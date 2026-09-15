@@ -24,6 +24,7 @@ option(FUSE_ALLOW_FETCH "Build a pinned copy of any Tier 0 dependency that is no
 # ---------------------------------------------------------------- Tier 0 (always)
 set(FUSE_FMT_TAG        "11.0.2")
 set(FUSE_FMTLOG_TAG     "v2.2.1")
+set(FUSE_YAMLCPP_TAG     "0.8.0")
 set(FUSE_GTEST_TAG       "v1.15.2")   # git tag; the find_package version below is the same number without the v
 set(FUSE_GTEST_VERSION   "1.15.2")
 set(FUSE_KOKKOS_TAG     "4.4.01")
@@ -75,6 +76,18 @@ FetchContent_Declare(Kokkos
   GIT_REPOSITORY https://github.com/kokkos/kokkos.git GIT_TAG ${FUSE_KOKKOS_TAG} GIT_SHALLOW ON)
 FetchContent_Declare(KokkosKernels
   GIT_REPOSITORY https://github.com/kokkos/kokkos-kernels.git GIT_TAG ${FUSE_KOKKOSKERNELS_TAG} GIT_SHALLOW ON)
+# yaml-cpp is the ONE dependency fetched by default rather than required from a
+# prefix. The installed-first rule exists because Kokkos, MOAB and PETSc carry
+# machine and stack tuning that a generic build would silently replace; a YAML
+# parser carries none of that -- it has no MPI, no index-size choice, no tuned
+# kernels -- so building a pinned copy costs nothing and makes the front-end
+# available on a machine that has no packaged one. An installed yaml-cpp is still
+# found first.
+FetchContent_Declare(yaml-cpp
+  GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git GIT_TAG ${FUSE_YAMLCPP_TAG}
+  GIT_SHALLOW ON
+  FIND_PACKAGE_ARGS ${FUSE_YAMLCPP_TAG} NAMES yaml-cpp)
+
 FetchContent_Declare(Eigen3
   GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git GIT_TAG ${FUSE_EIGEN_TAG} GIT_SHALLOW ON)
 
@@ -156,6 +169,24 @@ function(fuse_drop_missing_include_dirs)
   endforeach()
 endfunction()
 
+# Resolved separately from the tier ladder: it is the one always-fetchable
+# dependency, and only the front-end links it (PRIVATE, so it never reaches a
+# consumer's include path).
+macro(fuse_resolve_yaml)
+  find_package(yaml-cpp ${FUSE_YAMLCPP_TAG} QUIET CONFIG)
+  if(yaml-cpp_FOUND)
+    file(APPEND "${FUSE_RESOLUTION_FILE}" "yaml-cpp=found ${yaml-cpp_VERSION} ${yaml-cpp_DIR}\n")
+    message(STATUS "fuse: yaml-cpp ${yaml-cpp_VERSION} found at ${yaml-cpp_DIR}")
+  else()
+    set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+    set(YAML_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(yaml-cpp)
+    file(APPEND "${FUSE_RESOLUTION_FILE}" "yaml-cpp=fetched ${FUSE_YAMLCPP_TAG}\n")
+    message(STATUS "fuse: yaml-cpp ${FUSE_YAMLCPP_TAG} built from source (pinned)")
+  endif()
+endmacro()
+
 macro(fuse_resolve_dependencies)
   fuse_require(fmt HINT "fmt is the only output formatter (docs/dev/conventions.md).")
   fuse_require(Kokkos HINT "Kokkos is required at every tier; /opt/kokkos on this machine.")
@@ -163,6 +194,8 @@ macro(fuse_resolve_dependencies)
   # Kokkos::LIBDL, whose only usage requirement is the SDK include path Kokkos was
   # configured against; the rest are listed so a different install's stale entry is
   # caught the same way.
+  fuse_resolve_yaml()
+
   fuse_drop_missing_include_dirs(
     Kokkos::kokkos Kokkos::kokkoscore Kokkos::kokkoscontainers Kokkos::kokkossimd
     Kokkos::LIBDL Kokkos::THREADS Kokkos::SERIAL Kokkos::OPENMP

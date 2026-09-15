@@ -48,9 +48,13 @@ add_library(fuse-coupler-model
   model/transform.cpp
   model/compatibility.cpp
   model/multiscale.cpp
+  model/yaml_io.cpp
 )
 add_library(fuse::model ALIAS fuse-coupler-model)
 target_link_libraries(fuse-coupler-model PUBLIC fuse::base)
+# PRIVATE: the YAML parser is an implementation detail of the front-end and
+# must never reach a consumer's include path or link line.
+target_link_libraries(fuse-coupler-model PRIVATE yaml-cpp::yaml-cpp)
 set_target_properties(fuse-coupler-model PROPERTIES
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
