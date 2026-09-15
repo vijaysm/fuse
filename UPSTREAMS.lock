@@ -77,4 +77,4 @@ open      = ["PETSc-backed native component unregistered",
 #   Its suite was NOT run here: this sandbox cannot initialize MPI at all, so
 #   every PETSc/MPI test fails for environmental reasons. Running it is a host
 #   action and the only way to satisfy the S0 exit for this parent.
-verified  = "Release builds clean, 418 tests registered; suite run pending on a host with working MPI"
+verified  = "Release builds clean, 418 tests registered; host run 2026-09-15: 796/796 pass (4 MOAB-dependent skips) in a Tier 1 build with both parents"
