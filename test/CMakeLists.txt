@@ -45,3 +45,9 @@ endforeach()
 foreach(t rational units error)
   fuse_add_gtest(base ${t} THROWS)
 endforeach()
+
+# ---------------------------------------------------------------- model
+foreach(t semantics region component channel coupling_graph descriptor)
+  fuse_add_gtest(model ${t})
+endforeach()
+fuse_add_gtest(model validate THROWS)
