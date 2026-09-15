@@ -244,3 +244,53 @@ old = "  if (u.scale != Rational{1}) n[\"scale\"] = u.scale.to_string();"
 new = "  // (scale dropped)"
 target = "fuse_model_yaml_io_test"
 test = "model.yaml_io"
+
+[[mutation]]
+id = "dag-allows-second-producer"
+area = "compiler"
+describes = "an arc accepts a second producer, so the IR is no longer SSA"
+file = "include/fuse/ir/dag.hpp"
+old = "      if (out_arc.producer.valid()) {"
+new = "      if (false) {"
+target = "fuse_ir_ir_dag_test"
+test = "ir.ir_dag"
+
+[[mutation]]
+id = "dump-locale-unpinned"
+area = "compiler"
+describes = "the IR dump formats through the host locale, so golden bytes depend on LC_NUMERIC"
+file = "include/fuse/ir/dump.hpp"
+old = "  os.imbue(std::locale::classic());\n  os << v;"
+new = "  os << v;"
+target = "fuse_ir_ir_dump_test"
+test = "ir.ir_dump"
+
+[[mutation]]
+id = "clock-accepts-nonpositive-interval"
+area = "compiler"
+describes = "a component may declare a zero or negative time step"
+file = "include/fuse/schedule/clock.hpp"
+old = "    if (!(interval_ > Rational{0})) {"
+new = "    if (false) {"
+target = "fuse_schedule_clock_test"
+test = "schedule.clock"
+
+[[mutation]]
+id = "period-tick-limit-ignored"
+area = "compiler"
+describes = "an unusably long common period is passed downstream instead of refused"
+file = "include/fuse/schedule/clock.hpp"
+old = "    if (ticks > Rational{kMaxPeriodTicks}) {"
+new = "    if (false) {"
+target = "fuse_schedule_clock_test"
+test = "schedule.clock"
+
+[[mutation]]
+id = "overflow-escapes-as-exception"
+area = "compiler"
+describes = "an unrepresentable common period escapes as an exception instead of E-SCHED-PERIOD"
+file = "include/fuse/schedule/clock.hpp"
+old = "    } catch (const Error& e) {"
+new = "    } catch (const std::logic_error& e) {"
+target = "fuse_schedule_clock_test"
+test = "schedule.clock"

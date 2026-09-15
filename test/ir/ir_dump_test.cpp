@@ -1,3 +1,4 @@
+#include <string>
 #include <gtest/gtest.h>
 #include <fuse/ir/dump.hpp>
 
@@ -85,38 +86,58 @@ TEST(IrDump, GraphvizIsWellFormed) {
   EXPECT_NE(s.find('}'), std::string::npos);
 }
 
-// Task 2.8 diffs dump_text() byte-for-byte against checked-in golden files.
-// std::to_string(double) formats through the global C locale, so under a
-// comma-decimal locale (e.g. de_DE) a non-default omega would silently
-// change the golden bytes on any machine/CI image with that locale active.
-// This pins that the dump is locale-independent regardless of the ambient
-// global locale. CI images vary in which locales are installed, so this
-// skips (rather than fails) when de_DE isn't available.
-TEST(IrDump, OmegaIsFormattedLocaleIndependently) {
-  const char* kGermanLocale = "de_DE.UTF-8";
-  const std::string previous = std::setlocale(LC_ALL, nullptr);
+// ---- locale independence ------------------------------------------------
 
-  if (!std::setlocale(LC_ALL, kGermanLocale)) {
-    GTEST_SKIP() << kGermanLocale << " not available on this system";
-  }
+namespace {
 
-  OperatorDAG d = small_dag();
-  // Overwrite the Accumulate node's attrs with a non-default omega by
-  // rebuilding the dag with a Relax node carrying omega=0.7.
-  OperatorDAG relax_dag;
+// A locale that groups thousands and uses a comma decimal point, built from a
+// facet rather than a system locale name so the test does not depend on which
+// locales happen to be generated on the machine (`de_DE.UTF-8` is absent on
+// most CI images, and a test that silently skips proves nothing).
+struct CommaDecimalGrouping : std::numpunct<char> {
+  char do_decimal_point() const override { return ','; }
+  char do_thousands_sep() const override { return '.'; }
+  std::string do_grouping() const override { return "\3"; }
+};
+
+class GlobalLocale {
+ public:
+  explicit GlobalLocale(const std::locale& l) : previous_(std::locale::global(l)) {}
+  ~GlobalLocale() { std::locale::global(previous_); }
+  GlobalLocale(const GlobalLocale&) = delete;
+  GlobalLocale& operator=(const GlobalLocale&) = delete;
+
+ private:
+  std::locale previous_;
+};
+
+}  // namespace
+
+// The IR dump is a byte-compared golden artifact, so it must not depend on the
+// host application's locale. Without the classic-locale pin, an integer prints
+// as `16.384` and a double as `0,7` under the locale below -- and the process
+// locale is the HOST's choice, not ours: a coupler linked into an application
+// that called setlocale() would produce different golden bytes on the same data.
+TEST(IrDump, TextIsIdenticalUnderAGroupingLocale) {
+  // A non-default omega (a double) and element counts large enough to be
+  // grouped are what the two hazards act on.
+  OperatorDAG d;
   const ValueType t{.region = RegionId{0}};
-  const ArcId a0 = relax_dag.add_arc(t, "v0");
-  const ArcId a1 = relax_dag.add_arc(t, "v1");
-  relax_dag.add_node(OpKind::Source, {}, a0, OpAttrs{}, ChannelId{}, "src");
-  relax_dag.add_node(OpKind::Relax, {a0}, a1, OpAttrs{.omega = 0.7},
-                      ChannelId{}, "relax");
+  const ArcId a0 = d.add_arc(t, "v0");
+  const ArcId a1 = d.add_arc(t, "v1");
+  d.add_node(OpKind::Source, {}, a0, OpAttrs{}, ChannelId{}, "src");
+  d.add_node(OpKind::Relax, {a0}, a1, OpAttrs{.omega = 0.7}, ChannelId{}, "relax");
 
-  const std::string s = dump_text(relax_dag);
+  const std::string reference = dump_text(d);
+  EXPECT_NE(reference.find("0.7"), std::string::npos) << reference;
 
-  std::setlocale(LC_ALL, previous.c_str());
-
-  EXPECT_NE(s.find("0.7"), std::string::npos)
-      << "expected locale-independent '0.7', got: " << s;
-  EXPECT_EQ(s.find("0,7"), std::string::npos)
-      << "dump leaked the German comma-decimal locale: " << s;
+  const GlobalLocale scoped{std::locale(std::locale::classic(), new CommaDecimalGrouping)};
+  EXPECT_EQ(dump_text(d), reference)
+      << "the dump changed under a grouping locale, so some value formats through "
+         "the global locale the HOST application chose";
+  // No comma check here: the dump's own attribute separator is ", ", so a
+  // comma in the text is normal. Byte-equality against the reference is the
+  // property that matters, and it is the one a locale change would break.
+  EXPECT_NE(dump_text(d).find("0.7"), std::string::npos)
+      << "the decimal point itself came from the locale";
 }
