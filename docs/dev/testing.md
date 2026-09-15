@@ -117,14 +117,17 @@ read its output is not a front-end. The fallback is now a structural map of the 
 exact scale and offset; a unit that does have a symbol still emits as that symbol, so ordinary YAML
 stays readable.
 
-## The Tier 1 descriptor test has not run here
+## Cross-rank descriptor agreement
 
-`model.descriptor_mpi.{2,3,4,5}` asserts that every rank serializes the same graph to the same bytes —
-the last condition on the waist freeze, and one a single-process determinism test cannot catch (an
+`model.descriptor_mpi.{2,3,4,5}` asserts that every rank serializes the same graph to the same bytes
+— the last condition on the waist freeze, and one a single-process determinism test cannot catch (an
 unordered container's iteration order, a pointer value reaching the buffer, a locale-dependent number
-format). It is registered only in a Tier 1 build, and **this machine cannot launch MPI** (`mpiexec`
-fails in `HYDU_sock_create_and_listen_portstr`: unable to listen on a port), so it has no result yet.
-Tier 1 does configure and compile cleanly. Running it is a host action:
+format). **Verified on the host, 2026-09-15: passed at 2, 3, 4 and 5 ranks.** The odd counts are
+deliberate: a bug that only appears when ranks do not divide evenly is the usual kind.
+
+It is a Tier 1 test and absent from a Tier 0 build, because there is no MPI to run it with and a
+skipped test reads like a passing one in a summary line. This sandbox cannot launch MPI (`mpiexec`
+fails in `HYDU_sock_create_and_listen_portstr`), so running it is a host action:
 
 ```bash
 cmake -S . -B build-tier1 -DFUSE_ENABLE_MPI=ON \
