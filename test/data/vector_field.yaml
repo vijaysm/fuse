@@ -1,0 +1,22 @@
+# A graph whose only field has three components, used by the Fortran shim's
+# layout test. The point is the field's `components: 3` against a NON-SQUARE
+# 3-by-5 Fortran array: a square array cannot tell an element stride from a
+# component stride apart, because both readings of the layout are then
+# well-formed.
+#
+# There are no channels, so this graph is only ever taken as far as the LOADED
+# state -- which is all soma_register_field needs.
+version: 1
+meshes:
+  - {name: shell_mesh, source: "generated:box:4x4x4"}
+regions:
+  - {name: shell_wall, mesh: shell_mesh, entity_set: wall, dimension: 2}
+components:
+  - name: shell
+    ranks: {first: 0, count: 1}
+    interval: 1
+    fields:
+      - {name: displacement, region: shell_wall, disc: FV, components: 3,
+         units: m, conservation: None, intent: Provides}
+channels: []
+iteration_regions: []

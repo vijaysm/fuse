@@ -1,0 +1,46 @@
+# R14: this fixture is YAML-round-trip / initialize()-only, and is NOT a
+# runnable graph. The "flux" channel below sets both `accumulate: {op: Mean}`
+# and a `spacetime:` basis on the same channel, which `schedule()` refuses
+# with E-SCHED-SPACETIME (two temporal operators on one channel -- see
+# src/schedule/expand.cpp and SpacetimeRefusal.AccumulationCombinedWith-
+# SpacetimeIsRejected in test/unit/spacetime_runtime_test.cpp for the same
+# rule exercised directly). Every current caller of this file (grepped across
+# test/, python/, src/ -- see the R14 investigation this comment accompanies)
+# stops at load()/parse()/initialize()/begin_step()/end_step(): the C ABI's
+# soma_initialize() (used by the C, Fortran and Python `Context` tests) never
+# calls soma::schedule() at all, and the C++/Python paths that DO call
+# schedule() (Runner, Session) never load this file. If you are adding a
+# caller that calls schedule() or run()/run_period() on a graph loaded from
+# this file, it will fail with E-SCHED-SPACETIME by design; use a fixture
+# without both `accumulate` and `spacetime` on the same channel instead (see
+# test/data/pair_accumulate_remap_relax.yaml for a schedulable sibling that
+# exercises `accumulate`/`remap`/`relax` without `spacetime`).
+version: 1
+meshes:
+  - {name: fluid_mesh, source: "generated:box:8x8x8"}
+  - {name: solid_mesh, source: "generated:box:5x5x5"}
+regions:
+  - {name: fluid_wall, mesh: fluid_mesh, entity_set: wall, dimension: 2}
+  - {name: solid_wall, mesh: solid_mesh, entity_set: wall, dimension: 2}
+components:
+  - name: fluid
+    ranks: {first: 0, count: 2}
+    interval: 1/2
+    fields:
+      - {name: heat_flux, region: fluid_wall, disc: FV, components: 1,
+         units: W/m^2, conservation: Extensive, intent: Provides}
+  - name: solid
+    ranks: {first: 2, count: 2}
+    interval: 1
+    fields:
+      - {name: q_wall, region: solid_wall, disc: FV, components: 1,
+         units: W/m^2, conservation: Extensive, intent: Requires}
+channels:
+  - name: flux
+    source: fluid.heat_flux
+    target: solid.q_wall
+    accumulate: {op: Mean, window: {kind: from_component, component: fluid}}
+    remap: {flags: [Conservative, Monotone], method: mono3}
+    spacetime: {basis: DG, degree: 2, window: {kind: explicit, length: 2/5}}
+    relax: 0.7
+iteration_regions: []

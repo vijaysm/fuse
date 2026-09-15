@@ -1,0 +1,43 @@
+# pair_iterated.yaml with max_iterations set to 0, and nothing else changed.
+#
+# The Runner refuses this with E-ITER-MAXITER (verify_iteration_region(),
+# src/ir/checkpoint.cpp): a region whose body runs zero times is not a region.
+# The C ABI used to clamp it instead -- `std::max(1, ...)` in soma_initialize()
+# step 5 -- which turned the declaration into exactly one silent sweep followed
+# by a clock advance, with rc 0 and an empty error message, and with
+# soma_requires_checkpoint() reporting 0 so the caller was never even told it
+# was inside an iteration region. That is the E-ITER-NOCONVERGE failure mode
+# reached by a different route.
+version: 1
+meshes:
+  - {name: mf, source: "generated:box:4x4x4"}
+  - {name: ms, source: "generated:box:3x3x3"}
+regions:
+  - {name: rf, mesh: mf, entity_set: wall, dimension: 2}
+  - {name: rs, mesh: ms, entity_set: wall, dimension: 2}
+components:
+  - name: fluid
+    ranks: {first: 0, count: 1}
+    interval: 1
+    fields:
+      - {name: q, region: rf, disc: FV, components: 1, units: W/m^2,
+         conservation: Extensive, intent: Provides}
+  - name: solid
+    ranks: {first: 1, count: 1}
+    interval: 1
+    fields:
+      - {name: q_in, region: rs, disc: FV, components: 1, units: W/m^2,
+         conservation: Extensive, intent: Requires}
+channels:
+  - name: flux
+    source: fluid.q
+    target: solid.q_in
+    accumulate: {op: Mean}
+    remap: {flags: [Conservative, Monotone]}
+    relax: 0.7
+iteration_regions:
+  - name: outer
+    channels: [flux]
+    max_iterations: 0
+    convergence:
+      - {kind: Relative, tolerance: 1e-6, field: q}

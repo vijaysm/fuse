@@ -1,0 +1,41 @@
+# pair_iterated.yaml with the `convergence:` block DELETED, and nothing else
+# changed.
+#
+# The YAML loader accepts this: an absent `convergence` key simply leaves the
+# region's ConvergenceCriterion empty (src/graph/yaml_io.cpp). An empty
+# criterion reports satisfied -- true is the identity of AND -- so the region
+# would stop after one sweep and call itself converged, which is the state
+# verify_iteration_region() refuses with E-ITER-NOCONVERGE on the Runner path.
+# This file exists so test/unit/capi_test.c can show soma_initialize() refuses
+# it too, rather than reaching State::Initialized with no diagnostic at all.
+version: 1
+meshes:
+  - {name: mf, source: "generated:box:4x4x4"}
+  - {name: ms, source: "generated:box:3x3x3"}
+regions:
+  - {name: rf, mesh: mf, entity_set: wall, dimension: 2}
+  - {name: rs, mesh: ms, entity_set: wall, dimension: 2}
+components:
+  - name: fluid
+    ranks: {first: 0, count: 1}
+    interval: 1
+    fields:
+      - {name: q, region: rf, disc: FV, components: 1, units: W/m^2,
+         conservation: Extensive, intent: Provides}
+  - name: solid
+    ranks: {first: 1, count: 1}
+    interval: 1
+    fields:
+      - {name: q_in, region: rs, disc: FV, components: 1, units: W/m^2,
+         conservation: Extensive, intent: Requires}
+channels:
+  - name: flux
+    source: fluid.q
+    target: solid.q_in
+    accumulate: {op: Mean}
+    remap: {flags: [Conservative, Monotone]}
+    relax: 0.7
+iteration_regions:
+  - name: outer
+    channels: [flux]
+    max_iterations: 30

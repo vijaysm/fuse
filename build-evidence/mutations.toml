@@ -224,3 +224,23 @@ old = "  if (contract.ood_detector.empty()) {"
 new = "  if (false) {"
 target = "fuse_model_multiscale_test"
 test = "model.multiscale"
+
+[[mutation]]
+id = "yaml-unit-fallback-unparseable"
+area = "model"
+describes = "a unit with no table symbol is emitted as a string the parser cannot read"
+file = "src/model/yaml_io.cpp"
+old = "    if (u == e.value) return YAML::Node(std::string(e.symbol));  // the readable case"
+new = "    if (u.same_dimensions(e.value)) return YAML::Node(std::string(e.symbol));"
+target = "fuse_model_yaml_io_test"
+test = "model.yaml_io"
+
+[[mutation]]
+id = "yaml-drops-unit-scale"
+area = "model"
+describes = "the YAML form omits a unit's exact scale, so kilopascal reads back as pascal"
+file = "src/model/yaml_io.cpp"
+old = "  if (u.scale != Rational{1}) n[\"scale\"] = u.scale.to_string();"
+new = "  // (scale dropped)"
+target = "fuse_model_yaml_io_test"
+test = "model.yaml_io"
