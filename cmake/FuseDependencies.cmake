@@ -79,7 +79,12 @@ FetchContent_Declare(Eigen3
   GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git GIT_TAG ${FUSE_EIGEN_TAG} GIT_SHALLOW ON)
 
 # ------------------------------------------------- resolution
-set(FUSE_RESOLUTION_REPORT "" CACHE INTERNAL "per-dependency found/fetched record")
+# The per-dependency record is APPENDED TO A FILE as each one resolves, rather
+# than accumulated in a variable: a cache STRING cannot hold newlines (CMake
+# truncates it with a warning), and a plain list set inside a function does not
+# survive the function's scope. Both were tried; the file is what works.
+set(FUSE_RESOLUTION_FILE "${CMAKE_BINARY_DIR}/fuse-resolved-dependencies.txt")
+file(WRITE "${FUSE_RESOLUTION_FILE}" "")
 
 # fuse_require(<package> [VERSION v] [NAMES ...] [FETCH_AS <content-name>] [HINT <text>])
 #
@@ -101,8 +106,8 @@ function(fuse_require package)
   set(${package}_VERSION "${${package}_VERSION}" PARENT_SCOPE)
   set(${package}_DIR     "${${package}_DIR}"     PARENT_SCOPE)
   if(${package}_FOUND)
-    set(FUSE_RESOLUTION_REPORT "${FUSE_RESOLUTION_REPORT}${package}=found ${${package}_VERSION} ${${package}_DIR}\n"
-        CACHE INTERNAL "")
+    file(APPEND "${FUSE_RESOLUTION_FILE}"
+         "${package}=found ${${package}_VERSION} ${${package}_DIR}\n")
     message(STATUS "fuse: ${package} ${${package}_VERSION} found at ${${package}_DIR}")
     return()
   endif()
@@ -119,7 +124,7 @@ function(fuse_require package)
   endif()
   message(STATUS "fuse: ${package} not installed; building the pinned copy (FUSE_ALLOW_FETCH=ON)")
   FetchContent_MakeAvailable(${_content})
-  set(FUSE_RESOLUTION_REPORT "${FUSE_RESOLUTION_REPORT}${package}=fetched\n" CACHE INTERNAL "")
+  file(APPEND "${FUSE_RESOLUTION_FILE}" "${package}=fetched (pinned tag, not tuned for this machine)\n")
 endfunction()
 
 # Strip include directories that do not exist from an imported target.
@@ -205,10 +210,9 @@ macro(fuse_resolve_dependencies)
   endif()
 
   # A build that cannot say which versions it used cannot reproduce its own result.
-  file(WRITE "${CMAKE_BINARY_DIR}/fuse-resolved-dependencies.txt"
+  file(APPEND "${FUSE_RESOLUTION_FILE}"
        "linalg_backend=${FUSE_LINALG_BACKEND}\n"
        "allow_fetch=${FUSE_ALLOW_FETCH}\n"
-       "${FUSE_RESOLUTION_REPORT}"
        "mpi=${FUSE_ENABLE_MPI}\nmoab=${FUSE_ENABLE_MOAB}\npetsc=${FUSE_ENABLE_PETSC}\n"
        "lowfive=${FUSE_ENABLE_LOWFIVE}\nexceptions=${FUSE_ENABLE_EXCEPTIONS}\n")
 endmacro()

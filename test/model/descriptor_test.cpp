@@ -1,8 +1,13 @@
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <vector>
 
 #include <gtest/gtest.h>
 #include <fuse/model/coupling_graph.hpp>
 #include <fuse/model/descriptor.hpp>
+#include <fuse/model/freeze_fixture.hpp>
 
 using fuse::AccumOp;
 using fuse::ComponentDecl;
@@ -17,8 +22,6 @@ using fuse::Region;
 using fuse::RemapFlags;
 using fuse::TemporalBasis;
 namespace u = fuse::units;
-
-namespace {
 
 // Exercises every field the descriptor must carry, including the awkward ones:
 // rational intervals, spacetime specs, a lag, and a mismatch reason.
@@ -59,8 +62,6 @@ CouplingGraph rich_graph() {
       .name = "outer", .channels = {ch}, .max_iterations = 25});
   return g;
 }
-
-}  // namespace
 
 TEST(Descriptor, HeaderHasMagicAndVersion) {
   const auto bytes = serialize(rich_graph());
@@ -195,4 +196,53 @@ TEST(Descriptor, UnitScaleAndOffsetAreInTheCanonicalBytes) {
   ASSERT_TRUE(round_tripped.ok());
   EXPECT_EQ(round_tripped.value().field(fuse::FieldId{0}).units.scale, fuse::Rational{1000});
   EXPECT_TRUE(round_tripped.value().field(fuse::FieldId{0}).units.same_dimensions(pascal));
+}
+
+// ---- the waist freeze (S2.3) -------------------------------------------
+
+// Every optional member at a NON-DEFAULT value. A round-trip over defaults
+// proves nothing about a member: zero bytes written and zero read agree.
+
+
+// A descriptor is only frozen if a round trip preserves every member it can
+// carry -- not just the ones a default-constructed graph happens to set.
+TEST(Descriptor, RoundTripPreservesEveryNonDefaultMember) {
+  const auto original = fuse::testing::freeze_fixture();
+  const auto bytes = fuse::serialize(original);
+  const auto read_back = fuse::deserialize(bytes);
+  ASSERT_TRUE(read_back.ok()) << read_back.error().message;
+
+  // Structural equality is asserted through the bytes themselves: re-serializing
+  // what we read must reproduce the same buffer. That covers every member at
+  // once, including any added later, which a field-by-field comparison would not.
+  EXPECT_EQ(fuse::serialize(read_back.value()), bytes);
+
+  // And spot-check the members most likely to be silently dropped.
+  const auto& f = read_back.value().field(fuse::FieldId{0});
+  EXPECT_EQ(f.order, 4);
+  EXPECT_EQ(f.components, 3);
+  EXPECT_EQ(f.units.scale, fuse::Rational{1000});
+  EXPECT_EQ(f.conservation, fuse::Conservation::Extensive);
+  EXPECT_EQ(read_back.value().region(fuse::RegionId{0}).dimension, 2);
+  EXPECT_EQ(read_back.value().component(fuse::ComponentId{1}).interval, fuse::Rational(1, 3));
+}
+
+// The frozen bytes. `test/golden/waist-v1.bin` is this descriptor's tag: a
+// change to it is an ABI change and must come with a version bump, which is why
+// the test compares bytes rather than re-deriving them.
+TEST(Descriptor, MatchesTheFrozenWaistV1Bytes) {
+  const auto bytes = fuse::serialize(fuse::testing::freeze_fixture());
+  const std::filesystem::path golden =
+      std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / "waist-v1.bin";
+  ASSERT_TRUE(std::filesystem::exists(golden)) << golden;
+
+  std::ifstream in(golden, std::ios::binary);
+  const std::vector<char> raw((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
+  std::vector<std::byte> expected(raw.size());
+  for (std::size_t i = 0; i < raw.size(); ++i) expected[i] = static_cast<std::byte>(raw[i]);
+
+  EXPECT_EQ(bytes, expected)
+      << "the canonical descriptor changed. That is an ABI change: bump kGraphVersion, "
+         "regenerate test/golden/waist-v1.bin under the new name, and keep this one.";
 }
