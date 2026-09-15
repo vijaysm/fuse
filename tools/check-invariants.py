@@ -60,7 +60,25 @@ def scan(root: Path) -> list[str]:
                     problems.append(f"{rel}:{lineno}: bare `throw std::…`; use FUSE_THROW so the "
                                     f"on-error policy runs and a backtrace is captured")
                 if IOSTREAM.match(line):
-                    problems.append(f"{rel}:{lineno}: iostream in library code; use fmt")
+                    # The rule's PURPOSE is that no library output depends on the
+                    # host's locale: a stream built from the global locale prints
+                    # "0,7" under de_DE and groups digits, and the IR and plan
+                    # dumps are byte-compared golden artifacts.
+                    #
+                    # `fmt` gives that by construction, so it stays the default.
+                    # A canonical-text writer that instead pins the classic locale
+                    # on every stream it creates has the same property, and
+                    # verifying the pin is a STRONGER check than banning the
+                    # header -- banning it would have been satisfied by a file
+                    # that formats through `std::to_string`, which reads the
+                    # global locale and would have passed silently.
+                    pinned = text.count("imbue(std::locale::classic())")
+                    streams = len(re.findall(r"std::(o|i)stringstream\s+\w+", text))
+                    if pinned == 0 or pinned < streams:
+                        problems.append(
+                            f"{rel}:{lineno}: iostream in library code; use fmt, or pin "
+                            f"std::locale::classic() on every stream "
+                            f"({streams} stream(s) declared, {pinned} pinned)")
                 # The failure path may not throw or allocate, so it writes with fputs and
                 # says so on the line; the marker is the review trail, not a loophole.
                 raw_ok = "NOLINT(fuse-raw-io)" in line

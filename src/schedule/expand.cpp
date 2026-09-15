@@ -1,0 +1,485 @@
+#include "fuse/schedule/expand.hpp"
+
+#include <algorithm>
+#include <cstdint>
+#include <numeric>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include "fuse/schedule/slab.hpp"
+
+namespace fuse {
+namespace {
+
+using detail::Int128;
+
+[[nodiscard]] Int128 abs128(Int128 v) { return v < 0 ? -v : v; }
+
+bool any_spacetime(const CouplingGraph& g) {
+  for (std::uint32_t i = 0; i < g.channel_count(); ++i) {
+    if (g.channel_at(ChannelId{i}).spacetime.basis != TemporalBasis::None) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// Does this node run on the source clock rather than the target clock?
+/// Sample is the only interior op that does: accumulation samples every source
+/// tick and reduces once per target tick.
+bool runs_on_source_clock(OpKind k) { return k == OpKind::Sample; }
+
+/// Does this channel carry a `Sample`, i.e. does its chain straddle two clocks
+/// rather than lying on the slab decomposition?
+///
+/// Two constructions do. Accumulation is the original one. A SPACE-TIME
+/// channel (spec §7.3) is the second and was added by Task 6.3: the temporal
+/// operator `T` of `M = T (x) W` has one coefficient per (target step, source
+/// step) pair over the whole window, and its column index runs over EVERY
+/// source step -- including, for any reconstruction degree above zero, source
+/// steps that do not overlap the target step being written. Only a node on the
+/// source clock sees them all, so lowering gives a space-time channel a
+/// `Sample` for exactly the reason an accumulating one has one, and everything
+/// downstream of it closes a target step.
+///
+/// Laying the chain on the slabs instead would be incomplete rather than
+/// merely inconvenient: a slab lies inside one target step by construction, so
+/// a slab-laid chain can never reach the source steps outside it that `T`'s
+/// row names. (It would once also have recorded the WRONG source step at a
+/// slab that ends exactly on a source boundary, because such a slab ran after
+/// the tick beginning there. `TickPhase` fixed that half -- see runner.cpp --
+/// but the reach problem above is structural and is why `Sample` is here.)
+bool has_sample(const Channel& ch) {
+  return ch.accumulate.op != AccumOp::Instant ||
+         ch.spacetime.basis != TemporalBasis::None;
+}
+
+/// k * interval, formed and range-checked in __int128.
+///
+/// Rational::operator* throws std::logic_error when the reduced product does
+/// not fit int64_t, and that happens for legal inputs: with intervals P/4 and
+/// P (P = 8999999999999999999) the common period is P, tick 3 of the finer
+/// clock is 3P/4, and 3P > 2^63. expand() returns a Result, so the condition
+/// has to be detected rather than thrown. Same contract, and the same shape,
+/// as scaled_tick() in slab.cpp.
+[[nodiscard]] Result<Rational> scaled_tick(std::int64_t k,
+                                           const Rational& interval) {
+  const Int128 n = static_cast<Int128>(k) * interval.num();
+  const Int128 d = interval.den();  // always >= 1
+  const Int128 g = std::gcd(abs128(n), d);
+  const Int128 rn = n / g;
+  if (!detail::fits_i64(rn)) {
+    return Failure{"E-SCHED-PERIOD",
+                 "tick " + std::to_string(k) + " of interval " +
+                     interval.to_string() +
+                     " is not representable as an exact 64-bit Rational time"};
+  }
+  return Rational{static_cast<std::int64_t>(rn),
+                  static_cast<std::int64_t>(d / g)};
+}
+
+/// period / interval as an exact tick count, in __int128 so that neither the
+/// division nor the check can throw out of Rational.
+[[nodiscard]] Result<std::int64_t> tick_count(const Rational& period,
+                                              const Rational& interval,
+                                              const char* what) {
+  if (!(interval > Rational{0})) {
+    return Failure{"E-SCHED-INTERVAL", std::string(what) + " interval " +
+                                         interval.to_string() +
+                                         " must be positive"};
+  }
+  const Int128 num = static_cast<Int128>(period.num()) * interval.den();
+  const Int128 den = static_cast<Int128>(period.den()) * interval.num();
+  // den > 0: denominators are positive and interval.num() > 0.
+  if (num <= 0 || num % den != 0) {
+    return Failure{"E-SCHED-PERIOD",
+                 std::string(what) + " interval " + interval.to_string() +
+                     " does not divide the common period " +
+                     period.to_string() + " an integer number of times"};
+  }
+  const Int128 n = num / den;
+  if (n > kMaxPeriodTicks) {
+    return Failure{"E-SCHED-PERIOD",
+                 std::string(what) + " interval " + interval.to_string() +
+                     " needs more than " + std::to_string(kMaxPeriodTicks) +
+                     " ticks per period " + period.to_string()};
+  }
+  return static_cast<std::int64_t>(n);
+}
+
+/// floor(a / b) and ceil(a / b) for a >= 0, b > 0, in __int128 so that the
+/// products the callers feed in (up to kMaxPeriodTicks^2 == 1e12) cannot
+/// overflow. Both results are step indices, so they fit int64_t comfortably.
+[[nodiscard]] std::int64_t floor_div(Int128 a, Int128 b) {
+  return static_cast<std::int64_t>(a / b);
+}
+[[nodiscard]] std::int64_t ceil_div(Int128 a, Int128 b) {
+  return static_cast<std::int64_t>((a + b - 1) / b);
+}
+
+[[nodiscard]] Failure explode_error() {
+  return Failure{"E-SCHED-EXPLODE",
+               "time expansion exceeds " + std::to_string(kMaxTimedNodes) +
+                   " timed nodes; check component intervals"};
+}
+
+/// Does a channel of `g` own this node's instances? Shared by both expansion
+/// paths: which nodes the channel loop claims and which fall through to the
+/// boundary rule must be one decision, not two that can drift.
+[[nodiscard]] bool claimed_by_channel(const CouplingGraph& g, const Node& n) {
+  return n.origin.valid() && n.origin.value() < g.channel_count();
+}
+
+/// The two components a channel connects, or the error the graph earns for
+/// having an endpoint no component owns.
+[[nodiscard]] Result<std::pair<ComponentId, ComponentId>> channel_endpoints(
+    const CouplingGraph& g, const Channel& ch) {
+  const ComponentId src_c = g.owner_of(ch.source);
+  const ComponentId dst_c = g.owner_of(ch.target);
+  if (!src_c.valid() || src_c.value() >= g.component_count() ||
+      !dst_c.valid() || dst_c.value() >= g.component_count()) {
+    return Failure{"E-SCHED-EXPAND",
+                 "channel '" + ch.name + "' has an unowned endpoint"};
+  }
+  return std::pair<ComponentId, ComponentId>{src_c, dst_c};
+}
+
+/// The component whose clock a node no channel claimed runs on: the rank set
+/// its value is placed on. The arc type records which rank set (component) the
+/// value lives on.
+///
+/// Dropping such a node would silently shorten the schedule, which is worse
+/// than refusing to build one, so an unplaced value is an error. Shared by
+/// both expansion paths so that the set of schedulable graphs -- and the
+/// diagnostic an unschedulable one gets -- cannot depend on which path ran.
+[[nodiscard]] Result<ComponentId> boundary_owner(const CouplingGraph& g,
+                                                 const OperatorDAG& dag,
+                                                 std::uint32_t i,
+                                                 const Node& n) {
+  const ArcId ref = n.output.valid()
+                        ? n.output
+                        : (n.inputs.empty() ? ArcId{} : n.inputs.front());
+  const int rank_set = ref.valid() ? dag.arc(ref).type.rank_set : -1;
+  if (rank_set < 0 ||
+      static_cast<std::uint32_t>(rank_set) >= g.component_count()) {
+    return Failure{"E-SCHED-EXPAND",
+                 "node " + std::to_string(i) + " \"" + n.label +
+                     "\" belongs to no channel and its value is not placed "
+                     "on any component, so it cannot be scheduled"};
+  }
+  return ComponentId{static_cast<std::uint32_t>(rank_set)};
+}
+
+/// The order every expansion finishes in: by time, then by `TickPhase`, ties
+/// by NodeId. One definition, used by both paths, so the fast path cannot be
+/// sorted differently from the general one.
+///
+/// The phase sits between the two for the reason given in expand.hpp: within
+/// one instant every delivery has to precede the component ticks that begin
+/// there, and every `Sample` has to follow them. NodeId alone cannot express
+/// that, because the two kinds of instance belong to the same channel chain
+/// and their ids interleave.
+[[nodiscard]] bool by_time_then_node(const TimedNode& a, const TimedNode& b) {
+  if (a.time != b.time) return a.time < b.time;
+  if (a.phase != b.phase) return a.phase < b.phase;
+  return a.node < b.node;
+}
+
+/// Spec §8.2's lockstep shortcut: expand a whole period without decomposing.
+///
+/// Precondition (the caller's `out.lockstep`): every component shares one
+/// interval and no channel is space-time. The common period is then that one
+/// interval, every clock ticks exactly once in it, and `decompose(dt, dt, dt)`
+/// is the single slab [0, dt). The general path's three emission conventions
+/// therefore collapse to two constant times:
+///
+///   * a node a channel claims runs at the end of that channel's only slab,
+///     `t = period`; the one exception is the `Sample` of an accumulating
+///     channel, which runs on the *source* clock at the start of its only
+///     tick, `t = 0`, and therefore carries `TickPhase::AfterTicks`;
+///   * a node no channel claimed runs at its component's only tick, `t = 0`.
+///
+/// Every step index is 0, because there is only step 0 of either clock, and
+/// every instance index is 0, because nothing repeats.
+///
+/// This is not an approximation of the general path's answer, it *is* the
+/// general path's answer; `ExpandMode::ForceGeneral` and the byte-for-byte
+/// comparison in test/unit/lockstep_test.cpp are what hold it to that.
+[[nodiscard]] Result<void> emit_lockstep(const CouplingGraph& g,
+                                         const OperatorDAG& dag,
+                                         TimedDag& out) {
+  // The general path validates every channel's endpoints -- and rejects the
+  // graph if one is unowned -- before it emits anything for that channel.
+  // The shortcut must reject the same graphs with the same message, or which
+  // graphs are schedulable would depend on an optimisation.
+  for (std::uint32_t c = 0; c < g.channel_count(); ++c) {
+    const Result<std::pair<ComponentId, ComponentId>> ends =
+        channel_endpoints(g, g.channel_at(ChannelId{c}));
+    if (!ends.ok()) return ends.error();
+  }
+
+  // One instance per node, so the general path's per-emission cap reduces to
+  // this single check.
+  if (static_cast<std::int64_t>(dag.node_count()) > kMaxTimedNodes) {
+    return explode_error();
+  }
+
+  out.nodes.reserve(dag.node_count());
+  for (std::uint32_t i = 0; i < dag.node_count(); ++i) {
+    const NodeId nid{i};
+    const Node& n = dag.node(nid);
+    Rational t{0};
+    TickPhase phase = TickPhase::BeforeTicks;
+    if (claimed_by_channel(g, n)) {
+      const Channel& ch = g.channel_at(ChannelId{n.origin.value()});
+      if (has_sample(ch) && runs_on_source_clock(n.kind)) {
+        t = Rational{0};
+        phase = TickPhase::AfterTicks;
+      } else {
+        t = out.period;
+      }
+    } else {
+      const Result<ComponentId> owner = boundary_owner(g, dag, i, n);
+      if (!owner.ok()) return owner.error();
+    }
+    out.nodes.push_back(TimedNode{nid, t, 0, 0, 0, phase});
+  }
+  return Result<void>::success();
+}
+
+}  // namespace
+
+Result<TimedDag> expand(const CouplingGraph& g, const OperatorDAG& dag,
+                        const ClockSet& clocks, ExpandMode mode) {
+  // clocks.clock() is .at()-checked and throws std::out_of_range on a
+  // mismatch; expand() returns a Result, so the mismatch is rejected here
+  // instead of escaping as an exception.
+  if (clocks.size() != g.component_count()) {
+    return Failure{"E-SCHED-EXPAND",
+                 "clock set has " + std::to_string(clocks.size()) +
+                     " clocks but the graph has " +
+                     std::to_string(g.component_count()) + " components"};
+  }
+
+  // checked_common_period(), not common_period(): the latter throws
+  // std::logic_error when the LCM overflows (two coprime intervals near 2^31.5
+  // are enough), and it does not bound the number of ticks in the period.
+  const Result<Rational> period = clocks.checked_common_period();
+  if (!period.ok()) return period.error();
+
+  // Accumulation and a space-time projection each give the channel a `Sample`
+  // on the source clock, and a channel cannot have two: the second would read
+  // a value the first chain only produces at the END of a target step, so the
+  // emitted stream would fail `check_dependence_order()` with
+  // `E-SCHED-ORDER` -- a message that blames the scheduler for what is a
+  // conflict between two temporal operators the user asked for on one channel.
+  // Refused here, where the reason is still visible.
+  //
+  // Not refused in `lower()`: the DAG for such a channel is well formed (it is
+  // the *schedule* that does not exist), and `soma_initialize` lowers without
+  // scheduling, so rejecting it there would make a graph unloadable for a
+  // reason that only shows up one layer down.
+  for (std::uint32_t c = 0; c < g.channel_count(); ++c) {
+    const Channel& ch = g.channel_at(ChannelId{c});
+    if (ch.accumulate.op == AccumOp::Instant) continue;
+    if (ch.spacetime.basis == TemporalBasis::None) continue;
+    return Failure{
+        "E-SCHED-SPACETIME",
+        "channel '" + ch.name + "' asks for both accumulate(" +
+            to_cstring(ch.accumulate.op) + ") and the space-time basis " +
+            to_cstring(ch.spacetime.basis) +
+            ". Those are two different temporal operators on the same data and "
+            "each needs its own sampler on the source clock, which cannot be "
+            "scheduled; drop one. A degree-0 space-time projection onto a "
+            "single target step already IS the window mean"};
+  }
+
+  TimedDag out;
+  out.period = period.value();
+  out.lockstep = clocks.is_lockstep() && !any_spacetime(g);
+
+  std::unordered_map<std::uint32_t, std::int64_t> instance_of;  // NodeId -> count
+
+  // Returns false when the emission would push the total past kMaxTimedNodes.
+  // The cap is enforced on every emission, not once per node: a single node
+  // can expand to kMaxPeriodTicks instances, so a per-node check lets the
+  // vector overshoot by that much before anyone looks.
+  const auto emit = [&](NodeId n, const Rational& t, std::int64_t src_step,
+                        std::int64_t dst_step,
+                        TickPhase phase = TickPhase::BeforeTicks) -> bool {
+    if (static_cast<std::int64_t>(out.nodes.size()) >= kMaxTimedNodes) {
+      return false;
+    }
+    const std::int64_t inst = instance_of[n.value()]++;
+    out.nodes.push_back(TimedNode{n, t, src_step, dst_step, inst, phase});
+    return true;
+  };
+
+  // Spec §8.2: lockstep is the degenerate case and must not pay for the slab
+  // machinery. One instance per node, `decompose()` never called. The result
+  // is sorted by the same comparator as the general path, below, and is
+  // required to be identical to it -- see emit_lockstep().
+  if (out.lockstep && mode == ExpandMode::Auto) {
+    const Result<void> fast = emit_lockstep(g, dag, out);
+    if (!fast.ok()) return fast.error();
+    std::stable_sort(out.nodes.begin(), out.nodes.end(), by_time_then_node);
+    return out;
+  }
+
+  // --- channel chains -------------------------------------------------------
+  for (std::uint32_t c = 0; c < g.channel_count(); ++c) {
+    const ChannelId cid{c};
+    const Channel& ch = g.channel_at(cid);
+    const Result<std::pair<ComponentId, ComponentId>> ends =
+        channel_endpoints(g, ch);
+    if (!ends.ok()) return ends.error();
+    // Intervals come from the ClockSet, not from ComponentDecl: Clock's
+    // constructor is the thing that guarantees they are positive, and the
+    // ClockSet is what the runtime will actually advance.
+    const Rational src_dt = clocks.clock(ends.value().first).interval();
+    const Rational dst_dt = clocks.clock(ends.value().second).interval();
+
+    const Result<std::int64_t> ns = tick_count(out.period, src_dt, "source");
+    if (!ns.ok()) return ns.error();
+    const Result<std::int64_t> nd = tick_count(out.period, dst_dt, "target");
+    if (!nd.ok()) return nd.error();
+
+    const bool sampled = has_sample(ch);
+
+    // Only a chain without a Sample is laid out on slabs, so only it pays
+    // for (and can be rejected by) the decomposition.
+    SlabDecomposition decomp;
+    // TickPhase's causality contract, resolved once per channel rather than
+    // once per (channel, node): an Instant chain carries the source state at
+    // `(src_step + 1) * src_dt`, so the slab may be consumed by the target
+    // step beginning at its end only when the slab ends where its source step
+    // does. A slab ends at `min(source step end, target step end)`, so the
+    // test is an equality; it is written as a comparison because that is what
+    // the contract says and the reader should not have to re-derive the min.
+    std::vector<TickPhase> slab_phase;
+    if (!sampled) {
+      Result<SlabDecomposition> d = decompose(src_dt, dst_dt, out.period);
+      if (!d.ok()) return d.error();
+      decomp = std::move(d.value());
+      slab_phase.reserve(decomp.slabs.size());
+      for (const Slab& s : decomp.slabs) {
+        const Result<Rational> complete = scaled_tick(s.src_step + 1, src_dt);
+        if (!complete.ok()) return complete.error();
+        slab_phase.push_back(s.end < complete.value()
+                                 ? TickPhase::AfterTicks
+                                 : TickPhase::BeforeTicks);
+      }
+    }
+
+    for (std::uint32_t i = 0; i < dag.node_count(); ++i) {
+      const NodeId nid{i};
+      // dag is const throughout, so this reference cannot be invalidated;
+      // out.nodes is the only vector that grows and nothing points into it.
+      const Node& n = dag.node(nid);
+      if (n.origin != cid) continue;
+
+      if (sampled && runs_on_source_clock(n.kind)) {
+        // One Sample per source tick, inside whichever target step it falls.
+        // Stamped at the tick's START and marked `AfterTicks`, which together
+        // mean "the value that tick produces": the source step's own value,
+        // available only once the source has advanced over it. Stamping it at
+        // the tick's END instead would read the same value, but it would also
+        // redefine which source steps a target step closes over -- the window
+        // would shrink to the steps that have COMPLETED by the target step's
+        // end, which is a different (and, for space-time, strictly weaker)
+        // operator. See `src_step` below.
+        for (std::int64_t k = 0; k < ns.value(); ++k) {
+          const Result<Rational> t = scaled_tick(k, src_dt);
+          if (!t.ok()) return t.error();
+          // t / dst_dt == k * nd / ns exactly, done in integers.
+          const std::int64_t dst_step =
+              floor_div(static_cast<Int128>(k) * nd.value(), ns.value());
+          if (!emit(nid, t.value(), k, dst_step, TickPhase::AfterTicks)) {
+            return explode_error();
+          }
+        }
+      } else if (sampled) {
+        // The reduction and everything after it close a target step, so they
+        // run at its end and carry the last source step that contributed:
+        // the largest j with j*src_dt < (k+1)*dst_dt.
+        //
+        // `TickPhase::BeforeTicks` (the default) is the load-bearing half of
+        // this stamp, not a detail, and unlike a slab instance this one always
+        // earns it: a window-closing chain carries a quantity attributed to
+        // target step k, whose end IS `(k+1)*dst_dt`, so it satisfies the
+        // causality contract in expand.hpp unconditionally. That instant is
+        // also where the target's step k+1 BEGINS, and the value exists
+        // precisely so that step k+1 can consume it. Emitting it after that
+        // tick -- which is what a bare timestamp used to mean -- delayed every
+        // delivery by two target steps and dropped one write per period
+        // unread, because the next write overtook it. That was R2;
+        // `SpacetimeRunner.EveryTargetStepProjectionReachesTheTargetComponent`
+        // in test/unit/spacetime_conservation_test.cpp fails if it comes back.
+        //
+        // A `Sample` at this same instant is `AfterTicks` and therefore sorts
+        // after this chain, which is correct and not merely tolerated: this
+        // chain closes over source steps j with j*src_dt STRICTLY less than
+        // `(k+1)*dst_dt`, so it never depends on a `Sample` stamped here.
+        for (std::int64_t k = 0; k < nd.value(); ++k) {
+          const Result<Rational> t = scaled_tick(k + 1, dst_dt);
+          if (!t.ok()) return t.error();
+          const std::int64_t src_step =
+              ceil_div(static_cast<Int128>(k + 1) * ns.value(), nd.value()) - 1;
+          if (!emit(nid, t.value(), src_step, k)) return explode_error();
+        }
+      } else {
+        // No accumulation: one instance per slab, at the slab's end, with the
+        // phase the causality contract gave it above. A target-limited slab is
+        // `AfterTicks`: its source step is still running at the stamp, so the
+        // state it carries is not valid until after the target step beginning
+        // there has already started. The next slab redelivers the same
+        // `src_step` unchanged, so nothing is lost by waiting -- what would be
+        // lost by not waiting is the "explicit, lagged" character of the
+        // scheme, silently.
+        for (std::size_t si = 0; si < decomp.slabs.size(); ++si) {
+          const Slab& s = decomp.slabs[si];
+          if (!emit(nid, s.end, s.src_step, s.dst_step, slab_phase[si])) {
+            return explode_error();
+          }
+        }
+      }
+    }
+  }
+
+  // --- everything no channel claimed: one instance per owning component tick.
+  // Source always lands here (lowering gives it no origin); so does a Sink for
+  // a Bidirectional field that no channel writes. A Sink that *was* written is
+  // part of its channel's chain above and must not be emitted twice.
+  //
+  // `BeforeTicks`, like every non-`Sample` instance. `Source` moves no data --
+  // its arc already aliases the component's own storage (see
+  // `Runner::Impl::execute`) -- so which side of its component's tick it sits
+  // on is not observable; what would be observable is the reverse choice,
+  // because a `Source` stamped at the same instant as a delivery sorts first
+  // (it is a DAG root) and would drag the receiving component's tick forward
+  // past the delivery. That is R2 again, reached from the boundary pass.
+  for (std::uint32_t i = 0; i < dag.node_count(); ++i) {
+    const NodeId nid{i};
+    const Node& n = dag.node(nid);
+    if (claimed_by_channel(g, n)) continue;
+
+    const Result<ComponentId> owner = boundary_owner(g, dag, i, n);
+    if (!owner.ok()) return owner.error();
+    const Rational dt = clocks.clock(owner.value()).interval();
+
+    const Result<std::int64_t> nk = tick_count(out.period, dt, "component");
+    if (!nk.ok()) return nk.error();
+    for (std::int64_t k = 0; k < nk.value(); ++k) {
+      const Result<Rational> t = scaled_tick(k, dt);
+      if (!t.ok()) return t.error();
+      if (!emit(nid, t.value(), k, k)) return explode_error();
+    }
+  }
+
+  std::stable_sort(out.nodes.begin(), out.nodes.end(), by_time_then_node);
+  return out;
+}
+
+}  // namespace fuse

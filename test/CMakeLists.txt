@@ -72,3 +72,13 @@ if(FUSE_ENABLE_MPI)
     # ranks do not divide evenly is the usual kind.
   endforeach()
 endif()
+
+# ---------------------------------------------------------------- ir
+foreach(t ir_op ir_dag ir_dump lowering lowering_channel lowering_derived lowering_regions)
+  fuse_add_gtest(ir ${t})
+endforeach()
+
+# ---------------------------------------------------------------- schedule
+foreach(t clock acyclicity expand plan lockstep)
+  fuse_add_gtest(schedule ${t})
+endforeach()
