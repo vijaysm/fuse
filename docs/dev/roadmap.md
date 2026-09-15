@@ -12,13 +12,20 @@ imported code lands byte-identical before it is transformed ([](invariants.md) `
 | **S3** | One compiler: operator IR, transform chains as lowering rules, epochs as instructions, acyclicity proof | A reference case lowers to a golden-compared plan; fuzzer green |
 | **S4** | One runtime: both entry modes, transactions on plan buffers, Kokkos kernels, waveforms and acceleration | Manufactured-solution orders and iteration counts reproduce upstream exactly |
 | **S5** | Backends under one operator interface: mesh, remap, transport, persisted maps | First non-matching-mesh parallel coupled run with conservation and order gates |
-| **S6** | Interfaces: both ABIs on one descriptor, adapter host, Fortran, Python, YAML, external processes | An unmodified external executable couples through the participant ABI |
+| **S6** | Interfaces: both ABIs on one descriptor, adapter host, Fortran, Python, YAML, external processes | An unmodified external executable couples through the participant ABI. **`upstream/soma` deleted** — every path superseded |
 | **S7** | Implicit and monolithic solvers on PETSc | A Newton-coupled problem converges at measured quadratic rate with adjoints verified |
-| **S8** | `physics-kit`: the optional finite-element component | Every upstream physics baseline passes through FUSE |
-| **S9** | Portability and scale: budgets, cluster rehearsal, adversarial suite | Budgets exist; scaling numbers published with their conditions |
+| **S8** | `physics-kit`: the optional finite-element component | Every upstream physics baseline passes through FUSE. **`upstream/karma` deleted** — every path superseded |
+| **S9** | Portability and scale: budgets, cluster rehearsal, adversarial suite | Budgets exist; scaling numbers published with their conditions. **`upstream/` does not exist**; `UPSTREAMS.lock` records both retirements |
 
 **Critical path.** S0 → S1 → S2 → S3 → S4 → S5 → S6. S7 and S8 are independent once S5 exits. S9
 begins at S4 and finishes last.
+
+## What the end state is
+
+One library. Everything under `include/fuse/` and `src/`, namespace `fuse::`, FUSE's names — no
+`soma::`, no `KARMA::`, no `upstream/` directory. The parents survive as git history in their own
+repositories and as two `retired` entries in `UPSTREAMS.lock`. The procedure and naming map are in
+[](porting.md); invariant `I11` makes it enforceable from the first port.
 
 ## Where S0 stands
 

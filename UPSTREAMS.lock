@@ -12,6 +12,8 @@ tag       = "fuse-import-0"   # to be cut at the freeze
 imported  = "upstream/soma"          # byte-identical; proven by tools/verify-import.py
 diverged  = []                       # paths transformed in fuse since import
 superseded = []                      # upstream paths fuse has replaced
+retire_at = "S6"                     # subtree deleted whole when every path is superseded
+retired   = ""                       # "<date> @ <fuse sha>" once done
 open      = ["X2 rules_channel.cpp overlaps()", "X5 validate.hpp abs(lag)", "X7 soma_c.h int32_t comm",
              "R31 overlapping rank sets refused (untested)",
              "untested refusals: E-RT-TRANSPORT-{NOMPI,COMM,XREGION,OVERLAP}, E-RT-REMAP-HALO, E-MESH-HALO-GEOMETRY"]
@@ -33,6 +35,8 @@ tag       = "fuse-import-0"
 imported  = "upstream/karma"         # byte-identical; proven by tools/verify-import.py
 diverged  = []                       # paths transformed in fuse since import
 superseded = []                      # upstream paths fuse has replaced
+retire_at = "S8"                     # subtree deleted whole when every path is superseded
+retired   = ""                       # "<date> @ <fuse sha>" once done
 open      = ["PETSc-backed native component unregistered",
              "distorted-pyramid quadrature unverified (KNOWN_ISSUES #1)",
              "DEBUG BUILD IS BROKEN: src/numerics/spatial/karma_domain.C:32,54,77 uses unqualified Hexagon/Unstructured from the scoped enum KARMA::DomainShape, inside assert(). All three verified presets (release, asan=RelWithDebInfo, no-exceptions) define NDEBUG, so the line has never been compiled. The assertion is also vacuous: (Type != Hexagon || Type != Unstructured) is a tautology. Fix when porting, as a real invariant (I6), not an assert."]

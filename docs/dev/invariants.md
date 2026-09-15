@@ -36,7 +36,8 @@ no enforcement is a preference.
 
 `I8` **Import first, transform second.**
 : Upstream code lands byte-identical with its suite green before it is changed, so a port can be
-  checked against its source. *Enforced by* review and by the per-import evidence record.
+  checked against its source. *Enforced by* `tools/verify-import.py` and the per-import evidence
+  record.
 
 `I9` **A port is accepted only with killed mutants.**
 : At least one named mutation per public kernel, killed by a test, logged under `build-evidence/`.
@@ -46,6 +47,13 @@ no enforcement is a preference.
 `I10` **A fact about an upstream repository is a dated observation.**
 : Cite `path:line` at the SHA in `UPSTREAMS.lock`; re-verify before depending on it. *Enforced by*
   review — this rule exists because several plan-gating facts went stale within hours.
+
+`I11` **`upstream/` has an end, and `fuse::` never depends on it.**
+: All library code lives under `include/fuse/` and `src/` in namespace `fuse::` under FUSE's names;
+  the parents' namespaces, type prefixes and file prefixes do not survive a port. No `fuse::` code
+  includes from `upstream/`. Each parent subtree is deleted whole once its last path is superseded
+  ([](porting.md)). *Enforced by* `tools/check-layering.py` (no upstream include, no legacy namespace
+  or prefix under `include/fuse/` or `src/`) and by the retirement entries in `UPSTREAMS.lock`.
 
 ## API design rules
 

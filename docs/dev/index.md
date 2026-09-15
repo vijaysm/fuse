@@ -8,4 +8,5 @@ Read [](invariants.md) first — it is short, and every page after it assumes th
 [](layering.md) for where code goes, [](conventions.md) for how it is written, and [](testing.md) for
 what "done" means here.
 
-The staged build order lives in [](roadmap.md).
+How code moves out of `upstream/` and into `fuse::` — the procedure, the naming map, and the
+retirement schedule — is [](porting.md). The staged build order lives in [](roadmap.md).

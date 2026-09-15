@@ -48,6 +48,17 @@ FORBIDDEN_PUBLIC = re.compile(
     r"|mpi\.h|petsc|moab/|MBI|hdf5\.h|H5[A-Z]"
     r")"
 )
+
+# Invariant I11: fuse:: code never depends on upstream/ and never carries a
+# parent's namespace, type prefix or file prefix. Applied to include/fuse/ AND
+# src/ (not just public headers), because a legacy name in a .cpp is the same
+# unfinished port. Once both parents are retired these rules cost nothing and
+# stay as a guard against a stray copy-paste from the parents' repositories.
+LEGACY_INCLUDE = re.compile(r'^\s*#\s*include\s*[<"](upstream/|soma/|coupling/karma_|karma_[a-z_]+\.h)')
+LEGACY_NAMESPACE = re.compile(r'\bnamespace\s+(soma|KARMA)\b|\b(soma|KARMA)::')
+LEGACY_TYPE_PREFIX = re.compile(r'\bKARMA[A-Z][A-Za-z0-9]*\b')
+LEGACY_FILE_PREFIX = re.compile(r'^(karma_|soma_)')
+LEGACY_EXTENSION = {".C"}
 # --- end rules
 
 INCLUDE_FUSE = re.compile(r"^\s*#\s*include\s*[<\"]fuse/([a-z_]+)/")
@@ -102,10 +113,38 @@ def main() -> int:
                         f"'{layer}' header"
                     )
 
+    problems += check_legacy(root)
+
     for p in problems:
         print(f"error: {p}")
     print(f"check-layering: {len(problems)} violation(s)")
     return 1 if problems else 0
+
+
+def check_legacy(root: Path) -> list[str]:
+    """I11: no upstream include, no legacy namespace/prefix, under include/fuse and src."""
+    problems: list[str] = []
+    for area in (root / "include" / "fuse", root / "src"):
+        if not area.is_dir():
+            continue
+        for f in sorted(area.rglob("*")):
+            if not f.is_file():
+                continue
+            rel = f.relative_to(root)
+            if f.suffix in LEGACY_EXTENSION:
+                problems.append(f"{rel}: '.C' extension; FUSE sources are '.cpp' (I11)")
+            if LEGACY_FILE_PREFIX.match(f.name):
+                problems.append(f"{rel}: legacy file prefix; rename per docs/dev/porting.md (I11)")
+            if f.suffix not in {".hpp", ".h", ".cpp", ".cc", ".C", ".inl", ".ipp"}:
+                continue
+            for lineno, line in enumerate(f.read_text(errors="replace").splitlines(), 1):
+                if LEGACY_INCLUDE.match(line):
+                    problems.append(f"{rel}:{lineno}: fuse:: code includes from a parent tree (I11)")
+                if LEGACY_NAMESPACE.search(line):
+                    problems.append(f"{rel}:{lineno}: legacy namespace 'soma'/'KARMA' (I11)")
+                if LEGACY_TYPE_PREFIX.search(line):
+                    problems.append(f"{rel}:{lineno}: 'KARMA*' type prefix; the namespace carries it (I11)")
+    return problems
 
 
 if __name__ == "__main__":
