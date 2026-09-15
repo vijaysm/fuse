@@ -1,0 +1,125 @@
+# Named mutations for the mutation gate (tools/mutate.py). One entry per
+# public kernel at minimum; `old` must occur exactly once in `file`.
+# `describes` says what bug the mutation simulates, so a SURVIVED verdict
+# tells you which behaviour the suite does not actually check.
+
+# ------------------------------------------------------------------ base
+[[mutation]]
+id = "rational-gcd-skipped"
+area = "base"
+describes = "normalise() forgets to divide by the gcd, so 6/8 stays 6/8"
+file = "include/fuse/base/rational.hpp"
+old = "    const detail::Int128 g = std::gcd(an, d);\n    if (g > 1) {"
+new = "    const detail::Int128 g = 1;\n    if (g > 1) {"
+target = "fuse_base_rational_test"
+test = "base.rational"
+
+[[mutation]]
+id = "rational-compare-64bit"
+area = "base"
+describes = "operator<=> compares in int64 and overflows above sqrt(INT64_MAX)"
+file = "include/fuse/base/rational.hpp"
+old = "    const detail::Int128 lhs = static_cast<detail::Int128>(a.num_) * b.den_;"
+new = "    const detail::Int128 lhs = static_cast<std::int64_t>(a.num_ * b.den_);"
+target = "fuse_base_rational_test"
+test = "base.rational"
+
+[[mutation]]
+id = "rational-record-accepts-unreduced"
+area = "base"
+describes = "from_record() repairs 2/4 to 1/2 instead of refusing it (I4)"
+file = "include/fuse/base/rational.hpp"
+old = "    if (reduced.num_ != rec.numerator || reduced.den_ != rec.denominator) {"
+new = "    if (false) {"
+target = "fuse_base_rational_test"
+test = "base.rational"
+
+[[mutation]]
+id = "units-exponent-wraps"
+area = "base"
+describes = "exponent narrowing wraps silently instead of refusing (I4/I6)"
+file = "include/fuse/base/units.hpp"
+old = "  if (v < -128 || v > 127) {"
+new = "  if (false) {"
+target = "fuse_base_units_test"
+test = "base.units"
+
+[[mutation]]
+id = "units-divide-adds"
+area = "base"
+describes = "operator/ adds exponents instead of subtracting"
+file = "include/fuse/base/units.hpp"
+old = "        detail::narrow_exponent(length - o.length),"
+new = "        detail::narrow_exponent(length + o.length),"
+target = "fuse_base_units_test"
+test = "base.units"
+
+[[mutation]]
+id = "time-level-ignores-iterate"
+area = "base"
+describes = "TimeLevel equality ignores the iterate index"
+file = "include/fuse/base/time_level.hpp"
+old = "  friend bool operator==(const TimeLevel&, const TimeLevel&) = default;"
+new = "  friend bool operator==(const TimeLevel& a, const TimeLevel& b) { return a.anchor == b.anchor && a.offset == b.offset; }"
+target = "fuse_base_time_level_test"
+test = "base.time_level"
+
+[[mutation]]
+id = "diagnostics-first-failure-only"
+area = "base"
+describes = "Diagnostics keeps only the first defect (the U2 anti-pattern)"
+file = "include/fuse/base/result.hpp"
+old = "    items_.push_back(Diagnostic{severity, std::move(code), std::move(message),"
+new = "    if (items_.empty()) items_.push_back(Diagnostic{severity, std::move(code), std::move(message),"
+target = "fuse_base_result_test"
+test = "base.result"
+
+[[mutation]]
+id = "version-accepts-leading-zero"
+area = "base"
+describes = "parse accepts 01.2.3, breaking canonical round-trip"
+file = "src/base/version.cpp"
+old = "        if (word.empty() || (word.size() > 1 && word.front() == '0'))"
+new = "        if (word.empty())"
+target = "fuse_base_version_test"
+test = "base.version"
+
+[[mutation]]
+id = "version-compatible-across-major"
+area = "base"
+describes = "compatibility ignores the major version"
+file = "src/base/version.cpp"
+old = "    if (contract.version.major != reader.version.major) return {CompatibilityReason::MajorMismatch, 0};"
+new = "    if (false) return {CompatibilityReason::MajorMismatch, 0};"
+target = "fuse_base_version_test"
+test = "base.version"
+
+[[mutation]]
+id = "bytes-no-length-prefix"
+area = "base"
+describes = "put_bytes drops the length prefix so adjacent strings collide"
+file = "include/fuse/base/bytes.hpp"
+old = "    put_integer(out, value.size(), 4);"
+new = "    // (length prefix removed)"
+target = "fuse_base_bytes_test"
+test = "base.bytes"
+
+[[mutation]]
+id = "error-assert-compiled-out"
+area = "base"
+describes = "FUSE_ASSERT becomes a no-op (the `assert` it replaces)"
+file = "include/fuse/base/error.hpp"
+old = "    if (!(cond)) {                                                                   \\"
+new = "    if (false) {                                                                     \\"
+target = "fuse_base_error_test"
+test = "base.error"
+
+[[mutation]]
+id = "error-slices-to-base"
+area = "base"
+describes = "raise() throws the Error base, so catch(const Refusal&) is dead"
+file = "include/fuse/base/error.hpp"
+old = "  throw error;  // the DYNAMIC type E, so `catch (const Refusal&)` works"
+new = "  throw static_cast<Error&>(error);"
+target = "fuse_base_error_test"
+test = "base.error"
