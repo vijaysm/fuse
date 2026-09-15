@@ -31,6 +31,12 @@ def sh(cmd: list[str], cwd: Path | None = None) -> int:
     return subprocess.run(cmd, cwd=cwd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
 
 
+def build(build_dir: Path, target: str, jobs: int) -> tuple[int, str]:
+    r = subprocess.run(["cmake", "--build", str(build_dir), "-j", str(jobs), "--target", target],
+                       capture_output=True, text=True)
+    return r.returncode, r.stdout + r.stderr
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--build-dir", required=True, type=Path)
@@ -55,11 +61,17 @@ def main() -> int:
             continue
         try:
             path.write_text(original.replace(m["old"], m["new"], 1))
-            build = sh(["cmake", "--build", str(args.build_dir), "-j", str(args.jobs), "--target", m["target"]])
-            if build != 0:
-                # A mutant that does not compile has proved nothing about the
-                # tests. It is the MUTATION that is defective; rewrite it.
-                verdict, note = "INCONCLUSIVE", "mutant does not compile; rewrite it"
+            rc, log = build(args.build_dir, m["target"], args.jobs)
+            if rc != 0:
+                # Two very different reasons a mutant fails to build. A
+                # static_assert firing IN THE TEST FILE is a compile-time kill:
+                # the test caught it before main(). Any other error means the
+                # MUTATION is malformed and has proved nothing; rewrite it.
+                test_file = f"/{m['test'].replace('.', '/')}_test."
+                if "static assertion failed" in log and test_file in log:
+                    verdict, note = "KILLED", "test static_assert fails"
+                else:
+                    verdict, note = "INCONCLUSIVE", "mutant does not compile; rewrite it"
             else:
                 run = sh(["ctest", "--test-dir", str(args.build_dir), "-R", f"^{m['test']}$"])
                 verdict, note = ("KILLED", "test fails") if run != 0 else ("SURVIVED", "suite still green")
