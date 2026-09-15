@@ -1,0 +1,63 @@
+# FUSE — C++20 scientific computing library.
+# Rationale for every deviation from LLVM is in a trailing comment; do not change
+# a value without updating the comment (docs/CHARTER.md §Identity).
+---
+Language: Cpp
+BasedOnStyle: LLVM
+Standard: c++20
+
+ColumnLimit: 100              # long math expressions and Kokkos template signatures need > 80
+IndentWidth: 2
+ContinuationIndentWidth: 4
+UseTab: Never
+InsertNewlineAtEOF: true
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 1
+
+PointerAlignment: Left        # double* values, not double *values
+ReferenceAlignment: Left
+DerivePointerAlignment: false
+QualifierAlignment: Left      # const double&, consistently
+
+AlignAfterOpenBracket: Align
+AlignOperands: AlignAfterOperator   # keeps multi-line formulae readable at the operator
+AlignTrailingComments: true
+AlignConsecutiveAssignments: false  # churns diffs when a name changes
+AlignConsecutiveMacros: true        # error-code and ABI entry tables read as columns
+
+AllowShortFunctionsOnASingleLine: Inline   # header accessors stay one line; free functions do not
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+BreakBeforeBraces: Attach
+BreakConstructorInitializers: BeforeColon
+PackConstructorInitializers: NextLine
+EmptyLineBeforeAccessModifier: LogicalBlock
+
+IndentPPDirectives: AfterHash # nested #if FUSE_HAVE_MPI / KOKKOS guards stay legible
+IndentCaseLabels: true
+SpaceAfterTemplateKeyword: false
+SpacesBeforeTrailingComments: 2
+FixNamespaceComments: true
+ShortNamespaceLines: 0
+
+# Own header first, then fuse, then third-party, then C++ std, then C.
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+IncludeIsMainRegex: '(_test|_impl)?$'
+IncludeCategories:
+  - Regex: '^<fuse/'
+    Priority: 2
+  - Regex: '^<(Kokkos|KokkosSparse|KokkosBatched|Kokkos_)'
+    Priority: 3
+  - Regex: '^<(fmt|fmtlog)/'
+    Priority: 3
+  - Regex: '^<(gtest|gmock)/'
+    Priority: 3
+  - Regex: '^<(mpi|petsc|moab|MOAB|hdf5|H5|Eigen)'
+    Priority: 4
+  - Regex: '^<[a-z_]+>$'
+    Priority: 5
+  - Regex: '^<.*\.h>$'
+    Priority: 6
+  - Regex: '.*'
+    Priority: 1
