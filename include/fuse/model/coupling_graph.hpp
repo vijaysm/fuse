@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cassert>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -11,8 +10,7 @@
 #include "fuse/model/component.hpp"
 #include "fuse/model/field_spec.hpp"
 #include "fuse/model/region.hpp"
-#include "fuse/num/accelerator.hpp"
-#include "fuse/num/convergence.hpp"
+#include "fuse/model/iteration.hpp"
 
 namespace fuse {
 
@@ -120,7 +118,8 @@ class CouplingGraph {
   }
 
   FieldId add_field(ComponentId owner, FieldSpec f) {
-    assert(owner.valid() && owner.value() < components_.size());
+    FUSE_ASSERT(owner.valid() && owner.value() < components_.size(),
+                "component id {} is out of range ({} components)", owner.value(), components_.size());
     fields_.push_back(std::move(f));
     const FieldId id{static_cast<std::uint32_t>(fields_.size() - 1)};
     field_owner_.push_back(owner);
@@ -154,7 +153,8 @@ class CouplingGraph {
   }
 
   [[nodiscard]] ChannelBuilder channel(ChannelId id) {
-    assert(id.valid() && id.value() < channels_.size());
+    FUSE_ASSERT(id.valid() && id.value() < channels_.size(),
+                "channel id {} is out of range ({} channels)", id.value(), channels_.size());
     return ChannelBuilder{*this, id};
   }
 

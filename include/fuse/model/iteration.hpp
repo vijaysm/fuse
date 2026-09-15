@@ -1,57 +1,26 @@
 #pragma once
 
+/// Iteration configuration: WHAT was asked for, not how it is computed.
+///
+/// Moved down from the numerics layer during the merge. The graph's iteration
+/// region has to declare a convergence criterion and an acceleration choice, and a
+/// model layer that reached up into numerics to do so inverted the dependency (the
+/// layering gate caught it). The algorithms -- the `Accelerator` implementations and
+/// the criterion's per-iteration evaluation -- stay in `fuse::num`, which depends on
+/// this header rather than the reverse.
+
 #include <cmath>
+#include <string>
 #include <cstddef>
-#include <locale>
-#include <sstream>
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
-/// Spec §5.3: the convergence measure carried by an `IterationRegion`.
-///
-///     g.iterate({fsi_channels})
-///        .until(Converged::Relative(1e-6, "T_wall") &
-///               Converged::Absolute(1e-8, "flux"))
-///
-/// These predicates decide when a coupled fixed-point iteration stops, so both
-/// directions of error are quiet: too loose returns an unconverged answer that
-/// looks converged, too tight never terminates. Every policy decision below is
-/// therefore stated explicitly and pinned by a test in
-/// test/unit/convergence_test.cpp.
-///
-/// **AND vs OR.** There are two combining rules and they are deliberately
-/// different:
-///   * *Within* one measure, `AbsoluteOrRelative` is an OR -- either branch
-///     passing satisfies it.
-///   * *Across* measures, `ConvergenceCriterion` is an AND -- every measure
-///     must hold before the window advances. This matches preCICE's documented
-///     behaviour for multiple convergence measures, and is what `&` in spec
-///     §5.3 means. The two differ by orders of magnitude in practice, so the
-///     operator is `&` and never `|`.
-///
-/// **Zero reference.** A relative test divides by a norm that can be exactly
-/// zero -- a field that starts at zero is an ordinary case, not a pathological
-/// one. Policy: a zero reference makes the relative branch fall back to the
-/// absolute comparison against the same tolerance. It never yields NaN and
-/// never accepts a large residual. The caveat is that the tolerance is then
-/// read as a dimensional quantity rather than a ratio; a caller that cannot
-/// accept that should supply a fixed non-zero reference of its own choosing.
-///
-/// **Non-finite norms.** A diverging iteration produces inf or NaN norms. That
-/// is a runtime outcome, not a programmer error, so it is reported as NOT
-/// converged rather than throwing. Note that this is not automatic: the
-/// natural-looking `!(residual > tol)` is *true* for NaN and would report a
-/// diverged run as converged. Every branch here is written as `x <= tol`,
-/// which is false for NaN, and non-finite inputs are additionally rejected up
-/// front so that e.g. residual/inf == 0 cannot pass either.
-///
-/// **Programmer errors** (a negative norm, a non-positive or non-finite
-/// tolerance, a residual vector whose length does not match the number of
-/// measures) throw. They are not `assert`s: `assert` compiles out under
-/// -DNDEBUG, and a silently mis-sized residual vector is exactly the failure
-/// that would report a converged run.
+#include <fmt/format.h>
+
+#include "fuse/base/error.hpp"
+#include "fuse/base/result.hpp"
+
 namespace fuse {
 
 enum class MeasureKind {
@@ -91,10 +60,11 @@ namespace detail {
 /// locale instead. Same reasoning as detail::format_double in ir/dump.hpp; the
 /// name differs so both headers can be included in one translation unit.
 [[nodiscard]] inline std::string format_convergence_double(double v) {
-  std::ostringstream os;
-  os.imbue(std::locale::classic());
-  os << v;
-  return os.str();
+  // Was an ostringstream imbued with the classic locale, to stop a
+  // comma-decimal-separator locale from changing the text of a diagnostic.
+  // fmt is locale-independent unless asked otherwise, so the imbue is gone and
+  // the property it protected still holds.
+  return fmt::format("{}", v);
 }
 
 }  // namespace detail
@@ -115,8 +85,7 @@ struct ConvergenceMeasure {
   [[nodiscard]] bool satisfied(double residual_norm,
                                double reference_norm) const {
     if (!(tolerance > 0.0) || !std::isfinite(tolerance)) {
-      throw std::invalid_argument(
-          "ConvergenceMeasure::satisfied: tolerance must be finite and "
+      FUSE_THROW(InvalidArgument, "{}", std::string() + "ConvergenceMeasure::satisfied: tolerance must be finite and "
           "positive, got " +
           detail::format_convergence_double(tolerance) + " for field '" +
           field + "'");
@@ -126,8 +95,7 @@ struct ConvergenceMeasure {
       return false;
     }
     if (residual_norm < 0.0 || reference_norm < 0.0) {
-      throw std::invalid_argument(
-          "ConvergenceMeasure::satisfied: norms must be non-negative, got "
+      FUSE_THROW(InvalidArgument, "{}", std::string() + "ConvergenceMeasure::satisfied: norms must be non-negative, got "
           "residual " +
           detail::format_convergence_double(residual_norm) + " and reference " +
           detail::format_convergence_double(reference_norm) + " for field '" +
@@ -244,8 +212,7 @@ class ConvergenceCriterion {
                    const std::vector<double>& reference_norms) const {
     if (residual_norms.size() != measures_.size() ||
         reference_norms.size() != measures_.size()) {
-      throw std::invalid_argument(
-          std::string{"ConvergenceCriterion::"} + fn + ": expected " +
+      FUSE_THROW(InvalidArgument, "{}", std::string() + std::string{"ConvergenceCriterion::"} + fn + ": expected " +
           std::to_string(measures_.size()) +
           " residual and reference norms, got " +
           std::to_string(residual_norms.size()) + " and " +
@@ -258,15 +225,15 @@ class ConvergenceCriterion {
 
 namespace detail {
 
-/// Validating factory shared by the named constructors below. The same check
+/// Validating factory shared by the named constructors in fuse::Converged. The same check
 /// runs again in satisfied(), because ConvergenceMeasure is an aggregate and
 /// can be brace-initialised past this function.
+
 [[nodiscard]] inline ConvergenceMeasure make_measure(MeasureKind kind,
                                                      double tol,
                                                      std::string field) {
   if (!(tol > 0.0) || !std::isfinite(tol)) {
-    throw std::invalid_argument(
-        std::string{"Converged::"} + to_cstring(kind) +
+    FUSE_THROW(InvalidArgument, "{}", std::string() + std::string{"Converged::"} + to_cstring(kind) +
         ": tolerance must be finite and positive, got " +
         format_convergence_double(tol) + " for field '" + field + "'");
   }
@@ -274,6 +241,126 @@ namespace detail {
 }
 
 }  // namespace detail
+
+enum class AccelKind {
+  None,
+  Constant,
+  Aitken,
+  Secant,
+  Steffensen,
+  IQN_ILS,
+  IQN_IMVJ,
+};
+
+/// Column filters for the quasi-Newton least squares, as defined by preCICE
+/// and by Davis, Schulte & Uekermann, Math. Comput. Appl. 27(3):40 (2022).
+/// With |R_jj| the length of the part of column j that the newer columns do
+/// not already explain, and `limit` = AccelConfig::limit:
+///   None  keep every column.
+///   QR1   drop column j if |R_jj| < limit * ||V||_F. One threshold for the
+///         whole matrix, so it wants a much smaller limit than QR2 (preCICE
+///         suggests 1e-5..1e-6). It can drop every column, including the
+///         newest.
+///   QR2   drop column j if |R_jj| < limit * ||v_j||. A per-column threshold on
+///         the fraction of the column that is new, invariant under rescaling
+///         V. The newest column is always kept, so a non-empty history stays
+///         non-empty.
+///   QR3   the same retained column set as QR2. In preCICE, QR3 is a cost
+///         optimisation that skips QR2's en-bloc refactorisation when a cheap
+///         test on the incrementally maintained QR says nothing would be
+///         dropped; this implementation keeps no factorisation between calls,
+///         so the test and the filter read the same matrix and the outcomes
+///         coincide exactly. See `fuse::detail::filter_qn_columns`.
+/// See `AccelConfig::filter` and the seam documented there.
+enum class FilterKind { None, QR1, QR2, QR3 };
+
+[[nodiscard]] const char* to_cstring(AccelKind k) noexcept;
+[[nodiscard]] const char* to_cstring(FilterKind f) noexcept;
+
+struct AccelConfig {
+  AccelKind kind = AccelKind::Constant;
+
+  /// Relaxation factor used whenever no usable history exists -- iteration 0
+  /// of a window for every method, and any later iteration whose secant
+  /// information is degenerate. Must be finite and non-zero.
+  double initial_relaxation = 0.1;
+
+  /// Fixed factor for AccelKind::Constant. Must be finite and non-zero.
+  double omega = 0.5;
+
+  /// Maximum number of secant column pairs retained within one window. It
+  /// also caps the number of past windows IQN_IMVJ chains, at
+  /// min(reuse, Accelerator::kMaxJacobianBlocks). Must be in
+  /// [1, Accelerator::kMaxReuse]. AccelKind::Secant ignores it and always
+  /// keeps exactly one pair.
+  ///
+  /// MEASURED: raising this above 8 is a NO-OP whenever a filter is active.
+  /// Task 7.6's Dirichlet-Neumann demo ran reuse = 8/16/24/32 with QR1 and with
+  /// QR2 and got byte-identical sweep counts in every case -- the filter drops
+  /// columns long before the history cap binds. Tune `filter`/`limit` first;
+  /// `reuse` only bites with FilterKind::None.
+  int reuse = 8;
+
+  /// Column filter applied before the least-squares solve.
+  ///
+  /// `fuse::detail::filter_qn_columns` in src/num/accel_quasi_newton.cpp is the
+  /// single point where a filter drops columns, and the definitions and their
+  /// sources are documented there. Dropped columns are removed from the stored
+  /// history for good, not merely skipped for one solve, so `columns()` reports
+  /// what survived.
+  ///
+  /// A filter is NOT the mechanism that keeps the solve stable: rank deficiency
+  /// is handled unconditionally by the rank-revealing pivoted QR in the solver,
+  /// which truncates at a machine-precision threshold regardless of this
+  /// setting. A filter can only make the retained set smaller than what that
+  /// truncation would already accept.
+  ///
+  /// Filtering is not free on well-conditioned problems: it discards secant
+  /// information that a clean least-squares fit could still have used. THE
+  /// DEFAULT IS PRECICE'S AND IS TUNED FOR ILL-CONDITIONED FSI. Two independent
+  /// measurements in this tree say what it costs when the problem is not:
+  ///   * Accelerator.LadderIsMonotoneOnADenseLinearProblem, an exactly-linear
+  ///     5-dof problem: IQN_ILS and IQN_IMVJ each take 7 iterations at the
+  ///     default and 6 with FilterKind::None. The oldest column's orthogonal
+  ///     fraction crosses the 1e-2 limit at iteration 4 and is dropped -- but
+  ///     on an exactly-linear problem that 0.18% IS the last missing
+  ///     direction, so the exact rank-5 fit lands one iteration later. The
+  ///     test pins the count and explains the mechanism.
+  ///   * examples/dn_heat, 32 interface stations x 4 conductivity strips over
+  ///     20 periods: **211 sweeps unfiltered, 4233 with the default -- a factor
+  ///     of 20 -- and one window reaches max_iterations without converging.**
+  ///     QR1 at the same limit is worse still (6638-10935 sweeps).
+  ///
+  /// The default is left at preCICE's, because that is the reference
+  /// implementation and diverging from it silently would be its own trap. But
+  /// if your problem is well conditioned, FilterKind::None is very likely the
+  /// right choice, and a window that will not converge under the default is a
+  /// reason to try it before suspecting the accelerator.
+  FilterKind filter = FilterKind::QR2;
+
+  /// Threshold consumed by the filter, in the units each filter defines (see
+  /// FilterKind). Validated here as finite and in [0, 1); 0 disables the filter
+  /// exactly as FilterKind::None does. 1e-2 is preCICE's default for the
+  /// relative filters QR2 and QR3; QR1 wants something nearer 1e-5.
+  double limit = 1e-2;
+
+  /// Scale each field block of the residual by the reciprocal of its own
+  /// 2-norm before the least-squares solve, so a large-magnitude field cannot
+  /// dominate the fit. Requires set_field_partition() to have any effect, for
+  /// two separate reasons:
+  ///   * the default partition is *empty*, not one block. `field_weights`
+  ///     returns exactly 1.0 for every entry in that case and no reciprocal
+  ///     norm is ever formed, so the solve sees the unscaled system;
+  ///   * with an explicit single block (`set_field_partition({0})`) a scalar
+  ///     1/||r|| really is formed and applied, but it multiplies both the
+  ///     matrix and the right-hand side, so it leaves the least-squares
+  ///     minimiser unchanged.
+  /// Only a partition with two or more blocks changes the answer.
+  bool scale_fields = true;
+};
+
+/// Spec §5.3. Stateful across the iterations of a window; `reset()` marks a
+/// window boundary.
 
 namespace Converged {
 
@@ -311,5 +398,6 @@ namespace Converged {
   c.add(std::move(m));
   return c;
 }
+
 
 }  // namespace fuse
