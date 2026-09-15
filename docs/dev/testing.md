@@ -58,7 +58,8 @@ The rule is one leg per rung of the ladder, so no configuration can rot unnotice
 
 **Running today** (`.github/workflows/ci.yml`): the layering, invariant and import-identity gates; a
 documentation build with warnings as errors; **tier 0 as four legs** — Debug and Release across both
-linear-algebra backends, with Kokkos built at the pinned tag — and a **no-exceptions leg** that
+linear-algebra backends, with dependencies resolved from the runner's prefixes (`FUSE_ALLOW_FETCH=ON`
+there, since a CI runner has no tuned install) — and a **no-exceptions leg** that
 builds with `FUSE_ENABLE_EXCEPTIONS=OFF` and runs every test not labelled `throws`.
 
 **Planned**: tier 1 at 2/3/4/5 ranks (S4), tier 2 and tier 3 (S5, S7), an ASan+UBSan leg (S1 exit),

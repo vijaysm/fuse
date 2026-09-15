@@ -92,7 +92,7 @@ and a fresh backtrace for any other exception — before aborting. The test harn
 | policy from environment, refusing bad values | **verified** | `ErrorPolicy.EnvironmentSelectsEveryMode`, `…IsRefusedNotDefaulted` |
 | debugger command and rank selection | **verified** | `ErrorPolicy.DebuggerCommandIsWhatWouldBeRun`, `…DebuggerRankSelection` |
 | `abort` policy and `FUSE_DEBUG_ASSERT` abort | **verified** | death tests |
-| terminate handler prints a report | implemented, untested | needs a death test that inspects stderr; tracked below |
+| terminate handler prints a report | **verified** | four death tests: fuse::Error, foreign exception, no active exception, idempotence. They call `std::terminate` from inside a catch, because GoogleTest intercepts an exception escaping a death-test statement; the runtime's own uncaught-throw path is the language's, not ours |
 | `attach_debugger` spawns and waits | **implemented, untested** | needs a terminal and a debugger; CI has neither |
 | exceptions-off build (`FUSE_ENABLE_EXCEPTIONS=OFF`) | designed; leg arrives with the no-exceptions CI leg | S1 exit |
 
@@ -110,8 +110,6 @@ stage arrives.
    report is printed once, by the lowest failing rank, with the set of failing ranks and one
    representative backtrace per distinct code, instead of N interleaved reports. *S3/S4, with
    `Epoch`.*
-4. **Terminate-handler test** — a death test asserting the stderr report contains the code, the
-   location and `backtrace:`. *S1, before exit.*
 5. **`std::stacktrace` migration** — when libc++ ships it, replace the `execinfo.h` backend behind the
    same interface; keep the no-allocation-at-capture guarantee. *When the toolchain floor allows.*
 6. **Signal handlers** — `SIGSEGV`/`SIGBUS`/`SIGFPE` print a backtrace and honour the debugger policy,
