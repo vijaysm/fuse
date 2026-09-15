@@ -56,14 +56,18 @@ environment-gated, and **no performance claim is made for hardware that has not 
 
 The rule is one leg per rung of the ladder, so no configuration can rot unnoticed.
 
-**Running today** (`.github/workflows/ci.yml`): the layering and invariant gates, and a documentation
-build with warnings as errors.
+**Running today** (`.github/workflows/ci.yml`): the layering, invariant and import-identity gates; a
+documentation build with warnings as errors; **tier 0 as four legs** — Debug and Release across both
+linear-algebra backends, with Kokkos built at the pinned tag — and a **no-exceptions leg** that
+builds with `FUSE_ENABLE_EXCEPTIONS=OFF` and runs every test not labelled `throws`.
 
-**Planned, arriving with the first source at S1**: tier 0 across both linear-algebra backends and both
-host execution spaces (four fast legs), tier 1 at 2/3/4/5 ranks, tier 2, tier 3, a Release leg with
-`-O3 -DNDEBUG`, an ASan+UBSan leg, a no-exceptions leg, LowFive, and the mutation-evidence gate. They
-are absent rather than skipped, because there is no `CMakeLists.txt` for them to run — a leg that
-cannot run is not a leg.
+**Planned**: tier 1 at 2/3/4/5 ranks (S4), tier 2 and tier 3 (S5, S7), an ASan+UBSan leg (S1 exit),
+LowFive (S6), and the mutation gate as a CI leg once its runtime is acceptable — today it is run before
+a port is accepted and its log committed under `build-evidence/`.
+
+The `throws` label is **declared** on a test target, not detected: a parent tried to find
+refusal-asserting tests by grep, by helper name and by catch site, and both detectors were wrong in
+opposite directions.
 
 ## Mutation evidence
 

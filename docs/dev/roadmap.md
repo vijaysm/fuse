@@ -7,7 +7,7 @@ imported code lands byte-identical before it is transformed ([](invariants.md) `
 | Stage | What it delivers | Exit |
 |---|---|---|
 | **S0** *(in progress)* | Repository, conventions, CI gates, both parents imported untouched | Both upstream suites green inside FUSE with zero source edits. **Coupler tree: 770/770.** Spine tree: builds clean, suite pending on an MPI host |
-| **S1** | One vocabulary: exact time, units, versions, diagnostics, canonical serializer | Tier 0 builds with either linear-algebra backend; killed mutants per public type |
+| **S1** | One vocabulary: exact time, units, versions, diagnostics, canonical serializer | **in progress** — `fuse::base` ported and transformed (9 targets, 78 cases, Debug and Release green, `FUSE_ASSERT` verified under `NDEBUG`); mutation gate run; ASan/UBSan leg and the canonical serializer remain |
 | **S2** | One semantic model; the **canonical descriptor frozen**; multiscale and emulator contracts declared and refusing | C++/YAML/bytes round-trip structurally equal; descriptor tagged |
 | **S3** | One compiler: operator IR, transform chains as lowering rules, epochs as instructions, acyclicity proof | A reference case lowers to a golden-compared plan; fuzzer green |
 | **S4** | One runtime: both entry modes, transactions on plan buffers, Kokkos kernels, waveforms and acceleration | Manufactured-solution orders and iteration counts reproduce upstream exactly |

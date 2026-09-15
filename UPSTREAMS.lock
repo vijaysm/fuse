@@ -11,7 +11,12 @@ loc       = 31452        # include src fortran python
 tag       = "fuse-import-0"   # to be cut at the freeze
 imported  = "upstream/soma"          # byte-identical; proven by tools/verify-import.py
 diverged  = []                       # paths transformed in fuse since import
-superseded = []                      # upstream paths fuse has replaced
+superseded = [                       # upstream paths fuse has replaced (S1, fuse::base)
+  "include/soma/base/rational.hpp", "include/soma/base/time_level.hpp",
+  "include/soma/base/result.hpp",   "include/soma/base/ids.hpp", "include/soma/base/units.hpp",
+  "test/unit/rational_test.cpp", "test/unit/time_level_test.cpp", "test/unit/result_test.cpp",
+  "test/unit/ids_test.cpp", "test/unit/units_test.cpp",
+]
 retire_at = "S6"                     # subtree deleted whole when every path is superseded
 retired   = ""                       # "<date> @ <fuse sha>" once done
 open      = ["X2 rules_channel.cpp overlaps()", "X5 validate.hpp abs(lag)", "X7 soma_c.h int32_t comm",
@@ -34,7 +39,12 @@ ctest     = 203
 tag       = "fuse-import-0"
 imported  = "upstream/karma"         # byte-identical; proven by tools/verify-import.py
 diverged  = []                       # paths transformed in fuse since import
-superseded = []                      # upstream paths fuse has replaced
+superseded = [                       # upstream paths fuse has replaced (S1, fuse::base)
+  "include/coupling/karma_semantic_version.h", "src/coupling/karma_semantic_version.C",
+  "include/coupling/karma_byte_writer.h",
+  "include/base/karma_exceptions.h",           # -> include/fuse/base/error.hpp
+  "test/semantic_version_test.C", "test/byte_writer_test.C",
+]
 retire_at = "S8"                     # subtree deleted whole when every path is superseded
 retired   = ""                       # "<date> @ <fuse sha>" once done
 open      = ["PETSc-backed native component unregistered",

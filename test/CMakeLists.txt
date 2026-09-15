@@ -12,13 +12,21 @@ if(FUSE_ENABLE_MPI)
 endif()
 
 # fuse_add_gtest(<layer> <name> [LIBS ...]) -> test/<layer>/<name>_test.cpp
+# THROWS marks a test that asserts an exception is raised; the no-exceptions CI
+# leg excludes that label because with FUSE_ENABLE_EXCEPTIONS=OFF the library
+# aborts instead, by contract. Membership is declared here, not detected --
+# a parent tried detecting it by grep, in both directions, and both were wrong.
 function(fuse_add_gtest layer name)
-  cmake_parse_arguments(ARG "" "" "LIBS" ${ARGN})
+  cmake_parse_arguments(ARG "THROWS" "" "LIBS" ${ARGN})
   set(target fuse_${layer}_${name}_test)
   add_executable(${target} ${layer}/${name}_test.cpp)
   target_link_libraries(${target} PRIVATE fuse_test_main fuse::${layer} ${ARG_LIBS})
   add_test(NAME ${layer}.${name} COMMAND ${target})
-  set_tests_properties(${layer}.${name} PROPERTIES LABELS "${layer};gtest")
+  set(labels "${layer};gtest")
+  if(ARG_THROWS)
+    list(APPEND labels throws)
+  endif()
+  set_tests_properties(${layer}.${name} PROPERTIES LABELS "${labels}")
 endfunction()
 
 # fuse_add_upstream_main_test(<layer> <name>) -> same path, own main(), no harness.
@@ -31,6 +39,9 @@ function(fuse_add_upstream_main_test layer name)
 endfunction()
 
 # ---------------------------------------------------------------- base
-foreach(t config rational time_level result ids units error version bytes)
+foreach(t config time_level result ids version bytes)
   fuse_add_gtest(base ${t})
+endforeach()
+foreach(t rational units error)
+  fuse_add_gtest(base ${t} THROWS)
 endforeach()
