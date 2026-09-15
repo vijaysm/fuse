@@ -46,3 +46,47 @@ jobs:
   # ranks, tier 2, tier 3, Release, ASan+UBSan, no-exceptions, and the
   # mutation-evidence gate. The imported spine tree needs MOAB and PETSc and is
   # built on a host, not here -- see UPSTREAMS.lock.
+
+  tier0:
+    name: tier 0 (${{ matrix.build }}, ${{ matrix.linalg }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [Debug, Release]
+        linalg: [eigen, kokkoskernels]
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build libomp-dev
+      # Kokkos, fmt, googletest and the linalg backend come through FetchContent at the
+      # pinned tags (cmake/FuseDependencies.cmake); the system is not consulted so the
+      # leg reproduces the same way on every runner.
+      - run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=${{ matrix.build }}
+          -DFUSE_LINALG_BACKEND=${{ matrix.linalg }}
+          -DFUSE_BUILD_UPSTREAM_SOMA=OFF -DFUSE_BUILD_UPSTREAM_KARMA=OFF
+          -DKokkos_ENABLE_SERIAL=ON -DKokkos_ENABLE_OPENMP=ON
+          -DCMAKE_DISABLE_FIND_PACKAGE_Kokkos=ON -DCMAKE_DISABLE_FIND_PACKAGE_fmt=ON
+          -DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON -DCMAKE_DISABLE_FIND_PACKAGE_Eigen3=ON
+      - run: cmake --build build -j
+      - run: ctest --test-dir build --output-on-failure
+      - run: cat build/fuse-resolved-dependencies.txt
+
+  tier0-no-exceptions:
+    name: tier 0 (no exceptions)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build libomp-dev
+      - run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DFUSE_ENABLE_EXCEPTIONS=OFF
+          -DFUSE_BUILD_UPSTREAM_SOMA=OFF -DFUSE_BUILD_UPSTREAM_KARMA=OFF
+          -DKokkos_ENABLE_SERIAL=ON -DCMAKE_DISABLE_FIND_PACKAGE_Kokkos=ON
+          -DCMAKE_DISABLE_FIND_PACKAGE_fmt=ON -DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON
+          -DCMAKE_DISABLE_FIND_PACKAGE_Eigen3=ON
+      - run: cmake --build build -j
+      # Tests that assert a throw cannot run here by design; the leg proves the
+      # library and the non-throwing tests build and pass with the option off.
+      - run: ctest --test-dir build --output-on-failure -LE throws
