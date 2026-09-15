@@ -1,0 +1,968 @@
+${KARMA_DIR}/.build/$(METHOD)/ikarma.o:\
+    ${KARMA_DIR}/src/base/ikarma.C\
+    ${KARMA_DIR}/include/base/ikarma.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma.o:\
+    ${KARMA_DIR}/src/base/karma.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_log.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/utils/karma_utils.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_log.o:\
+    ${KARMA_DIR}/src/base/karma_log.C\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_log.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_print_trace.o:\
+    ${KARMA_DIR}/src/base/karma_print_trace.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/bc_type.o:\
+    ${KARMA_DIR}/src/enums/bc_type.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_log.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/enums/bc_type.h\
+    ${KARMA_DIR}/include/enums/enum_utils.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_linear_operations.o:\
+    ${KARMA_DIR}/src/enums/karma_linear_operations.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_log.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/enums/enum_utils.h\
+    ${KARMA_DIR}/include/enums/karma_linear_operations.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_nonlinear_operations.o:\
+    ${KARMA_DIR}/src/enums/karma_nonlinear_operations.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_log.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/enums/enum_utils.h\
+    ${KARMA_DIR}/include/enums/karma_nonlinear_operations.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/partitioner_type.o:\
+    ${KARMA_DIR}/src/enums/partitioner_type.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_log.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/enums/enum_utils.h\
+    ${KARMA_DIR}/include/enums/partitioner_type.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/physics_properties.o:\
+    ${KARMA_DIR}/src/enums/physics_properties.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_log.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/enums/enum_utils.h\
+    ${KARMA_DIR}/include/enums/physics_properties.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/runge_kutta_schemes.o:\
+    ${KARMA_DIR}/src/enums/runge_kutta_schemes.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_log.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/enums/enum_utils.h\
+    ${KARMA_DIR}/include/enums/runge_kutta_schemes.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_context.o:\
+    ${KARMA_DIR}/src/interface/karma_context.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/interface/karma_context.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_interface.o:\
+    ${KARMA_DIR}/src/interface/karma_interface.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_log.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/base/karma_parameters.h\
+    ${KARMA_DIR}/include/enums/enum_utils.h\
+    ${KARMA_DIR}/include/enums/karma_linear_operations.h\
+    ${KARMA_DIR}/include/enums/karma_nonlinear_operations.h\
+    ${KARMA_DIR}/include/interface/karma_context.h\
+    ${KARMA_DIR}/include/interface/karma_interface.h\
+    ${KARMA_DIR}/include/numerics/isystem.h\
+    ${KARMA_DIR}/include/numerics/user_sparsity.h\
+    ${KARMA_DIR}/include/utils/karma_utils.h\
+    ${KARMA_DIR}/include/utils/petsc_vec_utils.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_interface_block_routines.o:\
+    ${KARMA_DIR}/src/interface/karma_interface_block_routines.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/base/karma_parameters.h\
+    ${KARMA_DIR}/include/interface/karma_context.h\
+    ${KARMA_DIR}/include/interface/karma_interface.h\
+    ${KARMA_DIR}/include/interface/karma_wrappers.h\
+    ${KARMA_DIR}/include/io/karma_monitor.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_interface_routines.o:\
+    ${KARMA_DIR}/src/interface/karma_interface_routines.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_log.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/base/karma_parameters.h\
+    ${KARMA_DIR}/include/enums/enum_utils.h\
+    ${KARMA_DIR}/include/enums/karma_linear_operations.h\
+    ${KARMA_DIR}/include/enums/karma_nonlinear_operations.h\
+    ${KARMA_DIR}/include/interface/karma_context.h\
+    ${KARMA_DIR}/include/interface/karma_interface.h\
+    ${KARMA_DIR}/include/interface/karma_wrappers.h\
+    ${KARMA_DIR}/include/io/karma_monitor.h\
+    ${KARMA_DIR}/include/numerics/isystem.h\
+    ${KARMA_DIR}/include/numerics/user_sparsity.h\
+    ${KARMA_DIR}/include/utils/karma_utils.h\
+    ${KARMA_DIR}/include/utils/petsc_vec_utils.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_wrappers.o:\
+    ${KARMA_DIR}/src/interface/karma_wrappers.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/base/karma_parameters.h\
+    ${KARMA_DIR}/include/interface/karma_context.h\
+    ${KARMA_DIR}/include/interface/karma_interface.h\
+    ${KARMA_DIR}/include/interface/karma_wrappers.h\
+    ${KARMA_DIR}/include/utils/petsc_vec_utils.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_gmsh_io.o:\
+    ${KARMA_DIR}/src/io/karma_gmsh_io.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/io/karma_gmsh_io.h\
+    ${KARMA_DIR}/include/io/karma_mesh_io.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_input_document.o:\
+    ${KARMA_DIR}/src/io/karma_input_document.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_log.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/io/karma_input_document.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_mesh_io.o:\
+    ${KARMA_DIR}/src/io/karma_mesh_io.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/io/karma_mesh_io.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_monitor.o:\
+    ${KARMA_DIR}/src/io/karma_monitor.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/base/karma_parameters.h\
+    ${KARMA_DIR}/include/interface/karma_context.h\
+    ${KARMA_DIR}/include/interface/karma_interface.h\
+    ${KARMA_DIR}/include/io/karma_monitor.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_vtk_io.o:\
+    ${KARMA_DIR}/src/io/karma_vtk_io.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/io/karma_mesh_io.h\
+    ${KARMA_DIR}/include/io/karma_vtk_io.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/linear_algebra_factory.o:\
+    ${KARMA_DIR}/src/numerics/algebra/linear_algebra_factory.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/petsc_block_matrix.o:\
+    ${KARMA_DIR}/src/numerics/algebra/petsc_block_matrix.C\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_parameters.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/petsc_block_vector.o:\
+    ${KARMA_DIR}/src/numerics/algebra/petsc_block_vector.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/base/karma_parameters.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/petsc_native_matrix.o:\
+    ${KARMA_DIR}/src/numerics/algebra/petsc_native_matrix.C\
+    ${KARMA_DIR}/include/base/karma_config.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/petsc_native_vector.o:\
+    ${KARMA_DIR}/src/numerics/algebra/petsc_native_vector.C\
+    ${KARMA_DIR}/include/base/karma_config.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_eigen_solver.o:\
+    ${KARMA_DIR}/src/numerics/eigen/karma_eigen_solver.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/icollection.o:\
+    ${KARMA_DIR}/src/numerics/icollection.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/numerics/icollection.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/isystem.o:\
+    ${KARMA_DIR}/src/numerics/isystem.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_log.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/numerics/isystem.h\
+    ${KARMA_DIR}/include/numerics/user_sparsity.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_operator.o:\
+    ${KARMA_DIR}/src/numerics/karma_operator.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/base/karma_parameters.h\
+    ${KARMA_DIR}/include/numerics/karma_operator.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/libmesh_system.o:\
+    ${KARMA_DIR}/src/numerics/libmesh_system.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_log.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/numerics/isystem.h\
+    ${KARMA_DIR}/include/numerics/libmesh_system.h\
+    ${KARMA_DIR}/include/numerics/user_sparsity.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_linear_operator.o:\
+    ${KARMA_DIR}/src/numerics/linear/karma_linear_operator.C\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_log.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/petsc_native_linear_solver.o:\
+    ${KARMA_DIR}/src/numerics/linear/petsc_native_linear_solver.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/petsc_block_preconditioner.o:\
+    ${KARMA_DIR}/src/numerics/linear/preconditioner/petsc_block_preconditioner.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/petsc_native_preconditioner.o:\
+    ${KARMA_DIR}/src/numerics/linear/preconditioner/petsc_native_preconditioner.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_nonlinear_operator.o:\
+    ${KARMA_DIR}/src/numerics/nonlinear/karma_nonlinear_operator.C\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_log.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/petsc_native_nonlinear_solver.o:\
+    ${KARMA_DIR}/src/numerics/nonlinear/petsc_native_nonlinear_solver.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_domain.o:\
+    ${KARMA_DIR}/src/numerics/spatial/karma_domain.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_mesh.o:\
+    ${KARMA_DIR}/src/numerics/spatial/karma_mesh.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/io/karma_gmsh_io.h\
+    ${KARMA_DIR}/include/io/karma_mesh_io.h\
+    ${KARMA_DIR}/include/utils/karma_utils.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_mesh_extract_edge.o:\
+    ${KARMA_DIR}/src/numerics/spatial/karma_mesh_extract_edge.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_log.h\
+    ${KARMA_DIR}/include/base/karma_options.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_mesh_extract_face.o:\
+    ${KARMA_DIR}/src/numerics/spatial/karma_mesh_extract_face.C\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_log.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/backward_euler.o:\
+    ${KARMA_DIR}/src/numerics/temporal/backward_euler.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/crank_nicolson.o:\
+    ${KARMA_DIR}/src/numerics/temporal/crank_nicolson.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/dopri45.o:\
+    ${KARMA_DIR}/src/numerics/temporal/dopri45.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/dopri45_integrator.o:\
+    ${KARMA_DIR}/src/numerics/temporal/dopri45_integrator.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/base/karma_parameters.h\
+    ${KARMA_DIR}/include/interface/karma_context.h\
+    ${KARMA_DIR}/include/interface/karma_interface.h\
+    ${KARMA_DIR}/include/utils/karma_utils.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/embedded_dirk_integrator.o:\
+    ${KARMA_DIR}/src/numerics/temporal/embedded_dirk_integrator.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/base/karma_parameters.h\
+    ${KARMA_DIR}/include/interface/karma_context.h\
+    ${KARMA_DIR}/include/interface/karma_interface.h\
+    ${KARMA_DIR}/include/interface/karma_wrappers.h\
+    ${KARMA_DIR}/include/utils/karma_utils.h\
+    ${KARMA_DIR}/include/utils/petsc_snes_utils.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/explicit_rk_integrator.o:\
+    ${KARMA_DIR}/src/numerics/temporal/explicit_rk_integrator.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/base/karma_parameters.h\
+    ${KARMA_DIR}/include/interface/karma_context.h\
+    ${KARMA_DIR}/include/interface/karma_interface.h\
+    ${KARMA_DIR}/include/interface/karma_wrappers.h\
+    ${KARMA_DIR}/include/utils/karma_utils.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/forward_euler.o:\
+    ${KARMA_DIR}/src/numerics/temporal/forward_euler.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/grk4a.o:\
+    ${KARMA_DIR}/src/numerics/temporal/grk4a.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/grk4sn.o:\
+    ${KARMA_DIR}/src/numerics/temporal/grk4sn.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/grk4t.o:\
+    ${KARMA_DIR}/src/numerics/temporal/grk4t.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/implicit_dirk_integrator.o:\
+    ${KARMA_DIR}/src/numerics/temporal/implicit_dirk_integrator.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/base/karma_parameters.h\
+    ${KARMA_DIR}/include/interface/karma_context.h\
+    ${KARMA_DIR}/include/interface/karma_interface.h\
+    ${KARMA_DIR}/include/interface/karma_wrappers.h\
+    ${KARMA_DIR}/include/utils/karma_utils.h\
+    ${KARMA_DIR}/include/utils/petsc_snes_utils.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_ts_base.o:\
+    ${KARMA_DIR}/src/numerics/temporal/karma_ts_base.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/kutta22.o:\
+    ${KARMA_DIR}/src/numerics/temporal/kutta22.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/kutta44.o:\
+    ${KARMA_DIR}/src/numerics/temporal/kutta44.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/petsc_temporal_integrator.o:\
+    ${KARMA_DIR}/src/numerics/temporal/petsc_temporal_integrator.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/base/karma_parameters.h\
+    ${KARMA_DIR}/include/interface/karma_context.h\
+    ${KARMA_DIR}/include/interface/karma_interface.h\
+    ${KARMA_DIR}/include/io/karma_monitor.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/pseudo_time_integrator.o:\
+    ${KARMA_DIR}/src/numerics/temporal/pseudo_time_integrator.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/base/karma_parameters.h\
+    ${KARMA_DIR}/include/interface/karma_context.h\
+    ${KARMA_DIR}/include/interface/karma_interface.h\
+    ${KARMA_DIR}/include/utils/karma_utils.h\
+    ${KARMA_DIR}/include/utils/petsc_snes_utils.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/rk.o:\
+    ${KARMA_DIR}/src/numerics/temporal/rk.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/rodasp.o:\
+    ${KARMA_DIR}/src/numerics/temporal/rodasp.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/ros22.o:\
+    ${KARMA_DIR}/src/numerics/temporal/ros22.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/ros3p.o:\
+    ${KARMA_DIR}/src/numerics/temporal/ros3p.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/rosenbrock.o:\
+    ${KARMA_DIR}/src/numerics/temporal/rosenbrock.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/rosenbrock_integrator.o:\
+    ${KARMA_DIR}/src/numerics/temporal/rosenbrock_integrator.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/base/karma_parameters.h\
+    ${KARMA_DIR}/include/interface/karma_context.h\
+    ${KARMA_DIR}/include/interface/karma_interface.h\
+    ${KARMA_DIR}/include/interface/karma_wrappers.h\
+    ${KARMA_DIR}/include/utils/karma_utils.h\
+    ${KARMA_DIR}/include/utils/petsc_ksp_utils.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/sdirk22.o:\
+    ${KARMA_DIR}/src/numerics/temporal/sdirk22.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/sdirk23.o:\
+    ${KARMA_DIR}/src/numerics/temporal/sdirk23.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/sdirk33.o:\
+    ${KARMA_DIR}/src/numerics/temporal/sdirk33.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/sdirk332.o:\
+    ${KARMA_DIR}/src/numerics/temporal/sdirk332.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/sdirk34.o:\
+    ${KARMA_DIR}/src/numerics/temporal/sdirk34.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/sdirk44.o:\
+    ${KARMA_DIR}/src/numerics/temporal/sdirk44.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/sdirk45.o:\
+    ${KARMA_DIR}/src/numerics/temporal/sdirk45.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/sdirk543.o:\
+    ${KARMA_DIR}/src/numerics/temporal/sdirk543.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/sdirk643.o:\
+    ${KARMA_DIR}/src/numerics/temporal/sdirk643.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/temporal_integrator.o:\
+    ${KARMA_DIR}/src/numerics/temporal/temporal_integrator.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/base/karma_parameters.h\
+    ${KARMA_DIR}/include/interface/karma_context.h\
+    ${KARMA_DIR}/include/interface/karma_interface.h\
+    ${KARMA_DIR}/include/interface/karma_wrappers.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/trbe.o:\
+    ${KARMA_DIR}/src/numerics/temporal/trbe.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/user_sparsity.o:\
+    ${KARMA_DIR}/src/numerics/user_sparsity.C\
+    ${KARMA_DIR}/include/numerics/user_sparsity.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_partitioner.o:\
+    ${KARMA_DIR}/src/parallel/karma_partitioner.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_log.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/enums/enum_utils.h\
+    ${KARMA_DIR}/include/enums/partitioner_type.h\
+    ${KARMA_DIR}/include/parallel/karma_partitioner.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_physics_base.o:\
+    ${KARMA_DIR}/src/physics/base/karma_physics_base.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_log.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/base/karma_parameters.h\
+    ${KARMA_DIR}/include/enums/enum_utils.h\
+    ${KARMA_DIR}/include/enums/partitioner_type.h\
+    ${KARMA_DIR}/include/interface/karma_context.h\
+    ${KARMA_DIR}/include/interface/karma_interface.h\
+    ${KARMA_DIR}/include/io/karma_mesh_io.h\
+    ${KARMA_DIR}/include/io/karma_vtk_io.h\
+    ${KARMA_DIR}/include/numerics/isystem.h\
+    ${KARMA_DIR}/include/numerics/user_sparsity.h\
+    ${KARMA_DIR}/include/parallel/karma_partitioner.h\
+    ${KARMA_DIR}/include/utils/karma_utils.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_physics_base_property_manager.o:\
+    ${KARMA_DIR}/src/physics/base/karma_physics_base_property_manager.C\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_log.h\
+    ${KARMA_DIR}/include/base/karma_parameters.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/generic_mass_matrix.o:\
+    ${KARMA_DIR}/src/physics/common/impls/generic_mass_matrix.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_log.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/base/karma_parameters.h\
+    ${KARMA_DIR}/include/numerics/isystem.h\
+    ${KARMA_DIR}/include/numerics/libmesh_system.h\
+    ${KARMA_DIR}/include/numerics/user_sparsity.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/generic_mass_matrix_multiply.o:\
+    ${KARMA_DIR}/src/physics/common/impls/generic_mass_matrix_multiply.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_log.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/base/karma_parameters.h\
+    ${KARMA_DIR}/include/numerics/isystem.h\
+    ${KARMA_DIR}/include/numerics/libmesh_system.h\
+    ${KARMA_DIR}/include/numerics/user_sparsity.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/generic_mass_matrix_solve.o:\
+    ${KARMA_DIR}/src/physics/common/impls/generic_mass_matrix_solve.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_log.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/base/karma_parameters.h\
+    ${KARMA_DIR}/include/numerics/isystem.h\
+    ${KARMA_DIR}/include/numerics/libmesh_system.h\
+    ${KARMA_DIR}/include/numerics/user_sparsity.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_boundary_condition.o:\
+    ${KARMA_DIR}/src/physics/common/karma_boundary_condition.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_log.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/enums/enum_utils.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/karma_physics_bc_manager.o:\
+    ${KARMA_DIR}/src/physics/common/karma_physics_bc_manager.C\
+    ${KARMA_DIR}/include/base/karma_parameters.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/error_measure.o:\
+    ${KARMA_DIR}/src/utils/error_measure.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/lapack_utils.o:\
+    ${KARMA_DIR}/src/utils/lapack_utils.C\
+    ${KARMA_DIR}/include/utils/lapack_utils.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/petsc_ksp_utils.o:\
+    ${KARMA_DIR}/src/utils/petsc_ksp_utils.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/utils/petsc_ksp_utils.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/petsc_snes_utils.o:\
+    ${KARMA_DIR}/src/utils/petsc_snes_utils.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/utils/petsc_snes_utils.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/petsc_vec_utils.o:\
+    ${KARMA_DIR}/src/utils/petsc_vec_utils.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_log.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/utils/petsc_vec_utils.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/static_vector.o:\
+    ${KARMA_DIR}/src/utils/static_vector.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_error.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_log.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/utils/static_vector.h\
+    ${KARMA_DIR}/include/utils/typename_traits.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+${KARMA_DIR}/.build/$(METHOD)/typename_traits.o:\
+    ${KARMA_DIR}/src/utils/typename_traits.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/utils/typename_traits.h
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@

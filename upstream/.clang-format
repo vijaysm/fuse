@@ -1,0 +1,4 @@
+# Imported upstream code. DisableFormat is load-bearing: invariant I8 requires
+# byte-identity with the tagged parent tree, and formatting would break it.
+DisableFormat: true
+SortIncludes: Never

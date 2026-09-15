@@ -1,0 +1,23 @@
+include(CheckCXXSourceCompiles)
+
+function(karma_check_arborx)
+  set(KARMA_HAVE_ARBORX OFF PARENT_SCOPE)
+  if(NOT KARMA_ENABLE_ARBORX)
+    return()
+  endif()
+  find_path(KARMA_ARBORX_INCLUDE_DIR NAMES ArborX_Intersect.hpp HINTS ${KARMA_ARBORX_PREFIX} PATH_SUFFIXES include)
+  find_path(KARMA_KOKKOS_INCLUDE_DIR NAMES Kokkos_Core.hpp HINTS ${KARMA_KOKKOS_PREFIX} PATH_SUFFIXES include)
+  if(NOT KARMA_ARBORX_INCLUDE_DIR OR NOT KARMA_KOKKOS_INCLUDE_DIR)
+    message(STATUS "ArborX/Kokkos: unavailable")
+    return()
+  endif()
+  set(CMAKE_REQUIRED_INCLUDES ${KARMA_ARBORX_INCLUDE_DIR} ${KARMA_KOKKOS_INCLUDE_DIR})
+  unset(KARMA_ARBORX_WORKS CACHE)
+  check_cxx_source_compiles("#include <Kokkos_Core.hpp>
+#include <ArborX_Intersect.hpp>
+int main() { Kokkos::ScopeGuard guard; return 0; }" KARMA_ARBORX_WORKS)
+  unset(CMAKE_REQUIRED_INCLUDES)
+  if(KARMA_ARBORX_WORKS)
+    set(KARMA_HAVE_ARBORX ON PARENT_SCOPE)
+  endif()
+endfunction()

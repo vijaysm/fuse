@@ -1,0 +1,8 @@
+===========================================
+* LIST OF THINGS TO DO BEFORE NEXT RELEASE
+===========================================
+
+1) Remove extension "*.C" for C++ source files and replace with "*.cxx". That way it is easier to differentiate between C and C++ source files because some editors get confused.
+2) Check if we really need block extensions of vector/matrices based on petsc-ext. Can we use NEST type to replace these ?
+3) Change enums KARMA::KARMANonlinearOperations and KARMA::KARMALinearOperations to remove the prefix 'KARMA'. It is nested in a namespace..
+4)

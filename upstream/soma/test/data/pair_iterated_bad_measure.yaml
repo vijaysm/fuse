@@ -1,0 +1,44 @@
+# pair_iterated.yaml with the convergence measure renamed to a field the
+# region's only channel does not carry, and nothing else changed.
+#
+# `flux` connects fluid.q -> solid.q_in, so a measure may legally name "flux",
+# "q" or "q_in". "t_wall" names none of them, so it would never be tested
+# against anything: the region would either run to max_iterations with no
+# working stopping rule, or -- worse, once there is more than one measure --
+# stop on whichever measures did match. resolve_regions() refuses exactly this
+# with E-ITER-MEASURE (src/runtime/iteration.cpp). This file exists so
+# test/unit/capi_test.c can show soma_initialize() refuses it too, instead of
+# quietly leaving CompRuntime::converges false.
+version: 1
+meshes:
+  - {name: mf, source: "generated:box:4x4x4"}
+  - {name: ms, source: "generated:box:3x3x3"}
+regions:
+  - {name: rf, mesh: mf, entity_set: wall, dimension: 2}
+  - {name: rs, mesh: ms, entity_set: wall, dimension: 2}
+components:
+  - name: fluid
+    ranks: {first: 0, count: 1}
+    interval: 1
+    fields:
+      - {name: q, region: rf, disc: FV, components: 1, units: W/m^2,
+         conservation: Extensive, intent: Provides}
+  - name: solid
+    ranks: {first: 1, count: 1}
+    interval: 1
+    fields:
+      - {name: q_in, region: rs, disc: FV, components: 1, units: W/m^2,
+         conservation: Extensive, intent: Requires}
+channels:
+  - name: flux
+    source: fluid.q
+    target: solid.q_in
+    accumulate: {op: Mean}
+    remap: {flags: [Conservative, Monotone]}
+    relax: 0.7
+iteration_regions:
+  - name: outer
+    channels: [flux]
+    max_iterations: 30
+    convergence:
+      - {kind: Relative, tolerance: 1e-6, field: t_wall}

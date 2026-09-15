@@ -1,0 +1,119 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Unix Makefiles",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "/opt/petsc/download-moab;/opt/eigen3",
+        "KARMA_ENABLE_TESTS": "ON",
+        "KARMA_ENABLE_MOAB_COUPLER": "ON",
+        "KARMA_ENABLE_SHARED": "ON",
+        "KARMA_ENABLE_EXCEPTIONS": "ON",
+        "KARMA_ENABLE_TRACEFILES": "ON",
+        "KARMA_ENABLE_LIBMESH": "OFF",
+        "KARMA_ENABLE_ARBORX": "OFF"
+      }
+    },
+    {
+      "name": "release",
+      "inherits": "base",
+      "displayName": "Release with examples",
+      "description": "Canonical release verification build with examples.",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "KARMA_ENABLE_EXAMPLES": "ON"
+      }
+    },
+    {
+      "name": "asan",
+      "inherits": "base",
+      "displayName": "RelWithDebInfo + ASan/UBSan",
+      "description": "AddressSanitizer and UndefinedBehaviorSanitizer build. macOS LeakSanitizer is unsupported; detect_leaks stays off.",
+      "binaryDir": "${sourceDir}/build-sanitize",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "KARMA_ENABLE_EXAMPLES": "ON",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
+      }
+    },
+    {
+      "name": "no-exceptions",
+      "inherits": "base",
+      "displayName": "Release with KARMA_ENABLE_EXCEPTIONS=OFF",
+      "description": "Exercises the fail-fast configuration: KARMA_THROW aborts instead of throwing. Exists so that configuration cannot silently rot again - it did not compile at all until the exception types were moved outside the feature guard.",
+      "binaryDir": "${sourceDir}/build-no-exceptions",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "KARMA_ENABLE_EXAMPLES": "ON",
+        "KARMA_ENABLE_EXCEPTIONS": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "jobs": 4
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "jobs": 4
+    },
+    {
+      "name": "no-exceptions",
+      "configurePreset": "no-exceptions",
+      "jobs": 12
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 12,
+        "timeout": 900
+      }
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 12,
+        "timeout": 900
+      }
+    },
+    {
+      "name": "no-exceptions",
+      "configurePreset": "no-exceptions",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 12,
+        "timeout": 900
+      },
+      "filter": {
+        "include": {
+          "name": "karma_(byte_writer|field_entry_encoding|coupling_semantics|transform_inference|coupling_compatibility|static_registry|component_compliance|abi_|language_adapter|semantic_version|collective_outcome|field_transaction|operator_split_graph|operator_split_introspection|dense|smoke)"
+        }
+      },
+      "description": "Selects binaries with no refusal assertions. With KARMA_ENABLE_EXCEPTIONS=OFF a refusal aborts, so a test asserting one cannot pass. Membership is EMPIRICAL - determined by running each binary in this build, not by grepping for a helper name; see cmake/karma_test_helpers.cmake for the regeneration loop and for the two static detectors that were tried and failed. Excluding by CTest label does not work: CTest re-adds a FIXTURES_SETUP test a selected test requires whatever label it carries. Do not add -R/-E on the command line - it REPLACES this filter rather than narrowing it."
+    }
+  ]
+}

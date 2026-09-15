@@ -1,0 +1,20 @@
+# KARMA install procedures
+# -----------------------
+
+1. Go into the karma/trunk/ directory
+
+2. Go into the directory config/ and make sure the scripts install-xxx have the user execute
+permissions, otherwise do: chmod u+x install-*
+
+3. Go back to the trunk directory level and type from that level:
+ ./config/install-contrib.sh
+This will install petsc, slepc, and libmesh.
+
+4. From the trunk directory level, type 
+./config/install-karma.sh
+Read the script before trying this. It requires that some
+env variables are set (for convenience, I have put them in 
+the file envKARMA which is located at the ~/karma directory level)
+
+
+

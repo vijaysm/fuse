@@ -1,0 +1,12 @@
+${KARMA_DIR}/test/unit/karma_package_test.$(obj-suffix):\
+    ${KARMA_DIR}/test/unit/karma_package_test.C\
+    ${KARMA_DIR}/include/base/ikarma.h\
+    ${KARMA_DIR}/include/base/karma.h\
+    ${KARMA_DIR}/include/base/karma_base.h\
+    ${KARMA_DIR}/include/base/karma_config.h\
+    ${KARMA_DIR}/include/base/karma_constants.h\
+    ${KARMA_DIR}/include/base/karma_exceptions.h\
+    ${KARMA_DIR}/include/base/karma_io_buffers.h\
+    ${KARMA_DIR}/include/base/karma_log.h\
+    ${KARMA_DIR}/include/base/karma_options.h\
+    ${KARMA_DIR}/include/base/karma_test_suite.h

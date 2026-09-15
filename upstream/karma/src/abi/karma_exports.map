@@ -1,0 +1,14 @@
+/* ELF version script for the stable C ABI. Everything else is local, so a C++
+ * symbol cannot become an accidental compatibility promise. */
+KARMA_ABI_1 {
+  global:
+    karma_abi_version;
+    karma_abi_supported_capabilities;
+    karma_negotiate_abi;
+    karma_status_name;
+    karma_diagnostic_set;
+    karma_validate_field_table;
+    karma_plugin_query;
+  local:
+    *;
+};

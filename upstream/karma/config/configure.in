@@ -1,0 +1,533 @@
+dnl Process this file with autoconf to produce a configure script.
+
+dnl switch off caching, since that leads to insurmountable trouble if
+dnl you call ./configure subsequently on different systems without
+dnl clearing the cache 
+define([AC_CACHE_LOAD], )dnl
+define([AC_CACHE_SAVE], )dnl
+AC_REVISION($Revision: 281 $)
+
+
+dnl --------------------------------------------------------------
+dnl Get the source tree directory
+dnl --------------------------------------------------------------
+
+AC_INIT
+
+AC_CONFIG_FILES($KARMA_DIR/config/KARMA.common)
+AC_CONFIG_FILES($KARMA_DIR/config/Makefile)
+AC_CONFIG_FILES($KARMA_DIR/doc/Doxyfile)
+AC_CONFIG_FILES($KARMA_DIR/config/karma-config,         [chmod +x $KARMA_DIR/config/karma-config])
+
+dnl Create a temporary file with e.g. HAVE_MPI
+AC_CONFIG_HEADER($KARMA_DIR/include/base/karma_config.h.tmp:$KARMA_DIR/include/base/karma_config.h.in)
+dnl Prefixes everything in the temporary file with KARMA_, e.g. KARMA_HAVE_MPI
+AX_PREFIX_CONFIG_H($KARMA_DIR/include/base/karma_config.h,KARMA,$KARMA_DIR/include/base/karma_config.h.tmp)
+
+# Define date of package, etc. Could be useful in auto-generated documentation.
+PACKAGE_NAME="KARMA: K(c)ode for Analysis of Reactor and other Multi-physics Applications"
+PACKAGE_YEAR=2011
+PACKAGE_DATE="08/15/2011"
+PACKAGE_VERSION="0.05.dev"
+PACKAGE_STRING=$PACKAGE_NAME".  Ver : "$PACKAGE_VERSION
+PACKAGE_TARNAME="KARMA-"$PACKAGE_VERSION
+
+AC_DEFINE_UNQUOTED(PACKAGE_NAME,["${PACKAGE_NAME}"],[Name of package])
+AC_DEFINE_UNQUOTED(PACKAGE_VERSION,["${PACKAGE_VERSION}"],[Version number])
+AC_DEFINE_UNQUOTED(PACKAGE_YEAR,"$PACKAGE_YEAR",[Official year for this release])
+AC_DEFINE_UNQUOTED(PACKAGE_DATE,"$PACKAGE_DATE",[Official date of release])
+AC_DEFINE_UNQUOTED(PACKAGE_STRING,["${PACKAGE_STRING}"],[Full name and version of this package])
+AC_DEFINE_UNQUOTED(PACKAGE_TARNAME,["${PACKAGE_TARNAME}"],[Short name for release and archival])
+
+AC_SUBST(PACKAGE_NAME)
+AC_SUBST(PACKAGE_STRING)
+AC_SUBST(PACKAGE_TARNAME)
+AC_SUBST(PACKAGE_VERSION)
+AC_SUBST(PACKAGE_YEAR)
+AC_SUBST(PACKAGE_DATE)
+
+AC_MSG_RESULT(-------------------------------------------)
+AC_MSG_RESULT(----------- Configuring KARMA -------------)
+AC_MSG_RESULT(-------------------------------------------)
+
+
+dnl --------------------------------------------------------------
+dnl Print configuration info to the header file
+dnl --------------------------------------------------------------
+AC_DEFINE_UNQUOTED(CONFIGURE_INFO, ["$0 run on `date`"], [Configuration information.])	
+
+dnl --------------------------------------------------------------
+dnl Compute the canonical target system type variable "target", and its
+dnl three individual parts: "target_cpu", "target_vendor", and "target_os"
+dnl --------------------------------------------------------------
+AC_CANONICAL_TARGET
+
+dnl --------------------------------------------------------------
+dnl Do compilation tests using the compiler, preprocessor, and file extensions
+dnl of C++.  This uses the .C extension for test programs.
+dnl --------------------------------------------------------------
+AC_LANG_CPLUSPLUS
+
+dnl -------------------------------------------------------------------
+dnl MPI -- enabled by default.  Check for it now so we can be somewhat
+dnl                             smart about which compilers to look for
+dnl -------------------------------------------------------------------
+AC_ARG_ENABLE(mpi,
+              AC_HELP_STRING([--enable-mpi],
+                             [build with MPI message passing support]),
+              enablempi=$enableval,
+              enablempi=yes)
+
+
+CXX_TRY_LIST="g++ icc pgCC c++"
+CC_TRY_LIST="gcc icc pgcc cc"
+
+if  (test "$enablempi" != no) ; then
+  CXX_TRY_LIST="mpicxx mpiCC mpicc $CXX_TRY_LIST"
+  CC_TRY_LIST="mpicc $CC_TRY_LIST"
+fi
+
+AC_ARG_WITH([cxx],
+	    AC_HELP_STRING([--with-cxx=CXX],
+                           [C++ compiler to use]),
+	    [CXX="$withval"],
+	    [])
+
+AC_ARG_WITH([cc],
+	    AC_HELP_STRING([--with-cc=CC],
+                           [C compiler to use]),
+	    [CC="$withval"],
+	    [])
+
+AC_ARG_WITH([f90],
+	    AC_HELP_STRING([--with-f90=FC],
+                           [Fortran 90 compiler to use]),
+	    [FC="$withval"],
+	    [])
+
+dnl --------------------------------------------------------------
+dnl Determines a C++ compiler to use.  First checks if the variable CXX is
+dnl already set.  If not, then searches under g++, c++, and other names.
+dnl --------------------------------------------------------------
+AC_PROG_CXX([$CXX_TRY_LIST])
+
+dnl --------------------------------------------------------------
+dnl Determine a C compiler to use.  If CC is not already set, checks for
+dnl gcc, cc, and other C compilers.  Then sets the CC variable to the result.
+dnl --------------------------------------------------------------
+AC_PROG_CC([$CC_TRY_LIST])
+
+
+dnl --------------------------------------------------------------
+dnl Shared libraries - enabled by default
+dnl --------------------------------------------------------------
+AC_ARG_ENABLE(shared,
+              AC_HELP_STRING([--enable-shared],
+                             [build shared libraries]),
+              enableshared=$enableval,
+              enableshared=yes)
+AC_SUBST(enableshared)	
+dnl --------------------------------------------------------------
+
+dnl --------------------------------------------------------------
+dnl C++ exceptions - enabled by default
+dnl --------------------------------------------------------------
+AC_ARG_ENABLE(exceptions,
+              AC_HELP_STRING([--enable-exceptions],
+                             [throw exceptions on unexpected errors]),
+              enableexceptions=$enableval,
+              enableexceptions=yes)
+
+if test "$enableexceptions" != no ; then
+  AC_DEFINE(ENABLE_EXCEPTIONS, 1,
+           [Flag indicating if the library should be built to throw C++ exceptions on unexpected errors])
+  AC_MSG_RESULT(<<< Configuring library with exception throwing support >>>)
+fi
+dnl --------------------------------------------------------------
+
+dnl --------------------------------------------------------------
+dnl See aclocal.m4 for the definition of this function.  It can
+dnl figure out which version of a particular compiler, e.g. GCC 4.0,
+dnl you are using.
+dnl --------------------------------------------------------------
+DETERMINE_CXX_BRAND
+
+dnl --------------------------------------------------------------
+dnl See aclocal.m4 for the definition of this as well.  It uses the
+dnl output of DETERMINE_CXX_BRAND to set special flags for idiosyncratic
+dnl compilers.  For example, newer versions of GCC have additional C++ debugging
+dnl flags like _GLIBCXX_DEBUG_PEDANTIC which were not present in older versions.
+dnl --------------------------------------------------------------
+SET_CXX_FLAGS
+
+dnl --------------------------------------------------------------
+dnl The AC_SUBST(foo) command creates an output variable from a shell variable.
+dnl This command also causes AC_OUTPUT to replace all instances of @VAR@ with
+dnl the value of the shell variable VAR in the output files (e.g. one or more Makefiles).
+dnl --------------------------------------------------------------
+AC_SUBST(host)
+AC_SUBST(GXX_VERSION)
+AC_SUBST(CXXFLAGS_OPT)
+AC_SUBST(CXXFLAGS_DBG)
+AC_SUBST(CXXFLAGS_DVL)
+AC_SUBST(CFLAGS_OPT)
+AC_SUBST(CFLAGS_DBG)
+AC_SUBST(CFLAGS_DVL)
+AC_SUBST(LDFLAGS)
+AC_SUBST(CXXDEPFLAG)
+AC_SUBST(CXXSHAREDFLAG)
+AC_SUBST(RPATHFLAG)
+AC_SUBST(PROFILING_FLAGS)
+
+
+dnl --------------------------------------------------------------
+dnl Check for important type sizes
+dnl --------------------------------------------------------------
+AC_CHECK_SIZEOF(short int)
+AC_CHECK_SIZEOF(int)
+AC_CHECK_SIZEOF(long int)
+AC_CHECK_SIZEOF(float)
+AC_CHECK_SIZEOF(double)
+AC_CHECK_SIZEOF(void *)
+dnl Check the size of a function pointer.  This is the same
+dnl as a void* on most systems which matter (POSIX).
+dnl It turns out that AC_CHECK_SIZEOF can't do this
+dnl automatically... so we use a kind of hack with the 3rd
+dnl argument to do it.
+AC_CHECK_SIZEOF([function_pointer], [], [typedef void (*function_pointer)();])
+dnl AC_CHECK_SIZEOF([void(*)(void)]) <-- Does not work! 
+
+
+
+dnl --------------------------------------------------------------
+dnl Check for headers
+dnl --------------------------------------------------------------
+AC_CHECK_HEADERS(getopt.h)
+AC_CHECK_HEADERS(csignal)
+AC_CHECK_HEADERS(sys/resource.h)
+AC_CXX_HAVE_LOCALE
+AC_CXX_HAVE_SSTREAM
+
+AC_ARG_ENABLE(unordered-containers,
+              AC_HELP_STRING([--enable-unordered-containers],
+                             [Use unordered_map/unordered_set if available]),
+              enableunorderedcontainers=$enableval,
+              enableunorderedcontainers=yes)
+
+  if test "$enableunorderedcontainers" != no ; then
+    dnl Just checking for the headers is insufficient in all cases... we need to see if the compiler can actually compile a test code.
+    dnl AC_CHECK_HEADERS(unordered_map,[],[AC_CHECK_HEADERS(tr1/unordered_map,[],[AC_CHECK_HEADERS(hash_map, [], [AC_CHECK_HEADERS(ext/hash_map)])])])
+    dnl AC_CHECK_HEADERS(unordered_set,[],[AC_CHECK_HEADERS(tr1/unordered_set,[],[AC_CHECK_HEADERS(hash_set, [], [AC_CHECK_HEADERS(ext/hash_set)])])])
+
+    dnl The following routines, defined in aclocal.m4, check to see if the compiler can compile programs using
+    dnl various non-standard hash containers.
+    ACX_UNORDERED_MAP
+    ACX_UNORDERED_SET
+    ACX_HASH_MAP
+    ACX_HASH_SET
+  fi
+
+AC_CHECK_HEADERS(dlfcn.h)
+AX_CXX_GCC_ABI_DEMANGLE
+AX_CXX_GLIBC_BACKTRACE
+
+
+dnl --------------------------------------------------------------
+dnl This is a special test for the mpCC (IBM) compiler.
+dnl mpCC fails the AC_LANG tests. Set the compiler to 
+dnl mpCC if it is there instead of xlC, but only do this
+dnl _after_ configure is finished using CXX!
+dnl --------------------------------------------------------------
+if test "$CXX" = xlC_r; then
+  dnl           Var   | look for | name if found | name if not | where
+  AC_CHECK_PROG(MPCXX,  mpCC_r,      mpCC_r,           $CXX,         $PATH)
+  CXX=$MPCXX
+  if test "$CXX" = mpCC_r; then
+    AC_MSG_RESULT(<<< Using $CXX instead of xlC_r to compile C++ >>>)
+  fi
+fi
+if test "$CXX" = xlC; then
+  dnl           Var   | look for | name if found | name if not | where
+  AC_CHECK_PROG(MPCXX,  mpCC,      mpCC,           $CXX,         $PATH)
+  CXX=$MPCXX
+  if test "$CXX" = mpCC; then
+    AC_MSG_RESULT(<<< Using $CXX instead of xlC to compile C++ >>>)
+  fi
+fi
+dnl --------------------------------------------------------------
+
+
+
+
+
+dnl --------------------------------------------------------------
+dnl Write stack trace dump files on error() - enabled by default
+dnl --------------------------------------------------------------
+AC_ARG_ENABLE(tracefiles,
+              AC_HELP_STRING([--enable-tracefiles],
+                             [write stack trace files on unexpected errors]),
+              enabletracefiles=$enableval,
+              enabletracefiles=yes)
+
+if test "$enabletracefiles" != no ; then
+  AC_DEFINE(ENABLE_TRACEFILES, 1,
+           [Flag indicating if the library should be built to write stack trace files on unexpected errors])
+  AC_MSG_RESULT(<<< Configuring library with stack trace file support >>>)
+fi
+dnl --------------------------------------------------------------
+
+
+
+AC_MSG_RESULT(-------------------------------------------)
+AC_MSG_RESULT(----- Configuring supporting packages -----)
+AC_MSG_RESULT(-------------------------------------------)
+
+
+
+dnl -------------------------------------------------------------
+dnl Petsc -- enabled by default
+dnl -------------------------------------------------------------
+AC_ARG_ENABLE(petsc,
+              AC_HELP_STRING([--enable-petsc],
+                             [build with PETSc iterative solver suppport]),
+              enablepetsc=$enableval,
+              enablepetsc=yes)
+
+
+dnl -------------------------------------------------------------
+dnl configure MPI only if PETSc fails
+if (test "$enablempi" != no) ; then
+  if (test "$enablepetsc" !=  no) ; then
+dnl  AC_MSG_RESULT(<<< Configuring library with PETSc library support >>>)
+    CONFIGURE_PETSC
+  else
+    ACX_MPI
+  fi
+else
+  dnl no PETSc without MPI!
+  enablepetsc=no
+fi
+dnl -------------------------------------------------------------
+
+
+
+
+
+dnl -------------------------------------------------------------
+dnl SLEPc  -- enabled by default
+dnl -------------------------------------------------------------
+AC_ARG_ENABLE(slepc,
+              AC_HELP_STRING([--enable-slepc],
+                             [build with SLEPc eigen solver support]),
+     enableslepc=$enableval,
+     enableslepc=yes)
+
+if test "$enableslepc" != no ; then
+dnl  AC_MSG_RESULT(<<< Configuring library with SLEPc library support >>>)
+	CONFIGURE_SLEPC
+else
+	dnl no SLEPc.
+	enableslepc=no
+fi
+dnl -------------------------------------------------------------
+
+
+
+
+dnl -------------------------------------------------------------
+dnl Deal.II -- Spatial discretization package, configured with Petsc
+dnl disabled by default
+dnl -------------------------------------------------------------
+AC_ARG_ENABLE(dealii,
+              AC_HELP_STRING([--enable-dealii],
+                             [build with Deal.II configured with Petsc to handle spatial discretization]),
+              enabledealII=$enableval,
+              enabledealII=no)
+
+
+dnl -------------------------------------------------------------
+dnl configure Deal.II 
+if (test "$enabledealII" != no) ; then
+  AC_MSG_RESULT(<<< Configuring Deal.II library with PETSc library support >>>)
+    CONFIGURE_DEALII
+  AC_DEFINE(HAVE_DEALII, 1,
+           [Flag indicating the library has DEAL.II is configured already])
+fi
+
+dnl -------------------------------------------------------------
+
+
+
+dnl -------------------------------------------------------------
+dnl Allow user to configure with libMesh FEM package.
+dnl
+dnl Currently, KARMA cannot work without this library but maybe 
+dnl in the future, modifications to the library can be made to 
+dnl handle say Deal.II, Hermes and other FEM, FVM packages.
+dnl
+dnl Until then, --enable-libMesh will always be yes by default.
+dnl
+dnl -------------------------------------------------------------
+AC_ARG_ENABLE(libMesh,
+              AC_HELP_STRING([--enable-libMesh],
+                             [build with libMesh Finite Element library]),
+              enablelibMesh=$enableval,
+              enablelibMesh=yes)
+
+if test "$enablelibMesh" != no ; then
+  AC_MSG_RESULT(<<< Configuring library with libMesh FEM library support >>>)
+  CONFIGURE_LIBMESH
+  AC_DEFINE(HAVE_LIBMESH, 1,
+           [Flag indicating the library has LIBMESH is configured already])
+else
+  AC_MSG_ERROR( <<< Configuring library with libMesh FEM library failed.... exiting )
+fi
+dnl --------------------------------------------------------------
+
+
+
+dnl --------------------------------------------------------------
+dnl Support for unit testing through CPPTest - enabled by default
+dnl --------------------------------------------------------------
+AC_ARG_ENABLE(cpptest,
+              AC_HELP_STRING([--enable-cpptest],
+                             [support for unit testing through CPPTest]),
+              enablecpptest=$enableval,
+              enablecpptest=yes)
+
+if test "$enablecpptest" != no ; then
+  AC_DEFINE(HAVE_CPPTEST, 1,
+           [Flag indicating if the library includes unit testing support through CPPTest])
+  AC_MSG_RESULT(<<< Configuring library with unit testing support through CPPTest >>>)
+  CONFIGURE_CPPTEST
+  AC_MSG_RESULT(<<< Configuring CPPTest done >>>)
+fi
+dnl --------------------------------------------------------------
+
+
+
+dnl --------------------------------------------------------------
+dnl Support for unit testing through Elemental - disabled by default
+dnl --------------------------------------------------------------
+AC_ARG_ENABLE(elemental,
+              AC_HELP_STRING([--enable-elemental],
+                             [support for dense matrix manipulation through Elemental]),
+              enableelemental=$enableval,
+              enableelemental=no)
+
+if test "$enableelemental" != no ; then
+  AC_DEFINE(HAVE_ELEMENTAL, 1,
+           [Flag indicating if the library includes support for dense matrix manipulation through Elemental])
+  AC_MSG_RESULT(<<< Configuring library with support for dense matrix manipulation through Elemental >>>)
+  CONFIGURE_ELEMENTAL
+  AC_MSG_RESULT(<<< Configuring Elemental done >>>)
+fi
+dnl --------------------------------------------------------------
+
+
+dnl --------------------------------------------------------------
+dnl Support for reading/writing in CSV format - enabled by default
+dnl --------------------------------------------------------------
+AC_ARG_ENABLE(csvparser,
+              AC_HELP_STRING([--enable-csvparser],
+                             [support for reading/writing in CSV format]),
+              enablecsvparser=$enableval,
+              enablecsvparser=yes)
+
+if test "$enablecsvparser" != no ; then
+  AC_DEFINE(HAVE_CSVPARSER, 1,
+           [Flag indicating if the library should be built with support to parse CSV files])
+  AC_MSG_RESULT(<<< Configuring library with CSV file parsing support >>>)
+  CONFIGURE_CSVPARSER
+  AC_MSG_RESULT(<<< Configuring CSVParser done >>>)
+fi
+dnl --------------------------------------------------------------
+
+dnl --------------------------------------------------------------
+dnl Support for reading/writing in XML format - enabled by default
+dnl --------------------------------------------------------------
+AC_ARG_ENABLE(tinyxpath,
+              AC_HELP_STRING([--enable-tinyxpath],
+                             [support for reading/writing in XML format]),
+              enabletinyxpath=$enableval,
+              enabletinyxpath=yes)
+
+if test "$enabletinyxpath" != no ; then
+  AC_DEFINE(HAVE_TINY_XPATH, 1,
+           [Flag indicating if the library should be built with TinyXPath support])
+  AC_MSG_RESULT(<<< Configuring library with TinyXPath support >>>)
+  CONFIGURE_TINYXPATH
+  AC_MSG_RESULT(<<< Configuring TinyXPath done >>>)
+fi
+dnl --------------------------------------------------------------
+
+dnl --------------------------------------------------------------
+dnl Interface to Yaqi Wang's XUTHUS code - disabled by default
+dnl --------------------------------------------------------------
+AC_ARG_ENABLE(xuthus,
+              AC_HELP_STRING([--enable-xuthus],
+                             [support for using 2-D Neutron transport package by Yaqi Wang]),
+              enablexuthus=$enableval,
+              enablexuthus=no)
+
+if test "$enablexuthus" != no ; then
+  AC_DEFINE(HAVE_XUTHUS, 1,
+           [Flag indicating if the library should be linked with XUTHUS])
+  AC_MSG_RESULT(<<< Configuring library with XUTHUS support >>>)
+dnl  AC_MSG_RESULT(       Refer to documentation on creating a shared library of XUTHUS.)
+  CONFIGURE_XUTHUS
+  AC_MSG_RESULT(<<< Configuring XUTHUS done >>>)
+fi
+dnl --------------------------------------------------------------
+
+
+dnl -------------------------------------------------------------
+dnl Doxygen - look for doxygen (a documentation tool)
+dnl -------------------------------------------------------------
+AC_PATH_PROG(DOXYGEN, doxygen)
+AC_SUBST(DOXYGEN)
+if test "x$DOXYGEN" != x ; then
+  dnl -----------------------------------------------------------
+  dnl Dot -- lets doxygen generate pretty class diagrams
+  dnl -----------------------------------------------------------
+  AC_PATH_PROG(DOT, dot)
+  HAVE_DOT=NO
+  if test "x$DOT" != x ; then
+    HAVE_DOT=YES
+    DOTPATH=$KARMA_DIR/doc
+    AC_SUBST(DOT)
+    AC_SUBST(DOTPATH)
+  fi
+  AC_SUBST(HAVE_DOT)
+fi
+dnl -------------------------------------------------------------
+
+
+AC_MSG_RESULT(--------------------------------------------)
+AC_MSG_RESULT(--- Done configuring supporting packages ---)
+AC_MSG_RESULT(--------------------------------------------)
+
+
+
+dnl -------------------------------------------------------------
+dnl Perl - look for perl.  Perl is used to generate dependencies
+dnl -------------------------------------------------------------
+AC_PATH_PROG(PERL, perl)
+AC_SUBST(PERL)
+dnl -------------------------------------------------------------
+
+
+AC_OUTPUT
+
+
+AC_MSG_RESULT(-------------------------------------------)
+AC_MSG_RESULT(--------- Done Configuring KARMA ----------)
+AC_MSG_RESULT(-------------------------------------------)
+rm -f conftest* config.cache $KARMA_DIR/include/base/karma_config.h.tmp
+mv $KARMA_DIR/config/KARMA.common $KARMA_DIR/
+mv $KARMA_DIR/config/Makefile $KARMA_DIR/
+
+
+dnl Local Variables:
+dnl mode: m4
+dnl End:

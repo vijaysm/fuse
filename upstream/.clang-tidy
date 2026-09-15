@@ -1,0 +1,3 @@
+# Imported upstream code is not linted. It is checked against its own suite, and
+# it must stay byte-identical to the tagged parent tree (invariant I8).
+Checks: '-*'
