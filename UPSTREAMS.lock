@@ -1,0 +1,26 @@
+# fuse upstream import baselines. Bump ONLY through docs/PLAN.md §6 (sync protocol).
+# state: imported = byte-identical subtree | diverged = transformed in fuse since import
+[soma]
+path      = "/Users/mahadevan/Code/AI/coupling/coupe/modules/coupler"
+ref       = "main"
+sha       = "e52b981"
+date      = "2026-09-14"
+commits   = 157
+tests     = 948          # TEST(/TEST_F( macros; custom-main() MPI harnesses not counted
+loc       = 31452        # include src fortran python
+tag       = "fuse-import-0"   # to be cut at the freeze
+imports   = []           # filled at S0.3
+open      = ["X2 rules_channel.cpp overlaps()", "X5 validate.hpp abs(lag)", "X7 soma_c.h int32_t comm",
+             "R31 overlapping rank sets refused (untested)",
+             "untested refusals: E-RT-TRANSPORT-{NOMPI,COMM,XREGION,OVERLAP}, E-RT-REMAP-HALO, E-MESH-HALO-GEOMETRY"]
+
+[karma]
+path      = "/Users/mahadevan/Code/AI/coupling/karma"
+ref       = "master"
+sha       = "136f520"
+date      = "2026-09-15"
+commits   = 374
+ctest     = 203
+tag       = "fuse-import-0"
+imports   = []           # filled at S0.3 (Stage-1 spine + FEM/transfer areas for physics-kit)
+open      = ["PETSc-backed native component unregistered", "distorted-pyramid quadrature unverified (KNOWN_ISSUES #1)"]
