@@ -40,6 +40,13 @@ Several checks are disabled on purpose because they fight numerical code — mag
 content of a quadrature table, and `easily-swappable-parameters` is inherent to `remap(src, dst, tol,
 ...)`. Each exclusion states its reason in the file.
 
+## Errors
+
+`FUSE_ASSERT` for invariants (checked in every build), `FUSE_THROW(Type, …)` for recoverable errors,
+`FUSE_REFUSE("E-CODE", …)` for deliberate refusals. Never a bare `assert`, never a bare `throw`, and
+never the parents' `KARMA_THROW`/`SOMA_ASSERT` — the gate rejects all three. Design and the
+debugger hook: [](debugging.md).
+
 ## Output and logging
 
 `fmt` is the only formatter. No `iostream`, and no `printf` in library code. Any path that must not

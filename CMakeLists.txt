@@ -43,14 +43,17 @@ if(FUSE_BUILD_UPSTREAM_KARMA)
 endif()
 
 # --- the library ------------------------------------------------------------
-# include(FuseDependencies)   # enabled at S1, with the first fuse:: target
-# fuse_resolve_dependencies()
-# add_subdirectory(src)
-# add_subdirectory(test)
+include(FuseDependencies)
+fuse_resolve_dependencies()
+add_subdirectory(src)
+if(FUSE_ENABLE_TESTS)
+  add_subdirectory(test)
+endif()
 
 message(STATUS "")
-message(STATUS "fuse ${PROJECT_VERSION} — stage S0 (imports only)")
+message(STATUS "fuse ${PROJECT_VERSION} — stage S1")
 message(STATUS "  upstream/soma   : ${FUSE_BUILD_UPSTREAM_SOMA}")
 message(STATUS "  upstream/karma  : ${FUSE_BUILD_UPSTREAM_KARMA}")
-message(STATUS "  fuse:: targets  : none yet; first arrives at S1")
+message(STATUS "  fuse:: layers   : base")
+message(STATUS "  linalg backend  : ${FUSE_LINALG_BACKEND}")
 message(STATUS "")
