@@ -103,6 +103,20 @@ The previous file keeps its own name, so a reader can see what the bytes used to
 test share one fixture (`include/fuse/model/freeze_fixture.hpp`) so they cannot describe different
 graphs — which is the one way a golden test passes while the frozen bytes mean nothing.
 
+## The three-leg round-trip
+
+`YamlIo.ThreeLegRoundTripIsStructurallyIdentical` authors a graph in C++, emits YAML, parses it back,
+and compares the **canonical bytes** of the two. The comparison is against the bytes rather than
+between the two graphs because two legs prove nothing about the third: a front-end that loses a member
+symmetrically passes its own round-trip.
+
+It earned that on its first run, catching a defect inherited from the parent: a unit with no symbol in
+the table was emitted as a composed string (`kg*m^-1*s^-2`) that the parser could not read, so a graph
+with a kilopascal field emitted cleanly and then failed to parse. An emitter whose own parser cannot
+read its output is not a front-end. The fallback is now a structural map of the exponents plus the
+exact scale and offset; a unit that does have a symbol still emits as that symbol, so ordinary YAML
+stays readable.
+
 ## The Tier 1 descriptor test has not run here
 
 `model.descriptor_mpi.{2,3,4,5}` asserts that every rank serializes the same graph to the same bytes —

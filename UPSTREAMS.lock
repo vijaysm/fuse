@@ -25,6 +25,8 @@ superseded = [                       # upstream paths fuse has replaced (S1, fus
   "include/soma/num/accelerator.hpp",          # config -> model/iteration.hpp, interface -> fuse/num
   "test/unit/region_test.cpp", "test/unit/component_test.cpp", "test/unit/channel_test.cpp",
   "test/unit/coupling_graph_test.cpp", "test/unit/validate_test.cpp", "test/unit/descriptor_test.cpp",
+  "include/soma/graph/yaml_io.hpp", "src/graph/yaml_io.cpp", "test/unit/yaml_io_test.cpp",
+  "test/data/",                                # eight YAML fixtures
 ]
 retire_at = "S6"                     # subtree deleted whole when every path is superseded
 retired   = ""                       # "<date> @ <fuse sha>" once done
@@ -57,6 +59,9 @@ superseded = [                       # upstream paths fuse has replaced (S1, fus
   "include/coupling/karma_semantics.h",        # -> include/fuse/model/semantics.hpp
   "src/coupling/karma_semantics.C",            # less its rational arithmetic
   "test/coupling_semantics_test.C",            # 5 of 9 groups; see the port's header comment
+  "include/coupling/karma_compatibility.h", "src/coupling/karma_compatibility.C",
+  "include/coupling/karma_transform.h", "src/coupling/karma_transform.C",
+  "test/coupling_compatibility_test.C", "test/transform_inference_test.C",
 ]
 retire_at = "S8"                     # subtree deleted whole when every path is superseded
 retired   = ""                       # "<date> @ <fuse sha>" once done
