@@ -1,0 +1,88 @@
+# FUSE — clang-tidy for a scientific computing library.
+#
+# Two principles decide what is enabled:
+#   1. A check that finds real numerical or distributed bugs is on, even if noisy.
+#   2. A check that fights the idioms of numerical code (dense constants, raw field
+#      buffers, byte-level encoding, long kernels) is off, with the reason stated.
+---
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-branch-clone,
+  mpi-*,
+  concurrency-*,
+  performance-*,
+  -performance-avoid-endl,
+  modernize-*,
+  -modernize-use-trailing-return-type,
+  -modernize-avoid-c-arrays,
+  -modernize-use-nodiscard,
+  readability-*,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -readability-function-cognitive-complexity,
+  -readability-uppercase-literal-suffix,
+  -readability-braces-around-statements,
+  cppcoreguidelines-init-variables,
+  cppcoreguidelines-narrowing-conversions,
+  cppcoreguidelines-pro-type-member-init,
+  cppcoreguidelines-slicing,
+  cppcoreguidelines-special-member-functions,
+  cppcoreguidelines-virtual-class-destructor,
+  misc-*,
+  -misc-non-private-member-variables-in-classes,
+  -misc-include-cleaner,
+  -misc-no-recursion
+
+# Why the notable exclusions:
+#   bugprone-easily-swappable-parameters — remap(src, dst, tol, ...) is inherent to the domain.
+#   readability-magic-numbers / cppcoreguidelines-avoid-magic-numbers — quadrature weights,
+#     tolerances and order constants are the content of numerical code.
+#   readability-function-cognitive-complexity — a lowering rule or a kernel is long by nature;
+#     the charter's real limit is one concern per function, which no metric measures.
+#   modernize-use-trailing-return-type — churns every signature in 45 kLOC of imported code.
+#   modernize-avoid-c-arrays — the C ABI records are plain C structs by contract.
+#   misc-include-cleaner — Kokkos and MPI headers defeat it; revisit when it improves.
+#   misc-non-private-member-variables-in-classes — descriptor and ABI records are PODs.
+#   cppcoreguidelines-pro-bounds-* and pro-type-reinterpret-cast are absent deliberately:
+#     field buffers are raw pointers with strides and the canonical encoder is byte-level.
+#
+# Real bugs fail the build. Style and modernization do not.
+WarningsAsErrors: >
+  bugprone-*,
+  mpi-*,
+  concurrency-*,
+  cppcoreguidelines-narrowing-conversions,
+  cppcoreguidelines-init-variables,
+  performance-move-const-arg,
+  performance-unnecessary-value-param
+
+HeaderFilterRegex: '.*/(include|src|test)/fuse/.*\.(hpp|h)$'
+FormatStyle: file
+
+CheckOptions:
+  # Naming, matching docs/CHARTER.md. Enforced, not suggested.
+  readability-identifier-naming.NamespaceCase: lower_case
+  readability-identifier-naming.ClassCase: CamelCase
+  readability-identifier-naming.StructCase: CamelCase
+  readability-identifier-naming.EnumCase: CamelCase
+  readability-identifier-naming.EnumConstantCase: CamelCase
+  readability-identifier-naming.FunctionCase: lower_case
+  readability-identifier-naming.MethodCase: lower_case
+  readability-identifier-naming.VariableCase: lower_case
+  readability-identifier-naming.ParameterCase: lower_case
+  readability-identifier-naming.PrivateMemberSuffix: '_'
+  readability-identifier-naming.ProtectedMemberSuffix: '_'
+  readability-identifier-naming.ConstexprVariablePrefix: 'k'
+  readability-identifier-naming.ConstexprVariableCase: CamelCase
+  readability-identifier-naming.GlobalConstantPrefix: 'k'
+  readability-identifier-naming.GlobalConstantCase: CamelCase
+  readability-identifier-naming.TemplateParameterCase: CamelCase
+  readability-identifier-naming.MacroDefinitionCase: UPPER_CASE
+  readability-identifier-naming.MacroDefinitionPrefix: 'FUSE_'
+  # The C ABI is plain C and opts out of the C++ naming rules via its own .clang-tidy.
+  bugprone-signed-char-misuse.CharTypdefsToIgnore: 'int8_t'
+  cppcoreguidelines-narrowing-conversions.WarnOnIntegerNarrowingConversion: true
+  performance-unnecessary-value-param.AllowedTypes: 'Rational;TimeLevel;FieldId;ComponentId;ChannelId;MeshId;ArcId'
+  misc-const-correctness.AnalyzeValues: false

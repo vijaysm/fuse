@@ -1,0 +1,3 @@
+# The C ABI is plain C by contract: snake_case struct tags and members, no C++
+# naming rules and no modernization. Everything else from the root config applies.
+Checks: '-readability-identifier-naming,-modernize-*,-cppcoreguidelines-*'
