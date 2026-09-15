@@ -321,11 +321,13 @@ TEST(Validate, DeserializedGraphWithBadWindowComponentDoesNotThrowAndReportsBadR
   EXPECT_TRUE(has_code(d, "E-BAD-REF")) << d.to_string();
 }
 
-// ---- merge transform (S2.1) --------------------------------------------
+// ---- merge transform (S2.1, S2.4) -------------------------------------
 
-// Dimensions and the affine part are separate verdicts with separate codes: one
-// is an incompatibility, the other a conversion not yet inferred.
-TEST(Validate, DimensionMismatchAndScaleMismatchAreDistinctVerdicts) {
+// Three outcomes where the two parents had one. Dimensions that differ are an
+// incompatibility; an exact zero-offset scale is a conversion the compiler
+// inserts and REPORTS; an offset change, or a scale under a policy that forbids
+// insertion, is refused.
+TEST(Validate, UnitGapHasThreeDistinctOutcomes) {
   const auto graph_with = [](fuse::Units source_units, fuse::Units target_units) {
     fuse::CouplingGraph g;
     const auto a = g.add_component({.name = "a", .ranks = {0, 1}, .interval = fuse::Rational{1}});
@@ -335,25 +337,50 @@ TEST(Validate, DimensionMismatchAndScaleMismatchAreDistinctVerdicts) {
     (void)g.add_channel("q", sf, tf);
     return g;
   };
-  const auto codes = [](const fuse::Diagnostics& d) {
-    std::vector<std::string> out;
-    for (const auto& item : d.items()) out.push_back(item.code);
-    return out;
+  const auto count = [](const fuse::Diagnostics& d, std::string_view code) {
+    std::size_t n = 0;
+    for (const auto& item : d.items()) n += (item.code == code);
+    return n;
   };
 
   fuse::Units pascal{.length = -1, .mass = 1, .time = -2};
   fuse::Units kilopascal = pascal;
   kilopascal.scale = fuse::Rational{1000};
+  fuse::Units kelvin{.temperature = 1};
+  fuse::Units celsius = kelvin;
+  celsius.offset = fuse::Rational{27315, 100};
 
-  const auto same = codes(fuse::validate(graph_with(pascal, pascal)));
-  EXPECT_EQ(std::count(same.begin(), same.end(), "E-UNITS"), 0);
-  EXPECT_EQ(std::count(same.begin(), same.end(), "E-UNITS-SCALE"), 0);
+  // Agreeing units: nothing to say.
+  const auto same = fuse::validate(graph_with(pascal, pascal));
+  EXPECT_EQ(count(same, "E-UNITS"), 0u);
+  EXPECT_EQ(count(same, "E-UNITS-SCALE"), 0u);
+  EXPECT_EQ(count(same, "I-UNIT-SCALE-INSERTED"), 0u);
 
-  const auto scaled = codes(fuse::validate(graph_with(pascal, kilopascal)));
-  EXPECT_EQ(std::count(scaled.begin(), scaled.end(), "E-UNITS-SCALE"), 1);
-  EXPECT_EQ(std::count(scaled.begin(), scaled.end(), "E-UNITS"), 0);
+  // Exact scale, default policy: inserted, and named. The factor is reported
+  // because a user should see an operator they did not write.
+  const auto scaled = fuse::validate(graph_with(pascal, kilopascal));
+  EXPECT_EQ(count(scaled, "E-UNITS-SCALE"), 0u);
+  EXPECT_EQ(count(scaled, "I-UNIT-SCALE-INSERTED"), 1u);
+  bool factor_named = false;
+  for (const auto& item : scaled.items())
+    factor_named = factor_named || item.message.find("1/1000") != std::string::npos ||
+                   item.message.find("1000") != std::string::npos;
+  EXPECT_TRUE(factor_named);
 
-  const auto wrong = codes(fuse::validate(graph_with(pascal, fuse::Units{.temperature = 1})));
-  EXPECT_EQ(std::count(wrong.begin(), wrong.end(), "E-UNITS"), 1);
-  EXPECT_EQ(std::count(wrong.begin(), wrong.end(), "E-UNITS-SCALE"), 0);
+  // Same gap, policy off: refused rather than silently applied.
+  const auto forbidden = fuse::validate(graph_with(pascal, kilopascal), {.allow_automatic_unit_scale = false});
+  EXPECT_EQ(count(forbidden, "E-UNITS-SCALE"), 1u);
+  EXPECT_EQ(count(forbidden, "I-UNIT-SCALE-INSERTED"), 0u);
+
+  // An OFFSET moves the zero of the scale, so it is refused whatever the policy.
+  for (const fuse::ConnectPolicy policy : {fuse::ConnectPolicy{true}, fuse::ConnectPolicy{false}}) {
+    const auto affine = fuse::validate(graph_with(kelvin, celsius), policy);
+    EXPECT_EQ(count(affine, "E-UNITS-SCALE"), 1u);
+    EXPECT_EQ(count(affine, "I-UNIT-SCALE-INSERTED"), 0u);
+  }
+
+  // Different dimensions remain an incompatibility, with no conversion offered.
+  const auto wrong = fuse::validate(graph_with(pascal, kelvin));
+  EXPECT_EQ(count(wrong, "E-UNITS"), 1u);
+  EXPECT_EQ(count(wrong, "E-UNITS-SCALE"), 0u);
 }

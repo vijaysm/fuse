@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "fuse/base/result.hpp"
+#include "fuse/model/connect.hpp"
 #include "fuse/model/coupling_graph.hpp"
 
 namespace fuse {
@@ -52,7 +53,8 @@ inline Rational channel_window(const CouplingGraph& g, const Channel& ch) {
 }  // namespace detail
 
 /// Spec Global Constraints: accumulate every problem, report them together.
-[[nodiscard]] inline Diagnostics validate(const CouplingGraph& g) {
+[[nodiscard]] inline Diagnostics validate(const CouplingGraph& g,
+                                          const ConnectPolicy& policy = {}) {
   Diagnostics d;
 
   // --- name uniqueness -----------------------------------------------------
@@ -128,25 +130,45 @@ inline Rational channel_window(const CouplingGraph& g, const Channel& ch) {
     const auto& tf = g.field(ch.target);
     ++writers[ch.target.value()];
 
-    // Two distinct failures, distinguished because they have different remedies.
-    // Different DIMENSIONS is an incompatibility: nothing can transfer watts into
-    // kelvin. Same dimensions with a different SCALE or OFFSET is a conversion the
-    // compiler can insert, and inferring it is S2.4's transform work -- until that
-    // lands the channel is REFUSED with its own code, because silently ignoring the
-    // affine part would apply a factor-of-1000 error to every step and pass every
-    // dimensional check while doing it.
-    if (!sf.units.same_dimensions(tf.units)) {
-      d.add(Severity::Error, "E-UNITS",
-            "unit mismatch: source '" + sf.name + "' is " + sf.units.to_string() +
-                ", target '" + tf.name + "' is " + tf.units.to_string(), ctx);
-    } else if (!(sf.units == tf.units)) {
-      d.add(Severity::Error, "E-UNITS-SCALE",
-            "same dimensions but a different affine unit: source '" + sf.name +
-                "' has scale " + sf.units.scale.to_string() + " offset " +
-                sf.units.offset.to_string() + ", target '" + tf.name + "' has scale " +
-                tf.units.scale.to_string() + " offset " + tf.units.offset.to_string() +
-                "; automatic unit scaling is not inferred yet (S2.4)", ctx);
+    // The unit gap goes through the spine's graded stages (fuse/model/connect.hpp),
+    // so the three outcomes stay distinct instead of collapsing into one error:
+    //   * different DIMENSIONS      -> E-UNITS, an incompatibility;
+    //   * an exact zero-offset SCALE -> an inferred UnitScale operator, reported as
+    //     a warning naming the factor, because the user should see an operator they
+    //     did not write;
+    //   * an OFFSET change, or a scale under a policy that forbids insertion
+    //     -> E-UNITS-SCALE, refused. Moving the zero of a scale changes meaning.
+    const auto connection = check_channel(g, cid, policy);
+    for (const auto& item : connection.diagnostics) {
+      if (item.stage != ConnectionStage::Unit) continue;
+      switch (item.reason) {
+        case ConnectionReason::DimensionMismatch:
+          d.add(Severity::Error, "E-UNITS",
+                "unit mismatch: source '" + sf.name + "' is " + sf.units.to_string() +
+                    ", target '" + tf.name + "' is " + tf.units.to_string(), ctx);
+          break;
+        case ConnectionReason::UnitsUndeclared:
+          // Unknown dimensions, which is NOT dimensionless. Refused rather than
+          // assumed, because assuming would connect two unrelated quantities.
+          d.add(Severity::Error, "E-UNITS-UNDECLARED",
+                "a unit could not be interpreted, so the two cannot be shown to agree: " +
+                    item.detail, ctx);
+          break;
+        default:
+          d.add(Severity::Error, "E-UNITS-SCALE",
+                std::string("unit conversion refused (") +
+                    std::string(connection_reason_name(item.reason)) + "): " + item.detail, ctx);
+          break;
+      }
     }
+    for (const auto& step : connection.chain.steps) {
+      if (step.kind == OperatorKind::UnitScale && !step.explicitly_requested) {
+        d.add(Severity::Warning, "I-UNIT-SCALE-INSERTED",
+              "inserting an exact unit scale of " + step.scale.to_string() + " from '" + sf.name +
+                  "' to '" + tf.name + "'", ctx);
+      }
+    }
+
     if (!same_shape(sf, tf)) {
       d.add(Severity::Error, "E-SHAPE",
             "component count mismatch: " + std::to_string(sf.components) +
