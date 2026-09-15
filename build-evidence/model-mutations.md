@@ -14,5 +14,7 @@ Run 2026-09-15 against build `build-fuse-s1`. Regenerate with `tools/mutate.py -
 | `gll-order-collapses-to-vertex` — a high-order GLL coefficient is reported as a vertex value | `include/fuse/model/connect.hpp` | **KILLED** (test fails) | `model.connect` |
 | `multiscale-overlap-permissive` — overlap accounting quietly succeeds when coverage happens to sum to one | `src/model/multiscale.cpp` | **KILLED** (test fails) | `model.multiscale` |
 | `surrogate-ood-not-required` — a surrogate with no out-of-distribution detector passes review | `src/model/multiscale.cpp` | **KILLED** (test fails) | `model.multiscale` |
+| `yaml-unit-fallback-unparseable` — a unit with no table symbol is emitted as a string the parser cannot read | `src/model/yaml_io.cpp` | **KILLED** (test fails) | `model.yaml_io` |
+| `yaml-drops-unit-scale` — the YAML form omits a unit's exact scale, so kilopascal reads back as pascal | `src/model/yaml_io.cpp` | **KILLED** (test fails) | `model.yaml_io` |
 
-**10 killed / 10 total.**
+**12 killed / 12 total.**

@@ -65,7 +65,13 @@ cmake -S . -B build -DCMAKE_PREFIX_PATH="/opt/kokkos;/opt/kokkos-kernels;/opt/ho
 ```
 
 `-DFUSE_ALLOW_FETCH=ON` opts into building a pinned copy of any Tier 0 dependency that is not
-installed, for a machine that has none. Tiers 2 and 3 (MOAB, PETSc) are **found only, never fetched**:
+installed, for a machine that has none.
+
+**yaml-cpp is the one exception**: it is fetched at a pinned tag by default (an installed copy is
+still found first). The installed-first rule exists because Kokkos, MOAB and PETSc carry machine and
+stack tuning a generic build would silently replace; a YAML parser carries none of that — no MPI, no
+index-size choice, no tuned kernels — so building it costs nothing and keeps the configuration
+front-end available everywhere. It is linked `PRIVATE`, so it never reaches a consumer's include path. Tiers 2 and 3 (MOAB, PETSc) are **found only, never fetched**:
 they are large builds whose configuration choices — index size, debug or optimized, which MPI — must
 match the rest of the stack, so a fetched default would be the wrong library in a way no version
 number reveals. Extending the fetch machinery to them is a later decision, deliberately open.

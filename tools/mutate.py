@@ -48,8 +48,22 @@ def main() -> int:
     # A build directory that is not a configured CMake tree makes EVERY build fail,
     # which the verdict logic would read as "the mutant does not compile" -- 12
     # inconclusive results that look like a code problem and are a path typo.
-    if not (args.build_dir / "CMakeCache.txt").is_file():
+    cache = args.build_dir / "CMakeCache.txt"
+    if not cache.is_file():
         print(f"error: {args.build_dir} is not a configured CMake build directory")
+        return 2
+
+    # And it must be a build OF THIS TREE. A stale build directory belonging to
+    # another source root builds fine and runs tests that never see the mutation,
+    # so every mutant comes back inconclusive -- which reads as a code problem and
+    # is a path problem. This happened once; hence the check.
+    home = ""
+    for line in cache.read_text(errors="replace").splitlines():
+        if line.startswith("CMAKE_HOME_DIRECTORY:"):
+            home = line.split("=", 1)[1].strip()
+            break
+    if Path(home).resolve() != ROOT.resolve():
+        print(f"error: {args.build_dir} was configured for {home}, not {ROOT}")
         return 2
 
     if subprocess.run(["git", "status", "--porcelain", "include", "src"], cwd=ROOT,
