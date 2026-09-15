@@ -5,6 +5,9 @@
 Namespace `fuse::`. CMake package `fuse-coupler`. Headers `<fuse/<layer>/<name>.hpp>`. Libraries
 `libfuse-coupler-<layer>`.
 
+No `soma::`, no `KARMA::`, no `KARMA*` type prefix, no `karma_*`/`soma_*` file prefix, no `.C`
+extension. Ported code is renamed on arrival ([](porting.md)); the gate rejects the legacy forms.
+
 The C ABI exports **one symbol per ABI** returning a versioned function table — no prefixed symbol
 family, no macro-generated names, no macros in public headers. The reasoning is in
 [](abi-design.md).

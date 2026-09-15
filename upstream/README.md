@@ -37,7 +37,9 @@ the first can run without the parents.
 
 ## How this directory empties
 
-Each stage from S1 ports one area into `include/fuse/` and `src/`, and records the corresponding
-upstream paths as `superseded` in `UPSTREAMS.lock`. When a parent's every path is superseded, its
-subtree is removed and the lock records the final state. `upstream/` is scaffolding with a planned
-end, not a vendor directory.
+**It is deleted.** Each stage from S1 ports one area into `include/fuse/` and `src/` under
+namespace `fuse::` and FUSE's names — the parents' namespaces, type prefixes and file prefixes do not
+survive — and records the upstream paths as `superseded` in `UPSTREAMS.lock`. When a parent's every
+path is superseded its subtree is removed in one commit: `soma/` at the S6 exit, `karma/` at the S8
+exit. Until then each tree keeps building and its suite keeps running, because the original is the
+differential oracle for its own port. Procedure and naming map: `docs/dev/porting.md`.
