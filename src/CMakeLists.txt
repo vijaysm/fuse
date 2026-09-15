@@ -59,3 +59,38 @@ set_target_properties(fuse-coupler-model PROPERTIES
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
 )
+
+# ---------------------------------------------------------------- ir
+# Graph -> SSA operator DAG. Depends on the model and nothing above it: the
+# lowering rules are a pure function of the graph, which is what makes the
+# compiled IR inspectable and golden-comparable without a runtime.
+add_library(fuse-coupler-ir
+  ir/lowering.cpp
+  ir/regions.cpp
+  ir/rules_channel.cpp
+  ir/rules_derived.cpp
+  ir/checkpoint.cpp
+)
+add_library(fuse::ir ALIAS fuse-coupler-ir)
+target_link_libraries(fuse-coupler-ir PUBLIC fuse::model)
+set_target_properties(fuse-coupler-ir PROPERTIES
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN ON
+)
+
+# ---------------------------------------------------------------- schedule
+# Operator DAG -> flat execution plan: exact clocks, the init-time acyclicity
+# proof, window expansion, buffer assignment.
+add_library(fuse-coupler-schedule
+  schedule/acyclicity.cpp
+  schedule/buffers.cpp
+  schedule/expand.cpp
+  schedule/scheduler.cpp
+  schedule/slab.cpp
+)
+add_library(fuse::schedule ALIAS fuse-coupler-schedule)
+target_link_libraries(fuse-coupler-schedule PUBLIC fuse::ir)
+set_target_properties(fuse-coupler-schedule PROPERTIES
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN ON
+)

@@ -1,0 +1,7 @@
+# fuse-ir v1
+node 0   Source                    -> %0 : Instant<r0, kg·s^-3, Extensive, [WindowEnd, k], ranks=0>  "fluid.q"
+node 1   Transport    %0           -> %1 : Instant<r0, kg·s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/transport" {0->1}
+node 2   Remap        %1           -> %2 : Instant<r1, kg·s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/remap" {remap=C}
+node 3   Constrain    %2           -> %3 : Instant<r1, kg·s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/constrain"
+node 4   Diagnose     %3           -> %4 : Instant<r1, kg·s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/diagnose"
+node 5   Sink         %4           -> %5 : Instant<r1, kg·s^-3, Extensive, [WindowEnd, k], ranks=1>  "solid.q_in"
