@@ -1,4 +1,7 @@
-build*/
+# build directories, but NOT build-evidence/ (the mutation gate's tracked record)
+build/
+build-*/
+!build-evidence/
 docs/_build/
 docs/_doxygen/
 .cache/
