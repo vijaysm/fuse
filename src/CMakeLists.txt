@@ -21,6 +21,7 @@ configure_file(${PROJECT_SOURCE_DIR}/include/fuse/base/config.hpp.in
 add_library(fuse-coupler-base
   base/backtrace.cpp
   base/error.cpp
+  base/version.cpp
 )
 add_library(fuse::base ALIAS fuse-coupler-base)
 target_include_directories(fuse-coupler-base PUBLIC
