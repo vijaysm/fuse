@@ -1,0 +1,142 @@
+# KARMA
+
+KARMA (K(C)ode for Analysis of Reactor and other Multiphysics Applications) is a C++20 scientific-computing library built around PETSc, MPI, MOAB, and Eigen. The active code provides finite-element geometry and basis evaluation, distributed degree-of-freedom management, PETSc algebra, scalar diffusion-reaction and discontinuous-Galerkin advection-reaction systems, mesh-free ODE systems, and exact H5M checkpoint/restart.
+
+The repository is modernizing its historical libMesh-based implementation. The capabilities below describe the sources that are part of the current CMake target, not every legacy header still present in the tree.
+
+## Current Status
+
+**Current state.** Distributed finite-element systems and checkpoint/restart are complete on `master`. The native coupling foundation supports checked point location, stable-key source evaluation, persistent compiled FEM connections, scale-aware cG transfer residuals, immutable Lie/Strang schedules, transaction-local exchange, macro-step rollback, scalar transient Crank-Nicolson reaction-diffusion, coupled Gray-Scott MMS, independently partitioned nonmatching U/V trajectories at 2/3/4 ranks, graph introspection/signatures, safe-point restart, and scheduler-integrated mass-weighted fixed-point iteration with constant or safeguarded Aitken relaxation. The current Release matrix passes 425/425 tests when MPI and the external MOAB `mbpart` utility are available; use `ctest --test-dir <build> -N` as the local authority for registrations.
+
+**Current capability.** An extensible coupling library is under construction on top of that foundation. The currently executable contract spine provides:
+
+- Seven independent numeric version domains with structured, reason-coded compatibility decisions, and a behavioral oracle that pins the executing coupler's migration invariants so persisted transfer-map and checkpoint formats stay unchanged.
+- A canonical byte encoding and rank-stable hash for the existing field-entry identity (`FieldEntryKey`/`DofKey`), now declared in a dependency-free header (`karma_field_identity.h`) that pulls in neither PETSc, MOAB, nor MPI.
+- A storage-neutral, versioned semantic model (`karma_semantics.h`) describing what a coupled field *means* — units as SI dimensions, frame, shape, location, continuity, temporal interpretation, role, ownership, access, update — with all time carried as exact rational, not floating point.
+- A graded connection-compatibility checker and ordered operator-chain inference: a connection between two semantic fields is either one explicit operator chain or a refusal, never a silent runtime substitution.
+- A candidate stable C ABI, `libkarma_abi`, a separate shared library with hidden visibility and an explicit seven-symbol export list. Its headers are C11, include only `<stdint.h>` and `<stddef.h>`, and a pure-C consumer built against the install tree can negotiate a version and capability set, create a component, exchange a host array, checkpoint, advance over an exact rational interval, restore, and receive named deterministic errors, linking no PETSc, MOAB, or MPI. The ABI is a CANDIDATE, not frozen: a freeze is only meaningful once native, Fortran, and Python implementations have each proven the same call prefix.
+- A static component registry that never substitutes — a named implementation that isn't registered is an error even when another implementation of the same contract exists, and an ambiguous match is refused rather than resolved by an implicit default — plus a runtime that drives every implementation, native or otherwise, through the same C table (no native fast path), and a compliance harness that checks lifecycle ordering, capability honesty, field round-tripping, determinism, and buffer lifetime. Registry selection can now additionally require a named port and check it against the caller's field semantics via the compatibility checker, and the compliance harness asserts a record's own contract validates under the semantic model and exercises the canonical field-entry encoding.
+- The PETSc field commit path (`KARMAField::commit_petsc_values`) now runs through the same transactional publication path every other field write uses, restricted to entries the calling rank owns — it no longer writes by global index through unordered off-process `VecSetValues`/assembly.
+
+Two native reference components (an analytic exponential decay, with a real semantic port) are registered end to end and run through both the registry and the C ABI. The PETSc-backed transient reaction-diffusion adapter is deliberately **not yet** registered through this runtime — it needs a zero-copy PETSc field binding the current transactional layer does not yet provide for that case — so the existing fast path remains the executing route and the oracle's reference for it. There is still no dynamic loading, no language adapter, and no general coupling graph beyond the fixed two-component topology. The `KARMA_ENABLE_EXCEPTIONS=OFF` configuration now builds and is covered by its own preset. Remaining open defects and standing risks — including the one unverified risk carried by the resized prism and pyramid quadratures — are recorded in `KNOWN_ISSUES.md`, with enough detail to act on and to revert.
+
+**Future.** Further work includes a general coupling graph, dynamic loading, Fortran and Python adapters, canonical configuration, conservative remapping, and broader partitioned execution. The design comparisons in the developer guide record the interface differences that must be resolved before those capabilities can be enabled.
+
+| Area | Current support |
+|---|---|
+| Mesh | MOAB-backed 1D/2D/3D meshes, explicit box generation, material/boundary sets, serial and externally partitioned H5M input |
+| Geometry | Linear and quadratic edge, triangle, quadrilateral, tetrahedron, hexahedron, prism, and pyramid mappings |
+| FE spaces | Built-in nodal Lagrange P0-P2 with cG, dG, and SE continuity labels; runtime custom-basis registry |
+| Algebra | PETSc vectors/matrices, stable distributed DoF keys, exact owned-row sparsity, ghost mappings, empty-rank support |
+| Physics | Consistent/lumped mass, scalar cG diffusion-reaction, scalar dG advection-reaction, mesh-free ODE systems |
+| Boundaries | Dirichlet, outward-flux Neumann, and flux-form Robin conditions |
+| I/O | MOAB mesh I/O and exact, transactional H5M checkpoint/restart across different MPI rank counts |
+| Parallelism | Replicated SPMD and externally partitioned meshes; partition-aware assembly and collective-safe failure handling |
+| Field transfer | Native KARMA KD-tree location, stable-key FEM evaluation, nodal sampling, dG/SE/FV local L2, scalar cG global L2, stable-key maps, staged commits, coverage and diagnostics |
+| Coupling contracts | Seven independent version domains with reason-coded negotiation, canonical field-entry encoding with a rank-stable hash, a storage-neutral semantic model carrying units as SI dimensions, discrete location, temporal interpretation, ownership, access, and exact rational time, a graded connection compatibility checker with ordered operator-chain inference, a never-substitutes component registry composed with the compatibility checker, a candidate C ABI v1 (`libkarma_abi`), and a PETSc field commit routed through the transactional path, owned entries only |
+| Coupling foundation | Two native reciprocal components, immutable Lie/Strang schedules, persistent nonmatching-mesh staged exchange, Crank-Nicolson reaction-diffusion, rollback, graph reports/signatures, safe-point restart, coupled MMS, independently partitioned 2/3/4-rank trajectories, and scheduler-integrated fixed-point RMS/Aitken iteration |
+
+## Requirements
+
+- CMake 3.20 or newer and a C++20 compiler
+- PETSc with MPI and MOAB support
+- MPI with C++ support
+- MOAB with parallel HDF5 for partitioned H5M workflows
+- Eigen3, LAPACK, and `pkg-config`
+- MOAB `mbpart` for the complete partitioned integration-test matrix
+
+The current ABI contract supports PETSc configured with double-precision real scalars only. Single-precision and complex configurations are detected and rejected. Algebraic indices use the configured `PetscInt`; the verified dependency stack uses 32-bit indices.
+
+The development machine uses a coherent PETSc/MOAB/HDF5/MPI installation under `/opt/petsc/download-moab` and Eigen under `/opt/eigen3`. Other installations are valid when their pkg-config metadata and runtime libraries are mutually compatible.
+
+## Build and Test
+
+Configure out of tree. Release is the default for single-configuration generators, but specifying it makes the build reproducible:
+
+```bash
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH='/opt/petsc/download-moab;/opt/eigen3'
+cmake --build build -j4
+ctest --test-dir build --output-on-failure -j1
+```
+
+Run focused tests with CTest rather than invoking MPI executables directly:
+
+```bash
+ctest --test-dir build -N
+ctest --test-dir build -R 'karma_diffusion' --output-on-failure
+ctest --test-dir build -R 'karma_moab_io' --output-on-failure
+```
+
+Install the library and public headers with:
+
+```bash
+cmake --install build --prefix /desired/install/prefix
+```
+
+| Option | Default | Purpose |
+|---|---:|---|
+| `KARMA_ENABLE_SHARED` | `ON` | Build a shared rather than static library |
+| `KARMA_ENABLE_TESTS` | `ON` | Build and register the active test suite |
+| `KARMA_ENABLE_EXAMPLES` | `OFF` | Build the Gray-Scott operator-split example |
+| `KARMA_ENABLE_EXCEPTIONS` | `ON` | Enable exception handling; required by the active FE path |
+| `KARMA_ENABLE_TRACEFILES` | `ON` | Enable error stack-trace files |
+
+`KARMA_ENABLE_LIBMESH` is a transitional discovery option, not a supported way to restore all excluded legacy implementations.
+
+## Architecture
+
+- `KARMAMesh` owns a MOAB database and exposes topology, geometry, tags, ownership, ghosting, and mesh I/O.
+- `KARMABasisRegistry`, `KARMAGeometryMap`, and `KARMAFEBase` compose reference bases with physical element and face mappings.
+- `KARMADofMap` creates stable identities, owner-major global numbering, ghost maps, assembly ownership, and exact sparsity.
+- `KARMASystem` owns variables and PETSc vectors/matrices for a mesh-based algebraic system.
+- Physics systems assemble mass, diffusion-reaction, and dG advection-reaction operators using owned assembly elements.
+- `KARMAAlgebraicSystem` and `ODESystem` provide a mesh-free PETSc TS path.
+- `KARMAMoabIO` provides mesh interchange and schema-versioned exact H5M checkpoints.
+- The native coupling slice compiles two reciprocal component instances into Lie or Strang instruction streams with staged FEM exchange and macro-step rollback.
+
+Public headers are under `include/`, active implementations are explicitly listed in `src/CMakeLists.txt`, and active tests are registered in `test/CMakeLists.txt`. A header's presence alone does not mean its historical implementation is part of the current library.
+
+## Documentation
+
+The Sphinx documentation uses MyST so guides remain ordinary Markdown:
+
+- [Scientific user guide](docs/user-guide/README.md)
+- [Developer guide](docs/developer-guide/README.md)
+- [Gray-Scott coupler](docs/user-guide/gray-scott-coupler.md)
+- [Current roadmap](docs/roadmap.md)
+
+Build it locally with:
+
+```bash
+python3 -m venv .venv-docs
+. .venv-docs/bin/activate
+python -m pip install -r docs/requirements.txt
+sphinx-build -W --keep-going -b html docs docs/_build/html
+```
+
+`.readthedocs.yaml` provides the equivalent native Read the Docs build. The documentation build does not compile or import the C++ library.
+
+## Important Limitations
+
+- In-library mesh partitioning is not active. Use externally partitioned MOAB H5M files; tests use `mbpart` when available.
+- Diffusion-reaction supports one scalar cG variable. Interior dG diffusion fluxes are not implemented.
+- Advection-reaction supports one scalar dG variable with a state-independent velocity callback.
+- Built-in bases are nodal Lagrange P0-P2. Other families and higher orders require a user-provided registry implementation.
+- Hanging-node and periodic algebraic constraints are not implemented.
+- The coupling contracts now include a plugin boundary (the static registry plus a candidate C ABI) and a transactional publication path, but there is still no general graph beyond the fixed two-component topology, no dynamic loading, and no language adapter; the semantic model is not yet what the fast path consults at runtime, which remains the executing description for the PETSc-backed transient reaction-diffusion adapter specifically.
+- Conservative field transfer, scalable owner-directed loading of persisted projection rows, general graph partitioning, adaptive refinement, general graph topology/fan-in, plugin/language adapters, and ExodusII output are not active capabilities. Graph introspection/signatures, safe-point restart, and the restricted fixed-point foundation are active only within the native two-component graph boundary.
+- ArborX/Kokkos is capability-detected but no executable ArborX backend is currently enabled; MOAB AdaptiveKDTree is the verified locator.
+- FEM transfer convergence tests run serial and as replicated 2/4/5-rank executions; independently partitioned transfer fixtures pass canonical centroid-key serial-reference comparison at 2/4/5 ranks, and the coupled Gray-Scott trajectory harness passes stable-DofKey serial-reference comparison at 2/3/4 ranks with remote evaluation proven in both directions.
+- Exact checkpoint/restart requires H5M and a compatible scalar/schema ABI.
+
+## Roadmap
+
+The native coupling continuation is complete for the restricted two-component foundation. It verifies Lie/Strang scheduling, persistent compiled connection workspaces, scale-aware cG transfer, transaction-local multimesh exchange, rollback, scalar/coupled Gray-Scott MMS, independently partitioned Gray-Scott trajectories at 2/3/4 ranks, graph introspection/signatures, graph-aware safe-point restart, and scheduler-integrated fixed-point iteration using consistent-mass RMS criteria with constant or safeguarded Aitken relaxation. Rank-local fixed-point setup/runtime failures and initial-condition callback failures are reconciled before peers enter later collectives, with rollback or no mutation as appropriate. General graph topology, dynamic plugins/language adapters, executable ArborX, conservative supermesh remapping, and atomic graph-wide durable checkpoints remain future work rather than incomplete work in this native scope.
+
+Later work includes native partitioner integration, performance and scaling studies, broader distributed topology coverage, additional dependency variants, and final removal or isolation of excluded legacy code. See [`docs/roadmap.md`](docs/roadmap.md) for entry criteria and verification goals.
+
+## License
+
+KARMA is distributed under the GNU Lesser General Public License, version 3 or later. See [LICENSE](LICENSE).

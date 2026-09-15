@@ -14,6 +14,9 @@ jobs:
         with: { python-version: "3.12" }
       - run: python3 tools/check-layering.py
       - run: python3 tools/check-invariants.py
+      # Byte-identity of upstream/ against the manifest (invariant I8). The
+      # stronger --parents form needs the parent repositories and runs locally.
+      - run: python3 tools/verify-import.py
 
   docs:
     name: docs
@@ -26,8 +29,20 @@ jobs:
       # A warning in the docs is a defect in the docs.
       - run: sphinx-build -W --keep-going -b html docs docs/_build/html
 
-  # Build and test legs arrive with the first source at S1: tier 0 across both
-  # linear-algebra backends and both host execution spaces, then tier 1 at
-  # 2/3/4/5 ranks, Release, ASan+UBSan, and the no-exceptions leg. They are not
-  # listed here yet because there is no CMakeLists.txt to run -- a leg that
-  # cannot run is not a leg.
+  upstream-soma:
+    name: imported coupler suite
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libgtest-dev libyaml-cpp-dev
+      # The dependency-free configuration: no MPI, no MOAB. This is the tier-0
+      # equivalent for the import and the S0 exit condition for this parent.
+      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+      - run: cmake --build build -j
+      - run: ctest --test-dir build --output-on-failure -j4
+
+  # Remaining legs arrive with the first fuse:: source at S1: tier 0 across both
+  # linear-algebra backends and both host execution spaces, tier 1 at 2/3/4/5
+  # ranks, tier 2, tier 3, Release, ASan+UBSan, no-exceptions, and the
+  # mutation-evidence gate. The imported spine tree needs MOAB and PETSc and is
+  # built on a host, not here -- see UPSTREAMS.lock.

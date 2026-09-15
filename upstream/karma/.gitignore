@@ -1,0 +1,40 @@
+# CMake build trees
+build*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# Generated configuration
+include/base/karma_version.h
+include/base/karma_config_auto.h
+config/karma.pc
+
+# Scratch files from the pre-CMake era
+blah.cc
+Makefile_correct
+
+# Retired build system and the config header it generated, kept on disk
+# during the CMake migration but not part of the tree.
+.attic-waf/
+include/base/karma_config.h.waf-stale
+
+# Legacy waf/autoconf build artifacts
+KARMA.common
+Makefile
+_configs.sed
+config.log
+config.status
+config/autom4te.cache/
+.waf*
+.lock*
+.build
+make.log
+
+# Documentation environments and output
+.venv-docs/
+docs/_build/
+
+# Object and editor files
+*.o
+*.pyc
+.DS_Store

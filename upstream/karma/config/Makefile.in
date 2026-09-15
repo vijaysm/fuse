@@ -1,0 +1,129 @@
+# KARMA: K(C)ode for Analysis of Reactor and other Multiphysics Applications
+# Copyright (C) 2007-2011  Vijay S Mahadevan
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published
+# by the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program; if not, write to the Free Software Foundation,
+# Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#
+
+
+# include the common options determined by configure for KARMA.
+include KARMA.common
+
+###############################################################################
+
+.PHONY: clean distclean
+
+###############################################################################
+# INDIVIDUAL TEST SUITES FOR EACH PHYSICS
+###############################################################################
+
+hello_test: ${KARMA_TEST_DIR}/hello_test.C $(KARMA_LIBRARY)
+	@echo "Building test: "$(patsubst %.C, %$(bin-suffix), $(addprefix bin/, $(notdir $<)))"..."
+	@$(KARMA_CXX) $(KARMA_INCLUDE) $(KARMA_TEST_INCLUDE) $(KARMA_CXXFLAGS) $< -o $(patsubst %.C, %$(bin-suffix), $(addprefix bin/, $(notdir $<))) $(KARMA_LIBS)
+
+###############################################################################
+test: hello_test 
+	@echo "Finished creating all tests ..."
+###############################################################################
+
+# Useful rules.
+clean:
+	@rm -f bin/* $(KARMA_LIBRARY_DIR)/* $(KARMA_OBJS) $(KARMA_TEST_OBJS) $(KARMA_SRC:.C=.C~) $(subst -I,$, $(addsuffix /*.h~, $(KARMA_INCLUDE))) $(KARMA_TEST_SRC:.C=.C~)
+	
+clean_phy:
+	@rm -f $(KARMA_LIBRARY_DIR)/* $(KARMA_PHY_OBJS) $(KARMA_PHY_SRC:.C=.C~)
+	
+clean_test:
+	@rm -f $(KARMA_TEST_OBJS) $(KARMA_TEST_SRC:.C=.C~)
+
+distclean:
+	@$(MAKE) clobber
+	@rm -rf .build/opt/*.o .build/dbg/*.o .build/pro/*.o
+	@rm -rf lib/*_opt lib/*_dbg lib/*_pro $(target)
+
+echo:
+	@echo $(libmesh_CXXFLAGS)
+	@echo ${KARMA_DIR}
+	@echo ${KARMA_SRC}
+	@echo $(KARMA_OBJS)
+	@echo %.$(obj-suffix)
+	@echo $(KARMA_LIBS)
+	@echo $(KARMA_INCLUDE)
+	@echo ${KARMA_TEST_DIR}
+	@echo ${KARMA_TEST_SRC}
+	@echo $(KARMA_TEST_INCLUDE)
+
+echo_xuthus:
+	@echo $(XUTHUS_INCLUDE)
+	@echo $(XUTHUS_LIBRARY)
+
+# tar cvf "KARMA_src_`date +%Y%m%d_%H_%M`.tar.gz" src include test *.msh Makefile .depend .depend_test
+zipfiles: 
+	find ./ -maxdepth 1 -type f \( -name "Makefile" -o -name "*.msh" -o -name ".depend*" \) > ziplist
+	find src -type f \( -name "*.h*" -o -name "*.C*" \) >> ziplist 
+	find include -type f \( -name "*.h*" -o -name "*.C*" \) >> ziplist 
+	find test -type f \( -name "Makefile" -o -name "*.h*" -o -name "*.C*" -o -name "*.msh" -o -name "*.cc"  -o -name "*.cc*" \) >> ziplist
+	tar cf "KARMA_src_`date +%Y%m%d_%H_%M`.tar.gz" --files-from ziplist
+	@rm ziplist
+
+#
+# In the contrib/bin directory, we run the test_headers.sh shell
+# script.  This is a make rule for those tests.
+#
+$(KARMA_TEST_OBJS) : ${KARMA_TEST_SRC}
+	$(libmesh_CXX) $(libmesh_CXXFLAGS) $(libmesh_INCLUDE) -c $< -o $@
+
+upload:
+	chmod -R g+w ./doc/html/* ./doc/latex/*/*
+	rsync -rltzve ssh --exclude '.svn' ./doc/html/ $(SVN_NAME)@$(SVN_REPOSITORY)/htdocs
+	chmod -R g-w ./doc/html/* ./doc/latex/*/*
+
+syncscratch:
+	rm -rf $(SCRATCH_DIR)/.depend* $(SCRATCH_DIR)/Makefile $(SCRATCH_DIR)/src/ $(SCRATCH_DIR)/include/ bin/* obj/*
+	rsync -avz ${KARMA_DIR}/.depend* $(SCRATCH_DIR)/
+	rsync -avz $(SCRATCH_DIR)/Makefile $(SCRATCH_DIR)/
+#	rsync -avz --exclude '.svn' ${KARMA_DIR}/src/* $(SCRATCH_DIR)/src/
+#	rsync -avz --exclude '.svn' ${KARMA_DIR}/include/* $(SCRATCH_DIR)/include/
+	@echo $(SCRATCH_DIR)" is now synced."
+
+syncremote:
+#	rm -rf $(SCRATCH_DIR)/.depend* $(SCRATCH_DIR)/Makefile $(SCRATCH_DIR)/src/ $(SCRATCH_DIR)/include/ bin/* obj/*
+	rsync -rltzve ssh ${KARMA_DIR}/.depend* $(REMOTE_USERNAME)@$(REMOTE_HOST):~/KARMA/
+	rsync -rltzve ssh ${KARMA_DIR}/Makefile $(REMOTE_USERNAME)@$(REMOTE_HOST):~/KARMA/
+	rsync -rltzve ssh --exclude '.svn' ${KARMA_DIR}/src/* $(REMOTE_USERNAME)@$(REMOTE_HOST):~/KARMA/src/
+	rsync -rltzve ssh --exclude '.svn' ${KARMA_DIR}/include/* $(REMOTE_USERNAME)@$(REMOTE_HOST):~/KARMA/include/
+	@echo $(REMOTE_USERNAME)"@"$(REMOTE_HOST)":~/KARMA/ is now synced."
+
+#
+# doxygen documentation
+#
+doc: $(KARMA_LIBRARY)
+	$(DOXYGEN_EXE) doc/Doxyfile
+	@rm -rf doc/html/doxygen/*.map
+	@rm -rf doc/html/doxygen/*.md5
+	@rm -rf doc/html/doxygen/*.dot
+	@rm -rf doc/html/doxygen/formula.repository
+
+#
+# Dependencies
+#
+dependencies:
+	touch Make.dep
+	@rm Make.dep
+	@$(perl) ${KARMA_DIR}/contrib/bin/make_dependencies.pl -I. $(foreach i, $(wildcard ${KARMA_DIR}/include/*), -I$(i)) "-So" "-K${KARMA_DIR}" ${KARMA_SRC} > Make.dep
+	@echo "Updated Dependencies."
+
+
+# include the dependency list
+include Make.dep

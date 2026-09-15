@@ -9,10 +9,18 @@ commits   = 157
 tests     = 948          # TEST(/TEST_F( macros; custom-main() MPI harnesses not counted
 loc       = 31452        # include src fortran python
 tag       = "fuse-import-0"   # to be cut at the freeze
-imports   = []           # filled at S0.3
+imported  = "upstream/soma"          # byte-identical; proven by tools/verify-import.py
+diverged  = []                       # paths transformed in fuse since import
+superseded = []                      # upstream paths fuse has replaced
 open      = ["X2 rules_channel.cpp overlaps()", "X5 validate.hpp abs(lag)", "X7 soma_c.h int32_t comm",
              "R31 overlapping rank sets refused (untested)",
              "untested refusals: E-RT-TRANSPORT-{NOMPI,COMM,XREGION,OVERLAP}, E-RT-REMAP-HALO, E-MESH-HALO-GEOMETRY"]
+# Measured in fuse at import, 2026-09-15, Apple clang 21 / CMake 4.3.2:
+#   Debug, no MPI / no MOAB: configures, builds with 0 errors, ctest 770/770 pass
+#   (4 skipped: MOAB-dependent, reporting themselves as skipped). 3.3 s.
+#   Needs -DCMAKE_POLICY_VERSION_MINIMUM=3.5 when it must fetch yaml-cpp 0.8.0,
+#   whose CMakeLists predates CMake 3.5; a system yaml-cpp avoids the fetch.
+verified  = "770/770 ctest, Debug tier-0-equivalent, in fuse superbuild"
 
 [karma]
 path      = "/Users/mahadevan/Code/AI/coupling/karma"
@@ -22,5 +30,19 @@ date      = "2026-09-15"
 commits   = 374
 ctest     = 203
 tag       = "fuse-import-0"
-imports   = []           # filled at S0.3 (Stage-1 spine + FEM/transfer areas for physics-kit)
-open      = ["PETSc-backed native component unregistered", "distorted-pyramid quadrature unverified (KNOWN_ISSUES #1)"]
+imported  = "upstream/karma"         # byte-identical; proven by tools/verify-import.py
+diverged  = []                       # paths transformed in fuse since import
+superseded = []                      # upstream paths fuse has replaced
+open      = ["PETSc-backed native component unregistered",
+             "distorted-pyramid quadrature unverified (KNOWN_ISSUES #1)",
+             "DEBUG BUILD IS BROKEN: src/numerics/spatial/karma_domain.C:32,54,77 uses unqualified Hexagon/Unstructured from the scoped enum KARMA::DomainShape, inside assert(). All three verified presets (release, asan=RelWithDebInfo, no-exceptions) define NDEBUG, so the line has never been compiled. The assertion is also vacuous: (Type != Hexagon || Type != Unstructured) is a tautology. Fix when porting, as a real invariant (I6), not an assert."]
+# Measured in fuse at import, 2026-09-15, Apple clang 21 / CMake 4.3.2, with
+# MOAB 5.6.0 + PETSc + MPICH from /opt:
+#   Release: configures, builds with 0 errors, 418 ctest entries registered
+#   (bare -DCMAKE_BUILD_TYPE=Release; the `release` preset adds examples and
+#   registers more -- do not compare this number with a preset-built one).
+#   Debug: does NOT compile, see the last `open` entry.
+#   Its suite was NOT run here: this sandbox cannot initialize MPI at all, so
+#   every PETSc/MPI test fails for environmental reasons. Running it is a host
+#   action and the only way to satisfy the S0 exit for this parent.
+verified  = "Release builds clean, 418 tests registered; suite run pending on a host with working MPI"

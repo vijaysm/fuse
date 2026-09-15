@@ -1,0 +1,374 @@
+# KARMA: K(C)ode for Analysis of Reactor and other Multiphysics Applications
+# Copyright (C) 2007-2011  Vijay S Mahadevan
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published
+# by the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program; if not, write to the Free Software Foundation,
+# Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#
+
+###############################################################################
+#
+# The Make.common file defines the build environment for KARMA
+# and all its helper applications.  If you want to build an application
+# that makes use of KARMA it is highly recommended that you include
+# this file in your project's Makefile.
+#
+###############################################################################
+
+
+###############################################################################
+# the following lines will be replaced by the output 
+# of ./configure
+hosttype              = @host@
+hostos                = @host_os@
+
+KARMA_CXX           = @CXX@
+KARMA_CC            = @CC@
+KARMA_F77           = @F77@
+KARMA_LDFLAGS       = @LDFLAGS@
+KARMA_DLFLAGS       =
+KARMA_LIBS          = @LIBS@
+KARMA_FLIBS         = @FLIBS@
+KARMA_FFLAGS        = @FFLAGS@
+GXX-VERSION         = @GXX_VERSION@
+KARMA_CXXSHAREDFLAG = @CXXSHAREDFLAG@
+KARMA_CSHAREDFLAG   = @CXXSHAREDFLAG@
+KARMA_RPATHFLAG     = @RPATHFLAG@
+
+# Petsc iterative solvers for parallel and uniprocessor
+# applications
+enable-petsc         = @enablepetsc@
+petsc-version        = @petscversion@
+petsc-major-minor    = @petscmajorminor@
+# PETSC_ARCH           = @PETSC_ARCH@
+# PETSC_DIR            = @PETSC_DIR@
+
+# Slepc for eigen value analysis
+enable-slepc         = @enableslepc@
+# SLEPC_DIR            = @SLEPC_DIR@
+# We should probably snoop SLEPc to see if the following
+# libraries are configured. Enable this in ./configure
+#ARPACK_LIB           = @ARPACK_LIB@
+#PRIMME_LIB           = @PRIMME_LIB@
+
+# The location of the mesh library
+enable-libmesh         = @enablelibMesh@
+# LIBMESH_DIR = @LIBMESH_DIR@
+
+enable-dealII         = @enabledealII@
+# DEALII_DIR = @DEALII_DIR@
+
+enable-csvparser      = @enablecsvparser@
+enable-tinyxpath      = @enabletinyxpath@
+enable-cpptest        = @enablecpptest@
+enable-elemental        = @enableelemental@
+
+#enable-xuthus         = @enablexuthus@
+#ifeq ($(enable-xuthus),yes)
+#	XUTHUS_DIR            = @XUTHUS_DIR@
+#	XUTHUS_LIBS           = @XUTHUS_LIBS@
+#endif
+
+# include the library options determined by configure.  This will
+# set the variables INCLUDE and LIBS that we will need to build and
+# link with the library.
+ifeq ($(enable-libmesh),yes)
+	include $(LIBMESH_DIR)/Make.common
+endif
+
+# MPI configuration (always snooped from PETSc)
+MPI_IMPL             = @MPI_IMPL@
+MPI_INCLUDE          = @MPI_INCLUDES_PATHS@
+MPI_LIB              = @MPI_LIBS_PATHS@ @MPI_LIBS@
+
+# Doxygen for generating documentation
+DOXYGEN_EXE		     = @DOXYGEN@
+
+# Perl script for generating make.depend
+perl                 = @PERL@
+
+###############################################################################
+
+# Set the option to determine if shared libraries will be built
+enable-shared := @enableshared@
+
+###############################################################################
+
+#
+# Figure out the compilation mode based on the
+# environment variable MODE.
+opt-mode   := off
+debug-mode := off
+prof-mode  := off
+
+#
+# If the user has no environment variable
+# called METHOD, he gets optimized mode.
+ifeq (x$(METHOD),x)
+  METHOD := opt
+endif
+
+#
+# If METHOD=opt, compile in optimized mode.
+ifeq ($(METHOD),opt)
+  opt-mode := on
+  mode     := "optimized"
+endif
+
+#
+# If METHOD=dbg, compile in debug mode.
+ifeq ($(METHOD),dbg)
+  debug-mode := on
+  mode       := "debug"
+endif
+
+#
+# If METHOD=prof, compile in profiling mode
+ifeq ($(METHOD),pro)
+  prof-mode     := on
+  mode          := "profiling"
+  enable-shared := no
+endif
+
+# The file extension for object files.
+# foo.C is compiled to foo.$(obj-suffix)
+obj-suffix := @host@.$(METHOD).o
+
+#
+# Define the right lib-extension for shared libraries
+static_libext := .a
+shared_libext := .so
+ifeq ($(findstring darwin,$(hostos)),darwin)
+  shared_libext := .dylib
+endif
+
+libext := $(static_libext)
+ifeq ($(enable-shared),yes) 
+  libext := $(shared_libext)
+endif
+###############################################################################
+
+
+
+###############################################################################
+# Compiler flags, different for optimized, debug, and profiler modes.
+ifeq ($(opt-mode),on)
+  KARMA_CXXFLAGS += -DNDEBUG @CXXFLAGS_OPT@
+  KARMA_CFLAGS   += -DNDEBUG @CFLAGS_OPT@
+endif
+
+
+ifeq ($(debug-mode),on)
+  KARMA_CXXFLAGS += -DDEBUG @CXXFLAGS_DBG@ -g
+  KARMA_CFLAGS   += -DDEBUG @CFLAGS_DBG@ 
+endif
+
+
+ifeq ($(prof-mode),on)
+  KARMA_CXXFLAGS += -DNDEBUG @CXXFLAGS_OPT@ @PROFILING_FLAGS@
+  KARMA_CFLAGS   += -DNDEBUG @CFLAGS_OPT@ @PROFILING_FLAGS@ 
+  KARMA_LIBS += @PROFILING_FLAGS@
+endif
+
+###############################################################################
+
+
+###############################################################################
+# The KARMA library
+#
+KARMA_LIBRARY_DIR := ${KARMA_DIR}/lib/$(hosttype)_$(METHOD)
+
+KARMA_TEST_DIR  = ${KARMA_DIR}/test
+
+KARMA_LIBRARY     := $(KARMA_LIBRARY_DIR)/libKARMA$(static_libext)
+ifeq ($(enable-shared),yes) 
+  KARMA_LIBRARY   := $(KARMA_LIBRARY_DIR)/libKARMA$(shared_libext)
+  KARMA_DLFLAGS += $(KARMA_RPATHFLAG)$(KARMA_LIBRARY_DIR)
+  KARMA_LIBCXXFLAGS = -fPIC -shared 
+  KARMA_LIBS += -L$(KARMA_LIBRARY_DIR) -lKARMA 
+else
+  KARMA_LIBS += $(KARMA_LIBRARY)
+endif
+
+#  Additional options: -Weffc++ 
+KARMA_CXXFLAGS += -fpermissive -DLOG_MAX_LEVEL=3 -Wno-unused $(libmesh_CXXFLAGS)
+
+###############################################################################
+
+
+
+###############################################################################
+# now configuration for KARMA includes, sources, etc...
+
+#
+# The include directories for KARMA
+KARMA_INCLUDE  =	-I${KARMA_DIR}/include \
+					-I${KARMA_DIR}/include/base \
+					-I${KARMA_DIR}/include/enums \
+					-I${KARMA_DIR}/include/io \
+					-I${KARMA_DIR}/include/utils \
+					-I${KARMA_DIR}/include/parallel \
+					-I${KARMA_DIR}/include/numerics/algebra \
+					-I${KARMA_DIR}/include/numerics/linear \
+					-I${KARMA_DIR}/include/numerics/linear/preconditioner \
+					-I${KARMA_DIR}/include/numerics/nonlinear \
+					-I${KARMA_DIR}/include/numerics/eigen \
+					-I${KARMA_DIR}/include/numerics/spatial \
+					-I${KARMA_DIR}/include/numerics/temporal \
+					-I${KARMA_DIR}/include/numerics \
+					-I${KARMA_DIR}/include/physics \
+					-I${KARMA_DIR}/include/physics/base \
+					-I${KARMA_DIR}/include/physics/common \
+					-I${KARMA_DIR}/include/interface \
+					-I${KARMA_DIR}/include/physics/ode-system \
+					-I${KARMA_DIR}/include/physics/diffusion-reaction \
+					-I${KARMA_DIR}/include/physics/advection-reaction
+
+#
+# all source files in KARMA LIBRARY
+KARMA_SRC 	 =	$(wildcard ${KARMA_DIR}/src/base/*.C) \
+				$(wildcard ${KARMA_DIR}/src/enums/*.C) \
+				$(wildcard ${KARMA_DIR}/src/utils/*.C) \
+				$(wildcard ${KARMA_DIR}/src/parallel/*.C) \
+				$(wildcard ${KARMA_DIR}/src/numerics/algebra/*.C) \
+				$(wildcard ${KARMA_DIR}/src/numerics/linear/*.C) \
+				$(wildcard ${KARMA_DIR}/src/numerics/linear/preconditioner/*.C) \
+				$(wildcard ${KARMA_DIR}/src/numerics/nonlinear/*.C) \
+				$(wildcard ${KARMA_DIR}/src/numerics/eigen/*.C) \
+				$(wildcard ${KARMA_DIR}/src/numerics/spatial/*.C) \
+				$(wildcard ${KARMA_DIR}/src/numerics/temporal/*.C) \
+				$(wildcard ${KARMA_DIR}/src/numerics/*.C) \
+				$(wildcard ${KARMA_DIR}/src/io/*.C) \
+				$(wildcard ${KARMA_DIR}/src/physics/*.C) \
+				$(wildcard ${KARMA_DIR}/src/physics/base/*.C) \
+				$(wildcard ${KARMA_DIR}/src/physics/common/*.C) \
+				$(wildcard ${KARMA_DIR}/src/physics/common/impls/*.C) \
+				$(wildcard ${KARMA_DIR}/src/interface/*.C) \
+				$(wildcard ${KARMA_DIR}/src/physics/ode-system/*.C) \
+				$(wildcard ${KARMA_DIR}/src/physics/diffusion-reaction/*.C) \
+				$(wildcard ${KARMA_DIR}/src/physics/advection-reaction/*.C)
+
+# object files
+KARMA_OBJS = $(addprefix ${KARMA_DIR}/.build/$(METHOD)/, $(notdir $(KARMA_SRC:.C=.o)))
+
+#
+# Package-specific stuff
+
+#
+# Contributed source & libraries
+KARMA_CONTRIB_INCLUDE  =	-I${KARMA_DIR}/contrib/include/ 
+KARMA_CONTRIB_LIBS  =	-L${KARMA_DIR}/contrib/lib $(KARMA_RPATHFLAG)${KARMA_DIR}/contrib/lib
+
+ifeq ($(enable-csvparser),yes) 
+  KARMA_CONTRIB_LIBS  +=	${KARMA_DIR}/contrib/lib/libcsvparser$(libext)
+endif
+
+ifeq ($(enable-tinyxpath),yes) 
+  KARMA_CONTRIB_LIBS  +=	${KARMA_DIR}/contrib/lib/libtinyxpath$(libext)
+endif
+
+ifeq ($(enable-cpptest),yes) 
+  KARMA_CONTRIB_LIBS  +=	${KARMA_DIR}/contrib/lib/libcpptest$(libext)
+  KARMA_CONTRIB_INCLUDE +=	-I${KARMA_DIR}/contrib/cpptest/src/
+endif
+
+ifeq ($(enable-elemental),yes) 
+  KARMA_CONTRIB_LIBS  +=	${KARMA_DIR}/contrib/lib/libelemental$(libext)
+endif
+
+ifeq ($(enable-xuthus),yes) 
+  KARMA_CONTRIB_INCLUDE  +=	-I$(XUTHUS_DIR)
+  KARMA_CONTRIB_LIBS  +=	$(XUTHUS_LIBS)
+endif
+
+#
+# LibMesh source & libraries
+KARMA_INCLUDE += $(KARMA_CONTRIB_INCLUDE)
+
+# Finally, Append the linker flags to the libraries
+KARMA_LIBS += $(KARMA_DLFLAGS) $(KARMA_LDFLAGS)
+KARMA_LIBS += $(KARMA_CONTRIB_LIBS)
+
+# Add libMesh specific directories, libs to the list
+ifeq ($(enable-libmesh),yes) 
+  KARMA_INCLUDE += $(libmesh_INCLUDE) 
+  KARMA_LIBS += $(libmesh_LIBS)
+endif
+
+###############################################################################
+
+
+###############################################################################
+# Build rules
+
+##################################
+# C++ rules                      #
+##################################
+
+#
+# How to compile C++
+#
+${KARMA_DIR}/.build/$(METHOD)/%.o : %.C
+	@echo "Compiling C++ (in "$(mode)" mode) "$<"..."
+ifeq ($(KARMA_TEST_FLAG),yes)
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+else
+	@$(KARMA_CXX) $(KARMA_CXXFLAGS) $(KARMA_LIBCXXFLAGS) $(KARMA_INCLUDE) -c $< -o $@
+endif
+
+###############################################################################
+
+###############################################################################
+# Target build rules:
+
+# all:: karma_test
+
+bin-suffix := -${METHOD}
+# If the user is using METHOD=opt,
+# the utility programs gets no suffix
+
+ifeq (x${METHOD},xopt)
+  bin-suffix := 
+endif
+
+
+###############################################################################
+# INDIVIDUAL TEST SUITES FOR EACH PHYSICS
+###############################################################################
+# karma_test: ${KARMA_TEST_DIR}/hello_test.C $(KARMA_LIBRARY) 
+# 	@echo "Building test: "$(patsubst %.C, %$(bin-suffix), $(addprefix bin/, $(notdir $<)))"..."
+# 	@$(KARMA_CXX) $(KARMA_INCLUDE) $(KARMA_TEST_INCLUDE) $(KARMA_CXXFLAGS) $< -o $(patsubst %.C, %$(bin-suffix), $(addprefix bin/, $(notdir $<))) $(KARMA_LIBS) 
+
+
+KARMA_DEPENDENCY_OBJS = $(KARMA_OBJS)
+ifeq ($(enable-libmesh),yes) 
+	KARMA_DEPENDENCY_OBJS += $(mesh_library)
+endif
+
+# create KARMA LIBRARY
+$(KARMA_LIBRARY): $(KARMA_DEPENDENCY_OBJS)
+	@echo "Current directory: " $(PWD) "..."
+	@$(shell mkdir -p $(KARMA_LIBRARY_DIR))
+ifeq ($(enable-shared),yes)
+	# shared KARMA library
+	@echo "Linking "$@
+	@$(KARMA_CXX) $(KARMA_CXXSHAREDFLAG) -o $(KARMA_LIBRARY) $(KARMA_DEPENDENCY_OBJS) $(KARMA_LDFLAGS)
+else
+	# static KARMA library
+	@echo "Linking "$@
+	@$(AR) rv $(KARMA_LIBRARY) $(KARMA_DEPENDENCY_OBJS)
+endif
+
+# Local Variables:
+# mode: makefile
+# End:

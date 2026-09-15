@@ -1,0 +1,71 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "debug",
+      "displayName": "Debug (asserts active)",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release (-DNDEBUG, asserts compiled out)",
+      "binaryDir": "${sourceDir}/build-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "asan",
+      "displayName": "ASan+UBSan (undefined behaviour that passing tests cannot see)",
+      "binaryDir": "${sourceDir}/build-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all",
+        "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
+      }
+    },
+    {
+      "name": "lowfive",
+      "displayName": "LowFive HDF5-VOL transport (Task 8.4)",
+      "binaryDir": "${sourceDir}/build-lowfive",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "SOMA_ENABLE_LOWFIVE": "ON",
+        "CMAKE_PREFIX_PATH": "/opt/lowfive-shared;/opt/hdf5-shared"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "debug", "configurePreset": "debug" },
+    { "name": "release", "configurePreset": "release" },
+    { "name": "asan", "configurePreset": "asan" },
+    { "name": "lowfive", "configurePreset": "lowfive" }
+  ],
+  "testPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "lowfive",
+      "configurePreset": "lowfive",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

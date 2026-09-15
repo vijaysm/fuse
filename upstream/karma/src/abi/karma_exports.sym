@@ -1,0 +1,9 @@
+# Mach-O export list for the stable C ABI. Nothing outside this list is a
+# compatibility promise; `abi_export_test` asserts the exported set equals it.
+_karma_abi_version
+_karma_abi_supported_capabilities
+_karma_negotiate_abi
+_karma_status_name
+_karma_diagnostic_set
+_karma_validate_field_table
+_karma_plugin_query
