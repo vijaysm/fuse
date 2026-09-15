@@ -4,8 +4,8 @@
 
 #include <algorithm>
 #include <fstream>
+#include <iterator>
 #include <optional>
-#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -672,11 +672,16 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
 }
 
 Result<CouplingGraph> load_yaml_file(const std::string& path) {
-  std::ifstream in{path};
+  // Read with iterators rather than `ss << in.rdbuf()`: the invariant gate
+  // rejects <iostream>/<sstream> in library code (locale-dependent formatting is
+  // how a diagnostic's text changes with the environment), and a whole-file read
+  // needs neither. `std::ifstream` itself is fine -- it is file IO, not
+  // formatted output.
+  std::ifstream in{path, std::ios::binary};
   if (!in) return Failure{"E-YAML-IO", "cannot open '" + path + "'"};
-  std::ostringstream ss;
-  ss << in.rdbuf();
-  return from_yaml(ss.str());
+  const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  if (in.bad()) return Failure{"E-YAML-IO", "error while reading '" + path + "'"};
+  return from_yaml(text);
 }
 
 }  // namespace fuse
