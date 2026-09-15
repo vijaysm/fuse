@@ -42,3 +42,17 @@ which inverts the dependency — the layering gate rejected the port on the firs
 types (`ConvergenceMeasure`, `ConvergenceCriterion`, `AccelKind`, `AccelConfig`, and the
 `fuse::Converged` named constructors) now live in `fuse/model/iteration.hpp`; the algorithms (the
 `Accelerator` implementations) stay in `fuse/num`, depending on the model rather than the reverse.
+
+## Two splits the merge forced
+
+**`ir` may not ask the runtime what a component can do.** Upstream, the checkpoint rule both *derived*
+which values an iteration region must carry and *verified* that the components present could carry
+them — the second half including `runtime/component.hpp` from an `ir` source. Deriving the set is a
+pure function of the coupling graph and is provable before anything runs; asking whether the
+components can honour it is a property of the run. The derivation stays in `src/ir/checkpoint.cpp`;
+`verify_rollback_support` and `verify_iteration_region` moved to `src/runtime/checkpoint_support.cpp`.
+The layering gate is what caught it.
+
+**Iteration configuration is model, its algorithms are `num`.** `ConvergenceCriterion` and the
+accelerator settings are things a *graph* declares, so they live in `include/fuse/model/iteration.hpp`
+and the compiler can read them without linking a solver. The algorithms that consume them stay above.

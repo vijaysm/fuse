@@ -83,3 +83,16 @@ Provider ABI
 
 Participant ABI
 : A foreign code with its own time loop calls FUSE.
+
+## Canonical text and the locale
+
+Any function whose output is byte-compared — the IR dump, the plan dump, a golden file — must not
+format through the host's locale. `fmt` gives that by construction and is the default. A stream-based
+writer must pin `std::locale::classic()` on **every** stream it creates, and `tools/check-invariants.py`
+verifies the pin rather than banning `<sstream>`: banning the header would have been satisfied by a
+file formatting through `std::to_string`, which reads the global locale and would have passed silently.
+
+Tightening that check immediately found a real defect carried in from the parent: the IR dump pinned
+the locale for doubles and left the two dump builders unpinned, so their integer output would be
+digit-grouped (`coupler_elements=16.384`) under a grouping locale — in a file whose bytes three golden
+tests compare.
