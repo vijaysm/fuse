@@ -44,3 +44,14 @@ TEST(TimeLevel, ToStringShowsAnchorOffsetAndIterate) {
 TEST(TimeLevel, ToStringOmitsZeroOffsetAndCurrentIterate) {
   EXPECT_EQ(TimeLevel::current().to_string(), "[WindowEnd, k]");
 }
+
+// Found by the mutation gate: nothing compared two levels differing only in
+// iterate. The current and previous iterate of the same time ARE different
+// levels -- that distinction is the whole point of the field.
+TEST(TimeLevel, EqualityDistinguishesEveryField) {
+  EXPECT_NE(TimeLevel::current(), TimeLevel::previous_iterate());
+  EXPECT_NE(TimeLevel::current(), TimeLevel::lagged(1));
+  EXPECT_NE(TimeLevel::lagged(1), TimeLevel::lagged(2));
+  EXPECT_NE(TimeLevel::current(), (TimeLevel{Anchor::Absolute, Rational{0}, 0}));
+  EXPECT_EQ(TimeLevel::previous_iterate(), (TimeLevel{Anchor::WindowEnd, Rational{0}, -1}));
+}

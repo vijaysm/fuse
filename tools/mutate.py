@@ -57,7 +57,9 @@ def main() -> int:
             path.write_text(original.replace(m["old"], m["new"], 1))
             build = sh(["cmake", "--build", str(args.build_dir), "-j", str(args.jobs), "--target", m["target"]])
             if build != 0:
-                verdict, note = "KILLED", "does not compile"
+                # A mutant that does not compile has proved nothing about the
+                # tests. It is the MUTATION that is defective; rewrite it.
+                verdict, note = "INCONCLUSIVE", "mutant does not compile; rewrite it"
             else:
                 run = sh(["ctest", "--test-dir", str(args.build_dir), "-R", f"^{m['test']}$"])
                 verdict, note = ("KILLED", "test fails") if run != 0 else ("SURVIVED", "suite still green")
