@@ -248,3 +248,16 @@ TEST(Rational, AbiRecordContractViolationsAreRefusedNotRepaired) {
   ASSERT_FALSE(zero.ok());
   EXPECT_EQ(zero.error().code, "E-BASE-TIME-DENOMINATOR");
 }
+
+// Found by the mutation gate: ComparisonNeeds128BitIntermediate above only
+// fails under UBSan -- both products overflow int64 by the same 2^64, so the
+// wrapped values keep their order and a naive int64 comparison passes it.
+// Here exactly ONE product overflows: 2^62 * 3 wraps negative while 1 * 1 does
+// not, so a 64-bit comparison inverts the answer.
+TEST(Rational, ComparisonIsExactWhenOnlyOneCrossProductOverflows) {
+  const Rational big{std::int64_t{1} << 62, 1};
+  const Rational small{1, 3};
+  EXPECT_GT(big, small);
+  EXPECT_LT(small, big);
+  EXPECT_LT((Rational{-(std::int64_t{1} << 62), 1}), (Rational{-1, 3}));
+}
