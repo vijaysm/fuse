@@ -48,6 +48,11 @@ fuse_resolve_dependencies()
 add_subdirectory(src)
 if(FUSE_ENABLE_TESTS)
   add_subdirectory(test)
+
+  # Regenerates a frozen golden file. A tool, not a test: golden data is never
+  # rewritten by the suite that checks it (tools/src/write_golden_descriptor.cpp).
+  add_executable(fuse_write_golden_descriptor tools/src/write_golden_descriptor.cpp)
+  target_link_libraries(fuse_write_golden_descriptor PRIVATE fuse::model)
 endif()
 
 message(STATUS "")
