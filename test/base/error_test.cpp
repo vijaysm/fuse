@@ -5,6 +5,8 @@
 #include <gtest/gtest.h>
 
 #include <cstdlib>
+#include <exception>
+#include <stdexcept>
 #include <string>
 
 namespace {
@@ -222,6 +224,76 @@ TEST(ErrorDeath, AbortPolicyAbortsWithReport) {
   set_error_policy(p);
   EXPECT_DEATH(FUSE_THROW(InvalidArgument, "fatal by policy"), "fatal by policy");
   set_error_policy(ErrorPolicy{});
+}
+
+// ------------------------------------------------- the terminate handler
+
+// An uncaught fuse::Error must not die silently: the handler is the last place a
+// report can still be printed, and on a parallel run it is often the only output a
+// rank produces.
+//
+// These call std::terminate() from inside a catch block rather than letting an
+// exception escape, because GoogleTest wraps a death-test statement in its own
+// try/catch and reports an escaping exception instead of letting it reach
+// std::terminate. The handler's contract is "report whatever exception is in
+// flight", and current_exception() is exactly that inside a catch -- so this
+// exercises the handler itself. What it does NOT cover is the runtime's own path
+// from an uncaught throw to std::terminate, which is the language's behaviour and
+// not ours.
+TEST(ErrorDeath, TerminateHandlerReportsAnUncaughtFuseError) {
+  EXPECT_DEATH(
+      {
+        fuse::install_terminate_handler();
+        fuse::ErrorPolicy p;
+        p.on_error = fuse::OnError::Throw;  // no report before the throw
+        fuse::set_error_policy(p);
+        try {
+          FUSE_REFUSE("E-TEST-UNCAUGHT", "nobody catches this");
+        } catch (...) {
+          std::terminate();
+        }
+      },
+      "terminating on uncaught fuse::Error");
+}
+
+TEST(ErrorDeath, TerminateHandlerReportCarriesCodeLocationAndBacktrace) {
+  EXPECT_DEATH(
+      {
+        fuse::install_terminate_handler();
+        fuse::ErrorPolicy p;
+        p.on_error = fuse::OnError::Throw;
+        fuse::set_error_policy(p);
+        try {
+          FUSE_THROW(fuse::IoError, "cannot open {}", "mesh.h5m");
+        } catch (...) {
+          std::terminate();
+        }
+      },
+      "IoError.*cannot open mesh.h5m(.|\\n)*error_test.cpp(.|\\n)*backtrace:");
+}
+
+// A foreign exception reaching terminate still gets a trace -- captured in the
+// handler rather than at the throw site, which is the best available.
+TEST(ErrorDeath, TerminateHandlerReportsANonFuseException) {
+  EXPECT_DEATH(
+      {
+        fuse::install_terminate_handler();
+        try {
+          throw std::runtime_error("from somebody else");
+        } catch (...) {
+          std::terminate();
+        }
+      },
+      "uncaught exception: from somebody else(.|\\n)*backtrace:");
+}
+
+TEST(ErrorDeath, TerminateHandlerIsIdempotent) {
+  EXPECT_DEATH(
+      {
+        for (int i = 0; i < 3; ++i) fuse::install_terminate_handler();
+        std::terminate();
+      },
+      "std::terminate called without an active exception");
 }
 
 }  // namespace

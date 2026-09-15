@@ -7,10 +7,6 @@
 # header-only; version.cpp is the one translation unit. Depends on nothing
 # above Tier 0: Kokkos is linked for the execution-space vocabulary later
 # layers need in their public headers, fmt for Diagnostics formatting.
-# Exceptions on by default; OFF turns every FUSE_THROW/ASSERT/REFUSE into
-# report-then-abort after the same on-error policy has run. Types and call
-# sites are unconditional either way (docs/dev/conventions.md).
-option(FUSE_ENABLE_EXCEPTIONS "Throw C++ exceptions on errors (OFF = report and abort)" ON)
 set(FUSE_HAVE_MPI    ${FUSE_ENABLE_MPI})
 set(FUSE_HAVE_KOKKOS ON)
 set(FUSE_HAVE_MOAB   ${FUSE_ENABLE_MOAB})
@@ -35,6 +31,9 @@ target_compile_features(fuse-coupler-base PUBLIC cxx_std_20)
 # call sites are unconditional either way (docs/dev/conventions.md).
 target_link_libraries(fuse-coupler-base PUBLIC ${CMAKE_DL_LIBS})
 target_link_libraries(fuse-coupler-base PUBLIC Kokkos::kokkos fmt::fmt)
+# Prepended so the resolved Kokkos's headers precede every other prefix on the
+# command line (cmake/FuseDependencies.cmake explains the shadowing hazard).
+target_include_directories(fuse-coupler-base BEFORE PUBLIC ${FUSE_KOKKOS_INCLUDE_DIRS})
 set_target_properties(fuse-coupler-base PROPERTIES
   CXX_VISIBILITY_PRESET hidden      # the C ABI exports one symbol per ABI; nothing else leaks
   VISIBILITY_INLINES_HIDDEN ON
