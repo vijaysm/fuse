@@ -47,6 +47,7 @@ add_library(fuse-coupler-model
   model/semantics.cpp
   model/transform.cpp
   model/compatibility.cpp
+  model/multiscale.cpp
 )
 add_library(fuse::model ALIAS fuse-coupler-model)
 target_link_libraries(fuse-coupler-model PUBLIC fuse::base)
