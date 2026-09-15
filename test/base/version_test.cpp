@@ -1,10 +1,10 @@
+#include <gtest/gtest.h>
+
 #include "fuse/base/version.hpp"
 
 #include <array>
 #include <cstdint>
-#include <iostream>
 #include <limits>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -12,10 +12,9 @@ namespace
 {
 using namespace fuse;
 
-void require(bool condition, const char* message)
-{
-    if (!condition) throw std::runtime_error(message);
-}
+// Upstream's require() threw on the first failure; EXPECT_TRUE reports every
+// failure in the function (U2) and the message travels with it unchanged.
+void require(bool condition, const char* message) { EXPECT_TRUE(condition) << message; }
 
 void parsing()
 {
@@ -107,9 +106,5 @@ void compatibility()
 }
 }
 
-int main()
-{
-    try { parsing(); compatibility(); }
-    catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
-    return 0;
-}
+TEST(SemanticVersion, Parsing) { parsing(); }
+TEST(SemanticVersion, Compatibility) { compatibility(); }

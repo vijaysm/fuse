@@ -6,6 +6,8 @@
 #include <variant>
 #include <vector>
 
+#include <fmt/format.h>
+
 namespace fuse {
 
 enum class Severity { Warning, Error };
@@ -66,17 +68,22 @@ class Diagnostics {
   std::vector<Diagnostic> items_;
 };
 
-struct Error {
+/// The payload of a failed Result: what went wrong, as data. Distinct from
+/// fuse::Error (error.hpp), which is the exception. A boundary converts one
+/// into the other; nothing else should hold both.
+struct Failure {
   std::string code;
   std::string message;
 };
 
-/// Recoverable-error return type. Programmer errors use FUSE_ASSERT instead.
+/// Recoverable-error return type for the execution boundary (U2). Invariants
+/// use FUSE_ASSERT; deliberate refusals inside a call use FUSE_REFUSE; a
+/// Result carries the outcome OUT of validate()/run()/initialize().
 template <class T>
 class Result {
  public:
   Result(T value) : storage_(std::move(value)) {}       // NOLINT: implicit
-  Result(Error error) : storage_(std::move(error)) {}   // NOLINT: implicit
+  Result(Failure error) : storage_(std::move(error)) {}   // NOLINT: implicit
 
   [[nodiscard]] bool ok() const noexcept {
     return std::holds_alternative<T>(storage_);
@@ -85,26 +92,57 @@ class Result {
 
   [[nodiscard]] T&       value()       { return std::get<T>(storage_); }
   [[nodiscard]] const T& value() const { return std::get<T>(storage_); }
-  [[nodiscard]] const Error& error() const { return std::get<Error>(storage_); }
+  [[nodiscard]] const Failure& error() const { return std::get<Failure>(storage_); }
 
  private:
-  std::variant<T, Error> storage_;
+  std::variant<T, Failure> storage_;
 };
 
 template <>
 class Result<void> {
  public:
-  Result(Error error) : error_(std::move(error)), ok_(false) {}  // NOLINT
+  Result(Failure error) : error_(std::move(error)), ok_(false) {}  // NOLINT
   static Result<void> success() { return Result<void>{}; }
 
   [[nodiscard]] bool ok() const noexcept { return ok_; }
   explicit operator bool() const noexcept { return ok_; }
-  [[nodiscard]] const Error& error() const noexcept { return error_; }
+  [[nodiscard]] const Failure& error() const noexcept { return error_; }
 
  private:
   Result() = default;
-  Error error_{};
+  Failure error_{};
   bool  ok_ = true;
 };
 
 }  // namespace fuse
+
+// Diagnostics format through fmt (U2), so `fmt::print("{}", r.diagnostics())`
+// is the whole reporting story and no caller re-implements to_string().
+template <>
+struct fmt::formatter<fuse::Diagnostic> : fmt::formatter<std::string_view> {
+  template <class Ctx>
+  auto format(const fuse::Diagnostic& d, Ctx& ctx) const {
+    auto out = fmt::format_to(ctx.out(), "{} {}: {}",
+                              d.severity == fuse::Severity::Error ? "error" : "warning", d.code, d.message);
+    if (!d.context.empty()) out = fmt::format_to(out, " [{}]", d.context);
+    return out;
+  }
+};
+
+template <>
+struct fmt::formatter<fuse::Diagnostics> : fmt::formatter<std::string_view> {
+  template <class Ctx>
+  auto format(const fuse::Diagnostics& ds, Ctx& ctx) const {
+    auto out = ctx.out();
+    for (const auto& d : ds.items()) out = fmt::format_to(out, "{}\n", d);
+    return out;
+  }
+};
+
+template <>
+struct fmt::formatter<fuse::Failure> : fmt::formatter<std::string_view> {
+  template <class Ctx>
+  auto format(const fuse::Failure& f, Ctx& ctx) const {
+    return fmt::format_to(ctx.out(), "[{}] {}", f.code, f.message);
+  }
+};

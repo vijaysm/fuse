@@ -1,18 +1,22 @@
 #pragma once
 
-#include <cassert>
 #include <cstdint>
 #include <string>
+
+#include "fuse/base/error.hpp"
 
 namespace fuse {
 
 namespace detail {
 /// Exponent sums/differences are computed in `int` (promoted from int8_t)
-/// and only narrowed back to int8_t once. This assert catches the wraparound
-/// case in debug builds; real physical exponents are single digits, so this
-/// is a belt-and-braces check, not something expected to ever fire.
-constexpr std::int8_t narrow_exponent(int v) noexcept {
-  assert(v >= -128 && v <= 127 && "Units: exponent overflowed int8_t range");
+/// and only narrowed back to int8_t once. An exponent outside int8_t is
+/// unrepresentable, and an unrepresentable unit must be refused, not wrapped
+/// (I4) -- in every build (I6). Upstream had an assert here, which vanished
+/// under NDEBUG and let a Release build wrap silently.
+constexpr std::int8_t narrow_exponent(int v) {
+  if (v < -128 || v > 127) {
+    FUSE_REFUSE("E-BASE-UNITS-EXPONENT", "dimension exponent {} does not fit int8_t", v);
+  }
   return static_cast<std::int8_t>(v);
 }
 }  // namespace detail
@@ -30,7 +34,7 @@ struct Units {
 
   friend constexpr bool operator==(const Units&, const Units&) = default;
 
-  [[nodiscard]] constexpr Units operator*(const Units& o) const noexcept {
+  [[nodiscard]] constexpr Units operator*(const Units& o) const {
     using detail::narrow_exponent;
     return Units{narrow_exponent(length + o.length),
                  narrow_exponent(mass + o.mass),
@@ -41,7 +45,7 @@ struct Units {
                  narrow_exponent(luminosity + o.luminosity)};
   }
 
-  [[nodiscard]] constexpr Units operator/(const Units& o) const noexcept {
+  [[nodiscard]] constexpr Units operator/(const Units& o) const {
     using detail::narrow_exponent;
     return Units{narrow_exponent(length - o.length),
                  narrow_exponent(mass - o.mass),
