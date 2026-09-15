@@ -35,6 +35,7 @@ dev/invariants
 dev/layering
 dev/conventions
 dev/testing
+dev/debugging
 dev/porting
 dev/abi-design
 dev/roadmap

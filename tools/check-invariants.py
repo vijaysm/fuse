@@ -17,6 +17,8 @@ from pathlib import Path
 ABI_TIME = re.compile(r"\b(double|float)\b[^;,)]*\b\w*(time|dt|step_size|interval|when)\w*\b",
                       re.IGNORECASE)
 ASSERT_CALL = re.compile(r"^\s*assert\s*\(")
+# A bare `throw std::…` bypasses the on-error policy and carries no backtrace.
+BARE_THROW = re.compile(r"\bthrow\s+std::[a-z_]+\s*[({]")
 IOSTREAM = re.compile(r"^\s*#\s*include\s*<(iostream|sstream|iomanip)>")
 PRINTF = re.compile(r"\b(printf|fprintf|sprintf|snprintf|puts|fputs)\s*\(")
 
@@ -54,9 +56,15 @@ def scan(root: Path) -> list[str]:
                         f"{rel}:{lineno}: `assert` is never an invariant (I6); "
                         f"throw or return a status"
                     )
+                if BARE_THROW.search(line):
+                    problems.append(f"{rel}:{lineno}: bare `throw std::…`; use FUSE_THROW so the "
+                                    f"on-error policy runs and a backtrace is captured")
                 if IOSTREAM.match(line):
                     problems.append(f"{rel}:{lineno}: iostream in library code; use fmt")
-                if PRINTF.search(line) and "Kokkos::printf" not in line and not device_file:
+                # The failure path may not throw or allocate, so it writes with fputs and
+                # says so on the line; the marker is the review trail, not a loophole.
+                raw_ok = "NOLINT(fuse-raw-io)" in line
+                if PRINTF.search(line) and "Kokkos::printf" not in line and not device_file and not raw_ok:
                     problems.append(f"{rel}:{lineno}: printf in library code; use fmt")
     return problems
 

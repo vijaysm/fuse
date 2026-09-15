@@ -57,6 +57,7 @@ FORBIDDEN_PUBLIC = re.compile(
 LEGACY_INCLUDE = re.compile(r'^\s*#\s*include\s*[<"](upstream/|soma/|coupling/karma_|karma_[a-z_]+\.h)')
 LEGACY_NAMESPACE = re.compile(r'\bnamespace\s+(soma|KARMA)\b|\b(soma|KARMA)::')
 LEGACY_TYPE_PREFIX = re.compile(r'\bKARMA[A-Z][A-Za-z0-9]*\b')
+LEGACY_MACRO = re.compile(r'\b(KARMA|SOMA)_[A-Z_]+\b')
 LEGACY_FILE_PREFIX = re.compile(r'^(karma_|soma_)')
 LEGACY_EXTENSION = {".C"}
 # --- end rules
@@ -144,6 +145,8 @@ def check_legacy(root: Path) -> list[str]:
                     problems.append(f"{rel}:{lineno}: legacy namespace 'soma'/'KARMA' (I11)")
                 if LEGACY_TYPE_PREFIX.search(line):
                     problems.append(f"{rel}:{lineno}: 'KARMA*' type prefix; the namespace carries it (I11)")
+                if LEGACY_MACRO.search(line):
+                    problems.append(f"{rel}:{lineno}: legacy macro prefix; use FUSE_* (I11)")
     return problems
 
 
