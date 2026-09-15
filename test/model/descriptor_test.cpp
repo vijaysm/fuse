@@ -1,3 +1,5 @@
+#include <algorithm>
+
 #include <gtest/gtest.h>
 #include <fuse/model/coupling_graph.hpp>
 #include <fuse/model/descriptor.hpp>
@@ -141,4 +143,56 @@ TEST(Descriptor, RegionsFieldIsIntentionallyNotSerialized) {
   const_cast<fuse::ComponentDecl&>(b.component(fuse::ComponentId{0}))
       .regions.push_back(fuse::RegionId{0});
   EXPECT_EQ(serialize(a), serialize(b));
+}
+
+// ---- merge transforms (S2.1/S2.3) --------------------------------------
+
+// The waist is version 3 with magic "FUSE": two changes from the inherited v2,
+// both invisible to a reader that guessed. A v2 buffer must be REFUSED, not
+// reinterpreted -- its unit records are two rationals shorter, so every field
+// after the first unit would decode as plausible garbage.
+TEST(Descriptor, InheritedVersionIsRefusedNotReinterpreted) {
+  CouplingGraph g;
+  const auto c = g.add_component({.name = "fluid", .ranks = {0, 1}, .interval = fuse::Rational{1}});
+  (void)g.add_field(c, {.name = "q", .units = u::kWatt});
+  auto bytes = serialize(g);
+
+  auto v2 = bytes;
+  fuse::detail::Writer w;
+  w.pod(fuse::kGraphMagic);
+  w.pod(std::uint32_t{2});
+  const auto prefix = w.take();
+  std::copy(prefix.begin(), prefix.end(), v2.begin());
+  const auto rejected = deserialize(v2);
+  ASSERT_FALSE(rejected.ok());
+  EXPECT_EQ(rejected.error().code, "E-DESC-VERSION");
+
+  auto foreign = bytes;
+  foreign[0] = std::byte{0xFF};
+  EXPECT_FALSE(deserialize(foreign).ok());
+}
+
+// A unit's affine part is part of the unit. Kilopascal and pascal have identical
+// dimensions and must not hash alike; that is what the merge added scale for.
+TEST(Descriptor, UnitScaleAndOffsetAreInTheCanonicalBytes) {
+  const auto encode = [](fuse::Units units) {
+    CouplingGraph g;
+    const auto c = g.add_component({.name = "fluid", .ranks = {0, 1}, .interval = fuse::Rational{1}});
+    (void)g.add_field(c, {.name = "p", .units = units});
+    return serialize(g);
+  };
+  fuse::Units pascal{.mass = 1, .length = -1, .time = -2};
+  fuse::Units kilopascal = pascal;
+  kilopascal.scale = fuse::Rational{1000};
+  fuse::Units celsius{.temperature = 1};
+  celsius.offset = fuse::Rational{27315, 100};
+
+  EXPECT_NE(encode(pascal), encode(kilopascal));
+  EXPECT_NE(encode(fuse::Units{.temperature = 1}), encode(celsius));
+  EXPECT_EQ(encode(kilopascal), encode(kilopascal));
+
+  const auto round_tripped = deserialize(encode(kilopascal));
+  ASSERT_TRUE(round_tripped.ok());
+  EXPECT_EQ(round_tripped.value().field(fuse::FieldId{0}).units.scale, fuse::Rational{1000});
+  EXPECT_TRUE(round_tripped.value().field(fuse::FieldId{0}).units.same_dimensions(pascal));
 }

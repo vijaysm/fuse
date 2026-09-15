@@ -123,3 +123,54 @@ old = "  throw error;  // the DYNAMIC type E, so `catch (const Refusal&)` works"
 new = "  throw static_cast<Error&>(error);"
 target = "fuse_base_error_test"
 test = "base.error"
+
+# ----------------------------------------------------------------- model
+[[mutation]]
+id = "descriptor-drops-unit-scale"
+area = "model"
+describes = "the canonical bytes omit the affine unit part, so kPa hashes as Pa"
+file = "include/fuse/model/descriptor.hpp"
+old = "    rational(u.scale); rational(u.offset);"
+new = "    // (affine part dropped)"
+target = "fuse_model_descriptor_test"
+test = "model.descriptor"
+
+[[mutation]]
+id = "descriptor-accepts-any-version"
+area = "model"
+describes = "the version gate waves through a descriptor from the inherited format"
+file = "include/fuse/model/descriptor.hpp"
+old = "inline constexpr std::uint32_t kGraphVersion = 3u;"
+new = "inline constexpr std::uint32_t kGraphVersion = 2u;"
+target = "fuse_model_descriptor_test"
+test = "model.descriptor"
+
+[[mutation]]
+id = "units-affine-multiply-allowed"
+area = "model"
+describes = "multiplying an affine unit silently drops the offset"
+file = "include/fuse/base/units.hpp"
+old = "    if (!is_linear() || !o.is_linear()) {\n      FUSE_REFUSE(\"E-BASE-UNITS-AFFINE\", \"cannot multiply an affine unit (offset {}, {})\","
+new = "    if (false) {\n      FUSE_REFUSE(\"E-BASE-UNITS-AFFINE\", \"cannot multiply an affine unit (offset {}, {})\","
+target = "fuse_model_semantics_test"
+test = "model.semantics"
+
+[[mutation]]
+id = "semantics-zero-scale-accepted"
+area = "model"
+describes = "a zero unit scale validates, turning every converted value into zero"
+file = "src/model/semantics.cpp"
+old = "    if (field.units.scale == Rational{0})"
+new = "    if (false)"
+target = "fuse_model_semantics_test"
+test = "model.semantics"
+
+[[mutation]]
+id = "semantics-hash-ignores-order"
+area = "model"
+describes = "the semantic hash mixes bytes commutatively, so reordering is invisible"
+file = "src/model/semantics.cpp"
+old = "std::uint64_t semantic_hash(std::span<const std::byte> bytes) noexcept"
+new = "std::uint64_t semantic_hash_unused(std::span<const std::byte> bytes) noexcept"
+target = "fuse_model_semantics_test"
+test = "model.semantics"

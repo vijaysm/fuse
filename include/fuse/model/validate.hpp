@@ -128,10 +128,24 @@ inline Rational channel_window(const CouplingGraph& g, const Channel& ch) {
     const auto& tf = g.field(ch.target);
     ++writers[ch.target.value()];
 
-    if (!(sf.units == tf.units)) {
+    // Two distinct failures, distinguished because they have different remedies.
+    // Different DIMENSIONS is an incompatibility: nothing can transfer watts into
+    // kelvin. Same dimensions with a different SCALE or OFFSET is a conversion the
+    // compiler can insert, and inferring it is S2.4's transform work -- until that
+    // lands the channel is REFUSED with its own code, because silently ignoring the
+    // affine part would apply a factor-of-1000 error to every step and pass every
+    // dimensional check while doing it.
+    if (!sf.units.same_dimensions(tf.units)) {
       d.add(Severity::Error, "E-UNITS",
             "unit mismatch: source '" + sf.name + "' is " + sf.units.to_string() +
                 ", target '" + tf.name + "' is " + tf.units.to_string(), ctx);
+    } else if (!(sf.units == tf.units)) {
+      d.add(Severity::Error, "E-UNITS-SCALE",
+            "same dimensions but a different affine unit: source '" + sf.name +
+                "' has scale " + sf.units.scale.to_string() + " offset " +
+                sf.units.offset.to_string() + ", target '" + tf.name + "' has scale " +
+                tf.units.scale.to_string() + " offset " + tf.units.offset.to_string() +
+                "; automatic unit scaling is not inferred yet (S2.4)", ctx);
     }
     if (!same_shape(sf, tf)) {
       d.add(Severity::Error, "E-SHAPE",

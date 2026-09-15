@@ -320,3 +320,40 @@ TEST(Validate, DeserializedGraphWithBadWindowComponentDoesNotThrowAndReportsBadR
   EXPECT_NO_THROW(d = validate(restored.value()));
   EXPECT_TRUE(has_code(d, "E-BAD-REF")) << d.to_string();
 }
+
+// ---- merge transform (S2.1) --------------------------------------------
+
+// Dimensions and the affine part are separate verdicts with separate codes: one
+// is an incompatibility, the other a conversion not yet inferred.
+TEST(Validate, DimensionMismatchAndScaleMismatchAreDistinctVerdicts) {
+  const auto graph_with = [](fuse::Units source_units, fuse::Units target_units) {
+    fuse::CouplingGraph g;
+    const auto a = g.add_component({.name = "a", .ranks = {0, 1}, .interval = fuse::Rational{1}});
+    const auto b = g.add_component({.name = "b", .ranks = {1, 1}, .interval = fuse::Rational{1}});
+    const auto sf = g.add_field(a, {.name = "q", .units = source_units, .intent = fuse::Intent::Provides});
+    const auto tf = g.add_field(b, {.name = "q", .units = target_units, .intent = fuse::Intent::Requires});
+    (void)g.add_channel("q", sf, tf);
+    return g;
+  };
+  const auto codes = [](const fuse::Diagnostics& d) {
+    std::vector<std::string> out;
+    for (const auto& item : d.items()) out.push_back(item.code);
+    return out;
+  };
+
+  fuse::Units pascal{.mass = 1, .length = -1, .time = -2};
+  fuse::Units kilopascal = pascal;
+  kilopascal.scale = fuse::Rational{1000};
+
+  const auto same = codes(fuse::validate(graph_with(pascal, pascal)));
+  EXPECT_EQ(std::count(same.begin(), same.end(), "E-UNITS"), 0);
+  EXPECT_EQ(std::count(same.begin(), same.end(), "E-UNITS-SCALE"), 0);
+
+  const auto scaled = codes(fuse::validate(graph_with(pascal, kilopascal)));
+  EXPECT_EQ(std::count(scaled.begin(), scaled.end(), "E-UNITS-SCALE"), 1);
+  EXPECT_EQ(std::count(scaled.begin(), scaled.end(), "E-UNITS"), 0);
+
+  const auto wrong = codes(fuse::validate(graph_with(pascal, fuse::Units{.temperature = 1})));
+  EXPECT_EQ(std::count(wrong.begin(), wrong.end(), "E-UNITS"), 1);
+  EXPECT_EQ(std::count(wrong.begin(), wrong.end(), "E-UNITS-SCALE"), 0);
+}
