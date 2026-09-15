@@ -28,8 +28,13 @@ sphinx-build -W -b html docs docs/_build/html
 
 ## Status
 
-S0: repository and tooling. No library source yet; nothing is imported. The
-[roadmap](docs/dev/roadmap.md) lists the stages and their exit conditions, and every page marks
+**S0, in progress.** Both parents are frozen, tagged `fuse-import-0`, and imported byte-identical
+under [`upstream/`](upstream/) — 693 files, verified against the tagged trees by
+`tools/verify-import.py`. The imported coupler suite runs from this repository's own superbuild:
+**770/770 passing** in the dependency-free configuration. The imported spine tree builds clean in
+Release; running its suite needs a host with working MPI. No `fuse::` source yet — that starts at S1.
+
+The [roadmap](docs/dev/roadmap.md) lists the stages and their exit conditions, and every page marks
 whether a capability is verified, implemented, designed only, a deliberate refusal, or absent.
 
 ## License
