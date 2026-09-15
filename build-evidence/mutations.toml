@@ -211,7 +211,7 @@ area = "model"
 describes = "overlap accounting quietly succeeds when coverage happens to sum to one"
 file = "src/model/multiscale.cpp"
 old = "  return not_implemented(\"E-MULTISCALE-NOT-IMPLEMENTED\", \"overlap accounting\","
-new = "  if (spec.total() == Rational{1}) return {}; return not_implemented(\"E-MULTISCALE-NOT-IMPLEMENTED\", \"overlap accounting\","
+new = "  if (spec.total() == Rational{1}) return Result<void>::success(); return not_implemented(\"E-MULTISCALE-NOT-IMPLEMENTED\", \"overlap accounting\","
 target = "fuse_model_multiscale_test"
 test = "model.multiscale"
 
