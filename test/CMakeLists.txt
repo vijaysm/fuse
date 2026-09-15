@@ -47,7 +47,7 @@ foreach(t rational units error)
 endforeach()
 
 # ---------------------------------------------------------------- model
-foreach(t semantics transform compatibility multiscale region component channel coupling_graph descriptor)
+foreach(t semantics transform compatibility multiscale connect region component channel coupling_graph descriptor)
   fuse_add_gtest(model ${t})
 endforeach()
 fuse_add_gtest(model validate THROWS)

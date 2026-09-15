@@ -174,3 +174,53 @@ old = "    return bytes::fnv1a(bytes);"
 new = "    std::uint64_t sum = 0; for (auto b : bytes) sum += static_cast<std::uint8_t>(b); return sum;"
 target = "fuse_model_semantics_test"
 test = "model.semantics"
+
+[[mutation]]
+id = "validate-inserts-scale-silently"
+area = "model"
+describes = "an inferred unit scale is applied without being reported to the user"
+file = "include/fuse/model/validate.hpp"
+old = "      if (step.kind == OperatorKind::UnitScale && !step.explicitly_requested) {"
+new = "      if (false) {"
+target = "fuse_model_validate_test"
+test = "model.validate"
+
+[[mutation]]
+id = "connect-policy-ignored"
+area = "model"
+describes = "the site policy forbidding automatic unit scaling is ignored"
+file = "include/fuse/model/connect.hpp"
+old = "  request.allow_automatic_unit_scale = policy.allow_automatic_unit_scale;"
+new = "  request.allow_automatic_unit_scale = true;"
+target = "fuse_model_validate_test"
+test = "model.validate"
+
+[[mutation]]
+id = "gll-order-collapses-to-vertex"
+area = "model"
+describes = "a high-order GLL coefficient is reported as a vertex value"
+file = "include/fuse/model/connect.hpp"
+old = "      s.location = f.order <= 1 ? SemanticLocation::Vertex"
+new = "      s.location = true ? SemanticLocation::Vertex"
+target = "fuse_model_connect_test"
+test = "model.connect"
+
+[[mutation]]
+id = "multiscale-overlap-permissive"
+area = "model"
+describes = "overlap accounting quietly succeeds when coverage happens to sum to one"
+file = "src/model/multiscale.cpp"
+old = "  return not_implemented(\"E-MULTISCALE-NOT-IMPLEMENTED\", \"overlap accounting\","
+new = "  if (spec.total() == Rational{1}) return {}; return not_implemented(\"E-MULTISCALE-NOT-IMPLEMENTED\", \"overlap accounting\","
+target = "fuse_model_multiscale_test"
+test = "model.multiscale"
+
+[[mutation]]
+id = "surrogate-ood-not-required"
+area = "model"
+describes = "a surrogate with no out-of-distribution detector passes review"
+file = "src/model/multiscale.cpp"
+old = "  if (contract.ood_detector.empty()) {"
+new = "  if (false) {"
+target = "fuse_model_multiscale_test"
+test = "model.multiscale"
