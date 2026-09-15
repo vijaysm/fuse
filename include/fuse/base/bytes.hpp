@@ -74,6 +74,18 @@ void put_rational(std::vector<std::byte>& out, const RationalLike& value)
     put_signed(out, value.denominator, 8);
 }
 
+/** fuse::Rational spells its terms num()/den(); encode it as its ABI record so
+ * the bytes are the same whichever side of the ABI produced them. Declared
+ * here as a template on the accessor shape so this header still names no
+ * FUSE type (it stays usable by the dependency-free encoders). */
+template <class RationalType>
+    requires requires(const RationalType& r) { r.num(); r.den(); }
+void put_rational(std::vector<std::byte>& out, const RationalType& value)
+{
+    put_signed(out, value.num(), 8);
+    put_signed(out, value.den(), 8);
+}
+
 /** FNV-1a, 64-bit. Not a cryptographic hash and not used as one: it turns a
  * canonical byte string into a comparable identity, and the canonical bytes
  * remain the authority whenever two identities collide.

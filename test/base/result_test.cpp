@@ -4,7 +4,7 @@
 #include <string>
 
 using fuse::Diagnostics;
-using fuse::Error;
+using fuse::Failure;
 using fuse::Result;
 using fuse::Severity;
 
@@ -16,7 +16,7 @@ TEST(Result, HoldsValue) {
 }
 
 TEST(Result, HoldsError) {
-  Result<int> r{Error{"E001", "bad thing"}};
+  Result<int> r{Failure{"E001", "bad thing"}};
   ASSERT_FALSE(r.ok());
   EXPECT_EQ(r.error().code, "E001");
   EXPECT_EQ(r.error().message, "bad thing");
@@ -55,4 +55,24 @@ TEST(Diagnostics, ToStringMentionsEveryCode) {
   EXPECT_NE(s.find("E42"), std::string::npos);
   EXPECT_NE(s.find("boom"), std::string::npos);
   EXPECT_NE(s.find("here"), std::string::npos);
+}
+
+// ---- transforms (S1.3) --------------------------------------------------
+
+TEST(Diagnostics, FormatsThroughFmtIdenticallyToToString) {
+  Diagnostics d;
+  d.add(Severity::Error, "E1", "first", "ctx");
+  d.add(Severity::Warning, "W2", "second");
+  EXPECT_EQ(fmt::format("{}", d), d.to_string());
+  EXPECT_EQ(fmt::format("{}", d.items()[0]), "error E1: first [ctx]");
+  EXPECT_EQ(fmt::format("{}", Failure{"E9", "gone"}), "[E9] gone");
+}
+
+// U2: one terminal call reports EVERY defect, in insertion order. The
+// first-failure behaviour is the thing being excluded.
+TEST(Diagnostics, AccumulatesEveryDefectInOrder) {
+  Diagnostics d;
+  for (int i = 0; i < 5; ++i) d.add(Severity::Error, fmt::format("E{}", i), "defect");
+  ASSERT_EQ(d.size(), 5u);
+  for (int i = 0; i < 5; ++i) EXPECT_EQ(d.items()[static_cast<std::size_t>(i)].code, fmt::format("E{}", i));
 }

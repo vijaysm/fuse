@@ -31,8 +31,6 @@ function(fuse_add_upstream_main_test layer name)
 endfunction()
 
 # ---------------------------------------------------------------- base
-foreach(t config rational time_level result ids units error)
+foreach(t config rational time_level result ids units error version bytes)
   fuse_add_gtest(base ${t})
 endforeach()
-fuse_add_upstream_main_test(base version)
-fuse_add_upstream_main_test(base bytes)

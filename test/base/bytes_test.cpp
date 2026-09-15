@@ -1,8 +1,8 @@
+#include <gtest/gtest.h>
+
 #include "fuse/base/bytes.hpp"
 
 #include <cstdint>
-#include <iostream>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -10,10 +10,9 @@ namespace
 {
 using namespace fuse;
 
-void require(bool condition, const char* message)
-{
-    if (!condition) throw std::runtime_error(message);
-}
+// Upstream's require() threw on the first failure; EXPECT_TRUE reports every
+// failure in the function (U2) and the message travels with it unchanged.
+void require(bool condition, const char* message) { EXPECT_TRUE(condition) << message; }
 
 std::vector<std::byte> of(std::initializer_list<unsigned> values)
 {
@@ -127,20 +126,19 @@ void the_hash_depends_on_every_byte_and_on_order()
 }
 }
 
-int main()
-{
-    try
-    {
-        integers_are_little_endian_and_fixed_width();
-        signed_values_use_two_s_complement();
-        the_length_prefix_prevents_adjacent_collisions();
-        rationals_encode_both_terms();
-        the_hash_depends_on_every_byte_and_on_order();
-    }
-    catch (const std::exception& error)
-    {
-        std::cerr << error.what() << '\n';
-        return 1;
-    }
-    return 0;
+TEST(Bytes, IntegersAreLittleEndianAndFixedWidth) { integers_are_little_endian_and_fixed_width(); }
+TEST(Bytes, SignedValuesUseTwoSComplement) { signed_values_use_two_s_complement(); }
+TEST(Bytes, TheLengthPrefixPreventsAdjacentCollisions) { the_length_prefix_prevents_adjacent_collisions(); }
+TEST(Bytes, RationalsEncodeBothTerms) { rationals_encode_both_terms(); }
+TEST(Bytes, TheHashDependsOnEveryByteAndOnOrder) { the_hash_depends_on_every_byte_and_on_order(); }
+
+// Transform (S1.4): a fuse::Rational encodes exactly as its ABI record does.
+#include "fuse/base/rational.hpp"
+TEST(Bytes, FuseRationalEncodesAsItsAbiRecord) {
+    std::vector<std::byte> as_rational, as_record;
+    const fuse::Rational r{-3, 4};
+    bytes::put_rational(as_rational, r);
+    bytes::put_rational(as_record, r.to_record());
+    EXPECT_EQ(as_rational, as_record);
+    EXPECT_EQ(as_rational.size(), 16u);
 }

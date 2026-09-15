@@ -51,3 +51,19 @@ TEST(Units, ToStringRoundTripsFamiliarNames) {
   EXPECT_NE(w.find("m^2"), std::string::npos);
   EXPECT_NE(w.find("s^-3"), std::string::npos);
 }
+
+// Transform (S1.2): the upstream `assert` on exponent narrowing is now a
+// refusal that fires in every build, including Release. 100 * 100 = 200 does
+// not fit int8_t; upstream wrapped it to -56 under NDEBUG.
+TEST(Units, ExponentOverflowIsRefusedInEveryBuild) {
+  fuse::ErrorPolicy quiet;
+  quiet.on_error = fuse::OnError::Throw;
+  fuse::set_error_policy(quiet);
+  const Units big{.length = 100};
+  EXPECT_THROW((void)(big * big), fuse::Refusal);
+  const Units low{.length = -100};
+  EXPECT_THROW((void)(low * low), fuse::Refusal);   // -200
+  EXPECT_THROW((void)(big / low), fuse::Refusal);   // 200
+  EXPECT_EQ((Units{.length = 60} * Units{.length = 67}).length, 127);  // boundary is representable
+  fuse::set_error_policy(fuse::ErrorPolicy{});
+}

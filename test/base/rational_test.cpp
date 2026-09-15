@@ -1,5 +1,17 @@
 #include <gtest/gtest.h>
 
+#include "fuse/base/rational.hpp"
+
+namespace {
+// Expected throws should not print reports to stderr.
+const bool kQuiet = [] {
+  fuse::ErrorPolicy p;
+  p.on_error = fuse::OnError::Throw;
+  fuse::set_error_policy(p);
+  return true;
+}();
+}  // namespace
+
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
@@ -144,7 +156,7 @@ TEST(Rational, Int64MinDenominatorNormalisesWithoutUB) {
 
 // gcd_rational(Rational(INT64_MIN,1), Rational(INT64_MIN,1)) has true gcd
 // |INT64_MIN| == 2^63, which does not fit in int64_t (max is 2^63 - 1).
-// Every member operator throws std::logic_error rather than silently narrow
+// Every member operator throws fuse::Refusal rather than silently narrow
 // an unrepresentable reduced value; gcd_rational must honour the same
 // contract instead of letting static_cast<int64_t>(2^63) wrap to INT64_MIN.
 // Enforcement is unconditional (detail::check_fits_i64 throws regardless of
@@ -156,7 +168,7 @@ TEST(Rational, Int64MinDenominatorNormalisesWithoutUB) {
 TEST(Rational, GcdRationalThrowsOnUnrepresentableGcd) {
   constexpr std::int64_t kMin = std::numeric_limits<std::int64_t>::min();
   EXPECT_THROW((void)gcd_rational(Rational(kMin, 1), Rational(kMin, 1)),
-               std::logic_error);
+               fuse::Refusal);
 }
 
 // The ordinary, representable case must keep working: a gcd that is large
@@ -181,7 +193,7 @@ TEST(Rational, GcdRationalHandlesLargeButRepresentableGcd) {
 TEST(Rational, GcdRationalThrowsOnUnrepresentableDenominatorLcm) {
   EXPECT_THROW(
       (void)gcd_rational(Rational(1, 3'037'000'493LL), Rational(1, 3'037'000'507LL)),
-      std::logic_error);
+      fuse::Refusal);
 }
 
 // The companion positive case: large coprime denominators whose lcm still
@@ -198,7 +210,7 @@ TEST(Rational, GcdRationalIsExactForLargeRepresentableDenominatorLcm) {
 // must reject it unconditionally (not just via assert(), which -DNDEBUG
 // compiles out).
 TEST(Rational, ZeroDenominatorConstructorThrows) {
-  EXPECT_THROW((void)Rational(1, 0), std::logic_error);
+  EXPECT_THROW((void)Rational(1, 0), fuse::InvalidArgument);
 }
 
 // Same reasoning as the constructor guard: dividing by a zero Rational is
@@ -206,5 +218,33 @@ TEST(Rational, ZeroDenominatorConstructorThrows) {
 // and must throw regardless of build configuration.
 TEST(Rational, DivisionByZeroRationalThrows) {
   Rational a{1, 2};
-  EXPECT_THROW(a /= Rational(0), std::logic_error);
+  EXPECT_THROW(a /= Rational(0), fuse::InvalidArgument);
+}
+
+// ---- transforms (S1.1) --------------------------------------------------
+
+TEST(Rational, ZeroDenominatorIsAnInvalidArgument) {
+  EXPECT_THROW(Rational(1, 0), fuse::InvalidArgument);
+  EXPECT_THROW(Rational(1, 2) / Rational(0), fuse::InvalidArgument);
+}
+
+TEST(Rational, AbiRecordRoundTrips) {
+  const Rational r{-6, 8};
+  const fuse::ExactTimeRecord rec = r.to_record();
+  EXPECT_EQ(rec, (fuse::ExactTimeRecord{-3, 4}));
+  const auto back = Rational::from_record(rec);
+  ASSERT_TRUE(back.ok());
+  EXPECT_EQ(back.value(), r);
+}
+
+TEST(Rational, AbiRecordContractViolationsAreRefusedNotRepaired) {
+  const auto unreduced = Rational::from_record({2, 4});
+  ASSERT_FALSE(unreduced.ok());
+  EXPECT_EQ(unreduced.error().code, "E-BASE-TIME-UNREDUCED");
+  const auto negative = Rational::from_record({1, -2});
+  ASSERT_FALSE(negative.ok());
+  EXPECT_EQ(negative.error().code, "E-BASE-TIME-DENOMINATOR");
+  const auto zero = Rational::from_record({1, 0});
+  ASSERT_FALSE(zero.ok());
+  EXPECT_EQ(zero.error().code, "E-BASE-TIME-DENOMINATOR");
 }

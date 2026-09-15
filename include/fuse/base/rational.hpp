@@ -4,8 +4,10 @@
 #include <cstdint>
 #include <limits>
 #include <numeric>
-#include <stdexcept>
 #include <string>
+
+#include "fuse/base/error.hpp"
+#include "fuse/base/result.hpp"
 
 namespace fuse {
 
@@ -32,10 +34,21 @@ constexpr bool fits_i64(Int128 v) noexcept {
 /// being rejected. Same reasoning as OperatorDAG::add_node's SSA check.
 constexpr void check_fits_i64(Int128 v, const char* what) {
   if (!fits_i64(v)) {
-    throw std::logic_error(what);
+    FUSE_REFUSE("E-BASE-RATIONAL-OVERFLOW", "{}", what);
   }
 }
 }  // namespace detail
+
+/// The C-ABI shape of a Rational: two int64 in the order every ABI record,
+/// the byte writer and the Fortran shim agree on. Layout-identical to the
+/// spine's `karma_exact_time` and to the `fuse_time` the participant ABI
+/// will declare, so a Rational crosses the boundary as this and nothing else.
+struct ExactTimeRecord {
+  std::int64_t numerator = 0;
+  std::int64_t denominator = 1;
+  friend constexpr bool operator==(const ExactTimeRecord&, const ExactTimeRecord&) = default;
+};
+static_assert(sizeof(ExactTimeRecord) == 16 && alignof(ExactTimeRecord) == 8);
 
 /// Exact rational time. Spec §4.3: floating-point time accumulation would
 /// destroy slab decomposition over long runs, so every time quantity in FUSE
@@ -61,7 +74,7 @@ class Rational {
 
   constexpr Rational(std::int64_t n, std::int64_t d) {
     if (d == 0) {
-      throw std::logic_error("Rational::Rational: denominator must be non-zero");
+      FUSE_THROW(InvalidArgument, "Rational::Rational: denominator must be non-zero");
     }
     const Reduced128 r = reduce(n, d);
     detail::check_fits_i64(r.n, "Rational::Rational: numerator overflow after reduction");
@@ -113,7 +126,7 @@ class Rational {
   }
   constexpr Rational& operator/=(const Rational& o) {
     if (o.num_ == 0) {
-      throw std::logic_error("Rational::operator/=: division by zero Rational");
+      FUSE_THROW(InvalidArgument, "Rational::operator/=: division by zero Rational");
     }
     const detail::Int128 n = static_cast<detail::Int128>(num_) * o.den_;
     const detail::Int128 d = static_cast<detail::Int128>(den_) * o.num_;
@@ -151,6 +164,28 @@ class Rational {
   [[nodiscard]] std::string to_string() const {
     if (den_ == 1) return std::to_string(num_);
     return std::to_string(num_) + "/" + std::to_string(den_);
+  }
+
+  /// To the ABI record. Always reduced with a positive denominator, because
+  /// this object always is.
+  [[nodiscard]] constexpr ExactTimeRecord to_record() const noexcept { return {num_, den_}; }
+
+  /// From an ABI record produced by foreign code. The contract says reduced
+  /// and positive-denominator; a record that is not is a contract violation
+  /// on the producer's side and is refused rather than repaired (I4) -- a
+  /// coupler that quietly reduces 2/4 hides a bug in the code it is coupling.
+  [[nodiscard]] static Result<Rational> from_record(ExactTimeRecord rec) {
+    if (rec.denominator <= 0) {
+      return Failure{"E-BASE-TIME-DENOMINATOR",
+                     "exact time record has non-positive denominator " + std::to_string(rec.denominator)};
+    }
+    const Rational reduced{rec.numerator, rec.denominator};
+    if (reduced.num_ != rec.numerator || reduced.den_ != rec.denominator) {
+      return Failure{"E-BASE-TIME-UNREDUCED",
+                     "exact time record " + std::to_string(rec.numerator) + "/" +
+                         std::to_string(rec.denominator) + " is not in lowest terms"};
+    }
+    return reduced;
   }
 
  private:
