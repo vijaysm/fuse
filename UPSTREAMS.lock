@@ -16,6 +16,15 @@ superseded = [                       # upstream paths fuse has replaced (S1, fus
   "include/soma/base/result.hpp",   "include/soma/base/ids.hpp", "include/soma/base/units.hpp",
   "test/unit/rational_test.cpp", "test/unit/time_level_test.cpp", "test/unit/result_test.cpp",
   "test/unit/ids_test.cpp", "test/unit/units_test.cpp",
+  # S2, fuse::model
+  "include/soma/graph/field_spec.hpp", "include/soma/graph/region.hpp",
+  "include/soma/graph/component.hpp", "include/soma/graph/channel.hpp",
+  "include/soma/graph/coupling_graph.hpp", "include/soma/graph/validate.hpp",
+  "include/soma/graph/descriptor.hpp",
+  "include/soma/num/convergence.hpp",          # -> include/fuse/model/iteration.hpp
+  "include/soma/num/accelerator.hpp",          # config -> model/iteration.hpp, interface -> fuse/num
+  "test/unit/region_test.cpp", "test/unit/component_test.cpp", "test/unit/channel_test.cpp",
+  "test/unit/coupling_graph_test.cpp", "test/unit/validate_test.cpp", "test/unit/descriptor_test.cpp",
 ]
 retire_at = "S6"                     # subtree deleted whole when every path is superseded
 retired   = ""                       # "<date> @ <fuse sha>" once done
@@ -44,6 +53,10 @@ superseded = [                       # upstream paths fuse has replaced (S1, fus
   "include/coupling/karma_byte_writer.h",
   "include/base/karma_exceptions.h",           # -> include/fuse/base/error.hpp
   "test/semantic_version_test.C", "test/byte_writer_test.C",
+  # S2, fuse::model
+  "include/coupling/karma_semantics.h",        # -> include/fuse/model/semantics.hpp
+  "src/coupling/karma_semantics.C",            # less its rational arithmetic
+  "test/coupling_semantics_test.C",            # 5 of 9 groups; see the port's header comment
 ]
 retire_at = "S8"                     # subtree deleted whole when every path is superseded
 retired   = ""                       # "<date> @ <fuse sha>" once done
