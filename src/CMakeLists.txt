@@ -38,3 +38,17 @@ set_target_properties(fuse-coupler-base PROPERTIES
   CXX_VISIBILITY_PRESET hidden      # the C ABI exports one symbol per ABI; nothing else leaks
   VISIBILITY_INLINES_HIDDEN ON
 )
+
+# ---------------------------------------------------------------- model
+# The semantic model, the N-ary coupling graph, its validation and the canonical
+# descriptor -- the narrow waist. Header-heavy by design: everything the waist
+# declares must be inspectable by a front-end without linking the runtime.
+add_library(fuse-coupler-model
+  model/semantics.cpp
+)
+add_library(fuse::model ALIAS fuse-coupler-model)
+target_link_libraries(fuse-coupler-model PUBLIC fuse::base)
+set_target_properties(fuse-coupler-model PROPERTIES
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN ON
+)

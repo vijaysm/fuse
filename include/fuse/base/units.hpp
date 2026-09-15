@@ -4,6 +4,7 @@
 #include <string>
 
 #include "fuse/base/error.hpp"
+#include "fuse/base/rational.hpp"
 
 namespace fuse {
 
@@ -30,7 +31,19 @@ struct Units {
   std::int8_t current = 0;      // A
   std::int8_t temperature = 0;  // K
   std::int8_t amount = 0;       // mol
-  std::int8_t luminosity = 0;   // cd
+  std::int8_t luminosity = 0;
+
+  /// Affine part, merged in from the spine's unit type. A quantity's unit is
+  /// `scale * (value) + offset` in SI base units, EXACTLY: kilopascal is
+  /// `scale = 1000`, degrees Celsius is `scale = 1, offset = 27315/100`. Exact
+  /// rationals, not doubles, because a unit conversion applied every coupling
+  /// step must not drift, and because the descriptor's canonical bytes must be
+  /// reproducible across compilers (I1's reasoning, applied to units).
+  ///
+  /// Dimensional CHECKING ignores these (`same_dimensions`); a mismatch in them
+  /// is a transform to infer, not an incompatibility.
+  Rational scale{1};
+  Rational offset{0};   // cd
 
   friend constexpr bool operator==(const Units&, const Units&) = default;
 
@@ -55,6 +68,16 @@ struct Units {
                  narrow_exponent(amount - o.amount),
                  narrow_exponent(luminosity - o.luminosity)};
   }
+
+  /// Exponents only: what "are these the same physical quantity?" means.
+  [[nodiscard]] constexpr bool same_dimensions(const Units& o) const noexcept {
+    return length == o.length && mass == o.mass && time == o.time && current == o.current &&
+           temperature == o.temperature && amount == o.amount && luminosity == o.luminosity;
+  }
+
+  /// True when the unit is a pure scaling of SI base units (no additive offset),
+  /// which is the only case where multiplication and division are meaningful.
+  [[nodiscard]] constexpr bool is_linear() const noexcept { return offset == Rational{0}; }
 
   [[nodiscard]] constexpr bool is_dimensionless() const noexcept {
     return *this == Units{};
