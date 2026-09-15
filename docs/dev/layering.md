@@ -33,3 +33,12 @@ behind one directory and one build option each.
 
 The script runs as a CI gate on every push. A new layer or a new permitted dependency is a one-line
 change there, reviewed like any other.
+
+## A boundary the gate moved
+
+`model` declares WHAT was asked for; `num` computes it. The inherited graph put its iteration
+region's convergence criterion and acceleration choice in the numerics layer and reached up for them,
+which inverts the dependency — the layering gate rejected the port on the first run. The configuration
+types (`ConvergenceMeasure`, `ConvergenceCriterion`, `AccelKind`, `AccelConfig`, and the
+`fuse::Converged` named constructors) now live in `fuse/model/iteration.hpp`; the algorithms (the
+`Accelerator` implementations) stay in `fuse/num`, depending on the model rather than the reverse.

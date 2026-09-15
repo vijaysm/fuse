@@ -47,26 +47,42 @@ struct Units {
 
   friend constexpr bool operator==(const Units&, const Units&) = default;
 
+  /// Scales multiply along with the dimensions. An ADDITIVE offset makes the
+  /// operation meaningless -- degrees Celsius squared is not a quantity -- so an
+  /// affine operand is refused rather than having its offset silently dropped,
+  /// which would be a factor error no dimensional check can see.
   [[nodiscard]] constexpr Units operator*(const Units& o) const {
     using detail::narrow_exponent;
+    if (!is_linear() || !o.is_linear()) {
+      FUSE_REFUSE("E-BASE-UNITS-AFFINE", "cannot multiply an affine unit (offsets {} and {})",
+                  offset.to_string(), o.offset.to_string());
+    }
     return Units{narrow_exponent(length + o.length),
                  narrow_exponent(mass + o.mass),
                  narrow_exponent(time + o.time),
                  narrow_exponent(current + o.current),
                  narrow_exponent(temperature + o.temperature),
                  narrow_exponent(amount + o.amount),
-                 narrow_exponent(luminosity + o.luminosity)};
+                 narrow_exponent(luminosity + o.luminosity),
+                 scale * o.scale,
+                 Rational{0}};
   }
 
   [[nodiscard]] constexpr Units operator/(const Units& o) const {
     using detail::narrow_exponent;
+    if (!is_linear() || !o.is_linear()) {
+      FUSE_REFUSE("E-BASE-UNITS-AFFINE", "cannot divide an affine unit (offsets {} and {})",
+                  offset.to_string(), o.offset.to_string());
+    }
     return Units{narrow_exponent(length - o.length),
                  narrow_exponent(mass - o.mass),
                  narrow_exponent(time - o.time),
                  narrow_exponent(current - o.current),
                  narrow_exponent(temperature - o.temperature),
                  narrow_exponent(amount - o.amount),
-                 narrow_exponent(luminosity - o.luminosity)};
+                 narrow_exponent(luminosity - o.luminosity),
+                 scale / o.scale,
+                 Rational{0}};
   }
 
   /// Exponents only: what "are these the same physical quantity?" means.

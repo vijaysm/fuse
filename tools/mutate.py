@@ -45,6 +45,13 @@ def main() -> int:
     ap.add_argument("--jobs", type=int, default=8)
     args = ap.parse_args()
 
+    # A build directory that is not a configured CMake tree makes EVERY build fail,
+    # which the verdict logic would read as "the mutant does not compile" -- 12
+    # inconclusive results that look like a code problem and are a path typo.
+    if not (args.build_dir / "CMakeCache.txt").is_file():
+        print(f"error: {args.build_dir} is not a configured CMake build directory")
+        return 2
+
     if subprocess.run(["git", "status", "--porcelain", "include", "src"], cwd=ROOT,
                       capture_output=True, text=True).stdout.strip():
         print("error: include/ or src/ has uncommitted changes; the gate restores by copy-back")
