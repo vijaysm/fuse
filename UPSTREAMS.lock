@@ -27,6 +27,9 @@ superseded = [                       # upstream paths fuse has replaced (S1, fus
   "test/unit/coupling_graph_test.cpp", "test/unit/validate_test.cpp", "test/unit/descriptor_test.cpp",
   "include/soma/graph/yaml_io.hpp", "src/graph/yaml_io.cpp", "test/unit/yaml_io_test.cpp",
   "test/data/",                                # eight YAML fixtures
+  "include/soma/ir/", "src/ir/",               # lowering, rules, checkpoint derivation
+  "include/soma/schedule/", "src/schedule/",   # clocks, acyclicity, expand, plan, slab
+  "test/golden/",                              # three golden IR dumps
 ]
 retire_at = "S6"                     # subtree deleted whole when every path is superseded
 retired   = ""                       # "<date> @ <fuse sha>" once done
