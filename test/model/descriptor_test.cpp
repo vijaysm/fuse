@@ -181,7 +181,7 @@ TEST(Descriptor, UnitScaleAndOffsetAreInTheCanonicalBytes) {
     (void)g.add_field(c, {.name = "p", .units = units});
     return serialize(g);
   };
-  fuse::Units pascal{.mass = 1, .length = -1, .time = -2};
+  fuse::Units pascal{.length = -1, .mass = 1, .time = -2};
   fuse::Units kilopascal = pascal;
   kilopascal.scale = fuse::Rational{1000};
   fuse::Units celsius{.temperature = 1};

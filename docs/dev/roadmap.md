@@ -8,7 +8,7 @@ imported code lands byte-identical before it is transformed ([](invariants.md) `
 |---|---|---|
 | **S0** *(in progress)* | Repository, conventions, CI gates, both parents imported untouched | Both upstream suites green inside FUSE with zero source edits. **Coupler tree: 770/770.** Spine tree: builds clean, suite pending on an MPI host |
 | **S1** | One vocabulary: exact time, units, versions, diagnostics, canonical serializer | **in progress** — `fuse::base` ported and transformed (9 targets, 78 cases, Debug and Release green, `FUSE_ASSERT` verified under `NDEBUG`); mutation gate run; ASan/UBSan leg and the canonical serializer remain |
-| **S2** | One semantic model; the **canonical descriptor frozen**; multiscale and emulator contracts declared and refusing | C++/YAML/bytes round-trip structurally equal; descriptor tagged |
+| **S2** | One semantic model; the **canonical descriptor frozen**; multiscale and emulator contracts declared and refusing | **in progress** — semantic model, N-ary graph, validation and the descriptor ported and transformed; waist at v3 carrying exact unit scale/offset; compatibility inference (S2.4) and the multiscale/emulator stubs (S2.5) remain |
 | **S3** | One compiler: operator IR, transform chains as lowering rules, epochs as instructions, acyclicity proof | A reference case lowers to a golden-compared plan; fuzzer green |
 | **S4** | One runtime: both entry modes, transactions on plan buffers, Kokkos kernels, waveforms and acceleration | Manufactured-solution orders and iteration counts reproduce upstream exactly |
 | **S5** | Backends under one operator interface: mesh, remap, transport, persisted maps | First non-matching-mesh parallel coupled run with conservation and order gates |

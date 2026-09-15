@@ -84,3 +84,19 @@ These govern the fluent interface, and exist because an ergonomic API is the eas
 `A6`
 : Ref-qualified overloads: an rvalue chain yields an owning value, an lvalue chain a view. *Enforced
   by* a sanitizer test and a compile-fail test.
+
+## Units carry their affine part
+
+A `fuse::Units` is seven integer dimension exponents **and** an exact `scale` and `offset`
+(`Rational`, not `double`, so a conversion applied every coupling step cannot drift and the
+descriptor's bytes are reproducible). Three rules follow, each with a test:
+
+- **Dimensional checks ignore the affine part** — `same_dimensions()` is what "the same physical
+  quantity" means. Full `operator==` includes scale and offset, so kilopascal is not pascal.
+- **Multiplying or dividing an affine unit is refused** (`E-BASE-UNITS-AFFINE`). Degrees Celsius
+  squared is not a quantity, and dropping the offset would be a silent error no dimensional check
+  can see.
+- **A scale-only mismatch on a channel is its own verdict** (`E-UNITS-SCALE`), not an `E-UNITS`
+  incompatibility and not silence. It is a conversion the compiler will insert once transform
+  inference lands (S2.4); until then it is refused, because applying the wrong factor every step is
+  worse than a configure-time error.
