@@ -170,3 +170,13 @@ right answer rather than merely a consistent one:
 
 These are ports. Matching the parent's numbers exactly is the point: it is what
 says the merged compiler, schedule and runtime reproduce known-good results.
+
+## Mutations that cannot be assessed locally
+
+`tools/mutate.py` reports `NOT-ASSESSED` for a mutation whose test needs a
+working MPI launcher, rather than a verdict. The reason is narrow and
+important: in an environment where the test cannot start at all, it exits
+non-zero whether or not the mutation had any effect, so the runner would
+record a **false kill** — evidence that is worse than none. Mark such a
+mutation `requires = "mpi"` and assess it with `FUSE_MUTATE_MPI=1` on a host
+that can launch it.

@@ -124,3 +124,24 @@ A component that refuses its step carries forward the same way, both in the
 period loop and inside an iteration region — where it matters most, since the
 region body runs many times and a rank dropping out of the exchange
 desynchronises the remaining iterations rather than one step.
+
+## Partially shared placements
+
+Two components may share ranks. The exchange between them is then described
+peer by peer — `send_plan()` and `recv_plan()` — because a single list of
+global ids per rank cannot say whether an entry is something this rank *holds*
+or something it *wants*, and under partial overlap it is genuinely both, for
+different entities. Matches whose two ends land on the same rank never travel:
+they are copied locally.
+
+The two halves are checked against each other before the run. Each rank
+announces how many values it intends to send every other, and each requires
+that to equal what it expects to receive. A disagreement is
+`E-TRANSPORT-PEERMATCH` at setup — the failure mode it catches is a transport
+given a different communicator than the rank graph was built over, where the
+two rank numberings differ and every value would be delivered to the wrong
+rank for the entire run.
+
+Identical and disjoint placements keep using the matched plan, which has been
+verified longer. On a pattern both forms can express, they are required to
+deliver identical values, with the matched plan as the oracle.
