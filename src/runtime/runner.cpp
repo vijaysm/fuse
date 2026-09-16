@@ -1621,7 +1621,8 @@ Result<void> Runner::Impl::reconcile_epoch(const Instruction& ins) {
   int status = step_failure.has_value() ? 0 : 1;
   const EpochSchedule sched = epoch_schedule(n, my_index);
 
-  for (const int from : sched.reduce_recv_from) {
+  for (int ri = 0; ri < sched.reduce_recv_count; ++ri) {
+    const int from = sched.reduce_recv_from[static_cast<std::size_t>(ri)];
     int peer_status = 1;
     if (MPI_Recv(&peer_status, 1, MPI_INT, part[static_cast<std::size_t>(from)],
                  kEpochTag, base, MPI_STATUS_IGNORE) != MPI_SUCCESS) {
@@ -1648,7 +1649,7 @@ Result<void> Runner::Impl::reconcile_epoch(const Instruction& ins) {
                      "MPI_Recv failed while receiving the agreed status"};
     }
   }
-  for (const int to : sched.result_send_to) {
+  for (int to = 1; to <= sched.result_send_count; ++to) {
     if (MPI_Send(&status, 1, MPI_INT, part[static_cast<std::size_t>(to)],
                  kEpochTag, base) != MPI_SUCCESS) {
       return Failure{"E-RT-EPOCH-COMM",
