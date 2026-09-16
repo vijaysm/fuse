@@ -74,7 +74,7 @@ if(FUSE_ENABLE_MPI)
 endif()
 
 # ---------------------------------------------------------------- ir
-foreach(t ir_op ir_dag ir_dump lowering lowering_channel lowering_derived lowering_regions)
+foreach(t ir_op ir_dag ir_dump lowering lowering_channel lowering_derived lowering_regions scale)
   fuse_add_gtest(ir ${t})
 endforeach()
 

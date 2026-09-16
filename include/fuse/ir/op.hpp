@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "fuse/base/ids.hpp"
+#include "fuse/base/rational.hpp"
 #include "fuse/base/time_level.hpp"
 #include "fuse/base/units.hpp"
 #include "fuse/model/channel.hpp"  // RemapFlags
@@ -16,6 +17,30 @@ enum class OpKind {
   Sample, Accumulate, Interpolate, Extrapolate, Remap, Merge, Relax,
   Transport, Residual, Accelerate, Constrain, Diagnose,
   Source, Sink,
+
+  /// Unit conversion by an exact rational factor. Separate from `Relax` (which
+  /// scales by a double) because a unit factor must be exact: 1/1000 applied as
+  /// a double is not 1/1000, and a conservation check downstream would then be
+  /// comparing sums that differ in the last bits for no physical reason.
+  ///
+  /// Emitted by the compiler on the connection checker's authority, never on
+  /// the user's -- which is why the dump prints it and the plan names it.
+  Scale,
+
+  /// Rank agreement point. Every rank in the coupling reaches this instruction
+  /// in the same order, and each one learns the same outcome (all-succeeded, or
+  /// which rank failed) before any of them proceeds. It is the only place a
+  /// failure on one rank can be turned into a decision on all of them, and it
+  /// is what stops a local error from becoming a hang at the next collective.
+  Epoch,
+
+  /// Reserved for multiscale. Declared so the enumerator ordinals do not move
+  /// when they land, and REJECTED by the scheduler today -- see
+  /// include/fuse/model/multiscale.hpp for the contracts, and the same
+  /// reasoning: a reserved opcode that silently schedules as a no-op would let
+  /// a micro-macro coupling compile and run as though the closure had been
+  /// applied.
+  Map, Reduce, Closure,
 };
 
 [[nodiscard]] constexpr const char* to_cstring(OpKind k) noexcept {
@@ -34,6 +59,11 @@ enum class OpKind {
     case OpKind::Diagnose:    return "Diagnose";
     case OpKind::Source:      return "Source";
     case OpKind::Sink:        return "Sink";
+    case OpKind::Scale:       return "Scale";
+    case OpKind::Epoch:       return "Epoch";
+    case OpKind::Map:         return "Map";
+    case OpKind::Reduce:      return "Reduce";
+    case OpKind::Closure:     return "Closure";
   }
   return "Unknown";
 }
@@ -112,6 +142,11 @@ struct OpAttrs {
   std::string   method;
   int           src_rank_set = -1;
   int           dst_rank_set = -1;
+
+  /// `Scale`'s exact factor, and `Epoch`'s reason. Both default to values the
+  /// dump omits, so no existing golden file moves.
+  Rational      scale{1};
+  std::string   reason;
 
   friend bool operator==(const OpAttrs&, const OpAttrs&) = default;
 };

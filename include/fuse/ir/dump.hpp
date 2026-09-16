@@ -36,6 +36,11 @@ inline std::string attrs_string(OpKind kind, const OpAttrs& a) {
   if (a.omega != def.omega) add("omega=" + format_double(a.omega));
   if (a.order != def.order) add("order=" + std::to_string(a.order));
   if (a.lag != def.lag) add("lag=" + std::to_string(a.lag));
+  // Exact, so it prints as a rational -- "scale=1/1000", never 0.001. The
+  // whole point of carrying it as a Rational is that the dump and the plan
+  // show the factor the user's units implied, not a rounding of it.
+  if (a.scale != def.scale) add("scale=" + a.scale.to_string());
+  if (a.reason != def.reason) add("reason=" + a.reason);
   if (a.remap_flags != def.remap_flags) {
     std::string f;
     if (has(a.remap_flags, RemapFlags::Conservative)) f += "C";

@@ -59,9 +59,37 @@ void type_check(LoweringContext& ctx) {
 
 }  // namespace
 
-LoweringResult lower(const CouplingGraph& g) {
+bool ir_can_emit(OperatorKind kind) noexcept {
+  switch (kind) {
+    // Emitted here, as an exact rational multiply.
+    case OperatorKind::UnitScale:
+      return true;
+    // Emitted by the remap and interpolation steps of the channel rule, which
+    // know the regions and the two clocks.
+    case OperatorKind::SpatialTransfer:
+    case OperatorKind::TemporalTransfer:
+      return true;
+    // No operator yet. Each changes what the value means -- an offset moves the
+    // zero of a scale, selection and aggregation discard components, expansion
+    // invents them, clipping and conservation enforcement alter the data to
+    // satisfy a constraint -- so each needs its own verified kernel, not a
+    // generic pass-through.
+    case OperatorKind::AffineUnit:
+    case OperatorKind::SignFlip:
+    case OperatorKind::ComponentSelect:
+    case OperatorKind::ComponentReorder:
+    case OperatorKind::Aggregate:
+    case OperatorKind::Expand:
+    case OperatorKind::Clip:
+    case OperatorKind::ConservationEnforcement:
+      return false;
+  }
+  return false;  // a new kind is refused until someone decides
+}
+
+LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy) {
   LoweringResult result;
-  LoweringContext ctx{g, result.dag, result.diags, {}, {}};
+  LoweringContext ctx{g, result.dag, result.diags, {}, {}, policy};
 
   // 1. Source node per provided field.
   //

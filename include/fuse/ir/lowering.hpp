@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "fuse/base/result.hpp"
+#include "fuse/model/connect.hpp"
 #include "fuse/model/coupling_graph.hpp"
 #include "fuse/ir/dag.hpp"
 
@@ -58,6 +59,12 @@ struct LoweringContext {
   Diagnostics&                              diags;
   std::unordered_map<std::uint32_t, ArcId>  field_arc;
   std::unordered_map<std::uint32_t, ArcId>  source_arc;
+
+  /// The same policy the validator used. It must be the same object, or the
+  /// compiler can emit a unit conversion the checker forbade (or omit one it
+  /// authorized) and nothing would notice: validation and lowering would each
+  /// be self-consistent about different rules.
+  ConnectPolicy                             connect_policy{};
 };
 
 /// Returns true if the rule claimed the channel.
@@ -116,6 +123,17 @@ class LoweringRegistry {
   int                next_seq_ = 0;
 };
 
+/// Whether this compiler has an operator for a step the connection check can
+/// authorize.
+///
+/// It is a function rather than a `default:` in the emission switch so that it
+/// can be enumerated in a test: every value of `OperatorKind` is either emitted
+/// or refused, and adding a new one without deciding which is a test failure
+/// rather than a silent omission. The checker is allowed to be ahead of the
+/// compiler -- it is describing what the physics needs -- but the gap must be
+/// visible.
+[[nodiscard]] bool ir_can_emit(OperatorKind kind) noexcept;
+
 struct LoweringResult {
   OperatorDAG dag;
   Diagnostics diags;
@@ -123,7 +141,10 @@ struct LoweringResult {
 };
 
 /// Spec §2: CouplingGraph -> OperatorDAG.
-[[nodiscard]] LoweringResult lower(const CouplingGraph& g);
+/// `policy` must be the one the validator used: the compiler emits the
+/// conversions the connection check authorized, so a different policy here
+/// would silently compile a plan the checker never approved.
+[[nodiscard]] LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy = {});
 
 /// Spec §5.2: inserts the Constrain (from conservation) and Diagnose
 /// (always) operators the user did not write, immediately after this
