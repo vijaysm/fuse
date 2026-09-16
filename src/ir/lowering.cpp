@@ -153,7 +153,33 @@ LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy) {
                       qualified(g, f));
         continue;
       }
-      const ArcId out = ctx.dag.add_arc(ctx.dag.arc(writers.front()).type,
+      // The combined value's time level is the LATEST of its contributions,
+      // not the first writer's.
+      //
+      // This is not bookkeeping. A lagged contribution is typed one level
+      // back, and the acyclicity proof cuts an edge whose input is older than
+      // its consumer's output -- correctly, since last period's value
+      // constrains nothing in this one. If the combined value inherited a
+      // lagged writer's level merely because that writer was declared first,
+      // the edge from the combine to the field would be cut, and with it the
+      // dependence carried by the writers that are NOT lagged. The sweep in
+      // acyclicity_sweep_test.cpp found exactly that: a two-way coupling where
+      // each direction had one lagged and one unlagged channel into a combined
+      // field was certified acyclic, which is the direction that lets an
+      // unsolvable setup run.
+      //
+      // A value is available when its most recent contribution is, so the
+      // latest level is also the physically right answer.
+      ArcId newest = writers.front();
+      for (const ArcId w : writers) {
+        const TimeLevel& a = ctx.dag.arc(newest).type.time;
+        const TimeLevel& b = ctx.dag.arc(w).type.time;
+        if (b.iterate > a.iterate ||
+            (b.iterate == a.iterate && b.anchor == a.anchor && b.offset > a.offset)) {
+          newest = w;
+        }
+      }
+      const ArcId out = ctx.dag.add_arc(ctx.dag.arc(newest).type,
                                         qualified(g, f) + "/merge");
       ctx.dag.add_node(OpKind::Merge, writers, out,
                        OpAttrs{.reason = std::string(merge_op_name(spec->op))},

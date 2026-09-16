@@ -294,3 +294,83 @@ old = "    } catch (const Error& e) {"
 new = "    } catch (const std::logic_error& e) {"
 target = "fuse_schedule_clock_test"
 test = "schedule.clock"
+
+[[mutation]]
+id = "scale-emitted-as-double"
+area = "compiler"
+describes = "the unit conversion loses exactness, so 1/1000 becomes a rounded double"
+file = "src/ir/rules_channel.cpp"
+old = "          if (step.scale == Rational{1}) break;"
+new = "          if (true) break;"
+target = "fuse_ir_scale_test"
+test = "ir.scale"
+
+[[mutation]]
+id = "unlowerable-step-silently-dropped"
+area = "compiler"
+describes = "an authorized operation the compiler cannot emit is skipped instead of refused"
+file = "src/ir/rules_channel.cpp"
+old = "      if (!ir_can_emit(step.kind)) {"
+new = "      if (false) {"
+target = "fuse_ir_scale_test"
+test = "ir.scale"
+
+[[mutation]]
+id = "merge-keeps-last-writer"
+area = "compiler"
+describes = "the old last-writer-wins binding, which deletes every other writer's dependence"
+file = "src/ir/lowering.cpp"
+old = "      if (writers.size() < 2) continue;"
+new = "      if (writers.size() < 99) continue;"
+target = "fuse_schedule_acyclicity_sweep_test"
+test = "schedule.acyclicity_sweep"
+
+[[mutation]]
+id = "merge-typed-at-first-writer"
+area = "compiler"
+describes = "the combined value inherits the first writer's time level, so a lagged writer declared first cuts the unlagged writers' dependence"
+file = "src/ir/lowering.cpp"
+old = "      ArcId newest = writers.front();"
+new = "      ArcId newest = writers.front(); if (true) goto typed;"
+target = "fuse_schedule_acyclicity_sweep_test"
+test = "schedule.acyclicity_sweep"
+
+[[mutation]]
+id = "epoch-not-emitted-after-transport"
+area = "compiler"
+describes = "a data move with no agreement point, so a failure on one rank is found only at the next collective"
+file = "src/ir/rules_channel.cpp"
+old = "    cur = emit(ctx, OpKind::Epoch, cur, type, ea, cid, base + \"/epoch\");"
+new = "    (void)ea;"
+target = "fuse_schedule_epoch_test"
+test = "schedule.epoch"
+
+[[mutation]]
+id = "reserved-multiscale-op-scheduled"
+area = "compiler"
+describes = "a reserved multiscale operator schedules as a no-op instead of being refused"
+file = "src/schedule/scheduler.cpp"
+old = "    if (n.kind == OpKind::Map || n.kind == OpKind::Reduce || n.kind == OpKind::Closure) {"
+new = "    if (false) {"
+target = "fuse_schedule_epoch_test"
+test = "schedule.epoch"
+
+[[mutation]]
+id = "descriptor-drops-the-merge-table"
+area = "model"
+describes = "the merge table is not serialized, so a graph crossing the waist loses how its writers combine"
+file = "include/fuse/model/descriptor.hpp"
+old = "    w.pod(entry.first);\n    w.pod(static_cast<std::uint8_t>(entry.second.op));"
+new = "    (void)entry;"
+target = "fuse_model_descriptor_test"
+test = "model.descriptor"
+
+[[mutation]]
+id = "yaml-drops-field-declaration-order"
+area = "model"
+describes = "the text form omits the field index, so nesting fields under components renumbers every field id"
+file = "src/model/yaml_io.cpp"
+old = "        << YAML::Key << \"index\" << YAML::Value << fid.value()"
+new = "        << YAML::Key << \"index\" << YAML::Value << 0"
+target = "fuse_model_yaml_io_test"
+test = "model.yaml_io"

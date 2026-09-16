@@ -438,9 +438,10 @@ CycleReport prove_acyclic(const CouplingGraph& g, const OperatorDAG& dag,
   // exactly one `Sink` per field and a `Sink` consumes exactly one arc, so at
   // most one writer of a field can ever be represented.
   //
-  // When spec §5.1's `Merge` is implemented, lowering will emit a `Merge` node
-  // consuming every writer's arc and this second scan must learn about it --
-  // until then, more than one writer provably means a dropped dependence.
+  // Lowering now emits a `Merge` node consuming every writer's arc when the
+  // graph declares how the writers combine, so the second scan below only
+  // fires where there is no such declaration. The node scan here is unchanged
+  // and still correct: with a combine present, no writer's output dangles.
   for (std::uint32_t ni = 0; ni < n_nodes; ++ni) {
     const Node& n = dag.node(NodeId{ni});
     if (n.kind == OpKind::Sink || n.kind == OpKind::Residual) continue;
@@ -473,6 +474,12 @@ CycleReport prove_acyclic(const CouplingGraph& g, const OperatorDAG& dag,
       const FieldId t = ch.target;
       if (!t.valid() || t.value() >= g.field_count()) continue;
       if (writers[t.value()] < 2) continue;
+      // A declared combine consumes every writer, so no dependence is lost and
+      // there is nothing for this scan to catch. Checked against the graph
+      // rather than by looking for a Merge node: the question is whether the
+      // user authorized the combine, and a missing node with an authorization
+      // present is a lowering bug that belongs to the node scan above.
+      if (g.merge_for(t) != nullptr) continue;
       report.acyclic = false;
       report.explanation =
           "E-SCHED-DANGLING-CHANNEL: field '" + g.field(t).name + "' is the "
@@ -482,9 +489,9 @@ CycleReport prove_acyclic(const CouplingGraph& g, const OperatorDAG& dag,
           "so at most one of those channels is represented in the schedule "
           "and the dependences the others declare are missing from it. "
           "Acyclicity was therefore not proved, and an unproved schedule is "
-          "reported as a failure, never as a pass. Combining writers needs an "
-          "explicit Merge, which is not implemented; validate() reports this "
-          "as E-MULTI-WRITER.";
+          "reported as a failure, never as a pass. Combining writers requires "
+          "a declared rule -- graph.merge(field, MergeOp::Sum|Mean|First) -- "
+          "and validate() reports its absence as E-MULTI-WRITER.";
       return report;
     }
   }
