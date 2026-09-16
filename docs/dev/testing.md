@@ -149,3 +149,24 @@ rather than claims:
 The 2026-09-16 run is what makes the rank-agreement mechanism verified rather
 than asserted: `parallel.epoch_reconcile` fails one rank's component mid-step
 and requires every other rank to return a failure instead of blocking.
+
+## Convergence and iteration verification
+
+`test/verification/` holds the two suites that say the coupler computes the
+right answer rather than merely a consistent one:
+
+- **`mms_transfer`** measures the convergence order of the coupled response
+  against a manufactured solution and gates it at 1 ± 0.1, with an absolute
+  error gate as well — an order-1 slope on a curve that is uniformly wrong by a
+  constant factor would pass the slope alone. Observed: order 1.005, finest
+  error 1.86e-3.
+- **Its control** repeats the study with the exchange disabled, and asserts
+  that both gates *fail*: order 3e-16 (no convergence) and a 197× larger
+  error. Without the control, a run that never coupled could in principle
+  satisfy the gates above.
+- **`iteration`** covers 32 cases including six exact iteration-count
+  regressions, so a change that alters how many sweeps a coupled solve takes
+  fails a test rather than being absorbed as noise.
+
+These are ports. Matching the parent's numbers exactly is the point: it is what
+says the merged compiler, schedule and runtime reproduce known-good results.
