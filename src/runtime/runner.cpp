@@ -1509,9 +1509,39 @@ namespace {
 
 }  // namespace
 
+/// The tag the agreement reduction uses on the base communicator.
+///
+/// Small and explicit, following the crystal router's `kTag` (0x5C12) rather
+/// than being clever: MPI only guarantees tags up to `MPI_TAG_UB`, which the
+/// standard puts at a minimum of 32767. An earlier version used 'EPOC' packed
+/// into an int -- 1162891075 -- which every MPI rejects outright, and did so
+/// in a test that had been passing.
+///
+/// Safe from the transport's traffic: `MpiTransport::set_communicator`
+/// duplicates the communicator it is given, so a data move never uses the base
+/// communicator even when the user hands it the same one.
+constexpr int kEpochTag = 0x5C13;
+
 Result<void> Runner::Impl::resolve_epoch_participants() {
 #if FUSE_HAVE_MPI
   if (!config.base_communicator.has_value()) return Result<void>::success();
+
+  // Checked once, here, rather than assumed: the guaranteed floor is 32767 and
+  // `kEpochTag` is below it, so this cannot fire on a conforming MPI -- but a
+  // refusal at setup is a better failure than "Invalid tag" from inside a
+  // reduction on one rank while the others wait.
+  {
+    void* ub = nullptr;
+    int   found = 0;
+    if (MPI_Comm_get_attr(MPI_COMM_WORLD, MPI_TAG_UB, &ub, &found) == MPI_SUCCESS &&
+        found != 0 && ub != nullptr && *static_cast<int*>(ub) < kEpochTag) {
+      return Failure{"E-RT-EPOCH-TAG",
+                     "this MPI allows tags only up to " +
+                         std::to_string(*static_cast<int*>(ub)) +
+                         ", below the tag the rank-agreement reduction uses (" +
+                         std::to_string(kEpochTag) + ")"};
+    }
+  }
 
   epoch_participants.clear();
   for (const Instruction& ins : plan.instructions()) {
@@ -1590,7 +1620,6 @@ Result<void> Runner::Impl::reconcile_epoch(const Instruction& ins) {
   // identical set of pairings. Each step is one matched send/receive between
   // two participants, and nobody sends to a rank that is not expecting it.
   int status = step_failure.has_value() ? 0 : 1;
-  constexpr int kTag = 0x45504f43;  // 'EPOC'
 
   for (int stride = 1; stride < n; stride *= 2) {
     if ((my_index % (2 * stride)) == 0) {
@@ -1598,7 +1627,7 @@ Result<void> Runner::Impl::reconcile_epoch(const Instruction& ins) {
       if (from < n) {
         int peer_status = 1;
         if (MPI_Recv(&peer_status, 1, MPI_INT, part[static_cast<std::size_t>(from)],
-                     kTag, base, MPI_STATUS_IGNORE) != MPI_SUCCESS) {
+                     kEpochTag, base, MPI_STATUS_IGNORE) != MPI_SUCCESS) {
           return Failure{"E-RT-EPOCH-COMM",
                          "MPI_Recv failed while agreeing status at a "
                          "rank-agreement point"};
@@ -1607,7 +1636,7 @@ Result<void> Runner::Impl::reconcile_epoch(const Instruction& ins) {
       }
     } else {
       const int to = my_index - stride;
-      if (MPI_Send(&status, 1, MPI_INT, part[static_cast<std::size_t>(to)], kTag,
+      if (MPI_Send(&status, 1, MPI_INT, part[static_cast<std::size_t>(to)], kEpochTag,
                    base) != MPI_SUCCESS) {
         return Failure{"E-RT-EPOCH-COMM",
                        "MPI_Send failed while agreeing status at a "
@@ -1619,14 +1648,14 @@ Result<void> Runner::Impl::reconcile_epoch(const Instruction& ins) {
 
   // The answer, back down the same tree.
   if (my_index != 0) {
-    if (MPI_Recv(&status, 1, MPI_INT, part[0], kTag, base, MPI_STATUS_IGNORE) !=
+    if (MPI_Recv(&status, 1, MPI_INT, part[0], kEpochTag, base, MPI_STATUS_IGNORE) !=
         MPI_SUCCESS) {
       return Failure{"E-RT-EPOCH-COMM",
                      "MPI_Recv failed while receiving the agreed status"};
     }
   } else {
     for (int k = 1; k < n; ++k) {
-      if (MPI_Send(&status, 1, MPI_INT, part[static_cast<std::size_t>(k)], kTag,
+      if (MPI_Send(&status, 1, MPI_INT, part[static_cast<std::size_t>(k)], kEpochTag,
                    base) != MPI_SUCCESS) {
         return Failure{"E-RT-EPOCH-COMM",
                        "MPI_Send failed while publishing the agreed status"};
