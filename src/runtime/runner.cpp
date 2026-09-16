@@ -1479,7 +1479,7 @@ Result<void> Runner::Impl::setup(ComponentSet& components,
 #endif
   if (!r.ok()) return r;
   {
-    const Result<void> ec = attach_epoch_communicators();
+    const Result<void> ec = resolve_epoch_participants();
     if (!ec.ok()) return ec;
     const Result<void> cg = attach_comm_graphs();
     if (!cg.ok()) return cg;
@@ -1501,16 +1501,6 @@ Result<void> Runner::Impl::setup(ComponentSet& components,
 
 namespace {
 
-/// Whether `rank` (a base-communicator rank) belongs to component `component`.
-/// A negative or out-of-range component is not a participant.
-[[nodiscard]] bool rank_in_set(int rank, int component, const CouplingGraph& g) {
-  if (component < 0) return false;
-  const auto id = static_cast<std::uint32_t>(component);
-  if (id >= g.component_count()) return false;
-  const RankSet& rs = g.component(ComponentId{id}).ranks;
-  return rank >= rs.first && rank < rs.first + rs.count;
-}
-
 /// Packs the two component ids an `Epoch` names into one key.
 [[nodiscard]] std::uint64_t epoch_key(int src, int dst) {
   return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(src)) << 32) |
@@ -1519,46 +1509,38 @@ namespace {
 
 }  // namespace
 
-Result<void> Runner::Impl::attach_epoch_communicators() {
+Result<void> Runner::Impl::resolve_epoch_participants() {
 #if FUSE_HAVE_MPI
   if (!config.base_communicator.has_value()) return Result<void>::success();
-  const MPI_Comm base =
-      MPI_Comm_f2c(static_cast<MPI_Fint>(*config.base_communicator));
-  if (base == MPI_COMM_NULL) {
-    return Failure{"E-RT-EPOCH-COMM",
-                   "RunnerConfig::base_communicator is MPI_COMM_NULL"};
-  }
-  int me = 0;
-  if (MPI_Comm_rank(base, &me) != MPI_SUCCESS) {
-    return Failure{"E-RT-EPOCH-COMM", "MPI_Comm_rank failed on the base communicator"};
-  }
 
-  // The pairs, collected from the plan in a deterministic order. Every rank
-  // walks the same instruction stream, so every rank agrees on the list and on
-  // its order -- which is what makes the sequence of splits below a valid
-  // collective rather than a deadlock waiting to happen.
-  std::vector<std::uint64_t> keys;
+  epoch_participants.clear();
   for (const Instruction& ins : plan.instructions()) {
     if (ins.kind != OpKind::Epoch) continue;
-    const std::uint64_t k = epoch_key(ins.attrs.src_rank_set, ins.attrs.dst_rank_set);
-    if (std::find(keys.begin(), keys.end(), k) == keys.end()) keys.push_back(k);
-  }
+    const std::uint64_t key =
+        epoch_key(ins.attrs.src_rank_set, ins.attrs.dst_rank_set);
+    if (epoch_participants.count(key) != 0) continue;
 
-  for (std::size_t p = 0; p < keys.size(); ++p) {
-    const int src = static_cast<int>(static_cast<std::uint32_t>(keys[p] >> 32));
-    const int dst = static_cast<int>(static_cast<std::uint32_t>(keys[p] & 0xffffffffu));
-    const bool mine = rank_in_set(me, src, graph) || rank_in_set(me, dst, graph);
-    // MPI_UNDEFINED for a non-participant, so it gets MPI_COMM_NULL and never
-    // takes part in this point's reduction. It still CALLS the split, because
-    // the split is collective over the base communicator.
-    const int colour = mine ? static_cast<int>(p) : MPI_UNDEFINED;
-    MPI_Comm sub = MPI_COMM_NULL;
-    if (MPI_Comm_split(base, colour, me, &sub) != MPI_SUCCESS) {
-      return Failure{"E-RT-EPOCH-COMM",
-                     "MPI_Comm_split failed while building a rank-agreement "
-                     "communicator"};
+    // The union of the two components' rank sets, sorted and de-duplicated.
+    // Derived from the graph, which is identical on every rank, so every
+    // participant builds the same list -- that is what makes the schedule in
+    // reconcile_epoch() agree without anyone communicating to establish it.
+    std::vector<int> ranks;
+    for (const int component : {ins.attrs.src_rank_set, ins.attrs.dst_rank_set}) {
+      if (component < 0) continue;
+      const auto id = static_cast<std::uint32_t>(component);
+      if (id >= graph.component_count()) continue;
+      const RankSet& rs = graph.component(ComponentId{id}).ranks;
+      for (int r = rs.first; r < rs.first + rs.count; ++r) ranks.push_back(r);
     }
-    if (mine) epoch_comms[keys[p]] = static_cast<int>(MPI_Comm_c2f(sub));
+    std::sort(ranks.begin(), ranks.end());
+    ranks.erase(std::unique(ranks.begin(), ranks.end()), ranks.end());
+    if (ranks.empty()) {
+      return Failure{"E-RT-EPOCH-EMPTY",
+                     "a rank-agreement point names no participating ranks; "
+                     "the plan should not have compiled (the scheduler checks "
+                     "that its participants match its data move's)"};
+    }
+    epoch_participants.emplace(key, std::move(ranks));
   }
 #endif
   return Result<void>::success();
@@ -1568,23 +1550,92 @@ Result<void> Runner::Impl::reconcile_epoch(const Instruction& ins) {
 #if FUSE_HAVE_MPI
   if (!config.base_communicator.has_value()) return Result<void>::success();
   const auto it =
-      epoch_comms.find(epoch_key(ins.attrs.src_rank_set, ins.attrs.dst_rank_set));
-  if (it == epoch_comms.end()) {
+      epoch_participants.find(epoch_key(ins.attrs.src_rank_set, ins.attrs.dst_rank_set));
+  if (it == epoch_participants.end()) return Result<void>::success();
+
+  const MPI_Comm base =
+      MPI_Comm_f2c(static_cast<MPI_Fint>(*config.base_communicator));
+  if (base == MPI_COMM_NULL) {
+    return Failure{"E-RT-EPOCH-COMM",
+                   "RunnerConfig::base_communicator is MPI_COMM_NULL at a "
+                   "rank-agreement point"};
+  }
+  int me = 0;
+  if (MPI_Comm_rank(base, &me) != MPI_SUCCESS) {
+    return Failure{"E-RT-EPOCH-COMM", "MPI_Comm_rank failed at a rank-agreement point"};
+  }
+
+  const std::vector<int>& part = it->second;
+  const auto self = std::find(part.begin(), part.end(), me);
+  if (self == part.end()) {
     // This rank does not take part in the move, so it must not take part in
-    // the agreement either -- joining would make the others wait for a rank
-    // that has nothing to report.
+    // the agreement either: joining would make the others wait for a rank
+    // with nothing to report.
     return Result<void>::success();
   }
-  const MPI_Comm sub = MPI_Comm_f2c(static_cast<MPI_Fint>(it->second));
-  if (sub == MPI_COMM_NULL) return Result<void>::success();
+  const auto n = static_cast<int>(part.size());
+  const auto my_index = static_cast<int>(std::distance(part.begin(), self));
 
-  const int local_ok = step_failure.has_value() ? 0 : 1;
-  int       all_ok   = 0;
-  if (MPI_Allreduce(&local_ok, &all_ok, 1, MPI_INT, MPI_MIN, sub) != MPI_SUCCESS) {
-    return Failure{"E-RT-EPOCH-COMM",
-                   "MPI_Allreduce failed at a rank-agreement point"};
+  // A binomial reduce to participant 0 followed by a broadcast back, both on
+  // the base communicator with one dedicated tag.
+  //
+  // WHY NOT A SUB-COMMUNICATOR. Splitting one per pair would mean holding it
+  // for the Runner's lifetime and freeing it in a destructor, and
+  // `MPI_Comm_free` is collective -- so destruction order would become a
+  // correctness question. The transport layer avoids that deliberately
+  // ("nothing outlives this function"); this follows the same rule.
+  //
+  // WHY THIS CANNOT DEADLOCK. The schedule depends only on `n` and
+  // `my_index`, both derived from the graph, so every participant computes the
+  // identical set of pairings. Each step is one matched send/receive between
+  // two participants, and nobody sends to a rank that is not expecting it.
+  int status = step_failure.has_value() ? 0 : 1;
+  constexpr int kTag = 0x45504f43;  // 'EPOC'
+
+  for (int stride = 1; stride < n; stride *= 2) {
+    if ((my_index % (2 * stride)) == 0) {
+      const int from = my_index + stride;
+      if (from < n) {
+        int peer_status = 1;
+        if (MPI_Recv(&peer_status, 1, MPI_INT, part[static_cast<std::size_t>(from)],
+                     kTag, base, MPI_STATUS_IGNORE) != MPI_SUCCESS) {
+          return Failure{"E-RT-EPOCH-COMM",
+                         "MPI_Recv failed while agreeing status at a "
+                         "rank-agreement point"};
+        }
+        status = status < peer_status ? status : peer_status;
+      }
+    } else {
+      const int to = my_index - stride;
+      if (MPI_Send(&status, 1, MPI_INT, part[static_cast<std::size_t>(to)], kTag,
+                   base) != MPI_SUCCESS) {
+        return Failure{"E-RT-EPOCH-COMM",
+                       "MPI_Send failed while agreeing status at a "
+                       "rank-agreement point"};
+      }
+      break;  // this rank has handed its result up; it only waits for the answer
+    }
   }
-  if (all_ok == 0 && !step_failure.has_value()) {
+
+  // The answer, back down the same tree.
+  if (my_index != 0) {
+    if (MPI_Recv(&status, 1, MPI_INT, part[0], kTag, base, MPI_STATUS_IGNORE) !=
+        MPI_SUCCESS) {
+      return Failure{"E-RT-EPOCH-COMM",
+                     "MPI_Recv failed while receiving the agreed status"};
+    }
+  } else {
+    for (int k = 1; k < n; ++k) {
+      if (MPI_Send(&status, 1, MPI_INT, part[static_cast<std::size_t>(k)], kTag,
+                   base) != MPI_SUCCESS) {
+        return Failure{"E-RT-EPOCH-COMM",
+                       "MPI_Send failed while publishing the agreed status"};
+      }
+    }
+  }
+
+  ++stats.epochs_reconciled;
+  if (status == 0 && !step_failure.has_value()) {
     // This rank is fine and a partner is not. Stopping here is the point of
     // the whole mechanism: proceeding alone means blocking alone at the next
     // exchange. The rank that actually failed reports its own diagnostic,
@@ -1594,7 +1645,6 @@ Result<void> Runner::Impl::reconcile_epoch(const Instruction& ins) {
                    "rather than waiting for it at the next one. The failing "
                    "rank reports the cause."};
   }
-  ++stats.epochs_reconciled;
 #else
   (void)ins;
 #endif
@@ -1992,8 +2042,16 @@ Result<void> Runner::Impl::step_period(ComponentSet& components) {
     while (ti < ticks.size() &&
            (ticks[ti].time < ins.time ||
             (ticks_here && !(ins.time < ticks[ti].time)))) {
-      const Result<void> a = advance(components, ticks[ti], 0);
-      if (!a.ok()) return a;
+      // A component refusing its step is the canonical reason a rank fails
+      // mid-period, so it carries forward exactly like an instruction failure
+      // does: record it, stop advancing (the remaining components would be
+      // stepping on values this step never produced), and keep walking so the
+      // agreement points are still reached. Returning here is what leaves
+      // every partner blocked in the next exchange.
+      if (!step_failure.has_value()) {
+        const Result<void> a = advance(components, ticks[ti], 0);
+        if (!a.ok()) step_failure = a.error();
+      }
       ++ti;
     }
     if (ins.region_enter >= 0) {
@@ -2004,11 +2062,17 @@ Result<void> Runner::Impl::step_period(ComponentSet& components) {
       i = r.exit + 1;
       continue;
     }
-    // After a failure, only the agreement points still run. Everything else
-    // would be computing on values that were never produced, and skipping
-    // them silently is exactly why the agreement points have to be reached:
-    // the partners of this rank are already waiting at one.
-    if (step_failure.has_value() && ins.kind != OpKind::Epoch) { ++i; continue; }
+    // After a failure this rank keeps executing the COLLECTIVE instructions
+    // and skips the local ones (`is_collective`, fuse/ir/op.hpp).
+    //
+    // Skipping the local arithmetic costs nothing: the period is being
+    // abandoned. Skipping a collective would be fatal -- the partners are
+    // already inside it, waiting for this rank, which is the same hang as
+    // returning at the point of failure. So the data move still happens; the
+    // values it moves are whatever the buffers hold, and they are never used,
+    // because the agreement point immediately after it ends the period on
+    // every participant.
+    if (step_failure.has_value() && !is_collective(ins.kind)) { ++i; continue; }
 
     const Result<void> r = execute(ins, resolved[i]);
     if (!r.ok()) {
@@ -2027,17 +2091,23 @@ Result<void> Runner::Impl::step_period(ComponentSet& components) {
   // later, so the tail of a period routinely ends up here -- this is the
   // normal path, not just the "plan with no instruction after the last tick"
   // corner it was written for.
+  for (; ti < ticks.size(); ++ti) {
+    if (step_failure.has_value()) break;
+    const Result<void> a = advance(components, ticks[ti], 0);
+    if (!a.ok()) {
+      step_failure = a.error();
+      break;
+    }
+  }
+
   if (step_failure.has_value()) {
-    // Reported now rather than at the point of failure: every agreement point
-    // after it has been reached, so the partners know too.
+    // Reported at the END of the period, not at the point of failure: by here
+    // every agreement point after the failure has been reached, so the
+    // partners know too. `periods` is deliberately not incremented -- a period
+    // that failed did not happen.
     const Failure f = *step_failure;
     step_failure.reset();
     return f;
-  }
-
-  for (; ti < ticks.size(); ++ti) {
-    const Result<void> a = advance(components, ticks[ti], 0);
-    if (!a.ok()) return a;
   }
 
   ++stats.periods;

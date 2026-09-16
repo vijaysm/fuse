@@ -572,9 +572,27 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
 
   for (int k = 0; k < R.max_iterations; ++k) {
     for (std::size_t i = R.enter; i <= R.exit; ++i) {
+      // The same rule as the period loop (`is_collective`, fuse/ir/op.hpp):
+      // after a local failure keep executing the collectives, so no partner is
+      // left inside one waiting for this rank, and skip the local arithmetic.
+      // An iteration region is where this matters most -- its body runs many
+      // times, so a rank that drops out of the exchange desynchronises the
+      // remaining iterations rather than just one step.
+      if (step_failure.has_value() && !is_collective(stream[i].kind)) continue;
       const Result<void> e = execute(stream[i], resolved[i]);
-      if (!e.ok()) return e;
+      if (!e.ok()) {
+        if (!step_failure.has_value()) step_failure = e.error();
+        if (stream[i].kind == OpKind::Epoch) return *step_failure;
+        continue;
+      }
       ++stats.instructions_executed;
+    }
+    if (step_failure.has_value()) {
+      // Leaving the region rather than iterating again: every agreement point
+      // in the body has been reached this pass, so the partners already know.
+      const Failure f = *step_failure;
+      step_failure.reset();
+      return f;
     }
     ++st.iterations;
     ++stats.total_iterations;
@@ -712,16 +730,24 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
         std::vector<double>& shadow = previous[arc];
         if (shadow.size() == b.length) num::copy(fed, shadow.data(), b.length);
       }
+      if (step_failure.has_value() &&
+          !is_collective(stream[b.sink_instruction].kind)) {
+        continue;
+      }
       const Result<void> e = execute(stream[b.sink_instruction],
                                      resolved[b.sink_instruction]);
-      if (!e.ok()) return e;
+      if (!e.ok()) {
+        if (!step_failure.has_value()) step_failure = e.error();
+        continue;
+      }
       ++stats.instructions_executed;
     }
 
     // Re-advance, over the SAME interval, with ctx.iteration = k + 1.
     for (const std::size_t t : R.tick_indices) {
+      if (step_failure.has_value()) break;
       const Result<void> adv = advance(components, ticks[t], k + 1);
-      if (!adv.ok()) return adv;
+      if (!adv.ok()) step_failure = adv.error();
     }
     R.x_old.swap(R.x_out);
   }

@@ -94,3 +94,40 @@ TEST(ValueType, ToStringMentionsRegionUnitsAndTime) {
   EXPECT_NE(s.find("K"), std::string::npos);
   EXPECT_NE(s.find("WindowEnd"), std::string::npos);
 }
+
+// ---- what a failed rank may skip -------------------------------------
+
+// `is_collective` decides what a rank keeps executing after it has failed
+// mid-step. Getting one operator wrong here is a hang, not a wrong number, so
+// the classification is pinned per operator and the enumeration is exhaustive:
+// adding an operator without deciding fails this test rather than defaulting.
+TEST(OpKind, CollectiveClassificationIsDeliberate) {
+  using fuse::OpKind;
+  using fuse::is_collective;
+
+  // Involve the other ranks of the exchange: skipping one leaves partners
+  // inside it.
+  EXPECT_TRUE(is_collective(OpKind::Transport));
+  EXPECT_TRUE(is_collective(OpKind::Epoch));
+
+  // Rank-local arithmetic: skipping costs nothing once the period is lost.
+  for (const OpKind k : {OpKind::Source, OpKind::Sink, OpKind::Sample,
+                         OpKind::Accumulate, OpKind::Interpolate,
+                         OpKind::Extrapolate, OpKind::Remap, OpKind::Merge,
+                         OpKind::Relax, OpKind::Residual, OpKind::Accelerate,
+                         OpKind::Constrain, OpKind::Diagnose, OpKind::Scale}) {
+    EXPECT_FALSE(is_collective(k)) << fuse::to_cstring(k);
+  }
+
+  // Reserved for multiscale and refused by the scheduler. Collective is the
+  // safe answer for an operator nobody has written: skipping one that turns
+  // out to be collective hangs, executing one that is not merely wastes work.
+  for (const OpKind k : {OpKind::Map, OpKind::Reduce, OpKind::Closure}) {
+    EXPECT_TRUE(is_collective(k)) << fuse::to_cstring(k);
+  }
+
+  // Exhaustive: every enumerator above, counted. A new operator makes this
+  // fail until it is added to one of the lists.
+  EXPECT_EQ(static_cast<int>(OpKind::Closure) + 1, 19)  // 2 + 14 + 3 above
+      << "OpKind gained or lost an operator; classify it above";
+}

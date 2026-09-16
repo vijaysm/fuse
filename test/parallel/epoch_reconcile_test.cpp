@@ -362,6 +362,19 @@ void bind_all_except(TwoComponentJob& h, std::string_view skip) {
 
 namespace {
 
+/// Hands MPI_COMM_WORLD to the MPI transport. Same helper as
+/// runner_transport_test.cpp: with a base communicator set, the transport is
+/// the "mpi" one and it needs a communicator of its own.
+std::function<fuse::Result<void>(fuse::Transport&)> mpi_comm_setup() {
+  return [](fuse::Transport& tr) -> fuse::Result<void> {
+    auto* mpi = dynamic_cast<fuse::MpiTransport*>(&tr);
+    if (mpi == nullptr) {
+      return fuse::Failure{"E-TEST", "expected an MpiTransport"};
+    }
+    return mpi->set_communicator(MPI_Comm_c2f(MPI_COMM_WORLD));
+  };
+}
+
 /// A component that refuses its step on exactly one rank.
 ///
 /// Refusing in `advance()` rather than at setup is deliberate: a setup failure
@@ -424,12 +437,24 @@ TEST(EpochReconcile, EveryRankStopsWhenOneOfThemFails) {
   cs.add(std::make_unique<FailsOnOneRank>("solid", h.target_field(), n, -1));
 
   fuse::FieldRegistry reg;
-  for (auto& c : cs) ASSERT_TRUE(c.register_fields(reg, h.graph).ok());
+  for (auto& c : cs) {
+    const auto b = c.register_fields(reg, h.graph);
+    ASSERT_TRUE(b.ok()) << b.error().code << ": " << b.error().message;
+  }
 
+  // All three, not just the communicator: with a base communicator the plan
+  // gets rank-matching graphs attached, and a graph-backed plan requires the
+  // "mpi" transport -- RunnerTransport.ACommGraphBackedPlanRefusesANonMpiTransport
+  // asserts that refusal. Setting only base_communicator is how the first
+  // version of this test failed, at initialize() rather than at the behaviour
+  // it meant to check.
   fuse::RunnerConfig cfg;
-  cfg.base_communicator = static_cast<int>(MPI_Comm_c2f(MPI_COMM_WORLD));
+  cfg.transport         = "mpi";
+  cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
+  cfg.transport_setup   = mpi_comm_setup();
   Runner runner{h.graph, h.dag, h.plan, h.backend};
-  ASSERT_TRUE(runner.initialize(cs, reg, cfg).ok());
+  const auto init = runner.initialize(cs, reg, cfg);
+  ASSERT_TRUE(init.ok()) << init.error().code << ": " << init.error().message;
 
   const auto r = runner.run_period(cs);
 
@@ -458,10 +483,14 @@ TEST(EpochReconcile, AClearRunReconcilesAtEveryAgreementPoint) {
   bind_all(h);
 
   fuse::RunnerConfig cfg;
-  cfg.base_communicator = static_cast<int>(MPI_Comm_c2f(MPI_COMM_WORLD));
+  cfg.transport         = "mpi";
+  cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
+  cfg.transport_setup   = mpi_comm_setup();
   Runner runner{h.graph, h.dag, h.plan, h.backend};
-  ASSERT_TRUE(runner.initialize(h.components, h.registry, cfg).ok());
-  ASSERT_TRUE(runner.run_period(h.components).ok());
+  const auto init = runner.initialize(h.components, h.registry, cfg);
+  ASSERT_TRUE(init.ok()) << init.error().code << ": " << init.error().message;
+  const auto ran = runner.run_period(h.components);
+  ASSERT_TRUE(ran.ok()) << ran.error().code << ": " << ran.error().message;
 
   EXPECT_GT(runner.stats().epochs_reconciled, 0u)
       << "a rank taking part in the exchange reconciled no agreement point";

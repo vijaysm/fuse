@@ -338,14 +338,19 @@ struct Runner::Impl {
   /// rank-divergently on each rank's own FieldRegistry. What guarantees every
   /// live rank arrives is the MPI_Allreduce status-agreement checkpoint in
   /// setup(), immediately above the call.
-  /// Builds one communicator per distinct pair of rank sets that appears on
-  /// an `Epoch` instruction, so a rank-agreement point reduces over exactly
-  /// the ranks that took part in its data move and not over the whole job.
+  /// Works out, for each distinct pair of rank sets appearing on an `Epoch`,
+  /// which base-communicator ranks take part, so a rank-agreement point
+  /// reduces over exactly those and not over the whole job.
   ///
-  /// COLLECTIVE over the base communicator (one `MPI_Comm_split` per pair), so
-  /// it is called from setup alongside attach_comm_graphs(). A no-op when
-  /// `base_communicator` is unset, which is also the serial case.
-  Result<void> attach_epoch_communicators();
+  /// NOT collective, and creates no MPI resource. It reads the graph, which is
+  /// identical on every rank, so every rank derives the same lists. That
+  /// matters: an earlier version split a communicator per pair and held it for
+  /// the Runner's lifetime, which would have required a destructor that calls
+  /// `MPI_Comm_free` -- a COLLECTIVE call, and therefore exactly the
+  /// asymmetric-destruction hang attach_comm_graphs() is careful to avoid
+  /// ("nothing outlives this function"). The host run that exposed it reported
+  /// unfreed COMM handles at exit.
+  Result<void> resolve_epoch_participants();
 
   /// Reduces this rank's status over the participants of `ins` and fails if any
   /// of them has failed.
@@ -363,10 +368,17 @@ struct Runner::Impl {
   std::optional<Failure> step_failure;
 
   /// One entry per distinct (source rank set, destination rank set) pair that
-  /// appears on an `Epoch`. Keyed by the packed pair so the lookup at run time
-  /// is a hash, not a search. `int` rather than `MPI_Comm` so this header
-  /// needs no <mpi.h>: the value is a Fortran handle, converted at use.
-  std::unordered_map<std::uint64_t, int> epoch_comms;
+  /// appears on an `Epoch`: the base-communicator ranks that take part, sorted
+  /// ascending. Sorted because the reduction schedule is derived from a rank's
+  /// POSITION in this list, and every participant must derive the same one.
+  ///
+  /// Plain rank numbers, no MPI handle, nothing to release. The reduction
+  /// (`reconcile_epoch`) is point-to-point on the base communicator with a
+  /// dedicated tag, following the same discipline as the crystal router: a
+  /// schedule that depends only on the participant list and this rank's place
+  /// in it cannot diverge on data, and there is no resource whose lifetime
+  /// could outlive the Runner.
+  std::unordered_map<std::uint64_t, std::vector<int>> epoch_participants;
 
   Result<void> attach_comm_graphs();
   Result<void> resolve_constrain(const Instruction& ins, detail::Resolved& r);
