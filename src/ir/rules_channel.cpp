@@ -164,10 +164,21 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
   // type.rank_set/dst_rank_set are component ids (ValueType::rank_set's
   // documented meaning), so a plain integer comparison would fire Transport
   // for every cross-component channel, since source and target are always
-  // different components. What actually determines whether a data move is
-  // needed is whether the two components' *physical* rank ranges overlap:
-  // co-located components (same ranks, different component ids) need no
-  // Transport, disjoint ones do.
+  // different components. What determines whether a data move is needed is
+  // whether the two components' *physical* placements are the SAME SET of
+  // ranks: co-located components (identical ranks, different component ids)
+  // need no Transport, because every value is already on the rank that wants
+  // it.
+  //
+  // Identical, not merely overlapping. This condition used to read
+  // `!overlaps(...)`, which suppressed the move whenever the placements shared
+  // even one rank -- so a channel between ranks {0,1,2,3} and {2,3,4,5} got no
+  // Transport at all and ranks 4 and 5 silently received nothing. That was
+  // invisible in testing because the overlap refusal lives in transport setup,
+  // which only runs when a Transport was emitted: no move meant no refusal
+  // either. Partially shared placements now emit the move and are refused at
+  // setup with E-RT-TRANSPORT-OVERLAP until send/recv plans land, which is a
+  // failure instead of a wrong answer.
   const int dst_rank_set = static_cast<int>(g.owner_of(ch.target).value());
   bool ranks_differ = type.rank_set != dst_rank_set;
   if (type.rank_set >= 0 && dst_rank_set >= 0) {
@@ -175,7 +186,7 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
         g.component(ComponentId{static_cast<std::uint32_t>(type.rank_set)}).ranks;
     const RankSet& dst_ranks =
         g.component(ComponentId{static_cast<std::uint32_t>(dst_rank_set)}).ranks;
-    ranks_differ = !src_ranks.overlaps(dst_ranks);
+    ranks_differ = !src_ranks.same_as(dst_ranks);
   }
   if (ranks_differ) {
     ValueType moved = type;

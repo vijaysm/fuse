@@ -280,3 +280,66 @@ TEST(ChannelLowering, BidirectionalSinkStillConsumesTheDeliveredValue) {
   }
   FAIL() << "no Sink emitted for b.b_s";
 }
+
+// ---- shared placements ------------------------------------------------
+
+namespace {
+
+/// Two components with the given placements and one channel between them.
+fuse::CouplingGraph shared_pair(fuse::RankSet a, fuse::RankSet b) {
+  using namespace fuse;
+  CouplingGraph g;
+  const auto mesh = g.add_mesh({.name = "m", .source = "generated:cube(2)"});
+  const auto reg  = g.add_region({.name = "iface", .mesh = mesh,
+                                  .entity_set = "top", .dimension = 2});
+  const auto src = g.add_component({.name = "src", .ranks = std::move(a),
+                                    .interval = Rational{1}});
+  const auto dst = g.add_component({.name = "dst", .ranks = std::move(b),
+                                    .interval = Rational{1}});
+  const auto out = g.add_field(src, {.name = "q", .region = reg,
+                                     .intent = Intent::Provides});
+  const auto in  = g.add_field(dst, {.name = "q", .region = reg,
+                                     .intent = Intent::Requires});
+  g.add_channel("q", out, in);
+  return g;
+}
+
+std::size_t transports(const fuse::CouplingGraph& g) {
+  fuse::Diagnostics d;
+  const auto lowered = fuse::lower(g, {});
+  std::size_t n = 0;
+  for (std::uint32_t i = 0; i < lowered.dag.node_count(); ++i) {
+    if (lowered.dag.node(fuse::NodeId{i}).kind == fuse::OpKind::Transport) ++n;
+  }
+  return n;
+}
+
+}  // namespace
+
+TEST(LoweringChannel, IdenticalPlacementsNeedNoDataMove) {
+  // Co-located components: every value is already on the rank that wants it.
+  EXPECT_EQ(transports(shared_pair(fuse::RankSet{0, 4}, fuse::RankSet{0, 4})), 0u);
+  EXPECT_EQ(transports(shared_pair(fuse::RankSet{std::vector<int>{0, 2, 4}},
+                                   fuse::RankSet{std::vector<int>{0, 2, 4}})), 0u);
+}
+
+TEST(LoweringChannel, PartiallySharedPlacementsStillNeedADataMove) {
+  // The case that used to be silently skipped. {0,1,2,3} -> {2,3,4,5} shares
+  // 2 and 3, so ranks 4 and 5 can only be fed by a move; suppressing it
+  // because the placements touch would deliver nothing to them at all, with
+  // no diagnostic. The move is emitted; transport setup then refuses the
+  // overlap until send/recv plans exist, which is a failure and not a wrong
+  // answer.
+  EXPECT_EQ(transports(shared_pair(fuse::RankSet{0, 4},
+                                   fuse::RankSet{std::vector<int>{2, 3, 4, 5}})), 1u);
+  // One shared rank is enough to have been suppressed before.
+  EXPECT_EQ(transports(shared_pair(fuse::RankSet{0, 2},
+                                   fuse::RankSet{std::vector<int>{1, 2}})), 1u);
+}
+
+TEST(LoweringChannel, DisjointPlacementsNeedADataMove) {
+  EXPECT_EQ(transports(shared_pair(fuse::RankSet{0, 2}, fuse::RankSet{2, 2})), 1u);
+  // Strided and disjoint: evens to odds.
+  EXPECT_EQ(transports(shared_pair(fuse::RankSet{std::vector<int>{0, 2, 4}},
+                                   fuse::RankSet{std::vector<int>{1, 3, 5}})), 1u);
+}

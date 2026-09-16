@@ -450,3 +450,23 @@ old = "    for (int k = 1; k < participants; ++k) s.result_send_to.push_back(k);
 new = "    for (int k = 1; k < participants; ++k) (void)k;"
 target = "fuse_runtime_epoch_schedule_test"
 test = "runtime.epoch_schedule"
+
+[[mutation]]
+id = "lowering-skips-move-on-any-sharing"
+area = "compiler"
+describes = "the old condition: any shared rank suppresses the data move, so a partially shared placement delivers nothing to the ranks it does not share and never reaches the refusal either"
+file = "src/ir/rules_channel.cpp"
+old = "    ranks_differ = !src_ranks.same_as(dst_ranks);"
+new = "    ranks_differ = !src_ranks.overlaps(dst_ranks);"
+target = "fuse_ir_lowering_channel_test"
+test = "ir.lowering_channel"
+
+[[mutation]]
+id = "rankset-ignores-sharing"
+area = "model"
+describes = "overlaps() reports disjoint placements as sharing ranks, or the reverse"
+file = "include/fuse/model/component.hpp"
+old = "      if (*a == *b) return true;"
+new = "      if (false) return true;"
+target = "fuse_model_component_test"
+test = "model.component"
