@@ -28,9 +28,9 @@ CouplingGraph iterated_two_way(bool relax_return) {
   const auto ra = g.add_region(fuse::Region{.name = "ra", .mesh = ma});
   const auto rb = g.add_region(fuse::Region{.name = "rb", .mesh = mb});
   const auto a = g.add_component(fuse::ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1}, .interval = Rational{1}});
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
   const auto b = g.add_component(fuse::ComponentDecl{
-      .name = "b", .ranks = {.first = 1, .count = 1}, .interval = Rational{1}});
+      .name = "b", .ranks = fuse::RankSet{1, 1}, .interval = Rational{1}});
 
   const auto a_out = g.add_field(a, fuse::FieldSpec{
       .name = "a_out", .region = ra, .units = u::kKelvin,
@@ -327,7 +327,7 @@ TEST(Checkpoint, NoRegionMeansNoCheckpoints) {
   const auto r = g.add_region(fuse::Region{.name = "r", .mesh = m});
   const auto a = g.add_component(fuse::ComponentDecl{.name = "a"});
   const auto b = g.add_component(fuse::ComponentDecl{
-      .name = "b", .ranks = {.first = 1, .count = 1}});
+      .name = "b", .ranks = fuse::RankSet{1, 1}});
   const auto s = g.add_field(a, fuse::FieldSpec{
       .name = "f", .region = r, .intent = fuse::Intent::Provides});
   const auto t = g.add_field(b, fuse::FieldSpec{

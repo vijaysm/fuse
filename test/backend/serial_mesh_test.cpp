@@ -530,10 +530,10 @@ CouplingGraph two_mesh_graph(const std::string& src_a, const std::string& src_b,
   const RegionId rb =
       g.add_region(Region{.name = "rb", .mesh = mb, .dimension = -1});
   const auto ca = g.add_component(fuse::ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1},
+      .name = "a", .ranks = fuse::RankSet{0, 1},
       .interval = fuse::Rational{1}});
   const auto cb = g.add_component(fuse::ComponentDecl{
-      .name = "b", .ranks = {.first = 1, .count = 1},
+      .name = "b", .ranks = fuse::RankSet{1, 1},
       .interval = fuse::Rational{1}});
   const auto fa = g.add_field(ca, fuse::FieldSpec{
       .name = "f", .region = ra, .units = fuse::units::kKelvin,

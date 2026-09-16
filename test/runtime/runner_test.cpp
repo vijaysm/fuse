@@ -280,10 +280,10 @@ std::unique_ptr<Harness> build(HarnessOpts o) {
   const auto r2 = g.add_region(
       fuse::Region{.name = "r2", .mesh = m2, .dimension = o.dst_dim});
   const auto p = g.add_component(fuse::ComponentDecl{
-      .name = "producer", .ranks = {.first = 0, .count = 1},
+      .name = "producer", .ranks = fuse::RankSet{0, 1},
       .interval = o.src_dt});
   const auto c = g.add_component(fuse::ComponentDecl{
-      .name = "consumer", .ranks = {.first = 1, .count = 1},
+      .name = "consumer", .ranks = fuse::RankSet{1, 1},
       .interval = o.dst_dt});
   const auto s = g.add_field(
       p, fuse::FieldSpec{.name = "out", .region = r1, .units = u::kKelvin,
@@ -302,7 +302,7 @@ std::unique_ptr<Harness> build(HarnessOpts o) {
     const auto r3 = g.add_region(
         fuse::Region{.name = "r3", .mesh = m3, .dimension = o.dst_dim});
     const auto bc = g.add_component(fuse::ComponentDecl{
-        .name = "bystander", .ranks = {.first = 2, .count = 1},
+        .name = "bystander", .ranks = fuse::RankSet{2, 1},
         .interval = o.bystander_dt});
     g.add_field(bc, fuse::FieldSpec{.name = "idle", .region = r3,
                                     .units = u::kKelvin,

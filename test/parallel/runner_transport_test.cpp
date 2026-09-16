@@ -125,9 +125,9 @@ class PartitionedTestBackend final : public fuse::MeshBackend {
 
  private:
   [[nodiscard]] std::vector<std::size_t> block(fuse::RankSet rs, int me) const {
-    const int         pos  = me - rs.first;
-    const std::size_t base = n_ / static_cast<std::size_t>(rs.count);
-    const std::size_t rem  = n_ % static_cast<std::size_t>(rs.count);
+    const int         pos  = me - rs.min_rank();
+    const std::size_t base = n_ / static_cast<std::size_t>(static_cast<int>(rs.size()));
+    const std::size_t rem  = n_ % static_cast<std::size_t>(static_cast<int>(rs.size()));
     const std::size_t begin =
         static_cast<std::size_t>(pos) * base + std::min<std::size_t>(pos, rem);
     const std::size_t count =
@@ -204,9 +204,8 @@ class TwoComponentJob {
       // each of these actually runs. `backend` is declared below
       // fluid_/solid_/n_entities_/dim_ for exactly this reason: it is built
       // FROM them, so they must already hold their values.
-      : fluid_{.first = 0, .count = world_size() / 2},
-        solid_{.first = world_size() / 2,
-              .count = world_size() - world_size() / 2},
+      : fluid_{0, world_size() / 2},
+        solid_{world_size() / 2, world_size() - world_size() / 2},
         n_entities_(12), dim_(2),
         backend(fluid_, solid_, n_entities_, dim_) {
     const auto mesh =
@@ -358,8 +357,8 @@ TEST(RunnerTransport, SplittingByRankSetReproducesComponentMembership) {
   ASSERT_GE(world, 2);
 
   // Two disjoint components spanning the job, as spec §6 mode 1 describes.
-  const fuse::RankSet src{.first = 0, .count = world / 2};
-  const fuse::RankSet dst{.first = world / 2, .count = world - world / 2};
+  const fuse::RankSet src{0, world / 2};
+  const fuse::RankSet dst{world / 2, world - world / 2};
   EXPECT_FALSE(src.overlaps(dst));
 
   MPI_Comm c = MPI_COMM_NULL;
@@ -368,7 +367,7 @@ TEST(RunnerTransport, SplittingByRankSetReproducesComponentMembership) {
     ASSERT_NE(c, MPI_COMM_NULL);
     int sz = 0;
     MPI_Comm_size(c, &sz);
-    EXPECT_EQ(sz, src.count);
+    EXPECT_EQ(sz, static_cast<int>(src.size()));
     MPI_Comm_free(&c);
   } else {
     EXPECT_EQ(c, MPI_COMM_NULL);

@@ -18,9 +18,9 @@ CouplingGraph iterated_pair(int max_iters) {
   const auto rf = g.add_region(fuse::Region{.name = "rf", .mesh = mf});
   const auto rs = g.add_region(fuse::Region{.name = "rs", .mesh = ms});
   const auto a = g.add_component(fuse::ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1}});
+      .name = "a", .ranks = fuse::RankSet{0, 1}});
   const auto b = g.add_component(fuse::ComponentDecl{
-      .name = "b", .ranks = {.first = 1, .count = 1}});
+      .name = "b", .ranks = fuse::RankSet{1, 1}});
   const auto s = g.add_field(a, fuse::FieldSpec{
       .name = "f", .region = rf, .units = u::kKelvin,
       .intent = fuse::Intent::Provides});
@@ -98,9 +98,9 @@ TEST(IterationRegions, CarriedSetIsEmptyWithoutRelaxation) {
     const auto rf = h.add_region(fuse::Region{.name = "rf", .mesh = mf});
     const auto rs = h.add_region(fuse::Region{.name = "rs", .mesh = ms});
     const auto a = h.add_component(fuse::ComponentDecl{
-        .name = "a", .ranks = {.first = 0, .count = 1}});
+        .name = "a", .ranks = fuse::RankSet{0, 1}});
     const auto b = h.add_component(fuse::ComponentDecl{
-        .name = "b", .ranks = {.first = 1, .count = 1}});
+        .name = "b", .ranks = fuse::RankSet{1, 1}});
     const auto s = h.add_field(a, fuse::FieldSpec{
         .name = "f", .region = rf, .units = u::kKelvin,
         .intent = fuse::Intent::Provides});

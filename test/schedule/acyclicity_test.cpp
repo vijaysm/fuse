@@ -24,9 +24,9 @@ CouplingGraph two_way(bool lag_on_return) {
   const auto ra = g.add_region(fuse::Region{.name = "ra", .mesh = ma});
   const auto rb = g.add_region(fuse::Region{.name = "rb", .mesh = mb});
   const auto a = g.add_component(ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1}, .interval = Rational{1}});
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
   const auto b = g.add_component(ComponentDecl{
-      .name = "b", .ranks = {.first = 1, .count = 1}, .interval = Rational{1}});
+      .name = "b", .ranks = fuse::RankSet{1, 1}, .interval = Rational{1}});
 
   const auto a_out = g.add_field(a, fuse::FieldSpec{
       .name = "a_out", .region = ra, .units = u::kKelvin,
@@ -65,9 +65,9 @@ TEST(Acyclicity, LinearChainIsAcyclic) {
   const auto m = g.add_mesh(fuse::MeshDecl{.name = "m"});
   const auto r = g.add_region(fuse::Region{.name = "r", .mesh = m});
   const auto a = g.add_component(ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1}});
+      .name = "a", .ranks = fuse::RankSet{0, 1}});
   const auto b = g.add_component(ComponentDecl{
-      .name = "b", .ranks = {.first = 1, .count = 1}});
+      .name = "b", .ranks = fuse::RankSet{1, 1}});
   const auto s = g.add_field(a, fuse::FieldSpec{
       .name = "f", .region = r, .intent = fuse::Intent::Provides});
   const auto t = g.add_field(b, fuse::FieldSpec{
@@ -179,10 +179,10 @@ CouplingGraph multirate(bool lag_on_return, bool accumulate) {
   const auto ra = g.add_region(fuse::Region{.name = "ra", .mesh = m});
   const auto rb = g.add_region(fuse::Region{.name = "rb", .mesh = m});
   const auto a = g.add_component(ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1},
+      .name = "a", .ranks = fuse::RankSet{0, 1},
       .interval = Rational{1, 3}});
   const auto b = g.add_component(ComponentDecl{
-      .name = "b", .ranks = {.first = 1, .count = 1}, .interval = Rational{1}});
+      .name = "b", .ranks = fuse::RankSet{1, 1}, .interval = Rational{1}});
   const auto a_out = g.add_field(a, fuse::FieldSpec{
       .name = "a_out", .region = ra, .units = u::kKelvin,
       .intent = fuse::Intent::Provides});
@@ -250,7 +250,7 @@ CouplingGraph ring(int n, int lag_on) {
   std::vector<fuse::FieldId> ins;
   for (int i = 0; i < n; ++i) {
     const auto c = g.add_component(ComponentDecl{
-        .name = "c" + std::to_string(i), .ranks = {.first = i, .count = 1}});
+        .name = "c" + std::to_string(i), .ranks = fuse::RankSet{i, 1}});
     outs.push_back(g.add_field(c, fuse::FieldSpec{
         .name = "out", .region = r, .intent = fuse::Intent::Provides}));
     ins.push_back(g.add_field(c, fuse::FieldSpec{
@@ -311,9 +311,9 @@ TEST(Acyclicity, UnwrittenBidirectionalFieldIsNotASpuriousCycle) {
   const auto m = g.add_mesh(fuse::MeshDecl{.name = "m"});
   const auto r = g.add_region(fuse::Region{.name = "r", .mesh = m});
   const auto a = g.add_component(ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1}});
+      .name = "a", .ranks = fuse::RankSet{0, 1}});
   const auto b = g.add_component(ComponentDecl{
-      .name = "b", .ranks = {.first = 1, .count = 1}});
+      .name = "b", .ranks = fuse::RankSet{1, 1}});
   g.add_field(a, fuse::FieldSpec{.name = "state", .region = r,
                                  .intent = fuse::Intent::Bidirectional});
   const auto s = g.add_field(a, fuse::FieldSpec{
@@ -448,9 +448,9 @@ TEST(Acyclicity, SecondCycleOutsideTheRegionIsStillRejected) {
   const auto m = g.add_mesh(fuse::MeshDecl{.name = "mcd"});
   const auto r = g.add_region(fuse::Region{.name = "rcd", .mesh = m});
   const auto c = g.add_component(ComponentDecl{
-      .name = "c", .ranks = {.first = 2, .count = 1}, .interval = Rational{1}});
+      .name = "c", .ranks = fuse::RankSet{2, 1}, .interval = Rational{1}});
   const auto d = g.add_component(ComponentDecl{
-      .name = "d", .ranks = {.first = 3, .count = 1}, .interval = Rational{1}});
+      .name = "d", .ranks = fuse::RankSet{3, 1}, .interval = Rational{1}});
   const auto c_out = g.add_field(c, fuse::FieldSpec{
       .name = "c_out", .region = r, .intent = fuse::Intent::Provides});
   const auto d_in = g.add_field(d, fuse::FieldSpec{
@@ -557,7 +557,7 @@ namespace {
 CouplingGraph one_component() {
   CouplingGraph g;
   g.add_component(
-      ComponentDecl{.name = "solo", .ranks = {.first = 0, .count = 1}});
+      ComponentDecl{.name = "solo", .ranks = fuse::RankSet{0, 1}});
   return g;
 }
 
@@ -725,11 +725,11 @@ CouplingGraph multi_writer_hiding_a_loop(bool include_second_writer) {
   const auto m = g.add_mesh(fuse::MeshDecl{.name = "m"});
   const auto r = g.add_region(fuse::Region{.name = "r", .mesh = m});
   const auto a = g.add_component(ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1}, .interval = Rational{1}});
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
   const auto b = g.add_component(ComponentDecl{
-      .name = "b", .ranks = {.first = 1, .count = 1}, .interval = Rational{1}});
+      .name = "b", .ranks = fuse::RankSet{1, 1}, .interval = Rational{1}});
   const auto c = g.add_component(ComponentDecl{
-      .name = "c", .ranks = {.first = 2, .count = 1}, .interval = Rational{1}});
+      .name = "c", .ranks = fuse::RankSet{2, 1}, .interval = Rational{1}});
 
   const auto a_out = g.add_field(a, fuse::FieldSpec{
       .name = "a_out", .region = r, .units = u::kKelvin,
@@ -763,11 +763,11 @@ CouplingGraph multi_writer_with_a_node_free_channel() {
   const auto r = g.add_region(fuse::Region{.name = "r", .mesh = m});
   // a and c share ranks, so a->c needs no Transport.
   const auto a = g.add_component(ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1}, .interval = Rational{1}});
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
   const auto b = g.add_component(ComponentDecl{
-      .name = "b", .ranks = {.first = 5, .count = 1}, .interval = Rational{1}});
+      .name = "b", .ranks = fuse::RankSet{5, 1}, .interval = Rational{1}});
   const auto c = g.add_component(ComponentDecl{
-      .name = "c", .ranks = {.first = 0, .count = 1}, .interval = Rational{1}});
+      .name = "c", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
 
   const auto a_out = g.add_field(a, fuse::FieldSpec{
       .name = "a_out", .region = r, .units = u::kKelvin,
@@ -859,9 +859,9 @@ CouplingGraph bidirectional_alias(int lag_in, int lag_out, bool with_ch2) {
   const auto m = g.add_mesh(fuse::MeshDecl{.name = "m"});
   const auto r = g.add_region(fuse::Region{.name = "r", .mesh = m});
   const auto a = g.add_component(ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1}, .interval = Rational{1}});
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
   const auto b = g.add_component(ComponentDecl{
-      .name = "b", .ranks = {.first = 1, .count = 1}, .interval = Rational{1}});
+      .name = "b", .ranks = fuse::RankSet{1, 1}, .interval = Rational{1}});
 
   const auto a_x = g.add_field(a, fuse::FieldSpec{
       .name = "a_x", .region = r, .units = u::kKelvin,

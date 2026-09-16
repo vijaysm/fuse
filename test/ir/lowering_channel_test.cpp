@@ -34,9 +34,9 @@ Pair make_pair() {
   const auto rf = g.add_region(Region{.name = "rf", .mesh = mf, .dimension = 2});
   const auto rs = g.add_region(Region{.name = "rs", .mesh = ms, .dimension = 2});
   const auto fluid = g.add_component(ComponentDecl{
-      .name = "fluid", .ranks = {.first = 0, .count = 2}, .interval = Rational{1}});
+      .name = "fluid", .ranks = fuse::RankSet{0, 2}, .interval = Rational{1}});
   const auto solid = g.add_component(ComponentDecl{
-      .name = "solid", .ranks = {.first = 2, .count = 2}, .interval = Rational{1}});
+      .name = "solid", .ranks = fuse::RankSet{2, 2}, .interval = Rational{1}});
   const auto s = g.add_field(fluid, FieldSpec{
       .name = "heat_flux", .region = rf, .units = u::kHeatFluxDensity,
       .conservation = Conservation::Extensive, .intent = Intent::Provides});
@@ -204,9 +204,9 @@ BidiGraph make_bidi() {
   const auto m = g.add_mesh(MeshDecl{.name = "m"});
   const auto r = g.add_region(Region{.name = "r", .mesh = m, .dimension = 2});
   const auto a = g.add_component(ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1}, .interval = Rational{1}});
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
   const auto b = g.add_component(ComponentDecl{
-      .name = "b", .ranks = {.first = 1, .count = 1}, .interval = Rational{1}});
+      .name = "b", .ranks = fuse::RankSet{1, 1}, .interval = Rational{1}});
   const auto a_x = g.add_field(a, FieldSpec{
       .name = "a_x", .region = r, .units = u::kKelvin,
       .intent = Intent::Provides});

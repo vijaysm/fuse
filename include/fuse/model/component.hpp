@@ -1,4 +1,8 @@
 #pragma once
+#include <utility>
+#include <cstddef>
+#include <iterator>
+#include <algorithm>
 
 #include <string>
 #include <vector>
@@ -10,18 +14,125 @@ namespace fuse {
 
 /// Contiguous range of world-communicator ranks owned by a component.
 /// Disjoint rank sets are the normal case (spec §4.1); overlap is legal.
-struct RankSet {
-  int first = 0;
-  int count = 1;
+/// Which ranks a component runs on.
+///
+/// An explicit sorted list of distinct ranks, not a range. Three layouts that
+/// real coupled jobs use and a range cannot express:
+///
+///   * a component on strided ranks (every other core, one per socket);
+///   * a component on a subset chosen by the launcher rather than a block;
+///   * two components sharing ranks, which is how a job fits both in memory
+///     when neither needs a whole partition to itself.
+///
+/// The last one also means `overlaps()` is a question with a useful answer
+/// rather than an error condition: a channel between two components that share
+/// some ranks moves data between the ranks they do not share and copies on the
+/// ranks they do.
+///
+/// `{first, count}` still constructs a contiguous set, because that is the
+/// common case and because it keeps every existing declaration reading the
+/// same way. The members are gone, though, so code that used to compute
+/// `first + count` has to say what it means.
+class RankSet {
+ public:
+  RankSet() : ranks_{0} {}
+
+  /// The contiguous set `[first, first + count)`. `count <= 0` yields an empty
+  /// set, which is legal: a component may be declared and placed nowhere in a
+  /// particular run.
+  RankSet(int first, int count) {
+    ranks_.reserve(static_cast<std::size_t>(count > 0 ? count : 0));
+    for (int i = 0; i < count; ++i) ranks_.push_back(first + i);
+  }
+
+  /// An arbitrary set. Sorted and de-duplicated on construction, because every
+  /// consumer depends on the order (`CommGraph` matches by position, the
+  /// descriptor is compared byte-for-byte across ranks, and the agreement
+  /// reduction derives its schedule from a rank's index in the list), and
+  /// because a caller handing over ranks in launcher order should not have to
+  /// know that.
+  explicit RankSet(std::vector<int> ranks) : ranks_(std::move(ranks)) {
+    std::sort(ranks_.begin(), ranks_.end());
+    ranks_.erase(std::unique(ranks_.begin(), ranks_.end()), ranks_.end());
+  }
+
+  [[nodiscard]] const std::vector<int>& ranks() const noexcept { return ranks_; }
+  [[nodiscard]] std::size_t size() const noexcept { return ranks_.size(); }
+  [[nodiscard]] bool empty() const noexcept { return ranks_.empty(); }
+  [[nodiscard]] auto begin() const noexcept { return ranks_.begin(); }
+  [[nodiscard]] auto end() const noexcept { return ranks_.end(); }
+
+  /// The smallest rank, or -1 when empty. Named for what it is: callers that
+  /// want "where the block starts" are usually about to assume contiguity.
+  [[nodiscard]] int min_rank() const noexcept {
+    return ranks_.empty() ? -1 : ranks_.front();
+  }
+  [[nodiscard]] int max_rank() const noexcept {
+    return ranks_.empty() ? -1 : ranks_.back();
+  }
 
   [[nodiscard]] bool contains(int rank) const noexcept {
-    return rank >= first && rank < first + count;
+    return std::binary_search(ranks_.begin(), ranks_.end(), rank);
   }
+
+  /// Whether the two sets share at least one rank.
   [[nodiscard]] bool overlaps(const RankSet& o) const noexcept {
-    return first < o.first + o.count && o.first < first + count;
+    auto a = ranks_.begin();
+    auto b = o.ranks_.begin();
+    while (a != ranks_.end() && b != o.ranks_.end()) {
+      if (*a == *b) return true;
+      if (*a < *b) ++a; else ++b;
+    }
+    return false;
   }
-  [[nodiscard]] int last() const noexcept { return first + count - 1; }
+
+  /// Whether the two sets are the same ranks. Distinct from `overlaps`: a
+  /// channel between identical placements needs no data move at all, while one
+  /// between partially shared placements needs both a move and a local copy.
+  [[nodiscard]] bool same_as(const RankSet& o) const noexcept {
+    return ranks_ == o.ranks_;
+  }
+
+  /// Whether this set is a block `[min_rank, max_rank]` with nothing missing.
+  /// Asked by code that can take a faster path on a contiguous layout; never
+  /// assumed.
+  [[nodiscard]] bool is_contiguous() const noexcept {
+    if (ranks_.empty()) return true;
+    return ranks_.back() - ranks_.front() + 1 == static_cast<int>(ranks_.size());
+  }
+
+  /// The position of `rank` in this set, or -1. This, not the rank number, is
+  /// what indexes per-rank data in a set that may be strided.
+  [[nodiscard]] int index_of(int rank) const noexcept {
+    const auto it = std::lower_bound(ranks_.begin(), ranks_.end(), rank);
+    if (it == ranks_.end() || *it != rank) return -1;
+    return static_cast<int>(it - ranks_.begin());
+  }
+
+  [[nodiscard]] bool operator==(const RankSet& o) const noexcept {
+    return ranks_ == o.ranks_;
+  }
+
+ private:
+  std::vector<int> ranks_;
 };
+
+/// The union of two placements, sorted: the ranks that take part in an exchange
+/// between them.
+[[nodiscard]] inline RankSet rank_union(const RankSet& a, const RankSet& b) {
+  std::vector<int> all(a.ranks());
+  all.insert(all.end(), b.ranks().begin(), b.ranks().end());
+  return RankSet{std::move(all)};
+}
+
+/// The ranks the two placements share.
+[[nodiscard]] inline RankSet rank_intersection(const RankSet& a, const RankSet& b) {
+  std::vector<int> both;
+  std::set_intersection(a.ranks().begin(), a.ranks().end(),
+                        b.ranks().begin(), b.ranks().end(),
+                        std::back_inserter(both));
+  return RankSet{std::move(both)};
+}
 
 /// Spec §8.1: `interval` is the component's own coupling interval.
 /// Independent intervals are the default; lockstep is all intervals equal.

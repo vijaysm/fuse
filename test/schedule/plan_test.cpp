@@ -25,9 +25,9 @@ CouplingGraph pair(Rational src_dt, Rational dst_dt) {
   const auto rf = g.add_region(fuse::Region{.name = "rf", .mesh = mf});
   const auto rs = g.add_region(fuse::Region{.name = "rs", .mesh = ms});
   const auto a = g.add_component(ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1}, .interval = src_dt});
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = src_dt});
   const auto b = g.add_component(ComponentDecl{
-      .name = "b", .ranks = {.first = 1, .count = 1}, .interval = dst_dt});
+      .name = "b", .ranks = fuse::RankSet{1, 1}, .interval = dst_dt});
   const auto s = g.add_field(a, fuse::FieldSpec{
       .name = "f", .region = rf, .units = u::kHeatFluxDensity,
       .conservation = fuse::Conservation::Extensive,
@@ -132,9 +132,9 @@ TEST(ExecutionPlan, RejectsCyclicSchedules) {
   const auto ra = g.add_region(fuse::Region{.name = "ra", .mesh = m});
   const auto rb = g.add_region(fuse::Region{.name = "rb", .mesh = m});
   const auto a = g.add_component(ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1}});
+      .name = "a", .ranks = fuse::RankSet{0, 1}});
   const auto b = g.add_component(ComponentDecl{
-      .name = "b", .ranks = {.first = 1, .count = 1}});
+      .name = "b", .ranks = fuse::RankSet{1, 1}});
   const auto ao = g.add_field(a, fuse::FieldSpec{
       .name = "ao", .region = ra, .intent = fuse::Intent::Provides});
   const auto bi = g.add_field(b, fuse::FieldSpec{
@@ -191,7 +191,7 @@ TEST(ExecutionPlan, OrdersByDependenceNotByNodeId) {
   const auto m = g.add_mesh(fuse::MeshDecl{.name = "m"});
   const auto reg = g.add_region(fuse::Region{.name = "r", .mesh = m});
   g.add_component(ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1}, .interval = Rational{1}});
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
 
   fuse::OperatorDAG dag;
   fuse::ValueType vt;
@@ -354,7 +354,7 @@ TEST(ExecutionPlan, RejectsAnOperatorWithMoreInputsThanAnInstructionHolds) {
   const auto m = g.add_mesh(fuse::MeshDecl{.name = "m"});
   const auto reg = g.add_region(fuse::Region{.name = "r", .mesh = m});
   g.add_component(ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1},
+      .name = "a", .ranks = fuse::RankSet{0, 1},
       .interval = Rational{1, 4}});  // four instances per period
 
   fuse::OperatorDAG dag;
@@ -437,14 +437,14 @@ TEST(ExecutionPlan, RejectsARegionWhoseBodyIsNotContiguous) {
   const auto m = g.add_mesh(fuse::MeshDecl{.name = "m"});
   const auto r0 = g.add_region(fuse::Region{.name = "r0", .mesh = m});
   const auto a = g.add_component(ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1}, .interval = Rational{1}});
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
   const auto b = g.add_component(ComponentDecl{
-      .name = "b", .ranks = {.first = 1, .count = 1}, .interval = Rational{1}});
+      .name = "b", .ranks = fuse::RankSet{1, 1}, .interval = Rational{1}});
   const auto c = g.add_component(ComponentDecl{
-      .name = "c", .ranks = {.first = 2, .count = 1},
+      .name = "c", .ranks = fuse::RankSet{2, 1},
       .interval = Rational{1, 2}});
   const auto d = g.add_component(ComponentDecl{
-      .name = "d", .ranks = {.first = 3, .count = 1},
+      .name = "d", .ranks = fuse::RankSet{3, 1},
       .interval = Rational{1, 2}});
   const auto ao = g.add_field(a, fuse::FieldSpec{
       .name = "ao", .region = r0, .intent = fuse::Intent::Provides});

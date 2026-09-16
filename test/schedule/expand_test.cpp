@@ -23,9 +23,9 @@ CouplingGraph pair(Rational src_dt, Rational dst_dt, fuse::AccumOp accum) {
   const auto rf = g.add_region(fuse::Region{.name = "rf", .mesh = mf});
   const auto rs = g.add_region(fuse::Region{.name = "rs", .mesh = ms});
   const auto a = g.add_component(ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1}, .interval = src_dt});
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = src_dt});
   const auto b = g.add_component(ComponentDecl{
-      .name = "b", .ranks = {.first = 1, .count = 1}, .interval = dst_dt});
+      .name = "b", .ranks = fuse::RankSet{1, 1}, .interval = dst_dt});
   const auto s = g.add_field(a, fuse::FieldSpec{
       .name = "f", .region = rf, .units = u::kKelvin,
       .intent = fuse::Intent::Provides});
@@ -309,7 +309,7 @@ TEST(Expand, MismatchedClockSetIsAnErrorNotAnException) {
   const auto lowered = lower(g);
   CouplingGraph bigger = g;
   bigger.add_component(ComponentDecl{
-      .name = "c", .ranks = {.first = 2, .count = 1}, .interval = Rational{1}});
+      .name = "c", .ranks = fuse::RankSet{2, 1}, .interval = Rational{1}});
   const fuse::ClockSet cs{bigger};
 
   ASSERT_NO_THROW({

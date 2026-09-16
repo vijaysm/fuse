@@ -274,9 +274,22 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
     const auto& c = g.component(cid);
     e << YAML::BeginMap
       << YAML::Key << "name" << YAML::Value << c.name
-      << YAML::Key << "ranks" << YAML::Value << YAML::Flow << YAML::BeginMap
-      << YAML::Key << "first" << YAML::Value << c.ranks.first
-      << YAML::Key << "count" << YAML::Value << c.ranks.count << YAML::EndMap
+      << YAML::Key << "ranks" << YAML::Value;
+    // A contiguous placement keeps the {first, count} form, which is what
+    // almost every setup is and is far more readable than [0, 1, 2, ..., 63].
+    // A strided or shared placement emits the explicit list. Both parse, and
+    // the round-trip test covers each.
+    if (c.ranks.is_contiguous() && !c.ranks.empty()) {
+      e << YAML::Flow << YAML::BeginMap
+        << YAML::Key << "first" << YAML::Value << c.ranks.min_rank()
+        << YAML::Key << "count" << YAML::Value << static_cast<int>(c.ranks.size())
+        << YAML::EndMap;
+    } else {
+      e << YAML::Flow << YAML::BeginSeq;
+      for (const int rank : c.ranks) e << rank;
+      e << YAML::EndSeq;
+    }
+    e
       << YAML::Key << "interval" << YAML::Value << c.interval.to_string()
       << YAML::Key << "fields" << YAML::Value << YAML::BeginSeq;
     for (const FieldId fid : c.fields) {
@@ -486,12 +499,20 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
     ComponentDecl c;
     c.name = n["name"].as<std::string>();
     if (n["ranks"]) {
-      if (auto e = check_unknown_keys(n["ranks"], {"first", "count"},
-                                      "component '" + c.name + "' ranks")) {
-        return *e;
+      if (n["ranks"].IsSequence()) {
+        std::vector<int> ranks;
+        for (const auto& r : n["ranks"]) ranks.push_back(r.as<int>());
+        // RankSet sorts and de-duplicates, so a hand-written file may list
+        // ranks in launcher order without that changing the graph.
+        c.ranks = RankSet{std::move(ranks)};
+      } else {
+        if (auto e = check_unknown_keys(n["ranks"], {"first", "count"},
+                                        "component '" + c.name + "' ranks")) {
+          return *e;
+        }
+        c.ranks = RankSet{n["ranks"]["first"].as<int>(),
+                          n["ranks"]["count"].as<int>()};
       }
-      c.ranks.first = n["ranks"]["first"].as<int>();
-      c.ranks.count = n["ranks"]["count"].as<int>();
     }
     if (n["interval"]) {
       if (!parse_rational(n["interval"].as<std::string>(), c.interval)) {
