@@ -182,7 +182,8 @@ LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy) {
       const ArcId out = ctx.dag.add_arc(ctx.dag.arc(newest).type,
                                         qualified(g, f) + "/merge");
       ctx.dag.add_node(OpKind::Merge, writers, out,
-                       OpAttrs{.reason = std::string(merge_op_name(spec->op))},
+                       OpAttrs{.reason = std::string(merge_op_name(spec->op)),
+                               .merge = spec->op},
                        ChannelId{}, qualified(g, f) + "/merge");
       ctx.field_arc[field_value] = out;
     }

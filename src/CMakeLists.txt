@@ -10,6 +10,7 @@
 set(FUSE_HAVE_MPI    ${FUSE_ENABLE_MPI})
 set(FUSE_HAVE_KOKKOS ON)
 set(FUSE_HAVE_MOAB   ${FUSE_ENABLE_MOAB})
+set(FUSE_HAVE_LOWFIVE ${FUSE_ENABLE_LOWFIVE})
 set(FUSE_HAVE_PETSC  ${FUSE_ENABLE_PETSC})
 configure_file(${PROJECT_SOURCE_DIR}/include/fuse/base/config.hpp.in
                ${PROJECT_BINARY_DIR}/include/fuse/base/config.hpp @ONLY)
@@ -91,6 +92,83 @@ add_library(fuse-coupler-schedule
 add_library(fuse::schedule ALIAS fuse-coupler-schedule)
 target_link_libraries(fuse-coupler-schedule PUBLIC fuse::ir)
 set_target_properties(fuse-coupler-schedule PROPERTIES
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN ON
+)
+
+# ---------------------------------------------------------------- num
+# Numerics: waveforms, temporal bases, convergence measures, accelerators, and
+# the elementwise kernels. Depends on the model (for the iteration
+# configuration types) and on nothing above it, so a numerics test needs no
+# runtime and no mesh.
+add_library(fuse-coupler-num
+  num/accel_quasi_newton.cpp
+  num/accel_relaxation.cpp
+  num/kernels_inst.cpp
+)
+add_library(fuse::num ALIAS fuse-coupler-num)
+target_link_libraries(fuse-coupler-num PUBLIC fuse::model)
+set_target_properties(fuse-coupler-num PROPERTIES
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN ON
+)
+
+# ---------------------------------------------------------------- transport
+# Moving field values between rank sets. The copy path is always built; the MPI
+# router and the rank-matching graph are compiled only in an MPI build, because
+# they are the parts that name MPI types.
+add_library(fuse-coupler-transport
+  transport/copy_transport.cpp
+  transport/lowfive_transport.cpp
+)
+if(FUSE_ENABLE_MPI)
+  target_sources(fuse-coupler-transport PRIVATE
+    transport/comm_graph.cpp
+    transport/crystal_router.cpp
+    transport/mpi_transport.cpp
+  )
+endif()
+add_library(fuse::transport ALIAS fuse-coupler-transport)
+target_link_libraries(fuse-coupler-transport PUBLIC fuse::schedule)
+if(FUSE_ENABLE_MPI)
+  target_link_libraries(fuse-coupler-transport PUBLIC MPI::MPI_CXX)
+endif()
+set_target_properties(fuse-coupler-transport PROPERTIES
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN ON
+)
+
+# ---------------------------------------------------------------- backend
+# Mesh access and spatial/space-time transfer behind one interface. Only the
+# serial mesh and the space-time projection are here; the mesh database and
+# weight generators that need external libraries arrive at S5.
+add_library(fuse-coupler-backend
+  backend/serial_backend.cpp
+  backend/spacetime.cpp
+  # Supermesh intersection: the real implementation needs MOAB, and the
+  # file's own no-MOAB path refuses with E-REMAP-NOMOAB rather than
+  # leaving the symbol undefined. S5 turns the option on.
+  backend/intx_weights.cpp
+)
+add_library(fuse::backend ALIAS fuse-coupler-backend)
+target_link_libraries(fuse-coupler-backend PUBLIC fuse::schedule)
+set_target_properties(fuse-coupler-backend PROPERTIES
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN ON
+)
+
+# ---------------------------------------------------------------- runtime
+# Executing a plan: field binding, both entry modes, iteration regions.
+# The top of the library -- it links everything below and nothing links it.
+add_library(fuse-coupler-runtime
+  runtime/runner.cpp
+  runtime/iteration.cpp
+  runtime/checkpoint_support.cpp
+)
+add_library(fuse::runtime ALIAS fuse-coupler-runtime)
+target_link_libraries(fuse-coupler-runtime PUBLIC
+  fuse::schedule fuse::num fuse::transport fuse::backend)
+set_target_properties(fuse-coupler-runtime PROPERTIES
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
 )

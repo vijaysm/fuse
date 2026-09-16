@@ -1,3 +1,4 @@
+#include "fuse/base/config.hpp"
 #include "fuse/base/error.hpp"
 
 #include <unistd.h>
@@ -141,7 +142,7 @@ bool debugger_wanted_on_rank(const ErrorPolicy& policy, int rank) {
 }
 
 bool attach_debugger(const ErrorPolicy& policy) noexcept {
-#ifdef FUSE_HAVE_POSIX_SPAWN_PATH
+#if FUSE_HAVE_POSIX_SPAWN_PATH
   const long pid = static_cast<long>(::getpid());
   const std::string cmd = debugger_command(policy, pid);
   write_stderr(fmt::format("[fuse] attaching debugger: {}\n", cmd));
