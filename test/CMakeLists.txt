@@ -79,6 +79,6 @@ foreach(t ir_op ir_dag ir_dump lowering lowering_channel lowering_derived loweri
 endforeach()
 
 # ---------------------------------------------------------------- schedule
-foreach(t clock acyclicity expand plan lockstep)
+foreach(t clock acyclicity expand plan lockstep epoch)
   fuse_add_gtest(schedule ${t})
 endforeach()

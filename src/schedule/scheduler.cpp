@@ -333,6 +333,36 @@ std::string ExecutionPlan::to_string() const {
   return os.str();
 }
 
+namespace {
+
+/// True when `rank` takes part in an instruction: it owns the source side, the
+/// destination side, or the instruction names no ranks at all (a coupler-local
+/// operator, which every participating rank runs on its own data).
+bool rank_participates(const Instruction& ins, int rank, const CouplingGraph& g) {
+  const auto in_set = [&g, rank](int component) {
+    if (component < 0) return false;
+    const auto id = static_cast<std::uint32_t>(component);
+    if (id >= g.component_count()) return false;
+    const RankSet& rs = g.component(ComponentId{id}).ranks;
+    return rank >= rs.first && rank < rs.first + rs.count;
+  };
+  if (ins.attrs.src_rank_set < 0 && ins.attrs.dst_rank_set < 0) return true;
+  return in_set(ins.attrs.src_rank_set) || in_set(ins.attrs.dst_rank_set);
+}
+
+}  // namespace
+
+std::vector<std::string> epoch_sequence(const ExecutionPlan& plan,
+                                        const CouplingGraph& g, int rank) {
+  std::vector<std::string> seq;
+  for (const Instruction& ins : plan.instructions()) {
+    if (ins.kind != OpKind::Epoch) continue;
+    if (!rank_participates(ins, rank, g)) continue;
+    seq.push_back(ins.time.to_string() + ":" + ins.attrs.reason);
+  }
+  return seq;
+}
+
 ScheduleResult schedule(const CouplingGraph& g, const OperatorDAG& dag,
                         const ClockSet& clocks, const RegionSizes& sizes,
                         ExpandMode mode) {
@@ -363,6 +393,18 @@ ScheduleResult schedule(const CouplingGraph& g, const OperatorDAG& dag,
     result.diags.add(Severity::Error, rank.error().code, rank.error().message);
     return result;
   }
+
+  // Every rank must reach the same agreement points, in the same order.
+  //
+  // This is checked here, once, at compile time, because the alternative is
+  // finding out at run time: the ranks that expect one more agreement point
+  // than their partners simply wait, and a wait with no timeout on a thousand
+  // ranks is indistinguishable from slow physics. The proof is cheap because
+  // the plan is a pure function of the graph -- each rank builds this same
+  // instruction list -- so disagreement can only come from which instructions
+  // a rank takes part in.
+  //
+  // Checked after the plan is built, at the bottom of this function.
 
   // Reserved multiscale operators. They exist as enumerators so their ordinals
   // do not move when they land, and they are refused here for the same reason
@@ -529,6 +571,58 @@ ScheduleResult schedule(const CouplingGraph& g, const OperatorDAG& dag,
 
   result.plan = ExecutionPlan{std::move(instructions), std::move(buffers),
                               td.period, td.lockstep, dag.region_count()};
+
+  // Rank agreement, proved before the plan leaves the compiler.
+  //
+  // NOT "every rank reaches every agreement point": ranks legitimately do not.
+  // Two independent couplings on disjoint ranks have two independent agreement
+  // points, and forcing all four ranks through both would add synchronization
+  // the physics never asked for -- the cost that makes people distrust a
+  // coupler at scale.
+  //
+  // The property that actually prevents a hang is narrower: the ranks that
+  // take part in a data move must be exactly the ranks that reach the
+  // agreement point guarding it. If a rank moves data and then does not reach
+  // the point, its partners wait for a report it never sends; if a rank
+  // reaches the point without having moved data, it waits for partners who are
+  // not coming. Both are hangs, and both are compile-time detectable here.
+  for (std::size_t i = 0; i + 1 < result.plan.instructions().size(); ++i) {
+    const Instruction& move = result.plan.instructions()[i];
+    if (move.kind != OpKind::Transport) continue;
+
+    const Instruction* guard = nullptr;
+    for (std::size_t k = i + 1; k < result.plan.instructions().size(); ++k) {
+      const Instruction& candidate = result.plan.instructions()[k];
+      if (candidate.kind != OpKind::Epoch) continue;
+      if (candidate.n_in == 0 || candidate.in[0] != move.out) continue;
+      guard = &candidate;
+      break;
+    }
+    if (guard == nullptr) {
+      result.diags.add(Severity::Error, "E-SCHED-EPOCH-MISSING",
+                       "a data move at t=" + move.time.to_string() +
+                           " is not followed by a rank-agreement point, so a "
+                           "failure on one of its ranks would be discovered by "
+                           "the others only when they block on the next "
+                           "collective");
+      return result;
+    }
+    if (guard->attrs.src_rank_set != move.attrs.src_rank_set ||
+        guard->attrs.dst_rank_set != move.attrs.dst_rank_set) {
+      result.diags.add(
+          Severity::Error, "E-SCHED-EPOCH-PARTIAL",
+          "the rank-agreement point after the data move at t=" +
+              move.time.to_string() +
+              " covers a different set of ranks than the move itself (move " +
+              std::to_string(move.attrs.src_rank_set) + "->" +
+              std::to_string(move.attrs.dst_rank_set) + ", agreement " +
+              std::to_string(guard->attrs.src_rank_set) + "->" +
+              std::to_string(guard->attrs.dst_rank_set) +
+              "); some rank would wait for a partner that never arrives");
+      return result;
+    }
+  }
+
   return result;
 }
 

@@ -42,6 +42,19 @@ inline CouplingGraph freeze_fixture() {
                                         .units = kilopascal,
                                         .conservation = Conservation::Extensive,
                                         .intent = Intent::Requires});
+  // A second writer and the rule for combining the two, so the merge table is
+  // non-empty in the frozen bytes. A descriptor field that is only ever
+  // serialized at its default is not covered by a round trip that passes.
+  const auto q_out2 = g.add_field(fluid, {.name = "heat_flux_radiative",
+                                          .region = region,
+                                          .disc = Discretization::FV,
+                                          .components = 3,
+                                          .units = kilopascal,
+                                          .conservation = Conservation::Extensive,
+                                          .intent = Intent::Provides});
+  (void)g.add_channel("flux_radiative", q_out2, q_in);
+  g.merge(q_in, MergeOp::Sum);
+
   const auto ch = g.add_channel("flux", q_out, q_in);
   g.channel(ch)
       .accumulate(AccumOp::Integral)

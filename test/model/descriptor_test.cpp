@@ -230,10 +230,29 @@ TEST(Descriptor, RoundTripPreservesEveryNonDefaultMember) {
 // The frozen bytes. `test/golden/waist-v1.bin` is this descriptor's tag: a
 // change to it is an ABI change and must come with a version bump, which is why
 // the test compares bytes rather than re-deriving them.
-TEST(Descriptor, MatchesTheFrozenWaistV1Bytes) {
+// The previous frozen descriptor is kept, and kept REFUSED. A v3 reader handed
+// a v4 buffer would stop after the iteration regions, never see the merge
+// table, and successfully read a graph that says one writer per field from
+// bytes that say otherwise. The version check is what turns that into an error.
+TEST(Descriptor, TheFrozenV1BytesAreRefusedByThisReader) {
+  const std::filesystem::path old_golden =
+      std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / "waist-v1.bin";
+  ASSERT_TRUE(std::filesystem::exists(old_golden)) << old_golden;
+  std::ifstream in(old_golden, std::ios::binary);
+  const std::vector<char> raw((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
+  std::vector<std::byte> bytes(raw.size());
+  for (std::size_t i = 0; i < raw.size(); ++i) bytes[i] = static_cast<std::byte>(raw[i]);
+
+  const auto r = deserialize(bytes);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-DESC-VERSION");
+}
+
+TEST(Descriptor, MatchesTheFrozenWaistBytes) {
   const auto bytes = fuse::serialize(fuse::testing::freeze_fixture());
   const std::filesystem::path golden =
-      std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / "waist-v1.bin";
+      std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / "waist-v4.bin";
   ASSERT_TRUE(std::filesystem::exists(golden)) << golden;
 
   std::ifstream in(golden, std::ios::binary);
@@ -244,5 +263,6 @@ TEST(Descriptor, MatchesTheFrozenWaistV1Bytes) {
 
   EXPECT_EQ(bytes, expected)
       << "the canonical descriptor changed. That is an ABI change: bump kGraphVersion, "
-         "regenerate test/golden/waist-v1.bin under the new name, and keep this one.";
+         "regenerate the golden file under the new version's name with "
+         "fuse_write_golden_descriptor, and keep the old one.";
 }

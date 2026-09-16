@@ -281,6 +281,7 @@ TEST(Validate, DeserializedGraphWithBadWindowComponentDoesNotThrowAndReportsBadR
   w.pod(std::uint32_t{2});  // fields
   w.pod(std::uint32_t{1});  // channels
   w.pod(std::uint32_t{0});  // iteration regions
+  w.pod(std::uint32_t{0});  // merges
 
   // mesh 0
   w.str(std::string{"m"});
@@ -341,6 +342,7 @@ TEST(Validate, DeserializedGraphWithBadWindowComponentDoesNotThrowAndReportsBadR
   // a zero lag would never exercise the pre-fix crash path.
   w.pod(std::int32_t{1});   // lag
   w.str(std::string{});     // time_level_mismatch_reason
+  // No merge table: the count is in the header above, written as 0 there.
 
   const auto restored = deserialize(w.take());
   ASSERT_TRUE(restored.ok()) << restored.error().message;
