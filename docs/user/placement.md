@@ -45,14 +45,12 @@ The distinction is `same_as` versus `overlaps`, and it matters more than it
 looks. A condition that suppressed the move whenever the placements merely
 *touched* would deliver nothing at all to the ranks they do not share.
 
-:::{note}
-**Partially shared placements are refused today** with
-`E-RT-TRANSPORT-OVERLAP`, at setup rather than during a run. The rank-matching
-graph describes an exchange with one list of global ids per rank, which cannot
-describe a rank that is both a source and a destination of the same move;
-supporting it needs separate send and receive plans. Identical and disjoint
-placements both work and are tested at 2–5 ranks.
-:::
+Partially shared placements are delivered by a **peer-wise** plan: a rank that
+is a source for some entities and a destination for others is described peer by
+peer rather than by one list of ids, and the matches whose two ends land on the
+same rank are copied locally instead of travelling. Identical and disjoint
+placements use the matched plan, which is the longer-verified path; on a pattern
+both can express, the two are required to deliver identical values.
 
 ## An empty placement is legal
 

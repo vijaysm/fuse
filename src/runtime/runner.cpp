@@ -1277,6 +1277,15 @@ Result<void> Runner::Impl::attach_comm_graphs() {
                        "step."};
   }
 
+  // Set from the rank graph when a pair's placements partially overlap, and
+  // consumed by the plan build below. Local to this function rather than
+  // members of TransportPlan: runner_impl.hpp deliberately holds no MPI-only
+  // type, which is why the local-copy pairs there are two plain vectors and
+  // not a CommGraph type.
+  bool                       peer_plan_needed = false;
+  std::vector<CommGraphPeer> send_peers;
+  std::vector<CommGraphPeer> recv_peers;
+
   for (std::size_t pi = 0; pi < transport_plans.size() && status.ok(); ++pi) {
     detail::TransportPlan& p   = transport_plans[pi];
     const Instruction&     ins = plan.instructions()[transport_instruction[pi]];
@@ -1355,24 +1364,38 @@ Result<void> Runner::Impl::attach_comm_graphs() {
     if (!built.ok()) { status = built.error(); break; }
     const CommGraph& g = built.value();
 
-    if (!g.specs_are_disjoint()) {
-      status = Failure{"E-RT-TRANSPORT-OVERLAP",
-                     "the two components' rank sets overlap, which one "
-                     "global_ids list per rank cannot describe. The lowering "
-                     "does not emit Transport in that case today; closing it "
-                     "needs send_plan()/recv_plan() and a backend that "
-                     "consumes them (R31)."};
-      break;
-    }
-
-    // CommGraph knows nothing of components-per-entity; carry the arc's count
-    // across the assignment.
+    // Which of the two transport plan forms this exchange needs. Identical or
+    // disjoint placements can be described by one global_ids list per rank, so
+    // they take the matched path, which is the verified one. Partially shared
+    // placements cannot -- a rank is then a source for some entities and a
+    // destination for others -- and take the peer-wise path (R31).
     const int nc_planned = p.spec.components;
-    p.spec            = in_src ? g.source_spec() : g.dest_spec();
-    p.spec.components = nc_planned;
+    peer_plan_needed = !g.specs_are_disjoint();
 
-    p.gather  = in_src ? g.source_indices() : std::vector<std::size_t>{};
-    p.scatter = in_dst ? g.dest_indices() : std::vector<std::size_t>{};
+    if (peer_plan_needed) {
+      send_peers = g.send_plan();
+      recv_peers = g.recv_plan();
+      // prepare() compares only the extents for a peer-built plan, so those
+      // are the only spec fields that must be right. The element count is this
+      // rank's own field extent, which is what the local view holds.
+      p.spec.elements   = in_src || in_dst ? view.value()->entity_count(dim) : 0;
+      p.spec.components = nc_planned;
+      p.spec.global_ids.clear();
+      p.spec.src_ranks.clear();
+      p.spec.dst_ranks.clear();
+      // The peer path addresses the field directly by local element index, so
+      // there is no separate gather or scatter permutation to apply.
+      p.gather.clear();
+      p.scatter.clear();
+    } else {
+      // CommGraph knows nothing of components-per-entity; carry the arc's
+      // count across the assignment.
+      p.spec            = in_src ? g.source_spec() : g.dest_spec();
+      p.spec.components = nc_planned;
+
+      p.gather  = in_src ? g.source_indices() : std::vector<std::size_t>{};
+      p.scatter = in_dst ? g.dest_indices() : std::vector<std::size_t>{};
+    }
 
     p.local_src.clear();
     p.local_dst.clear();
@@ -1393,8 +1416,22 @@ Result<void> Runner::Impl::attach_comm_graphs() {
       transport_plans[0].has_graph) {
     if (auto* mpi = dynamic_cast<MpiTransport*>(transport.get())) {
       // COLLECTIVE, once, and every rank reaches it: the condition is derived
-      // from the plan, which is identical everywhere.
-      status = mpi->build_plan(transport_plans[0].spec);
+      // from the plan, which is identical everywhere -- including
+      // `peer_plan_needed`, which comes from the graph and not from anything
+      // rank-local.
+      if (peer_plan_needed) {
+        std::vector<LocalCopyPair> local;
+        local.reserve(transport_plans[0].local_src.size());
+        for (std::size_t k = 0; k < transport_plans[0].local_src.size(); ++k) {
+          local.push_back({transport_plans[0].local_src[k],
+                           transport_plans[0].local_dst[k]});
+        }
+        status = mpi->build_plan_from_peers(
+            send_peers, recv_peers, local, transport_plans[0].spec.elements,
+            transport_plans[0].spec.components);
+      } else {
+        status = mpi->build_plan(transport_plans[0].spec);
+      }
     } else {
       // A CommGraph-backed plan carries subset gather/scatter indices that
       // only MpiTransport::build_plan() knows how to turn into a real

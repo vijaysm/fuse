@@ -16,12 +16,13 @@
 // turns the first failed assertion on any rank into MPI_Abort, so a broken
 // build fails the CTest entry in seconds instead of sitting on its timeout.
 
+#include <fuse/transport/comm_graph.hpp>
 #include <gtest/gtest.h>
 
 #if FUSE_HAVE_MPI
 
 #include <mpi.h>
-#include <soma/ir/lowering.hpp>
+#include <fuse/ir/lowering.hpp>
 #include <fuse/backend/serial_backend.hpp>
 #include <fuse/runtime/runner.hpp>
 #include <fuse/transport/transport.hpp>
@@ -1048,5 +1049,224 @@ class AbortOnFailure : public ::testing::EmptyTestEventListener {
 // MPI_COMM_WORLD, so a failure on one rank fails every rank instead of leaving
 // the others to block in the next collective. A test that keeps its own
 // entry point silently loses that.
+
+// ---------------------------------------------------------------------------
+// The peer-wise plan (R31): partial overlap, and the matched plan as oracle
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// This rank's send and receive peer lists, derived from the pattern DIRECTLY
+/// rather than taken from a rank graph. That independence is the point: the
+/// test below requires the peer-built plan to deliver exactly what the matched
+/// plan delivers, so reusing the graph's own output on both sides would only
+/// prove the two agree with each other.
+///
+/// The orders reproduce what the matched path does, and they are not
+/// interchangeable: a send block to peer `d` is in **`d`'s** id order, because
+/// that is the order `d` unpacks in; a receive block from peer `s` is in **my**
+/// id order, because that is the order `s` walked my list in.
+void peers_for(const Pattern& p, int rank, std::vector<fuse::CommGraphPeer>& send,
+               std::vector<fuse::CommGraphPeer>& recv) {
+  send.clear();
+  recv.clear();
+  const std::vector<std::size_t> mine = ids_for(p, rank);
+  const bool is_source = position_in(p.src, rank) >= 0;
+  const bool is_dest = position_in(p.dst, rank) >= 0;
+
+  // Where each id lives: source rank `si` owns the block [si*per, (si+1)*per).
+  const std::size_t per = p.global / p.src.size();
+  const auto owner_of = [&](std::size_t gid) {
+    return p.src[std::min(gid / per, p.src.size() - 1)];
+  };
+
+  if (is_source) {
+    for (const int d : p.dst) {          // ascending: p.dst is built ascending
+      if (d == rank) continue;           // same-rank matches never travel
+      fuse::CommGraphPeer peer;
+      peer.base_rank = d;
+      Pattern q = p;
+      for (const std::size_t gid : ids_for(q, d)) {   // d's own id order
+        if (owner_of(gid) != rank) continue;
+        const auto it = std::find(mine.begin(), mine.end(), gid);
+        if (it == mine.end()) continue;
+        peer.local_indices.push_back(
+            static_cast<std::size_t>(it - mine.begin()));
+        peer.global_ids.push_back(gid);
+      }
+      if (!peer.local_indices.empty()) send.push_back(std::move(peer));
+    }
+  }
+
+  if (is_dest) {
+    for (const int s : p.src) {
+      if (s == rank) continue;
+      fuse::CommGraphPeer peer;
+      peer.base_rank = s;
+      for (std::size_t i = 0; i < mine.size(); ++i) {   // my id order
+        if (owner_of(mine[i]) != s) continue;
+        peer.local_indices.push_back(i);
+        peer.global_ids.push_back(mine[i]);
+      }
+      if (!peer.local_indices.empty()) recv.push_back(std::move(peer));
+    }
+  }
+
+  std::sort(send.begin(), send.end(),
+            [](const auto& a, const auto& b) { return a.base_rank < b.base_rank; });
+  std::sort(recv.begin(), recv.end(),
+            [](const auto& a, const auto& b) { return a.base_rank < b.base_rank; });
+}
+
+/// Matches with both ends on this rank: ids it owns as a source and also wants
+/// as a destination. Empty unless the pattern overlaps.
+std::vector<fuse::LocalCopyPair> local_for(const Pattern& p, int rank) {
+  std::vector<fuse::LocalCopyPair> out;
+  if (position_in(p.src, rank) < 0 || position_in(p.dst, rank) < 0) return out;
+  // With one id list per rank, a rank in both sets holds one buffer that is
+  // both its source and its destination view, so a self-match is an element
+  // copied to itself. The plan must carry it rather than silently drop it.
+  const std::vector<std::size_t> mine = ids_for(p, rank);
+  const std::size_t per = p.global / p.src.size();
+  const auto owner_of = [&](std::size_t gid) {
+    return p.src[std::min(gid / per, p.src.size() - 1)];
+  };
+  for (std::size_t i = 0; i < mine.size(); ++i) {
+    if (owner_of(mine[i]) == rank) out.push_back({i, i});
+  }
+  return out;
+}
+
+/// Runs a pattern through the peer-wise builder and returns the delivered
+/// buffer, so a caller can compare it against the matched path's.
+std::vector<double> deliver_via_peers(const Pattern& p, int rank) {
+  const TransportSpec spec = spec_for(p, rank);
+  const auto nc = static_cast<std::size_t>(p.components);
+  const std::size_t total = spec.elements * nc;
+
+  std::vector<fuse::CommGraphPeer> send_plan;
+  std::vector<fuse::CommGraphPeer> recv_plan;
+  peers_for(p, rank, send_plan, recv_plan);
+
+  MpiTransport t;
+  EXPECT_TRUE(t.set_communicator(MPI_Comm_c2f(MPI_COMM_WORLD)).ok());
+  const auto plan = t.build_plan_from_peers(send_plan, recv_plan,
+                                            local_for(p, rank), spec.elements,
+                                            p.components);
+  EXPECT_TRUE(plan.ok()) << plan.error().code << ": " << plan.error().message;
+  if (!plan.ok()) return {};
+
+  std::vector<double> send(total, 0.0);
+  std::vector<double> recv(total, -12345.0);
+  if (position_in(p.src, rank) >= 0) {
+    for (std::size_t i = 0; i < spec.elements; ++i) {
+      for (std::size_t c = 0; c < nc; ++c) {
+        send[i * nc + c] = value_of(spec.global_ids[i]) + static_cast<double>(c);
+      }
+    }
+  }
+  EXPECT_TRUE(t.prepare(spec).ok());
+  const auto mv = t.move(total == 0 ? nullptr : send.data(),
+                         total == 0 ? nullptr : recv.data(), total);
+  EXPECT_TRUE(mv.ok()) << mv.error().code << ": " << mv.error().message;
+  return recv;
+}
+
+}  // namespace
+
+TEST(MpiTransportPeers, DeliversWhatTheMatchedPlanDeliversOnADisjointPattern) {
+  // The differential oracle. The matched path is verified at 2-5 ranks; the
+  // peer path is new. On a pattern both can express they must agree element by
+  // element -- and the peer lists were derived from the pattern independently,
+  // so agreement is evidence about the transport rather than about one
+  // derivation.
+  Pattern p;
+  if (!halves(world_size(), p)) GTEST_SKIP() << "rank count does not split 12";
+  const int rank = world_rank();
+  const TransportSpec spec = spec_for(p, rank);
+  const auto nc = static_cast<std::size_t>(p.components);
+  const std::size_t total = spec.elements * nc;
+
+  const std::vector<double> via_peers = deliver_via_peers(p, rank);
+  ASSERT_EQ(via_peers.size(), total);
+
+  // The oracle, run in the same process on the same data.
+  MpiTransport t;
+  ASSERT_TRUE(t.set_communicator(MPI_Comm_c2f(MPI_COMM_WORLD)).ok());
+  ASSERT_TRUE(t.build_plan(spec).ok());
+  std::vector<double> send(total, 0.0);
+  std::vector<double> via_match(total, -12345.0);
+  if (position_in(p.src, rank) >= 0) {
+    for (std::size_t i = 0; i < spec.elements; ++i) {
+      for (std::size_t c = 0; c < nc; ++c) {
+        send[i * nc + c] = value_of(spec.global_ids[i]) + static_cast<double>(c);
+      }
+    }
+  }
+  ASSERT_TRUE(t.prepare(spec).ok());
+  ASSERT_TRUE(t.move(total == 0 ? nullptr : send.data(),
+                     total == 0 ? nullptr : via_match.data(), total).ok());
+
+  for (std::size_t k = 0; k < total; ++k) {
+    ASSERT_DOUBLE_EQ(via_peers[k], via_match[k])
+        << "rank " << rank << " slot " << k
+        << ": the peer-wise plan and the matched plan disagree";
+  }
+  ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
+}
+
+TEST(MpiTransportPeers, DeliversUnderPartialOverlap) {
+  // THE CASE THE MATCHED PATH CANNOT EXPRESS, and the reason R31 was open:
+  // every rank is both a source and a destination, so one global_ids list per
+  // rank cannot say which role an entry plays. Each rank ends up with a mix of
+  // values received from peers and values copied locally.
+  if (world_size() < 2) GTEST_SKIP() << "needs at least 2 ranks";
+  Pattern p;
+  p.src.resize(static_cast<std::size_t>(world_size()));
+  std::iota(p.src.begin(), p.src.end(), 0);
+  p.dst = p.src;                       // fully shared: the extreme of overlap
+  p.global = static_cast<std::size_t>(world_size()) * 3;
+  const int rank = world_rank();
+  const TransportSpec spec = spec_for(p, rank);
+  const auto nc = static_cast<std::size_t>(p.components);
+  const std::size_t total = spec.elements * nc;
+
+  const std::vector<double> got = deliver_via_peers(p, rank);
+  ASSERT_EQ(got.size(), total);
+  for (std::size_t i = 0; i < spec.elements; ++i) {
+    for (std::size_t c = 0; c < nc; ++c) {
+      ASSERT_DOUBLE_EQ(got[i * nc + c],
+                       value_of(spec.global_ids[i]) + static_cast<double>(c))
+          << "rank " << rank << " element " << i << " (global id "
+          << spec.global_ids[i] << ")";
+    }
+  }
+  ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
+}
+
+TEST(MpiTransportPeers, DisagreeingHalvesAreRefusedBeforeTheRun) {
+  // The numbering check. One rank is given a send plan its partner does not
+  // expect; every rank must return E-TRANSPORT-PEERMATCH rather than one rank
+  // sending into a receive nobody posted.
+  if (world_size() < 2) GTEST_SKIP() << "needs at least 2 ranks";
+  const int rank = world_rank();
+  std::vector<fuse::CommGraphPeer> send_plan;
+  std::vector<fuse::CommGraphPeer> recv_plan;
+  if (rank == 0) {
+    fuse::CommGraphPeer peer;
+    peer.base_rank = 1;
+    peer.local_indices = {0};
+    peer.global_ids = {0};
+    send_plan.push_back(peer);          // rank 1 posts no matching receive
+  }
+
+  MpiTransport t;
+  ASSERT_TRUE(t.set_communicator(MPI_Comm_c2f(MPI_COMM_WORLD)).ok());
+  const auto plan = t.build_plan_from_peers(send_plan, recv_plan, {}, 4, 1);
+  ASSERT_FALSE(plan.ok()) << "a plan whose halves disagree was accepted";
+  EXPECT_EQ(plan.error().code, "E-TRANSPORT-PEERMATCH")
+      << "every rank must report the same code: " << plan.error().message;
+  ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
+}
 
 #endif  // the guard whose body the removed main() sat inside

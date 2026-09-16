@@ -35,6 +35,7 @@
 //    a job that dies loudly, not one that hangs.
 
 #include "fuse/transport/transport.hpp"
+#include "fuse/transport/comm_graph.hpp"
 
 #include <mpi.h>
 
@@ -73,6 +74,9 @@ enum class Err : int {
   Match = 3,
   Mpi = 4,
   Alloc = 5,
+  // The send and receive halves of a peer-wise plan disagree. Distinct from
+  // Match, which is a matching failure within one side's own data.
+  PeerMatch = 6,
 };
 
 [[nodiscard]] const char* code_of(Err e) noexcept {
@@ -83,6 +87,7 @@ enum class Err : int {
     case Err::Match: return "E-TRANSPORT-MATCH";
     case Err::Mpi:   return "E-TRANSPORT-MPI";
     case Err::Alloc: return "E-TRANSPORT-ALLOC";
+    case Err::PeerMatch: return "E-TRANSPORT-PEERMATCH";
   }
   return "E-TRANSPORT-MPI";
 }
@@ -133,6 +138,17 @@ struct MpiTransport::Impl {
   // block agree element by element.
   std::vector<std::size_t> send_index, recv_index;
   std::vector<double>      send_buf, recv_buf;
+
+  // Matches whose two ends are on THIS rank, which happens under partial
+  // overlap. They never enter the Alltoallv -- its count arrays are indexed by
+  // peer, and a self-entry would collide with a real peer's block -- so move()
+  // copies them directly, source element to destination element.
+  std::vector<std::pair<std::size_t, std::size_t>> local_copy;
+
+  // Set when the plan came from build_plan_from_peers(). prepare() then
+  // compares only the extents, because there is no TransportSpec id list to
+  // compare against.
+  bool p_from_peers = false;
 
   ~Impl() {
     if (comm == MPI_COMM_NULL) return;
@@ -669,6 +685,228 @@ Result<void> MpiTransport::build_plan(const TransportSpec& spec) {
 }
 
 // ---------------------------------------------------------------------------
+// build_plan_from_peers -- the same plan, from a rank graph's peer-wise form
+// ---------------------------------------------------------------------------
+//
+// No matching happens here. `send_plan()`/`recv_plan()` already hold exactly
+// what the Alltoallv count arrays need, peer by peer in ascending rank, which
+// is why closing partial overlap needed a transport path and not a matching
+// redesign.
+
+Result<void> MpiTransport::build_plan_from_peers(
+    const std::vector<CommGraphPeer>& send,
+    const std::vector<CommGraphPeer>& recv,
+    const std::vector<LocalCopyPair>& local, std::size_t elements,
+    int components) {
+  Impl* p = impl_.get();
+  if (p == nullptr || p->comm == MPI_COMM_NULL) {
+    return Failure{"E-TRANSPORT-COMM",
+                 "build_plan_from_peers() before set_communicator()"};
+  }
+
+  const int  size  = p->size;
+  const auto usize = static_cast<std::size_t>(size);
+  p->planned = false;
+
+  Err         err = Err::None;
+  std::string detail;
+  int         mpi_rc = MPI_SUCCESS;
+  const auto  fail = [&](Err e, std::string d) {
+    if (err == Err::None) { err = e; detail = std::move(d); }
+  };
+
+  const auto        nc    = static_cast<std::size_t>(std::max(components, 1));
+  const std::size_t total = elements * nc;
+
+  // -- Phase A: local validation and every allocation ----------------------
+  // Nothing here returns. A rank that fails must still reach the agreement
+  // below, or it leaves its partners waiting in a collective.
+  try {
+    if (components <= 0) {
+      fail(Err::Size,
+           "components must be positive, got " + std::to_string(components));
+    }
+
+    // Peers ascending and in range. Ascending is not cosmetic: the count
+    // arrays are indexed by rank and both sides walk their index vectors in
+    // that order, so an out-of-order peer list pairs a sender's block with the
+    // wrong receiver's block -- wrong values, no error.
+    const auto check_peers = [&](const std::vector<CommGraphPeer>& peers,
+                                 const char* which) {
+      int previous = -1;
+      for (const CommGraphPeer& peer : peers) {
+        if (peer.base_rank < 0 || peer.base_rank >= size) {
+          fail(Err::Ranks,
+               std::string{which} + " plan names rank " +
+                   std::to_string(peer.base_rank) +
+                   ", outside this transport's communicator of size " +
+                   std::to_string(size) +
+                   "; set_communicator() must be given the communicator the "
+                   "rank graph was built over");
+          return;
+        }
+        if (peer.base_rank <= previous) {
+          fail(Err::Match,
+               std::string{which} + " plan is not in ascending rank order (" +
+                   std::to_string(previous) + " then " +
+                   std::to_string(peer.base_rank) + ")");
+          return;
+        }
+        previous = peer.base_rank;
+        for (const std::size_t idx : peer.local_indices) {
+          if (idx >= elements) {
+            fail(Err::Size,
+                 std::string{which} + " plan for rank " +
+                     std::to_string(peer.base_rank) + " names local element " +
+                     std::to_string(idx) + ", but this rank holds " +
+                     std::to_string(elements));
+            return;
+          }
+        }
+      }
+    };
+    check_peers(send, "send");
+    check_peers(recv, "recv");
+
+    p->sendcounts.assign(usize, 0);
+    p->recvcounts.assign(usize, 0);
+    p->sdispls.assign(usize, 0);
+    p->rdispls.assign(usize, 0);
+    p->send_index.clear();
+    p->recv_index.clear();
+    p->local_copy.clear();
+
+    if (err == Err::None) {
+      for (const CommGraphPeer& peer : send) {
+        for (const std::size_t idx : peer.local_indices) {
+          p->send_index.push_back(idx);
+        }
+        p->sendcounts[static_cast<std::size_t>(peer.base_rank)] =
+            static_cast<int>(peer.local_indices.size() * nc);
+      }
+      for (const CommGraphPeer& peer : recv) {
+        for (const std::size_t idx : peer.local_indices) {
+          p->recv_index.push_back(idx);
+        }
+        p->recvcounts[static_cast<std::size_t>(peer.base_rank)] =
+            static_cast<int>(peer.local_indices.size() * nc);
+      }
+
+      // Same-rank matches, range-checked here because an out-of-range index
+      // would otherwise be a write past the field inside move().
+      for (const LocalCopyPair& pair : local) {
+        if (pair.source_local_index >= elements ||
+            pair.dest_local_index >= elements) {
+          fail(Err::Size,
+               "a same-rank match names local elements " +
+                   std::to_string(pair.source_local_index) + " -> " +
+                   std::to_string(pair.dest_local_index) +
+                   ", but this rank holds " + std::to_string(elements));
+          break;
+        }
+        p->local_copy.emplace_back(pair.source_local_index,
+                                   pair.dest_local_index);
+      }
+    }
+
+    // Displacements, with build_plan()'s INT_MAX guard: the individual counts
+    // are bounded by elements*components, the running sums are not.
+    std::size_t send_total = 0;
+    std::size_t recv_total = 0;
+    for (std::size_t r = 0; r < usize && err == Err::None; ++r) {
+      p->sdispls[r] = static_cast<int>(send_total);
+      p->rdispls[r] = static_cast<int>(recv_total);
+      send_total += static_cast<std::size_t>(p->sendcounts[r]);
+      recv_total += static_cast<std::size_t>(p->recvcounts[r]);
+      if (send_total > kIntMax || recv_total > kIntMax) {
+        fail(Err::Size,
+             "the Alltoallv displacement for rank " + std::to_string(r) +
+                 " exceeds INT_MAX; split the field into several transports");
+      }
+    }
+    if (err == Err::None) {
+      // Sized once, here: this is what keeps move() allocation-free. The +1
+      // keeps data() non-null for a rank that sends or receives nothing.
+      p->send_buf.assign(send_total == 0 ? 1 : send_total, 0.0);
+      p->recv_buf.assign(recv_total == 0 ? 1 : recv_total, 0.0);
+    }
+  } catch (const std::bad_alloc&) {
+    fail(Err::Alloc, "out of memory while building the redistribution plan");
+  } catch (const std::exception& e) {
+    fail(Err::Alloc,
+         std::string{"exception while building the plan: "} + e.what());
+  } catch (...) {
+    fail(Err::Alloc, "unknown exception while building the plan");
+  }
+
+  // -- Phase B: the numbering check, and the reason for this extra collective
+  // Each rank tells every other how many doubles it intends to send it; each
+  // then requires that to equal what it expects to receive. If
+  // set_communicator() was given a different communicator than the rank graph
+  // was built over, the two rank numberings differ and this disagrees. That is
+  // the difference between an error at setup and a field delivered to the
+  // wrong rank for the whole run.
+  //
+  // Skipped on a rank that has already failed, whose count arrays are not
+  // meaningful -- but the agreement below still runs, so nobody is left in a
+  // collective alone.
+  if (err == Err::None) {
+    std::vector<int> expected(usize, 0);
+    mpi_rc = MPI_Alltoall(p->sendcounts.data(), 1, MPI_INT, expected.data(), 1,
+                          MPI_INT, p->comm);
+    if (mpi_rc != MPI_SUCCESS) {
+      fail(Err::Mpi, "MPI_Alltoall failed while checking the peer plan: " +
+                         mpi_error_text(mpi_rc));
+    } else {
+      for (std::size_t r = 0; r < usize; ++r) {
+        if (expected[r] != p->recvcounts[r]) {
+          fail(Err::PeerMatch,
+               "rank " + std::to_string(r) + " intends to send " +
+                   std::to_string(expected[r]) +
+                   " doubles to this rank, which expects " +
+                   std::to_string(p->recvcounts[r]) +
+                   ". The two halves of the plan disagree: either "
+                   "set_communicator() was given a different communicator "
+                   "than the rank graph was built over, or the two sides came "
+                   "from different graphs");
+          break;
+        }
+      }
+    }
+  }
+
+  // -- Agree, so a failure is the same failure on every rank ---------------
+  {
+    const Err agreed = p->agree(err, &mpi_rc);
+    if (agreed != Err::None) {
+      if (err != Err::None) return Failure{code_of(err), detail};
+      if (agreed == Err::Mpi && mpi_rc != MPI_SUCCESS) {
+        return Failure{"E-TRANSPORT-MPI",
+                     "MPI_Allreduce failed while agreeing the plan: " +
+                         mpi_error_text(mpi_rc)};
+      }
+      return Failure{code_of(agreed),
+                   "another rank failed to build the redistribution plan (" +
+                       std::string{code_of(agreed)} + ")"};
+    }
+  }
+
+  p->p_elements   = elements;
+  p->p_components = components;
+  p->p_total      = total;
+  p->p_from_peers = true;
+  // No spec identity to record: prepare() checks the extents only for a
+  // peer-built plan, and the fields below are what it compares.
+  p->p_src_rank_set = -1;
+  p->p_dst_rank_set = -1;
+  p->p_n_ids        = 0;
+  p->p_n_src_ranks  = 0;
+  p->p_n_dst_ranks  = 0;
+  p->planned        = true;
+  return Result<void>::success();
+}
+
+// ---------------------------------------------------------------------------
 // prepare -- the hot loop's call
 // ---------------------------------------------------------------------------
 //
@@ -683,12 +921,21 @@ Result<void> MpiTransport::prepare(const TransportSpec& spec) {
                  "redistribution plan is collective and cannot be built here, "
                  "inside the hot loop"};
   }
-  if (spec.elements != p->p_elements || spec.components != p->p_components ||
-      spec.src_rank_set != p->p_src_rank_set ||
-      spec.dst_rank_set != p->p_dst_rank_set ||
-      spec.global_ids.size() != p->p_n_ids ||
-      spec.src_ranks.size() != p->p_n_src_ranks ||
-      spec.dst_ranks.size() != p->p_n_dst_ranks) {
+  // A peer-built plan has no TransportSpec behind it, so only the extents are
+  // comparable. They are also the only fields move() depends on: the rank-set
+  // ids and id-list lengths exist to catch a re-spec of a MATCHED plan.
+  const bool respec =
+      p->p_from_peers
+          ? (spec.elements != p->p_elements ||
+             spec.components != p->p_components)
+          : (spec.elements != p->p_elements ||
+             spec.components != p->p_components ||
+             spec.src_rank_set != p->p_src_rank_set ||
+             spec.dst_rank_set != p->p_dst_rank_set ||
+             spec.global_ids.size() != p->p_n_ids ||
+             spec.src_ranks.size() != p->p_n_src_ranks ||
+             spec.dst_ranks.size() != p->p_n_dst_ranks);
+  if (respec) {
     return Failure{"E-TRANSPORT-RESPEC",
                  "prepare() was given a different TransportSpec than "
                  "build_plan() planned; rebuilding the plan is collective and "
@@ -744,6 +991,15 @@ Result<void> MpiTransport::move(const double* src, double* dst,
   const double* rb = p->recv_buf.data();
   for (std::size_t k = 0; k < p->recv_index.size(); ++k) {
     std::memcpy(dst + p->recv_index[k] * nc, rb + k * nc, nc * sizeof(double));
+  }
+
+  // Same-rank matches, under partial overlap. Done after the unpack so that a
+  // destination element fed by both a peer and a local match ends up with the
+  // local value -- which cannot happen, since a match has one source, but the
+  // order is fixed deliberately rather than left to whichever loop ran last.
+  // Empty for every disjoint plan, which is why the ordinary path pays nothing.
+  for (const auto& [from, to] : p->local_copy) {
+    std::memcpy(dst + to * nc, src + from * nc, nc * sizeof(double));
   }
   return Result<void>::success();
 }
