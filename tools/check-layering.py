@@ -133,9 +133,17 @@ def main() -> int:
 
 
 def check_legacy(root: Path) -> list[str]:
-    """I11: no upstream include, no legacy namespace/prefix, under include/fuse and src."""
+    """I11: no upstream include, no legacy namespace/prefix.
+
+    test/ IS SCANNED, and was not until 2026-09-16. A stale
+    `#include <soma/ir/lowering.hpp>` sat committed in test/parallel/ and
+    compiled anyway, because building a parent subtree puts its include
+    directory on the path -- so the test was quietly consuming a parent header
+    while every gate reported clean, and it would have broken the moment the
+    subtree retired. A test is fuse:: code for this purpose.
+    """
     problems: list[str] = []
-    for area in (root / "include" / "fuse", root / "src"):
+    for area in (root / "include" / "fuse", root / "src", root / "test"):
         if not area.is_dir():
             continue
         for f in sorted(area.rglob("*")):

@@ -12,6 +12,9 @@
 
 namespace fuse {
 
+struct CommGraphPeer;
+struct LocalCopyPair;
+
 struct TransportSpec {
   int         src_rank_set = -1;
   int         dst_rank_set = -1;
@@ -139,6 +142,37 @@ class MpiTransport final : public Transport {
   /// `E-TRANSPORT-MATCH`, `E-TRANSPORT-MPI`.
   Result<void> build_plan(const TransportSpec& spec);
 
+  /// COLLECTIVE, once, before the run. The same plan, built from a rank graph's
+  /// **peer-wise** form instead of matched from a `TransportSpec`.
+  ///
+  /// WHY A SECOND BUILDER. `TransportSpec` carries one `global_ids` list per
+  /// rank, which cannot describe a rank that is a source for some entities and
+  /// a destination for others -- and under partial overlap a rank genuinely
+  /// can be both. `CommGraph::send_plan()`/`recv_plan()` express the answer in
+  /// every overlap shape, and `local_pairs()` carries the matches whose two
+  /// ends are on one rank, which never travel. Handed those three, this
+  /// function does no matching at all: the peer lists already hold exactly
+  /// what `MPI_Alltoallv`'s count arrays need, peer by peer in ascending rank.
+  ///
+  /// THE NUMBERING PRECONDITION, checked rather than assumed. `CommGraphPeer`
+  /// ranks are in the **base** communicator the rank graph was built over,
+  /// while `MPI_Alltoallv` indexes its counts by rank in *this* transport's
+  /// communicator. The two agree only if `set_communicator` was given that
+  /// same base communicator. Rather than trust it, this builder exchanges the
+  /// intended counts (`MPI_Alltoall`) and requires every peer's expectation to
+  /// match what its partner intends to send: a numbering mismatch is
+  /// `E-TRANSPORT-PEERMATCH` before the run, not data delivered to the wrong
+  /// rank during it.
+  ///
+  /// `elements` and `components` describe THIS rank's field extent, exactly as
+  /// in `build_plan`. Errors: `E-TRANSPORT-COMM`, `E-TRANSPORT-RANKS`,
+  /// `E-TRANSPORT-SIZE`, `E-TRANSPORT-PEERMATCH`, `E-TRANSPORT-MPI`,
+  /// `E-TRANSPORT-ALLOC`.
+  Result<void> build_plan_from_peers(const std::vector<CommGraphPeer>& send,
+                                     const std::vector<CommGraphPeer>& recv,
+                                     const std::vector<LocalCopyPair>& local,
+                                     std::size_t elements, int components);
+
   /// Hot loop. Allocation-free and communication-free; checks only that
   /// `spec` is the one `build_plan` was given.
   /// Errors: `E-TRANSPORT-UNPLANNED`, `E-TRANSPORT-RESPEC`.
@@ -235,6 +269,37 @@ class LowFiveTransport final : public Transport {
   /// `E-TRANSPORT-LF-NOINTERCEPT`, `E-TRANSPORT-LF-ONDISK`,
   /// `E-TRANSPORT-HDF5`.
   Result<void> build_plan(const TransportSpec& spec);
+
+  /// COLLECTIVE, once, before the run. The same plan, built from a rank graph's
+  /// **peer-wise** form instead of matched from a `TransportSpec`.
+  ///
+  /// WHY A SECOND BUILDER. `TransportSpec` carries one `global_ids` list per
+  /// rank, which cannot describe a rank that is a source for some entities and
+  /// a destination for others -- and under partial overlap a rank genuinely
+  /// can be both. `CommGraph::send_plan()`/`recv_plan()` express the answer in
+  /// every overlap shape, and `local_pairs()` carries the matches whose two
+  /// ends are on one rank, which never travel. Handed those three, this
+  /// function does no matching at all: the peer lists already hold exactly
+  /// what `MPI_Alltoallv`'s count arrays need, peer by peer in ascending rank.
+  ///
+  /// THE NUMBERING PRECONDITION, checked rather than assumed. `CommGraphPeer`
+  /// ranks are in the **base** communicator the rank graph was built over,
+  /// while `MPI_Alltoallv` indexes its counts by rank in *this* transport's
+  /// communicator. The two agree only if `set_communicator` was given that
+  /// same base communicator. Rather than trust it, this builder exchanges the
+  /// intended counts (`MPI_Alltoall`) and requires every peer's expectation to
+  /// match what its partner intends to send: a numbering mismatch is
+  /// `E-TRANSPORT-PEERMATCH` before the run, not data delivered to the wrong
+  /// rank during it.
+  ///
+  /// `elements` and `components` describe THIS rank's field extent, exactly as
+  /// in `build_plan`. Errors: `E-TRANSPORT-COMM`, `E-TRANSPORT-RANKS`,
+  /// `E-TRANSPORT-SIZE`, `E-TRANSPORT-PEERMATCH`, `E-TRANSPORT-MPI`,
+  /// `E-TRANSPORT-ALLOC`.
+  Result<void> build_plan_from_peers(const std::vector<CommGraphPeer>& send,
+                                     const std::vector<CommGraphPeer>& recv,
+                                     const std::vector<LocalCopyPair>& local,
+                                     std::size_t elements, int components);
 
   /// Hot loop. Allocation-free; checks only that `spec` is the planned one.
   /// Errors: `E-TRANSPORT-UNPLANNED`, `E-TRANSPORT-RESPEC`.

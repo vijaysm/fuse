@@ -174,11 +174,11 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
   // `!overlaps(...)`, which suppressed the move whenever the placements shared
   // even one rank -- so a channel between ranks {0,1,2,3} and {2,3,4,5} got no
   // Transport at all and ranks 4 and 5 silently received nothing. That was
-  // invisible in testing because the overlap refusal lives in transport setup,
-  // which only runs when a Transport was emitted: no move meant no refusal
-  // either. Partially shared placements now emit the move and are refused at
-  // setup with E-RT-TRANSPORT-OVERLAP until send/recv plans land, which is a
-  // failure instead of a wrong answer.
+  // invisible in testing because the only thing that would have caught it
+  // lived in transport setup, which only runs when a Transport was emitted: no
+  // move meant no check either. Partially shared placements now emit the move,
+  // and the runtime delivers it -- a peer-wise plan for the ranks that differ,
+  // a local copy for the ranks in common.
   const int dst_rank_set = static_cast<int>(g.owner_of(ch.target).value());
   bool ranks_differ = type.rank_set != dst_rank_set;
   if (type.rank_set >= 0 && dst_rank_set >= 0) {

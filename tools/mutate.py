@@ -17,6 +17,7 @@ to start if git status is not clean.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -74,7 +75,18 @@ def main() -> int:
     spec = tomllib.loads((ROOT / "build-evidence" / "mutations.toml").read_text())
     rows = [m for m in spec["mutation"] if args.area is None or m["area"] == args.area]
     results = []
+    # A mutation whose test cannot RUN here must not be reported killed: the
+    # test exits non-zero whether or not the mutation had any effect, which is
+    # a false kill and worse than no evidence at all. `requires = "mpi"` marks
+    # those, and they are assessed on a host with a working launcher.
+    mpi_available = os.environ.get("FUSE_MUTATE_MPI", "") == "1"
     for m in rows:
+        if m.get("requires") == "mpi" and not mpi_available:
+            results.append((m, "NOT-ASSESSED",
+                            "needs a working MPI launcher; run with "
+                            "FUSE_MUTATE_MPI=1 on a host that has one"))
+            print(f"NOT-ASSESSED  {m['id']}  (needs MPI)")
+            continue
         path = ROOT / m["file"]
         original = path.read_text()
         if original.count(m["old"]) != 1:
@@ -119,9 +131,12 @@ def main() -> int:
 
     killed = sum(1 for _, v, _ in results if v == "KILLED")
     equivalent = sum(1 for _, v, _ in results if v == "EQUIVALENT")
-    survived = [(m, n) for m, v, n in results if v not in ("KILLED", "EQUIVALENT")]
+    not_assessed = sum(1 for _, v, _ in results if v == "NOT-ASSESSED")
+    survived = [(m, n) for m, v, n in results
+                if v not in ("KILLED", "EQUIVALENT", "NOT-ASSESSED")]
     print(f"\nmutation gate: {killed} killed, {equivalent} declared equivalent, "
-          f"{len(survived)} not killed, of {len(results)}")
+          f"{not_assessed} not assessed here, {len(survived)} not killed, "
+          f"of {len(results)}")
 
     if args.write_log:
         area = args.area or "all"

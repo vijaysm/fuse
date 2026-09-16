@@ -10,7 +10,9 @@
 /// `Runner::Impl::attach_comm_graphs` (`src/runtime/runner.cpp`) is now the
 /// consumer that populates those three from a `CommGraph`, at `setup()`, for
 /// every disjoint-rank `Transport` instruction the lowering emits. Overlapping
-/// rank sets are refused (`E-RT-TRANSPORT-OVERLAP`, R31) rather than silently
+/// rank sets are supported: the peer-wise plan below is consumed by
+/// `MpiTransport::build_plan_from_peers`, and the same-rank matches by its
+/// local-copy pass (R31, closed 2026-09-16).
 /// mishandled -- see the spec's status section for the complete list of what
 /// ships and what is refused.
 ///
