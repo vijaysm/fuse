@@ -44,6 +44,35 @@ enum class OpKind {
   Map, Reduce, Closure,
 };
 
+/// Whether executing this operator involves the other ranks of its exchange.
+///
+/// It decides what a rank may skip after it has failed mid-step. A rank that
+/// skips a COLLECTIVE leaves its partners inside that collective waiting for
+/// it, which is the same hang as returning early; a rank that skips local
+/// arithmetic costs nothing, because the run is being abandoned anyway.
+///
+/// A function rather than a `default:` in the loop so a test can enumerate
+/// every operator and fail when a new one is added without a decision.
+[[nodiscard]] constexpr bool is_collective(OpKind k) noexcept {
+  switch (k) {
+    case OpKind::Transport:  // moves values between two rank sets
+    case OpKind::Epoch:      // the agreement itself
+      return true;
+    case OpKind::Source: case OpKind::Sink: case OpKind::Sample:
+    case OpKind::Accumulate: case OpKind::Interpolate: case OpKind::Extrapolate:
+    case OpKind::Remap: case OpKind::Merge: case OpKind::Relax:
+    case OpKind::Residual: case OpKind::Accelerate: case OpKind::Constrain:
+    case OpKind::Diagnose: case OpKind::Scale:
+      return false;
+    // Reserved for multiscale, refused by the scheduler. Answering "not
+    // collective" here would be a guess about an operator nobody has written.
+    case OpKind::Map: case OpKind::Reduce: case OpKind::Closure:
+      return true;
+  }
+  return true;  // an unclassified operator is assumed collective: skipping one
+                // that is hangs, executing one that is not merely wastes work
+}
+
 [[nodiscard]] constexpr const char* to_cstring(OpKind k) noexcept {
   switch (k) {
     case OpKind::Sample:      return "Sample";
