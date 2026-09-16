@@ -24,6 +24,7 @@ user/build
 user/quickstart
 user/fluent-api
 user/combining-writers
+user/convergence
 user/c-abi
 ```
 
