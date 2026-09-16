@@ -96,6 +96,19 @@ def main() -> int:
             else:
                 run = sh(["ctest", "--test-dir", str(args.build_dir), "-R", f"^{m['test']}$"])
                 verdict, note = ("KILLED", "test fails") if run != 0 else ("SURVIVED", "suite still green")
+                # A mutation may be declared EQUIVALENT: the mutated code has
+                # the same observable behaviour as the original, so no test
+                # can distinguish them. It is allowed only with a written
+                # reason, and a surviving mutant WITHOUT one is still a gap.
+                # If such a mutation is ever killed, the declaration was wrong
+                # and that is reported too.
+                if m.get("equivalent"):
+                    if verdict == "SURVIVED":
+                        verdict, note = "EQUIVALENT", m["equivalent"]
+                    else:
+                        verdict, note = ("WRONGLY-DECLARED-EQUIVALENT",
+                                         "a test distinguishes it, so it is not equivalent: "
+                                         + m["equivalent"])
         finally:
             path.write_text(original)
         results.append((m, verdict, note))
@@ -105,8 +118,10 @@ def main() -> int:
     sh(["cmake", "--build", str(args.build_dir), "-j", str(args.jobs)])
 
     killed = sum(1 for _, v, _ in results if v == "KILLED")
-    survived = [(m, n) for m, v, n in results if v != "KILLED"]
-    print(f"\nmutation gate: {killed} killed, {len(survived)} not killed, of {len(results)}")
+    equivalent = sum(1 for _, v, _ in results if v == "EQUIVALENT")
+    survived = [(m, n) for m, v, n in results if v not in ("KILLED", "EQUIVALENT")]
+    print(f"\nmutation gate: {killed} killed, {equivalent} declared equivalent, "
+          f"{len(survived)} not killed, of {len(results)}")
 
     if args.write_log:
         area = args.area or "all"

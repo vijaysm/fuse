@@ -6,7 +6,8 @@ The import baselines are pinned in `UPSTREAMS.lock` at the repository root.
 
 Read [](invariants.md) first — it is short, and every page after it assumes those rules. Then
 [](layering.md) for where code goes, [](conventions.md) for how it is written, and [](testing.md) for
-what "done" means here.
+what "done" means here, and [](rank-agreement.md) for how the compiler keeps a failure on one
+rank from becoming a hang on all of them.
 
 How code moves out of `upstream/` and into `fuse::` — the procedure, the naming map, and the
 retirement schedule — is [](porting.md). The staged build order lives in [](roadmap.md).
