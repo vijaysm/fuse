@@ -15,29 +15,44 @@
 /// participant computes the same pairings without communicating to agree on
 /// them.
 
+#include <array>
 #include <cstddef>
-#include <vector>
 
 namespace fuse {
 
 /// One participant's part in the exchange, in the order it must be performed.
+///
+/// Fixed storage, no allocation: this is built once per agreement point per
+/// step, and the runtime's standing property is that a running plan touches no
+/// allocator (`RunnerTransport.TheTransportPathAllocatesNothingWhileRunning`).
+/// A first version returned `std::vector`s and broke it -- eight allocations
+/// per period on a two-component job.
 struct EpochSchedule {
-  /// Participant indices this one receives a status from, during the reduce,
-  /// in order.
-  std::vector<int> reduce_recv_from;
+  /// At most one receive per doubling of the stride, so 31 bounds any
+  /// participant count an `int` can express. Only the first
+  /// `reduce_recv_count` entries are meaningful.
+  std::array<int, 31> reduce_recv_from{};
+  int reduce_recv_count = 0;
+
   /// Participant index this one sends its (reduced) status to, or -1 for
   /// participant 0, which holds the answer.
   int reduce_send_to = -1;
+
   /// Where the agreed answer comes from, or -1 for participant 0.
   int result_recv_from = -1;
-  /// Participants this one sends the agreed answer to; non-empty only for
-  /// participant 0.
-  std::vector<int> result_send_to;
+
+  /// Participant 0 sends the agreed answer to every other participant. Held as
+  /// a count rather than a list because it is simply `1 .. participants-1`,
+  /// and materialising that list is the one part of this schedule whose size
+  /// grows with the job.
+  int result_send_count = 0;
 };
 
 /// `index` is a position in the participant list, not an MPI rank: the caller
 /// maps positions to ranks. Out-of-range input yields an empty schedule rather
 /// than an assertion, since a rank that does not take part simply does nothing.
+///
+/// No allocation, so it is safe to call inside a running plan.
 [[nodiscard]] inline EpochSchedule epoch_schedule(int participants, int index) {
   EpochSchedule s;
   if (participants <= 1 || index < 0 || index >= participants) return s;
@@ -45,7 +60,9 @@ struct EpochSchedule {
   for (int stride = 1; stride < participants; stride *= 2) {
     if ((index % (2 * stride)) == 0) {
       const int from = index + stride;
-      if (from < participants) s.reduce_recv_from.push_back(from);
+      if (from < participants) {
+        s.reduce_recv_from[static_cast<std::size_t>(s.reduce_recv_count++)] = from;
+      }
     } else {
       // Hands its result up and takes no further part in the reduce: anything
       // it received has already been folded in.
@@ -55,7 +72,7 @@ struct EpochSchedule {
   }
 
   if (index == 0) {
-    for (int k = 1; k < participants; ++k) s.result_send_to.push_back(k);
+    s.result_send_count = participants - 1;
   } else {
     s.result_recv_from = 0;
   }

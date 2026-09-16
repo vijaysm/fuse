@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include <map>
+#include <type_traits>
 #include <set>
 #include <utility>
 #include <vector>
@@ -30,10 +31,15 @@ Pairs collect(int n) {
   Pairs p;
   for (int i = 0; i < n; ++i) {
     const auto s = epoch_schedule(n, i);
-    for (const int from : s.reduce_recv_from) p.receives.emplace(from, i);
+    for (int r = 0; r < s.reduce_recv_count; ++r) {
+      p.receives.emplace(s.reduce_recv_from[static_cast<std::size_t>(r)], i);
+    }
     if (s.reduce_send_to >= 0) p.sends.emplace(i, s.reduce_send_to);
     if (s.result_recv_from >= 0) p.receives.emplace(s.result_recv_from, i);
-    for (const int to : s.result_send_to) p.sends.emplace(i, to);
+    // Participant 0 sends the answer to 1..n-1; the schedule holds the count
+    // rather than the list, because that list is the one part whose size grows
+    // with the job and materialising it would allocate.
+    for (int k = 1; k <= s.result_send_count; ++k) p.sends.emplace(i, k);
   }
   return p;
 }
@@ -57,13 +63,13 @@ TEST(EpochSchedule, EveryParticipantEndsUpWithTheAnswer) {
       if (i == 0) {
         EXPECT_EQ(s.reduce_send_to, -1) << "n=" << n << " participant 0 sent its result away";
         EXPECT_EQ(s.result_recv_from, -1);
-        EXPECT_EQ(s.result_send_to.size(), static_cast<std::size_t>(n - 1))
+        EXPECT_EQ(s.result_send_count, n - 1)
             << "n=" << n << ": participant 0 did not tell everyone";
       } else {
         EXPECT_GE(s.reduce_send_to, 0) << "n=" << n << " participant " << i
                                        << " never handed its status up";
         EXPECT_EQ(s.result_recv_from, 0);
-        EXPECT_TRUE(s.result_send_to.empty());
+        EXPECT_EQ(s.result_send_count, 0);
       }
     }
   }
@@ -100,7 +106,7 @@ TEST(EpochSchedule, CostsLogarithmicallyManyMessages) {
     for (int i = 0; i < n; ++i) {
       const auto s = epoch_schedule(n, i);
       if (i == 0) continue;  // participant 0 broadcasts, so it is O(n) by design
-      EXPECT_LE(s.reduce_recv_from.size(), 4u) << "n=" << n << " participant " << i;
+      EXPECT_LE(s.reduce_recv_count, 4) << "n=" << n << " participant " << i;
     }
   }
 }
@@ -110,9 +116,22 @@ TEST(EpochSchedule, ANonParticipantDoesNothing) {
   // others wait for a status it has no business reporting.
   for (const auto [n, i] : std::vector<std::pair<int, int>>{{4, 4}, {4, -1}, {1, 0}, {0, 0}}) {
     const auto s = epoch_schedule(n, i);
-    EXPECT_TRUE(s.reduce_recv_from.empty()) << "n=" << n << " index=" << i;
+    EXPECT_EQ(s.reduce_recv_count, 0) << "n=" << n << " index=" << i;
     EXPECT_EQ(s.reduce_send_to, -1);
     EXPECT_EQ(s.result_recv_from, -1);
-    EXPECT_TRUE(s.result_send_to.empty());
+    EXPECT_EQ(s.result_send_count, 0);
   }
+}
+
+TEST(EpochSchedule, IsAllocationFree) {
+  // The runtime's standing property is that a running plan touches no
+  // allocator, and this is built once per agreement point per step. A first
+  // version returned std::vectors and cost eight allocations per period on a
+  // two-component job -- caught only by a parallel test on the host, so the
+  // property is pinned here as well, where it is cheap to check.
+  static_assert(std::is_trivially_copyable_v<fuse::EpochSchedule>,
+                "EpochSchedule must hold no owning member");
+  static_assert(sizeof(fuse::EpochSchedule) <= 160,
+                "EpochSchedule grew; it is built per agreement point per step");
+  SUCCEED();
 }
