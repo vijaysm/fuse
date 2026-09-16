@@ -18,5 +18,6 @@ Run 2026-09-16 against build `build-fuse-s1`. Regenerate with `tools/mutate.py -
 | `yaml-drops-unit-scale` — the YAML form omits a unit's exact scale, so kilopascal reads back as pascal | `src/model/yaml_io.cpp` | **KILLED** (test fails) | `model.yaml_io` |
 | `descriptor-drops-the-merge-table` — the merge table is not serialized, so a graph crossing the waist loses how its writers combine | `include/fuse/model/descriptor.hpp` | **KILLED** (test fails) | `model.descriptor` |
 | `yaml-drops-field-declaration-order` — the text form omits the field index, so nesting fields under components renumbers every field id | `src/model/yaml_io.cpp` | **KILLED** (test fails) | `model.yaml_io` |
+| `rankset-ignores-sharing` — overlaps() reports disjoint placements as sharing ranks, or the reverse | `include/fuse/model/component.hpp` | **KILLED** (test fails) | `model.component` |
 
-**14 killed / 14 total.**
+**15 killed / 15 total.**

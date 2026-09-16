@@ -15,5 +15,6 @@ Run 2026-09-16 against build `build-fuse-s1`. Regenerate with `tools/mutate.py -
 | `merge-typed-at-first-writer` — the combined value inherits the first writer's time level, so a lagged writer declared first cuts the unlagged writers' dependence | `src/ir/lowering.cpp` | **KILLED** (test fails) | `schedule.acyclicity_sweep` |
 | `epoch-not-emitted-after-transport` — a data move with no agreement point, so a failure on one rank is found only at the next collective | `src/ir/rules_channel.cpp` | **KILLED** (test fails) | `schedule.epoch` |
 | `reserved-multiscale-op-scheduled` — a reserved multiscale operator schedules as a no-op instead of being refused | `src/schedule/scheduler.cpp` | **KILLED** (test fails) | `schedule.epoch` |
+| `lowering-skips-move-on-any-sharing` — the old condition: any shared rank suppresses the data move, so a partially shared placement delivers nothing to the ranks it does not share and never reaches the refusal either | `src/ir/rules_channel.cpp` | **KILLED** (test fails) | `ir.lowering_channel` |
 
-**10 killed / 11 total.**
+**11 killed / 12 total.**

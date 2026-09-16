@@ -23,6 +23,7 @@ user/index
 user/build
 user/quickstart
 user/fluent-api
+user/placement
 user/combining-writers
 user/convergence
 user/c-abi
