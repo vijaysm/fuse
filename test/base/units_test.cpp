@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <fuse/base/units.hpp>
+#include <fuse/base/error.hpp>
 
 using fuse::Units;
 namespace u = fuse::units;

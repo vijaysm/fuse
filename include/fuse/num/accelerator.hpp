@@ -24,6 +24,14 @@ namespace fuse {
 ///   Secant      rank-1 vector least squares (IQN with one column)
 ///   IQN_ILS     rank-k vector least squares, history cleared per window
 ///   IQN_IMVJ    as IQN_ILS, plus an inverse-Jacobian retained across windows
+// AccelKind, FilterKind and AccelConfig are NOT declared here. They moved to
+// fuse/model/iteration.hpp during the compiler port, because the coupling
+// graph has to name the accelerator a region uses and the model layer must not
+// depend on the numerics layer. This header declares the accelerators
+// themselves; what to configure them with is part of the graph.
+
+/// Spec §5.3. Stateful across the iterations of a window; `reset()` marks a
+/// window boundary.
 class Accelerator {
  public:
   /// History depth policy, enforced by make_accelerator() and by the

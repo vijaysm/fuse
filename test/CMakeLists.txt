@@ -82,3 +82,26 @@ endforeach()
 foreach(t clock acyclicity acyclicity_sweep expand plan lockstep epoch)
   fuse_add_gtest(schedule ${t})
 endforeach()
+
+# ---------------------------------------------------------------- num
+foreach(t kernels temporal_basis waveform waveform_order convergence accelerator)
+  fuse_add_gtest(num ${t})
+endforeach()
+
+# ---------------------------------------------------------------- field
+# field_ref/registry are header-only, so the test builds against the
+# lowest layer that provides their dependencies.
+fuse_add_gtest(runtime field_ref LIBS fuse::runtime)
+
+# ---------------------------------------------------------------- transport
+fuse_add_gtest(transport transport)
+
+# ---------------------------------------------------------------- backend
+foreach(t serial_mesh spacetime)
+  fuse_add_gtest(backend ${t})
+endforeach()
+
+# ---------------------------------------------------------------- runtime
+foreach(t runner checkpoint component_iface)
+  fuse_add_gtest(runtime ${t})
+endforeach()

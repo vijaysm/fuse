@@ -8,6 +8,7 @@
 #include "fuse/base/time_level.hpp"
 #include "fuse/base/units.hpp"
 #include "fuse/model/channel.hpp"  // RemapFlags
+#include "fuse/model/merge.hpp"
 
 namespace fuse {
 
@@ -147,6 +148,11 @@ struct OpAttrs {
   /// dump omits, so no existing golden file moves.
   Rational      scale{1};
   std::string   reason;
+
+  /// `Merge`'s rule. Carried as the enumerator rather than parsed back out of
+  /// `reason`, so the interpreter cannot disagree with the graph about which
+  /// combination it is performing.
+  MergeOp       merge = MergeOp::Sum;
 
   friend bool operator==(const OpAttrs&, const OpAttrs&) = default;
 };

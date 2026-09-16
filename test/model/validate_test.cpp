@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <fuse/model/coupling_graph.hpp>
+#include <fuse/base/error.hpp>
 #include <fuse/model/descriptor.hpp>
 #include <fuse/model/validate.hpp>
 

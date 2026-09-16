@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "fuse/base/rational.hpp"
+#include <fuse/base/error.hpp>
 
 namespace {
 // Expected throws should not print reports to stderr.
