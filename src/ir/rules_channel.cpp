@@ -2,6 +2,8 @@
 
 #include "fuse/ir/lowering.hpp"
 #include "fuse/ir/op.hpp"
+#include "fuse/model/connect.hpp"
+#include "fuse/model/transform.hpp"
 
 namespace fuse {
 namespace {
@@ -37,6 +39,68 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
 
   ArcId cur = it->second;
   ValueType type = ctx.dag.arc(cur).type;
+
+  // 1. The conversions the connection check authorized.
+  //
+  // `check_channel` (fuse/model/connect.hpp) decides whether the source and
+  // target field descriptions are compatible and, if they are, returns the
+  // ordered list of operations that makes them so -- a unit conversion, a
+  // component mapping, a spatial transfer, and so on. That list is a decision,
+  // not a suggestion: the compiled plan must contain exactly those operations,
+  // in that order, or the run does something other than what was checked.
+  //
+  // So this rule reads the list rather than re-deriving it. Two rules follow:
+  //
+  //   * an operation the checker authorized and this compiler cannot emit is a
+  //     REFUSAL, not a silent omission. Dropping it would produce a plan that
+  //     passes every check and computes the wrong thing -- the same failure
+  //     mode as a dropped writer.
+  //   * an operation emitted here that the checker did not authorize would be
+  //     the compiler inventing physics; there is no path that does it.
+  {
+    const ConnectionCompatibility verdict = check_channel(g, cid, ctx.connect_policy);
+    for (const OperatorStep& step : verdict.chain.steps) {
+      if (!ir_can_emit(step.kind)) {
+        ctx.diags.add(Severity::Error, "E-IR-UNLOWERABLE",
+                      std::string("the connection check authorized a '") +
+                          std::string(operator_kind_name(step.kind)) +
+                          "' operation, which this compiler cannot emit yet. The "
+                          "channel is refused rather than compiled without it: a plan "
+                          "missing an authorized operation passes every check and "
+                          "computes something else.",
+                      "channel '" + base + "'");
+        return true;  // claimed, but failed
+      }
+      switch (step.kind) {
+        case OperatorKind::UnitScale: {
+          // Exact, and recorded even when it is 1: a factor of 1 means the
+          // units already agreed, and emitting nothing is the right plan.
+          if (step.scale == Rational{1}) break;
+          // The output arc carries the TARGET's units. That is what makes the
+          // conversion real to the type checker: without the retype, the arc
+          // would still claim the source's units and the assignment at the sink
+          // would be comparing a value in pascals against a slot in kilopascals
+          // while the plan contained a multiply. Type and data must move
+          // together.
+          ValueType converted = type;
+          converted.units = g.field(g.channel_at(cid).target).units;
+          cur = emit(ctx, OpKind::Scale, cur, converted,
+                     OpAttrs{.scale = step.scale,
+                             .reason = step.explicitly_requested ? "requested" : "inferred"},
+                     cid, base + "/scale");
+          type = converted;
+          break;
+        }
+        case OperatorKind::SpatialTransfer:
+        case OperatorKind::TemporalTransfer:
+          // Emitted below by the remap and interpolation steps, which know the
+          // regions and the clocks. Named here so the two agree.
+          break;
+        default:
+          break;  // unreachable: ir_can_emit() refused it above
+      }
+    }
+  }
 
   // 2. Sample + Accumulate.
   if (ch.accumulate.op != AccumOp::Instant) {

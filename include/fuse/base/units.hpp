@@ -115,7 +115,14 @@ struct Units {
         out += std::to_string(static_cast<int>(e.exp));
       }
     }
-    return out.empty() ? std::string{"1"} : out;
+    if (out.empty()) out = "1";
+    // The affine part is part of the unit's identity, so it belongs in the
+    // text. Without it a mismatch between pascal and kilopascal prints as two
+    // identical strings -- "cannot assign kg·m^-1·s^-2 to kg·m^-1·s^-2" --
+    // which is exactly the diagnostic a user cannot act on.
+    if (scale != Rational{1}) out = scale.to_string() + "·" + out;
+    if (offset != Rational{0}) out += " + " + offset.to_string();
+    return out;
   }
 };
 
