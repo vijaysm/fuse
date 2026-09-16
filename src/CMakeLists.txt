@@ -11,6 +11,11 @@ set(FUSE_HAVE_MPI    ${FUSE_ENABLE_MPI})
 set(FUSE_HAVE_KOKKOS ON)
 set(FUSE_HAVE_MOAB   ${FUSE_ENABLE_MOAB})
 set(FUSE_HAVE_LOWFIVE ${FUSE_ENABLE_LOWFIVE})
+if(FUSE_LINALG_BACKEND STREQUAL "eigen")
+  set(FUSE_LINALG_EIGEN 1)
+else()
+  set(FUSE_LINALG_EIGEN 0)
+endif()
 set(FUSE_HAVE_PETSC  ${FUSE_ENABLE_PETSC})
 configure_file(${PROJECT_SOURCE_DIR}/include/fuse/base/config.hpp.in
                ${PROJECT_BINARY_DIR}/include/fuse/base/config.hpp @ONLY)
@@ -96,6 +101,25 @@ set_target_properties(fuse-coupler-schedule PROPERTIES
   VISIBILITY_INLINES_HIDDEN ON
 )
 
+# ---------------------------------------------------------------- linalg
+# One dense least-squares solve behind one declaration, so the acceleration
+# code does not know which factorisation is present. Sits beside `num` rather
+# than under it: `num` calls it, nothing calls `num` from here.
+add_library(fuse-coupler-linalg
+  linalg/least_squares.cpp
+)
+add_library(fuse::linalg ALIAS fuse-coupler-linalg)
+target_link_libraries(fuse-coupler-linalg PUBLIC fuse::base)
+# PRIVATE: which factorisation is inside is not part of the interface, and
+# Eigen must not land on a consumer's include path.
+if(FUSE_LINALG_BACKEND STREQUAL "eigen")
+  target_link_libraries(fuse-coupler-linalg PRIVATE Eigen3::Eigen)
+endif()
+set_target_properties(fuse-coupler-linalg PROPERTIES
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN ON
+)
+
 # ---------------------------------------------------------------- num
 # Numerics: waveforms, temporal bases, convergence measures, accelerators, and
 # the elementwise kernels. Depends on the model (for the iteration
@@ -108,6 +132,7 @@ add_library(fuse-coupler-num
 )
 add_library(fuse::num ALIAS fuse-coupler-num)
 target_link_libraries(fuse-coupler-num PUBLIC fuse::model)
+target_link_libraries(fuse-coupler-num PRIVATE fuse::linalg)
 set_target_properties(fuse-coupler-num PROPERTIES
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON

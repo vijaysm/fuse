@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <fuse/linalg/least_squares.hpp>
 #include <fuse/num/accelerator.hpp>
 #include <fuse/base/error.hpp>
 
@@ -732,7 +733,7 @@ TEST(QnLeastSquares, QrBeatsNormalEquationsOnNearDependentColumns) {
   for (std::size_t i = 0; i < m; ++i) b[i] = t0 * a[i] + t1 * a[m + i];
 
   std::vector<double> aq = a, bq = b, alpha;
-  const std::size_t rank = fuse::detail::qn_least_squares(aq, m, 2, bq, alpha);
+  const std::size_t rank = fuse::linalg::least_squares_builtin(aq, m, 2, bq, alpha);
   ASSERT_EQ(rank, 2u) << "both columns carry information at eps = 1e-8";
 
   const double qr_err = std::hypot(alpha[0] - t0, alpha[1] - t1) / std::hypot(t0, t1);
@@ -778,7 +779,7 @@ TEST(QnLeastSquares, StaysUsableAsColumnsBecomeMoreDependent) {
     std::vector<double> b(m);
     for (std::size_t i = 0; i < m; ++i) b[i] = t0 * a[i] + t1 * a[m + i];
     std::vector<double> aq = a, bq = b, alpha;
-    const std::size_t rank = fuse::detail::qn_least_squares(aq, m, 2, bq, alpha);
+    const std::size_t rank = fuse::linalg::least_squares_builtin(aq, m, 2, bq, alpha);
     ASSERT_EQ(rank, 2u) << "eps = " << eps;
     // Backward stability bound: the error grows like eps_machine / eps, and
     // stays far away from the total loss the normal equations suffer.
@@ -799,7 +800,7 @@ TEST(QnLeastSquares, DetectsExactRankDeficiency) {
     b[i]         = 3.0 * a[i] + 1.5 * a[2 * m + i];
   }
   std::vector<double> aq = a, bq = b, alpha;
-  const std::size_t rank = fuse::detail::qn_least_squares(aq, m, 3, bq, alpha);
+  const std::size_t rank = fuse::linalg::least_squares_builtin(aq, m, 3, bq, alpha);
   EXPECT_EQ(rank, 2u) << "three columns spanning a plane";
 
   // A dropped column gets exactly zero, and the retained ones still reproduce
@@ -824,16 +825,16 @@ TEST(QnLeastSquares, HandlesAZeroColumnAndAnEmptyProblem) {
     b[i] = 2.0 * a[i];
   }
   std::vector<double> aq = a, bq = b, alpha;
-  EXPECT_EQ(fuse::detail::qn_least_squares(aq, m, 2, bq, alpha), 1u);
+  EXPECT_EQ(fuse::linalg::least_squares_builtin(aq, m, 2, bq, alpha), 1u);
   EXPECT_NEAR(alpha[0], 2.0, 1e-12);
   EXPECT_DOUBLE_EQ(alpha[1], 0.0);
 
   std::vector<double> empty_a, empty_b, empty_out;
-  EXPECT_EQ(fuse::detail::qn_least_squares(empty_a, 0, 0, empty_b, empty_out), 0u);
+  EXPECT_EQ(fuse::linalg::least_squares_builtin(empty_a, 0, 0, empty_b, empty_out), 0u);
   EXPECT_TRUE(empty_out.empty());
 
   std::vector<double> all_zero(m * 2, 0.0), rhs = b, out;
-  EXPECT_EQ(fuse::detail::qn_least_squares(all_zero, m, 2, rhs, out), 0u);
+  EXPECT_EQ(fuse::linalg::least_squares_builtin(all_zero, m, 2, rhs, out), 0u);
   ASSERT_EQ(out.size(), 2u);
   EXPECT_DOUBLE_EQ(out[0], 0.0);
   EXPECT_DOUBLE_EQ(out[1], 0.0);

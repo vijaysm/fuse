@@ -216,16 +216,10 @@ void relax_into(double w, const double* x_old, const double* x_new,
 void field_weights(const std::vector<std::size_t>& offsets, const double* r,
                    std::size_t n, std::vector<double>& out);
 
-/// Defined in src/num/accel_quasi_newton.cpp. Solves min ||A a - b||_2 for an
-/// m x k, column-major `a` by Householder QR with column pivoting, truncated
-/// at the numerical rank, which it returns; `a` and `b` are overwritten and
-/// `out` receives k coefficients with the dropped columns exactly 0. Exposed
-/// here so the factorisation can be tested directly on near-dependent and
-/// rank-deficient column sets rather than only through an iteration.
-[[nodiscard]] std::size_t qn_least_squares(std::vector<double>& a,
-                                           std::size_t m, std::size_t k,
-                                           std::vector<double>& b,
-                                           std::vector<double>& out);
+// The dense least-squares solve is not declared here: it moved to
+// fuse/linalg/least_squares.hpp, which is where a backend can be substituted
+// for it. The accelerator calls linalg::least_squares_into() with its own
+// scratch.
 
 }  // namespace detail
 
