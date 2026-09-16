@@ -20,11 +20,18 @@ endif()
 set(FUSE_TEST_GOLDEN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/golden")
 set(FUSE_TEST_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data")
 
+# `layer` names both the source directory and, by default, the library the test
+# links. NO_LAYER_LIB separates them: test/verification/ is not a library layer,
+# it exercises whatever the case needs (declared via LIBS).
 function(fuse_add_gtest layer name)
-  cmake_parse_arguments(ARG "THROWS" "" "LIBS" ${ARGN})
+  cmake_parse_arguments(ARG "THROWS;NO_LAYER_LIB" "" "LIBS" ${ARGN})
   set(target fuse_${layer}_${name}_test)
   add_executable(${target} ${layer}/${name}_test.cpp)
-  target_link_libraries(${target} PRIVATE fuse::${layer} fuse_test_main ${ARG_LIBS})
+  if(ARG_NO_LAYER_LIB)
+    target_link_libraries(${target} PRIVATE fuse_test_main ${ARG_LIBS})
+  else()
+    target_link_libraries(${target} PRIVATE fuse::${layer} fuse_test_main ${ARG_LIBS})
+  endif()
   target_compile_definitions(${target} PRIVATE FUSE_TEST_GOLDEN_DIR="${FUSE_TEST_GOLDEN_DIR}"
                                              FUSE_TEST_DATA_DIR="${FUSE_TEST_DATA_DIR}")
   add_test(NAME ${layer}.${name} COMMAND ${target})
@@ -125,3 +132,12 @@ endif()
 
 # ---------------------------------------------------------------- linalg
 fuse_add_gtest(linalg least_squares THROWS)
+
+# ---------------------------------------------------------------- verification
+# Convergence orders and iteration counts, against known-good values. These are
+# the stage's exit criterion: they are what says the merged compiler and runtime
+# reproduce the parent's numbers and not merely something plausible.
+foreach(t mms_transfer iteration)
+  fuse_add_gtest(verification ${t} NO_LAYER_LIB
+                 LIBS fuse::runtime fuse::backend fuse::transport)
+endforeach()

@@ -14,7 +14,9 @@ loc       = 31452        # include src fortran python
 tag       = "fuse-import-0"   # to be cut at the freeze
 imported  = "upstream/soma"          # byte-identical; proven by tools/verify-import.py
 diverged  = []                       # paths transformed in fuse since import
-superseded = [                       # upstream paths fuse has replaced (S1, fuse::base)
+superseded = [
+  "test/verification/mms_transfer_test.cpp",
+  "test/verification/iteration_test.cpp",                       # upstream paths fuse has replaced (S1, fuse::base)
   "include/soma/base/rational.hpp", "include/soma/base/time_level.hpp",
   "include/soma/base/result.hpp",   "include/soma/base/ids.hpp", "include/soma/base/units.hpp",
   "test/unit/rational_test.cpp", "test/unit/time_level_test.cpp", "test/unit/result_test.cpp",
