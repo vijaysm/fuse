@@ -53,3 +53,21 @@ The task-level plan — step numbering, per-step tests, interfaces produced and 
 register and the upstream sync protocol — is kept outside this repository, like the parent projects'
 plans. This page is the durable summary; it is what belongs in documentation.
 :::
+
+## Deferred, with a design already written down
+
+**Diagrams of a coupled setup.** `dump_graphviz` draws the lowered operator graph, which is the right
+picture for debugging a lowering rule and the wrong one for understanding a setup: a four-component
+coupling is already a hundred nodes, most of them derived bookkeeping, and none of it shows when
+anything happens. Planned instead are three views generated from the graph and the compiled plan —
+a component view (who exchanges what with whom, at what rate, which exchanges are lagged or
+iterated), a time view (one coupling period, one lane per component, arrows from source step to
+target step, rank-agreement points as vertical bars), and a step view (the operators of one step in
+execution order, with the derived ones marked).
+
+Built as library functions emitting text (`fuse::diagram::component_dot`, `::time_svg`,
+`::step_dot`), then a `fuse-diagram` command over a YAML setup, and only then a single
+self-contained HTML page if one is still wanted. Text first is the point: a diagram that is a string
+is golden-comparable, so a change that drops an edge fails a test instead of producing a picture
+nobody checks. Scheduled at S9 because it gates no correctness result, and because the time view
+wants the runtime's final agreement-point placement.
