@@ -1,5 +1,7 @@
 #pragma once
 
+#include "fuse/transport/tags.hpp"
+
 #include "fuse/base/config.hpp"  // defines the FUSE_HAVE_* macros read below
 
 // The Crystal Router (Fox et al., *Solving Problems on Concurrent Processors*,
@@ -111,7 +113,8 @@ class CrystalRouter {
   [[nodiscard]] int last_rounds() const noexcept { return last_rounds_; }
 
   /// The tag `route()` occupies on the communicator.
-  static constexpr int kTag = 0x5C12;
+  // fuse/transport/tags.hpp holds every tag; see there for why.
+  static constexpr int kTag = tags::kCrystalRouter;
 
  private:
   MPI_Comm comm_ = MPI_COMM_NULL;

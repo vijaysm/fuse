@@ -1,5 +1,6 @@
 #include "fuse/base/config.hpp"
 #include "fuse/runtime/epoch_schedule.hpp"
+#include "fuse/transport/tags.hpp"
 #include "fuse/runtime/runner.hpp"
 
 #include <algorithm>
@@ -1511,17 +1512,9 @@ namespace {
 }  // namespace
 
 /// The tag the agreement reduction uses on the base communicator.
-///
-/// Small and explicit, following the crystal router's `kTag` (0x5C12) rather
-/// than being clever: MPI only guarantees tags up to `MPI_TAG_UB`, which the
-/// standard puts at a minimum of 32767. An earlier version used 'EPOC' packed
-/// into an int -- 1162891075 -- which every MPI rejects outright, and did so
-/// in a test that had been passing.
-///
-/// Safe from the transport's traffic: `MpiTransport::set_communicator`
-/// duplicates the communicator it is given, so a data move never uses the base
-/// communicator even when the user hands it the same one.
-constexpr int kEpochTag = 0x5C13;
+/// Defined with every other tag in fuse/transport/tags.hpp, which explains why
+/// they have to be chosen together.
+constexpr int kEpochTag = tags::kEpoch;
 
 Result<void> Runner::Impl::resolve_epoch_participants() {
 #if FUSE_HAVE_MPI
@@ -1535,12 +1528,12 @@ Result<void> Runner::Impl::resolve_epoch_participants() {
     void* ub = nullptr;
     int   found = 0;
     if (MPI_Comm_get_attr(MPI_COMM_WORLD, MPI_TAG_UB, &ub, &found) == MPI_SUCCESS &&
-        found != 0 && ub != nullptr && *static_cast<int*>(ub) < kEpochTag) {
+        found != 0 && ub != nullptr && *static_cast<int*>(ub) < tags::kMaxUsed) {
       return Failure{"E-RT-EPOCH-TAG",
                      "this MPI allows tags only up to " +
                          std::to_string(*static_cast<int*>(ub)) +
-                         ", below the tag the rank-agreement reduction uses (" +
-                         std::to_string(kEpochTag) + ")"};
+                         ", below the highest tag this library uses (" +
+                         std::to_string(tags::kMaxUsed) + ")"};
     }
   }
 
