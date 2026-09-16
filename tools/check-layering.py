@@ -15,14 +15,24 @@ from pathlib import Path
 # --- rules
 # Layers, lowest first. A layer may include from its own layer and any layer
 # BELOW it, never above.
+# Bottom to top. `backend` and `transport` sit BELOW `runtime`: the runtime
+# drives mesh access, spatial transfer and data movement through their
+# interfaces, so it depends on them and not the reverse. (They were the other
+# way round until the runtime port, where the order said the Runner's use of
+# MeshBackend -- which is how it resolves a remap at all -- was an inversion.
+# `transport` was missing from this list entirely, which meant its headers were
+# not checked at all.) `transport` is above `backend` because matching ranks
+# across two rank sets needs the global cell ids, which come from the mesh
+# interface.
 LAYERS = [
     "base",
     "model",
     "ir",
     "schedule",
     "num",
-    "runtime",
     "backend",
+    "transport",
+    "runtime",
     "interface",
 ]
 

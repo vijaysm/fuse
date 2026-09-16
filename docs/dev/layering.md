@@ -4,8 +4,9 @@ Dependencies point down only. A layer may use the layers below it and must not n
 
 ```text
 interface   provider ABI · participant ABI · registry/adapter host · Fortran · Python · YAML · dynamic loading
-backend     mesh · remap · transport · solver · persisted maps
 runtime     Runner · field binding · transactions · checkpoint sets · Kokkos kernels
+transport   rank matching · MPI router · crystal router · external processes
+backend     mesh access · spatial and space-time transfer · solvers · persisted maps
 num         waveforms · temporal bases · space-time projection · accelerators · convergence metric
 schedule    clocks · slabs · expansion · acyclicity proof · epochs · ExecutionPlan
 ir          operator DAG (SSA) · lowering registry · transform chain · golden IR
@@ -20,7 +21,7 @@ direction is what keeps FUSE adoptable by a code that already has its own discre
 
 `base` through `num` need only a C++20 compiler, Kokkos and a linear-algebra backend. That is not
 minimalism for its own sake: it is what makes the fast CI leg fast, and what lets a code with neither
-MOAB nor PETSc use the coupler. MPI enters at `runtime`; everything heavier enters at `backend`,
+MOAB nor PETSc use the coupler. MPI enters at `transport`; everything heavier enters at `backend`,
 behind one directory and one build option each.
 
 ## Enforcement
