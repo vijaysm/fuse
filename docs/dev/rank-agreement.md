@@ -57,3 +57,50 @@ notion yet of an operator whose output aliases its input: it copies rather than
 allocating nothing. That is one interface-sized buffer per data move. It is
 fixed when in-place operators land with the runtime, not by removing the
 agreement point.
+
+## How the agreement is actually performed
+
+Not with a sub-communicator. The obvious implementation splits one
+communicator per exchange pair at setup and keeps it for the run, and that is
+what the first version did — but a held communicator has to be released, and
+`MPI_Comm_free` is **collective**. Destruction order would then become a
+correctness question: if one rank destroys its `Runner` and another has not
+reached that point, they deadlock in the destructor. The transport layer
+avoids this deliberately (`attach_comm_graphs` frees everything before it
+returns, so "nothing outlives this function"), and holding communicators for
+the run would have reintroduced precisely that hazard. A host run made it
+concrete by reporting unfreed communicator handles at exit.
+
+Instead, each pair's participant list — the union of the two components' rank
+sets, sorted — is computed from the graph at setup. The graph is identical on
+every rank, so every participant derives the same list without communicating
+to establish it. The agreement is then a binomial reduce to the first
+participant and a broadcast back, point-to-point on the base communicator
+under one dedicated tag, with the schedule derived only from the list length
+and this rank's position in it. Nothing is allocated and nothing has to be
+released.
+
+## What a failed rank still executes
+
+A rank that has failed mid-step does **not** stop and does not skip
+indiscriminately. It keeps executing the *collective* operators and skips the
+local ones (`is_collective` in `fuse/ir/op.hpp`).
+
+The asymmetry matters in one direction only. Skipping local arithmetic costs
+nothing: the period is being abandoned, and the values would never be read.
+Skipping a collective is fatal — the partners are already inside the data
+move, waiting for this rank, which is the identical hang that returning at the
+point of failure produces. So the move still happens; what it moves is
+whatever the buffers hold, and it is never used, because the agreement point
+immediately after ends the period on every participant.
+
+`is_collective` is a function rather than a `default:` inside the execution
+loop so that a test can enumerate every operator: adding one without
+classifying it fails a test rather than silently inheriting an answer. An
+unclassified operator is assumed collective, because that error wastes work
+while the other error hangs.
+
+A component that refuses its step carries forward the same way, both in the
+period loop and inside an iteration region — where it matters most, since the
+region body runs many times and a rank dropping out of the exchange
+desynchronises the remaining iterations rather than one step.
