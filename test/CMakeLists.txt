@@ -122,3 +122,6 @@ if(FUSE_ENABLE_MPI)
     endforeach()
   endforeach()
 endif()
+
+# ---------------------------------------------------------------- linalg
+fuse_add_gtest(linalg least_squares THROWS)

@@ -46,10 +46,25 @@ option(FUSE_ENABLE_TESTS   "Build the test suite"                               
 # on-error policy has run; the types and call sites are unconditional either way.
 option(FUSE_ENABLE_EXCEPTIONS "Throw C++ exceptions on errors (OFF = report and abort)" ON)
 
-# The linalg facade has two interchangeable backends; the hand-written QR inherited
-# from a parent stays as the test oracle, not as a third backend.
-set(FUSE_LINALG_BACKEND "eigen" CACHE STRING "kokkoskernels | eigen")
-set_property(CACHE FUSE_LINALG_BACKEND PROPERTY STRINGS kokkoskernels eigen)
+# The linalg facade's dense least-squares backend. `builtin` is the coupler's own
+# column-pivoted Householder QR with rank truncation and needs nothing; `eigen`
+# is a second opinion from a widely used implementation. `builtin` is also the
+# oracle the other is checked against, because the recorded iteration counts
+# were produced with it.
+set(FUSE_LINALG_BACKEND "eigen" CACHE STRING "builtin | eigen")
+set_property(CACHE FUSE_LINALG_BACKEND PROPERTY STRINGS builtin eigen)
+# A value with no implementation is a configuration error, not a silent
+# downgrade: the backends differ in the last bits, an accelerated iteration's
+# path depends on those bits, and a run whose reported backend is not the one
+# that ran cannot be reproduced from its report.
+if(NOT FUSE_LINALG_BACKEND MATCHES "^(builtin|eigen)$")
+  message(FATAL_ERROR
+    "FUSE_LINALG_BACKEND='${FUSE_LINALG_BACKEND}' has no implementation. "
+    "Valid values: builtin (the coupler's own column-pivoted Householder QR, "
+    "no dependency) or eigen. A KokkosKernels backend is not available: it has "
+    "no column-pivoted QR with rank truncation in the form the quasi-Newton "
+    "solve needs.")
+endif()
 
 # A tier is a prefix: enabling a higher one without its predecessors is a
 # configuration error, never a silent downgrade (docs/CHARTER.md §4).
@@ -210,17 +225,13 @@ macro(fuse_resolve_dependencies)
   get_target_property(FUSE_KOKKOS_INCLUDE_DIRS Kokkos::kokkoscore INTERFACE_INCLUDE_DIRECTORIES)
   set(FUSE_KOKKOS_INCLUDE_DIRS "${FUSE_KOKKOS_INCLUDE_DIRS}" CACHE INTERNAL "chosen Kokkos include dirs")
 
-  if(FUSE_LINALG_BACKEND STREQUAL "kokkoskernels")
-    fuse_require(KokkosKernels HINT "Set FUSE_LINALG_BACKEND=eigen to use Eigen instead.")
-    fuse_drop_missing_include_dirs(Kokkos::kokkoskernels)
-  elseif(FUSE_LINALG_BACKEND STREQUAL "eigen")
+  if(FUSE_LINALG_BACKEND STREQUAL "eigen")
     # No version constraint: Eigen3Config is SameMajorVersion, so asking for 3.4
     # rejects an installed 5.x outright. The facade uses dense QR, small
     # least-squares and sparse products, whose API is identical across both.
-    fuse_require(Eigen3 NAMES Eigen3 HINT "Set FUSE_LINALG_BACKEND=kokkoskernels to use KokkosKernels instead.")
-  else()
-    message(FATAL_ERROR "FUSE_LINALG_BACKEND must be kokkoskernels or eigen, got '${FUSE_LINALG_BACKEND}'")
+    fuse_require(Eigen3 NAMES Eigen3 HINT "Set FUSE_LINALG_BACKEND=builtin to use the built-in factorisation instead.")
   endif()
+  # `builtin` resolves nothing: that is the point of having it.
 
   if(FUSE_ENABLE_TESTS)
     fuse_require(GTest VERSION ${FUSE_GTEST_VERSION} NAMES GTest FETCH_AS googletest
