@@ -80,6 +80,14 @@ under one dedicated tag, with the schedule derived only from the list length
 and this rank's position in it. Nothing is allocated and nothing has to be
 released.
 
+That pattern lives in `fuse/runtime/epoch_schedule.hpp`, apart from the MPI
+calls that carry it out, for a specific reason: a mistake in it is a **hang**,
+not a wrong number, so it cannot be observed by a serial test and shows up
+only as a stalled parallel leg. As arithmetic over participant count and
+position it is checkable without MPI, and `runtime.epoch_schedule` does check
+it — matched sends and receives, a hand-up chain that always terminates at
+participant 0, and a message count per participant that stays logarithmic.
+
 The tag is small and explicit (`0x5C13`, next to the crystal router's
 `0x5C12`). MPI only guarantees tags up to `MPI_TAG_UB`, whose standard minimum
 is 32767; a first version packed `'EPOC'` into an int, which is 1162891075 and
