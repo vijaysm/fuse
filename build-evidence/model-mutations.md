@@ -16,5 +16,7 @@ Run 2026-09-15 against build `build-fuse-s1`. Regenerate with `tools/mutate.py -
 | `surrogate-ood-not-required` — a surrogate with no out-of-distribution detector passes review | `src/model/multiscale.cpp` | **KILLED** (test fails) | `model.multiscale` |
 | `yaml-unit-fallback-unparseable` — a unit with no table symbol is emitted as a string the parser cannot read | `src/model/yaml_io.cpp` | **KILLED** (test fails) | `model.yaml_io` |
 | `yaml-drops-unit-scale` — the YAML form omits a unit's exact scale, so kilopascal reads back as pascal | `src/model/yaml_io.cpp` | **KILLED** (test fails) | `model.yaml_io` |
+| `descriptor-drops-the-merge-table` — the merge table is not serialized, so a graph crossing the waist loses how its writers combine | `include/fuse/model/descriptor.hpp` | **KILLED** (test fails) | `model.descriptor` |
+| `yaml-drops-field-declaration-order` — the text form omits the field index, so nesting fields under components renumbers every field id | `src/model/yaml_io.cpp` | **KILLED** (test fails) | `model.yaml_io` |
 
-**12 killed / 12 total.**
+**14 killed / 14 total.**

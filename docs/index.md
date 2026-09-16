@@ -23,6 +23,7 @@ user/index
 user/build
 user/quickstart
 user/fluent-api
+user/combining-writers
 user/c-abi
 ```
 
@@ -35,6 +36,7 @@ dev/invariants
 dev/layering
 dev/conventions
 dev/testing
+dev/rank-agreement
 dev/debugging
 dev/porting
 dev/abi-design

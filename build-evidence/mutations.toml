@@ -140,8 +140,8 @@ id = "descriptor-accepts-any-version"
 area = "model"
 describes = "the version gate waves through a descriptor from the inherited format"
 file = "include/fuse/model/descriptor.hpp"
-old = "inline constexpr std::uint32_t kGraphVersion = 3u;"
-new = "inline constexpr std::uint32_t kGraphVersion = 2u;"
+old = "  if (version != kGraphVersion) {"
+new = "  if (false) {"
 target = "fuse_model_descriptor_test"
 test = "model.descriptor"
 
@@ -314,6 +314,12 @@ old = "      if (!ir_can_emit(step.kind)) {"
 new = "      if (false) {"
 target = "fuse_ir_scale_test"
 test = "ir.scale"
+equivalent = """No graph the model can currently express makes the connection check \
+authorize a step outside {UnitScale, SpatialTransfer, TemporalTransfer}: the graph has no way \
+to declare a transform, and a component-count mismatch is caught earlier by the IR type check \
+(E-IR-TYPE). The branch is therefore defensive, and its classification is covered exhaustively \
+by Scale.EveryAuthorizableOperationIsEitherEmittedOrRefused. When declared transforms reach the \
+graph -- the checker already supports them -- this becomes reachable and must be killed."""
 
 [[mutation]]
 id = "merge-keeps-last-writer"
@@ -330,8 +336,8 @@ id = "merge-typed-at-first-writer"
 area = "compiler"
 describes = "the combined value inherits the first writer's time level, so a lagged writer declared first cuts the unlagged writers' dependence"
 file = "src/ir/lowering.cpp"
-old = "      ArcId newest = writers.front();"
-new = "      ArcId newest = writers.front(); if (true) goto typed;"
+old = "        if (b.iterate > a.iterate ||"
+new = "        if (false \u0026\u0026"
 target = "fuse_schedule_acyclicity_sweep_test"
 test = "schedule.acyclicity_sweep"
 
