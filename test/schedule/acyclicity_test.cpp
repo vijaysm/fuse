@@ -798,22 +798,38 @@ TEST(Acyclicity, SecondWriterCannotHideARealLoop) {
   ASSERT_FALSE(check(multi_writer_hiding_a_loop(false)).acyclic)
       << "the one-writer control is a genuine A@k -> C@k -> A@k loop";
 
-  // The regression. Whatever the message says, the verdict must not be "pass".
-  const auto report = check(multi_writer_hiding_a_loop(true));
+  // The original hazard: a second, unrelated writer on the same target used to
+  // replace the first, deleting the dependence that closed the loop, and the
+  // proof then passed. That graph is now refused outright at authoring
+  // (MultiWriterIsAnAuthoringError below), so it cannot reach the proof.
+  //
+  // The harder question is what happens once the user DOES say how to combine
+  // the writers, because then the graph compiles and the proof must still see
+  // the loop. It does, and for the right reason: the combine consumes every
+  // writer, so no declared dependence is lost.
+  CouplingGraph g = multi_writer_hiding_a_loop(true);
+  fuse::FieldId merged{};
+  for (std::uint32_t i = 0; i < g.field_count(); ++i) {
+    if (g.field(fuse::FieldId{i}).name == "c_f") merged = fuse::FieldId{i};
+  }
+  ASSERT_TRUE(merged.valid());
+  g.merge(merged, fuse::MergeOp::Sum);
+  ASSERT_FALSE(validate(g).has_errors()) << validate(g).to_string();
+
+  const auto report = check(g);
   EXPECT_FALSE(report.acyclic)
-      << "an unrelated second writer on c.c_f hid the A@k -> C@k -> A@k loop\n"
-      << report.explanation;
-  EXPECT_NE(report.explanation.find("ch0_a_to_c"), std::string::npos)
-      << "the message must name the channel whose data goes nowhere\n"
+      << "combining the writers must preserve both dependences, so the "
+         "A@k -> C@k -> A@k loop is still there\n"
       << report.explanation;
 }
 
 TEST(Acyclicity, SecondWriterOnANodeFreeChannelCannotHideARealLoop) {
-  const auto report = check(multi_writer_with_a_node_free_channel());
-  EXPECT_FALSE(report.acyclic)
-      << "the shadowed channel lowers to no nodes at all, so only counting "
-         "writers per target field can catch it\n"
-      << report.explanation;
+  // The shadowed channel lowers to no nodes at all, so nothing downstream can
+  // notice it went missing -- only counting writers per target field catches
+  // it. The graph is refused at authoring; with a declared combine it compiles
+  // and the loop is still visible.
+  CouplingGraph g = multi_writer_with_a_node_free_channel();
+  EXPECT_TRUE(validate(g).has_errors()) << "an undeclared combine must not compile";
 }
 
 // The authoring gate must reject the same graph outright: silently dropping

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+
 #include <optional>
 #include <string>
 #include <string_view>
@@ -7,6 +9,7 @@
 #include <vector>
 
 #include "fuse/model/channel.hpp"
+#include "fuse/model/merge.hpp"
 #include "fuse/model/component.hpp"
 #include "fuse/model/field_spec.hpp"
 #include "fuse/model/region.hpp"
@@ -170,6 +173,34 @@ class CouplingGraph {
   [[nodiscard]] const FieldSpec& field(FieldId id) const {
     return fields_.at(id.value());
   }
+  /// Declare how several channels writing `target` are combined. Without
+  /// this, a field with more than one writer is refused.
+  CouplingGraph& merge(FieldId target, MergeOp op) {
+    const std::uint32_t key = target.value();
+    for (auto& entry : merges_) {
+      if (entry.first == key) { entry.second.op = op; return *this; }
+    }
+    merges_.push_back({key, MergeSpec{op}});
+    std::sort(merges_.begin(), merges_.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    return *this;
+  }
+
+  /// Null when the field has no declared merge.
+  [[nodiscard]] const MergeSpec* merge_for(FieldId target) const {
+    for (const auto& entry : merges_) {
+      if (entry.first == target.value()) return &entry.second;
+    }
+    return nullptr;
+  }
+
+  [[nodiscard]] std::size_t merge_count() const noexcept { return merges_.size(); }
+
+  /// Sorted by field id, so serialization and diagnostics are reproducible.
+  [[nodiscard]] const std::pair<std::uint32_t, MergeSpec>& merge_at(std::size_t i) const {
+    return merges_.at(i);
+  }
+
   [[nodiscard]] const Channel& channel_at(ChannelId id) const {
     return channels_.at(id.value());
   }
@@ -232,6 +263,7 @@ class CouplingGraph {
   std::vector<ComponentId>         field_owner_;  // parallel to fields_
   std::vector<Channel>             channels_;
   std::vector<IterationRegionDecl> iteration_regions_;
+  std::vector<std::pair<std::uint32_t, MergeSpec>> merges_;  // sorted by field id
 };
 
 inline Channel& ChannelBuilder::target() { return graph_->channel_mut(id_); }
