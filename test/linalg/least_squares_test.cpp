@@ -122,6 +122,15 @@ TEST(LeastSquares, TruncatesARankDeficientSystemAndZeroesTheDroppedColumns) {
   const std::size_t rank_ref = fuse::linalg::least_squares_builtin(a2, m, k, b2, x2);
   EXPECT_EQ(rank, rank_ref);
   EXPECT_NEAR(residual(a0, m, k, b0, x1), residual(a0, m, k, b0, x2), 1e-9);
+
+  // The same contract on the built-in path explicitly. Without this the
+  // assertion above only covers whichever backend the build configured, and
+  // the built-in one is the oracle -- the iteration counts were recorded with
+  // its truncation behaviour, so a change in it must fail a test in every
+  // build, not only in a build that selects it.
+  EXPECT_TRUE((x2[0] == 0.0) != (x2[2] == 0.0))
+      << "the built-in factorisation gave both duplicate columns a weight: x = ["
+      << x2[0] << ", " << x2[1] << ", " << x2[2] << "]";
 }
 
 TEST(LeastSquares, StaysAccurateAsTheColumnsBecomeNearlyParallel) {
