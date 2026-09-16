@@ -1,5 +1,8 @@
 # fuse upstream import baselines. Bump ONLY through docs/PLAN.md §6 (sync protocol).
 # state: imported = byte-identical subtree | diverged = transformed in fuse since import
+# Host-run verification of the merged library: 2026-09-16, 843 tests, 0
+# failures, all 16 parallel legs at 2/3/4/5 ranks (docs/dev/testing.md).
+
 [soma]
 path      = "/Users/mahadevan/Code/AI/coupling/coupe/modules/coupler"
 ref       = "main"
