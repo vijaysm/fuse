@@ -84,7 +84,7 @@ foreach(t clock acyclicity acyclicity_sweep expand plan lockstep epoch)
 endforeach()
 
 # ---------------------------------------------------------------- num
-foreach(t kernels temporal_basis waveform waveform_order convergence accelerator)
+foreach(t kernels temporal_basis waveform waveform_order convergence accelerator residual_norm)
   fuse_add_gtest(num ${t})
 endforeach()
 

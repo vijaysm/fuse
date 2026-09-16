@@ -129,6 +129,7 @@ add_library(fuse-coupler-num
   num/accel_quasi_newton.cpp
   num/accel_relaxation.cpp
   num/kernels_inst.cpp
+  num/residual_norm.cpp
 )
 add_library(fuse::num ALIAS fuse-coupler-num)
 target_link_libraries(fuse-coupler-num PUBLIC fuse::model)
