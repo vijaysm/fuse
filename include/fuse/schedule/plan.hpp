@@ -160,6 +160,18 @@ struct ScheduleResult {
 /// the two plans compared. `ExpandMode::Auto` is the production setting.
 /// `ExecutionPlan::lockstep()` reports the property of the *graph* either way,
 /// so the two dumps are comparable byte for byte.
+/// The agreement points a rank reaches, in plan order.
+///
+/// Every rank compiles this same plan from the same graph (the descriptor is
+/// byte-identical across ranks, which `model.descriptor_mpi` checks), so two
+/// ranks can only disagree by executing a different subset of it. Comparing
+/// these sequences is how the compiler proves they do not: if rank A expects
+/// three agreement points and rank B two, the run deadlocks at the third, and
+/// it deadlocks at run time on a machine, which is the worst place to find out.
+[[nodiscard]] std::vector<std::string> epoch_sequence(const ExecutionPlan& plan,
+                                                      const CouplingGraph& g,
+                                                      int rank);
+
 [[nodiscard]] ScheduleResult schedule(const CouplingGraph& g,
                                       const OperatorDAG& dag,
                                       const ClockSet& clocks,

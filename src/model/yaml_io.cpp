@@ -283,6 +283,13 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
       const auto& f = g.field(fid);
       e << YAML::BeginMap
         << YAML::Key << "name" << YAML::Value << f.name
+        // The order fields were declared in, which is NOT the order they
+        // appear here: the text nests fields under their component, so a graph
+        // that interleaved two components' fields would come back regrouped
+        // and every field id would shift. Ids are what channels and merge
+        // rules refer to, and what two ranks compare byte-for-byte, so the
+        // order is part of the graph and has to survive the text.
+        << YAML::Key << "index" << YAML::Value << fid.value()
         << YAML::Key << "region" << YAML::Value << g.region(f.region).name
         << YAML::Key << "disc" << YAML::Value << to_cstring(f.disc)
         << YAML::Key << "order" << YAML::Value << f.order
@@ -345,6 +352,23 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
   }
   e << YAML::EndSeq;
 
+  // The merge table. Emitted even though it is usually empty, because the
+  // three-leg round trip compares canonical bytes: a field the text form drops
+  // is a field a YAML-authored graph silently loses.
+  if (g.merge_count() > 0) {
+    e << YAML::Key << "merges" << YAML::Value << YAML::BeginSeq;
+    for (std::size_t i = 0; i < g.merge_count(); ++i) {
+      const auto& entry = g.merge_at(i);
+      e << YAML::BeginMap
+        << YAML::Key << "field" << YAML::Value << g.field(FieldId{entry.first}).name
+        << YAML::Key << "component" << YAML::Value
+        << g.component(g.owner_of(FieldId{entry.first})).name
+        << YAML::Key << "rule" << YAML::Value << std::string(merge_op_name(entry.second.op))
+        << YAML::EndMap;
+    }
+    e << YAML::EndSeq;
+  }
+
   e << YAML::Key << "iteration_regions" << YAML::Value << YAML::BeginSeq;
   for (std::uint32_t i = 0; i < g.iteration_region_count(); ++i) {
     const auto& r = g.iteration_region(IterationRegionIdx{i});
@@ -401,7 +425,7 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
   if (auto e = check_unknown_keys(
           root,
           {"version", "meshes", "regions", "components", "channels",
-           "iteration_regions"},
+           "iteration_regions", "merges"},
           "top-level document")) {
     return *e;
   }
@@ -446,6 +470,14 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
         .dimension = n["dimension"] ? n["dimension"].as<int>() : -1});
   }
 
+  struct PendingField {
+    std::uint32_t index;
+    ComponentId owner;
+    std::string component_name;
+    FieldSpec spec;
+  };
+  std::vector<PendingField> pending_fields;
+
   for (const auto& n : root["components"]) {
     if (auto e = check_unknown_keys(
             n, {"name", "ranks", "interval", "fields"}, "component entry")) {
@@ -474,7 +506,7 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
       if (auto e = check_unknown_keys(
               fn,
               {"name", "region", "disc", "order", "components", "units",
-               "conservation", "intent"},
+               "conservation", "intent", "index"},
               "field entry in component '" + c.name + "'")) {
         return *e;
       }
@@ -506,8 +538,24 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
           !lookup_enum(fn["intent"].as<std::string>(), kIntentNames, f.intent)) {
         return Failure{"E-YAML-PARSE", "unknown intent"};
       }
-      field_by_qualified[c.name + "." + f.name] = g.add_field(cid, f);
+      // Collected, not added: the fields are added below in declaration
+      // order so the ids match the graph this text came from.
+      pending_fields.push_back(PendingField{
+          fn["index"] ? fn["index"].as<std::uint32_t>()
+                      : static_cast<std::uint32_t>(pending_fields.size()),
+          cid, c.name, f});
     }
+  }
+
+  // Declaration order. A text without `index` (hand-written, most likely)
+  // keeps the order it was read in, which is the best information available.
+  std::stable_sort(pending_fields.begin(), pending_fields.end(),
+                   [](const PendingField& a, const PendingField& b) {
+                     return a.index < b.index;
+                   });
+  for (const PendingField& pf : pending_fields) {
+    field_by_qualified[pf.component_name + "." + pf.spec.name] =
+        g.add_field(pf.owner, pf.spec);
   }
 
   for (const auto& n : root["channels"]) {
@@ -593,6 +641,39 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
       b.allow_time_level_mismatch(
           n["allow_time_level_mismatch"].as<std::string>());
     }
+  }
+
+  for (const auto& n : root["merges"]) {
+    if (!n["field"] || !n["component"] || !n["rule"]) {
+      return Failure{"E-YAML-MERGE",
+                     "a merge entry needs field, component and rule"};
+    }
+    const std::string comp = n["component"].as<std::string>();
+    const std::string field = n["field"].as<std::string>();
+    FieldId target;
+    for (std::uint32_t i = 0; i < g.field_count(); ++i) {
+      if (g.field(FieldId{i}).name == field &&
+          g.component(g.owner_of(FieldId{i})).name == comp) {
+        target = FieldId{i};
+        break;
+      }
+    }
+    if (!target.valid()) {
+      return Failure{"E-YAML-MERGE",
+                     "merge names field '" + comp + "." + field + "', which is not declared"};
+    }
+    const std::string rule = n["rule"].as<std::string>();
+    MergeOp op{};
+    if (rule == "Sum") op = MergeOp::Sum;
+    else if (rule == "Mean") op = MergeOp::Mean;
+    else if (rule == "First") op = MergeOp::First;
+    else {
+      return Failure{"E-YAML-MERGE",
+                     "unknown merge rule '" + rule +
+                         "'; expected Sum, Mean or First. Refusing rather than "
+                         "defaulting, which would silently change the physics"};
+    }
+    g.merge(target, op);
   }
 
   for (const auto& n : root["iteration_regions"]) {

@@ -23,7 +23,13 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 /// the seven dimension exponents. A v2 buffer read as v3 would take the next
 /// field's bytes as a scale, so the version gate rejects it rather than admit a
 /// plausible-looking graph with the wrong units.
-inline constexpr std::uint32_t kGraphVersion = 3u;
+/// 4: adds the merge table (how several channels writing one field combine).
+///
+/// The bump is not optional. A v3 reader handed a v4 buffer would stop after
+/// the iteration regions and never see the merge rules, so it would read a
+/// graph that says "one writer per field" from bytes that say otherwise -- and
+/// it would read it successfully. The version check turns that into a refusal.
+inline constexpr std::uint32_t kGraphVersion = 4u;
 
 namespace detail {
 
@@ -126,6 +132,7 @@ class Reader {
   w.pod(static_cast<std::uint32_t>(g.field_count()));
   w.pod(static_cast<std::uint32_t>(g.channel_count()));
   w.pod(static_cast<std::uint32_t>(g.iteration_region_count()));
+  w.pod(static_cast<std::uint32_t>(g.merge_count()));
 
   for (std::uint32_t i = 0; i < g.mesh_count(); ++i) {
     const auto& m = g.mesh(MeshId{i});
@@ -203,6 +210,17 @@ class Reader {
     w.pod(r.acceleration.limit);
     w.pod(static_cast<std::uint8_t>(r.acceleration.scale_fields));
   }
+
+  // The merge table. Sorted by field id in the graph, so the bytes are the
+  // same whatever order the calls were made in -- the descriptor is compared
+  // byte-for-byte across ranks, and an unordered container would make that
+  // comparison depend on hash iteration order.
+  for (std::size_t i = 0; i < g.merge_count(); ++i) {
+    const auto& entry = g.merge_at(i);
+    w.pod(entry.first);
+    w.pod(static_cast<std::uint8_t>(entry.second.op));
+  }
+
   return w.take();
 }
 
@@ -225,6 +243,7 @@ class Reader {
   const auto n_field = r.pod<std::uint32_t>();
   const auto n_chan = r.pod<std::uint32_t>();
   const auto n_iter = r.pod<std::uint32_t>();
+  const auto n_merge = r.pod<std::uint32_t>();
   if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated descriptor header"};
 
   CouplingGraph g;
@@ -323,6 +342,25 @@ class Reader {
     d.acceleration.scale_fields = r.pod<std::uint8_t>() != 0;
     if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated iteration region"};
     g.add_iteration_region(std::move(d));
+  }
+
+  for (std::uint32_t i = 0; i < n_merge; ++i) {
+    const auto field_value = r.pod<std::uint32_t>();
+    const auto op = r.pod<std::uint8_t>();
+    if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated merge table"};
+    if (field_value >= g.field_count()) {
+      return Failure{"E-DESC-MERGE",
+                     "the merge table names field id " + std::to_string(field_value) +
+                         " but the descriptor carries " +
+                         std::to_string(g.field_count()) + " fields"};
+    }
+    if (op > static_cast<std::uint8_t>(MergeOp::First)) {
+      return Failure{"E-DESC-MERGE",
+                     "unknown merge rule " + std::to_string(op) +
+                         "; refusing rather than defaulting to Sum, which would "
+                         "silently change the physics"};
+    }
+    g.merge(FieldId{field_value}, static_cast<MergeOp>(op));
   }
 
   if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated descriptor body"};
