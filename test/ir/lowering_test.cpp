@@ -147,9 +147,9 @@ TEST(Lowering, UnwrittenBidirectionalFieldSelfCopiesThroughOneSink) {
   const auto m = g.add_mesh(fuse::MeshDecl{.name = "m"});
   const auto r = g.add_region(fuse::Region{.name = "r", .mesh = m});
   const auto a = g.add_component(fuse::ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1}});
+      .name = "a", .ranks = fuse::RankSet{0, 1}});
   const auto b = g.add_component(fuse::ComponentDecl{
-      .name = "b", .ranks = {.first = 1, .count = 1}});
+      .name = "b", .ranks = fuse::RankSet{1, 1}});
   g.add_field(a, fuse::FieldSpec{.name = "state", .region = r,
                                  .intent = fuse::Intent::Bidirectional});
   const auto s = g.add_field(a, fuse::FieldSpec{

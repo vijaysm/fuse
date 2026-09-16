@@ -1548,13 +1548,15 @@ Result<void> Runner::Impl::resolve_epoch_participants() {
     // Derived from the graph, which is identical on every rank, so every
     // participant builds the same list -- that is what makes the schedule in
     // reconcile_epoch() agree without anyone communicating to establish it.
+    // The union of the two placements. Iterated as a list, not a range: a
+    // component may be placed on strided ranks, and the two may share some.
+    // A shared rank appears once, which is what makes it a participant once.
     std::vector<int> ranks;
     for (const int component : {ins.attrs.src_rank_set, ins.attrs.dst_rank_set}) {
       if (component < 0) continue;
       const auto id = static_cast<std::uint32_t>(component);
       if (id >= graph.component_count()) continue;
-      const RankSet& rs = graph.component(ComponentId{id}).ranks;
-      for (int r = rs.first; r < rs.first + rs.count; ++r) ranks.push_back(r);
+      for (const int r : graph.component(ComponentId{id}).ranks) ranks.push_back(r);
     }
     std::sort(ranks.begin(), ranks.end());
     ranks.erase(std::unique(ranks.begin(), ranks.end()), ranks.end());

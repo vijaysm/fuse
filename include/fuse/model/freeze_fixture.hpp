@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 /// The canonical descriptor fixture: every optional member at a NON-DEFAULT
 /// value. Shared by the golden-bytes test and the tool that regenerates the
 /// golden file, so the two cannot describe different graphs -- which is the one
@@ -20,9 +22,14 @@ inline CouplingGraph freeze_fixture() {
       {.name = "interface", .mesh = mesh, .entity_set = "top", .dimension = 2});
 
   const auto fluid = g.add_component(
-      {.name = "fluid", .ranks = {2, 3}, .interval = Rational{1, 4}});
+      // Strided, not a block. A component's ranks became an explicit list at
+      // descriptor v5, and a frozen file built from two contiguous placements
+      // would not exercise the change it exists to pin. Still disjoint from
+      // "solid": shared placements are a separate step.
+      {.name = "fluid", .ranks = RankSet{std::vector<int>{2, 4, 6}},
+       .interval = Rational{1, 4}});
   const auto solid = g.add_component(
-      {.name = "solid", .ranks = {5, 2}, .interval = Rational{1, 3}});
+      {.name = "solid", .ranks = {7, 2}, .interval = Rational{1, 3}});
 
   Units kilopascal{.length = -1, .mass = 1, .time = -2};
   kilopascal.scale = Rational{1000};

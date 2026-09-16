@@ -840,10 +840,10 @@ std::unique_ptr<HookHarness> make_hook_harness() {
   const auto r2 =
       g.add_region(fuse::Region{.name = "r2", .mesh = m2, .dimension = 1});
   const auto p = g.add_component(fuse::ComponentDecl{
-      .name = "producer", .ranks = {.first = 0, .count = 1},
+      .name = "producer", .ranks = {0, 1},
       .interval = fuse::Rational{1}});
   const auto c = g.add_component(fuse::ComponentDecl{
-      .name = "consumer", .ranks = {.first = 1, .count = 1},
+      .name = "consumer", .ranks = {1, 1},
       .interval = fuse::Rational{1}});
   const auto sf = g.add_field(
       p, fuse::FieldSpec{.name = "out", .region = r1, .units = u::kKelvin,

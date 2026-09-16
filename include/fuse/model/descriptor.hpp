@@ -23,13 +23,18 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 /// the seven dimension exponents. A v2 buffer read as v3 would take the next
 /// field's bytes as a scale, so the version gate rejects it rather than admit a
 /// plausible-looking graph with the wrong units.
+/// 5: a component's ranks are an explicit list, not `{first, count}`. Strided
+///    and overlapping placements are expressible; a v4 reader would read the
+///    rank count as a first rank and produce a plausible, wrong placement,
+///    which is the worst kind of incompatibility, so v4 is refused.
+///
 /// 4: adds the merge table (how several channels writing one field combine).
 ///
 /// The bump is not optional. A v3 reader handed a v4 buffer would stop after
 /// the iteration regions and never see the merge rules, so it would read a
 /// graph that says "one writer per field" from bytes that say otherwise -- and
 /// it would read it successfully. The version check turns that into a refusal.
-inline constexpr std::uint32_t kGraphVersion = 4u;
+inline constexpr std::uint32_t kGraphVersion = 5u;
 
 namespace detail {
 
@@ -149,8 +154,10 @@ class Reader {
   for (std::uint32_t i = 0; i < g.component_count(); ++i) {
     const auto& c = g.component(ComponentId{i});
     w.str(c.name);
-    w.pod(static_cast<std::int32_t>(c.ranks.first));
-    w.pod(static_cast<std::int32_t>(c.ranks.count));
+    // Count then ranks, in the sorted order RankSet guarantees, so two ranks
+    // serializing the same graph produce the same bytes.
+    w.pod(static_cast<std::uint32_t>(c.ranks.size()));
+    for (const int rank : c.ranks) w.pod(static_cast<std::int32_t>(rank));
     w.rational(c.interval);
   }
   for (std::uint32_t i = 0; i < g.field_count(); ++i) {
@@ -264,8 +271,32 @@ class Reader {
   for (std::uint32_t i = 0; i < n_comp; ++i) {
     ComponentDecl c;
     c.name = r.str();
-    c.ranks.first = r.pod<std::int32_t>();
-    c.ranks.count = r.pod<std::int32_t>();
+    {
+      const auto n_ranks = r.pod<std::uint32_t>();
+      if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated component ranks"};
+      std::vector<int> ranks;
+      ranks.reserve(n_ranks);
+      for (std::uint32_t k = 0; k < n_ranks; ++k) {
+        ranks.push_back(static_cast<int>(r.pod<std::int32_t>()));
+      }
+      if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated component ranks"};
+      // Checked rather than trusted: RankSet's invariant is sorted and
+      // distinct, and every consumer depends on it (CommGraph matches by
+      // position, the agreement reduction indexes by position). A descriptor
+      // that arrived unsorted would silently mis-place data.
+      for (std::uint32_t k = 1; k < n_ranks; ++k) {
+        if (ranks[k] <= ranks[k - 1]) {
+          return Failure{"E-DESC-RANKS",
+                         "component '" + c.name +
+                             "' has ranks that are not strictly increasing; "
+                             "refusing rather than sorting, because a "
+                             "descriptor that disagrees with its writer about "
+                             "rank order disagrees about which rank holds "
+                             "which values"};
+        }
+      }
+      c.ranks = RankSet{std::move(ranks)};
+    }
     c.interval = r.rational();
     g.add_component(std::move(c));
   }

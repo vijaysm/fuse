@@ -27,10 +27,10 @@ CouplingGraph make_pair_graph() {
                                        .entity_set = "wall", .dimension = 2});
 
   const auto fluid = g.add_component(
-      ComponentDecl{.name = "fluid", .ranks = {.first = 0, .count = 2},
+      ComponentDecl{.name = "fluid", .ranks = fuse::RankSet{0, 2},
                     .interval = Rational{1, 2}});
   const auto solid = g.add_component(
-      ComponentDecl{.name = "solid", .ranks = {.first = 2, .count = 2},
+      ComponentDecl{.name = "solid", .ranks = fuse::RankSet{2, 2},
                     .interval = Rational{1}});
 
   const auto q_out = g.add_field(

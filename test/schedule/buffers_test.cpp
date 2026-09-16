@@ -26,9 +26,9 @@ CouplingGraph pair_with_accumulate() {
   const auto rf = g.add_region(fuse::Region{.name = "rf", .mesh = mf});
   const auto rs = g.add_region(fuse::Region{.name = "rs", .mesh = ms});
   const auto a = g.add_component(ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1}, .interval = Rational{1, 2}});
+      .name = "a", .ranks = RankSet{0, 1}, .interval = Rational{1, 2}});
   const auto b = g.add_component(ComponentDecl{
-      .name = "b", .ranks = {.first = 1, .count = 1}, .interval = Rational{1}});
+      .name = "b", .ranks = RankSet{1, 1}, .interval = Rational{1}});
   const auto s = g.add_field(a, fuse::FieldSpec{
       .name = "f", .region = rf, .units = u::kKelvin,
       .intent = fuse::Intent::Provides});
@@ -49,9 +49,9 @@ CouplingGraph pair_with_optional_lag(bool lagged) {
   const auto rf = g.add_region(fuse::Region{.name = "rf", .mesh = mf});
   const auto rs = g.add_region(fuse::Region{.name = "rs", .mesh = mf});
   const auto a = g.add_component(ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1}, .interval = Rational{1}});
+      .name = "a", .ranks = RankSet{0, 1}, .interval = Rational{1}});
   const auto b = g.add_component(ComponentDecl{
-      .name = "b", .ranks = {.first = 0, .count = 1}, .interval = Rational{1}});
+      .name = "b", .ranks = RankSet{0, 1}, .interval = Rational{1}});
   const auto s = g.add_field(a, fuse::FieldSpec{
       .name = "f", .region = rf, .units = u::kKelvin,
       .intent = fuse::Intent::Provides});
@@ -69,9 +69,9 @@ CouplingGraph pair_with_components(int components) {
   const auto rf = g.add_region(fuse::Region{.name = "rf", .mesh = mf});
   const auto rs = g.add_region(fuse::Region{.name = "rs", .mesh = mf});
   const auto a = g.add_component(ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1}, .interval = Rational{1}});
+      .name = "a", .ranks = RankSet{0, 1}, .interval = Rational{1}});
   const auto b = g.add_component(ComponentDecl{
-      .name = "b", .ranks = {.first = 0, .count = 1}, .interval = Rational{1}});
+      .name = "b", .ranks = RankSet{0, 1}, .interval = Rational{1}});
   const auto s = g.add_field(a, fuse::FieldSpec{
       .name = "f", .region = rf, .components = components, .units = u::kKelvin,
       .intent = fuse::Intent::Provides});

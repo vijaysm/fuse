@@ -344,7 +344,8 @@ bool rank_participates(const Instruction& ins, int rank, const CouplingGraph& g)
     const auto id = static_cast<std::uint32_t>(component);
     if (id >= g.component_count()) return false;
     const RankSet& rs = g.component(ComponentId{id}).ranks;
-    return rank >= rs.first && rank < rs.first + rs.count;
+    // Membership, not a range test: a placement may be strided or shared.
+    return rs.contains(rank);
   };
   if (ins.attrs.src_rank_set < 0 && ins.attrs.dst_rank_set < 0) return true;
   return in_set(ins.attrs.src_rank_set) || in_set(ins.attrs.dst_rank_set);

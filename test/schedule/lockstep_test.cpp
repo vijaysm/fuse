@@ -59,9 +59,9 @@ CouplingGraph pair(Rational dt_a, Rational dt_b,
   const auto rf = g.add_region(fuse::Region{.name = "rf", .mesh = mf});
   const auto rs = g.add_region(fuse::Region{.name = "rs", .mesh = ms});
   const auto a = g.add_component(ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1}, .interval = dt_a});
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = dt_a});
   const auto b = g.add_component(ComponentDecl{
-      .name = "b", .ranks = {.first = 1, .count = 1}, .interval = dt_b});
+      .name = "b", .ranks = fuse::RankSet{1, 1}, .interval = dt_b});
   const auto s = g.add_field(a, fuse::FieldSpec{
       .name = "f", .region = rf, .units = u::kKelvin,
       .intent = fuse::Intent::Provides});
@@ -115,11 +115,11 @@ CouplingGraph spacetime_plus_plain(Rational dt) {
   const auto m = g.add_mesh(fuse::MeshDecl{.name = "m"});
   const auto r = g.add_region(fuse::Region{.name = "r", .mesh = m});
   const auto a = g.add_component(ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1}, .interval = dt});
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = dt});
   const auto b = g.add_component(ComponentDecl{
-      .name = "b", .ranks = {.first = 1, .count = 1}, .interval = dt});
+      .name = "b", .ranks = fuse::RankSet{1, 1}, .interval = dt});
   const auto c = g.add_component(ComponentDecl{
-      .name = "c", .ranks = {.first = 2, .count = 1}, .interval = dt});
+      .name = "c", .ranks = fuse::RankSet{2, 1}, .interval = dt});
   const auto s = g.add_field(a, fuse::FieldSpec{
       .name = "f", .region = r, .units = u::kKelvin,
       .intent = fuse::Intent::Provides});
@@ -143,7 +143,7 @@ CouplingGraph solo(Rational dt) {
   const auto m = g.add_mesh(fuse::MeshDecl{.name = "m"});
   const auto r = g.add_region(fuse::Region{.name = "r", .mesh = m});
   const auto a = g.add_component(ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1}, .interval = dt});
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = dt});
   g.add_field(a, fuse::FieldSpec{.name = "f", .region = r, .units = u::kKelvin,
                                  .intent = fuse::Intent::Provides});
   return g;
@@ -157,11 +157,11 @@ CouplingGraph chain3(Rational dt_a, Rational dt_b, Rational dt_c) {
   const auto rb = g.add_region(fuse::Region{.name = "rb", .mesh = m});
   const auto rc = g.add_region(fuse::Region{.name = "rc", .mesh = m});
   const auto a = g.add_component(ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1}, .interval = dt_a});
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = dt_a});
   const auto b = g.add_component(ComponentDecl{
-      .name = "b", .ranks = {.first = 1, .count = 1}, .interval = dt_b});
+      .name = "b", .ranks = fuse::RankSet{1, 1}, .interval = dt_b});
   const auto c = g.add_component(ComponentDecl{
-      .name = "c", .ranks = {.first = 2, .count = 1}, .interval = dt_c});
+      .name = "c", .ranks = fuse::RankSet{2, 1}, .interval = dt_c});
   const auto a_out = g.add_field(a, fuse::FieldSpec{
       .name = "a_out", .region = ra, .units = u::kKelvin,
       .intent = fuse::Intent::Provides});
@@ -188,11 +188,11 @@ CouplingGraph fan_out(Rational dt) {
   const auto rb = g.add_region(fuse::Region{.name = "rb", .mesh = m});
   const auto rc = g.add_region(fuse::Region{.name = "rc", .mesh = m});
   const auto a = g.add_component(ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 1}, .interval = dt});
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = dt});
   const auto b = g.add_component(ComponentDecl{
-      .name = "b", .ranks = {.first = 1, .count = 1}, .interval = dt});
+      .name = "b", .ranks = fuse::RankSet{1, 1}, .interval = dt});
   const auto c = g.add_component(ComponentDecl{
-      .name = "c", .ranks = {.first = 2, .count = 1}, .interval = dt});
+      .name = "c", .ranks = fuse::RankSet{2, 1}, .interval = dt});
   const auto a_out = g.add_field(a, fuse::FieldSpec{
       .name = "a_out", .region = ra, .units = u::kKelvin,
       .intent = fuse::Intent::Provides});

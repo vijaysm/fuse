@@ -39,10 +39,10 @@ CouplingGraph pair_graph() {
   const auto rs = g.add_region(Region{.name = "solid_wall", .mesh = ms,
                                       .entity_set = "wall", .dimension = 2});
   const auto fluid = g.add_component(ComponentDecl{
-      .name = "fluid", .ranks = {.first = 0, .count = 2},
+      .name = "fluid", .ranks = fuse::RankSet{0, 2},
       .interval = Rational{1, 2}});
   const auto solid = g.add_component(ComponentDecl{
-      .name = "solid", .ranks = {.first = 2, .count = 2},
+      .name = "solid", .ranks = fuse::RankSet{2, 2},
       .interval = Rational{1}});
   const auto s = g.add_field(fluid, FieldSpec{
       .name = "heat_flux", .region = rf, .units = u::kHeatFluxDensity,

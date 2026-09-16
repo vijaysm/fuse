@@ -21,9 +21,9 @@ CouplingGraph pair(bool disjoint_ranks, Conservation cons) {
   const auto rf = g.add_region(fuse::Region{.name = "rf", .mesh = mf});
   const auto rs = g.add_region(fuse::Region{.name = "rs", .mesh = ms});
   const auto a = g.add_component(fuse::ComponentDecl{
-      .name = "a", .ranks = {.first = 0, .count = 2}});
+      .name = "a", .ranks = fuse::RankSet{0, 2}});
   const auto b = g.add_component(fuse::ComponentDecl{
-      .name = "b", .ranks = {.first = disjoint_ranks ? 2 : 0, .count = 2}});
+      .name = "b", .ranks = fuse::RankSet{disjoint_ranks ? 2 : 0, 2}});
   const auto s = g.add_field(a, fuse::FieldSpec{
       .name = "f", .region = rf, .units = u::kHeatFluxDensity,
       .conservation = cons, .intent = fuse::Intent::Provides});

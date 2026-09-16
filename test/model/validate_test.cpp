@@ -41,10 +41,10 @@ struct Fixture {
     const auto r = g.add_region(Region{.name = "wall", .mesh = m,
                                        .entity_set = "w", .dimension = 2});
     fluid = g.add_component(ComponentDecl{.name = "fluid",
-                                          .ranks = {.first = 0, .count = 1},
+                                          .ranks = fuse::RankSet{0, 1},
                                           .interval = Rational{1}});
     solid = g.add_component(ComponentDecl{.name = "solid",
-                                          .ranks = {.first = 1, .count = 1},
+                                          .ranks = fuse::RankSet{1, 1},
                                           .interval = Rational{1}});
     src = g.add_field(fluid, FieldSpec{.name = "q", .region = r,
                                        .units = u::kHeatFluxDensity,
@@ -292,14 +292,15 @@ TEST(Validate, DeserializedGraphWithBadWindowComponentDoesNotThrowAndReportsBadR
   w.pod(std::uint32_t{0});
   w.str(std::string{});
   w.pod(std::int32_t{-1});
-  // component 0 = "A"
+  // component 0 = "A", on rank 0. Ranks are a COUNT then the list (v5), not
+  // {first, count}: a component may be placed on strided or shared ranks.
   w.str(std::string{"A"});
+  w.pod(std::uint32_t{1});
   w.pod(std::int32_t{0});
-  w.pod(std::int32_t{1});
   w.rational(Rational{1});
-  // component 1 = "B"
+  // component 1 = "B", on rank 1
   w.str(std::string{"B"});
-  w.pod(std::int32_t{1});
+  w.pod(std::uint32_t{1});
   w.pod(std::int32_t{1});
   w.rational(Rational{1});
   // field 0: owner=A, region=0, Provides
