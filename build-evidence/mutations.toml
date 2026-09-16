@@ -430,3 +430,23 @@ old = "  for (std::size_t ii = 0; ii < rank; ++ii) out[perm[ii]] = z[ii];"
 new = "  for (std::size_t ii = 0; ii < k; ++ii) out[perm[ii]] = z[ii];"
 target = "fuse_linalg_least_squares_test"
 test = "linalg.least_squares"
+
+[[mutation]]
+id = "epoch-schedule-sends-downward"
+area = "runtime"
+describes = "a participant hands its status to a higher index instead of a lower one, so no chain reaches participant 0 and some sends have no matching receive: a hang"
+file = "include/fuse/runtime/epoch_schedule.hpp"
+old = "      s.reduce_send_to = index - stride;"
+new = "      s.reduce_send_to = index + stride;"
+target = "fuse_runtime_epoch_schedule_test"
+test = "runtime.epoch_schedule"
+
+[[mutation]]
+id = "epoch-schedule-drops-the-answer"
+area = "runtime"
+describes = "participant 0 keeps the agreed status to itself, so every other participant waits for a message that never comes"
+file = "include/fuse/runtime/epoch_schedule.hpp"
+old = "    for (int k = 1; k < participants; ++k) s.result_send_to.push_back(k);"
+new = "    for (int k = 1; k < participants; ++k) (void)k;"
+target = "fuse_runtime_epoch_schedule_test"
+test = "runtime.epoch_schedule"

@@ -1,4 +1,5 @@
 #include "fuse/base/config.hpp"
+#include "fuse/runtime/epoch_schedule.hpp"
 #include "fuse/runtime/runner.hpp"
 
 #include <algorithm>
@@ -1606,60 +1607,52 @@ Result<void> Runner::Impl::reconcile_epoch(const Instruction& ins) {
   const auto n = static_cast<int>(part.size());
   const auto my_index = static_cast<int>(std::distance(part.begin(), self));
 
-  // A binomial reduce to participant 0 followed by a broadcast back, both on
-  // the base communicator with one dedicated tag.
+  // The schedule is arithmetic over (participants, index) and lives in
+  // fuse/runtime/epoch_schedule.hpp, where a Tier 0 test checks that every
+  // send has exactly one matching receive at 2..16 participants. A mismatch
+  // here is a hang, which is only observable in a real multi-rank run, so it
+  // is worth having a form that a unit test can falsify.
   //
   // WHY NOT A SUB-COMMUNICATOR. Splitting one per pair would mean holding it
   // for the Runner's lifetime and freeing it in a destructor, and
   // `MPI_Comm_free` is collective -- so destruction order would become a
   // correctness question. The transport layer avoids that deliberately
   // ("nothing outlives this function"); this follows the same rule.
-  //
-  // WHY THIS CANNOT DEADLOCK. The schedule depends only on `n` and
-  // `my_index`, both derived from the graph, so every participant computes the
-  // identical set of pairings. Each step is one matched send/receive between
-  // two participants, and nobody sends to a rank that is not expecting it.
   int status = step_failure.has_value() ? 0 : 1;
+  const EpochSchedule sched = epoch_schedule(n, my_index);
 
-  for (int stride = 1; stride < n; stride *= 2) {
-    if ((my_index % (2 * stride)) == 0) {
-      const int from = my_index + stride;
-      if (from < n) {
-        int peer_status = 1;
-        if (MPI_Recv(&peer_status, 1, MPI_INT, part[static_cast<std::size_t>(from)],
-                     kEpochTag, base, MPI_STATUS_IGNORE) != MPI_SUCCESS) {
-          return Failure{"E-RT-EPOCH-COMM",
-                         "MPI_Recv failed while agreeing status at a "
-                         "rank-agreement point"};
-        }
-        status = status < peer_status ? status : peer_status;
-      }
-    } else {
-      const int to = my_index - stride;
-      if (MPI_Send(&status, 1, MPI_INT, part[static_cast<std::size_t>(to)], kEpochTag,
-                   base) != MPI_SUCCESS) {
-        return Failure{"E-RT-EPOCH-COMM",
-                       "MPI_Send failed while agreeing status at a "
-                       "rank-agreement point"};
-      }
-      break;  // this rank has handed its result up; it only waits for the answer
+  for (const int from : sched.reduce_recv_from) {
+    int peer_status = 1;
+    if (MPI_Recv(&peer_status, 1, MPI_INT, part[static_cast<std::size_t>(from)],
+                 kEpochTag, base, MPI_STATUS_IGNORE) != MPI_SUCCESS) {
+      return Failure{"E-RT-EPOCH-COMM",
+                     "MPI_Recv failed while agreeing status at a "
+                     "rank-agreement point"};
+    }
+    status = status < peer_status ? status : peer_status;
+  }
+  if (sched.reduce_send_to >= 0) {
+    if (MPI_Send(&status, 1, MPI_INT,
+                 part[static_cast<std::size_t>(sched.reduce_send_to)], kEpochTag,
+                 base) != MPI_SUCCESS) {
+      return Failure{"E-RT-EPOCH-COMM",
+                     "MPI_Send failed while agreeing status at a "
+                     "rank-agreement point"};
     }
   }
-
-  // The answer, back down the same tree.
-  if (my_index != 0) {
-    if (MPI_Recv(&status, 1, MPI_INT, part[0], kEpochTag, base, MPI_STATUS_IGNORE) !=
-        MPI_SUCCESS) {
+  if (sched.result_recv_from >= 0) {
+    if (MPI_Recv(&status, 1, MPI_INT,
+                 part[static_cast<std::size_t>(sched.result_recv_from)],
+                 kEpochTag, base, MPI_STATUS_IGNORE) != MPI_SUCCESS) {
       return Failure{"E-RT-EPOCH-COMM",
                      "MPI_Recv failed while receiving the agreed status"};
     }
-  } else {
-    for (int k = 1; k < n; ++k) {
-      if (MPI_Send(&status, 1, MPI_INT, part[static_cast<std::size_t>(k)], kEpochTag,
-                   base) != MPI_SUCCESS) {
-        return Failure{"E-RT-EPOCH-COMM",
-                       "MPI_Send failed while publishing the agreed status"};
-      }
+  }
+  for (const int to : sched.result_send_to) {
+    if (MPI_Send(&status, 1, MPI_INT, part[static_cast<std::size_t>(to)],
+                 kEpochTag, base) != MPI_SUCCESS) {
+      return Failure{"E-RT-EPOCH-COMM",
+                     "MPI_Send failed while publishing the agreed status"};
     }
   }
 

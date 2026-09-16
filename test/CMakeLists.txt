@@ -102,7 +102,7 @@ foreach(t serial_mesh spacetime)
 endforeach()
 
 # ---------------------------------------------------------------- runtime
-foreach(t runner checkpoint component_iface)
+foreach(t runner checkpoint component_iface epoch_schedule)
   fuse_add_gtest(runtime ${t})
 endforeach()
 
