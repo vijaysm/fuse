@@ -105,3 +105,20 @@ endforeach()
 foreach(t runner checkpoint component_iface)
   fuse_add_gtest(runtime ${t})
 endforeach()
+
+# ---------------------------------------------------------------- parallel
+# Tier 1 only, and absent rather than skipped in Tier 0 for the reason above.
+if(FUSE_ENABLE_MPI)
+  foreach(t runner_transport comm_graph mpi_transport epoch_reconcile)
+    add_executable(fuse_parallel_${t}_test parallel/${t}_test.cpp)
+    target_link_libraries(fuse_parallel_${t}_test PRIVATE fuse::runtime fuse_test_main)
+    foreach(n 2 3 4 5)
+      add_test(NAME parallel.${t}.${n}
+               COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${n}
+                       $<TARGET_FILE:fuse_parallel_${t}_test>)
+      # A timeout, not because these are slow: the failure they guard against
+      # IS a hang, so a regression must fail the leg rather than stall CI.
+      set_tests_properties(parallel.${t}.${n} PROPERTIES TIMEOUT 120 LABELS "mpi;parallel")
+    endforeach()
+  endforeach()
+endif()
