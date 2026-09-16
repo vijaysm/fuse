@@ -80,6 +80,18 @@ under one dedicated tag, with the schedule derived only from the list length
 and this rank's position in it. Nothing is allocated and nothing has to be
 released.
 
+The tag is small and explicit (`0x5C13`, next to the crystal router's
+`0x5C12`). MPI only guarantees tags up to `MPI_TAG_UB`, whose standard minimum
+is 32767; a first version packed `'EPOC'` into an int, which is 1162891075 and
+which every MPI rejects outright. Setup now reads `MPI_TAG_UB` and refuses
+with `E-RT-EPOCH-TAG` if it is ever below the tag in use — a refusal before the
+run is a better failure than "Invalid tag" raised inside a reduction on one
+rank while its partners wait for it.
+
+Tag collision with a data move is not possible: `MpiTransport::set_communicator`
+duplicates the communicator it is handed, so a move never uses the base
+communicator even when the user passes it the same one.
+
 ## What a failed rank still executes
 
 A rank that has failed mid-step does **not** stop and does not skip
