@@ -508,7 +508,9 @@ TEST(ExecutionPlan, DumpIsIndependentOfTheGlobalLocale) {
   ASSERT_TRUE(r.ok()) << r.diags.to_string();
 
   const std::string classic = r.plan.to_string();
-  ASSERT_NE(classic.find("coupler_elements=16384"), std::string::npos)
+  // 20480, not 16384: the agreement point after the data move carries a
+  // buffer of its own until in-place operators land (S4).
+  ASSERT_NE(classic.find("coupler_elements=20480"), std::string::npos)
       << classic.substr(0, 200);
 
   std::string grouped;
@@ -550,16 +552,22 @@ TEST(ExecutionPlan, DumpShowsWhichInstructionsRunAfterTheTicks) {
             "  0  t=0  Source  node=0  out=%0\n"
             "  1  t=1/2  Transport  node=1  in=[%0]  out=%1  {0->1}  "
             "after-ticks\n"
-            "  2  t=1/2  Remap  node=2  in=[%1]  out=%2  {remap=C}  "
+            // The agreement point sits immediately after the move, on both
+            // ticks. Every rank that took part in the move reaches it.
+            "  2  t=1/2  Epoch  node=2  in=[%1]  out=%2  "
+            "{reason=after-transport}  after-ticks\n"
+            "  3  t=1/2  Remap  node=3  in=[%2]  out=%3  {remap=C}  "
             "after-ticks\n"
-            "  3  t=1/2  Constrain  node=3  in=[%2]  out=%3  after-ticks\n"
-            "  4  t=1/2  Diagnose  node=4  in=[%3]  out=%4  after-ticks\n"
-            "  5  t=1/2  Sink  node=5  in=[%4]  out=%5  after-ticks\n"
-            "  6  t=1  Transport  node=1  in=[%0]  out=%1  {0->1}\n"
-            "  7  t=1  Remap  node=2  in=[%1]  out=%2  {remap=C}\n"
-            "  8  t=1  Constrain  node=3  in=[%2]  out=%3\n"
-            "  9  t=1  Diagnose  node=4  in=[%3]  out=%4\n"
-            "  10  t=1  Sink  node=5  in=[%4]  out=%5\n");
+            "  4  t=1/2  Constrain  node=4  in=[%3]  out=%4  after-ticks\n"
+            "  5  t=1/2  Diagnose  node=5  in=[%4]  out=%5  after-ticks\n"
+            "  6  t=1/2  Sink  node=6  in=[%5]  out=%6  after-ticks\n"
+            "  7  t=1  Transport  node=1  in=[%0]  out=%1  {0->1}\n"
+            "  8  t=1  Epoch  node=2  in=[%1]  out=%2  "
+            "{reason=after-transport}\n"
+            "  9  t=1  Remap  node=3  in=[%2]  out=%3  {remap=C}\n"
+            "  10  t=1  Constrain  node=4  in=[%3]  out=%4\n"
+            "  11  t=1  Diagnose  node=5  in=[%4]  out=%5\n"
+            "  12  t=1  Sink  node=6  in=[%5]  out=%6\n");
 }
 
 TEST(ExecutionPlan, DumpIsByteExact) {
@@ -567,24 +575,34 @@ TEST(ExecutionPlan, DumpIsByteExact) {
   ASSERT_TRUE(r.ok()) << r.diags.to_string();
   EXPECT_EQ(r.plan.to_string(),
             "# fuse-plan v1\n"
-            "period=1 lockstep=yes instructions=6 buffers=6 "
-            "coupler_elements=256 regions=0\n"
+            "period=1 lockstep=yes instructions=7 buffers=7 "
+            "coupler_elements=320 regions=0\n"
             "buffer 0   %0  elements=64  components=1  region=r0  "
             "owner=component  persistent=no  \"a.f\"\n"
             "buffer 1   %1  elements=64  components=1  region=r0  "
             "owner=coupler  persistent=no  \"c/transport\"\n"
-            "buffer 2   %2  elements=64  components=1  region=r1  "
-            "owner=coupler  persistent=no  \"c/remap\"\n"
+            // The agreement point currently gets a buffer of its own because
+            // the plan has no notion yet of an operator whose output aliases
+            // its input; it copies rather than allocates nothing. That costs
+            // one interface-sized buffer per data move and is fixed when
+            // in-place operators land with the runtime (S4), not by removing
+            // the agreement point.
+            "buffer 2   %2  elements=64  components=1  region=r0  "
+            "owner=coupler  persistent=no  \"c/epoch\"\n"
             "buffer 3   %3  elements=64  components=1  region=r1  "
-            "owner=coupler  persistent=no  \"c/constrain\"\n"
+            "owner=coupler  persistent=no  \"c/remap\"\n"
             "buffer 4   %4  elements=64  components=1  region=r1  "
-            "owner=coupler  persistent=no  \"c/diagnose\"\n"
+            "owner=coupler  persistent=no  \"c/constrain\"\n"
             "buffer 5   %5  elements=64  components=1  region=r1  "
+            "owner=coupler  persistent=no  \"c/diagnose\"\n"
+            "buffer 6   %6  elements=64  components=1  region=r1  "
             "owner=component  persistent=no  \"b.f_in\"\n"
             "  0  t=0  Source  node=0  out=%0\n"
             "  1  t=1  Transport  node=1  in=[%0]  out=%1  {0->1}\n"
-            "  2  t=1  Remap  node=2  in=[%1]  out=%2  {remap=C}\n"
-            "  3  t=1  Constrain  node=3  in=[%2]  out=%3\n"
-            "  4  t=1  Diagnose  node=4  in=[%3]  out=%4\n"
-            "  5  t=1  Sink  node=5  in=[%4]  out=%5\n");
+            "  2  t=1  Epoch  node=2  in=[%1]  out=%2  "
+            "{reason=after-transport}\n"
+            "  3  t=1  Remap  node=3  in=[%2]  out=%3  {remap=C}\n"
+            "  4  t=1  Constrain  node=4  in=[%3]  out=%4\n"
+            "  5  t=1  Diagnose  node=5  in=[%4]  out=%5\n"
+            "  6  t=1  Sink  node=6  in=[%5]  out=%6\n");
 }

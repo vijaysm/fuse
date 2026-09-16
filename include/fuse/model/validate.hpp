@@ -235,16 +235,18 @@ inline Rational channel_window(const CouplingGraph& g, const Channel& ch) {
   // Two channels writing one field is an ERROR, not a warning, and the
   // severity is the whole point of the check.
   //
-  // Spec §5.1 lists `Merge` as a primitive operator, so combining several
-  // writers is a legitimate future feature -- but it is not implemented, and
-  // what lowering does instead is not an approximation of it. `lower()` binds
-  // `field_arc[target]` once per channel in channel-id order and emits one
-  // `Sink` per field, so every writer but the last is simply dropped: its
-  // chain dead-ends with no consumer, and the target component never depends
-  // on it. That silently deletes a declared dependence, which is exactly how
-  // `prove_acyclic` came to certify a graph containing a real algebraic loop
-  // as acyclic (232 such graphs in a 19,181-graph fuzz sweep). A Warning let
-  // that clear the authoring gate.
+  // Combining writers is now supported, but only when the user says HOW:
+  // `graph.merge(field, MergeOp::…)`. Summing two heat fluxes and averaging two
+  // temperatures are different physics, and nothing in the field descriptions
+  // chooses between them, so the compiler must not guess.
+  //
+  // Without a declared rule this stays an error, and the severity is the point.
+  // The compiler used to bind one arc per target field, so every writer but the
+  // last was simply dropped: its chain dead-ended with no consumer and the
+  // target component never depended on it. That silently deletes a declared
+  // dependence, which is how the parent's acyclicity proof came to certify
+  // graphs containing real algebraic loops (232 of 19,181 in a fuzz sweep). A
+  // warning let that clear the authoring gate.
   //
   // Iterated in ascending field id rather than in `writers`' unordered_map
   // order, so the diagnostic text is reproducible run to run.
@@ -254,14 +256,37 @@ inline Rational channel_window(const CouplingGraph& g, const Channel& ch) {
   }
   std::sort(multi_written.begin(), multi_written.end());
   for (const std::uint32_t field_value : multi_written) {
+    if (g.merge_for(FieldId{field_value}) != nullptr) continue;  // the user said how
     d.add(Severity::Error, "E-MULTI-WRITER",
           "field '" + g.field(FieldId{field_value}).name + "' is written by " +
               std::to_string(writers[field_value]) +
-              " channels. Combining several writers into one field requires an "
-              "explicit Merge operator, which is not implemented yet; lowering "
-              "would keep only the last writer and silently drop the rest, "
-              "which is not an implementation of Merge. Retarget all but one "
-              "channel.");
+              " channels, and no rule says how to combine them. Summing two heat "
+              "fluxes and averaging two temperatures are different physics, and "
+              "nothing in the field descriptions chooses between them. Declare one "
+              "with graph.merge(field, MergeOp::Sum|Mean|First), or retarget all but "
+              "one channel.");
+  }
+
+  // A declared merge that combines nothing usually means a channel was
+  // renamed or retargeted and the merge was left behind, so a field is now
+  // written by one channel under a rule that claims it is being combined.
+  for (std::size_t i = 0; i < g.merge_count(); ++i) {
+    const auto& entry = g.merge_at(i);
+    if (entry.first >= g.field_count()) {
+      d.add(Severity::Error, "E-MERGE-FIELD",
+            "a merge is declared for field id " + std::to_string(entry.first) +
+                ", which does not exist");
+      continue;
+    }
+    const auto it = writers.find(entry.first);
+    const int n = it == writers.end() ? 0 : it->second;
+    if (n < 2) {
+      d.add(Severity::Warning, "W-MERGE-UNUSED",
+            "field '" + g.field(FieldId{entry.first}).name + "' declares a " +
+                std::string(merge_op_name(entry.second.op)) +
+                " merge but is written by " + std::to_string(n) +
+                " channel(s); the merge combines nothing");
+    }
   }
 
   std::unordered_set<std::uint32_t> sources;

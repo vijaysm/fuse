@@ -89,7 +89,7 @@ bool ir_can_emit(OperatorKind kind) noexcept {
 
 LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy) {
   LoweringResult result;
-  LoweringContext ctx{g, result.dag, result.diags, {}, {}, policy};
+  LoweringContext ctx{g, result.dag, result.diags, {}, {}, {}, policy};
 
   // 1. Source node per provided field.
   //
@@ -121,6 +121,44 @@ LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy) {
       ctx.diags.add(Severity::Error, "E-IR-NORULE",
                     "no lowering rule matched",
                     "channel '" + g.channel_at(cid).name + "'");
+    }
+  }
+
+  // 2b. Combine multiple writers of one field.
+  //
+  // Iterated in ascending field id, and the inputs are in channel declaration
+  // order, so the emitted node is identical on every rank -- which matters
+  // because each rank compiles this plan independently and they must agree.
+  {
+    std::vector<std::uint32_t> targets;
+    targets.reserve(ctx.field_writers.size());
+    for (const auto& entry : ctx.field_writers) targets.push_back(entry.first);
+    std::sort(targets.begin(), targets.end());
+
+    for (const std::uint32_t field_value : targets) {
+      const std::vector<ArcId>& writers = ctx.field_writers[field_value];
+      if (writers.size() < 2) continue;
+      const FieldId f{field_value};
+      const MergeSpec* spec = g.merge_for(f);
+      if (spec == nullptr) {
+        // validate() reports this first, with the advice. Refusing again here
+        // is deliberate: lowering must never be reachable in a state where it
+        // would have to choose a writer, and a compiler that depends on an
+        // earlier pass having run is one refactor away from choosing silently.
+        ctx.diags.add(Severity::Error, "E-IR-MULTI-WRITER",
+                      "field '" + g.field(f).name + "' has " +
+                          std::to_string(writers.size()) +
+                          " writers and no declared merge; the compiler will not "
+                          "choose one",
+                      qualified(g, f));
+        continue;
+      }
+      const ArcId out = ctx.dag.add_arc(ctx.dag.arc(writers.front()).type,
+                                        qualified(g, f) + "/merge");
+      ctx.dag.add_node(OpKind::Merge, writers, out,
+                       OpAttrs{.reason = std::string(merge_op_name(spec->op))},
+                       ChannelId{}, qualified(g, f) + "/merge");
+      ctx.field_arc[field_value] = out;
     }
   }
 

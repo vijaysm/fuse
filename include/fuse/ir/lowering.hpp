@@ -60,6 +60,11 @@ struct LoweringContext {
   std::unordered_map<std::uint32_t, ArcId>  field_arc;
   std::unordered_map<std::uint32_t, ArcId>  source_arc;
 
+  /// Every arc that writes a field, in channel declaration order. More than
+  /// one is legal exactly when the graph declares how to combine them; the
+  /// combine node is emitted once all channels have lowered.
+  std::unordered_map<std::uint32_t, std::vector<ArcId>> field_writers;
+
   /// The same policy the validator used. It must be the same object, or the
   /// compiler can emit a unit conversion the checker forbade (or omit one it
   /// authorized) and nothing would notice: validation and lowering would each

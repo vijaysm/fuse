@@ -185,6 +185,26 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
     ta.dst_rank_set = dst_rank_set;
     cur = emit(ctx, OpKind::Transport, cur, moved, ta, cid, base + "/transport");
     type = moved;
+
+    // A rank-agreement point immediately after the data move.
+    //
+    // The move is the first place in the channel where ranks that were doing
+    // independent work have to meet. If one of them failed on the way here --
+    // a component refused, a remap found an uncovered point, an exact
+    // conversion overflowed -- the others are already committed to the move
+    // and will wait for a message that never comes. That is the hang.
+    //
+    // So the plan carries an explicit instruction where every participating
+    // rank learns the same answer: all succeeded, or which rank did not, and
+    // the run stops together. It is an operator rather than something the
+    // runtime does implicitly so that it is visible in the plan dump, ordered
+    // by the same scheduler as everything else, and checkable -- the scheduler
+    // verifies that the ranks reaching it are the same set on every side.
+    OpAttrs ea;
+    ea.src_rank_set = ta.src_rank_set;
+    ea.dst_rank_set = ta.dst_rank_set;
+    ea.reason = "after-transport";
+    cur = emit(ctx, OpKind::Epoch, cur, type, ea, cid, base + "/epoch");
   }
 
   // 5. Remap: emitted when flags ask for it or the regions differ.
@@ -222,8 +242,15 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
                cid, base + "/relax");
   }
 
-  // 7. Bind the result to the target field.
-  ctx.field_arc[ch.target.value()] = cur;
+  // 7. Record this channel as a writer of the target field.
+  //
+  // It APPENDS. The old code assigned `field_arc[target] = cur`, so a second
+  // channel writing the same field replaced the first and the first's chain
+  // dead-ended with no consumer -- a declared dependence deleted in silence.
+  // Which writers exist is settled here; how they combine is settled after
+  // every channel has lowered, because the combine needs all of them at once.
+  ctx.field_writers[ch.target.value()].push_back(cur);
+  ctx.field_arc[ch.target.value()] = cur;  // single-writer fast path, fixed up below
   return true;
 }
 

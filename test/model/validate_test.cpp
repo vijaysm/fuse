@@ -194,11 +194,40 @@ TEST(Validate, RejectsTwoWritersToOneTarget) {
   bool explains = false;
   for (const auto& item : d.items()) {
     if (item.code == "E-MULTI-WRITER" &&
-        item.message.find("not implemented yet") != std::string::npos) {
-      explains = true;
+        item.message.find("graph.merge(") != std::string::npos) {
+      explains = true;  // the message must say what to do about it
     }
   }
   EXPECT_TRUE(explains) << d.to_string();
+}
+
+// ... and accepts the same graph once the user says how the two contributions
+// combine. The rule is the user's to choose: summing two fluxes and averaging
+// two temperatures are different physics.
+TEST(Validate, AcceptsTwoWritersOnceAMergeIsDeclared) {
+  Fixture f;
+  const auto r = f.g.field(f.src).region;
+  const auto src2 = f.g.add_field(
+      f.fluid, FieldSpec{.name = "q_alt", .region = r,
+                         .units = u::kHeatFluxDensity,
+                         .conservation = Conservation::Extensive,
+                         .intent = Intent::Provides});
+  f.g.add_channel("second_writer", src2, f.dst);
+  f.g.merge(f.dst, fuse::MergeOp::Sum);
+
+  const Diagnostics d = validate(f.g);
+  EXPECT_FALSE(has_code(d, "E-MULTI-WRITER")) << d.to_string();
+  EXPECT_FALSE(d.has_errors()) << d.to_string();
+}
+
+// A merge left behind after a channel was retargeted combines nothing, which
+// is a mistake worth naming -- but not an error, since the graph still runs.
+TEST(Validate, AMergeThatCombinesNothingIsAWarning) {
+  Fixture f;
+  f.g.merge(f.dst, fuse::MergeOp::Mean);
+  const Diagnostics d = validate(f.g);
+  EXPECT_TRUE(has_code(d, "W-MERGE-UNUSED")) << d.to_string();
+  EXPECT_FALSE(d.has_errors()) << d.to_string();
 }
 
 TEST(Validate, RecordsTimeLevelMismatchAsWarning) {

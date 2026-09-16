@@ -364,6 +364,24 @@ ScheduleResult schedule(const CouplingGraph& g, const OperatorDAG& dag,
     return result;
   }
 
+  // Reserved multiscale operators. They exist as enumerators so their ordinals
+  // do not move when they land, and they are refused here for the same reason
+  // the multiscale contracts refuse (include/fuse/model/multiscale.hpp): an
+  // opcode that scheduled as a no-op would let a micro-macro coupling compile
+  // and run as though the closure had been applied, which is worse than not
+  // having the opcode at all.
+  for (std::uint32_t i = 0; i < dag.node_count(); ++i) {
+    const Node& n = dag.node(NodeId{i});
+    if (n.kind == OpKind::Map || n.kind == OpKind::Reduce || n.kind == OpKind::Closure) {
+      result.diags.add(Severity::Error, "E-SCHED-MULTISCALE",
+                       std::string("operator '") + to_cstring(n.kind) +
+                           "' is reserved for multiscale coupling and cannot be "
+                           "scheduled yet",
+                       n.label);
+      return result;
+    }
+  }
+
   // Arity, checked once over the DAG rather than once per instance: a node
   // with four inputs instantiated a million times must not produce a million
   // identical diagnostics. Truncating to three would silently rewire the
