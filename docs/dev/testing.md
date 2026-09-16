@@ -134,3 +134,18 @@ cmake -S . -B build-tier1 -DFUSE_ENABLE_MPI=ON \
       -DCMAKE_PREFIX_PATH="/opt/kokkos;/opt/kokkos-kernels;/opt/homebrew"
 cmake --build build-tier1 -j && ctest --test-dir build-tier1 -R descriptor_mpi
 ```
+
+## Host-verified parallel results
+
+The sandbox this library is developed in cannot initialise MPI at all, so every
+Tier 1 leg is compile-verified there and **run on the host**. Recorded results,
+rather than claims:
+
+| Date | Result |
+|---|---|
+| 2026-09-15 | `model.descriptor_mpi` at 2/3/4/5 ranks; full suite 796 tests, 4 MOAB skips |
+| 2026-09-16 | full suite **843 tests, 0 failures**, 4 MOAB skips, including all 16 `parallel.*` legs: `runner_transport`, `comm_graph`, `mpi_transport`, `epoch_reconcile` at 2/3/4/5 ranks |
+
+The 2026-09-16 run is what makes the rank-agreement mechanism verified rather
+than asserted: `parallel.epoch_reconcile` fails one rank's component mid-step
+and requires every other rank to return a failure instead of blocking.
