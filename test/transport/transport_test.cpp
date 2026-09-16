@@ -1,3 +1,5 @@
+#include <array>
+#include <fuse/transport/tags.hpp>
 #include <gtest/gtest.h>
 #include <fuse/transport/transport.hpp>
 
@@ -91,4 +93,32 @@ TEST(TransportRegistry, ReRegisteringAnExistingNameReplacesIt) {
   reg.register_backend("copy", [] { return std::make_unique<CopyTransport>(); });
   const auto names = reg.available();
   EXPECT_EQ(std::count(names.begin(), names.end(), "copy"), 1);
+}
+
+// ---- MPI tags ----------------------------------------------------------
+
+// Two mechanisms sharing a tag on the same communicator match each other's
+// messages, which shows up as a wrong result or a hang rather than an error.
+// kEpoch was first chosen as 0x5C13 -- the value MPI_Comm_create_group was
+// already being given on the same communicator -- so the uniqueness is pinned
+// here rather than left to whoever adds the next one.
+TEST(Tags, AreDistinctAndWithinTheGuaranteedBound) {
+  using namespace fuse::tags;
+  const std::array<int, 3> all{kCrystalRouter, kUnionCommCreate, kEpoch};
+
+  std::array<int, 3> sorted = all;
+  std::sort(sorted.begin(), sorted.end());
+  EXPECT_EQ(std::adjacent_find(sorted.begin(), sorted.end()), sorted.end())
+      << "two tags share a value; on a shared communicator that is a hang";
+
+  // 32767 is the standard's minimum for MPI_TAG_UB, so a tag above it may be
+  // rejected by a conforming implementation. Setup also checks the actual
+  // bound at run time.
+  for (const int t : all) {
+    EXPECT_GT(t, 0);
+    EXPECT_LE(t, 32767) << "tag " << t << " may exceed MPI_TAG_UB";
+  }
+  EXPECT_EQ(kMaxUsed, *std::max_element(all.begin(), all.end()))
+      << "kMaxUsed is what setup checks against MPI_TAG_UB; it must be the "
+         "largest tag actually used";
 }

@@ -33,6 +33,8 @@
 #include "fuse/base/config.hpp"
 #include "fuse/transport/comm_graph.hpp"
 
+#include "fuse/transport/tags.hpp"
+
 #if FUSE_HAVE_MPI
 
 #include <mpi.h>
@@ -621,7 +623,7 @@ Result<CommGraph> CommGraph::build(int base_comm_handle,
     }
     // Collective over `ugroup` only, which is exactly the set of ranks that
     // reach this line.
-    const int rc = MPI_Comm_create_group(base, ugroup, /*tag=*/0x5C13, &ucomm);
+    const int rc = MPI_Comm_create_group(base, ugroup, tags::kUnionCommCreate, &ucomm);
     MPI_Group_free(&ugroup);
     MPI_Group_free(&bgroup);
     if (rc != MPI_SUCCESS || ucomm == MPI_COMM_NULL) {
