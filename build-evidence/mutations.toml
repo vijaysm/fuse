@@ -492,3 +492,43 @@ new = "  for (const auto& [from, to] : std::vector<std::pair<std::size_t, std::s
 target = "fuse_parallel_mpi_transport_test"
 test = "parallel.mpi_transport.2"
 requires = "mpi"
+
+[[mutation]]
+id = "mesh-measure-uses-the-spatial-determinant"
+area = "backend"
+describes = "the m-measure is taken from a determinant instead of the Gram determinant, so a triangle in 3D or a curve in 3D measures zero"
+file = "include/fuse/backend/native/mesh.hpp"
+old = "          for (int k = 0; k < kSpatialDims; ++k) s += e[i][k] * e[j][k];"
+new = "          for (int k = 0; k < kSpatialDims; ++k) s += (i == j ? e[i][k] : 0.0) * e[j][k];"
+target = "fuse_backend_native_mesh_test"
+test = "backend.native_mesh"
+
+[[mutation]]
+id = "mesh-accepts-a-parent-outside-the-cell-set"
+area = "backend"
+describes = "a simplex may name a parent cell that does not exist, so a conservation sum silently omits it"
+file = "include/fuse/backend/native/mesh.hpp"
+old = "      if (parent_(c) >= n_parent_cells_) {"
+new = "      if (false) {"
+target = "fuse_backend_native_mesh_test"
+test = "backend.native_mesh"
+
+[[mutation]]
+id = "mesh-returns-nan-for-a-degenerate-simplex"
+area = "backend"
+describes = "a negative rounded Gram determinant reaches sqrt, so a degenerate cell yields a NaN weight that propagates through a conservation sum"
+file = "include/fuse/backend/native/mesh.hpp"
+old = "      if (det <= 0.0) return 0.0;"
+new = "      if (false) return 0.0;"
+target = "fuse_backend_native_mesh_test"
+test = "backend.native_mesh"
+
+[[mutation]]
+id = "structured-hex-decomposition-drops-a-tet"
+area = "backend"
+describes = "a box reports five tetrahedra instead of six, so its simplices no longer cover it and every weight built from them is short"
+file = "src/backend/serial_backend.cpp"
+old = "    if (dim == 3 && dim_ == 3) return 6;          // hex  -> 6 tets (Kuhn)"
+new = "    if (dim == 3 && dim_ == 3) return 5;          // hex  -> 6 tets (Kuhn)"
+target = "fuse_backend_serial_mesh_test"
+test = "backend.serial_mesh"

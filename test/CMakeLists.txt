@@ -132,6 +132,7 @@ endif()
 
 # ---------------------------------------------------------------- linalg
 fuse_add_gtest(linalg least_squares THROWS)
+fuse_add_gtest(backend native_mesh THROWS)
 
 # ---------------------------------------------------------------- verification
 # Convergence orders and iteration counts, against known-good values. These are
