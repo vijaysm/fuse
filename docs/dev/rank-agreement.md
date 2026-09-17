@@ -145,3 +145,21 @@ rank for the entire run.
 Identical and disjoint placements keep using the matched plan, which has been
 verified longer. On a pattern both forms can express, they are required to
 deliver identical values, with the matched plan as the oracle.
+
+## What is atomic, and by what mechanism
+
+There is no transaction object in FUSE. The atomicity properties a coupler needs
+are obtained by instruction ordering and by verification, and it is worth being
+explicit about which mechanism provides which, because "we have transactions" is
+a claim a reader cannot check:
+
+| Property | Mechanism |
+|---|---|
+| A rank does not publish a value derived from a transfer its partners did not complete | `Epoch` reconciles **before** its copy — ordering, not a commit protocol |
+| An iteration sweep that is discarded leaves the registered field storage as it was | `save_state()`/`restore_state()`, with the restored bytes compared against the saved bytes (`E-ITER-ROLLBACK`) |
+| A component cannot merely *claim* it rolled back | the byte comparison above is a check; a component that returns success without restoring fails the run |
+| Which state must be checkpointed | derived from dataflow over the graph, then verified against the components actually present — not requested from the user |
+
+The byte comparison is the load-bearing one. A tolerance would accept a restore
+that is nearly right, and a rollback that is nearly right is not a rollback: the
+next sweep would start from a state no one chose.
