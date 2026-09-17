@@ -242,7 +242,36 @@ macro(fuse_resolve_dependencies)
     find_package(MPI REQUIRED COMPONENTS C CXX)
   endif()
   if(FUSE_ENABLE_MOAB)
-    find_package(MOAB REQUIRED)     # found, never fetched; TempestRemap arrives through MOAB's configuration
+    # MOAB ships an OLD-STYLE config: it sets MOAB_INCLUDE_DIRS /
+    # MOAB_LIBRARIES and exports no imported target (checked against
+    # MOABConfig.cmake, which contains zero add_library calls). A bare
+    # find_package(MOAB REQUIRED) therefore SUCCEEDS and attaches nothing --
+    # configure passes, FUSE_HAVE_MOAB becomes 1, and the first MOAB include
+    # fails to compile. That is an option claiming a capability the build
+    # cannot deliver, so the variables are wrapped in a target here and the
+    # result is recorded like every other dependency.
+    find_package(MOAB REQUIRED)
+    if(NOT TARGET fuse::moab)
+      add_library(fuse-moab INTERFACE)
+      add_library(fuse::moab ALIAS fuse-moab)
+      target_include_directories(fuse-moab SYSTEM INTERFACE ${MOAB_INCLUDE_DIRS})
+      target_link_libraries(fuse-moab INTERFACE ${MOAB_LIBRARIES})
+      target_link_directories(fuse-moab INTERFACE ${MOAB_LIBRARY_DIRS})
+    endif()
+    # Whether high-order (spherical, TempestRemap-backed) remap is available is
+    # a property of WHICH MOAB was found, not of this project: a machine can
+    # have several MOAB builds with different capabilities. Recorded rather
+    # than assumed, so a skipped high-order test can be explained.
+    if(MOAB_USE_TEMPESTREMAP)
+      set(FUSE_MOAB_HAS_TEMPESTREMAP ON)
+    else()
+      set(FUSE_MOAB_HAS_TEMPESTREMAP OFF)
+      message(STATUS "fuse: MOAB at ${MOAB_INCLUDE_DIRS} has no TempestRemap; "
+                     "high-order spherical remap will be unavailable")
+    endif()
+    file(APPEND "${FUSE_RESOLUTION_FILE}"
+         "MOAB=found ${MOAB_VERSION} ${MOAB_INCLUDE_DIRS}\n"
+         "MOAB_tempestremap=${FUSE_MOAB_HAS_TEMPESTREMAP}\n")
   endif()
   if(FUSE_ENABLE_PETSC)
     find_package(PkgConfig REQUIRED)
