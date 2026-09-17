@@ -170,6 +170,7 @@ set_target_properties(fuse-coupler-transport PROPERTIES
 # weight generators that need external libraries arrive at S5.
 add_library(fuse-coupler-backend
   backend/serial_backend.cpp
+  backend/supermesh.cpp
   backend/spacetime.cpp
   # Supermesh intersection: the real implementation needs MOAB, and the
   # file's own no-MOAB path refuses with E-REMAP-NOMOAB rather than
@@ -178,6 +179,10 @@ add_library(fuse-coupler-backend
 )
 add_library(fuse::backend ALIAS fuse-coupler-backend)
 target_link_libraries(fuse-coupler-backend PUBLIC fuse::schedule)
+# PRIVATE: r3d is the supermesh kernel, used inside backend/supermesh.cpp only.
+# No public header mentions it, so a consumer never needs it on an include path
+# and never links it -- which is what keeps the geometric kernel swappable.
+target_link_libraries(fuse-coupler-backend PRIVATE r3d::r3d)
 if(FUSE_ENABLE_MOAB)
   # PUBLIC, not PRIVATE: intx_weights.cpp is compiled into this library, but
   # the mesh-backend headers a consumer includes also reach MOAB types, so a

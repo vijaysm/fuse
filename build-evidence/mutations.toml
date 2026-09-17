@@ -532,3 +532,63 @@ old = "    if (dim == 3 && dim_ == 3) return 6;          // hex  -> 6 tets (Kuhn
 new = "    if (dim == 3 && dim_ == 3) return 5;          // hex  -> 6 tets (Kuhn)"
 target = "fuse_backend_serial_mesh_test"
 test = "backend.serial_mesh"
+
+[[mutation]]
+id = "supermesh-planes-point-outward"
+area = "backend"
+describes = "the inward test on a clipping simplex's face planes is skipped, so clipping returns the complement's measure -- a plausible number and the wrong one"
+file = "src/backend/supermesh.cpp"
+old = "  if (side < 0.0) {"
+new = "  if (false) {"
+target = "fuse_backend_supermesh_test"
+test = "backend.supermesh"
+
+[[mutation]]
+id = "supermesh-ignores-triangle-winding"
+area = "backend"
+describes = "a clockwise target triangle is passed to r2d as-is, which documents counterclockwise input"
+file = "src/backend/supermesh.cpp"
+old = "    if (twice_area < 0.0) std::swap(verts[1], verts[2]);"
+new = "    if (false) std::swap(verts[1], verts[2]);"
+target = "fuse_backend_supermesh_test"
+test = "backend.supermesh"
+
+[[mutation]]
+id = "supermesh-ignores-tet-orientation"
+area = "backend"
+describes = "a negatively oriented target tetrahedron is initialised as-is, so its moments come out negative"
+file = "src/backend/supermesh.cpp"
+old = "  if (r3d_orient(verts) < 0.0) std::swap(verts[1], verts[2]);"
+new = "  if (false) std::swap(verts[1], verts[2]);"
+target = "fuse_backend_supermesh_test"
+test = "backend.supermesh"
+
+[[mutation]]
+id = "supermesh-keeps-rounding-level-overlaps"
+area = "backend"
+describes = "the negligible-overlap floor is removed, so a shared face yields a 1e-16 matrix entry and, in parallel, a real data dependency for no numerical content"
+file = "src/backend/supermesh.cpp"
+old = "    if (val < kNegligible) {"
+new = "    if (false) {"
+target = "fuse_backend_supermesh_test"
+test = "backend.supermesh"
+
+[[mutation]]
+id = "supermesh-projects-a-surface-onto-the-xy-plane"
+area = "backend"
+describes = "a surface pair is clipped as its xy shadow instead of being refused, returning a plausible wrong measure"
+file = "src/backend/supermesh.cpp"
+old = "    if (spread > 0.0) {"
+new = "    if (false) {"
+target = "fuse_backend_supermesh_test"
+test = "backend.supermesh"
+
+[[mutation]]
+id = "supermesh-divides-by-the-source-measure"
+area = "backend"
+describes = "the weight is normalised by the source cell's measure instead of the target's, which preserves mass but destroys constant preservation on a non-matching pair"
+file = "src/backend/supermesh.cpp"
+old = "    const double val = measure / mj;"
+new = "    const double val = measure / src.measure(dim, i);"
+target = "fuse_backend_supermesh_test"
+test = "backend.supermesh"
