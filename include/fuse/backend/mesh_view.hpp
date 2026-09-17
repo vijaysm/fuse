@@ -135,6 +135,40 @@ class MeshView {
   /// Throws `std::out_of_range` if `dim` is not represented or
   /// `i >= entity_count(dim)`.
   [[nodiscard]] virtual std::size_t global_id(int dim, std::size_t i) const = 0;
+
+  /// --- cell geometry, as simplices -----------------------------------------
+  ///
+  /// The supermesh kernel clips polytopes, so it needs real geometry, and a
+  /// centroid and a measure are not geometry. The contract is a **simplex
+  /// decomposition**: triangles in 2D, tetrahedra in 3D. It was chosen over
+  /// "cell type plus vertex list" and over a general boundary representation
+  /// deliberately:
+  ///
+  ///   * clipping a simplex needs no convexity assumption, so a non-convex
+  ///     cell, or a hexahedron whose quadrilateral faces are warped and
+  ///     therefore not planar, is handled EXACTLY -- the intersection of a
+  ///     cell is exactly the sum of the intersections of its simplices;
+  ///   * there is one geometric case in the kernel rather than six, so one
+  ///     thing to test rather than a table of canonical vertex orderings that
+  ///     every backend would have to agree with silently;
+  ///   * a degenerate cell shows up as a degenerate simplex, which has zero
+  ///     measure and is detectable, instead of as an inverted face.
+  ///
+  /// The cost is that a backend must decompose, and that a cell costs several
+  /// clips instead of one. That is the trade that was taken.
+  ///
+  /// `simplex_count` returns 0 for a view that carries no geometry at all --
+  /// which is legal, and which the weight builder turns into a refusal naming
+  /// this backend rather than into a silently empty supermesh.
+  [[nodiscard]] virtual std::size_t simplex_count(int dim,
+                                                  std::size_t i) const = 0;
+
+  /// Writes the `dim + 1` corners of simplex `s` of entity `i` into `out`,
+  /// which must have room for at least `dim + 1` points. Orientation is not
+  /// required: the kernel uses unsigned measures, so a backend need not know
+  /// or maintain a winding convention.
+  virtual void simplex_points(int dim, std::size_t i, std::size_t s,
+                              Point* out) const = 0;
 };
 
 /// Loads meshes and answers questions about them. Phase 4 provides the serial
