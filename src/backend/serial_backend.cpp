@@ -140,6 +140,121 @@ class StructuredMesh final : public MeshView {
     return h((axis + 1) % 3) * h((axis + 2) % 3);
   }
 
+  /// --- simplex decomposition (MeshView's geometry contract) ----------------
+  ///
+  /// A structured cell is a box, and a box is decomposed rather than clipped
+  /// as a box, because the kernel takes simplices from every backend and a
+  /// second entry point would be a second thing to keep correct.
+  ///
+  /// In 3D this is the Kuhn decomposition: one tetrahedron per permutation of
+  /// the three axes, each the path (0,0,0) -> e_a -> e_a+e_b -> (1,1,1). Six
+  /// tetrahedra, each exactly one sixth of the box, and they partition it --
+  /// no overlaps and no gaps, which is what a conservation sum depends on.
+  [[nodiscard]] std::size_t simplex_count(int dim,
+                                          std::size_t i) const override {
+    check(dim, i, "simplex_count");
+    if (dim == 0) return 0;                       // a vertex has no interior
+    if (dim == 1 && dim_ == 1) return 1;          // a segment IS its simplex
+    if (dim == 2 && dim_ == 2) return 2;          // quad -> 2 triangles
+    if (dim == 3 && dim_ == 3) return 6;          // hex  -> 6 tets (Kuhn)
+    if (dim == 2 && dim_ == 3) return 2;          // boundary quad -> 2 tris
+    return 0;
+  }
+
+  void simplex_points(int dim, std::size_t i, std::size_t s,
+                      Point* out) const override {
+    check(dim, i, "simplex_points");
+    FUSE_ASSERT(out != nullptr, "simplex_points given a null output");
+    FUSE_ASSERT(s < simplex_count(dim, i),
+                "simplex {} of entity {} does not exist (it has {})", s, i,
+                simplex_count(dim, i));
+
+    if (dim == 1 && dim_ == 1) {
+      out[0] = Point{static_cast<double>(i) * h(0), 0.0, 0.0};
+      out[1] = Point{(static_cast<double>(i) + 1.0) * h(0), 0.0, 0.0};
+      return;
+    }
+
+    if (dim == 2 && dim_ == 2) {
+      // NOT EXERCISED by any current backend: this generator makes only lines
+      // and boxes, so dim_ == 2 never occurs and no test reaches this branch.
+      // It is kept rather than deleted because the quad split is the thing a
+      // 2D mesh will need on its first day, and a later reimplementation from
+      // memory is likelier to be wrong than this is. The moment a 2D backend
+      // lands, DecompositionMeasuresSumToTheCellMeasure gains a case for it.
+      const std::size_t ix = i % n_[0];
+      const std::size_t iy = i / n_[0];
+      const double x0 = static_cast<double>(ix) * h(0);
+      const double y0 = static_cast<double>(iy) * h(1);
+      const double x1 = x0 + h(0);
+      const double y1 = y0 + h(1);
+      // The shared diagonal is (x0,y0)-(x1,y1) in both triangles, so the two
+      // cover the quad exactly once.
+      if (s == 0) {
+        out[0] = Point{x0, y0, 0.0};
+        out[1] = Point{x1, y0, 0.0};
+        out[2] = Point{x1, y1, 0.0};
+      } else {
+        out[0] = Point{x0, y0, 0.0};
+        out[1] = Point{x1, y1, 0.0};
+        out[2] = Point{x0, y1, 0.0};
+      }
+      return;
+    }
+
+    if (dim == 3 && dim_ == 3) {
+      const std::size_t ix = i % n_[0];
+      const std::size_t iy = (i / n_[0]) % n_[1];
+      const std::size_t iz = i / (n_[0] * n_[1]);
+      const double lo[3] = {static_cast<double>(ix) * h(0),
+                            static_cast<double>(iy) * h(1),
+                            static_cast<double>(iz) * h(2)};
+      const double dx[3] = {h(0), h(1), h(2)};
+      // The six axis permutations, in a fixed order so the decomposition is
+      // reproducible: two boxes that share a face decompose compatibly.
+      static constexpr int kPerm[6][3] = {{0, 1, 2}, {0, 2, 1}, {1, 0, 2},
+                                          {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};
+      const int* q = kPerm[s];
+      double c[4][3];
+      for (int k = 0; k < 3; ++k) {
+        c[0][k] = 0.0;                       // (0,0,0)
+        c[3][k] = 1.0;                       // (1,1,1)
+      }
+      for (int k = 0; k < 3; ++k) { c[1][k] = 0.0; c[2][k] = 0.0; }
+      c[1][q[0]] = 1.0;                      // e_a
+      c[2][q[0]] = 1.0;                      // e_a + e_b
+      c[2][q[1]] = 1.0;
+      for (int v = 0; v < 4; ++v) {
+        out[v] = Point{lo[0] + c[v][0] * dx[0], lo[1] + c[v][1] * dx[1],
+                       lo[2] + c[v][2] * dx[2]};
+      }
+      return;
+    }
+
+    // dim == 2 && dim_ == 3: a boundary face of the box, as two triangles in
+    // three-dimensional coordinates.
+    const auto [side, local] = locate_face(i);
+    const int  axis = static_cast<int>(side) / 2;
+    const bool at_max = (static_cast<int>(side) % 2) == 1;
+    const int  u = (axis + 1) % 3;
+    const int  v = (axis + 2) % 3;
+    const std::size_t nu = n_[static_cast<std::size_t>(u)];
+    const double u0 = static_cast<double>(local % nu) * h(u);
+    const double v0 = static_cast<double>(local / nu) * h(v);
+    const double u1 = u0 + h(u);
+    const double v1 = v0 + h(v);
+    const double fixed = at_max ? 1.0 : 0.0;
+    const double corners[4][2] = {{u0, v0}, {u1, v0}, {u1, v1}, {u0, v1}};
+    const int    tri[2][3] = {{0, 1, 2}, {0, 2, 3}};
+    for (int k = 0; k < 3; ++k) {
+      double c[3];
+      c[axis] = fixed;
+      c[u] = corners[tri[s][k]][0];
+      c[v] = corners[tri[s][k]][1];
+      out[k] = Point{c[0], c[1], c[2]};
+    }
+  }
+
   [[nodiscard]] std::size_t global_id(int dim, std::size_t i) const override {
     check(dim, i, "global_id");
     return i;  // serial: one partition, so local index == global id

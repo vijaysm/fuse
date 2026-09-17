@@ -82,6 +82,22 @@ class PartitionedTestMesh final : public fuse::MeshView {
     return gid_[i];
   }
 
+  /// No geometry. This mesh exists to exercise partitioning and transport, and
+  /// it has no coordinates at all -- `centroid` returns the origin and
+  /// `measure` returns 1. Reporting zero simplices is therefore the honest
+  /// answer, and it is the case MeshView's contract names: a weight builder
+  /// must refuse against this view rather than build an empty supermesh and
+  /// call it conservative.
+  [[nodiscard]] std::size_t simplex_count(int, std::size_t) const override {
+    return 0;
+  }
+  void simplex_points(int, std::size_t, std::size_t,
+                      fuse::Point*) const override {
+    throw std::logic_error(
+        "PartitionedTestMesh::simplex_points: this view reports zero "
+        "simplices, so nothing may ask it for one");
+  }
+
  private:
   int                      dim_;
   std::vector<std::size_t> gid_;

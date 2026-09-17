@@ -1,3 +1,5 @@
+#include <cmath>
+#include <cstdlib>
 #include <gtest/gtest.h>
 #include <fuse/model/validate.hpp>
 #include <fuse/base/error.hpp>
@@ -728,4 +730,115 @@ TEST(SerialMesh, MakeRegionSizesThrowsWhenTheBackendNeverLoadedTheMesh) {
   // Region 0 lives on "ma", which was never loaded. Positionally it would
   // have resolved to the 9x9x9 box and returned 729.
   EXPECT_THROW((void)sizes(RegionId{0}), std::runtime_error);
+}
+
+// ---- the simplex decomposition ----------------------------------------
+//
+// Everything the supermesh kernel computes rests on this: if the simplices of
+// a cell do not partition it exactly, every weight built from them is wrong by
+// the same defect, and a conservation test downstream would report a plausible
+// small error rather than pointing here.
+
+namespace {
+
+double tri_area(const fuse::Point* p) {
+  const double ax = p[1].x - p[0].x, ay = p[1].y - p[0].y, az = p[1].z - p[0].z;
+  const double bx = p[2].x - p[0].x, by = p[2].y - p[0].y, bz = p[2].z - p[0].z;
+  const double cx = ay * bz - az * by;
+  const double cy = az * bx - ax * bz;
+  const double cz = ax * by - ay * bx;
+  return 0.5 * std::sqrt(cx * cx + cy * cy + cz * cz);
+}
+
+double tet_volume(const fuse::Point* p) {
+  const double a[3] = {p[1].x - p[0].x, p[1].y - p[0].y, p[1].z - p[0].z};
+  const double b[3] = {p[2].x - p[0].x, p[2].y - p[0].y, p[2].z - p[0].z};
+  const double c[3] = {p[3].x - p[0].x, p[3].y - p[0].y, p[3].z - p[0].z};
+  const double det = a[0] * (b[1] * c[2] - b[2] * c[1]) -
+                     a[1] * (b[0] * c[2] - b[2] * c[0]) +
+                     a[2] * (b[0] * c[1] - b[1] * c[0]);
+  return std::abs(det) / 6.0;
+}
+
+}  // namespace
+
+TEST(SerialMeshSimplices, DecompositionMeasuresSumToTheCellMeasure) {
+  // Deliberately unequal cell counts per axis, so an implementation that mixed
+  // up an axis would produce the wrong total rather than the right one.
+  // Deliberately unequal counts per axis. No 2D case: this backend generates
+  // only lines and boxes, so a 2D CELL is unreachable here -- two-dimensional
+  // geometry appears as the boundary skin of a box, which the next test covers.
+  struct Case { const char* source; int dim; };
+  const Case cases[] = {{"generated:line:5", 1},
+                        {"generated:box:3x4x5", 3}};
+
+  for (const Case& c : cases) {
+    fuse::SerialMeshBackend backend;
+    const auto load = backend.load({.name = "m", .source = c.source});
+    ASSERT_TRUE(load.ok()) << c.source << ": " << load.error().message;
+    const auto id = backend.mesh_id("m");
+    ASSERT_TRUE(id.ok());
+    const auto view = backend.view(id.value());
+    ASSERT_TRUE(view.ok());
+    const fuse::MeshView& m = *view.value();
+    ASSERT_EQ(m.dimension(), c.dim) << c.source;
+
+    fuse::Point pts[4];
+    for (std::size_t i = 0; i < m.entity_count(c.dim); ++i) {
+      const std::size_t ns = m.simplex_count(c.dim, i);
+      ASSERT_GT(ns, 0u) << c.source << " cell " << i;
+      double total = 0.0;
+      for (std::size_t s = 0; s < ns; ++s) {
+        m.simplex_points(c.dim, i, s, pts);
+        if (c.dim == 1) {
+          total += std::abs(pts[1].x - pts[0].x);
+        } else if (c.dim == 2) {
+          total += tri_area(pts);
+        } else {
+          total += tet_volume(pts);
+        }
+      }
+      // Exactly, to rounding: the decomposition must partition, not approximate.
+      EXPECT_NEAR(total, m.measure(c.dim, i), 1e-14 * m.measure(c.dim, i))
+          << c.source << " cell " << i << ": " << ns
+          << " simplices do not cover it";
+    }
+  }
+}
+
+TEST(SerialMeshSimplices, BoundaryFacesOfABoxDecomposeToTheirArea) {
+  fuse::SerialMeshBackend backend;
+  ASSERT_TRUE(backend.load({.name = "m", .source = "generated:box:3x4x5"}).ok());
+  const auto id = backend.mesh_id("m");
+  ASSERT_TRUE(id.ok());
+  const auto view = backend.view(id.value());
+  ASSERT_TRUE(view.ok());
+  const fuse::MeshView& m = *view.value();
+
+  fuse::Point pts[4];
+  double skin = 0.0;
+  for (std::size_t i = 0; i < m.entity_count(2); ++i) {
+    double face = 0.0;
+    for (std::size_t s = 0; s < m.simplex_count(2, i); ++s) {
+      m.simplex_points(2, i, s, pts);
+      face += tri_area(pts);
+    }
+    EXPECT_NEAR(face, m.measure(2, i), 1e-14) << "boundary face " << i;
+    skin += face;
+  }
+  // The unit cube's surface area, independent of how it was divided.
+  EXPECT_NEAR(skin, 6.0, 1e-12);
+}
+
+TEST(SerialMeshSimplices, AVertexHasNoInterior) {
+  fuse::SerialMeshBackend backend;
+  ASSERT_TRUE(backend.load({.name = "m", .source = "generated:line:4"}).ok());
+  const auto id = backend.mesh_id("m");
+  ASSERT_TRUE(id.ok());
+  const auto view = backend.view(id.value());
+  ASSERT_TRUE(view.ok());
+  // Zero, not a degenerate simplex: a dim-0 entity has no interior to clip,
+  // and the weight builder must be able to tell that apart from geometry it
+  // merely failed to produce.
+  EXPECT_EQ(view.value()->simplex_count(0, 0), 0u);
 }
