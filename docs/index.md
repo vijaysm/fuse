@@ -24,6 +24,7 @@ user/build
 user/quickstart
 user/fluent-api
 user/placement
+user/geometry
 user/combining-writers
 user/convergence
 user/c-abi
