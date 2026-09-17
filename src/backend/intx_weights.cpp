@@ -2,6 +2,7 @@
 
 #include "fuse/base/config.hpp"
 #include "fuse/backend/remap_plan.hpp"
+#include "fuse/backend/supermesh.hpp"
 
 #include "high_order_backend.hpp"
 
@@ -80,12 +81,96 @@ Result<const RemapWeights*> RemapCache::get_or_build(
 
 #if !FUSE_HAVE_MOAB
 
-Result<RemapWeights> build_weights(const RemapPlan&, const CouplingGraph&,
-                                   const MeshBackend&) {
-  return Failure{"E-REMAP-NOMOAB",
-               "build_weights: this build has no MOAB, and the supermesh "
-               "intersection has no dependency-free implementation. "
-               "Reconfigure with -DSOMA_ENABLE_MOAB=ON."};
+/// Without MOAB, weights come from the dependency-free simplex supermesh.
+///
+/// This used to refuse, on the grounds that "the supermesh intersection has no
+/// dependency-free implementation". That is no longer true: `supermesh.cpp`
+/// clips the simplices every `MeshView` provides and computes analytic
+/// moments, so lowest-order conservative remap on arbitrary geometry is
+/// available in the DEFAULT build. What MOAB adds above this is its mesh
+/// reader, its spatial search and its partitioning; what TempestRemap adds is
+/// high order on the sphere.
+Result<RemapWeights> build_weights(const RemapPlan& plan,
+                                   const CouplingGraph& graph,
+                                   const MeshBackend& backend) {
+  // Only what this builder can honour. The checks are deliberately the same
+  // shape as the MOAB path's, so a plan refused there is refused here for the
+  // same stated reason rather than silently accepted by the other build.
+  if (plan.src_disc != Discretization::FV ||
+      plan.tgt_disc != Discretization::FV) {
+    return Failure{"E-REMAP-UNSUPPORTED",
+                   std::string("the supermesh builder makes FV<->FV weights "
+                               "only; the plan asks for ") +
+                       to_cstring(plan.src_disc) + " -> " +
+                       to_cstring(plan.tgt_disc)};
+  }
+  const int asked = std::max(plan.src_order, plan.tgt_order);
+  if (asked > 1 || has(plan.flags, RemapFlags::HighOrder)) {
+    return Failure{
+        "E-REMAP-NOHIGHORDER",
+        "this build has no MOAB, so the only reconstruction available is "
+        "piecewise constant (order 1), and order " + std::to_string(asked) +
+            " was asked for. Order 1 is exact for constants and conservative; "
+            "higher order on the sphere is what the TempestRemap tier adds. "
+            "Drop RemapFlags::HighOrder, or configure with "
+            "-DFUSE_ENABLE_MOAB=ON against a MOAB built with TempestRemap."};
+  }
+
+  // Region -> MeshView, with the same validation the MOAB path applies. An
+  // entity-set region is refused for the reason given there: the weights index
+  // whole-mesh local indices, and a sub-set region would be wrong by a
+  // permutation that nothing here could detect.
+  struct Side {
+    const MeshView* view = nullptr;
+    int             dim = 0;
+  };
+  const auto side = [&](RegionId id, const char* which) -> Result<Side> {
+    if (!id.valid() || id.value() >= graph.region_count()) {
+      return Failure{"E-REMAP-REGION",
+                     std::string(which) + " region id " +
+                         std::to_string(id.value()) + " is not one of the "
+                         "graph's " + std::to_string(graph.region_count()) +
+                         " regions"};
+    }
+    const Region& r = graph.region(id);
+    if (!(r.entity_set.empty() || r.entity_set == "all")) {
+      return Failure{"E-REMAP-REGION",
+                     std::string(which) + " region '" + r.name +
+                         "' names entity set '" + r.entity_set +
+                         "'. Remap weights index MeshView local indices over "
+                         "the whole mesh, so a sub-set region would give a "
+                         "matrix wrong by a permutation"};
+    }
+    if (!r.mesh.valid() || r.mesh.value() >= graph.mesh_count()) {
+      return Failure{"E-REMAP-REGION", std::string(which) + " region '" +
+                                           r.name + "' names no valid mesh"};
+    }
+    const auto mid = backend.mesh_id(graph.mesh(r.mesh).name);
+    if (!mid.ok()) return mid.error();
+    const auto view = backend.view(mid.value());
+    if (!view.ok()) return view.error();
+    Side s;
+    s.view = view.value();
+    s.dim = r.dimension >= 0 ? r.dimension : s.view->dimension();
+    return s;
+  };
+
+  auto s = side(plan.src, "source");
+  if (!s.ok()) return s.error();
+  auto d = side(plan.tgt, "target");
+  if (!d.ok()) return d.error();
+  if (s.value().dim != d.value().dim) {
+    return Failure{"E-REMAP-DIM",
+                   "the source cells are dimension " +
+                       std::to_string(s.value().dim) +
+                       " and the target cells dimension " +
+                       std::to_string(d.value().dim) +
+                       "; a conservative FV remap needs the same dimension on "
+                       "both sides"};
+  }
+
+  return build_supermesh_weights(*s.value().view, *d.value().view,
+                                 s.value().dim);
 }
 
 Result<std::size_t> build_remap_halo(const RemapPlan&, const CouplingGraph&,

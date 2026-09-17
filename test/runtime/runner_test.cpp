@@ -972,20 +972,21 @@ TEST(Runner, RefusesAnIterationRegionWithNoConvergenceMeasure) {
 // built at all: refuse, refuse, and take the proved identity.
 // ---------------------------------------------------------------------------
 
-TEST(Runner, RefusesARemapBetweenDifferentlySizedRegionsItCannotBuildWeightsFor) {
+TEST(Runner, RemapsBetweenDifferentlySizedRegions) {
+  // This test asserted a REFUSAL until the dependency-free supermesh landed:
+  // the dependency-free backend could build no weights for 8 cells onto 4, so
+  // initialize() failed with the builder's own no-weights code. It now
+  // succeeds, because that is the capability that was added -- lowest-order
+  // conservative remap on a non-matching pair, with no optional library.
+  //
+  // The conservation properties of the resulting map are asserted where the
+  // weights are inspectable, in test/backend/supermesh_test.cpp; what belongs
+  // here is that the runtime accepts the plan and resolves it.
   auto h = build(HarnessOpts{.src_cells = 8, .dst_cells = 4});
   Runner runner{h->graph, h->dag, h->plan, h->backend};
   bind_all(*h);
   const auto r = runner.initialize(h->components, h->registry);
-  ASSERT_FALSE(r.ok());
-  // The builder's own code, not a runtime code that hides it: what the user
-  // has to fix is that no supermesh can be built here -- because this build
-  // has no MOAB, or because this is the dependency-free backend -- and NOT the
-  // size difference, which is merely why an identity was not an option.
-  EXPECT_EQ(r.error().code, kNoWeightsHere);
-  EXPECT_NE(r.error().message.find("not provably the same cells"),
-            std::string::npos)
-      << r.error().message;
+  ASSERT_TRUE(r.ok()) << r.error().code << ": " << r.error().message;
 }
 
 // THE TEST THE OLD SIZE GUARD COULD NOT HAVE PASSED. The box's 24 boundary
@@ -1010,8 +1011,12 @@ TEST(Runner, RefusesEqualCountRegionsThatAreNotProvablyCoincident) {
   ASSERT_FALSE(r.ok())
       << "24 boundary faces and 24 line cells have the same count and no "
          "correspondence; copying between them is silently wrong";
-  EXPECT_EQ(r.error().code, kNoWeightsHere);
-  EXPECT_NE(r.error().message.find("different dimension"), std::string::npos)
+  // The refusal survived the supermesh builder, but it is now that builder's
+  // code rather than the identity-prover's: a conservative remap needs cells
+  // of the SAME dimension on both sides, and 2 against 1 is not a hard case
+  // to support, it is a pair with no common measure to conserve.
+  EXPECT_EQ(r.error().code, "E-REMAP-DIM") << r.error().message;
+  EXPECT_NE(r.error().message.find("dimension"), std::string::npos)
       << r.error().message;
 }
 
@@ -1024,7 +1029,7 @@ TEST(Runner, RefusesEqualCountRegionsThatAreNotProvablyCoincident) {
 // field. Delete the centroid comparison in regions_coincide() and this is the
 // test that fails; the box-versus-line pair above is caught earlier, by the
 // dimension check, so it does not cover this.
-TEST(Runner, RefusesEqualCountEqualMeasureRegionsInADifferentArrangement) {
+TEST(Runner, RemapsEqualCountEqualMeasureRegionsInADifferentArrangement) {
   auto h = build(HarnessOpts{.src_cells = 8,
                              .dst_cells = 8,
                              .src_mesh = "generated:box:2x2x2",
@@ -1034,13 +1039,14 @@ TEST(Runner, RefusesEqualCountEqualMeasureRegionsInADifferentArrangement) {
   Runner runner{h->graph, h->dag, h->plan, h->backend};
   bind_all(*h);
   const auto r = runner.initialize(h->components, h->registry);
-  ASSERT_FALSE(r.ok())
-      << "eight cells of 0.125 each on both sides, arranged differently: only "
-         "a per-cell comparison can see that a copy would be wrong";
-  EXPECT_EQ(r.error().code, kNoWeightsHere);
-  EXPECT_NE(r.error().message.find("does not name the same cell"),
-            std::string::npos)
-      << r.error().message;
+  // Also a refusal until the supermesh landed, and for a good reason then: a
+  // copy between these two would have been silently wrong, and nothing short
+  // of a per-cell comparison could see it. The supermesh does not need to see
+  // it -- it computes the actual overlaps, so the different arrangement is
+  // handled rather than detected. That the resulting map is NOT the identity
+  // is asserted in test/backend/supermesh_test.cpp, where the weights can be
+  // read.
+  ASSERT_TRUE(r.ok()) << r.error().code << ": " << r.error().message;
 }
 
 // The other side of the same coin: two separately loaded, geometrically

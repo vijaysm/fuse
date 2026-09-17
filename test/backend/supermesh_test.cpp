@@ -299,3 +299,41 @@ TEST(Supermesh, WindingOrderOfTheInputDoesNotChangeTheAnswer) {
   EXPECT_LT(b.value().max_col_defect, 1e-13)
       << "a clockwise mesh lost mass, so its triangles clipped wrongly";
 }
+
+TEST(Supermesh, EqualCountEqualMeasureButDifferentArrangementIsNotTheIdentity) {
+  // Eight cells of measure 0.125 on both sides, arranged completely
+  // differently: a 2x2x2 block against a 8x1x1 column. Before the supermesh
+  // existed this pair was REFUSED, because the only available map was an
+  // identity and applying one here would have been silently wrong -- same
+  // count, same measures, no correspondence.
+  //
+  // It is now computed rather than detected. The assertion that matters is
+  // that the result is emphatically not an identity, and is conservative.
+  auto p = pair_of("generated:box:2x2x2", "generated:box:8x1x1");
+  ASSERT_TRUE(p != nullptr);
+  const auto r = fuse::build_supermesh_weights(*p->src, *p->tgt, 3);
+  ASSERT_TRUE(r.ok()) << r.error().code << ": " << r.error().message;
+  const fuse::RemapWeights& w = r.value();
+
+  ASSERT_EQ(w.n_rows, 8u);
+  ASSERT_EQ(w.n_cols, 8u);
+  EXPECT_GT(w.nnz(), 8u)
+      << "an 8x1x1 column crosses several 2x2x2 cells, so rows must be split; "
+         "exactly 8 entries would mean an identity had been applied";
+
+  // Each target column cell spans x in [k/8, (k+1)/8] and the full y,z extent,
+  // so it draws from the four source cells at its x, never from one.
+  std::vector<std::size_t> per_row(w.n_rows, 0);
+  for (std::size_t k = 0; k < w.nnz(); ++k) {
+    ++per_row[static_cast<std::size_t>(w.row[k])];
+  }
+  for (std::size_t j = 0; j < w.n_rows; ++j) {
+    EXPECT_EQ(per_row[j], 4u) << "target cell " << j
+                              << " should straddle four source cells";
+  }
+
+  EXPECT_LT(w.max_row_defect, 1e-13);
+  EXPECT_LT(w.max_col_defect, 1e-13);
+  const std::vector<double> f(w.n_cols, 1.5);
+  for (const double g : apply_map(w, f)) EXPECT_NEAR(g, 1.5, 1e-13);
+}
