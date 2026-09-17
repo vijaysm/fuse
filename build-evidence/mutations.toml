@@ -592,3 +592,32 @@ old = "    const double val = measure / mj;"
 new = "    const double val = measure / src.measure(dim, i);"
 target = "fuse_backend_supermesh_test"
 test = "backend.supermesh"
+
+[[mutation]]
+id = "supermesh-bounding-box-filter-drops-slivers"
+area = "backend"
+describes = "the candidate filter rejects boxes that overlap by less than 1e-9, so thin slivers between coprime grids are never clipped and their mass is lost"
+file = "src/backend/supermesh.cpp"
+old = "    if (a.hi[k] < b.lo[k] || b.hi[k] < a.lo[k]) return false;"
+new = "    if (a.hi[k] < b.lo[k] + 1e-9 || b.hi[k] < a.lo[k] + 1e-9) return false;"
+target = "fuse_backend_supermesh_test"
+test = "backend.supermesh"
+
+[[mutation]]
+id = "supermesh-coverage-computed-before-the-floor"
+area = "backend"
+equivalent = """Declared equivalent, with the bound that makes it so: the audit is
+recomputed from the KEPT entries, and the negligible-overlap floor discards only
+contributions below 1e-12 of a target cell's measure. The pre-floor and post-floor
+audits therefore agree to within the floor itself, so no test can separate them
+without a target cell carrying enough negligible entries for 1e-12 each to
+accumulate into something visible -- which no realistic mesh pair produces. The
+recomputation is kept because the audit should describe the matrix actually
+returned, not the intermediate accumulation. IF THE FLOOR IS EVER RAISED this
+stops being equivalent and must be re-examined."""
+describes = "the audit is computed from the accumulated overlaps rather than from the entries actually kept, so mass discarded by the negligible-overlap floor is concealed"
+file = "src/backend/supermesh.cpp"
+old = "  std::fill(src_covered.begin(), src_covered.end(), 0.0);"
+new = "  if (false) std::fill(src_covered.begin(), src_covered.end(), 0.0);"
+target = "fuse_backend_supermesh_test"
+test = "backend.supermesh"
