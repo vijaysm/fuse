@@ -97,11 +97,14 @@ TEST(NativeMesh, TetrahedronVolumeAndTriangleArea) {
 }
 
 TEST(NativeMesh, ADegenerateSimplexHasZeroMeasureAndNotANaN) {
-  // Three collinear points. The Gram determinant is zero up to rounding and
-  // can land slightly negative; the measure must be 0, never NaN, because a
-  // NaN weight would propagate silently through a conservation sum.
-  auto flat = one_simplex<2, 3>({{{0.0, 0.0, 0.0}}, {{1.0, 1.0, 1.0}},
-                                 {{2.0, 2.0, 2.0}}});
+  // Three collinear points whose Gram determinant rounds NEGATIVE, so the
+  // clamp before the square root is actually exercised. The obvious choice
+  // -- (0,0,0), (1,1,1), (2,2,2) -- cancels exactly (3*12 - 6*6 = 0) and
+  // therefore proves nothing; the mutation gate caught that. Here
+  // det = -8.9e-16, and without the clamp the measure is a NaN that would
+  // propagate silently through a conservation sum.
+  auto flat = one_simplex<2, 3>({{{0.0, 0.0, 0.0}}, {{0.7, 0.2, 0.1}},
+                                 {{2.1, 0.6, 0.3}}});
   ASSERT_TRUE(flat.finalize().ok());
   EXPECT_EQ(flat.measure(0), 0.0);
   EXPECT_FALSE(std::isnan(flat.measure(0)));
