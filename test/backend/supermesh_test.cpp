@@ -183,3 +183,119 @@ TEST(Supermesh, RefusesASurfacePairRatherThanProjectingIt) {
   ASSERT_FALSE(r.ok()) << "a projected shadow measure would look legitimate";
   EXPECT_EQ(r.error().code, "E-REMAP-NONPLANAR");
 }
+
+// ---- 2D, planar triangulations -----------------------------------------
+//
+// The mesh generators produce lines and boxes, so nothing above reaches the
+// 2D kernel: the mutation that removes its winding normalisation survived,
+// which is how the gap was found. A planar triangulation is a real case
+// (2D CFD, planar FEM), so it gets a view here rather than the branch being
+// deleted.
+
+namespace {
+
+/// An n-by-n grid of the unit square, each quad split into two triangles.
+/// Cells are the triangles, so every cell is already a simplex.
+///
+/// `wind_clockwise` deliberately emits the corners in the opposite order. The
+/// MeshView contract promises nothing about orientation, so the kernel must
+/// normalise it; with this flag a test can prove it does rather than assume.
+class PlanarTriangulation final : public fuse::MeshView {
+ public:
+  PlanarTriangulation(std::size_t n, bool wind_clockwise)
+      : n_(n), cw_(wind_clockwise) {}
+
+  [[nodiscard]] int dimension() const override { return 2; }
+  [[nodiscard]] std::size_t entity_count(int dim) const override {
+    return dim == 2 ? 2 * n_ * n_ : (dim == 0 ? (n_ + 1) * (n_ + 1) : 0);
+  }
+  [[nodiscard]] std::size_t owned_count(int dim) const override {
+    return entity_count(dim);
+  }
+  [[nodiscard]] bool is_owned(int, std::size_t) const override { return true; }
+  [[nodiscard]] std::size_t global_id(int, std::size_t i) const override {
+    return i;
+  }
+  [[nodiscard]] fuse::Point centroid(int dim, std::size_t i) const override {
+    fuse::Point c[3];
+    simplex_points(dim, i, 0, c);
+    return fuse::Point{(c[0].x + c[1].x + c[2].x) / 3.0,
+                       (c[0].y + c[1].y + c[2].y) / 3.0, 0.0};
+  }
+  [[nodiscard]] double measure(int dim, std::size_t i) const override {
+    fuse::Point c[3];
+    simplex_points(dim, i, 0, c);
+    // Unsigned: half the magnitude of the cross product, so the measure does
+    // not depend on the winding either.
+    return 0.5 * std::abs((c[1].x - c[0].x) * (c[2].y - c[0].y) -
+                          (c[2].x - c[0].x) * (c[1].y - c[0].y));
+  }
+  [[nodiscard]] std::size_t simplex_count(int dim, std::size_t) const override {
+    return dim == 2 ? 1 : 0;
+  }
+  void simplex_points(int, std::size_t i, std::size_t,
+                      fuse::Point* out) const override {
+    const std::size_t quad = i / 2;
+    const bool        upper = (i % 2) == 1;
+    const double h = 1.0 / static_cast<double>(n_);
+    const double x0 = static_cast<double>(quad % n_) * h;
+    const double y0 = static_cast<double>(quad / n_) * h;
+    // Lower triangle (x0,y0)-(x1,y0)-(x1,y1); upper (x0,y0)-(x1,y1)-(x0,y1).
+    const double xs[3] = {x0, upper ? x0 + h : x0 + h, upper ? x0 : x0 + h};
+    const double ys[3] = {y0, upper ? y0 + h : y0, upper ? y0 + h : y0 + h};
+    for (int k = 0; k < 3; ++k) {
+      const int src = cw_ ? (2 - k) : k;   // reversed order is clockwise
+      out[k] = fuse::Point{xs[src], ys[src], 0.0};
+    }
+  }
+
+ private:
+  std::size_t n_;
+  bool        cw_;
+};
+
+}  // namespace
+
+TEST(Supermesh, TwoDimensionalNonMatchingIsExactlyConservative) {
+  const PlanarTriangulation src(3, false);
+  const PlanarTriangulation tgt(4, false);
+  const auto r = fuse::build_supermesh_weights(src, tgt, 2);
+  ASSERT_TRUE(r.ok()) << r.error().code << ": " << r.error().message;
+  const fuse::RemapWeights& w = r.value();
+
+  EXPECT_EQ(w.n_cols, 18u) << "3x3 quads, two triangles each";
+  EXPECT_EQ(w.n_rows, 32u);
+  EXPECT_NEAR(w.src_measure_total, 1.0, 1e-14) << "the unit square";
+  EXPECT_NEAR(w.tgt_measure_total, 1.0, 1e-14);
+  EXPECT_LT(w.max_row_defect, 1e-13) << "constants not preserved";
+  EXPECT_LT(w.max_col_defect, 1e-13) << "mass not conserved";
+  EXPECT_GE(w.min_weight, 0.0);
+  EXPECT_TRUE(w.monotone);
+
+  const std::vector<double> f(w.n_cols, 7.25);
+  for (const double g : apply_map(w, f)) EXPECT_NEAR(g, 7.25, 1e-13);
+}
+
+TEST(Supermesh, WindingOrderOfTheInputDoesNotChangeTheAnswer) {
+  // The same two meshes, but every triangle handed over clockwise. MeshView
+  // requires no orientation, so the two maps must be identical -- and r2d
+  // documents counterclockwise input, so something has to normalise it.
+  const PlanarTriangulation ccw_s(3, false), ccw_t(4, false);
+  const PlanarTriangulation cw_s(3, true),   cw_t(4, true);
+
+  const auto a = fuse::build_supermesh_weights(ccw_s, ccw_t, 2);
+  const auto b = fuse::build_supermesh_weights(cw_s, cw_t, 2);
+  ASSERT_TRUE(a.ok()) << a.error().code << ": " << a.error().message;
+  ASSERT_TRUE(b.ok()) << b.error().code << ": " << b.error().message;
+
+  ASSERT_EQ(a.value().nnz(), b.value().nnz())
+      << "winding changed the sparsity pattern";
+  for (std::size_t k = 0; k < a.value().nnz(); ++k) {
+    EXPECT_EQ(a.value().row[k], b.value().row[k]);
+    EXPECT_EQ(a.value().col[k], b.value().col[k]);
+    EXPECT_NEAR(a.value().val[k], b.value().val[k], 1e-14)
+        << "entry " << k << " differs with the input winding";
+  }
+  EXPECT_LT(b.value().max_col_defect, 1e-13)
+      << "a clockwise mesh lost mass, so its triangles clipped wrongly";
+}
