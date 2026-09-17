@@ -178,6 +178,12 @@ add_library(fuse-coupler-backend
 )
 add_library(fuse::backend ALIAS fuse-coupler-backend)
 target_link_libraries(fuse-coupler-backend PUBLIC fuse::schedule)
+if(FUSE_ENABLE_MOAB)
+  # PUBLIC, not PRIVATE: intx_weights.cpp is compiled into this library, but
+  # the mesh-backend headers a consumer includes also reach MOAB types, so a
+  # consumer that cannot see MOAB's headers cannot use this library at all.
+  target_link_libraries(fuse-coupler-backend PUBLIC fuse::moab)
+endif()
 set_target_properties(fuse-coupler-backend PROPERTIES
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
