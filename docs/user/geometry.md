@@ -73,3 +73,57 @@ Fields. The reference model this follows bundles point, cell and global data
 into the mesh; FUSE already has a field layer carrying units, intent and
 semantic shape, and a second home for a field would be two places to look for
 one and two places for its units to disagree. The mesh carries geometry only.
+
+## How the conservative map is built
+
+For every target cell `j` and source cell `i`, the exact measure of their
+intersection is computed by clipping simplices and taking analytic moments, and
+
+```
+W_ji = |T_j intersect S_i| / m_j
+```
+
+so a target value is the measure-weighted average of the source field over the
+target cell. That one formula is both **constant-preserving** (rows sum to one
+where the meshes overlap fully) and **conservative** (total mass is unchanged),
+which is why there is no separate "conservative" switch: a first-order
+supermesh map is conservative by construction. The audit fields on the weights
+report how nearly it achieved both on the pair it was given, rather than
+asserting it.
+
+Measured on non-matching pairs over the unit domain, all residuals at rounding:
+
+| Pair | Row defect (constants) | Column defect (mass) |
+|---|---|---|
+| 8 → 5 cells, 1D | < 1e-14 | < 1e-14 |
+| 3×3 → 4×4 triangulated quads, 2D | < 1e-13 | < 1e-13 |
+| 3×3×3 → 4×4×4 hexes, 3D | < 1e-13 | < 1e-13 |
+
+Remapping a mesh onto itself returns exactly the identity: one entry per cell,
+each equal to 1.
+
+### Two things it refuses
+
+**A surface pair.** The 2D kernel clips in the xy-plane. Handed a surface
+embedded in three-space it would return the measure of its *shadow* — a
+plausible wrong answer — so it refuses with `E-REMAP-NONPLANAR`. A surface pair
+needs a parameterisation, or great-circle geometry on the sphere, which is what
+the TempestRemap tier provides.
+
+**Anything above order 1.** Piecewise constant is what this path reconstructs.
+Asking for high order without MOAB is refused by name rather than quietly
+served at order 1.
+
+### A note on negligible overlaps
+
+Two cells that merely share a face have an intersection of measure zero, but
+clipping against a coplanar plane returns a rounding-level positive — measured
+at up to 1.1e-16 of a cell, which on an identity pair produced 84 spurious
+entries beside the 27 real ones. Contributions below 1e-12 of the target cell's
+measure are dropped.
+
+The reason is not accuracy: those entries could not move a double-precision
+result. It is that **a matrix entry is a data dependency**. In parallel it makes
+the target rank wait on whichever rank owns that source cell, for a
+contribution of 1e-16. The floor is applied before the conservation audit, so
+any mass it discards is reported in the residuals rather than hidden.
