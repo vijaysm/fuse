@@ -24,6 +24,14 @@ option(FUSE_ALLOW_FETCH "Build a pinned copy of any Tier 0 dependency that is no
 # ---------------------------------------------------------------- Tier 0 (always)
 set(FUSE_FMT_TAG        "11.0.2")
 set(FUSE_FMTLOG_TAG     "v2.2.1")
+# r3d: exact clipping of simplices and analytic moments (Powell & Abel 2015,
+# LA-UR-15-26964). It is the supermesh kernel for the ALWAYS-AVAILABLE
+# conservative path, so like yaml-cpp it is fetched by default rather than
+# required from a prefix: it carries no MPI, no index-size choice and no tuned
+# kernels, so a pinned build replaces nothing machine-specific. An installed
+# copy is still found first. Its licence is a LANL public notice that must be
+# reproduced -- see THIRD-PARTY-NOTICES.md.
+set(FUSE_R3D_TAG "58dfbfb2fd2a89e36e3c7ceb5ca6aef3f9c4c4e6" CACHE STRING "r3d commit")
 set(FUSE_YAMLCPP_TAG     "0.8.0")
 set(FUSE_GTEST_TAG       "v1.15.2")   # git tag; the find_package version below is the same number without the v
 set(FUSE_GTEST_VERSION   "1.15.2")
@@ -102,6 +110,10 @@ FetchContent_Declare(yaml-cpp
   GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git GIT_TAG ${FUSE_YAMLCPP_TAG}
   GIT_SHALLOW ON
   FIND_PACKAGE_ARGS ${FUSE_YAMLCPP_TAG} NAMES yaml-cpp)
+
+FetchContent_Declare(r3d
+  GIT_REPOSITORY https://github.com/devonmpowell/r3d.git GIT_TAG ${FUSE_R3D_TAG}
+  FIND_PACKAGE_ARGS NAMES r3d)
 
 FetchContent_Declare(Eigen3
   GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git GIT_TAG ${FUSE_EIGEN_TAG} GIT_SHALLOW ON)
@@ -187,6 +199,27 @@ endfunction()
 # Resolved separately from the tier ladder: it is the one always-fetchable
 # dependency, and only the front-end links it (PRIVATE, so it never reaches a
 # consumer's include path).
+# The supermesh kernel. Resolved with the core rather than in the tier ladder:
+# the lowest-order conservative path must work in the DEFAULT build, which is
+# the whole point of not depending on TempestRemap for it.
+macro(fuse_resolve_r3d)
+  find_package(r3d QUIET CONFIG)
+  if(r3d_FOUND)
+    file(APPEND "${FUSE_RESOLUTION_FILE}" "r3d=found ${r3d_DIR}\n")
+    message(STATUS "fuse: r3d found at ${r3d_DIR}")
+  else()
+    # 512 is r3d's own default and is the bound on vertices in a clipped
+    # polyhedron. Clipping one tetrahedron by another cannot approach it; the
+    # value is pinned here so the limit is a recorded choice rather than
+    # whatever a future upstream default becomes.
+    set(R3D_MAX_VERTS 512 CACHE STRING "" FORCE)
+    set(ENABLE_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(r3d)
+    file(APPEND "${FUSE_RESOLUTION_FILE}" "r3d=fetched ${FUSE_R3D_TAG}\n")
+    message(STATUS "fuse: r3d built from source (pinned ${FUSE_R3D_TAG})")
+  endif()
+endmacro()
+
 macro(fuse_resolve_yaml)
   find_package(yaml-cpp ${FUSE_YAMLCPP_TAG} QUIET CONFIG)
   if(yaml-cpp_FOUND)
@@ -209,6 +242,7 @@ macro(fuse_resolve_dependencies)
   # Kokkos::LIBDL, whose only usage requirement is the SDK include path Kokkos was
   # configured against; the rest are listed so a different install's stale entry is
   # caught the same way.
+  fuse_resolve_r3d()
   fuse_resolve_yaml()
 
   fuse_drop_missing_include_dirs(
