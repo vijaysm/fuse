@@ -14,5 +14,15 @@ Run 2026-09-17 against build `build-fuse-s1`. Regenerate with `tools/mutate.py -
 | `supermesh-keeps-rounding-level-overlaps` — the negligible-overlap floor is removed, so a shared face yields a 1e-16 matrix entry and, in parallel, a real data dependency for no numerical content | `src/backend/supermesh.cpp` | **KILLED** (test fails) | `backend.supermesh` |
 | `supermesh-projects-a-surface-onto-the-xy-plane` — a surface pair is clipped as its xy shadow instead of being refused, returning a plausible wrong measure | `src/backend/supermesh.cpp` | **KILLED** (test fails) | `backend.supermesh` |
 | `supermesh-divides-by-the-source-measure` — the weight is normalised by the source cell's measure instead of the target's, which preserves mass but destroys constant preservation on a non-matching pair | `src/backend/supermesh.cpp` | **KILLED** (test fails) | `backend.supermesh` |
+| `supermesh-bounding-box-filter-drops-slivers` — the candidate filter rejects boxes that overlap by less than 1e-9, so thin slivers between coprime grids are never clipped and their mass is lost | `src/backend/supermesh.cpp` | **KILLED** (test fails) | `backend.supermesh` |
+| `supermesh-coverage-computed-before-the-floor` — the audit is computed from the accumulated overlaps rather than from the entries actually kept, so mass discarded by the negligible-overlap floor is concealed | `src/backend/supermesh.cpp` | **EQUIVALENT** (Declared equivalent, with the bound that makes it so: the audit is
+recomputed from the KEPT entries, and the negligible-overlap floor discards only
+contributions below 1e-12 of a target cell's measure. The pre-floor and post-floor
+audits therefore agree to within the floor itself, so no test can separate them
+without a target cell carrying enough negligible entries for 1e-12 each to
+accumulate into something visible -- which no realistic mesh pair produces. The
+recomputation is kept because the audit should describe the matrix actually
+returned, not the intermediate accumulation. IF THE FLOOR IS EVER RAISED this
+stops being equivalent and must be re-examined.) | `backend.supermesh` |
 
-**10 killed / 10 total.**
+**11 killed / 12 total.**
