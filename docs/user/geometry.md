@@ -127,3 +127,32 @@ result. It is that **a matrix entry is a data dependency**. In parallel it makes
 the target rank wait on whichever rank owns that source cell, for a
 contribution of 1e-16. The floor is applied before the conservation audit, so
 any mass it discards is reported in the residuals rather than hidden.
+
+## What the conservative map is checked against
+
+Conservation and constant preservation are necessary but **not sufficient**: a
+map that sent mass to the wrong cells could still sum correctly along both
+axes. The checks below are ordered by what they can catch that the previous one
+cannot.
+
+| Check | What it would catch | Result |
+|---|---|---|
+| Conservation and constant residuals | mass created or destroyed | < 1e-13 in 1D, 2D and 3D |
+| Identity pair | any error at all in the clipper | exactly one entry per cell, each 1.0 |
+| **Entrywise against closed form** | mass delivered to the *wrong* cell | worst entry error 2.8e-15 over 1331 entries on coprime 5→7 grids; no missing and no spurious entries |
+| **Common affine map** | an axis-aligned assumption anywhere | weights change by 6.6e-15 under a rotation, shear and translation |
+| **Refinement study** | a map that conserves but does not converge | observed order **1.05** over five refinements |
+| Input winding | a dependence on vertex ordering, which the mesh contract does not fix | identical map from clockwise and counterclockwise input |
+| **1e-10 slivers** | a hidden tolerance in the candidate search | slivers kept; smallest weight 4.0e-10 |
+
+The closed-form check is the strongest available for the geometry: for two
+axis-aligned grids the exact intersection volume is the product of the per-axis
+overlaps, so every individual weight has a reference value rather than only the
+row and column sums.
+
+The refinement study is one-dimensional, deliberately. The candidate search is
+currently a brute-force box test, and a five-level 3D study would take hours —
+the 5×5×5 → 7×7×7 case alone is about 1.5 million clip calls. In 3D the kernel
+is pinned against closed form instead, which says more about the geometry than
+a convergence slope does. A 3D study becomes affordable when a spatial index
+replaces the brute-force search.
