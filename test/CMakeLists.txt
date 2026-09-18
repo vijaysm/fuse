@@ -135,6 +135,37 @@ fuse_add_gtest(linalg least_squares THROWS)
 fuse_add_gtest(backend native_mesh THROWS)
 fuse_add_gtest(backend supermesh THROWS)
 
+# ---------------------------------------------------------------- field
+# THROWS: the extent refusals are the point of half these cases.
+# field/ is header-only (the pipeline is templates over Kokkos views), so there
+# is no fuse::field library for the helper to derive from the directory name.
+fuse_add_gtest(field pipeline THROWS NO_LAYER_LIB LIBS fuse::model fuse::base)
+
+# A rule enforced by a DELETED OVERLOAD can only be tested by failing to
+# compile. Both targets are EXCLUDE_FROM_ALL and built only by their test, so a
+# normal build is unaffected.
+#
+# The pair matters: WILL_FAIL alone would pass if the file failed to build for
+# any reason at all -- a typo, a missing include -- so the control is the same
+# shape written the permitted way and MUST build. Together they say the
+# difference is the spelling.
+foreach(case compile_fail_dangling_span compile_ok_owning_chain)
+  add_executable(fuse_field_${case} EXCLUDE_FROM_ALL field/${case}.cpp)
+  target_link_libraries(fuse_field_${case} PRIVATE fuse::base)
+endforeach()
+
+add_test(NAME field.compile_fail.dangling_span
+  COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
+          --target fuse_field_compile_fail_dangling_span)
+set_tests_properties(field.compile_fail.dangling_span PROPERTIES
+  WILL_FAIL TRUE LABELS "compile_fail")
+
+add_test(NAME field.compile_ok.owning_chain
+  COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
+          --target fuse_field_compile_ok_owning_chain)
+set_tests_properties(field.compile_ok.owning_chain PROPERTIES
+  LABELS "compile_fail")
+
 # ---------------------------------------------------------------- verification
 # Convergence orders and iteration counts, against known-good values. These are
 # the stage's exit criterion: they are what says the merged compiler and runtime

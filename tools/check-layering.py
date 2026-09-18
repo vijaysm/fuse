@@ -24,16 +24,27 @@ from pathlib import Path
 # not checked at all.) `transport` is above `backend` because matching ranks
 # across two rank sets needs the global cell ids, which come from the mesh
 # interface.
+# Every directory under include/fuse MUST appear here. Three did not until
+# 2026-09-17 -- `field`, `linalg` and `abi` -- while this list named an
+# `interface` layer that no directory matched. A path that maps to no layer is
+# assigned no rank and no third-party allowance, so the checks below simply
+# never ran on those three: an entire directory could have included <mpi.h> in
+# a public header and this gate would have reported clean. The positions below
+# are the ones the actual include directions already impose (verified, not
+# assumed): `field` includes only `base` and is included by `backend` and
+# `runtime`; `linalg` includes only `base` and is included by `num`.
 LAYERS = [
     "base",
+    "linalg",
     "model",
     "ir",
     "schedule",
     "num",
+    "field",
     "backend",
     "transport",
     "runtime",
-    "interface",
+    "abi",
 ]
 
 # Third-party headers that may appear in a PUBLIC header, per layer. Anything
@@ -42,13 +53,23 @@ LAYERS = [
 # execution space in the public interface; `linalg` backends never are.
 ALLOWED_PUBLIC_THIRD_PARTY = {
     "base": {"Kokkos_Core.hpp"},
+    # The linalg facade exists so that a backend is swappable; naming one in
+    # its public header would defeat that, so nothing third-party is allowed.
+    "linalg": set(),
     "model": set(),
     "ir": set(),
     "schedule": set(),
     "num": {"Kokkos_Core.hpp"},
+    # The lazy field pipeline's stages ARE Kokkos subviews -- that is the
+    # substance of usability rule U3, not an implementation detail, so the view
+    # type is in the public interface by design.
+    "field": {"Kokkos_Core.hpp"},
     "runtime": {"Kokkos_Core.hpp"},
     "backend": {"Kokkos_Core.hpp"},   # per-backend headers live under backend/<name>/
-    "interface": set(),
+    "transport": set(),
+    # The C ABI is the one surface that must compile for a consumer with none
+    # of our dependencies installed.
+    "abi": set(),
 }
 
 # Never in any public header, at any layer, outside its own backend directory.
