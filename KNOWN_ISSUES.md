@@ -202,7 +202,14 @@ the catch:
 - `src/model/compatibility.cpp:160` and `:177`, both `catch (const Error&)`,
   doing the same around exact-rational arithmetic.
 
-Every other `catch` in the library takes `std::exception` or `...` at a
+One further site catches the same type and is **not** a defect:
+`src/base/error.cpp:174`, inside `fuse_terminate()`, which rethrows
+`std::current_exception()` solely to classify it for the message it prints
+before aborting. It is reporting an exception that has already escaped, not
+converting one into a value, and with exceptions off no exception can be in
+flight for it to see — so it is unreachable rather than wrong.
+
+Every remaining `catch` in the library takes `std::exception` or `...` at a
 containment boundary — a plugin call, a transport call — and simply never fires
 when exceptions are off. Those are correct as they stand.
 
@@ -215,10 +222,10 @@ for callers who want them. Nothing about the fix is conditional on
 `FUSE_ENABLE_EXCEPTIONS`: the point is that a path which must yield a `Result`
 should never have been throwing.
 
-**Why the remaining 8 failing targets are a different, smaller thing.**
+**Why the remaining 9 failing targets are a different, smaller thing.**
 `ir.ir_dag`, `schedule.clock`, `num.temporal_basis`, `num.waveform`,
 `num.convergence`, `num.accelerator`, `runtime.field_ref`,
-`backend.serial_mesh` and `runtime.component_iface` contain cases that
+`backend.serial_mesh` and `runtime.component_iface` — 9 of the 11 — contain cases that
 legitimately assert a throw and are simply missing the `THROWS` label the leg
 excludes by. They are **not** labelled yet, deliberately: labelling them now
 would also silence `schedule.expand` and `schedule.plan`, whose failure is the
