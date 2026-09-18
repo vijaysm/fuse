@@ -121,6 +121,7 @@ foreach(t spacetime)
   fuse_add_gtest(backend ${t})
 endforeach()
 fuse_add_gtest(backend serial_mesh THROWS)
+fuse_add_gtest(backend operator_conformance)
 
 # ---------------------------------------------------------------- runtime
 foreach(t runner checkpoint epoch_schedule)

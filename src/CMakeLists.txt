@@ -171,6 +171,8 @@ set_target_properties(fuse-coupler-transport PROPERTIES
 add_library(fuse-coupler-backend
   backend/serial_backend.cpp
   backend/supermesh.cpp
+  backend/linear_operator.cpp
+  backend/weights_operator.cpp
   backend/spacetime.cpp
   # Supermesh intersection: the real implementation needs MOAB, and the
   # file's own no-MOAB path refuses with E-REMAP-NOMOAB rather than
