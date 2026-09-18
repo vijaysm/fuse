@@ -24,5 +24,9 @@ accumulate into something visible -- which no realistic mesh pair produces. The
 recomputation is kept because the audit should describe the matrix actually
 returned, not the intermediate accumulation. IF THE FLOOR IS EVER RAISED this
 stops being equivalent and must be re-examined.) | `backend.supermesh` |
+| `composed-transpose-in-the-same-order` — (A B)^T applies A^T then B^T instead of B^T then A^T, so the composed operator's transpose is not its adjoint | `src/backend/linear_operator.cpp` | **KILLED** (test fails) | `backend.operator_conformance` |
+| `composed-claims-are-inherited` — a composition claims conservation when EITHER factor does, so composing a conservative map with a non-conservative one reports conservation | `src/backend/linear_operator.cpp` | **KILLED** (test fails) | `backend.operator_conformance` |
+| `compose-signature-ignores-order` — A o B and B o A hash the same, so a plan can reuse a persisted map built for the opposite order | `src/backend/linear_operator.cpp` | **KILLED** (test fails) | `backend.operator_conformance` |
+| `weights-signature-covers-the-audit` — the signature hashes a measurement about the matrix rather than only what it computes, so a change in the builder's diagnostics invalidates every persisted map | `src/backend/weights_operator.cpp` | **KILLED** (test fails) | `backend.operator_conformance` |
 
-**11 killed / 12 total.**
+**15 killed / 16 total.**
