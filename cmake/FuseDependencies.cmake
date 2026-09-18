@@ -291,6 +291,15 @@ macro(fuse_resolve_dependencies)
       target_include_directories(fuse-moab SYSTEM INTERFACE ${MOAB_INCLUDE_DIRS})
       target_link_libraries(fuse-moab INTERFACE ${MOAB_LIBRARIES})
       target_link_directories(fuse-moab INTERFACE ${MOAB_LIBRARY_DIRS})
+      # MOAB's public headers include <moab_mpi.h>, which includes <mpi.h>
+      # unconditionally for a parallel MOAB build -- so anything consuming a
+      # MOAB header needs MPI's include path even if it never calls MPI
+      # itself. Without this the very first MOAB include fails with
+      # "'mpi.h' file not found", which reads like a missing MPI install
+      # rather than a missing interface property.
+      if(FUSE_ENABLE_MPI AND TARGET MPI::MPI_CXX)
+        target_link_libraries(fuse-moab INTERFACE MPI::MPI_CXX)
+      endif()
     endif()
     # Whether high-order (spherical, TempestRemap-backed) remap is available is
     # a property of WHICH MOAB was found, not of this project: a machine can
