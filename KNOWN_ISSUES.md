@@ -1,6 +1,8 @@
 # Known issues
 
-Open items, split by **who has to act**. Every entry names the file, the
+Open items, split by **who has to act**. Closed entries are kept, struck
+through, because the reason a thing was an issue is worth more than a shorter
+file. Every entry names the file, the
 function and the code, and quotes prior code verbatim where a revert is
 involved — never a commit hash, because hashes do not survive a rebase.
 
@@ -30,38 +32,32 @@ executed**. Two consequences:
 **What to do.** Create the remote and push. Nothing in the tree needs to
 change; the workflow is already written.
 
-### A2. Four parallel test legs cannot run in this sandbox
+### ~~A2. Four parallel test legs cannot run in this sandbox~~ — CLOSED 2026-09-17
 
-`test/parallel/{runner_transport,comm_graph,mpi_transport,epoch_reconcile}` are
-registered at 2/3/4/5 ranks. They **build** here but cannot run: the sandbox's
-MPI process manager cannot bind a port (`mpiexec` fails before reaching the
-test). The same applies to the two transport mutations, which are declared
-`requires = "mpi"` and report `NOT-ASSESSED` rather than a false kill.
+Still true of the sandbox, and no longer an open item: the host run covers it.
+**855 tests, 0 failures**, including all 16 `parallel.*` entries
+(`runner_transport`, `comm_graph`, `mpi_transport`, `epoch_reconcile` at
+2/3/4/5 ranks), the 4 `example` entries, the 2 `compile_fail` entries and the
+`field` and `num` additions. Both transport mutations were **killed** under
+`FUSE_MUTATE_MPI=1`, so the peer-plan numbering check and the local-copy pass
+are each load-bearing rather than merely present.
 
-**What to do**, on the host, after a build:
+Re-run after any change to the transport, the runner or the rank-matching
+graph — those are the three areas whose failure mode is a hang, which no
+sandbox test can see:
 
 ```sh
 cmake --build build-tier1 -j12 && (cd build-tier1 && ctest --output-on-failure)
 FUSE_MUTATE_MPI=1 python3 tools/mutate.py --build-dir build-tier1 --area transport --write-log
 ```
 
-### A3. The Python and Fortran binding names are still proposals
+### ~~A3. The Python and Fortran binding names are still proposals~~ — CLOSED 2026-09-17
 
-`docs/dev/porting.md`, naming map rows for the Fortran module and the Python
-package, both marked *(proposed)*. The pattern you chose is a one-letter
-language prefix on the stem: `cfuse` (C header and flat-symbol shim only —
-there is no separate C binding, the C surface *is* `fuse_coupler_abi()`),
-`ffuse` (Fortran), and `pfuse` (Python, replacing `pyfuse`, which collides both
-with an existing package index entry and with the FUSE-filesystem project's own
-bindings).
-
-**What to do.** Confirm `pfuse` is free before it lands:
-
-```sh
-pip index versions pfuse
-```
-
-Then say the word and the map stops saying *proposed*.
+Ruled: **`cfuse`** (C header and flat-symbol shim only), **`ffuse`** (Fortran
+module), **`pfuse`** (Python package). `pip index versions pfuse` reports no
+matching distribution, checked before the name landed. The collisions that
+shaped the choice — and why a Julia binding must *not* be `jfuse` — are
+recorded in `docs/dev/porting.md`, which now has no open decisions.
 
 ### A4. No external code is nominated for the conformance profile
 

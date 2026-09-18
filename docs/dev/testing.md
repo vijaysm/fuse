@@ -146,6 +146,7 @@ rather than claims:
 | 2026-09-15 | `model.descriptor_mpi` at 2/3/4/5 ranks; full suite 796 tests, 4 MOAB skips |
 | 2026-09-16 | full suite **843 tests, 0 failures**, 4 MOAB skips, including all 16 `parallel.*` legs: `runner_transport`, `comm_graph`, `mpi_transport`, `epoch_reconcile` at 2/3/4/5 ranks |
 | 2026-09-16 | full suite **845 tests, 0 failures** after the peer-wise transport landed, and both `requires = "mpi"` mutations **killed** under `FUSE_MUTATE_MPI=1` — so the numbering check and the local-copy pass are each load-bearing, not merely present |
+| 2026-09-17 | full suite **855 tests, 0 failures**, 36.2 s real; 4 skips, all of them the parent suite's MOAB-dependent cases. Adds the 4 `example`, 2 `compile_fail`, 1 `field` and 1 `num` (typed, per execution space) entries. Both `requires = "mpi"` transport mutations **killed** under `FUSE_MUTATE_MPI=1`. |
 
 The 2026-09-16 run is what makes the rank-agreement mechanism verified rather
 than asserted: `parallel.epoch_reconcile` fails one rank's component mid-step
