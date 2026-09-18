@@ -62,6 +62,12 @@ whole argument for A1: a workflow that has never run is not evidence.
 |---|---|---|---|
 | installed `/opt/kokkos` | 4.6.0 | `Threads Serial` (default Threads) | 65/65 |
 | fetched, pinned `4.4.01` | 4.4.1 | `OpenMP Serial` (default OpenMP) | 65/65 |
+| installed `/opt/kokkos`, **after the 2026-09-17 upgrade** | 5.1.0 | `OpenMP Serial` (default OpenMP) | 65/65 |
+
+The upgrade to 5.1.0 turned the installed device list from `THREADS;SERIAL` into
+`OPENMP;SERIAL`, so OpenMP is now covered by the ordinary build and **Threads is
+no longer enabled anywhere** — that space is currently unexercised, and a fetch
+build with `-DKokkos_ENABLE_THREADS=ON` is what would restore it if wanted.
 
 So the typed kernel tests are now verified on **all three host-parallel spaces**
 — Threads, OpenMP and Serial — which is every one that exists without a device.
@@ -169,6 +175,57 @@ This is **not** a build defect. `upstream/soma/src/mesh/moab_backend.cpp` is
 2,111 lines and has not been ported yet; porting it is the mesh-backend step of
 S5. The conservative remap path that does not need MOAB works today and is the
 differential oracle for this one when it lands.
+
+### B1a. The no-exceptions build aborts where the library catches its own refusal
+
+**Found 2026-09-17 by running the `tier0-no-exceptions` leg's recipe** — the
+third defect found this way, and independent of the Kokkos update: 11 of 57
+tests abort with `FUSE_ENABLE_EXCEPTIONS=OFF`.
+
+**The substance.** `FUSE_REFUSE` throws when exceptions are on and
+*reports-then-aborts* when they are off. Three places in the library use
+throw/catch as **internal control flow** — they let a refusal propagate and
+catch it to build a `Failure` — so with exceptions off the abort happens before
+the catch:
+
+- `include/fuse/schedule/clock.hpp:175`, `ClockSet::checked_common_period()`:
+
+  ```cpp
+      } catch (const Error& e) {
+  ```
+
+  It calls `lcm_rational`, which refuses on overflow
+  (`E-BASE-RATIONAL-OVERFLOW`), and converts that into a `Result`. The test
+  that exercises it is named for the contract it is asserting —
+  `Expand.UnrepresentableCommonPeriodIsAnErrorNotAnException` — and it is the
+  case that aborts.
+- `src/model/compatibility.cpp:160` and `:177`, both `catch (const Error&)`,
+  doing the same around exact-rational arithmetic.
+
+Every other `catch` in the library takes `std::exception` or `...` at a
+containment boundary — a plugin call, a transport call — and simply never fires
+when exceptions are off. Those are correct as they stand.
+
+**The fix, which is an interface decision and not a patch.** The three sites
+need non-throwing primitives: a `lcm_rational` (and the two arithmetic
+operations `compatibility.cpp` wraps) that *return* failure —
+`std::optional<Rational>` or `Result<Rational>` — so the caller converts to a
+`Failure` without an exception ever being involved. The throwing spellings stay
+for callers who want them. Nothing about the fix is conditional on
+`FUSE_ENABLE_EXCEPTIONS`: the point is that a path which must yield a `Result`
+should never have been throwing.
+
+**Why the remaining 8 failing targets are a different, smaller thing.**
+`ir.ir_dag`, `schedule.clock`, `num.temporal_basis`, `num.waveform`,
+`num.convergence`, `num.accelerator`, `runtime.field_ref`,
+`backend.serial_mesh` and `runtime.component_iface` contain cases that
+legitimately assert a throw and are simply missing the `THROWS` label the leg
+excludes by. They are **not** labelled yet, deliberately: labelling them now
+would also silence `schedule.expand` and `schedule.plan`, whose failure is the
+defect above and not a missing label. Label them once the three sites are
+fixed, and consider per-case guards instead, since the label is
+target-granular and excluding a whole target costs the coverage of its
+non-throwing cases.
 
 ### B2. The 3D order study waits on a spatial index
 

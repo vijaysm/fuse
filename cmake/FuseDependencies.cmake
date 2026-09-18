@@ -273,7 +273,48 @@ endmacro()
 
 macro(fuse_resolve_dependencies)
   fuse_require(fmt HINT "fmt is the only output formatter (docs/dev/conventions.md).")
-  fuse_require(Kokkos HINT "Kokkos is required at every tier; /opt/kokkos on this machine.")
+
+  # Apple's clang ships no OpenMP runtime, so CMake's FindOpenMP fails with no
+  # hints even when libomp IS installed. A Kokkos built with OpenMP does
+  # find_dependency(OpenMP) from its own config file, so a perfectly good
+  # install then fails to resolve with "Could NOT find OpenMP_CXX (missing:
+  # OpenMP_CXX_FLAGS OpenMP_CXX_LIB_NAMES)" -- which reads as though Kokkos
+  # were broken rather than as a missing hint.
+  #
+  # Hit on 2026-09-17 when the installed Kokkos moved to 5.1.0 with
+  # OPENMP;SERIAL. Supplying the conventional prefix here rather than expecting
+  # it on every command line: the caller should not have to know that this
+  # platform's compiler needs a third-party runtime to honour a standard
+  # pragma. An explicit -DOpenMP_ROOT always wins.
+  if(APPLE AND NOT DEFINED OpenMP_ROOT AND NOT DEFINED CACHE{OpenMP_ROOT})
+    foreach(_omp_prefix /opt/homebrew/opt/libomp /usr/local/opt/libomp)
+      if(EXISTS "${_omp_prefix}/include/omp.h")
+        set(OpenMP_ROOT "${_omp_prefix}")
+        # The LIBRARY has to be pinned too, not just the prefix. FindOpenMP
+        # validates clang's flags (`-Xclang -fopenmp`) and then searches for a
+        # runtime independently, and on this machine it selected
+        # /usr/local/lib/libgomp.dylib -- GNU's runtime, which exports
+        # `GOMP_*` and NOT the `__kmpc_*` entry points clang's code generation
+        # and Kokkos' own objects call. The build then failed at link with
+        # "Undefined symbols ... ___kmpc_fork_call, referenced from
+        # Kokkos::OpenMP::impl_initialize", which reads as a broken Kokkos
+        # rather than as two OpenMP runtimes on one machine and the wrong one
+        # chosen. Both are arm64 and both export `GOMP_parallel`, so neither
+        # architecture nor a missing file is the discriminator: only the ABI
+        # is, and it must match the compiler that generated the code.
+        if(EXISTS "${_omp_prefix}/lib/libomp.dylib"
+           AND NOT DEFINED CACHE{OpenMP_libomp_LIBRARY})
+          set(OpenMP_libomp_LIBRARY "${_omp_prefix}/lib/libomp.dylib"
+              CACHE FILEPATH "OpenMP runtime matching the compiler's ABI")
+        endif()
+        message(STATUS "fuse: OpenMP runtime at ${_omp_prefix} "
+                       "(Apple clang provides none; override with -DOpenMP_ROOT)")
+        break()
+      endif()
+    endforeach()
+  endif()
+
+  fuse_require(Kokkos HINT "Kokkos is required at every tier; /opt/kokkos on this machine. If it was built with OpenMP and this fails on OpenMP_CXX, install libomp (brew install libomp) or pass -DOpenMP_ROOT.")
   # Sanitized before anything links it. The offender on this machine is
   # Kokkos::LIBDL, whose only usage requirement is the SDK include path Kokkos was
   # configured against; the rest are listed so a different install's stale entry is
