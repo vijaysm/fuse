@@ -50,6 +50,35 @@ int main(int argc, char** argv) {
 #endif
   {
     Kokkos::ScopeGuard guard(argc, argv);
+
+    // Names the execution spaces this build enabled, once, on rank 0. It is
+    // here rather than in a test because it is EVIDENCE FOR AN EXIT CRITERION
+    // ("the kernels run on more than one execution space") and a reader of a
+    // CI log should not have to infer it from the configure flags. A typed
+    // test that silently instantiates once looks identical in a summary to
+    // one that covered everything -- which is exactly what happened: the
+    // space list omitted Threads, and every typed test in the project ran on
+    // Serial alone until 2026-09-17.
+    if (::fuse::testing::rank() == 0) {
+      std::printf("[  spaces  ] enabled:");
+#if defined(KOKKOS_ENABLE_CUDA)
+      std::printf(" Cuda");
+#endif
+#if defined(KOKKOS_ENABLE_HIP)
+      std::printf(" HIP");
+#endif
+#if defined(KOKKOS_ENABLE_SYCL)
+      std::printf(" SYCL");
+#endif
+#if defined(KOKKOS_ENABLE_OPENMP)
+      std::printf(" OpenMP");
+#endif
+#if defined(KOKKOS_ENABLE_THREADS)
+      std::printf(" Threads");
+#endif
+      std::printf(" Serial  (default %s)\n",
+                  Kokkos::DefaultExecutionSpace::name());
+    }
     ::testing::InitGoogleTest(&argc, argv);
 
     auto& listeners = ::testing::UnitTest::GetInstance()->listeners();
