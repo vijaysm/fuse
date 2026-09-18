@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "fuse/base/result.hpp"
 #include "fuse/ir/dag.hpp"
 #include "fuse/schedule/expand.hpp"
 
@@ -91,6 +92,16 @@ struct BufferPlan {
 ///     `dag`, or `timed` names a node `dag` does not have;
 ///   - `std::overflow_error` if `elements * components`, or the running total,
 ///     does not fit `std::size_t`.
+/// Buffer planning that REPORTS. Every failure it can detect is a setup
+/// mistake the caller turns into a diagnostic, so none of them is routed
+/// through an exception -- which also means the behaviour is identical with
+/// exceptions disabled.
+[[nodiscard]] Result<BufferPlan> try_plan_buffers(const OperatorDAG& dag,
+                                                  const TimedDag& timed,
+                                                  const RegionSizes& sizes);
+
+/// The throwing spelling, for direct callers that treat these as programming
+/// errors.
 [[nodiscard]] BufferPlan plan_buffers(const OperatorDAG& dag,
                                       const TimedDag& timed,
                                       const RegionSizes& sizes);

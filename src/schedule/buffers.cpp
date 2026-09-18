@@ -1,3 +1,5 @@
+#include <optional>
+
 #include "fuse/schedule/buffers.hpp"
 #include "fuse/base/error.hpp"
 
@@ -8,6 +10,9 @@
 #include <vector>
 
 namespace fuse {
+
+/// One code for every way buffer planning can fail; the message carries which.
+inline constexpr const char* kBuffersCode = "E-SCHED-BUFFERS";
 namespace {
 
 constexpr std::size_t kSizeMax = std::numeric_limits<std::size_t>::max();
@@ -18,34 +23,23 @@ constexpr std::size_t kSizeMax = std::numeric_limits<std::size_t>::max();
 /// is defined to wrap, so neither UBSan nor ASan reports it, and the wrapped
 /// product is a plausible-looking small allocation whose first write is a heap
 /// overflow.
-[[nodiscard]] std::size_t checked_mul(std::size_t a, std::size_t b,
-                                      const char* what) {
-  if (a != 0 && b > kSizeMax / a) {
-    FUSE_THROW(InvariantViolation, "{}",std::string{"plan_buffers: "} + what + ": " +
-                              std::to_string(a) + " * " + std::to_string(b) +
-                              " does not fit std::size_t");
-  }
+[[nodiscard]] std::optional<std::size_t> checked_mul(std::size_t a, std::size_t b) {
+  if (a != 0 && b > kSizeMax / a) return std::nullopt;
   return a * b;
 }
 
-[[nodiscard]] std::size_t checked_add(std::size_t a, std::size_t b,
-                                      const char* what) {
-  if (a > kSizeMax - b) {
-    FUSE_THROW(InvariantViolation, "{}",std::string{"plan_buffers: "} + what + ": " +
-                              std::to_string(a) + " + " + std::to_string(b) +
-                              " does not fit std::size_t");
-  }
+[[nodiscard]] std::optional<std::size_t> checked_add(std::size_t a, std::size_t b) {
+  if (a > kSizeMax - b) return std::nullopt;
   return a + b;
 }
 
 }  // namespace
 
-BufferPlan plan_buffers(const OperatorDAG& dag, const TimedDag& timed,
-                        const RegionSizes& sizes) {
+Result<BufferPlan> try_plan_buffers(const OperatorDAG& dag, const TimedDag& timed,
+                                    const RegionSizes& sizes) {
   if (!sizes) {
-    FUSE_THROW(InvalidArgument, "{}",
-        "plan_buffers: the RegionSizes callback is empty; a mesh backend (or, "
-        "before Phase 4 Task 4.2, a stub) must supply one");
+    return Failure{kBuffersCode, "plan_buffers: the RegionSizes callback is empty; a mesh backend (or, "
+        "before Phase 4 Task 4.2, a stub) must supply one"};
   }
 
   const std::size_t n_arcs = dag.arc_count();
@@ -56,10 +50,9 @@ BufferPlan plan_buffers(const OperatorDAG& dag, const TimedDag& timed,
   // with the wrong lowering would silently plan against the wrong arcs.
   for (const TimedNode& tn : timed.nodes) {
     if (!tn.node.valid() || tn.node.value() >= n_nodes) {
-      FUSE_THROW(InvalidArgument, "{}",
-          "plan_buffers: TimedDag names node " +
+      return Failure{kBuffersCode, "plan_buffers: TimedDag names node " +
           std::to_string(tn.node.value()) + " but the DAG has " +
-          std::to_string(n_nodes) + "; the TimedDag is not this DAG's");
+          std::to_string(n_nodes) + "; the TimedDag is not this DAG's"};
     }
   }
 
@@ -71,10 +64,10 @@ BufferPlan plan_buffers(const OperatorDAG& dag, const TimedDag& timed,
     if (n.kind != OpKind::Source && n.kind != OpKind::Sink) continue;
     if (!n.output.valid()) continue;
     if (n.output.value() >= n_arcs) {
-      FUSE_THROW(InvalidArgument, "{}","plan_buffers: node " + std::to_string(i) +
+      return Failure{kBuffersCode, "plan_buffers: node " + std::to_string(i) +
                               " outputs arc " +
                               std::to_string(n.output.value()) +
-                              " but the DAG has " + std::to_string(n_arcs));
+                              " but the DAG has " + std::to_string(n_arcs)};
     }
     component_owned[n.output.value()] = 1;
   }
@@ -90,16 +83,15 @@ BufferPlan plan_buffers(const OperatorDAG& dag, const TimedDag& timed,
       // A negative count cast to std::size_t is the sharpest case: -1 becomes
       // 2^64-1 and the product wraps back to something small and plausible.
       // validate() does not police this, so plan_buffers must.
-      FUSE_THROW(InvalidArgument, "{}",
-          "plan_buffers: arc " + std::to_string(i) + " (\"" + a.name +
+      return Failure{kBuffersCode, "plan_buffers: arc " + std::to_string(i) + " (\"" + a.name +
           "\") declares " + std::to_string(a.type.components) +
-          " components; a field must have at least 1");
+          " components; a field must have at least 1"};
     }
     if (!a.type.region.valid()) {
-      FUSE_THROW(InvalidArgument, "{}","plan_buffers: arc " + std::to_string(i) +
+      return Failure{kBuffersCode, "plan_buffers: arc " + std::to_string(i) +
                                   " (\"" + a.name +
                                   "\") has no region, so its size cannot be "
-                                  "asked of the mesh backend");
+                                  "asked of the mesh backend"};
     }
 
     BufferDecl b;
@@ -123,16 +115,42 @@ BufferPlan plan_buffers(const OperatorDAG& dag, const TimedDag& timed,
     b.elements = sizes(b.region);
 
     if (!b.is_component_owned) {
-      const std::size_t need =
-          checked_mul(b.elements, static_cast<std::size_t>(b.components),
-                      "buffer size");
-      plan.total_coupler_elements =
-          checked_add(plan.total_coupler_elements, need, "total coupler size");
+      const auto need =
+          checked_mul(b.elements, static_cast<std::size_t>(b.components));
+      if (!need) {
+        return Failure{kBuffersCode,
+                       "plan_buffers: buffer size " + std::to_string(b.elements) +
+                           " * " + std::to_string(b.components) +
+                           " does not fit std::size_t"};
+      }
+      const auto total = checked_add(plan.total_coupler_elements, *need);
+      if (!total) {
+        return Failure{kBuffersCode,
+                       "plan_buffers: total coupler size " +
+                           std::to_string(plan.total_coupler_elements) + " + " +
+                           std::to_string(*need) + " does not fit std::size_t"};
+      }
+      plan.total_coupler_elements = *total;
     }
     plan.buffers.push_back(std::move(b));
   }
 
   return plan;
+}
+
+/// The throwing spelling, unchanged for direct callers. `schedule()` uses the
+/// reporting one above: it must turn a setup mistake into a diagnostic, and
+/// routing that through an exception made the conversion depend on exceptions
+/// being enabled -- with `FUSE_ENABLE_EXCEPTIONS=OFF` the refusal aborted
+/// instead of unwinding and the process died inside
+/// `ExecutionPlan.ReportsAnEmptyRegionSizesCallbackAsADiagnostic`.
+BufferPlan plan_buffers(const OperatorDAG& dag, const TimedDag& timed,
+                        const RegionSizes& sizes) {
+  auto r = try_plan_buffers(dag, timed, sizes);
+  if (!r.ok()) {
+    FUSE_THROW(InvalidArgument, "{}", r.error().message);
+  }
+  return std::move(r).value();
 }
 
 }  // namespace fuse
