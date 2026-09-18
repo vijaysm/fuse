@@ -73,6 +73,15 @@ using EnabledExecutionSpaces = ::testing::Types<
 #if defined(KOKKOS_ENABLE_OPENMP)
     Kokkos::OpenMP,
 #endif
+// Threads was missing until 2026-09-17, and the omission mattered: the
+// machine-tuned Kokkos this project resolves against reports
+// `Kokkos_DEVICES = THREADS;SERIAL` with NO OpenMP, so every typed test
+// instantiated exactly ONCE, on Serial. "Runs on every enabled space" was
+// true and vacuous. OpenMP and Threads are both host-parallel and a build
+// normally enables one, so listing both costs nothing where only one exists.
+#if defined(KOKKOS_ENABLE_THREADS)
+    Kokkos::Threads,
+#endif
     Kokkos::Serial>;
 
 /// One definition, every enabled space. Device coverage is then a build option,
