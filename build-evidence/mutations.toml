@@ -621,3 +621,43 @@ old = "  std::fill(src_covered.begin(), src_covered.end(), 0.0);"
 new = "  if (false) std::fill(src_covered.begin(), src_covered.end(), 0.0);"
 target = "fuse_backend_supermesh_test"
 test = "backend.supermesh"
+
+[[mutation]]
+id = "gather-ignores-the-index-list"
+area = "num"
+describes = "the pack kernel copies element k instead of element index[k], so a message carries the wrong values while every size and count still agrees"
+file = "include/fuse/num/space_kernels.hpp"
+old = "      KOKKOS_LAMBDA(const std::size_t k) { dst(k) = src(index(k)); });"
+new = "      KOKKOS_LAMBDA(const std::size_t k) { dst(k) = src(k); });"
+target = "fuse_num_space_kernels_test"
+test = "num.space_kernels"
+
+[[mutation]]
+id = "remap-apply-drops-each-row-first-entry"
+area = "num"
+describes = "the matvec starts each row one entry late, which loses mass without changing the sparsity pattern or any dimension"
+file = "include/fuse/num/space_kernels.hpp"
+old = "        for (std::size_t k = row_begin(j); k < row_begin(j + 1); ++k) {"
+new = "        for (std::size_t k = row_begin(j) + 1; k < row_begin(j + 1); ++k) {"
+target = "fuse_num_space_kernels_test"
+test = "num.space_kernels"
+
+[[mutation]]
+id = "relax-swaps-its-weights"
+area = "num"
+describes = "the relaxation weights are exchanged, so an under-relaxed sweep over-relaxes; convergence still happens, just to a different iterate count"
+file = "include/fuse/num/space_kernels.hpp"
+old = "        out(i) = omega * current(i) + one_minus * previous(i);"
+new = "        out(i) = one_minus * current(i) + omega * previous(i);"
+target = "fuse_num_space_kernels_test"
+test = "num.space_kernels"
+
+[[mutation]]
+id = "accumulate-forgets-the-first-sample"
+area = "num"
+describes = "the first substep accumulates into whatever the buffer held instead of overwriting it, so a period's accumulation inherits the previous period's residue"
+file = "include/fuse/num/space_kernels.hpp"
+old = "            acc(i) = first ? sample(i) : acc(i) + sample(i);"
+new = "            acc(i) = acc(i) + sample(i);"
+target = "fuse_num_space_kernels_test"
+test = "num.space_kernels"

@@ -140,6 +140,7 @@ fuse_add_gtest(backend supermesh THROWS)
 # field/ is header-only (the pipeline is templates over Kokkos views), so there
 # is no fuse::field library for the helper to derive from the directory name.
 fuse_add_gtest(field pipeline THROWS NO_LAYER_LIB LIBS fuse::model fuse::base)
+fuse_add_gtest(num space_kernels)
 
 # A rule enforced by a DELETED OVERLOAD can only be tested by failing to
 # compile. Both targets are EXCLUDE_FROM_ALL and built only by their test, so a
