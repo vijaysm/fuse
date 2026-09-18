@@ -20,6 +20,11 @@ set(FUSE_HAVE_PETSC  ${FUSE_ENABLE_PETSC})
 configure_file(${PROJECT_SOURCE_DIR}/include/fuse/base/config.hpp.in
                ${PROJECT_BINARY_DIR}/include/fuse/base/config.hpp @ONLY)
 
+# C++20 is required on EVERY layer below, not inherited from one of them: the
+# requirement was originally stated once (PUBLIC, on base) and propagated only
+# while every layer linked base. A layer that stopped would fall back to the
+# compiler's default, and the symptom would be a template error inside a header
+# rather than a message naming the standard.
 add_library(fuse-coupler-base
   base/backtrace.cpp
   base/error.cpp
@@ -57,6 +62,7 @@ add_library(fuse-coupler-model
   model/yaml_io.cpp
 )
 add_library(fuse::model ALIAS fuse-coupler-model)
+target_compile_features(fuse-coupler-model PUBLIC cxx_std_20)
 target_link_libraries(fuse-coupler-model PUBLIC fuse::base)
 # PRIVATE: the YAML parser is an implementation detail of the front-end and
 # must never reach a consumer's include path or link line.
@@ -78,6 +84,7 @@ add_library(fuse-coupler-ir
   ir/checkpoint.cpp
 )
 add_library(fuse::ir ALIAS fuse-coupler-ir)
+target_compile_features(fuse-coupler-ir PUBLIC cxx_std_20)
 target_link_libraries(fuse-coupler-ir PUBLIC fuse::model)
 set_target_properties(fuse-coupler-ir PROPERTIES
   CXX_VISIBILITY_PRESET hidden
@@ -95,6 +102,7 @@ add_library(fuse-coupler-schedule
   schedule/slab.cpp
 )
 add_library(fuse::schedule ALIAS fuse-coupler-schedule)
+target_compile_features(fuse-coupler-schedule PUBLIC cxx_std_20)
 target_link_libraries(fuse-coupler-schedule PUBLIC fuse::ir)
 set_target_properties(fuse-coupler-schedule PROPERTIES
   CXX_VISIBILITY_PRESET hidden
@@ -109,6 +117,7 @@ add_library(fuse-coupler-linalg
   linalg/least_squares.cpp
 )
 add_library(fuse::linalg ALIAS fuse-coupler-linalg)
+target_compile_features(fuse-coupler-linalg PUBLIC cxx_std_20)
 target_link_libraries(fuse-coupler-linalg PUBLIC fuse::base)
 # PRIVATE: which factorisation is inside is not part of the interface, and
 # Eigen must not land on a consumer's include path.
@@ -132,6 +141,7 @@ add_library(fuse-coupler-num
   num/residual_norm.cpp
 )
 add_library(fuse::num ALIAS fuse-coupler-num)
+target_compile_features(fuse-coupler-num PUBLIC cxx_std_20)
 target_link_libraries(fuse-coupler-num PUBLIC fuse::model)
 target_link_libraries(fuse-coupler-num PRIVATE fuse::linalg)
 set_target_properties(fuse-coupler-num PROPERTIES
@@ -155,6 +165,7 @@ if(FUSE_ENABLE_MPI)
   )
 endif()
 add_library(fuse::transport ALIAS fuse-coupler-transport)
+target_compile_features(fuse-coupler-transport PUBLIC cxx_std_20)
 target_link_libraries(fuse-coupler-transport PUBLIC fuse::schedule)
 if(FUSE_ENABLE_MPI)
   target_link_libraries(fuse-coupler-transport PUBLIC MPI::MPI_CXX)
@@ -178,14 +189,21 @@ add_library(fuse-coupler-backend
   # file's own no-MOAB path refuses with E-REMAP-NOMOAB rather than
   # leaving the symbol undefined. S5 turns the option on.
   backend/intx_weights.cpp
+  backend/tempest_weights.cpp
 )
 add_library(fuse::backend ALIAS fuse-coupler-backend)
+target_compile_features(fuse-coupler-backend PUBLIC cxx_std_20)
 target_link_libraries(fuse-coupler-backend PUBLIC fuse::schedule)
 # PRIVATE: r3d is the supermesh kernel, used inside backend/supermesh.cpp only.
 # No public header mentions it, so a consumer never needs it on an include path
 # and never links it -- which is what keeps the geometric kernel swappable.
 target_link_libraries(fuse-coupler-backend PRIVATE r3d::r3d)
 if(FUSE_ENABLE_MOAB)
+  # Unlike intx_weights.cpp, which carries its own no-MOAB path, this file IS
+  # the MOAB backend: it includes moab/ headers unconditionally, so it can only
+  # be compiled when they exist.
+  target_sources(fuse-coupler-backend PRIVATE backend/moab_backend.cpp)
+
   # PUBLIC, not PRIVATE: intx_weights.cpp is compiled into this library, but
   # the mesh-backend headers a consumer includes also reach MOAB types, so a
   # consumer that cannot see MOAB's headers cannot use this library at all.
@@ -205,6 +223,7 @@ add_library(fuse-coupler-runtime
   runtime/checkpoint_support.cpp
 )
 add_library(fuse::runtime ALIAS fuse-coupler-runtime)
+target_compile_features(fuse-coupler-runtime PUBLIC cxx_std_20)
 target_link_libraries(fuse-coupler-runtime PUBLIC
   fuse::schedule fuse::num fuse::transport fuse::backend)
 set_target_properties(fuse-coupler-runtime PROPERTIES

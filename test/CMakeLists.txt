@@ -122,6 +122,13 @@ foreach(t spacetime)
 endforeach()
 fuse_add_gtest(backend serial_mesh THROWS)
 fuse_add_gtest(backend operator_conformance)
+fuse_add_gtest(backend cell_simplices)
+
+# The MOAB backend's own tests. Registered only when MOAB is enabled -- absent
+# rather than skipped, because a skipped test reads like a passing one.
+if(FUSE_ENABLE_MOAB)
+  fuse_add_gtest(backend moab_mesh THROWS)
+endif()
 
 # ---------------------------------------------------------------- runtime
 foreach(t runner checkpoint epoch_schedule)
