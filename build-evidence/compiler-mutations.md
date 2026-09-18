@@ -1,6 +1,6 @@
 # Mutation evidence — `compiler`
 
-Run 2026-09-17 against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
+Run 2026-09-18 against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
 
 | Mutation | File | Verdict | Killed by |
 |---|---|---|---|
