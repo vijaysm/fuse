@@ -55,6 +55,12 @@ if(FUSE_ENABLE_TESTS)
   target_link_libraries(fuse_write_golden_descriptor PRIVATE fuse::model)
 endif()
 
+# AFTER enable_testing() and after test/, because the examples register ctest
+# entries of their own: added earlier, no CTestTestfile.cmake is generated for
+# that directory and the examples would build but never run. The parent
+# recorded that trap and it applies here unchanged.
+add_subdirectory(examples)
+
 message(STATUS "")
 message(STATUS "fuse ${PROJECT_VERSION} — stage S1")
 message(STATUS "  upstream/soma   : ${FUSE_BUILD_UPSTREAM_SOMA}")

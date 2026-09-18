@@ -141,9 +141,18 @@ def check_legacy(root: Path) -> list[str]:
     directory on the path -- so the test was quietly consuming a parent header
     while every gate reported clean, and it would have broken the moment the
     subtree retired. A test is fuse:: code for this purpose.
+
+    examples/ is scanned from 2026-09-17 for the same reason, and it matters
+    more there: an example is what a user copies. One that included a parent
+    header or named a parent namespace would teach the wrong thing and would
+    break when the subtree retires. The port of the two parent examples left
+    exactly one such reference -- a doc comment naming
+    `soma/runtime/component.hpp` -- which this gate could not see while
+    examples/ was outside its scope.
     """
     problems: list[str] = []
-    for area in (root / "include" / "fuse", root / "src", root / "test"):
+    for area in (root / "include" / "fuse", root / "src", root / "test",
+                 root / "examples"):
         if not area.is_dir():
             continue
         for f in sorted(area.rglob("*")):
