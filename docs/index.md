@@ -40,6 +40,7 @@ dev/index
 dev/invariants
 dev/layering
 dev/conventions
+dev/operators
 dev/testing
 dev/rank-agreement
 dev/debugging

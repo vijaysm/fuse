@@ -84,6 +84,32 @@ RemapWeights transposed_shape() {
   return w;
 }
 
+/// Columns sum to exactly 1, rows do not. This is the classic pair a remap can
+/// satisfy one of: it conserves the integral but does not reproduce a constant.
+/// It exists because without it NO operator in the fixture claimed
+/// conservation, so the composition rule (`&&`, not `||`) was never exercised
+/// -- a mutation that inherited the claim from either factor survived the whole
+/// suite.
+RemapWeights conservative() {
+  RemapWeights w;
+  w.n_rows = 4;
+  w.n_cols = 3;
+  //                    col 0 -> 0.5 + 0.5, col 1 -> 1.0, col 2 -> 0.7 + 0.3
+  const int rows[] = {0, 1, 2, 0, 3};
+  const int cols[] = {0, 0, 1, 2, 2};
+  const double val[] = {0.5, 0.5, 1.0, 0.7, 0.3};
+  for (int k = 0; k < 5; ++k) {
+    w.row.push_back(rows[k]);
+    w.col.push_back(cols[k]);
+    w.val.push_back(val[k]);
+  }
+  w.max_col_defect = 0.0;   // conserves
+  w.max_row_defect = 0.8;   // row 3 sums to 0.3, so it does NOT preserve constants
+  w.monotone = false;
+  w.order = 1;
+  return w;
+}
+
 /// One entry per operator under test. Holds the weights alive alongside the
 /// operator, because WeightsOperator deliberately does not copy them.
 struct Case {
@@ -101,12 +127,24 @@ std::vector<Case> operators() {
   auto w2 = std::make_shared<RemapWeights>(transposed_shape());
   cases.push_back({"weights-3x4", w2, std::make_shared<fuse::WeightsOperator>(*w2)});
 
+  auto w3 = std::make_shared<RemapWeights>(conservative());
+  cases.push_back({"weights-conservative-4x3", w3,
+                   std::make_shared<fuse::WeightsOperator>(*w3)});
+
   // The composition, as a case in its own right: it is an operator, so it is
   // held to every property below rather than only to the composition case.
   auto composed = fuse::compose(cases[0].op, cases[1].op);
   if (composed.ok()) {
     std::shared_ptr<const LinearOperator> c{std::move(composed).value()};
     cases.push_back({"weights-4x3 o weights-3x4", nullptr, c});
+  }
+  // Conservative composed with non-conservative: the case the `&&` rule is
+  // for. It must NOT claim conservation, and the claim check above then holds
+  // it to that.
+  auto mixed = fuse::compose(cases[2].op, cases[1].op);
+  if (mixed.ok()) {
+    std::shared_ptr<const LinearOperator> c{std::move(mixed).value()};
+    cases.push_back({"weights-conservative-4x3 o weights-3x4", nullptr, c});
   }
   return cases;
 }
@@ -365,4 +403,26 @@ TEST(OperatorConformance, WrongLengthsAreRefusedNotRead) {
   const std::vector<double> ok_in(a.cols(), 1.0);
   EXPECT_FALSE(a.apply(ok_in, bad_out, 1).ok());
   EXPECT_FALSE(a.apply(ok_in, out, 0).ok()) << "zero components was accepted";
+}
+
+TEST(OperatorConformance, ComposingWithANonConservativeFactorDropsTheClaim) {
+  // Named separately from the generic claim rule because this is the asymmetric
+  // case: one factor conserves, the other does not, and the composition must
+  // not. A rule written as "either factor" passes every other case in this
+  // file.
+  const auto cases = operators();
+  const RemapWeights cw = conservative();
+  const fuse::WeightsOperator cons(cw);
+  ASSERT_TRUE(cons.claims().conservative) << "the conservative fixture is not conservative";
+  ASSERT_FALSE(cases[1].op->claims().conservative);
+
+  auto mixed = fuse::compose(cases[2].op, cases[1].op);
+  ASSERT_TRUE(mixed.ok()) << mixed.error().message;
+  EXPECT_FALSE(mixed.value()->claims().conservative)
+      << "a composition inherited conservation from one factor";
+
+  // And the other order, so the rule is not accidentally one-sided.
+  auto other = fuse::compose(cases[1].op, cases[2].op);
+  ASSERT_TRUE(other.ok()) << other.error().message;
+  EXPECT_FALSE(other.value()->claims().conservative);
 }
