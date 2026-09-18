@@ -26,6 +26,11 @@ IOSTREAM = re.compile(r"^\s*#\s*include\s*<(iostream|sstream|iomanip)>")
 # then compiles as though the feature were off, in a build where it is on, and
 # nothing warns. This has now happened twice: once to the exceptions option and
 # once to MpiTransport, which vanished from an MPI build.
+# `//` to end of line, capturing the prefix so it can be preserved. Block
+# comments are deliberately not handled: this project's prose is `///` lines,
+# and a regex for /* */ that got it wrong could blank a real `#if`.
+COMMENT_LINE = re.compile(r"(^|[^:])(//[^\n]*)", re.M)
+
 FEATURE_MACRO = re.compile(r"\bFUSE_(HAVE_[A-Z0-9_]+|ENABLE_EXCEPTIONS)\b")
 PRINTF = re.compile(r"\b(printf|fprintf|sprintf|snprintf|puts|fputs)\s*\(")
 
@@ -94,10 +99,21 @@ def scan(root: Path) -> list[str]:
 
             # Whole-file check: reading a build-feature macro requires the
             # generated header that defines it.
-            first_use = FEATURE_MACRO.search(text)
+            # Comments are blanked first, keeping the byte offsets so the
+            # reported line numbers stay right. A build-feature macro NAMED IN
+            # PROSE is not a read of it, and a header's leading doc comment
+            # necessarily precedes its includes -- so without this the gate
+            # fires on any file that documents the macro, and the pressure
+            # becomes to reword the documentation rather than fix the code.
+            # Only `//` line comments are stripped: that is where this
+            # project's prose lives, and a narrow rule that is obviously
+            # correct beats a general one that might blank a real directive.
+            scanned = COMMENT_LINE.sub(
+                lambda m: m.group(1) + " " * len(m.group(2)), text)
+            first_use = FEATURE_MACRO.search(scanned)
             if first_use and not rel.as_posix().endswith("base/config.hpp.in"):
-                names = sorted(set(m.group(0) for m in FEATURE_MACRO.finditer(text)))
-                cfg = text.find('#include "fuse/base/config.hpp"')
+                names = sorted(set(m.group(0) for m in FEATURE_MACRO.finditer(scanned)))
+                cfg = scanned.find('#include "fuse/base/config.hpp"')
                 if cfg < 0:
                     problems.append(
                         f"{rel}: reads {', '.join(names)} without including "
@@ -108,7 +124,7 @@ def scan(root: Path) -> list[str]:
                     # Presence is not enough: an #if that reads the macro before
                     # the definition arrives is compiled out, and the include
                     # further down makes the file LOOK correct.
-                    line = text.count("\n", 0, first_use.start()) + 1
+                    line = scanned.count("\n", 0, first_use.start()) + 1
                     problems.append(
                         f"{rel}:{line}: reads {first_use.group(0)} before including "
                         f'"fuse/base/config.hpp" (line '
