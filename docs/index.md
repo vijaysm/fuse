@@ -26,6 +26,7 @@ user/fluent-api
 user/placement
 user/geometry
 user/combining-writers
+user/field-pipeline
 user/examples
 user/convergence
 user/c-abi
