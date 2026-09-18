@@ -50,8 +50,9 @@ same concept — are made in the plan's stage that merges them, and recorded her
 | `SOMA_*`, `KARMA_*` macros and CMake options | `FUSE_*` | |
 | `soma_c.h` flat C API | the `fuse_coupler_abi()` table | not renamed: **replaced**, see [](abi-design.md) |
 | `karma_*_v1` exported symbols | `fuse_plugin_abi()` table | same |
-| Fortran `module soma_mod` | `module fuse_coupler` | *(proposed — see open decisions)* |
-| Python `_soma` / `soma` | `fuse_coupler` | *(proposed — `fuse` is taken on PyPI by the filesystem bindings)* |
+| Fortran `module soma_mod` | `module ffuse` | ruled 2026-09-17 |
+| Python `_soma` / `soma` | package `pfuse` | ruled 2026-09-17; availability confirmed (`pip index versions pfuse` → no matching distribution) |
+| C header and flat-symbol shim | `cfuse.h` | names the HEADER only. There is no separate C binding to name: the C surface *is* `fuse_coupler_abi()` |
 | golden-IR header `soma-ir v1` | `fuse-ir v1` | the only canonical-byte change the rename causes; the golden files are regenerated once, and the diff must be that token and nothing else |
 
 **What the rename does not touch.** KARMA's field-identity encoding contains no `KARMA` string, so
@@ -77,8 +78,28 @@ contract, a status type, a coupling graph — and the plan decides each one:
 
 A row here is the *decision*; the port commit is the *evidence*.
 
+## Binding names — ruled 2026-09-17
+
+One letter of language prefix on the stem: **`cfuse`** (C), **`ffuse`** (Fortran), **`pfuse`**
+(Python). The shape leaves room for `rfuse` and `jfuse` should Rust or Julia bindings ever exist,
+though neither is on the roadmap and the Julia one should not use a prefix at all (see below).
+
+The collisions that shaped it, so nobody re-litigates them:
+
+- **`fuse`** is the FUSE filesystem project across every ecosystem — `pip install fuse`, the
+  `libfuse` C library, `fuser` in Rust. Unusable as a bare package name.
+- **`fused`** is taken: the Fused.io geospatial SDK owns `pip install fused` / `import fused`.
+- **`pyfuse`** is a hard collision twice over: a package of that name already exists on PyPI, and
+  libfuse calls its own Python bindings "pyfuse" in release announcements. Every `py`+`fuse`
+  composition — `pyfuse`, `pyfuse3`, `fusepy`, `mfusepy` — belongs to filesystem bindings.
+- **`pfuse`** surfaced no package and `pip index versions pfuse` reports no matching distribution.
+  Confirmed before the name landed, not after.
+- **`cfuse`** has no known collision, but it can only name a header and the optional flat-symbol
+  shim. There is nothing else for it to name, because a C consumer calls the ABI table directly.
+- **A Julia binding must not be `jfuse`.** `FUSE.jl` already exists — ProjectTorreyPines' FUsion
+  Synthesis Engine, with its own registry — so `using FUSE` is taken, and a one-letter language
+  prefix violates Julia's own naming guidelines. If Julia is ever added, give it a CamelCase name.
+
 ## Open decisions
 
-- **Fortran module and Python package names.** `fuse_coupler` is proposed for both because `fuse` as
-  a Python module belongs to the filesystem bindings on PyPI, and a Fortran module named `fuse` would
-  be an odd pairing with it. Not yet ruled.
+None. The naming map above is complete.
