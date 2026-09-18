@@ -296,7 +296,7 @@ constexpr double kIntxTol = 1e-8;
   return text;
 }
 
-[[nodiscard]] Error intx_error(moab::Interface& mb, const std::string& what,
+[[nodiscard]] Failure intx_error(moab::Interface& mb, const std::string& what,
                                moab::ErrorCode rval) {
   return Failure{"E-REMAP-INTX", what + ": " + moab_text(mb, rval)};
 }
@@ -518,7 +518,7 @@ struct BoxMesh {
 struct BoxTry {
   bool ok = false;
   BoxMesh mesh;
-  Error error{};   ///< set only when `failed`
+  Failure error{};   ///< set only when `failed`
   bool failed = false;
 };
 
