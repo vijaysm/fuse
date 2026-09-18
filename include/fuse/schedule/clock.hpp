@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <optional>
 #include <cstdint>
 #include <numeric>
 #include <stdexcept>
@@ -29,22 +30,35 @@ inline constexpr std::int64_t kMaxPeriodTicks = 1'000'000;
 /// Same contract as gcd_rational() in rational.hpp -- an unrepresentable
 /// result throws rather than silently wrapping, and the check is a throw
 /// rather than an assert so it survives -DNDEBUG.
-[[nodiscard]] constexpr Rational lcm_rational(const Rational& a,
-                                              const Rational& b) {
-  if (a.is_zero() || b.is_zero()) {
-    FUSE_THROW(InvalidArgument, "{}",
-        "lcm_rational: the least common multiple of zero is undefined");
-  }
+/// Shortest value of which both a and b are integer multiples, or nothing
+/// when it is not representable or undefined. Callers that must not throw use
+/// this; `lcm_rational` below refuses on the same conditions.
+[[nodiscard]] constexpr std::optional<Rational> try_lcm_rational(
+    const Rational& a, const Rational& b) noexcept {
+  if (a.is_zero() || b.is_zero()) return std::nullopt;
   const detail::Int128 an_wide = a.num();
   const detail::Int128 bn_wide = b.num();
   const detail::Int128 an = an_wide < 0 ? -an_wide : an_wide;
   const detail::Int128 bn = bn_wide < 0 ? -bn_wide : bn_wide;
   // an, bn <= 2^63, so an*bn <= 2^126 and the product cannot overflow Int128.
   const detail::Int128 l = an / std::gcd(an, bn) * bn;
-  detail::check_fits_i64(l, "lcm_rational: lcm overflow");
+  if (!detail::fits_i64(l)) return std::nullopt;
   // gcd of two positive denominators is positive and no larger than either,
   // so this narrowing is always safe.
   return Rational{static_cast<std::int64_t>(l), std::gcd(a.den(), b.den())};
+}
+
+[[nodiscard]] constexpr Rational lcm_rational(const Rational& a,
+                                              const Rational& b) {
+  if (a.is_zero() || b.is_zero()) {
+    FUSE_THROW(InvalidArgument, "{}",
+        "lcm_rational: the least common multiple of zero is undefined");
+  }
+  const auto l = try_lcm_rational(a, b);
+  if (!l) {
+    FUSE_REFUSE("E-BASE-RATIONAL-OVERFLOW", "lcm_rational: lcm overflow");
+  }
+  return *l;
 }
 
 /// Spec §8.2: one clock per component; there is no global time step.
@@ -167,23 +181,43 @@ class ClockSet {
   /// than handed downstream to build an unusable slab decomposition.
   /// Never throws.
   [[nodiscard]] Result<Rational> checked_common_period() const {
+    // No try/catch, and that is the point: this function is documented never
+    // to throw, and an exception must not be the mechanism by which it keeps
+    // that promise. It used to catch `fuse::Error` around the throwing
+    // arithmetic, which meant the promise held only in a build WITH
+    // exceptions -- with them disabled a refusal aborts instead of unwinding,
+    // so the process died here rather than returning the Failure the caller
+    // was written to handle. Every step below reports instead.
     Rational period{1};
-    Rational ticks{1};
-    try {
-      period = common_period();
-      ticks = period / finest_interval();
-    } catch (const Error& e) {
-      // Upstream this caught `std::logic_error`, which is what its rational
-      // arithmetic threw. In this library exact arithmetic refuses through the
-      // error machinery (`FUSE_REFUSE`, code `E-BASE-RATIONAL-OVERFLOW`), so the
-      // catch is on `fuse::Error` -- the base of the whole hierarchy, since an
-      // invariant violation here is just as much "not representable" as a
-      // refusal. Keeping the old catch would have let the refusal escape a
-      // function documented never to throw, and it would have escaped through a
-      // collective boundary, which is the hang this design exists to prevent.
-      return Failure{"E-SCHED-PERIOD",
-                     std::string("common period is not representable: ") + e.what()};
+    Rational finest{1};
+    if (!clocks_.empty()) {
+      period = clocks_.front().interval();
+      finest = period;
+      for (const Clock& c : clocks_) {
+        const auto p = try_lcm_rational(period, c.interval());
+        if (!p) {
+          return Failure{"E-SCHED-PERIOD",
+                         "common period is not representable: the least common "
+                         "multiple of the clock intervals overflows"};
+        }
+        period = *p;
+        const auto f = try_gcd_rational(finest, c.interval());
+        if (!f) {
+          return Failure{"E-SCHED-PERIOD",
+                         "the finest interval is not representable: the greatest "
+                         "common divisor of the clock intervals overflows"};
+        }
+        finest = *f;
+      }
     }
+    const auto maybe_ticks = Rational::try_div(period, finest);
+    if (!maybe_ticks) {
+      return Failure{"E-SCHED-PERIOD",
+                     "common period " + period.to_string() +
+                         " is not an expressible number of ticks of the finest "
+                         "interval " + finest.to_string()};
+    }
+    const Rational ticks = *maybe_ticks;
     if (ticks > Rational{kMaxPeriodTicks}) {
       return Failure{"E-SCHED-PERIOD",
                    "common period " + period.to_string() + " spans " +

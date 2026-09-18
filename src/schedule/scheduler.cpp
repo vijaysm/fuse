@@ -444,23 +444,19 @@ ScheduleResult schedule(const CouplingGraph& g, const OperatorDAG& dag,
   }
   if (!arity_ok) return result;
 
-  // plan_buffers() reports by throwing (it returns a plain value): an empty
-  // RegionSizes, an invalid region, a components count below 1, an arc id out
-  // of range, or an elements*components product that does not fit size_t. All
-  // of those are init-time setup errors and belong in diags, not in an
-  // exception escaping the scheduler.
-  BufferPlan buffers;
-  try {
-    buffers = plan_buffers(dag, td, sizes);
-  } catch (const std::exception& e) {
-    result.diags.add(Severity::Error, "E-SCHED-BUFFERS", e.what());
-    return result;
-  } catch (...) {
-    result.diags.add(Severity::Error, "E-SCHED-BUFFERS",
-                     "plan_buffers threw an exception that does not derive "
-                     "from std::exception");
+  // An empty RegionSizes, an invalid region, a components count below 1, an
+  // arc id out of range, or an elements*components product that does not fit
+  // size_t are all init-time setup errors and belong in diags. They are
+  // OBTAINED as diagnostics rather than caught: routing them through an
+  // exception made this conversion work only in a build with exceptions
+  // enabled, and abort in one without.
+  auto planned = try_plan_buffers(dag, td, sizes);
+  if (!planned.ok()) {
+    result.diags.add(Severity::Error, planned.error().code,
+                     planned.error().message);
     return result;
   }
+  const BufferPlan buffers = std::move(planned).value();
   const std::size_t n_buffers = buffers.buffers.size();
 
   std::vector<Instruction> instructions;

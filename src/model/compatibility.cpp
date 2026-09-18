@@ -154,12 +154,11 @@ void check_units(const ConnectionRequest& request, Evaluation& evaluation)
 
     // source_scale / target_scale, exactly. A zero target scale or an overflowing
     // product is a refusal, not an approximation.
-    std::optional<Rational> factor;
-    try {
-        factor = source.scale / target.scale;
-    } catch (const Error&) {
-        factor.reset();
-    }
+    // Non-throwing by construction rather than by catching: an
+    // unrepresentable conversion is a verdict on the channel, and building a
+    // verdict is not something an exception should be routed through (it is
+    // not even available in a no-exceptions build).
+    const std::optional<Rational> factor = Rational::try_div(source.scale, target.scale);
     if (!factor)
     {
         evaluation.refuse(ConnectionStage::Unit, ConnectionReason::UnitConversionOverflow,
@@ -171,12 +170,8 @@ void check_units(const ConnectionRequest& request, Evaluation& evaluation)
     {
         // An offset change moves the zero of the scale - Celsius to Kelvin -
         // which is a change of meaning, never inserted on the caller's behalf.
-        std::optional<Rational> delta;
-        try {
-            delta = source.offset - target.offset;
-        } catch (const Error&) {
-            delta.reset();
-        }
+        const std::optional<Rational> delta =
+            Rational::try_sub(source.offset, target.offset);
         if (!delta)
         {
             evaluation.refuse(ConnectionStage::Unit, ConnectionReason::UnitConversionOverflow,

@@ -81,37 +81,52 @@ if(FUSE_ENABLE_MPI)
 endif()
 
 # ---------------------------------------------------------------- ir
-foreach(t ir_op ir_dag ir_dump lowering lowering_channel lowering_derived lowering_regions scale)
+# THROWS below is not decoration: these targets contain cases that assert a
+# refusal is raised, and with FUSE_ENABLE_EXCEPTIONS=OFF a refusal aborts, so
+# the whole target would abort in the no-exceptions leg. The label is
+# target-granular, so excluding one also costs the coverage of its
+# non-throwing cases -- an accepted price for now, and the reason to prefer
+# per-case guards if this list grows. Determined by running the leg, not by
+# reading: the nine here are exactly the targets that still aborted once the
+# library stopped using throw/catch as internal control flow.
+foreach(t ir_op ir_dump lowering lowering_channel lowering_derived lowering_regions scale)
   fuse_add_gtest(ir ${t})
 endforeach()
+fuse_add_gtest(ir ir_dag THROWS)
 
 # ---------------------------------------------------------------- schedule
-foreach(t clock acyclicity acyclicity_sweep expand plan lockstep epoch)
+foreach(t acyclicity acyclicity_sweep expand plan lockstep epoch)
   fuse_add_gtest(schedule ${t})
 endforeach()
+fuse_add_gtest(schedule clock THROWS)
 
 # ---------------------------------------------------------------- num
-foreach(t kernels temporal_basis waveform waveform_order convergence accelerator residual_norm)
+foreach(t kernels waveform_order residual_norm)
   fuse_add_gtest(num ${t})
+endforeach()
+foreach(t temporal_basis waveform convergence accelerator)
+  fuse_add_gtest(num ${t} THROWS)
 endforeach()
 
 # ---------------------------------------------------------------- field
 # field_ref/registry are header-only, so the test builds against the
 # lowest layer that provides their dependencies.
-fuse_add_gtest(runtime field_ref LIBS fuse::runtime)
+fuse_add_gtest(runtime field_ref THROWS LIBS fuse::runtime)
 
 # ---------------------------------------------------------------- transport
 fuse_add_gtest(transport transport)
 
 # ---------------------------------------------------------------- backend
-foreach(t serial_mesh spacetime)
+foreach(t spacetime)
   fuse_add_gtest(backend ${t})
 endforeach()
+fuse_add_gtest(backend serial_mesh THROWS)
 
 # ---------------------------------------------------------------- runtime
-foreach(t runner checkpoint component_iface epoch_schedule)
+foreach(t runner checkpoint epoch_schedule)
   fuse_add_gtest(runtime ${t})
 endforeach()
+fuse_add_gtest(runtime component_iface THROWS)
 
 # ---------------------------------------------------------------- parallel
 # Tier 1 only, and absent rather than skipped in Tier 0 for the reason above.
