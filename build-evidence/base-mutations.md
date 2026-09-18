@@ -16,5 +16,6 @@ Run 2026-09-18 against build `build-fuse-s1`. Regenerate with `tools/mutate.py -
 | `bytes-no-length-prefix` — put_string drops the length prefix so adjacent strings collide | `include/fuse/base/bytes.hpp` | **KILLED** (test fails) | `base.bytes` |
 | `error-assert-compiled-out` — FUSE_ASSERT becomes a no-op (the `assert` it replaces) | `include/fuse/base/error.hpp` | **KILLED** (test fails) | `base.error` |
 | `error-slices-to-base` — raise() throws the Error base, so catch(const Refusal&) is dead | `include/fuse/base/error.hpp` | **KILLED** (test fails) | `base.error` |
+| `rational-try-skips-the-fit-check` — the non-throwing arithmetic stops checking that the reduced result fits, so an overflowing value narrows silently instead of reporting -- and the throwing operators inherit it, since they are layered on this | `include/fuse/base/rational.hpp` | **SURVIVED** (suite still green) | `base.rational` |
 
-**12 killed / 12 total.**
+**12 killed / 13 total.**

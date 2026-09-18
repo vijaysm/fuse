@@ -262,3 +262,38 @@ TEST(Rational, ComparisonIsExactWhenOnlyOneCrossProductOverflows) {
   EXPECT_LT(small, big);
   EXPECT_LT((Rational{-(std::int64_t{1} << 62), 1}), (Rational{-1, 3}));
 }
+
+// ---- results that do not fit even after reduction ----------------------
+//
+// Every overflow case above is about an INTERMEDIATE that exceeds int64_t and
+// then reduces back into range -- the reason the arithmetic is done in 128
+// bits. This is the opposite and previously untested case: the reduced result
+// itself is unrepresentable, which is the only thing the post-reduction fit
+// check catches. A mutation that removed that check survived the whole suite.
+
+TEST(Rational, AResultThatDoesNotFitAfterReductionIsRefused) {
+  constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+  const fuse::Rational big{kMax, 1};
+  // 2 * (2^63 - 1) is already past INT64_MAX and shares no factor to reduce.
+  EXPECT_THROW((void)(big + big), fuse::Refusal);
+  EXPECT_THROW((void)(big * fuse::Rational{2}), fuse::Refusal);
+  // Denominators too: 1/kMax divided by kMax needs a denominator of kMax^2.
+  const fuse::Rational tiny{1, kMax};
+  EXPECT_THROW((void)(tiny / fuse::Rational{kMax, 1}), fuse::Refusal);
+}
+
+TEST(Rational, TheNonThrowingSpellingReportsTheSameCases) {
+  constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+  const fuse::Rational big{kMax, 1};
+  const fuse::Rational tiny{1, kMax};
+  EXPECT_FALSE(fuse::Rational::try_add(big, big).has_value());
+  EXPECT_FALSE(fuse::Rational::try_mul(big, fuse::Rational{2}).has_value());
+  EXPECT_FALSE(fuse::Rational::try_div(tiny, fuse::Rational{kMax, 1}).has_value());
+  // Division by zero reports rather than throwing in this spelling, which is
+  // the whole reason it exists -- a caller building a verdict cannot catch.
+  EXPECT_FALSE(fuse::Rational::try_div(big, fuse::Rational{0}).has_value());
+  // And it agrees with the operators wherever the result IS representable.
+  const auto sum = fuse::Rational::try_add(fuse::Rational{1, 3}, fuse::Rational{1, 6});
+  ASSERT_TRUE(sum.has_value());
+  EXPECT_EQ(*sum, fuse::Rational(1, 2));
+}

@@ -424,10 +424,16 @@ test = "num.residual_norm"
 [[mutation]]
 id = "linalg-drops-rank-truncation"
 area = "num"
-describes = "the facade reports full rank, so a filtered column comes back with a weight instead of exactly zero"
+describes = "a filtered column comes back with a small weight instead of exactly zero, so a caller cannot tell \"dropped\" from \"barely used\""
+# The obvious mutant here -- looping to k instead of rank -- reads past the end
+# of z, which is resize(rank)d, so its verdict was whatever garbage followed:
+# it killed on one build and survived on the next with no source change. A
+# mutant whose new text is undefined behaviour produces no evidence either way.
+# This one writes a plausible small weight instead, which is the defect the
+# test actually guards against, deterministically.
 file = "src/linalg/least_squares.cpp"
 old = "  for (std::size_t ii = 0; ii < rank; ++ii) out[perm[ii]] = z[ii];"
-new = "  for (std::size_t ii = 0; ii < k; ++ii) out[perm[ii]] = z[ii];"
+new = "  for (std::size_t ii = 0; ii < rank; ++ii) out[perm[ii]] = z[ii];\n  for (std::size_t ii = rank; ii < k; ++ii) out[perm[ii]] = 1e-12;"
 target = "fuse_linalg_least_squares_test"
 test = "linalg.least_squares"
 
