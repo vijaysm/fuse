@@ -40,3 +40,6 @@ whether a capability is verified, implemented, designed only, a deliberate refus
 ## License
 
 BSD 3-Clause. © 2006–2026 Vijay Mahadevan. See [`LICENSE`](LICENSE).
+
+Open items, and which of them need the repository owner rather than a
+contributor, are in [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
