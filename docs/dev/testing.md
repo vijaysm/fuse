@@ -148,6 +148,7 @@ rather than claims:
 | 2026-09-16 | full suite **845 tests, 0 failures** after the peer-wise transport landed, and both `requires = "mpi"` mutations **killed** under `FUSE_MUTATE_MPI=1` — so the numbering check and the local-copy pass are each load-bearing, not merely present |
 | 2026-09-17 | full suite **855 tests, 0 failures**, 36.2 s real; 4 skips, all of them the parent suite's MOAB-dependent cases. Adds the 4 `example`, 2 `compile_fail`, 1 `field` and 1 `num` (typed, per execution space) entries. Both `requires = "mpi"` transport mutations **killed** under `FUSE_MUTATE_MPI=1`. |
 | 2026-09-17 | **Kokkos 5.1.0** (`OPENMP;SERIAL`) replaced 4.6.0 (`THREADS;SERIAL`) on the machine. Tier 0 65/65 and Tier 1 builds after two fixes: Apple clang needs a libomp hint, and `FindOpenMP` had selected GNU `libgomp` whose ABI lacks the `__kmpc_*` entry points Kokkos' objects call. Kernels now instantiate on `Kokkos::OpenMP` and `Serial`; **Threads is no longer enabled anywhere**, so that space is currently unexercised. |
+| 2026-09-17 | full suite **855 tests, 0 failures**, 49.7 s real, on the upgraded **Kokkos 5.1.0** (`OPENMP;SERIAL`). Same 4 parent-suite MOAB skips. Confirms the two OpenMP resolution fixes on the host, not just in the sandbox. |
 
 The 2026-09-16 run is what makes the rank-agreement mechanism verified rather
 than asserted: `parallel.epoch_reconcile` fails one rank's component mid-step
