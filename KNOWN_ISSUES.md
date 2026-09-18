@@ -176,63 +176,43 @@ This is **not** a build defect. `upstream/soma/src/mesh/moab_backend.cpp` is
 S5. The conservative remap path that does not need MOAB works today and is the
 differential oracle for this one when it lands.
 
-### B1a. The no-exceptions build aborts where the library catches its own refusal
+### ~~B1a. The no-exceptions build aborts where the library catches its own refusal~~ — CLOSED 2026-09-17
 
-**Found 2026-09-17 by running the `tier0-no-exceptions` leg's recipe** — the
-third defect found this way, and independent of the Kokkos update: 11 of 57
-tests abort with `FUSE_ENABLE_EXCEPTIONS=OFF`.
+Found by running the `tier0-no-exceptions` leg's recipe (11 of 57 aborting),
+fixed in `9975cb3` and `555c62d`. The leg now passes **48/48**, and the normal
+build stays at 65/65.
 
-**The substance.** `FUSE_REFUSE` throws when exceptions are on and
-*reports-then-aborts* when they are off. Three places in the library use
-throw/catch as **internal control flow** — they let a refusal propagate and
-catch it to build a `Failure` — so with exceptions off the abort happens before
-the catch:
+**What it was.** `FUSE_REFUSE` throws when exceptions are on and
+reports-then-aborts when they are off, so any place the library threw and
+caught *its own* refusal to build a value died before the catch ran.
 
-- `include/fuse/schedule/clock.hpp:175`, `ClockSet::checked_common_period()`:
+**The fix, applied in two places.** Each operation now has ONE implementation
+that reports, with the throwing spelling layered on top — so the two cannot
+disagree about when something is an error, and the reporting path never
+depends on exceptions:
 
-  ```cpp
-      } catch (const Error& e) {
-  ```
+- `Rational::try_add/try_sub/try_mul/try_div`, `try_gcd_rational`,
+  `try_lcm_rational`. The four operators and `gcd_rational`/`lcm_rational` are
+  now thin wrappers that refuse when those report nothing.
+  `ClockSet::checked_common_period()` and the two unit-compatibility sites use
+  the reporting forms and contain no `try`/`catch`.
+- `try_plan_buffers()` returns `Result<BufferPlan>`; `plan_buffers()` is the
+  throwing wrapper for direct callers; `schedule()` reads the diagnostic
+  instead of catching it. Its old comment already said the throw belonged in
+  diagnostics.
 
-  It calls `lcm_rational`, which refuses on overflow
-  (`E-BASE-RATIONAL-OVERFLOW`), and converts that into a `Result`. The test
-  that exercises it is named for the contract it is asserting —
-  `Expand.UnrepresentableCommonPeriodIsAnErrorNotAnException` — and it is the
-  case that aborts.
-- `src/model/compatibility.cpp:160` and `:177`, both `catch (const Error&)`,
-  doing the same around exact-rational arithmetic.
+**A correction to what this entry first claimed.** It said the discriminator
+was the *caught type* — that only `catch (const Error&)` sites were internal
+control flow and everything catching `std::exception` was a containment
+boundary. That was wrong, and running the leg proved it: `scheduler.cpp`
+caught `std::exception` and was internal control flow, because **we** were the
+thrower. The discriminator is whether the throw originates inside this library
+on a path that must produce a value.
 
-One further site catches the same type and is **not** a defect:
-`src/base/error.cpp:174`, inside `fuse_terminate()`, which rethrows
-`std::current_exception()` solely to classify it for the message it prints
-before aborting. It is reporting an exception that has already escaped, not
-converting one into a value, and with exceptions off no exception can be in
-flight for it to see — so it is unreachable rather than wrong.
-
-Every remaining `catch` in the library takes `std::exception` or `...` at a
-containment boundary — a plugin call, a transport call — and simply never fires
-when exceptions are off. Those are correct as they stand.
-
-**The fix, which is an interface decision and not a patch.** The three sites
-need non-throwing primitives: a `lcm_rational` (and the two arithmetic
-operations `compatibility.cpp` wraps) that *return* failure —
-`std::optional<Rational>` or `Result<Rational>` — so the caller converts to a
-`Failure` without an exception ever being involved. The throwing spellings stay
-for callers who want them. Nothing about the fix is conditional on
-`FUSE_ENABLE_EXCEPTIONS`: the point is that a path which must yield a `Result`
-should never have been throwing.
-
-**Why the remaining 9 failing targets are a different, smaller thing.**
-`ir.ir_dag`, `schedule.clock`, `num.temporal_basis`, `num.waveform`,
-`num.convergence`, `num.accelerator`, `runtime.field_ref`,
-`backend.serial_mesh` and `runtime.component_iface` — 9 of the 11 — contain cases that
-legitimately assert a throw and are simply missing the `THROWS` label the leg
-excludes by. They are **not** labelled yet, deliberately: labelling them now
-would also silence `schedule.expand` and `schedule.plan`, whose failure is the
-defect above and not a missing label. Label them once the three sites are
-fixed, and consider per-case guards instead, since the label is
-target-granular and excluding a whole target costs the coverage of its
-non-throwing cases.
+**The nine remaining targets were a missing label, as expected**, and are now
+marked `THROWS` in `test/CMakeLists.txt`. Recorded there: the label is
+target-granular, so excluding one also costs its non-throwing cases — prefer
+per-case guards if the list grows.
 
 ### B2. The 3D order study waits on a spatial index
 

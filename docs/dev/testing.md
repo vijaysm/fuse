@@ -184,3 +184,15 @@ non-zero whether or not the mutation had any effect, so the runner would
 record a **false kill** — evidence that is worse than none. Mark such a
 mutation `requires = "mpi"` and assess it with `FUSE_MUTATE_MPI=1` on a host
 that can launch it.
+
+## A mutant that is undefined behaviour produces no evidence
+
+`linalg-drops-rank-truncation` looped to `k` instead of `rank` over a vector
+sized `rank`, so it read past the end. It was recorded as killed on one build
+and survived on the next with no source change between them: the verdict was
+whatever followed the allocation. A mutation has to be a *different program*,
+not an invalid one — it now writes a small plausible weight to the dropped
+columns, which is the defect the test guards against, and kills
+deterministically. Same family as the existing rules: a mutant that fails to
+compile is inconclusive, one whose test cannot run here is not assessed, and
+one whose behaviour is undefined is neither.
