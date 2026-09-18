@@ -90,8 +90,14 @@ class Result {
   }
   explicit operator bool() const noexcept { return ok(); }
 
-  [[nodiscard]] T&       value()       { return std::get<T>(storage_); }
-  [[nodiscard]] const T& value() const { return std::get<T>(storage_); }
+  [[nodiscard]] T&       value() &      { return std::get<T>(storage_); }
+  [[nodiscard]] const T& value() const & { return std::get<T>(storage_); }
+  /// Moves the value out. Without this overload `std::move(r).value()` binds
+  /// to the lvalue accessor above and silently COPIES -- which compiled
+  /// wherever T happened to be copyable, so the mistake was invisible, and
+  /// failed to compile only on a move-only T like `unique_ptr<LinearOperator>`.
+  /// The ref-qualifiers on the two above are what make this overload reachable.
+  [[nodiscard]] T&&      value() &&     { return std::get<T>(std::move(storage_)); }
   [[nodiscard]] const Failure& error() const { return std::get<Failure>(storage_); }
 
  private:
