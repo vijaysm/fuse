@@ -164,6 +164,25 @@ function(fuse_require package)
   endif()
   message(STATUS "fuse: ${package} not installed; building the pinned copy (FUSE_ALLOW_FETCH=ON)")
   FetchContent_MakeAvailable(${_content})
+  # Propagate the fetched dependency's version exactly as the find_package
+  # branch does. Without it the version is the empty string on the fetch path
+  # and Config.KokkosHeadersMatchTheResolvedLibrary fails parsing "" rather
+  # than comparing anything -- found 2026-09-17 running the OpenMP CI leg by
+  # hand, the second defect that leg would have caught and never did.
+  #
+  # The variable has to be read out of the SUBPROJECT's directory scope:
+  # FetchContent_MakeAvailable() is an add_subdirectory(), so the `set()` the
+  # dependency's own CMakeLists performs is invisible here and is not cached.
+  # Reading it this way reports the version that was actually BUILT rather than
+  # the tag we asked for, which are the same thing until a tag is moved.
+  string(TOLOWER "${_content}" _content_lc)
+  if(DEFINED ${_content_lc}_SOURCE_DIR)
+    get_directory_property(_fetched_version
+      DIRECTORY "${${_content_lc}_SOURCE_DIR}" DEFINITION ${package}_VERSION)
+    if(_fetched_version)
+      set(${package}_VERSION "${_fetched_version}" PARENT_SCOPE)
+    endif()
+  endif()
   file(APPEND "${FUSE_RESOLUTION_FILE}" "${package}=fetched (pinned tag, not tuned for this machine)\n")
 endfunction()
 
@@ -178,6 +197,23 @@ endfunction()
 function(fuse_drop_missing_include_dirs)
   foreach(target ${ARGN})
     if(NOT TARGET ${target})
+      continue()
+    endif()
+    # An ALIAS cannot carry properties, and set_target_properties on one is a
+    # hard CMake error. Both kinds appear here depending on how the dependency
+    # arrived: an INSTALLED Kokkos exports IMPORTED targets (settable), while a
+    # Kokkos built from source exposes ALIASES onto its own real targets. The
+    # stale-include-dir problem this function exists for is specific to the
+    # installed case -- an exported config naming an SDK path that no longer
+    # exists -- so skipping aliases loses nothing: a target built in this very
+    # build tree cannot have a stale include directory.
+    #
+    # Found 2026-09-17 by running the OpenMP CI leg's recipe by hand. The leg
+    # fetches Kokkos, so it would have failed at CONFIGURE, and it has never
+    # run: the defect was invisible to every build done here, all of which used
+    # the installed Kokkos.
+    get_target_property(_alias ${target} ALIASED_TARGET)
+    if(_alias)
       continue()
     endif()
     get_target_property(_dirs ${target} INTERFACE_INCLUDE_DIRECTORIES)

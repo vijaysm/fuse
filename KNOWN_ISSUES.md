@@ -13,24 +13,65 @@ spends time on them.
 
 ## A. Blocked on the repository owner
 
-### A1. There is no remote, so CI has never run
+### A1. There is no remote yet — deferred by decision, with one residual risk
 
-`.github/workflows/ci.yml` defines five legs. `git remote -v` is empty and the
-history is 79 commits local-only, so **not one of those legs has ever
-executed**. Two consequences:
+**Your call, recorded 2026-09-17: the remote waits until all phases are
+complete.** This is not an oversight and needs no action. What it costs is
+worth writing down so it is not forgotten at the end:
 
-- The OpenMP execution-space coverage is **unverified**. The installed Kokkos
-  reports `Kokkos_DEVICES = THREADS;SERIAL` (read from
-  `/opt/kokkos/lib/cmake/Kokkos/KokkosConfigCommon.cmake`), so locally the
-  typed kernel tests instantiate on Threads and Serial only. The CI leg is the
-  only thing that would build with OpenMP, because it passes
-  `-DCMAKE_DISABLE_FIND_PACKAGE_Kokkos=ON -DKokkos_ENABLE_OPENMP=ON` and
-  fetches Kokkos rather than using the installed one.
-- The static gates, docs build and imported-suite legs are likewise only ever
-  run by hand here.
+- **The workflow file itself is unexercised.** `.github/workflows/ci.yml`
+  defines five legs (`gates`, `docs`, `upstream-soma`, `tier0`,
+  `tier0-no-exceptions`) and none has ever run, so its YAML wiring — job
+  names, matrix, cache keys, action versions — is of unknown correctness. A
+  workflow that has never run is not evidence of anything.
+- **Mitigation:** the legs' *recipes* are run by hand here, so the configure
+  lines and commands are exercised even though the wiring is not. Doing that for
+  the OpenMP leg on 2026-09-17 found two real defects in the fetch path — see
+  the note that follows this entry. When the remote appears, expect to debug the
+  YAML and the Eigen fetch, not the rest of the build.
 
-**What to do.** Create the remote and push. Nothing in the tree needs to
-change; the workflow is already written.
+**What to do.** Nothing now. At the end, push and expect one round of workflow
+fixes.
+
+### Note to A1 and A5 — the OpenMP leg's recipe, run by hand 2026-09-17
+
+Since the workflow cannot run, its OpenMP leg's configure line was executed
+directly. **It found two defects, and would have failed on both.** That is the
+whole argument for A1: a workflow that has never run is not evidence.
+
+1. **Configure error on the fetch path.** `fuse_drop_missing_include_dirs()`
+   called `set_target_properties` on Kokkos' targets. An *installed* Kokkos
+   exports IMPORTED targets, which are settable; a Kokkos built from source
+   exposes ALIASES, and `set_target_properties` on an alias is a hard CMake
+   error. Every build ever done here used the installed Kokkos, so the fault
+   was invisible. The function now skips aliases, which loses nothing: a target
+   built in this build tree cannot have a stale include directory.
+
+2. **`Config.KokkosHeadersMatchTheResolvedLibrary` failed.**
+   `FUSE_KOKKOS_VERSION_EXPECTED` was the empty string on the fetch path,
+   because the version was only recorded when `find_package` succeeded — so
+   the test failed parsing `""` instead of comparing anything.
+   `FetchContent_MakeAvailable()` is an `add_subdirectory()`, so the
+   dependency's own `set(Kokkos_VERSION …)` is invisible to us and is not
+   cached; it is now read out of the subproject's directory scope, which
+   reports what was *built* rather than the tag we asked for.
+
+**Measured after both fixes** — the same suite, two configurations:
+
+| Configuration | Kokkos | Spaces reported | Result |
+|---|---|---|---|
+| installed `/opt/kokkos` | 4.6.0 | `Threads Serial` (default Threads) | 65/65 |
+| fetched, pinned `4.4.01` | 4.4.1 | `OpenMP Serial` (default OpenMP) | 65/65 |
+
+So the typed kernel tests are now verified on **all three host-parallel spaces**
+— Threads, OpenMP and Serial — which is every one that exists without a device.
+
+**One stated deviation.** The leg also fetches Eigen; this sandbox cannot reach
+`gitlab.com`, so the run used `-DFUSE_LINALG_BACKEND=builtin` instead. The
+OpenMP result above is unaffected — the facade's builtin factorisation is the
+oracle the Eigen backend is tested against — but **the leg's Eigen fetch path
+remains unexercised** and is one more thing to expect to debug when the remote
+appears.
 
 ### ~~A2. Four parallel test legs cannot run in this sandbox~~ — CLOSED 2026-09-17
 
@@ -59,28 +100,57 @@ matching distribution, checked before the name landed. The collisions that
 shaped the choice — and why a Julia binding must *not* be `jfuse` — are
 recorded in `docs/dev/porting.md`, which now has no open decisions.
 
-### A4. No external code is nominated for the conformance profile
+### A4. Which existing simulation code should be the first one we couple?
 
-The profile is fixed — separately built, unmodified, owns its time loop, drives
-the coupler through the participant ABI, exposes fields via `CFI_cdesc_t`,
-disjoint rank sets, passes the compliance harness — and **no code in the
-workspace satisfies it**. Until one is named, that milestone is scheduled but
-unpopulated. The interim fallback is a second separately-built FUSE
-executable, which must be reported as weaker, naming which profile items went
-unverified.
+**Not needed until S6.** Listed here so it is not discovered at the last
+minute, since the answer may involve getting a code built, which takes longer
+than the coupling does.
 
-**What to do.** Name the code, or accept the weaker fallback explicitly.
+**The plain version.** Everything coupled so far has been written by us, in
+this repository, against our own interfaces. That proves the coupler works on
+components that were designed for it. The claim we actually want to make is
+stronger: *FUSE can couple a simulation code it has never met, without
+modifying that code.* Demonstrating that needs one real program — someone
+else's, already written, that we do not touch.
 
-### A5. A device performance number needs hardware
+What such a program has to be, in ordinary terms:
 
-This machine has no GPU. Every kernel in `include/fuse/num/space_kernels.hpp`
-is parameterised on an execution space and verified against the serial oracle
-on every space the build enables, but **parameterisation is a precondition for
-device performance, not evidence of it**, and the headers say so.
+- a **separate executable**, built by its own build system, not linked into our
+  test suite;
+- it **runs its own time loop** and calls FUSE when it wants to exchange, rather
+  than being driven by us;
+- it **hands us its existing arrays** — no rewriting its data structures;
+- it can run **on its own set of processes**, alongside another code on
+  different processes.
 
-**What to do.** Nothing, unless you want a measured device claim — that needs
-a machine with a GPU-enabled Kokkos, at which point the typed tests
-instantiate on it with no code change.
+A Fortran or C++ heat, fluid, structural or transport solver you already have
+is exactly the right shape. It does not need to be large; a small code that is
+genuinely external teaches more here than a big one we adapt.
+
+**What to do — when S6 comes up, not now.** Either name a code, or say you
+would rather we use a second separately-built FUSE executable as a stand-in. The
+stand-in is a weaker result and would be reported as such, naming which of the
+four properties above went untested — a program we wrote knows our conventions
+even when it is built separately, so it cannot show that an unfamiliar code
+works.
+
+### A5. A device number waits on a GPU machine — your sequencing
+
+**Your call, recorded 2026-09-17: get host threading fully working first, then
+retry on a machine with a GPU.** That is the right order, and the host-threading
+half is now measured rather than asserted: 65/65 on `Threads Serial` from the
+installed Kokkos and 65/65 on `OpenMP Serial` from a fetched one, both recorded
+in the note under A1. Those are all three host-parallel spaces.
+
+Nothing in the code has to change for a GPU. The typed kernel tests instantiate
+on whatever spaces the build enables, so on a CUDA- or HIP-enabled Kokkos they
+pick up the device space automatically and the startup banner will name it. What
+that run would add is a *measured* number; parameterisation is a precondition
+for device performance, not evidence of it, and the headers say so.
+
+**What to do.** Nothing until you have the machine. Then configure against a
+GPU-enabled Kokkos and run the suite; the banner tells you whether the device
+space was actually picked up.
 
 ---
 
