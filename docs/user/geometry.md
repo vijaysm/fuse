@@ -156,3 +156,26 @@ the 5×5×5 → 7×7×7 case alone is about 1.5 million clip calls. In 3D the ke
 is pinned against closed form instead, which says more about the geometry than
 a convergence slope does. A 3D study becomes affordable when a spatial index
 replaces the brute-force search.
+
+## How a cell becomes simplices
+
+Every backend presents its cells to the clipping kernel as simplices, so that
+kernel has one geometric case instead of six. *Which* corners form which
+simplex is not each backend's business: it is a fixed table in
+`include/fuse/backend/cell_simplices.hpp`, covering edges, triangles, quads,
+convex polygons, tetrahedra, pyramids, prisms and hexahedra.
+
+The table is shared rather than duplicated for a reason that is easy to miss.
+A hexahedron with **non-planar faces is not a polyhedron**: each choice of
+diagonal triangulates those faces differently, so the two decompositions
+enclose genuinely different solids with different volumes. Neither is wrong.
+But it means "the volume of this cell" is not a property of the cell alone, and
+two backends that decomposed the same mesh about different diagonals would
+disagree about cell volumes — a conservation check between them would then
+report a defect that is really a convention mismatch. One table removes that
+possibility, and
+`CellSimplices.ANonPlanarHexHasNoSingleVolumeAndThatIsWhyTheTableIsFixed`
+records the fact.
+
+The tables are `constexpr` and device-callable, so a kernel can decompose a
+cell in place instead of asking the host for its corner list.

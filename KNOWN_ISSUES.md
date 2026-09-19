@@ -214,6 +214,26 @@ marked `THROWS` in `test/CMakeLists.txt`. Recorded there: the label is
 target-granular, so excluding one also costs its non-throwing cases — prefer
 per-case guards if the list grows.
 
+### C1. The MOAB backend is built but unrun in the sandbox
+
+**Status: needs one host run.** `S5.2` landed 2026-09-18: tier 2 configures,
+compiles and links for the first time, and `test/backend/moab_mesh_test.cpp`
+(38 cases, ported from the parent) is registered whenever MOAB is enabled.
+
+None of it has executed here. Tier 2 requires MPI by the tier ladder, and this
+sandbox cannot `MPI_Init` — every test in an MPI-enabled build dies at startup
+in `MPI_Init_thread`, which is why tier 2 reports 81 of 87 failing here and why
+that number says nothing about the code. The ladder is right to refuse MOAB
+without MPI, so there is no serial configuration to fall back on.
+
+What a host run would establish: the 38 MOAB cases, and in particular the seven
+whose expectations this port moved from `std::out_of_range` to
+`fuse::InvalidArgument` when the bare throws became `FUSE_THROW`.
+
+```sh
+cmake --build build-tier2 -j12 && (cd build-tier2 && ctest --output-on-failure)
+```
+
 ### B2. The 3D order study waits on a spatial index
 
 `build_supermesh_weights` uses a brute-force bounding-box candidate test. It is
