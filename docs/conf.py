@@ -31,7 +31,7 @@ myst_enable_extensions = [
 ]
 myst_heading_anchors = 3
 
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = ["dev/reviews/**", "_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = "sphinx_book_theme"
 html_static_path = ["_static"]

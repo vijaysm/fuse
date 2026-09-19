@@ -214,6 +214,14 @@ marked `THROWS` in `test/CMakeLists.txt`. Recorded there: the label is
 target-granular, so excluding one also costs its non-throwing cases — prefer
 per-case guards if the list grows.
 
+### C0. Full implementation review, 2026-09-19 — 50 findings, fix plan in `REVIEW.md`
+
+Ten BLOCKER, 22 MAJOR. Read `REVIEW.md` §2 first: the fifty reduce to six causes, and §4 gives the
+fix order with the gate additions that keep each one closed. Two corrections to THIS file follow from
+it: B1 below is stale (tier 2 builds, see C1), and C1 understates the MOAB situation — the test file
+opens with `#ifdef FUSE_HAVE_MOAB` and no config include, so its 38 cases compile to a skip stub in
+every configuration, host included (`REVIEW.md` R-09). Both are fixed in wave 1 of the plan.
+
 ### C1. The MOAB backend is built but unrun in the sandbox
 
 **Status: needs one host run.** `S5.2` landed 2026-09-18: tier 2 configures,
