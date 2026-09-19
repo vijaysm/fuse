@@ -362,6 +362,36 @@ macro(fuse_resolve_dependencies)
     # cannot deliver, so the variables are wrapped in a target here and the
     # result is recorded like every other dependency.
     find_package(MOAB REQUIRED)
+    # MOAB's config bakes in the link line of the toolchain it was BUILT with,
+    # including the gfortran runtime directory of that gcc. When that gcc is
+    # upgraded the directory disappears and the config is stale: configure
+    # still succeeds, and the failure arrives as `ld: library 'emutls_w' not
+    # found` at the end of a full build, which reads like a FUSE bug. Found
+    # 2026-09-19 after a Homebrew gcc 15 -> 16 upgrade. Checked here so the
+    # message names the actual remedy.
+    set(_fuse_moab_stale "")
+    # MOAB_LIBRARIES is ONE space-separated string (an old-style config), not a
+    # CMake list, so it is tokenised on whitespace first.
+    string(REGEX REPLACE "[ \t]+" ";" _fuse_moab_tokens "${MOAB_LIBRARIES}")
+    foreach(_tok IN LISTS _fuse_moab_tokens)
+      string(REGEX MATCH "^(-L|-Wl,-rpath,)(.+)$" _m "${_tok}")
+      if(_m AND NOT IS_DIRECTORY "${CMAKE_MATCH_2}")
+        list(APPEND _fuse_moab_stale "${CMAKE_MATCH_2}")
+      endif()
+    endforeach()
+    if(_fuse_moab_stale)
+      list(REMOVE_DUPLICATES _fuse_moab_stale)
+      list(JOIN _fuse_moab_stale "\n    " _fuse_moab_stale_text)
+      message(FATAL_ERROR
+        "fuse: the MOAB found at ${MOAB_DIR} was built against a toolchain that "
+        "is no longer installed. Its MOABConfig.cmake links against directories "
+        "that do not exist:\n    ${_fuse_moab_stale_text}\n"
+        "  Linking would fail late with `ld: library ... not found`. Remedy: "
+        "rebuild MOAB (and PETSc, whose .pc carries the same line) against the "
+        "current compiler, or point CMAKE_PREFIX_PATH at a MOAB that matches it. "
+        "There is nothing FUSE can substitute: the libraries in that directory "
+        "belong to the compiler that produced them.")
+    endif()
     if(NOT TARGET fuse::moab)
       add_library(fuse-moab INTERFACE)
       add_library(fuse::moab ALIAS fuse-moab)
