@@ -61,6 +61,14 @@ downloaded silently: the prefixes on an HPC machine are built for that machine, 
 copy would quietly replace them — any timing taken afterwards would be measuring the wrong library.
 
 ```bash
+# One command per tier. The presets carry the prefixes for this machine in
+# the hidden `_machine` preset -- edit that one entry on another machine.
+cmake --preset tier0 && cmake --build --preset tier0 && ctest --preset tier0
+cmake --preset tier1 && cmake --build --preset tier1 && ctest --preset tier1   # + MPI
+cmake --preset tier2 && cmake --build --preset tier2 && ctest --preset tier2   # + MOAB
+cmake --list-presets                                                          # all of them
+
+# Or by hand, which is what the presets expand to:
 cmake -S . -B build -DCMAKE_PREFIX_PATH="/opt/kokkos;/opt/kokkos-kernels;/opt/homebrew"
 ```
 
@@ -87,3 +95,15 @@ or worse, compiles against the wrong configuration. FUSE prepends the resolved K
 directory on its base target so the chosen install wins, and
 `Config.KokkosHeadersMatchTheResolvedLibrary` compares `KOKKOS_VERSION` from the headers with the
 version CMake resolved, so a slip fails a test instead of producing a mystery.
+
+## When a dependency's own config is stale
+
+A dependency installed from source records the link line of the toolchain it
+was built with. MOAB's `MOABConfig.cmake` carries the gfortran runtime
+directory of *its* gcc; upgrade gcc and that directory is gone, and the failure
+would arrive as `ld: library 'emutls_w' not found` after a full build. FUSE
+checks every `-L` and `-rpath` directory in that config at configure time and
+refuses with the directories named. The remedy is to rebuild MOAB (and PETSc,
+whose `.pc` carries the same line) against the current compiler; there is
+nothing to substitute, since those libraries belong to the compiler that
+produced them.
