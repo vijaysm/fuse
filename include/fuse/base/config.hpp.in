@@ -4,6 +4,13 @@
 #cmakedefine01 FUSE_HAVE_MPI
 #cmakedefine01 FUSE_HAVE_KOKKOS
 #cmakedefine01 FUSE_HAVE_MOAB
+// Whether the MOAB we resolved was built WITH TempestRemap. Separate from
+// FUSE_HAVE_MOAB because a MOAB without it gives the spherical high-order
+// tier no implementation, and the difference must reach the code: the
+// ported tempest_weights.cpp read this macro while nothing defined it, so
+// the preprocessor read 0 and the high-order path compiled as permanently
+// unavailable even where MOAB does provide it.
+#cmakedefine01 FUSE_HAVE_TEMPEST
 #cmakedefine01 FUSE_HAVE_PETSC
 #cmakedefine01 FUSE_HAVE_LOWFIVE
 #cmakedefine01 FUSE_LINALG_EIGEN
