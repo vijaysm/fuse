@@ -1,3 +1,9 @@
+// Before the FUSE_HAVE_MPI test below: config.hpp defines the feature
+// macros, and an undefined one reads as 0 -- which had compiled this
+// file's whole parallel half out of every build, MPI or not.
+#include "fuse/base/config.hpp"
+#include "fuse/base/error.hpp"
+
 #include "fuse/backend/moab_backend.hpp"
 #include "fuse/backend/cell_simplices.hpp"
 
@@ -15,7 +21,7 @@
 // MOABConfig.h arrives via Core.hpp, so MOAB_HAVE_MPI is only knowable here.
 // Both halves are required: MOAB must have been built with MPI, and FUSE must
 // have been configured with it, or there is no mpi.h on the include path.
-#if defined(MOAB_HAVE_MPI) && defined(FUSE_HAVE_MPI)
+#if defined(MOAB_HAVE_MPI) && FUSE_HAVE_MPI
 #define FUSE_MOAB_PARALLEL 1
 #include <MBParallelConventions.h>
 #include <moab/ParallelComm.hpp>
@@ -239,9 +245,9 @@ constexpr int kQuadCorner[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
   std::vector<double> xyz(static_cast<std::size_t>(n) * 3, 0.0);
   const moab::ErrorCode rval = mb.get_coords(conn, n, xyz.data());
   if (rval != moab::MB_SUCCESS) {
-    throw std::runtime_error(std::string("MoabMeshView::") + what +
+    FUSE_THROW(InvariantViolation, "{}", std::string(std::string("MoabMeshView::") + what +
                              ": MOAB could not read vertex coordinates: " +
-                             moab_text(mb, rval));
+                             moab_text(mb, rval)));
   }
   std::vector<V3> p(static_cast<std::size_t>(n));
   for (std::size_t i = 0; i < p.size(); ++i) {
@@ -287,28 +293,28 @@ constexpr int kPrismAsHex[8] = {0, 1, 2, 2, 3, 4, 5, 5};
   const moab::ErrorCode rval =
       mb.get_connectivity(h, conn, nconn, /*corners_only=*/false, &storage);
   if (rval != moab::MB_SUCCESS) {
-    throw std::runtime_error(
+    FUSE_THROW(InvariantViolation, "{}", std::string(
         "MoabMeshView::measure: MOAB could not read the connectivity of "
         "entity " +
-        std::to_string(h) + ": " + moab_text(mb, rval));
+        std::to_string(h) + ": " + moab_text(mb, rval)));
   }
   if (conn == nullptr || nconn <= 0) {
-    throw std::runtime_error("MoabMeshView::measure: entity " +
+    FUSE_THROW(InvariantViolation, "{}", std::string("MoabMeshView::measure: entity " +
                              std::to_string(h) +
-                             " has no connectivity, so no geometry to measure");
+                             " has no connectivity, so no geometry to measure"));
   }
 
   const std::string type_name = moab::CN::EntityTypeName(type);
   if (type != moab::MBPOLYGON && type != moab::MBPOLYHEDRON) {
     const int corners = moab::CN::VerticesPerEntity(type);
     if (nconn != corners) {
-      throw std::runtime_error(
+      FUSE_THROW(InvariantViolation, "{}", std::string(
           "MoabMeshView::measure: entity " + std::to_string(h) + " is a " +
           type_name + " with " + std::to_string(nconn) + " nodes, not " +
           std::to_string(corners) +
           ". This backend integrates straight-sided elements exactly and "
           "refuses to report the straight-sided measure of a curved one, "
-          "which would misstate a conservation sum with no diagnostic.");
+          "which would misstate a conservation sum with no diagnostic."));
     }
   }
 
@@ -323,9 +329,9 @@ constexpr int kPrismAsHex[8] = {0, 1, 2, 2, 3, 4, 5, 5};
       return quad_area({p[0], p[1], p[2], p[3]});
     case moab::MBPOLYGON:
       if (nconn < 3) {
-        throw std::runtime_error(
+        FUSE_THROW(InvariantViolation, "{}", std::string(
             "MoabMeshView::measure: polygon " + std::to_string(h) + " has " +
-            std::to_string(nconn) + " nodes; a polygon needs at least three");
+            std::to_string(nconn) + " nodes; a polygon needs at least three"));
       }
       return polygon_area(p);
     case moab::MBTET:
@@ -340,10 +346,10 @@ constexpr int kPrismAsHex[8] = {0, 1, 2, 2, 3, 4, 5, 5};
     case moab::MBHEX:
       return std::fabs(hex_signed_volume(as_hex(p, kHexAsHex)));
     default:
-      throw std::runtime_error(
+      FUSE_THROW(InvariantViolation, "{}", std::string(
           "MoabMeshView::measure: no exact measure is implemented for a " +
           type_name + " (entity " + std::to_string(h) +
-          "); this backend refuses to guess one");
+          "); this backend refuses to guess one"));
   }
 }
 
@@ -400,9 +406,9 @@ class MoabMeshView final : public MeshView {
       double c[3] = {0.0, 0.0, 0.0};
       const moab::ErrorCode rval = mb_->get_coords(&h, 1, c);
       if (rval != moab::MB_SUCCESS) {
-        throw std::runtime_error(
+        FUSE_THROW(InvariantViolation, "{}", std::string(
             "MoabMeshView::centroid: MOAB could not read vertex " +
-            std::to_string(h) + ": " + moab_text(*mb_, rval));
+            std::to_string(h) + ": " + moab_text(*mb_, rval)));
       }
       return Point{c[0], c[1], c[2]};
     }
@@ -412,10 +418,10 @@ class MoabMeshView final : public MeshView {
     const moab::ErrorCode rval =
         mb_->get_connectivity(h, conn, nconn, /*corners_only=*/true, &storage);
     if (rval != moab::MB_SUCCESS || conn == nullptr || nconn <= 0) {
-      throw std::runtime_error(
+      FUSE_THROW(InvariantViolation, "{}", std::string(
           "MoabMeshView::centroid: MOAB could not read the connectivity of "
           "entity " +
-          std::to_string(h) + ": " + moab_text(*mb_, rval));
+          std::to_string(h) + ": " + moab_text(*mb_, rval)));
     }
     const std::vector<V3> p = node_coords(*mb_, conn, nconn, "centroid");
     V3 c{0.0, 0.0, 0.0};
@@ -429,10 +435,10 @@ class MoabMeshView final : public MeshView {
   [[nodiscard]] double measure(int dim, std::size_t i) const override {
     check(dim, i, "measure");
     if (dim == 0) {
-      throw std::out_of_range(
+      FUSE_THROW(InvalidArgument, "{}", std::string(
           "MoabMeshView::measure: this backend defines no measure for "
           "vertices (dim 0); it has no dual or control volume to report, and "
-          "a zero weight would silently drop them from a conservation sum");
+          "a zero weight would silently drop them from a conservation sum"));
     }
     return element_measure(*mb_, dims_[static_cast<std::size_t>(dim)].handles[i]);
   }
@@ -444,7 +450,7 @@ class MoabMeshView final : public MeshView {
       // Not `out_of_range`: the entity exists and the index is fine, it is
       // the numbering that is unusable. Returning the raw value, or 0, would
       // let two entities match that are not the same entity.
-      throw std::runtime_error("MoabMeshView::global_id: " + dd.gid_error);
+      FUSE_THROW(InvariantViolation, "{}", std::string("MoabMeshView::global_id: " + dd.gid_error));
     }
     return dd.global_ids[i];
   }
@@ -473,23 +479,23 @@ class MoabMeshView final : public MeshView {
                       Point* out) const override {
     check(dim, i, "simplex_points");
     if (out == nullptr) {
-      throw std::invalid_argument(
-          "MoabMeshView::simplex_points: null output pointer");
+      FUSE_THROW(InvalidArgument, "{}", std::string(
+          "MoabMeshView::simplex_points: null output pointer"));
     }
     const auto shape = shape_of(dim, i);
     if (!shape) {
-      throw std::runtime_error(
+      FUSE_THROW(InvariantViolation, "{}", std::string(
           "MoabMeshView::simplex_points: entity " + std::to_string(i) +
           " of dimension " + std::to_string(dim) +
           " has a cell type this backend cannot decompose; see "
-          "fuse/backend/cell_simplices.hpp for the shapes it supports");
+          "fuse/backend/cell_simplices.hpp for the shapes it supports"));
     }
     int corners[4] = {0, 0, 0, 0};
     if (!simplex_corners(shape->first, shape->second, s, corners)) {
-      throw std::out_of_range(
+      FUSE_THROW(InvalidArgument, "{}", std::string(
           "MoabMeshView::simplex_points: simplex " + std::to_string(s) +
           " of entity " + std::to_string(i) + " does not exist (it has " +
-          std::to_string(cell_simplex_count(shape->first, shape->second)) + ")");
+          std::to_string(cell_simplex_count(shape->first, shape->second)) + ")"));
     }
     const moab::EntityHandle h = dims_[static_cast<std::size_t>(dim)].handles[i];
     const moab::EntityHandle* conn = nullptr;
@@ -498,9 +504,9 @@ class MoabMeshView final : public MeshView {
     const moab::ErrorCode rval =
         mb_->get_connectivity(h, conn, nconn, /*corners_only=*/true, &storage);
     if (rval != moab::MB_SUCCESS || conn == nullptr || nconn <= 0) {
-      throw std::runtime_error(
+      FUSE_THROW(InvariantViolation, "{}", std::string(
           "MoabMeshView::simplex_points: MOAB could not read the connectivity "
-          "of entity " + std::to_string(h) + ": " + moab_text(*mb_, rval));
+          "of entity " + std::to_string(h) + ": " + moab_text(*mb_, rval)));
     }
     const std::vector<V3> p = node_coords(*mb_, conn, nconn, "simplex_points");
     const int per = shape_dimension(shape->first) + 1;
@@ -575,17 +581,17 @@ class MoabMeshView final : public MeshView {
   /// plausible number rather than crashing.
   void check(int dim, std::size_t i, const char* what) const {
     if (dim < 0 || dim > 3) {
-      throw std::out_of_range(std::string("MoabMeshView::") + what +
+      FUSE_THROW(InvalidArgument, "{}", std::string(std::string("MoabMeshView::") + what +
                               ": dimension " + std::to_string(dim) +
-                              " is outside [0, 3]");
+                              " is outside [0, 3]"));
     }
     const std::size_t n = dims_[static_cast<std::size_t>(dim)].handles.size();
     if (i >= n) {
-      throw std::out_of_range(std::string("MoabMeshView::") + what +
+      FUSE_THROW(InvalidArgument, "{}", std::string(std::string("MoabMeshView::") + what +
                               ": entity index " + std::to_string(i) +
                               " is outside [0, " + std::to_string(n) +
                               ") for dimension " + std::to_string(dim) +
-                              " on this rank");
+                              " on this rank"));
     }
   }
 

@@ -305,18 +305,18 @@ TEST(MoabMesh, VertexMeasureThrowsRatherThanReturningZero) {
   const MoabMeshBackend b = loaded("generated:box:2x2x2");
   const MeshView& v = view_of(b);
   ASSERT_GT(v.entity_count(0), 0u);
-  EXPECT_THROW((void)v.measure(0, 0), std::out_of_range);
+  EXPECT_THROW((void)v.measure(0, 0), fuse::InvalidArgument);
 }
 
 TEST(MoabMesh, OutOfRangeAccessThrows) {
   const MoabMeshBackend b = loaded("generated:box:2x2x2");
   const MeshView& v = view_of(b);
-  EXPECT_THROW((void)v.measure(3, v.entity_count(3)), std::out_of_range);
-  EXPECT_THROW((void)v.centroid(3, 999), std::out_of_range);
-  EXPECT_THROW((void)v.global_id(3, 999), std::out_of_range);
-  EXPECT_THROW((void)v.is_owned(3, 999), std::out_of_range);
-  EXPECT_THROW((void)v.measure(-1, 0), std::out_of_range);
-  EXPECT_THROW((void)v.measure(7, 0), std::out_of_range);
+  EXPECT_THROW((void)v.measure(3, v.entity_count(3)), fuse::InvalidArgument);
+  EXPECT_THROW((void)v.centroid(3, 999), fuse::InvalidArgument);
+  EXPECT_THROW((void)v.global_id(3, 999), fuse::InvalidArgument);
+  EXPECT_THROW((void)v.is_owned(3, 999), fuse::InvalidArgument);
+  EXPECT_THROW((void)v.measure(-1, 0), fuse::InvalidArgument);
+  EXPECT_THROW((void)v.measure(7, 0), fuse::InvalidArgument);
 }
 
 TEST(MoabMesh, EntityCountIsTotalForEveryDimension) {

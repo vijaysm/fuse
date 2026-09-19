@@ -4,6 +4,13 @@
 // still defines every function `high_order_backend.hpp` declares; they just say
 // no. Task 5.2 was bitten by the other arrangement (an always-visible
 // declaration whose definition was inside an #ifdef), so the rule here is:
+//
+// A NOTE ON THE GUARDS: FUSE's feature macros come from config.hpp via
+// `#cmakedefine01`, so they are always DEFINED, as 0 or 1. Every test on one
+// must therefore be `#if FUSE_HAVE_X`, never `#ifdef` -- which is
+// unconditionally true and would compile the MOAB-only branch in a build
+// without MOAB. MOAB's own macros (MOAB_HAVE_*) are `-D`-style, so `#ifndef`
+// is correct for those.
 // declare once, define once, both outside the guard.
 //
 // ---------------------------------------------------------------------------
@@ -68,18 +75,21 @@
 // only one build may be in flight process-wide at a time, same as before --
 // it converts silent corruption under concurrent use into safe serialization.
 
+// Before any FUSE_HAVE_* read: an undefined feature macro is read as 0 by
+// the preprocessor, which would silently compile the refusing stub.
+#include "fuse/base/config.hpp"
+
 #include "high_order_backend.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
-#include <cstdio>
 #include <limits>
 #include <mutex>
 #include <string>
 #include <vector>
 
-#ifdef FUSE_HAVE_TEMPEST
+#if FUSE_HAVE_TEMPEST
 // The macro trap: MOAB spells it MOAB_HAVE_TEMPESTREMAP, not MOAB_HAVE_TEMPEST.
 // FUSE_HAVE_TEMPEST is set by cmake/FindSomaMOAB.cmake only after a real
 // compile-and-link of the two entry points below, but assert the header story
@@ -99,7 +109,7 @@
 
 namespace fuse::remap_backend {
 
-#ifndef FUSE_HAVE_TEMPEST
+#if !FUSE_HAVE_TEMPEST
 
 bool high_order_backend_available() noexcept { return false; }
 

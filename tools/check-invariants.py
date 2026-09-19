@@ -94,7 +94,18 @@ def scan(root: Path) -> list[str]:
                 # The failure path may not throw or allocate, so it writes with fputs and
                 # says so on the line; the marker is the review trail, not a loophole.
                 raw_ok = "NOLINT(fuse-raw-io)" in line
-                if PRINTF.search(line) and "Kokkos::printf" not in line and not device_file and not raw_ok:
+                # Comments are blanked first, for the same reason the
+                # feature-macro check below does it: naming `fprintf` in prose
+                # is not a call to it. A comment explaining why a third-party
+                # library's own fprintf cannot be redirected is exactly the
+                # kind of note this project wants, and a gate that fires on it
+                # pressures the author to delete the explanation rather than
+                # fix any code. Found 2026-09-18, when the check fired on a
+                # doc comment in the ported high-order backend while the
+                # feature-macro check on the same file did not.
+                code = COMMENT_LINE.sub(
+                    lambda m: m.group(1) + " " * len(m.group(2)), line)
+                if PRINTF.search(code) and "Kokkos::printf" not in code and not device_file and not raw_ok:
                     problems.append(f"{rel}:{lineno}: printf in library code; use fmt")
 
             # Whole-file check: reading a build-feature macro requires the

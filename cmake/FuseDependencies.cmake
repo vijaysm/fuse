@@ -392,6 +392,8 @@ macro(fuse_resolve_dependencies)
     file(APPEND "${FUSE_RESOLUTION_FILE}"
          "MOAB=found ${MOAB_VERSION} ${MOAB_INCLUDE_DIRS}\n"
          "MOAB_tempestremap=${FUSE_MOAB_HAS_TEMPESTREMAP}\n")
+    # config.hpp's FUSE_HAVE_TEMPEST comes from here, and nowhere else.
+    set(FUSE_HAVE_TEMPEST ${FUSE_MOAB_HAS_TEMPESTREMAP})
   endif()
   if(FUSE_ENABLE_PETSC)
     find_package(PkgConfig REQUIRED)

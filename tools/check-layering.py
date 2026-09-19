@@ -65,7 +65,7 @@ ALLOWED_PUBLIC_THIRD_PARTY = {
     # type is in the public interface by design.
     "field": {"Kokkos_Core.hpp"},
     "runtime": {"Kokkos_Core.hpp"},
-    "backend": {"Kokkos_Core.hpp"},   # per-backend headers live under backend/<name>/
+    "backend": {"Kokkos_Core.hpp", "Kokkos_Macros.hpp"},   # per-backend headers live under backend/<name>/
     "transport": set(),
     # The C ABI is the one surface that must compile for a consumer with none
     # of our dependencies installed.
