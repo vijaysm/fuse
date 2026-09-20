@@ -36,6 +36,9 @@
 
 #include "fuse/transport/transport.hpp"
 #include "fuse/transport/comm_graph.hpp"
+#include "fuse/transport/rank_agreement.hpp"
+
+#include <fmt/format.h>
 
 #include <mpi.h>
 
@@ -499,27 +502,42 @@ Result<void> MpiTransport::build_plan(const TransportSpec& spec) {
                    "MPI_Allgather of components failed: " +
                        mpi_error_text(rc)};
     }
-    if (err == Err::None) {
-      int first_rank = -1;
-      int first_value = 0;
+    // Opt-in trace, because this check has now twice not fired when reading
+    // the code said it must (host runs 2026-09-20). Off unless
+    // FUSE_TRANSPORT_DEBUG is set in the environment, so it costs a getenv
+    // per build_plan() and nothing else.
+    if (std::getenv("FUSE_TRANSPORT_DEBUG") != nullptr) {
+      std::string line = "[build_plan rank " + std::to_string(rank) + "/" +
+                         std::to_string(size) + "] err=" +
+                         std::string{code_of(err)} + " components=[";
       for (std::size_t r = 0; r < usize; ++r) {
-        if (is_src[r] == 0 && is_dst[r] == 0) continue;
-        if (first_rank < 0) {
-          first_rank = static_cast<int>(r);
-          first_value = all_components[r];
-          continue;
-        }
-        if (all_components[r] != first_value) {
-          fail(Err::PeerMatch,
-               "rank " + std::to_string(r) + " called build_plan() with "
-               "components = " + std::to_string(all_components[r]) +
-                   ", but rank " + std::to_string(first_rank) +
-                   " (also in the src or dst rank set) called it with " +
-                   std::to_string(first_value) +
-                   "; every rank taking part in this redistribution must "
-                   "agree on the field's component count");
-          break;
-        }
+        line += (r ? "," : "") + std::to_string(all_components[r]);
+      }
+      line += "] participants=[";
+      for (std::size_t r = 0; r < usize; ++r) {
+        const bool part = is_src[r] != 0 || is_dst[r] != 0;
+        line += (r ? "," : "") + std::string{part ? "1" : "0"};
+      }
+      line += "]\n";
+      fmt::print(stderr, "{}", line);
+    }
+
+    if (err == Err::None) {
+      // The rule itself is pure and lives in a header so Tier 0 can test it
+      // (fuse/transport/rank_agreement.hpp); only the gather is MPI's.
+      const auto agreement =
+          ::fuse::transport::check_component_agreement(all_components,
+                                                       is_src, is_dst);
+      if (!agreement.agreed()) {
+        fail(Err::PeerMatch,
+             "rank " + std::to_string(agreement.disagreeing_rank) +
+                 " called build_plan() with components = " +
+                 std::to_string(agreement.disagreeing_value) + ", but rank " +
+                 std::to_string(agreement.first_rank) +
+                 " (also in the src or dst rank set) called it with " +
+                 std::to_string(agreement.first_value) +
+                 "; every rank taking part in this redistribution must agree "
+                 "on the field's component count");
       }
     }
   }
