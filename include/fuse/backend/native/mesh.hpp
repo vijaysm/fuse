@@ -37,6 +37,28 @@
 /// closed set of instantiations, which `native_view.hpp` provides for the
 /// pairs that physically occur.
 ///
+/// THE MEMORY SPACE (REVIEW.md R-03). `Mesh` also takes a `MemorySpace`
+/// template parameter, defaulting to `Kokkos::DefaultExecutionSpace::
+/// memory_space`. Earlier, the views had no explicit space, so on a build
+/// whose default execution space has discrete device memory (CUDA without
+/// UVM, HIP, SYCL) they allocated there -- and `finalize()`'s host-side
+/// assembly loop, which refuses via `Result<void>`/`std::string` and cannot
+/// run on a device, dereferenced them directly: an illegal host access to
+/// device memory, undefined behaviour, not caught at compile time. Now:
+///
+///   * The views are `Kokkos::View<..., MemorySpace>`, so a caller that
+///     wants everything on the host (every caller in this codebase today,
+///     since the build's default execution space is OpenMP/Serial and
+///     therefore host-accessible) gets exactly the type it had before.
+///   * `finalize()` assembles through `Kokkos::create_mirror_view` --
+///     a no-op alias of the same view when `MemorySpace` is already
+///     host-accessible, and an explicit host allocation plus `deep_copy`
+///     otherwise -- so the refusal logic always runs on host memory it can
+///     legally touch, regardless of where the views actually live.
+///   * `measure()`, `centroid()` and `normal()` are `KOKKOS_INLINE_FUNCTION`
+///     (R-14 below), so a kernel that built a device-resident `Mesh` can
+///     read them from inside a `Kokkos::parallel_for`.
+///
 /// THREE DEPARTURES FROM THE REFERENCE MODEL.
 ///
 ///  1. **Cells are simplices, and they carry a parent.** The reference stores
@@ -59,7 +81,12 @@
 ///     them. A `const` method that fills a cache is a data race the moment two
 ///     Kokkos threads call it, and the whole point of this layer is to be used
 ///     from parallel kernels. They are computed in one pass by `finalize()`
-///     and are read-only thereafter.
+///     and are read-only thereafter -- `measure()` and `centroid()` read the
+///     precomputed value; `normal()` (R-14) recomputes from the vertices on
+///     every call, which is cheap enough (one cross product) that caching it
+///     would cost more in storage than it saves in arithmetic, and it keeps
+///     `finalize()` free of the `kCodimension == 1` branch `normal()` alone
+///     needs.
 
 #include <Kokkos_Core.hpp>
 
@@ -75,7 +102,8 @@ namespace fuse::native {
 
 /// Vertex coordinates, cell connectivity, and the quantities derived from
 /// them. Construct, fill the views, call `finalize()`, then read.
-template <int ManifoldDims, int SpatialDims>
+template <int ManifoldDims, int SpatialDims,
+         class MemorySpace = Kokkos::DefaultExecutionSpace::memory_space>
 class Mesh {
  public:
   static constexpr int kManifoldDims = ManifoldDims;
@@ -96,11 +124,11 @@ class Mesh {
   /// space and has none; codimension 2 or more has infinitely many.
   static constexpr bool kHasUniqueNormal = (kCodimension == 1);
 
-  using Points   = Kokkos::View<double* [SpatialDims]>;
-  using Cells    = Kokkos::View<int* [kVertsPerCell]>;
-  using Parents  = Kokkos::View<std::size_t*>;
-  using Scalars  = Kokkos::View<double*>;
-  using Vectors  = Kokkos::View<double* [SpatialDims]>;
+  using Points   = Kokkos::View<double* [SpatialDims], MemorySpace>;
+  using Cells    = Kokkos::View<int* [kVertsPerCell], MemorySpace>;
+  using Parents  = Kokkos::View<std::size_t*, MemorySpace>;
+  using Scalars  = Kokkos::View<double*, MemorySpace>;
+  using Vectors  = Kokkos::View<double* [SpatialDims], MemorySpace>;
 
   Mesh() = default;
 
@@ -141,11 +169,29 @@ class Mesh {
   /// pass. Refuses rather than computing from a bad index: an out-of-range
   /// vertex would otherwise read arbitrary memory and produce a measure that
   /// looks like a number.
+  ///
+  /// REVIEW.md R-03: this is host-only code by necessity -- `Result<void>`,
+  /// `Failure` and `std::to_string` are not device-callable -- so it works
+  /// through `Kokkos::create_mirror_view` rather than `points_`/`cells_`/
+  /// `parent_` directly. When `MemorySpace` is host-accessible (every
+  /// caller in this codebase today) the mirror IS the original view, so
+  /// this is exactly the loop that ran before; when it is not, the mirror
+  /// is a host-allocated copy this function fills MOAB-free with a
+  /// `deep_copy` at each end.
   [[nodiscard]] Result<void> finalize() {
     const std::size_t np = point_count();
-    for (std::size_t c = 0; c < simplex_count(); ++c) {
+    const std::size_t ns = simplex_count();
+
+    const auto h_points = Kokkos::create_mirror_view(points_);
+    const auto h_cells   = Kokkos::create_mirror_view(cells_);
+    const auto h_parent  = Kokkos::create_mirror_view(parent_);
+    Kokkos::deep_copy(h_points, points_);
+    Kokkos::deep_copy(h_cells, cells_);
+    Kokkos::deep_copy(h_parent, parent_);
+
+    for (std::size_t c = 0; c < ns; ++c) {
       for (int v = 0; v < kVertsPerCell; ++v) {
-        const int idx = cells_(c, v);
+        const int idx = h_cells(c, v);
         if (idx < 0 || static_cast<std::size_t>(idx) >= np) {
           return Failure{"E-MESH-CONNECTIVITY",
                          "simplex " + std::to_string(c) + " corner " +
@@ -154,10 +200,10 @@ class Mesh {
                              std::to_string(np) + " vertices"};
         }
       }
-      if (parent_(c) >= n_parent_cells_) {
+      if (h_parent(c) >= n_parent_cells_) {
         return Failure{"E-MESH-PARENT",
                        "simplex " + std::to_string(c) + " names parent cell " +
-                           std::to_string(parent_(c)) + " of " +
+                           std::to_string(h_parent(c)) + " of " +
                            std::to_string(n_parent_cells_) +
                            "; a conservation sum would silently omit it"};
       }
@@ -165,35 +211,54 @@ class Mesh {
 
     centroid_ = Vectors(Kokkos::view_alloc(name_ + ".centroid",
                                            Kokkos::WithoutInitializing),
-                        simplex_count());
+                        ns);
     measure_  = Scalars(Kokkos::view_alloc(name_ + ".measure",
                                            Kokkos::WithoutInitializing),
-                        simplex_count());
-    for (std::size_t c = 0; c < simplex_count(); ++c) {
+                        ns);
+    const auto h_centroid = Kokkos::create_mirror_view(centroid_);
+    const auto h_measure  = Kokkos::create_mirror_view(measure_);
+    for (std::size_t c = 0; c < ns; ++c) {
       for (int k = 0; k < kSpatialDims; ++k) {
         double sum = 0.0;
-        for (int v = 0; v < kVertsPerCell; ++v) sum += points_(cells_(c, v), k);
-        centroid_(c, k) = sum / static_cast<double>(kVertsPerCell);
+        for (int v = 0; v < kVertsPerCell; ++v) {
+          sum += h_points(h_cells(c, v), k);
+        }
+        h_centroid(c, k) = sum / static_cast<double>(kVertsPerCell);
       }
-      measure_(c) = simplex_measure(c);
+      h_measure(c) = simplex_measure(h_points, h_cells, c);
     }
+    Kokkos::deep_copy(centroid_, h_centroid);
+    Kokkos::deep_copy(measure_, h_measure);
+
     finalized_ = true;
     return Result<void>::success();
   }
 
-  [[nodiscard]] bool finalized() const noexcept { return finalized_; }
+  [[nodiscard]] KOKKOS_INLINE_FUNCTION bool finalized() const noexcept {
+    return finalized_;
+  }
 
   /// The m-dimensional measure of simplex `c`: length, area or volume
   /// according to the MANIFOLD dimension, never the spatial one. A triangle in
   /// 3D has an area, and that is what this returns.
-  [[nodiscard]] double measure(std::size_t c) const {
-    FUSE_ASSERT(finalized_, "measure() before finalize()");
+  ///
+  /// REVIEW.md R-14: `KOKKOS_INLINE_FUNCTION`, so a kernel can read a
+  /// precomputed measure without leaving the device. The `finalized_` check
+  /// is `FUSE_DEBUG_ASSERT`, not `FUSE_ASSERT` -- the latter formats a
+  /// string and throws, neither of which is device-callable -- per
+  /// error.hpp's own contract: the same condition must also be checked by a
+  /// real `FUSE_ASSERT` at the kernel's launch boundary, which is
+  /// `finalize()`'s caller's job, not this accessor's.
+  [[nodiscard]] KOKKOS_INLINE_FUNCTION double measure(std::size_t c) const {
+    FUSE_DEBUG_ASSERT(finalized_);
     return measure_(c);
   }
 
-  /// Component `k` of the centroid of simplex `c`.
-  [[nodiscard]] double centroid(std::size_t c, int k) const {
-    FUSE_ASSERT(finalized_, "centroid() before finalize()");
+  /// Component `k` of the centroid of simplex `c`. See `measure()` for the
+  /// `KOKKOS_INLINE_FUNCTION`/`FUSE_DEBUG_ASSERT` rationale (R-14).
+  [[nodiscard]] KOKKOS_INLINE_FUNCTION double centroid(std::size_t c,
+                                                       int k) const {
+    FUSE_DEBUG_ASSERT(finalized_);
     return centroid_(c, k);
   }
 
@@ -202,10 +267,16 @@ class Mesh {
   /// Only declared when the codimension is exactly 1. On a volume mesh this
   /// does not compile, which is the intent: "the normal of a tetrahedron" has
   /// no answer, and a runtime refusal would be a worse way to learn that.
-  void normal(std::size_t c, double* out) const
+  ///
+  /// REVIEW.md R-14: `KOKKOS_INLINE_FUNCTION`, and degeneracy is
+  /// `FUSE_DEBUG_ASSERT`, not `FUSE_ASSERT` -- see `measure()`. The
+  /// non-degenerate case was already checked once, when this simplex's
+  /// measure was computed in `finalize()`, so this is a cheap redundant
+  /// check, not the only guard.
+  KOKKOS_INLINE_FUNCTION void normal(std::size_t c, double* out) const
     requires(kCodimension == 1)
   {
-    FUSE_ASSERT(finalized_, "normal() before finalize()");
+    FUSE_DEBUG_ASSERT(finalized_);
     if constexpr (kManifoldDims == 2 && kSpatialDims == 3) {
       const int a = cells_(c, 0), b = cells_(c, 1), d = cells_(c, 2);
       const double u[3] = {points_(b, 0) - points_(a, 0),
@@ -217,7 +288,7 @@ class Mesh {
       double n[3] = {u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2],
                      u[0] * w[1] - u[1] * w[0]};
       const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-      FUSE_ASSERT(len > 0.0, "simplex {} is degenerate: it has no normal", c);
+      FUSE_DEBUG_ASSERT(len > 0.0);
       for (int k = 0; k < 3; ++k) out[k] = n[k] / len;
     } else {
       // Codimension 1 with M = 1, S = 2: an edge in the plane. The normal is
@@ -226,7 +297,7 @@ class Mesh {
       const double t[2] = {points_(b, 0) - points_(a, 0),
                            points_(b, 1) - points_(a, 1)};
       const double len = std::sqrt(t[0] * t[0] + t[1] * t[1]);
-      FUSE_ASSERT(len > 0.0, "simplex {} is degenerate: it has no normal", c);
+      FUSE_DEBUG_ASSERT(len > 0.0);
       out[0] = -t[1] / len;
       out[1] = t[0] / len;
     }
@@ -245,17 +316,25 @@ class Mesh {
   /// the one formula that covers every (M, S) pair: for codimension 0 it
   /// reduces to |det|/M!, and for a surface or curve it gives the area or
   /// length rather than zero, which a naive determinant would.
-  [[nodiscard]] double simplex_measure(std::size_t c) const {
+  ///
+  /// REVIEW.md R-03: templated on the point/cell view types, rather than
+  /// reading `points_`/`cells_` directly, because `finalize()` calls this on
+  /// its HOST MIRRORS (which may or may not be `points_`/`cells_`
+  /// themselves, depending on whether `MemorySpace` is host-accessible).
+  template <class PointsView, class CellsView>
+  [[nodiscard]] double simplex_measure(const PointsView& pts,
+                                       const CellsView& cls,
+                                       std::size_t c) const {
     if constexpr (kManifoldDims == 0) {
       return 0.0;  // a point has no extent, and that is not a defect
     } else {
       constexpr int M = kManifoldDims;
       double e[M][kSpatialDims];
-      const int a = cells_(c, 0);
+      const int a = cls(c, 0);
       for (int i = 0; i < M; ++i) {
-        const int b = cells_(c, i + 1);
+        const int b = cls(c, i + 1);
         for (int k = 0; k < kSpatialDims; ++k) {
-          e[i][k] = points_(b, k) - points_(a, k);
+          e[i][k] = pts(b, k) - pts(a, k);
         }
       }
       // G = E E^T, an M x M Gram matrix; sqrt(det G) is the M-volume of the
