@@ -91,6 +91,16 @@ LEGACY_TYPE_PREFIX = re.compile(r'\bKARMA[A-Z][A-Za-z0-9]*\b')
 LEGACY_MACRO = re.compile(r'\b(KARMA|SOMA)_[A-Z_]+\b')
 LEGACY_FILE_PREFIX = re.compile(r'^(karma_|soma_)')
 LEGACY_EXTENSION = {".C"}
+# `//` to end of line, capturing the prefix so it can be preserved -- the same
+# blanking check-invariants.py's feature-macro check does, and for the same
+# reason (REVIEW.md R-38 / BT-F12): a prose comment NAMING a legacy
+# namespace/prefix/macro (e.g. a port's rename changelog, or porting.md's own
+# examples) is not a USE of it, and a gate that fires on the name in prose
+# pressures an author to reword the documentation rather than fix code. Block
+# comments are deliberately not handled here either, for the same reason
+# check-invariants.py gives: this project's prose is `///` lines, and a regex
+# for `/* */` that got it wrong could blank real code.
+COMMENT_LINE = re.compile(r"(^|[^:])(//[^\n]*)")
 # --- end rules
 
 INCLUDE_FUSE = re.compile(r"^\s*#\s*include\s*[<\"]fuse/([a-z_]+)/")
@@ -189,11 +199,18 @@ def check_legacy(root: Path) -> list[str]:
             for lineno, line in enumerate(f.read_text(errors="replace").splitlines(), 1):
                 if LEGACY_INCLUDE.match(line):
                     problems.append(f"{rel}:{lineno}: fuse:: code includes from a parent tree (I11)")
-                if LEGACY_NAMESPACE.search(line):
+                # Comments blanked (preserving column offsets) before the
+                # namespace/prefix/macro checks: those three read as prose
+                # naming the rename just as easily as a live use of it, and
+                # LEGACY_INCLUDE above is anchored to a real #include and
+                # cannot match inside a `//` comment's text.
+                code_only = COMMENT_LINE.sub(
+                    lambda m: m.group(1) + " " * len(m.group(2)), line)
+                if LEGACY_NAMESPACE.search(code_only):
                     problems.append(f"{rel}:{lineno}: legacy namespace 'soma'/'KARMA' (I11)")
-                if LEGACY_TYPE_PREFIX.search(line):
+                if LEGACY_TYPE_PREFIX.search(code_only):
                     problems.append(f"{rel}:{lineno}: 'KARMA*' type prefix; the namespace carries it (I11)")
-                if LEGACY_MACRO.search(line):
+                if LEGACY_MACRO.search(code_only):
                     problems.append(f"{rel}:{lineno}: legacy macro prefix; use FUSE_* (I11)")
     return problems
 

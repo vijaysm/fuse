@@ -3,16 +3,30 @@
 Dependencies point down only. A layer may use the layers below it and must not name anything above.
 
 ```text
-interface   provider ABI · participant ABI · registry/adapter host · Fortran · Python · YAML · dynamic loading
+abi         provider ABI · participant ABI · registry/adapter host · Fortran · Python · YAML · dynamic loading
 runtime     Runner · field binding · transactions · checkpoint sets · Kokkos kernels
 transport   rank matching · MPI router · crystal router · external processes
 backend     mesh access · spatial and space-time transfer · solvers · persisted maps
+field   (*) the lazy field pipeline: FieldRef/FieldSpan, subview staging over Kokkos views
 num         waveforms · temporal bases · space-time projection · accelerators · convergence metric
 schedule    clocks · slabs · expansion · acyclicity proof · epochs · ExecutionPlan
 ir          operator DAG (SSA) · lowering registry · transform chain · golden IR
 model       semantic model · coupling graph · canonical descriptor · compatibility · inference
+linalg  (*) one dense least-squares facade, `builtin` or `eigen` behind it -- see docs/user/build.md
 base        Rational · units · TimeLevel · SemanticVersion · ids · Result/Diagnostics · byte writer
 ```
+
+`(*) linalg` and `field` are real, separately-ranked layers in
+`tools/check-layering.py`'s `LAYERS` list, omitted from earlier drawings of
+this diagram (REVIEW.md R-39 / BT-F13). Neither sits strictly "under" its
+neighbour the way the rest of the column does: `linalg` is a peer utility
+`num` depends on (nothing depends on `num` from here), and `field` is
+included only by `backend` and `runtime`, not by anything below them. The
+gate script's own comment (`tools/check-layering.py:16-29`, reproduced below)
+is the exact-rank source of truth; this diagram is the reader-facing summary
+of it, not a replacement for it. Renamed the former `interface` row to `abi`
+to match the gate's actual layer name — no directory ever matched
+`interface`.
 
 `physics-kit/` is a separate optional component. It **depends on FUSE and never the reverse** — that
 direction is what keeps FUSE adoptable by a code that already has its own discretisation.
