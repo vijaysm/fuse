@@ -330,6 +330,10 @@ struct HarnessOpts {
   /// E-ITER-NOCONVERGE. A caller that wants a region that actually runs sets
   /// this to a real criterion (R-10, REVIEW.md).
   fuse::ConvergenceCriterion region_convergence;
+  /// The region's accelerator. `Constant` (the AccelConfig default) is what
+  /// every existing test declares; `Aitken` and the IQN family are the kinds
+  /// resolve_regions() refuses on a multi-rank region under MPI.
+  fuse::AccelKind region_acceleration = fuse::AccelKind::Constant;
   /// Non-zero adds a `Bystander` on this interval, which only widens the
   /// common period. See the class comment for why a test would want that.
   Rational      bystander_dt{0};
@@ -393,7 +397,8 @@ std::unique_ptr<Harness> build(HarnessOpts o) {
   if (o.iteration_region) {
     g.add_iteration_region(fuse::IterationRegionDecl{
         .name = "outer", .channels = {ch}, .max_iterations = 12,
-        .convergence = o.region_convergence});
+        .convergence = o.region_convergence,
+        .acceleration = fuse::AccelConfig{.kind = o.region_acceleration}});
   }
 
   EXPECT_TRUE(h->backend.load(g.mesh(m1)).ok());
@@ -1239,6 +1244,29 @@ TEST(Runner, StillRunsAnIterationRegionWithNoCommunicatorConfigured) {
   // moving) from the one this test asks, which is whether resolve_regions()
   // still accepts a declaratively cross-rank region when no communicator is
   // configured -- exactly the R-10 fix's own guard condition.
+  const auto init = runner.initialize(h->components, h->registry);
+  ASSERT_TRUE(init.ok()) << init.error().code << ": " << init.error().message;
+}
+
+// The refusal's OTHER precondition. R-10's guard refuses a multi-rank region
+// only when a communicator is configured AND the accelerator's coefficient
+// would be computed from rank-local history. The test above covers the first
+// half (no communicator: accepted). This one covers the second: a region whose
+// components are declared on two ranks, driven by Aitken, with no communicator
+// configured, must ALSO be accepted -- because with no communicator there is
+// no second rank for the coefficients to disagree with. A guard that fired on
+// the declared placement alone would refuse every serial run of an accelerated
+// multi-rank graph, which is how single-process development of a parallel
+// coupling is done. Without this case the mutation that removes the
+// communicator test survived (mutation gate, 2026-09-20).
+TEST(Runner, AcceptsAnAcceleratedMultiRankRegionWhenNoCommunicatorIsConfigured) {
+  auto h = build(HarnessOpts{
+      .dst_rank_count = 2,
+      .iteration_region = true,
+      .region_convergence = one_measure(1e-6, "link"),
+      .region_acceleration = fuse::AccelKind::Aitken});
+  Runner runner{h->graph, h->dag, h->plan, h->backend};
+  bind_all(*h);
   const auto init = runner.initialize(h->components, h->registry);
   ASSERT_TRUE(init.ok()) << init.error().code << ": " << init.error().message;
 }

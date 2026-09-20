@@ -1,6 +1,6 @@
 # Mutation evidence — `compiler`
 
-Run 2026-09-19 against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
+Run 2026-09-20 against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
 
 | Mutation | File | Verdict | Killed by |
 |---|---|---|---|
@@ -18,5 +18,7 @@ Run 2026-09-19 against build `build-fuse-s1`. Regenerate with `tools/mutate.py -
 | `buffer-planning-failure-ignored` — the scheduler ignores a reported buffer-planning failure and takes the value anyway, turning a diagnostic the caller can read into an exception it cannot | `src/schedule/scheduler.cpp` | **KILLED** (test fails) | `schedule.plan` |
 | `merge-typed-at-first-writer-v2` — the combined value inherits the first writer's time level regardless of a later writer's offset (the axis the sweep's random lag placement actually varies -- it excludes iteration regions, so every generated writer already ties on `iterate`), instead of the newest contribution's -- the same regression the now-stale 'merge-typed-at-first-writer' anchored on the pre-two-pass code (R-27/R-43/R-44). Verified by hand: applying this mutation fails schedule.acyclicity_sweep (a False/0u mismatch on the independently-computed loop verdict); the sibling attempt anchored on the `iterate`-reduction line one loop up is a confirmed NO-OP against this test, because the sweep generator never produces a writer set spanning more than one `iterate` value -- do not reintroduce that anchor as this mutation's replacement. | `src/ir/lowering.cpp` | **KILLED** (test fails) | `schedule.acyclicity_sweep` |
 | `merge-not-folded-past-three-writers` — a 4+ writer Merge reverts to one oversized N-ary node instead of a left-fold of pairwise merges, so it compiles past lower() and then fails schedule() with E-SCHED-ARITY (R-27) | `src/ir/lowering.cpp` | **KILLED** (test fails) | `schedule.plan` |
+| `merge-placed-at-tick-start-lockstep` — in the lockstep fast path, a Merge combining two or more channels is placed at its owning component's tick START (the Source/unwritten-Sink convention) instead of the tick END its Transport/Epoch inputs land on, so it sorts before them and schedule() fails E-SCHED-ORDER on any graph where a writer is not colocated with the merge target | `src/schedule/expand.cpp` | **KILLED** (test fails) | `schedule.expand` |
+| `merge-placed-at-tick-start-general` — in the general (non-lockstep) path, a Merge combining two or more channels is placed at its owning component's tick START instead of the tick END, the same defect as merge-placed-at-tick-start-lockstep but in the other of expand()'s two emission paths -- ExpandMode::ForceGeneral is required to reach it, since a lockstep graph never takes this branch | `src/schedule/expand.cpp` | **KILLED** (test fails) | `schedule.expand` |
 
-**13 killed / 14 total.**
+**15 killed / 16 total.**

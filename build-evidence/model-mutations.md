@@ -1,6 +1,6 @@
 # Mutation evidence — `model`
 
-Run 2026-09-19 against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
+Run 2026-09-20 against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
 
 | Mutation | File | Verdict | Killed by |
 |---|---|---|---|
@@ -25,5 +25,8 @@ Run 2026-09-19 against build `build-fuse-s1`. Regenerate with `tools/mutate.py -
 | `descriptor-accepts-non-positive-unit-scale` — deserialize() stops rejecting a non-positive field unit scale (R-19), letting a corrupted descriptor introduce a zero (annihilator) or negative (sign-flipping) scale | `include/fuse/model/descriptor.hpp` | **KILLED** (test fails) | `model.descriptor` |
 | `compatibility-auto-inserts-negative-unit-scale` — check_units() stops gating a negative pure-scale conversion factor behind an explicit request (R-19), so it is auto-inserted like an ordinary positive rescale and silently flips the sign of every value crossing the channel | `src/model/compatibility.cpp` | **KILLED** (test fails) | `model.compatibility` |
 | `semantics-accepts-negative-unit-scale` — validate_field_semantics() stops flagging a negative field unit scale (R-19), leaving only the zero/annihilator case checked | `src/model/semantics.cpp` | **KILLED** (test fails) | `model.semantics` |
+| `yaml-io-emits-dangling-window-component` — emit_window() stops checking window_component_ok() before dereferencing a FromComponent window's component (N-base-model-1), reopening the std::out_of_range escape R-18 fixed for the other four to_yaml() sites but not this one | `src/model/yaml_io.cpp` | **KILLED** (test fails) | `model.yaml_io` |
+| `yaml-io-emits-dangling-field-region` — to_yaml()'s field loop stops bounds-checking a field's RegionId before g.region(f.region).name (N-base-model-1), reopening the same std::out_of_range escape R-18 fixed for the region->mesh, channel->field, merge->field, and iteration-region->channel sites | `src/model/yaml_io.cpp` | **KILLED** (test fails) | `model.yaml_io` |
+| `yaml-io-parses-non-positive-unit-scale` — from_yaml() stops refusing a non-positive parsed unit scale (N-base-model-2), reopening on the text front end the exact defect R-19 closed on the binary descriptor | `src/model/yaml_io.cpp` | **KILLED** (test fails) | `model.yaml_io` |
 
-**21 killed / 21 total.**
+**24 killed / 24 total.**
