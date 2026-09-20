@@ -224,9 +224,9 @@ marked `THROWS` in `test/CMakeLists.txt`. Recorded there: the label is
 target-granular, so excluding one also costs its non-throwing cases — prefer
 per-case guards if the list grows.
 
-### C0. Full implementation review, 2026-09-19 — 50 findings, fix plan in `REVIEW.md`
+### C0. Full implementation review, 2026-09-19 — 51 findings, fix plan in `REVIEW.md`
 
-Ten BLOCKER, 22 MAJOR. Read `REVIEW.md` §2 first: the fifty reduce to six causes, and §4 gives the
+11 BLOCKER, 21 MAJOR. Read `REVIEW.md` §2 first: the fifty-one reduce to six causes, and §4 gives the
 fix order with the gate additions that keep each one closed. Two corrections to THIS file followed
 from it: B1 above was stale (tier 2 builds, see C1) — now closed, above. C1 below understated the
 MOAB situation — the test file opened with `#ifdef FUSE_HAVE_MOAB` and no config include, so its 38
@@ -282,19 +282,28 @@ sequences with the ABI work rather than being done in passing.
 
 ## C. Not defects — do not fix these
 
-- **Two mutations report `NOT-ASSESSED` locally.** They need MPI, and a test
+- **Five mutations report `NOT-ASSESSED` locally.** They need MPI, and a test
   that cannot start exits non-zero whether or not the mutation had an effect.
-  Recording that as a kill would be evidence worse than none.
-- **Two mutations are declared equivalent**, each with a written bound. The
-  backend one — computing the conservation audit before rather than after the
-  negligible-overlap floor — is indistinguishable because the floor discards
-  only contributions below 1e-12 of a cell's measure. **Raising the floor would
-  make it distinguishable again** and the declaration says so.
+  Recording that as a kill would be evidence worse than none. Three are in
+  `transport-mutations.md` (`peer-plan-skips-the-numbering-check`,
+  `peer-plan-drops-the-local-copies`, and `build-plan-skips-the-components-agreement` —
+  the last tagged R-30 in its own description, added while fixing that finding) and two
+  are in `runtime-mutations.md` (`cross-rank-region-check-fires-unconditionally`,
+  `region-residual-skips-the-cross-rank-reduction` — both tagged R-10 in their own
+  description, added while fixing that finding).
+- **One mutation is declared equivalent**, with a written bound: `ir.scale`'s
+  `unlowerable-step-silently-dropped` (`compiler-mutations.md`) — no graph the
+  model can currently express reaches the defensive branch it mutates. The
+  backend mutation once declared equivalent here — computing the conservation
+  audit before rather than after the negligible-overlap floor — had that
+  declaration withdrawn 2026-09-19 and is now an ordinary mutation, killed
+  (`backend-mutations.md`).
 - **The four `SkippedWithoutMoab` entries are the PARENT's, not FUSE's.** They
   live in `upstream/soma/test/unit/{moab_mesh,remap,remap_order,remap_runtime}_test.cpp`
-  and are run by the imported-suite CI leg. FUSE's own suite has no
-  MOAB-dependent test at all, which is consistent with B1: there is no MOAB
-  backend here yet to test. Do not read those four skips as FUSE coverage.
+  and are run by the imported-suite CI leg. FUSE's own suite does have a
+  MOAB-dependent test now (`backend.moab_mesh`, 38 cases, registered whenever
+  `FUSE_ENABLE_MOAB` is on) — what it lacks is a host run, per C1. Do not read
+  those four parent skips as FUSE coverage either way.
 - **The serial loops in `fuse/num/kernels.hpp` are not dead code** now that
   `space_kernels.hpp` exists. They are the oracle the parallel kernels are
   tested against, and they are what runs where no execution space has been
