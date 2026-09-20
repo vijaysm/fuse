@@ -188,10 +188,16 @@ class StubComponent final : public fuse::Component {
   /// component it checkpoints to support rollback (E-ITER-NOROLLBACK);
   /// default false matches every existing caller, none of which puts this
   /// component in a region.
+  /// N-transport-runtime-2 (REVIEW.md pass2): fail_after -- -1 (the
+  /// default, every existing caller) never refuses; 0 refuses starting with
+  /// this component's very FIRST advance() call, the shape
+  /// RunnerTransport.StillRunsASecondChannelAfterARegionFailsUnderMpi needs
+  /// to force an iteration region's re-advance to fail on sweep 0 under a
+  /// real multi-rank run.
   StubComponent(std::string name, fuse::FieldId field, std::size_t count,
-               bool rollback = false)
+               bool rollback = false, int fail_after = -1)
       : name_(std::move(name)), field_(field), storage_(count, 0.0),
-        rollback_(rollback) {}
+        rollback_(rollback), fail_after_(fail_after) {}
 
   [[nodiscard]] std::string name() const override { return name_; }
 
@@ -205,6 +211,11 @@ class StubComponent final : public fuse::Component {
   }
 
   fuse::Result<void> advance(const fuse::StepContext&) override {
+    if (fail_after_ >= 0 && calls_++ >= fail_after_) {
+      return fuse::Failure{"E-TEST-ADVANCE-REFUSED",
+                          "'" + name_ + "' refuses advance() past call " +
+                              std::to_string(fail_after_)};
+    }
     return fuse::Result<void>::success();  // the test writes storage directly
   }
 
@@ -220,6 +231,7 @@ class StubComponent final : public fuse::Component {
 
   [[nodiscard]] double*     data() noexcept { return storage_.data(); }
   [[nodiscard]] std::size_t size() const noexcept { return storage_.size(); }
+  [[nodiscard]] int         calls() const noexcept { return calls_; }
 
  private:
   std::string          name_;
@@ -227,6 +239,8 @@ class StubComponent final : public fuse::Component {
   std::vector<double>  storage_;
   bool                 rollback_;
   std::vector<double>  saved_;
+  int                  fail_after_ = -1;
+  int                  calls_ = 0;
 };
 
 /// Everything a test needs: the graph, the plan, the backend, and the two
@@ -247,9 +261,17 @@ class TwoComponentJob {
   /// the two kinds R-10's fix genuinely supports for a region spanning more
   /// than one rank; a dynamic kind (Aitken and stronger) is the case it
   /// still refuses -- see RefusesADynamicAcceleratorOnACrossRankRegion.
+  /// `with_independent_channel`: N-transport-runtime-2 (REVIEW.md pass2) --
+  /// adds a SECOND channel, "linkB", between two more components on the SAME
+  /// fluid_/solid_ ranks and the SAME shared region, but NOT one of the
+  /// region's channels. Default false leaves every existing caller
+  /// unchanged. `fail_fluid_after`: forwarded to "fluid"'s StubComponent
+  /// (see its own doc); -1 (default) never refuses.
   explicit TwoComponentJob(const std::string& entity_set,
                            bool with_iteration_region = false,
-                           fuse::AccelKind accel_kind = fuse::AccelKind::None)
+                           fuse::AccelKind accel_kind = fuse::AccelKind::None,
+                           bool with_independent_channel = false,
+                           int fail_fluid_after = -1)
       // MEMBER DECLARATION ORDER, NOT INITIALIZER-LIST ORDER, decides when
       // each of these actually runs. `backend` is declared below
       // fluid_/solid_/n_entities_/dim_ for exactly this reason: it is built
@@ -287,6 +309,23 @@ class TwoComponentJob {
           .acceleration = fuse::AccelConfig{.kind = accel_kind}});
     }
 
+    fuse::FieldId src_field_b, dst_field_b;
+    if (with_independent_channel) {
+      const auto pb = graph.add_component(fuse::ComponentDecl{
+          .name = "producer_b", .ranks = fluid_, .interval = Rational{1}});
+      const auto cb = graph.add_component(fuse::ComponentDecl{
+          .name = "consumer_b", .ranks = solid_, .interval = Rational{1}});
+      src_field_b = graph.add_field(
+          pb, fuse::FieldSpec{.name = "outB", .region = region_,
+                             .units = fuse::units::kKelvin,
+                             .intent = fuse::Intent::Provides});
+      dst_field_b = graph.add_field(
+          cb, fuse::FieldSpec{.name = "inB", .region = region_,
+                             .units = fuse::units::kKelvin,
+                             .intent = fuse::Intent::Requires});
+      graph.add_channel("linkB", src_field_b, dst_field_b);
+    }
+
     EXPECT_TRUE(backend.load(graph.mesh(mesh)).ok());
 
     const auto lowered = lower(graph);
@@ -305,9 +344,16 @@ class TwoComponentJob {
     // not one. EXPECT_TRUE matches every other check in this constructor.
     EXPECT_TRUE(count.ok());
     components.add(std::make_unique<StubComponent>(
-        "fluid", src_field_, count.value(), with_iteration_region));
+        "fluid", src_field_, count.value(), with_iteration_region,
+        fail_fluid_after));
     components.add(std::make_unique<StubComponent>(
         "solid", dst_field_, count.value(), with_iteration_region));
+    if (with_independent_channel) {
+      components.add(std::make_unique<StubComponent>(
+          "producer_b", src_field_b, count.value()));
+      components.add(std::make_unique<StubComponent>(
+          "consumer_b", dst_field_b, count.value()));
+    }
   }
 
   void write_source_by_global_id() {
@@ -677,6 +723,65 @@ TEST(RunnerTransport, RefusesADynamicAcceleratorOnACrossRankRegion) {
          "configured, and the region names AccelKind::Aitken -- the one "
          "case R-10's reduction fix still refuses";
   EXPECT_EQ(r.error().code, "E-RT-REGION-MPI") << r.error().message;
+  ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
+}
+
+// N-transport-runtime-2 / R-09 (REVIEW.md pass2, re-transport-runtime.md):
+// what R-09's fix (step_period(), src/runtime/runner.cpp) is actually FOR --
+// a region failure must not abandon a LATER, unrelated channel's collective
+// instructions in the same period. Under Tier 0 (no MPI) that abandonment is
+// unobservable: nothing is waiting on the other end. Under a real multi-rank
+// run it is exactly the hang rank-agreement.md exists to prevent -- "fluid"'s
+// rank(s) return out of step_period() the moment the region fails (pre-R-09
+// behaviour) while "consumer_b"'s rank(s), on the disjoint `solid_` set,
+// still walk forward to "linkB"'s Epoch and block waiting for a partner that
+// already left. Tier 0 could not even construct this shape at all: an
+// independent channel on the region's own clock is refused outright
+// (E-SCHED-REGION) unless declared before the region, and in that ordering
+// its own Epoch is scheduled BEFORE the region -- a plan property, not a
+// property of R-09's fix -- so nothing downstream of the region ever
+// exists to abandon. Here `with_independent_channel` puts producer_b/
+// consumer_b on the SAME fluid_/solid_ ranks as the region itself, so
+// "linkB"'s Transport+Epoch are genuinely collective and genuinely
+// downstream: reverting R-09's one-line change reproduces the hang this
+// test is built to catch (ctest's TIMEOUT, matching the existing R-10
+// mutation entries in build-evidence/mutations/transport-runtime.toml);
+// with the fix, every rank -- both the ones that saw "fluid" fail and the
+// ones that never did -- must return from run_period() with the SAME
+// reported failure, and consumer_b's rank(s) must show their own advance()
+// having run.
+TEST(RunnerTransport, StillRunsASecondChannelAfterARegionFailsUnderMpi) {
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
+  auto h = TwoComponentJob("", /*with_iteration_region=*/true,
+                           fuse::AccelKind::None,
+                           /*with_independent_channel=*/true,
+                           /*fail_fluid_after=*/0);
+  ASSERT_GT(h.plan.region_count(), 0u);
+  Runner runner{h.graph, h.dag, h.plan, h.backend};
+  bind_all(h);
+
+  fuse::RunnerConfig cfg;
+  cfg.transport         = "mpi";
+  cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
+  cfg.transport_setup   = mpi_comm_setup();
+  const auto init = runner.initialize(h.components, h.registry, cfg);
+  ASSERT_TRUE(init.ok()) << init.error().code << ": " << init.error().message;
+
+  auto* cons_b = dynamic_cast<StubComponent*>(h.components.find("consumer_b"));
+  ASSERT_NE(cons_b, nullptr);
+
+  const auto r = runner.run_period(h.components);
+  ASSERT_FALSE(r.ok())
+      << "fluid refuses its first advance() inside the region; the period "
+         "must report that failure on every rank, including ranks that "
+         "belong only to the independent channel";
+  EXPECT_EQ(r.error().code, "E-TEST-ADVANCE-REFUSED") << r.error().message;
+  EXPECT_GE(cons_b->calls(), 1)
+      << "consumer_b has nothing to do with the region; its own advance() "
+         "must still run rather than being abandoned when step_period() "
+         "returns out of the region's failure (the pre-R-09 behaviour, "
+         "which leaves consumer_b's rank(s) blocked in linkB's Epoch "
+         "waiting for a partner that already returned)";
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 

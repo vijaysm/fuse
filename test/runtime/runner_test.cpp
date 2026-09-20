@@ -60,6 +60,10 @@ struct ProducerOpts {
   /// put a real Failure on the re-advance path inside an iteration region's
   /// sweep loop.
   bool        fail_advance = false;
+  /// N-transport-runtime-2 (REVIEW.md pass2): the harness's single producer
+  /// is always named "producer"; a test that needs a SECOND, independent
+  /// producer/channel in the same graph sets this to a distinct name.
+  std::string name = "producer";
 };
 
 /// Producer writes a value; consumer just holds what it receives.
@@ -73,11 +77,11 @@ class Producer final : public fuse::Component {
         data_((o.bind_count == 0 ? o.cells : o.bind_count) * o.bind_stride,
               o.value) {}
 
-  [[nodiscard]] std::string name() const override { return "producer"; }
+  [[nodiscard]] std::string name() const override { return opts_.name; }
 
   fuse::Result<void> register_fields(FieldRegistry& reg,
                                      const CouplingGraph& g) override {
-    const auto cid = g.find_component("producer");
+    const auto cid = g.find_component(opts_.name);
     const std::size_t count =
         opts_.bind_count == 0 ? opts_.cells : opts_.bind_count;
     for (const fuse::FieldId f : g.component(*cid).fields) {
@@ -142,17 +146,20 @@ class Consumer final : public fuse::Component {
  public:
   /// `rollback`: see Producer::rollback_ (R-10, REVIEW.md) -- same opt-in,
   /// same reason, default false to match every existing caller.
-  explicit Consumer(std::size_t n, bool rollback = false)
-      : data_(n, 0.0), rollback_(rollback) {
+  /// `name`: N-transport-runtime-2 (REVIEW.md pass2) -- a second, independent
+  /// consumer in the same graph needs a name distinct from "consumer".
+  explicit Consumer(std::size_t n, bool rollback = false,
+                    std::string name = "consumer")
+      : data_(n, 0.0), rollback_(rollback), name_(std::move(name)) {
     seen_.reserve(64);
     seen_at_.reserve(64);
   }
 
-  [[nodiscard]] std::string name() const override { return "consumer"; }
+  [[nodiscard]] std::string name() const override { return name_; }
 
   fuse::Result<void> register_fields(FieldRegistry& reg,
                                      const CouplingGraph& g) override {
-    const auto cid = g.find_component("consumer");
+    const auto cid = g.find_component(name_);
     for (const fuse::FieldId f : g.component(*cid).fields) {
       auto r = reg.bind(f, fuse::FieldRef{data_.data(),
                                           fuse::Layout{.stride = 1,
@@ -200,6 +207,7 @@ class Consumer final : public fuse::Component {
   std::vector<Rational> seen_at_;
   bool                  rollback_;
   std::vector<double>   saved_;
+  std::string           name_;
 };
 
 /// A component that participates in nothing: it declares one `Provides` field
@@ -325,6 +333,14 @@ struct HarnessOpts {
   /// Non-zero adds a `Bystander` on this interval, which only widens the
   /// common period. See the class comment for why a test would want that.
   Rational      bystander_dt{0};
+  /// N-transport-runtime-1 (REVIEW.md pass2): how many ranks the consumer is
+  /// declared on. 1 (the default) reproduces every existing caller. A
+  /// caller that wants the channel's target on more than one DECLARED rank,
+  /// with no `RunnerConfig::base_communicator` set, is the same
+  /// Tier-0-legitimate "nominal placement, one real process" case
+  /// resolve_regions() already relies on (R-10's own
+  /// StillRunsAnIterationRegionWithNoCommunicatorConfigured).
+  int           dst_rank_count = 1;
 };
 
 std::unique_ptr<Harness> build(HarnessOpts o) {
@@ -348,7 +364,7 @@ std::unique_ptr<Harness> build(HarnessOpts o) {
       .name = "producer", .ranks = fuse::RankSet{0, 1},
       .interval = o.src_dt});
   const auto c = g.add_component(fuse::ComponentDecl{
-      .name = "consumer", .ranks = fuse::RankSet{1, 1},
+      .name = "consumer", .ranks = fuse::RankSet{1, o.dst_rank_count},
       .interval = o.dst_dt});
   const auto s = g.add_field(
       p, fuse::FieldSpec{.name = "out", .region = r1, .units = u::kKelvin,
@@ -1091,6 +1107,121 @@ TEST(Runner, AnAdvanceFailureInsideAnIterationRegionSweepIsReported) {
   EXPECT_EQ(r.error().code, "E-TEST-ADVANCE-REFUSED") << r.error().message;
 }
 
+// N-transport-runtime-2 (REVIEW.md pass2, re-transport-runtime.md): the test
+// above pins run_region()'s PRE-EXISTING per-sweep check; it has nothing
+// downstream of the region in the same period, so it cannot tell R-09's own
+// addition -- step_period() carrying a region failure forward
+// (`i = r.exit + 1; continue;`) instead of returning straight out -- apart
+// from the pre-R-09 `return rr;` this pins against. Reverting exactly that
+// one-line change and rerunning this suite showed zero failures (pass2
+// review, confirmed again here): with a SECOND, independent channel present,
+// the reverted line returns before step_period() ever reaches that channel's
+// own instructions, abandoning them -- silent here (Tier 0 has no MPI, so
+// nothing hangs), but the abandonment itself is real and is what causes the
+// partner-rank hang under MPI (test/parallel/runner_transport_test.cpp,
+// RunnerTransport.StillRunsASecondChannelAfterARegionFailsUnderMpi -- "Needs
+// a host run").
+//
+// linkB is declared on the SAME clock as linkA (both dt=1) but is NOT one of
+// the region's channels, so its Remap/Diagnose land BEFORE the region in the
+// scheduled stream and only its Sink (consumer_b.in) lands after (Kahn's
+// algorithm ties broken by ascending NodeId, include/fuse/ir/dag.hpp: the
+// region's own Residual is created in a later lowering phase than every
+// channel's operator chain, so it always sorts after linkB's Remap/Diagnose
+// -- declaring linkB's whole graph before linkA/the region keeps ITS chain
+// from interleaving INSIDE the region's own run, which the scheduler refuses
+// outright, E-SCHED-REGION, if the declaration order is reversed). Sink is
+// non-collective (fuse::is_collective(), op.hpp) and is skipped once
+// step_failure is set whether or not R-09's fix is present -- so what this
+// test can and does pin is that consumer_b's OWN tick (Consumer::advance(),
+// scheduled by absolute time and already satisfied before the region's
+// failure exists) is not retroactively undone by a later, unrelated
+// region's failure, and that the period still reports that failure.
+TEST(Runner, ASecondChannelStillAdvancesAfterAnUnrelatedRegionFails) {
+  CouplingGraph g;
+  const auto m3 = g.add_mesh(fuse::MeshDecl{.name = "m3", .source = "generated:line:8"});
+  const auto m4 = g.add_mesh(fuse::MeshDecl{.name = "m4", .source = "generated:line:8"});
+  const auto m1 = g.add_mesh(fuse::MeshDecl{.name = "m1", .source = "generated:line:8"});
+  const auto m2 = g.add_mesh(fuse::MeshDecl{.name = "m2", .source = "generated:line:8"});
+  const auto r3 = g.add_region(fuse::Region{.name = "r3", .mesh = m3, .dimension = 1});
+  const auto r4 = g.add_region(fuse::Region{.name = "r4", .mesh = m4, .dimension = 1});
+  const auto r1 = g.add_region(fuse::Region{.name = "r1", .mesh = m1, .dimension = 1});
+  const auto r2 = g.add_region(fuse::Region{.name = "r2", .mesh = m2, .dimension = 1});
+
+  const auto pb = g.add_component(fuse::ComponentDecl{
+      .name = "producer_b", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  const auto cb = g.add_component(fuse::ComponentDecl{
+      .name = "consumer_b", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  const auto pa = g.add_component(fuse::ComponentDecl{
+      .name = "producer_a", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  const auto ca = g.add_component(fuse::ComponentDecl{
+      .name = "consumer_a", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+
+  const auto sb = g.add_field(pb, fuse::FieldSpec{
+      .name = "out", .region = r3, .units = u::kKelvin, .intent = fuse::Intent::Provides});
+  const auto tb = g.add_field(cb, fuse::FieldSpec{
+      .name = "in", .region = r4, .units = u::kKelvin, .intent = fuse::Intent::Requires});
+  const auto sa = g.add_field(pa, fuse::FieldSpec{
+      .name = "out", .region = r1, .units = u::kKelvin, .intent = fuse::Intent::Provides});
+  const auto ta = g.add_field(ca, fuse::FieldSpec{
+      .name = "in", .region = r2, .units = u::kKelvin, .intent = fuse::Intent::Requires});
+
+  g.add_channel("linkB", sb, tb);
+  const auto chA = g.add_channel("linkA", sa, ta);
+  g.add_iteration_region(fuse::IterationRegionDecl{
+      .name = "outer", .channels = {chA}, .max_iterations = 12,
+      .convergence = one_measure(1e-6, "linkA")});
+
+  SerialMeshBackend backend;
+  ASSERT_TRUE(backend.load(g.mesh(m1)).ok());
+  ASSERT_TRUE(backend.load(g.mesh(m2)).ok());
+  ASSERT_TRUE(backend.load(g.mesh(m3)).ok());
+  ASSERT_TRUE(backend.load(g.mesh(m4)).ok());
+
+  const auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+  fuse::OperatorDAG dag = lowered.dag;
+  const fuse::ClockSet clocks{g};
+  const auto sched = schedule(g, dag, clocks, fuse::make_region_sizes(g, backend));
+  ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
+  fuse::ExecutionPlan plan = sched.plan;
+
+  ProducerOpts po_a;
+  po_a.name = "producer_a";
+  po_a.fail_advance = true;
+  po_a.rollback = true;
+  ProducerOpts po_b;
+  po_b.name = "producer_b";
+
+  ComponentSet components;
+  components.add(std::make_unique<Producer>(po_a));
+  components.add(std::make_unique<Consumer>(8, /*rollback=*/true, "consumer_a"));
+  components.add(std::make_unique<Producer>(po_b));
+  components.add(std::make_unique<Consumer>(8, /*rollback=*/false, "consumer_b"));
+
+  FieldRegistry registry;
+  for (auto& c : components) {
+    ASSERT_TRUE(c.register_fields(registry, g).ok());
+  }
+
+  Runner runner{g, dag, plan, backend};
+  const auto init = runner.initialize(components, registry);
+  ASSERT_TRUE(init.ok()) << init.error().code << ": " << init.error().message;
+
+  auto* cons_b = dynamic_cast<Consumer*>(components.find("consumer_b"));
+  ASSERT_NE(cons_b, nullptr);
+
+  const auto r = runner.run_period(components);
+  ASSERT_FALSE(r.ok())
+      << "producer_a's region still failed; a second, independent channel "
+         "completing must not turn that into a reported success";
+  EXPECT_EQ(r.error().code, "E-TEST-ADVANCE-REFUSED") << r.error().message;
+  EXPECT_EQ(cons_b->steps, 1)
+      << "linkB has nothing to do with region 'outer'; its consumer's own "
+         "advance() must not be skipped or rolled back just because an "
+         "unrelated region failed later in the same period";
+}
+
 // The companion regression: every existing single-process caller -- no
 // RunnerConfig::base_communicator set at all -- must keep working exactly as
 // before. R-10's fix reads the same declared placement as the test above;
@@ -1390,6 +1521,66 @@ TEST(Runner, ConservationCheckCanBeTurnedOff) {
   // magnitude, which is zero either way -- is the observable.
   EXPECT_EQ(runner.stats().conservation_checks, 0);
   EXPECT_EQ(runner.stats().conservation_violations, 0);
+}
+
+// ---------------------------------------------------------------------------
+// N-transport-runtime-1 (REVIEW.md pass2, docs/dev/reviews/2026-09-19/pass2/
+// re-transport-runtime.md): resolve_constrain()'s conservation integral sums
+// only this rank's owned share of it (weights_for() zeroes every ghost) once
+// the Remap's output component spans more than one rank -- the same
+// rank-local-decision defect R-10 fixed for iteration-region convergence.
+// Reducing it correctly would need Constrain reclassified in
+// fuse::is_collective() (include/fuse/ir/op.hpp, outside this pass's owned
+// paths): a rank that already failed earlier in the period skips a
+// non-collective instruction, so a partner still calling into a new
+// cross-rank reduction here would block on a message that never arrives --
+// exactly the hang class R-09 fixed, reopened one instruction over. Refusing
+// at setup is what this pass can do without adding a collective: the check
+// (`graph.component(dst).ranks`, the declared placement) is identical on
+// every rank, so the refusal fires deterministically everywhere and nothing
+// can hang on it -- the same reasoning resolve_regions() already uses for
+// E-RT-REGION-MPI.
+//
+// Verifiable without MPI, and more directly than R-10's own analogous guard:
+// resolve_constrain() runs inside resolve_instructions(), which setup() calls
+// and checks BEFORE attach_comm_graphs() (the "#if !FUSE_HAVE_MPI: refuse ANY
+// base_communicator" guard that intercepts R-10's own Tier 0 attempt -- see
+// the comment on StillRunsAnIterationRegionWithNoCommunicatorConfigured
+// above). So this refusal fires and setup() returns before that guard is
+// ever reached, and `cfg.base_communicator` here is never dereferenced as a
+// real communicator on this path -- only the Fortran handle slot
+// RunnerConfig already carries is needed, exactly as R-10's guard-condition
+// tests use it.
+TEST(Runner, RefusesAConservationCheckOnAMultiRankTarget) {
+  auto h = build(HarnessOpts{.conservation = fuse::Conservation::Extensive,
+                             .dst_rank_count = 2});
+  ASSERT_TRUE(h->arc_of("link/constrain").valid());
+  Runner runner{h->graph, h->dag, h->plan, h->backend};
+  bind_all(*h);
+  RunnerConfig cfg;
+  cfg.base_communicator = 0;
+  const auto r = runner.initialize(h->components, h->registry, cfg);
+  ASSERT_FALSE(r.ok())
+      << "the consumer is declared on 2 ranks; a Constrain that sums only "
+         "this rank's owned share cannot be a correct global conservation "
+         "check";
+  EXPECT_EQ(r.error().code, "E-RT-CONSERVATION-MPI") << r.error().message;
+}
+
+// The companion regression, mirroring
+// StillRunsAnIterationRegionWithNoCommunicatorConfigured: the identical
+// nominal placement (consumer on 2 declared ranks) must still be accepted
+// when no communicator is configured -- there is no second rank to
+// desynchronise from, and every single-process caller that happens to
+// declare a multi-rank placement (the common case in this file's OTHER
+// tests, which never sets base_communicator at all) must keep working.
+TEST(Runner, StillRunsAConservationCheckWithNoCommunicatorConfigured) {
+  auto h = build(HarnessOpts{.conservation = fuse::Conservation::Extensive,
+                             .dst_rank_count = 2});
+  Runner runner{h->graph, h->dag, h->plan, h->backend};
+  bind_all(*h);
+  const auto r = runner.initialize(h->components, h->registry);
+  ASSERT_TRUE(r.ok()) << r.error().code << ": " << r.error().message;
 }
 
 TEST(Runner, RejectsANegativePeriodCount) {

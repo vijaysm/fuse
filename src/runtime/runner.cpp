@@ -442,6 +442,55 @@ Result<void> Runner::Impl::resolve_constrain(const Instruction& ins,
                      ", so there is no pre-remap integral to compare against"};
   }
 
+  // N-transport-runtime-1 (REVIEW.md pass2, re-transport-runtime.md): the
+  // integral weights_for() builds -- the field value per owned entity against
+  // its measure, every ghost zeroed -- is this rank's OWNED SHARE of the true
+  // integral once the Remap's output spans more than one rank. Comparing two
+  // such shares in isolation is not the check the comment above ConstrainInfo
+  // says it is: it can false-fire on a correct cross-rank remap (mass that
+  // left is accounted for on the receiving rank, not here) and it can miss a
+  // real defect that only shows up once every rank's share is summed. That is
+  // exactly the rank-local-decision defect R-10 fixed for iteration-region
+  // convergence (reduce_region_residuals(), below).
+  //
+  // Reducing it the same way is NOT done here. reduce_region_residuals() is
+  // reachable after a local failure only because Epoch and Transport are
+  // marked collective in fuse::is_collective() (include/fuse/ir/op.hpp) --
+  // outside this pass's owned paths -- so a rank that already failed earlier
+  // in the period still reaches it. Constrain is marked NOT collective there,
+  // on purpose (Phase 4 "reports; it does not correct" -- ordinary local
+  // arithmetic every other rank is free to skip). Adding a cross-rank
+  // reduction inside Constrain without also reclassifying it would mean: a
+  // rank that has not yet failed reaches this reduction expecting its peers,
+  // while a peer that already failed earlier in the SAME period skips this
+  // instruction entirely (it is "local") and never sends its half -- the
+  // exact hang R-09 fixed, reopened one instruction over. So this refuses
+  // instead, at setup, where it can be decided without any collective at
+  // all: `graph.component(dst).ranks` is the declared placement, identical on
+  // every rank, so every rank reaches the same verdict independently and
+  // nothing can hang on it -- the same reasoning resolve_regions() uses for
+  // its own E-RT-REGION-MPI (src/runtime/iteration.cpp).
+  const int dst_rank_set = dag.arc(ins.out).type.rank_set;
+  if (config.base_communicator.has_value() && dst_rank_set >= 0 &&
+      static_cast<std::size_t>(dst_rank_set) < graph.component_count()) {
+    const RankSet& dst_ranks =
+        graph.component(ComponentId{static_cast<std::uint32_t>(dst_rank_set)})
+            .ranks;
+    if (dst_ranks.size() > 1) {
+      return Failure{
+          "E-RT-CONSERVATION-MPI",
+          "the channel writing arc %" + std::to_string(ins.out.value()) +
+              "'s Constrain checks conservation on a component placed on " +
+              std::to_string(dst_ranks.size()) +
+              " ranks; the check sums only this rank's owned share of the "
+              "integral, with no cross-rank reduction, so it can both "
+              "false-fire on a correct cross-rank remap and miss a real one "
+              "(REVIEW.md N-transport-runtime-1). Set "
+              "RunnerConfig::check_conservation = false for a multi-rank "
+              "placement, or place the channel's target on a single rank"};
+    }
+  }
+
   const Slot& in_slot = slots[before.value()];
   const Slot& out_slot = slots[ins.out.value()];
   const Result<std::uint32_t> wb = weights_for(
