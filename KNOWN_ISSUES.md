@@ -162,7 +162,15 @@ space was actually picked up.
 
 ## B. Mine, and already scheduled — please do not act on these
 
-### B1. Tier 2 does not build: the MOAB backend is unported
+### ~~B1. Tier 2 does not build: the MOAB backend is unported~~ — CLOSED 2026-09-18, superseded by C1
+
+Stale and false as of the S5.2 port: `include/fuse/backend/moab_backend.hpp`
+and `src/backend/moab_backend.cpp` both exist and are wired into
+`fuse-coupler-backend`, so the compile error quoted below cannot reproduce at
+HEAD (REVIEW.md R-23). See C1 below for the current status of tier 2 — it
+builds; what is still open is a host run of its test suite.
+
+<details><summary>Original text, kept for history</summary>
 
 `-DFUSE_ENABLE_MOAB=ON` now configures and resolves MOAB 5.6.0 correctly, then
 fails to compile:
@@ -175,6 +183,8 @@ This is **not** a build defect. `upstream/soma/src/mesh/moab_backend.cpp` is
 2,111 lines and has not been ported yet; porting it is the mesh-backend step of
 S5. The conservative remap path that does not need MOAB works today and is the
 differential oracle for this one when it lands.
+
+</details>
 
 ### ~~B1a. The no-exceptions build aborts where the library catches its own refusal~~ — CLOSED 2026-09-17
 
@@ -217,10 +227,12 @@ per-case guards if the list grows.
 ### C0. Full implementation review, 2026-09-19 — 50 findings, fix plan in `REVIEW.md`
 
 Ten BLOCKER, 22 MAJOR. Read `REVIEW.md` §2 first: the fifty reduce to six causes, and §4 gives the
-fix order with the gate additions that keep each one closed. Two corrections to THIS file follow from
-it: B1 below is stale (tier 2 builds, see C1), and C1 understates the MOAB situation — the test file
-opens with `#ifdef FUSE_HAVE_MOAB` and no config include, so its 38 cases compile to a skip stub in
-every configuration, host included (`REVIEW.md` R-09). Both are fixed in wave 1 of the plan.
+fix order with the gate additions that keep each one closed. Two corrections to THIS file followed
+from it: B1 above was stale (tier 2 builds, see C1) — now closed, above. C1 below understated the
+MOAB situation — the test file opened with `#ifdef FUSE_HAVE_MOAB` and no config include, so its 38
+cases compiled to a skip stub in every configuration, host included (`REVIEW.md` R-06, not R-09 as
+first written here; R-09 is the unrelated `step_period()` collective-agreement BLOCKER). `test/backend/moab_mesh_test.cpp` now includes `config.hpp` and tests `#if FUSE_HAVE_MOAB` — the
+cases compile again, but C1's "needs one host run" still stands: nothing here can `MPI_Init`.
 
 ### C1. The MOAB backend is built but unrun in the sandbox
 
