@@ -1,0 +1,21 @@
+# Mutation for the linalg fix pass (REVIEW.md R-45).
+# Own file per the review-fix protocol: do not edit build-evidence/mutations.toml
+# directly while other fixers hold it dirty.
+
+[[mutation]]
+id = "least-squares-into-checks-shape"
+area = "linalg"
+describes = "least_squares_into starts enforcing check_shape's m>=k precondition, which the accelerator's small-interface call sites violate by design (R-45)"
+file = "src/linalg/least_squares.cpp"
+old = """std::size_t least_squares_into(std::vector<double>& a, std::size_t m,
+                                  std::size_t k, std::vector<double>& b,
+                                  std::vector<double>& out, LsScratch& work) {
+  out.assign(k, 0.0);
+  if (m == 0 || k == 0) return 0;"""
+new = """std::size_t least_squares_into(std::vector<double>& a, std::size_t m,
+                                  std::size_t k, std::vector<double>& b,
+                                  std::vector<double>& out, LsScratch& work) {
+  check_shape(a, m, k, b, out);
+  if (m == 0 || k == 0) return 0;"""
+target = "fuse_linalg_least_squares_test"
+test = "linalg.least_squares"

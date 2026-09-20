@@ -169,3 +169,39 @@ TEST(LeastSquares, RefusesAShapeItCannotSolve) {
   EXPECT_THROW((void)fuse::linalg::least_squares(small, 4, 2, b, x),
                fuse::InvalidArgument);
 }
+
+// REVIEW.md R-45: `least_squares_into` is called from the accelerator with
+// fewer rows (m, the interface size) than columns (k, the reuse limit) on any
+// small-interface coupling, but no test drove that shape. This turns the
+// ASan/UBSan check the reviewer ran outside the repository into a durable
+// regression: `least_squares_into` is safe and gives a sane, rank-<=m,
+// round-off-accurate answer -- it does not enforce the public entry point's
+// `m >= k` precondition, by design (see the header doc on the function).
+TEST(LeastSquares, IntoAgreesWithBuiltinWhenMIsLessThanK) {
+  for (const auto& [m, k] : {std::pair<std::size_t, std::size_t>{1, 4},
+                             std::pair<std::size_t, std::size_t>{2, 6}}) {
+    std::mt19937 rng(3u);
+    std::uniform_real_distribution<double> u(-1.0, 1.0);
+    std::vector<double> a(m * k);
+    for (double& v : a) v = u(rng);
+    // A consistent system (b is exactly in A's range), so the expected
+    // residual is round-off, not a fitting error -- the property that
+    // distinguishes "safe and sane" from "safe but garbage".
+    std::vector<double> x_true(k);
+    for (double& v : x_true) v = u(rng);
+    std::vector<double> b(m, 0.0);
+    for (std::size_t i = 0; i < m; ++i) {
+      for (std::size_t j = 0; j < k; ++j) b[i] += a[j * m + i] * x_true[j];
+    }
+
+    std::vector<double> a1 = a, b1 = b, out;
+    fuse::linalg::LsScratch work;
+    const std::size_t rank =
+        fuse::linalg::least_squares_into(a1, m, k, b1, out, work);
+    EXPECT_LE(rank, m) << "m=" << m << " k=" << k;
+    EXPECT_LE(rank, k) << "m=" << m << " k=" << k;
+    EXPECT_NEAR(residual(a, m, k, b, out), 0.0, 1e-9)
+        << "m=" << m << " k=" << k;
+    for (const double v : out) EXPECT_TRUE(std::isfinite(v));
+  }
+}

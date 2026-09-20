@@ -484,6 +484,32 @@ TEST(Accelerator, ResetClearsHistory) {
   EXPECT_EQ(a->columns(), 0u);
 }
 
+// REVIEW.md R-45: `cols_` (bounded by `cfg.reuse`, default 8) is completely
+// independent of `n` (the interface size, legitimately as small as 1), so any
+// coupling with a small interface and the default reuse limit reaches
+// `cols_ > n` on the very first window -- exactly the shape
+// `linalg::least_squares_into` is called with, un-preconditioned by
+// `check_shape`'s `m >= k`. This drives that shape at the Accelerator level
+// (linalg-level coverage is `LeastSquares.IntoAgreesWithBuiltinWhenMIsLessThanK`)
+// and asserts `update()` still succeeds and returns a finite iterate.
+TEST(Accelerator, HandlesAnInterfaceSmallerThanTheReuseLimit) {
+  AccelConfig cfg{.kind = AccelKind::IQN_ILS, .filter = FilterKind::None};
+  auto a = must_make(cfg);  // default reuse = 8
+  std::vector<double> old_x(1, 0.0), out(1, 0.0);
+  for (int k = 0; k < 4; ++k) {
+    // Distinct residuals each iteration, so the difference vectors stored as
+    // columns are not the degenerate zero-column case.
+    const std::vector<double> new_x = {
+        1.0 - std::pow(0.3, k + 1) + 0.01 * static_cast<double>(k)};
+    ASSERT_TRUE(a->update(old_x.data(), new_x.data(), out.data(), 1, k).ok())
+        << "at iteration " << k;
+    old_x = out;
+    EXPECT_TRUE(std::isfinite(out[0])) << "at iteration " << k;
+  }
+  EXPECT_GT(a->columns(), 1u)
+      << "the test must actually reach cols_ > n=1 to exercise R-45's path";
+}
+
 TEST(Accelerator, RespectsTheReuseLimit) {
   AccelConfig cfg{.kind = AccelKind::IQN_ILS, .reuse = 3,
                   .filter = FilterKind::None};

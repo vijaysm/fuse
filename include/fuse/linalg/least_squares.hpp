@@ -100,6 +100,19 @@ struct LsScratch {
 
 /// `least_squares_builtin` with the scratch supplied, for the inner loop.
 /// Same code, same arithmetic, same order; the buffers are the only difference.
+///
+/// UNLIKE `least_squares`/`least_squares_builtin`, this entry point does NOT
+/// enforce `m >= k` (REVIEW.md R-45): the accelerator's hot loop can call it
+/// with more retained columns (`k`, bounded by `cfg.reuse`) than interface
+/// values (`m`, the coupled problem's own size) when the interface is small,
+/// and that shape is reachable in ordinary use, not just in principle. The
+/// QR loop below is bounded by `steps = min(m, k)` everywhere, so `m < k`
+/// does not read or write outside `a`/`b`/`out` -- it returns a rank capped
+/// at `m`, with the coefficients of every column past that rank set to zero,
+/// exactly like any other rank-deficient system. Confirmed under
+/// ASan/UBSan at `m=1,k=8` and `m=2,k=8` (see the detailed review) and
+/// pinned by `LeastSquares.IntoAgreesWithBuiltinWhenMIsLessThanK` and
+/// `Accelerator.HandlesAnInterfaceSmallerThanTheReuseLimit`.
 [[nodiscard]] std::size_t least_squares_into(std::vector<double>& a,
                                              std::size_t m, std::size_t k,
                                              std::vector<double>& b,
