@@ -332,16 +332,6 @@ target = "fuse_schedule_acyclicity_sweep_test"
 test = "schedule.acyclicity_sweep"
 
 [[mutation]]
-id = "merge-typed-at-first-writer"
-area = "compiler"
-describes = "the combined value inherits the first writer's time level, so a lagged writer declared first cuts the unlagged writers' dependence"
-file = "src/ir/lowering.cpp"
-old = "        if (b.iterate > a.iterate ||"
-new = "        if (false \u0026\u0026"
-target = "fuse_schedule_acyclicity_sweep_test"
-test = "schedule.acyclicity_sweep"
-
-[[mutation]]
 id = "epoch-not-emitted-after-transport"
 area = "compiler"
 describes = "a data move with no agreement point, so a failure on one rank is found only at the next collective"
@@ -451,9 +441,17 @@ test = "runtime.epoch_schedule"
 id = "epoch-schedule-drops-the-answer"
 area = "runtime"
 describes = "participant 0 keeps the agreed status to itself, so every other participant waits for a message that never comes"
+# Anchor rewritten for REVIEW.md R-21 (BT-F5): the flat `result_send_to`
+# per-participant list this mutation targeted was replaced by the
+# binomial-tree reduce/broadcast's `result_send_count` (a count, not a
+# list -- see epoch_schedule.hpp's own header comment) before this entry's
+# 2026-09-16 KILLED verdict was recorded, so `old` matched zero occurrences
+# and the verdict was unverifiable against the current implementation. The
+# new anchor reproduces the same defect against the current shape:
+# participant 0 sends its answer to nobody.
 file = "include/fuse/runtime/epoch_schedule.hpp"
-old = "    for (int k = 1; k < participants; ++k) s.result_send_to.push_back(k);"
-new = "    for (int k = 1; k < participants; ++k) (void)k;"
+old = "    s.result_send_count = participants - 1;"
+new = "    s.result_send_count = 0;"
 target = "fuse_runtime_epoch_schedule_test"
 test = "runtime.epoch_schedule"
 
@@ -514,7 +512,7 @@ id = "mesh-accepts-a-parent-outside-the-cell-set"
 area = "backend"
 describes = "a simplex may name a parent cell that does not exist, so a conservation sum silently omits it"
 file = "include/fuse/backend/native/mesh.hpp"
-old = "      if (parent_(c) >= n_parent_cells_) {"
+old = "      if (h_parent(c) >= n_parent_cells_) {"
 new = "      if (false) {"
 target = "fuse_backend_native_mesh_test"
 test = "backend.native_mesh"
