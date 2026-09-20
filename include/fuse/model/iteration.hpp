@@ -77,8 +77,14 @@ struct ConvergenceMeasure {
   /// True when this measure alone considers the iteration converged.
   ///
   /// `reference_norm` is ignored by Absolute and used by every other kind.
-  /// See the header comment for the zero-reference, non-finite and AND/OR
-  /// policies. Throws std::invalid_argument on a non-positive or non-finite
+  /// REVIEW.md R-34: this used to point at "the header comment" for the
+  /// zero-reference, non-finite and AND/OR policies -- no such section
+  /// exists in this file. They are implemented, and explained, inline
+  /// below: a zero-or-negative `reference_norm` falls back to the absolute
+  /// check (`have_ref`); a non-finite norm reports "not converged" rather
+  /// than throwing; and `AbsoluteOrRelative` is the OR of the two (there is
+  /// no AND case among the current MeasureKind values). Throws
+  /// std::invalid_argument on a non-positive or non-finite
   /// tolerance, or on a negative (finite) norm -- neither can arise from
   /// fuse::num::norm_l2 and friends, so both indicate a caller bug that must
   /// not be swallowed in a release build.
