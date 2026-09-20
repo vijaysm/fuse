@@ -212,30 +212,43 @@ and every fix to library code carries a test that fails before it and a mutation
    `KNOWN_ISSUES.md` C1 (R-06).
 6. **DONE, wave 0** (`b8e3f54`; see wave 0 item 2 above). `buffers_test` and `slab_test` registered;
    both pass at tier 0 (R-07).
-7. `runner.cpp` `step_period()`: a failing region records the failure and continues to the remaining
-   collective instructions, exactly as the non-region path does two lines below
-   (R-09). Test: at 2/3/4 ranks under a timeout, one rank's region refuses
-   and every rank returns the failure.
-8. `iteration.cpp`: convergence measures are reduced across the region's participants before the
-   decision, through the existing `residual_norm` reduction path; a rank owning no part of the
-   interface contributes the undefined marker, not zero (R-10). Test: two
-   ranks with unequal local residuals must exit on the same iteration.
-9. `mpi_transport.cpp` `build_plan()`: component count agreed by the same handshake
-   `build_plan_from_peers` already does (R-30).
-10. MOAB `intx_weights.cpp` and `plan_halo_exchange`: every data-dependent refusal ahead of a collective
-    becomes a locally recorded failure that is reduced at the collective, so all ranks refuse together
-    (R-01, R-02). These cannot be tested here; they need the host
-    tier-2 run and belong in the same commit as item 5.
-11. `descriptor.hpp` reader: validate every enumerator read from bytes against its range before the
-    cast, refusing `E-DESC-ENUM` (R-04). Mutation: remove one range check.
-12. `pipeline.hpp` `FieldSpan::from()`: an empty partition is a valid zero-extent view, not a refusal
-    (R-08) — this is the X3 rule from S1 reaching the pipeline.
+7. **DONE, PARTIAL per pass2** (transport-runtime fixer). `runner.cpp` `step_period()`: a failing
+   region records the failure and continues to the remaining collective instructions, exactly as the
+   non-region path does two lines below (R-09). The code fix is correct by
+   inspection (confirmed by the pass2 reviewer reverting it and seeing zero test failures), but it
+   still has no mutation entry and no test that distinguishes fixed from broken — see
+   `docs/dev/reviews/2026-09-19/pass2/re-transport-runtime.md` N-transport-runtime-2 (MAJOR, open).
+8. **DONE, CONFIRMED-FIXED per pass2**. `iteration.cpp`: convergence measures are reduced across the
+   region's participants before the decision, through the existing `residual_norm` reduction path; a
+   rank owning no part of the interface contributes the undefined marker, not zero
+   (R-10). Test: two ranks with unequal local residuals exit on the same
+   iteration, host-verified per `re-transport-runtime.md`.
+9. **DONE, CONFIRMED-FIXED per pass2**. `mpi_transport.cpp` `build_plan()`: component count agreed by
+   the same handshake `build_plan_from_peers` already does
+   (R-30), per `re-transport-runtime.md`.
+10. **DONE, PARTIAL per pass2**. MOAB `intx_weights.cpp` and `plan_halo_exchange`: every
+    data-dependent refusal ahead of a collective becomes a locally recorded failure that is reduced
+    at the collective, so all ranks refuse together (R-01, R-02). The
+    backend pass2 review confirms R-02 CONFIRMED-FIXED but finds R-01's fix incomplete — the same
+    hang-hazard class one call frame higher, in the same two functions, still open as
+    N-BACKEND-1 (BLOCKER). Still needs the host tier-2 run for either
+    to execute.
+11. **DONE, CONFIRMED-FIXED per pass2**. `descriptor.hpp` reader: validate every enumerator read from
+    bytes against its range before the cast, refusing `E-DESC-ENUM`
+    (R-04). Mutation: remove one range check; per `re-base-model.md`.
+12. **DONE, CONFIRMED-FIXED per pass2**. `pipeline.hpp` `FieldSpan::from()`: an empty partition is a
+    valid zero-extent view, not a refusal (R-08) — this is the X3 rule
+    from S1 reaching the pipeline; per `re-num-linalg-field.md`.
 13. **DONE**. `.github/workflows/ci.yml`: `kokkoskernels` leg replaced with `builtin`, the value
     `FUSE_LINALG_BACKEND` actually implements (R-05).
-14. Native mesh: this BLOCKER (R-03) is a design change, not a patch — the mesh
-    gains an execution/memory space parameter and `finalize()`, `measure()`, `centroid()`, `normal()`
-    become device-callable (R-14). Schedule it as its own task after wave 2; it is
-    blocking for S9, not for S5.
+14. **DONE, PARTIAL per pass2**. Native mesh: this BLOCKER (R-03) is a
+    design change, not a patch — the mesh gains an execution/memory space parameter and
+    `finalize()`, `measure()`, `centroid()`, `normal()` become device-callable
+    (R-14). The backend pass2 review confirms R-03 CONFIRMED-FIXED; R-14 has a residual
+    defect/limitation found this pass — `measure()`/`centroid()`/`normal()` are now
+    `KOKKOS_INLINE_FUNCTION`, but the `FUSE_DEBUG_ASSERT` path they call is not itself
+    device-callable, so the device-callability claim only holds in `NDEBUG` builds — see
+    `re-backend.md`.
 
 **Wave 2 — MAJOR.** In the order they are listed in §1; the documentation ones
 (R-23 **DONE**, R-24 **DONE**, R-11,
@@ -247,9 +260,23 @@ this wave already closes. The `error_policy()` data race (R-16) matters as
 soon as two threads can throw. The `lcm_denominator` overflow (R-15) is the same
 defect B1a fixed elsewhere and gets the same `try_` treatment.
 
+**Wave 2 pass2 status, 2026-09-20 (see §6 for detail):** CONFIRMED-FIXED — R-11, R-15, R-16, R-25,
+R-26, R-27, R-28, R-29, R-30, R-32, R-46, R-50 (R-50 is also DEVIATION D-2 in §3, closed the same
+way). PARTIAL — R-12, R-13 (backend: correct fix, mutation entry only, no permanent regression test),
+R-18, R-19 (base-model: guard/refusal covers some but not all call sites — see §6 for the two new
+findings that finish the job). REJECTION-UPHELD — R-17, R-31.
+
 **Wave 3 — MINOR, IMPROVEMENT, DEVIATION.** Group by file. For each DEVIATION in §3, decide and record:
 either the code moves to match the document or the document is corrected and the decision noted in
 the plan.
+
+**Wave 3 pass2 status, 2026-09-20:** CONFIRMED-FIXED — R-33, R-34, R-35, R-36 through R-42 (except
+R-41), R-43, R-44, R-45, R-47. NOT-FIXED — R-41 (`test/backend/moab_mesh_test.cpp:614`'s dead
+`FUSE_MOAB_TEST_MESH` guard, correctly deferred by the build-tools-docs fixer to the backend layer,
+still open at HEAD), R-49 (DEVIATION: `num.convergence` still exercises `fuse::model`, not `num`;
+explicitly left for another owner). PARTIAL — R-48 (shared basis-matrix factorization is hoisted, but
+the disclosed per-element scratch allocation remains). R-50's DEVIATION (parallel tests not using the
+documented rank-requirement mechanism) is CONFIRMED-FIXED.
 
 ---
 
@@ -266,3 +293,50 @@ rename-only import integrity; the layering link graph; the compile-features audi
 
 Not reviewed by anyone: `examples/` beyond build correctness; the LowFive transport's body (compiled
 out, see R-31); the TempestRemap path's body (no TempestRemap here).
+
+---
+
+## 6. Second pass (2026-09-20)
+
+Six independent read-only re-reviews, one per layer group, against branch `review-2026-09-19-fixes`
+at HEAD `dbdc872` — the same rubric, verifying every first-pass finding assigned to that layer and
+looking fresh for anything the fix wave introduced or missed. Full reports:
+`docs/dev/reviews/2026-09-19/pass2/re-<layer>.md`.
+
+| Layer | Confirmed-fixed | Partial | Not-fixed / rejection-upheld | New findings |
+|---|---|---|---|---|
+| backend | 4 (R-02, R-03, R-11, R-33) | 4 (R-01, R-12, R-13, R-14) | 0 | 3 — N-BACKEND-1 BLOCKER, N-BACKEND-2 MAJOR, N-BACKEND-3 MINOR/DEVIATION |
+| base-model | 6 (R-04, R-15, R-16, R-34, R-35; R-17 rejection-upheld) | 2 (R-18, R-19) | 0 | 2 — N-base-model-1 MAJOR, N-base-model-2 MAJOR |
+| build-tools-docs | 16 own-layer, of 17 assigned (R-05, R-06, R-07, R-20–R-25, R-36–R-40, R-42, R-47) + 2 cross-layer (R-51 confirmed, R-31 rejection-upheld) | 0 | 1 (R-41, correctly deferred to backend layer) | 10 — N-build-tools-docs-1/2 MAJOR, -3/-4/-5/-6/-7 MINOR (-7 out of scope, flagged for backend), -8 IMPROVEMENT, -9 BLOCKER (host-reported tier-2 configure failure, 2026-09-20; fixed), -10 MINOR (host-reported, same date; fixed) |
+| ir-schedule | 5 (R-26, R-27, R-28, R-43, R-44) | 0 | 0 | 1 — N-ir-schedule-1 IMPROVEMENT |
+| num-linalg-field | 3 (R-08, R-29, R-45) | 1 (R-48) | 1 (R-49, DEVIATION, explicitly left for another owner) | 1 — N-num-linalg-field-1 MINOR |
+| transport-runtime | 5 (R-10, R-30, R-32, R-46, R-50) | 1 (R-09) | 1 (R-31, rejection-upheld) | 6 — N-transport-runtime-1/2 MAJOR, -3 MINOR, -4/-6 DEVIATION, -5 IMPROVEMENT |
+
+**Reading "partial."** Every PARTIAL row is a real, working fix with a specific, evidenced gap, not
+a fix that failed — e.g. backend's R-01 (a residual hang-hazard one call frame higher, now
+N-BACKEND-1), base-model's R-18/R-19 (the guard covers most but not all call sites, now
+N-base-model-1/2), num-linalg-field's R-48 (the disclosed scratch allocation was never claimed
+fixed), transport-runtime's R-09 (correct by inspection and by revert-and-rerun, but no mutation or
+test yet distinguishes it from the bug). None of the six reports rejected a finding the first fixer
+had accepted, and none overturned a first-pass rejection other than confirming it (R-17, R-31 both
+REJECTION-UPHELD).
+
+**New BLOCKER.** N-BACKEND-1 is the only new BLOCKER: the same per-rank-refusal-ahead-of-a-collective
+hang class as R-01, found one call frame higher in the same two MOAB functions — not yet fixed,
+needs the host tier-2 run to execute either way.
+
+**Cross-cutting pattern.** Four of the eight new build-tools-docs findings (N-3 through N-6, and the
+out-of-scope N-7) are stale cross-references — finding-id mis-citations or dangling doc-page
+citations — left behind by the first fix wave. base-model's two new findings and num-linalg-field's
+one are the same shape: a fix that closed the finding's evidenced instances without covering every
+call site the underlying rule applies to. This second pass fixed the build-tools-docs instances of
+that pattern (N-build-tools-docs-1 through -6, -8 — see the fix report,
+`docs/dev/reviews/2026-09-19/fixes/fix2-build-tools-docs.md`) and left N-7 for the backend layer's
+own second fix pass, since it sits in `test/backend/**`.
+
+**Deviation from a full run.** Two of the six pass2 reviews (base-model, num-linalg-field) note their
+own reduced scope: base-model did not independently re-run the static gates (relied on the fixer's
+own claim, cross-checked against everything else read); num-linalg-field's one MPI-only test could
+not run in the sandbox. Tier 2 (MOAB) and any MPI-launched test remain out of reach for all six
+reviews, as at the first review — every claim resting on them is marked PARTIAL or NOT-FIXED above
+rather than reported as a firm result.
