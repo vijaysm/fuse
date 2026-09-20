@@ -315,6 +315,35 @@ without the limitation being written down anywhere.
 
 ---
 
+### D2. One CommGraph-backed Transport per run
+
+`Runner::Impl` holds a single `std::unique_ptr<Transport>`, so a plan with two
+cross-rank channels is refused at `initialize()`:
+
+```
+E-RT-TRANSPORT: this build wires one CommGraph-backed Transport per run, but
+the plan has 2. One Transport instance per instruction is the next step.
+```
+
+Two independent cross-rank couplings is not an exotic graph — it is the
+ordinary multiphysics case, and the brief this library exists to serve names
+it. So this is the sharpest remaining limit on what can actually be coupled,
+not a corner.
+
+Surfaced 2026-09-20 by the host Tier 1 run once two earlier faults in the same
+test were cleared (`RunnerTransport.StillRunsASecondChannelAfterARegionFails
+UnderMpi`, which needs exactly this). That test is the acceptance criterion and
+is already written; it fails on this and nothing else.
+
+**Shape of the fix** — `transport` becomes a vector indexed by transport plan;
+`attach_comm_graphs()` builds and wires one per plan rather than one per run
+(`src/runtime/runner.cpp:1321` is the refusal, `:1467` the single-instance
+`dynamic_cast` wiring, `:2097` and `:2124` the execution sites). The open
+design question is whether two plans with an identical `TransportSpec` share
+one instance or get one each.
+
+---
+
 ## C. Not defects — do not fix these
 
 - **Five mutations report `NOT-ASSESSED` locally.** They need MPI, and a test
