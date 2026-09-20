@@ -46,6 +46,13 @@ target_link_libraries(fuse-coupler-base PUBLIC Kokkos::kokkos fmt::fmt)
 # command line (cmake/FuseDependencies.cmake explains the shadowing hazard).
 target_include_directories(fuse-coupler-base BEFORE PUBLIC ${FUSE_KOKKOS_INCLUDE_DIRS})
 set_target_properties(fuse-coupler-base PROPERTIES
+  # `install(EXPORT ... NAMESPACE fuse::)` (below) prefixes fuse:: onto the
+  # TARGET's own name, not onto the fuse::base ALIAS above -- an installed
+  # consumer would otherwise see fuse::fuse-coupler-base instead of fuse::base
+  # and every other layer's alias, silently diverging from the in-tree name
+  # docs/dev/conventions.md promises (REVIEW.md R-25/BT-F9). EXPORT_NAME makes
+  # the two agree; every layer below sets the same property.
+  EXPORT_NAME base
   CXX_VISIBILITY_PRESET hidden      # the C ABI exports one symbol per ABI; nothing else leaks
   VISIBILITY_INLINES_HIDDEN ON
 )
@@ -66,8 +73,19 @@ target_compile_features(fuse-coupler-model PUBLIC cxx_std_20)
 target_link_libraries(fuse-coupler-model PUBLIC fuse::base)
 # PRIVATE: the YAML parser is an implementation detail of the front-end and
 # must never reach a consumer's include path or link line.
-target_link_libraries(fuse-coupler-model PRIVATE yaml-cpp::yaml-cpp)
+# $<BUILD_LOCAL_INTERFACE:...>, not a bare PRIVATE reference: yaml-cpp is
+# fetched on any machine without an installed copy (FuseDependencies.cmake),
+# which makes it an in-tree build target with no package of its own to
+# install(EXPORT) alongside -- CMake refuses to export fuse-coupler-model
+# otherwise ("requires target yaml-cpp that is not in any export set",
+# REVIEW.md R-25/BT-F9). This tells CMake the dependency is real for OUR
+# build only and never becomes part of what an installed consumer must
+# supply through this package; a consumer linking fuse::model with a
+# fetched yaml-cpp must find/link yaml-cpp itself (documented in
+# cmake/fuse-couplerConfig.cmake.in).
+target_link_libraries(fuse-coupler-model PRIVATE $<BUILD_LOCAL_INTERFACE:yaml-cpp::yaml-cpp>)
 set_target_properties(fuse-coupler-model PROPERTIES
+  EXPORT_NAME model
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
 )
@@ -87,6 +105,7 @@ add_library(fuse::ir ALIAS fuse-coupler-ir)
 target_compile_features(fuse-coupler-ir PUBLIC cxx_std_20)
 target_link_libraries(fuse-coupler-ir PUBLIC fuse::model)
 set_target_properties(fuse-coupler-ir PROPERTIES
+  EXPORT_NAME ir
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
 )
@@ -105,6 +124,7 @@ add_library(fuse::schedule ALIAS fuse-coupler-schedule)
 target_compile_features(fuse-coupler-schedule PUBLIC cxx_std_20)
 target_link_libraries(fuse-coupler-schedule PUBLIC fuse::ir)
 set_target_properties(fuse-coupler-schedule PROPERTIES
+  EXPORT_NAME schedule
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
 )
@@ -125,6 +145,7 @@ if(FUSE_LINALG_BACKEND STREQUAL "eigen")
   target_link_libraries(fuse-coupler-linalg PRIVATE Eigen3::Eigen)
 endif()
 set_target_properties(fuse-coupler-linalg PROPERTIES
+  EXPORT_NAME linalg
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
 )
@@ -145,6 +166,7 @@ target_compile_features(fuse-coupler-num PUBLIC cxx_std_20)
 target_link_libraries(fuse-coupler-num PUBLIC fuse::model)
 target_link_libraries(fuse-coupler-num PRIVATE fuse::linalg)
 set_target_properties(fuse-coupler-num PROPERTIES
+  EXPORT_NAME num
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
 )
@@ -171,6 +193,7 @@ if(FUSE_ENABLE_MPI)
   target_link_libraries(fuse-coupler-transport PUBLIC MPI::MPI_CXX)
 endif()
 set_target_properties(fuse-coupler-transport PROPERTIES
+  EXPORT_NAME transport
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
 )
@@ -197,7 +220,10 @@ target_link_libraries(fuse-coupler-backend PUBLIC fuse::schedule)
 # PRIVATE: r3d is the supermesh kernel, used inside backend/supermesh.cpp only.
 # No public header mentions it, so a consumer never needs it on an include path
 # and never links it -- which is what keeps the geometric kernel swappable.
-target_link_libraries(fuse-coupler-backend PRIVATE r3d::r3d)
+# Same reasoning as fuse-coupler-model's yaml-cpp link above: r3d has no
+# installed-package path at all today (cmake/FuseDependencies.cmake fetches
+# it unconditionally), so it cannot be exported alongside fuse-coupler-backend.
+target_link_libraries(fuse-coupler-backend PRIVATE $<BUILD_LOCAL_INTERFACE:r3d::r3d>)
 if(FUSE_ENABLE_MOAB)
   # Unlike intx_weights.cpp, which carries its own no-MOAB path, this file IS
   # the MOAB backend: it includes moab/ headers unconditionally, so it can only
@@ -210,6 +236,7 @@ if(FUSE_ENABLE_MOAB)
   target_link_libraries(fuse-coupler-backend PUBLIC fuse::moab)
 endif()
 set_target_properties(fuse-coupler-backend PROPERTIES
+  EXPORT_NAME backend
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
 )
@@ -227,6 +254,62 @@ target_compile_features(fuse-coupler-runtime PUBLIC cxx_std_20)
 target_link_libraries(fuse-coupler-runtime PUBLIC
   fuse::schedule fuse::num fuse::transport fuse::backend)
 set_target_properties(fuse-coupler-runtime PROPERTIES
+  EXPORT_NAME runtime
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
+)
+
+# ---------------------------------------------------------------- install
+# find_package()-able install of the CMake package docs/dev/conventions.md
+# already names in prose ("CMake package `fuse-coupler`"): every target above
+# already carries the BUILD_INTERFACE/INSTALL_INTERFACE split on its include
+# directories, so the missing half was only the install() calls themselves
+# and one Config.cmake.in (REVIEW.md R-25/BT-F9).
+include(GNUInstallDirs)
+
+set(FUSE_INSTALL_TARGETS
+  fuse-coupler-base fuse-coupler-model fuse-coupler-ir fuse-coupler-schedule
+  fuse-coupler-linalg fuse-coupler-num fuse-coupler-transport
+  fuse-coupler-backend fuse-coupler-runtime
+)
+
+install(TARGETS ${FUSE_INSTALL_TARGETS}
+  EXPORT fuse-coupler-targets
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+  INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/fuse
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+  FILES_MATCHING PATTERN "*.hpp" PATTERN "*.h"
+)
+# The one generated header, from the BUILD tree (configure_file'd above), not
+# the source tree -- a consumer needs the config it was actually built with.
+install(FILES ${PROJECT_BINARY_DIR}/include/fuse/base/config.hpp
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/fuse/base
+)
+
+install(EXPORT fuse-coupler-targets
+  FILE fuse-coupler-targets.cmake
+  NAMESPACE fuse::
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/fuse-coupler
+)
+
+include(CMakePackageConfigHelpers)
+configure_package_config_file(
+  ${PROJECT_SOURCE_DIR}/cmake/fuse-couplerConfig.cmake.in
+  ${PROJECT_BINARY_DIR}/fuse-couplerConfig.cmake
+  INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/fuse-coupler
+)
+write_basic_package_version_file(
+  ${PROJECT_BINARY_DIR}/fuse-couplerConfigVersion.cmake
+  VERSION ${PROJECT_VERSION}
+  COMPATIBILITY SameMajorVersion
+)
+install(FILES
+  ${PROJECT_BINARY_DIR}/fuse-couplerConfig.cmake
+  ${PROJECT_BINARY_DIR}/fuse-couplerConfigVersion.cmake
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/fuse-coupler
 )

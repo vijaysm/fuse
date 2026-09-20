@@ -235,6 +235,37 @@ foreach(t mms_transfer iteration)
                  LIBS fuse::runtime fuse::backend fuse::transport)
 endforeach()
 
+# ---------------------------------------------------------------- install
+# find_package(fuse-coupler) smoke test (REVIEW.md R-25/BT-F9): install this
+# build, configure and build a tiny STANDALONE consumer project against the
+# install prefix (test/install_consumer/, its own independent CMake project,
+# never add_subdirectory'd into this one), then run it. A `cmake -P` script
+# drives the three cmake invocations because ctest's COMMAND runs one program.
+#
+# This is the actual thing conventions.md's "CMake package `fuse-coupler`"
+# claim needs to be true, not a proxy for it: before this, nothing in the
+# tree ran `cmake --install` at all.
+add_test(NAME install.consumer_find_package
+  # -D arguments MUST precede -P: cmake only honours -D definitions that
+  # appear before the script argument on its command line.
+  COMMAND ${CMAKE_COMMAND}
+          -DFUSE_BUILD_DIR=${CMAKE_BINARY_DIR}
+          -DFUSE_INSTALL_PREFIX=${CMAKE_BINARY_DIR}/install-test
+          -DCONSUMER_SRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}/install_consumer
+          -DCONSUMER_BUILD_DIR=${CMAKE_BINARY_DIR}/install_consumer_build
+          -DCMAKE_COMMAND=${CMAKE_COMMAND}
+          -DCMAKE_GENERATOR=${CMAKE_GENERATOR}
+          "-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/install_consumer/run-smoke-test.cmake
+)
+set_tests_properties(install.consumer_find_package PROPERTIES
+  LABELS "install"
+  # Builds a second small project from scratch; generous relative to the rest
+  # of the suite (docs/dev/testing.md's timeout convention for anything that
+  # runs more than one build).
+  TIMEOUT 300
+)
+
 # ---------------------------------------------------------------- audit
 # Every *_test.cpp on disk must be registered above or declared gated by a tier
 # option that is OFF in this configuration. Anything else is a test that runs

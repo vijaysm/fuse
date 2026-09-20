@@ -1,0 +1,45 @@
+# Config file for the installed `fuse-coupler` CMake package (docs/dev/conventions.md:
+# "CMake package `fuse-coupler`", never wired up before REVIEW.md R-25/BT-F9).
+#
+# Only the two dependencies every fuse:: layer target links PUBLIC are resolved
+# here: Kokkos (base's execution-space vocabulary) and fmt (Diagnostics
+# formatting). A consumer that links a layer with a PRIVATE third-party
+# dependency of its own -- Eigen3 for fuse::linalg/fuse::num when
+# FUSE_LINALG_BACKEND=eigen, yaml-cpp for fuse::model, MPI for
+# fuse::transport/fuse::backend with FUSE_ENABLE_MPI, MOAB for fuse::backend
+# with FUSE_ENABLE_MOAB -- must find that dependency itself: a PRIVATE link of
+# a STATIC library is not re-exported by CMake's INTERFACE_LINK_LIBRARIES
+# machinery, so this file cannot discover which of those a given consumer
+# needs without also taking a COMPONENTS argument keyed to them, which is
+# future work (this install just makes `find_package(fuse-coupler)` succeed
+# at all, where before it could not -- REVIEW.md R-25/BT-F9's fix scope).
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Same workaround as cmake/FuseDependencies.cmake's fuse_resolve_dependencies():
+# Apple clang ships no OpenMP runtime, so a Kokkos built with OpenMP fails its
+# own find_dependency(OpenMP) with no hint even when libomp is installed. A
+# consumer of an installed fuse-coupler hits the identical failure the main
+# build already works around; without this, find_package(fuse-coupler) would
+# fail downstream for a reason that has nothing to do with this package.
+if(APPLE AND NOT DEFINED OpenMP_ROOT AND NOT DEFINED CACHE{OpenMP_ROOT})
+  foreach(_fuse_omp_prefix /opt/homebrew/opt/libomp /usr/local/opt/libomp)
+    if(EXISTS "${_fuse_omp_prefix}/include/omp.h")
+      set(OpenMP_ROOT "${_fuse_omp_prefix}")
+      if(EXISTS "${_fuse_omp_prefix}/lib/libomp.dylib"
+         AND NOT DEFINED CACHE{OpenMP_libomp_LIBRARY})
+        set(OpenMP_libomp_LIBRARY "${_fuse_omp_prefix}/lib/libomp.dylib"
+            CACHE FILEPATH "OpenMP runtime matching the compiler's ABI")
+      endif()
+      break()
+    endif()
+  endforeach()
+endif()
+
+find_dependency(Kokkos)
+find_dependency(fmt)
+
+include("${CMAKE_CURRENT_LIST_DIR}/fuse-coupler-targets.cmake")
+
+check_required_components(fuse-coupler)
