@@ -201,8 +201,9 @@ Result<std::size_t> build_remap_halo(const RemapPlan&, const CouplingGraph&,
   // A successful no-op, not an error: without MOAB there is no partitioned
   // read to build a halo for, and a caller that makes the call
   // unconditionally (which the header invites) must not have to branch on
-  // which backends were compiled in. `build_weights` refuses this build
-  // anyway, with E-REMAP-NOMOAB.
+  // which backends were compiled in. `build_weights` in this build goes
+  // through the always-available supermesh path, which needs no halo: it
+  // works on the cells each rank already holds.
   return std::size_t{0};
 }
 

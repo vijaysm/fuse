@@ -1,5 +1,6 @@
 # Mutations for the issue tracker transport-runtime findings (TR-*, unified,
-#). Schema: build-evidence/mutations.toml.
+#) and the pass-2 findings N-transport-runtime-1 and -2.
+# Schema: build-evidence/mutations.toml.
 
 [[mutation]]
 id = "cross-rank-region-check-fires-unconditionally"
