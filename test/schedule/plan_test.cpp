@@ -534,6 +534,94 @@ TEST(ExecutionPlan, MergeAcrossRanksSchedulesInDependenceOrder) {
 // Iteration regions become explicit loop boundaries (spec §2 layer 3)
 // ---------------------------------------------------------------------------
 
+// The declaration-order limitation, pinned so it cannot regress silently and
+// so the refusal's advice can be checked against what actually cures it.
+//
+// Two independent channels on the SAME clock, one of them iterated. Nothing
+// couples them, so an order exists that keeps the region's body contiguous --
+// and when the unrelated channel is declared FIRST the scheduler finds it.
+// Declared second, its chain sorts into the middle of the region's and the
+// plan is refused. That is a limitation of this scheduler, not of the graph:
+// the two spellings describe the same coupling. Found 2026-09-20 when a
+// parallel fixture declared them in the losing order (KNOWN_ISSUES.md D1).
+namespace {
+
+/// `region_first`: declare the iterated channel's components and channel
+/// before the independent channel's, or after.
+CouplingGraph two_channels_one_iterated(bool region_first) {
+  CouplingGraph g;
+  // Each pair gets its own meshes, as `pair()` does: a channel whose two
+  // sides share a region lowers to nothing at all (E-IR-REGION-EMPTY), and a
+  // region over no nodes cannot show anything about contiguity.
+  auto add_pair = [&](const char* pa, const char* pb, const char* chan) {
+    const auto ms = g.add_mesh(fuse::MeshDecl{.name = std::string{pa} + "_m"});
+    const auto md = g.add_mesh(fuse::MeshDecl{.name = std::string{pb} + "_m"});
+    const auto rs = g.add_region(
+        fuse::Region{.name = std::string{pa} + "_r", .mesh = ms});
+    const auto rd = g.add_region(
+        fuse::Region{.name = std::string{pb} + "_r", .mesh = md});
+    const auto ca = g.add_component(ComponentDecl{
+        .name = pa, .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+    const auto cb = g.add_component(ComponentDecl{
+        .name = pb, .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+    const auto s = g.add_field(ca, fuse::FieldSpec{
+        .name = "out", .region = rs, .units = u::kHeatFluxDensity,
+        .conservation = fuse::Conservation::Extensive,
+        .intent = fuse::Intent::Provides});
+    const auto d = g.add_field(cb, fuse::FieldSpec{
+        .name = "in", .region = rd, .units = u::kHeatFluxDensity,
+        .conservation = fuse::Conservation::Extensive,
+        .intent = fuse::Intent::Requires});
+    const auto ch = g.add_channel(chan, s, d);
+    g.channel(ch).remap(fuse::RemapFlags::Conservative);
+    return ch;
+  };
+  fuse::ChannelId iterated{};
+  if (region_first) {
+    iterated = add_pair("pa", "pb", "iterated");
+    (void)add_pair("qa", "qb", "independent");
+  } else {
+    (void)add_pair("qa", "qb", "independent");
+    iterated = add_pair("pa", "pb", "iterated");
+  }
+  g.add_iteration_region(fuse::IterationRegionDecl{
+      .name = "outer", .channels = {iterated}, .max_iterations = 4});
+  return g;
+}
+
+}  // namespace
+
+TEST(ExecutionPlan, AnUnrelatedChannelDeclaredAfterARegionBreaksItsContiguity) {
+  // Declared first: scheduled.
+  {
+    const CouplingGraph g = two_channels_one_iterated(/*region_first=*/false);
+    const auto lowered = lower(g);
+    ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+    const fuse::ClockSet cs{g};
+    const auto r = schedule(g, lowered.dag, cs, constant_sizes(8));
+    EXPECT_TRUE(r.ok()) << "the independent channel declared FIRST is the "
+                           "spelling that works today: "
+                        << r.diags.to_string();
+  }
+  // Declared second: refused, on the identical coupling.
+  {
+    const CouplingGraph g = two_channels_one_iterated(/*region_first=*/true);
+    const auto lowered = lower(g);
+    ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+    const fuse::ClockSet cs{g};
+    const auto r = schedule(g, lowered.dag, cs, constant_sizes(8));
+    ASSERT_FALSE(r.ok())
+        << "if this now succeeds the limitation is fixed -- delete this half "
+           "and KNOWN_ISSUES.md D1 rather than relaxing the assertion";
+    EXPECT_TRUE(has_code(r.diags, "E-SCHED-REGION")) << r.diags.to_string();
+    // Both channels are on one clock, so the refusal must not stop at advice
+    // that cannot apply.
+    EXPECT_NE(r.diags.to_string().find("declaration order"), std::string::npos)
+        << "the message tells the user to put the channels on one clock, "
+           "which they already are: " << r.diags.to_string();
+  }
+}
+
 TEST(ExecutionPlan, MarksIterationRegionBoundaries) {
   CouplingGraph g = pair(Rational{1, 3}, Rational{1});
   g.add_iteration_region(fuse::IterationRegionDecl{

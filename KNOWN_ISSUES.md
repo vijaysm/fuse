@@ -280,6 +280,41 @@ sequences with the ABI work rather than being done in passing.
 
 ---
 
+## D. Real limitations, documented and pinned
+
+### D1. A region's contiguity depends on declaration order
+
+Two independent channels on the same clock, one of them inside an iteration
+region. Nothing couples them, so an instruction order exists that keeps the
+region's body contiguous — and the scheduler finds it when the unrelated
+channel is declared **first**. Declared **second**, its operator chain sorts
+into the middle of the region's body and `schedule()` refuses the plan with
+`E-SCHED-REGION`. The two spellings describe the same coupling, so which one
+works is a property of this scheduler, not of the graph.
+
+Found 2026-09-20 by the host Tier 1 run: `runner_transport`'s fixture
+declared the independent channel after the region, while the Tier 0 twin in
+`test/runtime/runner_test.cpp` had already worked around it in the opposite
+order — with a comment explaining why, which is how the workaround survived
+without the limitation being written down anywhere.
+
+- **Pinned by** `ExecutionPlan.AnUnrelatedChannelDeclaredAfterARegionBreaksItsContiguity`
+  (`test/schedule/plan_test.cpp`), which asserts *both* halves: declared-first
+  schedules, declared-second is refused. If the second half ever starts
+  passing the limitation is gone — delete the half and this entry rather than
+  relaxing the assertion.
+- **The refusal's advice was also wrong here** and has been corrected. It said
+  to put the region's channels on one clock; they already were. It now names
+  declaration order as the cure and points at this entry.
+- **The real fix** is in `assign_region_boundaries`/the ready-list order in
+  `src/schedule/scheduler.cpp`: once an instruction belonging to a region is
+  emitted, prefer that region's other ready members until its body is
+  exhausted. Not attempted yet — it changes instruction order for every plan
+  with a region, so it needs the golden-IR files regenerated and re-checked,
+  which is a change of its own rather than a rider on a test fix.
+
+---
+
 ## C. Not defects — do not fix these
 
 - **Five mutations report `NOT-ASSESSED` locally.** They need MPI, and a test

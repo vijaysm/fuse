@@ -189,7 +189,13 @@ static_assert(kMaxInstructionInputs == 3,
               " of them. A region can only become flat enter/exit boundaries "
               "when one whole pass over its body is contiguous in the "
               "instruction stream; put the region's channels on one clock, or "
-              "split it into one region per clock"};
+              "split it into one region per clock. If they are ALREADY on one "
+              "clock, the interleaving instruction belongs to an unrelated "
+              "channel whose own chain sorts into the middle of this region's; "
+              "declaring that channel's components and channel before the "
+              "region's, or after the whole region, separates them. That the "
+              "cure is declaration order is a limitation of this scheduler, "
+              "not a property of the graph (KNOWN_ISSUES.md D1)"};
     }
     instructions[i].region_enter = r;
     instructions[j - 1].region_exit = r;
