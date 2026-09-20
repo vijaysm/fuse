@@ -4,6 +4,14 @@
 #include "fuse_test_main.hpp"
 
 namespace fuse::testing {
+
+int self_communicator_handle() {
+#if FUSE_HAVE_MPI
+  return static_cast<int>(MPI_Comm_c2f(MPI_COMM_SELF));
+#else
+  return 0;
+#endif
+}
 namespace {
 int g_rank = 0;
 int g_size = 1;

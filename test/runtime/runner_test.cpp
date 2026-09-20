@@ -2,6 +2,8 @@
 #include "fuse/base/config.hpp"
 
 #include <gtest/gtest.h>
+
+#include "fuse_test_main.hpp"
 #include <fuse/ir/lowering.hpp>
 #include <fuse/backend/serial_backend.hpp>
 #include <fuse/runtime/runner.hpp>
@@ -1572,7 +1574,10 @@ TEST(Runner, RefusesAConservationCheckOnAMultiRankTarget) {
   Runner runner{h->graph, h->dag, h->plan, h->backend};
   bind_all(*h);
   RunnerConfig cfg;
-  cfg.base_communicator = 0;
+  // A real one-process communicator, not a 0 sentinel: under MPI the setup
+  // status agreement reduces over whatever is configured, and 0 is an
+  // invalid handle rather than MPI_COMM_NULL (fuse_test_main.hpp).
+  cfg.base_communicator = fuse::testing::self_communicator_handle();
   const auto r = runner.initialize(h->components, h->registry, cfg);
   ASSERT_FALSE(r.ok())
       << "the consumer is declared on 2 ranks; a Constrain that sums only "

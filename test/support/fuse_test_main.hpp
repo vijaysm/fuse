@@ -39,6 +39,22 @@ namespace fuse::testing {
 int rank();
 int size();
 
+/// A communicator handle that is VALID but has exactly this process in it,
+/// for a test whose subject is "a communicator is configured at all" rather
+/// than any collective across peers.
+///
+/// Returns 0 without MPI, where no handle can be formed and none is ever
+/// dereferenced. Under MPI it is `MPI_Comm_c2f(MPI_COMM_SELF)`. Added
+/// 2026-09-20: two runner tests used a literal 0 as a sentinel, reasoning
+/// that the refusal they assert is reached before the handle is used. That
+/// held in Tier 0, where `attach_comm_graphs()` refuses ANY communicator in
+/// a build without MPI. In Tier 1 the same 0 reaches
+/// `MPI_Comm_f2c(0)`, which is NOT `MPI_COMM_NULL` on MPICH but an invalid
+/// handle, and the setup status agreement then aborted the process inside
+/// `MPI_Allreduce` (`comm=0x0`). A handle must be real or absent; there is
+/// no third state a library can diagnose.
+int self_communicator_handle();
+
 /// Declare a test's rank requirement. A test that needs exactly N ranks must say so;
 /// running it at the wrong size is a configuration error, reported once by rank 0,
 /// not a silent pass. Registration is per ctest entry, so the matrix in
