@@ -1,5 +1,7 @@
 #include <array>
 #include <fuse/transport/tags.hpp>
+#include "fuse/transport/rank_agreement.hpp"
+
 #include <gtest/gtest.h>
 #include <fuse/transport/transport.hpp>
 
@@ -124,4 +126,44 @@ TEST(Tags, AreDistinctAndWithinTheGuaranteedBound) {
   EXPECT_EQ(kMaxUsed, *std::max_element(all.begin(), all.end()))
       << "kMaxUsed is what setup checks against MPI_TAG_UB; it must be the "
          "largest tag actually used";
+}
+
+
+// ---- component agreement (pure rule, no MPI) ---------------------------
+
+// The two-rank job that failed on the host: rank 0 is the source with 1
+// component, rank 1 the destination with 2. Both ranks gather the same
+// array, so both must reach the same verdict -- and that verdict must be a
+// disagreement. Added 2026-09-20: the rule read as though it could not fail
+// to fire, and the host run showed both ranks accepting the spec, so the
+// rule is now checked where it can be run.
+TEST(ComponentAgreement, SourceAndDestinationDisagreeing) {
+  const auto a = fuse::transport::check_component_agreement(
+      /*all_components=*/{1, 2}, /*is_src=*/{1, 0}, /*is_dst=*/{0, 1});
+  EXPECT_FALSE(a.agreed());
+  EXPECT_EQ(a.first_rank, 0);
+  EXPECT_EQ(a.first_value, 1);
+  EXPECT_EQ(a.disagreeing_rank, 1);
+  EXPECT_EQ(a.disagreeing_value, 2);
+}
+
+TEST(ComponentAgreement, AgreeingParticipantsAndIgnoredBystanders) {
+  // Every participant agrees; a rank in neither set may hold anything,
+  // because its count never sizes any count array.
+  const auto ok = fuse::transport::check_component_agreement(
+      {3, 99, 3}, {1, 0, 0}, {0, 0, 1});
+  EXPECT_TRUE(ok.agreed());
+  EXPECT_EQ(ok.first_rank, 0);
+
+  // A disagreement between two participants is still found when a bystander
+  // sits between them.
+  const auto bad = fuse::transport::check_component_agreement(
+      {3, 99, 4}, {1, 0, 0}, {0, 0, 1});
+  EXPECT_FALSE(bad.agreed());
+  EXPECT_EQ(bad.disagreeing_rank, 2);
+
+  // No participants at all is not a disagreement.
+  EXPECT_TRUE(fuse::transport::check_component_agreement({1, 2}, {0, 0},
+                                                         {0, 0})
+                  .agreed());
 }
