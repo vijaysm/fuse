@@ -444,7 +444,10 @@ Result<void> LowFiveTransport::build_plan(const TransportSpec& spec) {
   if (probe_space < 0) {
     return Failure{"E-TRANSPORT-HDF5", "H5Screate_simple(1) failed"};
   }
-  const char* kProbe = "__soma_lowfive_probe__";
+  // R-46 (REVIEW.md): residual upstream name, harmless (it never leaves this
+  // process's own scratch HDF5 file) but a leftover porting.md renaming would
+  // have caught.
+  const char* kProbe = "__fuse_lowfive_probe__";
   bool        hdf5_ok = true;
   {
     FileHandle f(H5Fcreate(p->file_c, H5F_ACC_TRUNC, H5P_DEFAULT, p->fapl));
