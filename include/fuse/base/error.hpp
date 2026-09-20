@@ -3,7 +3,8 @@
 #include <cstdint>
 #include <source_location>
 
-#include <Kokkos_Core.hpp>  // KOKKOS_IF_ON_HOST/DEVICE and Kokkos::abort for FUSE_DEBUG_ASSERT
+#include <Kokkos_Abort.hpp>   // Kokkos::abort, for FUSE_DEBUG_ASSERT on the device
+#include <Kokkos_Macros.hpp>  // KOKKOS_IF_ON_HOST / KOKKOS_IF_ON_DEVICE
 #include <stdexcept>
 #include <string>
 #include <string_view>
