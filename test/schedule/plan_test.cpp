@@ -97,6 +97,45 @@ CouplingGraph five_writer_merge(int lagged_writer) {
   return g;
 }
 
+/// Two writers on DIFFERENT ranks than the target and than each other,
+/// merged with a declared Sum -- unlike `five_writer_merge()` above, whose
+/// writers are colocated with the target so lowering never inserts a
+/// Transport/Epoch pair. Colocated writers happened to schedule correctly by
+/// accident: with no Transport/Epoch, every node in the graph landed at the
+/// same instant and NodeId order alone kept Merge after its inputs. The
+/// moment a writer is NOT colocated, its Transport/Epoch pair runs at the
+/// destination's tick END while the boundary pass placed Merge at the tick
+/// START, so Merge sorted before the Epoch outputs it reads and the
+/// scheduler's own dependence check refused the plan with E-SCHED-ORDER --
+/// docs/dev/reviews/2026-09-19/pass2/re-ir-schedule.md's N-ir-schedule-2,
+/// found by the sweep this fix report also extends to call schedule().
+CouplingGraph merge_across_ranks() {
+  CouplingGraph g;
+  const auto m = g.add_mesh(fuse::MeshDecl{.name = "m"});
+  const auto r = g.add_region(fuse::Region{.name = "r", .mesh = m});
+  const auto dst = g.add_component(ComponentDecl{
+      .name = "dst", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  const auto in = g.add_field(
+      dst, fuse::FieldSpec{.name = "f_in", .region = r,
+                           .units = u::kHeatFluxDensity,
+                           .conservation = fuse::Conservation::Extensive,
+                           .intent = fuse::Intent::Requires});
+  for (int i = 0; i < 2; ++i) {
+    const auto src = g.add_component(
+        ComponentDecl{.name = "src" + std::to_string(i),
+                      .ranks = fuse::RankSet{i + 1, 1},
+                      .interval = Rational{1}});
+    const auto out = g.add_field(
+        src, fuse::FieldSpec{.name = "f_out", .region = r,
+                             .units = u::kHeatFluxDensity,
+                             .conservation = fuse::Conservation::Extensive,
+                             .intent = fuse::Intent::Provides});
+    g.add_channel("ch" + std::to_string(i), out, in);
+  }
+  g.merge(in, fuse::MergeOp::Sum);
+  return g;
+}
+
 /// Independent of the scheduler's own reasoning: walk the emitted stream and
 /// check that every operand was written by an earlier instruction. A lagged
 /// arc (negative time offset) is exempt -- spec §4.3, its value comes from the
@@ -462,6 +501,33 @@ TEST(ExecutionPlan, FiveWriterMergeKeepsNewestTimeLevelThroughTheFoldWhenOneIsLa
            "contribution's time level, not a mid-fold intermediate's";
   }
   EXPECT_EQ(merge_nodes, 4u);
+}
+
+// A Merge whose writers are NOT colocated with the target must schedule too,
+// and its instruction stream must be a real dependence order -- not just
+// "schedule() returned ok", since a wrong-but-lucky order could still pass
+// r.ok() if nothing downstream happened to read the misordered arc first.
+// N-ir-schedule-2 (docs/dev/reviews/2026-09-19/pass2/re-ir-schedule.md): this
+// used to fail E-SCHED-ORDER, Merge sorted before the Epoch outputs it reads.
+TEST(ExecutionPlan, MergeAcrossRanksSchedulesInDependenceOrder) {
+  const CouplingGraph g = merge_across_ranks();
+  const auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+
+  bool saw_transport = false;
+  for (std::uint32_t i = 0; i < lowered.dag.node_count(); ++i) {
+    if (lowered.dag.node(fuse::NodeId{i}).kind == OpKind::Transport) {
+      saw_transport = true;
+    }
+  }
+  ASSERT_TRUE(saw_transport)
+      << "fixture must actually exercise a Transport/Epoch pair, or it is "
+         "the colocated case FiveWriterMerge* already covers";
+
+  const fuse::ClockSet cs{g};
+  const auto r = schedule(g, lowered.dag, cs, constant_sizes(64));
+  ASSERT_TRUE(r.ok()) << r.diags.to_string();  // used to fail E-SCHED-ORDER
+  EXPECT_EQ(dependence_violations(lowered.dag, r.plan), 0u);
 }
 
 // ---------------------------------------------------------------------------

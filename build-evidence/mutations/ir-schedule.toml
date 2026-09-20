@@ -30,3 +30,43 @@ old = "      if (writers.size() <= kMaxMergeInputs) {"
 new = "      if (true) {"
 target = "fuse_schedule_plan_test"
 test = "schedule.plan"
+
+# The two mutations below guard N-ir-schedule-2
+# (docs/dev/reviews/2026-09-19/pass2/re-ir-schedule.md), found while fixing
+# that report's N-ir-schedule-1 IMPROVEMENT: extending
+# schedule.acyclicity_sweep to also call schedule() immediately turned up a
+# real BLOCKER, not just a coverage gap. A Merge combining two or more
+# channels carries `ChannelId{}` origin (fuse/ir/lowering.cpp -- it is not
+# any one of them), so `expand()`'s "no channel claimed" boundary handling
+# placed it at its owning component's tick START, the convention meant for
+# Source and an unwritten Sink. When any of its writers actually crosses
+# ranks (needs a real Transport/Epoch pair, unlike every writer in
+# five_writer_merge()'s fixture above, which are all colocated with the
+# target and so never gain one), that pair runs at the tick's END and Merge
+# sorted before it, failing the scheduler's own dependence check with
+# E-SCHED-ORDER on an entirely ordinary graph. Two mutations because the fix
+# touches two independent code paths -- expand()'s lockstep fast path and
+# its general path -- each hand-verified by reverting just that one line,
+# rebuilding, and confirming the cited test fails; `tools/mutate.py` was not
+# run (see the header note: it edits repository sources in place, unsafe
+# against a checkout six fixers share).
+
+[[mutation]]
+id = "merge-placed-at-tick-start-lockstep"
+area = "compiler"
+describes = "in the lockstep fast path, a Merge combining two or more channels is placed at its owning component's tick START (the Source/unwritten-Sink convention) instead of the tick END its Transport/Epoch inputs land on, so it sorts before them and schedule() fails E-SCHED-ORDER on any graph where a writer is not colocated with the merge target"
+file = "src/schedule/expand.cpp"
+old = "    } else if (n.kind == OpKind::Merge) {"
+new = "    } else if (false) {"
+target = "fuse_schedule_expand_test"
+test = "schedule.expand"
+
+[[mutation]]
+id = "merge-placed-at-tick-start-general"
+area = "compiler"
+describes = "in the general (non-lockstep) path, a Merge combining two or more channels is placed at its owning component's tick START instead of the tick END, the same defect as merge-placed-at-tick-start-lockstep but in the other of expand()'s two emission paths -- ExpandMode::ForceGeneral is required to reach it, since a lockstep graph never takes this branch"
+file = "src/schedule/expand.cpp"
+old = "    const bool tick_closing = (n.kind == OpKind::Merge);"
+new = "    const bool tick_closing = false;"
+target = "fuse_schedule_expand_test"
+test = "schedule.expand"

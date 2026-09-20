@@ -199,7 +199,11 @@ bool has_sample(const Channel& ch) {
 ///     `t = period`; the one exception is the `Sample` of an accumulating
 ///     channel, which runs on the *source* clock at the start of its only
 ///     tick, `t = 0`, and therefore carries `TickPhase::AfterTicks`;
-///   * a node no channel claimed runs at its component's only tick, `t = 0`.
+///   * a `Merge` -- claimed by no single channel, since it combines two or
+///     more -- also runs at `t = period`, the same instant as the
+///     Epoch/Transport/Remap outputs it reads (N-ir-schedule-2);
+///   * every other node no channel claimed (`Source`, an unwritten `Sink`)
+///     runs at its component's only tick, `t = 0`.
 ///
 /// Every step index is 0, because there is only step 0 of either clock, and
 /// every instance index is 0, because nothing repeats.
@@ -240,6 +244,16 @@ bool has_sample(const Channel& ch) {
       } else {
         t = out.period;
       }
+    } else if (n.kind == OpKind::Merge) {
+      // A Merge combining two or more channels has no single owning channel
+      // (fuse/ir/lowering.cpp gives it ChannelId{} on purpose -- it is not
+      // any one of them), but it is a chain-CLOSING node like the rest of
+      // those channels' own non-Sample tails, not a component-tick-opening
+      // one. Falling into the `boundary_owner()` branch below placed it at
+      // its component's tick START, sorting it before the Epoch/Transport
+      // outputs it reads and failing the scheduler's own dependence check --
+      // REVIEW.md N-ir-schedule-2.
+      t = out.period;
     } else {
       const Result<ComponentId> owner = boundary_owner(g, dag, i, n);
       if (!owner.ok()) return owner.error();
@@ -451,7 +465,10 @@ Result<TimedDag> expand(const CouplingGraph& g, const OperatorDAG& dag,
   // --- everything no channel claimed: one instance per owning component tick.
   // Source always lands here (lowering gives it no origin); so does a Sink for
   // a Bidirectional field that no channel writes. A Sink that *was* written is
-  // part of its channel's chain above and must not be emitted twice.
+  // part of its channel's chain above and must not be emitted twice. A Merge
+  // combining two or more channels also has no single origin and lands here,
+  // but -- unlike Source/Sink -- it closes its destination component's tick
+  // rather than opening it (N-ir-schedule-2, see the loop body below).
   //
   // `BeforeTicks`, like every non-`Sample` instance. `Source` moves no data --
   // its arc already aliases the component's own storage (see
@@ -471,8 +488,19 @@ Result<TimedDag> expand(const CouplingGraph& g, const OperatorDAG& dag,
 
     const Result<std::int64_t> nk = tick_count(out.period, dt, "component");
     if (!nk.ok()) return nk.error();
+
+    // A Merge combining two or more channels lands here too -- it has no
+    // single owning channel by construction (see the twin comment in
+    // emit_lockstep()) -- but it CLOSES its destination component's tick
+    // rather than opening it, so it is stamped at each tick's END,
+    // `(k+1)*dt`, the same instant a channel's own non-Sample tail lands on
+    // for that tick. Source and an unwritten Sink genuinely open the tick,
+    // `k*dt`, which is the one case this loop was written for.
+    // REVIEW.md N-ir-schedule-2: placing Merge at the tick's start sorted it
+    // before the Epoch/Transport outputs it reads.
+    const bool tick_closing = (n.kind == OpKind::Merge);
     for (std::int64_t k = 0; k < nk.value(); ++k) {
-      const Result<Rational> t = scaled_tick(k, dt);
+      const Result<Rational> t = scaled_tick(tick_closing ? k + 1 : k, dt);
       if (!t.ok()) return t.error();
       if (!emit(nid, t.value(), k, k)) return explode_error();
     }

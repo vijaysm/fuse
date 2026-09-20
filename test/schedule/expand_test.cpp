@@ -344,3 +344,63 @@ TEST(Expand, RejectsExpansionThatExceedsTheTimedNodeCap) {
   ASSERT_FALSE(td.ok());
   EXPECT_EQ(td.error().code, "E-SCHED-EXPLODE");
 }
+
+// Two writers on different ranks than the target and than each other,
+// merged with a declared Sum -- `merge()` gives the combining node
+// `ChannelId{}` origin (fuse/ir/lowering.cpp), same as Source, so it is
+// claimed by no channel. Unlike Source it is a chain-CLOSING node: it must
+// land no earlier than the Transport/Epoch outputs it reads, in EITHER
+// expansion path -- docs/dev/reviews/2026-09-19/pass2/re-ir-schedule.md's
+// N-ir-schedule-2 found the fast (lockstep) path stamping it at the tick's
+// START instead, sorting it before its own inputs.
+CouplingGraph merge_across_ranks() {
+  CouplingGraph g;
+  const auto m = g.add_mesh(fuse::MeshDecl{.name = "m"});
+  const auto r = g.add_region(fuse::Region{.name = "r", .mesh = m});
+  const auto dst = g.add_component(ComponentDecl{
+      .name = "dst", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  const auto in = g.add_field(
+      dst, fuse::FieldSpec{.name = "f_in", .region = r, .units = u::kKelvin,
+                           .intent = fuse::Intent::Requires});
+  for (int i = 0; i < 2; ++i) {
+    const auto src = g.add_component(ComponentDecl{
+        .name = "src" + std::to_string(i), .ranks = fuse::RankSet{i + 1, 1},
+        .interval = Rational{1}});
+    const auto out = g.add_field(
+        src, fuse::FieldSpec{.name = "f_out", .region = r, .units = u::kKelvin,
+                             .intent = fuse::Intent::Provides});
+    g.add_channel("ch" + std::to_string(i), out, in);
+  }
+  g.merge(in, fuse::MergeOp::Sum);
+  return g;
+}
+
+TEST(Expand, MergeNeverPrecedesItsProducers) {
+  const CouplingGraph g = merge_across_ranks();
+  const auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+
+  for (const fuse::ExpandMode mode :
+       {fuse::ExpandMode::Auto, fuse::ExpandMode::ForceGeneral}) {
+    const fuse::ClockSet cs{g};
+    const auto td = expand(g, lowered.dag, cs, mode);
+    ASSERT_TRUE(td.ok()) << td.error().message;
+
+    Rational merge_time{-1};
+    bool have_merge = false;
+    Rational latest_input_time{0};
+    for (const auto& tn : td.value().nodes) {
+      const fuse::Node& n = lowered.dag.node(tn.node);
+      if (n.kind == OpKind::Merge) {
+        ASSERT_FALSE(have_merge) << "fixture must have exactly one Merge";
+        have_merge = true;
+        merge_time = tn.time;
+      } else if (n.kind == OpKind::Transport || n.kind == OpKind::Epoch) {
+        latest_input_time = std::max(latest_input_time, tn.time);
+      }
+    }
+    ASSERT_TRUE(have_merge);
+    EXPECT_GE(merge_time, latest_input_time)
+        << "mode=" << static_cast<int>(mode);
+  }
+}
