@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "fuse/model/descriptor.hpp"
+#include "fuse/model/validate.hpp"
 
 namespace fuse {
 namespace {
@@ -183,7 +184,18 @@ using ComponentByName = std::unordered_map<std::string, ComponentId>;
 // for "coupling_period" (scalar, or {kind: coupling_period}) so a
 // hand-written map form is also legal.
 
-void emit_window(YAML::Emitter& e, const CouplingGraph& g, const Window& w) {
+// N-base-model-1 (docs/dev/reviews/2026-09-19/pass2/re-base-model.md): a
+// FromComponent window's ComponentId is accepted by ChannelBuilder::
+// accumulate()/spacetime() with no bounds check, same as the four sites
+// R-18 already guards -- window_component_ok() (validate.hpp) is the same
+// helper validate() uses for this exact id, reused here rather than
+// duplicated so the two call sites cannot drift out of agreement on what
+// "in range" means.
+std::optional<Failure> emit_window(YAML::Emitter& e, const CouplingGraph& g,
+                                    const Window& w) {
+  if (!detail::window_component_ok(g, w)) {
+    return Failure{"E-YAML-REF", "window references an invalid component"};
+  }
   e << YAML::Key << "window" << YAML::Value;
   switch (w.kind) {
     case Window::Kind::FromComponent:
@@ -204,6 +216,7 @@ void emit_window(YAML::Emitter& e, const CouplingGraph& g, const Window& w) {
       e << "coupling_period";
       break;
   }
+  return std::nullopt;
 }
 
 Result<Window> parse_window(const YAML::Node& wn,
@@ -319,6 +332,15 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
       << YAML::Key << "fields" << YAML::Value << YAML::BeginSeq;
     for (const FieldId fid : c.fields) {
       const auto& f = g.field(fid);
+      // N-base-model-1: f.region is a raw RegionId add_field() accepts with
+      // no bounds check (add_field() only asserts the owning component is
+      // in range); g.region() below is .at()-based, same class of gap as
+      // the region->mesh check above and the four sites R-18 already
+      // guards.
+      if (!f.region.valid() || f.region.value() >= g.region_count()) {
+        return Failure{"E-YAML-REF",
+                       "field '" + f.name + "' references an invalid region"};
+      }
       e << YAML::BeginMap
         << YAML::Key << "name" << YAML::Value << f.name
         // The order fields were declared in, which is NOT the order they
@@ -364,7 +386,7 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
       << YAML::Key << "target" << YAML::Value << qualified(c.target)
       << YAML::Key << "accumulate" << YAML::Value << YAML::Flow << YAML::BeginMap
       << YAML::Key << "op" << YAML::Value << to_cstring(c.accumulate.op);
-    emit_window(e, g, c.accumulate.window);
+    if (auto fail = emit_window(e, g, c.accumulate.window)) return *fail;
     e << YAML::EndMap;
 
     if (c.remap.flags != RemapFlags::None || !c.remap.method_override.empty()) {
@@ -385,7 +407,7 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
       e << YAML::Key << "spacetime" << YAML::Value << YAML::Flow << YAML::BeginMap
         << YAML::Key << "basis" << YAML::Value << to_cstring(c.spacetime.basis)
         << YAML::Key << "degree" << YAML::Value << c.spacetime.degree;
-      emit_window(e, g, c.spacetime.window);
+      if (auto fail = emit_window(e, g, c.spacetime.window)) return *fail;
       e << YAML::EndMap;
     }
     if (c.relax.enabled) e << YAML::Key << "relax" << YAML::Value << c.relax.omega;
@@ -598,9 +620,24 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
       }
       if (fn["order"])      f.order = fn["order"].as<int>();
       if (fn["components"]) f.components = fn["components"].as<int>();
-      if (fn["units"] && !parse_units(fn["units"], f.units)) {
-        return Failure{"E-YAML-UNITS",
-                     "unknown unit symbol '" + fn["units"].as<std::string>() + "'"};
+      if (fn["units"]) {
+        if (!parse_units(fn["units"], f.units)) {
+          return Failure{"E-YAML-UNITS",
+                       "unknown unit symbol '" + fn["units"].as<std::string>() + "'"};
+        }
+        // N-base-model-2: R-19 gated a non-positive Units::scale at the
+        // binary descriptor boundary (descriptor.hpp) and at
+        // check_units()/validate_field_semantics(), but from_yaml() -- an
+        // equally real trust boundary per testing.md's three-leg
+        // round-trip and porting.md's front-end list -- parsed "scale"
+        // with no sign or zero check at all. Same rule, same message
+        // shape, matching E-DESC-UNITS-SCALE's code family so the two
+        // front ends report the identical defect the same way.
+        if (!(f.units.scale > Rational{0})) {
+          return Failure{"E-YAML-UNITS-SCALE",
+                       "field '" + f.name + "' has non-positive unit scale " +
+                           f.units.scale.to_string()};
+        }
       }
       if (fn["conservation"] &&
           !lookup_enum(fn["conservation"].as<std::string>(), kConservNames,

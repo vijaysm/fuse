@@ -118,6 +118,83 @@ TEST(YamlIo, EmittingAGraphWithADanglingChannelReferenceReturnsFailure) {
   EXPECT_EQ(text.error().code, "E-YAML-REF");
 }
 
+// N-base-model-1 (docs/dev/reviews/2026-09-19/pass2/re-base-model.md): a
+// FromComponent window's ComponentId is accepted by ChannelBuilder::
+// accumulate()/spacetime() with no bounds check, the same reachability
+// R-18 already covers for a channel's source/target field and an
+// iteration region's channel list -- but neither window field was
+// guarded. Mirrors EmittingAGraphWithADanglingChannelReferenceReturnsFailure
+// above, one call site per window.
+TEST(YamlIo, EmittingAGraphWithADanglingAccumulateWindowComponentReturnsFailure) {
+  CouplingGraph g;
+  const auto m = g.add_mesh(MeshDecl{.name = "m", .source = "generated:box"});
+  const auto r = g.add_region(Region{.name = "wall", .mesh = m,
+                                     .entity_set = "w", .dimension = 2});
+  const auto a = g.add_component(ComponentDecl{.name = "a",
+                                                .ranks = fuse::RankSet{0, 1},
+                                                .interval = Rational{1}});
+  const auto s = g.add_field(a, FieldSpec{.name = "s", .region = r,
+                                          .units = u::kHeatFluxDensity,
+                                          .conservation = Conservation::Extensive,
+                                          .intent = Intent::Provides});
+  const auto t = g.add_field(a, FieldSpec{.name = "t", .region = r,
+                                          .units = u::kHeatFluxDensity,
+                                          .conservation = Conservation::Extensive,
+                                          .intent = Intent::Requires});
+  const auto ch = g.add_channel("c", s, t);
+  // Only component "a" exists, so ComponentId{99} is out of range -- the
+  // raw builder accepts it without complaint.
+  g.channel(ch).accumulate(AccumOp::Mean, Window::from(fuse::ComponentId{99}));
+
+  const auto text = to_yaml(g);
+  ASSERT_FALSE(text.ok());
+  EXPECT_EQ(text.error().code, "E-YAML-REF");
+}
+
+TEST(YamlIo, EmittingAGraphWithADanglingSpacetimeWindowComponentReturnsFailure) {
+  CouplingGraph g;
+  const auto m = g.add_mesh(MeshDecl{.name = "m", .source = "generated:box"});
+  const auto r = g.add_region(Region{.name = "wall", .mesh = m,
+                                     .entity_set = "w", .dimension = 2});
+  const auto a = g.add_component(ComponentDecl{.name = "a",
+                                                .ranks = fuse::RankSet{0, 1},
+                                                .interval = Rational{1}});
+  const auto s = g.add_field(a, FieldSpec{.name = "s", .region = r,
+                                          .units = u::kHeatFluxDensity,
+                                          .conservation = Conservation::Extensive,
+                                          .intent = Intent::Provides});
+  const auto t = g.add_field(a, FieldSpec{.name = "t", .region = r,
+                                          .units = u::kHeatFluxDensity,
+                                          .conservation = Conservation::Extensive,
+                                          .intent = Intent::Requires});
+  const auto ch = g.add_channel("c", s, t);
+  g.channel(ch).spacetime(TemporalBasis::DG, 2, Window::from(fuse::ComponentId{99}));
+
+  const auto text = to_yaml(g);
+  ASSERT_FALSE(text.ok());
+  EXPECT_EQ(text.error().code, "E-YAML-REF");
+}
+
+// N-base-model-1: a FieldSpec's RegionId is accepted by add_field() with no
+// bounds check (add_field() only asserts the owning ComponentId is in
+// range), the same reachability gap as the region->mesh check to_yaml()
+// already has for Region::mesh.
+TEST(YamlIo, EmittingAGraphWithADanglingFieldRegionReturnsFailure) {
+  CouplingGraph g;
+  const auto a = g.add_component(ComponentDecl{.name = "a",
+                                                .ranks = fuse::RankSet{0, 1},
+                                                .interval = Rational{1}});
+  // No region exists in g, so RegionId{7} is out of range.
+  (void)g.add_field(a, FieldSpec{.name = "f", .region = fuse::RegionId{7},
+                                 .units = u::kHeatFluxDensity,
+                                 .conservation = Conservation::Extensive,
+                                 .intent = Intent::Provides});
+
+  const auto text = to_yaml(g);
+  ASSERT_FALSE(text.ok());
+  EXPECT_EQ(text.error().code, "E-YAML-REF");
+}
+
 TEST(YamlIo, RejectsUnknownFieldReference) {
   const std::string bad = R"(
 version: 1
@@ -151,6 +228,35 @@ channels: []
   const auto g = from_yaml(bad);
   ASSERT_FALSE(g.ok());
   EXPECT_EQ(g.error().code, "E-YAML-UNITS");
+}
+
+// N-base-model-2: R-19 gated a non-positive Units::scale at the binary
+// descriptor boundary (Descriptor.RejectsNonPositiveUnitScale) and at
+// check_units()/validate_field_semantics(), but from_yaml()'s parse_units()
+// parsed "scale" with no sign or zero check at all -- an equally real
+// front-end per testing.md's three-leg round-trip. Mirrors
+// Descriptor.RejectsNonPositiveUnitScale's two cases through from_yaml()
+// instead of deserialize().
+TEST(YamlIo, RejectsNonPositiveUnitScale) {
+  const auto encode = [](const std::string& scale) {
+    return R"(
+version: 1
+meshes: [{name: m, source: "generated:box"}]
+regions: [{name: r, mesh: m, entity_set: w, dimension: 2}]
+components:
+  - name: a
+    ranks: {first: 0, count: 1}
+    interval: 1
+    fields: [{name: f, region: r, intent: Provides, units: {length: 1, scale: ")" +
+           scale + R"("}}]
+channels: []
+)";
+  };
+  for (const std::string& bad_scale : {std::string("0"), std::string("-1000")}) {
+    const auto g = from_yaml(encode(bad_scale));
+    ASSERT_FALSE(g.ok()) << "scale " << bad_scale;
+    EXPECT_EQ(g.error().code, "E-YAML-UNITS-SCALE");
+  }
 }
 
 TEST(YamlIo, RejectsWrongSchemaVersion) {

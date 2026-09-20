@@ -76,3 +76,37 @@ old = "    else if (field.units.scale < Rational{0})"
 new = "    else if (false)"
 target = "fuse_model_semantics_test"
 test = "model.semantics"
+
+# Second-pass mutations (docs/dev/reviews/2026-09-19/pass2/re-base-model.md,
+# N-base-model-1, N-base-model-2): the two "finish the job" gaps the first
+# pass's R-18/R-19 fixes left open in to_yaml()/from_yaml().
+
+[[mutation]]
+id = "yaml-io-emits-dangling-window-component"
+area = "model"
+describes = "emit_window() stops checking window_component_ok() before dereferencing a FromComponent window's component (N-base-model-1), reopening the std::out_of_range escape R-18 fixed for the other four to_yaml() sites but not this one"
+file = "src/model/yaml_io.cpp"
+old = "  if (!detail::window_component_ok(g, w)) {"
+new = "  if (false) {"
+target = "fuse_model_yaml_io_test"
+test = "model.yaml_io"
+
+[[mutation]]
+id = "yaml-io-emits-dangling-field-region"
+area = "model"
+describes = "to_yaml()'s field loop stops bounds-checking a field's RegionId before g.region(f.region).name (N-base-model-1), reopening the same std::out_of_range escape R-18 fixed for the region->mesh, channel->field, merge->field, and iteration-region->channel sites"
+file = "src/model/yaml_io.cpp"
+old = "      if (!f.region.valid() || f.region.value() >= g.region_count()) {"
+new = "      if (false) {"
+target = "fuse_model_yaml_io_test"
+test = "model.yaml_io"
+
+[[mutation]]
+id = "yaml-io-parses-non-positive-unit-scale"
+area = "model"
+describes = "from_yaml() stops refusing a non-positive parsed unit scale (N-base-model-2), reopening on the text front end the exact defect R-19 closed on the binary descriptor"
+file = "src/model/yaml_io.cpp"
+old = "        if (!(f.units.scale > Rational{0})) {"
+new = "        if (false) {"
+target = "fuse_model_yaml_io_test"
+test = "model.yaml_io"
