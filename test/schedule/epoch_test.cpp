@@ -126,4 +126,51 @@ TEST(Epoch, ReservedMultiscaleOperatorsAreRefused) {
   }
 }
 
+// `E-SCHED-EPOCH-PARTIAL`'s comparison (scheduler.cpp:599-618) cannot fire
+// under any lowering path that exists today: the only place an Epoch node is
+// created copies its rank sets verbatim from the Transport it guards
+// (rules_channel.cpp:213-218), so the two always agree by construction. That
+// makes the check currently unreachable by normal means, not incorrect --
+// same situation as ReservedMultiscaleOperatorsAreRefused above, which
+// splices in an opcode no lowering rule emits either. Splice a genuinely
+// mismatched Transport/Epoch pair the same way, so the diagnostic text and
+// code path are proven reachable and correctly worded (REVIEW.md R-44 /
+// IR-F5).
+TEST(Epoch, MismatchedRankSetsAreRefused) {
+  CouplingGraph g = colocated_pair();
+  auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+
+  const ArcId in = lowered.dag.node(NodeId{0}).output;
+  // A COPY, not a reference: add_arc()/add_node() below can reallocate the
+  // DAG's internal arc vector, and dag.hpp's own doc comment on node()/arc()
+  // warns that a reference into it does not survive a subsequent mutating
+  // call. Two add_arc() calls follow, so a reference here would read freed
+  // memory on the second one.
+  const ValueType t = lowered.dag.arc(in).type;
+
+  OpAttrs move_attrs;
+  move_attrs.src_rank_set = 0;
+  move_attrs.dst_rank_set = 1;
+  const ArcId moved = lowered.dag.add_arc(t, "spliced/moved");
+  lowered.dag.add_node(OpKind::Transport, {in}, moved, move_attrs,
+                       ChannelId{}, "spliced/transport");
+
+  // Deliberately wrong: the guard should cover the same 0->1 the move did.
+  OpAttrs guard_attrs;
+  guard_attrs.src_rank_set = 0;
+  guard_attrs.dst_rank_set = 2;
+  const ArcId guarded = lowered.dag.add_arc(t, "spliced/guarded");
+  lowered.dag.add_node(OpKind::Epoch, {moved}, guarded, guard_attrs,
+                       ChannelId{}, "spliced/epoch");
+
+  const ClockSet cs{g};
+  const auto r = schedule(g, lowered.dag, cs, [](RegionId) -> std::size_t { return 64; });
+  EXPECT_FALSE(r.ok()) << "a rank-set mismatch between a move and its guard "
+                          "scheduled as if they agreed";
+  bool named = false;
+  for (const auto& item : r.diags.items()) named = named || item.code == "E-SCHED-EPOCH-PARTIAL";
+  EXPECT_TRUE(named) << r.diags.to_string();
+}
+
 }  // namespace
