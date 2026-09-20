@@ -90,10 +90,21 @@ struct Simplex {
 // ordering to rely on -- and an outward-pointing plane would not error, it
 // would silently return the complement's measure.
 
-/// Face `i` of a simplex omits vertex `i`. Returns the inward plane.
+/// Face `i` of a simplex omits vertex `i`. Fills the inward plane and
+/// returns whether the face was non-degenerate.
+///
+/// REVIEW.md R-12: a zero-length edge (2D) or zero-area face (3D) has no
+/// normal to give -- `n` comes out `(0,0,0)`, and with it `d == 0`
+/// regardless of the vertex used to compute it (`d = -(0 . v[a]) == 0`).
+/// r2d/r3d's clip keeps the side where `dot(n, x) + d >= 0`, so an
+/// unreported `(0,0,0), 0` plane reads `0 >= 0` -- true for EVERY point,
+/// i.e. no constraint at all, which is the opposite of what a degenerate
+/// clipping face should impose (zero measure, not the whole target).
+/// Returning `false` here lets the caller clip to zero instead, the same
+/// way the target polygon's own `twice_area == 0.0` check already does.
 template <int Dim>
-void inward_plane(const std::array<Point, 4>& v, int i, double n[3],
-                  double& d) {
+[[nodiscard]] bool inward_plane(const std::array<Point, 4>& v, int i,
+                                double n[3], double& d) {
   const int a = (i + 1) % (Dim + 1);
   const int b = (i + 2) % (Dim + 1);
   if constexpr (Dim == 2) {
@@ -111,6 +122,8 @@ void inward_plane(const std::array<Point, 4>& v, int i, double n[3],
     n[1] = e1[2] * e2[0] - e1[0] * e2[2];
     n[2] = e1[0] * e2[1] - e1[1] * e2[0];
   }
+  const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+  if (!(len > 0.0)) return false;
   d = -(n[0] * coord(v[a], 0) + n[1] * coord(v[a], 1) + n[2] * coord(v[a], 2));
   // Make it point at the omitted vertex, which is the one inside.
   const double side = n[0] * coord(v[i], 0) + n[1] * coord(v[i], 1) +
@@ -119,11 +132,9 @@ void inward_plane(const std::array<Point, 4>& v, int i, double n[3],
     for (int k = 0; k < 3; ++k) n[k] = -n[k];
     d = -d;
   }
-  const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-  if (len > 0.0) {
-    for (int k = 0; k < 3; ++k) n[k] /= len;
-    d /= len;
-  }
+  for (int k = 0; k < 3; ++k) n[k] /= len;
+  d /= len;
+  return true;
 }
 
 /// The exact measure of the intersection of two simplices.
@@ -158,7 +169,9 @@ void inward_plane(const std::array<Point, 4>& v, int i, double n[3],
     r2d_plane planes[3];
     for (int f = 0; f < 3; ++f) {
       double n[3], d;
-      inward_plane<2>(s.p, f, n, d);
+      // REVIEW.md R-12: a degenerate clipping edge has no half-plane to
+      // give; clip to zero rather than silently impose no constraint.
+      if (!inward_plane<2>(s.p, f, n, d)) return 0.0;
       planes[f].n.xy[0] = n[0];
       planes[f].n.xy[1] = n[1];
       planes[f].d = d;
@@ -184,7 +197,9 @@ void inward_plane(const std::array<Point, 4>& v, int i, double n[3],
   r3d_plane planes[4];
   for (int f = 0; f < 4; ++f) {
     double n[3], d;
-    inward_plane<3>(s.p, f, n, d);
+    // REVIEW.md R-12: a degenerate clipping face has no half-plane to give;
+    // clip to zero rather than silently impose no constraint.
+    if (!inward_plane<3>(s.p, f, n, d)) return 0.0;
     planes[f].n.xyz[0] = n[0];
     planes[f].n.xyz[1] = n[1];
     planes[f].n.xyz[2] = n[2];
@@ -283,6 +298,10 @@ Result<RemapWeights> build_supermesh_weights(const MeshView& src,
   // lost to the floor is reported in `max_col_defect` rather than concealed by
   // computing the audit from entries that were then discarded.
   constexpr double kNegligible = 1e-12;
+  // REVIEW.md R-13: the same relative tolerance intx_weights.cpp's MOAB path
+  // uses for its over_src/over_tgt audit (`kCoverageTol` there), so the two
+  // paths refuse on the same threshold.
+  constexpr double kSupermeshCoverageTol = 1e-9;
 
   // Brute force over bounding-box-compatible pairs. This is O(n_t * n_s) box
   // tests, which is the honest starting point: it is exact, it has no tuning
@@ -348,16 +367,44 @@ Result<RemapWeights> build_supermesh_weights(const MeshView& src,
     src_covered[i] += m;
     tgt_covered[j] += m;
   }
+  // REVIEW.md R-13: the MOAB path refuses E-REMAP-INTX when a cell is
+  // assigned more area than it has (intx_weights.cpp's over_src/over_tgt
+  // audit, kCoverageTol). This path tracked only the minimum, so the exact
+  // defect class R-12 produces -- overlap inflated past the cell it came
+  // from -- passed here as a wrong, conservative-looking weight matrix
+  // instead of being caught. Checked against the SAME kept-entries coverage
+  // the minimum already uses, so a degenerate cell fixed by R-12 (now
+  // contributing zero) cannot trip this.
   for (std::size_t i = 0; i < w.n_cols; ++i) {
     const double m = src.measure(dim, i);
     if (m > 0.0) {
-      w.min_src_coverage = std::min(w.min_src_coverage, src_covered[i] / m);
+      const double c = src_covered[i] / m;
+      w.min_src_coverage = std::min(w.min_src_coverage, c);
+      if (c > 1.0 + kSupermeshCoverageTol) {
+        return Failure{
+            "E-REMAP-INTX",
+            "the supermesh assigns " + std::to_string(c) +
+                " times its own area to source cell " + std::to_string(i) +
+                " (dimension " + std::to_string(dim) +
+                "); overlaps cannot exceed the cell, so the intersection or "
+                "its parent attribution is wrong"};
+      }
     }
   }
   for (std::size_t j = 0; j < w.n_rows; ++j) {
     const double m = tgt.measure(dim, j);
     if (m > 0.0) {
-      w.min_tgt_coverage = std::min(w.min_tgt_coverage, tgt_covered[j] / m);
+      const double c = tgt_covered[j] / m;
+      w.min_tgt_coverage = std::min(w.min_tgt_coverage, c);
+      if (c > 1.0 + kSupermeshCoverageTol) {
+        return Failure{
+            "E-REMAP-INTX",
+            "the supermesh assigns " + std::to_string(c) +
+                " times its own area to target cell " + std::to_string(j) +
+                " (dimension " + std::to_string(dim) +
+                "); overlaps cannot exceed the cell, so the intersection or "
+                "its parent attribution is wrong"};
+      }
     }
   }
 

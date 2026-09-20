@@ -1,0 +1,13 @@
+# Mutation for the backend fix pass (REVIEW.md R-13).
+# Own file per the review-fix protocol: do not edit build-evidence/mutations.toml
+# directly while other fixers hold it dirty.
+
+[[mutation]]
+id = "supermesh-no-over-coverage-audit"
+area = "backend"
+describes = "the supermesh path's per-cell coverage audit checks only the minimum, so a cell assigned more area than it has (R-12's defect class, or any other overlap-inflation bug) passes silently instead of refusing E-REMAP-INTX (R-13)"
+file = "src/backend/supermesh.cpp"
+old = "return moments[0] > 0.0 ? moments[0] : 0.0;\n  }"
+new = "return moments[0] > 0.0 ? moments[0] * 1.5 : 0.0;\n  }"
+target = "fuse_backend_supermesh_test"
+test = "backend.supermesh"
