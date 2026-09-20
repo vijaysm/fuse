@@ -33,7 +33,7 @@
 // there is no mpi.h on the include path. This is the second of the two
 // translation units allowed to see MOAB, so it is also allowed to see the MPI
 // that comes with it; no FUSE header names either.
-#if defined(MOAB_HAVE_MPI) && defined(FUSE_HAVE_MPI)
+#if defined(MOAB_HAVE_MPI) && FUSE_HAVE_MPI  // FUSE_HAVE_MPI is #cmakedefine01: test its VALUE
 #define FUSE_REMAP_PARALLEL 1
 #include <moab/ParallelComm.hpp>
 #include <mpi.h>

@@ -1,3 +1,6 @@
+// Explicit, not transitive: the feature macros are read below (docs/dev/invariants.md).
+#include "fuse/base/config.hpp"
+
 #include "fuse/linalg/least_squares.hpp"
 
 #include <cstddef>

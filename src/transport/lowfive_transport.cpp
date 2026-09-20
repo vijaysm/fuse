@@ -63,7 +63,7 @@ namespace {
   return Failure{"E-TRANSPORT-NOLOWFIVE",
                std::string(what) +
                    " requires a LowFive-enabled build; this one was configured "
-                   "without it. Reconfigure with -DSOMA_ENABLE_LOWFIVE=ON and "
+                   "without it. Reconfigure with -DFUSE_ENABLE_LOWFIVE=ON and "
                    "-DCMAKE_PREFIX_PATH=\"/opt/lowfive-shared;/opt/hdf5-shared\" "
                    "(see docs/BUILDING.md)"};
 }
