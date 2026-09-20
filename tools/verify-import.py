@@ -48,21 +48,16 @@ def imported_files() -> list[Path]:
     return out
 
 
-def read_lock() -> dict[str, dict[str, str]]:
-    """Parse the [name] path/ref/tag/sha fields out of UPSTREAMS.lock."""
-    text = (ROOT / "UPSTREAMS.lock").read_text()
-    parents: dict[str, dict[str, str]] = {}
-    current = None
-    for line in text.splitlines():
-        sec = re.match(r"^\[([a-z0-9_]+)\]", line)
-        if sec:
-            current = sec.group(1)
-            parents[current] = {}
-            continue
-        kv = re.match(r"^\s*(path|ref|sha|tag)\s*=\s*\"([^\"]+)\"", line)
-        if kv and current:
-            parents[current][kv.group(1)] = kv.group(2)
-    return parents
+def read_lock() -> dict[str, dict[str, object]]:
+    """UPSTREAMS.lock is TOML in everything but its name; parse it as TOML.
+
+    The regex reader this replaces read only single-line `key = "value"`
+    fields and silently returned nothing for the multi-line `superseded` and
+    `diverged` arrays -- so the paths a port had replaced were never seen by
+    either tool that reasons about retirement (REVIEW.md BT-F4, BT-F6).
+    """
+    import tomllib
+    return tomllib.loads((ROOT / "UPSTREAMS.lock").read_text())
 
 
 def check_manifest() -> int:

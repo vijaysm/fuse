@@ -28,24 +28,16 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def lock() -> dict[str, dict[str, object]]:
-    text = (ROOT / "UPSTREAMS.lock").read_text()
-    out: dict[str, dict[str, object]] = {}
-    cur = None
-    for line in text.splitlines():
-        sec = re.match(r"^\[([a-z0-9_]+)\]", line)
-        if sec:
-            cur = sec.group(1)
-            out[cur] = {"diverged": [], "superseded": []}
-            continue
-        if not cur:
-            continue
-        kv = re.match(r"^\s*(path|ref|sha|tag)\s*=\s*\"([^\"]+)\"", line)
-        if kv:
-            out[cur][kv.group(1)] = kv.group(2)
-        lst = re.match(r"^\s*(diverged|superseded)\s*=\s*\[(.*)\]\s*$", line)
-        if lst:
-            out[cur][lst.group(1)] = re.findall(r'"([^"]+)"', lst.group(2))
-    return out
+    """Parse UPSTREAMS.lock as the TOML it is. The line-by-line regex reader it
+    replaces could not read a multi-line array, so `superseded` came back empty
+    and every upstream commit touching replaced code was classified as live
+    divergence (REVIEW.md BT-F4)."""
+    import tomllib
+    data = tomllib.loads((ROOT / "UPSTREAMS.lock").read_text())
+    for sec in data.values():
+        sec.setdefault("diverged", [])
+        sec.setdefault("superseded", [])
+    return data
 
 
 def git(path: str, *args: str) -> str:

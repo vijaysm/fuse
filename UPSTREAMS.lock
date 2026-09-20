@@ -35,6 +35,18 @@ superseded = [
   "include/soma/ir/", "src/ir/",               # lowering, rules, checkpoint derivation
   "include/soma/schedule/", "src/schedule/",   # clocks, acyclicity, expand, plan, slab
   "test/golden/",                              # three golden IR dumps
+  # S4, the runtime import (fuse::num, fuse::runtime, fuse::transport, fuse::backend)
+  "include/soma/num/", "src/num/",
+  "include/soma/runtime/", "src/runtime/",
+  "include/soma/transport/", "src/transport/",
+  "include/soma/mesh/", "src/mesh/",           # mesh_view, serial backend, and (S5.2) the MOAB backend
+  "include/soma/remap/", "src/remap/",         # remap_plan, intx_weights, spacetime, (S5.2) tempest_weights
+  "test/unit/moab_mesh_test.cpp",              # S5.2 -> test/backend/moab_mesh_test.cpp
+  "test/parallel/runner_transport_test.cpp", "test/parallel/comm_graph_test.cpp",
+  "test/parallel/mpi_transport_test.cpp",
+  # NOT yet superseded, and the reason upstream/soma cannot retire at S6 as written:
+  #   test/parallel/moab_parallel_test.cpp, the remaining test/unit/*.cpp (order studies,
+  #   remap_parallel and its four siblings that backend comments still cite -- REVIEW.md BK-M1)
 ]
 retire_at = "S6"                     # subtree deleted whole when every path is superseded
 retired   = ""                       # "<date> @ <fuse sha>" once done
@@ -87,9 +99,3 @@ open      = ["PETSc-backed native component unregistered",
 #   action and the only way to satisfy the S0 exit for this parent.
 verified  = "Release builds clean, 418 tests registered; host run 2026-09-15: 796/796 pass (4 MOAB-dependent skips) in a Tier 1 build with both parents"
 
-# Superseded 2026-09-18 by the MOAB backend port (S5.2):
-#   soma/include/soma/mesh/moab_backend.hpp -> include/fuse/backend/moab_backend.hpp
-#   soma/src/mesh/moab_backend.cpp          -> src/backend/moab_backend.cpp
-#   soma/src/remap/tempest_weights.cpp      -> src/backend/tempest_weights.cpp
-#   soma/test/unit/moab_mesh_test.cpp       -> test/backend/moab_mesh_test.cpp
-# Still to port from soma before upstream/soma retires: test/parallel/moab_parallel_test.cpp.
