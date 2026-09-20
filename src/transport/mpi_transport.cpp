@@ -477,6 +477,53 @@ Result<void> MpiTransport::build_plan(const TransportSpec& spec) {
     }
   }
 
+  // -- Collective 2b: agree on components (R-30, REVIEW.md) ----------------
+  // `sendcounts`/`recvcounts` below are each sized from THIS rank's own
+  // `spec.components` (via `nc`); nothing about the id-matching above would
+  // ever notice two ranks disagreeing on it, since ids carry no per-rank
+  // component count. `build_plan_from_peers()`'s Phase B numbering check
+  // catches this class of mismatch as a side effect of its own count
+  // handshake; this, the older matched path, has none. A disagreement here
+  // would size MPI_Alltoallv's count arrays inconsistently across ranks,
+  // which is undefined behaviour per the MPI standard -- deferred through
+  // the same `fail()`/`agree()` mechanism as every other verdict in this
+  // function, so it is still reconciled at Collective 4 rather than left for
+  // one rank to discover alone inside the actual data move.
+  std::vector<int> all_components(usize, 0);
+  {
+    const int my_components = spec.components;
+    const int rc = MPI_Allgather(&my_components, 1, MPI_INT,
+                                 all_components.data(), 1, MPI_INT, p->comm);
+    if (rc != MPI_SUCCESS) {
+      return Failure{"E-TRANSPORT-MPI",
+                   "MPI_Allgather of components failed: " +
+                       mpi_error_text(rc)};
+    }
+    if (err == Err::None) {
+      int first_rank = -1;
+      int first_value = 0;
+      for (std::size_t r = 0; r < usize; ++r) {
+        if (is_src[r] == 0 && is_dst[r] == 0) continue;
+        if (first_rank < 0) {
+          first_rank = static_cast<int>(r);
+          first_value = all_components[r];
+          continue;
+        }
+        if (all_components[r] != first_value) {
+          fail(Err::PeerMatch,
+               "rank " + std::to_string(r) + " called build_plan() with "
+               "components = " + std::to_string(all_components[r]) +
+                   ", but rank " + std::to_string(first_rank) +
+                   " (also in the src or dst rank set) called it with " +
+                   std::to_string(first_value) +
+                   "; every rank taking part in this redistribution must "
+                   "agree on the field's component count");
+          break;
+        }
+      }
+    }
+  }
+
   // Derived identically on every rank from data every rank now has, so a
   // return here is a return everywhere.
   std::size_t total_ids = 0;

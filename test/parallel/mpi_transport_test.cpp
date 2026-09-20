@@ -22,6 +22,11 @@
 #include <fuse/transport/comm_graph.hpp>
 #include <gtest/gtest.h>
 
+// R-50 (REVIEW.md): the documented rank-requirement convention
+// (docs/dev/testing.md). `halves()` below is a divisibility check the
+// documented macros cannot express, so it stays hand-rolled.
+#include "fuse_test_main.hpp"
+
 #if FUSE_HAVE_MPI
 
 #include <mpi.h>
@@ -288,7 +293,7 @@ TEST(MpiTransport, RedistributesAcrossDisjointRankSets) {
 
 // n != m, the asymmetric case. Three producers, one consumer.
 TEST(MpiTransport, RedistributesThreeToOne) {
-  if (world_size() != 4) GTEST_SKIP() << "needs exactly 4 ranks";
+  FUSE_REQUIRE_RANKS(4);
   Pattern p;
   p.src = {0, 1, 2};
   p.dst = {3};
@@ -297,7 +302,7 @@ TEST(MpiTransport, RedistributesThreeToOne) {
 
 // The other direction: one producer, three consumers.
 TEST(MpiTransport, RedistributesOneToThree) {
-  if (world_size() != 4) GTEST_SKIP() << "needs exactly 4 ranks";
+  FUSE_REQUIRE_RANKS(4);
   Pattern p;
   p.src = {0};
   p.dst = {1, 2, 3};
@@ -326,7 +331,7 @@ TEST(MpiTransport, RedistributesVectorFields) {
 // early return, rather than something MPICH can be made to reveal.
 TEST(MpiTransport, IdleRanksParticipateInsteadOfDeadlocking) {
   const int size = world_size();
-  if (size < 3) GTEST_SKIP() << "needs a rank outside both sets";
+  FUSE_REQUIRE_AT_LEAST_RANKS(3);
   Pattern p;
   p.src = {0};
   p.dst = {1};
@@ -338,7 +343,7 @@ TEST(MpiTransport, IdleRanksParticipateInsteadOfDeadlocking) {
 // `std::vector<double>{}.data()` is null. Both must work.
 TEST(MpiTransport, RankOwningZeroElementsIsOrdinary) {
   const int size = world_size();
-  if (size < 4) GTEST_SKIP() << "needs two sources and two destinations";
+  FUSE_REQUIRE_AT_LEAST_RANKS(4);
   const int rank = world_rank();
 
   // src = {0, 1} with rank 1 holding nothing; dst = the rest with the LAST
@@ -534,7 +539,7 @@ TEST(MpiTransport, BuildPlanRejectsEmptyRankSets) {
 }
 
 TEST(MpiTransport, BuildPlanRejectsOverlappingRankSets) {
-  if (world_size() < 2) GTEST_SKIP();
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   TransportSpec spec;
   spec.src_ranks = {0, 1};
   spec.dst_ranks = {1};
@@ -545,6 +550,35 @@ TEST(MpiTransport, BuildPlanRejectsOverlappingRankSets) {
   const auto r = t.build_plan(spec);
   ASSERT_FALSE(r.ok());
   EXPECT_EQ(r.error().code, "E-TRANSPORT-RANKS") << r.error().message;
+  ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
+}
+
+// R-30 (REVIEW.md): build_plan() has no cross-rank agreement on
+// TransportSpec::components, unlike build_plan_from_peers()'s Phase B
+// numbering check. Rank 0 calls it with components = 1, rank 1 with
+// components = 2, over an otherwise valid disjoint pattern; every rank must
+// refuse with E-TRANSPORT-PEERMATCH rather than build a plan whose
+// MPI_Alltoallv count arrays disagree between the two sides. Needs a host
+// run: the sandbox this was written in cannot launch MPI at all.
+TEST(MpiTransport, BuildPlanRejectsDisagreeingComponentsAcrossRanks) {
+  FUSE_REQUIRE_RANKS(2);
+  const int rank = world_rank();
+
+  TransportSpec spec;
+  spec.src_ranks = {0};
+  spec.dst_ranks = {1};
+  spec.elements = 1;
+  spec.global_ids = {0};
+  spec.components = (rank == 0) ? 1 : 2;
+
+  MpiTransport t;
+  ASSERT_TRUE(t.set_communicator(MPI_Comm_c2f(MPI_COMM_WORLD)).ok());
+  const auto r = t.build_plan(spec);
+  ASSERT_FALSE(r.ok()) << "rank " << rank
+                       << ": ranks disagreed on components, and every rank "
+                          "must refuse together rather than one side sizing "
+                          "MPI_Alltoallv from its own, different, count";
+  EXPECT_EQ(r.error().code, "E-TRANSPORT-PEERMATCH") << r.error().message;
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
@@ -567,7 +601,7 @@ TEST(MpiTransport, BuildPlanRejectsARankOutsideTheCommunicator) {
 // because the matching runs on data every rank has.
 TEST(MpiTransport, UnmatchedGlobalIdIsAnErrorOnEveryRank) {
   const int size = world_size();
-  if (size < 2) GTEST_SKIP();
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   const int rank = world_rank();
   const std::vector<int> src = range_of(0, size / 2 > 0 ? size / 2 : 1);
   const std::vector<int> dst = range_of(size / 2 > 0 ? size / 2 : 1, size);
@@ -597,7 +631,7 @@ TEST(MpiTransport, UnmatchedGlobalIdIsAnErrorOnEveryRank) {
 // Sending either copy would be a silent choice between two values.
 TEST(MpiTransport, DuplicatedSourceIdIsRejected) {
   const int size = world_size();
-  if (size < 3) GTEST_SKIP() << "needs two sources and a destination";
+  FUSE_REQUIRE_AT_LEAST_RANKS(3);
   const int rank = world_rank();
   const std::vector<int> src{0, 1};
   const std::vector<int> dst = range_of(2, size);
@@ -621,7 +655,7 @@ TEST(MpiTransport, DuplicatedSourceIdIsRejected) {
 }
 
 TEST(MpiTransport, BuildPlanRejectsAnIdListThatDisagreesWithElements) {
-  if (world_size() < 2) GTEST_SKIP();
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   TransportSpec spec;
   spec.src_ranks = {0};
   spec.dst_ranks = {1};
@@ -641,7 +675,7 @@ TEST(MpiTransport, BuildPlanRejectsAnIdListThatDisagreesWithElements) {
 // Reached with a huge component count so the test costs no memory.
 TEST(MpiTransport, BuildPlanRejectsCountsBeyondIntMax) {
   const int size = world_size();
-  if (size < 2) GTEST_SKIP();
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   const int rank = world_rank();
   const std::vector<int> src = range_of(0, size / 2);
   const std::vector<int> dst = range_of(size / 2, size);
@@ -1223,7 +1257,7 @@ TEST(MpiTransportPeers, DeliversUnderPartialOverlap) {
   // every rank is both a source and a destination, so one global_ids list per
   // rank cannot say which role an entry plays. Each rank ends up with a mix of
   // values received from peers and values copied locally.
-  if (world_size() < 2) GTEST_SKIP() << "needs at least 2 ranks";
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   Pattern p;
   p.src.resize(static_cast<std::size_t>(world_size()));
   std::iota(p.src.begin(), p.src.end(), 0);
@@ -1251,7 +1285,7 @@ TEST(MpiTransportPeers, DisagreeingHalvesAreRefusedBeforeTheRun) {
   // The numbering check. One rank is given a send plan its partner does not
   // expect; every rank must return E-TRANSPORT-PEERMATCH rather than one rank
   // sending into a receive nobody posted.
-  if (world_size() < 2) GTEST_SKIP() << "needs at least 2 ranks";
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   const int rank = world_rank();
   std::vector<fuse::CommGraphPeer> send_plan;
   std::vector<fuse::CommGraphPeer> recv_plan;
