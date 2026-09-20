@@ -252,7 +252,7 @@ class LowFiveTransport final : public Transport {
   LowFiveTransport& operator=(const LowFiveTransport&) = delete;
 
   /// True iff this build was configured with a usable LowFive
-  /// (`-DSOMA_ENABLE_LOWFIVE=ON` and the find module's dlopen probe passed).
+  /// (`-DFUSE_ENABLE_LOWFIVE=ON` and the find module's dlopen probe passed).
   [[nodiscard]] static bool is_available() noexcept;
 
   /// One-time setup. `file` is the HDF5 file name the writing component would

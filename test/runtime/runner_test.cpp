@@ -1,3 +1,6 @@
+// Explicit, not transitive: the feature macros are read below (docs/dev/invariants.md).
+#include "fuse/base/config.hpp"
+
 #include <gtest/gtest.h>
 #include <fuse/ir/lowering.hpp>
 #include <fuse/backend/serial_backend.hpp>

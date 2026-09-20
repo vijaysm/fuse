@@ -1,6 +1,11 @@
 #include <gtest/gtest.h>
 
-#ifdef FUSE_HAVE_MOAB
+// Before the #if: without this the macro is undefined, the preprocessor reads
+// 0, and all 38 cases below compile to the skip stub at the bottom -- which is
+// exactly what happened from the day this file was ported (REVIEW.md R-09).
+#include "fuse/base/config.hpp"
+
+#if FUSE_HAVE_MOAB
 
 #include <fuse/backend/moab_backend.hpp>
 #include <fuse/backend/serial_backend.hpp>

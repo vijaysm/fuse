@@ -16,6 +16,9 @@
 // turns the first failed assertion on any rank into MPI_Abort, so a broken
 // build fails the CTest entry in seconds instead of sitting on its timeout.
 
+// Explicit, not transitive: the feature macros are read below (docs/dev/invariants.md).
+#include "fuse/base/config.hpp"
+
 #include <fuse/transport/comm_graph.hpp>
 #include <gtest/gtest.h>
 

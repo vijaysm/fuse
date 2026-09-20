@@ -31,7 +31,19 @@ IOSTREAM = re.compile(r"^\s*#\s*include\s*<(iostream|sstream|iomanip)>")
 # and a regex for /* */ that got it wrong could blank a real `#if`.
 COMMENT_LINE = re.compile(r"(^|[^:])(//[^\n]*)", re.M)
 
-FEATURE_MACRO = re.compile(r"\bFUSE_(HAVE_[A-Z0-9_]+|ENABLE_EXCEPTIONS)\b")
+FEATURE_MACRO = re.compile(r"\bFUSE_(HAVE_[A-Z0-9_]+|ENABLE_EXCEPTIONS|LINALG_EIGEN)\b")
+# Every feature macro is `#cmakedefine01`: ALWAYS defined, as 0 or 1. So a
+# presence test on one is unconditionally true, and `#ifdef FUSE_HAVE_MOAB`
+# compiles the MOAB branch into a build without MOAB -- or, when config.hpp is
+# not included, compiles it OUT of every build. Both happened (REVIEW.md 2.3).
+# Only `#if FUSE_HAVE_X` / `#if !FUSE_HAVE_X` is a valid test.
+FEATURE_PRESENCE_TEST = re.compile(
+    r"#\s*(ifdef|ifndef)\s+FUSE_(HAVE_[A-Z0-9_]+|ENABLE_EXCEPTIONS|LINALG_EIGEN)\b"
+    r"|\bdefined\s*\(?\s*FUSE_(HAVE_[A-Z0-9_]+|ENABLE_EXCEPTIONS|LINALG_EIGEN)\b")
+# A macro from either parent. The layering gate forbids parent NAMESPACES and
+# includes; a parent MACRO read in an #if is just as live and was not caught
+# (SOMA_ENABLE_LOWFIVE compiled the LowFive transport out of every build).
+LEGACY_MACRO = re.compile(r"(?<![a-z0-9_])D?(SOMA|KARMA)_[A-Z][A-Z0-9_]*\b")
 PRINTF = re.compile(r"\b(printf|fprintf|sprintf|snprintf|puts|fputs)\s*\(")
 
 # Device code has no fmtlog and no iostream; Kokkos::printf is the sanctioned
@@ -52,7 +64,14 @@ def scan(root: Path) -> list[str]:
                         f"{rel}:{lineno}: floating-point time in an ABI header (I1): {line.strip()}"
                     )
 
-    for area in ("include", "src"):
+    # `include` and `src` carry every rule. `test` and `examples` carry only the
+    # feature-macro rules: a test may legitimately throw a std:: type in a
+    # fixture, but a test that reads FUSE_HAVE_MOAB without config.hpp compiles
+    # to a skip stub in every configuration and reads like a pass (REVIEW.md
+    # R-09: 38 MOAB cases, never once executed). Found 2026-09-19 -- the same
+    # scope gap the layering gate closed on 09-17, in the other tool.
+    for area in ("include", "src", "test", "examples"):
+        library_code = area in ("include", "src")
         area_dir = root / area
         if not area_dir.is_dir():
             continue
@@ -62,7 +81,27 @@ def scan(root: Path) -> list[str]:
             rel = source.relative_to(root)
             text = source.read_text()
             device_file = bool(DEVICE_HINT.search(text))
-            for lineno, line in enumerate(text.splitlines(), 1):
+            all_lines = text.splitlines()
+            for lineno, line in enumerate(all_lines, 1):
+                code_only = COMMENT_LINE.sub(
+                    lambda m: m.group(1) + " " * len(m.group(2)), line)
+                # `#ifndef FUSE_X` followed by `#error` is the guard that the
+                # macro IS defined (error.hpp does this for the exceptions
+                # macro). That is the only presence test with a purpose.
+                nxt = next((l for l in all_lines[lineno:lineno + 2] if l.strip()), "")
+                is_guard = bool(re.match(r"\s*#\s*ifndef\b", code_only)) and nxt.lstrip().startswith("#error")
+                if FEATURE_PRESENCE_TEST.search(code_only) and not is_guard:
+                    problems.append(
+                        f"{rel}:{lineno}: presence test on a feature macro (#ifdef / "
+                        f"defined()); every FUSE_HAVE_* is #cmakedefine01 and always "
+                        f"defined, so this is unconditionally true -- use `#if MACRO`")
+                if LEGACY_MACRO.search(code_only) and not rel.as_posix().startswith("include/fuse/abi/"):
+                    problems.append(
+                        f"{rel}:{lineno}: parent macro in fuse:: code (I11): "
+                        f"{LEGACY_MACRO.search(code_only).group(0)} -- nothing defines it here, "
+                        f"so the guarded code is silently compiled out")
+                if not library_code:
+                    continue
                 if ASSERT_CALL.match(line):
                     problems.append(
                         f"{rel}:{lineno}: `assert` is never an invariant (I6); "
@@ -124,7 +163,9 @@ def scan(root: Path) -> list[str]:
             first_use = FEATURE_MACRO.search(scanned)
             if first_use and not rel.as_posix().endswith("base/config.hpp.in"):
                 names = sorted(set(m.group(0) for m in FEATURE_MACRO.finditer(scanned)))
-                cfg = scanned.find('#include "fuse/base/config.hpp"')
+                cfg = min([i for i in (scanned.find('#include "fuse/base/config.hpp"'),
+                                       scanned.find('#include <fuse/base/config.hpp>')) if i >= 0],
+                          default=-1)
                 if cfg < 0:
                     problems.append(
                         f"{rel}: reads {', '.join(names)} without including "

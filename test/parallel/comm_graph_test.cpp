@@ -26,6 +26,13 @@
 
 #include <gtest/gtest.h>
 
+// Before the #if. Only <gtest/gtest.h> preceded this test, so FUSE_HAVE_MPI was
+// undefined here, read as 0, and every case in this file was compiled out of
+// every build -- including the host runs that reported the parallel legs
+// passing. A binary with no tests exits 0. Found by the extended invariant
+// gate 2026-09-19, not by any reviewer.
+#include "fuse/base/config.hpp"
+
 #if FUSE_HAVE_MPI
 
 #include <mpi.h>
