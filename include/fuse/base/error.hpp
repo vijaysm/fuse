@@ -109,7 +109,14 @@ struct ErrorPolicy {
 
 /// Process-wide policy. Set by fuse::initialize from FUSE_ON_ERROR and
 /// friends, or programmatically; read on every throw.
-[[nodiscard]] const ErrorPolicy& error_policy() noexcept;
+///
+/// Returns a COPY, not a reference: REVIEW.md R-16 -- set_error_policy() is
+/// documented as callable at any time, not only during single-threaded
+/// startup, and takes policy_mutex() while copy-assigning ErrorPolicy's two
+/// std::string members. A reference into that storage could be observed by
+/// a reader mid-assignment (a genuine data race, not just a stale read); a
+/// copy taken under the same lock cannot.
+[[nodiscard]] ErrorPolicy error_policy() noexcept;
 void set_error_policy(ErrorPolicy policy) noexcept;
 
 /// Parse the environment: FUSE_ON_ERROR = throw | backtrace | debugger | abort,

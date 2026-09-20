@@ -64,7 +64,17 @@ void write_stderr(const std::string& s) noexcept {
 }
 }  // namespace
 
-const ErrorPolicy& error_policy() noexcept { return policy_storage(); }
+// REVIEW.md R-16: policy_storage() is mutated under policy_mutex() by
+// set_error_policy() below; a reader that returned a reference into it with
+// no lock could observe an ErrorPolicy (two std::string members) mid
+// copy-assignment -- a data race, not merely a stale-read hazard. Taking the
+// same lock here and returning a copy means the lock is never held past this
+// function, so this stays cheap on the hot error path without widening the
+// mutex's scope to every raise() call downstream.
+ErrorPolicy error_policy() noexcept {
+  const std::lock_guard<std::mutex> lock(policy_mutex());
+  return policy_storage();
+}
 
 void set_error_policy(ErrorPolicy policy) noexcept {
   const std::lock_guard<std::mutex> lock(policy_mutex());
@@ -183,6 +193,17 @@ std::once_flag g_installed;
     write_stderr("[fuse] std::terminate called without an active exception\n  backtrace:\n" +
                  Backtrace::capture(1).format());
   }
+  // REVIEW.md R-35: chain to whatever terminate handler was installed
+  // before ours, rather than silently discarding it. An embedding
+  // application (or a third-party library FUSE is linked into -- MOAB,
+  // PETSc, Kokkos) may have installed its own handler for its own cleanup
+  // (flushing output, calling MPI_Abort in a way its own runtime expects);
+  // FUSE's own diagnostic is already on stderr by this point, and
+  // std::terminate's contract is that a handler never returns, so this is
+  // the last thing fuse_terminate() does. std::abort() below is the
+  // fallback for the one case with nothing to chain to, and for a chained
+  // handler that violates its own contract and returns anyway.
+  if (g_previous != nullptr) g_previous();
   std::abort();
 }
 }  // namespace

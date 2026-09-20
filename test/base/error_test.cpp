@@ -4,10 +4,13 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 namespace {
 
@@ -119,6 +122,48 @@ TEST(Error, BacktraceCaptureCanBeDisabledByPolicy) {
     EXPECT_TRUE(e.backtrace().empty());
     EXPECT_EQ(e.report().find("backtrace:"), std::string::npos);
   }
+}
+
+// REVIEW.md R-16: error_policy() used to return a reference into
+// policy_storage() with no lock, while set_error_policy() writes that same
+// storage under policy_mutex() -- a data race on ErrorPolicy's two
+// std::string members, invisible to any functional test and only reliably
+// caught by a race detector. This does not assert anything beyond "no crash,
+// no sanitizer report": a plain build cannot observe the race directly, but
+// -fsanitize=thread instruments every load/store this loop performs and
+// would have flagged the pre-fix code (a reference read of policy_storage()
+// racing set_error_policy()'s locked copy-assignment) as a data race.
+TEST(Error, ErrorPolicyIsSafeUnderConcurrentReadAndWrite) {
+  const ErrorPolicy previous = error_policy();
+  std::atomic<bool> stop{false};
+
+  std::thread writer([&] {
+    ErrorPolicy p = previous;
+    p.on_error = OnError::Throw;
+    while (!stop.load(std::memory_order_relaxed)) {
+      p.terminal = (p.terminal == "xterm") ? "alacritty" : "xterm";
+      p.debugger_ranks = (p.debugger_ranks.empty()) ? "0-3" : "";
+      set_error_policy(p);
+    }
+  });
+
+  std::thread reader([&] {
+    QuietPolicy quiet;
+    for (int i = 0; i < 2000; ++i) {
+      try {
+        FUSE_REFUSE("E-TEST-RACE", "concurrent read {}", i);
+        FAIL();
+      } catch (const Error&) {
+        // Expected; the assertion here is that error_policy() returns a
+        // consistent snapshot, not any particular value.
+      }
+    }
+  });
+
+  reader.join();
+  stop.store(true, std::memory_order_relaxed);
+  writer.join();
+  set_error_policy(previous);
 }
 
 TEST(Error, ReportCarriesTheRankOnceAnnounced) {
@@ -285,6 +330,37 @@ TEST(ErrorDeath, TerminateHandlerReportsANonFuseException) {
         }
       },
       "uncaught exception: from somebody else(.|\\n)*backtrace:");
+}
+
+// REVIEW.md R-35: g_previous (the terminate handler installed before
+// fuse::install_terminate_handler() ran) used to be captured and never
+// used -- an embedding application's own handler (flushing output,
+// MPI_Abort, ...) was silently discarded. install_terminate_handler() is
+// call_once and every earlier ErrorDeath test's death-test child already
+// ran it once inside its own forked child (which never returns to this
+// process), so the flag is still unset here: set_terminate() below installs
+// a genuine "previous" handler for THIS child to chain to.
+[[noreturn]] void previous_handler_marker() noexcept {
+  std::fputs("[embedder] previous handler ran\n", stderr);
+  std::fflush(stderr);
+  std::abort();
+}
+
+TEST(ErrorDeath, TerminateHandlerChainsToAPreviouslyInstalledHandler) {
+  EXPECT_DEATH(
+      {
+        std::set_terminate(&previous_handler_marker);
+        fuse::install_terminate_handler();
+        fuse::ErrorPolicy p;
+        p.on_error = fuse::OnError::Throw;
+        fuse::set_error_policy(p);
+        try {
+          FUSE_REFUSE("E-TEST-CHAIN", "trigger chaining");
+        } catch (...) {
+          std::terminate();
+        }
+      },
+      "terminating on uncaught fuse::Error(.|\\n)*\\[embedder\\] previous handler ran");
 }
 
 TEST(ErrorDeath, TerminateHandlerIsIdempotent) {
