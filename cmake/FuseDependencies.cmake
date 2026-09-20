@@ -36,7 +36,6 @@ set(FUSE_YAMLCPP_TAG     "0.8.0")
 set(FUSE_GTEST_TAG       "v1.15.2")   # git tag; the find_package version below is the same number without the v
 set(FUSE_GTEST_VERSION   "1.15.2")
 set(FUSE_KOKKOS_TAG     "4.4.01")
-set(FUSE_KOKKOSKERNELS_TAG "4.4.01")   # must match Kokkos
 set(FUSE_EIGEN_TAG      "3.4.0")
 
 # ------------------------------------------------- options
@@ -97,8 +96,12 @@ FetchContent_Declare(googletest
   GIT_REPOSITORY https://github.com/google/googletest.git GIT_TAG ${FUSE_GTEST_TAG} GIT_SHALLOW ON)
 FetchContent_Declare(Kokkos
   GIT_REPOSITORY https://github.com/kokkos/kokkos.git GIT_TAG ${FUSE_KOKKOS_TAG} GIT_SHALLOW ON)
-FetchContent_Declare(KokkosKernels
-  GIT_REPOSITORY https://github.com/kokkos/kokkos-kernels.git GIT_TAG ${FUSE_KOKKOSKERNELS_TAG} GIT_SHALLOW ON)
+# A KokkosKernels linear-algebra backend was designed and pinned here, then the
+# project went with `builtin` instead (REVIEW.md R-24/R-42); this declaration
+# was never resolved (no find_package/FetchContent_MakeAvailable anywhere) and
+# has been removed rather than left dead. Re-add it, wired into
+# fuse_resolve_dependencies() and src/CMakeLists.txt's linalg target, if a
+# KokkosKernels backend is implemented.
 # yaml-cpp is the ONE dependency fetched by default rather than required from a
 # prefix. The installed-first rule exists because Kokkos, MOAB and PETSc carry
 # machine and stack tuning that a generic build would silently replace; a YAML
