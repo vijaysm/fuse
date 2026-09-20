@@ -335,6 +335,66 @@ TEST(Buffers, RejectsAnEmptyRegionSizesCallback) {
                fuse::InvalidArgument);
 }
 
+// buffers.hpp used to document plan_buffers() as throwing std::invalid_argument
+// / std::out_of_range / std::overflow_error; it has never thrown any of the
+// three -- every path converts through FUSE_THROW(InvalidArgument, ...), so
+// the real (and now correctly documented) type is fuse::InvalidArgument, a
+// fuse::Error, ultimately a std::runtime_error (REVIEW.md R-28). Pin the type
+// explicitly, on all three documented failure modes, so the header and the
+// implementation cannot silently re-diverge in either direction.
+TEST(Buffers, PlanBuffersThrowsFuseInvalidArgumentNotTheDocumentedStdTypes) {
+  const CouplingGraph accum_g = pair_with_accumulate();
+  const fuse::OperatorDAG accum_dag = lower_ok(accum_g);
+  const fuse::TimedDag accum_td = expand_ok(accum_g, accum_dag);
+
+  auto expect_fuse_invalid_argument_only = [](auto&& call) {
+    EXPECT_THROW(call(), fuse::InvalidArgument);
+    bool caught_wrong_type = false;
+    try {
+      call();
+    } catch (const fuse::InvalidArgument&) {
+      // expected -- this is the one type buffers.hpp now documents.
+    } catch (const std::invalid_argument&) {
+      caught_wrong_type = true;
+    } catch (const std::out_of_range&) {
+      caught_wrong_type = true;
+    } catch (const std::overflow_error&) {
+      caught_wrong_type = true;
+    }
+    EXPECT_FALSE(caught_wrong_type)
+        << "must not be catchable as any of the three std:: types the "
+           "header used to (wrongly) document";
+  };
+
+  // The "std::invalid_argument"-documented case: an empty RegionSizes.
+  expect_fuse_invalid_argument_only([&] {
+    return plan_buffers(accum_dag, accum_td, fuse::RegionSizes{});
+  });
+
+  // The "std::out_of_range"-documented case: a TimedDag naming a node the
+  // OperatorDAG does not have.
+  fuse::OperatorDAG bare_dag;
+  const fuse::ArcId bare_arc =
+      bare_dag.add_arc(fuse::ValueType{.region = fuse::RegionId{0}}, "x");
+  bare_dag.add_node(fuse::OpKind::Source, {}, bare_arc, fuse::OpAttrs{},
+                    fuse::ChannelId{}, "x");
+  fuse::TimedDag bad_td;
+  bad_td.nodes.push_back(fuse::TimedNode{.node = fuse::NodeId{7}});
+  expect_fuse_invalid_argument_only([&] {
+    return plan_buffers(bare_dag, bad_td, constant_sizes(100));
+  });
+
+  // The "std::overflow_error"-documented case: a running total that does not
+  // fit std::size_t.
+  const CouplingGraph big_g = pair_with_components(1);
+  const fuse::OperatorDAG big_dag = lower_ok(big_g);
+  const fuse::TimedDag big_td = expand_ok(big_g, big_dag);
+  const std::size_t big = (std::numeric_limits<std::size_t>::max() / 4) * 3;
+  expect_fuse_invalid_argument_only([&] {
+    return plan_buffers(big_dag, big_td, constant_sizes(big));
+  });
+}
+
 TEST(Buffers, RejectsAnArcWithNoRegion) {
   fuse::OperatorDAG dag;
   const fuse::ArcId arc = dag.add_arc(fuse::ValueType{}, "unplaced");

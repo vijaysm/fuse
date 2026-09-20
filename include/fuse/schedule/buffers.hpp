@@ -85,13 +85,20 @@ struct BufferPlan {
 /// Throws (this returns a plain value, not a `Result`, so the checks cannot be
 /// asserts -- an assert compiles out under Release's -O3 -DNDEBUG, and
 /// unsigned wraparound is *defined* behaviour that neither ASan nor UBSan
-/// reports):
-///   - `std::invalid_argument` if `sizes` is empty, if an arc's `components`
-///     is < 1, or if an arc's region is invalid;
-///   - `std::out_of_range` if a node's output arc id is out of range for
-///     `dag`, or `timed` names a node `dag` does not have;
-///   - `std::overflow_error` if `elements * components`, or the running total,
-///     does not fit `std::size_t`.
+/// reports): `fuse::InvalidArgument` (a `fuse::Error`, ultimately a
+/// `std::runtime_error` -- NOT `std::invalid_argument`, `std::out_of_range`,
+/// or `std::overflow_error`; those three are unrelated branches of the
+/// standard hierarchy and this type derives from none of them), uniformly for
+/// every condition `try_plan_buffers()` below can detect: an empty `sizes`,
+/// an arc's `components` < 1, an arc's region invalid, a node's output arc id
+/// out of range for `dag`, `timed` naming a node `dag` does not have, or an
+/// `elements * components` (or running-total) product that does not fit
+/// `std::size_t`. The specific reason is in the exception's `.message()`;
+/// the code is always `E-SCHED-BUFFERS` (REVIEW.md R-28 -- this docstring
+/// used to promise the three-way `std::` split above, which the
+/// implementation has never thrown: every path here converts through
+/// `FUSE_THROW(InvalidArgument, ...)`, per conventions.md's ban on a bare
+/// `throw std::...`).
 /// Buffer planning that REPORTS. Every failure it can detect is a setup
 /// mistake the caller turns into a diagnostic, so none of them is routed
 /// through an exception -- which also means the behaviour is identical with
