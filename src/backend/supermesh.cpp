@@ -10,6 +10,8 @@
 
 #include "fuse/base/error.hpp"
 
+#include "supermesh_detail.hpp"
+
 extern "C" {
 #include "r2d.h"
 #include "r3d.h"
@@ -89,53 +91,13 @@ struct Simplex {
 // MeshView deliberately does not require an orientation, so there is no
 // ordering to rely on -- and an outward-pointing plane would not error, it
 // would silently return the complement's measure.
-
-/// Face `i` of a simplex omits vertex `i`. Fills the inward plane and
-/// returns whether the face was non-degenerate.
-///
-/// REVIEW.md R-12: a zero-length edge (2D) or zero-area face (3D) has no
-/// normal to give -- `n` comes out `(0,0,0)`, and with it `d == 0`
-/// regardless of the vertex used to compute it (`d = -(0 . v[a]) == 0`).
-/// r2d/r3d's clip keeps the side where `dot(n, x) + d >= 0`, so an
-/// unreported `(0,0,0), 0` plane reads `0 >= 0` -- true for EVERY point,
-/// i.e. no constraint at all, which is the opposite of what a degenerate
-/// clipping face should impose (zero measure, not the whole target).
-/// Returning `false` here lets the caller clip to zero instead, the same
-/// way the target polygon's own `twice_area == 0.0` check already does.
-template <int Dim>
-[[nodiscard]] bool inward_plane(const std::array<Point, 4>& v, int i,
-                                double n[3], double& d) {
-  const int a = (i + 1) % (Dim + 1);
-  const int b = (i + 2) % (Dim + 1);
-  if constexpr (Dim == 2) {
-    // The face is the edge a-b; a normal is its in-plane perpendicular.
-    const double tx = v[b].x - v[a].x;
-    const double ty = v[b].y - v[a].y;
-    n[0] = -ty;
-    n[1] = tx;
-    n[2] = 0.0;
-  } else {
-    const int c = (i + 3) % 4;
-    const double e1[3] = {v[b].x - v[a].x, v[b].y - v[a].y, v[b].z - v[a].z};
-    const double e2[3] = {v[c].x - v[a].x, v[c].y - v[a].y, v[c].z - v[a].z};
-    n[0] = e1[1] * e2[2] - e1[2] * e2[1];
-    n[1] = e1[2] * e2[0] - e1[0] * e2[2];
-    n[2] = e1[0] * e2[1] - e1[1] * e2[0];
-  }
-  const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-  if (!(len > 0.0)) return false;
-  d = -(n[0] * coord(v[a], 0) + n[1] * coord(v[a], 1) + n[2] * coord(v[a], 2));
-  // Make it point at the omitted vertex, which is the one inside.
-  const double side = n[0] * coord(v[i], 0) + n[1] * coord(v[i], 1) +
-                      n[2] * coord(v[i], 2) + d;
-  if (side < 0.0) {
-    for (int k = 0; k < 3; ++k) n[k] = -n[k];
-    d = -d;
-  }
-  for (int k = 0; k < 3; ++k) n[k] /= len;
-  d /= len;
-  return true;
-}
+//
+// `inward_plane` itself lives in supermesh_detail.hpp, a private header
+// (REVIEW.md R-12) rather than in this anonymous namespace, so
+// test/backend/supermesh_test.cpp can call it directly with a manufactured
+// degenerate face -- the regression test the original fix pass could not
+// add through the public MeshView grammar alone.
+using fuse::supermesh_detail::inward_plane;
 
 /// The exact measure of the intersection of two simplices.
 [[nodiscard]] double intersect(const Simplex& t, const Simplex& s, int dim) {
@@ -298,10 +260,11 @@ Result<RemapWeights> build_supermesh_weights(const MeshView& src,
   // lost to the floor is reported in `max_col_defect` rather than concealed by
   // computing the audit from entries that were then discarded.
   constexpr double kNegligible = 1e-12;
-  // REVIEW.md R-13: the same relative tolerance intx_weights.cpp's MOAB path
-  // uses for its over_src/over_tgt audit (`kCoverageTol` there), so the two
-  // paths refuse on the same threshold.
-  constexpr double kSupermeshCoverageTol = 1e-9;
+  // REVIEW.md R-13: the coverage tolerance itself, and the refusal it backs,
+  // now live in supermesh_detail::audit_coverage -- the same relative
+  // tolerance intx_weights.cpp's MOAB path uses for its over_src/over_tgt
+  // audit (`kCoverageTol` there), so the two paths refuse on the same
+  // threshold, and unit-testable directly (test/backend/supermesh_test.cpp).
 
   // Brute force over bounding-box-compatible pairs. This is O(n_t * n_s) box
   // tests, which is the honest starting point: it is exact, it has no tuning
@@ -378,34 +341,20 @@ Result<RemapWeights> build_supermesh_weights(const MeshView& src,
   for (std::size_t i = 0; i < w.n_cols; ++i) {
     const double m = src.measure(dim, i);
     if (m > 0.0) {
-      const double c = src_covered[i] / m;
-      w.min_src_coverage = std::min(w.min_src_coverage, c);
-      if (c > 1.0 + kSupermeshCoverageTol) {
-        return Failure{
-            "E-REMAP-INTX",
-            "the supermesh assigns " + std::to_string(c) +
-                " times its own area to source cell " + std::to_string(i) +
-                " (dimension " + std::to_string(dim) +
-                "); overlaps cannot exceed the cell, so the intersection or "
-                "its parent attribution is wrong"};
-      }
+      w.min_src_coverage = std::min(w.min_src_coverage, src_covered[i] / m);
     }
+    const auto audit =
+        supermesh_detail::audit_coverage(src_covered[i], m, "source", i, dim);
+    if (!audit.ok()) return audit.error();
   }
   for (std::size_t j = 0; j < w.n_rows; ++j) {
     const double m = tgt.measure(dim, j);
     if (m > 0.0) {
-      const double c = tgt_covered[j] / m;
-      w.min_tgt_coverage = std::min(w.min_tgt_coverage, c);
-      if (c > 1.0 + kSupermeshCoverageTol) {
-        return Failure{
-            "E-REMAP-INTX",
-            "the supermesh assigns " + std::to_string(c) +
-                " times its own area to target cell " + std::to_string(j) +
-                " (dimension " + std::to_string(dim) +
-                "); overlaps cannot exceed the cell, so the intersection or "
-                "its parent attribution is wrong"};
-      }
+      w.min_tgt_coverage = std::min(w.min_tgt_coverage, tgt_covered[j] / m);
     }
+    const auto audit =
+        supermesh_detail::audit_coverage(tgt_covered[j], m, "target", j, dim);
+    if (!audit.ok()) return audit.error();
   }
 
   // Constant preservation: the row residual.
