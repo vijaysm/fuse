@@ -187,6 +187,14 @@ if(FUSE_ENABLE_MPI)
   foreach(t runner_transport comm_graph mpi_transport epoch_reconcile)
     fuse_add_mpi_test(parallel ${t} LIBS fuse::runtime)
   endforeach()
+  # comm_graph_test exercises CrystalRouter directly, which is a private
+  # implementation header under src/transport/ -- the transport layer's public
+  # surface is CommGraph. The parent gave this one test src/ on its include
+  # path for the same reason; an alternative that made the router public for
+  # a test's convenience would widen the layer's API by one class nobody else
+  # needs. Invisible until 2026-09-19 because the whole file compiled to
+  # nothing (REVIEW.md R-51).
+  target_include_directories(fuse_parallel_comm_graph_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 endif()
 
 # ---------------------------------------------------------------- linalg

@@ -26,12 +26,18 @@
 
 #include <gtest/gtest.h>
 
+// R-50 (REVIEW.md): the documented rank-requirement convention
+// (docs/dev/testing.md), so the matrix of rank counts this file needs is
+// checkable by grep instead of by reading every skip guard by hand.
+#include "fuse_test_main.hpp"
+
 // Before the #if. Only <gtest/gtest.h> preceded this test, so FUSE_HAVE_MPI was
 // undefined here, read as 0, and every case in this file was compiled out of
 // every build -- including the host runs that reported the parallel legs
 // passing. A binary with no tests exits 0. Found by the extended invariant
 // gate 2026-09-19, not by any reviewer.
 #include "fuse/base/config.hpp"
+#include "fuse/base/error.hpp"
 
 #if FUSE_HAVE_MPI
 
@@ -123,11 +129,23 @@ class TestMesh final : public fuse::MeshView {
     check(dim, i);
     return gid_[i];
   }
+  // This mesh carries points and ids only -- it exists to test the matching,
+  // not geometry -- so it declares no simplices, which MeshView documents as
+  // legal. Added 2026-09-19: the interface gained the simplex contract after
+  // this file was ported, and the mismatch went unseen because the whole file
+  // compiled to nothing until the same day (REVIEW.md R-51).
+  [[nodiscard]] std::size_t simplex_count(int dim, std::size_t i) const override {
+    check(dim, i);
+    return 0;
+  }
+  void simplex_points(int, std::size_t, std::size_t, fuse::Point*) const override {
+    FUSE_THROW(fuse::InvalidArgument, "TestMesh declares no simplices");
+  }
 
  private:
   void check(int dim, std::size_t i) const {
     if (dim != dim_ || i >= gid_.size()) {
-      throw std::out_of_range("TestMesh: dimension or index out of range");
+      FUSE_THROW(fuse::InvalidArgument, "TestMesh: dimension {} or index {} out of range", dim, i);
     }
   }
 
@@ -693,7 +711,7 @@ TEST(CrystalRouter, AnOutOfRangeDestinationIsRefusedOnEveryRank) {
 // ===========================================================================
 
 TEST(CommGraph, FullyDisjointRanksMatchByGlobalId) {
-  if (world_size() < 2) GTEST_SKIP();
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   run_matrix_cell(Shape::FullyDisjoint, MatchMode::GlobalId, 1);
 }
 
@@ -702,12 +720,12 @@ TEST(CommGraph, FullyOverlappingRanksMatchByGlobalId) {
 }
 
 TEST(CommGraph, PartiallyOverlappingRanksMatchByGlobalId) {
-  if (world_size() < 2) GTEST_SKIP();
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   run_matrix_cell(Shape::PartialOverlap, MatchMode::GlobalId, 1);
 }
 
 TEST(CommGraph, FullyDisjointRanksMatchByNearestNeighbor) {
-  if (world_size() < 2) GTEST_SKIP();
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   run_matrix_cell(Shape::FullyDisjoint, MatchMode::NearestNeighbor, 1);
 }
 
@@ -716,7 +734,7 @@ TEST(CommGraph, FullyOverlappingRanksMatchByNearestNeighbor) {
 }
 
 TEST(CommGraph, PartiallyOverlappingRanksMatchByNearestNeighbor) {
-  if (world_size() < 2) GTEST_SKIP();
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   run_matrix_cell(Shape::PartialOverlap, MatchMode::NearestNeighbor, 1);
 }
 
@@ -790,7 +808,7 @@ TEST(CommGraph, AMatchWithBothEndsOnOneRankNeverReachesMpiTransport) {
 // its timeout. Then the reverse leg is driven end to end to show the
 // relabelling is not just cheap but correct.
 TEST(CommGraph, TheReverseLegIsARelabellingAndCostsNoCollective) {
-  if (world_size() < 2) GTEST_SKIP();
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   const int dim = 1;
   Fixture   f = make_fixture(Shape::FullyDisjoint, dim, true);
 
@@ -831,17 +849,17 @@ TEST(CommGraph, TheReverseLegIsARelabellingAndCostsNoCollective) {
 // ===========================================================================
 
 TEST(CommGraph, NearestNeighborIsDimensionIndependentIn1D) {
-  if (world_size() < 2) GTEST_SKIP();
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   run_matrix_cell(Shape::FullyDisjoint, MatchMode::NearestNeighbor, 1);
 }
 
 TEST(CommGraph, NearestNeighborIsDimensionIndependentIn2D) {
-  if (world_size() < 2) GTEST_SKIP();
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   run_matrix_cell(Shape::FullyDisjoint, MatchMode::NearestNeighbor, 2);
 }
 
 TEST(CommGraph, NearestNeighborIsDimensionIndependentIn3D) {
-  if (world_size() < 2) GTEST_SKIP();
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   run_matrix_cell(Shape::FullyDisjoint, MatchMode::NearestNeighbor, 3);
 }
 
@@ -1022,7 +1040,7 @@ TEST(CommGraph, AMatchOneCellAwayIsStillFound) {
 // splitters is asserted here to keep the worst bucket within 4x the mean.
 TEST(CommGraph, TheSfcPartitionBalancesBucketPopulationOnARefinedPatch) {
   const int size = world_size();
-  if (size < 2) GTEST_SKIP();
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   const int rank = world_rank();
 
   constexpr std::size_t kTotal = 400;
@@ -1104,7 +1122,7 @@ TEST(CommGraph, TheSfcPartitionBalancesBucketPopulationOnARefinedPatch) {
 // `min(27, P)` unrelated ranks. That ratio is asserted here.
 TEST(CommGraph, TheSfcPartitionKeepsAQuerysNeighbourhoodInOneOrTwoBuckets) {
   const int size = world_size();
-  if (size < 2) GTEST_SKIP();
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   const int rank = world_rank();
 
   // A 3D lattice, where a hash has the most to scatter: 27 neighbouring cells
@@ -1191,7 +1209,7 @@ TEST(CommGraph, TheSfcPartitionKeepsAQuerysNeighbourhoodInOneOrTwoBuckets) {
 // CommGraph which ranks are involved; it works that out from the two
 // communicators alone.
 TEST(CommGraph, TwoIndependentlySplitCommunicatorsAreEnoughToBuildTheGraph) {
-  if (world_size() < 2) GTEST_SKIP();
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   const int dim = 1;
   Fixture   f = make_fixture(Shape::FullyDisjoint, dim, true);
 
@@ -1266,7 +1284,7 @@ TEST(CommGraph, NearestNeighborWithoutAToleranceIsRefusedBeforeAnyCollective) {
 
 // A wanted id that no source owns is refused, on EVERY rank, naming the id.
 TEST(CommGraph, AWantedGlobalIdWithNoSourceIsRefusedOnEveryRank) {
-  if (world_size() < 2) GTEST_SKIP();
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   const int rank = world_rank();
   const int size = world_size();
 
@@ -1311,7 +1329,7 @@ TEST(CommGraph, AWantedGlobalIdWithNoSourceIsRefusedOnEveryRank) {
 // Two source ranks claiming one id is ambiguous ownership, and is refused
 // rather than resolved by picking a winner -- the two copies need not agree.
 TEST(CommGraph, TwoSourceRanksOwningOneIdIsRefused) {
-  if (world_size() < 2) GTEST_SKIP();
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
 
   // Every rank owns the SAME id on the source side.
   TestMesh smesh(1, {gid_of(0)}, {Point{0, 0, 0}});
@@ -1336,7 +1354,7 @@ TEST(CommGraph, TwoSourceRanksOwningOneIdIsRefused) {
 // control for the test above: it is the same id on two ranks, and it is
 // accepted, because exactly one rank owns it.
 TEST(CommGraph, AGhostedSourceEntityIsNotASecondOwner) {
-  if (world_size() < 2) GTEST_SKIP();
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   const int rank = world_rank();
 
   // Rank 0 owns id A; every other rank carries it as a ghost.
@@ -1370,7 +1388,7 @@ TEST(CommGraph, AGhostedSourceEntityIsNotASecondOwner) {
 // everyone else, because it still has to enter MpiTransport's collectives.
 TEST(CommGraph, ARankInNeitherComponentStillGetsTheRankSets) {
   const int size = world_size();
-  if (size < 3) GTEST_SKIP();
+  FUSE_REQUIRE_AT_LEAST_RANKS(3);
   const int rank = world_rank();
 
   const bool in_src = rank == 0;
@@ -1418,7 +1436,7 @@ TEST(CommGraph, ARankInNeitherComponentStillGetsTheRankSets) {
 // A rank contributing zero entities on either side is ordinary in parallel and
 // still enters every collective -- the same rule MpiTransport already states.
 TEST(CommGraph, ARankWithZeroLocalEntitiesIsOrdinary) {
-  if (world_size() < 2) GTEST_SKIP();
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   const int rank = world_rank();
   const int size = world_size();
 
