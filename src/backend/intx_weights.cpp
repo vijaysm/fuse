@@ -80,6 +80,94 @@ Result<const RemapWeights*> RemapCache::get_or_build(
   return p;
 }
 
+namespace {
+
+/// A region resolved to a view and a dimension, using only the
+/// backend-agnostic `MeshBackend` interface -- no MOAB dependency, so this
+/// compiles and is used identically whether or not `FUSE_HAVE_MOAB` is set.
+struct SupermeshSide {
+  const MeshView* view = nullptr;
+  int dim = 0;
+};
+
+[[nodiscard]] Result<SupermeshSide> supermesh_side(const CouplingGraph& graph,
+                                                    const MeshBackend& backend,
+                                                    RegionId id,
+                                                    const char* which) {
+  if (!id.valid() || id.value() >= graph.region_count()) {
+    return Failure{"E-REMAP-REGION",
+                 std::string(which) + " region id " +
+                     std::to_string(id.value()) + " is not one of the "
+                     "graph's " + std::to_string(graph.region_count()) +
+                     " regions"};
+  }
+  const Region& r = graph.region(id);
+  if (!(r.entity_set.empty() || r.entity_set == "all")) {
+    return Failure{"E-REMAP-REGION",
+                 std::string(which) + " region '" + r.name +
+                     "' names entity set '" + r.entity_set +
+                     "'. Remap weights index MeshView local indices over "
+                     "the whole mesh, so a sub-set region would give a "
+                     "matrix wrong by a permutation"};
+  }
+  if (!r.mesh.valid() || r.mesh.value() >= graph.mesh_count()) {
+    return Failure{"E-REMAP-REGION", std::string(which) + " region '" +
+                                         r.name + "' names no valid mesh"};
+  }
+  const auto mid = backend.mesh_id(graph.mesh(r.mesh).name);
+  if (!mid.ok()) return mid.error();
+  const auto view = backend.view(mid.value());
+  if (!view.ok()) return view.error();
+  SupermeshSide s;
+  s.view = view.value();
+  s.dim = r.dimension >= 0 ? r.dimension : s.view->dimension();
+  return s;
+}
+
+/// The dependency-free FV<->FV path: exact-simplex supermesh weights, order 1
+/// only. This is the entirety of `build_weights()` when the library is
+/// compiled without MOAB, and it is ALSO what a MOAB-enabled build must fall
+/// back to when the backend handed to `build_weights()` is not a
+/// `MoabMeshBackend` (REVIEW.md N-BACKEND-4: before this fix, a MOAB build's
+/// `build_weights()` always took the MOAB-only path -- via `resolve()`'s
+/// `dynamic_cast<const MoabMeshBackend*>` -- and refused E-REMAP-BACKEND for
+/// a serial mesh pair that a tier-0 build would have served, a capability a
+/// tier-2 build must not lose just because it CAN also do more).
+[[nodiscard]] Result<RemapWeights> build_weights_via_supermesh(
+    const RemapPlan& plan, const CouplingGraph& graph,
+    const MeshBackend& backend) {
+  const int asked = std::max(plan.src_order, plan.tgt_order);
+  if (asked > 1 || has(plan.flags, RemapFlags::HighOrder)) {
+    return Failure{
+        "E-REMAP-NOHIGHORDER",
+        "this backend has no MOAB/TempestRemap high-order path, so the only "
+        "reconstruction available is piecewise constant (order 1), and "
+        "order " + std::to_string(asked) +
+            " was asked for. Order 1 is exact for constants and "
+            "conservative; higher order on the sphere is what the "
+            "TempestRemap tier adds. Drop RemapFlags::HighOrder, or ask for "
+            "it against a MOAB mesh pair in a build configured with "
+            "-DFUSE_ENABLE_MOAB=ON against a MOAB built with TempestRemap."};
+  }
+  auto s = supermesh_side(graph, backend, plan.src, "source");
+  if (!s.ok()) return s.error();
+  auto d = supermesh_side(graph, backend, plan.tgt, "target");
+  if (!d.ok()) return d.error();
+  if (s.value().dim != d.value().dim) {
+    return Failure{"E-REMAP-DIM",
+                 "the source cells are dimension " +
+                     std::to_string(s.value().dim) +
+                     " and the target cells dimension " +
+                     std::to_string(d.value().dim) +
+                     "; a conservative FV remap needs the same dimension on "
+                     "both sides"};
+  }
+  return build_supermesh_weights(*s.value().view, *d.value().view,
+                                 s.value().dim);
+}
+
+}  // namespace
+
 #if !FUSE_HAVE_MOAB
 
 /// Without MOAB, weights come from the dependency-free simplex supermesh.
@@ -105,73 +193,7 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
                        to_cstring(plan.src_disc) + " -> " +
                        to_cstring(plan.tgt_disc)};
   }
-  const int asked = std::max(plan.src_order, plan.tgt_order);
-  if (asked > 1 || has(plan.flags, RemapFlags::HighOrder)) {
-    return Failure{
-        "E-REMAP-NOHIGHORDER",
-        "this build has no MOAB, so the only reconstruction available is "
-        "piecewise constant (order 1), and order " + std::to_string(asked) +
-            " was asked for. Order 1 is exact for constants and conservative; "
-            "higher order on the sphere is what the TempestRemap tier adds. "
-            "Drop RemapFlags::HighOrder, or configure with "
-            "-DFUSE_ENABLE_MOAB=ON against a MOAB built with TempestRemap."};
-  }
-
-  // Region -> MeshView, with the same validation the MOAB path applies. An
-  // entity-set region is refused for the reason given there: the weights index
-  // whole-mesh local indices, and a sub-set region would be wrong by a
-  // permutation that nothing here could detect.
-  struct Side {
-    const MeshView* view = nullptr;
-    int             dim = 0;
-  };
-  const auto side = [&](RegionId id, const char* which) -> Result<Side> {
-    if (!id.valid() || id.value() >= graph.region_count()) {
-      return Failure{"E-REMAP-REGION",
-                     std::string(which) + " region id " +
-                         std::to_string(id.value()) + " is not one of the "
-                         "graph's " + std::to_string(graph.region_count()) +
-                         " regions"};
-    }
-    const Region& r = graph.region(id);
-    if (!(r.entity_set.empty() || r.entity_set == "all")) {
-      return Failure{"E-REMAP-REGION",
-                     std::string(which) + " region '" + r.name +
-                         "' names entity set '" + r.entity_set +
-                         "'. Remap weights index MeshView local indices over "
-                         "the whole mesh, so a sub-set region would give a "
-                         "matrix wrong by a permutation"};
-    }
-    if (!r.mesh.valid() || r.mesh.value() >= graph.mesh_count()) {
-      return Failure{"E-REMAP-REGION", std::string(which) + " region '" +
-                                           r.name + "' names no valid mesh"};
-    }
-    const auto mid = backend.mesh_id(graph.mesh(r.mesh).name);
-    if (!mid.ok()) return mid.error();
-    const auto view = backend.view(mid.value());
-    if (!view.ok()) return view.error();
-    Side s;
-    s.view = view.value();
-    s.dim = r.dimension >= 0 ? r.dimension : s.view->dimension();
-    return s;
-  };
-
-  auto s = side(plan.src, "source");
-  if (!s.ok()) return s.error();
-  auto d = side(plan.tgt, "target");
-  if (!d.ok()) return d.error();
-  if (s.value().dim != d.value().dim) {
-    return Failure{"E-REMAP-DIM",
-                   "the source cells are dimension " +
-                       std::to_string(s.value().dim) +
-                       " and the target cells dimension " +
-                       std::to_string(d.value().dim) +
-                       "; a conservative FV remap needs the same dimension on "
-                       "both sides"};
-  }
-
-  return build_supermesh_weights(*s.value().view, *d.value().view,
-                                 s.value().dim);
+  return build_weights_via_supermesh(plan, graph, backend);
 }
 
 Result<std::size_t> build_remap_halo(const RemapPlan&, const CouplingGraph&,
@@ -431,6 +453,59 @@ template <class T>
 #endif
 }
 
+/// REVIEW.md N-BACKEND-1: `reconcile<T>` above agrees whether a per-rank
+/// computation SUCCEEDED; it says nothing about whether the ranks that all
+/// succeeded computed the SAME value. `Side::dim` is exactly such a value --
+/// `moab_backend.hpp`'s own documented `MeshView::dimension()` limitation
+/// says a rank whose local partition is empty, or holds only a
+/// lower-dimensional boundary, reports a smaller dimension than its peers,
+/// and `resolve()` only ever checks that ITS OWN `dim` is in `[1,3]` and
+/// non-empty -- two ranks can each pass that check while disagreeing with
+/// each other. Every comparison downstream (`a.dim != b.dim`, `a.dim != 2`)
+/// then risks evaluating to a different answer on different ranks, racing
+/// into a collective exactly like the verdict `reconcile<T>` already guards.
+/// Agreed the same way: min and max across the communicator must coincide.
+[[nodiscard]] Result<int> reconcile_dim(void* pcomm_raw, int dim,
+                                        const std::string& label) {
+#ifdef FUSE_REMAP_PARALLEL
+  if (pcomm_raw == nullptr) return dim;
+  auto* pc = static_cast<moab::ParallelComm*>(pcomm_raw);
+  const MPI_Comm comm = pc->comm();
+  int nproc = 1;
+  if (MPI_Comm_size(comm, &nproc) != MPI_SUCCESS) {
+    return Failure{"E-REMAP-PARALLEL",
+                 "could not size the communicator to reconcile " + label +
+                     "'s dimension"};
+  }
+  if (nproc <= 1) return dim;
+  int max_dim = dim;
+  int min_dim = dim;
+  if (MPI_Allreduce(&dim, &max_dim, 1, MPI_INT, MPI_MAX, comm) !=
+          MPI_SUCCESS ||
+      MPI_Allreduce(&dim, &min_dim, 1, MPI_INT, MPI_MIN, comm) !=
+          MPI_SUCCESS) {
+    return Failure{"E-REMAP-PARALLEL",
+                 "the collective reduction of " + label +
+                     "'s dimension failed"};
+  }
+  if (max_dim != min_dim) {
+    return Failure{
+        "E-REMAP-DIM",
+        label + "'s MeshView::dimension() disagrees across ranks (" +
+            std::to_string(min_dim) + " to " + std::to_string(max_dim) +
+            "); a rank whose local partition is empty at the region's usual "
+            "dimension, or holds only a lower-dimensional boundary, reports "
+            "a different dimension than its peers -- moab_backend.hpp's own "
+            "documented MeshView::dimension() limitation. Set Region::dimension "
+            "explicitly rather than relying on the mesh-wide default so every "
+            "rank agrees without a reduction."};
+  }
+  return dim;
+#else
+  return dim;
+#endif
+}
+
 [[nodiscard]] Result<Side> resolve(const CouplingGraph& graph,
                                    const MeshBackend& backend, RegionId id,
                                    const char* which) {
@@ -497,6 +572,16 @@ template <class T>
   s.pcomm = native.value().parallel_comm;
   s.dim = r.dimension >= 0 ? r.dimension : s.view->dimension();
   s.label = std::string(which) + " region '" + r.name + "'";
+
+  // REVIEW.md N-BACKEND-1: agree on the DIMENSION ITSELF before it feeds any
+  // further local computation or a downstream a.dim/b.dim comparison in
+  // build_remap_halo/build_weights -- reconcile<T> below only agrees whether
+  // resolve() succeeded, not what value a rank that succeeded computed.
+  {
+    auto reconciled_dim = reconcile_dim(s.pcomm, s.dim, s.label);
+    if (!reconciled_dim.ok()) return reconciled_dim.error();
+    s.dim = reconciled_dim.value();
+  }
 
   // REVIEW.md R-01: everything from here on reads data that is local to
   // THIS RANK's partition -- its cell count at this dimension, its own copy
@@ -1949,6 +2034,19 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
             "degrees of freedom or for point-cloud nodes, so there is nothing "
             "to address the rows and columns of such a matrix with. Closing "
             "this needs a DOF map on MeshBackend first."};
+  }
+
+  // REVIEW.md N-BACKEND-4: dispatch on the ACTUAL backend the caller handed
+  // us, not on which builders this translation unit was compiled with.
+  // Every check below this point assumes the MOAB backend (`resolve()`'s own
+  // `dynamic_cast` refuses otherwise with E-REMAP-BACKEND) -- so a plan whose
+  // meshes are NOT MoabMeshBackend must take the always-available r3d
+  // supermesh path here, exactly as it would in a build with no MOAB at
+  // all. Without this, compiling MOAB in silently took away the capability
+  // a tier-0 build has for the identical plan and the identical serial mesh
+  // pair.
+  if (dynamic_cast<const MoabMeshBackend*>(&backend) == nullptr) {
+    return build_weights_via_supermesh(plan, graph, backend);
   }
 
   // Order. `src_order`/`tgt_order` default to 0, meaning "unspecified".
