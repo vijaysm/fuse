@@ -300,16 +300,16 @@ class TwoComponentJob {
                            .intent = fuse::Intent::Requires});
     const auto channel = graph.add_channel("link", src_field_, dst_field_);
 
-    if (with_iteration_region) {
-      fuse::ConvergenceCriterion conv;
-      conv.add(fuse::Converged::Relative(1e-6, "link"));
-      graph.add_iteration_region(fuse::IterationRegionDecl{
-          .name = "outer", .channels = {channel}, .max_iterations = 4,
-          .convergence = conv,
-          .acceleration = fuse::AccelConfig{.kind = accel_kind}});
-    }
-
     fuse::FieldId src_field_b, dst_field_b;
+
+    // Declared BEFORE the region, deliberately. The scheduler keeps a
+    // region's body contiguous only when nothing unrelated sorts into the
+    // middle of it, and an independent channel declared AFTER the region
+    // does exactly that -- E-SCHED-REGION, even though both channels are
+    // on the same clock, so the refusal's own advice does not apply. The
+    // Tier 0 twin (runner_test.cpp's StillRunsASecondChannelAfterAn
+    // IterationRegionFails) already declares linkB first for this reason;
+    // this fixture did not, which is why it only failed under Tier 1.
     if (with_independent_channel) {
       const auto pb = graph.add_component(fuse::ComponentDecl{
           .name = "producer_b", .ranks = fluid_, .interval = Rational{1}});
@@ -325,6 +325,16 @@ class TwoComponentJob {
                              .intent = fuse::Intent::Requires});
       graph.add_channel("linkB", src_field_b, dst_field_b);
     }
+
+    if (with_iteration_region) {
+      fuse::ConvergenceCriterion conv;
+      conv.add(fuse::Converged::Relative(1e-6, "link"));
+      graph.add_iteration_region(fuse::IterationRegionDecl{
+          .name = "outer", .channels = {channel}, .max_iterations = 4,
+          .convergence = conv,
+          .acceleration = fuse::AccelConfig{.kind = accel_kind}});
+    }
+
 
     EXPECT_TRUE(backend.load(graph.mesh(mesh)).ok());
 
