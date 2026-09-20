@@ -283,7 +283,7 @@ hand-rolled rank-count skips to `FUSE_REQUIRE_RANKS`/`FUSE_REQUIRE_AT_LEAST_
 RANKS` across `comm_graph_test.cpp` (16), `mpi_transport_test.cpp` (11), and
 `runner_transport_test.cpp` (1, the original test that this revision's new
 tests also use `FUSE_REQUIRE_AT_LEAST_RANKS` for). Left hand-rolled, with a
-comment explaining why: 8 `halves()`-based divisibility skips in
+comment explaining why: 7 `halves()`-based divisibility skips in
 `mpi_transport_test.cpp`, and one deliberate `ASSERT_GE` in
 `epoch_reconcile_test.cpp`.
 
@@ -298,17 +298,7 @@ never a live `#ifdef`. Recorded as REJECTED-as-stated / fixed-as-stale-name
 
 ## Needs another owner
 
-None. Every finding's fix and every file it required were inside the owned
-paths.
-
-`test/parallel/comm_graph_test.cpp` still fails to compile under `tier1`
-for a pre-existing, unrelated reason (`transport/crystal_router.hpp` file
-not found -- `fuse-coupler-transport` never exposes `src/` as an include
-directory to any test target). Confirmed unrelated to this fixer's edits
-(traced to commit `b3b4058`, long before this review). Every other Tier 1
-target touched this session -- including the two new
-`runner_transport_test.cpp` tests -- built cleanly. The lead should route
-this to whoever owns `test/CMakeLists.txt`'s `fuse_add_mpi_test()` macro.
+None remaining. (An earlier version of this section reported that `test/parallel/comm_graph_test.cpp` failed to compile under tier 1 on a private include; that was closed by `41535ff` in the same fix wave. Corrected 2026-09-20 per pass-2 finding N-transport-runtime-4.)
 
 ## Needs a host run
 
