@@ -18,7 +18,8 @@
 #if FUSE_HAVE_MOAB
 
 // ONE OF THE TWO TRANSLATION UNITS THAT MAY SEE MOAB; the other is
-// src/mesh/moab_backend.cpp. Nothing below leaks a MOAB type through a header.
+// src/backend/moab_backend.cpp. Nothing below leaks a MOAB type through a
+// header.
 #include <moab/CN.hpp>
 #include <moab/Core.hpp>
 #include <moab/IntxMesh/Intx2MeshInPlane.hpp>
@@ -28,7 +29,7 @@
 #include <MBTagConventions.hpp>
 
 // MOABConfig.h arrives via Core.hpp, so MOAB_HAVE_MPI is only knowable here.
-// Both halves are required, exactly as in src/mesh/moab_backend.cpp: MOAB must
+// Both halves are required, exactly as in src/backend/moab_backend.cpp: MOAB must
 // have been built with MPI, and FUSE must have been configured with it, or
 // there is no mpi.h on the include path. This is the second of the two
 // translation units allowed to see MOAB, so it is also allowed to see the MPI
@@ -199,8 +200,11 @@ using V3 = std::array<double, 3>;
 [[nodiscard]] double norm(const V3& a) { return std::sqrt(dot(a, a)); }
 
 // ---------------------------------------------------------------------------
-// Tolerances. All relative; each is justified by a measurement recorded in the
-// commit message and reproduced by test/unit/remap_test.cpp.
+// Tolerances. All relative; each is justified by a measurement recorded in
+// the commit that introduced it. REVIEW.md R-11: no test in this tree reads
+// any of them directly -- `test/unit/remap_test.cpp`, cited here previously
+// as reproducing that measurement, does not exist under `test/backend/`.
+// Implemented, untested (docs/dev/testing.md state).
 // ---------------------------------------------------------------------------
 
 /// How far a cell's supermesh coverage may sit from 1 before the overlap is
@@ -350,6 +354,83 @@ struct Side {
   std::string label;
 };
 
+/// Reconcile a per-rank outcome across the communicator before any rank acts
+/// on it -- the mechanism docs/dev/rank-agreement.md names and invariant I2
+/// requires. `resolve()`, `fit_surface()` and `orient()` each compute from
+/// this rank's own partition (its local cell count, its local vertices, its
+/// local cell orientation) and can therefore fail on one rank without
+/// failing on a peer; without this, the ranks that did not fail walk into
+/// the next MOAB collective (`FindMaxEdges`, `reduce_audit`'s
+/// `MPI_Allreduce`, ...) and hang waiting for the one that did (REVIEW.md
+/// R-01). This is the same shape as `reduce_audit` below, applied earlier,
+/// to the checks that run before it.
+///
+/// `pcomm_raw` is a `moab::ParallelComm*`, or null (serial, or this rank's
+/// own resolve never got far enough to obtain one) -- then there is nothing
+/// to reconcile against and `local` is returned unchanged, matching
+/// `reduce_audit`'s own no-op path. A communicator of one rank is also a
+/// no-op: there is no peer to disagree with.
+template <class T>
+[[nodiscard]] Result<T> reconcile(void* pcomm_raw, Result<T> local) {
+#ifdef FUSE_REMAP_PARALLEL
+  if (pcomm_raw == nullptr) return local;
+  auto* pc = static_cast<moab::ParallelComm*>(pcomm_raw);
+  const MPI_Comm comm = pc->comm();
+  int nproc = 1;
+  if (MPI_Comm_size(comm, &nproc) != MPI_SUCCESS) {
+    return Failure{"E-REMAP-PARALLEL",
+                 "could not size the communicator to reconcile a per-rank "
+                 "outcome"};
+  }
+  if (nproc <= 1) return local;
+  int rank = 0;
+  static_cast<void>(MPI_Comm_rank(comm, &rank));
+
+  const int local_failed = local.ok() ? 0 : 1;
+  int any_failed = 0;
+  if (MPI_Allreduce(&local_failed, &any_failed, 1, MPI_INT, MPI_MAX, comm) !=
+          MPI_SUCCESS) {
+    return Failure{"E-REMAP-PARALLEL",
+                 "the collective reduction of a per-rank resolve/fit/orient "
+                 "outcome failed, so this rank cannot know whether its peers "
+                 "agree; refusing rather than proceeding out of step"};
+  }
+  if (any_failed == 0) return local;
+
+  // At least one rank failed. Every rank must return the IDENTICAL Failure
+  // -- "some ranks refuse, some proceed" is the hang this exists to rule
+  // out -- so broadcast the lowest failing rank's message rather than each
+  // rank keeping its own.
+  const int candidate = local_failed != 0 ? rank : nproc;
+  int failing_rank = nproc;
+  if (MPI_Allreduce(&candidate, &failing_rank, 1, MPI_INT, MPI_MIN, comm) !=
+          MPI_SUCCESS) {
+    return Failure{"E-REMAP-PARALLEL",
+                 "the collective reduction of a per-rank resolve/fit/orient "
+                 "outcome failed, so this rank cannot know whether its peers "
+                 "agree; refusing rather than proceeding out of step"};
+  }
+  std::string msg = (rank == failing_rank && !local.ok())
+                        ? local.error().message
+                        : std::string();
+  int len = static_cast<int>(msg.size());
+  if (MPI_Bcast(&len, 1, MPI_INT, failing_rank, comm) != MPI_SUCCESS) {
+    return Failure{"E-REMAP-PARALLEL",
+                 "the broadcast of the failing rank's message failed"};
+  }
+  msg.resize(static_cast<std::size_t>(len));
+  if (len > 0 && MPI_Bcast(msg.data(), len, MPI_CHAR, failing_rank, comm) !=
+                     MPI_SUCCESS) {
+    return Failure{"E-REMAP-PARALLEL",
+                 "the broadcast of the failing rank's message failed"};
+  }
+  return Failure{"E-REMAP-PARALLEL",
+               "rank " + std::to_string(failing_rank) + " refused: " + msg};
+#else
+  return local;
+#endif
+}
+
 [[nodiscard]] Result<Side> resolve(const CouplingGraph& graph,
                                    const MeshBackend& backend, RegionId id,
                                    const char* which) {
@@ -417,71 +498,85 @@ struct Side {
   s.dim = r.dimension >= 0 ? r.dimension : s.view->dimension();
   s.label = std::string(which) + " region '" + r.name + "'";
 
-  if (s.dim < 1 || s.dim > 3) {
-    return Failure{"E-REMAP-DIM",
-                 s.label + " has dimension " + std::to_string(s.dim) +
-                     "; a finite-volume remap needs cells of dimension 1, 2 or "
-                     "3 (dimension 0 has no measure at all)"};
-  }
+  // REVIEW.md R-01: everything from here on reads data that is local to
+  // THIS RANK's partition -- its cell count at this dimension, its own copy
+  // of each cell's measure -- and, per moab_backend.hpp's own documented
+  // limitation on MeshView::dimension(), can legitimately disagree with a
+  // peer's. Computed as an ordinary local Result and reconciled once, at the
+  // return below, rather than at each individual check, so a rank that fails
+  // here still reaches whatever collective its peers are about to call next
+  // with the SAME verdict instead of racing ahead of it (rank-agreement.md).
+  Result<Side> local = [&]() -> Result<Side> {
+    if (s.dim < 1 || s.dim > 3) {
+      return Failure{"E-REMAP-DIM",
+                   s.label + " has dimension " + std::to_string(s.dim) +
+                       "; a finite-volume remap needs cells of dimension 1, "
+                       "2 or 3 (dimension 0 has no measure at all)"};
+    }
 
-  moab::Range range;
-  const moab::ErrorCode rval = s.mb->get_entities_by_dimension(
-      s.file_set, s.dim, range, /*recursive=*/true);
-  if (rval != moab::MB_SUCCESS) {
-    return intx_error(*s.mb,
-                      "could not list the dimension-" + std::to_string(s.dim) +
-                          " cells of " + s.label,
-                      rval);
-  }
-  // A moab::Range iterates in ascending handle order, which is exactly how
-  // MoabMeshBackend fixed the local indexing at load. Cross-checked rather
-  // than trusted: if the two ever diverge every weight lands in the wrong row.
-  if (range.size() != s.view->entity_count(s.dim)) {
-    return Failure{"E-REMAP-REGION",
-                 s.label + " has " + std::to_string(range.size()) +
-                     " dimension-" + std::to_string(s.dim) +
-                     " cells in MOAB but " +
-                     std::to_string(s.view->entity_count(s.dim)) +
-                     " in its MeshView; the local index spaces disagree"};
-  }
-  if (range.empty()) {
-    return Failure{"E-REMAP-REGION", s.label + " holds no dimension-" +
-                                       std::to_string(s.dim) + " cells"};
-  }
-  if (range.size() >
-      static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
-    return Failure{"E-REMAP-SIZE",
-                 s.label + " holds " + std::to_string(range.size()) +
-                     " cells, more than the int32 COO indices can address"};
-  }
-  s.cells.assign(range.begin(), range.end());
+    moab::Range range;
+    const moab::ErrorCode rval = s.mb->get_entities_by_dimension(
+        s.file_set, s.dim, range, /*recursive=*/true);
+    if (rval != moab::MB_SUCCESS) {
+      return intx_error(*s.mb,
+                        "could not list the dimension-" +
+                            std::to_string(s.dim) + " cells of " + s.label,
+                        rval);
+    }
+    // A moab::Range iterates in ascending handle order, which is exactly how
+    // MoabMeshBackend fixed the local indexing at load. Cross-checked rather
+    // than trusted: if the two ever diverge every weight lands in the wrong
+    // row.
+    if (range.size() != s.view->entity_count(s.dim)) {
+      return Failure{"E-REMAP-REGION",
+                   s.label + " has " + std::to_string(range.size()) +
+                       " dimension-" + std::to_string(s.dim) +
+                       " cells in MOAB but " +
+                       std::to_string(s.view->entity_count(s.dim)) +
+                       " in its MeshView; the local index spaces disagree"};
+    }
+    if (range.empty()) {
+      return Failure{"E-REMAP-REGION", s.label + " holds no dimension-" +
+                                         std::to_string(s.dim) + " cells"};
+    }
+    if (range.size() >
+        static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
+      return Failure{"E-REMAP-SIZE",
+                   s.label + " holds " + std::to_string(range.size()) +
+                       " cells, more than the int32 COO indices can address"};
+    }
+    s.cells.assign(range.begin(), range.end());
 
-  s.measure.resize(s.cells.size());
-  for (std::size_t i = 0; i < s.cells.size(); ++i) {
-    // MeshView::measure THROWS by contract; build_weights returns a Result and
-    // must not, so the contract is converted here rather than propagated.
-    try {
-      s.measure[i] = s.view->measure(s.dim, i);
-    } catch (const std::exception& e) {
-      return Failure{"E-REMAP-MEASURE", s.label + ": " + e.what()};
+    s.measure.resize(s.cells.size());
+    for (std::size_t i = 0; i < s.cells.size(); ++i) {
+      // MeshView::measure THROWS by contract; build_weights returns a Result
+      // and must not, so the contract is converted here rather than
+      // propagated.
+      try {
+        s.measure[i] = s.view->measure(s.dim, i);
+      } catch (const std::exception& e) {
+        return Failure{"E-REMAP-MEASURE", s.label + ": " + e.what()};
+      }
+      if (!(s.measure[i] > 0.0)) {
+        return Failure{"E-REMAP-MEASURE",
+                     s.label + " cell " + std::to_string(i) + " has measure " +
+                         std::to_string(s.measure[i]) +
+                         "; a zero or degenerate cell cannot carry a "
+                         "conservative weight"};
+      }
+      // OWNED ONLY. A halo cell is a copy of another rank's, and adding its
+      // measure here would make `src_measure_total` count it once per rank
+      // that holds a copy. In serial every entity is owned and this is
+      // unchanged.
+      if (s.view->is_owned(s.dim, i)) {
+        s.measure_total += s.measure[i];
+      } else {
+        ++s.not_owned;
+      }
     }
-    if (!(s.measure[i] > 0.0)) {
-      return Failure{"E-REMAP-MEASURE",
-                   s.label + " cell " + std::to_string(i) + " has measure " +
-                       std::to_string(s.measure[i]) +
-                       "; a zero or degenerate cell cannot carry a "
-                       "conservative weight"};
-    }
-    // OWNED ONLY. A halo cell is a copy of another rank's, and adding its
-    // measure here would make `src_measure_total` count it once per rank that
-    // holds a copy. In serial every entity is owned and this is unchanged.
-    if (s.view->is_owned(s.dim, i)) {
-      s.measure_total += s.measure[i];
-    } else {
-      ++s.not_owned;
-    }
-  }
-  return s;
+    return s;
+  }();
+  return reconcile(s.pcomm, std::move(local));
 }
 
 // ---------------------------------------------------------------------------
@@ -1377,7 +1472,7 @@ struct Audit {
 //
 // Everything MOAB-specific stops here. `remap_backend::build_high_order_weights`
 // sees a polygon soup and a geometry classification, never a moab::Interface --
-// see src/remap/high_order_backend.hpp for why the seam is drawn there.
+// see src/backend/high_order_backend.hpp for why the seam is drawn there.
 // ---------------------------------------------------------------------------
 
 /// Row sums must be this close to 1, and every weight non-negative, before
@@ -1640,8 +1735,11 @@ constexpr double kHighOrderCoverageTol = 1e-6;
 // MOAB's 3456-cell cubed sphere (8 partition sets) against a 1536-cell partner
 // (4 partition sets, deliberately misaligned): the ORDINARY serial
 // intersection over the halo-extended source gives target coverage 1.0 to
-// 1e-16 at 1, 2 and 4 ranks, and the conservation test in
-// test/unit/remap_parallel_test.cpp pins the integral end to end.
+// 1e-16 at 1, 2 and 4 ranks, from the task report that measured this.
+// REVIEW.md R-11: no conservation test in this tree pins that number --
+// `test/unit/remap_parallel_test.cpp`, cited here previously, does not
+// exist under `test/backend/`. Implemented, untested (docs/dev/testing.md
+// state); see REVIEW.md B1/B2 for the MPI test that would verify it.
 // ===========================================================================
 
 Result<std::size_t> build_remap_halo(const RemapPlan& plan,
@@ -1703,40 +1801,61 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan,
                      "impossible. Read the meshes without a communicator, or "
                      "add a volumetric covering construction."};
   }
-  auto fa = fit_surface(a);
+  // REVIEW.md R-01: fit_surface() reads only this rank's local vertices, so
+  // a rank whose local partition happens to be non-spherical (or empty)
+  // cannot agree with a peer's answer without reconciling first -- otherwise
+  // that rank refuses here while its peers walk into FindMaxEdges below and
+  // hang waiting for it.
+  auto fa = reconcile(a.pcomm, fit_surface(a));
   if (!fa.ok()) return fa.error();
-  auto fb = fit_surface(b);
+  auto fb = reconcile(b.pcomm, fit_surface(b));
   if (!fb.ok()) return fb.error();
-  if (!fa.value().ok || !fb.value().ok ||
-      fa.value().kind != Surface::Sphere || fb.value().kind != Surface::Sphere) {
-    return Failure{
-        "E-MESH-HALO-GEOMETRY",
-        "a partitioned remap needs a covering set, and the only construction "
-        "available in this build supports SPHERICAL surfaces only -- every "
-        "vertex of both meshes at a common radius about the origin. This pair "
-        "is not one. A planar covering construction is UNIMPLEMENTED here, "
-        "not impossible: it would slot in behind build_remap_halo() and "
-        "nothing above it would change. Until then, read the meshes without a "
-        "communicator and remap redundantly on every rank."};
-  }
-  const double ra = fa.value().radius;
-  const double rb = fb.value().radius;
-  if (std::fabs(ra - rb) > kGeomTol * std::max(ra, rb)) {
-    return Failure{"E-REMAP-GEOMETRY",
-                 "the two surfaces are spheres of different radius (" +
-                     std::to_string(ra) + " and " + std::to_string(rb) +
-                     "); they are not the same domain"};
-  }
-  const double radius = 0.5 * (ra + rb);
+  // REVIEW.md R-01: the classification below is a value computed from each
+  // rank's own local vertices (the SAME hazard fit_surface() itself has, one
+  // level up in the SurfaceFit::ok/kind/radius payload rather than in
+  // Result's error channel), so it is reconciled too before its radius is
+  // used by any collective below.
+  const Result<double> radius_result =
+      reconcile(a.pcomm, [&]() -> Result<double> {
+        if (!fa.value().ok || !fb.value().ok ||
+            fa.value().kind != Surface::Sphere ||
+            fb.value().kind != Surface::Sphere) {
+          return Failure{
+              "E-MESH-HALO-GEOMETRY",
+              "a partitioned remap needs a covering set, and the only "
+              "construction available in this build supports SPHERICAL "
+              "surfaces only -- every vertex of both meshes at a common "
+              "radius about the origin. This pair is not one. A planar "
+              "covering construction is UNIMPLEMENTED here, not impossible: "
+              "it would slot in behind build_remap_halo() and nothing above "
+              "it would change. Until then, read the meshes without a "
+              "communicator and remap redundantly on every rank."};
+        }
+        const double ra = fa.value().radius;
+        const double rb = fb.value().radius;
+        if (std::fabs(ra - rb) > kGeomTol * std::max(ra, rb)) {
+          return Failure{"E-REMAP-GEOMETRY",
+                       "the two surfaces are spheres of different radius (" +
+                           std::to_string(ra) + " and " + std::to_string(rb) +
+                           "); they are not the same domain"};
+        }
+        return 0.5 * (ra + rb);
+      }());
+  if (!radius_result.ok()) return radius_result.error();
+  const double radius = radius_result.value();
 
   // ORIENTATION FIRST, AND THIS IS NOT OPTIONAL. Measured: with MOAB's own
   // cubed sphere left exactly as read -- its cells are negatively oriented,
   // see orient() -- the covering construction and the intersection that
   // follows reach only 0.80 of the target area. Oriented first, 1.0 to 1e-16.
   {
-    const auto o1 = orient(a, fa.value());
+    // REVIEW.md R-01: orient() reorients this rank's own local cells only,
+    // and a per-cell connectivity read/write failure is exactly as local as
+    // the checks in resolve() -- reconciled the same way, before
+    // FindMaxEdges below.
+    const auto o1 = reconcile(a.pcomm, orient(a, fa.value()));
     if (!o1.ok()) return o1.error();
-    const auto o2 = orient(b, fb.value());
+    const auto o2 = reconcile(b.pcomm, orient(b, fb.value()));
     if (!o2.ok()) return o2.error();
   }
 
@@ -1943,9 +2062,11 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
   // `> 1`, not "a communicator was set". A communicator of one rank is an
   // ordinary MPI job whose mesh happens to be undivided; every cell is local
   // and the serial construction is exactly right. Refusing it would take
-  // remap away from every single-rank MPI run, and no serial test can see the
-  // difference -- which is why test/unit/remap_parallel_test.cpp runs a
-  // one-rank leg as a POSITIVE control.
+  // remap away from every single-rank MPI run, and no serial test can see
+  // the difference. REVIEW.md R-11: `test/unit/remap_parallel_test.cpp`,
+  // cited here previously as running a one-rank leg to check exactly that,
+  // does not exist under `test/backend/`. Implemented, untested
+  // (docs/dev/testing.md state).
   // ==========================================================================
   if (a.backend != nullptr && a.backend->communicator_size() > 1 &&
       a.file_set != b.file_set &&
