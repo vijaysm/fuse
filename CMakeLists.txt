@@ -61,10 +61,24 @@ endif()
 # recorded that trap and it applies here unchanged.
 add_subdirectory(examples)
 
+# The banner used to name the stage and the layer list as literal strings and
+# drifted for four stages and eight layers (REVIEW.md R-37): read the layer
+# list back from src/CMakeLists.txt's own targets instead of restating it, so
+# it cannot drift again. `fuse::` is the alias namespace every layer target
+# registers itself under (src/CMakeLists.txt); this reads them back rather
+# than hand-listing the layers a second time here.
+set(_fuse_layers "")
+foreach(_fuse_layer_target base model ir schedule linalg num transport backend runtime)
+  if(TARGET fuse::${_fuse_layer_target})
+    list(APPEND _fuse_layers ${_fuse_layer_target})
+  endif()
+endforeach()
+list(JOIN _fuse_layers ", " _fuse_layers_text)
+
 message(STATUS "")
-message(STATUS "fuse ${PROJECT_VERSION} — stage S1")
+message(STATUS "fuse ${PROJECT_VERSION}")
 message(STATUS "  upstream/soma   : ${FUSE_BUILD_UPSTREAM_SOMA}")
 message(STATUS "  upstream/karma  : ${FUSE_BUILD_UPSTREAM_KARMA}")
-message(STATUS "  fuse:: layers   : base")
+message(STATUS "  fuse:: layers   : ${_fuse_layers_text}")
 message(STATUS "  linalg backend  : ${FUSE_LINALG_BACKEND}")
 message(STATUS "")
