@@ -288,9 +288,9 @@ sequences with the ABI work rather than being done in passing.
   `transport-mutations.md` (`peer-plan-skips-the-numbering-check`,
   `peer-plan-drops-the-local-copies`, and `build-plan-skips-the-components-agreement` —
   the last tagged R-30 in its own description, added while fixing that finding) and two
-  are in `runtime-mutations.md` (`cross-rank-region-check-fires-unconditionally`,
-  `region-residual-skips-the-cross-rank-reduction` — both tagged R-10 in their own
-  description, added while fixing that finding).
+  are in `runtime-mutations.md` (`region-residual-skips-the-cross-rank-reduction`,
+  tagged R-10, and `region-failure-abandons-the-rest-of-the-period`, tagged R-09;
+  `cross-rank-region-check-fires-unconditionally` is tier-0-assessable and KILLED).
 - **One mutation is declared equivalent**, with a written bound: `ir.scale`'s
   `unlowerable-step-silently-dropped` (`compiler-mutations.md`) — no graph the
   model can currently express reaches the defensive branch it mutates. The

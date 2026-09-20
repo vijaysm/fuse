@@ -271,9 +271,10 @@ either the code moves to match the document or the document is corrected and the
 the plan.
 
 **Wave 3 pass2 status, 2026-09-20:** CONFIRMED-FIXED — R-33, R-34, R-35, R-36 through R-42 (except
-R-41), R-43, R-44, R-45, R-47. NOT-FIXED — R-41 (`test/backend/moab_mesh_test.cpp:614`'s dead
-`FUSE_MOAB_TEST_MESH` guard, correctly deferred by the build-tools-docs fixer to the backend layer,
-still open at HEAD), R-49 (DEVIATION: `num.convergence` still exercises `fuse::model`, not `num`;
+R-41), R-43, R-44, R-45, R-47. R-41 (`test/backend/moab_mesh_test.cpp:614`'s dead
+`FUSE_MOAB_TEST_MESH` guard) was deferred by the build-tools-docs fixer to the backend layer and
+CONFIRMED-FIXED in the second fix round (`08848ec`: the definition is now supplied from
+`test/CMakeLists.txt` when the fixture mesh is found). NOT-FIXED at pass 2 — R-49 (DEVIATION: `num.convergence` still exercises `fuse::model`, not `num`;
 explicitly left for another owner). PARTIAL — R-48 (shared basis-matrix factorization is hoisted, but
 the disclosed per-element scratch allocation remains). R-50's DEVIATION (parallel tests not using the
 documented rank-requirement mechanism) is CONFIRMED-FIXED.
@@ -303,14 +304,14 @@ at HEAD `dbdc872` — the same rubric, verifying every first-pass finding assign
 looking fresh for anything the fix wave introduced or missed. Full reports:
 `docs/dev/reviews/2026-09-19/pass2/re-<layer>.md`.
 
-Totals across the six pass-2 reports, summed from their verification tables: **39 confirmed fixed, 3 rejections upheld, 8 partial, 2 not fixed** (52 verdict rows; one first-pass finding is verified in two layers), and **21 new findings**. Commit `1565cdf`'s body states "forty-five of fifty-one confirmed fixed"; that figure was written from memory and is wrong -- this line is the record.
+Totals across the six pass-2 reports, summed from their verification tables: **39 confirmed fixed, 3 rejections upheld, 8 partial, 2 not fixed** (52 verdict rows; one first-pass finding is verified in two layers), and **23 new findings** (the six pass-2 tables sum to 23; two of build-tools-docs' ten were reported from the host tier-2 run rather than by the reviewer, and an earlier headline of 21 excluded them without saying so). Commit `1565cdf`'s body states "forty-five of fifty-one confirmed fixed"; that figure was written from memory and is wrong -- this line is the record.
 
 | Layer | Confirmed-fixed | Partial | Not-fixed / rejection-upheld | New findings |
 |---|---|---|---|---|
 | backend | 4 (R-02, R-03, R-11, R-33) | 4 (R-01, R-12, R-13, R-14) | 0 | 3 — N-BACKEND-1 BLOCKER, N-BACKEND-2 MAJOR, N-BACKEND-3 MINOR/DEVIATION |
 | base-model | 6 (R-04, R-15, R-16, R-34, R-35; R-17 rejection-upheld) | 2 (R-18, R-19) | 0 | 2 — N-base-model-1 MAJOR, N-base-model-2 MAJOR |
-| build-tools-docs | 16 own-layer, of 17 assigned (R-05, R-06, R-07, R-20–R-25, R-36–R-40, R-42, R-47) + 2 cross-layer (R-51 confirmed, R-31 rejection-upheld) | 0 | 1 (R-41, correctly deferred to backend layer) | 10 — N-build-tools-docs-1/2 MAJOR, -3/-4/-5/-6/-7 MINOR (-7 out of scope, flagged for backend), -8 IMPROVEMENT, -9 BLOCKER (host-reported tier-2 configure failure, 2026-09-20; fixed), -10 MINOR (host-reported, same date; fixed) |
-| ir-schedule | 5 (R-26, R-27, R-28, R-43, R-44) | 0 | 0 | 1 — N-ir-schedule-1 IMPROVEMENT |
+| build-tools-docs | 16 own-layer, of 17 assigned (R-05, R-06, R-07, R-20–R-25, R-36–R-40, R-42, R-47) + 2 cross-layer (R-51 confirmed, R-31 rejection-upheld) | 0 | 1 at pass 2 (R-41, deferred to backend; fixed in round 2, `08848ec`) | 10 — N-build-tools-docs-1/2 MAJOR, -3/-4/-5/-6/-7 MINOR (-7 out of scope, flagged for backend), -8 IMPROVEMENT, -9 BLOCKER (host-reported tier-2 configure failure, 2026-09-20; fixed), -10 MINOR (host-reported, same date; fixed) |
+| ir-schedule | 5 (R-26, R-27, R-28, R-43, R-44) | 0 | 0 | 2 — N-ir-schedule-1 IMPROVEMENT; N-ir-schedule-2 BLOCKER (a Merge scheduled before the Epochs feeding it, found by the host tier-2 run while N-ir-schedule-1 routed the sweep through `schedule()`; fixed `c92ad1c`) |
 | num-linalg-field | 3 (R-08, R-29, R-45) | 1 (R-48) | 1 (R-49, DEVIATION, explicitly left for another owner) | 1 — N-num-linalg-field-1 MINOR |
 | transport-runtime | 5 (R-10, R-30, R-32, R-46, R-50) | 1 (R-09) | 1 (R-31, rejection-upheld) | 6 — N-transport-runtime-1/2 MAJOR, -3 MINOR, -4/-6 DEVIATION, -5 IMPROVEMENT |
 
