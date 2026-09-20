@@ -303,6 +303,8 @@ at HEAD `dbdc872` — the same rubric, verifying every first-pass finding assign
 looking fresh for anything the fix wave introduced or missed. Full reports:
 `docs/dev/reviews/2026-09-19/pass2/re-<layer>.md`.
 
+Totals across the six pass-2 reports, summed from their verification tables: **39 confirmed fixed, 3 rejections upheld, 8 partial, 2 not fixed** (52 verdict rows; one first-pass finding is verified in two layers), and **21 new findings**. Commit `1565cdf`'s body states "forty-five of fifty-one confirmed fixed"; that figure was written from memory and is wrong -- this line is the record.
+
 | Layer | Confirmed-fixed | Partial | Not-fixed / rejection-upheld | New findings |
 |---|---|---|---|---|
 | backend | 4 (R-02, R-03, R-11, R-33) | 4 (R-01, R-12, R-13, R-14) | 0 | 3 — N-BACKEND-1 BLOCKER, N-BACKEND-2 MAJOR, N-BACKEND-3 MINOR/DEVIATION |
