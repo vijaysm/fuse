@@ -23,10 +23,33 @@ set(FUSE_TEST_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data")
 # `layer` names both the source directory and, by default, the library the test
 # links. NO_LAYER_LIB separates them: test/verification/ is not a library layer,
 # it exercises whatever the case needs (declared via LIBS).
+# Every registration function records its source in FUSE_REGISTERED_TEST_SOURCES;
+# the audit at the bottom of this file compares that against the files on disk.
+# A test file that exists but is registered nowhere runs nowhere, and nothing
+# else reports it: 33 cases in schedule/buffers_test.cpp and slab_test.cpp sat
+# unregistered for four days (REVIEW.md R-10).
+set_property(GLOBAL PROPERTY FUSE_REGISTERED_TEST_SOURCES "")
+set_property(GLOBAL PROPERTY FUSE_GATED_TEST_SOURCES "")
+function(fuse_record_test_source rel)
+  set_property(GLOBAL APPEND PROPERTY FUSE_REGISTERED_TEST_SOURCES "${rel}")
+endfunction()
+# fuse_tests_gated_by(<option> <rel>...) -- these sources are legitimately
+# unregistered when <option> is OFF (absent, not skipped: a skipped test reads
+# like a passing one). Called UNconditionally so the audit knows about them in
+# every configuration.
+function(fuse_tests_gated_by option)
+  if(NOT ${option})
+    foreach(rel IN LISTS ARGN)
+      set_property(GLOBAL APPEND PROPERTY FUSE_GATED_TEST_SOURCES "${rel}")
+    endforeach()
+  endif()
+endfunction()
+
 function(fuse_add_gtest layer name)
   cmake_parse_arguments(ARG "THROWS;NO_LAYER_LIB" "" "LIBS" ${ARGN})
   set(target fuse_${layer}_${name}_test)
   add_executable(${target} ${layer}/${name}_test.cpp)
+  fuse_record_test_source(${layer}/${name}_test.cpp)
   if(ARG_NO_LAYER_LIB)
     target_link_libraries(${target} PRIVATE fuse_test_main ${ARG_LIBS})
   else()
@@ -46,9 +69,33 @@ endfunction()
 function(fuse_add_upstream_main_test layer name)
   set(target fuse_${layer}_${name}_test)
   add_executable(${target} ${layer}/${name}_test.cpp)
+  fuse_record_test_source(${layer}/${name}_test.cpp)
   target_link_libraries(${target} PRIVATE fuse::${layer})
   add_test(NAME ${layer}.${name} COMMAND ${target})
   set_tests_properties(${layer}.${name} PROPERTIES LABELS "${layer};upstream-main")
+endfunction()
+
+# fuse_add_mpi_test(<layer> <name> [LIBS ...] [RANKS n...]) -> mpiexec at each
+# rank count. Default ranks 2 3 4 5: an odd count is included on purpose, since
+# a bug that appears only when the ranks do not divide evenly is the usual kind.
+# Every leg carries a timeout, not because these are slow: the failure they
+# guard against IS a hang, so a regression must fail rather than stall CI.
+function(fuse_add_mpi_test layer name)
+  cmake_parse_arguments(ARG "" "" "LIBS;RANKS" ${ARGN})
+  if(NOT ARG_RANKS)
+    set(ARG_RANKS 2 3 4 5)
+  endif()
+  set(target fuse_${layer}_${name}_test)
+  add_executable(${target} ${layer}/${name}_test.cpp)
+  fuse_record_test_source(${layer}/${name}_test.cpp)
+  target_link_libraries(${target} PRIVATE fuse_test_main ${ARG_LIBS})
+  target_compile_definitions(${target} PRIVATE FUSE_TEST_GOLDEN_DIR="${FUSE_TEST_GOLDEN_DIR}"
+                                             FUSE_TEST_DATA_DIR="${FUSE_TEST_DATA_DIR}")
+  foreach(n IN LISTS ARG_RANKS)
+    add_test(NAME ${layer}.${name}.${n}
+             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${n} $<TARGET_FILE:${target}>)
+    set_tests_properties(${layer}.${name}.${n} PROPERTIES TIMEOUT 120 LABELS "${layer};mpi;parallel")
+  endforeach()
 endfunction()
 
 # ---------------------------------------------------------------- base
@@ -67,17 +114,9 @@ fuse_add_gtest(model validate THROWS)
 
 # Tier 1 only. Absent rather than skipped in Tier 0: there is no MPI to run it
 # with, and a skipped test reads like a passing one in a summary line.
+fuse_tests_gated_by(FUSE_ENABLE_MPI model/descriptor_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
-  add_executable(fuse_model_descriptor_mpi_test model/descriptor_mpi_test.cpp)
-  target_link_libraries(fuse_model_descriptor_mpi_test PRIVATE fuse::model fuse_test_main)
-  target_compile_definitions(fuse_model_descriptor_mpi_test PRIVATE FUSE_TEST_GOLDEN_DIR="${FUSE_TEST_GOLDEN_DIR}")
-  foreach(n 2 3 4 5)
-    add_test(NAME model.descriptor_mpi.${n}
-             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${n}
-                     $<TARGET_FILE:fuse_model_descriptor_mpi_test>)
-    # An odd rank count is included on purpose: a bug that only appears when the
-    # ranks do not divide evenly is the usual kind.
-  endforeach()
+  fuse_add_mpi_test(model descriptor_mpi LIBS fuse::model)
 endif()
 
 # ---------------------------------------------------------------- ir
@@ -95,9 +134,11 @@ endforeach()
 fuse_add_gtest(ir ir_dag THROWS)
 
 # ---------------------------------------------------------------- schedule
-foreach(t acyclicity acyclicity_sweep expand plan lockstep epoch)
+foreach(t acyclicity acyclicity_sweep expand plan lockstep epoch slab)
   fuse_add_gtest(schedule ${t})
 endforeach()
+# buffers asserts the overflow refusals are raised, so it aborts in the no-exceptions leg.
+fuse_add_gtest(schedule buffers THROWS)
 fuse_add_gtest(schedule clock THROWS)
 
 # ---------------------------------------------------------------- num
@@ -126,6 +167,7 @@ fuse_add_gtest(backend cell_simplices)
 
 # The MOAB backend's own tests. Registered only when MOAB is enabled -- absent
 # rather than skipped, because a skipped test reads like a passing one.
+fuse_tests_gated_by(FUSE_ENABLE_MOAB backend/moab_mesh_test.cpp)
 if(FUSE_ENABLE_MOAB)
   fuse_add_gtest(backend moab_mesh THROWS)
 endif()
@@ -138,18 +180,12 @@ fuse_add_gtest(runtime component_iface THROWS)
 
 # ---------------------------------------------------------------- parallel
 # Tier 1 only, and absent rather than skipped in Tier 0 for the reason above.
+fuse_tests_gated_by(FUSE_ENABLE_MPI
+  parallel/runner_transport_test.cpp parallel/comm_graph_test.cpp
+  parallel/mpi_transport_test.cpp parallel/epoch_reconcile_test.cpp)
 if(FUSE_ENABLE_MPI)
   foreach(t runner_transport comm_graph mpi_transport epoch_reconcile)
-    add_executable(fuse_parallel_${t}_test parallel/${t}_test.cpp)
-    target_link_libraries(fuse_parallel_${t}_test PRIVATE fuse::runtime fuse_test_main)
-    foreach(n 2 3 4 5)
-      add_test(NAME parallel.${t}.${n}
-               COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${n}
-                       $<TARGET_FILE:fuse_parallel_${t}_test>)
-      # A timeout, not because these are slow: the failure they guard against
-      # IS a hang, so a regression must fail the leg rather than stall CI.
-      set_tests_properties(parallel.${t}.${n} PROPERTIES TIMEOUT 120 LABELS "mpi;parallel")
-    endforeach()
+    fuse_add_mpi_test(parallel ${t} LIBS fuse::runtime)
   endforeach()
 endif()
 
@@ -198,3 +234,28 @@ foreach(t mms_transfer iteration)
   fuse_add_gtest(verification ${t} NO_LAYER_LIB
                  LIBS fuse::runtime fuse::backend fuse::transport)
 endforeach()
+
+# ---------------------------------------------------------------- audit
+# Every *_test.cpp on disk must be registered above or declared gated by a tier
+# option that is OFF in this configuration. Anything else is a test that runs
+# nowhere, and this is the only place that would ever say so.
+file(GLOB_RECURSE _fuse_test_files RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} CONFIGURE_DEPENDS
+     ${CMAKE_CURRENT_SOURCE_DIR}/*/*_test.cpp)
+get_property(_fuse_registered GLOBAL PROPERTY FUSE_REGISTERED_TEST_SOURCES)
+get_property(_fuse_gated GLOBAL PROPERTY FUSE_GATED_TEST_SOURCES)
+set(_fuse_unregistered "")
+foreach(f IN LISTS _fuse_test_files)
+  if(NOT f IN_LIST _fuse_registered AND NOT f IN_LIST _fuse_gated)
+    list(APPEND _fuse_unregistered ${f})
+  endif()
+endforeach()
+if(_fuse_unregistered)
+  list(JOIN _fuse_unregistered "\n    " _fuse_unregistered_text)
+  message(FATAL_ERROR "fuse: test source(s) registered nowhere, so they would run nowhere:\n"
+                      "    ${_fuse_unregistered_text}\n"
+                      "  Register each with fuse_add_gtest / fuse_add_mpi_test, or declare it "
+                      "gated with fuse_tests_gated_by(<option> <file>).")
+endif()
+list(LENGTH _fuse_test_files _n_files)
+list(LENGTH _fuse_registered _n_reg)
+message(STATUS "fuse: tests  ${_n_reg} registered of ${_n_files} on disk (rest gated by a tier option that is OFF)")
