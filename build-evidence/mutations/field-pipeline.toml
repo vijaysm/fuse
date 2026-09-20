@@ -1,0 +1,27 @@
+# Mutations for the field-layer fix pass (REVIEW.md R-08, R-29).
+# Own file per the review-fix protocol: do not edit build-evidence/mutations.toml
+# directly while other fixers hold it dirty.
+
+[[mutation]]
+id = "fieldspan-from-refuses-empty-partition"
+area = "field"
+describes = "FieldSpan::from() reverts to refusing every null FieldRef, including the legitimate count==0 partition (R-08)"
+file = "include/fuse/field/pipeline.hpp"
+old = "    if (!f.valid() && f.layout().count != 0) {"
+new = "    if (!f.valid()) {"
+target = "fuse_field_pipeline_test"
+test = "field.pipeline"
+
+[[mutation]]
+id = "layout-well-formed-off-by-one-stride"
+area = "field"
+describes = "Layout::well_formed() reverts to the one-unit-too-conservative disjointness bound that rejects valid padded/strided layouts (R-29)"
+file = "include/fuse/field/field_ref.hpp"
+old = """      const bool interleaved =
+          stride > detail::sat_mul(nc - 1, cs);
+      const bool blocked =
+          stride >= 1 && cs > detail::sat_mul(count - 1, stride);"""
+new = """      const bool interleaved = stride >= detail::sat_mul(nc, cs);
+      const bool blocked = stride >= 1 && cs >= detail::sat_mul(count, stride);"""
+target = "fuse_field_pipeline_test"
+test = "field.pipeline"

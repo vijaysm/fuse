@@ -177,8 +177,33 @@ TEST(Pipeline, AnOutOfRangeExtentIsRefusedRatherThanClamped) {
 }
 
 TEST(Pipeline, AnUnboundFieldIsRefusedNotDereferenced) {
-  const fuse::FieldRef unbound(nullptr, fuse::Layout{}, fuse::MemorySpace::Host);
+  // REVIEW.md R-08: a default-constructed `Layout{}` has `count == 0`, which
+  // is bit-for-bit the same state as a legitimately-bound empty partition
+  // (see AnEmptyFieldFromABoundZeroCountFieldRefDoesNotRefuse below) -- so it
+  // cannot be used to pin "genuinely unbound" here. A non-empty null FieldRef
+  // is the case `FieldRegistry::bind()` itself still refuses unconditionally.
+  const fuse::FieldRef unbound(
+      nullptr, fuse::Layout{.stride = 1, .count = 4}, fuse::MemorySpace::Host);
   EXPECT_THROW((void)fuse::FieldSpan<>::from(unbound), fuse::Refusal);
+}
+
+// The complement of the above (REVIEW.md R-08): a rank that legitimately owns
+// zero elements of a region binds a null pointer with `count == 0`
+// (FieldRegistry::bind()'s own allowance, registry.hpp:38-46), and
+// FieldSpan::from() must accept it as an ordinary, empty view rather than
+// refusing it -- refusing it here is an uncaught throw on every rank with a
+// genuinely empty partition, on the ordinary path of a partitioned run.
+TEST(Pipeline, AnEmptyFieldFromABoundZeroCountFieldRefDoesNotRefuse) {
+  const fuse::FieldRef empty(
+      nullptr, fuse::Layout{.stride = 1, .count = 0, .components = 3},
+      fuse::MemorySpace::Host);
+  const auto span = fuse::FieldSpan<>::from(empty);
+  EXPECT_EQ(span.element_count(), 0u);
+  EXPECT_EQ(span.component_count(), 3u);
+  // slice/local_sum/fill on the empty result must be no-ops, not throws.
+  EXPECT_NO_THROW(span.fill(1.0));
+  EXPECT_DOUBLE_EQ(span.local_sum(), 0.0);
+  EXPECT_NO_THROW((void)span.slice(fuse::all, fuse::all));
 }
 
 // ---- U6: lifetime -------------------------------------------------------
@@ -242,4 +267,36 @@ TEST(Pipeline, NoTypeIsBothABuilderAndAPipeline) {
   static_assert(!HasPipelineStage<fuse::CouplingGraph>,
                 "the graph builder acquired a pipeline stage (U1)");
   SUCCEED();
+}
+
+// ---- REVIEW.md R-29: Layout::well_formed()'s padded/strided boundary -----
+//
+// These pin the tightened disjointness bound in field_ref.hpp. They live
+// here rather than in test/runtime/field_ref_test.cpp (this file's owner
+// during the review-fix pass does not hold that path) -- Layout is
+// header-only and pipeline_test.cpp already includes field_ref.hpp directly.
+
+TEST(Layout, WellFormedAcceptsATightPaddedInterleavedLayout) {
+  // offsets: component 0 at {0,5,10,15}, component 1 at {2,7,12,17} -- disjoint,
+  // confirmed by brute force in the review (NL-A1). The old bound
+  // (stride >= nc*cs = 6) wrongly rejected this.
+  EXPECT_TRUE((fuse::Layout{.stride = 5, .component_stride = 2, .count = 4,
+                            .components = 3}
+                   .well_formed()));
+  // One unit tighter than the boundary must still be refused.
+  EXPECT_FALSE((fuse::Layout{.stride = 4, .component_stride = 2, .count = 4,
+                             .components = 3}
+                    .well_formed()));
+}
+
+TEST(Layout, WellFormedAcceptsATightPaddedBlockedLayout) {
+  // Symmetric blocked case: component blocks at {0,2,4}, {5,7,9} -- disjoint.
+  // The old bound (cs >= count*stride = 6) wrongly rejected this.
+  EXPECT_TRUE((fuse::Layout{.stride = 2, .component_stride = 5, .count = 3,
+                            .components = 2}
+                   .well_formed()));
+  // One unit tighter than the boundary must still be refused.
+  EXPECT_FALSE((fuse::Layout{.stride = 2, .component_stride = 4, .count = 3,
+                             .components = 2}
+                    .well_formed()));
 }

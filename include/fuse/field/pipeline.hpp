@@ -93,7 +93,13 @@ class FieldSpan {
   /// `LayoutStride`, which is why the pipeline needs no separate layout
   /// notion: interleaved and blocked storage are both just stride pairs.
   static FieldSpan from(const FieldRef& f) {
-    if (!f.valid()) {
+    // Mirror FieldRegistry::bind()'s own allowance exactly (REVIEW.md R-08):
+    // null is refused only when there is something to point AT. A rank that
+    // legitimately owns zero elements of a region binds a null pointer with
+    // `count == 0`, and that FieldRef is indistinguishable from a genuinely
+    // unbound one by pointer alone -- `count` is the only fact that tells
+    // them apart, so it has to be part of the guard here too.
+    if (!f.valid() && f.layout().count != 0) {
       FUSE_REFUSE("E-FIELD-NULL",
                   "the field is not bound to any storage, so there is nothing "
                   "to view");
