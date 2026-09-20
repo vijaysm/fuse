@@ -188,6 +188,69 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components) {
       }
     }
 
+    // R-10 (REVIEW.md): the convergence decision in run_region() used to be
+    // computed entirely from this rank's own buffers, with no MPI_Allreduce
+    // or equivalent before `all_satisfied()` was called -- a silent
+    // hang-or-wrong-answer risk when the region's components sit on more
+    // than one rank, because two ranks measuring different slices of a
+    // not-yet-converged field could satisfy the tolerance on different
+    // sweeps and desynchronise the region's own per-sweep exchanges. Fixed
+    // by reducing every measure's residual and reference contribution
+    // across the region's participants on every sweep (run_region(), via
+    // reduce_region_residuals()); `R.participants`, computed below, is what
+    // that reduction runs over.
+    //
+    // Checked against `config.base_communicator` rather than the graph's
+    // declared `RankSet` cardinality alone -- a Tier 0 caller with no
+    // communicator configured (e.g. verification.iteration) legitimately
+    // declares a region's components on different nominal ranks while
+    // running all of them, right here, on the one process that exists;
+    // there is no second rank to reduce across, and `R.participants` stays
+    // empty (run_region() takes that as "purely local", unchanged from
+    // before this fix).
+    if (config.base_communicator.has_value()) {
+      std::vector<int> region_ranks;
+      for (const ComponentId c : cp.components) {
+        for (const int rk : graph.component(c).ranks) region_ranks.push_back(rk);
+      }
+      std::sort(region_ranks.begin(), region_ranks.end());
+      region_ranks.erase(std::unique(region_ranks.begin(), region_ranks.end()),
+                         region_ranks.end());
+      if (region_ranks.size() > 1) {
+        // The one case this fix does NOT cover: a dynamic accelerator
+        // (Aitken and everything with more history than that) derives its
+        // relaxation coefficient from an inner product over this rank's own
+        // local iterate history (fuse::num, src/num/accel_quasi_newton.cpp
+        // and accel_relaxation.cpp's Aitken branch -- outside this fixer's
+        // owned paths, and `Accelerator::update()`'s signature has no hook
+        // for a caller-supplied global reduction). Two ranks with different
+        // local slices would compute different coefficients from that
+        // inner product and take different accelerator paths even with the
+        // residual itself correctly agreed, which is the same
+        // desynchronisation risk R-10 opened with. `None` (plain Picard)
+        // and `Constant` (a fixed, config-supplied omega, identical on
+        // every rank because AccelConfig comes from the graph) need
+        // nothing beyond the residual reduction below and are genuinely
+        // supported.
+        if (decl.acceleration.kind != AccelKind::None &&
+            decl.acceleration.kind != AccelKind::Constant) {
+          return Failure{
+              "E-RT-REGION-MPI",
+              "iteration region '" + R.name + "' checkpoints components "
+              "placed on " + std::to_string(region_ranks.size()) +
+              " different ranks and names accelerator '" +
+              std::string(to_cstring(decl.acceleration.kind)) +
+              "', whose dynamic coefficient is computed from this rank's "
+              "own local iterate history with no cross-rank agreement "
+              "(REVIEW.md R-10) and no hook to add one from here. Use "
+              "AccelKind::None or AccelKind::Constant for a region spanning "
+              "more than one rank, or place every component this region "
+              "checkpoints on the same rank"};
+        }
+        R.participants = std::move(region_ranks);
+      }
+    }
+
     // --- one contiguous pass over the body, and only one -------------------
     std::size_t enters = 0;
     std::size_t exits = 0;
@@ -267,7 +330,18 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components) {
                          " values) and the storage it is delivered into do not "
                          "have the same length"};
       }
-      if (b.length == 0) {
+      // R-10 (REVIEW.md): a rank that is a genuine participant of a
+      // multi-rank region (R.participants.size() > 1) but owns no local
+      // entries of THIS measure's coupling value is ordinary -- the same
+      // "n == 0 is a success no-op" case Accelerator::update() documents --
+      // not an error: reduce_region_residuals() contributes an undefined
+      // (owned == 0, never a converged-looking 0) entry for it and the
+      // region converges on the reduced, globally-owned residual. Outside
+      // that case (no communicator, or every checkpointed component on one
+      // rank), an empty coupling value is still what it always was: a
+      // region that would report convergence after one sweep with nothing
+      // ever measured, refused below.
+      if (b.length == 0 && R.participants.size() <= 1) {
         return Failure{"E-RT-REGION",
                      "iteration region '" + R.name +
                          "' measures an empty coupling value, so its residual "
@@ -587,18 +661,15 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
       }
       ++stats.instructions_executed;
     }
-    if (step_failure.has_value()) {
-      // Leaving the region rather than iterating again: every agreement point
-      // in the body has been reached this pass, so the partners already know.
-      const Failure f = *step_failure;
-      step_failure.reset();
-      return f;
-    }
-    ++st.iterations;
-    ++stats.total_iterations;
 
-    // G(y), and the residual G(y) - y.
-    double total = 0.0;
+    // G(y), and the residual G(y) - y. Computed unconditionally, even after
+    // a local failure earlier in this same sweep: R-10 (REVIEW.md)'s
+    // cross-rank reduction just below is itself a collective every
+    // participant must reach on every sweep -- mirroring reconcile_epoch(),
+    // and for the same reason -- so the local half of it cannot be skipped
+    // just because this rank already knows it failed. A rank whose local
+    // step_failure is set contributes an undefined (never a
+    // converged-looking zero) entry instead, below.
     for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
       const detail::RegionBlock& b = R.blocks[bi];
       const double* g = slots[b.value_arc].data;
@@ -613,8 +684,89 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
       }
       R.block_residual[bi] = std::sqrt(rs);
       R.block_value[bi] = std::sqrt(vs);
-      if (k == 0) R.block_first[bi] = R.block_residual[bi];
-      total += rs;
+    }
+
+    // R-10 (REVIEW.md): agree the residual across the region's participants
+    // before testing convergence or letting the accelerator see it, so
+    // every participant decides from the same globally-owned norm rather
+    // than its own local slice. `R.participants.size() <= 1` (no
+    // communicator, or every checkpointed component on one rank) skips
+    // this entirely -- run_region() is then exactly what it always was.
+    if (R.participants.size() > 1) {
+      const std::size_t nb = R.blocks.size();
+      std::vector<double> payload(1 + 4 * nb);
+      payload[0] = step_failure.has_value() ? 0.0 : 1.0;
+      for (std::size_t bi = 0; bi < nb; ++bi) {
+        // "n == 0 is a success no-op. A rank that owns no interface
+        // elements is ordinary in a parallel run, not an error"
+        // (Accelerator::update()'s own doc comment) -- the same rule
+        // applies to a rank contributing nothing to this measure. Zero is
+        // never sent as a value: field_norm()'s convention (undefined, not
+        // a converged zero) is `owned == 0`, so a locally-failed rank or a
+        // rank with no local entries for this block sends owned == 0 and
+        // reduce_region_residuals() (via num::combine()) excludes it.
+        const std::size_t length = R.blocks[bi].length;
+        const bool owned_here = !step_failure.has_value() && length > 0;
+        const double owned = owned_here ? static_cast<double>(length) : 0.0;
+        payload[1 + 4 * bi + 0] = owned_here ? R.block_residual[bi] : 0.0;
+        payload[1 + 4 * bi + 1] = owned;
+        payload[1 + 4 * bi + 2] = owned_here ? R.block_value[bi] : 0.0;
+        payload[1 + 4 * bi + 3] = owned;
+      }
+      const Result<void> red = reduce_region_residuals(R, payload);
+      if (!red.ok()) return red.error();
+      if (payload[0] < 0.5) {
+        // A participant's local failure carries through the reduction
+        // exactly as reconcile_epoch() carries an Epoch's: this rank's own
+        // sweep may have succeeded locally, but stopping here -- rather
+        // than waiting for the failed rank at the next sweep's reduction --
+        // is the point of reaching the collective at all.
+        if (!step_failure.has_value()) {
+          step_failure = Failure{
+              "E-RT-REGION-PEER",
+              "a rank taking part in iteration region '" + R.name +
+                  "'s residual agreement failed; stopping here rather than "
+                  "waiting for it at the next sweep. The failing rank "
+                  "reports the cause."};
+        }
+      } else {
+        for (std::size_t bi = 0; bi < nb; ++bi) {
+          if (payload[1 + 4 * bi + 1] == 0.0) {
+            // Not one participant owned any part of this block this sweep
+            // -- a setup defect (the measure names a coupling value nobody
+            // in the region's rank set ever provides), not a converged
+            // zero, and not something the sweep loop can recover from.
+            return Failure{
+                "E-RT-REGION-UNMEASURED",
+                "iteration region '" + R.name + "': no participant of the "
+                "residual agreement owns any part of block " +
+                    std::to_string(bi) + "'s coupling value this sweep"};
+          }
+          R.block_residual[bi] = payload[1 + 4 * bi + 0];
+          R.block_value[bi] = payload[1 + 4 * bi + 2];
+        }
+      }
+    }
+
+    if (step_failure.has_value()) {
+      // Leaving the region rather than iterating again: every agreement point
+      // in the body -- and, now, this sweep's residual reduction -- has been
+      // reached this pass, so the partners already know.
+      const Failure f = *step_failure;
+      step_failure.reset();
+      return f;
+    }
+    ++st.iterations;
+    ++stats.total_iterations;
+
+    if (k == 0) {
+      for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
+        R.block_first[bi] = R.block_residual[bi];
+      }
+    }
+    double total = 0.0;
+    for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
+      total += R.block_residual[bi] * R.block_residual[bi];
     }
     st.residual_history.push_back(std::sqrt(total));
 
@@ -644,7 +796,18 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
     if (!a.ok()) {
       // E-ACCEL-DIVERGED and friends: x_out's contents are not part of the
       // contract after a failed update, so nothing here reads them.
-      return a.error();
+      //
+      // R-09 (REVIEW.md): record the failure and fall through to the
+      // post-loop failure check below instead of returning straight out of
+      // the sweep loop. A bare return here bypassed step_period()'s
+      // failure-carries-forward mechanism once that caller stopped
+      // early-returning on a failed region (the fix immediately above this
+      // one, in runner.cpp): every remaining collective this rank owes its
+      // partners -- in this region and in the rest of the period -- still
+      // needs to be reached, and only step_period()'s continuation can do
+      // that once this function returns.
+      if (!step_failure.has_value()) step_failure = a.error();
+      break;
     }
 
     // Roll the components back. The loop-carried coupler buffers are NOT rolled
@@ -750,6 +913,20 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
       if (!adv.ok()) step_failure = adv.error();
     }
     R.x_old.swap(R.x_out);
+  }
+
+  // R-09 (REVIEW.md): the accelerator-divergence `break` above leaves this
+  // sweep's rollback, delivery and re-advance unexecuted -- correctly, since
+  // every collective this pass owed its partners was already reached inside
+  // the body loop above (`for (std::size_t i = R.enter; ...)`), before the
+  // residual and acceleration code runs at all. What must not happen is
+  // falling into the non-convergence path below and reporting success (or a
+  // stale E-RT-NOCONVERGE) instead of the failure that actually stopped the
+  // sweep.
+  if (step_failure.has_value()) {
+    const Failure f = *step_failure;
+    step_failure.reset();
+    return f;
   }
 
   if (!st.converged) {

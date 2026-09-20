@@ -16,6 +16,7 @@
 
 #include "runner_impl.hpp"
 #include "fuse/num/kernels.hpp"
+#include "fuse/num/residual_norm.hpp"
 #include "fuse/schedule/slab.hpp"
 
 #if FUSE_HAVE_MOAB
@@ -1546,12 +1547,56 @@ namespace {
          static_cast<std::uint32_t>(dst);
 }
 
+/// R-10 (REVIEW.md): folds `peer`'s contribution into `acc` in place, one
+/// block at a time, via `num::combine()` -- the same undefined-count
+/// exclusion `fuse::num::field_norm()`'s callers get for free, so a rank that
+/// wrote `owned == 0` (no local entries, or a locally-failed sweep; see
+/// reduce_region_residuals()) never reads as a converged zero. `status` is
+/// combined by MIN, matching reconcile_epoch()'s status arithmetic: one
+/// failed participant makes the combined status failed for everyone.
+///
+/// Euclidean is the kind used throughout: it is what run_region()'s
+/// existing per-rank computation already was (REVIEW.md R-10's fix keeps the
+/// serial iteration counts the recorded test fixtures were built with; see
+/// docs -- num/residual_norm.hpp's own header comment says the same about
+/// MeasureWeightedRms being a deliberate, opt-in departure). `combine()`
+/// cannot fail for Euclidean (the E-NORM-UNITS check is
+/// MeasureWeightedRms-only, and Euclidean's NormValue::units is always the
+/// default), so the Result is unwrapped unconditionally.
+void merge_region_payload(std::vector<double>& acc,
+                          const std::vector<double>& peer,
+                          std::size_t nblocks) {
+  acc[0] = std::min(acc[0], peer[0]);
+  for (std::size_t bi = 0; bi < nblocks; ++bi) {
+    const std::size_t base = 1 + 4 * bi;
+    for (const std::size_t off : {std::size_t{0}, std::size_t{2}}) {
+      num::NormValue a;
+      a.value = acc[base + off];
+      a.owned_count = static_cast<std::size_t>(acc[base + off + 1]);
+      a.total_measure = static_cast<double>(a.owned_count);
+      num::NormValue b;
+      b.value = peer[base + off];
+      b.owned_count = static_cast<std::size_t>(peer[base + off + 1]);
+      b.total_measure = static_cast<double>(b.owned_count);
+      const num::NormValue c =
+          num::combine(num::NormKind::Euclidean, {a, b}).value();
+      acc[base + off]     = c.value;
+      acc[base + off + 1] = static_cast<double>(c.owned_count);
+    }
+  }
+}
+
 }  // namespace
 
 /// The tag the agreement reduction uses on the base communicator.
 /// Defined with every other tag in fuse/transport/tags.hpp, which explains why
 /// they have to be chosen together.
 constexpr int kEpochTag = tags::kEpoch;
+
+/// R-10 (REVIEW.md): the tag reduce_region_residuals() uses on the same base
+/// communicator. Distinct from kEpochTag for the reason tags.hpp's own
+/// comment on kIterationRegion gives.
+constexpr int kRegionTag = tags::kIterationRegion;
 
 Result<void> Runner::Impl::resolve_epoch_participants() {
 #if FUSE_HAVE_MPI
@@ -1561,10 +1606,28 @@ Result<void> Runner::Impl::resolve_epoch_participants() {
   // `kEpochTag` is below it, so this cannot fire on a conforming MPI -- but a
   // refusal at setup is a better failure than "Invalid tag" from inside a
   // reduction on one rank while the others wait.
+  //
+  // R-32 (REVIEW.md): queried against `base`, the same communicator
+  // reconcile_epoch() actually sends and receives on, not MPI_COMM_WORLD.
+  // `MPI_TAG_UB` is an attribute of a communicator and nothing here
+  // guarantees the two share a value -- only that they usually do, under the
+  // spec §6 mode 1 usage `RunnerConfig::base_communicator` documents as
+  // today's only integration mode. A caller that ever hands this something
+  // other than MPI_COMM_WORLD itself would have this check silently pass on
+  // MPI_COMM_WORLD's bound while reconcile_epoch()'s own communicator has a
+  // lower one -- reproducing exactly the "Invalid tag" failure inside a
+  // reduction, on one rank while its partners wait, that this check exists
+  // to prevent.
   {
+    const MPI_Comm base =
+        MPI_Comm_f2c(static_cast<MPI_Fint>(*config.base_communicator));
+    if (base == MPI_COMM_NULL) {
+      return Failure{"E-RT-EPOCH-COMM",
+                     "RunnerConfig::base_communicator is MPI_COMM_NULL"};
+    }
     void* ub = nullptr;
     int   found = 0;
-    if (MPI_Comm_get_attr(MPI_COMM_WORLD, MPI_TAG_UB, &ub, &found) == MPI_SUCCESS &&
+    if (MPI_Comm_get_attr(base, MPI_TAG_UB, &ub, &found) == MPI_SUCCESS &&
         found != 0 && ub != nullptr && *static_cast<int*>(ub) < tags::kMaxUsed) {
       return Failure{"E-RT-EPOCH-TAG",
                      "this MPI allows tags only up to " +
@@ -1702,6 +1765,83 @@ Result<void> Runner::Impl::reconcile_epoch(const Instruction& ins) {
   }
 #else
   (void)ins;
+#endif
+  return Result<void>::success();
+}
+
+Result<void> Runner::Impl::reduce_region_residuals(
+    const detail::RegionRuntime& r, std::vector<double>& payload) {
+#if FUSE_HAVE_MPI
+  if (r.participants.size() <= 1) return Result<void>::success();
+  const MPI_Comm base =
+      MPI_Comm_f2c(static_cast<MPI_Fint>(*config.base_communicator));
+  if (base == MPI_COMM_NULL) {
+    return Failure{"E-RT-REGION-COMM",
+                   "RunnerConfig::base_communicator is MPI_COMM_NULL at "
+                   "iteration region '" + r.name + "'s residual agreement"};
+  }
+  int me = 0;
+  if (MPI_Comm_rank(base, &me) != MPI_SUCCESS) {
+    return Failure{"E-RT-REGION-COMM",
+                   "MPI_Comm_rank failed at iteration region '" + r.name +
+                       "'s residual agreement"};
+  }
+  const std::vector<int>& part = r.participants;
+  const auto self = std::find(part.begin(), part.end(), me);
+  if (self == part.end()) {
+    // Not a participant of this region -- see RegionRuntime::participants.
+    // Joining would make the real participants wait for a rank with nothing
+    // to contribute, exactly as reconcile_epoch() reasons for an Epoch.
+    return Result<void>::success();
+  }
+  const auto n = static_cast<int>(part.size());
+  const auto my_index = static_cast<int>(std::distance(part.begin(), self));
+  const auto count = static_cast<int>(payload.size());
+  const EpochSchedule sched = epoch_schedule(n, my_index);
+  const std::size_t nblocks = r.blocks.size();
+
+  std::vector<double> peer(payload.size());
+  for (int ri = 0; ri < sched.reduce_recv_count; ++ri) {
+    const int from = sched.reduce_recv_from[static_cast<std::size_t>(ri)];
+    if (MPI_Recv(peer.data(), count, MPI_DOUBLE,
+                 part[static_cast<std::size_t>(from)], kRegionTag, base,
+                 MPI_STATUS_IGNORE) != MPI_SUCCESS) {
+      return Failure{"E-RT-REGION-COMM",
+                     "MPI_Recv failed while reducing iteration region '" +
+                         r.name + "'s residuals"};
+    }
+    merge_region_payload(payload, peer, nblocks);
+  }
+  if (sched.reduce_send_to >= 0) {
+    if (MPI_Send(payload.data(), count, MPI_DOUBLE,
+                 part[static_cast<std::size_t>(sched.reduce_send_to)],
+                 kRegionTag, base) != MPI_SUCCESS) {
+      return Failure{"E-RT-REGION-COMM",
+                     "MPI_Send failed while reducing iteration region '" +
+                         r.name + "'s residuals"};
+    }
+  }
+  if (sched.result_recv_from >= 0) {
+    if (MPI_Recv(payload.data(), count, MPI_DOUBLE,
+                 part[static_cast<std::size_t>(sched.result_recv_from)],
+                 kRegionTag, base, MPI_STATUS_IGNORE) != MPI_SUCCESS) {
+      return Failure{"E-RT-REGION-COMM",
+                     "MPI_Recv failed while receiving iteration region '" +
+                         r.name + "'s agreed residual"};
+    }
+  }
+  for (int to = 1; to <= sched.result_send_count; ++to) {
+    if (MPI_Send(payload.data(), count, MPI_DOUBLE,
+                 part[static_cast<std::size_t>(to)], kRegionTag,
+                 base) != MPI_SUCCESS) {
+      return Failure{"E-RT-REGION-COMM",
+                     "MPI_Send failed while publishing iteration region '" +
+                         r.name + "'s agreed residual"};
+    }
+  }
+#else
+  (void)r;
+  (void)payload;
 #endif
   return Result<void>::success();
 }
@@ -2113,7 +2253,14 @@ Result<void> Runner::Impl::step_period(ComponentSet& components) {
       detail::RegionRuntime& r =
           regions.at(static_cast<std::size_t>(ins.region_enter));
       const Result<void> rr = run_region(components, r);
-      if (!rr.ok()) return rr;
+      // R-09 (REVIEW.md): a region failure carries forward exactly like an
+      // ordinary instruction failure two branches below -- record it and
+      // keep walking the stream -- instead of returning straight out of
+      // step_period(). Returning here abandoned every later Epoch/Transport
+      // in the same period's instruction stream, including ones for a
+      // channel that has nothing to do with this region; a partner rank
+      // waiting at one of those later agreement points blocked forever.
+      if (!rr.ok() && !step_failure.has_value()) step_failure = rr.error();
       i = r.exit + 1;
       continue;
     }
