@@ -1,0 +1,34 @@
+# Mutations for REVIEW.md's transport-runtime findings (TR-*, unified R-09,
+# R-10, R-30, R-32). Schema: build-evidence/mutations.toml.
+
+[[mutation]]
+id = "cross-rank-region-check-fires-unconditionally"
+area = "runtime"
+describes = "R-10: the cross-rank iteration-region refusal (E-RT-REGION-MPI) fires even with no RunnerConfig::base_communicator configured, wrongly refusing every single-process caller that places a region's components on different declared ranks"
+file = "src/runtime/iteration.cpp"
+old = "    if (config.base_communicator.has_value()) {"
+new = "    if (true) {"
+target = "fuse_runtime_runner_test"
+test = "runtime.runner"
+
+[[mutation]]
+id = "build-plan-skips-the-components-agreement"
+area = "transport"
+describes = "R-30: MpiTransport::build_plan() stops checking that every rank in the src/dst rank set agrees on TransportSpec::components, so two ranks calling it with different component counts size MPI_Alltoallv's count arrays inconsistently instead of refusing at setup"
+file = "src/transport/mpi_transport.cpp"
+old = "        if (all_components[r] != first_value) {"
+new = "        if (false) {"
+target = "fuse_parallel_mpi_transport_test"
+test = "parallel.mpi_transport.2"
+requires = "mpi"
+
+[[mutation]]
+id = "region-residual-skips-the-cross-rank-reduction"
+area = "runtime"
+describes = "R-10: run_region() stops agreeing the residual across the region's participants and falls back to each rank's own local Euclidean sum, exactly the defect the fix closes. On RunnerTransport.RegionConvergesInTheSerialIterationCount's unequal 2/1/1-style split this desynchronises which sweep each rank exits on -- the expected kill is the iteration-count assertion failing outright on the ranks that finish before the timeout, or the whole job timing out (a slower rank's partners move on to the region's own exit instructions while it is still sweeping, which is the hang rank-agreement.md's Epoch exists to prevent and this reduction is the region-local analogue of); either is a correct kill for this mutation, and the 120s TIMEOUT test property makes the second case an unambiguous FAILED rather than a silent PASS."
+file = "src/runtime/iteration.cpp"
+old = "    if (R.participants.size() > 1) {"
+new = "    if (false) {"
+target = "fuse_parallel_runner_transport_test"
+test = "parallel.runner_transport.2"
+requires = "mpi"
