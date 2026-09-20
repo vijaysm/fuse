@@ -606,6 +606,10 @@ std::size_t count_allocations_for_one_evaluate(TemporalBasis basis, int degree,
   std::vector<double> out(elements);
   const AllocationCounter counter;
   EXPECT_TRUE(w.evaluate(Rational{3, 2}, out.data()).ok());
+  // integrate_dg / integrate_spline received the same hoist as the evaluate
+  // pair (R-48) but were not under this fence, so a per-element buffer
+  // reintroduced there would have passed (pass-3 review, N-num-linalg-field-2).
+  EXPECT_TRUE(w.integrate(Rational{1, 2}, Rational{5, 2}, out.data()).ok());
   return counter.count();
 }
 }  // namespace
