@@ -1,18 +1,33 @@
 # Config file for the installed `fuse-coupler` CMake package (docs/dev/conventions.md:
 # "CMake package `fuse-coupler`", never wired up before REVIEW.md R-25/BT-F9).
 #
-# Only the two dependencies every fuse:: layer target links PUBLIC are resolved
-# here: Kokkos (base's execution-space vocabulary) and fmt (Diagnostics
-# formatting). A consumer that links a layer with a PRIVATE third-party
-# dependency of its own -- Eigen3 for fuse::linalg/fuse::num when
-# FUSE_LINALG_BACKEND=eigen, yaml-cpp for fuse::model, MPI for
-# fuse::transport/fuse::backend with FUSE_ENABLE_MPI, MOAB for fuse::backend
-# with FUSE_ENABLE_MOAB -- must find that dependency itself: a PRIVATE link of
-# a STATIC library is not re-exported by CMake's INTERFACE_LINK_LIBRARIES
-# machinery, so this file cannot discover which of those a given consumer
-# needs without also taking a COMPONENTS argument keyed to them, which is
-# future work (this install just makes `find_package(fuse-coupler)` succeed
-# at all, where before it could not -- REVIEW.md R-25/BT-F9's fix scope).
+# Kokkos and fmt (every fuse:: layer links both PUBLIC) are resolved below via
+# find_dependency(), the portable path, because both ship a real CMake Config
+# with imported targets. MPI and MOAB are also PUBLIC link dependencies of
+# fuse::transport/fuse::backend when this build had FUSE_ENABLE_MPI/
+# FUSE_ENABLE_MOAB on, so a consumer needs them resolved too (REVIEW.md pass2
+# N-build-tools-docs-9 -- install(EXPORT) failed at Generate time the moment a
+# host actually configured tier 2, invisible at tier 0/1 where MOAB is off).
+# MPI gets the portable find_dependency() treatment same as Kokkos/fmt. MOAB
+# does not: its shipped MOABConfig.cmake creates no imported target at all
+# (sets bare MOAB_INCLUDE_DIRS/MOAB_LIBRARIES variables, verified by reading
+# it -- see cmake/FuseDependencies.cmake's fuse_resolve_dependencies()), so
+# there is no `fuse::moab`-equivalent to find_dependency() against. Instead
+# the exact values THIS build resolved are baked in below and used to
+# recreate the same wrapper target. That is only as portable as MOAB's own
+# config already is -- a consumer needs the same MOAB installation at the
+# same absolute path, not a different prefix -- which is no worse than what
+# MOABConfig.cmake itself does. A consumer that needs a MOAB at a different
+# location must reconfigure FUSE itself against it, not just find_package()
+# the installed result.
+#
+# A consumer that links a layer with a PRIVATE third-party dependency of its
+# own -- Eigen3 for fuse::linalg/fuse::num when FUSE_LINALG_BACKEND=eigen,
+# yaml-cpp for fuse::model -- must find that dependency itself: a PRIVATE link
+# of a STATIC library is not re-exported by CMake's INTERFACE_LINK_LIBRARIES
+# machinery, and unlike MPI/MOAB above neither is in any layer's PUBLIC
+# interface, so install(EXPORT) never required them and there is nothing here
+# for a consumer to hit at configure time either.
 @PACKAGE_INIT@
 
 include(CMakeFindDependencyMacro)
@@ -39,6 +54,41 @@ endif()
 
 find_dependency(Kokkos)
 find_dependency(fmt)
+
+set(FUSE_ENABLE_MPI @FUSE_ENABLE_MPI@)
+set(FUSE_ENABLE_MOAB @FUSE_ENABLE_MOAB@)
+
+if(FUSE_ENABLE_MPI)
+  # CXX only, deliberately: fuse::transport/fuse::backend's PUBLIC interface
+  # links MPI::MPI_CXX, never MPI::MPI_C. Requesting the C component here (as
+  # the main build's own find_package(MPI REQUIRED COMPONENTS C CXX) does)
+  # would fail FindMPI's own component check for any consumer whose project()
+  # enables only CXX -- "MPI component 'C' was requested, but language C is
+  # not enabled" -- forcing every consumer to also enable C for a component
+  # this package never uses. Found running this exact consumer scenario by
+  # hand (REVIEW.md pass2 N-build-tools-docs-9's own verification).
+  find_dependency(MPI COMPONENTS CXX)
+endif()
+
+if(FUSE_ENABLE_MOAB AND NOT TARGET fuse::moab)
+  # Recreate the exact wrapper cmake/FuseDependencies.cmake built for this
+  # install, from the values it resolved then -- see the file header comment
+  # above for why this is baked in rather than found.
+  set(_fuse_moab_includes "@FUSE_MOAB_INCLUDE_DIRS@")
+  set(_fuse_moab_libs "@FUSE_MOAB_LIBRARIES_RESOLVED@")
+  set(_fuse_moab_libdirs "@FUSE_MOAB_LIBRARY_DIRS@")
+  add_library(fuse-moab INTERFACE IMPORTED GLOBAL)
+  add_library(fuse::moab ALIAS fuse-moab)
+  target_include_directories(fuse-moab SYSTEM INTERFACE ${_fuse_moab_includes})
+  target_link_libraries(fuse-moab INTERFACE ${_fuse_moab_libs})
+  target_link_directories(fuse-moab INTERFACE ${_fuse_moab_libdirs})
+  if(TARGET MPI::MPI_CXX)
+    target_link_libraries(fuse-moab INTERFACE MPI::MPI_CXX)
+  endif()
+  unset(_fuse_moab_includes)
+  unset(_fuse_moab_libs)
+  unset(_fuse_moab_libdirs)
+endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/fuse-coupler-targets.cmake")
 

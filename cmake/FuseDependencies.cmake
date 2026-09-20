@@ -1,4 +1,4 @@
-# FUSE dependency resolution, one tier at a time (docs/PLAN.md §3.1).
+# FUSE dependency resolution, one tier at a time.
 #
 # Policy, decided 2026-09-15: USE WHAT IS INSTALLED. Every dependency is resolved
 # by find_package against the prefixes in CMAKE_PREFIX_PATH, and a missing one is a
@@ -74,7 +74,7 @@ if(NOT FUSE_LINALG_BACKEND MATCHES "^(builtin|eigen)$")
 endif()
 
 # A tier is a prefix: enabling a higher one without its predecessors is a
-# configuration error, never a silent downgrade (docs/CHARTER.md §4).
+# configuration error, never a silent downgrade (docs/user/build.md).
 if(FUSE_ENABLE_MOAB AND NOT FUSE_ENABLE_MPI)
   message(FATAL_ERROR "FUSE_ENABLE_MOAB (tier 2) requires FUSE_ENABLE_MPI (tier 1)")
 endif()
@@ -82,7 +82,7 @@ if(FUSE_ENABLE_PETSC AND NOT FUSE_ENABLE_MOAB)
   message(FATAL_ERROR "FUSE_ENABLE_PETSC (tier 3) requires FUSE_ENABLE_MOAB (tier 2)")
 endif()
 
-# fmt — the ONLY output formatter in the library (docs/CHARTER.md). No iostreams in
+# fmt — the ONLY output formatter in the library (docs/dev/conventions.md). No iostreams in
 # library code, no printf in host code; fmt::format_to with a caller-provided buffer
 # on any path that must not allocate.
 # ------------------------------------------------- declarations for the fetch path
@@ -395,11 +395,51 @@ macro(fuse_resolve_dependencies)
         "There is nothing FUSE can substitute: the libraries in that directory "
         "belong to the compiler that produced them.")
     endif()
+    # MOAB_LIBRARIES repeats the gfortran -Wl,-rpath/-L entries up to three
+    # times (its old-style config concatenates several link-line fragments
+    # that each carry the same toolchain directory), which otherwise reaches
+    # the linker verbatim and prints one `ld: warning: duplicate -rpath ...
+    # ignored` per repeat, per target -- harmless, but noisy on every tier-2
+    # link (REVIEW.md pass2 N-build-tools-docs-10). Reuse the same
+    # whitespace-tokenised form the stale-directory check above already
+    # built; only -L/-Wl,-rpath tokens are deduplicated, order-preserving --
+    # a repeated plain -lFoo is left alone since library link order can
+    # matter and de-duplicating it is not what this defect is about.
+    set(_fuse_moab_libs_dedup "")
+    set(_fuse_moab_seen_dirs "")
+    foreach(_tok IN LISTS _fuse_moab_tokens)
+      string(REGEX MATCH "^(-L|-Wl,-rpath,)(.+)$" _m "${_tok}")
+      if(_m)
+        list(FIND _fuse_moab_seen_dirs "${_tok}" _fuse_moab_seen_idx)
+        if(_fuse_moab_seen_idx EQUAL -1)
+          list(APPEND _fuse_moab_seen_dirs "${_tok}")
+          list(APPEND _fuse_moab_libs_dedup "${_tok}")
+        endif()
+      else()
+        list(APPEND _fuse_moab_libs_dedup "${_tok}")
+      endif()
+    endforeach()
     if(NOT TARGET fuse::moab)
-      add_library(fuse-moab INTERFACE)
+      # An IMPORTED target is exempt from install(EXPORT)'s "every PUBLIC
+      # link dependency must be in some export set" check -- the same
+      # exemption Kokkos::kokkos/fmt::fmt/MPI::MPI_CXX already rely on,
+      # because those are IMPORTED targets created by find_package's own
+      # Find/Config modules. fuse-moab is not: MOAB's shipped MOABConfig.cmake
+      # creates no imported target at all (see the comment above), so this
+      # project's own wrapper is what needs the IMPORTED marker instead.
+      # Without it, `fuse-coupler-backend`'s PUBLIC link to `fuse::moab`
+      # fails install(EXPORT) at CMake's Generate step with "requires target
+      # fuse-moab that is not in any export set" -- invisible at tier 0/1
+      # (MOAB is off there), a BLOCKER the first time tier 2 configures
+      # (REVIEW.md pass2 N-build-tools-docs-9). Being IMPORTED does not by
+      # itself make a downstream consumer's find_package(fuse-coupler) able
+      # to reconstruct this target -- fuse-couplerConfig.cmake.in does that
+      # explicitly, baking in the same resolved paths, since MOAB's own
+      # config gives it nothing portable to find_dependency() against.
+      add_library(fuse-moab INTERFACE IMPORTED GLOBAL)
       add_library(fuse::moab ALIAS fuse-moab)
       target_include_directories(fuse-moab SYSTEM INTERFACE ${MOAB_INCLUDE_DIRS})
-      target_link_libraries(fuse-moab INTERFACE ${MOAB_LIBRARIES})
+      target_link_libraries(fuse-moab INTERFACE ${_fuse_moab_libs_dedup})
       target_link_directories(fuse-moab INTERFACE ${MOAB_LIBRARY_DIRS})
       # MOAB's public headers include <moab_mpi.h>, which includes <mpi.h>
       # unconditionally for a parallel MOAB build -- so anything consuming a
@@ -411,6 +451,14 @@ macro(fuse_resolve_dependencies)
         target_link_libraries(fuse-moab INTERFACE MPI::MPI_CXX)
       endif()
     endif()
+    # Baked in verbatim (via configure_package_config_file's @VAR@
+    # substitution) into fuse-couplerConfig.cmake.in so a downstream
+    # find_package(fuse-coupler) consumer can recreate this exact target --
+    # see that file for why these are absolute, machine-specific paths
+    # rather than a portable find_dependency() call.
+    set(FUSE_MOAB_INCLUDE_DIRS "${MOAB_INCLUDE_DIRS}")
+    set(FUSE_MOAB_LIBRARIES_RESOLVED "${_fuse_moab_libs_dedup}")
+    set(FUSE_MOAB_LIBRARY_DIRS "${MOAB_LIBRARY_DIRS}")
     # Whether high-order (spherical, TempestRemap-backed) remap is available is
     # a property of WHICH MOAB was found, not of this project: a machine can
     # have several MOAB builds with different capabilities. Recorded rather
