@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <source_location>
+
+#include <Kokkos_Core.hpp>  // KOKKOS_IF_ON_HOST/DEVICE and Kokkos::abort for FUSE_DEBUG_ASSERT
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -198,15 +200,29 @@ template <class E>
 
 /// Debug-only, never the sole guard on an invariant. Aborts rather than
 /// throws so it is usable from device code and noexcept kernels.
+///
+/// Two bodies, selected at compile time by where the code is running. On the
+/// host it reports the condition, location and a backtrace through
+/// `debug_abort` -- which formats with fmt and captures a stack, both host-only
+/// facilities, so that function cannot be called from a kernel. On the device
+/// it calls `Kokkos::abort` with the condition text, which is what the backend
+/// provides for exactly this. Before 2026-09-20 the macro called `debug_abort`
+/// unconditionally, so a `KOKKOS_INLINE_FUNCTION` using it (the native mesh's
+/// `measure()`/`centroid()`/`normal()`, R-14) could not compile for a
+/// GPU-default build in Debug; no such build exists on this machine, which is
+/// why it went unnoticed (REVIEW.md pass 2, backend R-14 residual).
 #ifdef NDEBUG
 #define FUSE_DEBUG_ASSERT(cond) \
   do {                          \
   } while (false)
 #else
-#define FUSE_DEBUG_ASSERT(cond)                    \
-  do {                                             \
-    if (!(cond)) ::fuse::detail::debug_abort(#cond, \
-                     ::std::source_location::current()); \
+#define FUSE_DEBUG_ASSERT(cond)                                                    \
+  do {                                                                             \
+    if (!(cond)) {                                                                 \
+      KOKKOS_IF_ON_HOST((::fuse::detail::debug_abort(                              \
+          #cond, ::std::source_location::current());))                             \
+      KOKKOS_IF_ON_DEVICE((::Kokkos::abort("FUSE_DEBUG_ASSERT(" #cond ") failed");)) \
+    }                                                                              \
   } while (false)
 #endif
 
