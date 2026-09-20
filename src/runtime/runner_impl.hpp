@@ -260,6 +260,16 @@ struct RegionRuntime {
   std::vector<double> block_first;                 // per block, sweep 0's residual
   std::vector<double> residual_norms;              // per convergence measure
   std::vector<double> reference_norms;             // per convergence measure
+
+  /// R-10 (REVIEW.md): the sorted, de-duplicated union of ranks of every
+  /// component this region checkpoints -- the same derivation
+  /// resolve_epoch_participants() uses for an Epoch, computed once here
+  /// instead of once per Epoch instruction because a region has exactly one
+  /// participant set for its whole lifetime. Empty (the default) means
+  /// "no cross-rank reduction": either no communicator is configured, or the
+  /// region's components all sit on one rank, and run_region() computes its
+  /// residual purely locally, exactly as it always has.
+  std::vector<int> participants;
 };
 
 }  // namespace detail
@@ -419,6 +429,16 @@ struct Runner::Impl {
   Result<void> checkpoint_regions(ComponentSet& components);
   /// One region: sweep until converged, exhausted, or failed.
   Result<void> run_region(ComponentSet& components, detail::RegionRuntime& r);
+  /// R-10 (REVIEW.md): one sweep's cross-rank residual agreement, reached by
+  /// every rank in `r.participants` on every sweep -- including one that has
+  /// already locally recorded a step_failure, exactly like reconcile_epoch().
+  /// `payload` is laid out `[status, (r_value, r_owned, v_value, v_owned) *
+  /// r.blocks.size()]`; combined in place via fuse::num::combine() so every
+  /// participant ends the call holding the same globally-agreed values.
+  /// No-ops (`Result<void>::success()`, `payload` unchanged) when
+  /// `r.participants` has at most one rank or this rank is not in it.
+  Result<void> reduce_region_residuals(const detail::RegionRuntime& r,
+                                       std::vector<double>& payload);
 };
 
 }  // namespace fuse

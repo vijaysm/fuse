@@ -30,6 +30,16 @@ namespace u = fuse::units;
 
 namespace {
 
+/// A one-measure ConvergenceCriterion. `fuse::Converged::Relative(...)`
+/// returns a bare `ConvergenceMeasure`, which `ConvergenceCriterion` does
+/// not implicitly construct from (test/runtime/checkpoint_test.cpp's
+/// `one_measure()` is the same pattern for the same reason).
+fuse::ConvergenceCriterion one_measure(double tol, std::string field) {
+  fuse::ConvergenceCriterion c;
+  c.add(fuse::Converged::Relative(tol, std::move(field)));
+  return c;
+}
+
 /// How the producer allocates, fills and registers its array. The defaults
 /// reproduce the plain case; the other fields exist so the tests can register
 /// storage that does *not* match the plan and check the Runner refuses it
@@ -41,6 +51,15 @@ struct ProducerOpts {
   std::size_t bind_count = 0;    // 0 -> cells
   std::size_t bind_stride = 1;   // > 1 registers a strided view
   bool        poison = false;    // write NaN instead of a number
+  /// R-10 (REVIEW.md): an iteration region requires every component it
+  /// checkpoints to support rollback (E-ITER-NOROLLBACK); default false
+  /// matches every existing caller of this harness, none of which puts this
+  /// component in a region.
+  bool        rollback = false;
+  /// R-09 (REVIEW.md): refuse every advance() instead of running it. Used to
+  /// put a real Failure on the re-advance path inside an iteration region's
+  /// sweep loop.
+  bool        fail_advance = false;
 };
 
 /// Producer writes a value; consumer just holds what it receives.
@@ -73,6 +92,12 @@ class Producer final : public fuse::Component {
   }
 
   fuse::Result<void> advance(const StepContext&) override {
+    // R-09: fails starting from the SECOND call, so the first (establishing
+    // y_0, before any region sweep) succeeds and only a RE-advance fails.
+    if (opts_.fail_advance && steps > 0) {
+      return fuse::Failure{"E-TEST-ADVANCE-REFUSED",
+                          "producer refuses to advance (test-injected)"};
+    }
     ++steps;
     for (std::size_t i = 0; i < data_.size(); ++i) {
       if (opts_.poison) {
@@ -90,16 +115,35 @@ class Producer final : public fuse::Component {
   [[nodiscard]] const std::vector<double>& data() const { return data_; }
   void poison() { opts_.poison = true; }
 
+  // R-10 (REVIEW.md): opt-in rollback, exercised only by a harness that puts
+  // this component in an iteration region. `saved_` is a byte-for-byte copy
+  // because rank-agreement.md's E-ITER-ROLLBACK check compares exactly that.
+  fuse::Result<void> save_state() override {
+    if (opts_.rollback) saved_ = data_;
+    return fuse::Result<void>::success();
+  }
+  fuse::Result<void> restore_state() override {
+    if (opts_.rollback) data_ = saved_;
+    return fuse::Result<void>::success();
+  }
+  [[nodiscard]] bool supports_rollback() const override {
+    return opts_.rollback;
+  }
+
   int steps = 0;
 
  private:
   ProducerOpts        opts_;
   std::vector<double> data_;
+  std::vector<double> saved_;
 };
 
 class Consumer final : public fuse::Component {
  public:
-  explicit Consumer(std::size_t n) : data_(n, 0.0) {
+  /// `rollback`: see Producer::rollback_ (R-10, REVIEW.md) -- same opt-in,
+  /// same reason, default false to match every existing caller.
+  explicit Consumer(std::size_t n, bool rollback = false)
+      : data_(n, 0.0), rollback_(rollback) {
     seen_.reserve(64);
     seen_at_.reserve(64);
   }
@@ -137,12 +181,25 @@ class Consumer final : public fuse::Component {
   [[nodiscard]] const std::vector<Rational>& seen_at() const {
     return seen_at_;
   }
+
+  fuse::Result<void> save_state() override {
+    if (rollback_) saved_ = data_;
+    return fuse::Result<void>::success();
+  }
+  fuse::Result<void> restore_state() override {
+    if (rollback_) data_ = saved_;
+    return fuse::Result<void>::success();
+  }
+  [[nodiscard]] bool supports_rollback() const override { return rollback_; }
+
   int steps = 0;
 
  private:
   std::vector<double>   data_;
   std::vector<double>   seen_;
   std::vector<Rational> seen_at_;
+  bool                  rollback_;
+  std::vector<double>   saved_;
 };
 
 /// A component that participates in nothing: it declares one `Provides` field
@@ -260,6 +317,11 @@ struct HarnessOpts {
   fuse::Conservation conservation = fuse::Conservation::None;
   ProducerOpts  producer{};
   bool          iteration_region = false;
+  /// Empty (the default) reproduces the existing behaviour: an iteration
+  /// region with no convergence measure, which `initialize()` refuses with
+  /// E-ITER-NOCONVERGE. A caller that wants a region that actually runs sets
+  /// this to a real criterion (R-10, REVIEW.md).
+  fuse::ConvergenceCriterion region_convergence;
   /// Non-zero adds a `Bystander` on this interval, which only widens the
   /// common period. See the class comment for why a test would want that.
   Rational      bystander_dt{0};
@@ -314,7 +376,8 @@ std::unique_ptr<Harness> build(HarnessOpts o) {
   }
   if (o.iteration_region) {
     g.add_iteration_region(fuse::IterationRegionDecl{
-        .name = "outer", .channels = {ch}, .max_iterations = 12});
+        .name = "outer", .channels = {ch}, .max_iterations = 12,
+        .convergence = o.region_convergence});
   }
 
   EXPECT_TRUE(h->backend.load(g.mesh(m1)).ok());
@@ -332,8 +395,17 @@ std::unique_ptr<Harness> build(HarnessOpts o) {
 
   ProducerOpts po = o.producer;
   po.cells = o.src_cells;
+  // R-10 (REVIEW.md): a region with a real (non-empty) convergence
+  // criterion re-advances its components every sweep, which requires
+  // rollback (E-ITER-NOROLLBACK). A region left at the default empty
+  // criterion -- the existing RefusesAnIterationRegionWithNoConvergenceMeasure
+  // test -- is refused before rollback is ever checked, so leaving rollback
+  // off there reproduces that test's exact prior behaviour.
+  const bool needs_rollback =
+      o.iteration_region && !o.region_convergence.measures().empty();
+  po.rollback = needs_rollback;
   h->components.add(std::make_unique<Producer>(po));
-  h->components.add(std::make_unique<Consumer>(o.dst_cells));
+  h->components.add(std::make_unique<Consumer>(o.dst_cells, needs_rollback));
   if (with_bystander) h->components.add(std::make_unique<Bystander>());
   return h;
 }
@@ -964,6 +1036,80 @@ TEST(Runner, RefusesAnIterationRegionWithNoConvergenceMeasure) {
       << "running an iteration region's body once and reporting success turns "
          "an implicit scheme into an explicit one with no diagnostic";
   EXPECT_EQ(r.error().code, "E-ITER-NOCONVERGE");
+}
+
+// ---------------------------------------------------------------------------
+// R-10 (REVIEW.md): the iteration region's convergence decision has no
+// cross-rank agreement, so a region whose checkpointed components sit on
+// different ranks is refused rather than silently risking a hang or a wrong
+// answer under a real multi-rank run (docs/dev/invariants.md I4). This test
+// is fully verifiable without MPI: `config.base_communicator` is what the
+// check reads, and setting it needs no working MPI, only the Fortran handle
+// slot RunnerConfig already carries for exactly this purpose.
+// The refusal itself (RunnerConfig::base_communicator set, and the region's
+// checkpointed components declared on different ranks) is NOT tested here:
+// Runner::Impl::attach_comm_graphs() refuses ANY base_communicator in a
+// build without FUSE_HAVE_MPI, before resolve_regions() -- and this check --
+// is ever reached (E-RT-TRANSPORT-NOMPI). Reaching the R-10 refusal needs a
+// Tier 1 (FUSE_HAVE_MPI) build; see
+// test/parallel/runner_transport_test.cpp's
+// RunnerTransport.RefusesACrossRankIterationRegionUnderMpi, "Needs a host
+// run" in the report.
+
+// R-09 (REVIEW.md) regression guard. A component's advance() failing
+// inside an iteration region's body is already carried out correctly by
+// the PRE-EXISTING per-sweep check at the top of run_region()'s k-loop
+// (`if (step_failure.has_value()) return f;`, right after the body's own
+// instructions execute) -- this test pins that behaviour so it cannot
+// regress. It does NOT exercise this fix's own addition: the
+// accelerator-divergence `break` (same function) skips the REST of the
+// current sweep and relies on the NEXT k-loop iteration to reach that same
+// check, which does not exist when the divergence happens to fall on the
+// last permitted sweep -- exactly the gap R-09's fix (the post-loop
+// `step_failure` check, and the matching change in step_period(),
+// runner.cpp) closes. Deterministically forcing a built-in accelerator to
+// diverge on a specific, low-iteration-count sweep was not constructed in
+// the time available; that path is verified by code inspection only (see
+// the report's "Fixed" section) and by the affected files compiling and
+// every other test in this suite still passing.
+TEST(Runner, AnAdvanceFailureInsideAnIterationRegionSweepIsReported) {
+  ProducerOpts po;
+  po.fail_advance = true;
+  auto h = build(HarnessOpts{
+      .producer = po,
+      .iteration_region = true,
+      .region_convergence = one_measure(1e-6, "link")});
+  Runner runner{h->graph, h->dag, h->plan, h->backend};
+  bind_all(*h);
+  ASSERT_TRUE(runner.initialize(h->components, h->registry).ok());
+
+  const auto r = runner.run_period(h->components);
+  ASSERT_FALSE(r.ok())
+      << "the producer refuses every advance() after the first; a failure "
+         "inside the region's sweep loop must surface as that failure, not "
+         "as quiet success or a stale non-convergence report";
+  EXPECT_EQ(r.error().code, "E-TEST-ADVANCE-REFUSED") << r.error().message;
+}
+
+// The companion regression: every existing single-process caller -- no
+// RunnerConfig::base_communicator set at all -- must keep working exactly as
+// before. R-10's fix reads the same declared placement as the test above;
+// only the presence of a communicator distinguishes "unverified multi-rank"
+// from "there is no second rank to desynchronise from".
+TEST(Runner, StillRunsAnIterationRegionWithNoCommunicatorConfigured) {
+  auto h = build(HarnessOpts{
+      .iteration_region = true,
+      .region_convergence = one_measure(1e-6, "link")});
+  Runner runner{h->graph, h->dag, h->plan, h->backend};
+  bind_all(*h);
+  // initialize() only: whether THIS particular producer/consumer pair's
+  // values actually converge under a sweep loop is a different question
+  // (Producer::advance() counts every re-advance, so its output keeps
+  // moving) from the one this test asks, which is whether resolve_regions()
+  // still accepts a declaratively cross-rank region when no communicator is
+  // configured -- exactly the R-10 fix's own guard condition.
+  const auto init = runner.initialize(h->components, h->registry);
+  ASSERT_TRUE(init.ok()) << init.error().code << ": " << init.error().message;
 }
 
 // ---------------------------------------------------------------------------

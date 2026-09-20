@@ -104,9 +104,12 @@ TEST(TransportRegistry, ReRegisteringAnExistingNameReplacesIt) {
 // here rather than left to whoever adds the next one.
 TEST(Tags, AreDistinctAndWithinTheGuaranteedBound) {
   using namespace fuse::tags;
-  const std::array<int, 3> all{kCrystalRouter, kUnionCommCreate, kEpoch};
+  // kIterationRegion (REVIEW.md R-10): the residual-agreement reduction an
+  // iteration region's sweep loop runs on the same base communicator.
+  const std::array<int, 4> all{kCrystalRouter, kUnionCommCreate, kEpoch,
+                               kIterationRegion};
 
-  std::array<int, 3> sorted = all;
+  std::array<int, 4> sorted = all;
   std::sort(sorted.begin(), sorted.end());
   EXPECT_EQ(std::adjacent_find(sorted.begin(), sorted.end()), sorted.end())
       << "two tags share a value; on a shared communicator that is a hang";
