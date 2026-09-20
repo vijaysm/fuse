@@ -5,6 +5,7 @@
 
 #include "fuse/backend/supermesh.hpp"
 
+#include <array>
 #include <memory>
 #include <string>
 #include <cmath>
@@ -13,7 +14,14 @@
 
 #include <gtest/gtest.h>
 
+#include "fuse/backend/remap_plan.hpp"
 #include "fuse/backend/serial_backend.hpp"
+#include "fuse/model/coupling_graph.hpp"
+
+// PRIVATE header, reached the same way test/parallel/comm_graph_test.cpp
+// reaches the transport layer's CrystalRouter -- see
+// src/backend/supermesh_detail.hpp for why (REVIEW.md R-12/BK-M2).
+#include "backend/supermesh_detail.hpp"
 
 namespace {
 
@@ -707,4 +715,153 @@ TEST(Supermesh, ThinSliversAreClippedAndTheirMassIsKept) {
       << "mass lost beyond the 1e-10 strip that genuinely left the domain";
   std::printf("[ slivers  ] nnz=%zu  smallest weight %.3e  col defect %.3e\n",
               w.nnz(), smallest, w.max_col_defect);
+}
+
+// ---- inward_plane whitebox regression (REVIEW.md R-12/BK-M2) -----------
+//
+// build_supermesh_weights has no source grammar that produces a degenerate
+// clipping face (SerialMeshBackend only generates regular, non-degenerate
+// lines/boxes), so the fix pass that closed R-12 could not add a black-box
+// regression test through the public API -- see its report under "Needs
+// another owner". These reach the fix directly through the private
+// supermesh_detail.hpp header instead.
+
+TEST(SupermeshDetail, InwardPlaneRefusesAZeroLengthEdgeIn2D) {
+  // Face 0 of the "triangle" v omits v[0] and is the edge v[1]-v[2]; make
+  // that edge zero-length by placing v[1] and v[2] at the same point. Before
+  // R-12 this produced n=(0,0,0), d=0 -- a half-plane that reads `0 >= 0` for
+  // every point, i.e. no constraint at all -- instead of refusing.
+  const std::array<fuse::Point, 4> v{{{0.0, 0.0, 0.0},
+                                      {1.0, 1.0, 0.0},
+                                      {1.0, 1.0, 0.0},   // == v[1]: degenerate
+                                      {0.0, 0.0, 0.0}}};
+  double n[3] = {0.0, 0.0, 0.0};
+  double d = 0.0;
+  EXPECT_FALSE((fuse::supermesh_detail::inward_plane<2>(v, 0, n, d)));
+}
+
+TEST(SupermeshDetail, InwardPlaneRefusesAZeroAreaFaceIn3D) {
+  // Face 0 of the tetrahedron v omits v[0] and is the triangle v[1]-v[2]-v[3];
+  // collapse it to a segment (v[1] == v[2]) so its cross product, and
+  // therefore its normal, is exactly zero.
+  const std::array<fuse::Point, 4> v{{{0.0, 0.0, 0.0},
+                                      {1.0, 0.0, 0.0},
+                                      {1.0, 0.0, 0.0},   // == v[1]: degenerate
+                                      {0.0, 1.0, 0.0}}};
+  double n[3] = {0.0, 0.0, 0.0};
+  double d = 0.0;
+  EXPECT_FALSE((fuse::supermesh_detail::inward_plane<3>(v, 0, n, d)));
+}
+
+TEST(SupermeshDetail, InwardPlaneAcceptsAndOrientsANonDegenerateFaceIn2D) {
+  // The unit right triangle (0,0), (1,0), (0,1). Face 0 omits v[0] and is
+  // the hypotenuse v[1]-v[2]; the omitted vertex v[0] is at the origin, on
+  // the plane's positive side by construction (inward_plane orients toward
+  // the omitted vertex), and the plane must actually pass through the edge.
+  const std::array<fuse::Point, 4> v{
+      {{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 0.0}}};
+  double n[3] = {0.0, 0.0, 0.0};
+  double d = 0.0;
+  ASSERT_TRUE((fuse::supermesh_detail::inward_plane<2>(v, 0, n, d)));
+  // n is a unit normal.
+  EXPECT_NEAR(n[0] * n[0] + n[1] * n[1] + n[2] * n[2], 1.0, 1e-12);
+  // v[1] and v[2] sit ON the plane.
+  EXPECT_NEAR(n[0] * v[1].x + n[1] * v[1].y + d, 0.0, 1e-12);
+  EXPECT_NEAR(n[0] * v[2].x + n[1] * v[2].y + d, 0.0, 1e-12);
+  // The omitted vertex v[0] (the origin) is strictly on the inward side.
+  EXPECT_GT(n[0] * v[0].x + n[1] * v[0].y + d, 0.0);
+}
+
+// ---- audit_coverage's refusal boundary (REVIEW.md R-13/BK-M3) -----------
+//
+// The defect class this guards against -- overlap inflated past the cell it
+// came from -- cannot be produced through the public MeshView grammar by a
+// well-formed mesh (that is why the original fix pass could add only a
+// mutation, `supermesh-no-over-coverage-audit`, and not a permanent test).
+// Testing the extracted boundary directly on a synthetic ratio pins the
+// threshold and the error shape without manufacturing invalid geometry.
+
+TEST(SupermeshDetail, AuditCoverageAcceptsExactAndSlightlyUnderCoverage) {
+  EXPECT_TRUE(fuse::supermesh_detail::audit_coverage(1.0, 1.0, "source", 0, 2).ok());
+  EXPECT_TRUE(fuse::supermesh_detail::audit_coverage(0.5, 1.0, "target", 3, 3).ok());
+  // Within the 1e-9 relative tolerance: rounding, not a defect.
+  EXPECT_TRUE(
+      fuse::supermesh_detail::audit_coverage(1.0 + 5e-10, 1.0, "source", 0, 2)
+          .ok());
+}
+
+TEST(SupermeshDetail, AuditCoverageRefusesOverCoverageWithTheDefectsErrorCode) {
+  // 1.5x its own area: exactly the class the R-12/R-13 fix pass introduced
+  // the mutation for.
+  const auto r =
+      fuse::supermesh_detail::audit_coverage(1.5, 1.0, "target", 7, 2);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-REMAP-INTX");
+  EXPECT_NE(r.error().message.find("target cell 7"), std::string::npos)
+      << r.error().message;
+  EXPECT_NE(r.error().message.find("1.5"), std::string::npos)
+      << r.error().message;
+}
+
+TEST(SupermeshDetail, AuditCoverageSkipsAZeroMeasureCellRatherThanDivideByZero) {
+  EXPECT_TRUE(fuse::supermesh_detail::audit_coverage(0.0, 0.0, "source", 2, 1)
+                  .ok());
+}
+
+// ---- build_weights dispatches on the backend, not on FUSE_HAVE_MOAB -----
+// (REVIEW.md N-BACKEND-4, found on a host tier-2 run: Runner.RemapsBetween-
+// DifferentlySizedRegions/RefusesEqualCountRegionsThatAreNotProvablyCoincident/
+// RemapsEqualCountEqualMeasureRegionsInADifferentArrangement all failed with
+// "build_weights needs the MOAB backend" once MOAB was compiled in, because
+// resolve()'s dynamic_cast refused every SerialMeshBackend call unconditionally.
+// This runs identically at tier 0 (where it is the only path there is, so it
+// is a plain sanity check) and at tier 2 (where, before the fix, it failed:
+// `direct` was E-REMAP-BACKEND, not the oracle's weights).
+
+TEST(Supermesh, BuildWeightsReachesTheSupermeshPathForANonMoabBackend) {
+  fuse::SerialMeshBackend backend;
+  ASSERT_TRUE(backend.load({.name = "s", .source = "generated:box:2x2x2"}).ok());
+  ASSERT_TRUE(backend.load({.name = "t", .source = "generated:box:8x1x1"}).ok());
+
+  fuse::CouplingGraph graph;
+  const fuse::MeshId smid =
+      graph.add_mesh({.name = "s", .source = "generated:box:2x2x2"});
+  const fuse::MeshId tmid =
+      graph.add_mesh({.name = "t", .source = "generated:box:8x1x1"});
+  const fuse::RegionId srid =
+      graph.add_region({.name = "s_all", .mesh = smid, .dimension = 3});
+  const fuse::RegionId trid =
+      graph.add_region({.name = "t_all", .mesh = tmid, .dimension = 3});
+
+  fuse::RemapPlan plan;
+  plan.src = srid;
+  plan.tgt = trid;
+
+  // The dispatch under test: the SAME public entry point every caller (the
+  // Runner included) actually calls.
+  const auto direct = fuse::build_weights(plan, graph, backend);
+  ASSERT_TRUE(direct.ok()) << direct.error().code << ": " << direct.error().message
+                           << " -- build_weights refused a plain serial mesh "
+                              "pair; it must reach build_supermesh_weights "
+                              "regardless of whether MOAB was compiled in";
+
+  // The oracle: calling the supermesh builder directly, over the same views.
+  const auto sid = backend.mesh_id("s");
+  const auto tid = backend.mesh_id("t");
+  ASSERT_TRUE(sid.ok());
+  ASSERT_TRUE(tid.ok());
+  const auto sview = backend.view(sid.value());
+  const auto tview = backend.view(tid.value());
+  ASSERT_TRUE(sview.ok());
+  ASSERT_TRUE(tview.ok());
+  const auto oracle = fuse::build_supermesh_weights(*sview.value(), *tview.value(), 3);
+  ASSERT_TRUE(oracle.ok()) << oracle.error().code << ": " << oracle.error().message;
+
+  // build_weights's dispatch must produce EXACTLY the supermesh builder's own
+  // matrix, not a different (or refused) one.
+  EXPECT_EQ(direct.value().row, oracle.value().row);
+  EXPECT_EQ(direct.value().col, oracle.value().col);
+  EXPECT_EQ(direct.value().val, oracle.value().val);
+  EXPECT_EQ(direct.value().n_rows, oracle.value().n_rows);
+  EXPECT_EQ(direct.value().n_cols, oracle.value().n_cols);
 }
