@@ -1,0 +1,13 @@
+# Mutation for the backend fix pass (REVIEW.md R-33).
+# Own file per the review-fix protocol: do not edit build-evidence/mutations.toml
+# directly while other fixers hold it dirty.
+
+[[mutation]]
+id = "apply-spacetime-skips-validation-at-zero-weight"
+area = "backend"
+describes = "a zero temporal coefficient returns before the spatial-triplet index validation loop runs, so a malformed spatial array (an out-of-range row/column index) is only ever caught on a call whose temporal weight happens to be nonzero (R-33)"
+file = "src/backend/spacetime.cpp"
+old = "  const double w = temporal.coefficient(tgt_step, src_step);\n\n  // REVIEW.md R-33:"
+new = "  const double w = temporal.coefficient(tgt_step, src_step);\n  if (w == 0.0) return Result<void>::success();\n\n  // REVIEW.md R-33:"
+target = "fuse_backend_spacetime_test"
+test = "backend.spacetime"

@@ -681,3 +681,44 @@ TEST(Spacetime, ApplySpacetimeChecksItsPreconditions) {
   ASSERT_FALSE(bad_row.ok());
   EXPECT_EQ(bad_row.error().code, "E-ST-SHAPE");
 }
+
+// REVIEW.md R-33: a zero temporal coefficient used to return
+// Result<void>::success() before the spatial-triplet index loop ran at
+// all, so a malformed `spatial` array was only ever caught on a call whose
+// (tgt_step, src_step) pair happened to have a nonzero temporal weight. A
+// LOCKSTEP projection's off-diagonal entries are EXACTLY zero (asserted by
+// `Spacetime.LockstepIsTheIdentityForEveryBasis`), which gives an in-range
+// pair with `w == 0.0` to probe: (tgt=1, src=0) never contributes to the
+// output, but the connectivity is still checked.
+TEST(Spacetime, ApplySpacetimeValidatesTripletsEvenWhenTheTemporalWeightIsZero) {
+  const Case c{Rational{1, 4}, Rational{1, 4}, Rational{1}};
+  const auto t = build(c, Basis{TemporalBasis::Constant, 0, "Constant"});
+  ASSERT_EQ(t.n_src_steps, 4u);
+  ASSERT_EQ(t.n_tgt_steps, 4u);
+  ASSERT_EQ(t.coefficient(1, 0), 0.0) << "off-diagonal lockstep entry";
+
+  TinySpatial oob;
+  oob.row[2] = 5;  // n_rows is 2; an out-of-range row index
+  std::vector<double> src(3, 1.0);
+  std::vector<double> dst(2, 0.0);
+
+  // Same malformed triplet array as ApplySpacetimeChecksItsPreconditions,
+  // but at a (tgt, src) pair whose temporal weight is exactly zero. Before
+  // the fix this returned success, silently skipping the row-index check.
+  const auto r = fuse::apply_spacetime(oob.view(), t, src.data(), dst.data(),
+                                       3, 1, /*src_step=*/0, /*tgt_step=*/1);
+  ASSERT_FALSE(r.ok())
+      << "a bad spatial index must be caught even at zero temporal weight";
+  EXPECT_EQ(r.error().code, "E-ST-SHAPE");
+
+  // A WELL-FORMED triplet array at the same zero-weight pair still succeeds,
+  // and still leaves dst untouched -- the accumulation itself is skipped.
+  TinySpatial w;
+  dst.assign(2, -1.0);
+  const auto ok = fuse::apply_spacetime(w.view(), t, src.data(), dst.data(),
+                                        3, 1, /*src_step=*/0,
+                                        /*tgt_step=*/1);
+  ASSERT_TRUE(ok.ok()) << ok.error().message;
+  EXPECT_EQ(dst[0], -1.0) << "a zero temporal weight applies no contribution";
+  EXPECT_EQ(dst[1], -1.0) << "a zero temporal weight applies no contribution";
+}
