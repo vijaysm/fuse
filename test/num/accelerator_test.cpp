@@ -1430,8 +1430,14 @@ TEST(Accelerator, ConfigurationIsValidated) {
 TEST(Accelerator, FieldPartitionIsValidated) {
   auto a = must_make(AccelConfig{.kind = AccelKind::IQN_ILS});
   EXPECT_THROW(a->set_field_partition({1, 4}), fuse::InvalidArgument);
-  EXPECT_THROW(a->set_field_partition({0, 4, 4}), fuse::InvalidArgument);
-  EXPECT_THROW(a->set_field_partition({0, 4, 2}), fuse::InvalidArgument);
+  EXPECT_THROW(a->set_field_partition({0, 4, 2}), fuse::InvalidArgument)
+      << "a decrease overlaps the blocks and stays an error";
+  // An empty block is not an error: a rank can own none of one field of a
+  // region and some of another. Rejecting it threw out of resolve_regions()
+  // on exactly the ranks that owned nothing (host Tier 1, 5 ranks, 4
+  // entities), hanging the ranks that did.
+  EXPECT_NO_THROW(a->set_field_partition({0, 4, 4}));
+  EXPECT_NO_THROW(a->set_field_partition({0, 0, 4}));
   EXPECT_NO_THROW(a->set_field_partition({0, 4}));
   EXPECT_EQ(a->field_partition().size(), 2u);
   EXPECT_NO_THROW(a->set_field_partition({}));

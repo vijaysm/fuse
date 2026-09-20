@@ -239,11 +239,22 @@ void Accelerator::set_field_partition(std::vector<std::size_t> offsets) {
           "Accelerator::set_field_partition: the first offset must be 0, got " +
           std::to_string(offsets.front()));
     }
+    // Non-decreasing, NOT strictly increasing. Two equal offsets are an
+    // empty block: under a real partition a rank can own none of one field
+    // of a region and some of another, which is as ordinary here as it is in
+    // the transport (MpiTransport.RankOwningZeroElementsIsOrdinary). It costs
+    // field_weights() nothing -- its inner loops simply do not execute and
+    // the block's weight is never read. A *decrease* remains a programmer
+    // error: the blocks would overlap.
+    // Found 2026-09-20 by the host Tier 1 run at 5 ranks, where 4 entities
+    // leave ranks with none and initialize() threw out of resolve_regions()
+    // on one rank while the others waited in a collective -- the refusal was
+    // not merely wrong, it hung the job.
     for (std::size_t i = 1; i < offsets.size(); ++i) {
-      if (offsets[i] <= offsets[i - 1]) {
+      if (offsets[i] < offsets[i - 1]) {
         FUSE_THROW(InvalidArgument, "{}", 
-            "Accelerator::set_field_partition: offsets must be strictly "
-            "increasing, got " +
+            "Accelerator::set_field_partition: offsets must not decrease, "
+            "got " +
             std::to_string(offsets[i - 1]) + " then " +
             std::to_string(offsets[i]) + " at index " + std::to_string(i));
       }
