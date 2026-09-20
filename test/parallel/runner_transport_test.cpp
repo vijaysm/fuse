@@ -5,6 +5,10 @@
 #include <gtest/gtest.h>
 #include <mpi.h>
 
+// R-50 (REVIEW.md): the documented rank-requirement convention
+// (docs/dev/testing.md).
+#include "fuse_test_main.hpp"
+
 #include <algorithm>
 #include <functional>
 #include <memory>
@@ -180,8 +184,14 @@ class PartitionedTestBackend final : public fuse::MeshBackend {
 /// belongs to only one of them.
 class StubComponent final : public fuse::Component {
  public:
-  StubComponent(std::string name, fuse::FieldId field, std::size_t count)
-      : name_(std::move(name)), field_(field), storage_(count, 0.0) {}
+  /// `rollback`: R-10 (REVIEW.md). An iteration region requires every
+  /// component it checkpoints to support rollback (E-ITER-NOROLLBACK);
+  /// default false matches every existing caller, none of which puts this
+  /// component in a region.
+  StubComponent(std::string name, fuse::FieldId field, std::size_t count,
+               bool rollback = false)
+      : name_(std::move(name)), field_(field), storage_(count, 0.0),
+        rollback_(rollback) {}
 
   [[nodiscard]] std::string name() const override { return name_; }
 
@@ -198,6 +208,16 @@ class StubComponent final : public fuse::Component {
     return fuse::Result<void>::success();  // the test writes storage directly
   }
 
+  fuse::Result<void> save_state() override {
+    if (rollback_) saved_ = storage_;
+    return fuse::Result<void>::success();
+  }
+  fuse::Result<void> restore_state() override {
+    if (rollback_) storage_ = saved_;
+    return fuse::Result<void>::success();
+  }
+  [[nodiscard]] bool supports_rollback() const override { return rollback_; }
+
   [[nodiscard]] double*     data() noexcept { return storage_.data(); }
   [[nodiscard]] std::size_t size() const noexcept { return storage_.size(); }
 
@@ -205,6 +225,8 @@ class StubComponent final : public fuse::Component {
   std::string          name_;
   fuse::FieldId        field_;
   std::vector<double>  storage_;
+  bool                 rollback_;
+  std::vector<double>  saved_;
 };
 
 /// Everything a test needs: the graph, the plan, the backend, and the two
@@ -215,7 +237,19 @@ class TwoComponentJob {
  public:
   /// `entity_set`, when non-empty, is set on the shared region. Task 3's
   /// E-RT-TRANSPORT-REGION test passes "wall"; every other test passes "".
-  explicit TwoComponentJob(const std::string& entity_set)
+  /// `with_iteration_region`: R-10 (REVIEW.md) -- wraps the "link" channel
+  /// in an iteration region with a real convergence measure, and makes both
+  /// components rollback-capable so E-ITER-NOROLLBACK does not mask the
+  /// check this exists to reach. Default false leaves every existing caller
+  /// of this class exactly as it was. `accel_kind`: which accelerator the
+  /// region declares; only read when `with_iteration_region` is true.
+  /// AccelKind::None (the default, and IterationRegionDecl's own) is one of
+  /// the two kinds R-10's fix genuinely supports for a region spanning more
+  /// than one rank; a dynamic kind (Aitken and stronger) is the case it
+  /// still refuses -- see RefusesADynamicAcceleratorOnACrossRankRegion.
+  explicit TwoComponentJob(const std::string& entity_set,
+                           bool with_iteration_region = false,
+                           fuse::AccelKind accel_kind = fuse::AccelKind::None)
       // MEMBER DECLARATION ORDER, NOT INITIALIZER-LIST ORDER, decides when
       // each of these actually runs. `backend` is declared below
       // fluid_/solid_/n_entities_/dim_ for exactly this reason: it is built
@@ -242,7 +276,16 @@ class TwoComponentJob {
         sc, fuse::FieldSpec{.name = "in", .region = region_,
                            .units = fuse::units::kKelvin,
                            .intent = fuse::Intent::Requires});
-    graph.add_channel("link", src_field_, dst_field_);
+    const auto channel = graph.add_channel("link", src_field_, dst_field_);
+
+    if (with_iteration_region) {
+      fuse::ConvergenceCriterion conv;
+      conv.add(fuse::Converged::Relative(1e-6, "link"));
+      graph.add_iteration_region(fuse::IterationRegionDecl{
+          .name = "outer", .channels = {channel}, .max_iterations = 4,
+          .convergence = conv,
+          .acceleration = fuse::AccelConfig{.kind = accel_kind}});
+    }
 
     EXPECT_TRUE(backend.load(graph.mesh(mesh)).ok());
 
@@ -261,10 +304,10 @@ class TwoComponentJob {
     // which only compiles in a void-returning function, and a constructor is
     // not one. EXPECT_TRUE matches every other check in this constructor.
     EXPECT_TRUE(count.ok());
-    components.add(std::make_unique<StubComponent>("fluid", src_field_,
-                                                    count.value()));
-    components.add(std::make_unique<StubComponent>("solid", dst_field_,
-                                                    count.value()));
+    components.add(std::make_unique<StubComponent>(
+        "fluid", src_field_, count.value(), with_iteration_region));
+    components.add(std::make_unique<StubComponent>(
+        "solid", dst_field_, count.value(), with_iteration_region));
   }
 
   void write_source_by_global_id() {
@@ -336,6 +379,161 @@ TwoComponentJob make_two_component_job(const std::string& entity_set) {
 /// contract test/unit/runner_test.cpp:399-404 documents (`bind_all`): nothing
 /// in Runner::initialize() calls Component::register_fields() for you.
 void bind_all(TwoComponentJob& h) {
+  for (auto& c : h.components) {
+    EXPECT_TRUE(c.register_fields(h.registry, h.graph).ok());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R-10 (REVIEW.md): a genuine two-way iterated coupling, for the positive
+// convergence test below. TwoComponentJob's one-way "link" channel has
+// nothing to iterate on -- the whole point here is a fixed point with real
+// feedback, split across ranks with an UNEQUAL local partition.
+// ---------------------------------------------------------------------------
+
+/// out[i] = a + k * in[i]. Mirrors test/verification/iteration_test.cpp's
+/// LinearBlock exactly (same role, same save/restore contract) so the same
+/// a/k coefficients and entity count there give this fixture the identical
+/// fixed point and contraction rate: the map is applied entity-wise with no
+/// coupling BETWEEN entities, so splitting the same entities across ranks
+/// changes nothing about either, only how the Euclidean residual is split
+/// into local contributions before reduce_region_residuals() reduces them
+/// back together.
+class LinearRelaxComponent final : public fuse::Component {
+ public:
+  LinearRelaxComponent(std::string name, double a, double k, std::size_t n)
+      : name_(std::move(name)), a_(a), k_(k), out_(n, 0.0), in_(n, 0.0) {}
+
+  [[nodiscard]] std::string name() const override { return name_; }
+
+  fuse::Result<void> register_fields(fuse::FieldRegistry& reg,
+                                     const fuse::CouplingGraph& g) override {
+    const auto cid = g.find_component(name_);
+    for (const fuse::FieldId f : g.component(*cid).fields) {
+      const bool is_out = g.field(f).intent == fuse::Intent::Provides;
+      std::vector<double>& buf = is_out ? out_ : in_;
+      fuse::Layout layout;
+      layout.count = buf.size();
+      auto r = reg.bind(
+          f, fuse::FieldRef{buf.data(), layout, fuse::MemorySpace::Host});
+      if (!r.ok()) return r;
+    }
+    return fuse::Result<void>::success();
+  }
+
+  fuse::Result<void> advance(const fuse::StepContext&) override {
+    for (std::size_t i = 0; i < out_.size(); ++i) out_[i] = a_ + k_ * in_[i];
+    return fuse::Result<void>::success();
+  }
+
+  fuse::Result<void> save_state() override {
+    saved_out_ = out_;
+    saved_in_ = in_;
+    return fuse::Result<void>::success();
+  }
+  fuse::Result<void> restore_state() override {
+    for (std::size_t i = 0; i < out_.size(); ++i) out_[i] = saved_out_[i];
+    for (std::size_t i = 0; i < in_.size(); ++i) in_[i] = saved_in_[i];
+    return fuse::Result<void>::success();
+  }
+  [[nodiscard]] bool supports_rollback() const override { return true; }
+
+  [[nodiscard]] const std::vector<double>& out() const { return out_; }
+
+ private:
+  std::string          name_;
+  double               a_, k_;
+  std::vector<double>  out_, in_, saved_out_, saved_in_;
+};
+
+/// `A`/`B` both span the WHOLE communicator (unlike TwoComponentJob's
+/// disjoint halves), so every rank owns a slice of both components and
+/// `resolve_regions()`'s participant set is every rank in the job.
+/// `kEntities == 4` does not divide evenly at 3 ranks (2, 1, 1) and leaves a
+/// spare at 4+ ranks too, so every rank count this fixture is used at
+/// exercises an unequal local split.
+class LinearFixedPointJob {
+ public:
+  static constexpr std::size_t kEntities = 4;
+
+  explicit LinearFixedPointJob(int max_iterations)
+      : whole_{0, world_size()}, backend(whole_, whole_, kEntities, 1) {
+    const auto mesh =
+        graph.add_mesh(fuse::MeshDecl{.name = "shared", .source = "test"});
+    region_ = graph.add_region(
+        fuse::Region{.name = "r", .mesh = mesh, .dimension = 1});
+
+    const auto ca = graph.add_component(fuse::ComponentDecl{
+        .name = "A", .ranks = whole_, .interval = Rational{1}});
+    const auto cb = graph.add_component(fuse::ComponentDecl{
+        .name = "B", .ranks = whole_, .interval = Rational{1}});
+    const auto a_out = graph.add_field(
+        ca, fuse::FieldSpec{.name = "a_out", .region = region_,
+                           .units = fuse::units::kKelvin,
+                           .intent = fuse::Intent::Provides});
+    const auto a_in = graph.add_field(
+        ca, fuse::FieldSpec{.name = "a_in", .region = region_,
+                           .units = fuse::units::kKelvin,
+                           .intent = fuse::Intent::Requires});
+    const auto b_in = graph.add_field(
+        cb, fuse::FieldSpec{.name = "b_in", .region = region_,
+                           .units = fuse::units::kKelvin,
+                           .intent = fuse::Intent::Requires});
+    const auto b_out = graph.add_field(
+        cb, fuse::FieldSpec{.name = "b_out", .region = region_,
+                           .units = fuse::units::kKelvin,
+                           .intent = fuse::Intent::Provides});
+
+    const auto fwd = graph.add_channel("a2b", a_out, b_in);
+    const auto back = graph.add_channel("b2a", b_out, a_in);
+    graph.channel(back).lag(1).allow_time_level_mismatch("iterated");
+
+    fuse::ConvergenceCriterion conv;
+    conv.add(fuse::Converged::Relative(1e-10, "a2b"));
+    conv.add(fuse::Converged::Relative(1e-10, "b2a"));
+    // .acceleration defaults to AccelKind::None (plain Picard) -- the only
+    // kind R-10's fix supports for a region spanning more than one rank
+    // (REVIEW.md; see resolve_regions()'s accelerator-kind check), and the
+    // kind test/verification/iteration_test.cpp's
+    // AitkenNeedsNoMoreIterationsThanPicard measured at 30 iterations for
+    // this exact pair of coefficients, entity count and tolerance.
+    graph.add_iteration_region(fuse::IterationRegionDecl{
+        .name = "outer", .channels = {fwd, back},
+        .max_iterations = max_iterations, .convergence = conv});
+
+    EXPECT_TRUE(backend.load(graph.mesh(mesh)).ok());
+    const auto lowered = lower(graph);
+    EXPECT_TRUE(lowered.ok()) << lowered.diags.to_string();
+    dag = lowered.dag;
+
+    const fuse::ClockSet clocks{graph};
+    const auto sched =
+        schedule(graph, dag, clocks, fuse::make_region_sizes(graph, backend));
+    EXPECT_TRUE(sched.ok()) << sched.diags.to_string();
+    plan = sched.plan;
+
+    const auto count = backend.region_size(graph.region(region_));
+    EXPECT_TRUE(count.ok());
+    components.add(
+        std::make_unique<LinearRelaxComponent>("A", 1.0, 0.5, count.value()));
+    components.add(
+        std::make_unique<LinearRelaxComponent>("B", 2.0, 0.4, count.value()));
+  }
+
+  fuse::RankSet          whole_;
+  PartitionedTestBackend backend;
+
+  fuse::CouplingGraph  graph;
+  fuse::OperatorDAG    dag;
+  fuse::ExecutionPlan  plan;
+  fuse::ComponentSet   components;
+  fuse::FieldRegistry  registry;
+
+ private:
+  fuse::RegionId region_;
+};
+
+void bind_all(LinearFixedPointJob& h) {
   for (auto& c : h.components) {
     EXPECT_TRUE(c.register_fields(h.registry, h.graph).ok());
   }
@@ -434,6 +632,96 @@ std::function<fuse::Result<void>(fuse::Transport&)> mpi_comm_setup() {
     }
     return mpi->set_communicator(MPI_Comm_c2f(MPI_COMM_WORLD));
   };
+}
+
+// R-10 (REVIEW.md). Originally: an iteration region's convergence decision
+// was computed from a purely rank-local residual with no cross-rank
+// agreement, and ANY region spanning more than one rank was refused
+// (E-RT-REGION-MPI) as unverified. Superseded: resolve_regions() and
+// run_region() now reduce the residual across the region's participants on
+// every sweep (reduce_region_residuals(), src/runtime/runner.cpp), so a
+// region using AccelKind::None or AccelKind::Constant is genuinely
+// supported -- see RegionConvergesInTheSerialIterationCount below, which is
+// exactly the TwoComponentJob("", true) scenario this test used to refuse.
+//
+// What is NOT supported: a DYNAMIC accelerator (Aitken and stronger)
+// derives its relaxation coefficient from an inner product over this
+// rank's own local iterate history, computed inside fuse::num
+// (src/num/accel_quasi_newton.cpp, accel_relaxation.cpp's Aitken branch) --
+// outside this fixer's owned paths, and Accelerator::update()'s signature
+// has no hook for a caller-supplied global reduction. Two ranks with
+// different local slices would compute different coefficients from that
+// inner product and take different accelerator paths even with the
+// residual itself correctly agreed, reopening the desynchronisation risk
+// R-10 was about. `fluid`/`solid` are on disjoint rank sets (as in every
+// other TwoComponentJob test), so this still needs `FUSE_REQUIRE_AT_LEAST_
+// RANKS(2)` to reach a real cross-rank configuration; the sandbox this was
+// written in cannot launch MPI at all (every test here dies in
+// MPI_Init_thread), so it is recorded verified only by the tier 1 BUILD
+// succeeding, and needs a host run to execute.
+TEST(RunnerTransport, RefusesADynamicAcceleratorOnACrossRankRegion) {
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
+  auto h = TwoComponentJob("", /*with_iteration_region=*/true,
+                           fuse::AccelKind::Aitken);
+  ASSERT_GT(h.plan.region_count(), 0u);
+  Runner runner{h.graph, h.dag, h.plan, h.backend};
+  bind_all(h);
+
+  fuse::RunnerConfig cfg;
+  cfg.transport         = "mpi";
+  cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
+  cfg.transport_setup   = mpi_comm_setup();
+  const auto r = runner.initialize(h.components, h.registry, cfg);
+  ASSERT_FALSE(r.ok())
+      << "fluid and solid are on disjoint ranks, a real communicator is "
+         "configured, and the region names AccelKind::Aitken -- the one "
+         "case R-10's reduction fix still refuses";
+  EXPECT_EQ(r.error().code, "E-RT-REGION-MPI") << r.error().message;
+  ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
+}
+
+// R-10 (REVIEW.md), the positive case: `A` and `B` each span the WHOLE
+// communicator (LinearFixedPointJob, above), so every rank owns a slice of
+// both -- and at 3 ranks, kEntities == 4 splits 2/1/1, giving genuinely
+// unequal per-rank local residuals. `initialize()` must now SUCCEED (not
+// refuse: both components use AccelKind::None, the supported case above),
+// and every rank must exit the region on the SAME sweep with the SAME
+// iteration count test/verification/iteration_test.cpp's own
+// Iteration.AitkenNeedsNoMoreIterationsThanPicard printed for the identical
+// coefficients (a=1.0/k=0.5, a=2.0/k=0.4), entity count (4) and tolerance
+// (1e-10) run on one process: 30. The map is applied entity-wise with no
+// coupling between entities, so the fixed point and its contraction rate
+// do not depend on how the 4 entities are split across ranks -- only
+// reduce_region_residuals() combining the per-rank Euclidean sums back into
+// the same global norm makes that hold under a real partition instead of
+// desynchronising. Needs a host run: this sandbox cannot launch MPI at all.
+TEST(RunnerTransport, RegionConvergesInTheSerialIterationCount) {
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
+  constexpr int kSerialIterations = 30;
+  auto h = LinearFixedPointJob(kSerialIterations + 10);
+  ASSERT_GT(h.plan.region_count(), 0u);
+  Runner runner{h.graph, h.dag, h.plan, h.backend};
+  bind_all(h);
+
+  fuse::RunnerConfig cfg;
+  cfg.transport         = "mpi";
+  cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
+  cfg.transport_setup   = mpi_comm_setup();
+  const auto init = runner.initialize(h.components, h.registry, cfg);
+  ASSERT_TRUE(init.ok())
+      << "AccelKind::None on a region spanning every rank is the supported "
+         "case; " << (init.ok() ? "" : init.error().message);
+
+  const auto run = runner.run_period(h.components);
+  ASSERT_TRUE(run.ok()) << run.error().code << ": " << run.error().message;
+  ASSERT_FALSE(runner.iteration_stats().empty());
+  const fuse::IterationStats& st = runner.iteration_stats()[0];
+  EXPECT_TRUE(st.converged);
+  EXPECT_EQ(st.iterations, kSerialIterations)
+      << "every rank must exit on the same sweep the serial run does, "
+         "whatever this rank's own unequal local slice of the 4 entities "
+         "looks like";
+  ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
 TEST(RunnerTransport, InitializeBuildsAPlanForEveryTransport) {
@@ -610,10 +898,7 @@ TEST(RunnerTransport, InitializeIsRepeatableOnTheSameRunner) {
 // (test/CMakeLists.txt). A busy-wait or alarm inside the test would duplicate
 // a budget CTest already owns, and would have to guess at it.
 TEST(RunnerTransport, ARankDivergentSetupFailureRefusesOnEveryRank) {
-  if (world_size() < 2) {
-    GTEST_SKIP() << "needs a second rank to diverge from; world_size() is "
-                 << world_size();
-  }
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
 
   auto h = make_two_component_job("");
   Runner runner{h.graph, h.dag, h.plan, h.backend};
