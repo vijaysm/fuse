@@ -112,8 +112,16 @@ class MoabMeshBackend final : public MeshBackend {
   ///
   /// Must be called before the first `load`; the read options depend on it.
   /// Errors: `E-MOAB-NOMPI` if this build has no MPI, `E-MOAB-MPIINIT` if
-  /// MPI is not initialised, `E-MOAB-COMM` for `MPI_COMM_NULL` or for a call
-  /// made after a mesh has already been loaded.
+  /// MPI is not initialised, `E-MOAB-COMM` for `MPI_COMM_NULL`, for a call
+  /// made after a mesh has already been loaded, or when duplicating the
+  /// communicator fails.
+  ///
+  /// COLLECTIVE over the given communicator: the backend works on its own
+  /// duplicate with `MPI_ERRORS_RETURN` set, so that its MPI failures come
+  /// back as `Failure`s instead of aborting inside the MPI call. Every rank
+  /// of the communicator must call this, in the same order relative to its
+  /// other collectives. The duplicate is released when the backend is
+  /// destroyed, unless MPI has already been finalised.
   Result<void> set_communicator(int fortran_comm_handle);
 
   /// How many ranks share the meshes this backend has read: 1 unless

@@ -706,6 +706,21 @@ struct MoabMeshBackend::Impl {
   /// method, which is the same thing said less honestly.
   mutable moab::Core mb;
 #ifdef FUSE_MOAB_PARALLEL
+  /// Our own duplicate of the caller's communicator, with MPI_ERRORS_RETURN
+  /// set on it. Declared BEFORE `pcomm` so it is destroyed after the
+  /// ParallelComm that holds it. Freed in the destructor unless MPI has
+  /// already been finalised, exactly as the MPI transport does.
+  struct OwnedComm {
+    MPI_Comm comm = MPI_COMM_NULL;
+    ~OwnedComm() {
+      if (comm == MPI_COMM_NULL) return;
+      int finalized = 0;
+      if (MPI_Finalized(&finalized) == MPI_SUCCESS && finalized == 0) {
+        MPI_Comm_free(&comm);
+      }
+      comm = MPI_COMM_NULL;
+    }
+  } owned_comm;
   std::unique_ptr<moab::ParallelComm> pcomm;
 #endif
   std::vector<std::unique_ptr<MoabMeshView>> meshes;
@@ -2304,15 +2319,39 @@ Result<void> MoabMeshBackend::set_communicator(int fortran_comm_handle) {
                  "MPI is not initialised; MPI_Comm_f2c on a handle from an "
                  "uninitialised MPI is undefined"};
   }
-  const MPI_Comm comm =
+  const MPI_Comm given =
       MPI_Comm_f2c(static_cast<MPI_Fint>(fortran_comm_handle));
-  if (comm == MPI_COMM_NULL) {
+  if (given == MPI_COMM_NULL) {
     return Failure{"E-MOAB-COMM",
                  "the Fortran communicator handle " +
                      std::to_string(fortran_comm_handle) +
                      " converts to MPI_COMM_NULL"};
   }
-  impl_->pcomm = std::make_unique<moab::ParallelComm>(&impl_->mb, comm);
+  // Every reconciliation helper in this backend checks the return code of
+  // its MPI calls and refuses on failure (invariant I4). Those checks are
+  // only reachable if the communicator returns errors instead of aborting
+  // inside the call -- and the caller's communicator carries whatever
+  // handler the application set, MPI_ERRORS_ARE_FATAL by default. So the
+  // backend works on its OWN duplicate with MPI_ERRORS_RETURN, the same
+  // arrangement the MPI transport uses (mpi_transport.cpp). Until 2026-09-20
+  // the given communicator was handed to MOAB directly, which made every
+  // `!= MPI_SUCCESS` branch in this file dead in practice (pass-3 review,
+  // N-BACKEND-1). MPI_Comm_dup is collective: every rank that constructs the
+  // backend calls set_communicator, in the same order, which is the contract
+  // documented on the declaration.
+  MPI_Comm dup = MPI_COMM_NULL;
+  int rc = MPI_Comm_dup(given, &dup);
+  if (rc != MPI_SUCCESS) {
+    return Failure{"E-MOAB-COMM", "MPI_Comm_dup failed with code " + std::to_string(rc)};
+  }
+  rc = MPI_Comm_set_errhandler(dup, MPI_ERRORS_RETURN);
+  if (rc != MPI_SUCCESS) {
+    MPI_Comm_free(&dup);
+    return Failure{"E-MOAB-COMM",
+                 "MPI_Comm_set_errhandler failed with code " + std::to_string(rc)};
+  }
+  impl_->owned_comm.comm = dup;
+  impl_->pcomm = std::make_unique<moab::ParallelComm>(&impl_->mb, dup);
   return Result<void>::success();
 #endif
 }
