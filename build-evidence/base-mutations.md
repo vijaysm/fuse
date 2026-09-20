@@ -17,6 +17,6 @@ Run 2026-09-19 against build `build-fuse-s1`. Regenerate with `tools/mutate.py -
 | `error-assert-compiled-out` — FUSE_ASSERT becomes a no-op (the `assert` it replaces) | `include/fuse/base/error.hpp` | **KILLED** (test fails) | `base.error` |
 | `error-slices-to-base` — raise() throws the Error base, so catch(const Refusal&) is dead | `include/fuse/base/error.hpp` | **KILLED** (test fails) | `base.error` |
 | `rational-try-skips-the-fit-check` — the non-throwing arithmetic stops checking that the reduced result fits, so an overflowing value narrows silently instead of reporting -- and the throwing operators inherit it, since they are layered on this | `include/fuse/base/rational.hpp` | **KILLED** (test fails) | `base.rational` |
-| `rational-lcm-denominator-overflows` — lcm_denominator() reverts to the direct int64_t std::lcm call, reintroducing the overflow gcd_rational's sibling fix removed (R-15) | `include/fuse/base/rational.hpp` | **SURVIVED** (suite still green) | `base.rational` |
+| `rational-lcm-denominator-overflows` — lcm_denominator() reverts to the direct int64_t std::lcm call, reintroducing the overflow gcd_rational's sibling fix removed (R-15) | `include/fuse/base/rational.hpp` | **KILLED** (test fails) | `base.rational` |
 
-**13 killed / 14 total.**
+**14 killed / 14 total.**

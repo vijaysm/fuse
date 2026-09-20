@@ -15,15 +15,7 @@ Run 2026-09-19 against build `build-fuse-s1`. Regenerate with `tools/mutate.py -
 | `supermesh-projects-a-surface-onto-the-xy-plane` — a surface pair is clipped as its xy shadow instead of being refused, returning a plausible wrong measure | `src/backend/supermesh.cpp` | **KILLED** (test fails) | `backend.supermesh` |
 | `supermesh-divides-by-the-source-measure` — the weight is normalised by the source cell's measure instead of the target's, which preserves mass but destroys constant preservation on a non-matching pair | `src/backend/supermesh.cpp` | **KILLED** (test fails) | `backend.supermesh` |
 | `supermesh-bounding-box-filter-drops-slivers` — the candidate filter rejects boxes that overlap by less than 1e-9, so thin slivers between coprime grids are never clipped and their mass is lost | `src/backend/supermesh.cpp` | **KILLED** (test fails) | `backend.supermesh` |
-| `supermesh-coverage-computed-before-the-floor` — the audit is computed from the accumulated overlaps rather than from the entries actually kept, so mass discarded by the negligible-overlap floor is concealed | `src/backend/supermesh.cpp` | **WRONGLY-DECLARED-EQUIVALENT** (a test distinguishes it, so it is not equivalent: Declared equivalent, with the bound that makes it so: the audit is
-recomputed from the KEPT entries, and the negligible-overlap floor discards only
-contributions below 1e-12 of a target cell's measure. The pre-floor and post-floor
-audits therefore agree to within the floor itself, so no test can separate them
-without a target cell carrying enough negligible entries for 1e-12 each to
-accumulate into something visible -- which no realistic mesh pair produces. The
-recomputation is kept because the audit should describe the matrix actually
-returned, not the intermediate accumulation. IF THE FLOOR IS EVER RAISED this
-stops being equivalent and must be re-examined.) | `backend.supermesh` |
+| `supermesh-coverage-computed-before-the-floor` — the audit is computed from the accumulated overlaps rather than from the entries actually kept, so mass discarded by the negligible-overlap floor is concealed | `src/backend/supermesh.cpp` | **KILLED** (test fails) | `backend.supermesh` |
 | `composed-transpose-in-the-same-order` — (A B)^T applies A^T then B^T instead of B^T then A^T, so the composed operator's transpose is not its adjoint | `src/backend/linear_operator.cpp` | **KILLED** (test fails) | `backend.operator_conformance` |
 | `composed-claims-are-inherited` — a composition claims conservation when EITHER factor does, so composing a conservative map with a non-conservative one reports conservation | `src/backend/linear_operator.cpp` | **KILLED** (test fails) | `backend.operator_conformance` |
 | `compose-signature-ignores-order` — A o B and B o A hash the same, so a plan can reuse a persisted map built for the opposite order | `src/backend/linear_operator.cpp` | **KILLED** (test fails) | `backend.operator_conformance` |
@@ -31,4 +23,4 @@ stops being equivalent and must be re-examined.) | `backend.supermesh` |
 | `apply-spacetime-skips-validation-at-zero-weight` — a zero temporal coefficient returns before the spatial-triplet index validation loop runs, so a malformed spatial array (an out-of-range row/column index) is only ever caught on a call whose temporal weight happens to be nonzero (R-33) | `src/backend/spacetime.cpp` | **KILLED** (test fails) | `backend.spacetime` |
 | `supermesh-no-over-coverage-audit` — the supermesh path's per-cell coverage audit checks only the minimum, so a cell assigned more area than it has (R-12's defect class, or any other overlap-inflation bug) passes silently instead of refusing E-REMAP-INTX (R-13) | `src/backend/supermesh.cpp` | **KILLED** (test fails) | `backend.supermesh` |
 
-**17 killed / 18 total.**
+**18 killed / 18 total.**
