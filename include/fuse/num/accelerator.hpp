@@ -166,7 +166,9 @@ class Accelerator {
   /// Multi-field support (spec §5.3: per-field scaling is part of the
   /// accelerator interface, not an add-on). `offsets` gives the start index of
   /// each field block inside the concatenated vector. It must begin at 0 and
-  /// be strictly increasing; an empty vector restores the default, which is no
+  /// must not decrease; equal neighbours are an empty block, which a rank
+  /// owning none of that field has and which is not an error. An empty
+  /// vector restores the default, which is no
   /// partition and therefore no row scaling at all -- not a single block. See
   /// AccelConfig::scale_fields for why the two differ.
   ///
