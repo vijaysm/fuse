@@ -228,50 +228,87 @@ struct PolynomialFitPlan {
   return plan;
 }
 
-/// The `f`-only half of `fit_polynomial`: builds the right-hand side and
-/// replays `plan`'s recorded swaps/multipliers/back-substitution on it.
-/// `f.size()` must equal `plan.n`.
-[[nodiscard]] inline std::vector<double> solve_polynomial_fit(
-    const PolynomialFitPlan& plan, const std::vector<double>& f) {
+/// The `f`-only half of `fit_polynomial`, writing into caller-supplied
+/// buffers instead of allocating (REVIEW.md R-48, pass 2): `Waveform`'s
+/// per-element loops (`evaluate_dg`/`integrate_dg`) call this once per
+/// element with `out`/`rhs_scratch` hoisted outside the loop, mirroring
+/// `linalg::least_squares_into`'s scratch convention, so a steady-state
+/// evaluate/integrate over many elements touches no allocator. `out` is
+/// resized to `plan.m` and `rhs_scratch` to `plan.m`; `vector::assign` on a
+/// buffer already at that capacity does not reallocate, so only the first
+/// call per buffer pair allocates. `f.size()` must equal `plan.n`.
+inline void solve_polynomial_fit_into(const PolynomialFitPlan& plan,
+                                      const std::vector<double>& f,
+                                      std::vector<double>& out,
+                                      std::vector<double>& rhs_scratch) {
   if (f.size() != plan.n) {
     FUSE_THROW(InvalidArgument, "{}", 
         "fuse::num::fit_polynomial: t and f have different lengths");
   }
   const std::size_t m = plan.m;
-  std::vector<double> rhs(m, 0.0);
+  rhs_scratch.assign(m, 0.0);
   for (std::size_t i = 0; i < plan.n; ++i) {
-    for (std::size_t r = 0; r < m; ++r) rhs[r] += plan.phi[i * m + r] * f[i];
-  }
-
-  for (std::size_t k = 0; k < m; ++k) {
-    if (plan.piv[k] != k) std::swap(rhs[k], rhs[plan.piv[k]]);
-    for (std::size_t r = k + 1; r < m; ++r) {
-      const double fac = plan.mult[r * m + k];
-      if (fac == 0.0) continue;
-      rhs[r] -= fac * rhs[k];
+    for (std::size_t r = 0; r < m; ++r) {
+      rhs_scratch[r] += plan.phi[i * m + r] * f[i];
     }
   }
 
-  std::vector<double> c(m, 0.0);
+  for (std::size_t k = 0; k < m; ++k) {
+    if (plan.piv[k] != k) std::swap(rhs_scratch[k], rhs_scratch[plan.piv[k]]);
+    for (std::size_t r = k + 1; r < m; ++r) {
+      const double fac = plan.mult[r * m + k];
+      if (fac == 0.0) continue;
+      rhs_scratch[r] -= fac * rhs_scratch[k];
+    }
+  }
+
+  out.assign(m, 0.0);
   const std::vector<double>& a = plan.lu;
   for (std::size_t i = m; i-- > 0;) {
-    double s = rhs[i];
-    for (std::size_t j = i + 1; j < m; ++j) s -= a[i * m + j] * c[j];
-    c[i] = s / a[i * m + i];
+    double s = rhs_scratch[i];
+    for (std::size_t j = i + 1; j < m; ++j) s -= a[i * m + j] * out[j];
+    out[i] = s / a[i * m + i];
   }
 
   // p(t) = sum c_k s^k with s = (t - t0)/h  ==>  sum (c_k / h^k) (t - t0)^k.
   double hk = 1.0;
   for (std::size_t k = 0; k < m; ++k) {
-    c[k] /= hk;
+    out[k] /= hk;
     hk *= plan.h;
   }
-  return c;
+}
+
+/// The `f`-only half of `fit_polynomial`: builds the right-hand side and
+/// replays `plan`'s recorded swaps/multipliers/back-substitution on it.
+/// `f.size()` must equal `plan.n`. Allocating convenience wrapper around
+/// `solve_polynomial_fit_into`; a caller in a hot loop should hoist its own
+/// `out`/scratch buffers and call that directly instead.
+[[nodiscard]] inline std::vector<double> solve_polynomial_fit(
+    const PolynomialFitPlan& plan, const std::vector<double>& f) {
+  std::vector<double> out;
+  std::vector<double> rhs_scratch;
+  solve_polynomial_fit_into(plan, f, out, rhs_scratch);
+  return out;
 }
 
 [[nodiscard]] inline std::vector<double> fit_polynomial(
     const std::vector<double>& t, const std::vector<double>& f, int degree,
     double t0) {
+  // N-num-linalg-field-1 (pass 2): on a call with two simultaneous errors
+  // (e.g. a wrong `f` length together with a negative degree), the split
+  // below runs prepare_polynomial_fit -- which only sees `t`/`degree` -- to
+  // completion before solve_polynomial_fit ever sees `f`, so the length
+  // check would fire last instead of second. Checking it here, ahead of the
+  // split, restores the pre-split order (empty t, then length, then
+  // degree) exactly; prepare_polynomial_fit cannot do this check itself
+  // because it never receives `f`.
+  if (t.size() == 0) {
+    FUSE_THROW(InvalidArgument, "{}", "fuse::num::fit_polynomial: no samples");
+  }
+  if (f.size() != t.size()) {
+    FUSE_THROW(InvalidArgument, "{}",
+        "fuse::num::fit_polynomial: t and f have different lengths");
+  }
   return solve_polynomial_fit(prepare_polynomial_fit(t, degree, t0), f);
 }
 
@@ -377,35 +414,62 @@ struct SplineMomentPlan {
   return plan;
 }
 
-/// The `f`-only half of `cubic_spline_moments`: builds the right-hand side
-/// and replays `plan`'s recorded forward elimination and back-substitution.
-/// `f.size()` must equal `plan.n`.
-[[nodiscard]] inline std::vector<double> solve_cubic_spline_moments(
-    const SplineMomentPlan& plan, const std::vector<double>& f) {
+/// The `f`-only half of `cubic_spline_moments`, writing into caller-supplied
+/// buffers instead of allocating (REVIEW.md R-48, pass 2): `Waveform`'s
+/// per-element loops (`evaluate_spline`/`integrate_spline`) call this once
+/// per element with `out`/`r_scratch` hoisted outside the loop, mirroring
+/// `solve_polynomial_fit_into` above. `out` is resized to `plan.n` and
+/// `r_scratch` to `plan.n - 2` (or left untouched when `plan.n < 3`, the
+/// no-interior-equation case); `vector::assign`/`resize` on a buffer already
+/// at that capacity does not reallocate. `f.size()` must equal `plan.n`.
+inline void solve_cubic_spline_moments_into(const SplineMomentPlan& plan,
+                                            const std::vector<double>& f,
+                                            std::vector<double>& out,
+                                            std::vector<double>& r_scratch) {
   if (f.size() != plan.n) {
     FUSE_THROW(InvalidArgument, "{}", 
         "fuse::num::cubic_spline_moments: t and f have different lengths");
   }
-  std::vector<double> m(plan.n, 0.0);
-  if (plan.n < 3) return m;
+  out.assign(plan.n, 0.0);
+  if (plan.n < 3) return;
 
   const std::size_t k = plan.n - 2;
-  std::vector<double> r(k);
+  r_scratch.assign(k, 0.0);
   for (std::size_t i = 1; i + 1 < plan.n; ++i) {
-    r[i - 1] = 6.0 * ((f[i + 1] - f[i]) / plan.up[i - 1] -
-                      (f[i] - f[i - 1]) / plan.lo[i - 1]);
+    r_scratch[i - 1] = 6.0 * ((f[i + 1] - f[i]) / plan.up[i - 1] -
+                              (f[i] - f[i - 1]) / plan.lo[i - 1]);
   }
-  for (std::size_t i = 1; i < k; ++i) r[i] -= plan.w[i] * r[i - 1];
+  for (std::size_t i = 1; i < k; ++i) r_scratch[i] -= plan.w[i] * r_scratch[i - 1];
 
-  m[k] = r[k - 1] / plan.di[k - 1];  // m[n-2]
+  out[k] = r_scratch[k - 1] / plan.di[k - 1];  // out[n-2]
   for (std::size_t i = k - 1; i-- > 0;) {
-    m[i + 1] = (r[i] - plan.up[i] * m[i + 2]) / plan.di[i];
+    out[i + 1] = (r_scratch[i] - plan.up[i] * out[i + 2]) / plan.di[i];
   }
-  return m;
+}
+
+/// The `f`-only half of `cubic_spline_moments`: builds the right-hand side
+/// and replays `plan`'s recorded forward elimination and back-substitution.
+/// `f.size()` must equal `plan.n`. Allocating convenience wrapper around
+/// `solve_cubic_spline_moments_into`; a caller in a hot loop should hoist
+/// its own `out`/scratch buffers and call that directly instead.
+[[nodiscard]] inline std::vector<double> solve_cubic_spline_moments(
+    const SplineMomentPlan& plan, const std::vector<double>& f) {
+  std::vector<double> out;
+  std::vector<double> r_scratch;
+  solve_cubic_spline_moments_into(plan, f, out, r_scratch);
+  return out;
 }
 
 [[nodiscard]] inline std::vector<double> cubic_spline_moments(
     const std::vector<double>& t, const std::vector<double>& f) {
+  // N-num-linalg-field-1 (pass 2): same reasoning as fit_polynomial above --
+  // check the length here, ahead of the split, so a `t` that is both the
+  // wrong length against `f` AND non-monotonic reports the length mismatch
+  // first, matching the pre-split order.
+  if (f.size() != t.size()) {
+    FUSE_THROW(InvalidArgument, "{}",
+        "fuse::num::cubic_spline_moments: t and f have different lengths");
+  }
   return solve_cubic_spline_moments(prepare_cubic_spline_moments(t), f);
 }
 

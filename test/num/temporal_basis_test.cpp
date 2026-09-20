@@ -307,6 +307,46 @@ TEST(TemporalBasis, PreparedSplineMomentsAgreeWithCubicSplineMomentsAcrossSevera
   }
 }
 
+// REVIEW.md R-48, pass 2: the allocation-free `_into` entry points must
+// agree with the allocating convenience wrappers above, and reusing the same
+// `out`/scratch buffers across several calls -- exactly how `Waveform`'s
+// per-element loop uses them -- must not leak a stale value from a previous,
+// differently-shaped call into the next one's answer.
+TEST(TemporalBasis, SolvePolynomialFitIntoAgreesWithSolvePolynomialFitAndBuffersAreReusable) {
+  const std::vector<double> t = {0.0, 0.25, 0.6, 1.0};
+  const auto plan = fuse::num::prepare_polynomial_fit(t, 2, 0.0);
+  std::vector<double> out;
+  std::vector<double> rhs_scratch;
+  for (const std::vector<double> f :
+       {std::vector<double>{3.0, 2.5, 4.1, 6.0},
+        std::vector<double>{-1.0, 0.2, 1.7, 5.5}}) {
+    fuse::num::solve_polynomial_fit_into(plan, f, out, rhs_scratch);
+    const std::vector<double> expected = fuse::num::solve_polynomial_fit(plan, f);
+    ASSERT_EQ(out.size(), expected.size());
+    for (std::size_t i = 0; i < out.size(); ++i) {
+      EXPECT_DOUBLE_EQ(out[i], expected[i]) << "coefficient " << i;
+    }
+  }
+}
+
+TEST(TemporalBasis, SolveCubicSplineMomentsIntoAgreesWithSolveCubicSplineMomentsAndBuffersAreReusable) {
+  const std::vector<double> t = {0.0, 0.3, 0.55, 0.8, 1.0};
+  const auto plan = fuse::num::prepare_cubic_spline_moments(t);
+  std::vector<double> out;
+  std::vector<double> r_scratch;
+  for (const std::vector<double> f :
+       {std::vector<double>{1.0, 2.0, 1.5, 0.5, 3.0},
+        std::vector<double>{0.2, -0.3, 1.1, 2.2, -1.0}}) {
+    fuse::num::solve_cubic_spline_moments_into(plan, f, out, r_scratch);
+    const std::vector<double> expected =
+        fuse::num::solve_cubic_spline_moments(plan, f);
+    ASSERT_EQ(out.size(), expected.size());
+    for (std::size_t i = 0; i < out.size(); ++i) {
+      EXPECT_DOUBLE_EQ(out[i], expected[i]) << "moment " << i;
+    }
+  }
+}
+
 TEST(TemporalBasis, PreparePolynomialFitThrowsExactlyAsFitPolynomialOnTOnlyErrors) {
   EXPECT_THROW((void)fuse::num::prepare_polynomial_fit({}, 1, 0.0),
                fuse::InvalidArgument);
@@ -319,4 +359,63 @@ TEST(TemporalBasis, PreparePolynomialFitThrowsExactlyAsFitPolynomialOnTOnlyError
 TEST(TemporalBasis, PrepareSplineMomentsThrowsExactlyAsCubicSplineMomentsOnTOnlyErrors) {
   EXPECT_THROW((void)fuse::num::prepare_cubic_spline_moments({0.0, 1.0, 1.0}),
                fuse::InvalidArgument);
+}
+
+// ---------------------------------------------------------------------------
+// N-num-linalg-field-1 (pass 2): the split reordered which of two
+// simultaneous errors `fit_polynomial`/`cubic_spline_moments` report, because
+// `prepare_*` runs to completion -- including its own t-only checks -- before
+// `solve_*` ever sees `f`. These pin a NAMED, FROZEN expectation (the
+// pre-split order, extracted from `git show fd5bbc2` by the pass-2 review)
+// rather than comparing against `fit_polynomial`/`cubic_spline_moments`
+// themselves, since post-split those are the code under test, not an
+// independent oracle -- exactly the trap the finding describes.
+// ---------------------------------------------------------------------------
+
+TEST(TemporalBasis, FitPolynomialReportsTheLengthMismatchBeforeTheDegreeError) {
+  // f is the wrong length (needs 3) AND degree is negative: the pre-split
+  // function checked length before degree, so that is the error that must
+  // survive the split.
+  try {
+    (void)fit_polynomial({0.0, 1.0, 2.0}, {1.0, 2.0}, -1, 0.0);
+    FAIL() << "a simultaneous length-mismatch-and-negative-degree call was "
+              "accepted";
+  } catch (const fuse::InvalidArgument& e) {
+    const std::string m = e.what();
+    EXPECT_NE(m.find("different lengths"), std::string::npos)
+        << "expected the length-mismatch message first, got: " << m;
+    EXPECT_EQ(m.find("negative degree"), std::string::npos)
+        << "the degree error fired first instead of the length one: " << m;
+  }
+}
+
+TEST(TemporalBasis, CubicSplineMomentsReportsTheLengthMismatchBeforeTheMonotonicityError) {
+  // t is non-monotonic AND f is the wrong length (needs 4): the pre-split
+  // function checked length before monotonicity.
+  try {
+    (void)cubic_spline_moments({0.0, 1.0, 0.5, 3.0}, {1.0, 2.0});
+    FAIL() << "a simultaneous length-mismatch-and-non-monotonic call was "
+              "accepted";
+  } catch (const fuse::InvalidArgument& e) {
+    const std::string m = e.what();
+    EXPECT_NE(m.find("different lengths"), std::string::npos)
+        << "expected the length-mismatch message first, got: " << m;
+    EXPECT_EQ(m.find("strictly increasing"), std::string::npos)
+        << "the monotonicity error fired first instead of the length one: "
+        << m;
+  }
+}
+
+TEST(TemporalBasis, FitPolynomialStillReportsNoSamplesAheadOfALengthMismatch) {
+  // t is empty (t.size()==0) AND f is not: the pre-split function checked
+  // "no samples" first, ahead of the length check added by this fix -- the
+  // wrapper's own no-samples check must stay ahead of its length check too.
+  try {
+    (void)fit_polynomial({}, {1.0, 2.0}, 1, 0.0);
+    FAIL() << "an empty t with a non-empty f was accepted";
+  } catch (const fuse::InvalidArgument& e) {
+    const std::string m = e.what();
+    EXPECT_NE(m.find("no samples"), std::string::npos)
+        << "expected the no-samples message first, got: " << m;
+  }
 }

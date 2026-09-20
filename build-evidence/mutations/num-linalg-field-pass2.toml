@@ -1,0 +1,42 @@
+# Mutations for the num/linalg/field SECOND fix pass (REVIEW.md pass2
+# N-num-linalg-field-1, R-48). Own file per the review-fix protocol: do not
+# edit build-evidence/mutations.toml directly while other fixers hold it
+# dirty, and do not edit build-evidence/mutations/*.toml belonging to the
+# first pass.
+
+[[mutation]]
+id = "fit-polynomial-drops-the-pre-split-length-check"
+area = "num"
+describes = "fit_polynomial reverts to the split's accidental check order, where a combined length-mismatch-and-degree<0 call reports the degree error instead of the length one (N-num-linalg-field-1)"
+file = "include/fuse/num/temporal_basis.hpp"
+old = """  if (t.size() == 0) {
+    FUSE_THROW(InvalidArgument, "{}", "fuse::num::fit_polynomial: no samples");
+  }
+  if (f.size() != t.size()) {
+    FUSE_THROW(InvalidArgument, "{}",
+        "fuse::num::fit_polynomial: t and f have different lengths");
+  }
+  return solve_polynomial_fit(prepare_polynomial_fit(t, degree, t0), f);"""
+new = """  return solve_polynomial_fit(prepare_polynomial_fit(t, degree, t0), f);"""
+target = "fuse_num_temporal_basis_test"
+test = "num.temporal_basis"
+
+[[mutation]]
+id = "waveform-evaluate-dg-reallocates-coefficients-per-element"
+area = "num"
+describes = "evaluate_dg reverts to calling the allocating solve_polynomial_fit fresh for every element instead of the hoisted _into buffers, reintroducing the per-element allocation R-48 (pass 2) removed"
+file = "include/fuse/num/waveform.hpp"
+old = """    std::vector<double>       coeffs;
+    std::vector<double>       rhs_scratch;
+    for (std::size_t e = 0; e < elements_; ++e) {
+      gather(e, ff);
+      num::solve_polynomial_fit_into(plan, ff, coeffs, rhs_scratch);
+      out[e] = num::eval_polynomial(coeffs, x, 0.0);
+    }"""
+new = """    for (std::size_t e = 0; e < elements_; ++e) {
+      gather(e, ff);
+      out[e] = num::eval_polynomial(num::solve_polynomial_fit(plan, ff), x,
+                                    0.0);
+    }"""
+target = "fuse_num_waveform_test"
+test = "num.waveform"
