@@ -10,6 +10,9 @@ old = "    if (config.base_communicator.has_value()) {"
 new = "    if (true) {"
 target = "fuse_runtime_runner_test"
 test = "runtime.runner"
+# The guarded block is compiled only when FUSE_HAVE_MPI, so in tier 0 this mutant
+# is byte-identical to the original and its survival there says nothing.
+requires = "mpi"
 
 [[mutation]]
 id = "build-plan-skips-the-components-agreement"
