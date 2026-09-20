@@ -27,7 +27,7 @@ set(FUSE_TEST_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data")
 # the audit at the bottom of this file compares that against the files on disk.
 # A test file that exists but is registered nowhere runs nowhere, and nothing
 # else reports it: 33 cases in schedule/buffers_test.cpp and slab_test.cpp sat
-# unregistered for four days (REVIEW.md R-10).
+# unregistered for four days (REVIEW.md R-07).
 set_property(GLOBAL PROPERTY FUSE_REGISTERED_TEST_SOURCES "")
 set_property(GLOBAL PROPERTY FUSE_GATED_TEST_SOURCES "")
 function(fuse_record_test_source rel)
@@ -111,6 +111,11 @@ foreach(t semantics transform compatibility multiscale connect builder yaml_io r
   fuse_add_gtest(model ${t})
 endforeach()
 fuse_add_gtest(model validate THROWS)
+# R-49 (REVIEW.md, pass 2): moved here from num/ -- ConvergenceMeasure,
+# ConvergenceCriterion, MeasureKind and Converged are declared in
+# fuse/model/iteration.hpp, not fuse/num, and this test never included
+# anything from fuse/num.
+fuse_add_gtest(model iteration THROWS)
 
 # Tier 1 only. Absent rather than skipped in Tier 0: there is no MPI to run it
 # with, and a skipped test reads like a passing one in a summary line.
@@ -145,7 +150,7 @@ fuse_add_gtest(schedule clock THROWS)
 foreach(t kernels waveform_order residual_norm)
   fuse_add_gtest(num ${t})
 endforeach()
-foreach(t temporal_basis waveform convergence accelerator)
+foreach(t temporal_basis waveform accelerator)
   fuse_add_gtest(num ${t} THROWS)
 endforeach()
 
@@ -170,6 +175,33 @@ fuse_add_gtest(backend cell_simplices)
 fuse_tests_gated_by(FUSE_ENABLE_MOAB backend/moab_mesh_test.cpp)
 if(FUSE_ENABLE_MOAB)
   fuse_add_gtest(backend moab_mesh THROWS)
+  # REVIEW.md R-41 (BT-F15): a real, non-planar, non-matching MOAB mesh, not
+  # a generated box. MOAB installs a 3456-quad cubed sphere under
+  # share/examples/fortran relative to its own include prefix; discovered
+  # from MOAB_INCLUDE_DIRS rather than copied into this repository, exactly
+  # as upstream/soma/test/CMakeLists.txt discovered SOMA_MOAB_TEST_MESH (this
+  # is the port of that mechanism -- FUSE_MOAB_TEST_MESH is the name the test
+  # file itself already refers to; nothing previously defined it). The four
+  # MoabMeshFile.* cases compile only when the file is found; its absence is
+  # a configure-time message, not a test that reads as passing.
+  if(MOAB_INCLUDE_DIRS)
+    list(GET MOAB_INCLUDE_DIRS 0 _fuse_moab_inc)
+    get_filename_component(_fuse_moab_prefix "${_fuse_moab_inc}" DIRECTORY)
+    find_file(FUSE_MOAB_TEST_MESH_FILE
+              NAMES spherecube.h5m
+              PATHS "${_fuse_moab_prefix}/share/examples/fortran"
+              NO_DEFAULT_PATH)
+  endif()
+  if(FUSE_MOAB_TEST_MESH_FILE)
+    target_compile_definitions(fuse_backend_moab_mesh_test PRIVATE
+      FUSE_MOAB_TEST_MESH="${FUSE_MOAB_TEST_MESH_FILE}")
+    message(STATUS "fuse: real-mesh MOAB tests will use ${FUSE_MOAB_TEST_MESH_FILE}")
+  else()
+    message(STATUS
+      "fuse: spherecube.h5m not found under a share/examples/fortran next to "
+      "the MOAB include prefix; the real-mesh MoabMeshFile.* tests are not "
+      "compiled")
+  endif()
 endif()
 
 # ---------------------------------------------------------------- runtime
@@ -201,6 +233,11 @@ endif()
 fuse_add_gtest(linalg least_squares THROWS)
 fuse_add_gtest(backend native_mesh THROWS)
 fuse_add_gtest(backend supermesh THROWS)
+# supermesh_test reaches src/backend/supermesh_detail.hpp directly, a private
+# header (REVIEW.md R-12/BK-M2), the same way parallel/comm_graph_test reaches
+# CrystalRouter above: one test target's include path, not a widened public
+# surface.
+target_include_directories(fuse_backend_supermesh_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
 # ---------------------------------------------------------------- field
 # THROWS: the extent refusals are the point of half these cases.
