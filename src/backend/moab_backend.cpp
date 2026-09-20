@@ -1825,8 +1825,20 @@ namespace {
 [[nodiscard]] Result<void> reconcile_halo(MPI_Comm comm, bool local_failed,
                                           const std::string& local_message) {
   int nproc = 1, rank = 0;
-  MPI_Comm_size(comm, &nproc);
-  MPI_Comm_rank(comm, &rank);
+  // REVIEW.md N-BACKEND-3: the sibling reconcile<T> (intx_weights.cpp)
+  // refuses rather than silently falling through when it cannot size its
+  // communicator; this one used to ignore both return values, so a
+  // corrupted/mismatched communicator -- exactly the class E-TRANSPORT-
+  // PEERMATCH exists elsewhere to catch -- would leave nproc at its
+  // initialiser value of 1 and take the "no peers to disagree with" path on
+  // the one rank most likely to need reconciling (I4: no silent fallback).
+  if (MPI_Comm_size(comm, &nproc) != MPI_SUCCESS ||
+      MPI_Comm_rank(comm, &rank) != MPI_SUCCESS) {
+    return Failure{"E-MESH-HALO",
+                 "could not size or rank the communicator to reconcile a "
+                 "per-rank halo-plan outcome; refusing rather than treating "
+                 "it as having no peers to disagree with"};
+  }
   if (nproc <= 1) {
     return local_failed ? Result<void>(Failure{"E-MESH-HALO", local_message})
                         : Result<void>::success();
@@ -2010,18 +2022,32 @@ Result<void> MoabMeshBackend::Impl::plan_halo_exchange(std::size_t mesh,
                     comm) != MPI_SUCCESS) {
     return Failure{"E-MESH-HALO", "MPI_Alltoallv of the requested ids failed"};
   }
+  // REVIEW.md N-BACKEND-2: this is a fourth per-rank-local refusal drawn
+  // from this rank's own `owned_by_gid` map, the same shape R-02 fixed for
+  // the two `want`-loop refusals above -- but it sits AFTER both collective
+  // pairs in this function, so it does not itself race into a further
+  // collective here. It still broke the function's own "every rank returns
+  // the IDENTICAL Failure" contract that R-01/R-02 established everywhere
+  // else in this file, which a caller upstream may rely on. Recorded and
+  // reconciled the same way rather than returned from inside the loop.
   ex.send_index.resize(ans_gids.size());
+  std::string send_error;
   for (std::size_t k = 0; k < ans_gids.size(); ++k) {
     const auto it =
         owned_by_gid.find(static_cast<std::size_t>(ans_gids[k]));
     if (it == owned_by_gid.end()) {
-      return Failure{"E-MESH-HALO",
-                   "another rank asked this one for global id " +
-                       std::to_string(ans_gids[k]) +
-                       " at dimension " + std::to_string(dim) +
-                       ", which this rank does not own"};
+      send_error = "another rank asked this one for global id " +
+                   std::to_string(ans_gids[k]) +
+                   " at dimension " + std::to_string(dim) +
+                   ", which this rank does not own";
+      break;
     }
     ex.send_index[k] = it->second;
+  }
+  {
+    const Result<void> r = reconcile_halo(comm, !send_error.empty(),
+                                          send_error);
+    if (!r.ok()) return r.error();
   }
   return Result<void>::success();
 #endif
