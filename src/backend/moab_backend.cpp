@@ -8,7 +8,7 @@
 #include "fuse/backend/cell_simplices.hpp"
 
 // ONE OF THE TWO TRANSLATION UNITS THAT MAY SEE MOAB (Global Constraints
-// dependency rule); the other is src/remap/intx_weights.cpp, which needs the
+// dependency rule); the other is src/backend/intx_weights.cpp, which needs the
 // actual polygons to build a supermesh and reaches them through
 // MoabMeshBackend::native_mesh below. Nothing here or there leaks a MOAB type
 // through a header.
@@ -258,7 +258,8 @@ constexpr int kQuadCorner[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
 
 /// Corner permutations that express a lower solid as a DEGENERATE trilinear
 /// hexahedron with the same image, so one exact integrator serves all of
-/// them. Pinned against closed forms in test/unit/moab_mesh_test.cpp: the
+/// them. Pinned against closed forms in
+/// `test/backend/moab_mesh_test.cpp:MixedElementMeasuresMatchClosedForms`: the
 /// reference tetrahedron comes out at 1/6, a unit-triangle wedge of height 1
 /// at 1/2, and a unit-square pyramid of height 1 at 1/3.
 constexpr int kHexAsHex[8] = {0, 1, 2, 3, 4, 5, 6, 7};
@@ -603,7 +604,7 @@ class MoabMeshView final : public MeshView {
 
 // ===========================================================================
 // Source-string parsing. Deliberately the same grammar SerialMeshBackend
-// accepts (src/mesh/serial_backend.cpp), so "generated:..." means the same
+// accepts (src/backend/serial_backend.cpp), so "generated:..." means the same
 // thing whichever backend answers; MoabMesh.RejectsTheSameMalformedSources
 // pins the two against each other.
 // ===========================================================================
@@ -1807,6 +1808,67 @@ Result<void> MoabMeshBackend::Impl::regather_with_halo(std::size_t mesh,
   return Result<void>::success();
 }
 
+#ifdef FUSE_MOAB_PARALLEL
+namespace {
+
+/// Reconcile a per-rank yes/no outcome across the communicator before the
+/// next collective, so a data-dependent local refusal -- an inconsistent
+/// global id, an owner contradiction (REVIEW.md R-02) -- produces the SAME
+/// Failure on every rank instead of letting the ranks that did not hit it
+/// walk into the next `MPI_Alltoall(v)` and hang waiting for the one that
+/// did. `local_failed`/`local_message` describe only this rank's outcome;
+/// a rank that did not fail passes an empty message. Mirrors the
+/// reconciliation `intx_weights.cpp` performs for
+/// `resolve()`/`fit_surface()`/`orient()` -- same finding, same fix, kept as
+/// a separate copy here rather than a shared header because no MOAB/MPI type
+/// may cross into a header outside its own backend translation unit (I7).
+[[nodiscard]] Result<void> reconcile_halo(MPI_Comm comm, bool local_failed,
+                                          const std::string& local_message) {
+  int nproc = 1, rank = 0;
+  MPI_Comm_size(comm, &nproc);
+  MPI_Comm_rank(comm, &rank);
+  if (nproc <= 1) {
+    return local_failed ? Result<void>(Failure{"E-MESH-HALO", local_message})
+                        : Result<void>::success();
+  }
+  const int lf = local_failed ? 1 : 0;
+  int any = 0;
+  if (MPI_Allreduce(&lf, &any, 1, MPI_INT, MPI_MAX, comm) != MPI_SUCCESS) {
+    return Failure{"E-MESH-HALO",
+                 "the collective reduction of a per-rank halo-plan outcome "
+                 "failed, so this rank cannot know whether its peers agree; "
+                 "refusing rather than proceeding out of step"};
+  }
+  if (any == 0) return Result<void>::success();
+
+  const int candidate = local_failed ? rank : nproc;
+  int failing_rank = nproc;
+  if (MPI_Allreduce(&candidate, &failing_rank, 1, MPI_INT, MPI_MIN, comm) !=
+          MPI_SUCCESS) {
+    return Failure{"E-MESH-HALO",
+                 "the collective reduction of a per-rank halo-plan outcome "
+                 "failed, so this rank cannot know whether its peers agree; "
+                 "refusing rather than proceeding out of step"};
+  }
+  std::string msg = (rank == failing_rank) ? local_message : std::string();
+  int len = static_cast<int>(msg.size());
+  if (MPI_Bcast(&len, 1, MPI_INT, failing_rank, comm) != MPI_SUCCESS) {
+    return Failure{"E-MESH-HALO",
+                 "the broadcast of the failing rank's message failed"};
+  }
+  msg.resize(static_cast<std::size_t>(len));
+  if (len > 0 && MPI_Bcast(msg.data(), len, MPI_CHAR, failing_rank, comm) !=
+                     MPI_SUCCESS) {
+    return Failure{"E-MESH-HALO",
+                 "the broadcast of the failing rank's message failed"};
+  }
+  return Failure{"E-MESH-HALO",
+               "rank " + std::to_string(failing_rank) + " refused: " + msg};
+}
+
+}  // namespace
+#endif  // FUSE_MOAB_PARALLEL
+
 Result<void> MoabMeshBackend::Impl::plan_halo_exchange(std::size_t mesh,
                                                        int dim) {
 #ifndef FUSE_MOAB_PARALLEL
@@ -1826,12 +1888,19 @@ Result<void> MoabMeshBackend::Impl::plan_halo_exchange(std::size_t mesh,
 
   const MoabMeshView& view = *meshes[mesh];
   const DimData& dd = view.dim_data(dim);
-  if (!dd.gid_error.empty()) {
-    return Failure{"E-MESH-HALO-GID",
-                 "this mesh cannot carry a remap halo at dimension " +
-                     std::to_string(dim) +
-                     " because a halo cell is matched to its owner by global "
-                     "id and by nothing else: " + dd.gid_error};
+  // REVIEW.md R-02: reconciled BEFORE the first collective below (the
+  // MPI_Allgather a few lines down), not after -- this check needs no
+  // per-rank data beyond what is already local at function entry, so there
+  // is no reason to let a divergent refusal race a peer into that
+  // collective.
+  {
+    const Result<void> r = reconcile_halo(
+        comm, !dd.gid_error.empty(),
+        "this mesh cannot carry a remap halo at dimension " +
+            std::to_string(dim) +
+            " because a halo cell is matched to its owner by global id and "
+            "by nothing else: " + dd.gid_error);
+    if (!r.ok()) return r.error();
   }
 
   // Owned entities, by global id, so an incoming request can be answered.
@@ -1872,29 +1941,40 @@ Result<void> MoabMeshBackend::Impl::plan_halo_exchange(std::size_t mesh,
   }
 
   // Group this rank's halo slots by the rank that owns them.
+  // REVIEW.md R-02: both refusals below depend on THIS RANK's own global-id
+  // scan, and can therefore fire on one rank without firing on its peers.
+  // The loop no longer returns from inside itself -- it records the first
+  // local problem and reconciles it, once, before the MPI_Alltoall further
+  // down -- so a rank hitting either condition still reaches the same
+  // verdict as every other rank instead of racing ahead of it.
   std::vector<std::vector<std::size_t>> want(np);
+  std::string local_error;
   for (std::size_t i = 0; i < dd.handles.size(); ++i) {
     if (dd.owned[i] != 0) continue;
     const auto it = owner_of.find(static_cast<long long>(dd.global_ids[i]));
     if (it == owner_of.end()) {
-      return Failure{"E-MESH-HALO",
-                   "local entity " + std::to_string(i) + " of dimension " +
-                       std::to_string(dim) + " has global id " +
-                       std::to_string(dd.global_ids[i]) +
-                       ", which no rank claims to own; the mesh's global "
-                       "numbering is inconsistent across the communicator"};
+      local_error = "local entity " + std::to_string(i) + " of dimension " +
+                    std::to_string(dim) + " has global id " +
+                    std::to_string(dd.global_ids[i]) +
+                    ", which no rank claims to own; the mesh's global "
+                    "numbering is inconsistent across the communicator";
+      break;
     }
     if (it->second == me) {
       // A non-owned entity whose owner is this rank is a contradiction: it
       // would be double counted in every reduction. Refuse rather than
       // quietly fetch a value from ourselves.
-      return Failure{"E-MESH-HALO",
-                   "local entity " + std::to_string(i) +
-                       " is marked not owned yet its global id " +
-                       std::to_string(dd.global_ids[i]) +
-                       " is owned by this rank"};
+      local_error = "local entity " + std::to_string(i) +
+                    " is marked not owned yet its global id " +
+                    std::to_string(dd.global_ids[i]) + " is owned by this rank";
+      break;
     }
     want[static_cast<std::size_t>(it->second)].push_back(i);
+  }
+  {
+    const Result<void> r = reconcile_halo(comm, !local_error.empty(),
+                                          local_error);
+    if (!r.ok()) return r.error();
   }
 
   HaloExchange& ex = h.ex;
