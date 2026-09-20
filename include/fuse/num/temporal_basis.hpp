@@ -113,16 +113,46 @@ struct GaussRule {
 /// Throws `std::invalid_argument` on empty or mismatched inputs or a negative
 /// degree, and `std::runtime_error` if the normal equations are exactly
 /// singular (duplicate sample times).
+///
+/// The normal-equations matrix and its elimination depend only on `t`,
+/// `degree` and `t0` -- never on `f` -- yet `Waveform::evaluate_dg`/
+/// `integrate_dg` called this once per field element with the same `t`,
+/// `degree`, `t0` and a different `f` each time (REVIEW.md R-48), repeating
+/// the O(n*m^2 + m^3) build-and-eliminate for every element. `fit_polynomial`
+/// itself is unchanged -- same signature, same exceptions, same answer -- and
+/// is now the one-shot convenience wrapper around the two halves below, which
+/// a multi-element caller uses directly to pay the shared cost once.
 [[nodiscard]] inline std::vector<double> fit_polynomial(
     const std::vector<double>& t, const std::vector<double>& f, int degree,
-    double t0) {
+    double t0);
+
+/// The `t`-only half of `fit_polynomial`: builds the normal-equations matrix
+/// and eliminates it, without ever touching `f`. Reusable across every field
+/// element that shares the same sample times, degree and expansion point.
+///
+/// Throws exactly as `fit_polynomial` does for the checks that do not need
+/// `f`: empty `t`, a negative degree, or a singular (duplicate abscissae)
+/// system. The `f`-length check is `solve_polynomial_fit`'s, since only it
+/// has `f` to check.
+struct PolynomialFitPlan {
+  std::size_t n = 0;             ///< sample count `solve` must match `f` to.
+  std::size_t m = 0;             ///< number of basis functions (deg + 1).
+  double      h = 1.0;
+  double      t0 = 0.0;
+  std::vector<double> phi;       ///< n * m, row i: powers of (t[i]-t0)/h.
+  std::vector<double> lu;        ///< m * m, the eliminated normal-equations
+                                 ///< matrix (upper triangle is R; the
+                                 ///< multipliers used to get there are `mult`).
+  std::vector<std::size_t> piv;  ///< piv[k]: the row swapped into position k.
+  std::vector<double> mult;      ///< m * m, mult[r*m+k] is the elimination
+                                 ///< factor applied to row r at step k.
+};
+
+[[nodiscard]] inline PolynomialFitPlan prepare_polynomial_fit(
+    const std::vector<double>& t, int degree, double t0) {
   const std::size_t n = t.size();
   if (n == 0) {
     FUSE_THROW(InvalidArgument, "{}", "fuse::num::fit_polynomial: no samples");
-  }
-  if (f.size() != n) {
-    FUSE_THROW(InvalidArgument, "{}", 
-        "fuse::num::fit_polynomial: t and f have different lengths");
   }
   if (degree < 0) {
     FUSE_THROW(InvalidArgument, "{}", 
@@ -132,30 +162,42 @@ struct GaussRule {
       std::min(static_cast<std::size_t>(degree), n - 1);
   const std::size_t m = deg + 1;
 
+  PolynomialFitPlan plan;
+  plan.n = n;
+  plan.m = m;
+  plan.t0 = t0;
+
   double h = 0.0;
   for (std::size_t i = 0; i < n; ++i) {
     h = std::max(h, std::fabs(t[i] - t0));
   }
   if (!(h > 0.0)) h = 1.0;  // single sample at t0, or all samples at t0
+  plan.h = h;
 
+  std::vector<double>& phi = plan.phi;
+  phi.assign(n * m, 0.0);
   std::vector<double> a(m * m, 0.0);
-  std::vector<double> rhs(m, 0.0);
-  std::vector<double> phi(m, 0.0);
   for (std::size_t i = 0; i < n; ++i) {
     const double s = (t[i] - t0) / h;
     double       p = 1.0;
     for (std::size_t k = 0; k < m; ++k) {
-      phi[k] = p;
+      phi[i * m + k] = p;
       p *= s;
     }
     for (std::size_t r = 0; r < m; ++r) {
-      rhs[r] += phi[r] * f[i];
-      for (std::size_t c = 0; c < m; ++c) a[r * m + c] += phi[r] * phi[c];
+      for (std::size_t c = 0; c < m; ++c) {
+        a[r * m + c] += phi[i * m + r] * phi[i * m + c];
+      }
     }
   }
 
+  plan.piv.assign(m, 0);
+  plan.mult.assign(m * m, 0.0);
+
   // Gaussian elimination with partial pivoting; m <= 5 in every FUSE use, so
-  // LAPACK would be a dependency in the core for a 5x5 solve.
+  // LAPACK would be a dependency in the core for a 5x5 solve. Every swap and
+  // multiplier is recorded so `solve_polynomial_fit` can replay the identical
+  // sequence on a fresh right-hand side without rebuilding `a`.
   for (std::size_t k = 0; k < m; ++k) {
     std::size_t piv  = k;
     double      best = std::fabs(a[k * m + k]);
@@ -171,19 +213,47 @@ struct GaussRule {
           "fuse::num::fit_polynomial: singular normal equations "
           "(duplicate sample times?)");
     }
+    plan.piv[k] = piv;
     if (piv != k) {
       for (std::size_t c = k; c < m; ++c) std::swap(a[k * m + c], a[piv * m + c]);
-      std::swap(rhs[k], rhs[piv]);
     }
     for (std::size_t r = k + 1; r < m; ++r) {
       const double fac = a[r * m + k] / a[k * m + k];
+      plan.mult[r * m + k] = fac;
       if (fac == 0.0) continue;
       for (std::size_t c = k; c < m; ++c) a[r * m + c] -= fac * a[k * m + c];
+    }
+  }
+  plan.lu = std::move(a);
+  return plan;
+}
+
+/// The `f`-only half of `fit_polynomial`: builds the right-hand side and
+/// replays `plan`'s recorded swaps/multipliers/back-substitution on it.
+/// `f.size()` must equal `plan.n`.
+[[nodiscard]] inline std::vector<double> solve_polynomial_fit(
+    const PolynomialFitPlan& plan, const std::vector<double>& f) {
+  if (f.size() != plan.n) {
+    FUSE_THROW(InvalidArgument, "{}", 
+        "fuse::num::fit_polynomial: t and f have different lengths");
+  }
+  const std::size_t m = plan.m;
+  std::vector<double> rhs(m, 0.0);
+  for (std::size_t i = 0; i < plan.n; ++i) {
+    for (std::size_t r = 0; r < m; ++r) rhs[r] += plan.phi[i * m + r] * f[i];
+  }
+
+  for (std::size_t k = 0; k < m; ++k) {
+    if (plan.piv[k] != k) std::swap(rhs[k], rhs[plan.piv[k]]);
+    for (std::size_t r = k + 1; r < m; ++r) {
+      const double fac = plan.mult[r * m + k];
+      if (fac == 0.0) continue;
       rhs[r] -= fac * rhs[k];
     }
   }
 
   std::vector<double> c(m, 0.0);
+  const std::vector<double>& a = plan.lu;
   for (std::size_t i = m; i-- > 0;) {
     double s = rhs[i];
     for (std::size_t j = i + 1; j < m; ++j) s -= a[i * m + j] * c[j];
@@ -194,9 +264,15 @@ struct GaussRule {
   double hk = 1.0;
   for (std::size_t k = 0; k < m; ++k) {
     c[k] /= hk;
-    hk *= h;
+    hk *= plan.h;
   }
   return c;
+}
+
+[[nodiscard]] inline std::vector<double> fit_polynomial(
+    const std::vector<double>& t, const std::vector<double>& f, int degree,
+    double t0) {
+  return solve_polynomial_fit(prepare_polynomial_fit(t, degree, t0), f);
 }
 
 /// Horner evaluation of the monomial expansion about `t0`. An empty
@@ -242,19 +318,42 @@ struct GaussRule {
 /// interior equation to solve and every moment is zero, which makes
 /// `eval_cubic_spline` reduce to linear interpolation (n == 2) or a constant
 /// (n == 1) -- the right degeneracies.
+///
+/// The tridiagonal system's matrix -- `lo`/`di`/`up` below -- depends only on
+/// `t`; only the right-hand side `r` depends on `f`. `Waveform::evaluate_spline`/
+/// `integrate_spline` called this once per field element with the same `t`
+/// and a different `f` each time (REVIEW.md R-48), rebuilding and
+/// re-factoring the same tridiagonal matrix every time. `cubic_spline_moments`
+/// itself is unchanged; it is now the convenience wrapper around the two
+/// halves below, which a multi-element caller uses directly to factor once.
 [[nodiscard]] inline std::vector<double> cubic_spline_moments(
-    const std::vector<double>& t, const std::vector<double>& f) {
-  const std::size_t n = t.size();
-  if (f.size() != n) {
-    FUSE_THROW(InvalidArgument, "{}", 
-        "fuse::num::cubic_spline_moments: t and f have different lengths");
-  }
-  std::vector<double> m(n, 0.0);
-  if (n < 3) return m;
+    const std::vector<double>& t, const std::vector<double>& f);
 
-  const std::size_t k = n - 2;  // unknowns are m[1] .. m[n-2]
-  std::vector<double> lo(k), di(k), up(k), r(k);
-  for (std::size_t i = 1; i + 1 < n; ++i) {
+/// The `t`-only half of `cubic_spline_moments`: builds and forward-eliminates
+/// the tridiagonal moment matrix, without touching `f`. `n < 3` (no interior
+/// equation) is recorded as an empty plan; `solve_cubic_spline_moments`
+/// checks `plan.n`, not these vectors, to decide the trivial case.
+struct SplineMomentPlan {
+  std::size_t n = 0;
+  std::vector<double> lo;  ///< h0 at each interior row (length n - 2).
+  std::vector<double> up;  ///< h1 at each interior row (length n - 2);
+                            ///< unmodified by elimination, unlike `di`.
+  std::vector<double> di;  ///< diagonal AFTER forward elimination.
+  std::vector<double> w;   ///< elimination multiplier at each row (w[0] unused).
+};
+
+[[nodiscard]] inline SplineMomentPlan prepare_cubic_spline_moments(
+    const std::vector<double>& t) {
+  SplineMomentPlan plan;
+  plan.n = t.size();
+  if (plan.n < 3) return plan;
+
+  const std::size_t k = plan.n - 2;  // unknowns are m[1] .. m[n-2]
+  plan.lo.resize(k);
+  plan.di.resize(k);
+  plan.up.resize(k);
+  plan.w.assign(k, 0.0);
+  for (std::size_t i = 1; i + 1 < plan.n; ++i) {
     const double h0 = t[i] - t[i - 1];
     const double h1 = t[i + 1] - t[i];
     if (!(h0 > 0.0) || !(h1 > 0.0)) {
@@ -262,24 +361,52 @@ struct GaussRule {
           "fuse::num::cubic_spline_moments: sample times must be strictly "
           "increasing");
     }
-    lo[i - 1] = h0;
-    di[i - 1] = 2.0 * (h0 + h1);
-    up[i - 1] = h1;
-    r[i - 1]  = 6.0 * ((f[i + 1] - f[i]) / h1 - (f[i] - f[i - 1]) / h0);
+    plan.lo[i - 1] = h0;
+    plan.di[i - 1] = 2.0 * (h0 + h1);
+    plan.up[i - 1] = h1;
   }
 
-  // Thomas algorithm. The system is strictly diagonally dominant
-  // (2(h0+h1) > h0 + h1), so no pivoting is needed and no pivot can vanish.
+  // Thomas algorithm, matrix half only. The system is strictly diagonally
+  // dominant (2(h0+h1) > h0 + h1), so no pivoting is needed and no pivot can
+  // vanish. The multipliers are recorded so `solve_cubic_spline_moments` can
+  // apply the identical forward elimination to a fresh right-hand side.
   for (std::size_t i = 1; i < k; ++i) {
-    const double w = lo[i] / di[i - 1];
-    di[i] -= w * up[i - 1];
-    r[i] -= w * r[i - 1];
+    plan.w[i] = plan.lo[i] / plan.di[i - 1];
+    plan.di[i] -= plan.w[i] * plan.up[i - 1];
   }
-  m[k] = r[k - 1] / di[k - 1];  // m[n-2]
+  return plan;
+}
+
+/// The `f`-only half of `cubic_spline_moments`: builds the right-hand side
+/// and replays `plan`'s recorded forward elimination and back-substitution.
+/// `f.size()` must equal `plan.n`.
+[[nodiscard]] inline std::vector<double> solve_cubic_spline_moments(
+    const SplineMomentPlan& plan, const std::vector<double>& f) {
+  if (f.size() != plan.n) {
+    FUSE_THROW(InvalidArgument, "{}", 
+        "fuse::num::cubic_spline_moments: t and f have different lengths");
+  }
+  std::vector<double> m(plan.n, 0.0);
+  if (plan.n < 3) return m;
+
+  const std::size_t k = plan.n - 2;
+  std::vector<double> r(k);
+  for (std::size_t i = 1; i + 1 < plan.n; ++i) {
+    r[i - 1] = 6.0 * ((f[i + 1] - f[i]) / plan.up[i - 1] -
+                      (f[i] - f[i - 1]) / plan.lo[i - 1]);
+  }
+  for (std::size_t i = 1; i < k; ++i) r[i] -= plan.w[i] * r[i - 1];
+
+  m[k] = r[k - 1] / plan.di[k - 1];  // m[n-2]
   for (std::size_t i = k - 1; i-- > 0;) {
-    m[i + 1] = (r[i] - up[i] * m[i + 2]) / di[i];
+    m[i + 1] = (r[i] - plan.up[i] * m[i + 2]) / plan.di[i];
   }
   return m;
+}
+
+[[nodiscard]] inline std::vector<double> cubic_spline_moments(
+    const std::vector<double>& t, const std::vector<double>& f) {
+  return solve_cubic_spline_moments(prepare_cubic_spline_moments(t), f);
 }
 
 /// Evaluate the spline defined by (t, f, m) at `x`. `x` outside [t.front(),

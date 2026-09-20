@@ -3,6 +3,7 @@
 #include <fuse/base/error.hpp>
 
 #include <cmath>
+#include <functional>
 #include <stdexcept>
 #include <vector>
 
@@ -246,5 +247,76 @@ TEST(TemporalBasis, SplineRejectsMalformedInput) {
   EXPECT_THROW((void)integrate_cubic_spline({}, {}, {}, 0.0, 1.0),
                fuse::InvalidArgument);
   EXPECT_THROW((void)eval_cubic_spline({0.0, 1.0}, {1.0, 2.0}, {0.0}, 0.5),
+               fuse::InvalidArgument);
+}
+
+// ---------------------------------------------------------------------------
+// REVIEW.md R-48: the prepare/solve split
+// ---------------------------------------------------------------------------
+//
+// `fit_polynomial`/`cubic_spline_moments` are themselves unchanged (defined
+// in terms of prepare_*/solve_* below), so every test above already pins
+// their answer. These pin the two halves directly: one plan, reused for
+// several distinct `f` arrays sharing the same `t`, must give each `f` the
+// same answer solving that `f` monolithically would -- the property
+// `Waveform`'s per-element loops depend on now that they build the plan once
+// (waveform.hpp `evaluate_dg`/`integrate_dg`/`evaluate_spline`/`integrate_spline`).
+
+TEST(TemporalBasis, PreparedPolynomialFitAgreesWithFitPolynomialAcrossSeveralF) {
+  const std::vector<double> t = {0.0, 0.25, 0.6, 1.0};
+  const std::function<double(double)> f0 = [](double x) { return 2.0 * x * x - x + 3.0; };
+  const std::function<double(double)> f1 = [](double x) { return -x * x + 4.0 * x - 1.5; };
+  const auto plan = fuse::num::prepare_polynomial_fit(t, 2, 0.0);
+
+  for (const auto& f : {f0, f1}) {
+    std::vector<double> ff(t.size());
+    for (std::size_t i = 0; i < t.size(); ++i) ff[i] = f(t[i]);
+    const std::vector<double> c_shared = fuse::num::solve_polynomial_fit(plan, ff);
+    const std::vector<double> c_monolithic = fit_polynomial(t, ff, 2, 0.0);
+    ASSERT_EQ(c_shared.size(), c_monolithic.size());
+    for (std::size_t i = 0; i < c_shared.size(); ++i) {
+      EXPECT_DOUBLE_EQ(c_shared[i], c_monolithic[i]) << "coefficient " << i;
+    }
+    // And the fit itself is exact for a quadratic at degree 2.
+    for (const double x : {0.1, 0.5, 0.9}) {
+      EXPECT_NEAR(eval_polynomial(c_shared, x, 0.0), f(x), 1e-11) << "x=" << x;
+    }
+  }
+}
+
+TEST(TemporalBasis, PreparedSplineMomentsAgreeWithCubicSplineMomentsAcrossSeveralF) {
+  const std::vector<double> t = {0.0, 0.3, 0.55, 0.8, 1.0};
+  const std::function<double(double)> f0 = [](double x) { return std::exp(std::sin(3.0 * x)); };
+  const std::function<double(double)> f1 = [](double x) { return std::cos(2.0 * x) + x; };
+  const auto plan = fuse::num::prepare_cubic_spline_moments(t);
+
+  for (const auto& f : {f0, f1}) {
+    std::vector<double> ff(t.size());
+    for (std::size_t i = 0; i < t.size(); ++i) ff[i] = f(t[i]);
+    const std::vector<double> m_shared =
+        fuse::num::solve_cubic_spline_moments(plan, ff);
+    const std::vector<double> m_monolithic = cubic_spline_moments(t, ff);
+    ASSERT_EQ(m_shared.size(), m_monolithic.size());
+    for (std::size_t i = 0; i < m_shared.size(); ++i) {
+      EXPECT_DOUBLE_EQ(m_shared[i], m_monolithic[i]) << "moment " << i;
+    }
+    for (std::size_t i = 0; i < t.size(); ++i) {
+      EXPECT_NEAR(eval_cubic_spline(t, ff, m_shared, t[i]), f(t[i]), 1e-12)
+          << "i=" << i;
+    }
+  }
+}
+
+TEST(TemporalBasis, PreparePolynomialFitThrowsExactlyAsFitPolynomialOnTOnlyErrors) {
+  EXPECT_THROW((void)fuse::num::prepare_polynomial_fit({}, 1, 0.0),
+               fuse::InvalidArgument);
+  EXPECT_THROW((void)fuse::num::prepare_polynomial_fit({0.0, 1.0}, -1, 0.0),
+               fuse::InvalidArgument);
+  EXPECT_THROW((void)fuse::num::prepare_polynomial_fit({1.0, 1.0}, 1, 1.0),
+               std::runtime_error);
+}
+
+TEST(TemporalBasis, PrepareSplineMomentsThrowsExactlyAsCubicSplineMomentsOnTOnlyErrors) {
+  EXPECT_THROW((void)fuse::num::prepare_cubic_spline_moments({0.0, 1.0, 1.0}),
                fuse::InvalidArgument);
 }

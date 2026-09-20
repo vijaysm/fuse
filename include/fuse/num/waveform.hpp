@@ -478,10 +478,15 @@ class Waveform {
     const std::vector<double> tt  = local_times();
     const int                 deg = effective_dg_degree();
     const double              x   = local(t);
+    // The normal-equations build-and-eliminate depends only on `tt`/`deg`,
+    // not on any element's values, so it is hoisted out of the per-element
+    // loop below (REVIEW.md R-48): every element replays the same
+    // factorization on its own right-hand side instead of rebuilding it.
+    const num::PolynomialFitPlan plan = num::prepare_polynomial_fit(tt, deg, 0.0);
     std::vector<double>       ff(times_.size());
     for (std::size_t e = 0; e < elements_; ++e) {
       gather(e, ff);
-      out[e] = num::eval_polynomial(num::fit_polynomial(tt, ff, deg, 0.0), x,
+      out[e] = num::eval_polynomial(num::solve_polynomial_fit(plan, ff), x,
                                     0.0);
     }
   }
@@ -489,11 +494,15 @@ class Waveform {
   void evaluate_spline(Rational t, double* out) const {
     const std::vector<double> tt = local_times();
     const double              x  = local(t);
+    // The tridiagonal moment matrix depends only on `tt`, so its
+    // factorization is hoisted out of the per-element loop (REVIEW.md R-48),
+    // matching evaluate_dg's plan/solve split above.
+    const num::SplineMomentPlan plan = num::prepare_cubic_spline_moments(tt);
     std::vector<double>       ff(times_.size());
     for (std::size_t e = 0; e < elements_; ++e) {
       gather(e, ff);
-      out[e] = num::eval_cubic_spline(tt, ff, num::cubic_spline_moments(tt, ff),
-                                      x);
+      out[e] = num::eval_cubic_spline(
+          tt, ff, num::solve_cubic_spline_moments(plan, ff), x);
     }
   }
 
@@ -537,10 +546,12 @@ class Waveform {
     const int                 deg = effective_dg_degree();
     const double              xa  = local(a);
     const double              xb  = local(b);
+    // Hoisted for the same reason as evaluate_dg above (REVIEW.md R-48).
+    const num::PolynomialFitPlan plan = num::prepare_polynomial_fit(tt, deg, 0.0);
     std::vector<double>       ff(times_.size());
     for (std::size_t e = 0; e < elements_; ++e) {
       gather(e, ff);
-      out[e] = num::integrate_polynomial(num::fit_polynomial(tt, ff, deg, 0.0),
+      out[e] = num::integrate_polynomial(num::solve_polynomial_fit(plan, ff),
                                          xa, xb, 0.0);
     }
   }
@@ -549,11 +560,13 @@ class Waveform {
     const std::vector<double> tt = local_times();
     const double              xa = local(a);
     const double              xb = local(b);
+    // Hoisted for the same reason as evaluate_spline above (REVIEW.md R-48).
+    const num::SplineMomentPlan plan = num::prepare_cubic_spline_moments(tt);
     std::vector<double>       ff(times_.size());
     for (std::size_t e = 0; e < elements_; ++e) {
       gather(e, ff);
       out[e] = num::integrate_cubic_spline(
-          tt, ff, num::cubic_spline_moments(tt, ff), xa, xb);
+          tt, ff, num::solve_cubic_spline_moments(plan, ff), xa, xb);
     }
   }
 
