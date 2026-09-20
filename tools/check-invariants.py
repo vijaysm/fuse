@@ -68,7 +68,7 @@ def scan(root: Path) -> list[str]:
     # feature-macro rules: a test may legitimately throw a std:: type in a
     # fixture, but a test that reads FUSE_HAVE_MOAB without config.hpp compiles
     # to a skip stub in every configuration and reads like a pass (REVIEW.md
-    # R-09: 38 MOAB cases, never once executed). Found 2026-09-19 -- the same
+    # R-06: 38 MOAB cases, never once executed). Found 2026-09-19 -- the same
     # scope gap the layering gate closed on 09-17, in the other tool.
     for area in ("include", "src", "test", "examples"):
         library_code = area in ("include", "src")
