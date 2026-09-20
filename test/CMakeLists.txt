@@ -128,7 +128,7 @@ endif()
 # per-case guards if this list grows. Determined by running the leg, not by
 # reading: the nine here are exactly the targets that still aborted once the
 # library stopped using throw/catch as internal control flow.
-foreach(t ir_op ir_dump lowering lowering_channel lowering_derived lowering_regions scale)
+foreach(t ir_op ir_dump lowering lowering_channel lowering_derived lowering_regions scale golden_ir)
   fuse_add_gtest(ir ${t})
 endforeach()
 fuse_add_gtest(ir ir_dag THROWS)

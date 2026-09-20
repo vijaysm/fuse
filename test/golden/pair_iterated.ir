@@ -3,10 +3,11 @@ node 0   Source                    -> %0 : Instant<r0, kg·s^-3, Extensive, [Win
 node 1   Sample       %0           -> %1 : Waveform<r0, kg·s^-3, Extensive, [WindowEnd, k], ranks=0>  "flux/sample"
 node 2   Accumulate   %1           -> %2 : Instant<r0, kg·s^-3, Extensive, [WindowEnd, k], ranks=0>  "flux/accumulate" {accum=Mean}
 node 3   Transport    %2           -> %3 : Instant<r0, kg·s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/transport" {0->1}
-node 4   Remap        %3           -> %4 : Instant<r1, kg·s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/remap" {remap=CM}
-node 5   Constrain    %4           -> %5 : Instant<r1, kg·s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/constrain"
-node 6   Diagnose     %5           -> %6 : Instant<r1, kg·s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/diagnose"
-node 7   Relax        %6           -> %7 : Instant<r1, kg·s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/relax" {omega=0.7}
-node 8   Residual     %7           -> %8 : Instant<r1, kg·s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/residual"
-node 9   Sink         %7           -> %9 : Instant<r1, kg·s^-3, Extensive, [WindowEnd, k], ranks=1>  "solid.q_in"
-region 0 "outer" body=[1,2,3,4,5,6,7] residuals=[%8] carried=[%7] max_iter=30
+node 4   Epoch        %3           -> %4 : Instant<r0, kg·s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/epoch" {reason=after-transport}
+node 5   Remap        %4           -> %5 : Instant<r1, kg·s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/remap" {remap=CM}
+node 6   Constrain    %5           -> %6 : Instant<r1, kg·s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/constrain"
+node 7   Diagnose     %6           -> %7 : Instant<r1, kg·s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/diagnose"
+node 8   Relax        %7           -> %8 : Instant<r1, kg·s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/relax" {omega=0.7}
+node 9   Residual     %8           -> %9 : Instant<r1, kg·s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/residual"
+node 10  Sink         %8           -> %10 : Instant<r1, kg·s^-3, Extensive, [WindowEnd, k], ranks=1>  "solid.q_in"
+region 0 "outer" body=[1,2,3,4,5,6,7,8] residuals=[%9] carried=[%8] max_iter=30
