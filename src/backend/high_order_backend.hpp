@@ -1,8 +1,9 @@
 #pragma once
 
 // PRIVATE header. Lives under src/, is not installed, and is included by
-// exactly two translation units: src/remap/intx_weights.cpp (the generic layer)
-// and src/remap/tempest_weights.cpp (the one backend that exists today).
+// exactly two translation units: src/backend/intx_weights.cpp (the generic
+// layer) and src/backend/tempest_weights.cpp (the one backend that exists
+// today).
 //
 // PURPOSE. Task 5.3 added a second way to build remap weights. The seam between
 // "resolve the plan, find the meshes, classify the geometry, audit the result"
