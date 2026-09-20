@@ -28,7 +28,7 @@ struct MoabNativeMesh {
 
 /// MOAB-backed topology. Per the Global Constraints dependency rule, no MOAB
 /// type appears here; `moab/Core.hpp` is included only by
-/// `src/mesh/moab_backend.cpp`.
+/// `src/backend/moab_backend.cpp`.
 ///
 /// SOURCES
 ///   any path MOAB can read      `.h5m`, `.exo`, `.g`, `.vtk`, `.cub`, ...
@@ -62,8 +62,8 @@ struct MoabNativeMesh {
 ///
 /// MEASURES are physical, unsigned, additive and local, exactly as
 /// `MeshView::measure` specifies. See the implementation notes in
-/// `src/mesh/moab_backend.cpp` for how each element type is integrated and
-/// which ones are refused.
+/// `src/backend/moab_backend.cpp` for how each element type is integrated
+/// and which ones are refused.
 ///
 /// PARALLEL. Without `set_communicator` the backend is serial: every rank
 /// that runs it reads the whole file independently and owns every entity.
@@ -132,14 +132,17 @@ class MoabMeshBackend final : public MeshBackend {
   /// what closes it, and once it has run the weights are conservative on a
   /// partitioned read.
   ///
-  /// THIS VALUE IS LOAD BEARING AND ITS BOUNDARY IS TESTED. `> 1` refuses;
-  /// `== 1` must NOT, because a one-rank communicator is an ordinary MPI job
-  /// whose mesh happens to be undivided, every cell is local, and the serial
-  /// construction is exactly right. Refusing it would take remap away from
-  /// every MPI run and no serial test could see the difference. Guard on the
-  /// property that breaks correctness -- the mesh being DIVIDED -- not on
-  /// "a communicator exists". `test/unit/remap_parallel_test.cpp` pins both
-  /// sides, the one-rank leg being the positive control.
+  /// THIS VALUE IS LOAD BEARING AND ITS BOUNDARY SHOULD BE TESTED. `> 1`
+  /// refuses; `== 1` must NOT, because a one-rank communicator is an
+  /// ordinary MPI job whose mesh happens to be undivided, every cell is
+  /// local, and the serial construction is exactly right. Refusing it would
+  /// take remap away from every MPI run and no serial test could see the
+  /// difference. Guard on the property that breaks correctness -- the mesh
+  /// being DIVIDED -- not on "a communicator exists". REVIEW.md R-11: no
+  /// test in this tree exercises either side of this boundary --
+  /// `test/unit/remap_parallel_test.cpp`, cited here previously, does not
+  /// exist under `test/backend/`. Implemented, untested (docs/dev/testing.md
+  /// state), until an MPI test is ported (see B1/B2's "test to add").
   ///
   /// 1 on a moved-from backend, which holds no meshes for anyone to remap.
   /// Never throws.
@@ -239,7 +242,7 @@ class MoabMeshBackend final : public MeshBackend {
                                                    int components) const;
 
   /// INTERNAL SEAM for `build_remap_halo`'s geometry half, which lives in
-  /// `src/remap/intx_weights.cpp` because that is where the surface
+  /// `src/backend/intx_weights.cpp` because that is where the surface
   /// classification and the orientation pass already are. Adopts `cells`
   /// (`moab::EntityHandle`s, as opaque integers) as halo cells of `source` at
   /// `dim`, skipping any whose global id this rank already holds. Nothing but
@@ -248,7 +251,7 @@ class MoabMeshBackend final : public MeshBackend {
                                        const std::uint64_t* cells,
                                        std::size_t count);
 
-  /// INTERNAL SEAM, added for Task 5.2 (`src/remap/intx_weights.cpp`) and used
+  /// INTERNAL SEAM, added for Task 5.2 (`src/backend/intx_weights.cpp`) and used
   /// nowhere else. `MeshView` deliberately exposes no connectivity and no
   /// coordinates, which is right for the runtime but leaves a supermesh
   /// builder unable to do its job: an intersection needs the actual polygons.

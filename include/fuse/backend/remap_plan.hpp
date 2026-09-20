@@ -36,8 +36,13 @@ namespace fuse {
 ///   It is a MEASURE-WEIGHTED sum down a column.
 ///
 /// The two are easy to state backwards, and a matrix that is wrong one way
-/// still looks right on a uniform field, so both are pinned by separate tests
-/// (`RemapRow.*` and `RemapColumn.*` in `test/unit/remap_test.cpp`) and both
+/// still looks right on a uniform field. REVIEW.md R-11: there is no
+/// `RemapRow.*`/`RemapColumn.*` suite -- that cited `test/unit/remap_test.cpp`,
+/// which does not exist under `test/backend/`. The order-1 supermesh path is
+/// exercised for both properties by `Supermesh.AConstantSurvivesAndTotal
+/// MassIsPreserved` (row) and the `*IsExactlyConservative` tests (column) in
+/// `test/backend/supermesh_test.cpp`; the MOAB and high-order builder paths
+/// are implemented, untested (docs/dev/testing.md state). Both
 /// residuals are reported in `RemapWeights::max_row_defect` and
 /// `max_col_defect`. This is the same orientation `TemporalProjection` uses
 /// (`fuse/backend/spacetime.hpp`): row sums unity, column sums carrying the
@@ -134,13 +139,19 @@ struct RemapWeights {
   // Added in Task 5.3, when a second builder appeared. Two builders that both
   // return a `RemapWeights` do NOT return the same kind of object, and the
   // difference is not visible in the triplets. These fields say which one you
-  // were handed, and are asserted rather than described: see
-  // `RemapOrder.*` and `RemapMonotone.*` in test/unit/.
+  // were handed. REVIEW.md R-11: no test in this tree reads either field --
+  // `RemapOrder.*`/`RemapMonotone.*` cited here previously do not exist.
+  // Implemented, untested (docs/dev/testing.md state).
 
   /// The polynomial order of the reconstruction the weights were built from:
   /// 1 = piecewise constant (exact for constants), 2 = exact for linears, and
-  /// so on. NOT a promise about the observed convergence rate -- that is
-  /// measured, in `test/unit/remap_order_test.cpp`.
+  /// so on. NOT a promise about the observed convergence rate. REVIEW.md
+  /// R-11: order 1 is measured by
+  /// `Supermesh.ObservedOrderOnANonMatchingPairIsAtLeastOne`
+  /// (`test/backend/supermesh_test.cpp`); order > 1 is implemented,
+  /// untested here -- this build has no TempestRemap to build a high-order
+  /// map to measure. `test/unit/remap_order_test.cpp`, cited here
+  /// previously, does not exist.
   int order = 1;
 
   /// True only when the map is bound preserving BY CONSTRUCTION and that has
@@ -320,8 +331,12 @@ struct RemapPlan {
 /// ignored.
 ///
 /// WHICH PROPERTIES EACH CONFIGURATION ACTUALLY GUARANTEES. Measured residuals
-/// are for a 6x24^2 against 6x16^2 cubed-sphere pair; see the task report and
-/// `test/unit/remap_test.cpp` for the exact numbers, which are asserted.
+/// below are for a 6x24^2 against 6x16^2 cubed-sphere pair, from the task
+/// report that introduced this table. REVIEW.md R-11: `test/unit/remap_test.cpp`,
+/// cited here previously as where these numbers are asserted, does not exist
+/// under `test/backend/`; the MOAB-backed configurations below are
+/// implemented, untested (docs/dev/testing.md state) -- only the order-1
+/// supermesh row is exercised, by `test/backend/supermesh_test.cpp`.
 ///
 ///   supermesh, order 1        conservative in `MeshView::measure` (1e-16),
 ///     (axis-aligned boxes)    constant-preserving (1e-16), bound-preserving.
@@ -389,7 +404,7 @@ struct RemapPlan {
 /// and the message says so in those terms: high-order remap on a plane or in a
 /// volume is UNIMPLEMENTED here, not impossible. Nothing in `RemapPlan`,
 /// `RemapWeights` or `RemapFlags` is spherical, and the internal backend
-/// interface (`src/remap/high_order_backend.hpp`) takes a polygon-soup surface
+/// interface (`src/backend/high_order_backend.hpp`) takes a polygon-soup surface
 /// plus a geometry classification, so a planar or volumetric high-order backend
 /// can be added behind the same seam.
 ///
@@ -440,9 +455,13 @@ struct RemapPlan {
 /// quantity at two ranks and 91.2% at four, returned as SUCCESS unless
 /// `RemapFlags::Conservative` happens to be set. So `build_weights` refuses a
 /// partitioned pair for which no halo was built (`E-REMAP-PARALLEL`), and with
-/// one it conserves to 1.2e-15 at two ranks and 7.4e-16 at four. Both halves
-/// are pinned by `test/unit/remap_parallel_test.cpp` (the refusal) and
-/// `test/unit/remap_halo_parallel_test.cpp` (the halo and the conservation).
+/// one it conserves to 1.2e-15 at two ranks and 7.4e-16 at four, from the
+/// task report that measured this. REVIEW.md R-11: neither number is pinned
+/// by a test in this tree -- `test/unit/remap_parallel_test.cpp` and
+/// `test/unit/remap_halo_parallel_test.cpp`, cited here previously, do not
+/// exist under `test/backend/`. Both the refusal and the halo/conservation
+/// path are implemented, untested (docs/dev/testing.md state); see B1/B2
+/// in REVIEW.md for the MPI tests that would verify them.
 ///
 /// The refusal is keyed on the communicator having MORE THAN ONE RANK, not on
 /// a communicator being present: a one-rank communicator is an ordinary MPI
