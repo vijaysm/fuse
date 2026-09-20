@@ -286,20 +286,6 @@ class TwoComponentJob {
                                             .entity_set = entity_set,
                                             .dimension = dim_});
 
-    const auto pf = graph.add_component(fuse::ComponentDecl{
-        .name = "fluid", .ranks = fluid_, .interval = Rational{1}});
-    const auto sc = graph.add_component(fuse::ComponentDecl{
-        .name = "solid", .ranks = solid_, .interval = Rational{1}});
-    src_field_ = graph.add_field(
-        pf, fuse::FieldSpec{.name = "out", .region = region_,
-                           .units = fuse::units::kKelvin,
-                           .intent = fuse::Intent::Provides});
-    dst_field_ = graph.add_field(
-        sc, fuse::FieldSpec{.name = "in", .region = region_,
-                           .units = fuse::units::kKelvin,
-                           .intent = fuse::Intent::Requires});
-    const auto channel = graph.add_channel("link", src_field_, dst_field_);
-
     fuse::FieldId src_field_b, dst_field_b;
 
     // Declared BEFORE the region, deliberately. The scheduler keeps a
@@ -325,6 +311,21 @@ class TwoComponentJob {
                              .intent = fuse::Intent::Requires});
       graph.add_channel("linkB", src_field_b, dst_field_b);
     }
+
+    const auto pf = graph.add_component(fuse::ComponentDecl{
+        .name = "fluid", .ranks = fluid_, .interval = Rational{1}});
+    const auto sc = graph.add_component(fuse::ComponentDecl{
+        .name = "solid", .ranks = solid_, .interval = Rational{1}});
+    src_field_ = graph.add_field(
+        pf, fuse::FieldSpec{.name = "out", .region = region_,
+                           .units = fuse::units::kKelvin,
+                           .intent = fuse::Intent::Provides});
+    dst_field_ = graph.add_field(
+        sc, fuse::FieldSpec{.name = "in", .region = region_,
+                           .units = fuse::units::kKelvin,
+                           .intent = fuse::Intent::Requires});
+    const auto channel = graph.add_channel("link", src_field_, dst_field_);
+
 
     if (with_iteration_region) {
       fuse::ConvergenceCriterion conv;
