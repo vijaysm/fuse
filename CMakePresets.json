@@ -8,7 +8,7 @@
       "displayName": "Prefixes for this machine",
       "description": "Where the installed dependencies live. Edit this ONE preset on another machine; the tiers below inherit it. Kokkos is required at every tier and is machine-optimised, which is why nothing is fetched by default.",
       "generator": "Unix Makefiles",
-      "binaryDir": "${sourceDir}/build/${presetName}",
+      "binaryDir": "${sourceDir}/build-${presetName}",
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "CMAKE_PREFIX_PATH": "/opt/kokkos;/opt/kokkos-kernels;/opt/homebrew;/opt/mpich;/opt/petsc/download-moab;/opt/hdf5",
