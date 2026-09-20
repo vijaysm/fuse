@@ -37,6 +37,7 @@
 #include <fuse/schedule/acyclicity.hpp>
 #include <fuse/schedule/clock.hpp>
 #include <fuse/schedule/expand.hpp>
+#include <fuse/schedule/plan.hpp>
 
 namespace {
 
@@ -47,6 +48,11 @@ struct Generated {
   /// The independently computed answer: true when the unlagged channels close
   /// a loop over the components.
   bool has_same_level_loop = false;
+  /// True when any generated channel carries a lag. Kept separate from
+  /// `has_same_level_loop` (which a lagged channel never affects, by this
+  /// suite's own restriction) because it gates the narrower `schedule()`
+  /// pass below, not the cycle answer.
+  bool has_lag = false;
   std::string description;
 };
 
@@ -127,6 +133,7 @@ Generated generate(std::mt19937& rng) {
       // that is intended. Saying it here is part of generating a well-formed
       // graph, not a way around the check.
       ch.lag(lag).allow_time_level_mismatch("generated lagged channel");
+      out.has_lag = true;
     }
 
     out.description += (lag > 0 ? "c" : "C") + std::to_string(a) + "->" +
@@ -147,6 +154,27 @@ CycleReport run_detector(const CouplingGraph& g) {
   return prove_acyclic(g, lowered.dag, td.value());
 }
 
+RegionSizes constant_sizes(std::size_t n) {
+  return [n](RegionId) -> std::size_t { return n; };
+}
+
+/// N-ir-schedule-1 (docs/dev/reviews/2026-09-19/pass2/re-ir-schedule.md): the
+/// sweep above generates random `Merge` arities but only ever calls
+/// `prove_acyclic()`, so the left-fold-of-pairwise-merges lowering (R-27) got
+/// no independent-oracle coverage of its own -- only the two hand-built
+/// fixed-shape tests in plan_test.cpp. This routes the same random graphs
+/// through the full scheduler, exercising buffer planning and instruction
+/// emission over whatever merge chain `lower()` folded for that graph.
+///
+/// 64 per region, matching plan_test.cpp's fold fixtures -- ample for the at
+/// most 6 channels/6 merges this generator produces.
+ScheduleResult run_scheduler(const CouplingGraph& g) {
+  const auto lowered = lower(g);
+  EXPECT_TRUE(lowered.ok()) << lowered.diags.to_string();
+  const ClockSet cs{g};
+  return schedule(g, lowered.dag, cs, constant_sizes(64));
+}
+
 /// 2000 by default so the suite stays a few seconds. FUSE_SWEEP_GRAPHS raises
 /// it for a deliberate long run; the seed is fixed either way, so a failure is
 /// reproducible from the reported index alone.
@@ -161,6 +189,7 @@ std::size_t sweep_size() {
 TEST(AcyclicitySweep, VerdictAgreesWithAnIndependentlyComputedAnswer) {
   std::mt19937 rng(20260916u);
   std::size_t with_loop = 0, without = 0, false_negatives = 0, false_positives = 0;
+  std::size_t scheduled = 0, schedule_disagreements = 0;
 
   const std::size_t n = sweep_size();
   for (std::size_t i = 0; i < n; ++i) {
@@ -189,6 +218,31 @@ TEST(AcyclicitySweep, VerdictAgreesWithAnIndependentlyComputedAnswer) {
                       << report.explanation;
       }
     }
+
+    // Also route the lockstep, non-lagged, non-region subset of these random
+    // graphs through the full scheduler (N-ir-schedule-1), so the merge
+    // left-fold gets random-oracle coverage of buffer planning and
+    // instruction emission, not just the two hand-built fixtures in
+    // plan_test.cpp. Every graph this generator produces is already lockstep
+    // (one shared component interval) and region-free (no
+    // add_iteration_region call in `generate()`); lag is the one axis this
+    // suite's own cycle answer does not depend on, so it is the one filter
+    // needed here. `schedule()` must agree with the same acyclicity verdict:
+    // it refuses (E-SCHED-CYCLE) exactly when the graph has a same-level
+    // loop, and otherwise its own internal prove_acyclic/expand/plan_buffers
+    // pipeline must complete over whatever merge chain `lower()` folded.
+    if (!gen.has_lag) {
+      ++scheduled;
+      const ScheduleResult sched = run_scheduler(gen.graph);
+      if (sched.ok() == gen.has_same_level_loop) {
+        ++schedule_disagreements;
+        ADD_FAILURE() << "graph " << i << " (" << gen.description
+                      << ") disagreed between the independent cycle answer "
+                         "(has_same_level_loop="
+                      << gen.has_same_level_loop << ") and schedule() (ok="
+                      << sched.ok() << "):\n" << sched.diags.to_string();
+      }
+    }
   }
 
   // The sweep is only evidence if it generated both answers.
@@ -196,8 +250,11 @@ TEST(AcyclicitySweep, VerdictAgreesWithAnIndependentlyComputedAnswer) {
   EXPECT_GT(without, n / 50) << "the generator produced almost no acyclic graphs";
   EXPECT_EQ(false_negatives, 0u);
   EXPECT_EQ(false_positives, 0u);
-  std::printf("[ sweep    ] %zu graphs: %zu with a loop, %zu without\n",
-              with_loop + without, with_loop, without);
+  EXPECT_GT(scheduled, n / 50)
+      << "the generator produced almost no non-lagged graphs to schedule";
+  EXPECT_EQ(schedule_disagreements, 0u);
+  std::printf("[ sweep    ] %zu graphs: %zu with a loop, %zu without; %zu scheduled\n",
+              with_loop + without, with_loop, without, scheduled);
 }
 
 }  // namespace
