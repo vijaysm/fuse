@@ -3,7 +3,10 @@
 #include <fuse/base/error.hpp>
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <new>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -11,6 +14,54 @@
 using fuse::Rational;
 using fuse::TemporalBasis;
 using fuse::Waveform;
+
+// ---------------------------------------------------------------------------
+// Allocation counting, as in test/num/accelerator_test.cpp. REVIEW.md R-48,
+// pass 2: `WaveformOrder.DgAndSplineEvaluateAllocationIsIndependentOfElement
+// Count` below is the fence that MEASURES the per-element solve buffers
+// being hoisted, rather than asserting it in a comment. This is the only
+// translation unit in this test binary, so defining global operator
+// new/delete here is safe (one definition per binary, not per file).
+// ---------------------------------------------------------------------------
+namespace {
+std::size_t g_allocations = 0;
+bool        g_counting    = false;
+
+class AllocationCounter {
+ public:
+  AllocationCounter() {
+    g_allocations = 0;
+    g_counting    = true;
+  }
+  ~AllocationCounter() { g_counting = false; }
+  AllocationCounter(const AllocationCounter&)            = delete;
+  AllocationCounter& operator=(const AllocationCounter&) = delete;
+  [[nodiscard]] std::size_t count() const { return g_allocations; }
+};
+}  // namespace
+
+void* operator new(std::size_t n) {
+  if (g_counting) ++g_allocations;
+  void* p = std::malloc(n == 0 ? 1 : n);
+  if (p == nullptr) throw std::bad_alloc();
+  return p;
+}
+void* operator new[](std::size_t n) { return ::operator new(n); }
+void* operator new(std::size_t n, const std::nothrow_t&) noexcept {
+  if (g_counting) ++g_allocations;
+  return std::malloc(n == 0 ? 1 : n);
+}
+void* operator new[](std::size_t n, const std::nothrow_t& t) noexcept {
+  return ::operator new(n, t);
+}
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+void operator delete(void* p, const std::nothrow_t&) noexcept { std::free(p); }
+void operator delete[](void* p, const std::nothrow_t&) noexcept {
+  std::free(p);
+}
 
 namespace {
 
@@ -526,4 +577,48 @@ TEST(Waveform, LargeAbsoluteTimesDoNotDegradeTheFit) {
   EXPECT_NEAR(eval(w, Rational{t0} + Rational{1, 3}), f(1.0 / 3.0), 1e-12);
   EXPECT_NEAR(integral(w, Rational{t0}, Rational{t0 + 1}),
               2.0 / 3.0 - 0.5 + 3.0, 1e-12);
+}
+
+// ---------------------------------------------------------------------------
+// REVIEW.md R-48, pass 2: the disclosed remaining per-element allocation.
+// ---------------------------------------------------------------------------
+//
+// The first R-48 pass hoisted the shared factorization (`PolynomialFitPlan`/
+// `SplineMomentPlan`) out of the per-element loop, but `solve_polynomial_fit`/
+// `solve_cubic_spline_moments` still allocated their own `rhs`/`c` (resp.
+// `r`/`m`) scratch on every element -- the pass2 re-review's PARTIAL verdict.
+// This pass closes it with the `_into` entry points. The fence: one
+// `evaluate()` call's allocation count must not depend on the element count,
+// since every allocation left in the per-element loop would make it scale
+// with `elements_`.
+namespace {
+std::size_t count_allocations_for_one_evaluate(TemporalBasis basis, int degree,
+                                               std::size_t elements) {
+  Waveform w{elements, 4, basis, degree};
+  w.reset(Rational{0}, Rational{3});
+  std::vector<double> vals(elements);
+  for (int i = 0; i < 4; ++i) {
+    for (std::size_t e = 0; e < elements; ++e) {
+      vals[e] = static_cast<double>(i * i) + 0.1 * static_cast<double>(e);
+    }
+    EXPECT_TRUE(w.push(Rational{i}, vals.data()).ok());
+  }
+  std::vector<double> out(elements);
+  const AllocationCounter counter;
+  EXPECT_TRUE(w.evaluate(Rational{3, 2}, out.data()).ok());
+  return counter.count();
+}
+}  // namespace
+
+TEST(Waveform, DgAndSplineEvaluateAllocationIsIndependentOfElementCount) {
+  for (const auto [basis, degree] :
+       {std::pair{TemporalBasis::DG, 2}, std::pair{TemporalBasis::Spline, 3}}) {
+    const std::size_t few  = count_allocations_for_one_evaluate(basis, degree, 2);
+    const std::size_t many = count_allocations_for_one_evaluate(basis, degree, 400);
+    EXPECT_GT(few, 0u) << "the counter itself is not wired up";
+    EXPECT_EQ(few, many)
+        << "basis=" << static_cast<int>(basis)
+        << ": allocation count scales with element count, so a per-element "
+           "buffer is still being allocated inside the loop";
+  }
 }

@@ -484,10 +484,15 @@ class Waveform {
     // factorization on its own right-hand side instead of rebuilding it.
     const num::PolynomialFitPlan plan = num::prepare_polynomial_fit(tt, deg, 0.0);
     std::vector<double>       ff(times_.size());
+    // REVIEW.md R-48, pass 2: `coeffs`/`rhs_scratch` are hoisted here and
+    // reused every element via the `_into` entry point, so the disclosed
+    // per-element solve allocation is gone too, not just the factorization.
+    std::vector<double>       coeffs;
+    std::vector<double>       rhs_scratch;
     for (std::size_t e = 0; e < elements_; ++e) {
       gather(e, ff);
-      out[e] = num::eval_polynomial(num::solve_polynomial_fit(plan, ff), x,
-                                    0.0);
+      num::solve_polynomial_fit_into(plan, ff, coeffs, rhs_scratch);
+      out[e] = num::eval_polynomial(coeffs, x, 0.0);
     }
   }
 
@@ -499,10 +504,13 @@ class Waveform {
     // matching evaluate_dg's plan/solve split above.
     const num::SplineMomentPlan plan = num::prepare_cubic_spline_moments(tt);
     std::vector<double>       ff(times_.size());
+    // REVIEW.md R-48, pass 2: same hoisting as evaluate_dg above.
+    std::vector<double>       moments;
+    std::vector<double>       r_scratch;
     for (std::size_t e = 0; e < elements_; ++e) {
       gather(e, ff);
-      out[e] = num::eval_cubic_spline(
-          tt, ff, num::solve_cubic_spline_moments(plan, ff), x);
+      num::solve_cubic_spline_moments_into(plan, ff, moments, r_scratch);
+      out[e] = num::eval_cubic_spline(tt, ff, moments, x);
     }
   }
 
@@ -549,10 +557,13 @@ class Waveform {
     // Hoisted for the same reason as evaluate_dg above (REVIEW.md R-48).
     const num::PolynomialFitPlan plan = num::prepare_polynomial_fit(tt, deg, 0.0);
     std::vector<double>       ff(times_.size());
+    // REVIEW.md R-48, pass 2: same hoisting as evaluate_dg above.
+    std::vector<double>       coeffs;
+    std::vector<double>       rhs_scratch;
     for (std::size_t e = 0; e < elements_; ++e) {
       gather(e, ff);
-      out[e] = num::integrate_polynomial(num::solve_polynomial_fit(plan, ff),
-                                         xa, xb, 0.0);
+      num::solve_polynomial_fit_into(plan, ff, coeffs, rhs_scratch);
+      out[e] = num::integrate_polynomial(coeffs, xa, xb, 0.0);
     }
   }
 
@@ -563,10 +574,13 @@ class Waveform {
     // Hoisted for the same reason as evaluate_spline above (REVIEW.md R-48).
     const num::SplineMomentPlan plan = num::prepare_cubic_spline_moments(tt);
     std::vector<double>       ff(times_.size());
+    // REVIEW.md R-48, pass 2: same hoisting as evaluate_dg above.
+    std::vector<double>       moments;
+    std::vector<double>       r_scratch;
     for (std::size_t e = 0; e < elements_; ++e) {
       gather(e, ff);
-      out[e] = num::integrate_cubic_spline(
-          tt, ff, num::solve_cubic_spline_moments(plan, ff), xa, xb);
+      num::solve_cubic_spline_moments_into(plan, ff, moments, r_scratch);
+      out[e] = num::integrate_cubic_spline(tt, ff, moments, xa, xb);
     }
   }
 
