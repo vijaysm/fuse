@@ -2,8 +2,9 @@
 
 Six independent read-only reviews, one per layer group, against the same commit with the same
 rubric (docs/dev/invariants.md, layering.md, conventions.md, testing.md, rank-agreement.md, porting.md).
-**50 findings: 10 BLOCKER, 22 MAJOR, 14 MINOR,
-2 IMPROVEMENT, 2 DEVIATION.** The detailed reviews, with
+**51 findings: 11 BLOCKER, 21 MAJOR, 15 MINOR,
+2 IMPROVEMENT, 2 DEVIATION.** (R-51 added and R-31 reclassified MAJOR→MINOR while fixing wave 0,
+2026-09-19 — see their rows below for why.) The detailed reviews, with
 every finding's evidence and concrete fix, are in `docs/dev/reviews/2026-09-19/`; this document is the
 index, the causes, and the order to fix them in.
 
@@ -30,6 +31,7 @@ fix step for every finding begins with reading the cited lines.
 | R-08 | [NL-B1](docs/dev/reviews/2026-09-19/num-linalg-field.md) | `include/fuse/field/pipeline.hpp:96-99` | `FieldSpan::from()` refuses the exact empty-partition `FieldRef` that `FieldRegistry::bind()` was fixed to acc | reviewer |
 | R-09 | [TR-F1](docs/dev/reviews/2026-09-19/transport-runtime.md) | `src/runtime/runner.cpp:2112-2118` | A failing iteration region makes `step_period()` abandon the rest of the period's instruction stream, includin | **verified here** |
 | R-10 | [TR-F2](docs/dev/reviews/2026-09-19/transport-runtime.md) | `src/runtime/iteration.cpp:600-639` | Iteration-region convergence is decided from a purely rank-local residual with no cross-rank agreement; ranks  | **verified here** |
+| R-51 | *(added while fixing, 2026-09-19)* | `test/parallel/comm_graph_test.cpp:1-13` | Only `<gtest/gtest.h>` preceded this file's `#if FUSE_HAVE_MPI` — the same undefined-macro bug as R-06, one directory over — so its 28 CommGraph/Crystal-Router cases compiled to nothing in every configuration. **Fixed in wave 0**, commit `4a2ad6e` (the same commit that added the `test`/`examples` scan and the presence-test rule these two findings motivated). | **verified here** |
 
 ### MAJOR — reachable in normal use, or a binding rule the gates missed
 
@@ -55,13 +57,13 @@ fix step for every finding begins with reading the cited lines.
 | R-28 | [IR-F3](docs/dev/reviews/2026-09-19/ir-schedule.md) | `include/fuse/schedule/buffers.hpp:85-93`; `src/schedule/buffers.cpp:147-152` | `buffers.hpp` documents `plan_buffers()`/`try_plan_buffers()` as throwing `std::invalid_argument` / `std::out_ | reviewer |
 | R-29 | [NL-A1](docs/dev/reviews/2026-09-19/num-linalg-field.md) | `include/fuse/field/field_ref.hpp:97-98` | `Layout::well_formed()` rejects valid padded/strided layouts (off-by-one-stride-unit bound) | reviewer |
 | R-30 | [TR-F3](docs/dev/reviews/2026-09-19/transport-runtime.md) | `src/transport/mpi_transport.cpp:355-358` vs `842-876` | `MpiTransport::build_plan()` has no cross-rank agreement on `TransportSpec::components`, unlike the peer-wise  | reviewer |
-| R-31 | [TR-F4](docs/dev/reviews/2026-09-19/transport-runtime.md) | `include/fuse/transport/transport.hpp:255`, `src/transport/lowfive_transport.cpp:66` | Residual `SOMA_ENABLE_LOWFIVE` (should be `FUSE_ENABLE_LOWFIVE`) survives in a doc comment and in the `E-TRANS | reviewer |
 | R-32 | [TR-F5](docs/dev/reviews/2026-09-19/transport-runtime.md) | `src/runtime/runner.cpp:1567` | `resolve_epoch_participants()`'s `MPI_TAG_UB` safety check queries `MPI_COMM_WORLD` instead of the configured  | reviewer |
 
 ### MINOR — latent, edge case, robustness
 
 | # | Source | Location | Finding | Checked |
 |---|---|---|---|---|
+| R-31 | [TR-F4](docs/dev/reviews/2026-09-19/transport-runtime.md) | `include/fuse/transport/transport.hpp:255`, `src/transport/lowfive_transport.cpp:66` | Reclassified MAJOR→MINOR while fixing (2026-09-19): confirmed by reading both cited lines that `SOMA_ENABLE_LOWFIVE` names a stale identifier only in a doc comment and an error-message string, never in a live `#ifdef`/`defined()` — LowFive was never compiled out by it. Both lines already read `FUSE_ENABLE_LOWFIVE` after wave 0's commit `4a2ad6e` (the same commit that fixed R-06's twin, R-51). **Fixed in wave 0.** | **verified here** |
 | R-33 | [BK-MIN1](docs/dev/reviews/2026-09-19/backend.md) | `src/backend/spacetime.cpp` (`apply_spacetime`) | Zero-temporal-weight early return skips all spatial-operator bounds/null validation for that call, so a malfor | reviewer |
 | R-34 | [BM-M6](docs/dev/reviews/2026-09-19/base-model.md) | `include/fuse/model/iteration.hpp:80,127` | Dangling doc cross-reference: "the header comment" it points to does not exist | reviewer |
 | R-35 | [BM-M7](docs/dev/reviews/2026-09-19/base-model.md) | `src/base/error.cpp:167,191` | Previous `std::terminate` handler captured in `g_previous` but never chained or otherwise used | reviewer |
@@ -120,11 +122,18 @@ data-dependent per-rank refusals ahead of documented collectives in both weight 
 planning (R-01, R-02). Every one is a hang, not an error message.
 
 **2.3 A macro nothing defines.** The class this project has been bitten by four times is here twice
-more: the MOAB test stub above, and `SOMA_ENABLE_LOWFIVE` surviving in `transport.hpp` as a live
-`#ifdef` (R-31) — so the LowFive transport is compiled out of every build
-regardless of `FUSE_ENABLE_LOWFIVE`. The invariant gate checks that a `FUSE_HAVE_*` read follows the
-config include; it does not check for `#ifdef` on those macros, and it does not know that a
-`SOMA_`-prefixed macro is a legacy name (the layering gate does, but only for namespaces and includes).
+more: the MOAB test stub above (R-06) and its exact twin one directory
+over, `test/parallel/comm_graph_test.cpp` (R-51) — 28 CommGraph/Crystal-Router
+cases compiled to nothing for the identical reason. (An earlier draft of this section also counted
+`SOMA_ENABLE_LOWFIVE` here as a live `#ifdef` compiling LowFive out of every build; re-reading both
+cited lines while fixing R-31 found the stale name only in a doc comment and an error-message
+string, never in a conditional — reclassified MAJOR→MINOR, see its row above.) The invariant gate
+checks that a `FUSE_HAVE_*` read follows the config include; it does not check for `#ifdef` on those
+macros, and it does not know that a `SOMA_`-prefixed macro is a legacy name (the layering gate does,
+but only for namespaces and includes). Wave 0 closed this gap: `check-invariants.py` now also scans
+`test/` and `examples/`, forbids `#ifdef`/`defined()` on any `FUSE_HAVE_*`/`FUSE_ENABLE_*`, and flags
+a `SOMA_`/`KARMA_`-prefixed macro anywhere in `fuse::` code — R-06 and R-51 are both fixed by the
+same commit that added it, `4a2ad6e`.
 
 **2.4 Documentation that describes code that is not there.** `KNOWN_ISSUES` B1 still says tier 2 does
 not build, fifteen lines above C1 saying it does (R-23). `build.md` documents
@@ -161,9 +170,9 @@ changed, and the choice written down.
 | Golden IR regression suite is the first mutation gate (S3.1) | Golden files present, comparing test absent | R-26 |
 | Parallel tests declare rank requirements through the documented mechanism (testing.md) | Several in-scope parallel tests do not | R-50 |
 | `num.convergence` tests the `fuse::num` layer | The file exercises `fuse::model` only | R-49 |
-| One build-directory convention | Three: `build/`, `build-*/`, and the presets' `build/<preset>` | R-40 |
-| `layering.md` diagram shows every layer | `linalg` and `field` are absent from it | R-39 |
-| Installable package `fuse-coupler` (conventions.md) | No `install()` or `export()` anywhere | R-25 |
+| One build-directory convention | **FIXED**: `CMakePresets.json` now uses `build-<preset>`, matching `build-*/` everywhere else | R-40 |
+| `layering.md` diagram shows every layer | **FIXED**: `linalg` and `field` added, and the stale `interface` row renamed to the gate's actual `abi` | R-39 |
+| Installable package `fuse-coupler` (conventions.md) | **FIXED**: `install()`/`export()`/`fuse-couplerConfig.cmake` added; `find_package(fuse-coupler)` now works and is ctest-verified (`install.consumer_find_package`) | R-25 |
 | Native Kokkos mesh parameterised on execution space (S4.8 rulings) | Host-only `Mesh<M,S>` | R-03 |
 
 ---
@@ -175,27 +184,34 @@ rest of the waves from "fixed once" into "cannot recur". Every fix begins by rea
 and every fix to library code carries a test that fails before it and a mutation in
 `build-evidence/mutations.toml` where the gate can host one.
 
-**Wave 0 — the gates, so the fixes stay fixed.**
-1. `tools/check-invariants.py`: scan `test/` and `examples/` for the feature-macro rule; add a rule
-   that `#ifdef`/`#ifndef`/`defined(` on any `FUSE_HAVE_*`/`FUSE_ENABLE_*` is a violation (they are
-   `#cmakedefine01`, always defined); add `SOMA_`/`KARMA_` macro prefixes to the legacy-name rule.
-   Prove each fires on a probe. This alone would have caught R-06 and
-   R-31.
-2. `test/CMakeLists.txt`: a configure-time check that every `test/**/*_test.cpp` is registered by some
-   `fuse_add_gtest`/`fuse_add_mpi_test` call, failing configure with the unregistered names. Catches
-   R-07 and any future one.
-3. `tools/mutate.py --check-anchors`: verify every `old` string in the manifest exists exactly once in
-   its file, without building; run it in CI and in the pre-commit gate set. Catches
-   R-21.
-4. `tools/verify-import.py`: read superseded paths from the lock file's structured arrays only; make
-   the S5.2 comment into entries (R-22); fix the multi-line parser in
-   `sync-upstream.py` (R-20).
+**Wave 0 — the gates, so the fixes stay fixed. All four DONE, 2026-09-19.**
+1. **DONE** (`4a2ad6e`). `tools/check-invariants.py`: scan `test/` and `examples/` for the feature-macro
+   rule; add a rule that `#ifdef`/`#ifndef`/`defined(` on any `FUSE_HAVE_*`/`FUSE_ENABLE_*` is a
+   violation (they are `#cmakedefine01`, always defined); add `SOMA_`/`KARMA_` macro prefixes to the
+   legacy-name rule. Fired on both R-06 and R-51 the moment it landed —
+   the two live cases this exact rule was written for.
+2. **DONE** (`b8e3f54`). `test/CMakeLists.txt`: a configure-time check that every `test/**/*_test.cpp`
+   is registered by some `fuse_add_gtest`/`fuse_add_mpi_test` call, failing configure with the
+   unregistered names; `schedule/buffers_test.cpp` and `slab_test.cpp` registered. Closes
+   R-07.
+3. **DONE, checker only** (`06e882a`). `tools/mutate.py --check-anchors`: verify every `old` string in
+   the manifest exists exactly once in its file, without building; reads manifests from
+   `build-evidence/mutations/`. Confirmed it fires on R-21's stale anchor;
+   the anchor ITSELF was rewritten separately while fixing R-21 (wave 2/3, `build-tools-docs` fixer) —
+   the checker catching it is not the same as it being fixed.
+4. **DONE** (`ffea077`). `tools/verify-import.py`/lock reading: `UPSTREAMS.lock` parsed as TOML;
+   read superseded paths from the lock file's structured arrays only; the S5.2 comment turned into
+   real `[soma].superseded` array entries (closes R-22); the
+   multi-line array parser in `sync-upstream.py` fixed to use `tomllib` (closes
+   R-20).
 
 **Wave 1 — BLOCKERs that must precede the first host tier-2 run.**
-5. `test/backend/moab_mesh_test.cpp`: include `config.hpp`, `#if FUSE_HAVE_MOAB`. Then the 38 cases
-   run for the first time, and whatever they find is the next work (R-06).
-6. Register `buffers_test` and `slab_test`; fix whatever 33 previously-unrun cases report
-   (R-07).
+5. **DONE** (backend fixer, 2026-09-19, verified here). `test/backend/moab_mesh_test.cpp`: includes
+   `config.hpp` and tests `#if FUSE_HAVE_MOAB` now. The 38 cases compile again; a host tier-2 run
+   (this sandbox cannot `MPI_Init`) is still what will run them for the first time — see
+   `KNOWN_ISSUES.md` C1 (R-06).
+6. **DONE, wave 0** (`b8e3f54`; see wave 0 item 2 above). `buffers_test` and `slab_test` registered;
+   both pass at tier 0 (R-07).
 7. `runner.cpp` `step_period()`: a failing region records the failure and continues to the remaining
    collective instructions, exactly as the non-region path does two lines below
    (R-09). Test: at 2/3/4 ranks under a timeout, one rank's region refuses
@@ -214,17 +230,20 @@ and every fix to library code carries a test that fails before it and a mutation
     cast, refusing `E-DESC-ENUM` (R-04). Mutation: remove one range check.
 12. `pipeline.hpp` `FieldSpan::from()`: an empty partition is a valid zero-extent view, not a refusal
     (R-08) — this is the X3 rule from S1 reaching the pipeline.
-13. `.github/workflows/ci.yml`: remove the `kokkoskernels` leg (R-05).
+13. **DONE**. `.github/workflows/ci.yml`: `kokkoskernels` leg replaced with `builtin`, the value
+    `FUSE_LINALG_BACKEND` actually implements (R-05).
 14. Native mesh: this BLOCKER (R-03) is a design change, not a patch — the mesh
     gains an execution/memory space parameter and `finalize()`, `measure()`, `centroid()`, `normal()`
     become device-callable (R-14). Schedule it as its own task after wave 2; it is
     blocking for S9, not for S5.
 
 **Wave 2 — MAJOR.** In the order they are listed in §1; the documentation ones
-(R-23, R-24, R-11,
+(R-23 **DONE**, R-24 **DONE**, R-11,
 R-28) are one commit and go first because they are cheap and each is currently
-telling a reader something false. `SOMA_ENABLE_LOWFIVE` (R-31) is a one-line
-fix that turns a transport on. The `error_policy()` data race (R-16) matters as
+telling a reader something false. R-31 turned out not to need a
+code fix at all — see its reclassification to MINOR above; it and R-25
+(**DONE**: `install()`/`export()` now exist) are the two former-MAJOR items
+this wave already closes. The `error_policy()` data race (R-16) matters as
 soon as two threads can throw. The `lcm_denominator` overflow (R-15) is the same
 defect B1a fixed elsewhere and gets the same `try_` treatment.
 
