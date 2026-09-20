@@ -8,7 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <stdexcept>
+#include <stdexcept>  // std::size_t limits only; the thrown type is fuse::InvalidArgument (buffers.hpp)
 #include <utility>
 #include <vector>
 
@@ -26,9 +26,9 @@ CouplingGraph pair_with_accumulate() {
   const auto rf = g.add_region(fuse::Region{.name = "rf", .mesh = mf});
   const auto rs = g.add_region(fuse::Region{.name = "rs", .mesh = ms});
   const auto a = g.add_component(ComponentDecl{
-      .name = "a", .ranks = RankSet{0, 1}, .interval = Rational{1, 2}});
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1, 2}});
   const auto b = g.add_component(ComponentDecl{
-      .name = "b", .ranks = RankSet{1, 1}, .interval = Rational{1}});
+      .name = "b", .ranks = fuse::RankSet{1, 1}, .interval = Rational{1}});
   const auto s = g.add_field(a, fuse::FieldSpec{
       .name = "f", .region = rf, .units = u::kKelvin,
       .intent = fuse::Intent::Provides});
@@ -49,9 +49,9 @@ CouplingGraph pair_with_optional_lag(bool lagged) {
   const auto rf = g.add_region(fuse::Region{.name = "rf", .mesh = mf});
   const auto rs = g.add_region(fuse::Region{.name = "rs", .mesh = mf});
   const auto a = g.add_component(ComponentDecl{
-      .name = "a", .ranks = RankSet{0, 1}, .interval = Rational{1}});
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
   const auto b = g.add_component(ComponentDecl{
-      .name = "b", .ranks = RankSet{0, 1}, .interval = Rational{1}});
+      .name = "b", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
   const auto s = g.add_field(a, fuse::FieldSpec{
       .name = "f", .region = rf, .units = u::kKelvin,
       .intent = fuse::Intent::Provides});
@@ -69,9 +69,9 @@ CouplingGraph pair_with_components(int components) {
   const auto rf = g.add_region(fuse::Region{.name = "rf", .mesh = mf});
   const auto rs = g.add_region(fuse::Region{.name = "rs", .mesh = mf});
   const auto a = g.add_component(ComponentDecl{
-      .name = "a", .ranks = RankSet{0, 1}, .interval = Rational{1}});
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
   const auto b = g.add_component(ComponentDecl{
-      .name = "b", .ranks = RankSet{0, 1}, .interval = Rational{1}});
+      .name = "b", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
   const auto s = g.add_field(a, fuse::FieldSpec{
       .name = "f", .region = rf, .components = components, .units = u::kKelvin,
       .intent = fuse::Intent::Provides});
@@ -300,7 +300,7 @@ TEST(Buffers, RejectsAnOverflowingBufferSize) {
   const fuse::TimedDag td = expand_ok(g, dag);
   const std::size_t huge = std::numeric_limits<std::size_t>::max() / 2;
   EXPECT_THROW((void)plan_buffers(dag, td, constant_sizes(huge)),
-               std::overflow_error);
+               fuse::InvalidArgument);
 }
 
 TEST(Buffers, RejectsAnOverflowingTotal) {
@@ -310,7 +310,7 @@ TEST(Buffers, RejectsAnOverflowingTotal) {
   // Each individual buffer fits; there is more than one coupler buffer, so the
   // running sum does not.
   const std::size_t big = (std::numeric_limits<std::size_t>::max() / 4) * 3;
-  EXPECT_THROW((void)plan_buffers(dag, td, constant_sizes(big)), std::overflow_error);
+  EXPECT_THROW((void)plan_buffers(dag, td, constant_sizes(big)), fuse::InvalidArgument);
 }
 
 // validate() has no positivity rule for FieldSpec::components, so a graph with
