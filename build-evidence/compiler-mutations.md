@@ -1,6 +1,6 @@
 # Mutation evidence — `compiler`
 
-Run 2026-09-18 against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
+Run 2026-09-19 against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
 
 | Mutation | File | Verdict | Killed by |
 |---|---|---|---|
@@ -12,10 +12,11 @@ Run 2026-09-18 against build `build-fuse-s1`. Regenerate with `tools/mutate.py -
 | `scale-emitted-as-double` — the unit conversion loses exactness, so 1/1000 becomes a rounded double | `src/ir/rules_channel.cpp` | **KILLED** (test fails) | `ir.scale` |
 | `unlowerable-step-silently-dropped` — an authorized operation the compiler cannot emit is skipped instead of refused | `src/ir/rules_channel.cpp` | **EQUIVALENT** (No graph the model can currently express makes the connection check authorize a step outside {UnitScale, SpatialTransfer, TemporalTransfer}: the graph has no way to declare a transform, and a component-count mismatch is caught earlier by the IR type check (E-IR-TYPE). The branch is therefore defensive, and its classification is covered exhaustively by Scale.EveryAuthorizableOperationIsEitherEmittedOrRefused. When declared transforms reach the graph -- the checker already supports them -- this becomes reachable and must be killed.) | `ir.scale` |
 | `merge-keeps-last-writer` — the old last-writer-wins binding, which deletes every other writer's dependence | `src/ir/lowering.cpp` | **KILLED** (test fails) | `schedule.acyclicity_sweep` |
-| `merge-typed-at-first-writer` — the combined value inherits the first writer's time level, so a lagged writer declared first cuts the unlagged writers' dependence | `src/ir/lowering.cpp` | **KILLED** (test fails) | `schedule.acyclicity_sweep` |
 | `epoch-not-emitted-after-transport` — a data move with no agreement point, so a failure on one rank is found only at the next collective | `src/ir/rules_channel.cpp` | **KILLED** (test fails) | `schedule.epoch` |
 | `reserved-multiscale-op-scheduled` — a reserved multiscale operator schedules as a no-op instead of being refused | `src/schedule/scheduler.cpp` | **KILLED** (test fails) | `schedule.epoch` |
 | `lowering-skips-move-on-any-sharing` — the old condition: any shared rank suppresses the data move, so a partially shared placement delivers nothing to the ranks it does not share and never reaches the refusal either | `src/ir/rules_channel.cpp` | **KILLED** (test fails) | `ir.lowering_channel` |
 | `buffer-planning-failure-ignored` — the scheduler ignores a reported buffer-planning failure and takes the value anyway, turning a diagnostic the caller can read into an exception it cannot | `src/schedule/scheduler.cpp` | **KILLED** (test fails) | `schedule.plan` |
+| `merge-typed-at-first-writer-v2` — the combined value inherits the first writer's time level regardless of a later writer's offset (the axis the sweep's random lag placement actually varies -- it excludes iteration regions, so every generated writer already ties on `iterate`), instead of the newest contribution's -- the same regression the now-stale 'merge-typed-at-first-writer' anchored on the pre-two-pass code (R-27/R-43/R-44). Verified by hand: applying this mutation fails schedule.acyclicity_sweep (a False/0u mismatch on the independently-computed loop verdict); the sibling attempt anchored on the `iterate`-reduction line one loop up is a confirmed NO-OP against this test, because the sweep generator never produces a writer set spanning more than one `iterate` value -- do not reintroduce that anchor as this mutation's replacement. | `src/ir/lowering.cpp` | **KILLED** (test fails) | `schedule.acyclicity_sweep` |
+| `merge-not-folded-past-three-writers` — a 4+ writer Merge reverts to one oversized N-ary node instead of a left-fold of pairwise merges, so it compiles past lower() and then fails schedule() with E-SCHED-ARITY (R-27) | `src/ir/lowering.cpp` | **KILLED** (test fails) | `schedule.plan` |
 
-**12 killed / 13 total.**
+**13 killed / 14 total.**

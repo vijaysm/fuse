@@ -1,6 +1,6 @@
 # Mutation evidence — `model`
 
-Run 2026-09-18 against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
+Run 2026-09-19 against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
 
 | Mutation | File | Verdict | Killed by |
 |---|---|---|---|
@@ -19,5 +19,11 @@ Run 2026-09-18 against build `build-fuse-s1`. Regenerate with `tools/mutate.py -
 | `descriptor-drops-the-merge-table` — the merge table is not serialized, so a graph crossing the waist loses how its writers combine | `include/fuse/model/descriptor.hpp` | **KILLED** (test fails) | `model.descriptor` |
 | `yaml-drops-field-declaration-order` — the text form omits the field index, so nesting fields under components renumbers every field id | `src/model/yaml_io.cpp` | **KILLED** (test fails) | `model.yaml_io` |
 | `rankset-ignores-sharing` — overlaps() reports disjoint placements as sharing ranks, or the reverse | `include/fuse/model/component.hpp` | **KILLED** (test fails) | `model.component` |
+| `descriptor-accepts-any-convergence-measure-kind` — deserialize() reverts to admitting any byte as a MeasureKind, the exact gap R-04 fixed (yaml_io.cpp's kMeasureNames index would go out of bounds later, disconnected from the cause) | `include/fuse/model/descriptor.hpp` | **KILLED** (test fails) | `model.descriptor` |
+| `descriptor-accepts-any-acceleration-kind` — deserialize() reverts to admitting any byte as an AccelKind (R-04) | `include/fuse/model/descriptor.hpp` | **KILLED** (test fails) | `model.descriptor` |
+| `descriptor-accepts-any-acceleration-filter` — deserialize() reverts to admitting any byte as a FilterKind (R-04) | `include/fuse/model/descriptor.hpp` | **KILLED** (test fails) | `model.descriptor` |
+| `descriptor-accepts-non-positive-unit-scale` — deserialize() stops rejecting a non-positive field unit scale (R-19), letting a corrupted descriptor introduce a zero (annihilator) or negative (sign-flipping) scale | `include/fuse/model/descriptor.hpp` | **KILLED** (test fails) | `model.descriptor` |
+| `compatibility-auto-inserts-negative-unit-scale` — check_units() stops gating a negative pure-scale conversion factor behind an explicit request (R-19), so it is auto-inserted like an ordinary positive rescale and silently flips the sign of every value crossing the channel | `src/model/compatibility.cpp` | **KILLED** (test fails) | `model.compatibility` |
+| `semantics-accepts-negative-unit-scale` — validate_field_semantics() stops flagging a negative field unit scale (R-19), leaving only the zero/annihilator case checked | `src/model/semantics.cpp` | **KILLED** (test fails) | `model.semantics` |
 
-**15 killed / 15 total.**
+**21 killed / 21 total.**

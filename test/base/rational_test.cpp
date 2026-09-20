@@ -71,6 +71,20 @@ TEST(Rational, LcmDenominatorGivesFinestCommonTick) {
             Rational(1, 4));
 }
 
+// R-15: two coprime denominators just above sqrt(2^63). Their product does
+// not fit int64_t, and a direct std::lcm wrapped to a NEGATIVE value that the
+// constructor then normalised into a small negative "finest tick" with no
+// diagnostic. The fix computes in 128 bits and refuses; this is the test the
+// fix landed without, found by the mutation that reverts it surviving.
+TEST(Rational, LcmDenominatorRefusesAnUnrepresentableCommonTick) {
+  const Rational a(1, 3037000493);
+  const Rational b(1, 3037000507);
+  EXPECT_THROW((void)Rational::lcm_denominator(a, b), fuse::Refusal);
+  // And just below the bound it is exact, not merely non-negative.
+  EXPECT_EQ(Rational::lcm_denominator(Rational(1, 3037000493), Rational(1, 2)),
+            Rational(1, 6074000986));
+}
+
 // gcd_rational(a,b) is the largest g with a = i*g and b = j*g for integers i,j.
 TEST(Rational, GcdRationalIsCommonDivisor) {
   EXPECT_EQ(gcd_rational(Rational(1, 3), Rational(1, 7)), Rational(1, 21));
