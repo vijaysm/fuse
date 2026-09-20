@@ -241,20 +241,6 @@ class Bystander final : public fuse::Component {
   std::vector<double> data_ = std::vector<double>(8, 0.0);
 };
 
-/// What `build_weights` says when this file's mesh backend cannot give it a
-/// supermesh. Every Harness here uses `SerialMeshBackend`, which has no
-/// connectivity or coordinates to intersect, so the two answers are: with MOAB
-/// compiled in, the builder gets as far as looking at the backend and rejects
-/// it; without MOAB it never gets that far. Both are the builder's own code,
-/// deliberately not folded into one runtime code -- they tell the user two
-/// different things to do.
-constexpr const char* kNoWeightsHere =
-#if FUSE_HAVE_MOAB
-    "E-REMAP-BACKEND";
-#else
-    "E-REMAP-NOMOAB";
-#endif
-
 /// A component the graph knows nothing about.
 class Stowaway final : public fuse::Component {
  public:
@@ -1261,10 +1247,10 @@ TEST(Runner, StillRunsAnIterationRegionWithNoCommunicatorConfigured) {
 // communicator test survived (mutation gate, 2026-09-20).
 TEST(Runner, AcceptsAnAcceleratedMultiRankRegionWhenNoCommunicatorIsConfigured) {
   auto h = build(HarnessOpts{
-      .dst_rank_count = 2,
       .iteration_region = true,
       .region_convergence = one_measure(1e-6, "link"),
-      .region_acceleration = fuse::AccelKind::Aitken});
+      .region_acceleration = fuse::AccelKind::Aitken,
+      .dst_rank_count = 2});
   Runner runner{h->graph, h->dag, h->plan, h->backend};
   bind_all(*h);
   const auto init = runner.initialize(h->components, h->registry);

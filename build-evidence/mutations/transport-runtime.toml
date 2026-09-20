@@ -1,5 +1,6 @@
 # Mutations for REVIEW.md's transport-runtime findings (TR-*, unified R-09,
-# R-10, R-30, R-32). Schema: build-evidence/mutations.toml.
+# R-10, R-30, R-32) and the pass-2 findings N-transport-runtime-1 and -2.
+# Schema: build-evidence/mutations.toml.
 
 [[mutation]]
 id = "cross-rank-region-check-fires-unconditionally"
