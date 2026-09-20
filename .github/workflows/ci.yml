@@ -54,7 +54,13 @@ jobs:
       fail-fast: false
       matrix:
         build: [Debug, Release]
-        linalg: [eigen, kokkoskernels]
+        # `kokkoskernels` is not one of FUSE_LINALG_BACKEND's implemented values
+        # (cmake/FuseDependencies.cmake's STRINGS property is builtin|eigen) and
+        # this leg's configure step would FATAL_ERROR on every run (REVIEW.md
+        # R-05). `builtin` is the coupler's own backend and the second leg
+        # `docs/dev/testing.md` names as "tier 0 across both linear-algebra
+        # backends".
+        linalg: [eigen, builtin]
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y ninja-build libomp-dev
