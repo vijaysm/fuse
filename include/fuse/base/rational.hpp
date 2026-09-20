@@ -207,9 +207,22 @@ class Rational {
   }
 
   /// Finest tick that divides both denominators: 1/lcm(den(a), den(b)).
+  /// REVIEW.md R-15: std::lcm(a.den_, b.den_) computed directly in int64_t is
+  /// the exact overflow try_gcd_rational's own denominator lcm was fixed for
+  /// (std::lcm(3037000493, 3037000507) wraps to a negative int64_t, and
+  /// Rational{1, <negative>} normalises the sign onto the numerator, so this
+  /// silently returned a small NEGATIVE Rational for "the finest tick", a
+  /// positive quantity by construction, with no diagnostic). Same Int128
+  /// route as try_gcd_rational's denominator lcm, refusing rather than
+  /// admitting a wrapped result.
   [[nodiscard]] static constexpr Rational lcm_denominator(const Rational& a,
                                                           const Rational& b) {
-    return Rational{1, std::lcm(a.den_, b.den_)};
+    const detail::Int128 ad = a.den_;
+    const detail::Int128 bd = b.den_;
+    const detail::Int128 dg = std::gcd(ad, bd);
+    const detail::Int128 l = (ad / dg) * bd;  // divide first: no needless growth
+    detail::check_fits_i64(l, "Rational::lcm_denominator: denominator lcm overflow");
+    return Rational{1, static_cast<std::int64_t>(l)};
   }
 
   [[nodiscard]] std::string to_string() const {

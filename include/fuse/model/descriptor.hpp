@@ -314,6 +314,19 @@ class Reader {
     if (!r.ok() || owner.value() >= n_comp) {
       return Failure{"E-DESC-TRUNC", "truncated or invalid field table"};
     }
+    // REVIEW.md R-19: Units has no constructor of its own to gate this at
+    // (every call site aggregate-initializes it), so the descriptor reader
+    // is the narrowest choke point available: a unit's scale relative to SI
+    // base units is a conversion factor and is never non-positive (zero is
+    // an annihilator, negative is a sign flip), and a corrupted or
+    // adversarially constructed byte buffer must not be able to introduce
+    // either through this, the one input in this scope that crosses a real
+    // trust boundary.
+    if (!(f.units.scale > Rational{0})) {
+      return Failure{"E-DESC-UNITS-SCALE",
+                     "field '" + f.name + "' has non-positive unit scale " +
+                         f.units.scale.to_string()};
+    }
     g.add_field(owner, std::move(f));
   }
   for (std::uint32_t i = 0; i < n_chan; ++i) {
@@ -356,7 +369,19 @@ class Reader {
     if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated iteration region"};
     for (std::uint32_t k = 0; k < n_measure; ++k) {
       ConvergenceMeasure m;
-      m.kind = static_cast<MeasureKind>(r.pod<std::uint8_t>());
+      // REVIEW.md R-04: deserialize() is the ABI narrow waist every language
+      // binding funnels through, and this byte comes straight off the wire.
+      // Refusing an out-of-range enumerator here (matching the MergeOp check
+      // above) is what stands between a corrupted descriptor and the raw,
+      // unchecked array index in yaml_io.cpp's to_yaml() -- admitting the
+      // value would be undefined behavior later, disconnected from its cause.
+      const auto measure_kind = r.pod<std::uint8_t>();
+      if (measure_kind > static_cast<std::uint8_t>(MeasureKind::ResidualRelative)) {
+        return Failure{"E-DESC-ENUM",
+                       "unknown convergence measure kind " +
+                           std::to_string(measure_kind)};
+      }
+      m.kind = static_cast<MeasureKind>(measure_kind);
       m.tolerance = r.pod<double>();
       m.field = r.str();
       if (!r.ok()) {
@@ -364,11 +389,24 @@ class Reader {
       }
       d.convergence.add(std::move(m));
     }
-    d.acceleration.kind = static_cast<AccelKind>(r.pod<std::uint8_t>());
+    // REVIEW.md R-04: same reasoning as the measure kind above -- both bytes
+    // are read from the same untrusted buffer and indexed unchecked by
+    // to_yaml()'s kAccelNames/kFilterNames tables.
+    const auto accel_kind = r.pod<std::uint8_t>();
+    if (accel_kind > static_cast<std::uint8_t>(AccelKind::IQN_IMVJ)) {
+      return Failure{"E-DESC-ENUM",
+                     "unknown acceleration kind " + std::to_string(accel_kind)};
+    }
+    d.acceleration.kind = static_cast<AccelKind>(accel_kind);
     d.acceleration.initial_relaxation = r.pod<double>();
     d.acceleration.omega = r.pod<double>();
     d.acceleration.reuse = r.pod<std::int32_t>();
-    d.acceleration.filter = static_cast<FilterKind>(r.pod<std::uint8_t>());
+    const auto accel_filter = r.pod<std::uint8_t>();
+    if (accel_filter > static_cast<std::uint8_t>(FilterKind::QR3)) {
+      return Failure{"E-DESC-ENUM",
+                     "unknown acceleration filter " + std::to_string(accel_filter)};
+    }
+    d.acceleration.filter = static_cast<FilterKind>(accel_filter);
     d.acceleration.limit = r.pod<double>();
     d.acceleration.scale_fields = r.pod<std::uint8_t>() != 0;
     if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated iteration region"};

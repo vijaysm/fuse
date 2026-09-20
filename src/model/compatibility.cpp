@@ -16,6 +16,7 @@ ConnectionVerdict severity_of(ConnectionReason reason) noexcept
     switch (reason)
     {
         case ConnectionReason::UnitScaleNotPermitted:
+        case ConnectionReason::UnitScaleSignNotRequested:
         case ConnectionReason::AffineConversionNotRequested:
         case ConnectionReason::ShapeChangeNotRequested:
         case ConnectionReason::ComponentReductionNotRequested:
@@ -194,6 +195,19 @@ void check_units(const ConnectionRequest& request, Evaluation& evaluation)
     }
 
     const bool explicit_request = evaluation.requested(OperatorKind::UnitScale);
+    // REVIEW.md R-19: an exact, zero-offset unit scale is auto-insertable
+    // because it is "a change of spelling, not of meaning" (this file's own
+    // rationale for allow_automatic_unit_scale) -- but a NEGATIVE factor
+    // negates every value crossing the channel, which is a change of
+    // meaning. Gated exactly like the affine branch above: never inserted
+    // without an explicit request, regardless of allow_automatic_unit_scale.
+    if (*factor < Rational{0} && !explicit_request)
+    {
+        evaluation.refuse(ConnectionStage::Unit, ConnectionReason::UnitScaleSignNotRequested,
+                          "the unit scale ratio is negative, which would flip the sign of "
+                          "every value; request UnitScale explicitly if this is intended");
+        return;
+    }
     if (!explicit_request && !request.allow_automatic_unit_scale)
     {
         evaluation.refuse(ConnectionStage::Unit, ConnectionReason::UnitScaleNotPermitted,
@@ -378,6 +392,7 @@ std::string_view connection_reason_name(ConnectionReason reason) noexcept
         case ConnectionReason::RequirementFieldMismatch: return "requirement names another field";
         case ConnectionReason::DimensionMismatch: return "unit dimension mismatch";
         case ConnectionReason::UnitScaleNotPermitted: return "automatic unit scaling not permitted";
+        case ConnectionReason::UnitScaleSignNotRequested: return "unit scale ratio is negative and was not explicitly requested";
         case ConnectionReason::AffineConversionNotRequested: return "affine unit conversion not requested";
         case ConnectionReason::UnitsUndeclared:
         case ConnectionReason::UnitConversionOverflow: return "unit conversion not representable";

@@ -251,7 +251,12 @@ enum class SemanticDiagnosticCode : std::uint16_t
     RequirementFieldMismatch = 7,
     EmptyMetadataKey = 8,
     DuplicateMetadataKey = 9,
-    IntervalReversed = 10
+    IntervalReversed = 10,
+    /** REVIEW.md R-19: a unit's scale relative to SI base units is a
+     * conversion factor and is never negative (there is no unit whose
+     * "amount per SI base unit" is negative). Distinct from NonfiniteScale,
+     * which is specifically the zero/annihilator case. */
+    NegativeScale = 11
 };
 
 struct SemanticDiagnostic

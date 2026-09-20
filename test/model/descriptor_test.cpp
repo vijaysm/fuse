@@ -198,6 +198,79 @@ TEST(Descriptor, UnitScaleAndOffsetAreInTheCanonicalBytes) {
   EXPECT_TRUE(round_tripped.value().field(fuse::FieldId{0}).units.same_dimensions(pascal));
 }
 
+// REVIEW.md R-19: Units has no constructor of its own to gate a non-positive
+// scale at (every call site aggregate-initializes it), so deserialize() is
+// the narrowest choke point available for the one input in this scope that
+// crosses a real trust boundary. Both the zero (annihilator) and negative
+// (sign flip) cases must be refused, not silently admitted.
+TEST(Descriptor, RejectsNonPositiveUnitScale) {
+  const auto encode = [](fuse::Rational scale) {
+    CouplingGraph g;
+    const auto c = g.add_component({.name = "fluid", .ranks = {0, 1}, .interval = fuse::Rational{1}});
+    fuse::Units bad{.length = -1, .mass = 1, .time = -2};
+    bad.scale = scale;
+    (void)g.add_field(c, {.name = "p", .units = bad});
+    return serialize(g);
+  };
+  for (const fuse::Rational bad_scale : {fuse::Rational{0}, fuse::Rational{-1000}}) {
+    const auto r = deserialize(encode(bad_scale));
+    ASSERT_FALSE(r.ok()) << "scale " << bad_scale.to_string();
+    EXPECT_EQ(r.error().code, "E-DESC-UNITS-SCALE");
+  }
+}
+
+// REVIEW.md R-04: deserialize() used to read MeasureKind/AccelKind/FilterKind
+// straight off the wire with no range check, so an out-of-range byte (a bit
+// flip, truncation, or adversarial construction of a descriptor buffer --
+// deserialize() is the ABI narrow waist every language binding funnels
+// through) round-tripped into a CouplingGraph and only became undefined
+// behavior later, at to_yaml()'s unchecked array index. This patches each
+// enum byte to an out-of-range value in a known-good buffer, mirroring
+// InheritedVersionIsRefusedNotReinterpreted's technique, and relies on the
+// iteration region (with exactly one convergence measure, a one-character
+// field name, and an empty merge table) being the LAST thing serialize()
+// writes, so each enum byte's offset is computable from the end of the
+// buffer without re-deriving serialize()'s full layout.
+TEST(Descriptor, RejectsCorruptedIterationRegionEnums) {
+  CouplingGraph g;
+  const auto c = g.add_component(
+      {.name = "fluid", .ranks = {0, 1}, .interval = fuse::Rational{1}});
+  (void)g.add_field(c, {.name = "q", .units = u::kWatt});
+  fuse::IterationRegionDecl d;
+  d.name = "outer";
+  d.max_iterations = 10;
+  d.convergence.add(fuse::ConvergenceMeasure{
+      .kind = fuse::MeasureKind::Relative, .tolerance = 1e-6, .field = "q"});
+  d.acceleration = fuse::AccelConfig{.kind = fuse::AccelKind::None,
+                                     .filter = fuse::FilterKind::None};
+  g.add_iteration_region(d);
+  const auto bytes = serialize(g);
+
+  // acceleration: kind(1) initial_relaxation(8) omega(8) reuse(4) filter(1)
+  // limit(8) scale_fields(1) -- 31 bytes total, and the last thing written
+  // (merge_count == 0).
+  auto accel_kind = bytes;
+  accel_kind[bytes.size() - 31] = std::byte{200};
+  EXPECT_EQ(deserialize(accel_kind).error().code, "E-DESC-ENUM")
+      << "corrupted acceleration kind byte was not refused";
+
+  auto accel_filter = bytes;
+  accel_filter[bytes.size() - 10] = std::byte{200};
+  EXPECT_EQ(deserialize(accel_filter).error().code, "E-DESC-ENUM")
+      << "corrupted acceleration filter byte was not refused";
+
+  // measure.kind(1) tolerance(8) field(4 + 1, "q") + the 31-byte acceleration
+  // block above == 44 bytes after it.
+  auto measure_kind = bytes;
+  measure_kind[bytes.size() - 45] = std::byte{200};
+  EXPECT_EQ(deserialize(measure_kind).error().code, "E-DESC-ENUM")
+      << "corrupted convergence measure kind byte was not refused";
+
+  // The unpatched buffer must still read back cleanly, or the offsets above
+  // are wrong rather than the deserializer.
+  ASSERT_TRUE(deserialize(bytes).ok());
+}
+
 // ---- the waist freeze (S2.3) -------------------------------------------
 
 // Every optional member at a NON-DEFAULT value. A round-trip over defaults

@@ -111,6 +111,19 @@ bool lookup_enum(const std::string& s, const char* const (&names)[N], E& out) {
   return false;
 }
 
+// REVIEW.md R-04: deserialize() now refuses an out-of-range AccelKind/
+// FilterKind before it can reach a CouplingGraph (descriptor.hpp), but the
+// raw add_iteration_region() API has no such gate, so a value indexed here
+// can still originate from direct API misuse. Bounds-checking the index
+// before it reaches the array is defense in depth against a second unchecked
+// source, matching the switch-with-fallback style ids.hpp and iteration.hpp's
+// own to_cstring(MeasureKind) already use for the same purpose.
+template <class E, std::size_t N>
+const char* enum_name(E value, const char* const (&names)[N]) {
+  const auto idx = static_cast<std::size_t>(value);
+  return idx < N ? names[idx] : "?";
+}
+
 const char* const kDiscNames[]    = {"FV", "cGLL", "dGLL", "PointCloud"};
 const char* const kConservNames[] = {"None", "Extensive", "Intensive"};
 const char* const kIntentNames[]  = {"Provides", "Requires", "Bidirectional"};
@@ -259,6 +272,18 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
   e << YAML::Key << "regions" << YAML::Value << YAML::BeginSeq;
   for (std::uint32_t i = 0; i < g.region_count(); ++i) {
     const auto& r = g.region(RegionId{i});
+    // REVIEW.md R-18: unlike serialize() (descriptor.hpp), which never
+    // dereferences a foreign id through an .at()-based accessor, to_yaml()
+    // needs the mesh's NAME, not its raw id, for readable YAML -- and
+    // add_region() accepts any MeshId with no bounds check at construction
+    // time. Refusing here is what routes a bad reference through the
+    // Result<std::string> this function promises, instead of letting
+    // CouplingGraph::mesh()'s std::vector::at() throw a raw
+    // std::out_of_range past the boundary.
+    if (!r.mesh.valid() || r.mesh.value() >= g.mesh_count()) {
+      return Failure{"E-YAML-REF",
+                     "region '" + r.name + "' references an invalid mesh"};
+    }
     e << YAML::BeginMap
       << YAML::Key << "name" << YAML::Value << r.name
       << YAML::Key << "mesh" << YAML::Value << g.mesh(r.mesh).name
@@ -319,6 +344,17 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
   e << YAML::Key << "channels" << YAML::Value << YAML::BeginSeq;
   for (std::uint32_t i = 0; i < g.channel_count(); ++i) {
     const auto& c = g.channel_at(ChannelId{i});
+    // REVIEW.md R-18: c.source/c.target are raw FieldIds add_channel()
+    // accepts with no bounds check; qualified() below dereferences both
+    // through g.field()/g.owner_of(), each an .at()-based accessor. Once a
+    // field id is confirmed in range, owner_of() and component() on its
+    // owner are always safe (add_field() populates field_owner_ 1:1 with
+    // fields_ and asserts the owner is in range at that time).
+    if (!c.source.valid() || c.source.value() >= g.field_count() ||
+        !c.target.valid() || c.target.value() >= g.field_count()) {
+      return Failure{"E-YAML-REF",
+                     "channel '" + c.name + "' references an invalid field"};
+    }
     const auto qualified = [&](FieldId f) {
       return g.component(g.owner_of(f)).name + "." + g.field(f).name;
     };
@@ -372,6 +408,13 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
     e << YAML::Key << "merges" << YAML::Value << YAML::BeginSeq;
     for (std::size_t i = 0; i < g.merge_count(); ++i) {
       const auto& entry = g.merge_at(i);
+      // REVIEW.md R-18: entry.first is a raw field id merge() accepts with
+      // no bounds check; g.field()/g.owner_of() below are .at()-based.
+      if (entry.first >= g.field_count()) {
+        return Failure{"E-YAML-REF",
+                       "a merge entry references invalid field id " +
+                           std::to_string(entry.first)};
+      }
       e << YAML::BeginMap
         << YAML::Key << "field" << YAML::Value << g.field(FieldId{entry.first}).name
         << YAML::Key << "component" << YAML::Value
@@ -388,7 +431,16 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
     e << YAML::BeginMap
       << YAML::Key << "name" << YAML::Value << r.name
       << YAML::Key << "channels" << YAML::Value << YAML::Flow << YAML::BeginSeq;
-    for (const ChannelId c : r.channels) e << g.channel_at(c).name;
+    // REVIEW.md R-18: r.channels is a raw ChannelId list add_iteration_region()
+    // accepts with no bounds check; g.channel_at() is .at()-based.
+    for (const ChannelId c : r.channels) {
+      if (!c.valid() || c.value() >= g.channel_count()) {
+        return Failure{"E-YAML-REF",
+                       "iteration region '" + r.name +
+                           "' references an invalid channel"};
+      }
+      e << g.channel_at(c).name;
+    }
     e << YAML::EndSeq
       << YAML::Key << "max_iterations" << YAML::Value << r.max_iterations;
     // Emitted unconditionally, empty sequence and all. An omitted
@@ -400,7 +452,7 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
     for (const ConvergenceMeasure& m : r.convergence.measures()) {
       e << YAML::Flow << YAML::BeginMap
         << YAML::Key << "kind" << YAML::Value
-        << kMeasureNames[static_cast<std::size_t>(m.kind)]
+        << enum_name(m.kind, kMeasureNames)
         << YAML::Key << "tolerance" << YAML::Value << m.tolerance
         << YAML::Key << "field" << YAML::Value << m.field
         << YAML::EndMap;
@@ -408,13 +460,13 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
     e << YAML::EndSeq;
     e << YAML::Key << "acceleration" << YAML::Value << YAML::BeginMap
       << YAML::Key << "kind" << YAML::Value
-      << kAccelNames[static_cast<std::size_t>(r.acceleration.kind)]
+      << enum_name(r.acceleration.kind, kAccelNames)
       << YAML::Key << "initial_relaxation" << YAML::Value
       << r.acceleration.initial_relaxation
       << YAML::Key << "omega" << YAML::Value << r.acceleration.omega
       << YAML::Key << "reuse" << YAML::Value << r.acceleration.reuse
       << YAML::Key << "filter" << YAML::Value
-      << kFilterNames[static_cast<std::size_t>(r.acceleration.filter)]
+      << enum_name(r.acceleration.filter, kFilterNames)
       << YAML::Key << "limit" << YAML::Value << r.acceleration.limit
       << YAML::Key << "scale_fields" << YAML::Value
       << r.acceleration.scale_fields

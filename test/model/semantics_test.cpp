@@ -178,6 +178,12 @@ void structural_validation()
     bad_scale.ports[0].field.units.scale = Rational{0};
     rejects(bad_scale, SemanticDiagnosticCode::NonfiniteScale, "zero unit scale accepted");
 
+    // REVIEW.md R-19: a unit's scale relative to SI base units is never
+    // negative; distinct from the zero/annihilator case just above.
+    auto negative_scale = two_port_component();
+    negative_scale.ports[0].field.units.scale = Rational{-1};
+    rejects(negative_scale, SemanticDiagnosticCode::NegativeScale, "negative unit scale accepted");
+
     auto inverted = two_port_component();
     inverted.ports[1].requirement.minimum_version = {2, 0, 0};
     inverted.ports[1].requirement.maximum_version = {1, 0, 0};

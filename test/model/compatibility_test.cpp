@@ -130,6 +130,30 @@ void unit_rules()
     require(allowed.verdict == ConnectionVerdict::LosslessExplicit, "an explicitly requested scale was refused");
     require(allowed.chain.steps[0].explicitly_requested, "an explicit request was not recorded on the step");
 
+    // REVIEW.md R-19: a negative scale ratio is a sign flip, not "a change
+    // of spelling" -- it must never be auto-inserted, even though
+    // allow_automatic_unit_scale defaults to true and nothing about a pure
+    // scale difference with no offset would otherwise distinguish it from
+    // the ordinary kilopascal-to-pascal case above.
+    auto negative_scale = agreeing();
+    negative_scale.source.units.scale = Rational{-1000};
+    const auto sign_refused = check_connection(negative_scale);
+    require(sign_refused.verdict == ConnectionVerdict::Ambiguous,
+            "a negative unit scale ratio was inserted automatically");
+    require(has(sign_refused, ConnectionStage::Unit, ConnectionReason::UnitScaleSignNotRequested),
+            "wrong reason code");
+    require(sign_refused.chain.empty(), "a refused negative scale still emitted an operator");
+
+    // Explicitly requesting it is still honored -- the gate is "not asked
+    // for", the same as the affine case, not "never allowed".
+    auto negative_requested = negative_scale;
+    negative_requested.explicitly_requested = operator_request_bit(OperatorKind::UnitScale);
+    const auto sign_allowed = check_connection(negative_requested);
+    require(sign_allowed.verdict == ConnectionVerdict::LosslessExplicit,
+            "an explicitly requested negative scale was refused");
+    require(sign_allowed.chain.steps[0].scale == Rational{-1000},
+            "the negative conversion factor was not preserved");
+
     // An offset difference is an affine conversion and is never automatic:
     // Celsius to Kelvin changes what zero means.
     auto affine = agreeing();

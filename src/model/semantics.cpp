@@ -358,6 +358,14 @@ SemanticValidation validate_field_semantics(const FieldSemantics& field, std::st
     // turn every converted value into 0 while passing every dimensional check.
     if (field.units.scale == Rational{0})
         diagnostics.push_back({SemanticDiagnosticCode::NonfiniteScale, prefix + ".units"});
+    // REVIEW.md R-19: a scale's SIGN was never checked here either, and a
+    // unit's scale relative to SI base units is never negative. Left
+    // unchecked, check_units() (compatibility.cpp) could auto-insert an
+    // unrequested UnitScale operator that flips the sign of every value
+    // crossing the channel, while reporting the connection as an ordinary
+    // successful conversion.
+    else if (field.units.scale < Rational{0})
+        diagnostics.push_back({SemanticDiagnosticCode::NegativeScale, prefix + ".units"});
     if (!in_range(field.shape, 2) || !in_range(field.location, 3) || !in_range(field.continuity, 2) ||
         !in_range(field.temporal, 3) || !in_range(field.frame, 2) || !in_range(field.ownership, 2) ||
         !in_range(field.access, 2) || !in_range(field.update, 1) || !in_range(field.role, 3))

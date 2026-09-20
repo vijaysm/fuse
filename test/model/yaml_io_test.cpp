@@ -86,6 +86,38 @@ TEST(YamlIo, ReadsTheCheckedInFixture) {
   EXPECT_TRUE(structurally_equal(pair_graph(), g.value()));
 }
 
+// REVIEW.md R-18: to_yaml()'s own signature promises Result<std::string> for
+// a reportable failure, but it dereferences several foreign ids (a channel's
+// source/target field, an iteration region's channel list, a merge entry's
+// field) through CouplingGraph accessors that are plain std::vector::at()
+// calls -- and the raw API (add_channel, add_iteration_region, merge) admits
+// any id with no bounds check at construction time. Nothing requires
+// validate() to run before to_yaml(); this builds a graph via the raw API
+// with an out-of-range ChannelId in an iteration region, bypassing
+// validate() entirely, and checks to_yaml() returns a Failure rather than
+// letting std::out_of_range escape uncaught.
+TEST(YamlIo, EmittingAGraphWithADanglingChannelReferenceReturnsFailure) {
+  CouplingGraph g;
+  const auto m = g.add_mesh(MeshDecl{.name = "m", .source = "generated:box"});
+  const auto r = g.add_region(Region{.name = "wall", .mesh = m,
+                                     .entity_set = "w", .dimension = 2});
+  const auto a = g.add_component(ComponentDecl{.name = "a",
+                                                .ranks = fuse::RankSet{0, 1},
+                                                .interval = Rational{1}});
+  (void)g.add_field(a, FieldSpec{.name = "f", .region = r,
+                                 .units = u::kHeatFluxDensity,
+                                 .conservation = Conservation::Extensive,
+                                 .intent = Intent::Provides});
+  // No channels exist, so ChannelId{99} is out of range -- the raw API
+  // (iterate(), a thin wrapper over add_iteration_region()) accepts it
+  // without complaint.
+  g.iterate({fuse::ChannelId{99}}).name("outer").max_iterations(10);
+
+  const auto text = to_yaml(g);
+  ASSERT_FALSE(text.ok());
+  EXPECT_EQ(text.error().code, "E-YAML-REF");
+}
+
 TEST(YamlIo, RejectsUnknownFieldReference) {
   const std::string bad = R"(
 version: 1

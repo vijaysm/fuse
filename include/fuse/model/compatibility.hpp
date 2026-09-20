@@ -74,6 +74,11 @@ enum class ConnectionReason : std::uint16_t
      * two cannot be shown to agree. Not the same as a dimension mismatch:
      * the dimensions are unknown rather than known and different. */
     UnitsUndeclared = 30,
+    /** REVIEW.md R-19: the pure-scale conversion factor is negative -- a
+     * sign flip, not "a change of spelling" -- and was not explicitly
+     * requested. Distinct from UnitScaleNotPermitted so a caller can tell
+     * "automatic scaling is off" from "this scale would flip a sign". */
+    UnitScaleSignNotRequested = 31,
     ShapeChangeNotRequested = 8,
     ComponentReductionNotRequested = 9,
     ComponentReductionAmbiguous = 10,
