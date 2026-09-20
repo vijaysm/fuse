@@ -574,6 +574,13 @@ TEST(MpiTransport, BuildPlanRejectsDisagreeingComponentsAcrossRanks) {
   MpiTransport t;
   ASSERT_TRUE(t.set_communicator(MPI_Comm_c2f(MPI_COMM_WORLD)).ok());
   const auto r = t.build_plan(spec);
+  // Printed on every rank, pass or fail: the 2026-09-20 host run had rank 1
+  // refusing and rank 0 building a plan, which the assertion alone does not
+  // distinguish from both ranks missing the check.
+  std::printf("[components rank %d/%d] components=%d verdict=%s %s\n", rank,
+              world_size(), spec.components, r.ok() ? "OK" : "REFUSED",
+              r.ok() ? "" : r.error().code.c_str());
+  std::fflush(stdout);
   ASSERT_FALSE(r.ok()) << "rank " << rank
                        << ": ranks disagreed on components, and every rank "
                           "must refuse together rather than one side sizing "
