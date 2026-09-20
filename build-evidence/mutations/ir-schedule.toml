@@ -1,0 +1,32 @@
+# Mutations for the ir/schedule fix pass (REVIEW.md R-26, R-27, R-43, R-44).
+# Placed in its own file per the review-fix protocol: do not edit
+# build-evidence/mutations.toml directly while other fixers hold it dirty.
+#
+# NOTE for the lead: fixing R-43/R-44 (IR-F4) restructured the multi-writer
+# combine's tie-break in src/ir/lowering.cpp from a single pass into two
+# (first find the greatest `iterate` across all writers, then resolve
+# anchor/offset only among writers tied at it -- a single pass can flag a
+# false ambiguity from an older tie while a later, strictly-newer writer
+# would have been the unambiguous answer). That rewrite deletes the line
+# Replaces build-evidence/mutations.toml's "merge-typed-at-first-writer", retired when the
+# R-27/R-43 rewrite removed the line it anchored on; same regression, new code shape.
+
+[[mutation]]
+id = "merge-typed-at-first-writer-v2"
+area = "compiler"
+describes = "the combined value inherits the first writer's time level regardless of a later writer's offset (the axis the sweep's random lag placement actually varies -- it excludes iteration regions, so every generated writer already ties on `iterate`), instead of the newest contribution's -- the same regression the now-stale 'merge-typed-at-first-writer' anchored on the pre-two-pass code (R-27/R-43/R-44). Verified by hand: applying this mutation fails schedule.acyclicity_sweep (a False/0u mismatch on the independently-computed loop verdict); the sibling attempt anchored on the `iterate`-reduction line one loop up is a confirmed NO-OP against this test, because the sweep generator never produces a writer set spanning more than one `iterate` value -- do not reintroduce that anchor as this mutation's replacement."
+file = "src/ir/lowering.cpp"
+old = "        } else if (b.offset > a.offset) {"
+new = "        } else if (false) {"
+target = "fuse_schedule_acyclicity_sweep_test"
+test = "schedule.acyclicity_sweep"
+
+[[mutation]]
+id = "merge-not-folded-past-three-writers"
+area = "compiler"
+describes = "a 4+ writer Merge reverts to one oversized N-ary node instead of a left-fold of pairwise merges, so it compiles past lower() and then fails schedule() with E-SCHED-ARITY (R-27)"
+file = "src/ir/lowering.cpp"
+old = "      if (writers.size() <= kMaxMergeInputs) {"
+new = "      if (true) {"
+target = "fuse_schedule_plan_test"
+test = "schedule.plan"

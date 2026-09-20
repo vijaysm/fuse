@@ -170,22 +170,91 @@ LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy) {
       //
       // A value is available when its most recent contribution is, so the
       // latest level is also the physically right answer.
-      ArcId newest = writers.front();
+      //
+      // Offsets against different anchors have no shared origin (the same
+      // reason src/schedule/acyclicity.cpp:218-219 and
+      // src/schedule/scheduler.cpp:52 give for "keep the edge" when they hit
+      // this same ambiguity) -- but unlike those two call sites, silently
+      // keeping whichever writer got here first would mistype the merged
+      // output, not just risk an over-cautious cycle report. So this refuses
+      // rather than guesses (REVIEW.md R-43; today no lowering rule produces
+      // a non-WindowEnd anchor, so this branch is not yet reachable, but the
+      // guard has to exist before one does).
+      //
+      // Two passes, deliberately not one: `iterate` alone orders writers
+      // regardless of anchor (it numbers coupling periods the same way under
+      // every anchor convention), so the first pass finds the greatest
+      // `iterate` across ALL writers, independent of anchor. Only the
+      // writers tied at THAT iterate can be ambiguous -- a writer whose
+      // iterate is strictly greater is the newest no matter what anchor it
+      // or anyone else uses, and must not be shadowed by an anchor clash
+      // among older writers a single combined pass would still be visiting.
+      int max_iterate = ctx.dag.arc(writers.front()).type.time.iterate;
       for (const ArcId w : writers) {
-        const TimeLevel& a = ctx.dag.arc(newest).type.time;
+        max_iterate = std::max(max_iterate, ctx.dag.arc(w).type.time.iterate);
+      }
+      ArcId newest{};
+      bool have_newest = false;
+      bool anchor_ambiguous = false;
+      for (const ArcId w : writers) {
         const TimeLevel& b = ctx.dag.arc(w).type.time;
-        if (b.iterate > a.iterate ||
-            (b.iterate == a.iterate && b.anchor == a.anchor && b.offset > a.offset)) {
+        if (b.iterate != max_iterate) continue;
+        if (!have_newest) {
+          newest = w;
+          have_newest = true;
+          continue;
+        }
+        const TimeLevel& a = ctx.dag.arc(newest).type.time;
+        if (b.anchor != a.anchor) {
+          anchor_ambiguous = true;
+        } else if (b.offset > a.offset) {
           newest = w;
         }
       }
-      const ArcId out = ctx.dag.add_arc(ctx.dag.arc(newest).type,
-                                        qualified(g, f) + "/merge");
-      ctx.dag.add_node(OpKind::Merge, writers, out,
-                       OpAttrs{.reason = std::string(merge_op_name(spec->op)),
-                               .merge = spec->op},
-                       ChannelId{}, qualified(g, f) + "/merge");
-      ctx.field_arc[field_value] = out;
+      if (anchor_ambiguous) {
+        ctx.diags.add(Severity::Error, "E-IR-MERGE-ANCHOR",
+                      "field '" + g.field(f).name + "' has writers whose time "
+                      "levels agree on iterate but disagree on anchor; there "
+                      "is no ordering between them from which to pick the "
+                      "newest contribution",
+                      qualified(g, f));
+        continue;
+      }
+      const OpAttrs merge_attrs{.reason = std::string(merge_op_name(spec->op)),
+                                .merge = spec->op};
+      const ValueType newest_type = ctx.dag.arc(newest).type;
+
+      // Merge with more than three sources is lowered as a left-fold of
+      // pairwise merges (documented at include/fuse/schedule/plan.hpp's
+      // Instruction; that struct's `in` array is what actually holds three,
+      // but `ir` does not depend on `schedule`, so the limit is duplicated
+      // here rather than shared -- REVIEW.md R-27). Up to that many writers
+      // still become one Merge node, unchanged from before this fix.
+      constexpr std::size_t kMaxMergeInputs = 3;
+      if (writers.size() <= kMaxMergeInputs) {
+        const ArcId out =
+            ctx.dag.add_arc(newest_type, qualified(g, f) + "/merge");
+        ctx.dag.add_node(OpKind::Merge, writers, out, merge_attrs,
+                         ChannelId{}, qualified(g, f) + "/merge");
+        ctx.field_arc[field_value] = out;
+      } else {
+        // Every node in the chain carries `newest_type`, computed once above
+        // over the FULL writer list -- not recomputed from each pair's own
+        // two inputs -- so an intermediate fold's output still reports the
+        // correct running-newest time level to the acyclicity prover's
+        // lag-cutting rule partway through the chain.
+        ArcId acc = writers.front();
+        for (std::size_t k = 1; k < writers.size(); ++k) {
+          const ArcId out = ctx.dag.add_arc(
+              newest_type,
+              qualified(g, f) + "/merge" + std::to_string(k));
+          ctx.dag.add_node(OpKind::Merge, {acc, writers[k]}, out, merge_attrs,
+                           ChannelId{}, qualified(g, f) + "/merge" +
+                                            std::to_string(k));
+          acc = out;
+        }
+        ctx.field_arc[field_value] = acc;
+      }
     }
   }
 

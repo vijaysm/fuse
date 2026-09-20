@@ -60,6 +60,43 @@ bool has_code(const fuse::Diagnostics& d, const char* code) {
   return false;
 }
 
+/// Five components, each providing one field into the same target, with a
+/// declared Sum merge -- an entirely ordinary use of spec §5.1's Merge that
+/// used to compile past lower() as one 5-input Merge node and then fail
+/// schedule() with E-SCHED-ARITY, blaming a "lower Merge as a left-fold"
+/// step that lower() never performed (REVIEW.md R-27). All writers are
+/// colocated with the target so no Transport/Epoch pair complicates the
+/// count of Merge nodes below. `lagged_writer` (or -1 for none) names the
+/// one writer, by index, that lags one step behind the rest.
+CouplingGraph five_writer_merge(int lagged_writer) {
+  CouplingGraph g;
+  const auto m = g.add_mesh(fuse::MeshDecl{.name = "m"});
+  const auto r = g.add_region(fuse::Region{.name = "r", .mesh = m});
+  const auto dst = g.add_component(ComponentDecl{
+      .name = "dst", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  const auto in = g.add_field(
+      dst, fuse::FieldSpec{.name = "f_in", .region = r,
+                           .units = u::kHeatFluxDensity,
+                           .conservation = fuse::Conservation::Extensive,
+                           .intent = fuse::Intent::Requires});
+  for (int i = 0; i < 5; ++i) {
+    const auto src = g.add_component(
+        ComponentDecl{.name = "src" + std::to_string(i),
+                      .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+    const auto out = g.add_field(
+        src, fuse::FieldSpec{.name = "f_out", .region = r,
+                             .units = u::kHeatFluxDensity,
+                             .conservation = fuse::Conservation::Extensive,
+                             .intent = fuse::Intent::Provides});
+    const auto ch = g.add_channel("ch" + std::to_string(i), out, in);
+    if (i == lagged_writer) {
+      g.channel(ch).lag(1).allow_time_level_mismatch("explicit lag, R-27 fixture");
+    }
+  }
+  g.merge(in, fuse::MergeOp::Sum);
+  return g;
+}
+
 /// Independent of the scheduler's own reasoning: walk the emitted stream and
 /// check that every operand was written by an earlier instruction. A lagged
 /// arc (negative time offset) is exempt -- spec §4.3, its value comes from the
@@ -376,6 +413,55 @@ TEST(ExecutionPlan, RejectsAnOperatorWithMoreInputsThanAnInstructionHolds) {
   EXPECT_TRUE(r.plan.instructions().empty());
   // One diagnostic for the node, not one per timed instance.
   EXPECT_EQ(r.diags.size(), 1u) << r.diags.to_string();
+}
+
+// A real 5-writer Merge, produced by lower() itself rather than hand-built
+// like the test above, must fold into a chain of 2-input Merge nodes and
+// then schedule successfully -- the case the hand-built arity test above
+// cannot cover, since it never calls lower() (REVIEW.md R-27).
+TEST(ExecutionPlan, FiveWriterMergeFoldsToPairwiseMergesAndSchedules) {
+  const CouplingGraph g = five_writer_merge(/*lagged_writer=*/-1);
+  const auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+
+  std::size_t merge_nodes = 0;
+  for (std::uint32_t i = 0; i < lowered.dag.node_count(); ++i) {
+    const fuse::Node& n = lowered.dag.node(fuse::NodeId{i});
+    if (n.kind != OpKind::Merge) continue;
+    ++merge_nodes;
+    EXPECT_EQ(n.inputs.size(), 2u)
+        << "left-fold must chain 2-input Merge nodes, not one N-ary node";
+  }
+  // Five writers fold as (((w0+w1)+w2)+w3)+w4: four pairwise merges.
+  EXPECT_EQ(merge_nodes, 4u);
+
+  const fuse::ClockSet cs{g};
+  const auto r = schedule(g, lowered.dag, cs, constant_sizes(64));
+  EXPECT_TRUE(r.ok()) << r.diags.to_string();  // used to fail E-SCHED-ARITY
+}
+
+// The merged output's TimeLevel must still reflect the single newest
+// contribution when one of several writers is lagged -- and that must hold
+// at EVERY node in the fold chain, not just the pairwise Merge that happens
+// to consume the lagged writer directly, or the acyclicity prover's
+// lag-cutting rule would see the wrong level partway through (REVIEW.md
+// R-27's note on intermediate types).
+TEST(ExecutionPlan, FiveWriterMergeKeepsNewestTimeLevelThroughTheFoldWhenOneIsLagged) {
+  const CouplingGraph g = five_writer_merge(/*lagged_writer=*/2);
+  const auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+
+  const fuse::TimeLevel newest = fuse::TimeLevel::current();
+  std::size_t merge_nodes = 0;
+  for (std::uint32_t i = 0; i < lowered.dag.node_count(); ++i) {
+    const fuse::Node& n = lowered.dag.node(fuse::NodeId{i});
+    if (n.kind != OpKind::Merge) continue;
+    ++merge_nodes;
+    EXPECT_TRUE(lowered.dag.arc(n.output).type.time == newest)
+        << "node " << i << " (\"" << n.label << "\") must carry the newest "
+           "contribution's time level, not a mid-fold intermediate's";
+  }
+  EXPECT_EQ(merge_nodes, 4u);
 }
 
 // ---------------------------------------------------------------------------
