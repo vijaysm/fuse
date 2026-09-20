@@ -38,13 +38,51 @@ def build(build_dir: Path, target: str, jobs: int) -> tuple[int, str]:
     return r.returncode, r.stdout + r.stderr
 
 
+def load_manifest() -> list[dict]:
+    """build-evidence/mutations.toml plus every build-evidence/mutations/*.toml.
+
+    The directory form exists so that work on different layers can add
+    mutations without editing one shared file; ids must be unique across all
+    of them, and a duplicate is an error rather than a silent shadow."""
+    rows: list[dict] = []
+    files = [ROOT / "build-evidence" / "mutations.toml"]
+    files += sorted((ROOT / "build-evidence" / "mutations").glob("*.toml"))
+    for f in files:
+        if f.is_file():
+            rows += tomllib.loads(f.read_text()).get("mutation", [])
+    seen: dict[str, int] = {}
+    for m in rows:
+        seen[m["id"]] = seen.get(m["id"], 0) + 1
+    dups = sorted(k for k, v in seen.items() if v > 1)
+    if dups:
+        raise SystemExit(f"error: duplicate mutation id(s) across manifests: {dups}")
+    return rows
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--build-dir", required=True, type=Path)
     ap.add_argument("--area", default=None)
     ap.add_argument("--write-log", action="store_true")
     ap.add_argument("--jobs", type=int, default=8)
+    ap.add_argument("--check-anchors", action="store_true",
+                    help="verify every `old` occurs exactly once in its file; no build, "
+                         "no git requirement. Run this in CI: an anchor that drifted is a "
+                         "mutation that is silently no longer assessed (REVIEW.md BT-F5).")
     args = ap.parse_args()
+
+    spec_rows = load_manifest()
+    if args.check_anchors:
+        bad = 0
+        for m in spec_rows:
+            path = ROOT / m["file"]
+            n = path.read_text().count(m["old"]) if path.is_file() else -1
+            if n != 1:
+                bad += 1
+                where = "file missing" if n < 0 else f"`old` occurs {n} times"
+                print(f"STALE-ANCHOR  {m['id']}  {m['file']}: {where}")
+        print(f"mutation anchors: {len(spec_rows) - bad} valid, {bad} stale, of {len(spec_rows)}")
+        return 1 if bad else 0
 
     # A build directory that is not a configured CMake tree makes EVERY build fail,
     # which the verdict logic would read as "the mutant does not compile" -- 12
@@ -72,8 +110,7 @@ def main() -> int:
         print("error: include/ or src/ has uncommitted changes; the gate restores by copy-back")
         return 2
 
-    spec = tomllib.loads((ROOT / "build-evidence" / "mutations.toml").read_text())
-    rows = [m for m in spec["mutation"] if args.area is None or m["area"] == args.area]
+    rows = [m for m in spec_rows if args.area is None or m["area"] == args.area]
     results = []
     # A mutation whose test cannot RUN here must not be reported killed: the
     # test exits non-zero whether or not the mutation had any effect, which is
