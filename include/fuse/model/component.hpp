@@ -35,6 +35,14 @@ namespace fuse {
 /// `first + count` has to say what it means.
 class RankSet {
  public:
+  // REVIEW.md R-17 was investigated and REJECTED here: see the review
+  // report for the git-history evidence (ComponentDecl.DefaultsToUnitInterval
+  // OnRankZero, test/model/component_test.cpp, predates this class and pins
+  // rank 0 as the deliberate default of the pre-refactor `struct RankSet
+  // { int first = 0; int count = 1; }` this class replaced). "Empty =
+  // unplaced" is RankSet(int, int)'s documented contract for an EXPLICIT
+  // count <= 0, not a claim about the niladic default, which has always
+  // meant "rank 0" and is tested as such.
   RankSet() : ranks_{0} {}
 
   /// The contiguous set `[first, first + count)`. `count <= 0` yields an empty
