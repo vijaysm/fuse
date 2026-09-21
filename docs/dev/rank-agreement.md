@@ -163,3 +163,45 @@ a claim a reader cannot check:
 The byte comparison is the load-bearing one. A tolerance would accept a restore
 that is nearly right, and a rollback that is nearly right is not a rollback: the
 next sweep would start from a state no one chose.
+
+
+## A failing period and the components that keep stepping
+
+A component may refuse its step, and an iteration region may fail to converge.
+Neither aborts the period: `step_period()` records the failure, keeps walking
+the instruction stream so every **collective** instruction is still executed —
+a rank that skipped one would leave its partners waiting inside it — and
+reports the failure at the end of the period, where every rank has reached the
+same conclusion.
+
+What it does *not* do any longer is stop advancing every component. Since
+2026-09-21 the rule is:
+
+> The origin of the failure, and every component that reads — transitively —
+> something the origin provides, do not advance for the rest of that period.
+> Every other component does.
+
+`Runner::Impl::downstream_of` holds that relation, one row per component: an
+edge per channel from the component owning its source field to the component
+owning its target, transitively closed, built once in `build_ticks()`. A
+region failure is not attributable to a single component, so the origin is
+every member the region re-advances.
+
+Two reasons it is a dependence rule and not a blanket:
+
+- A component downstream of the failure would consume a value the failed step
+  never produced. That is the case the old blanket was protecting, and it is
+  still refused.
+- A component that reads nothing from the failure is in exactly the state it
+  would have been in had the period succeeded. Skipping its step bought
+  nothing and, because a period's ticks routinely all land in
+  `step_period()`'s trailing loop, it meant a single refusal could stop every
+  component in the period — including ones on a channel with no relation to
+  the failure.
+
+Upstream components advance. They read nothing the failed step was supposed
+to produce, so the argument for blocking them does not apply.
+
+`Runner.AFailedStepBlocksOnlyWhatReadsFromIt` pins both halves in Tier 0, and
+two mutations (`a-failed-step-blocks-every-later-advance`,
+`a-failed-step-blocks-nothing`) fail if either half is removed.
