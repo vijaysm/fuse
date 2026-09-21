@@ -225,9 +225,17 @@ fuse_tests_gated_by(FUSE_ENABLE_MPI
   parallel/runner_transport_test.cpp parallel/comm_graph_test.cpp
   parallel/mpi_transport_test.cpp parallel/epoch_reconcile_test.cpp)
 if(FUSE_ENABLE_MPI)
-  foreach(t runner_transport comm_graph mpi_transport epoch_reconcile)
+  foreach(t runner_transport comm_graph mpi_transport)
     fuse_add_mpi_test(parallel ${t} LIBS fuse::runtime)
   endforeach()
+  # epoch_reconcile is registered from 2 ranks up, not 1. Its own
+  # EpochReconcile.TheJobNeedsAtLeastTwoRanks asserts `world_size() >= 2`
+  # deliberately -- "Not a skip: with one rank there is nothing to reconcile,
+  # and the rank counts this test is registered at all provide at least two."
+  # Adding rank 1 to the default list (S5.5) broke that premise and the test
+  # failed as designed. Keeping the premise true is the fix; a guard would
+  # turn a file with nothing to say at one rank into three silent skips.
+  fuse_add_mpi_test(parallel epoch_reconcile LIBS fuse::runtime RANKS 2 3 4 5)
   # comm_graph_test exercises CrystalRouter directly, which is a private
   # implementation header under src/transport/ -- the transport layer's public
   # surface is CommGraph. The parent gave this one test src/ on its include
