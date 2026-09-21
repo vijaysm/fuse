@@ -27,6 +27,31 @@
 #
 #  Rows A-* are the axes S5.5 names that are not in that spec.
 
+#  HOW TO ADD A CELL -- and why this warning is here.
+#
+#  Copy every test name out of the source file. Do not type it from memory,
+#  from a spec's prose, or from a grep whose output was truncated.
+#
+#  The first draft of this file got SEVEN names wrong in three distinct ways,
+#  and the gate caught all seven:
+#    - rows 8 and 14 were invented from the spec's section comments
+#      ("bidirectionality via transpose()", "the union communicator is
+#      exercised for real") rather than read from the tests, which are really
+#      called TheReverseLegIsARelabellingAndCostsNoCollective and
+#      TwoIndependentlySplitCommunicatorsAreEnoughToBuildTheGraph;
+#    - two A-SPACES names were completed from a grep piped through
+#      `cut -c1-95`, which had cut the tails off: the guesses
+#      "...ForEveryLayout" and "...ToRoundoff" are really "...ForEveryOp" and
+#      "...ToRounding";
+#    - A-RANKS claimed rank 1 while the build still ran 2 3 4 5 -- written six
+#      messages after that very gap had been found.
+#  A-EMPTY additionally named a CommGraph test in the transport's file, which
+#  is what `also_in` now exists for.
+#
+#  A manifest of claims is worth having only because something checks it. That
+#  is the point of tools/check-parallel-matrix.py, and it earned its keep on
+#  its first run.
+#
 # ---------------------------------------------------------------------------
 # Rows 1-14: the CommGraph regression matrix
 # ---------------------------------------------------------------------------
