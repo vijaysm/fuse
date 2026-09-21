@@ -117,3 +117,30 @@ stage arrives.
    host code without being asked. *S4, opt-in through `fuse::initialize`.*
 7. **Device-side diagnostics** — `FUSE_DEBUG_ASSERT` in a Kokkos kernel reports through
    `Kokkos::printf` and `Kokkos::abort`, not `execinfo.h`. *S4, with the first device kernel.*
+
+
+## `FUSE_SCHEDULE_DEBUG` — what the scheduler did to an instant
+
+Set it and `schedule()` prints, for each (time, phase) instant, the bounds,
+whether the instant holds iteration-region members, whether it was judged
+entangled, and every instruction in it with its region, the arcs it reads and
+the arc it writes:
+
+```
+[instant 2..10] t=1 phase=0 members=true entangled=false
+    [5] Remap "iterated/remap" region=0 reads %1:pa.out writes %5
+    ...
+    [10] Sink "pb.in" region=-1 reads %7:iterated/diagnose writes %10
+```
+
+The order shown is the one **before** region grouping, which is the point: it
+is the layout the rule is about to act on.
+
+This is what closed D1. The refusal said a region's body was not contiguous,
+and five readings of the ordering code had not said why. The dump showed the
+interleaving instruction was the region's *own* sink — a non-member reading
+the region's converged output — and that made both halves of the fix obvious:
+group the members, but not when a non-member reads an external value the
+region re-advances. Reading a diagnostic beats reading the code that produces
+it, and this session spent that lesson twice (see also
+`FUSE_TRANSPORT_DEBUG` in `rank-agreement.md`).

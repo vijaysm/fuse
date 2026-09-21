@@ -190,12 +190,13 @@ static_assert(kMaxInstructionInputs == 3,
               "when one whole pass over its body is contiguous in the "
               "instruction stream; put the region's channels on one clock, or "
               "split it into one region per clock. If they are ALREADY on one "
-              "clock, the interleaving instruction belongs to an unrelated "
-              "channel whose own chain sorts into the middle of this region's; "
-              "declaring that channel's components and channel before the "
-              "region's, or after the whole region, separates them. That the "
-              "cure is declaration order is a limitation of this scheduler, "
-              "not a property of the graph (KNOWN_ISSUES.md D1)"};
+              "clock, the interleaving instruction reads a value this region "
+              "re-advances -- an explicit channel hanging off one of its "
+              "components is the usual shape -- and it would run once, on one "
+              "sweep's iterate, so its place relative to the loop is a "
+              "modelling decision and is not chosen for you. Route it from "
+              "the region's output instead. (Declaration order used to matter "
+              "here and no longer does: KNOWN_ISSUES.md D1.)"};
     }
     instructions[i].region_enter = r;
     instructions[j - 1].region_exit = r;
@@ -238,6 +239,217 @@ static_assert(kMaxInstructionInputs == 3,
     rank[order[i].value()] = static_cast<std::uint32_t>(i);
   }
   return rank;
+}
+
+/// Reorder inside each (time, phase) instant so one region's members come out
+/// contiguously — KNOWN_ISSUES D1, fixed 2026-09-21.
+///
+/// The sort below orders an instant by topological rank, which is a dependence
+/// order but says nothing about grouping: two independent chains at the same
+/// instant interleave whenever their ranks alternate, and whether they do
+/// depended on the order the user happened to declare their components in. A
+/// region whose body was cut in half by an unrelated channel was then refused
+/// (`E-SCHED-REGION`) even though an order existed that kept it whole — the
+/// user's only cure was to move a declaration, which is not a property of
+/// their coupling at all.
+///
+/// The rule is a greedy emission with one preference: while a region has
+/// members left in this instant, prefer its ready members; otherwise take the
+/// first ready instruction. **Only ready instructions are ever emitted** — an
+/// instruction whose operands are all written already, carried in from the
+/// previous period, or unproduced — so this cannot invert a dependence, which
+/// is why it needs no argument beyond that sentence. `check_dependence_order`
+/// re-derives the same property from the finished stream regardless.
+///
+/// With no region in an instant the result is *identical* to the sort: within
+/// one instant an operand always has a lower topological rank than its
+/// consumer, so scanning in rank order always finds the lowest-ranked
+/// instruction ready, and greedy-lowest-ready is the rank order itself. That
+/// is what keeps the golden IR of every region-free plan byte-identical.
+///
+/// A region can still be refused: if one of its members is blocked by an
+/// unrelated instruction that has not run yet, that instruction must be
+/// emitted and the run breaks. The difference is that the refusal now means
+/// the graph genuinely does not admit a contiguous pass, rather than that the
+/// components were declared in an unlucky order.
+void group_regions_within_instants(const OperatorDAG& dag,
+                                   const std::vector<std::int32_t>& owner,
+                                   std::vector<Instruction>& instructions) {
+  const std::size_t n_regions = dag.region_count();
+  if (n_regions == 0) return;
+
+  std::vector<char> written(dag.arc_count(), 0);
+  const auto is_ready = [&](const Instruction& ins) {
+    const Node& nd = dag.node(ins.origin_node);
+    for (const ArcId in : nd.inputs) {
+      if (!in.valid() || in.value() >= dag.arc_count()) continue;
+      if (!dag.arc(in).producer.valid()) continue;
+      if (crosses_period(dag, nd, in)) continue;
+      if (written[in.value()] == 0) return false;
+    }
+    return true;
+  };
+  const auto commit = [&](const Instruction& ins) {
+    if (ins.out.valid() && ins.out.value() < dag.arc_count()) {
+      written[ins.out.value()] = 1;
+    }
+  };
+
+  const std::size_t n = instructions.size();
+  std::size_t lo = 0;
+  while (lo < n) {
+    std::size_t hi = lo + 1;
+    while (hi < n && instructions[hi].time == instructions[lo].time &&
+           instructions[hi].phase == instructions[lo].phase) {
+      ++hi;
+    }
+
+    std::vector<std::size_t> left(n_regions, 0);
+    bool any_member = false;
+    for (std::size_t k = lo; k < hi; ++k) {
+      const std::int32_t r = owner[instructions[k].origin_node.value()];
+      if (r != kNoRegion) {
+        ++left[static_cast<std::size_t>(r)];
+        any_member = true;
+      }
+    }
+
+    // Group ONLY where the displaced instructions share no data with the
+    // region. A non-member that reads what a member produces -- or produces
+    // what a member reads -- is not unrelated work that happens to sit in the
+    // way: where it runs relative to the loop decides which iterate it sees.
+    // An explicit channel hanging off a component the region re-advances is
+    // the case that matters: it would run once, on the pre-iteration value,
+    // and the converged iterate would never reach its consumer. Until this
+    // grouping existed, `E-SCHED-REGION` refused that graph as a side effect
+    // of the interleave, and `Iteration.RejectsAnExplicitChannelHangingOff`
+    // `AnIteratedComponent` measures the refusal. Separating the interleave
+    // would have turned that refusal into a silently-chosen placement, so an
+    // entangled instant keeps the order it had -- and with it, whatever
+    // verdict it produced before.
+    // An arc a member reads that a member does NOT produce: a value coming in
+    // from outside the loop. If a non-member reads one of those too, the two
+    // read the same iterated value and where the non-member runs decides
+    // which sweep's value it sees -- that is the hanging-channel hazard, and
+    // choosing silently is the wrong answer to it.
+    //
+    // Reading an arc a member PRODUCES is the opposite case and must stay
+    // groupable: the region's own sink (`Sink "pb.in"`, a non-member, reads
+    // the region's converged output) is exactly what interleaved with the
+    // body and made contiguity depend on declaration order. Deferring it past
+    // the loop is not a silent choice -- it is the only correct placement.
+    bool entangled = false;
+    {
+      std::vector<char> member_produces(dag.arc_count(), 0);
+      for (std::size_t k = lo; k < hi; ++k) {
+        if (owner[instructions[k].origin_node.value()] == kNoRegion) continue;
+        const Instruction& ins = instructions[k];
+        if (ins.out.valid() && ins.out.value() < dag.arc_count()) {
+          member_produces[ins.out.value()] = 1;
+        }
+      }
+      std::vector<char> from_outside(dag.arc_count(), 0);
+      for (std::size_t k = lo; k < hi; ++k) {
+        if (owner[instructions[k].origin_node.value()] == kNoRegion) continue;
+        for (const ArcId in : dag.node(instructions[k].origin_node).inputs) {
+          if (!in.valid() || in.value() >= dag.arc_count()) continue;
+          const NodeId prod = dag.arc(in).producer;
+          const bool inside =
+              prod.valid() && prod.value() < owner.size() &&
+              owner[prod.value()] != kNoRegion;
+          if (!inside) from_outside[in.value()] = 1;
+        }
+      }
+      for (std::size_t k = lo; k < hi && !entangled; ++k) {
+        if (owner[instructions[k].origin_node.value()] != kNoRegion) continue;
+        for (const ArcId in : dag.node(instructions[k].origin_node).inputs) {
+          if (in.valid() && in.value() < dag.arc_count() &&
+              from_outside[in.value()] != 0) {
+            entangled = true;
+          }
+        }
+      }
+      (void)member_produces;
+    }
+
+    if (std::getenv("FUSE_SCHEDULE_DEBUG") != nullptr) {
+      fmt::print(stderr,
+                 "[instant {}..{}] t={} phase={} members={} entangled={}\n",
+                 lo, hi - 1, instructions[lo].time.to_string(),
+                 static_cast<int>(instructions[lo].phase), any_member,
+                 entangled);
+      for (std::size_t k = lo; k < hi; ++k) {
+        const Instruction& ins = instructions[k];
+        const Node& nd = dag.node(ins.origin_node);
+        std::string ins_s;
+        for (const ArcId in : nd.inputs) {
+          if (in.valid() && in.value() < dag.arc_count()) {
+            ins_s += " %" + std::to_string(in.value()) + ":" + dag.arc(in).name;
+          }
+        }
+        fmt::print(stderr, "    [{}] {} \"{}\" region={} reads{} writes %{}\n",
+                   k, to_cstring(nd.kind), nd.label,
+                   owner[ins.origin_node.value()], ins_s,
+                   ins.out.valid() ? std::to_string(ins.out.value()) : "-");
+      }
+    }
+
+    if (!any_member || entangled || hi - lo < 2) {
+      for (std::size_t k = lo; k < hi; ++k) commit(instructions[k]);
+      lo = hi;
+      continue;
+    }
+
+    // Candidates in the sort's order, so "first ready" means lowest rank.
+    const std::vector<Instruction> bucket(instructions.begin() + lo,
+                                          instructions.begin() + hi);
+    std::vector<char>  taken(bucket.size(), 0);
+    const std::size_t  none = bucket.size();
+    std::int32_t       open = kNoRegion;
+
+    for (std::size_t out = lo; out < hi; ++out) {
+      std::size_t pick = none;
+      if (open != kNoRegion) {
+        for (std::size_t k = 0; k < bucket.size(); ++k) {
+          if (taken[k] != 0) continue;
+          if (owner[bucket[k].origin_node.value()] != open) continue;
+          if (!is_ready(bucket[k])) continue;
+          pick = k;
+          break;
+        }
+      }
+      if (pick == none) {
+        for (std::size_t k = 0; k < bucket.size(); ++k) {
+          if (taken[k] == 0 && is_ready(bucket[k])) {
+            pick = k;
+            break;
+          }
+        }
+      }
+      if (pick == none) {
+        // Nothing is ready, so the instant's own order was not a dependence
+        // order to begin with. Emit what is left as it stands and let
+        // check_dependence_order report it against the real stream rather
+        // than silently reshuffling a stream that is already wrong.
+        for (std::size_t k = 0; k < bucket.size(); ++k) {
+          if (taken[k] == 0) {
+            pick = k;
+            break;
+          }
+        }
+      }
+
+      taken[pick] = 1;
+      const std::int32_t r = owner[bucket[pick].origin_node.value()];
+      if (r != kNoRegion) {
+        open = r;
+        if (--left[static_cast<std::size_t>(r)] == 0) open = kNoRegion;
+      }
+      commit(bucket[pick]);
+      instructions[out] = bucket[pick];
+    }
+    lo = hi;
+  }
 }
 
 /// The scheduler's own dependence check on the finished stream: every operand
@@ -550,6 +762,20 @@ ScheduleResult schedule(const CouplingGraph& g, const OperatorDAG& dag,
                      return a.origin_node < b.origin_node;
                    });
 
+  // Spec §2 layer 3: iteration regions become explicit loop boundaries here,
+  // not something the interpreter rediscovers from node membership. Computed
+  // BEFORE the dependence check because the grouping below needs it, and the
+  // grouping must be inside the window the check validates -- checking the
+  // stream and then permuting it would validate an order nobody runs.
+  const Result<std::vector<std::int32_t>> owner = region_membership(dag);
+  if (!owner.ok()) {
+    result.diags.add(Severity::Error, owner.error().code,
+                     owner.error().message);
+    return result;
+  }
+
+  group_regions_within_instants(dag, owner.value(), instructions);
+
   const Result<void> ordered = check_dependence_order(dag, instructions);
   if (!ordered.ok()) {
     result.diags.add(Severity::Error, ordered.error().code,
@@ -557,14 +783,6 @@ ScheduleResult schedule(const CouplingGraph& g, const OperatorDAG& dag,
     return result;
   }
 
-  // Spec §2 layer 3: iteration regions become explicit loop boundaries here,
-  // not something the interpreter rediscovers from node membership.
-  const Result<std::vector<std::int32_t>> owner = region_membership(dag);
-  if (!owner.ok()) {
-    result.diags.add(Severity::Error, owner.error().code,
-                     owner.error().message);
-    return result;
-  }
   const Result<void> marked = mark_regions(dag, owner.value(), instructions);
   if (!marked.ok()) {
     result.diags.add(Severity::Error, marked.error().code,

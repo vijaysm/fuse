@@ -591,34 +591,38 @@ CouplingGraph two_channels_one_iterated(bool region_first) {
 
 }  // namespace
 
-TEST(ExecutionPlan, AnUnrelatedChannelDeclaredAfterARegionBreaksItsContiguity) {
-  // Declared first: scheduled.
-  {
-    const CouplingGraph g = two_channels_one_iterated(/*region_first=*/false);
+// KNOWN_ISSUES D1, now fixed. This test was written as a reproducer: the same
+// coupling scheduled when the unrelated channel was declared first and was
+// refused when it was declared second, and it asserted BOTH -- with a note to
+// delete the refusing half rather than relax it if the limitation was ever
+// fixed. It was, by grouping a region's members inside their instant
+// (`group_regions_within_instants`), so the halves have become one assertion
+// made twice: declaration order does not decide whether a coupling schedules.
+//
+// Keep both spellings. The point is not that one order works; it is that they
+// agree, which is the property a user relies on and the one that regressed
+// invisibly before.
+TEST(ExecutionPlan, ARegionSchedulesWhicheverOrderItsNeighbourIsDeclaredIn) {
+  for (const bool region_first : {false, true}) {
+    const CouplingGraph g = two_channels_one_iterated(region_first);
     const auto lowered = lower(g);
     ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
     const fuse::ClockSet cs{g};
     const auto r = schedule(g, lowered.dag, cs, constant_sizes(8));
-    EXPECT_TRUE(r.ok()) << "the independent channel declared FIRST is the "
-                           "spelling that works today: "
+    ASSERT_TRUE(r.ok()) << "region_first=" << region_first << ": "
                         << r.diags.to_string();
-  }
-  // Declared second: refused, on the identical coupling.
-  {
-    const CouplingGraph g = two_channels_one_iterated(/*region_first=*/true);
-    const auto lowered = lower(g);
-    ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
-    const fuse::ClockSet cs{g};
-    const auto r = schedule(g, lowered.dag, cs, constant_sizes(8));
-    ASSERT_FALSE(r.ok())
-        << "if this now succeeds the limitation is fixed -- delete this half "
-           "and KNOWN_ISSUES.md D1 rather than relaxing the assertion";
-    EXPECT_TRUE(has_code(r.diags, "E-SCHED-REGION")) << r.diags.to_string();
-    // Both channels are on one clock, so the refusal must not stop at advice
-    // that cannot apply.
-    EXPECT_NE(r.diags.to_string().find("declaration order"), std::string::npos)
-        << "the message tells the user to put the channels on one clock, "
-           "which they already are: " << r.diags.to_string();
+    EXPECT_GT(r.plan.region_count(), 0u) << "region_first=" << region_first;
+
+    // The region's members are one contiguous run with enter/exit stamped on
+    // its ends -- what `mark_regions` requires and what the grouping restores.
+    std::size_t enters = 0;
+    std::size_t exits = 0;
+    for (const auto& ins : r.plan.instructions()) {
+      if (ins.region_enter >= 0) ++enters;
+      if (ins.region_exit >= 0) ++exits;
+    }
+    EXPECT_EQ(enters, 1u) << "region_first=" << region_first;
+    EXPECT_EQ(exits, 1u) << "region_first=" << region_first;
   }
 }
 

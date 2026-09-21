@@ -282,36 +282,37 @@ sequences with the ABI work rather than being done in passing.
 
 ## D. Real limitations, documented and pinned
 
-### D1. A region's contiguity depends on declaration order
+### ~~D1. A region's contiguity depends on declaration order~~ — FIXED 2026-09-21
 
-Two independent channels on the same clock, one of them inside an iteration
-region. Nothing couples them, so an instruction order exists that keeps the
-region's body contiguous — and the scheduler finds it when the unrelated
-channel is declared **first**. Declared **second**, its operator chain sorts
-into the middle of the region's body and `schedule()` refuses the plan with
-`E-SCHED-REGION`. The two spellings describe the same coupling, so which one
-works is a property of this scheduler, not of the graph.
+Two independent channels on the same clock, one inside an iteration region.
+The scheduler ordered an instant by topological rank alone, so the two chains
+interleaved whenever their ranks alternated — and whether they did depended on
+the order the user happened to declare their components in. A region cut in
+half that way was refused (`E-SCHED-REGION`) although an order existed that
+kept it whole.
 
-Found 2026-09-20 by the host Tier 1 run: `runner_transport`'s fixture
-declared the independent channel after the region, while the Tier 0 twin in
-`test/runtime/runner_test.cpp` had already worked around it in the opposite
-order — with a comment explaining why, which is how the workaround survived
-without the limitation being written down anywhere.
+The interleaving instruction was usually the region's **own** sink: a
+non-member that reads the region's converged output and must run after the
+loop, which the rank tie-break sometimes placed between two members.
 
-- **Pinned by** `ExecutionPlan.AnUnrelatedChannelDeclaredAfterARegionBreaksItsContiguity`
-  (`test/schedule/plan_test.cpp`), which asserts *both* halves: declared-first
-  schedules, declared-second is refused. If the second half ever starts
-  passing the limitation is gone — delete the half and this entry rather than
-  relaxing the assertion.
-- **The refusal's advice was also wrong here** and has been corrected. It said
-  to put the region's channels on one clock; they already were. It now names
-  declaration order as the cure and points at this entry.
-- **The real fix** is in `assign_region_boundaries`/the ready-list order in
-  `src/schedule/scheduler.cpp`: once an instruction belonging to a region is
-  emitted, prefer that region's other ready members until its body is
-  exhausted. Not attempted yet — it changes instruction order for every plan
-  with a region, so it needs the golden-IR files regenerated and re-checked,
-  which is a change of its own rather than a rider on a test fix.
+**Fixed** by `group_regions_within_instants()` (`src/schedule/scheduler.cpp`):
+within each (time, phase) instant, emit greedily and prefer an open region's
+ready members. Only ready instructions are ever emitted, so it cannot invert a
+dependence — and with no region in an instant the result is the rank order
+itself, which is why every golden IR file is byte-identical.
+
+Grouping is **skipped** for an instant where a non-member reads an arc that a
+member also reads and that no member produces — the same external value the
+region re-advances. That is the hanging-channel hazard
+(`Iteration.RejectsAnExplicitChannelHangingOffAnIteratedComponent`): the
+non-member would run once, on one sweep's iterate, so separating the interleave
+would turn a refusal into a silently chosen placement. Such an instant keeps
+the order it had, and with it the verdict it produced before. The first attempt
+at this fix did separate it, and that test is what caught it.
+
+`ExecutionPlan.ARegionSchedulesWhicheverOrderItsNeighbourIsDeclaredIn` asserts
+both spellings schedule; two mutations fail if either half of the rule is
+removed. `E-SCHED-REGION`'s message no longer mentions declaration order.
 
 ---
 
