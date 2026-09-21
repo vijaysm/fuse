@@ -998,9 +998,9 @@ Result<void> Runner::Impl::resolve_instructions() {
   // Both are APPENDED to by the OpKind::Transport case below, so they must be
   // reset here like every other setup-owned container. Runner::initialize() is
   // re-callable (it clears `initialized` at entry), and without these a second
-  // initialize() would carry the first call's entries forward and trip
-  // attach_comm_graphs()'s "one CommGraph-backed Transport per run" guard
-  // (E-RT-TRANSPORT) on a plan that has exactly one.
+  // initialize() would carry the first call's entries forward and build a
+  // Transport per stale plan as well as per real one --
+  // RunnerTransport.InitializeIsRepeatableOnTheSameRunner is what notices.
   transport_plans.clear();
   transport_instruction.clear();
   stats.remap_weight_builds = 0;
@@ -1318,20 +1318,16 @@ Result<void> Runner::Impl::attach_comm_graphs() {
     }
   }
 
-  if (status.ok() && transport_plans.size() > 1) {
-    status = Failure{"E-RT-TRANSPORT",
-                   "this build wires one CommGraph-backed Transport per run, "
-                   "but the plan has " +
-                       std::to_string(transport_plans.size()) +
-                       ". One Transport instance per instruction is the next "
-                       "step."};
-  }
-
   // Set from the rank graph when a pair's placements partially overlap, and
   // consumed by the plan build below. Local to this function rather than
   // members of TransportPlan: runner_impl.hpp deliberately holds no MPI-only
   // type, which is why the local-copy pairs there are two plain vectors and
   // not a CommGraph type.
+  // clear()+resize(), not assign(n, nullptr): assign copy-constructs its
+  // fill value and unique_ptr is move-only.
+  graph_transports.clear();
+  graph_transports.resize(transport_plans.size());
+
   bool                       peer_plan_needed = false;
   std::vector<CommGraphPeer> send_peers;
   std::vector<CommGraphPeer> recv_peers;
@@ -1460,45 +1456,61 @@ Result<void> Runner::Impl::attach_comm_graphs() {
     p.send.assign(p.total(), 0.0);
     p.recv.assign(p.total(), 0.0);
     p.has_graph = true;
-  }
 
-  if (status.ok() && transport_plans.size() == 1 &&
-      transport_plans[0].has_graph) {
-    if (auto* mpi = dynamic_cast<MpiTransport*>(transport.get())) {
-      // COLLECTIVE, once, and every rank reaches it: the condition is derived
-      // from the plan, which is identical everywhere -- including
-      // `peer_plan_needed`, which comes from the graph and not from anything
-      // rank-local.
-      if (peer_plan_needed) {
-        std::vector<LocalCopyPair> local;
-        local.reserve(transport_plans[0].local_src.size());
-        for (std::size_t k = 0; k < transport_plans[0].local_src.size(); ++k) {
-          local.push_back({transport_plans[0].local_src[k],
-                           transport_plans[0].local_dst[k]});
-        }
-        status = mpi->build_plan_from_peers(
-            send_peers, recv_peers, local, transport_plans[0].spec.elements,
-            transport_plans[0].spec.components);
-      } else {
-        status = mpi->build_plan(transport_plans[0].spec);
+    // This plan's own Transport, built here rather than after the loop
+    // because `peer_plan_needed`, `send_peers` and `recv_peers` describe THIS
+    // plan and are overwritten by the next iteration. Building it after the
+    // loop is what limited the runner to a single cross-rank channel.
+    //
+    // COLLECTIVE, and every rank reaches it for every plan: the registry
+    // creates from `config.transport`, `transport_setup` duplicates the
+    // communicator, and build_plan agrees its verdict across ranks. All three
+    // depend on the plan and the config, which are identical everywhere.
+    Result<std::unique_ptr<Transport>> made =
+        TransportRegistry::instance().create(config.transport);
+    if (!made.ok()) {
+      status = made.error();
+      continue;
+    }
+    std::unique_ptr<Transport> own = std::move(made.value());
+    if (config.transport_setup) {
+      const Result<void> set_up = config.transport_setup(*own);
+      if (!set_up.ok()) {
+        status = set_up;
+        continue;
       }
-    } else {
+    }
+
+    auto* mpi = dynamic_cast<MpiTransport*>(own.get());
+    if (mpi == nullptr) {
       // A CommGraph-backed plan carries subset gather/scatter indices that
       // only MpiTransport::build_plan() knows how to turn into a real
       // cross-rank exchange -- a "copy" or other backend given this spec
       // would silently move the wrong data rather than fail. `has_graph`'s
-      // own doc comment (runner_impl.hpp) already excludes this case; this
-      // is that exclusion made a refusal instead of an assumption. Safe
-      // below the collective marker because the condition (`dynamic_cast`
-      // on `config.transport`'s concrete type) depends only on
-      // `RunnerConfig`, which is identical on every rank.
+      // own doc comment (runner_impl.hpp) already excludes this case; this is
+      // that exclusion made a refusal instead of an assumption.
       status = Failure{"E-RT-TRANSPORT",
                      "a CommGraph-backed Transport plan requires the \"mpi\" "
                      "transport backend, but the configured transport is '" +
-                         transport->name() +
+                         own->name() +
                          "'; set RunnerConfig::transport = \"mpi\" alongside "
                          "base_communicator"};
+      continue;
     }
+
+    if (peer_plan_needed) {
+      std::vector<LocalCopyPair> local;
+      local.reserve(p.local_src.size());
+      for (std::size_t k = 0; k < p.local_src.size(); ++k) {
+        local.push_back({p.local_src[k], p.local_dst[k]});
+      }
+      status = mpi->build_plan_from_peers(send_peers, recv_peers, local,
+                                         p.spec.elements, p.spec.components);
+    } else {
+      status = mpi->build_plan(p.spec);
+    }
+    if (!status.ok()) continue;
+    graph_transports[pi] = std::move(own);
   }
 
   // Nothing outlives this function. `CommGraph` is a pure value
@@ -2099,6 +2111,16 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
         return transport->move(in_ptr(0), out_ptr(), n);
       }
 
+      // This plan's own instance, not the shared one: see
+      // Impl::graph_transports.
+      Transport* tp = graph_transports[static_cast<std::size_t>(r.transport)].get();
+      if (tp == nullptr) {
+        return Failure{"E-RT-TRANSPORT",
+                     "the CommGraph-backed plan for this Transport "
+                     "instruction has no Transport instance; initialize() "
+                     "must have failed and been ignored"};
+      }
+
       const double*     in  = in_ptr(0);
       double*           out = out_ptr();
       const std::size_t nc =
@@ -2121,13 +2143,12 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
         for (std::size_t c = 0; c < nc; ++c) p.send[k * nc + c] = in[s + c];
       }
 
-      const Result<void> prep = transport->prepare(p.spec);
+      const Result<void> prep = tp->prepare(p.spec);
       if (!prep.ok()) return prep;
       // p.total(), NOT the arc's n: move() requires exactly elements *
       // components OF THE PLANNED SPEC, and the planned spec is the subset
       // this rank actually exchanges.
-      const Result<void> mv =
-          transport->move(p.send.data(), p.recv.data(), p.total());
+      const Result<void> mv = tp->move(p.send.data(), p.recv.data(), p.total());
       if (!mv.ok()) return mv;
 
       for (std::size_t k = 0; k < p.scatter.size(); ++k) {
