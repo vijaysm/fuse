@@ -205,3 +205,31 @@ to produce, so the argument for blocking them does not apply.
 `Runner.AFailedStepBlocksOnlyWhatReadsFromIt` pins both halves in Tier 0, and
 two mutations (`a-failed-step-blocks-every-later-advance`,
 `a-failed-step-blocks-nothing`) fail if either half is removed.
+
+
+## A deferred verdict is one value, and clearing it loses a check
+
+`MpiTransport::build_plan()` never returns at the point of a local failure: it
+records the verdict with `fail()` and returns only at an agreement point, where
+every rank is present to return the same thing. That makes the verdict a single
+monotonic value per call — `fail()` keeps the first and ignores later ones.
+
+**It must never be cleared.** Phase D (the id matching) used to clear `err` so
+it could reuse it as its own loop accumulator. That was harmless when written,
+because every verdict recorded before it had already been agreed and returned
+at Collective 1. Collective 2b — the components agreement — then added a
+verdict recorded *after* Collective 1 and read only at Collective 4, on the far
+side of the clear. The consequence: that check ran, computed the correct answer
+on every rank, and had it erased two phases later, so `build_plan()` returned
+success on ranks that had just refused. The guard existed, was reached, was
+right, and was ignored.
+
+It survived a full review pass, a mutation entry, and five readings of the
+path. What found it was printing the verdict at both ends under
+`FUSE_TRANSPORT_DEBUG`: the rule reported `agreed=false` on both ranks while
+the agreement two phases later reported `local=0`. Two numbers that cannot both
+be true localised in one run what argument had failed to find five times.
+
+`tools/check-invariants.py` now refuses any `err = Err::None;` in library code
+(**I-VERDICT**). If a phase needs its own accumulator, it gets its own
+variable.
