@@ -270,14 +270,25 @@ endforeach()
 add_test(NAME field.compile_fail.dangling_span
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
           --target fuse_field_compile_fail_dangling_span)
+# RESOURCE_LOCK on every test that drives ${CMAKE_BINARY_DIR}.
+#
+# These three invoke `cmake --build` (or `cmake --install`) on the SAME build
+# directory the test run itself lives in. Under `ctest -j8` two of them can be
+# in the generator at once, and the loser sees a tree another cmake is
+# rewriting: `field.compile_ok.owning_chain` failed once that way on
+# 2026-09-21 and passed on rerun. A test that passes on rerun is the shape of
+# a race, and a gate nobody trusts to be deterministic is not a gate.
+#
+# Tests sharing a lock name are never scheduled concurrently. This costs
+# sequencing among exactly these three and nothing else.
 set_tests_properties(field.compile_fail.dangling_span PROPERTIES
-  WILL_FAIL TRUE LABELS "compile_fail")
+  WILL_FAIL TRUE LABELS "compile_fail" RESOURCE_LOCK fuse_build_tree)
 
 add_test(NAME field.compile_ok.owning_chain
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
           --target fuse_field_compile_ok_owning_chain)
 set_tests_properties(field.compile_ok.owning_chain PROPERTIES
-  LABELS "compile_fail")
+  LABELS "compile_fail" RESOURCE_LOCK fuse_build_tree)
 
 # ---------------------------------------------------------------- verification
 # Convergence orders and iteration counts, against known-good values. These are
@@ -313,6 +324,7 @@ add_test(NAME install.consumer_find_package
 )
 set_tests_properties(install.consumer_find_package PROPERTIES
   LABELS "install"
+  RESOURCE_LOCK fuse_build_tree
   # Builds a second small project from scratch; generous relative to the rest
   # of the suite (docs/dev/testing.md's timeout convention for anything that
   # runs more than one build).
