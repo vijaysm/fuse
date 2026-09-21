@@ -71,3 +71,31 @@ same global ids. The builder's own conservation audit travels with the map
 (`max_row_defect`, `max_col_defect`, the two measure totals) and is reported
 on read, but it describes the meshes the map was *built* from. If that matters
 to your run, re-check it against the meshes you loaded.
+
+## The answer does not depend on how many ranks you run
+
+Values are bit-for-bit identical at 1, 2, 3, 4 and 5 tasks, including the
+uneven splits, and `TransferMapIo.EveryRankCountGivesBitIdenticalValues`
+asserts exact equality rather than a tolerance.
+
+Two things make it hold. A target entity is owned by exactly one rank, so
+every entry of a row is local and no row is ever summed in pieces. And
+`localise()` orders each row by ascending **source global id**, never by local
+column index — local indices depend on how many entities a rank holds and in
+what order its halo arrived, so summing in that order would make the last bits
+of the answer a function of the decomposition.
+
+If you extend this, note what it cost to test. Two earlier versions of that
+test passed while proving nothing, and the mutation
+`map-accumulates-in-local-column-order` survived both:
+
+1. The weights were four values of similar magnitude. Summation is
+   non-associative only when magnitudes differ enough for absorption, so
+   reversing the order gave identical bits. The map now uses one weight of 1
+   and three of 6e-17, where ascending accumulates 1.8e-16 and then moves 1 by
+   one ulp while descending absorbs each term into 1.
+2. Every reader was given the *same* source view. A replicated source numbered
+   identically everywhere makes local-column order partition-independent as
+   well, so the two orders could not be distinguished by a test that only
+   compares rank counts against each other. Each rank now numbers the source
+   its own way, which is what a halo gather produces.
