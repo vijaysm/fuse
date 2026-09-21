@@ -336,6 +336,27 @@ struct Runner::Impl {
   /// One entry per `OpKind::Transport` instruction, in instruction order.
   /// Built in resolve_instructions(); Task 4 fills in the CommGraph-derived
   /// maps. Never resized after setup.
+  /// Row `s` marks every ComponentSet slot that reads, transitively, something
+  /// slot `s` provides -- the components whose step would consume a value a
+  /// failed step never produced. Square, `components.size()` per side, built
+  /// once in setup() from the channels of the coupling graph.
+  ///
+  /// It exists so that a failing period can keep advancing the components that
+  /// are NOT downstream of the failure. Before 2026-09-21 a failure anywhere
+  /// stopped every later advance in the period, which for a plan whose ticks
+  /// all fall in the trailing loop meant no component advanced at all --
+  /// including ones on a channel with no relation to the failure.
+  ///
+  /// Downstream only, deliberately. A component UPSTREAM of the failure reads
+  /// nothing the failed step was supposed to produce, so its own step is as
+  /// valid as it would have been in a period that succeeded.
+  std::vector<std::vector<char>>     downstream_of;
+
+  /// True for a slot that must not advance for the rest of this period: the
+  /// slot the failure came from, plus everything `downstream_of` it. Empty
+  /// until a failure occurs. Sized with `downstream_of`.
+  std::vector<char>                  advance_blocked;
+
   std::vector<detail::TransportPlan> transport_plans;
   /// Index into `plan.instructions` of the instruction each plan belongs to,
   /// parallel to `transport_plans`. attach_comm_graphs() needs the instruction
@@ -455,6 +476,13 @@ struct Runner::Impl {
   /// participant ends the call holding the same globally-agreed values.
   /// No-ops (`Result<void>::success()`, `payload` unchanged) when
   /// `r.participants` has at most one rank or this rank is not in it.
+  /// Mark `origin` and everything downstream of it as not advancing for the
+  /// rest of this period. An out-of-range origin blocks every slot.
+  void block_advances_from(std::size_t origin);
+
+  /// False once this period has a failure that `slot` is downstream of.
+  [[nodiscard]] bool may_advance(std::size_t slot) const;
+
   Result<void> reduce_region_residuals(const detail::RegionRuntime& r,
                                        std::vector<double>& payload);
 };

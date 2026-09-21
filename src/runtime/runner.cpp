@@ -1270,6 +1270,37 @@ Result<void> Runner::Impl::build_ticks(ComponentSet& components) {
                      if (a.time != b.time) return a.time < b.time;
                      return a.order < b.order;
                    });
+
+  // Which components would consume a value a failed step never produced: one
+  // edge per channel, from the component owning its source field to the
+  // component owning its target, then a transitive closure. Component counts
+  // here are tens, so the plain cubic closure costs nothing and reads better
+  // than a worklist. Built here because this is where graph components are
+  // already matched to ComponentSet slots.
+  const std::size_t nc = components.size();
+  downstream_of.assign(nc, std::vector<char>(nc, 0));
+  const auto slot_of = [&](ComponentId cid) -> std::size_t {
+    const std::string& want = graph.component(cid).name;
+    for (std::size_t j = 0; j < nc; ++j) {
+      if (components.at(j).name() == want) return j;
+    }
+    return nc;  // declared but not supplied; the loop above already refused
+  };
+  for (std::uint32_t ci = 0; ci < graph.channel_count(); ++ci) {
+    const Channel&    ch = graph.channel_at(ChannelId{ci});
+    const std::size_t a  = slot_of(graph.owner_of(ch.source));
+    const std::size_t b  = slot_of(graph.owner_of(ch.target));
+    if (a < nc && b < nc && a != b) downstream_of[a][b] = 1;
+  }
+  for (std::size_t k = 0; k < nc; ++k) {
+    for (std::size_t a = 0; a < nc; ++a) {
+      if (downstream_of[a][k] == 0) continue;
+      for (std::size_t b = 0; b < nc; ++b) {
+        if (downstream_of[k][b] != 0) downstream_of[a][b] = 1;
+      }
+    }
+  }
+
   return Result<void>::success();
 }
 
@@ -2226,6 +2257,27 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
   return Result<void>::success();
 }
 
+void Runner::Impl::block_advances_from(std::size_t origin) {
+  if (downstream_of.empty()) return;
+  if (advance_blocked.empty()) advance_blocked.assign(downstream_of.size(), 0);
+  if (origin >= downstream_of.size()) {
+    // An unattributable failure blocks everything, which is what this rule
+    // replaced. Being unable to name the origin is not a licence to advance
+    // components that might be downstream of it.
+    advance_blocked.assign(downstream_of.size(), 1);
+    return;
+  }
+  advance_blocked[origin] = 1;
+  for (std::size_t b = 0; b < downstream_of.size(); ++b) {
+    if (downstream_of[origin][b] != 0) advance_blocked[b] = 1;
+  }
+}
+
+bool Runner::Impl::may_advance(std::size_t slot) const {
+  if (advance_blocked.empty()) return true;
+  return slot < advance_blocked.size() && advance_blocked[slot] == 0;
+}
+
 Result<void> Runner::Impl::advance(ComponentSet& components, const Tick& tick,
                                    int iteration) {
   StepContext ctx;
@@ -2299,6 +2351,8 @@ Result<void> Runner::Impl::step_period(ComponentSet& components) {
     if (!c.ok()) return c;
   }
 
+  advance_blocked.clear();
+
   std::size_t ti = 0;
   std::size_t i = 0;
   while (i < stream.size()) {
@@ -2313,9 +2367,17 @@ Result<void> Runner::Impl::step_period(ComponentSet& components) {
       // stepping on values this step never produced), and keep walking so the
       // agreement points are still reached. Returning here is what leaves
       // every partner blocked in the next exchange.
-      if (!step_failure.has_value()) {
+      // A component refusing its step no longer stops components that read
+      // nothing it provides: the origin and everything downstream of it are
+      // blocked (Impl::downstream_of), the rest still step. Their values are
+      // as valid as in a period that succeeded, and the period still reports
+      // the failure at its end.
+      if (may_advance(ticks[ti].slot)) {
         const Result<void> a = advance(components, ticks[ti], 0);
-        if (!a.ok()) step_failure = a.error();
+        if (!a.ok()) {
+          if (!step_failure.has_value()) step_failure = a.error();
+          block_advances_from(ticks[ti].slot);
+        }
       }
       ++ti;
     }
@@ -2330,7 +2392,15 @@ Result<void> Runner::Impl::step_period(ComponentSet& components) {
       // in the same period's instruction stream, including ones for a
       // channel that has nothing to do with this region; a partner rank
       // waiting at one of those later agreement points blocked forever.
-      if (!rr.ok() && !step_failure.has_value()) step_failure = rr.error();
+      if (!rr.ok()) {
+        if (!step_failure.has_value()) step_failure = rr.error();
+        // The region's members are the origin: a region failure is not
+        // attributable to one component (a convergence failure is
+        // attributable to none), so everything it re-advances is suspect.
+        for (const std::size_t slot : r.component_slots) {
+          block_advances_from(slot);
+        }
+      }
       i = r.exit + 1;
       continue;
     }
@@ -2364,11 +2434,14 @@ Result<void> Runner::Impl::step_period(ComponentSet& components) {
   // normal path, not just the "plan with no instruction after the last tick"
   // corner it was written for.
   for (; ti < ticks.size(); ++ti) {
-    if (step_failure.has_value()) break;
+    // Not `break` on any failure -- see the tick loop above. A period's ticks
+    // routinely ALL land here, so breaking made one component's refusal skip
+    // every other component's step, unrelated ones included.
+    if (!may_advance(ticks[ti].slot)) continue;
     const Result<void> a = advance(components, ticks[ti], 0);
     if (!a.ok()) {
-      step_failure = a.error();
-      break;
+      if (!step_failure.has_value()) step_failure = a.error();
+      block_advances_from(ticks[ti].slot);
     }
   }
 

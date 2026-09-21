@@ -1130,6 +1130,111 @@ TEST(Runner, AnAdvanceFailureInsideAnIterationRegionSweepIsReported) {
 // scheduled by absolute time and already satisfied before the region's
 // failure exists) is not retroactively undone by a later, unrelated
 // region's failure, and that the period still reports that failure.
+// The dependence rule of 2026-09-21, both halves, with the failure FIRST so
+// that every other advance in the period is governed by it.
+//
+// No iteration region here on purpose. In
+// ASecondChannelStillAdvancesAfterAnUnrelatedRegionFails the region body
+// re-advances its own members, so that fixture cannot show what the rule does
+// to a component merely downstream of a failure.
+//
+// Declaration order puts the A pair first, so the refusing producer's tick
+// comes before the other three: consumer_a is downstream of it over linkA and
+// must NOT step, while producer_b and consumer_b read nothing it provides and
+// must.
+TEST(Runner, AFailedStepBlocksOnlyWhatReadsFromIt) {
+  CouplingGraph g;
+  const auto m1 = g.add_mesh(fuse::MeshDecl{.name = "m1", .source = "generated:line:8"});
+  const auto m2 = g.add_mesh(fuse::MeshDecl{.name = "m2", .source = "generated:line:8"});
+  const auto m3 = g.add_mesh(fuse::MeshDecl{.name = "m3", .source = "generated:line:8"});
+  const auto m4 = g.add_mesh(fuse::MeshDecl{.name = "m4", .source = "generated:line:8"});
+  const auto r1 = g.add_region(fuse::Region{.name = "r1", .mesh = m1, .dimension = 1});
+  const auto r2 = g.add_region(fuse::Region{.name = "r2", .mesh = m2, .dimension = 1});
+  const auto r3 = g.add_region(fuse::Region{.name = "r3", .mesh = m3, .dimension = 1});
+  const auto r4 = g.add_region(fuse::Region{.name = "r4", .mesh = m4, .dimension = 1});
+
+  const auto pa = g.add_component(fuse::ComponentDecl{
+      .name = "producer_a", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  const auto ca = g.add_component(fuse::ComponentDecl{
+      .name = "consumer_a", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  const auto pb = g.add_component(fuse::ComponentDecl{
+      .name = "producer_b", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  const auto cb = g.add_component(fuse::ComponentDecl{
+      .name = "consumer_b", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+
+  const auto sa = g.add_field(pa, fuse::FieldSpec{
+      .name = "out", .region = r1, .units = u::kKelvin, .intent = fuse::Intent::Provides});
+  const auto ta = g.add_field(ca, fuse::FieldSpec{
+      .name = "in", .region = r2, .units = u::kKelvin, .intent = fuse::Intent::Requires});
+  const auto sb = g.add_field(pb, fuse::FieldSpec{
+      .name = "out", .region = r3, .units = u::kKelvin, .intent = fuse::Intent::Provides});
+  const auto tb = g.add_field(cb, fuse::FieldSpec{
+      .name = "in", .region = r4, .units = u::kKelvin, .intent = fuse::Intent::Requires});
+
+  g.add_channel("linkA", sa, ta);
+  g.add_channel("linkB", sb, tb);
+
+  SerialMeshBackend backend;
+  ASSERT_TRUE(backend.load(g.mesh(m1)).ok());
+  ASSERT_TRUE(backend.load(g.mesh(m2)).ok());
+  ASSERT_TRUE(backend.load(g.mesh(m3)).ok());
+  ASSERT_TRUE(backend.load(g.mesh(m4)).ok());
+
+  const auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+  fuse::OperatorDAG dag = lowered.dag;
+  const fuse::ClockSet clocks{g};
+  const auto sched = schedule(g, dag, clocks, fuse::make_region_sizes(g, backend));
+  ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
+  fuse::ExecutionPlan plan = sched.plan;
+
+  ProducerOpts po_a;
+  po_a.name         = "producer_a";
+  po_a.fail_advance = true;
+  ProducerOpts po_b;
+  po_b.name = "producer_b";
+
+  ComponentSet components;
+  components.add(std::make_unique<Producer>(po_a));
+  components.add(std::make_unique<Consumer>(8, /*rollback=*/false, "consumer_a"));
+  components.add(std::make_unique<Producer>(po_b));
+  components.add(std::make_unique<Consumer>(8, /*rollback=*/false, "consumer_b"));
+
+  FieldRegistry registry;
+  for (auto& c : components) {
+    ASSERT_TRUE(c.register_fields(registry, g).ok());
+  }
+
+  Runner runner{g, dag, plan, backend};
+  const auto init = runner.initialize(components, registry);
+  ASSERT_TRUE(init.ok()) << init.error().code << ": " << init.error().message;
+
+  auto* cons_a = dynamic_cast<Consumer*>(components.find("consumer_a"));
+  auto* cons_b = dynamic_cast<Consumer*>(components.find("consumer_b"));
+  ASSERT_NE(cons_a, nullptr);
+  ASSERT_NE(cons_b, nullptr);
+
+  // The stub refuses from its SECOND advance() on, so the first period is the
+  // ordinary one and the second is the one under test.
+  const auto first = runner.run_period(components);
+  ASSERT_TRUE(first.ok()) << first.error().code << ": " << first.error().message;
+  ASSERT_EQ(cons_a->steps, 1);
+  ASSERT_EQ(cons_b->steps, 1);
+
+  const auto r = runner.run_period(components);
+  ASSERT_FALSE(r.ok()) << "producer_a refuses its second step";
+  EXPECT_EQ(r.error().code, "E-TEST-ADVANCE-REFUSED") << r.error().message;
+
+  EXPECT_EQ(cons_a->steps, 1)
+      << "consumer_a reads producer_a's output over linkA, so it must NOT "
+         "have taken a second step: it would consume a value producer_a "
+         "never produced";
+  EXPECT_EQ(cons_b->steps, 2)
+      << "consumer_b reads nothing producer_a provides, so its step is as "
+         "valid as in a period that succeeded; blocking it is what made one "
+         "component's refusal stop every other component in the period";
+}
+
 TEST(Runner, ASecondChannelStillAdvancesAfterAnUnrelatedRegionFails) {
   CouplingGraph g;
   const auto m3 = g.add_mesh(fuse::MeshDecl{.name = "m3", .source = "generated:line:8"});
@@ -1213,6 +1318,7 @@ TEST(Runner, ASecondChannelStillAdvancesAfterAnUnrelatedRegionFails) {
       << "linkB has nothing to do with region 'outer'; its consumer's own "
          "advance() must not be skipped or rolled back just because an "
          "unrelated region failed later in the same period";
+
 }
 
 // The companion regression: every existing single-process caller -- no
