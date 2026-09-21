@@ -1,6 +1,6 @@
 # Mutation evidence — `backend`
 
-Run 2026-09-20 against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
+Run 2026-09-21 against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
 
 | Mutation | File | Verdict | Killed by |
 |---|---|---|---|
@@ -22,5 +22,8 @@ Run 2026-09-20 against build `build-fuse-s1`. Regenerate with `tools/mutate.py -
 | `weights-signature-covers-the-audit` — the signature hashes a measurement about the matrix rather than only what it computes, so a change in the builder's diagnostics invalidates every persisted map | `src/backend/weights_operator.cpp` | **KILLED** (test fails) | `backend.operator_conformance` |
 | `apply-spacetime-skips-validation-at-zero-weight` — a zero temporal coefficient returns before the spatial-triplet index validation loop runs, so a malformed spatial array (an out-of-range row/column index) is only ever caught on a call whose temporal weight happens to be nonzero (R-33) | `src/backend/spacetime.cpp` | **KILLED** (test fails) | `backend.spacetime` |
 | `supermesh-no-over-coverage-audit` — the supermesh path's per-cell coverage audit checks only the minimum, so a cell assigned more area than it has (R-12's defect class, or any other overlap-inflation bug) passes silently instead of refusing E-REMAP-INTX (R-13) | `src/backend/supermesh.cpp` | **KILLED** (test fails) | `backend.supermesh` |
+| `map-coverage-check-does-nothing` — S5.4's distribution check: localise() refuses when a target entity this rank owns has no row in the map. Without it a map written for another partition localises to a matrix with missing rows, and apply() writes zero into a field the map exists to fill -- indistinguishable from a field that transferred and happened to be zero. | `src/backend/transfer_map_io.cpp` | **KILLED** (test fails) | `backend.transfer_map_io` |
+| `map-checksum-not-verified` — The payload hash is what catches silent corruption; the length check cannot. Removing the comparison accepts a file of the right length whose weights have changed. | `src/backend/transfer_map_io.cpp` | **KILLED** (test fails) | `backend.transfer_map_io` |
+| `map-entries-not-sorted` — The format promises entries sorted by (target gid, source gid), because floating-point summation is not associative: a map that reloads in a different order gives different rounding than it was written with. Local index order and global id order need not agree, so dropping the sort emits whatever the local order was. | `src/backend/transfer_map_io.cpp` | **KILLED** (test fails) | `backend.transfer_map_io` |
 
-**18 killed / 18 total.**
+**21 killed / 21 total.**
