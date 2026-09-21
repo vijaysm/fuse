@@ -25,6 +25,7 @@ user/quickstart
 user/fluent-api
 user/placement
 user/geometry
+user/transfer-maps
 user/combining-writers
 user/field-pipeline
 user/examples

@@ -11,3 +11,33 @@ old = "return moments[0] > 0.0 ? moments[0] : 0.0;\n  }"
 new = "return moments[0] > 0.0 ? moments[0] * 1.5 : 0.0;\n  }"
 target = "fuse_backend_supermesh_test"
 test = "backend.supermesh"
+
+[[mutation]]
+id = "map-coverage-check-does-nothing"
+area = "backend"
+describes = "S5.4's distribution check: localise() refuses when a target entity this rank owns has no row in the map. Without it a map written for another partition localises to a matrix with missing rows, and apply() writes zero into a field the map exists to fill -- indistinguishable from a field that transferred and happened to be zero."
+file = "src/backend/transfer_map_io.cpp"
+old = "  if (missing != 0) {"
+new = "  if (false) {"
+target = "fuse_backend_transfer_map_io_test"
+test = "backend.transfer_map_io"
+
+[[mutation]]
+id = "map-checksum-not-verified"
+area = "backend"
+describes = "The payload hash is what catches silent corruption; the length check cannot. Removing the comparison accepts a file of the right length whose weights have changed."
+file = "src/backend/transfer_map_io.cpp"
+old = "  if (bytes::fnv1a(raw.subspan(payload_at, payload_len)) != want_hash) {"
+new = "  if (false) {"
+target = "fuse_backend_transfer_map_io_test"
+test = "backend.transfer_map_io"
+
+[[mutation]]
+id = "map-entries-not-sorted"
+area = "backend"
+describes = "The format promises entries sorted by (target gid, source gid), because floating-point summation is not associative: a map that reloads in a different order gives different rounding than it was written with. Local index order and global id order need not agree, so dropping the sort emits whatever the local order was."
+file = "src/backend/transfer_map_io.cpp"
+old = "  std::stable_sort(order.begin(), order.end(),"
+new = "  if (false) std::stable_sort(order.begin(), order.end(),"
+target = "fuse_backend_transfer_map_io_test"
+test = "backend.transfer_map_io"

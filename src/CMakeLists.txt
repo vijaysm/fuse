@@ -206,6 +206,7 @@ add_library(fuse-coupler-backend
   backend/serial_backend.cpp
   backend/supermesh.cpp
   backend/linear_operator.cpp
+  backend/transfer_map_io.cpp
   backend/weights_operator.cpp
   backend/spacetime.cpp
   # Supermesh intersection: the real implementation needs MOAB, and the
