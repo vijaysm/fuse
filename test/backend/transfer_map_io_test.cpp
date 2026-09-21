@@ -87,6 +87,37 @@ fuse::RemapWeights four_point_map(std::size_t n_rows, std::size_t n_cols) {
   return w;
 }
 
+/// A map whose row sums are ORDER SENSITIVE, which the four-point map is not.
+///
+/// Summation is non-associative only when magnitudes differ enough to be
+/// absorbed. Each row here carries one weight of 1 and three of 6e-17 against
+/// a unit field: ascending, the three small terms accumulate to 1.8e-16 first
+/// and then push 1 up by one ulp; descending, each is absorbed into 1 and the
+/// row comes out exactly 1. The 1 is placed on the row's SMALLEST local
+/// column, which -- because the source partition numbers its entities in
+/// descending gid order -- is its LARGEST global id, so global-id order is the
+/// ascending case and local-column order is the descending one.
+///
+/// Without this, `map-accumulates-in-local-column-order` survives: it did, on
+/// the first attempt at the test below.
+fuse::RemapWeights order_sensitive_map(std::size_t n_rows, std::size_t n_cols) {
+  fuse::RemapWeights w;
+  w.n_rows = n_rows;
+  w.n_cols = n_cols;
+  w.order = 1;
+  for (std::size_t j = 0; j < n_rows; ++j) {
+    std::vector<std::size_t> cols;
+    for (std::size_t d = 0; d < 4; ++d) cols.push_back((j * 3 + d) % n_cols);
+    const std::size_t big = *std::min_element(cols.begin(), cols.end());
+    for (const std::size_t c : cols) {
+      w.row.push_back(static_cast<std::int32_t>(j));
+      w.col.push_back(static_cast<std::int32_t>(c));
+      w.val.push_back(c == big ? 1.0 : 6e-17);
+    }
+  }
+  return w;
+}
+
 /// Named `apply_map`, not `apply`: one argument is a std::vector, so ADL
 /// finds `std::apply` and resolves to it.
 std::vector<double> apply_map(const fuse::RemapWeights& w,
@@ -263,20 +294,33 @@ TEST(TransferMapIo, TwoWritersReloadAsFourReadersAndReproduceTheValues) {
 // gid order for that reason, so local-column order and global-id order
 // disagree and a mutation that used the former is detectable.
 TEST(TransferMapIo, EveryRankCountGivesBitIdenticalValues) {
-  std::vector<std::size_t> src_gids = ids(0, 16);
-  std::reverse(src_gids.begin(), src_gids.end());
-  const Partition src_all{src_gids};
+  // Each rank's source view holds every source entity -- as it would after a
+  // halo gather -- but NUMBERED DIFFERENTLY: its own share first, then the
+  // rest. That is the crux. A replicated source numbered identically on every
+  // reader makes local-column order partition-independent too, and then
+  // nothing distinguishes it from global-id order; the first version of this
+  // test did exactly that and could not kill
+  // `map-accumulates-in-local-column-order`.
+  const auto src_for = [](std::size_t ranks, std::size_t r) {
+    std::vector<std::size_t> g = ids(0, 16);
+    std::rotate(g.begin(), g.begin() + static_cast<long>((r * 5 + ranks) % 16),
+                g.end());
+    return Partition{g};
+  };
 
   const std::size_t n_tgt = 8;
+  const Partition   src_writer = src_for(1, 0);
   const Partition   tgt_whole{ids(100, n_tgt)};
-  const auto        p =
-      fuse::to_persisted(four_point_map(n_tgt, 16), src_all, tgt_whole, 2, 2);
+  const auto        p = fuse::to_persisted(order_sensitive_map(n_tgt, 16),
+                                           src_writer, tgt_whole, 2, 2);
   ASSERT_TRUE(p.ok()) << p.error().message;
 
-  std::vector<double> f(16);
-  for (std::size_t i = 0; i < f.size(); ++i) {
-    f[i] = 1.0 + 0.5 * static_cast<double>(i);
-  }
+  // Unit field: the row value is then exactly the construction above, so the
+  // two orders differ by one ulp of 1 rather than by an accident of the data.
+  // Being constant, it is also independent of each rank's local numbering --
+  // so any difference between rank counts comes from the summation order and
+  // not from which local slot a value landed in.
+  const std::vector<double> f(16, 1.0);
 
   // Global target id -> value, so answers from different partitions are
   // comparable entity by entity rather than by local position.
@@ -291,7 +335,8 @@ TEST(TransferMapIo, EveryRankCountGivesBitIdenticalValues) {
       const std::size_t count = base + (r < extra ? 1 : 0);
       if (count == 0) continue;
       const Partition mine{ids(100 + first, count)};
-      const auto      w = fuse::localise(p.value(), src_all, mine, 2, 2);
+      const Partition src_here = src_for(ranks, r);
+      const auto      w = fuse::localise(p.value(), src_here, mine, 2, 2);
       if (!w.ok()) return std::vector<std::pair<std::size_t, double>>{};
 
       // The documented invariant, checked where it is produced.
