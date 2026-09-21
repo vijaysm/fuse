@@ -315,7 +315,7 @@ without the limitation being written down anywhere.
 
 ---
 
-### D2. One CommGraph-backed Transport per run
+### ~~D2. One CommGraph-backed Transport per run~~ — FIXED 2026-09-20
 
 `Runner::Impl` holds a single `std::unique_ptr<Transport>`, so a plan with two
 cross-rank channels is refused at `initialize()`:
@@ -335,7 +335,24 @@ test were cleared (`RunnerTransport.StillRunsASecondChannelAfterARegionFails
 UnderMpi`, which needs exactly this). That test is the acceptance criterion and
 is already written; it fails on this and nothing else.
 
-**Shape of the fix** — `transport` becomes a vector indexed by transport plan;
+**Fixed.** `Impl::graph_transports` is a vector of one Transport per
+CommGraph-backed plan, built inside the per-plan loop of
+`attach_comm_graphs()` — which is where it has to be, because
+`peer_plan_needed`/`send_peers`/`recv_peers` describe the plan being walked
+and are overwritten by the next iteration. Building after the loop, on the
+last plan's peer lists, is what had limited the runner to one channel. Each
+instance is created from the registry, passed through
+`RunnerConfig::transport_setup`, then planned; every rank builds the same
+number in the same order, which matters because `set_communicator()`
+duplicates the communicator and `build_plan()` is collective. Instances are
+NOT shared between plans: a Transport carries the plan it was built for and
+`prepare()` refuses any other spec. Mutation
+`one-transport-shared-across-every-plan` pins that. Verified in the sandbox
+only as far as compiling in all three tiers; the acceptance test is
+`RunnerTransport.StillRunsASecondChannelAfterARegionFailsUnderMpi` and needs
+a host run.
+
+**The superseded plan was** — `transport` becomes a vector indexed by transport plan;
 `attach_comm_graphs()` builds and wires one per plan rather than one per run
 (`src/runtime/runner.cpp:1321` is the refusal, `:1467` the single-instance
 `dynamic_cast` wiring, `:2097` and `:2124` the execution sites). The open

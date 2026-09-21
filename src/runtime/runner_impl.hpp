@@ -315,6 +315,24 @@ struct Runner::Impl {
   /// coupler writes and the component only reads).
   std::vector<std::int32_t>        slot_source_owner;
   std::unique_ptr<Transport>       transport;
+
+  /// One Transport per CommGraph-backed entry of `transport_plans`, at the
+  /// same index; the slot is null for a plan without a graph, which moves the
+  /// whole arc through `transport` instead.
+  ///
+  /// Separate instances, not one shared: a Transport carries the plan it was
+  /// built for (`MpiTransport::prepare()` refuses a spec other than the
+  /// planned one), so two cross-rank channels cannot take turns on a single
+  /// object without re-planning at every step. Two independent cross-rank
+  /// couplings is the ordinary multiphysics case; before 2026-09-20 the
+  /// runner refused any plan with more than one (KNOWN_ISSUES D2).
+  ///
+  /// Every rank builds the same number in the same order. That is required,
+  /// not incidental: `MpiTransport::set_communicator()` duplicates the
+  /// communicator and `build_plan()` is collective, so a rank that built a
+  /// different set would desynchronise the next collective. `transport_plans`
+  /// comes from the plan, which is identical on every rank.
+  std::vector<std::unique_ptr<Transport>> graph_transports;
   /// One entry per `OpKind::Transport` instruction, in instruction order.
   /// Built in resolve_instructions(); Task 4 fills in the CommGraph-derived
   /// maps. Never resized after setup.
