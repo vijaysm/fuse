@@ -522,12 +522,28 @@ Result<void> MpiTransport::build_plan(const TransportSpec& spec) {
       fmt::print(stderr, "{}", line);
     }
 
+    // The rule itself is pure and lives in a header so Tier 0 can test it
+    // (fuse/transport/rank_agreement.hpp); only the gather is MPI's. Computed
+    // unconditionally so the trace below can report it even when an earlier
+    // verdict already stands.
+    const auto agreement =
+        ::fuse::transport::check_component_agreement(all_components, is_src,
+                                                     is_dst);
+    if (std::getenv("FUSE_TRANSPORT_DEBUG") != nullptr) {
+      // Sizes included deliberately: the rule clamps its loop to the shortest
+      // of the three, so a short mask makes it agree vacuously and that is
+      // indistinguishable from real agreement in any other output.
+      fmt::print(stderr,
+                 "[agreement rank {}] sizes comp={} src={} dst={} | "
+                 "first=({},{}) disagree=({},{}) agreed={}\n",
+                 rank, all_components.size(), is_src.size(), is_dst.size(),
+                 agreement.first_rank, agreement.first_value,
+                 agreement.disagreeing_rank, agreement.disagreeing_value,
+                 agreement.agreed());
+      std::fflush(stderr);
+    }
+
     if (err == Err::None) {
-      // The rule itself is pure and lives in a header so Tier 0 can test it
-      // (fuse/transport/rank_agreement.hpp); only the gather is MPI's.
-      const auto agreement =
-          ::fuse::transport::check_component_agreement(all_components,
-                                                       is_src, is_dst);
       if (!agreement.agreed()) {
         fail(Err::PeerMatch,
              "rank " + std::to_string(agreement.disagreeing_rank) +
@@ -723,6 +739,14 @@ Result<void> MpiTransport::build_plan(const TransportSpec& spec) {
   // is after the last collective the plan needs, so every rank reaches it.
   {
     const Err agreed = p->agree(err, &mpi_rc);
+    if (std::getenv("FUSE_TRANSPORT_DEBUG") != nullptr) {
+      // The pair that localises a lost verdict: `local` is what this rank
+      // decided, `agreed` what the reduction returned. A refusal visible here
+      // that still returns success can only be lost between the two.
+      fmt::print(stderr, "[verdict rank {}] local={} agreed={}\n", rank,
+                 static_cast<int>(err), static_cast<int>(agreed));
+      std::fflush(stderr);
+    }
     if (agreed != Err::None) {
       if (err != Err::None) return Failure{code_of(err), detail};
       if (agreed == Err::Mpi && mpi_rc != MPI_SUCCESS) {
