@@ -41,3 +41,13 @@ old = "  std::stable_sort(order.begin(), order.end(),"
 new = "  if (false) std::stable_sort(order.begin(), order.end(),"
 target = "fuse_backend_transfer_map_io_test"
 test = "backend.transfer_map_io"
+
+[[mutation]]
+id = "map-accumulates-in-local-column-order"
+area = "backend"
+describes = "Bit-for-bit across rank counts (the user's requirement, 2026-09-21) rests on localise() summing each row in ascending source GLOBAL id. Local column indices depend on how many entities the rank holds, so summing in that order makes the answer depend on the partition in the last bits. If this mutation ever survives, the bit-for-bit test has stopped distinguishing the two orders -- check its weights are still unequal before believing it."
+file = "src/backend/transfer_map_io.cpp"
+old = "    return a.src_gid < b.src_gid;"
+new = "    return a.col < b.col;"
+target = "fuse_backend_transfer_map_io_test"
+test = "backend.transfer_map_io"

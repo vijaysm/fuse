@@ -383,6 +383,30 @@ Result<RemapWeights> localise(const PersistedTransferMap& map,
   w.max_row_defect = map.max_row_defect;
   w.max_col_defect = map.max_col_defect;
 
+  // Collected before it is emitted, because the output order is load-bearing
+  // twice over and the two requirements are not the same:
+  //
+  //   1. `RemapWeights` documents `row` as ascending in LOCAL index. The file
+  //      is sorted by global id, and local numbering need not agree with it,
+  //      so emitting file order would break that invariant.
+  //   2. Within one row the sum must run in ascending SOURCE GLOBAL ID, which
+  //      is what makes the result bit-for-bit independent of rank count: a
+  //      target entity is owned by exactly one rank, so all of its entries are
+  //      local, and the global ids they carry are the same numbers whatever
+  //      the partition. Local column indices are NOT: they depend on how many
+  //      entities this rank holds and in which order.
+  //
+  // Sorting by (local row, source gid) satisfies both, and the row part is
+  // free of consequence: reordering whole rows cannot change any row's sum.
+  struct Entry {
+    std::int32_t  row;
+    std::uint64_t src_gid;
+    std::int32_t  col;
+    double        val;
+  };
+  std::vector<Entry> kept;
+  kept.reserve(map.size());
+
   std::vector<char> row_seen(n_tgt, 0);
   for (std::size_t k = 0; k < map.size(); ++k) {
     const auto row_it = tgt_local.find(map.tgt_gid[k]);
@@ -399,10 +423,24 @@ Result<RemapWeights> localise(const PersistedTransferMap& map,
                       "partition the map was written for",
                       map.tgt_gid[k], map.src_gid[k])};
     }
-    w.row.push_back(row_it->second);
-    w.col.push_back(col_it->second);
-    w.val.push_back(map.val[k]);
+    kept.push_back(Entry{.row = row_it->second,
+                         .src_gid = map.src_gid[k],
+                         .col = col_it->second,
+                         .val = map.val[k]});
     row_seen[static_cast<std::size_t>(row_it->second)] = 1;
+  }
+
+  std::stable_sort(kept.begin(), kept.end(), [](const Entry& a, const Entry& b) {
+    if (a.row != b.row) return a.row < b.row;
+    return a.src_gid < b.src_gid;
+  });
+  w.row.reserve(kept.size());
+  w.col.reserve(kept.size());
+  w.val.reserve(kept.size());
+  for (const Entry& e : kept) {
+    w.row.push_back(e.row);
+    w.col.push_back(e.col);
+    w.val.push_back(e.val);
   }
 
   const auto missing = static_cast<std::size_t>(
