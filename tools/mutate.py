@@ -56,6 +56,23 @@ def load_manifest() -> list[dict]:
     dups = sorted(k for k, v in seen.items() if v > 1)
     if dups:
         raise SystemExit(f"error: duplicate mutation id(s) across manifests: {dups}")
+
+    # Every key this tool reads, checked here rather than where it is used. A
+    # row missing one used to raise KeyError deep in the run loop: the area
+    # ABANDONED every remaining mutation and printed a traceback instead of a
+    # verdict line, so from the caller's side an area with one malformed row
+    # was indistinguishable from an area with nothing to do -- and
+    # --check-anchors still called all of them valid, because it only reads
+    # `file` and `old`. Found 2026-09-21 by adding two rows without `target`.
+    required = ("id", "area", "describes", "file", "old", "new", "target", "test")
+    missing = [
+        f"{m.get('id', '<no id>')}: missing {k}"
+        for m in rows
+        for k in required
+        if k not in m
+    ]
+    if missing:
+        raise SystemExit("error: malformed mutation row(s):\n  " + "\n  ".join(missing))
     return rows
 
 

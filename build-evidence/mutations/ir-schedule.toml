@@ -78,6 +78,7 @@ describes = "D1's fix: a region's members are grouped inside their instant so de
 file = "src/schedule/scheduler.cpp"
 old = "      if (open != kNoRegion) {"
 new = "      if (false) {"
+target = "fuse_schedule_plan_test"
 test = "schedule.plan"
 
 [[mutation]]
@@ -87,4 +88,5 @@ describes = "The other half: grouping must NOT separate a non-member that reads 
 file = "src/schedule/scheduler.cpp"
 old = "    if (!any_member || entangled || hi - lo < 2) {"
 new = "    if (!any_member || hi - lo < 2) {"
+target = "fuse_verification_iteration_test"
 test = "verification.iteration"
