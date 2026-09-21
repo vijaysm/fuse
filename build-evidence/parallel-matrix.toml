@@ -141,6 +141,7 @@ pins = "every MPI leg runs at each registered rank count; 3 and 5 are the odd on
 file = "test/CMakeLists.txt"
 kind = "registration"
 ranks = [1, 2, 3, 4, 5]
+note = """One deliberate exception, which the gate prints as MATRIX-OVERRIDE: `epoch_reconcile` is registered from 2 up. Its first case asserts `world_size() >= 2` rather than skipping, on the written grounds that there is nothing to reconcile on one rank -- so the honest fix when rank 1 was added was to keep that premise true, not to convert the file into three skips. A host run on 2026-09-21 is what surfaced it, along with two other legs whose rank-1 behaviour is still being resolved."""
 
 [[cell]]
 id = "A-EMPTY"

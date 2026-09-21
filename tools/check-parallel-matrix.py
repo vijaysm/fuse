@@ -88,11 +88,31 @@ def mpi_ranks_for(cmake: str) -> list[int]:
     return [int(x) for x in m.group(1).split()]
 
 
+def rank_overrides(cmake: str) -> dict[str, list[int]]:
+    """Files registered with an explicit RANKS list.
+
+    A per-file override is invisible to a check that only reads the default,
+    and one exists on purpose: `epoch_reconcile` starts at 2 because its own
+    first case asserts there are peers to reconcile. Reported so an override
+    cannot quietly narrow the matrix -- a file dropped to `RANKS 2` alone
+    would otherwise look fully covered.
+    """
+    out: dict[str, list[int]] = {}
+    for m in re.finditer(
+        r"fuse_add_mpi_test\((\w+)\s+(\w+)[^)]*?RANKS ([0-9 ]+)\)", cmake
+    ):
+        out[f"test/{m.group(1)}/{m.group(2)}_test.cpp"] = [
+            int(x) for x in m.group(3).split()
+        ]
+    return out
+
+
 def main() -> int:
     spec = tomllib.loads(MANIFEST.read_text())
     cmake = TEST_CMAKE.read_text()
     have_files = registered_files(cmake)
     default_ranks = mpi_ranks_for(cmake)
+    overrides = rank_overrides(cmake)
 
     # Every test body and every code mention, read once.
     test_text = "\n".join(
@@ -182,11 +202,12 @@ def main() -> int:
                 verified += 1
 
         if cell.get("kind") == "mpi":
-            missing = [n for n in cell.get("ranks", []) if n not in default_ranks]
+            runs = overrides.get(rel, default_ranks)
+            missing = [n for n in cell.get("ranks", []) if n not in runs]
             if missing:
                 problems.append(
                     f"{cid}: claims rank counts {missing} that the build does "
-                    f"not run (fuse_add_mpi_test defaults to {default_ranks})"
+                    f"not run for {rel} (it runs {runs})"
                 )
             else:
                 verified += 1
@@ -203,6 +224,9 @@ def main() -> int:
 
     for p in problems:
         print(f"MATRIX-BROKEN  {p}")
+    for rel, runs in sorted(overrides.items()):
+        print(f"MATRIX-OVERRIDE {rel} runs {runs}, not the default "
+              f"{default_ranks}")
     for cid, why in gaps:
         print(f"MATRIX-GAP     {cid}: {why}")
     print(
