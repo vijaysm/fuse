@@ -211,7 +211,20 @@ class StubComponent final : public fuse::Component {
   }
 
   fuse::Result<void> advance(const fuse::StepContext&) override {
-    if (fail_after_ >= 0 && calls_++ >= fail_after_) {
+    // `calls_` counts EVERY advance, so `calls()` means what its name says.
+    // It used to be incremented inside the condition below, to the right of
+    // `fail_after_ >= 0 &&` -- so for a stub with no failure configured
+    // (`fail_after_ == -1`) short-circuit evaluation skipped the increment
+    // entirely and `calls()` was stuck at 0 however often the component ran.
+    // StillRunsASecondChannelAfterARegionFailsUnderMpi asserts
+    // `cons_b->calls() >= 1` on exactly such a stub, so it could not pass
+    // whatever the runtime did; four separate real defects were found and
+    // fixed against it before the counter itself was read.
+    //
+    // The comparison keeps the pre-increment value, so `fail_after_`'s
+    // meaning is unchanged: with 0 the first call fails, with 1 the second.
+    const int n = calls_++;
+    if (fail_after_ >= 0 && n >= fail_after_) {
       return fuse::Failure{"E-TEST-ADVANCE-REFUSED",
                           "'" + name_ + "' refuses advance() past call " +
                               std::to_string(fail_after_)};
