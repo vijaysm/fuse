@@ -598,8 +598,25 @@ Result<void> MpiTransport::build_plan(const TransportSpec& spec) {
   // needed. The inputs are identical everywhere, so the verdict is identical
   // everywhere: "no source holds id g" cannot be a one-rank error return while
   // the others walk into MPI_Alltoallv.
-  err = Err::None;
-  detail.clear();
+  //
+  // `err` IS NOT RESET HERE, and must not be. It is one monotonic verdict for
+  // the whole function -- `fail()` keeps the first and ignores later ones --
+  // and the loops below read it only to stop early. It used to be cleared at
+  // this point, back when every verdict before it had already been agreed and
+  // returned at Collective 1, so clearing it was harmless. Collective 2b (the
+  // components agreement, R-30) then added a verdict recorded AFTER Collective
+  // 1 and agreed only at Collective 4 -- on the far side of the clear. The
+  // effect was that R-30's check ran, computed the right answer on every rank,
+  // and had it erased two phases later: `build_plan()` returned success on
+  // ranks that had just refused. Found 2026-09-21 by tracing the verdict at
+  // both ends (FUSE_TRANSPORT_DEBUG) after reading the path five times without
+  // seeing it; `MpiTransport.BuildPlanRejectsDisagreeingComponentsAcrossRanks`
+  // could not pass until this line went away.
+  //
+  // With the verdict kept, a rank that has already refused skips the matching
+  // below -- every rank does, since the verdict is derived from the gathered
+  // array and is identical everywhere -- and Phase D holds no collective, so
+  // there is nothing for a skipping rank to desynchronise.
   try {
     std::unordered_map<std::uint64_t, int> owner;
     owner.reserve(total_ids);

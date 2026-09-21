@@ -51,6 +51,22 @@ PRINTF = re.compile(r"\b(printf|fprintf|sprintf|snprintf|puts|fputs)\s*\(")
 DEVICE_HINT = re.compile(r"KOKKOS_(INLINE_)?FUNCTION|KOKKOS_LAMBDA")
 
 
+# I-VERDICT. A deferred verdict must never be cleared. `MpiTransport` defers
+# every local refusal into one `err`, reached by `fail()`, and turns it into a
+# return only at an agreement point where every rank is present. Phase D used
+# to clear `err` so it could reuse it as its own loop accumulator, which was
+# harmless while every verdict before it had already been agreed -- and then
+# silently destroyed the components agreement (R-30), a verdict recorded after
+# that agreement and read only two phases later. The check ran, was right on
+# every rank, and its answer was thrown away; `build_plan()` returned success
+# on ranks that had just refused, and it took an instrumented run to see it.
+#
+# Declaration and reset look almost identical, so the rule keys off the `;`
+# terminator only being a reset when the line does not also declare the type.
+VERDICT_RESET = re.compile(
+    r"^\s*(?:err|verdict)\s*=\s*(?:Err|Verdict)::None\s*;")
+
+
 def scan(root: Path) -> list[str]:
     problems: list[str] = []
 
@@ -90,6 +106,13 @@ def scan(root: Path) -> list[str]:
                 # macro). That is the only presence test with a purpose.
                 nxt = next((l for l in all_lines[lineno:lineno + 2] if l.strip()), "")
                 is_guard = bool(re.match(r"\s*#\s*ifndef\b", code_only)) and nxt.lstrip().startswith("#error")
+                if library_code and VERDICT_RESET.match(code_only):
+                    problems.append(
+                        f"{rel}:{lineno}: clears a deferred verdict (I-VERDICT); "
+                        "it is one monotonic value per call, agreed at a "
+                        "collective -- use a separate accumulator: "
+                        f"{line.strip()}"
+                    )
                 if FEATURE_PRESENCE_TEST.search(code_only) and not is_guard:
                     problems.append(
                         f"{rel}:{lineno}: presence test on a feature macro (#ifdef / "
