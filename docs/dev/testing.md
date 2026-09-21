@@ -196,3 +196,34 @@ columns, which is the defect the test guards against, and kills
 deterministically. Same family as the existing rules: a mutant that fails to
 compile is inconclusive, one whose test cannot run here is not assessed, and
 one whose behaviour is undefined is neither.
+
+
+## A counter must not be incremented inside a condition
+
+```cpp
+// WRONG. For fail_after_ == -1 the left operand is false, so `calls_++`
+// is never evaluated: calls() stays 0 however often advance() ran.
+if (fail_after_ >= 0 && calls_++ >= fail_after_) { ... }
+
+// Right: count first, then decide.
+const int n = calls_++;
+if (fail_after_ >= 0 && n >= fail_after_) { ... }
+```
+
+This was real, and it was expensive. `runner_transport_test.cpp`'s stub had
+the first form, and
+`RunnerTransport.StillRunsASecondChannelAfterARegionFailsUnderMpi` asserts
+`cons_b->calls() >= 1` on a stub with no failure configured — so the
+assertion could not pass whatever the runtime did. **Four separate real
+defects were found and fixed against that one red test** before the counter
+itself was read: an invalid communicator sentinel, an accelerator that
+refused an empty field block, a fixture whose declaration order broke a
+region's contiguity, and the whole-period advance blanket. All four were
+genuine and all four needed fixing — but none of them was ever going to turn
+that test green.
+
+The lesson for a test instrument: a counter, a flag, or a log that a test
+asserts on must be updated on **every** path, unconditionally, before any
+branch that might skip it. An instrument that only works in the case it was
+written for is worse than none, because a red test with a broken instrument
+looks exactly like a red test with a broken subject.
