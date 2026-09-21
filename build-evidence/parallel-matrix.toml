@@ -1,0 +1,176 @@
+#  The parallel coverage matrix — S5.5.
+#
+#  The plan's S5.5 asks that every cell of the parallel matrix "has a named
+#  test or a named refusal", and records that this was "partly satisfied in
+#  practice, absent as a gate": rank counts were enumerated by hand in
+#  test/CMakeLists.txt and nothing asserted the matrix was covered.
+#
+#  This file is that assertion's input, and `tools/check-parallel-matrix.py`
+#  checks it. Each cell claims either
+#    test    = ["Suite.Name", ...]   a GoogleTest case that must EXIST, in a
+#                                    file that must be REGISTERED, and (for an
+#                                    mpi cell) at the rank counts it names
+#    refusal = ["E-CODE", ...]       an error code that must exist in the
+#                                    library AND be asserted by some test, so
+#                                    that a deliberate refusal counts as
+#                                    coverage only when something makes it fire
+#    gap     = "why"                 no coverage. The gate COUNTS these and
+#                                    exits non-zero: a gap is a fact about the
+#                                    library, not a waiver.
+#
+#  Rows 1-14 are the CommGraph regression matrix of
+#  upstream/soma/docs/specs/2026-09-11-comm-graph-design.md §7, transcribed
+#  because that document is in the imported parent tree, which is temporary
+#  (the namespace ruling). When `upstream/` goes, the matrix must not go with
+#  it -- the tests referred to "test 14 of the matrix" while the matrix itself
+#  was reachable only through a parent's spec directory.
+#
+#  Rows A-* are the axes S5.5 names that are not in that spec.
+
+# ---------------------------------------------------------------------------
+# Rows 1-14: the CommGraph regression matrix
+# ---------------------------------------------------------------------------
+
+[[cell]]
+id = "1-6"
+axis = "rank-overlap shape x matching mode"
+pins = "the 6-way cross product of (fully-overlapping, fully-disjoint, partially-overlapping) x (GlobalId, NearestNeighbor); each combination is its own failure mode"
+file = "test/parallel/comm_graph_test.cpp"
+kind = "mpi"
+ranks = [1, 2, 3, 4, 5]
+test = [
+  "CommGraph.FullyDisjointRanksMatchByGlobalId",
+  "CommGraph.FullyOverlappingRanksMatchByGlobalId",
+  "CommGraph.PartiallyOverlappingRanksMatchByGlobalId",
+  "CommGraph.FullyDisjointRanksMatchByNearestNeighbor",
+  "CommGraph.FullyOverlappingRanksMatchByNearestNeighbor",
+  "CommGraph.PartiallyOverlappingRanksMatchByNearestNeighbor",
+]
+
+[[cell]]
+id = "7"
+axis = "same-rank shortcut"
+pins = "a match with both ends on one rank never reaches MpiTransport -- load bearing, not an optimisation, because MpiTransport refuses the spec such a graph produces (R24)"
+file = "test/parallel/comm_graph_test.cpp"
+kind = "mpi"
+ranks = [1, 2, 3, 4, 5]
+test = ["CommGraph.AMatchWithBothEndsOnOneRankNeverReachesMpiTransport"]
+
+[[cell]]
+id = "8"
+axis = "bidirectionality"
+pins = "the reverse leg via transpose() fires no second collective build"
+file = "test/parallel/comm_graph_test.cpp"
+kind = "mpi"
+ranks = [1, 2, 3, 4, 5]
+test = ["CommGraph.TheReverseLegIsARelabellingAndCostsNoCollective"]
+
+[[cell]]
+id = "9-11"
+axis = "dimension independence"
+pins = "the identical nearest-neighbour fixture in 1D, 2D and 3D"
+file = "test/parallel/comm_graph_test.cpp"
+kind = "mpi"
+ranks = [1, 2, 3, 4, 5]
+test = [
+  "CommGraph.NearestNeighborIsDimensionIndependentIn1D",
+  "CommGraph.NearestNeighborIsDimensionIndependentIn2D",
+  "CommGraph.NearestNeighborIsDimensionIndependentIn3D",
+]
+
+[[cell]]
+id = "12"
+axis = "nearest-neighbour tolerance boundary"
+pins = "points exactly at, just inside and just outside nn_tolerance -- the refusal boundary, pinned exactly"
+file = "test/parallel/comm_graph_test.cpp"
+kind = "mpi"
+ranks = [1, 2, 3, 4, 5]
+refusal = ["E-COMMGRAPH-NOMATCH"]
+
+[[cell]]
+id = "13"
+axis = "space-filling-curve load balance"
+pins = "a deliberately non-uniform (refined-patch) mesh: the splitter partition balances bucket population"
+file = "test/parallel/comm_graph_test.cpp"
+kind = "mpi"
+ranks = [1, 2, 3, 4, 5]
+test = ["CommGraph.TheSfcPartitionBalancesBucketPopulationOnARefinedPatch"]
+
+[[cell]]
+id = "14"
+axis = "union communicator"
+pins = "the non-corresponding contiguous/strided pattern driven through two independently MPI_Comm_split-built communicators, not one shared one"
+file = "test/parallel/comm_graph_test.cpp"
+kind = "mpi"
+ranks = [1, 2, 3, 4, 5]
+test = ["CommGraph.TwoIndependentlySplitCommunicatorsAreEnoughToBuildTheGraph"]
+
+# ---------------------------------------------------------------------------
+# Rows A-*: the axes S5.5 names beyond the CommGraph spec
+# ---------------------------------------------------------------------------
+
+[[cell]]
+id = "A-RANKS"
+axis = "rank counts, odd included"
+pins = "every MPI leg runs at each registered rank count; 3 and 5 are the odd ones, and 5 over 4 entities is what found the accelerator's empty-block refusal"
+file = "test/CMakeLists.txt"
+kind = "registration"
+ranks = [1, 2, 3, 4, 5]
+
+[[cell]]
+id = "A-EMPTY"
+axis = "empty partitions"
+pins = "a rank owning no entity of a field is ordinary, not an error; and an empty RANK SET is refused, which is a different thing"
+file = "test/parallel/mpi_transport_test.cpp"
+also_in = ["test/parallel/comm_graph_test.cpp"]
+kind = "mpi"
+ranks = [1, 2, 3, 4, 5]
+test = [
+  "MpiTransport.RankOwningZeroElementsIsOrdinary",
+  "MpiTransport.BuildPlanRejectsEmptyRankSets",
+  "CommGraph.ARankWithZeroLocalEntitiesIsOrdinary",
+]
+refusal = ["E-TRANSPORT-RANKS"]
+
+[[cell]]
+id = "A-SPACES"
+axis = "host-parallel space vs Serial"
+pins = "every kernel gives the Serial oracle's answer on every execution space the build enabled; the space list is one definition so device coverage is a build option rather than a second file that can drift"
+file = "test/num/space_kernels_test.cpp"
+kind = "typed"
+test = [
+  "SpaceKernels.AccumulateMatchesTheSerialOracleForEveryOp",
+  "SpaceKernels.RemapApplyMatchesADirectTripletProduct",
+  "SpaceKernels.ReductionsAgreeWithTheSerialSumToRounding",
+  "SpaceKernels.TheSpaceUnderTestIsNamedInTheRecord",
+]
+
+[[cell]]
+id = "A-REPLICATED"
+axis = "replicated source partition"
+pins = "a source every rank holds in full -- as after a halo gather -- gives bit-for-bit the same answer at every rank count, and only because accumulation is ordered by source global id"
+file = "test/backend/transfer_map_io_test.cpp"
+kind = "serial"
+test = [
+  "TransferMapIo.EveryRankCountGivesBitIdenticalValues",
+  "TransferMapIo.TwoWritersReloadAsFourReadersAndReproduceTheValues",
+]
+
+[[cell]]
+id = "A-PARTITIONED"
+axis = "independently partitioned source"
+gap = """A source partitioned independently of the target, where a remap row needs \
+source values the rank does not own. `localise()` refuses it (E-MAP-COVERAGE, \
+tested), which is correct but is not coverage OF the case: what makes it work is \
+the halo exchange, and `build_remap_halo` / `exchange_remap_halo` / \
+`E-RT-REMAP-HALO` have NO test in this tree -- 34 references across src/ and \
+include/, none under test/. This is the axis S5.5 records as appearing nowhere, \
+and it is the largest untested surface in the parallel path."""
+
+[[cell]]
+id = "A-SPACES-TRANSPORT"
+axis = "host-parallel space, transport and runtime paths"
+gap = """Only `space_kernels_test.cpp` is typed over execution spaces, so the space \
+axis covers the numerical kernels and not the transport or runtime paths that \
+call them. A build with a host-parallel space therefore exercises those paths on \
+one space only, whichever the default is."""

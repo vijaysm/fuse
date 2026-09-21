@@ -83,7 +83,14 @@ endfunction()
 function(fuse_add_mpi_test layer name)
   cmake_parse_arguments(ARG "" "" "LIBS;RANKS" ${ARGN})
   if(NOT ARG_RANKS)
-    set(ARG_RANKS 2 3 4 5)
+    # 1 included deliberately (S5.5, build-evidence/parallel-matrix.toml row
+    # A-RANKS). A single task is not a trivial case of the others: every match
+    # has both ends on one rank, so the same-rank shortcut carries the whole
+    # exchange and MpiTransport must not see anything at all -- the path row 7
+    # pins from the other side. Tests that need peers skip themselves through
+    # FUSE_REQUIRE_AT_LEAST_RANKS; one that fails here instead of skipping is
+    # missing that guard, which is worth knowing.
+    set(ARG_RANKS 1 2 3 4 5)
   endif()
   set(target fuse_${layer}_${name}_test)
   add_executable(${target} ${layer}/${name}_test.cpp)
