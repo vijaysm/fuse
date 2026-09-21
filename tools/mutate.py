@@ -117,12 +117,36 @@ def main() -> int:
     # a false kill and worse than no evidence at all. `requires = "mpi"` marks
     # those, and they are assessed on a host with a working launcher.
     mpi_available = os.environ.get("FUSE_MUTATE_MPI", "") == "1"
+
+    # The SAME argument, one step further: a test that is ALREADY FAILING on
+    # the unmutated tree also exits non-zero whether or not the mutation had
+    # any effect. Reporting that as KILLED is a false kill, and the gate did
+    # exactly that on 2026-09-21 -- three mutations whose test was red were
+    # all reported killed, which is how the omission was found. So each
+    # distinct test is run once on the clean tree first, and a mutation whose
+    # test does not pass there is reported NO-BASELINE and proves nothing.
+    baseline: dict[str, bool] = {}
+
+    def baseline_ok(target: str, test: str) -> bool:
+        if test not in baseline:
+            rc, _ = build(args.build_dir, target, args.jobs)
+            baseline[test] = rc == 0 and sh(
+                ["ctest", "--test-dir", str(args.build_dir), "--no-tests=error",
+                 "-R", f"^{test}$"]) == 0
+        return baseline[test]
+
     for m in rows:
         if m.get("requires") == "mpi" and not mpi_available:
             results.append((m, "NOT-ASSESSED",
                             "needs a working MPI launcher; run with "
                             "FUSE_MUTATE_MPI=1 on a host that has one"))
             print(f"NOT-ASSESSED  {m['id']}  (needs MPI)")
+            continue
+        if not baseline_ok(m["target"], m["test"]):
+            results.append((m, "NO-BASELINE",
+                            f"`{m['test']}` already fails without the mutation, "
+                            "so its failure with it applied is not evidence"))
+            print(f"NO-BASELINE   {m['id']:<36} {m['test']} is already red")
             continue
         path = ROOT / m["file"]
         original = path.read_text()
@@ -143,7 +167,8 @@ def main() -> int:
                 else:
                     verdict, note = "INCONCLUSIVE", "mutant does not compile; rewrite it"
             else:
-                run = sh(["ctest", "--test-dir", str(args.build_dir), "-R", f"^{m['test']}$"])
+                run = sh(["ctest", "--test-dir", str(args.build_dir),
+                          "--no-tests=error", "-R", f"^{m['test']}$"])
                 verdict, note = ("KILLED", "test fails") if run != 0 else ("SURVIVED", "suite still green")
                 # A mutation may be declared EQUIVALENT: the mutated code has
                 # the same observable behaviour as the original, so no test
@@ -169,11 +194,15 @@ def main() -> int:
     killed = sum(1 for _, v, _ in results if v == "KILLED")
     equivalent = sum(1 for _, v, _ in results if v == "EQUIVALENT")
     not_assessed = sum(1 for _, v, _ in results if v == "NOT-ASSESSED")
+    no_baseline = sum(1 for _, v, _ in results if v == "NO-BASELINE")
     survived = [(m, n) for m, v, n in results
-                if v not in ("KILLED", "EQUIVALENT", "NOT-ASSESSED")]
+                if v not in ("KILLED", "EQUIVALENT", "NOT-ASSESSED", "NO-BASELINE")]
     print(f"\nmutation gate: {killed} killed, {equivalent} declared equivalent, "
-          f"{not_assessed} not assessed here, {len(survived)} not killed, "
-          f"of {len(results)}")
+          f"{not_assessed} not assessed here, {no_baseline} without a baseline, "
+          f"{len(survived)} not killed, of {len(results)}")
+    if no_baseline:
+        print("  NO-BASELINE is not a pass: fix the failing test, then re-run "
+              "to find out whether these mutations are really killed.")
 
     if args.write_log:
         area = args.area or "all"
@@ -187,7 +216,7 @@ def main() -> int:
         lines += ["", f"**{killed} killed / {len(results)} total.**"]
         log.write_text("\n".join(lines) + "\n")
         print(f"wrote {log.relative_to(ROOT)}")
-    return 0 if not survived else 1
+    return 0 if not survived and not no_baseline else 1
 
 
 if __name__ == "__main__":
