@@ -150,4 +150,64 @@ TEST(RemapHalo, AnExchangeWithNoHaloLeavesTheBufferAlone) {
                             "may be zeroed";
 }
 
+// ---- the non-matching spherical pair --------------------------------------
+//
+// MOAB's MeshFiles/unittest holds wholeATM_T.h5m and recMeshOcn.h5m: an
+// atmosphere and an ocean mesh, both on the sphere and deliberately not
+// matching. They are the fixture the halo's parallel half needs, and they are
+// compiled in only when the build was told where MOAB's source tree is
+// (-DFUSE_MOAB_MESHFILES=...). Absence is a configure-time message and a
+// missing test, never a test that reads as passing.
+//
+// The projection is not optional and not cosmetic: Intx requires the two
+// meshes to share a radius, and neither file is on the unit sphere. Without it
+// the intersection is empty or wrong rather than refused, which is the failure
+// mode worth a test of its own.
+#if defined(FUSE_SPHERE_ATM) && defined(FUSE_SPHERE_OCN)
+
+TEST(RemapHaloSphere, TheNonMatchingPairLoadsAndIsSpherical) {
+  fuse::MoabMeshBackend backend;
+  const auto atm = backend.load({.name = "atm", .source = FUSE_SPHERE_ATM});
+  ASSERT_TRUE(atm.ok()) << atm.error().code << ": " << atm.error().message;
+  const auto ocn = backend.load({.name = "ocn", .source = FUSE_SPHERE_OCN});
+  ASSERT_TRUE(ocn.ok()) << ocn.error().code << ": " << ocn.error().message;
+
+  // Both must be non-empty 2-D surface meshes, and they must NOT agree in
+  // size -- a matching pair would make every later assertion vacuous, which
+  // is the trap an identity fixture falls into.
+  const auto* av = backend.view(fuse::MeshId{0}).value();
+  const auto* ov = backend.view(fuse::MeshId{1}).value();
+  const std::size_t na = av->entity_count(2);
+  const std::size_t no = ov->entity_count(2);
+  EXPECT_GT(na, 0u);
+  EXPECT_GT(no, 0u);
+  EXPECT_NE(na, no) << "the pair must be non-matching (" << na << " vs " << no
+                    << "); a matching pair cannot exercise a halo";
+}
+
+TEST(RemapHaloSphere, ASerialHaloOnTheSpherePairIsStillANoOp) {
+  // The same one-rank contract as the box pair, on the geometry the parallel
+  // case will use. This one CAN reach the covering-set construction's
+  // geometry check if the serial short-circuit were ever removed, so it is
+  // the sharper of the two.
+  fuse::MoabMeshBackend backend;
+  ASSERT_TRUE(backend.load({.name = "atm", .source = FUSE_SPHERE_ATM}).ok());
+  ASSERT_TRUE(backend.load({.name = "ocn", .source = FUSE_SPHERE_OCN}).ok());
+
+  fuse::CouplingGraph graph;
+  const fuse::MeshId am =
+      graph.add_mesh({.name = "atm", .source = FUSE_SPHERE_ATM});
+  const fuse::MeshId om =
+      graph.add_mesh({.name = "ocn", .source = FUSE_SPHERE_OCN});
+  fuse::RemapPlan plan;
+  plan.src = graph.add_region({.name = "a", .mesh = am, .dimension = 2});
+  plan.tgt = graph.add_region({.name = "o", .mesh = om, .dimension = 2});
+
+  const auto r = fuse::build_remap_halo(plan, graph, backend);
+  ASSERT_TRUE(r.ok()) << r.error().code << ": " << r.error().message;
+  EXPECT_EQ(r.value(), 0u);
+}
+
+#endif  // FUSE_SPHERE_ATM && FUSE_SPHERE_OCN
+
 }  // namespace

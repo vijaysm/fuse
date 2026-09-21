@@ -211,6 +211,44 @@ if(FUSE_ENABLE_MOAB)
       "the MOAB include prefix; the real-mesh MoabMeshFile.* tests are not "
       "compiled")
   endif()
+
+  # A NON-MATCHING pair of spherical meshes, for the parallel half of the remap
+  # halo (build-evidence/parallel-matrix.toml, A-PARTITIONED). MOAB's own
+  # MeshFiles/unittest holds wholeATM_T.h5m and recMeshOcn.h5m -- an atmosphere
+  # and an ocean mesh, both on the sphere and deliberately not matching, which
+  # is what a halo exists for. An identity pair cannot substitute: with both
+  # sides on one partition of one mesh, target cell j's source is cell j on the
+  # same rank and no halo is ever needed.
+  #
+  # BOTH MUST BE PROJECTED ONTO THE UNIT SPHERE before intersection -- Intx
+  # needs the two to share a radius and theirs is not 1.
+  #
+  # These live in a MOAB SOURCE tree, not an install, so MOAB_INCLUDE_DIRS does
+  # not lead to them. Pass -DFUSE_MOAB_MESHFILES=/path/to/moab/MeshFiles/unittest
+  # (or a MOAB source root, which is searched for the subdirectory).
+  if(FUSE_MOAB_MESHFILES)
+    find_file(FUSE_SPHERE_ATM_FILE NAMES wholeATM_T.h5m
+              PATHS "${FUSE_MOAB_MESHFILES}"
+                    "${FUSE_MOAB_MESHFILES}/MeshFiles/unittest"
+              NO_DEFAULT_PATH)
+    find_file(FUSE_SPHERE_OCN_FILE NAMES recMeshOcn.h5m
+              PATHS "${FUSE_MOAB_MESHFILES}"
+                    "${FUSE_MOAB_MESHFILES}/MeshFiles/unittest"
+              NO_DEFAULT_PATH)
+  endif()
+  if(FUSE_SPHERE_ATM_FILE AND FUSE_SPHERE_OCN_FILE)
+    target_compile_definitions(fuse_backend_remap_halo_test PRIVATE
+      FUSE_SPHERE_ATM="${FUSE_SPHERE_ATM_FILE}"
+      FUSE_SPHERE_OCN="${FUSE_SPHERE_OCN_FILE}")
+    message(STATUS "fuse: sphere pair for the remap halo: "
+                   "${FUSE_SPHERE_ATM_FILE} + ${FUSE_SPHERE_OCN_FILE}")
+  else()
+    message(STATUS
+      "fuse: wholeATM_T.h5m / recMeshOcn.h5m not found; pass "
+      "-DFUSE_MOAB_MESHFILES=<moab-source>/MeshFiles/unittest to compile the "
+      "non-matching spherical halo cases (they are skipped, not silently "
+      "passed)")
+  endif()
 endif()
 
 # ---------------------------------------------------------------- runtime
