@@ -76,9 +76,12 @@ fuse::RemapWeights four_point_map(std::size_t n_rows, std::size_t n_cols) {
     for (std::size_t d = 0; d < 4; ++d) {
       w.row.push_back(static_cast<std::int32_t>(j));
       w.col.push_back(static_cast<std::int32_t>((j * 3 + d) % n_cols));
-      // Deliberately not 0.25 exactly for every entry: a value that is not a
-      // power of two catches a codec that round-trips through a decimal.
-      w.val.push_back(d == 0 ? 0.25 : (1.0 - 0.25) / 3.0);
+      // Four DIFFERENT weights, none a power of two, summing to one only to
+      // rounding. Equal weights would make every summation order give the
+      // same bits, which would hide exactly what the bit-for-bit test below
+      // is for.
+      static constexpr double kW[4] = {0.1, 0.2, 0.3, 0.4};
+      w.val.push_back(kW[d]);
     }
   }
   return w;
@@ -242,7 +245,81 @@ TEST(TransferMapIo, TwoWritersReloadAsFourReadersAndReproduceTheValues) {
     const auto      w =
         fuse::localise(whole.value(), src_all, tgt_quarter, 2, 2);
     ASSERT_TRUE(w.ok());
-    for (const double v : apply_map(w.value(), ones)) EXPECT_NEAR(v, 1.0, 1e-14);
+    for (const double v : apply_map(w.value(), ones)) EXPECT_NEAR(v, 1.0, 1e-15);
+  }
+}
+
+// ---- bit-for-bit across rank counts ------------------------------------
+
+// The requirement, stated by the user 2026-09-21: 1/2/3/4/5 "tasks" must give
+// bit-for-bit the same answer, with accumulation ordered by global id.
+//
+// EXPECT_EQ on doubles, not NEAR: a tolerance would pass for the wrong
+// reason. What makes it hold is that a target entity is owned by exactly one
+// rank -- so every entry of a row is local -- and `localise()` sums a row in
+// ascending source GLOBAL id, which is the same sequence of numbers on every
+// partition. Local column indices are not: they depend on how many entities
+// the rank holds. The source partition here numbers its entities in DESCENDING
+// gid order for that reason, so local-column order and global-id order
+// disagree and a mutation that used the former is detectable.
+TEST(TransferMapIo, EveryRankCountGivesBitIdenticalValues) {
+  std::vector<std::size_t> src_gids = ids(0, 16);
+  std::reverse(src_gids.begin(), src_gids.end());
+  const Partition src_all{src_gids};
+
+  const std::size_t n_tgt = 8;
+  const Partition   tgt_whole{ids(100, n_tgt)};
+  const auto        p =
+      fuse::to_persisted(four_point_map(n_tgt, 16), src_all, tgt_whole, 2, 2);
+  ASSERT_TRUE(p.ok()) << p.error().message;
+
+  std::vector<double> f(16);
+  for (std::size_t i = 0; i < f.size(); ++i) {
+    f[i] = 1.0 + 0.5 * static_cast<double>(i);
+  }
+
+  // Global target id -> value, so answers from different partitions are
+  // comparable entity by entity rather than by local position.
+  const auto run_on = [&](std::size_t ranks) {
+    std::vector<std::pair<std::size_t, double>> out;
+    for (std::size_t r = 0; r < ranks; ++r) {
+      // Uneven on purpose for 3 and 5: the first ranks take one more entity,
+      // and at 5 ranks over 8 entities some hold 2 and some hold 1.
+      const std::size_t base = n_tgt / ranks;
+      const std::size_t extra = n_tgt % ranks;
+      const std::size_t first = r * base + std::min(r, extra);
+      const std::size_t count = base + (r < extra ? 1 : 0);
+      if (count == 0) continue;
+      const Partition mine{ids(100 + first, count)};
+      const auto      w = fuse::localise(p.value(), src_all, mine, 2, 2);
+      if (!w.ok()) return std::vector<std::pair<std::size_t, double>>{};
+
+      // The documented invariant, checked where it is produced.
+      for (std::size_t k = 1; k < w.value().row.size(); ++k) {
+        EXPECT_LE(w.value().row[k - 1], w.value().row[k])
+            << "RemapWeights::row must be ascending; ranks=" << ranks;
+      }
+      const std::vector<double> g = apply_map(w.value(), f);
+      for (std::size_t j = 0; j < g.size(); ++j) {
+        out.emplace_back(100 + first + j, g[j]);
+      }
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+  };
+
+  const auto one = run_on(1);
+  ASSERT_EQ(one.size(), n_tgt) << "the single-partition run must localise";
+  for (const std::size_t ranks : {2u, 3u, 4u, 5u}) {
+    const auto got = run_on(ranks);
+    ASSERT_EQ(got.size(), one.size()) << "ranks=" << ranks;
+    for (std::size_t j = 0; j < got.size(); ++j) {
+      EXPECT_EQ(got[j].first, one[j].first) << "ranks=" << ranks;
+      EXPECT_EQ(got[j].second, one[j].second)
+          << "target " << got[j].first << " at ranks=" << ranks
+          << " differs from the 1-task answer in its bits; accumulation is "
+             "no longer ordered by source global id";
+    }
   }
 }
 

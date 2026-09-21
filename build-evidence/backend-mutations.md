@@ -1,6 +1,6 @@
 # Mutation evidence — `backend`
 
-Run 2026-09-21 against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
+Run 2026-09-21 against build `build-tier1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
 
 | Mutation | File | Verdict | Killed by |
 |---|---|---|---|
