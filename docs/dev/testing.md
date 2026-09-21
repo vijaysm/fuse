@@ -227,3 +227,23 @@ asserts on must be updated on **every** path, unconditionally, before any
 branch that might skip it. An instrument that only works in the case it was
 written for is worse than none, because a red test with a broken instrument
 looks exactly like a red test with a broken subject.
+
+
+## Never complete a name a pipe truncated
+
+`grep ... | cut -c1-95` is a fine way to keep a survey readable and a bad
+source for a value you are about to write down. A truncated test name looks
+like a whole one, and finishing it from context produces a plausible name that
+does not exist — `SpaceKernels.ReductionsAgreeWithTheSerialSumToRoundoff` for
+the real `...ToRounding`, twice over, in
+`build-evidence/parallel-matrix.toml`'s first draft.
+
+The same applies to a name taken from prose. A spec section headed
+"bidirectionality via `transpose()`" does not tell you the test is called
+`TheReverseLegIsARelabellingAndCostsNoCollective`, and a comment describing a
+requirement is not evidence that a test with any particular name meets it.
+
+So: when a document, manifest, or commit message is about to state a symbol,
+test name, error code or rank count, re-read it from the file at full width
+first. Every gate in `tools/` exists because this class of error is invisible
+to review — all seven wrong names in that draft read perfectly well.
