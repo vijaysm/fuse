@@ -362,6 +362,41 @@ one instance or get one each.
 
 ---
 
+### D4. Two axes of the parallel matrix have no coverage — the gate is RED on purpose
+
+`tools/check-parallel-matrix.py` (S5.5) checks that every cell of
+`build-evidence/parallel-matrix.toml` names coverage that exists: the test is
+really in the file, the file is really registered, the refusal is really in the
+library *and* asserted somewhere, and a claimed rank count is really run. It
+reports **33 claims verified, 0 broken, 2 gaps**, and exits 1 on the gaps.
+
+| Gap | What has no test |
+|---|---|
+| `A-PARTITIONED` | an **independently partitioned source**: `build_remap_halo`, `exchange_remap_halo` and `E-RT-REMAP-HALO` have 34 references across `src/` and `include/` and **none under `test/`** |
+| `A-SPACES-TRANSPORT` | the host-parallel space axis beyond the kernels: only `space_kernels_test.cpp` is typed over execution spaces, so transport and runtime run on one space |
+
+`A-PARTITIONED` is the axis S5.5 records as appearing nowhere, and it is the
+largest untested surface in the parallel path. A remap whose source is
+partitioned independently of its target needs values the rank does not own;
+`localise()` refuses that (`E-MAP-COVERAGE`, tested), which is correct but is
+not coverage *of* the case — the halo exchange is what makes it work, and
+nothing exercises it.
+
+A gap is deliberately not waivable: the gate counts them and fails, so the
+number can only fall by writing the test. A **third** gap appearing, or any
+`MATRIX-BROKEN` line, is a new defect rather than one of these.
+
+**Also found by building this gate**, and fixed: rank count **1** was never
+run (`fuse_add_mpi_test` defaulted to `2 3 4 5`). A single task is not a
+trivial case of the others — every match has both ends on one rank, so the
+same-rank shortcut carries the whole exchange and `MpiTransport` must see
+nothing, which is row 7's requirement from the other side. Tier 1 went from 92
+to 97 registered tests. **Unverified here:** MPI cannot initialise in this
+sandbox, so a test that fails at 1 rank instead of skipping — i.e. one missing
+its `FUSE_REQUIRE_AT_LEAST_RANKS` guard — will only show up on a host run.
+
+---
+
 ### D3. Three behaviours no test detects — the mutation gate is RED on purpose
 
 `FUSE_MUTATE_MPI=1 tools/mutate.py --area transport|runtime` exits 1 with three

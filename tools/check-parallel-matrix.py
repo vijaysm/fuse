@@ -72,8 +72,12 @@ def mpi_ranks_for(cmake: str) -> list[int]:
     # Comments may sit between the guard and the assignment -- they do, and
     # requiring the two to be adjacent made this return [] the moment one was
     # added, which failed every mpi cell at once for no real reason.
+    # `[\s\S]*?` and not `[^)]*?`: the comment between the guard and the
+    # assignment contains parentheses, so excluding them made this fail on the
+    # real file while still passing the probe -- a check that fires for the
+    # wrong reason, which is worse than one that does not fire.
     m = re.search(
-        r"if\(NOT ARG_RANKS\)(?:[^)]*?\n)*?\s*set\(ARG_RANKS ([0-9 ]+)\)", cmake
+        r"if\(NOT ARG_RANKS\)[\s\S]*?set\(ARG_RANKS ([0-9 ]+)\)", cmake
     )
     if not m:
         raise SystemExit(
