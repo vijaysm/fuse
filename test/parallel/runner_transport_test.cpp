@@ -301,30 +301,6 @@ class TwoComponentJob {
 
     fuse::FieldId src_field_b, dst_field_b;
 
-    // Declared BEFORE the region, deliberately. The scheduler keeps a
-    // region's body contiguous only when nothing unrelated sorts into the
-    // middle of it, and an independent channel declared AFTER the region
-    // does exactly that -- E-SCHED-REGION, even though both channels are
-    // on the same clock, so the refusal's own advice does not apply. The
-    // Tier 0 twin (runner_test.cpp's StillRunsASecondChannelAfterAn
-    // IterationRegionFails) already declares linkB first for this reason;
-    // this fixture did not, which is why it only failed under Tier 1.
-    if (with_independent_channel) {
-      const auto pb = graph.add_component(fuse::ComponentDecl{
-          .name = "producer_b", .ranks = fluid_, .interval = Rational{1}});
-      const auto cb = graph.add_component(fuse::ComponentDecl{
-          .name = "consumer_b", .ranks = solid_, .interval = Rational{1}});
-      src_field_b = graph.add_field(
-          pb, fuse::FieldSpec{.name = "outB", .region = region_,
-                             .units = fuse::units::kKelvin,
-                             .intent = fuse::Intent::Provides});
-      dst_field_b = graph.add_field(
-          cb, fuse::FieldSpec{.name = "inB", .region = region_,
-                             .units = fuse::units::kKelvin,
-                             .intent = fuse::Intent::Requires});
-      graph.add_channel("linkB", src_field_b, dst_field_b);
-    }
-
     const auto pf = graph.add_component(fuse::ComponentDecl{
         .name = "fluid", .ranks = fluid_, .interval = Rational{1}});
     const auto sc = graph.add_component(fuse::ComponentDecl{
@@ -349,6 +325,29 @@ class TwoComponentJob {
           .acceleration = fuse::AccelConfig{.kind = accel_kind}});
     }
 
+    // Declared AFTER the region, which is the natural order and which the
+    // scheduler now honours: `group_regions_within_instants()` keeps the
+    // region's body contiguous whatever order its neighbour was declared in
+    // (KNOWN_ISSUES D1, fixed 2026-09-21). This fixture used to declare it
+    // FIRST to work around that, and the workaround is why three mutations
+    // survived: with the independent channel ahead of the region, everything
+    // this test observes happened before the failure, so "the rest of the
+    // period" was empty and R-09's mutant skipped nothing (D3).
+    if (with_independent_channel) {
+      const auto pb = graph.add_component(fuse::ComponentDecl{
+          .name = "producer_b", .ranks = fluid_, .interval = Rational{1}});
+      const auto cb = graph.add_component(fuse::ComponentDecl{
+          .name = "consumer_b", .ranks = solid_, .interval = Rational{1}});
+      src_field_b = graph.add_field(
+          pb, fuse::FieldSpec{.name = "outB", .region = region_,
+                             .units = fuse::units::kKelvin,
+                             .intent = fuse::Intent::Provides});
+      dst_field_b = graph.add_field(
+          cb, fuse::FieldSpec{.name = "inB", .region = region_,
+                             .units = fuse::units::kKelvin,
+                             .intent = fuse::Intent::Requires});
+      graph.add_channel("linkB", src_field_b, dst_field_b);
+    }
 
     EXPECT_TRUE(backend.load(graph.mesh(mesh)).ok());
 
