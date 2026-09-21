@@ -1,6 +1,6 @@
 # Mutation evidence — `compiler`
 
-Run 2026-09-20 against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
+Run 2026-09-21 against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
 
 | Mutation | File | Verdict | Killed by |
 |---|---|---|---|
@@ -20,5 +20,7 @@ Run 2026-09-20 against build `build-fuse-s1`. Regenerate with `tools/mutate.py -
 | `merge-not-folded-past-three-writers` — a 4+ writer Merge reverts to one oversized N-ary node instead of a left-fold of pairwise merges, so it compiles past lower() and then fails schedule() with E-SCHED-ARITY (R-27) | `src/ir/lowering.cpp` | **KILLED** (test fails) | `schedule.plan` |
 | `merge-placed-at-tick-start-lockstep` — in the lockstep fast path, a Merge combining two or more channels is placed at its owning component's tick START (the Source/unwritten-Sink convention) instead of the tick END its Transport/Epoch inputs land on, so it sorts before them and schedule() fails E-SCHED-ORDER on any graph where a writer is not colocated with the merge target | `src/schedule/expand.cpp` | **KILLED** (test fails) | `schedule.expand` |
 | `merge-placed-at-tick-start-general` — in the general (non-lockstep) path, a Merge combining two or more channels is placed at its owning component's tick START instead of the tick END, the same defect as merge-placed-at-tick-start-lockstep but in the other of expand()'s two emission paths -- ExpandMode::ForceGeneral is required to reach it, since a lockstep graph never takes this branch | `src/schedule/expand.cpp` | **KILLED** (test fails) | `schedule.expand` |
+| `region-grouping-does-nothing` — D1's fix: a region's members are grouped inside their instant so declaration order cannot decide whether a coupling schedules. Without the preference the greedy emission degenerates to the old rank order and the declared-second spelling is refused again. | `src/schedule/scheduler.cpp` | **KILLED** (test fails) | `schedule.plan` |
+| `region-grouping-ignores-entanglement` — The other half: grouping must NOT separate a non-member that reads the same external value the region re-advances, because its placement relative to the loop is a modelling decision. Removing the guard lets an explicit channel hanging off an iterated component schedule, on one sweep's iterate, instead of being refused. | `src/schedule/scheduler.cpp` | **KILLED** (test fails) | `verification.iteration` |
 
-**15 killed / 16 total.**
+**17 killed / 18 total.**
