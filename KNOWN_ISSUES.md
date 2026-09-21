@@ -361,6 +361,38 @@ one instance or get one each.
 
 ---
 
+### D3. Three behaviours no test detects — the mutation gate is RED on purpose
+
+`FUSE_MUTATE_MPI=1 tools/mutate.py --area transport|runtime` exits 1 with three
+survivors. All 91 tier-1 tests pass; what is missing is coverage, and these
+three are **known** — a fourth survivor is a new gap, not one of these.
+
+| Survivor | Behaviour with no test that detects it |
+|---|---|
+| `one-transport-shared-across-every-plan` | D2's fix: one Transport per CommGraph-backed plan. Collapsing every plan onto instance 0 fails nothing. |
+| `region-failure-abandons-the-rest-of-the-period` | R-09: a failing period carries the failure forward instead of returning at the region. |
+| `region-residual-skips-the-cross-rank-reduction` | R-10: the region residual is agreed across participants rather than summed rank-locally. |
+
+**One cause for all three.** In
+`RunnerTransport.StillRunsASecondChannelAfterARegionFailsUnderMpi` the
+independent channel is declared *first* — the D1 workaround — and the iteration
+region *last*. So every observable in that test happens before the region, and
+"the rest of the period" after it is empty. R-09's mutant skips nothing; the
+shared-Transport mutant still fails the run, and the first failure wins, so the
+asserted code is unchanged; and no case in that binary has two cross-rank
+channels both delivering. R-10's local-sum fallback reaches the same
+convergence decision on this data.
+
+Note what this means about the earlier claim that
+`StillRunsASecondChannelAfterARegionFailsUnderMpi` was the acceptance test for
+D2's capability: it is not, and the mutation is what established that.
+
+**Fixing D1 comes first** (the user's ruling, 2026-09-21). The declaration-order
+limitation is what forced the reordering that blinded the test, so removing it
+is the root fix; the three tests are written against the fixture that follows.
+
+---
+
 ## C. Not defects — do not fix these
 
 - **Five mutations report `NOT-ASSESSED` locally.** They need MPI, and a test
