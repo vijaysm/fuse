@@ -362,6 +362,40 @@ one instance or get one each.
 
 ---
 
+### D5. Partial rank-set overlap is untested end to end (CommGraph itself is fine)
+
+**`CommGraph` supports all three overlap shapes and is tested on all three.**
+Matrix rows 1–6 are the cross product of (fully overlapping, fully disjoint,
+partially overlapping) × (GlobalId, NearestNeighbor), and they pass on the host.
+`specs_are_disjoint()` returning false is documented as "FALSE IS NOT AN ERROR,
+AND IT IS NOT RARE": under full overlap every match is a `local_pairs()` entry,
+under partial overlap `send_plan()`/`recv_plan()` describe it exactly. The
+Runner consumes precisely that — `peer_plan_needed = !specs_are_disjoint()`,
+then the peer plans plus local copies. No overlap refusal exists in the runtime
+path; `E-RT-TRANSPORT-OVERLAP` survives only as a sample string in
+`test/base/error_test.cpp`.
+
+What is missing is **end-to-end** coverage of the partial case
+(`A-OVERLAP-RUNNER-PARTIAL`). Through the Runner the suite exercises disjoint
+(`fluid_{0, n/2}` / `solid_{n/2, n-n/2}`) and fully overlapping
+(`whole_{0, n}` for both components, where every match is local) — and nothing
+partial. That is the one shape where peer traffic and local copies happen at
+once, so it is the only one that can expose an interaction between them.
+
+**It is not a one-line fixture change**, which is why this is recorded rather
+than improvised. Each side partitions the same global ids over its *own* rank
+set, so a rank in both sets is a source for one block and a destination for a
+*different* block — exactly what one `global_ids` list per rank cannot express,
+and the reason `send_plan()`/`recv_plan()` exist. `PartitionedTestBackend` holds
+one gid list per rank (`if (fluid_.contains(me)) … else if
+(solid_.contains(me)) …`), so it cannot represent a rank holding both; used
+under partial overlap, two different ranks would claim the same global ids as
+destinations and break the one-owner-per-target-entity invariant the delivery
+assertions rest on. Closing it needs a two-mesh harness — separate source and
+target meshes per rank — instead of the single shared region the suite uses.
+
+---
+
 ### D4. Two axes of the parallel matrix have no coverage — the gate is RED on purpose
 
 `tools/check-parallel-matrix.py` (S5.5) checks that every cell of

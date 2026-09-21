@@ -135,6 +135,28 @@ test = ["CommGraph.TwoIndependentlySplitCommunicatorsAreEnoughToBuildTheGraph"]
 # ---------------------------------------------------------------------------
 
 [[cell]]
+id = "A-OVERLAP-RUNNER"
+axis = "rank-overlap shape, end to end through the Runner"
+pins = """rows 1-6 test the three shapes at the CommGraph level. This cell is the same three shapes through Runner::initialize + run_period, which is where CommGraph's output is consumed: `peer_plan_needed = !specs_are_disjoint()`, then send_plan()/recv_plan() for peer traffic and local_pairs() for same-rank copies (src/runtime/runner.cpp)."""
+file = "test/parallel/runner_transport_test.cpp"
+kind = "mpi"
+ranks = [1, 2, 3, 4, 5]
+test = [
+  "RunnerTransport.TheDeliveredFieldDoesNotDependOnTheRankCount",
+  "RunnerTransport.SplittingByRankSetReproducesComponentMembership",
+]
+note = """DISJOINT and FULLY OVERLAPPING only. The fixtures are `fluid_{0, n/2}` / `solid_{n/2, n-n/2}` (disjoint) and `whole_{0, n}` for both components (full overlap, where every match is a local pair). PARTIAL overlap is cell A-OVERLAP-RUNNER-PARTIAL."""
+
+[[cell]]
+id = "A-OVERLAP-RUNNER-PARTIAL"
+axis = "partially overlapping rank sets, end to end"
+gap = """The one shape where BOTH transport paths run at once -- peer traffic for ranks in one set and local copies for ranks in both -- and so the only one that can expose an interaction between them. Untested through the Runner; the word "partial" does not occur in runner_transport_test.cpp.
+
+NOT a one-line fixture change, which is why it is recorded rather than improvised. Each side partitions the same global ids over its OWN rank set, so a rank in both sets is a source for one block and a destination for a DIFFERENT block -- exactly the case one `global_ids` list per rank cannot express, which is why CommGraph has send_plan()/recv_plan() at all. PartitionedTestBackend holds one gid list per rank (`if (fluid_.contains(me)) ... else if (solid_.contains(me)) ...`), so it cannot represent a rank holding both. Under partial overlap with that backend two different ranks would claim the same global ids as destinations, breaking the one-owner-per-target-entity invariant the delivery assertions rest on. It needs a two-mesh harness (separate source and target meshes per rank) rather than the shared single region the suite uses today.
+
+CommGraph itself is NOT the gap: rows 1-6 cover all three shapes at that level and pass on the host."""
+
+[[cell]]
 id = "A-RANKS"
 axis = "rank counts, odd included"
 pins = "every MPI leg runs at each registered rank count; 3 and 5 are the odd ones, and 5 over 4 entities is what found the accelerator's empty-block refusal"
@@ -201,8 +223,12 @@ note = """Compiles at tier 2 and is UNRUN in the sandbox -- MOAB here is MPI-lin
 [[cell]]
 id = "A-PARTITIONED"
 axis = "independently partitioned source"
-gap = """The PARALLEL half: a source partitioned independently of the target, where a remap row needs source values the rank does not own. The one-rank contract is now covered (A-PARTITIONED-SERIAL); what is still untested is the case the halo exists for -- `build_remap_halo` with a communicator of more than one, the `E-REMAP-PARALLEL` boundary that moab_backend.hpp itself calls load bearing ("> 1 refuses; == 1 must NOT"), the forward/reverse exchange round trip, and E-MESH-HALO-GEOMETRY on a non-spherical partitioned pair. It needs mpiexec and a non-matching spherical pair: MOAB ships one sphere (spherecube.h5m, found via MOAB_INCLUDE_DIRS), and a second, non-matching one can be generated with /opt/moab-tempest/bin/GenerateCSMesh and GenerateRLLMesh, which are installed."""
-
+gap = """The PARALLEL half: a source partitioned independently of the target, where a remap row needs source values the rank does not own. The one-rank contract is now covered (A-PARTITIONED-SERIAL); what is still untested is the case the halo exists for -- `build_remap_halo` with a communicator of more than one, the `E-REMAP-PARALLEL` boundary that moab_backend.hpp itself calls load bearing ("> 1 refuses; == 1 must NOT"), the forward/reverse exchange round trip, and E-MESH-HALO-GEOMETRY on a non-spherical partitioned pair. It needs mpiexec and a non-matching spherical pair, and a REAL one
+exists in MOAB's own MeshFiles/unittest: `wholeATM_T.h5m` and `recMeshOcn.h5m`,
+both meshes on the sphere. They must be PROJECTED ONTO THE UNIT SPHERE before
+intersection -- Intx needs a common radius and theirs is not 1. That pair is the
+intended fixture; GenerateCSMesh / GenerateRLLMesh in /opt/moab-tempest/bin stay
+a fallback if a particular resolution is wanted."""
 [[cell]]
 id = "A-SPACES-TRANSPORT"
 axis = "host-parallel space, transport and runtime paths"
