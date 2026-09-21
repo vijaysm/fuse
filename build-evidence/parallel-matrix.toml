@@ -182,15 +182,25 @@ test = [
 ]
 
 [[cell]]
+id = "A-PARTITIONED-SERIAL"
+axis = "remap halo, one-rank contract"
+pins = """the contract every unconditional caller depends on: a serial or one-rank build_remap_halo is a SUCCESSFUL no-op, idempotent, and short-circuits before the covering-set construction -- so a non-spherical pair is not refused with E-MESH-HALO-GEOMETRY on a serial run. Plus both exchange directions' argument refusals, and that an exchange with no halo touches nothing."""
+file = "test/backend/remap_halo_test.cpp"
+kind = "tier2"
+test = [
+  "RemapHalo.ASerialCallIsASuccessfulNoOpAndIsIdempotent",
+  "RemapHalo.ANonSphericalPairIsNotRefusedInSerial",
+  "RemapHalo.TheBookkeepingAgreesWithWhatWasBuilt",
+  "RemapHalo.WeightsBuildInSerialWithoutTheParallelRefusal",
+  "RemapHalo.TheExchangeChecksItsArgumentsBeforeAnythingElse",
+  "RemapHalo.AnExchangeWithNoHaloLeavesTheBufferAlone",
+]
+note = """Compiles at tier 2 and is UNRUN in the sandbox -- MOAB here is MPI-linked and calls MPI_Init_thread when the backend is constructed, which cannot succeed where MPI will not initialise (KNOWN_ISSUES C1). Its verdict comes from a host run like every other tier-2 test."""
+
+[[cell]]
 id = "A-PARTITIONED"
 axis = "independently partitioned source"
-gap = """A source partitioned independently of the target, where a remap row needs \
-source values the rank does not own. `localise()` refuses it (E-MAP-COVERAGE, \
-tested), which is correct but is not coverage OF the case: what makes it work is \
-the halo exchange, and `build_remap_halo` / `exchange_remap_halo` / \
-`E-RT-REMAP-HALO` have NO test in this tree -- 34 references across src/ and \
-include/, none under test/. This is the axis S5.5 records as appearing nowhere, \
-and it is the largest untested surface in the parallel path."""
+gap = """The PARALLEL half: a source partitioned independently of the target, where a remap row needs source values the rank does not own. The one-rank contract is now covered (A-PARTITIONED-SERIAL); what is still untested is the case the halo exists for -- `build_remap_halo` with a communicator of more than one, the `E-REMAP-PARALLEL` boundary that moab_backend.hpp itself calls load bearing ("> 1 refuses; == 1 must NOT"), the forward/reverse exchange round trip, and E-MESH-HALO-GEOMETRY on a non-spherical partitioned pair. It needs mpiexec and a non-matching spherical pair: MOAB ships one sphere (spherecube.h5m, found via MOAB_INCLUDE_DIRS), and a second, non-matching one can be generated with /opt/moab-tempest/bin/GenerateCSMesh and GenerateRLLMesh, which are installed."""
 
 [[cell]]
 id = "A-SPACES-TRANSPORT"

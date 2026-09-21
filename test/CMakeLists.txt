@@ -179,9 +179,11 @@ fuse_add_gtest(backend cell_simplices)
 
 # The MOAB backend's own tests. Registered only when MOAB is enabled -- absent
 # rather than skipped, because a skipped test reads like a passing one.
-fuse_tests_gated_by(FUSE_ENABLE_MOAB backend/moab_mesh_test.cpp)
+fuse_tests_gated_by(FUSE_ENABLE_MOAB
+  backend/moab_mesh_test.cpp backend/remap_halo_test.cpp)
 if(FUSE_ENABLE_MOAB)
   fuse_add_gtest(backend moab_mesh THROWS)
+  fuse_add_gtest(backend remap_halo THROWS)
   # REVIEW.md R-41 (BT-F15): a real, non-planar, non-matching MOAB mesh, not
   # a generated box. MOAB installs a 3456-quad cubed sphere under
   # share/examples/fortran relative to its own include prefix; discovered

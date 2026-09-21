@@ -372,15 +372,31 @@ reports **33 claims verified, 0 broken, 2 gaps**, and exits 1 on the gaps.
 
 | Gap | What has no test |
 |---|---|
-| `A-PARTITIONED` | an **independently partitioned source**: `build_remap_halo`, `exchange_remap_halo` and `E-RT-REMAP-HALO` have 34 references across `src/` and `include/` and **none under `test/`** |
+| `A-PARTITIONED` | the **parallel** half of an independently partitioned source. The one-rank contract is now covered by `test/backend/remap_halo_test.cpp` (2026-09-21); still untested: `build_remap_halo` on a communicator of more than one, the `E-REMAP-PARALLEL` boundary its own header calls load bearing, the forward/reverse exchange round trip, and `E-MESH-HALO-GEOMETRY` on a non-spherical partitioned pair |
 | `A-SPACES-TRANSPORT` | the host-parallel space axis beyond the kernels: only `space_kernels_test.cpp` is typed over execution spaces, so transport and runtime run on one space |
 
 `A-PARTITIONED` is the axis S5.5 records as appearing nowhere, and it is the
 largest untested surface in the parallel path. A remap whose source is
 partitioned independently of its target needs values the rank does not own;
 `localise()` refuses that (`E-MAP-COVERAGE`, tested), which is correct but is
-not coverage *of* the case — the halo exchange is what makes it work, and
-nothing exercises it.
+not coverage *of* the case — the halo exchange is what makes it work.
+
+**Progress 2026-09-21.** The serial contract now has tests
+(`A-PARTITIONED-SERIAL`): a one-rank `build_remap_halo` must succeed, be
+idempotent, and short-circuit *before* the covering-set construction, so a
+non-spherical pair is not refused on a serial run — the promise every
+unconditional caller relies on, previously unchecked. They compile at tier 2
+and are **unrun here**: MOAB in this build calls `MPI_Init_thread` when the
+backend is constructed, which cannot succeed where MPI will not initialise
+(C1 above), so their verdict comes from a host run.
+
+For the parallel half, the fixture problem is solved but not yet built: MOAB
+ships one sphere (`spherecube.h5m`, found through `MOAB_INCLUDE_DIRS`) and a
+second, non-matching spherical mesh can be generated with
+`/opt/moab-tempest/bin/GenerateCSMesh` and `GenerateRLLMesh`, both installed.
+An identity pair cannot substitute: with both sides on the same partition of
+the same mesh, target cell *j*'s source is cell *j* on the same rank, so no
+halo is ever needed.
 
 A gap is deliberately not waivable: the gate counts them and fails, so the
 number can only fall by writing the test. A **third** gap appearing, or any
