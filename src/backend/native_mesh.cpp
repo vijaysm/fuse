@@ -494,14 +494,14 @@ Result<std::unique_ptr<NativeMeshView>> NativeMeshView::create_from_host(
 
 void NativeMeshView::check(int dim, std::size_t i, const char* what) const {
   if (dim != 0 && dim != dim_) {
-    throw std::out_of_range(fmt::format("NativeMeshView::{}: dimension {} is not represented "
-                                       "(mesh dimension is {})", what, dim, dim_));
+    FUSE_THROW(InvalidArgument, "NativeMeshView::{}: dimension {} is not represented "
+              "(mesh dimension is {})", what, dim, dim_);
   }
   const std::size_t n = (dim == 0) ? vertex_count() : cell_count();
   if (i >= n) {
-    throw std::out_of_range(
-        fmt::format("NativeMeshView::{}: index {} out of range (dim {} has {} entities)", what,
-                   i, dim, n));
+    FUSE_THROW(InvalidArgument,
+              "NativeMeshView::{}: index {} out of range (dim {} has {} entities)", what, i,
+              dim, n);
   }
 }
 
