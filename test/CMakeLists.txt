@@ -379,6 +379,8 @@ set_tests_properties(install.consumer_find_package PROPERTIES
   TIMEOUT 300
 )
 
+add_subdirectory(partition)
+
 # ---------------------------------------------------------------- audit
 # Every *_test.cpp on disk must be registered above or declared gated by a tier
 # option that is OFF in this configuration. Anything else is a test that runs
