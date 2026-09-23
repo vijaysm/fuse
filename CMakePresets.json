@@ -1,6 +1,10 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
   "configurePresets": [
     {
       "name": "_machine",
@@ -21,64 +25,233 @@
       "inherits": "_machine",
       "displayName": "Tier 0 - Kokkos + fmt, no MPI",
       "description": "The always-buildable configuration. Serial and threaded kernels, the supermesh remap, every unit test.",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
     },
     {
       "name": "tier0-release",
       "inherits": "tier0",
       "displayName": "Tier 0, Release",
       "description": "FUSE_ASSERT is verified live under NDEBUG on this leg; it is not a decoration.",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
     },
     {
       "name": "tier0-no-exceptions",
       "inherits": "tier0-release",
       "displayName": "Tier 0, exceptions off",
       "description": "Every refusal aborts instead of unwinding. Run tests with -LE throws.",
-      "cacheVariables": { "FUSE_ENABLE_EXCEPTIONS": "OFF" }
+      "cacheVariables": {
+        "FUSE_ENABLE_EXCEPTIONS": "OFF"
+      }
     },
     {
       "name": "tier1",
       "inherits": "tier0",
       "displayName": "Tier 1 - + MPI",
       "description": "Adds the MPI transport, rank graph, agreement points and the parallel test legs (mpiexec at 2/3/4/5 ranks).",
-      "cacheVariables": { "FUSE_ENABLE_MPI": "ON" }
+      "cacheVariables": {
+        "FUSE_ENABLE_MPI": "ON"
+      }
     },
     {
       "name": "tier2",
       "inherits": "tier1",
       "displayName": "Tier 2 - + MOAB",
       "description": "Adds the MOAB mesh backend and its 38-case suite. Requires tier 1: the ladder refuses MOAB without MPI. TempestRemap is picked up automatically when the MOAB found was built with it.",
-      "cacheVariables": { "FUSE_ENABLE_MOAB": "ON" }
+      "cacheVariables": {
+        "FUSE_ENABLE_MOAB": "ON"
+      }
     },
     {
       "name": "tier3",
       "inherits": "tier2",
       "displayName": "Tier 3 - + PETSc",
       "description": "Adds the implicit/monolithic solver path (S7). Configures today; the solver plugin is not yet written.",
-      "cacheVariables": { "FUSE_ENABLE_PETSC": "ON" }
+      "cacheVariables": {
+        "FUSE_ENABLE_PETSC": "ON"
+      }
+    },
+    {
+      "name": "all",
+      "inherits": "tier3",
+      "displayName": "All features - MPI, MOAB with TempestRemap, PETSc",
+      "description": "Every tier in one build dir (build-all). Uses the TempestRemap-enabled MOAB at /opt/moab-tempest so the high-order spherical remap is compiled, and the MOAB source tree's MeshFiles/unittest so the non-matching sphere pair (wholeATM_T/recMeshOcn) cases are compiled. PETSc is found through pkg-config (environment below). LowFive, Python and Fortran stay OFF: none has an implementation to build.",
+      "environment": {
+        "PKG_CONFIG_PATH": "/opt/petsc/download-moab/lib/pkgconfig"
+      },
+      "cacheVariables": {
+        "MOAB_DIR": "/opt/moab-tempest/lib/cmake/MOAB",
+        "FUSE_MOAB_MESHFILES": "/Users/mahadevan/Code/sigma/moab/MeshFiles/unittest"
+      }
     }
   ],
   "buildPresets": [
-    { "name": "tier0", "configurePreset": "tier0", "jobs": 12 },
-    { "name": "tier0-release", "configurePreset": "tier0-release", "jobs": 12 },
-    { "name": "tier0-no-exceptions", "configurePreset": "tier0-no-exceptions", "jobs": 12 },
-    { "name": "tier1", "configurePreset": "tier1", "jobs": 12 },
-    { "name": "tier2", "configurePreset": "tier2", "jobs": 12 },
-    { "name": "tier3", "configurePreset": "tier3", "jobs": 12 }
+    {
+      "name": "tier0",
+      "configurePreset": "tier0",
+      "jobs": 12
+    },
+    {
+      "name": "tier0-release",
+      "configurePreset": "tier0-release",
+      "jobs": 12
+    },
+    {
+      "name": "tier0-no-exceptions",
+      "configurePreset": "tier0-no-exceptions",
+      "jobs": 12
+    },
+    {
+      "name": "tier1",
+      "configurePreset": "tier1",
+      "jobs": 12
+    },
+    {
+      "name": "tier2",
+      "configurePreset": "tier2",
+      "jobs": 12
+    },
+    {
+      "name": "tier3",
+      "configurePreset": "tier3",
+      "jobs": 12
+    },
+    {
+      "name": "all",
+      "configurePreset": "all"
+    }
   ],
   "testPresets": [
-    { "name": "tier0", "configurePreset": "tier0", "output": { "outputOnFailure": true }, "execution": { "jobs": 8 } },
-    { "name": "tier0-release", "configurePreset": "tier0-release", "output": { "outputOnFailure": true }, "execution": { "jobs": 8 } },
-    { "name": "tier0-no-exceptions", "configurePreset": "tier0-no-exceptions", "output": { "outputOnFailure": true }, "execution": { "jobs": 8 },
-      "filter": { "exclude": { "label": "throws" } } },
-    { "name": "tier1", "configurePreset": "tier1", "output": { "outputOnFailure": true }, "execution": { "jobs": 4 } },
-    { "name": "tier2", "configurePreset": "tier2", "output": { "outputOnFailure": true }, "execution": { "jobs": 4 } },
-    { "name": "tier3", "configurePreset": "tier3", "output": { "outputOnFailure": true }, "execution": { "jobs": 4 } }
+    {
+      "name": "tier0",
+      "configurePreset": "tier0",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 8
+      }
+    },
+    {
+      "name": "tier0-release",
+      "configurePreset": "tier0-release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 8
+      }
+    },
+    {
+      "name": "tier0-no-exceptions",
+      "configurePreset": "tier0-no-exceptions",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 8
+      },
+      "filter": {
+        "exclude": {
+          "label": "throws"
+        }
+      }
+    },
+    {
+      "name": "tier1",
+      "configurePreset": "tier1",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 4
+      }
+    },
+    {
+      "name": "tier2",
+      "configurePreset": "tier2",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 4
+      }
+    },
+    {
+      "name": "tier3",
+      "configurePreset": "tier3",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 4
+      }
+    },
+    {
+      "name": "all",
+      "configurePreset": "all",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 4
+      }
+    }
   ],
   "workflowPresets": [
-    { "name": "tier0", "steps": [ { "type": "configure", "name": "tier0" }, { "type": "build", "name": "tier0" }, { "type": "test", "name": "tier0" } ] },
-    { "name": "tier1", "steps": [ { "type": "configure", "name": "tier1" }, { "type": "build", "name": "tier1" }, { "type": "test", "name": "tier1" } ] },
-    { "name": "tier2", "steps": [ { "type": "configure", "name": "tier2" }, { "type": "build", "name": "tier2" }, { "type": "test", "name": "tier2" } ] }
+    {
+      "name": "tier0",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "tier0"
+        },
+        {
+          "type": "build",
+          "name": "tier0"
+        },
+        {
+          "type": "test",
+          "name": "tier0"
+        }
+      ]
+    },
+    {
+      "name": "tier1",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "tier1"
+        },
+        {
+          "type": "build",
+          "name": "tier1"
+        },
+        {
+          "type": "test",
+          "name": "tier1"
+        }
+      ]
+    },
+    {
+      "name": "tier2",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "tier2"
+        },
+        {
+          "type": "build",
+          "name": "tier2"
+        },
+        {
+          "type": "test",
+          "name": "tier2"
+        }
+      ]
+    }
   ]
 }
