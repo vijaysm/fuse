@@ -287,6 +287,7 @@ endif()
 # ---------------------------------------------------------------- linalg
 fuse_add_gtest(linalg least_squares THROWS)
 fuse_add_gtest(backend native_mesh THROWS)
+fuse_add_gtest(backend native_distributed_mesh THROWS)
 fuse_add_gtest(backend supermesh THROWS)
 fuse_add_gtest(backend transfer_map_io THROWS)
 # supermesh_test reaches src/backend/supermesh_detail.hpp directly, a private
