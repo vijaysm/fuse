@@ -112,7 +112,7 @@ Result<BufferPlan> try_plan_buffers(const OperatorDAG& dag, const TimedDag& time
     // Filled for component-owned arcs too: `elements` describes the region,
     // and Phase 4 needs it to check a registered pointer's Layout::count
     // against what the plan expects. Allocation is governed by the flag.
-    b.elements = sizes(b.region);
+    b.elements = sizes(b.region, a.type.rank_set);
 
     if (!b.is_component_owned) {
       const auto need =

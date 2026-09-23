@@ -132,6 +132,26 @@ struct TransportPlan {
   /// source side, `dest_indices()` scattering into it on the destination side.
   std::vector<std::size_t> gather, scatter;
 
+  /// True when the plan came from `build_plan_from_peers` (partially shared
+  /// placements). Such a plan addresses both buffers BY LOCAL ENTITY INDEX --
+  /// the source block on one side, the destination block on the other -- so
+  /// `gather`/`scatter` are empty and the hot loop stages differently:
+  /// `send` takes the whole source block, and only `peer_written` is copied
+  /// back out of `recv`. Before this existed the hot loop ran the matched
+  /// path's empty gather and scatter on a peer plan: it sent zeros and
+  /// delivered nothing, unnoticed because no Runner test used partial overlap
+  /// (KNOWN_ISSUES D5).
+  bool from_peers = false;
+
+  /// Peer plans only. How many doubles of the SOURCE block this rank holds
+  /// (its own decomposition's extent times components; 0 off the source).
+  std::size_t peer_src_total = 0;
+
+  /// Peer plans only. Every destination-local entity index the plan writes --
+  /// the receive peers' indices and the same-rank pairs' targets -- sorted and
+  /// unique, computed once at setup so the hot loop allocates nothing.
+  std::vector<std::size_t> peer_written;
+
   /// Sized once to `total()` and never resized. BOTH are that size on every
   /// participating rank, including the side that does not use one of them:
   /// `MpiTransport::move` (src/transport/mpi_transport.cpp:709-722) checks a
@@ -447,7 +467,8 @@ struct Runner::Impl {
   /// projected exactly once, and no row of `T` reaching past the last source
   /// step available when it is applied.
   Result<void> check_spacetime_schedule();
-  Result<std::uint32_t> weights_for(RegionId region, std::size_t elements,
+  Result<std::uint32_t> weights_for(RegionId region, int rank_set,
+                                    std::size_t elements,
                                     int components);
   Result<void> build_ticks(ComponentSet& components);
 

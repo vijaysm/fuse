@@ -564,8 +564,8 @@ TEST(SerialMesh, MakeRegionSizesReportsTheBackendsCounts) {
   SerialMeshBackend b;
   ASSERT_NO_FATAL_FAILURE(load_graph_meshes(b, g));
   const fuse::RegionSizes sizes = make_region_sizes(g, b);
-  EXPECT_EQ(sizes(RegionId{0}), 27u);
-  EXPECT_EQ(sizes(RegionId{1}), 11u);
+  EXPECT_EQ(sizes(RegionId{0}, -1), 27u);
+  EXPECT_EQ(sizes(RegionId{1}, -1), 11u);
 }
 
 TEST(SerialMesh, MakeRegionSizesHandlesABoundaryRegion) {
@@ -574,7 +574,7 @@ TEST(SerialMesh, MakeRegionSizesHandlesABoundaryRegion) {
   SerialMeshBackend b;
   ASSERT_NO_FATAL_FAILURE(load_graph_meshes(b, g));
   const fuse::RegionSizes sizes = make_region_sizes(g, b);
-  EXPECT_EQ(sizes(RegionId{0}), 8u);
+  EXPECT_EQ(sizes(RegionId{0}, -1), 8u);
 }
 
 // Returning 0 for a region the backend cannot size would allocate an empty
@@ -586,8 +586,8 @@ TEST(SerialMesh, MakeRegionSizesThrowsRatherThanReturningZero) {
   SerialMeshBackend b;
   ASSERT_NO_FATAL_FAILURE(load_graph_meshes(b, g));
   const fuse::RegionSizes sizes = make_region_sizes(g, b);
-  EXPECT_THROW((void)sizes(RegionId{0}), std::runtime_error);
-  EXPECT_EQ(sizes(RegionId{1}), 3u);  // the healthy region still answers
+  EXPECT_THROW((void)sizes(RegionId{0}, -1), std::runtime_error);
+  EXPECT_EQ(sizes(RegionId{1}, -1), 3u);  // the healthy region still answers
 }
 
 TEST(SerialMesh, MakeRegionSizesThrowsOnAnOutOfRangeRegionId) {
@@ -596,8 +596,8 @@ TEST(SerialMesh, MakeRegionSizesThrowsOnAnOutOfRangeRegionId) {
   SerialMeshBackend b;
   ASSERT_NO_FATAL_FAILURE(load_graph_meshes(b, g));
   const fuse::RegionSizes sizes = make_region_sizes(g, b);
-  EXPECT_THROW((void)sizes(RegionId{}), fuse::InvalidArgument);       // invalid
-  EXPECT_THROW((void)sizes(RegionId{7}), fuse::InvalidArgument);      // past the end
+  EXPECT_THROW((void)sizes(RegionId{}, -1), fuse::InvalidArgument);       // invalid
+  EXPECT_THROW((void)sizes(RegionId{7}, -1), fuse::InvalidArgument);      // past the end
 }
 
 // End to end: a real mesh actually sizes a real buffer plan. This is the whole
@@ -710,10 +710,10 @@ TEST(SerialMesh, MakeRegionSizesIsIndependentOfBackendLoadOrder) {
 
   const fuse::RegionSizes a = make_region_sizes(g, forwards);
   const fuse::RegionSizes b = make_region_sizes(g, backwards);
-  EXPECT_EQ(a(RegionId{0}), 27u);
-  EXPECT_EQ(a(RegionId{1}), 11u);
-  EXPECT_EQ(b(RegionId{0}), 27u);
-  EXPECT_EQ(b(RegionId{1}), 11u);
+  EXPECT_EQ(a(RegionId{0}, -1), 27u);
+  EXPECT_EQ(a(RegionId{1}, -1), 11u);
+  EXPECT_EQ(b(RegionId{0}, -1), 27u);
+  EXPECT_EQ(b(RegionId{1}, -1), 11u);
 }
 
 // A backend that loaded extra meshes, or fewer, still answers correctly for
@@ -726,10 +726,10 @@ TEST(SerialMesh, MakeRegionSizesThrowsWhenTheBackendNeverLoadedTheMesh) {
                               .source = "generated:box:9x9x9"}).ok());
   ASSERT_TRUE(b.load(g.mesh(MeshId{1})).ok());  // "mb"
   const fuse::RegionSizes sizes = make_region_sizes(g, b);
-  EXPECT_EQ(sizes(RegionId{1}), 11u);
+  EXPECT_EQ(sizes(RegionId{1}, -1), 11u);
   // Region 0 lives on "ma", which was never loaded. Positionally it would
   // have resolved to the 9x9x9 box and returned 729.
-  EXPECT_THROW((void)sizes(RegionId{0}), std::runtime_error);
+  EXPECT_THROW((void)sizes(RegionId{0}, -1), std::runtime_error);
 }
 
 // ---- the simplex decomposition ----------------------------------------

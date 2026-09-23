@@ -19,7 +19,15 @@ namespace fuse {
 /// It is only ever called with a valid `RegionId`; `plan_buffers` rejects a
 /// DAG carrying an invalid one rather than passing 0xFFFFFFFF to a backend
 /// that would index an array with it.
-using RegionSizes = std::function<std::size_t(RegionId)>;
+/// How many entities a region holds on this rank, AS SEEN BY one placement.
+///
+/// `placement` is the arc's `ValueType::rank_set`: the component whose ranks
+/// the value lives on, or -1 when it lives on none in particular. It is part
+/// of the key because a component holds its own decomposition of a shared
+/// mesh (MeshBackend::placed_region_size), so on a rank in two partially
+/// overlapping placements one region has two sizes. A callback that ignores it
+/// is correct for any backend with one decomposition per mesh.
+using RegionSizes = std::function<std::size_t(RegionId, int placement)>;
 
 /// The storage one SSA arc needs for one period. Exactly one per DAG arc.
 struct BufferDecl {

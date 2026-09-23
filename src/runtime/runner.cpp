@@ -117,7 +117,8 @@ constexpr double kCentroidRelTol = 1e-9;
 /// mesh-local index.
 [[nodiscard]] Coincidence regions_coincide(const CouplingGraph& graph,
                                            const MeshBackend& backend,
-                                           RegionId a, RegionId b) {
+                                           RegionId a, RegionId b,
+                                           ComponentId placement) {
   Coincidence out;
   if (!a.valid() || a.value() >= graph.region_count() || !b.valid() ||
       b.value() >= graph.region_count()) {
@@ -157,7 +158,10 @@ constexpr double kCentroidRelTol = 1e-9;
     // positional id spaces (MeshBackend::mesh_id).
     const Result<MeshId> id = backend.mesh_id(graph.mesh(r.mesh).name);
     if (!id.ok()) return id.error().message;
-    const Result<const MeshView*> v = backend.view(id.value());
+    // The placement's own decomposition: two regions coincide only as seen
+    // by the SAME component (a Remap's two ends always share one -- the
+    // Transport that changes placement is emitted before it).
+    const Result<const MeshView*> v = backend.placed_view(id.value(), placement);
     if (!v.ok()) return v.error().message;
     if (v.value() == nullptr) {
       return "the backend returned no view for region '" + r.name + "'";
@@ -347,10 +351,16 @@ Result<void> Runner::Impl::resolve_buffers(FieldRegistry& registry) {
 }
 
 Result<std::uint32_t> Runner::Impl::weights_for(RegionId region,
+                                                int rank_set,
                                                 std::size_t elements,
                                                 int components) {
+  // Keyed by placement too: on a rank in two placements one region has two
+  // decompositions, so two different measure vectors. `components` is small
+  // (checked >= 1 by plan_buffers), the placement a component index.
   const auto key = (static_cast<std::uint64_t>(region.value()) << 32) |
-                   static_cast<std::uint32_t>(components);
+                   (static_cast<std::uint64_t>(
+                        static_cast<std::uint16_t>(rank_set + 1)) << 16) |
+                   static_cast<std::uint16_t>(components);
   const auto cached = weights_by_region.find(key);
   if (cached != weights_by_region.end()) return cached->second;
 
@@ -375,7 +385,21 @@ Result<std::uint32_t> Runner::Impl::weights_for(RegionId region,
                      "backend"};
   }
 
-  const Result<const MeshView*> view = backend.view(reg.mesh);
+  // Resolved by NAME: `reg.mesh` is the GRAPH's MeshId, a numbering
+  // independent of the backend's (MeshBackend::mesh_id). Passing it straight
+  // through -- as this did -- sizes whichever backend mesh happens to share
+  // the position: the "wrong-but-plausible count with no diagnostic" that
+  // make_region_sizes is written to avoid.
+  if (!reg.mesh.valid() || reg.mesh.value() >= graph.mesh_count()) {
+    return Failure{"E-RT-MEASURE", "region '" + reg.name +
+                                       "' names a mesh the graph does not declare"};
+  }
+  const auto bid = backend.mesh_id(graph.mesh(reg.mesh).name);
+  if (!bid.ok()) return bid.error();
+  const ComponentId placement =
+      rank_set >= 0 ? ComponentId{static_cast<std::uint32_t>(rank_set)}
+                    : ComponentId{};
+  const Result<const MeshView*> view = backend.placed_view(bid.value(), placement);
   if (!view.ok()) return view.error();
   const MeshView* mv = view.value();
   if (mv == nullptr) {
@@ -494,10 +518,12 @@ Result<void> Runner::Impl::resolve_constrain(const Instruction& ins,
   const Slot& in_slot = slots[before.value()];
   const Slot& out_slot = slots[ins.out.value()];
   const Result<std::uint32_t> wb = weights_for(
-      dag.arc(before).type.region, in_slot.elements, in_slot.components);
+      dag.arc(before).type.region, dag.arc(before).type.rank_set,
+      in_slot.elements, in_slot.components);
   if (!wb.ok()) return wb.error();
   const Result<std::uint32_t> wa = weights_for(
-      dag.arc(ins.out).type.region, out_slot.elements, out_slot.components);
+      dag.arc(ins.out).type.region, dag.arc(ins.out).type.rank_set,
+      out_slot.elements, out_slot.components);
   if (!wa.ok()) return wa.error();
 
   r.constrain = static_cast<std::int32_t>(constrains.size());
@@ -537,7 +563,40 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
   }
 
   // ---- 1. The identity, but only when it is provably the right answer -----
-  const Coincidence c = regions_coincide(graph, backend, src, tgt);
+  // A Remap's two ends share one placement: rules_channel.cpp emits the
+  // Transport that changes placement BEFORE the Remap.
+  const int remap_rank_set = dag.arc(ins.out).type.rank_set;
+  const ComponentId placement =
+      remap_rank_set >= 0
+          ? ComponentId{static_cast<std::uint32_t>(remap_rank_set)}
+          : ComponentId{};
+
+  // Weights are not yet built per placement: build_weights() reads each
+  // mesh's DEFAULT decomposition. Where this placement's decomposition is a
+  // different one, weights built on the default would index the wrong
+  // entities -- plausible numbers, no diagnostic -- so refuse instead.
+  // (KNOWN_ISSUES D5: per-placement weight construction is the next step.)
+  for (const RegionId side : {src, tgt}) {
+    if (!side.valid() || side.value() >= graph.region_count()) break;
+    const Region& rs = graph.region(side);
+    if (!rs.mesh.valid() || rs.mesh.value() >= graph.mesh_count()) break;
+    const auto bid = backend.mesh_id(graph.mesh(rs.mesh).name);
+    if (!bid.ok()) break;  // reported by the checks below
+    const auto placed = backend.placed_view(bid.value(), placement);
+    const auto dflt = backend.view(bid.value());
+    if (placed.ok() && dflt.ok() && placed.value() != dflt.value()) {
+      return Failure{"E-RT-REMAP-PLACEMENT",
+                     label + " remaps on component " +
+                         std::to_string(remap_rank_set) +
+                         "'s own decomposition of mesh '" +
+                         graph.mesh(rs.mesh).name +
+                         "', and remap weights are not yet built per "
+                         "placement; building them on the mesh's default "
+                         "decomposition would index the wrong entities"};
+    }
+  }
+
+  const Coincidence c = regions_coincide(graph, backend, src, tgt, placement);
   if (c.same) {
     if (in.total() != out.total()) {
       return Failure{"E-RT-REMAP-SIZE",
@@ -1404,13 +1463,21 @@ Result<void> Runner::Impl::attach_comm_graphs() {
     const Region& reg_side = graph.region(p.region);
     const auto    mid      = backend.mesh_id(graph.mesh(reg_side.mesh).name);
     if (!mid.ok()) { status = mid.error(); break; }
-    const auto view = backend.view(mid.value());
-    if (!view.ok()) { status = view.error(); break; }
-    const int dim =
-        reg_side.dimension >= 0 ? reg_side.dimension : view.value()->dimension();
-
     const auto src_cid = static_cast<std::uint32_t>(p.spec.src_rank_set);
     const auto dst_cid = static_cast<std::uint32_t>(p.spec.dst_rank_set);
+
+    // EACH SIDE ITS OWN COMPONENT'S DECOMPOSITION (KNOWN_ISSUES D5). This used
+    // to be one `backend.view(mesh)` handed to both sides, so a rank in both
+    // placements offered the same piece as source and as destination, and two
+    // partially overlapping placements could not both cover the region. The
+    // failures here are local and identical on every rank (the same graph,
+    // the same backend contract), so breaking before the collective is safe.
+    const auto src_view = backend.placed_view(mid.value(), ComponentId{src_cid});
+    if (!src_view.ok()) { status = src_view.error(); break; }
+    const auto dst_view = backend.placed_view(mid.value(), ComponentId{dst_cid});
+    if (!dst_view.ok()) { status = dst_view.error(); break; }
+    const int dim = reg_side.dimension >= 0 ? reg_side.dimension
+                                            : src_view.value()->dimension();
     const bool in_src =
         graph.component(ComponentId{src_cid}).ranks.contains(my_rank);
     const bool in_dst =
@@ -1421,12 +1488,12 @@ Result<void> Runner::Impl::attach_comm_graphs() {
     CommGraphSide src_side;
     src_side.dim         = dim;
     src_side.comm_handle = MPI_Comm_c2f(comms[src_cid]);
-    src_side.mesh        = in_src ? view.value() : nullptr;
+    src_side.mesh        = in_src ? src_view.value() : nullptr;
 
     CommGraphSide dst_side;
     dst_side.dim         = dim;
     dst_side.comm_handle = MPI_Comm_c2f(comms[dst_cid]);
-    dst_side.mesh        = in_dst ? view.value() : nullptr;
+    dst_side.mesh        = in_dst ? dst_view.value() : nullptr;
 
     CommGraphOptions opts;
     // NOT a default: the only reachable mode. Guard (1) above proved Transport
@@ -1453,10 +1520,35 @@ Result<void> Runner::Impl::attach_comm_graphs() {
       send_peers = g.send_plan();
       recv_peers = g.recv_plan();
       // prepare() compares only the extents for a peer-built plan, so those
-      // are the only spec fields that must be right. The element count is this
-      // rank's own field extent, which is what the local view holds.
-      p.spec.elements   = in_src || in_dst ? view.value()->entity_count(dim) : 0;
+      // are the only spec fields that must be right. With per-placement
+      // decomposition a rank in both placements holds TWO blocks -- its source
+      // component's and its destination component's -- whose sizes need not
+      // agree, and the peer plan indexes each by its own local numbering. The
+      // extent is therefore the LARGER of the two: every source index and
+      // every destination index lies below it, which is what
+      // build_plan_from_peers checks. The hot loop stages the source block
+      // into `send` and copies only the written destination entries back.
+      const std::size_t src_n =
+          in_src ? src_view.value()->entity_count(dim) : 0;
+      const std::size_t dst_n =
+          in_dst ? dst_view.value()->entity_count(dim) : 0;
+      p.spec.elements   = std::max(src_n, dst_n);
       p.spec.components = nc_planned;
+      p.from_peers      = true;
+      p.peer_src_total =
+          src_n * static_cast<std::size_t>(std::max(nc_planned, 1));
+      p.peer_written.clear();
+      for (const CommGraphPeer& peer : recv_peers) {
+        p.peer_written.insert(p.peer_written.end(), peer.local_indices.begin(),
+                              peer.local_indices.end());
+      }
+      for (const LocalCopyPair& lp : g.local_pairs()) {
+        p.peer_written.push_back(lp.dest_local_index);
+      }
+      std::sort(p.peer_written.begin(), p.peer_written.end());
+      p.peer_written.erase(
+          std::unique(p.peer_written.begin(), p.peer_written.end()),
+          p.peer_written.end());
       p.spec.global_ids.clear();
       p.spec.src_ranks.clear();
       p.spec.dst_ranks.clear();
@@ -1465,6 +1557,11 @@ Result<void> Runner::Impl::attach_comm_graphs() {
       p.gather.clear();
       p.scatter.clear();
     } else {
+      // Reset explicitly: initialize() is re-callable, and a plan that was a
+      // peer plan last time must not keep the peer staging this time.
+      p.from_peers     = false;
+      p.peer_src_total = 0;
+      p.peer_written.clear();
       // CommGraph knows nothing of components-per-entity; carry the arc's
       // count across the assignment.
       p.spec            = in_src ? g.source_spec() : g.dest_spec();
@@ -2156,6 +2253,28 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
       double*           out = out_ptr();
       const std::size_t nc =
           static_cast<std::size_t>(p.spec.components < 1 ? 1 : p.spec.components);
+
+      if (p.from_peers) {
+        // A peer plan indexes both buffers by local entity index and performs
+        // the same-rank copies itself (MpiTransport::move, local_copy), so the
+        // matched path's gather/scatter -- empty here -- must not run. Stage
+        // the whole source block; `send` is at least that large because the
+        // plan's extent is the larger of the two blocks.
+        for (std::size_t k = 0; k < p.peer_src_total; ++k) p.send[k] = in[k];
+        const Result<void> prep = tp->prepare(p.spec);
+        if (!prep.ok()) return prep;
+        const Result<void> mv =
+            tp->move(p.send.data(), p.recv.data(), p.total());
+        if (!mv.ok()) return mv;
+        // Only what the plan wrote: an entry it did not write holds the
+        // staging zero, not a value, and must not overwrite the field.
+        for (const std::size_t d : p.peer_written) {
+          for (std::size_t c = 0; c < nc; ++c) {
+            out[d * nc + c] = p.recv[d * nc + c];
+          }
+        }
+        return Result<void>::success();
+      }
 
       // Matches whose two ends are on this rank never reach the Transport at
       // all -- comm_graph.hpp:75-86. One global_ids list cannot describe a

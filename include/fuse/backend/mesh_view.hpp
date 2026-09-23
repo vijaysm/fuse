@@ -234,6 +234,55 @@ class MeshBackend {
   /// Never throws.
   [[nodiscard]] virtual Result<std::size_t> region_size(const Region& r) const = 0;
 
+  // ---- per-placement decomposition (KNOWN_ISSUES D5, ruled 2026-09-22) ----
+  //
+  // Each component holds its OWN decomposition of a mesh it shares with
+  // another: the mesh laid out over that component's ranks, not over the
+  // job's. Without this a rank holds exactly one piece of each mesh, shared by
+  // every component placed on it, and two PARTIALLY overlapping placements
+  // cannot both hold the whole region -- A on {0,1,2} and B on {1,2,3} over one
+  // 4-way partition leaves A without piece 3, so B's rank 3 has no source.
+  // Disjoint and identical placements happened to work; partial could not be
+  // expressed at all.
+  //
+  // So these answer "this rank's piece of mesh `id` AS COMPONENT `placement`
+  // SEES IT". A rank in two placements has two pieces, one each. That is
+  // inherent to partial overlap, not a cost of the interface.
+  //
+  // DEFAULTS. A backend with one decomposition per mesh -- serial, or a
+  // parallel backend all of whose components share one placement -- need not
+  // override either: the defaults return the placement-free answer, which is
+  // then correct for every component. An invalid `placement` (`ComponentId{}`)
+  // always means "the backend's default decomposition".
+  //
+  // CONTRACT FOR AN OVERRIDING BACKEND:
+  //   * two components with IDENTICAL placements must get the same
+  //     decomposition (the same entities in the same local order). The IR
+  //     emits no Transport between identical placements (rules_channel.cpp,
+  //     `same_as`), so a backend that partitioned them differently would have
+  //     the value read at the wrong local indices with no data move to fix it;
+  //   * the pointer is owned by the backend and stays valid for its lifetime,
+  //     like `view`'s;
+  //   * errors are the same codes `view` / `region_size` use, plus
+  //     `E-MESH-PLACEMENT` for a placement the backend was never told about,
+  //     rather than a silent fallback to a different decomposition.
+  //
+  // Named rather than overloaded on purpose: an overload of `view` would be
+  // HIDDEN in every derived class that overrides `view(MeshId)` (C++ name
+  // lookup stops at the first scope that declares the name), so a direct call
+  // on a concrete backend would fail to compile or pick the wrong function.
+  [[nodiscard]] virtual Result<const MeshView*> placed_view(
+      MeshId id, ComponentId placement) const {
+    (void)placement;
+    return view(id);
+  }
+
+  [[nodiscard]] virtual Result<std::size_t> placed_region_size(
+      const Region& r, ComponentId placement) const {
+    (void)placement;
+    return region_size(r);
+  }
+
   /// Short backend identifier for diagnostics, e.g. "serial", "moab".
   [[nodiscard]] virtual std::string name() const = 0;
 };

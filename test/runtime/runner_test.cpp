@@ -1422,6 +1422,73 @@ TEST(Runner, RefusesEqualCountRegionsThatAreNotProvablyCoincident) {
       << r.error().message;
 }
 
+// KNOWN_ISSUES D5: a Remap on a component's OWN decomposition is refused
+// until weights are built per placement. build_weights() reads each mesh's
+// default decomposition; where a placement's decomposition is a different one,
+// weights built on the default would index the wrong entities -- plausible
+// numbers, no diagnostic.
+//
+// The backend below forwards everything to the harness's, except that
+// `placed_view` answers from a SECOND backend holding the same meshes: a
+// valid decomposition, just not the default one, which is the situation the
+// refusal exists for. Everything else is the differently-sized pair above,
+// which initialises cleanly on the default decomposition -- so the only
+// difference between that test passing and this one refusing is the
+// placement.
+namespace {
+
+class OtherDecompositionBackend final : public fuse::MeshBackend {
+ public:
+  OtherDecompositionBackend(const fuse::MeshBackend& inner,
+                            const fuse::CouplingGraph& g)
+      : inner_(inner) {
+    for (std::uint32_t m = 0; m < g.mesh_count(); ++m) {
+      EXPECT_TRUE(other_.load(g.mesh(fuse::MeshId{m})).ok());
+    }
+  }
+  fuse::Result<void> load(const fuse::MeshDecl&) override {
+    return fuse::Failure{"E-TEST", "not loadable"};
+  }
+  [[nodiscard]] fuse::Result<fuse::MeshId> mesh_id(
+      std::string_view name) const override {
+    return inner_.mesh_id(name);
+  }
+  [[nodiscard]] fuse::Result<const fuse::MeshView*> view(
+      fuse::MeshId id) const override {
+    return inner_.view(id);
+  }
+  [[nodiscard]] fuse::Result<std::size_t> region_size(
+      const fuse::Region& r) const override {
+    return inner_.region_size(r);
+  }
+  [[nodiscard]] fuse::Result<const fuse::MeshView*> placed_view(
+      fuse::MeshId id, fuse::ComponentId placement) const override {
+    if (!placement.valid()) return inner_.view(id);
+    return other_.view(id);
+  }
+  [[nodiscard]] std::string name() const override { return "other-decomposition"; }
+
+ private:
+  const fuse::MeshBackend& inner_;
+  SerialMeshBackend        other_;
+};
+
+}  // namespace
+
+TEST(Runner, RefusesARemapOnANonDefaultPlacementDecomposition) {
+  auto h = build(HarnessOpts{.src_cells = 8, .dst_cells = 4});
+  const OtherDecompositionBackend backend{h->backend, h->graph};
+  Runner runner{h->graph, h->dag, h->plan, backend};
+  bind_all(*h);
+  const auto r = runner.initialize(h->components, h->registry);
+  ASSERT_FALSE(r.ok())
+      << "a Remap whose placement has its own decomposition must not use "
+         "weights built on the mesh's default one";
+  EXPECT_EQ(r.error().code, "E-RT-REMAP-PLACEMENT") << r.error().message;
+  EXPECT_NE(r.error().message.find("per placement"), std::string::npos)
+      << r.error().message;
+}
+
 // The sharper version of the same hazard, and the one that isolates the
 // GEOMETRIC half of the correspondence proof. A 2x2x2 box and an 8x1x1 box
 // both tile the unit cube with eight cells; they agree on the count, on the

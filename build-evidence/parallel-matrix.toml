@@ -150,13 +150,26 @@ note = """DISJOINT and FULLY OVERLAPPING only. The fixtures are `fluid_{0, n/2}`
 [[cell]]
 id = "A-OVERLAP-RUNNER-PARTIAL"
 axis = "partially overlapping rank sets, end to end"
-gap = """A CAPABILITY gap, not only a coverage one (KNOWN_ISSUES D5, corrected \
-2026-09-22). The Runner fills both CommGraph sides from ONE mesh view -- \
-MeshBackend::view(MeshId) has no component argument and the MOAB backend \
-partitions over one communicator -- so each rank holds one piece of each mesh \
-shared by every component on it, and two partially overlapping rank sets cannot \
-each hold the whole region. CommGraph itself supports all three shapes (rows \
-1-6). Needs per-placement mesh instances; design awaiting a ruling."""
+pins = """the shape that needs a peer-to-peer plan and same-rank local copies in \
+one exchange, through Runner::initialize + run_period: fluid on 0..W-2, solid \
+on 1..W-1, each with ITS OWN decomposition of the shared mesh \
+(MeshBackend::placed_view, ruled 2026-09-22), and every destination entity \
+checked to hold its own global id. The same helper runs the full and disjoint \
+shapes, so the three differ only in placement."""
+file = "test/parallel/runner_transport_test.cpp"
+kind = "mpi"
+ranks = [3, 4, 5]
+test = [
+  "RunnerTransport.APartiallyOverlappingPlacementDeliversEveryEntity",
+  "RunnerTransport.AFullyOverlappingPlacementDeliversEveryEntity",
+  "RunnerTransport.ADisjointPlacementDeliversEveryEntityThroughTheSameHarness",
+]
+note = """Ranks 3-5 only: at 2 ranks {0..W-2}/{1..W-1} is {0}/{1}, which is \
+disjoint. Compiled here, verdict from a host run -- MPI cannot initialise in \
+this sandbox. MOAB's own per-placement decomposition (one ParallelComm per \
+component communicator) is not yet implemented, so this is exercised with the \
+test backend, and a Remap on a non-default decomposition refuses \
+(E-RT-REMAP-PLACEMENT) until weights are built per placement."""
 
 [[cell]]
 id = "A-RANKS"

@@ -594,7 +594,7 @@ Result<std::size_t> SerialMeshBackend::region_size(const Region& r) const {
 
 RegionSizes make_region_sizes(const CouplingGraph& g,
                               const MeshBackend& backend) {
-  return [&g, &backend](RegionId id) -> std::size_t {
+  return [&g, &backend](RegionId id, int placement) -> std::size_t {
     if (!id.valid() || id.value() >= g.region_count()) {
       FUSE_THROW(InvalidArgument, "{}", 
           "make_region_sizes: region id " + std::to_string(id.value()) +
@@ -628,7 +628,12 @@ RegionSizes make_region_sizes(const CouplingGraph& g,
 
     Region resolved = r;
     resolved.mesh = backend_mesh.value();
-    const auto n = backend.region_size(resolved);
+    // The placement's own decomposition (MeshBackend::placed_region_size);
+    // -1 means none in particular and asks for the default one.
+    const ComponentId who = placement >= 0
+                                ? ComponentId{static_cast<std::uint32_t>(placement)}
+                                : ComponentId{};
+    const auto n = backend.placed_region_size(resolved, who);
     if (!n.ok()) {
       FUSE_THROW(InvariantViolation, "{}", "make_region_sizes: cannot size region '" +
                                r.name + "': " + n.error().code + ": " +

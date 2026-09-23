@@ -91,6 +91,17 @@ class PartitionedTestMesh final : public fuse::MeshView {
 
 /// One mesh, split into a contiguous block per rank within whichever of
 /// `fluid_`/`solid_` contains the calling rank; empty on a rank in neither.
+///
+/// PER-PLACEMENT DECOMPOSITION (KNOWN_ISSUES D5). Given `set_placements`, the
+/// backend also builds one decomposition PER COMPONENT, each laid out over that
+/// component's own ranks, and answers `placed_view` / `placed_region_size`
+/// from it. A rank in two partially overlapping placements then holds two
+/// blocks -- one per component -- which is what lets each side of a
+/// CommGraph cover the whole region. A block is a function of the RankSet
+/// alone, so identical placements get identical decompositions, as the
+/// MeshBackend contract requires. Without `set_placements` the placed queries
+/// fall back to the default view, exactly as a single-decomposition backend's
+/// do.
 /// `entity_set` on the `Region` is what Task 3's guard checks -- this backend
 /// does not itself narrow by it, unlike SerialMeshBackend's real one
 /// (src/mesh/serial_backend.cpp:438-457).
@@ -99,6 +110,12 @@ class PartitionedTestBackend final : public fuse::MeshBackend {
   PartitionedTestBackend(fuse::RankSet fluid, fuse::RankSet solid,
                          std::size_t n_entities, int dim)
       : fluid_(fluid), solid_(solid), n_(n_entities), dim_(dim) {}
+
+  /// One RankSet per graph component, indexed by ComponentId. Must precede
+  /// every `load`, because each load builds one decomposition per entry.
+  void set_placements(std::vector<fuse::RankSet> placements) {
+    placements_ = std::move(placements);
+  }
 
   fuse::Result<void> load(const fuse::MeshDecl& decl) override {
     int me = 0;
@@ -112,7 +129,35 @@ class PartitionedTestBackend final : public fuse::MeshBackend {
     meshes_.push_back(
         std::make_unique<PartitionedTestMesh>(dim_, std::move(gids)));
     names_.push_back(decl.name);
+
+    std::vector<std::unique_ptr<fuse::MeshView>> per;
+    for (const fuse::RankSet& rs : placements_) {
+      per.push_back(std::make_unique<PartitionedTestMesh>(
+          dim_, rs.contains(me) ? block(rs, me) : std::vector<std::size_t>{}));
+    }
+    placed_.push_back(std::move(per));
     return fuse::Result<void>::success();
+  }
+
+  [[nodiscard]] fuse::Result<const fuse::MeshView*> placed_view(
+      fuse::MeshId id, fuse::ComponentId placement) const override {
+    if (!placement.valid() || placements_.empty()) return view(id);
+    if (!id.valid() || id.value() >= placed_.size()) {
+      return fuse::Failure{"E-MESH-ID", "invalid mesh id"};
+    }
+    if (placement.value() >= placed_[id.value()].size()) {
+      return fuse::Failure{"E-MESH-PLACEMENT",
+                           "no decomposition for component " +
+                               std::to_string(placement.value())};
+    }
+    return placed_[id.value()][placement.value()].get();
+  }
+
+  [[nodiscard]] fuse::Result<std::size_t> placed_region_size(
+      const fuse::Region& r, fuse::ComponentId placement) const override {
+    const auto v = placed_view(r.mesh, placement);
+    if (!v.ok()) return v.error();
+    return v.value()->entity_count(dim_);
   }
 
   [[nodiscard]] fuse::Result<fuse::MeshId> mesh_id(
@@ -145,7 +190,10 @@ class PartitionedTestBackend final : public fuse::MeshBackend {
 
  private:
   [[nodiscard]] std::vector<std::size_t> block(fuse::RankSet rs, int me) const {
-    const int         pos  = me - rs.min_rank();
+    // Position IN the set, not an offset from its first rank: a RankSet may
+    // be strided (docs/user/placement.md), and then the two differ.
+    int pos = 0;
+    for (int r = rs.min_rank(); r < me; ++r) pos += rs.contains(r) ? 1 : 0;
     const std::size_t base = n_ / static_cast<std::size_t>(static_cast<int>(rs.size()));
     const std::size_t rem  = n_ % static_cast<std::size_t>(static_cast<int>(rs.size()));
     const std::size_t begin =
@@ -175,6 +223,9 @@ class PartitionedTestBackend final : public fuse::MeshBackend {
   int           dim_;
   std::vector<std::unique_ptr<fuse::MeshView>> meshes_;
   std::vector<std::string>                     names_;
+  std::vector<fuse::RankSet>                   placements_;
+  // placed_[mesh][component]
+  std::vector<std::vector<std::unique_ptr<fuse::MeshView>>> placed_;
 };
 
 /// Registers one field of `count` doubles, nothing more. `build_ticks()`
@@ -260,6 +311,28 @@ class StubComponent final : public fuse::Component {
 /// stub components, plus helpers that read/write through the SAME region both
 /// components' fields reference (Transport preserves region -- see the plan's
 /// Scope Decision -- so there is exactly one to read).
+/// How the source and destination placements relate (matrix rows 1-6 at the
+/// CommGraph level; this is the same three shapes through the Runner).
+enum class Overlap {
+  Disjoint,  ///< fluid on the first half, solid on the rest -- the default
+  Partial,   ///< fluid on 0..W-2, solid on 1..W-1: shared ranks 1..W-2 plus
+             ///< one rank unique to each side; genuinely partial from W = 3
+  Full,      ///< both on every rank: identical placements, no Transport
+};
+
+[[nodiscard]] fuse::RankSet placement_for(Overlap shape, bool is_fluid) {
+  const int w = world_size();
+  switch (shape) {
+    case Overlap::Disjoint:
+      return is_fluid ? fuse::RankSet{0, w / 2} : fuse::RankSet{w / 2, w - w / 2};
+    case Overlap::Partial:
+      return is_fluid ? fuse::RankSet{0, w - 1} : fuse::RankSet{1, w - 1};
+    case Overlap::Full:
+      return fuse::RankSet{0, w};
+  }
+  return fuse::RankSet{0, 0};
+}
+
 class TwoComponentJob {
  public:
   /// `entity_set`, when non-empty, is set on the shared region. Task 3's
@@ -284,13 +357,14 @@ class TwoComponentJob {
                            bool with_iteration_region = false,
                            fuse::AccelKind accel_kind = fuse::AccelKind::None,
                            bool with_independent_channel = false,
-                           int fail_fluid_after = -1)
+                           int fail_fluid_after = -1,
+                           Overlap shape = Overlap::Disjoint)
       // MEMBER DECLARATION ORDER, NOT INITIALIZER-LIST ORDER, decides when
       // each of these actually runs. `backend` is declared below
       // fluid_/solid_/n_entities_/dim_ for exactly this reason: it is built
       // FROM them, so they must already hold their values.
-      : fluid_{0, world_size() / 2},
-        solid_{world_size() / 2, world_size() - world_size() / 2},
+      : fluid_{placement_for(shape, true)},
+        solid_{placement_for(shape, false)},
         n_entities_(12), dim_(2),
         backend(fluid_, solid_, n_entities_, dim_) {
     const auto mesh =
@@ -349,6 +423,13 @@ class TwoComponentJob {
       graph.add_channel("linkB", src_field_b, dst_field_b);
     }
 
+    // Every component's own decomposition (KNOWN_ISSUES D5), built before
+    // the load that lays them out.
+    std::vector<fuse::RankSet> placements;
+    for (std::uint32_t c = 0; c < graph.component_count(); ++c) {
+      placements.push_back(graph.component(fuse::ComponentId{c}).ranks);
+    }
+    backend.set_placements(std::move(placements));
     EXPECT_TRUE(backend.load(graph.mesh(mesh)).ok());
 
     const auto lowered = lower(graph);
@@ -361,27 +442,36 @@ class TwoComponentJob {
     EXPECT_TRUE(sched.ok()) << sched.diags.to_string();
     plan = sched.plan;
 
-    const auto count = backend.region_size(graph.region(region_));
+    // Each component's storage is ITS OWN decomposition's size: on a rank in
+    // both partially overlapping placements the two differ. (Component ids
+    // follow declaration order: fluid 0, solid 1, producer_b 2, consumer_b 3.)
     // NOTE: ASSERT_TRUE cannot be used here -- it expands to `return ...;`,
     // which only compiles in a void-returning function, and a constructor is
     // not one. EXPECT_TRUE matches every other check in this constructor.
-    EXPECT_TRUE(count.ok());
+    auto size_of = [&](std::uint32_t cid) -> std::size_t {
+      const auto n = backend.placed_region_size(graph.region(region_),
+                                                fuse::ComponentId{cid});
+      EXPECT_TRUE(n.ok());
+      return n.ok() ? n.value() : 0;
+    };
     components.add(std::make_unique<StubComponent>(
-        "fluid", src_field_, count.value(), with_iteration_region,
+        "fluid", src_field_, size_of(0), with_iteration_region,
         fail_fluid_after));
     components.add(std::make_unique<StubComponent>(
-        "solid", dst_field_, count.value(), with_iteration_region));
+        "solid", dst_field_, size_of(1), with_iteration_region));
     if (with_independent_channel) {
       components.add(std::make_unique<StubComponent>(
-          "producer_b", src_field_b, count.value()));
+          "producer_b", src_field_b, size_of(2)));
       components.add(std::make_unique<StubComponent>(
-          "consumer_b", dst_field_b, count.value()));
+          "consumer_b", dst_field_b, size_of(3)));
     }
   }
 
   void write_source_by_global_id() {
     auto* src = dynamic_cast<StubComponent*>(components.find("fluid"));
-    const auto v = backend.view(graph.region(region_).mesh).value();
+    const auto v =
+        backend.placed_view(graph.region(region_).mesh, fuse::ComponentId{0})
+            .value();
     for (std::size_t i = 0; i < src->size(); ++i) {
       src->data()[i] = static_cast<double>(v->global_id(dim_, i));
     }
@@ -399,7 +489,9 @@ class TwoComponentJob {
     if (!solid_.contains(current_rank())) return 0;
     auto* dst = dynamic_cast<StubComponent*>(
         const_cast<fuse::ComponentSet&>(components).find("solid"));
-    const auto v = backend.view(graph.region(region_).mesh).value();
+    const auto v =
+        backend.placed_view(graph.region(region_).mesh, fuse::ComponentId{1})
+            .value();
     std::size_t ok = 0;
     for (std::size_t i = 0; i < dst->size(); ++i) {
       if (dst->data()[i] == static_cast<double>(v->global_id(dim_, i))) ++ok;
@@ -412,7 +504,9 @@ class TwoComponentJob {
     // destination entities, even though backend.region_size() would report
     // its own (fluid-side) count instead, absent this guard.
     if (!solid_.contains(current_rank())) return 0;
-    return backend.region_size(graph.region(region_)).value();
+    return backend
+        .placed_region_size(graph.region(region_), fuse::ComponentId{1})
+        .value();
   }
   [[nodiscard]] std::size_t global_destination_entity_count() const {
     return n_entities_;  // every id is wanted exactly once
@@ -1022,6 +1116,73 @@ TEST(RunnerTransport, TheDeliveredFieldDoesNotDependOnTheRankCount) {
   MPI_Allreduce(&local_ok, &total_ok, 1, MPI_UNSIGNED_LONG, MPI_SUM,
                 MPI_COMM_WORLD);
   EXPECT_EQ(total_ok, h.global_destination_entity_count());
+}
+
+// ---- the three overlap shapes through the Runner (KNOWN_ISSUES D5) -------
+//
+// CommGraph is tested on all three shapes (rows 1-6). These put the same
+// shapes through Runner::initialize + run_period, which is where CommGraph's
+// output is consumed. PARTIAL is the case that could not be expressed before
+// per-placement decomposition: the Runner handed both CommGraph sides one
+// view, so each rank held one piece of the mesh shared by both components,
+// and two partially overlapping placements could not both cover the region.
+// It is also the only shape where a peer-to-peer plan and a same-rank local
+// copy run in the same exchange.
+
+static void expect_every_destination_entity_delivered(Overlap shape) {
+  TwoComponentJob h{"", false, fuse::AccelKind::None, false, -1, shape};
+  Runner runner{h.graph, h.dag, h.plan, h.backend};
+  bind_all(h);
+  fuse::RunnerConfig cfg;
+  cfg.transport         = "mpi";
+  cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
+  cfg.transport_setup   = mpi_comm_setup();
+  const auto init = runner.initialize(h.components, h.registry, cfg);
+  ASSERT_TRUE(init.ok()) << init.error().code << ": " << init.error().message;
+
+  h.write_source_by_global_id();
+  const auto run = runner.run_period(h.components);
+  ASSERT_TRUE(run.ok()) << run.error().code << ": " << run.error().message;
+
+  unsigned long local_ok = h.count_destination_matches();
+  unsigned long local_n  = h.local_destination_entity_count();
+  unsigned long total_ok = 0, total_n = 0;
+  MPI_Allreduce(&local_ok, &total_ok, 1, MPI_UNSIGNED_LONG, MPI_SUM,
+                MPI_COMM_WORLD);
+  MPI_Allreduce(&local_n, &total_n, 1, MPI_UNSIGNED_LONG, MPI_SUM,
+                MPI_COMM_WORLD);
+  // Both counts, because each catches what the other cannot: a destination
+  // decomposition that lost or duplicated entities changes total_n, and a
+  // delivery that put the right values in the wrong slots changes total_ok.
+  EXPECT_EQ(total_n, h.global_destination_entity_count())
+      << "the destination's own decomposition does not cover the region "
+         "exactly once";
+  EXPECT_EQ(total_ok, h.global_destination_entity_count())
+      << "every destination entity must hold its own global id";
+}
+
+TEST(RunnerTransport, APartiallyOverlappingPlacementDeliversEveryEntity) {
+  // Fluid on 0..W-2, solid on 1..W-1. At two ranks that is {0} and {1}, which
+  // is disjoint -- so three is the first rank count where the shape is
+  // genuinely partial: rank 0 only sends, rank W-1 only receives, and every
+  // rank between holds a block of EACH component's decomposition.
+  FUSE_REQUIRE_AT_LEAST_RANKS(3);
+  expect_every_destination_entity_delivered(Overlap::Partial);
+}
+
+TEST(RunnerTransport, AFullyOverlappingPlacementDeliversEveryEntity) {
+  // Identical placements: the IR emits no Transport (rules_channel.cpp,
+  // same_as), so this pins that identical placements get the identical
+  // decomposition the MeshBackend contract requires -- a different one would
+  // leave values at the wrong local indices with nothing to move them.
+  expect_every_destination_entity_delivered(Overlap::Full);
+}
+
+TEST(RunnerTransport, ADisjointPlacementDeliversEveryEntityThroughTheSameHarness) {
+  // The third shape through the same helper, so the three differ only in the
+  // placement and not in what is checked.
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
+  expect_every_destination_entity_delivered(Overlap::Disjoint);
 }
 
 // Runner::initialize() is re-callable by contract: it clears `initialized` at

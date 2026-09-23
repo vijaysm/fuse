@@ -53,7 +53,7 @@ ScheduleResult build(const CouplingGraph& g) {
   EXPECT_TRUE(lowered.ok()) << lowered.diags.to_string();
   const ClockSet cs{g};
   // A stub size: the mesh backend supplies the real one (S5).
-  return schedule(g, lowered.dag, cs, [](RegionId) -> std::size_t { return 64; });
+  return schedule(g, lowered.dag, cs, [](RegionId, int /*placement*/) -> std::size_t { return 64; });
 }
 
 std::size_t count(const ExecutionPlan& p, OpKind kind) {
@@ -118,7 +118,7 @@ TEST(Epoch, ReservedMultiscaleOperatorsAreRefused) {
     lowered.dag.add_node(kind, {in}, out, OpAttrs{}, ChannelId{}, "reserved");
 
     const ClockSet cs{g};
-    const auto r = schedule(g, lowered.dag, cs, [](RegionId) -> std::size_t { return 64; });
+    const auto r = schedule(g, lowered.dag, cs, [](RegionId, int /*placement*/) -> std::size_t { return 64; });
     EXPECT_FALSE(r.ok()) << to_cstring(kind) << " scheduled as if it worked";
     bool named = false;
     for (const auto& item : r.diags.items()) named = named || item.code == "E-SCHED-MULTISCALE";
@@ -165,7 +165,7 @@ TEST(Epoch, MismatchedRankSetsAreRefused) {
                        ChannelId{}, "spliced/epoch");
 
   const ClockSet cs{g};
-  const auto r = schedule(g, lowered.dag, cs, [](RegionId) -> std::size_t { return 64; });
+  const auto r = schedule(g, lowered.dag, cs, [](RegionId, int /*placement*/) -> std::size_t { return 64; });
   EXPECT_FALSE(r.ok()) << "a rank-set mismatch between a move and its guard "
                           "scheduled as if they agreed";
   bool named = false;
