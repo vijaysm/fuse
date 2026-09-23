@@ -46,6 +46,7 @@ endfunction()
 fuse_partition_add_gtest(oracle)
 fuse_partition_add_gtest(rcb_partition)
 fuse_partition_add_gtest(mesh_adapter LIBS fuse::backend)
+fuse_partition_add_gtest(repartition LIBS fuse::backend)
 fuse_partition_add_gtest(refusals THROWS)
 
 fuse_tests_gated_by(FUSE_ENABLE_MPI partition/rcb_mpi_test.cpp)

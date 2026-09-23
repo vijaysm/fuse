@@ -8,6 +8,12 @@
 # above Tier 0: Kokkos is linked for the execution-space vocabulary later
 # layers need in their public headers, fmt for Diagnostics formatting.
 set(FUSE_HAVE_MPI    ${FUSE_ENABLE_MPI})
+include(${PROJECT_SOURCE_DIR}/cmake/FuseMpiGpuAware.cmake)
+if(FUSE_ENABLE_MPI)
+  fuse_probe_mpi_gpu_aware(FUSE_MPI_GPU_AWARE)
+else()
+  set(FUSE_MPI_GPU_AWARE 0)
+endif()
 set(FUSE_HAVE_KOKKOS ON)
 set(FUSE_HAVE_MOAB   ${FUSE_ENABLE_MOAB})
 set(FUSE_HAVE_LOWFIVE ${FUSE_ENABLE_LOWFIVE})
@@ -214,6 +220,7 @@ add_library(fuse-coupler-backend
   backend/native_generators.cpp
   backend/native_backend.cpp
   backend/native_mesh_io.cpp
+  backend/native_migration.cpp
   # Supermesh intersection: the real implementation needs MOAB, and the
   # file's own no-MOAB path refuses with E-REMAP-NOMOAB rather than
   # leaving the symbol undefined. S5 turns the option on.
@@ -230,6 +237,12 @@ target_link_libraries(fuse-coupler-backend PUBLIC fuse::schedule)
 # installed-package path at all today (cmake/FuseDependencies.cmake fetches
 # it unconditionally), so it cannot be exported alongside fuse-coupler-backend.
 target_link_libraries(fuse-coupler-backend PRIVATE $<BUILD_LOCAL_INTERFACE:r3d::r3d>)
+# native_migration.cpp is this layer's own single MPI translation unit (the
+# exchange step only -- docs/dev/layering.md), the same isolation
+# fuse::partition's collectives.cpp uses one layer up.
+if(FUSE_ENABLE_MPI)
+  target_link_libraries(fuse-coupler-backend PRIVATE MPI::MPI_CXX)
+endif()
 if(FUSE_ENABLE_MOAB)
   # Unlike intx_weights.cpp, which carries its own no-MOAB path, this file IS
   # the MOAB backend: it includes moab/ headers unconditionally, so it can only
