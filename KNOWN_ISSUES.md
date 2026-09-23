@@ -433,9 +433,28 @@ application-id model.
   `peer-plan-staged-through-the-matched-path` and
   `peer-extent-is-only-the-source-block` NOT-ASSESSED (need MPI).
 
+**Host run 1 (2026-09-23) found a regression I introduced**, now fixed: every
+cross-placement Transport was refused with `E-RT-SIZE` ("reads 12 values ... into
+0"). The Runner held Transport to the rule that an instruction's input and output
+buffers are the same size. That rule held only while both ends shared one view. With
+each end in its own component's decomposition, a rank in one placement and not the
+other legitimately has 12 and 0. Tier 0 could not see it, because serial backends
+keep one decomposition. Transport is now exempt from that rule, as Remap already was.
+`check_transport_extents()` reconciles it after the CommGraph plans exist, with its
+verdict agreed across ranks:
+- a whole-arc copy must still have equal sizes;
+- a matched plan's gather, scatter and local indices must fit their buffers;
+- a peer plan's staged source must equal its input, and its written indices must
+  fit its output.
+
+The whole-arc-copy branch has **no test yet**: the serial harness's Transport feeds
+a Remap, whose own size check fires first. Mutation `transport-held-to-equal-extents`
+(MPI) pins the fix.
+
 **Still open:**
 
-1. **A host run.** None of the parallel verdicts above exists yet.
+1. **A host run** of the fix. The partial-overlap test needs ≥3 ranks, so run 1
+   (2 ranks) skipped it.
 2. **`MoabMeshBackend` does not override the placed queries.** It still has one
    `ParallelComm` over one communicator, so with MOAB every component shares one
    decomposition. Partial overlap is therefore proved with the test backend

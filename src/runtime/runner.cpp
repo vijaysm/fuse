@@ -1128,12 +1128,19 @@ Result<void> Runner::Impl::resolve_instructions() {
     // shorter than that is a heap overread with no bounds check left, so the
     // sizes are reconciled here rather than clamped there.
     //
-    // `Remap` is exempt, and is the ONLY operator that is: transferring
-    // between two differently-sized meshes is exactly what it is for. Its
-    // sizes are reconciled against the matrix it is actually given, in
-    // resolve_remap() below, which is a stronger check than this one -- equal
-    // lengths never implied the two ends corresponded.
-    if (ins.kind != OpKind::Remap) {
+    // `Remap` is exempt: transferring between two differently-sized meshes is
+    // exactly what it is for. Its sizes are reconciled against the matrix it
+    // is actually given, in resolve_remap() below, which is a stronger check
+    // than this one -- equal lengths never implied the two ends corresponded.
+    //
+    // `Transport` is exempt too, since per-placement decomposition (KNOWN_ISSUES
+    // D5): its two ends are the SAME region in two components' decompositions,
+    // so on a rank in one placement and not the other one end legitimately
+    // holds 12 entities and the other 0. Whether that is right depends on
+    // which kind of plan it gets -- a whole-arc copy needs equal sizes, a
+    // CommGraph plan needs its indices in range -- and that is not known until
+    // attach_comm_graphs(), so check_transport_extents() reconciles it there.
+    if (ins.kind != OpKind::Remap && ins.kind != OpKind::Transport) {
       for (std::uint8_t k = 0; k < ins.n_in; ++k) {
         const std::size_t in_total = slots[ins.in[k].value()].total();
         if (in_total == r.out_total) continue;
@@ -1712,6 +1719,32 @@ Result<void> Runner::Impl::setup(ComponentSet& components,
     if (!ec.ok()) return ec;
     const Result<void> cg = attach_comm_graphs();
     if (!cg.ok()) return cg;
+  }
+  {
+    Result<void> ext = check_transport_extents();
+#if FUSE_HAVE_MPI
+    // Agreed like the checkpoint above: the verdict is rank-local (it reads
+    // this rank's buffers and plans), and a rank returning alone while its
+    // peers go on would leave them in the next collective.
+    if (config.base_communicator.has_value()) {
+      const MPI_Comm base =
+          MPI_Comm_f2c(static_cast<MPI_Fint>(*config.base_communicator));
+      const int local_ok = ext.ok() ? 1 : 0;
+      int       all_ok   = 0;
+      if (MPI_Allreduce(&local_ok, &all_ok, 1, MPI_INT, MPI_MIN, base) !=
+          MPI_SUCCESS) {
+        return Failure{"E-RT-TRANSPORT-COMM",
+                       "MPI_Allreduce failed while agreeing Transport extents "
+                       "across the base communicator"};
+      }
+      if (all_ok == 0 && ext.ok()) {
+        return Failure{"E-RT-SETUP-PEER",
+                       "another rank's Transport buffers do not fit its plan; "
+                       "see that rank's E-RT-SIZE for the cause"};
+      }
+    }
+#endif
+    if (!ext.ok()) return ext;
   }
   r = build_ticks(components);
   if (!r.ok()) return r;
@@ -2589,6 +2622,100 @@ Runner::Runner(const CouplingGraph& graph, const OperatorDAG& dag,
 Runner::~Runner() = default;
 Runner::Runner(Runner&&) noexcept = default;
 Runner& Runner::operator=(Runner&&) noexcept = default;
+
+
+// Every Transport's buffers against the plan it was actually given -- run
+// after attach_comm_graphs(), the first point at which that is known.
+//
+// A whole-arc copy (no CommGraph) moves `n` doubles from one buffer to the
+// other, so the two must be the same size. A CommGraph plan reads and writes
+// by index, and since each end is its own component's decomposition the two
+// buffers may differ; what must hold is that every index it uses lies inside
+// the buffer it uses it on. An out-of-range index here is a heap overrun in
+// the hot loop, which checks nothing, so it is refused before the first step.
+Result<void> Runner::Impl::check_transport_extents() const {
+  const std::vector<Instruction>& stream = plan.instructions();
+  auto size_failure = [](std::size_t i, const std::string& what) {
+    return Failure{"E-RT-SIZE", "Transport instruction " + std::to_string(i) +
+                                    ": " + what};
+  };
+  for (std::size_t i = 0; i < stream.size(); ++i) {
+    const Instruction& ins = stream[i];
+    if (ins.kind != OpKind::Transport || ins.n_in == 0 || !ins.out.valid()) {
+      continue;
+    }
+    const std::int32_t ti = resolved[i].transport;
+    if (ti < 0 || static_cast<std::size_t>(ti) >= transport_plans.size()) {
+      continue;  // refused at execution with E-RT-TRANSPORT
+    }
+    const detail::TransportPlan& p = transport_plans[static_cast<std::size_t>(ti)];
+    const Slot& in = slots[ins.in[0].value()];
+    const Slot& out = slots[ins.out.value()];
+    const std::size_t in_n = in.total();
+    const std::size_t out_n = out.total();
+
+    if (!p.has_graph) {
+      if (in_n != out_n) {
+        return size_failure(
+            i, "reads " + std::to_string(in_n) + " values from arc %" +
+                   std::to_string(ins.in[0].value()) + " into " +
+                   std::to_string(out_n) + " at arc %" +
+                   std::to_string(ins.out.value()) +
+                   "; without a CommGraph the whole arc is moved, so the two "
+                   "ends must be the same size -- set base_communicator and "
+                   "the \"mpi\" transport for placements whose "
+                   "decompositions differ");
+      }
+      continue;
+    }
+
+    const std::size_t nc =
+        static_cast<std::size_t>(p.spec.components < 1 ? 1 : p.spec.components);
+    auto fits = [nc](std::size_t idx, std::size_t n) {
+      return (idx + 1) * nc <= n;
+    };
+
+    if (p.from_peers) {
+      if (p.peer_src_total != in_n || p.peer_src_total > p.send.size()) {
+        return size_failure(
+            i, "the peer plan stages " + std::to_string(p.peer_src_total) +
+                   " source values but arc %" + std::to_string(ins.in[0].value()) +
+                   " holds " + std::to_string(in_n));
+      }
+      for (const std::size_t d : p.peer_written) {
+        if (!fits(d, out_n) || !fits(d, p.recv.size())) {
+          return size_failure(
+              i, "the peer plan writes destination entity " + std::to_string(d) +
+                     ", outside the " + std::to_string(out_n) +
+                     " values of arc %" + std::to_string(ins.out.value()));
+        }
+      }
+      continue;
+    }
+
+    for (std::size_t k = 0; k < p.gather.size(); ++k) {
+      if (!fits(p.gather[k], in_n) || !fits(k, p.send.size())) {
+        return size_failure(i, "gather index " + std::to_string(p.gather[k]) +
+                                   " is outside the " + std::to_string(in_n) +
+                                   " source values");
+      }
+    }
+    for (std::size_t k = 0; k < p.scatter.size(); ++k) {
+      if (!fits(p.scatter[k], out_n) || !fits(k, p.recv.size())) {
+        return size_failure(i, "scatter index " + std::to_string(p.scatter[k]) +
+                                   " is outside the " + std::to_string(out_n) +
+                                   " destination values");
+      }
+    }
+    for (std::size_t k = 0; k < p.local_src.size(); ++k) {
+      if (!fits(p.local_src[k], in_n) || !fits(p.local_dst[k], out_n)) {
+        return size_failure(i, "a same-rank copy names an entity outside "
+                               "one of the two buffers");
+      }
+    }
+  }
+  return Result<void>::success();
+}
 
 Result<void> Runner::initialize(ComponentSet& components,
                                 FieldRegistry& registry,
