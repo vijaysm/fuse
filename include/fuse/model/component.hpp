@@ -48,6 +48,19 @@ class RankSet {
   /// The contiguous set `[first, first + count)`. `count <= 0` yields an empty
   /// set, which is legal: a component may be declared and placed nowhere in a
   /// particular run.
+  ///
+  /// LEGAL ONLY FOR A COMPONENT WITH NO CHANNELS, and `validate()` enforces
+  /// that with `E-PLACEMENT-EMPTY`. A channel out of or into a component that
+  /// exists on no rank asks to move data to or from nowhere, which is a
+  /// modelling error rather than a configuration to be accommodated: there is
+  /// no rank to read from, and no rank that could receive. So "placed nowhere"
+  /// means "switched off this run", and switching a component off means its
+  /// channels go with it.
+  ///
+  /// This sentence used to stop at "legal", which left the model layer calling
+  /// a configuration legal while `MpiTransport::build_plan` refused it
+  /// (`E-TRANSPORT-RANKS`) two layers down -- the ruling of 2026-09-22 is that
+  /// the refusal is right and this contract was the incomplete half.
   RankSet(int first, int count) {
     ranks_.reserve(static_cast<std::size_t>(count > 0 ? count : 0));
     for (int i = 0; i < count; ++i) ranks_.push_back(first + i);

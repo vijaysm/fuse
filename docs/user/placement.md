@@ -68,3 +68,21 @@ appears in yours; declaring it with no ranks says "not here, this run".
   over exactly the ranks of its own exchange. A shared rank counts once.
 - **Indexing per-rank data** — by *position* in the placement, not by rank
   number, since a strided set has no arithmetic relationship between the two.
+
+## An empty placement means "switched off", and takes its channels with it
+
+A placement of zero ranks is legal and says *this component does not run here,
+this time*. It is the supported way to leave a component out of one run
+without editing the rest of the graph.
+
+It is legal **only for a component with no channels**. A channel out of a
+component placed on no rank has nothing to read from, and a channel into one
+has nowhere to deliver; `validate()` refuses both with `E-PLACEMENT-EMPTY`,
+naming the component and the channel. So when you switch a component off,
+remove its channels for that run too.
+
+The refusal is a modelling check, not a transport limitation: it fires for
+every transport, before any communicator exists. Previously the same mistake
+surfaced two layers down as `MpiTransport::build_plan` refusing an empty rank
+set — correct, but it told you about a rank set when the error was in the
+graph, and only when you were running under MPI.

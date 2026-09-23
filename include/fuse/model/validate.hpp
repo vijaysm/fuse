@@ -126,6 +126,33 @@ inline Rational channel_window(const CouplingGraph& g, const Channel& ch) {
       continue;  // every later rule would dereference garbage
     }
 
+    // A channel whose either end belongs to a component placed NOWHERE.
+    //
+    // An empty placement is legal on its own -- it is how a component is
+    // switched off for one run (docs/user/placement.md) -- but a channel out
+    // of or into one asks to move data to or from a component that exists on
+    // no rank, which is a modelling error. It was previously diagnosed two
+    // layers down, as MpiTransport::build_plan refusing an empty rank set
+    // (E-TRANSPORT-RANKS): a true refusal, but one that told the user about a
+    // rank set when the mistake was in the graph. Caught here, the message can
+    // name the component and the channel, and it is caught for every transport
+    // rather than only the MPI one.
+    for (const bool source_side : {true, false}) {
+      const FieldId fid = source_side ? ch.source : ch.target;
+      const ComponentId owner = g.owner_of(fid);
+      if (!owner.valid() || owner.value() >= g.component_count()) continue;
+      const auto& comp = g.component(owner);
+      if (!comp.ranks.empty()) continue;
+      d.add(Severity::Error, "E-PLACEMENT-EMPTY",
+            "component '" + comp.name + "' is placed on no rank, so this " +
+                (source_side ? std::string("channel has nothing to read from")
+                             : std::string("channel has nowhere to deliver")) +
+                "; an empty placement is legal only for a component with no "
+                "channels -- give it a placement, or remove the channel for "
+                "runs where it is switched off",
+            ctx);
+    }
+
     const auto& sf = g.field(ch.source);
     const auto& tf = g.field(ch.target);
     ++writers[ch.target.value()];
