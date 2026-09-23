@@ -40,3 +40,67 @@ if(FUSE_ENABLE_TESTS)
   set_tests_properties(example.mms_pair example.dn_heat
     example.mms_pair.dump example.dn_heat.dump PROPERTIES LABELS "example")
 endif()
+
+# ---------------------------------------------------------------------------
+# PE-layout driver (plan-track-d). MPI-only: it links fuse::transport for
+# MpiTransport and needs mpiexec to mean anything, so the whole block is
+# gated on FUSE_ENABLE_MPI, exactly as test/CMakeLists.txt gates its own
+# parallel/ targets.
+# ---------------------------------------------------------------------------
+if(FUSE_ENABLE_MPI)
+  add_executable(fuse_example_layout_driver layout_driver/main.cpp)
+  target_link_libraries(fuse_example_layout_driver PRIVATE
+    fuse::runtime fuse::backend fuse::transport MPI::MPI_CXX)
+  # PartitionedTestBackend (test/support/partitioned_test_backend.hpp) is the
+  # only MeshBackend in the tree that gives each graph component its own
+  # decomposition of a shared mesh -- see that header's own comment. Sharing
+  # it here, rather than a second copy, is why this include directory reaches
+  # into test/.
+  target_include_directories(fuse_example_layout_driver PRIVATE
+    ${CMAKE_SOURCE_DIR}/test/support)
+
+  # fuse_add_mpi_test (test/CMakeLists.txt) always builds a NEW target from
+  # test/<layer>/<name>_test.cpp -- one gtest binary per registration. This is
+  # ONE binary, driven by different CLI arguments at each rank count and
+  # placement, so the mpiexec line is written out directly instead.
+  function(fuse_add_layout_test name ranks)
+    cmake_parse_arguments(ARG "WILL_FAIL" "" "ARGS" ${ARGN})
+    add_test(NAME ${name}
+             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks}
+                     $<TARGET_FILE:fuse_example_layout_driver> ${ARG_ARGS})
+    set_tests_properties(${name} PROPERTIES TIMEOUT 120 LABELS "mpi;parallel;layout")
+    if(ARG_WILL_FAIL)
+      set_tests_properties(${name} PROPERTIES WILL_FAIL TRUE)
+    endif()
+  endfunction()
+
+  # Identical, disjoint and partially-overlapping placements at 2, 3 and 4
+  # ranks -- partial overlap needs >= 3 ranks (2 ranks can only be identical
+  # or disjoint), and at 3 and 4 ranks one arrangement of each non-identical
+  # shape puts comp2 on the LOWER range, not comp1.
+  fuse_add_layout_test(layout.2.c1-0-0.c2-1-1 2 ARGS --comp1 0:0 --comp2 1:1 --check)
+  fuse_add_layout_test(layout.2.c1-1-1.c2-0-0 2 ARGS --comp1 1:1 --comp2 0:0 --check)
+  fuse_add_layout_test(layout.2.c1-0-1.c2-0-1 2 ARGS --comp1 0:1 --comp2 0:1 --check)
+
+  fuse_add_layout_test(layout.3.c1-0-0.c2-1-2 3 ARGS --comp1 0:0 --comp2 1:2 --check)
+  fuse_add_layout_test(layout.3.c1-0-1.c2-1-2 3 ARGS --comp1 0:1 --comp2 1:2 --check)
+  fuse_add_layout_test(layout.3.c1-1-2.c2-0-1 3 ARGS --comp1 1:2 --comp2 0:1 --check)
+  fuse_add_layout_test(layout.3.c1-0-2.c2-0-2 3 ARGS --comp1 0:2 --comp2 0:2 --check)
+
+  fuse_add_layout_test(layout.4.c1-0-1.c2-2-3 4 ARGS --comp1 0:1 --comp2 2:3 --check)
+  fuse_add_layout_test(layout.4.c1-0-2.c2-1-3 4 ARGS --comp1 0:2 --comp2 1:3 --check)
+  fuse_add_layout_test(layout.4.c1-1-3.c2-0-2 4 ARGS --comp1 1:3 --comp2 0:2 --check)
+  fuse_add_layout_test(layout.4.c1-0-3.c2-0-3 4 ARGS --comp1 0:3 --comp2 0:3 --check)
+
+  # Deliberate refusals (docs/dev/testing.md: counts as coverage only when a
+  # test makes the refusal fire). Run at 2 ranks -- the rank count is
+  # incidental to what each of these is testing.
+  fuse_add_layout_test(layout.refuse.min-nonzero 2 WILL_FAIL
+    ARGS --comp1 1:1 --comp2 1:1)
+  fuse_add_layout_test(layout.refuse.max-not-last 2 WILL_FAIL
+    ARGS --comp1 0:0 --comp2 0:0)
+  fuse_add_layout_test(layout.refuse.reversed-range 2 WILL_FAIL
+    ARGS --comp1 1:0 --comp2 0:1)
+  fuse_add_layout_test(layout.refuse.coupler 2 WILL_FAIL
+    ARGS --comp1 0:1 --comp2 0:1 --coupler 0:1)
+endif()
