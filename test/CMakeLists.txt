@@ -350,7 +350,7 @@ set_tests_properties(field.compile_ok.owning_chain PROPERTIES
 # Convergence orders and iteration counts, against known-good values. These are
 # the stage's exit criterion: they are what says the merged compiler and runtime
 # reproduce the parent's numbers and not merely something plausible.
-foreach(t mms_transfer iteration)
+foreach(t mms_transfer iteration interface_transfer)
   fuse_add_gtest(verification ${t} NO_LAYER_LIB
                  LIBS fuse::runtime fuse::backend fuse::transport)
 endforeach()
