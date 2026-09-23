@@ -1,6 +1,6 @@
 # Mutation evidence — `model`
 
-Run 2026-09-20 against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
+Run 2026-09-22 against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
 
 | Mutation | File | Verdict | Killed by |
 |---|---|---|---|
@@ -28,5 +28,7 @@ Run 2026-09-20 against build `build-fuse-s1`. Regenerate with `tools/mutate.py -
 | `yaml-io-emits-dangling-window-component` — emit_window() stops checking window_component_ok() before dereferencing a FromComponent window's component (N-base-model-1), reopening the std::out_of_range escape R-18 fixed for the other four to_yaml() sites but not this one | `src/model/yaml_io.cpp` | **KILLED** (test fails) | `model.yaml_io` |
 | `yaml-io-emits-dangling-field-region` — to_yaml()'s field loop stops bounds-checking a field's RegionId before g.region(f.region).name (N-base-model-1), reopening the same std::out_of_range escape R-18 fixed for the region->mesh, channel->field, merge->field, and iteration-region->channel sites | `src/model/yaml_io.cpp` | **KILLED** (test fails) | `model.yaml_io` |
 | `yaml-io-parses-non-positive-unit-scale` — from_yaml() stops refusing a non-positive parsed unit scale (N-base-model-2), reopening on the text front end the exact defect R-19 closed on the binary descriptor | `src/model/yaml_io.cpp` | **KILLED** (test fails) | `model.yaml_io` |
+| `empty-placement-channel-check-never-fires` — The 2026-09-22 ruling: a channel out of or into a component placed on no rank is a modelling error, refused at validate() with E-PLACEMENT-EMPTY. Removing the check returns the diagnosis to MpiTransport::build_plan's E-TRANSPORT-RANKS two layers down -- a refusal that names a rank set when the mistake is in the graph, and only under MPI. | `include/fuse/model/validate.hpp` | **KILLED** (test fails) | `model.validate` |
+| `empty-placement-check-fires-on-every-channel` — The other half of the same ruling: an empty placement stays legal for a component with NO channels, which is how a component is switched off for one run. A check that fired regardless of placement would refuse every ordinary graph, so this mutation must be killed by a test that validates a normally-placed pair. | `include/fuse/model/validate.hpp` | **KILLED** (test fails) | `model.validate` |
 
-**24 killed / 24 total.**
+**26 killed / 26 total.**
