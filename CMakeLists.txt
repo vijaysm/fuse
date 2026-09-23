@@ -67,10 +67,25 @@ add_subdirectory(examples)
 # it cannot drift again. `fuse::` is the alias namespace every layer target
 # registers itself under (src/CMakeLists.txt); this reads them back rather
 # than hand-listing the layers a second time here.
+#
+# It used to loop over a hand-written candidate list, which is exactly the
+# restatement this comment forbids: `partition` was added as a layer and the
+# summary silently left it out. So the list now comes from the targets
+# src/CMakeLists.txt actually defined, in definition order (which is layer
+# order), keeping each `fuse-coupler-<layer>` library that has its `fuse::`
+# alias.
 set(_fuse_layers "")
-foreach(_fuse_layer_target base model ir schedule linalg num transport backend runtime)
-  if(TARGET fuse::${_fuse_layer_target})
-    list(APPEND _fuse_layers ${_fuse_layer_target})
+get_property(_fuse_src_targets DIRECTORY "${PROJECT_SOURCE_DIR}/src"
+             PROPERTY BUILDSYSTEM_TARGETS)
+foreach(_fuse_target IN LISTS _fuse_src_targets)
+  # Two separate ifs, not one: `${CMAKE_MATCH_1}` in an if() is expanded
+  # BEFORE that if's MATCHES runs, so a combined condition tests the PREVIOUS
+  # iteration's layer -- which dropped `base`, the first, from the summary.
+  if(_fuse_target MATCHES "^fuse-coupler-(.+)$")
+    set(_fuse_layer "${CMAKE_MATCH_1}")
+    if(TARGET fuse::${_fuse_layer})
+      list(APPEND _fuse_layers ${_fuse_layer})
+    endif()
   endif()
 endforeach()
 list(JOIN _fuse_layers ", " _fuse_layers_text)
