@@ -440,6 +440,47 @@ macro(fuse_resolve_dependencies)
         list(APPEND _fuse_moab_libs_dedup "${_tok}")
       endif()
     endforeach()
+    # A MOAB's config does not always export its dependencies' headers.
+    # /opt/moab/cmake-all absorbs libTempestRemap into libMOAB (the symbols
+    # are exported, so linking is fine) but never sets MOAB_PACKAGE_INCLUDES,
+    # so MOAB_INCLUDE_DIRS names only MOAB's own include directory:
+    # tempest_weights.cpp fails on <Announce.h>, then TempestRemap's own
+    # headers fail on <netcdf.h>. The config DOES record, per dependency it
+    # was built with, MOAB_USE_<PKG> and <PKG>_DIR, so each such dependency's
+    # <PKG>_DIR/include is added when it exists and is not already listed.
+    # A MOAB whose config does export them (/opt/moab-tempest) is unchanged.
+    foreach(_pkg NETCDF PNETCDF HDF5 TEMPESTREMAP EIGEN3 ZOLTAN)
+      set(_pkg_inc "${${_pkg}_DIR}/include")
+      if(MOAB_USE_${_pkg} AND ${_pkg}_DIR AND IS_DIRECTORY "${_pkg_inc}")
+        list(FIND MOAB_INCLUDE_DIRS "${_pkg_inc}" _pkg_idx)
+        if(_pkg_idx EQUAL -1)
+          list(APPEND MOAB_INCLUDE_DIRS "${_pkg_inc}")
+          message(STATUS "fuse: ${_pkg} headers from ${_pkg_inc} "
+                         "(this MOAB's config does not export them)")
+        endif()
+      endif()
+    endforeach()
+    if(MOAB_USE_TEMPESTREMAP)
+      set(_fuse_tempest_reachable FALSE)
+      foreach(_d IN LISTS MOAB_INCLUDE_DIRS)
+        if(EXISTS "${_d}/Announce.h")
+          set(_fuse_tempest_reachable TRUE)
+        endif()
+      endforeach()
+      if(NOT _fuse_tempest_reachable)
+        if(TEMPESTREMAP_DIR AND EXISTS "${TEMPESTREMAP_DIR}/include/Announce.h")
+          list(APPEND MOAB_INCLUDE_DIRS "${TEMPESTREMAP_DIR}/include")
+          message(STATUS "fuse: TempestRemap headers from ${TEMPESTREMAP_DIR}/include "
+                         "(MOAB's config does not export them)")
+        else()
+          message(FATAL_ERROR
+            "fuse: the MOAB at ${MOAB_DIR} was built with TempestRemap, but its "
+            "headers (Announce.h) are on none of MOAB_INCLUDE_DIRS and "
+            "TEMPESTREMAP_DIR='${TEMPESTREMAP_DIR}' has no include/Announce.h. "
+            "Point TEMPESTREMAP_DIR at the TempestRemap install MOAB was built against.")
+        endif()
+      endif()
+    endif()
     if(NOT TARGET fuse::moab)
       # An IMPORTED target is exempt from install(EXPORT)'s "every PUBLIC
       # link dependency must be in some export set" check -- the same
