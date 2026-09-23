@@ -86,3 +86,20 @@ every transport, before any communicator exists. Previously the same mistake
 surfaced two layers down as `MpiTransport::build_plan` refusing an empty rank
 set — correct, but it told you about a rank set when the error was in the
 graph, and only when you were running under MPI.
+
+## Each component has its own decomposition of a shared mesh
+
+Two components that share a mesh do not share its partition. Each holds the
+mesh laid out over **its own** ranks, so a rank placed in both holds two
+pieces, one per component. This is what makes partially overlapping
+placements work: with A on ranks 0–2 and B on ranks 1–3, each side covers the
+whole region over its own ranks, and the transport moves what differs and
+copies locally what both hold.
+
+Components with identical placements always get identical decompositions,
+which is why no data move is needed between them.
+
+Current limits: the MOAB backend does not yet build a decomposition per
+component (every component shares one), and a remap on a component's own,
+non-default decomposition is refused with `E-RT-REMAP-PLACEMENT` until
+weights are built per placement.
