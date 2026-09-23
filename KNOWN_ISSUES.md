@@ -362,40 +362,31 @@ one instance or get one each.
 
 ---
 
-### D6. A component placed nowhere is legal, but a channel from it cannot initialise — OPEN, needs a ruling
+### ~~D6. A component placed nowhere is legal, but a channel from it cannot initialise~~ — RULED AND FIXED 2026-09-22
 
-Found by running the MPI legs at 1 rank (S5.5). `RankSet`'s own contract says:
+`RankSet` said an empty placement was legal; `MpiTransport::build_plan` refused
+one. **Ruling: the refusal is right** — transporting out of a component that
+exists nowhere is a modelling error, and `RankSet`'s contract was the
+incomplete half.
 
-> The contiguous set `[first, first + count)`. `count <= 0` yields an empty
-> set, **which is legal: a component may be declared and placed nowhere in a
-> particular run.**
+Fixed accordingly:
 
-`MpiTransport::build_plan` refuses an empty rank set (`E-TRANSPORT-RANKS`, and
-`MpiTransport.BuildPlanRejectsEmptyRankSets` pins the refusal). Both are
-defensible alone: a component may sit out a run, and there is no rank to send
-from. Together they mean **a job in which any component is placed nowhere
-cannot initialise if that component has an MPI channel** — the model layer
-declares the configuration legal and the transport layer refuses it.
+- `validate()` now refuses a channel whose source or target component is placed
+  on no rank, with `E-PLACEMENT-EMPTY` naming the component and the channel.
+  A model-layer check, so it fires for every transport and before any
+  communicator exists — where the previous `E-TRANSPORT-RANKS` told the user
+  about a rank set when the mistake was in the graph, and only under MPI.
+- `RankSet`'s contract says empty placement is legal **only for a component
+  with no channels**, and says why.
+- `docs/user/placement.md` states the same rule from the user's side.
+- Five tests pin both halves — each end refused separately, both ends reported
+  separately, and an empty placement with no channel still accepted, because
+  that is the supported way to switch a component off for one run. Two
+  mutations (`empty-placement-channel-check-never-fires`,
+  `empty-placement-check-fires-on-every-channel`) fail if either half goes.
 
-This is not hypothetical: it is exactly what the two-component test fixture
-becomes at one rank, where `fluid_{0, world_size()/2}` is `{first=0, count=0}`.
-The tests are now guarded at ≥2 ranks, because their subject is a two-sided
-job that one rank cannot host — but that guards the *tests*, not the question.
-
-**The two readings, and neither is chosen yet:**
-
-1. *The refusal is right.* Asking to transport out of a component that exists
-   nowhere is a modelling error, and failing loudly at setup is the honest
-   answer. Then `RankSet`'s "placed nowhere is legal" should say that it is
-   legal only for a component with no channels.
-2. *The refusal is wrong.* "Placed nowhere" is documented as an ordinary
-   configuration — switching a component off for one run — and the Runner
-   should treat its channels as inactive rather than fail. Then `build_plan`'s
-   refusal needs to become a no-op plan for the empty case, and the existing
-   refusal test changes meaning.
-
-Whichever is chosen, one of the two documents is currently wrong. Deciding it
-is a design call, so it is recorded rather than settled here.
+The transport-level refusal stays exactly as it was: it is now a backstop
+rather than the primary diagnosis.
 
 ---
 

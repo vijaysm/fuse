@@ -417,3 +417,81 @@ TEST(Validate, UnitGapHasThreeDistinctOutcomes) {
   EXPECT_EQ(count(wrong, "E-UNITS"), 1u);
   EXPECT_EQ(count(wrong, "E-UNITS-SCALE"), 0u);
 }
+
+// ---- empty placement (the 2026-09-22 ruling) -----------------------------
+//
+// An empty placement is legal ONLY for a component with no channels. Both
+// halves are tested, because the rule is a boundary and a check that refused
+// every empty placement would pass a one-sided test while breaking the
+// documented way to switch a component off for a run.
+
+namespace {
+
+/// One channel, `a.out -> b.in`, with each side's placement chosen by the
+/// caller. `{0, 0}` is a component placed nowhere.
+fuse::Diagnostics validate_with_placements(fuse::RankSet a_ranks,
+                                           fuse::RankSet b_ranks,
+                                           bool with_channel) {
+  fuse::CouplingGraph g;
+  const fuse::MeshId m = g.add_mesh(fuse::MeshDecl{.name = "m", .source = "test"});
+  const fuse::RegionId r =
+      g.add_region(fuse::Region{.name = "r", .mesh = m, .dimension = 2});
+  const fuse::ComponentId a = g.add_component(fuse::ComponentDecl{
+      .name = "a", .ranks = a_ranks, .interval = fuse::Rational{1}});
+  const fuse::ComponentId b = g.add_component(fuse::ComponentDecl{
+      .name = "b", .ranks = b_ranks, .interval = fuse::Rational{1}});
+  const fuse::FieldId af = g.add_field(
+      a, fuse::FieldSpec{.name = "out", .region = r, .units = u::kKelvin,
+                         .intent = fuse::Intent::Provides});
+  const fuse::FieldId bf = g.add_field(
+      b, fuse::FieldSpec{.name = "in", .region = r, .units = u::kKelvin,
+                         .intent = fuse::Intent::Requires});
+  if (with_channel) g.add_channel("link", af, bf);
+  return fuse::validate(g);
+}
+
+std::size_t count_code(const fuse::Diagnostics& d, std::string_view code) {
+  std::size_t n = 0;
+  for (const auto& item : d.items()) {
+    if (item.code == code && item.severity == fuse::Severity::Error) ++n;
+  }
+  return n;
+}
+
+}  // namespace
+
+TEST(Validate, AChannelOutOfAComponentPlacedNowhereIsRefused) {
+  // The source exists on no rank: nothing to read from.
+  const auto d = validate_with_placements({0, 0}, {0, 2}, true);
+  EXPECT_EQ(count_code(d, "E-PLACEMENT-EMPTY"), 1u)
+      << "a channel cannot read from a component that exists on no rank";
+}
+
+TEST(Validate, AChannelIntoAComponentPlacedNowhereIsRefused) {
+  // The target exists on no rank: nowhere to deliver. Checked separately
+  // because a rule written for one side only would pass the other test.
+  const auto d = validate_with_placements({0, 2}, {0, 0}, true);
+  EXPECT_EQ(count_code(d, "E-PLACEMENT-EMPTY"), 1u)
+      << "a channel cannot deliver to a component that exists on no rank";
+}
+
+TEST(Validate, BothEndsPlacedNowhereIsReportedOnceForEachEnd) {
+  const auto d = validate_with_placements({0, 0}, {0, 0}, true);
+  EXPECT_EQ(count_code(d, "E-PLACEMENT-EMPTY"), 2u)
+      << "each end is a separate thing for the user to fix";
+}
+
+TEST(Validate, AnEmptyPlacementWithNoChannelIsStillLegal) {
+  // The other half of the ruling, and the reason the check is per channel
+  // rather than per component: switching a component off for one run by
+  // giving it an empty placement remains supported (docs/user/placement.md).
+  const auto d = validate_with_placements({0, 0}, {0, 2}, false);
+  EXPECT_EQ(count_code(d, "E-PLACEMENT-EMPTY"), 0u)
+      << "an empty placement is how a component is switched off for a run; "
+         "with no channel there is nothing to refuse";
+}
+
+TEST(Validate, OrdinaryPlacementsAreNotRefused) {
+  const auto d = validate_with_placements({0, 2}, {2, 2}, true);
+  EXPECT_EQ(count_code(d, "E-PLACEMENT-EMPTY"), 0u);
+}

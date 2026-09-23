@@ -110,3 +110,21 @@ old = "        if (!(f.units.scale > Rational{0})) {"
 new = "        if (false) {"
 target = "fuse_model_yaml_io_test"
 test = "model.yaml_io"
+
+[[mutation]]
+id = "empty-placement-channel-check-never-fires"
+area = "model"
+describes = "The 2026-09-22 ruling: a channel out of or into a component placed on no rank is a modelling error, refused at validate() with E-PLACEMENT-EMPTY. Removing the check returns the diagnosis to MpiTransport::build_plan's E-TRANSPORT-RANKS two layers down -- a refusal that names a rank set when the mistake is in the graph, and only under MPI."
+file = "include/fuse/model/validate.hpp"
+old = "      if (!comp.ranks.empty()) continue;"
+new = "      continue;"
+test = "model.validate"
+
+[[mutation]]
+id = "empty-placement-check-fires-on-every-channel"
+area = "model"
+describes = "The other half of the same ruling: an empty placement stays legal for a component with NO channels, which is how a component is switched off for one run. A check that fired regardless of placement would refuse every ordinary graph, so this mutation must be killed by a test that validates a normally-placed pair."
+file = "include/fuse/model/validate.hpp"
+old = "      if (!comp.ranks.empty()) continue;"
+new = "      if (false) continue;"
+test = "model.validate"
