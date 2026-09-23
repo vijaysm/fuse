@@ -96,7 +96,7 @@ fuse::TimedDag expand_ok(const CouplingGraph& g, const fuse::OperatorDAG& dag) {
 }
 
 fuse::RegionSizes constant_sizes(std::size_t n) {
-  return [n](fuse::RegionId r) {
+  return [n](fuse::RegionId r, int /*placement*/) {
     EXPECT_TRUE(r.valid()) << "the callback must never see an invalid region";
     return n;
   };

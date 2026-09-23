@@ -42,7 +42,7 @@ CouplingGraph pair(Rational src_dt, Rational dst_dt) {
 }
 
 fuse::RegionSizes constant_sizes(std::size_t n) {
-  return [n](fuse::RegionId) -> std::size_t { return n; };
+  return [n](fuse::RegionId, int /*placement*/) -> std::size_t { return n; };
 }
 
 fuse::ScheduleResult build(const CouplingGraph& g) {
@@ -50,7 +50,7 @@ fuse::ScheduleResult build(const CouplingGraph& g) {
   EXPECT_TRUE(lowered.ok()) << lowered.diags.to_string();
   const fuse::ClockSet cs{g};
   return schedule(g, lowered.dag, cs,
-                  [](fuse::RegionId) -> std::size_t { return 64; });
+                  [](fuse::RegionId, int /*placement*/) -> std::size_t { return 64; });
 }
 
 bool has_code(const fuse::Diagnostics& d, const char* code) {

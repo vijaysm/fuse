@@ -155,7 +155,7 @@ CycleReport run_detector(const CouplingGraph& g) {
 }
 
 RegionSizes constant_sizes(std::size_t n) {
-  return [n](RegionId) -> std::size_t { return n; };
+  return [n](RegionId, int /*placement*/) -> std::size_t { return n; };
 }
 
 /// N-ir-schedule-1 (docs/dev/reviews/2026-09-19/pass2/re-ir-schedule.md): the

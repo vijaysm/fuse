@@ -41,7 +41,7 @@ namespace u = fuse::units;
 namespace {
 
 fuse::RegionSizes sizes32() {
-  return [](fuse::RegionId) -> std::size_t { return 32; };
+  return [](fuse::RegionId, int /*placement*/) -> std::size_t { return 32; };
 }
 
 // --- graph builders --------------------------------------------------------
