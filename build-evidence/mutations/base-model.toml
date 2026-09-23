@@ -118,6 +118,7 @@ describes = "The 2026-09-22 ruling: a channel out of or into a component placed 
 file = "include/fuse/model/validate.hpp"
 old = "      if (!comp.ranks.empty()) continue;"
 new = "      continue;"
+target = "fuse_model_validate_test"
 test = "model.validate"
 
 [[mutation]]
@@ -127,4 +128,5 @@ describes = "The other half of the same ruling: an empty placement stays legal f
 file = "include/fuse/model/validate.hpp"
 old = "      if (!comp.ranks.empty()) continue;"
 new = "      if (false) continue;"
+target = "fuse_model_validate_test"
 test = "model.validate"
