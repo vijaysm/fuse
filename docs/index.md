@@ -24,6 +24,7 @@ user/build
 user/quickstart
 user/fluent-api
 user/placement
+user/layouts
 user/geometry
 user/transfer-maps
 user/combining-writers
@@ -47,5 +48,6 @@ dev/rank-agreement
 dev/debugging
 dev/porting
 dev/abi-design
+dev/partitioning
 dev/roadmap
 ```
