@@ -181,6 +181,9 @@ TEST(NativeMigration, MigrateAtKNullCommIsTheIdentityUpToLocalOrdering) {
   auto migrated = migrate(*view.value(), dest, kNullComm);
   ASSERT_TRUE(migrated.ok()) << migrated.error().message;
   EXPECT_EQ(migrated.value()->cell_count(), view.value()->cell_count());
+  EXPECT_EQ(migrated.value()->vertex_count(), view.value()->vertex_count())
+      << "adjacent cells share vertices; unpack must dedup by global id rather than minting a "
+        "new vertex per incoming closure entry, or this count inflates";
   double total = 0.0;
   for (std::size_t c = 0; c < migrated.value()->cell_count(); ++c) {
     total += migrated.value()->measure(3, c);
