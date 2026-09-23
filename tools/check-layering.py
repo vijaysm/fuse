@@ -42,6 +42,12 @@ LAYERS = [
     "num",
     "field",
     "backend",
+    # `partition` (fuse::partition, the Kokkos-view RCB port) sits directly
+    # above `backend`: its core (rcb.hpp/median.hpp/coord_transform.hpp)
+    # depends only on `base`, and its MeshView adapter (mesh_adapter.hpp)
+    # depends on `backend` for the mesh interface -- nothing above `backend`
+    # needs it yet, so this is the lowest position that satisfies both.
+    "partition",
     "transport",
     "runtime",
     "abi",
@@ -70,6 +76,10 @@ ALLOWED_PUBLIC_THIRD_PARTY = {
     "field": {"Kokkos_Core.hpp"},
     "runtime": {"Kokkos_Core.hpp"},
     "backend": {"Kokkos_Core.hpp", "Kokkos_Macros.hpp"},   # per-backend headers live under backend/<name>/
+    # rcb_partition/weighted_median/apply_coord_transform are all templated
+    # on an execution space, in the public interface, the same reason `num`
+    # and `field` need the core header.
+    "partition": {"Kokkos_Core.hpp"},
     "transport": set(),
     # The C ABI is the one surface that must compile for a consumer with none
     # of our dependencies installed.

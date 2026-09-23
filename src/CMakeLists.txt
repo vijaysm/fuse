@@ -242,6 +242,30 @@ set_target_properties(fuse-coupler-backend PROPERTIES
   VISIBILITY_INLINES_HIDDEN ON
 )
 
+# ---------------------------------------------------------------- partition
+# fuse::partition: the Kokkos-view RCB mesh partitioner, ported from the
+# user's rcb_moab. The core (rcb.hpp/median.hpp/coord_transform.hpp) is
+# header-only and templated on an execution space; the one translation unit
+# here (collectives.cpp) is where every MPI symbol in this layer lives, so
+# the public headers stay free of mpi.h (docs/dev/layering.md). The other
+# (mesh_adapter.cpp) is the only file in this layer that needs fuse::backend,
+# for the MeshView it adapts into (centroids, global_ids).
+add_library(fuse-coupler-partition
+  partition/collectives.cpp
+  partition/mesh_adapter.cpp
+)
+add_library(fuse::partition ALIAS fuse-coupler-partition)
+target_compile_features(fuse-coupler-partition PUBLIC cxx_std_20)
+target_link_libraries(fuse-coupler-partition PUBLIC fuse::base fuse::backend)
+if(FUSE_ENABLE_MPI)
+  target_link_libraries(fuse-coupler-partition PRIVATE MPI::MPI_CXX)
+endif()
+set_target_properties(fuse-coupler-partition PROPERTIES
+  EXPORT_NAME partition
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN ON
+)
+
 # ---------------------------------------------------------------- runtime
 # Executing a plan: field binding, both entry modes, iteration regions.
 # The top of the library -- it links everything below and nothing links it.
@@ -271,7 +295,7 @@ include(GNUInstallDirs)
 set(FUSE_INSTALL_TARGETS
   fuse-coupler-base fuse-coupler-model fuse-coupler-ir fuse-coupler-schedule
   fuse-coupler-linalg fuse-coupler-num fuse-coupler-transport
-  fuse-coupler-backend fuse-coupler-runtime
+  fuse-coupler-backend fuse-coupler-partition fuse-coupler-runtime
 )
 
 install(TARGETS ${FUSE_INSTALL_TARGETS}
