@@ -450,6 +450,7 @@ struct Runner::Impl {
   std::unordered_map<std::uint64_t, std::vector<int>> epoch_participants;
 
   Result<void> attach_comm_graphs();
+  [[nodiscard]] Result<void> check_transport_extents() const;
   Result<void> resolve_constrain(const Instruction& ins, detail::Resolved& r);
   /// Spec §5.4 (Task 5.5). Gives one `Remap` instruction its operator: either
   /// real weights from `remap_cache`, or the identity -- but only after
