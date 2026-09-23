@@ -326,7 +326,15 @@ TYPED_TEST(RcbPartition, UniformWeightHexBoxImbalanceWithinBound) {
   for (std::size_t i = 0; i < got.size(); ++i) part_weight[static_cast<std::size_t>(got[i])] += w[i];
   const double ideal = static_cast<double>(ps.centroids.size()) / 8.0;
   for (long long pw : part_weight) {
-    EXPECT_NEAR(static_cast<double>(pw), ideal, 0.15 * ideal) << pw;
+    // Exact, not approximate. The histogram median only has to land the split
+    // inside the right final bucket; every point inside that bucket is then a
+    // tie, and ties are handed left in ascending global id until the left
+    // weight equals the target exactly. With 512 uniform weights and 8 parts
+    // every part is therefore exactly 64 (rcb_moab's own sweep measured an
+    // excess imbalance of 1.0000 on every evenly dividing fixture). A 15%
+    // slack, which this test once had, would pass an RCB whose tie
+    // distribution had stopped working.
+    EXPECT_EQ(static_cast<double>(pw), ideal) << pw;
   }
 }
 
