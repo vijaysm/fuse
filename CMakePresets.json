@@ -78,12 +78,12 @@
       "name": "all",
       "inherits": "tier3",
       "displayName": "All features - MPI, MOAB with TempestRemap, PETSc",
-      "description": "Every tier in one build dir (build-all). Uses the TempestRemap-enabled MOAB at /opt/moab-tempest so the high-order spherical remap is compiled, and the MOAB source tree's MeshFiles/unittest so the non-matching sphere pair (wholeATM_T/recMeshOcn) cases are compiled. PETSc is found through pkg-config (environment below). LowFive, Python and Fortran stay OFF: none has an implementation to build.",
+      "description": "Every tier in one build dir (build-all). MOAB is /opt/moab/cmake-all (TempestRemap, Zoltan, NetCDF, PnetCDF); its config does not export its dependencies' headers, so FuseDependencies.cmake recovers each from the recorded <PKG>_DIR. /opt/moab-tempest also builds, by overriding MOAB_DIR. FUSE_MOAB_MESHFILES points at the MOAB source tree, which compiles the non-matching sphere pair (wholeATM_T/recMeshOcn). PETSc is found through pkg-config (environment below) but nothing links it yet: the tier-3 solver plugin is not written. LowFive, Python and Fortran stay OFF: none has an implementation to build.",
       "environment": {
         "PKG_CONFIG_PATH": "/opt/petsc/download-moab/lib/pkgconfig"
       },
       "cacheVariables": {
-        "MOAB_DIR": "/opt/moab-tempest/lib/cmake/MOAB",
+        "MOAB_DIR": "/opt/moab/cmake-all/lib/cmake/MOAB",
         "FUSE_MOAB_MESHFILES": "/Users/mahadevan/Code/sigma/moab/MeshFiles/unittest"
       }
     }
