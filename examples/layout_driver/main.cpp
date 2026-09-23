@@ -34,6 +34,8 @@
 
 #include <mpi.h>
 
+#include <Kokkos_Core.hpp>
+
 #include <fuse/backend/native_backend.hpp>
 #include <fuse/backend/native_migration.hpp>
 #include <fuse/ir/lowering.hpp>
@@ -475,6 +477,15 @@ int main(int argc, char** argv) {
   int rank = 0, world = 1;
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
   MPI_Comm_size(MPI_COMM_WORLD, &world);
+
+  // Kokkos is initialised here and for the whole of main, before any argument
+  // is parsed (the guard also strips --kokkos-* arguments). The native mesh,
+  // the RCB input and its part ids are all Kokkos views, and allocating one
+  // before initialize() aborts. The transport-only mode never allocates one,
+  // which is how the first eleven layout tests passed while every --migrate
+  // test failed. Declared after MPI_Init and in main's scope, so every view
+  // built in a mode function is destroyed before the guard finalises Kokkos.
+  Kokkos::ScopeGuard kokkos_guard(argc, argv);
 
   const Args args = parse_args(argc, argv);
   if (!args.parse_error.empty()) {
