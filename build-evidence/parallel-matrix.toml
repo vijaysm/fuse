@@ -150,11 +150,13 @@ note = """DISJOINT and FULLY OVERLAPPING only. The fixtures are `fluid_{0, n/2}`
 [[cell]]
 id = "A-OVERLAP-RUNNER-PARTIAL"
 axis = "partially overlapping rank sets, end to end"
-gap = """The one shape where BOTH transport paths run at once -- peer traffic for ranks in one set and local copies for ranks in both -- and so the only one that can expose an interaction between them. Untested through the Runner; the word "partial" does not occur in runner_transport_test.cpp.
-
-NOT a one-line fixture change, which is why it is recorded rather than improvised. Each side partitions the same global ids over its OWN rank set, so a rank in both sets is a source for one block and a destination for a DIFFERENT block -- exactly the case one `global_ids` list per rank cannot express, which is why CommGraph has send_plan()/recv_plan() at all. PartitionedTestBackend holds one gid list per rank (`if (fluid_.contains(me)) ... else if (solid_.contains(me)) ...`), so it cannot represent a rank holding both. Under partial overlap with that backend two different ranks would claim the same global ids as destinations, breaking the one-owner-per-target-entity invariant the delivery assertions rest on. It needs a two-mesh harness (separate source and target meshes per rank) rather than the shared single region the suite uses today.
-
-CommGraph itself is NOT the gap: rows 1-6 cover all three shapes at that level and pass on the host."""
+gap = """A CAPABILITY gap, not only a coverage one (KNOWN_ISSUES D5, corrected \
+2026-09-22). The Runner fills both CommGraph sides from ONE mesh view -- \
+MeshBackend::view(MeshId) has no component argument and the MOAB backend \
+partitions over one communicator -- so each rank holds one piece of each mesh \
+shared by every component on it, and two partially overlapping rank sets cannot \
+each hold the whole region. CommGraph itself supports all three shapes (rows \
+1-6). Needs per-placement mesh instances; design awaiting a ruling."""
 
 [[cell]]
 id = "A-RANKS"

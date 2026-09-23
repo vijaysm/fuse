@@ -390,37 +390,51 @@ rather than the primary diagnosis.
 
 ---
 
-### D5. Partial rank-set overlap is untested end to end (CommGraph itself is fine)
+### D5. The Runner cannot express partial rank-set overlap — a CAPABILITY gap, corrected 2026-09-22
 
-**`CommGraph` supports all three overlap shapes and is tested on all three.**
-Matrix rows 1–6 are the cross product of (fully overlapping, fully disjoint,
-partially overlapping) × (GlobalId, NearestNeighbor), and they pass on the host.
-`specs_are_disjoint()` returning false is documented as "FALSE IS NOT AN ERROR,
-AND IT IS NOT RARE": under full overlap every match is a `local_pairs()` entry,
-under partial overlap `send_plan()`/`recv_plan()` describe it exactly. The
-Runner consumes precisely that — `peer_plan_needed = !specs_are_disjoint()`,
-then the peer plans plus local copies. No overlap refusal exists in the runtime
-path; `E-RT-TRANSPORT-OVERLAP` survives only as a sample string in
-`test/base/error_test.cpp`.
+**Correction.** This entry first said `CommGraph` supported all three shapes,
+the Runner "consumes precisely that", and only end-to-end *coverage* of the
+partial case was missing. The first half is true. The second is wrong, and
+building the test harness showed why.
 
-What is missing is **end-to-end** coverage of the partial case
-(`A-OVERLAP-RUNNER-PARTIAL`). Through the Runner the suite exercises disjoint
-(`fluid_{0, n/2}` / `solid_{n/2, n-n/2}`) and fully overlapping
-(`whole_{0, n}` for both components, where every match is local) — and nothing
-partial. That is the one shape where peer traffic and local copies happen at
-once, so it is the only one that can expose an interaction between them.
+`CommGraph` is correct: each `CommGraphSide` takes its **own** communicator and
+its **own** `MeshView`, and matrix rows 1–6 cover (full, disjoint, partial) ×
+(GlobalId, NearestNeighbor) on the host.
 
-**It is not a one-line fixture change**, which is why this is recorded rather
-than improvised. Each side partitions the same global ids over its *own* rank
-set, so a rank in both sets is a source for one block and a destination for a
-*different* block — exactly what one `global_ids` list per rank cannot express,
-and the reason `send_plan()`/`recv_plan()` exist. `PartitionedTestBackend` holds
-one gid list per rank (`if (fluid_.contains(me)) … else if
-(solid_.contains(me)) …`), so it cannot represent a rank holding both; used
-under partial overlap, two different ranks would claim the same global ids as
-destinations and break the one-owner-per-target-entity invariant the delivery
-assertions rest on. Closing it needs a two-mesh harness — separate source and
-target meshes per rank — instead of the single shared region the suite uses.
+The Runner fills **both** sides from **one** view
+(`src/runtime/runner.cpp`, `attach_comm_graphs`):
+
+```cpp
+const auto view = backend.view(mid.value());          // the region's mesh
+src_side.mesh = in_src ? view.value() : nullptr;
+dst_side.mesh = in_dst ? view.value() : nullptr;      // the same view
+```
+
+That follows from the data model, not a slip: `MeshBackend::view(MeshId)` has
+no component argument, the Runner holds one backend, and `MoabMeshBackend`
+partitions every mesh over the single communicator given to
+`set_communicator`. **Each rank holds exactly one piece of each mesh**, shared by
+every component placed on it. Guard (1), `E-RT-TRANSPORT-XREGION`, then
+requires a transport's two ends to be the same region on the same mesh.
+
+With one partition, two different rank sets cannot each hold the whole region.
+A on {0,1,2} and B on {1,2,3} over one 4-way partition: A holds pieces 0–2, so
+B's rank 3 has no source for piece 3 and the match is incomplete. Under **full**
+overlap it works (both sides hold the same pieces, every match is a local
+pair). Under **disjoint** placement it works in the suite only because
+`PartitionedTestBackend` partitions within "whichever set contains the calling
+rank" — a per-component decomposition faked from rank membership, which is
+exactly what cannot be faked once a rank is in both sets. No parallel Runner
+test constructs a real backend (`SerialMeshBackend` once, in
+`mpi_transport_test.cpp`, where every rank owns everything).
+
+**What it needs:** each component's view of a shared region must be that
+component's own decomposition — the mesh loaded once per placement, over that
+placement's communicator — and the Runner must hand the source component's view
+to `src_side` and the target component's to `dst_side`. A rank in both sets then
+holds two pieces, one per component. That is inherent to partial overlap, not a
+cost of the fix. It is an interface change to `MeshBackend` or the Runner, so the
+design is **awaiting a ruling**.
 
 ---
 
