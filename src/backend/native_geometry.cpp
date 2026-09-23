@@ -84,28 +84,50 @@ Result<std::vector<Triangle>> canonical_fan_triangulation(
   std::vector<int> rotated(n);
   for (std::size_t i = 0; i < n; ++i) rotated[i] = static_cast<int>((apex + i) % n);
 
+  // Validity: every fan triangle's OWN (unnormalized) oriented-area vector
+  // must agree in sign with the polygon's overall orientation (Newell's
+  // vector, an exact algebraic identity -- see the file header -- of the
+  // SIGNED sum of these same vectors for ANY apex). A reflex-vertex
+  // fold-back flips one triangle's sign relative to the rest; a merely
+  // NON-PLANAR but star-shaped polygon (a cubed-sphere quad, say) keeps
+  // every triangle's normal within a small angle of the overall one, so
+  // this is curvature-tolerant where the unsigned-area-sum comparison
+  // used before this comment was written was not (that comparison
+  // conflates "does a flat-triangle fan double back on itself" with "does
+  // a curved surface's area equal its flat-triangle approximation",
+  // which is never true for the second question and was flagging benign
+  // curvature as a defect).
+  const Vec3 overall = newell_vector_area(points);
+  const double overall_norm = norm(overall);
+  const double scale = bounding_scale(points);
+  const double degenerate_tol = 1e-12 * scale * scale;
+  if (overall_norm < degenerate_tol) {
+    return Failure{"E-MESH-POLYGON-DEGENERATE",
+                   fmt::format("this {}-gon has (near-)zero area from every direction; it is "
+                              "not a valid face", n)};
+  }
+
   std::vector<Triangle> tris;
   tris.reserve(n - 2);
   double unsigned_sum = 0.0;
   for (std::size_t k = 1; k + 1 < n; ++k) {
     const int i0 = rotated[0], i1 = rotated[k], i2 = rotated[k + 1];
+    const Vec3& a = points[static_cast<std::size_t>(i0)];
+    const Vec3& b = points[static_cast<std::size_t>(i1)];
+    const Vec3& c = points[static_cast<std::size_t>(i2)];
+    const Vec3 tri_vec = cross(b - a, c - a);  // 2x the triangle's own oriented area
+    const double tri_norm = norm(tri_vec);
+    if (dot(tri_vec, overall) <= -1e-9 * tri_norm * overall_norm) {
+      return Failure{
+          "E-MESH-POLYGON-NOT-STAR-SHAPED",
+          fmt::format("the fan from the minimum-global-id corner (gid {}) is not a valid "
+                     "decomposition of this {}-gon: triangle ({},{},{})'s own orientation "
+                     "disagrees with the polygon's overall orientation -- the fan folds back "
+                     "on itself, so the polygon is not star-shaped about that corner",
+                     global_ids[apex], n, i0, i1, i2)};
+    }
     tris.push_back({i0, i1, i2});
-    unsigned_sum += triangle_area(points[static_cast<std::size_t>(i0)],
-                                  points[static_cast<std::size_t>(i1)],
-                                  points[static_cast<std::size_t>(i2)]);
-  }
-
-  const double true_area = norm(newell_vector_area(points));
-  const double scale = bounding_scale(points);
-  const double tol = 1e-9 * scale * scale;  // area scale ~ length^2
-  if (unsigned_sum - true_area > tol) {
-    return Failure{
-        "E-MESH-POLYGON-NOT-STAR-SHAPED",
-        fmt::format("the fan from the minimum-global-id corner (gid {}) is not a valid "
-                   "decomposition of this {}-gon: its unsigned triangle-area sum {:.17g} "
-                   "exceeds the polygon's true area {:.17g} by more than tolerance -- the "
-                   "polygon is not star-shaped about that corner",
-                   global_ids[apex], n, unsigned_sum, true_area)};
+    unsigned_sum += 0.5 * tri_norm;
   }
   return tris;
 }
