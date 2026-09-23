@@ -62,7 +62,8 @@ least 3 ranks to be genuine: at 2 ranks, `comp1 = 0:0` and `comp2 = 1:1` is disj
 
 `examples/CMakeLists.txt` registers 11 valid layouts, 3 + 4 + 4 across 2, 3 and 4 ranks: at 2 ranks,
 identical plus disjoint in both orderings (partial overlap is not possible below 3 ranks); at 3 and
-4 ranks, identical, disjoint, and partial overlap in both orderings (comp1 lower, comp2 lower).
+4 ranks, identical once, disjoint once (comp1 lower), and partial overlap in both orderings (comp1
+lower, comp2 lower).
 Plus 4 `WILL_FAIL` refusal cases (one each for `min != 0`, `max != P-1`, a reversed range, and
 `--coupler`), all labelled `mpi;parallel;layout`:
 
