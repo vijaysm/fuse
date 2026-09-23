@@ -14,8 +14,8 @@ namespace fuse::native {
 /// `fuse::MeshBackend` over the native distributed mesh. No MPI, no files
 /// beyond the native VTK-subset reader (native_mesh_io.hpp); a caller with a
 /// real communicator passes its `(rank, num_ranks)` in as plain ints, the
-/// same way every other backend layer stays MPI-free in its public header
-/// (docs/dev/layering.md).
+/// same MPI-free-public-header convention `fuse::partition::detail`'s own
+/// `collectives.hpp` documents and `native_migration.hpp` follows.
 ///
 /// SOURCES. `decl.source`:
 ///
