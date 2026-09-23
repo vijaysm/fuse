@@ -1,0 +1,54 @@
+# Mutations for the native-mesh track (native distributed mesh + RCB-driven
+# repartition migration). Own file per the review-fix protocol: do not edit
+# build-evidence/mutations.toml directly while other fixers hold it dirty.
+
+[[mutation]]
+id = "migrate-incomplete-assignment-refusal-disabled"
+area = "backend"
+describes = "pack_for_migration's E-MESH-MIGRATE-INCOMPLETE refusal (dest.size() must equal the owned cell count) is disabled. Without it, a destination array one entry short or long is accepted, silently misassigning every cell from the short point onward -- rcb_moab's own historical failure mode (MeshMigration.cpp, HANDOFF.md) of cells destroyed without a trace."
+file = "src/backend/native_migration.cpp"
+old = "  if (dest.size() != nowned) {"
+new = "  if (false) {"
+target = "fuse_backend_native_migration_test"
+test = "backend.native_migration"
+
+[[mutation]]
+id = "migrate-vertex-dedup-disabled"
+area = "backend"
+describes = "unpack_migrated_mesh's dedup-by-global-id (a vertex already seen keeps its FIRST local index) is disabled, so every incoming copy of a shared vertex becomes a NEW vertex instead of being merged. A cell touching a previously-unpacked vertex then references the wrong (duplicate) copy, breaking connectivity -- rcb_moab's 'orphaned vertices' failure mode."
+file = "src/backend/native_migration.cpp"
+old = "        if (it == vertex_by_gid.end()) {"
+new = "        if (true) {"
+target = "fuse_backend_native_migration_test"
+test = "backend.native_migration"
+
+[[mutation]]
+id = "shared-face-apex-rule-ignores-global-id"
+area = "backend"
+describes = "canonical_fan_triangulation's rotation to the MINIMUM-GLOBAL-ID corner is disabled (apex stays local index 0), so the fan's diagonal pattern depends on each cell's own LOCAL vertex numbering instead of the face's global ids. Two cells sharing a face but numbering its corners differently then triangulate it differently, which is exactly the gap/overlap defect the shared-face rule (docs/dev/native-mesh.md) exists to prevent -- caught here by the two differently-numbered hexes sharing a face."
+file = "src/backend/native_geometry.cpp"
+old = "    if (global_ids[i] < global_ids[apex]) apex = i;"
+new = "    if (false) apex = i;"
+target = "fuse_backend_native_distributed_mesh_test"
+test = "backend.native_distributed_mesh"
+
+[[mutation]]
+id = "vertex-ownership-rule-picks-max-not-min-rank"
+area = "backend"
+describes = "resolve_vertex_ownership's cross-rank agreement (a vertex's new owner is the MINIMUM rank holding a copy of it) is flipped to maximum. This is a cross-rank property -- kNullComm agrees with itself trivially -- so only a real MPI run exercises the Allgatherv agreement; requires = mpi, and RepartitionConservesGlobalCellCountAndMeasureAndUniqueIds is the test, compiled here but not run (this sandbox cannot start mpiexec)."
+file = "src/backend/native_migration.cpp"
+old = "      if (it == min_rank_of.end() || r < it->second) min_rank_of[gid] = r;"
+new = "      if (it == min_rank_of.end() || r > it->second) min_rank_of[gid] = r;"
+target = "fuse_backend_native_migration_mpi_test"
+test = "backend.native_migration_mpi.2"
+requires = "mpi"
+
+[[mutation]]
+id = "tetrahedron-volume-factor-wrong"
+area = "backend"
+describes = "canonical_cell_tetrahedra's star-shapedness check and every cell measure it feeds depend on tetrahedron_volume's 1/6 scalar-triple-product factor. Corrupting it to 1/5 makes every 3D cell's reported measure wrong by a constant factor -- caught by the closed-form hex/tet/prism/pyramid volume tests and the migration measure-conservation tests, any of which would still 'conserve' the WRONG total if this factor were shared consistently, but none of which would match the analytic 1.0 a unit box must report."
+file = "src/backend/native_geometry.cpp"
+old = "  return std::abs(dot(t.a - t.d, cross(t.b - t.d, t.c - t.d))) / 6.0;"
+new = "  return std::abs(dot(t.a - t.d, cross(t.b - t.d, t.c - t.d))) / 5.0;"
+target = "fuse_backend_native_distributed_mesh_test"
+test = "backend.native_distributed_mesh"
