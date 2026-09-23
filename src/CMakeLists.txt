@@ -211,6 +211,9 @@ add_library(fuse-coupler-backend
   backend/spacetime.cpp
   backend/native_geometry.cpp
   backend/native_mesh.cpp
+  backend/native_generators.cpp
+  backend/native_backend.cpp
+  backend/native_mesh_io.cpp
   # Supermesh intersection: the real implementation needs MOAB, and the
   # file's own no-MOAB path refuses with E-REMAP-NOMOAB rather than
   # leaving the symbol undefined. S5 turns the option on.
