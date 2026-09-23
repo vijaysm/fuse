@@ -92,8 +92,9 @@ struct Grid {
   }
   /// Owner of the vertex at split-axis grid index `s` (global, 0..extent):
   /// the cell immediately "below" it on the split axis, or cell 0 if `s`
-  /// is the domain's own lower boundary -- see native_backend.hpp's doc
-  /// comment on the shared-boundary rule.
+  /// is the domain's own lower boundary -- deterministic and independent
+  /// of the rank count, since `owner_of_index` derives it from `s` and
+  /// `num_ranks` alone.
   [[nodiscard]] int vertex_owner_on_split_axis(std::size_t s) const {
     const std::size_t cell = (s == 0) ? 0 : s - 1;
     return owner_of_index(cell, split_extent(), num_ranks);

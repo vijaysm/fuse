@@ -100,8 +100,8 @@ TEST(NativeDistributedMesh, QuadMeasureIsUnitArea) {
 // ---- a concave (star-shaped-only-about-some-vertices) polygon -----------
 
 TEST(NativeDistributedMesh, ConcavePolygonThatIsStarShapedFromItsMinGidVertexIsAccepted) {
-  // An "L" pentagon, star-shaped from vertex 0 (global id 0, the minimum),
-  // area 3 (a 2x2 square minus a 1x1 notch).
+  // An "L" hexagon (six vertices), star-shaped from vertex 0 (global id 0,
+  // the minimum), area 3 (a 2x2 square minus a 1x1 notch).
   NativeMeshBuilder b(2);
   const int v0 = b.add_vertex(0, 0.0, 0.0, 0.0, 0, true);
   const int v1 = b.add_vertex(1, 2.0, 0.0, 0.0, 0, true);

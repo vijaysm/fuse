@@ -147,7 +147,7 @@ TEST(NativeGenerators, PrismPyramidMixCellsHaveThePyramidsVolume) {
   EXPECT_NEAR(total, 1.0, 1e-10);
 }
 
-TEST(NativeGenerators, CubedSphereQuadsHaveThePositiveOctantPanelOnTheUnitSphere) {
+TEST(NativeGenerators, CubedSphereHasSixPanelsWithEveryVertexOnTheUnitSphere) {
   auto arrays = generate_native_mesh("cubedsphere:4", 0, 1);
   ASSERT_TRUE(arrays.ok()) << arrays.error().message;
   auto view = NativeMeshView::create_from_host(arrays.value(), 0);

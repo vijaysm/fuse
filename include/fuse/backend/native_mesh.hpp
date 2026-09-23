@@ -98,12 +98,13 @@ DstView copy_view(const SrcView& src) {
 }
 }  // namespace detail
 
-/// Deep-copies every array of `src` into a same-shaped `MeshArrays<Target>`.
-/// A no-op-cost alias when `Target == Source` and both are host-accessible
-/// (Kokkos::create_mirror_view's usual guarantee); an explicit allocation
-/// and copy otherwise. This is the one hook that makes the mesh portable to
-/// a GPU build: every generator and the file reader build on the host, and
-/// a caller that wants the result device-resident calls this once.
+/// Deep-copies every array of `src` into a freshly allocated, same-shaped
+/// `MeshArrays<Target>` -- unconditionally, even when `Target == Source`
+/// (a same-space copy is then just cheap, not free; this does not alias
+/// `src`'s memory the way `Kokkos::create_mirror_view` would). This is the
+/// one hook that makes the mesh portable to a GPU build: every generator
+/// and the file reader build on the host, and a caller that wants the
+/// result device-resident calls this once.
 template <class Target, class Source>
 [[nodiscard]] MeshArrays<Target> to_memory_space(const MeshArrays<Source>& src) {
   MeshArrays<Target> dst;
