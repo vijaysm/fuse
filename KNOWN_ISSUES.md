@@ -582,3 +582,26 @@ is the root fix; the three tests are written against the fixture that follows.
 - **A surface remap pair is refused** (`E-REMAP-NONPLANAR`) rather than
   supported. The planar kernel would return the measure of the xy shadow, which
   is a plausible wrong answer. A surface pair needs a parameterisation.
+- **The native mesh's `--migrate` layout-driver mode re-verifies MESH
+  conservation, not FIELD transfer.** `docs/dev/native-mesh.md` "what is
+  deferred": matching a migrated mesh's entities back to `MpiTransport`'s
+  exchange plan, so a component's field DATA (not just its mesh) follows a
+  repartition, is not implemented — closer in shape to a distributed remap
+  operator than to migration itself. Do not read `layout.migrate.*`'s
+  `--check` as evidence the field-transfer path handles a migrated mesh; it
+  is not tested at all here.
+- **The native mesh's `generated:cubedsphere:N` source has an unwelded seam.**
+  Its six panels are independently numbered (`docs/dev/native-mesh.md`); a
+  vertex on one panel's edge and the matching vertex on its neighbour's edge
+  are distinct global ids, not merged into one. A caller needing a
+  seam-welded sphere must do that merge itself.
+- **`fuse::native::migrate`'s vertex-ownership rule (minimum rank holding a
+  copy) is exercised only by an MPI test that has not run in this sandbox.**
+  `resolve_vertex_ownership`'s Allgatherv-based agreement never executes at
+  `comm == kNullComm` (every vertex trivially owned by rank 0 there), so
+  Tier 0 cannot verify the cross-rank rule itself — only
+  `native_migration_mpi_test.cpp` (2-5 ranks) does, and per C1 this sandbox
+  cannot start `mpiexec`. The corresponding mutation
+  (`vertex-ownership-rule-picks-max-not-min-rank`,
+  `build-evidence/mutations/native-mesh.toml`) is `requires = "mpi"` for the
+  same reason.

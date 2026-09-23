@@ -50,7 +50,7 @@ endif()
 if(FUSE_ENABLE_MPI)
   add_executable(fuse_example_layout_driver layout_driver/main.cpp)
   target_link_libraries(fuse_example_layout_driver PRIVATE
-    fuse::runtime fuse::backend fuse::transport MPI::MPI_CXX)
+    fuse::runtime fuse::backend fuse::partition fuse::transport MPI::MPI_CXX)
   # PartitionedTestBackend (test/support/partitioned_test_backend.hpp) is the
   # only MeshBackend in the tree that gives each graph component its own
   # decomposition of a shared mesh -- see that header's own comment. Sharing
@@ -91,6 +91,18 @@ if(FUSE_ENABLE_MPI)
   fuse_add_layout_test(layout.4.c1-0-2.c2-1-3 4 ARGS --comp1 0:2 --comp2 1:3 --check)
   fuse_add_layout_test(layout.4.c1-1-3.c2-0-2 4 ARGS --comp1 1:3 --comp2 0:2 --check)
   fuse_add_layout_test(layout.4.c1-0-3.c2-0-3 4 ARGS --comp1 0:3 --comp2 0:3 --check)
+
+  # --mesh/--migrate: comp2's mesh is comp1's, migrated with RCB onto
+  # comp2's placement (Args::mesh_spec's own comment on what --check means
+  # in this mode: cell count and measure conservation, not the field
+  # channel). One box generator per rank count, on the same
+  # disjoint/overlapping/identical shapes as the field-transfer rows above.
+  fuse_add_layout_test(layout.migrate.2.c1-0-0.c2-1-1 2
+    ARGS --comp1 0:0 --comp2 1:1 --mesh hexbox:4x4x4 --migrate --check)
+  fuse_add_layout_test(layout.migrate.3.c1-0-1.c2-1-2 3
+    ARGS --comp1 0:1 --comp2 1:2 --mesh hexbox:4x4x4 --migrate --check)
+  fuse_add_layout_test(layout.migrate.4.c1-0-2.c2-1-3 4
+    ARGS --comp1 0:2 --comp2 1:3 --mesh hexbox:4x4x4 --migrate --check)
 
   # Deliberate refusals (docs/dev/testing.md: counts as coverage only when a
   # test makes the refusal fire). Run at 2 ranks -- the rank count is

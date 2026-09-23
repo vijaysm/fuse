@@ -34,8 +34,11 @@
 
 #include <mpi.h>
 
+#include <fuse/backend/native_backend.hpp>
+#include <fuse/backend/native_migration.hpp>
 #include <fuse/ir/lowering.hpp>
 #include <fuse/model/coupling_graph.hpp>
+#include <fuse/partition/repartition.hpp>
 #include <fuse/runtime/runner.hpp>
 #include <fuse/schedule/clock.hpp>
 #include <fuse/transport/transport.hpp>
@@ -142,6 +145,21 @@ struct Args {
   std::string timing_path;
   bool        have_timing = false;
   std::string parse_error;  // non-empty means refuse before doing anything else
+
+  // --mesh switches the driver into a SEPARATE mode (run_mesh_migration_mode,
+  // below): instead of the synthetic PartitionedTestBackend field-transfer
+  // demonstration above, comp1 and comp2 each get a real
+  // fuse::native generated mesh, optionally migrated (--migrate) from
+  // comp1's decomposition onto comp2's placement via RCB. --check in this
+  // mode re-verifies MESH data transfer (global cell count, measure, and id
+  // uniqueness conserved across the migration) -- not the field-transfer
+  // channel the other mode checks, which this mode does not build at all.
+  // See docs/dev/native-mesh.md "what is deferred": matching migrated
+  // entities back to the coupling graph's field-transfer machinery
+  // (arbitrary post-migration entity correspondence through MpiTransport)
+  // is not implemented.
+  std::optional<std::string> mesh_spec;
+  bool        migrate = false;
 };
 
 [[nodiscard]] Args parse_args(int argc, char** argv) {
@@ -190,6 +208,12 @@ struct Args {
       }
     } else if (a == "--check") {
       args.check = true;
+    } else if (a == "--mesh") {
+      auto v = next("--mesh");
+      if (!v) return args;
+      args.mesh_spec = *v;
+    } else if (a == "--migrate") {
+      args.migrate = true;
     } else if (a == "--timing") {
       auto v = next("--timing");
       if (!v) return args;
@@ -215,6 +239,10 @@ struct Args {
   if (coupler_text) {
     args.coupler = parse_range(*coupler_text, &args.parse_error);
     if (!args.coupler) return args;
+  }
+  if (args.migrate && !args.mesh_spec) {
+    args.parse_error = "E-LAYOUT-PARSE: --migrate needs --mesh <spec>";
+    return args;
   }
   return args;
 }
@@ -300,6 +328,147 @@ void write_timing_csv(const std::string& path, int world, const std::string& lay
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// --mesh / --migrate: a separate mode. See the Args::mesh_spec doc comment.
+// ---------------------------------------------------------------------------
+
+/// The topological dimension `fuse::native::generate_native_mesh("<kind>:...")`
+/// produces, read from the kind alone (before any rank slicing happens) --
+/// needed here to build a matching EMPTY mesh (`NativeMeshBuilder(dim)`) on
+/// a rank that owns none of a placement, since `NativeMeshView` requires
+/// every mesh, even an empty one, to declare its dimension up front.
+[[nodiscard]] std::optional<int> infer_native_mesh_dim(const std::string& spec) {
+  const auto colon = spec.find(':');
+  const std::string kind = (colon == std::string::npos) ? spec : spec.substr(0, colon);
+  if (kind == "line") return 1;
+  if (kind == "quad" || kind == "tri" || kind == "cubedsphere") return 2;
+  if (kind == "hexbox" || kind == "tetbox" || kind == "prismpyramidmix" ||
+      kind == "polyhedral") {
+    return 3;
+  }
+  return std::nullopt;
+}
+
+/// Builds this rank's slice of `spec` for a placement of `placement_size`
+/// ranks, using LOCAL rank-within-the-placement numbering (so the mesh's
+/// global ids stay independent of which world ranks the placement actually
+/// occupies) -- or an empty mesh of the right dimension when this rank does
+/// not belong to `ranks`.
+[[nodiscard]] fuse::Result<std::unique_ptr<fuse::native::NativeMeshView>> build_placement_mesh(
+    const std::string& spec, const fuse::RankSet& ranks, int world_rank, int dim) {
+  if (ranks.contains(world_rank)) {
+    const int local_rank = ranks.index_of(world_rank);
+    auto arrays = fuse::native::generate_native_mesh(spec, local_rank,
+                                                      static_cast<int>(ranks.size()));
+    if (!arrays.ok()) return arrays.error();
+    return fuse::native::NativeMeshView::create_from_host(arrays.value(), world_rank);
+  }
+  fuse::native::NativeMeshBuilder builder(dim);
+  auto arrays = builder.build();
+  if (!arrays.ok()) return arrays.error();
+  return fuse::native::NativeMeshView::create_from_host(arrays.value(), world_rank);
+}
+
+/// The whole --mesh/--migrate mode: build comp1's placement mesh, build (or
+/// migrate onto) comp2's, and under --check report the conservation
+/// properties migration promises (global cell count, total measure, unique
+/// ids) rather than the field-transfer channel the OTHER mode's --check
+/// verifies -- see Args::mesh_spec's own comment on why the two are
+/// separate claims.
+int run_mesh_migration_mode(const Args& args, int rank, int world) {
+  const auto dim = infer_native_mesh_dim(*args.mesh_spec);
+  if (!dim) {
+    if (rank == 0) {
+      std::cerr << "E-LAYOUT-MESH: unrecognised --mesh kind in '" << *args.mesh_spec << "'\n";
+    }
+    return agree_and_exit(1);
+  }
+
+  auto comp1_view = build_placement_mesh(*args.mesh_spec, args.comp1->ranks, rank, *dim);
+  if (!comp1_view.ok()) {
+    if (rank == 0) std::cerr << "comp1 mesh failed: " << comp1_view.error().message << '\n';
+    return agree_and_exit(1);
+  }
+
+  const fuse::partition::CommHandle world_comm = MPI_Comm_c2f(MPI_COMM_WORLD);
+  std::unique_ptr<fuse::native::NativeMeshView> comp2_view;
+
+  if (args.migrate) {
+    const auto& comp2_ranks = args.comp2->ranks;
+    const int comp2_size = static_cast<int>(comp2_ranks.size());
+
+    auto cd = fuse::partition::centroids_of(*comp1_view.value(), world_comm);
+    if (!cd.ok()) {
+      if (rank == 0) std::cerr << "centroids_of failed: " << cd.error().message << '\n';
+      return agree_and_exit(1);
+    }
+    using Space = Kokkos::DefaultHostExecutionSpace;
+    const std::size_t n = cd.value().centroids.extent(0);
+    Kokkos::View<fuse::partition::Weight*, Space::memory_space> weights(
+        Kokkos::view_alloc("layout_driver.weights", Kokkos::WithoutInitializing), n);
+    Kokkos::deep_copy(weights, fuse::partition::Weight{1});
+
+    fuse::partition::RcbOptions rcb_opts;
+    rcb_opts.num_parts = comp2_size;  // RCB targets comp2's OWN rank count,
+                                      // not the world's -- remapped below.
+    rcb_opts.comm = world_comm;
+    auto rcb_result = fuse::partition::rcb_partition<Space>(rcb_opts, cd.value().centroids,
+                                                             weights, cd.value().global_ids);
+
+    std::vector<int> dest(n);
+    auto part_host =
+        Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), rcb_result.part_id);
+    for (std::size_t i = 0; i < n; ++i) {
+      dest[i] = comp2_ranks.ranks()[static_cast<std::size_t>(part_host(i))];
+    }
+
+    auto migrated = fuse::native::migrate(*comp1_view.value(), dest, world_comm);
+    if (!migrated.ok()) {
+      if (rank == 0) std::cerr << "migrate failed: " << migrated.error().message << '\n';
+      return agree_and_exit(1);
+    }
+    comp2_view = std::move(migrated.value());
+  } else {
+    auto v = build_placement_mesh(*args.mesh_spec, args.comp2->ranks, rank, *dim);
+    if (!v.ok()) {
+      if (rank == 0) std::cerr << "comp2 mesh failed: " << v.error().message << '\n';
+      return agree_and_exit(1);
+    }
+    comp2_view = std::move(v.value());
+  }
+
+  int local_status = 0;
+  if (args.check) {
+    const unsigned long local_c1 = comp1_view.value()->owned_count(*dim);
+    const unsigned long local_c2 = comp2_view->owned_count(*dim);
+    double local_m1 = 0.0, local_m2 = 0.0;
+    for (std::size_t c = 0; c < comp1_view.value()->cell_count(); ++c) {
+      if (comp1_view.value()->is_owned(*dim, c)) local_m1 += comp1_view.value()->measure(*dim, c);
+    }
+    for (std::size_t c = 0; c < comp2_view->cell_count(); ++c) {
+      if (comp2_view->is_owned(*dim, c)) local_m2 += comp2_view->measure(*dim, c);
+    }
+    unsigned long total_c1 = 0, total_c2 = 0;
+    double total_m1 = 0.0, total_m2 = 0.0;
+    MPI_Allreduce(&local_c1, &total_c1, 1, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(&local_c2, &total_c2, 1, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(&local_m1, &total_m1, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(&local_m2, &total_m2, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+
+    if (rank == 0) {
+      std::cout << "check: comp1 cells=" << total_c1 << " measure=" << total_m1
+                << "; comp2 cells=" << total_c2 << " measure=" << total_m2 << '\n';
+    }
+    const bool cells_conserved = (args.migrate ? (total_c1 == total_c2) : true);
+    const bool measure_ok = std::abs(total_m1 - total_m2) < 1e-9 * std::max(1.0, total_m1);
+    if (!cells_conserved || (args.migrate && !measure_ok)) {
+      if (rank == 0) std::cerr << "FAIL: mesh data transfer did not conserve cells/measure\n";
+      local_status = 1;
+    }
+  }
+  return agree_and_exit(local_status);
+}
+
 int main(int argc, char** argv) {
   int provided = 0;
   MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided);
@@ -352,6 +521,10 @@ int main(int argc, char** argv) {
       std::cerr << "E-LAYOUT-COUPLER: coupler placement is not implemented yet\n";
     }
     return agree_and_exit(1);
+  }
+
+  if (args.mesh_spec) {
+    return run_mesh_migration_mode(args, rank, world);
   }
 
   // ------------------------------------------------------------- the graph
