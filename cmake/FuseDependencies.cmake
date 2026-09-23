@@ -405,9 +405,30 @@ macro(fuse_resolve_dependencies)
     # built; only -L/-Wl,-rpath tokens are deduplicated, order-preserving --
     # a repeated plain -lFoo is left alone since library link order can
     # matter and de-duplicating it is not what this defect is about.
+    #
+    # `-framework X` is ONE link item spelt as two words. Tokenising on
+    # whitespace splits it, and CMake then renders the orphaned name as a plain
+    # library: `ld: framework '-lAccelerate' not found`. A MOAB built with
+    # TempestRemap on macOS carries BLAS as "-framework Accelerate", so
+    # /opt/moab-tempest failed to link every tier-2 target. The pair is folded
+    # back into the single token `-Wl,-framework,X`, which survives as a list
+    # element and reaches the linker unchanged.
     set(_fuse_moab_libs_dedup "")
     set(_fuse_moab_seen_dirs "")
+    set(_fuse_moab_pending_framework FALSE)
     foreach(_tok IN LISTS _fuse_moab_tokens)
+      if(_tok STREQUAL "")
+        continue()
+      endif()
+      if(_fuse_moab_pending_framework)
+        list(APPEND _fuse_moab_libs_dedup "-Wl,-framework,${_tok}")
+        set(_fuse_moab_pending_framework FALSE)
+        continue()
+      endif()
+      if(_tok STREQUAL "-framework")
+        set(_fuse_moab_pending_framework TRUE)
+        continue()
+      endif()
       string(REGEX MATCH "^(-L|-Wl,-rpath,)(.+)$" _m "${_tok}")
       if(_m)
         list(FIND _fuse_moab_seen_dirs "${_tok}" _fuse_moab_seen_idx)
