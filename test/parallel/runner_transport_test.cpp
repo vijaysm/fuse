@@ -634,10 +634,14 @@ TEST(RunnerTransport, BaseCommunicatorIsOptionalAndDefaultsToUnset) {
 // puts exactly the component's ranks in its communicator, and a rank in no
 // component gets MPI_COMM_NULL.
 TEST(RunnerTransport, SplittingByRankSetReproducesComponentMembership) {
+  // Was a hard ASSERT_GE(world, 2), which held only because this file was
+  // registered from 2 ranks up. Adding rank 1 (S5.5) falsified that premise
+  // and the assertion fired as designed; a skip states the requirement where
+  // the reader is, and does not depend on the registration staying put.
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   int world = 0, me = 0;
   MPI_Comm_size(MPI_COMM_WORLD, &world);
   MPI_Comm_rank(MPI_COMM_WORLD, &me);
-  ASSERT_GE(world, 2);
 
   // Two disjoint components spanning the job, as spec §6 mode 1 describes.
   const fuse::RankSet src{0, world / 2};
@@ -853,6 +857,13 @@ TEST(RunnerTransport, RegionConvergesInTheSerialIterationCount) {
 }
 
 TEST(RunnerTransport, InitializeBuildsAPlanForEveryTransport) {
+  // Two DISJOINT placements need two ranks: at one rank
+  // `fluid_{0, world_size()/2}` is `{first=0, count=0}`, a component placed
+  // NOWHERE. That is legal per RankSet's own contract, but there is then no
+  // rank to send from and `build_plan` refuses the empty set
+  // (E-TRANSPORT-RANKS). A skip, not a workaround: this test's subject is a
+  // two-sided job, which one rank cannot host.
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   auto h = make_two_component_job("");
   Runner runner{h.graph, h.dag, h.plan, h.backend};
   bind_all(h);
@@ -872,6 +883,13 @@ TEST(RunnerTransport, InitializeBuildsAPlanForEveryTransport) {
 // has_graph starts driving execution. This must be a clean E-RT-TRANSPORT
 // refusal, not a silent success.
 TEST(RunnerTransport, ACommGraphBackedPlanRefusesANonMpiTransport) {
+  // Two DISJOINT placements need two ranks: at one rank
+  // `fluid_{0, world_size()/2}` is `{first=0, count=0}`, a component placed
+  // NOWHERE. That is legal per RankSet's own contract, but there is then no
+  // rank to send from and `build_plan` refuses the empty set
+  // (E-TRANSPORT-RANKS). A skip, not a workaround: this test's subject is a
+  // two-sided job, which one rank cannot host.
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   auto h = make_two_component_job("");
   Runner runner{h.graph, h.dag, h.plan, h.backend};
   bind_all(h);
@@ -885,6 +903,13 @@ TEST(RunnerTransport, ACommGraphBackedPlanRefusesANonMpiTransport) {
 }
 
 TEST(RunnerTransport, ARunDeliversTheSourceValuesToTheDestinationRanks) {
+  // Two DISJOINT placements need two ranks: at one rank
+  // `fluid_{0, world_size()/2}` is `{first=0, count=0}`, a component placed
+  // NOWHERE. That is legal per RankSet's own contract, but there is then no
+  // rank to send from and `build_plan` refuses the empty set
+  // (E-TRANSPORT-RANKS). A skip, not a workaround: this test's subject is a
+  // two-sided job, which one rank cannot host.
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   auto h = make_two_component_job("");
   Runner runner{h.graph, h.dag, h.plan, h.backend};
   bind_all(h);
@@ -903,6 +928,13 @@ TEST(RunnerTransport, ARunDeliversTheSourceValuesToTheDestinationRanks) {
 }
 
 TEST(RunnerTransport, TheTransportPathAllocatesNothingWhileRunning) {
+  // Two DISJOINT placements need two ranks: at one rank
+  // `fluid_{0, world_size()/2}` is `{first=0, count=0}`, a component placed
+  // NOWHERE. That is legal per RankSet's own contract, but there is then no
+  // rank to send from and `build_plan` refuses the empty set
+  // (E-TRANSPORT-RANKS). A skip, not a workaround: this test's subject is a
+  // two-sided job, which one rank cannot host.
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   // The same guarantee Runner.AllocatesNothingWhileRunning pins for the serial
   // path (spec §2 layer 3). This is what proves that holding the TransportSpec
   // behind an index, rather than by value in Resolved, actually removed the
@@ -962,6 +994,13 @@ TEST(RunnerTransport, TheTransportPathAllocatesNothingWhileRunning) {
 // caught -- this test FAILED as expected -- at every rank count tried (2, 3,
 // 4 and 5). Neither mutation survives anywhere post-fix.
 TEST(RunnerTransport, TheDeliveredFieldDoesNotDependOnTheRankCount) {
+  // Two DISJOINT placements need two ranks: at one rank
+  // `fluid_{0, world_size()/2}` is `{first=0, count=0}`, a component placed
+  // NOWHERE. That is legal per RankSet's own contract, but there is then no
+  // rank to send from and `build_plan` refuses the empty set
+  // (E-TRANSPORT-RANKS). A skip, not a workaround: this test's subject is a
+  // two-sided job, which one rank cannot host.
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   // The physics is rank-count invariant, so the delivered values must be too.
   // A gather or scatter that silently dropped one rank's entities passes every
   // per-rank check and fails only this one, because only this one compares a
@@ -996,6 +1035,13 @@ TEST(RunnerTransport, TheDeliveredFieldDoesNotDependOnTheRankCount) {
 // base_communicator, so a copy-transport version of this test cannot see the
 // bug at all.
 TEST(RunnerTransport, InitializeIsRepeatableOnTheSameRunner) {
+  // Two DISJOINT placements need two ranks: at one rank
+  // `fluid_{0, world_size()/2}` is `{first=0, count=0}`, a component placed
+  // NOWHERE. That is legal per RankSet's own contract, but there is then no
+  // rank to send from and `build_plan` refuses the empty set
+  // (E-TRANSPORT-RANKS). A skip, not a workaround: this test's subject is a
+  // two-sided job, which one rank cannot host.
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   auto h = make_two_component_job("");
   Runner runner{h.graph, h.dag, h.plan, h.backend};
   bind_all(h);

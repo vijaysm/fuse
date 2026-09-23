@@ -362,6 +362,43 @@ one instance or get one each.
 
 ---
 
+### D6. A component placed nowhere is legal, but a channel from it cannot initialise — OPEN, needs a ruling
+
+Found by running the MPI legs at 1 rank (S5.5). `RankSet`'s own contract says:
+
+> The contiguous set `[first, first + count)`. `count <= 0` yields an empty
+> set, **which is legal: a component may be declared and placed nowhere in a
+> particular run.**
+
+`MpiTransport::build_plan` refuses an empty rank set (`E-TRANSPORT-RANKS`, and
+`MpiTransport.BuildPlanRejectsEmptyRankSets` pins the refusal). Both are
+defensible alone: a component may sit out a run, and there is no rank to send
+from. Together they mean **a job in which any component is placed nowhere
+cannot initialise if that component has an MPI channel** — the model layer
+declares the configuration legal and the transport layer refuses it.
+
+This is not hypothetical: it is exactly what the two-component test fixture
+becomes at one rank, where `fluid_{0, world_size()/2}` is `{first=0, count=0}`.
+The tests are now guarded at ≥2 ranks, because their subject is a two-sided
+job that one rank cannot host — but that guards the *tests*, not the question.
+
+**The two readings, and neither is chosen yet:**
+
+1. *The refusal is right.* Asking to transport out of a component that exists
+   nowhere is a modelling error, and failing loudly at setup is the honest
+   answer. Then `RankSet`'s "placed nowhere is legal" should say that it is
+   legal only for a component with no channels.
+2. *The refusal is wrong.* "Placed nowhere" is documented as an ordinary
+   configuration — switching a component off for one run — and the Runner
+   should treat its channels as inactive rather than fail. Then `build_plan`'s
+   refusal needs to become a no-op plan for the empty case, and the existing
+   refusal test changes meaning.
+
+Whichever is chosen, one of the two documents is currently wrong. Deciding it
+is a design call, so it is recorded rather than settled here.
+
+---
+
 ### D5. Partial rank-set overlap is untested end to end (CommGraph itself is fine)
 
 **`CommGraph` supports all three overlap shapes and is tested on all three.**
