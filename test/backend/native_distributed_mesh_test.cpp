@@ -5,13 +5,35 @@
 
 #include "fuse/backend/native_mesh.hpp"
 
+#include "fuse/backend/native/geometry.hpp"
+
+#include <algorithm>
+#include <array>
 #include <cmath>
+#include <set>
 
 #include <gtest/gtest.h>
 
 namespace {
 
 using namespace fuse::native;
+
+/// The set of triangles `canonical_fan_triangulation` returns, as sorted
+/// GLOBAL id triples -- independent of local index, so two calls with the
+/// SAME cyclic face presented in DIFFERENT local orders can be compared
+/// directly.
+std::set<std::array<std::int64_t, 3>> triangle_gid_sets(
+    const std::vector<std::int64_t>& gids, const std::vector<Triangle>& tris) {
+  std::set<std::array<std::int64_t, 3>> out;
+  for (const auto& t : tris) {
+    std::array<std::int64_t, 3> g{gids[static_cast<std::size_t>(t[0])],
+                                  gids[static_cast<std::size_t>(t[1])],
+                                  gids[static_cast<std::size_t>(t[2])]};
+    std::sort(g.begin(), g.end());
+    out.insert(g);
+  }
+  return out;
+}
 
 double sum_measures(const NativeMeshView& v, int dim) {
   double s = 0.0;
@@ -115,6 +137,36 @@ TEST(NativeDistributedMesh, ConcavePolygonNotStarShapedFromMinGidVertexIsRefused
   auto view_r = NativeMeshView::create_from_host(arrays_r.value(), 0);
   ASSERT_FALSE(view_r.ok()) << "the fan from vertex 0 folds over itself and must be refused";
   EXPECT_EQ(view_r.error().code, "E-MESH-POLYGON-NOT-STAR-SHAPED");
+}
+
+// ---- the shared-face rule, at the level of canonical_fan_triangulation ---
+
+TEST(NativeDistributedMesh, CanonicalFanTriangulationIsIndependentOfLocalStartingCorner) {
+  // The SAME unit-square face's four corners (cyclic order 10-11-12-13),
+  // presented starting at two DIFFERENT local corners -- B is A rotated by
+  // one position, same cyclic direction. A caller keyed on LOCAL index 0
+  // (rather than minimum global id) would fan from a different physical
+  // vertex in each case and get a DIFFERENT diagonal; the actual rule must
+  // not.
+  const std::vector<std::int64_t> gids_a = {10, 11, 12, 13};
+  const std::vector<Vec3> pts_a = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}};
+  const std::vector<std::int64_t> gids_b = {11, 12, 13, 10};  // A rotated by 1
+  const std::vector<Vec3> pts_b = {{1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 0}};
+
+  auto tri_a = canonical_fan_triangulation(gids_a, pts_a);
+  auto tri_b = canonical_fan_triangulation(gids_b, pts_b);
+  ASSERT_TRUE(tri_a.ok()) << tri_a.error().message;
+  ASSERT_TRUE(tri_b.ok()) << tri_b.error().message;
+
+  const auto sets_a = triangle_gid_sets(gids_a, tri_a.value());
+  const auto sets_b = triangle_gid_sets(gids_b, tri_b.value());
+  EXPECT_EQ(sets_a, sets_b) << "the same physical face, presented starting at a different "
+                              "local corner, must triangulate into the SAME set of global-id "
+                              "triangles -- the rule is keyed on global id, not local index";
+  // And the actual expected split (fan from gid 10, the minimum): (10,11,12)
+  // and (10,12,13).
+  const std::set<std::array<std::int64_t, 3>> expected = {{10, 11, 12}, {10, 12, 13}};
+  EXPECT_EQ(sets_a, expected);
 }
 
 // ---- the shared-face rule: two hexes sharing a quad, opposite local order
