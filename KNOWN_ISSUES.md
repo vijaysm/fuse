@@ -390,51 +390,59 @@ rather than the primary diagnosis.
 
 ---
 
-### D5. The Runner cannot express partial rank-set overlap — a CAPABILITY gap, corrected 2026-09-22
+### D5. Partial rank-set overlap through the Runner — FIXED IN THE LIBRARY 2026-09-22, awaiting a host run; MOAB half open
 
-**Correction.** This entry first said `CommGraph` supported all three shapes,
-the Runner "consumes precisely that", and only end-to-end *coverage* of the
-partial case was missing. The first half is true. The second is wrong, and
-building the test harness showed why.
+**History.** First recorded as a coverage gap, then corrected to a capability
+gap. The Runner filled both `CommGraphSide`s from one `backend.view(MeshId)`,
+so each rank held one piece of each mesh, shared by every component on it,
+and two partially overlapping placements could not both cover the region.
 
-`CommGraph` is correct: each `CommGraphSide` takes its **own** communicator and
-its **own** `MeshView`, and matrix rows 1–6 cover (full, disjoint, partial) ×
-(GlobalId, NearestNeighbor) on the host.
+**Ruling (2026-09-22): per-placement views in one backend**, MOAB's
+application-id model.
 
-The Runner fills **both** sides from **one** view
-(`src/runtime/runner.cpp`, `attach_comm_graphs`):
+**Done (`2a1e8c0`):**
 
-```cpp
-const auto view = backend.view(mid.value());          // the region's mesh
-src_side.mesh = in_src ? view.value() : nullptr;
-dst_side.mesh = in_dst ? view.value() : nullptr;      // the same view
-```
+- `MeshBackend::placed_view(MeshId, ComponentId)` and
+  `placed_region_size(Region, ComponentId)`. They default to the
+  placement-free answers, so every existing backend and every
+  single-decomposition run behaves exactly as before; tier 0 is unchanged at
+  72/72. They are named rather than overloaded because an overload of `view`
+  would be hidden in every derived backend. Contract: identical placements get
+  identical decompositions, since the IR emits no Transport between them.
+- `RegionSizes` takes the arc's placement (`ValueType::rank_set`), so buffers
+  are sized from their own component's decomposition.
+- The Runner gives each CommGraph side its own component's view. The Remap
+  identity check and the conservation measure use the arc's placement, and
+  the measure now resolves its mesh **by name** (it had passed the graph's
+  `MeshId` straight to the backend, the positional-id hazard
+  `make_region_sizes` exists to avoid).
+- **A latent defect the harness exposed:** the hot loop ran the matched path's
+  gather and scatter on a *peer* plan, where both are empty. A peer exchange
+  sent zeros and delivered nothing through the Runner. No Runner test used
+  partial overlap, which is the only shape that produces a peer plan, so it was
+  never run. Fixed: the peer plan's extent is the larger of the rank's two
+  blocks, the source block is staged whole, and only the destination indices
+  the plan writes (precomputed, allocation-free) are copied back.
+- `E-RT-REMAP-PLACEMENT`: a Remap on a non-default decomposition refuses,
+  because `build_weights()` still reads the default one. A serial test makes it
+  fire (`Runner.RefusesARemapOnANonDefaultPlacementDecomposition`).
+- Three shape tests through one helper (partial at 3–5 ranks, full, disjoint);
+  the test backend builds one decomposition per placement.
+- Mutations: `remap-ignores-the-placement-decomposition` KILLED here;
+  `both-commgraph-sides-share-one-view`,
+  `peer-plan-staged-through-the-matched-path` and
+  `peer-extent-is-only-the-source-block` NOT-ASSESSED (need MPI).
 
-That follows from the data model, not a slip: `MeshBackend::view(MeshId)` has
-no component argument, the Runner holds one backend, and `MoabMeshBackend`
-partitions every mesh over the single communicator given to
-`set_communicator`. **Each rank holds exactly one piece of each mesh**, shared by
-every component placed on it. Guard (1), `E-RT-TRANSPORT-XREGION`, then
-requires a transport's two ends to be the same region on the same mesh.
+**Still open:**
 
-With one partition, two different rank sets cannot each hold the whole region.
-A on {0,1,2} and B on {1,2,3} over one 4-way partition: A holds pieces 0–2, so
-B's rank 3 has no source for piece 3 and the match is incomplete. Under **full**
-overlap it works (both sides hold the same pieces, every match is a local
-pair). Under **disjoint** placement it works in the suite only because
-`PartitionedTestBackend` partitions within "whichever set contains the calling
-rank" — a per-component decomposition faked from rank membership, which is
-exactly what cannot be faked once a rank is in both sets. No parallel Runner
-test constructs a real backend (`SerialMeshBackend` once, in
-`mpi_transport_test.cpp`, where every rank owns everything).
-
-**What it needs:** each component's view of a shared region must be that
-component's own decomposition — the mesh loaded once per placement, over that
-placement's communicator — and the Runner must hand the source component's view
-to `src_side` and the target component's to `dst_side`. A rank in both sets then
-holds two pieces, one per component. That is inherent to partial overlap, not a
-cost of the fix. It is an interface change to `MeshBackend` or the Runner, so the
-design is **awaiting a ruling**.
+1. **A host run.** None of the parallel verdicts above exists yet.
+2. **`MoabMeshBackend` does not override the placed queries.** It still has one
+   `ParallelComm` over one communicator, so with MOAB every component shares one
+   decomposition. Partial overlap is therefore proved with the test backend
+   only. The MOAB half is one `ParallelComm` per component communicator, with
+   the mesh read once per placement.
+3. **Per-placement remap weights**, which is what `E-RT-REMAP-PLACEMENT` holds
+   the place of.
 
 ---
 
