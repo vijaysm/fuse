@@ -181,6 +181,30 @@ ranks = [1, 2, 3, 4, 5]
 note = """One deliberate exception, which the gate prints as MATRIX-OVERRIDE: `epoch_reconcile` is registered from 2 up. Its first case asserts `world_size() >= 2` rather than skipping, on the written grounds that there is nothing to reconcile on one rank -- so the honest fix when rank 1 was added was to keep that premise true, not to convert the file into three skips. A host run on 2026-09-21 is what surfaced it, along with two other legs whose rank-1 behaviour is still being resolved."""
 
 [[cell]]
+id = "A-LAYOUT"
+axis = "command-line PE layout: rank count x placement shape"
+pins = """the S4 PE-layout driver (examples/layout_driver/main.cpp) built and \
+registered at 2, 3 and 4 ranks over identical, disjoint and \
+partially-overlapping --comp1/--comp2 placements (partial needs >= 3 ranks), \
+with an arrangement at 3 and 4 ranks that puts comp2 on the LOWER range, plus \
+WILL_FAIL refusals for min != 0, max != P-1, a reversed range, and --coupler \
+(coupler placement is not implemented and must refuse, not silently ignore, \
+per E-LAYOUT-COUPLER)."""
+file = "examples/CMakeLists.txt"
+kind = "registration"
+ranks = [2, 3, 4]
+note = """This is a REGISTRATION cell, not an `mpi` cell: the driver is one \
+binary run at different CLI arguments through explicit add_test() entries in \
+examples/CMakeLists.txt, not a fuse_add_mpi_test() gtest target, so the \
+checker's TEST(Suite,Name) source match does not apply -- there is no such \
+macro in this file to find. The 15 ctest names are \
+layout.{2,3,4}.c1-<lo>-<hi>.c2-<lo>-<hi>* (11 valid layouts) and \
+layout.refuse.{min-nonzero,max-not-last,reversed-range,coupler} (4 \
+WILL_FAIL). Compiled and linked in the sandbox (tier 1); mpiexec cannot \
+initialise MPI here (KNOWN_ISSUES C1), so every rank's run and every \
+refusal's exit code are a host action, not a sandbox one."""
+
+[[cell]]
 id = "A-EMPTY"
 axis = "empty partitions"
 pins = "a rank owning no entity of a field is ordinary, not an error; and an empty RANK SET is refused, which is a different thing"
