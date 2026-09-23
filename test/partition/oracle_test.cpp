@@ -129,10 +129,15 @@ TEST(OracleImbalance, UniformWeightHexBoxWithinBound) {
   }
   const double ideal = static_cast<double>(total) / static_cast<double>(num_parts);
   for (OracleWeight pw : part_weight) {
-    // The histogram median is not exact (K=128 buckets, 4 refine iterations),
-    // so a small relative slack is expected on top of the ties-based
-    // rounding; 15% covers both on a structured, uniform-weight fixture.
-    EXPECT_NEAR(static_cast<double>(pw), ideal, 0.15 * ideal)
+    // Exact, not approximate. The histogram median only has to land the split
+    // inside the right final bucket; every point inside that bucket is then a
+    // tie, and ties are handed left in ascending global id until the left
+    // weight equals the target exactly. With 512 uniform weights and 8 parts
+    // every part is therefore exactly 64 (rcb_moab's own sweep measured an
+    // excess imbalance of 1.0000 on every evenly dividing fixture). A 15%
+    // slack, which this test once had, would pass an RCB whose tie
+    // distribution had stopped working.
+    EXPECT_EQ(static_cast<double>(pw), ideal)
         << "part weight " << pw << " vs ideal " << ideal;
   }
 }
