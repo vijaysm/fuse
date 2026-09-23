@@ -774,17 +774,55 @@ TEST(RunnerTransport, ASubSetRegionIsRefusedRatherThanGuessed) {
   EXPECT_EQ(r.error().code, "E-RT-TRANSPORT-REGION");
 }
 
+// Defined below, with its rationale.
+std::function<fuse::Result<void>(fuse::Transport&)> mpi_comm_setup();
+
 TEST(RunnerTransport, AWholeMeshRegionIsNotRefused) {
   // The control for the test above: without it, a guard that refused
-  // everything would pass.
+  // everything would pass. Same configuration as that test -- the mpi
+  // transport over the base communicator -- so the entity set is the ONLY
+  // difference between the two.
+  //
+  // It used the "copy" transport with no communicator until 2026-09-23. That
+  // passed only while both ends of the Transport shared one mesh view; with
+  // each end in its own component's decomposition it copies fluid's local
+  // block whole into solid's, which on a rank in one placement and not the
+  // other are different sizes. That is refused (E-RT-SIZE) and pinned by the
+  // test below, so this control no longer rides on it.
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);  // two disjoint placements
   auto h = make_two_component_job(/*entity_set=*/"");
   Runner runner{h.graph, h.dag, h.plan, h.backend};
   bind_all(h);
 
   fuse::RunnerConfig cfg;
-  cfg.transport         = "copy";  // no communicator: no CommGraph, no refusal
+  cfg.transport         = "mpi";
+  cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
+  cfg.transport_setup   = mpi_comm_setup();
   const auto r = runner.initialize(h.components, h.registry, cfg);
   EXPECT_TRUE(r.ok()) << r.error().code << ": " << r.error().message;
+}
+
+TEST(RunnerTransport, AWholeArcCopyBetweenDifferentDecompositionsIsRefused) {
+  // With no communicator there is no CommGraph, so the Transport moves its
+  // whole input arc into its whole output arc. Across two DISJOINT
+  // placements those are two components' decompositions of the region --
+  // 12 entities and 0 on a rank in one of them -- and an element-wise copy
+  // would put one component's local values into another's slots. The
+  // refusal is check_transport_extents()'s whole-arc-copy branch.
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
+  auto h = make_two_component_job(/*entity_set=*/"");
+  Runner runner{h.graph, h.dag, h.plan, h.backend};
+  bind_all(h);
+
+  fuse::RunnerConfig cfg;
+  cfg.transport = "copy";
+  const auto r = runner.initialize(h.components, h.registry, cfg);
+  ASSERT_FALSE(r.ok())
+      << "copying one component's local block into another's is not a "
+         "transfer between their decompositions";
+  EXPECT_EQ(r.error().code, "E-RT-SIZE") << r.error().message;
+  EXPECT_NE(r.error().message.find("without a CommGraph"), std::string::npos)
+      << r.error().message;
 }
 
 // RunnerConfig::transport_setup is the existing hook for a backend's
