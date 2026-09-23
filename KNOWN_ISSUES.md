@@ -390,7 +390,7 @@ rather than the primary diagnosis.
 
 ---
 
-### D5. Partial rank-set overlap through the Runner — FIXED IN THE LIBRARY 2026-09-22, awaiting a host run; MOAB half open
+### D5. Partial rank-set overlap through the Runner — FIXED AND HOST-VERIFIED 2026-09-23; MOAB half open
 
 **History.** First recorded as a coverage gap, then corrected to a capability
 gap. The Runner filled both `CommGraphSide`s from one `backend.view(MeshId)`,
@@ -447,14 +447,20 @@ verdict agreed across ranks:
 - a peer plan's staged source must equal its input, and its written indices must
   fit its output.
 
-The whole-arc-copy branch has **no test yet**: the serial harness's Transport feeds
-a Remap, whose own size check fires first. Mutation `transport-held-to-equal-extents`
-(MPI) pins the fix.
+The whole-arc-copy branch is tested by
+`RunnerTransport.AWholeArcCopyBetweenDifferentDecompositionsIsRefused` (`6b07464`); the
+serial harness cannot reach it, because its Transport feeds a Remap whose own size check
+fires first. Mutation `transport-held-to-equal-extents` (MPI) pins the fix.
 
 **Still open:**
 
-1. **A host run** of the fix. The partial-overlap test needs ≥3 ranks, so run 1
-   (2 ranks) skipped it.
+**Host-verified (2026-09-23):** partial overlap delivers every entity at 3, 4 and 5
+ranks, full overlap at every rank count, and all 18 `layout.*` tests pass, including the
+3 `layout.migrate.*` ones.
+
+1. **The MPI-gated mutations** for this fix (`both-commgraph-sides-share-one-view`,
+   `peer-plan-staged-through-the-matched-path`, `peer-extent-is-only-the-source-block`,
+   `transport-held-to-equal-extents`) have not yet been run on a host.
 2. **`MoabMeshBackend` does not override the placed queries.** It still has one
    `ParallelComm` over one communicator, so with MOAB every component shares one
    decomposition. Partial overlap is therefore proved with the test backend
