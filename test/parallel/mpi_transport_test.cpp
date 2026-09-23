@@ -1021,6 +1021,8 @@ TEST(MpiTransportThroughRunner, PlanningTheRunnersOwnSpecIsRefusedForNoRanks) {
 // build_plan() for which this path moves data, and the missing piece is on the
 // Runner's side, in resolve_instructions().
 TEST(MpiTransportThroughRunner, APlannableSpecStillCannotSurvivePrepare) {
+  // plannable_spec() names two rank sets, so it needs two ranks to name.
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
   auto h = make_hook_harness();
   fuse::Runner runner{h->graph, h->dag, h->plan, h->backend};
 
