@@ -1,6 +1,7 @@
 #include <fmt/format.h>
 
 #include "fuse/base/config.hpp"
+#include "fuse/backend/consistent_interp.hpp"
 #include "fuse/backend/remap_plan.hpp"
 #include "fuse/backend/supermesh.hpp"
 
@@ -182,6 +183,17 @@ struct SupermeshSide {
 Result<RemapWeights> build_weights(const RemapPlan& plan,
                                    const CouplingGraph& graph,
                                    const MeshBackend& backend) {
+  // The consistent-interpolation H / H^T D pair
+  // (fuse/backend/consistent_interp.hpp, header-only) is dependency-free -- it needs only
+  // MeshView::centroid at dimension 0, which every backend already provides
+  // -- so it dispatches BEFORE the FV<->FV-only check below, in both this
+  // translation unit's build_weights() and the MOAB one. Neither the P0
+  // supermesh path nor these two methods need each other, so there is no
+  // ordering hazard in checking the method string first.
+  if (plan.method == "consistent" || plan.method == "consistent-transpose") {
+    return build_consistent_weights_for_plan(plan, graph, backend);
+  }
+
   // Only what this builder can honour. The checks are deliberately the same
   // shape as the MOAB path's, so a plan refused there is refused here for the
   // same stated reason rather than silently accepted by the other build.
@@ -2013,6 +2025,12 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
                                    const CouplingGraph& graph,
                                    const MeshBackend& backend) {
   using namespace remap_detail;  // NOLINT: file-local detail namespace
+
+  // See the identical early dispatch in the
+  // !FUSE_HAVE_MOAB build_weights() above for why this check comes first.
+  if (plan.method == "consistent" || plan.method == "consistent-transpose") {
+    return build_consistent_weights_for_plan(plan, graph, backend);
+  }
 
   // =========================================================================
   // Plan-level dispatch. Nothing here touches a mesh: these are statements
