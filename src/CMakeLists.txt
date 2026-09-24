@@ -125,6 +125,7 @@ add_library(fuse-coupler-schedule
   schedule/expand.cpp
   schedule/scheduler.cpp
   schedule/slab.cpp
+  schedule/window.cpp
 )
 add_library(fuse::schedule ALIAS fuse-coupler-schedule)
 target_compile_features(fuse-coupler-schedule PUBLIC cxx_std_20)
@@ -291,6 +292,7 @@ add_library(fuse-coupler-runtime
   runtime/runner.cpp
   runtime/iteration.cpp
   runtime/checkpoint_support.cpp
+  runtime/window_coupler.cpp
 )
 add_library(fuse::runtime ALIAS fuse-coupler-runtime)
 target_compile_features(fuse-coupler-runtime PUBLIC cxx_std_20)
