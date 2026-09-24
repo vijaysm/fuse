@@ -845,6 +845,42 @@ genuinely partitioned, non-matching nodal Remap through the Runner at 1 to 5
 ranks: global force conserved, H exact for a linear field, power balanced.
 Lift the refusal only when that passes.
 
+
+### D9. The coupled channel-beam FSI gains energy over many periods — OPEN
+
+`examples/fsi_channel`: 2D unsteady Stokes (CN, MAC grid) and a clamped
+Euler-Bernoulli beam (FD, Newmark average acceleration), strongly coupled
+through consistent H and conservative Hᵀ D on a non-matching wall.
+
+Every window converges tightly, so the converged solution is the monolithic
+solution of the combined time discretisation. The growth therefore belongs to
+that combined scheme, not to the coupling iteration. Each half alone is bounded:
+- the beam alone, over 80 periods: Emax/E0 = 1.0000;
+- the fluid alone under a prescribed periodic wall velocity, over 40 periods:
+  bounded.
+
+**Found and fixed on the way:**
+- the Crank-Nicolson pressure gradient was fully implicit against a trapezoidal
+  viscous term, so the wall traction was p(t_{n+½}) labelled as p(t₁). That
+  caused a sign-alternating growth of |ratio| 2.48 per period. The pressure now
+  converges at order 2.0013 against p(t₁), and the alternation is gone.
+- the wall-velocity boundary condition used the t₁ value for both Crank-Nicolson
+  levels.
+
+**What remains:** at mass ratio about 2.5 (h_s = 0.5, rho_f = 1, H = 0.2) with
+IQN-ILS and dt = T₁/40, the total energy grows by a constant 1.22796 per step,
+the same to four figures across periods 3 to 12. The dt self-convergence order is
+0.822 (mid-span deflection 0.018725, 0.019143, 0.019390, 0.019533, 0.019608 m at
+10 to 160 steps). `FsiTransient.DISABLED_SelfConvergenceInDtIsSecondOrderInTheAsymptoticRegime`
+keeps the unchanged bound.
+
+**Next:** check the discrete energy identity step by step. A monolithic
+trapezoidal pairing needs the interface power in mid-step form,
+½(ẇₙ + ẇₙ₊₁) · ½(fₙ + fₙ₊₁), on both sides. Also check whether the
+transpiration condition's volume source, ∫ẇ dx, is consistent with the
+pressure outlet's reference. The steady, power-balance and added-mass tests
+pass, and do not depend on either.
+
 ---
 
 ## C. Not defects — do not fix these
