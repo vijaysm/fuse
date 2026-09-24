@@ -1,0 +1,89 @@
+# Mutations for the "Nodal fields" track. Schema: build-evidence/mutations.toml.
+# Own file per the review-fix protocol: do not edit build-evidence/mutations.toml
+# directly while other fixers hold it dirty.
+
+[[mutation]]
+id = "nodal-field-extent-uses-cell-count"
+area = "backend"
+describes = "make_region_sizes()'s Vertex-kind branch (mesh_view.hpp's field_extent/region_extent_kind decided the region carries a ContinuousGLL order-1 field) reads the region's own (cell) dimension instead of the mesh's vertex count, exactly the defect the acceptance test (InterfaceTransfer.ConsistentPairRunsThroughTheRunnerExactlyAndBalancesPower) failed on with E-RT-SIZE before this track's fix"
+file = "src/backend/serial_backend.cpp"
+old = "      return view.value()->entity_count(0);\n    }"
+new = "      return view.value()->entity_count(resolved.dimension >= 0 ? resolved.dimension\n                                                                 : view.value()->dimension());\n    }"
+target = "fuse_backend_field_extent_test"
+test = "backend.field_extent"
+# KILLED, observed directly in this sandbox (Tier 0, no MPI needed): applied
+# by hand, rebuilt, and confirmed to turn FOUR cases from passing to failing --
+# MakeRegionSizesNodal.LineMeshVertexCountIsCellsPlusOne reports 9 where 10
+# (vertices, on the 9-cell line mesh) is expected, and the box/quad-triangle/
+# hex-tet cases fail the same way. The mutated source was then restored
+# byte-for-byte (cmp against a pre-mutation backup) and the suite rebuilt and
+# reconfirmed passing (14/14) before moving on. See docs/dev/nodal-fields.md's
+# "Mutation coverage" for the same account.
+
+[[mutation]]
+id = "shared-vertex-owner-picks-highest-rank"
+area = "backend"
+describes = "SharedVertexLineMesh::is_owned(0, i) inverts docs/dev/native-mesh.md's rule for the boundary slot this rank shares with its LEFT neighbour, claiming ownership for the HIGHER of the two ranks holding a shared vertex instead of the lower one -- exactly the inversion mutation this track's own test backend exists to catch, since resolve_vertex_ownership (native_migration.cpp) itself is reused unmodified and has no comparable local mutation point in this track's owned files"
+file = "test/support/partitioned_test_backend.hpp"
+old = "    if (i == 0) return owner_of_first_ == my_rank_;"
+new = "    if (i == 0) return true;  // MUTATED: every rank claims its own first vertex"
+target = "fuse_parallel_nodal_field_test"
+test = "parallel.nodal_field.2"
+requires = "mpi"
+# NOT-ASSESSED in this sandbox: MPI cannot initialise here (docs/dev/
+# testing.md). Expected kill: SharedVertexOwnership.
+# LowestRankOwnsEachSharedVertexAndBoundariesAgree's
+# `all_owns_first[r+1] == 0` check fails on every rank pair, at every rank
+# count above 1 -- with the mutation, a rank claims ownership of a vertex a
+# lower rank already claimed, so BOTH holders report owned. Verdict is a host
+# action.
+
+[[mutation]]
+id = "shared-vertex-halo-copy-skipped"
+area = "backend"
+describes = "SharedVertexLineMesh reports every one of its local vertices as owned (is_owned(0, i) always true), the shape a Transport's halo-fill step being skipped would produce: a ghost copy that was never overwritten from its owner keeps whatever this rank wrote locally instead of the owner's value"
+file = "test/support/partitioned_test_backend.hpp"
+old = "    if (i == 0) return owner_of_first_ == my_rank_;\n    return true;"
+new = "    return true;  // MUTATED: no shared vertex is ever non-owned"
+target = "fuse_parallel_nodal_field_test"
+test = "parallel.nodal_field.2"
+requires = "mpi"
+# NOT-ASSESSED in this sandbox. Expected kill: this mutation alone does not
+# change NodalTransport.EveryLocalCopyMatchesTheGlobalIdentity's outcome (that
+# test writes the SAME closed form on every rank regardless of ownership, so
+# a ghost that keeps its own locally-written value is still correct by
+# coincidence) -- which is exactly why
+# SharedVertexOwnership.LowestRankOwnsEachSharedVertexAndBoundariesAgree
+# exists as a SEPARATE case asserting ownership directly rather than only
+# inferring it from a transfer's correctness. `all_owns_first[r+1] == 0`
+# fails for every r+1 > 0.
+
+[[mutation]]
+id = "shared-vertex-load-summed-more-than-once"
+area = "transport"
+describes = "accumulate_shared_rows sends a rank's own row TWICE into the Allgatherv payload (once as itself, once duplicated), so every gathered total double-counts every rank's contribution instead of counting each exactly once"
+file = "src/transport/comm_graph.cpp"
+old = "  std::vector<std::int64_t> local_gids(nv);\n  for (std::size_t i = 0; i < nv; ++i) {\n    local_gids[i] = static_cast<std::int64_t>(view.global_id(dim, i));\n  }\n\n  const int local_count = static_cast<int>(nv);"
+new = "  std::vector<std::int64_t> local_gids(nv);\n  for (std::size_t i = 0; i < nv; ++i) {\n    local_gids[i] = static_cast<std::int64_t>(view.global_id(dim, i));\n  }\n\n  const int local_count = static_cast<int>(nv) * 2;  // MUTATED: double-counted"
+target = "fuse_parallel_nodal_field_test"
+test = "parallel.nodal_field.2"
+requires = "mpi"
+# NOT-ASSESSED in this sandbox. Expected kill: AccumulateSharedRows.
+# SumsEveryRanksPartialExactlyOnceAndDeliversTheSameTotalToEveryHolder's
+# per-vertex expected totals are computed from EXACTLY one contribution per
+# holding rank; doubling `local_count` reads `nv` values past the end of
+# `local_gids`/`local_component` (undefined behaviour, likely a crash or a
+# visibly wrong total well before any EXPECT_DOUBLE_EQ) rather than a subtle
+# near-miss -- either outcome fails the test. AccumulateSharedRows.
+# ManuallyAssembledPowerBalances's global sum would also double, failing its
+# EXPECT_NEAR against `total_force`.
+
+[[mutation]]
+id = "nodal-parallel-remap-refusal-disabled"
+area = "runtime"
+describes = "KNOWN_ISSUES D8: a Remap into a nodal field on several ranks has no verified reduction; on a replicated source the owner sum multiplies the load by the holder count. Removing the refusal lets it run."
+file = "src/runtime/runner.cpp"
+old = "      if (kind.value() == RegionExtentKind::Vertex) {"
+new = "      if (false) {"
+target = "fuse_verification_interface_transfer_test"
+test = "verification.interface_transfer"

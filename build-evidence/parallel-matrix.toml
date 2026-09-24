@@ -280,3 +280,47 @@ gap = """Only `space_kernels_test.cpp` is typed over execution spaces, so the sp
 axis covers the numerical kernels and not the transport or runtime paths that \
 call them. A build with a host-parallel space therefore exercises those paths on \
 one space only, whichever the default is."""
+
+[[cell]]
+id = "A-NODAL-OWNERSHIP"
+axis = "lowest-rank vertex ownership (Nodal fields track)"
+pins = "a vertex shared by two ranks -- SharedVertexLineMesh's one-vertex overlap at every internal boundary -- is owned by the LOWER of the two, on every rank count, and both neighbours agree on where the boundary itself sits"
+file = "test/parallel/nodal_field_test.cpp"
+kind = "mpi"
+ranks = [1, 2, 3, 4, 5]
+test = ["SharedVertexOwnership.LowestRankOwnsEachSharedVertexAndBoundariesAgree"]
+note = "Compiles under FUSE_ENABLE_MPI=ON; UNRUN in the sandbox (MPI cannot initialise here, docs/dev/testing.md). Its verdict comes from a host run like every other mpi cell in this matrix."
+
+[[cell]]
+id = "A-NODAL-TRANSPORT"
+axis = "plain nodal Transport delivers the correct value to every local copy"
+pins = "a ContinuousGLL order-1 field, moved by a plain (non-conservative) channel through a real Runner + Transport, gives every rank's local buffer -- owned or ghost -- the value its global identity implies, at every rank count"
+file = "test/parallel/nodal_field_test.cpp"
+kind = "mpi"
+ranks = [1, 2, 3, 4, 5]
+test = ["NodalTransport.EveryLocalCopyMatchesTheGlobalIdentity"]
+note = "Compiles under FUSE_ENABLE_MPI=ON; UNRUN in the sandbox. Exercises attach_comm_graphs's dim-0 fix and comm_graph.cpp's existing owned-source/every-destination gather; does NOT exercise consistent_interp.hpp's H operator itself (same-region transfer, no non-matching interface)."
+
+[[cell]]
+id = "A-NODAL-ACCUMULATE"
+axis = "cross-rank reduction for a distributed H^T target (accumulate_shared_rows)"
+pins = "every rank's own local partial contribution to a shared vertex is summed exactly once, not once per holder, and the resulting total is identical wherever it is read back -- on a deliberately non-uniform per-rank partial pattern, plus a manually-assembled global power balance to round-off"
+file = "test/parallel/nodal_field_test.cpp"
+kind = "mpi"
+ranks = [1, 2, 3, 4, 5]
+test = [
+  "AccumulateSharedRows.SumsEveryRanksPartialExactlyOnceAndDeliversTheSameTotalToEveryHolder",
+  "AccumulateSharedRows.ManuallyAssembledPowerBalances",
+]
+note = "Compiles under FUSE_ENABLE_MPI=ON; UNRUN in the sandbox. Verifies the STANDALONE primitive (include/fuse/transport/comm_graph.hpp's accumulate_shared_rows), called directly -- see the A-NODAL-HT-PARALLEL gap below for why it is not yet called from Runner."
+
+[[cell]]
+id = "A-NODAL-HT-PARALLEL"
+axis = "H^T on a genuinely distributed nodal target, through Runner"
+gap = """REFUSED, not run: E-RT-REMAP-NODAL-PARALLEL (KNOWN_ISSUES D8) refuses a \
+Remap into a nodal field on more than one rank, and \
+InterfaceTransfer.ARemapIntoANodalFieldOnSeveralRanksIsRefused makes it fire. Whether \
+shared-vertex rows must be summed or copied depends on per-placement weights (D5 item 3); \
+on the replicated source reachable today an owner sum would multiply the load by the \
+holder count. The cell closes with a genuinely partitioned, non-matching nodal Remap \
+through the Runner at 1 to 5 ranks conserving force and balancing power."""

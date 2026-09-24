@@ -814,6 +814,39 @@ replay" for that one).
 
 ---
 
+### D8. A Remap into a nodal field on more than one rank is refused — OPEN, needs per-placement weights
+
+`E-RT-REMAP-NODAL-PARALLEL` (`resolve_remap`, `src/runtime/runner.cpp`) refuses
+any Remap whose target is a nodal field (ContinuousGLL order 1) on a component
+placed on more than one rank. `InterfaceTransfer.ARemapIntoANodalFieldOnSeveralRanksIsRefused`
+makes it fire. The condition is read from the declared graph and placement, so
+every rank refuses together.
+
+**Why a refusal and not the owner sum that was first wired in.** A shared
+vertex's rows on each holder are partial or already complete depending on the
+decomposition the weights were built on. On a replicated source, which is
+every case reachable today because `E-RT-REMAP-PLACEMENT` keeps weights on
+the default view (D5 item 3), every holder computes the complete row. Summing
+them onto the owner then multiplies the load by the holder count, silently. On
+a genuinely partitioned source the rows are partial and the sum is right. No
+test has run the partitioned case, and taking the owner's value for a pointwise
+target is equally unverified there. The lead's first ruling assumed partial
+rows without checking; the nodal-fields track found the replicated case.
+
+**What stays.** Nodal Transport (the same field on both sides, with
+lowest-rank vertex ownership), the shared-vertex primitives
+`accumulate_shared_rows` and `copy_owner_shared_rows`, and their MPI tests in
+`test/parallel/nodal_field_test.cpp`, whose verdicts come from a host run.
+`reduce_nodal_remap_target()` stays compiled but is unreachable behind the
+refusal: it is the path the refusal will open.
+
+**What to do.** Build per-placement remap weights (D5 item 3). Then run a
+genuinely partitioned, non-matching nodal Remap through the Runner at 1 to 5
+ranks: global force conserved, H exact for a linear field, power balanced.
+Lift the refusal only when that passes.
+
+---
+
 ## C. Not defects — do not fix these
 
 - **Five mutations report `NOT-ASSESSED` locally.** They need MPI, and a test

@@ -12,4 +12,6 @@ rank from becoming a hang on all of them.
 How code moves out of `upstream/` and into `fuse::` — the procedure, the naming map, and the
 retirement schedule — is [](porting.md). The staged build order lives in [](roadmap.md).
 [](coupling-windows.md) covers the multi-clock iteration-window mechanism (schedule-time opt-in
-plus runtime driver) for whoever next touches it.
+plus runtime driver) for whoever next touches it. [](nodal-fields.md) covers how a field's
+discretization decides its buffer extent (`ContinuousGLL` order 1 is sized by vertex count, not
+cell count) and what lowest-rank vertex ownership means for a nodal field in parallel.
