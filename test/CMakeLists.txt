@@ -146,7 +146,7 @@ endforeach()
 fuse_add_gtest(ir ir_dag THROWS)
 
 # ---------------------------------------------------------------- schedule
-foreach(t acyclicity acyclicity_sweep expand plan lockstep epoch slab multirate_region)
+foreach(t acyclicity acyclicity_sweep expand plan lockstep epoch slab multirate_region window_scope)
   fuse_add_gtest(schedule ${t})
 endforeach()
 # buffers asserts the overflow refusals are raised, so it aborts in the no-exceptions leg.
@@ -252,7 +252,7 @@ if(FUSE_ENABLE_MOAB)
 endif()
 
 # ---------------------------------------------------------------- runtime
-foreach(t runner checkpoint epoch_schedule)
+foreach(t runner checkpoint epoch_schedule window_coupler)
   fuse_add_gtest(runtime ${t})
 endforeach()
 fuse_add_gtest(runtime component_iface THROWS)

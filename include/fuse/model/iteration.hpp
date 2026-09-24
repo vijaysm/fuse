@@ -258,6 +258,33 @@ enum class AccelKind {
   IQN_IMVJ,
 };
 
+/// Time windows track: how a component's own sub-stepping relates to a
+/// coupling window's end (`CouplingWindowScope`, fuse/schedule/window.hpp).
+/// Chosen per component, never per region -- a mixed pair is the point.
+enum class DtPolicy {
+  /// The component keeps its own dt. A substep that would cross the window
+  /// end is taken in full anyway (the straddling step): the part of it
+  /// beyond the window end is advanced against the partner's trajectory
+  /// EXTRAPOLATED past the window end (order >= 2, `WindowCoupler`'s
+  /// `extrapolate_boundary_value`), and the whole substep is provisional --
+  /// it is rolled back to its own start and recomputed with the partner's
+  /// now-converged data as the FIRST act of the next window.
+  Fixed,
+  /// The component may shorten its own last substep in the window so that it
+  /// lands exactly on the window end (preCICE's waveform-iteration
+  /// convention). No straddling step and no extrapolation are ever needed
+  /// for this component.
+  Adjustable,
+};
+
+[[nodiscard]] constexpr const char* to_cstring(DtPolicy p) noexcept {
+  switch (p) {
+    case DtPolicy::Fixed:      return "Fixed";
+    case DtPolicy::Adjustable: return "Adjustable";
+  }
+  return "?";
+}
+
 /// Column filters for the quasi-Newton least squares, as defined by preCICE
 /// and by Davis, Schulte & Uekermann, Math. Comput. Appl. 27(3):40 (2022).
 /// With |R_jj| the length of the part of column j that the newer columns do
