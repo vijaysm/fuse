@@ -424,9 +424,18 @@ Result<void> WindowCoupler::sweep_window(Rational T0, Rational T1) {
 
     real_traj.clear();
     real_traj.resize(n);
-    std::size_t idx = 0;
+    // Every write below goes to the canonical (member, element, substep)
+    // index, computed, never to a running counter. The substep loop visits
+    // (substep, element); a counter there wrote the transposed layout, which
+    // agrees with the canonical one only for a scalar member or a single
+    // substep -- the only cases tested until a field-valued multirate
+    // member (Gray-Scott) delivered a "mean" outside the partner's range.
+    std::size_t base = 0;
     for (std::size_t i = 0; i < n; ++i) {
       const WindowMember& m = members_[i];
+      const std::size_t n_sub = steps[i].size();
+      const auto at = [&](std::size_t e, std::size_t s) { return base + e * n_sub + s; };
+      std::size_t s_idx = 0;
       real_traj[i].resize(m.length);
       for (std::size_t e = 0; e < m.length; ++e) {
         real_traj[i][e] = std::make_unique<Waveform>(
@@ -514,8 +523,9 @@ Result<void> WindowCoupler::sweep_window(Rational T0, Rational T1) {
             // The committed/exchanged value for this substep is the EXACT
             // value at T1 from the first advance() call above, never an
             // interpolant -- this is the whole point of the split.
-            y_new[idx++] = v_at_t1[e];
+            y_new[at(e, s_idx)] = v_at_t1[e];
           }
+          ++s_idx;
           continue;
         }
         for (std::size_t e = 0; e < m.length; ++e) {
@@ -545,9 +555,11 @@ Result<void> WindowCoupler::sweep_window(Rational T0, Rational T1) {
           double v = m.provided[e];
           const Result<void> pr = real_traj[i][e]->push(sub.t1, &v);
           if (!pr.ok()) return pr.error();
-          y_new[idx++] = v;
+          y_new[at(e, s_idx)] = v;
         }
+        ++s_idx;
       }
+      base += m.length * n_sub;
     }
 
     double resid_sq = 0.0, ref_sq = 0.0;
