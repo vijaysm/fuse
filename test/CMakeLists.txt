@@ -367,6 +367,19 @@ foreach(t mms_transfer iteration interface_transfer)
                  LIBS fuse::runtime fuse::backend fuse::transport)
 endforeach()
 
+# Gray-Scott (Time windows track): the species solver's own MMS order, the
+# multirate windowed coupling, and the monolithic-reference comparison --
+# each in its own binary so a Newton-solve regression in one does not hide
+# behind a pass in another. Eigen3::Eigen directly, same reasoning as
+# examples/CMakeLists.txt's fuse_example_gray_scott: the Newton solves use
+# Eigen::SparseLU and FUSE_LINALG_BACKEND=eigen is the default backend.
+foreach(t gray_scott_mms gray_scott_multirate gray_scott_reference)
+  fuse_add_gtest(verification ${t} NO_LAYER_LIB
+                 LIBS fuse::runtime fuse::backend Eigen3::Eigen)
+  target_include_directories(fuse_verification_${t}_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/gray_scott)
+endforeach()
+
 # ---------------------------------------------------------------- install
 # find_package(fuse-coupler) smoke test (REVIEW.md R-25/BT-F9): install this
 # build, configure and build a tiny STANDALONE consumer project against the

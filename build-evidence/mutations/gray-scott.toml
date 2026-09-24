@@ -1,0 +1,61 @@
+# Mutations for the Gray-Scott track (examples/gray_scott/**,
+# test/verification/gray_scott_*). Own file per the review-fix protocol: do
+# not edit build-evidence/mutations.toml directly while other tracks hold it
+# dirty.
+#
+# Each row below was proved BY HAND (tools/mutate.py was not run except
+# --check-anchors, per this delegation's constraints): the edit in `old`/
+# `new` was applied directly to the named file with edit_file, the named
+# target was rebuilt, the named test was run and observed to fail with the
+# message quoted in its own comment, then the file was restored and
+# verified byte-identical to a backup with `cmp` before the next row.
+
+[[mutation]]
+id = "gray-scott-laplacian-wrong-sign"
+area = "examples/gray_scott"
+describes = "flips the periodic 5-point Laplacian's off-diagonal coefficient to the wrong sign (attraction instead of diffusion), so a species diffuses away from its neighbours' values instead of toward them -- destroys second-order spatial accuracy entirely rather than merely degrading its order."
+file = "examples/gray_scott/gray_scott_physics.hpp"
+old = "  const double off = 1.0 / h2;"
+new = "  const double off = -1.0 / h2;"
+target = "fuse_verification_gray_scott_mms_test"
+test = "verification.gray_scott_mms"
+# PROVED: GrayScottMms.SpatialOrderTwoSpeciesU measured order -1.51 and
+# -0.62 between refinement steps (errors GROWING with resolution: 0.226 ->
+# 0.641 -> 0.984), instead of the required >= 1.85.
+
+[[mutation]]
+id = "gray-scott-cn-drops-old-reaction-term"
+area = "examples/gray_scott"
+describes = "replaces the Crank-Nicolson residual's trapezoidal reaction quadrature (react_new + react_old) with 2*react_new -- silently degrades the species solver from second-order (CN) to first-order (backward Euler) in time while leaving the steady-state residual scale unchanged, so only a temporal-order study catches it, not a single-run check."
+file = "examples/gray_scott/species_component.hpp"
+old = """            0.5 * dt *
+                (diffusion_ * (lap_new[static_cast<int>(m)] + lap_old[static_cast<int>(m)]) +
+                 react_new + react_old + src_sum[m]);"""
+new = """            0.5 * dt *
+                (diffusion_ * (lap_new[static_cast<int>(m)] + lap_old[static_cast<int>(m)]) +
+                 2.0 * react_new + src_sum[m]);"""
+target = "fuse_verification_gray_scott_mms_test"
+test = "verification.gray_scott_mms"
+# PROVED: GrayScottMms.TemporalOrderTwoSpeciesU measured order 1.80 and
+# 1.68 between refinement steps, instead of the required >= 1.85 --
+# degrading toward the order-1 (backward Euler) behaviour the mutation
+# introduces, exactly as the refinement ladder approaches its asymptotic
+# regime.
+
+[[mutation]]
+id = "gray-scott-monolithic-reaction-v-scaled"
+area = "examples/gray_scott"
+describes = "scales the monolithic reference's V-reaction evaluation by 0.9 inside the Newton residual (not just the Jacobian) -- Newton still converges (to the WRONG root, since the residual it is solving no longer matches the true Gray-Scott equations), so this is caught only by a check against an independent computation of the same physics (species_component.hpp's separately-implemented reaction term), not by the monolithic solver's own internal convergence check."
+file = "examples/gray_scott/monolithic_reference.hpp"
+old = "        const double rv_new = kin_.reaction_v(u_new[mi], v_new[mi]);"
+new = "        const double rv_new = kin_.reaction_v(u_new[mi], v_new[mi]) * 0.9;"
+target = "fuse_verification_gray_scott_reference_test"
+test = "verification.gray_scott_reference"
+# PROVED: GrayScottReference.WindowedMatchesMonolithicAtASufficientlySmallDt
+# measured diff=3.373e-06 against the tight bound 1.0e-07 (34x over) --
+# note a WEAKER mutation (zeroing the cross-Jacobian terms only, leaving
+# the residual correct) was tried first and did NOT fail this test: Newton
+# still converges to the correct root with a degraded (block-diagonal)
+# Jacobian, just more slowly, so that variant is not recorded as a
+# mutation row here (it does not observably change any measured output at
+# this problem's iteration budget).

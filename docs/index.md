@@ -33,6 +33,7 @@ user/examples
 user/convergence
 user/coupling-windows
 user/interface-transfer
+user/gray-scott
 user/c-abi
 ```
 
@@ -53,5 +54,6 @@ dev/abi-design
 dev/partitioning
 dev/native-mesh
 dev/coupling-windows
+dev/nodal-fields
 dev/roadmap
 ```
