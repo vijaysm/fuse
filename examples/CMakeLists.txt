@@ -47,6 +47,34 @@ endif()
 # gated on FUSE_ENABLE_MPI, exactly as test/CMakeLists.txt gates its own
 # parallel/ targets.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Gray-Scott (Time windows track): U and V on one structured grid, coupled
+# implicitly at independent time steps through fuse::WindowCoupler. Needs
+# Eigen3::Eigen directly (its Newton solves use Eigen::SparseLU) -- available
+# because FUSE_LINALG_BACKEND=eigen is the default (cmake/FuseDependencies.cmake).
+# ---------------------------------------------------------------------------
+add_executable(fuse_example_gray_scott
+  gray_scott/main.cpp)
+target_link_libraries(fuse_example_gray_scott PRIVATE fuse::runtime fuse::backend Eigen3::Eigen)
+target_include_directories(fuse_example_gray_scott PRIVATE gray_scott)
+
+if(FUSE_ENABLE_TESTS)
+  # Gated on the physics, same convention as mms_pair/dn_heat above:
+  # --check exits non-zero if the m=1 windowed result misses the monolithic
+  # reference (to a TIGHT, iteration-tolerance-level bound -- see the
+  # comment at that check in main.cpp) or a concentration goes negative.
+  # --dt 0.1 is not incidental: the m=1 windowed/monolithic mismatch is a
+  # genuine order-2-in-dt effect (gray_scott_reference_test.cpp measures it
+  # exactly), not merely the iteration residual, so it is checked at a dt
+  # small enough for that order-2 term to already be below the tight bound,
+  # rather than by loosening the bound. The --check block's own m=1
+  # sub-run is internally fixed at 5 windows of --dt regardless of --ratio/
+  # --t-end (main.cpp), so --dt is what this bound actually depends on;
+  # measured AT THIS EXACT COMMAND LINE: diff 3.022e-08, bound 1.0e-6.
+  add_test(NAME example.gray_scott COMMAND fuse_example_gray_scott --n 24 --ratio 2 --t-end 4 --dt 0.1 --check)
+  set_tests_properties(example.gray_scott PROPERTIES LABELS "example")
+endif()
+
 if(FUSE_ENABLE_MPI)
   add_executable(fuse_example_layout_driver layout_driver/main.cpp)
   target_link_libraries(fuse_example_layout_driver PRIVATE
