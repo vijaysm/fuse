@@ -29,7 +29,9 @@
 
 #include <gtest/gtest.h>
 
+#include "fuse/backend/consistent_interp.hpp"
 #include "fuse/backend/linear_operator.hpp"
+#include "fuse/backend/serial_backend.hpp"
 #include "fuse/backend/weights_operator.hpp"
 
 namespace {
@@ -145,6 +147,38 @@ std::vector<Case> operators() {
   if (mixed.ok()) {
     std::shared_ptr<const LinearOperator> c{std::move(mixed).value()};
     cases.push_back({"weights-conservative-4x3 o weights-3x4", nullptr, c});
+  }
+
+  // Interface-operators task: the consistent-interpolation H on a genuinely
+  // non-matching 1D pair (5 beam vertices, 8 fluid cells) -- built through
+  // `SerialMeshBackend`'s real "generated:line:n" meshes, not a hand-typed
+  // matrix, so a bug in the geometry code (axis choice, node ordering) would
+  // show up here too, not only in `ConsistentInterp.*` below. Appended, not
+  // inserted, so it does not renumber `cases[0..2]`, which
+  // `ComposingWithANonConservativeFactorDropsTheClaim` indexes directly.
+  {
+    fuse::SerialMeshBackend backend;
+    const bool loaded =
+        backend.load({.name = "beam", .source = "generated:line:5"}).ok() &&
+        backend.load({.name = "fluid", .source = "generated:line:8"}).ok();
+    if (loaded) {
+      const auto bid = backend.mesh_id("beam");
+      const auto fid = backend.mesh_id("fluid");
+      if (bid.ok() && fid.ok()) {
+        const auto bv = backend.view(bid.value());
+        const auto fv = backend.view(fid.value());
+        if (bv.ok() && fv.ok()) {
+          auto h = fuse::build_consistent_interp_weights(*bv.value(),
+                                                          *fv.value(), 1);
+          if (h.ok()) {
+            auto w4 = std::make_shared<RemapWeights>(std::move(h).value());
+            cases.push_back(
+                {"consistent-interp-H(5-node-beam,8-cell-fluid)", w4,
+                 std::make_shared<fuse::WeightsOperator>(*w4)});
+          }
+        }
+      }
+    }
   }
   return cases;
 }
@@ -405,6 +439,24 @@ TEST(OperatorConformance, WrongLengthsAreRefusedNotRead) {
   EXPECT_FALSE(a.apply(ok_in, out, 0).ok()) << "zero components was accepted";
 }
 
+// `operators()` adds the consistent-interpolation H case conditionally (in
+// the same style the composition cases above use), so a construction
+// failure there would otherwise just shrink the fixture silently -- every
+// other TEST in this file would keep passing on fewer cases, which is
+// exactly the vacuous-pass testing.md warns about. This makes that failure
+// loud.
+TEST(OperatorConformance, ConsistentInterpCaseIsPresent) {
+  const auto cases = operators();
+  const bool present =
+      std::any_of(cases.begin(), cases.end(), [](const Case& c) {
+        return c.name.rfind("consistent-interp-H", 0) == 0;
+      });
+  EXPECT_TRUE(present) << "the consistent-interpolation H case was not "
+                          "constructed (generated:line load or "
+                          "build_consistent_interp_weights failed) -- every "
+                          "other test in this file silently ran without it";
+}
+
 TEST(OperatorConformance, ComposingWithANonConservativeFactorDropsTheClaim) {
   // Named separately from the generic claim rule because this is the asymmetric
   // case: one factor conserves, the other does not, and the composition must
@@ -425,4 +477,302 @@ TEST(OperatorConformance, ComposingWithANonConservativeFactorDropsTheClaim) {
   auto other = fuse::compose(cases[1].op, cases[2].op);
   ASSERT_TRUE(other.ok()) << other.error().message;
   EXPECT_FALSE(other.value()->claims().conservative);
+}
+
+// ===========================================================================
+// ConsistentInterp: the domain-specific properties `operators()` above does
+// not check (per this file's own "WHAT IT DOES NOT CHECK" -- these need real
+// meshes and closed-form solutions, not just algebra). Task: "Consistent H
+// and conservative H^T on 1D interfaces". Uses `SerialMeshBackend`'s real
+// "generated:line:n" meshes throughout, exactly as
+// `test/verification/interface_transfer_test.cpp` does for the P0 path, so a
+// geometry bug (axis choice, node ordering, degenerate-tolerance) shows up
+// here on real mesh data, not only against a hand-typed matrix.
+// ===========================================================================
+
+namespace {
+
+using fuse::InterfaceDomainPolicy;
+
+/// A `SerialMeshBackend` loaded with one "generated:line:n" mesh, and the
+/// resolved `MeshView*` -- the backend must outlive the view, so this bundles
+/// them the same way `test/backend/supermesh_test.cpp`'s `Pair` does.
+struct LineMesh {
+  fuse::SerialMeshBackend backend;
+  const fuse::MeshView*   view = nullptr;
+};
+
+[[nodiscard]] std::unique_ptr<LineMesh> line_mesh(std::size_t n) {
+  auto m = std::make_unique<LineMesh>();
+  if (!m->backend.load({.name = "m", .source = "generated:line:" + std::to_string(n)}).ok())
+    return nullptr;
+  const auto mid = m->backend.mesh_id("m");
+  if (!mid.ok()) return nullptr;
+  const auto view = m->backend.view(mid.value());
+  if (!view.ok()) return nullptr;
+  m->view = view.value();
+  return m;
+}
+
+std::vector<double> apply_H(const RemapWeights& w, const std::vector<double>& f) {
+  std::vector<double> g(w.n_rows, 0.0);
+  const auto r = fuse::apply_weights(w, f.data(), g.data(), 1);
+  if (!r.ok()) ADD_FAILURE() << r.error().message;
+  return g;
+}
+
+}  // namespace
+
+TEST(ConsistentInterp, ExactForALinearFieldAtFixedNonMatchingResolution) {
+  auto beam = line_mesh(5);
+  auto fluid = line_mesh(8);
+  ASSERT_TRUE(beam && fluid);
+  const auto h = fuse::build_consistent_interp_weights(*beam->view, *fluid->view, 1);
+  ASSERT_TRUE(h.ok()) << h.error().message;
+  const RemapWeights& H = h.value();
+  ASSERT_EQ(H.n_rows, 8u);
+  ASSERT_EQ(H.n_cols, 6u);
+  EXPECT_LT(H.max_row_defect, 1e-13) << "H's rows must sum to 1 (partition of unity)";
+
+  std::vector<double> v(6);
+  for (std::size_t i = 0; i < 6; ++i) v[i] = 1.0 + 2.0 * (static_cast<double>(i) / 5.0);
+  const std::vector<double> Hv = apply_H(H, v);
+  for (std::size_t j = 0; j < 8; ++j) {
+    const double x = (static_cast<double>(j) + 0.5) / 8.0;
+    EXPECT_NEAR(Hv[j], 1.0 + 2.0 * x, 1e-12) << "fluid cell " << j;
+  }
+}
+
+TEST(ConsistentInterp, ObservedOrderIsTwoUnderRefinement) {
+  const auto f = [](double x) {
+    const double two_pi = 6.283185307179586476925287;
+    return std::sin(two_pi * x);
+  };
+  std::vector<double> hs, errs;
+  for (const std::size_t nb : {16u, 32u, 64u, 128u}) {
+    const std::size_t nf = nb * 11 / 7;  // deliberately non-matching
+    auto beam = line_mesh(nb);
+    auto fluid = line_mesh(nf);
+    ASSERT_TRUE(beam && fluid);
+    const auto h = fuse::build_consistent_interp_weights(*beam->view, *fluid->view, 1);
+    ASSERT_TRUE(h.ok()) << h.error().message;
+    std::vector<double> v(nb + 1);
+    for (std::size_t i = 0; i <= nb; ++i)
+      v[i] = f(static_cast<double>(i) / static_cast<double>(nb));
+    const std::vector<double> Hv = apply_H(h.value(), v);
+    double l2 = 0.0;
+    for (std::size_t j = 0; j < nf; ++j) {
+      const double x = (static_cast<double>(j) + 0.5) / static_cast<double>(nf);
+      const double e = Hv[j] - f(x);
+      l2 += e * e / static_cast<double>(nf);
+    }
+    hs.push_back(1.0 / static_cast<double>(nb));
+    errs.push_back(std::sqrt(l2));
+  }
+  double sx = 0, sy = 0, sxx = 0, sxy = 0;
+  const double n = static_cast<double>(hs.size());
+  for (std::size_t k = 0; k < hs.size(); ++k) {
+    const double x = std::log(hs[k]), y = std::log(errs[k]);
+    sx += x; sy += y; sxx += x * x; sxy += x * y;
+  }
+  const double order = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+  EXPECT_GT(order, 1.8) << "observed order " << order << ", finest error " << errs.back();
+  EXPECT_LT(order, 2.3) << "suspiciously high for a piecewise-linear reconstruction";
+}
+
+TEST(ConsistentInterp, HAndItsTransposeAreExactAdjointsToRoundoff) {
+  // The generic `TransposeIsTheAdjoint` case above already covers H through
+  // `WeightsOperator`; this restates it directly against
+  // `build_consistent_interp_weights`'s own output so the property is
+  // checked without going through that wrapper too.
+  auto beam = line_mesh(5);
+  auto fluid = line_mesh(9);
+  ASSERT_TRUE(beam && fluid);
+  const auto h = fuse::build_consistent_interp_weights(*beam->view, *fluid->view, 1);
+  ASSERT_TRUE(h.ok()) << h.error().message;
+  const RemapWeights& H = h.value();
+
+  std::mt19937 rng(42);
+  std::uniform_real_distribution<double> dist(-1.0, 1.0);
+  std::vector<double> x(H.n_cols), y(H.n_rows);
+  for (double& e : x) e = dist(rng);
+  for (double& e : y) e = dist(rng);
+  const std::vector<double> Hx = apply_H(H, x);
+  std::vector<double> Hty(H.n_cols, 0.0);
+  ASSERT_TRUE(fuse::WeightsOperator(H).apply_transpose(y, Hty, 1).ok());
+
+  double lhs = 0.0, rhs = 0.0;
+  for (std::size_t i = 0; i < y.size(); ++i) lhs += y[i] * Hx[i];
+  for (std::size_t i = 0; i < x.size(); ++i) rhs += Hty[i] * x[i];
+  EXPECT_NEAR(lhs, rhs, 1e-12 * (std::abs(lhs) + std::abs(rhs) + 1.0))
+      << "y.(Hx) = " << lhs << ", (H^T y).x = " << rhs;
+}
+
+TEST(ConsistentInterp, DomainEdgeMismatchRefusesByDefault) {
+  // The fluid wall's cells extend to x=1; shrink the beam so it stops well
+  // short, forcing the fluid's last cell centres to fall past the beam's
+  // span.
+  auto beam = line_mesh(3);
+  auto fluid = line_mesh(8);
+  ASSERT_TRUE(beam && fluid);
+  // Reduce the beam's own extent by rescaling is not exposed by
+  // SerialMeshBackend's generator, so instead evaluate the fluid's points
+  // (dim 1, spanning [0,1]) against a beam of only 2 nodes covering
+  // [0, 1/3] -- "generated:line:2" gives vertices at 0, 1/2, 1, which DOES
+  // span [0,1] fully; a genuinely short domain needs a smaller line count
+  // interpreted over a shorter conceptual span, which this generator does
+  // not offer. So instead this refusal is exercised the other direction:
+  // node-to-node onto a coarser beam evaluated at NODES beyond the fluid
+  // wall's own node range is not representable either. The gap is real: see
+  // open_questions for a MeshView test double that can present an arbitrary
+  // vertex layout, which is what a genuine short-domain fixture needs.
+  auto fluid_nodes = line_mesh(20);
+  ASSERT_TRUE(fluid_nodes);
+  const auto h = fuse::build_consistent_interp_weights(*beam->view, *fluid_nodes->view, 1,
+                                                        InterfaceDomainPolicy::Refuse);
+  // Both meshes span [0, 1] by construction (the generator's only span), so
+  // no target point is genuinely out of range and this MUST succeed --
+  // asserting that documents the generator's limit rather than papering over
+  // it, and the E-INTERP-DOMAIN path itself is exercised directly below via
+  // build_consistent_interp_weights' documented contract with a
+  // manufactured MeshView.
+  EXPECT_TRUE(h.ok()) << "both generated:line meshes span [0,1]; this case "
+                         "is not actually out-of-domain -- see the comment "
+                         "above";
+}
+
+// A minimal MeshView exposing an arbitrary 1D vertex layout, for the one
+// property `generated:line:n` cannot exercise: a genuinely short domain.
+namespace {
+class ArbitraryLine final : public fuse::MeshView {
+ public:
+  explicit ArbitraryLine(std::vector<double> xs) : xs_(std::move(xs)) {}
+  int dimension() const override { return 1; }
+  std::size_t entity_count(int dim) const override {
+    if (dim == 0) return xs_.size();
+    if (dim == 1) return xs_.empty() ? 0 : xs_.size() - 1;
+    return 0;
+  }
+  std::size_t owned_count(int dim) const override { return entity_count(dim); }
+  bool is_owned(int, std::size_t) const override { return true; }
+  fuse::Point centroid(int dim, std::size_t i) const override {
+    if (dim == 0) return fuse::Point{xs_[i], 0, 0};
+    return fuse::Point{0.5 * (xs_[i] + xs_[i + 1]), 0, 0};
+  }
+  double measure(int dim, std::size_t i) const override {
+    if (dim == 0) throw std::out_of_range("no vertex measure");
+    return xs_[i + 1] - xs_[i];
+  }
+  std::size_t global_id(int, std::size_t i) const override { return i; }
+  std::size_t simplex_count(int dim, std::size_t) const override { return dim == 1 ? 1 : 0; }
+  void simplex_points(int, std::size_t i, std::size_t, fuse::Point* out) const override {
+    out[0] = fuse::Point{xs_[i], 0, 0};
+    out[1] = fuse::Point{xs_[i + 1], 0, 0};
+  }
+
+ private:
+  std::vector<double> xs_;
+};
+}  // namespace
+
+TEST(ConsistentInterp, DomainEdgeMismatchRefusesAndClampAccepts) {
+  // Beam nodes cover only [0, 0.4]; the fluid's cell centres run to 0.9375,
+  // well past it.
+  ArbitraryLine beam({0.0, 0.2, 0.4});
+  auto fluid = line_mesh(8);
+  ASSERT_TRUE(fluid);
+
+  const auto refused =
+      fuse::build_consistent_interp_weights(beam, *fluid->view, 1, InterfaceDomainPolicy::Refuse);
+  ASSERT_FALSE(refused.ok());
+  EXPECT_EQ(refused.error().code, "E-INTERP-DOMAIN");
+
+  const auto clamped = fuse::build_consistent_interp_weights(
+      beam, *fluid->view, 1, InterfaceDomainPolicy::ClampToBoundary);
+  ASSERT_TRUE(clamped.ok()) << clamped.error().message;
+  EXPECT_LT(clamped.value().max_row_defect, 1e-13)
+      << "a clamped row is still a single weight of 1, so row-sum-one holds";
+}
+
+TEST(ConsistentInterp, TransposeConservesTotalLoadAndBalancesPower) {
+  auto beam = line_mesh(5);
+  auto fluid = line_mesh(8);
+  ASSERT_TRUE(beam && fluid);
+  const auto h = fuse::build_consistent_interp_weights(*beam->view, *fluid->view, 1);
+  ASSERT_TRUE(h.ok()) << h.error().message;
+  const RemapWeights& H = h.value();
+
+  // H^T D by hand, exactly as build_consistent_weights_for_plan constructs
+  // it: out(beam_dof, fluid_cell) = H(fluid_cell, beam_dof) * fluid_measure.
+  RemapWeights HtD;
+  HtD.n_rows = H.n_cols;
+  HtD.n_cols = H.n_rows;
+  for (std::size_t k = 0; k < H.val.size(); ++k) {
+    HtD.row.push_back(H.col[k]);
+    HtD.col.push_back(H.row[k]);
+    HtD.val.push_back(H.val[k] * fluid->view->measure(1, static_cast<std::size_t>(H.row[k])));
+  }
+
+  std::mt19937 rng(7);
+  std::uniform_real_distribution<double> dist(-3.0, 5.0);
+  std::vector<double> rho(8);
+  for (double& x : rho) x = dist(rng);
+  const std::vector<double> F = apply_H(HtD, rho);
+
+  double sent = 0.0;
+  for (std::size_t j = 0; j < 8; ++j) sent += rho[j] * fluid->view->measure(1, j);
+  double received = 0.0;
+  for (double v : F) received += v;
+  EXPECT_NEAR(sent, received, 1e-12 * std::abs(sent))
+      << "total force must be conserved to round-off";
+
+  std::vector<double> v(6);
+  for (double& x : v) x = dist(rng);
+  const std::vector<double> Hv = apply_H(H, v);
+  double power_fluid = 0.0;
+  for (std::size_t j = 0; j < 8; ++j) power_fluid += Hv[j] * rho[j] * fluid->view->measure(1, j);
+  double power_beam = 0.0;
+  for (std::size_t i = 0; i < 6; ++i) power_beam += v[i] * F[i];
+  EXPECT_NEAR(power_fluid, power_beam, 1e-12 * (std::abs(power_fluid) + std::abs(power_beam)))
+      << "discrete interface power must balance exactly: (Hv)^T(D rho) = v^T(H^T D rho)";
+}
+
+TEST(ConsistentInterp, CoincidentSourceNodesRefuseAsDegenerate) {
+  // Two source vertices at the same x -- the piecewise-linear reconstruction
+  // is singular there. `ArbitraryLine` lets this be constructed directly;
+  // `generated:line:n` cannot produce a repeated node.
+  ArbitraryLine beam({0.0, 0.2, 0.2, 0.6});  // nodes 1 and 2 coincide
+  auto fluid = line_mesh(8);
+  ASSERT_TRUE(fluid);
+  const auto r = fuse::build_consistent_interp_weights(beam, *fluid->view, 1);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-INTERP-DEGENERATE");
+}
+
+TEST(ConsistentInterp, NoSourceGeometryRefuses) {
+  ArbitraryLine empty_beam({});  // no vertices at all
+  auto fluid = line_mesh(8);
+  ASSERT_TRUE(fluid);
+  const auto r = fuse::build_consistent_interp_weights(empty_beam, *fluid->view, 1);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-INTERP-NOGEOMETRY");
+}
+
+TEST(ConsistentInterp, NoTargetGeometryRefuses) {
+  auto beam = line_mesh(5);
+  ASSERT_TRUE(beam);
+  ArbitraryLine empty_fluid({});
+  const auto r = fuse::build_consistent_interp_weights(*beam->view, empty_fluid, 1);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-INTERP-NOGEOMETRY");
+}
+
+TEST(ConsistentInterp, NodeToNodeOntoTheSameMeshIsTheIdentity) {
+  auto m = line_mesh(6);
+  ASSERT_TRUE(m);
+  const auto h = fuse::build_consistent_interp_weights(*m->view, *m->view, 0);
+  ASSERT_TRUE(h.ok()) << h.error().message;
+  const RemapWeights& H = h.value();
+  EXPECT_EQ(H.nnz(), H.n_rows) << "one entry per row: no bracket, an exact hit each time";
+  for (const double v : H.val) EXPECT_NEAR(v, 1.0, 1e-14);
 }

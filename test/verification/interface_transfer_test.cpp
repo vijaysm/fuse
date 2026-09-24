@@ -55,6 +55,7 @@
 
 #include <gtest/gtest.h>
 #include <fuse/ir/lowering.hpp>
+#include <fuse/backend/consistent_interp.hpp>
 #include <fuse/backend/serial_backend.hpp>
 #include <fuse/runtime/runner.hpp>
 
@@ -341,4 +342,162 @@ TEST(InterfaceTransfer, TransferOrderOnASmoothField) {
   EXPECT_GT(order, 0.9) << "observed order " << order
                         << ", finest error " << errs.back();
   EXPECT_LT(order, 3.0) << "suspiciously high: pair accidentally nested?";
+}
+
+// ===========================================================================
+// Consistent H / conservative H^T, exercised through build_weights() --
+// intx_weights.cpp's public RemapPlan-level entry point, the SAME function
+// resolve_remap() (src/runtime/runner.cpp) calls -- against a REAL
+// CouplingGraph + SerialMeshBackend, at the level the runtime actually
+// dispatches at. Not run through lower()/schedule()/Runner: a channel
+// between a genuinely nodal field (Discretization::ContinuousGLL order <= 1,
+// SemanticLocation::Vertex) and an FV field (SemanticLocation::Element) is
+// refused by include/fuse/model/connect.hpp's check_channel(), called from
+// src/ir/rules_channel.cpp during lower() -- neither file is owned by this
+// track, and check_channel() hardcodes `request.transfer.kind =
+// TransferKind::Copy` unconditionally, so a location-changing channel has no
+// way to declare the transfer that would let it through. This is reported
+// exactly as found in the task's open_questions; it is not worked around
+// here. What IS tested here is everything this track owns: build_weights()'s
+// dispatch on `RemapPlan::method`, region resolution through the graph, the
+// discretization gate, and that the weights returned match
+// build_consistent_interp_weights() called directly on the same MeshViews.
+// ===========================================================================
+
+namespace {
+
+/// A nodal region (dimension 0, one entity per vertex) and an FV region
+/// (dimension 1, one entity per cell) on two independently-resolved
+/// "generated:line" meshes, with no fields or channels -- build_weights()
+/// only needs the graph's meshes and regions, not a validated channel.
+struct PlanFixture {
+  CouplingGraph        g;
+  SerialMeshBackend    backend;
+  fuse::RegionId       r_beam_nodal;   // dimension 0, n_beam + 1 entities
+  fuse::RegionId       r_fluid_cells;  // dimension 1, n_fluid entities
+};
+
+[[nodiscard]] std::unique_ptr<PlanFixture> plan_fixture(std::size_t n_beam,
+                                                        std::size_t n_fluid) {
+  auto pf = std::make_unique<PlanFixture>();
+  const auto m_beam = pf->g.add_mesh(
+      fuse::MeshDecl{.name = "beam_mesh", .source = "generated:line:" + std::to_string(n_beam)});
+  const auto m_fluid = pf->g.add_mesh(
+      fuse::MeshDecl{.name = "fluid_mesh", .source = "generated:line:" + std::to_string(n_fluid)});
+  pf->r_beam_nodal = pf->g.add_region(
+      fuse::Region{.name = "r_beam_nodal", .mesh = m_beam, .dimension = 0});
+  pf->r_fluid_cells = pf->g.add_region(
+      fuse::Region{.name = "r_fluid_cells", .mesh = m_fluid, .dimension = 1});
+  for (std::uint32_t i = 0; i < pf->g.mesh_count(); ++i) {
+    if (!pf->backend.load(pf->g.mesh(fuse::MeshId{i})).ok()) return nullptr;
+  }
+  return pf;
+}
+
+}  // namespace
+
+TEST(ConsistentInterpPlan, ConsistentMethodMatchesTheDirectBuilder) {
+  auto pf = plan_fixture(5, 8);
+  ASSERT_TRUE(pf);
+
+  fuse::RemapPlan plan;
+  plan.src = pf->r_beam_nodal;
+  plan.tgt = pf->r_fluid_cells;
+  plan.src_disc = fuse::Discretization::ContinuousGLL;
+  plan.src_order = 1;
+  plan.tgt_disc = fuse::Discretization::FV;
+  plan.tgt_order = 0;
+  plan.method = "consistent";
+
+  const auto via_plan = fuse::build_weights(plan, pf->g, pf->backend);
+  ASSERT_TRUE(via_plan.ok()) << via_plan.error().message;
+
+  const auto bid = pf->backend.mesh_id("beam_mesh");
+  const auto fid = pf->backend.mesh_id("fluid_mesh");
+  ASSERT_TRUE(bid.ok() && fid.ok());
+  const auto bv = pf->backend.view(bid.value());
+  const auto fv = pf->backend.view(fid.value());
+  ASSERT_TRUE(bv.ok() && fv.ok());
+  const auto direct = fuse::build_consistent_interp_weights(*bv.value(), *fv.value(), 1);
+  ASSERT_TRUE(direct.ok()) << direct.error().message;
+
+  const fuse::RemapWeights& a = via_plan.value();
+  const fuse::RemapWeights& b = direct.value();
+  ASSERT_EQ(a.n_rows, b.n_rows);
+  ASSERT_EQ(a.n_cols, b.n_cols);
+  ASSERT_EQ(a.nnz(), b.nnz());
+  for (std::size_t k = 0; k < a.val.size(); ++k) {
+    EXPECT_EQ(a.row[k], b.row[k]) << "entry " << k;
+    EXPECT_EQ(a.col[k], b.col[k]) << "entry " << k;
+    EXPECT_DOUBLE_EQ(a.val[k], b.val[k]) << "entry " << k;
+  }
+}
+
+TEST(ConsistentInterpPlan, ConsistentTransposeMethodDeliversTheConservativeLoad) {
+  auto pf = plan_fixture(5, 8);
+  ASSERT_TRUE(pf);
+
+  // The paired channel: fluid (FV, density) -> beam (nodal, load).
+  fuse::RemapPlan plan;
+  plan.src = pf->r_fluid_cells;
+  plan.tgt = pf->r_beam_nodal;
+  plan.src_disc = fuse::Discretization::FV;
+  plan.src_order = 0;
+  plan.tgt_disc = fuse::Discretization::ContinuousGLL;
+  plan.tgt_order = 1;
+  plan.method = "consistent-transpose";
+
+  const auto via_plan = fuse::build_weights(plan, pf->g, pf->backend);
+  ASSERT_TRUE(via_plan.ok()) << via_plan.error().message;
+  const fuse::RemapWeights& HtD = via_plan.value();
+
+  const auto bid = pf->backend.mesh_id("beam_mesh");
+  const auto fid = pf->backend.mesh_id("fluid_mesh");
+  const auto bv = pf->backend.view(bid.value());
+  const auto fv = pf->backend.view(fid.value());
+  ASSERT_TRUE(bv.ok() && fv.ok());
+
+  ASSERT_EQ(HtD.n_rows, 6u);  // beam vertices
+  ASSERT_EQ(HtD.n_cols, 8u);  // fluid cells
+
+  // Total force conserved: sum(H^T D rho) == sum(D rho), for an arbitrary
+  // density -- the property build_consistent_weights_for_plan's header
+  // claims follows purely from H's row-sum-one identity.
+  std::vector<double> rho(8);
+  for (std::size_t i = 0; i < 8; ++i) rho[i] = 1.7 - 0.3 * static_cast<double>(i);
+  std::vector<double> F(6, 0.0);
+  ASSERT_TRUE(fuse::apply_weights(HtD, rho.data(), F.data(), 1).ok());
+  double sent = 0.0;
+  for (std::size_t j = 0; j < 8; ++j) sent += rho[j] * fv.value()->measure(1, j);
+  double received = 0.0;
+  for (double v : F) received += v;
+  EXPECT_NEAR(sent, received, 1e-12 * std::abs(sent));
+}
+
+TEST(ConsistentInterpPlan, WrongDiscretizationOnTheNodalSideRefuses) {
+  auto pf = plan_fixture(5, 8);
+  ASSERT_TRUE(pf);
+  fuse::RemapPlan plan;
+  plan.src = pf->r_beam_nodal;
+  plan.tgt = pf->r_fluid_cells;
+  // Left at the RemapPlan default: Discretization::FV, not the nodal
+  // ContinuousGLL order<=1 the "consistent" method requires of its source.
+  plan.method = "consistent";
+  const auto r = fuse::build_weights(plan, pf->g, pf->backend);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-INTERP-DISC");
+}
+
+TEST(ConsistentInterpPlan, UnknownMethodStringRefuses) {
+  auto pf = plan_fixture(5, 8);
+  ASSERT_TRUE(pf);
+  fuse::RemapPlan plan;
+  plan.src = pf->r_beam_nodal;
+  plan.tgt = pf->r_fluid_cells;
+  plan.src_disc = fuse::Discretization::ContinuousGLL;
+  plan.src_order = 1;
+  plan.method = "consistent-but-misspelled";
+  const auto r = fuse::build_consistent_weights_for_plan(plan, pf->g, pf->backend);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-INTERP-METHOD");
 }
