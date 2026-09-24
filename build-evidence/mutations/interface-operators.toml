@@ -1,0 +1,52 @@
+# Mutations for the "Interface operators" track (consistent H, conservative
+# H^T on 1D interfaces). Own file per the review-fix protocol: do not edit
+# build-evidence/mutations/backend-supermesh.toml or any other track's
+# mutation file directly.
+#
+# All four rows below were hand-verified in this session by editing
+# include/fuse/backend/consistent_interp.hpp exactly as `old`/`new` describe,
+# rebuilding the named target, confirming the named test (and, for the third
+# row, three others) actually failed, then reverting to the original text
+# and confirming a clean rebuild passed again. `tools/mutate.py` itself was
+# not run (out of scope for this track; the lead runs the gate), so these
+# rows are evidence the tests catch the defect, not a `mutate.py` transcript.
+
+[[mutation]]
+id = "consistent-interp-nodal-gate-always-true"
+area = "backend"
+describes = "build_consistent_weights_for_plan's is_nodal() gate decides which side of a 'consistent'/'consistent-transpose' channel must be a genuinely nodal (ContinuousGLL order <= 1) field. If it accepted any discretization, an FV (cell-average) field would be silently treated as if it carried nodal DOFs -- the resulting matrix would index into the wrong entities without any refusal."
+file = "include/fuse/backend/consistent_interp.hpp"
+old = "[[nodiscard]] inline bool is_nodal(Discretization disc, int order) {\n  return disc == Discretization::ContinuousGLL && order <= 1;\n}"
+new = "[[nodiscard]] inline bool is_nodal(Discretization disc, int order) {\n  (void)disc; (void)order; return true;\n}"
+target = "fuse_verification_interface_transfer_test"
+test = "verification.interface_transfer"
+
+[[mutation]]
+id = "consistent-transpose-drops-density-to-load-scale"
+area = "backend"
+describes = "'consistent-transpose' delivers H^T D: H's transpose contracted against the point side's OWN cell measure, converting a density input into a load before the contraction runs (see the header's 'DENSITY VS LOAD' section). Dropping the measure scale (leaving it at 1.0 always) makes the returned matrix a bare H^T applied to a density -- the total delivered no longer equals the total sent whenever the point side's cells are not all the same size, and interface power stops balancing."
+file = "include/fuse/backend/consistent_interp.hpp"
+old = "      const double scale =\n          src_is_load ? 1.0\n                      : src.value().view->measure(src.value().dim, fluid_pt);"
+new = "      const double scale = 1.0;"
+target = "fuse_verification_interface_transfer_test"
+test = "verification.interface_transfer"
+
+[[mutation]]
+id = "consistent-interp-bracket-drops-partition-of-unity"
+area = "backend"
+describes = "H's row-sum-one (partition of unity) property is what the header's whole conservation and power-balance argument rests on: every downstream identity is derived from sum_i H_ji == 1, not re-derived from the raw weights. The bracketing formula for a genuine two-node interpolation is val_a = 1-t, val_b = t; pinning val_a at 1.0 regardless of t breaks the row sum for every bracketed target point, which should be visible immediately in the exactness, order, conservation and power-balance tests -- all of which read the row sum, not just one of them."
+file = "include/fuse/backend/consistent_interp.hpp"
+old = "      val_a = 1.0 - t;\n      val_b = t;"
+new = "      val_a = 1.0;\n      val_b = t;"
+target = "fuse_backend_operator_conformance_test"
+test = "backend.operator_conformance"
+
+[[mutation]]
+id = "consistent-interp-disc-check-message-swapped-order"
+area = "backend"
+describes = "The 'consistent' method's discretization gate must check plan.src_disc/plan.src_order (the field being interpolated FROM); the 'consistent-transpose' gate must check plan.tgt_disc/plan.tgt_order (the field being delivered TO). Swapping which side 'consistent' validates would let a channel with a nodal TARGET and an FV SOURCE through as if the source were nodal -- build_consistent_interp_weights would then be asked for target evaluation points on a genuinely nodal target's own vertices while reading source geometry from an FV region, silently building H the wrong way round."
+file = "include/fuse/backend/consistent_interp.hpp"
+old = "  if (plan.method == \"consistent\") {\n    if (!is_nodal(plan.src_disc, plan.src_order)) {"
+new = "  if (plan.method == \"consistent\") {\n    if (!is_nodal(plan.tgt_disc, plan.tgt_order)) {"
+target = "fuse_verification_interface_transfer_test"
+test = "verification.interface_transfer"
