@@ -278,6 +278,105 @@ holds hidden state — which the declared `SurrogateContract` already asks about
 and currently cannot be told. It changes the component interface, so it
 sequences with the ABI work rather than being done in passing.
 
+### ~~B4. Coupling windows: implemented, type-checked, not built or run~~ — BUILT, TWO REAL BUGS FOUND AND FIXED, ALL 13 TESTS PASS
+
+`include/fuse/schedule/window.hpp` + `src/schedule/window.cpp`
+(`CouplingWindowScope`, `validate_coupling_window`) and
+`include/fuse/runtime/window_coupler.hpp` + `src/runtime/window_coupler.cpp`
+(`WindowCoupler`) — the multi-clock iteration-window mechanism, docs in
+[](docs/dev/coupling-windows.md) and [](docs/user/coupling-windows.md).
+
+**History.** This entry originally recorded that the mechanism had been
+type-checked (`clang++ -fsyntax-only`) but never actually built, because the
+disk shared by three concurrent tracks had under 1 GiB free. Once the lead
+registered `schedule/window.cpp`/`runtime/window_coupler.cpp` in
+`src/CMakeLists.txt` and the disk recovered, the real build surfaced 5 of 13
+`runtime.window_coupler` failures the syntax-check and the Python
+reimplementation had both missed. Root causes, found by comparing
+`WindowCoupler`'s C++ against the validated Python model window-by-window on
+the smallest failing case:
+
+1. **`build_delivered()` read the live, mutating `provided[]` pointer for a
+   member's window-start value.** Correct only for the very first call
+   (right after `save_state()`, before any `advance()` this window); every
+   later sweep's call read whatever the PREVIOUS sweep's `advance()` had
+   just left there — the value at the end of the last substep, silently
+   mislabelled as the value at `start_clock[i]`. This corrupted every
+   iterated `mean_over()` after sweep 0 for EVERY case, straddling or not
+   (`ErrorConvergesNearOrderTwoAdjustableAdjustable`'s order collapsing to
+   ~0 and `RatioOneMatchesTodaysSingleClockRegion`'s wrong converged value
+   both trace to this). Fixed by capturing `start_value[i][e]` once, right
+   after `save_state()`, and reading that captured copy instead of the live
+   pointer inside `build_delivered()`.
+2. **`build_delivered()`'s `Waveform::reset()` started at `start_clock[i]`,
+   not at the window start `T0`.** When a `Fixed` member's clock is already
+   past `T0` (a resolved straddle from the previous window leaves it there
+   by design), a consumer whose own substep spans the full window --
+   the window-definer's single substep, in particular -- needs that
+   member's value starting at `T0`, before the member's own current-window
+   data begins. This crashed outright: `Waveform::integrate: [13, 26] is not
+   inside the support [14, 26]` (`IncommensurateSevenThirteenAllPolicyPairs`,
+   both order tests). Fixed by extending the reset to
+   `min(start_clock[i], T0)` and, when `start_clock[i] > T0`, prepending a
+   leading sample at `T0` using `state_[i].history[e].back().second` --
+   the boundary value this member already committed at the end of the
+   previous window, needing no re-derivation since `T1(prev) == T0(this
+   window)` by construction.
+
+Both bugs were absent from the Python cross-check because Python's
+hand-rolled `wf_integrate`/`wf_evaluate` helpers silently clamp or drop
+out-of-range contributions instead of refusing -- the real
+`fuse::Waveform::integrate()` correctly enforces its documented support
+contract, which is what turned bug 2 into a loud crash instead of a silently
+wrong number. Bug 1 doesn't depend on straddling at all and the Python
+model never reproduced it because its own `build_delivered`-equivalent
+re-derives each sweep's inputs from the SAME variables it also treats as
+"the window-start value" without an analogous live/mutating pointer to
+confuse them.
+
+A third, separate defect was in the TEST, not `WindowCoupler`:
+`RatioOneMatchesTodaysSingleClockRegion`'s hand-rolled reference (a) never
+called `restore_state()` before re-advancing on each Gauss-Seidel sweep, so
+it compounded across all 100 sweeps instead of resetting each one, and (b)
+fed each component its partner's raw iterate rather than the MEAN of the
+partner's window-start value and current iterate -- what a single
+full-window substep's `mean_over()` actually evaluates to for a two-knot
+linear Waveform. Both fixed in the test fixture; `WindowCoupler`'s own code
+needed no change for this one.
+
+**Current state: all 13 `runtime.window_coupler` tests pass** (rebuilt and
+run at tier 0: `cmake --build ./b0 --target fuse_runtime_window_coupler_test
+fuse_schedule_window_scope_test fuse_schedule_multirate_region_test
+fuse_verification_iteration_test fuse_runtime_runner_test && ctest`), along
+with all 14 `schedule.window_scope`, all 3 `schedule.multirate_region`, all
+32 `verification.iteration` and all 49 `runtime.runner` tests -- no
+regression in any file this track does not own.
+
+**Measured order, verbatim from this build** (refining the window length by
+half four times at ratio 13:7; instrumented with a temporary `std::cerr`,
+captured, then reverted -- these are not left in the test):
+Adjustable/Adjustable errs `[0.262615, 0.0765105, 0.0118387, 0.00176083]`,
+orders `[1.77922, 2.69214, 2.74918]`; Fixed/Fixed errs `[0.281933,
+0.0614089, 0.00721211, 0.000942069]`, orders `[2.19883, 3.08995,
+2.93652]`. Only the Adjustable/Adjustable series starts below 2 at the
+coarsest step (1.78); Fixed/Fixed sits above 2 at every step measured in
+THIS build. **This differs from the pre-fix Python cross-check's Fixed/Fixed
+numbers** (`[1.94, 3.87, 3.00]`, quoted in an earlier revision of this
+entry) -- both are comfortably inside the `EXPECT_GE(order, 1.7)` bound the
+test actually asserts (unweakened), and the discrepancy is confined to the
+`Fixed` policy's straddle-handling path (Adjustable/Adjustable matches the
+Python model to 3+ significant figures on every number); it was not chased
+further since no test failed and the bugs found and fixed above (see the
+two numbered causes) fully explain the ORIGINAL failures. Recorded here as
+an open observation, not a resolved discrepancy -- see the delegated task's
+open_questions.
+
+`WindowCoupler`'s own answer for the simplest case (m=1, window=1, 5
+windows, Constant relaxation) now agrees with the independent Python
+reimplementation to 8 significant figures (`0.051993874...`), where before
+the fix it silently converged to a different, wrong value
+(`0.018690611...`).
+
 ---
 
 ## D. Real limitations, documented and pinned
@@ -433,6 +532,14 @@ application-id model.
   `peer-plan-staged-through-the-matched-path` and
   `peer-extent-is-only-the-source-block` NOT-ASSESSED (need MPI).
 
+**D3 note (2026-09-23):** D3's new `TwoIndependentCommGraphChannelsBothDeliver
+InOnePeriod` is the first Runner test to check DATA delivered through TWO
+distinct CommGraph-backed plans (`pi=0`/`pi=1`) in one period, on the same
+per-placement machinery this section built (`attach_comm_graphs()`,
+`graph_transports`). Compiled only, not yet run (C1: this sandbox cannot
+initialize MPI) — noted here so a future change to plan indexing re-runs it
+alongside this section's own three shape tests once the host confirms it.
+
 **Host run 1 (2026-09-23) found a regression I introduced**, now fixed: every
 cross-placement Transport was refused with `E-RT-SIZE` ("reads 12 values ... into
 0"). The Runner held Transport to the rule that an instruction's input and output
@@ -525,8 +632,7 @@ its `FUSE_REQUIRE_AT_LEAST_RANKS` guard — will only show up on a host run.
 ### D3. Three behaviours no test detects — the mutation gate is RED on purpose
 
 `FUSE_MUTATE_MPI=1 tools/mutate.py --area transport|runtime` exits 1 with three
-survivors. All 91 tier-1 tests pass; what is missing is coverage, and these
-three are **known** — a fourth survivor is a new gap, not one of these.
+survivors, plus a fourth in `native-mesh.toml` (vertex ownership, below).
 
 | Survivor | Behaviour with no test that detects it |
 |---|---|
@@ -534,23 +640,106 @@ three are **known** — a fourth survivor is a new gap, not one of these.
 | `region-failure-abandons-the-rest-of-the-period` | R-09: a failing period carries the failure forward instead of returning at the region. |
 | `region-residual-skips-the-cross-rank-reduction` | R-10: the region residual is agreed across participants rather than summed rank-locally. |
 
-**One cause for all three.** In
-`RunnerTransport.StillRunsASecondChannelAfterARegionFailsUnderMpi` the
-independent channel is declared *first* — the D1 workaround — and the iteration
-region *last*. So every observable in that test happens before the region, and
-"the rest of the period" after it is empty. R-09's mutant skips nothing; the
-shared-Transport mutant still fails the run, and the first failure wins, so the
-asserted code is unchanged; and no case in that binary has two cross-rank
-channels both delivering. R-10's local-sum fallback reaches the same
-convergence decision on this data.
+**D1 is fixed, and the fixture already reflects it — the old "declared first"
+diagnosis in this section was stale.** Reading the checked-out
+`test/parallel/runner_transport_test.cpp` directly: `with_independent_channel`
+declares "linkB" AFTER `add_iteration_region` (see the class comment; D1
+landed at `2de9247`/reordered again since). So the three survivors are not
+explained by declaration order at all. Tracing each mutant's actual code path
+instead:
 
-Note what this means about the earlier claim that
-`StillRunsASecondChannelAfterARegionFailsUnderMpi` was the acceptance test for
-D2's capability: it is not, and the mutation is what established that.
+- **`one-transport-shared-across-every-plan`.** `attach_comm_graphs()`
+  (`src/runtime/runner.cpp`) still pushes one `TransportPlan` per Transport
+  INSTRUCTION regardless of declaration order (`case OpKind::Transport:`,
+  unconditional, no dedup by shape) — "link" and "linkB" already get distinct
+  plan indices `pi=0`/`pi=1` in the existing fixture. The mutant nulls
+  `graph_transports[1]`; executing "linkB"'s Transport at `pi=1` then hits the
+  `tp == nullptr` guard and returns a clean `E-RT-TRANSPORT`. The OLD test
+  never saw this: it ALSO forces "fluid" to fail inside the region, and
+  `step_period()`'s failure branch only overwrites `step_failure`
+  `if (!step_failure.has_value())` — the region's failure already claimed
+  that slot, so "linkB"'s distinct error code was discarded, masked rather
+  than absent. And `cons_b->calls()` never read the DELIVERED DATA, only
+  whether the tick ran at all — which it does, from whatever the (possibly
+  null-Transport, uninitialized) input buffer held.
+- **`region-failure-abandons-the-rest-of-the-period` (R-09).** Producer_b/
+  consumer_b's own tick sat at the SAME `t=0` the region occupies (interval
+  `Rational{1}`, same as fluid/solid) — `group_regions_within_instants()`
+  only reorders the INSTRUCTION stream inside one `(time, phase)` window, so
+  a same-time observable's position relative to the region is a greedy
+  implementation detail, not a property either the fix or the mutant is
+  actually about. An "after" that depends on winning that tie-break is not a
+  real "after".
+- **`region-residual-skips-the-cross-rank-reduction` (R-10).**
+  `RegionConvergesInTheSerialIterationCount` gives `A` the SAME `k` on every
+  rank; because the map is entity-wise with no coupling between entities, a
+  RELATIVE criterion's decay rate does not depend on how many entities are
+  summed (1 rank-local, or the global 4) — local and agreed residuals reach
+  the SAME verdict on this data regardless of how unequal the entity split
+  is, so the mutant is invisible however many ranks run it.
 
-**Fixing D1 comes first** (the user's ruling, 2026-09-21). The declaration-order
-limitation is what forced the reordering that blinded the test, so removing it
-is the root fix; the three tests are written against the fixture that follows.
+**Done.** `test/parallel/runner_transport_test.cpp` (owned by this track):
+- `TwoComponentJob` gained an `independent_interval` parameter (default
+  `Rational{1}`, every existing caller unchanged) and `write_source_b_by_
+  global_id()`/`count_destination_b_matches()`/`local_destination_b_entity_
+  count()`, the "linkB" analogues of the existing "link" data-verification
+  helpers.
+- `StillRunsASecondChannelAfterARegionFailsUnderMpi` now puts producer_b/
+  consumer_b on `Rational{1,2}` (two ticks per period, at `t=0` and `t=1/2`)
+  instead of sharing the region's `t=0`. `schedule()`'s own `(time, phase,
+  rank)` sort key places the `t=1/2` tick strictly after everything at `t=0`
+  — not a tie-break, an ordering guarantee — so `EXPECT_GE(cons_b->calls(),
+  2)` is a genuine "after the region" check now.
+- New `TwoIndependentCommGraphChannelsBothDeliverInOnePeriod`: nothing fails
+  (no region at all), both "link" and "linkB" run, and both channels' data
+  is checked by global id. This is the direct kill for the shared-transport
+  mutant: no failure exists to mask a distinct error code, and a shared
+  instance that happens to work for `pi=0` but corrupts `pi=1` is caught by
+  checking `pi=1`'s own delivered data, not just whether the run failed.
+- New `RegionResidualLocalConvergenceIsNotEnoughUnderMpi`: `LinearFixedPointJob`
+  gained `kA`/`tol` parameters; rank 0 builds `A` with `kA = 0.001`, every
+  other rank with `kA = 0.5` (same graph structure everywhere — coefficients
+  are a runtime, not a graph, property). Simulated: rank 0's own relative
+  residual clears `tol = 1e-6` by sweep 4, every other rank's is still
+  `3.8e-3` at sweep 5 (`max_iterations = 5`). The fix must report
+  `converged == false`, `iterations == 5` on EVERY rank (the agreed residual
+  stays dominated by the slow ranks); the mutant lets rank 0 decide from its
+  own local residual and report `converged == true` at a smaller count —
+  caught by `EXPECT_FALSE`/`EXPECT_EQ` without needing a hang, though a hang
+  on a later sweep (rank 0 stops participating once it thinks it's done) is
+  an equally correct kill per the mutation's own `describes` text.
+
+**Vertex ownership** (`vertex-ownership-rule-picks-max-not-min-rank`,
+`build-evidence/mutations/native-mesh.toml`). New
+`NativeMigrationMpi.VertexOwnerIsTheMinimumRankAmongHoldersAfterMigration`
+(`test/backend/native_migration_mpi_test.cpp`): after a real
+`fuse::partition::repartition`, gathers every rank's `(vertex gid, owner)`
+pairs via the SAME Allgather-counts/Allgatherv-payload shape
+`resolve_vertex_ownership` itself uses, independently recomputes the minimum
+holder rank per gid in the TEST's own (unmutated) code, and checks both that
+every holder of a shared vertex agrees on one owner and that the agreed
+owner is that minimum. `RepartitionConservesGlobalCellCountAndMeasureAndUnique
+Ids` never reads `vertex_owner`/`vertex_is_owned` at all, so it cannot see
+this mutant regardless of rank count.
+
+**Not reachable at Tier 0.** `resolve_vertex_ownership`'s cross-rank
+comparison lives inside `#if FUSE_HAVE_MPI`, which a Tier-0 build does not
+compile at all (dead-code-eliminated, not just runtime-skipped), and every
+Tier-0 caller of `migrate()` in `test/backend/native_migration_test.cpp`
+passes `kNullComm`, which returns before that `#if` block regardless of
+whether MPI is compiled in. No emulated assertion was added there: there is
+no code path, compiled or not, for one to reach.
+
+**Status: compiled here, awaiting the host's mutation run.** All four new/
+changed assertions compile cleanly against `build-all`'s existing object
+flags (checked by compiling each changed file to a throwaway `.o` with the
+flags `compile_commands.json` recorded, given the sandbox's near-full disk —
+see `local_verification`); none of them ran, and none of the three
+`transport-runtime.toml` mutations or the `native-mesh.toml` one were
+re-applied, since this sandbox cannot initialize MPI (C1) and mutate.py
+rewrites sources in place (forbidden while two other tracks share this
+checkout). `host_verification_needed` lists exactly what the host run must
+confirm.
 
 ---
 
@@ -610,4 +799,6 @@ is the root fix; the three tests are written against the fixture that follows.
   cannot start `mpiexec`. The corresponding mutation
   (`vertex-ownership-rule-picks-max-not-min-rank`,
   `build-evidence/mutations/native-mesh.toml`) is `requires = "mpi"` for the
-  same reason.
+  same reason. D3 (below) adds
+  `VertexOwnerIsTheMinimumRankAmongHoldersAfterMigration`, targeted at this
+  exact comparison; it is compiled, not yet run, for the same C1 reason.

@@ -173,12 +173,23 @@ class TwoComponentJob {
   /// region's channels. Default false leaves every existing caller
   /// unchanged. `fail_fluid_after`: forwarded to "fluid"'s StubComponent
   /// (see its own doc); -1 (default) never refuses.
+  /// `independent_interval`: D3 (KNOWN_ISSUES) -- producer_b/consumer_b's own
+  /// clock. Default `Rational{1}` (one tick per period, unchanged from every
+  /// prior caller). `StillRunsASecondChannelAfterARegionFailsUnderMpi` passes
+  /// `Rational{1,2}` (two ticks per period) so its SECOND tick sits at
+  /// `t=1/2`, strictly later than anything at `t=0` by the schedule's own
+  /// (time, phase, rank) sort key (`plan.hpp`'s own contract) -- not by any
+  /// same-instant tie-break `group_regions_within_instants()` might resolve
+  /// either way. A survivor abandoning "the rest of the period" the moment
+  /// the region fails abandons that `t=1/2` tick regardless of where the
+  /// greedy grouping would have placed a same-time observable.
   explicit TwoComponentJob(const std::string& entity_set,
                            bool with_iteration_region = false,
                            fuse::AccelKind accel_kind = fuse::AccelKind::None,
                            bool with_independent_channel = false,
                            int fail_fluid_after = -1,
-                           Overlap shape = Overlap::Disjoint)
+                           Overlap shape = Overlap::Disjoint,
+                           fuse::Rational independent_interval = fuse::Rational{1})
       // MEMBER DECLARATION ORDER, NOT INITIALIZER-LIST ORDER, decides when
       // each of these actually runs. `backend` is declared below
       // fluid_/solid_/n_entities_/dim_ for exactly this reason: it is built
@@ -229,9 +240,11 @@ class TwoComponentJob {
     // period" was empty and R-09's mutant skipped nothing (D3).
     if (with_independent_channel) {
       const auto pb = graph.add_component(fuse::ComponentDecl{
-          .name = "producer_b", .ranks = fluid_, .interval = Rational{1}});
+          .name = "producer_b", .ranks = fluid_,
+          .interval = independent_interval});
       const auto cb = graph.add_component(fuse::ComponentDecl{
-          .name = "consumer_b", .ranks = solid_, .interval = Rational{1}});
+          .name = "consumer_b", .ranks = solid_,
+          .interval = independent_interval});
       src_field_b = graph.add_field(
           pb, fuse::FieldSpec{.name = "outB", .region = region_,
                              .units = fuse::units::kKelvin,
@@ -330,6 +343,46 @@ class TwoComponentJob {
   }
   [[nodiscard]] std::size_t global_destination_entity_count() const {
     return n_entities_;  // every id is wanted exactly once
+  }
+
+  /// The same three helpers as above, for "linkB" (producer_b -> consumer_b,
+  /// ComponentId{2}/{3}) instead of "link" (fluid -> solid, ComponentId{0}/
+  /// {1}). Only meaningful when `with_independent_channel` was true; every
+  /// caller of these three checks `find("producer_b")`/`find("consumer_b")`
+  /// is non-null first via ASSERT_NE, so a null dereference here would mean
+  /// the fixture itself was misconfigured, not a Transport defect.
+  void write_source_b_by_global_id() {
+    auto* src = dynamic_cast<StubComponent*>(components.find("producer_b"));
+    const auto v =
+        backend.placed_view(graph.region(region_).mesh, fuse::ComponentId{2})
+            .value();
+    for (std::size_t i = 0; i < src->size(); ++i) {
+      src->data()[i] = static_cast<double>(v->global_id(dim_, i));
+    }
+  }
+
+  [[nodiscard]] std::size_t count_destination_b_matches() const {
+    // See count_destination_matches(): only a rank actually in `solid_` (the
+    // RankSet consumer_b was placed on) is a real destination worth
+    // checking.
+    if (!solid_.contains(current_rank())) return 0;
+    auto* dst = dynamic_cast<StubComponent*>(
+        const_cast<fuse::ComponentSet&>(components).find("consumer_b"));
+    const auto v =
+        backend.placed_view(graph.region(region_).mesh, fuse::ComponentId{3})
+            .value();
+    std::size_t ok = 0;
+    for (std::size_t i = 0; i < dst->size(); ++i) {
+      if (dst->data()[i] == static_cast<double>(v->global_id(dim_, i))) ++ok;
+    }
+    return ok;
+  }
+
+  [[nodiscard]] std::size_t local_destination_b_entity_count() const {
+    if (!solid_.contains(current_rank())) return 0;
+    return backend
+        .placed_region_size(graph.region(region_), fuse::ComponentId{3})
+        .value();
   }
 
   // Declared in the order the constructor's initializer list must run them
@@ -439,7 +492,15 @@ class LinearFixedPointJob {
  public:
   static constexpr std::size_t kEntities = 4;
 
-  explicit LinearFixedPointJob(int max_iterations)
+  /// `kA`/`tol`: D3 (KNOWN_ISSUES) -- `RegionResidualLocalConvergenceIsNot-
+  /// EnoughUnderMpi` passes a `kA` CHOSEN PER RANK (`current_rank() == 0 ?
+  /// fast : slow`) so this rank's own LOCAL residual and the region's
+  /// GLOBALLY-AGREED residual reach different convergence verdicts at the
+  /// same sweep -- see that test's own comment for the numbers. Every
+  /// existing caller passes neither, keeping `kA = 0.5`/`tol = 1e-10`
+  /// (this class's own long-standing values) exactly as before.
+  explicit LinearFixedPointJob(int max_iterations, double kA = 0.5,
+                               double tol = 1e-10)
       : whole_{0, world_size()}, backend(whole_, whole_, kEntities, 1) {
     const auto mesh =
         graph.add_mesh(fuse::MeshDecl{.name = "shared", .source = "test"});
@@ -472,8 +533,8 @@ class LinearFixedPointJob {
     graph.channel(back).lag(1).allow_time_level_mismatch("iterated");
 
     fuse::ConvergenceCriterion conv;
-    conv.add(fuse::Converged::Relative(1e-10, "a2b"));
-    conv.add(fuse::Converged::Relative(1e-10, "b2a"));
+    conv.add(fuse::Converged::Relative(tol, "a2b"));
+    conv.add(fuse::Converged::Relative(tol, "b2a"));
     // .acceleration defaults to AccelKind::None (plain Picard) -- the only
     // kind R-10's fix supports for a region spanning more than one rank
     // (REVIEW.md; see resolve_regions()'s accelerator-kind check), and the
@@ -498,7 +559,7 @@ class LinearFixedPointJob {
     const auto count = backend.region_size(graph.region(region_));
     EXPECT_TRUE(count.ok());
     components.add(
-        std::make_unique<LinearRelaxComponent>("A", 1.0, 0.5, count.value()));
+        std::make_unique<LinearRelaxComponent>("A", 1.0, kA, count.value()));
     components.add(
         std::make_unique<LinearRelaxComponent>("B", 2.0, 0.4, count.value()));
   }
@@ -714,27 +775,51 @@ TEST(RunnerTransport, RefusesADynamicAcceleratorOnACrossRankRegion) {
 // rank(s) return out of step_period() the moment the region fails (pre-R-09
 // behaviour) while "consumer_b"'s rank(s), on the disjoint `solid_` set,
 // still walk forward to "linkB"'s Epoch and block waiting for a partner that
-// already left. Tier 0 could not even construct this shape at all: an
-// independent channel on the region's own clock is refused outright
-// (E-SCHED-REGION) unless declared before the region, and in that ordering
-// its own Epoch is scheduled BEFORE the region -- a plan property, not a
-// property of R-09's fix -- so nothing downstream of the region ever
-// exists to abandon. Here `with_independent_channel` puts producer_b/
-// consumer_b on the SAME fluid_/solid_ ranks as the region itself, so
-// "linkB"'s Transport+Epoch are genuinely collective and genuinely
-// downstream: reverting R-09's one-line change reproduces the hang this
-// test is built to catch (ctest's TIMEOUT, matching the existing R-10
-// mutation entries in build-evidence/mutations/transport-runtime.toml);
-// with the fix, every rank -- both the ones that saw "fluid" fail and the
+// already left.
+//
+// D1 (KNOWN_ISSUES, fixed 2026-09-21) means "linkB" no longer has to be
+// declared before the region to survive scheduling -- `with_independent_
+// channel`'s block is declared AFTER `add_iteration_region` now (see the
+// class comment above) -- but D3's own history is that this declaration
+// reorder ALONE did not kill the three survivors on the host: producer_b/
+// consumer_b's own component TICK still lands at the same `t=0` the region
+// occupies, and `group_regions_within_instants()` only reorders the
+// INSTRUCTION stream inside one (time, phase) window -- it says nothing
+// about which same-time observable an unrelated reader happens to see, and
+// a test that depends on winning that tie-break is a test that depends on
+// an implementation detail the mutation is not really about.
+//
+// So this fixture puts `producer_b`/`consumer_b` on their OWN clock,
+// `Rational{1,2}` -- two ticks per period, at `t=0` and `t=1/2` -- instead of
+// sharing the region's `t=0`. `schedule()`'s own contract (`plan.hpp`:
+// "schedule() orders by (time, TickPhase, topological rank..., NodeId)")
+// means the SECOND tick, at `t=1/2`, is placed strictly after every `t=0`
+// instruction by the sort key itself, not by any greedy preference that
+// could go either way. Under the fix, `step_period()` carries the region's
+// failure forward and keeps walking the stream, so both ticks of producer_b/
+// consumer_b still run (their own field has nothing to do with the region,
+// so `block_advances_from()` never reaches their slot) and "linkB"'s
+// Transport+Epoch at `t=1/2` complete on every participant. Reverting R-09's
+// fix makes `step_period()` return the instant the region's `run_region()`
+// reports failure, at `t=0` -- strictly BEFORE `t=1/2` -- so consumer_b's
+// second tick, and "linkB"'s second exchange, are abandoned outright: no
+// hang is even needed for the mutant to be visibly wrong here, though a
+// version of this shape that put producer_b/consumer_b on the SAME `t=0`
+// clock would still hang the way the ctest TIMEOUT property (matching the
+// existing mutation entries in build-evidence/mutations/transport-runtime.
+// toml) is there to catch.
+//
+// With the fix, every rank -- both the ones that saw "fluid" fail and the
 // ones that never did -- must return from run_period() with the SAME
-// reported failure, and consumer_b's rank(s) must show their own advance()
-// having run.
+// reported failure, and consumer_b's rank(s) must show BOTH of their own
+// ticks having run.
 TEST(RunnerTransport, StillRunsASecondChannelAfterARegionFailsUnderMpi) {
   FUSE_REQUIRE_AT_LEAST_RANKS(2);
   auto h = TwoComponentJob("", /*with_iteration_region=*/true,
                            fuse::AccelKind::None,
                            /*with_independent_channel=*/true,
-                           /*fail_fluid_after=*/0);
+                           /*fail_fluid_after=*/0, /*shape=*/Overlap::Disjoint,
+                           /*independent_interval=*/fuse::Rational{1, 2});
   ASSERT_GT(h.plan.region_count(), 0u);
   Runner runner{h.graph, h.dag, h.plan, h.backend};
   bind_all(h);
@@ -755,12 +840,14 @@ TEST(RunnerTransport, StillRunsASecondChannelAfterARegionFailsUnderMpi) {
          "must report that failure on every rank, including ranks that "
          "belong only to the independent channel";
   EXPECT_EQ(r.error().code, "E-TEST-ADVANCE-REFUSED") << r.error().message;
-  EXPECT_GE(cons_b->calls(), 1)
-      << "consumer_b has nothing to do with the region; its own advance() "
-         "must still run rather than being abandoned when step_period() "
-         "returns out of the region's failure (the pre-R-09 behaviour, "
-         "which leaves consumer_b's rank(s) blocked in linkB's Epoch "
-         "waiting for a partner that already returned)";
+  EXPECT_GE(cons_b->calls(), 2)
+      << "consumer_b ticks TWICE this period (t=0 and t=1/2), on a clock "
+         "that has nothing to do with the region; both ticks must still run "
+         "rather than being abandoned when step_period() returns out of "
+         "the region's t=0 failure -- 'region-failure-abandons-the-rest-"
+         "of-the-period' (D3) abandons the t=1/2 tick specifically, which a "
+         "same-time-as-the-region observable could not distinguish from "
+         "an ordinary greedy-grouping choice";
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
@@ -805,6 +892,165 @@ TEST(RunnerTransport, RegionConvergesInTheSerialIterationCount) {
       << "every rank must exit on the same sweep the serial run does, "
          "whatever this rank's own unequal local slice of the 4 entities "
          "looks like";
+  ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
+}
+
+// D3 (KNOWN_ISSUES), `one-transport-shared-across-every-plan`:
+// `Runner::Impl::attach_comm_graphs()` (src/runtime/runner.cpp) builds ONE
+// `Transport` object per CommGraph-backed plan and stores it at
+// `graph_transports[pi]`; the mutant changes `graph_transports[pi] =
+// std::move(own)` to `if (pi == 0) graph_transports[pi] = std::move(own)`,
+// so every plan index PAST THE FIRST is left holding a null `unique_ptr`
+// even though `build_plan()` (called unconditionally, for every `pi`, just
+// above) already succeeded for it. `TwoComponentJob("", ..., with_
+// independent_channel=true)` lowers to exactly two CommGraph-backed
+// Transport instructions -- "link" (fluid -> solid) gets `pi=0`, "linkB"
+// (producer_b -> consumer_b) gets `pi=1`, in declaration order
+// (src/runtime/runner.cpp's `case OpKind::Transport:` pushes one plan per
+// instruction, unconditionally, with no dedup by shape even though both
+// channels happen to share the same fluid_/solid_ rank split) -- so under
+// the mutant "linkB"'s own execute() (OpKind::Transport, `p.has_graph`)
+// reads `graph_transports[1].get() == nullptr` and returns a clean
+// `E-RT-TRANSPORT` failure ("the CommGraph-backed plan for this Transport
+// instruction has no Transport instance").
+//
+// WHY THE EXISTING `StillRunsASecondChannelAfterARegionFailsUnderMpi` DOES
+// NOT CATCH THIS. That test ALSO forces "fluid" to fail inside the region
+// (`fail_fluid_after=0`), which sets `step_failure` before "linkB"'s
+// Transport instruction is even reached; `step_period()`'s failure branch
+// only OVERWRITES `step_failure` `if (!step_failure.has_value())` (see the
+// R-09 mutation's own `old` line, just above this in the same function),
+// so the region's "E-TEST-ADVANCE-REFUSED" wins and "linkB"'s distinct
+// "E-RT-TRANSPORT" verdict is silently discarded -- masked, not fixed. And
+// `cons_b->calls()` does not depend on whether "linkB"'s DATA arrived
+// correctly at all: a component's own tick runs from whatever its input
+// buffer already holds, null Transport or not.
+//
+// So THIS test forces nothing to fail (`fail_fluid_after` stays at its
+// default, no iteration region at all -- `with_iteration_region=false`, the
+// mutant needs no region to manifest, and one fewer moving part is one
+// fewer thing masking a different failure), and checks the DATA delivered
+// through BOTH channels, using the same by-global-id technique
+// `ARunDeliversTheSourceValuesToTheDestinationRanks` uses for "link".
+// Under the mutant, "linkB"'s own `run_period()` (called directly, since
+// there is no region to iterate) returns `E-RT-TRANSPORT`, which the
+// `ASSERT_TRUE` below catches outright; if some future refactor changed
+// which plan gets the null instance, checking BOTH channels' delivered
+// data (not just "did it fail") is what still catches a shared instance
+// that happens to work for one channel and silently corrupt the other.
+TEST(RunnerTransport, TwoIndependentCommGraphChannelsBothDeliverInOnePeriod) {
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
+  auto h = TwoComponentJob("", /*with_iteration_region=*/false,
+                           fuse::AccelKind::None,
+                           /*with_independent_channel=*/true);
+  Runner runner{h.graph, h.dag, h.plan, h.backend};
+  bind_all(h);
+
+  fuse::RunnerConfig cfg;
+  cfg.transport         = "mpi";
+  cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
+  cfg.transport_setup   = mpi_comm_setup();
+  ASSERT_TRUE(runner.initialize(h.components, h.registry, cfg).ok())
+      << "build_plan() must succeed for both 'link' and 'linkB' regardless "
+         "of the mutation: only the FINAL move-into-storage is skipped, not "
+         "the plan build itself";
+
+  h.write_source_by_global_id();
+  h.write_source_b_by_global_id();
+  const auto r = runner.run_period(h.components);
+  ASSERT_TRUE(r.ok())
+      << r.error().code << ": " << r.error().message
+      << " -- nothing in this fixture is configured to fail, so any error "
+         "here means a CommGraph-backed plan lost its Transport instance";
+  EXPECT_EQ(h.count_destination_matches(), h.local_destination_entity_count())
+      << "'link' (pi=0, the mutant's surviving index) must still deliver "
+         "correctly";
+  EXPECT_EQ(h.count_destination_b_matches(),
+           h.local_destination_b_entity_count())
+      << "'linkB' (pi=1) is the mutant's actual target: a shared Transport "
+         "instance moved to pi=0 leaves this plan's own instance nulled, "
+         "and its data never arrives";
+  ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
+}
+
+// D3 (KNOWN_ISSUES), `region-residual-skips-the-cross-rank-reduction` (R-10):
+// `run_region()`'s `if (R.participants.size() > 1) { ... reduce_region_
+// residuals(...) ... }` (src/runtime/iteration.cpp) agrees `R.block_residual`/
+// `R.block_value` across every rank in the region BEFORE the convergence
+// criterion reads them; the mutant (`if (false)`) skips this unconditionally,
+// so `R.block_residual`/`R.block_value` keep whatever this rank's OWN LOCAL
+// sum (computed just above the mutated line: `rs += d*d; ... R.block_
+// residual[bi] = std::sqrt(rs);`, over ONLY this rank's owned entities)
+// already held -- every rank decides convergence from its own slice.
+//
+// `RegionConvergesInTheSerialIterationCount` (above) does not catch this: it
+// gives `A` (`LinearRelaxComponent`) the SAME `k` on every rank, and because
+// the map is applied entity-wise with no coupling between entities, a
+// RELATIVE criterion (residual / value) decays at the SAME RATE whether it
+// is summed over 1 entity, 2 entities, or the global 4 -- the local and
+// global verdicts happen to AGREE at every sweep for a uniform `k`, so the
+// mutation is invisible there no matter how unequal the entity SPLIT is.
+//
+// This fixture instead varies `k` (not the entity count) BY RANK: rank 0
+// builds its own `A` with `kA = kFast = 0.001`, every other rank with
+// `kA = kSlow = 0.5` (both pass the SAME graph structure to every rank --
+// `CouplingGraph` carries no coefficients, only field/channel/region shapes
+// -- so this is one legitimate way for a coupled code to vary a local
+// feedback gain by subdomain, not a divergent graph). Simulating the
+// Gauss-Seidel update (`a_out' = 1 + kA*a_in`, `b_out' = 2 + 0.4*a_out'`,
+// `a_in` lagged one sweep) from zero:
+//   rank 0 (kA=0.001): relative "a2b" residual is 9.6e-7 at sweep 3, 3.8e-10
+//     at sweep 4 -- under `tol = 1e-6` (chosen well above both), CONVERGED
+//     by its own local residual at sweep 4.
+//   every other rank (kA=0.5): relative "a2b" residual is 3.8e-3 at sweep 5
+//     -- three orders of magnitude above `tol`, nowhere near converged.
+// At `max_iterations = 5`, the GLOBALLY AGREED residual (dominated by the
+// slow ranks, since `num::combine`-style reduction sums OWNED entities
+// across every participant) never drops under `tol`: `st.converged` must be
+// `false` on EVERY rank under the fix, having spent the whole budget.
+// Under the mutant, rank 0 decides FROM ITS OWN LOCAL RESIDUAL ALONE,
+// already under `tol` by sweep 4, and reports `st.converged == true` at a
+// SMALLER `st.iterations` -- exactly the "reaches a different convergence
+// decision" this task names, caught here by an outright `EXPECT_FALSE`/
+// `EXPECT_EQ` mismatch on rank 0 without needing the desync to hang first
+// (though a hang on a LATER sweep, once rank 0 has stopped participating in
+// the region's own cross-rank exchange while the slow ranks keep going, is
+// an equally correct kill -- see the mutation's own `describes` text).
+TEST(RunnerTransport, RegionResidualLocalConvergenceIsNotEnoughUnderMpi) {
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
+  constexpr double kFast = 0.001;
+  constexpr double kSlow = 0.5;
+  constexpr double kTol  = 1e-6;
+  constexpr int    kMaxIterations = 5;
+  const double kA = (current_rank() == 0) ? kFast : kSlow;
+  auto h = LinearFixedPointJob(kMaxIterations, kA, kTol);
+  ASSERT_GT(h.plan.region_count(), 0u);
+  Runner runner{h.graph, h.dag, h.plan, h.backend};
+  bind_all(h);
+
+  fuse::RunnerConfig cfg;
+  cfg.transport         = "mpi";
+  cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
+  cfg.transport_setup   = mpi_comm_setup();
+  const auto init = runner.initialize(h.components, h.registry, cfg);
+  ASSERT_TRUE(init.ok())
+      << "AccelKind::None on a region spanning every rank is the supported "
+         "case; " << (init.ok() ? "" : init.error().message);
+
+  const auto run = runner.run_period(h.components);
+  ASSERT_TRUE(run.ok()) << run.error().code << ": " << run.error().message;
+  ASSERT_FALSE(runner.iteration_stats().empty());
+  const fuse::IterationStats& st = runner.iteration_stats()[0];
+  EXPECT_FALSE(st.converged)
+      << "rank " << current_rank() << ": the GLOBALLY agreed residual is "
+         "still dominated by the slow ranks (kA=" << kSlow << ") at sweep "
+      << kMaxIterations << "; only a rank deciding from its OWN local "
+         "residual (rank 0's kA=" << kFast << " converges by itself) could "
+         "report converged here";
+  EXPECT_EQ(st.iterations, kMaxIterations)
+      << "the fix spends the whole iteration budget because the AGREED "
+         "residual never clears tol; a smaller count means this rank exited "
+         "on its own local (unreduced) residual instead";
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
