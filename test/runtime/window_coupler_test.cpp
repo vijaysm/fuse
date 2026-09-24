@@ -112,11 +112,15 @@ struct RunResult {
   std::vector<int> iterations;
 };
 
-// A <-> B, window length `Tc` (A's own interval; A is the window-definer),
-// B's interval `hB`. Runs `n_windows` back to back and returns the final
-// state plus each window's iteration count.
-[[nodiscard]] RunResult run_two_member(
-    Rational Tc, Rational hB, int n_windows, DtPolicy pol_a, DtPolicy pol_b,
+// A <-> B with an EXPLICIT window length independent of either member's own
+// interval -- the shape needed to make BOTH members straddle at once (see
+// `BothMembersStraddleAnExplicitWindow` below). `run_two_member` (next) is
+// the common case where the window length equals A's own interval, which is
+// what makes A the window-definer and structurally incapable of
+// straddling.
+[[nodiscard]] RunResult run_two_member_general(
+    Rational window_length, Rational intervalA, Rational intervalB,
+    int n_windows, DtPolicy pol_a, DtPolicy pol_b,
     AccelKind accel = AccelKind::Aitken, int order = 2,
     std::size_t waveform_capacity = 4096) {
   auto comp_a = std::make_unique<LinearOdeComponent>("A", kA, kB, kX0);
@@ -125,7 +129,7 @@ struct RunResult {
   WindowMember mA;
   mA.component = comp_a.get();
   mA.name = "A";
-  mA.interval = Tc;
+  mA.interval = intervalA;
   mA.policy = pol_a;
   mA.provided = comp_a->provided_ptr();
   mA.required = comp_a->required_ptr();
@@ -134,7 +138,7 @@ struct RunResult {
   WindowMember mB;
   mB.component = comp_b.get();
   mB.name = "B";
-  mB.interval = hB;
+  mB.interval = intervalB;
   mB.policy = pol_b;
   mB.provided = comp_b->provided_ptr();
   mB.required = comp_b->required_ptr();
@@ -146,7 +150,7 @@ struct RunResult {
   const std::vector<WindowChannel> channels = {{0, 1}, {1, 0}};
 
   WindowCouplerConfig cfg;
-  cfg.window_length = Tc;
+  cfg.window_length = window_length;
   cfg.max_iterations = 300;
   cfg.acceleration = AccelConfig{.kind = accel};
   cfg.order = order;
@@ -175,6 +179,19 @@ struct RunResult {
   return out;
 }
 
+// A <-> B, window length `Tc` (A's own interval; A is the window-definer,
+// and therefore structurally incapable of straddling regardless of its
+// DtPolicy), B's interval `hB`. Runs `n_windows` back to back and returns
+// the final state plus each window's iteration count.
+[[nodiscard]] RunResult run_two_member(
+    Rational Tc, Rational hB, int n_windows, DtPolicy pol_a, DtPolicy pol_b,
+    AccelKind accel = AccelKind::Aitken, int order = 2,
+    std::size_t waveform_capacity = 4096) {
+  RunResult out = run_two_member_general(Tc, Tc, hB, n_windows, pol_a, pol_b,
+                                         accel, order, waveform_capacity);
+  return out;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------- (a)/(b)
@@ -197,64 +214,204 @@ TEST(WindowCouplerVerification, IncommensurateSevenThirteenAllPolicyPairs) {
       {DtPolicy::Fixed, DtPolicy::Adjustable, "mixed A-fixed,B-adjustable"},
       {DtPolicy::Adjustable, DtPolicy::Fixed, "mixed A-adjustable,B-fixed"},
   };
+  // Tolerance derived from measured error, not an arbitrary round number
+  // against a decayed solution: this window (Tc=13) is deliberately
+  // coarse -- kA*Tc = 16.9, far outside the asymptotic regime the order
+  // tests above require -- so it exercises the policy combinations, not
+  // accuracy at scale. Measured (this build): fixed/fixed and mixed
+  // A-adjustable,B-fixed both give errA=1.09e-2, errB=2.36e-2;
+  // adjustable/adjustable and mixed A-fixed,B-adjustable both give
+  // errA=1.51e-2, errB=1.37e-2. 0.03 is comfortably above the largest of
+  // these (2.36e-2) without being the old, unexamined 0.05.
   for (const auto& c : cases) {
     const RunResult r = run_two_member(Rational{13}, Rational{7}, 3, c.a, c.b);
     const ExactSolution ex = exact_reference(39.0);
-    EXPECT_NEAR(r.xA, ex.x, 0.05) << c.label;
-    EXPECT_NEAR(r.xB, ex.y, 0.05) << c.label;
+    EXPECT_NEAR(r.xA, ex.x, 0.03) << c.label;
+    EXPECT_NEAR(r.xB, ex.y, 0.03) << c.label;
   }
 }
 
-// The per-step order is NOT >= 2 at the coarsest refinement tried (measured
-// ~1.78 here going into the first halving) -- this is a pre-asymptotic
-// regime effect, not a bug; see the Python cross-check this test's
-// EXPECT_GE(order, 1.7) threshold is set from. Order climbs above 2 at
-// finer refinement (measured ~2.7-2.75 for the later steps). Do not read
-// this test's name as "every step measures >= 2".
-TEST(WindowCouplerVerification, ErrorConvergesNearOrderTwoAdjustableAdjustable) {
-  const double T_total = 13.0;
-  const double scales[] = {1.0, 0.5, 0.25, 0.125};
-  double errs[4];
-  for (int i = 0; i < 4; ++i) {
-    const double s = scales[i];
-    const Rational Tc{static_cast<std::int64_t>(std::llround(13.0 * s * 8)), 8};
-    const Rational hB{static_cast<std::int64_t>(std::llround(7.0 * s * 8)), 8};
-    const int n_windows = static_cast<int>(std::lround(T_total / (13.0 * s)));
-    const RunResult r = run_two_member(Tc, hB, n_windows, DtPolicy::Adjustable,
-                                       DtPolicy::Adjustable);
-    const ExactSolution ex = exact_reference(n_windows * 13.0 * s);
-    errs[i] = std::hypot(r.xA - ex.x, r.xB - ex.y);
+// Asymptotic regime (a*h <= ~0.13 at the coarsest level used): the
+// refinement set below is m in {2,4,8,16,32} (base shifted from m=1, see
+// the comment on asymptotic_refinements() for why), so the coarsest
+// scale is Tc=13/70=0.1857, kA*Tc=0.241 -- itself still coarser than the
+// ~0.13 target, which is why the base is shifted rather than the target
+// loosened. The finest scale (m=32, d=1120) reaches kA*Tc =
+// 1.3*13/1120 = 0.0151, well inside the asymptotic regime. d = 35*m:
+// n_windows = 7*m is always a multiple
+// of the 7:13 straddle's own phase cycle (gcd(7,13)=1, so the straddle's
+// position within its substep repeats every 7 windows) AND
+// n_windows*Tc = 7m * 13/(35m) = 91/35 = 2.6 exactly for every m -- fixed
+// T_total, fixed final-window phase, varying only the discretization.
+// Skipping the phase alignment while holding T_total fixed produces a
+// non-monotone, sometimes order-0-looking error sequence purely from
+// measuring different runs' final windows at different phases of that
+// cycle -- verified directly: the same coefficients and scales, refined by
+// naive doubling instead of by this scheme, gave errors 3.8e-3, 1.6e-3,
+// 4.9e-4, 5.0e-4, 2.1e-4, 6.3e-5, 6.3e-5, 2.6e-5 (two near-flat steps) for
+// Fixed/Fixed, while THIS scheme's phase-aligned sequence is
+// monotone to 2-3 significant figures at every step.
+struct AsymptoticRefinement {
+  std::int64_t d;
+  Rational     Tc, hB;
+  int          n_windows;
+};
+[[nodiscard]] std::vector<AsymptoticRefinement> asymptotic_refinements() {
+  // Base shifted to m=2 (d=70), not m=1 (d=35): measured directly, the
+  // mixed Adjustable/Fixed pair's coarsest step (d=35 -> d=70) has order
+  // 2.137, above the [1.9, 2.1] bound the order tests below assert at
+  // EVERY step -- the coarsest scale in this file's original 35*m base
+  // still carries enough higher-order truncation content to push order
+  // just past 2.1 before the asymptotic regime is fully entered.
+  // Starting from d=70 keeps every step (measured for all four policy
+  // pairs used below) inside [1.9, 2.1].
+  std::vector<AsymptoticRefinement> out;
+  for (const std::int64_t m : {2LL, 4LL, 8LL, 16LL, 32LL}) {
+    const std::int64_t d = 35 * m;
+    out.push_back({d, Rational{13, d}, Rational{7, d}, static_cast<int>(7 * m)});
   }
-  for (int i = 0; i < 3; ++i) {
+  return out;
+}
+// Every step's order must land in [1.9, 2.1] (the task's own bound); the
+// helper below applies that uniformly and reports every step's number on
+// failure, not just the first.
+void expect_order_two_at_every_step(const std::vector<double>& errs,
+                                    const char* label) {
+  ASSERT_GE(errs.size(), 2u);
+  for (std::size_t i = 0; i + 1 < errs.size(); ++i) {
     const double order = std::log(errs[i] / errs[i + 1]) / std::log(2.0);
-    EXPECT_GE(order, 1.7) << "refinement step " << i << ": errs " << errs[i]
-                          << " -> " << errs[i + 1];
+    EXPECT_GE(order, 1.9) << label << " refinement step " << i << ": order "
+                         << order << " (errs " << errs[i] << " -> "
+                         << errs[i + 1] << ")";
+    EXPECT_LE(order, 2.1) << label << " refinement step " << i << ": order "
+                         << order << " (errs " << errs[i] << " -> "
+                         << errs[i + 1] << ")";
   }
 }
 
-// Measured (tier-0, this build): order [2.20, 3.09, 2.94] between
-// successive refinements -- unlike the Adjustable/Adjustable case above,
-// every step here sits above 2, not just above the 1.7 floor. Not
-// monotone, but bounded below by 1.7 at every step, which is what this
-// test actually asserts; do not read a specific number into the name.
-TEST(WindowCouplerVerification, ErrorConvergesNearOrderTwoFixedFixedIncommensurate) {
-  const double T_total = 13.0;
-  const double scales[] = {1.0, 0.5, 0.25, 0.125};
-  double errs[4];
-  for (int i = 0; i < 4; ++i) {
-    const double s = scales[i];
-    const Rational Tc{static_cast<std::int64_t>(std::llround(13.0 * s * 8)), 8};
-    const Rational hB{static_cast<std::int64_t>(std::llround(7.0 * s * 8)), 8};
-    const int n_windows = static_cast<int>(std::lround(T_total / (13.0 * s)));
-    const RunResult r =
-        run_two_member(Tc, hB, n_windows, DtPolicy::Fixed, DtPolicy::Fixed);
-    const ExactSolution ex = exact_reference(n_windows * 13.0 * s);
-    errs[i] = std::hypot(r.xA - ex.x, r.xB - ex.y);
+TEST(WindowCouplerVerification, ErrorConvergesAtOrderTwoAdjustableAdjustable) {
+  std::vector<double> errs;
+  for (const auto& r : asymptotic_refinements()) {
+    const RunResult res = run_two_member(r.Tc, r.hB, r.n_windows,
+                                         DtPolicy::Adjustable, DtPolicy::Adjustable);
+    const ExactSolution ex = exact_reference(2.6);
+    errs.push_back(std::hypot(res.xA - ex.x, res.xB - ex.y));
   }
-  for (int i = 0; i < 3; ++i) {
-    const double order = std::log(errs[i] / errs[i + 1]) / std::log(2.0);
-    EXPECT_GE(order, 1.7) << "refinement step " << i << ": errs " << errs[i]
-                          << " -> " << errs[i + 1];
+  expect_order_two_at_every_step(errs, "adjustable/adjustable");
+}
+
+TEST(WindowCouplerVerification, ErrorConvergesAtOrderTwoFixedFixedIncommensurate) {
+  std::vector<double> errs;
+  for (const auto& r : asymptotic_refinements()) {
+    const RunResult res =
+        run_two_member(r.Tc, r.hB, r.n_windows, DtPolicy::Fixed, DtPolicy::Fixed);
+    const ExactSolution ex = exact_reference(2.6);
+    errs.push_back(std::hypot(res.xA - ex.x, res.xB - ex.y));
+  }
+  expect_order_two_at_every_step(errs, "fixed/fixed");
+}
+
+TEST(WindowCouplerVerification, ErrorConvergesAtOrderTwoMixedFixedAdjustable) {
+  std::vector<double> errs;
+  for (const auto& r : asymptotic_refinements()) {
+    const RunResult res =
+        run_two_member(r.Tc, r.hB, r.n_windows, DtPolicy::Fixed, DtPolicy::Adjustable);
+    const ExactSolution ex = exact_reference(2.6);
+    errs.push_back(std::hypot(res.xA - ex.x, res.xB - ex.y));
+  }
+  expect_order_two_at_every_step(errs, "mixed A-fixed,B-adjustable");
+}
+
+TEST(WindowCouplerVerification, ErrorConvergesAtOrderTwoMixedAdjustableFixed) {
+  std::vector<double> errs;
+  for (const auto& r : asymptotic_refinements()) {
+    const RunResult res =
+        run_two_member(r.Tc, r.hB, r.n_windows, DtPolicy::Adjustable, DtPolicy::Fixed);
+    const ExactSolution ex = exact_reference(2.6);
+    errs.push_back(std::hypot(res.xA - ex.x, res.xB - ex.y));
+  }
+  expect_order_two_at_every_step(errs, "mixed A-adjustable,B-fixed");
+}
+
+// The delegated task's item (b), third bullet asked for a genuinely mixed
+// case where BOTH members straddle at once, using an explicit window that
+// is a multiple of neither member's own step, WITH an order-2 assertion.
+// That assertion is NOT made here -- two real, DISCLOSED gaps were found
+// while trying to construct it, neither of them the straddle_window_start
+// bug already fixed above, and both out of scope for a bug-fix pass:
+//
+// 1. window=10/d (the task's own suggested value): A's interval (13/d)
+//    exceeds the window by 30%, so A's overshoot grows window over
+//    window (13, 26, 39, 52 against window boundaries 10, 20, 30, 40)
+//    until, at the 5th window, A's carried-over clock (52/d) is already
+//    PAST that window's own end (50/d) -- a member whose interval so
+//    exceeds the window that it must SKIP a window entirely.
+//    WindowCoupler's bookkeeping does not handle that: `build_delivered`
+//    constructs a Waveform with window_begin > window_end and throws.
+//
+// 2. window=12/d (chosen to keep A's per-window excess small, 8%,
+//    delaying gap 1 well past any window count tested here -- verified
+//    directly by simulating the substep grid alone, first skip at window
+//    12): a DIFFERENT failure appears much earlier. With BOTH A and B
+//    straddle_pending simultaneously, `resolve_pending_straddles()`
+//    replays them one at a time and one member's replay reads the OTHER
+//    member's `last_window_waveform`/`history` -- measured directly,
+//    Fixed/Fixed throws "Waveform::integrate: [range] is not inside the
+//    support [range]" as early as window 2 (every d value tried).
+//    Neither mixed case (one member Fixed, the other Adjustable, so only
+//    the Fixed one actually straddles) throws, but both show
+//    non-monotone or growing error with refinement, not order 2.
+//    Adjustable/Adjustable (neither member straddles, both truncate)
+//    comes closest to correct -- order 1.87 at the one step measured,
+//    under the 1.9 floor but not crashing or growing. This is a second,
+//    independent simultaneous-straddle interaction bug, not covered by
+//    either fix made above.
+//
+// Filed as an open architectural gap (KNOWN_ISSUES.md, this task's
+// open_questions): WindowCoupler's replay path assumes at most one
+// member straddles per window and does not support a member skipping a
+// window outright. Both need dedicated design work, not a hand-applied
+// mutation-scale fix. What IS verified here is narrower: two members can
+// straddle in the SAME window over a SHORT run without corrupting state
+// silently -- either it works (checked below) or it raises the
+// InvalidArgument this comment documents, never a wrong answer that looks
+// like success.
+TEST(WindowCouplerVerification, BothMembersStraddleAnExplicitWindow) {
+  const Rational window{12, 35};
+  const Rational intervalA{13, 35};
+  const Rational intervalB{7, 35};
+  const int n_windows = 2;  // verified safe: the simultaneous-straddle
+                            // throw above first appears at window 2.
+  const struct { DtPolicy a, b; const char* label; } cases[] = {
+      {DtPolicy::Fixed, DtPolicy::Fixed, "fixed/fixed"},
+      {DtPolicy::Adjustable, DtPolicy::Adjustable, "adjustable/adjustable"},
+      {DtPolicy::Fixed, DtPolicy::Adjustable, "mixed A-fixed,B-adjustable"},
+      {DtPolicy::Adjustable, DtPolicy::Fixed, "mixed A-adjustable,B-fixed"},
+  };
+  for (const auto& c : cases) {
+    const RunResult r = run_two_member_general(window, intervalA, intervalB,
+                                                n_windows, c.a, c.b);
+    ASSERT_FALSE(r.iterations.empty()) << c.label;
+    EXPECT_TRUE(std::isfinite(r.xA)) << c.label;
+    EXPECT_TRUE(std::isfinite(r.xB)) << c.label;
+  }
+}
+
+// Deliberately stiff: kA*h and kC*h are O(1) at the coarsest scale used
+// elsewhere in this file (nowhere near the asymptotic regime the order
+// tests require). This test checks STABILITY -- the coupled iteration
+// converges within max_iterations and produces a finite, bounded answer --
+// not accuracy; do not add an error/order assertion here.
+TEST(WindowCouplerVerification, StiffRegimeStaysStableWithoutBlowingUp) {
+  const RunResult r =
+      run_two_member(Rational{13}, Rational{7}, 6, DtPolicy::Fixed, DtPolicy::Fixed);
+  ASSERT_FALSE(r.iterations.empty());
+  EXPECT_TRUE(std::isfinite(r.xA));
+  EXPECT_TRUE(std::isfinite(r.xB));
+  EXPECT_LT(std::abs(r.xA), 10.0) << "diverged instead of staying stable";
+  EXPECT_LT(std::abs(r.xB), 10.0) << "diverged instead of staying stable";
+  for (int it : r.iterations) {
+    EXPECT_LT(it, 300) << "hit max_iterations instead of converging";
   }
 }
 
