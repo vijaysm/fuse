@@ -147,3 +147,38 @@ new = "    if (ins.kind != OpKind::Remap) {"
 target = "fuse_parallel_runner_transport_test"
 test = "parallel.runner_transport.2"
 requires = "mpi"
+
+# Time windows track (Implement windowed temporal coupling across clocks).
+# Mutations below guard fuse/runtime/window_coupler.hpp's straddle
+# rollback/replay and its conservative mean-forcing split. NOT
+# hand-verified by rebuilding: the shared tier-0 build disk was exhausted
+# by three concurrent tracks for the whole of this session (see the
+# report this change's commit carries). Anchors are confirmed present
+# (`tools/mutate.py --check-anchors`) and the expected failure mode is
+# derived from a from-scratch Python re-implementation of the identical
+# algorithm, run and checked against a closed-form exact solution and,
+# for the rollback mutation specifically, against a from-scratch
+# fixed-point solve of the same discretized equations (fsolve) that the
+# unmutated algorithm was confirmed to match to round-off. The lead
+# should re-verify by actually applying each mutation once tier-0 disk is
+# available.
+
+[[mutation]]
+id = "window-straddle-fixup-skips-rollback"
+area = "runtime"
+describes = "resolve_pending_straddles() stops rolling a Fixed member back to its previous window's checkpoint before replaying the straddling step with converged data, so the replay runs forward from whatever provisional state the straddling step already left behind instead of from the checkpoint -- the state most sensitive to this compounds it into a growing error every subsequent window, since each fixup's provisional error is carried into the next rather than corrected"
+file = "src/runtime/window_coupler.cpp"
+old = "    const Result<void> r0 = m.component->restore_state();"
+new = "    const Result<void> r0 = Result<void>::success();"
+target = "fuse_runtime_window_coupler_test"
+test = "runtime.window_coupler"
+
+[[mutation]]
+id = "window-straddle-tail-mean-not-length-weighted"
+area = "runtime"
+describes = "the straddling-substep mean-forcing blend's denominator drops tail_len, normalizing by in_len alone instead of the full (in_len + tail_len) span -- so the blended mean no longer represents the substep's TRUE average forcing, breaking the conservative-in-time property (the substep's contribution to the window integral is no longer exact) whenever a straddle's in-window and tail portions are unequal in length, which the 7:13 case makes common"
+file = "src/runtime/window_coupler.cpp"
+old = "                  ? (mean_in * in_len + mean_tail * tail_len) / (in_len + tail_len)"
+new = "                  ? (mean_in * in_len + mean_tail * tail_len) / in_len"
+target = "fuse_runtime_window_coupler_test"
+test = "runtime.window_coupler"

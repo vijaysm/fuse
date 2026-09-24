@@ -90,3 +90,34 @@ old = "    if (!any_member || entangled || hi - lo < 2) {"
 new = "    if (!any_member || hi - lo < 2) {"
 target = "fuse_verification_iteration_test"
 test = "verification.iteration"
+
+# Time windows track (Implement windowed temporal coupling across clocks).
+# Mutations below guard fuse/schedule/window.hpp's legality gate. NOT
+# hand-verified by rebuilding: the shared tier-0 build disk was exhausted
+# by three concurrent tracks for the whole of this session (see the
+# report this change's commit carries). Anchors are confirmed present
+# (`tools/mutate.py --check-anchors`) and the expected failure mode is
+# derived from a from-scratch Python re-implementation of the identical
+# algorithm, run and checked against a closed-form exact solution. The
+# lead should re-verify by actually applying each mutation once tier-0
+# disk is available.
+
+[[mutation]]
+id = "window-order-floor-not-enforced"
+area = "compiler"
+describes = "validate_coupling_window() stops enforcing CouplingWindowScope::order >= 2, so a scope whose interpolant/extrapolant is only first order (or degenerate) is accepted instead of refused with E-SCHED-WINDOW-ORDER -- exactly the floor the user's ruling states (interpolation and extrapolation are at least second order)"
+file = "src/schedule/window.cpp"
+old = "  if (scope.order < 2) {"
+new = "  if (false) {"
+target = "fuse_schedule_window_scope_test"
+test = "schedule.window_scope"
+
+[[mutation]]
+id = "window-length-ignores-explicit-interval"
+area = "compiler"
+describes = "window_length() stops returning the caller's declared CouplingWindowScope::explicit_interval and returns a hardcoded Rational{1} instead, silently changing every explicitly-windowed region's macro period regardless of what was authored -- the user's ruling is that the window is never derived (never the LCM of the members' own steps), so it must be exactly what the scope names"
+file = "src/schedule/window.cpp"
+old = "    const Rational len = *scope.explicit_interval;"
+new = "    const Rational len = Rational{1};"
+target = "fuse_schedule_window_scope_test"
+test = "schedule.window_scope"

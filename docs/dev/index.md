@@ -11,3 +11,5 @@ rank from becoming a hang on all of them.
 
 How code moves out of `upstream/` and into `fuse::` — the procedure, the naming map, and the
 retirement schedule — is [](porting.md). The staged build order lives in [](roadmap.md).
+[](coupling-windows.md) covers the multi-clock iteration-window mechanism (schedule-time opt-in
+plus runtime driver) for whoever next touches it.
