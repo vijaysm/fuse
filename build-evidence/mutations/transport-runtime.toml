@@ -212,3 +212,13 @@ old = "      if (first_straddler != nullptr) {"
 new = "      if (false) {"
 target = "fuse_runtime_window_coupler_test"
 test = "runtime.window_coupler"
+
+[[mutation]]
+id = "window-sweep-writes-samples-transposed"
+area = "runtime"
+describes = "The defect Gray-Scott found: the sweep wrote its exchanged vector in (substep, element) order against the canonical (member, element, substep) layout every reader uses. Invisible for scalar members and for one substep per window."
+file = "src/runtime/window_coupler.cpp"
+old = "      const auto at = [&](std::size_t e, std::size_t s) { return base + e * n_sub + s; };"
+new = "      const auto at = [&](std::size_t e, std::size_t s) { return base + s * m.length + e; };"
+target = "fuse_runtime_window_coupler_test"
+test = "runtime.window_coupler"

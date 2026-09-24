@@ -10,6 +10,7 @@
 #include <fuse/runtime/window_coupler.hpp>
 
 #include <cmath>
+#include <utility>
 #include <memory>
 #include <string>
 #include <vector>
@@ -669,4 +670,93 @@ TEST(WindowCouplerRefusals, ChannelIndexOutOfRangeRefused) {
   const auto r = WindowCoupler::create({m}, {{0, 5}}, cfg);
   ASSERT_FALSE(r.ok());
   EXPECT_EQ(r.error().code, "E-RT-WINDOW-CHANNEL");
+}
+
+// ---------------------------------------------------------------- layout
+//
+// A field-valued member with several substeps per window. Two independent
+// scalar problems packed into length-2 members must reproduce each problem run
+// on its own. The elements never interact, so a difference beyond the
+// iteration tolerance is the driver mixing (element, substep) entries. Not bit
+// for bit: convergence is judged on the whole packed vector, so the packed run
+// may stop one sweep apart from the scalar one (measured about 1e-11). The
+// transposed write this test exists for was off by about 1e-2 (0.4136 against
+// 0.4074); every scalar or single-substep test above is blind to it.
+namespace {
+
+class PackedOde final : public Component {
+ public:
+  PackedOde(std::vector<double> a, std::vector<double> b, std::vector<double> x0)
+      : a_(std::move(a)), b_(std::move(b)), x_(std::move(x0)), saved_(x_),
+        provided_(x_), required_(x_.size(), 0.0) {}
+  [[nodiscard]] std::string name() const override { return "packed"; }
+  Result<void> register_fields(FieldRegistry&, const CouplingGraph&) override {
+    return Result<void>::success();
+  }
+  Result<void> advance(const StepContext& ctx) override {
+    const double h = ctx.dt().to_double();
+    for (std::size_t e = 0; e < x_.size(); ++e) {
+      const double ex = std::exp(-a_[e] * h);
+      x_[e] = x_[e] * ex + b_[e] * required_[e] * (1.0 - ex) / a_[e];
+    }
+    provided_ = x_;
+    return Result<void>::success();
+  }
+  Result<void> save_state() override { saved_ = x_; return Result<void>::success(); }
+  Result<void> restore_state() override {
+    x_ = saved_; provided_ = x_; return Result<void>::success();
+  }
+  [[nodiscard]] bool supports_rollback() const override { return true; }
+  double* provided_ptr() { return provided_.data(); }
+  double* required_ptr() { return required_.data(); }
+  [[nodiscard]] const std::vector<double>& x() const { return x_; }
+
+ private:
+  std::vector<double> a_, b_, x_, saved_, provided_, required_;
+};
+
+std::pair<std::vector<double>, std::vector<double>> run_packed(
+    const std::vector<double>& aA, const std::vector<double>& bA, const std::vector<double>& xA,
+    const std::vector<double>& aB, const std::vector<double>& bB, const std::vector<double>& xB,
+    Rational window, Rational hB, int n_windows, DtPolicy pol_b) {
+  PackedOde A(aA, bA, xA), B(aB, bB, xB);
+  WindowMember mA;
+  mA.component = &A; mA.name = "A"; mA.interval = window; mA.policy = DtPolicy::Adjustable;
+  mA.provided = A.provided_ptr(); mA.required = A.required_ptr(); mA.length = xA.size();
+  WindowMember mB;
+  mB.component = &B; mB.name = "B"; mB.interval = hB; mB.policy = pol_b;
+  mB.provided = B.provided_ptr(); mB.required = B.required_ptr(); mB.length = xB.size();
+  WindowCouplerConfig cfg;
+  cfg.window_length = window;
+  cfg.max_iterations = 300;
+  cfg.acceleration = AccelConfig{.kind = AccelKind::None};
+  auto c = WindowCoupler::create({mA, mB}, {{0, 1}, {1, 0}}, cfg);
+  if (!c.ok()) { ADD_FAILURE() << c.error().message; return {}; }
+  for (int w = 0; w < n_windows; ++w) {
+    const Result<void> r = c.value()->run_window();
+    if (!r.ok()) { ADD_FAILURE() << r.error().message; return {}; }
+  }
+  return {A.x(), B.x()};
+}
+
+}  // namespace
+
+TEST(WindowCouplerLayout, PackedElementsReproduceEachScalarProblemExactly) {
+  // Element 0 and element 1 are different problems, so a transposed write
+  // hands each element its neighbour's trajectory.
+  const std::vector<double> aA{kA, 0.4}, bA{kB, 0.9}, xA{kX0, -0.3};
+  const std::vector<double> aB{kC, 1.7}, bB{kD, 0.2}, xB{kY0, 0.8};
+  for (const DtPolicy pol : {DtPolicy::Adjustable, DtPolicy::Fixed}) {
+    // 13:7 at d = 100: B takes two substeps per window and straddles when Fixed.
+    const auto packed = run_packed(aA, bA, xA, aB, bB, xB, Rational{13, 100},
+                                   Rational{7, 100}, 7, pol);
+    ASSERT_EQ(packed.first.size(), 2u);
+    for (std::size_t e = 0; e < 2; ++e) {
+      const auto alone = run_packed({aA[e]}, {bA[e]}, {xA[e]}, {aB[e]}, {bB[e]}, {xB[e]},
+                                    Rational{13, 100}, Rational{7, 100}, 7, pol);
+      ASSERT_EQ(alone.first.size(), 1u);
+      EXPECT_NEAR(packed.first[e], alone.first[0], 1e-9) << "A element " << e;
+      EXPECT_NEAR(packed.second[e], alone.second[0], 1e-9) << "B element " << e;
+    }
+  }
 }
