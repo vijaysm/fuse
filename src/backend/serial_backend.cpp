@@ -633,6 +633,44 @@ RegionSizes make_region_sizes(const CouplingGraph& g,
     const ComponentId who = placement >= 0
                                 ? ComponentId{static_cast<std::uint32_t>(placement)}
                                 : ComponentId{};
+
+    // Which of field_extent()'s two shapes every field on this region
+    // implies (mesh_view.hpp, "the one definition of a field's extent").
+    // Everything below this is UNCHANGED for a Cell-shaped region -- the
+    // default when nothing declared a field on it yet -- so a graph with no
+    // nodal field anywhere sizes exactly as it always has.
+    const auto kind = region_extent_kind(g, id);
+    if (!kind.ok()) {
+      FUSE_THROW(InvariantViolation, "{}",
+                 "make_region_sizes: cannot size region '" + r.name +
+                     "': " + kind.error().code + ": " + kind.error().message);
+    }
+
+    if (kind.value() == RegionExtentKind::Vertex) {
+      // A nodal field's extent is the mesh's VERTEX count, not the region's
+      // own (cell) dimension -- and "the region's cells" means the WHOLE
+      // mesh, exactly the restriction consistent_interp.hpp's resolve_side
+      // already places on the nodal side: a named entity SUBSET has no
+      // MeshView enumeration, so which vertices belong to "the region's
+      // cells" cannot be answered without one.
+      if (!(resolved.entity_set.empty() || resolved.entity_set == "all")) {
+        FUSE_THROW(InvariantViolation, "{}",
+                   "make_region_sizes: region '" + r.name +
+                       "' names entity set '" + resolved.entity_set +
+                       "', which MeshView cannot enumerate, so a nodal "
+                       "field's vertex count cannot be taken from it "
+                       "(E-EXTENT-REGION)");
+      }
+      const auto view = backend.placed_view(backend_mesh.value(), who);
+      if (!view.ok()) {
+        FUSE_THROW(InvariantViolation, "{}",
+                   "make_region_sizes: cannot size nodal region '" + r.name +
+                       "': " + view.error().code + ": " +
+                       view.error().message);
+      }
+      return view.value()->entity_count(0);
+    }
+
     const auto n = backend.placed_region_size(resolved, who);
     if (!n.ok()) {
       FUSE_THROW(InvariantViolation, "{}", "make_region_sizes: cannot size region '" +

@@ -1166,6 +1166,228 @@ Result<CommGraph> CommGraph::build(int base_comm_handle,
   return finish(std::move(g));
 }
 
+// ---------------------------------------------------------------------------
+// accumulate_shared_rows -- docs/dev/nodal-fields.md's "H^T on a distributed
+// interface". See comm_graph.hpp for the contract.
+// ---------------------------------------------------------------------------
+
+Result<void> accumulate_shared_rows(const MeshView& view, int dim,
+                                    std::size_t components,
+                                    std::vector<double>& local_values,
+                                    int base_comm_handle) {
+  const std::size_t nv = view.entity_count(dim);
+  if (components < 1) {
+    return Failure{"E-ACCUM-COMPONENTS",
+                   fmt::format("accumulate_shared_rows: components must be "
+                              "at least 1, got {}",
+                              components)};
+  }
+  if (local_values.size() != nv * components) {
+    return Failure{
+        "E-ACCUM-SIZE",
+        fmt::format("accumulate_shared_rows: {} entities x {} components "
+                   "needs a buffer of {} values, got {}",
+                   nv, components, nv * components, local_values.size())};
+  }
+
+  const MPI_Comm comm = MPI_Comm_f2c(static_cast<MPI_Fint>(base_comm_handle));
+  if (comm == MPI_COMM_NULL) {
+    return Failure{"E-ACCUM-COMM",
+                   "accumulate_shared_rows: base_comm_handle names "
+                   "MPI_COMM_NULL"};
+  }
+  int num_ranks = 0;
+  if (MPI_Comm_size(comm, &num_ranks) != MPI_SUCCESS) {
+    return Failure{"E-ACCUM-COMM", "accumulate_shared_rows: MPI_Comm_size failed"};
+  }
+
+  // Every LOCAL row contributes its own global id and value EXACTLY ONCE,
+  // regardless of ownership (comm_graph.hpp's contract) -- unlike
+  // gather_side() above, which restricts a SOURCE side to owned entities to
+  // avoid ambiguous ownership. There is no such ambiguity here: this is a
+  // SUM, not a copy, and every rank's local partial is a real, independent
+  // contribution to the total, whether or not that rank happens to own the
+  // vertex.
+  std::vector<std::int64_t> local_gids(nv);
+  for (std::size_t i = 0; i < nv; ++i) {
+    local_gids[i] = static_cast<std::int64_t>(view.global_id(dim, i));
+  }
+
+  const int local_count = static_cast<int>(nv);
+  std::vector<int> counts(static_cast<std::size_t>(num_ranks));
+  if (MPI_Allgather(&local_count, 1, MPI_INT, counts.data(), 1, MPI_INT, comm) !=
+      MPI_SUCCESS) {
+    return Failure{"E-ACCUM-COMM", "accumulate_shared_rows: MPI_Allgather (counts) failed"};
+  }
+  std::vector<int> displs(static_cast<std::size_t>(num_ranks));
+  int total = 0;
+  for (int r = 0; r < num_ranks; ++r) {
+    displs[static_cast<std::size_t>(r)] = total;
+    total += counts[static_cast<std::size_t>(r)];
+  }
+
+  std::vector<std::int64_t> gathered_gids(static_cast<std::size_t>(total));
+  if (MPI_Allgatherv(local_gids.data(), local_count, MPI_INT64_T,
+                     gathered_gids.data(), counts.data(), displs.data(),
+                     MPI_INT64_T, comm) != MPI_SUCCESS) {
+    return Failure{"E-ACCUM-COMM", "accumulate_shared_rows: MPI_Allgatherv (gids) failed"};
+  }
+
+  // Values: one MPI_Allgatherv per component, rather than one interleaved
+  // call, so `counts`/`displs` (row counts) apply unchanged -- an
+  // interleaved layout would need every count/displ scaled by `components`,
+  // and a mismatch there is exactly the class of defect a second, tested
+  // code path invites.
+  std::vector<double> gathered_vals(static_cast<std::size_t>(total) * components);
+  std::vector<double> local_component(nv);
+  for (std::size_t c = 0; c < components; ++c) {
+    for (std::size_t i = 0; i < nv; ++i) local_component[i] = local_values[i * components + c];
+    std::vector<double> gathered_c(static_cast<std::size_t>(total));
+    if (MPI_Allgatherv(local_component.data(), local_count, MPI_DOUBLE,
+                       gathered_c.data(), counts.data(), displs.data(),
+                       MPI_DOUBLE, comm) != MPI_SUCCESS) {
+      return Failure{"E-ACCUM-COMM", "accumulate_shared_rows: MPI_Allgatherv (values) failed"};
+    }
+    for (std::size_t i = 0; i < static_cast<std::size_t>(total); ++i) {
+      gathered_vals[i * components + c] = gathered_c[i];
+    }
+  }
+
+  // Sum every gathered row into its global id's running total. A gid
+  // appearing on several ranks (or, once, twice within one rank's own
+  // segment -- not a valid partition, but summed rather than silently
+  // overwritten either way) accumulates every contribution.
+  std::unordered_map<std::int64_t, std::vector<double>> total_of;
+  total_of.reserve(static_cast<std::size_t>(total));
+  for (std::size_t i = 0; i < static_cast<std::size_t>(total); ++i) {
+    auto [it, inserted] = total_of.try_emplace(gathered_gids[i], components, 0.0);
+    for (std::size_t c = 0; c < components; ++c) it->second[c] += gathered_vals[i * components + c];
+  }
+
+  for (std::size_t i = 0; i < nv; ++i) {
+    const auto& t = total_of.at(local_gids[i]);
+    for (std::size_t c = 0; c < components; ++c) local_values[i * components + c] = t[c];
+  }
+  return Result<void>::success();
+}
+
+// ---------------------------------------------------------------------------
+// copy_owner_shared_rows -- the Intensive/None companion. See comm_graph.hpp
+// for the contract; the gather below mirrors accumulate_shared_rows's, with
+// an `is_owned` flag riding alongside each row so the OWNER's contribution
+// (not the sum) can be picked out.
+// ---------------------------------------------------------------------------
+
+Result<void> copy_owner_shared_rows(const MeshView& view, int dim,
+                                    std::size_t components,
+                                    std::vector<double>& local_values,
+                                    int base_comm_handle) {
+  const std::size_t nv = view.entity_count(dim);
+  if (components < 1) {
+    return Failure{"E-ACCUM-COMPONENTS",
+                   fmt::format("copy_owner_shared_rows: components must be "
+                              "at least 1, got {}",
+                              components)};
+  }
+  if (local_values.size() != nv * components) {
+    return Failure{
+        "E-ACCUM-SIZE",
+        fmt::format("copy_owner_shared_rows: {} entities x {} components "
+                   "needs a buffer of {} values, got {}",
+                   nv, components, nv * components, local_values.size())};
+  }
+
+  const MPI_Comm comm = MPI_Comm_f2c(static_cast<MPI_Fint>(base_comm_handle));
+  if (comm == MPI_COMM_NULL) {
+    return Failure{"E-ACCUM-COMM",
+                   "copy_owner_shared_rows: base_comm_handle names "
+                   "MPI_COMM_NULL"};
+  }
+  int num_ranks = 0;
+  if (MPI_Comm_size(comm, &num_ranks) != MPI_SUCCESS) {
+    return Failure{"E-ACCUM-COMM", "copy_owner_shared_rows: MPI_Comm_size failed"};
+  }
+
+  std::vector<std::int64_t> local_gids(nv);
+  std::vector<int>          local_owned(nv);
+  for (std::size_t i = 0; i < nv; ++i) {
+    local_gids[i]  = static_cast<std::int64_t>(view.global_id(dim, i));
+    local_owned[i] = view.is_owned(dim, i) ? 1 : 0;
+  }
+
+  const int        local_count = static_cast<int>(nv);
+  std::vector<int> counts(static_cast<std::size_t>(num_ranks));
+  if (MPI_Allgather(&local_count, 1, MPI_INT, counts.data(), 1, MPI_INT, comm) !=
+      MPI_SUCCESS) {
+    return Failure{"E-ACCUM-COMM", "copy_owner_shared_rows: MPI_Allgather (counts) failed"};
+  }
+  std::vector<int> displs(static_cast<std::size_t>(num_ranks));
+  int total = 0;
+  for (int r = 0; r < num_ranks; ++r) {
+    displs[static_cast<std::size_t>(r)] = total;
+    total += counts[static_cast<std::size_t>(r)];
+  }
+
+  std::vector<std::int64_t> gathered_gids(static_cast<std::size_t>(total));
+  if (MPI_Allgatherv(local_gids.data(), local_count, MPI_INT64_T,
+                     gathered_gids.data(), counts.data(), displs.data(),
+                     MPI_INT64_T, comm) != MPI_SUCCESS) {
+    return Failure{"E-ACCUM-COMM", "copy_owner_shared_rows: MPI_Allgatherv (gids) failed"};
+  }
+  std::vector<int> gathered_owned(static_cast<std::size_t>(total));
+  if (MPI_Allgatherv(local_owned.data(), local_count, MPI_INT,
+                     gathered_owned.data(), counts.data(), displs.data(),
+                     MPI_INT, comm) != MPI_SUCCESS) {
+    return Failure{"E-ACCUM-COMM", "copy_owner_shared_rows: MPI_Allgatherv (owned) failed"};
+  }
+
+  std::vector<double> gathered_vals(static_cast<std::size_t>(total) * components);
+  std::vector<double> local_component(nv);
+  for (std::size_t c = 0; c < components; ++c) {
+    for (std::size_t i = 0; i < nv; ++i) local_component[i] = local_values[i * components + c];
+    std::vector<double> gathered_c(static_cast<std::size_t>(total));
+    if (MPI_Allgatherv(local_component.data(), local_count, MPI_DOUBLE,
+                       gathered_c.data(), counts.data(), displs.data(),
+                       MPI_DOUBLE, comm) != MPI_SUCCESS) {
+      return Failure{"E-ACCUM-COMM", "copy_owner_shared_rows: MPI_Allgatherv (values) failed"};
+    }
+    for (std::size_t i = 0; i < static_cast<std::size_t>(total); ++i) {
+      gathered_vals[i * components + c] = gathered_c[i];
+    }
+  }
+
+  // Exactly one gathered row per global id may claim ownership -- more than
+  // one is two ranks disagreeing about docs/dev/native-mesh.md's rule (a
+  // mesh contract violation), and zero is a global id nobody holds as owner,
+  // neither of which this function can resolve by guessing.
+  std::unordered_map<std::int64_t, std::vector<double>> owner_of;
+  owner_of.reserve(static_cast<std::size_t>(total));
+  for (std::size_t i = 0; i < static_cast<std::size_t>(total); ++i) {
+    if (gathered_owned[i] != 1) continue;
+    std::vector<double> row(components);
+    for (std::size_t c = 0; c < components; ++c) row[c] = gathered_vals[i * components + c];
+    const auto [it, inserted] = owner_of.try_emplace(gathered_gids[i], std::move(row));
+    if (!inserted) {
+      return Failure{"E-ACCUM-OWNER",
+                     fmt::format("copy_owner_shared_rows: more than one rank "
+                                "claims ownership of global id {}",
+                                gathered_gids[i])};
+    }
+  }
+
+  for (std::size_t i = 0; i < nv; ++i) {
+    const auto it = owner_of.find(local_gids[i]);
+    if (it == owner_of.end()) {
+      return Failure{"E-ACCUM-OWNER",
+                     fmt::format("copy_owner_shared_rows: no rank claims "
+                                "ownership of global id {}",
+                                local_gids[i])};
+    }
+    for (std::size_t c = 0; c < components; ++c) local_values[i * components + c] = it->second[c];
+  }
+  return Result<void>::success();
+}
+
 }  // namespace fuse
 
 #endif  // FUSE_HAVE_MPI
