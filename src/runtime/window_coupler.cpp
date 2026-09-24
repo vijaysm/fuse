@@ -168,9 +168,74 @@ Result<void> WindowCoupler::resolve_pending_straddles(Rational /*T0*/) {
     const Result<void> r0 = m.component->restore_state();
     if (!r0.ok()) return r0;
 
+    // `sweep_window()` already committed `history[e]`'s last entry --
+    // {prev_end, v_at_t1} -- as the EXACT value at prev_end from a genuine
+    // advance() split at that boundary (not an interpolant; see the class
+    // comment on why the split, not a blended mean_val plus interpolation,
+    // is what makes a straddling substep's boundary value as accurate as
+    // an ordinary substep's own endpoint). This replay must reproduce that
+    // SAME split at `prev_end` for its own crossing chunk, for the same
+    // reason -- and once it does, it recomputes the SAME accurate value
+    // sweep_window already committed (both use the same converged
+    // in-window data for [chunk_start, prev_end)), so `history` needs no
+    // separate correction here.
     Rational clock = st.straddle_window_start;
     while (clock < st.clock) {
       const Rational end = std::min(clock + m.interval, st.clock);
+      if (clock < prev_end && prev_end < end) {
+        // This chunk straddles prev_end: split it exactly there, same as
+        // sweep_window's straddling substep.
+        for (std::size_t e = 0; e < m.length; ++e) {
+          double mean_in = 0.0;
+          bool have = false;
+          for (const WindowChannel& ch : channels_) {
+            if (ch.consumer != i) continue;
+            const MemberState& pst = state_[ch.provider];
+            const std::size_t pe = std::min(e, members_[ch.provider].length - 1);
+            const Result<double> mv =
+                mean_over(*pst.last_window_waveform[pe], clock, prev_end);
+            if (!mv.ok()) return mv.error();
+            mean_in = mv.value();
+            have = true;
+          }
+          if (have) m.required[e] = mean_in;
+        }
+        StepContext ctx_in;
+        ctx_in.t_begin = clock;
+        ctx_in.t_end = prev_end;
+        ctx_in.step = window_index_;
+        ctx_in.iteration = 0;
+        const Result<void> ar_in = m.component->advance(ctx_in);
+        if (!ar_in.ok()) return ar_in;
+
+        for (std::size_t e = 0; e < m.length; ++e) {
+          double mean_tail = 0.0;
+          bool have = false;
+          for (const WindowChannel& ch : channels_) {
+            if (ch.consumer != i) continue;
+            const MemberState& pst = state_[ch.provider];
+            const std::size_t pe = std::min(e, members_[ch.provider].length - 1);
+            const int ord = order_for(ch.provider);
+            double v_bnd = 0.0;
+            const Result<void> ev =
+                pst.last_window_waveform[pe]->evaluate(prev_end, &v_bnd);
+            if (!ev.ok()) return ev.error();
+            const double v_tail = extrapolate_boundary_value(pst.history[pe], end, ord);
+            mean_tail = 0.5 * (v_bnd + v_tail);
+            have = true;
+          }
+          if (have) m.required[e] = mean_tail;
+        }
+        StepContext ctx_tail;
+        ctx_tail.t_begin = prev_end;
+        ctx_tail.t_end = end;
+        ctx_tail.step = window_index_;
+        ctx_tail.iteration = 0;
+        const Result<void> ar_tail = m.component->advance(ctx_tail);
+        if (!ar_tail.ok()) return ar_tail;
+        clock = end;
+        continue;
+      }
       for (std::size_t e = 0; e < m.length; ++e) {
         double mean_val = 0.0;
         bool have = false;
@@ -184,20 +249,10 @@ Result<void> WindowCoupler::resolve_pending_straddles(Rational /*T0*/) {
                 mean_over(*pst.last_window_waveform[pe], clock, end);
             if (!mv.ok()) return mv.error();
             mean_val = mv.value();
-          } else if (clock >= prev_end) {
+          } else {
             const double v0 = extrapolate_boundary_value(pst.history[pe], clock, ord);
             const double v1 = extrapolate_boundary_value(pst.history[pe], end, ord);
             mean_val = 0.5 * (v0 + v1);
-          } else {
-            const Result<double> mv_in =
-                mean_over(*pst.last_window_waveform[pe], clock, prev_end);
-            if (!mv_in.ok()) return mv_in.error();
-            const double v_bnd = extrapolate_boundary_value(pst.history[pe], prev_end, ord);
-            const double v_tail = extrapolate_boundary_value(pst.history[pe], end, ord);
-            const double in_len = (prev_end - clock).to_double();
-            const double tail_len = (end - prev_end).to_double();
-            mean_val = (mv_in.value() * in_len + 0.5 * (v_bnd + v_tail) * tail_len) /
-                      (in_len + tail_len);
           }
           have = true;
         }
@@ -345,37 +400,96 @@ Result<void> WindowCoupler::sweep_window(Rational T0, Rational T1) {
       }
 
       for (const Substep& sub : steps[i]) {
+        if (sub.straddle && T1 > sub.t0) {
+          // Split the advance() exactly AT T1 instead of taking one
+          // advance() over the whole [sub.t0, sub.t1) with a single
+          // BLENDED mean and then interpolating the value AT T1 between
+          // the two endpoint STATES. That interpolation does not recover
+          // x(T1) to the substep's own order: x(T1) depends on the TRUE
+          // mean over [sub.t0, T1) specifically, and a state computed by
+          // advancing with a mean valid for the LONGER, blended interval
+          // does not sit on the same trajectory between t0 and T1 that a
+          // direct advance() with mean_in would produce. Splitting the
+          // call -- advance to T1 with mean_in (exactly the non-straddle
+          // formula, restricted to [sub.t0, T1)), then continue to
+          // sub.t1 with mean_tail -- makes the committed T1 value as
+          // accurate as an ordinary substep's own endpoint, which is what
+          // this member's Adjustable counterpart already gets for free
+          // (its last substep simply ends at T1). This is also what the
+          // validated Python reference implements (run_substeps3's two
+          // advance() calls at the straddle boundary); the single-call
+          // interpolation was a divergence from it introduced when this
+          // was ported to C++.
+          for (std::size_t e = 0; e < m.length; ++e) {
+            double mean_in = 0.0;
+            for (const WindowChannel& ch : channels_) {
+              if (ch.consumer != i) continue;
+              const std::size_t pe = std::min(e, members_[ch.provider].length - 1);
+              const Waveform& pw = *delivered[ch.provider][pe];
+              const Result<double> mv = mean_over(pw, sub.t0, T1);
+              if (!mv.ok()) return mv.error();
+              mean_in = mv.value();
+            }
+            m.required[e] = mean_in;
+          }
+          StepContext ctx_in;
+          ctx_in.t_begin = sub.t0;
+          ctx_in.t_end = T1;
+          ctx_in.step = window_index_;
+          ctx_in.iteration = k;
+          const Result<void> ar_in = members_[i].component->advance(ctx_in);
+          if (!ar_in.ok()) return ar_in;
+          std::vector<double> v_at_t1(m.length);
+          for (std::size_t e = 0; e < m.length; ++e) {
+            v_at_t1[e] = m.provided[e];
+            const Result<void> pr = real_traj[i][e]->push(T1, &v_at_t1[e]);
+            if (!pr.ok()) return pr.error();
+          }
+          if (T1 < sub.t1) {
+            for (std::size_t e = 0; e < m.length; ++e) {
+              double mean_tail = 0.0;
+              for (const WindowChannel& ch : channels_) {
+                if (ch.consumer != i) continue;
+                const std::size_t pe = std::min(e, members_[ch.provider].length - 1);
+                const Waveform& pw = *delivered[ch.provider][pe];
+                double v_bnd = 0.0;
+                (void)pw.evaluate(T1, &v_bnd);
+                const double v_tail = extrapolate_boundary_value(
+                    state_[ch.provider].history[pe], sub.t1, order_for(ch.provider));
+                mean_tail = 0.5 * (v_bnd + v_tail);
+              }
+              m.required[e] = mean_tail;
+            }
+            StepContext ctx_tail;
+            ctx_tail.t_begin = T1;
+            ctx_tail.t_end = sub.t1;
+            ctx_tail.step = window_index_;
+            ctx_tail.iteration = k;
+            const Result<void> ar_tail = members_[i].component->advance(ctx_tail);
+            if (!ar_tail.ok()) return ar_tail;
+          }
+          for (std::size_t e = 0; e < m.length; ++e) {
+            if (T1 < sub.t1) {
+              double v = m.provided[e];
+              const Result<void> pr = real_traj[i][e]->push(sub.t1, &v);
+              if (!pr.ok()) return pr.error();
+            }
+            // The committed/exchanged value for this substep is the EXACT
+            // value at T1 from the first advance() call above, never an
+            // interpolant -- this is the whole point of the split.
+            y_new[idx++] = v_at_t1[e];
+          }
+          continue;
+        }
         for (std::size_t e = 0; e < m.length; ++e) {
           double mean_val = m.required[e];
           for (const WindowChannel& ch : channels_) {
             if (ch.consumer != i) continue;
             const std::size_t pe = std::min(e, members_[ch.provider].length - 1);
             const Waveform& pw = *delivered[ch.provider][pe];
-            if (!sub.straddle) {
-              const Result<double> mv = mean_over(pw, sub.t0, sub.t1);
-              if (!mv.ok()) return mv.error();
-              mean_val = mv.value();
-            } else {
-              // [sub.t0, T1) from the delivered (in-window, iterated) data;
-              // [T1, sub.t1) extrapolated -- nothing has produced data there
-              // yet this window.
-              double mean_in = 0.0, in_len = 0.0;
-              if (T1 > sub.t0) {
-                const Result<double> mv = mean_over(pw, sub.t0, T1);
-                if (!mv.ok()) return mv.error();
-                mean_in = mv.value();
-                in_len = (T1 - sub.t0).to_double();
-              }
-              double v_bnd = 0.0;
-              (void)pw.evaluate(T1, &v_bnd);
-              const double v_tail = extrapolate_boundary_value(
-                  state_[ch.provider].history[pe], sub.t1, order_for(ch.provider));
-              const double tail_len = (sub.t1 - T1).to_double();
-              const double mean_tail = 0.5 * (v_bnd + v_tail);
-              mean_val = in_len > 0
-                  ? (mean_in * in_len + mean_tail * tail_len) / (in_len + tail_len)
-                  : mean_tail;
-            }
+            const Result<double> mv = mean_over(pw, sub.t0, sub.t1);
+            if (!mv.ok()) return mv.error();
+            mean_val = mv.value();
           }
           m.required[e] = mean_val;
         }
@@ -386,23 +500,15 @@ Result<void> WindowCoupler::sweep_window(Rational T0, Rational T1) {
         ctx.iteration = k;
         const Result<void> ar = members_[i].component->advance(ctx);
         if (!ar.ok()) return ar;
+        // This substep is never a straddle here (the straddling case
+        // `continue`s past this point above): tc == sub.t1 always, so the
+        // committed value is simply this substep's own endpoint, no
+        // interpolation involved.
         for (std::size_t e = 0; e < m.length; ++e) {
           double v = m.provided[e];
           const Result<void> pr = real_traj[i][e]->push(sub.t1, &v);
           if (!pr.ok()) return pr.error();
-          const Rational tc = std::min(sub.t1, T1);
-          double vc = v;
-          if (sub.straddle && sub.t1 > T1) {
-            // Value AT the window end, interpolated linearly within the
-            // straddling substep (exact for the substep's own linear
-            // representation): the two endpoints are (sub.t0, value at
-            // t0) and (sub.t1, v).
-            double v_t0 = 0.0;
-            (void)real_traj[i][e]->evaluate(sub.t0, &v_t0);
-            const double w = (tc - sub.t0).to_double() / (sub.t1 - sub.t0).to_double();
-            vc = (1.0 - w) * v_t0 + w * v;
-          }
-          y_new[idx++] = vc;
+          y_new[idx++] = v;
         }
       }
     }
@@ -449,20 +555,23 @@ Result<void> WindowCoupler::sweep_window(Rational T0, Rational T1) {
 
   // Commit: the component state IS this sweep's real advance() output
   // already; only the driver's own bookkeeping needs updating.
-  {
-    std::size_t idx = 0;
-    for (std::size_t i = 0; i < n; ++i) {
-      for (std::size_t e = 0; e < members_[i].length; ++e) {
-        idx += steps[i].size() > 0 ? steps[i].size() - 1 : 0;  // skip to last
-      }
-    }
-  }
   std::size_t idx = 0;
   for (std::size_t i = 0; i < n; ++i) {
     for (std::size_t e = 0; e < members_[i].length; ++e) {
       // The LAST substep's clipped (window-end) sample is this window's
-      // committed boundary value.
-      double last_val = 0.0;
+      // committed boundary value. A member can have ZERO planned
+      // substeps this window (reachable when a prior straddle already
+      // carried its clock at or past this window's own end) -- in that
+      // case there is no new y_new entry to read, and the value this
+      // window commits is simply whatever it committed last: carry
+      // forward history[e]'s current last entry rather than an
+      // uninitialized 0.0, which would otherwise silently overwrite a
+      // real carried-forward value with an artificial zero that
+      // extrapolate_boundary_value() would then read as if it were
+      // genuine data.
+      double last_val = state_[i].history[e].empty()
+                             ? members_[i].provided[e]
+                             : state_[i].history[e].back().second;
       for (std::size_t s = 0; s < steps[i].size(); ++s) last_val = y_new[idx++];
       state_[i].history[e].push_back({T1, last_val});
     }
@@ -470,7 +579,20 @@ Result<void> WindowCoupler::sweep_window(Rational T0, Rational T1) {
     state_[i].clock = new_clock[i];
     if (!steps[i].empty() && steps[i].back().straddle) {
       state_[i].straddle_pending = true;
-      state_[i].straddle_window_start = T0;
+      // The replay's restore_state() returns to whatever save_state()
+      // above actually checkpointed -- this member's clock at the TOP of
+      // THIS window, i.e. start_clock[i], which is T0 only the first time
+      // this member ever straddles. A member that is ALREADY overshooting
+      // every window (the 7:13 case) has start_clock[i] > T0 by the
+      // previous window's own overshoot; recording T0 here made the next
+      // window's resolve_pending_straddles() replay substeps as if they
+      // began at T0, one component's worth of true elapsed time short of
+      // where restore_state() actually put it -- a per-window
+      // mislabelling whose size never shrinks with the window length
+      // (both T0 and start_clock[i] shrink together, but their GAP is a
+      // roughly fixed fraction of the window), which is exactly why the
+      // resulting error was O(1) rather than O(h^2).
+      state_[i].straddle_window_start = start_clock[i];
       state_[i].straddle_window_end = T1;
     } else {
       state_[i].straddle_pending = false;
