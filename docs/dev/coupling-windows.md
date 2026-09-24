@@ -122,22 +122,22 @@ windows at different points in that 7-window cycle — not a remaining
 bug, but a reason to align refinement to the cycle rather than read
 order off an arbitrary fixed wall-clock time.
 
-**A third, disclosed, NOT-fixed gap**, found while building
-`BothMembersStraddleAnExplicitWindow`: `resolve_pending_straddles()`
-assumes at most one member has `straddle_pending` in a given window. An
-explicit window shorter than BOTH members' own intervals makes both
-straddle at once; replaying them one at a time, each reading the OTHER's
-`last_window_waveform`/`history`, throws
-`Waveform::integrate: [range] is not inside the support [range]` within
-a couple of windows for Fixed/Fixed, and gives non-monotone or growing
-error for the mixed cases, without crashing. A related, separate gap:
-a member whose interval EXCEEDS the window enough (here, more than
-double it) must eventually skip a window outright, which
-`build_delivered()` does not support (`Waveform::reset` with
-`window_begin > window_end`, an `InvalidArgument`). Both need dedicated
-design work — multi-window replay, at minimum — not a mutation-scale
-fix; see the test's own comment for the exact configurations and
-measurements, and `KNOWN_ISSUES.md` for the tracking entry.
+**The supported envelope, enforced at `WindowCoupler::create`.** The
+straddle replay handles one straddling member per window. A member straddles
+only if it is Fixed and its step does not divide the window, so:
+- two such members are refused (`E-RT-WINDOW-STRADDLE`), because each would
+  replay against the other's unresolved trajectory;
+- a Fixed step longer than the window is refused (`E-RT-WINDOW-LONGSTEP`),
+  because it spans a window end it never samples.
+Both were run before they were refused. Fixed/Fixed threw from
+`Waveform::integrate`, and the Fixed long-step mixed case returned a
+non-converging answer with no diagnostic, which is why they are refusals and
+not merely documented limits. Inside the envelope, a window that neither step
+divides still converges at order 2
+(`AWindowNeitherStepDividesConvergesAtOrderTwo`). Supporting simultaneous
+straddles needs a joint replay over a consistent snapshot of every member,
+and supporting long Fixed steps needs a commit path that can record "no new
+data this window"; see `KNOWN_ISSUES.md` D7.
 
 ## What is NOT built here
 

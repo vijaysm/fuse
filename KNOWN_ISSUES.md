@@ -743,10 +743,9 @@ confirm.
 
 ---
 
-### D6. `WindowCoupler` supports at most one straddling member per window, and none whose interval so exceeds the window that it must skip one
+### D7. `WindowCoupler` supports at most one straddling member per window, and no Fixed step longer than the window — REFUSED 2026-09-24, support is design work
 
-Found 2026-09-24 while building
-`WindowCouplerVerification.BothMembersStraddleAnExplicitWindow`
+Found 2026-09-24 while testing an explicit window
 (`test/runtime/window_coupler_test.cpp`) — an explicit window interval
 shorter than every member's own step, so every member straddles at once,
 which the delegated task's own design allows
@@ -780,14 +779,25 @@ component's step, or an explicit interval"). Two distinct gaps, not one:
    build itself, since 1 already stops the run first at a much smaller
    window index for that same configuration.
 
-**What is verified instead**
-(`WindowCouplerVerification.BothMembersStraddleAnExplicitWindow`): two
-members CAN straddle in the same window over a short run (window=12/d,
-intervals 13/d and 7/d, 2 windows — chosen because 1's throw does not
-appear until window 2 there) without silently returning a wrong answer:
-either it works and returns a finite result, or it raises the exact
-`InvalidArgument` above. No order-2 assertion is made for this
-configuration, unlike every other case in that file.
+**Now refused, not run** (`WindowCoupler::create`). Running either case
+returned a wrong answer without any diagnostic in the mixed configuration,
+so both are refusals:
+- `E-RT-WINDOW-LONGSTEP`: a Fixed member whose interval exceeds the window.
+  This was the mixed case that "never reached order 2": the Fixed 13/d member
+  against a 12/d window, which spans a window end it cannot replay.
+- `E-RT-WINDOW-STRADDLE`: two Fixed members whose steps both fail to divide
+  the window, so both can straddle one window end.
+Tests `WindowCouplerRefusals.AFixedStepLongerThanTheWindowIsRefused` and
+`TwoFixedMembersThatCanStraddleTogetherAreRefused` make each fire, and
+`AFixedStepThatDividesTheWindowNeverStraddlesAndIsAccepted` shows that a Fixed
+step dividing the window is not counted.
+
+**What is verified inside the envelope.**
+`WindowCouplerVerification.AWindowNeitherStepDividesConvergesAtOrderTwo`: a
+12/d window with A Adjustable at 13/d (truncated to the window) and B at 7/d,
+both Fixed and Adjustable, converges at order in [1.9, 2.1] at every one of
+four phase-aligned refinements. It replaces the earlier
+`BothMembersStraddleAnExplicitWindow`, which asserted only a finite result.
 
 **What to do.** Both gaps need multi-window replay support:
 `resolve_pending_straddles()` would need to resolve every member with a

@@ -113,8 +113,8 @@ struct RunResult {
 };
 
 // A <-> B with an EXPLICIT window length independent of either member's own
-// interval -- the shape needed to make BOTH members straddle at once (see
-// `BothMembersStraddleAnExplicitWindow` below). `run_two_member` (next) is
+// interval -- the shape a window neither step divides needs (see
+// `AWindowNeitherStepDividesConvergesAtOrderTwo` below). `run_two_member` (next) is
 // the common case where the window length equals A's own interval, which is
 // what makes A the window-definer and structurally incapable of
 // straddling.
@@ -367,33 +367,77 @@ TEST(WindowCouplerVerification, ErrorConvergesAtOrderTwoMixedAdjustableFixed) {
 //    independent simultaneous-straddle interaction bug, not covered by
 //    either fix made above.
 //
-// Filed as an open architectural gap (KNOWN_ISSUES.md, this task's
-// open_questions): WindowCoupler's replay path assumes at most one
-// member straddles per window and does not support a member skipping a
-// window outright. Both need dedicated design work, not a hand-applied
-// mutation-scale fix. What IS verified here is narrower: two members can
-// straddle in the SAME window over a SHORT run without corrupting state
-// silently -- either it works (checked below) or it raises the
-// InvalidArgument this comment documents, never a wrong answer that looks
-// like success.
-TEST(WindowCouplerVerification, BothMembersStraddleAnExplicitWindow) {
-  const Rational window{12, 35};
-  const Rational intervalA{13, 35};
-  const Rational intervalB{7, 35};
-  const int n_windows = 2;  // verified safe: the simultaneous-straddle
-                            // throw above first appears at window 2.
-  const struct { DtPolicy a, b; const char* label; } cases[] = {
-      {DtPolicy::Fixed, DtPolicy::Fixed, "fixed/fixed"},
-      {DtPolicy::Adjustable, DtPolicy::Adjustable, "adjustable/adjustable"},
-      {DtPolicy::Fixed, DtPolicy::Adjustable, "mixed A-fixed,B-adjustable"},
-      {DtPolicy::Adjustable, DtPolicy::Fixed, "mixed A-adjustable,B-fixed"},
-  };
-  for (const auto& c : cases) {
-    const RunResult r = run_two_member_general(window, intervalA, intervalB,
-                                                n_windows, c.a, c.b);
-    ASSERT_FALSE(r.iterations.empty()) << c.label;
-    EXPECT_TRUE(std::isfinite(r.xA)) << c.label;
-    EXPECT_TRUE(std::isfinite(r.xB)) << c.label;
+// The straddle envelope (KNOWN_ISSUES.md D7). Outside it the coupler used
+// to run and return a wrong answer with no diagnostic -- growing error in
+// the mixed cases -- so it is now refused at create(). Inside it, a window
+// that neither step divides is still verified to order 2.
+namespace {
+
+[[nodiscard]] Result<std::unique_ptr<WindowCoupler>> create_pair(
+    LinearOdeComponent& a, LinearOdeComponent& b, Rational window,
+    Rational ia, Rational ib, DtPolicy pa, DtPolicy pb) {
+  WindowMember ma;
+  ma.component = &a; ma.name = "A"; ma.interval = ia; ma.policy = pa;
+  ma.provided = a.provided_ptr(); ma.required = a.required_ptr(); ma.length = 1;
+  WindowMember mb;
+  mb.component = &b; mb.name = "B"; mb.interval = ib; mb.policy = pb;
+  mb.provided = b.provided_ptr(); mb.required = b.required_ptr(); mb.length = 1;
+  WindowCouplerConfig cfg;
+  cfg.window_length = window;
+  return WindowCoupler::create({ma, mb}, {{0, 1}, {1, 0}}, cfg);
+}
+
+}  // namespace
+
+TEST(WindowCouplerRefusals, AFixedStepLongerThanTheWindowIsRefused) {
+  LinearOdeComponent a("A", kA, kB, kX0), b("B", kC, kD, kY0);
+  const auto r = create_pair(a, b, Rational{12, 35}, Rational{13, 35},
+                             Rational{7, 35}, DtPolicy::Fixed, DtPolicy::Adjustable);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-RT-WINDOW-LONGSTEP") << r.error().message;
+}
+
+TEST(WindowCouplerRefusals, TwoFixedMembersThatCanStraddleTogetherAreRefused) {
+  // 5 and 7 are both shorter than 12 and neither divides it.
+  LinearOdeComponent a("A", kA, kB, kX0), b("B", kC, kD, kY0);
+  const auto r = create_pair(a, b, Rational{12, 35}, Rational{5, 35},
+                             Rational{7, 35}, DtPolicy::Fixed, DtPolicy::Fixed);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-RT-WINDOW-STRADDLE") << r.error().message;
+}
+
+TEST(WindowCouplerRefusals, AFixedStepThatDividesTheWindowNeverStraddlesAndIsAccepted) {
+  // The envelope counts only members that can straddle: 4 divides 12.
+  LinearOdeComponent a("A", kA, kB, kX0), b("B", kC, kD, kY0);
+  const auto r = create_pair(a, b, Rational{12, 35}, Rational{4, 35},
+                             Rational{7, 35}, DtPolicy::Fixed, DtPolicy::Fixed);
+  EXPECT_TRUE(r.ok()) << r.error().message;
+}
+
+// Inside the envelope with a window NEITHER step divides: A is Adjustable
+// with a step longer than the window (so it truncates to it), B is Fixed
+// and straddles. Phase-aligned like the other order tests: 12k mod 7 repeats
+// every 7 windows, so n_windows = 7m at d = 35m holds T = 2.4 fixed.
+TEST(WindowCouplerVerification, AWindowNeitherStepDividesConvergesAtOrderTwo) {
+  const DtPolicy pol_a[] = {DtPolicy::Adjustable, DtPolicy::Adjustable};
+  const DtPolicy pol_b[] = {DtPolicy::Fixed, DtPolicy::Adjustable};
+  for (int c = 0; c < 2; ++c) {
+    double errs[5];
+    for (int k = 0; k < 5; ++k) {
+      const std::int64_t m = std::int64_t{2} << k;
+      const RunResult r = run_two_member_general(
+          Rational{12, 35 * m}, Rational{13, 35 * m}, Rational{7, 35 * m},
+          static_cast<int>(7 * m), pol_a[c], pol_b[c]);
+      const ExactSolution ex = exact_reference(2.4);
+      errs[k] = std::hypot(r.xA - ex.x, r.xB - ex.y);
+    }
+    for (int k = 0; k < 4; ++k) {
+      const double order = std::log2(errs[k] / errs[k + 1]);
+      EXPECT_GE(order, 1.9) << "B " << (c == 0 ? "Fixed" : "Adjustable")
+                            << ", step " << k << ": " << errs[k] << " -> " << errs[k + 1];
+      EXPECT_LE(order, 2.1) << "B " << (c == 0 ? "Fixed" : "Adjustable")
+                            << ", step " << k << ": " << errs[k] << " -> " << errs[k + 1];
+    }
   }
 }
 

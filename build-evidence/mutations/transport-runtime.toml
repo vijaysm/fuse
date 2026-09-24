@@ -182,3 +182,33 @@ old = "                mean_tail = 0.5 * (v_bnd + v_tail);"
 new = "                mean_tail = v_tail;"
 target = "fuse_runtime_window_coupler_test"
 test = "runtime.window_coupler"
+
+[[mutation]]
+id = "window-longstep-refusal-disabled"
+area = "runtime"
+describes = "KNOWN_ISSUES D7: a Fixed member whose step is longer than the window spans a window end it cannot replay, and returned a non-converging answer with no diagnostic. Removing the refusal lets it run."
+file = "src/runtime/window_coupler.cpp"
+old = "      if (m.interval > cfg.window_length) {"
+new = "      if (false) {"
+target = "fuse_runtime_window_coupler_test"
+test = "runtime.window_coupler"
+
+[[mutation]]
+id = "window-straddle-envelope-counts-dividing-steps"
+area = "runtime"
+describes = "KNOWN_ISSUES D7: only a Fixed member whose step does not divide the window can straddle. Counting dividing steps too refuses a configuration that is safe and verified."
+file = "src/runtime/window_coupler.cpp"
+old = "      if ((cfg.window_length / m.interval).is_integer()) continue;"
+new = "      if (false) continue;"
+target = "fuse_runtime_window_coupler_test"
+test = "runtime.window_coupler"
+
+[[mutation]]
+id = "window-straddle-refusal-disabled"
+area = "runtime"
+describes = "KNOWN_ISSUES D7: two Fixed members that can straddle one window end replay against each other's unresolved trajectories. Removing the refusal lets them run."
+file = "src/runtime/window_coupler.cpp"
+old = "      if (first_straddler != nullptr) {"
+new = "      if (false) {"
+target = "fuse_runtime_window_coupler_test"
+test = "runtime.window_coupler"

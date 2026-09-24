@@ -139,6 +139,43 @@ Result<std::unique_ptr<WindowCoupler>> WindowCoupler::create(
                        "component's supports_rollback() is false"};
     }
   }
+
+  // The verified envelope (KNOWN_ISSUES.md D7). A member straddles a window
+  // end only if it is Fixed and its step does not divide the window. The
+  // replay handles ONE such member per window: two replay against each
+  // other's unresolved trajectories, and a Fixed step longer than the window
+  // spans a whole window it never samples. Outside the envelope the result
+  // was measured to be wrong without any error, so it is refused here rather
+  // than run.
+  {
+    const std::string* first_straddler = nullptr;
+    for (const WindowMember& m : members) {
+      if (m.policy != DtPolicy::Fixed) continue;
+      if (m.interval > cfg.window_length) {
+        return Failure{"E-RT-WINDOW-LONGSTEP",
+                       "WindowCoupler::create: member '" + m.name +
+                           "' is Fixed with interval " + m.interval.to_string() +
+                           ", longer than the window (" +
+                           cfg.window_length.to_string() +
+                           "); a Fixed step may not span a window end it cannot "
+                           "replay. Make the member Adjustable, or define the "
+                           "window by this member's step"};
+      }
+      if ((cfg.window_length / m.interval).is_integer()) continue;
+      if (first_straddler != nullptr) {
+        return Failure{"E-RT-WINDOW-STRADDLE",
+                       "WindowCoupler::create: members '" + *first_straddler +
+                           "' and '" + m.name +
+                           "' are both Fixed with steps that do not divide the "
+                           "window (" + cfg.window_length.to_string() +
+                           "), so both can straddle one window end; only one "
+                           "straddling member per window is supported. Make one "
+                           "of them Adjustable, or choose a window both steps "
+                           "divide"};
+      }
+      first_straddler = &m.name;
+    }
+  }
   for (std::size_t c = 0; c < channels.size(); ++c) {
     if (channels[c].provider >= members.size() ||
         channels[c].consumer >= members.size()) {
