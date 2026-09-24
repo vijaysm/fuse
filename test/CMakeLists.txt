@@ -367,6 +367,20 @@ foreach(t mms_transfer iteration interface_transfer)
                  LIBS fuse::runtime fuse::backend fuse::transport)
 endforeach()
 
+# FSI channel (FSI track): fsi_stokes_mms and fsi_beam exercise the two
+# standalone solvers (examples/fsi_channel/{stokes,beam}_solver.hpp) with no
+# FUSE graph involved; fsi_coupled and fsi_transient drive the real two-
+# component Runner graph (consistent H / conservative H^T). All four need
+# examples/fsi_channel/ on the include path and Eigen3::Eigen directly for
+# the two solvers' SparseLU factorisations, same reasoning as gray_scott's
+# registration just below.
+foreach(t fsi_stokes_mms fsi_beam fsi_coupled fsi_transient)
+  fuse_add_gtest(verification ${t} NO_LAYER_LIB
+                 LIBS fuse::runtime fuse::backend Eigen3::Eigen)
+  target_include_directories(fuse_verification_${t}_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/fsi_channel)
+endforeach()
+
 # Gray-Scott (Time windows track): the species solver's own MMS order, the
 # multirate windowed coupling, and the monolithic-reference comparison --
 # each in its own binary so a Newton-solve regression in one does not hide

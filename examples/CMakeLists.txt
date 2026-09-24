@@ -75,6 +75,32 @@ if(FUSE_ENABLE_TESTS)
   set_tests_properties(example.gray_scott PROPERTIES LABELS "example")
 endif()
 
+# ---------------------------------------------------------------------------
+# FSI channel (FSI track): a 2D unsteady-Stokes channel with an Euler-
+# Bernoulli wall beam, strongly coupled on a non-matching 1D interface
+# (consistent H, conservative H^T -- fuse/backend/consistent_interp.hpp).
+# Needs Eigen3::Eigen directly for both solvers' SparseLU factorisations,
+# same reasoning as fuse_example_gray_scott just above.
+# ---------------------------------------------------------------------------
+add_executable(fuse_example_fsi_channel
+  fsi_channel/main.cpp)
+target_link_libraries(fuse_example_fsi_channel PRIVATE
+  fuse::runtime fuse::backend Eigen3::Eigen)
+target_include_directories(fuse_example_fsi_channel PRIVATE fsi_channel)
+
+if(FUSE_ENABLE_TESTS)
+  # Small grids and few steps so the example itself stays fast; the
+  # convergence-order and physics gates live in test/verification/fsi_*_test.
+  # --check exits non-zero if a window fails to converge under acceleration,
+  # if the beam displacement is ever non-finite, or if the beam never moved
+  # (the coupling did nothing measurable).
+  add_test(NAME example.fsi_channel
+           COMMAND fuse_example_fsi_channel --nx-fluid 16 --ny-fluid 8
+                   --nx-beam 12 --mass-ratio 1.0 --accel iqn-ils --dt 0.01
+                   --t-end 0.1 --check)
+  set_tests_properties(example.fsi_channel PROPERTIES LABELS "example")
+endif()
+
 if(FUSE_ENABLE_MPI)
   add_executable(fuse_example_layout_driver layout_driver/main.cpp)
   target_link_libraries(fuse_example_layout_driver PRIVATE
