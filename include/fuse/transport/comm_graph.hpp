@@ -324,6 +324,51 @@ class CommGraph {
   bool             participates_ = false;
 };
 
+/// The cross-rank reduction docs/dev/nodal-fields.md's "H^T on a
+/// distributed interface" specifies: sums every rank's own local partial
+/// contribution to a distributed NODAL field's buffer, keyed by
+/// `view.global_id(dim, i)`, and OVERWRITES every LOCAL row of
+/// `local_values` -- owned or ghost -- with that global sum, so every
+/// holder of a shared vertex ends up with the same, correct total.
+///
+/// COLLECTIVE over `base_comm_handle` (`MPI_Comm_c2f()` of the
+/// communicator, the same Fortran-handle convention `CommGraph::build`
+/// uses). `local_values` is `view.entity_count(dim) * components` doubles,
+/// entity-major -- the exact layout `apply_weights` already writes; every
+/// row contributes its own value to its own global id's sum EXACTLY ONCE,
+/// regardless of `view.is_owned(dim, i)`: summing only owned copies would
+/// silently drop a non-owning rank's real, nonzero partial, which is
+/// exactly what a target vertex at an interior source-partition boundary
+/// has.
+///
+/// Called from `Runner::Impl::reduce_nodal_remap_target` (src/runtime/
+/// runner.cpp) for a distributed nodal Extensive Remap target -- the lead's
+/// ruling of 2026-09-24 (docs/dev/nodal-fields.md): this is not gated by
+/// `RunnerConfig::check_conservation`, which controls a CHECK, not the
+/// physics, so it always runs when the target is Extensive and distributed.
+[[nodiscard]] Result<void> accumulate_shared_rows(const MeshView& view, int dim,
+                                                  std::size_t components,
+                                                  std::vector<double>& local_values,
+                                                  int base_comm_handle);
+
+/// The companion for an Intensive or None (pointwise) distributed nodal
+/// Remap target: every LOCAL row -- owned or not -- is OVERWRITTEN with the
+/// value the mesh's OWNER of that global id holds (docs/dev/native-mesh.md's
+/// lowest-rank rule), not summed and not left as this rank's own possibly
+/// divergent local answer. Every holder ends up bit-identical to the owner,
+/// the same halo discipline a plain Transport already gives a nodal field,
+/// extended here to a Remap's own output.
+///
+/// COLLECTIVE over `base_comm_handle`, same convention as
+/// `accumulate_shared_rows`. Refuses `E-ACCUM-OWNER` if a global id's
+/// gathered rows claim zero or more than one owner -- `MeshView::is_owned`
+/// disagreeing with itself across ranks is a mesh contract violation, not
+/// something to silently pick a side on.
+[[nodiscard]] Result<void> copy_owner_shared_rows(const MeshView& view, int dim,
+                                                  std::size_t components,
+                                                  std::vector<double>& local_values,
+                                                  int base_comm_handle);
+
 #endif  // FUSE_HAVE_MPI
 
 }  // namespace fuse

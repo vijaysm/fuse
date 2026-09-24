@@ -63,6 +63,8 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <stdexcept>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -500,4 +502,281 @@ TEST(ConsistentInterpPlan, UnknownMethodStringRefuses) {
   const auto r = fuse::build_consistent_weights_for_plan(plan, pf->g, pf->backend);
   ASSERT_FALSE(r.ok());
   EXPECT_EQ(r.error().code, "E-INTERP-METHOD");
+}
+
+// ---- consistent H and its transpose, end to end through the Runner --------
+//
+// The FSI pairing: beam velocity (nodal, ContinuousGLL order 1) to the fluid
+// wall (FV) through H, and the fluid's per-cell force back to beam nodal
+// loads through H^T. Through lower -> schedule -> Runner, not RemapPlan, so a
+// refusal anywhere on the public path shows up here.
+namespace {
+
+struct NodalResult {
+  std::vector<double> v_nodes, fluid_in, fluid_force, beam_load;
+};
+
+NodalResult run_consistent_pair(std::size_t n_beam, std::size_t n_fluid,
+                                const std::function<double(double)>& vel,
+                                const std::function<double(double)>& trac,
+                                fuse::RankSet beam_ranks = {0, 1}) {
+  CouplingGraph g;
+  const auto m_beam = g.add_mesh(fuse::MeshDecl{
+      .name = "beam_mesh", .source = "generated:line:" + std::to_string(n_beam)});
+  const auto m_fluid = g.add_mesh(fuse::MeshDecl{
+      .name = "fluid_mesh", .source = "generated:line:" + std::to_string(n_fluid)});
+  const auto r_beam = g.add_region(fuse::Region{.name = "r_beam", .mesh = m_beam, .dimension = 1});
+  const auto r_fluid = g.add_region(fuse::Region{.name = "r_fluid", .mesh = m_fluid, .dimension = 1});
+  const auto beam = g.add_component(fuse::ComponentDecl{
+      .name = "beam", .ranks = beam_ranks, .interval = Rational{1}});
+  const auto fluid = g.add_component(fuse::ComponentDecl{
+      .name = "fluid", .ranks = {0, 1}, .interval = Rational{1}});
+  const auto vel_out = g.add_field(beam, fuse::FieldSpec{
+      .name = "beam_velocity", .region = r_beam, .disc = fuse::Discretization::ContinuousGLL,
+      .order = 1, .units = kMetersPerSecond, .conservation = fuse::Conservation::Intensive,
+      .intent = fuse::Intent::Provides});
+  const auto vel_in = g.add_field(fluid, fuse::FieldSpec{
+      .name = "fluid_velocity_in", .region = r_fluid, .units = kMetersPerSecond,
+      .conservation = fuse::Conservation::Intensive, .intent = fuse::Intent::Requires});
+  const auto vch = g.add_channel("wall_velocity", vel_out, vel_in);
+  g.channel(vch).remap_method("consistent");
+  const auto force_out = g.add_field(fluid, fuse::FieldSpec{
+      .name = "fluid_force", .region = r_fluid, .units = u::kNewton,
+      .conservation = fuse::Conservation::Extensive, .intent = fuse::Intent::Provides});
+  const auto force_in = g.add_field(beam, fuse::FieldSpec{
+      .name = "beam_load", .region = r_beam, .disc = fuse::Discretization::ContinuousGLL,
+      .order = 1, .units = u::kNewton, .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Requires});
+  const auto fch = g.add_channel("wall_force", force_out, force_in);
+  g.channel(fch).remap_method("consistent-transpose").conservative().lag(1)
+      .allow_time_level_mismatch("capability test: only transfer accuracy is under test");
+
+  SerialMeshBackend backend;
+  for (std::uint32_t i = 0; i < g.mesh_count(); ++i) {
+    const auto r = backend.load(g.mesh(fuse::MeshId{i}));
+    if (!r.ok()) throw std::runtime_error(r.error().message);
+  }
+  const auto lowered = lower(g);
+  if (!lowered.ok()) throw std::runtime_error("lower: " + lowered.diags.to_string());
+  const fuse::ClockSet clocks{g};
+  auto sched = fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+  if (!sched.ok()) throw std::runtime_error("schedule: " + sched.diags.to_string());
+
+  // One buffer per field, sized by what the backend says the region holds;
+  // a nodal field needs n+1 values, which is what this test is checking.
+  const auto sizes = fuse::make_region_sizes(g, backend);
+  NodalResult out;
+  class Side final : public fuse::Component {
+   public:
+    Side(std::string name, std::function<void(Side&)> fill) : name_(std::move(name)), fill_(std::move(fill)) {}
+    [[nodiscard]] std::string name() const override { return name_; }
+    fuse::Result<void> register_fields(FieldRegistry& reg, const CouplingGraph& g) override {
+      for (const fuse::FieldId f : g.component(*g.find_component(name_)).fields) {
+        auto& buf = bufs[g.field(f).name];
+        buf.assign(count(g, f), 0.0);
+        auto r = reg.bind(f, fuse::FieldRef{buf.data(), fuse::Layout{.stride = 1, .count = buf.size()},
+                                            fuse::MemorySpace::Host});
+        if (!r.ok()) return r;
+      }
+      return fuse::Result<void>::success();
+    }
+    fuse::Result<void> advance(const StepContext&) override { fill_(*this); return fuse::Result<void>::success(); }
+    std::function<std::size_t(const CouplingGraph&, fuse::FieldId)> count;
+    std::map<std::string, std::vector<double>> bufs;
+   private:
+    std::string name_;
+    std::function<void(Side&)> fill_;
+  };
+  auto b = std::make_unique<Side>("beam", [&](Side& me) {
+    auto& v = me.bufs["beam_velocity"];
+    for (std::size_t i = 0; i < v.size(); ++i) v[i] = vel(static_cast<double>(i) / n_beam);
+  });
+  auto f = std::make_unique<Side>("fluid", [&](Side& me) {
+    auto& q = me.bufs["fluid_force"];
+    for (std::size_t j = 0; j < q.size(); ++j) q[j] = trac(cell_x(j, n_fluid));
+  });
+  const auto nodal = [&](const CouplingGraph& gg, fuse::FieldId fid) -> std::size_t {
+    const auto& fs = gg.field(fid);
+    const std::size_t cells = fs.region == r_beam ? n_beam : n_fluid;
+    return fs.disc == fuse::Discretization::ContinuousGLL ? cells + 1 : cells;
+  };
+  b->count = nodal; f->count = nodal;
+  Side* bp = b.get(); Side* fp = f.get();
+  ComponentSet components;
+  components.add(std::move(b)); components.add(std::move(f));
+  FieldRegistry registry;
+  for (auto& c : components) {
+    const auto r = c.register_fields(registry, g);
+    if (!r.ok()) throw std::runtime_error("bind: " + r.error().message);
+  }
+  (void)sizes;
+  Runner runner{g, lowered.dag, sched.plan, backend};
+  if (const auto r = runner.initialize(components, registry); !r.ok())
+    throw std::runtime_error("initialize: " + r.error().code + ": " + r.error().message);
+  if (const auto r = runner.run(components, 2); !r.ok())
+    throw std::runtime_error("run: " + r.error().code + ": " + r.error().message);
+  out.v_nodes = bp->bufs["beam_velocity"];
+  out.beam_load = bp->bufs["beam_load"];
+  out.fluid_in = fp->bufs["fluid_velocity_in"];
+  out.fluid_force = fp->bufs["fluid_force"];
+  return out;
+}
+
+}  // namespace
+
+TEST(InterfaceTransfer, ConsistentPairRunsThroughTheRunnerExactlyAndBalancesPower) {
+  NodalResult r;
+  try {
+    r = run_consistent_pair(7, 11, [](double x) { return 0.3 + 2.0 * x; },
+                            [](double x) { return 1.0 + std::sin(3.0 * x); });
+  } catch (const std::exception& e) {
+    FAIL() << e.what();
+  }
+  ASSERT_EQ(r.v_nodes.size(), 8u);
+  ASSERT_EQ(r.fluid_in.size(), 11u);
+  ASSERT_EQ(r.beam_load.size(), 8u);
+  for (std::size_t j = 0; j < r.fluid_in.size(); ++j)
+    EXPECT_NEAR(r.fluid_in[j], 0.3 + 2.0 * cell_x(j, 11), 1e-13) << "H is not exact for a linear field at cell " << j;
+  double sent = 0.0, got = 0.0, p_fluid = 0.0, p_beam = 0.0;
+  // An FV source is a density: H^T D scales it by the cell measure, so the
+  // conserved quantities are the integrals, not the plain sums.
+  const double h_f = measure_of(11);
+  for (std::size_t j = 0; j < 11; ++j) { sent += r.fluid_force[j] * h_f; p_fluid += r.fluid_in[j] * r.fluid_force[j] * h_f; }
+  for (std::size_t i = 0; i < 8; ++i) { got += r.beam_load[i]; p_beam += r.v_nodes[i] * r.beam_load[i]; }
+  EXPECT_NEAR(got, sent, 1e-13 * std::abs(sent)) << "H^T lost force";
+  EXPECT_NEAR(p_beam, p_fluid, 1e-13 * std::abs(p_fluid)) << "interface power does not balance";
+}
+
+// ---- a nodal field through a PLAIN channel, no remap at all ---------------
+//
+// Both ends declare the SAME region on the SAME mesh, so lower/schedule/
+// Runner take the identity-copy path (Runner::Impl's regions_coincide()),
+// never touching consistent_interp.hpp. This isolates the buffer-sizing fix
+// (mesh_view.hpp's field_extent/region_extent_kind, wired into
+// make_region_sizes) from the H/H^T operator: if a nodal field's buffers were
+// still sized by cell count, this would fail at Runner::initialize with
+// E-RT-SIZE exactly like the acceptance test did before the fix, even though
+// no interpolation is involved at all.
+
+TEST(InterfaceTransfer, NodalFieldPassesThroughAPlainChannelOnTheSameMesh) {
+  CouplingGraph g;
+  const auto m = g.add_mesh(
+      fuse::MeshDecl{.name = "beam_mesh", .source = "generated:line:6"});
+  const auto r = g.add_region(fuse::Region{.name = "r", .mesh = m, .dimension = 1});
+  const auto src = g.add_component(fuse::ComponentDecl{
+      .name = "src", .ranks = {0, 1}, .interval = Rational{1}});
+  const auto dst = g.add_component(fuse::ComponentDecl{
+      .name = "dst", .ranks = {0, 1}, .interval = Rational{1}});
+  const auto f_out = g.add_field(src, fuse::FieldSpec{
+      .name = "v_out", .region = r, .disc = fuse::Discretization::ContinuousGLL,
+      .order = 1, .units = kMetersPerSecond, .intent = fuse::Intent::Provides});
+  const auto f_in = g.add_field(dst, fuse::FieldSpec{
+      .name = "v_in", .region = r, .disc = fuse::Discretization::ContinuousGLL,
+      .order = 1, .units = kMetersPerSecond, .intent = fuse::Intent::Requires});
+  g.add_channel("v", f_out, f_in);  // no .remap_method(): plain copy
+
+  SerialMeshBackend backend;
+  ASSERT_TRUE(backend.load(g.mesh(m)).ok());
+  const auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+  const fuse::ClockSet clocks{g};
+  const auto sizes = fuse::make_region_sizes(g, backend);
+  auto sched = fuse::schedule(g, lowered.dag, clocks, sizes);
+  ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
+
+  class Side final : public fuse::Component {
+   public:
+    Side(std::string name, std::vector<double> initial)
+        : name_(std::move(name)), buf(std::move(initial)) {}
+    [[nodiscard]] std::string name() const override { return name_; }
+    fuse::Result<void> register_fields(FieldRegistry& reg, const CouplingGraph& gg) override {
+      for (const fuse::FieldId f : gg.component(*gg.find_component(name_)).fields) {
+        auto r2 = reg.bind(f, fuse::FieldRef{buf.data(),
+                                             fuse::Layout{.stride = 1, .count = buf.size()},
+                                             fuse::MemorySpace::Host});
+        if (!r2.ok()) return r2;
+      }
+      return fuse::Result<void>::success();
+    }
+    fuse::Result<void> advance(const StepContext&) override { return fuse::Result<void>::success(); }
+    std::vector<double> buf;
+   private:
+    std::string name_;
+  };
+
+  std::vector<double> v_out(7);  // 6 cells -> 7 vertices
+  for (std::size_t i = 0; i < v_out.size(); ++i) v_out[i] = 1.0 + 0.5 * static_cast<double>(i);
+  auto s = std::make_unique<Side>("src", v_out);
+  auto d = std::make_unique<Side>("dst", std::vector<double>(7, 0.0));
+  Side* dp = d.get();
+  ComponentSet components;
+  components.add(std::move(s));
+  components.add(std::move(d));
+  FieldRegistry registry;
+  for (auto& c : components) {
+    const auto rb = c.register_fields(registry, g);
+    ASSERT_TRUE(rb.ok()) << rb.error().message;
+  }
+  Runner runner{g, lowered.dag, sched.plan, backend};
+  const auto ri = runner.initialize(components, registry);
+  ASSERT_TRUE(ri.ok()) << ri.error().code << ": " << ri.error().message;
+  const auto rr = runner.run(components, 1);
+  ASSERT_TRUE(rr.ok()) << rr.error().code << ": " << rr.error().message;
+
+  ASSERT_EQ(dp->buf.size(), 7u);
+  for (std::size_t i = 0; i < 7; ++i) {
+    EXPECT_DOUBLE_EQ(dp->buf[i], v_out[i]) << "vertex " << i;
+  }
+}
+
+// ---- the refusal fires end to end, not just inside field_extent() ---------
+//
+// A ContinuousGLL field at order 2 (a spectral element this codebase does not
+// implement an extent for) reaches the Runner's own buffer-planning path
+// (make_region_sizes -> plan_buffers -> schedule()) and is refused there,
+// named E-EXTENT-DISC, rather than silently sized by cell count.
+
+TEST(InterfaceTransfer, AnUnimplementedNodalOrderRefusesThroughTheRealSchedulingPath) {
+  CouplingGraph g;
+  const auto m = g.add_mesh(
+      fuse::MeshDecl{.name = "beam_mesh", .source = "generated:line:6"});
+  const auto r = g.add_region(fuse::Region{.name = "r", .mesh = m, .dimension = 1});
+  const auto c = g.add_component(fuse::ComponentDecl{
+      .name = "c", .ranks = {0, 1}, .interval = Rational{1}});
+  g.add_field(c, fuse::FieldSpec{
+      .name = "spectral", .region = r, .disc = fuse::Discretization::ContinuousGLL,
+      .order = 2, .units = kMetersPerSecond, .intent = fuse::Intent::Provides});
+
+  SerialMeshBackend backend;
+  ASSERT_TRUE(backend.load(g.mesh(m)).ok());
+  const auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+  const fuse::ClockSet clocks{g};
+  const auto sizes = fuse::make_region_sizes(g, backend);
+
+  bool threw = false;
+  std::string what;
+  try {
+    (void)fuse::schedule(g, lowered.dag, clocks, sizes);
+  } catch (const std::exception& e) {
+    threw = true;
+    what = e.what();
+  }
+  ASSERT_TRUE(threw) << "expected the unimplemented discretization to refuse, "
+                        "not to be sized by cell count";
+  EXPECT_NE(what.find("E-EXTENT-DISC"), std::string::npos) << what;
+}
+
+// KNOWN_ISSUES D8: a Remap into a nodal field on more than one rank is
+// refused until per-placement weights exist and a partitioned case has been
+// shown correct. The placement is declared, not run, so this fires in Tier 0.
+TEST(InterfaceTransfer, ARemapIntoANodalFieldOnSeveralRanksIsRefused) {
+  try {
+    (void)run_consistent_pair(7, 11, [](double x) { return x; },
+                              [](double) { return 1.0; }, fuse::RankSet{0, 2});
+    FAIL() << "a two-rank nodal Remap target initialised";
+  } catch (const std::exception& e) {
+    const std::string what = e.what();
+    EXPECT_NE(what.find("E-RT-REMAP-NODAL-PARALLEL"), std::string::npos) << what;
+  }
 }

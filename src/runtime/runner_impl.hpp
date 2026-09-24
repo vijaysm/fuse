@@ -58,6 +58,50 @@ struct ConstrainInfo {
   std::uint32_t weights_after = 0;
 };
 
+/// docs/dev/nodal-fields.md's "H^T on a distributed interface", lead's ruling
+/// 2026-09-24: what a Remap whose target is a DISTRIBUTED nodal field (more
+/// than one rank in the destination component) does to reconcile the several
+/// independent local answers a shared vertex gets, one per rank that holds
+/// it.
+enum class NodalReduceMode : std::uint8_t {
+  /// FieldSpec::conservation == Extensive: a LOAD. Every holder's local
+  /// partial is a genuine, independent contribution to the true total, and
+  /// the physics is the sum -- not gated by RunnerConfig::check_conservation,
+  /// which controls a CHECK, not this. Skipping the sum is a wrong ANSWER,
+  /// not merely an unchecked one.
+  Sum,
+  /// Intensive or None: a POINTWISE value. Every holder takes the OWNER's
+  /// value (docs/dev/native-mesh.md's lowest-rank rule), so every copy
+  /// agrees bit for bit -- the same halo discipline a plain Transport
+  /// already applies to a nodal field, extended to a Remap's own output.
+  TakeOwner,
+};
+
+/// One entry per `OpKind::Remap` instruction whose target is a distributed
+/// (more than one rank) nodal region. Built once in `resolve_remap()`; `-1`
+/// in `Resolved::nodal_reduce` means either the target is not nodal, or its
+/// destination placement is a single rank -- "nothing is shared" (the lead's
+/// ruling) -- so there is nothing to reconcile and the instruction's own
+/// locally-computed Remap answer already IS the answer.
+///
+/// `dst_component` is a graph id, not a communicator: `reduce_nodal_remap_
+/// target()` derives an EPHEMERAL split of `config.base_communicator` from
+/// `graph.component(dst_component).ranks` at the point it is needed and
+/// frees it before returning, rather than holding one for the Runner's
+/// lifetime. `resolve_epoch_participants()`'s own docstring records why:
+/// an earlier version of this codebase held a split per rank-set pair as
+/// Impl state and a host run reported unfreed COMM handles at exit --
+/// `MPI_Comm_free` is collective, and destroying it asymmetrically is the
+/// same hang class `attach_comm_graphs()` is written to avoid ("nothing
+/// outlives this function"). This entry is deliberately a plain graph id,
+/// nothing that needs releasing.
+struct NodalReduceInfo {
+  NodalReduceMode mode = NodalReduceMode::TakeOwner;
+  ComponentId     dst_component;
+  int             dim = 0;  // the vertex dimension; always 0 for the one
+                            // nodal discretization mesh_view.hpp implements
+};
+
 /// One space-time channel's operator and its window of source history
 /// (spec §7.3, Task 6.3). Everything here is sized once in `resolve_spacetime`
 /// and never resized afterwards; the sweep loop only indexes it.
@@ -192,6 +236,12 @@ struct Resolved {
   /// element-wise copy the interpreter then performs IS the conservative map.
   /// Every other `Remap` carries real weights or the setup failed.
   std::int32_t  remap = -1;
+  /// Index into `Impl::nodal_reductions`, or -1. Set on an `OpKind::Remap`
+  /// instruction whose target is a nodal region distributed across more than
+  /// one rank; -1 means either not nodal or a single-rank placement, so
+  /// nothing is shared and the Remap's own local answer needs no further
+  /// reconciliation (docs/dev/nodal-fields.md).
+  std::int32_t  nodal_reduce = -1;
 };
 
 /// One component advance the runtime owes within a period.
@@ -326,6 +376,11 @@ struct Runner::Impl {
   /// setup() at all: the hot loop indexes `remap_weights` and nothing else.
   RemapCache                          remap_cache;
   std::vector<const RemapWeights*>    remap_weights;
+  /// One entry per `OpKind::Remap` instruction targeting a distributed nodal
+  /// region (detail::NodalReduceInfo); `Resolved::nodal_reduce` indexes it.
+  /// Built once in resolve_remap(), read-only after setup -- plain graph
+  /// ids, nothing MPI-owned (see NodalReduceInfo's own comment for why).
+  std::vector<detail::NodalReduceInfo> nodal_reductions;
   /// Element measures, expanded to one weight per (element, component) so a
   /// weighted_sum can run straight over a buffer. Built once at setup.
   std::vector<std::vector<double>> weight_sets;
@@ -459,6 +514,21 @@ struct Runner::Impl {
   /// copy between meshes that merely agree on a count, which is silently
   /// wrong rather than loudly wrong.
   Result<void> resolve_remap(const Instruction& ins, detail::Resolved& r);
+  /// docs/dev/nodal-fields.md's "H^T on a distributed interface", wired in
+  /// per the lead's ruling 2026-09-24. Called from the `OpKind::Remap` case
+  /// of `execute()` immediately after that instruction's own local answer is
+  /// written into `out_ptr()`, for exactly the instructions
+  /// `resolve_remap()` marked with `Resolved::nodal_reduce >= 0`.
+  ///
+  /// COLLECTIVE over `config.base_communicator`, EVERY RANK OF IT: the
+  /// instruction stream is identical everywhere, so every rank -- including
+  /// one holding none of `dst_component`'s data -- reaches this call for the
+  /// same instruction and must take part in the `MPI_Comm_split` that scopes
+  /// the reduction to `dst_component`'s own ranks, exactly the discipline
+  /// `attach_comm_graphs()` already uses for the analogous per-component
+  /// split it builds and frees within one function call.
+  Result<void> reduce_nodal_remap_target(const Instruction& ins,
+                                         const detail::Resolved& r);
   /// Spec §7.3 (Task 6.3). Builds one `SpacetimeInfo` per space-time
   /// `Interpolate` node and refuses every configuration the interpreter cannot
   /// execute correctly, rather than falling back to a lower-order basis.

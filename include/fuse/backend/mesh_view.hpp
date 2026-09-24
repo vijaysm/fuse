@@ -287,6 +287,113 @@ class MeshBackend {
   [[nodiscard]] virtual std::string name() const = 0;
 };
 
+/// ---------------------------------------------------------------------------
+/// The one definition of a field's extent (docs/dev/nodal-fields.md)
+/// ---------------------------------------------------------------------------
+///
+/// How many scalar slots ONE FIELD needs, per entity of the block it is
+/// declared over, decided from `(disc, order)` ALONE -- never re-derived a
+/// second way at a second call site. Every place that used to size a field's
+/// buffer, or check one, by `view.entity_count(region_dim)` unconditionally
+/// now goes through this function instead: `make_region_sizes`
+/// (serial_backend.cpp), the Runner's conservation-measure builder
+/// (`weights_for`, runner.cpp), and the parallel Transport dimension
+/// selection (`attach_comm_graphs`, runner.cpp).
+///
+///   * FV, and `DiscontinuousGLL` order 0, read one value per `region_dim`
+///     entity -- a cell. This is `region_size`'s existing, UNCHANGED
+///     behaviour; nothing here alters what `region_size`/`placed_region_size`
+///     mean on their own (both keep sizing by the region's own dimension for
+///     every caller that asks them directly, with no field in view at all).
+///   * `ContinuousGLL` order 1 is genuinely nodal -- `connect.hpp`'s
+///     `to_semantics` already maps that combination to
+///     `SemanticLocation::Vertex`, and `consistent_interp.hpp`'s H/H^T
+///     already index `MeshView` dimension-0 local indices for it -- so its
+///     extent is the mesh's VERTEX count, `view.entity_count(0)`, regardless
+///     of `region_dim`.
+///   * Everything else -- `ContinuousGLL` order != 1, `DiscontinuousGLL`
+///     order >= 1, `PointCloud` -- is a NAMED refusal, `E-EXTENT-DISC|`
+///     rather than a guess: a spectral element needs as many DOFs per cell as
+///     `order` implies, which nothing here computes, and a point cloud has no
+///     cell topology to size a field by at all.
+[[nodiscard]] inline Result<std::size_t> field_extent(Discretization disc,
+                                                       int order,
+                                                       const MeshView& view,
+                                                       int region_dim) {
+  if (disc == Discretization::FV ||
+      (disc == Discretization::DiscontinuousGLL && order == 0)) {
+    return view.entity_count(region_dim);
+  }
+  if (disc == Discretization::ContinuousGLL && order == 1) {
+    return view.entity_count(0);
+  }
+  return Failure{
+      "E-EXTENT-DISC",
+      "field_extent: " + std::string(to_cstring(disc)) + " order " +
+          std::to_string(order) +
+          " has no field-extent definition; only FV/DiscontinuousGLL order "
+          "0 (cell count) and ContinuousGLL order 1 (vertex count) are "
+          "implemented"};
+}
+
+/// Which of `field_extent`'s two implemented shapes every field DECLARED
+/// over `region` implies, read off the graph rather than assumed.
+///
+/// A region with no field on it yet (an unused declaration, or one probed
+/// before any `add_field` call) defaults to `Cell` -- `region_size`'s
+/// existing behaviour -- since there is no field to disagree with it.
+enum class RegionExtentKind { Cell, Vertex };
+
+/// Classifies the SAME `(disc, order)` combinations `field_extent` accepts,
+/// without needing a `MeshView` at all -- the caller supplies one only once
+/// a `Vertex`/`Cell` verdict is in hand and the real dimension is known.
+/// Refuses `E-EXTENT-DISC` for a field whose `(disc, order)` `field_extent`
+/// itself would refuse, and `E-EXTENT-MIXED` when the region carries BOTH a
+/// cell field and a nodal one: one region cannot be sized two different ways
+/// at once, and choosing either silently would size the other field wrong
+/// with no diagnostic.
+[[nodiscard]] inline Result<RegionExtentKind> region_extent_kind(
+    const CouplingGraph& g, RegionId region) {
+  bool saw_cell = false;
+  bool saw_vertex = false;
+  std::string cell_field;
+  std::string vertex_field;
+  for (std::size_t i = 0; i < g.field_count(); ++i) {
+    const FieldId fid{static_cast<std::uint32_t>(i)};
+    const FieldSpec& f = g.field(fid);
+    if (!(f.region == region)) continue;
+    if (f.disc == Discretization::ContinuousGLL && f.order == 1) {
+      saw_vertex = true;
+      vertex_field = f.name;
+      continue;
+    }
+    if (f.disc == Discretization::FV ||
+        (f.disc == Discretization::DiscontinuousGLL && f.order == 0)) {
+      saw_cell = true;
+      cell_field = f.name;
+      continue;
+    }
+    return Failure{"E-EXTENT-DISC",
+                   "region_extent_kind: field '" + f.name + "' on region " +
+                       std::to_string(region.value()) + " uses " +
+                       std::string(to_cstring(f.disc)) + " order " +
+                       std::to_string(f.order) +
+                       ", which has no field-extent definition (only FV/"
+                       "DiscontinuousGLL order 0 and ContinuousGLL order 1 "
+                       "are implemented)"};
+  }
+  if (saw_cell && saw_vertex) {
+    return Failure{"E-EXTENT-MIXED",
+                   "region_extent_kind: region " +
+                       std::to_string(region.value()) +
+                       " is used by a cell field ('" + cell_field +
+                       "') and a nodal field ('" + vertex_field +
+                       "'); one region cannot be sized two different ways "
+                       "at once"};
+  }
+  return saw_vertex ? RegionExtentKind::Vertex : RegionExtentKind::Cell;
+}
+
 /// Adapt a backend to the callback Phase 3 Task 3.5 defined.
 ///
 /// MESH IDS ARE RESOLVED BY NAME, NOT BY POSITION. A `Region` carries the

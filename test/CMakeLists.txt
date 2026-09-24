@@ -176,6 +176,11 @@ endforeach()
 fuse_add_gtest(backend serial_mesh THROWS)
 fuse_add_gtest(backend operator_conformance)
 fuse_add_gtest(backend cell_simplices)
+# The "nodal fields" track's field_extent()/region_extent_kind() (mesh_view.hpp)
+# and their wiring into make_region_sizes(), on both the serial and native
+# backends -- native_backend.hpp's 2D/3D generators are what give this file
+# quad/tri/hex/tet coverage without duplicating a mesh generator here.
+fuse_add_gtest(backend field_extent THROWS)
 
 # The MOAB backend's own tests. Registered only when MOAB is enabled -- absent
 # rather than skipped, because a skipped test reads like a passing one.
@@ -261,11 +266,18 @@ fuse_add_gtest(runtime component_iface THROWS)
 # Tier 1 only, and absent rather than skipped in Tier 0 for the reason above.
 fuse_tests_gated_by(FUSE_ENABLE_MPI
   parallel/runner_transport_test.cpp parallel/comm_graph_test.cpp
-  parallel/mpi_transport_test.cpp parallel/epoch_reconcile_test.cpp)
+  parallel/mpi_transport_test.cpp parallel/epoch_reconcile_test.cpp
+  parallel/nodal_field_test.cpp)
 if(FUSE_ENABLE_MPI)
   foreach(t runner_transport comm_graph mpi_transport)
     fuse_add_mpi_test(parallel ${t} LIBS fuse::runtime)
   endforeach()
+  # "Nodal fields" track, step 2: SharedVertexLineMesh's lowest-rank
+  # ownership, a plain nodal Transport's every-copy-matches-owner property,
+  # and the standalone accumulate_shared_rows reduction (comm_graph.hpp).
+  # See the file header for exactly which of the task's five MPI properties
+  # each case covers, and which it honestly does not.
+  fuse_add_mpi_test(parallel nodal_field LIBS fuse::runtime fuse::backend fuse::transport)
   # epoch_reconcile is registered from 2 ranks up, not 1. Its own
   # EpochReconcile.TheJobNeedsAtLeastTwoRanks asserts `world_size() >= 2`
   # deliberately -- "Not a skip: with one rank there is nothing to reconcile,
