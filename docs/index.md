@@ -31,6 +31,8 @@ user/combining-writers
 user/field-pipeline
 user/examples
 user/convergence
+user/coupling-windows
+user/interface-transfer
 user/c-abi
 ```
 
@@ -50,5 +52,6 @@ dev/porting
 dev/abi-design
 dev/partitioning
 dev/native-mesh
+dev/coupling-windows
 dev/roadmap
 ```
