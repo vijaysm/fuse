@@ -84,18 +84,25 @@ which resolves the two regions through the graph exactly as the supermesh
 path does and refuses `E-INTERP-DISC` if the side that must be nodal is not
 `Discretization::ContinuousGLL` at order `<= 1`.
 
-**Known gap, reported rather than worked around:** a channel between a
-nodal field (`SemanticLocation::Vertex`) and an FV field
-(`SemanticLocation::Element`) is refused during `lower()` today, by
-`include/fuse/model/connect.hpp`'s `check_channel`, which unconditionally
-declares every channel's transfer as `TransferKind::Copy` regardless of
-`remap_method`. Fixing that crosses this track's file ownership (it lives in
-`connect.hpp` and is called from `src/ir/rules_channel.cpp`); see the task
-report's `open_questions` for the two-sided fix this needs. Until it lands,
-`build_weights()`/`build_consistent_weights_for_plan` can be exercised
-directly against a `RemapPlan` (as `test/verification/interface_transfer_
-test.cpp`'s `ConsistentInterpPlan` cases do), but not yet through a
-validated two-component `Runner` graph with genuinely nodal fields.
+**Verified end to end.** A channel between a nodal field
+(`SemanticLocation::Vertex`) and an FV field (`SemanticLocation::Element`)
+lowers, schedules and runs through a real, two-component `Runner` graph:
+`InterfaceTransfer.ConsistentPairRunsThroughTheRunnerExactlyAndBalancesPower`
+(`test/verification/interface_transfer_test.cpp`) builds exactly this pair
+-- a nodal beam velocity through `H` to an FV fluid wall, and the fluid's
+per-cell force back through `H^T D` to a nodal beam load -- and checks `H`
+exact for a linear field, the delivered force equal to the sent force to
+round-off, and discrete interface power balanced to round-off. An earlier
+draft of this page reported a `lower()`-time refusal here; it did not
+reproduce, and the paragraph was wrong on this point.
+
+What made that end-to-end run possible is a separate fix, not to this
+operator: until now, every field's buffer was sized by its region's CELL
+count regardless of discretization, so a genuinely nodal field's `n + 1`
+values never fit the `n`-cell buffer `Runner::initialize` expected. See
+[](../dev/nodal-fields.md) for where a field's extent is now decided from
+`(disc, order, region)`, and for parallel nodal fields (lowest-rank vertex
+ownership, and what remains open for a distributed `H^T` interface).
 
 ## Domain edges
 
@@ -112,6 +119,41 @@ they only depend on every row summing to one, which a clamped row still
 does -- at the cost of reverting to zeroth-order accuracy near the
 uncovered edge. `ClampToBoundary` is not yet reachable through the channel
 API; see `open_questions`.
+
+## Nodal fields through the Runner
+
+A field declared `Discretization::ContinuousGLL, order = 1` is genuinely
+nodal: `n` line elements carry `n + 1` values, not `n`. Every buffer-sizing
+and conservation-measure call site in `include/fuse/backend/**`,
+`src/backend/**` and `src/runtime/runner.cpp` now reads that from one place
+-- `field_extent`/`region_extent_kind` in `mesh_view.hpp` -- rather than
+assuming a field's extent equals its region's cell count:
+
+```cpp
+const auto vel = g.add_field(beam, fuse::FieldSpec{
+    .name = "beam_velocity", .region = r_beam,
+    .disc = fuse::Discretization::ContinuousGLL, .order = 1,
+    .conservation = fuse::Conservation::Intensive,
+    .intent = fuse::Intent::Provides});
+```
+
+registers a buffer of `n_beam + 1` values, checked against whatever the
+component actually binds at `Runner::initialize` (`E-RT-SIZE` on a
+mismatch), and its conservation integral (when `.conservation =
+fuse::Conservation::Extensive`, `.conservative()` on the channel) is the
+plain sum of its owned values, not a measure-weighted one -- a vertex has
+no measure of its own. A discretization this codebase does not implement an
+extent for (`ContinuousGLL` order != 1, `DiscontinuousGLL` order >= 1,
+`PointCloud`) refuses by name, `E-EXTENT-DISC`, at the same point.
+
+In parallel, a nodal field's distributed buffer follows the native mesh's
+own rule for a shared vertex: the LOWEST rank holding it owns it, and
+`Transport` moves owned values and fills every other copy from its owner.
+An `H^T` channel whose nodal target is itself distributed across more than
+one rank needs a further cross-rank accumulation this track specified but
+did not wire into `Runner` -- see [](../dev/nodal-fields.md)'s "H^T on a
+distributed interface" for exactly where it goes and why it is safe, and
+this task's `open_questions` for the scope decision it is waiting on.
 
 ## What this is not
 
