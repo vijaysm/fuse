@@ -743,6 +743,67 @@ confirm.
 
 ---
 
+### D6. `WindowCoupler` supports at most one straddling member per window, and none whose interval so exceeds the window that it must skip one
+
+Found 2026-09-24 while building
+`WindowCouplerVerification.BothMembersStraddleAnExplicitWindow`
+(`test/runtime/window_coupler_test.cpp`) — an explicit window interval
+shorter than every member's own step, so every member straddles at once,
+which the delegated task's own design allows
+(`docs/dev/coupling-windows.md`'s "The window is set by one named
+component's step, or an explicit interval"). Two distinct gaps, not one:
+
+1. **Simultaneous straddles corrupt each other's replay.**
+   `resolve_pending_straddles()` (`src/runtime/window_coupler.cpp`)
+   iterates members one at a time; each straddling member's replay reads
+   the OTHER member's `last_window_waveform`/`history` for the partner
+   data it needs. When BOTH members have `straddle_pending` in the same
+   window, this throws `Waveform::integrate: [range] is not inside the
+   support [range]` — measured directly, Fixed/Fixed throws within two
+   windows (window=12/d, intervals 13/d and 7/d, every d tried); the
+   mixed cases (one member Fixed, one Adjustable — only the Fixed one
+   straddles) do not throw but show non-monotone or growing error with
+   refinement, never order 2.
+2. **A member whose interval exceeds the window by more than double
+   must eventually skip a window outright** (real time, tracked by the
+   window index, falls behind the member's own clock by more than one
+   window's worth), which nothing in the commit path
+   (`sweep_window()`'s per-window `history[e].push_back(...)`,
+   `build_delivered()`'s `Waveform::reset(start_clock[i], ...)`) handles:
+   `real_traj[i][e]->reset()` is asked for a window with
+   `window_begin > window_end` once `start_clock[i]` has raced past the
+   current window's own end, and throws `InvalidArgument`. Measured with
+   window=10/d, interval_A=13/d (excess 30%): the substep grid alone
+   (no Waveform involved) shows the first skip at window index 4,
+   scale-invariant in d (a property of the 13:10 ratio, not the absolute
+   step size) — confirmed by direct simulation, not the WindowCoupler
+   build itself, since 1 already stops the run first at a much smaller
+   window index for that same configuration.
+
+**What is verified instead**
+(`WindowCouplerVerification.BothMembersStraddleAnExplicitWindow`): two
+members CAN straddle in the same window over a short run (window=12/d,
+intervals 13/d and 7/d, 2 windows — chosen because 1's throw does not
+appear until window 2 there) without silently returning a wrong answer:
+either it works and returns a finite result, or it raises the exact
+`InvalidArgument` above. No order-2 assertion is made for this
+configuration, unlike every other case in that file.
+
+**What to do.** Both gaps need multi-window replay support:
+`resolve_pending_straddles()` would need to resolve every member with a
+pending straddle together (reading a CONSISTENT snapshot of each other's
+data, not one already-replayed-this-call and one not), and the commit
+path would need to represent "this member has no new data this window"
+(skip the substep AND the history commit, rather than committing
+whatever `last_val` happened to hold) separately from "this member
+straddled." Neither is a mutation-scale fix; both are new design work,
+which is why this is filed here rather than attempted in the bug-fix
+pass that found it (which fixed a different, unrelated defect — see
+`docs/dev/coupling-windows.md`'s "Two bugs found in the straddle
+replay" for that one).
+
+---
+
 ## C. Not defects — do not fix these
 
 - **Five mutations report `NOT-ASSESSED` locally.** They need MPI, and a test

@@ -68,6 +68,77 @@ has a test that makes it fire (`test/schedule/window_scope_test.cpp`,
 `test/runtime/window_coupler_test.cpp`'s `WindowCouplerRefusals` suite) —
 per [](testing.md), an unexercised refusal is not verified.
 
+## Two bugs found in the straddle replay, and one gap found but not fixed
+
+Two defects made a `Fixed` member's error stop shrinking with refinement
+(O(1), not the order-2 the design targets) in the asymptotic regime
+(small `k*dt`); both are fixed, and the fix is verified directly in
+`test/runtime/window_coupler_test.cpp`'s
+`ErrorConvergesAtOrderTwoFixedFixedIncommensurate` and its
+Adjustable/Fixed-mixed siblings, at every refinement step, to
+[1.9, 2.1].
+
+**Root cause (the dominant one — O(1), not a smaller-order defect):**
+`sweep_window()`'s commit code set `straddle_window_start = T0` — the
+window's own nominal start — but `resolve_pending_straddles()`'s
+`restore_state()` returns to whatever `save_state()` actually
+checkpointed at the TOP of that same `sweep_window()` call, which is
+`start_clock[i]`, not `T0`. For a member that straddles only once
+(its first straddle ever), the two are equal and nothing shows. For a
+member straddling EVERY window (the 7:13 case), `start_clock[i] > T0`
+by the previous window's own overshoot, so the next window's replay ran
+its substeps as if it began a whole component's worth of elapsed time
+short of where `restore_state()` actually put it — a mislabelling whose
+size is a fixed fraction of the window rather than a fraction that
+shrinks with it, which is exactly why the resulting error was O(1)
+rather than O(h^2). Fix: record `start_clock[i]`, not `T0`.
+
+**Second defect (smaller order, visible only once the first was fixed):**
+a straddling substep's boundary value at T1 was computed as a single
+`advance()` call over the WHOLE straddling substep, fed one BLENDED mean
+covering both the in-window and tail portions, with the T1 value read
+off by linear interpolation between the substep's two endpoints. That
+interpolant does not recover x(T1) to the substep's own order — an
+ordinary (non-straddling) substep gets its endpoint from an `advance()`
+call whose own mean is exact for that shorter interval, but the
+interpolated value here is not on the same trajectory a direct call
+with the true in-window mean would produce. Fix: split the call at T1 —
+one `advance()` for `[sub.t0, T1)` with the in-window mean, a second for
+`[T1, sub.t1)` with the boundary/extrapolated mean — in both
+`sweep_window()` and `resolve_pending_straddles()`'s replay of the same
+substep, matching how an Adjustable member's own last substep already
+ends exactly at T1 for free.
+
+**Measured** (this build, tier 0): with both fixes, `d = 35*m` for
+`m` in {2,4,8,16,32} (`Tc = 13/d`, `hB = 7/d`, `n_windows = 7*m` — a
+multiple of the 7:13 straddle's own phase cycle, since gcd(7,13)=1, so
+T_total and the final window's phase stay fixed across refinements),
+Fixed/Fixed order is 2.09, 2.05, 2.02, 2.01 between successive steps;
+Adjustable/Fixed and Fixed/Adjustable land in the same [2.0, 2.1] band.
+Refining by naive doubling instead of this phase-aligned scheme (same
+coefficients, same Tc/hB ratio) gives a non-monotone, sometimes
+order-0-looking sequence purely from measuring different runs' final
+windows at different points in that 7-window cycle — not a remaining
+bug, but a reason to align refinement to the cycle rather than read
+order off an arbitrary fixed wall-clock time.
+
+**A third, disclosed, NOT-fixed gap**, found while building
+`BothMembersStraddleAnExplicitWindow`: `resolve_pending_straddles()`
+assumes at most one member has `straddle_pending` in a given window. An
+explicit window shorter than BOTH members' own intervals makes both
+straddle at once; replaying them one at a time, each reading the OTHER's
+`last_window_waveform`/`history`, throws
+`Waveform::integrate: [range] is not inside the support [range]` within
+a couple of windows for Fixed/Fixed, and gives non-monotone or growing
+error for the mixed cases, without crashing. A related, separate gap:
+a member whose interval EXCEEDS the window enough (here, more than
+double it) must eventually skip a window outright, which
+`build_delivered()` does not support (`Waveform::reset` with
+`window_begin > window_end`, an `InvalidArgument`). Both need dedicated
+design work — multi-window replay, at minimum — not a mutation-scale
+fix; see the test's own comment for the exact configurations and
+measurements, and `KNOWN_ISSUES.md` for the tracking entry.
+
 ## What is NOT built here
 
 - `schedule()`/`Runner` resolving `WindowMember` fields from a
