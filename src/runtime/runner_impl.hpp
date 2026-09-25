@@ -57,6 +57,12 @@ struct ConstrainInfo {
   std::uint32_t before_arc = 0;      // the Remap's input, on the source region
   std::uint32_t weights_before = 0;  // index into Impl::weight_sets
   std::uint32_t weights_after = 0;
+  /// Whether the two integrals are reduced over the base communicator before
+  /// they are compared. True whenever one is configured:
+  /// every rank of it walks the same instruction stream, a rank holding
+  /// neither region contributes zero, and the totals -- hence the verdict --
+  /// come out identical on every rank, so nothing is decided rank-locally.
+  bool reduce = false;
 };
 
 ///, round 2: replaces the
