@@ -83,7 +83,7 @@ id = "nodal-parallel-remap-refusal-disabled"
 area = "runtime"
 describes = "KNOWN_ISSUES D8: resolve_remap's whole nodal-distributed trigger (both the build_nodal_dist_remap success path and the E-RT-REMAP-NODAL-PARALLEL refusal for any other method/orientation) is disabled, so a nodal Remap on a multi-rank component falls through unconditionally to the OLD rank-local path -- the exact shape a real host MPI run found silently mis-answering or failing with the wrong diagnostic (round 4)"
 file = "src/runtime/runner.cpp"
-old = "    if ((src_ranks > 1U || dst_ranks > 1U) && (src_nodal || tgt_nodal)) {"
+old = "    if (!both_on_one_rank && (src_nodal || tgt_nodal)) {"
 new = "    if (false) {  // MUTATED: the whole nodal-distributed trigger disabled"
 target = "fuse_verification_interface_transfer_test"
 test = "verification.interface_transfer"
@@ -101,3 +101,20 @@ test = "verification.interface_transfer"
 # ANY method with the trigger disabled) -- 13/15 InterfaceTransfer-suite
 # cases pass. Restored byte-for-byte (cmp against a pre-mutation backup)
 # before the next mutation.
+
+[[mutation]]
+id = "nodal-trigger-misses-two-single-rank-placements"
+area = "runtime"
+describes = "The round-5 condition. `src_ranks > 1 || dst_ranks > 1` asks whether either placement is partitioned; what matters is whether the two TOGETHER sit on one rank. At exactly two ranks a disjoint pair is one rank EACH, so the old form took the rank-local path even though no rank held both sides, and a real host run failed with E-INTERP-NOGEOMETRY ('they hold 7 and 0 entities'). Reverting to it restores that."
+file = "src/runtime/runner.cpp"
+old = """    const bool both_on_one_rank =
+        src_ranks == 1U && dst_ranks == 1U &&
+        (src_set == nullptr || dst_set == nullptr ||
+         src_set->min_rank() == dst_set->min_rank());"""
+new = "    const bool both_on_one_rank = src_ranks == 1U && dst_ranks == 1U;"
+target = "fuse_parallel_nodal_remap_runner_test"
+test = "parallel.nodal_remap_runner.2"
+requires = "mpi"
+# NOT-ASSESSED in this sandbox: the shape it describes exists only at exactly
+# two ranks, and MPI cannot initialise here at all. The two-rank host run is
+# what kills it.

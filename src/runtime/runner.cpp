@@ -686,14 +686,29 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
     const bool src_nodal = src_kind.value() == RegionExtentKind::Vertex;
     const bool tgt_nodal = tgt_kind.value() == RegionExtentKind::Vertex;
 
-    const std::size_t src_ranks =
+    const RankSet* src_set =
         (src_component.valid() && src_component.value() < graph.component_count())
-            ? graph.component(src_component).ranks.size()
-            : 1U;
-    const std::size_t dst_ranks =
+            ? &graph.component(src_component).ranks
+            : nullptr;
+    const RankSet* dst_set =
         (dst_component.valid() && dst_component.value() < graph.component_count())
-            ? graph.component(dst_component).ranks.size()
-            : 1U;
+            ? &graph.component(dst_component).ranks
+            : nullptr;
+    const std::size_t src_ranks = src_set != nullptr ? src_set->size() : 1U;
+    const std::size_t dst_ranks = dst_set != nullptr ? dst_set->size() : 1U;
+    // Round 5 (a real host MPI run again): `src_ranks > 1 || dst_ranks > 1`
+    // was still not the condition. At exactly TWO ranks a disjoint pair is
+    // one rank EACH -- neither side is partitioned, yet the source lives on
+    // rank 0 and the target on rank 1, so no rank holds both and the
+    // rank-local path below produced E-INTERP-NOGEOMETRY ("they hold 7 and 0
+    // entities") on whichever rank was missing a side. What decides this is
+    // not whether either placement spans several ranks but whether the two
+    // TOGETHER are confined to one: only then is every entity the operator
+    // needs local to the rank building it.
+    const bool both_on_one_rank =
+        src_ranks == 1U && dst_ranks == 1U &&
+        (src_set == nullptr || dst_set == nullptr ||
+         src_set->min_rank() == dst_set->min_rank());
     // "A single-rank placement on BOTH sides skips this whole path, since
     // nothing is shared" -- the lead's ruling, generalized from the
     // original's `dst_ranks.size() > 1` to look at whichever side (or
@@ -701,7 +716,7 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
     // Allgatherv still needs the distributed path when only the EVAL side
     // is spread across ranks, since a rank holding zero local evaluation
     // entities cannot build ITS row from a local-only view either.
-    if ((src_ranks > 1U || dst_ranks > 1U) && (src_nodal || tgt_nodal)) {
+    if (!both_on_one_rank && (src_nodal || tgt_nodal)) {
       if (src_nodal && tgt_nodal) {
         // Neither `build_nodal_dist_remap` orientation has been run against
         // a nodal-to-nodal channel (both regions Vertex-kind); refuse by
