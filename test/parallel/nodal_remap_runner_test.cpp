@@ -317,21 +317,50 @@ void run_and_check(std::size_t n_beam, std::size_t n_fluid, fuse::RankSet beam_r
 }  // namespace
 
 TEST(NodalRemapRunnerMpi, DisjointRankSets) {
+  // Round 4 (KNOWN_ISSUES.md D8, defect 3, found by a real host MPI run):
+  // `beam_ranks{0, (w+1)/2}` and `fluid_ranks{(w+1)/2, w-(w+1)/2}` are
+  // disjoint by construction ONLY when both halves are non-empty; at
+  // `w == 1`, `fluid_ranks` has count 0 -- the fluid component would be
+  // placed on NO rank at all, the exact two-sided-placement-on-one-rank
+  // shape commit 2383024 already fixed elsewhere in this codebase. An ad
+  // hoc `if (fluid_ranks.size() == 0) GTEST_SKIP()` caught this at `w == 1`
+  // specifically, but stated the requirement in terms of THIS test's own
+  // arithmetic rather than the rank count a reader can check against
+  // parallel-matrix.toml at a glance; `FUSE_REQUIRE_AT_LEAST_RANKS`
+  // (test/parallel/runner_transport_test.cpp's own convention for exactly
+  // this situation) says it the same way every other multi-rank-shape test
+  // in this codebase does.
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);  // a disjoint split needs two non-empty halves
   const int w = world_size();
   const fuse::RankSet beam_ranks{0, (w + 1) / 2};
   const fuse::RankSet fluid_ranks{(w + 1) / 2, w - (w + 1) / 2};
-  if (fluid_ranks.size() == 0) GTEST_SKIP() << "needs at least 2 ranks to be disjoint";
   run_and_check(7, 11, beam_ranks, fluid_ranks, 0.3, 2.0);
 }
 
 TEST(NodalRemapRunnerMpi, IdenticalRankSets) {
+  // `all{0, world_size()}` is never empty (even at w == 1, where both
+  // components simply share the one rank the job has) -- so, UNLIKE
+  // DisjointRankSets/PartiallyOverlappingRankSets above and below, this
+  // case has no empty-RankSet construction to guard against, and none is
+  // added here. A real host MPI run (round 4) reported this test failing
+  // at world size 1 too, with a cause distinct from the other two (their
+  // shared empty-RankSet defect does not apply here); reproducing it needs
+  // a genuine MPI launch, which this sandbox cannot provide even at -np 1
+  // (`mpirun -np 1` fails in HYDU_sock_listen; running the built MPI test
+  // binary directly without mpirun aborts inside MPI_Init's own
+  // debugger-attach teardown, `dbginit.c`'s `MPIR_Debugger_set_aborting`) --
+  // see KNOWN_ISSUES.md D8 for the exact host command this still needs.
   const fuse::RankSet all{0, world_size()};
   run_and_check(7, 11, all, all, 0.3, 2.0);
 }
 
 TEST(NodalRemapRunnerMpi, PartiallyOverlappingRankSets) {
+  // `beam_ranks{0, w-1}` and `fluid_ranks{1, w-1}` overlap on `[1, w-1)`,
+  // which is only non-empty (and only genuinely "partial", rather than
+  // disjoint) once `w >= 3` -- the same class of shape-needs-N-ranks
+  // requirement as DisjointRankSets above, stated the same way.
+  FUSE_REQUIRE_AT_LEAST_RANKS(3);  // needs a genuine overlap, not just two non-empty sets
   const int w = world_size();
-  if (w < 3) GTEST_SKIP() << "needs at least 3 ranks to overlap partially";
   const fuse::RankSet beam_ranks{0, w - 1};      // ranks [0, w-1)
   const fuse::RankSet fluid_ranks{1, w - 1};     // ranks [1, w)
   run_and_check(8, 6, beam_ranks, fluid_ranks, -0.5, 1.5);
