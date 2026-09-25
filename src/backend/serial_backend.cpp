@@ -260,6 +260,63 @@ class StructuredMesh final : public MeshView {
     return i;  // serial: one partition, so local index == global id
   }
 
+  /// mesh_view.hpp's cell-to-vertex connectivity query (nodal-remap track),
+  /// for the one shape this structured backend can answer without storing
+  /// an explicit connectivity list: a volume cell (`dim == dim_ == 3`) is a
+  /// hexahedron whose 8 corner vertex indices follow directly from the same
+  /// `ix`/`iy`/`iz`/`sx`/`sy` arithmetic `centroid(0, ...)` already uses,
+  /// in `cell_simplices.hpp`'s Hex corner order (face 0-3 at the cell's
+  /// "lo" corner, opposite face 4-7 at "hi", i.e. corner k has
+  /// (ix + bit0(k), iy + bit1(k), iz + bit2(k)) with bit1/bit0 read off a
+  /// CCW-from-outside face traversal, not a raw binary count -- see the
+  /// table below). A 1D line's cells are segments (dimension() == 1, so
+  /// `build_consistent_interp_weights` never routes here at all -- its
+  /// dispatch is unconditional on dimension, per consistent_interp.hpp), and
+  /// a boundary face (dim == 2, dim_ == 3) has no answer here: the default
+  /// MeshView refusal applies to both.
+  [[nodiscard]] Result<CellVertices> cell_vertices(int dim, std::size_t i) const override {
+    check(dim, i, "cell_vertices");
+    // 1D ('generated:line') cells: Edge, corners {i, i+1} -- vertices are
+    // numbered 0..n_[0] in order along the line (entity_count(0) ==
+    // n_[0] + 1, checked above), so this is a plain consecutive pair, no
+    // ix/iy/iz decomposition needed. Added for the nodal-remap track's
+    // distributed builder (nodal_remap_distributed.hpp), which needs a
+    // connectivity answer for the SAME 1D line meshes
+    // test/verification/interface_transfer_test.cpp's `run_consistent_pair`
+    // already uses for its serial (single-rank) H/H^T coverage.
+    if (dim == 1 && dim_ == 1) {
+      CellVertices out;
+      out.shape = CellShape::Edge;
+      out.vertices = {i, i + 1};
+      return out;
+    }
+    if (!(dim == 3 && dim_ == 3)) {
+      return Failure{"E-MESH-NO-CELL-VERTICES",
+                     "StructuredMesh::cell_vertices: only this backend's 1D edge cells "
+                     "(dimension 1 of a 'generated:line' mesh) and 3D hexahedral cells "
+                     "(dimension 3 of a 'generated:box' mesh) have an implemented "
+                     "connectivity answer; dimension " +
+                         std::to_string(dim) + " of a dimension-" +
+                         std::to_string(dim_) + " mesh does not"};
+    }
+    const std::size_t ix = i % n_[0];
+    const std::size_t iy = (i / n_[0]) % n_[1];
+    const std::size_t iz = i / (n_[0] * n_[1]);
+    const std::size_t sx = n_[0] + 1;
+    const std::size_t sy = n_[1] + 1;
+    const auto vidx = [&](std::size_t dx, std::size_t dy, std::size_t dz) {
+      return (ix + dx) + (iy + dy) * sx + (iz + dz) * sx * sy;
+    };
+    // Hex corners 0..7: 0=(0,0,0) 1=(1,0,0) 2=(1,1,0) 3=(0,1,0) 4=(0,0,1)
+    // 5=(1,0,1) 6=(1,1,1) 7=(0,1,1) -- cell_simplices.hpp's "face 0-3,
+    // opposite face 4-7", each face CCW as seen from outside.
+    CellVertices out;
+    out.shape = CellShape::Hex;
+    out.vertices = {vidx(0, 0, 0), vidx(1, 0, 0), vidx(1, 1, 0), vidx(0, 1, 0),
+                    vidx(0, 0, 1), vidx(1, 0, 1), vidx(1, 1, 1), vidx(0, 1, 1)};
+    return out;
+  }
+
   /// Entity count of one named boundary set. Precondition: `dim_ == 3`.
   [[nodiscard]] std::size_t side_count(Side s) const {
     const auto axis = static_cast<std::size_t>(static_cast<int>(s) / 2);

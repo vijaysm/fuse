@@ -517,6 +517,53 @@ class MoabMeshView final : public MeshView {
     }
   }
 
+  // --- mesh_view.hpp's cell-to-vertex connectivity query (nodal-remap
+  // track) -- straightforward here: `shape_of` already maps MOAB's own
+  // entity type onto `CellShape` (used above for the simplex decomposition),
+  // and `get_connectivity(..., corners_only=true, ...)` gives the corner
+  // HANDLES in MOAB's own (identical to cell_simplices.hpp's) corner order;
+  // `index_of` translates each to this view's own dimension-0 local index.
+  [[nodiscard]] Result<CellVertices> cell_vertices(int dim, std::size_t i) const override {
+    check(dim, i, "cell_vertices");
+    const auto shape = shape_of(dim, i);
+    if (!shape) {
+      return Failure{"E-MESH-NO-CELL-VERTICES",
+                     "MoabMeshView::cell_vertices: entity " + std::to_string(i) +
+                         " of dimension " + std::to_string(dim) +
+                         " has a cell type with no fuse::CellShape equivalent "
+                         "(MBPOLYHEDRON or a higher-order type; see "
+                         "cell_simplices.hpp for the shapes this backend supports)"};
+    }
+    const moab::EntityHandle h = dims_[static_cast<std::size_t>(dim)].handles[i];
+    const moab::EntityHandle* conn = nullptr;
+    int nconn = 0;
+    std::vector<moab::EntityHandle> storage;
+    const moab::ErrorCode rval =
+        mb_->get_connectivity(h, conn, nconn, /*corners_only=*/true, &storage);
+    if (rval != moab::MB_SUCCESS || conn == nullptr || nconn <= 0) {
+      return Failure{"E-MESH-NO-CELL-VERTICES",
+                     "MoabMeshView::cell_vertices: MOAB could not read the corner "
+                     "connectivity of entity " + std::to_string(h) + ": " +
+                         moab_text(*mb_, rval)};
+    }
+    CellVertices out;
+    out.shape = shape->first;
+    out.vertices.reserve(static_cast<std::size_t>(nconn));
+    for (int k = 0; k < nconn; ++k) {
+      const std::size_t vidx = index_of(0, conn[k]);
+      if (vidx == kNoIndex) {
+        return Failure{
+            "E-MESH-NO-CELL-VERTICES",
+            "MoabMeshView::cell_vertices: corner " + std::to_string(k) + " of entity " +
+                std::to_string(h) +
+                " is not among this rank's own dimension-0 entities (a vertex this "
+                "view was not given, e.g. outside a partitioned read's halo)"};
+      }
+      out.vertices.push_back(vidx);
+    }
+    return out;
+  }
+
   // --- used by the backend, not part of MeshView ---------------------------
 
   [[nodiscard]] moab::EntityHandle file_set() const { return file_set_; }

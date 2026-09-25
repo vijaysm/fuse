@@ -114,6 +114,7 @@
 
 #include <fmt/format.h>
 
+#include "fuse/backend/general_interp.hpp"
 #include "fuse/backend/mesh_view.hpp"
 #include "fuse/backend/remap_plan.hpp"
 #include "fuse/base/error.hpp"
@@ -122,29 +123,15 @@
 
 namespace fuse {
 
-/// What `build_consistent_interp_weights` does when a target evaluation
-/// point falls outside the span of the source mesh's vertices (by more than
-/// a rounding-scale tolerance of the span).
-enum class InterfaceDomainPolicy {
-  /// The default. Refuses with `E-INTERP-DOMAIN` naming the offending point
-  /// and the source span, rather than silently extrapolating a linear
-  /// reconstruction past the data that supports it -- an interpolant
-  /// extrapolated even one node-spacing past its data can be arbitrarily
-  /// wrong for anything but an actually-affine field, and there is no way
-  /// for this builder to tell whether the field it will later be applied to
-  /// is affine near the boundary.
-  Refuse,
-  /// Constant extrapolation: a target point beyond the span is given weight
-  /// 1 on the nearest boundary node (so its value equals that node's,
-  /// unchanged as the point moves further out). Still exactly row-sum-one,
-  /// so every conservation and power-balance property above continues to
-  /// hold under this policy; what is lost is the order-2 accuracy near the
-  /// uncovered edge, which reverts to order 0 there. Not reachable through
-  /// the channel API today -- see the task's `open_questions`.
-  ClampToBoundary,
-};
+// `InterfaceDomainPolicy` (what to do when a target point falls outside the
+// source's coverage) is defined in general_interp.hpp now that TWO builders
+// share it -- this file's own 1D curve algorithm below, and
+// `build_general_interp_weights` (any 2D/3D cell, including a surface). The
+// enum and its meaning are unchanged; only its physical location moved so
+// general_interp.hpp does not have to include this file to name it.
 
-/// Builds `H`: row = target evaluation point (index into `tgt_points` at
+/// Builds `H` for a source mesh whose topological dimension is 1 (a beam, a
+/// wire, any 1D interface curve): row = target evaluation point (index into
 /// `tgt_dim`), column = source vertex (index into `src_nodes` at dimension
 /// 0), value = the piecewise-linear hat-function weight.
 ///
@@ -164,7 +151,7 @@ enum class InterfaceDomainPolicy {
 ///     reconstruction is singular there.
 ///   * `E-INTERP-DOMAIN`      -- (policy `Refuse`, the default) a target
 ///     point lies outside the source vertices' span along the chosen axis.
-[[nodiscard]] inline Result<RemapWeights> build_consistent_interp_weights(
+[[nodiscard]] inline Result<RemapWeights> build_consistent_interp_weights_1d(
     const MeshView& src_nodes, const MeshView& tgt_points, int tgt_dim,
     InterfaceDomainPolicy policy = InterfaceDomainPolicy::Refuse) {
   const std::size_t n_src = src_nodes.entity_count(0);
@@ -370,6 +357,46 @@ enum class InterfaceDomainPolicy {
   w.min_src_coverage = 1.0;
   w.min_tgt_coverage = 1.0;
   return w;
+}
+
+/// Builds `H` for a source of ANY supported cell shape -- the public entry
+/// point every caller (this file's own `build_consistent_weights_for_plan`,
+/// and any test that calls it directly the way
+/// `test/backend/operator_conformance_test.cpp`'s `ConsistentInterp.*` cases
+/// do) should use.
+///
+/// DISPATCH, NOT A REWRITE: `src_nodes.dimension() == 1` (a 1D interface
+/// curve -- a beam, a wire) routes to `build_consistent_interp_weights_1d`
+/// above, UNCHANGED, so every existing 1D test (including the hand-built
+/// `ArbitraryLine`/`PartitionedTestMesh`-style views that carry no cell
+/// connectivity at all, only a coordinate-ordered vertex list) keeps its
+/// exact prior behaviour byte for byte. `dimension() == 2` or `3` (a
+/// triangle/quad/sphere-surface or tet/hex/prism source) routes to
+/// `build_general_interp_weights` (general_interp.hpp), which needs
+/// `MeshView::cell_vertices` and refuses by name
+/// (`E-MESH-NO-CELL-VERTICES`) when the concrete backend does not implement
+/// it.
+///
+/// The two paths are kept separate rather than folded into one
+/// connectivity-based algorithm because the 1D algorithm's coordinate-sort
+/// is strictly more permissive (it needs no cell_vertices at all, only a
+/// vertex position per source DOF) and is the one every existing 1D test
+/// and the FSI beam model were written and verified against -- see
+/// build_consistent_interp_weights_1d's own header for why coordinate order
+/// and mesh order coincide for a genuine 1D interface. A mesh of literal
+/// `CellShape::Edge` cells with real connectivity would also be handled
+/// correctly by `build_general_interp_weights` (an edge is just a 2-corner,
+/// 1-parameter affine cell, a degenerate case of `Triangle`'s machinery),
+/// but nothing here relies on that: the dispatch is purely on
+/// `dimension()`, so an Edge-shaped source never actually reaches
+/// general_interp.hpp.
+[[nodiscard]] inline Result<RemapWeights> build_consistent_interp_weights(
+    const MeshView& src_nodes, const MeshView& tgt_points, int tgt_dim,
+    InterfaceDomainPolicy policy = InterfaceDomainPolicy::Refuse) {
+  if (src_nodes.dimension() == 1) {
+    return build_consistent_interp_weights_1d(src_nodes, tgt_points, tgt_dim, policy);
+  }
+  return build_general_interp_weights(src_nodes, tgt_points, tgt_dim, policy);
 }
 
 namespace consistent_interp_detail {

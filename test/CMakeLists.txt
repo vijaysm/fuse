@@ -176,6 +176,13 @@ endforeach()
 fuse_add_gtest(backend serial_mesh THROWS)
 fuse_add_gtest(backend operator_conformance)
 fuse_add_gtest(backend cell_simplices)
+# Nodal-remap track, step 1: general consistent interpolation on any
+# supported cell (general_interp.hpp), reached through
+# build_consistent_interp_weights (consistent_interp.hpp) exactly like
+# operator_conformance_test.cpp's 1D ConsistentInterp.* cases -- this is
+# their 2D/3D sibling. Links fuse::backend (native/serial generators) and
+# GTest via fuse_add_gtest's default; needs no extra LIBS.
+fuse_add_gtest(backend nodal_interp)
 # The "nodal fields" track's field_extent()/region_extent_kind() (mesh_view.hpp)
 # and their wiring into make_region_sizes(), on both the serial and native
 # backends -- native_backend.hpp's 2D/3D generators are what give this file

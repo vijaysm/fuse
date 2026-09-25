@@ -1,0 +1,114 @@
+# Mutations for the "Nodal remap" track (general consistent interpolation on
+# any supported cell, general_interp.hpp / consistent_interp.hpp). Schema:
+# build-evidence/mutations.toml. Own file per the review-fix protocol: do not
+# edit build-evidence/mutations.toml directly while other fixers hold it
+# dirty.
+#
+# All four below were KILLED, observed directly in this sandbox (Tier 0, no
+# MPI needed): each was applied by hand to include/fuse/backend/
+# general_interp.hpp, rebuilt, confirmed to turn the named case(s) from
+# passing to failing (and ONLY those, with the rest of the suite still
+# green), then the file was restored byte-for-byte (cmp against a
+# pre-mutation backup) and fuse_backend_nodal_interp_test rebuilt and
+# reconfirmed passing (23/23) before moving to the next mutation. The two
+# distributed-path rows this step's task also named -- "the transpose scatter
+# summing on the wrong rank" and "a row computed on every holder instead of
+# the owner" -- have no analogue in this file (this builder is serial); they
+# belong to nodal_remap_distributed.hpp and are recorded, NOT-ASSESSED, in
+# nodal-remap-distributed.toml instead.
+#
+# Round 2 revision (2026-09-25): the single-tier containment rule (one
+# `kRefEps`, a boolean "close enough" test feeding a lowest-global-id
+# tie-break among every candidate that passed it) was replaced by a two-tier
+# rule -- `kRefEpsTight` (genuine containment, wins outright, tie-break only
+# among tight matches) then `kRefEpsLoose` (single least-violating fallback,
+# no tie-break, only for a real curved-surface faceting gap). This obsoleted
+# the "containment-tolerance-too-tight" row's anchor (`kRefEps` no longer
+# exists as a name) and, worse, its OLD "new" value (a rounding-scale 1e-9)
+# is now numerically indistinguishable from the new design's own
+# `kRefEpsTight` (`1e3 * kNewtonTol` = `1e-9`) -- so re-running that row
+# verbatim would no longer test anything. It is rewritten below to target
+# `kRefEpsLoose` (the tier that actually carries the curved-surface-faceting
+# concern now) instead of deleted, since the underlying physical concern --
+# a rounding-scale fallback tolerance cannot accept a real geometric gap --
+# is unchanged. A new row, "tier (a) skipped", was added to cover the
+# distinct failure mode the two-tier redesign exists to fix: a lower-global-id
+# NEIGHBOUR winning by loose-tolerance-tie-break over a higher-global-id cell
+# that genuinely, tightly contains the point.
+
+[[mutation]]
+id = "nodal-interp-tie-break-picks-highest-global-id"
+area = "backend"
+describes = "build_general_interp_weights' tier-(a) tie-break among GENUINELY-containing candidates (docs: 'a point on a shared face or vertex chooses the containing cell with the LOWEST source global id, so weights are deterministic') is inverted to pick the HIGHEST global id instead, so a target point exactly on a shared edge between two cells is assigned the wrong cell's weights depending on which id happens to be higher rather than a rule independent of insertion order. (Anchor updated for the round-2 two-tier rewrite: `have_contain`/`best_gid` -> `have_tight`/`tight_gid`; the tie-break rule and this row's intent are otherwise unchanged.)"
+file = "include/fuse/backend/general_interp.hpp"
+old = "        if (!have_tight || gid < tight_gid) {"
+new = "        if (!have_tight || gid > tight_gid) {"
+target = "fuse_backend_nodal_interp_test"
+test = "backend.nodal_interp"
+# KILLED. GeneralInterp.PointExactlyOnASharedEdgePicksTheLowerGlobalId fails:
+# the resulting row's only nonzero columns are {0, 1, 2} (the HIGHER-global-id
+# cell, local index 0, gid 7), not {1, 2, 3} (the lower-gid cell, local index
+# 1, gid 3) the test asserts against -- exactly the two triangles' corners
+# swapped, which is what an inverted tie-break produces on a mesh whose
+# global-id numbering deliberately does not follow local/insertion order.
+
+[[mutation]]
+id = "nodal-interp-fallback-tolerance-too-tight"
+area = "backend"
+describes = "the tier-(b) fallback containment tolerance (kRefEpsLoose, which the header comment derives as EQUAL to kSurfaceTol -- 'the same physically-derived bound applied to the other axis of the same reference cell') is tightened from that physically-derived value back to a rounding-scale 1e-9, which is what a first, naive implementation would pick by analogy with kRefEpsTight (itself derived from kNewtonTol, a genuinely rounding-scale quantity) rather than from the curved-surface faceting gap kRefEpsLoose actually has to accept"
+file = "include/fuse/backend/general_interp.hpp"
+old = "inline constexpr double kRefEpsLoose = kSurfaceTol;"
+new = "inline constexpr double kRefEpsLoose = 1e-9;"
+target = "fuse_backend_nodal_interp_test"
+test = "backend.nodal_interp"
+# KILLED (re-verified 2026-09-25 against the two-tier rewrite). Every target
+# point on GeneralInterp.SphereSurfaceOrderIsAtLeastTwoUnderRefinement's
+# finest cubed-sphere pair fails BOTH tiers: tier (a) is correctly rejected
+# (the physical faceting gap between two independent curved-surface
+# discretizations, observed up to ~0.6% of a cell's own reference width at
+# N=4, is not floating-point round-off, so kRefEpsTight is right to reject
+# it) and tier (b)'s fallback is now rounding-scale too, so no candidate is
+# ever accepted -> E-INTERP-DOMAIN. The test fails outright (not merely a
+# degraded order) with this mutation applied; every other GeneralInterp.*
+# case still passes (22/22), since only this test's cells are genuinely
+# curved.
+
+[[mutation]]
+id = "nodal-interp-newton-nonconvergence-accepted-silently"
+area = "backend"
+describes = "invert_reference_map's non-convergence refusal (E-INTERP-NEWTON, fired when max_iter is exhausted without the step norm or residual falling under tolerance) is removed; the last (possibly nowhere near converged) iterate is returned marked converged=true instead"
+file = "include/fuse/backend/general_interp.hpp"
+old = '''  return Failure{"E-INTERP-NEWTON",
+                 fmt::format("invert_reference_map: did not converge within {} "
+                             "iterations (last residual {:.6g}, tolerance {:.3g})",
+                             max_iter, out.residual, abstol)};'''
+new = '''  out.converged = true;  // MUTATED: accept an unconverged result silently
+  return out;'''
+target = "fuse_backend_nodal_interp_test"
+test = "backend.nodal_interp"
+# KILLED. GeneralInterp.NewtonNonConvergenceRefuses (added specifically to
+# make this refusal path deterministically reachable -- max_iter = 0 means
+# the Newton loop body never executes at all, so ANY shape reaches this exact
+# return statement on the very first call, with no need to hunt for a
+# pathologically distorted cell that happens to defeat 50 real iterations)
+# fails: invert_reference_map.ok() is true where the test asserts false.
+
+[[mutation]]
+id = "nodal-interp-tier-a-skipped"
+area = "backend"
+describes = "tier (a)'s dedicated tight-containment check is widened to use kRefEpsLoose instead of kRefEpsTight, collapsing the two-tier rule back into the original single-tier design: EVERY candidate that merely clears the loose (curved-surface-faceting) tolerance is now tie-broken by lowest global id, rather than only candidates that GENUINELY (to floating-point round-off) contain the point -- i.e. tier (a) is present in name but never discriminates against a loose-only match, so it is effectively skipped"
+file = "include/fuse/backend/general_interp.hpp"
+old = "      if (surface_ok && in_reference_domain(cells[ci].shape, inv.value().u, kRefEpsTight)) {"
+new = "      if (surface_ok && in_reference_domain(cells[ci].shape, inv.value().u, kRefEpsLoose)) {"
+target = "fuse_backend_nodal_interp_test"
+test = "backend.nodal_interp"
+# KILLED. GeneralInterp.PointDeepInsideBIsNotStolenByALowerGidNeighbourExtrapolating
+# fails, and ONLY that test (22/23 pass): triangle A (global id 0, LOWER)
+# extrapolated past its own edge has reference-domain violation 0.04, which
+# clears kRefEpsLoose (0.1) exactly as easily as triangle B's (global id 5,
+# HIGHER) genuine, tight containment (violation 0) does, so BOTH become tier
+# (a) candidates and the lowest-global-id tie-break wrongly picks A --
+# reproducing verbatim the bug the two-tier redesign exists to fix. On a
+# field that were affine across the shared A/B edge this mutation would be
+# invisible (A's extrapolation would reproduce the correct value by
+# construction), which is why the test uses a field with v11 != v10+v01-v00.
