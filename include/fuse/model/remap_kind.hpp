@@ -26,6 +26,7 @@
 
 #include <string_view>
 
+#include "fuse/model/channel.hpp"
 #include "fuse/model/field_spec.hpp"
 
 namespace fuse {
@@ -47,6 +48,31 @@ namespace fuse {
                                                    const FieldSpec& target) noexcept {
   return (method == "consistent" && is_nodal_field(source)) ||
          (method == "consistent-transpose" && is_nodal_field(target));
+}
+
+/// Whether it is even POSSIBLE for a channel with these flags, these two
+/// fields, and this remap method to emit a Remap operator: explicit flags,
+/// differing regions, or a method that moves placement itself (above)
+/// whenever its two ends' placements differ.
+///
+/// The coupler-placement track's shared gate (plans/2026-09-23-coupler-
+/// placement-and-migration.md design C). Deliberately independent of any
+/// particular placement -- the channel's own source/target ranks, or a
+/// declared `RemapSpec::remap_on` -- because flags and region don't depend
+/// on ranks, and a non-moving method never moves ranks by itself. If this is
+/// false, no choice of `remap_on` could ever change what this channel
+/// lowers to, which is exactly what `validate()`'s `W-CHANNEL-REMAP-ON-
+/// UNUSED` reports and what `src/ir/rules_channel.cpp` uses to decide
+/// whether a declared `remap_on` is honoured at all. One predicate, two
+/// callers, so a channel the warning calls unused cannot be one whose
+/// lowering silently routes through the coupler anyway.
+[[nodiscard]] constexpr bool could_ever_emit_remap(RemapFlags flags,
+                                                   const FieldSpec& source,
+                                                   const FieldSpec& target,
+                                                   std::string_view method) noexcept {
+  if (flags != RemapFlags::None) return true;
+  if (!(source.region == target.region)) return true;
+  return remap_moves_placement(method, source, target);
 }
 
 }  // namespace fuse

@@ -42,6 +42,14 @@ struct AccumulateSpec {
 struct RemapSpec {
   RemapFlags  flags = RemapFlags::None;
   std::string method_override;  // empty = derive from disc pair + conservation
+  /// Which placement this channel's Remap runs on. Invalid (the default)
+  /// means "the target's own placement" -- today's behaviour, and the only
+  /// behaviour a channel with no coupler ever sees. When valid, it must name
+  /// either a `ComponentKind::Coupler` component or this channel's own
+  /// source/target component (`validate()`'s `E-CHANNEL-REMAP-ON`); the
+  /// value moves source -> here -> target, with any hop between identical
+  /// placements elided (src/ir/rules_channel.cpp).
+  ComponentId remap_on{};
 };
 
 struct SpacetimeSpec {
@@ -92,6 +100,12 @@ class ChannelBuilder {
   ChannelBuilder& accumulate(AccumOp op, Window w = Window::coupling_period());
   ChannelBuilder& remap(RemapFlags flags);
   ChannelBuilder& remap_method(std::string method);
+  /// Spec: the separately-placed coupler track. `c` must be a
+  /// `ComponentKind::Coupler` component or this channel's own source/target
+  /// component; `validate()`'s `E-CHANNEL-REMAP-ON` enforces it, not this
+  /// fluent setter (spec Global Constraints: every problem is reported
+  /// together, not the first one found).
+  ChannelBuilder& remap_on(ComponentId c);
   ChannelBuilder& conservative();
   ChannelBuilder& spacetime(TemporalBasis basis, int degree,
                             Window w = Window::coupling_period());
