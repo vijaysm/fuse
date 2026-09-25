@@ -2,6 +2,7 @@
 
 #include "fuse/base/config.hpp"
 #include "fuse/backend/consistent_interp.hpp"
+#include "fuse/backend/mls_weights.hpp"
 #include "fuse/backend/remap_plan.hpp"
 #include "fuse/backend/supermesh.hpp"
 
@@ -192,6 +193,12 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
   // ordering hazard in checking the method string first.
   if (plan.method == "consistent" || plan.method == "consistent-transpose") {
     return build_consistent_weights_for_plan(plan, graph, backend);
+  }
+  // Moving least squares (fuse/backend/mls_weights.hpp): dependency-free, so
+  // dispatched identically with or without MOAB. Its options are part of the
+  // method string and are never defaulted (E-MLS-OPTIONS).
+  if (plan.method == "mls" || plan.method.rfind("mls:", 0) == 0) {
+    return build_mls_weights(plan, graph, backend);
   }
 
   // Only what this builder can honour. The checks are deliberately the same
@@ -2030,6 +2037,12 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
   // !FUSE_HAVE_MOAB build_weights() above for why this check comes first.
   if (plan.method == "consistent" || plan.method == "consistent-transpose") {
     return build_consistent_weights_for_plan(plan, graph, backend);
+  }
+  // Moving least squares (fuse/backend/mls_weights.hpp): dependency-free, so
+  // dispatched identically with or without MOAB. Its options are part of the
+  // method string and are never defaulted (E-MLS-OPTIONS).
+  if (plan.method == "mls" || plan.method.rfind("mls:", 0) == 0) {
+    return build_mls_weights(plan, graph, backend);
   }
 
   // =========================================================================
