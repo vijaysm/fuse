@@ -104,7 +104,8 @@ struct Outcome {
 };
 
 /// The same graph the MPI fixture builds, at one participant.
-Outcome run_pair(std::size_t n_beam, std::size_t n_fluid, double vel_a, double vel_b) {
+Outcome run_pair(std::size_t n_beam, std::size_t n_fluid, double vel_a, double vel_b,
+                 bool distributed_path) {
   CouplingGraph g;
   const auto m_beam = g.add_mesh(fuse::MeshDecl{.name = "beam_mesh", .source = "n/a"});
   const auto m_fluid = g.add_mesh(fuse::MeshDecl{.name = "fluid_mesh", .source = "n/a"});
@@ -183,6 +184,14 @@ Outcome run_pair(std::size_t n_beam, std::size_t n_fluid, double vel_a, double v
 
   Runner runner{g, lowered.dag, sched.plan, backend};
   RunnerConfig cfg;  // no base_communicator: one participant, no MPI in this build
+  // Both remap paths, from one test. At one participant the Runner takes the
+  // rank-local weights; the MPI fixture's cross-rank cases take
+  // build_nodal_dist_remap / apply_distributed_H(T). The first host run that
+  // reached run_period (2026-09-25) had H exact and H^T D delivering ZERO on
+  // the distributed path while this test, on the local path, passed -- so
+  // the distributed operator had no serial coverage at all. It is a correct
+  // remap at any participant count, so it must give the same answer here.
+  cfg.force_distributed_nodal_remap = distributed_path;
   {
     const auto r = runner.initialize(components, registry, cfg);
     if (!r.ok()) throw std::runtime_error("initialize: " + r.error().code + ": " + r.error().message);
@@ -200,12 +209,17 @@ Outcome run_pair(std::size_t n_beam, std::size_t n_fluid, double vel_a, double v
 TEST(NodalRemapRunnerSerial, TheOneRankCaseOfTheMpiFixtureRunsAndIsExact) {
   // Exactly the three parameter sets the MPI cases use, so a failure here is
   // that case's failure and not a different problem wearing its name.
-  struct Case { std::size_t n_beam, n_fluid; double a, b; const char* name; };
-  for (const Case c : {Case{7, 11, 0.3, 2.0, "Disjoint/Identical (7, 11)"},
-                       Case{8, 6, -0.5, 1.5, "PartiallyOverlapping (8, 6)"}}) {
+  struct Case { std::size_t n_beam, n_fluid; double a, b; bool dist; std::string name; };
+  std::vector<Case> cases;
+  for (const bool dist : {false, true}) {
+    const std::string tag = dist ? " [distributed path]" : " [local weights]";
+    cases.push_back({7, 11, 0.3, 2.0, dist, "Disjoint/Identical (7, 11)" + tag});
+    cases.push_back({8, 6, -0.5, 1.5, dist, "PartiallyOverlapping (8, 6)" + tag});
+  }
+  for (const Case& c : cases) {
     Outcome o;
     try {
-      o = run_pair(c.n_beam, c.n_fluid, c.a, c.b);
+      o = run_pair(c.n_beam, c.n_fluid, c.a, c.b, c.dist);
     } catch (const std::exception& e) {
       ADD_FAILURE() << c.name << ": " << e.what();
       continue;
