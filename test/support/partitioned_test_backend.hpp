@@ -18,7 +18,31 @@
 #include <unordered_map>
 #include <vector>
 
+// MPI is optional HERE on purpose. Every backend below partitions by a
+// declared RankSet, and at a single participant that partition is the whole
+// mesh -- no MPI call is needed to know that. Compiling without MPI lets the
+// serial tier drive the same Runner fixtures the MPI tests use, which is the
+// only way a one-rank failure in an MPI-registered test can be debugged in a
+// sandbox where MPI cannot initialise at all.
+#include "fuse/base/config.hpp"
+
+#if FUSE_HAVE_MPI
 #include <mpi.h>
+#endif
+
+namespace fuse_test {
+/// This participant's rank, or 0 on a build with no MPI.
+[[nodiscard]] inline int this_rank() {
+#if FUSE_HAVE_MPI
+  int me = 0;
+  MPI_Comm_rank(MPI_COMM_WORLD, &me);
+  return me;
+#else
+  return 0;
+#endif
+}
+}  // namespace fuse_test
+
 
 #include <fuse/backend/mesh_view.hpp>
 #include <fuse/model/component.hpp>
@@ -101,8 +125,7 @@ class PartitionedTestBackend final : public fuse::MeshBackend {
   }
 
   fuse::Result<void> load(const fuse::MeshDecl& decl) override {
-    int me = 0;
-    MPI_Comm_rank(MPI_COMM_WORLD, &me);
+    const int me = fuse_test::this_rank();
     std::vector<std::size_t> gids;
     if (fluid_.contains(me)) {
       gids = block(fluid_, me);
@@ -329,8 +352,7 @@ class SharedVertexLineBackend final : public fuse::MeshBackend {
       : n_cells_(n_cells), ranks_(ranks) {}
 
   fuse::Result<void> load(const fuse::MeshDecl& decl) override {
-    int me = 0;
-    MPI_Comm_rank(MPI_COMM_WORLD, &me);
+    const int me = fuse_test::this_rank();
     int pos = 0;
     for (int r = ranks_.min_rank(); r < me; ++r) pos += ranks_.contains(r) ? 1 : 0;
     meshes_.push_back(std::make_unique<SharedVertexLineMesh>(
@@ -523,8 +545,7 @@ class GeometricLineBackend final : public fuse::MeshBackend {
       : n_cells_(n_cells), ranks_(ranks), x_lo_(x_lo), x_hi_(x_hi) {}
 
   fuse::Result<void> load(const fuse::MeshDecl& decl) override {
-    int me = 0;
-    MPI_Comm_rank(MPI_COMM_WORLD, &me);
+    const int me = fuse_test::this_rank();
     if (!ranks_.contains(me)) {
       // Not in this component: an EMPTY mesh (zero cells, zero vertices),
       // not a slice computed as if it were -- a rank outside `ranks_` must
@@ -634,8 +655,7 @@ class MultiMeshGeometricBackend final : public fuse::MeshBackend {
                                decl.name + "' -- call add_mesh_spec() before load()"};
     }
     const Spec& s = it->second;
-    int me = 0;
-    MPI_Comm_rank(MPI_COMM_WORLD, &me);
+    const int me = fuse_test::this_rank();
     if (!s.ranks.contains(me)) {
       meshes_.push_back(std::make_unique<GeometricLineMesh>(GeometricLineMesh::empty(s.x_lo, s.x_hi)));
     } else {
