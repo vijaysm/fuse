@@ -155,6 +155,27 @@ class RankSet {
   return RankSet{std::move(both)};
 }
 
+/// Which of two things a placement-space entry is.
+///
+/// The IR's placement space is the component index (`ValueType::rank_set`,
+/// `ComponentId` everywhere in the Runner, `placed_view(MeshId, ComponentId)`),
+/// so a separately-placed coupler is represented as another entry in the same
+/// array rather than a new kind of id. `kind` is what keeps that decision
+/// honest: every loop that means "a physics component with state and a
+/// clock" -- advancing it, building it a `Clock`, matching it to a supplied
+/// `Component`, counting it as a rollback participant -- must ask `kind`
+/// rather than assuming every entry qualifies. See docs/dev/coupler-
+/// placement.md for the enumerated call sites this decision touches.
+enum class ComponentKind { Physics, Coupler };
+
+[[nodiscard]] constexpr const char* to_cstring(ComponentKind k) noexcept {
+  switch (k) {
+    case ComponentKind::Physics: return "Physics";
+    case ComponentKind::Coupler: return "Coupler";
+  }
+  return "Unknown";
+}
+
 /// Spec §8.1: `interval` is the component's own coupling interval.
 /// Independent intervals are the default; lockstep is all intervals equal.
 struct ComponentDecl {
@@ -162,6 +183,12 @@ struct ComponentDecl {
   RankSet               ranks;
   Rational              interval{1};
   std::vector<FieldId>  fields;
+  /// `Coupler` entries own no fields (`validate()`'s `E-COUPLER-FIELDS`),
+  /// have no clock, and are never advanced -- see the enumerated call sites
+  /// in docs/dev/coupler-placement.md. Default `Physics` so every existing
+  /// `ComponentDecl{...}` aggregate-initializer keeps meaning what it meant
+  /// before this field existed.
+  ComponentKind          kind = ComponentKind::Physics;
   // Deliberately NOT serialized by either the flat descriptor
   // (include/fuse/model/descriptor.hpp) or the YAML front-end
   // (src/graph/yaml_io.cpp). Nothing in the current graph API populates
@@ -174,6 +201,18 @@ struct ComponentDecl {
   // passing through structurally_equal() (which is defined in terms of
   // serialize(), so it cannot see a field neither side writes).
   std::vector<RegionId> regions;
+};
+
+/// `g.add_coupler(CouplerDecl{"C", ranks})`: a placement with no fields and
+/// no clock, that a channel's `RemapSpec::remap_on` (channel.hpp) can name.
+/// Lowers to a `ComponentDecl` with `kind = ComponentKind::Coupler` (see
+/// `CouplingGraph::add_coupler`) -- there is no separate coupler array, so
+/// every existing `component_count()`/`component(ComponentId)` reader keeps
+/// working unchanged, and `kind` is what a caller that needs to tell the two
+/// apart asks.
+struct CouplerDecl {
+  std::string name;
+  RankSet     ranks;
 };
 
 /// The time span an accumulation or space-time projection covers.

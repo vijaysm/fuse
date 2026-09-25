@@ -120,6 +120,17 @@ class CouplingGraph {
     return ComponentId{static_cast<std::uint32_t>(components_.size() - 1)};
   }
 
+  /// A separately-placed coupler: no fields, no clock, `kind ==
+  /// ComponentKind::Coupler`. Lives in the SAME `components_` array as every
+  /// physics component -- see `ComponentKind`'s comment for why -- so it is
+  /// an `add_component()` call with the fields a coupler cannot have left at
+  /// their defaults, plus the one it must not be left at.
+  ComponentId add_coupler(CouplerDecl d) {
+    return add_component(ComponentDecl{.name = std::move(d.name),
+                                       .ranks = std::move(d.ranks),
+                                       .kind = ComponentKind::Coupler});
+  }
+
   FieldId add_field(ComponentId owner, FieldSpec f) {
     FUSE_ASSERT(owner.valid() && owner.value() < components_.size(),
                 "component id {} is out of range ({} components)", owner.value(), components_.size());
@@ -318,6 +329,11 @@ inline ChannelBuilder& ChannelBuilder::remap(RemapFlags flags) {
 
 inline ChannelBuilder& ChannelBuilder::remap_method(std::string method) {
   target().remap.method_override = std::move(method);
+  return *this;
+}
+
+inline ChannelBuilder& ChannelBuilder::remap_on(ComponentId c) {
+  target().remap.remap_on = c;
   return *this;
 }
 
