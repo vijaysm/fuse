@@ -516,111 +516,47 @@ unaffected by either round's fix (19 sweeps at `mass_ratio=1` throughout)
 — the accelerator this task's own headline mass ratio actually needs
 still works regardless of which pressure scheme is in use.
 
-## Known open issues (measured, not resolved)
+## The energy growth: root cause and fix (2026-09-25)
 
-**Transient divergence, residual.** See "Partitioned time-level
-consistency: the force side" above -- the dominant (Nyquist,
-sign-alternating) instability is fixed, but a smaller, non-alternating
-residual growth (measured per-step energy ratio 1.228, converged over 12
-periods) remains at `mass_ratio` ~2.5, `dt=T1/40`.
+The wall traction `StokesSolver::step()` delivered to the beam was
+`-p + 2 mu dv/dy` -- Cauchy's `sigma . n` with the fluid's outward normal,
+which is the force the wall exerts *on the fluid*. The force on the wall is its
+negative: `+p - 2 mu dv/dy`. A pressurised channel pushes its wall outward.
 
-**This round's diagnosis (KNOWN_ISSUES.md D9 carries the full numbers).**
-The lead's linear-algebra method locates it precisely: one converged
-coupled step is an exact affine map over the full carried state (every
-boundary datum here is time-independent, the coupling is a fixed linear
-remap), built column-by-column in
-`test/verification/fsi_energy_diag_test.cpp`. Its spectral radius, rho(M) =
-1.108145 on the production grid, has rho² matching the measured 1.22796
-energy ratio to ~4 significant figures; on the smaller diagnostic grid the
-committed test actually runs (kept small for runtime), rho(M) =
-1.115-1.116 and rho² agrees only to ~2 figures -- same qualitative
-mechanism, weaker quantitative match at coarser resolution. Either way
-this is a genuine scheme instability, confirmed by direct linear algebra
-rather than merely inferred from "every window converges tightly". Beam
-alone and fluid alone are both bounded by the
-same method (rho = 1.0000000060 and 1.0000000000 respectively). The
-dominant eigenvector is ~85-96% pressure, ~4-15% the beam's own first
-bending mode, and its velocity field is exactly divergence-free everywhere
-except the outflow column -- a direct, measured footprint of the pressure-
-outlet condition's own documented trade-off (dropping that column's
-continuity equation to fix the pressure gauge, see "Outflow" above). A
-global mass-conservation correction was added to `StokesSolver::step` (see
-that function's own comment) restoring `Q_out = Q_in + Q_wall` every step;
-it is real, harmless, and leaves every OTHER verified number in this
-document unchanged, but does NOT close this issue -- rho(M) and the
-long-run energy ratio both move by under 1%. Direct ablation shows the
-instability is carried almost entirely by `wall_traction()`'s pressure
-term (zeroing it alone drops rho to ~1.0005); the specific inconsistency
-that lets this pressure-dominated mode gain energy through the beam
-coupling, while remaining exactly marginal in the fluid alone, was not
-found this round. Root cause narrowed substantially; not yet eliminated.
+With the sign wrong the beam saw a **negative added mass**, and everything
+measured over four rounds of diagnosis follows from that: one real eigenvalue
+above 1 (1.115466 on the diagnostic grid, energy x1.228 per step), a
+pressure-plus-first-bending-mode eigenvector, and insensitivity to every
+boundary detail varied -- because power balance, adjointness and the energy
+budgets all compared the delivered vector with itself, and were correct
+statements about a consistently wrong-signed force. No test stated the physics:
+the steady-deflection test's analytic load carried the same sign.
 
-**Round 2's diagnosis (KNOWN_ISSUES.md D9's "round 2" section carries the
-full numbers).** The lead's specific hypothesis for this residual mode --
-a genuine |lambda|=1 parasitic state in the trapezoidal-pressure-gradient
-scheme's carried `p0`, closing a feedback loop through the beam's load --
-was implemented exactly as prescribed (fully-implicit pressure gradient,
-mid-step traction delivery, a new `BeamSolver::step_midpoint_load`) and
-is confirmed CORRECT on its own terms: the fluid-alone spectral radius
-moves off exactly 1 (to 0.9946), the coupled step map's own "fluid p"
-input sensitivity drops to exactly zero, and the beam-alone midpoint
-stepping keeps its second-order accuracy (order 2.2174). But the coupled
-system's own rho(M) is UNCHANGED to 4 significant figures (1.115467 ->
-1.115466), the transient self-convergence order is unchanged outside
-noise (0.822 -> 0.8182), and a direct ablation (zeroing the pressure
-term in the delivered traction) gives the identical rho=1.000512 before
-and after this fix. The parasitic p0 mode is real and is now removed,
-but a separate, comparable-magnitude, still-unidentified mechanism in the
-pressure channel remains. D9 is still OPEN.
+With the sign corrected:
 
-**Round 3's diagnosis (KNOWN_ISSUES.md D9's "round 3" section carries
-the full numbers).** The lead's elimination argument (hypothesis A: the
-delivered traction is not the discrete work-conjugate of v_wall;
-hypothesis B: the outflow's own boundary term is not sign-definite) was
-tested both empirically (five candidate fixes, none moved the coupled
-rho(M) out of a narrow 1.1154-1.1173 band around the 1.115466 baseline)
-and via a rigorous, round-off-validated discrete energy identity
-(`FsiEnergyDiag.EnergyIdentityResidualRevealsWhichHypothesisHolds`,
-closure to -7.3e-17). The identity shows WHY: the two hypotheses' own
-LOCAL, boundary-attributable viscous terms are genuinely tiny (1.58e-5
-and 2.13e-6), but the dominant term in the energy budget is
-`pressure_div_power`, a GLOBAL quantity (the continuity constraint's own
-Lagrange multiplier, summed over the whole domain) that does not
-localise to either boundary the way viscous power does -- so neither
-hypothesis, correctly derived and tested, explains D9's residual growth.
-D9 remains OPEN; the pressure/continuity channel's own global bookkeeping
-is now the leading candidate for the next round.
+| Measurement | Before | After |
+|---|---|---|
+| coupled step-map spectral radius (diagnostic grid) | 1.115466 | 1.000000 (Newmark's acceleration passenger, energetically empty) |
+| per-step energy ratio, periods 3-12, dt = T1/40 | 1.22796 | 0.998067 |
+| steady-deflection order | 1.743 | 1.923 |
+| transient self-convergence order, smooth start, T1/160..T1/2560 | (disabled, 0.82 from an impulsive start) | 1.846, pairwise 1.85 / 1.87 / 1.81 |
 
-**Round 4's diagnosis (KNOWN_ISSUES.md D9's "round 4" section carries
-the full numbers).** The lead's own instruction moved from local
-elimination to a full discrete energy budget evaluated ON the coupled
-map's dominant eigenvector, run through one real production period
-(`Umax=0` makes the additive term `b` vanish exactly, so the output
-equals `lambda*x` to 8.8e-8 relative -- validated, not assumed). Every
-term of the budget closes; all three named candidates were tested by
-measurement and none supplies the growth: the post-solve mass
-correction is NEGATIVE (removes energy, wrong sign for candidate (a));
-the outflow do-nothing scheme (candidate (b)) was actually implemented
-in `cn_step`/`StokesSolver` and measured -- well-posed, passes every
-existing test including a previously-undiscovered pin/gauge conflict
-that had to be fixed along the way -- but leaves `rho(M)` at 1.115367,
-unchanged from 1.115466 to within 0.01%, so it was reverted; the pin
-row (candidate (c)) is inapplicable, always inactive under
-`bcs.right.outflow=true`. Interface adjointness (H vs H^T D, plausible
-given `nx_beam != nx_fluid`) was also checked and ruled out (1.9e-12
-mismatch against a 4.6e-6 scale). A genuine, independent defect was
-found on the beam side -- `kinetic_energy()`'s dx-weighted and
-`strain_energy()`'s unweighted quadratures are inconsistent with each
-other and with the pointwise-collocation mass/stiffness the dynamics
-actually use -- responsible for 56% of the measured growth in this
-specific budget, but proven (by inspecting every caller) NOT to affect
-`rho(M)` at all, hence not D9's mechanism; left unfixed this round
-(flagged for a separate one). D9 remains OPEN; no production code
-change survived this round. The next candidate: the STAGGERED,
-sequential time-level structure of the partitioned exchange itself,
-not any single boundary condition or correction term -- every
-term-level candidate this task anticipated has now been tested and
-excluded.
+Two tests now state the physics rather than self-consistency, so a sign flip
+cannot pass: `FsiCoupled.APressurisedChannelPushesItsWallAwayFromTheFluid` and
+`FsiCoupled.AcceleratingTheWallAwayFromTheFluidIsOpposedByTheTraction`.
+Mutation `fsi-traction-is-the-force-on-the-fluid` reproduces the defect.
+
+Still open, and recorded rather than explained:
+- the transient order sits at ~1.85 across three doublings rather than
+  trending to 2 (`FsiTransient.SelfConvergenceInDtIsSecondOrderInTheAsymptoticRegime`
+  passes its unchanged [1.8, 2.2] bound; the 0.15 is unaccounted for);
+- an impulsive start (fluid at rest, inflow switched on at t = 0) is not
+  second-order data for an incompressible system: the five-level regression
+  over T1/40..T1/640 measures 0.87, and the three coarsest levels alone
+  measure 0.15 (`ImpulsiveStartIsMeasuredNotAsserted`, recorded, not asserted);
+- `BeamSolver::strain_energy()` is missing a `dx_beam` factor relative to
+  `kinetic_energy()`'s quadrature (round 4's finding); it never enters the
+  state map and is unrelated to the growth.
 
 ## Verification summary (measured, this session)
 
@@ -628,7 +564,7 @@ excluded.
 |---|---|---|
 | `fsi_beam_test.cpp` | 5/5 pass | static deflection + frequency, 2nd order (4 pre-existing cases); `MidpointLoadStepConvergesAtSecondOrderInDt` (new, round 2) order 2.2174; 63 ms total |
 | `fsi_stokes_mms_test.cpp` | 4/4 pass | spatial order 2.206 (fast grids, 3.1s) and 2.115 (original `{8,16,32,48}` grids, 25.6s); temporal order clean 2nd order; ~28s total; unaffected by round 4's do-nothing outflow experiment (reverted) since MMS never sets `bcs.right.outflow=true` |
-| `fsi_coupled_test.cpp` | 6/6 pass | steady-deflection order 1.743232 (unchanged outside noise); power balance to 1e-12 (unchanged); Aitken/IQN-ILS agreement (2.147e-12 m, was 2.577e-12; 154/45 sweeps); Gauss-Seidel-diverges/IQN-ILS-converges at mass_ratio=1 (18 sweeps, was 19); `AitkenDivergesAtLowMassRatioButConvergesAtHigh` (unchanged, round 2); ~23s total. Also: `FluidReconstructedPoiseuilleIsAFixedPointOfCnStep` was the sentinel that caught round 4's do-nothing-outflow pin/gauge conflict (worst_v up to 0.95 with the pin left unconditionally active) before that experimental change was reverted |
-| `fsi_transient_test.cpp` | 0/1 pass (disabled) | unchanged this round -- order still 0.8182 (required >1.8), left DISABLED with numbers, no fix found |
-| `fsi_energy_diag_test.cpp` | 5/6 pass, 1 disabled | `BeamAloneStepMapSpectralRadiusIsAtMostOne`, `FluidAloneStepMapSpectralRadiusIsAtMostOne`, `CoupledStepMapRevealsTheGrowthMechanism` (rho=1.115466, unchanged), `EnergyIdentityResidualRevealsWhichHypothesisHolds` (unchanged) all pass; `FullBudgetOnTheUnstableModeItselfAttributesTheGrowth` (new, round 4) passes -- full term-by-term budget closes (beam identity mismatch 2.1e-12 against a tolerance of 5x the measured eigenvector quality; fluid identity mismatch 3.5e-14); `DISABLED_LongRunEnergyGrowthApproachesBoundedAfterAFix` left disabled, unchanged, D9 not fixed |
+| `fsi_coupled_test.cpp` | 8/8 pass | steady-deflection order 1.923 (was 1.743); two physics-sign tests; power balance to 1e-12 |
+| `fsi_transient_test.cpp` | 2/2 pass | smooth-start order 1.846 in [1.8, 2.2]; impulsive start recorded (0.9), not asserted |
+| `fsi_energy_diag_test.cpp` | 6/6 pass | coupled rho = 1.000000 asserted; long-run energy ratio 0.998; budget armed, skipped on an energetically empty dominant mode |
 | `fuse_example_fsi_channel` (`--check`) | passes with `--accel iqn-ils` | `--accel none` correctly fails (the added-mass demonstration) |

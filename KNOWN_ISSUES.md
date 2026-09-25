@@ -814,7 +814,24 @@ replay" for that one).
 
 ---
 
-### D10. The conservation check is rank-local, so it refuses instead of checking in parallel — OPEN
+### ~~D10. The conservation check is rank-local, so it refuses instead of checking in parallel~~ — FIXED 2026-09-25
+
+**Fix (`54a27cc`).** `Constrain` is now collective (`fuse::is_collective`), so
+a rank whose period has already failed still reaches it instead of leaving its
+partners inside a reduction; the two owned-share integrals are summed over the
+base communicator in one `MPI_Allreduce` of three doubles — the third a flag
+from any rank whose period is already lost, so a real failure elsewhere is not
+turned into a spurious conservation error on every partner. Totals, hence the
+verdict, are identical on every rank with no further agreement. The refusal
+`E-RT-CONSERVATION-MPI` and its fixture workaround are gone;
+`Runner.AcceptsAConservationCheckOnAMultiRankTarget` pins the acceptance in
+Tier 0, `parallel.nodal_remap_runner` at 2–5 ranks exercises the reduction
+against its own `MPI_Allreduce` of the same integrals (host verdict pending),
+and mutations `conservation-check-not-reduced-across-ranks` (MPI) and
+`constrain-classified-local` pin the two halves.
+
+*Original entry follows.*
+
 
 `Runner::Impl` checks a conservative channel by summing this rank's owned share
 of the integral. With no cross-rank reduction that number is meaningless on a
@@ -1275,7 +1292,57 @@ even `-np 1`: `mpirun` fails in `HYDU_sock_listen`, and the binary run directly 
 One rank is enough, and the failing assertion's own message names the stage.
 
 
-### D9. The coupled channel-beam FSI gains energy over many periods — OPEN
+### ~~D9. The coupled channel-beam FSI gains energy over many periods~~ — FIXED 2026-09-25: the traction had the sign of the force on the fluid
+
+**Root cause.** `StokesSolver::step()` delivered `-p + 2 mu dv/dy` as the wall
+traction. That is Cauchy's `sigma . n` with the fluid's outward normal — the
+force the *wall exerts on the fluid*. The force on the wall is its negative,
+`+p - 2 mu dv/dy`; a pressurised channel pushes its wall outward. With the
+wrong sign the fluid handed the beam a **negative added mass**, which is
+exactly the observed signature: one real eigenvalue above 1 (1.115466 on the
+diagnostic grid, energy ×1.228 per step), a pressure-plus-first-bending-mode
+eigenvector, and insensitivity to every boundary detail four rounds of energy
+budgets varied — because every one of those checks compared the delivered
+vector with itself. Power balance, adjointness and the closed budgets were all
+correct statements about a consistently wrong-signed force.
+
+**Why no test saw it.** The steady-deflection test compared the beam against
+the analytic solution *under whatever load the code produced*, with the same
+sign built into its analytic load (`q1 = -dpdx`). Nothing stated the physics.
+
+**Fix and evidence (`stokes_solver.hpp`, `fsi_coupled_test.cpp`,
+`fsi_energy_diag_test.cpp`, `fsi_transient_test.cpp`).**
+- Coupled step-map spectral radius: **1.115466 → 1.000000**; the |λ| = 1 mode
+  is Newmark's acceleration passenger (`wddot_{n+1} = 2(v_{n+1}-v_n)/dt -
+  wddot_n`, read by nothing), and carries no energy: E0 = 6.3e-21 at |x| = 1
+  against an eigenvector residual of 7.7e-11, i.e. eig_quality².
+  `CoupledStepMapRevealsTheGrowthMechanism` now asserts rho ≤ 1 + 1e-6.
+- Long-run energy, 12 beam periods at dt = T1/40: geometric-mean per-step
+  ratio **1.22796 → 0.998067**. `LongRunEnergyIsBounded` enabled with its
+  original bound.
+- Steady deflection order **1.743 → 1.923**, errors 1.48e-4, 3.97e-5, 1.03e-5.
+- Two physics tests that fail on the old sign and cannot be satisfied by a
+  self-consistent wrong sign: `APressurisedChannelPushesItsWallAwayFromTheFluid`
+  and `AcceleratingTheWallAwayFromTheFluidIsOpposedByTheTraction`. Mutation
+  `fsi-traction-is-the-force-on-the-fluid` reproduces the defect exactly.
+- Transient self-convergence: enabled. Two things had been conflated in its
+  old 0.82: the growth, and the fixture's **impulsive start** (fluid at rest,
+  inflow switched on at t = 0 — not second-order data for an incompressible
+  system; with the sign fixed alone the five-level regression over
+  T1/40 … T1/640 still measures 0.87, and the three coarsest levels kept as
+  `ImpulsiveStartIsMeasuredNotAsserted` give 0.15). From a smooth start — fluid at its
+  exact Poiseuille state, beam at rest and displaced off equilibrium in its
+  first-mode shape — at T1/160 … T1/2560 the order is **1.846** (pairwise
+  1.849, 1.871, 1.809), inside the unchanged [1.8, 2.2] bound. It is flat at
+  ~1.85 rather than trending to 2, and that gap is **not explained**; recorded
+  as such. Levels T1/40 and T1/80 are pre-asymptotic (pairwise 0.29, 1.33).
+
+The beam quadrature inconsistency round 4 found (`strain_energy()` missing a
+`dx_beam` factor relative to `kinetic_energy()`) remains open and separate; it
+never entered the state map.
+
+*Original entry, four rounds of diagnosis, follows.*
+
 
 `examples/fsi_channel`: 2D unsteady Stokes (CN, MAC grid) and a clamped
 Euler-Bernoulli beam (FD, Newmark average acceleration), strongly coupled
