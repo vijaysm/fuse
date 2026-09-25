@@ -163,6 +163,29 @@ if(FUSE_ENABLE_MPI)
   fuse_add_layout_test(layout.4.c1-1-3.c2-0-2 4 ARGS --comp1 1:3 --comp2 0:2 --check)
   fuse_add_layout_test(layout.4.c1-0-3.c2-0-3 4 ARGS --comp1 0:3 --comp2 0:3 --check)
 
+  # --coupler: the coupler-placement track (design C). The channel always
+  # gets RemapFlags::Conservative (main.cpp's own comment on why), so
+  # --check still verifies the same "every destination entity holds its own
+  # global id" property as the rows above, now routed source -> coupler ->
+  # target.
+  #   * coupler disjoint from both comp1 and comp2.
+  fuse_add_layout_test(layout.coupler.3.disjoint 3
+    ARGS --comp1 0:0 --comp2 1:1 --coupler 2:2 --check)
+  #   * coupler IDENTICAL to comp2's own range -- the coupler -> target hop
+  #     is elided (same_as), so this must reproduce the no-coupler result
+  #     bit for bit; the byte-exact claim itself is pinned at Tier 0
+  #     (CouplerLowering.CouplerEqualToTargetReproducesTodaysIRExactly,
+  #     Runner.ACouplerNeedsNoComponentAndDeliversTheIdenticalValue), --check
+  #     here confirms delivery still holds under a real multi-rank run.
+  fuse_add_layout_test(layout.coupler.3.equals-target 3
+    ARGS --comp1 0:0 --comp2 1:2 --coupler 1:2 --check)
+  #   * coupler overlapping comp1 (shares rank 1, not identical to either
+  #     side) -- needs 4 ranks for the same reason a partial comp1/comp2
+  #     overlap needs 3: the shared rank must leave room for the rest of
+  #     each placement to differ.
+  fuse_add_layout_test(layout.coupler.4.overlaps-comp1 4
+    ARGS --comp1 0:1 --comp2 2:3 --coupler 1:2 --check)
+
   # --mesh/--migrate: comp2's mesh is comp1's, migrated with RCB onto
   # comp2's placement (Args::mesh_spec's own comment on what --check means
   # in this mode: cell count and measure conservation, not the field
@@ -192,26 +215,3 @@ if(FUSE_ENABLE_MPI)
   fuse_add_layout_test(layout.refuse.coupler-with-mesh 2 WILL_FAIL
     ARGS --comp1 0:1 --comp2 0:1 --coupler 0:1 --mesh hexbox:4x4x4)
 endif()
-  # --coupler: the coupler-placement track (design C). The channel always
-  # gets RemapFlags::Conservative (main.cpp's own comment on why), so
-  # --check still verifies the same "every destination entity holds its own
-  # global id" property as the rows above, now routed source -> coupler ->
-  # target.
-  #   * coupler disjoint from both comp1 and comp2.
-  fuse_add_layout_test(layout.coupler.3.disjoint 3
-    ARGS --comp1 0:0 --comp2 1:1 --coupler 2:2 --check)
-  #   * coupler IDENTICAL to comp2's own range -- the coupler -> target hop
-  #     is elided (same_as), so this must reproduce the no-coupler result
-  #     bit for bit; the byte-exact claim itself is pinned at Tier 0
-  #     (CouplerLowering.CouplerEqualToTargetReproducesTodaysIRExactly,
-  #     Runner.ACouplerNeedsNoComponentAndDeliversTheIdenticalValue), --check
-  #     here confirms delivery still holds under a real multi-rank run.
-  fuse_add_layout_test(layout.coupler.3.equals-target 3
-    ARGS --comp1 0:0 --comp2 1:2 --coupler 1:2 --check)
-  #   * coupler overlapping comp1 (shares rank 1, not identical to either
-  #     side) -- needs 4 ranks for the same reason a partial comp1/comp2
-  #     overlap needs 3: the shared rank must leave room for the rest of
-  #     each placement to differ.
-  fuse_add_layout_test(layout.coupler.4.overlaps-comp1 4
-    ARGS --comp1 0:1 --comp2 2:3 --coupler 1:2 --check)
-
