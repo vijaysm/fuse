@@ -105,3 +105,61 @@ carries the component, every weight builder resolves its meshes through
 current limit is the MOAB backend, which does not yet build a decomposition
 per component (every component shares one), so on MOAB the per-placement
 weights coincide with the default ones.
+
+## A separately placed coupler
+
+Every channel's Remap has to run somewhere. By default it runs on the
+target's own placement: the value moves source -> target and is remapped
+there. A **coupler** is a third placement a channel can name instead, so the
+value moves source -> coupler -> target, remapped on the coupler's own
+decomposition of both meshes.
+
+```cpp
+const auto coupler = g.add_coupler({.name = "coupler", .ranks = {8, 4}});
+g.channel(ch).remap(fuse::RemapFlags::Conservative).remap_on(coupler);
+```
+
+or in YAML:
+
+```yaml
+couplers:
+  - name: coupler
+    ranks: {first: 8, count: 4}
+channels:
+  - name: flux
+    source: fluid.q
+    target: solid.q_in
+    remap: {flags: [Conservative], remap_on: coupler}
+```
+
+A coupler is a placement, not a physics component: it declares no fields, has
+no clock, and is never advanced. It gets a communicator like any other
+placement, so its ranks take part in the channel's data moves and
+rank-agreement points, but nothing ever calls `advance()` on it and no
+`Component` implementation needs to exist for it.
+
+`remap_on` may also name the channel's own source or target component
+directly -- "remap on the source's decomposition, then transport to the
+target" is the same rule with `C` set to an existing placement rather than a
+new one.
+
+**When a coupler costs something.** THE RULE is one rule, not a special case:
+source -> C -> target, with any hop between *identical* placements elided,
+exactly like the identical/disjoint table above.
+
+| `remap_on` | What it costs over the default |
+|---|---|
+| unset, or the target's own component | nothing — today's default, unchanged |
+| a coupler with the SAME ranks as the target | no extra move (the second hop is `same_as`), but the Remap runs under the coupler's own placement identity, not the target's |
+| the channel's own source component | the second hop only: remap on the source's decomposition, then one move to the target |
+| any other placement | two moves: source -> C, then C -> target |
+
+A `remap_on` that could never change anything -- no remap flags, matching
+regions, and a method that does not move placement itself -- has no effect at
+all, and `validate()` reports it with `W-CHANNEL-REMAP-ON-UNUSED` rather than
+silently routing data through an extra hop nothing needed.
+
+A coupler placed on no ranks is legal on its own, by the same rule as any
+other empty placement above -- until a channel's `remap_on` actually routes
+through it, at which point `E-PLACEMENT-EMPTY` applies exactly as it does for
+a channel's source or target.

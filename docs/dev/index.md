@@ -15,3 +15,6 @@ retirement schedule — is [](porting.md). The staged build order lives in [](ro
 plus runtime driver) for whoever next touches it. [](nodal-fields.md) covers how a field's
 discretization decides its buffer extent (`ContinuousGLL` order 1 is sized by vertex count, not
 cell count) and what lowest-rank vertex ownership means for a nodal field in parallel.
+[](coupler-placement.md) covers the separately-placed coupler: the `ComponentKind` representation
+decision, the rule that lowers `source -> C -> target`, and every `component_count()` call site
+checked against it.

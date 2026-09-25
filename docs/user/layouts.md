@@ -23,7 +23,7 @@ what it says, the two ends — and the driver checks nothing stronger.
 | Flag | Meaning |
 |---|---|
 | `--comp1 a:b`, `--comp2 c:d` | required; inclusive rank ranges for the two components |
-| `--coupler e:f` | parsed and range-checked like the two above, then refused (see below) |
+| `--coupler e:f` | routes the "link" channel's Remap through a separately placed coupler on ranks `[e:f]` — `comp1 -> coupler -> comp2` (`[](placement.md#a-separately-placed-coupler)`); refused only together with `--mesh` |
 | `--entities N` | total entities in the shared region; default 100 |
 | `--steps K` | coupling periods to run; default 1 |
 | `--check` | verify every destination entity holds its own source value; non-zero exit and a message on every rank if not |
@@ -38,11 +38,14 @@ guessing or hanging:
   `E-LAYOUT-PARSE`, `E-LAYOUT-RANGE-EMPTY`, `E-LAYOUT-RANGE-REVERSED`;
 - any endpoint outside `[0, P-1]` — `E-LAYOUT-RANK-OUT-OF-RANGE`;
 - a layout whose two ends are not `0` and `P-1` — `E-LAYOUT-BOUNDS`;
-- `--coupler`, unconditionally: coupler placement (a coupler component distinct from the two it
-  joins) is designed but **not implemented** — `E-LAYOUT-COUPLER: coupler placement is not
-  implemented yet`. `--coupler`'s own range is still parsed and validated first, and folded into the
-  `0`/`P-1` check above, so a malformed or out-of-bounds coupler range is reported as that specific
-  problem rather than masked by the coupler refusal.
+- `--coupler` together with `--mesh` — `E-LAYOUT-COUPLER: --coupler is not supported with --mesh`.
+  `--mesh`/`--migrate` mode never builds the field-transfer coupling graph a coupler's `remap_on`
+  could attach to (see `Args::mesh_spec`'s own comment), so the two flags together are refused
+  rather than silently ignoring one. Plain `--coupler` (no `--mesh`) is not a refusal: it builds the
+  graph with a coupler on `[e:f]` and routes the channel's Remap through it. `--coupler`'s own range
+  is still parsed and validated first, and folded into the `0`/`P-1` check above, so a malformed or
+  out-of-bounds coupler range is reported as that specific problem rather than masked by anything
+  else.
 
 Every one of these is reached before any MPI collective call: the command line is identical on
 every rank under `mpiexec`, so the refusal decision is identical on every rank too, and nothing can
@@ -60,12 +63,17 @@ least 3 ranks to be genuine: at 2 ranks, `comp1 = 0:0` and `comp2 = 1:1` is disj
 
 ## Registered layouts
 
-`examples/CMakeLists.txt` registers 11 valid layouts, 3 + 4 + 4 across 2, 3 and 4 ranks: at 2 ranks,
-identical plus disjoint in both orderings (partial overlap is not possible below 3 ranks); at 3 and
-4 ranks, identical once, disjoint once (comp1 lower), and partial overlap in both orderings (comp1
-lower, comp2 lower).
+`examples/CMakeLists.txt` registers 11 valid comp1/comp2 layouts, 3 + 4 + 4 across 2, 3 and 4 ranks:
+at 2 ranks, identical plus disjoint in both orderings (partial overlap is not possible below 3
+ranks); at 3 and 4 ranks, identical once, disjoint once (comp1 lower), and partial overlap in both
+orderings (comp1 lower, comp2 lower).
+
+Plus 3 `--coupler` rows (`layout.coupler.*`): a coupler disjoint from both comp1 and comp2 (3
+ranks), a coupler identical to comp2's own range (3 ranks — the coupler->target hop elides), and a
+coupler overlapping comp1 without being identical to it (4 ranks).
+
 Plus 4 `WILL_FAIL` refusal cases (one each for `min != 0`, `max != P-1`, a reversed range, and
-`--coupler`), all labelled `mpi;parallel;layout`:
+`--coupler` together with `--mesh`), all labelled `mpi;parallel;layout`:
 
 ```bash
 ctest -L layout            # list them
