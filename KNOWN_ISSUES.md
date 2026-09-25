@@ -814,6 +814,35 @@ replay" for that one).
 
 ---
 
+### D11. The coupler's runtime executes no Kokkos kernel — OpenMP coverage of it is vacuous, and that is a capability gap
+
+Found 2026-09-25 while answering "test Kokkos+OpenMP". Kokkos 5.1.0 is built with
+`OPENMP;SERIAL`, every test binary initialises OpenMP as the default execution
+space, and both physics examples produce byte-identical output at 1 and 8
+threads. That last fact is not reassurance: it holds because **`src/runtime/`
+and `src/schedule/` call no `Kokkos::parallel_*` at all.** The Runner's
+weighted sums, residual norms, remap apply and accelerators are the serial
+loops in `num/kernels.hpp`; the typed, space-portable kernels in
+`num/space_kernels.hpp` are verified on every enabled space
+(`SpaceKernels/*`) and called by nothing.
+
+Kokkos code that does execute, and is now measured at both thread extremes
+(`ctest -L omp`, 22 tests): the RCB partitioner (`partition/*`, whose
+`median.hpp` histogram sums weights with `Kokkos::atomic_add` — the one
+order-dependent accumulation in the library), the native mesh, and the typed
+kernels. `tools/compare-runs.cmake` compares the two examples' output bit for
+bit across thread counts, and is in the tree so that the day the runtime moves
+onto Kokkos and the comparison stops holding trivially, it fails.
+
+**What this means for the plan.** "Performance portability" for the coupler
+today means the *partitioner and mesh* are portable; the coupling hot loop is
+host-serial per rank. Moving it onto `space_kernels.hpp` is the step before
+any device number means anything (A5), and it will make the `omp` leg and the
+example comparison load-bearing rather than trivially green. The matrix gap
+`A-SPACES-TRANSPORT` is this entry in the manifest's terms.
+
+---
+
 ### ~~D10. The conservation check is rank-local, so it refuses instead of checking in parallel~~ — FIXED 2026-09-25
 
 **Fix (`54a27cc`).** `Constrain` is now collective (`fuse::is_collective`), so

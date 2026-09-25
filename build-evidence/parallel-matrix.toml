@@ -276,10 +276,13 @@ a fallback if a particular resolution is wanted."""
 [[cell]]
 id = "A-SPACES-TRANSPORT"
 axis = "host-parallel space, transport and runtime paths"
-gap = """Only `space_kernels_test.cpp` is typed over execution spaces, so the space \
-axis covers the numerical kernels and not the transport or runtime paths that \
-call them. A build with a host-parallel space therefore exercises those paths on \
-one space only, whichever the default is."""
+gap = """Only `space_kernels_test.cpp` is typed over execution spaces, and the transport \
+and runtime paths do not CALL those kernels at all: src/runtime and src/schedule \
+execute no Kokkos kernel (KNOWN_ISSUES.md D11). So the space axis covers the \
+numerical kernels, the partitioner and the native mesh -- each now also run at \
+OMP_NUM_THREADS=1 and at every core (`ctest -L omp`) -- and not the coupling hot \
+loop, which is host-serial per rank. Closing this cell means moving the Runner \
+onto space_kernels.hpp, not writing a test."""
 
 [[cell]]
 id = "A-NODAL-OWNERSHIP"

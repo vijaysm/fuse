@@ -52,6 +52,24 @@ One test definition runs on every execution space the build enabled, so the devi
 same assertions as the host leg instead of a parallel copy that drifts. The device leg is
 environment-gated, and **no performance claim is made for hardware that has not been measured.**
 
+### The thread-count leg (`ctest -L omp`)
+
+A Kokkos built with OpenMP runs every test on OpenMP at whatever thread count the machine gives,
+which is one point on the axis. `fuse_add_omp_legs(<test> <target>)` registers a test twice more,
+at `OMP_NUM_THREADS=1` and at every core, so both extremes are measured on every build. It is
+applied to the code that actually executes Kokkos kernels: the RCB partitioner, whose
+`median.hpp` histogram sums weights with `Kokkos::atomic_add` (the one accumulation in the library
+whose order is the threads'), the native mesh, and the typed numerical kernels.
+`tools/compare-runs.cmake` additionally runs the two physics examples at both counts and requires
+byte-identical output.
+
+Read the label for what it is. `src/runtime/` and `src/schedule/` call no Kokkos kernel — the
+Runner's sums, norms and remap apply are the serial loops in `num/kernels.hpp`, and
+`num/space_kernels.hpp` is verified but uncalled — so the examples' output is identical across
+thread counts *trivially*, and running the runner tests at two counts would compare a serial loop
+with itself. That is a capability gap, `KNOWN_ISSUES.md` D11, and the comparison is in the tree so
+that the day the runtime moves onto the space kernels it stops being trivial and starts being a test.
+
 ## CI legs
 
 The rule is one leg per rung of the ladder, so no configuration can rot unnoticed.
