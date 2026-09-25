@@ -81,9 +81,23 @@ requires = "mpi"
 [[mutation]]
 id = "nodal-parallel-remap-refusal-disabled"
 area = "runtime"
-describes = "KNOWN_ISSUES D8: a Remap into a nodal field on several ranks has no verified reduction; on a replicated source the owner sum multiplies the load by the holder count. Removing the refusal lets it run."
+describes = "KNOWN_ISSUES D8: resolve_remap's whole nodal-distributed trigger (both the build_nodal_dist_remap success path and the E-RT-REMAP-NODAL-PARALLEL refusal for any other method/orientation) is disabled, so a nodal Remap on a multi-rank component falls through unconditionally to the OLD rank-local path -- the exact shape a real host MPI run found silently mis-answering or failing with the wrong diagnostic (round 4)"
 file = "src/runtime/runner.cpp"
-old = "      if (kind.value() == RegionExtentKind::Vertex) {"
-new = "      if (false) {"
+old = "    if ((src_ranks > 1U || dst_ranks > 1U) && (src_nodal || tgt_nodal)) {"
+new = "    if (false) {  // MUTATED: the whole nodal-distributed trigger disabled"
 target = "fuse_verification_interface_transfer_test"
 test = "verification.interface_transfer"
+# KILLED (re-verified round 4, after resolve_remap's trigger was generalized
+# to check BOTH regions' kind and BOTH components' rank count -- see
+# nodal-remap-runner.toml's own preamble for why this anchor moved). Applied
+# by hand, rebuilt, and run: InterfaceTransfer.
+# ARemapIntoANodalFieldOnSeveralRanksViaASupermeshMethodStillRefuses fails
+# (the graph-level E-RT-REMAP-NODAL-PARALLEL never fires; initialize() throws
+# a DIFFERENT refusal, E-REMAP-UNSUPPORTED, from the old supermesh builder
+# instead, since the whole trigger -- not just this one method's branch --
+# is gone) and InterfaceTransfer.
+# ApplyNodalDistRemapHasAConstantMeasuredPerPeriodAllocationCount also fails
+# (0 allocations measured, since apply_distributed_H/HT is never reached for
+# ANY method with the trigger disabled) -- 13/15 InterfaceTransfer-suite
+# cases pass. Restored byte-for-byte (cmp against a pre-mutation backup)
+# before the next mutation.

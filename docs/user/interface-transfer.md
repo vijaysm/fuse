@@ -149,11 +149,11 @@ extent for (`ContinuousGLL` order != 1, `DiscontinuousGLL` order >= 1,
 In parallel, a nodal field's distributed buffer follows the native mesh's
 own rule for a shared vertex: the LOWEST rank holding it owns it, and
 `Transport` moves owned values and fills every other copy from its owner.
-An `H^T` channel whose nodal target is itself distributed across more than
-one rank needs a further cross-rank accumulation this track specified but
-did not wire into `Runner` -- see [](../dev/nodal-fields.md)'s "H^T on a
-distributed interface" for exactly where it goes and why it is safe, and
-this task's `open_questions` for the scope decision it is waiting on.
+An `H`/`H^T` channel whose nodal SIDE (source or target) is itself
+distributed across more than one rank is wired into `Runner` for methods
+`"consistent"`/`"consistent-transpose"` specifically -- see "Beyond 1D"
+below and [](../dev/nodal-fields.md)'s "H^T on a distributed interface"
+for exactly how and what remains a host-verification action.
 
 ## Beyond 1D: any supported cell (the "nodal remap" track)
 
@@ -190,15 +190,22 @@ the same general interpolation across ranks: each evaluation entity's row is
 built only by the rank that owns it, against an assembled replica of the
 source mesh (see that header for the explicit trade this makes and why the
 result is bit-identical across rank counts). A channel using method
-`"consistent"`/`"consistent-transpose"` now reaches this automatically
-through the Runner for a nodal target on more than one declared rank — no
-change needed on the caller's side beyond `Channel::remap_method(...)`,
-exactly as for a single-rank nodal target. Any OTHER method into such a
-target still refuses `E-RT-REMAP-NODAL-PARALLEL` (per-placement supermesh
-weights remain unimplemented). `KNOWN_ISSUES.md` D8 records what is, and is
-not yet, verified about this wiring under a genuinely partitioned
-multi-process run — read it before relying on this at more than one real
-rank in production.
+`"consistent"` (H, interpolating FROM a nodal source) or
+`"consistent-transpose"` (H^T D, delivering a load TO a nodal target) now
+reaches this automatically through the Runner whenever the NODAL side of
+that orientation, or its evaluation partner, is on more than one declared
+rank — no change needed on the caller's side beyond
+`Channel::remap_method(...)`, exactly as for a single-rank nodal side.
+A method paired with the WRONG orientation for its nodal side, any OTHER
+method (per-placement supermesh weights remain unimplemented), or a
+channel where BOTH sides are nodal, all still refuse
+`E-RT-REMAP-NODAL-PARALLEL` by name rather than attempting an unverified
+shape. `KNOWN_ISSUES.md` D8 records what is, and is not yet, verified
+about this wiring under a genuinely partitioned multi-process run — read
+it before relying on this at more than one real rank in production; a
+real host MPI run (round 4) found and fixed two correctness defects in
+this wiring, and the exact `ctest` commands still needed on a host are
+named there.
 
 ## What this is not
 

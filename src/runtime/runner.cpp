@@ -663,59 +663,113 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
   }
 
   std::int32_t nodal_dist_idx = -1;
-  if (tf_ptr != nullptr && dst_component.valid() &&
-      dst_component.value() < graph.component_count()) {
-    const RankSet& dst_ranks = graph.component(dst_component).ranks;
-    // "A single-rank placement skips both, since nothing is shared" -- the
-    // lead's ruling. `dst_ranks.size() > 1` reads the DECLARED graph, so
-    // every rank reaches the same verdict without needing a communicator
-    // yet. Written `> 1U` here, not `> 1`, purely so this line's TEXT
-    // differs from the textually identical `dst_ranks.size() > 1` guard in
-    // resolve_constrain() below -- two identical anchors made
-    // tools/mutate.py's STALE-ANCHOR check flag
-    // build-evidence/mutations/transport-runtime.toml's own
-    // "conservation-check-skips-the-multi-rank-refusal" row (a file this
-    // track does not own) as ambiguous; the comparison itself is unchanged.
-    if (dst_ranks.size() > 1U) {
-      const auto kind = region_extent_kind(graph, tgt);
-      if (!kind.ok()) return kind.error();
-      if (kind.value() == RegionExtentKind::Vertex) {
-        // Round 2 (KNOWN_ISSUES.md D8): "consistent"/"consistent-transpose"
-        // build distributed rows via `build_nodal_dist_remap` instead of
-        // refusing -- `nodal_remap_distributed.hpp`'s Allgatherv-replicated
-        // primitive, verified serially in
+  if (sf_ptr != nullptr && tf_ptr != nullptr) {
+    // Round 4 (KNOWN_ISSUES.md D8, defect 2, found by a real host MPI run):
+    // the ORIGINAL guard here read only `dst_ranks.size() > 1` and
+    // `region_extent_kind(tgt) == Vertex` -- exactly right for
+    // "consistent-transpose" (H^T D delivers a load TO a nodal target), but
+    // it silently missed "consistent" (H interpolates FROM a nodal
+    // SOURCE): when the target was a cell region, `kind(tgt)` was `Cell`,
+    // the inner check never ran, and control fell through to the OLD
+    // rank-local path below -- which assumes its local `MeshView` already
+    // holds the region's WHOLE mesh, wrong (or E-INTERP-NOGEOMETRY on a
+    // rank owning zero local entities of one side) whenever either
+    // component is genuinely partitioned across ranks. Both `src_ranks`
+    // and `dst_ranks` are checked now, and either region's kind, so the
+    // decision still depends only on the declared graph -- unchanged from
+    // the original guard's own invariant -- and is identical on every
+    // rank.
+    const auto src_kind = region_extent_kind(graph, src);
+    if (!src_kind.ok()) return src_kind.error();
+    const auto tgt_kind = region_extent_kind(graph, tgt);
+    if (!tgt_kind.ok()) return tgt_kind.error();
+    const bool src_nodal = src_kind.value() == RegionExtentKind::Vertex;
+    const bool tgt_nodal = tgt_kind.value() == RegionExtentKind::Vertex;
+
+    const std::size_t src_ranks =
+        (src_component.valid() && src_component.value() < graph.component_count())
+            ? graph.component(src_component).ranks.size()
+            : 1U;
+    const std::size_t dst_ranks =
+        (dst_component.valid() && dst_component.value() < graph.component_count())
+            ? graph.component(dst_component).ranks.size()
+            : 1U;
+    // "A single-rank placement on BOTH sides skips this whole path, since
+    // nothing is shared" -- the lead's ruling, generalized from the
+    // original's `dst_ranks.size() > 1` to look at whichever side (or
+    // both) is genuinely partitioned: a nodal source replicated via
+    // Allgatherv still needs the distributed path when only the EVAL side
+    // is spread across ranks, since a rank holding zero local evaluation
+    // entities cannot build ITS row from a local-only view either.
+    if ((src_ranks > 1U || dst_ranks > 1U) && (src_nodal || tgt_nodal)) {
+      if (src_nodal && tgt_nodal) {
+        // Neither `build_nodal_dist_remap` orientation has been run against
+        // a nodal-to-nodal channel (both regions Vertex-kind); refuse by
+        // name rather than silently picking one orientation's convention
+        // (KNOWN_ISSUES.md D8) -- verified by
+        // NodalRemapRunnerTierZero.BothSidesNodalOnMultipleRanksRefuses.
+        return Failure{
+            "E-RT-REMAP-NODAL-PARALLEL",
+            label + " has BOTH a nodal source and a nodal target, and at "
+                    "least one side's component is on more than one rank ("
+                "source: " + std::to_string(src_ranks) + ", target: " +
+                std::to_string(dst_ranks) +
+                "). A nodal-to-nodal distributed Remap is not implemented "
+                "(KNOWN_ISSUES.md D8). Route through a cell-located "
+                "intermediate field, or place both components on one rank."};
+      }
+      // "consistent" needs a nodal SOURCE (H); "consistent-transpose" needs
+      // a nodal TARGET (H^T D) -- build_nodal_dist_remap's own rule (it
+      // mirrors build_consistent_weights_for_plan's non-distributed one),
+      // checked here too since a method paired with the WRONG orientation
+      // must be refused, not silently misapplied to the other side.
+      const bool method_matches_orientation =
+          (ins.attrs.method == "consistent" && src_nodal) ||
+          (ins.attrs.method == "consistent-transpose" && tgt_nodal);
+      if (method_matches_orientation) {
+        // Round 2 (KNOWN_ISSUES.md D8): build distributed rows via
+        // `build_nodal_dist_remap` instead of refusing --
+        // `nodal_remap_distributed.hpp`'s Allgatherv-replicated primitive,
+        // verified serially in
         // test/backend/nodal_remap_distributed_nullcomm_test.cpp and under
-        // real MPI in test/parallel/nodal_remap_distributed_test.cpp. Any
-        // OTHER method (including the supermesh conservative ones, which
-        // build FV<->FV weights only) still refuses: per-placement
-        // supermesh weights for a nodal target remain unimplemented
-        // (KNOWN_ISSUES D5 item 3), and this round's own scope is the two
-        // consistent-interpolation methods specifically, not every method.
-        if (ins.attrs.method == "consistent" || ins.attrs.method == "consistent-transpose") {
-          const auto built = build_nodal_dist_remap(ins, label, src, tgt, sf_ptr, tf_ptr);
-          if (!built.ok()) return built.error();
-          nodal_dist_idx = built.value();
-        } else {
-          // Whether a shared vertex's per-holder rows are partial or already
-          // complete depends on the decomposition the weights are built on,
-          // and no Remap on a genuinely partitioned nodal target through a
-          // supermesh method has been run: on a replicated source every
-          // holder computes the whole row and an owner sum would multiply
-          // the load by the holder count, with no diagnostic. The condition
-          // is read from the declared graph and placement alone, so every
-          // rank refuses together.
-          return Failure{
-              "E-RT-REMAP-NODAL-PARALLEL",
-              label + " remaps into nodal field '" + tf_ptr->name + "', whose "
-                  "component is placed on " + std::to_string(dst_ranks.size()) +
-                  " ranks, via method '" + ins.attrs.method + "'. A Remap into a "
-                  "nodal field on more than one rank is supported only for methods "
-                  "'consistent'/'consistent-transpose' (nodal_remap_distributed.hpp); "
-                  "a supermesh conservative method's per-placement weights are not "
-                  "built yet (KNOWN_ISSUES.md D8, D5 item 3). Place the component on "
-                  "one rank, use a cell-located target field, or set "
-                  "Channel::remap_method(\"consistent\"/\"consistent-transpose\")"};
-        }
+        // real MPI in test/parallel/nodal_remap_distributed_test.cpp;
+        // round 4 extended it to the nodal-SOURCE orientation
+        // (test/parallel/nodal_remap_runner_test.cpp's wall_velocity
+        // channel). Any OTHER method (including the supermesh conservative
+        // ones, which build FV<->FV weights only) still refuses:
+        // per-placement supermesh weights for a nodal side remain
+        // unimplemented (KNOWN_ISSUES D5 item 3), and this track's own
+        // scope is the two consistent-interpolation methods specifically,
+        // not every method.
+        const auto built = build_nodal_dist_remap(ins, label, src, tgt, sf_ptr, tf_ptr);
+        if (!built.ok()) return built.error();
+        nodal_dist_idx = built.value();
+      } else {
+        // Whether a shared vertex's per-holder rows are partial or already
+        // complete depends on the decomposition the weights are built on,
+        // and no Remap on a genuinely partitioned nodal side through a
+        // supermesh method (or the orientation-mismatched consistent
+        // method) has been run: on a replicated source every holder
+        // computes the whole row and an owner sum would multiply the load
+        // by the holder count, with no diagnostic. The condition is read
+        // from the declared graph and placement alone, so every rank
+        // refuses together.
+        const std::string& nodal_side_name = src_nodal ? sf_ptr->name : tf_ptr->name;
+        return Failure{
+            "E-RT-REMAP-NODAL-PARALLEL",
+            label + " has a nodal " + std::string(src_nodal ? "source" : "target") +
+                " field '" + nodal_side_name + "', and at least one side's "
+                "component is on more than one rank (source: " +
+                std::to_string(src_ranks) + ", target: " + std::to_string(dst_ranks) +
+                "), via method '" + ins.attrs.method +
+                "'. A Remap touching a nodal field on more than one rank is "
+                "supported only for method 'consistent' with a nodal SOURCE, "
+                "or 'consistent-transpose' with a nodal TARGET "
+                "(nodal_remap_distributed.hpp); a supermesh conservative "
+                "method's per-placement weights are not built yet "
+                "(KNOWN_ISSUES.md D8, D5 item 3). Place both components on "
+                "one rank, use a cell-located field on the multi-rank side, "
+                "or set Channel::remap_method to the matching orientation"};
       }
     }
   }

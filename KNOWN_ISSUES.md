@@ -814,7 +814,7 @@ replay" for that one).
 
 ---
 
-### D8. A Remap into a nodal field on more than one rank is refused — PARTIALLY LIFTED (round 2), real multi-rank host run still needed
+### D8. A Remap into a nodal field on more than one rank is refused — PARTIALLY LIFTED (round 4): two real correctness defects found by a host MPI run are fixed; a real multi-rank host run is still the final verdict
 
 `E-RT-REMAP-NODAL-PARALLEL` (`resolve_remap`, `src/runtime/runner.cpp`)
 refuses any Remap whose target is a nodal field (ContinuousGLL order 1) on a
@@ -1069,21 +1069,151 @@ own assertion (a CONSTANT count across periods, not a zero one) will keep
 catching a regression that makes it grow or leak even after that
 replacement lands.
 
-**What is still open, honestly.** (a) No REAL multi-process MPI host run
-has verified this Runner wiring — the null-comm (Tier 0) case IS a real
-run and IS the right physics for a single participant, and the new
-Runner-level MPI test (above) is now written and its own oracle
-cross-checked without MPI, but the test itself has never actually EXECUTED
-at more than one real rank; that remains a host action. (b)
+**Progress (2026-09-25, round 4): a real host MPI run found two genuine
+correctness defects in round 2/3's own wiring, both fixed here, plus a
+test-authoring bug in round 3's own new test.**
+
+1. **Defect 1 — a rank-local refusal reachable inside a collective
+   function (`nodal_remap_distributed.cpp`).** `build_distributed_interp_rows`
+   returned `E-INTERP-DOMAIN`/`E-INTERP-NEWTON`/`E-INTERP-DEGENERATE`
+   directly from inside its per-local-evaluation-entity loop, AFTER that
+   same function's own `allgatherv_records` collective
+   (`gather_global_source`). Since which entities are local differs per
+   rank, one rank could hit the refusal while a DIFFERENT rank, whose own
+   local points were all fine, returned success -- exactly the shape the
+   host's own `parallel.nodal_remap_distributed.3/4/5` runs caught
+   (`NodalRemapDistributed.TargetOutsideSourceDomainRefuses`:
+   `rows_r.ok()` true where false was expected, at 3+ ranks; 1-2 ranks
+   passed, masking it). **Fix:** a new helper,
+   `agree_on_local_failure(comm_handle, local_failed, local_code_id,
+   local_entity_gid, function_name)`, Allgathers a fixed 4-double-per-rank
+   record (so a rank with ZERO local evaluation entities still contributes
+   exactly one record and takes part in the agreement) and returns the
+   SAME `Failure` -- same code, same message, naming the LOWEST failing
+   rank and that entity's GLOBAL id -- on every rank when ANY rank failed,
+   or success when none did. The per-entity loop now records-and-stops on
+   its OWN first local failure instead of returning; the agreement call
+   happens once, after the loop, unconditionally. The identical hazard,
+   found independently (not named by the host report) by auditing every
+   other post-collective early return in the same file, existed at
+   `apply_distributed_H`'s own `E-RT-NODAL-DIST-OWNER` check (line ~411,
+   after ITS OWN Allgatherv) and got the same fix; `apply_distributed_HT`
+   was audited too and has no such early return (its post-Allgatherv code
+   is pure deterministic sort/sum/copy) -- no fix needed there.
+   **Verification available in this sandbox:** the null-communicator
+   suite (`backend.nodal_remap_distributed_nullcomm`, 3/3) still passes,
+   confirming the single-participant case is unchanged; a standalone
+   diagnostic, compiled directly against this file's own
+   `allgatherv_records`/`fail_code_str` (not a re-implementation) and fed
+   hand-built 3- and 4-fake-rank record sets, confirmed the AGREEMENT
+   DECISION logic itself picks the lowest failing rank's code/global id
+   correctly and agrees "success" when none fail -- proving the rule
+   without a real multi-process launch. **What still needs the host:** a
+   genuine 3+-rank run of `parallel.nodal_remap_distributed` (see the exact
+   command below) is the only way to observe every rank AGREEING, since
+   `kNullComm`'s one participant has nothing to disagree with by
+   construction -- confirmed empirically, not just argued: the new
+   "domain verdict is not agreed" mutation
+   (`build-evidence/mutations/nodal-remap-distributed.toml`) was applied
+   and every Tier-0 test, including the null-comm suite, still passed
+   unchanged, exactly as expected for a mutation whose effect requires a
+   SECOND rank to exist at all.
+
+2. **Defect 2 — the nodal-SOURCE, cell-TARGET direction had no distributed
+   path and no refusal (`runner.cpp`).** `resolve_remap`'s distributed
+   trigger read only the REMAP TARGET's kind
+   (`region_extent_kind(graph, tgt) == Vertex`), so a `"consistent"`
+   channel whose SOURCE is nodal and target is cells -- exactly
+   `wall_velocity` in the FSI channel pair -- never took the distributed
+   path regardless of either side's declared rank count, and fell through
+   silently to the old rank-local `build_consistent_interp_weights`: on a
+   rank owning zero local cells of the (cell) target this fails
+   (`E-INTERP-NOGEOMETRY`, the host's own observed message on ALL FIVE
+   `parallel.nodal_remap_runner.N`, every rank count); on a rank owning
+   some cells it would have built weights against only that rank's own
+   local view of the source, silently, with no diagnostic. **Fix:** the
+   trigger now reads BOTH regions' kind and BOTH components' declared rank
+   count (`src_ranks`/`dst_ranks`), and fires whenever either side is
+   nodal and either component is on more than one rank.
+   `Runner::Impl::build_nodal_dist_remap`'s existing `!transpose` branch
+   already builds exactly this orientation correctly (`nodal_region =
+   src`, `eval_region = tgt`) -- the bug was purely in the trigger
+   condition, not in that function. A method paired with the WRONG
+   orientation (e.g. `"consistent-transpose"` with a nodal SOURCE) is
+   refused by name (`E-RT-REMAP-NODAL-PARALLEL`), as is a channel with
+   BOTH sides nodal (`InterfaceTransfer.BothSidesNodalOnMultipleRanksRefuses`,
+   new this round) -- neither `build_nodal_dist_remap` orientation has
+   ever been run against a nodal-to-nodal channel, so it is refused rather
+   than silently picking one convention. A rank with zero local evaluation
+   entities already contributed zero rows and still took part in every
+   collective before this fix (`build_distributed_interp_rows`'s loop
+   bound is `entity_count`, and `apply_distributed_H`/`HT` both call their
+   own Allgatherv unconditionally regardless of row count) -- re-confirmed
+   after Defect 1's agreement step was added, since that call is
+   unconditional too. **Verified in this sandbox** (per the review's own
+   instruction: this is exactly what a DECLARED multi-rank placement at
+   `comm_handle == kNullComm` can test without real MPI):
+   `InterfaceTransfer.ARemapIntoANodalFieldOnTwoDeclaredRanksIsAcceptedAndMatchesOneRank`
+   -- unmodified from round 2, since `beam_ranks{0, 2}` governs BOTH
+   channels' nodal side already -- now ALSO exercises the newly-fixed
+   nodal-source orientation through the SAME declared placement (its own
+   `fluid_in` closed-form check is H's correctness proof for that
+   direction); `InterfaceTransfer.
+   ApplyNodalDistRemapHasAConstantMeasuredPerPeriodAllocationCount`'s
+   measured count rose from round 3's 31 to **50 allocations/period**
+   (still constant across periods), the expected increase now that BOTH
+   `wall_velocity` (H) and `wall_force` (H^T D) route through the
+   Allgatherv-based distributed builder instead of one. Full tier-0 ctest
+   (101/101, ~210s), full tier-1 (MPI-enabled) build, `check-invariants.py`/
+   `check-layering.py` (0 violations) and `mutate.py --check-anchors`
+   (164/164 valid) all reconfirmed after this fix.
+
+3. **Defect 3, smaller — the new Runner test's own rank arithmetic
+   (`nodal_remap_runner_test.cpp`).** `DisjointRankSets`'
+   `fluid_ranks{(w+1)/2, w-(w+1)/2}` and `PartiallyOverlappingRankSets`'
+   `beam_ranks{0, w-1}`/`fluid_ranks{1, w-1}` place a component on NO rank
+   at all below a minimum world size -- the same two-sided-
+   placement-on-one-rank shape commit 2383024 fixed elsewhere. Ad hoc
+   `GTEST_SKIP` guards already caught this at the exact rank counts where
+   it would otherwise misbehave; round 4 replaced them with
+   `FUSE_REQUIRE_AT_LEAST_RANKS(2)`/`FUSE_REQUIRE_AT_LEAST_RANKS(3)`
+   (`test/parallel/runner_transport_test.cpp`'s own convention), which
+   states the requirement the same way every other multi-rank-shape test
+   in this codebase does. `IdenticalRankSets`' own `RankSet{0,
+   world_size()}` is never empty, so this cause does not explain the
+   host's separately-reported rank-1 failure there; reproducing it needs a
+   genuine MPI launch, which this sandbox cannot provide even at `-np 1`
+   (`mpirun -np 1` fails in `HYDU_sock_listen`; running the built MPI test
+   binary directly, without `mpirun`, aborts inside `MPI_Init`'s own
+   debugger-attach teardown, `dbginit.c`'s `MPIR_Debugger_set_aborting`)
+   -- confirmed by trying both, not assumed. That specific failure's
+   actual message is a host action; see the command below.
+
+**What is still open, honestly.** (a) No REAL multi-process (2+ actual
+ranks) MPI host run has verified this Runner wiring or the round-4 fixes
+above -- the null-comm (Tier 0) case IS a real run and IS the right
+physics for a single participant, but it structurally cannot exercise
+cross-rank AGREEMENT (nothing to agree ON with one voice) or a genuine
+partition. The exact commands a host should run:
+```
+ctest --test-dir <mpi-build-dir> -R 'parallel\.nodal_remap_distributed' -V
+ctest --test-dir <mpi-build-dir> -R 'parallel\.nodal_remap_runner' -V
+```
+naming, for `nodal_remap_runner`, `IdenticalRankSets`' actual rank-1
+message specifically (defect 3 above). (b)
 `InterfaceDomainPolicy::ClampToBoundary` remains unimplemented in the
-distributed builder (unchanged from round 1). (c) The 31-allocations/period
-measurement above is a number to reduce, not (yet) a fix -- no attempt was
-made this round to eliminate it, since doing so needs a scratch-buffer-
-reusing redesign of `apply_distributed_H`/`apply_distributed_HT`'s own,
-already-tested API, a change of a different size and risk than measuring
-the existing behavior precisely. **Lift the refusal for the remaining
-methods only after (a) and D5 item 3 (per-placement supermesh weights) both
-land.**
+distributed builder (unchanged from round 1). (c) The 50-allocations/period
+measurement (round 4, was 31 in round 3) is a number to reduce, not (yet)
+a fix -- no attempt was made to eliminate it, since doing so needs a
+scratch-buffer-reusing redesign of `apply_distributed_H`/
+`apply_distributed_HT`'s own, already-tested API, a change of a different
+size and risk than measuring the existing behavior precisely. (d) The
+"domain verdict is not agreed across ranks" mutation
+(`build-evidence/mutations/nodal-remap-distributed.toml`) is NOT-ASSESSED
+in this sandbox for the same single-participant reason as (a) -- a host
+3+-rank run applying it on top of the fix is the only way to KILL it.
+**Lift the refusal for the remaining methods only after (a) and D5 item 3
+(per-placement supermesh weights) both land.**
 
 
 ### D9. The coupled channel-beam FSI gains energy over many periods — OPEN

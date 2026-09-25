@@ -20,20 +20,29 @@
 [[mutation]]
 id = "nodal-remap-runner-method-check-skipped"
 area = "runtime"
-describes = "resolve_remap's method-string guard ('consistent'/'consistent-transpose' build distributed rows, anything else still refuses E-RT-REMAP-NODAL-PARALLEL) is replaced by an unconditional true, so a nodal Remap target on more than one rank via ANY method -- including the default (empty) one that would otherwise fall through to the supermesh FV<->FV-only builder -- takes the distributed-rows path"
+describes = "resolve_remap's method/orientation guard ('consistent' with a nodal source, or 'consistent-transpose' with a nodal target, build distributed rows; anything else still refuses E-RT-REMAP-NODAL-PARALLEL) is replaced by an unconditional true, so a nodal Remap on a multi-rank component via ANY method -- including the default (empty) one that would otherwise fall through to the supermesh FV<->FV-only builder, or a method paired with the WRONG nodal orientation -- takes the distributed-rows path"
 file = "src/runtime/runner.cpp"
-old = '        if (ins.attrs.method == "consistent" || ins.attrs.method == "consistent-transpose") {'
-new = "        if (true) {  // MUTATED: every method takes the distributed nodal path"
+old = "      if (method_matches_orientation) {"
+new = "      if (true) {  // MUTATED: every method takes the distributed nodal path"
 target = "fuse_verification_interface_transfer_test"
 test = "verification.interface_transfer"
-# KILLED. InterfaceTransfer.ARemapIntoANodalFieldOnSeveralRanksViaASupermeshMethodStillRefuses
-# fails (2/3 InterfaceTransfer NodalField-area cases pass): initialize()
-# throws E-INTERP-DISC ("method 'consistent' builds H... the source field is
-# not a continuous field at order <= 1") instead of the expected
+# KILLED (re-verified round 4, after resolve_remap grew the
+# `method_matches_orientation` name to cover BOTH the nodal-target
+# ("consistent-transpose") and the newly-added nodal-source ("consistent")
+# orientations -- the anchor text itself moved from the round-2 method
+# string comparison to this named boolean, but the mutation's INTENT is
+# unchanged). Applied by hand, rebuilt, and run:
+# InterfaceTransfer.ARemapIntoANodalFieldOnSeveralRanksViaASupermeshMethodStillRefuses
+# fails (14/15 InterfaceTransfer-suite cases pass): initialize() throws
+# E-INTERP-DISC ("method 'consistent' builds H... the source field is not a
+# continuous field at order <= 1") instead of the expected
 # E-RT-REMAP-NODAL-PARALLEL -- build_nodal_dist_remap is reached with a
-# method it was never designed to run (the empty default), and its own
-# `is_nodal` precondition check catches the resulting nonsense with a
-# DIFFERENT refusal, not the graph-level one this row exists to keep firing.
+# method/orientation pairing it was never designed to run (the empty
+# default method against a nodal TARGET, which only "consistent-transpose"
+# may use), and its own `is_nodal` precondition check catches the resulting
+# nonsense with a DIFFERENT refusal, not the graph-level one this row
+# exists to keep firing. Restored byte-for-byte (cmp against a
+# pre-mutation backup) before the next mutation.
 
 [[mutation]]
 id = "nodal-remap-runner-transpose-scaling-always-load"

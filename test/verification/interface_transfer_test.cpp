@@ -802,6 +802,23 @@ TEST(InterfaceTransfer, AnUnimplementedNodalOrderRefusesThroughTheRealScheduling
 // IDENTICAL to the one-rank baseline -- proving the declared rank count by
 // itself changes nothing about the physics, only which code path computes
 // it (build_nodal_dist_remap vs. the plain local weights-apply).
+//
+// Round 4 (defect 2, found by a real host MPI run): `beam_ranks` governs
+// the SAME "beam" component for BOTH channels here -- `vel_out` (the
+// SOURCE of "consistent"/H, wall_velocity) and `force_in` (the TARGET of
+// "consistent-transpose"/H^T D, wall_force). Before round 4,
+// resolve_remap's distributed trigger read only the REMAP TARGET's kind,
+// so declaring `beam_ranks{0, 2}` moved only wall_force onto the
+// distributed path; wall_velocity's nodal SOURCE being multi-rank went
+// unnoticed and silently fell through to the old rank-local weights (Tier
+// 0 could not catch this: with no genuine partition, the old path still
+// saw the whole mesh and got the right answer by coincidence -- exactly
+// the "declare 2 ranks on the host and it reproduces" masking a real host
+// MPI run exposed, KNOWN_ISSUES.md D8). This SAME test, unmodified, now
+// exercises BOTH orientations at once through the one declared placement:
+// `fluid_in`'s closed-form check below is H's own correctness proof for
+// the newly-covered nodal-SOURCE direction, and `beam_load`'s one-rank
+// comparison is H^T D's, as before.
 TEST(InterfaceTransfer, ARemapIntoANodalFieldOnTwoDeclaredRanksIsAcceptedAndMatchesOneRank) {
   NodalResult one_rank, two_ranks;
   ASSERT_NO_THROW(one_rank = run_consistent_pair(
@@ -857,6 +874,85 @@ TEST(InterfaceTransfer, ARemapIntoANodalFieldOnSeveralRanksViaASupermeshMethodSt
     const std::string what = e.what();
     EXPECT_NE(what.find("E-RT-REMAP-NODAL-PARALLEL"), std::string::npos) << what;
   }
+}
+
+// Round 4 (KNOWN_ISSUES.md D8, defect 2(b)): resolve_remap's generalized
+// trigger recognizes a channel whose SOURCE *and* TARGET are both nodal
+// (Vertex-kind) regions, with at least one side's component on more than
+// one rank, but must REFUSE it by name rather than silently pick one
+// orientation's build_nodal_dist_remap convention over the other --
+// neither has ever been run against a nodal-to-nodal channel. A minimal
+// two-field, one-channel graph (not run_consistent_pair's shared beam/
+// fluid shape, which has no nodal-to-nodal channel to construct without
+// also breaking its OTHER field's region) exercises this directly through
+// the real Runner/CouplingGraph/SerialMeshBackend stack, exactly like the
+// supermesh-method refusal above.
+TEST(InterfaceTransfer, BothSidesNodalOnMultipleRanksRefuses) {
+  CouplingGraph g;
+  const auto m_a = g.add_mesh(fuse::MeshDecl{.name = "a_mesh", .source = "generated:line:5"});
+  const auto m_b = g.add_mesh(fuse::MeshDecl{.name = "b_mesh", .source = "generated:line:5"});
+  const auto r_a = g.add_region(fuse::Region{.name = "r_a", .mesh = m_a, .dimension = 1});
+  const auto r_b = g.add_region(fuse::Region{.name = "r_b", .mesh = m_b, .dimension = 1});
+  const auto comp_a = g.add_component(
+      fuse::ComponentDecl{.name = "a", .ranks = fuse::RankSet{0, 2}, .interval = Rational{1}});
+  const auto comp_b = g.add_component(
+      fuse::ComponentDecl{.name = "b", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  const auto f_a = g.add_field(comp_a, fuse::FieldSpec{
+      .name = "a_field", .region = r_a, .disc = fuse::Discretization::ContinuousGLL, .order = 1,
+      .units = kMetersPerSecond, .conservation = fuse::Conservation::Intensive,
+      .intent = fuse::Intent::Provides});
+  const auto f_b = g.add_field(comp_b, fuse::FieldSpec{
+      .name = "b_field", .region = r_b, .disc = fuse::Discretization::ContinuousGLL, .order = 1,
+      .units = kMetersPerSecond, .conservation = fuse::Conservation::Intensive,
+      .intent = fuse::Intent::Requires});
+  const auto ch = g.add_channel("a_to_b", f_a, f_b);
+  g.channel(ch).remap_method("consistent");  // orientation is irrelevant: BOTH sides are nodal
+
+  SerialMeshBackend backend;
+  for (std::uint32_t i = 0; i < g.mesh_count(); ++i) {
+    ASSERT_TRUE(backend.load(g.mesh(fuse::MeshId{i})).ok());
+  }
+  const auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+  const fuse::ClockSet clocks{g};
+  auto sched = fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+  ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
+
+  class Side final : public fuse::Component {
+   public:
+    Side(std::string name, std::size_t n) : name_(std::move(name)), n_(n) {}
+    [[nodiscard]] std::string name() const override { return name_; }
+    fuse::Result<void> register_fields(FieldRegistry& reg, const CouplingGraph& g) override {
+      for (const fuse::FieldId f : g.component(*g.find_component(name_)).fields) {
+        auto& buf = bufs[g.field(f).name];
+        buf.assign(n_, 0.0);
+        auto r = reg.bind(f, fuse::FieldRef{buf.data(), fuse::Layout{.stride = 1, .count = buf.size()},
+                                            fuse::MemorySpace::Host});
+        if (!r.ok()) return r;
+      }
+      return fuse::Result<void>::success();
+    }
+    fuse::Result<void> advance(const StepContext&) override { return fuse::Result<void>::success(); }
+    std::map<std::string, std::vector<double>> bufs;
+   private:
+    std::string name_;
+    std::size_t n_;
+  };
+  ComponentSet components;
+  components.add(std::make_unique<Side>("a", 6));
+  components.add(std::make_unique<Side>("b", 6));
+  FieldRegistry registry;
+  for (auto& c : components) {
+    const auto r = c.register_fields(registry, g);
+    ASSERT_TRUE(r.ok()) << r.error().message;
+  }
+
+  Runner runner{g, lowered.dag, sched.plan, backend};
+  const auto r = runner.initialize(components, registry);
+  ASSERT_FALSE(r.ok()) << "a nodal-to-nodal channel with a multi-rank side initialised";
+  EXPECT_EQ(r.error().code, "E-RT-REMAP-NODAL-PARALLEL") << r.error().message;
+  EXPECT_NE(r.error().message.find("BOTH a nodal source and a nodal target"), std::string::npos)
+      << r.error().message;
 }
 
 // Nodal-remap track, round 3: apply_nodal_dist_remap's own per-period

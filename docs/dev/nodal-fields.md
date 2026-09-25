@@ -207,6 +207,31 @@ not fully replicated by construction — remains unverified; see KNOWN_ISSUES.md
 D8's "What is still open, honestly" for the precise gap and why a dedicated
 Runner-level MPI test was not authored this round.
 
+**Update (nodal-remap track, round 4, 2026-09-25): a real host MPI run found
+two genuine defects in the round-2/3 wiring above, both fixed.** (1) A
+refusal reachable INSIDE a collective function must be an AGREED verdict,
+not a rank-local one: `build_distributed_interp_rows` (and, by the same
+audit, `apply_distributed_H`) returned their domain/owner-missing failures
+directly from a per-local-entity loop, after their own `allgatherv_records`
+call, so one rank could refuse while a partner with no bad point succeeded
+and moved on to a collective the refusing rank never reached. A new helper,
+`agree_on_local_failure`, Allgathers each rank's own (possibly-absent)
+local failure as a fixed 4-double record — so a rank with zero local
+entities still takes part — and returns the SAME failure (naming the
+lowest failing rank and the entity's global id) on every rank, or success
+everywhere, never a per-rank split. (2) `resolve_remap`'s distributed
+trigger checked only the Remap TARGET's kind, so a `"consistent"` channel
+whose SOURCE is nodal (H interpolating FROM a nodal field, e.g.
+`wall_velocity` in the FSI pair) never took the distributed path at all —
+it fell through silently to the old rank-local weights, correct only by
+Tier-0 coincidence (no genuine partition to expose it) and broken
+(`E-INTERP-NOGEOMETRY` or a silently wrong local-only answer) on a real
+host. The trigger now reads both regions' kind and both components' rank
+counts; a shape still not implemented after that (both sides nodal) is
+refused by name, not silently attempted. See KNOWN_ISSUES.md D8's round-4
+entry for the full account, measured numbers, and the exact host commands
+still needed.
+
 ## Mutation coverage
 
 `build-evidence/mutations/nodal-fields.toml` (this track's own file) records
