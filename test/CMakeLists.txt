@@ -430,7 +430,7 @@ endforeach()
 # examples/fsi_channel/ on the include path and Eigen3::Eigen directly for
 # the two solvers' SparseLU factorisations, same reasoning as gray_scott's
 # registration just below.
-foreach(t fsi_stokes_mms fsi_beam fsi_coupled fsi_transient)
+foreach(t fsi_stokes_mms fsi_beam fsi_coupled fsi_transient fsi_energy_diag)
   fuse_add_gtest(verification ${t} NO_LAYER_LIB
                  LIBS fuse::runtime fuse::backend Eigen3::Eigen)
   target_include_directories(fuse_verification_${t}_test PRIVATE
