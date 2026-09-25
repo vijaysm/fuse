@@ -27,6 +27,7 @@ user/placement
 user/layouts
 user/geometry
 user/transfer-maps
+user/point-cloud-remap
 user/combining-writers
 user/field-pipeline
 user/examples

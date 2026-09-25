@@ -263,6 +263,12 @@ add_library(fuse-coupler-backend
   # leaving the symbol undefined. S5 turns the option on.
   backend/intx_weights.cpp
   backend/tempest_weights.cpp
+  # MOAB-free moving-least-squares remap weights for point clouds and for
+  # mesh fields sampled at vertices/centroids (the "Point clouds" track).
+  # Dependency-free like intx_weights.cpp's own no-MOAB path: needs only
+  # fuse::search (below) for k-nearest and fuse::linalg (below) for the
+  # local polynomial solve, neither of which needs MOAB.
+  backend/mls_weights.cpp
 )
 add_library(fuse::backend ALIAS fuse-coupler-backend)
 target_compile_features(fuse-coupler-backend PUBLIC cxx_std_20)
@@ -275,6 +281,11 @@ target_link_libraries(fuse-coupler-backend PUBLIC fuse::schedule)
 # a general (non-1D) nodal basis needs. PUBLIC because BoxIndex's symbols must
 # resolve in any executable that links fuse::backend.
 target_link_libraries(fuse-coupler-backend PUBLIC fuse::search)
+# PRIVATE: fuse::linalg backs backend/mls_weights.cpp's local polynomial
+# solve (the moving-least-squares moment-matrix system) the same way
+# fuse-coupler-num links it -- no public mls_weights.hpp type names
+# fuse::linalg, so a consumer of fuse::backend never needs to see it.
+target_link_libraries(fuse-coupler-backend PRIVATE fuse::linalg)
 # PRIVATE: r3d is the supermesh kernel, used inside backend/supermesh.cpp only.
 # No public header mentions it, so a consumer never needs it on an include path
 # and never links it -- which is what keeps the geometric kernel swappable.

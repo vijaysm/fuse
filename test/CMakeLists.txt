@@ -176,6 +176,13 @@ endforeach()
 fuse_add_gtest(backend serial_mesh THROWS)
 fuse_add_gtest(backend operator_conformance)
 fuse_add_gtest(backend cell_simplices)
+# The "Point clouds" track: MOAB-free moving-least-squares remap
+# (fuse/backend/mls_weights.hpp). Cross-checks against ArborX 2.1's own
+# PUBLIC MovingLeastSquares class (never its Details:: internals -- see that
+# header's own comment), so this target also links ArborX directly, the
+# same PRIVATE/BUILD_LOCAL_INTERFACE posture src/CMakeLists.txt's
+# fuse-coupler-search target uses for the same dependency.
+fuse_add_gtest(backend mls_weights LIBS $<BUILD_LOCAL_INTERFACE:ArborX::ArborX>)
 # Nodal-remap track, step 1: general consistent interpolation on any
 # supported cell (general_interp.hpp), reached through
 # build_consistent_interp_weights (consistent_interp.hpp) exactly like
