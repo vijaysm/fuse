@@ -120,51 +120,77 @@ class BeamSolver {
     return w;
   }
 
-  /// One Newmark-beta step of size dt, driven by the DISTRIBUTED line load
-  /// q(x_i, t_new) [N/m] at the new time level (implicit: Newmark's average-
-  /// acceleration form is unconditionally stable exactly because the load
-  /// and stiffness are evaluated at t_new). Advances (w_, wdot_, wddot_) in
-  /// place.
-  void step(double dt, const std::vector<double>& q_at_nodes_new) {
-    if (q_at_nodes_new.size() != p_.n + 1) {
-      throw std::invalid_argument("BeamSolver::step: expected n+1 pointwise "
-                                   "load values");
+  /// The "CN form" of Newmark average-acceleration: forced by a SINGLE
+  /// mid-step load q_mid (already representing the load at t_{n+1/2}, the
+  /// same time level Crank-Nicolson's own trapezoidal terms live at -- see
+  /// docs/user/fsi-channel.md's "Partitioned time-level consistency: the
+  /// force side, round 2" for the KNOWN_ISSUES.md D9 derivation this
+  /// implements). No end-point force is evaluated or stored, and this
+  /// needs no `wddot_` in its OWN recurrence (only w, wdot) -- the
+  /// superseded force-at-t_{n+1} Newmark scheme this replaced did need
+  /// wddot_ in its recurrence, but that scheme has been removed (no
+  /// remaining caller once step_midpoint_load took over the production
+  /// and diagnostic paths). The recurrence below is derived directly from
+  /// averaging the beam's own equation of motion at
+  /// n and n+1 (M*ddot{w}_avg + K*w_avg = q_mid, using gamma=1/2's own
+  /// kinematic identity ddot{w}_avg = (wdot_{n+1}-wdot_n)/dt and the m
+  /// same beta=1/4 identity w_avg = w_n + dt/4*(wdot_n+wdot_{n+1}) this
+  /// file's header already relies on for w_{n+1}-w_n):
+  ///
+  ///   (M/dt + K*dt/4) wdot_{n+1} = q_mid + (M/dt - K*dt/4) wdot_n - K w_n
+  ///   w_{n+1} = w_n + dt/2 (wdot_n + wdot_{n+1})
+  ///
+  /// `wddot_` is still updated afterwards, from the SAME gamma=1/2 identity
+  /// (ddot{w}_n + ddot{w}_{n+1} = (2/dt)(wdot_{n+1}-wdot_n)) -- a REPORTED,
+  /// derived quantity (kinetic_energy()/strain_energy() never need it, and
+  /// no term above uses it), kept only so `acceleration()`/`save()`/
+  /// `restore()` stay meaningful for a caller that inspects it. Exact
+  /// algebraic identity, confirmed directly: M*ddot{w}_avg + K*w_avg = q_mid
+  /// holds to round-off after solving. Second order in time: replacing the
+  /// trapezoidal average of end-point forces with the true midpoint value
+  /// is itself an O(dt^2) substitution for smooth forcing, so this does
+  /// not cost the scheme's order -- verified directly by
+  /// `FsiBeam.MidpointLoadStepConvergesAtSecondOrderInDt`.
+  void step_midpoint_load(double dt, const std::vector<double>& q_mid_at_nodes) {
+    if (q_mid_at_nodes.size() != p_.n + 1) {
+      throw std::invalid_argument(
+          "BeamSolver::step_midpoint_load: expected n+1 pointwise load "
+          "values");
     }
     if (!(dt > 0.0)) {
-      throw std::invalid_argument("BeamSolver::step: dt must be positive");
+      throw std::invalid_argument(
+          "BeamSolver::step_midpoint_load: dt must be positive");
     }
     const std::size_t m = p_.n - 1;
-    const double beta = 0.25, gamma = 0.5;
-    const double a0 = 1.0 / (beta * dt * dt);
-    const double a1 = 1.0 / (beta * dt);
-    const double a2 = 1.0 / (2.0 * beta) - 1.0;
     const double mconst = p_.rho_s * p_.h_s;
 
-    rebuild_effective(dt, beta);
+    rebuild_effective_midpoint(dt);
 
-    Eigen::VectorXd rhs(m);
+    Eigen::VectorXd wn(m), vn(m), qmid(m);
     for (std::size_t idx = 0; idx < m; ++idx) {
       const std::size_t node = idx + 1;
-      const double wn = w_[node], wdn = wdot_[node], wddn = wddot_[node];
-      rhs[idx] = q_at_nodes_new[node] +
-                 mconst * (a0 * wn + a1 * wdn + a2 * wddn);
+      wn[idx] = w_[node];
+      vn[idx] = wdot_[node];
+      qmid[idx] = q_mid_at_nodes[node];
     }
-    const Eigen::VectorXd sol = keff_lu_.solve(rhs);
-    if (keff_lu_.info() != Eigen::Success) {
-      throw std::runtime_error("BeamSolver::step: SparseLU solve failed");
+    const Eigen::VectorXd rhs =
+        qmid + (mconst / dt) * vn - (dt / 4.0) * (K_ * vn) - (K_ * wn);
+    const Eigen::VectorXd vnew = keff2_lu_.solve(rhs);
+    if (keff2_lu_.info() != Eigen::Success) {
+      throw std::runtime_error(
+          "BeamSolver::step_midpoint_load: SparseLU solve failed");
     }
+    const Eigen::VectorXd wnew = wn + (dt / 2.0) * (vn + vnew);
 
-    std::vector<double> w_new(p_.n + 1, 0.0), wddot_new(p_.n + 1, 0.0),
-        wdot_new(p_.n + 1, 0.0);
+    std::vector<double> w_new(p_.n + 1, 0.0), wdot_new(p_.n + 1, 0.0),
+        wddot_new(p_.n + 1, 0.0);
     for (std::size_t idx = 0; idx < m; ++idx) {
       const std::size_t node = idx + 1;
-      const double wn = w_[node], wdn = wdot_[node], wddn = wddot_[node];
-      const double wnew = sol[idx];
-      const double wddnew = a0 * (wnew - wn) - a1 * wdn - a2 * wddn;
-      const double wdnew = wdn + dt * ((1.0 - gamma) * wddn + gamma * wddnew);
-      w_new[node] = wnew;
-      wddot_new[node] = wddnew;
-      wdot_new[node] = wdnew;
+      w_new[node] = wnew[idx];
+      wdot_new[node] = vnew[idx];
+      // Derived/reported only -- see this method's own header comment.
+      wddot_new[node] =
+          (2.0 / dt) * (vnew[idx] - vn[idx]) - wddot_[node];
     }
     w_ = std::move(w_new);
     wdot_ = std::move(wdot_new);
@@ -287,33 +313,37 @@ class BeamSolver {
     K_.makeCompressed();
   }
 
-  void rebuild_effective(double dt, double beta) {
-    if (keff_valid_ && dt == cached_dt_) return;
+  /// Effective system for `step_midpoint_load`: (M/dt + K*dt/4), the
+  /// matrix multiplying wdot_{n+1} in that method's own derivation.
+  /// Cached across calls (fixed dt, fixed K_) purely as a "robustness over
+  /// efficiency" posture -- a fresh factorisation every call would also be
+  /// correct, just slower.
+  void rebuild_effective_midpoint(double dt) {
+    if (keff2_valid_ && dt == cached_dt2_) return;
     const std::size_t m = p_.n - 1;
-    const double a0 = 1.0 / (beta * dt * dt);
     const double mconst = p_.rho_s * p_.h_s;
-    Eigen::SparseMatrix<double> Keff = K_;
+    Eigen::SparseMatrix<double> Keff2 = (dt / 4.0) * K_;
     for (std::size_t idx = 0; idx < m; ++idx) {
-      Keff.coeffRef(static_cast<int>(idx), static_cast<int>(idx)) += a0 * mconst;
+      Keff2.coeffRef(static_cast<int>(idx), static_cast<int>(idx)) += mconst / dt;
     }
-    Keff.makeCompressed();
-    keff_lu_.compute(Keff);
-    if (keff_lu_.info() != Eigen::Success) {
+    Keff2.makeCompressed();
+    keff2_lu_.compute(Keff2);
+    if (keff2_lu_.info() != Eigen::Success) {
       throw std::runtime_error(
-          "BeamSolver::rebuild_effective: SparseLU factorization of the "
-          "effective Newmark stiffness failed");
+          "BeamSolver::rebuild_effective_midpoint: SparseLU factorization "
+          "of the midpoint-load effective system failed");
     }
-    cached_dt_ = dt;
-    keff_valid_ = true;
+    cached_dt2_ = dt;
+    keff2_valid_ = true;
   }
 
   BeamParams p_;
   double     dx_;
   Eigen::SparseMatrix<double> K_;  // (n-1) x (n-1), interior stiffness
 
-  Eigen::SparseLU<Eigen::SparseMatrix<double>> keff_lu_;
-  double cached_dt_ = -1.0;
-  bool   keff_valid_ = false;
+  Eigen::SparseLU<Eigen::SparseMatrix<double>> keff2_lu_;
+  double cached_dt2_ = -1.0;
+  bool   keff2_valid_ = false;
 
   std::vector<double> w_, wdot_, wddot_;
 };

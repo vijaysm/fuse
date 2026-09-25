@@ -104,6 +104,17 @@ struct PressurePin {
 
 struct FlowState {
   std::vector<double> u, v, p;
+  // KNOWN_ISSUES.md D9 (this round): the wall traction delivered to the
+  // beam, at t_{n+1/2} -- the SAME time level Crank-Nicolson's own
+  // trapezoidal terms live at (see StokesSolver::step()'s own comment for
+  // the full derivation). It is PART OF FlowState, not a separate member,
+  // specifically so it rides through save()/restore()/set_state() and the
+  // iteration region's checkpoint verification correctly: a solver-
+  // private member `wall_traction()` depends on, that `save()`/`restore()`
+  // does not carry, breaks that check the moment it changes between a
+  // save and its matching restore -- an earlier round's own experiment
+  // with a similarly-unsaved member hit exactly this failure mode.
+  std::vector<double> traction_mid;
 };
 
 namespace detail {
@@ -560,6 +571,7 @@ class StokesSolver {
     u_.assign(Nu, 0.0);
     v_.assign(Nv, 0.0);
     p_field_.assign(Np, 0.0);
+    traction_mid_.assign(p_.nx, 0.0);
   }
 
   [[nodiscard]] const ChannelParams& params() const { return p_; }
@@ -626,29 +638,169 @@ class StokesSolver {
     bcs.left.v = [](double, double) { return 0.0; };
     bcs.right.outflow = true;
 
-    // Passing p_field_ as p0 makes the pressure gradient TRAPEZOIDAL (see
-    // cn_step's own header comment) -- p_field_ already holds the PREVIOUS
-    // step's solved pressure (zero-initialised for the very first step,
-    // matching the channel's own at-rest initial condition), so this makes
-    // the newly-solved pressure genuinely t1-accurate rather than a
-    // t_{n+1/2} quantity mislabelled as t1.
-    const FlowState next =
-        cn_step(p_, bcs, SourceTerms{}, dt, t0, t1, u_, v_, pin_, nullptr, &p_field_);
+    // KNOWN_ISSUES.md D9, root cause and fix (this round). `cn_step`'s
+    // trapezoidal VISCOUS term already averages t0 and t1; incompressibility
+    // (div u = 0, enforced at t1 by the continuity rows) determines only
+    // that ONE combination of pressure and velocity that makes the t1
+    // momentum balance hold -- which, for a fully-implicit pressure
+    // gradient (p0 = nullptr, this round's fix), the manufactured-solution
+    // fixture already showed (docs/user/fsi-channel.md, "Partitioned
+    // time-level consistency: the force side") converges to the ANALYTIC
+    // p(t_{n+1/2}), not p(t1): the solved `p_field_` genuinely IS the
+    // trapezoidal scheme's own Lagrange multiplier at the step's MIDPOINT,
+    // not a t1 quantity mislabelled or a t0 quantity carried as extra state.
+    //
+    // An earlier round's fix instead made the pressure GRADIENT trapezoidal
+    // (half implicit p1, half explicit p0, with p0 = the PREVIOUS step's
+    // p_field_ carried forward as literal state) specifically to make the
+    // solved value t1-accurate. That traded one defect for another: p0 as
+    // carried state is a FREE parasitic component -- incompressibility only
+    // ever pins the average p_mid = (p0+p1)/2, so p1 = 2*p_mid - p0 has a
+    // genuine |lambda|=1 mode in p0 alone (confirmed directly, this round:
+    // FsiEnergyDiag.FluidAloneStepMapSpectralRadiusIsAtMostOne measures
+    // rho=1.0000000000 for a mode that is ~100% pressure with u=v=0
+    // identically -- the fluid alone never feels it, since only p_mid
+    // enters its own momentum balance). Reverting to a fully-implicit
+    // pressure gradient removes that parasitic state entirely: there is
+    // no p0 to carry, only the genuinely mid-step p_field_ this call
+    // produces directly -- confirmed directly by the fluid-alone spectral
+    // radius moving off exactly 1 (to 0.9946) once p0 is gone.
+    //
+    // IMPORTANT, measured directly (this round, NOT assumed): removing
+    // this parasitic mode does NOT fix D9's headline coupled-system
+    // growth. The wall traction delivered to the beam used to carry p1
+    // (the "t1-accurate" value, including the parasitic component), and
+    // the natural hypothesis was that THIS closed the feedback loop
+    // driving the coupled step map's rho~1.11 (KNOWN_ISSUES.md D9's own
+    // numbers). Measured before/after this exact change:
+    // FsiEnergyDiag.CoupledStepMapRevealsTheGrowthMechanism's own rho
+    // moves from 1.115467 to 1.115466 -- unchanged to 4 significant
+    // figures -- and an ablation that zeroes the pressure term in the
+    // delivered traction gives the identical rho=1.000512 before and
+    // after this change. The parasitic p0 mode is real and is correctly
+    // removed here, but it is demonstrably NOT the (or not the only)
+    // mechanism sustaining D9's coupled energy growth; that mechanism is
+    // still open (KNOWN_ISSUES.md D9's "round 2" section).
+    FlowState next =
+        cn_step(p_, bcs, SourceTerms{}, dt, t0, t1, u_, v_, pin_, nullptr, nullptr);
+
+    // GLOBAL MASS CONSERVATION AT THE OUTFLOW -- kept, independent of the
+    // pressure-labelling fix above. This is a correct statement of
+    // discrete continuity at the outlet REGARDLESS of what time level the
+    // pressure represents: `cn_step`'s pressure-outlet condition (this
+    // file's own header, "PRESSURE GAUGE") REPLACES the outflow column's
+    // own continuity equation with `p=0` at every row -- a deliberate,
+    // documented trade-off to kill the discrete operator's second null
+    // direction (a uniform u-shift paired with a linear pressure ramp;
+    // docs/user/fsi-channel.md's "Outflow" section). Its documented cost
+    // ("the exact discrete Poiseuille state is only an APPROXIMATE ...
+    // fixed point") is that with that column's continuity unenforced, the
+    // OUTPUT velocity field is free to violate global mass balance by
+    // whatever the solve happens to produce there. Global continuity for
+    // an incompressible channel with a moving (transpiring) top wall
+    // reads Q_out(t) = Q_in(t) + Q_wall(t), Q_wall(t) = integral of the
+    // wall's own normal velocity over the channel length -- exactly the
+    // "transpiration volume source" this task named. `cn_step`'s outflow
+    // treatment leaves `Q_out` floating (a zero-curvature extrapolation)
+    // with nothing tying it to `Q_in + Q_wall`; this correction ties it,
+    // by a single uniform shift of the outflow column's own `u` (the ONE
+    // quantity the pressure-outlet condition left unconstrained there)
+    // chosen so the corrected `Q_out` matches exactly. A uniform shift
+    // changes nothing else -- not any OTHER column's `u`, nor `v`, nor
+    // `p` -- so it cannot reopen the null direction the pressure-outlet
+    // fix removed (that mode needs the WHOLE field perturbed together).
+    // At the exact discrete Poiseuille state with a resting beam
+    // (Q_wall=0), `Q_in` and the uncorrected `Q_out` already agree to
+    // round-off (confirmed by
+    // `FsiCoupled.FluidReconstructedPoiseuilleIsAFixedPointOfCnStep`, which
+    // calls `cn_step` directly and is therefore untouched by this fix --
+    // it lives entirely here, never in `cn_step` itself, so the MMS
+    // spatial/temporal-order suite is unaffected too), so the correction
+    // is a genuine no-op there and a real, physically-motivated one only
+    // when the wall actually moves. An earlier round measured this
+    // correction alone changes the coupled step map's spectral radius by
+    // well under 1% -- consistent with it correcting a real but
+    // SEPARATE local-continuity defect, not the parasitic-pressure-state
+    // mechanism the fix above addresses.
+    {
+      using detail::idx_u;
+      const double dyc = dy();
+      double q_in = 0.0, q_out = 0.0;
+      for (std::size_t j = 0; j < p_.ny; ++j) {
+        q_in += next.u[idx_u(p_, 0, j)] * dyc;
+        q_out += next.u[idx_u(p_, p_.nx, j)] * dyc;
+      }
+      double q_wall = 0.0;
+      const double dxc = dx();
+      for (std::size_t i = 0; i < p_.nx; ++i) q_wall += top_wall_v_new[i] * dxc;
+      const double correction = (q_in + q_wall - q_out) / p_.H;
+      for (std::size_t j = 0; j < p_.ny; ++j) {
+        next.u[idx_u(p_, p_.nx, j)] += correction;
+      }
+    }
+
+    // Mid-step traction, computed and cached HERE (not derived on demand
+    // by wall_traction()): the pressure half is already mid-step (see
+    // this method's own comment above -- `next.p` IS p_mid, no averaging
+    // needed), but the VISCOUS half of the traction, `2*mu*dv/dy`, still
+    // needs the SAME t0/t1 trapezoidal averaging the momentum equation's
+    // own viscous term uses -- `dv/dy` from a one-sided difference is a
+    // SPATIAL construct evaluated at a single time level, so computing it
+    // once from `next.v` alone would stay t1-only regardless of how the
+    // pressure is handled. `v_` here is still the t0 array (assigned to
+    // `v_` only below); `next.v` is t1.
+    std::vector<double> traction(p_.nx, 0.0);
+    {
+      using detail::idx_p;
+      using detail::idx_v;
+      const double h = dy();
+      for (std::size_t i = 0; i < p_.nx; ++i) {
+        const double p_last = next.p[idx_p(p_, i, p_.ny - 1)];
+        const double p_prev = p_.ny >= 2 ? next.p[idx_p(p_, i, p_.ny - 2)] : p_last;
+        const double p_wall_mid = 1.5 * p_last - 0.5 * p_prev;
+
+        const auto dvdy_at = [&](const std::vector<double>& v) {
+          const double v_wall = v[idx_v(p_, i, p_.ny)];
+          const double v_m1 = v[idx_v(p_, i, p_.ny - 1)];
+          const double v_m2 = p_.ny >= 2 ? v[idx_v(p_, i, p_.ny - 2)] : v_m1;
+          return (3.0 * v_wall - 4.0 * v_m1 + v_m2) / (2.0 * h);
+        };
+        const double dvdy_mid = 0.5 * (dvdy_at(v_) + dvdy_at(next.v));
+        traction[i] = -p_wall_mid + 2.0 * p_.mu * dvdy_mid;
+      }
+    }
+
     u_ = next.u;
     v_ = next.v;
     p_field_ = next.p;
+    traction_mid_ = std::move(traction);
   }
 
-  /// Normal fluid traction at the top wall, `-p + 2 mu dv/dy`, one value per
-  /// wall-face column (size nx): `p` extrapolated to the wall to 2nd order
-  /// from the two nearest cell centres, `dv/dy` from a 2nd-order one-sided
-  /// difference using the wall value (a real grid point for v) and its two
-  /// nearest interior neighbours.
-  [[nodiscard]] std::vector<double> wall_traction() const {
+  /// Mid-step wall traction, `-p_{n+1/2} + 2 mu (dv/dy)_{n+1/2}`, one value
+  /// per wall-face column (size nx) -- see `step()`'s own comment for the
+  /// KNOWN_ISSUES.md D9 derivation. Cached in `step()` (needs the t0 `v_`
+  /// array, no longer available once `step()` returns), not recomputed
+  /// here; a plain accessor.
+  [[nodiscard]] const std::vector<double>& wall_traction() const {
+    return traction_mid_;
+  }
+
+  /// Recomputes and caches `traction_mid_` from the CURRENT `p_field_`/`v_`
+  /// alone, evaluating the mid-step formula with the SAME array used for
+  /// both the "t0" and "t1" sample (so the viscous half's averaging is a
+  /// no-op: `0.5*(dvdy(v_)+dvdy(v_)) = dvdy(v_)`). For a caller that just
+  /// bypassed `step()` via a direct `set_state(...)` (a test-only pattern
+  /// -- see `FluidComponent::refresh_force_from_current_state()`'s own
+  /// comment): `step()` is the only place `traction_mid_` is normally
+  /// updated, and it needs the t0 `v_` array `set_state()` has no access
+  /// to. Exact for the one case this is actually used for, a genuine
+  /// STEADY state (t0=t1 trivially, so evaluating "as if" they were the
+  /// same array is not an approximation there at all).
+  void recompute_traction_from_current_state() {
     using detail::idx_p;
     using detail::idx_v;
-    std::vector<double> t(p_.nx, 0.0);
     const double h = dy();
+    std::vector<double> traction(p_.nx, 0.0);
     for (std::size_t i = 0; i < p_.nx; ++i) {
       const double p_last = p_field_[idx_p(p_, i, p_.ny - 1)];
       const double p_prev = p_.ny >= 2 ? p_field_[idx_p(p_, i, p_.ny - 2)] : p_last;
@@ -657,21 +809,45 @@ class StokesSolver {
       const double v_m1 = v_[idx_v(p_, i, p_.ny - 1)];
       const double v_m2 = p_.ny >= 2 ? v_[idx_v(p_, i, p_.ny - 2)] : v_m1;
       const double dvdy = (3.0 * v_wall - 4.0 * v_m1 + v_m2) / (2.0 * h);
-      t[i] = -p_wall + 2.0 * p_.mu * dvdy;
+      traction[i] = -p_wall + 2.0 * p_.mu * dvdy;
     }
-    return t;
+    traction_mid_ = std::move(traction);
   }
 
-  [[nodiscard]] FlowState save() const { return FlowState{u_, v_, p_field_}; }
+  /// Discrete kinetic energy [J, per unit out-of-plane depth], consistent
+  /// with this scheme's own mass convention: `cn_step`'s momentum rows
+  /// carry `rho/dt`, not `rho*dx*dy/dt` (a pointwise, collocation
+  /// convention, exactly as `BeamSolver::kinetic_energy()`'s own header
+  /// explains for the beam's `wdot`). The matching quadrature is therefore
+  /// a uniform `dx*dy` cell weight at every `u`/`v` degree of freedom,
+  /// boundary ones included (they carry real values -- Dirichlet or
+  /// floating -- not placeholders). Used by the transient-energy
+  /// diagnostics in test/verification/fsi_transient_test.cpp and
+  /// fsi_energy_diag_test.cpp; not on any solve path.
+  [[nodiscard]] double kinetic_energy() const {
+    const double cell = dx() * dy();
+    double sum = 0.0;
+    for (const double uv : u_) sum += uv * uv;
+    for (const double vv : v_) sum += vv * vv;
+    return 0.5 * p_.rho * cell * sum;
+  }
+
+  [[nodiscard]] FlowState save() const {
+    return FlowState{u_, v_, p_field_, traction_mid_};
+  }
   void restore(const FlowState& s) {
     u_ = s.u;
     v_ = s.v;
     p_field_ = s.p;
+    traction_mid_ =
+        s.traction_mid.empty() ? std::vector<double>(p_.nx, 0.0) : s.traction_mid;
   }
   void set_state(FlowState s) {
     u_ = std::move(s.u);
     v_ = std::move(s.v);
     p_field_ = std::move(s.p);
+    traction_mid_ = s.traction_mid.empty() ? std::vector<double>(p_.nx, 0.0)
+                                           : std::move(s.traction_mid);
   }
 
   [[nodiscard]] const std::vector<double>& u() const { return u_; }
@@ -682,6 +858,7 @@ class StokesSolver {
   ChannelParams p_;
   PressurePin   pin_;
   std::vector<double> u_, v_, p_field_;
+  std::vector<double> traction_mid_;  // see wall_traction()'s own comment
 };
 
 }  // namespace fsi

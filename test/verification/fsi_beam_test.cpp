@@ -13,8 +13,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <vector>
 
 #include "beam_solver.hpp"
@@ -86,6 +88,68 @@ TEST(FsiBeam, UniformLoadMaxDeflectionMatchesTheTextbookFormula) {
   const double want = q0 * std::pow(L, 4) / (384.0 * EI);
   const double got = fsi::clamped_beam_affine_deflection(L / 2.0, L, EI, q0, 0.0);
   EXPECT_NEAR(got, want, 1e-12 * want);
+}
+
+// KNOWN_ISSUES.md D9, this round: `BeamSolver::step_midpoint_load` replaces
+// `step()`'s "force at t_{n+1}" convention with a load already representing
+// t_{n+1/2} (matching Crank-Nicolson's own trapezoidal terms on the fluid
+// side). Substituting the midpoint value for the trapezoidal average of end-
+// point values is an O(dt^2) change for smooth forcing, so it should NOT
+// cost the scheme's temporal order -- checked directly here, on the BEAM
+// ALONE (no fluid, no coupling), against a self-convergence construction
+// identical in spirit to fsi_transient_test.cpp's own (no closed-form
+// forced-transient solution is needed: e_k = |w(dt_k)-w(dt_k/2)| ~ C dt_k^p).
+double run_midpoint_forced_midspan(std::size_t n, double L, double EI,
+                                   double rho_s, double h_s, double Q0,
+                                   double Omega, double dt,
+                                   std::size_t n_steps) {
+  fsi::BeamSolver beam(
+      fsi::BeamParams{.n = n, .L = L, .EI = EI, .rho_s = rho_s, .h_s = h_s});
+  std::vector<double> q_mid(n + 1);
+  double t = 0.0;
+  for (std::size_t s = 0; s < n_steps; ++s) {
+    const double load = Q0 * std::sin(Omega * (t + 0.5 * dt));
+    std::fill(q_mid.begin(), q_mid.end(), load);
+    beam.step_midpoint_load(dt, q_mid);
+    t += dt;
+  }
+  return beam.displacement()[beam.n_nodes() / 2];
+}
+
+TEST(FsiBeam, MidpointLoadStepConvergesAtSecondOrderInDt) {
+  constexpr double L = 1.0, EI = 2.0, rho_s = 1.0, h_s = 0.5;
+  constexpr std::size_t n = 24;  // fine enough that FD spatial error is
+                                 // negligible next to the dt error measured
+  const double omega1 = fsi::clamped_beam_first_frequency(L, EI, rho_s, h_s);
+  const double T1 = 2.0 * M_PI / omega1;
+  // Forcing well off resonance (0.37*omega1, an arbitrary irrational-ish
+  // fraction), asymptotic regime (finest dt/T1 ~ 1/2560), fixed final time
+  // a quarter of the natural period -- same reasoning as
+  // fsi_transient_test.cpp's own choice.
+  const double Omega = 0.37 * omega1;
+  const double t_final = T1 / 4.0;
+
+  std::vector<double> dts, w_at_dt;
+  for (const std::size_t n_steps : {40u, 80u, 160u, 320u, 640u}) {
+    const double dt = t_final / static_cast<double>(n_steps);
+    const double w = run_midpoint_forced_midspan(n, L, EI, rho_s, h_s, 1.0,
+                                                 Omega, dt, n_steps);
+    dts.push_back(dt);
+    w_at_dt.push_back(w);
+  }
+  std::vector<double> diffs;
+  for (std::size_t k = 0; k + 1 < w_at_dt.size(); ++k) {
+    diffs.push_back(std::abs(w_at_dt[k] - w_at_dt[k + 1]));
+  }
+  ASSERT_GE(diffs.size(), 2u);
+  const double order =
+      observed_order(std::vector<double>(dts.begin(), dts.end() - 1), diffs);
+  std::printf("MidpointLoadStep self-convergence: order=%.4f, diffs=[%.3e, "
+             "%.3e, %.3e, %.3e]\n",
+             order, diffs[0], diffs[1], diffs[2], diffs[3]);
+  EXPECT_GT(order, 1.8) << "observed order " << order
+                        << " -- midpoint substitution cost temporal order";
+  EXPECT_LT(order, 2.3) << "suspiciously high order " << order;
 }
 
 TEST(FsiBeam, FirstNaturalFrequencyConvergesAtSecondOrder) {

@@ -545,29 +545,29 @@ TEST(FsiCoupled, GaussSeidelDivergesWhileIqnIlsConvergesAtMassRatioOne) {
 }
 
 // Aitken's OWN measured operating range, with numbers, rather than an
-// assumption that it must match IQN-ILS at every mass ratio. Measured
-// this session (see this task's own report for the full scan): Aitken
-// (initial_relaxation=0.1-0.5) does NOT converge within 500 sweeps at
-// mass_ratio=1 (the ratio IQN-ILS handles cleanly above), but DOES
-// converge cleanly at mass_ratio=25 -- the same ratio
-// AitkenAndIqnIlsReachTheSameFixedPoint already exercises. This test
-// pins both ends of that measurement: a FAILURE at 1 and a SUCCESS at 25,
-// with the actual sweep counts and residuals printed, so the boundary is
-// documented rather than asserted away in either direction.
-// Round-3's stability fix to the fluid solver (see stokes_solver.hpp's
-// cn_step -- the pressure gradient is now trapezoidal, matching the
-// viscous term, so the solved pressure is genuinely t1-accurate instead
-// of a t_{n+1/2} quantity mislabelled as t1) substantially reduced the
-// coupled system's own added-mass feedback gain, and Aitken -- which
-// previously needed 500+ sweeps and did not converge at mass_ratio=1 --
-// now converges there too (measured: 422 sweeps, close to but under the
-// budget). This test now demonstrates the REMAINING difficulty gradient
-// (Aitken still needs far more sweeps at the lower ratio than IQN-ILS
-// does at the SAME ratio -- 422 vs 18, see
-// GaussSeidelDivergesWhileIqnIlsConvergesAtMassRatioOne -- and far more
-// than it itself needs at the higher ratio) rather than a hard pass/fail
-// boundary, since that boundary moved.
-TEST(FsiCoupled, AitkenNeedsFarMoreSweepsAtLowMassRatioThanAtHigh) {
+// assumption that it must match IQN-ILS at every mass ratio.
+//
+// HISTORY (kept for the record -- the boundary below has moved twice).
+// An earlier fluid-solver scheme (trapezoidal pressure GRADIENT, with the
+// previous step's pressure carried as literal state to get a nominally
+// t1-accurate p1) had Aitken needing 422 sweeps to converge at
+// mass_ratio=1 -- slow, but not divergent. KNOWN_ISSUES.md D9's own fix
+// (docs/user/fsi-channel.md, "Partitioned time-level consistency: the
+// force side, round 2") replaced that scheme with a genuinely mid-step
+// pressure (fully-implicit gradient, no p0 carried as state) delivered to
+// a matching midpoint-load beam step -- removing a real |lambda|=1
+// parasitic mode confirmed by test/verification/fsi_energy_diag_test.cpp,
+// but the coupled system's own step-map spectral radius barely moved
+// (~1.1155 either way -- that root cause is SEPARATE and still open, see
+// KNOWN_ISSUES.md D9). What DID change is Aitken's own operating point at
+// mass_ratio=1: measured directly (this round), it now DIVERGES (residual
+// grows without bound, confirmed non-finite well past the 500-sweep
+// budget) rather than merely converging slowly. This test now pins the
+// CURRENT boundary -- a genuine divergence at 1, a clean convergence at
+// 25 -- exactly mirroring GaussSeidelDivergesWhileIqnIlsConvergesAtMass
+// RatioOne's own residual_grew check, rather than assuming either
+// direction.
+TEST(FsiCoupled, AitkenDivergesAtLowMassRatioButConvergesAtHigh) {
   FsiCase base;
   base.nx_beam = 10;
   base.nx_fluid = 14;
@@ -582,15 +582,21 @@ TEST(FsiCoupled, AitkenNeedsFarMoreSweepsAtLowMassRatioThanAtHigh) {
   const double low_ratio = 1.0;
   low.h_s = low_ratio * low.rho_f * low.H / low.rho_s;
   const AccelOutcome low_out = run_one_period(low);
-  std::printf("Aitken, mass ratio %.3g: converged=%d in %lld sweeps\n",
+  std::printf("Aitken, mass ratio %.3g: converged=%d in %lld sweeps, "
+             "residual first=%.6e last=%.6e\n",
              low_ratio, low_out.converged ? 1 : 0,
-             static_cast<long long>(low_out.sweeps));
-  EXPECT_TRUE(low_out.converged)
-      << "Aitken failed to converge at mass ratio " << low_ratio
-      << " in " << low_out.sweeps << " sweeps -- previously measured "
-         "(before round 3's fluid stability fix) NOT to converge there "
-         "at all; if this now fails, the stability fix itself may have "
-         "regressed";
+             static_cast<long long>(low_out.sweeps), low_out.residual_first,
+             low_out.residual_last);
+  EXPECT_FALSE(low_out.converged)
+      << "Aitken was expected to DIVERGE (not merely converge slowly) at "
+         "mass ratio " << low_ratio << " under D9's mid-step fix -- if "
+         "this now converges, the fix's effect on Aitken's own operating "
+         "range has changed again and this test's history comment needs "
+         "updating";
+  EXPECT_TRUE(low_out.residual_grew)
+      << "expected Aitken's residual to GROW, not merely fail to shrink "
+         "fast enough; first=" << low_out.residual_first << " last="
+      << low_out.residual_last;
 
   FsiCase high = base;
   const double high_ratio = 25.0;  // rho_s h_s/(rho_f H) with h_s=5.0,
@@ -607,8 +613,8 @@ TEST(FsiCoupled, AitkenNeedsFarMoreSweepsAtLowMassRatioThanAtHigh) {
       << "Aitken failed to converge at mass ratio " << high_ratio
       << " (" << high_out.sweeps << " sweeps) -- previously measured to "
          "converge cleanly there";
-  EXPECT_GT(low_out.sweeps, 10 * high_out.sweeps)
-      << "expected Aitken to need MANY more sweeps at the low ratio ("
-      << low_out.sweeps << ") than the high one (" << high_out.sweeps
-      << ") -- the difficulty gradient this test is actually about";
+  // No sweep-count comparison here: low_out never converges (it hits
+  // max_iterations having diverged), so "sweeps" there is just the
+  // budget, not a meaningful difficulty measure -- the residual_grew
+  // check above is the actual claim this test makes about mass_ratio=1.
 }

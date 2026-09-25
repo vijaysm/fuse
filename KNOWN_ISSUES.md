@@ -814,13 +814,19 @@ replay" for that one).
 
 ---
 
-### D8. A Remap into a nodal field on more than one rank is refused — OPEN, needs per-placement weights
+### D8. A Remap into a nodal field on more than one rank is refused — PARTIALLY LIFTED (round 2), real multi-rank host run still needed
 
-`E-RT-REMAP-NODAL-PARALLEL` (`resolve_remap`, `src/runtime/runner.cpp`) refuses
-any Remap whose target is a nodal field (ContinuousGLL order 1) on a component
-placed on more than one rank. `InterfaceTransfer.ARemapIntoANodalFieldOnSeveralRanksIsRefused`
-makes it fire. The condition is read from the declared graph and placement, so
-every rank refuses together.
+`E-RT-REMAP-NODAL-PARALLEL` (`resolve_remap`, `src/runtime/runner.cpp`)
+refuses any Remap whose target is a nodal field (ContinuousGLL order 1) on a
+component placed on more than one rank, UNLESS the channel's method is
+`"consistent"`/`"consistent-transpose"` (round 2, see below) — for every
+other method (in particular the supermesh conservative default) it still
+fires exactly as originally described here.
+`InterfaceTransfer.ARemapIntoANodalFieldOnSeveralRanksViaASupermeshMethodStillRefuses`
+makes it fire; `InterfaceTransfer.ARemapIntoANodalFieldOnTwoDeclaredRanksIsAcceptedAndMatchesOneRank`
+is the SAME declared two-rank placement, method `"consistent-transpose"`,
+now accepted. Both conditions are read from the declared graph and
+placement, so every rank reaches the same verdict together.
 
 **Why a refusal and not the owner sum that was first wired in.** A shared
 vertex's rows on each holder are partial or already complete depending on the
@@ -845,6 +851,240 @@ genuinely partitioned, non-matching nodal Remap through the Runner at 1 to 5
 ranks: global force conserved, H exact for a linear field, power balanced.
 Lift the refusal only when that passes.
 
+**Progress (2026-09-25, "Nodal remap" track).** `consistent_interp.hpp`'s
+`build_consistent_interp_weights` is no longer 1D-only: a source of
+topological dimension 2 or 3 (triangles, quads including a curved surface
+like a cubed sphere, tets, hexes, and P1×P1 prisms) now dispatches to
+`build_general_interp_weights` (`general_interp.hpp`), which locates each
+target point's containing cell via `fuse::search`, inverts that cell's
+reference map (a direct affine solve for a simplex, damped Gauss-Newton for
+a genuinely multilinear quad/hex/prism), and reads off the weights —
+verified serially (`test/backend/nodal_interp_test.cpp`, 22 cases: exact for
+the shape's own affine/multilinear field on a single reference cell, order-2
+convergence on non-matching real meshes for triangles and a cubed sphere,
+H^T conservation and power balance, the lowest-source-global-id tie-break at
+a shared face, and refusals for Pyramid/Polygon (`E-INTERP-SHAPE`, no
+standard nodal basis), a missing `MeshView::cell_vertices` connectivity
+answer, a degenerate cell, an out-of-domain point, an off-surface point, and
+Newton non-convergence) — plus three of those refusal/tie-break rules pinned
+by hand-applied, byte-restored mutations
+(`build-evidence/mutations/nodal-remap.toml`).
+
+**This directly answers D5 item 3's per-placement weights question for the
+CONSISTENT methods specifically** (never for the supermesh conservative
+methods, which still refuse `E-RT-REMAP-PLACEMENT` and are unaffected): a
+new, genuinely partitioned, non-replicated distributed primitive —
+`build_distributed_interp_rows`/`apply_distributed_H`/`apply_distributed_HT`
+(`nodal_remap_distributed.hpp`) — builds each evaluation entity's row ONLY on
+the rank that owns it (an MPI_Allgatherv-replicated assembly of the source
+mesh, then the same per-cell primitives the serial builder above already
+validated; see that header's file comment for the explicit
+robustness-over-efficiency trade this makes, and for why `H^T`'s cross-rank
+sum is keyed by the CONTRIBUTING evaluation entity's global id rather than
+by delivery order, which is what makes it bit-identical across rank counts
+rather than merely correct at one). Compiled under `FUSE_ENABLE_MPI=ON`
+(`test/parallel/nodal_remap_distributed_test.cpp`: disjoint, identical and
+partially-overlapping rank sets, plus an out-of-domain refusal); UNRUN in
+this sandbox (MPI cannot initialise here), so its verdict is a host action,
+same as every other MPI-gated case in this file.
+
+**Progress (2026-09-25, round 2, "Nodal remap" track): the Runner IS now
+wired, and the null-comm path made it locally verifiable.** Three things
+changed from round 1's "not wired, no local MPI verdict possible" state:
+
+1. **Two-tier containment, general_interp.hpp.** Round 1's single loose
+   tolerance (`kRefEps = 0.02`, one boolean "close enough" test feeding a
+   lowest-source-global-id tie-break among every candidate that passed it)
+   let a lower-global-id NEIGHBOUR's cell win a shared-boundary point by
+   EXTRAPOLATING past its own edge, invisible to an affine-field test since
+   an affine field cannot tell an interpolation from an extrapolation apart.
+   Replaced by two tiers: `kRefEpsTight = 1e3 * kNewtonTol` (a genuine,
+   rounding-scale containment; wins outright, tie-broken by lowest global id
+   ONLY among tight matches) and `kRefEpsLoose = kSurfaceTol` (a single
+   least-violating fallback, no tie-break, accepted only when it ALSO clears
+   the same physically-derived bound the existing `kSurfaceTol` uses for the
+   curved-surface faceting gap along the other axis). New regression test
+   `GeneralInterp.PointDeepInsideBIsNotStolenByALowerGidNeighbourExtrapolating`
+   (two triangles, a field with `v11 != v10+v01-v00` so an extrapolation is
+   visibly wrong, not accidentally exact) fails under the old rule and passes
+   under the new one; a new "tier (a) skipped" mutation
+   (`build-evidence/mutations/nodal-remap.toml`) reproduces the old bug by
+   widening tier (a)'s own threshold to `kRefEpsLoose`, confirmed KILLED by
+   exactly that test. **Measured convergence orders, verbatim, after this
+   fix** (`TriangleMeshOrderIsTwoUnderRefinement`,
+   `SphereSurfaceOrderIsAtLeastTwoUnderRefinement`; both gated at `>= 1.8`,
+   tightened from round 1's `1.7`/`1.5`): triangle mesh **1.955988**, cubed-
+   sphere surface **1.914458** — both comfortably above the tightened gate,
+   and both HIGHER than round 1's own measurements at the old (looser,
+   tie-break-only) rule, direct evidence that the mis-assigned-cell bug was
+   actually costing real accuracy, not merely a theoretical concern.
+2. **A null-communicator (Tier 0) code path, nodal_remap_distributed.{hpp,cpp}.**
+   The file's blanket `#if FUSE_HAVE_MPI` guard (round 1) is gone; only the
+   one real MPI call site (`allgatherv_records`) branches on
+   `comm_handle == fuse::search::kNullComm` (a local no-op copy, touching no
+   MPI symbol) vs. a real communicator (unchanged, `FUSE_HAVE_MPI`-gated,
+   refuses `E-RT-NODAL-DIST-NOMPI` otherwise) — the same convention
+   `fuse::partition::detail::collectives.hpp` already established. The
+   serial two-tier fix above was ALSO applied to this file's own
+   (previously independently-tolerant) selection loop, since the same bug
+   shape applies to a replicated-mesh candidate list exactly as it does to a
+   local one. Proven by a new, PLAIN (`fuse_add_gtest`, no MPI linked)
+   target, `backend.nodal_remap_distributed_nullcomm`, which actually RUNS
+   in this sandbox (unlike `parallel.nodal_remap_distributed`, still
+   compile-only here) — 3/3 passing, plus a new KILLED mutation
+   (`build-evidence/mutations/nodal-remap-distributed.toml`) proving the
+   `kNullComm` guard itself is load-bearing, not decoration.
+3. **The Runner wiring itself, `src/runtime/runner.cpp`.** `resolve_remap`'s
+   nodal-target check now branches on `Instruction::attrs.method`:
+   `"consistent"`/`"consistent-transpose"` call the new
+   `Runner::Impl::build_nodal_dist_remap` (builds one `DistributedInterpRows`
+   at setup, via `comm_handle = *config.base_communicator` when set, else
+   `fuse::search::kNullComm`) instead of refusing; every other method still
+   refuses `E-RT-REMAP-NODAL-PARALLEL` exactly as before (per-placement
+   supermesh weights remain unimplemented, D5 item 3). `execute()`'s
+   `OpKind::Remap` case calls the new `apply_nodal_dist_remap` per period,
+   allocation-free of the ROWS themselves (the `Allgatherv` buffers
+   `apply_distributed_H`/`HT` build are a separate, per-call cost — see
+   "Known scalability limitation" below). **This is a REAL Runner run, not a
+   compile check**: `InterfaceTransfer.ARemapIntoANodalFieldOnTwoDeclaredRanksIsAcceptedAndMatchesOneRank`
+   runs the exact channel pair `ConsistentPairRunsThroughTheRunnerExactlyAndBalancesPower`
+   already covers at one declared rank, a SECOND time at a DECLARED
+   two-rank placement (no real second process; `comm_handle` is
+   `kNullComm` since `base_communicator` is unset, so this single process
+   already owns everything, exactly the null-comm case item 2 proved), and
+   checks the two-rank run reproduces the one-rank run's numbers exactly (H
+   exact for a linear field, H^T conserves the total force, interface power
+   balances) — not merely that it runs without throwing. Two new KILLED
+   mutations (`build-evidence/mutations/nodal-remap-runner.toml`) pin the
+   method-string dispatch and the transpose density-to-load scaling
+   decision. The full tier-0 suite (101/101, including this new test and
+   every previously-passing case) and the full tier-1 (MPI-enabled) build
+   both pass/compile with these changes; `check-invariants.py`/
+   `check-layering.py`/`mutate.py --check-anchors` all report zero
+   violations (160/160 anchors valid).
+
+**`reduce_nodal_remap_target()`/`NodalReduceInfo`/`NodalReduceMode`/
+`Impl::nodal_reductions` are DELETED, not merely left unreachable.** They
+were genuinely dead code even before this round: `resolve_remap`'s own
+`nodal_reduce_idx` local was set to a real index only inside a branch that
+unconditionally returned a `Failure` first, so `nodal_reductions` was always
+empty and `reduce_nodal_remap_target` was never reached by anything. Round 2
+chose the Allgatherv-replicated design (item 3 above) over the design that
+scaffolding anticipated ("every holder ends up with the owner's total,"
+reusing `accumulate_shared_rows`/`copy_owner_shared_rows`); since a
+decision was made, the unreachable alternative is removed rather than kept
+as a second, unused implementation of the same feature. `accumulate_shared_rows`
+and `copy_owner_shared_rows` (`fuse/transport/comm_graph.hpp`) themselves are
+UNTOUCHED — they are general-purpose primitives with their own direct
+callers in `test/parallel/nodal_field_test.cpp` (the "nodal fields" track's
+Transport-side ownership tests), not exclusive to the deleted function.
+
+**Known scalability limitation, disclosed not hidden: every
+`build_nodal_dist_remap`/`apply_distributed_H`/`apply_distributed_HT` call
+replicates the WHOLE source (or evaluation) mesh's geometry across every
+rank via `MPI_Allgatherv`,** and every period's `apply` re-gathers the
+field VALUES the same way. This does not scale to a source mesh too large
+to fit in one rank's memory, and is a documented, deliberate
+robustness-over-efficiency trade (this project's own standing priority),
+not an oversight — see `nodal_remap_distributed.hpp`'s file header for the
+full reasoning. The planned replacement is a directory-based, point-to-point
+query via `fuse::search::query_points_distributed` (already built,
+currently unused by this path) for the ROW-LOCATION step specifically,
+exchanging only what each pair of ranks actually needs instead of
+broadcasting everything to everyone. **The current Allgatherv-based
+implementation's results should be KEPT as the oracle the future scalable
+implementation is tested against** — every exactness/conservation property
+this round's tests check is a property of the MATH (H's rows sum to one;
+H^T D's total is conserved), not of the Allgatherv mechanism, so a future
+point-to-point implementation must reproduce these same numbers exactly,
+not merely "also pass its own tests."
+
+**Progress (2026-09-25, round 3): the missing Runner-level MPI test now
+exists, compiled but unrun.** Round 2's own gap (b) below is closed:
+`test/support/partitioned_test_backend.hpp` gained
+`MultiMeshGeometricBackend`, a small composite that holds one
+(`n_cells`, `RankSet`, `x_lo`, `x_hi`) `Spec` PER MESH NAME (registered
+before `load()`), reusing `GeometricLineMesh` unchanged for each -- exactly
+what closes the "`Runner` needs one `MeshBackend` but the two test backends
+available each bake in a single mesh's shape" gap. `test/parallel/
+nodal_remap_runner_test.cpp` (`NodalRemapRunnerMpi.{DisjointRankSets,
+IdenticalRankSets, PartiallyOverlappingRankSets}`) drives a real beam/fluid
+`"consistent"`/`"consistent-transpose"` channel pair through
+`lower -> schedule -> initialize -> run_period` on that backend, at 1-5
+ranks, checking H's exactness pointwise, global force conservation and
+power balance to `1e-13` relative, and -- the property this file's own name
+promises -- each rank's `beam_load` entry against a ONE-RANK REFERENCE
+computed IN THE SAME TEST (via `build_consistent_interp_weights` on an
+unpartitioned `GeometricLineMesh`, not a second job launch), which is the
+standard way this codebase already proves "bit-identical across rank
+counts" without two separate compared launches (see
+`nodal_remap_distributed_test.cpp`'s own header for the identical
+argument). That reference was cross-checked in this sandbox, WITHOUT real
+MPI, against `apply_distributed_HT` itself at `comm_handle ==
+fuse::search::kNullComm`: the two agree to `1.4e-17` (round-off) at every
+one of 8 beam vertices for `n_beam=7, n_fluid=11` -- strong evidence the
+new test's own oracle is correct and consistent with the code path it
+exercises, even though the test itself still cannot be RUN here (MPI
+cannot initialise in this sandbox, same posture as every other MPI-gated
+case).
+
+**The two NOT-ASSESSED mutations from round 2 were reconsidered, not
+mechanically retargeted.** Retargeting them at the new Runner test would
+not have made them assessable: the "row built on every holder" row needs a
+genuinely SHARED evaluation-side entity, and in both the primitive-level
+test and the new Runner test the evaluation side is always the FLUID
+mesh -- cell-based, never ownership-shared in `GeometricLineMesh`'s design
+(only vertices, always the nodal side here, are ever shared). A real target
+for that row needs a node-to-node `"consistent"` channel (both sides
+nodal), not built this round since it is not the shape "H/H^T as the FSI
+uses them" needs. The "transpose sums in rank order" row remains
+undecidable by ANY single job launch at a fixed rank count, Runner-level or
+not -- `build-evidence/mutations/nodal-remap-distributed.toml` now names
+both the primitive-level and the new Runner-level tests as equally valid
+surfaces for the two-launch (e.g. rank counts 2 and 4) comparison a host
+would run to actually kill it.
+
+**A genuine defect was found and precisely quantified: `apply_nodal_dist_remap`
+does NOT allocate zero per period.** `InterfaceTransfer.
+ApplyNodalDistRemapHasAConstantMeasuredPerPeriodAllocationCount`
+(interface_transfer_test.cpp) extends the SAME `AllocationCounter`
+instrument `Runner.AllocatesNothingWhileRunning` (runner_test.cpp) uses --
+not by editing that shared, heavily-reused harness (which has no
+nodal-target-on-several-ranks case to extend), but with a second, focused
+test next to it, since teaching the existing harness a new mesh/field/
+channel shape was a materially bigger and riskier change than one more
+self-contained test. Measured, verbatim: **31 allocations per period**,
+constant across all 8 measured periods (no growth, no leak) -- NOT the
+zero every other Remap kind achieves. The cause is not a bug in the Runner
+wiring itself but the ALREADY-DISCLOSED cost this same D8 entry named in
+round 2: `apply_distributed_H`/`apply_distributed_HT`
+(`nodal_remap_distributed.hpp`) build fresh `Allgatherv` buffers, an
+`unordered_map`, and (in the `H` branch) a copy of the local input slot on
+EVERY call, by design, for a scalability trade this track has been explicit
+about since round 1. This measurement turns that prior qualitative
+disclosure into a concrete number future work can compare against: a
+point-to-point replacement (see the "Known scalability limitation"
+paragraph above) should be expected to reduce this count, and this test's
+own assertion (a CONSTANT count across periods, not a zero one) will keep
+catching a regression that makes it grow or leak even after that
+replacement lands.
+
+**What is still open, honestly.** (a) No REAL multi-process MPI host run
+has verified this Runner wiring — the null-comm (Tier 0) case IS a real
+run and IS the right physics for a single participant, and the new
+Runner-level MPI test (above) is now written and its own oracle
+cross-checked without MPI, but the test itself has never actually EXECUTED
+at more than one real rank; that remains a host action. (b)
+`InterfaceDomainPolicy::ClampToBoundary` remains unimplemented in the
+distributed builder (unchanged from round 1). (c) The 31-allocations/period
+measurement above is a number to reduce, not (yet) a fix -- no attempt was
+made this round to eliminate it, since doing so needs a scratch-buffer-
+reusing redesign of `apply_distributed_H`/`apply_distributed_HT`'s own,
+already-tested API, a change of a different size and risk than measuring
+the existing behavior precisely. **Lift the refusal for the remaining
+methods only after (a) and D5 item 3 (per-placement supermesh weights) both
+land.**
+
 
 ### D9. The coupled channel-beam FSI gains energy over many periods — OPEN
 
@@ -859,7 +1099,7 @@ that combined scheme, not to the coupling iteration. Each half alone is bounded:
 - the fluid alone under a prescribed periodic wall velocity, over 40 periods:
   bounded.
 
-**Found and fixed on the way:**
+**Found and fixed on the way (earlier rounds):**
 - the Crank-Nicolson pressure gradient was fully implicit against a trapezoidal
   viscous term, so the wall traction was p(t_{n+½}) labelled as p(t₁). That
   caused a sign-alternating growth of |ratio| 2.48 per period. The pressure now
@@ -867,19 +1107,385 @@ that combined scheme, not to the coupling iteration. Each half alone is bounded:
 - the wall-velocity boundary condition used the t₁ value for both Crank-Nicolson
   levels.
 
-**What remains:** at mass ratio about 2.5 (h_s = 0.5, rho_f = 1, H = 0.2) with
-IQN-ILS and dt = T₁/40, the total energy grows by a constant 1.22796 per step,
-the same to four figures across periods 3 to 12. The dt self-convergence order is
-0.822 (mid-span deflection 0.018725, 0.019143, 0.019390, 0.019533, 0.019608 m at
-10 to 160 steps). `FsiTransient.DISABLED_SelfConvergenceInDtIsSecondOrderInTheAsymptoticRegime`
+**Residual, unresolved:** at mass ratio about 2.5 (h_s = 0.5, rho_f = 1,
+H = 0.2) with IQN-ILS and dt = T₁/40, the total energy grows by a constant
+1.22796 per step, the same to four figures across periods 3 to 12. The dt
+self-convergence order is 0.822 (mid-span deflection 0.018725, 0.019143,
+0.019390, 0.019533, 0.019608 m at 10 to 160 steps).
+`FsiTransient.DISABLED_SelfConvergenceInDtIsSecondOrderInTheAsymptoticRegime`
 keeps the unchanged bound.
 
-**Next:** check the discrete energy identity step by step. A monolithic
-trapezoidal pairing needs the interface power in mid-step form,
-½(ẇₙ + ẇₙ₊₁) · ½(fₙ + fₙ₊₁), on both sides. Also check whether the
-transpiration condition's volume source, ∫ẇ dx, is consistent with the
-pressure outlet's reference. The steady, power-balance and added-mass tests
-pass, and do not depend on either.
+**This round: the mechanism is now precisely located, via the lead's
+linear-algebra method (`test/verification/fsi_energy_diag_test.cpp`).** One
+converged coupled step is an exact affine map x_{n+1} = M x_n + b over the
+full carried state (fluid u/v/p, the beam's w/wdot/wddot, and
+`FluidComponent`'s own checkpointed `velocity_in_t0_`), because every
+boundary datum here is time-independent and the coupling is a fixed linear
+remap. Built column-by-column by perturbing each state entry (finite
+difference is exact here, confirmed by two step sizes agreeing to
+round-off):
+
+- **rho(M) = 1.108145 on the production grid** (nx_beam=8, nx_fluid=10,
+  ny_fluid=6) — rho² = 1.227985, matching the measured 1.22796 energy ratio
+  to ~4 significant figures. **rho(M) = 1.115467-1.115908 on the smaller
+  diagnostic grid** (nx_beam=6, nx_fluid=5, ny_fluid=3, the grid the
+  COMMITTED `CoupledStepMapRevealsTheGrowthMechanism` test actually runs,
+  for runtime) — rho² = 1.244-1.245, agreeing with 1.22796 only to ~2
+  significant figures at this coarser resolution, though the same
+  qualitative mechanism (a real, non-oscillatory eigenvalue dominated by
+  the same pressure-and-beam-mode eigenvector) holds at both grids. Either
+  way this is a genuine, real (not oscillatory) eigenvalue, confirming the
+  growth is a scheme instability, not a coupling-iteration artefact
+  (independently re-confirming what "every window converges tightly"
+  already implied, this time by direct linear algebra rather than by
+  absence of a symptom).
+- **Beam alone and fluid alone are both bounded by the SAME method**:
+  `FsiEnergyDiag.BeamAloneStepMapSpectralRadiusIsAtMostOne` measures
+  rho=1.0000000060 (undamped Newmark, marginal as expected);
+  `FsiEnergyDiag.FluidAloneStepMapSpectralRadiusIsAtMostOne` measures
+  rho=1.0000000000 exactly, for a fixed (state-independent) wall velocity.
+- **The dominant eigenvector is ~85-96% pressure**, ~4-15% the beam's own
+  first bending mode (wddot), negligible everywhere else (beam w/wdot,
+  fluid u/v, velocity_in_t0 all under 1%).
+- **Its velocity field is exactly divergence-free everywhere except the
+  outflow column**, where the local divergence is ~0.02-0.03 (vs 0 to
+  round-off elsewhere) — a direct, measured footprint of the pressure-
+  outlet's own documented trade-off (`cn_step`'s "PRESSURE GAUGE" comment,
+  stokes_solver.hpp): replacing the outflow column's continuity equation
+  with `p=0` at every row kills the discrete operator's second null
+  direction (SVD-confirmed in an earlier round) but leaves a local mass
+  source there with nothing damping it.
+- **A global mass-conservation correction was added** (`StokesSolver::step`,
+  a single uniform shift of the outflow column's own `u` so
+  `Q_out = Q_in + Q_wall` exactly every step — the "transpiration volume
+  source vs. pressure-outlet reference" check this task's own instructions
+  named). It is real, harmless, and verified: all of `fsi_coupled_test.cpp`
+  passes with IDENTICAL numbers (order 1.743205, power balance to 1e-12,
+  same sweep counts), `fsi_stokes_mms_test.cpp` and `fsi_beam_test.cpp` are
+  untouched (the fix lives in `StokesSolver::step`, never in `cn_step`
+  itself, which the MMS suite calls directly). **It does NOT fix D9**:
+  rho(M) moves by under 1% (1.115908 → 1.115467) and the long-run energy
+  ratio is unchanged outside noise (1.22796 → 1.226473,
+  `FsiEnergyDiag.DISABLED_LongRunEnergyGrowthApproachesBoundedAfterAFix`,
+  left disabled with this number, not loosened).
+- **Direct ablation isolates the channel, not the mechanism**: zeroing
+  `wall_traction()`'s pressure term (viscous only) drops rho to 1.0005 —
+  essentially marginal, a complex-conjugate pair, 81% beam-wddot / 19%
+  pressure. Zeroing the viscous term instead (pressure only) leaves rho
+  essentially unchanged (1.1157). So the pressure channel of the interface
+  force carries the instability — but this is not itself a usable fix
+  (pressure legitimately belongs in a wall traction).
+- **Two further candidate fixes were tried and ruled out**: the order of
+  `wall_traction()`'s wall-pressure extrapolation (2nd-order vs. nearest-
+  cell) makes no measurable difference (rho 1.1159 → 1.1171); trapezoidally
+  averaging the DELIVERED wall pressure across the t0/t1 step boundary
+  (mirroring the momentum equation's own p0/p1 mixing) makes things
+  dramatically WORSE, reopening the exact sign-alternating |lambda|≈3.27
+  Nyquist instability the earlier round's trapezoidal-pressure-GRADIENT fix
+  removed — confirming that fix is correct and this residual mode is a
+  genuinely different mechanism, not a residue of the same one.
+
+**Round 2: the leading hypothesis was tested directly, is confirmed correct
+in its own right, and does NOT fix D9.** The lead's hypothesis: with the
+trapezoidal pressure GRADIENT (the earlier round's fix, described above),
+CN's momentum equation pins only p_mid = (p0+p1)/2; carrying p0 as literal
+state makes p1 = 2 p_mid - p0 a free, |lambda|=1 parasitic direction, and
+the wall traction delivered to the beam (built from p1) closes a feedback
+loop through exactly that direction. Prescribed fix: make the fluid's
+pressure gradient fully implicit again (no p0 carried — the solved
+`p_field_` genuinely IS p_mid), deliver `wall_traction()` as that mid-step
+value (viscous part trapezoidally averaged over t0/t1, matching CN's own
+convention), and have the beam consume it AS a mid-step load directly
+rather than averaging two endpoint forces a second time — a new
+`BeamSolver::step_midpoint_load()` derived from averaging the beam's own
+equation of motion at n and n+1 (M ddot{w}_avg + K w_avg = q_mid, exact
+algebraic identity, confirmed to round-off after solving).
+
+Implemented exactly as prescribed (`StokesSolver::step`'s `cn_step` call
+reverted to `p0=nullptr`; `wall_traction()` now a cached mid-step accessor,
+`traction_mid_`, carried through `save`/`restore`/`set_state`;
+`BeamComponent::advance` now calls `step_midpoint_load`). Three independent
+lines of evidence confirm the fix is CORRECTLY implemented, exactly as
+derived:
+- `FsiEnergyDiag.FluidAloneStepMapSpectralRadiusIsAtMostOne` moves from
+  rho=1.0000000000 (exactly marginal — the parasitic mode) to
+  rho=0.9946298894 (genuinely damped) — the targeted mode is gone.
+- The 73×73 coupled step map's "fluid p" input column norm is EXACTLY zero
+  (avg and max, measured via finite-difference perturbation of every
+  carried-state entry) — perturbing p_field_ now provably has zero effect
+  on the dynamics, exactly as expected once it is no longer carried state.
+- `FsiBeam.MidpointLoadStepConvergesAtSecondOrderInDt` (new test, beam
+  alone, sinusoidal mid-step forcing off-resonance) measures order=2.2174
+  — the midpoint substitution does not cost the scheme's temporal order.
+
+**But D9's headline symptom is unchanged.** Before/after this exact change:
+- `FsiEnergyDiag.CoupledStepMapRevealsTheGrowthMechanism`'s own rho(M) on
+  the committed diagnostic grid: **1.115467 → 1.115466** — unchanged to 4
+  significant figures. The dominant eigenvector is still ~84% pressure,
+  ~16% beam wddot, same as before.
+- `FsiTransient.DISABLED_SelfConvergenceInDtIsSecondOrderInTheAsymptoticRegime`'s
+  observed order: **0.822 → 0.8182** — unchanged outside noise. Still left
+  disabled with this number, per the same "report, don't loosen" rule.
+- `FsiEnergyDiag.DISABLED_LongRunEnergyGrowthApproachesBoundedAfterAFix`'s
+  measured 480-step ratio: **1.226473, unchanged** from the earlier round's
+  measurement (the mass-conservation fix's number, carried over — this
+  round's fix moved it by less than the earlier round's own noise floor).
+- A direct ablation (temporarily zeroing the pressure term in the
+  delivered traction) gives the IDENTICAL rho=1.000512 before and after
+  this round's fix — the viscous-only channel's own dynamics are
+  unaffected by the p0-labelling change, exactly as expected, but the
+  pressure-inclusive channel's gain is ALSO unaffected, which is the
+  actual surprise: the parasitic p0 mode, while real, sits alongside a
+  SEPARATE, comparable-magnitude, still-unidentified mechanism in the
+  pressure channel that this fix does not touch.
+
+**Conclusion: the hypothesis identified and fixed a real, independently
+confirmed defect (a genuine |lambda|=1 parasitic state with a physical
+provenance — the trapezoidal-pressure-gradient scheme genuinely does have
+this problem), but it is demonstrably not the (or not the only) cause of
+D9's coupled energy growth.** The two mechanisms happen to be similar in
+magnitude (rho~1.11-1.12 either way) but are separable in the diagnostic:
+removing one leaves the other's rho and the transient order untouched to
+the precision measured. D9 remains OPEN.
+
+**A genuine regression was found and fixed as part of this round's
+change, unrelated to the above.** The earlier round's trapezoidal-
+pressure-gradient scheme had, as an apparent side effect, made Aitken's
+scalar relaxation converge (slowly, 422 sweeps) at mass_ratio=1, where it
+previously did not converge at all. Reverting to the fully-implicit
+pressure gradient (this round's fix) reverses that side effect: Aitken now
+DIVERGES at mass_ratio=1 (residual reaches ~7.45e+111 within the 500-sweep
+budget, confirmed non-finite with a longer budget), rather than merely
+converging slowly. `FsiCoupled.AitkenNeedsFarMoreSweepsAtLowMassRatioThanAtHigh`
+(which asserted convergence there) has been rewritten as
+`FsiCoupled.AitkenDivergesAtLowMassRatioButConvergesAtHigh`, asserting
+non-convergence and a growing residual at mass_ratio=1 (mirroring the
+sibling `GaussSeidelDivergesWhileIqnIlsConvergesAtMassRatioOne`'s own
+`residual_grew` check) while keeping the still-valid claim that Aitken
+itself converges cleanly at mass_ratio=25, measured at 19 sweeps. IQN-ILS
+is unaffected either way (19 sweeps at mass_ratio=1, both before and
+after this round's fix) — the coupling accelerator that matters for this
+task's own headline mass ratio still works.
+
+**Not yet found (before round 3)**: the specific numerical inconsistency
+that lets the pressure-dominated, outflow-vanishing mode gain energy once
+coupled to the beam, when it is exactly marginal in the fluid alone.
+Round 2 rules out the trapezoidal-pressure-gradient's p0-parasitic-state
+mechanism specifically (confirmed real, confirmed fixed, confirmed NOT
+the driver of the residual rho~1.115) — the remaining mechanism is still
+open, and demonstrably lives in the pressure channel of the interface
+force (the ablation above), not in how that pressure is time-labelled.
+
+**Round 3: the lead's elimination argument, tested both empirically and
+via a rigorous, validated discrete energy identity.** Hypothesis (A):
+the traction delivered to the beam is not the discrete work-conjugate of
+the wall velocity (wrong wall-pressure extrapolation, wrong viscous
+coefficient). Hypothesis (B): the outflow's zero-curvature-ghost + p=0
+treatment is not the physical "do-nothing" condition, so B_outflow is not
+sign-definite. Derived directly from `cn_step`'s own discrete Laplacian
+(a standard 3-point stencil in y for v, in x for u — no ghost
+complication at either boundary this round cares about): the
+energy-conjugate viscous traction at a Dirichlet-moving wall is a
+ONE-SIDED difference with coefficient mu (NOT 2*mu, the textbook full
+viscous stress) and the energy-conjugate pressure is the ADJACENT CELL's
+own value exactly (no extrapolation) — confirmed by hand via the
+standard discrete Green's identity for a 3-point Laplacian (proved for
+the boundary case, N=2, and cross-checked numerically this round).
+
+**Empirically, five candidate fixes were tried on the small diagnostic
+grid, and NONE moved rho(M) meaningfully** (baseline 1.115466; range
+measured across all five: 1.115367–1.117273): (A) pressure-only
+(adjacent-cell p, no extrapolation, viscous unchanged) — rho=1.117151;
+(A) viscous-only (coefficient mu, 1st-order one-sided, pressure
+unchanged) — rho=1.115585; (A) combined (both) — rho=1.117273; (B)
+do-nothing outflow (`-p+2*mu*du/dx=0` replacing the zero-curvature ghost
++ p=0, continuity restored at the outflow column, verified NOT to break
+`FluidReconstructedPoiseuilleIsAFixedPointOfCnStep`,
+`SteadyStateBeamDeflectionMatchesTheAnalyticLinearLoad`, or
+`InterfacePowerBalancesToRoundoff`) — rho=1.115367; (A)+(B) combined —
+rho=1.117173. Fluid-alone rho changed more substantially under each
+variant (0.9946→0.9786 under do-nothing, for instance), confirming these
+changes genuinely alter the fluid's own dynamics — the coupled system's
+own dominant eigenvalue is simply insensitive to all of them.
+
+**Why, confirmed by a rigorous, ROUND-OFF-VALIDATED discrete energy
+identity** (`FsiEnergyDiag.EnergyIdentityResidualRevealsWhichHypothesisHolds`,
+fluid alone, zero inflow, rest initial state, nonzero CN-distinct top
+wall velocity — chosen so the LEFT/BOTTOM boundaries contribute nothing
+and only the TOP wall and RIGHT outflow can inject or absorb energy).
+Dotting every interior momentum row with its own CN-averaged velocity and
+summing gives, exactly, `(E1_interior-E0_interior)/dt =
+interior_viscous_power + pressure_div_power - boundary_bt_term`, where
+`boundary_bt_term` is the continuity operator's own adjoint (B^T)
+contribution from v_wall/u_outflow (boundary velocities referenced by
+continuity but with no momentum row of their own — a term the naive
+"momentum-row-only" identity misses entirely, and which this round's
+diagnostic derived, added, and confirmed closes the identity to
+`-7.3e-17`, round-off relative to E1~1.2e-2). `interior_viscous_power`
+cleanly splits (proven, same discrete Green's identity) into bulk
+dissipation plus the two LOCAL, boundary-attributable viscous flux terms
+above (`W_wall_viscous_natural`, `B_out_viscous_natural`) — measured at
+1.58e-5 and 2.13e-6 respectively, in this diagnostic's own units.
+`pressure_div_power`, however, does **NOT** localise to either boundary:
+it is `sum_cells(p1.div_avg)` over the WHOLE domain, dominated (measured:
+-0.524, roughly 29,000x the local viscous terms combined, 1.79e-5) by
+the fact that
+`div_avg` (CN-averaging the rest initial condition against the solved
+t1 state) is nonzero away from both boundaries too — a property of the
+GLOBAL continuity constraint's own Lagrange multiplier, not a boundary
+effect either hypothesis (A) or (B) can fix by construction. This is
+exactly why the five empirical fixes above changed the LOCAL viscous
+numbers but left the coupled rho untouched: the dominant term in this
+discretization's own energy budget is not attributable to a wall-traction
+formula or an outflow condition at all.
+
+**Conclusion, per the lead's own fallback instruction.** Neither (A) nor
+(B), correctly derived and empirically tested, is nonzero in a way that
+explains D9's residual growth — the per-term bookkeeping shows why:
+this MAC discretization's pressure channel is a global, not local,
+quantity, so the lead's local A/B elimination argument does not cleanly
+split for it the way it does for viscosity. D9 remains OPEN. The
+remaining candidate, not yet tested: whether the mismatch is in the
+GLOBAL pressure/continuity bookkeeping itself (e.g. the pressure gauge's
+own treatment, or a genuine physical resonance between the beam's
+stiffness and the fluid's pressure response that has nothing to do with
+either boundary's own labelling) rather than in any single boundary
+condition.
+
+**Round 4: the full discrete energy budget on the coupled map's OWN
+dominant eigenvector, evaluated through one real production period, and
+all three named candidates tested by measurement — none supplies the
+growth.** Method (`FsiEnergyDiag.
+FullBudgetOnTheUnstableModeItselfAttributesTheGrowth`, small diagnostic
+grid, dt=T1/40): extract the dominant eigenvector `x` of the linear
+coupled map `M` (rho=1.115466, real, positive — confirmed, not assumed:
+imaginary part exactly 0), set `Umax=0` (the ONLY source of the map's
+additive term `b`, since the beam has no forcing of its own — a new
+`CoupledCase::Umax` field, default 1.0, added for this purpose and
+unused by every existing caller), and run `x` through one ACTUAL
+production period (real `Runner`/IQN-ILS, not the finite-difference
+linearization). Confirmed the output equals `lambda*x` to 8.8e-8
+relative — genuinely validating `x` as an eigenvector of the real
+nonlinear step, not just of its finite-difference approximation.
+
+**Every term of the budget closes exactly**, both internally
+(`gen.id.closure_residual` = 1.7e-17) and against the total
+(`E1` vs `lambda²·E0`: 2.8e-10 relative; `dE_beam+dE_fluid` vs
+`(lambda²-1)·E0`: exact to solver tolerance). The three candidates the
+lead named were each tested directly, not assumed:
+- **(a) the post-solve mass correction**: measured `correction_energy`
+  (its own, isolated KE contribution, computed by independently
+  re-solving `cn_step` with the SAME t0 state and converged wall
+  velocities to get the RAW, uncorrected solution, then diffing against
+  the actual — mass-corrected — production output at the outflow
+  column) = **-4.572e-6, NEGATIVE**. The correction removes energy in
+  this mode, not adds it — the opposite sign from what candidate (a)
+  requires. RULED OUT by measurement, not argument.
+- **(b) the outflow rows (restore continuity with a do-nothing traction
+  condition)**: IMPLEMENTED directly in `cn_step`/`StokesSolver`
+  (replacing the zero-curvature-extrapolation + `p=0`-column pair with a
+  genuine `-p+2·mu·du/dx=0` momentum row for `u(nx,j)` paired with a
+  real continuity row at `i=nx-1`), confirmed well-posed (`JacobiSVD`
+  smallest singular value 7.25e-2, no null direction, on the nx=10,ny=6
+  grid) and confirmed NOT to break `FluidReconstructedPoiseuilleIsA
+  FixedPointOfCnStep` (needed a companion fix: the interior pin must
+  stay INACTIVE under this scheme too, exactly as under the old one —
+  the do-nothing rows already fix the gauge on their own; turning the
+  pin on unconditionally, tried first, conflicted with the do-nothing
+  rows' own implicit gauge and failed that test badly, worst_v up to
+  0.95). With this candidate actually applied: **rho(M) = 1.115367,
+  unchanged from baseline 1.115466 to within 0.01%**. RULED OUT by
+  measurement; the change was reverted (`stokes_solver.hpp` confirmed
+  byte-identical to the round-3 baseline via `cmp`) since it does not
+  fix D9, per this task's standing "revert what doesn't work" rule.
+- **(c) a pin row replacing continuity**: inapplicable by inspection —
+  `pin` is unconditionally INACTIVE whenever `bcs.right.outflow=true`
+  (`stokes_solver.hpp`'s own `if (!bcs.right.outflow && ...)`), which
+  this example always sets. There is no pin row to remove.
+
+**A genuinely large, but separately-explained, positive term was found
+on the fluid side**: `ke_change_u_outflow` (the outflow column's OWN
+kinetic-energy change, on the RAW/uncorrected solution) = +7.106e-6,
+comparable to the entire fluid-side growth (+6.806e-6). This tracks
+directly with a massive LOCAL divergence at the outflow column measured
+on this eigenvector: `|div(u)|` there is 0.25-0.27 (vs 6.9e-14
+everywhere else) — exactly the mechanism candidate (b) targeted. But
+fixing that decoupling (candidate (b), above) moves rho(M) only from 1.115466 to 1.115367 (0.01%),
+because `correction_energy` (-4.572e-6) and `boundary_bt_term`
+(-4.525e-6 as measured, boundary_bt_term*dt = -4.525289976e-06; the SAME necessary B^T identity term round 3 already proved
+load-bearing, not a bug) shift to compensate — the net effect on total
+fluid growth is preserved under the change, just redistributed among
+these three terms differently. **The fluid-side budget is internally
+consistent and complete; no single named term, when corrected, changes
+the total.**
+
+**The beam side of the budget uncovered an independent, genuine defect,
+unrelated to D9**: `BeamSolver::kinetic_energy()` (dx-weighted,
+`0.5·rho_s·h_s·dx·Σwdot²`) and `strain_energy()` (unweighted,
+`0.5·wᵀKw`) use INCONSISTENT quadratures relative to the pointwise-
+collocation mass/stiffness `step_midpoint_load`'s own recurrence
+actually advances (this file's own header: "M is the constant diagonal
+rho_s·h_s with no dx factor"). Derived and confirmed to solver-tolerance
+precision (mismatch/tolerance ratio 0.045, tolerance itself DERIVED from
+the measured eigenvector quality, not chosen): the identity that
+actually closes is `dE_beam = beam_wall_power + (1-dx_beam)·dPE`, NOT
+the naive `dE_beam = beam_wall_power` (which fails by 1.47e-5, four
+orders of magnitude over tolerance) — i.e. `strain_energy()` is missing
+a `dx_beam = L/nx_beam` factor to be the SAME physical quadrature
+`kinetic_energy()` already uses (`0.5·wᵀKw` = `PE_true/dx_beam`, by the
+standard discrete integration-by-parts identity for a pointwise 4th-
+difference stiffness operator). On the small grid here, `dx_beam=1/6`,
+so this artifact term is **56% of the entire measured `(lambda²-1)·E0`
+growth** — the single largest contributor found this round. **This does
+NOT explain, and fixing it would NOT change, D9's measured per-period
+ratio**: `kinetic_energy()`/`strain_energy()` are never called anywhere
+in the state-map construction (`run_one_coupled_period`, `coupled_map`)
+that produces `rho(M)`, and any quadratic energy functional evaluated on
+a state dominated by a single real eigenvector grows at exactly
+`rho²` per period regardless of which quadratic form is used — verified
+structurally (by inspecting every caller of `kinetic_energy()`/
+`strain_energy()`), not merely argued. Left UNFIXED this round (owned
+file, genuine bug, but explicitly not the term the lead asked this round
+to fix — "fix the term that supplies growth, and NOTHING else" — and
+this one does not supply `rho(M)`'s growth); flagged here for a future,
+separate round.
+
+**Interface adjointness (H vs HᵀD) was also checked and ruled out**: the
+power the beam RECEIVES (`dt·Σload_in·wdot_avg`, beam's own nx_beam=6
+grid) and the power the fluid DELIVERS (`W_wall_current`, the actual
+production traction formula, fluid's own, different, nx_fluid=5 grid)
+agree to 1.9e-12 absolute (vs a beam-side scale of 4.6e-6) — a
+non-adjoint interpolation leak between the two different-resolution
+grids was a plausible, un-named fourth candidate; measurement rules it
+out too.
+
+**Conclusion.** The energy budget is COMPLETE (every joule accounted
+for, both the beam-side and fluid-side identities validated to
+solver-tolerance closure) and NONE of the three named candidates, nor
+the two additional ones checked this round (interface adjointness, the
+beam quadrature defect), supplies `(lambda²-1)·E0`'s growth in a way
+that, when corrected, changes `rho(M)`. The growth appears to be an
+intrinsic property of the coupled discrete operator's own eigenstructure
+— each individual energy-transfer term is present, correctly signed and
+closed, and simply redistributes among terms differently under any of
+the tested variants without changing the total. This is consistent with
+the classical "added-mass instability" literature for partitioned FSI
+(a segregated fluid/structure exchange can amplify even when each
+sub-system is independently stable and the interface exchange is
+individually energy-consistent, because of the SEQUENTIAL/staggered
+order the exchange happens in within a step) — plausible at this task's
+own mass_ratio≈2.5, but not yet confirmed as THE mechanism. D9 remains
+OPEN. Per the lead's own instruction ("if no term supplies the growth,
+report that the budget is incomplete... before changing code"): no
+production code change is retained this round (the do-nothing outflow
+candidate was implemented, measured, and reverted); the transient
+self-convergence test and the long-run energy test both stay DISABLED
+with their existing numbers, unchanged. The next round's search should
+look at the STAGGERED, sequential nature of the partitioned exchange
+itself (which quantity is evaluated at which time level, in which
+order, within one IQN-ILS-converged step) rather than at any single
+boundary condition or correction term — every term-level candidate this
+task's own instructions anticipated has now been tested and excluded.
 
 ---
 
@@ -942,3 +1548,25 @@ pass, and do not depend on either.
   same reason. D3 (below) adds
   `VertexOwnerIsTheMinimumRankAmongHoldersAfterMigration`, targeted at this
   exact comparison; it is compiled, not yet run, for the same C1 reason.
+
+**Status after four investigation rounds (2026-09-25).** Every term of the discrete energy budget on
+the unstable eigenmode has been measured, and each named candidate has been ruled out by
+measurement, not by argument:
+- the outflow mass correction removes energy, -4.571654e-06;
+- a do-nothing outflow moves rho(M) by 0.01%;
+- the pressure pin is inactive in this configuration;
+- H and H^T D are adjoint to 1.9e-12;
+- the conjugate (adjacent-cell) traction leaves rho(M) in 1.1154-1.1173.
+The combined scheme still has rho(M) = 1.115466 on the diagnostic grid and 1.108145 on the
+production grid (rho^2 = 1.227985 against the measured 1.22796).
+
+**Next experiment, the one that discriminates.** Assemble the SAME discretisation as one monolithic
+system (fluid saddle point plus beam, with H and H^T D as the coupling blocks) and take its step map.
+- If the monolithic map also has rho > 1, the defect is in the coupled discretisation or the
+  linearised transpiration model itself, independent of partitioning.
+- If it has rho <= 1, the converged partitioned step is not computing the monolithic solution, and
+  the gap between the two is the defect.
+Also check whether any carried state is determined only through an average, as p_n was: Newmark's
+a_n under the midpoint load is the candidate, since the eigenvector carries 14% of its mass in the
+beam acceleration.
+

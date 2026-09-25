@@ -35,3 +35,60 @@ test = "verification.fsi_beam"
 # recorded as rows here (a row without a real anchor fails
 # `tools/mutate.py --check-anchors`). They are reported as "not proven" in
 # this task's submitted output instead.
+
+[[mutation]]
+id = "fsi-beam-midpoint-load-quarter-dt-coefficient"
+area = "examples/fsi_channel"
+describes = "changes step_midpoint_load()'s RHS coefficient on the K_*vn term from dt/4.0 to dt/3.0, while leaving the LHS effective-system coefficient (rebuild_effective_midpoint's own dt/4.0) untouched -- breaks the exact algebraic identity M*wddot_avg+K*w_avg=q_mid the method's own derivation relies on, without touching the marginal-stability property a spectral-radius check alone would catch. Supersedes an earlier row (`fsi-beam-newmark-gamma-below-half`, mutating a `gamma` parameter in the OLD force-at-t_{n+1} Newmark `step()`) that KNOWN_ISSUES.md D9's round-2 fix made stale: `step()` had zero remaining callers once `step_midpoint_load()` took over the production and diagnostic paths, and was removed this round (dead code) -- the old row's mutation target no longer existed in the code path any test actually exercises."
+file = "examples/fsi_channel/beam_solver.hpp"
+old = "    const Eigen::VectorXd rhs =\n        qmid + (mconst / dt) * vn - (dt / 4.0) * (K_ * vn) - (K_ * wn);"
+new = "    const Eigen::VectorXd rhs =\n        qmid + (mconst / dt) * vn - (dt / 3.0) * (K_ * vn) - (K_ * wn);"
+target = "fuse_verification_fsi_beam_test"
+test = "verification.fsi_beam"
+# PROVED (D9 round 2): FsiBeam.MidpointLoadStepConvergesAtSecondOrderInDt
+#   FAILS -- self-convergence order measures 0.9428 (required > 1.8),
+#   diffs=[1.588e-07, 8.497e-08, 4.402e-08, 2.239e-08] -- a first-order,
+#   not second-order, scheme once the RHS/LHS dt/4 coefficients disagree.
+#   The other 4 fsi_beam_test cases still PASS unchanged under this same
+#   mutation (static solves and the eigenvalue problem don't exercise
+#   step_midpoint_load at all); FsiEnergyDiag.
+#   BeamAloneStepMapSpectralRadiusIsAtMostOne ALSO still passes (rho moves
+#   from 1.0000006573 to 1.0000006905, still comfortably marginal) --
+#   confirming the spectral-radius check alone would NOT have caught this
+#   specific defect, which is exactly why the self-convergence test (not
+#   just the spectral-radius one) is the sentinel for it. Restored and
+#   confirmed byte-identical with `cmp` before moving on.
+
+[[mutation]]
+id = "fsi-energy-diag-boundary-bt-term-dropped"
+area = "test/verification"
+describes = "drops the boundary_bt_term correction from measure_full_energy_identity's own closure_residual computation, reverting to the naive (and WRONG, this round's own derivation showed) identity (E1_int-E0_int)/dt = interior_viscous_power + pressure_div_power alone -- misses the continuity operator's own B^T contribution from v_wall/u_outflow (boundary velocities referenced by continuity but with no momentum row of their own), which this round derived, added, and confirmed closes the identity to round-off."
+file = "test/verification/fsi_energy_diag_test.cpp"
+old = "  r.closure_residual =\n      e_interior_change -\n      dt * (r.interior_viscous_power + r.pressure_div_power - boundary_bt_term);"
+new = "  r.closure_residual =\n      e_interior_change -\n      dt * (r.interior_viscous_power + r.pressure_div_power);"
+target = "fuse_verification_fsi_energy_diag_test"
+test = "verification.fsi_energy_diag"
+# PROVED (D9 round 3): FsiEnergyDiag.
+#   EnergyIdentityResidualRevealsWhichHypothesisHolds FAILS -- closure_
+#   residual measures 0.013613711065375848 (required < 1e-9*E1 ~=
+#   1.17e-11), off by 9 orders of magnitude, confirming this test's own
+#   closure check is load-bearing and boundary_bt_term is not a decorative
+#   correction. Restored and confirmed byte-identical with cmp before
+#   moving on.
+
+[[mutation]]
+id = "fsi-energy-diag-beam-identity-dx-beam-coefficient-dropped"
+area = "test/verification"
+describes = "drops the (1-dx_beam) coefficient on dPE in the round-4 beam-side exact Newmark energy identity, reverting to the NAIVE (and WRONG, this round's own derivation showed) identity dE_beam = dt*sum(load_in*wdot_avg) alone -- misses that BeamSolver::kinetic_energy() (dx-weighted) and strain_energy() (unweighted) use INCONSISTENT quadratures relative to the pointwise-collocation mass/stiffness the actual step_midpoint_load recurrence uses, which this round derived, added, and confirmed closes the identity to solver-tolerance precision."
+file = "test/verification/fsi_energy_diag_test.cpp"
+old = "  const double dE_beam_predicted = dE_beam_naive + (1.0 - dx_beam) * dPE;"
+new = "  const double dE_beam_predicted = dE_beam_naive + dPE;"
+target = "fuse_verification_fsi_energy_diag_test"
+test = "verification.fsi_energy_diag"
+# PROVED (D9 round 4): FsiEnergyDiag.
+#   FullBudgetOnTheUnstableModeItselfAttributesTheGrowth FAILS -- dE_beam
+#   mismatch measures 2.943e-06 (required < 5*eig_quality*|E0| ~=
+#   4.708e-11), off by more than 4 orders of magnitude (ratio to
+#   tolerance 62517.6), confirming the (1-dx_beam) term is load-bearing,
+#   not a decorative correction. Restored and confirmed byte-identical
+#   with cmp before moving on.
