@@ -145,8 +145,16 @@ FetchContent_Declare(Eigen3
 # header-only, so the extra history costs a few seconds once, not a repeated
 # build cost.
 FetchContent_Declare(ArborX
-  GIT_REPOSITORY https://github.com/arborx/arborx.git GIT_TAG ${FUSE_ARBORX_COMMIT}
-  FIND_PACKAGE_ARGS ${FUSE_ARBORX_VERSION} NAMES ArborX)
+  GIT_REPOSITORY https://github.com/arborx/arborx.git GIT_TAG ${FUSE_ARBORX_COMMIT})
+# Deliberately NO FIND_PACKAGE_ARGS here, unlike the entries above.
+# fuse_resolve_arborx() already does its own find_package(ArborX) and only
+# reaches FetchContent_MakeAvailable when that failed, so the redirection
+# would merely repeat it -- and repeating it is harmful: an installed
+# ArborX's ArborXSettings.cmake does a plain `set(ARBORX_ENABLE_MPI ON)`,
+# which survives even when the find as a whole fails, and MakeAvailable's
+# internal retry re-leaked it AFTER the macro had reset it. The fetched
+# ArborX then ran `find_package(MPI REQUIRED)` and a Tier-0 configure died
+# on a machine with no discoverable MPI.
 
 # ------------------------------------------------- resolution
 # The per-dependency record is APPENDED TO A FILE as each one resolves, rather
@@ -326,12 +334,24 @@ macro(fuse_resolve_arborx)
     # AnyNewer, so ArborX's ">= 4.5" request is satisfied by it; proven to
     # actually COMPILE against 5.1.0, not just configure, per
     # docs/dev/search.md.)
+    # The failed find_package above is not side-effect free. An INSTALLED
+    # ArborX's ArborXSettings.cmake does a plain `set(ARBORX_ENABLE_MPI ON)`,
+    # which survives in this scope even when the find as a whole fails (its
+    # own find_dependency(MPI) not resolving is the usual way that happens).
+    # A normal variable shadows the cache entry, so FORCE-ing the cache alone
+    # left the fetched ArborX seeing ON: its CMakeLists then ran
+    # `find_package(MPI REQUIRED)` and a Tier-0 configure died on a machine
+    # with no discoverable MPI. Clear the normal variable, then set both.
+    unset(ARBORX_ENABLE_MPI)
     set(ARBORX_ENABLE_MPI ${FUSE_ENABLE_MPI} CACHE BOOL "" FORCE)
+    set(ARBORX_ENABLE_MPI ${FUSE_ENABLE_MPI})
     set(ARBORX_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
     set(ARBORX_ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(ARBORX_ENABLE_BENCHMARKS OFF CACHE BOOL "" FORCE)
-    message(STATUS "fuse: ArborX not installed; building the pinned copy "
-                   "(commit ${FUSE_ARBORX_COMMIT})")
+    message(STATUS "fuse: no usable installed ArborX (>= ${FUSE_ARBORX_VERSION}); "
+                   "building the pinned copy (commit ${FUSE_ARBORX_COMMIT}). If one IS "
+                   "installed, its own config did not resolve -- an MPI-enabled ArborX "
+                   "needs MPI discoverable even for a Tier-0 build")
     FetchContent_MakeAvailable(ArborX)
     file(APPEND "${FUSE_RESOLUTION_FILE}"
          "ArborX=fetched (pinned ${FUSE_ARBORX_COMMIT}, not tuned for this machine)\n")

@@ -40,6 +40,31 @@ own reason (tagging a rank onto the result). `box_index.cpp`'s `ExtractIndex` an
 `distributed.cpp`'s `TagWithRank` are that callback for the local and distributed trees
 respectively.
 
+
+### An installed MPI-enabled ArborX pulls MPI into a Tier-0 build
+
+Found 2026-09-25 against an installed ArborX 2.1.99 built with `ARBORX_ENABLE_MPI ON`
+(`/opt/arborx/share/cmake/ArborX`). Two things follow, and both bit:
+
+1. **Its config needs MPI to resolve at all.** `ArborXConfig.cmake` runs
+   `find_dependency(MPI)`, so on a machine where MPI is not discoverable the installed ArborX
+   simply does not resolve — even for a build with `FUSE_ENABLE_MPI=OFF`, which wants nothing
+   from MPI. `fuse_resolve_arborx()` then falls back to the pinned copy, and its message says so
+   rather than the misleading "not installed".
+2. **The failed find leaks a variable.** `ArborXSettings.cmake` does a plain
+   `set(ARBORX_ENABLE_MPI ON)`, which survives in the caller's scope even though the find as a
+   whole failed. A normal variable shadows a cache entry, so FORCE-ing the cache to `OFF` was not
+   enough: the fetched ArborX's own `option()` kept `ON`, ran `find_package(MPI REQUIRED)`, and
+   the configure died with `Could NOT find MPI` pointing inside `_deps/arborx-src/CMakeLists.txt`.
+   The variable is now cleared before the fetch, and — the part that actually fixed it — ArborX's
+   `FetchContent_Declare` carries **no** `FIND_PACKAGE_ARGS`: `MakeAvailable`'s own internal
+   `find_package` retry re-leaked the variable *after* the reset, and the retry is redundant
+   because `fuse_resolve_arborx()` has already done that find itself.
+
+Verified by configuring Tier 0 with `/opt/arborx` on `CMAKE_PREFIX_PATH` and no MPI on `PATH`:
+before, a hard `Could NOT find MPI`; after, a clean configure, the pinned copy, and 101/101. With
+MPI available the installed 2.1.99 is still preferred.
+
 ## Layering: BELOW `fuse::backend`, not above it
 
 `docs/dev/layering.md` / `tools/check-layering.py`'s `LAYERS` list places `search` directly below
