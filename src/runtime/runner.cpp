@@ -1652,9 +1652,19 @@ Result<void> Runner::Impl::build_ticks(ComponentSet& components) {
   // Every graph component needs an implementation and vice versa. A component
   // present in only one of the two is never advanced and never exchanged,
   // which is a wrong-physics failure with no symptom.
+  //
+  // A `ComponentKind::Coupler` entry is exempt from BOTH directions of that
+  // rule: it is a placement, not a physics participant, so it has no
+  // `register_fields()`/`advance()` implementation to supply (there is no
+  // `add_coupler_impl()`-style call on `ComponentSet`, and there should
+  // never need to be one), and it gets no `Tick` -- it is never due, never
+  // advanced, never clocked. Its ranks still get a communicator in
+  // `attach_comm_graphs()` below, exactly like any physics component's,
+  // which is what lets a channel's Transport/Epoch actually reach them.
   std::vector<bool> matched(components.size(), false);
   for (std::uint32_t i = 0; i < graph.component_count(); ++i) {
     const ComponentDecl& decl = graph.component(ComponentId{i});
+    if (decl.kind == ComponentKind::Coupler) continue;
     std::size_t slot = components.size();
     for (std::size_t j = 0; j < components.size(); ++j) {
       if (components.at(j).name() == decl.name) {
