@@ -128,3 +128,60 @@ test = "backend.nodal_remap_distributed_nullcomm"
 # applied, rebuilt, confirmed exactly this one test fails; file restored
 # byte-for-byte (cmp against a pre-mutation backup); rebuilt and reconfirmed
 # all 3 tests passing before moving on.
+
+[[mutation]]
+id = "nodal-remap-dist-domain-verdict-not-agreed-across-ranks"
+area = "backend"
+describes = "build_distributed_interp_rows returns its local scan's own verdict directly (E-INTERP-DOMAIN/E-INTERP-NEWTON/E-INTERP-DEGENERATE on local_failed, success otherwise) instead of calling agree_on_local_failure -- exactly the round-4 defect a real host MPI run found: a rank whose OWN local evaluation entities all lie inside the assembled source returns success while a DIFFERENT rank, holding a genuinely out-of-domain point, returns failure, so at 3+ ranks some ranks refuse and their partners do not, skipping a collective the failing rank never reaches"
+file = "src/backend/nodal_remap_distributed.cpp"
+old = '''  const auto agreed = agree_on_local_failure(comm_handle, local_failed, local_fail_code_id,
+                                             local_fail_entity_gid, "build_distributed_interp_rows");
+  if (!agreed.ok()) return agreed.error();
+  return out;
+}'''
+new = '''  // MUTATED: no cross-rank agreement, rank-local verdict only
+  if (local_failed) {
+    return Failure{fail_code_str(local_fail_code_id), "MUTATED: rank-local verdict, no agreement"};
+  }
+  return out;
+}'''
+target = "fuse_parallel_nodal_remap_distributed_test"
+test = "parallel.nodal_remap_distributed.3"
+requires = "mpi"
+# NOT-ASSESSED in this sandbox, and VERIFIED HERE not to be assessable even
+# through the Tier-0 null-communicator path this track otherwise uses to
+# dodge the "MPI cannot initialise here" limit for everything else in this
+# file: `agree_on_local_failure`'s whole point is to make every rank of
+# `comm_handle` agree on ONE verdict, and with `kNullComm`'s exactly ONE
+# participant there is nothing to disagree with -- the local verdict IS the
+# global verdict, by construction, whether or not the agreement step runs
+# at all. Applied by hand and rebuilt: ALL 16 InterfaceTransfer/
+# ConsistentInterpPlan cases and all 3 NodalRemapDistributedNullComm cases
+# (including TargetOutsideSourceDomainRefuses, the single-participant
+# sibling of the real defect's own failing test) still pass -- confirming,
+# empirically rather than just by argument, that this mutation is invisible
+# to every test this sandbox can run. File restored byte-for-byte (cmp
+# against a pre-mutation backup) immediately after.
+# What DOES bound confidence in the fix without a live multi-rank kill: a
+# standalone diagnostic (compiled against this file's own real
+# `allgatherv_records`/`fail_code_str`, not a re-implementation) fed
+# hand-built 3- and 4-fake-rank record sets directly into
+# `agree_on_local_failure`'s post-Allgather scan logic and confirmed it
+# picks the LOWEST failing rank's code and global id when exactly one
+# rank fails, when two DIFFERENT ranks fail with different codes, and
+# agrees "success" when none do -- the DECISION rule this mutation would
+# corrupt, exercised without needing a real multi-process launch. That
+# checks the logic in isolation; it is not a substitute for this row's own
+# KILL, which needs a genuine 3+-rank launch:
+#   ctest --test-dir <build> -R 'parallel\\.nodal_remap_distributed\\.[3-5]'
+# Expected kill on the host: with the round-4 fix in place (unmutated),
+# that command should PASS -- every rank of a 3+-rank job agrees on ONE
+# E-INTERP-DOMAIN verdict. Apply this mutation on top of the fix, rebuild,
+# rerun the same command: it should FAIL again, reproducing the ORIGINAL
+# symptom the host run that found this defect reported (`rows_r.ok()`
+# true on a rank whose own local points all lie inside the source, false
+# on a rank that owns the genuinely out-of-domain one) -- this mutation's
+# `new` IS, almost verbatim, the pre-round-4 code. A clean host run of
+# BOTH the unmutated fix (expect PASS) and this mutation (expect the
+# original FAIL to reappear) is the one verdict this sandbox cannot supply
+# for itself.

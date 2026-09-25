@@ -109,6 +109,113 @@ struct GatheredDoubles {
 #endif
 }
 
+// This rank's position in `comm_handle` (0 for `kNullComm`). ONLY ever
+// called after a caller has already round-tripped `comm_handle` through
+// `allgatherv_records` once successfully (both `build_distributed_interp_rows`
+// and `agree_on_local_failure` below satisfy this): a real communicator on a
+// no-MPI build would already have been refused (`E-RT-NODAL-DIST-NOMPI`) by
+// that earlier call, so by the time this runs, `comm_handle == kNullComm` (0
+// is the genuinely correct answer) or `FUSE_HAVE_MPI` is on and `comm_handle`
+// already named a working communicator (so `MPI_Comm_rank` on it cannot fail
+// for a reason `allgatherv_records` itself would not already have caught).
+[[nodiscard]] int comm_rank(search::CommHandle comm_handle) {
+  if (comm_handle == search::kNullComm) return 0;
+#if FUSE_HAVE_MPI
+  const MPI_Comm comm = MPI_Comm_f2c(static_cast<MPI_Fint>(comm_handle));
+  int r = 0;
+  MPI_Comm_rank(comm, &r);
+  return r;
+#else
+  return 0;
+#endif
+}
+
+/// THE FIX FOR "a refusal reachable after a collective must be an AGREED
+/// verdict, not a rank-local one" -- the exact defect a host MPI run found
+/// in `build_distributed_interp_rows`'s per-entity loop (round 4,
+/// KNOWN_ISSUES.md D8): a rank whose own local evaluation entities all lie
+/// inside the assembled source mesh would return success while a
+/// DIFFERENT rank, whose own local entities include one that is genuinely
+/// out of domain (or defeats Newton), returned failure -- so at 3+ ranks
+/// some ranks would return from this collective-adjacent function while
+/// their partners, having taken the success branch, went on to call
+/// FURTHER collectives the failing rank never reaches. This function is
+/// the single place that turns "did THIS rank see a local failure" into
+/// "did ANY rank see one, and if so, which is authoritative" -- called by
+/// EVERY rank of `comm_handle`, INCLUDING one with zero local evaluation
+/// entities or one that itself never failed, since the agreement itself
+/// (not just its outcome) is the collective every rank must take part in.
+///
+/// `local_failed`/`local_code_id`/`local_entity_gid` describe (at most) the
+/// FIRST local failure this rank's own per-entity scan hit (see
+/// `FailCode` below for what `local_code_id` encodes); a rank that saw no
+/// failure passes `local_failed = false` (the other two are then
+/// ignored). Ties (more than one rank failing) are broken by LOWEST RANK,
+/// the same determinism rule this codebase already uses for a shared
+/// global id (general_interp.hpp's own tie-break) -- not because a lower
+/// rank is more "correct," but so every rank's reconstructed message
+/// agrees on which failure to report without needing to exchange the
+/// dynamic message text itself over MPI.
+///
+/// Returns `Result<void>::success()` when no rank failed. Encodes each
+/// rank's record as exactly 4 doubles (rank, failed flag, code id, entity
+/// global id) and Allgathers ONE such record per rank -- fixed-size, so
+/// every rank (even one with nothing of its own to report) contributes
+/// exactly one record, satisfying the "still take part in the collective"
+/// requirement structurally, not by convention.
+enum class FailCode : int {
+  kDomain = 1,
+  kNewton = 2,
+  kDegenerate = 3,
+  kOwnerMissing = 4,  // apply_distributed_H's own E-RT-NODAL-DIST-OWNER
+  kOther = 5,
+};
+
+[[nodiscard]] const char* fail_code_str(int id) {
+  switch (static_cast<FailCode>(id)) {
+    case FailCode::kDomain: return "E-INTERP-DOMAIN";
+    case FailCode::kNewton: return "E-INTERP-NEWTON";
+    case FailCode::kDegenerate: return "E-INTERP-DEGENERATE";
+    case FailCode::kOwnerMissing: return "E-RT-NODAL-DIST-OWNER";
+    case FailCode::kOther: default: return "E-INTERP-DISTRIBUTED-ROW";
+  }
+}
+
+[[nodiscard]] Result<void> agree_on_local_failure(search::CommHandle comm_handle, bool local_failed,
+                                                   int local_code_id, std::size_t local_entity_gid,
+                                                   const char* function_name) {
+  const int my_rank = comm_rank(comm_handle);
+  const std::vector<double> local_record = {
+      static_cast<double>(my_rank), local_failed ? 1.0 : 0.0,
+      static_cast<double>(local_code_id), static_cast<double>(local_entity_gid)};
+  const auto g = allgatherv_records(comm_handle, local_record, /*stride=*/4);
+  if (!g.ok()) return g.error();
+
+  bool any_failed = false;
+  int winning_rank = -1;
+  int winning_code_id = 0;
+  std::size_t winning_gid = 0;
+  for (std::size_t k = 0; k < g.value().records; ++k) {
+    const double* rec = &g.value().data[k * 4];
+    if (rec[1] == 0.0) continue;
+    const auto rec_rank = static_cast<int>(rec[0]);
+    if (!any_failed || rec_rank < winning_rank) {
+      any_failed = true;
+      winning_rank = rec_rank;
+      winning_code_id = static_cast<int>(rec[2]);
+      winning_gid = static_cast<std::size_t>(rec[3]);
+    }
+  }
+  if (!any_failed) return Result<void>::success();
+  return Failure{
+      fail_code_str(winning_code_id),
+      fmt::format("{}: rank {} could not place its evaluation entity of global id {} ({}); "
+                  "the verdict is AGREED across every rank of the communicator, so every rank "
+                  "refuses together even though only rank {} saw the failure locally",
+                  function_name, winning_rank, winning_gid, fail_code_str(winning_code_id),
+                  winning_rank)};
+}
+
 /// The whole source nodal mesh, assembled identically on every rank --
 /// see nodal_remap_distributed.hpp's file header for why this trades
 /// scalability for an implementation whose correctness reduces entirely to
@@ -274,7 +381,25 @@ Result<DistributedInterpRows> build_distributed_interp_rows(const MeshView& src_
 
   DistributedInterpRows out;
   const std::size_t n_eval = eval_points.entity_count(eval_dim);
-  for (std::size_t j = 0; j < n_eval; ++j) {
+
+  // Round 4 (KNOWN_ISSUES.md D8): NEITHER branch below returns directly.
+  // Both a per-candidate invert_reference_map failure (E-INTERP-NEWTON /
+  // E-INTERP-DEGENERATE) and "no candidate contains this point"
+  // (E-INTERP-DOMAIN) depend on THIS rank's own local evaluation entities,
+  // so returning either one straight from this loop -- as an earlier
+  // version of this file did -- would let a rank with no bad point return
+  // success and go on to call a FURTHER collective its partners, having
+  // hit the failure, never reach. `local_failed`/`local_fail_code_id`/
+  // `local_fail_entity_gid` record the FIRST such local failure (if any)
+  // and the loop then simply stops adding rows; `agree_on_local_failure`
+  // below is the single place every rank -- including one with zero local
+  // evaluation entities, or one that never fails at all -- takes part in
+  // the SAME collective and returns the SAME verdict.
+  bool local_failed = false;
+  int local_fail_code_id = 0;
+  std::size_t local_fail_entity_gid = 0;
+
+  for (std::size_t j = 0; j < n_eval && !local_failed; ++j) {
     if (!eval_points.is_owned(eval_dim, j)) continue;
     const Vec3 target = to_vec(eval_points.centroid(eval_dim, j));
 
@@ -298,10 +423,22 @@ Result<DistributedInterpRows> build_distributed_interp_rows(const MeshView& src_
     double fallback_score = std::numeric_limits<double>::max();
     std::array<double, 3> fallback_u{};
     bool fallback_passes_loose = false;
+    bool newton_failed = false;
 
     for (std::size_t c = 0; c < cells.size(); ++c) {
       const auto inv = invert_reference_map(cells[c], target);
-      if (!inv.ok()) return inv.error();
+      if (!inv.ok()) {
+        // E-INTERP-NEWTON or E-INTERP-DEGENERATE, both from
+        // invert_reference_map's own documented contract (general_interp.hpp)
+        // -- NOT returned directly; recorded for the agreed verdict below.
+        local_failed = true;
+        newton_failed = true;
+        local_fail_code_id = (inv.error().code == "E-INTERP-DEGENERATE")
+                                 ? static_cast<int>(FailCode::kDegenerate)
+                                 : static_cast<int>(FailCode::kNewton);
+        local_fail_entity_gid = eval_points.global_id(eval_dim, j);
+        break;
+      }
       const double diam = std::max(cell_diameter(cells[c]), 1.0);
       const bool surf_ok = inv.value().residual <= kSurfaceTol * diam;
       const std::size_t gid = mesh.cells[c].gid;
@@ -329,6 +466,7 @@ Result<DistributedInterpRows> build_distributed_interp_rows(const MeshView& src_
         fallback_passes_loose = passes_loose;
       }
     }
+    if (newton_failed) break;
 
     std::size_t best_c;
     std::array<double, 3> best_u{};
@@ -339,13 +477,10 @@ Result<DistributedInterpRows> build_distributed_interp_rows(const MeshView& src_
       best_c = fallback_c;
       best_u = fallback_u;
     } else {
-      return Failure{"E-INTERP-DOMAIN",
-                     fmt::format("build_distributed_interp_rows: evaluation entity {} (at "
-                                 "({:.6g}, {:.6g}, {:.6g})) is not contained by any source "
-                                 "cell assembled across the communicator; "
-                                 "InterfaceDomainPolicy::ClampToBoundary is not implemented "
-                                 "for the distributed builder (see the file header)",
-                                 j, target.x, target.y, target.z)};
+      local_failed = true;
+      local_fail_code_id = static_cast<int>(FailCode::kDomain);
+      local_fail_entity_gid = eval_points.global_id(eval_dim, j);
+      break;
     }
 
     DistributedInterpRow row;
@@ -367,6 +502,10 @@ Result<DistributedInterpRows> build_distributed_interp_rows(const MeshView& src_
     out.max_row_defect = std::max(out.max_row_defect, std::abs(rowsum - 1.0));
     out.rows.push_back(std::move(row));
   }
+
+  const auto agreed = agree_on_local_failure(comm_handle, local_failed, local_fail_code_id,
+                                             local_fail_entity_gid, "build_distributed_interp_rows");
+  if (!agreed.ok()) return agreed.error();
   return out;
 }
 
@@ -402,23 +541,38 @@ Result<void> apply_distributed_H(const DistributedInterpRows& rows, const MeshVi
     value_of[static_cast<std::size_t>(rec[0])] = rec + 1;
   }
 
+  // Round 4 (KNOWN_ISSUES.md D8): same hazard class as
+  // build_distributed_interp_rows' own fix above, and the SAME remedy --
+  // whether a rows' src_global_ids miss the globally-gathered value_of map
+  // depends on THIS rank's own rows, so it must never return directly. The
+  // scan still runs to completion locally (out_owned is filled wherever
+  // possible) so a rank that never fails is not left with a half-filled
+  // buffer if a DIFFERENT rank's verdict turns out to be the failing one;
+  // the buffer is only ever read by the caller once agree_on_local_failure
+  // below confirms success on every rank.
   out_owned.assign(rows.rows.size() * components, 0.0);
+  bool local_failed = false;
+  std::size_t local_fail_gid = 0;
   for (std::size_t r = 0; r < rows.rows.size(); ++r) {
     const DistributedInterpRow& row = rows.rows[r];
     for (std::size_t k = 0; k < row.src_global_ids.size(); ++k) {
       const auto it = value_of.find(row.src_global_ids[k]);
       if (it == value_of.end()) {
-        return Failure{"E-RT-NODAL-DIST-OWNER",
-                       fmt::format("apply_distributed_H: source vertex global id {} (needed "
-                                   "by a row this rank owns) was not supplied as OWNED by "
-                                   "any rank",
-                                   row.src_global_ids[k])};
+        if (!local_failed) {
+          local_failed = true;
+          local_fail_gid = row.src_global_ids[k];
+        }
+        continue;
       }
       for (std::size_t c = 0; c < components; ++c) {
         out_owned[r * components + c] += row.weights[k] * it->second[c];
       }
     }
   }
+  const auto agreed = agree_on_local_failure(comm_handle, local_failed,
+                                             static_cast<int>(FailCode::kOwnerMissing), local_fail_gid,
+                                             "apply_distributed_H");
+  if (!agreed.ok()) return agreed.error();
   return Result<void>::success();
 }
 
