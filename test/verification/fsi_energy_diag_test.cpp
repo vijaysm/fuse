@@ -1706,8 +1706,22 @@ TEST(FsiEnergyDiag, FullBudgetOnTheUnstableModeItselfAttributesTheGrowth) {
   // Measured (this run): mismatch/(eig_quality*E0) = 0.225 -- a safety
   // factor of 5 gives >>20x headroom over the actual mismatch without
   // being loosened past what the eigenvector's own quality can support.
-  const double beam_identity_tol = 5.0 * eig_quality * std::abs(E0);
-  std::printf("beam identity tolerance = 5*eig_quality*|E0| = %.3e "
+  // The floor, not a chosen slack. `x` is a finite-difference eigenvector
+  // accurate to `eig_quality` (measured 8.8e-8) in relative terms, so a
+  // quadratic identity evaluated on it cannot close below
+  // eig_quality*|E0| however right the algebra is. Factor 1.0: the measured
+  // mismatch is 2.118e-12 against a tolerance of 9.4e-12, i.e. 22% of it, so
+  // this assertion is load-bearing.
+  //
+  // Stated plainly because it matters: this is LOOSER than the 1e-9*|E0|+1e-12
+  // bound this test carried before the identity was evaluated on an
+  // eigenvector at all. That bound was 1.1e-12, below the 2.1e-12 the
+  // eigenvector's own accuracy permits, so it was unachievable for a reason
+  // now understood rather than merely inconvenient. It is TIGHTER than the
+  // 1e-7*|E0| and 5*eig_quality*|E0| values used while that was being worked
+  // out.
+  const double beam_identity_tol = 1.0 * eig_quality * std::abs(E0);
+  std::printf("beam identity tolerance = eig_quality*|E0| = %.3e "
              "(measured mismatch/that ratio = %.3f)\n",
              beam_identity_tol,
              std::abs(dE_beam - dE_beam_predicted) / beam_identity_tol);
@@ -1751,11 +1765,17 @@ TEST(FsiEnergyDiag, FullBudgetOnTheUnstableModeItselfAttributesTheGrowth) {
   // not from a second, independent error source.
   double u_raw_scale = 0.0;
   for (const double v : u_raw) u_raw_scale = std::max(u_raw_scale, std::abs(v));
-  const double mass_corr_tol = 20.0 * eig_quality * u_raw_scale;
+  // Away from the outflow column the two solves differ only by the solver's
+  // own convergence, which is why this is keyed to eig_quality rather than to
+  // round-off. Factor 0.5, not 20: the measured difference is 1.115e-10
+  // against 1.4e-9, and at the factor of 20 it had been 0.2% of the tolerance,
+  // which asserts nothing. This is also tighter than the plain 1e-8 bound it
+  // originally replaced.
+  const double mass_corr_tol = 0.5 * eig_quality * u_raw_scale;
   std::printf("\n==== MASS-CORRECTION ISOLATION ====\n");
   std::printf("max|u_raw| (velocity scale for the tolerance below) = %.3e\n",
              u_raw_scale);
-  std::printf("mass-correction isolation tolerance = 20*eig_quality*max|u_raw| "
+  std::printf("mass-correction isolation tolerance = 0.5*eig_quality*max|u_raw| "
              "= %.3e\n",
              mass_corr_tol);
   std::printf("max|u1-u_raw| away from outflow column = %.3e (must be ~0: "
