@@ -233,7 +233,14 @@ void run_and_check(std::size_t n_beam, std::size_t n_fluid, fuse::RankSet beam_r
   });
   b->local_count = local_count;
   f->local_count = local_count;
+  // Both raw pointers BEFORE the moves. The one-rank host segfault
+  // (EXC_BAD_ACCESS at address 0x30) was `fp->bufs[...]` below, read through
+  // a moved-from unique_ptr: `bp` had been taken, `fp` had not, and the
+  // fluid buffers were then read through a null `Side*` plus the map's
+  // offset. It showed only at one rank because every other rank count died
+  // earlier, at initialize(), on E-RT-CONSERVATION-MPI.
   Side* bp = b.get();
+  Side* fp = f.get();
   ComponentSet components;
   components.add(std::move(b));
   components.add(std::move(f));
@@ -246,17 +253,13 @@ void run_and_check(std::size_t n_beam, std::size_t n_fluid, fuse::RankSet beam_r
   Runner runner{g, lowered.dag, sched.plan, backend};
   RunnerConfig cfg;
   cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
-  // The Runner's own conservation check is RANK-LOCAL by construction: it sums
-  // this rank's owned share of the integral with no cross-rank reduction, so
-  // on a multi-rank placement it refuses rather than report a number it cannot
-  // stand behind (E-RT-CONSERVATION-MPI, REVIEW.md N-transport-runtime-1), and
-  // that refusal is what this fixture hit at 2-5 ranks on a host run. Turning
-  // it off here is not weakening the test: the assertions below compute the
-  // SAME conservation statement across the whole job with MPI_Allreduce, which
-  // is the check the Runner is declining to make. Closing the gap in the
-  // library -- reducing over the target component's communicator, which the
-  // Runner already holds -- would let this line go away; KNOWN_ISSUES.md D10.
-  cfg.check_conservation = false;
+  // check_conservation stays at its default (ON). The Runner's Constrain
+  // reduces both integrals over the base communicator (KNOWN_ISSUES.md D10,
+  // 2026-09-25) -- before that it refused a multi-rank target
+  // (E-RT-CONSERVATION-MPI) and this fixture had to disable it. Leaving it on
+  // makes this test check the Runner's verdict against its own MPI_Allreduce
+  // of the same integrals below: two independent computations of one
+  // statement, and the Runner's would fail initialize()/run_period() first.
   {
     const auto r = runner.initialize(components, registry, cfg);
     ASSERT_TRUE(r.ok()) << "initialize: " << r.error().code << ": " << r.error().message;
@@ -278,7 +281,7 @@ void run_and_check(std::size_t n_beam, std::size_t n_fluid, fuse::RankSet beam_r
   // (1) H exact for a linear field, on every rank's own local fluid cells --
   // pointwise, so ghosts don't even enter into it (fluid has none: cells are
   // a plain, non-overlapping partition).
-  const std::vector<double>& fluid_in = f->bufs["fluid_velocity_in"];
+  const std::vector<double>& fluid_in = fp->bufs["fluid_velocity_in"];
   for (std::size_t j = 0; j < fluid_in.size(); ++j) {
     const double x = fluid_view->centroid(1, j).x;
     EXPECT_NEAR(fluid_in[j], vel_a + vel_b * x, 1e-12) << "rank " << world_rank() << " fluid cell " << j;
@@ -303,7 +306,7 @@ void run_and_check(std::size_t n_beam, std::size_t n_fluid, fuse::RankSet beam_r
   // across every rank of MPI_COMM_WORLD, exactly like
   // nodal_remap_distributed_test.cpp's own conservation check.
   double local_sent = 0.0, local_received = 0.0, local_p_fluid = 0.0, local_p_beam = 0.0;
-  const std::vector<double>& fluid_force = f->bufs["fluid_force"];
+  const std::vector<double>& fluid_force = fp->bufs["fluid_force"];
   const double h_fluid = fluid_view->entity_count(1) > 0 ? fluid_view->measure(1, 0) : 0.0;
   for (std::size_t j = 0; j < fluid_force.size(); ++j) {
     local_sent += fluid_force[j] * h_fluid;
