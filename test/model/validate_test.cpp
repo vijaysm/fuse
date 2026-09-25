@@ -298,11 +298,13 @@ TEST(Validate, DeserializedGraphWithBadWindowComponentDoesNotThrowAndReportsBadR
   w.pod(std::uint32_t{1});
   w.pod(std::int32_t{0});
   w.rational(Rational{1});
+  w.pod(std::uint8_t{0});  // kind = Physics (v6)
   // component 1 = "B", on rank 1
   w.str(std::string{"B"});
   w.pod(std::uint32_t{1});
   w.pod(std::int32_t{1});
   w.rational(Rational{1});
+  w.pod(std::uint8_t{0});  // kind = Physics (v6)
   // field 0: owner=A, region=0, Provides
   w.str(std::string{"s"});
   w.pod(std::uint32_t{0});
@@ -333,6 +335,7 @@ TEST(Validate, DeserializedGraphWithBadWindowComponentDoesNotThrowAndReportsBadR
   w.window(Window::from(ComponentId{99}));
   w.pod(std::uint32_t{0});  // remap.flags = None
   w.str(std::string{});     // remap.method_override
+  w.pod(std::uint32_t{0xFFFFFFFFu});  // remap.remap_on = invalid (v6)
   w.pod(std::uint8_t{0});   // spacetime.basis = None
   w.pod(std::int32_t{0});   // spacetime.degree
   w.window(Window{});       // spacetime.window = CouplingPeriod default
@@ -494,4 +497,88 @@ TEST(Validate, AnEmptyPlacementWithNoChannelIsStillLegal) {
 TEST(Validate, OrdinaryPlacementsAreNotRefused) {
   const auto d = validate_with_placements({0, 2}, {2, 2}, true);
   EXPECT_EQ(count_code(d, "E-PLACEMENT-EMPTY"), 0u);
+}
+
+// ---- coupler placement (design C) --------------------------------------
+
+TEST(Validate, ACouplerOwningFieldsIsRefused) {
+  Fixture f;
+  const auto coupler = f.g.add_coupler({.name = "C", .ranks = {2, 1}});
+  // Nothing in the public API stops a caller from add_field()-ing onto a
+  // coupler's ComponentId; validate() is where the misuse is caught.
+  (void)f.g.add_field(coupler, FieldSpec{.name = "stray", .region =
+                                         f.g.field(f.src).region});
+  const Diagnostics d = validate(f.g);
+  EXPECT_TRUE(has_code(d, "E-COUPLER-FIELDS")) << d.to_string();
+}
+
+TEST(Validate, ACouplerWithNoFieldsIsClean) {
+  Fixture f;
+  f.g.add_coupler({.name = "C", .ranks = {2, 1}});
+  const Diagnostics d = validate(f.g);
+  EXPECT_FALSE(d.has_errors()) << d.to_string();
+}
+
+TEST(Validate, RemapOnMustNameACouplerOrTheChannelsOwnEndpoint) {
+  Fixture f;
+  // A THIRD physics component, unrelated to this channel: neither a
+  // coupler, nor this channel's own source or target.
+  const auto bystander = f.g.add_component(
+      ComponentDecl{.name = "bystander", .ranks = {2, 1}});
+  f.g.channel(f.ch).remap(fuse::RemapFlags::Conservative).remap_on(bystander);
+  const Diagnostics d = validate(f.g);
+  EXPECT_TRUE(has_code(d, "E-CHANNEL-REMAP-ON")) << d.to_string();
+}
+
+TEST(Validate, RemapOnACouplerIsAccepted) {
+  Fixture f;
+  const auto coupler = f.g.add_coupler({.name = "C", .ranks = {2, 1}});
+  f.g.channel(f.ch).remap(fuse::RemapFlags::Conservative).remap_on(coupler);
+  const Diagnostics d = validate(f.g);
+  EXPECT_FALSE(d.has_errors()) << d.to_string();
+  EXPECT_FALSE(has_code(d, "W-CHANNEL-REMAP-ON-UNUSED")) << d.to_string();
+}
+
+TEST(Validate, RemapOnTheChannelsOwnSourceOrTargetIsAccepted) {
+  Fixture f;
+  f.g.channel(f.ch).remap(fuse::RemapFlags::Conservative).remap_on(f.fluid);
+  const Diagnostics d = validate(f.g);
+  EXPECT_FALSE(has_code(d, "E-CHANNEL-REMAP-ON")) << d.to_string();
+  f.g.channel(f.ch).remap_on(f.solid);
+  const Diagnostics d2 = validate(f.g);
+  EXPECT_FALSE(has_code(d2, "E-CHANNEL-REMAP-ON")) << d2.to_string();
+}
+
+// Fixture's "flux" channel has no remap flags and both fields share the
+// SAME region (`r`), so nothing about it can ever produce a Remap operator
+// (fuse/model/remap_kind.hpp's could_ever_emit_remap): a remap_on declared
+// on it is inert.
+TEST(Validate, RemapOnWithNoPossibleRemapWarnsUnused) {
+  Fixture f;
+  const auto coupler = f.g.add_coupler({.name = "C", .ranks = {2, 1}});
+  f.g.channel(f.ch).remap_on(coupler);
+  const Diagnostics d = validate(f.g);
+  EXPECT_FALSE(d.has_errors()) << d.to_string();
+  EXPECT_TRUE(has_code(d, "W-CHANNEL-REMAP-ON-UNUSED")) << d.to_string();
+}
+
+TEST(Validate, RemapOnACouplerPlacedNowhereIsRefusedWhenItWouldBeUsed) {
+  Fixture f;
+  const auto coupler = f.g.add_coupler({.name = "C", .ranks = fuse::RankSet(0, 0)});
+  f.g.channel(f.ch).remap(fuse::RemapFlags::Conservative).remap_on(coupler);
+  const Diagnostics d = validate(f.g);
+  EXPECT_TRUE(has_code(d, "E-PLACEMENT-EMPTY")) << d.to_string();
+}
+
+// The unused case is the other half of the same ruling as
+// AnEmptyPlacementWithNoChannelIsStillLegal above: an empty coupler
+// placement that no channel's remap actually routes through is not a
+// modelling error.
+TEST(Validate, RemapOnACouplerPlacedNowhereIsNotRefusedWhenItWouldNotBeUsed) {
+  Fixture f;
+  const auto coupler = f.g.add_coupler({.name = "C", .ranks = fuse::RankSet(0, 0)});
+  f.g.channel(f.ch).remap_on(coupler);  // no flags -> could never fire
+  const Diagnostics d = validate(f.g);
+  EXPECT_FALSE(has_code(d, "E-PLACEMENT-EMPTY")) << d.to_string();
+  EXPECT_TRUE(has_code(d, "W-CHANNEL-REMAP-ON-UNUSED")) << d.to_string();
 }

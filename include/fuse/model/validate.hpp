@@ -10,6 +10,7 @@
 #include "fuse/base/result.hpp"
 #include "fuse/model/connect.hpp"
 #include "fuse/model/coupling_graph.hpp"
+#include "fuse/model/remap_kind.hpp"
 
 namespace fuse {
 namespace detail {
@@ -69,6 +70,18 @@ inline Rational channel_window(const CouplingGraph& g, const Channel& ch) {
       d.add(Severity::Error, "E-INTERVAL",
             "component '" + c.name + "' has non-positive interval " +
                 c.interval.to_string());
+    }
+    // A coupler is a placement, not a physics participant: it has no
+    // register_fields() call and no Source/Sink of its own, so a field
+    // declared on it would be silently unreachable -- nothing ever produces
+    // or consumes it. Caught here rather than left to surface as an
+    // unrelated "no producing arc" failure much later in lowering.
+    if (c.kind == ComponentKind::Coupler && !c.fields.empty()) {
+      d.add(Severity::Error, "E-COUPLER-FIELDS",
+            "coupler '" + c.name + "' owns " +
+                std::to_string(c.fields.size()) +
+                " field(s); a coupler is a placement, not a physics "
+                "component, and owns no fields");
     }
     std::unordered_set<std::string> field_names;
     for (const FieldId f : c.fields) {
@@ -151,6 +164,54 @@ inline Rational channel_window(const CouplingGraph& g, const Channel& ch) {
                 "channels -- give it a placement, or remove the channel for "
                 "runs where it is switched off",
             ctx);
+    }
+
+    // The coupler-placement track: `remap_on` names WHERE this channel's
+    // Remap runs. Invalid (the default) means "the target's own placement",
+    // today's behaviour, and needs no check at all.
+    if (ch.remap.remap_on.valid()) {
+      const ComponentId ro = ch.remap.remap_on;
+      if (ro.value() >= g.component_count()) {
+        d.add(Severity::Error, "E-BAD-REF",
+              "channel's remap_on references an invalid component", ctx);
+      } else {
+        const ComponentDecl& roc = g.component(ro);
+        const bool names_a_coupler = roc.kind == ComponentKind::Coupler;
+        const bool names_an_endpoint =
+            ro == g.owner_of(ch.source) || ro == g.owner_of(ch.target);
+        if (!names_a_coupler && !names_an_endpoint) {
+          d.add(Severity::Error, "E-CHANNEL-REMAP-ON",
+                "remap_on names component '" + roc.name +
+                    "', which is neither a coupler nor this channel's own "
+                    "source or target component",
+                ctx);
+        } else if (!could_ever_emit_remap(ch.remap.flags, g.field(ch.source), g.field(ch.target), ch.remap.method_override)) {
+          // A remap_on that would never see a Remap emitted for it: the
+          // setting has no effect. Not an error -- the graph may have named
+          // it in anticipation of a flag that got removed, or for symmetry
+          // with a sibling channel -- but silently doing nothing is exactly
+          // the kind of surprise a warning exists to flag.
+          d.add(Severity::Warning, "W-CHANNEL-REMAP-ON-UNUSED",
+                "channel names a remap_on placement, but no Remap operator "
+                "would be emitted for it (no remap flags, matching regions, "
+                "and no distributed-remap placement move); the setting is "
+                "unused",
+                ctx);
+        }
+        // Whether the placement itself is usable, but only when a Remap
+        // will actually route through it -- an empty coupler placement that
+        // nothing uses is not a modelling error (docs/user/placement.md: an
+        // empty placement is legal for a component with no channels; a
+        // coupler no channel's remap_on names has exactly that shape).
+        if (roc.ranks.empty() && could_ever_emit_remap(ch.remap.flags, g.field(ch.source), g.field(ch.target), ch.remap.method_override)) {
+          d.add(Severity::Error, "E-PLACEMENT-EMPTY",
+                "remap_on names component '" + roc.name +
+                    "', which is placed on no rank, so this channel's Remap "
+                    "has nowhere to run; give it a placement, or remove "
+                    "remap_on",
+                ctx);
+        }
+      }
     }
 
     const auto& sf = g.field(ch.source);
