@@ -23,6 +23,15 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 /// the seven dimension exponents. A v2 buffer read as v3 would take the next
 /// field's bytes as a scale, so the version gate rejects it rather than admit a
 /// plausible-looking graph with the wrong units.
+/// 6: the coupler-placement track. Each component record gains a `kind` byte
+///    (`ComponentKind`: Physics or Coupler) after its interval, and each
+///    channel record gains a `remap_on` component-id word after its remap
+///    method string. A v5 reader handed a v6 buffer would read the coupler
+///    kind byte of the FIRST component as the start of the next component's
+///    name length, and every field after it would decode as plausible
+///    garbage from there on -- the same class of silent misread v5 itself
+///    was bumped to prevent, so v5 is refused.
+///
 /// 5: a component's ranks are an explicit list, not `{first, count}`. Strided
 ///    and overlapping placements are expressible; a v4 reader would read the
 ///    rank count as a first rank and produce a plausible, wrong placement,
@@ -34,7 +43,7 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 /// the iteration regions and never see the merge rules, so it would read a
 /// graph that says "one writer per field" from bytes that say otherwise -- and
 /// it would read it successfully. The version check turns that into a refusal.
-inline constexpr std::uint32_t kGraphVersion = 5u;
+inline constexpr std::uint32_t kGraphVersion = 6u;
 
 namespace detail {
 
@@ -159,6 +168,7 @@ class Reader {
     w.pod(static_cast<std::uint32_t>(c.ranks.size()));
     for (const int rank : c.ranks) w.pod(static_cast<std::int32_t>(rank));
     w.rational(c.interval);
+    w.pod(static_cast<std::uint8_t>(c.kind));
   }
   for (std::uint32_t i = 0; i < g.field_count(); ++i) {
     const auto& f = g.field(FieldId{i});
@@ -181,6 +191,7 @@ class Reader {
     w.window(c.accumulate.window);
     w.pod(static_cast<std::uint32_t>(c.remap.flags));
     w.str(c.remap.method_override);
+    w.pod(c.remap.remap_on.value());
     w.pod(static_cast<std::uint8_t>(c.spacetime.basis));
     w.pod(static_cast<std::int32_t>(c.spacetime.degree));
     w.window(c.spacetime.window);
@@ -298,6 +309,16 @@ class Reader {
       c.ranks = RankSet{std::move(ranks)};
     }
     c.interval = r.rational();
+    // REVIEW.md R-04's pattern (MeasureKind/AccelKind/FilterKind below):
+    // this byte comes straight off the wire, and an out-of-range value must
+    // be refused here rather than admitted and later indexed unchecked by
+    // to_yaml()'s enum-name table.
+    const auto kind_byte = r.pod<std::uint8_t>();
+    if (kind_byte > static_cast<std::uint8_t>(ComponentKind::Coupler)) {
+      return Failure{"E-DESC-ENUM",
+                     "unknown component kind " + std::to_string(kind_byte)};
+    }
+    c.kind = static_cast<ComponentKind>(kind_byte);
     g.add_component(std::move(c));
   }
   for (std::uint32_t i = 0; i < n_field; ++i) {
@@ -341,6 +362,7 @@ class Reader {
     b.accumulate(op, aw);
     b.remap(static_cast<RemapFlags>(r.pod<std::uint32_t>()));
     b.remap_method(r.str());
+    b.remap_on(ComponentId{r.pod<std::uint32_t>()});
     const auto basis = static_cast<TemporalBasis>(r.pod<std::uint8_t>());
     const auto degree = r.pod<std::int32_t>();
     const Window sw = r.window();

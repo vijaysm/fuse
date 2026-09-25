@@ -306,10 +306,19 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
   }
   e << YAML::EndSeq;
 
+  // Couplers are ComponentKind::Coupler entries of the SAME components_
+  // array (component.hpp's CouplerDecl doc comment), but the text form
+  // gives them their own top-level list: a coupler owns no fields and no
+  // interval, so nesting it under "components:" would either force those
+  // two keys to mean nothing on some entries or need a "kind:" discriminant
+  // on every entry just to tell the two apart. A separate list needs
+  // neither, and reads as what a coupler is -- a placement, not a physics
+  // component.
   e << YAML::Key << "components" << YAML::Value << YAML::BeginSeq;
   for (std::uint32_t i = 0; i < g.component_count(); ++i) {
     const ComponentId cid{i};
     const auto& c = g.component(cid);
+    if (c.kind == ComponentKind::Coupler) continue;
     e << YAML::BeginMap
       << YAML::Key << "name" << YAML::Value << c.name
       << YAML::Key << "ranks" << YAML::Value;
@@ -363,6 +372,26 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
   }
   e << YAML::EndSeq;
 
+  e << YAML::Key << "couplers" << YAML::Value << YAML::BeginSeq;
+  for (std::uint32_t i = 0; i < g.component_count(); ++i) {
+    const auto& c = g.component(ComponentId{i});
+    if (c.kind != ComponentKind::Coupler) continue;
+    e << YAML::BeginMap << YAML::Key << "name" << YAML::Value << c.name
+      << YAML::Key << "ranks" << YAML::Value;
+    if (c.ranks.is_contiguous() && !c.ranks.empty()) {
+      e << YAML::Flow << YAML::BeginMap
+        << YAML::Key << "first" << YAML::Value << c.ranks.min_rank()
+        << YAML::Key << "count" << YAML::Value << static_cast<int>(c.ranks.size())
+        << YAML::EndMap;
+    } else {
+      e << YAML::Flow << YAML::BeginSeq;
+      for (const int rank : c.ranks) e << rank;
+      e << YAML::EndSeq;
+    }
+    e << YAML::EndMap;
+  }
+  e << YAML::EndSeq;
+
   e << YAML::Key << "channels" << YAML::Value << YAML::BeginSeq;
   for (std::uint32_t i = 0; i < g.channel_count(); ++i) {
     const auto& c = g.channel_at(ChannelId{i});
@@ -389,7 +418,8 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
     if (auto fail = emit_window(e, g, c.accumulate.window)) return *fail;
     e << YAML::EndMap;
 
-    if (c.remap.flags != RemapFlags::None || !c.remap.method_override.empty()) {
+    if (c.remap.flags != RemapFlags::None || !c.remap.method_override.empty() ||
+        c.remap.remap_on.valid()) {
       e << YAML::Key << "remap" << YAML::Value << YAML::BeginMap;
       if (c.remap.flags != RemapFlags::None) {
         e << YAML::Key << "flags" << YAML::Value << YAML::Flow << YAML::BeginSeq;
@@ -400,6 +430,20 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
       }
       if (!c.remap.method_override.empty()) {
         e << YAML::Key << "method" << YAML::Value << c.remap.method_override;
+      }
+      if (c.remap.remap_on.valid()) {
+        // REVIEW.md R-18's pattern: remap_on() accepts any ComponentId with
+        // no bounds check, so the emitter -- which needs the NAME, not the
+        // raw id -- must refuse a foreign one through Result<std::string>
+        // rather than let g.component() throw past this function's caller.
+        if (c.remap.remap_on.value() >= g.component_count()) {
+          return Failure{"E-YAML-REF",
+                         "channel '" + c.name +
+                             "' has a remap_on that references an invalid "
+                             "component"};
+        }
+        e << YAML::Key << "remap_on" << YAML::Value
+          << g.component(c.remap.remap_on).name;
       }
       e << YAML::EndMap;
     }
@@ -511,8 +555,8 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
 
   if (auto e = check_unknown_keys(
           root,
-          {"version", "meshes", "regions", "components", "channels",
-           "iteration_regions", "merges"},
+          {"version", "meshes", "regions", "components", "couplers",
+           "channels", "iteration_regions", "merges"},
           "top-level document")) {
     return *e;
   }
@@ -657,6 +701,37 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
     }
   }
 
+  for (const auto& n : root["couplers"]) {
+    if (auto e = check_unknown_keys(n, {"name", "ranks"}, "coupler entry")) {
+      return *e;
+    }
+    CouplerDecl c;
+    c.name = n["name"].as<std::string>();
+    if (n["ranks"]) {
+      if (n["ranks"].IsSequence()) {
+        std::vector<int> ranks;
+        for (const auto& r : n["ranks"]) ranks.push_back(r.as<int>());
+        c.ranks = RankSet{std::move(ranks)};
+      } else {
+        if (auto e = check_unknown_keys(n["ranks"], {"first", "count"},
+                                        "coupler '" + c.name + "' ranks")) {
+          return *e;
+        }
+        c.ranks = RankSet{n["ranks"]["first"].as<int>(),
+                          n["ranks"]["count"].as<int>()};
+      }
+    }
+    // Couplers share the SAME name -> id table channels resolve `source`,
+    // `target` and (below) `remap_on` through, so a channel can name a
+    // coupler exactly as it names a physics component.
+    //
+    // The name is read into a local BEFORE the std::move(c) below: since
+    // C++17, `a[k] = f(std::move(c))` sequences the right operand first, so
+    // `c.name` used directly as the map key would read a moved-from string.
+    const std::string coupler_name = c.name;
+    component_by_name[coupler_name] = g.add_coupler(std::move(c));
+  }
+
   // Declaration order. A text without `index` (hand-written, most likely)
   // keeps the order it was read in, which is the best information available.
   std::stable_sort(pending_fields.begin(), pending_fields.end(),
@@ -707,7 +782,7 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
       b.accumulate(op, win.value());
     }
     if (n["remap"]) {
-      if (auto e = check_unknown_keys(n["remap"], {"flags", "method"},
+      if (auto e = check_unknown_keys(n["remap"], {"flags", "method", "remap_on"},
                                       "channel '" + name + "' remap")) {
         return *e;
       }
@@ -724,6 +799,23 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
       }
       if (n["remap"]["method"]) {
         b.remap_method(n["remap"]["method"].as<std::string>());
+      }
+      if (n["remap"]["remap_on"]) {
+        // The coupler-placement track: names either a coupler or a physics
+        // component by name, resolved through the SAME `component_by_name`
+        // table `source`/`target` use. Whether it names a valid coupler or
+        // one of this channel's own endpoints is a validate()-time question
+        // (E-CHANNEL-REMAP-ON): a reference to an unknown NAME, in contrast,
+        // is a parse-time reference error, same class as an unknown source
+        // or target field above.
+        const auto ro_name = n["remap"]["remap_on"].as<std::string>();
+        const auto ro_it = component_by_name.find(ro_name);
+        if (ro_it == component_by_name.end()) {
+          return Failure{"E-YAML-REF",
+                       "channel '" + name + "' remap_on references unknown "
+                       "component '" + ro_name + "'"};
+        }
+        b.remap_on(ro_it->second);
       }
     }
     if (n["spacetime"]) {

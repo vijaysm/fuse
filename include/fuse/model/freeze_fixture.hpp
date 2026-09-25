@@ -30,6 +30,12 @@ inline CouplingGraph freeze_fixture() {
        .interval = Rational{1, 4}});
   const auto solid = g.add_component(
       {.name = "solid", .ranks = {7, 2}, .interval = Rational{1, 3}});
+  // A coupler: `ComponentKind::Coupler` is the one non-default enumerator a
+  // freeze fixture built only from `add_component()` calls could never
+  // reach, and `add_coupler()` is the API that reaches it. Placed disjoint
+  // from both `fluid` and `solid` so the frozen bytes also exercise a real
+  // third placement, not a same_as-elided one.
+  const auto coupler = g.add_coupler({.name = "midpoint", .ranks = {9, 1}});
 
   Units kilopascal{.length = -1, .mass = 1, .time = -2};
   kilopascal.scale = Rational{1000};
@@ -67,6 +73,7 @@ inline CouplingGraph freeze_fixture() {
       .accumulate(AccumOp::Integral)
       .spacetime(TemporalBasis::Linear, 1)
       .remap_method("conservative-intersection")
+      .remap_on(coupler)
       .relax(0.7)
       .extrapolate(2)
       .lag(1);

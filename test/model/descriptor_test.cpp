@@ -298,6 +298,23 @@ TEST(Descriptor, RoundTripPreservesEveryNonDefaultMember) {
   EXPECT_EQ(f.conservation, fuse::Conservation::Extensive);
   EXPECT_EQ(read_back.value().region(fuse::RegionId{0}).dimension, 2);
   EXPECT_EQ(read_back.value().component(fuse::ComponentId{1}).interval, fuse::Rational(1, 3));
+
+  // The coupler-placement track's two new members: a Coupler-kind component
+  // (freeze_fixture's "midpoint"), and the "flux" channel's remap_on naming
+  // it.
+  const auto midpoint = read_back.value().find_component("midpoint");
+  ASSERT_TRUE(midpoint.has_value());
+  EXPECT_EQ(read_back.value().component(*midpoint).kind, fuse::ComponentKind::Coupler);
+  EXPECT_EQ(read_back.value().component(fuse::ComponentId{0}).kind,
+            fuse::ComponentKind::Physics);
+  bool found_flux = false;
+  for (std::uint32_t i = 0; i < read_back.value().channel_count(); ++i) {
+    const auto& ch = read_back.value().channel_at(fuse::ChannelId{i});
+    if (ch.name != "flux") continue;
+    found_flux = true;
+    EXPECT_EQ(ch.remap.remap_on, *midpoint);
+  }
+  EXPECT_TRUE(found_flux);
 }
 
 // The frozen bytes. `test/golden/waist-v1.bin` is this descriptor's tag: a
@@ -310,7 +327,7 @@ TEST(Descriptor, RoundTripPreservesEveryNonDefaultMember) {
 // delivered to the wrong ranks, with nothing to indicate it. The version check
 // is what turns that into an error.
 TEST(Descriptor, SupersededFrozenBytesAreRefusedByThisReader) {
-  for (const char* name : {"waist-v1.bin", "waist-v4.bin"}) {
+  for (const char* name : {"waist-v1.bin", "waist-v4.bin", "waist-v5.bin"}) {
     const std::filesystem::path old_golden =
         std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / name;
     ASSERT_TRUE(std::filesystem::exists(old_golden)) << old_golden;
@@ -343,7 +360,7 @@ TEST(Descriptor, TheFrozenV1BytesAreRefusedByThisReader) {
 TEST(Descriptor, MatchesTheFrozenWaistBytes) {
   const auto bytes = fuse::serialize(fuse::testing::freeze_fixture());
   const std::filesystem::path golden =
-      std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / "waist-v5.bin";
+      std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / "waist-v6.bin";
   ASSERT_TRUE(std::filesystem::exists(golden)) << golden;
 
   std::ifstream in(golden, std::ios::binary);
