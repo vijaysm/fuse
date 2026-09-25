@@ -423,6 +423,16 @@ foreach(t mms_transfer iteration interface_transfer)
                  LIBS fuse::runtime fuse::backend fuse::transport)
 endforeach()
 
+# The one-rank case of parallel/nodal_remap_runner_test.cpp, WITHOUT MPI. It
+# shares that file's backend (support/partitioned_test_backend.hpp, which no
+# longer needs MPI) so a one-rank failure in an MPI-registered test can be
+# debugged in a build where MPI is absent. Needs the support directory on the
+# include path for fuse_test_main.hpp, like the parallel tests do.
+fuse_add_gtest(verification nodal_remap_runner_serial NO_LAYER_LIB
+               LIBS fuse::runtime fuse::backend)
+target_include_directories(fuse_verification_nodal_remap_runner_serial_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/support)
+
 # FSI channel (FSI track): fsi_stokes_mms and fsi_beam exercise the two
 # standalone solvers (examples/fsi_channel/{stokes,beam}_solver.hpp) with no
 # FUSE graph involved; fsi_coupled and fsi_transient drive the real two-

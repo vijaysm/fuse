@@ -1215,6 +1215,33 @@ in this sandbox for the same single-participant reason as (a) -- a host
 **Lift the refusal for the remaining methods only after (a) and D5 item 3
 (per-placement supermesh weights) both land.**
 
+**Host run 2026-09-25 (third): `parallel.nodal_remap_runner` still fails at 1-5 ranks.** The two
+defects above are fixed and `parallel.nodal_remap_distributed` now passes, so this is a third,
+separate cause, and it is NOT any of:
+- the graph, the channels, or the two remap methods;
+- `MultiMeshGeometricBackend`'s own views, geometry or global ids;
+- the H and H^T D weights, or the transposed load;
+- force conservation or interface power balance.
+
+All of those are now covered by `verification.nodal_remap_runner_serial`, which drives the SAME
+graph and the SAME backend as the MPI fixture at a single participant, with the MPI fixture's own
+parameters (7/11 and 8/6) and its own serial reference, and passes to 1e-12. Since the failing
+`.1` case is also a single participant, whatever remains differs only in the MPI-configured path:
+`RunnerConfig::base_communicator` being set, and the `FUSE_HAVE_MPI` branches that follow from it
+(`Runner::Impl`'s per-component `MPI_Comm_split`, the transport setup, and the epoch agreement).
+
+`test/support/partitioned_test_backend.hpp` no longer needs MPI, which is what made that
+bisection possible: its four `MPI_Comm_rank` calls became one `fuse_test::this_rank()` that
+returns 0 without MPI, since at a single participant every declared placement is the whole mesh.
+
+**What this still needs from a host**, because MPI cannot initialise in the sandbox at all (not
+even `-np 1`: `mpirun` fails in `HYDU_sock_listen`, and the binary run directly aborts inside
+`MPI_Init`):
+
+    ctest --preset <mpi-preset> -R 'parallel\.nodal_remap_runner\.1' --output-on-failure
+
+One rank is enough, and the failing assertion's own message names the stage.
+
 
 ### D9. The coupled channel-beam FSI gains energy over many periods — OPEN
 
