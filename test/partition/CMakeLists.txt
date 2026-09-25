@@ -19,6 +19,9 @@ function(fuse_partition_add_gtest name)
   target_link_libraries(${target} PRIVATE fuse::partition fuse_test_main ${ARG_LIBS})
   add_test(NAME partition.${name} COMMAND ${target})
   set(labels "partition;gtest")
+  # test/CMakeLists.txt's OpenMP thread-count leg: the partitioner is the one
+  # library area whose accumulation order is the threads' (median.hpp).
+  fuse_add_omp_legs(partition.${name} ${target})
   if(ARG_THROWS)
     list(APPEND labels throws)
   endif()

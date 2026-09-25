@@ -39,6 +39,23 @@ if(FUSE_ENABLE_TESTS)
     PASS_REGULAR_EXPRESSION "=== IR ===.*=== PLAN ===")
   set_tests_properties(example.mms_pair example.dn_heat
     example.mms_pair.dump example.dn_heat.dump PROPERTIES LABELS "example")
+
+  # Thread-count determinism of the two physics examples, bit for bit: each is
+  # run at one OpenMP thread and at every core and the two outputs compared
+  # exactly (tools/compare-runs.cmake). Today this holds trivially -- the
+  # runtime executes no Kokkos kernel (KNOWN_ISSUES.md D11) -- and the test is
+  # here so the day it stops holding trivially is the day it fails.
+  if(COMMAND fuse_add_omp_legs AND FUSE_KOKKOS_HAS_OPENMP)
+    foreach(ex mms_pair dn_heat)
+      add_test(NAME example.${ex}.omp_identical
+               COMMAND ${CMAKE_COMMAND}
+                       -DBIN=$<TARGET_FILE:fuse_example_${ex}>
+                       -DTHREADS_HI=${_fuse_host_cores}
+                       -DOUT=${CMAKE_CURRENT_BINARY_DIR}/omp_${ex}
+                       -P ${CMAKE_SOURCE_DIR}/tools/compare-runs.cmake)
+      set_tests_properties(example.${ex}.omp_identical PROPERTIES LABELS "example;omp")
+    endforeach()
+  endif()
 endif()
 
 # ---------------------------------------------------------------------------

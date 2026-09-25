@@ -1,6 +1,6 @@
 # Mutation evidence — `compiler`
 
-Run 2026-09-21 against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
+Run 2026-09-25 against build `b0`. Regenerate with `tools/mutate.py --write-log`; do not edit.
 
 | Mutation | File | Verdict | Killed by |
 |---|---|---|---|
@@ -22,5 +22,8 @@ Run 2026-09-21 against build `build-fuse-s1`. Regenerate with `tools/mutate.py -
 | `merge-placed-at-tick-start-general` — in the general (non-lockstep) path, a Merge combining two or more channels is placed at its owning component's tick START instead of the tick END, the same defect as merge-placed-at-tick-start-lockstep but in the other of expand()'s two emission paths -- ExpandMode::ForceGeneral is required to reach it, since a lockstep graph never takes this branch | `src/schedule/expand.cpp` | **KILLED** (test fails) | `schedule.expand` |
 | `region-grouping-does-nothing` — D1's fix: a region's members are grouped inside their instant so declaration order cannot decide whether a coupling schedules. Without the preference the greedy emission degenerates to the old rank order and the declared-second spelling is refused again. | `src/schedule/scheduler.cpp` | **KILLED** (test fails) | `schedule.plan` |
 | `region-grouping-ignores-entanglement` — The other half: grouping must NOT separate a non-member that reads the same external value the region re-advances, because its placement relative to the loop is a modelling decision. Removing the guard lets an explicit channel hanging off an iterated component schedule, on one sweep's iterate, instead of being refused. | `src/schedule/scheduler.cpp` | **KILLED** (test fails) | `verification.iteration` |
+| `window-order-floor-not-enforced` — validate_coupling_window() stops enforcing CouplingWindowScope::order >= 2, so a scope whose interpolant/extrapolant is only first order (or degenerate) is accepted instead of refused with E-SCHED-WINDOW-ORDER -- exactly the floor the user's ruling states (interpolation and extrapolation are at least second order) | `src/schedule/window.cpp` | **KILLED** (test fails) | `schedule.window_scope` |
+| `window-length-ignores-explicit-interval` — window_length() stops returning the caller's declared CouplingWindowScope::explicit_interval and returns a hardcoded Rational{1} instead, silently changing every explicitly-windowed region's macro period regardless of what was authored -- the user's ruling is that the window is never derived (never the LCM of the members' own steps), so it must be exactly what the scope names | `src/schedule/window.cpp` | **KILLED** (test fails) | `schedule.window_scope` |
+| `distributed-remap-lowered-behind-a-transport` — The host-run defect of 2026-09-25: a consistent-interpolation remap on a nodal side was lowered as Transport-then-Remap like every other, so the source values were delivered onto the target placement's (empty, on a disjoint placement) view of the source mesh and the distributed operator summed nothing -- H exact, H^T D zero. With the predicate forced false the default lowering returns. | `src/ir/rules_channel.cpp` | **KILLED** (test fails) | `ir.lowering_channel` |
 
-**17 killed / 18 total.**
+**20 killed / 21 total.**

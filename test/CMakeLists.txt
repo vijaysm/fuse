@@ -30,6 +30,51 @@ set(FUSE_TEST_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data")
 # unregistered for four days (REVIEW.md R-07).
 set_property(GLOBAL PROPERTY FUSE_REGISTERED_TEST_SOURCES "")
 set_property(GLOBAL PROPERTY FUSE_GATED_TEST_SOURCES "")
+
+# ---- the OpenMP thread-count leg -------------------------------------------
+# A Kokkos built with OpenMP runs every test on OpenMP already, at whatever
+# thread count the machine and environment happen to give. That is one point
+# on the axis, and the claims that matter -- the RCB partition bit-for-bit
+# against its serial oracle, the native mesh's kernels, the typed numerical
+# kernels -- were verified there only. `fuse_add_omp_legs` registers a test a
+# second and third time, at ONE thread and at every core, so the two extremes
+# are measured on every build rather than assumed from the default. What this
+# catches is order-dependent floating-point accumulation: median.hpp's
+# histogram sums weights with Kokkos::atomic_add, whose summation order is the
+# threads', and a weighted median that lands within an ulp of a bucket edge
+# can move an element across the cut. Uniform weights would never show it;
+# the skewed-weight cases can. Labelled `omp`; empty when Kokkos has no OpenMP.
+#
+# What it does NOT cover, stated so nobody reads the label as more than it is:
+# the coupler's own runtime (src/runtime/, src/schedule/) executes no Kokkos
+# kernel at all -- its sums and norms are the serial ones in num/kernels.hpp
+# and the space kernels in num/space_kernels.hpp are verified but uncalled.
+# Running the runner tests at two thread counts would compare a serial loop
+# with itself. That is a capability gap (KNOWN_ISSUES.md D11), not a test gap.
+include(ProcessorCount)
+ProcessorCount(_fuse_host_cores)
+if(_fuse_host_cores EQUAL 0)
+  set(_fuse_host_cores 4)
+endif()
+if(TARGET Kokkos::kokkos)
+  get_target_property(_fuse_kokkos_devices Kokkos::kokkos INTERFACE_COMPILE_DEFINITIONS)
+endif()
+set(FUSE_KOKKOS_HAS_OPENMP OFF)
+if(Kokkos_ENABLE_OPENMP OR "${Kokkos_DEVICES}" MATCHES "OPENMP")
+  set(FUSE_KOKKOS_HAS_OPENMP ON)
+endif()
+function(fuse_add_omp_legs test_name target)
+  if(NOT FUSE_KOKKOS_HAS_OPENMP)
+    return()
+  endif()
+  cmake_parse_arguments(ARG "" "" "ARGS" ${ARGN})
+  foreach(n 1 ${_fuse_host_cores})
+    add_test(NAME ${test_name}.omp${n} COMMAND ${target} ${ARG_ARGS})
+    set_tests_properties(${test_name}.omp${n} PROPERTIES
+      LABELS "omp"
+      ENVIRONMENT "OMP_NUM_THREADS=${n};OMP_PROC_BIND=false")
+  endforeach()
+endfunction()
 function(fuse_record_test_source rel)
   set_property(GLOBAL APPEND PROPERTY FUSE_REGISTERED_TEST_SOURCES "${rel}")
 endfunction()
@@ -343,6 +388,9 @@ fuse_add_gtest(backend native_mesh THROWS)
 fuse_add_gtest(backend native_distributed_mesh THROWS)
 fuse_add_gtest(backend native_generators THROWS)
 fuse_add_gtest(backend native_migration THROWS)
+foreach(t native_mesh native_distributed_mesh native_generators native_migration)
+  fuse_add_omp_legs(backend.${t} fuse_backend_${t}_test)
+endforeach()
 fuse_tests_gated_by(FUSE_ENABLE_MPI backend/native_migration_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(backend native_migration_mpi LIBS fuse::backend fuse::partition MPI::MPI_CXX
@@ -362,6 +410,7 @@ target_include_directories(fuse_backend_supermesh_test PRIVATE ${CMAKE_SOURCE_DI
 # is no fuse::field library for the helper to derive from the directory name.
 fuse_add_gtest(field pipeline THROWS NO_LAYER_LIB LIBS fuse::model fuse::base)
 fuse_add_gtest(num space_kernels)
+fuse_add_omp_legs(num.space_kernels fuse_num_space_kernels_test)
 
 # ---------------------------------------------------------------- search
 # fuse::search: BoxIndex against brute force (1D/2D/3D, shared faces and
