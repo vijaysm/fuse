@@ -99,7 +99,9 @@ copies locally what both hold.
 Components with identical placements always get identical decompositions,
 which is why no data move is needed between them.
 
-Current limits: the MOAB backend does not yet build a decomposition per
-component (every component shares one), and a remap on a component's own,
-non-default decomposition is refused with `E-RT-REMAP-PLACEMENT` until
-weights are built per placement.
+Remap weights are built on the placement's own decomposition: the plan
+carries the component, every weight builder resolves its meshes through
+`placed_view`, and two placements never share a cached matrix. The one
+current limit is the MOAB backend, which does not yet build a decomposition
+per component (every component shares one), so on MOAB the per-placement
+weights coincide with the default ones.
