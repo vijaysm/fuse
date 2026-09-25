@@ -1,0 +1,42 @@
+# Mutations for the "Point clouds" track (fuse/backend/mls_weights.hpp/.cpp).
+# Own file per the mutation-manifest protocol (tools/mutate.py's own doc
+# comment, and search.toml's own header): do not edit
+# build-evidence/mutations.toml directly while another track holds it dirty.
+#
+# Applied and restored BY HAND, one at a time, against the tier-0 build
+# described in this task's own build instructions -- not via
+# `tools/mutate.py` in mutating mode, because other agents hold this same
+# checkout dirty on disjoint files at the same time and that mode rewrites
+# sources in place. `tools/mutate.py --check-anchors` (read-only, no build,
+# no git) DOES verify both `old` strings below occur exactly once in their
+# file, and was run clean against the state these rows describe.
+
+[[mutation]]
+id = "mls-neighbor-count-refusal-disabled"
+area = "backend"
+describes = "build_mls_weights's E-MLS-NEIGHBORS check for a declared k below the degree's polynomial basis size is disabled. The task's own required row: MlsRefusals.KBelowBasisSizeIsEMlsNeighbors asserts the refusal's CODE, so disabling it is caught even though the local PxP moment matrix built from only k < P neighbours is still mathematically rank-deficient and the least-squares solve two calls later refuses it too -- with the WRONG code (E-MLS-RANK, not E-MLS-NEIGHBORS), which is exactly what the test's EXPECT_EQ on the code catches. Verified to fire: with this mutation applied, KBelowBasisSizeIsEMlsNeighbors fails (actual code E-MLS-RANK, expected E-MLS-NEIGHBORS); TooFewSourcePointsIsEMlsNeighbors (a source side with fewer than k points overall, checked on the very next line, left untouched by this mutation) still passes on its own, confirming the two E-MLS-NEIGHBORS call sites are independently exercised."
+file = "src/backend/mls_weights.cpp"
+old = "  if (static_cast<std::size_t>(opt.k) < basis_size) {"
+new = "  if (false) {  // opt.k < basis_size -- neighbour-count refusal disabled"
+target = "fuse_backend_mls_weights_test"
+test = "backend.mls_weights"
+
+[[mutation]]
+id = "mls-polynomial-basis-multiplication-to-addition"
+area = "backend"
+describes = "polynomial_basis()'s dim == 2 branch builds the monomial x^a y^b as a SUM (x^a + y^b) instead of a product -- every basis function past the constant and the pure-x/pure-y terms is now the wrong function, so the local polynomial fit built from it is fit to the wrong basis and no longer reproduces even a plane exactly, let alone a full degree-2 polynomial with a genuine cross term. Verified to fire: with this mutation applied, ExactForDegree1Polynomial2D, ConvergenceOrderIsDegreePlusOneOnRefinement, MatchesArborXsOwnInterpolateOnTheSameCloud2D and MonotoneFlagOnADegreeTwoFitThatIsNotBoundPreservingIsEMlsMonotone (which needs an actual, correctly-shaped degree-2 basis to observe a bound-preservation failure rather than a coincidental one) all fail; the 1D and 3D exactness tests, which never enter this branch, are unaffected -- confirming the mutation is caught by the tests that exercise 2D and not merely by accident elsewhere."
+file = "src/backend/mls_weights.cpp"
+old = "        out.push_back(ipow(x, a) * ipow(y, b));"
+new = "        out.push_back(ipow(x, a) + ipow(y, b));  // mutated: product -> sum"
+target = "fuse_backend_mls_weights_test"
+test = "backend.mls_weights"
+
+[[mutation]]
+id = "mls-parallel-placement-refusal-disabled"
+area = "runtime"
+describes = "MLS weights are serial; a partitioned cloud gives each rank different neighbours and a silently wrong answer. The Runner refuses an MLS channel whose source or target component is placed on more than one rank. Removing the refusal lets it initialise."
+file = "src/runtime/runner.cpp"
+old = "          graph.component(owner).ranks.size() > 1U) {"
+new = "          false) {"
+target = "fuse_verification_interface_transfer_test"
+test = "verification.interface_transfer"

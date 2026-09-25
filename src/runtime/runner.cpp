@@ -627,6 +627,7 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
   const NodeId origin = ins.origin_node;
   const FieldSpec* sf_ptr = nullptr;
   const FieldSpec* tf_ptr = nullptr;
+  ComponentId      src_component;
   ComponentId      dst_component;
   if (origin.valid() && origin.value() < dag.node_count()) {
     const ChannelId ch = dag.node(origin).origin;
@@ -634,22 +635,44 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
       const Channel& channel = graph.channel_at(ch);
       sf_ptr = &graph.field(channel.source);
       tf_ptr = &graph.field(channel.target);
+      src_component = graph.owner_of(channel.source);
       dst_component = graph.owner_of(channel.target);
     }
   }
 
-  std::int32_t nodal_reduce_idx = -1;
+  // MLS weights are serial: they are built from each rank's own view of the
+  // source cloud, and a partitioned cloud would give each rank a different
+  // neighbourhood, and so a different, wrong answer, with no diagnostic.
+  // mls_weights.cpp can only detect a partitioned NativeMeshBackend; the
+  // declared placement can always be read here, so the refusal lives here.
+  if (ins.attrs.method == "mls" || ins.attrs.method.rfind("mls:", 0) == 0) {
+    for (const ComponentId owner : {src_component, dst_component}) {
+      if (owner.valid() && owner.value() < graph.component_count() &&
+          graph.component(owner).ranks.size() > 1U) {
+        return Failure{
+            "E-RT-REMAP-MLS-PARALLEL",
+            label + " uses method '" + ins.attrs.method + "', and component '" +
+                graph.component(owner).name + "' is placed on " +
+                std::to_string(graph.component(owner).ranks.size()) +
+                " ranks. Moving-least-squares weights are serial only: a "
+                "partitioned point cloud gives each rank different neighbours "
+                "(docs/user/point-cloud-remap.md). Place both components on one "
+                "rank, or use method 'consistent'"};
+      }
+    }
+  }
+
+  std::int32_t nodal_dist_idx = -1;
   if (tf_ptr != nullptr && dst_component.valid() &&
       dst_component.value() < graph.component_count()) {
     const RankSet& dst_ranks = graph.component(dst_component).ranks;
     // "A single-rank placement skips both, since nothing is shared" -- the
     // lead's ruling. `dst_ranks.size() > 1` reads the DECLARED graph, so
     // every rank reaches the same verdict without needing a communicator
-    // yet; `reduce_nodal_remap_target()` is the only place that opens one,
-    // and only for instructions this decided to mark. Written `> 1U` here,
-    // not `> 1`, purely so this line's TEXT differs from the textually
-    // identical `dst_ranks.size() > 1` guard in resolve_constrain() below --
-    // two identical anchors made tools/mutate.py's STALE-ANCHOR check flag
+    // yet. Written `> 1U` here, not `> 1`, purely so this line's TEXT
+    // differs from the textually identical `dst_ranks.size() > 1` guard in
+    // resolve_constrain() below -- two identical anchors made
+    // tools/mutate.py's STALE-ANCHOR check flag
     // build-evidence/mutations/transport-runtime.toml's own
     // "conservation-check-skips-the-multi-rank-refusal" row (a file this
     // track does not own) as ambiguous; the comparison itself is unchanged.
@@ -657,25 +680,54 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
       const auto kind = region_extent_kind(graph, tgt);
       if (!kind.ok()) return kind.error();
       if (kind.value() == RegionExtentKind::Vertex) {
-        // REFUSED until a test shows the answer is right (KNOWN_ISSUES D8).
-        // Whether a shared vertex's per-holder rows are partial or already
-        // complete depends on the decomposition the weights are built on,
-        // and no Remap on a genuinely partitioned nodal target has been run:
-        // on a replicated source every holder computes the whole row and the
-        // owner sum below would multiply the load by the holder count, with
-        // no diagnostic. The condition is read from the declared graph and
-        // placement alone, so every rank refuses together.
-        return Failure{
-            "E-RT-REMAP-NODAL-PARALLEL",
-            label + " remaps into nodal field '" + tf_ptr->name + "', whose "
-                "component is placed on " + std::to_string(dst_ranks.size()) +
-                " ranks. A Remap into a nodal field on more than one rank is not "
-                "yet supported: whether shared-vertex contributions must be summed "
-                "or copied depends on per-placement weights that are not built yet "
-                "(KNOWN_ISSUES.md D8). Place the component on one rank, or use a "
-                "cell-located target field"};
+        // Round 2 (KNOWN_ISSUES.md D8): "consistent"/"consistent-transpose"
+        // build distributed rows via `build_nodal_dist_remap` instead of
+        // refusing -- `nodal_remap_distributed.hpp`'s Allgatherv-replicated
+        // primitive, verified serially in
+        // test/backend/nodal_remap_distributed_nullcomm_test.cpp and under
+        // real MPI in test/parallel/nodal_remap_distributed_test.cpp. Any
+        // OTHER method (including the supermesh conservative ones, which
+        // build FV<->FV weights only) still refuses: per-placement
+        // supermesh weights for a nodal target remain unimplemented
+        // (KNOWN_ISSUES D5 item 3), and this round's own scope is the two
+        // consistent-interpolation methods specifically, not every method.
+        if (ins.attrs.method == "consistent" || ins.attrs.method == "consistent-transpose") {
+          const auto built = build_nodal_dist_remap(ins, label, src, tgt, sf_ptr, tf_ptr);
+          if (!built.ok()) return built.error();
+          nodal_dist_idx = built.value();
+        } else {
+          // Whether a shared vertex's per-holder rows are partial or already
+          // complete depends on the decomposition the weights are built on,
+          // and no Remap on a genuinely partitioned nodal target through a
+          // supermesh method has been run: on a replicated source every
+          // holder computes the whole row and an owner sum would multiply
+          // the load by the holder count, with no diagnostic. The condition
+          // is read from the declared graph and placement alone, so every
+          // rank refuses together.
+          return Failure{
+              "E-RT-REMAP-NODAL-PARALLEL",
+              label + " remaps into nodal field '" + tf_ptr->name + "', whose "
+                  "component is placed on " + std::to_string(dst_ranks.size()) +
+                  " ranks, via method '" + ins.attrs.method + "'. A Remap into a "
+                  "nodal field on more than one rank is supported only for methods "
+                  "'consistent'/'consistent-transpose' (nodal_remap_distributed.hpp); "
+                  "a supermesh conservative method's per-placement weights are not "
+                  "built yet (KNOWN_ISSUES.md D8, D5 item 3). Place the component on "
+                  "one rank, use a cell-located target field, or set "
+                  "Channel::remap_method(\"consistent\"/\"consistent-transpose\")"};
+        }
       }
     }
+  }
+  if (nodal_dist_idx >= 0) {
+    // Mutually exclusive with the rest of resolve_remap: the distributed
+    // rows ARE this instruction's whole operator, not a correction applied
+    // after the normal (local, replicated-mesh) path below. `r.remap` stays
+    // -1 -- execute()'s OpKind::Remap case reads `r.nodal_dist >= 0` FIRST
+    // and calls apply_nodal_dist_remap() instead of the weights-apply, per
+    // NodalDistRemap's own comment.
+    r.nodal_dist = nodal_dist_idx;
+    return Result<void>::success();
   }
 
   const Coincidence c = regions_coincide(graph, backend, src, tgt, placement);
@@ -690,7 +742,6 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
                        "disagree about the same region"};
     }
     r.remap = -1;
-    r.nodal_reduce = nodal_reduce_idx;
     return Result<void>::success();
   }
 
@@ -821,108 +872,159 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
 
   r.remap = static_cast<std::int32_t>(remap_weights.size());
   remap_weights.push_back(weights);
-  r.nodal_reduce = nodal_reduce_idx;
   return Result<void>::success();
 }
 
 // ---------------------------------------------------------------------------
-// docs/dev/nodal-fields.md's "H^T on a distributed interface". Wired in per
-// the lead's ruling 2026-09-24; see NodalReduceInfo (runner_impl.hpp) and
-// this function's own declaration for why no communicator is held past this
-// call.
+// Nodal-remap track, round 2 (KNOWN_ISSUES.md D8). Replaces the deleted
+// reduce_nodal_remap_target()/NodalReduceInfo design (see NodalDistRemap's
+// own comment in runner_impl.hpp for why): a distributed nodal Remap target
+// now gets ITS OWN operator built here via nodal_remap_distributed.hpp,
+// rather than a per-rank LOCAL Remap answer reconciled afterwards.
 // ---------------------------------------------------------------------------
 
-Result<void> Runner::Impl::reduce_nodal_remap_target(const Instruction& ins,
-                                                      const Resolved& r) {
-#if !FUSE_HAVE_MPI
-  (void)ins;
-  (void)r;
-  return Failure{"E-RT-NODAL-NOMPI",
-               "a distributed nodal Remap reduction was scheduled, but this "
-               "build of FUSE was built without MPI; configure with "
-               "-DFUSE_ENABLE_MPI=ON"};
-#else
-  if (!config.base_communicator.has_value()) {
-    return Failure{"E-RT-NODAL-COMM",
-                 "a distributed nodal Remap reduction was scheduled, but "
-                 "RunnerConfig::base_communicator is unset"};
-  }
-  const detail::NodalReduceInfo& info =
-      nodal_reductions[static_cast<std::size_t>(r.nodal_reduce)];
+Result<std::int32_t> Runner::Impl::build_nodal_dist_remap(
+    const Instruction& ins, const std::string& label, RegionId src, RegionId tgt,
+    const FieldSpec* sf_ptr, const FieldSpec* tf_ptr) {
+  // `is_nodal` mirrors consistent_interp_detail::is_nodal (consistent_interp.hpp)
+  // exactly -- duplicated rather than shared because that function lives in
+  // an internal-to-that-header namespace runner.cpp does not otherwise reach
+  // into, and this is one line, not a maintenance-prone algorithm.
+  const auto is_nodal = [](const FieldSpec* f) {
+    return f != nullptr && f->disc == Discretization::ContinuousGLL && f->order <= 1;
+  };
 
-  const MPI_Comm base =
-      MPI_Comm_f2c(static_cast<MPI_Fint>(*config.base_communicator));
-  if (base == MPI_COMM_NULL) {
-    return Failure{"E-RT-NODAL-COMM",
-                 "RunnerConfig::base_communicator is MPI_COMM_NULL"};
+  const std::string& method = ins.attrs.method;
+  const bool transpose = (method == "consistent-transpose");
+  // Round 2 activates this function only when `tgt` is Vertex-located
+  // (resolve_remap's own caller already checked); "consistent" additionally
+  // needs `src` nodal (H interpolates FROM a nodal source), and
+  // "consistent-transpose" needs `tgt` nodal (H^T D delivers a load TO a
+  // nodal target) -- both exactly what build_consistent_weights_for_plan
+  // itself requires, checked here too since this path never calls that
+  // function.
+  if (!transpose && !is_nodal(sf_ptr)) {
+    return Failure{"E-INTERP-DISC",
+                   label + ": method 'consistent' builds H, the interpolation FROM "
+                           "the source field's nodal DOFs; the source field is not "
+                           "a continuous field at order <= 1"};
   }
-  int my_rank = 0;
-  if (MPI_Comm_rank(base, &my_rank) != MPI_SUCCESS) {
-    return Failure{"E-RT-NODAL-COMM", "MPI_Comm_rank failed on the base communicator"};
+  if (transpose && !is_nodal(tf_ptr)) {
+    return Failure{"E-INTERP-DISC",
+                   label + ": method 'consistent-transpose' delivers H^T D, a "
+                           "conservative load transfer TO the target field's nodal "
+                           "DOFs; the target field is not a continuous field at "
+                           "order <= 1"};
   }
 
-  const RankSet& dst_ranks = graph.component(info.dst_component).ranks;
-  const int      colour = dst_ranks.contains(my_rank) ? 0 : MPI_UNDEFINED;
-  // EVERY RANK OF `base` REACHES THIS SPLIT, at the same position in the
-  // (identical, every-rank) instruction stream -- resolve_remap() marked
-  // `Resolved::nodal_reduce` from the graph alone, so a rank holding none of
-  // `info.dst_component`'s data still calls this function for this
-  // instruction and must take part in the collective. Freed below, before
-  // returning: nothing outlives this call, the same discipline attach_
-  // comm_graphs() uses for its own per-component splits, and the one
-  // resolve_epoch_participants()'s docstring explains a REAL prior host run
-  // needed -- a communicator held across periods needs a destructor that
-  // calls the collective MPI_Comm_free, and an earlier version of this
-  // codebase that did exactly that left unfreed COMM handles at exit.
-  MPI_Comm scoped = MPI_COMM_NULL;
-  if (MPI_Comm_split(base, colour, my_rank, &scoped) != MPI_SUCCESS) {
-    return Failure{"E-RT-NODAL-COMM",
-                 "MPI_Comm_split failed while scoping a nodal Remap's "
-                 "cross-rank reduction to component '" +
-                     graph.component(info.dst_component).name + "'"};
+  // The nodal side is `src` for "consistent", `tgt` for "consistent-transpose"
+  // -- the SAME orientation build_consistent_weights_for_plan uses (see that
+  // function's own comment: "Build H itself with the SAME orientation the
+  // paired forward channel would use"). The eval side is the other one.
+  const RegionId nodal_region = transpose ? tgt : src;
+  const RegionId eval_region = transpose ? src : tgt;
+  const bool eval_is_nodal = transpose ? is_nodal(sf_ptr) : is_nodal(tf_ptr);
+
+  const auto resolve = [&](RegionId rid) -> Result<const MeshView*> {
+    const Region& rg = graph.region(rid);
+    if (!rg.mesh.valid() || rg.mesh.value() >= graph.mesh_count()) {
+      return Failure{"E-RT-REMAP-MESH", label + ": region '" + rg.name + "' names no mesh"};
+    }
+    const auto bid = backend.mesh_id(graph.mesh(rg.mesh).name);
+    if (!bid.ok()) return bid.error();
+    const auto view = backend.view(bid.value());
+    if (!view.ok()) return view.error();
+    return view.value();
+  };
+  const auto nodal_view_r = resolve(nodal_region);
+  if (!nodal_view_r.ok()) return nodal_view_r.error();
+  const auto eval_view_r = resolve(eval_region);
+  if (!eval_view_r.ok()) return eval_view_r.error();
+
+  const int eval_dim = eval_is_nodal ? 0 : graph.region(eval_region).dimension;
+
+  search::CommHandle comm_handle = search::kNullComm;
+#if FUSE_HAVE_MPI
+  if (config.base_communicator.has_value()) {
+    comm_handle = *config.base_communicator;
   }
-  if (scoped == MPI_COMM_NULL) {
-    // Not in the destination component: this rank holds none of this arc's
-    // data (its local `out.total()` is 0), so there is nothing to reduce.
+#endif
+
+  const auto rows_r = build_distributed_interp_rows(*nodal_view_r.value(), *eval_view_r.value(),
+                                                     eval_dim, comm_handle);
+  if (!rows_r.ok()) {
+    return Failure{rows_r.error().code,
+                   label + ": build_distributed_interp_rows failed: " + rows_r.error().message};
+  }
+
+  detail::NodalDistRemap plan;
+  plan.rows = rows_r.value();
+  plan.nodal_view = nodal_view_r.value();
+  plan.eval_view = eval_view_r.value();
+  plan.eval_dim = eval_dim;
+  plan.transpose = transpose;
+  plan.src_is_load = transpose ? is_nodal(sf_ptr) : false;
+  plan.components = static_cast<std::size_t>(
+      slots[ins.out.value()].components < 1 ? 1 : slots[ins.out.value()].components);
+  plan.comm_handle = comm_handle;
+
+  const auto idx = static_cast<std::int32_t>(nodal_dist_remaps.size());
+  nodal_dist_remaps.push_back(std::move(plan));
+  return idx;
+}
+
+Result<void> Runner::Impl::apply_nodal_dist_remap(const Instruction& ins, const Resolved& r) {
+  detail::NodalDistRemap& plan = nodal_dist_remaps[static_cast<std::size_t>(r.nodal_dist)];
+  const detail::Slot& in_slot = slots[ins.in[0].value()];
+  const detail::Slot& out_slot = slots[ins.out.value()];
+  const std::size_t components = plan.components;
+
+  if (!plan.transpose) {
+    // "consistent": H. in_slot is the nodal side's own LOCAL buffer
+    // (entity-major, owned + ghost) -- exactly apply_distributed_H's
+    // `local_src_values` contract.
+    const std::vector<double> local_src(in_slot.data, in_slot.data + in_slot.elements * components);
+    std::vector<double> owned_out;
+    const auto ah = apply_distributed_H(plan.rows, *plan.nodal_view, local_src, components,
+                                        owned_out, plan.comm_handle);
+    if (!ah.ok()) return ah.error();
+    std::fill(out_slot.data, out_slot.data + out_slot.elements * components, 0.0);
+    for (std::size_t k = 0; k < plan.rows.rows.size(); ++k) {
+      const std::size_t li = plan.rows.rows[k].local_index;
+      for (std::size_t c = 0; c < components; ++c) {
+        out_slot.data[li * components + c] = owned_out[k * components + c];
+      }
+    }
     return Result<void>::success();
   }
 
-  const RegionId tgt_region = dag.arc(ins.out).type.region;
-  const Region&  reg = graph.region(tgt_region);
-  const auto     mid = backend.mesh_id(graph.mesh(reg.mesh).name);
-  if (!mid.ok()) { MPI_Comm_free(&scoped); return mid.error(); }
-  const auto view = backend.placed_view(mid.value(), info.dst_component);
-  if (!view.ok()) { MPI_Comm_free(&scoped); return view.error(); }
-
-  const detail::Slot& out_slot = slots[ins.out.value()];
-  const auto components = static_cast<std::size_t>(
-      out_slot.components < 1 ? 1 : out_slot.components);
-  const std::size_t mesh_n = view.value()->entity_count(info.dim);
-  if (mesh_n != out_slot.elements) {
-    MPI_Comm_free(&scoped);
-    return Failure{"E-RT-NODAL-SIZE",
-                 "component '" + graph.component(info.dst_component).name +
-                     "' holds " + std::to_string(mesh_n) +
-                     " entities of dimension " + std::to_string(info.dim) +
-                     " but the plan sized this Remap's target at " +
-                     std::to_string(out_slot.elements)};
+  // "consistent-transpose": H^T D. in_slot is the eval (point/density) side's
+  // own LOCAL buffer; only its rows this rank's OWNED evaluation entities
+  // name are read (via plan.rows.rows[k].local_index), scaled by that
+  // entity's own measure UNLESS the eval side is itself already a load
+  // (plan.src_is_load) -- the same density-to-load rule
+  // build_consistent_weights_for_plan's transpose branch bakes into its
+  // weights at build time, applied here to the VALUES at apply time instead.
+  std::vector<double> owned_loads(plan.rows.rows.size() * components, 0.0);
+  for (std::size_t k = 0; k < plan.rows.rows.size(); ++k) {
+    const std::size_t li = plan.rows.rows[k].local_index;
+    const double scale = plan.src_is_load ? 1.0 : plan.eval_view->measure(plan.eval_dim, li);
+    for (std::size_t c = 0; c < components; ++c) {
+      owned_loads[k * components + c] = in_slot.data[li * components + c] * scale;
+    }
   }
-
-  std::vector<double> local(out_slot.data, out_slot.data + mesh_n * components);
-  const Result<void> reduced =
-      info.mode == detail::NodalReduceMode::Sum
-          ? accumulate_shared_rows(*view.value(), info.dim, components, local,
-                                   MPI_Comm_c2f(scoped))
-          : copy_owner_shared_rows(*view.value(), info.dim, components, local,
-                                   MPI_Comm_c2f(scoped));
-  if (!reduced.ok()) {
-    MPI_Comm_free(&scoped);
-    return reduced.error();
+  std::vector<double> out_local;
+  const auto aht = apply_distributed_HT(plan.rows, *plan.nodal_view, *plan.eval_view, plan.eval_dim,
+                                        owned_loads, components, out_local, plan.comm_handle);
+  if (!aht.ok()) return aht.error();
+  if (out_local.size() != out_slot.elements * components) {
+    return Failure{"E-RT-NODAL-DIST-SIZE",
+                   "apply_nodal_dist_remap: apply_distributed_HT returned " +
+                       std::to_string(out_local.size()) + " values, expected " +
+                       std::to_string(out_slot.elements * components)};
   }
-  std::copy(local.begin(), local.end(), out_slot.data);
-  MPI_Comm_free(&scoped);
+  std::copy(out_local.begin(), out_local.end(), out_slot.data);
   return Result<void>::success();
-#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -2314,6 +2416,17 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
 
     case OpKind::Remap: {
       if (ins.n_in == 0 || !ins.out.valid()) break;
+      if (r.nodal_dist >= 0) {
+        // Nodal-remap track, round 2 (KNOWN_ISSUES.md D8): a distributed
+        // nodal Remap target via "consistent"/"consistent-transpose" has
+        // its OWN operator (build_nodal_dist_remap() at setup); this is the
+        // WHOLE answer, not a local Remap answer plus a correction, so it
+        // takes over the case entirely -- `r.remap` is left at -1 for such
+        // an instruction (see Resolved::nodal_dist's own comment).
+        const Result<void> nd = apply_nodal_dist_remap(ins, r);
+        if (!nd.ok()) return nd;
+        break;
+      }
       if (r.remap < 0) {
         // The identity -- and it IS the conservative map here, not a stand-in
         // for one. resolve_remap() reached this branch only after checking
@@ -2333,17 +2446,6 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
         const Result<void> aw = apply_weights(w, in_ptr(0), out_ptr(),
                                               slots[ins.out.value()].components);
         if (!aw.ok()) return aw;
-      }
-      // docs/dev/nodal-fields.md's "H^T on a distributed interface": this
-      // instruction's own local answer is now in out_ptr(), one entry per
-      // LOCAL row of the target's placement. If that target is a nodal
-      // region distributed across more than one rank, a shared row's
-      // several independent local answers still need reconciling -- summed
-      // (Extensive) or replaced by the owner's (Intensive/None) -- before
-      // this arc's value is what the rest of the period reads.
-      if (r.nodal_reduce >= 0) {
-        const Result<void> nr = reduce_nodal_remap_target(ins, r);
-        if (!nr.ok()) return nr;
       }
       break;
     }

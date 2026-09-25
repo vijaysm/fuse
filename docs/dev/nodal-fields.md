@@ -165,6 +165,48 @@ remain, and the last two are unit-tested under MPI. The refusal is lifted once
 per-placement weights exist and a partitioned, non-matching nodal Remap through the
 Runner conserves force and balances power at 1 to 5 ranks.
 
+**Update (nodal-remap track, round 1).** Rather than extending the replicated-source
+owner sum above to a per-placement one, `fuse/backend/nodal_remap_distributed.hpp` builds
+a genuinely different (and genuinely partitioned) primitive from the ground up: each
+evaluation entity's row is computed ONLY by the rank that owns it, against an
+`MPI_Allgatherv`-assembled replica of the source mesh (a documented
+robustness-over-efficiency trade — see that header's own file comment for why, and
+for the concrete next step of replacing it with a `fuse::search::query_points_
+distributed`-based directory query once this is verified), reusing `general_interp.hpp`'s
+already-validated per-cell primitives rather than the sort-and-bracket 1D algorithm.
+`H^T`'s cross-rank sum is keyed by the CONTRIBUTING evaluation entity's global id,
+which is what makes it bit-identical across rank counts (the header explains why
+summing in whatever order `MPI_Allgatherv` happens to concatenate records would not
+be).
+
+**Update (nodal-remap track, round 2, 2026-09-25): the Runner IS now wired.**
+`src/runtime/runner.cpp`'s `resolve_remap` calls the new `Runner::Impl::
+build_nodal_dist_remap`/`apply_nodal_dist_remap` for exactly the two consistent
+methods, replacing `E-RT-REMAP-NODAL-PARALLEL` for them (every other method
+still refuses it — D5 item 3's per-placement supermesh weights remain
+unimplemented). `reduce_nodal_remap_target()`/`NodalReduceInfo`/
+`NodalReduceMode`/`Impl::nodal_reductions` are DELETED (they were genuine
+dead code: the index into them was never set to anything but -1 before a
+`Failure` returned first) — `accumulate_shared_rows`/`copy_owner_shared_rows`
+themselves are UNTOUCHED, since `test/parallel/nodal_field_test.cpp` (the
+"nodal fields" track) calls them directly for its own Transport-side
+ownership tests, independent of the deleted Remap-specific caller.
+
+The distributed builder also gained a NULL-COMMUNICATOR code path this round
+(`fuse::search::kNullComm`; only `nodal_remap_distributed.cpp`'s
+`allgatherv_records` still branches on real MPI, mirroring
+`fuse::partition::detail::collectives.hpp`'s established convention), which is
+what makes the Runner wiring locally verifiable at all: with no
+`RunnerConfig::base_communicator` set, `comm_handle` is `kNullComm` and the
+single participant already owns everything, so
+`InterfaceTransfer.ARemapIntoANodalFieldOnTwoDeclaredRanksIsAcceptedAndMatchesOneRank`
+is a REAL Runner run (not a compile check) proving a declared two-rank
+placement reproduces the one-rank baseline's numbers exactly. A genuinely
+partitioned multi-PROCESS host run — where the source mesh is actually split,
+not fully replicated by construction — remains unverified; see KNOWN_ISSUES.md
+D8's "What is still open, honestly" for the precise gap and why a dedicated
+Runner-level MPI test was not authored this round.
+
 ## Mutation coverage
 
 `build-evidence/mutations/nodal-fields.toml` (this track's own file) records

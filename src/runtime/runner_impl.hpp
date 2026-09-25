@@ -18,6 +18,7 @@
 #include "fuse/ir/lowering.hpp"
 #include "fuse/num/accelerator.hpp"
 #include "fuse/model/iteration.hpp"
+#include "fuse/backend/nodal_remap_distributed.hpp"
 #include "fuse/backend/remap_plan.hpp"
 #include "fuse/backend/spacetime.hpp"
 #include "fuse/runtime/runner.hpp"
@@ -58,48 +59,67 @@ struct ConstrainInfo {
   std::uint32_t weights_after = 0;
 };
 
-/// docs/dev/nodal-fields.md's "H^T on a distributed interface", lead's ruling
-/// 2026-09-24: what a Remap whose target is a DISTRIBUTED nodal field (more
-/// than one rank in the destination component) does to reconcile the several
-/// independent local answers a shared vertex gets, one per rank that holds
-/// it.
-enum class NodalReduceMode : std::uint8_t {
-  /// FieldSpec::conservation == Extensive: a LOAD. Every holder's local
-  /// partial is a genuine, independent contribution to the true total, and
-  /// the physics is the sum -- not gated by RunnerConfig::check_conservation,
-  /// which controls a CHECK, not this. Skipping the sum is a wrong ANSWER,
-  /// not merely an unchecked one.
-  Sum,
-  /// Intensive or None: a POINTWISE value. Every holder takes the OWNER's
-  /// value (docs/dev/native-mesh.md's lowest-rank rule), so every copy
-  /// agrees bit for bit -- the same halo discipline a plain Transport
-  /// already applies to a nodal field, extended to a Remap's own output.
-  TakeOwner,
-};
-
-/// One entry per `OpKind::Remap` instruction whose target is a distributed
-/// (more than one rank) nodal region. Built once in `resolve_remap()`; `-1`
-/// in `Resolved::nodal_reduce` means either the target is not nodal, or its
-/// destination placement is a single rank -- "nothing is shared" (the lead's
-/// ruling) -- so there is nothing to reconcile and the instruction's own
-/// locally-computed Remap answer already IS the answer.
+/// Nodal-remap track, round 2 (KNOWN_ISSUES.md D8): replaces the
+/// NodalReduceInfo/NodalReduceMode/reduce_nodal_remap_target() design this
+/// struct's own predecessor comment described ("the path the refusal will
+/// open"). That design was never wired to a real index (`nodal_reduce_idx`
+/// in `resolve_remap()` was set only inside a branch that always returned a
+/// `Failure` first) and is deleted below, per this round's explicit
+/// instruction to state that decision rather than leave it as unreachable
+/// scaffolding; `accumulate_shared_rows`/`copy_owner_shared_rows`
+/// (fuse/transport/comm_graph.hpp) are UNCHANGED and untouched by this
+/// deletion -- they are general-purpose primitives with their own direct
+/// callers in `test/parallel/nodal_field_test.cpp` (a different track's
+/// Transport-side ownership tests), not exclusive to the deleted function.
 ///
-/// `dst_component` is a graph id, not a communicator: `reduce_nodal_remap_
-/// target()` derives an EPHEMERAL split of `config.base_communicator` from
-/// `graph.component(dst_component).ranks` at the point it is needed and
-/// frees it before returning, rather than holding one for the Runner's
-/// lifetime. `resolve_epoch_participants()`'s own docstring records why:
-/// an earlier version of this codebase held a split per rank-set pair as
-/// Impl state and a host run reported unfreed COMM handles at exit --
-/// `MPI_Comm_free` is collective, and destroying it asymmetrically is the
-/// same hang class `attach_comm_graphs()` is written to avoid ("nothing
-/// outlives this function"). This entry is deliberately a plain graph id,
-/// nothing that needs releasing.
-struct NodalReduceInfo {
-  NodalReduceMode mode = NodalReduceMode::TakeOwner;
-  ComponentId     dst_component;
-  int             dim = 0;  // the vertex dimension; always 0 for the one
-                            // nodal discretization mesh_view.hpp implements
+/// One `OpKind::Remap` instruction whose target is a nodal region on a
+/// component placed on more than one rank, resolved via method `"consistent"`
+/// or `"consistent-transpose"` (any other method still refuses
+/// `E-RT-REMAP-NODAL-PARALLEL` exactly as before this round -- per-placement
+/// weights for the supermesh conservative methods remain unimplemented,
+/// KNOWN_ISSUES D5 item 3). Built once in `resolve_remap()`, applied
+/// allocation-free (of THIS struct; `apply_distributed_H`/`HT`'s own
+/// Allgatherv buffers are a distinct, per-call cost -- see
+/// nodal_remap_distributed.hpp) every period from `Resolved::nodal_dist`.
+struct NodalDistRemap {
+  DistributedInterpRows rows;
+  /// The nodal side's (placed) view -- `build_distributed_interp_rows`'s own
+  /// `src_nodal` argument, and `apply_distributed_H`'s/`apply_distributed_HT`'s
+  /// too. Owned by `backend`, not this struct; stable for the Runner's own
+  /// lifetime exactly like `Side::view` (consistent_interp.hpp) and
+  /// `remap_weights`'s pointers already assume.
+  const MeshView* nodal_view = nullptr;
+  /// The evaluation side's (placed) view: for `"consistent"` this is
+  /// `resolve_remap`'s own `tgt` (the Remap's output region); for
+  /// `"consistent-transpose"` it is `src` (the Remap's INPUT region) --
+  /// `apply_nodal_dist_remap()` needs both `nodal_view` and `eval_view`
+  /// regardless of direction, since `apply_distributed_HT` reads its
+  /// `eval_points` argument at apply time, not just at build time (see that
+  /// function's own header comment for why).
+  const MeshView* eval_view = nullptr;
+  int  eval_dim = 0;
+  /// `true` for `"consistent-transpose"` (apply H^T D); `false` for
+  /// `"consistent"` (apply H).
+  bool transpose = false;
+  /// Transpose only: whether the eval (source-of-load) side is ITSELF nodal
+  /// (already a load, no measure to multiply by) -- mirrors
+  /// `consistent_interp_detail::is_nodal(plan.src_disc, plan.src_order)` in
+  /// `build_consistent_weights_for_plan`'s own transpose branch exactly, so
+  /// the density-to-load scaling this struct's apply function does at
+  /// runtime agrees with what the serial (single-rank) builder bakes into
+  /// its weights at build time.
+  bool src_is_load = false;
+  std::size_t components = 1;
+  /// `fuse::search::CommHandle`: `fuse::search::kNullComm` when
+  /// `RunnerConfig::base_communicator` is unset (Tier 0, or a single-rank
+  /// run with no communicator configured at all -- every entity is locally
+  /// "owned" in that case, so the null-comm branch of
+  /// `nodal_remap_distributed.cpp`'s `allgatherv_records` is exactly the
+  /// right answer, not a stand-in for a real one); otherwise
+  /// `*config.base_communicator` UNCHANGED -- the run's WHOLE base
+  /// communicator, not a component-scoped split, per this struct's own
+  /// build function's comment on why.
+  int comm_handle = 0;
 };
 
 /// One space-time channel's operator and its window of source history
@@ -236,12 +256,20 @@ struct Resolved {
   /// element-wise copy the interpreter then performs IS the conservative map.
   /// Every other `Remap` carries real weights or the setup failed.
   std::int32_t  remap = -1;
-  /// Index into `Impl::nodal_reductions`, or -1. Set on an `OpKind::Remap`
-  /// instruction whose target is a nodal region distributed across more than
-  /// one rank; -1 means either not nodal or a single-rank placement, so
-  /// nothing is shared and the Remap's own local answer needs no further
-  /// reconciliation (docs/dev/nodal-fields.md).
-  std::int32_t  nodal_reduce = -1;
+  /// Index into `Impl::nodal_dist_remaps`, or -1 (round 2, replacing the
+  /// deleted `nodal_reduce`/`NodalReduceInfo` design -- see
+  /// `NodalDistRemap`'s own comment). Set on an `OpKind::Remap` instruction
+  /// whose target is a nodal region distributed across more than one rank
+  /// AND whose method is `"consistent"`/`"consistent-transpose"`; -1 means
+  /// either not nodal, a single-rank placement (nothing is shared, the
+  /// Remap's own local answer already IS the answer), or a method this
+  /// round does not build distributed rows for (still refused
+  /// `E-RT-REMAP-NODAL-PARALLEL`). When set, `execute()`'s `OpKind::Remap`
+  /// case calls `apply_nodal_dist_remap()` INSTEAD OF the normal
+  /// `remap`-indexed weights-apply -- `remap` is left at -1 for such an
+  /// instruction, since the two are mutually exclusive execution paths, not
+  /// a base answer plus a correction.
+  std::int32_t  nodal_dist = -1;
 };
 
 /// One component advance the runtime owes within a period.
@@ -377,10 +405,14 @@ struct Runner::Impl {
   RemapCache                          remap_cache;
   std::vector<const RemapWeights*>    remap_weights;
   /// One entry per `OpKind::Remap` instruction targeting a distributed nodal
-  /// region (detail::NodalReduceInfo); `Resolved::nodal_reduce` indexes it.
-  /// Built once in resolve_remap(), read-only after setup -- plain graph
-  /// ids, nothing MPI-owned (see NodalReduceInfo's own comment for why).
-  std::vector<detail::NodalReduceInfo> nodal_reductions;
+  /// region via `"consistent"`/`"consistent-transpose"` (detail::
+  /// NodalDistRemap); `Resolved::nodal_dist` indexes it. Built once in
+  /// resolve_remap(), read-only after setup. Holds real `MeshView*`
+  /// pointers (owned by `backend`, stable for the Runner's lifetime -- see
+  /// `NodalDistRemap::nodal_view`'s own comment) and one already-built
+  /// `DistributedInterpRows`, unlike `nodal_reductions` before it (deleted
+  /// this round; see `NodalDistRemap`'s own comment for why).
+  std::vector<detail::NodalDistRemap> nodal_dist_remaps;
   /// Element measures, expanded to one weight per (element, component) so a
   /// weighted_sum can run straight over a buffer. Built once at setup.
   std::vector<std::vector<double>> weight_sets;
@@ -514,21 +546,42 @@ struct Runner::Impl {
   /// copy between meshes that merely agree on a count, which is silently
   /// wrong rather than loudly wrong.
   Result<void> resolve_remap(const Instruction& ins, detail::Resolved& r);
-  /// docs/dev/nodal-fields.md's "H^T on a distributed interface", wired in
-  /// per the lead's ruling 2026-09-24. Called from the `OpKind::Remap` case
-  /// of `execute()` immediately after that instruction's own local answer is
-  /// written into `out_ptr()`, for exactly the instructions
-  /// `resolve_remap()` marked with `Resolved::nodal_reduce >= 0`.
+  /// Nodal-remap track, round 2 (KNOWN_ISSUES.md D8). Called from
+  /// `resolve_remap()` in place of the flat `E-RT-REMAP-NODAL-PARALLEL`
+  /// refusal, ONLY for a Remap whose target is a nodal region on more than
+  /// one rank AND whose method is `"consistent"`/`"consistent-transpose"`.
+  /// Resolves the nodal and evaluation `MeshView`s, decides `comm_handle`
+  /// from `config.base_communicator` (`fuse::search::kNullComm` when unset),
+  /// and calls `fuse::build_distributed_interp_rows` once -- the expensive
+  /// part, done here at setup so `apply_nodal_dist_remap` below allocates
+  /// nothing PER PERIOD beyond what `apply_distributed_H`/`HT` themselves
+  /// need for their own (documented, per-call) Allgatherv buffers. Pushes
+  /// one `detail::NodalDistRemap` and returns its index for
+  /// `Resolved::nodal_dist`, or a `Failure` (any code
+  /// `build_distributed_interp_rows`/`E-INTERP-DISC` documents).
   ///
-  /// COLLECTIVE over `config.base_communicator`, EVERY RANK OF IT: the
-  /// instruction stream is identical everywhere, so every rank -- including
-  /// one holding none of `dst_component`'s data -- reaches this call for the
-  /// same instruction and must take part in the `MPI_Comm_split` that scopes
-  /// the reduction to `dst_component`'s own ranks, exactly the discipline
-  /// `attach_comm_graphs()` already uses for the analogous per-component
-  /// split it builds and frees within one function call.
-  Result<void> reduce_nodal_remap_target(const Instruction& ins,
-                                         const detail::Resolved& r);
+  /// COLLECTIVE over `comm_handle` exactly when it names a real
+  /// communicator (see `NodalDistRemap::comm_handle`'s own comment for why
+  /// this is `config.base_communicator` UNCHANGED, not a per-component
+  /// split): every rank of it must call this at the same position in the
+  /// (identical) instruction stream, same discipline `attach_comm_graphs()`
+  /// and the deleted `reduce_nodal_remap_target()` both used.
+  Result<std::int32_t> build_nodal_dist_remap(const Instruction& ins,
+                                              const std::string& label,
+                                              RegionId src, RegionId tgt,
+                                              const FieldSpec* sf_ptr,
+                                              const FieldSpec* tf_ptr);
+  /// Called from the `OpKind::Remap` case of `execute()` INSTEAD OF the
+  /// normal weights-apply, for exactly the instructions
+  /// `build_nodal_dist_remap()` above marked with `Resolved::nodal_dist >=
+  /// 0`. Reads `in_ptr(0)`, calls `apply_distributed_H` or
+  /// `apply_distributed_HT` (per `NodalDistRemap::transpose`) against the
+  /// already-built rows, and writes the result into `out_ptr()`.
+  ///
+  /// COLLECTIVE over the stored `comm_handle`, same rule as the build
+  /// function above -- every period, not just once.
+  Result<void> apply_nodal_dist_remap(const Instruction& ins,
+                                      const detail::Resolved& r);
   /// Spec §7.3 (Task 6.3). Builds one `SpacetimeInfo` per space-time
   /// `Interpolate` node and refuses every configuration the interpreter cannot
   /// execute correctly, rather than falling back to a lower-order basis.

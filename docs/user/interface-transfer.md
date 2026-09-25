@@ -155,10 +155,56 @@ did not wire into `Runner` -- see [](../dev/nodal-fields.md)'s "H^T on a
 distributed interface" for exactly where it goes and why it is safe, and
 this task's `open_questions` for the scope decision it is waiting on.
 
+## Beyond 1D: any supported cell (the "nodal remap" track)
+
+The description above is `H`'s original 1D-curve algorithm (node ordering by
+a single coordinate), which `build_consistent_interp_weights` still uses,
+unchanged, whenever the source's topological dimension is 1. When the source
+is 2D or 3D — triangles, quadrilaterals (including a curved surface mesh
+embedded in R^3, e.g. a cubed sphere), tetrahedra, hexahedra, or triangular
+prisms — the SAME public entry point dispatches instead to
+`build_general_interp_weights` (`include/fuse/backend/general_interp.hpp`):
+for each target evaluation point, it locates the containing source cell with
+`fuse::search`, inverts that cell's reference map (an exact affine solve for
+a simplex; a damped Gauss-Newton iteration, with a stated iteration cap and
+residual test, for a genuinely multilinear quad/hex/prism), and reads off
+the standard P1/Q1 basis weights at the corners `MeshView::cell_vertices`
+reports. It is exact for the shape's own affine/multilinear field, and every
+property `H`'s row-sum-one identity buys above — the transpose's exact load
+conservation, the discrete power balance — carries over unchanged, because
+it rests on nothing more shape-specific than that identity.
+
+A source cell's shape must have a STANDARD nodal basis: a pyramid's is
+rational rather than polynomial and is out of scope (refused by name,
+`E-INTERP-SHAPE`), and a general polygon or polyhedron has no standard nodal
+basis at all (refused the same way). A surface target point is accepted only
+within a stated distance of the source's own (possibly non-planar) cell
+faceting — see `general_interp.hpp`'s `kSurfaceTol` comment for why that
+tolerance is a genuine, physically-motivated one (the faceting gap between
+two independent discretizations of the same curved surface) rather than a
+rounding-scale check. `InterfaceDomainPolicy::ClampToBoundary` is supported
+here exactly as it is for the 1D algorithm.
+
+**Distributed.** `include/fuse/backend/nodal_remap_distributed.hpp` gives
+the same general interpolation across ranks: each evaluation entity's row is
+built only by the rank that owns it, against an assembled replica of the
+source mesh (see that header for the explicit trade this makes and why the
+result is bit-identical across rank counts). A channel using method
+`"consistent"`/`"consistent-transpose"` now reaches this automatically
+through the Runner for a nodal target on more than one declared rank — no
+change needed on the caller's side beyond `Channel::remap_method(...)`,
+exactly as for a single-rank nodal target. Any OTHER method into such a
+target still refuses `E-RT-REMAP-NODAL-PARALLEL` (per-placement supermesh
+weights remain unimplemented). `KNOWN_ISSUES.md` D8 records what is, and is
+not yet, verified about this wiring under a genuinely partitioned
+multi-process run — read it before relying on this at more than one real
+rank in production.
+
 ## What this is not
 
-This is a 1D-interface operator: node ordering comes from sorting by a
-single coordinate, which is correct for a genuine 1D interface curve and
-wrong for anything with more than one tangential direction (a 2D surface
-coupling, say). It also does not attempt anything above piecewise-linear
-order; a higher-order nodal basis is a different, not-yet-written kernel.
+Neither algorithm attempts anything above piecewise-linear (P1) or bilinear/
+trilinear (Q1) order; a higher-order nodal basis is a different,
+not-yet-written kernel. The 1D algorithm specifically still relies on
+coordinate-sort node ordering, correct only for a genuine 1D interface
+curve — the general algorithm above is what replaces it for anything with
+more than one tangential direction.

@@ -269,6 +269,12 @@ add_library(fuse-coupler-backend
   # fuse::search (below) for k-nearest and fuse::linalg (below) for the
   # local polynomial solve, neither of which needs MOAB.
   backend/mls_weights.cpp
+  # Nodal-remap track, step 2: distributed rows and the exact transpose
+  # (KNOWN_ISSUES D8). Its own single MPI translation unit, isolated the same
+  # way native_migration.cpp is above -- the whole file body is inside
+  # #if FUSE_HAVE_MPI, so it compiles to an empty translation unit without
+  # MPI, exactly like transport/comm_graph.cpp.
+  backend/nodal_remap_distributed.cpp
 )
 add_library(fuse::backend ALIAS fuse-coupler-backend)
 target_compile_features(fuse-coupler-backend PUBLIC cxx_std_20)

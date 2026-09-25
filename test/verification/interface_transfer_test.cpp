@@ -61,12 +61,20 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <functional>
 #include <memory>
 #include <stdexcept>
 #include <map>
 #include <string>
 #include <vector>
+
+// Nodal-remap track, round 3: apply_nodal_dist_remap's own per-period
+// allocation check (below, ApplyNodalDistRemapHasAConstantMeasuredPerPeriodAllocationCount)
+// needs this. Safe to include here: this file's own test target compiles
+// exactly one .cpp against the prebuilt fuse_test_main -- see the header's
+// own comment on why it may appear in only one TU per binary.
+#include "../support/allocation_counter.hpp"
 
 using fuse::ComponentSet;
 using fuse::CouplingGraph;
@@ -519,7 +527,18 @@ struct NodalResult {
 NodalResult run_consistent_pair(std::size_t n_beam, std::size_t n_fluid,
                                 const std::function<double(double)>& vel,
                                 const std::function<double(double)>& trac,
-                                fuse::RankSet beam_ranks = {0, 1}) {
+                                fuse::RankSet beam_ranks = {0, 1},
+                                // Round 2 (nodal-remap track): lets a caller
+                                // force the "wall_force" channel's own
+                                // method away from "consistent-transpose",
+                                // to exercise the refusal a non-consistent
+                                // method into a multi-rank nodal target
+                                // still gets (E-RT-REMAP-NODAL-PARALLEL,
+                                // KNOWN_ISSUES D5 item 3) through this same,
+                                // already-built graph shape instead of a
+                                // second hand-rolled one.
+                                const std::string& force_method = "consistent-transpose",
+                                const std::string& vel_method = "consistent") {
   CouplingGraph g;
   const auto m_beam = g.add_mesh(fuse::MeshDecl{
       .name = "beam_mesh", .source = "generated:line:" + std::to_string(n_beam)});
@@ -539,7 +558,7 @@ NodalResult run_consistent_pair(std::size_t n_beam, std::size_t n_fluid,
       .name = "fluid_velocity_in", .region = r_fluid, .units = kMetersPerSecond,
       .conservation = fuse::Conservation::Intensive, .intent = fuse::Intent::Requires});
   const auto vch = g.add_channel("wall_velocity", vel_out, vel_in);
-  g.channel(vch).remap_method("consistent");
+  g.channel(vch).remap_method(vel_method);
   const auto force_out = g.add_field(fluid, fuse::FieldSpec{
       .name = "fluid_force", .region = r_fluid, .units = u::kNewton,
       .conservation = fuse::Conservation::Extensive, .intent = fuse::Intent::Provides});
@@ -548,7 +567,7 @@ NodalResult run_consistent_pair(std::size_t n_beam, std::size_t n_fluid,
       .order = 1, .units = u::kNewton, .conservation = fuse::Conservation::Extensive,
       .intent = fuse::Intent::Requires});
   const auto fch = g.add_channel("wall_force", force_out, force_in);
-  g.channel(fch).remap_method("consistent-transpose").conservative().lag(1)
+  g.channel(fch).remap_method(force_method).conservative().lag(1)
       .allow_time_level_mismatch("capability test: only transfer accuracy is under test");
 
   SerialMeshBackend backend;
@@ -767,16 +786,270 @@ TEST(InterfaceTransfer, AnUnimplementedNodalOrderRefusesThroughTheRealScheduling
   EXPECT_NE(what.find("E-EXTENT-DISC"), std::string::npos) << what;
 }
 
-// KNOWN_ISSUES D8: a Remap into a nodal field on more than one rank is
-// refused until per-placement weights exist and a partitioned case has been
-// shown correct. The placement is declared, not run, so this fires in Tier 0.
-TEST(InterfaceTransfer, ARemapIntoANodalFieldOnSeveralRanksIsRefused) {
+// KNOWN_ISSUES D8, round 2 (2026-09-25): a Remap into a nodal field on more
+// than one rank via "consistent-transpose" is no longer refused --
+// `Runner::Impl::build_nodal_dist_remap` (runner.cpp) builds distributed
+// rows through nodal_remap_distributed.hpp instead. The placement is
+// DECLARED (`fuse::RankSet{0, 2}`, two ranks in the graph) but this test
+// still RUNS as one process with no `RunnerConfig::base_communicator` set,
+// so `comm_handle == fuse::search::kNullComm`: exactly the single-
+// participant path test/backend/nodal_remap_distributed_nullcomm_test.cpp
+// exercises on its own hand-built meshes, exercised HERE through the real
+// Runner/CouplingGraph/SerialMeshBackend stack on the SAME channel
+// `ConsistentPairRunsThroughTheRunnerExactlyAndBalancesPower` above uses at
+// one rank. With no real communicator, this single process already holds
+// (and owns) every entity of both meshes, so the correct answer is
+// IDENTICAL to the one-rank baseline -- proving the declared rank count by
+// itself changes nothing about the physics, only which code path computes
+// it (build_nodal_dist_remap vs. the plain local weights-apply).
+TEST(InterfaceTransfer, ARemapIntoANodalFieldOnTwoDeclaredRanksIsAcceptedAndMatchesOneRank) {
+  NodalResult one_rank, two_ranks;
+  ASSERT_NO_THROW(one_rank = run_consistent_pair(
+                      7, 11, [](double x) { return 0.3 + 2.0 * x; },
+                      [](double x) { return 1.0 + std::sin(3.0 * x); }, fuse::RankSet{0, 1}));
+  ASSERT_NO_THROW(two_ranks = run_consistent_pair(
+                      7, 11, [](double x) { return 0.3 + 2.0 * x; },
+                      [](double x) { return 1.0 + std::sin(3.0 * x); }, fuse::RankSet{0, 2}));
+
+  ASSERT_EQ(two_ranks.v_nodes.size(), one_rank.v_nodes.size());
+  ASSERT_EQ(two_ranks.beam_load.size(), one_rank.beam_load.size());
+  ASSERT_EQ(two_ranks.fluid_in.size(), one_rank.fluid_in.size());
+  for (std::size_t i = 0; i < one_rank.beam_load.size(); ++i) {
+    EXPECT_NEAR(two_ranks.beam_load[i], one_rank.beam_load[i], 1e-12 * std::abs(one_rank.beam_load[i]) + 1e-13)
+        << "beam_load[" << i << "]: the declared rank count must not change the physics";
+  }
+  for (std::size_t j = 0; j < one_rank.fluid_in.size(); ++j) {
+    EXPECT_NEAR(two_ranks.fluid_in[j], one_rank.fluid_in[j], 1e-13) << "fluid_in[" << j << "]";
+    EXPECT_NEAR(two_ranks.fluid_in[j], 0.3 + 2.0 * cell_x(j, 11), 1e-13)
+        << "H is still exact for a linear field at cell " << j << " on the two-rank placement";
+  }
+
+  double sent = 0.0, got = 0.0, p_fluid = 0.0, p_beam = 0.0;
+  const double h_f = measure_of(11);
+  for (std::size_t j = 0; j < 11; ++j) {
+    sent += two_ranks.fluid_force[j] * h_f;
+    p_fluid += two_ranks.fluid_in[j] * two_ranks.fluid_force[j] * h_f;
+  }
+  for (std::size_t i = 0; i < 8; ++i) {
+    got += two_ranks.beam_load[i];
+    p_beam += two_ranks.v_nodes[i] * two_ranks.beam_load[i];
+  }
+  EXPECT_NEAR(got, sent, 1e-13 * std::abs(sent)) << "H^T lost force on the two-rank placement";
+  EXPECT_NEAR(p_beam, p_fluid, 1e-13 * std::abs(p_fluid))
+      << "interface power does not balance on the two-rank placement";
+}
+
+// A method OTHER than "consistent"/"consistent-transpose" into a nodal
+// target on more than one rank is unaffected by round 2: per-placement
+// supermesh weights remain unimplemented (KNOWN_ISSUES D5 item 3), so this
+// still refuses -- now for a method-specific reason, since the SAME
+// declared placement with method "consistent-transpose" (the test above)
+// is accepted. `run_consistent_pair`'s own default empty method ("") is
+// neither "consistent" nor "consistent-transpose", so build_weights() would
+// fall through to the supermesh path, which builds FV<->FV weights only --
+// exactly the case this refusal exists for.
+TEST(InterfaceTransfer, ARemapIntoANodalFieldOnSeveralRanksViaASupermeshMethodStillRefuses) {
   try {
-    (void)run_consistent_pair(7, 11, [](double x) { return x; },
-                              [](double) { return 1.0; }, fuse::RankSet{0, 2});
-    FAIL() << "a two-rank nodal Remap target initialised";
+    (void)run_consistent_pair(7, 11, [](double x) { return x; }, [](double) { return 1.0; },
+                              fuse::RankSet{0, 2}, /*force_method=*/"");
+    FAIL() << "a two-rank nodal Remap target via a non-consistent method initialised";
   } catch (const std::exception& e) {
     const std::string what = e.what();
     EXPECT_NE(what.find("E-RT-REMAP-NODAL-PARALLEL"), std::string::npos) << what;
+  }
+}
+
+// Nodal-remap track, round 3: apply_nodal_dist_remap's own per-period
+// allocation, checked with the SAME `AllocationCounter` instrument
+// Runner.AllocatesNothingWhileRunning (test/runtime/runner_test.cpp) uses
+// for the ordinary weights-apply path. `Runner.AllocatesNothingWhileRunning`'s
+// own harness (`build(HarnessOpts{...})`, runner_test.cpp) has no
+// nodal-target-on-several-ranks case at all -- extending IT to cover this
+// path would mean teaching that shared, heavily-reused harness a new
+// mesh/field/channel shape it has never needed before, a materially bigger
+// and riskier change than a second, focused test next to it. This test is
+// that second test -- and it does NOT assert zero, unlike its namesake,
+// because zero is not the true answer here: `apply_distributed_H`/
+// `apply_distributed_HT` (nodal_remap_distributed.hpp) build fresh
+// Allgatherv buffers, an unordered_map and (in the H branch) a local-slot
+// copy on EVERY call by design, a cost KNOWN_ISSUES.md D8 already named as
+// "a distinct, documented cost" in round 2 -- this test MEASURES it (a
+// small, constant number per period, not zero, not growing) rather than
+// asserting a bound that was never true, and records the measured number
+// in KNOWN_ISSUES.md D8 as the concrete baseline a future point-to-point
+// implementation should reduce.
+TEST(InterfaceTransfer, ApplyNodalDistRemapHasAConstantMeasuredPerPeriodAllocationCount) {
+  CouplingGraph g;
+  const auto m_beam = g.add_mesh(fuse::MeshDecl{.name = "beam_mesh", .source = "generated:line:7"});
+  const auto m_fluid = g.add_mesh(fuse::MeshDecl{.name = "fluid_mesh", .source = "generated:line:11"});
+  const auto r_beam = g.add_region(fuse::Region{.name = "r_beam", .mesh = m_beam, .dimension = 1});
+  const auto r_fluid = g.add_region(fuse::Region{.name = "r_fluid", .mesh = m_fluid, .dimension = 1});
+  const auto beam = g.add_component(
+      fuse::ComponentDecl{.name = "beam", .ranks = {0, 2}, .interval = Rational{1}});
+  const auto fluid = g.add_component(
+      fuse::ComponentDecl{.name = "fluid", .ranks = {0, 1}, .interval = Rational{1}});
+  const auto vel_out = g.add_field(beam, fuse::FieldSpec{
+      .name = "beam_velocity", .region = r_beam, .disc = fuse::Discretization::ContinuousGLL,
+      .order = 1, .units = kMetersPerSecond, .conservation = fuse::Conservation::Intensive,
+      .intent = fuse::Intent::Provides});
+  const auto vel_in = g.add_field(fluid, fuse::FieldSpec{
+      .name = "fluid_velocity_in", .region = r_fluid, .units = kMetersPerSecond,
+      .conservation = fuse::Conservation::Intensive, .intent = fuse::Intent::Requires});
+  const auto vch = g.add_channel("wall_velocity", vel_out, vel_in);
+  g.channel(vch).remap_method("consistent");
+  const auto force_out = g.add_field(fluid, fuse::FieldSpec{
+      .name = "fluid_force", .region = r_fluid, .units = u::kNewton,
+      .conservation = fuse::Conservation::Extensive, .intent = fuse::Intent::Provides});
+  const auto force_in = g.add_field(beam, fuse::FieldSpec{
+      .name = "beam_load", .region = r_beam, .disc = fuse::Discretization::ContinuousGLL,
+      .order = 1, .units = u::kNewton, .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Requires});
+  const auto fch = g.add_channel("wall_force", force_out, force_in);
+  g.channel(fch).remap_method("consistent-transpose").conservative().lag(1)
+      .allow_time_level_mismatch("capability test: only transfer accuracy is under test");
+
+  SerialMeshBackend backend;
+  for (std::uint32_t i = 0; i < g.mesh_count(); ++i) {
+    ASSERT_TRUE(backend.load(g.mesh(fuse::MeshId{i})).ok());
+  }
+  const auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+  const fuse::ClockSet clocks{g};
+  auto sched = fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+  ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
+
+  class Side final : public fuse::Component {
+   public:
+    Side(std::string name, std::function<void(Side&)> fill)
+        : name_(std::move(name)), fill_(std::move(fill)) {}
+    [[nodiscard]] std::string name() const override { return name_; }
+    fuse::Result<void> register_fields(FieldRegistry& reg, const CouplingGraph& g) override {
+      for (const fuse::FieldId f : g.component(*g.find_component(name_)).fields) {
+        auto& buf = bufs[g.field(f).name];
+        buf.assign(count(g, f), 0.0);
+        const auto r = reg.bind(
+            f, fuse::FieldRef{buf.data(), fuse::Layout{.stride = 1, .count = buf.size()},
+                              fuse::MemorySpace::Host});
+        if (!r.ok()) return r;
+      }
+      return fuse::Result<void>::success();
+    }
+    fuse::Result<void> advance(const StepContext&) override {
+      fill_(*this);
+      return fuse::Result<void>::success();
+    }
+    std::function<std::size_t(const CouplingGraph&, fuse::FieldId)> count;
+    std::map<std::string, std::vector<double>> bufs;
+
+   private:
+    std::string name_;
+    std::function<void(Side&)> fill_;
+  };
+  auto b = std::make_unique<Side>("beam", [](Side& me) {
+    auto& v = me.bufs["beam_velocity"];
+    for (std::size_t i = 0; i < v.size(); ++i) v[i] = static_cast<double>(i) / 7.0;
+  });
+  auto f = std::make_unique<Side>("fluid", [](Side& me) {
+    auto& q = me.bufs["fluid_force"];
+    for (double& x : q) x = 1.0;
+  });
+  const auto nodal = [&](const CouplingGraph& gg, fuse::FieldId fid) -> std::size_t {
+    const auto& fs = gg.field(fid);
+    const std::size_t cells = fs.region == r_beam ? 7u : 11u;
+    return fs.disc == fuse::Discretization::ContinuousGLL ? cells + 1 : cells;
+  };
+  b->count = nodal;
+  f->count = nodal;
+  ComponentSet components;
+  components.add(std::move(b));
+  components.add(std::move(f));
+  FieldRegistry registry;
+  for (auto& c : components) {
+    ASSERT_TRUE(c.register_fields(registry, g).ok());
+  }
+
+  Runner runner{g, lowered.dag, sched.plan, backend};
+  ASSERT_TRUE(runner.initialize(components, registry).ok());
+
+  // Warm-up, outside the counter -- mirrors Runner.AllocatesNothingWhileRunning
+  // (runner_test.cpp) exactly: anything the FIRST call allocates lazily (a
+  // std::function's heap state, a container grown from empty) is still
+  // caught by the counted periods below, since it would already exist by
+  // then were this the only allocation site.
+  ASSERT_TRUE(runner.run_period(components).ok());
+
+  // MEASURED, NOT ASSERTED ZERO -- and that is the finding this test exists
+  // to pin down, not a bug in the TEST. apply_nodal_dist_remap calls
+  // apply_distributed_H/apply_distributed_HT (nodal_remap_distributed.hpp)
+  // every period, and those functions build fresh Allgatherv buffers, an
+  // unordered_map, and (in the H branch) a copy of the local input slot on
+  // EVERY call by design -- exactly the "Allgatherv buffers apply_distributed_H/HT
+  // allocate per call are a distinct, documented cost" this track's own round-2
+  // KNOWN_ISSUES.md D8 entry already named, now measured for the first time
+  // rather than only asserted. `DistributedInterpRows` itself (the expensive
+  // part: locating every point's containing cell) is genuinely built ONCE, at
+  // setup -- what this test actually proves is that the PER-PERIOD count is
+  // small, deterministic and does not grow across periods (no leak, nothing
+  // accumulating), not that it is zero, because it provably is not.
+  std::size_t first_period_allocations = 0;
+  {
+    const AllocationCounter counter;
+    ASSERT_TRUE(runner.run_period(components).ok());
+    first_period_allocations = counter.count();
+  }
+  std::printf("ApplyNodalDistRemapHasAConstantMeasuredPerPeriodAllocationCount: "
+             "%zu allocations/period\n", first_period_allocations);
+  EXPECT_GT(first_period_allocations, 0u)
+      << "expected a NONZERO, measured allocation count from "
+         "apply_distributed_H/HT's own per-call buffers -- see this test's own "
+         "comment; a zero here would mean this measurement itself is broken, "
+         "not that the code got faster";
+
+  std::size_t total_allocations = 0;
+  bool ok = false;
+  {
+    const AllocationCounter counter;
+    ok = runner.run(components, 8).ok();
+    total_allocations = counter.count();
+  }
+  ASSERT_TRUE(ok);
+  EXPECT_EQ(total_allocations, first_period_allocations * 8)
+      << "total=" << total_allocations << ", first_period=" << first_period_allocations
+      << " -- the per-period allocation count must be CONSTANT across periods (no "
+         "growth, no leak); it is measured here as " << first_period_allocations
+      << " allocations/period, not zero (see this test's own comment on why), and "
+         "KNOWN_ISSUES.md D8 records this number as the Allgatherv-per-apply cost "
+         "a future point-to-point implementation should reduce, not silently accept "
+         "as unmeasurable";
+}
+
+// Moving least squares through the Runner (docs/user/point-cloud-remap.md):
+// beam nodal velocity to fluid cells with a degree-1 fit, which reproduces a
+// linear field exactly, on the same serial path every other method takes.
+TEST(InterfaceTransfer, MlsVelocityChannelRunsThroughTheRunnerAndIsExactForLinear) {
+  NodalResult r;
+  try {
+    r = run_consistent_pair(7, 11, [](double x) { return 0.3 + 2.0 * x; },
+                            [](double) { return 1.0; }, fuse::RankSet{0, 1},
+                            "consistent-transpose", "mls:degree=1,k=4,radial=wendland2");
+  } catch (const std::exception& e) {
+    FAIL() << e.what();
+  }
+  ASSERT_EQ(r.fluid_in.size(), 11u);
+  for (std::size_t j = 0; j < 11; ++j)
+    EXPECT_NEAR(r.fluid_in[j], 0.3 + 2.0 * cell_x(j, 11), 1e-12) << "cell " << j;
+}
+
+// MLS is serial: a partitioned cloud gives each rank different neighbours.
+// Refused from the declared placement, before any weights are built.
+TEST(InterfaceTransfer, AnMlsChannelOnSeveralRanksIsRefused) {
+  try {
+    (void)run_consistent_pair(7, 11, [](double x) { return x; }, [](double) { return 1.0; },
+                              fuse::RankSet{0, 2}, "consistent-transpose",
+                              "mls:degree=1,k=4,radial=wendland2");
+    FAIL() << "an MLS channel from a two-rank component initialised";
+  } catch (const std::exception& e) {
+    const std::string what = e.what();
+    EXPECT_NE(what.find("E-RT-REMAP-MLS-PARALLEL"), std::string::npos) << what;
   }
 }

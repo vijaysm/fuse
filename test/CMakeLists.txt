@@ -190,6 +190,14 @@ fuse_add_gtest(backend mls_weights LIBS $<BUILD_LOCAL_INTERFACE:ArborX::ArborX>)
 # their 2D/3D sibling. Links fuse::backend (native/serial generators) and
 # GTest via fuse_add_gtest's default; needs no extra LIBS.
 fuse_add_gtest(backend nodal_interp)
+# Nodal-remap track, round 2: the SAME nodal_remap_distributed.hpp/.cpp
+# public functions test/parallel/nodal_remap_distributed_test.cpp exercises
+# under real MPI, called here with comm_handle == fuse::search::kNullComm --
+# a plain fuse_add_gtest target, no MPI linked, that actually RUNS in this
+# sandbox (the MPI sibling can only be compiled here; see that file's own
+# header). Proves the null-comm branch nodal_remap_distributed.cpp's
+# allgatherv_records() takes is not dead code that merely compiles.
+fuse_add_gtest(backend nodal_remap_distributed_nullcomm)
 # The "nodal fields" track's field_extent()/region_extent_kind() (mesh_view.hpp)
 # and their wiring into make_region_sizes(), on both the serial and native
 # backends -- native_backend.hpp's 2D/3D generators are what give this file
@@ -281,7 +289,8 @@ fuse_add_gtest(runtime component_iface THROWS)
 fuse_tests_gated_by(FUSE_ENABLE_MPI
   parallel/runner_transport_test.cpp parallel/comm_graph_test.cpp
   parallel/mpi_transport_test.cpp parallel/epoch_reconcile_test.cpp
-  parallel/nodal_field_test.cpp)
+  parallel/nodal_field_test.cpp parallel/nodal_remap_distributed_test.cpp
+  parallel/nodal_remap_runner_test.cpp)
 if(FUSE_ENABLE_MPI)
   foreach(t runner_transport comm_graph mpi_transport)
     fuse_add_mpi_test(parallel ${t} LIBS fuse::runtime)
@@ -292,6 +301,24 @@ if(FUSE_ENABLE_MPI)
   # See the file header for exactly which of the task's five MPI properties
   # each case covers, and which it honestly does not.
   fuse_add_mpi_test(parallel nodal_field LIBS fuse::runtime fuse::backend fuse::transport)
+  # "Nodal remap" track, step 2: build_distributed_interp_rows /
+  # apply_distributed_H / apply_distributed_HT (nodal_remap_distributed.hpp)
+  # against GeometricLineMesh -- disjoint, identical and partially
+  # overlapping rank sets, called directly. Round 3 added the Runner-level
+  # sibling right below (nodal_remap_runner), which exercises the SAME
+  # primitive through a real CouplingGraph/Runner pair instead of calling it
+  # directly -- this row stays for the primitive-level coverage the Runner
+  # test does not itself re-derive (e.g. its own out-of-domain refusal).
+  fuse_add_mpi_test(parallel nodal_remap_distributed LIBS fuse::backend)
+  # "Nodal remap" track, round 3 (KNOWN_ISSUES.md D8): the Runner-level
+  # sibling of the row above -- a real beam/fluid consistent +
+  # consistent-transpose channel pair, driven through lower -> schedule ->
+  # initialize -> run_period on MultiMeshGeometricBackend
+  # (test/support/partitioned_test_backend.hpp), at disjoint, identical and
+  # partially overlapping RankSets. See that file's own header for the
+  # closed-form / one-rank-reference argument its "bit-identical across
+  # rank counts" checks rest on.
+  fuse_add_mpi_test(parallel nodal_remap_runner LIBS fuse::runtime fuse::backend)
   # epoch_reconcile is registered from 2 ranks up, not 1. Its own
   # EpochReconcile.TheJobNeedsAtLeastTwoRanks asserts `world_size() >= 2`
   # deliberately -- "Not a skip: with one rank there is nothing to reconcile,

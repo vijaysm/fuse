@@ -317,13 +317,50 @@ note = "Compiles under FUSE_ENABLE_MPI=ON; UNRUN in the sandbox. Verifies the ST
 [[cell]]
 id = "A-NODAL-HT-PARALLEL"
 axis = "H^T on a genuinely distributed nodal target, through Runner"
-gap = """REFUSED, not run: E-RT-REMAP-NODAL-PARALLEL (KNOWN_ISSUES D8) refuses a \
-Remap into a nodal field on more than one rank, and \
-InterfaceTransfer.ARemapIntoANodalFieldOnSeveralRanksIsRefused makes it fire. Whether \
-shared-vertex rows must be summed or copied depends on per-placement weights (D5 item 3); \
-on the replicated source reachable today an owner sum would multiply the load by the \
-holder count. The cell closes with a genuinely partitioned, non-matching nodal Remap \
-through the Runner at 1 to 5 ranks conserving force and balancing power."""
+gap = """PARTIALLY CLOSED (round 3, 2026-09-25): the Runner-level MPI test this cell's own \
+round-2 note said was missing NOW EXISTS -- compiled, its own oracle cross-checked without \
+MPI, but not yet EXECUTED at more than one real rank. That execution remains this cell's \
+one open item.
+
+What closed in round 2 (unchanged, still true): src/runtime/runner.cpp's resolve_remap calls \
+Runner::Impl::build_nodal_dist_remap (setup) / apply_nodal_dist_remap (per period) for a \
+nodal Remap target on more than one declared rank via method "consistent"/ \
+"consistent-transpose"; a null-communicator (fuse::search::kNullComm) code path makes this \
+testable at Tier 0 without MPI; InterfaceTransfer.ARemapIntoANodalFieldOnTwoDeclaredRanksIsAcceptedAndMatchesOneRank \
+proves a declared two-rank placement with no real second process reproduces the one-rank \
+baseline exactly.
+
+What closed in round 3: test/support/partitioned_test_backend.hpp gained \
+MultiMeshGeometricBackend -- one (n_cells, RankSet, x_lo, x_hi) Spec PER MESH NAME, reusing \
+GeometricLineMesh unchanged for each, closing the "Runner needs ONE MeshBackend but every \
+existing two-mesh test backend bakes in a single mesh's shape" gap round 2 left open. \
+test/parallel/nodal_remap_runner_test.cpp (NodalRemapRunnerMpi.{DisjointRankSets, \
+IdenticalRankSets, PartiallyOverlappingRankSets}) drives a real beam/fluid \
+consistent+consistent-transpose channel pair through lower->schedule->initialize->run_period \
+at 1-5 ranks, checking H's pointwise exactness, global force conservation and power balance \
+to 1e-13, and each rank's beam_load against a ONE-RANK REFERENCE computed IN THE SAME TEST \
+(build_consistent_interp_weights on an unpartitioned GeometricLineMesh -- no second job \
+launch needed for that part). That reference was cross-checked in this sandbox, without real \
+MPI, against apply_distributed_HT itself at comm_handle == kNullComm: agreement to 1.4e-17 \
+(round-off) at all 8 beam vertices for n_beam=7, n_fluid=11 -- strong evidence the new test's \
+oracle is right and consistent with the exact code path it exercises. Separately, \
+InterfaceTransfer.ApplyNodalDistRemapHasAConstantMeasuredPerPeriodAllocationCount measured \
+apply_nodal_dist_remap's own per-period cost precisely: 31 allocations/period, constant \
+across 8 periods (not zero -- apply_distributed_H/HT build fresh Allgatherv buffers by \
+design, a cost already disclosed in round 2, now quantified). Full tier-0 suite still \
+passing; full tier-1 (MPI-enabled) build still compiles cleanly with the new test included.
+
+What is STILL open: the new Runner-level MPI test has never actually EXECUTED at more than \
+one real rank -- MPI cannot initialise in this sandbox. This cell fully closes once that \
+host run exists and reports the same force-conserved/H-exact/power-balanced/matches-the- \
+one-rank-reference verdict at 1-5 ranks. Two secondary, honestly-scoped gaps remain open \
+alongside it (see KNOWN_ISSUES.md D8's own "What is still open" for the full statement): \
+the two NOT-ASSESSED distributed-builder mutations were reconsidered rather than \
+mechanically retargeted at the new test (neither this test's nor the primitive test's \
+evaluation side ever has a genuinely shared entity, so "row built on every holder" still has \
+no real target in EITHER test; "transpose sums in rank order" needs a two-launch comparison \
+no single test, Runner-level or not, can perform alone); and the measured 31 \
+allocations/period is a number to reduce in a future point-to-point redesign, not yet a fix."""
 
 [[cell]]
 id = "A-SEARCH-DISTRIBUTED"

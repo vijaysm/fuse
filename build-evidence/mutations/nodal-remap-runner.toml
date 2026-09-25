@@ -1,0 +1,57 @@
+# Mutations for the "Nodal remap" track's round-2 Runner wiring
+# (Runner::Impl::build_nodal_dist_remap/apply_nodal_dist_remap,
+# src/runtime/runner.cpp -- KNOWN_ISSUES.md D8). Schema:
+# build-evidence/mutations.toml. Own file per the review-fix protocol.
+#
+# Both rows below were KILLED, observed directly in this sandbox (Tier 0, no
+# MPI needed -- the whole point of round 2's null-communicator path is that
+# this Runner wiring is testable without MPI at all): each was applied by
+# hand to src/runtime/runner.cpp, rebuilt, and run against the filtered
+# `*NodalField*` subset (the 3 cases this file's own dispatch logic can
+# affect), confirming exactly the named case turned from passing to failing
+# while the other two in that subset stayed green; the file was then
+# restored byte-for-byte (cmp against a pre-mutation backup) before moving
+# to the next mutation. The full, unfiltered 12-test
+# `verification.interface_transfer` binary was reconfirmed passing once, at
+# the end, after BOTH restores -- not, as an earlier version of this
+# preamble claimed, separately between the two mutations. Each row's own
+# per-mutation comment below states precisely which subset was rerun.
+
+[[mutation]]
+id = "nodal-remap-runner-method-check-skipped"
+area = "runtime"
+describes = "resolve_remap's method-string guard ('consistent'/'consistent-transpose' build distributed rows, anything else still refuses E-RT-REMAP-NODAL-PARALLEL) is replaced by an unconditional true, so a nodal Remap target on more than one rank via ANY method -- including the default (empty) one that would otherwise fall through to the supermesh FV<->FV-only builder -- takes the distributed-rows path"
+file = "src/runtime/runner.cpp"
+old = '        if (ins.attrs.method == "consistent" || ins.attrs.method == "consistent-transpose") {'
+new = "        if (true) {  // MUTATED: every method takes the distributed nodal path"
+target = "fuse_verification_interface_transfer_test"
+test = "verification.interface_transfer"
+# KILLED. InterfaceTransfer.ARemapIntoANodalFieldOnSeveralRanksViaASupermeshMethodStillRefuses
+# fails (2/3 InterfaceTransfer NodalField-area cases pass): initialize()
+# throws E-INTERP-DISC ("method 'consistent' builds H... the source field is
+# not a continuous field at order <= 1") instead of the expected
+# E-RT-REMAP-NODAL-PARALLEL -- build_nodal_dist_remap is reached with a
+# method it was never designed to run (the empty default), and its own
+# `is_nodal` precondition check catches the resulting nonsense with a
+# DIFFERENT refusal, not the graph-level one this row exists to keep firing.
+
+[[mutation]]
+id = "nodal-remap-runner-transpose-scaling-always-load"
+area = "runtime"
+describes = "build_nodal_dist_remap's plan.src_is_load (whether the eval/point side's own values are ALREADY a load, so apply_nodal_dist_remap must NOT multiply them by that side's cell measure before scattering through H^T) is hardcoded to true regardless of the eval side's actual discretization, so a genuinely density-valued (FV) eval side's values are scattered as though they were already loads -- silently dropping the measure-weighting build_consistent_weights_for_plan's own serial transpose branch performs at build time"
+file = "src/runtime/runner.cpp"
+old = "  plan.src_is_load = transpose ? is_nodal(sf_ptr) : false;"
+new = "  plan.src_is_load = true;  // MUTATED: never scale by the eval side's measure"
+target = "fuse_verification_interface_transfer_test"
+test = "verification.interface_transfer"
+# KILLED. InterfaceTransfer.ARemapIntoANodalFieldOnTwoDeclaredRanksIsAcceptedAndMatchesOneRank
+# fails on ALL THREE of its own checks at once (2/3 InterfaceTransfer
+# NodalField-area cases pass overall): beam_load[7] disagrees with the
+# one-rank baseline by two orders of magnitude (0.0 vs the correct ~0.085,
+# since force_out's cell measure at n_fluid=11 is ~1/11 and the mutation
+# drops that factor entirely), H^T's total sent no longer equals total
+# received (got=18.32 vs sent=1.67 -- the UNSCALED density values, summed
+# without their cell-width weighting, do not conserve the same total the
+# scaled ones do), and interface power no longer balances (p_beam=24.12 vs
+# p_fluid=2.19) -- three independent, physically distinct symptoms of the
+# same single missing multiplication.
