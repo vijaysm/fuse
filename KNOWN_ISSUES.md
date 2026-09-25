@@ -854,6 +854,62 @@ example comparison load-bearing rather than trivially green. The matrix gap
 
 ---
 
+### ~~D12. `--coupler` on the layout driver refused unconditionally: coupler placement was designed but not implemented~~ — CLOSED 2026-09-25
+
+**Fix.** The coupler-placement track (design C,
+`docs/dev/coupler-placement.md`): `ComponentKind::Coupler`, `add_coupler()`,
+`RemapSpec::remap_on`. A channel's Remap now runs on any declared placement
+`C` (default: the target's own component) — value moves source -> C ->
+target, remapped on `C`'s decomposition of both meshes, any hop between
+identical placements elided exactly like every other hop. `C = target`
+reproduces today's IR byte for byte (golden IR unchanged;
+`CouplerLowering.CouplerEqualToTargetReproducesTodaysIRExactly`). Descriptor
+bumped to v6 (a component's `kind` byte, a channel's `remap_on` word); YAML
+gains a `couplers:` list and a channel's `remap_on:` key. New validation:
+`E-COUPLER-FIELDS`, `E-CHANNEL-REMAP-ON`, `W-CHANNEL-REMAP-ON-UNUSED`.
+`examples/layout_driver/main.cpp`'s `--coupler e:f` now builds and runs the
+coupler-routed graph instead of refusing; refused only together with
+`--mesh` (that mode builds no field-transfer graph at all).
+
+**Verified at Tier 0** (no MPI in this sandbox): every model/IR/schedule/
+runtime unit test above passes unchanged (no regression when no coupler is
+declared), 8 new `Validate.*` tests pin the validation rules, 7 new
+`CouplerLowering.*`/`LoweringChannel.*` tests pin every lowering shape
+(disjoint, remap-on-source, partial overlap, a coupler co-located with the
+target under a distinct identity, the distributed-remap-with-coupler case,
+and the "no possible remap" no-op case), and `Runner.
+ACouplerNeedsNoComponentAndDeliversTheIdenticalValue` runs a serial (1
+nominal-rank) end-to-end job and asserts the coupler-routed result equals
+the direct result exactly (no tolerance) — see
+`test/runtime/runner_test.cpp`.
+
+**Compiled at Tier 1, not run.** `fuse_example_layout_driver` builds cleanly
+under `-DFUSE_ENABLE_MPI=ON` with the new code, and `layout.coupler.{3.
+disjoint,3.equals-target,4.overlaps-comp1}` are registered
+(`examples/CMakeLists.txt`) alongside the existing comp1/comp2 shapes.
+`layout.refuse.coupler` (the old "unconditionally refused" pin) is replaced
+by `layout.refuse.coupler-with-mesh`. **Not run this track** — this sandbox
+cannot start MPI at all, not even `-np 1`; a host run of `ctest -L layout`
+is the remaining verification step.
+
+**Open, needing a host run to assess (`docs/dev/coupler-placement.md`'s own
+section on it):** `resolve_remap()`'s MLS-serial and nodal-parallel-refusal
+checks size themselves from the channel's declared source/target
+components, not from the operator's actual placement — for a coupler-routed
+nodal remap where the coupler spans more than one rank while the channel's
+declared endpoints are each single-rank, this could read the wrong rank
+count. Not changed: the existing derivation was tuned through several rounds
+of real host MPI debugging that this sandbox cannot reproduce or verify
+against.
+
+**Also open:** `src/runtime/iteration.cpp`'s iteration-region participant
+fix (a coupler-routed channel inside a region now unions the coupler's
+ranks into `R.participants`) touches a `RunnerConfig::base_communicator`-
+gated code path with no Tier 0 coverage at all — genuinely needs MPI to
+exercise.
+
+---
+
 ### ~~D10. The conservation check is rank-local, so it refuses instead of checking in parallel~~ — FIXED 2026-09-25
 
 **Fix (`54a27cc`).** `Constrain` is now collective (`fuse::is_collective`), so
