@@ -99,3 +99,28 @@ open      = ["PETSc-backed native component unregistered",
 #   action and the only way to satisfy the S0 exit for this parent.
 verified  = "Release builds clean, 418 tests registered; host run 2026-09-15: 796/796 pass (4 MOAB-dependent skips) in a Tier 1 build with both parents"
 
+[arborx]
+# NOT a subtree import like [soma]/[karma] above: ArborX is an ordinary
+# third-party CMake dependency, resolved by cmake/FuseDependencies.cmake's
+# fuse_resolve_arborx() (find_package first, pinned FetchContent otherwise --
+# find_package/FetchContent, never an upstream/ subtree). Recorded here
+# anyway, per the ArborX track's own instruction, so the exact commit this was
+# last proven against a specific Kokkos version survives independently of
+# git history on what may be a shallow clone.
+repo      = "https://github.com/arborx/arborx.git"
+tag       = "v2.1"                                              # == ARBORX_VERSION 2.1.0
+sha       = "8f89be60bc3797670b9be8843da7dcdbc5f2333f"          # verified by the lead; tag's tip
+date      = "2026-04-28"
+kokkos_required = "4.5"          # ArborX's own find_package(Kokkos 4.5 REQUIRED CONFIG)
+kokkos_verified_against = "5.1.0"  # /opt/kokkos here; AnyNewer version file satisfies >= 4.5
+verified  = """Standalone configure + build proven against Kokkos 5.1.0 / AppleClang 21 /
+CMake 4.3.2 before any fuse:: code was written (the task's own requirement): a
+BoundingVolumeHierarchy built over 100 boxes, an intersects (point-in-box) CRS
+query, and a k-nearest CRS query, all via ArborX::Experimental::attach_indices
+plus a custom index-extracting callback -- ArborX 2.1's own DefaultCallback
+does not extract PairValueIndex::index into a plain integer output view (a
+real API-shape finding recorded in docs/dev/search.md and box_index.cpp's own
+header comment, not an ArborX defect). All three gave the expected indices.
+DistributedTree was not run (this sandbox cannot initialize MPI); its headers
+were proven only to COMPILE under -DFUSE_ENABLE_MPI=ON, in src/search/distributed.cpp."""
+
