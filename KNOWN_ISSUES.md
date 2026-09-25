@@ -1341,6 +1341,9 @@ The beam quadrature inconsistency round 4 found (`strain_energy()` missing a
 `dx_beam` factor relative to `kinetic_energy()`) remains open and separate; it
 never entered the state map.
 
+**Host run 2026-09-25 15:57:** every FSI suite passes on the host — `fsi_transient` (254 s, order
+1.846 inside the bound), `fsi_energy_diag` (115 s), `fsi_coupled`, `fsi_stokes_mms`, `fsi_beam`.
+
 *Original entry, four rounds of diagnosis, follows.*
 
 
