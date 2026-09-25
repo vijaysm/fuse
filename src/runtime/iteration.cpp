@@ -188,6 +188,35 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components) {
       }
     }
 
+    // --- one contiguous pass over the body, and only one -------------------
+    // Moved ahead of the participant computation below (it used to follow):
+    // that computation now needs [R.enter, R.exit] to see every Transport
+    // and Epoch INSIDE the region body, not only the checkpointed
+    // components' own declared ranks.
+    std::size_t enters = 0;
+    std::size_t exits = 0;
+    for (std::size_t i = 0; i < stream.size(); ++i) {
+      if (stream[i].region_enter == static_cast<std::int32_t>(ri)) {
+        R.enter = i;
+        ++enters;
+      }
+      if (stream[i].region_exit == static_cast<std::int32_t>(ri)) {
+        R.exit = i;
+        ++exits;
+      }
+    }
+    if (enters != 1 || exits != 1 || R.exit < R.enter) {
+      return Failure{"E-RT-REGION",
+                   "iteration region '" + R.name + "' appears as " +
+                       std::to_string(enters) + " enter and " +
+                       std::to_string(exits) +
+                       " exit boundaries in one period; exactly one pass over "
+                       "the body is required. A body that appears more than "
+                       "once per period is several independent fixed-point "
+                       "problems sharing one checkpoint, which this runner "
+                       "will not guess at: split it into one region per clock"};
+    }
+
     // R-10 (REVIEW.md): the convergence decision in run_region() used to be
     // computed entirely from this rank's own buffers, with no MPI_Allreduce
     // or equivalent before `all_satisfied()` was called -- a silent
@@ -212,6 +241,39 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components) {
       std::vector<int> region_ranks;
       for (const ComponentId c : cp.components) {
         for (const int rk : graph.component(c).ranks) region_ranks.push_back(rk);
+      }
+      // The coupler-placement track: a channel inside this region that
+      // routes through a separately-placed coupler (RemapSpec::remap_on)
+      // makes the coupler's ranks participants of every Transport/Epoch
+      // that channel's lowering emitted -- even though the coupler owns no
+      // state and so is never named by `derive_checkpoint_set()`'s
+      // `components` above. Missing them here would leave the coupler's
+      // ranks executing the region's collectives (its own Transport/Epoch
+      // pairs are inside [R.enter, R.exit] like any other) while sitting
+      // outside `R.participants`' residual reduction -- not a wrong answer,
+      // since the coupler carries no residual to contribute, but a rank
+      // that took part in one collective and not the other is exactly the
+      // hang class E-SCHED-EPOCH-PARTIAL exists to catch at compile time;
+      // this is the same property, enforced at the ONE place a scheduler
+      // check cannot reach because it is about which RUNTIME ranks reduce a
+      // residual, not which ranks a single instruction's attrs name. Read
+      // directly off the instruction stream -- the same source
+      // `epoch_sequence()` (src/schedule/scheduler.cpp) reads -- rather than
+      // re-derived from the graph, so the two cannot disagree about which
+      // ranks a region's body actually touches.
+      for (std::size_t i = R.enter; i <= R.exit; ++i) {
+        const Instruction& ins = stream[i];
+        if (ins.kind != OpKind::Transport && ins.kind != OpKind::Epoch) continue;
+        for (const int rank_set : {ins.attrs.src_rank_set, ins.attrs.dst_rank_set}) {
+          if (rank_set < 0 || static_cast<std::uint32_t>(rank_set) >=
+                                  graph.component_count()) {
+            continue;
+          }
+          for (const int rk : graph.component(ComponentId{
+                   static_cast<std::uint32_t>(rank_set)}).ranks) {
+            region_ranks.push_back(rk);
+          }
+        }
       }
       std::sort(region_ranks.begin(), region_ranks.end());
       region_ranks.erase(std::unique(region_ranks.begin(), region_ranks.end()),
@@ -249,31 +311,6 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components) {
         }
         R.participants = std::move(region_ranks);
       }
-    }
-
-    // --- one contiguous pass over the body, and only one -------------------
-    std::size_t enters = 0;
-    std::size_t exits = 0;
-    for (std::size_t i = 0; i < stream.size(); ++i) {
-      if (stream[i].region_enter == static_cast<std::int32_t>(ri)) {
-        R.enter = i;
-        ++enters;
-      }
-      if (stream[i].region_exit == static_cast<std::int32_t>(ri)) {
-        R.exit = i;
-        ++exits;
-      }
-    }
-    if (enters != 1 || exits != 1 || R.exit < R.enter) {
-      return Failure{"E-RT-REGION",
-                   "iteration region '" + R.name + "' appears as " +
-                       std::to_string(enters) + " enter and " +
-                       std::to_string(exits) +
-                       " exit boundaries in one period; exactly one pass over "
-                       "the body is required. A body that appears more than "
-                       "once per period is several independent fixed-point "
-                       "problems sharing one checkpoint, which this runner "
-                       "will not guess at: split it into one region per clock"};
     }
 
     // --- the residual blocks, and the Sink each is delivered through --------

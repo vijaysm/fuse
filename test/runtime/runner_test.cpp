@@ -333,6 +333,17 @@ struct HarnessOpts {
   /// resolve_regions() already relies on (R-10's own
   /// StillRunsAnIterationRegionWithNoCommunicatorConfigured).
   int           dst_rank_count = 1;
+  /// The coupler-placement track: when set, the channel's Remap is routed
+  /// through a `ComponentKind::Coupler` placed on a rank neither the
+  /// producer nor the consumer occupies, via `remap_on`. No
+  /// `RunnerConfig::base_communicator` is configured anywhere in this file
+  /// (the class comment on `dst_rank_count` above explains why that is
+  /// legitimate here), so the coupler's nominal placement never becomes a
+  /// second real process -- what this actually exercises is that a
+  /// `ComponentSet` with NO Component supplied for the coupler still
+  /// initializes and runs, and that the two extra Transport/Epoch hops
+  /// deliver the identical value a direct producer->consumer channel would.
+  bool          with_coupler = false;
 };
 
 std::unique_ptr<Harness> build(HarnessOpts o) {
@@ -367,6 +378,11 @@ std::unique_ptr<Harness> build(HarnessOpts o) {
                          .conservation = o.conservation,
                          .intent = fuse::Intent::Requires});
   const auto ch = g.add_channel("link", s, t);
+  if (o.with_coupler) {
+    const auto coupler = g.add_coupler(
+        {.name = "coupler", .ranks = fuse::RankSet{5, 1}});
+    g.channel(ch).remap_on(coupler);
+  }
   if (o.accum != fuse::AccumOp::Instant) g.channel(ch).accumulate(o.accum);
   const bool with_bystander = o.bystander_dt > Rational{0};
   if (with_bystander) {
@@ -468,6 +484,58 @@ TEST(Runner, TransfersAValueFromProducerToConsumer) {
   for (const double v : consumer->data()) {
     EXPECT_DOUBLE_EQ(v, 2.0) << "producer wrote 2.0 on its first step";
   }
+}
+
+// ---- coupler placement (design C) --------------------------------------
+
+// A coupler declared on the channel's remap_on, placed on a rank neither
+// the producer nor the consumer occupies. No Component is supplied for it
+// (build() never adds one when with_coupler is set) -- build_ticks() must
+// not require one -- and the delivered value must be bit-for-bit identical
+// to the direct producer->consumer channel: source -> C -> target, with
+// every hop an ordinary local copy since no RunnerConfig::base_communicator
+// is configured anywhere in this harness.
+TEST(Runner, ACouplerNeedsNoComponentAndDeliversTheIdenticalValue) {
+  auto plain = build(HarnessOpts{});
+  Runner plain_runner{plain->graph, plain->dag, plain->plan, plain->backend};
+  bind_all(*plain);
+  ASSERT_TRUE(plain_runner.initialize(plain->components, plain->registry).ok());
+  ASSERT_TRUE(plain_runner.run_period(plain->components).ok());
+  ASSERT_TRUE(plain_runner.run_period(plain->components).ok());
+
+  auto coupled = build(HarnessOpts{.with_coupler = true});
+  Runner coupled_runner{coupled->graph, coupled->dag, coupled->plan, coupled->backend};
+  bind_all(*coupled);
+  ASSERT_TRUE(coupled_runner.initialize(coupled->components, coupled->registry).ok())
+      << "a Coupler-kind component must not need a matching Component";
+  ASSERT_TRUE(coupled_runner.run_period(coupled->components).ok());
+  ASSERT_TRUE(coupled_runner.run_period(coupled->components).ok());
+
+  const Consumer* plain_consumer = plain->consumer();
+  const Consumer* coupled_consumer = coupled->consumer();
+  ASSERT_NE(plain_consumer, nullptr);
+  ASSERT_NE(coupled_consumer, nullptr);
+  ASSERT_EQ(plain_consumer->data().size(), coupled_consumer->data().size());
+  for (std::size_t i = 0; i < plain_consumer->data().size(); ++i) {
+    EXPECT_EQ(plain_consumer->data()[i], coupled_consumer->data()[i])
+        << "entity " << i << ": routing through a coupler must not change "
+                              "the delivered value, assert exactly (no tolerance)";
+  }
+}
+
+// The coupler's own placement gets no Tick at all: it is never due, so a
+// Component supplied under its name (if one somehow were) would never see
+// advance() called. Checked indirectly here via runner.stats(): the period
+// count advances normally, which it would not if build_ticks() had tried
+// and failed to schedule a tick for a component with no interval-driven
+// physics.
+TEST(Runner, ACouplerContributesNoTicks) {
+  auto h = build(HarnessOpts{.with_coupler = true});
+  Runner runner{h->graph, h->dag, h->plan, h->backend};
+  bind_all(*h);
+  ASSERT_TRUE(runner.initialize(h->components, h->registry).ok());
+  ASSERT_TRUE(runner.run_period(h->components).ok());
+  EXPECT_EQ(runner.stats().periods, 1);
 }
 
 TEST(Runner, AdvancesEveryComponentOncePerPeriodInLockstep) {

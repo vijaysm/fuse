@@ -233,3 +233,42 @@ old = "      const auto at = [&](std::size_t e, std::size_t s) { return base + e
 new = "      const auto at = [&](std::size_t e, std::size_t s) { return base + s * m.length + e; };"
 target = "fuse_runtime_window_coupler_test"
 test = "runtime.window_coupler"
+
+# The coupler-placement track (design C, docs/dev/coupler-placement.md).
+
+[[mutation]]
+id = "coupler-treated-as-physics-component"
+area = "runtime"
+describes = "build_ticks() stops exempting ComponentKind::Coupler entries: a declared coupler is then treated as an ordinary physics component, so it needs a matching Component supplied by name (E-RT-COMPONENT when one is not) and, if one were supplied, would be ticked and advanced -- a placement given a clock and a state it does not have"
+file = "src/runtime/runner.cpp"
+old = "    if (decl.kind == ComponentKind::Coupler) continue;"
+new = "    if (false) continue;  // MUTATED: coupler no longer exempt"
+target = "fuse_runtime_runner_test"
+test = "runtime.runner"
+# Expected kill: Runner.ACouplerNeedsNoComponentAndDeliversTheIdenticalValue
+# and Runner.ACouplerContributesNoTicks both fail at initialize() with
+# E-RT-COMPONENT ("the graph declares component 'coupler' but no Component
+# with that name was supplied").
+
+[[mutation]]
+id = "coupler-region-participants-missing-its-ranks"
+area = "runtime"
+describes = "resolve_regions()'s R.participants union no longer scans the region body's own Transport/Epoch instructions for a coupler's ranks -- it reverts to derive_checkpoint_set()'s components alone, which never names a coupler (it owns no state, so no Source node ever points at it). A channel inside an iteration region that routes through a separately-placed coupler would then leave the coupler's ranks executing the region's Transport/Epoch collectives while sitting outside the residual reduction those collectives are supposed to agree against."
+file = "src/runtime/iteration.cpp"
+old = "      for (std::size_t i = R.enter; i <= R.exit; ++i) {"
+new = "      for (std::size_t i = R.enter; i < R.enter; ++i) {  // MUTATED: empty loop, no coupler ranks added"
+target = "fuse_parallel_runner_transport_test"
+test = "parallel.runner_transport.4"
+requires = "mpi"
+# NOT-ASSESSED in this sandbox: MPI cannot initialise here (not even -np 1),
+# and this whole code path is gated on RunnerConfig::base_communicator
+# having a value, which no Tier 0 caller in this tree sets. No test in
+# fuse_parallel_runner_transport_test exercises an iteration region with a
+# coupler-routed channel today -- this row names the nearest existing MPI
+# surface a host would extend, mirroring nodal-remap-distributed.toml's own
+# precedent for a scenario with no test yet. Expected kill, once such a
+# test exists: a region whose coupler is disjoint from every checkpointed
+# component's own ranks would either hang (the coupler's ranks block
+# forever on a collective the reduced participant list never reaches) or
+# under-count the region's participants in R-10's own cross-rank residual
+# reduction.
