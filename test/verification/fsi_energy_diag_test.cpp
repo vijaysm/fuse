@@ -939,7 +939,7 @@ TEST(FsiEnergyDiag, EnergyIdentityResidualRevealsWhichHypothesisHolds) {
 // standing instruction requires. Re-enable (tightening EXPECT_LE back to a
 // bound near 1) once a genuine fix is found -- the bound below documents
 // the target, not today's result.
-TEST(FsiEnergyDiag, DISABLED_LongRunEnergyGrowthApproachesBoundedAfterAFix) {
+TEST(FsiEnergyDiag, LongRunEnergyIsBounded) {
   constexpr double L = 1.0, H = 0.2, mu = 0.01, rho_f = 1.0;
   constexpr double EI = 2.0, rho_s = 1.0, h_s = 0.5;
   constexpr std::size_t nx_beam = 8, nx_fluid = 10, ny_fluid = 6;
@@ -1027,7 +1027,7 @@ TEST(FsiEnergyDiag, DISABLED_LongRunEnergyGrowthApproachesBoundedAfterAFix) {
   std::printf("energy[0]=%.6e energy[120]=%.6e energy[480]=%.6e\n", energy[0],
              energy[120], energy[480]);
   std::printf("geometric-mean per-step energy ratio over periods 3-12: %.6f "
-             "(D9's original, unfixed measurement: 1.22796)\n",
+             "(D9's unfixed measurement: 1.22796)\n",
              mean_ratio);
   EXPECT_LE(mean_ratio, 1.01)
       << "energy still grows by " << mean_ratio << " per step -- D9 not fixed";
@@ -1097,8 +1097,16 @@ TEST(FsiEnergyDiag, CoupledStepMapRevealsTheGrowthMechanism) {
   // Cross-check against a real multi-period run on this SAME small grid: if
   // rho(M) truly is the per-period growth factor, N periods from a generic
   // (here: the eigenvector-aligned) perturbation should grow like rho^N.
-  SUCCEED() << "diagnostic test: see stdout for the measured spectral radius "
-               "and eigenvector attribution";
+  // KNOWN_ISSUES.md D9, fixed 2026-09-25: with the wall traction carrying
+  // the force ON the wall (it carried the force on the fluid, a negative
+  // added mass), the coupled step map is neutrally stable -- rho = 1.000000
+  // measured, the |lambda| = 1 mode being Newmark's acceleration passenger
+  // (wddot_{n+1} = 2(v_{n+1}-v_n)/dt - wddot_n, which no other state reads).
+  // The bound is the finite-difference construction's own accuracy; the
+  // defect it guards against measured 1.115466 on this very grid.
+  EXPECT_LE(eig.rho, 1.0 + 1e-6)
+      << "the coupled step map amplifies: rho = " << eig.rho
+      << " (D9's defect gave 1.115466 here)";
 
   if (const char* dump_dir = std::getenv("FSI_DIAG_DUMP_DIR")) {
     const std::string base = dump_dir;
@@ -1532,7 +1540,7 @@ CoupledPeriodDiag run_one_coupled_period_with_budget(const CoupledCase& c,
   return diag;
 }
 
-TEST(FsiEnergyDiag, FullBudgetOnTheUnstableModeItselfAttributesTheGrowth) {
+TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   constexpr double L = 1.0, EI = 2.0, rho_s = 1.0, h_s = 0.5;
   const double omega1 = fsi::clamped_beam_first_frequency(L, EI, rho_s, h_s);
   const double T1 = 2.0 * M_PI / omega1;
@@ -1573,7 +1581,12 @@ TEST(FsiEnergyDiag, FullBudgetOnTheUnstableModeItselfAttributesTheGrowth) {
   const double lambda = eig.solver.eigenvalues()[eig.dominant].real();
   std::printf("dominant eigenvalue lambda = %.9f (rho check: %.9f)\n", lambda,
              eig.rho);
-  ASSERT_NEAR(lambda, eig.rho, 1e-9);
+  // Written for D9's real, POSITIVE growing eigenvalue (1.115466). With the
+  // traction sign fixed the dominant eigenvalue is -1 (Newmark's acceleration
+  // passenger), still real, so the single-run protocol below applies with
+  // |lambda| = rho; every identity it checks is quadratic in the state and
+  // indifferent to the sign.
+  ASSERT_NEAR(std::abs(lambda), eig.rho, 1e-9);
 
   Eigen::VectorXd x(static_cast<Eigen::Index>(d.D));
   double max_im = 0.0;
@@ -1625,6 +1638,24 @@ TEST(FsiEnergyDiag, FullBudgetOnTheUnstableModeItselfAttributesTheGrowth) {
   std::printf("dE_total = E1-E0 = %.9e ; (lambda^2-1)*E0 = %.9e\n", E1 - E0,
              (lambda * lambda - 1.0) * E0);
   std::printf("dE_beam = %.9e ; dE_fluid = %.9e\n", dE_beam, dE_fluid);
+  // With D9 fixed the dominant mode is Newmark's acceleration passenger and
+  // carries NO energy: measured E0 = 6.3e-21 at |x| = 1 against
+  // eig_quality = 7.7e-11, i.e. E0 is eig_quality^2 -- the energy of the
+  // eigenvector's own error, nothing more. Every identity below divides by
+  // E0, so on this mode they would compare noise with noise. The assertion
+  // that fits the fixed scheme is that the dominant mode IS energetically
+  // empty; the budget stays armed and runs in full whenever a mode with
+  // energy of its own is dominant again, which is what a returning growth
+  // mode would be (D9's carried E0 at the 1e-9 level for the same |x|).
+  const double energy_floor = 100.0 * eig_quality * eig_quality * xnorm * xnorm;
+  if (E0 < energy_floor) {
+    std::printf("dominant mode carries no energy (E0 = %.3e < floor %.3e): the "
+                "Newmark acceleration passenger; budget not evaluated on noise\n",
+                E0, energy_floor);
+    EXPECT_LE(eig.rho, 1.0 + 1e-6)
+        << "an energetically empty dominant mode with rho > 1 would be a new defect";
+    return;
+  }
   ASSERT_LT(std::abs(E1 - predicted_E1) / E0, 1e-6)
       << "the run is not behaving as a clean eigenmode -- budget below "
          "would not be trustworthy";
