@@ -324,3 +324,16 @@ shared-vertex rows must be summed or copied depends on per-placement weights (D5
 on the replicated source reachable today an owner sum would multiply the load by the \
 holder count. The cell closes with a genuinely partitioned, non-matching nodal Remap \
 through the Runner at 1 to 5 ranks conserving force and balancing power."""
+
+[[cell]]
+id = "A-SEARCH-DISTRIBUTED"
+axis = "fuse::search's distributed point-containment query (ArborX::DistributedTree)"
+pins = "a fixed global box set split into disjoint contiguous per-rank slices, queried with the same global point set on every rank: the gathered (rank, local index) hits, translated back to global box ids, equal BoxIndex's own serial answer over the whole gathered set -- the escape hatch A-RANKS's own note and test/partition/rcb_mpi_test.cpp use for the same reason (comparing against a single-rank reference the sandbox actually CAN run, rather than against another rank's answer this sandbox cannot obtain either); a second cell checks hits within one query are sorted by (rank, index) directly, independent of what the hits are"
+file = "test/search/distributed_mpi_test.cpp"
+kind = "mpi"
+ranks = [1, 2, 3, 4, 5]
+test = [
+  "SearchDistributedMpi.MatchesSerialOnTheGatheredInput",
+  "SearchDistributedMpi.HitsWithinOneQuerySortedByRankThenIndex",
+]
+note = "Compiles under FUSE_ENABLE_MPI=ON; UNRUN in the sandbox (MPI cannot initialise here, docs/dev/testing.md) -- the same posture every other mpi cell in this matrix documents for itself. Its verdict comes from a host run."
