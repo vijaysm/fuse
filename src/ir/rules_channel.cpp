@@ -3,6 +3,7 @@
 #include "fuse/ir/lowering.hpp"
 #include "fuse/ir/op.hpp"
 #include "fuse/model/connect.hpp"
+#include "fuse/model/remap_kind.hpp"
 #include "fuse/model/transform.hpp"
 
 namespace fuse {
@@ -188,7 +189,25 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
         g.component(ComponentId{static_cast<std::uint32_t>(dst_rank_set)}).ranks;
     ranks_differ = !src_ranks.same_as(dst_ranks);
   }
-  if (ranks_differ) {
+  // Whether this channel's Remap moves the data between placements ITSELF
+  // (fuse/model/remap_kind.hpp). If it does, a Transport in front of it is
+  // not redundant but wrong: it delivers the source values onto the target
+  // placement's view of the source mesh, which on a disjoint placement is
+  // empty, and the operator then reads its input where nothing lives.
+  const bool remap_moves =
+      remap_moves_placement(ch.remap.method_override, g.field(ch.source), g.field(ch.target));
+
+  if (ranks_differ && remap_moves) {
+    // The agreement point still comes first, for the same reason it follows a
+    // Transport: the distributed operator is the first place these ranks meet,
+    // and a rank that failed before it must be discovered here, by everyone,
+    // rather than by its partners blocking inside the operator's gather.
+    OpAttrs ea;
+    ea.src_rank_set = type.rank_set;
+    ea.dst_rank_set = dst_rank_set;
+    ea.reason = "before-distributed-remap";
+    cur = emit(ctx, OpKind::Epoch, cur, type, ea, cid, base + "/epoch");
+  } else if (ranks_differ) {
     ValueType moved = type;
     moved.rank_set = dst_rank_set;
     OpAttrs ta;
@@ -215,15 +234,19 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
     ea.src_rank_set = ta.src_rank_set;
     ea.dst_rank_set = ta.dst_rank_set;
     ea.reason = "after-transport";
-    cur = emit(ctx, OpKind::Epoch, cur, type, ea, cid, base + "/epoch");
+    cur = emit(ctx, OpKind::Epoch, cur, type, ea, cid, base + "/epoch");  // after the move
   }
 
   // 5. Remap: emitted when flags ask for it or the regions differ.
   const RegionId tgt_region = g.field(ch.target).region;
   const bool region_changes = (type.region != tgt_region);
-  if (ch.remap.flags != RemapFlags::None || region_changes) {
+  if (ch.remap.flags != RemapFlags::None || region_changes || (ranks_differ && remap_moves)) {
     ValueType remapped = type;
     remapped.region = tgt_region;
+    // The distributed operator writes its result on the TARGET placement; the
+    // output type says so, and that is what sizes its buffer
+    // (make_region_sizes reads the arc's rank_set).
+    if (ranks_differ && remap_moves) remapped.rank_set = dst_rank_set;
     cur = emit(ctx, OpKind::Remap, cur, remapped,
                OpAttrs{.remap_flags = ch.remap.flags,
                        .method = ch.remap.method_override},
