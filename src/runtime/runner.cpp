@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -557,6 +558,15 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
       remap_rank_set >= 0
           ? ComponentId{static_cast<std::uint32_t>(remap_rank_set)}
           : ComponentId{};
+  // The input's placement. Equal to the output's for every Remap except the
+  // one that moves data between placements itself (fuse/model/remap_kind.hpp,
+  // rules_channel.cpp): there the input lives on the SOURCE component's
+  // ranks and no Transport preceded it. Such a Remap takes the distributed
+  // path below and is exempt from the per-placement weights refusal, which
+  // is about the rank-local weights this Remap does not build.
+  const int in_rank_set = dag.arc(ins.in[0]).type.rank_set;
+  const bool moves_placement = in_rank_set >= 0 && remap_rank_set >= 0 &&
+                               in_rank_set != remap_rank_set;
 
   // Weights are not yet built per placement: build_weights() reads each
   // mesh's DEFAULT decomposition. Where this placement's decomposition is a
@@ -564,6 +574,7 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
   // entities -- plausible numbers, no diagnostic -- so refuse instead.
   // (KNOWN_ISSUES D5: per-placement weight construction is the next step.)
   for (const RegionId side : {src, tgt}) {
+    if (moves_placement) break;
     if (!side.valid() || side.value() >= graph.region_count()) break;
     const Region& rs = graph.region(side);
     if (!rs.mesh.valid() || rs.mesh.value() >= graph.mesh_count()) break;
@@ -687,7 +698,8 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
     // Allgatherv still needs the distributed path when only the EVAL side
     // is spread across ranks, since a rank holding zero local evaluation
     // entities cannot build ITS row from a local-only view either.
-    if (!both_on_one_rank && (src_nodal || tgt_nodal)) {
+    if ((!both_on_one_rank || moves_placement || config.force_distributed_nodal_remap) &&
+        (src_nodal || tgt_nodal)) {
       if (src_nodal && tgt_nodal) {
         // Neither `build_nodal_dist_remap` orientation has been run against
         // a nodal-to-nodal channel (both regions Vertex-kind); refuse by
@@ -965,20 +977,36 @@ Result<std::int32_t> Runner::Impl::build_nodal_dist_remap(
   const RegionId eval_region = transpose ? src : tgt;
   const bool eval_is_nodal = transpose ? is_nodal(sf_ptr) : is_nodal(tf_ptr);
 
-  const auto resolve = [&](RegionId rid) -> Result<const MeshView*> {
+  // Each side as seen by ITS OWN component: the input region by the input
+  // arc's placement, the output region by the output arc's. Before 2026-09-25
+  // both used the mesh's default view, which coincided with the placed view
+  // on the backends that had been run; it is the placed view the buffers are
+  // sized by (make_region_sizes), so it is the placed view the operator must
+  // read and write.
+  const auto placement_of = [&](ArcId arc) {
+    const int rs = dag.arc(arc).type.rank_set;
+    return rs >= 0 ? ComponentId{static_cast<std::uint32_t>(rs)} : ComponentId{};
+  };
+  const ComponentId src_placement = placement_of(ins.in[0]);
+  const ComponentId tgt_placement = placement_of(ins.out);
+  const auto resolve = [&](RegionId rid, ComponentId who) -> Result<const MeshView*> {
     const Region& rg = graph.region(rid);
     if (!rg.mesh.valid() || rg.mesh.value() >= graph.mesh_count()) {
       return Failure{"E-RT-REMAP-MESH", label + ": region '" + rg.name + "' names no mesh"};
     }
     const auto bid = backend.mesh_id(graph.mesh(rg.mesh).name);
     if (!bid.ok()) return bid.error();
-    const auto view = backend.view(bid.value());
+    const auto view = backend.placed_view(bid.value(), who);
     if (!view.ok()) return view.error();
+    if (view.value() == nullptr) {
+      return Failure{"E-RT-REMAP-MESH",
+                     label + ": the backend returned no view for region '" + rg.name + "'"};
+    }
     return view.value();
   };
-  const auto nodal_view_r = resolve(nodal_region);
+  const auto nodal_view_r = resolve(nodal_region, transpose ? tgt_placement : src_placement);
   if (!nodal_view_r.ok()) return nodal_view_r.error();
-  const auto eval_view_r = resolve(eval_region);
+  const auto eval_view_r = resolve(eval_region, transpose ? src_placement : tgt_placement);
   if (!eval_view_r.ok()) return eval_view_r.error();
 
   const int eval_dim = eval_is_nodal ? 0 : graph.region(eval_region).dimension;
@@ -1019,6 +1047,32 @@ Result<void> Runner::Impl::apply_nodal_dist_remap(const Instruction& ins, const 
   const detail::Slot& out_slot = slots[ins.out.value()];
   const std::size_t components = plan.components;
 
+  // Opt-in trace (FUSE_NODAL_DEBUG). Host run 2026-09-25: on a disjoint
+  // two-component placement the H direction delivered exact values while
+  // H^T D delivered zero to every target vertex, and the two paths read as
+  // symmetric. What decides it is what each rank actually holds here: how
+  // many rows it built, how many values its input slot has and whether they
+  // are zero, and how many entities its two views hold. Printed per rank so
+  // the next run answers that instead of another reading.
+  const bool trace = std::getenv("FUSE_NODAL_DEBUG") != nullptr;
+  if (trace) {
+    double in_abs = 0.0;
+    for (std::size_t k = 0; k < in_slot.elements * components; ++k) in_abs += std::abs(in_slot.data[k]);
+    int me = -1;
+#if FUSE_HAVE_MPI
+    if (config.base_communicator.has_value()) {
+      MPI_Comm_rank(MPI_Comm_f2c(static_cast<MPI_Fint>(*config.base_communicator)), &me);
+    }
+#endif
+    fmt::print(stderr,
+               "[nodal-dist rank {}] arc %{} {} rows={} in.elements={} sum|in|={:.6g} "
+               "nodal.nv={} eval.n={} out.elements={} src_is_load={}\n",
+               me, ins.out.value(), plan.transpose ? "H^T" : "H", plan.rows.rows.size(),
+               in_slot.elements, in_abs, plan.nodal_view->entity_count(0),
+               plan.eval_view->entity_count(plan.eval_dim), out_slot.elements,
+               plan.src_is_load);
+  }
+
   if (!plan.transpose) {
     // "consistent": H. in_slot is the nodal side's own LOCAL buffer
     // (entity-major, owned + ghost) -- exactly apply_distributed_H's
@@ -1034,6 +1088,11 @@ Result<void> Runner::Impl::apply_nodal_dist_remap(const Instruction& ins, const 
       for (std::size_t c = 0; c < components; ++c) {
         out_slot.data[li * components + c] = owned_out[k * components + c];
       }
+    }
+    if (trace) {
+      double s = 0.0;
+      for (std::size_t k = 0; k < out_slot.elements * components; ++k) s += std::abs(out_slot.data[k]);
+      fmt::print(stderr, "[nodal-dist] arc %{} H sum|out|={:.6g}\n", ins.out.value(), s);
     }
     return Result<void>::success();
   }
@@ -1064,6 +1123,13 @@ Result<void> Runner::Impl::apply_nodal_dist_remap(const Instruction& ins, const 
                        std::to_string(out_slot.elements * components)};
   }
   std::copy(out_local.begin(), out_local.end(), out_slot.data);
+  if (trace) {
+    double s_in = 0.0, s_out = 0.0;
+    for (const double v : owned_loads) s_in += std::abs(v);
+    for (const double v : out_local) s_out += std::abs(v);
+    fmt::print(stderr, "[nodal-dist] arc %{} H^T sum|owned_loads|={:.6g} sum|out|={:.6g}\n",
+               ins.out.value(), s_in, s_out);
+  }
   return Result<void>::success();
 }
 
