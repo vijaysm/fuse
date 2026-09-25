@@ -322,6 +322,21 @@ target_include_directories(fuse_backend_supermesh_test PRIVATE ${CMAKE_SOURCE_DI
 fuse_add_gtest(field pipeline THROWS NO_LAYER_LIB LIBS fuse::model fuse::base)
 fuse_add_gtest(num space_kernels)
 
+# ---------------------------------------------------------------- search
+# fuse::search: BoxIndex against brute force (1D/2D/3D, shared faces and
+# vertices, k-nearest, the empty index), the mesh adapter (against a real
+# fuse::MeshView, LIBS fuse::backend -- see the file header for why 2D is
+# covered in refusals_test.cpp instead), the refusals, and the distributed
+# query at 1 to 5 ranks.
+foreach(t box_index refusals)
+  fuse_add_gtest(search ${t})
+endforeach()
+fuse_add_gtest(search mesh_adapter LIBS fuse::backend)
+fuse_tests_gated_by(FUSE_ENABLE_MPI search/distributed_mpi_test.cpp)
+if(FUSE_ENABLE_MPI)
+  fuse_add_mpi_test(search distributed_mpi LIBS fuse::search MPI::MPI_CXX)
+endif()
+
 # A rule enforced by a DELETED OVERLOAD can only be tested by failing to
 # compile. Both targets are EXCLUDE_FROM_ALL and built only by their test, so a
 # normal build is unaffected.

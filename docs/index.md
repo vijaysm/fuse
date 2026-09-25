@@ -54,6 +54,7 @@ dev/porting
 dev/abi-design
 dev/partitioning
 dev/native-mesh
+dev/search
 dev/coupling-windows
 dev/nodal-fields
 dev/roadmap

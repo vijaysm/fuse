@@ -1,0 +1,74 @@
+# Mutations for fuse::search (the ArborX track). Own file per the
+# mutation-manifest protocol (tools/mutate.py's own doc comment): do not edit
+# build-evidence/mutations.toml directly while another track holds it dirty.
+
+[[mutation]]
+id = "search-padding-dropped"
+area = "search"
+describes = "geometry.hpp's padded() stops growing the box on its active axes -- the tolerance is silently dropped to zero on every call, not just the default. A point sitting just outside a shared face (BoxIndex.PointJustOutsideTheExactBoxIsFoundOnlyThroughPadding) or exactly on one that is not exactly floating-point representable would then fall through the gap between two adjacent elements' boxes instead of being found in either."
+file = "include/fuse/search/geometry.hpp"
+old = """  if (b.hi.x != b.lo.x) {
+    out.lo.x -= p;
+    out.hi.x += p;
+  }
+  if (b.hi.y != b.lo.y) {
+    out.lo.y -= p;
+    out.hi.y += p;
+  }
+  if (b.hi.z != b.lo.z) {
+    out.lo.z -= p;
+    out.hi.z += p;
+  }"""
+new = """  if (false) {  // padding disabled: p is computed but never applied
+    out.lo.x -= p;
+    out.hi.x += p;
+    out.lo.y -= p;
+    out.hi.y += p;
+    out.lo.z -= p;
+    out.hi.z += p;
+  }"""
+target = "fuse_search_box_index_test"
+test = "search.box_index"
+
+[[mutation]]
+id = "search-hit-sort-removed"
+area = "search"
+describes = "box_index.cpp's to_result() stops sorting each query's hit group -- QueryResult's own documented contract (\"always ASCENDING within a query\") is silently broken. Verified to actually fire PointQueriesMatchBruteForceIn1D2D3D (whose brute-force reference returns hits in ascending order, so an out-of-order answer from ArborX's own traversal reads as a mismatch) on this fixture; ResultsAreSortedAscendingByIndex is the test purpose-built to check the ordering property directly, but did not happen to fail on this particular (small, single-threaded) tree, whose traversal order coincided with ascending index anyway."
+file = "src/search/box_index.cpp"
+old = """  for (std::size_t q = 0; q + 1 < r.offsets.size(); ++q) {
+    std::sort(r.indices.begin() + static_cast<std::ptrdiff_t>(r.offsets[q]),
+              r.indices.begin() + static_cast<std::ptrdiff_t>(r.offsets[q + 1]));
+  }"""
+new = """  // sort removed: hits keep ArborX's own traversal order"""
+target = "fuse_search_box_index_test"
+test = "search.box_index"
+
+[[mutation]]
+id = "search-mixed-dim-refusal-disabled"
+area = "search"
+describes = "BoxIndex::build's E-SEARCH-MIXED-DIM refusal is disabled outright -- the deliberate-refusal rule (docs/dev/testing.md) counts as verified only when a test makes it fire, and refusals_test.cpp's MixedDimensionBoxesAreRefused and MixedDimensionOneVsThreeIsRefused are those tests."
+file = "src/search/box_index.cpp"
+old = "    if (di != dim0) {"
+new = "    if (false) {  // di != dim0 -- mixed-dimension refusal disabled"
+target = "fuse_search_refusals_test"
+test = "search.refusals"
+
+[[mutation]]
+id = "search-k-refusal-disabled"
+area = "search"
+describes = "BoxIndex::query_nearest's E-SEARCH-K refusal for a non-positive k is disabled -- refusals_test.cpp's NonPositiveKIsRefused is the test that makes it fire."
+file = "src/search/box_index.cpp"
+old = "  if (k <= 0) {"
+new = "  if (false) {  // k <= 0 -- refusal disabled"
+target = "fuse_search_refusals_test"
+test = "search.refusals"
+
+[[mutation]]
+id = "search-mesh-adapter-no-geometry-refusal-disabled"
+area = "search"
+describes = "mesh_adapter.hpp's element_boxes() stops refusing an owned entity with simplex_count() == 0 (E-SEARCH-NO-GEOMETRY) -- refusals_test.cpp's MeshAdapterRefusesEntityWithNoGeometry is the test that makes it fire."
+file = "include/fuse/search/mesh_adapter.hpp"
+old = "    if (nsimplex == 0) {"
+new = "    if (false) {  // nsimplex == 0 -- no-geometry refusal disabled"
+target = "fuse_search_refusals_test"
+test = "search.refusals"

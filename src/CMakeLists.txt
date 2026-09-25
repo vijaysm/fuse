@@ -205,6 +205,42 @@ set_target_properties(fuse-coupler-transport PROPERTIES
   VISIBILITY_INLINES_HIDDEN ON
 )
 
+# ---------------------------------------------------------------- search
+# fuse::search: the ArborX-backed spatial index (BVH point/box queries,
+# k-nearest, and the distributed variant) fuse::backend can build spatial
+# queries on (docs/dev/search.md). Sits BELOW backend in
+# docs/dev/layering.md's ordering -- the reverse of fuse::partition's own
+# mesh_adapter.hpp, deliberately, so that fuse::backend CAN depend on this
+# layer -- and depends on fuse::base alone: no ArborX type escapes a public
+# header (box_index.hpp is pimpl'd; distributed.hpp never names mpi.h), so
+# nothing above this layer has to see ArborX either.
+add_library(fuse-coupler-search
+  search/box_index.cpp
+  search/distributed.cpp
+)
+add_library(fuse::search ALIAS fuse-coupler-search)
+target_compile_features(fuse-coupler-search PUBLIC cxx_std_20)
+target_link_libraries(fuse-coupler-search PUBLIC fuse::base)
+# PRIVATE: ArborX is an implementation detail of this layer only, exactly the
+# way r3d is private to fuse-coupler-backend below. $<BUILD_LOCAL_INTERFACE:...>
+# for the same reason fuse-coupler-model's yaml-cpp link and
+# fuse-coupler-backend's r3d link use it: a FETCHED ArborX has no installable
+# package of its own to sit alongside in this library's install(EXPORT) set,
+# whether or not THIS configure happened to find one instead.
+target_link_libraries(fuse-coupler-search PRIVATE $<BUILD_LOCAL_INTERFACE:ArborX::ArborX>)
+if(FUSE_ENABLE_MPI)
+  # src/search/distributed.cpp is this layer's own single MPI translation
+  # unit (distributed.hpp's header comment) -- the same isolation
+  # fuse::partition's collectives.cpp and fuse::backend's
+  # native_migration.cpp use one layer up.
+  target_link_libraries(fuse-coupler-search PRIVATE MPI::MPI_CXX)
+endif()
+set_target_properties(fuse-coupler-search PROPERTIES
+  EXPORT_NAME search
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN ON
+)
+
 # ---------------------------------------------------------------- backend
 # Mesh access and spatial/space-time transfer behind one interface. Only the
 # serial mesh and the space-time projection are here; the mesh database and
@@ -314,7 +350,7 @@ include(GNUInstallDirs)
 
 set(FUSE_INSTALL_TARGETS
   fuse-coupler-base fuse-coupler-model fuse-coupler-ir fuse-coupler-schedule
-  fuse-coupler-linalg fuse-coupler-num fuse-coupler-transport
+  fuse-coupler-linalg fuse-coupler-num fuse-coupler-transport fuse-coupler-search
   fuse-coupler-backend fuse-coupler-partition fuse-coupler-runtime
 )
 
