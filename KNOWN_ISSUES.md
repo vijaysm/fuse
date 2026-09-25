@@ -522,12 +522,21 @@ application-id model.
   never run. Fixed: the peer plan's extent is the larger of the rank's two
   blocks, the source block is staged whole, and only the destination indices
   the plan writes (precomputed, allocation-free) are copied back.
-- `E-RT-REMAP-PLACEMENT`: a Remap on a non-default decomposition refuses,
-  because `build_weights()` still reads the default one. A serial test makes it
-  fire (`Runner.RefusesARemapOnANonDefaultPlacementDecomposition`).
+- ~~`E-RT-REMAP-PLACEMENT`: a Remap on a non-default decomposition refuses~~ —
+  **closed 2026-09-25.** `RemapPlan::placement` carries the component whose
+  decomposition the weights index; it is part of `RemapPlan::key()`, and every
+  builder (supermesh, MOAB/Tempest, consistent, MLS) resolves its sides through
+  `MeshBackend::placed_view(id, placement)`. Asserted where the matrix can be
+  read: `Supermesh.WeightsAreBuiltOnThePlacementsOwnDecomposition` gives one
+  placement a target view numbered backwards and requires the row-reversed
+  matrix, exactly. (Its first draft reversed BOTH sides — a mirror symmetry of
+  a uniform line pair, matrix unchanged — and its own "the matrices coincide"
+  guard caught that.) `Runner.AcceptsARemapOnANonDefaultPlacementDecomposition`
+  replaces the refusal test.
 - Three shape tests through one helper (partial at 3–5 ranks, full, disjoint);
   the test backend builds one decomposition per placement.
-- Mutations: `remap-ignores-the-placement-decomposition` KILLED here;
+- Mutations: `remap-ignores-the-placement-decomposition` (now the builder
+  reading the default view, killed by the reversed-numbering test) KILLED here;
   `both-commgraph-sides-share-one-view`,
   `peer-plan-staged-through-the-matched-path` and
   `peer-extent-is-only-the-source-block` NOT-ASSESSED (need MPI).
@@ -573,8 +582,10 @@ ranks, full overlap at every rank count, and all 18 `layout.*` tests pass, inclu
    decomposition. Partial overlap is therefore proved with the test backend
    only. The MOAB half is one `ParallelComm` per component communicator, with
    the mesh read once per placement.
-3. **Per-placement remap weights**, which is what `E-RT-REMAP-PLACEMENT` holds
-   the place of.
+3. ~~**Per-placement remap weights**~~ — done 2026-09-25 (above). What remains
+   of D5 is the MOAB half (item 2): `MoabMeshBackend::placed_view` still returns
+   the default view for every placement, so on MOAB the per-placement weights
+   are the default weights until one `ParallelComm` per component exists.
 
 ---
 
@@ -909,8 +920,10 @@ placement, so every rank reaches the same verdict together.
 **Why a refusal and not the owner sum that was first wired in.** A shared
 vertex's rows on each holder are partial or already complete depending on the
 decomposition the weights were built on. On a replicated source, which is
-every case reachable today because `E-RT-REMAP-PLACEMENT` keeps weights on
-the default view (D5 item 3), every holder computes the complete row. Summing
+every case reachable today because MOAB gives every placement the default
+view (D5 item 2; the builders honour the placement since 2026-09-25, but the
+only backend with per-placement decompositions is the test one), every holder
+computes the complete row. Summing
 them onto the owner then multiplies the load by the holder count, silently. On
 a genuinely partitioned source the rows are partial and the sum is right. No
 test has run the partitioned case, and taking the owner's value for a pointwise
@@ -950,7 +963,8 @@ by hand-applied, byte-restored mutations
 
 **This directly answers D5 item 3's per-placement weights question for the
 CONSISTENT methods specifically** (never for the supermesh conservative
-methods, which still refuse `E-RT-REMAP-PLACEMENT` and are unaffected): a
+methods, which since 2026-09-25 build on the placement's view and are
+otherwise unaffected): a
 new, genuinely partitioned, non-replicated distributed primitive —
 `build_distributed_interp_rows`/`apply_distributed_H`/`apply_distributed_HT`
 (`nodal_remap_distributed.hpp`) — builds each evaluation entity's row ONLY on

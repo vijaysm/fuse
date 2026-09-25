@@ -168,8 +168,8 @@ note = """Ranks 3-5 only: at 2 ranks {0..W-2}/{1..W-1} is {0}/{1}, which is \
 disjoint. Compiled here, verdict from a host run -- MPI cannot initialise in \
 this sandbox. MOAB's own per-placement decomposition (one ParallelComm per \
 component communicator) is not yet implemented, so this is exercised with the \
-test backend, and a Remap on a non-default decomposition refuses \
-(E-RT-REMAP-PLACEMENT) until weights are built per placement."""
+test backend. Remap weights follow the placement's decomposition since \
+2026-09-25 (RemapPlan::placement; Supermesh.WeightsAreBuiltOnThePlacementsOwnDecomposition)."""
 
 [[cell]]
 id = "A-RANKS"
