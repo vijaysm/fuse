@@ -37,6 +37,22 @@ set(FUSE_GTEST_TAG       "v1.15.2")   # git tag; the find_package version below 
 set(FUSE_GTEST_VERSION   "1.15.2")
 set(FUSE_KOKKOS_TAG     "4.4.01")
 set(FUSE_EIGEN_TAG      "3.4.0")
+# ArborX: the scalable BVH tree and point-cloud interpolants fuse::search
+# wraps (docs/dev/search.md) -- required at every tier, like Kokkos and fmt,
+# once Kokkos is (Kokkos is required unconditionally, so ArborX riding on it
+# costs nothing new). Unlike yaml-cpp/r3d just above, ArborX is NOT one of the
+# two always-fetched exceptions: it follows the ordinary "found first, ON
+# ALLOW_FETCH build the pinned copy, OFF with none installed is a configure
+# error" policy every other required Tier 0 dependency does, via its own
+# fuse_resolve_arborx() below rather than the generic fuse_require() (it needs
+# CACHE variables set BEFORE the fetch, the same reason r3d/yaml-cpp have
+# their own macros instead of using fuse_require()).
+set(FUSE_ARBORX_VERSION "2.1")
+# Pinned by COMMIT, not just the tag, so a tag that moves upstream cannot
+# silently change what a fetch build compiles. This is the exact commit v2.1
+# resolves to; verified by the lead, and proven here against Kokkos 5.1.0
+# (UPSTREAMS.lock's [arborx] entry, docs/dev/search.md).
+set(FUSE_ARBORX_COMMIT  "8f89be60bc3797670b9be8843da7dcdbc5f2333f")
 
 # ------------------------------------------------- options
 # Declared BEFORE any FetchContent_Declare that consults them: on a fresh cache
@@ -120,6 +136,17 @@ FetchContent_Declare(r3d
 
 FetchContent_Declare(Eigen3
   GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git GIT_TAG ${FUSE_EIGEN_TAG} GIT_SHALLOW ON)
+
+# ArborX. GIT_TAG is the pinned COMMIT (see FUSE_ARBORX_COMMIT's comment
+# above), not the tag string -- FIND_PACKAGE_ARGS still names the version so
+# an installed ArborX is matched by its real version number. GIT_SHALLOW is
+# NOT used here: a shallow clone of a specific commit that is not the tip of
+# any branch fails on some git-over-https configurations, and ArborX is
+# header-only, so the extra history costs a few seconds once, not a repeated
+# build cost.
+FetchContent_Declare(ArborX
+  GIT_REPOSITORY https://github.com/arborx/arborx.git GIT_TAG ${FUSE_ARBORX_COMMIT}
+  FIND_PACKAGE_ARGS ${FUSE_ARBORX_VERSION} NAMES ArborX)
 
 # ------------------------------------------------- resolution
 # The per-dependency record is APPENDED TO A FILE as each one resolves, rather
@@ -274,6 +301,47 @@ macro(fuse_resolve_yaml)
   endif()
 endmacro()
 
+# ArborX. Same posture as fuse_require() (found first; FUSE_ALLOW_FETCH=OFF
+# with none installed is a configure error naming the remedy) but written by
+# hand rather than calling fuse_require() itself, because the fetch path needs
+# CACHE variables set BEFORE FetchContent_MakeAvailable(ArborX) runs --
+# ARBORX_ENABLE_MPI in particular must track FUSE_ENABLE_MPI, which
+# fuse_require()'s generic fetch branch has no hook for (the same reason
+# fuse_resolve_r3d()/fuse_resolve_yaml() above are hand-written too).
+macro(fuse_resolve_arborx)
+  find_package(ArborX ${FUSE_ARBORX_VERSION} QUIET CONFIG)
+  if(ArborX_FOUND)
+    file(APPEND "${FUSE_RESOLUTION_FILE}" "ArborX=found ${ArborX_VERSION} ${ArborX_DIR}\n")
+    message(STATUS "fuse: ArborX ${ArborX_VERSION} found at ${ArborX_DIR}")
+  else()
+    if(NOT FUSE_ALLOW_FETCH)
+      message(FATAL_ERROR
+        "fuse: ArborX (>= ${FUSE_ARBORX_VERSION}) not found.\n"
+        "  ArborX provides the BVH spatial index fuse::search wraps (docs/dev/search.md).\n"
+        "  Point CMAKE_PREFIX_PATH at its prefix, or configure with -DFUSE_ALLOW_FETCH=ON to "
+        "build the pinned copy (commit ${FUSE_ARBORX_COMMIT}, which will NOT be tuned for this "
+        "machine).")
+    endif()
+    # Built against the SAME Kokkos this build already resolved above:
+    # ArborX's own CMakeLists calls find_package(Kokkos 4.5 REQUIRED CONFIG)
+    # itself, which is a no-op re-use of the existing imported targets once
+    # Kokkos::kokkoscore already exists in this configure -- it never fetches
+    # or builds a second Kokkos. (/opt/kokkos 5.1.0's version file is
+    # AnyNewer, so ArborX's ">= 4.5" request is satisfied by it; proven to
+    # actually COMPILE against 5.1.0, not just configure, per
+    # docs/dev/search.md.)
+    set(ARBORX_ENABLE_MPI ${FUSE_ENABLE_MPI} CACHE BOOL "" FORCE)
+    set(ARBORX_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+    set(ARBORX_ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(ARBORX_ENABLE_BENCHMARKS OFF CACHE BOOL "" FORCE)
+    message(STATUS "fuse: ArborX not installed; building the pinned copy "
+                   "(commit ${FUSE_ARBORX_COMMIT}, FUSE_ALLOW_FETCH=ON)")
+    FetchContent_MakeAvailable(ArborX)
+    file(APPEND "${FUSE_RESOLUTION_FILE}"
+         "ArborX=fetched (pinned ${FUSE_ARBORX_COMMIT}, not tuned for this machine)\n")
+  endif()
+endmacro()
+
 macro(fuse_resolve_dependencies)
   fuse_require(fmt HINT "fmt is the only output formatter (docs/dev/conventions.md).")
 
@@ -324,6 +392,7 @@ macro(fuse_resolve_dependencies)
   # caught the same way.
   fuse_resolve_r3d()
   fuse_resolve_yaml()
+  fuse_resolve_arborx()
 
   fuse_drop_missing_include_dirs(
     Kokkos::kokkos Kokkos::kokkoscore Kokkos::kokkoscontainers Kokkos::kokkossimd
