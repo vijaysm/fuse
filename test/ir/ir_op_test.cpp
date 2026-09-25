@@ -109,13 +109,18 @@ TEST(OpKind, CollectiveClassificationIsDeliberate) {
   // inside it.
   EXPECT_TRUE(is_collective(OpKind::Transport));
   EXPECT_TRUE(is_collective(OpKind::Epoch));
+  // Constrain reduces its two conservation integrals over the base
+  // communicator (KNOWN_ISSUES.md D10). Were it local, a rank that failed
+  // earlier in the period would skip it and leave every partner inside the
+  // Allreduce -- which is why it used to refuse a multi-rank target instead.
+  EXPECT_TRUE(is_collective(OpKind::Constrain));
 
   // Rank-local arithmetic: skipping costs nothing once the period is lost.
   for (const OpKind k : {OpKind::Source, OpKind::Sink, OpKind::Sample,
                          OpKind::Accumulate, OpKind::Interpolate,
                          OpKind::Extrapolate, OpKind::Remap, OpKind::Merge,
                          OpKind::Relax, OpKind::Residual, OpKind::Accelerate,
-                         OpKind::Constrain, OpKind::Diagnose, OpKind::Scale}) {
+                         OpKind::Diagnose, OpKind::Scale}) {
     EXPECT_FALSE(is_collective(k)) << fuse::to_cstring(k);
   }
 

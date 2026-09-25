@@ -482,54 +482,25 @@ Result<void> Runner::Impl::resolve_constrain(const Instruction& ins,
                      ", so there is no pre-remap integral to compare against"};
   }
 
-  // N-transport-runtime-1 (REVIEW.md pass2, re-transport-runtime.md): the
-  // integral weights_for() builds -- the field value per owned entity against
-  // its measure, every ghost zeroed -- is this rank's OWNED SHARE of the true
-  // integral once the Remap's output spans more than one rank. Comparing two
-  // such shares in isolation is not the check the comment above ConstrainInfo
-  // says it is: it can false-fire on a correct cross-rank remap (mass that
-  // left is accounted for on the receiving rank, not here) and it can miss a
-  // real defect that only shows up once every rank's share is summed. That is
-  // exactly the rank-local-decision defect R-10 fixed for iteration-region
-  // convergence (reduce_region_residuals(), below).
+  // N-transport-runtime-1 (REVIEW.md pass2), closed 2026-09-25 (KNOWN_ISSUES.md
+  // D10). weights_for() builds this rank's OWNED share of each integral --
+  // every ghost zeroed -- so once either region spans more than one rank the
+  // two shares cannot be compared in isolation: mass that left this rank is
+  // accounted for on the receiving one. The check used to REFUSE a multi-rank
+  // target (E-RT-CONSERVATION-MPI) because reducing inside a non-collective
+  // operator would hang: a rank that had already failed skips local
+  // instructions while its partners wait in the reduction. Constrain is now
+  // collective (fuse::is_collective), so every rank of the base communicator
+  // reaches the reduction, failed or not, and the shares are summed there.
+  // A failed rank does not poison the sum: it contributes a flag instead of
+  // a value, and the verdict is skipped when any rank raised it, since the
+  // agreement point that follows ends the period with the real error.
   //
-  // Reducing it the same way is NOT done here. reduce_region_residuals() is
-  // reachable after a local failure only because Epoch and Transport are
-  // marked collective in fuse::is_collective() (include/fuse/ir/op.hpp) --
-  // outside this pass's owned paths -- so a rank that already failed earlier
-  // in the period still reaches it. Constrain is marked NOT collective there,
-  // on purpose (Phase 4 "reports; it does not correct" -- ordinary local
-  // arithmetic every other rank is free to skip). Adding a cross-rank
-  // reduction inside Constrain without also reclassifying it would mean: a
-  // rank that has not yet failed reaches this reduction expecting its peers,
-  // while a peer that already failed earlier in the SAME period skips this
-  // instruction entirely (it is "local") and never sends its half -- the
-  // exact hang R-09 fixed, reopened one instruction over. So this refuses
-  // instead, at setup, where it can be decided without any collective at
-  // all: `graph.component(dst).ranks` is the declared placement, identical on
-  // every rank, so every rank reaches the same verdict independently and
-  // nothing can hang on it -- the same reasoning resolve_regions() uses for
-  // its own E-RT-REGION-MPI (src/runtime/iteration.cpp).
-  const int dst_rank_set = dag.arc(ins.out).type.rank_set;
-  if (config.base_communicator.has_value() && dst_rank_set >= 0 &&
-      static_cast<std::size_t>(dst_rank_set) < graph.component_count()) {
-    const RankSet& dst_ranks =
-        graph.component(ComponentId{static_cast<std::uint32_t>(dst_rank_set)})
-            .ranks;
-    if (dst_ranks.size() > 1) {
-      return Failure{
-          "E-RT-CONSERVATION-MPI",
-          "the channel writing arc %" + std::to_string(ins.out.value()) +
-              "'s Constrain checks conservation on a component placed on " +
-              std::to_string(dst_ranks.size()) +
-              " ranks; the check sums only this rank's owned share of the "
-              "integral, with no cross-rank reduction, so it can both "
-              "false-fire on a correct cross-rank remap and miss a real one "
-              "(REVIEW.md N-transport-runtime-1). Set "
-              "RunnerConfig::check_conservation = false for a multi-rank "
-              "placement, or place the channel's target on a single rank"};
-    }
-  }
+  // Reduced whenever a communicator is configured, not only for multi-rank
+  // targets: a one-rank source feeding a one-rank target on a DIFFERENT rank
+  // has both shares on different ranks too, and the reduction is one
+  // Allreduce of three doubles per conservative channel per period.
+  const bool reduce = config.base_communicator.has_value();
 
   const Slot& in_slot = slots[before.value()];
   const Slot& out_slot = slots[ins.out.value()];
@@ -544,7 +515,7 @@ Result<void> Runner::Impl::resolve_constrain(const Instruction& ins,
 
   r.constrain = static_cast<std::int32_t>(constrains.size());
   constrains.push_back(
-      ConstrainInfo{before.value(), wb.value(), wa.value()});
+      ConstrainInfo{before.value(), wb.value(), wa.value(), reduce});
   return Result<void>::success();
 }
 
@@ -2749,8 +2720,36 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
       // that entity's physical measure, ghosts already zero-weighted. This is
       // the quantity a conservative remap must preserve; comparing the
       // operator's own input with its own copy of it never can.
-      const double before = num::weighted_sum(src.data, wb.data(), wb.size());
-      const double after = num::weighted_sum(out, wa.data(), wa.size());
+      double before = num::weighted_sum(src.data, wb.data(), wb.size());
+      double after = num::weighted_sum(out, wa.data(), wa.size());
+      if (ci.reduce) {
+#if FUSE_HAVE_MPI
+        // KNOWN_ISSUES.md D10: the owned shares summed over every rank, plus
+        // a flag from any rank whose period has already failed -- its buffers
+        // are whatever the abandoned step left, and summing them would turn
+        // one real failure into a spurious conservation error on every
+        // partner. All three ride one Allreduce; all ranks see identical
+        // totals, so the verdict below is the same everywhere without any
+        // further agreement.
+        const double local[3] = {before, after,
+                                 step_failure.has_value() ? 1.0 : 0.0};
+        double total[3] = {0.0, 0.0, 0.0};
+        const MPI_Comm base =
+            MPI_Comm_f2c(static_cast<MPI_Fint>(*config.base_communicator));
+        if (MPI_Allreduce(local, total, 3, MPI_DOUBLE, MPI_SUM, base) !=
+            MPI_SUCCESS) {
+          return Failure{"E-RT-CONSERVATION-REDUCE",
+                       "MPI_Allreduce of the conservation integrals for arc %" +
+                           std::to_string(ins.out.value()) + " failed"};
+        }
+        if (total[2] > 0.0) break;  // a partner's period is already lost
+        before = total[0];
+        after = total[1];
+#else
+        return Failure{"E-RT-CONSERVATION-REDUCE",
+                     "a base communicator is configured but this build has no MPI"};
+#endif
+      }
       const double scale = std::abs(before) > 0.0 ? std::abs(before) : 1.0;
       const double rel = std::abs(after - before) / scale;
       if (rel > stats.worst_conservation_error) {

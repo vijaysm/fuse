@@ -57,11 +57,20 @@ enum class OpKind {
   switch (k) {
     case OpKind::Transport:  // moves values between two rank sets
     case OpKind::Epoch:      // the agreement itself
+    // Constrain reduces the two conservation integrals over the base
+    // communicator when one is configured (KNOWN_ISSUES.md D10, 2026-09-25).
+    // Before that it was rank-local and REFUSED a multi-rank target, because
+    // adding a reduction to a non-collective operator is a hang: a rank that
+    // failed earlier in the period skips it while its partners wait inside
+    // it. Collective is the classification that makes the reduction safe;
+    // with no communicator it is the same local arithmetic as before, merely
+    // no longer skipped after a failure, which costs nothing.
+    case OpKind::Constrain:
       return true;
     case OpKind::Source: case OpKind::Sink: case OpKind::Sample:
     case OpKind::Accumulate: case OpKind::Interpolate: case OpKind::Extrapolate:
     case OpKind::Remap: case OpKind::Merge: case OpKind::Relax:
-    case OpKind::Residual: case OpKind::Accelerate: case OpKind::Constrain:
+    case OpKind::Residual: case OpKind::Accelerate:
     case OpKind::Diagnose: case OpKind::Scale:
       return false;
     // Reserved for multiscale, refused by the scheduler. Answering "not

@@ -43,14 +43,25 @@ test = "parallel.runner_transport.2"
 requires = "mpi"
 
 [[mutation]]
-id = "conservation-check-skips-the-multi-rank-refusal"
+id = "conservation-check-not-reduced-across-ranks"
 area = "runtime"
-describes = "N-transport-runtime-1 (REVIEW.md pass2): resolve_constrain() stops refusing a conservation check whose Remap target is declared on more than one rank, so the check silently sums only this rank's owned share of the integral instead of refusing a diagnostic it cannot correctly compute without a cross-rank reduction it does not have"
+describes = "KNOWN_ISSUES D10: Constrain compares this rank's owned share of each integral without the Allreduce over the base communicator. On a disjoint two-component placement the source share lives on one rank and the target share on another, so every rank sees a spurious violation (or misses a real one) -- the defect N-transport-runtime-1 named, which the refusal it replaced used to prevent by declining the check altogether."
 file = "src/runtime/runner.cpp"
-old = "    if (dst_ranks.size() > 1) {"
-new = "    if (false) {"
-target = "fuse_runtime_runner_test"
-test = "runtime.runner"
+old = "  const bool reduce = config.base_communicator.has_value();"
+new = "  const bool reduce = false;"
+target = "fuse_parallel_nodal_remap_runner_test"
+test = "parallel.nodal_remap_runner.2"
+requires = "mpi"
+
+[[mutation]]
+id = "constrain-classified-local"
+area = "runtime"
+describes = "Constrain back to non-collective while it still reduces: a rank whose period already failed skips it, its partners block in the Allreduce. The MPI runner test's own 120 s timeout is what turns that hang into a verdict; at Tier 0 there is no partner to abandon and the mutant is invisible, as region-failure-abandons-the-rest-of-the-period documents for the same reason."
+file = "include/fuse/ir/op.hpp"
+old = "    case OpKind::Constrain:\n      return true;"
+new = "    case OpKind::Constrain:\n      return false;"
+target = "fuse_ir_op_test"
+test = "ir.op"
 
 [[mutation]]
 id = "region-failure-abandons-the-rest-of-the-period"

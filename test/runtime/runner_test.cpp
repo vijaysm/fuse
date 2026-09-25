@@ -1713,50 +1713,37 @@ TEST(Runner, ConservationCheckCanBeTurnedOff) {
 }
 
 // ---------------------------------------------------------------------------
-// N-transport-runtime-1 (REVIEW.md pass2, docs/dev/reviews/2026-09-19/pass2/
-// re-transport-runtime.md): resolve_constrain()'s conservation integral sums
-// only this rank's owned share of it (weights_for() zeroes every ghost) once
-// the Remap's output component spans more than one rank -- the same
-// rank-local-decision defect R-10 fixed for iteration-region convergence.
-// Reducing it correctly would need Constrain reclassified in
-// fuse::is_collective() (include/fuse/ir/op.hpp, outside this pass's owned
-// paths): a rank that already failed earlier in the period skips a
-// non-collective instruction, so a partner still calling into a new
-// cross-rank reduction here would block on a message that never arrives --
-// exactly the hang class R-09 fixed, reopened one instruction over. Refusing
-// at setup is what this pass can do without adding a collective: the check
-// (`graph.component(dst).ranks`, the declared placement) is identical on
-// every rank, so the refusal fires deterministically everywhere and nothing
-// can hang on it -- the same reasoning resolve_regions() already uses for
-// E-RT-REGION-MPI.
+// N-transport-runtime-1 (REVIEW.md pass2), CLOSED 2026-09-25 as KNOWN_ISSUES.md
+// D10. resolve_constrain() used to REFUSE a conservation check whose Remap
+// target spans more than one rank (E-RT-CONSERVATION-MPI), because the
+// integral it builds is this rank's owned share and reducing it inside a
+// non-collective operator would hang a rank that had already failed. Constrain
+// is collective now (fuse::is_collective) and the shares are summed over the
+// base communicator, so the multi-rank target is ACCEPTED at setup.
 //
-// Verifiable without MPI, and more directly than R-10's own analogous guard:
-// resolve_constrain() runs inside resolve_instructions(), which setup() calls
-// and checks BEFORE attach_comm_graphs() (the "#if !FUSE_HAVE_MPI: refuse ANY
-// base_communicator" guard that intercepts R-10's own Tier 0 attempt -- see
-// the comment on StillRunsAnIterationRegionWithNoCommunicatorConfigured
-// above). So this refusal fires and setup() returns before that guard is
-// ever reached, and `cfg.base_communicator` here is never dereferenced as a
-// real communicator on this path -- only the Fortran handle slot
-// RunnerConfig already carries is needed, exactly as R-10's guard-condition
-// tests use it.
-TEST(Runner, RefusesAConservationCheckOnAMultiRankTarget) {
+// What Tier 0 can pin: that the refusal is gone -- setup with a 2-rank target
+// no longer fails on E-RT-CONSERVATION-MPI. It cannot run the reduction: with
+// no MPI in this build, ANY base_communicator is refused one guard later
+// (attach_comm_graphs' "#if !FUSE_HAVE_MPI"), so this test configures none
+// and checks that the same graph, which used to be refused for its placement
+// alone, now initialises and its Constrain runs. The reduction itself is
+// exercised by parallel.nodal_remap_runner at 2-5 ranks, whose wall_force
+// channel is conservative onto a multi-rank target and whose OWN MPI_Allreduce
+// of the same integrals is what the Runner's verdict is checked against.
+TEST(Runner, AcceptsAConservationCheckOnAMultiRankTarget) {
   auto h = build(HarnessOpts{.conservation = fuse::Conservation::Extensive,
                              .dst_rank_count = 2});
   ASSERT_TRUE(h->arc_of("link/constrain").valid());
   Runner runner{h->graph, h->dag, h->plan, h->backend};
   bind_all(*h);
-  RunnerConfig cfg;
-  // A real one-process communicator, not a 0 sentinel: under MPI the setup
-  // status agreement reduces over whatever is configured, and 0 is an
-  // invalid handle rather than MPI_COMM_NULL (fuse_test_main.hpp).
-  cfg.base_communicator = fuse::testing::self_communicator_handle();
-  const auto r = runner.initialize(h->components, h->registry, cfg);
-  ASSERT_FALSE(r.ok())
-      << "the consumer is declared on 2 ranks; a Constrain that sums only "
-         "this rank's owned share cannot be a correct global conservation "
-         "check";
-  EXPECT_EQ(r.error().code, "E-RT-CONSERVATION-MPI") << r.error().message;
+  const auto r = runner.initialize(h->components, h->registry);
+  ASSERT_TRUE(r.ok()) << r.error().code << ": " << r.error().message
+                      << " -- a multi-rank conservation target is no longer refused; "
+                         "its integrals are reduced (KNOWN_ISSUES.md D10)";
+  const auto ran = runner.run_period(h->components);
+  ASSERT_TRUE(ran.ok()) << ran.error().code << ": " << ran.error().message;
+  EXPECT_GE(runner.stats().conservation_checks, 1u)
+      << "the Constrain ran rather than being skipped";
 }
 
 // The companion regression, mirroring
