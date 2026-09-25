@@ -264,6 +264,76 @@ TEST(FsiCoupled, FluidReconstructedPoiseuilleIsAFixedPointOfCnStep) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// The SIGN of the interface force, pinned by physics rather than by
+// self-consistency. KNOWN_ISSUES.md D9: the wall traction delivered to the beam
+// was -p + 2 mu dv/dy, the force on the FLUID, for the whole life of this
+// example, and no test could see it -- the steady-deflection test compared the
+// beam against the analytic solution under whatever load the code produced, and
+// every energy check compared the delivered vector with itself. The two tests
+// below state what the force must do, in terms no internal identity can
+// satisfy with the wrong sign:
+//   1. a pressurised channel pushes its wall AWAY from the fluid;
+//   2. accelerating the wall away from the fluid at rest produces a force that
+//      OPPOSES the acceleration (positive added mass).
+// A sign flip fails both.
+TEST(FsiCoupled, APressurisedChannelPushesItsWallAwayFromTheFluid) {
+  // Steady Poiseuille: p > 0 upstream of the outflow reference, so a wall
+  // above the fluid must deflect toward +y (the beam's +w; the transpiration
+  // condition v_wall = +wdot fixes that orientation, fsi_components.hpp).
+  FsiCase c;
+  c.nx_beam = 12;
+  c.nx_fluid = 16;
+  c.ny_fluid = 10;
+  double mid = 0.0, mean_p = 0.0, mean_q = 0.0;
+  with_fsi_case(c, [&](fuse::Runner& runner, fsi::BeamComponent& beam,
+                      fsi::FluidComponent& fluid, fuse::ComponentSet& components) {
+    fluid.solver().set_state(exact_poiseuille_state(fluid.solver().params(), c.U_max));
+    fluid.refresh_force_from_current_state();
+    const auto r = runner.run_period(components);
+    if (!r.ok()) throw std::runtime_error("run_period: " + r.error().message);
+    const auto& p = fluid.solver().p();
+    for (const double v : p) mean_p += v;
+    mean_p /= static_cast<double>(p.size());
+    const fsi::BeamSolver& bs = beam.solver();
+    std::vector<double> q(bs.n_nodes());
+    for (std::size_t i = 0; i < q.size(); ++i) {
+      q[i] = beam.load_in()[i] / bs.tributary_length(i);
+      mean_q += q[i];
+    }
+    mean_q /= static_cast<double>(q.size());
+    mid = bs.solve_static(q)[bs.n_nodes() / 2];
+  });
+  ASSERT_GT(mean_p, 0.0) << "the fixture's channel is not pressurised; the test is vacuous";
+  EXPECT_GT(mean_q, 0.0) << "the delivered load points INTO the fluid: the traction sign is "
+                            "the force on the fluid, not on the wall (D9)";
+  EXPECT_GT(mid, 0.0) << "the wall deflects toward the fluid under positive pressure";
+}
+
+TEST(FsiCoupled, AcceleratingTheWallAwayFromTheFluidIsOpposedByTheTraction) {
+  // Fluid alone, at rest, no inflow. One step in which the wall velocity goes
+  // from 0 to +V (away from the fluid). The fluid below must be dragged along,
+  // so its pressure at the wall drops below the outlet reference and the
+  // force on the wall points back toward the fluid: the added mass is
+  // positive. Independent of the beam, of H, and of every energy identity.
+  fsi::ChannelParams p;
+  p.nx = 12; p.ny = 6; p.L = 1.0; p.H = 0.2; p.mu = 0.01; p.rho = 1.0;
+  fsi::StokesSolver fluid(p);
+  const std::vector<double> v0(p.nx, 0.0), v1(p.nx, 1.0);
+  const double dt = 1e-3;
+  fluid.step(dt, 0.0, dt, v0, v1, [](double) { return 0.0; });
+  const std::vector<double>& tr = fluid.wall_traction();
+  double sum = 0.0;
+  for (const double f : tr) sum += f;
+  EXPECT_LT(sum, 0.0) << "the net wall force is in the direction of the acceleration: "
+                         "a NEGATIVE added mass, which is D9's growth mechanism";
+  // And the pressure that produced it is genuinely below the outlet reference
+  // in the row under the wall, not an artefact of the viscous term.
+  double p_top = 0.0;
+  for (std::size_t i = 0; i < p.nx; ++i) p_top += fluid.p()[(p.ny - 1) * p.nx + i];
+  EXPECT_LT(p_top, 0.0);
+}
+
 TEST(FsiCoupled, SteadyStateBeamDeflectionMatchesTheAnalyticLinearLoad) {
   std::vector<double> hs, errs;
   const std::vector<std::pair<std::size_t, std::size_t>> resolutions{
@@ -298,8 +368,10 @@ TEST(FsiCoupled, SteadyStateBeamDeflectionMatchesTheAnalyticLinearLoad) {
       const double dpdx0 = -8.0 * c.mu * c.U_max / (c.H * c.H);
       const double dx_fluid0 = c.L / static_cast<double>(nf);
       const double x_pin0 = (static_cast<double>(nf - 1) + 0.5) * dx_fluid0;
-      const double q1_0 = -dpdx0;
-      const double q0_0 = dpdx0 * x_pin0;
+      // q = +p(x): the fluid pushes the wall outward (stokes_solver.hpp's
+      // wall traction comment). The analytic load below is the same.
+      const double q1_0 = dpdx0;
+      const double q0_0 = -dpdx0 * x_pin0;
       fsi::BeamSolver& bs0 = beam.solver();
       std::vector<double> q_seed(bs0.n_nodes());
       for (std::size_t i = 0; i < q_seed.size(); ++i) {
@@ -342,13 +414,14 @@ TEST(FsiCoupled, SteadyStateBeamDeflectionMatchesTheAnalyticLinearLoad) {
 
       // The analytic clamped-clamped affine-load deflection, using the
       // SAME gauge convention StokesSolver pins its pressure to (see
-      // exact_poiseuille_state): traction(x) = q1*x + q0.
+      // exact_poiseuille_state): traction(x) = +p(x) = q1*x + q0, the force ON
+      // the wall (it used to be -p, the force on the fluid; D9).
       const double dpdx = -8.0 * c.mu * c.U_max / (c.H * c.H);
       const double dx_fluid = c.L / static_cast<double>(nf);
       // Same outflow-column reference as exact_poiseuille_state above.
       const double x_pin = (static_cast<double>(nf - 1) + 0.5) * dx_fluid;
-      const double q1 = -dpdx;
-      const double q0 = dpdx * x_pin;
+      const double q1 = dpdx;
+      const double q0 = -dpdx * x_pin;
 
       double worst = 0.0;
       for (std::size_t i = 0; i < w.size(); ++i) {

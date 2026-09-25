@@ -92,3 +92,13 @@ test = "verification.fsi_energy_diag"
 #   tolerance 62517.6), confirming the (1-dx_beam) term is load-bearing,
 #   not a decorative correction. Restored and confirmed byte-identical
 #   with cmp before moving on.
+
+[[mutation]]
+id = "fsi-traction-is-the-force-on-the-fluid"
+area = "fsi"
+describes = "KNOWN_ISSUES D9's root cause, reproduced exactly: the wall traction delivered to the beam carries the sign of the force on the FLUID (-p + 2 mu dv/dy) instead of on the wall. A negative added mass: the coupled step map's spectral radius was 1.115466 on the diagnostic grid and the energy grew 1.228 per step, while every self-consistency check (power balance, adjointness, energy budgets) passed, because each compared the delivered vector with itself. Killed only by a test that states the physics: a pressurised channel pushes its wall outward, and accelerating the wall away from the fluid is opposed."
+file = "examples/fsi_channel/stokes_solver.hpp"
+old = "        traction[i] = p_wall_mid - 2.0 * p_.mu * dvdy_mid;"
+new = "        traction[i] = -p_wall_mid + 2.0 * p_.mu * dvdy_mid;"
+target = "fuse_verification_fsi_coupled_test"
+test = "verification.fsi_coupled"

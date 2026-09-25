@@ -766,7 +766,21 @@ class StokesSolver {
           return (3.0 * v_wall - 4.0 * v_m1 + v_m2) / (2.0 * h);
         };
         const double dvdy_mid = 0.5 * (dvdy_at(v_) + dvdy_at(next.v));
-        traction[i] = -p_wall_mid + 2.0 * p_.mu * dvdy_mid;
+        // The force the FLUID exerts ON THE WALL, per unit area, in the
+        // fluid's +y (the beam's +w, since the transpiration condition sets
+        // v_wall = +wdot). Cauchy's sigma.n with the fluid's outward normal
+        // n = +e_y is the traction the wall exerts on the fluid; the force
+        // on the wall is its negative: +p - 2 mu dv/dy. A pressurised
+        // channel pushes its wall OUTWARD. This carried the opposite sign
+        // (-p + 2 mu dv/dy, i.e. the force on the fluid) until 2026-09-25,
+        // which handed the beam a NEGATIVE added mass: KNOWN_ISSUES.md D9's
+        // real eigenvalue 1.115466 with a pressure-and-first-bending-mode
+        // eigenvector, insensitive to every boundary detail four rounds of
+        // energy budgets varied, because every check compared the delivered
+        // vector with itself. With the sign right the coupled step map's
+        // spectral radius is 1.000000 (the Newmark acceleration passenger at
+        // -1), measured in fsi_energy_diag_test.cpp before this line changed.
+        traction[i] = p_wall_mid - 2.0 * p_.mu * dvdy_mid;
       }
     }
 
@@ -809,7 +823,7 @@ class StokesSolver {
       const double v_m1 = v_[idx_v(p_, i, p_.ny - 1)];
       const double v_m2 = p_.ny >= 2 ? v_[idx_v(p_, i, p_.ny - 2)] : v_m1;
       const double dvdy = (3.0 * v_wall - 4.0 * v_m1 + v_m2) / (2.0 * h);
-      traction[i] = -p_wall + 2.0 * p_.mu * dvdy;
+      traction[i] = p_wall - 2.0 * p_.mu * dvdy;  // force ON the wall; see step()
     }
     traction_mid_ = std::move(traction);
   }
