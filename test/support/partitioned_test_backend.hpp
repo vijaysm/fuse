@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include <mpi.h>
@@ -369,6 +370,311 @@ class SharedVertexLineBackend final : public fuse::MeshBackend {
  private:
   std::size_t n_cells_;
   fuse::RankSet ranks_;
+  std::vector<std::unique_ptr<fuse::MeshView>> meshes_;
+  std::vector<std::string> names_;
+};
+
+// ---------------------------------------------------------------------------
+// GeometricLineMesh / GeometricLineBackend -- the "Nodal remap" track's own
+// addition (test/parallel/nodal_remap_distributed_test.cpp), for a
+// distributed 1D interface with REAL COORDINATES and REAL CONNECTIVITY:
+// unlike PartitionedTestMesh (no geometry at all: centroid is the origin,
+// measure is 1) and SharedVertexLineMesh (also no geometry), this is what
+// `build_distributed_interp_rows` needs on BOTH sides of a genuinely
+// non-matching interpolation -- a source and target line at different
+// resolutions, each split over its own (possibly different) RankSet, with
+// physical vertex positions and Edge cell-to-vertex connectivity
+// (`cell_vertices`) a real interpolation can be checked against a closed
+// form. Ownership follows SharedVertexLineMesh's own rule exactly (the
+// lowest rank holding a shared vertex owns it; cells are a plain,
+// non-overlapping partition) -- duplicated rather than reused because that
+// class deliberately carries NO geometry and this one deliberately does; the
+// two diverge in exactly the fields this task's algorithm needs.
+// ---------------------------------------------------------------------------
+class GeometricLineMesh final : public fuse::MeshView {
+ public:
+  /// `n_cells` cells over `[x_lo, x_hi]`, this rank's slice being position
+  /// `my_rank_in_set` of `num_ranks_in_set` (both relative to the OWNING
+  /// RankSet, not to MPI_COMM_WORLD -- the same convention
+  /// SharedVertexLineMesh uses).
+  /// A genuinely empty mesh: zero vertices, zero cells -- what a rank
+  /// OUTSIDE this component's RankSet must supply to a collective call, as
+  /// opposed to a one-rank slice of a real (if tiny) mesh, which would
+  /// falsely claim ownership of a vertex no other rank agrees it owns.
+  static GeometricLineMesh empty(double x_lo, double x_hi) {
+    GeometricLineMesh m;
+    m.x_lo_ = x_lo;
+    m.x_hi_ = x_hi;
+    m.n_cells_ = 0;
+    m.lo_ = 0;
+    m.hi_ = 0;
+    m.cell_begin_ = 0;
+    m.cell_count_ = 0;
+    m.empty_ = true;
+    return m;
+  }
+
+  GeometricLineMesh(std::size_t n_cells, int num_ranks_in_set, int my_rank_in_set, double x_lo,
+                    double x_hi)
+      : n_cells_(n_cells), x_lo_(x_lo), x_hi_(x_hi) {
+    const std::size_t n_verts = n_cells + 1;
+    const std::size_t base = n_verts / static_cast<std::size_t>(num_ranks_in_set);
+    const std::size_t rem = n_verts % static_cast<std::size_t>(num_ranks_in_set);
+    const auto owned_begin = [&](int r) {
+      return static_cast<std::size_t>(r) * base + std::min<std::size_t>(static_cast<std::size_t>(r), rem);
+    };
+    const std::size_t my_owned_begin = owned_begin(my_rank_in_set);
+    const std::size_t my_owned_count =
+        base + (static_cast<std::size_t>(my_rank_in_set) < rem ? 1 : 0);
+    lo_ = my_owned_begin;
+    hi_ = my_owned_begin + my_owned_count - 1;
+    if (my_rank_in_set + 1 < num_ranks_in_set) hi_ += 1;
+    owner_of_first_ = (my_rank_in_set == 0) ? 0 : my_rank_in_set - 1;
+    my_rank_ = my_rank_in_set;
+    cell_begin_ = my_owned_begin;
+    cell_count_ = (my_rank_in_set + 1 < num_ranks_in_set) ? my_owned_count : my_owned_count - 1;
+  }
+
+  [[nodiscard]] int dimension() const override { return 1; }
+  [[nodiscard]] std::size_t entity_count(int dim) const override {
+    if (empty_) return 0;
+    if (dim == 0) return hi_ - lo_ + 1;
+    if (dim == 1) return cell_count_;
+    return 0;
+  }
+  [[nodiscard]] std::size_t owned_count(int dim) const override {
+    if (empty_) return 0;
+    if (dim != 0) return entity_count(dim);
+    return entity_count(0) - (my_rank_ > 0 ? 1 : 0);
+  }
+  [[nodiscard]] bool is_owned(int dim, std::size_t i) const override {
+    // Lowest-rank-owns-a-shared-vertex rule (docs/dev/native-mesh.md), worded
+    // deliberately differently from SharedVertexLineMesh's own identical rule
+    // just above in this file: an IDENTICAL `old` string in two mutation
+    // anchors makes tools/mutate.py's STALE-ANCHOR check flag both as
+    // ambiguous (this exact hazard is called out in resolve_remap's own
+    // comment on the same tool). Same semantics, distinct text.
+    if (empty_) return false;
+    const bool shares_left_boundary_vertex = (dim == 0 && i == 0);
+    if (shares_left_boundary_vertex) return my_rank_ == owner_of_first_;
+    return true;
+  }
+  [[nodiscard]] fuse::Point centroid(int dim, std::size_t i) const override {
+    const double h = (x_hi_ - x_lo_) / static_cast<double>(n_cells_);
+    if (dim == 0) return fuse::Point{x_lo_ + static_cast<double>(lo_ + i) * h, 0, 0};
+    return fuse::Point{x_lo_ + (static_cast<double>(cell_begin_ + i) + 0.5) * h, 0, 0};
+  }
+  [[nodiscard]] double measure(int dim, std::size_t) const override {
+    if (dim == 1) return (x_hi_ - x_lo_) / static_cast<double>(n_cells_);
+    throw std::domain_error("GeometricLineMesh: no measure at dimension 0 (a vertex)");
+  }
+  [[nodiscard]] std::size_t global_id(int dim, std::size_t i) const override {
+    if (dim == 0) {
+      if (i > hi_ - lo_) throw std::out_of_range("GeometricLineMesh: vertex index out of range");
+      return lo_ + i;
+    }
+    if (dim == 1) {
+      if (i >= cell_count_) throw std::out_of_range("GeometricLineMesh: cell index out of range");
+      return cell_begin_ + i;
+    }
+    throw std::out_of_range("GeometricLineMesh: no entities at this dimension");
+  }
+  [[nodiscard]] std::size_t simplex_count(int dim, std::size_t) const override {
+    return dim == 1 ? 1 : 0;
+  }
+  void simplex_points(int dim, std::size_t i, std::size_t, fuse::Point* out) const override {
+    if (dim != 1) throw std::logic_error("GeometricLineMesh::simplex_points: wrong dimension");
+    out[0] = centroid(0, i);
+    out[1] = centroid(0, i + 1);
+  }
+  [[nodiscard]] fuse::Result<CellVertices> cell_vertices(int dim, std::size_t i) const override {
+    if (dim != 1 || i >= cell_count_) {
+      return fuse::Failure{"E-MESH-NO-CELL-VERTICES", "GeometricLineMesh: wrong dimension"};
+    }
+    CellVertices out;
+    out.shape = fuse::CellShape::Edge;
+    out.vertices = {i, i + 1};  // local dim-0 indices: cell i spans [i, i+1]
+    return out;
+  }
+
+  [[nodiscard]] std::size_t lo() const noexcept { return lo_; }
+  [[nodiscard]] std::size_t hi() const noexcept { return hi_; }
+
+ private:
+  GeometricLineMesh() = default;  // only `empty()` uses this
+
+  std::size_t n_cells_ = 0;
+  double x_lo_ = 0.0, x_hi_ = 1.0;
+  std::size_t lo_ = 0, hi_ = 0;
+  std::size_t cell_begin_ = 0, cell_count_ = 0;
+  bool empty_ = false;
+  int owner_of_first_ = 0;
+  int my_rank_ = 0;
+};
+
+/// One nodal region (`GeometricLineMesh`) over every rank of `ranks`, over
+/// `[x_lo, x_hi]` -- the geometric analogue of `SharedVertexLineBackend`,
+/// for tests that need real coordinates on both the source and target side
+/// of a distributed nodal remap.
+class GeometricLineBackend final : public fuse::MeshBackend {
+ public:
+  GeometricLineBackend(std::size_t n_cells, fuse::RankSet ranks, double x_lo = 0.0,
+                       double x_hi = 1.0)
+      : n_cells_(n_cells), ranks_(ranks), x_lo_(x_lo), x_hi_(x_hi) {}
+
+  fuse::Result<void> load(const fuse::MeshDecl& decl) override {
+    int me = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &me);
+    if (!ranks_.contains(me)) {
+      // Not in this component: an EMPTY mesh (zero cells, zero vertices),
+      // not a slice computed as if it were -- a rank outside `ranks_` must
+      // still supply a valid MeshView to a collective call, exactly like
+      // PartitionedTestBackend's own `gids = {}` branch.
+      meshes_.push_back(std::make_unique<GeometricLineMesh>(GeometricLineMesh::empty(x_lo_, x_hi_)));
+      names_.push_back(decl.name);
+      return fuse::Result<void>::success();
+    }
+    int pos = 0;
+    for (int r = ranks_.min_rank(); r < me; ++r) pos += ranks_.contains(r) ? 1 : 0;
+    meshes_.push_back(std::make_unique<GeometricLineMesh>(
+        n_cells_, static_cast<int>(ranks_.size()), pos, x_lo_, x_hi_));
+    names_.push_back(decl.name);
+    return fuse::Result<void>::success();
+  }
+  [[nodiscard]] fuse::Result<const fuse::MeshView*> view(fuse::MeshId id) const override {
+    if (!id.valid() || id.value() >= meshes_.size()) return fuse::Failure{"E-MESH-ID", "invalid mesh id"};
+    return meshes_[id.value()].get();
+  }
+  [[nodiscard]] fuse::Result<const fuse::MeshView*> placed_view(fuse::MeshId id,
+                                                                fuse::ComponentId) const override {
+    return view(id);
+  }
+  [[nodiscard]] fuse::Result<std::size_t> region_size(const fuse::Region& r) const override {
+    const auto v = view(r.mesh);
+    if (!v.ok()) return v.error();
+    const int dim = r.dimension >= 0 ? r.dimension : v.value()->dimension();
+    return v.value()->entity_count(dim);
+  }
+  [[nodiscard]] fuse::Result<std::size_t> placed_region_size(const fuse::Region& r,
+                                                             fuse::ComponentId) const override {
+    return region_size(r);
+  }
+  [[nodiscard]] fuse::Result<fuse::MeshId> mesh_id(std::string_view name) const override {
+    for (std::size_t i = 0; i < names_.size(); ++i) {
+      if (names_[i] == name) return fuse::MeshId{static_cast<std::uint32_t>(i)};
+    }
+    return fuse::Failure{"E-MESH-NAME", "no mesh named '" + std::string(name) + "'"};
+  }
+  [[nodiscard]] std::string name() const override { return "geometric-line-test"; }
+
+ private:
+  std::size_t n_cells_;
+  fuse::RankSet ranks_;
+  double x_lo_, x_hi_;
+  std::vector<std::unique_ptr<fuse::MeshView>> meshes_;
+  std::vector<std::string> names_;
+};
+
+// ---------------------------------------------------------------------------
+// MultiMeshGeometricBackend -- the "Nodal remap" track's round-3 addition
+// (test/parallel/nodal_remap_runner_test.cpp), for driving ONE real
+// Runner/CouplingGraph pair through a beam/fluid channel pair like FSI
+// uses, where the two meshes have DIFFERENT shapes (cell counts) and
+// DIFFERENT, independently-declared RankSets. `Runner` takes a single
+// `MeshBackend&` for every region in the graph, but `GeometricLineBackend`
+// (above) bakes ONE (n_cells, RankSet, x_lo, x_hi) into the whole instance,
+// so serving a beam mesh and a fluid mesh of different shapes needs a
+// SECOND `GeometricLineBackend` instance -- exactly what a single `Runner`
+// cannot be handed. This class is the small composite that closes that
+// gap: it holds one (n_cells, RankSet, x_lo, x_hi) `Spec` PER MESH NAME
+// (registered before `load()`, mirroring `PartitionedTestBackend::
+// set_placements`'s own "declare before loading" convention) and reuses
+// `GeometricLineMesh` UNCHANGED -- one instance per registered mesh name,
+// each built from its OWN spec exactly as `GeometricLineBackend::load`
+// already does for its single mesh.
+//
+// GLOBAL IDS ARE CONSISTENT ACROSS PARTITIONS BY CONSTRUCTION, NOT BY
+// ANYTHING THIS CLASS ADDS: `GeometricLineMesh`'s global id for a given
+// local index is a pure function of (n_cells, x_lo, x_hi, that index's
+// position along the line) -- never of the calling rank or the rank
+// COUNT -- so the SAME mesh built at 1 rank, 3 ranks or 5 ranks numbers
+// the SAME physical vertex with the SAME global id every time. This is
+// the property `apply_distributed_HT`'s bit-identical-across-rank-counts
+// argument (nodal_remap_distributed.hpp) already rests on; this class
+// does not need to re-derive it, only avoid breaking it, which reusing
+// `GeometricLineMesh` verbatim guarantees.
+//
+// No per-placement decomposition (`set_placements`): each mesh has
+// exactly one decomposition, driven by its own spec's RankSet, exactly
+// like `GeometricLineBackend`'s own single-mesh design -- a test using
+// this class puts each graph component on the SAME RankSet as its own
+// mesh's spec, so `view()`/`placed_view()` never need to differ.
+class MultiMeshGeometricBackend final : public fuse::MeshBackend {
+ public:
+  struct Spec {
+    std::size_t n_cells = 1;
+    fuse::RankSet ranks{0, 1};
+    double x_lo = 0.0;
+    double x_hi = 1.0;
+  };
+
+  /// Must precede the corresponding `load()` call. Registering the same
+  /// name twice overwrites the earlier spec -- there is exactly one
+  /// decomposition per mesh name, matching every other backend in this
+  /// file.
+  void add_mesh_spec(std::string name, Spec spec) {
+    specs_[std::move(name)] = spec;
+  }
+
+  fuse::Result<void> load(const fuse::MeshDecl& decl) override {
+    const auto it = specs_.find(decl.name);
+    if (it == specs_.end()) {
+      return fuse::Failure{"E-MESH-NAME",
+                           "MultiMeshGeometricBackend: no spec registered for mesh '" +
+                               decl.name + "' -- call add_mesh_spec() before load()"};
+    }
+    const Spec& s = it->second;
+    int me = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &me);
+    if (!s.ranks.contains(me)) {
+      meshes_.push_back(std::make_unique<GeometricLineMesh>(GeometricLineMesh::empty(s.x_lo, s.x_hi)));
+    } else {
+      int pos = 0;
+      for (int r = s.ranks.min_rank(); r < me; ++r) pos += s.ranks.contains(r) ? 1 : 0;
+      meshes_.push_back(std::make_unique<GeometricLineMesh>(
+          s.n_cells, static_cast<int>(s.ranks.size()), pos, s.x_lo, s.x_hi));
+    }
+    names_.push_back(decl.name);
+    return fuse::Result<void>::success();
+  }
+  [[nodiscard]] fuse::Result<const fuse::MeshView*> view(fuse::MeshId id) const override {
+    if (!id.valid() || id.value() >= meshes_.size()) return fuse::Failure{"E-MESH-ID", "invalid mesh id"};
+    return meshes_[id.value()].get();
+  }
+  [[nodiscard]] fuse::Result<const fuse::MeshView*> placed_view(fuse::MeshId id,
+                                                                fuse::ComponentId) const override {
+    return view(id);
+  }
+  [[nodiscard]] fuse::Result<std::size_t> region_size(const fuse::Region& r) const override {
+    const auto v = view(r.mesh);
+    if (!v.ok()) return v.error();
+    const int dim = r.dimension >= 0 ? r.dimension : v.value()->dimension();
+    return v.value()->entity_count(dim);
+  }
+  [[nodiscard]] fuse::Result<std::size_t> placed_region_size(const fuse::Region& r,
+                                                             fuse::ComponentId) const override {
+    return region_size(r);
+  }
+  [[nodiscard]] fuse::Result<fuse::MeshId> mesh_id(std::string_view name) const override {
+    for (std::size_t i = 0; i < names_.size(); ++i) {
+      if (names_[i] == name) return fuse::MeshId{static_cast<std::uint32_t>(i)};
+    }
+    return fuse::Failure{"E-MESH-NAME", "no mesh named '" + std::string(name) + "'"};
+  }
+  [[nodiscard]] std::string name() const override { return "multi-mesh-geometric-test"; }
+
+ private:
+  std::unordered_map<std::string, Spec> specs_;
   std::vector<std::unique_ptr<fuse::MeshView>> meshes_;
   std::vector<std::string> names_;
 };
