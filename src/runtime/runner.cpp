@@ -568,31 +568,13 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
   const bool moves_placement = in_rank_set >= 0 && remap_rank_set >= 0 &&
                                in_rank_set != remap_rank_set;
 
-  // Weights are not yet built per placement: build_weights() reads each
-  // mesh's DEFAULT decomposition. Where this placement's decomposition is a
-  // different one, weights built on the default would index the wrong
-  // entities -- plausible numbers, no diagnostic -- so refuse instead.
-  // (KNOWN_ISSUES D5: per-placement weight construction is the next step.)
-  for (const RegionId side : {src, tgt}) {
-    if (moves_placement) break;
-    if (!side.valid() || side.value() >= graph.region_count()) break;
-    const Region& rs = graph.region(side);
-    if (!rs.mesh.valid() || rs.mesh.value() >= graph.mesh_count()) break;
-    const auto bid = backend.mesh_id(graph.mesh(rs.mesh).name);
-    if (!bid.ok()) break;  // reported by the checks below
-    const auto placed = backend.placed_view(bid.value(), placement);
-    const auto dflt = backend.view(bid.value());
-    if (placed.ok() && dflt.ok() && placed.value() != dflt.value()) {
-      return Failure{"E-RT-REMAP-PLACEMENT",
-                     label + " remaps on component " +
-                         std::to_string(remap_rank_set) +
-                         "'s own decomposition of mesh '" +
-                         graph.mesh(rs.mesh).name +
-                         "', and remap weights are not yet built per "
-                         "placement; building them on the mesh's default "
-                         "decomposition would index the wrong entities"};
-    }
-  }
+  // Weights are built on THIS placement's decomposition: RemapPlan::placement
+  // is set below and every builder resolves its sides through
+  // MeshBackend::placed_view (KNOWN_ISSUES D5, closed 2026-09-25). Until then
+  // a Remap on a non-default decomposition was refused (E-RT-REMAP-PLACEMENT)
+  // because weights built on the default view would have indexed the wrong
+  // entities with no diagnostic. A placement the backend was never told about
+  // is still refused, by placed_view itself (E-MESH-PLACEMENT).
 
   // Discretization, order and conservation live on the FIELDS, not on the
   // operator, so they are read once here from the channel this node was
@@ -802,6 +784,9 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
   p.src = src;
   p.tgt = tgt;
   p.flags = ins.attrs.remap_flags;
+  // The decomposition the weights index. Part of the plan's key, so the same
+  // channel on two placements builds two matrices rather than sharing one.
+  p.placement = placement;
   // THE METHOD STRING IS A BUILDER SELECTOR, AND IT IS THE USER'S. It is
   // `Channel::remap.method_override`, carried verbatim through lowering, and
   // it is forwarded here unaltered rather than being defaulted, normalised or

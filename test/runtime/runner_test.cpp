@@ -1422,19 +1422,18 @@ TEST(Runner, RefusesEqualCountRegionsThatAreNotProvablyCoincident) {
       << r.error().message;
 }
 
-// KNOWN_ISSUES D5: a Remap on a component's OWN decomposition is refused
-// until weights are built per placement. build_weights() reads each mesh's
-// default decomposition; where a placement's decomposition is a different one,
-// weights built on the default would index the wrong entities -- plausible
-// numbers, no diagnostic.
+// KNOWN_ISSUES D5, closed 2026-09-25: a Remap on a component's OWN
+// decomposition used to be refused (E-RT-REMAP-PLACEMENT) because
+// build_weights() read each mesh's default view. RemapPlan now carries the
+// placement and every builder resolves its sides through placed_view, so the
+// same graph initialises. That the weights really follow the placed view --
+// and not merely that the refusal is gone -- is asserted where the matrix can
+// be read: Supermesh.WeightsAreBuiltOnThePlacementsOwnDecomposition, with a
+// view whose numbering is reversed.
 //
 // The backend below forwards everything to the harness's, except that
 // `placed_view` answers from a SECOND backend holding the same meshes: a
-// valid decomposition, just not the default one, which is the situation the
-// refusal exists for. Everything else is the differently-sized pair above,
-// which initialises cleanly on the default decomposition -- so the only
-// difference between that test passing and this one refusing is the
-// placement.
+// valid decomposition, just not the default object.
 namespace {
 
 class OtherDecompositionBackend final : public fuse::MeshBackend {
@@ -1475,18 +1474,16 @@ class OtherDecompositionBackend final : public fuse::MeshBackend {
 
 }  // namespace
 
-TEST(Runner, RefusesARemapOnANonDefaultPlacementDecomposition) {
+TEST(Runner, AcceptsARemapOnANonDefaultPlacementDecomposition) {
   auto h = build(HarnessOpts{.src_cells = 8, .dst_cells = 4});
   const OtherDecompositionBackend backend{h->backend, h->graph};
   Runner runner{h->graph, h->dag, h->plan, backend};
   bind_all(*h);
   const auto r = runner.initialize(h->components, h->registry);
-  ASSERT_FALSE(r.ok())
-      << "a Remap whose placement has its own decomposition must not use "
-         "weights built on the mesh's default one";
-  EXPECT_EQ(r.error().code, "E-RT-REMAP-PLACEMENT") << r.error().message;
-  EXPECT_NE(r.error().message.find("per placement"), std::string::npos)
-      << r.error().message;
+  ASSERT_TRUE(r.ok()) << r.error().code << ": " << r.error().message
+                      << " -- weights are built per placement now (D5)";
+  const auto ran = runner.run_period(h->components);
+  ASSERT_TRUE(ran.ok()) << ran.error().code << ": " << ran.error().message;
 }
 
 // The sharper version of the same hazard, and the one that isolates the
