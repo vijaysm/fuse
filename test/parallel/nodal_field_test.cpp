@@ -281,42 +281,67 @@ TEST(AccumulateSharedRows, SumsEveryRanksPartialExactlyOnceAndDeliversTheSameTot
   }
 }
 
-/// Property (e)'s closest approximation this file can offer without Runner
-/// wiring: assemble a "load" by hand -- rank r contributes its own local
-/// slice of a KNOWN total force, accumulate_shared_rows sums it exactly
-/// once per shared vertex, and the resulting per-rank sum, added across
-/// every rank's OWNED entities only (no double count), equals the force
-/// sent, to round-off, matching InterfaceTransfer.
-/// ConsistentPairRunsThroughTheRunnerExactlyAndBalancesPower's serial
-/// check but assembled by hand rather than through Runner.
+/// A load assembled the way a real one is. Each rank's cells are its own, and
+/// each cell spreads its share of a known total force equally onto its two end
+/// vertices. A vertex on a rank boundary therefore receives a PARTIAL load from
+/// each side, and accumulate_shared_rows must sum those onto the owner exactly
+/// once. The owned-only sum across ranks then equals the force sent.
+///
+/// The first version of this test wrote a full per-vertex share into every
+/// holder's copy of a shared vertex. That input already counted each shared
+/// vertex twice before any reduction ran, so the test failed by exactly
+/// (ranks - 1) / (n_cells + 1), which is what the host measured (3/14 at 4
+/// ranks, 4/14 at 5). The primitive was right; the input was not a load.
 TEST(AccumulateSharedRows, ManuallyAssembledPowerBalances) {
   const int size = world_size();
-  const int rank = current_rank();
   const std::size_t n_cells = 13;
-  SharedVertexLineMesh mesh(n_cells, size, rank);
+  SharedVertexLineMesh mesh(n_cells, size, current_rank());
   const std::size_t nv = mesh.entity_count(0);
+  const std::size_t nc = mesh.entity_count(1);
+  ASSERT_EQ(nv, nc + 1) << "local cell c joins local vertices c and c+1";
 
-  // Total force to distribute: 1.0, split evenly across every one of the
-  // n_cells+1 GLOBAL vertex slots this rank's local buffer touches -- i.e.
-  // each LOCAL row's partial is 1.0 / (n_cells + 1), so summing every row
-  // across every rank (with shared rows counted once via
-  // accumulate_shared_rows, not once per holder) reconstructs exactly 1.0.
   const double total_force = 1.0;
-  const double per_row = total_force / static_cast<double>(n_cells + 1);
-  std::vector<double> local_load(nv, per_row);
+  const double per_cell = total_force / static_cast<double>(n_cells);
+  std::vector<double> local_load(nv, 0.0);
+  for (std::size_t c = 0; c < nc; ++c) {
+    local_load[c] += 0.5 * per_cell;
+    local_load[c + 1] += 0.5 * per_cell;
+  }
+  // An interface velocity linear in the global vertex id: power at the owned
+  // vertices must equal the cellwise trapezoidal power, which is what the
+  // assembled load has to reproduce.
+  std::vector<double> v(nv);
+  for (std::size_t i = 0; i < nv; ++i) {
+    v[i] = 0.25 + static_cast<double>(mesh.global_id(0, i)) / static_cast<double>(n_cells);
+  }
+  double cell_power = 0.0;
+  for (std::size_t c = 0; c < nc; ++c) cell_power += per_cell * 0.5 * (v[c] + v[c + 1]);
+
+  const auto sum_owned = [&](const std::vector<double>& x, const std::vector<double>* w) {
+    double local = 0.0;
+    for (std::size_t i = 0; i < nv; ++i) {
+      if (mesh.is_owned(0, i)) local += x[i] * (w != nullptr ? (*w)[i] : 1.0);
+    }
+    double global = 0.0;
+    EXPECT_EQ(MPI_Allreduce(&local, &global, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD), MPI_SUCCESS);
+    return global;
+  };
+
+  // Before the reduction an owner holds only its own side of a shared vertex,
+  // so the owned-only sum is short by half a cell per rank boundary: the
+  // reason the reduction exists.
+  const double before = sum_owned(local_load, nullptr);
+  EXPECT_NEAR(before, total_force - 0.5 * per_cell * static_cast<double>(size - 1), 1e-13);
 
   const auto r = fuse::accumulate_shared_rows(mesh, 0, 1, local_load,
                                               MPI_Comm_c2f(MPI_COMM_WORLD));
   ASSERT_TRUE(r.ok()) << r.error().code << ": " << r.error().message;
 
-  double owned_sum = 0.0;
-  for (std::size_t i = 0; i < nv; ++i) {
-    if (mesh.is_owned(0, i)) owned_sum += local_load[i];
-  }
-  double global_sum = 0.0;
-  ASSERT_EQ(MPI_Allreduce(&owned_sum, &global_sum, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD),
-           MPI_SUCCESS);
-  EXPECT_NEAR(global_sum, total_force, 1e-13)
-      << "the load, summed over owned entities only across every rank, must equal "
-         "the force sent, to round-off";
+  EXPECT_NEAR(sum_owned(local_load, nullptr), total_force, 1e-13)
+      << "the assembled load, summed over owned vertices, must equal the force sent";
+  double global_cell_power = 0.0;
+  ASSERT_EQ(MPI_Allreduce(&cell_power, &global_cell_power, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD),
+            MPI_SUCCESS);
+  EXPECT_NEAR(sum_owned(local_load, &v), global_cell_power, 1e-13)
+      << "power at the owned vertices must equal the power integrated over the cells";
 }
