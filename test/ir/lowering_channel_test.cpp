@@ -343,3 +343,87 @@ TEST(LoweringChannel, DisjointPlacementsNeedADataMove) {
   EXPECT_EQ(transports(shared_pair(fuse::RankSet{std::vector<int>{0, 2, 4}},
                                    fuse::RankSet{std::vector<int>{1, 3, 5}})), 1u);
 }
+
+// ---- a Remap that moves the data itself ----------------------------------
+
+namespace {
+
+/// A nodal-to-cell channel across two placements, with the given method.
+fuse::CouplingGraph nodal_pair(fuse::RankSet a, fuse::RankSet b, const char* method,
+                               bool nodal_source) {
+  using namespace fuse;
+  CouplingGraph g;
+  const auto m_a = g.add_mesh({.name = "ma", .source = "n/a"});
+  const auto m_b = g.add_mesh({.name = "mb", .source = "n/a"});
+  const auto r_a = g.add_region({.name = "ra", .mesh = m_a, .dimension = 1});
+  const auto r_b = g.add_region({.name = "rb", .mesh = m_b, .dimension = 1});
+  const auto src = g.add_component({.name = "src", .ranks = std::move(a), .interval = Rational{1}});
+  const auto dst = g.add_component({.name = "dst", .ranks = std::move(b), .interval = Rational{1}});
+  FieldSpec fs{.name = "q", .region = r_a, .intent = Intent::Provides};
+  FieldSpec ft{.name = "q", .region = r_b, .intent = Intent::Requires};
+  if (nodal_source) { fs.disc = Discretization::ContinuousGLL; fs.order = 1; }
+  else              { ft.disc = Discretization::ContinuousGLL; ft.order = 1; }
+  const auto out = g.add_field(src, fs);
+  const auto in  = g.add_field(dst, ft);
+  const auto ch = g.add_channel("q", out, in);
+  g.channel(ch).remap_method(method);
+  return g;
+}
+
+struct Shape { std::size_t transports = 0, epochs = 0, remaps = 0; int remap_in_rs = -2, remap_out_rs = -2; };
+
+Shape shape_of(const fuse::CouplingGraph& g) {
+  const auto lowered = fuse::lower(g, {});
+  Shape s;
+  for (std::uint32_t i = 0; i < lowered.dag.node_count(); ++i) {
+    const auto& n = lowered.dag.node(fuse::NodeId{i});
+    if (n.kind == fuse::OpKind::Transport) ++s.transports;
+    if (n.kind == fuse::OpKind::Epoch) ++s.epochs;
+    if (n.kind == fuse::OpKind::Remap) {
+      ++s.remaps;
+      s.remap_in_rs  = lowered.dag.arc(n.inputs.front()).type.rank_set;
+      s.remap_out_rs = lowered.dag.arc(n.output).type.rank_set;
+    }
+  }
+  return s;
+}
+
+}  // namespace
+
+// fuse/model/remap_kind.hpp. A consistent-interpolation remap on a nodal side
+// exchanges the values itself, reading each side where it lives; a Transport
+// in front of it would deliver the source values onto the target placement's
+// view of the SOURCE mesh -- empty on a disjoint placement -- and the
+// operator would then sum nothing. That is what the host measured on
+// 2026-09-25: H exact, H^T D delivering zero. So the lowering emits the
+// agreement point and a Remap whose output changes placement, and no move.
+TEST(LoweringChannel, AConsistentRemapOnANodalSideMovesThePlacementItself) {
+  for (const bool nodal_source : {true, false}) {
+    const char* method = nodal_source ? "consistent" : "consistent-transpose";
+    const Shape s = shape_of(nodal_pair(fuse::RankSet{0, 2}, fuse::RankSet{2, 2}, method, nodal_source));
+    EXPECT_EQ(s.transports, 0u) << method;
+    EXPECT_EQ(s.epochs, 1u) << method << ": the agreement point stays";
+    EXPECT_EQ(s.remaps, 1u) << method;
+    EXPECT_EQ(s.remap_in_rs, 0) << method << ": the Remap reads on the source placement";
+    EXPECT_EQ(s.remap_out_rs, 1) << method << ": and writes on the target placement";
+  }
+}
+
+TEST(LoweringChannel, AConsistentRemapWithTheWrongOrientationStillGetsAMove) {
+  // "consistent" needs a nodal SOURCE. With the nodal side on the target the
+  // predicate is false and the default lowering applies; the runtime then
+  // refuses the orientation mismatch by name (E-RT-REMAP-NODAL-PARALLEL).
+  const Shape s = shape_of(nodal_pair(fuse::RankSet{0, 2}, fuse::RankSet{2, 2}, "consistent",
+                                      /*nodal_source=*/false));
+  EXPECT_EQ(s.transports, 1u);
+  EXPECT_EQ(s.remap_in_rs, s.remap_out_rs) << "the Transport changed the placement, not the Remap";
+}
+
+TEST(LoweringChannel, AConsistentRemapOnOnePlacementNeedsNoMoveAndChangesNothing) {
+  const Shape s = shape_of(nodal_pair(fuse::RankSet{0, 4}, fuse::RankSet{0, 4}, "consistent-transpose",
+                                      /*nodal_source=*/false));
+  EXPECT_EQ(s.transports, 0u);
+  EXPECT_EQ(s.epochs, 0u);
+  EXPECT_EQ(s.remap_in_rs, s.remap_out_rs);
+}
+
