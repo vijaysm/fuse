@@ -60,8 +60,8 @@ describes = "Constrain back to non-collective while it still reduces: a rank who
 file = "include/fuse/ir/op.hpp"
 old = "    case OpKind::Constrain:\n      return true;"
 new = "    case OpKind::Constrain:\n      return false;"
-target = "fuse_ir_op_test"
-test = "ir.op"
+target = "fuse_ir_ir_op_test"
+test = "ir.ir_op"
 
 [[mutation]]
 id = "region-failure-abandons-the-rest-of-the-period"
