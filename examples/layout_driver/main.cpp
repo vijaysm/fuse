@@ -10,10 +10,19 @@
 //   mpiexec -n P fuse_example_layout_driver --comp1 a:b --comp2 c:d \
 //       [--coupler e:f] [--entities N] [--steps K] [--check] [--timing out.csv]
 //
+// --coupler e:f (design C, plans/2026-09-23-coupler-placement-and-
+// migration.md) routes the "link" channel's Remap through a separately
+// placed coupler on ranks [e:f]: comp1 -> coupler -> comp2, with the
+// coupler->comp2 hop elided whenever [e:f] is identical to comp2's own
+// range. It always attaches RemapFlags::Conservative to the channel, since
+// comp1 and comp2 share one region here and nothing else would make the
+// coupler's remap_on do anything (validate()'s W-CHANNEL-REMAP-ON-UNUSED).
+// Not supported together with --mesh (that mode never builds this
+// field-transfer graph at all).
+//
 // The job's PE layout must cover the whole world exactly:
 // min(a,b,c,d[,e,f]) == 0 and max(...) == P-1. A violation, a reversed or
-// unparseable range, a rank outside [0, P-1], or --coupler (parsed and
-// validated, but refused: coupler placement is not implemented) is a
+// unparseable range, a rank outside [0, P-1], or --coupler with --mesh is a
 // refusal on EVERY rank, never a hang -- argv is identical on every rank
 // under mpiexec, so every validation decision up to the graph build is
 // deterministic and reached before any collective call, and every
@@ -250,8 +259,9 @@ struct Args {
 }
 
 /// disjoint / partially overlapping / identical, spelled out for a rank-0
-/// print rather than an enumerator: the driver has exactly one pair to
-/// report (comp1 vs comp2 -- --coupler is refused before this would matter).
+/// print rather than an enumerator: the driver reports exactly the comp1 vs
+/// comp2 shape here regardless of --coupler, since that is the shape the
+/// non-coupler tests already print and diff against.
 [[nodiscard]] std::string_view shape_of(const fuse::RankSet& a,
                                         const fuse::RankSet& b) {
   if (a.same_as(b)) return "identical";
@@ -527,9 +537,12 @@ int main(int argc, char** argv) {
               << shape_of(args.comp1->ranks, args.comp2->ranks) << '\n';
   }
 
-  if (args.have_coupler_flag) {
+  // --coupler is still refused in --mesh/--migrate mode: that mode never
+  // builds the field-transfer coupling graph at all (see Args::mesh_spec's
+  // comment), so there is no channel for a coupler placement to attach to.
+  if (args.have_coupler_flag && args.mesh_spec) {
     if (rank == 0) {
-      std::cerr << "E-LAYOUT-COUPLER: coupler placement is not implemented yet\n";
+      std::cerr << "E-LAYOUT-COUPLER: --coupler is not supported with --mesh\n";
     }
     return agree_and_exit(1);
   }
@@ -558,7 +571,19 @@ int main(int argc, char** argv) {
       comp2_id, fuse::FieldSpec{.name = "in", .region = region,
                                 .units = fuse::units::kKelvin,
                                 .intent = fuse::Intent::Requires});
-  graph.add_channel("link", src_field, dst_field);
+  const auto link = graph.add_channel("link", src_field, dst_field);
+  if (args.coupler) {
+    // remap() with no flags: the two components' regions are the SAME
+    // region (both fields share `region` above), so nothing about this
+    // channel would otherwise emit a Remap at all -- could_ever_emit_remap
+    // (fuse/model/remap_kind.hpp) would be false and remap_on would be
+    // W-CHANNEL-REMAP-ON-UNUSED. Conservative asks for one unconditionally,
+    // so --coupler always exercises the coupler-placement route it is
+    // there to demonstrate, on every layout shape.
+    const auto coupler_id = graph.add_coupler(
+        fuse::CouplerDecl{.name = "coupler", .ranks = args.coupler->ranks});
+    graph.channel(link).remap(fuse::RemapFlags::Conservative).remap_on(coupler_id);
+  }
 
   PartitionedTestBackend backend(args.comp1->ranks, args.comp2->ranks,
                                  args.entities, dim);

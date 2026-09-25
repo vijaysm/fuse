@@ -184,6 +184,34 @@ if(FUSE_ENABLE_MPI)
     ARGS --comp1 0:0 --comp2 0:0)
   fuse_add_layout_test(layout.refuse.reversed-range 2 WILL_FAIL
     ARGS --comp1 1:0 --comp2 0:1)
-  fuse_add_layout_test(layout.refuse.coupler 2 WILL_FAIL
-    ARGS --comp1 0:1 --comp2 0:1 --coupler 0:1)
+  # --coupler is refused only in combination with --mesh (E-LAYOUT-COUPLER):
+  # that mode never builds the field-transfer graph a coupler could attach
+  # to. Plain --coupler is no longer a refusal -- see the layout.coupler.*
+  # rows above -- so this replaces the row that used to pin the "not
+  # implemented yet" refusal.
+  fuse_add_layout_test(layout.refuse.coupler-with-mesh 2 WILL_FAIL
+    ARGS --comp1 0:1 --comp2 0:1 --coupler 0:1 --mesh hexbox:4x4x4)
 endif()
+  # --coupler: the coupler-placement track (design C). The channel always
+  # gets RemapFlags::Conservative (main.cpp's own comment on why), so
+  # --check still verifies the same "every destination entity holds its own
+  # global id" property as the rows above, now routed source -> coupler ->
+  # target.
+  #   * coupler disjoint from both comp1 and comp2.
+  fuse_add_layout_test(layout.coupler.3.disjoint 3
+    ARGS --comp1 0:0 --comp2 1:1 --coupler 2:2 --check)
+  #   * coupler IDENTICAL to comp2's own range -- the coupler -> target hop
+  #     is elided (same_as), so this must reproduce the no-coupler result
+  #     bit for bit; the byte-exact claim itself is pinned at Tier 0
+  #     (CouplerLowering.CouplerEqualToTargetReproducesTodaysIRExactly,
+  #     Runner.ACouplerNeedsNoComponentAndDeliversTheIdenticalValue), --check
+  #     here confirms delivery still holds under a real multi-rank run.
+  fuse_add_layout_test(layout.coupler.3.equals-target 3
+    ARGS --comp1 0:0 --comp2 1:2 --coupler 1:2 --check)
+  #   * coupler overlapping comp1 (shares rank 1, not identical to either
+  #     side) -- needs 4 ranks for the same reason a partial comp1/comp2
+  #     overlap needs 3: the shared rank must leave room for the rest of
+  #     each placement to differ.
+  fuse_add_layout_test(layout.coupler.4.overlaps-comp1 4
+    ARGS --comp1 0:1 --comp2 2:3 --coupler 1:2 --check)
+
