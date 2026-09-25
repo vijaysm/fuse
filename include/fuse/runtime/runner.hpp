@@ -32,6 +32,17 @@ struct RunnerConfig {
   /// `E-RT-NOCONVERGE`.
   bool        abort_on_nonconvergence = false;
 
+  /// Take the distributed nodal-remap path (`build_nodal_dist_remap`,
+  /// `apply_distributed_H` / `_HT`) even when both placements sit on one rank,
+  /// where the Runner would otherwise use the rank-local weights. The
+  /// distributed operator is a correct remap at any participant count,
+  /// including one: with no communicator it runs as a single participant.
+  /// This exists so the serial tier can exercise the code the MPI fixtures
+  /// run -- a one-rank failure of that path is otherwise debuggable only
+  /// under a launcher. Not a performance setting; a production run leaves it
+  /// false.
+  bool        force_distributed_nodal_remap = false;
+
   /// `MPI_Comm_c2f()` of a communicator whose group contains every rank of
   /// every component in the graph -- `MPI_COMM_WORLD` under spec §6 mode 1,
   /// which is the only integration mode v1 implements. Set it to make
