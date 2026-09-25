@@ -564,4 +564,47 @@ void NativeMeshView::simplex_points(int dim, std::size_t i, std::size_t s, Point
   for (int k = 0; k < corners; ++k) out[k] = cell_simplices_[i][s][static_cast<std::size_t>(k)];
 }
 
+// ---------------------------------------------------------------------------
+// mesh_view.hpp's cell-to-vertex connectivity query (nodal-remap track). The
+// native mesh already stores exactly this -- `cell_vertices_[c]`, corner
+// indices in `native/cell_topology.hpp`'s convention, which is worded
+// identically to `cell_simplices.hpp`'s `CellShape` tables ("quad base 0-3,
+// apex 4"; "triangle 0-2, opposite triangle 3-5"; "face 0-3, opposite face
+// 4-7") -- so no reordering is needed, only a type translation from this
+// mesh's own `CellType` (which additionally has `Point` and `Polyhedron`,
+// neither representable as a `CellShape`) to `CellShape`.
+// ---------------------------------------------------------------------------
+Result<MeshView::CellVertices> NativeMeshView::cell_vertices(int dim, std::size_t i) const {
+  check(dim, i, "cell_vertices");
+  if (dim != dim_) {
+    return Failure{"E-MESH-NO-CELL-VERTICES",
+                   "NativeMeshView::cell_vertices: connectivity is stored only for "
+                   "this mesh's top-dimension cells (dimension " +
+                       std::to_string(dim_) + "), not dimension " + std::to_string(dim)};
+  }
+  CellShape shape{};
+  switch (cell_type_[i]) {
+    case CellType::Segment: shape = CellShape::Edge; break;
+    case CellType::Triangle: shape = CellShape::Triangle; break;
+    case CellType::Quad: shape = CellShape::Quad; break;
+    case CellType::Polygon: shape = CellShape::Polygon; break;
+    case CellType::Tet: shape = CellShape::Tet; break;
+    case CellType::Pyramid: shape = CellShape::Pyramid; break;
+    case CellType::Prism: shape = CellShape::Prism; break;
+    case CellType::Hex: shape = CellShape::Hex; break;
+    case CellType::Point:
+    case CellType::Polyhedron:
+    default:
+      return Failure{"E-MESH-NO-CELL-VERTICES",
+                     "NativeMeshView::cell_vertices: cell " + std::to_string(i) +
+                         " is a Point or a general Polyhedron, neither of which has "
+                         "a fuse::CellShape equivalent (a Polyhedron's faces are an "
+                         "explicit CSR, not a fixed corner list)"};
+  }
+  MeshView::CellVertices out;
+  out.shape = shape;
+  out.vertices.assign(cell_vertices_[i].begin(), cell_vertices_[i].end());
+  return out;
+}
+
 }  // namespace fuse::native

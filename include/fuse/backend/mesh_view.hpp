@@ -3,7 +3,9 @@
 #include <cstddef>
 #include <string>
 #include <string_view>
+#include <vector>
 
+#include "fuse/backend/cell_simplices.hpp"  // CellShape
 #include "fuse/base/result.hpp"
 #include "fuse/model/coupling_graph.hpp"
 #include "fuse/schedule/buffers.hpp"  // RegionSizes
@@ -169,6 +171,65 @@ class MeshView {
   /// or maintain a winding convention.
   virtual void simplex_points(int dim, std::size_t i, std::size_t s,
                               Point* out) const = 0;
+
+  /// --- cell-to-vertex connectivity, for a general nodal basis --------------
+  ///
+  /// WHY THIS EXISTS (nodal-remap track). The simplex decomposition above is
+  /// exactly what the supermesh/clipping kernel needs, but it is NOT enough
+  /// to interpolate a Q1 field on a quadrilateral or hexahedron: a hex's
+  /// trilinear basis needs its 8 ACTUAL corners in a known order, not the 6
+  /// tetrahedra `simplex_points` decomposes it into (whose "corners" are
+  /// physical points with no local vertex index attached, and which do not
+  /// preserve the cell's own multilinear shape). General consistent
+  /// interpolation (`fuse/backend/general_interp.hpp`) needs, for a cell of
+  /// dimension-`dim` index `i`: which SHAPE it is, and which `MeshView`
+  /// dimension-0 (vertex) local indices are its corners, in
+  /// `cell_simplices.hpp`'s canonical corner order (the MOAB/Exodus
+  /// convention every `CellShape` table already uses) -- because a nodal
+  /// field's degrees of freedom ARE `MeshView` dimension-0 local indices
+  /// (mesh_view.hpp's own field-extent contract), and the weight this
+  /// function's caller computes for corner `k` must land in the sparse
+  /// matrix's column `vertices[k]` for the result to be indexed consistently
+  /// with everything else that reads a nodal field's buffer.
+  ///
+  /// DEFAULT: refuses `E-MESH-NO-CELL-VERTICES`. Most existing `MeshView`s
+  /// have no answer -- a structured serial grid keeps no explicit
+  /// connectivity list at all (its cells are addressed by index arithmetic),
+  /// and a hand-built 1D test double (`ArbitraryLine`,
+  /// `test/backend/operator_conformance_test.cpp`) orders its vertices by
+  /// coordinate rather than storing a corner list. Implemented for
+  /// `fuse::native::NativeMeshView` (its own `CellType`/corner-list storage
+  /// already matches this convention exactly), the structured
+  /// `SerialMeshBackend`'s hexahedral cells (`ix`/`iy`/`iz` arithmetic gives
+  /// the 8 corners directly), and `MoabMeshView` (MOAB's own
+  /// `get_connectivity`, translated through each dimension's existing
+  /// handle<->local-index tables).
+  ///
+  /// Refuses (never throws), beyond the default:
+  ///   * `E-MESH-NO-CELL-VERTICES` -- this entity's cell type has no
+  ///     `CellShape` equivalent (a `Point`, or a general `Polyhedron` whose
+  ///     faces are not a fixed corner list) -- named so a caller can tell
+  ///     "this backend never answers" apart from "this specific cell has no
+  ///     answer", though both are refused the same way today.
+  struct CellVertices {
+    CellShape shape = CellShape::Edge;
+    /// `MeshView` dimension-0 local indices, in `cell_simplices.hpp`'s
+    /// canonical corner order for `shape` -- length `2` for `Edge`, `3` for
+    /// `Triangle`, `4` for `Quad`/`Tet`, `5` for `Pyramid`, `6` for `Prism`,
+    /// `8` for `Hex`; variable (`>= 3`) for `Polygon`.
+    std::vector<std::size_t> vertices;
+  };
+  [[nodiscard]] virtual Result<CellVertices> cell_vertices(int dim,
+                                                           std::size_t i) const {
+    (void)i;
+    return Failure{
+        "E-MESH-NO-CELL-VERTICES",
+        "MeshView::cell_vertices: this view carries no cell-to-vertex "
+        "connectivity at dimension " +
+            std::to_string(dim) +
+            " (the default MeshView implementation always refuses); general "
+            "nodal interpolation needs a concrete backend that overrides it"};
+  }
 };
 
 /// Loads meshes and answers questions about them. Phase 4 provides the serial

@@ -228,6 +228,7 @@ class NativeMeshView final : public MeshView {
   [[nodiscard]] std::size_t global_id(int dim, std::size_t i) const override;
   [[nodiscard]] std::size_t simplex_count(int dim, std::size_t i) const override;
   void simplex_points(int dim, std::size_t i, std::size_t s, Point* out) const override;
+  [[nodiscard]] Result<CellVertices> cell_vertices(int dim, std::size_t i) const override;
 
   // ---- accessors used by migration/partition/IO, beyond MeshView -------
   [[nodiscard]] std::size_t cell_count() const noexcept { return cell_type_.size(); }

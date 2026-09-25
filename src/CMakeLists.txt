@@ -267,6 +267,14 @@ add_library(fuse-coupler-backend
 add_library(fuse::backend ALIAS fuse-coupler-backend)
 target_compile_features(fuse-coupler-backend PUBLIC cxx_std_20)
 target_link_libraries(fuse-coupler-backend PUBLIC fuse::schedule)
+# fuse::search sits BELOW fuse::backend (docs/dev/layering.md), added here by
+# the nodal-remap track: general_interp.hpp (header-only, included from
+# consistent_interp.hpp / intx_weights.cpp) calls fuse::search::element_boxes
+# (template, inline) and fuse::search::BoxIndex (pimpl'd, non-inline methods
+# defined in libfuse-coupler-search) for the broad-phase point-location query
+# a general (non-1D) nodal basis needs. PUBLIC because BoxIndex's symbols must
+# resolve in any executable that links fuse::backend.
+target_link_libraries(fuse-coupler-backend PUBLIC fuse::search)
 # PRIVATE: r3d is the supermesh kernel, used inside backend/supermesh.cpp only.
 # No public header mentions it, so a consumer never needs it on an include path
 # and never links it -- which is what keeps the geometric kernel swappable.
