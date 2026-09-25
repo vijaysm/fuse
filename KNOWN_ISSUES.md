@@ -814,6 +814,38 @@ replay" for that one).
 
 ---
 
+### D10. The conservation check is rank-local, so it refuses instead of checking in parallel — OPEN
+
+`Runner::Impl` checks a conservative channel by summing this rank's owned share
+of the integral. With no cross-rank reduction that number is meaningless on a
+multi-rank placement — it would both false-fire on a correct cross-rank remap
+and miss a real error — so the Runner refuses rather than report it
+(`E-RT-CONSERVATION-MPI`, REVIEW.md N-transport-runtime-1). The refusal is
+right; the missing capability is what matters.
+
+**Found on the critical path 2026-09-25.** Every `parallel.nodal_remap_runner`
+case at 2-5 ranks failed at `initialize` on this refusal, because its
+`wall_force` channel is `.conservative()` and its target is placed on several
+ranks. That fixture now sets `RunnerConfig::check_conservation = false` and
+performs the same conservation statement itself with `MPI_Allreduce` — which is
+exactly the check the Runner is declining to make.
+
+**Why it is not merely cosmetic.** A conservative channel to a multi-rank target
+is the normal case for FSI in parallel, and today every such job must either
+disable the check or place the target on one rank. The interface load is the
+quantity most worth checking.
+
+**What it needs.** The reduction, over the target component's communicator,
+which `Runner::Impl` already holds (it splits one per component from
+`base_communicator`). The integral is a sum over owned entities, so the fix is
+to reduce that sum and compare the totals on every rank, agreeing the verdict
+the way `check_component_agreement` and `agree_on_local_failure` already do —
+a rank-local comparison would reintroduce the disagreement class of defect
+fixed in `27e55a1`. The refusal then applies only where no communicator is
+available.
+
+---
+
 ### D8. A Remap into a nodal field on more than one rank is refused — PARTIALLY LIFTED (round 4): two real correctness defects found by a host MPI run are fixed; a real multi-rank host run is still the final verdict
 
 `E-RT-REMAP-NODAL-PARALLEL` (`resolve_remap`, `src/runtime/runner.cpp`)

@@ -246,6 +246,17 @@ void run_and_check(std::size_t n_beam, std::size_t n_fluid, fuse::RankSet beam_r
   Runner runner{g, lowered.dag, sched.plan, backend};
   RunnerConfig cfg;
   cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
+  // The Runner's own conservation check is RANK-LOCAL by construction: it sums
+  // this rank's owned share of the integral with no cross-rank reduction, so
+  // on a multi-rank placement it refuses rather than report a number it cannot
+  // stand behind (E-RT-CONSERVATION-MPI, REVIEW.md N-transport-runtime-1), and
+  // that refusal is what this fixture hit at 2-5 ranks on a host run. Turning
+  // it off here is not weakening the test: the assertions below compute the
+  // SAME conservation statement across the whole job with MPI_Allreduce, which
+  // is the check the Runner is declining to make. Closing the gap in the
+  // library -- reducing over the target component's communicator, which the
+  // Runner already holds -- would let this line go away; KNOWN_ISSUES.md D10.
+  cfg.check_conservation = false;
   {
     const auto r = runner.initialize(components, registry, cfg);
     ASSERT_TRUE(r.ok()) << "initialize: " << r.error().code << ": " << r.error().message;
