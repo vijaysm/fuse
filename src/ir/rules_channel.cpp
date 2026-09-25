@@ -181,14 +181,7 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
   // and the runtime delivers it -- a peer-wise plan for the ranks that differ,
   // a local copy for the ranks in common.
   const int dst_rank_set = static_cast<int>(g.owner_of(ch.target).value());
-  bool ranks_differ = type.rank_set != dst_rank_set;
-  if (type.rank_set >= 0 && dst_rank_set >= 0) {
-    const RankSet& src_ranks =
-        g.component(ComponentId{static_cast<std::uint32_t>(type.rank_set)}).ranks;
-    const RankSet& dst_ranks =
-        g.component(ComponentId{static_cast<std::uint32_t>(dst_rank_set)}).ranks;
-    ranks_differ = !src_ranks.same_as(dst_ranks);
-  }
+
   // Whether this channel's Remap moves the data between placements ITSELF
   // (fuse/model/remap_kind.hpp). If it does, a Transport in front of it is
   // not redundant but wrong: it delivers the source values onto the target
@@ -197,6 +190,46 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
   const bool remap_moves =
       remap_moves_placement(ch.remap.method_override, g.field(ch.source), g.field(ch.target));
 
+  // The coupler-placement track (design C, plans/2026-09-23-coupler-
+  // placement-and-migration.md): `RemapSpec::remap_on` says WHERE this
+  // channel's Remap runs. THE RULE is one rule, not a second mode: the value
+  // moves source -> C, is remapped on C's decomposition of both meshes, and
+  // (after the Remap block below) moves C -> target, with any hop between
+  // identical placements elided by the same `same_as` test as always.
+  // `C = target` -- `remap_on` invalid, the default -- must reproduce
+  // today's IR exactly, which is why `coupler_rank_set` below degrades to
+  // `dst_rank_set` both when no `remap_on` is declared AND when one is
+  // declared but could never affect this channel's lowering: honouring it
+  // in that case would insert two data moves (source->C, C->target) where a
+  // channel with no coupler needed none, for a setting `validate()`'s
+  // `W-CHANNEL-REMAP-ON-UNUSED` already reports as having no effect.
+  // `could_ever_emit_remap` (fuse/model/remap_kind.hpp) is the exact gate
+  // that warning is keyed on, so the two cannot disagree about which
+  // channels a coupler declaration actually touches.
+  const bool remap_on_declared = ch.remap.remap_on.valid() &&
+                                 ch.remap.remap_on.value() < g.component_count();
+  const bool remap_on_could_matter =
+      remap_on_declared &&
+      could_ever_emit_remap(ch.remap.flags, g.field(ch.source),
+                            g.field(ch.target), ch.remap.method_override);
+  const int coupler_rank_set =
+      remap_on_could_matter ? static_cast<int>(ch.remap.remap_on.value())
+                            : dst_rank_set;
+
+  // `dst_ranks`, not `c_ranks`: kept under its original name so the
+  // pre-existing mutation "lowering-skips-move-on-any-sharing"
+  // (build-evidence/mutations.toml) still anchors on this line. It is the
+  // placement this hop moves data TO, which is `coupler_rank_set` here --
+  // the coupler when one is honoured, the channel's own target otherwise.
+  bool ranks_differ = type.rank_set != coupler_rank_set;
+  if (type.rank_set >= 0 && coupler_rank_set >= 0) {
+    const RankSet& src_ranks =
+        g.component(ComponentId{static_cast<std::uint32_t>(type.rank_set)}).ranks;
+    const RankSet& dst_ranks =
+        g.component(ComponentId{static_cast<std::uint32_t>(coupler_rank_set)}).ranks;
+    ranks_differ = !src_ranks.same_as(dst_ranks);
+  }
+
   if (ranks_differ && remap_moves) {
     // The agreement point still comes first, for the same reason it follows a
     // Transport: the distributed operator is the first place these ranks meet,
@@ -204,15 +237,15 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
     // rather than by its partners blocking inside the operator's gather.
     OpAttrs ea;
     ea.src_rank_set = type.rank_set;
-    ea.dst_rank_set = dst_rank_set;
+    ea.dst_rank_set = coupler_rank_set;
     ea.reason = "before-distributed-remap";
     cur = emit(ctx, OpKind::Epoch, cur, type, ea, cid, base + "/epoch");
   } else if (ranks_differ) {
     ValueType moved = type;
-    moved.rank_set = dst_rank_set;
+    moved.rank_set = coupler_rank_set;
     OpAttrs ta;
     ta.src_rank_set = type.rank_set;
-    ta.dst_rank_set = dst_rank_set;
+    ta.dst_rank_set = coupler_rank_set;
     cur = emit(ctx, OpKind::Transport, cur, moved, ta, cid, base + "/transport");
     type = moved;
 
@@ -243,10 +276,11 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
   if (ch.remap.flags != RemapFlags::None || region_changes || (ranks_differ && remap_moves)) {
     ValueType remapped = type;
     remapped.region = tgt_region;
-    // The distributed operator writes its result on the TARGET placement; the
-    // output type says so, and that is what sizes its buffer
-    // (make_region_sizes reads the arc's rank_set).
-    if (ranks_differ && remap_moves) remapped.rank_set = dst_rank_set;
+    // The distributed operator writes its result on the placement this
+    // channel's Remap runs on -- C, or the target when no coupler is in
+    // play -- and that is what sizes its buffer (make_region_sizes reads
+    // the arc's rank_set).
+    if (ranks_differ && remap_moves) remapped.rank_set = coupler_rank_set;
     cur = emit(ctx, OpKind::Remap, cur, remapped,
                OpAttrs{.remap_flags = ch.remap.flags,
                        .method = ch.remap.method_override},
@@ -256,6 +290,39 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
     // The lag shift needs somewhere to live when no Remap follows.
     cur = emit(ctx, OpKind::Interpolate, cur, type, OpAttrs{.lag = ch.lag}, cid,
                base + "/lag");
+  }
+
+  // 5b. Coupler -> target: the second hop of the coupler-placement rule.
+  // Elided by the same `same_as` test as every other hop, so with `C =
+  // target` (no `remap_on`, or one `could_ever_emit_remap` found unused)
+  // `type.rank_set` already equals `dst_rank_set` and this is a no-op --
+  // today's IR, unchanged. When a real coupler ran the Remap above (or
+  // moved the value there via Transport in step 4, with no Remap
+  // following), this is what actually delivers the result to the channel's
+  // own target placement; `insert_derived_ops` below runs on the delivered
+  // value, so Constrain's two conservation integrals stay on the channel's
+  // source and target -- never on the coupler, which owns no state to
+  // integrate.
+  if (type.rank_set >= 0 && type.rank_set != dst_rank_set) {
+    const RankSet& cur_ranks =
+        g.component(ComponentId{static_cast<std::uint32_t>(type.rank_set)}).ranks;
+    const RankSet& dst_ranks =
+        g.component(ComponentId{static_cast<std::uint32_t>(dst_rank_set)}).ranks;
+    if (!cur_ranks.same_as(dst_ranks)) {
+      ValueType moved = type;
+      moved.rank_set = dst_rank_set;
+      OpAttrs ta;
+      ta.src_rank_set = type.rank_set;
+      ta.dst_rank_set = dst_rank_set;
+      cur = emit(ctx, OpKind::Transport, cur, moved, ta, cid,
+                 base + "/transport_to_target");
+      type = moved;
+      OpAttrs ea;
+      ea.src_rank_set = ta.src_rank_set;
+      ea.dst_rank_set = ta.dst_rank_set;
+      ea.reason = "after-coupler-transport";
+      cur = emit(ctx, OpKind::Epoch, cur, type, ea, cid, base + "/epoch_to_target");
+    }
   }
 
   // insert_derived_ops (Constrain, Diagnose) reads/writes through

@@ -121,3 +121,39 @@ old = "    const Rational len = *scope.explicit_interval;"
 new = "    const Rational len = Rational{1};"
 target = "fuse_schedule_window_scope_test"
 test = "schedule.window_scope"
+
+# The coupler-placement track (design C, docs/dev/coupler-placement.md).
+# Both rows below are Tier 0 -- no MPI needed, since the shapes they break
+# are visible from the DAG a single lowering call produces.
+
+[[mutation]]
+id = "coupler-remap-placement-ignored"
+area = "compiler"
+describes = "the coupler-placement rule's whole effect on where a channel's Remap runs is dropped: coupler_rank_set always falls back to the target's own component, so a channel that declares remap_on is lowered exactly as if it had not -- the value moves source -> target directly (at most one Transport+Epoch pair) and the Remap's placement is always the target's, never a declared coupler's"
+file = "src/ir/rules_channel.cpp"
+old = "      remap_on_could_matter ? static_cast<int>(ch.remap.remap_on.value())\n                            : dst_rank_set;"
+new = "      dst_rank_set;  // MUTATED: remap_on_could_matter never consulted"
+target = "fuse_ir_lowering_channel_test"
+test = "ir.lowering_channel"
+# Expected kill: CouplerLowering.DisjointCouplerGetsTwoDataMovesAndOneRemap
+# (transports drop from 2 to 1, remap_in_rs/remap_out_rs read as the
+# target's component id instead of the coupler's) and
+# CouplerLowering.RemapOnSourceRunsRemapOnSourceRanksThenTransportsToTarget
+# (the remap's placement would read as the target's, not the source's).
+
+[[mutation]]
+id = "coupler-second-hop-not-elided-when-same-as"
+area = "compiler"
+describes = "the coupler -> target hop's same_as elision is removed: every coupler-routed channel gets a second Transport+Epoch pair even when the coupler's ranks are identical to the target's own (a distinct ComponentId sharing the target's RankSet), which ACouplerColocatedWithTargetStillIdentifiesAsItsOwnPlacement pins as a no-op move"
+file = "src/ir/rules_channel.cpp"
+old = "    if (!cur_ranks.same_as(dst_ranks)) {"
+new = "    if (true) {  // MUTATED: same_as elision removed"
+target = "fuse_ir_lowering_channel_test"
+test = "ir.lowering_channel"
+# Expected kill: CouplerLowering.ACouplerColocatedWithTargetStillIdentifiesAsItsOwnPlacement
+# (transport_hops.size() becomes 2, not 1) and
+# CouplerLowering.CouplerEqualToTargetReproducesTodaysIRExactly stays green
+# only by coincidence (its own C IS the target's id, so this guard's outer
+# condition `type.rank_set != dst_rank_set` is false and this line is never
+# reached there) -- the colocated-but-distinct-identity test is the one
+# that actually exercises this line.

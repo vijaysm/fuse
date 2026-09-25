@@ -3,6 +3,7 @@
 #include <fuse/ir/dump.hpp>
 #include <fuse/ir/lowering.hpp>
 
+#include <utility>
 #include <vector>
 
 using fuse::AccumOp;
@@ -425,5 +426,239 @@ TEST(LoweringChannel, AConsistentRemapOnOnePlacementNeedsNoMoveAndChangesNothing
   EXPECT_EQ(s.transports, 0u);
   EXPECT_EQ(s.epochs, 0u);
   EXPECT_EQ(s.remap_in_rs, s.remap_out_rs);
+}
+
+// ---- coupler placement (design C, plans/2026-09-23-coupler-placement-and-
+// migration.md): THE RULE is source -> C -> target, remap on C's
+// decomposition of both meshes, any hop between identical placements elided
+// by the same `same_as` test as every other hop. -------------------------
+
+namespace {
+
+struct CouplerPair {
+  fuse::CouplingGraph g;
+  fuse::ComponentId   src_c, dst_c, coupler_c;
+  fuse::ChannelId     ch;
+};
+
+/// src -[remap_on coupler]-> dst, three independent placements, one
+/// channel. Different mesh regions by default (the ordinary coupling
+/// shape), so a Remap is always emitted regardless of flags.
+CouplerPair make_coupler_pair(fuse::RankSet src_ranks, fuse::RankSet dst_ranks,
+                              fuse::RankSet coupler_ranks,
+                              const char* method = "",
+                              bool nodal_source = false) {
+  using namespace fuse;
+  CouplerPair p;
+  auto& g = p.g;
+  const auto m_src = g.add_mesh({.name = "ms"});
+  const auto m_dst = g.add_mesh({.name = "md"});
+  const auto r_src = g.add_region({.name = "rs", .mesh = m_src, .dimension = 1});
+  const auto r_dst = g.add_region({.name = "rd", .mesh = m_dst, .dimension = 1});
+  p.src_c = g.add_component({.name = "src", .ranks = std::move(src_ranks),
+                             .interval = Rational{1}});
+  p.dst_c = g.add_component({.name = "dst", .ranks = std::move(dst_ranks),
+                             .interval = Rational{1}});
+  p.coupler_c = g.add_coupler({.name = "C", .ranks = std::move(coupler_ranks)});
+  FieldSpec fs{.name = "q", .region = r_src, .intent = Intent::Provides};
+  FieldSpec ft{.name = "q", .region = r_dst, .intent = Intent::Requires};
+  if (*method) {
+    if (nodal_source) { fs.disc = Discretization::ContinuousGLL; fs.order = 1; }
+    else              { ft.disc = Discretization::ContinuousGLL; ft.order = 1; }
+  }
+  const auto out = g.add_field(p.src_c, fs);
+  const auto in  = g.add_field(p.dst_c, ft);
+  p.ch = g.add_channel("q", out, in);
+  auto b = g.channel(p.ch).remap_on(p.coupler_c);
+  if (*method) b.remap_method(method);
+  return p;
+}
+
+struct CouplerShape {
+  std::size_t transports = 0, epochs = 0, remaps = 0;
+  int remap_in_rs = -2, remap_out_rs = -2;
+  std::vector<std::pair<int, int>> transport_hops;  // (src_rank_set, dst_rank_set), in order
+};
+
+CouplerShape coupler_shape_of(const fuse::CouplingGraph& g) {
+  const auto lowered = fuse::lower(g, {});
+  CouplerShape s;
+  for (const fuse::NodeId n : lowered.dag.topological_order()) {
+    const auto& node = lowered.dag.node(n);
+    if (node.kind == fuse::OpKind::Transport) {
+      ++s.transports;
+      s.transport_hops.emplace_back(node.attrs.src_rank_set, node.attrs.dst_rank_set);
+    }
+    if (node.kind == fuse::OpKind::Epoch) ++s.epochs;
+    if (node.kind == fuse::OpKind::Remap) {
+      ++s.remaps;
+      s.remap_in_rs  = lowered.dag.arc(node.inputs.front()).type.rank_set;
+      s.remap_out_rs = lowered.dag.arc(node.output).type.rank_set;
+    }
+  }
+  return s;
+}
+
+}  // namespace
+
+TEST(CouplerLowering, DisjointCouplerGetsTwoDataMovesAndOneRemap) {
+  const CouplerPair p = make_coupler_pair(fuse::RankSet{0, 2}, fuse::RankSet{4, 2},
+                                          fuse::RankSet{8, 1});
+  ASSERT_TRUE(fuse::lower(p.g).ok());
+  const CouplerShape s = coupler_shape_of(p.g);
+  EXPECT_EQ(s.transports, 2u);
+  EXPECT_EQ(s.epochs, 2u);
+  EXPECT_EQ(s.remaps, 1u);
+  // rank-local remap: no placement move OF ITS OWN, so it runs entirely on
+  // the coupler's ranks, on both sides.
+  EXPECT_EQ(s.remap_in_rs, static_cast<int>(p.coupler_c.value()));
+  EXPECT_EQ(s.remap_out_rs, static_cast<int>(p.coupler_c.value()));
+  ASSERT_EQ(s.transport_hops.size(), 2u);
+  EXPECT_EQ(s.transport_hops[0],
+            std::make_pair(static_cast<int>(p.src_c.value()),
+                           static_cast<int>(p.coupler_c.value())));
+  EXPECT_EQ(s.transport_hops[1],
+            std::make_pair(static_cast<int>(p.coupler_c.value()),
+                           static_cast<int>(p.dst_c.value())));
+}
+
+TEST(CouplerLowering, CouplerEqualToTargetReproducesTodaysIRExactly) {
+  // "C = target" means the SAME ComponentId, not merely a same_as RankSet:
+  // a distinct Coupler-kind component whose ranks happen to coincide with
+  // the target's is still its own placement identity (per-placement
+  // weights are keyed by ComponentId, not by RankSet content -- commit
+  // a3fb10a), and legitimately elides only the data move, not the Remap's
+  // placement. So this graph declares NO separate coupler at all;
+  // `remap_on` names the channel's own target component directly, which
+  // `validate()`'s E-CHANNEL-REMAP-ON also accepts.
+  using namespace fuse;
+  CouplingGraph g;
+  const auto m_src = g.add_mesh({.name = "ms"});
+  const auto m_dst = g.add_mesh({.name = "md"});
+  const auto r_src = g.add_region({.name = "rs", .mesh = m_src, .dimension = 1});
+  const auto r_dst = g.add_region({.name = "rd", .mesh = m_dst, .dimension = 1});
+  const auto src_c = g.add_component({.name = "src", .ranks = RankSet{0, 2},
+                                      .interval = Rational{1}});
+  const auto dst_c = g.add_component({.name = "dst", .ranks = RankSet{4, 2},
+                                      .interval = Rational{1}});
+  const auto out = g.add_field(src_c, FieldSpec{.name = "q", .region = r_src,
+                                                .intent = Intent::Provides});
+  const auto in = g.add_field(dst_c, FieldSpec{.name = "q", .region = r_dst,
+                                               .intent = Intent::Requires});
+  const auto ch = g.add_channel("q", out, in);
+  const auto lowered_plain = lower(g);
+  ASSERT_TRUE(lowered_plain.ok()) << lowered_plain.diags.to_string();
+
+  g.channel(ch).remap_on(dst_c);
+  const auto lowered_with = lower(g);
+  ASSERT_TRUE(lowered_with.ok()) << lowered_with.diags.to_string();
+
+  EXPECT_EQ(dump_text(lowered_with.dag), dump_text(lowered_plain.dag))
+      << "C = target's own component id must reproduce today's IR byte for byte";
+}
+
+TEST(CouplerLowering, ACouplerColocatedWithTargetStillIdentifiesAsItsOwnPlacement) {
+  // The edge case CouplerEqualToTargetReproducesTodaysIRExactly's comment
+  // names: a genuinely separate coupler whose RankSet happens to equal the
+  // target's. same_as elides the SECOND data move (nothing to move), but
+  // the Remap still runs under the coupler's OWN ComponentId, not the
+  // target's -- placed_view() and per-placement weights key on identity,
+  // not on rank-set content, so a coupler is not "the same placement" as a
+  // same-ranks target just because no bytes need to move between them.
+  const CouplerPair p = make_coupler_pair(fuse::RankSet{0, 2}, fuse::RankSet{4, 2},
+                                          fuse::RankSet{4, 2});  // C's ranks == dst's
+  ASSERT_TRUE(fuse::lower(p.g).ok());
+  const CouplerShape s = coupler_shape_of(p.g);
+  ASSERT_EQ(s.transport_hops.size(), 1u)
+      << "only the first hop moves data; C -> target is same_as and elided";
+  EXPECT_EQ(s.transport_hops[0],
+            std::make_pair(static_cast<int>(p.src_c.value()),
+                           static_cast<int>(p.coupler_c.value())));
+  EXPECT_EQ(s.remap_in_rs, static_cast<int>(p.coupler_c.value()));
+  EXPECT_EQ(s.remap_out_rs, static_cast<int>(p.coupler_c.value()))
+      << "the coupler's own identity, even though it shares the target's ranks";
+}
+
+TEST(CouplerLowering, RemapOnSourceRunsRemapOnSourceRanksThenTransportsToTarget) {
+  const CouplerPair p = make_coupler_pair(fuse::RankSet{0, 2}, fuse::RankSet{4, 2},
+                                          fuse::RankSet{0, 2});  // C == src
+  ASSERT_TRUE(fuse::lower(p.g).ok());
+  const CouplerShape s = coupler_shape_of(p.g);
+  // The first hop (source -> C) is elided: C IS the source's placement.
+  ASSERT_EQ(s.transport_hops.size(), 1u);
+  EXPECT_EQ(s.transport_hops[0],
+            std::make_pair(static_cast<int>(p.src_c.value()),
+                           static_cast<int>(p.dst_c.value())))
+      << "the only move left is C (== source) -> target";
+  EXPECT_EQ(s.remaps, 1u);
+  EXPECT_EQ(s.remap_in_rs, static_cast<int>(p.src_c.value()))
+      << "the Remap ran on the source's own decomposition, before any move";
+  EXPECT_EQ(s.remap_out_rs, static_cast<int>(p.src_c.value()));
+}
+
+TEST(CouplerLowering, PartiallyOverlappingCouplerStillGetsBothMoves) {
+  // C shares rank 2 with src, but is not IDENTICAL to it -- same_as is
+  // false, so the first hop is a real move, mirroring
+  // LoweringChannel.PartiallySharedPlacementsStillNeedADataMove.
+  const CouplerPair p = make_coupler_pair(
+      fuse::RankSet{std::vector<int>{0, 1, 2}}, fuse::RankSet{5, 1},
+      fuse::RankSet{std::vector<int>{2, 3}});
+  ASSERT_TRUE(fuse::lower(p.g).ok());
+  const CouplerShape s = coupler_shape_of(p.g);
+  EXPECT_EQ(s.transports, 2u);
+  EXPECT_EQ(s.epochs, 2u);
+}
+
+TEST(CouplerLowering, AConsistentRemapWithACouplerMovesToCThenTransportsToTarget) {
+  // The distributed operator IS the source->C move (fuse/model/remap_kind.hpp);
+  // the design's second hop, C->target, still needs an ordinary Transport.
+  const CouplerPair p = make_coupler_pair(fuse::RankSet{0, 2}, fuse::RankSet{4, 2},
+                                          fuse::RankSet{8, 1}, "consistent",
+                                          /*nodal_source=*/true);
+  ASSERT_TRUE(fuse::lower(p.g).ok());
+  const CouplerShape s = coupler_shape_of(p.g);
+  EXPECT_EQ(s.remaps, 1u);
+  EXPECT_EQ(s.remap_in_rs, static_cast<int>(p.src_c.value()))
+      << "the distributed operator reads on the source placement";
+  EXPECT_EQ(s.remap_out_rs, static_cast<int>(p.coupler_c.value()))
+      << "and writes on the coupler placement, moving the data itself";
+  ASSERT_EQ(s.transport_hops.size(), 1u)
+      << "only the second hop (C -> target) is an ordinary Transport";
+  EXPECT_EQ(s.transport_hops[0],
+            std::make_pair(static_cast<int>(p.coupler_c.value()),
+                           static_cast<int>(p.dst_c.value())));
+  EXPECT_EQ(s.epochs, 2u) << "before-distributed-remap, then after-coupler-transport";
+}
+
+TEST(CouplerLowering, RemapOnUnusedWhenChannelWouldNeverRemapReproducesNoCouplerIR) {
+  // Same region on both sides (so no region-driven Remap), no flags, and a
+  // non-moving method: could_ever_emit_remap is false, so remap_on must be
+  // ignored entirely -- one plain Transport straight from source to target,
+  // not source->C->target.
+  using namespace fuse;
+  CouplingGraph g;
+  const auto mesh = g.add_mesh({.name = "m"});
+  const auto reg  = g.add_region({.name = "r", .mesh = mesh, .dimension = 1});
+  const auto src_c = g.add_component({.name = "src", .ranks = RankSet{0, 2},
+                                      .interval = Rational{1}});
+  const auto dst_c = g.add_component({.name = "dst", .ranks = RankSet{4, 2},
+                                      .interval = Rational{1}});
+  const auto coupler = g.add_coupler({.name = "C", .ranks = RankSet{8, 1}});
+  const auto out = g.add_field(src_c, FieldSpec{.name = "q", .region = reg,
+                                                .intent = Intent::Provides});
+  const auto in  = g.add_field(dst_c, FieldSpec{.name = "q", .region = reg,
+                                                .intent = Intent::Requires});
+  const auto ch = g.add_channel("q", out, in);
+  g.channel(ch).remap_on(coupler);
+  const auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+
+  CouplerShape s = coupler_shape_of(g);
+  EXPECT_EQ(s.remaps, 0u);
+  ASSERT_EQ(s.transport_hops.size(), 1u)
+      << "remap_on has no effect here: exactly the no-coupler shape";
+  EXPECT_EQ(s.transport_hops[0],
+            std::make_pair(static_cast<int>(src_c.value()),
+                           static_cast<int>(dst_c.value())));
 }
 
