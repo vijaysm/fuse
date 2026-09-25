@@ -39,6 +39,7 @@
 #include <fuse/backend/consistent_interp.hpp>
 #include <fuse/backend/remap_plan.hpp>
 #include <fuse/runtime/runner.hpp>
+#include <fuse/transport/transport.hpp>
 
 #include <cmath>
 #include <cstddef>
@@ -253,6 +254,18 @@ void run_and_check(std::size_t n_beam, std::size_t n_fluid, fuse::RankSet beam_r
   Runner runner{g, lowered.dag, sched.plan, backend};
   RunnerConfig cfg;
   cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
+  // A placement that spans ranks needs a CommGraph-backed Transport, and the
+  // Runner refuses to build one on the default 'copy' backend
+  // (E-RT-TRANSPORT) -- which is what every cross-rank case of this fixture
+  // hit on the host once the earlier refusals were out of the way. Same
+  // convention as runner_transport_test.cpp's mpi_comm_setup(): name the
+  // backend, and hand the transport its communicator when it is created.
+  cfg.transport = "mpi";
+  cfg.transport_setup = [](fuse::Transport& tr) -> fuse::Result<void> {
+    auto* mpi = dynamic_cast<fuse::MpiTransport*>(&tr);
+    if (mpi == nullptr) return fuse::Failure{"E-TEST", "expected an MpiTransport"};
+    return mpi->set_communicator(MPI_Comm_c2f(MPI_COMM_WORLD));
+  };
   // check_conservation stays at its default (ON). The Runner's Constrain
   // reduces both integrals over the base communicator (KNOWN_ISSUES.md D10,
   // 2026-09-25) -- before that it refused a multi-rank target
