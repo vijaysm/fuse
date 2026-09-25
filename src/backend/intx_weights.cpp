@@ -94,7 +94,7 @@ struct SupermeshSide {
 
 [[nodiscard]] Result<SupermeshSide> supermesh_side(const CouplingGraph& graph,
                                                     const MeshBackend& backend,
-                                                    RegionId id,
+                                                    RegionId id, ComponentId placement,
                                                     const char* which) {
   if (!id.valid() || id.value() >= graph.region_count()) {
     return Failure{"E-REMAP-REGION",
@@ -118,7 +118,9 @@ struct SupermeshSide {
   }
   const auto mid = backend.mesh_id(graph.mesh(r.mesh).name);
   if (!mid.ok()) return mid.error();
-  const auto view = backend.view(mid.value());
+  // The placement's OWN decomposition (RemapPlan::placement); the default
+  // view when the backend does not distinguish placements.
+  const auto view = backend.placed_view(mid.value(), placement);
   if (!view.ok()) return view.error();
   SupermeshSide s;
   s.view = view.value();
@@ -151,9 +153,9 @@ struct SupermeshSide {
             "it against a MOAB mesh pair in a build configured with "
             "-DFUSE_ENABLE_MOAB=ON against a MOAB built with TempestRemap."};
   }
-  auto s = supermesh_side(graph, backend, plan.src, "source");
+  auto s = supermesh_side(graph, backend, plan.src, plan.placement, "source");
   if (!s.ok()) return s.error();
-  auto d = supermesh_side(graph, backend, plan.tgt, "target");
+  auto d = supermesh_side(graph, backend, plan.tgt, plan.placement, "target");
   if (!d.ok()) return d.error();
   if (s.value().dim != d.value().dim) {
     return Failure{"E-REMAP-DIM",
@@ -528,7 +530,7 @@ template <class T>
 
 [[nodiscard]] Result<Side> resolve(const CouplingGraph& graph,
                                    const MeshBackend& backend, RegionId id,
-                                   const char* which) {
+                                   ComponentId placement, const char* which) {
   if (!id.valid() || id.value() >= graph.region_count()) {
     return Failure{"E-REMAP-REGION",
                  std::string(which) + " region id " +
@@ -578,7 +580,11 @@ template <class T>
   const auto mid = moab_backend->mesh_id(graph.mesh(r.mesh).name);
   if (!mid.ok()) return mid.error();
 
-  const auto view = moab_backend->view(mid.value());
+  // MoabMeshBackend gives every placement the default decomposition today
+  // (one ParallelComm per backend, KNOWN_ISSUES D5's MOAB half); routing
+  // through placed_view here is what makes that a MOAB change and not a
+  // builder change when it lands.
+  const auto view = moab_backend->placed_view(mid.value(), placement);
   if (!view.ok()) return view.error();
   const auto native = moab_backend->native_mesh(mid.value());
   if (!native.ok()) return native.error();
@@ -1859,9 +1865,9 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan,
                      backend.name() + "' backend"};
   }
 
-  auto src = resolve(graph, backend, plan.src, "source");
+  auto src = resolve(graph, backend, plan.src, plan.placement, "source");
   if (!src.ok()) return src.error();
-  auto tgt = resolve(graph, backend, plan.tgt, "target");
+  auto tgt = resolve(graph, backend, plan.tgt, plan.placement, "target");
   if (!tgt.ok()) return tgt.error();
   Side& a = src.value();
   Side& b = tgt.value();
@@ -2161,9 +2167,9 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
                      ")."};
   }
 
-  auto src = resolve(graph, backend, plan.src, "source");
+  auto src = resolve(graph, backend, plan.src, plan.placement, "source");
   if (!src.ok()) return src.error();
-  auto tgt = resolve(graph, backend, plan.tgt, "target");
+  auto tgt = resolve(graph, backend, plan.tgt, plan.placement, "target");
   if (!tgt.ok()) return tgt.error();
   Side& a = src.value();
   Side& b = tgt.value();

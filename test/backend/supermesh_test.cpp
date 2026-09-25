@@ -5,7 +5,9 @@
 
 #include "fuse/backend/supermesh.hpp"
 
+#include <algorithm>
 #include <array>
+#include <map>
 #include <memory>
 #include <string>
 #include <cmath>
@@ -865,3 +867,122 @@ TEST(Supermesh, BuildWeightsReachesTheSupermeshPathForANonMoabBackend) {
   EXPECT_EQ(direct.value().n_rows, oracle.value().n_rows);
   EXPECT_EQ(direct.value().n_cols, oracle.value().n_cols);
 }
+
+// ---- weights follow the PLACEMENT's decomposition (KNOWN_ISSUES D5) -------
+
+namespace {
+
+/// The same mesh with its local cell numbering reversed: cell i here is cell
+/// n-1-i of the wrapped view. A different decomposition of identical
+/// geometry, which is exactly what a per-placement backend hands out, and
+/// the one for which "weights built on the default view" is measurably wrong:
+/// they would put source cell 0's mass into target cell 0, and here target
+/// cell 0 is the OTHER end of the line.
+class ReversedView final : public fuse::MeshView {
+ public:
+  explicit ReversedView(const fuse::MeshView& inner) : inner_(inner) {}
+  [[nodiscard]] int dimension() const override { return inner_.dimension(); }
+  [[nodiscard]] std::size_t entity_count(int d) const override { return inner_.entity_count(d); }
+  [[nodiscard]] std::size_t owned_count(int d) const override { return inner_.owned_count(d); }
+  [[nodiscard]] bool is_owned(int d, std::size_t i) const override { return inner_.is_owned(d, r(d, i)); }
+  [[nodiscard]] fuse::Point centroid(int d, std::size_t i) const override { return inner_.centroid(d, r(d, i)); }
+  [[nodiscard]] double measure(int d, std::size_t i) const override { return inner_.measure(d, r(d, i)); }
+  [[nodiscard]] std::size_t global_id(int d, std::size_t i) const override { return inner_.global_id(d, r(d, i)); }
+  [[nodiscard]] std::size_t simplex_count(int d, std::size_t i) const override { return inner_.simplex_count(d, r(d, i)); }
+  void simplex_points(int d, std::size_t i, std::size_t s, fuse::Point* out) const override {
+    inner_.simplex_points(d, r(d, i), s, out);
+  }
+ private:
+  [[nodiscard]] std::size_t r(int d, std::size_t i) const { return inner_.entity_count(d) - 1 - i; }
+  const fuse::MeshView& inner_;
+};
+
+/// Default view for the default placement; the reversed one for component 1.
+class PerPlacementBackend final : public fuse::MeshBackend {
+ public:
+  PerPlacementBackend(const fuse::SerialMeshBackend& inner, fuse::MeshId target)
+      : inner_(inner), target_(target) {}
+  fuse::Result<void> load(const fuse::MeshDecl&) override { return fuse::Failure{"E-TEST", "not loadable"}; }
+  [[nodiscard]] fuse::Result<fuse::MeshId> mesh_id(std::string_view n) const override { return inner_.mesh_id(n); }
+  [[nodiscard]] fuse::Result<const fuse::MeshView*> view(fuse::MeshId id) const override { return inner_.view(id); }
+  [[nodiscard]] fuse::Result<std::size_t> region_size(const fuse::Region& rg) const override { return inner_.region_size(rg); }
+  /// Placement 1 numbers the TARGET mesh backwards and the source as the
+  /// default. Only one side on purpose: reversing both is a mirror symmetry
+  /// of a uniform line pair and leaves the matrix unchanged (the first draft
+  /// of this test did that, and its own "the two matrices coincide" guard
+  /// caught it). A decomposition need not treat every mesh alike.
+  [[nodiscard]] fuse::Result<const fuse::MeshView*> placed_view(fuse::MeshId id, fuse::ComponentId who) const override {
+    if (!who.valid() || who.value() != 1 || id.value() != target_.value()) return inner_.view(id);
+    auto it = reversed_.find(id.value());
+    if (it == reversed_.end()) {
+      const auto v = inner_.view(id);
+      if (!v.ok()) return v.error();
+      it = reversed_.emplace(id.value(), std::make_unique<ReversedView>(*v.value())).first;
+    }
+    return it->second.get();
+  }
+  [[nodiscard]] std::string name() const override { return "per-placement"; }
+ private:
+  const fuse::SerialMeshBackend& inner_;
+  fuse::MeshId target_;
+  mutable std::map<std::uint32_t, std::unique_ptr<ReversedView>> reversed_;
+};
+
+/// Dense form of a RemapWeights, for permutation comparisons.
+std::vector<double> dense(const fuse::RemapWeights& w) {
+  std::vector<double> m(w.n_rows * w.n_cols, 0.0);
+  for (std::size_t k = 0; k < w.val.size(); ++k) {
+    m[static_cast<std::size_t>(w.row[k]) * w.n_cols + static_cast<std::size_t>(w.col[k])] += w.val[k];
+  }
+  return m;
+}
+
+}  // namespace
+
+TEST(Supermesh, WeightsAreBuiltOnThePlacementsOwnDecomposition) {
+  fuse::SerialMeshBackend inner;
+  ASSERT_TRUE(inner.load({.name = "s", .source = "generated:line:8"}).ok());
+  ASSERT_TRUE(inner.load({.name = "t", .source = "generated:line:3"}).ok());
+  const auto tid = inner.mesh_id("t");
+  ASSERT_TRUE(tid.ok());
+  const PerPlacementBackend backend{inner, tid.value()};
+
+  fuse::CouplingGraph graph;
+  const auto smid = graph.add_mesh({.name = "s", .source = "generated:line:8"});
+  const auto tmid = graph.add_mesh({.name = "t", .source = "generated:line:3"});
+  const auto srid = graph.add_region({.name = "s_all", .mesh = smid, .dimension = 1});
+  const auto trid = graph.add_region({.name = "t_all", .mesh = tmid, .dimension = 1});
+
+  fuse::RemapPlan plan;
+  plan.src = srid;
+  plan.tgt = trid;
+  const auto dflt = fuse::build_weights(plan, graph, backend);
+  ASSERT_TRUE(dflt.ok()) << dflt.error().code << ": " << dflt.error().message;
+
+  const std::string default_key = plan.key();
+  plan.placement = fuse::ComponentId{1};
+  EXPECT_NE(plan.key(), default_key) << "two placements must never share a cache entry";
+  const auto placed = fuse::build_weights(plan, graph, backend);
+  ASSERT_TRUE(placed.ok()) << placed.error().code << ": " << placed.error().message;
+
+  // With the target numbered backwards, the placed matrix is the default one
+  // with its ROWS reversed. 8 onto 3 is not a divisor pair, so the rows are
+  // not palindromic and the row-reversed matrix differs from the original.
+  const auto D = dense(dflt.value());
+  const auto P = dense(placed.value());
+  ASSERT_EQ(D.size(), P.size());
+  const std::size_t R = dflt.value().n_rows, C = dflt.value().n_cols;
+  double max_perm = 0.0, max_same = 0.0;
+  for (std::size_t i = 0; i < R; ++i) {
+    for (std::size_t j = 0; j < C; ++j) {
+      max_perm = std::max(max_perm, std::abs(P[i * C + j] - D[(R - 1 - i) * C + j]));
+      max_same = std::max(max_same, std::abs(P[i * C + j] - D[i * C + j]));
+    }
+  }
+  // Exact: the two builds see the same simplices in a different order, and
+  // every entry is one overlap length divided by one target measure.
+  EXPECT_EQ(max_perm, 0.0) << "the placed weights are not the row-reversed default ones";
+  EXPECT_GT(max_same, 0.1) << "the two matrices coincide, so the test cannot tell whether the "
+                              "placement was honoured -- choose a less symmetric pair";
+}
+

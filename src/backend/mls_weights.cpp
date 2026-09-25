@@ -79,8 +79,8 @@ struct MlsSide {
 
 [[nodiscard]] Result<MlsSide> resolve_mls_side(const CouplingGraph& graph,
                                                const MeshBackend& backend, RegionId id,
-                                               Discretization disc, int order,
-                                               const char* which) {
+                                               ComponentId placement, Discretization disc,
+                                               int order, const char* which) {
   if (!id.valid() || id.value() >= graph.region_count()) {
     return Failure{"E-MLS-REGION",
                    fmt::format("{} region id {} is not one of the graph's {} regions", which,
@@ -101,7 +101,7 @@ struct MlsSide {
   }
   const auto mid = backend.mesh_id(graph.mesh(r.mesh).name);
   if (!mid.ok()) return mid.error();
-  const auto view_r = backend.view(mid.value());
+  const auto view_r = backend.placed_view(mid.value(), placement);
   if (!view_r.ok()) return view_r.error();
 
   MlsSide s;
@@ -378,10 +378,12 @@ Result<RemapWeights> build_mls_weights(const RemapPlan& plan, const CouplingGrap
   }
 
   const auto src_r =
-      resolve_mls_side(graph, backend, plan.src, plan.src_disc, plan.src_order, "source");
+      resolve_mls_side(graph, backend, plan.src, plan.placement, plan.src_disc, plan.src_order,
+                       "source");
   if (!src_r.ok()) return src_r.error();
   const auto tgt_r =
-      resolve_mls_side(graph, backend, plan.tgt, plan.tgt_disc, plan.tgt_order, "target");
+      resolve_mls_side(graph, backend, plan.tgt, plan.placement, plan.tgt_disc, plan.tgt_order,
+                       "target");
   if (!tgt_r.ok()) return tgt_r.error();
   const MlsSide& src = src_r.value();
   const MlsSide& tgt = tgt_r.value();

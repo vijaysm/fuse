@@ -221,6 +221,18 @@ struct RemapPlan {
   std::string    method;
   TemporalBasis  temporal = TemporalBasis::None;
   int            temporal_degree = 0;
+  /// The component whose decomposition of BOTH meshes the weights index.
+  /// Weights are a matrix over MeshView local indices, so they are only
+  /// meaningful against the views they were built from; a backend that
+  /// gives each placement its own decomposition (`MeshBackend::placed_view`)
+  /// returns a different local numbering per component, and weights built
+  /// on the default view would index the wrong entities -- plausible numbers,
+  /// no diagnostic (that was the E-RT-REMAP-PLACEMENT refusal, KNOWN_ISSUES
+  /// D5, closed 2026-09-25). Every builder resolves its sides through
+  /// `placed_view(id, placement)`; invalid means the default decomposition,
+  /// which is what `placed_view`'s default implementation returns anyway.
+  /// Part of `key()`: the same plan on two placements is two matrices.
+  ComponentId    placement{};
 
   friend bool operator==(const RemapPlan&, const RemapPlan&) = default;
 
@@ -237,7 +249,8 @@ struct RemapPlan {
            to_cstring(tgt_disc) + std::to_string(tgt_order) + "/" +
            std::to_string(static_cast<std::uint32_t>(flags)) + "/" +
            std::to_string(method.size()) + ":" + method + "/" +
-           to_cstring(temporal) + std::to_string(temporal_degree);
+           to_cstring(temporal) + std::to_string(temporal_degree) + "@" +
+           (placement.valid() ? std::to_string(placement.value()) : std::string{"-"});
   }
 };
 

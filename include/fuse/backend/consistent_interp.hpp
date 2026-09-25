@@ -412,7 +412,8 @@ struct Side {
 
 [[nodiscard]] inline Result<Side> resolve_side(const CouplingGraph& graph,
                                                const MeshBackend& backend,
-                                               RegionId id, const char* which) {
+                                               RegionId id, ComponentId placement,
+                                               const char* which) {
   if (!id.valid() || id.value() >= graph.region_count()) {
     return Failure{"E-INTERP-REGION",
                    fmt::format("{} region id {} is not one of the graph's {} "
@@ -437,7 +438,7 @@ struct Side {
   }
   const auto mid = backend.mesh_id(graph.mesh(r.mesh).name);
   if (!mid.ok()) return mid.error();
-  const auto view = backend.view(mid.value());
+  const auto view = backend.placed_view(mid.value(), placement);
   if (!view.ok()) return view.error();
   Side s;
   s.view = view.value();
@@ -472,9 +473,9 @@ struct Side {
   using consistent_interp_detail::is_nodal;
   using consistent_interp_detail::resolve_side;
 
-  auto src = resolve_side(graph, backend, plan.src, "source");
+  auto src = resolve_side(graph, backend, plan.src, plan.placement, "source");
   if (!src.ok()) return src.error();
-  auto tgt = resolve_side(graph, backend, plan.tgt, "target");
+  auto tgt = resolve_side(graph, backend, plan.tgt, plan.placement, "target");
   if (!tgt.ok()) return tgt.error();
 
   if (plan.method == "consistent") {

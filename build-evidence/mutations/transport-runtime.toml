@@ -140,13 +140,13 @@ requires = "mpi"
 
 [[mutation]]
 id = "remap-ignores-the-placement-decomposition"
-area = "runtime"
-describes = "KNOWN_ISSUES D5: build_weights() reads each mesh's DEFAULT decomposition, so a Remap on a placement whose decomposition differs must refuse (E-RT-REMAP-PLACEMENT) rather than apply weights that index the wrong entities. Removing the check lets it through."
-file = "src/runtime/runner.cpp"
-old = "    if (placed.ok() && dflt.ok() && placed.value() != dflt.value()) {"
-new = "    if (false) {"
-target = "fuse_runtime_runner_test"
-test = "runtime.runner"
+area = "backend"
+describes = "KNOWN_ISSUES D5, the defect the retired E-RT-REMAP-PLACEMENT refusal stood in front of: the supermesh builder resolving a side from the mesh's DEFAULT view instead of the placement's. Weights then index the wrong local entities on any backend that decomposes per placement -- plausible numbers, no diagnostic. Killed by the reversed-numbering view, where the wrong matrix is the un-permuted one."
+file = "src/backend/intx_weights.cpp"
+old = "  const auto view = backend.placed_view(mid.value(), placement);"
+new = "  const auto view = backend.view(mid.value());"
+target = "fuse_backend_supermesh_test"
+test = "backend.supermesh"
 
 [[mutation]]
 id = "transport-held-to-equal-extents"
