@@ -301,8 +301,8 @@ macro(fuse_resolve_yaml)
   endif()
 endmacro()
 
-# ArborX. Same posture as fuse_require() (found first; FUSE_ALLOW_FETCH=OFF
-# with none installed is a configure error naming the remedy) but written by
+# ArborX. Found first, otherwise always fetched (never gated on
+# FUSE_ALLOW_FETCH), and written by
 # hand rather than calling fuse_require() itself, because the fetch path needs
 # CACHE variables set BEFORE FetchContent_MakeAvailable(ArborX) runs --
 # ARBORX_ENABLE_MPI in particular must track FUSE_ENABLE_MPI, which
@@ -314,14 +314,10 @@ macro(fuse_resolve_arborx)
     file(APPEND "${FUSE_RESOLUTION_FILE}" "ArborX=found ${ArborX_VERSION} ${ArborX_DIR}\n")
     message(STATUS "fuse: ArborX ${ArborX_VERSION} found at ${ArborX_DIR}")
   else()
-    if(NOT FUSE_ALLOW_FETCH)
-      message(FATAL_ERROR
-        "fuse: ArborX (>= ${FUSE_ARBORX_VERSION}) not found.\n"
-        "  ArborX provides the BVH spatial index fuse::search wraps (docs/dev/search.md).\n"
-        "  Point CMAKE_PREFIX_PATH at its prefix, or configure with -DFUSE_ALLOW_FETCH=ON to "
-        "build the pinned copy (commit ${FUSE_ARBORX_COMMIT}, which will NOT be tuned for this "
-        "machine).")
-    endif()
+    # Always fetched when absent, like r3d and yaml-cpp above, and unlike the
+    # FUSE_ALLOW_FETCH-gated Tier 0 dependencies: the user asked for ArborX to
+    # be fetched dynamically, and a default configure must not fail for want
+    # of it. An installed ArborX >= 2.1 on CMAKE_PREFIX_PATH is still preferred.
     # Built against the SAME Kokkos this build already resolved above:
     # ArborX's own CMakeLists calls find_package(Kokkos 4.5 REQUIRED CONFIG)
     # itself, which is a no-op re-use of the existing imported targets once
@@ -335,7 +331,7 @@ macro(fuse_resolve_arborx)
     set(ARBORX_ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(ARBORX_ENABLE_BENCHMARKS OFF CACHE BOOL "" FORCE)
     message(STATUS "fuse: ArborX not installed; building the pinned copy "
-                   "(commit ${FUSE_ARBORX_COMMIT}, FUSE_ALLOW_FETCH=ON)")
+                   "(commit ${FUSE_ARBORX_COMMIT})")
     FetchContent_MakeAvailable(ArborX)
     file(APPEND "${FUSE_RESOLUTION_FILE}"
          "ArborX=fetched (pinned ${FUSE_ARBORX_COMMIT}, not tuned for this machine)\n")

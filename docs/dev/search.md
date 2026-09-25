@@ -10,11 +10,11 @@ into the boxes it indexes.
 
 ## Dependency: ArborX 2.1, pinned
 
-`cmake/FuseDependencies.cmake`'s `fuse_resolve_arborx()` follows every other REQUIRED Tier 0
-dependency's policy (found first; `-DFUSE_ALLOW_FETCH=ON` builds a pinned copy; `OFF` with none
-installed is a configure error naming the remedy) rather than yaml-cpp/r3d's always-fetch
-exception, because ArborX's fetch path needs `ARBORX_ENABLE_MPI` set to `FUSE_ENABLE_MPI` *before*
-`FetchContent_MakeAvailable` runs. The pin is by commit
+`cmake/FuseDependencies.cmake`'s `fuse_resolve_arborx()` prefers an installed ArborX >= 2.1 on
+`CMAKE_PREFIX_PATH` and otherwise always builds the pinned copy, like yaml-cpp and r3d, never gated
+on `FUSE_ALLOW_FETCH`: ArborX is required, and a default configure must not fail for want of it. It
+is hand-written rather than routed through `fuse_require()` because the fetch path needs
+`ARBORX_ENABLE_MPI` set to `FUSE_ENABLE_MPI` *before* `FetchContent_MakeAvailable` runs. The pin is by commit
 (`8f89be60bc3797670b9be8843da7dcdbc5f2333f`, exactly tag `v2.1`; verified by the lead;
 `UPSTREAMS.lock`'s `[arborx]` entry), built against the SAME Kokkos target this build already
 resolved -- ArborX's own `CMakeLists.txt` calls `find_package(Kokkos 4.5 REQUIRED CONFIG)`, which
