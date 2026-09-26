@@ -223,7 +223,8 @@ def main() -> int:
 
     if args.write_log:
         area = args.area or "all"
-        log = ROOT / "build-evidence" / f"{area}-mutations.md"
+        # An area may be a path ("examples/brusselator"); the log is one file.
+        log = ROOT / "build-evidence" / f"{area.replace('/', '-')}-mutations.md"
         lines = [f"# Mutation evidence — `{area}`", "",
                  f"Run {date.today().isoformat()} against build `{args.build_dir.name}`. "
                  "Regenerate with `tools/mutate.py --write-log`; do not edit.", "",
