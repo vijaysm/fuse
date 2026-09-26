@@ -133,8 +133,31 @@ A Fortran or C++ heat, fluid, structural or transport solver you already have
 is exactly the right shape. It does not need to be large; a small code that is
 genuinely external teaches more here than a big one we adapt.
 
-**What to do — when S6 comes up, not now.** Either name a code, or say you
-would rather we use a second separately-built FUSE executable as a stand-in. The
+**Your answer, 2026-09-25: your own multirate Brusselator** (`~/Code/AI/Toy`,
+written independently of FUSE; two species on non-nested periodic grids,
+waveform-iterated windows, area-overlap conservative transfer, Eigen only).
+Ported as `examples/brusselator` (`24a3a70`) onto the native quad mesh, the
+supermesh remap and `WindowCoupler`, with the reaction on Kokkos —
+`docs/user/brusselator.md` records what was kept verbatim, the one necessary
+departure (where the shared reaction rate is sampled), and every measurement.
+Weights match the Toy's separable overlap oracle to `1e-13`; the discrete
+budget holds to round-off (`7.6e-13` per window over 575 windows, against a
+first version at `1.7e-3` whose U consumed a different amount of the reaction
+than V received — now a mutation row that must fail `--check`); the cross-code
+difference at `--end 0.1` shrinks monotonically under 1x–8x refinement with
+measured orders 0.73, 0.76, 0.86, and the two codes' Richardson limits agree
+to `1.4e-6`.
+
+Against the four properties above this is honest about what it shows: it
+hands us its existing arrays (Eigen vectors, wrapped, not copied) — that one
+holds. It is not a separate executable, does not run its own time loop, and
+does not run on its own processes: those need the C ABI and a
+component-driven entry, which do not exist yet. **A4 stays open for those
+three**, and the Brusselator is the code they will be shown on.
+
+**What to do — when S6 comes up, not now.** For the three remaining
+properties, either the Brusselator itself driven from its own `main` through
+the C ABI, or a second code; say which. The
 stand-in is a weaker result and would be reported as such, naming which of the
 four properties above went untested — a program we wrote knows our conventions
 even when it is built separately, so it cannot show that an unfamiliar code
