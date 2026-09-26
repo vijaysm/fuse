@@ -1,6 +1,6 @@
 # Mutation evidence — `compiler`
 
-Run 2026-09-25 against build `b0`. Regenerate with `tools/mutate.py --write-log`; do not edit.
+Run 2026-09-25 against build `bh0`. Regenerate with `tools/mutate.py --write-log`; do not edit.
 
 | Mutation | File | Verdict | Killed by |
 |---|---|---|---|
@@ -24,6 +24,8 @@ Run 2026-09-25 against build `b0`. Regenerate with `tools/mutate.py --write-log`
 | `region-grouping-ignores-entanglement` — The other half: grouping must NOT separate a non-member that reads the same external value the region re-advances, because its placement relative to the loop is a modelling decision. Removing the guard lets an explicit channel hanging off an iterated component schedule, on one sweep's iterate, instead of being refused. | `src/schedule/scheduler.cpp` | **KILLED** (test fails) | `verification.iteration` |
 | `window-order-floor-not-enforced` — validate_coupling_window() stops enforcing CouplingWindowScope::order >= 2, so a scope whose interpolant/extrapolant is only first order (or degenerate) is accepted instead of refused with E-SCHED-WINDOW-ORDER -- exactly the floor the user's ruling states (interpolation and extrapolation are at least second order) | `src/schedule/window.cpp` | **KILLED** (test fails) | `schedule.window_scope` |
 | `window-length-ignores-explicit-interval` — window_length() stops returning the caller's declared CouplingWindowScope::explicit_interval and returns a hardcoded Rational{1} instead, silently changing every explicitly-windowed region's macro period regardless of what was authored -- the user's ruling is that the window is never derived (never the LCM of the members' own steps), so it must be exactly what the scope names | `src/schedule/window.cpp` | **KILLED** (test fails) | `schedule.window_scope` |
+| `coupler-remap-placement-ignored` — the coupler-placement rule's whole effect on where a channel's Remap runs is dropped: coupler_rank_set always falls back to the target's own component, so a channel that declares remap_on is lowered exactly as if it had not -- the value moves source -> target directly (at most one Transport+Epoch pair) and the Remap's placement is always the target's, never a declared coupler's | `src/ir/rules_channel.cpp` | **KILLED** (test fails) | `ir.lowering_channel` |
+| `coupler-second-hop-not-elided-when-same-as` — the coupler -> target hop's same_as elision is removed: every coupler-routed channel gets a second Transport+Epoch pair even when the coupler's ranks are identical to the target's own (a distinct ComponentId sharing the target's RankSet), which ACouplerColocatedWithTargetStillIdentifiesAsItsOwnPlacement pins as a no-op move | `src/ir/rules_channel.cpp` | **KILLED** (test fails) | `ir.lowering_channel` |
 | `distributed-remap-lowered-behind-a-transport` — The host-run defect of 2026-09-25: a consistent-interpolation remap on a nodal side was lowered as Transport-then-Remap like every other, so the source values were delivered onto the target placement's (empty, on a disjoint placement) view of the source mesh and the distributed operator summed nothing -- H exact, H^T D zero. With the predicate forced false the default lowering returns. | `src/ir/rules_channel.cpp` | **KILLED** (test fails) | `ir.lowering_channel` |
 
-**20 killed / 21 total.**
+**22 killed / 23 total.**

@@ -1,6 +1,6 @@
 # Mutation evidence — `model`
 
-Run 2026-09-22 against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
+Run 2026-09-25 against build `bh0`. Regenerate with `tools/mutate.py --write-log`; do not edit.
 
 | Mutation | File | Verdict | Killed by |
 |---|---|---|---|
