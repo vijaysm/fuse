@@ -35,6 +35,7 @@ user/convergence
 user/coupling-windows
 user/interface-transfer
 user/gray-scott
+user/brusselator
 user/fsi-channel
 user/c-abi
 ```
