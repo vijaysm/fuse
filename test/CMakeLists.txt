@@ -509,6 +509,25 @@ foreach(t gray_scott_mms gray_scott_multirate gray_scott_reference)
     ${CMAKE_SOURCE_DIR}/examples/gray_scott)
 endforeach()
 
+# Brusselator (Time windows track, "a code FUSE has never met"): weights
+# (an independent, integer-arithmetic oracle reimplementing the Toy's own
+# separable overlap construction, compared entry-by-entry against FUSE's
+# native-mesh-backed supermesh weights) and physics (closed-form Toy
+# invariants ported onto this example's own physics header). Needs
+# Eigen3::Eigen (periodic-diffusion backward-Euler, SimplicialLDLT) and
+# Kokkos::kokkos (the reaction kernel) directly, same reasoning as
+# gray_scott's registration just above.
+foreach(t brusselator_weights brusselator_physics)
+  fuse_add_gtest(verification ${t} NO_LAYER_LIB
+                 LIBS fuse::runtime fuse::backend Eigen3::Eigen Kokkos::kokkos)
+  target_include_directories(fuse_verification_${t}_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/brusselator)
+endforeach()
+# The weights oracle is pure host arithmetic (no Kokkos kernel of its own);
+# the physics suite's ReactionKokkosMatchesTheClosedForm IS one, so its omp
+# legs are the ones that are load-bearing here.
+fuse_add_omp_legs(verification.brusselator_physics fuse_verification_brusselator_physics_test)
+
 # ---------------------------------------------------------------- install
 # find_package(fuse-coupler) smoke test (REVIEW.md R-25/BT-F9): install this
 # build, configure and build a tiny STANDALONE consumer project against the

@@ -1,0 +1,58 @@
+# Mutations for the Brusselator track (examples/brusselator/**,
+# test/verification/brusselator_*). Own file per the review-fix protocol.
+#
+# Each row below was proved BY HAND (tools/mutate.py was not run except
+# --check-anchors, per this delegation's constraints): the edit in `old`/
+# `new` was applied directly to the named file with edit_file, the named
+# target was rebuilt, the named test was run and observed to fail with the
+# message quoted in its own comment, then the file was restored and
+# verified byte-identical to a backup with `cmp` before the next row.
+
+[[mutation]]
+id = "brusselator-v-exchange-wrong-sign"
+area = "examples/brusselator"
+describes = "flips the sign of the exchange sink in V's own backward-Euler RHS (V_t = a*Lap(V) - q becomes + q) -- V gains mass from the exchange instead of losing it, silently destroying the NUMERICS.md 'U consumes +q; V consumes -(P_UV q)' design decision the whole conservative-transfer story depends on."
+file = "examples/brusselator/species_component.hpp"
+old = "    Vector rhs = state_ - dt * q_on_v;"
+new = "    Vector rhs = state_ + dt * q_on_v;"
+target = "fuse_example_brusselator"
+test = "example.brusselator"
+# PROVED (thresholds then 5e-3 / 1e-2; now 1e-11 / 1e-9, so the margin is
+# larger still): at --end 0.5 (the registered example.brusselator
+# arguments), --check failed with max_window_balance_error=7.670e-02
+# and global_balance_error=1.265e+00 -- both roughly 20x
+# to 100x over their measured-margin thresholds; max_window_exchange_error
+# stayed at round-off (1.621e-13) because that check is purely spatial
+# (mean(q) vs mean(P_UV q)) and does not see which SIGN q enters V's own
+# equation with. Restored and verified byte-identical with `cmp` before
+# the next row.
+
+[[mutation]]
+id = "brusselator-exchange-bookkeeping-drops-trapezoid"
+area = "examples/brusselator"
+describes = "replaces the trapezoidal exchange-conservation bookkeeping (0.5*dt*(q_prev_.mean()+q_new.mean())) with a plain Riemann term (dt*q_new.mean()) -- UComponent::provided_ and the physical exchange U actually delivers are unchanged (still q_new, still fed to WindowCoupler exactly the same way), but the DIAGNOSTIC accumulator UComponent uses to measure 'what U reports it exchanged' no longer matches the quadrature WindowCoupler's own Linear-waveform reconstruction actually uses when integrating that same reported signal for V, so the exchange-conservation check sees a spurious O(dt) mismatch that is an artifact of the bookkeeping, not of the physics."
+file = "examples/brusselator/species_component.hpp"
+old = "    exchange_out_ += 0.5 * dt * (q_prev_.mean() + q_new.mean());"
+new = "    exchange_out_ += dt * q_new.mean();"
+target = "fuse_example_brusselator"
+test = "example.brusselator"
+# PROVED: at --end 0.5, --check failed with max_window_exchange_error=
+# 1.686e-03 against the round-off threshold 1e-9 (both max_window_balance_
+# error=1.686e-03 and final_mean_u/v were UNCHANGED from the unmutated
+# run, confirming the mutation affects only the diagnostic, not the
+# simulated trajectory). This is the exact defect an earlier version of
+# UComponent::advance had before this trapezoidal fix was written (see
+# that method's own comment): reporting q_prev_ as `provided_` and
+# accumulating a plain Riemann sum measured max_window_exchange_error
+# ~1.7e-3 for the same reason. Restored and verified byte-identical with
+# `cmp` before submission.
+
+[[mutation]]
+id = "brusselator-u-consumes-start-of-step-reaction"
+area = "examples/brusselator"
+describes = "The first version of this port: U's step consumed dt*q_prev (the start-of-step rate) while WindowCoupler delivered V the trapezoid 0.5*dt*(q_prev+q_new) of the same samples, so the two species exchanged different amounts of one reaction and the Toy's discrete budget identity held only to first order (1.686e-3 per window). Restoring it must fail the round-off budget thresholds."
+file = "examples/brusselator/species_component.hpp"
+old = "      const Vector rhs = rhs_base + (0.5 * dt) * (q_prev_ + q_new);"
+new = "      const Vector rhs = rhs_base + dt * q_prev_;"
+target = "fuse_example_brusselator"
+test = "example.brusselator"

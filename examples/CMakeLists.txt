@@ -93,6 +93,55 @@ if(FUSE_ENABLE_TESTS)
 endif()
 
 # ---------------------------------------------------------------------------
+# Brusselator (Time windows track, "a code FUSE has never met"): U and V on
+# two INDEPENDENT, non-nested native meshes ("generated:quad:NxM"), coupled
+# at independent time steps through fuse::WindowCoupler and exchanged
+# through FUSE's conservative supermesh remap (fuse::build_weights /
+# fuse::apply_weights) -- ported from the user's own independently-written
+# multirate Brusselator (/Users/mahadevan/Code/AI/Toy). Needs Eigen3::Eigen
+# directly (periodic-diffusion backward-Euler solves, Eigen::SimplicialLDLT)
+# and Kokkos::kokkos directly (the reaction kernel, brusselator_physics.hpp
+# `reaction_kokkos`) -- both available unconditionally, same reasoning as
+# fuse_example_gray_scott just above.
+# ---------------------------------------------------------------------------
+add_executable(fuse_example_brusselator
+  brusselator/main.cpp)
+target_link_libraries(fuse_example_brusselator PRIVATE
+  fuse::runtime fuse::backend Eigen3::Eigen Kokkos::kokkos)
+target_include_directories(fuse_example_brusselator PRIVATE brusselator)
+
+if(FUSE_ENABLE_TESTS)
+  # Gated on the physics, same convention as the examples above: --check
+  # exits non-zero unless every window converged, both species stayed
+  # non-negative, the discrete mass budget (NUMERICS.md "Discrete budget")
+  # held per-window and globally, and the U<->V exchange stayed conservative
+  # -- see main.cpp's --check block and docs/user/brusselator.md for the
+  # measured thresholds. A short run (--end 0.5) so the example itself
+  # stays fast; the deep verification (weights-vs-Toy-oracle, invariants,
+  # cross-code agreement, convergence order) lives in
+  # test/verification/brusselator_*_test.cpp.
+  add_test(NAME example.brusselator COMMAND fuse_example_brusselator --end 0.5 --check)
+  set_tests_properties(example.brusselator PROPERTIES LABELS "example")
+
+  # Thread-count determinism of the Kokkos reaction kernel, bit for bit --
+  # the same convention mms_pair/dn_heat use (tools/compare-runs.cmake),
+  # but load-bearing HERE rather than trivial: unlike those two (and unlike
+  # gray_scott, which runs no Kokkos kernel at all -- KNOWN_ISSUES.md D11),
+  # `reaction_kokkos` is a genuine Kokkos::parallel_for over the OpenMP
+  # execution space, so this leg is the one that actually exercises
+  # thread-count-independence for this example.
+  if(COMMAND fuse_add_omp_legs AND FUSE_KOKKOS_HAS_OPENMP)
+    add_test(NAME example.brusselator.omp_identical
+             COMMAND ${CMAKE_COMMAND}
+                     -DBIN=$<TARGET_FILE:fuse_example_brusselator>
+                     -DTHREADS_HI=${_fuse_host_cores}
+                     -DOUT=${CMAKE_CURRENT_BINARY_DIR}/omp_brusselator
+                     -P ${CMAKE_SOURCE_DIR}/tools/compare-runs.cmake)
+    set_tests_properties(example.brusselator.omp_identical PROPERTIES LABELS "example;omp")
+  endif()
+endif()
+
+# ---------------------------------------------------------------------------
 # FSI channel (FSI track): a 2D unsteady-Stokes channel with an Euler-
 # Bernoulli wall beam, strongly coupled on a non-matching 1D interface
 # (consistent H, conservative H^T -- fuse/backend/consistent_interp.hpp).
