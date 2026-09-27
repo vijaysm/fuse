@@ -20,10 +20,14 @@ function(fuse_partition_add_gtest name)
   add_test(NAME partition.${name} COMMAND ${target})
   set(labels "partition;gtest")
   # test/CMakeLists.txt's OpenMP thread-count leg: the partitioner is the one
-  # library area whose accumulation order is the threads' (median.hpp).
-  fuse_add_omp_legs(partition.${name} ${target})
+  # library area whose accumulation order is the threads' (median.hpp). The omp
+  # legs run the same executable as the base test, so THROWS must propagate to
+  # them too, or `ctest -LE throws` (tier0-no-exceptions) will not exclude them.
   if(ARG_THROWS)
+    fuse_add_omp_legs(partition.${name} ${target} THROWS)
     list(APPEND labels throws)
+  else()
+    fuse_add_omp_legs(partition.${name} ${target})
   endif()
   set_tests_properties(partition.${name} PROPERTIES LABELS "${labels}")
 endfunction()

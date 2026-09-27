@@ -15,5 +15,6 @@ __pycache__/
 .DS_Store
 
 # Task-level plans stay local, as in the parent projects. The durable summary
-# lives in docs/dev/roadmap.md.
-plans/
+# lives in docs/dev/roadmap.md. Anchored to the root so it does not also catch
+# upstream/*/docs/plans/, which are imported and manifested content.
+/plans/

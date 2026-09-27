@@ -201,7 +201,21 @@ function(fuse_require package)
     set(_content ${ARG_FETCH_AS})
   endif()
   message(STATUS "fuse: ${package} not installed; building the pinned copy (FUSE_ALLOW_FETCH=ON)")
+  # Eigen (and, generically, any future fetched dependency using the same
+  # convention) gates its OWN bundled test suite on the standard BUILD_TESTING
+  # option, which this project's own enable_testing()/include(CTest) has
+  # already turned ON -- add_subdirectory() (what FetchContent_MakeAvailable
+  # does) reads that same cache variable, so Eigen registered ~830 of its own
+  # "Not Run: Unsupported" CTest entries into THIS project's test suite, and a
+  # bare `ctest` failed on them even though every fuse:: test passed (found
+  # running the tier0-eigen legs for the first time, CI run 36124149902,
+  # 2026-09-25). Saved and restored, not just forced OFF, because fuse's own
+  # tests need it back ON afterward.
+  set(_fuse_saved_build_testing "${BUILD_TESTING}")
+  set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(${_content})
+  set(BUILD_TESTING "${_fuse_saved_build_testing}" CACHE BOOL "" FORCE)
+  unset(_fuse_saved_build_testing)
   # Propagate the fetched dependency's version exactly as the find_package
   # branch does. Without it the version is the empty string on the fetch path
   # and Config.KokkosHeadersMatchTheResolvedLibrary fails parsing "" rather

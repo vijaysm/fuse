@@ -1,0 +1,26 @@
+{
+ "ownership-check-dropped": [
+  "    _all_owned = true;\n    for (const auto index : _indices)\n        if (index < low || index >= high)\n        {\n            _all_owned = false;\n            break;\n        }",
+  "    _all_owned = true;"
+ ],
+ "range-query-failure-ignored": [
+  "    if (VecGetOwnershipRange(_vector, &low, &high) != PETSC_SUCCESS) return;",
+  ""
+ ],
+ "publish-skips-owned-check": [
+  "    if (!_all_owned) return OutcomeReason::InvalidArgument;\n    if (values.size() != _indices.size()) return OutcomeReason::InvalidArgument;\n    for (const auto value : values)\n        if (!std::isfinite(value)) return OutcomeReason::NonfiniteValue;",
+  "    if (values.size() != _indices.size()) return OutcomeReason::InvalidArgument;"
+ ],
+ "read-skips-owned-check": [
+  "    if (!_all_owned) return OutcomeReason::InvalidArgument;\n    if (destination.size() != _indices.size()) return OutcomeReason::InvalidArgument;",
+  "    if (destination.size() != _indices.size()) return OutcomeReason::InvalidArgument;"
+ ],
+ "publish-skips-duplicate-safety": [
+  "    PetscOwner<Vec, VecDestroy> staged_vector;\n    if (VecDuplicate(_vector, staged_vector.put()) != PETSC_SUCCESS ||\n        VecCopy(_vector, staged_vector.get()) != PETSC_SUCCESS)\n        return OutcomeReason::StorageFailure;\n    if (VecSetValues(staged_vector.get(), static_cast<PetscInt>(_indices.size()), _indices.data(), staged.data(),\n                     INSERT_VALUES) != PETSC_SUCCESS)\n        return OutcomeReason::StorageFailure;\n    if (VecAssemblyBegin(staged_vector.get()) != PETSC_SUCCESS || VecAssemblyEnd(staged_vector.get()) != PETSC_SUCCESS)\n        return OutcomeReason::StorageFailure;\n    if (VecCopy(staged_vector.get(), _vector) != PETSC_SUCCESS) return OutcomeReason::StorageFailure;",
+  "    if (VecSetValues(_vector, static_cast<PetscInt>(_indices.size()), _indices.data(), staged.data(),\n                     INSERT_VALUES) != PETSC_SUCCESS)\n        return OutcomeReason::StorageFailure;\n    if (VecAssemblyBegin(_vector) != PETSC_SUCCESS || VecAssemblyEnd(_vector) != PETSC_SUCCESS)\n        return OutcomeReason::StorageFailure;"
+ ],
+ "nonfinite-check-dropped": [
+  "    for (const auto value : values)\n        if (!std::isfinite(value)) return OutcomeReason::NonfiniteValue;\n    if (_indices.empty()) return OutcomeReason::Success;\n\n    std::vector<PetscScalar> staged",
+  "    if (_indices.empty()) return OutcomeReason::Success;\n\n    std::vector<PetscScalar> staged"
+ ]
+}

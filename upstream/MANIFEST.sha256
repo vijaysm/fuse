@@ -2,7 +2,7 @@
 # Regenerate only when performing an import: tools/verify-import.py --write
 # karma: master @ 136f520 tag fuse-import-0
 # soma: main @ e52b981 tag fuse-import-0
-192a81d9a9fe42ab44e70ccf8ec632d779a2e0db7ca7ff010dfbb1bef1a11bda  upstream/karma/.gitignore
+60b54126e9dac2f31687275ed75f1eaff85df1e1f8f611924857d8299063965f  upstream/karma/.gitignore
 8bef08cb61a42775f21ea995d5586254650262d4f0a865296b29cd9fdf69d742  upstream/karma/.readthedocs.yaml
 3db44cbd2029cc63068b059123ef1176aaae85db036d2bd6080756e6a58a897e  upstream/karma/AGENTS.md
 ca842c128701d141fed81a840d1353a8c0f74870c63f0ec40fedace4eee58b85  upstream/karma/CMakeLists.txt
