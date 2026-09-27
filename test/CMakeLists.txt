@@ -67,11 +67,19 @@ function(fuse_add_omp_legs test_name target)
   if(NOT FUSE_KOKKOS_HAS_OPENMP)
     return()
   endif()
-  cmake_parse_arguments(ARG "" "" "ARGS" ${ARGN})
+  cmake_parse_arguments(ARG "THROWS" "" "ARGS" ${ARGN})
+  set(labels "omp")
+  # An omp leg runs the same executable as its THROWS base test, so it must
+  # carry the same label: otherwise `ctest -LE throws` (tier0-no-exceptions)
+  # does not exclude it and it aborts instead of failing an assertion (found
+  # running that leg for the first time, CI run 36124149902, 2026-09-25).
+  if(ARG_THROWS)
+    list(APPEND labels throws)
+  endif()
   foreach(n 1 ${_fuse_host_cores})
     add_test(NAME ${test_name}.omp${n} COMMAND ${target} ${ARG_ARGS})
     set_tests_properties(${test_name}.omp${n} PROPERTIES
-      LABELS "omp"
+      LABELS "${labels}"
       ENVIRONMENT "OMP_NUM_THREADS=${n};OMP_PROC_BIND=false")
   endforeach()
 endfunction()
@@ -389,7 +397,7 @@ fuse_add_gtest(backend native_distributed_mesh THROWS)
 fuse_add_gtest(backend native_generators THROWS)
 fuse_add_gtest(backend native_migration THROWS)
 foreach(t native_mesh native_distributed_mesh native_generators native_migration)
-  fuse_add_omp_legs(backend.${t} fuse_backend_${t}_test)
+  fuse_add_omp_legs(backend.${t} fuse_backend_${t}_test THROWS)
 endforeach()
 fuse_tests_gated_by(FUSE_ENABLE_MPI backend/native_migration_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
@@ -467,10 +475,16 @@ set_tests_properties(field.compile_ok.owning_chain PROPERTIES
 # Convergence orders and iteration counts, against known-good values. These are
 # the stage's exit criterion: they are what says the merged compiler and runtime
 # reproduce the parent's numbers and not merely something plausible.
-foreach(t mms_transfer iteration interface_transfer)
+foreach(t mms_transfer iteration)
   fuse_add_gtest(verification ${t} NO_LAYER_LIB
                  LIBS fuse::runtime fuse::backend fuse::transport)
 endforeach()
+# THROWS: AnUnimplementedNodalOrderRefusesThroughTheRealSchedulingPath exercises
+# an E-EXTENT-DISC refusal (src/backend/serial_backend.cpp), which aborts rather
+# than throws when FUSE_ENABLE_EXCEPTIONS=OFF (tier0-no-exceptions, CI run
+# 36124149902, 2026-09-25).
+fuse_add_gtest(verification interface_transfer THROWS NO_LAYER_LIB
+               LIBS fuse::runtime fuse::backend fuse::transport)
 
 # The one-rank case of parallel/nodal_remap_runner_test.cpp, WITHOUT MPI. It
 # shares that file's backend (support/partitioned_test_backend.hpp, which no

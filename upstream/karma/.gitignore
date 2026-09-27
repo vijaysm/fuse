@@ -1,5 +1,6 @@
-# CMake build trees
+# CMake build trees, but NOT build-evidence/ (the mutation gate's tracked record)
 build*/
+!build-evidence/
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
@@ -18,9 +19,10 @@ Makefile_correct
 .attic-waf/
 include/base/karma_config.h.waf-stale
 
-# Legacy waf/autoconf build artifacts
+# Legacy waf/autoconf build artifacts, at the root only -- test/unit/Makefile
+# is part of the imported tree.
 KARMA.common
-Makefile
+/Makefile
 _configs.sed
 config.log
 config.status

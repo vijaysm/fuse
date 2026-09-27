@@ -21,13 +21,20 @@
 # location must reconfigure FUSE itself against it, not just find_package()
 # the installed result.
 #
-# A consumer that links a layer with a PRIVATE third-party dependency of its
-# own -- Eigen3 for fuse::linalg/fuse::num when FUSE_LINALG_BACKEND=eigen,
-# yaml-cpp for fuse::model -- must find that dependency itself: a PRIVATE link
-# of a STATIC library is not re-exported by CMake's INTERFACE_LINK_LIBRARIES
-# machinery, and unlike MPI/MOAB above neither is in any layer's PUBLIC
-# interface, so install(EXPORT) never required them and there is nothing here
-# for a consumer to hit at configure time either.
+# yaml-cpp for fuse::model is a PRIVATE dependency of a STATIC library too, but
+# a consumer never needs to find_dependency() it: it is not part of any
+# PUBLIC/INTERFACE property, so install(EXPORT) never emitted a reference to
+# it and there is nothing here for a consumer to hit at configure time.
+#
+# Eigen3 is different -- CMake's install(EXPORT) DOES re-export a STATIC
+# library's PRIVATE link dependency (fuse::linalg PRIVATE-links Eigen3::Eigen
+# in src/CMakeLists.txt), as $<LINK_ONLY:Eigen3::Eigen> in
+# fuse-coupler-targets.cmake: a static archive carries no dependency
+# information of its own, so a consumer's link line needs it even though
+# Eigen contributes no symbols and no include path. Without find_dependency()
+# here, that generated file's own target existence check fails
+# fuse-coupler_FOUND for every consumer, unconditionally -- caught by
+# test/install_consumer's smoke test (CI run 36124149902, 2026-09-25).
 @PACKAGE_INIT@
 
 include(CMakeFindDependencyMacro)
@@ -54,6 +61,11 @@ endif()
 
 find_dependency(Kokkos)
 find_dependency(fmt)
+
+set(FUSE_LINALG_BACKEND "@FUSE_LINALG_BACKEND@")
+if(FUSE_LINALG_BACKEND STREQUAL "eigen")
+  find_dependency(Eigen3)
+endif()
 
 set(FUSE_ENABLE_MPI @FUSE_ENABLE_MPI@)
 set(FUSE_ENABLE_MOAB @FUSE_ENABLE_MOAB@)

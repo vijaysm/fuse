@@ -37,7 +37,9 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libgtest-dev libyaml-cpp-dev
       # The dependency-free configuration: no MPI, no MOAB. This is the tier-0
       # equivalent for the import and the S0 exit condition for this parent.
-      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+      # fmt and Kokkos are not installed on the runner, so fuse_require() needs
+      # FUSE_ALLOW_FETCH=ON to build the pinned copies instead of hard-failing.
+      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DFUSE_ALLOW_FETCH=ON
       - run: cmake --build build -j
       - run: ctest --test-dir build --output-on-failure -j4
 
@@ -64,16 +66,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y ninja-build libomp-dev
-      # Kokkos, fmt, googletest and the linalg backend come through FetchContent at the
-      # pinned tags (cmake/FuseDependencies.cmake); the system is not consulted so the
-      # leg reproduces the same way on every runner.
+      # fmt, googletest and the linalg backend come through FetchContent at the pinned
+      # tags (cmake/FuseDependencies.cmake); the system is not consulted for them (the
+      # CMAKE_DISABLE_FIND_PACKAGE_* flags below) and FUSE_ALLOW_FETCH=ON lets
+      # fuse_require() build the pinned copy instead of hard-failing, so the leg
+      # reproduces the same way on every runner. Kokkos is deliberately NOT disabled:
+      # the runner has no system Kokkos to consult anyway, and ArborX's own
+      # find_package(Kokkos REQUIRED CONFIG) call (fuse_resolve_arborx(), meant to
+      # transparently reuse the Kokkos this configure already fetched) is a hard
+      # configure error when CMAKE_DISABLE_FIND_PACKAGE_Kokkos is set on a REQUIRED
+      # call -- CMake refuses to disable a REQUIRED find_package.
       - run: >
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=${{ matrix.build }}
           -DFUSE_LINALG_BACKEND=${{ matrix.linalg }}
+          -DFUSE_ALLOW_FETCH=ON
           -DFUSE_BUILD_UPSTREAM_SOMA=OFF -DFUSE_BUILD_UPSTREAM_KARMA=OFF
           -DKokkos_ENABLE_SERIAL=ON -DKokkos_ENABLE_OPENMP=ON
-          -DCMAKE_DISABLE_FIND_PACKAGE_Kokkos=ON -DCMAKE_DISABLE_FIND_PACKAGE_fmt=ON
+          -DCMAKE_DISABLE_FIND_PACKAGE_fmt=ON
           -DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON -DCMAKE_DISABLE_FIND_PACKAGE_Eigen3=ON
       - run: cmake --build build -j
       - run: ctest --test-dir build --output-on-failure
@@ -85,11 +95,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y ninja-build libomp-dev
+      # Kokkos is deliberately not disabled for find_package -- see the tier0 leg's
+      # comment above; disabling it breaks ArborX's own REQUIRED find_package(Kokkos).
       - run: >
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          -DFUSE_ENABLE_EXCEPTIONS=OFF
+          -DFUSE_ENABLE_EXCEPTIONS=OFF -DFUSE_ALLOW_FETCH=ON
           -DFUSE_BUILD_UPSTREAM_SOMA=OFF -DFUSE_BUILD_UPSTREAM_KARMA=OFF
-          -DKokkos_ENABLE_SERIAL=ON -DCMAKE_DISABLE_FIND_PACKAGE_Kokkos=ON
+          -DKokkos_ENABLE_SERIAL=ON
           -DCMAKE_DISABLE_FIND_PACKAGE_fmt=ON -DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON
           -DCMAKE_DISABLE_FIND_PACKAGE_Eigen3=ON
       - run: cmake --build build -j

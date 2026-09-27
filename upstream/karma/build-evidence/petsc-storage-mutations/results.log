@@ -1,0 +1,7 @@
+ownership-check-dropped: exit=1; killed: PetscVectorStorage accepted an index outside its ownership range
+range-query-failure-ignored: exit=1; killed: ERROR: invalid argument passed to routine ! field commit addresses an entry this rank does not own
+publish-skips-owned-check: exit=1; killed: [0]PETSC ERROR: --------------------- Error Message --------------------------------------------------------------
+read-skips-owned-check: exit=1; killed: [0]PETSC ERROR: --------------------- Error Message --------------------------------------------------------------
+publish-skips-duplicate-safety: exit=0; MUTATION SURVIVED
+nonfinite-check-dropped: exit=1; killed: publish() did not refuse a nonfinite value
+restored: exit=0

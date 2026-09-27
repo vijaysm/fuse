@@ -69,7 +69,12 @@ commits   = 374
 ctest     = 203
 tag       = "fuse-import-0"
 imported  = "upstream/karma"         # byte-identical; proven by tools/verify-import.py
-diverged  = []                       # paths transformed in fuse since import
+diverged  = [                        # paths transformed in fuse since import
+  ".gitignore",                      # build*/ and bare Makefile were also matching
+                                      # build-evidence/ and test/unit/Makefile, which
+                                      # tools/verify-import.py's own manifest expects
+                                      # tracked (CI run 36124149902, 2026-09-25)
+]
 superseded = [                       # upstream paths fuse has replaced (S1, fuse::base)
   "include/coupling/karma_semantic_version.h", "src/coupling/karma_semantic_version.C",
   "include/coupling/karma_byte_writer.h",
