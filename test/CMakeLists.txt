@@ -99,7 +99,11 @@ function(fuse_tests_gated_by option)
 endfunction()
 
 function(fuse_add_gtest layer name)
-  cmake_parse_arguments(ARG "THROWS;NO_LAYER_LIB" "" "LIBS" ${ARGN})
+  # LABELS: extra ctest labels beyond <layer>;gtest[;throws]. A test that
+  # needs an optional dependency carries its name (e.g. `moab`) so the
+  # whole set can be selected with `ctest -L moab` -- the first host run
+  # asked exactly that and found no tests, because nothing carried it.
+  cmake_parse_arguments(ARG "THROWS;NO_LAYER_LIB" "" "LIBS;LABELS" ${ARGN})
   set(target fuse_${layer}_${name}_test)
   add_executable(${target} ${layer}/${name}_test.cpp)
   fuse_record_test_source(${layer}/${name}_test.cpp)
@@ -115,6 +119,7 @@ function(fuse_add_gtest layer name)
   if(ARG_THROWS)
     list(APPEND labels throws)
   endif()
+  list(APPEND labels ${ARG_LABELS})
   set_tests_properties(${layer}.${name} PROPERTIES LABELS "${labels}")
 endfunction()
 
@@ -262,8 +267,8 @@ fuse_add_gtest(backend field_extent THROWS)
 fuse_tests_gated_by(FUSE_ENABLE_MOAB
   backend/moab_mesh_test.cpp backend/remap_halo_test.cpp)
 if(FUSE_ENABLE_MOAB)
-  fuse_add_gtest(backend moab_mesh THROWS)
-  fuse_add_gtest(backend remap_halo THROWS)
+  fuse_add_gtest(backend moab_mesh THROWS LABELS moab)
+  fuse_add_gtest(backend remap_halo THROWS LABELS moab)
   # REVIEW.md R-41 (BT-F15): a real, non-planar, non-matching MOAB mesh, not
   # a generated box. MOAB installs a 3456-quad cubed sphere under
   # share/examples/fortran relative to its own include prefix; discovered
