@@ -95,7 +95,7 @@ file = "src/runtime/runner.cpp"
 old = "        if (!step_failure.has_value()) step_failure = rr.error();"
 new = "        return rr.error();  // abandon the rest of the period"
 target = "fuse_parallel_runner_transport_test"
-test = "parallel.runner_transport.2"
+test = "parallel.runner_transport.3"
 requires = "mpi"
 # The test EXISTS: RunnerTransport.StillRunsASecondChannelAfterARegionFailsUnderMpi
 # (test/parallel/runner_transport_test.cpp), TwoComponentJob(with_iteration_
@@ -145,6 +145,14 @@ requires = "mpi"
 # the mutated binary was actually rebuilt before that run -- a stale binary
 # would produce exactly a false SURVIVED with no code-level explanation,
 # which is the one class of cause my trace cannot rule out from here.
+# SURVIVED on the host at .2 (2026-09-28), explained by the host's own stream
+# print: the region is entered at t=1, after consumer_b's ticks, and every
+# rank of linkB was also a region participant, so every rank returned
+# together and nothing blocked. Re-pointed at .3, where
+# RunnerTransport.AChannelOutsideTheRegionStillCompletesAfterTheRegionFails
+# puts consumer_b on a rank outside the region: the mutant leaves that rank
+# blocked in linkB's Transport until ctest's TIMEOUT. Traced, compiled, not
+# yet run.
 
 [[mutation]]
 id = "one-transport-shared-across-every-plan"

@@ -156,10 +156,12 @@ enum class CouplerShape {
 };
 
 [[nodiscard]] fuse::RankSet placement_for(Overlap shape, bool is_fluid,
-                                          CouplerShape coupler = CouplerShape::None) {
-  // With a DISJOINT coupler the last rank is the coupler's alone, and the
-  // two physics components split the remaining W-1 ranks.
-  const int w = world_size() - (coupler == CouplerShape::Disjoint ? 1 : 0);
+                                          CouplerShape coupler = CouplerShape::None,
+                                          bool reserve_last_rank = false) {
+  // With a DISJOINT coupler, or `reserve_last_rank`, the last rank belongs to
+  // neither physics component, and the two split the remaining W-1 ranks.
+  const int w = world_size() -
+                ((coupler == CouplerShape::Disjoint || reserve_last_rank) ? 1 : 0);
   switch (shape) {
     case Overlap::Disjoint:
       return is_fluid ? fuse::RankSet{0, w / 2} : fuse::RankSet{w / 2, w - w / 2};
@@ -229,13 +231,14 @@ class TwoComponentJob {
                            int fail_fluid_after = -1,
                            Overlap shape = Overlap::Disjoint,
                            fuse::Rational independent_interval = fuse::Rational{1},
-                           CouplerShape coupler = CouplerShape::None)
+                           CouplerShape coupler = CouplerShape::None,
+                           bool independent_consumer_outside_region = false)
       // MEMBER DECLARATION ORDER, NOT INITIALIZER-LIST ORDER, decides when
       // each of these actually runs. `backend` is declared below
       // fluid_/solid_/n_entities_/dim_ for exactly this reason: it is built
       // FROM them, so they must already hold their values.
-      : fluid_{placement_for(shape, true, coupler)},
-        solid_{placement_for(shape, false, coupler)},
+      : fluid_{placement_for(shape, true, coupler, independent_consumer_outside_region)},
+        solid_{placement_for(shape, false, coupler, independent_consumer_outside_region)},
         n_entities_(12), dim_(2),
         backend(fluid_, solid_, n_entities_, dim_) {
     const auto mesh =
@@ -295,8 +298,16 @@ class TwoComponentJob {
       const auto pb = graph.add_component(fuse::ComponentDecl{
           .name = "producer_b", .ranks = fluid_,
           .interval = independent_interval});
+      // `independent_consumer_outside_region` (D3): consumer_b alone on the
+      // last rank, which neither region component uses, so one rank of
+      // linkB is NOT a participant of the region -- the only shape in which
+      // a rank can be left waiting in linkB for a partner that returned out
+      // of the region.
       const auto cb = graph.add_component(fuse::ComponentDecl{
-          .name = "consumer_b", .ranks = solid_,
+          .name = "consumer_b",
+          .ranks = independent_consumer_outside_region
+                       ? fuse::RankSet{world_size() - 1, 1}
+                       : solid_,
           .interval = independent_interval});
       src_field_b = graph.add_field(
           pb, fuse::FieldSpec{.name = "outB", .region = region_,
@@ -888,37 +899,14 @@ TEST(RunnerTransport, StillRunsASecondChannelAfterARegionFailsUnderMpi) {
   auto* cons_b = dynamic_cast<StubComponent*>(h.components.find("consumer_b"));
   ASSERT_NE(cons_b, nullptr);
 
-  // PRECONDITION of the kill (D3, host mutation run 2026-09-28: SURVIVED).
-  // 'region-failure-abandons-the-rest-of-the-period' returns out of
-  // step_period() straight after run_region(), so it can only lose what the
-  // stream orders AFTER the region. step_period() advances a tick as soon as
-  // an instruction stamped strictly later is reached, so consumer_b's t=1/2
-  // tick is after the region only if the region is entered BEFORE t=1/2. If
-  // the scheduler stamps the region at t >= 1/2, both ticks run first,
-  // calls() is 2 either way, and the EXPECT_GE below cannot see the mutant.
-  // Asserted, not assumed, and the stream printed so the host run shows
-  // where the region actually sits.
-  std::optional<fuse::Rational> region_time;
-  for (const auto& ins : h.plan.instructions()) {
-    if (ins.region_enter >= 0) { region_time = ins.time; break; }
-  }
-  if (current_rank() == 0) {
-    std::printf("[D3] region enters at t=%s; stream:\n%s\n",
-                region_time ? region_time->to_string().c_str() : "(none)",
-                h.plan.to_string().c_str());
-  }
-  ASSERT_TRUE(region_time.has_value());
-  EXPECT_TRUE(*region_time < fuse::Rational(1, 2))
-      << "the region is entered at t=" << region_time->to_string()
-      << ", not before consumer_b's t=1/2 tick, so this test cannot detect "
-         "'region-failure-abandons-the-rest-of-the-period': nothing it "
-         "checks is ordered after the region";
-
+  // What this test does NOT detect (D3, host run 2026-09-28): the region is
+  // entered at t=1, after both of consumer_b's ticks, and every rank of linkB
+  // is also a region participant, so a period abandoned straight after the
+  // region loses nothing observable here -- the host's stream print showed
+  // exactly that. It pins the tick carry-forward (ticks unrelated to the
+  // failure still run). 'region-failure-abandons-the-rest-of-the-period' is
+  // killed by AChannelOutsideTheRegionStillCompletesAfterTheRegionFails below.
   const auto r = runner.run_period(h.components);
-  std::printf("[D3] rank %d: ok=%d code=%s consumer_b.calls=%d\n", current_rank(),
-              r.ok() ? 1 : 0, r.ok() ? "-" : r.error().code.c_str(),
-              static_cast<int>(cons_b->calls()));
-  std::fflush(stdout);
   ASSERT_FALSE(r.ok())
       << "fluid refuses its first advance() inside the region; the period "
          "must report that failure on every rank, including ranks that "
@@ -927,11 +915,51 @@ TEST(RunnerTransport, StillRunsASecondChannelAfterARegionFailsUnderMpi) {
   EXPECT_GE(cons_b->calls(), 2)
       << "consumer_b ticks TWICE this period (t=0 and t=1/2), on a clock "
          "that has nothing to do with the region; both ticks must still run "
-         "rather than being abandoned when step_period() returns out of "
-         "the region's t=0 failure -- 'region-failure-abandons-the-rest-"
-         "of-the-period' (D3) abandons the t=1/2 tick specifically, which a "
-         "same-time-as-the-region observable could not distinguish from "
-         "an ordinary greedy-grouping choice";
+         "rather than being blocked by the region's failure: neither tick "
+         "reads anything the failing region provides";
+  ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
+}
+
+// Mutation "region-failure-abandons-the-rest-of-the-period" (D3, R-09):
+// step_period() returning straight out of run_region() on failure instead of
+// recording it and walking on. The host's stream for this fixture (region at
+// t=1; linkB's Transport and Epoch ordered AFTER the region's exit) shows the
+// only thing such a return can lose is linkB's t=1 exchange, and losing it is
+// only observable on a rank of linkB that is NOT in the region: with
+// consumer_b alone on the last rank, producer_b (on fluid's ranks, inside the
+// region) must still execute linkB's Transport and Epoch after its region
+// fails. Under correct code the outside rank receives, reconciles at that
+// Epoch and stops with E-RT-EPOCH-PEER (runner.cpp, reconcile); under the
+// mutant producer_b's rank has already returned, and the outside rank blocks
+// in the Transport until ctest's TIMEOUT -- the kill.
+TEST(RunnerTransport, AChannelOutsideTheRegionStillCompletesAfterTheRegionFails) {
+  FUSE_REQUIRE_AT_LEAST_RANKS(3);  // fluid, solid, and a rank in neither
+  auto h = TwoComponentJob("", /*with_iteration_region=*/true,
+                           fuse::AccelKind::None,
+                           /*with_independent_channel=*/true,
+                           /*fail_fluid_after=*/0, /*shape=*/Overlap::Disjoint,
+                           /*independent_interval=*/fuse::Rational{1},
+                           CouplerShape::None,
+                           /*independent_consumer_outside_region=*/true);
+  ASSERT_GT(h.plan.region_count(), 0u);
+  Runner runner{h.graph, h.dag, h.plan, h.backend};
+  bind_all(h);
+
+  fuse::RunnerConfig cfg;
+  cfg.transport         = "mpi";
+  cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
+  cfg.transport_setup   = mpi_comm_setup();
+  const auto init = runner.initialize(h.components, h.registry, cfg);
+  ASSERT_TRUE(init.ok()) << init.error().code << ": " << init.error().message;
+
+  const int me = current_rank();
+  const bool outside = me == world_size() - 1;
+  const auto r = runner.run_period(h.components);
+  ASSERT_FALSE(r.ok()) << "rank " << me
+                       << ": the period must fail everywhere, including on the "
+                          "rank that only belongs to linkB";
+  EXPECT_EQ(r.error().code, outside ? "E-RT-EPOCH-PEER" : "E-TEST-ADVANCE-REFUSED")
+      << "rank " << me << ": " << r.error().message;
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
