@@ -63,6 +63,21 @@ set(FUSE_KOKKOS_HAS_OPENMP OFF)
 if(Kokkos_ENABLE_OPENMP OR "${Kokkos_DEVICES}" MATCHES "OPENMP")
   set(FUSE_KOKKOS_HAS_OPENMP ON)
 endif()
+# KNOWN_ISSUES.md D11 (closing): PARENT_SCOPE, because examples/CMakeLists.txt
+# -- a SIBLING of this directory under the root add_subdirectory(test) /
+# add_subdirectory(examples) pair, not a child of it -- reads both of these
+# to register its own example.*.omp_identical legs, and a plain set() here
+# is invisible outside this directory's own scope tree. Before this fix
+# every example.*.omp_identical test examples/CMakeLists.txt DOES declare
+# (mms_pair, dn_heat, brusselator -- fsi_channel has never had one coded at
+# all, unrelated to this bug) silently registered ZERO ctest entries --
+# `examples/CMakeLists.txt`'s own `if(COMMAND fuse_add_omp_legs AND
+# FUSE_KOKKOS_HAS_OPENMP)` guard saw an empty, falsy variable and skipped the
+# whole block -- which is why brusselator's own comment ("this leg actually
+# exercises thread-count-independence for this example") was aspirational,
+# not measured, until now.
+set(FUSE_KOKKOS_HAS_OPENMP ${FUSE_KOKKOS_HAS_OPENMP} PARENT_SCOPE)
+set(_fuse_host_cores ${_fuse_host_cores} PARENT_SCOPE)
 function(fuse_add_omp_legs test_name target)
   if(NOT FUSE_KOKKOS_HAS_OPENMP)
     return()
@@ -367,6 +382,14 @@ foreach(t runner checkpoint epoch_schedule window_coupler)
   fuse_add_gtest(runtime ${t})
 endforeach()
 fuse_add_gtest(runtime component_iface THROWS)
+# KNOWN_ISSUES.md D11 (closing) / matrix cell A-SPACES-TRANSPORT: a
+# Runner-level, 2048-element iteration region -- large enough to span
+# several of space_kernels.hpp's fixed reduction chunks -- pinned to exact
+# literals via fuse_add_omp_legs below, so the day the coupling hot loop's
+# thread-count independence regresses, SOME OMP_NUM_THREADS leg fails
+# rather than every leg agreeing by coincidence at a size too small to tell.
+fuse_add_gtest(runtime runner_determinism)
+fuse_add_omp_legs(runtime.runner_determinism fuse_runtime_runner_determinism_test)
 
 # KNOWN_ISSUES.md B3: `bool supports_rollback() const override` no longer
 # names a virtual to override, once `Component::capabilities()` is the one

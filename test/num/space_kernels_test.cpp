@@ -225,6 +225,227 @@ TYPED_TEST(SpaceKernels, ReductionsAgreeWithTheSerialSumToRounding) {
       want_wns, tol);
 }
 
+TYPED_TEST(SpaceKernels, CopyScaleAndResidualMatchThePlainArithmetic) {
+  using F = SpaceKernels<TypeParam>;
+  constexpr std::size_t n = 2048;
+  const auto a = F::ramp(n, 1.0, 0.5);
+  const auto b = F::ramp(n, -0.75, 1.25);
+
+  auto d_a = F::upload(a, "a");
+  auto d_b = F::upload(b, "b");
+  auto d_out = F::upload(std::vector<double>(n, 0.0), "out");
+
+  fuse::num::copy<TypeParam>(F::c(d_a), F::m(d_out));
+  auto got_copy = F::download(d_out);
+  for (std::size_t i = 0; i < n; ++i) ASSERT_DOUBLE_EQ(got_copy[i], a[i]) << i;
+
+  fuse::num::scale<TypeParam>(2.75, F::c(d_a), F::m(d_out));
+  auto got_scale = F::download(d_out);
+  for (std::size_t i = 0; i < n; ++i) {
+    ASSERT_DOUBLE_EQ(got_scale[i], 2.75 * a[i]) << i;
+  }
+
+  fuse::num::residual<TypeParam>(F::c(d_a), F::c(d_b), F::m(d_out));
+  auto got_residual = F::download(d_out);
+  for (std::size_t i = 0; i < n; ++i) {
+    ASSERT_DOUBLE_EQ(got_residual[i], a[i] - b[i]) << i;
+  }
+}
+
+TYPED_TEST(SpaceKernels, RemapApplyMultiComponentMatchesApplyWeightsOrder) {
+  using F = SpaceKernels<TypeParam>;
+  constexpr std::size_t rows = 64;
+  constexpr std::size_t per_row = 3;
+  constexpr std::size_t cols = 40;
+  constexpr std::size_t components = 3;
+
+  // Row-major sorted triplets (row ascending, col ascending within a row) --
+  // RemapWeights' own documented invariant -- with some rows deliberately
+  // empty (row_begin(j) == row_begin(j+1)) so the CSR prefix scan's gap
+  // handling is exercised, not just the dense case.
+  std::vector<std::size_t> row_begin(rows + 1, 0);
+  std::vector<std::size_t> col;
+  std::vector<double>      val;
+  for (std::size_t j = 0; j < rows; ++j) {
+    const std::size_t k = (j % 5 == 4) ? 0 : per_row;  // every 5th row empty
+    for (std::size_t e = 0; e < k; ++e) {
+      col.push_back((j * 11 + e * 17) % cols);
+      val.push_back(0.2 + 0.1 * static_cast<double>(e));
+    }
+    row_begin[j + 1] = row_begin[j] + k;
+  }
+  const auto x = F::ramp(cols * components, 1.0, 0.3);
+
+  // The oracle: apply_weights' own COO scan (fuse/backend/remap_plan.hpp),
+  // over the SAME triplets in the SAME (row-major, ascending-within-row)
+  // order -- exactly what the CSR conversion the runtime does once at plan
+  // time is supposed to preserve.
+  std::vector<double> want(rows * components, 0.0);
+  for (std::size_t j = 0; j < rows; ++j) {
+    for (std::size_t k = row_begin[j]; k < row_begin[j + 1]; ++k) {
+      for (std::size_t c = 0; c < components; ++c) {
+        want[j * components + c] += val[k] * x[col[k] * components + c];
+      }
+    }
+  }
+
+  auto d_rb = F::upload_idx(row_begin, "row_begin");
+  auto d_col = F::upload_idx(col, "col");
+  auto d_val = F::upload(val, "val");
+  auto d_x = F::upload(x, "x");
+  auto d_y = F::upload(std::vector<double>(rows * components, -1.0), "y");
+  fuse::num::remap_apply<TypeParam>(F::ix(d_rb), F::ix(d_col), F::c(d_val),
+                                    F::c(d_x), F::m(d_y), components);
+
+  const auto got = F::download(d_y);
+  for (std::size_t j = 0; j < rows * components; ++j) {
+    ASSERT_NEAR(got[j], want[j], 1e-13 * (1.0 + std::abs(want[j]))) << j;
+  }
+}
+
+/// KNOWN_ISSUES.md D11 / matrix cell A-SPACES-TRANSPORT: the fixed-chunk
+/// scheme `deterministic_dot`/`deterministic_sum`/`deterministic_norm_squared`
+/// use so the runtime's own reductions (iteration.cpp's block residual/value
+/// norms) stay bit-for-bit independent of the execution space's thread count.
+///
+/// The reference below is plain host C++ that implements the SAME algorithm
+/// space_kernels.hpp documents -- chunk into `kDeterministicChunk`, sum each
+/// chunk ascending, then sum the chunk partials ascending -- not
+/// `fuse::num::sum`'s single-accumulator oracle, which re-associates
+/// differently the moment a buffer spans more than one chunk (that header's
+/// own comment on why the two are not the same bits in general). Comparing
+/// against THIS reference with EXPECT_EQ (no tolerance) is possible only
+/// because it is the identical computation, and it is what actually pins the
+/// property this cell needs: a caller cannot get a different answer no
+/// matter how the Kokkos runtime happened to partition the chunk loop across
+/// threads, because the finalising sum never runs through Kokkos at all.
+///
+/// ADVERSARIAL DATA: alternating +1e16/1.0/-1e16/1e-16 magnitudes, so that
+/// ANY re-association -- a different chunk boundary, a tree instead of a
+/// scan, a plain running accumulator instead of chunking at all -- moves the
+/// rounding and is caught, rather than the test coincidentally passing
+/// because every candidate scheme rounds the same way on well-scaled data.
+namespace {
+std::vector<double> AdversarialMagnitudes(std::size_t n) {
+  std::vector<double> v(n);
+  static constexpr double kPattern[4] = {1e16, 1.0, -1e16, 1e-16};
+  for (std::size_t i = 0; i < n; ++i) {
+    // Not a clean period-4 repeat: a per-element sign/scale wobble on top of
+    // the base pattern, so a scheme that only happens to agree with the
+    // reference on an exactly-periodic input is not let off the hook.
+    const double wobble = 1.0 + 0.125 * std::sin(0.91 * static_cast<double>(i));
+    v[i] = kPattern[i % 4] * wobble;
+  }
+  return v;
+}
+
+double ChunkedSerialReference(const std::vector<double>& v,
+                              std::size_t chunk) {
+  const std::size_t n = v.size();
+  const std::size_t n_chunks = (n + chunk - 1) / chunk;
+  double total = 0.0;
+  for (std::size_t c = 0; c < n_chunks; ++c) {
+    const std::size_t begin = c * chunk;
+    const std::size_t end = (begin + chunk < n) ? begin + chunk : n;
+    double s = 0.0;
+    for (std::size_t i = begin; i < end; ++i) s += v[i];
+    total += s;
+  }
+  return total;
+}
+
+double ChunkedSerialDotReference(const std::vector<double>& a,
+                                 const std::vector<double>& b,
+                                 std::size_t chunk) {
+  const std::size_t n = a.size();
+  const std::size_t n_chunks = (n + chunk - 1) / chunk;
+  double total = 0.0;
+  for (std::size_t c = 0; c < n_chunks; ++c) {
+    const std::size_t begin = c * chunk;
+    const std::size_t end = (begin + chunk < n) ? begin + chunk : n;
+    double s = 0.0;
+    for (std::size_t i = begin; i < end; ++i) s += a[i] * b[i];
+    total += s;
+  }
+  return total;
+}
+
+double ChunkedSerialDiffSquaredReference(const std::vector<double>& a,
+                                         const std::vector<double>& b,
+                                         std::size_t chunk) {
+  const std::size_t n = a.size();
+  const std::size_t n_chunks = (n + chunk - 1) / chunk;
+  double total = 0.0;
+  for (std::size_t c = 0; c < n_chunks; ++c) {
+    const std::size_t begin = c * chunk;
+    const std::size_t end = (begin + chunk < n) ? begin + chunk : n;
+    double s = 0.0;
+    for (std::size_t i = begin; i < end; ++i) {
+      const double d = a[i] - b[i];
+      s += d * d;
+    }
+    total += s;
+  }
+  return total;
+}
+}  // namespace
+
+TYPED_TEST(SpaceKernels,
+          DeterministicReductionsMatchTheChunkedReferenceExactly) {
+  using F = SpaceKernels<TypeParam>;
+  // Sizes deliberately straddling the chunk boundary (256): one well below
+  // it (single chunk -- must also equal a plain ascending sum), one that
+  // lands exactly on a multiple, and two with a partial last chunk.
+  for (const std::size_t n : {std::size_t{1}, std::size_t{37},
+                              std::size_t{256}, std::size_t{257},
+                              std::size_t{4096}, std::size_t{100'000}}) {
+    const auto a = AdversarialMagnitudes(n);
+    const auto b = AdversarialMagnitudes(n + 1);  // deliberately different
+    std::vector<double> b_trim(b.begin(), b.begin() + static_cast<long>(n));
+
+    auto d_a = F::upload(a, "a");
+    auto d_b = F::upload(b_trim, "b");
+    const std::size_t n_chunks = fuse::num::deterministic_chunks(n);
+    auto d_scratch =
+        F::upload(std::vector<double>(n_chunks, 0.0), "scratch");
+
+    const double got_sum =
+        fuse::num::deterministic_sum<TypeParam>(F::c(d_a), F::m(d_scratch));
+    const double want_sum =
+        ChunkedSerialReference(a, fuse::num::kDeterministicChunk);
+    EXPECT_EQ(got_sum, want_sum) << "deterministic_sum, n=" << n;
+
+    const double got_dot = fuse::num::deterministic_dot<TypeParam>(
+        F::c(d_a), F::c(d_b), F::m(d_scratch));
+    const double want_dot =
+        ChunkedSerialDotReference(a, b_trim, fuse::num::kDeterministicChunk);
+    EXPECT_EQ(got_dot, want_dot) << "deterministic_dot, n=" << n;
+
+    const double got_ns = fuse::num::deterministic_norm_squared<TypeParam>(
+        F::c(d_a), F::m(d_scratch));
+    const double want_ns =
+        ChunkedSerialDotReference(a, a, fuse::num::kDeterministicChunk);
+    EXPECT_EQ(got_ns, want_ns) << "deterministic_norm_squared, n=" << n;
+
+    const double got_nsd =
+        fuse::num::deterministic_norm_squared_diff<TypeParam>(
+            F::c(d_a), F::c(d_b), F::m(d_scratch));
+    const double want_nsd = ChunkedSerialDiffSquaredReference(
+        a, b_trim, fuse::num::kDeterministicChunk);
+    EXPECT_EQ(got_nsd, want_nsd) << "deterministic_norm_squared_diff, n=" << n;
+
+    // n <= kDeterministicChunk: the chunked scheme is a SINGLE chunk, i.e.
+    // exactly the plain ascending accumulator -- so it must also agree with
+    // fuse::num::sum (kernels.hpp), not just with the chunked reference
+    // above (which would trivially agree with itself for any chunk size).
+    if (n <= fuse::num::kDeterministicChunk) {
+      EXPECT_EQ(got_sum, fuse::num::sum(a.data(), n))
+          << "single-chunk deterministic_sum must equal the plain "
+          << "ascending oracle, n=" << n;
+    }
+  }
+}
+
 TYPED_TEST(SpaceKernels, TheSpaceUnderTestIsNamedInTheRecord) {
   // So a reader of CI output can see WHICH spaces ran, rather than inferring
   // it from the build flags. A typed test that silently instantiates once is
