@@ -69,16 +69,35 @@ new = "    // MUTATED: no ownership guard -- every local entity gets a row"
 target = "fuse_parallel_nodal_remap_distributed_test"
 test = "parallel.nodal_remap_distributed.2"
 requires = "mpi"
-# NOT-ASSESSED in this sandbox. Expected kill: at any rank count with a
-# genuinely shared boundary vertex between the target's own rank blocks
-# (GeometricLineMesh's overlap-by-one-vertex layout, DisjointRankSets /
-# PartiallyOverlappingRankSets), `rows.rows.size()` would exceed the number
-# of GLOBALLY owned evaluation entities on this rank by exactly the number of
-# ghost entities it holds, and `check_affine_exact_and_conservative`'s H^T
-# total-load conservation check (`total_sent` computed as
-# `rows.rows.size()` summed globally) would report MORE load sent than the
-# target mesh's true global entity count, failing the `EXPECT_NEAR(total_sent,
-# total_received, ...)` assertion.
+# SURVIVED on the host's real np=2 run (2026-09-28), traced by hand and fixed
+# in the test, not here -- the row above's OWN "expected kill" reasoning was
+# wrong. At np=2 `IdenticalRankSets` (`check_affine_exact_and_conservative(9,
+# all, 13, all)`) DOES hit a genuine ghost: `GeometricLineMesh`'s
+# overlap-by-one-vertex rule (test/support/partitioned_test_backend.hpp) puts
+# rank 1's own local index 0 as a non-owned copy of rank 0's last owned
+# vertex. Under the mutation, rank 1 now also builds a row for that ghost --
+# a real duplicate of rank 0's row for the SAME physical target vertex. But
+# `check_affine_exact_and_conservative`'s H^T conservation check cannot see
+# it: `total_sent` (rows.rows.size() summed globally) and `total_received`
+# (what lands back on the source via `apply_distributed_HT`) move together
+# for ANY row set whose per-row weights sum to ~1 (`max_row_defect < 1e-10`
+# guarantees this) -- the duplicate row adds exactly 1 unit to both sides at
+# once, so `EXPECT_NEAR(total_sent, total_received, ...)` still holds. The
+# check tests "H and H^T are exact transposes of whatever rows exist", not
+# "exactly one row per owned target entity", despite its own comment's claim.
+# FIX (this row's `test`, same target/test names, no manifest field changed):
+# test/parallel/nodal_remap_distributed_test.cpp now asserts
+# `EXPECT_EQ(rows.rows.size(), tgt_view->owned_count(0))` right after
+# `rows_r` is obtained -- a direct, local, independent-ground-truth check of
+# the exact invariant this mutation breaks, with no load-conservation
+# arithmetic to cancel through. Verified by hand: at np=2, `IdenticalRankSets`
+# rank 1's mutated `rows.rows.size()` (all local entities, including its
+# ghost) no longer equals `owned_count(0)` (which still excludes the ghost),
+# so the new assertion fails under the mutation and passes on the unmutated
+# build (both traced against `GeometricLineMesh::is_owned`/`owned_count`
+# directly; not run in this sandbox -- MPI cannot initialise here). Not
+# marked `equivalent`: the guard is genuinely load-bearing, only the
+# PRE-EXISTING assertion was too weak to say so.
 
 [[mutation]]
 id = "nodal-remap-dist-transpose-sums-in-rank-order-not-contributor-gid"
