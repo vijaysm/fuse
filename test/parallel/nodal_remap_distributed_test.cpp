@@ -66,6 +66,23 @@ void check_affine_exact_and_conservative(std::size_t n_src, fuse::RankSet src_ra
   const fuse::DistributedInterpRows& rows = rows_r.value();
   EXPECT_LT(rows.max_row_defect, 1e-10);
 
+  // Ownership uniqueness, checked DIRECTLY and locally: exactly one row per
+  // OWNED target evaluation entity on this rank, never one for a ghost too.
+  // This is NOT implied by the load-conservation check further down --
+  // apply_distributed_H / apply_distributed_HT redistribute whatever `rows`
+  // it is handed with total_sent == total_received for ANY row set whose
+  // per-row weights sum to ~1 (a duplicated ghost row included: it adds the
+  // same unit to both sides at once), so that check alone cannot see a ghost
+  // that wrongly got its own row built. `owned_count(0)` is the independent
+  // ground truth `rows.rows.size()` must match (mesh_view.hpp's own
+  // contract); a mismatch here is exactly what
+  // "nodal-remap-dist-row-built-on-every-holder" (build-evidence/mutations/
+  // nodal-remap-distributed.toml) removes the guard against.
+  EXPECT_EQ(rows.rows.size(), tgt_view->owned_count(0))
+      << "build_distributed_interp_rows must build exactly one row per "
+         "OWNED target evaluation entity on this rank, never one for a "
+         "ghost too";
+
   // v(x) = 2 + 3x, exact for P1 -- src_view's OWNED and ghost vertices alike
   // need a value (apply_distributed_H only reads OWNED ones, but the buffer
   // must still be full-sized).
