@@ -938,10 +938,33 @@ TEST(RunnerTransport, AChannelOutsideTheRegionStillCompletesAfterTheRegionFails)
                            fuse::AccelKind::None,
                            /*with_independent_channel=*/true,
                            /*fail_fluid_after=*/0, /*shape=*/Overlap::Disjoint,
-                           /*independent_interval=*/fuse::Rational{1},
+                           /*independent_interval=*/fuse::Rational{1, 2},
                            CouplerShape::None,
                            /*independent_consumer_outside_region=*/true);
   ASSERT_GT(h.plan.region_count(), 0u);
+  // PRECONDITION, identical on every rank (the plan is): at least one
+  // Transport ordered after the region's exit. That is linkB's t=1 exchange
+  // in the stream the host printed for this graph (interval 1/2); if the
+  // scheduler ever orders it before the region, nothing after the region is
+  // left to abandon and this test could not see the mutant -- the first
+  // version, at interval 1, failed on exactly one rank (2026-09-28), most
+  // likely the outside one finishing its exchange before any failure.
+  const auto& stream = h.plan.instructions();
+  std::size_t exit_at = stream.size();
+  for (std::size_t k = 0; k < stream.size(); ++k) {
+    if (stream[k].region_exit >= 0) { exit_at = k; break; }
+  }
+  std::size_t transports_after = 0;
+  for (std::size_t k = exit_at + 1; k < stream.size(); ++k) {
+    if (stream[k].kind == fuse::OpKind::Transport) ++transports_after;
+  }
+  if (current_rank() == 0) {
+    std::printf("[D3-outside] region exits at instruction %zu; %zu Transport(s) after it; stream:\n%s\n",
+                exit_at, transports_after, h.plan.to_string().c_str());
+  }
+  ASSERT_GT(transports_after, 0u)
+      << "nothing collective is ordered after the region, so this graph cannot "
+         "detect 'region-failure-abandons-the-rest-of-the-period'";
   Runner runner{h.graph, h.dag, h.plan, h.backend};
   bind_all(h);
 
@@ -955,6 +978,11 @@ TEST(RunnerTransport, AChannelOutsideTheRegionStillCompletesAfterTheRegionFails)
   const int me = current_rank();
   const bool outside = me == world_size() - 1;
   const auto r = runner.run_period(h.components);
+  // Every rank prints its own verdict: only rank 0's gtest output reaches the
+  // log, and the first host run showed one failing rank without its message.
+  std::printf("[D3-outside] rank %d (%s): ok=%d code=%s\n", me, outside ? "outside" : "region",
+              r.ok() ? 1 : 0, r.ok() ? "-" : r.error().code.c_str());
+  std::fflush(stdout);
   ASSERT_FALSE(r.ok()) << "rank " << me
                        << ": the period must fail everywhere, including on the "
                           "rank that only belongs to linkB";
