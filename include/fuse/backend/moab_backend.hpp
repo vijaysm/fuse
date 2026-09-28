@@ -182,6 +182,43 @@ class MoabMeshBackend final : public MeshBackend {
   [[nodiscard]] Result<int> partition_rank_of(const Region& r,
                                               std::size_t local_index) const;
 
+  /// FIXTURE-PREP SEAM, added for the `A-PARTITIONED` parallel-matrix cell
+  /// (`build-evidence/parallel-matrix.toml`), used from test code only.
+  ///
+  /// `build_remap_halo`'s covering-set construction refuses a spherical pair
+  /// whose two meshes fit to DIFFERENT radii (`E-REMAP-GEOMETRY`, "not the
+  /// same domain") -- correctly, because in general two different radii ARE
+  /// two different domains and the library cannot know they are meant to be
+  /// the same sphere in different units. MOAB's own non-matching spherical
+  /// fixture pair (`wholeATM_T.h5m`, radius 1; `recMeshOcn.h5m`, radius
+  /// 6371229, i.e. Earth radius in metres) is exactly that case: two REAL
+  /// meshes, each individually a well-formed sphere, at two different
+  /// nominal radii. This rescales mesh `id`'s vertices by a single scalar
+  /// factor -- `1 / fitted_radius` -- so that calling it on both meshes of
+  /// such a pair puts them on a common (unit) sphere before
+  /// `build_remap_halo`/`build_weights` ever sees them. It does not attempt
+  /// to reconcile two meshes that are NOT individually spherical; that
+  /// remains `E-MESH-GEOMETRY`, the same failure mode `build_remap_halo`
+  /// itself would reach, reported earlier and by name.
+  ///
+  /// COLLECTIVE over the backend's communicator when one is set: on a
+  /// partitioned read this rank may hold only a subset of the mesh's
+  /// vertices, so the min/max radius used to decide "is this a sphere" and
+  /// to compute the rescale factor is reduced over every rank holding a
+  /// piece of it, the same reconciliation discipline `build_remap_halo`
+  /// itself uses for `fit_surface`. Every rank holding this mesh must call
+  /// this for the same mesh, in the same order, exactly once before the
+  /// first geometry-sensitive call (`build_remap_halo`, `build_weights`).
+  ///
+  /// Returns the applied scale factor (1 for a mesh already on the unit
+  /// sphere, to the same `E-REMAP-GEOMETRY`-style tolerance `fit_surface`
+  /// uses). Errors, never throws: `E-MESH-MOVED`, `E-MESH-ID`,
+  /// `E-MESH-GEOMETRY` (the mesh's vertices are not at one common radius
+  /// about the origin, so there is no single sphere to project it onto),
+  /// `E-MESH-HALO` (the collective reduction of the radius failed), and
+  /// MOAB read/write failures as `E-MOAB-QUERY`.
+  [[nodiscard]] Result<double> project_onto_unit_sphere(MeshId id);
+
   // =========================================================================
   // THE REMAP HALO (R3).
   //
