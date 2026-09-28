@@ -904,6 +904,75 @@ TEST(RunnerTransport, StillRunsASecondChannelAfterARegionFailsUnderMpi) {
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
+// Mutation "coupler-region-participants-missing-its-ranks"
+// (transport-runtime.toml): resolve_regions()'s coupler-rank union scan --
+// the `for (i = R.enter; i <= R.exit; ++i)` loop over the region's own
+// Transport/Epoch instructions, added specifically so a coupler-routed
+// channel's coupler is counted among `R.participants` even though it owns
+// no checkpointed field and so is invisible to `derive_checkpoint_set()`'s
+// `cp.components` -- is mutated to `i < R.enter`, an empty loop, so
+// `region_ranks` never gains the coupler's ranks at all.
+//
+// SHAPE: `Overlap::Full` + `CouplerShape::Disjoint` puts "fluid" AND
+// "solid" on the SAME `RankSet{0, world_size()-1}` (coincident with EACH
+// OTHER) and the coupler alone on the one remaining rank, disjoint from
+// both -- so `cp.components`' own ranks (fluid/solid, coincident) give
+// `region_ranks.size() == 1` BEFORE the coupler scan runs at all. Under
+// correct code the scan pushes the coupler's rank too, `region_ranks.
+// size() == 2`, `R.participants` is set to it. Under the mutation
+// `region_ranks` stays size 1, so `R.participants` is left EMPTY (`if
+// (region_ranks.size() > 1)` never fires) -- exactly the "no communicator,
+// or every checkpointed component on one rank" case resolve_regions()'s own
+// comment says is legitimately treated as "purely local".
+//
+// TRACED KILL, no hang needed (like `StillRunsASecondChannelAfterARegionFailsUnderMpi`
+// above, this fixture's failure is a clean, local verdict mismatch, not a
+// collective one): `resolve_regions()`'s OWN per-block guard,
+// `if (b.length == 0 && R.participants.size() <= 1) return Failure{
+// "E-RT-REGION", "... would report convergence after one sweep"};`
+// (src/runtime/iteration.cpp, immediately below the participants scan --
+// see that function's own comment: "a rank that IS a genuine participant
+// of a multi-rank region... is ordinary... Outside that case... an empty
+// coupling value is still what it always was... refused below"), fires on
+// the COUPLER's rank specifically: the coupler's own local `b.length`
+// (this region's coupling-value block, sized from ITS OWN buffer) is 0
+// (it owns no checkpointed field), and under the mutation
+// `R.participants.size() <= 1` on every rank (participants is graph-
+// derived, hence identical everywhere) -- so the refusal that is correctly
+// SKIPPED (treated as the ordinary "n == 0" no-op) when the coupler is
+// correctly counted instead FIRES, on the coupler's rank only, the moment
+// `runner.initialize()` reaches this region. `fluid`/`solid`'s own rank
+// never hits it (their block length is > 0 there), so this is an
+// asymmetric, per-rank INITIALIZE()-time verdict split -- observable with
+// nothing collective having run yet, unlike the region-body mutation above.
+TEST(RunnerTransport, IterationRegionParticipantsIncludeADisjointCoupler) {
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);  // one rank for fluid/solid (coincident), one for the coupler
+  auto h = TwoComponentJob("", /*with_iteration_region=*/true,
+                           fuse::AccelKind::None,
+                           /*with_independent_channel=*/false,
+                           /*fail_fluid_after=*/-1, /*shape=*/Overlap::Full,
+                           /*independent_interval=*/fuse::Rational{1},
+                           /*coupler=*/CouplerShape::Disjoint);
+  ASSERT_GT(h.plan.region_count(), 0u);
+  Runner runner{h.graph, h.dag, h.plan, h.backend};
+  bind_all(h);
+
+  fuse::RunnerConfig cfg;
+  cfg.transport         = "mpi";
+  cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
+  cfg.transport_setup   = mpi_comm_setup();
+  const auto init = runner.initialize(h.components, h.registry, cfg);
+  ASSERT_TRUE(init.ok())
+      << "rank " << current_rank() << ": a coupler disjoint from both "
+         "checkpointed components, on a region whose components alone "
+         "coincide on one rank, must be counted among the region's "
+         "residual-agreement participants -- otherwise resolve_regions()'s "
+         "own \"would report convergence after one sweep\" refusal fires on "
+         "the coupler's rank for a coupling value that is legitimately "
+         "zero-length there: " << init.error().code << ": " << init.error().message;
+  ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
+}
+
 // R-10 (REVIEW.md), the positive case: `A` and `B` each span the WHOLE
 // communicator (LinearFixedPointJob, above), so every rank owns a slice of
 // both -- and at 3 ranks, kEntities == 4 splits 2/1/1, giving genuinely
