@@ -315,13 +315,34 @@ note = """Compiles at tier 2 under FUSE_ENABLE_MOAB AND FUSE_ENABLE_MPI; UNRUN i
 [[cell]]
 id = "A-SPACES-TRANSPORT"
 axis = "host-parallel space, transport and runtime paths"
-gap = """Only `space_kernels_test.cpp` is typed over execution spaces, and the transport \
-and runtime paths do not CALL those kernels at all: src/runtime and src/schedule \
-execute no Kokkos kernel (KNOWN_ISSUES.md D11). So the space axis covers the \
-numerical kernels, the partitioner and the native mesh -- each now also run at \
-OMP_NUM_THREADS=1 and at every core (`ctest -L omp`) -- and not the coupling hot \
-loop, which is host-serial per rank. Closing this cell means moving the Runner \
-onto space_kernels.hpp, not writing a test."""
+pins = """KNOWN_ISSUES.md D11, CLOSED 2026-09-28: the coupling hot loop \
+(src/runtime/runner.cpp's execute(), src/runtime/iteration.cpp's run_region()) \
+now calls the same typed, space-portable kernels A-SPACES verifies on every \
+enabled execution space -- Runner::Impl::HostExecSpace is Kokkos:: \
+DefaultHostExecutionSpace, OpenMP here, Serial on a Serial-only build. \
+Elementwise ops (Scale, Merge, Residual, Relax, Interpolate/Sample copies, \
+Accumulate's finalize, the CSR-converted remap apply) are thread-count- \
+independent by construction -- each output element's write touches no other. \
+The two per-sweep REDUCTIONS (block value/residual norms) are not: a plain \
+Kokkos::parallel_reduce associates by the threads' own schedule, which this \
+runtime's bit-for-bit-across-thread-counts requirement cannot use, so they run \
+through a NEW fixed-chunk scheme instead (space_kernels.hpp's \
+deterministic_dot/deterministic_norm_squared/deterministic_norm_squared_diff). \
+Verified at the kernel level (typed, every enabled space, adversarial-magnitude \
+data) and at the Runner level (a real 2048-element iteration region -- large \
+enough to span several fixed chunks -- registered at every OMP_NUM_THREADS from \
+1 to the host's core count). What remains under A5: a device execution space, \
+which needs the host-only finalising sum these reductions still do (deep_copy \
+first) and the component-boundary host/device mirrors a device build would add."""
+file = "test/num/space_kernels_test.cpp"
+also_in = ["test/runtime/runner_determinism_test.cpp"]
+kind = "typed"
+test = [
+  "SpaceKernels.CopyScaleAndResidualMatchThePlainArithmetic",
+  "SpaceKernels.RemapApplyMultiComponentMatchesApplyWeightsOrder",
+  "SpaceKernels.DeterministicReductionsMatchTheChunkedReferenceExactly",
+  "RunnerDeterminism.LargeIterationRegionIsBitIdenticalAcrossThreadCounts",
+]
 
 [[cell]]
 id = "A-NODAL-OWNERSHIP"

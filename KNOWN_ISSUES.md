@@ -1017,32 +1017,146 @@ replay" for that one).
 
 ---
 
-### D11. The coupler's runtime executes no Kokkos kernel — OpenMP coverage of it is vacuous, and that is a capability gap
+### ~~D11. The coupler's runtime executes no Kokkos kernel — OpenMP coverage of it is vacuous, and that is a capability gap~~ — CLOSED 2026-09-28
 
 Found 2026-09-25 while answering "test Kokkos+OpenMP". Kokkos 5.1.0 is built with
 `OPENMP;SERIAL`, every test binary initialises OpenMP as the default execution
 space, and both physics examples produce byte-identical output at 1 and 8
-threads. That last fact is not reassurance: it holds because **`src/runtime/`
-and `src/schedule/` call no `Kokkos::parallel_*` at all.** The Runner's
-weighted sums, residual norms, remap apply and accelerators are the serial
+threads. That last fact was not reassurance: it held because `src/runtime/`
+and `src/schedule/` called no `Kokkos::parallel_*` at all. The Runner's
+weighted sums, residual norms, remap apply and accelerators were the serial
 loops in `num/kernels.hpp`; the typed, space-portable kernels in
-`num/space_kernels.hpp` are verified on every enabled space
+`num/space_kernels.hpp` were verified on every enabled space
 (`SpaceKernels/*`) and called by nothing.
 
-Kokkos code that does execute, and is now measured at both thread extremes
-(`ctest -L omp`, 22 tests): the RCB partitioner (`partition/*`, whose
-`median.hpp` histogram sums weights with `Kokkos::atomic_add` — the one
-order-dependent accumulation in the library), the native mesh, and the typed
-kernels. `tools/compare-runs.cmake` compares the two examples' output bit for
-bit across thread counts, and is in the tree so that the day the runtime moves
-onto Kokkos and the comparison stops holding trivially, it fails.
+**Fix.** `src/runtime/runner.cpp`'s `execute()` and `src/runtime/
+iteration.cpp`'s `run_region()` now call `space_kernels.hpp`'s kernels over
+`Runner::Impl::HostExecSpace` (`Kokkos::DefaultHostExecutionSpace` — OpenMP
+here, Serial on a Serial-only build), wrapping the SAME existing raw pointers
+as unmanaged `SpanOf`/`ConstSpanOf` views at zero allocation cost:
 
-**What this means for the plan.** "Performance portability" for the coupler
-today means the *partitioner and mesh* are portable; the coupling hot loop is
-host-serial per rank. Moving it onto `space_kernels.hpp` is the step before
-any device number means anything (A5), and it will make the `omp` leg and the
-example comparison load-bearing rather than trivially green. The matrix gap
-`A-SPACES-TRANSPORT` is this entry in the manifest's terms.
+  * **Elementwise** (`Scale`, `Merge`, `Residual`, `Relax`, `Interpolate`/
+    `Sample`'s copies, `Sample`'s `accumulate_into`, `Accumulate`'s
+    `accumulate_finalize`, `Extrapolate`'s order-0 copy) — thread-count-
+    independent by construction: each output element's write touches no
+    other, so no argument about associativity is needed. Two new additive
+    kernels, `copy<Space>`/`scale<Space>`, cover what `kernels.hpp`'s
+    pointer-based `copy` and a hand-written scale loop did; `Merge`'s Sum/
+    Mean reuses the existing `accumulate<Space>` kernel once per input
+    channel, in declaration order, which is the identical zero-then-
+    accumulate-in-order the hand-written loop it replaces did.
+  * **The remap apply** — `apply_weights`'s COO scan is now a CSR matvec
+    (`space_kernels.hpp`'s `remap_apply`, a new multi-component overload for
+    `components > 1`), with the CSR built ONCE per plan, in `resolve_remap()`
+    (`build_remap_csr()`), never per period. `RemapWeights::row`'s own header
+    comment ("target entity, ascending") is NOT trusted as a universal
+    invariant — `consistent_interp.hpp`'s `"consistent-transpose"` path
+    transposes H's row-sorted triplets and does not re-sort the result, so
+    `build_remap_csr()` STABLE-sorts by row itself rather than assuming;
+    stability is what makes the CSR's per-row sum bit-identical to
+    `apply_weights`' own ascending-k scan regardless of the input's original
+    order (found by a real Tier-0 test failure — `InterfaceTransfer.
+    ConsistentPairRunsThroughTheRunnerExactlyAndBalancesPower` and two
+    siblings — that a first cut of this fix, which DID assume `row` was
+    always ascending, got wrong; see `include/fuse/backend/remap_plan.hpp`'s
+    `RemapCsr`-adjacent comment in `runner_impl.hpp` for the argument).
+  * **Reductions** — `iteration.cpp`'s block value/residual norms are the
+    one place a plain `Kokkos::parallel_reduce` would have been WRONG: its
+    own header comment says its summation order is the threads', which this
+    runtime's bit-for-bit-across-thread-counts requirement cannot use. Three
+    new kernels, `deterministic_sum`/`deterministic_dot`/
+    `deterministic_norm_squared`(`_diff`), use a FIXED-CHUNK scheme instead:
+    `Kokkos::parallel_for` over `ceil(n / 256)` chunks, each summing its own
+    span sequentially into one scratch partial, then a plain host loop sums
+    the partials in ascending chunk order — fixed by `n` alone, never by
+    thread count. For `n <= 256` (every existing Tier-0 iteration-region
+    fixture) this is the identical computation as the single-accumulator sum
+    it replaced, bit for bit; scratch is sized once, in `initialize()`, from
+    the largest block any region has, and reused every sweep.
+
+**A label-length trap, found and fixed the same way it would be found again.**
+`Kokkos::parallel_for`/`parallel_reduce` copy their label into a
+`std::string`; a label past this tree's libc++'s small-string-optimisation
+capacity (measured: 22 characters) heap-allocates one PER CALL. The first cut
+of the three `deterministic_*` kernels used self-describing 31-45 character
+labels, and `runtime.iteration`'s two allocation-counted tests
+(`Iteration.TheSweepLoopAllocatesNothing`/
+`TheAcceleratorAllocatesNothingPerUpdate`) caught it immediately — 852 and 256
+allocations where both expect 0. Fixed by shortening every label a
+Runner-owned path reaches to stay under budget (`space_kernels.hpp`'s own
+header comment records the number so a future kernel does not reintroduce
+it).
+
+**Verified, measured, this session:**
+
+  * Full Tier-0 build: 0 errors. Full Tier-0 `ctest`: **136/136 (100%)**,
+    including every `example.*.omp_identical` leg (`mms_pair`, `dn_heat`,
+    `brusselator` — `fsi_channel` has never had one registered, unrelated to
+    this closing) and `ctest -L omp` (29 legs, 100%). Getting the
+    `omp_identical` legs to run at all also fixed a pre-existing
+    `test/CMakeLists.txt` scoping bug: `FUSE_KOKKOS_HAS_OPENMP`/
+    `_fuse_host_cores` were `set()` without `PARENT_SCOPE`, so
+    `examples/CMakeLists.txt` — a sibling directory, not a child — never saw
+    them and silently registered ZERO `omp_identical` tests for ANY example,
+    including `brusselator`'s pre-existing, genuinely-Kokkos one. Every
+    example whose `main()` calls into the Runner (`mms_pair`, `dn_heat`,
+    `fsi_channel`, `gray_scott`) also gained its own `Kokkos::ScopeGuard`,
+    matching `brusselator`'s and `layout_driver`'s: Kokkos `View`
+    construction — even unmanaged — asserts `Kokkos::initialize()` has run,
+    which none of those four needed before this closing.
+  * A new typed test, `SpaceKernels.
+    DeterministicReductionsMatchTheChunkedReferenceExactly`, compares against
+    a plain-host reference implementing the identical chunked algorithm
+    (adversarial 1e16/1.0/-1e16/1e-16-magnitude data) with `EXPECT_EQ` — no
+    tolerance — at six sizes straddling the chunk boundary; registered with
+    `fuse_add_omp_legs`. A new Runner-level test, `runtime.
+    runner_determinism`, drives a real 2048-element iteration region (large
+    enough to span 8 fixed chunks) through `Relax`/`Residual` and pins the
+    delivered field and the residual history to literals measured on this
+    session's own passing run, also registered with `fuse_add_omp_legs`.
+  * **Mutation-verified, by hand** (`tools/mutate.py` was not run against the
+    tree; each mutation below was applied, built, run, and restored
+    byte-for-byte via `diff`):
+    - Replacing `deterministic_dot`'s fixed-chunk scheme with a plain
+      `Kokkos::parallel_reduce` is killed by the new typed test on BOTH
+      `Kokkos::OpenMP` and `Kokkos::Serial`, at every thread count — it is
+      sensitive to any re-association, of which a thread-count difference is
+      one case.
+    - The same mutation applied to `deterministic_norm_squared_diff` is ALSO
+      killed by `runtime.runner_determinism`, and demonstrates the actual
+      defect this closing prevents: unmutated, `residual_history.back()`
+      measures `1.8888945275990152` at `OMP_NUM_THREADS` 1, 8 and 12 alike
+      (bit-identical); mutated, `OMP_NUM_THREADS=1` gives
+      `1.8888945275990165` while `=12` happens to coincide with the
+      unmutated literal — the mutation makes the answer DEPEND ON THREAD
+      COUNT, which is exactly what this closing exists to prevent.
+    - `runtime-scale-runs-serial-loop` (reverting `OpKind::Scale` to its old
+      hand-written loop) is an HONEST NON-KILL: the full Tier-0 suite still
+      passed 100% with it applied. No test can distinguish a
+      `Kokkos::parallel_for` over independent elements from a serial loop
+      computing the identical products with identical rounding — there is no
+      reduction to reassociate, so nothing about correctness, determinism,
+      or the observable output differs, only which code path executed. The
+      same is true of every other elementwise op this closing moved; Scale
+      is the one instance named, not a special case among them. Recorded as
+      a named gap (`build-evidence/mutations/transport-runtime.toml`), not a
+      fabricated row: `tools/mutate.py`'s manifest loader requires
+      `new`/`target`/`test` on every `[[mutation]]` row or aborts for the
+      WHOLE tree, and there is no honest value to give those keys here.
+  * `tools/check-parallel-matrix.py`: the `A-SPACES-TRANSPORT` gap is closed
+    (70 claims verified, 0 broken, 1 gap remaining — `A-NODAL-HT-PARALLEL`,
+    unrelated). `tools/mutate.py --check-anchors`: 179/179 valid (fixing one
+    stale anchor this closing's own new `remap_apply` overload introduced by
+    accidentally duplicating an existing mutation's anchor text verbatim).
+
+**What is NOT claimed, and remains open under A5.** No device performance
+number, and no device correctness number: this machine has no GPU. The
+`deterministic_*` reductions' finalising sum reads `scratch` with plain host
+code and are `static_assert`-guarded to a host-accessible memory space; a
+device build needs a `deep_copy` of the partials to a host mirror first,
+which nothing here implements. Moving the Runner onto a device execution
+space, and the host/device mirrors a real coupled run would need at the
+component boundary, is A5's own next step, not this closing's.
 
 ---
 

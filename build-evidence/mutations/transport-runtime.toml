@@ -272,3 +272,79 @@ requires = "mpi"
 # forever on a collective the reduced participant list never reaches) or
 # under-count the region's participants in R-10's own cross-rank residual
 # reduction.
+
+# KNOWN_ISSUES.md D11 (closing) / matrix cell A-SPACES-TRANSPORT: the
+# coupling hot loop moved onto Kokkos' default host execution space
+# (fuse/num/space_kernels.hpp), and the deterministic-reduction scheme that
+# makes its reductions thread-count-independent is what the two rows below
+# guard. Both hand-verified (apply the `old`->`new` text by hand, rebuild,
+# run, restore byte-for-byte via cmp -- tools/mutate.py was not run, per
+# this file's own standing note elsewhere in the tree that it edits
+# repository sources in place and is unsafe against a shared checkout).
+
+[[mutation]]
+id = "runtime-reduction-not-deterministic"
+area = "runtime"
+describes = "space_kernels.hpp's deterministic_dot/deterministic_norm_squared_diff -- the fixed-chunk, serial-combine scheme iteration.cpp's block value/residual norms use so run_region()'s convergence decision is bit-for-bit independent of the execution space's thread count -- reverts to a plain Kokkos::parallel_reduce over the whole range. A parallel_reduce's summation order is the threads', not the deterministic scheme's, so the SAME input gives a DIFFERENT last-bit answer at different OMP_NUM_THREADS, which is exactly the property D11 closes."
+file = "include/fuse/num/space_kernels.hpp"
+old = "  Kokkos::parallel_for(\n      \"fuse::det_dot_part\", Kokkos::RangePolicy<Space>(0, n_chunks),"
+new = "  double result = 0.0; Kokkos::parallel_reduce(\"fuse::det_dot_MUT\", Kokkos::RangePolicy<Space>(0, a.extent(0)), KOKKOS_LAMBDA(const std::size_t i, double& acc) { acc += a(i) * b(i); }, result); return result; if (false) Kokkos::parallel_for(\n      \"fuse::det_dot_part\", Kokkos::RangePolicy<Space>(0, n_chunks),"
+target = "fuse_num_space_kernels_test"
+test = "num.space_kernels"
+note = """Hand-verified on BOTH functions this scheme has (deterministic_dot,
+which deterministic_norm_squared calls, and the independently-implemented
+deterministic_norm_squared_diff), not the anchor above (a minimal, syntactically-
+valid patch of deterministic_dot's body is what is recorded, matching the
+mutation actually run by hand):
+
+  * deterministic_dot mutated -> SpaceKernels.
+    DeterministicReductionsMatchTheChunkedReferenceExactly (test/num/
+    space_kernels_test.cpp) fails at n=4096 and n=100'000 -- on BOTH Kokkos::
+    OpenMP and Kokkos::Serial, at OMP_NUM_THREADS=1 and =12 alike: this typed
+    test compares against a plain host reference that implements the SAME
+    fixed-chunk algorithm, so it catches ANY re-association, which a
+    thread-count difference is a special case of. Adversarial magnitudes
+    (1e16/1.0/-1e16/1e-16 with a per-element wobble) make the difference
+    unmissable rather than incidental.
+  * deterministic_norm_squared_diff mutated -> caught the same way by the
+    same typed test, AND by runtime.runner_determinism
+    (test/runtime/runner_determinism_test.cpp, a real 2048-element iteration
+    region through a real Runner): residual_history.back() measured
+    1.8888945275990152 unmutated at OMP_NUM_THREADS 1, 8 and 12 alike
+    (bit-identical); mutated, OMP_NUM_THREADS=1 gives 1.8888945275990165 (a
+    real, non-noise difference in the low digits) while OMP_NUM_THREADS=12
+    happens to coincide with the unmutated literal -- i.e. the mutation
+    makes the ANSWER DEPEND ON THREAD COUNT, which is precisely the defect
+    this row exists to catch, demonstrated by hand rather than assumed.
+
+Restored byte-for-byte after both experiments (diff against the pre-mutation
+copy was empty)."""
+
+# "runtime-scale-runs-serial-loop" -- asked for by name, deliberately NOT
+# registered as a [[mutation]] row here: tools/mutate.py's load_manifest()
+# requires every row (id, area, describes, file, old, new, target, test) or
+# raises SystemExit for the WHOLE manifest across every area (its own
+# comment: "found 2026-09-21 by adding two rows without target"), and there
+# is no honest `new`/`target`/`test` to give this one -- see below.
+#
+# HONEST NON-KILL, hand-verified rather than assumed: reverted OpKind::
+# Scale's execute() case from `num::scale<HostExecSpace>(...)` (a
+# Kokkos::parallel_for over an unmanaged view) to the plain serial
+# `for (i) out[i] = f*src[i];` loop it replaced, rebuilt, and ran the FULL
+# tier-0 ctest suite (133/133 at the time) -- 100% still passed, including
+# every omp_identical leg and runtime.runner_determinism. No test can
+# distinguish the two: a `Kokkos::parallel_for` over independent elements
+# and a serial loop compute the IDENTICAL sequence of `f * src[i]` products
+# with the IDENTICAL rounding (elementwise ops have no reduction to
+# reassociate), so nothing about correctness, determinism, or the
+# observable output differs -- only which code path executed, which no
+# functional test can see and this tree has no execution-tracing test for.
+# Restored byte-for-byte (diff against the pre-mutation copy was empty)
+# rather than left applied. The same reasoning applies to every OTHER
+# elementwise op this closing moved (Merge, Residual, Relax's num::relax
+# half, Interpolate/Sample's copies, Accumulate's finalize) for the
+# identical reason -- Scale is the one instance, not a special case among
+# them. Recorded here, in prose, as the honest answer rather than a
+# fabricated row; see KNOWN_ISSUES.md D11's closing entry for the same
+# statement made where a reader of the capability gap is more likely to
+# look for it first.

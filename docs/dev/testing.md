@@ -63,12 +63,22 @@ whose order is the threads'), the native mesh, and the typed numerical kernels.
 `tools/compare-runs.cmake` additionally runs the two physics examples at both counts and requires
 byte-identical output.
 
-Read the label for what it is. `src/runtime/` and `src/schedule/` call no Kokkos kernel — the
-Runner's sums, norms and remap apply are the serial loops in `num/kernels.hpp`, and
-`num/space_kernels.hpp` is verified but uncalled — so the examples' output is identical across
-thread counts *trivially*, and running the runner tests at two counts would compare a serial loop
-with itself. That is a capability gap, `KNOWN_ISSUES.md` D11, and the comparison is in the tree so
-that the day the runtime moves onto the space kernels it stops being trivial and starts being a test.
+`KNOWN_ISSUES.md` D11, CLOSED 2026-09-28: `src/runtime/`'s `execute()`/`run_region()` now call
+`num/space_kernels.hpp`'s kernels over `Runner::Impl::HostExecSpace`
+(`Kokkos::DefaultHostExecutionSpace`), so `example.*.omp_identical` and this leg are load-bearing
+for the coupling hot loop, not merely for the partitioner, the native mesh and the typed kernels.
+Elementwise operators (`Scale`, `Merge`, `Residual`, `Relax`, the remap apply's CSR matvec, and
+`Interpolate`/`Sample`/`Accumulate`'s copies and finalisers) are thread-count-independent because
+each output element's write touches no other; the per-sweep block value/residual norms
+(`iteration.cpp`) are the one place that argument does not apply, since a plain
+`Kokkos::parallel_reduce`'s summation order is the threads' — they use a fixed-chunk scheme instead
+(`space_kernels.hpp`'s `deterministic_dot`/`deterministic_norm_squared`(`_diff`)), verified against
+a plain-host reference with `EXPECT_EQ` (`SpaceKernels.
+DeterministicReductionsMatchTheChunkedReferenceExactly`) and, at the Runner level, by a real
+2048-element iteration region pinned to measured literals across every `OMP_NUM_THREADS`
+(`runtime.runner_determinism`, `fuse_add_omp_legs`). See `KNOWN_ISSUES.md` D11's closing entry for
+the full account, including the one label-length allocation trap this closing found and fixed, and
+what remains open for a device execution space under A5.
 
 ## CI legs
 
