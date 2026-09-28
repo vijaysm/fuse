@@ -2820,6 +2820,29 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
       break;
     }
 
+    case OpKind::WindowAdvance:
+      // Time windows track: declared (fuse/ir/op.hpp) so a future front end
+      // can name it, but nothing in src/ir or src/schedule emits one yet --
+      // schedule() still runs its unconditional contiguous-run check
+      // (mark_regions, src/schedule/scheduler.cpp) for every region,
+      // window-scoped or not, so a plan containing this op never reaches the
+      // interpreter today. Unlike every other instruction here, subcycling
+      // is not a stateless function of its resolved input/output buffers --
+      // it calls the owning component's advance()/save_state()/
+      // restore_state() directly and carries state across sweeps -- so it
+      // cannot be executed through this switch's uniform
+      // in_ptr()/out_ptr()/span_c()/span_m() convention at all; it needs its
+      // own dispatch with access to the component registry and a persistent
+      // per-member scratch (docs/dev/coupling-windows.md's design notes for
+      // this track cover the shape). Refusing rather than falling through to
+      // a copy, matching Map/Reduce/Closure immediately below: a reserved
+      // operator that behaved as a pass-through would silently run a time
+      // window as though it had been fully executed.
+      return Failure{"E-RT-WINDOW-UNWIRED",
+                     "operator 'WindowAdvance' has no interpreter "
+                     "implementation yet; the plan should not have "
+                     "compiled one"};
+
     case OpKind::Map:
     case OpKind::Reduce:
     case OpKind::Closure:
