@@ -10,6 +10,7 @@
 #include "fuse_test_main.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -887,7 +888,37 @@ TEST(RunnerTransport, StillRunsASecondChannelAfterARegionFailsUnderMpi) {
   auto* cons_b = dynamic_cast<StubComponent*>(h.components.find("consumer_b"));
   ASSERT_NE(cons_b, nullptr);
 
+  // PRECONDITION of the kill (D3, host mutation run 2026-09-28: SURVIVED).
+  // 'region-failure-abandons-the-rest-of-the-period' returns out of
+  // step_period() straight after run_region(), so it can only lose what the
+  // stream orders AFTER the region. step_period() advances a tick as soon as
+  // an instruction stamped strictly later is reached, so consumer_b's t=1/2
+  // tick is after the region only if the region is entered BEFORE t=1/2. If
+  // the scheduler stamps the region at t >= 1/2, both ticks run first,
+  // calls() is 2 either way, and the EXPECT_GE below cannot see the mutant.
+  // Asserted, not assumed, and the stream printed so the host run shows
+  // where the region actually sits.
+  std::optional<fuse::Rational> region_time;
+  for (const auto& ins : h.plan.instructions()) {
+    if (ins.region_enter >= 0) { region_time = ins.time; break; }
+  }
+  if (current_rank() == 0) {
+    std::printf("[D3] region enters at t=%s; stream:\n%s\n",
+                region_time ? region_time->to_string().c_str() : "(none)",
+                h.plan.to_string().c_str());
+  }
+  ASSERT_TRUE(region_time.has_value());
+  EXPECT_TRUE(*region_time < fuse::Rational(1, 2))
+      << "the region is entered at t=" << region_time->to_string()
+      << ", not before consumer_b's t=1/2 tick, so this test cannot detect "
+         "'region-failure-abandons-the-rest-of-the-period': nothing it "
+         "checks is ordered after the region";
+
   const auto r = runner.run_period(h.components);
+  std::printf("[D3] rank %d: ok=%d code=%s consumer_b.calls=%d\n", current_rank(),
+              r.ok() ? 1 : 0, r.ok() ? "-" : r.error().code.c_str(),
+              static_cast<int>(cons_b->calls()));
+  std::fflush(stdout);
   ASSERT_FALSE(r.ok())
       << "fluid refuses its first advance() inside the region; the period "
          "must report that failure on every rank, including ranks that "
