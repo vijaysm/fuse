@@ -122,6 +122,17 @@ def main() -> int:
         print(f"error: {args.build_dir} was configured for {home}, not {ROOT}")
         return 2
 
+    # Read from the build itself, not from an env var the caller might set to
+    # mean something else: FUSE_ENABLE_MPI is what decides whether a target
+    # like nodal_remap_distributed_nullcomm_test's `#if !FUSE_HAVE_MPI` body
+    # GTEST_SKIPs. A skipped test exits 0 whichever way `old`/`new` reads, so
+    # a `requires = "no-mpi"` row run against an MPI build is not evidence
+    # either way -- reported NOT-ASSESSED, the same courtesy `requires =
+    # "mpi"` gets on a build with none.
+    build_has_mpi = any(
+        line.startswith("FUSE_ENABLE_MPI:") and line.rstrip().endswith("=ON")
+        for line in cache.read_text(errors="replace").splitlines())
+
     if subprocess.run(["git", "status", "--porcelain", "include", "src"], cwd=ROOT,
                       capture_output=True, text=True).stdout.strip():
         print("error: include/ or src/ has uncommitted changes; the gate restores by copy-back")
@@ -158,6 +169,13 @@ def main() -> int:
                             "needs a working MPI launcher; run with "
                             "FUSE_MUTATE_MPI=1 on a host that has one"))
             print(f"NOT-ASSESSED  {m['id']}  (needs MPI)")
+            continue
+        if m.get("requires") == "no-mpi" and build_has_mpi:
+            results.append((m, "NOT-ASSESSED",
+                            "its test's own #if !FUSE_HAVE_MPI body GTEST_SKIPs on an "
+                            "MPI build, which exits 0 either way; assess it against a "
+                            "build configured with -DFUSE_ENABLE_MPI=OFF"))
+            print(f"NOT-ASSESSED  {m['id']}  (needs a build with NO MPI)")
             continue
         if not baseline_ok(m["target"], m["test"]):
             results.append((m, "NO-BASELINE",

@@ -120,14 +120,18 @@ old = "  if (comm_handle == search::kNullComm) {"
 new = "  if (true) {  // MUTATED: every comm_handle is treated as local"
 target = "fuse_backend_nodal_remap_distributed_nullcomm_test"
 test = "backend.nodal_remap_distributed_nullcomm"
-# KILLED, observed directly in this sandbox (Tier 0, no MPI needed -- unlike
-# the two rows above, this one does not need a second rank to exist at all).
-# NodalRemapDistributedNullComm.RealCommunicatorWithoutMpiRefuses fails
-# (2/3 pass): build_distributed_interp_rows(..., kNullComm + 1) now succeeds
-# instead of refusing E-RT-NODAL-DIST-NOMPI. Verified by hand: mutation
-# applied, rebuilt, confirmed exactly this one test fails; file restored
-# byte-for-byte (cmp against a pre-mutation backup); rebuilt and reconfirmed
-# all 3 tests passing before moving on.
+requires = "no-mpi"
+# KILLED by hand in a sandbox build with -DFUSE_ENABLE_MPI=OFF: mutation
+# applied, rebuilt, RealCommunicatorWithoutMpiRefuses fails (2/3 pass) because
+# build_distributed_interp_rows(..., kNullComm + 1) now succeeds instead of
+# refusing E-RT-NODAL-DIST-NOMPI; file restored byte-for-byte, all 3 passing
+# again. SURVIVED on the user's `build-all` (2026-09-28) for a reason that is
+# not a gap: RealCommunicatorWithoutMpiRefuses's own body is
+# `#if !FUSE_HAVE_MPI ... #else GTEST_SKIP() ... #endif`, and `build-all` has
+# MPI on, so the test SKIPS (ctest exit 0) whether or not the mutation is
+# applied -- tools/mutate.py now reads FUSE_ENABLE_MPI from the build's own
+# CMakeCache.txt and reports this row NOT-ASSESSED on such a build, the same
+# courtesy a `requires = "mpi"` row gets on a build with none.
 
 [[mutation]]
 id = "nodal-remap-dist-domain-verdict-not-agreed-across-ranks"
