@@ -72,12 +72,42 @@ double extrapolate_boundary_value(
   return num::eval_polynomial(coeffs, x, 0.0);
 }
 
+Result<double> WindowChannelIO::mean(
+    const WindowChannel& /*ch*/, std::size_t e,
+    const std::vector<std::unique_ptr<Waveform>>& provider, Rational a,
+    Rational b) const {
+  const std::size_t pe = std::min(e, provider.size() - 1);
+  return mean_over(*provider[pe], a, b);
+}
+
+Result<double> WindowChannelIO::boundary(
+    const WindowChannel& /*ch*/, std::size_t e,
+    const std::vector<std::unique_ptr<Waveform>>& provider,
+    Rational t) const {
+  const std::size_t pe = std::min(e, provider.size() - 1);
+  double v = 0.0;
+  const Result<void> r = provider[pe]->evaluate(t, &v);
+  if (!r.ok()) return r.error();
+  return v;
+}
+
+double WindowChannelIO::extrapolate(
+    const WindowChannel& /*ch*/, std::size_t e,
+    const std::vector<std::vector<std::pair<Rational, double>>>&
+        provider_history,
+    Rational target, int order) const {
+  const std::size_t pe = std::min(e, provider_history.size() - 1);
+  return extrapolate_boundary_value(provider_history[pe], target, order);
+}
+
 WindowCoupler::WindowCoupler(std::vector<WindowMember> members,
                              std::vector<WindowChannel> channels,
                              WindowCouplerConfig cfg)
     : members_(std::move(members)),
       channels_(std::move(channels)),
       cfg_(std::move(cfg)) {
+  channel_io_ = cfg_.channel_io ? cfg_.channel_io
+                                : std::make_shared<WindowChannelIO>();
   state_.resize(members_.size());
   for (std::size_t i = 0; i < members_.size(); ++i) {
     MemberState& st = state_[i];
@@ -228,9 +258,8 @@ Result<void> WindowCoupler::resolve_pending_straddles(Rational /*T0*/) {
           for (const WindowChannel& ch : channels_) {
             if (ch.consumer != i) continue;
             const MemberState& pst = state_[ch.provider];
-            const std::size_t pe = std::min(e, members_[ch.provider].length - 1);
-            const Result<double> mv =
-                mean_over(*pst.last_window_waveform[pe], clock, prev_end);
+            const Result<double> mv = channel_io_->mean(
+                ch, e, pst.last_window_waveform, clock, prev_end);
             if (!mv.ok()) return mv.error();
             mean_in = mv.value();
             have = true;
@@ -251,13 +280,13 @@ Result<void> WindowCoupler::resolve_pending_straddles(Rational /*T0*/) {
           for (const WindowChannel& ch : channels_) {
             if (ch.consumer != i) continue;
             const MemberState& pst = state_[ch.provider];
-            const std::size_t pe = std::min(e, members_[ch.provider].length - 1);
             const int ord = order_for(ch.provider);
-            double v_bnd = 0.0;
-            const Result<void> ev =
-                pst.last_window_waveform[pe]->evaluate(prev_end, &v_bnd);
-            if (!ev.ok()) return ev.error();
-            const double v_tail = extrapolate_boundary_value(pst.history[pe], end, ord);
+            const Result<double> bv = channel_io_->boundary(
+                ch, e, pst.last_window_waveform, prev_end);
+            if (!bv.ok()) return bv.error();
+            const double v_bnd = bv.value();
+            const double v_tail =
+                channel_io_->extrapolate(ch, e, pst.history, end, ord);
             mean_tail = 0.5 * (v_bnd + v_tail);
             have = true;
           }
@@ -279,16 +308,17 @@ Result<void> WindowCoupler::resolve_pending_straddles(Rational /*T0*/) {
         for (const WindowChannel& ch : channels_) {
           if (ch.consumer != i) continue;
           const MemberState& pst = state_[ch.provider];
-          const std::size_t pe = std::min(e, members_[ch.provider].length - 1);
           const int ord = order_for(ch.provider);
           if (end <= prev_end) {
             const Result<double> mv =
-                mean_over(*pst.last_window_waveform[pe], clock, end);
+                channel_io_->mean(ch, e, pst.last_window_waveform, clock, end);
             if (!mv.ok()) return mv.error();
             mean_val = mv.value();
           } else {
-            const double v0 = extrapolate_boundary_value(pst.history[pe], clock, ord);
-            const double v1 = extrapolate_boundary_value(pst.history[pe], end, ord);
+            const double v0 =
+                channel_io_->extrapolate(ch, e, pst.history, clock, ord);
+            const double v1 =
+                channel_io_->extrapolate(ch, e, pst.history, end, ord);
             mean_val = 0.5 * (v0 + v1);
           }
           have = true;
@@ -470,9 +500,8 @@ Result<void> WindowCoupler::sweep_window(Rational T0, Rational T1) {
             double mean_in = 0.0;
             for (const WindowChannel& ch : channels_) {
               if (ch.consumer != i) continue;
-              const std::size_t pe = std::min(e, members_[ch.provider].length - 1);
-              const Waveform& pw = *delivered[ch.provider][pe];
-              const Result<double> mv = mean_over(pw, sub.t0, T1);
+              const Result<double> mv = channel_io_->mean(
+                  ch, e, delivered[ch.provider], sub.t0, T1);
               if (!mv.ok()) return mv.error();
               mean_in = mv.value();
             }
@@ -496,12 +525,16 @@ Result<void> WindowCoupler::sweep_window(Rational T0, Rational T1) {
               double mean_tail = 0.0;
               for (const WindowChannel& ch : channels_) {
                 if (ch.consumer != i) continue;
-                const std::size_t pe = std::min(e, members_[ch.provider].length - 1);
-                const Waveform& pw = *delivered[ch.provider][pe];
                 double v_bnd = 0.0;
-                (void)pw.evaluate(T1, &v_bnd);
-                const double v_tail = extrapolate_boundary_value(
-                    state_[ch.provider].history[pe], sub.t1, order_for(ch.provider));
+                // (void): this call site never checked evaluate()'s Result
+                // before channel_io_ existed either -- preserved exactly,
+                // not a new omission.
+                const Result<double> bv =
+                    channel_io_->boundary(ch, e, delivered[ch.provider], T1);
+                if (bv.ok()) v_bnd = bv.value();
+                const double v_tail = channel_io_->extrapolate(
+                    ch, e, state_[ch.provider].history, sub.t1,
+                    order_for(ch.provider));
                 mean_tail = 0.5 * (v_bnd + v_tail);
               }
               m.required[e] = mean_tail;
@@ -532,9 +565,8 @@ Result<void> WindowCoupler::sweep_window(Rational T0, Rational T1) {
           double mean_val = m.required[e];
           for (const WindowChannel& ch : channels_) {
             if (ch.consumer != i) continue;
-            const std::size_t pe = std::min(e, members_[ch.provider].length - 1);
-            const Waveform& pw = *delivered[ch.provider][pe];
-            const Result<double> mv = mean_over(pw, sub.t0, sub.t1);
+            const Result<double> mv = channel_io_->mean(
+                ch, e, delivered[ch.provider], sub.t0, sub.t1);
             if (!mv.ok()) return mv.error();
             mean_val = mv.value();
           }

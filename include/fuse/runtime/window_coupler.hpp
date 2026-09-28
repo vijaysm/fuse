@@ -21,16 +21,44 @@
 /// `restore_state()`, `StepContext`) and against the production
 /// `fuse::Waveform` and `fuse::Accelerator`/`fuse::ConvergenceCriterion`, so
 /// it is usable today by a model author driving a small set of components
-/// directly. `schedule()`/`Runner` wiring it to an arbitrary
-/// `fuse::CouplingGraph` declaration -- resolving `WindowMember::provided`/
-/// `required` from the `FieldRegistry` the way `RegionBlock` does for a
-/// single-clock region -- is DESIGNED ONLY (see the "Five states",
-/// docs/dev/testing.md); that graph-level front end is not built in this
-/// track. The mechanism below is "Implemented, untested" until
-/// test/runtime/window_coupler_test.cpp exists and passes against it --
-/// this comment does not itself make it "Verified". See
-/// `include/fuse/schedule/window.hpp` for the schedule-time legality gate a
-/// future front end would call before constructing one of these.
+/// directly. The mechanism below is "Verified" against
+/// test/runtime/window_coupler_test.cpp, `examples/gray_scott` and
+/// `examples/brusselator`.
+///
+/// STATE OF THE GRAPH-LEVEL FRONT END (multirate-window-on-the-Runner
+/// track). Three of its four pieces exist; `schedule()`/`Runner` do not yet
+/// call any of them, so wiring one arbitrary `fuse::CouplingGraph`
+/// declaration all the way through remains DESIGNED ONLY (see the "Five
+/// states", docs/dev/testing.md):
+///   * the opt-in lives on the declaration itself --
+///     `IterationRegionDecl::window_scope`
+///     (`fuse::CouplingWindowScope`, `fuse/model/iteration.hpp`), carried
+///     through the descriptor (v7) and the YAML round trip;
+///   * `fuse::validate_coupling_window()` (`fuse/schedule/window.hpp`) is
+///     the legality gate a front end must pass before constructing one of
+///     these -- written, tested, not yet CALLED by `schedule()`, which
+///     still runs its unconditional contiguous-run check
+///     (`mark_regions`, src/schedule/scheduler.cpp) and refuses a
+///     multi-clock region with `E-SCHED-REGION` whether or not
+///     `window_scope` is set;
+///   * the sweep loop below is driven through `WindowChannelIO`
+///     (immediately below `WindowChannel`), an exchange seam a future
+///     front end can override to route a channel's provider->consumer
+///     data through a real `fuse::Remap`/`fuse::Transport` instead of the
+///     raw-pointer read the base class still performs by default -- built
+///     and exercised by the existing test suite (which never overrides
+///     it), NOT YET implemented by anything that does the remap/transport
+///     it exists for.
+/// What is NOT built: `schedule()` recognizing a window-scoped region and
+/// lowering/scheduling it as one window block instead of the per-channel,
+/// per-tick nodes `build_iteration_regions()` (src/ir/regions.cpp) emits
+/// today; the Runner executing that block by resolving
+/// `WindowMember::provided`/`required` from the `FieldRegistry` the way
+/// `RegionBlock` resolves value/feed arcs for a single-clock region; and a
+/// `WindowChannelIO` override that actually performs the remap/transport.
+/// See this track's design notes for why (the arc/Instruction
+/// representation this needs does not yet exist) and the concrete shape
+/// proposed for it.
 ///
 /// ---------------------------------------------------------------------------
 /// WHAT ONE `advance()` CALL RECEIVES (why the algorithm looks like it does)
@@ -82,6 +110,60 @@ struct WindowChannel {
   std::size_t consumer = 0;
 };
 
+/// Time windows track: the exchange seam a graph-level front end needs, so
+/// that a window channel's provider -> consumer data can be routed through
+/// a real `fuse::Remap`/`fuse::Transport` (design notes for this track)
+/// instead of the direct pointer arithmetic `WindowCoupler` used before
+/// this class existed. `WindowCoupler` calls this at every point it needs
+/// "this channel's provider value for consumer element `e`"; the default
+/// -- what `WindowCoupler` constructs whenever
+/// `WindowCouplerConfig::channel_io` is left null -- is EXACTLY the direct
+/// read every caller had before: the same `std::min(e, provider.size()-1)`
+/// clamp, the same `Waveform::integrate`/`evaluate` calls and the same
+/// `extrapolate_boundary_value()`. Every existing direct caller
+/// (`examples/gray_scott`, `examples/brusselator`, this header's own test)
+/// is unaffected by this seam's existence: none of them set
+/// `channel_io`, so none of them observe anything but the base class's own
+/// behaviour.
+///
+/// AN OVERRIDE THAT DOES REAL WORK MUST BATCH IT ITSELF. `mean()`/
+/// `boundary()`/`extrapolate()` are called once per (channel, consumer
+/// substep, element) -- exactly as often as `WindowCoupler` always needed
+/// the value, one query at a time; nothing here changes that call
+/// frequency. A remap is spatial and linear, so it commutes with the
+/// temporal mean and can legally be applied once to `provider`'s whole
+/// trajectory rather than once per query -- but ONLY an override that
+/// itself memoizes on `provider`'s identity (rebuilt at most once per
+/// sweep by `WindowCoupler::sweep_window()`) turns that legality into the
+/// "one message per exchange" property this track is bound to; the
+/// straightforward reading of this interface -- remap and transport
+/// inside every call -- would send one message per query, which is
+/// exactly what that property forbids.
+class WindowChannelIO {
+ public:
+  virtual ~WindowChannelIO() = default;
+
+  /// The provider's mean over `[a, b)`, `a < b`, for consumer element `e`.
+  [[nodiscard]] virtual Result<double> mean(
+      const WindowChannel& ch, std::size_t e,
+      const std::vector<std::unique_ptr<Waveform>>& provider, Rational a,
+      Rational b) const;
+
+  /// The provider's point value at `t` for consumer element `e`.
+  [[nodiscard]] virtual Result<double> boundary(
+      const WindowChannel& ch, std::size_t e,
+      const std::vector<std::unique_ptr<Waveform>>& provider,
+      Rational t) const;
+
+  /// The provider's history, extrapolated to `target`, for consumer
+  /// element `e`. Never fails (matches `extrapolate_boundary_value()`).
+  [[nodiscard]] virtual double extrapolate(
+      const WindowChannel& ch, std::size_t e,
+      const std::vector<std::vector<std::pair<Rational, double>>>&
+          provider_history,
+      Rational target, int order) const;
+};
+
 struct WindowCouplerConfig {
   Rational              window_length{1};
   int                   max_iterations = 50;
@@ -93,6 +175,12 @@ struct WindowCouplerConfig {
   /// Waveform sample capacity per member per window. See
   /// `validate_coupling_window`'s `E-SCHED-WINDOW-CAPACITY`.
   std::size_t           waveform_capacity = 64;
+
+  /// Time windows track: the exchange seam (`WindowChannelIO` above).
+  /// `nullptr` (the default) is every direct caller today -- `create()`
+  /// then constructs a plain `WindowChannelIO`, whose direct-read default
+  /// behaviour reproduces the pointer arithmetic this class always used.
+  std::shared_ptr<WindowChannelIO> channel_io;
 };
 
 /// Per-window outcome, exposed for the caller (and for the mutation-evidence
@@ -197,6 +285,10 @@ class WindowCoupler {
   std::vector<WindowChannel> channels_;
   WindowCouplerConfig        cfg_;
   std::vector<MemberState>   state_;
+  /// Never null after construction: `WindowCoupler(...)` builds a plain
+  /// `WindowChannelIO` when `cfg_.channel_io` is null, so every call site
+  /// below can dereference this unconditionally.
+  std::shared_ptr<WindowChannelIO> channel_io_;
   std::unique_ptr<Accelerator> accel_;
   std::int64_t               window_index_ = 0;
   WindowIterationStats       stats_;
