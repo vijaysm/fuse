@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <exception>
 #include <limits>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -1759,6 +1760,30 @@ Result<void> Runner::Impl::build_ticks(ComponentSet& components) {
   // advanced, never clocked. Its ranks still get a communicator in
   // `attach_comm_graphs()` below, exactly like any physics component's,
   // which is what lets a channel's Transport/Epoch actually reach them.
+  // Which process this is, when a base communicator is set: a component is
+  // stepped only on the processes of its own processor set (the placement
+  // guide's contract -- a component placed on no processes "does not run
+  // here, this run"). Without a communicator every component runs in this
+  // one process, exactly as before. Found by the D3 host run (2026-09-28): a
+  // process outside a component's processor set was calling its advance(),
+  // where the component's own communicator is MPI_COMM_NULL.
+  std::optional<int> this_process;
+#if FUSE_HAVE_MPI
+  if (config.base_communicator.has_value()) {
+    const MPI_Comm base =
+        MPI_Comm_f2c(static_cast<MPI_Fint>(*config.base_communicator));
+    int rank = 0;
+    if (base == MPI_COMM_NULL || MPI_Comm_rank(base, &rank) != MPI_SUCCESS) {
+      return Failure{"E-RT-TRANSPORT-COMM",
+                     "could not read this process's rank in the base "
+                     "communicator while building the step list"};
+    }
+    this_process = rank;
+  }
+#endif
+
+  all_ticks.clear();
+  std::vector<bool> hosted(components.size(), false);
   std::vector<bool> matched(components.size(), false);
   for (std::uint32_t i = 0; i < graph.component_count(); ++i) {
     const ComponentDecl& decl = graph.component(ComponentId{i});
@@ -1792,8 +1817,11 @@ Result<void> Runner::Impl::build_ticks(ComponentSet& components) {
                        ", which does not divide the plan's common period " +
                        period.to_string() + " an integer number of times"};
     }
+    // Every step of every component goes into `all_ticks`, identical on every
+    // process; `ticks`, filtered below, holds only this process's own.
+    hosted[slot] = !this_process.has_value() || decl.ranks.contains(*this_process);
     for (std::int64_t k = 0; k < n_exact.num(); ++k) {
-      ticks.push_back(Tick{Rational{k} * dt, dt, slot, i, k, n_exact.num()});
+      all_ticks.push_back(Tick{Rational{k} * dt, dt, slot, i, k, n_exact.num()});
     }
   }
   for (std::size_t j = 0; j < components.size(); ++j) {
@@ -1805,11 +1833,14 @@ Result<void> Runner::Impl::build_ticks(ComponentSet& components) {
     }
   }
 
-  std::stable_sort(ticks.begin(), ticks.end(),
+  std::stable_sort(all_ticks.begin(), all_ticks.end(),
                    [](const Tick& a, const Tick& b) {
                      if (a.time != b.time) return a.time < b.time;
                      return a.order < b.order;
                    });
+  for (const Tick& tk : all_ticks) {
+    if (hosted[tk.slot]) ticks.push_back(tk);
+  }
 
   // Which components would consume a value a failed step never produced: one
   // edge per channel, from the component owning its source field to the

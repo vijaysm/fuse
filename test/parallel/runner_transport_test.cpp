@@ -912,11 +912,19 @@ TEST(RunnerTransport, StillRunsASecondChannelAfterARegionFailsUnderMpi) {
          "must report that failure on every rank, including ranks that "
          "belong only to the independent channel";
   EXPECT_EQ(r.error().code, "E-TEST-ADVANCE-REFUSED") << r.error().message;
-  EXPECT_GE(cons_b->calls(), 2)
-      << "consumer_b ticks TWICE this period (t=0 and t=1/2), on a clock "
-         "that has nothing to do with the region; both ticks must still run "
-         "rather than being blocked by the region's failure: neither tick "
-         "reads anything the failing region provides";
+  // Only consumer_b's own processes step it (the runtime steps a component
+  // only on its processor set since 2026-09-29), so only they can count.
+  if (h.solid_.contains(current_rank())) {
+    EXPECT_GE(cons_b->calls(), 2)
+        << "consumer_b ticks TWICE this period (t=0 and t=1/2), on a clock "
+           "that has nothing to do with the region; both ticks must still run "
+           "rather than being blocked by the region's failure: neither tick "
+           "reads anything the failing region provides";
+  } else {
+    EXPECT_EQ(cons_b->calls(), 0)
+        << "process " << current_rank() << " is outside consumer_b's processor set "
+           "and must not step it";
+  }
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
