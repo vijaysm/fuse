@@ -20,6 +20,7 @@ distinction is deliberate — see [](dev/testing.md#the-five-states).
 :maxdepth: 2
 
 user/index
+user/glossary
 user/build
 user/quickstart
 user/fluent-api
