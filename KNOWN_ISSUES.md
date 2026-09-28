@@ -13,7 +13,24 @@ spends time on them.
 
 ## A. Blocked on the repository owner
 
-### A1. There is no remote yet — deferred by decision, with one residual risk
+### A1. ~~There is no remote yet~~ — a remote exists and CI has run (2026-09-27); MPI legs still absent
+
+**Update 2026-09-27.** `origin` is `github.com:vijaysm/fuse.git` and the
+workflow has executed: run 36124149902 failed, and `d42caa6` fixed what it
+found — exactly the class of defect this entry predicted (fetch-path flags,
+a `CMAKE_DISABLE_FIND_PACKAGE_Kokkos` that broke ArborX's own REQUIRED
+lookup, a missing `find_dependency(Eigen3)` in the installed config, the
+`throws` label missing from the omp legs, Eigen's own tests leaking into
+ctest). Whether the run after `d42caa6` went green is not recorded here; the
+sandbox cannot see GitHub.
+
+**What the five legs still do not cover:** none runs MPI, so every
+`parallel.*`, `layout.*` and MOAB test remains a host-only verdict, and the
+mutation rows marked `requires = "mpi"` are never assessed by CI. Adding an
+MPI leg (MPICH from apt, `-DFUSE_ENABLE_MPI=ON`, `ctest -L mpi` at 2–4
+ranks) is the one CI change that would move verification off your machine.
+The text below is the original entry, kept for its reasoning.
+
 
 **Your call, recorded 2026-09-17: the remote waits until all phases are
 complete.** This is not an oversight and needs no action. What it costs is
@@ -911,9 +928,26 @@ under `-DFUSE_ENABLE_MPI=ON` with the new code, and `layout.coupler.{3.
 disjoint,3.equals-target,4.overlaps-comp1}` are registered
 (`examples/CMakeLists.txt`) alongside the existing comp1/comp2 shapes.
 `layout.refuse.coupler` (the old "unconditionally refused" pin) is replaced
-by `layout.refuse.coupler-with-mesh`. **Not run this track** — this sandbox
-cannot start MPI at all, not even `-np 1`; a host run of `ctest -L layout`
-is the remaining verification step.
+by `layout.refuse.coupler-with-mesh`.
+
+**Host run 2026-09-27: all three `layout.coupler.*` rows FAILED**, each in
+under a second, at `initialize` with `E-MESH-PLACEMENT`. The driver had told
+its backend about two placements (`set_placements({comp1, comp2})`) and the
+coupler was the third component, so `placed_view(mesh, coupler)` had no
+decomposition to return. The library refused correctly; the driver had not
+kept the promise the coupler design makes ("a coupler is a component-array
+entry like any other"). Fixed: the driver reads one placement per graph
+component, exactly as `runner_transport_test.cpp`'s harness does. That
+harness is also why no gtest caught it — it already did the right thing, and
+the Tier-0 coupler tests use the serial backend, whose `placed_view` returns
+one view for every placement. Three gtests now run the coupler shapes on the
+partitioned backend
+(`RunnerTransport.{ADisjointCoupler,ACouplerOnTheTargetsRanks,ACouplerOverlappingTheSource}DeliversEveryEntity`,
+matrix cell `A-COUPLER`). Both the rows and the gtests still need the host:
+
+```sh
+ctest --test-dir build-all -R 'layout.coupler|parallel.runner_transport' --output-on-failure
+```
 
 **Open, needing a host run to assess (`docs/dev/coupler-placement.md`'s own
 section on it):** `resolve_remap()`'s MLS-serial and nodal-parallel-refusal
