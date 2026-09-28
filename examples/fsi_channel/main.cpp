@@ -20,6 +20,8 @@
 #include <string>
 #include <vector>
 
+#include <Kokkos_Core.hpp>
+
 #include <fuse/ir/lowering.hpp>
 #include <fuse/backend/consistent_interp.hpp>
 #include <fuse/backend/serial_backend.hpp>
@@ -166,6 +168,14 @@ fuse::CouplingGraph build_graph(std::size_t nx_beam, std::size_t nx_fluid,
 }  // namespace
 
 int main(int argc, char** argv) {
+  // KNOWN_ISSUES.md D11 (closing): the Runner's coupling hot loop now runs
+  // on Kokkos' default host execution space (fuse/num/space_kernels.hpp),
+  // so every caller -- including this one, which ran no Kokkos kernel at
+  // all before this closing -- must initialise Kokkos before touching a
+  // Runner. Same pattern as test/support/fuse_test_main.cpp's
+  // `Kokkos::ScopeGuard` and examples/brusselator/main.cpp's.
+  Kokkos::ScopeGuard kokkos_guard(argc, argv);
+
   Args args;
   try {
     args = parse(argc, argv);

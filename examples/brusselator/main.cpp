@@ -152,10 +152,12 @@ int main(int argc, char** argv) {
   // Both the native mesh backend's own Kokkos::View allocations
   // (MeshArrays<Kokkos::HostSpace>) and this example's own reaction kernel
   // (brusselator_physics.hpp's `reaction_kokkos`) need Kokkos initialised
-  // first -- unlike fuse_example_gray_scott/mms_pair/dn_heat, which run no
-  // Kokkos kernel at all, this example is not implicitly covered by
-  // anything else's initialization. Same pattern as
-  // test/support/fuse_test_main.cpp's `Kokkos::ScopeGuard`.
+  // first. KNOWN_ISSUES.md D11 (closing): fuse_example_gray_scott/mms_pair/
+  // dn_heat/fsi_channel now ALSO need this -- the Runner's own coupling hot
+  // loop moved onto Kokkos' default host execution space
+  // (fuse/num/space_kernels.hpp), so every one of them gained its own
+  // `Kokkos::ScopeGuard` at the same place this one has always had it.
+  // Same pattern as test/support/fuse_test_main.cpp's.
   Kokkos::ScopeGuard kokkos_guard(argc, argv);
 
   fuse::native::NativeMeshBackend backend(/*rank=*/0, /*num_ranks=*/1);

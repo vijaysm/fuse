@@ -28,6 +28,8 @@
 #include <string>
 #include <vector>
 
+#include <Kokkos_Core.hpp>
+
 #include <fuse/runtime/window_coupler.hpp>
 
 #include "gray_scott_physics.hpp"
@@ -154,6 +156,14 @@ void write_csv(const std::string& path, const gray_scott::Grid& g,
 }  // namespace
 
 int main(int argc, char** argv) {
+  // KNOWN_ISSUES.md D11 (closing): the Runner's coupling hot loop now runs
+  // on Kokkos' default host execution space (fuse/num/space_kernels.hpp),
+  // so every caller -- including this one, which ran no Kokkos kernel at
+  // all before this closing -- must initialise Kokkos before touching a
+  // Runner. Same pattern as test/support/fuse_test_main.cpp's
+  // `Kokkos::ScopeGuard` and examples/brusselator/main.cpp's.
+  Kokkos::ScopeGuard kokkos_guard(argc, argv);
+
   const Args args = parse_args(argc, argv);
 
   const gray_scott::Grid grid{args.n, args.L};
