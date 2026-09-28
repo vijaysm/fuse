@@ -587,7 +587,21 @@ int main(int argc, char** argv) {
 
   PartitionedTestBackend backend(args.comp1->ranks, args.comp2->ranks,
                                  args.entities, dim);
-  backend.set_placements({args.comp1->ranks, args.comp2->ranks});
+  // One decomposition per graph component, INCLUDING the coupler: it is a
+  // component-array entry like any other (ComponentKind::Coupler), and the
+  // Remap routed through it resolves both meshes with placed_view(mesh,
+  // coupler). The first version listed comp1 and comp2 by hand, so with
+  // --coupler the third placement had no decomposition and every coupler
+  // layout failed at initialize with E-MESH-PLACEMENT (host run,
+  // 2026-09-27) -- the library refused correctly; the driver had not kept
+  // its promise. Read from the graph, as runner_transport_test.cpp does.
+  {
+    std::vector<fuse::RankSet> placements;
+    for (std::uint32_t c = 0; c < graph.component_count(); ++c) {
+      placements.push_back(graph.component(fuse::ComponentId{c}).ranks);
+    }
+    backend.set_placements(std::move(placements));
+  }
   if (const auto r = backend.load(graph.mesh(mesh)); !r.ok()) {
     if (rank == 0) std::cerr << "mesh load failed: " << r.error().message << '\n';
     return agree_and_exit(1);
