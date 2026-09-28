@@ -52,6 +52,30 @@ new = "  const bool reduce = false;"
 target = "fuse_parallel_nodal_remap_runner_test"
 test = "parallel.nodal_remap_runner.2"
 requires = "mpi"
+# SURVIVED explained, verified by hand: Constrain (runner.cpp's OpKind::
+# Constrain case) only REPORTS ("Phase 4 reports; it does not correct" --
+# the field values downstream are copied through unchanged either way).
+# RunnerConfig::abort_on_violation defaults to FALSE (runner.hpp), and
+# DisjointRankSets never sets it nor reads runner.stats() -- its own
+# checks are an INDEPENDENT MPI_Allreduce of the raw field values, which
+# `ci.reduce` never touches. So a spurious per-rank violation from
+# skipping the cross-rank Allreduce only increments
+# runner.stats().conservation_violations, which nothing in the test
+# reads, and run_period() still returns ok(). Confirmed with a standalone
+# harness (DisjointRankSets' own shape, no MPI, so deliberately WITHOUT a
+# base communicator -- the same `ci.reduce == false` branch the mutation
+# forces): conservation_violations came back 2 of 4, worst_conservation_
+# error 1.0 (100% relative), run_period() still ok(). Fix: added
+# `cfg.abort_on_violation = true;` to run_and_check() in
+# test/parallel/nodal_remap_runner_test.cpp (shared by DisjointRankSets/
+# IdenticalRankSets/PartiallyOverlappingRankSets), turning that same
+# condition into a hard E-RT-CONSERVATION failure -- confirmed by the same
+# harness ("integral 10.400000 -> 0.000000" once abort_on_violation was
+# set). Compiled (Tier 1, MPI-enabled) but not run at real rank counts;
+# a host run is what confirms the fix does not introduce a false positive
+# on the correct (reduce == true) path, though the achieved precision
+# elsewhere in this same test (1e-13 relative) is comfortably inside the
+# 1e-12 default tolerance.
 
 [[mutation]]
 id = "constrain-classified-local"
@@ -73,6 +97,54 @@ new = "        return rr.error();  // abandon the rest of the period"
 target = "fuse_parallel_runner_transport_test"
 test = "parallel.runner_transport.2"
 requires = "mpi"
+# The test EXISTS: RunnerTransport.StillRunsASecondChannelAfterARegionFailsUnderMpi
+# (test/parallel/runner_transport_test.cpp), TwoComponentJob(with_iteration_
+# region=true, with_independent_channel=true, fail_fluid_after=0, shape=
+# Overlap::Disjoint), FUSE_REQUIRE_AT_LEAST_RANKS(2). Traced this row's OWN
+# "block in linkB's Epoch waiting for a partner that already returned"
+# premise against it and found it does NOT describe this fixture: "solid"
+# (one of the region's own two checkpointed components, per Overlap::
+# Disjoint) is NOT disjoint from the region -- it IS the region, together
+# with "fluid". R-10's own reduce_region_residuals() (merge_region_payload's
+# `acc[0] = std::min(acc[0], peer[0])`, a tree reduce-then-broadcast) already
+# synchronises the pass/fail verdict to EVERY region participant on the SAME
+# sweep, so fluid's AND solid's ranks both see `run_region()` fail
+# SYMMETRICALLY, at the SAME point -- consumer_b (co-located with "solid")
+# never reaches "linkB"'s Epoch expecting a partner that already left,
+# because ITS OWN rank ALSO returns (correct code) or continues (mutant)
+# at the identical point. This test's OWN header comment already says so
+# plainly ("no hang is even needed for the mutant to be visibly wrong
+# here") -- this row's shorter describes field, written by analogy to a
+# genuinely hang-based sibling mutation, is the imprecise one, not the
+# test.
+#
+# Given that, the test's actual kill is `EXPECT_GE(cons_b->calls(), 2)`:
+# under the fix, step_period() carries the failure forward and reaches
+# producer_b/consumer_b's SECOND (t=1/2) tick; under the mutation it
+# returns at t=0 and that tick is never taken, so calls() should read 1,
+# not >=2. Traced the whole call chain by hand (step_period -> run_region
+# -> reduce_region_residuals -> merge_region_payload) and found NO flaw in
+# this mechanism that would produce SURVIVED -- I could not reproduce this
+# analytically further, and MPI cannot initialise in this sandbox to run
+# it. One OPEN QUESTION surfaced along the way, orthogonal to calls(): 
+# run_region()'s post-reduction branch reports a DIFFERENT Failure CODE on
+# a rank that owns the failure locally ("E-TEST-ADVANCE-REFUSED", fluid's
+# rank) than on a peer that learns of it only via the MIN-reduce
+# ("E-RT-REGION-PEER", solid's rank) -- the same "-PEER" convention
+# reconcile_epoch()'s own comment documents explicitly ("This rank is fine
+# and a partner is not... The rank that actually failed reports its own
+# diagnostic"). The test's `EXPECT_EQ(r.error().code, "E-TEST-ADVANCE-
+# REFUSED")` runs identically on every rank with no world_rank() branch, so
+# it may already read "E-RT-REGION-PEER" on solid's/consumer_b's rank --
+# independent of, and pre-existing before, this mutation, so it would not
+# explain SURVIVED by itself. RECOMMENDED HOST ACTION: re-run this ONE test
+# in isolation (`ctest -R parallel.runner_transport.2 --output-on-failure`
+# or the equivalent `--gtest_filter=*StillRunsASecondChannelAfterARegionFailsUnderMpi*`
+# at exactly 2 ranks) on BOTH the clean tree and the mutant, and report (a)
+# which EXPECT/ASSERT actually fires or does not, per rank, and (b) whether
+# the mutated binary was actually rebuilt before that run -- a stale binary
+# would produce exactly a false SURVIVED with no code-level explanation,
+# which is the one class of cause my trace cannot rule out from here.
 
 [[mutation]]
 id = "one-transport-shared-across-every-plan"
@@ -260,18 +332,44 @@ new = "      for (std::size_t i = R.enter; i < R.enter; ++i) {  // MUTATED: empt
 target = "fuse_parallel_runner_transport_test"
 test = "parallel.runner_transport.4"
 requires = "mpi"
-# NOT-ASSESSED in this sandbox: MPI cannot initialise here (not even -np 1),
-# and this whole code path is gated on RunnerConfig::base_communicator
-# having a value, which no Tier 0 caller in this tree sets. No test in
-# fuse_parallel_runner_transport_test exercises an iteration region with a
-# coupler-routed channel today -- this row names the nearest existing MPI
-# surface a host would extend, mirroring nodal-remap-distributed.toml's own
-# precedent for a scenario with no test yet. Expected kill, once such a
-# test exists: a region whose coupler is disjoint from every checkpointed
-# component's own ranks would either hang (the coupler's ranks block
-# forever on a collective the reduced participant list never reaches) or
-# under-count the region's participants in R-10's own cross-rank residual
-# reduction.
+# Test written: NodalRemapRunnerMpi -- no, RunnerTransport.
+# IterationRegionParticipantsIncludeADisjointCoupler (test/parallel/
+# runner_transport_test.cpp), reusing TwoComponentJob's EXISTING
+# Overlap::Full + CouplerShape::Disjoint combination (already supported by
+# that class, no new fixture code needed): fluid AND solid COINCIDE on
+# RankSet{0, world_size()-1} while the coupler alone holds the one
+# remaining rank, disjoint from both. `FUSE_REQUIRE_AT_LEAST_RANKS(2)`.
+#
+# Traced kill mechanism, no hang required (verified by READING the code,
+# not by execution -- MPI cannot initialise in this sandbox): with fluid/
+# solid coincident, derive_checkpoint_set()'s own components give
+# `region_ranks.size() == 1` BEFORE the coupler scan runs at all; only the
+# scan this mutation empties can push it to 2. Under the mutation,
+# `R.participants` is therefore left EMPTY (`if (region_ranks.size() > 1)`
+# never fires) on EVERY rank (participants is graph-derived, identical
+# everywhere) -- exactly the "no communicator, or every checkpointed
+# component on one rank" case resolve_regions()'s own comment treats as
+# "purely local". resolve_regions()'s PER-BLOCK guard immediately below
+# the participants scan, `if (b.length == 0 && R.participants.size() <= 1)
+# return Failure{"E-RT-REGION", "... would report convergence after one
+# sweep"};`, then fires on the COUPLER's rank specifically: its own local
+# `b.length` for this region's coupling-value block is 0 (it owns no
+# checkpointed field), and with the mutation `R.participants.size() <= 1`
+# -- the refusal that is correctly SKIPPED (treated as the ordinary "n ==
+# 0" no-op) when the coupler is counted instead FIRES there. fluid/solid's
+# own rank never hits it (its block length is > 0). This is an asymmetric,
+# per-rank INITIALIZE()-time verdict split, observable before anything
+# collective runs -- confirmed as far as this sandbox can: a Tier-0 double
+# of the SAME shape (PartitionedTestBackend, coupler played by the one
+# simulated rank) reaches `config.base_communicator.has_value()`'s branch
+# correctly (this whole block is NOT #if FUSE_HAVE_MPI-gated, confirmed by
+# reading it) but then fails EARLIER and for an unrelated reason,
+# E-RT-TRANSPORT-NOMPI, because the channel's cross-rank data move needs a
+# real Transport that Tier 0 cannot provide -- i.e. Transport attachment
+# in initialize() runs BEFORE resolve_regions(), which this sandbox cannot
+# get past. The test above compiles (Tier 1, MPI-enabled) but was NOT run;
+# a host run at >= 2 ranks is what confirms the E-RT-REGION verdict on the
+# coupler's rank.
 
 # KNOWN_ISSUES.md D11 (closing) / matrix cell A-SPACES-TRANSPORT: the
 # coupling hot loop moved onto Kokkos' default host execution space
