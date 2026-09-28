@@ -706,41 +706,116 @@ ranks, full overlap at every rank count, and all 18 `layout.*` tests pass, inclu
 
 ---
 
-### D4. Two axes of the parallel matrix have no coverage — the gate is RED on purpose
+### D4. ~~Two axes~~ One axis of the parallel matrix has no coverage — the gate is RED on purpose (A-PARTITIONED closed 2026-09-28, awaiting the host)
 
 `tools/check-parallel-matrix.py` (S5.5) checks that every cell of
 `build-evidence/parallel-matrix.toml` names coverage that exists: the test is
 really in the file, the file is really registered, the refusal is really in the
 library *and* asserted somewhere, and a claimed rank count is really run. It
-reports **33 claims verified, 0 broken, 2 gaps**, and exits 1 on the gaps.
+reported **33 claims verified, 0 broken, 2 gaps** when this entry was written;
+as of 2026-09-28 it reports **66 verified, 0 broken, 2 gaps** — `A-PARTITIONED`
+below is closed (its verdict is the host's), `A-SPACES-TRANSPORT` is being
+closed by moving the runtime onto `space_kernels.hpp` (D11), and the second
+remaining gap is D8's `A-NODAL-HT-PARALLEL`, not one of this entry's two.
 
 | Gap | What has no test |
 |---|---|
-| `A-PARTITIONED` | the **parallel** half of an independently partitioned source. The one-rank contract is now covered by `test/backend/remap_halo_test.cpp` (2026-09-21); still untested: `build_remap_halo` on a communicator of more than one, the `E-REMAP-PARALLEL` boundary its own header calls load bearing, the forward/reverse exchange round trip, and `E-MESH-HALO-GEOMETRY` on a non-spherical partitioned pair |
 | `A-SPACES-TRANSPORT` | the host-parallel space axis beyond the kernels: only `space_kernels_test.cpp` is typed over execution spaces, so transport and runtime run on one space |
 
-`A-PARTITIONED` is the axis S5.5 records as appearing nowhere, and it is the
-largest untested surface in the parallel path. A remap whose source is
-partitioned independently of its target needs values the rank does not own;
-`localise()` refuses that (`E-MAP-COVERAGE`, tested), which is correct but is
-not coverage *of* the case — the halo exchange is what makes it work.
+~~`A-PARTITIONED`: the **parallel** half of an independently partitioned
+source has no test~~ — **closed 2026-09-28.** The one-rank contract
+(`A-PARTITIONED-SERIAL`) was already covered by
+`test/backend/remap_halo_test.cpp` (2026-09-21); this closes what it left
+open: `build_remap_halo`/`build_weights` under a REAL communicator of more
+than one rank.
 
-**Progress 2026-09-21.** The serial contract now has tests
-(`A-PARTITIONED-SERIAL`): a one-rank `build_remap_halo` must succeed, be
-idempotent, and short-circuit *before* the covering-set construction, so a
-non-spherical pair is not refused on a serial run — the promise every
-unconditional caller relies on, previously unchecked. They compile at tier 2
-and are **unrun here**: MOAB in this build calls `MPI_Init_thread` when the
-backend is constructed, which cannot succeed where MPI will not initialise
-(C1 above), so their verdict comes from a host run.
+**What is now written**, all in `test/parallel/remap_halo_mpi_test.cpp`
+(new; registered `fuse_add_mpi_test(parallel remap_halo_mpi ...)`, ranks
+1–5, gated on `FUSE_ENABLE_MOAB AND FUSE_ENABLE_MPI` — ABSENT, not skipped,
+when either is off):
+- `RemapHaloMpi.ERemapParallelRefusesAboveOneRankAndNotAtOne` and
+  `RemapHaloMpi.EMeshHaloGeometryRefusesTheBoxPairAboveOneRankAndNotAtOne` —
+  the `E-REMAP-PARALLEL` and `E-MESH-HALO-GEOMETRY` boundaries
+  `moab_backend.hpp`/`remap_plan.hpp` call load bearing ("`> 1` refuses;
+  `== 1` must NOT"), checked on BOTH sides using a generated, non-spherical
+  box pair — no mesh file needed, since both boundaries are structural
+  (rank count, distinct file sets) and neither depends on real geometry.
+- `RemapHaloMpiSphere.TheNonMatchingPairLoadsProjectsAndIsSphericalAtEvery
+  RankCount` and `RemapHaloMpiSphere.BuildRemapHaloDeliversExactHaloValues
+  AndRoundTripsExactly` — the REAL fixture, MOAB's own `wholeATM_T.h5m`
+  (atmosphere) and `recMeshOcn.h5m` (ocean), both spherical and
+  deliberately not matching (an identity pair cannot exercise a halo at
+  all). These need `-DFUSE_MOAB_MESHFILES=<moab-source>/MeshFiles/unittest`
+  and are not compiled at all without it, same as `A-PARTITIONED-SERIAL`'s
+  own sphere cases.
+  - **The fixture needed one more piece that nobody had built**: read
+    directly off the files (`h5dump` on the raw node coordinates,
+    2026-09-28), `wholeATM_T.h5m` sits at radius 1.0 and `recMeshOcn.h5m`
+    at radius 6371229.0 (Earth radius in metres) — two different,
+    individually well-formed, spheres. `intx_weights.cpp`'s own
+    radius-agreement check (`kGeomTol = 1e-9`) would refuse that pairing
+    outright with `E-REMAP-GEOMETRY`, correctly, since the library cannot
+    know two different radii are meant to be the same sphere in different
+    units. `MoabMeshBackend::project_onto_unit_sphere` (new;
+    `include/fuse/backend/moab_backend.hpp` / `src/backend/moab_backend.cpp`)
+    rescales one mesh's vertices by a single collectively-reconciled scalar
+    factor onto a common unit sphere; the test calls it once per mesh,
+    before `build_remap_halo` ever sees them.
+  - Forward (`exchange_remap_halo`): every halo slot's value is checked
+    EXACTLY against its own `global_id` — no gather needed for the
+    reference, since every rank applies the same identity function to its
+    own owned cells' global ids.
+  - Reverse (`accumulate_remap_halo`): every local entity starts at exactly
+    1.0; after the round trip, the Allreduce-summed total over every rank's
+    owned entities is EXACTLY (726, the mesh's own known cell count,
+    independent of rank count) + (the Allreduce-summed halo-instance count)
+    — arithmetic on exact integer-valued doubles, not a tolerance. This is
+    also the only place this cell can confirm the halo's send/receive
+    bookkeeping agrees on every rank: a lost or duplicated exchange message
+    breaks the identity outright.
+  - A default (non-`Conservative`) `build_weights()` call with the halo in
+    place is asserted to succeed and its audit numbers
+    (`min_src_coverage`, `max_col_defect`) are printed for the host log, but
+    NOT gated on a specific value: whether this real atmosphere/ocean pair's
+    domains overlap enough for `RemapFlags::Conservative` to hold is a
+    property of the files nobody has measured yet, and inventing a
+    tolerance for a number never measured would violate this project's own
+    "never widen a tolerance to make an assertion pass" rule.
 
-For the parallel half, the fixture problem is solved but not yet built: MOAB
-ships one sphere (`spherecube.h5m`, found through `MOAB_INCLUDE_DIRS`) and a
-second, non-matching spherical mesh can be generated with
-`/opt/moab-tempest/bin/GenerateCSMesh` and `GenerateRLLMesh`, both installed.
-An identity pair cannot substitute: with both sides on the same partition of
-the same mesh, target cell *j*'s source is cell *j* on the same rank, so no
-halo is ever needed.
+**What compiled at tier 2, in this sandbox**: configuring with
+`-DFUSE_ENABLE_MOAB=ON -DFUSE_ENABLE_MPI=ON
+-DFUSE_MOAB_MESHFILES=<moab-source>/MeshFiles/unittest` found both real
+files (`fuse: sphere pair for the remap halo: .../wholeATM_T.h5m +
+.../recMeshOcn.h5m`) and registered `test/parallel/remap_halo_mpi_test.cpp`
+(the "tests N registered of N on disk" audit line covers it); both
+`fuse_parallel_remap_halo_mpi_test` and the pre-existing
+`fuse_backend_remap_halo_test` built with 0 errors.
+`tools/check-parallel-matrix.py` now reports 66 claims verified, 0 broken —
+`A-PARTITIONED` no longer among the gaps (2 gaps remain: the unrelated
+`A-SPACES-TRANSPORT` above, plus one added by concurrent work elsewhere in
+this tree during the same session, outside this section's scope).
+`tools/mutate.py --check-anchors` and `tools/check-invariants.py`/
+`check-layering.py` are unaffected (0 violations).
+**UNRUN here, correcting this section's own 2026-09-21 note that the
+serial contract's verdict "comes from a host run"**: it does, and more
+finally than stated then. This sandbox cannot initialise MPI even at ONE
+process with no `mpiexec` at all (C1) — confirmed for THREE separate
+binaries built against the same MPI-enabled MOAB (the pre-existing serial
+`fuse_backend_remap_halo_test`, this new `fuse_parallel_remap_halo_mpi_test`,
+and even MOAB's own `mbsize` CLI tool), every one aborting inside MPI's own
+`MPI_Init` before any of them reach a single line of test code. The exact
+host command, on a `build-all` configured with MOAB and MPI on:
+
+```
+ctest --test-dir build-all -R 'parallel.remap_halo' --output-on-failure
+```
+
+For the parallel half, the fixture problem is now fully solved and built,
+not merely diagnosed: the note this replaces pointed at MOAB's own
+`spherecube.h5m` (a single, self-matching sphere with no partner) and at
+`GenerateCSMesh`/`GenerateRLLMesh` as a fallback for building one; the real
+non-matching pair this section now uses needed no generation step, only the
+radius projection described above.
 
 A gap is deliberately not waivable: the gate counts them and fails, so the
 number can only fall by writing the test. A **third** gap appearing, or any

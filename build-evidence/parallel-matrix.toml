@@ -301,12 +301,17 @@ note = """Compiles at tier 2 and is UNRUN in the sandbox -- MOAB here is MPI-lin
 [[cell]]
 id = "A-PARTITIONED"
 axis = "independently partitioned source"
-gap = """The PARALLEL half: a source partitioned independently of the target, where a remap row needs source values the rank does not own. The one-rank contract is now covered (A-PARTITIONED-SERIAL); what is still untested is the case the halo exists for -- `build_remap_halo` with a communicator of more than one, the `E-REMAP-PARALLEL` boundary that moab_backend.hpp itself calls load bearing ("> 1 refuses; == 1 must NOT"), the forward/reverse exchange round trip, and E-MESH-HALO-GEOMETRY on a non-spherical partitioned pair. It needs mpiexec and a non-matching spherical pair, and a REAL one
-exists in MOAB's own MeshFiles/unittest: `wholeATM_T.h5m` and `recMeshOcn.h5m`,
-both meshes on the sphere. They must be PROJECTED ONTO THE UNIT SPHERE before
-intersection -- Intx needs a common radius and theirs is not 1. That pair is the
-intended fixture; GenerateCSMesh / GenerateRLLMesh in /opt/moab-tempest/bin stay
-a fallback if a particular resolution is wanted."""
+pins = """the PARALLEL half of A-PARTITIONED-SERIAL's one-rank contract, under a REAL communicator of more than one rank: the `E-REMAP-PARALLEL` boundary moab_backend.hpp itself calls load bearing ("> 1 refuses; == 1 must NOT"), checked on BOTH sides with a generated box pair (needs no mesh file); `E-MESH-HALO-GEOMETRY` firing on that same non-spherical box pair and NOT firing on the real non-matching spherical pair (MOAB's own `wholeATM_T.h5m` / `recMeshOcn.h5m`, projected onto a common unit sphere by `MoabMeshBackend::project_onto_unit_sphere` -- their raw files sit at radius 1 and at Earth radius respectively, so Intx's radius-agreement check would otherwise refuse the pair outright); the forward exchange (`exchange_remap_halo`) delivering every halo slot's owner's value exactly, by global id; and the reverse exchange's (`accumulate_remap_halo`) round trip to an EXACT total, cross-checked against the mesh's own known cell count, which is also this cell's evidence that the halo's send/receive bookkeeping agrees on every rank (a lost or duplicated message breaks the identity outright)."""
+file = "test/parallel/remap_halo_mpi_test.cpp"
+kind = "mpi"
+ranks = [1, 2, 3, 4, 5]
+test = [
+  "RemapHaloMpi.ERemapParallelRefusesAboveOneRankAndNotAtOne",
+  "RemapHaloMpi.EMeshHaloGeometryRefusesTheBoxPairAboveOneRankAndNotAtOne",
+  "RemapHaloMpiSphere.TheNonMatchingPairLoadsProjectsAndIsSphericalAtEveryRankCount",
+  "RemapHaloMpiSphere.BuildRemapHaloDeliversExactHaloValuesAndRoundTripsExactly",
+]
+note = """Compiles at tier 2 under FUSE_ENABLE_MOAB AND FUSE_ENABLE_MPI; UNRUN in the sandbox -- MOAB here is MPI-linked and calls MPI_Init_thread when the backend is constructed, which cannot succeed where MPI will not initialise even at one rank (KNOWN_ISSUES C1). The two RemapHaloMpiSphere cases additionally need `wholeATM_T.h5m` / `recMeshOcn.h5m` discovered via -DFUSE_MOAB_MESHFILES (A-PARTITIONED-SERIAL's own note); absent, they are not compiled at all, never silently skipped. Its verdict comes from a host run like every other tier-2 mpi cell in this matrix."""
 [[cell]]
 id = "A-SPACES-TRANSPORT"
 axis = "host-parallel space, transport and runtime paths"
