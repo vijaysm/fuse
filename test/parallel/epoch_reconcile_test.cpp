@@ -511,3 +511,48 @@ TEST(EpochReconcile, AClearRunReconcilesAtEveryAgreementPoint) {
   EXPECT_GT(runner.stats().epochs_reconciled, 0u)
       << "a rank taking part in the exchange reconciled no agreement point";
 }
+
+// A component is stepped only on the processes of its own processor set
+// (docs/user/placement.md). Until 2026-09-29 the runtime gave every component
+// a step on every process, so a process outside a component's processor set
+// called its advance() with the component's communicator MPI_COMM_NULL; the
+// D3 host run found it, when a process outside an implicit coupling group
+// reported the group's failing component as its own failure. Here fluid and
+// solid are on disjoint processor sets, so each process must step exactly
+// one of them, once per coupling cycle.
+TEST(EpochReconcile, AComponentIsSteppedOnlyOnItsOwnProcesses) {
+  auto h = make_two_component_job("");
+  ASSERT_FALSE(h.fluid_.contains(current_rank()) && h.solid_.contains(current_rank()))
+      << "this test needs disjoint processor sets";
+
+  fuse::ComponentSet cs;
+  const auto n = h.backend.region_size(h.graph.region(h.region())).value();
+  cs.add(std::make_unique<FailsOnOneRank>("fluid", h.source_field(), n, -1));
+  cs.add(std::make_unique<FailsOnOneRank>("solid", h.target_field(), n, -1));
+  fuse::FieldRegistry reg;
+  for (auto& c : cs) {
+    const auto b = c.register_fields(reg, h.graph);
+    ASSERT_TRUE(b.ok()) << b.error().code << ": " << b.error().message;
+  }
+
+  fuse::RunnerConfig cfg;
+  cfg.transport         = "mpi";
+  cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
+  cfg.transport_setup   = mpi_comm_setup();
+  Runner runner{h.graph, h.dag, h.plan, h.backend};
+  const auto init = runner.initialize(cs, reg, cfg);
+  ASSERT_TRUE(init.ok()) << init.error().code << ": " << init.error().message;
+  const auto ran = runner.run_period(cs);
+  ASSERT_TRUE(ran.ok()) << ran.error().code << ": " << ran.error().message;
+
+  const auto* fluid = dynamic_cast<const FailsOnOneRank*>(cs.find("fluid"));
+  const auto* solid = dynamic_cast<const FailsOnOneRank*>(cs.find("solid"));
+  ASSERT_NE(fluid, nullptr);
+  ASSERT_NE(solid, nullptr);
+  const int me = current_rank();
+  EXPECT_EQ(fluid->steps, h.fluid_.contains(me) ? 1u : 0u)
+      << "process " << me << " stepped fluid " << fluid->steps << " time(s)";
+  EXPECT_EQ(solid->steps, h.solid_.contains(me) ? 1u : 0u)
+      << "process " << me << " stepped solid " << solid->steps << " time(s)";
+}
+

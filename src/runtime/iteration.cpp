@@ -432,11 +432,16 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components) {
 
     // --- the ticks the sweep re-runs ---------------------------------------
     const Rational enter_time = stream[R.enter].time;
-    for (std::size_t t = 0; t < ticks.size(); ++t) {
-      const bool mine =
+    // Validated over `all_ticks`, identical on every process, so every
+    // process reaches the same verdict; only this process's own steps
+    // (`ticks`) are then recorded for re-stepping.
+    std::size_t member_steps = 0;
+    for (std::size_t t = 0; t < all_ticks.size(); ++t) {
+      const bool member =
           std::find(R.component_slots.begin(), R.component_slots.end(),
-                    ticks[t].slot) != R.component_slots.end();
-      if (!mine) continue;
+                    all_ticks[t].slot) != R.component_slots.end();
+      if (!member) continue;
+      ++member_steps;
       // `>=`, not `>`. A member tick at EXACTLY `enter_time` has not run when
       // the region body starts: the enter instruction is `BeforeTicks` (see
       // TickPhase), so the main cursor in step_period() has advanced only the
@@ -467,20 +472,25 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components) {
       // measured. The guard still must not depend on reachability being rare
       // -- it refuses correctly here too -- but "no graph reaches this" is no
       // longer an accurate reason to leave it undertested.
-      if (!(ticks[t].time < enter_time)) {
+      if (!(all_ticks[t].time < enter_time)) {
         return Failure{"E-RT-REGION",
-                     "component '" + components.at(ticks[t].slot).name() +
+                     "component '" + components.at(all_ticks[t].slot).name() +
                          "' is checkpointed by iteration region '" + R.name +
                          "' but has an advance at t=" +
-                         ticks[t].time.to_string() +
+                         all_ticks[t].time.to_string() +
                          ", at or after the region begins at t=" +
                          enter_time.to_string() +
                          ". That advance would run once, outside the loop, "
                          "from state the region had already iterated"};
       }
-      R.tick_indices.push_back(t);
     }
-    if (R.tick_indices.empty()) {
+    for (std::size_t t = 0; t < ticks.size(); ++t) {
+      const bool member =
+          std::find(R.component_slots.begin(), R.component_slots.end(),
+                    ticks[t].slot) != R.component_slots.end();
+      if (member && ticks[t].time < enter_time) R.tick_indices.push_back(t);
+    }
+    if (member_steps == 0) {
       return Failure{"E-RT-REGION",
                    "iteration region '" + R.name +
                        "' re-advances no component, so a sweep would recompute "

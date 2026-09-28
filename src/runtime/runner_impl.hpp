@@ -444,6 +444,11 @@ struct Runner::Impl {
   std::vector<std::size_t>         sample_count;  // per arc, for Accumulate
   std::vector<detail::Resolved>    resolved;      // parallel to instructions
   std::vector<detail::Tick>        ticks;         // one period's worth, sorted
+  /// Every component's steps, identical on every process. `ticks` is the
+  /// subset this process performs (a component is stepped only on its own
+  /// processor set); checks whose verdict must agree across processes read
+  /// this list instead, so no process rejects a configuration alone.
+  std::vector<detail::Tick>        all_ticks;
   std::vector<detail::ConstrainInfo> constrains;
   /// Spec §7.3: one entry per space-time `Interpolate` node. Built once in
   /// resolve_spacetime(); `spacetime_by_node` maps the DAG node id to the

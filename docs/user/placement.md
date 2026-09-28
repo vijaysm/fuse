@@ -60,6 +60,11 @@ appears in yours; declaring it with no ranks says "not here, this run".
 
 ## What the library does with a placement
 
+- **Stepping the component** — `advance()` is called only on the processes of
+  the component's own processor set. A process outside it still constructs the
+  `Component` object (every process holds the same graph), but never steps it,
+  and a component placed on no processes is never stepped at all. Without a
+  base communicator all components run in the one process, as before.
 - **Deciding whether a move is needed** — identical placements, no move.
 - **Forming the exchange's communicator** — the union of the two placements,
   built collectively over that union only, never over the whole job. Ranks in
