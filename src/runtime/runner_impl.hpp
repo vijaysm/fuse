@@ -15,8 +15,11 @@
 #include <unordered_map>
 #include <vector>
 
+#include <Kokkos_Core.hpp>
+
 #include "fuse/ir/lowering.hpp"
 #include "fuse/num/accelerator.hpp"
+#include "fuse/num/space_kernels.hpp"
 #include "fuse/model/iteration.hpp"
 #include "fuse/backend/nodal_remap_distributed.hpp"
 #include "fuse/backend/remap_plan.hpp"
@@ -163,6 +166,42 @@ struct SpacetimeInfo {
                               identity_val.data(), identity_val.size(),
                               elements, elements};
   }
+};
+
+/// KNOWN_ISSUES.md D11 (closing) / matrix cell A-SPACES-TRANSPORT: the CSR
+/// conversion of one `RemapWeights`' COO triplets, built ONCE alongside the
+/// matching entry of `Impl::remap_weights` -- never per period.
+///
+/// `RemapWeights`' own header comment (fuse/backend/remap_plan.hpp) says
+/// `row` is "target entity, ascending" -- true of the conservative supermesh
+/// builder (`src/backend/intx_weights.cpp`), but NOT of every builder that
+/// returns one: `consistent_interp.hpp`'s `"consistent-transpose"` path
+/// builds H^T D by transposing H's own row-sorted triplets element-by-
+/// element, so the RESULT's `row` (H's former COLUMN) is sorted by whatever
+/// order H's rows happened to name it, not ascending. `build_remap_csr()`
+/// (runner.cpp) does not trust the comment: it STABLE-sorts the triplet
+/// indices by row before building `row_begin`, which is correct whether or
+/// not the input already was sorted (a stable sort of an already-sorted
+/// sequence is the identity permutation) and, critically, reproduces the
+/// EXACT per-row floating-point accumulation order `apply_weights`' own
+/// ascending-k COO scan would have used for that row's own entries --
+/// stable sort preserves each row's entries' relative order among
+/// THEMSELVES, which is all a per-row sum depends on, regardless of what
+/// other rows' entries were interleaved with them in the original array.
+///
+/// `col` and `val` are therefore both copied here, in the sorted order --
+/// `val` cannot be borrowed from `RemapWeights::val` directly the way the
+/// single-component `remap_apply`'s test fixture does, because the sort may
+/// have reordered it relative to the original array.
+///
+/// All three views live in `Kokkos::HostSpace` explicitly, not the default
+/// execution space's memory space: `Runner::Impl::HostExecSpace` (below) is
+/// always host (Serial/OpenMP/Threads), whose `memory_space` IS
+/// `Kokkos::HostSpace`, so the two agree without a template parameter here.
+struct RemapCsr {
+  Kokkos::View<std::size_t*, Kokkos::HostSpace> row_begin;
+  Kokkos::View<std::size_t*, Kokkos::HostSpace> col;
+  Kokkos::View<double*,      Kokkos::HostSpace> val;
 };
 
 /// One `Transport` instruction's execution plan, resolved once at setup.
@@ -385,6 +424,18 @@ struct Runner::Impl {
   const MeshBackend&   backend;
   RunnerConfig         config;
 
+  /// KNOWN_ISSUES.md D11 (closing): the coupling hot loop runs on Kokkos'
+  /// DEFAULT HOST execution space -- OpenMP if the build enabled it, Serial
+  /// otherwise (`Kokkos::DefaultHostExecutionSpace`'s own definition) --
+  /// instead of the hand-rolled serial loops `execute()` used to call
+  /// directly. Not templated on `Impl` itself: a device build (A5) is out
+  /// of scope for this closing, and every `SpanOf`/`ConstSpanOf` this file
+  /// wraps assumes host-accessible memory -- component-owned arrays,
+  /// coupler storage, `RemapWeights` triplets -- which is exactly what this
+  /// alias's `memory_space` (`Kokkos::HostSpace`) is, for every space it can
+  /// resolve to.
+  using HostExecSpace = Kokkos::DefaultHostExecutionSpace;
+
   bool initialized = false;
 
   std::vector<std::vector<double>> storage;       // coupler-owned, one per arc
@@ -410,6 +461,12 @@ struct Runner::Impl {
   /// setup() at all: the hot loop indexes `remap_weights` and nothing else.
   RemapCache                          remap_cache;
   std::vector<const RemapWeights*>    remap_weights;
+  /// KNOWN_ISSUES.md D11 (closing): the CSR conversion of the SAME entry of
+  /// `remap_weights`, at the same index -- built once, right where that
+  /// entry is pushed (resolve_remap()), never per period. See
+  /// `detail::RemapCsr`'s own comment. `Resolved::remap` indexes both
+  /// vectors together.
+  std::vector<detail::RemapCsr>       remap_csr;
   /// One entry per `OpKind::Remap` instruction targeting a distributed nodal
   /// region via `"consistent"`/`"consistent-transpose"` (detail::
   /// NodalDistRemap); `Resolved::nodal_dist` indexes it. Built once in
@@ -482,6 +539,15 @@ struct Runner::Impl {
   std::vector<IterationStats>        region_stats;   // parallel to regions
   std::vector<std::string>           region_explain;  // parallel to regions
 
+  /// KNOWN_ISSUES.md D11 (closing): scratch for the fixed-chunk
+  /// deterministic reductions (fuse/num/space_kernels.hpp's
+  /// `deterministic_norm_squared`/`deterministic_norm_squared_diff`) that
+  /// replace iteration.cpp's block residual/value norm loop. Sized ONCE in
+  /// resolve_regions(), from the largest block any region has -- never
+  /// per sweep, per iteration.cpp's own header comment (point 4: nothing in
+  /// the sweep loop may allocate).
+  Kokkos::View<double*, Kokkos::HostSpace> reduction_scratch;
+
   Impl(const CouplingGraph& g, const OperatorDAG& d, ExecutionPlan p,
        const MeshBackend& b)
       : graph(g), dag(d), plan(std::move(p)), backend(b) {}
@@ -552,6 +618,17 @@ struct Runner::Impl {
   /// copy between meshes that merely agree on a count, which is silently
   /// wrong rather than loudly wrong.
   Result<void> resolve_remap(const Instruction& ins, detail::Resolved& r);
+  /// KNOWN_ISSUES.md D11 (closing). Builds the CSR conversion of `weights`'
+  /// COO triplets -- see `detail::RemapCsr`'s own comment for the layout --
+  /// called from `resolve_remap()` at the point it is about to push a new
+  /// entry onto `remap_weights`, so the two vectors stay parallel. Defensive,
+  /// not a re-derivation of `remap_cache`'s own correctness: refuses
+  /// `E-REMAP-COO` if a triplet's row or column falls outside the matrix's
+  /// declared shape, or if `RemapWeights::row` is not actually ascending --
+  /// the same invariant `apply_weights` (fuse/backend/remap_plan.hpp) checks
+  /// per call and this checks once, at the point the invariant is consumed
+  /// to build a prefix scan instead of re-validated every period.
+  Result<detail::RemapCsr> build_remap_csr(const RemapWeights& weights);
   /// Nodal-remap track, round 2 (KNOWN_ISSUES.md D8). Called from
   /// `resolve_remap()` in place of the flat `E-RT-REMAP-NODAL-PARALLEL`
   /// refusal, ONLY for a Remap whose target is a nodal region on more than

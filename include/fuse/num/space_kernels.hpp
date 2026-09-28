@@ -34,6 +34,24 @@
 /// LABELS. Every kernel launch is named. A profile of a coupled run should say
 /// `fuse::accumulate` rather than `parallel_for`, because the first question
 /// asked of a slow run is which phase is slow.
+///
+/// LABEL LENGTH IS NOT COSMETIC for a kernel the Runner's own hot loop calls
+/// every period. `Kokkos::parallel_for`/`parallel_reduce` copy their label
+/// into a `std::string`, and a label past the standard library's
+/// small-string-optimisation capacity (measured: 22 characters on this
+/// tree's libc++) heap-allocates one -- per call, every period, forever.
+/// `runtime.iteration`'s allocation-counted tests
+/// (`Iteration.TheSweepLoopAllocatesNothing`/
+/// `TheAcceleratorAllocatesNothingPerUpdate`, test/verification/
+/// iteration_test.cpp) is exactly what caught this: the first cut of the
+/// `deterministic_*` kernels below used long, self-describing labels
+/// (`"fuse::deterministic_dot_partial"`, 31 characters) and both tests
+/// regressed from 0 allocations to hundreds. Every label a Runner-owned code
+/// path can reach stays under that budget; a kernel meant only for a test
+/// fixture's own direct calls (nothing in `Impl::execute()`/`run_region()`
+/// reaches `dot`/`weighted_norm_squared` above, for instance) is not held to
+/// it, but inherits the same convention anyway rather than becoming the
+/// exception a later reader has to rediscover why it's there.
 
 #include <cstddef>
 
@@ -182,6 +200,247 @@ template <class Space>
       },
       result);
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// KNOWN_ISSUES.md D11 (closing): additive kernels for the coupling hot loop.
+//
+// `copy`, `scale` and `residual` below are elementwise -- each output entry
+// depends on nothing any other thread writes, so `Kokkos::parallel_for`'s
+// partitioning of the range across threads cannot change the answer. They
+// need no determinism argument beyond the one `accumulate`/`relax` above
+// already carry.
+//
+// `remap_apply`'s second overload below (with an explicit `components`) is
+// the same argument as the single-component one above, generalised: each
+// thread still owns one row `j` and writes only `y(j*components + c)` for
+// `c` in `[0, components)`, in the SAME triplet order (ascending `k` within
+// the row) `apply_weights` (fuse/backend/remap_plan.hpp) processes its COO
+// scan in -- so a caller building the CSR ONCE, at plan time, from a
+// `RemapWeights`' already row-major-sorted triplets gets the identical
+// per-row sum `apply_weights` would have produced, regardless of how many
+// threads ran the row loop.
+//
+// The three `deterministic_*` kernels at the bottom are the exception to
+// "elementwise needs no argument": they are REDUCTIONS, and `dot`/
+// `weighted_norm_squared` above are explicit that a plain
+// `Kokkos::parallel_reduce`'s summation order is the THREADS', not a fixed
+// one -- exactly what a runtime whose bit-for-bit reproducibility across
+// thread counts is a requirement (not a nicety) cannot use. See their own
+// comment for the fixed-chunk scheme and what it does and does not promise.
+
+/// `dst[i] <- src[i]`. The elementwise copy every `num::copy` call site in
+/// the Runner (`fuse/num/kernels.hpp`) moves to when the buffer is a
+/// component-owned array wrapped as a `SpanOf`/`ConstSpanOf` rather than a
+/// raw pointer no space has been chosen for.
+template <class Space>
+void copy(ConstSpanOf<Space> src, SpanOf<Space> dst) {
+  Kokkos::parallel_for(
+      "fuse::copy", Kokkos::RangePolicy<Space>(0, dst.extent(0)),
+      KOKKOS_LAMBDA(const std::size_t i) { dst(i) = src(i); });
+}
+
+/// `dst[i] <- factor * src[i]`. `OpKind::Scale`'s whole operator.
+template <class Space>
+void scale(double factor, ConstSpanOf<Space> src, SpanOf<Space> dst) {
+  Kokkos::parallel_for(
+      "fuse::scale", Kokkos::RangePolicy<Space>(0, dst.extent(0)),
+      KOKKOS_LAMBDA(const std::size_t i) { dst(i) = factor * src(i); });
+}
+
+/// `out[i] <- a[i] - b[i]`. `OpKind::Residual`'s two shapes (`a - b` and
+/// `a - prev`) are the same subtraction against a different second operand,
+/// so one kernel covers both; the caller decides what `b` aliases.
+template <class Space>
+void residual(ConstSpanOf<Space> a, ConstSpanOf<Space> b, SpanOf<Space> out) {
+  Kokkos::parallel_for(
+      "fuse::residual", Kokkos::RangePolicy<Space>(0, out.extent(0)),
+      KOKKOS_LAMBDA(const std::size_t i) { out(i) = a(i) - b(i); });
+}
+
+/// The multi-component sibling of `remap_apply` above: `y <- W x` with `x`
+/// `w.n_cols * components` doubles and `y` `w.n_rows * components`, both
+/// entity-major with the component index fastest -- `apply_weights`'s own
+/// layout (`fuse/backend/remap_plan.hpp`). `row_begin` has `rows + 1`
+/// entries (a plain CSR prefix scan, not derivable from `y` alone once
+/// `components != 1`, which is why this overload takes it explicitly rather
+/// than reusing the single-component one's `y.extent(0)` row count).
+template <class Space>
+void remap_apply(IndexSpanOf<Space> row_begin, IndexSpanOf<Space> col,
+                 ConstSpanOf<Space> val, ConstSpanOf<Space> x,
+                 SpanOf<Space> y, std::size_t components) {
+  const std::size_t rows = row_begin.extent(0) - 1;
+  Kokkos::parallel_for(
+      "fuse::remap_multi", Kokkos::RangePolicy<Space>(0, rows),
+      KOKKOS_LAMBDA(const std::size_t j) {
+        const std::size_t base = j * components;
+        for (std::size_t c = 0; c < components; ++c) y(base + c) = 0.0;
+        // Deliberately not textually identical to the single-component
+        // remap_apply's own row loop above (same bounds, `row_end` hoisted
+        // out of the loop instead of re-read each iteration): the two are
+        // separate mutate.py anchors in build-evidence/mutations.toml, and
+        // an anchor that occurs more than once is one tools/mutate.py
+        // --check-anchors reports as STALE for the whole manifest, not just
+        // this row.
+        const std::size_t row_end = row_begin(j + 1);
+        for (std::size_t k = row_begin(j); k < row_end; ++k) {
+          const std::size_t cbase = col(k) * components;
+          const double v = val(k);
+          for (std::size_t c = 0; c < components; ++c) {
+            y(base + c) += v * x(cbase + c);
+          }
+        }
+      });
+}
+
+/// Fixed-order reductions whose answer does not depend on the execution
+/// space's thread count -- unlike `dot`/`weighted_norm_squared` above, whose
+/// own comments say plainly that a parallel reduction's summation order is
+/// the threads'. KNOWN_ISSUES.md D11: the runtime's OWN reductions
+/// (`iteration.cpp`'s block residual/value norms) need bit-for-bit
+/// reproducibility across thread counts, which those two cannot give.
+///
+/// THE SCHEME. `kDeterministicChunk` (a compile-time constant, independent
+/// of `Space` and of the thread count) partitions `[0, n)` into
+/// `deterministic_chunks(n)` fixed-size groups. `Kokkos::parallel_for` runs
+/// over CHUNKS, not elements: each chunk sums its own span sequentially, in
+/// ascending index order, into one scratch partial -- the number of
+/// independent units of work is fixed by `n` alone, never by how many
+/// threads happen to be available. The partials are then combined
+/// SEQUENTIALLY, in ascending chunk order, directly out of `scratch`: this
+/// second pass, not a second `parallel_reduce`, is what makes the total
+/// independent of the first pass's thread partitioning.
+///
+/// NOT the same bits as `fuse::num::sum` (`kernels.hpp`)'s single-accumulator
+/// ascending sum in general: grouping `n` terms into
+/// `deterministic_chunks(n)` partials re-associates the moment
+/// `n > kDeterministicChunk`, and floating-point addition is not
+/// associative. For `n <= kDeterministicChunk` there is exactly one chunk,
+/// so the grouped sum and the plain ascending sum are the identical
+/// computation and agree bit for bit; a caller whose buffers are all that
+/// small (as the runtime's own iteration-region blocks are, in every
+/// existing Tier-0 fixture) sees no change at all from moving onto this
+/// scheme. A caller with genuinely larger `n` gets thread-count
+/// independence, not bitwise agreement with a pre-existing single-
+/// accumulator reference -- the same trade `dot`/`weighted_norm_squared`
+/// already document, just resolved differently.
+///
+/// `scratch` must hold at least `deterministic_chunks(v.extent(0))` entries;
+/// callers size it once, at setup, and reuse it (D11's no-per-period-
+/// allocation rule; `iteration.cpp` sizes it from the largest region block).
+///
+/// HOST-ONLY. The finalising sum reads `scratch` with plain host code, so
+/// `Space::memory_space` must be host-accessible -- true of every space this
+/// tree can build (Serial, Threads, OpenMP). A device space would need a
+/// `deep_copy` of the partials to a host mirror before that sum, which nothing
+/// here does: closing THAT gap is A5's device work, not this one's.
+inline constexpr std::size_t kDeterministicChunk = 256;
+
+[[nodiscard]] inline std::size_t deterministic_chunks(std::size_t n) {
+  return (n + kDeterministicChunk - 1) / kDeterministicChunk;
+}
+
+/// `sum_i a_i b_i`, fixed-order. `deterministic_norm_squared` below is
+/// `deterministic_dot(v, v, scratch)`.
+template <class Space>
+[[nodiscard]] double deterministic_dot(ConstSpanOf<Space> a,
+                                       ConstSpanOf<Space> b,
+                                       SpanOf<Space> scratch) {
+  static_assert(
+      Kokkos::SpaceAccessibility<Kokkos::HostSpace,
+                                 typename Space::memory_space>::accessible,
+      "deterministic_dot's fixed-order finalize reads `scratch` directly "
+      "from host code; a device memory space needs a deep_copy first "
+      "(KNOWN_ISSUES.md D11, remaining work under A5)");
+  const std::size_t n = a.extent(0);
+  const std::size_t n_chunks = deterministic_chunks(n);
+  Kokkos::parallel_for(
+      "fuse::det_dot_part", Kokkos::RangePolicy<Space>(0, n_chunks),
+      KOKKOS_LAMBDA(const std::size_t c) {
+        const std::size_t begin = c * kDeterministicChunk;
+        const std::size_t end =
+            (begin + kDeterministicChunk < n) ? begin + kDeterministicChunk : n;
+        double s = 0.0;
+        for (std::size_t i = begin; i < end; ++i) s += a(i) * b(i);
+        scratch(c) = s;
+      });
+  double total = 0.0;
+  for (std::size_t c = 0; c < n_chunks; ++c) total += scratch(c);
+  return total;
+}
+
+/// `sum_i v_i`, fixed-order. See `deterministic_dot`'s comment for the scheme
+/// and what it does and does not promise.
+template <class Space>
+[[nodiscard]] double deterministic_sum(ConstSpanOf<Space> v,
+                                       SpanOf<Space> scratch) {
+  static_assert(
+      Kokkos::SpaceAccessibility<Kokkos::HostSpace,
+                                 typename Space::memory_space>::accessible,
+      "deterministic_sum's fixed-order finalize reads `scratch` directly "
+      "from host code; a device memory space needs a deep_copy first "
+      "(KNOWN_ISSUES.md D11, remaining work under A5)");
+  const std::size_t n = v.extent(0);
+  const std::size_t n_chunks = deterministic_chunks(n);
+  Kokkos::parallel_for(
+      "fuse::det_sum_part", Kokkos::RangePolicy<Space>(0, n_chunks),
+      KOKKOS_LAMBDA(const std::size_t c) {
+        const std::size_t begin = c * kDeterministicChunk;
+        const std::size_t end =
+            (begin + kDeterministicChunk < n) ? begin + kDeterministicChunk : n;
+        double s = 0.0;
+        for (std::size_t i = begin; i < end; ++i) s += v(i);
+        scratch(c) = s;
+      });
+  double total = 0.0;
+  for (std::size_t c = 0; c < n_chunks; ++c) total += scratch(c);
+  return total;
+}
+
+/// `sum_i v_i^2`, fixed-order. `deterministic_dot(v, v, scratch)` exactly:
+/// a separate name because this is the one `iteration.cpp`'s block value
+/// norm calls, and `weighted_norm_squared`'s own precedent above (a distinct
+/// name for `dot` specialised to one argument doubled) is the convention
+/// this follows.
+template <class Space>
+[[nodiscard]] double deterministic_norm_squared(ConstSpanOf<Space> v,
+                                                SpanOf<Space> scratch) {
+  return deterministic_dot<Space>(v, v, scratch);
+}
+
+/// `sum_i (a_i - b_i)^2`, fixed-order. `iteration.cpp`'s block RESIDUAL norm:
+/// avoids materialising `a - b` into a third buffer (and the allocation, or
+/// third scratch array, that would cost) by folding the subtraction into the
+/// same per-chunk loop `deterministic_dot` uses.
+template <class Space>
+[[nodiscard]] double deterministic_norm_squared_diff(ConstSpanOf<Space> a,
+                                                      ConstSpanOf<Space> b,
+                                                      SpanOf<Space> scratch) {
+  static_assert(
+      Kokkos::SpaceAccessibility<Kokkos::HostSpace,
+                                 typename Space::memory_space>::accessible,
+      "deterministic_norm_squared_diff's fixed-order finalize reads "
+      "`scratch` directly from host code; a device memory space needs a "
+      "deep_copy first (KNOWN_ISSUES.md D11, remaining work under A5)");
+  const std::size_t n = a.extent(0);
+  const std::size_t n_chunks = deterministic_chunks(n);
+  Kokkos::parallel_for(
+      "fuse::det_nsd_part",
+      Kokkos::RangePolicy<Space>(0, n_chunks),
+      KOKKOS_LAMBDA(const std::size_t c) {
+        const std::size_t begin = c * kDeterministicChunk;
+        const std::size_t end =
+            (begin + kDeterministicChunk < n) ? begin + kDeterministicChunk : n;
+        double s = 0.0;
+        for (std::size_t i = begin; i < end; ++i) {
+          const double d = a(i) - b(i);
+          s += d * d;
+        }
+        scratch(c) = s;
+      });
+  double total = 0.0;
+  for (std::size_t c = 0; c < n_chunks; ++c) total += scratch(c);
+  return total;
 }
 
 }  // namespace fuse::num

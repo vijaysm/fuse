@@ -710,15 +710,31 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
     for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
       const detail::RegionBlock& b = R.blocks[bi];
       const double* g = slots[b.value_arc].data;
-      double rs = 0.0;
-      double vs = 0.0;
-      for (std::size_t j = 0; j < b.length; ++j) {
-        const double v = g[j];
-        const double d = v - R.x_old[b.offset + j];
-        R.x_new[b.offset + j] = v;
-        rs += d * d;
-        vs += v * v;
-      }
+      double* x_new_block = R.x_new.data() + b.offset;
+      const double* x_old_block = R.x_old.data() + b.offset;
+
+      // KNOWN_ISSUES.md D11 (closing) / matrix cell A-SPACES-TRANSPORT: the
+      // copy is elementwise -- trivially thread-count-independent, same
+      // argument as every other elementwise kernel in
+      // fuse/num/space_kernels.hpp. The two norms below are REDUCTIONS, and
+      // are exactly the case that header's `deterministic_norm_squared`/
+      // `deterministic_norm_squared_diff` exist for: a plain accumulator
+      // (what this loop used to be) or a `Kokkos::parallel_reduce` both
+      // associate depending on how the work is split, which a runtime whose
+      // bit-for-bit reproducibility across thread counts is a requirement
+      // cannot use. `reduction_scratch` is sized once, in initialize(), from
+      // the largest block any region has; nothing here resizes it.
+      num::copy<HostExecSpace>(num::ConstSpanOf<HostExecSpace>(g, b.length),
+                               num::SpanOf<HostExecSpace>(x_new_block,
+                                                          b.length));
+
+      const std::size_t n_chunks = num::deterministic_chunks(b.length);
+      num::SpanOf<HostExecSpace> scratch(reduction_scratch.data(), n_chunks);
+      const double vs = num::deterministic_norm_squared<HostExecSpace>(
+          num::ConstSpanOf<HostExecSpace>(x_new_block, b.length), scratch);
+      const double rs = num::deterministic_norm_squared_diff<HostExecSpace>(
+          num::ConstSpanOf<HostExecSpace>(x_new_block, b.length),
+          num::ConstSpanOf<HostExecSpace>(x_old_block, b.length), scratch);
       R.block_residual[bi] = std::sqrt(rs);
       R.block_value[bi] = std::sqrt(vs);
     }

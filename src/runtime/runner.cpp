@@ -907,9 +907,106 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
                      "the two regions"};
   }
 
+  // KNOWN_ISSUES.md D11 (closing): the CSR conversion of THIS weights matrix,
+  // built here -- at plan time, once -- so execute()'s OpKind::Remap case
+  // never converts a triplet list on the hot path. remap_csr stays parallel
+  // to remap_weights: both are pushed together, indexed by the same
+  // r.remap.
+  const Result<detail::RemapCsr> csr = build_remap_csr(*weights);
+  if (!csr.ok()) return csr.error();
+
   r.remap = static_cast<std::int32_t>(remap_weights.size());
   remap_weights.push_back(weights);
+  remap_csr.push_back(csr.value());
   return Result<void>::success();
+}
+
+// ---------------------------------------------------------------------------
+// KNOWN_ISSUES.md D11 (closing): builds the CSR conversion of one
+// RemapWeights' COO triplets, ONCE, at the point resolve_remap() is about
+// to push a new remap_weights entry. See detail::RemapCsr's own comment
+// (runner_impl.hpp) for the layout this produces and why the two views'
+// memory space is always Kokkos::HostSpace regardless of which host
+// execution space actually applies the matvec.
+// ---------------------------------------------------------------------------
+Result<detail::RemapCsr> Runner::Impl::build_remap_csr(
+    const RemapWeights& weights) {
+  const std::size_t nnz = weights.val.size();
+  if (weights.row.size() != nnz || weights.col.size() != nnz) {
+    return Failure{"E-REMAP-COO",
+                 "build_remap_csr: the triplet arrays disagree in length "
+                 "(row " + std::to_string(weights.row.size()) + ", col " +
+                     std::to_string(weights.col.size()) + ", val " +
+                     std::to_string(nnz) + ")"};
+  }
+  for (std::size_t k = 0; k < nnz; ++k) {
+    if (weights.row[k] < 0 ||
+        static_cast<std::size_t>(weights.row[k]) >= weights.n_rows ||
+        weights.col[k] < 0 ||
+        static_cast<std::size_t>(weights.col[k]) >= weights.n_cols) {
+      return Failure{"E-REMAP-COO",
+                   "build_remap_csr: triplet " + std::to_string(k) + " is (" +
+                       std::to_string(weights.row[k]) + ", " +
+                       std::to_string(weights.col[k]) + "), outside the " +
+                       std::to_string(weights.n_rows) + "x" +
+                       std::to_string(weights.n_cols) + " matrix"};
+    }
+  }
+
+  // A STABLE sort by row, not an assumption that `row` already is ascending
+  // (see detail::RemapCsr's own comment for why the latter is false for
+  // consistent_interp.hpp's "consistent-transpose" H^T D). Stability is what
+  // makes this exact rather than merely convenient: for two triplets of the
+  // SAME row, it preserves their original relative order, which is all a
+  // per-row sum's floating-point rounding depends on -- `apply_weights`
+  // (fuse/backend/remap_plan.hpp) accumulates a row's own entries in
+  // ascending-k order regardless of what other rows' entries sit between
+  // them in the array, and a stable sort by row reproduces exactly that
+  // relative order for each row's own entries. When `row` already IS
+  // ascending (the conservative supermesh builder), a stable sort of an
+  // already-sorted sequence is the identity permutation, so this costs
+  // nothing extra in the common case and changes nothing about it.
+  std::vector<std::size_t> perm(nnz);
+  for (std::size_t k = 0; k < nnz; ++k) perm[k] = k;
+  std::stable_sort(perm.begin(), perm.end(),
+                   [&weights](std::size_t a, std::size_t b) {
+                     return weights.row[a] < weights.row[b];
+                   });
+
+  detail::RemapCsr csr;
+  csr.row_begin = Kokkos::View<std::size_t*, Kokkos::HostSpace>(
+      Kokkos::view_alloc("fuse::remap_csr_row_begin",
+                        Kokkos::WithoutInitializing),
+      weights.n_rows + 1);
+  csr.col = Kokkos::View<std::size_t*, Kokkos::HostSpace>(
+      Kokkos::view_alloc("fuse::remap_csr_col", Kokkos::WithoutInitializing),
+      nnz);
+  csr.val = Kokkos::View<double*, Kokkos::HostSpace>(
+      Kokkos::view_alloc("fuse::remap_csr_val", Kokkos::WithoutInitializing),
+      nnz);
+
+  std::size_t k = 0;
+  for (std::size_t row = 0; row < weights.n_rows; ++row) {
+    csr.row_begin(row) = k;
+    while (k < nnz && static_cast<std::size_t>(weights.row[perm[k]]) == row) {
+      csr.col(k) = static_cast<std::size_t>(weights.col[perm[k]]);
+      csr.val(k) = weights.val[perm[k]];
+      ++k;
+    }
+  }
+  csr.row_begin(weights.n_rows) = k;
+  // Cannot fail given the bounds check above (every row[] value is in
+  // [0, n_rows), so the scan above visits every one of them); asserted as a
+  // Result rather than FUSE_ASSERT so a future change to the sort or the
+  // scan that broke this is a diagnosed refusal, not undefined behaviour
+  // from an under-filled row_begin.
+  if (k != nnz) {
+    return Failure{"E-REMAP-COO",
+                 "build_remap_csr: internal error -- the row-sorted scan "
+                 "consumed " + std::to_string(k) + " of " +
+                     std::to_string(nnz) + " triplets"};
+  }
+  return csr;
 }
 
 // ---------------------------------------------------------------------------
@@ -1420,6 +1517,7 @@ Result<void> Runner::Impl::resolve_instructions() {
   weight_sets.clear();
   weights_by_region.clear();
   remap_weights.clear();
+  remap_csr.clear();  // parallel to remap_weights; see build_remap_csr()
   // Both are APPENDED to by the OpKind::Transport case below, so they must be
   // reset here like every other setup-owned container. Runner::initialize() is
   // re-callable (it clears `initialized` at entry), and without these a second
@@ -2147,6 +2245,30 @@ Result<void> Runner::Impl::setup(ComponentSet& components,
   // (E-ITER-NOCONVERGE, E-ITER-MAXITER, E-ITER-NOROLLBACK).
   r = resolve_regions(components);
   if (!r.ok()) return r;
+
+  // KNOWN_ISSUES.md D11 (closing): scratch for the fixed-chunk deterministic
+  // reductions run_region() uses (fuse/num/space_kernels.hpp's
+  // `deterministic_norm_squared`/`deterministic_norm_squared_diff`), sized
+  // ONCE here from the largest block any region has -- never per sweep or
+  // per period, per iteration.cpp's own header comment (point 4: nothing in
+  // the sweep loop may allocate). Grown, not shrunk, on a repeated
+  // initialize() call (Runner::initialize() is re-callable), so a second
+  // call with a smaller plan does not lose headroom a still-live reference
+  // might need -- though nothing currently keeps one across a call.
+  std::size_t max_block_length = 0;
+  for (const detail::RegionRuntime& region : regions) {
+    for (const detail::RegionBlock& b : region.blocks) {
+      max_block_length = std::max(max_block_length, b.length);
+    }
+  }
+  const std::size_t needed_chunks = num::deterministic_chunks(max_block_length);
+  if (reduction_scratch.extent(0) < needed_chunks) {
+    reduction_scratch = Kokkos::View<double*, Kokkos::HostSpace>(
+        Kokkos::view_alloc("fuse::reduction_scratch",
+                          Kokkos::WithoutInitializing),
+        needed_chunks);
+  }
+
   initialized = true;
   return Result<void>::success();
 }
@@ -2469,6 +2591,24 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
   const auto out_ptr = [&]() -> double* { return slots[ins.out.value()].data; };
   const std::size_t n = r.out_total;
 
+  // KNOWN_ISSUES.md D11 (closing) / matrix cell A-SPACES-TRANSPORT: the
+  // elementwise operators below wrap their existing raw pointers as
+  // UNMANAGED views (fuse/num/space_kernels.hpp's SpanOf/ConstSpanOf are
+  // zero-cost for exactly this) and run on `HostExecSpace` -- OpenMP if the
+  // build enabled it, Serial otherwise -- instead of the hand-written
+  // serial loops this switch used to run directly. Each output element's
+  // write depends on no other, so the answer cannot depend on how many
+  // threads Kokkos happened to split the range across; see
+  // space_kernels.hpp's own header comment. Nothing here allocates: a
+  // SpanOf/ConstSpanOf is a view CONSTRUCTOR over an existing pointer, not a
+  // new buffer.
+  const auto span_c = [](const double* p, std::size_t len) {
+    return num::ConstSpanOf<HostExecSpace>(p, len);
+  };
+  const auto span_m = [](double* p, std::size_t len) {
+    return num::SpanOf<HostExecSpace>(p, len);
+  };
+
   switch (ins.kind) {
     case OpKind::Source:
       // The arc already aliases component storage; nothing to do.
@@ -2486,7 +2626,7 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
       if (r.spacetime < 0) {
         // The `lag(k)` no-op of src/ir/rules_channel.cpp: it exists so the
         // TimeLevel shift has an arc to live on and moves no data.
-        num::copy(in_ptr(0), out_ptr(), n);
+        num::copy<HostExecSpace>(span_c(in_ptr(0), n), span_m(out_ptr(), n));
         break;
       }
 
@@ -2535,18 +2675,37 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
         // centroid at the same local index, so `dst[i] = src[i]` moves each
         // value to the cell it already belonged to. Any pair that failed that
         // check either carries real weights below or never got past setup.
-        num::copy(in_ptr(0), out_ptr(), n);
+        num::copy<HostExecSpace>(span_c(in_ptr(0), n), span_m(out_ptr(), n));
       } else {
         // Spec §5.4: `g = W f`, with `W` the conservative FV<->FV matrix
         // built from the supermesh at SETUP (src/remap/intx_weights.cpp).
         // Nothing is allocated, looked up or rebuilt here -- `remap_weights`
-        // was filled in resolve_remap() and the pointers are owned by
-        // `remap_cache`.
+        // AND `remap_csr` were both filled in resolve_remap()
+        // (build_remap_csr(), KNOWN_ISSUES.md D11 closing), and the CSR
+        // conversion, like the triplets themselves, is owned by setup, not
+        // rebuilt per period. `remap_apply`'s multi-component overload
+        // (fuse/num/space_kernels.hpp) reproduces `apply_weights`' own
+        // per-row accumulation order exactly -- see detail::RemapCsr's own
+        // comment for why the stable sort at plan time guarantees that.
         const RemapWeights& w =
             *remap_weights[static_cast<std::size_t>(r.remap)];
-        const Result<void> aw = apply_weights(w, in_ptr(0), out_ptr(),
-                                              slots[ins.out.value()].components);
-        if (!aw.ok()) return aw;
+        const detail::RemapCsr& csr =
+            remap_csr[static_cast<std::size_t>(r.remap)];
+        const int components = slots[ins.out.value()].components;
+        if (components < 1) {
+          return Failure{"E-REMAP-ARG",
+                       "apply_weights: components must be >= 1, not " +
+                           std::to_string(components)};
+        }
+        const std::size_t nc = static_cast<std::size_t>(components);
+        num::IndexSpanOf<HostExecSpace> row_begin(csr.row_begin.data(),
+                                                   csr.row_begin.extent(0));
+        num::IndexSpanOf<HostExecSpace> col(csr.col.data(),
+                                            csr.col.extent(0));
+        num::ConstSpanOf<HostExecSpace> val(csr.val.data(), csr.val.extent(0));
+        num::remap_apply<HostExecSpace>(row_begin, col, val,
+                                        span_c(in_ptr(0), w.n_cols * nc),
+                                        span_m(out_ptr(), w.n_rows * nc), nc);
       }
       break;
     }
@@ -2559,32 +2718,45 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
         // defined and inspectable; the projection reads `history`.
         SpacetimeInfo& st = spacetimes[static_cast<std::size_t>(r.spacetime)];
         const auto j = static_cast<std::size_t>(ins.src_step);
-        num::copy(in_ptr(0), st.history.data() + j * st.width, st.width);
-        num::copy(in_ptr(0), out_ptr(), n);
+        num::copy<HostExecSpace>(span_c(in_ptr(0), st.width),
+                                 span_m(st.history.data() + j * st.width,
+                                        st.width));
+        num::copy<HostExecSpace>(span_c(in_ptr(0), n), span_m(out_ptr(), n));
         break;
       }
       const std::size_t idx = sample_count[ins.out.value()];
-      // r.accum, not ins.attrs.accum: see resolve_instructions().
-      num::accumulate_into(r.accum, in_ptr(0), out_ptr(), n, idx);
+      // r.accum, not ins.attrs.accum: see resolve_instructions(). `first`
+      // mirrors `num::accumulate_into`'s own `sample_index == 0` rule.
+      num::accumulate<HostExecSpace>(r.accum, span_c(in_ptr(0), n),
+                                     span_m(out_ptr(), n), idx == 0);
       sample_count[ins.out.value()] = idx + 1;
       break;
     }
 
     case OpKind::Accumulate: {
       if (ins.n_in == 0 || !ins.out.valid()) break;
-      num::copy(in_ptr(0), out_ptr(), n);
+      double* out = out_ptr();
+      num::copy<HostExecSpace>(span_c(in_ptr(0), n), span_m(out, n));
       // The sample counter belongs to the accumulator arc this reduction
-      // reads, not to the arc it writes.
+      // reads, not to the arc it writes. `num::accumulate_finalize`
+      // (kernels.hpp) does nothing outside AccumOp::Mean with a nonzero
+      // count; the elementwise equivalent is exactly that scale, in place.
       const std::size_t count = sample_count[ins.in[0].value()];
-      num::accumulate_finalize(ins.attrs.accum, out_ptr(), n, count);
+      if (ins.attrs.accum == AccumOp::Mean && count != 0) {
+        const double inv = 1.0 / static_cast<double>(count);
+        num::scale<HostExecSpace>(inv, span_c(out, n), span_m(out, n));
+      }
       sample_count[ins.in[0].value()] = 0;  // reset for the next window
       break;
     }
 
     case OpKind::Extrapolate: {
       if (ins.n_in == 0 || !ins.out.valid()) break;
-      // Phase 4 keeps no history, so order 0 is the only honest behaviour.
-      num::extrapolate(0, in_ptr(0), n, out_ptr(), n);
+      // Phase 4 keeps no history, so order 0 -- `out[i] = history[i]`,
+      // exactly `copy` -- is the only behaviour `num::extrapolate` (still
+      // used, and still the oracle for a future order > 0) ever actually
+      // takes here.
+      num::copy<HostExecSpace>(span_c(in_ptr(0), n), span_m(out_ptr(), n));
       break;
     }
 
@@ -2595,21 +2767,28 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
         case MergeOp::First:
           // The first contributing channel in declaration order wins; the
           // others are not read at all. An override, not a combination.
-          num::copy(in_ptr(0), out, n);
+          num::copy<HostExecSpace>(span_c(in_ptr(0), n), span_m(out, n));
           break;
         case MergeOp::Sum:
         case MergeOp::Mean: {
-          for (std::size_t i = 0; i < n; ++i) out[i] = 0.0;
+          // `accumulate<HostExecSpace>(AccumOp::Sum, ..., first)` (already
+          // verified for every AccumOp by
+          // SpaceKernels.AccumulateMatchesTheSerialOracleForEveryOp) sets
+          // `out <- sample` when `first` and `out <- out + sample`
+          // otherwise -- called once per input channel, in declaration
+          // order, this is the SAME zero-then-accumulate-in-order the
+          // hand-written loop it replaces did, just spelled as the kernel
+          // Sample's own accumulation already uses.
           for (std::uint8_t k = 0; k < ins.n_in; ++k) {
-            const double* src = in_ptr(k);
-            for (std::size_t i = 0; i < n; ++i) out[i] += src[i];
+            num::accumulate<HostExecSpace>(AccumOp::Sum, span_c(in_ptr(k), n),
+                                           span_m(out, n), k == 0);
           }
           if (ins.attrs.merge == MergeOp::Mean) {
             // Unweighted, as declared: the model carries no coverage
             // information that could weight the contributions, and inventing
             // weights here would be inventing physics.
             const double inv = 1.0 / static_cast<double>(ins.n_in);
-            for (std::size_t i = 0; i < n; ++i) out[i] *= inv;
+            num::scale<HostExecSpace>(inv, span_c(out, n), span_m(out, n));
           }
           break;
         }
@@ -2623,9 +2802,7 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
       // here, at the one point where it has to. Converting per element, or
       // carrying a double through the plan, would round it repeatedly.
       const double f = ins.attrs.scale.to_double();
-      const double* src = in_ptr(0);
-      double* out = out_ptr();
-      for (std::size_t i = 0; i < n; ++i) out[i] = f * src[i];
+      num::scale<HostExecSpace>(f, span_c(in_ptr(0), n), span_m(out_ptr(), n));
       break;
     }
 
@@ -2660,8 +2837,9 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
       if (ins.n_in == 0 || !ins.out.valid()) break;
       double* out = out_ptr();
       std::vector<double>& prev = previous[ins.out.value()];  // pre-sized
-      num::relax(ins.attrs.omega, prev.data(), in_ptr(0), out, n);
-      num::copy(out, prev.data(), n);
+      num::relax<HostExecSpace>(ins.attrs.omega, span_c(prev.data(), n),
+                                span_c(in_ptr(0), n), span_m(out, n));
+      num::copy<HostExecSpace>(span_c(out, n), span_m(prev.data(), n));
       break;
     }
 
@@ -2755,11 +2933,13 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
       const double* a = in_ptr(0);
       if (ins.n_in > 1) {
         const double* b = in_ptr(1);
-        for (std::size_t i = 0; i < n; ++i) out[i] = a[i] - b[i];
+        num::residual<HostExecSpace>(span_c(a, n), span_c(b, n),
+                                     span_m(out, n));
       } else {
         std::vector<double>& prev = previous[ins.out.value()];  // pre-sized
-        for (std::size_t i = 0; i < n; ++i) out[i] = a[i] - prev[i];
-        num::copy(a, prev.data(), n);
+        num::residual<HostExecSpace>(span_c(a, n), span_c(prev.data(), n),
+                                     span_m(out, n));
+        num::copy<HostExecSpace>(span_c(a, n), span_m(prev.data(), n));
       }
       break;
     }
