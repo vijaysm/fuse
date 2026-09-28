@@ -19,10 +19,12 @@
 #include <string>
 #include <vector>
 
+using fuse::ComponentId;
 using fuse::MeshDecl;
 using fuse::MeshId;
 using fuse::MeshView;
 using fuse::MoabMeshBackend;
+using fuse::RankSet;
 using fuse::Region;
 
 namespace {
@@ -610,6 +612,145 @@ TEST(MoabMesh, SetCommunicatorAfterLoadIsRefused) {
   EXPECT_TRUE(r.error().code == "E-MOAB-COMM" ||
               r.error().code == "E-MOAB-NOMPI")
       << r.error().code;
+}
+
+// ===========================================================================
+// KNOWN_ISSUES D5, the MOAB half: per-placement decomposition.
+//
+// Every test below runs with NO communicator adopted -- moab_backend.hpp's
+// "Mode A", where "this rank" is rank 0 of an effective size-1 base
+// communicator (`partition_rank_of`'s own documented convention). That is
+// enough to exercise every REFUSAL this item adds, and the one piece of
+// real behaviour Mode A needs no MPI to prove: a one-rank placement equal
+// to the whole (size-1) communicator must match the default view entity
+// for entity, and one that names no rank at all must be empty. The real
+// split-and-read machinery (a genuine `moab::ParallelComm` per placement)
+// needs a communicator of more than one rank and is pinned instead by
+// test/parallel/moab_placed_view_mpi_test.cpp, run on a host.
+// ===========================================================================
+
+namespace {
+
+/// Every dimension's entity count, global id set and measure agree between
+/// two views -- "identical decomposition" per mesh_view.hpp's per-placement
+/// contract, checked structurally rather than by pointer identity (a
+/// placement backed by `view()` directly and one that is genuinely a
+/// second read of the same source must both pass this).
+void expect_same_decomposition(const MeshView& a, const MeshView& b) {
+  for (int d = 0; d <= 3; ++d) {
+    ASSERT_EQ(a.entity_count(d), b.entity_count(d)) << "dim " << d;
+    ASSERT_EQ(a.owned_count(d), b.owned_count(d)) << "dim " << d;
+    for (std::size_t i = 0; i < a.entity_count(d); ++i) {
+      EXPECT_EQ(a.is_owned(d, i), b.is_owned(d, i)) << "dim " << d << " i " << i;
+      EXPECT_EQ(a.global_id(d, i), b.global_id(d, i)) << "dim " << d << " i " << i;
+      if (d > 0) {
+        EXPECT_DOUBLE_EQ(a.measure(d, i), b.measure(d, i)) << "dim " << d << " i " << i;
+      }
+    }
+  }
+}
+
+void expect_empty_view(const MeshView& v) {
+  for (int d = 0; d <= 3; ++d) {
+    EXPECT_EQ(v.entity_count(d), 0u) << "dim " << d;
+    EXPECT_EQ(v.owned_count(d), 0u) << "dim " << d;
+  }
+}
+
+}  // namespace
+
+TEST(MoabMesh, PlacedViewFallsBackToDefaultWhenNoPlacementsDeclared) {
+  MoabMeshBackend b = loaded("generated:box:2x2x2");
+  const auto placed = b.placed_view(MeshId{0}, ComponentId{0});
+  ASSERT_TRUE(placed.ok()) << placed.error().code << ": " << placed.error().message;
+  EXPECT_EQ(placed.value(), &view_of(b));
+}
+
+TEST(MoabMesh, APlacementEqualToTheWholeCommunicatorMatchesTheDefaultView) {
+  MoabMeshBackend b;
+  ASSERT_TRUE(b.set_placements({RankSet(0, 1)}).ok());
+  ASSERT_TRUE(b.load(MeshDecl{.name = "m", .source = "generated:box:2x2x2"}).ok());
+  const auto placed = b.placed_view(MeshId{0}, ComponentId{0});
+  ASSERT_TRUE(placed.ok()) << placed.error().code << ": " << placed.error().message;
+  expect_same_decomposition(*placed.value(), view_of(b));
+}
+
+TEST(MoabMesh, APlacementNamingNoRankIsEmptyNotTheDefault) {
+  MoabMeshBackend b;
+  // An empty RankSet -- a component switched off this run (docs/user/
+  // placement.md) -- names no rank at all, including rank 0, so this
+  // placement's view must be EMPTY, never the default one.
+  ASSERT_TRUE(b.set_placements({RankSet(0, 0)}).ok());
+  ASSERT_TRUE(b.load(MeshDecl{.name = "m", .source = "generated:box:2x2x2"}).ok());
+  const auto placed = b.placed_view(MeshId{0}, ComponentId{0});
+  ASSERT_TRUE(placed.ok()) << placed.error().code << ": " << placed.error().message;
+  expect_empty_view(*placed.value());
+  // Not the same object as the default view, and not the default view's
+  // content either (the box mesh is not itself empty).
+  EXPECT_NE(placed.value(), &view_of(b));
+  EXPECT_GT(view_of(b).entity_count(3), 0u);
+}
+
+TEST(MoabMesh, SetPlacementsMustPrecedeTheFirstLoad) {
+  MoabMeshBackend b = loaded("generated:box:2x2x2");
+  const auto r = b.set_placements({RankSet(0, 1)});
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-MOAB-PLACEMENT");
+}
+
+TEST(MoabMesh, SetPlacementsCannotBeDeclaredTwice) {
+  MoabMeshBackend b;
+  ASSERT_TRUE(b.set_placements({RankSet(0, 1)}).ok());
+  const auto r = b.set_placements({RankSet(0, 1)});
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-MOAB-PLACEMENT");
+}
+
+TEST(MoabMesh, SetPlacementsRefusesARankOutsideTheBaseCommunicator) {
+  MoabMeshBackend b;
+  // No communicator adopted: the base communicator is effectively rank 0
+  // only, so naming rank 5 is out of range.
+  const auto r = b.set_placements({RankSet(std::vector<int>{5})});
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-MOAB-PLACEMENT");
+}
+
+TEST(MoabMesh, PlacedViewRefusesAnUndeclaredComponent) {
+  MoabMeshBackend b;
+  ASSERT_TRUE(b.set_placements({RankSet(0, 1)}).ok());
+  ASSERT_TRUE(b.load(MeshDecl{.name = "m", .source = "generated:box:2x2x2"}).ok());
+  // Only component 0 was declared; component 1 was not.
+  const auto r = b.placed_view(MeshId{0}, ComponentId{1});
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-MESH-PLACEMENT");
+}
+
+TEST(MoabMesh, PlacedRegionSizeMatchesTheDefaultForAWholeCommunicatorPlacement) {
+  MoabMeshBackend b;
+  ASSERT_TRUE(b.set_placements({RankSet(0, 1)}).ok());
+  ASSERT_TRUE(b.load(MeshDecl{.name = "m", .source = "generated:box:2x2x2"}).ok());
+  const Region r{.name = "all", .mesh = MeshId{0}, .dimension = 3};
+  const auto placed = b.placed_region_size(r, ComponentId{0});
+  const auto def = b.region_size(r);
+  ASSERT_TRUE(placed.ok()) << placed.error().code << ": " << placed.error().message;
+  ASSERT_TRUE(def.ok());
+  EXPECT_EQ(placed.value(), def.value());
+  EXPECT_GT(placed.value(), 0u);
+}
+
+TEST(MoabMesh, PlacedRegionSizeIsZeroForAnEmptyPlacementButStillChecksDimension) {
+  MoabMeshBackend b;
+  ASSERT_TRUE(b.set_placements({RankSet(0, 0)}).ok());
+  ASSERT_TRUE(b.load(MeshDecl{.name = "m", .source = "generated:box:2x2x2"}).ok());
+  const Region ok_r{.name = "all", .mesh = MeshId{0}, .dimension = 3};
+  const auto placed = b.placed_region_size(ok_r, ComponentId{0});
+  ASSERT_TRUE(placed.ok()) << placed.error().code << ": " << placed.error().message;
+  EXPECT_EQ(placed.value(), 0u);
+
+  const Region bad_r{.name = "all", .mesh = MeshId{0}, .dimension = 99};
+  const auto bad = b.placed_region_size(bad_r, ComponentId{0});
+  ASSERT_FALSE(bad.ok());
+  EXPECT_EQ(bad.error().code, "E-MESH-DIM");
 }
 
 // ===========================================================================

@@ -101,10 +101,31 @@ which is why no data move is needed between them.
 
 Remap weights are built on the placement's own decomposition: the plan
 carries the component, every weight builder resolves its meshes through
-`placed_view`, and two placements never share a cached matrix. The one
-current limit is the MOAB backend, which does not yet build a decomposition
-per component (every component shares one), so on MOAB the per-placement
-weights coincide with the default ones.
+`placed_view`, and two placements never share a cached matrix.
+
+**The MOAB backend** builds a decomposition per component too, once told
+about the placements: `MoabMeshBackend::set_placements(placements)` -- one
+`RankSet` per component, indexed the same way `graph.component_count()`
+counts them (including a coupler), and declared before the first `load()`.
+
+With a real communicator adopted (`set_communicator`), each declared
+placement gets its own `moab::Core` and `moab::ParallelComm`, split from the
+base communicator over exactly that placement's ranks (iMOAB's
+application-id model), and `load()` reads the same source into it
+independently -- a genuine second partitioned read, not a relabelling of the
+default one. A rank outside a placement holds none of it: `placed_view`
+answers an empty view there, never the default decomposition. Without a
+communicator, "this rank" is rank 0 of an effective one-rank job, so a
+placement that names it IS the default view and one that does not is empty
+-- exercised without MPI at all.
+
+**What is not yet built**: this closes KNOWN_ISSUES D5's view-layer half.
+Weight builders already resolve every side through `placed_view`
+(unchanged since the per-placement remap-weights work), so a weight build
+issued against a MOAB placement's own decomposition uses it automatically
+-- but assembling and comparing a conservative weight matrix between two
+independently-partitioned MOAB placements has not been exercised end to
+end; that remains open.
 
 ## A separately placed coupler
 

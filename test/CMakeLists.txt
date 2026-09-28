@@ -291,7 +291,8 @@ if(FUSE_ENABLE_MOAB AND FUSE_ENABLE_MPI)
 else()
   set(FUSE_ENABLE_MOAB_MPI OFF)
 endif()
-fuse_tests_gated_by(FUSE_ENABLE_MOAB_MPI parallel/remap_halo_mpi_test.cpp)
+fuse_tests_gated_by(FUSE_ENABLE_MOAB_MPI parallel/remap_halo_mpi_test.cpp
+  parallel/moab_placed_view_mpi_test.cpp)
 
 if(FUSE_ENABLE_MOAB)
   fuse_add_gtest(backend moab_mesh THROWS LABELS moab)
@@ -373,6 +374,20 @@ if(FUSE_ENABLE_MOAB)
       target_compile_definitions(fuse_parallel_remap_halo_mpi_test PRIVATE
         FUSE_SPHERE_ATM="${FUSE_SPHERE_ATM_FILE}"
         FUSE_SPHERE_OCN="${FUSE_SPHERE_OCN_FILE}")
+    endif()
+
+    # KNOWN_ISSUES D5, the MOAB half: MoabMeshBackend::set_placements /
+    # placed_view under a REAL communicator of more than one rank. See
+    # test/parallel/moab_placed_view_mpi_test.cpp's own header for scope.
+    # Needs the real (non-matching-radius-tolerant) sphere fixture -- a
+    # generated box under a communicator does not actually partition
+    # (moab_backend.cpp's `generate*` builds the same mesh on every rank,
+    # with no PARALLEL_RESOLVE_SHARED_ENTS step), so it cannot exercise a
+    # genuine per-placement partition at all.
+    fuse_add_mpi_test(parallel moab_placed_view_mpi LIBS fuse::backend MPI::MPI_CXX)
+    if(FUSE_SPHERE_ATM_FILE)
+      target_compile_definitions(fuse_parallel_moab_placed_view_mpi_test PRIVATE
+        FUSE_SPHERE_ATM="${FUSE_SPHERE_ATM_FILE}")
     endif()
   endif()
 endif()
