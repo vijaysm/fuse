@@ -11,7 +11,9 @@ set(_strip "Kokkos::OpenMP|OMP_PROC_BIND|OMP_PLACES|For best performance|For uni
 foreach(n 1 ${THREADS_HI})
   set(ENV{OMP_NUM_THREADS} ${n})
   set(ENV{OMP_PROC_BIND} false)
-  execute_process(COMMAND ${BIN} OUTPUT_VARIABLE _out ERROR_VARIABLE _err RESULT_VARIABLE _rc)
+  # ARGS is an optional ;-list forwarded to the binary, so an example whose
+  # registered test needs a command line can be compared at that same line.
+  execute_process(COMMAND ${BIN} ${ARGS} OUTPUT_VARIABLE _out ERROR_VARIABLE _err RESULT_VARIABLE _rc)
   if(NOT _rc EQUAL 0)
     message(FATAL_ERROR "compare-runs.cmake: ${BIN} exited ${_rc} at OMP_NUM_THREADS=${n}\n${_err}")
   endif()
