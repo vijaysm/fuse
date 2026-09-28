@@ -119,7 +119,17 @@ class HeatComponent final : public fuse::Component {
     time_ = saved_time_;
     return fuse::Result<void>::success();
   }
-  [[nodiscard]] bool supports_rollback() const override { return true; }
+  /// Rollback: save_state()/restore_state() are real. Bitwise: a hand-written
+  /// solver with no RNG and no unordered reduction (elementwise Kokkos
+  /// kernels only), and example.*.omp_identical measures it bit for bit at
+  /// one thread and at every core. Hidden state: YES -- advance() mutates
+  /// state that is not bound through register_fields() (the clock, the
+  /// history, the solver's internals), which the runtime's byte-for-byte
+  /// rollback verification cannot see; save_state() is what carries it.
+  [[nodiscard]] std::uint64_t capabilities() const override {
+    return fuse::make_capabilities(/*rollback=*/true, fuse::DeterminismLevel::Bitwise,
+                                   /*hidden_state=*/true);
+  }
 
   [[nodiscard]] double x(std::size_t i) const {
     return (static_cast<double>(i) + 0.5) * dx_;
@@ -219,7 +229,17 @@ class RelaxComponent final : public fuse::Component {
     time_ = saved_time_;
     return fuse::Result<void>::success();
   }
-  [[nodiscard]] bool supports_rollback() const override { return true; }
+  /// Rollback: save_state()/restore_state() are real. Bitwise: a hand-written
+  /// solver with no RNG and no unordered reduction (elementwise Kokkos
+  /// kernels only), and example.*.omp_identical measures it bit for bit at
+  /// one thread and at every core. Hidden state: YES -- advance() mutates
+  /// state that is not bound through register_fields() (the clock, the
+  /// history, the solver's internals), which the runtime's byte-for-byte
+  /// rollback verification cannot see; save_state() is what carries it.
+  [[nodiscard]] std::uint64_t capabilities() const override {
+    return fuse::make_capabilities(/*rollback=*/true, fuse::DeterminismLevel::Bitwise,
+                                   /*hidden_state=*/true);
+  }
 
   [[nodiscard]] double exact(std::size_t i, double t) const {
     return std::sin(kPi * cell_x(i, r_.size())) * (kappa_ / (kappa_ - mu_)) *

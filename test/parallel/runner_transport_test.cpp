@@ -111,7 +111,7 @@ class StubComponent final : public fuse::Component {
     if (rollback_) storage_ = saved_;
     return fuse::Result<void>::success();
   }
-  [[nodiscard]] bool supports_rollback() const override { return rollback_; }
+  [[nodiscard]] std::uint64_t capabilities() const override { return rollback_ ? fuse::kCapabilityRollback : 0; }
 
   [[nodiscard]] double*     data() noexcept { return storage_.data(); }
   [[nodiscard]] std::size_t size() const noexcept { return storage_.size(); }
@@ -525,7 +525,7 @@ class LinearRelaxComponent final : public fuse::Component {
     for (std::size_t i = 0; i < in_.size(); ++i) in_[i] = saved_in_[i];
     return fuse::Result<void>::success();
   }
-  [[nodiscard]] bool supports_rollback() const override { return true; }
+  [[nodiscard]] std::uint64_t capabilities() const override { return fuse::kCapabilityRollback; }
 
   [[nodiscard]] const std::vector<double>& out() const { return out_; }
 
