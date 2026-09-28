@@ -42,9 +42,13 @@ if(FUSE_ENABLE_TESTS)
 
   # Thread-count determinism of the two physics examples, bit for bit: each is
   # run at one OpenMP thread and at every core and the two outputs compared
-  # exactly (tools/compare-runs.cmake). Today this holds trivially -- the
-  # runtime executes no Kokkos kernel (KNOWN_ISSUES.md D11) -- and the test is
-  # here so the day it stops holding trivially is the day it fails.
+  # exactly (tools/compare-runs.cmake). Since D11 closed (2026-09-28) the
+  # Runner's own hot loop runs on Kokkos' host execution space with a
+  # fixed-order reduction scheme, so these legs are load-bearing: they are
+  # what the components' `DeterminismLevel::Bitwise` declarations rest on.
+  # (Until the same day, test/CMakeLists.txt's FUSE_KOKKOS_HAS_OPENMP was not
+  # exported to this sibling directory and every leg here silently registered
+  # nothing.)
   if(COMMAND fuse_add_omp_legs AND FUSE_KOKKOS_HAS_OPENMP)
     foreach(ex mms_pair dn_heat)
       add_test(NAME example.${ex}.omp_identical
@@ -90,6 +94,18 @@ if(FUSE_ENABLE_TESTS)
   # measured AT THIS EXACT COMMAND LINE: diff 3.022e-08, bound 1.0e-6.
   add_test(NAME example.gray_scott COMMAND fuse_example_gray_scott --n 24 --ratio 2 --t-end 4 --dt 0.1 --check)
   set_tests_properties(example.gray_scott PROPERTIES LABELS "example")
+  # Same command line, compared bit for bit at one thread and at every core;
+  # the species components declare DeterminismLevel::Bitwise on this measurement.
+  if(COMMAND fuse_add_omp_legs AND FUSE_KOKKOS_HAS_OPENMP)
+    add_test(NAME example.gray_scott.omp_identical
+             COMMAND ${CMAKE_COMMAND}
+                     -DBIN=$<TARGET_FILE:fuse_example_gray_scott>
+                     "-DARGS=--n;24;--ratio;2;--t-end;4;--dt;0.1;--check"
+                     -DTHREADS_HI=${_fuse_host_cores}
+                     -DOUT=${CMAKE_CURRENT_BINARY_DIR}/omp_gray_scott
+                     -P ${CMAKE_SOURCE_DIR}/tools/compare-runs.cmake)
+    set_tests_properties(example.gray_scott.omp_identical PROPERTIES LABELS "example;omp")
+  endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -125,11 +141,9 @@ if(FUSE_ENABLE_TESTS)
 
   # Thread-count determinism of the Kokkos reaction kernel, bit for bit --
   # the same convention mms_pair/dn_heat use (tools/compare-runs.cmake),
-  # but load-bearing HERE rather than trivial: unlike those two (and unlike
-  # gray_scott, which runs no Kokkos kernel at all -- KNOWN_ISSUES.md D11),
-  # `reaction_kokkos` is a genuine Kokkos::parallel_for over the OpenMP
-  # execution space, so this leg is the one that actually exercises
-  # thread-count-independence for this example.
+  # and, since D11 closed, load-bearing for every example: `reaction_kokkos`
+  # is a genuine Kokkos::parallel_for over the OpenMP execution space on top
+  # of the Runner's own kernels.
   if(COMMAND fuse_add_omp_legs AND FUSE_KOKKOS_HAS_OPENMP)
     add_test(NAME example.brusselator.omp_identical
              COMMAND ${CMAKE_COMMAND}
@@ -165,6 +179,19 @@ if(FUSE_ENABLE_TESTS)
                    --nx-beam 12 --mass-ratio 1.0 --accel iqn-ils --dt 0.01
                    --t-end 0.1 --check)
   set_tests_properties(example.fsi_channel PROPERTIES LABELS "example")
+  # Same command line at one thread and at every core, bit for bit. IQN-ILS
+  # goes through the Runner's reductions, so this is the example most exposed
+  # to a non-deterministic sum; both FSI components declare Bitwise on it.
+  if(COMMAND fuse_add_omp_legs AND FUSE_KOKKOS_HAS_OPENMP)
+    add_test(NAME example.fsi_channel.omp_identical
+             COMMAND ${CMAKE_COMMAND}
+                     -DBIN=$<TARGET_FILE:fuse_example_fsi_channel>
+                     "-DARGS=--nx-fluid;16;--ny-fluid;8;--nx-beam;12;--mass-ratio;1.0;--accel;iqn-ils;--dt;0.01;--t-end;0.1;--check"
+                     -DTHREADS_HI=${_fuse_host_cores}
+                     -DOUT=${CMAKE_CURRENT_BINARY_DIR}/omp_fsi_channel
+                     -P ${CMAKE_SOURCE_DIR}/tools/compare-runs.cmake)
+    set_tests_properties(example.fsi_channel.omp_identical PROPERTIES LABELS "example;omp")
+  endif()
 endif()
 
 if(FUSE_ENABLE_MPI)
