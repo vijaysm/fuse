@@ -140,8 +140,25 @@ enum class Overlap {
   Full,      ///< both on every rank: identical placements, no Transport
 };
 
-[[nodiscard]] fuse::RankSet placement_for(Overlap shape, bool is_fluid) {
-  const int w = world_size();
+/// Where the channel's Remap runs (RemapSpec::remap_on): on the target, which
+/// is today's default and emits ONE Transport, or on a separately placed
+/// coupler, which emits fluid -> coupler and coupler -> solid with either hop
+/// elided when the placements coincide.
+enum class CouplerShape {
+  None,            ///< no coupler declared: remap on the target
+  Disjoint,        ///< the coupler is the LAST rank alone; fluid and solid
+                   ///< share the rest as Overlap::Disjoint over W-1 ranks
+  EqualsTarget,    ///< the coupler's ranks are exactly solid's: the second
+                   ///< hop is elided and the result must equal no-coupler
+  OverlapsSource,  ///< the coupler is fluid's last rank plus solid's first:
+                   ///< identical to neither side, sharing a rank with each
+};
+
+[[nodiscard]] fuse::RankSet placement_for(Overlap shape, bool is_fluid,
+                                          CouplerShape coupler = CouplerShape::None) {
+  // With a DISJOINT coupler the last rank is the coupler's alone, and the
+  // two physics components split the remaining W-1 ranks.
+  const int w = world_size() - (coupler == CouplerShape::Disjoint ? 1 : 0);
   switch (shape) {
     case Overlap::Disjoint:
       return is_fluid ? fuse::RankSet{0, w / 2} : fuse::RankSet{w / 2, w - w / 2};
@@ -149,6 +166,27 @@ enum class Overlap {
       return is_fluid ? fuse::RankSet{0, w - 1} : fuse::RankSet{1, w - 1};
     case Overlap::Full:
       return fuse::RankSet{0, w};
+  }
+  return fuse::RankSet{0, 0};
+}
+
+[[nodiscard]] fuse::RankSet coupler_placement(CouplerShape coupler,
+                                              const fuse::RankSet& fluid,
+                                              const fuse::RankSet& solid) {
+  switch (coupler) {
+    case CouplerShape::None:
+      return fuse::RankSet{0, 0};
+    case CouplerShape::Disjoint:
+      return fuse::RankSet{world_size() - 1, 1};
+    case CouplerShape::EqualsTarget:
+      return solid;
+    case CouplerShape::OverlapsSource: {
+      // fluid's last rank and solid's first: for Overlap::Disjoint these are
+      // adjacent, so the coupler is the two ranks straddling the boundary.
+      const int lo = std::min(fluid.max_rank(), solid.min_rank());
+      const int hi = std::max(fluid.max_rank(), solid.min_rank());
+      return fuse::RankSet{lo, hi - lo + 1};
+    }
   }
   return fuse::RankSet{0, 0};
 }
@@ -189,13 +227,14 @@ class TwoComponentJob {
                            bool with_independent_channel = false,
                            int fail_fluid_after = -1,
                            Overlap shape = Overlap::Disjoint,
-                           fuse::Rational independent_interval = fuse::Rational{1})
+                           fuse::Rational independent_interval = fuse::Rational{1},
+                           CouplerShape coupler = CouplerShape::None)
       // MEMBER DECLARATION ORDER, NOT INITIALIZER-LIST ORDER, decides when
       // each of these actually runs. `backend` is declared below
       // fluid_/solid_/n_entities_/dim_ for exactly this reason: it is built
       // FROM them, so they must already hold their values.
-      : fluid_{placement_for(shape, true)},
-        solid_{placement_for(shape, false)},
+      : fluid_{placement_for(shape, true, coupler)},
+        solid_{placement_for(shape, false, coupler)},
         n_entities_(12), dim_(2),
         backend(fluid_, solid_, n_entities_, dim_) {
     const auto mesh =
@@ -219,6 +258,19 @@ class TwoComponentJob {
                            .units = fuse::units::kKelvin,
                            .intent = fuse::Intent::Requires});
     const auto channel = graph.add_channel("link", src_field_, dst_field_);
+    if (coupler != CouplerShape::None) {
+      // Both fields share one region, so nothing would emit a Remap for this
+      // channel and remap_on would be W-CHANNEL-REMAP-ON-UNUSED; Conservative
+      // asks for one unconditionally, exactly as the layout driver does. The
+      // coupler is declared AFTER fluid and solid, so ComponentId 0 and 1
+      // stay fluid and solid for every helper in this class. (No caller
+      // combines a coupler with with_independent_channel; producer_b and
+      // consumer_b would then be ids 3 and 4, and size_of() below says 2, 3.)
+      coupler_ = coupler_placement(coupler, fluid_, solid_);
+      const auto cid = graph.add_coupler(
+          fuse::CouplerDecl{.name = "coupler", .ranks = coupler_});
+      graph.channel(channel).remap(fuse::RemapFlags::Conservative).remap_on(cid);
+    }
 
 
     if (with_iteration_region) {
@@ -391,6 +443,7 @@ class TwoComponentJob {
   // `registry` are default-constructed and filled in by the constructor
   // body, so their position relative to the others does not matter.
   fuse::RankSet          fluid_, solid_;
+  fuse::RankSet          coupler_{0, 0};  ///< empty unless a CouplerShape was asked for
   std::size_t            n_entities_ = 0;
   int                    dim_ = 0;
   PartitionedTestBackend backend;
@@ -1233,8 +1286,10 @@ TEST(RunnerTransport, TheDeliveredFieldDoesNotDependOnTheRankCount) {
 // It is also the only shape where a peer-to-peer plan and a same-rank local
 // copy run in the same exchange.
 
-static void expect_every_destination_entity_delivered(Overlap shape) {
-  TwoComponentJob h{"", false, fuse::AccelKind::None, false, -1, shape};
+static void expect_every_destination_entity_delivered(
+    Overlap shape, CouplerShape coupler = CouplerShape::None) {
+  TwoComponentJob h{"", false, fuse::AccelKind::None, false, -1, shape,
+                    fuse::Rational{1}, coupler};
   Runner runner{h.graph, h.dag, h.plan, h.backend};
   bind_all(h);
   fuse::RunnerConfig cfg;
@@ -1287,6 +1342,44 @@ TEST(RunnerTransport, ADisjointPlacementDeliversEveryEntityThroughTheSameHarness
   // placement and not in what is checked.
   FUSE_REQUIRE_AT_LEAST_RANKS(2);
   expect_every_destination_entity_delivered(Overlap::Disjoint);
+}
+
+// ---- the same delivery check with the Remap routed through a coupler ------
+//
+// Coupler placement (docs/dev/coupler-placement.md): the channel's value moves
+// fluid -> coupler, is remapped on the coupler's decomposition, and moves
+// coupler -> solid; a hop between identical placements is elided. The three
+// shapes below are the ones the layout driver registers (layout.coupler.*),
+// asserted here through the same helper as the no-coupler shapes so the only
+// difference is the route. The first host run of those driver rows failed on
+// every shape at initialize (E-MESH-PLACEMENT, 2026-09-27): the driver had
+// told the backend about two placements and the coupler was the third. This
+// fixture reads its placements from the graph, which is why it could not have
+// caught that -- and why the driver now does the same.
+
+TEST(RunnerTransport, ADisjointCouplerDeliversEveryEntity) {
+  // The coupler is the last rank alone; fluid and solid split the others.
+  // Three ranks is the first count with a rank for each of the three roles;
+  // both hops are real Transports (peer plans, no rank in common).
+  FUSE_REQUIRE_AT_LEAST_RANKS(3);
+  expect_every_destination_entity_delivered(Overlap::Disjoint, CouplerShape::Disjoint);
+}
+
+TEST(RunnerTransport, ACouplerOnTheTargetsRanksDeliversEveryEntity) {
+  // The coupler's placement IS solid's, so the coupler -> solid hop is
+  // elided (same_as) and the route must reproduce the no-coupler result:
+  // the same check, the same count, exactly.
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
+  expect_every_destination_entity_delivered(Overlap::Disjoint, CouplerShape::EqualsTarget);
+}
+
+TEST(RunnerTransport, ACouplerOverlappingTheSourceDeliversEveryEntity) {
+  // The coupler straddles the fluid/solid boundary: one rank in common with
+  // each side and identical to neither, so both hops are partial-overlap
+  // plans -- a local copy on the shared rank, a peer exchange for the rest.
+  // Four ranks gives fluid {0,1}, solid {2,3}, coupler {1,2}.
+  FUSE_REQUIRE_AT_LEAST_RANKS(4);
+  expect_every_destination_entity_delivered(Overlap::Disjoint, CouplerShape::OverlapsSource);
 }
 
 // Runner::initialize() is re-callable by contract: it clears `initialized` at

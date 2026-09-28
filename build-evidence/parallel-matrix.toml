@@ -237,6 +237,28 @@ test = [
 refusal = ["E-TRANSPORT-RANKS"]
 
 [[cell]]
+id = "A-COUPLER"
+axis = "a separately placed coupler: disjoint from both, equal to the target, overlapping the source"
+pins = "the channel's value reaches every destination entity when its Remap runs on a coupler placement, through the same delivery check as the no-coupler shapes"
+file = "test/parallel/runner_transport_test.cpp"
+kind = "mpi"
+ranks = [1, 2, 3, 4, 5]
+test = [
+  "RunnerTransport.ADisjointCouplerDeliversEveryEntity",
+  "RunnerTransport.ACouplerOnTheTargetsRanksDeliversEveryEntity",
+  "RunnerTransport.ACouplerOverlappingTheSourceDeliversEveryEntity",
+]
+note = """Added after the first host run of the layout.coupler.* driver rows failed \
+on every shape (2026-09-27): the driver had registered two placements with \
+its backend and the coupler was the third, so initialize refused with \
+E-MESH-PLACEMENT. The library was right to refuse; the gap was that no gtest \
+exercised a coupler on a backend with per-placement decompositions -- the \
+Runner's Tier-0 coupler tests use the serial backend, whose placed_view has \
+one view for every placement. These three run the partitioned test backend \
+with the placements read from the graph, as the driver now does too. \
+Verdict is the host's; skips below their rank minimum."""
+
+[[cell]]
 id = "A-SPACES"
 axis = "host-parallel space vs Serial"
 pins = "every kernel gives the Serial oracle's answer on every execution space the build enabled; the space list is one definition so device coverage is a build option rather than a second file that can drift"
