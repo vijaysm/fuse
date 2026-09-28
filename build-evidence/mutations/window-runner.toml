@@ -1,0 +1,81 @@
+# Mutations for the multirate-window-on-the-Runner track (the graph-level
+# front end for fuse::WindowCoupler: IterationRegionDecl::window_scope,
+# fuse::WindowChannelIO, and the schedule()/Runner wiring). Own file per the
+# review-fix protocol: do not edit build-evidence/mutations.toml directly
+# while other tracks hold it dirty.
+#
+# STATE OF THIS FILE, HONESTLY: this delegation built and verified three of
+# the track's four pieces (the region declaration's `window_scope` opt-in
+# and its descriptor/YAML round trip; `WindowChannelIO`, the exchange seam
+# WindowCoupler's sweep loop now calls instead of raw pointer arithmetic;
+# and the design for the remaining schedule()/Runner wiring -- see this
+# delegation's design notes) but did NOT build the wiring itself: schedule()
+# does not yet call validate_coupling_window() for a window-scoped region,
+# and no WindowChannelIO override performs a real Remap/Transport or a
+# rank-agreed convergence verdict. Two of the three mutation rows this
+# track's task named are properties of code that consequently does not
+# exist yet:
+#   * "routes the exchange around the Remap/Transport ops" -- there is no
+#     Remap/Transport routing in the window path to route around. The
+#     nearest existing analogue, WindowChannelIO's default direct-pointer
+#     behaviour, IS "no remap/transport", by design (see
+#     window_coupler.hpp): there is nothing to mutate FROM.
+#   * "makes the convergence verdict rank-local" -- there is no cross-rank
+#     convergence agreement in the window path (WindowCoupler is a
+#     single-process, direct-pointer driver; see its own header). Mutating
+#     "make it rank-local" presupposes a cross-rank reduction that has not
+#     been written.
+# Recording either as a "row" here without the code it mutates would be
+# exactly what this project's standing rules forbid: a claim not backed by
+# the tool output it derives from. They are left for whoever lands the
+# wiring and the batching Remap/Transport override this design calls for;
+# this file's row below is the one the CURRENT code supports and needed
+# only WindowCoupler's own algorithm to exist.
+#
+# The row below was proved BY HAND (tools/mutate.py was not run except
+# --check-anchors, per this delegation's constraints): the edit in
+# `old`/`new` was applied directly to the named file with edit_file, the
+# named target was rebuilt, the named test was run and observed to fail
+# with the message quoted in its own comment, then the file was restored
+# and verified byte-identical to a backup with `cmp` before moving on.
+
+[[mutation]]
+id = "window-runner-point-sample-instead-of-mean"
+area = "runtime/window_coupler"
+describes = "feeds a consumer's non-straddling substep the provider's point sample at the substep END (WindowChannelIO::boundary) instead of the provider's MEAN over the substep (WindowChannelIO::mean) -- the exact 'point samples instead of substep means' defect this track's task named. Second-order accuracy in the exchanged quantity depends specifically on feeding a mean (window_coupler.hpp's own class comment); a point sample is what a naive one-value-per-call reading of Component::advance()'s contract would do instead, and degrades the coupling scheme to first order."
+file = "src/runtime/window_coupler.cpp"
+old = """        for (std::size_t e = 0; e < m.length; ++e) {
+          double mean_val = m.required[e];
+          for (const WindowChannel& ch : channels_) {
+            if (ch.consumer != i) continue;
+            const Result<double> mv = channel_io_->mean(
+                ch, e, delivered[ch.provider], sub.t0, sub.t1);
+            if (!mv.ok()) return mv.error();
+            mean_val = mv.value();
+          }
+          m.required[e] = mean_val;
+        }"""
+new = """        for (std::size_t e = 0; e < m.length; ++e) {
+          double mean_val = m.required[e];
+          for (const WindowChannel& ch : channels_) {
+            if (ch.consumer != i) continue;
+            const Result<double> mv = channel_io_->boundary(
+                ch, e, delivered[ch.provider], sub.t1);
+            if (!mv.ok()) return mv.error();
+            mean_val = mv.value();
+          }
+          m.required[e] = mean_val;
+        }"""
+target = "fuse_runtime_window_coupler_test"
+test = "runtime.window_coupler"
+# PROVED (2026-09-28): 6 of 21 WindowCoupler tests failed --
+# WindowCouplerVerification.{ErrorConvergesAtOrderTwoAdjustableAdjustable,
+# ErrorConvergesAtOrderTwoFixedFixedIncommensurate,
+# ErrorConvergesAtOrderTwoMixedFixedAdjustable,
+# ErrorConvergesAtOrderTwoMixedAdjustableFixed,
+# AWindowNeitherStepDividesConvergesAtOrderTwo,
+# RatioOneMatchesTodaysSingleClockRegion} -- exactly the order-2-accuracy
+# and m=1-equivalence tests this class of defect should break; the 9
+# WindowCouplerRefusals and 1 WindowCouplerLayout test, which do not depend
+# on temporal order, were unaffected. File restored and `cmp`-verified
+# byte-identical to the pre-mutation copy afterward.
