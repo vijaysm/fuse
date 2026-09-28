@@ -706,7 +706,16 @@ ranks, full overlap at every rank count, and all 18 `layout.*` tests pass, inclu
 
 ---
 
-### D4. ~~Two axes~~ One axis of the parallel matrix has no coverage — the gate is RED on purpose (A-PARTITIONED closed 2026-09-28, awaiting the host)
+### ~~D4. Two axes of the parallel matrix have no coverage~~ — CLOSED 2026-09-28, host-verified
+
+**Host run 2026-09-28:** `ctest -R 'layout.coupler|parallel.runner_transport|parallel.remap_halo|backend.remap_halo'`
+and `ctest -L omp` all pass on the user's machine. `A-PARTITIONED`'s parallel half therefore
+has a verdict, not just a compile: `RemapHaloMpiSphere.BuildRemapHaloDeliversExactHaloValuesAndRoundTripsExactly`
+passes at 2 ranks, printing `min_src_coverage=0 max_col_defect=1` for the ATM/OCN pair (rank 0,
+local sums; both meshes span nearly the whole globe in their node coordinates, so the zero
+coverage is not a regional-patch effect — the likeliest reading, a land-masked ocean grid, is
+unconfirmed). `A-SPACES-TRANSPORT` closed with D11. The matrix's one remaining gap is D8's
+`A-NODAL-HT-PARALLEL`, which is not this entry's.
 
 `tools/check-parallel-matrix.py` (S5.5) checks that every cell of
 `build-evidence/parallel-matrix.toml` names coverage that exists: the test is
@@ -833,7 +842,23 @@ its `FUSE_REQUIRE_AT_LEAST_RANKS` guard — will only show up on a host run.
 
 ---
 
-### D3. Three behaviours no test detects — the mutation gate is RED on purpose
+### D3. ~~Four behaviours no test detects~~ — three KILLED on the host 2026-09-28; one survivor left
+
+**Host mutation runs 2026-09-28 (`FUSE_MUTATE_MPI=1`, `build-all`):** `one-transport-shared-across-every-plan`
+(transport area), `region-residual-skips-the-cross-rank-reduction` (runtime) and
+`vertex-ownership-rule-picks-max-not-min-rank` (backend) are **KILLED** — the tests written for them
+on 09-23 do detect them. `region-failure-abandons-the-rest-of-the-period` still **SURVIVED**. A trace
+of `RunnerTransport.StillRunsASecondChannelAfterARegionFailsUnderMpi` found no flaw in its kill
+mechanism (`cons_b->calls() >= 2`), so the open question is empirical: run it alone, on the clean
+tree and with the mutation hand-applied and the binary rebuilt, and report each rank's error code
+and `cons_b->calls()`:
+
+```sh
+mpiexec -np 2 build-all/test/fuse_parallel_runner_transport_test --gtest_filter='*StillRunsASecondChannelAfterARegionFailsUnderMpi*'
+```
+
+The text below is the entry as it stood before the host run.
+
 
 `FUSE_MUTATE_MPI=1 tools/mutate.py --area transport|runtime` exits 1 with three
 survivors, plus a fourth in `native-mesh.toml` (vertex ownership, below).
