@@ -606,7 +606,33 @@ rather than the primary diagnosis.
 
 ---
 
-### D5. Partial rank-set overlap through the Runner — FIXED AND HOST-VERIFIED 2026-09-23; MOAB half open
+### D5. Partial rank-set overlap through the Runner — FIXED AND HOST-VERIFIED 2026-09-23; MOAB view layer written 2026-09-28, awaiting the host
+
+**MOAB per-component decomposition (`8cf2dfe`, `0e290ab`).** `MoabMeshBackend::set_placements(placements)`,
+one `RankSet` per graph component (couplers included, read from `graph.component_count()`),
+builds one `moab::Core` and one `moab::ParallelComm` per placement on a sub-communicator split
+from the base communicator over exactly that placement's ranks: iMOAB's application-id model,
+as approved. `placed_view`/`placed_region_size` answer from that decomposition, and outside the
+placement they return an **empty** view, never the default one. Placement count and ranges are
+agreed over the base communicator before the first split, and every placement's read outcome
+is reconciled there too, so a rank outside a placement is never left waiting. With no
+placements declared every existing caller gets exactly today's answer. The caller declares
+the placements, as with the native and test backends; the Runner does not.
+
+**Not run anywhere yet.** No MOAB-linked binary can start in this sandbox (`moab::Core`'s
+constructor calls `MPI_Init_thread`), so the 9 single-process cases in `moab_mesh_test.cpp`,
+the 2–5 rank `parallel.moab_placed_view_mpi.*` tiling test and the 8 rows of
+`build-evidence/mutations/moab-placement.toml` are compiled (tier 2, 0 errors) and traced only:
+
+```sh
+ctest --test-dir build-all -R 'backend.moab_mesh|parallel.moab_placed_view_mpi' --output-on-failure
+FUSE_MUTATE_MPI=1 python3 tools/mutate.py --build-dir build-all --area backend
+```
+
+**What remains of D5:** per-placement remap *weights* built on two independently decomposed
+MOAB placements and compared. The builders already resolve through `placed_view`, but nobody
+has assembled and checked such a matrix.
+
 
 **History.** First recorded as a coverage gap, then corrected to a capability
 gap. The Runner filled both `CommGraphSide`s from one `backend.view(MeshId)`,
