@@ -267,6 +267,17 @@ fuse_add_gtest(backend field_extent THROWS)
 fuse_tests_gated_by(FUSE_ENABLE_MOAB
   backend/moab_mesh_test.cpp backend/remap_halo_test.cpp)
 
+# A-PARTITIONED's PARALLEL half (KNOWN_ISSUES.md D4): needs a REAL
+# communicator of more than one rank AND the MOAB backend, so it is gated on
+# both -- ABSENT, not skipped, when either is off. fuse_tests_gated_by takes
+# one option name, hence the combined variable rather than an inline `AND`.
+if(FUSE_ENABLE_MOAB AND FUSE_ENABLE_MPI)
+  set(FUSE_ENABLE_MOAB_MPI ON)
+else()
+  set(FUSE_ENABLE_MOAB_MPI OFF)
+endif()
+fuse_tests_gated_by(FUSE_ENABLE_MOAB_MPI parallel/remap_halo_mpi_test.cpp)
+
 if(FUSE_ENABLE_MOAB)
   fuse_add_gtest(backend moab_mesh THROWS LABELS moab)
   fuse_add_gtest(backend remap_halo THROWS LABELS moab)
@@ -336,6 +347,19 @@ if(FUSE_ENABLE_MOAB)
       "passed)")
   endif()
 
+  # A-PARTITIONED's PARALLEL half: build_remap_halo/build_weights under a
+  # REAL communicator of more than one rank, plus the box-pair structural
+  # boundaries that need no mesh file at all. See
+  # test/parallel/remap_halo_mpi_test.cpp's own header for what each case
+  # pins. Rank counts default to 1 2 3 4 5, same as every other mpi cell.
+  if(FUSE_ENABLE_MOAB_MPI)
+    fuse_add_mpi_test(parallel remap_halo_mpi LIBS fuse::backend MPI::MPI_CXX)
+    if(FUSE_SPHERE_ATM_FILE AND FUSE_SPHERE_OCN_FILE)
+      target_compile_definitions(fuse_parallel_remap_halo_mpi_test PRIVATE
+        FUSE_SPHERE_ATM="${FUSE_SPHERE_ATM_FILE}"
+        FUSE_SPHERE_OCN="${FUSE_SPHERE_OCN_FILE}")
+    endif()
+  endif()
 endif()
 
 # ---------------------------------------------------------------- runtime

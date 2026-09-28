@@ -1834,6 +1834,118 @@ Result<int> MoabMeshBackend::partition_rank_of(const Region& r,
   return 0;
 }
 
+// ===========================================================================
+// project_onto_unit_sphere (moab_backend.hpp: fixture-prep seam for
+// A-PARTITIONED). See the header for why this exists rather than being done
+// implicitly inside build_remap_halo.
+// ===========================================================================
+
+Result<double> MoabMeshBackend::project_onto_unit_sphere(MeshId id) {
+  if (impl_ == nullptr) {
+    return Failure{"E-MESH-MOVED",
+                 "project_onto_unit_sphere() on a moved-from backend"};
+  }
+  if (!id.valid() || id.value() >= impl_->meshes.size()) {
+    return Failure{"E-MESH-ID", "project_onto_unit_sphere(): unknown mesh id"};
+  }
+  MoabMeshView& view = *impl_->meshes[id.value()];
+  moab::Range verts;
+  moab::ErrorCode rval = impl_->mb.get_entities_by_dimension(
+      view.file_set(), 0, verts, /*recursive=*/true);
+  if (rval != moab::MB_SUCCESS) {
+    return impl_->moab_error(
+        "E-MOAB-QUERY", "project_onto_unit_sphere(): could not list vertices",
+        rval);
+  }
+
+  std::vector<moab::EntityHandle> vh(verts.begin(), verts.end());
+  std::vector<double> xyz(vh.size() * 3, 0.0);
+  if (!vh.empty()) {
+    rval = impl_->mb.get_coords(vh.data(), static_cast<int>(vh.size()),
+                                xyz.data());
+    if (rval != moab::MB_SUCCESS) {
+      return impl_->moab_error(
+          "E-MOAB-QUERY",
+          "project_onto_unit_sphere(): could not read vertex coordinates",
+          rval);
+    }
+  }
+
+  double rmin = 1e300, rmax = 0.0;
+  for (std::size_t i = 0; i < vh.size(); ++i) {
+    const double x = xyz[3 * i], y = xyz[3 * i + 1], z = xyz[3 * i + 2];
+    const double r = std::sqrt(x * x + y * y + z * z);
+    rmin = std::min(rmin, r);
+    rmax = std::max(rmax, r);
+  }
+
+#ifdef FUSE_MOAB_PARALLEL
+  if (impl_->pcomm != nullptr) {
+    // A partitioned read may leave this rank holding only a piece of the
+    // mesh's vertices (or none at all, if vh is empty -- rmin/rmax then sit
+    // at their sentinel/zero initialisers, which MUST NOT win the reduction).
+    // Reconciled the same way build_remap_halo's own fit_surface() is
+    // (REVIEW.md R-01): every rank needs the GLOBAL radius, not its own
+    // local slice's, both to decide whether this really is one sphere and to
+    // compute the one scale factor every rank then applies identically.
+    const MPI_Comm comm = impl_->pcomm->comm();
+    const double local_min = vh.empty() ? 1e300 : rmin;
+    const double local_max = vh.empty() ? 0.0 : rmax;
+    double global_min = local_min, global_max = local_max;
+    if (MPI_Allreduce(&local_min, &global_min, 1, MPI_DOUBLE, MPI_MIN,
+                      comm) != MPI_SUCCESS ||
+        MPI_Allreduce(&local_max, &global_max, 1, MPI_DOUBLE, MPI_MAX,
+                      comm) != MPI_SUCCESS) {
+      return Failure{
+          "E-MESH-HALO",
+          "project_onto_unit_sphere(): the collective reduction of the "
+          "mesh's radius across the communicator failed"};
+    }
+    rmin = global_min;
+    rmax = global_max;
+  }
+#endif
+
+  // Same shape of check as intx_weights.cpp's fit_surface(): a common radius
+  // to within a generous relative tolerance. Generous on purpose -- this is
+  // fixture prep for a REAL data file, not the tight kGeomTol (1e-9) that
+  // decides whether two ALREADY-a-priori-spherical meshes agree with EACH
+  // OTHER; here the question is only "is this one mesh a sphere at all",
+  // and wholeATM_T.h5m / recMeshOcn.h5m each measure a std/mean radius of a
+  // few times 1e-17 to a few times 1e-16 (h5dump on the raw files,
+  // 2026-09-28) -- floating-point noise, not a real deviation from a
+  // sphere -- comfortably inside even this tolerance.
+  constexpr double kProjectSphereTol = 1e-6;
+  if (!(rmax > 0.0) || (rmax - rmin) > kProjectSphereTol * rmax) {
+    return Failure{
+        "E-MESH-GEOMETRY",
+        "project_onto_unit_sphere(): this mesh's vertices are not at one "
+        "common radius about the origin (min " + std::to_string(rmin) +
+            ", max " + std::to_string(rmax) +
+            "), so there is no single sphere to project it onto"};
+  }
+  const double radius = 0.5 * (rmin + rmax);
+  const double factor = 1.0 / radius;
+
+  if (!vh.empty()) {
+    for (std::size_t i = 0; i < vh.size(); ++i) {
+      xyz[3 * i] *= factor;
+      xyz[3 * i + 1] *= factor;
+      xyz[3 * i + 2] *= factor;
+    }
+    rval = impl_->mb.set_coords(vh.data(), static_cast<int>(vh.size()),
+                                xyz.data());
+    if (rval != moab::MB_SUCCESS) {
+      return impl_->moab_error(
+          "E-MOAB-QUERY",
+          "project_onto_unit_sphere(): could not write rescaled vertex "
+          "coordinates",
+          rval);
+    }
+  }
+  return factor;
+}
+
 int MoabMeshBackend::communicator_size() const noexcept {
   if (impl_ == nullptr) return 1;
 #ifdef FUSE_MOAB_PARALLEL
