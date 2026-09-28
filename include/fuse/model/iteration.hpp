@@ -10,15 +10,18 @@
 /// this header rather than the reverse.
 
 #include <cmath>
+#include <optional>
 #include <string>
 #include <cstddef>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include <fmt/format.h>
 
 #include "fuse/base/error.hpp"
+#include "fuse/base/rational.hpp"
 #include "fuse/base/result.hpp"
 
 namespace fuse {
@@ -284,6 +287,52 @@ enum class DtPolicy {
   }
   return "?";
 }
+
+/// One member's declared role inside a coupling window
+/// (`CouplingWindowScope::policies`).
+struct WindowMemberPolicy {
+  std::string component;  ///< must name a `ComponentDecl` in the graph
+  DtPolicy    policy = DtPolicy::Adjustable;
+};
+
+/// Time windows track (spec-in-progress §5.4): the opt-in payload that turns
+/// a multi-clock `IterationRegionDecl` into a coupling window instead of the
+/// contiguous single-clock loop `schedule()` otherwise requires
+/// (`E-SCHED-REGION`; see `fuse::validate_coupling_window`,
+/// `fuse/schedule/window.hpp`).
+///
+/// LIVES HERE, NOT IN `fuse/schedule/window.hpp`. It is a member of
+/// `IterationRegionDecl` (`fuse/model/coupling_graph.hpp`), and
+/// `coupling_graph.hpp` already includes this header for `DtPolicy` and
+/// `ConvergenceCriterion` -- putting the type in `schedule/window.hpp`
+/// instead, which itself includes `coupling_graph.hpp` for `CouplingGraph`,
+/// would be a circular include. `fuse/schedule/window.hpp`'s free functions
+/// (`window_length`, `window_region_members`, `validate_coupling_window`)
+/// consume this type; they do not define it.
+struct CouplingWindowScope {
+  std::optional<std::string> window_component;
+  std::optional<Rational>    explicit_interval;
+
+  /// Every component that owns either end of one of the region's channels
+  /// must appear here exactly once. `validate_coupling_window()` checks
+  /// this; nothing here does, so an incomplete scope can be built
+  /// incrementally with `.policies.push_back(...)` before validation.
+  std::vector<WindowMemberPolicy> policies;
+
+  /// Order of the temporal interpolant/extrapolant at the window boundary
+  /// (`WindowCoupler`'s Waveform basis and its extrapolation degree). Must
+  /// be >= 2 per the user's ruling ("interpolation and extrapolation are at
+  /// least second order"); `Adjustable`/`Fixed` do not change this floor.
+  int order = 2;
+
+  [[nodiscard]] std::optional<DtPolicy> policy_for(
+      std::string_view component) const {
+    for (const WindowMemberPolicy& p : policies) {
+      if (p.component == component) return p.policy;
+    }
+    return std::nullopt;
+  }
+};
 
 /// Column filters for the quasi-Newton least squares, as defined by preCICE
 /// and by Davis, Schulte & Uekermann, Math. Comput. Appl. 27(3):40 (2022).

@@ -23,6 +23,16 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 /// the seven dimension exponents. A v2 buffer read as v3 would take the next
 /// field's bytes as a scale, so the version gate rejects it rather than admit a
 /// plausible-looking graph with the wrong units.
+/// 7: the multirate-window-on-the-Runner track. Each iteration region record
+///    gains an optional `CouplingWindowScope` after its acceleration block: a
+///    presence byte, and when set, an optional window-defining component name
+///    or explicit interval, the interpolation/extrapolation order, and the
+///    per-member `DtPolicy` list. A v6 reader handed a v7 buffer would read
+///    the window-scope presence byte of the FIRST region as the start of the
+///    next region's name length, and everything after it would decode as
+///    plausible garbage -- the same class of silent misread every prior bump
+///    was made to prevent, so v6 is refused.
+///
 /// 6: the coupler-placement track. Each component record gains a `kind` byte
 ///    (`ComponentKind`: Physics or Coupler) after its interval, and each
 ///    channel record gains a `remap_on` component-id word after its remap
@@ -43,7 +53,7 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 /// the iteration regions and never see the merge rules, so it would read a
 /// graph that says "one writer per field" from bytes that say otherwise -- and
 /// it would read it successfully. The version check turns that into a refusal.
-inline constexpr std::uint32_t kGraphVersion = 6u;
+inline constexpr std::uint32_t kGraphVersion = 7u;
 
 namespace detail {
 
@@ -227,6 +237,25 @@ class Reader {
     w.pod(static_cast<std::uint8_t>(r.acceleration.filter));
     w.pod(r.acceleration.limit);
     w.pod(static_cast<std::uint8_t>(r.acceleration.scale_fields));
+
+    // v7: the multirate-window opt-in. `std::nullopt` writes a single zero
+    // byte and nothing else, so a descriptor with no window-scoped region
+    // (every region declared before this member existed) grows by exactly
+    // one byte per region -- not by the whole payload below.
+    w.pod(static_cast<std::uint8_t>(r.window_scope.has_value() ? 1 : 0));
+    if (r.window_scope.has_value()) {
+      const CouplingWindowScope& scope = *r.window_scope;
+      w.pod(static_cast<std::uint8_t>(scope.window_component.has_value() ? 1 : 0));
+      if (scope.window_component.has_value()) w.str(*scope.window_component);
+      w.pod(static_cast<std::uint8_t>(scope.explicit_interval.has_value() ? 1 : 0));
+      if (scope.explicit_interval.has_value()) w.rational(*scope.explicit_interval);
+      w.pod(static_cast<std::int32_t>(scope.order));
+      w.pod(static_cast<std::uint32_t>(scope.policies.size()));
+      for (const WindowMemberPolicy& p : scope.policies) {
+        w.str(p.component);
+        w.pod(static_cast<std::uint8_t>(p.policy));
+      }
+    }
   }
 
   // The merge table. Sorted by field id in the graph, so the bytes are the
@@ -432,6 +461,42 @@ class Reader {
     d.acceleration.limit = r.pod<double>();
     d.acceleration.scale_fields = r.pod<std::uint8_t>() != 0;
     if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated iteration region"};
+
+    // v7: the multirate-window opt-in.
+    const bool has_scope = r.pod<std::uint8_t>() != 0;
+    if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated iteration region"};
+    if (has_scope) {
+      CouplingWindowScope scope;
+      const bool has_component = r.pod<std::uint8_t>() != 0;
+      if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated window scope"};
+      if (has_component) scope.window_component = r.str();
+      const bool has_interval = r.pod<std::uint8_t>() != 0;
+      if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated window scope"};
+      if (has_interval) scope.explicit_interval = r.rational();
+      scope.order = r.pod<std::int32_t>();
+      const auto n_policies = r.pod<std::uint32_t>();
+      if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated window scope"};
+      scope.policies.reserve(n_policies);
+      for (std::uint32_t k = 0; k < n_policies; ++k) {
+        WindowMemberPolicy p;
+        p.component = r.str();
+        const auto policy_byte = r.pod<std::uint8_t>();
+        // REVIEW.md R-04's pattern (MeasureKind/AccelKind/FilterKind above):
+        // this byte comes straight off the wire and is indexed unchecked by
+        // to_yaml()'s enum-name table.
+        if (policy_byte > static_cast<std::uint8_t>(DtPolicy::Adjustable)) {
+          return Failure{"E-DESC-ENUM",
+                        "unknown DtPolicy " + std::to_string(policy_byte) +
+                            " in window scope policy for component '" +
+                            p.component + "'"};
+        }
+        p.policy = static_cast<DtPolicy>(policy_byte);
+        if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated window scope"};
+        scope.policies.push_back(std::move(p));
+      }
+      if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated window scope"};
+      d.window_scope = std::move(scope);
+    }
     g.add_iteration_region(std::move(d));
   }
 

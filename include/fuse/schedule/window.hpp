@@ -17,57 +17,20 @@
 /// case the multirate probe (`test/schedule/multirate_region_test.cpp`)
 /// pins as refused today.
 ///
-/// WHY THIS IS A SIBLING PARAMETER, NOT A FIELD ON `IterationRegionDecl`.
-/// The natural spelling is a member on the region declaration itself
-/// (`fuse/model/coupling_graph.hpp`). That file is owned by a different
-/// track of this port and is not touched here; see the "opt-in on the
-/// region declaration" ruling recorded as an open question. `schedule()`'s
-/// contiguous-run rule (`mark_regions`, src/schedule/scheduler.cpp) is
-/// UNCHANGED and keeps refusing a multi-clock region with `E-SCHED-REGION`
-/// exactly as it does today (`MultirateRegionProbe.*`); the message now
-/// names this header as where the opt-in lives. `CouplingWindowScope` is the
-/// opt-in's payload, carried alongside the graph rather than inside it, and
-/// `validate_coupling_window()` is the legality gate a caller (today: a
-/// test harness or a model driving `WindowCoupler` directly;
-/// designed-but-not-wired: `schedule()` itself, once the region declaration
-/// can carry it) must pass before running a window-scoped region.
+/// THE OPT-IN LIVES ON THE REGION DECLARATION. `CouplingWindowScope` and
+/// `WindowMemberPolicy` are defined in `fuse/model/iteration.hpp`, not here
+/// -- `IterationRegionDecl` (`fuse/model/coupling_graph.hpp`) carries an
+/// `std::optional<CouplingWindowScope> window_scope` member directly, and
+/// `coupling_graph.hpp` already includes `iteration.hpp`; defining the type
+/// in this header instead (which includes `coupling_graph.hpp` for
+/// `CouplingGraph`) would be circular. This header only holds the free
+/// functions that CONSUME the type once a region carries one:
+/// `window_length()`, `window_region_members()` and
+/// `validate_coupling_window()`, the legality gate a caller (a test
+/// harness, a model driving `WindowCoupler` directly, or `schedule()`
+/// itself for a region whose declaration opts in) must pass before running
+/// a window-scoped region.
 namespace fuse {
-
-/// One member's declared role inside a coupling window.
-struct WindowMemberPolicy {
-  std::string component;  ///< must name a `ComponentDecl` in the graph
-  DtPolicy    policy = DtPolicy::Adjustable;
-};
-
-/// The opt-in payload. Exactly one of `window_component` /
-/// `explicit_interval` must be set -- naming a component ties the window to
-/// whatever interval that component is later re-declared with (the common
-/// case: "couple every time the slow solver steps"); an explicit interval is
-/// for a window with no single natural owner.
-struct CouplingWindowScope {
-  std::optional<std::string> window_component;
-  std::optional<Rational>    explicit_interval;
-
-  /// Every component that owns either end of one of the region's channels
-  /// must appear here exactly once. `validate_coupling_window()` checks
-  /// this; nothing here does, so an incomplete scope can be built
-  /// incrementally with `.policies.push_back(...)` before validation.
-  std::vector<WindowMemberPolicy> policies;
-
-  /// Order of the temporal interpolant/extrapolant at the window boundary
-  /// (`WindowCoupler`'s Waveform basis and its extrapolation degree). Must
-  /// be >= 2 per the user's ruling ("interpolation and extrapolation are at
-  /// least second order"); `Adjustable`/`Fixed` do not change this floor.
-  int order = 2;
-
-  [[nodiscard]] std::optional<DtPolicy> policy_for(
-      std::string_view component) const {
-    for (const WindowMemberPolicy& p : policies) {
-      if (p.component == component) return p.policy;
-    }
-    return std::nullopt;
-  }
-};
 
 /// The window's length: the named component's own interval, or the explicit
 /// one. `E-SCHED-WINDOW-AMBIGUOUS` if both or neither are set;

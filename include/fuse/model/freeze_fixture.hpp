@@ -77,6 +77,35 @@ inline CouplingGraph freeze_fixture() {
       .relax(0.7)
       .extrapolate(2)
       .lag(1);
+
+  // An iteration region, at non-default values throughout -- this fixture
+  // had none before the multirate-window-on-the-Runner track, so
+  // IterationRegionDecl's own members (max_iterations, convergence,
+  // acceleration) were never exercised by the golden bytes either; adding
+  // one region closes that gap as well as pinning the new `window_scope`
+  // member (fuse::CouplingWindowScope, v7's reason for the descriptor
+  // version bump).
+  g.iterate({ch})
+      .name("outer")
+      .max_iterations(12)
+      .until(Converged::Relative(1e-7, "heat_flux"))
+      .accelerate(AccelConfig{.kind = AccelKind::Aitken,
+                             .initial_relaxation = 0.2,
+                             .omega = 0.6,
+                             .reuse = 6,
+                             .filter = FilterKind::QR1,
+                             .limit = 5e-3,
+                             .scale_fields = false});
+  {
+    CouplingWindowScope scope;
+    scope.explicit_interval = Rational{3, 10};
+    scope.order = 3;
+    scope.policies.push_back({.component = "fluid", .policy = DtPolicy::Fixed});
+    scope.policies.push_back(
+        {.component = "solid", .policy = DtPolicy::Adjustable});
+    const_cast<IterationRegionDecl&>(g.iteration_region(IterationRegionIdx{0}))
+        .window_scope = std::move(scope);
+  }
   return g;
 }
 }  // namespace fuse::testing
