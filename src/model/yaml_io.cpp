@@ -144,6 +144,9 @@ const char* const kAccelNames[]   = {"None",       "Constant", "Aitken",
                                      "Secant",     "Steffensen",
                                      "IQN_ILS",    "IQN_IMVJ"};
 const char* const kFilterNames[]  = {"None", "QR1", "QR2", "QR3"};
+// Time windows track: must stay in DtPolicy's declaration order
+// (fuse/model/iteration.hpp), same reasoning as the three tables above.
+const char* const kDtPolicyNames[] = {"Fixed", "Adjustable"};
 
 // --- rational parsing ------------------------------------------------------
 
@@ -537,6 +540,28 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
       << YAML::Key << "scale_fields" << YAML::Value
       << r.acceleration.scale_fields
       << YAML::EndMap;
+    if (r.window_scope.has_value()) {
+      const CouplingWindowScope& scope = *r.window_scope;
+      e << YAML::Key << "window_scope" << YAML::Value << YAML::BeginMap;
+      if (scope.window_component.has_value()) {
+        e << YAML::Key << "window_component" << YAML::Value
+          << *scope.window_component;
+      }
+      if (scope.explicit_interval.has_value()) {
+        e << YAML::Key << "explicit_interval" << YAML::Value
+          << scope.explicit_interval->to_string();
+      }
+      e << YAML::Key << "order" << YAML::Value << scope.order;
+      e << YAML::Key << "policies" << YAML::Value << YAML::BeginSeq;
+      for (const WindowMemberPolicy& p : scope.policies) {
+        e << YAML::Flow << YAML::BeginMap
+          << YAML::Key << "component" << YAML::Value << p.component
+          << YAML::Key << "policy" << YAML::Value << to_cstring(p.policy)
+          << YAML::EndMap;
+      }
+      e << YAML::EndSeq;
+      e << YAML::EndMap;
+    }
     e << YAML::EndMap;
   }
   e << YAML::EndSeq << YAML::EndMap;
@@ -881,7 +906,7 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
   for (const auto& n : root["iteration_regions"]) {
     if (auto e = check_unknown_keys(
             n, {"name", "channels", "max_iterations", "convergence",
-                "acceleration"},
+                "acceleration", "window_scope"},
             "iteration region entry")) {
       return *e;
     }
@@ -947,6 +972,53 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
       if (an["scale_fields"]) {
         d.acceleration.scale_fields = an["scale_fields"].as<bool>();
       }
+    }
+    if (const auto& wn = n["window_scope"]) {
+      if (auto e = check_unknown_keys(
+              wn, {"window_component", "explicit_interval", "order",
+                   "policies"},
+              "window_scope block")) {
+        return *e;
+      }
+      CouplingWindowScope scope;
+      if (wn["window_component"]) {
+        scope.window_component = wn["window_component"].as<std::string>();
+      }
+      if (wn["explicit_interval"]) {
+        Rational len;
+        if (!parse_rational(wn["explicit_interval"].as<std::string>(), len)) {
+          return Failure{"E-YAML-PARSE",
+                       "iteration region '" + d.name +
+                           "': window_scope.explicit_interval is not a "
+                           "valid rational"};
+        }
+        scope.explicit_interval = len;
+      }
+      if (wn["order"]) scope.order = wn["order"].as<int>();
+      for (const auto& pn : wn["policies"]) {
+        if (auto e = check_unknown_keys(pn, {"component", "policy"},
+                                        "window_scope policy entry")) {
+          return *e;
+        }
+        WindowMemberPolicy p;
+        if (!pn["component"]) {
+          return Failure{"E-YAML-PARSE",
+                       "iteration region '" + d.name +
+                           "': window_scope policy entry has no component"};
+        }
+        p.component = pn["component"].as<std::string>();
+        if (!pn["policy"] ||
+            !lookup_enum(pn["policy"].as<std::string>(), kDtPolicyNames,
+                        p.policy)) {
+          return Failure{"E-YAML-PARSE",
+                       "iteration region '" + d.name +
+                           "': window_scope policy for component '" +
+                           p.component + "' has an unknown or missing "
+                           "DtPolicy"};
+        }
+        scope.policies.push_back(std::move(p));
+      }
+      d.window_scope = std::move(scope);
     }
     g.add_iteration_region(std::move(d));
   }

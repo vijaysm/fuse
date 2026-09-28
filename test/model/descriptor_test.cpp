@@ -247,22 +247,24 @@ TEST(Descriptor, RejectsCorruptedIterationRegionEnums) {
   const auto bytes = serialize(g);
 
   // acceleration: kind(1) initial_relaxation(8) omega(8) reuse(4) filter(1)
-  // limit(8) scale_fields(1) -- 31 bytes total, and the last thing written
-  // (merge_count == 0).
+  // limit(8) scale_fields(1) -- 31 bytes total. v7 adds a 1-byte
+  // window_scope presence flag right after it (0 here: `d` sets none), so
+  // the acceleration block now sits 32 bytes -- not 31 -- before the end of
+  // this region's record (merge_count == 0, the last thing written).
   auto accel_kind = bytes;
-  accel_kind[bytes.size() - 31] = std::byte{200};
+  accel_kind[bytes.size() - 32] = std::byte{200};
   EXPECT_EQ(deserialize(accel_kind).error().code, "E-DESC-ENUM")
       << "corrupted acceleration kind byte was not refused";
 
   auto accel_filter = bytes;
-  accel_filter[bytes.size() - 10] = std::byte{200};
+  accel_filter[bytes.size() - 11] = std::byte{200};
   EXPECT_EQ(deserialize(accel_filter).error().code, "E-DESC-ENUM")
       << "corrupted acceleration filter byte was not refused";
 
-  // measure.kind(1) tolerance(8) field(4 + 1, "q") + the 31-byte acceleration
-  // block above == 44 bytes after it.
+  // measure.kind(1) tolerance(8) field(4 + 1, "q") + the 32-byte
+  // acceleration-plus-window-scope-flag block above == 45 bytes after it.
   auto measure_kind = bytes;
-  measure_kind[bytes.size() - 45] = std::byte{200};
+  measure_kind[bytes.size() - 46] = std::byte{200};
   EXPECT_EQ(deserialize(measure_kind).error().code, "E-DESC-ENUM")
       << "corrupted convergence measure kind byte was not refused";
 
@@ -315,6 +317,61 @@ TEST(Descriptor, RoundTripPreservesEveryNonDefaultMember) {
     EXPECT_EQ(ch.remap.remap_on, *midpoint);
   }
   EXPECT_TRUE(found_flux);
+
+  // v7's reason for the version bump: IterationRegionDecl::window_scope.
+  ASSERT_EQ(read_back.value().iteration_region_count(), 1u);
+  const auto& region =
+      read_back.value().iteration_region(fuse::IterationRegionIdx{0});
+  EXPECT_EQ(region.max_iterations, 12);
+  ASSERT_TRUE(region.window_scope.has_value());
+  const auto& scope = *region.window_scope;
+  EXPECT_FALSE(scope.window_component.has_value());
+  ASSERT_TRUE(scope.explicit_interval.has_value());
+  EXPECT_EQ(*scope.explicit_interval, fuse::Rational(3, 10));
+  EXPECT_EQ(scope.order, 3);
+  ASSERT_EQ(scope.policies.size(), 2u);
+  EXPECT_EQ(scope.policies[0].component, "fluid");
+  EXPECT_EQ(scope.policies[0].policy, fuse::DtPolicy::Fixed);
+  EXPECT_EQ(scope.policies[1].component, "solid");
+  EXPECT_EQ(scope.policies[1].policy, fuse::DtPolicy::Adjustable);
+}
+
+// A region with no window_scope (std::nullopt, the default -- every region
+// declared before this member existed) must round-trip to exactly that, not
+// to an accidentally-empty CouplingWindowScope.
+TEST(Descriptor, ANonWindowedIterationRegionRoundTripsWithNoScope) {
+  const auto g = deserialize(serialize(rich_graph())).value();
+  ASSERT_EQ(g.iteration_region_count(), 1u);
+  EXPECT_FALSE(
+      g.iteration_region(fuse::IterationRegionIdx{0}).window_scope.has_value());
+}
+
+// The wire byte for an unset window_scope is a single zero -- corrupting it
+// to an out-of-range DtPolicy byte must be refused like every other enum on
+// the wire, not silently admitted.
+TEST(Descriptor, RejectsCorruptedWindowScopeDtPolicy) {
+  CouplingGraph g;
+  const auto c = g.add_component(
+      {.name = "fluid", .ranks = {0, 1}, .interval = fuse::Rational{1}});
+  const auto f = g.add_field(c, {.name = "q", .units = u::kWatt});
+  const auto ch = g.add_channel("self", f, f);
+  g.iterate({ch}).name("w");
+  {
+    fuse::CouplingWindowScope scope;
+    scope.explicit_interval = fuse::Rational{1};
+    scope.policies.push_back({.component = "fluid", .policy = fuse::DtPolicy::Fixed});
+    const_cast<fuse::IterationRegionDecl&>(
+        g.iteration_region(fuse::IterationRegionIdx{0}))
+        .window_scope = std::move(scope);
+  }
+  auto bytes = serialize(g);
+  // The policy byte is the last byte serialize() writes for this graph: no
+  // merges, one policy entry (component name "fluid" = 4 bytes + 4-byte
+  // length prefix, then the policy byte).
+  bytes.back() = std::byte{200};
+  const auto r = deserialize(bytes);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-DESC-ENUM");
 }
 
 // The frozen bytes. `test/golden/waist-v1.bin` is this descriptor's tag: a
@@ -327,7 +384,8 @@ TEST(Descriptor, RoundTripPreservesEveryNonDefaultMember) {
 // delivered to the wrong ranks, with nothing to indicate it. The version check
 // is what turns that into an error.
 TEST(Descriptor, SupersededFrozenBytesAreRefusedByThisReader) {
-  for (const char* name : {"waist-v1.bin", "waist-v4.bin", "waist-v5.bin"}) {
+  for (const char* name :
+       {"waist-v1.bin", "waist-v4.bin", "waist-v5.bin", "waist-v6.bin"}) {
     const std::filesystem::path old_golden =
         std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / name;
     ASSERT_TRUE(std::filesystem::exists(old_golden)) << old_golden;
@@ -360,7 +418,7 @@ TEST(Descriptor, TheFrozenV1BytesAreRefusedByThisReader) {
 TEST(Descriptor, MatchesTheFrozenWaistBytes) {
   const auto bytes = fuse::serialize(fuse::testing::freeze_fixture());
   const std::filesystem::path golden =
-      std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / "waist-v6.bin";
+      std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / "waist-v7.bin";
   ASSERT_TRUE(std::filesystem::exists(golden)) << golden;
 
   std::ifstream in(golden, std::ios::binary);

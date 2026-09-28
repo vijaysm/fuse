@@ -56,6 +56,24 @@ struct IterationRegionDecl {
   /// `AccelConfig::filter` (QR1/QR2/QR3) is a documented no-op until Task
   /// 7.4; setting it changes nothing today.
   AccelConfig            acceleration{.kind = AccelKind::None};
+
+  /// Time windows track: the OPT-IN that will turn this region from today's
+  /// single-clock loop into a coupling window (`fuse::CouplingWindowScope`,
+  /// `fuse/model/iteration.hpp`). `std::nullopt` (the default) is every
+  /// region declared before this member existed, and -- as of this
+  /// declaration's own introduction -- every region there is: `schedule()`
+  /// does not yet inspect this member. It still runs its existing
+  /// contiguous-run check (`mark_regions`, src/schedule/scheduler.cpp)
+  /// unconditionally and still refuses a multi-clock region with
+  /// `E-SCHED-REGION`, whether or not this field is set. Setting it changes
+  /// nothing today; only the descriptor (v7), the YAML round trip, and
+  /// `fuse::validate_coupling_window()`'s standalone legality gate
+  /// (`fuse/schedule/window.hpp`) can see it. Teaching `schedule()` to call
+  /// that gate for a window-scoped region instead of the contiguous-run
+  /// check is designed but NOT WIRED (see docs/dev/testing.md's "Five
+  /// states" and this track's design notes) -- adding that call is a
+  /// separate, not-yet-made change to scheduler.cpp.
+  std::optional<CouplingWindowScope> window_scope;
 };
 
 class CouplingGraph;
