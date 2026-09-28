@@ -209,6 +209,10 @@ struct CheckpointSet {
 /// `E-ITER-NOROLLBACK` for a component that reports
 /// `supports_rollback() == false`, and equally for one the analysis named that
 /// is not registered at all — an unverifiable claim is refused, not assumed.
+/// Also `E-ITER-NONDETERMINISTIC` (KNOWN_ISSUES.md B3) for one whose
+/// `determinism_level() == DeterminismLevel::Nondeterministic`: the sweep
+/// loop's convergence test compares successive iterates, and noise in a
+/// component is indistinguishable from a residual.
 [[nodiscard]] Diagnostics verify_rollback_support(const CouplingGraph& g,
                                                   const CheckpointSet& set,
                                                   const ComponentSet& components);

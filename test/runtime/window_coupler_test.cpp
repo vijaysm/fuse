@@ -67,7 +67,7 @@ class LinearOdeComponent : public Component {
     provided_ = x_;
     return Result<void>::success();
   }
-  [[nodiscard]] bool supports_rollback() const override { return true; }
+  [[nodiscard]] std::uint64_t capabilities() const override { return fuse::kCapabilityRollback; }
 
   [[nodiscard]] double* provided_ptr() { return &provided_; }
   [[nodiscard]] double* required_ptr() { return &required_; }
@@ -706,7 +706,7 @@ class PackedOde final : public Component {
   Result<void> restore_state() override {
     x_ = saved_; provided_ = x_; return Result<void>::success();
   }
-  [[nodiscard]] bool supports_rollback() const override { return true; }
+  [[nodiscard]] std::uint64_t capabilities() const override { return fuse::kCapabilityRollback; }
   double* provided_ptr() { return provided_.data(); }
   double* required_ptr() { return required_.data(); }
   [[nodiscard]] const std::vector<double>& x() const { return x_; }

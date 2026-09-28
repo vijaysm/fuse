@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <iterator>
 #include <memory>
 #include <stdexcept>
@@ -15,7 +16,9 @@
 #include "fuse/base/error.hpp"
 #include "fuse/base/result.hpp"
 #include "fuse/field/registry.hpp"
+#include "fuse/model/capabilities.hpp"
 #include "fuse/model/coupling_graph.hpp"
+#include "fuse/model/multiscale.hpp"
 
 namespace fuse {
 
@@ -194,15 +197,67 @@ class Component {
   /// than restore garbage.
   virtual Result<void> restore_state() { return Result<void>::success(); }
 
-  /// Whether this component implements a real `save_state()`/`restore_state()`
-  /// pair.
+  /// This component's capability bits (KNOWN_ISSUES.md B3). ONE virtual;
+  /// `supports_rollback()`, `determinism_level()` and `carries_hidden_state()`
+  /// below are non-virtual readers of it, not separate overridable questions
+  /// -- a derived class states everything it knows about itself in one call,
+  /// and cannot, say, claim rollback while leaving determinism at whatever a
+  /// stale override happened to return.
   ///
-  /// Must be constant for the object's lifetime and must be `true` if and only
-  /// if both hooks are genuinely implemented. Defaults to `false`, which is
-  /// the honest answer for the default no-op hooks: a component that silently
-  /// claimed rollback support while doing nothing would make an iteration
-  /// region converge on stale state.
-  [[nodiscard]] virtual bool supports_rollback() const { return false; }
+  /// The bits are the SAME 64-bit space `fuse::ComponentSemantics::capabilities`
+  /// and `fuse::FieldRequirement::required_capabilities` (fuse/model/
+  /// semantics.hpp) carry; the assignments are named in fuse/model/
+  /// capabilities.hpp, which also has the full rationale. In short: bit 0 is
+  /// rollback, bits 1-2 encode `fuse::DeterminismLevel`
+  /// (fuse/model/multiscale.hpp), bit 3 is hidden state, the rest reserved.
+  ///
+  /// Must be constant for the object's lifetime. The default, 0, decodes to
+  /// {no rollback, determinism UNDECLARED, no hidden state}.
+  /// `kCapabilityRollback` unset is the honest answer for the default no-op
+  /// `save_state()`/`restore_state()` (a component that silently claimed
+  /// rollback support while doing nothing would make an iteration region
+  /// converge on stale state). The determinism field is likewise not
+  /// assumed: `Bitwise` is the strongest claim the enum has, and a component
+  /// that said nothing has not made it, so silence decodes to
+  /// `std::nullopt` and an iteration region WARNS
+  /// (W-ITER-DETERMINISM-UNDECLARED) until the component declares a level.
+  /// Say what is true: `Bitwise` for a hand-written numerical component with
+  /// no RNG and no unordered reduction, `RunToRun` if a library's reduction
+  /// order is fixed per configuration only, `Nondeterministic` for an RNG or
+  /// a stochastic surrogate (refused inside an iteration region). Hidden
+  /// state: any state `advance()` mutates outside what `register_fields()`
+  /// bound. See fuse/model/capabilities.hpp for the bits and
+  /// `fuse::make_capabilities()` to set all three at once.
+  [[nodiscard]] virtual std::uint64_t capabilities() const { return 0; }
+
+  /// Whether `kCapabilityRollback` is set -- i.e. whether this component
+  /// implements a real `save_state()`/`restore_state()` pair. Non-virtual on
+  /// purpose: `capabilities()` is the one virtual a derived class can
+  /// override, so a stale `bool supports_rollback() const override` from
+  /// before this bit existed no longer overrides anything and is a compile
+  /// error (test/runtime/component_iface_test.cpp's `compile_fail` case
+  /// proves it), rather than a silently-ignored shadow of a base member.
+  [[nodiscard]] bool supports_rollback() const {
+    return (capabilities() & kCapabilityRollback) != 0;
+  }
+
+  /// This component's declared `DeterminismLevel`, decoded from
+  /// `capabilities()`'s bits 1-2. See `decode_capability_determinism()`
+  /// (fuse/model/capabilities.hpp) for how an out-of-range field is read.
+  /// `std::nullopt` when the component has not declared one: the default
+  /// `capabilities()` says nothing about determinism, and silence is not a
+  /// `Bitwise` claim (capabilities.hpp). An iteration region warns on an
+  /// undeclared level and refuses an explicit `Nondeterministic` one.
+  [[nodiscard]] std::optional<DeterminismLevel> determinism_level() const {
+    return decode_capability_determinism(capabilities());
+  }
+
+  /// Whether `kCapabilityHiddenState` is set -- i.e. whether `advance()`
+  /// mutates state this component never bound through `register_fields()`,
+  /// which FUSE's byte-for-byte rollback verification therefore cannot see.
+  [[nodiscard]] bool carries_hidden_state() const {
+    return (capabilities() & kCapabilityHiddenState) != 0;
+  }
 };
 
 namespace detail {

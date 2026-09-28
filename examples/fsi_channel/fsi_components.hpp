@@ -121,7 +121,17 @@ class BeamComponent final : public fuse::Component {
     std::copy(v.begin(), v.end(), velocity_out_.begin());
     return fuse::Result<void>::success();
   }
-  [[nodiscard]] bool supports_rollback() const override { return true; }
+  /// Rollback: save_state()/restore_state() are real. Bitwise: a hand-written
+  /// solver with no RNG and no unordered reduction (elementwise Kokkos
+  /// kernels only), and example.*.omp_identical measures it bit for bit at
+  /// one thread and at every core. Hidden state: YES -- advance() mutates
+  /// state that is not bound through register_fields() (the clock, the
+  /// history, the solver's internals), which the runtime's byte-for-byte
+  /// rollback verification cannot see; save_state() is what carries it.
+  [[nodiscard]] std::uint64_t capabilities() const override {
+    return fuse::make_capabilities(/*rollback=*/true, fuse::DeterminismLevel::Bitwise,
+                                   /*hidden_state=*/true);
+  }
 
   [[nodiscard]] const BeamSolver& solver() const { return beam_; }
   [[nodiscard]] BeamSolver& solver() { return beam_; }
@@ -251,7 +261,17 @@ class FluidComponent final : public fuse::Component {
     }
     return fuse::Result<void>::success();
   }
-  [[nodiscard]] bool supports_rollback() const override { return true; }
+  /// Rollback: save_state()/restore_state() are real. Bitwise: a hand-written
+  /// solver with no RNG and no unordered reduction (elementwise Kokkos
+  /// kernels only), and example.*.omp_identical measures it bit for bit at
+  /// one thread and at every core. Hidden state: YES -- advance() mutates
+  /// state that is not bound through register_fields() (the clock, the
+  /// history, the solver's internals), which the runtime's byte-for-byte
+  /// rollback verification cannot see; save_state() is what carries it.
+  [[nodiscard]] std::uint64_t capabilities() const override {
+    return fuse::make_capabilities(/*rollback=*/true, fuse::DeterminismLevel::Bitwise,
+                                   /*hidden_state=*/true);
+  }
 
   [[nodiscard]] const StokesSolver& solver() const { return fluid_; }
   [[nodiscard]] StokesSolver& solver() { return fluid_; }

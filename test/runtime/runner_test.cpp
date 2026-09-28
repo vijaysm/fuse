@@ -132,8 +132,8 @@ class Producer final : public fuse::Component {
     if (opts_.rollback) data_ = saved_;
     return fuse::Result<void>::success();
   }
-  [[nodiscard]] bool supports_rollback() const override {
-    return opts_.rollback;
+  [[nodiscard]] std::uint64_t capabilities() const override {
+    return opts_.rollback ? fuse::kCapabilityRollback : 0;
   }
 
   int steps = 0;
@@ -199,7 +199,7 @@ class Consumer final : public fuse::Component {
     if (rollback_) data_ = saved_;
     return fuse::Result<void>::success();
   }
-  [[nodiscard]] bool supports_rollback() const override { return rollback_; }
+  [[nodiscard]] std::uint64_t capabilities() const override { return rollback_ ? fuse::kCapabilityRollback : 0; }
 
   int steps = 0;
 

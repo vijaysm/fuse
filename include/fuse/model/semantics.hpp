@@ -139,6 +139,14 @@ struct FieldRequirement
     bool required = false;
     SemanticVersion minimum_version;
     SemanticVersion maximum_version;
+    /** Same 64-bit space as `ComponentSemantics::capabilities` below and as
+     * `fuse::Component::capabilities()` (fuse/runtime/component.hpp) --
+     * `check_capabilities()` (src/model/compatibility.cpp) tests this
+     * against a connection's `available_capabilities` bit for bit. Named
+     * bit assignments (rollback, determinism, hidden state) are in
+     * fuse/model/capabilities.hpp, which explains why one space rather than
+     * two; nothing here constrains a caller to those bits alone, since a
+     * connection's own capability vocabulary need not be a component's. */
     std::uint64_t required_capabilities = 0;
     std::vector<MetadataEntry> metadata;
 };
@@ -157,6 +165,8 @@ struct ComponentSemantics
     std::string id;
     SemanticVersion version;
     std::vector<PortSemantics> ports;
+    /** See `FieldRequirement::required_capabilities` above: same space,
+     * fuse/model/capabilities.hpp names the bits. */
     std::uint64_t capabilities = 0;
     bool supports_fractional_steps = false;
     bool supports_checkpoint_restore = false;

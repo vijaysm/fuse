@@ -140,7 +140,7 @@ class LinearBlock final : public fuse::Component {
     ++restore_count;
     return fuse::Result<void>::success();
   }
-  [[nodiscard]] bool supports_rollback() const override { return true; }
+  [[nodiscard]] std::uint64_t capabilities() const override { return fuse::kCapabilityRollback; }
 
   [[nodiscard]] const std::vector<double>& out() const { return out_; }
   [[nodiscard]] const std::vector<double>& in() const { return in_; }
@@ -194,7 +194,7 @@ class LyingBlock final : public fuse::Component {
   fuse::Result<void> restore_state() override {
     return fuse::Result<void>::success();  // restores nothing, reports success
   }
-  [[nodiscard]] bool supports_rollback() const override { return true; }
+  [[nodiscard]] std::uint64_t capabilities() const override { return fuse::kCapabilityRollback; }
 
  private:
   std::string         name_;
