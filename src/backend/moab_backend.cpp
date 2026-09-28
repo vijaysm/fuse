@@ -567,6 +567,13 @@ class MoabMeshView final : public MeshView {
   // --- used by the backend, not part of MeshView ---------------------------
 
   [[nodiscard]] moab::EntityHandle file_set() const { return file_set_; }
+  /// The Interface that owns this view's entities -- KNOWN_ISSUES D5's MOAB
+  /// half needs it: a placement's own decomposition lives in its OWN
+  /// `moab::Core`, distinct from the backend's default one, and a caller
+  /// resolving a named entity set (`placed_region_size`) must query the
+  /// SAME Core the view's handles came from, never the backend's default
+  /// `mb`, or it queries a set that does not exist in that Core at all.
+  [[nodiscard]] moab::Interface& interface() const { return *mb_; }
   [[nodiscard]] const DimData& dim_data(int dim) const {
     return dims_[static_cast<std::size_t>(dim)];
   }
@@ -648,6 +655,71 @@ class MoabMeshView final : public MeshView {
   int top_dim_ = 0;
   std::array<DimData, 4> dims_{};
 };
+
+// ===========================================================================
+// KNOWN_ISSUES D5, the MOAB half: the view answered to a rank OUTSIDE a
+// declared placement.
+//
+// moab_backend.hpp's contract is explicit that this must be an EMPTY view,
+// never the default one -- the whole point of a per-placement decomposition
+// is that a rank not in a component's placement holds none of that
+// component's piece of the mesh, and falling back to the default would
+// silently hand it somebody else's data. Every dimension answers 0 entities;
+// there is no MOAB Core behind it at all, so nothing here can query one.
+// ===========================================================================
+
+class EmptyMeshView final : public MeshView {
+ public:
+  [[nodiscard]] int dimension() const override { return 0; }
+  [[nodiscard]] std::size_t entity_count(int) const override { return 0; }
+  [[nodiscard]] std::size_t owned_count(int) const override { return 0; }
+
+  [[nodiscard]] bool is_owned(int dim, std::size_t i) const override {
+    refuse(dim, i, "is_owned");
+    return false;
+  }
+  [[nodiscard]] Point centroid(int dim, std::size_t i) const override {
+    refuse(dim, i, "centroid");
+    return {};
+  }
+  [[nodiscard]] double measure(int dim, std::size_t i) const override {
+    refuse(dim, i, "measure");
+    return 0.0;
+  }
+  [[nodiscard]] std::size_t global_id(int dim, std::size_t i) const override {
+    refuse(dim, i, "global_id");
+    return 0;
+  }
+  [[nodiscard]] std::size_t simplex_count(int dim,
+                                          std::size_t i) const override {
+    refuse(dim, i, "simplex_count");
+    return 0;
+  }
+  void simplex_points(int dim, std::size_t i, std::size_t /*s*/,
+                      Point* /*out*/) const override {
+    refuse(dim, i, "simplex_points");
+  }
+
+ private:
+  // entity_count(dim) == 0 for every dim, so `i` is out of range for every
+  // call the base MeshView contract allows to throw std::out_of_range --
+  // there is no valid `i` on this view, ever, and this says so rather than
+  // reading past a vector that was never allocated.
+  static void refuse(int dim, std::size_t i, const char* what) {
+    FUSE_THROW(InvalidArgument, "{}", std::string(std::string("EmptyMeshView::") + what +
+        ": entity index " + std::to_string(i) + " of dimension " + std::to_string(dim) +
+        " does not exist -- this view stands for a rank OUTSIDE its declared "
+        "placement (KNOWN_ISSUES D5), which by contract holds no entities of "
+        "any dimension"));
+  }
+};
+
+/// One shared instance: every (mesh, placement) pair with no local entities
+/// answers the exact same nothing, so there is nothing per-instance to hold.
+const MeshView& empty_mesh_view() {
+  static const EmptyMeshView instance;
+  return instance;
+}
 
 // ===========================================================================
 // Source-string parsing. Deliberately the same grammar SerialMeshBackend
@@ -735,6 +807,62 @@ constexpr std::array<BoxSide, 6> kBoxSides{{
     {"top", 2, true},
 }};
 
+// ===========================================================================
+// KNOWN_ISSUES D5, the MOAB half: one moab::Core and one moab::ParallelComm
+// PER COMPONENT COMMUNICATOR (the ruling of 2026-09-22, iMOAB's own
+// application-id model).
+//
+// Everything that reads a source into a fresh moab::Interface -- generate a
+// box, read a file, number it, gather it into a MoabMeshView -- used to be
+// nine `MoabMeshBackend::Impl` methods hard-wired to `this->mb`/`this->pcomm`.
+// A placement's decomposition needs the EXACT same sequence run against a
+// DIFFERENT (Core, ParallelComm) pair, so that sequence is pulled out here,
+// unchanged body for body (every one of these still says bare `mb`/`pcomm`;
+// only the enclosing class changed, from `Impl` to this), as a small object
+// bound to whichever pair it is given. `Impl` keeps one instance, `base_
+// loader`, bound to its own `mb`/`pcomm`; `set_placements()` builds one more
+// per declared placement, bound to that placement's own Core.
+// ===========================================================================
+
+struct MeshLoader {
+  moab::Interface& mb;
+#ifdef FUSE_MOAB_PARALLEL
+  /// Non-owning: the communicator and the ParallelComm that holds it belong
+  /// to whoever constructed this loader (`Impl` for the base case,
+  /// `MoabMeshBackend::Impl::PlacementContext` for a placement), not to the
+  /// loader itself. Null means "serial": every rank reads the whole source
+  /// independently, exactly as `set_communicator`'s own doc describes.
+  moab::ParallelComm* pcomm = nullptr;
+#endif
+
+  [[nodiscard]] Failure moab_error(std::string code, const std::string& what,
+                                   moab::ErrorCode rval) {
+    return Failure{std::move(code), what + ": " + moab_text(mb, rval)};
+  }
+
+  [[nodiscard]] bool parallel() const {
+#ifdef FUSE_MOAB_PARALLEL
+    return pcomm != nullptr;
+#else
+    return false;
+#endif
+  }
+
+  [[nodiscard]] Result<moab::Tag> ensure_tag(const char* tag_name, int size,
+                                             moab::DataType type,
+                                             unsigned create_flags,
+                                             const void* default_value);
+  Result<void> read_file(const std::string& path, moab::EntityHandle file_set);
+  Result<void> generate(const std::string& spec, moab::EntityHandle file_set);
+  Result<void> generate_line(std::size_t n, moab::EntityHandle file_set);
+  Result<void> generate_box(const std::array<std::size_t, 3>& n,
+                            moab::EntityHandle file_set);
+  Result<void> tag_sequential_global_ids(moab::EntityHandle file_set);
+  Result<void> name_set(moab::EntityHandle set, std::string_view name);
+  Result<void> gather(MoabMeshView& view);
+  void discard(moab::EntityHandle file_set);
+};
+
 }  // namespace moab_detail
 
 using namespace moab_detail;  // NOLINT: one translation unit, no headers
@@ -772,6 +900,66 @@ struct MoabMeshBackend::Impl {
 #endif
   std::vector<std::unique_ptr<MoabMeshView>> meshes;
   std::vector<std::string> names;  ///< parallel to `meshes`
+
+  /// Everything that reads a source into `mb` -- generate, read_file, gather,
+  /// and their helpers -- lives on this now (see `MeshLoader`'s own header
+  /// comment); `base_loader` is the one instance bound to the backend's own
+  /// (default-decomposition) Core. Declared after `mb` so the reference
+  /// member below binds to an already-constructed object; `pcomm` (when
+  /// this build has MPI) is wired in by `set_communicator`, once it exists.
+  MeshLoader base_loader{mb};
+
+  // --- per-placement decomposition (KNOWN_ISSUES D5, MOAB half) -----------
+  //
+  // One RankSet per graph component, indexed by ComponentId -- declared by
+  // `set_placements()`, mirroring `PartitionedTestBackend::set_placements`
+  // (test/support/partitioned_test_backend.hpp) and
+  // `NativeMeshBackend::set_placed_view`'s own per-placement contract.
+  // Empty (the initial state) means "no placements declared", the same
+  // convention `PartitionedTestBackend` uses to fall back to the default
+  // view; `placed_view`/`placed_region_size` read this to tell "never
+  // declared" apart from "declared, but this component index is out of
+  // range", which the ruling above requires be told apart (a silent
+  // fallback for the latter would hide a real caller bug).
+  std::vector<RankSet> placements;
+
+#ifdef FUSE_MOAB_PARALLEL
+  /// One rank's context for one declared placement: a wholly separate
+  /// `moab::Core` + `moab::ParallelComm`, split from the BASE communicator
+  /// over exactly that placement's ranks (iMOAB's application-id model,
+  /// the ruling of 2026-09-22). A rank outside the placement has no Core
+  /// here -- `core == nullptr` -- and its queries answer from the shared
+  /// `empty_mesh_view()`, never from a decomposition it does not hold.
+  ///
+  /// Heap-allocated and referenced through a `unique_ptr` so that growing
+  /// `placement_ctx` (one `push_back` per declared placement) never moves
+  /// or copies an `OwnedComm` -- `OwnedComm`'s destructor frees a raw
+  /// `MPI_Comm`, and its implicitly-generated copy constructor would let
+  /// two live instances free the same handle.
+  struct PlacementContext {
+    OwnedComm comm;                            ///< this placement's own sub-communicator
+    std::unique_ptr<moab::Core> core;          ///< null on a rank outside the placement
+    std::unique_ptr<moab::ParallelComm> pcomm; ///< null iff `core` is null
+    std::unique_ptr<MeshLoader> loader;        ///< bound to `*core`/`pcomm.get()`; null iff `core` is null
+    /// Parallel to the backend's own `meshes`: entry `i` is this
+    /// placement's decomposition of mesh `i`, or null on a rank outside the
+    /// placement (queried through `empty_mesh_view()` instead) or when this
+    /// placement's read of mesh `i` failed (queried through `E-MESH-
+    /// PLACEMENT` instead -- `load()` already refused by then, so reaching
+    /// that null is only possible if a caller kept a `MeshId` past a
+    /// refused `load()`).
+    std::vector<std::unique_ptr<MoabMeshView>> meshes;
+
+    [[nodiscard]] bool participates() const noexcept { return core != nullptr; }
+  };
+  std::vector<std::unique_ptr<PlacementContext>> placement_ctx;  ///< parallel to `placements`
+
+  /// Read `decl` into every declared placement's own Core, after the base
+  /// (default-decomposition) read this same `load()` call already did.
+  /// A no-op returning success when no placements were declared. See its
+  /// definition (near `set_placements`) for the collective-safety argument.
+  [[nodiscard]] Result<void> load_into_placements(const MeshDecl& decl);
+#endif
 
   // --- the remap halo (R3) --------------------------------------------------
   //
@@ -848,38 +1036,18 @@ struct MoabMeshBackend::Impl {
     return Failure{std::move(code), what + ": " + moab_text(mb, rval)};
   }
 
-  /// Look a conventional tag up, creating it only if it is genuinely absent.
-  ///
-  /// `tag_get_handle(..., MB_TAG_CREAT, &default)` is NOT idempotent: if the
-  /// tag already exists with a different default it returns
-  /// MB_ALREADY_ALLOCATED rather than the handle. moab::Core creates
-  /// GLOBAL_ID itself, with default -1, so asking for it with default 0 fails
-  /// on a freshly constructed Core -- which is exactly the case a generated
-  /// mesh hits.
-  [[nodiscard]] Result<moab::Tag> ensure_tag(const char* tag_name, int size,
-                                             moab::DataType type,
-                                             unsigned create_flags,
-                                             const void* default_value);
-
-  Result<void> read_file(const std::string& path, moab::EntityHandle file_set);
-  Result<void> generate(const std::string& spec, moab::EntityHandle file_set);
-  Result<void> generate_line(std::size_t n, moab::EntityHandle file_set);
-  Result<void> generate_box(const std::array<std::size_t, 3>& n,
-                            moab::EntityHandle file_set);
-  Result<void> tag_sequential_global_ids(moab::EntityHandle file_set);
-  Result<void> name_set(moab::EntityHandle set, std::string_view name);
-  Result<void> gather(MoabMeshView& view);
-  void discard(moab::EntityHandle file_set);
-
-  /// A region resolved against a loaded mesh.
+  /// A region resolved against a loaded mesh. Entity-set and dimension
+  /// resolution themselves are `resolve_region()` (a free function, so a
+  /// placement's own Core/view can resolve through it too, not just the
+  /// backend's default one); this wrapper adds the base-case's own
+  /// `meshes`-by-id lookup, which a placement resolves differently (against
+  /// `PlacementContext::meshes` instead).
   struct Resolved {
     const MoabMeshView* view = nullptr;
     moab::EntityHandle set = 0;  ///< the file set for "" / "all"
     int dim = 0;
   };
   [[nodiscard]] Result<Resolved> resolve(const Region& r) const;
-  [[nodiscard]] Result<moab::EntityHandle> find_named_set(
-      const MoabMeshView& view, const std::string& set_name) const;
 };
 
 // --- construction -----------------------------------------------------------
@@ -892,7 +1060,7 @@ MoabMeshBackend& MoabMeshBackend::operator=(MoabMeshBackend&&) noexcept =
 
 // --- helpers ----------------------------------------------------------------
 
-Result<moab::Tag> MoabMeshBackend::Impl::ensure_tag(const char* tag_name,
+Result<moab::Tag> MeshLoader::ensure_tag(const char* tag_name,
                                                     int size,
                                                     moab::DataType type,
                                                     unsigned create_flags,
@@ -913,7 +1081,7 @@ Result<moab::Tag> MoabMeshBackend::Impl::ensure_tag(const char* tag_name,
   return tag;
 }
 
-Result<void> MoabMeshBackend::Impl::name_set(moab::EntityHandle set,
+Result<void> MeshLoader::name_set(moab::EntityHandle set,
                                              std::string_view name) {
   // NAME is char[NAME_TAG_SIZE], zero padded. A longer name cannot be stored,
   // and truncating it would create a set that answers to a name nobody asked
@@ -943,7 +1111,7 @@ Result<void> MoabMeshBackend::Impl::name_set(moab::EntityHandle set,
 
 /// Number the entities of each dimension 1..n. Used only for meshes this
 /// backend generated, which have no numbering of their own.
-Result<void> MoabMeshBackend::Impl::tag_sequential_global_ids(
+Result<void> MeshLoader::tag_sequential_global_ids(
     moab::EntityHandle file_set) {
   const int unset = -1;  // MOAB's own convention for GLOBAL_ID
   const auto gid_r = ensure_tag(GLOBAL_ID_TAG_NAME, 1, moab::MB_TYPE_INTEGER,
@@ -980,7 +1148,7 @@ Result<void> MoabMeshBackend::Impl::tag_sequential_global_ids(
   return Result<void>::success();
 }
 
-void MoabMeshBackend::Impl::discard(moab::EntityHandle file_set) {
+void MeshLoader::discard(moab::EntityHandle file_set) {
   // Best effort: we are already returning an error, and leaving the partial
   // mesh behind would only leak. Nothing else references these entities --
   // every load creates its own -- so deleting them cannot disturb a mesh that
@@ -1002,7 +1170,7 @@ void MoabMeshBackend::Impl::discard(moab::EntityHandle file_set) {
 
 // --- reading ----------------------------------------------------------------
 
-Result<void> MoabMeshBackend::Impl::read_file(const std::string& path,
+Result<void> MeshLoader::read_file(const std::string& path,
                                               moab::EntityHandle file_set) {
   std::string opts;
 #ifdef FUSE_MOAB_PARALLEL
@@ -1024,7 +1192,7 @@ Result<void> MoabMeshBackend::Impl::read_file(const std::string& path,
   return Result<void>::success();
 }
 
-Result<void> MoabMeshBackend::Impl::generate_line(std::size_t n,
+Result<void> MeshLoader::generate_line(std::size_t n,
                                                   moab::EntityHandle file_set) {
   const std::size_t nv = n + 1;  // n >= 1, so this cannot wrap into 0
   if (nv > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
@@ -1068,7 +1236,7 @@ Result<void> MoabMeshBackend::Impl::generate_line(std::size_t n,
   return Result<void>::success();
 }
 
-Result<void> MoabMeshBackend::Impl::generate_box(
+Result<void> MeshLoader::generate_box(
     const std::array<std::size_t, 3>& n, moab::EntityHandle file_set) {
   const std::size_t sx = n[0] + 1;
   const std::size_t sy = n[1] + 1;
@@ -1261,7 +1429,7 @@ Result<void> MoabMeshBackend::Impl::generate_box(
   return Result<void>::success();
 }
 
-Result<void> MoabMeshBackend::Impl::generate(const std::string& spec,
+Result<void> MeshLoader::generate(const std::string& spec,
                                              moab::EntityHandle file_set) {
   const auto colon = spec.find(':');
   if (colon == std::string::npos) {
@@ -1320,7 +1488,7 @@ Result<void> MoabMeshBackend::Impl::generate(const std::string& spec,
 
 // --- gathering --------------------------------------------------------------
 
-Result<void> MoabMeshBackend::Impl::gather(MoabMeshView& view) {
+Result<void> MeshLoader::gather(MoabMeshView& view) {
   const moab::EntityHandle file_set = view.file_set();
   moab::ErrorCode rval = moab::MB_SUCCESS;
 
@@ -1470,17 +1638,17 @@ Result<void> MoabMeshBackend::load(const MeshDecl& decl) {
   constexpr std::string_view kPrefix = "generated:";
   Result<void> built =
       decl.source.rfind(kPrefix, 0) == 0
-          ? impl_->generate(decl.source.substr(kPrefix.size()), file_set)
-          : impl_->read_file(decl.source, file_set);
+          ? impl_->base_loader.generate(decl.source.substr(kPrefix.size()), file_set)
+          : impl_->base_loader.read_file(decl.source, file_set);
   if (!built.ok()) {
-    impl_->discard(file_set);
+    impl_->base_loader.discard(file_set);
     return built;
   }
 
   auto view = std::make_unique<MoabMeshView>(impl_->mb, file_set);
-  const auto gathered = impl_->gather(*view);
+  const auto gathered = impl_->base_loader.gather(*view);
   if (!gathered.ok()) {
-    impl_->discard(file_set);
+    impl_->base_loader.discard(file_set);
     return gathered;
   }
 
@@ -1489,6 +1657,15 @@ Result<void> MoabMeshBackend::load(const MeshDecl& decl) {
   // no MeshId.
   impl_->meshes.push_back(std::move(view));
   impl_->names.push_back(decl.name);
+
+#ifdef FUSE_MOAB_PARALLEL
+  // KNOWN_ISSUES D5, the MOAB half: read this same source into every
+  // declared placement's own Core too, now that the base decomposition
+  // (above) has succeeded and the new MeshId is committed. A no-op when no
+  // placements were declared (`set_placements()` was never called).
+  const Result<void> placed = impl_->load_into_placements(decl);
+  if (!placed.ok()) return placed;
+#endif
   return Result<void>::success();
 }
 
@@ -1560,11 +1737,29 @@ Result<MoabNativeMesh> MoabMeshBackend::native_mesh(MeshId id) const {
       static_cast<std::uint64_t>(impl_->meshes[id.value()]->file_set()), pc};
 }
 
-Result<moab::EntityHandle> MoabMeshBackend::Impl::find_named_set(
-    const MoabMeshView& view, const std::string& set_name) const {
-  moab::Interface& m = mb;
+/// A region resolved to a MOAB set and dimension, independent of WHICH
+/// Core/view it was resolved against -- unlike `MoabMeshBackend::Impl::
+/// Resolved` (which also carries the owning `MoabMeshView*`), this is a
+/// free-standing type so `resolve_region()` below can be called for a
+/// placement's own view, not only the backend's default one.
+struct ResolvedRegion {
+  moab::EntityHandle set = 0;  ///< the file set for "" / "all"
+  int dim = 0;
+};
+
+// A named entity set, resolved against an EXPLICIT (Interface, file set)
+// pair rather than a hard-wired `mb` -- KNOWN_ISSUES D5's MOAB half needs
+// this too: a placement's own Core has its OWN copy of the same named sets
+// (a fresh read of the same source), and resolving a name against the
+// backend's DEFAULT `mb` when the caller asked for a placement's own
+// decomposition would look the name up in the wrong Core entirely, or --
+// worse -- find a set by the same name that happens to exist in both and
+// silently answer with the default Core's count.
+Result<moab::EntityHandle> find_named_set_in(moab::Interface& m,
+                                             moab::EntityHandle mesh_file_set,
+                                             const std::string& set_name) {
   moab::Range sets;
-  moab::ErrorCode rval = m.get_entities_by_type(view.file_set(),
+  moab::ErrorCode rval = m.get_entities_by_type(mesh_file_set,
                                                 moab::MBENTITYSET, sets,
                                                 /*recursive=*/true);
   if (rval != moab::MB_SUCCESS) {
@@ -1655,15 +1850,9 @@ Result<moab::EntityHandle> MoabMeshBackend::Impl::find_named_set(
                    "block_<n> or material_<n>"};
 }
 
-Result<MoabMeshBackend::Impl::Resolved> MoabMeshBackend::Impl::resolve(
-    const Region& r) const {
-  if (!r.mesh.valid() || r.mesh.value() >= meshes.size()) {
-    return Failure{"E-MESH-ID",
-                 "region '" + r.name + "' names mesh id " +
-                     std::to_string(r.mesh.value()) + ", of which " +
-                     std::to_string(meshes.size()) + " are loaded"};
-  }
-  const MoabMeshView& view = *meshes[r.mesh.value()];
+Result<ResolvedRegion> resolve_region(moab::Interface& m,
+                                      const MoabMeshView& view,
+                                      const Region& r) {
   if (r.dimension < -1) {
     return Failure{"E-MESH-DIM",
                  "region '" + r.name + "' has dimension " +
@@ -1687,13 +1876,12 @@ Result<MoabMeshBackend::Impl::Resolved> MoabMeshBackend::Impl::resolve(
                        ", above this mesh's dimension " +
                        std::to_string(view.dimension())};
     }
-    return Resolved{&view, view.file_set(), dim};
+    return ResolvedRegion{view.file_set(), dim};
   }
 
-  const auto set = find_named_set(view, r.entity_set);
+  const auto set = find_named_set_in(m, view.file_set(), r.entity_set);
   if (!set.ok()) return set.error();
 
-  moab::Interface& m = mb;
   std::array<int, 4> counts{0, 0, 0, 0};
   for (int d = 0; d <= 3; ++d) {
     const moab::ErrorCode rval = m.get_number_entities_by_dimension(
@@ -1715,8 +1903,7 @@ Result<MoabMeshBackend::Impl::Resolved> MoabMeshBackend::Impl::resolve(
     // A locally empty set (a partition where this rank holds none of it) has
     // no dimension of its own; fall back to the mesh's so the answer is a
     // well-defined 0 rather than a guess.
-    return Resolved{&view, set.value(),
-                    highest >= 0 ? highest : view.dimension()};
+    return ResolvedRegion{set.value(), highest >= 0 ? highest : view.dimension()};
   }
   if (highest >= 0 && counts[static_cast<std::size_t>(r.dimension)] == 0) {
     // Silently answering 0 would hand back an empty buffer for a region the
@@ -1727,7 +1914,21 @@ Result<MoabMeshBackend::Impl::Resolved> MoabMeshBackend::Impl::resolve(
                      " entities, but the region states dimension " +
                      std::to_string(r.dimension)};
   }
-  return Resolved{&view, set.value(), r.dimension};
+  return ResolvedRegion{set.value(), r.dimension};
+}
+
+Result<MoabMeshBackend::Impl::Resolved> MoabMeshBackend::Impl::resolve(
+    const Region& r) const {
+  if (!r.mesh.valid() || r.mesh.value() >= meshes.size()) {
+    return Failure{"E-MESH-ID",
+                 "region '" + r.name + "' names mesh id " +
+                     std::to_string(r.mesh.value()) + ", of which " +
+                     std::to_string(meshes.size()) + " are loaded"};
+  }
+  const MoabMeshView& view = *meshes[r.mesh.value()];
+  const auto res = resolve_region(mb, view, r);
+  if (!res.ok()) return res.error();
+  return Resolved{&view, res.value().set, res.value().dim};
 }
 
 Result<std::size_t> MoabMeshBackend::region_size(const Region& r) const {
@@ -1747,6 +1948,106 @@ Result<std::size_t> MoabMeshBackend::region_size(const Region& r) const {
   if (rval != moab::MB_SUCCESS) {
     return Failure{"E-MOAB-QUERY", "could not size region '" + r.name +
                                      "': " + moab_text(m, rval)};
+  }
+  return static_cast<std::size_t>(n);
+}
+
+// ===========================================================================
+// KNOWN_ISSUES D5, the MOAB half: per-placement decomposition.
+// ===========================================================================
+
+Result<const MeshView*> MoabMeshBackend::placed_view(
+    MeshId id, ComponentId placement) const {
+  if (impl_ == nullptr) {
+    return Failure{"E-MESH-MOVED", "placed_view() on a moved-from MoabMeshBackend"};
+  }
+  // No placements declared at all: every existing single-decomposition
+  // caller gets exactly today's answer (mesh_view.hpp's default-answer
+  // contract), and an invalid ComponentId always means the same thing.
+  if (!placement.valid() || impl_->placements.empty()) return view(id);
+  if (placement.value() >= impl_->placements.size()) {
+    // Placements WERE declared, but not for this component -- refused
+    // rather than silently answering the default decomposition, which
+    // would hide a caller that forgot an entry (mesh_view.hpp's contract:
+    // "falling back silently is NOT acceptable if placements were declared
+    // at all").
+    return Failure{"E-MESH-PLACEMENT",
+                 "no placement was declared for component " +
+                     std::to_string(placement.value()) + " (" +
+                     std::to_string(impl_->placements.size()) +
+                     " declared by set_placements()); every component the "
+                     "graph names needs an entry, including a coupler"};
+  }
+  if (!id.valid() || id.value() >= impl_->meshes.size()) {
+    return Failure{"E-MESH-ID", "no mesh with id " + std::to_string(id.value()) +
+                                  " (" + std::to_string(impl_->meshes.size()) +
+                                  " loaded)"};
+  }
+#ifdef FUSE_MOAB_PARALLEL
+  if (impl_->pcomm != nullptr) {
+    const Impl::PlacementContext& ctx = *impl_->placement_ctx[placement.value()];
+    if (!ctx.participates()) {
+      // This rank is outside the placement: the EMPTY view, never the
+      // default one (the silent-wrong-answer this item exists to remove).
+      return &empty_mesh_view();
+    }
+    if (id.value() >= ctx.meshes.size() || ctx.meshes[id.value()] == nullptr) {
+      return Failure{"E-MESH-PLACEMENT",
+                   "placement " + std::to_string(placement.value()) +
+                       "'s own decomposition of mesh " +
+                       std::to_string(id.value()) +
+                       " was never built (its load() must already have "
+                       "refused; this MeshId cannot be used with this "
+                       "placement)"};
+    }
+    return static_cast<const MeshView*>(ctx.meshes[id.value()].get());
+  }
+#endif
+  // Serial / no-communicator mode (moab_backend.hpp's Mode A): "this rank"
+  // is rank 0 of an effective size-1 communicator, so a placement
+  // containing it holds exactly the one piece view() already answers, and
+  // one that does not holds none of it.
+  if (impl_->placements[placement.value()].contains(0)) return view(id);
+  return &empty_mesh_view();
+}
+
+Result<std::size_t> MoabMeshBackend::placed_region_size(
+    const Region& r, ComponentId placement) const {
+  if (impl_ == nullptr) {
+    return Failure{"E-MESH-MOVED",
+                 "placed_region_size() on a moved-from MoabMeshBackend"};
+  }
+  if (!placement.valid() || impl_->placements.empty()) return region_size(r);
+  const auto v = placed_view(r.mesh, placement);
+  if (!v.ok()) return v.error();
+  if (v.value() == &empty_mesh_view()) {
+    // Every dimension of the empty view is 0; still refuse a nonsensical
+    // region dimension exactly as a real decomposition would, rather than
+    // silently answering 0 for what is actually a caller mistake.
+    if (r.dimension < -1 || r.dimension > 3) {
+      return Failure{"E-MESH-DIM",
+                   "region '" + r.name + "' has dimension " +
+                       std::to_string(r.dimension) +
+                       "; only -1 (meaning the mesh dimension) or a "
+                       "non-negative dimension is meaningful"};
+    }
+    return std::size_t{0};
+  }
+  // Every non-empty answer `placed_view` can give is a real MoabMeshView --
+  // either `view(id)`'s own, or one of a placement's own decompositions --
+  // so this downcast needs no RTTI to be safe.
+  const auto& mview = static_cast<const MoabMeshView&>(*v.value());
+  const auto res = resolve_region(mview.interface(), mview, r);
+  if (!res.ok()) return res.error();
+  if (res.value().set == mview.file_set()) {
+    return mview.entity_count(res.value().dim);
+  }
+  int n = 0;
+  const moab::ErrorCode rval = mview.interface().get_number_entities_by_dimension(
+      res.value().set, res.value().dim, n, /*recursive=*/true);
+  if (rval != moab::MB_SUCCESS) {
+    return Failure{"E-MOAB-QUERY", "could not size placed region '" + r.name +
+                                     "': " + moab_text(mview.interface(), rval)};
   }
   return static_cast<std::size_t>(n);
 }
@@ -1965,7 +2266,7 @@ int MoabMeshBackend::communicator_size() const noexcept {
 Result<void> MoabMeshBackend::Impl::regather_with_halo(std::size_t mesh,
                                                        int dim) {
   MoabMeshView& view = *meshes[mesh];
-  const Result<void> g = gather(view);
+  const Result<void> g = base_loader.gather(view);
   if (!g.ok()) return g;
 
   const HaloState* h = halo(mesh, dim);
@@ -2054,6 +2355,222 @@ namespace {
 
 }  // namespace
 #endif  // FUSE_MOAB_PARALLEL
+
+// ===========================================================================
+// KNOWN_ISSUES D5, the MOAB half: reading a mesh into every declared
+// placement's own decomposition, once `load()`'s own default-decomposition
+// read has already succeeded for it.
+//
+// `load_into_placements` itself is declared on `Impl` only `#ifdef
+// FUSE_MOAB_PARALLEL` (it is meaningless without MPI: Mode A below stores
+// nothing at load time at all), so its definition is guarded the same way.
+// `set_placements`, right after it, is NOT -- it is the one entry point
+// Mode A needs too, so it stays callable in every build; only the "a real
+// communicator was adopted" branch inside it is guarded.
+// ===========================================================================
+
+#ifdef FUSE_MOAB_PARALLEL
+Result<void> MoabMeshBackend::Impl::load_into_placements(const MeshDecl& decl) {
+  if (placements.empty()) return Result<void>::success();
+  if (pcomm == nullptr) {
+    // Mode A (moab_backend.hpp): no communicator was adopted, so there is
+    // no per-placement Core to read into -- `placed_view`/
+    // `placed_region_size` resolve a placement containing rank 0 by
+    // aliasing `view()`/`region_size()` directly, and one that does not by
+    // aliasing the shared empty view, at QUERY time. Nothing to store here.
+    return Result<void>::success();
+  }
+  const MPI_Comm base = owned_comm.comm;
+  for (std::size_t p = 0; p < placement_ctx.size(); ++p) {
+    PlacementContext& ctx = *placement_ctx[p];
+    bool local_failed = false;
+    std::string local_msg;
+    if (ctx.participates()) {
+      moab::EntityHandle file_set = 0;
+      moab::ErrorCode rval = ctx.core->create_meshset(moab::MESHSET_SET, file_set);
+      Result<void> built = Result<void>::success();
+      if (rval != moab::MB_SUCCESS) {
+        built = ctx.loader->moab_error(
+            "E-MOAB-CREATE",
+            "could not create a file set for placement " + std::to_string(p) +
+                "'s own copy of mesh '" + decl.name + "'",
+            rval);
+      } else {
+        constexpr std::string_view kPrefix = "generated:";
+        built = decl.source.rfind(kPrefix, 0) == 0
+                    ? ctx.loader->generate(decl.source.substr(kPrefix.size()), file_set)
+                    : ctx.loader->read_file(decl.source, file_set);
+      }
+      std::unique_ptr<MoabMeshView> view;
+      if (built.ok()) {
+        view = std::make_unique<MoabMeshView>(*ctx.core, file_set);
+        built = ctx.loader->gather(*view);
+      }
+      if (built.ok()) {
+        ctx.meshes.push_back(std::move(view));
+      } else {
+        ctx.loader->discard(file_set);
+        local_failed = true;
+        local_msg = built.error().code + ": " + built.error().message;
+        // Keep `meshes` parallel to the backend's own `meshes` even on
+        // failure -- `placed_view` indexes it by `MeshId`, and a gap here
+        // would misalign every mesh loaded after this one.
+        ctx.meshes.push_back(nullptr);
+      }
+    } else {
+      // Outside this placement: queried through `empty_mesh_view()`
+      // instead, never through this slot.
+      ctx.meshes.push_back(nullptr);
+    }
+    // Every rank of the BASE communicator reconciles here, in placement
+    // order, whether or not it is IN placement `p` -- the base
+    // communicator, not `p`'s own (possibly nonexistent on this rank)
+    // sub-communicator, is what keeps every rank of the job in lockstep. A
+    // rank outside `p` contributes `local_failed = false`: it did nothing
+    // for this placement, so it cannot have failed at it.
+    const Result<void> agreed = reconcile_halo(base, local_failed, local_msg);
+    if (!agreed.ok()) return agreed;
+  }
+  return Result<void>::success();
+}
+#endif  // FUSE_MOAB_PARALLEL
+
+Result<void> MoabMeshBackend::set_placements(std::vector<RankSet> placements) {
+  if (impl_ == nullptr) {
+    return Failure{"E-MESH-MOVED",
+                 "set_placements() on a moved-from MoabMeshBackend"};
+  }
+  if (!impl_->meshes.empty()) {
+    return Failure{"E-MOAB-PLACEMENT",
+                 "set_placements() must be called before the first load(): " +
+                     std::to_string(impl_->meshes.size()) +
+                     " mesh(es) have already been read against the default "
+                     "decomposition, and declaring placements now would not "
+                     "give them one"};
+  }
+  if (!impl_->placements.empty()) {
+    return Failure{"E-MOAB-PLACEMENT",
+                 "placements have already been declared on this backend"};
+  }
+
+#ifdef FUSE_MOAB_PARALLEL
+  if (impl_->pcomm != nullptr) {
+    const MPI_Comm base = impl_->owned_comm.comm;
+    int base_size = 1;
+    int base_rank = 0;
+    if (MPI_Comm_size(base, &base_size) != MPI_SUCCESS ||
+        MPI_Comm_rank(base, &base_rank) != MPI_SUCCESS) {
+      return Failure{"E-MOAB-PLACEMENT",
+                   "could not size or rank the base communicator to declare "
+                   "placements"};
+    }
+
+    // Agree on the placement COUNT before anything collective depends on
+    // it: a caller bug that hands different ranks different-length
+    // `placements` vectors would otherwise desynchronise the
+    // `MPI_Comm_split` loop below -- some ranks would call it more times
+    // than others, which is a hang, not a clean failure.
+    const int my_count = static_cast<int>(placements.size());
+    int authoritative_count = my_count;
+    if (MPI_Bcast(&authoritative_count, 1, MPI_INT, 0, base) != MPI_SUCCESS) {
+      return Failure{"E-MOAB-PLACEMENT",
+                   "could not broadcast the declared placement count"};
+    }
+    bool local_failed = (my_count != authoritative_count);
+    std::string local_msg =
+        local_failed
+            ? "rank " + std::to_string(base_rank) + " declared " +
+                  std::to_string(my_count) + " placement(s), rank 0 declared " +
+                  std::to_string(authoritative_count)
+            : std::string();
+    Result<void> agreed = reconcile_halo(base, local_failed, local_msg);
+    if (!agreed.ok()) return Failure{"E-MOAB-PLACEMENT", agreed.error().message};
+
+    // Every rank now agrees on the count. Validate every named rank is in
+    // range, agreed the same way before the split loop that follows
+    // depends on it.
+    local_failed = false;
+    local_msg.clear();
+    for (std::size_t p = 0; p < placements.size() && !local_failed; ++p) {
+      for (const int r : placements[p]) {
+        if (r < 0 || r >= base_size) {
+          local_failed = true;
+          local_msg = "placement " + std::to_string(p) + " names rank " +
+                      std::to_string(r) +
+                      ", outside the base communicator's [0, " +
+                      std::to_string(base_size) + ")";
+          break;
+        }
+      }
+    }
+    agreed = reconcile_halo(base, local_failed, local_msg);
+    if (!agreed.ok()) return Failure{"E-MOAB-PLACEMENT", agreed.error().message};
+
+    impl_->placement_ctx.clear();
+    impl_->placement_ctx.reserve(placements.size());
+    for (std::size_t p = 0; p < placements.size(); ++p) {
+      auto ctx = std::make_unique<Impl::PlacementContext>();
+      const bool mine = placements[p].contains(base_rank);
+      const int color = mine ? 0 : MPI_UNDEFINED;
+      // Position IN the placement, not the base rank number -- so the new
+      // sub-communicator's rank i is exactly the placement's i-th listed
+      // rank, matching docs/user/placement.md's "indexing per-rank data --
+      // by position in the placement" contract.
+      const int key = mine ? placements[p].index_of(base_rank) : 0;
+      MPI_Comm sub = MPI_COMM_NULL;
+      const int rc = MPI_Comm_split(base, color, key, &sub);
+      local_failed = (rc != MPI_SUCCESS);
+      local_msg = local_failed
+                      ? ("MPI_Comm_split failed with code " +
+                         std::to_string(rc) + " for placement " +
+                         std::to_string(p))
+                      : std::string();
+      agreed = reconcile_halo(base, local_failed, local_msg);
+      if (!agreed.ok()) {
+        if (sub != MPI_COMM_NULL) MPI_Comm_free(&sub);
+        return Failure{"E-MOAB-PLACEMENT", agreed.error().message};
+      }
+      if (sub != MPI_COMM_NULL) {
+        const int erc = MPI_Comm_set_errhandler(sub, MPI_ERRORS_RETURN);
+        if (erc != MPI_SUCCESS) {
+          MPI_Comm_free(&sub);
+          return Failure{"E-MOAB-PLACEMENT",
+                       "MPI_Comm_set_errhandler failed with code " +
+                           std::to_string(erc) + " for placement " +
+                           std::to_string(p)};
+        }
+        ctx->comm.comm = sub;
+        ctx->core = std::make_unique<moab::Core>();
+        ctx->pcomm = std::make_unique<moab::ParallelComm>(ctx->core.get(), sub);
+        ctx->loader = std::make_unique<MeshLoader>(*ctx->core, ctx->pcomm.get());
+      }
+      impl_->placement_ctx.push_back(std::move(ctx));
+    }
+    impl_->placements = std::move(placements);
+    return Result<void>::success();
+  }
+#endif  // FUSE_MOAB_PARALLEL
+
+  // Serial / no-communicator mode: "this rank" is rank 0 of an effective
+  // size-1 base communicator (`partition_rank_of`'s own convention), so
+  // there is exactly one participant and nothing collective to protect --
+  // checked directly rather than through `reconcile_halo`, which exists to
+  // agree a verdict across PEERS this call has none of.
+  for (std::size_t p = 0; p < placements.size(); ++p) {
+    for (const int r : placements[p]) {
+      if (r != 0) {
+        return Failure{"E-MOAB-PLACEMENT",
+                     "placement " + std::to_string(p) + " names rank " +
+                         std::to_string(r) +
+                         ", outside the base communicator's [0, 1) (no "
+                         "communicator was adopted; call set_communicator() "
+                         "first for a real multi-rank job)"};
+      }
+    }
+  }
+  impl_->placements = std::move(placements);
+  return Result<void>::success();
+}
 
 Result<void> MoabMeshBackend::Impl::plan_halo_exchange(std::size_t mesh,
                                                        int dim) {
@@ -2511,6 +3028,7 @@ Result<void> MoabMeshBackend::set_communicator(int fortran_comm_handle) {
   }
   impl_->owned_comm.comm = dup;
   impl_->pcomm = std::make_unique<moab::ParallelComm>(&impl_->mb, dup);
+  impl_->base_loader.pcomm = impl_->pcomm.get();
   return Result<void>::success();
 #endif
 }

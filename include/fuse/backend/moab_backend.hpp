@@ -99,6 +99,58 @@ class MoabMeshBackend final : public MeshBackend {
   [[nodiscard]] Result<std::size_t> region_size(const Region& r) const override;
   [[nodiscard]] std::string name() const override { return "moab"; }
 
+  /// KNOWN_ISSUES D5, the MOAB half: declare one `RankSet` per graph
+  /// component, indexed by `ComponentId` -- mirrors
+  /// `PartitionedTestBackend::set_placements`
+  /// (test/support/partitioned_test_backend.hpp) and `NativeMeshBackend::
+  /// set_placed_view`'s own per-placement contract, so a caller that reads
+  /// placements off a `CouplingGraph` (`graph.component_count()`, including
+  /// `Coupler`-kind entries -- never listed by hand) hands them to every
+  /// mesh backend the same way.
+  ///
+  /// MUST PRECEDE THE FIRST `load()`: each `load()` call afterwards reads
+  /// the SAME source into every declared placement's own decomposition, in
+  /// addition to the backend's default one, so a placement declared after a
+  /// mesh already exists would leave that mesh without one. Refuses
+  /// `E-MOAB-PLACEMENT` in that case, and if called twice.
+  ///
+  /// TWO MODES, both usable without ever calling `set_communicator`:
+  ///   * NO communicator adopted -- "this rank" is rank 0 of an effective
+  ///     size-1 communicator (`partition_rank_of`'s own convention). A
+  ///     placement containing rank 0 IS the default decomposition (there is
+  ///     only one rank to hold it); one that does not gets an empty view.
+  ///     No MOAB Core, no MPI call, is needed or possible, so this mode
+  ///     -- including its refusals -- is exercised at Tier 0.
+  ///   * A communicator IS adopted -- one `moab::ParallelComm`, on its own
+  ///     `moab::Core`, split from the BASE communicator over exactly each
+  ///     placement's ranks (iMOAB's application-id model, the ruling of
+  ///     2026-09-22). Requires `FUSE_ENABLE_MPI` and an MPI-enabled MOAB;
+  ///     `E-MOAB-NOMPI` otherwise, the same boundary `set_communicator`
+  ///     itself draws.
+  ///
+  /// COLLECTIVE over the base communicator when one is adopted: every rank
+  /// calls this with the SAME `placements` content, in the same order
+  /// relative to its other collectives (the graph is identical on every
+  /// rank, docs/user/placement.md). The placement count and every named
+  /// rank are agreed BEFORE the first `MPI_Comm_split`, so a caller bug that
+  /// hands ranks a different-length or out-of-range `placements` is a
+  /// refusal every rank returns identically, never a hang inside the split
+  /// sequence that follows (a rank that disagreed would otherwise return
+  /// early while its peers still expect it at the next collective).
+  ///
+  /// Errors, never throws: `E-MESH-MOVED`; `E-MOAB-PLACEMENT` for a mesh
+  /// already loaded, placements already declared, a rank named outside the
+  /// base communicator's `[0, size)`, or an MPI failure while splitting. No
+  /// communicator adopted (the no-communicator mode above) is never an
+  /// error, whether or not this build has MPI at all -- that mode needs
+  /// none.
+  Result<void> set_placements(std::vector<RankSet> placements);
+
+  [[nodiscard]] Result<const MeshView*> placed_view(
+      MeshId id, ComponentId placement) const override;
+  [[nodiscard]] Result<std::size_t> placed_region_size(
+      const Region& r, ComponentId placement) const override;
+
   /// Adopt an MPI communicator for partitioned reads.
   ///
   /// Pass `MPI_Comm_c2f(comm)`, not the `MPI_Comm` itself, so this header
