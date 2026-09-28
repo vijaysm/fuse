@@ -85,11 +85,23 @@ id = "nodal-remap-dist-transpose-sums-in-rank-order-not-contributor-gid"
 area = "backend"
 describes = "apply_distributed_HT sums the Allgatherv-assembled contribution list in its own by-rank concatenation order instead of sorting it by (target_gid, contributor_eval_gid) first -- the mutation the header's own comment names explicitly: 'summing in Allgatherv's own by-rank concatenation order would silently reorder the floating-point sum... every time the rank count changed'"
 file = "src/backend/nodal_remap_distributed.cpp"
-old = "  std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {"
-new = "  std::sort(order.begin(), order.end(), [&](std::size_t, std::size_t) { return false;  // MUTATED: no real ordering, degrades to Allgatherv's own concatenation order"
+old = """  std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+    const double* ra = rec_at(a);
+    const double* rb = rec_at(b);
+    if (ra[0] != rb[0]) return ra[0] < rb[0];
+    return ra[1] < rb[1];
+  });"""
+new = """  std::sort(order.begin(), order.end(), [&](std::size_t, std::size_t) {
+    return false;  // MUTATED: no real ordering, degrades to Allgatherv's own concatenation order
+  });"""
 target = "fuse_parallel_nodal_remap_distributed_test"
 test = "parallel.nodal_remap_distributed.2"
 requires = "mpi"
+# Fixed 2026-09-28: the previous `old`/`new` pair replaced only the sort
+# call's first line, leaving the original lambda's BODY (which reads named
+# parameters `a`/`b`) after a new lambda declared with unnamed parameters --
+# an unbound-identifier compile error the host correctly reported as
+# INCONCLUSIVE. `old`/`new` now each span the full statement.
 # NOT-ASSESSED in this sandbox, and not fully assessable even on a host by a
 # SINGLE test run: the property this breaks -- bit-identical totals across
 # DIFFERENT rank counts -- needs two separate job launches (e.g. rank counts

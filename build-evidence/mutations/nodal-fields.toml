@@ -61,23 +61,56 @@ requires = "mpi"
 [[mutation]]
 id = "shared-vertex-load-summed-more-than-once"
 area = "transport"
-describes = "accumulate_shared_rows sends a rank's own row TWICE into the Allgatherv payload (once as itself, once duplicated), so every gathered total double-counts every rank's contribution instead of counting each exactly once"
+describes = "accumulate_shared_rows sends a rank's own row TWICE into the total -- once via the normal Allgatherv-and-sum every rank does, once again by re-adding this rank's own local contribution afterward -- so every gathered total double-counts every LOCAL row's own contribution instead of counting each exactly once"
 file = "src/transport/comm_graph.cpp"
-old = "  std::vector<std::int64_t> local_gids(nv);\n  for (std::size_t i = 0; i < nv; ++i) {\n    local_gids[i] = static_cast<std::int64_t>(view.global_id(dim, i));\n  }\n\n  const int local_count = static_cast<int>(nv);"
-new = "  std::vector<std::int64_t> local_gids(nv);\n  for (std::size_t i = 0; i < nv; ++i) {\n    local_gids[i] = static_cast<std::int64_t>(view.global_id(dim, i));\n  }\n\n  const int local_count = static_cast<int>(nv) * 2;  // MUTATED: double-counted"
+old = """  std::unordered_map<std::int64_t, std::vector<double>> total_of;
+  total_of.reserve(static_cast<std::size_t>(total));
+  for (std::size_t i = 0; i < static_cast<std::size_t>(total); ++i) {
+    auto [it, inserted] = total_of.try_emplace(gathered_gids[i], components, 0.0);
+    for (std::size_t c = 0; c < components; ++c) it->second[c] += gathered_vals[i * components + c];
+  }
+
+  for (std::size_t i = 0; i < nv; ++i) {
+    const auto& t = total_of.at(local_gids[i]);
+    for (std::size_t c = 0; c < components; ++c) local_values[i * components + c] = t[c];
+  }
+  return Result<void>::success();
+}"""
+new = """  std::unordered_map<std::int64_t, std::vector<double>> total_of;
+  total_of.reserve(static_cast<std::size_t>(total));
+  for (std::size_t i = 0; i < static_cast<std::size_t>(total); ++i) {
+    auto [it, inserted] = total_of.try_emplace(gathered_gids[i], components, 0.0);
+    for (std::size_t c = 0; c < components; ++c) it->second[c] += gathered_vals[i * components + c];
+  }
+  // MUTATED: send this rank's own row TWICE into the total -- once via the
+  // Allgatherv above (as every other rank sees it too), once again here.
+  for (std::size_t i = 0; i < nv; ++i) {
+    auto& t = total_of.at(local_gids[i]);
+    for (std::size_t c = 0; c < components; ++c) t[c] += local_values[i * components + c];
+  }
+
+  for (std::size_t i = 0; i < nv; ++i) {
+    const auto& t = total_of.at(local_gids[i]);
+    for (std::size_t c = 0; c < components; ++c) local_values[i * components + c] = t[c];
+  }
+  return Result<void>::success();
+}"""
 target = "fuse_parallel_nodal_field_test"
 test = "parallel.nodal_field.2"
 requires = "mpi"
-# NOT-ASSESSED in this sandbox. Expected kill: AccumulateSharedRows.
-# SumsEveryRanksPartialExactlyOnceAndDeliversTheSameTotalToEveryHolder's
-# per-vertex expected totals are computed from EXACTLY one contribution per
-# holding rank; doubling `local_count` reads `nv` values past the end of
-# `local_gids`/`local_component` (undefined behaviour, likely a crash or a
-# visibly wrong total well before any EXPECT_DOUBLE_EQ) rather than a subtle
-# near-miss -- either outcome fails the test. AccumulateSharedRows.
-# ManuallyAssembledPowerBalances's global sum would also double, failing its
-# EXPECT_NEAR against `total_force`.
-
+# Fixed 2026-09-28: the original `old`/`new` pair doubled `local_count`
+# without doubling the `local_gids`/`local_component` buffers it sizes the
+# Allgatherv send from -- an out-of-bounds read (undefined behaviour), which
+# SURVIVED on the host because the few `int64_t`/`double` slots just past a
+# small heap allocation are typically harmless garbage or zero, not
+# necessarily a crash or a visible difference. Rewritten to duplicate the
+# CONTRIBUTION deterministically instead of the buffer size: after the
+# normal (correct) gather-and-sum, this rank's own local values are added a
+# second time directly into `total_of`. No undefined behaviour anywhere, and
+# every locally-held vertex's total is now unconditionally too high by
+# exactly its own local value -- SumsEveryRanksPartialExactlyOnceAndDeliversTheSameTotalToEveryHolder's
+# `EXPECT_DOUBLE_EQ` (exact, not a tolerance) cannot miss it.
+# NOT-ASSESSED in this sandbox (MPI cannot initialise here).
 [[mutation]]
 id = "nodal-parallel-remap-refusal-disabled"
 area = "runtime"
