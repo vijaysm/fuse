@@ -698,3 +698,136 @@ class MultiMeshGeometricBackend final : public fuse::MeshBackend {
   std::vector<std::unique_ptr<fuse::MeshView>> meshes_;
   std::vector<std::string> names_;
 };
+
+// ---------------------------------------------------------------------------
+// GeometricPlacedLineBackend -- additive fixture for the "nodal-fields"
+// track's "distributed-remap-reads-the-default-view" mutation
+// (build-evidence/mutations/nodal-fields.toml): MultiMeshGeometricBackend's
+// own header comment says plainly that its `placed_view()` forwards
+// straight to `view()`, so it cannot tell `build_nodal_dist_remap`'s two
+// resolution calls apart no matter what shape a test built from it uses.
+// This class exists ONLY to close that specific gap, additively -- every
+// class above is unchanged.
+//
+// A mesh's DEFAULT decomposition (`view()`) is built from its own
+// `add_mesh_spec` RankSet exactly like MultiMeshGeometricBackend. A
+// component's PLACED decomposition (`placed_view(id, who)`) is, when
+// `set_component_ranks(mesh_name, who, ranks)` has registered one for that
+// (mesh, component) pair, a SEPARATE `GeometricLineMesh` decomposed over
+// THAT component's own `ranks` instead -- reusing `GeometricLineMesh`
+// UNCHANGED, exactly the "duplicated Spec, same underlying mesh class"
+// pattern MultiMeshGeometricBackend's own header comment already
+// establishes for per-mesh-name specs. `GeometricLineMesh`'s global ids are
+// a pure function of (n_cells, x_lo, x_hi, position along the line) --
+// never of rank or rank count (that class's own header comment) -- so the
+// default and placed decompositions of the SAME mesh agree on which
+// physical entity a given global id names, even though they disagree on
+// which RANK holds it locally and how many entities that rank sees. That
+// is exactly the divergence `build_nodal_dist_remap`'s
+// `backend.view(bid.value())` (wrong) vs
+// `backend.placed_view(bid.value(), who)` (right) must be told apart by,
+// and it needs no collective to observe: for a mesh whose default ranks
+// and a given component's own ranks differ, at least one rank's LOCAL
+// slice size differs between the two decompositions, checkable from that
+// rank alone.
+class GeometricPlacedLineBackend final : public fuse::MeshBackend {
+ public:
+  struct Spec {
+    std::size_t n_cells = 1;
+    fuse::RankSet ranks{0, 1};
+    double x_lo = 0.0;
+    double x_hi = 1.0;
+  };
+
+  /// Must precede the corresponding `load()` call, mirroring every other
+  /// backend in this file's "declare before loading" convention.
+  void add_mesh_spec(std::string name, Spec spec) { specs_[std::move(name)] = spec; }
+
+  /// Registers component `who`'s OWN placement of mesh `mesh_name`, decomposed
+  /// over `ranks` (which may differ from the mesh's own default spec ranks
+  /// above). Must precede `load()`: `load()` builds every registered placed
+  /// decomposition once, alongside the default one.
+  void set_component_ranks(const std::string& mesh_name, fuse::ComponentId who,
+                           fuse::RankSet ranks) {
+    placement_specs_[mesh_name][who.value()] = ranks;
+  }
+
+  fuse::Result<void> load(const fuse::MeshDecl& decl) override {
+    const auto it = specs_.find(decl.name);
+    if (it == specs_.end()) {
+      return fuse::Failure{"E-MESH-NAME",
+                           "GeometricPlacedLineBackend: no spec registered for mesh '" +
+                               decl.name + "' -- call add_mesh_spec() before load()"};
+    }
+    const int me = fuse_test::this_rank();
+    meshes_.push_back(std::make_unique<GeometricLineMesh>(build(it->second, me)));
+    names_.push_back(decl.name);
+
+    std::unordered_map<std::uint32_t, std::unique_ptr<fuse::MeshView>> per;
+    const auto pit = placement_specs_.find(decl.name);
+    if (pit != placement_specs_.end()) {
+      for (const auto& [who, ranks] : pit->second) {
+        Spec s = it->second;
+        s.ranks = ranks;
+        per.emplace(who, std::make_unique<GeometricLineMesh>(build(s, me)));
+      }
+    }
+    placed_.push_back(std::move(per));
+    return fuse::Result<void>::success();
+  }
+
+  [[nodiscard]] fuse::Result<const fuse::MeshView*> view(fuse::MeshId id) const override {
+    if (!id.valid() || id.value() >= meshes_.size()) return fuse::Failure{"E-MESH-ID", "invalid mesh id"};
+    return meshes_[id.value()].get();
+  }
+
+  /// Returns the PLACED decomposition registered via `set_component_ranks`
+  /// for this (mesh, component) pair, or falls back to `view()` when none
+  /// was registered -- the same "no override declared" fallback
+  /// `PartitionedTestBackend::placed_view` uses for an unrecognised
+  /// placement, so a test that only cares about ONE side's placed/default
+  /// divergence need not register the other.
+  [[nodiscard]] fuse::Result<const fuse::MeshView*> placed_view(
+      fuse::MeshId id, fuse::ComponentId who) const override {
+    if (!who.valid() || !id.valid() || id.value() >= placed_.size()) return view(id);
+    const auto& per = placed_[id.value()];
+    const auto it = per.find(who.value());
+    if (it == per.end()) return view(id);
+    return it->second.get();
+  }
+
+  [[nodiscard]] fuse::Result<std::size_t> region_size(const fuse::Region& r) const override {
+    const auto v = view(r.mesh);
+    if (!v.ok()) return v.error();
+    const int dim = r.dimension >= 0 ? r.dimension : v.value()->dimension();
+    return v.value()->entity_count(dim);
+  }
+  [[nodiscard]] fuse::Result<std::size_t> placed_region_size(const fuse::Region& r,
+                                                             fuse::ComponentId who) const override {
+    const auto v = placed_view(r.mesh, who);
+    if (!v.ok()) return v.error();
+    const int dim = r.dimension >= 0 ? r.dimension : v.value()->dimension();
+    return v.value()->entity_count(dim);
+  }
+  [[nodiscard]] fuse::Result<fuse::MeshId> mesh_id(std::string_view name) const override {
+    for (std::size_t i = 0; i < names_.size(); ++i) {
+      if (names_[i] == name) return fuse::MeshId{static_cast<std::uint32_t>(i)};
+    }
+    return fuse::Failure{"E-MESH-NAME", "no mesh named '" + std::string(name) + "'"};
+  }
+  [[nodiscard]] std::string name() const override { return "geometric-placed-line-test"; }
+
+ private:
+  static GeometricLineMesh build(const Spec& s, int me) {
+    if (!s.ranks.contains(me)) return GeometricLineMesh::empty(s.x_lo, s.x_hi);
+    int pos = 0;
+    for (int r = s.ranks.min_rank(); r < me; ++r) pos += s.ranks.contains(r) ? 1 : 0;
+    return GeometricLineMesh(s.n_cells, static_cast<int>(s.ranks.size()), pos, s.x_lo, s.x_hi);
+  }
+
+  std::unordered_map<std::string, Spec> specs_;
+  std::unordered_map<std::string, std::unordered_map<std::uint32_t, fuse::RankSet>> placement_specs_;
+  std::vector<std::unique_ptr<fuse::MeshView>> meshes_;
+  std::vector<std::unordered_map<std::uint32_t, std::unique_ptr<fuse::MeshView>>> placed_;
+  std::vector<std::string> names_;
+};
