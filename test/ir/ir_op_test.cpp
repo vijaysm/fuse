@@ -27,6 +27,7 @@ TEST(OpKind, EveryKindHasAName) {
   EXPECT_STREQ(to_cstring(OpKind::Diagnose), "Diagnose");
   EXPECT_STREQ(to_cstring(OpKind::Source), "Source");
   EXPECT_STREQ(to_cstring(OpKind::Sink), "Sink");
+  EXPECT_STREQ(to_cstring(OpKind::WindowAdvance), "WindowAdvance");
 }
 
 TEST(ValueType, DefaultsToInstantScalarDimensionless) {
@@ -116,11 +117,16 @@ TEST(OpKind, CollectiveClassificationIsDeliberate) {
   EXPECT_TRUE(is_collective(OpKind::Constrain));
 
   // Rank-local arithmetic: skipping costs nothing once the period is lost.
+  // Subcycling (WindowAdvance) is here too: it runs on the member's own
+  // ranks only (docs/dev/coupling-windows.md; the exchange that delivers a
+  // partner's waveform to it is the ordinary field-transfer chain, each
+  // classified on its own merits).
   for (const OpKind k : {OpKind::Source, OpKind::Sink, OpKind::Sample,
                          OpKind::Accumulate, OpKind::Interpolate,
                          OpKind::Extrapolate, OpKind::Remap, OpKind::Merge,
                          OpKind::Relax, OpKind::Residual, OpKind::Accelerate,
-                         OpKind::Diagnose, OpKind::Scale}) {
+                         OpKind::Diagnose, OpKind::Scale,
+                         OpKind::WindowAdvance}) {
     EXPECT_FALSE(is_collective(k)) << fuse::to_cstring(k);
   }
 
@@ -133,6 +139,6 @@ TEST(OpKind, CollectiveClassificationIsDeliberate) {
 
   // Exhaustive: every enumerator above, counted. A new operator makes this
   // fail until it is added to one of the lists.
-  EXPECT_EQ(static_cast<int>(OpKind::Closure) + 1, 19)  // 2 + 14 + 3 above
+  EXPECT_EQ(static_cast<int>(OpKind::WindowAdvance) + 1, 20)  // 2 + 15 + 3 above
       << "OpKind gained or lost an operator; classify it above";
 }

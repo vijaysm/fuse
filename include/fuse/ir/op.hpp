@@ -42,6 +42,23 @@ enum class OpKind {
   /// a micro-macro coupling compile and run as though the closure had been
   /// applied.
   Map, Reduce, Closure,
+
+  /// Time windows track: subcycling (docs/user/glossary.md) -- one component
+  /// of a time window of a waveform iteration taking several of its own time
+  /// steps across the window, reading its partners' waveforms (delivered by
+  /// the ordinary field-transfer chain: Remap/data redistribution/
+  /// synchronisation, exactly as any other field transfer) and producing its
+  /// own outgoing waveform for the next fixed-point sweep. Unlike every
+  /// operator above, it is not a stateless function of its input buffers: it
+  /// calls the owning component's advance()/save_state()/restore_state()
+  /// directly (fuse::WindowCoupler's algorithm) and carries state across
+  /// sweeps (the component's own subcycling clock, its waveform history for
+  /// extrapolation, a pending step not aligned with the window end) that
+  /// outlives one instruction execution. See fuse::WindowCoupler
+  /// (fuse/runtime/window_coupler.hpp) for the algorithm and
+  /// docs/dev/coupling-windows.md for why a component receives a mean, not a
+  /// point sample.
+  WindowAdvance,
 };
 
 /// Whether executing this operator involves the other ranks of its exchange.
@@ -77,6 +94,14 @@ enum class OpKind {
     // collective" here would be a guess about an operator nobody has written.
     case OpKind::Map: case OpKind::Reduce: case OpKind::Closure:
       return true;
+    // Subcycling runs on the member's own ranks only (the task brief's own
+    // wording): it calls that member's component directly and involves no
+    // other rank set. The exchange that delivers a PARTNER's waveform to it
+    // is the ordinary field-transfer chain (Remap/Transport/Epoch), each
+    // classified on its own merits above; WindowAdvance itself moves nothing
+    // between rank sets.
+    case OpKind::WindowAdvance:
+      return false;
   }
   return true;  // an unclassified operator is assumed collective: skipping one
                 // that is hangs, executing one that is not merely wastes work
@@ -103,6 +128,7 @@ enum class OpKind {
     case OpKind::Map:         return "Map";
     case OpKind::Reduce:      return "Reduce";
     case OpKind::Closure:     return "Closure";
+    case OpKind::WindowAdvance: return "WindowAdvance";
   }
   return "Unknown";
 }
