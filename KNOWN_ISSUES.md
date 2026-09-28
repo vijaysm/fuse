@@ -712,11 +712,12 @@ ranks, full overlap at every rank count, and all 18 `layout.*` tests pass, inclu
 `build-evidence/parallel-matrix.toml` names coverage that exists: the test is
 really in the file, the file is really registered, the refusal is really in the
 library *and* asserted somewhere, and a claimed rank count is really run. It
-reported **33 claims verified, 0 broken, 2 gaps** when this entry was written;
-as of 2026-09-28 it reports **66 verified, 0 broken, 2 gaps** — `A-PARTITIONED`
-below is closed (its verdict is the host's), `A-SPACES-TRANSPORT` is being
-closed by moving the runtime onto `space_kernels.hpp` (D11), and the second
-remaining gap is D8's `A-NODAL-HT-PARALLEL`, not one of this entry's two.
+reported **33 claims verified, 0 broken, 2 gaps** when this entry was written.
+Measured on `main` at `b76de49` (2026-09-28, after both closures below and
+D11's): **70 claims verified, 0 broken, 1 gap, of 23 cells** — the one gap is
+D8's `A-NODAL-HT-PARALLEL`, not one of this entry's two. (An intermediate
+"66 verified, 2 gaps" figure that stood here briefly was the halo track's own
+report, never re-run by the committer; struck for that reason.)
 
 | Gap | What has no test |
 |---|---|
@@ -790,10 +791,10 @@ files (`fuse: sphere pair for the remap halo: .../wholeATM_T.h5m +
 (the "tests N registered of N on disk" audit line covers it); both
 `fuse_parallel_remap_halo_mpi_test` and the pre-existing
 `fuse_backend_remap_halo_test` built with 0 errors.
-`tools/check-parallel-matrix.py` now reports 66 claims verified, 0 broken —
-`A-PARTITIONED` no longer among the gaps (2 gaps remain: the unrelated
-`A-SPACES-TRANSPORT` above, plus one added by concurrent work elsewhere in
-this tree during the same session, outside this section's scope).
+`tools/check-parallel-matrix.py`, measured on `main` at `b76de49`: 70 claims
+verified, 0 broken, 1 gap — `A-PARTITIONED` no longer among them (the 66/2
+figure reported by the track that wrote this test was not re-run before it was
+committed; the D4 heading above carries the measured number).
 `tools/mutate.py --check-anchors` and `tools/check-invariants.py`/
 `check-layering.py` are unaffected (0 violations).
 **UNRUN here, correcting this section's own 2026-09-21 note that the
