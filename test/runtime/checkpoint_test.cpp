@@ -119,12 +119,17 @@ TEST(Checkpoint, DerivedSetIsStable) {
 
 namespace {
 
-/// Minimal Component: it exists only to answer supports_rollback(). Nothing
+/// Minimal Component: it exists only to answer capabilities(). Nothing
 /// under test touches the registry or advances it.
+///
+/// `determinism` defaults to Bitwise so every existing two-argument call
+/// (`Stub("a", true)`) keeps describing exactly the component it described
+/// before KNOWN_ISSUES.md B3 replaced the bool with a bitmask.
 class Stub final : public fuse::Component {
  public:
-  Stub(std::string name, bool rollback)
-      : name_(std::move(name)), rollback_(rollback) {}
+  Stub(std::string name, bool rollback,
+       fuse::DeterminismLevel determinism = fuse::DeterminismLevel::Bitwise)
+      : name_(std::move(name)), rollback_(rollback), determinism_(determinism) {}
   [[nodiscard]] std::string name() const override { return name_; }
   fuse::Result<void> register_fields(fuse::FieldRegistry&,
                                      const CouplingGraph&) override {
@@ -133,11 +138,14 @@ class Stub final : public fuse::Component {
   fuse::Result<void> advance(const fuse::StepContext&) override {
     return fuse::Result<void>::success();
   }
-  [[nodiscard]] bool supports_rollback() const override { return rollback_; }
+  [[nodiscard]] std::uint64_t capabilities() const override {
+    return fuse::make_capabilities(rollback_, determinism_, false);
+  }
 
  private:
-  std::string name_;
-  bool        rollback_;
+  std::string             name_;
+  bool                    rollback_;
+  fuse::DeterminismLevel determinism_;
 };
 
 ComponentSet make_set(bool a_rolls_back, bool b_rolls_back) {
@@ -262,6 +270,107 @@ TEST(Checkpoint, UnregisteredComponentIsRefusedRatherThanAssumedFine) {
   EXPECT_TRUE(diags.has_errors());
   EXPECT_EQ(diags.size(), 2u) << diags.to_string();
   EXPECT_TRUE(has_code(diags, "E-ITER-NOROLLBACK")) << diags.to_string();
+}
+
+// ---------------------------------------------------------------------------
+// KNOWN_ISSUES.md B3: verify_rollback_support() also checks the determinism
+// bit capabilities() now carries -- the refusal src/model/multiscale.cpp's
+// review_surrogate_contract() predicts ("it is an error to use [a
+// nondeterministic component] inside an iteration region") but cannot itself
+// check, since it has no graph and no ComponentSet.
+// ---------------------------------------------------------------------------
+
+TEST(Checkpoint, NondeterministicComponentInsideIterationRegionIsRejected) {
+  const CouplingGraph g = iterated_two_way(true);
+  const auto lowered = lower(g);
+  const auto set = derive_checkpoint_set(
+      g, lowered.dag, lowered.dag.region_at(fuse::RegionIdx{0}));
+  ComponentSet cs;
+  cs.add(std::make_unique<Stub>("a", /*rollback=*/true,
+                                fuse::DeterminismLevel::Bitwise));
+  cs.add(std::make_unique<Stub>("b", /*rollback=*/true,
+                                fuse::DeterminismLevel::Nondeterministic));
+  const auto diags = verify_rollback_support(g, set, cs);
+  EXPECT_TRUE(diags.has_errors());
+  EXPECT_TRUE(has_code(diags, "E-ITER-NONDETERMINISTIC")) << diags.to_string();
+  EXPECT_NE(diags.to_string().find("'b'"), std::string::npos)
+      << diags.to_string();
+  // 'a' declared Bitwise and rollback: it must not also be flagged.
+  EXPECT_EQ(diags.size(), 1u) << diags.to_string();
+}
+
+namespace {
+/// Rollback, and nothing said about determinism: every component written
+/// before the bitmask existed looks like this.
+class RollbackOnly final : public fuse::Component {
+ public:
+  explicit RollbackOnly(std::string name) : name_(std::move(name)) {}
+  [[nodiscard]] std::string name() const override { return name_; }
+  fuse::Result<void> register_fields(fuse::FieldRegistry&,
+                                     const CouplingGraph&) override {
+    return fuse::Result<void>::success();
+  }
+  fuse::Result<void> advance(const fuse::StepContext&) override {
+    return fuse::Result<void>::success();
+  }
+  [[nodiscard]] std::uint64_t capabilities() const override {
+    return fuse::kCapabilityRollback;
+  }
+
+ private:
+  std::string name_;
+};
+}  // namespace
+
+// Silence about determinism is not a Bitwise claim (capabilities.hpp). It
+// is also not a refusal -- that would reject every pre-bitmask component --
+// so the region WARNS, once per undeclared component, and stays runnable.
+TEST(Checkpoint, UndeclaredDeterminismInsideIterationRegionWarnsAndRuns) {
+  const CouplingGraph g = iterated_two_way(true);
+  const auto lowered = lower(g);
+  const auto set = derive_checkpoint_set(
+      g, lowered.dag, lowered.dag.region_at(fuse::RegionIdx{0}));
+  ComponentSet cs;
+  cs.add(std::make_unique<RollbackOnly>("a"));
+  cs.add(std::make_unique<Stub>("b", /*rollback=*/true,
+                                fuse::DeterminismLevel::Bitwise));
+  const auto diags = verify_rollback_support(g, set, cs);
+  EXPECT_FALSE(diags.has_errors()) << diags.to_string();
+  EXPECT_TRUE(has_code(diags, "W-ITER-DETERMINISM-UNDECLARED")) << diags.to_string();
+  EXPECT_NE(diags.to_string().find("'a'"), std::string::npos) << diags.to_string();
+  // 'b' declared a level: exactly one diagnostic, and it names 'a'.
+  EXPECT_EQ(diags.size(), 1u) << diags.to_string();
+}
+
+// Agreement: a component that declares determinism explicitly, and agrees
+// with what an iteration region needs, passes clean -- the check is a real
+// gate, not one that always fires.
+TEST(Checkpoint, ExplicitlyBitwiseComponentInsideIterationRegionIsAccepted) {
+  const CouplingGraph g = iterated_two_way(true);
+  const auto lowered = lower(g);
+  const auto set = derive_checkpoint_set(
+      g, lowered.dag, lowered.dag.region_at(fuse::RegionIdx{0}));
+  ComponentSet cs;
+  cs.add(std::make_unique<Stub>("a", /*rollback=*/true,
+                                fuse::DeterminismLevel::Bitwise));
+  cs.add(std::make_unique<Stub>("b", /*rollback=*/true,
+                                fuse::DeterminismLevel::RunToRun));
+  const auto diags = verify_rollback_support(g, set, cs);
+  EXPECT_FALSE(diags.has_errors()) << diags.to_string();
+  EXPECT_TRUE(diags.empty()) << diags.to_string();
+}
+
+// The default (no override at all, hence capabilities() == 0) must decode as
+// Bitwise and therefore pass -- proven directly against make_set(), whose
+// Stubs never touch determinism.
+TEST(Checkpoint, DefaultDeterminismInsideIterationRegionIsAccepted) {
+  const CouplingGraph g = iterated_two_way(true);
+  const auto lowered = lower(g);
+  const auto set = derive_checkpoint_set(
+      g, lowered.dag, lowered.dag.region_at(fuse::RegionIdx{0}));
+  const ComponentSet cs = make_set(true, true);
+  const auto diags = verify_rollback_support(g, set, cs);
+  EXPECT_FALSE(diags.has_errors()) << diags.to_string();
 }
 
 // Task 7.1's hazard. all_satisfied() on an empty criterion is true, because

@@ -172,7 +172,7 @@ foreach(t rational units error)
 endforeach()
 
 # ---------------------------------------------------------------- model
-foreach(t semantics transform compatibility multiscale connect builder yaml_io region component channel coupling_graph descriptor)
+foreach(t semantics transform compatibility multiscale connect builder yaml_io region component channel coupling_graph descriptor capabilities)
   fuse_add_gtest(model ${t})
 endforeach()
 fuse_add_gtest(model validate THROWS)
@@ -266,6 +266,7 @@ fuse_add_gtest(backend field_extent THROWS)
 # rather than skipped, because a skipped test reads like a passing one.
 fuse_tests_gated_by(FUSE_ENABLE_MOAB
   backend/moab_mesh_test.cpp backend/remap_halo_test.cpp)
+
 if(FUSE_ENABLE_MOAB)
   fuse_add_gtest(backend moab_mesh THROWS LABELS moab)
   fuse_add_gtest(backend remap_halo THROWS LABELS moab)
@@ -334,6 +335,7 @@ if(FUSE_ENABLE_MOAB)
       "non-matching spherical halo cases (they are skipped, not silently "
       "passed)")
   endif()
+
 endif()
 
 # ---------------------------------------------------------------- runtime
@@ -341,6 +343,32 @@ foreach(t runner checkpoint epoch_schedule window_coupler)
   fuse_add_gtest(runtime ${t})
 endforeach()
 fuse_add_gtest(runtime component_iface THROWS)
+
+# KNOWN_ISSUES.md B3: `bool supports_rollback() const override` no longer
+# names a virtual to override, once `Component::capabilities()` is the one
+# virtual. A rule enforced by a REMOVED VIRTUAL, like U6's deleted overload
+# just above, can only be tested by failing to compile -- same pairing, same
+# reason: WILL_FAIL alone would pass for a typo or a missing include, so the
+# control (the same shape, written the way B3 permits) must build.
+foreach(case compile_fail_stale_rollback_override compile_ok_capabilities_override)
+  add_executable(fuse_runtime_${case} EXCLUDE_FROM_ALL runtime/${case}.cpp)
+  target_link_libraries(fuse_runtime_${case} PRIVATE fuse::runtime)
+endforeach()
+
+add_test(NAME runtime.compile_fail.stale_rollback_override
+  COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
+          --target fuse_runtime_compile_fail_stale_rollback_override)
+# RESOURCE_LOCK fuse_build_tree: see field.compile_fail.dangling_span's own
+# comment above for why every `cmake --build` test on this directory shares
+# one lock.
+set_tests_properties(runtime.compile_fail.stale_rollback_override PROPERTIES
+  WILL_FAIL TRUE LABELS "compile_fail" RESOURCE_LOCK fuse_build_tree)
+
+add_test(NAME runtime.compile_ok.capabilities_override
+  COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
+          --target fuse_runtime_compile_ok_capabilities_override)
+set_tests_properties(runtime.compile_ok.capabilities_override PROPERTIES
+  LABELS "compile_fail" RESOURCE_LOCK fuse_build_tree)
 
 # ---------------------------------------------------------------- parallel
 # Tier 1 only, and absent rather than skipped in Tier 0 for the reason above.

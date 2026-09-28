@@ -303,20 +303,97 @@ must reproduce — but a five-level 3D convergence study is unaffordable with it
 pinned entrywise against the closed-form tensor product instead, which says
 more about the geometry than a slope does.
 
-### B3. `supports_rollback()` is still a single bool
+### ~~B3. `supports_rollback()` is still a single bool~~ — CLOSED: `Component::capabilities()` is now a `std::uint64_t` bitmask
 
-`include/fuse/runtime/component.hpp`, `class Component`:
+`include/fuse/runtime/component.hpp`, `class Component`. The ONE virtual is
+now
 
 ```cpp
-[[nodiscard]] virtual bool supports_rollback() const
+[[nodiscard]] virtual std::uint64_t capabilities() const { return 0; }
 ```
 
-The model layer already carries `capabilities` / `required_capabilities` as
-`std::uint64_t` (`include/fuse/model/semantics.hpp`). Replacing the bool with
-the bitmask would let a component declare its determinism level and whether it
-holds hidden state — which the declared `SurrogateContract` already asks about
-and currently cannot be told. It changes the component interface, so it
-sequences with the ABI work rather than being done in passing.
+`supports_rollback()` (unchanged signature and meaning), plus two new
+readers, `determinism_level()` and `carries_hidden_state()`, are non-virtual
+convenience functions over it — a derived class states everything it knows
+about itself in one call, and a stale
+`bool supports_rollback() const override` from before this change no longer
+overrides anything, which is a compile error
+(`runtime.compile_fail.stale_rollback_override`, paired with the control
+`runtime.compile_ok.capabilities_override`).
+
+**The bit space is REUSED, not duplicated.** `fuse::ComponentSemantics::capabilities`
+and `fuse::FieldRequirement::required_capabilities` (`include/fuse/model/semantics.hpp`)
+already carried a `std::uint64_t` with no named bits at all — the model layer's
+own tests set it with literal patterns like `0b1011` because there was nothing
+else to set. `Component::capabilities()` now returns bits numbered in that
+SAME space; the assignments live in the new `include/fuse/model/capabilities.hpp`
+(bit 0 rollback, bits 1-2 a `fuse::DeterminismLevel` encoding, bit 3 hidden
+state, the rest reserved), which both `component.hpp` (runtime) and
+`semantics.hpp` (model, via a doc-comment pointer — no dependency edge is
+needed there since the fields were already `std::uint64_t`) now reference.
+
+**The runtime checks the new bits.** `verify_rollback_support()`
+(`src/runtime/checkpoint_support.cpp`, reached from `Runner::initialize()` via
+`verify_iteration_region()`) now also refuses `E-ITER-NONDETERMINISTIC` for a
+component inside an iteration region's checkpoint set whose
+`determinism_level()` decodes to `DeterminismLevel::Nondeterministic` — the
+exact refusal `src/model/multiscale.cpp`'s `review_surrogate_contract()`
+already predicted in prose ("it is an error to use \[a nondeterministic
+surrogate\] inside an iteration region, which the compiler checks when it
+knows the graph") but could not itself implement, having no graph and no
+`ComponentSet`. Pinned by `Checkpoint.NondeterministicComponentInsideIterationRegionIsRejected`
+(fires) and `Checkpoint.ExplicitlyBitwiseComponentInsideIterationRegionIsAccepted`
+/ `Checkpoint.DefaultDeterminismInsideIterationRegionIsAccepted` (agree and
+pass), all in `test/runtime/checkpoint_test.cpp`. Mutation rows
+`b3-determinism-check-disabled` and `b3-rollback-bit-read-from-wrong-field`
+(`build-evidence/mutations/ir-schedule.toml`) are hand-verified.
+
+**Default.** `capabilities() == 0` (no override at all) decodes to {no
+rollback, determinism **undeclared**, no hidden state}. The first version of
+this change decoded the zero field as `Bitwise`, on the reasoning that it kept
+every pre-bitmask override meaning what it meant before; rejected the same
+day: `Bitwise` is the strongest claim in the enum ("bit-identical ... across
+the rank counts the coupler may use") and a component that never mentioned
+determinism has not made it — reading silence as that claim is exactly the
+assumption this project's rules forbid. So the enumerators are stored at raw
+value + 1, `decode_capability_determinism()` returns `std::nullopt` for zero,
+and an iteration region **warns** (`W-ITER-DETERMINISM-UNDECLARED`,
+`Checkpoint.UndeclaredDeterminismInsideIterationRegionWarnsAndRuns`) rather
+than refusing — a refusal would reject every component written before the
+bitmask. All nine example components now declare their real triple:
+rollback, `Bitwise` (measured by `example.*.omp_identical`), and **hidden
+state = true** — each keeps a clock, a history or a solver's internals that
+`register_fields()` never bound and the runtime's byte-for-byte rollback
+check cannot see, which is precisely what their `save_state()` hooks carry.
+
+**Measured, not asserted.** Full tier-0 build (this checkout, this session):
+0 errors, 129/130 ctest pass (the 130th, `backend.native_generators.omp1`, is
+a `./.tmp/` shared-path race between two ctest workers under `-j8`, unrelated
+to this change — passes alone; `ctest -R backend.native_generators` 1/1
+green). `runtime.checkpoint`, `runtime.component_iface` and `model.capabilities`
+all pass in isolation. Both mutation rows above were actually applied to the
+real files, rebuilt, run, and restored (`cmp` byte-identical against the
+pre-edit copy) — the exact subtests each one flips are in the toml's own
+`describes` field, not repeated here to avoid the two copies drifting.
+`check-invariants.py` / `check-layering.py`: 0 violations each.
+`mutate.py --check-anchors`: 178/178 valid. `check-parallel-matrix.py`: 3
+pre-existing gaps (`A-PARTITIONED`, `A-SPACES-TRANSPORT`, `A-NODAL-HT-PARALLEL`
+— none mention rollback, determinism or capabilities; unaffected by this
+change). Sphinx: exit 0.
+
+**Left open, found while closing this one:**
+  - `test/parallel/runner_transport_test.cpp`'s `LinearRelaxComponent`
+    (line ~528) still has the pre-B3 `bool supports_rollback() const override`
+    and is now a compile error. It was out of scope for both trackers active
+    on this file (one owned only this file's `StubComponent`, the other owns
+    a different file); the fix is mechanical and identical to every site
+    above: `[[nodiscard]] std::uint64_t capabilities() const override { return fuse::kCapabilityRollback; }`.
+  - `docs/dev/abi-design.md` does not currently have a capabilities table (or
+    any mention of `rollback`/`determinism`) to update — checked directly,
+    not assumed absent.
+  - `include/fuse/model/descriptor.hpp` does not serialize
+    `Component::capabilities()` (it is a runtime, not a descriptor,
+    property), so no descriptor version bump applies here.
 
 ### ~~B4. Coupling windows: implemented, type-checked, not built or run~~ — BUILT, TWO REAL BUGS FOUND AND FIXED, ALL 13 TESTS PASS
 

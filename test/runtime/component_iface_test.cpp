@@ -67,7 +67,9 @@ class Toy final : public Component {
     return fuse::Result<void>::success();
   }
 
-  [[nodiscard]] bool supports_rollback() const override { return true; }
+  [[nodiscard]] std::uint64_t capabilities() const override {
+    return fuse::kCapabilityRollback;
+  }
 
   int         advance_count = 0;
   int         save_count = 0;
@@ -171,6 +173,64 @@ TEST(ComponentIface, RollbackDefaultsToUnsupported) {
   const Bare b;
   EXPECT_FALSE(b.supports_rollback());
   EXPECT_TRUE(Toy{"a"}.supports_rollback());
+}
+
+// KNOWN_ISSUES.md B3. capabilities() == 0 (no override at all) must decode
+// to the same three answers a reader of Component::capabilities()'s doc
+// comment is told to expect: no rollback, NO determinism claim, no hidden
+// state. A default that read as Bitwise would silently promote every
+// component ported before this bitmask existed to the strongest claim in
+// the enum -- which the first version did, and was changed.
+TEST(ComponentIface, DefaultCapabilitiesDecodeToTheDocumentedTriple) {
+  const Bare b;
+  EXPECT_EQ(b.capabilities(), 0u);
+  EXPECT_FALSE(b.supports_rollback());
+  EXPECT_FALSE(b.determinism_level().has_value())
+      << "silence is not a Bitwise claim (capabilities.hpp)";
+  EXPECT_FALSE(b.carries_hidden_state());
+}
+
+// Toy only ever set kCapabilityRollback (it predates this bitmask); the
+// determinism field stays undeclared rather than defaulting to a claim.
+TEST(ComponentIface, ToyDeclaresRollbackOnlyAndLeavesTheRestAtDefault) {
+  const Toy t{"a"};
+  EXPECT_EQ(t.capabilities(), fuse::kCapabilityRollback);
+  EXPECT_TRUE(t.supports_rollback());
+  EXPECT_FALSE(t.determinism_level().has_value());
+  EXPECT_FALSE(t.carries_hidden_state());
+}
+
+namespace {
+
+/// Declares every bit `make_capabilities()` can set, via that helper, so a
+/// reader sees the three-question style the capabilities.hpp doc comment
+/// asks a component author to answer.
+class FullyDeclared final : public fuse::Component {
+ public:
+  [[nodiscard]] std::string name() const override { return "fully-declared"; }
+  fuse::Result<void> register_fields(FieldRegistry&,
+                                     const CouplingGraph&) override {
+    return fuse::Result<void>::success();
+  }
+  fuse::Result<void> advance(const StepContext&) override {
+    return fuse::Result<void>::success();
+  }
+  [[nodiscard]] std::uint64_t capabilities() const override {
+    return fuse::make_capabilities(/*rollback=*/true,
+                                   fuse::DeterminismLevel::RunToRun,
+                                   /*hidden_state=*/true);
+  }
+};
+
+}  // namespace
+
+TEST(ComponentIface, MakeCapabilitiesRoundTripsAllThreeBits) {
+  const FullyDeclared f;
+  EXPECT_TRUE(f.supports_rollback());
+  EXPECT_EQ(f.determinism_level(), fuse::DeterminismLevel::RunToRun);
+  EXPECT_TRUE(f.carries_hidden_state());
+  // Nothing outside the three named bits leaked in.
+  EXPECT_EQ(f.capabilities() & fuse::kCapabilityReservedMask, 0u);
 }
 
 // The base-class defaults must be callable and must succeed, so that a driver

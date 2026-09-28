@@ -3,6 +3,7 @@
 
 #include "fuse/base/result.hpp"
 #include "fuse/ir/lowering.hpp"
+#include "fuse/model/multiscale.hpp"
 #include "fuse/runtime/component.hpp"
 
 /// Split out of the IR's checkpoint rule during the merge (see the note in
@@ -48,6 +49,50 @@ Diagnostics verify_rollback_support(const CouplingGraph& g,
               "previous sweep left behind, so the iteration converges to the "
               "fixed point of the wrong operator -- a wrong answer with no "
               "symptom, not a crash",
+          "component '" + name + "'");
+    }
+
+    // KNOWN_ISSUES.md B3. `capabilities()` can now say more than whether a
+    // component rolls back; the determinism bit is the one this region's own
+    // mechanism can act on directly, so it is checked here rather than left
+    // decorative. This is exactly the refusal
+    // src/model/multiscale.cpp::review_surrogate_contract() predicts for a
+    // `SurrogateContract` ("It is an error to use [a nondeterministic
+    // surrogate] inside an iteration region, which the compiler checks when
+    // it knows the graph") -- multiscale.cpp cannot check it (it has no
+    // graph and no ComponentSet; see that file's header), so it is checked
+    // here, the one place that has both. A component that says nothing about
+    // determinism has declared NOTHING (capabilities.hpp: raw 0 is undeclared,
+    // not `Bitwise`); that is a warning, W-ITER-DETERMINISM-UNDECLARED, so the
+    // gap is visible in the diagnostics without refusing every component
+    // written before the bitmask existed. An explicit `Nondeterministic` is
+    // refused.
+    const std::optional<DeterminismLevel> level = impl->determinism_level();
+    if (!level.has_value()) {
+      diags.add(
+          Severity::Warning, "W-ITER-DETERMINISM-UNDECLARED",
+          "component '" + name +
+              "' is re-advanced inside an iteration region but its "
+              "capabilities() declares no determinism level; the region's "
+              "convergence test assumes the component is at least "
+              "run-to-run reproducible. Declare one with "
+              "fuse::make_capabilities()",
+          "component '" + name + "'");
+    }
+    if (level == DeterminismLevel::Nondeterministic) {
+      diags.add(
+          Severity::Error, "E-ITER-NONDETERMINISTIC",
+          "component '" + name +
+              "' declares capabilities() with DeterminismLevel::Nondeterministic "
+              "and is re-advanced inside iteration region's sweep loop, whose "
+              "convergence test compares successive iterates. Noise in a "
+              "component's own output is indistinguishable, in that "
+              "comparison, from a residual that has not yet converged: the "
+              "region may report convergence at an iterate that was never "
+              "actually a fixed point, or may fail to converge at all for a "
+              "reason that has nothing to do with the coupling. A "
+              "nondeterministic component may be used in an explicit "
+              "(non-iterated) coupling, just not inside this region",
           "component '" + name + "'");
     }
   }
