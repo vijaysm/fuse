@@ -614,10 +614,22 @@ int main(int argc, char** argv) {
   }
 
   const fuse::ClockSet clocks{graph};
-  const auto sched =
-      schedule(graph, lowered.dag, clocks, fuse::make_region_sizes(graph, backend));
-  if (!sched.ok()) {
-    if (rank == 0) std::cerr << sched.diags.to_string();
+  // make_region_sizes() is loud by contract (mesh_view.hpp): a region it
+  // cannot size THROWS rather than returning 0, and schedule() lets that
+  // propagate. An exception escaping main() in an MPI program is an abort on
+  // that rank and a hang for the others if the failure was not unanimous --
+  // the first host run of the coupler rows died exactly this way (libc++abi
+  // terminating, E-MESH-PLACEMENT, 2026-09-27). A configuration failure is
+  // unanimous, so it is turned into the same agreed exit as every other one.
+  std::optional<decltype(schedule(graph, lowered.dag, clocks, fuse::RegionSizes{}))> sched;
+  try {
+    sched = schedule(graph, lowered.dag, clocks, fuse::make_region_sizes(graph, backend));
+  } catch (const std::exception& e) {
+    if (rank == 0) std::cerr << "schedule failed: " << e.what() << '\n';
+    return agree_and_exit(1);
+  }
+  if (!sched->ok()) {
+    if (rank == 0) std::cerr << sched->diags.to_string();
     return agree_and_exit(1);
   }
 
@@ -639,7 +651,7 @@ int main(int argc, char** argv) {
     }
   }
 
-  Runner runner{graph, lowered.dag, sched.plan, backend};
+  Runner runner{graph, lowered.dag, sched->plan, backend};
   fuse::RunnerConfig cfg;
   cfg.transport         = "mpi";
   cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
