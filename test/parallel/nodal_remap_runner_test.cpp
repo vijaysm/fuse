@@ -38,6 +38,7 @@
 #include <fuse/ir/lowering.hpp>
 #include <fuse/backend/consistent_interp.hpp>
 #include <fuse/backend/remap_plan.hpp>
+#include <fuse/backend/serial_backend.hpp>
 #include <fuse/runtime/runner.hpp>
 #include <fuse/transport/transport.hpp>
 
@@ -269,10 +270,31 @@ void run_and_check(std::size_t n_beam, std::size_t n_fluid, fuse::RankSet beam_r
   // check_conservation stays at its default (ON). The Runner's Constrain
   // reduces both integrals over the base communicator (KNOWN_ISSUES.md D10,
   // 2026-09-25) -- before that it refused a multi-rank target
-  // (E-RT-CONSERVATION-MPI) and this fixture had to disable it. Leaving it on
-  // makes this test check the Runner's verdict against its own MPI_Allreduce
-  // of the same integrals below: two independent computations of one
-  // statement, and the Runner's would fail initialize()/run_period() first.
+  // (E-RT-CONSERVATION-MPI) and this fixture had to disable it.
+  //
+  // `abort_on_violation = true` is NOT the default -- and its absence is
+  // exactly why mutation "conservation-check-not-reduced-across-ranks"
+  // (build-evidence/mutations/nodal-fields.toml) survived here. Constrain
+  // only REPORTS (runner.cpp's own comment: "Phase 4 reports; it does not
+  // correct" -- the field values downstream are copied through unchanged
+  // either way), so with `abort_on_violation` left at its default `false`,
+  // a spurious per-rank violation caused by skipping the cross-rank
+  // Allreduce (`ci.reduce == false`, which the mutation forces
+  // unconditionally) only increments `runner.stats().conservation_violations`
+  // -- which nothing below ever reads -- and `run_period()` still returns
+  // `ok()`. Traced by hand and confirmed with a standalone harness linked
+  // against this library (DisjointRankSets' own shape, no MPI, so
+  // deliberately WITHOUT a base communicator -- the same `ci.reduce ==
+  // false` branch the mutation forces): `conservation_violations` came back
+  // 2 of 4 checks, `worst_conservation_error` 1.0 (100% relative), while
+  // `run_period()` still reported `ok()` -- exactly the silent-survival
+  // shape. Setting this true turns that same condition into a hard
+  // `E-RT-CONSERVATION` failure (confirmed by the same harness: "integral
+  // 10.400000 -> 0.000000" once `abort_on_violation` was flipped on), which
+  // is what actually makes this test check the Runner's verdict against its
+  // own MPI_Allreduce of the same integrals below -- the claim the comment
+  // used to make here without this line being present to back it.
+  cfg.abort_on_violation = true;
   {
     const auto r = runner.initialize(components, registry, cfg);
     ASSERT_TRUE(r.ok()) << "initialize: " << r.error().code << ": " << r.error().message;
@@ -391,4 +413,275 @@ TEST(NodalRemapRunnerMpi, PartiallyOverlappingRankSets) {
   const fuse::RankSet beam_ranks{0, w - 1};      // ranks [0, w-1)
   const fuse::RankSet fluid_ranks{1, w - 1};     // ranks [1, w)
   run_and_check(8, 6, beam_ranks, fluid_ranks, -0.5, 1.5);
+}
+
+// Isolates resolve_remap's `both_on_one_rank` computation from
+// `moves_placement` (mutation "nodal-trigger-misses-two-single-rank-
+// placements", build-evidence/mutations/nodal-fields.toml).
+//
+// DisjointRankSets above cannot kill that mutation: its two channels both
+// use a method that matches its nodal side's orientation exactly
+// ("consistent" with a nodal source, "consistent-transpose" with a nodal
+// target), and `remap_moves_placement()` (fuse/model/remap_kind.hpp) is
+// therefore true for both at lowering, which makes rules_channel.cpp route
+// them through the Epoch-only, placement-changing Remap path with NO
+// Transport. At runtime that gives `in_rank_set != remap_rank_set`
+// (`moves_placement == true`) unconditionally whenever the two components'
+// declared ranks genuinely differ -- independent of, and always agreeing
+// with, whatever `both_on_one_rank` computes. Traced by hand and confirmed
+// with a standalone harness linked against this library (SerialMeshBackend,
+// no MPI, no base_communicator; see this track's evidence log): applying
+// the mutation to a fresh build left `DisjointRankSets`'s own two channels'
+// outcome completely unchanged, because `moves_placement` alone already
+// forces entry into the nodal-distributed branch.
+//
+// A channel whose method does NOT match its nodal side's orientation
+// (`remap_moves_placement() == false`) is lowered the OLD way instead: a
+// real Transport moves the value to the target's declared ranks first, so
+// `in_rank_set == remap_rank_set` and `moves_placement == false`. On such a
+// channel, `both_on_one_rank` is the ONLY gate deciding whether
+// resolve_remap's nodal-parallel check runs at all -- exactly the gap
+// DisjointRankSets leaves uncovered. This case needs no cross-rank
+// communication to observe: the decision is read entirely from the
+// DECLARED graph (component ranks, sizes, kinds), before any Transport or
+// collective would run, so it is checked here declaratively, the same way
+// `test/verification/interface_transfer_test.cpp`'s
+// `BothSidesNodalOnMultipleRanksRefuses` checks an adjacent declared-only
+// refusal without a real multi-rank launch -- correct code refuses by name
+// (E-RT-REMAP-NODAL-PARALLEL) before ever touching the backend; this file's
+// own header already establishes every case here is graph-declared and
+// rank-count-independent for that reason.
+//
+// Confirmed by hand (Tier 0, standalone harness, no MPI): current code
+// returns E-RT-REMAP-NODAL-PARALLEL ("source: 1, target: 1"); with the
+// mutation applied, `both_on_one_rank` wrongly reports true for this
+// disjoint pair, the whole nodal-parallel check is skipped, and control
+// falls through to the OLD rank-local path, which -- because
+// SerialMeshBackend hands every declared placement the WHOLE (identically
+// ordered) mesh regardless of rank -- reports E-RT-REMAP-SIZE instead ("the
+// buffer plan and the mesh backend disagree about the same region", 6 vs 5
+// values) once it discovers the vertex- and cell-counts collide under a
+// coincidence check that never should have run. Both outcomes are
+// `!r.ok()`, so a bare `ASSERT_FALSE(r.ok())` cannot tell them apart --
+// which is exactly why the mutation survived nowhere else; the code check
+// below is the specific error CODE, mirroring
+// `BothSidesNodalOnMultipleRanksRefuses`'s own convention for the same
+// reason.
+TEST(NodalRemapRunnerMpi, DisjointSingleRankPlacementRefusesMismatchedOrientation) {
+  fuse::CouplingGraph g;
+  const auto m_a = g.add_mesh(fuse::MeshDecl{.name = "a_mesh", .source = "generated:line:5"});
+  const auto m_b = g.add_mesh(fuse::MeshDecl{.name = "b_mesh", .source = "generated:line:5"});
+  const auto r_a = g.add_region(fuse::Region{.name = "r_a", .mesh = m_a, .dimension = 1});
+  const auto r_b = g.add_region(fuse::Region{.name = "r_b", .mesh = m_b, .dimension = 1});
+  // Disjoint SINGLE-rank placements -- the exact shape `src_ranks == 1U &&
+  // dst_ranks == 1U` alone cannot distinguish from a coincident single
+  // rank; only the `min_rank()` comparison the mutation removes can.
+  const auto comp_a = g.add_component(
+      fuse::ComponentDecl{.name = "a", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  const auto comp_b = g.add_component(
+      fuse::ComponentDecl{.name = "b", .ranks = fuse::RankSet{1, 1}, .interval = Rational{1}});
+  const auto f_a = g.add_field(comp_a, fuse::FieldSpec{
+      .name = "a_field", .region = r_a, .disc = fuse::Discretization::ContinuousGLL, .order = 1,
+      .units = kMetersPerSecond, .conservation = fuse::Conservation::Intensive,
+      .intent = fuse::Intent::Provides});
+  const auto f_b = g.add_field(comp_b, fuse::FieldSpec{
+      .name = "b_field", .region = r_b,  // default disc: FV / non-nodal
+      .units = kMetersPerSecond, .conservation = fuse::Conservation::Intensive,
+      .intent = fuse::Intent::Requires});
+  const auto ch = g.add_channel("a_to_b", f_a, f_b);
+  // "consistent-transpose" needs a nodal TARGET; b_field is not nodal, so
+  // remap_moves_placement() is false here -- unlike DisjointRankSets'
+  // channels, this one is lowered via a real Transport, and moves_placement
+  // cannot mask both_on_one_rank the way it does there.
+  g.channel(ch).remap_method("consistent-transpose");
+
+  fuse::SerialMeshBackend backend;
+  for (std::uint32_t i = 0; i < g.mesh_count(); ++i) {
+    const auto r = backend.load(g.mesh(fuse::MeshId{i}));
+    ASSERT_TRUE(r.ok()) << r.error().message;
+  }
+  const auto lowered = fuse::lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+  const fuse::ClockSet clocks{g};
+  auto sched = fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+  ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
+
+  class Side final : public fuse::Component {
+   public:
+    Side(std::string name, std::size_t n) : name_(std::move(name)), n_(n) {}
+    [[nodiscard]] std::string name() const override { return name_; }
+    fuse::Result<void> register_fields(FieldRegistry& reg, const CouplingGraph& g) override {
+      for (const fuse::FieldId f : g.component(*g.find_component(name_)).fields) {
+        auto& buf = bufs[g.field(f).name];
+        buf.assign(n_, 0.0);
+        auto r = reg.bind(f, fuse::FieldRef{buf.data(), fuse::Layout{.stride = 1, .count = buf.size()},
+                                            fuse::MemorySpace::Host});
+        if (!r.ok()) return r;
+      }
+      return fuse::Result<void>::success();
+    }
+    fuse::Result<void> advance(const StepContext&) override { return fuse::Result<void>::success(); }
+    std::map<std::string, std::vector<double>> bufs;
+   private:
+    std::string name_;
+    std::size_t n_;
+  };
+  ComponentSet components;
+  components.add(std::make_unique<Side>("a", 6));  // 6 vertices, 5-cell nodal line mesh
+  components.add(std::make_unique<Side>("b", 5));  // 5 cells, FV (non-nodal) region
+  FieldRegistry registry;
+  for (auto& c : components) {
+    const auto r = c.register_fields(registry, g);
+    ASSERT_TRUE(r.ok()) << r.error().message;
+  }
+
+  Runner runner{g, lowered.dag, sched.plan, backend};
+  const auto r = runner.initialize(components, registry);
+  ASSERT_FALSE(r.ok()) << "a disjoint single-rank-each nodal channel with a "
+                          "mismatched method initialised";
+  EXPECT_EQ(r.error().code, "E-RT-REMAP-NODAL-PARALLEL") << r.error().message;
+}
+
+// Mutation "distributed-remap-reads-the-default-view" (nodal-fields.toml):
+// build_nodal_dist_remap resolving both sides through `backend.view(bid)`
+// instead of each side's own `backend.placed_view(bid, who)`. MultiMeshGeometricBackend
+// -- what every other test in this file uses -- cannot tell the two apart
+// BY CONSTRUCTION: its own `placed_view` forwards straight to `view()`
+// regardless of the ComponentId given (see that class's header comment and
+// its `placed_view` body, test/support/partitioned_test_backend.hpp), so no
+// fixture built from it, at any rank count or placement shape, can kill
+// this mutation. `PartitionedTestBackend` HAS a genuine per-placement
+// decomposition (`set_placements`) but carries no geometry
+// (`PartitionedTestMesh`'s own comment: centroid/measure are unused stubs),
+// so it cannot feed `build_distributed_interp_rows`, which needs real
+// coordinates.
+//
+// `GeometricPlacedLineBackend` (this track's own additive fixture, added
+// alongside this test) closes the gap: it reuses `GeometricLineMesh`
+// UNCHANGED for both the mesh's default decomposition and a SEPARATE,
+// genuinely different decomposition registered per (mesh, component) via
+// `set_component_ranks`. Below, `beam_mesh`'s DEFAULT decomposition is
+// deliberately declared over `fluid_ranks` (the WRONG ranks for beam) while
+// `set_component_ranks` gives the beam component its own, correct
+// `beam_ranks` decomposition -- exactly the "one mesh, two placements"
+// shape a coupler/shared-mesh scenario produces, and exactly what
+// `build_nodal_dist_remap`'s own comment (runner.cpp, "Each side as seen by
+// ITS OWN component") says must be read.
+//
+// Verified mechanism (Tier 0, standalone harness, no MPI, see this track's
+// evidence log): with the fixture built this way, correct code
+// (`placed_view`) returns the exact affine value at every point (H is
+// P1-exact); the mutation (`view`) makes the nodal side's local view come
+// back EMPTY (the DEFAULT decomposition excludes the very ranks that own
+// it), and `build_distributed_interp_rows` fails with E-INTERP-NOGEOMETRY
+// ("the source mesh ... has no cells or no vertices at all"). This
+// specific TEST (a real 2+-rank MPI shape, using a REAL communicator so it
+// is valid at every registered rank count 1-5, not the single-simulated-
+// rank/null-communicator harness used to prove the mechanism above) has
+// been compiled (Tier 1, MPI-enabled, compile-only -- this sandbox cannot
+// execute MPI) but NOT run; a host run is what confirms it at real rank
+// counts. Expected signatures: correct code -- every EXPECT_NEAR below
+// passes; mutated code (apply the manifest's old->new by hand, rebuild) --
+// `initialize()` fails and `E-INTERP-NOGEOMETRY` appears in the message,
+// exactly as the Tier-0 double showed.
+TEST(NodalRemapRunnerMpi, DistributedRemapUsesThePlacedViewNotTheDefaultView) {
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);  // needs a real second rank the default view can wrongly omit
+  const int w = world_size();
+  const fuse::RankSet beam_ranks{0, (w + 1) / 2};
+  const fuse::RankSet fluid_ranks{(w + 1) / 2, w - (w + 1) / 2};
+  const std::size_t n_beam = 7, n_fluid = 11;
+
+  fuse::CouplingGraph g;
+  const auto m_beam = g.add_mesh(fuse::MeshDecl{.name = "beam_mesh", .source = "n/a"});
+  const auto m_fluid = g.add_mesh(fuse::MeshDecl{.name = "fluid_mesh", .source = "n/a"});
+  const auto r_beam = g.add_region(fuse::Region{.name = "r_beam", .mesh = m_beam, .dimension = 1});
+  const auto r_fluid = g.add_region(fuse::Region{.name = "r_fluid", .mesh = m_fluid, .dimension = 1});
+  const auto beam = g.add_component(
+      fuse::ComponentDecl{.name = "beam", .ranks = beam_ranks, .interval = Rational{1}});
+  const auto fluid = g.add_component(
+      fuse::ComponentDecl{.name = "fluid", .ranks = fluid_ranks, .interval = Rational{1}});
+  const auto vel_out = g.add_field(beam, fuse::FieldSpec{
+      .name = "beam_velocity", .region = r_beam, .disc = fuse::Discretization::ContinuousGLL,
+      .order = 1, .units = kMetersPerSecond, .conservation = fuse::Conservation::Intensive,
+      .intent = fuse::Intent::Provides});
+  const auto vel_in = g.add_field(fluid, fuse::FieldSpec{
+      .name = "fluid_velocity_in", .region = r_fluid, .units = kMetersPerSecond,
+      .conservation = fuse::Conservation::Intensive, .intent = fuse::Intent::Requires});
+  const auto vch = g.add_channel("wall_velocity", vel_out, vel_in);
+  g.channel(vch).remap_method("consistent");
+
+  GeometricPlacedLineBackend backend;
+  // WRONG default: beam_mesh's own decomposition is declared over
+  // fluid_ranks, not beam_ranks -- `view()` gives beam's own ranks nothing.
+  backend.add_mesh_spec("beam_mesh", {.n_cells = n_beam, .ranks = fluid_ranks, .x_lo = 0.0, .x_hi = 1.0});
+  backend.set_component_ranks("beam_mesh", beam, beam_ranks);  // the CORRECT decomposition
+  backend.add_mesh_spec("fluid_mesh", {.n_cells = n_fluid, .ranks = fluid_ranks, .x_lo = 0.0, .x_hi = 1.0});
+  for (std::uint32_t i = 0; i < g.mesh_count(); ++i) {
+    const auto r = backend.load(g.mesh(fuse::MeshId{i}));
+    ASSERT_TRUE(r.ok()) << r.error().message;
+  }
+
+  const auto lowered = fuse::lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+  const fuse::ClockSet clocks{g};
+  auto sched = fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+  ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
+
+  const auto local_count = [&](const CouplingGraph& gg, fuse::FieldId fid,
+                               fuse::ComponentId who) -> std::size_t {
+    const auto& fs = gg.field(fid);
+    const auto mid = backend.mesh_id(gg.mesh(gg.region(fs.region).mesh).name);
+    if (!mid.ok()) throw std::runtime_error("local_count: " + mid.error().message);
+    const auto view = backend.placed_view(mid.value(), who);
+    if (!view.ok()) throw std::runtime_error("local_count: " + view.error().message);
+    const int dim = fs.disc == fuse::Discretization::ContinuousGLL ? 0 : 1;
+    return view.value()->entity_count(dim);
+  };
+
+  auto b = std::make_unique<Side>("beam", [&](Side& me) {
+    auto& v = me.bufs["beam_velocity"];
+    const auto mid = backend.mesh_id("beam_mesh").value();
+    const auto* view = backend.placed_view(mid, beam).value();
+    for (std::size_t i = 0; i < v.size(); ++i) v[i] = 0.3 + 2.0 * view->centroid(0, i).x;
+  });
+  auto f = std::make_unique<Side>("fluid", [&](Side&) {});
+  b->local_count = [&](const CouplingGraph& gg, fuse::FieldId fid) { return local_count(gg, fid, beam); };
+  f->local_count = [&](const CouplingGraph& gg, fuse::FieldId fid) { return local_count(gg, fid, fluid); };
+  Side* bp = b.get();
+  Side* fp = f.get();
+  ComponentSet components;
+  components.add(std::move(b));
+  components.add(std::move(f));
+  FieldRegistry registry;
+  for (auto& c : components) {
+    const auto r = c.register_fields(registry, g);
+    ASSERT_TRUE(r.ok()) << r.error().message;
+  }
+
+  Runner runner{g, lowered.dag, sched.plan, backend};
+  RunnerConfig cfg;
+  cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
+  cfg.transport = "mpi";
+  cfg.transport_setup = [](fuse::Transport& tr) -> fuse::Result<void> {
+    auto* mpi = dynamic_cast<fuse::MpiTransport*>(&tr);
+    if (mpi == nullptr) return fuse::Failure{"E-TEST", "expected an MpiTransport"};
+    return mpi->set_communicator(MPI_Comm_c2f(MPI_COMM_WORLD));
+  };
+  {
+    const auto r = runner.initialize(components, registry, cfg);
+    ASSERT_TRUE(r.ok()) << "initialize: " << r.error().code << ": " << r.error().message;
+  }
+  {
+    const auto r = runner.run_period(components);
+    ASSERT_TRUE(r.ok()) << "run_period: " << r.error().code << ": " << r.error().message;
+  }
+
+  const auto fluid_mid = backend.mesh_id("fluid_mesh").value();
+  const auto* fluid_view = backend.placed_view(fluid_mid, fluid).value();
+  const std::vector<double>& fluid_in = fp->bufs["fluid_velocity_in"];
+  for (std::size_t j = 0; j < fluid_in.size(); ++j) {
+    const double x = fluid_view->centroid(1, j).x;
+    EXPECT_NEAR(fluid_in[j], 0.3 + 2.0 * x, 1e-12) << "rank " << world_rank() << " fluid cell " << j;
+  }
+  (void)bp;
 }

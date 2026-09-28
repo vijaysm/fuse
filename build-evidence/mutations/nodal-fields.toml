@@ -148,9 +148,37 @@ new = "    const bool both_on_one_rank = src_ranks == 1U && dst_ranks == 1U;"
 target = "fuse_parallel_nodal_remap_runner_test"
 test = "parallel.nodal_remap_runner.2"
 requires = "mpi"
-# NOT-ASSESSED in this sandbox: the shape it describes exists only at exactly
-# two ranks, and MPI cannot initialise here at all. The two-rank host run is
-# what kills it.
+# SURVIVED explained, verified by hand (Tier 0, standalone harness linked
+# against this library, no MPI): DisjointRankSets' own two channels
+# ("consistent" nodal-source, "consistent-transpose" nodal-target) both
+# match remap_moves_placement()'s orientation exactly (fuse/model/
+# remap_kind.hpp), so resolve_remap's `moves_placement` is unconditionally
+# TRUE whenever the two components' ranks genuinely differ -- independent
+# of, and always agreeing with, whatever `both_on_one_rank` computes. The
+# OR at resolve_remap's guard (`!both_on_one_rank || moves_placement || ...`)
+# is satisfied by `moves_placement` alone on this test's own channels, so
+# the mutation is fully masked there: applying it by hand and rebuilding
+# left DisjointRankSets' equivalent (SerialMeshBackend, declared disjoint
+# single ranks, no real MPI needed since the decision is graph-declared)
+# completely unaffected.
+#
+# The gap is real but narrower than "needs two ranks": `both_on_one_rank`
+# is the ONLY gate whenever a channel's method does NOT match its nodal
+# side's orientation (remap_moves_placement() == false), which is lowered
+# via a real Transport instead of the Epoch-only path -- a shape no
+# existing test in this file builds. Added
+# NodalRemapRunnerMpi.DisjointSingleRankPlacementRefusesMismatchedOrientation
+# (test/parallel/nodal_remap_runner_test.cpp) to isolate exactly that:
+# same disjoint-single-rank pair, "consistent-transpose" paired with a
+# NODAL SOURCE (orientation mismatch). Confirmed by hand: correct code
+# refuses with E-RT-REMAP-NODAL-PARALLEL ("source: 1, target: 1"); with
+# the mutation applied, `both_on_one_rank` wrongly reports true, the whole
+# nodal-parallel check is skipped, and the OLD rank-local path reports a
+# DIFFERENT code, E-RT-REMAP-SIZE, instead -- a kill an EXACT error-code
+# check (not a bare `ASSERT_FALSE(r.ok())`) catches. The new test needs no
+# real MPI to decide (same declarative-only argument this row's own
+# describes field already makes), and was additionally compiled
+# (Tier 1, MPI-enabled) but not run here.
 
 [[mutation]]
 id = "distributed-remap-lowered-behind-a-transport"
@@ -172,3 +200,25 @@ new = "    const auto view = backend.view(bid.value());\n    if (!view.ok()) ret
 target = "fuse_parallel_nodal_remap_runner_test"
 test = "parallel.nodal_remap_runner.4"
 requires = "mpi"
+# Confirmed: MultiMeshGeometricBackend's placed_view() forwards straight to
+# view() regardless of the ComponentId given (test/support/
+# partitioned_test_backend.hpp's own header comment plus its body), so no
+# fixture built from it kills this at any rank count. PartitionedTestBackend
+# has genuine set_placements() decomposition but no geometry
+# (PartitionedTestMesh's centroid/measure are unused stubs) -- it cannot
+# feed build_distributed_interp_rows. Added GeometricPlacedLineBackend
+# (test/support/partitioned_test_backend.hpp, additive) reusing
+# GeometricLineMesh for BOTH a mesh's default decomposition and a separate,
+# per-component "placed" one registered via set_component_ranks(). Verified
+# by hand (Tier 0, standalone harness, no MPI): correct code
+# (placed_view) returns the exact affine value (H is P1-exact); the
+# mutation (view) makes the nodal side's local view come back the WRONG
+# decomposition and build_distributed_interp_rows fails with
+# E-INTERP-NOGEOMETRY ("the source mesh ... has no cells or no vertices at
+# all"). Added
+# NodalRemapRunnerMpi.DistributedRemapUsesThePlacedViewNotTheDefaultView
+# (test/parallel/nodal_remap_runner_test.cpp) using this fixture at a real
+# 2+-rank shape (a real communicator, so it is valid at every registered
+# rank count) -- compiled (Tier 1, MPI-enabled) but NOT run here; a host
+# run is what confirms it at real rank counts. Expected signatures match
+# the Tier-0 double above.
