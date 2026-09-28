@@ -108,6 +108,15 @@ void check_placements_partition_the_mesh(std::vector<fuse::RankSet> placements) 
       MPI_COMM_WORLD, static_cast<long long>(default_view.value()->owned_count(dim)));
   ASSERT_GT(global_count, 0);
 
+  // One communicator per placement, built by EVERY rank in placement order
+  // (MPI_Comm_split is collective over MPI_COMM_WORLD; a rank outside the
+  // placement passes MPI_UNDEFINED and gets MPI_COMM_NULL). The first version
+  // split only on ranks inside placement p, so the calls paired up across
+  // DIFFERENT placements -- the host run (2026-09-28) summed two placements
+  // into one "placement total" (1452 = 2 x 726 at 2 ranks) and hung at >= 3.
+  std::vector<MPI_Comm> comms;
+  for (const auto& rs : placements) comms.push_back(component_comm(rs, rank));
+
   for (std::size_t p = 0; p < placements.size(); ++p) {
     const fuse::ComponentId cid{static_cast<std::uint32_t>(p)};
     const auto placed = backend.placed_view(fuse::MeshId{0}, cid);
@@ -125,7 +134,7 @@ void check_placements_partition_the_mesh(std::vector<fuse::RankSet> placements) 
       continue;
     }
 
-    MPI_Comm comp_comm = component_comm(placements[p], rank);
+    MPI_Comm comp_comm = comms[p];
     ASSERT_NE(comp_comm, MPI_COMM_NULL);
 
     // 1. This placement's OWN ranks tile the mesh's global entity count
@@ -149,8 +158,9 @@ void check_placements_partition_the_mesh(std::vector<fuse::RankSet> placements) 
     EXPECT_EQ(unique_gids.size(), owned_gids.size())
         << "rank " << rank << " placement " << p
         << " owns a duplicate global id locally";
-
-    MPI_Comm_free(&comp_comm);
+  }
+  for (MPI_Comm& c : comms) {
+    if (c != MPI_COMM_NULL) MPI_Comm_free(&c);
   }
 }
 
