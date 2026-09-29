@@ -16,7 +16,7 @@ analytic gate, when no conservation check ran, or when the coupled error is not
 decisively better than a run with the exchange removed — the control that
 proves the number moves when the coupling breaks.
 
-Measured, 100 periods to t = 0.1:
+Measured, 100 coupling cycles to t = 0.1:
 
 | Quantity | Value |
 |---|---|
@@ -28,12 +28,12 @@ Measured, 100 periods to t = 0.1:
 
 ## `dn_heat` — implicit coupling, Dirichlet–Neumann, iterated to a fixed point
 
-A classical Dirichlet–Neumann pair of conduction domains inside an iteration
-region, with a derived checkpoint set, a convergence criterion covering both
-channels, and quasi-Newton acceleration. This is the example that exercises
+A classical Dirichlet–Neumann pair of conduction domains inside an implicit coupling
+group, with a derived checkpoint set, a convergence criterion covering both
+field transfers, and quasi-Newton acceleration. This is the example that exercises
 rollback, acceleration and convergence together.
 
-Measured over 20 periods:
+Measured over 20 coupling cycles:
 
 | Quantity | Value |
 |---|---|

@@ -60,10 +60,10 @@ to. Instead, the method that selects the transpose direction,
 `"consistent-transpose"`, multiplies the point side's density by *that
 side's own* cell measure before contracting with `H^T`, so the matrix it
 returns is `H^T D`, not a bare `H^T`. Callers apply it directly to the
-density array the channel already carries; the density-to-load conversion
+density array the field transfer already carries; the density-to-load conversion
 is inside the operator, not a step the caller must remember.
 
-## Selecting it on a channel
+## Selecting it on a field transfer
 
 ```cpp
 #include "fuse/backend/consistent_interp.hpp"
@@ -80,24 +80,24 @@ g.channel(force_channel).remap_method("consistent-transpose").conservative();
 `build_weights()` (`src/backend/intx_weights.cpp`) recognises both method
 strings ahead of its usual FV-only check, in both the MOAB and non-MOAB
 translation units, and dispatches to `build_consistent_weights_for_plan`,
-which resolves the two regions through the graph exactly as the supermesh
-path does and refuses `E-INTERP-DISC` if the side that must be nodal is not
+which resolves the two mesh entity sets through the graph exactly as the supermesh
+path does and rejects with `E-INTERP-DISC` if the side that must be nodal is not
 `Discretization::ContinuousGLL` at order `<= 1`.
 
-**Verified end to end.** A channel between a nodal field
+**Verified end to end.** A field transfer between a nodal field
 (`SemanticLocation::Vertex`) and an FV field (`SemanticLocation::Element`)
-lowers, schedules and runs through a real, two-component `Runner` graph:
+compiles into the dataflow graph, schedules and runs through a real, two-component `Runner` graph:
 `InterfaceTransfer.ConsistentPairRunsThroughTheRunnerExactlyAndBalancesPower`
 (`test/verification/interface_transfer_test.cpp`) builds exactly this pair
 -- a nodal beam velocity through `H` to an FV fluid wall, and the fluid's
 per-cell force back through `H^T D` to a nodal beam load -- and checks `H`
 exact for a linear field, the delivered force equal to the sent force to
 round-off, and discrete interface power balanced to round-off. An earlier
-draft of this page reported a `lower()`-time refusal here; it did not
+draft of this page reported a `lower()`-time rejection here; it did not
 reproduce, and the paragraph was wrong on this point.
 
 What made that end-to-end run possible is a separate fix, not to this
-operator: until now, every field's buffer was sized by its region's CELL
+operator: until now, every field's buffer was sized by its mesh entity set's CELL
 count regardless of discretization, so a genuinely nodal field's `n + 1`
 values never fit the `n`-cell buffer `Runner::initialize` expected. See
 [](../dev/nodal-fields.md) for where a field's extent is now decided from
@@ -108,7 +108,7 @@ ownership, and what remains open for a distributed `H^T` interface).
 
 The two interface meshes are not required to span the same physical extent.
 By default, a target evaluation point outside the source vertices' span
-refuses with `E-INTERP-DOMAIN`, naming the point and the span -- extrapolating
+rejects with `E-INTERP-DOMAIN`, naming the point and the span -- extrapolating
 a linear reconstruction past the data that supports it can be arbitrarily
 wrong for anything but a genuinely affine field, and there is no way for the
 builder to know in advance whether the field it will later be applied to is
@@ -117,7 +117,7 @@ instead extrapolates with a constant (the nearest boundary node's value),
 which keeps every conservation and power-balance property above intact --
 they only depend on every row summing to one, which a clamped row still
 does -- at the cost of reverting to zeroth-order accuracy near the
-uncovered edge. `ClampToBoundary` is not yet reachable through the channel
+uncovered edge. `ClampToBoundary` is not yet reachable through the field-transfer
 API; see `open_questions`.
 
 ## Nodal fields through the Runner
@@ -127,7 +127,7 @@ nodal: `n` line elements carry `n + 1` values, not `n`. Every buffer-sizing
 and conservation-measure call site in `include/fuse/backend/**`,
 `src/backend/**` and `src/runtime/runner.cpp` now reads that from one place
 -- `field_extent`/`region_extent_kind` in `mesh_view.hpp` -- rather than
-assuming a field's extent equals its region's cell count:
+assuming a field's extent equals its mesh entity set's cell count:
 
 ```cpp
 const auto vel = g.add_field(beam, fuse::FieldSpec{
@@ -140,16 +140,16 @@ const auto vel = g.add_field(beam, fuse::FieldSpec{
 registers a buffer of `n_beam + 1` values, checked against whatever the
 component actually binds at `Runner::initialize` (`E-RT-SIZE` on a
 mismatch), and its conservation integral (when `.conservation =
-fuse::Conservation::Extensive`, `.conservative()` on the channel) is the
+fuse::Conservation::Extensive`, `.conservative()` on the field transfer) is the
 plain sum of its owned values, not a measure-weighted one -- a vertex has
 no measure of its own. A discretization this codebase does not implement an
 extent for (`ContinuousGLL` order != 1, `DiscontinuousGLL` order >= 1,
-`PointCloud`) refuses by name, `E-EXTENT-DISC`, at the same point.
+`PointCloud`) rejects by name, `E-EXTENT-DISC`, at the same point.
 
 In parallel, a nodal field's distributed buffer follows the native mesh's
 own rule for a shared vertex: the LOWEST rank holding it owns it, and
 `Transport` moves owned values and fills every other copy from its owner.
-An `H`/`H^T` channel whose nodal SIDE (source or target) is itself
+An `H`/`H^T` field transfer whose nodal SIDE (source or target) is itself
 distributed across more than one rank is wired into `Runner` for methods
 `"consistent"`/`"consistent-transpose"` specifically -- see "Beyond 1D"
 below and [](../dev/nodal-fields.md)'s "H^T on a distributed interface"
@@ -175,9 +175,9 @@ conservation, the discrete power balance — carries over unchanged, because
 it rests on nothing more shape-specific than that identity.
 
 A source cell's shape must have a STANDARD nodal basis: a pyramid's is
-rational rather than polynomial and is out of scope (refused by name,
+rational rather than polynomial and is out of scope (rejected by name,
 `E-INTERP-SHAPE`), and a general polygon or polyhedron has no standard nodal
-basis at all (refused the same way). A surface target point is accepted only
+basis at all (rejected the same way). A surface target point is accepted only
 within a stated distance of the source's own (possibly non-planar) cell
 faceting — see `general_interp.hpp`'s `kSurfaceTol` comment for why that
 tolerance is a genuine, physically-motivated one (the faceting gap between
@@ -189,7 +189,7 @@ here exactly as it is for the 1D algorithm.
 the same general interpolation across ranks: each evaluation entity's row is
 built only by the rank that owns it, against an assembled replica of the
 source mesh (see that header for the explicit trade this makes and why the
-result is bit-identical across rank counts). A channel using method
+result is bit-identical across rank counts). A field transfer using method
 `"consistent"` (H, interpolating FROM a nodal source) or
 `"consistent-transpose"` (H^T D, delivering a load TO a nodal target) now
 reaches this automatically through the Runner whenever the NODAL side of
@@ -197,8 +197,9 @@ that orientation, or its evaluation partner, is on more than one declared
 rank — no change needed on the caller's side beyond
 `Channel::remap_method(...)`, exactly as for a single-rank nodal side.
 A method paired with the WRONG orientation for its nodal side, any OTHER
-method (per-placement supermesh weights remain unimplemented), or a
-channel where BOTH sides are nodal, all still refuse
+method (supermesh weights built from a component's own partition of the mesh remain
+unimplemented), or a
+field transfer where BOTH sides are nodal, all still reject
 `E-RT-REMAP-NODAL-PARALLEL` by name rather than attempting an unverified
 shape. `KNOWN_ISSUES.md` D8 records what is, and is not yet, verified
 about this wiring under a genuinely partitioned multi-process run — read

@@ -22,20 +22,20 @@ pip install -r docs/requirements.txt
 sphinx-build -W -b html docs docs/_build/html
 ```
 
-- **User guide** — building (tiers), quickstart, the fluent API, coupling an existing code through
+- **User guide** — building (dependency-tiered build configurations), quickstart, the fluent API, coupling an existing code through
   C or Fortran
 - **Developer guide** — design invariants, layering, conventions, testing, ABI rationale, roadmap
 
 ## Status
 
-**S1, in progress.** `fuse::base` — exact time, units, ids, versions, diagnostics, canonical bytes, and the error/backtrace machinery — is ported, transformed and tested at Tier 0 (Debug and Release). Before that: **S0 done** — Both parents are frozen, tagged `fuse-import-0`, and imported byte-identical
+**S1, in progress.** `fuse::base` — exact time, units, ids, versions, diagnostics, canonical bytes, and the error/backtrace machinery — is ported, transformed and tested at the base build configuration (serial, Debug and Release). Before that: **S0 done** — Both parents are frozen, tagged `fuse-import-0`, and imported byte-identical
 under [`upstream/`](upstream/) — 693 files, verified against the tagged trees by
 `tools/verify-import.py`. The imported coupler suite runs from this repository's own superbuild:
 **770/770 passing** in the dependency-free configuration. The imported spine tree builds clean in
 Release; running its suite needs a host with working MPI. No `fuse::` source yet — that starts at S1.
 
 The [roadmap](docs/dev/roadmap.md) lists the stages and their exit conditions, and every page marks
-whether a capability is verified, implemented, designed only, a deliberate refusal, or absent.
+whether a capability is verified, implemented, designed only, a deliberately rejected configuration, or absent.
 
 ## License
 

@@ -4,7 +4,7 @@ A component declares the ranks it runs on. That declaration is an explicit set,
 not a range, because real coupled jobs are laid out in ways a range cannot
 describe.
 
-## Declaring a placement
+## Declaring a processor set
 
 A contiguous block is the common case and keeps the short form:
 
@@ -31,64 +31,64 @@ components:
     ranks: [0, 8, 16, 24]
 ```
 
-## Shared, identical and disjoint placements
+## Shared, identical and disjoint processor sets
 
 Three cases, and the library treats them differently because the physics does:
 
-| Placements | What a channel between them costs |
+| Processor sets | What a field transfer between them costs |
 |---|---|
 | identical | no data move: every value is already on the rank that wants it |
 | partially shared | a move for the ranks that differ, a local copy for the ranks in common |
 | disjoint | a move |
 
 The distinction is `same_as` versus `overlaps`, and it matters more than it
-looks. A condition that suppressed the move whenever the placements merely
+looks. A condition that suppressed the move whenever the processor sets merely
 *touched* would deliver nothing at all to the ranks they do not share.
 
-Partially shared placements are delivered by a **peer-wise** plan: a rank that
+Partially shared processor sets are delivered by a **peer-wise** plan: a rank that
 is a source for some entities and a destination for others is described peer by
 peer rather than by one list of ids, and the matches whose two ends land on the
 same rank are copied locally instead of travelling. Identical and disjoint
-placements use the matched plan, which is the longer-verified path; on a pattern
+processor sets use the matched plan, which is the longer-verified path; on a pattern
 both can express, the two are required to deliver identical values.
 
-## An empty placement is legal
+## An empty processor set is legal
 
 A component placed on no ranks in a particular run is not an error. The graph
 is identical on every rank, so a component that another rank hosts still
 appears in yours; declaring it with no ranks says "not here, this run".
 
-## What the library does with a placement
+## What the library does with a processor set
 
 - **Stepping the component** — `advance()` is called only on the processes of
   the component's own processor set. A process outside it still constructs the
   `Component` object (every process holds the same graph), but never steps it,
   and a component placed on no processes is never stepped at all. Without a
   base communicator all components run in the one process, as before.
-- **Deciding whether a move is needed** — identical placements, no move.
-- **Forming the exchange's communicator** — the union of the two placements,
+- **Deciding whether a move is needed** — identical processor sets, no move.
+- **Forming the exchange's communicator** — the union of the two processor sets,
   built collectively over that union only, never over the whole job. Ranks in
-  neither placement take no part.
-- **Agreeing on failure** — the same union, so a rank-agreement point reduces
+  neither processor set take no part.
+- **Agreeing on failure** — the same union, so a synchronisation point reduces
   over exactly the ranks of its own exchange. A shared rank counts once.
-- **Indexing per-rank data** — by *position* in the placement, not by rank
+- **Indexing per-rank data** — by *position* in the processor set, not by rank
   number, since a strided set has no arithmetic relationship between the two.
 
-## An empty placement means "switched off", and takes its channels with it
+## An empty processor set means "switched off", and takes its field transfers with it
 
-A placement of zero ranks is legal and says *this component does not run here,
+A processor set of zero ranks is legal and says *this component does not run here,
 this time*. It is the supported way to leave a component out of one run
 without editing the rest of the graph.
 
-It is legal **only for a component with no channels**. A channel out of a
-component placed on no rank has nothing to read from, and a channel into one
-has nowhere to deliver; `validate()` refuses both with `E-PLACEMENT-EMPTY`,
-naming the component and the channel. So when you switch a component off,
-remove its channels for that run too.
+It is legal **only for a component with no field transfers**. A field transfer out of a
+component placed on no rank has nothing to read from, and a field transfer into one
+has nowhere to deliver; `validate()` rejects both with `E-PLACEMENT-EMPTY`,
+naming the component and the field transfer. So when you switch a component off,
+remove its field transfers for that run too.
 
-The refusal is a modelling check, not a transport limitation: it fires for
+The rejection is a modelling check, not a transport limitation: it fires for
 every transport, before any communicator exists. Previously the same mistake
-surfaced two layers down as `MpiTransport::build_plan` refusing an empty rank
+surfaced two layers down as `MpiTransport::build_plan` rejecting an empty rank
 set — correct, but it told you about a rank set when the error was in the
 graph, and only when you were running under MPI.
 
@@ -97,46 +97,47 @@ graph, and only when you were running under MPI.
 Two components that share a mesh do not share its partition. Each holds the
 mesh laid out over **its own** ranks, so a rank placed in both holds two
 pieces, one per component. This is what makes partially overlapping
-placements work: with A on ranks 0–2 and B on ranks 1–3, each side covers the
-whole region over its own ranks, and the transport moves what differs and
+processor sets work: with A on ranks 0–2 and B on ranks 1–3, each side covers the
+whole mesh entity set over its own ranks, and the transport moves what differs and
 copies locally what both hold.
 
-Components with identical placements always get identical decompositions,
+Components with identical processor sets always get identical decompositions,
 which is why no data move is needed between them.
 
-Remap weights are built on the placement's own decomposition: the plan
+Remap weights are built on the processor set's own decomposition: the plan
 carries the component, every weight builder resolves its meshes through
-`placed_view`, and two placements never share a cached matrix.
+`placed_view`, and two processor sets never share a cached matrix.
 
 **The MOAB backend** builds a decomposition per component too, once told
-about the placements: `MoabMeshBackend::set_placements(placements)` -- one
+about the processor sets: `MoabMeshBackend::set_placements(placements)` -- one
 `RankSet` per component, indexed the same way `graph.component_count()`
 counts them (including a coupler), and declared before the first `load()`.
 
 With a real communicator adopted (`set_communicator`), each declared
-placement gets its own `moab::Core` and `moab::ParallelComm`, split from the
-base communicator over exactly that placement's ranks (iMOAB's
+processor set gets its own `moab::Core` and `moab::ParallelComm`, split from the
+base communicator over exactly that processor set's ranks (iMOAB's
 application-id model), and `load()` reads the same source into it
 independently -- a genuine second partitioned read, not a relabelling of the
-default one. A rank outside a placement holds none of it: `placed_view`
+default one. A rank outside a processor set holds none of it: `placed_view`
 answers an empty view there, never the default decomposition. Without a
 communicator, "this rank" is rank 0 of an effective one-rank job, so a
-placement that names it IS the default view and one that does not is empty
+processor set that names it IS the default view and one that does not is empty
 -- exercised without MPI at all.
 
 **What is not yet built**: this closes KNOWN_ISSUES D5's view-layer half.
 Weight builders already resolve every side through `placed_view`
-(unchanged since the per-placement remap-weights work), so a weight build
-issued against a MOAB placement's own decomposition uses it automatically
+(unchanged since the remap-weights work built on each component's own
+partition of the mesh), so a weight build
+issued against a MOAB processor set's own decomposition uses it automatically
 -- but assembling and comparing a conservative weight matrix between two
-independently-partitioned MOAB placements has not been exercised end to
+independently-partitioned MOAB processor sets has not been exercised end to
 end; that remains open.
 
 ## A separately placed coupler
 
-Every channel's Remap has to run somewhere. By default it runs on the
-target's own placement: the value moves source -> target and is remapped
-there. A **coupler** is a third placement a channel can name instead, so the
+Every field transfer's Remap has to run somewhere. By default it runs on the
+target's own processor set: the value moves source -> target and is remapped
+there. A **coupler** is a third processor set a field transfer can name instead, so the
 value moves source -> coupler -> target, remapped on the coupler's own
 decomposition of both meshes.
 
@@ -158,34 +159,35 @@ channels:
     remap: {flags: [Conservative], remap_on: coupler}
 ```
 
-A coupler is a placement, not a physics component: it declares no fields, has
-no clock, and is never advanced. It gets a communicator like any other
-placement, so its ranks take part in the channel's data moves and
-rank-agreement points, but nothing ever calls `advance()` on it and no
+A coupler is a processor set, not a physics component: it declares no fields, has
+no time grid, and is never advanced. It gets a communicator like any other
+processor set, so its ranks take part in the field transfer's data moves and
+synchronisation points, but nothing ever calls `advance()` on it and no
 `Component` implementation needs to exist for it.
 
-`remap_on` may also name the channel's own source or target component
+`remap_on` may also name the field transfer's own source or target component
 directly -- "remap on the source's decomposition, then transport to the
-target" is the same rule with `C` set to an existing placement rather than a
+target" is the same rule with `C` set to an existing processor set rather than a
 new one.
 
 **When a coupler costs something.** THE RULE is one rule, not a special case:
-source -> C -> target, with any hop between *identical* placements elided,
+source -> C -> target, with any hop between *identical* processor sets omitted,
 exactly like the identical/disjoint table above.
 
 | `remap_on` | What it costs over the default |
 |---|---|
 | unset, or the target's own component | nothing — today's default, unchanged |
-| a coupler with the SAME ranks as the target | no extra move (the second hop is `same_as`), but the Remap runs under the coupler's own placement identity, not the target's |
-| the channel's own source component | the second hop only: remap on the source's decomposition, then one move to the target |
-| any other placement | two moves: source -> C, then C -> target |
+| a coupler with the SAME ranks as the target | no extra move (the second hop is `same_as`), but the Remap runs under the coupler's own processor-set identity, not the target's |
+| the field transfer's own source component | the second hop only: remap on the source's decomposition, then one move to the target |
+| any other processor set | two moves: source -> C, then C -> target |
 
 A `remap_on` that could never change anything -- no remap flags, matching
-regions, and a method that does not move placement itself -- has no effect at
+mesh entity sets, and a method that does not itself move data between processor
+sets -- has no effect at
 all, and `validate()` reports it with `W-CHANNEL-REMAP-ON-UNUSED` rather than
 silently routing data through an extra hop nothing needed.
 
 A coupler placed on no ranks is legal on its own, by the same rule as any
-other empty placement above -- until a channel's `remap_on` actually routes
+other empty processor set above -- until a field transfer's `remap_on` actually routes
 through it, at which point `E-PLACEMENT-EMPTY` applies exactly as it does for
-a channel's source or target.
+a field transfer's source or target.

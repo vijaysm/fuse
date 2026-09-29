@@ -30,7 +30,7 @@ The spelling is `std::mdspan`'s, not a new one:
 `{lo, fuse::end}` resolves against the *current* extent, so it stays correct
 after an earlier stage has already narrowed the dimension.
 
-A reversed or out-of-range extent is **refused**, with the offending bounds in
+A reversed or out-of-range extent is **rejected**, with the offending bounds in
 the message. It is not clamped: clamping turns a caller's wrong arithmetic into
 a shorter loop that still produces numbers.
 
@@ -57,7 +57,7 @@ execution space:
 
 | Kernel | Runs |
 |---|---|
-| `accumulate` | once per substep, on every coupled field |
+| `accumulate` | once per subcycling step, on every coupled field |
 | `gather` / `scatter` | packing and unpacking each data move |
 | `remap_apply` | the sparse product that *is* the field transfer |
 | `relax` | once per iteration sweep |

@@ -50,7 +50,7 @@ typedef struct fuse_time { int64_t num; int64_t den; } fuse_time;
 
 No FUSE entry point accepts or returns a floating-point time. If your solver keeps `double` time,
 convert at the boundary and keep the exact value as the reference — otherwise a step count of a few
-million drifts your schedule off the coupling window.
+million drifts your schedule off the time window.
 
 ## Checkpoints and restarts
 

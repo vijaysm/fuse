@@ -2,7 +2,7 @@
 
 `examples/fsi_channel/` couples a 2D unsteady-Stokes channel to a 1D
 Euler-Bernoulli beam forming its top wall, strongly coupled through FUSE's
-iteration region on a non-matching 1D interface (`fuse/backend/
+implicit coupling group on a non-matching 1D interface (`fuse/backend/
 consistent_interp.hpp`'s `H` / conservative `H^T D`).
 
 ## Small-displacement assumption
@@ -111,25 +111,26 @@ fluid top-wall velocity by `remap_method("consistent")` (piecewise-linear
 `H`, exact for an affine field at fixed non-matching resolution); fluid
 wall traction (`-p + 2 mu dv/dy`) -> beam nodal load by
 `remap_method("consistent-transpose").conservative()` (`H^T` applied to an
-already-integrated load, scaled by the source region's own cell measure) —
+already-integrated load, scaled by the source mesh entity set's own cell measure) —
 see `docs/user/interface-transfer.md`.
 
 **Unit convention.** FUSE's `generated:line:n` interface mesh spans the
 *normalised* `[0,1]` interval regardless of physical length `L`; the fluid
 side's `fluid_force` field is therefore the wall traction *scaled by L*
 (`fsi::traction_to_fuse_density`), so that `consistent-transpose`'s own
-scaling by the source region's normalised cell measure (`1/Nx_fluid`)
+scaling by the source mesh entity set's normalised cell measure (`1/Nx_fluid`)
 delivers a correctly-scaled physical force (`traction * dx_fluid`) at each
 beam node.
 
-## Coupling: one clock, strongly coupled
+## Coupling: one time grid, strongly coupled
 
 Both components share one `ComponentDecl::interval` (`dt`, an exact
-`Rational`); the two channels (velocity, force) close a cycle within a
-period, so one of them (`wall_force`) carries `.lag(1)`
+`Rational`); the two field transfers (velocity, force) form a cyclic
+dependency within one coupling cycle, so one of them (`wall_force`) carries
+`.lag(1)`
 `.allow_time_level_mismatch(...)` — the same pattern
 `examples/dn_heat/main.cpp` uses for its Dirichlet-Neumann pair — so the
-graph is schedulable at all; the iteration region resolves that lag every
+graph is schedulable at all; the implicit coupling group resolves that lag every
 sweep. Acceleration: `AccelKind::None` (plain Gauss-Seidel), `Aitken`, or
 `IQN_ILS`, selected by `--accel`.
 
@@ -194,19 +195,19 @@ resolution-dependent artifact.
 own time argument, applying the SAME (new, t1) velocity value at BOTH
 Crank-Nicolson's explicit (t0) and implicit (t1) evaluations. Fixed:
 `step` now takes separate `top_wall_v_old` (t0) and `top_wall_v_new` (t1)
-arrays; `FluidComponent` tracks the wall velocity at the period's start
+arrays; `FluidComponent` tracks the wall velocity at the coupling cycle's start
 (`velocity_in_t0_`) separately from the current sweep's guess. Measured
 (round 2): this fix ALONE did not resolve the transient divergence -- the
 FORCE side (below) turned out to carry the dominant mismatch.
 
 ## Partitioned time-level consistency: the force side -- root cause and fix
 
-**Diagnosis.** Traced exactly, per period, at `fsi_transient_test`'s
+**Diagnosis.** Traced exactly, per coupling cycle, at `fsi_transient_test`'s
 coarsest `dt` (T1/40): the fluid's wall traction, sampled once per
-(converged) coupling period, alternates sign and grows by a remarkably
+(converged) coupling cycle, alternates sign and grows by a remarkably
 consistent ratio: 158.9, -322.5, 849.9, -2073.8, 5180.8, -12844.3,
 31930.8, -79287.8, 196996.2, -489288.4 -- |ratio| converging to 2.48,
-sign flipping every period. This is the signature the lead's hypothesis
+sign flipping every coupling cycle. This is the signature the lead's hypothesis
 predicted: a genuine unstable eigenmode at the Nyquist frequency
 (period-2*dt), not an iteration artefact (every window converges tightly
 first).
