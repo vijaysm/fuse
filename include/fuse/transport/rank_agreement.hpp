@@ -3,13 +3,13 @@
 /// Rank-agreement rules as pure functions over already-gathered data.
 ///
 /// The rules themselves involve no MPI: a collective produces an array, and
-/// a rule reads it. Keeping them here makes them testable in Tier 0, where
+/// a rule reads it. Keeping them here makes them testable at the base build configuration, where
 /// most of this project's tests run, instead of only inside a two-rank job.
 /// `runtime/epoch_schedule.hpp` is the same idea for the agreement schedule.
 ///
 /// Written 2026-09-20 because the component-agreement rule read as though it
 /// could not fail to fire, and a host run showed both ranks accepting a spec
-/// it should have refused. A rule you can only exercise under `mpiexec` is a
+/// it should have rejected. A rule you can only exercise under `mpiexec` is a
 /// rule you cannot debug.
 
 #include <cstddef>
@@ -25,7 +25,7 @@ struct ComponentAgreement {
   /// That rank's component count.
   int first_value = 0;
   /// The first participating rank that disagrees with it, or -1 when they all
-  /// agree (which includes the no-participant case).
+  /// agree (which includes the no-process case).
   int disagreeing_rank = -1;
   /// That rank's component count, meaningful only when `disagreeing_rank >= 0`.
   int disagreeing_value = 0;
@@ -39,7 +39,7 @@ struct ComponentAgreement {
 /// its component count is not part of any count array, so it is not consulted.
 ///
 /// The three vectors are indexed by rank and must be the same length. A short
-/// `all_components` is treated as the end of the participant list rather than
+/// `all_components` is treated as the end of the process list rather than
 /// read out of bounds.
 [[nodiscard]] inline ComponentAgreement check_component_agreement(
     const std::vector<int>& all_components, const std::vector<char>& is_src,

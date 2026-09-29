@@ -273,7 +273,7 @@ class StructuredMesh final : public MeshView {
   /// `build_consistent_interp_weights` never routes here at all -- its
   /// dispatch is unconditional on dimension, per consistent_interp.hpp), and
   /// a boundary face (dim == 2, dim_ == 3) has no answer here: the default
-  /// MeshView refusal applies to both.
+  /// MeshView rejection applies to both.
   [[nodiscard]] Result<CellVertices> cell_vertices(int dim, std::size_t i) const override {
     check(dim, i, "cell_vertices");
     // 1D ('generated:line') cells: Edge, corners {i, i+1} -- vertices are
@@ -637,7 +637,7 @@ Result<std::size_t> SerialMeshBackend::region_size(const Region& r) const {
                                    std::to_string(mesh.dimension()) + "D"};
   }
   // A boundary set is a set of faces. Silently ignoring a stated dimension
-  // that says otherwise would hand back a face count for a region the author
+  // that says otherwise would hand back a face count for a mesh entity set the author
   // believes is volumetric.
   if (r.dimension >= 0 && r.dimension != kBoundaryDim) {
     return Failure{"E-MESH-DIM",
@@ -664,7 +664,7 @@ RegionSizes make_region_sizes(const CouplingGraph& g,
     // positional numberings. Resolve through the mesh's NAME rather than
     // assuming they coincide: if they do not -- a backend that loaded the
     // meshes in a different order, or loaded extra ones -- passing r.mesh
-    // straight through sizes a DIFFERENT mesh's region and returns a
+    // straight through sizes a DIFFERENT mesh's mesh entity set and returns a
     // wrong-but-plausible count with no diagnostic. See
     // MeshBackend::mesh_id.
     if (!r.mesh.valid() || r.mesh.value() >= g.mesh_count()) {
@@ -685,15 +685,15 @@ RegionSizes make_region_sizes(const CouplingGraph& g,
 
     Region resolved = r;
     resolved.mesh = backend_mesh.value();
-    // The placement's own decomposition (MeshBackend::placed_region_size);
+    // The processor set's own decomposition (MeshBackend::placed_region_size);
     // -1 means none in particular and asks for the default one.
     const ComponentId who = placement >= 0
                                 ? ComponentId{static_cast<std::uint32_t>(placement)}
                                 : ComponentId{};
 
-    // Which of field_extent()'s two shapes every field on this region
+    // Which of field_extent()'s two shapes every field on this mesh entity set
     // implies (mesh_view.hpp, "the one definition of a field's extent").
-    // Everything below this is UNCHANGED for a Cell-shaped region -- the
+    // Everything below this is UNCHANGED for a Cell-shaped mesh entity set -- the
     // default when nothing declared a field on it yet -- so a graph with no
     // nodal field anywhere sizes exactly as it always has.
     const auto kind = region_extent_kind(g, id);
@@ -704,11 +704,11 @@ RegionSizes make_region_sizes(const CouplingGraph& g,
     }
 
     if (kind.value() == RegionExtentKind::Vertex) {
-      // A nodal field's extent is the mesh's VERTEX count, not the region's
-      // own (cell) dimension -- and "the region's cells" means the WHOLE
+      // A nodal field's extent is the mesh's VERTEX count, not the mesh entity set's
+      // own (cell) dimension -- and "the mesh entity set's cells" means the WHOLE
       // mesh, exactly the restriction consistent_interp.hpp's resolve_side
       // already places on the nodal side: a named entity SUBSET has no
-      // MeshView enumeration, so which vertices belong to "the region's
+      // MeshView enumeration, so which vertices belong to "the mesh entity set's
       // cells" cannot be answered without one.
       if (!(resolved.entity_set.empty() || resolved.entity_set == "all")) {
         FUSE_THROW(InvariantViolation, "{}",

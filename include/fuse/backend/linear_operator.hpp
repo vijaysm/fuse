@@ -77,7 +77,7 @@ class LinearOperator {
   [[nodiscard]] virtual std::size_t cols() const noexcept = 0;
 
   /// What this operator is, for diagnostics and for the plan dump. Stable
-  /// across runs; it appears in golden text.
+  /// across runs; it appears in reference output.
   [[nodiscard]] virtual std::string_view kind() const noexcept = 0;
 
   [[nodiscard]] virtual OperatorClaims claims() const noexcept = 0;
@@ -134,7 +134,7 @@ class LinearOperator {
 
 /// B then A, as one operator. `inner` is applied first.
 ///
-/// Refuses at construction when the shapes do not meet, rather than at the
+/// Rejects at construction when the shapes do not meet, rather than at the
 /// first apply: a composed operator is built at init time, and a shape mistake
 /// there is a setup error that should be reported with the rest of them.
 [[nodiscard]] Result<std::unique_ptr<LinearOperator>> compose(

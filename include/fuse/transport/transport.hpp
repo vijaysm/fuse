@@ -42,7 +42,7 @@ struct TransportSpec {
 /// coupling share a runtime. Everything else in the DAG is unchanged.
 ///
 /// HOT-LOOP CONTRACT (Task 4.6). `Runner::Impl::execute` calls `prepare()`
-/// immediately before `move()`, inside the period loop, from a `TransportSpec`
+/// immediately before `move()`, inside the coupling-cycle loop, from a `TransportSpec`
 /// resolved once at setup. `prepare()` is therefore required to be
 /// allocation-free and communication-free: it may re-read the spec, it may
 /// validate it against work already done, but it may NOT build a plan. A
@@ -61,7 +61,7 @@ class Transport {
 /// In-process copy. Phase 5 adds "mpi"; Phase 8 adds "lowfive".
 ///
 /// `move` requires that `src` and `dst` either designate the same address (a
-/// no-op, which the lowering pass legitimately emits when a component reads
+/// no-op, which compiling into the dataflow graph legitimately emits when a component reads
 /// its own output) or do not overlap at all. Partial overlap is not part of
 /// the contract.
 class CopyTransport final : public Transport {
@@ -105,12 +105,12 @@ class CopyTransport final : public Transport {
 /// only a source they mean "what I hold"; for a rank that is only a
 /// destination they mean "what I want". A rank in both sets has two
 /// distributions and no way to write the second one down, so `build_plan`
-/// refuses the overlap (`E-TRANSPORT-RANKS`) rather than silently using the
+/// rejects the overlap (`E-TRANSPORT-RANKS`) rather than silently using the
 /// source partition for both. A rank set that overlaps is a local exchange
 /// anyway: that is what `CopyTransport` is for.
 ///
 /// ISOLATION. `set_communicator` duplicates the communicator, so each
-/// `MpiTransport` owns a private communication context. Two channels running
+/// `MpiTransport` owns a private communication context. Two field transfers running
 /// concurrently on the same user communicator therefore cannot mismatch each
 /// other's collectives, and the duplicate carries `MPI_ERRORS_RETURN` so an
 /// MPI failure becomes a `Result` rather than an abort inside the caller's
@@ -180,7 +180,7 @@ class MpiTransport final : public Transport {
 
   /// COLLECTIVE. `n` must be exactly `elements * components` of the planned
   /// spec. `src` and `dst` may be null when `n` is zero -- a rank that owns no
-  /// elements of a region is ordinary in parallel, and `std::vector<double>{}
+  /// elements of a mesh entity set is ordinary in parallel, and `std::vector<double>{}
   /// .data()` is null.
   /// Errors: `E-TRANSPORT-UNPLANNED`, `E-TRANSPORT-NULL`,
   /// `E-TRANSPORT-SIZE`, `E-TRANSPORT-MPI`.

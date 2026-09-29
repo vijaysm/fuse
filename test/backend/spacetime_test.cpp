@@ -448,7 +448,7 @@ TEST(Spacetime, SplineBasisIsRejected) {
   // Rejected rather than silently downgraded to a local degree-3
   // reconstruction: a conservative spline projection is globally coupled, and
   // handing back something else under the name Spline is the same silent
-  // substitution Waveform's constructor refuses for Spline(5).
+  // substitution Waveform's constructor rejects for Spline(5).
   const auto p = build_temporal_projection(
       decomp_of(Rational{1, 3}, Rational{1, 5}, Rational{1}),
       TemporalBasis::Spline, 3, Rational{1, 3}, Rational{1, 5});
@@ -509,7 +509,7 @@ TEST(Spacetime, TruncatedSlabsAreRejected) {
 
 TEST(Spacetime, AWrongStepIndexIsRejected) {
   auto d = decomp_of(Rational{1, 3}, Rational{1, 5}, Rational{1});
-  d.slabs.front().src_step = 2;  // slab [0, 1/5) is in source step 0, not 2
+  d.slabs.front().src_step = 2;  // common-refinement interval [0, 1/5) is in source step 0, not 2
   const auto p = build_temporal_projection(d, TemporalBasis::Constant, 0,
                                            Rational{1, 3}, Rational{1, 5});
   ASSERT_FALSE(p.ok());

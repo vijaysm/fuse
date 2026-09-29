@@ -115,7 +115,7 @@ TEST(TemporalBasis, FitClampsTheDegreeToTheSampleCount) {
   EXPECT_NEAR(c1[0], 7.0, 1e-14);
 }
 
-// A short coupling window is not exotic -- it is what a small time step looks
+// A short time window of a waveform iteration is not exotic -- it is what a small time step looks
 // like, and `Waveform` passes window-LOCAL times, so h here is literally the
 // window length. The fit must be as accurate at h = 1e-6 as at h = 1.
 //
@@ -140,7 +140,7 @@ TEST(TemporalBasis, FitIsAccurateOnAVeryShortWindow) {
               3.0 * h - h * h + 5.0 * h * h * h / 3.0, 1e-18);
 }
 
-// ...and the other extreme. A multi-day climate coupling window measured in
+// ...and the other extreme. A multi-day climate time window of a waveform iteration measured in
 // seconds is order 1e6, so the long end is as real as the short one. The field
 // VALUES stay O(1) across the window -- that is the physically meaningful
 // case, and the one the returned monomial coefficients (which are then

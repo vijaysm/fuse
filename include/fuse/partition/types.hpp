@@ -20,8 +20,8 @@ using Weight = std::int64_t;
 /// other public header in this layer) stays free of `mpi.h` -- the same
 /// boundary convention `fuse::transport`'s `MpiTransport` uses
 /// (`MPI_Comm_c2f`/`MPI_Comm_f2c`; see transport.hpp). `kNullComm` (0) means
-/// "no communicator": exactly one participant, no MPI symbol touched at
-/// all -- what makes `rcb_partition` callable in a Tier 0 (no-MPI) build.
+/// "no communicator": exactly one process, no MPI symbol touched at
+/// all -- what makes `rcb_partition` callable in a base (no-MPI) build.
 /// A non-zero handle requires `FUSE_HAVE_MPI`; supplying one without it is
 /// `E-PART-NO-MPI`.
 using CommHandle = int;

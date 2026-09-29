@@ -14,9 +14,9 @@
 /// EVERY FUNCTION HERE IS COLLECTIVE over `comm` when `comm != kNullComm`:
 /// every rank of that communicator must call it in lockstep. When
 /// `comm == kNullComm` each one is a local no-op / identity (there is
-/// exactly one participant, so the caller's local value already is the
+/// exactly one process, so the caller's local value already is the
 /// global answer) and touches no MPI symbol -- what keeps fuse::partition
-/// callable from a Tier 0 (no-MPI) build. rcb_moab's CLAUDE.md "Global
+/// callable from a base (no-MPI) build. rcb_moab's CLAUDE.md "Global
 /// collective discipline" applies here exactly as it does there: a caller
 /// must never skip one of these based on a locally-computed condition (an
 /// empty local subset is not a reason to skip a reduction every other rank

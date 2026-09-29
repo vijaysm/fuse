@@ -11,7 +11,7 @@ namespace fuse {
 namespace detail {
 /// Exponent sums/differences are computed in `int` (promoted from int8_t)
 /// and only narrowed back to int8_t once. An exponent outside int8_t is
-/// unrepresentable, and an unrepresentable unit must be refused, not wrapped
+/// unrepresentable, and an unrepresentable unit must be rejected, not wrapped
 /// (I4) -- in every build (I6). Upstream had an assert here, which vanished
 /// under NDEBUG and let a Release build wrap silently.
 constexpr std::int8_t narrow_exponent(int v) {
@@ -49,7 +49,7 @@ struct Units {
 
   /// Scales multiply along with the dimensions. An ADDITIVE offset makes the
   /// operation meaningless -- degrees Celsius squared is not a quantity -- so an
-  /// affine operand is refused rather than having its offset silently dropped,
+  /// affine operand is rejected rather than having its offset silently dropped,
   /// which would be a factor error no dimensional check can see.
   [[nodiscard]] constexpr Units operator*(const Units& o) const {
     using detail::narrow_exponent;

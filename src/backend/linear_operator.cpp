@@ -63,7 +63,7 @@ namespace {
 
 /// A o B. Holds its factors by shared_ptr because a composed operator commonly
 /// shares a factor with another composition -- the same remap appearing in two
-/// channels -- and copying weight arrays per composition would be the largest
+/// field transfers -- and copying weight arrays per composition would be the largest
 /// avoidable allocation in the init path.
 class ComposedOperator final : public LinearOperator {
  public:

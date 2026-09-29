@@ -113,8 +113,8 @@ TEST(RemapHalo, TheExchangeChecksItsArgumentsBeforeAnythingElse) {
   ASSERT_TRUE(fuse::build_remap_halo(f.plan, f.graph, f.backend).ok());
 
   std::vector<double> buf(64, 0.0);
-  // A null buffer and a non-positive component count are refused by both
-  // directions. These are the only refusals of the exchange that do not need
+  // A null buffer and a non-positive component count are rejected by both
+  // directions. These are the only rejections of the exchange that do not need
   // a peer, and an unchecked null here would be a segfault inside MPI.
   for (const bool accumulate : {false, true}) {
     const auto null_buf =
@@ -161,7 +161,7 @@ TEST(RemapHalo, AnExchangeWithNoHaloLeavesTheBufferAlone) {
 //
 // The projection is not optional and not cosmetic: Intx requires the two
 // meshes to share a radius, and neither file is on the unit sphere. Without it
-// the intersection is empty or wrong rather than refused, which is the failure
+// the intersection is empty or wrong rather than rejected, which is the failure
 // mode worth a test of its own.
 #if defined(FUSE_SPHERE_ATM) && defined(FUSE_SPHERE_OCN)
 

@@ -41,12 +41,12 @@
 /// round-off): the iteration is not special-cased for them, it simply
 /// converges in one step.
 ///
-/// SHAPES NOT HANDLED, REFUSED BY NAME (`E-INTERP-SHAPE`):
+/// SHAPES NOT HANDLED, REJECTED BY NAME (`E-INTERP-SHAPE`):
 ///   * `Pyramid` -- the standard nodal basis for a pyramid is RATIONAL (its
 ///     apex is a genuine basis singularity; see e.g. Bedrosian's or
 ///     Zgainski's rational pyramid element), not the polynomial family every
 ///     other shape here uses, and implementing and validating a rational
-///     basis is out of this track's scope -- refusing loudly beats a
+///     basis is out of this track's scope -- rejecting loudly beats a
 ///     plausible but unvalidated one.
 ///   * `Polygon` (n > 4) and `Polyhedron` -- no STANDARD nodal basis exists
 ///     for either (cell_simplices.hpp's `Polygon` decomposition is a fan
@@ -97,7 +97,7 @@ namespace fuse {
 /// general_interp.hpp does not have to include consistent_interp.hpp (which
 /// includes this file) to name it.
 enum class InterfaceDomainPolicy {
-  /// The default. Refuses with `E-INTERP-DOMAIN`, naming the offending point.
+  /// The default. Rejects with `E-INTERP-DOMAIN`, naming the offending point.
   Refuse,
   /// Nearest-cell extrapolation: the point is assigned the weights of
   /// whichever candidate cell comes closest to containing it, with its
@@ -440,7 +440,7 @@ inline constexpr double kNewtonTol = 1e-12;
 /// independent of `u`, so it converges in exactly one iteration to
 /// round-off.
 ///
-/// Refuses `E-INTERP-DEGENERATE` if the (least-squares) Jacobian is singular
+/// Rejects `E-INTERP-DEGENERATE` if the (least-squares) Jacobian is singular
 /// to working precision -- a genuinely degenerate (zero-measure) cell -- and
 /// `E-INTERP-NEWTON` if `max_iter` is exhausted without the step norm or
 /// residual falling under `tol` (relative to the cell's own diameter).
@@ -547,10 +547,10 @@ inline constexpr double kNewtonTol = 1e-12;
 /// the true curved surface it approximates, second order in the cell's own
 /// angular width -- at a coarse resolution, comparable to several percent of
 /// the cell's own diameter, not to machine round-off). Rejecting a hit at a
-/// rounding-scale tolerance here would refuse most of a legitimately
+/// rounding-scale tolerance here would reject most of a legitimately
 /// contained coarse-mesh point as "off surface"; `0.1` accepts the genuine
 /// faceting gap between two reasonable discretizations of one surface while
-/// still refusing a point that is actually far off the interface (the
+/// still rejecting a point that is actually far off the interface (the
 /// `OffSurfaceRefusesByDefault` test below is off by several cell diameters,
 /// not a fraction of one).
 inline constexpr double kSurfaceTol = 0.1;
@@ -609,14 +609,14 @@ inline constexpr double kRefEpsLoose = kSurfaceTol;
 /// (rows), exactly `consistent_interp.hpp`'s existing 1D builder's
 /// convention.
 ///
-/// Refuses, never throws:
+/// Rejects, never throws:
 ///   * `E-INTERP-NOGEOMETRY` -- no source cells, or no target points.
 ///   * `E-MESH-NO-CELL-VERTICES` -- `src_nodes` (or the winning candidate
 ///     cell) has no cell-to-vertex connectivity (mesh_view.hpp's default).
 ///   * `E-INTERP-SHAPE` -- a source cell's shape has no standard nodal
 ///     basis (`Pyramid`, `Polygon`, `Polyhedron`, `Point`) -- checked for
 ///     EVERY source cell up front, not only ones a target point happens to
-///     land near, so the refusal does not depend on the query set.
+///     land near, so the rejection does not depend on the query set.
 ///   * `E-INTERP-DEGENERATE` / `E-INTERP-NEWTON` -- from
 ///     `invert_reference_map`.
 ///   * `E-INTERP-DOMAIN` -- (policy `Refuse`, the default) a target point is
@@ -767,7 +767,7 @@ inline constexpr double kRefEpsLoose = kSurfaceTol;
     // interface, never a tie-break, since "outside" is a real geometric
     // fact about every tier-(b) candidate, not a contest between equals.
     //
-    // Beyond both tiers: refused (E-INTERP-DOMAIN) under the default
+    // Beyond both tiers: rejected (E-INTERP-DOMAIN) under the default
     // `Refuse` policy; under `ClampToBoundary`, the same least-outside
     // candidate is accepted anyway, with its natural coordinates clamped
     // into its own reference domain.

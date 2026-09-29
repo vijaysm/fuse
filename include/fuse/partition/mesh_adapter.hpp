@@ -20,10 +20,10 @@
 /// case: it exposes owned entities at BOTH dim 3 (cells) and dim 2 (the
 /// boundary skin) simultaneously, and `dimension() == 3` there, correctly.
 /// Scanning dims 1..3 for "any owned entity" would misread the skin as a
-/// second top-level dimension and refuse every ordinary volumetric mesh --
+/// second top-level dimension and reject every ordinary volumetric mesh --
 /// exactly the false positive this design avoids.
 ///
-/// What CAN legitimately go wrong, and is refused rather than guessed:
+/// What CAN legitimately go wrong, and is rejected rather than guessed:
 /// two ranks disagreeing about `dimension()` -- e.g. a multi-block or
 /// heterogeneous mesh where rank 0's local view answers 3 and rank 1's
 /// answers 2. Silently taking one rank's answer for the "global" dimension
@@ -52,14 +52,14 @@ struct CentroidData {
 };
 
 /// COLLECTIVE over `comm` when `comm != kNullComm`: see the header comment
-/// above. `comm == kNullComm` (one participant) trivially agrees with
+/// above. `comm == kNullComm` (one process) trivially agrees with
 /// itself, so the disagreement path below is exercised only under real
 /// MPI with two or more ranks holding differently-dimensioned meshes.
 ///
 /// Errors, never a silent guess:
 ///   * `E-PART-MIXED-DIM` -- ranks disagree about `mesh.dimension()`.
 ///     Partitioning one rank's answer and dropping the cells implied by
-///     another's is exactly the historical rcb_moab defect this refuses
+///     another's is exactly the historical rcb_moab defect this rejects
 ///     instead of repeating.
 ///   * `E-PART-NO-ENTITIES` -- the agreed dimension is <= 0 (no rank has a
 ///     meaningful mesh loaded).

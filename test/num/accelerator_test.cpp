@@ -24,7 +24,7 @@ using fuse::make_accelerator;
 // ---------------------------------------------------------------------------
 // Allocation counting, as in test/verification/iteration_test.cpp and
 // test/unit/runner_test.cpp. Spec §2 layer 3 requires the sweep loop to
-// allocate nothing, and an accelerated region runs the accelerator inside that
+// allocate nothing, and an accelerated implicit coupling group runs the accelerator inside that
 // loop, so "the accelerator allocates nothing per update" is part of the same
 // requirement. Replacing the global operator new is the only way to MEASURE
 // that rather than assert it in a comment; SteadyStateUpdateAllocatesNothing
@@ -332,7 +332,7 @@ TEST(Accelerator, LadderIsMonotoneOnADenseLinearProblem) {
   // QR2 filter doing exactly what it is for. These accelerators take
   // AccelConfig's default filter, QR2 at limit = 1e-2, so a column is dropped
   // once less than 1% of it is orthogonal to the newer columns. Measured
-  // remainder fractions of the oldest column on the unfiltered trajectory:
+  // remainder fractions of the oldest column on the unfiltered waveform:
   // 3.5e-1 at iteration 2, 4.5e-2 at 3, 1.8e-3 at 4. At iteration 4 the first
   // secant pair is therefore dropped -- and on this exactly linear 5-dof
   // problem that 0.18% is precisely the fifth direction still missing from the
@@ -553,7 +553,7 @@ TEST(Accelerator, AZeroResidualDifferenceIsNotStoredAsAColumn) {
   for (int k = 0; k < 5; ++k) {
     ASSERT_TRUE(a->update(old_x.data(), new_x.data(), out.data(), 2, k).ok());
     // A stalled iteration produces Delta r == 0. The column is information
-    // free and is refused rather than spending a history slot on something
+    // free and is rejected rather than spending a history slot on something
     // the rank truncation is guaranteed to discard.
     EXPECT_EQ(a->columns(), 0u) << "at iteration " << k;
     EXPECT_DOUBLE_EQ(out[0], 0.25);
@@ -675,7 +675,7 @@ TEST(Accelerator, AitkenFallsBackWhenTheDenominatorVanishes) {
 TEST(Accelerator, AitkenFallsBackWhenTheNumeratorVanishes) {
   // Orthogonal residual change: the numerator is 0, so the natural formula
   // gives omega == 0 and the iterate freezes for ever (and every later
-  // denominator is then 0 too). Refused in favour of initial_relaxation.
+  // denominator is then 0 too). Rejected in favour of initial_relaxation.
   auto a = must_make(
       AccelConfig{.kind = AccelKind::Aitken, .initial_relaxation = 0.5});
   std::vector<double> out(2, 0.0);
@@ -1146,7 +1146,7 @@ TEST(Accelerator, NullPointersAndNegativeIterationsAreRejected) {
 }
 
 TEST(Accelerator, WritingTheOutputOverAnInputIsRejected) {
-  // Not a crash if allowed, which is what makes it worth refusing: the
+  // Not a crash if allowed, which is what makes it worth rejecting: the
   // history is recorded from x_old and x_new after x_out has been written, so
   // an in-place call would store a secant pair that was never evaluated.
   for (const AccelKind k : {AccelKind::None, AccelKind::Constant,
@@ -1279,7 +1279,7 @@ TEST(Accelerator, EveryKindLeavesAnExactFixedPointBitForBit) {
             << fuse::to_cstring(k);
         x = std::move(nx);
       }
-      // A vector unrelated to the trajectory, so nothing can cancel by luck.
+      // A vector unrelated to the waveform, so nothing can cancel by luck.
       std::vector<double> out(g.n, 12345.0);
       const auto r =
           a->update(fixed.data(), fixed.data(), out.data(), g.n, warm);
@@ -1433,8 +1433,8 @@ TEST(Accelerator, FieldPartitionIsValidated) {
   EXPECT_THROW(a->set_field_partition({0, 4, 2}), fuse::InvalidArgument)
       << "a decrease overlaps the blocks and stays an error";
   // An empty block is not an error: a rank can own none of one field of a
-  // region and some of another. Rejecting it threw out of resolve_regions()
-  // on exactly the ranks that owned nothing (host Tier 1, 5 ranks, 4
+  // mesh entity set and some of another. Rejecting it threw out of resolve_regions()
+  // on exactly the ranks that owned nothing (host run of the MPI-enabled build configuration, 5 ranks, 4
   // entities), hanging the ranks that did.
   EXPECT_NO_THROW(a->set_field_partition({0, 4, 4}));
   EXPECT_NO_THROW(a->set_field_partition({0, 0, 4}));
@@ -1525,7 +1525,7 @@ LinearMap two_field_problem(double scale) {
   return g;
 }
 
-/// Runs `steps` accelerated iterations from x = 0 and returns the trajectory
+/// Runs `steps` accelerated iterations from x = 0 and returns the waveform
 /// of the first field block only.
 std::vector<std::vector<double>> first_block_trajectory(Accelerator& accel,
                                                         const LinearMap& g,
@@ -1726,7 +1726,7 @@ TEST(Accelerator, ImvjRetainedJacobianIsBounded) {
 
 // ---------------------------------------------------------------------------
 // The hot loop. Spec §2 layer 3 requires the interpreted sweep loop to
-// allocate nothing, and an accelerated region calls update() from inside that
+// allocate nothing, and an accelerated implicit coupling group calls update() from inside that
 // loop, so the accelerators are part of the same requirement -- measured, not
 // asserted in a comment.
 // ---------------------------------------------------------------------------

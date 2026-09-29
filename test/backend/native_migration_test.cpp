@@ -148,7 +148,7 @@ TEST(NativeMigration, EmulatedRoundTripThroughTwoDifferentPartitionsReproducesTh
         "global cell ids (up to local ordering)";
 }
 
-// ---- refusals -------------------------------------------------------------
+// ---- rejections -------------------------------------------------------------
 
 TEST(NativeMigration, RefusesAnIncompleteAssignment) {
   auto arrays = generate_native_mesh("hexbox:2x2x2", 0, 1);

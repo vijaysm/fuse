@@ -64,7 +64,7 @@ Result<void> check_update_args(const double* x_old, const double* x_new,
   // do overlap have their pointers in a single array object, so `<` is defined
   // for them and std::less must agree with it: the test has no false
   // negatives. A false positive would need an implementation whose total order
-  // interleaves two disjoint arrays; refusing such a call is safe, whereas
+  // interleaves two disjoint arrays; rejecting such a call is safe, whereas
   // accepting an overlapping one is a silent wrong answer.
   const std::less<const double*> before;
   const auto overlaps = [&before, n](const double* a, const double* b) {
@@ -177,7 +177,7 @@ Result<void> finish_or_fallback(const char* who, double w, const double* x_old,
 ///
 /// Note that this guard is not the last line of defence. A non-finite entry
 /// that did reach the least-squares matrix would be caught by
-/// qn_least_squares(), which refuses a non-finite column norm and reports
+/// qn_least_squares(), which rejects a non-finite column norm and reports
 /// rank 0, so the accelerator would degrade to relaxation rather than emit a
 /// NaN. The guard exists so the degradation is a documented weight of 1 for
 /// that block, not the loss of every block's fit at once.
@@ -241,14 +241,14 @@ void Accelerator::set_field_partition(std::vector<std::size_t> offsets) {
     }
     // Non-decreasing, NOT strictly increasing. Two equal offsets are an
     // empty block: under a real partition a rank can own none of one field
-    // of a region and some of another, which is as ordinary here as it is in
+    // of a mesh entity set and some of another, which is as ordinary here as it is in
     // the transport (MpiTransport.RankOwningZeroElementsIsOrdinary). It costs
     // field_weights() nothing -- its inner loops simply do not execute and
     // the block's weight is never read. A *decrease* remains a programmer
     // error: the blocks would overlap.
-    // Found 2026-09-20 by the host Tier 1 run at 5 ranks, where 4 entities
+    // Found 2026-09-20 by the host run of the MPI-enabled build configuration at 5 ranks, where 4 entities
     // leave ranks with none and initialize() threw out of resolve_regions()
-    // on one rank while the others waited in a collective -- the refusal was
+    // on one rank while the others waited in a collective -- the rejection was
     // not merely wrong, it hung the job.
     for (std::size_t i = 1; i < offsets.size(); ++i) {
       if (offsets[i] < offsets[i - 1]) {

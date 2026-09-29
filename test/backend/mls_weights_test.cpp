@@ -1,10 +1,10 @@
 // Moving-least-squares remap weights (`fuse/backend/mls_weights.hpp`): the
-// "Point clouds" track. Covers option parsing, the region/discretization
+// "Point clouds" track. Covers option parsing, the mesh entity set/discretization
 // resolution `build_mls_weights` shares no code with `intx_weights.cpp`'s
 // own (a deliberate, separate, smaller copy -- see the header comment),
 // exact reproduction of the declared polynomial degree in 1D/2D/3D and on
 // scattered points on a sphere, convergence order under refinement, every
-// named refusal, and a cross-check against ArborX 2.1's own
+// named rejection, and a cross-check against ArborX 2.1's own
 // `ArborX::Interpolation::MovingLeastSquares::interpolate()` -- the PUBLIC
 // class, not the `Details::` internals `mls_weights.hpp`'s own header
 // comment explains why this file does not build on.
@@ -134,9 +134,9 @@ class TestBackend final : public fuse::MeshBackend {
   std::vector<std::unique_ptr<MeshView>> views_;
 };
 
-/// A graph plus backend holding exactly two regions, "src" and "tgt", each a
+/// A graph plus backend holding exactly two mesh entity sets, "src" and "tgt", each a
 /// flat point set at dimension `dim` (0 for PointCloud/vertex, or the cell
-/// dimension for an FV-style side). Both regions default to `Discretization::
+/// dimension for an FV-style side). Both mesh entity sets default to `Discretization::
 /// PointCloud` on the `RemapPlan` the test builds; a case that wants a
 /// different `(disc, order)` sets `plan.src_disc`/`tgt_disc` itself.
 struct Fixture {
@@ -241,7 +241,7 @@ std::vector<Point> sphere_points(int n, unsigned seed) {
 /// neighbour stencil can make the moment matrix exactly singular in specific
 /// directions (measured here: a 6x6x6 grid, k = 16, degree 2 -- rank 9 of
 /// the 10 needed, condition estimate 2.2e5, `E-MLS-RANK`), which is a
-/// property of the SAMPLING, not a defect in this builder -- the refusal is
+/// property of the SAMPLING, not a defect in this builder -- the rejection is
 /// doing exactly its job. A scattered cloud is both the more representative
 /// case for a point-cloud method and the one that avoids the symmetry.
 std::vector<Point> random_cube_points(int n, double lo, double hi, unsigned seed) {
@@ -630,7 +630,7 @@ TEST(MlsWeights, SourcePointExactlyAtTargetDoesNotDivideByZero) {
 }
 
 // ===========================================================================
-// Refusals.
+// Rejections.
 // ===========================================================================
 
 TEST(MlsRefusals, MalformedMethodStringIsEMlsOptions) {

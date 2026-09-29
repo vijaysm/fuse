@@ -40,7 +40,7 @@ namespace fuse {
 
 /// Builds the weights for the pair, at the given entity dimension.
 ///
-/// Refuses, rather than returning an empty or partial map, when either view
+/// Rejects, rather than returning an empty or partial map, when either view
 /// reports no geometry (`simplex_count() == 0`), when the dimension is outside
 /// 1..3, or when a cell's simplices do not cover it. A silently empty
 /// supermesh would look like a legitimate zero-overlap answer.

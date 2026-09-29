@@ -14,7 +14,7 @@
 ///
 /// Half-open, like every other range in C++ and like `mdspan`: `{2, 5}` is
 /// three elements. An `Extent` that is reversed or reaches past the end is a
-/// REFUSAL carrying the offending bounds, not a clamp -- clamping turns a
+/// REJECTION carrying the offending bounds, not a clamp -- clamping turns a
 /// caller's arithmetic mistake into a smaller-than-intended loop that still
 /// produces numbers.
 

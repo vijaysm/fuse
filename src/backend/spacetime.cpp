@@ -130,7 +130,7 @@ void lu_solve(const Lu& lu, std::vector<double>& b) {
 }
 
 /// integral of s^r over [lo, hi], for r = 0 .. deg. Used both for the
-/// stencil's cell-average constraints and for a slab's moment vector.
+/// stencil's cell-average constraints and for a common-refinement interval's moment vector.
 void moments(double lo, double hi, int deg, std::vector<double>& out) {
   double plo = lo;
   double phi = hi;
@@ -219,23 +219,23 @@ void moments(double lo, double hi, int deg, std::vector<double>& out) {
   // answer.
   if (slabs.slabs.empty()) {
     return Failure{"E-ST-SLABS",
-                 "build_temporal_projection: empty slab decomposition"};
+                 "build_temporal_projection: empty common-refinement-interval decomposition"};
   }
   {
     Rational cursor{0};
     for (std::size_t k = 0; k < slabs.slabs.size(); ++k) {
       const Slab& s   = slabs.slabs[k];
-      const auto  ctx = " (slab " + std::to_string(k) + " [" +
+      const auto  ctx = " (common-refinement interval " + std::to_string(k) + " [" +
                        s.begin.to_string() + ", " + s.end.to_string() + "])";
       if (s.begin != cursor) {
         return Failure{"E-ST-SLABS",
-                     "build_temporal_projection: slabs do not tile the period "
-                     "contiguously; expected a slab starting at " +
+                     "build_temporal_projection: common-refinement intervals do not tile the "
+                     "period contiguously; expected a common-refinement interval starting at " +
                          cursor.to_string() + ctx};
       }
       if (!(s.end > s.begin)) {
         return Failure{"E-ST-SLABS",
-                     "build_temporal_projection: non-positive slab length" +
+                     "build_temporal_projection: non-positive common-refinement-interval length" +
                          ctx};
       }
       if (s.src_step < 0 || s.src_step >= n_src) {
@@ -250,7 +250,7 @@ void moments(double lo, double hi, int deg, std::vector<double>& out) {
                          std::to_string(s.dst_step) + " outside [0, " +
                          std::to_string(n_tgt) + ")" + ctx};
       }
-      // The slab must lie inside the step it claims, on BOTH sides. Exact
+      // The common-refinement interval must lie inside the step it claims, on BOTH sides. Exact
       // rational comparison; this is what catches a decomposition built from
       // other intervals.
       const Rational qb_src = s.begin / src_interval;
@@ -258,7 +258,7 @@ void moments(double lo, double hi, int deg, std::vector<double>& out) {
       if (qb_src < Rational{s.src_step} ||
           qe_src > Rational{s.src_step + 1}) {
         return Failure{"E-ST-SLABS",
-                     "build_temporal_projection: slab is not inside source "
+                     "build_temporal_projection: common-refinement interval is not inside source "
                      "step " +
                          std::to_string(s.src_step) + " of interval " +
                          src_interval.to_string() + ctx};
@@ -268,7 +268,7 @@ void moments(double lo, double hi, int deg, std::vector<double>& out) {
       if (qb_dst < Rational{s.dst_step} ||
           qe_dst > Rational{s.dst_step + 1}) {
         return Failure{"E-ST-SLABS",
-                     "build_temporal_projection: slab is not inside target "
+                     "build_temporal_projection: common-refinement interval is not inside target "
                      "step " +
                          std::to_string(s.dst_step) + " of interval " +
                          dst_interval.to_string() + ctx};
@@ -277,7 +277,7 @@ void moments(double lo, double hi, int deg, std::vector<double>& out) {
     }
     if (cursor != period) {
       return Failure{"E-ST-SLABS",
-                   "build_temporal_projection: slabs end at " +
+                   "build_temporal_projection: common-refinement intervals end at " +
                        cursor.to_string() + ", not at the period " +
                        period.to_string()};
     }
@@ -341,7 +341,7 @@ void moments(double lo, double hi, int deg, std::vector<double>& out) {
         have[oi] = 1;
       }
 
-      // Slab endpoints in units of the source interval, measured from the
+      // Common-refinement-interval endpoints in units of the source interval, measured from the
       // centre of step j. The subtraction of the integer step index happens in
       // EXACT rational arithmetic, so `u` stays in [-1/2, 1/2] and carries no
       // cancellation even at step index 100000.

@@ -99,10 +99,10 @@ using Triangle = std::array<int, 3>;
 /// sense) produce IDENTICAL triangles. `points` and `global_ids` must have
 /// the same length and be listed in the polygon's cyclic order.
 ///
-/// Refuses `E-MESH-POLYGON-NOT-STAR-SHAPED` when the fan is not a valid
+/// Rejects `E-MESH-POLYGON-NOT-STAR-SHAPED` when the fan is not a valid
 /// decomposition of this polygon (the unsigned triangle-area sum exceeds
 /// the polygon's own Newell magnitude by more than a relative tolerance) --
-/// per the file header, this is an exact test, not a heuristic. Refuses
+/// per the file header, this is an exact test, not a heuristic. Rejects
 /// `E-MESH-POLYGON-DEGENERATE` for `n < 3` or duplicate global ids.
 [[nodiscard]] Result<std::vector<Triangle>> canonical_fan_triangulation(
     const std::vector<std::int64_t>& global_ids, const std::vector<Vec3>& points);
@@ -130,8 +130,8 @@ struct Tetrahedron {
 /// the oriented face triangles give a true enclosed volume from ANY origin,
 /// so comparing that (using the coordinate origin) against the UNSIGNED sum
 /// of the centroid-fanned tetrahedra's volumes is an exact star-shapedness
-/// test. Refuses `E-MESH-CELL-NOT-STAR-SHAPED` when they disagree by more
-/// than a relative tolerance, and propagates a `E-MESH-POLYGON-*` refusal
+/// test. Rejects `E-MESH-CELL-NOT-STAR-SHAPED` when they disagree by more
+/// than a relative tolerance, and propagates a `E-MESH-POLYGON-*` rejection
 /// from a face's own triangulation.
 [[nodiscard]] Result<std::vector<Tetrahedron>> canonical_cell_tetrahedra(
     const std::vector<OrientedFace>& faces, const Vec3& centroid);

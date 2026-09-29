@@ -24,7 +24,7 @@ struct Point {
 ///
 /// DESIGNED FOR THE DISTRIBUTED, UNSTRUCTURED CASE. The Phase 4 backend is a
 /// serial structured grid, but Phase 5's MOAB backend must fit this interface
-/// without changing the runtime, so the contract below deliberately refuses
+/// without changing the runtime, so the contract below deliberately rejects
 /// four assumptions that a structured serial mesh would otherwise smuggle in:
 ///
 ///   1. `entity_count(dim)` is a LOCAL count -- the entities this rank can
@@ -160,7 +160,7 @@ class MeshView {
   /// clips instead of one. That is the trade that was taken.
   ///
   /// `simplex_count` returns 0 for a view that carries no geometry at all --
-  /// which is legal, and which the weight builder turns into a refusal naming
+  /// which is legal, and which the weight builder turns into a rejection naming
   /// this backend rather than into a silently empty supermesh.
   [[nodiscard]] virtual std::size_t simplex_count(int dim,
                                                   std::size_t i) const = 0;
@@ -192,7 +192,7 @@ class MeshView {
   /// matrix's column `vertices[k]` for the result to be indexed consistently
   /// with everything else that reads a nodal field's buffer.
   ///
-  /// DEFAULT: refuses `E-MESH-NO-CELL-VERTICES`. Most existing `MeshView`s
+  /// DEFAULT: rejects `E-MESH-NO-CELL-VERTICES`. Most existing `MeshView`s
   /// have no answer -- a structured serial grid keeps no explicit
   /// connectivity list at all (its cells are addressed by index arithmetic),
   /// and a hand-built 1D test double (`ArbitraryLine`,
@@ -205,12 +205,12 @@ class MeshView {
   /// `get_connectivity`, translated through each dimension's existing
   /// handle<->local-index tables).
   ///
-  /// Refuses (never throws), beyond the default:
+  /// Rejects (never throws), beyond the default:
   ///   * `E-MESH-NO-CELL-VERTICES` -- this entity's cell type has no
   ///     `CellShape` equivalent (a `Point`, or a general `Polyhedron` whose
   ///     faces are not a fixed corner list) -- named so a caller can tell
   ///     "this backend never answers" apart from "this specific cell has no
-  ///     answer", though both are refused the same way today.
+  ///     answer", though both are rejected the same way today.
   struct CellVertices {
     CellShape shape = CellShape::Edge;
     /// `MeshView` dimension-0 local indices, in `cell_simplices.hpp`'s
@@ -263,7 +263,7 @@ class MeshBackend {
   /// Nothing in either type enforces that. A backend that loads in a
   /// different order (MOAB reading a partitioned set of files, a driver that
   /// loads on demand, a caller that skips a mesh it does not need) silently
-  /// shifts every id, and a positional lookup then sizes a region against
+  /// shifts every id, and a positional lookup then sizes a mesh entity set against
   /// the WRONG MESH: a plausible number, no diagnostic, and a buffer plan
   /// that is quietly too small or too large. Name resolution is the only
   /// thing that ties the two id spaces together, so `make_region_sizes`
@@ -283,7 +283,7 @@ class MeshBackend {
   /// handed out.
   [[nodiscard]] virtual Result<const MeshView*> view(MeshId id) const = 0;
 
-  /// How many entities region `r` designates on this rank -- owned plus
+  /// How many entities mesh entity set `r` designates on this rank -- owned plus
   /// ghost, matching `MeshView::entity_count`, because a field buffer needs a
   /// slot for every locally visible entity. (Conservation sums restrict to
   /// owned entities afterwards via `MeshView::is_owned`; the two counts are
@@ -300,32 +300,32 @@ class MeshBackend {
   // Each component holds its OWN decomposition of a mesh it shares with
   // another: the mesh laid out over that component's ranks, not over the
   // job's. Without this a rank holds exactly one piece of each mesh, shared by
-  // every component placed on it, and two PARTIALLY overlapping placements
-  // cannot both hold the whole region -- A on {0,1,2} and B on {1,2,3} over one
+  // every component placed on it, and two PARTIALLY overlapping processor sets
+  // cannot both hold the whole mesh entity set -- A on {0,1,2} and B on {1,2,3} over one
   // 4-way partition leaves A without piece 3, so B's rank 3 has no source.
-  // Disjoint and identical placements happened to work; partial could not be
+  // Disjoint and identical processor sets happened to work; partial could not be
   // expressed at all.
   //
   // So these answer "this rank's piece of mesh `id` AS COMPONENT `placement`
-  // SEES IT". A rank in two placements has two pieces, one each. That is
+  // SEES IT". A rank in two processor sets has two pieces, one each. That is
   // inherent to partial overlap, not a cost of the interface.
   //
   // DEFAULTS. A backend with one decomposition per mesh -- serial, or a
-  // parallel backend all of whose components share one placement -- need not
-  // override either: the defaults return the placement-free answer, which is
+  // parallel backend all of whose components share one processor set -- need not
+  // override either: the defaults return the processor-set-free answer, which is
   // then correct for every component. An invalid `placement` (`ComponentId{}`)
   // always means "the backend's default decomposition".
   //
   // CONTRACT FOR AN OVERRIDING BACKEND:
-  //   * two components with IDENTICAL placements must get the same
+  //   * two components with IDENTICAL processor sets must get the same
   //     decomposition (the same entities in the same local order). The IR
-  //     emits no Transport between identical placements (rules_channel.cpp,
+  //     emits no Transport between identical processor sets (rules_channel.cpp,
   //     `same_as`), so a backend that partitioned them differently would have
   //     the value read at the wrong local indices with no data move to fix it;
   //   * the pointer is owned by the backend and stays valid for its lifetime,
   //     like `view`'s;
   //   * errors are the same codes `view` / `region_size` use, plus
-  //     `E-MESH-PLACEMENT` for a placement the backend was never told about,
+  //     `E-MESH-PLACEMENT` for a processor set the backend was never told about,
   //     rather than a silent fallback to a different decomposition.
   //
   // Named rather than overloaded on purpose: an overload of `view` would be
@@ -364,7 +364,7 @@ class MeshBackend {
 ///   * FV, and `DiscontinuousGLL` order 0, read one value per `region_dim`
 ///     entity -- a cell. This is `region_size`'s existing, UNCHANGED
 ///     behaviour; nothing here alters what `region_size`/`placed_region_size`
-///     mean on their own (both keep sizing by the region's own dimension for
+///     mean on their own (both keep sizing by the mesh entity set's own dimension for
 ///     every caller that asks them directly, with no field in view at all).
 ///   * `ContinuousGLL` order 1 is genuinely nodal -- `connect.hpp`'s
 ///     `to_semantics` already maps that combination to
@@ -373,7 +373,7 @@ class MeshBackend {
 ///     extent is the mesh's VERTEX count, `view.entity_count(0)`, regardless
 ///     of `region_dim`.
 ///   * Everything else -- `ContinuousGLL` order != 1, `DiscontinuousGLL`
-///     order >= 1, `PointCloud` -- is a NAMED refusal, `E-EXTENT-DISC|`
+///     order >= 1, `PointCloud` -- is a NAMED rejection, `E-EXTENT-DISC|`
 ///     rather than a guess: a spectral element needs as many DOFs per cell as
 ///     `order` implies, which nothing here computes, and a point cloud has no
 ///     cell topology to size a field by at all.
@@ -400,17 +400,17 @@ class MeshBackend {
 /// Which of `field_extent`'s two implemented shapes every field DECLARED
 /// over `region` implies, read off the graph rather than assumed.
 ///
-/// A region with no field on it yet (an unused declaration, or one probed
+/// A mesh entity set with no field on it yet (an unused declaration, or one probed
 /// before any `add_field` call) defaults to `Cell` -- `region_size`'s
 /// existing behaviour -- since there is no field to disagree with it.
 enum class RegionExtentKind { Cell, Vertex };
 
 /// Classifies the SAME `(disc, order)` combinations `field_extent` accepts,
 /// without needing a `MeshView` at all -- the caller supplies one only once
-/// a `Vertex`/`Cell` verdict is in hand and the real dimension is known.
-/// Refuses `E-EXTENT-DISC` for a field whose `(disc, order)` `field_extent`
-/// itself would refuse, and `E-EXTENT-MIXED` when the region carries BOTH a
-/// cell field and a nodal one: one region cannot be sized two different ways
+/// a `Vertex`/`Cell` outcome is in hand and the real dimension is known.
+/// Rejects `E-EXTENT-DISC` for a field whose `(disc, order)` `field_extent`
+/// itself would reject, and `E-EXTENT-MIXED` when the mesh entity set carries BOTH a
+/// cell field and a nodal one: one mesh entity set cannot be sized two different ways
 /// at once, and choosing either silently would size the other field wrong
 /// with no diagnostic.
 [[nodiscard]] inline Result<RegionExtentKind> region_extent_kind(
@@ -463,12 +463,12 @@ enum class RegionExtentKind { Cell, Vertex };
 /// only while the two happen to line up. This adapter therefore reads
 /// `g.mesh(r.mesh).name` and asks the backend for ITS id for that name,
 /// so a backend that loaded the meshes in a different order (or loaded
-/// extra ones) still sizes the right region instead of a wrong-but-plausible
+/// extra ones) still sizes the right mesh entity set instead of a wrong-but-plausible
 /// one. `MeshBackend::mesh_id` documents why that ordering cannot be
 /// assumed.
 ///
 /// LIFETIME. The returned callable stores references to `g` and `backend`.
-/// Both must outlive it, and `g` must not have regions added or removed while
+/// Both must outlive it, and `g` must not have mesh entity sets added or removed while
 /// it is in use.
 ///
 /// FAILURE IS LOUD. `RegionSizes` returns a bare `std::size_t`, with no way to
@@ -479,12 +479,12 @@ enum class RegionExtentKind { Cell, Vertex };
 ///     promises `plan_buffers` never passes one, but an unchecked invariant is
 ///     not enforced, and this is the check that would have caught it.
 ///   * `std::runtime_error`, carrying the backend's error code and message, if
-///     the region cannot be sized -- a mesh name the backend never loaded, an
+///     the mesh entity set cannot be sized -- a mesh name the backend never loaded, an
 ///     ambiguous mesh name, an unknown entity set, a dimension the mesh does
 ///     not represent.
 ///
 /// Returning 0 instead, as a size-returning callback naturally tempts one to
-/// do, would allocate an empty buffer for a real region and let the run
+/// do, would allocate an empty buffer for a real mesh entity set and let the run
 /// proceed to produce silently empty exchanges. `plan_buffers` returns a plain
 /// value and is documented to throw, so an exception propagates to the caller
 /// intact.

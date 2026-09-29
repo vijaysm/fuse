@@ -76,7 +76,7 @@
 // it converts silent corruption under concurrent use into safe serialization.
 
 // Before any FUSE_HAVE_* read: an undefined feature macro is read as 0 by
-// the preprocessor, which would silently compile the refusing stub.
+// the preprocessor, which would silently compile the rejecting stub.
 #include "fuse/base/config.hpp"
 
 #include "high_order_backend.hpp"
@@ -140,7 +140,7 @@ namespace {
 /// Measured on a 6x8^2 against 6x6^2 cubed-sphere pair: orders 1-4 build with
 /// no warning at all; order 5 warns on essentially every cell, with condition
 /// estimates from 1.5e7 to 2.2e13. An order the library cannot deliver is
-/// refused up front rather than delivered degraded -- and the per-cell warning
+/// rejected up front rather than delivered degraded -- and the per-cell warning
 /// is ALSO caught below, because a mesh pair worse than the one measured can
 /// degrade at order 2.
 constexpr int kMaxOrder = 4;

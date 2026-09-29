@@ -1,7 +1,7 @@
 // test/partition/rcb_partition_test.cpp — typed over EnabledExecutionSpaces
 // (fuse_test_main.hpp). Verifies fuse::partition::rcb_partition against the
-// serial oracle (rcb_oracle.hpp) at Tier 0 (comm == kNullComm, i.e. the
-// library's single-participant path -- what THIS sandbox can run; P > 1
+// serial oracle (rcb_oracle.hpp) at the base build configuration (comm == kNullComm, i.e. the
+// library's single-process path -- what THIS sandbox can run; P > 1
 // requires a real MPI launcher, which cannot start here (see rcb_mpi_test.cpp
 // and docs/dev/partitioning.md "What is verified where").
 

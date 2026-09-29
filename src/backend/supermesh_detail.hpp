@@ -22,7 +22,7 @@
 
 namespace fuse::supermesh_detail {
 
-/// the issue tracker (BK-M3): the per-cell coverage audit's refusal, factored
+/// the issue tracker (BK-M3): the per-cell coverage audit's rejection, factored
 /// out so it is unit-testable on a synthetic ratio directly -- the defect
 /// class it guards against (overlap inflated past the cell it came from,
 /// family) cannot be produced through the public MeshView grammar by

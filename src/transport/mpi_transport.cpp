@@ -3,7 +3,7 @@
 // THE SHAPE OF THIS FILE IS DICTATED BY TWO CONSTRAINTS THAT PULL APART.
 //
 // 1. Task 4.6's hot loop. `Runner::Impl::execute` calls `prepare()` and then
-//    `move()` inside the period loop, and that loop is proved allocation-free
+//    `move()` inside the coupling-cycle loop, and that loop is proved allocation-free
 //    by replacing global operator new. So `prepare()` may not build anything:
 //    no allocation, no rank-set analysis, no matching, no buffer sizing, no
 //    communicator work. All of it lives in `build_plan()`, which is called
@@ -113,7 +113,7 @@ enum class Err : int {
 
 struct MpiTransport::Impl {
   // A private duplicate of the caller's communicator: its own context (so two
-  // channels' collectives can never be matched with each other) and its own
+  // field transfers' collectives can never be matched with each other) and its own
   // MPI_ERRORS_RETURN handler (so a failure is a Result, not an abort).
   MPI_Comm comm = MPI_COMM_NULL;
   int      rank = -1;
@@ -522,7 +522,7 @@ Result<void> MpiTransport::build_plan(const TransportSpec& spec) {
       fmt::print(stderr, "{}", line);
     }
 
-    // The rule itself is pure and lives in a header so Tier 0 can test it
+    // The rule itself is pure and lives in a header so the base build configuration can test it
     // (fuse/transport/rank_agreement.hpp); only the gather is MPI's. Computed
     // unconditionally so the trace below can report it even when an earlier
     // outcome already stands.
@@ -758,7 +758,7 @@ Result<void> MpiTransport::build_plan(const TransportSpec& spec) {
     const Err agreed = p->agree(err, &mpi_rc);
     if (std::getenv("FUSE_TRANSPORT_DEBUG") != nullptr) {
       // The pair that localises a lost outcome: `local` is what this rank
-      // decided, `agreed` what the reduction returned. A refusal visible here
+      // decided, `agreed` what the reduction returned. A rejection visible here
       // that still returns success can only be lost between the two.
       fmt::print(stderr, "[outcome rank {}] local={} agreed={}\n", rank,
                  static_cast<int>(err), static_cast<int>(agreed));
@@ -1018,7 +1018,7 @@ Result<void> MpiTransport::build_plan_from_peers(
 //
 // Scalar comparisons only. No allocation, no MPI, no matching, no buffer
 // sizing: `Runner::Impl::execute` calls this once per Transport instruction
-// per period, inside the loop Task 4.6 proved allocation-free.
+// per coupling cycle, inside the loop Task 4.6 proved allocation-free.
 Result<void> MpiTransport::prepare(const TransportSpec& spec) {
   const Impl* p = impl_.get();
   if (p == nullptr || !p->planned) {
@@ -1067,7 +1067,7 @@ Result<void> MpiTransport::move(const double* src, double* dst,
                  "this rank covers exactly " + std::to_string(p->p_total) +
                      " (elements * components)"};
   }
-  // A rank owning zero elements of a region is ordinary in parallel, and
+  // A rank owning zero elements of a mesh entity set is ordinary in parallel, and
   // `std::vector<double>{}.data()` is permitted to be null. Null is therefore
   // accepted exactly when there is nothing to address.
   if (n != 0 && (src == nullptr || dst == nullptr)) {

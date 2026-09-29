@@ -31,7 +31,7 @@
 /// It is not a drop-in replacement for the plain norm and does not try to be:
 /// the recorded iteration counts of the inherited test suite were produced
 /// with the plain norm, and changing it would change them. Both are available
-/// and which one a region uses is declared.
+/// and which one an implicit coupling group uses is declared.
 
 #include <cstddef>
 #include <vector>

@@ -148,21 +148,21 @@ TEST(ComponentAgreement, SourceAndDestinationDisagreeing) {
 }
 
 TEST(ComponentAgreement, AgreeingParticipantsAndIgnoredBystanders) {
-  // Every participant agrees; a rank in neither set may hold anything,
+  // Every process agrees; a rank in neither set may hold anything,
   // because its count never sizes any count array.
   const auto ok = fuse::transport::check_component_agreement(
       {3, 99, 3}, {1, 0, 0}, {0, 0, 1});
   EXPECT_TRUE(ok.agreed());
   EXPECT_EQ(ok.first_rank, 0);
 
-  // A disagreement between two participants is still found when a bystander
+  // A disagreement between two processes is still found when a bystander
   // sits between them.
   const auto bad = fuse::transport::check_component_agreement(
       {3, 99, 4}, {1, 0, 0}, {0, 0, 1});
   EXPECT_FALSE(bad.agreed());
   EXPECT_EQ(bad.disagreeing_rank, 2);
 
-  // No participants at all is not a disagreement.
+  // No processes at all is not a disagreement.
   EXPECT_TRUE(fuse::transport::check_component_agreement({1, 2}, {0, 0},
                                                          {0, 0})
                   .agreed());

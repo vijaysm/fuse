@@ -58,7 +58,7 @@
 /// The interpolatory (pointwise) temporal operator -- sample `Waveform` at the
 /// target step centres -- is a genuinely different matrix and is deliberately
 /// NOT built here. It cannot be, in general, without extrapolating: the first
-/// target centre can lie before the first source centre, and `Waveform` refuses
+/// target centre can lie before the first source centre, and `Waveform` rejects
 /// to evaluate outside its support (`E-WF-OUTSIDE`) rather than silently
 /// extrapolate. Conservative projection has no such gap, because the supports
 /// are the steps themselves and the two partitions cover the same window.
@@ -102,7 +102,7 @@
 /// spline projection is a global (coupled) reconstruction, not the local one
 /// implemented here, and returning a piecewise-cubic-per-step matrix under the
 /// name `Spline` would be exactly the silent order/behaviour swap that
-/// `Waveform`'s constructor refuses for `Spline(5)`.
+/// `Waveform`'s constructor rejects for `Spline(5)`.
 ///
 /// ---------------------------------------------------------------------------
 /// STENCILS AT THE ENDS OF THE WINDOW
@@ -133,8 +133,9 @@
 ///                   divide the decomposition's period an exact whole number
 ///                   of times
 ///   E-ST-SLABS      the decomposition does not tile `[0, period]` with the
-///                   given intervals -- an empty slab list, a gap, an overlap,
-///                   a step index out of range, or a slab straddling a step
+///                   given intervals -- an empty list of common-refinement
+///                   intervals, a gap, an overlap, a step index out of range,
+///                   or a common-refinement interval straddling a step
 ///                   boundary. This is the check that catches a
 ///                   `SlabDecomposition` built from intervals other than the
 ///                   ones passed here.

@@ -1,4 +1,4 @@
-// test/partition/refusals_test.cpp — deliberate refusals firing
+// test/partition/refusals_test.cpp — deliberate rejections firing
 // (docs/dev/testing.md: "counts as verified only when a test makes it
 // fire"). Every case here asserts an exception, so this whole target
 // carries the THROWS label (see test/CMakeLists.txt).
@@ -66,9 +66,9 @@ TEST(PartitionRefusals, NegativeNumPartsIsRefused) {
 }
 
 #if !FUSE_HAVE_MPI
-// This build has no MPI at all (Tier 0) -- a non-null communicator handle
-// can only be a caller error, and must be refused before anything tries to
-// resolve it. In an MPI (Tier 1) build this branch does not compile-in at
+// This build has no MPI at all (the base build configuration) -- a non-null communicator handle
+// can only be a caller error, and must be rejected before anything tries to
+// resolve it. In an MPI-enabled build this branch does not compile-in at
 // all: the corresponding behaviour there is exercised on the host, by
 // mpiexec actually disagreeing (see rcb_mpi_test.cpp).
 TEST(PartitionRefusals, NonNullCommWithNoMpiBuildIsRefused) {

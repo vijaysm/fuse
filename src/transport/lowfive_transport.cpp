@@ -596,7 +596,7 @@ Result<void> LowFiveTransport::move(const double* src, double* dst,
     }
   }
 
-  // Re-checked every step, not just at setup: a channel that stopped being
+  // Re-checked every step, not just at setup: a field transfer that stopped being
   // intercepted mid-run must fail, not quietly start writing files.
   if (g.writes == before) {
     return Failure{"E-TRANSPORT-LF-NOINTERCEPT",

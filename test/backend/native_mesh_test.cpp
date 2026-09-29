@@ -52,7 +52,7 @@ TEST(NativeMesh, CodimensionFollowsFromTheTwoDimensions) {
   SUCCEED();
 }
 
-// A normal on a mesh that has none is a COMPILE error, not a refusal. This
+// A normal on a mesh that has none is a COMPILE error, not a rejection. This
 // documents the intent; uncommenting either line must fail to build.
 //
 //   Mesh<3,3> v; double n[3]; v.normal(0, n);   // no unique normal

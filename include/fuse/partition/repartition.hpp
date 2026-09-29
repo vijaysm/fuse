@@ -31,7 +31,7 @@ struct RepartitionOptions {
   /// halves of one call).
   RcbOptions rcb;
 
-  /// See types.hpp. kNullComm (default): Tier 0, one participant.
+  /// See types.hpp. kNullComm (default): the base build configuration, one process.
   CommHandle comm = kNullComm;
 };
 
@@ -42,13 +42,13 @@ struct RepartitionOptions {
 ///
 /// CONSTRAINT: `options.rcb.num_parts`, if set explicitly rather than left
 /// at its default (0, meaning "the communicator's size"), must equal the
-/// communicator's size -- `migrate` refuses `E-MESH-MIGRATE-RANGE` the
+/// communicator's size -- `migrate` rejects `E-MESH-MIGRATE-RANGE` the
 /// moment a part id lands outside `[0, num_ranks)`, which is exactly what
 /// a mismatched `num_parts` produces. `rcb_partition` and `migrate` have
 /// no other coupling: this is the one thing this wrapper's default
 /// (leaving `num_parts` at 0) exists to avoid a caller getting wrong.
 ///
-/// Errors: anything `centroids_of` or `migrate` themselves refuse
+/// Errors: anything `centroids_of` or `migrate` themselves reject
 /// (`E-PART-MIXED-DIM`, `E-PART-NO-ENTITIES`, `E-MESH-MIGRATE-INCOMPLETE`
 /// cannot occur here since `dest` is always sized to the owned count,
 /// `E-MESH-MIGRATE-RANGE` from the constraint above).

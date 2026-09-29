@@ -77,7 +77,7 @@ struct Failure {
 };
 
 /// Recoverable-error return type for the execution boundary (U2). Invariants
-/// use FUSE_ASSERT; deliberate refusals inside a call use FUSE_REFUSE; a
+/// use FUSE_ASSERT; deliberate rejections inside a call use FUSE_REFUSE; a
 /// Result carries the outcome OUT of validate()/run()/initialize().
 template <class T>
 class Result {

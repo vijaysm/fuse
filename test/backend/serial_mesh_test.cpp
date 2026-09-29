@@ -247,7 +247,7 @@ TEST(SerialMesh, MeasureIsUnsignedAndPositive) {
 }
 
 // A zero measure would silently drop vertices from a conservation sum, so the
-// backend refuses rather than inventing one.
+// backend rejects rather than inventing one.
 TEST(SerialMesh, VertexMeasureIsRefusedRatherThanZero) {
   const SerialMeshBackend b = loaded("generated:box:2x2x2");
   const auto* v = b.view(MeshId{0}).value();
@@ -319,7 +319,7 @@ TEST(SerialMesh, EverythingIsOwnedInSerial) {
 }
 
 // ---------------------------------------------------------------------------
-// Regions
+// Mesh entity sets
 // ---------------------------------------------------------------------------
 
 TEST(SerialMesh, RegionSizeOfWholeMesh) {
@@ -384,7 +384,7 @@ TEST(SerialMesh, BoundarySetsNeedABox) {
   EXPECT_EQ(n.error().code, "E-MESH-SET");
 }
 
-// A boundary set holds faces. Answering with a face count for a region whose
+// A boundary set holds faces. Answering with a face count for a mesh entity set whose
 // author wrote dimension 3 would size a volumetric buffer from a surface.
 TEST(SerialMesh, BoundarySetRejectsANonFaceDimension) {
   const SerialMeshBackend b = loaded("generated:box:4x4x4");
@@ -396,7 +396,7 @@ TEST(SerialMesh, BoundarySetRejectsANonFaceDimension) {
   EXPECT_EQ(size_of(b, "wall", -1), 96u);
 }
 
-// Silently returning 0 here would produce an empty buffer for a real region.
+// Silently returning 0 here would produce an empty buffer for a real mesh entity set.
 TEST(SerialMesh, RegionDimensionTheMeshDoesNotRepresentIsAnError) {
   const SerialMeshBackend l = loaded("generated:line:10");
   for (const int dim : {2, 3, 4}) {
@@ -520,7 +520,7 @@ TEST(SerialMesh, MovedFromBackendIsDiagnosedNotDereferenced) {
 namespace {
 
 /// Two components on two differently sized meshes, so a buffer plan that used
-/// one region's size for the other would show up.
+/// one mesh entity set's size for the other would show up.
 CouplingGraph two_mesh_graph(const std::string& src_a, const std::string& src_b,
                              const std::string& set_a = "",
                              int dim_a = -1) {
@@ -577,7 +577,7 @@ TEST(SerialMesh, MakeRegionSizesHandlesABoundaryRegion) {
   EXPECT_EQ(sizes(RegionId{0}, -1), 8u);
 }
 
-// Returning 0 for a region the backend cannot size would allocate an empty
+// Returning 0 for a mesh entity set the backend cannot size would allocate an empty
 // buffer and let the run produce silently empty exchanges. RegionSizes has no
 // error channel, so the only honest option is to throw.
 TEST(SerialMesh, MakeRegionSizesThrowsRatherThanReturningZero) {
@@ -693,7 +693,7 @@ TEST(SerialMesh, MeshIdOnAMovedFromBackendReports) {
 // THE BUG THIS CLOSES. make_region_sizes used to pass the GRAPH's MeshId
 // straight to the backend. Load the graph's meshes in any other order -- MOAB
 // reading a partitioned set of files, a driver loading on demand -- and every
-// region was sized against the wrong mesh: a plausible number, no diagnostic.
+// mesh entity set was sized against the wrong mesh: a plausible number, no diagnostic.
 // Resolving by name makes the answer independent of load order.
 TEST(SerialMesh, MakeRegionSizesIsIndependentOfBackendLoadOrder) {
   const CouplingGraph g =
@@ -717,7 +717,7 @@ TEST(SerialMesh, MakeRegionSizesIsIndependentOfBackendLoadOrder) {
 }
 
 // A backend that loaded extra meshes, or fewer, still answers correctly for
-// the ones it has and refuses loudly for the ones it does not.
+// the ones it has and rejects loudly for the ones it does not.
 TEST(SerialMesh, MakeRegionSizesThrowsWhenTheBackendNeverLoadedTheMesh) {
   const CouplingGraph g =
       two_mesh_graph("generated:box:3x3x3", "generated:line:11");
@@ -727,7 +727,7 @@ TEST(SerialMesh, MakeRegionSizesThrowsWhenTheBackendNeverLoadedTheMesh) {
   ASSERT_TRUE(b.load(g.mesh(MeshId{1})).ok());  // "mb"
   const fuse::RegionSizes sizes = make_region_sizes(g, b);
   EXPECT_EQ(sizes(RegionId{1}, -1), 11u);
-  // Region 0 lives on "ma", which was never loaded. Positionally it would
+  // Mesh entity set 0 lives on "ma", which was never loaded. Positionally it would
   // have resolved to the 9x9x9 box and returned 729.
   EXPECT_THROW((void)sizes(RegionId{0}, -1), std::runtime_error);
 }
