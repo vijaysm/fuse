@@ -1,21 +1,21 @@
 # fuse-plan v1
-period=1/4 lockstep=yes instructions=16 buffers=16 coupler_elements=896 regions=1
-buffer 0   %0  elements=64  components=1  region=r0  owner=coupler  persistent=no  "a.a_out/window"
-buffer 1   %1  elements=64  components=1  region=r1  owner=coupler  persistent=no  "b.b_out/window"
-buffer 2   %2  elements=64  components=1  region=r0  owner=coupler  persistent=no  "a2b/transport"
-buffer 3   %3  elements=64  components=1  region=r0  owner=coupler  persistent=no  "a2b/epoch"
-buffer 4   %4  elements=64  components=1  region=r1  owner=coupler  persistent=no  "a2b/remap"
-buffer 5   %5  elements=64  components=1  region=r1  owner=coupler  persistent=no  "a2b/constrain"
-buffer 6   %6  elements=64  components=1  region=r1  owner=coupler  persistent=no  "a2b/diagnose"
-buffer 7   %7  elements=64  components=1  region=r1  owner=coupler  persistent=yes  "b2a/transport"
-buffer 8   %8  elements=64  components=1  region=r1  owner=coupler  persistent=yes  "b2a/epoch"
-buffer 9   %9  elements=64  components=1  region=r0  owner=coupler  persistent=yes  "b2a/remap"
-buffer 10  %10  elements=64  components=1  region=r0  owner=coupler  persistent=yes  "b2a/constrain"
-buffer 11  %11  elements=64  components=1  region=r0  owner=coupler  persistent=yes  "b2a/diagnose"
-buffer 12  %12  elements=64  components=1  region=r1  owner=component  persistent=no  "b.b_in"
-buffer 13  %13  elements=64  components=1  region=r0  owner=component  persistent=no  "a.a_in"
-buffer 14  %14  elements=64  components=1  region=r1  owner=coupler  persistent=no  "a2b/residual"
-buffer 15  %15  elements=64  components=1  region=r0  owner=coupler  persistent=yes  "b2a/residual"
+period=1/4 lockstep=yes instructions=16 buffers=16 coupler_elements=2048 regions=1
+buffer 0   %0  elements=64  components=2  region=r0  owner=coupler  persistent=no  "a.a_out/window"
+buffer 1   %1  elements=64  components=2  region=r1  owner=coupler  persistent=no  "b.b_out/window"
+buffer 2   %2  elements=64  components=2  region=r0  owner=coupler  persistent=no  "a2b/transport"
+buffer 3   %3  elements=64  components=2  region=r0  owner=coupler  persistent=no  "a2b/epoch"
+buffer 4   %4  elements=64  components=2  region=r1  owner=coupler  persistent=no  "a2b/remap"
+buffer 5   %5  elements=64  components=2  region=r1  owner=coupler  persistent=no  "a2b/constrain"
+buffer 6   %6  elements=64  components=2  region=r1  owner=coupler  persistent=no  "a2b/diagnose"
+buffer 7   %7  elements=64  components=2  region=r1  owner=coupler  persistent=yes  "b2a/transport"
+buffer 8   %8  elements=64  components=2  region=r1  owner=coupler  persistent=yes  "b2a/epoch"
+buffer 9   %9  elements=64  components=2  region=r0  owner=coupler  persistent=yes  "b2a/remap"
+buffer 10  %10  elements=64  components=2  region=r0  owner=coupler  persistent=yes  "b2a/constrain"
+buffer 11  %11  elements=64  components=2  region=r0  owner=coupler  persistent=yes  "b2a/diagnose"
+buffer 12  %12  elements=64  components=2  region=r1  owner=coupler  persistent=no  "b.b_in/window"
+buffer 13  %13  elements=64  components=2  region=r0  owner=coupler  persistent=no  "a.a_in/window"
+buffer 14  %14  elements=64  components=2  region=r1  owner=coupler  persistent=no  "a2b/residual"
+buffer 15  %15  elements=64  components=2  region=r0  owner=coupler  persistent=yes  "b2a/residual"
   0  t=1/4  WindowAdvance  node=12  out=%0  {window_import=%13}  enter=0
   1  t=1/4  Transport  node=0  in=[%0]  out=%2  {0->1}
   2  t=1/4  Epoch  node=1  in=[%2]  out=%3  {reason=after-transport}

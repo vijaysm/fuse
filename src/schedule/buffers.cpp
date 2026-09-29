@@ -7,6 +7,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace fuse {
@@ -58,6 +59,30 @@ Result<BufferPlan> try_plan_buffers(const OperatorDAG& dag, const TimedDag& time
 
   // Arcs that alias component storage: Source outputs and Sink outputs
   // (spec §4.2). Everything else is a coupler intermediate.
+  //
+  // Time windows track (C3): a window-scoped IMPORT's own Sink is the one
+  // exception. Its output is K samples wide (window_import_width(),
+  // src/ir/window_lowering.cpp) -- the provider's whole flat waveform for
+  // this window, delivered unchanged -- never the SINGLE value the
+  // component's own native Requires storage holds; advance_window()
+  // (src/runtime/iteration.cpp) reads this buffer directly and writes
+  // its OWN per-substep mean into the component's native storage
+  // separately. Aliasing this arc onto that native storage the way an
+  // ordinary Sink's output is aliased would size-mismatch it (the
+  // component registers 1 value, the plan wants K) and, if the sizes
+  // were forced to agree, overwrite the K-wide delivery with a single
+  // scalar mid-sweep. `emit_field_sink()` (src/ir/lowering.cpp) marks
+  // exactly this Sink with the SAME "/window" label suffix the window
+  // EXPORT side's own WindowAdvance output already uses for the
+  // identical reason (that one is excluded above by node KIND, since
+  // WindowAdvance is neither Source nor Sink; this one needs a label
+  // check because it genuinely is a Sink).
+  const auto is_window_arc = [](const std::string& label) {
+    constexpr std::string_view kSuffix = "/window";
+    return label.size() >= kSuffix.size() &&
+           label.compare(label.size() - kSuffix.size(), kSuffix.size(),
+                        kSuffix) == 0;
+  };
   std::vector<char> component_owned(n_arcs, 0);
   for (std::size_t i = 0; i < n_nodes; ++i) {
     const Node& n = dag.node(NodeId{static_cast<std::uint32_t>(i)});
@@ -69,6 +94,7 @@ Result<BufferPlan> try_plan_buffers(const OperatorDAG& dag, const TimedDag& time
                               std::to_string(n.output.value()) +
                               " but the DAG has " + std::to_string(n_arcs)};
     }
+    if (n.kind == OpKind::Sink && is_window_arc(n.label)) continue;
     component_owned[n.output.value()] = 1;
   }
 
