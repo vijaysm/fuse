@@ -43,7 +43,7 @@ using ChannelId   = Id<ChannelTag>;
 using MeshId      = Id<MeshTag>;
 using NodeId      = Id<NodeTag>;       // operator node in the DAG
 using ArcId       = Id<ArcTag>;        // SSA value
-using RegionIdx   = Id<IterRegionTag>; // iteration region
+using RegionIdx   = Id<IterRegionTag>; // implicit coupling group
 
 enum class Discretization { FV, ContinuousGLL, DiscontinuousGLL, PointCloud };
 enum class Conservation   { None, Extensive, Intensive };

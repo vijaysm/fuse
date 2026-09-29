@@ -132,7 +132,7 @@ class MpiTransport final : public Transport {
 
   /// COLLECTIVE, once, before the run. Builds the redistribution plan.
   ///
-  /// Every rank returns the same verdict: local validation is agreed with an
+  /// Every rank returns the same outcome: local validation is agreed with an
   /// `MPI_Allreduce` before any rank acts on it, and the matching itself is
   /// computed from data every rank has, so a pattern error is an identical
   /// error return everywhere instead of one rank bailing out while the others

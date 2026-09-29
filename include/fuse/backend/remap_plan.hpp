@@ -509,7 +509,7 @@ struct RemapPlan {
 /// failure -- and, worse, would report it on some ranks only, so
 /// `E-REMAP-COVERAGE` would fire unevenly and the job would hang in the next
 /// collective instead of failing. Every rank gets the same numbers and the
-/// same verdict.
+/// same outcome.
 ///
 /// Errors, never throws. `E-REMAP-NOMOAB`, `E-REMAP-NOTEMPEST`,
 /// `E-REMAP-BACKEND`, `E-REMAP-PARALLEL`, `E-REMAP-REGION`, `E-REMAP-DIM`,

@@ -13,7 +13,7 @@
 #include <utility>
 #include <vector>
 
-/// Spec §5.1 `Accelerate`, §5.3 iteration regions: the members of the family
+/// Spec §5.1 `Accelerate`, §5.3 implicit coupling groups: the members of the family
 /// that need at most the previous residual -- None, Constant, Aitken and
 /// Steffensen -- plus the shared validation and the factory.
 ///
@@ -326,7 +326,7 @@ class ConstantAccel final : public Accelerator {
 /// later denominator 0 as well.
 ///
 /// Storage: the current residual is a member, not a local, so a steady-state
-/// update() performs no heap allocation -- an accelerated iteration region
+/// update() performs no heap allocation -- an accelerated implicit coupling group
 /// sits inside the sweep loop, which spec §2 layer 3 requires to be allocation
 /// free. `r_` and `r_prev_` ping-pong by swap(), so the two buffers are
 /// allocated once each, in the first two calls of the first window, and then

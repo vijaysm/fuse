@@ -366,7 +366,7 @@ void filter_qn_columns(FilterKind filter, double limit, std::size_t n,
 /// update() performs no heap allocation (a window boundary that folds a new
 /// block in is nearly but not quite the same claim -- see
 /// fold_window_into_jacobian()). An accelerated
-/// iteration region sits inside the sweep loop, which spec §2 layer 3 requires
+/// implicit coupling group sits inside the sweep loop, which spec §2 layer 3 requires
 /// to be allocation free, and the scratch of a least-squares solve over
 /// k columns of length n is far too big to leave to the allocator once per
 /// sweep. Nothing about the arithmetic changed with the buffers: every scratch

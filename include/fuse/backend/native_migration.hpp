@@ -116,7 +116,7 @@ void resolve_vertex_ownership(MeshArrays<Kokkos::HostSpace>& arrays, CommHandle 
 /// participate -- that is rcb_moab's own "divergent early return causing
 /// hangs" failure mode (see the file header), reproduced if this
 /// function returned the local Result directly. So `migrate` computes
-/// its OWN validity locally, then reduces that verdict with every other
+/// its OWN validity locally, then reduces that outcome with every other
 /// rank via one `MPI_Allreduce(MIN)` BEFORE calling the exchange -- if
 /// any rank is invalid, EVERY rank returns the same refusal, none of
 /// them touching the alltoall at all.

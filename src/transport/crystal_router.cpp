@@ -134,7 +134,7 @@ Result<std::vector<Envelope>> CrystalRouter::route(
     const int rc = MPI_Allreduce(&err, &agreed, 1, MPI_INT, MPI_MAX, comm_);
     if (rc != MPI_SUCCESS) {
       return Failure{"E-CROUTER-MPI",
-                   "MPI_Allreduce failed while agreeing the routing verdict: " +
+                   "MPI_Allreduce failed while agreeing the routing outcome: " +
                        mpi_error_text(rc)};
     }
     if (agreed != 0) {

@@ -138,7 +138,7 @@ struct PtRec {
 };
 static_assert(sizeof(PtRec) == 56, "PtRec must be padding-free");
 
-/// Round 2, NearestNeighbor mode: one bucket's verdict on one query. A query
+/// Round 2, NearestNeighbor mode: one bucket's outcome on one query. A query
 /// is probed against several buckets, so the requester receives several of
 /// these per entity and reduces them; `found == 0` still carries `dist` so a
 /// refusal can name the nearest distance actually found anywhere.
@@ -721,7 +721,7 @@ Result<CommGraph> CommGraph::build(int base_comm_handle,
         route(out.take(), &got1);
       }
 
-      // Reconcile, on the bucket rank, and route the verdict home.
+      // Reconcile, on the bucket rank, and route the outcome home.
       std::vector<Envelope> got2;
       {
         Outbox out(usize);
@@ -1099,7 +1099,7 @@ Result<CommGraph> CommGraph::build(int base_comm_handle,
     abort_job(ucomm, "an unknown exception building the directory");
   }
 
-  // -- Agree the verdict ---------------------------------------------------
+  // -- Agree the outcome ---------------------------------------------------
   {
     auto      e = static_cast<int>(err);
     int       agreed = e;
@@ -1107,7 +1107,7 @@ Result<CommGraph> CommGraph::build(int base_comm_handle,
     if (rc != MPI_SUCCESS) {
       return finish(Failure{"E-COMMGRAPH-COMM",
                           "MPI_Allreduce failed while agreeing the rendezvous "
-                          "verdict"});
+                          "outcome"});
     }
     if (agreed != 0) {
       if (err != Err::None) return finish(Failure{code_of(err), detail});
