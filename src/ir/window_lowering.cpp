@@ -31,6 +31,7 @@
 #include "fuse/ir/lowering.hpp"
 #include "fuse/ir/op.hpp"
 
+#include <optional>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -60,16 +61,73 @@ std::vector<ComponentId> members_in_first_seen_order(
   return members;
 }
 
+// Mirrors fuse::window_length()'s OWN resolution logic (fuse/schedule/
+// window.hpp/window.cpp) exactly, EXCEPT it reports failure as
+// `std::nullopt` rather than a `Failure`: `ir` sits below `schedule`
+// (docs/dev/layering.md), so this layer cannot call window_length()
+// itself, and lower() has no refusal code of its own for a malformed
+// CouplingWindowScope -- that refusal is validate_coupling_window()'s
+// job, reached moments later by schedule(). A nullopt here means "do not
+// widen this member's exported field past its own declared shape" --
+// today's behaviour, before this window ever existed -- leaving the
+// actual diagnostic (E-SCHED-WINDOW-AMBIGUOUS/COMPONENT/INTERVAL) to the
+// check downstream that is equipped to report it.
+std::optional<Rational> window_length_for_lowering(
+    const CouplingGraph& g, const CouplingWindowScope& scope) {
+  const bool has_component = scope.window_component.has_value();
+  const bool has_explicit = scope.explicit_interval.has_value();
+  if (has_component == has_explicit) return std::nullopt;
+  if (has_explicit) {
+    const Rational len = *scope.explicit_interval;
+    return len > Rational{0} ? std::optional<Rational>{len} : std::nullopt;
+  }
+  const std::optional<ComponentId> found =
+      g.find_component(*scope.window_component);
+  if (!found.has_value()) return std::nullopt;
+  const Rational len = g.component(*found).interval;
+  return len > Rational{0} ? std::optional<Rational>{len} : std::nullopt;
+}
+
+// How many `components` THIS member's own exported field carries once it
+// crosses a coupling window: `spec.components` scalar/vector/tensor
+// entries per element, TIMES `window_sample_capacity()` (fuse/model/
+// coupling_graph.hpp) samples across the window -- the user's decision,
+// carried through from field width already ("a time window's field
+// transfer carries the provider's K-sample waveform as K components of
+// one field"). `window_sample_capacity()` is the SAME function
+// validate_coupling_window()'s own E-SCHED-WINDOW-CAPACITY calls, so a
+// malformed scope that lowering could not resolve above (nullopt) simply
+// leaves the field at its own declared width here -- harmless, since
+// schedule() refuses the malformed scope before anything reads that
+// field's width for real.
+std::size_t window_export_width(const CouplingGraph& g,
+                                const IterationRegionDecl& decl,
+                                ComponentId member, FieldId exported) {
+  const FieldSpec& spec = g.field(exported);
+  const CouplingWindowScope& scope = *decl.window_scope;
+  const std::optional<Rational> window_len = window_length_for_lowering(g, scope);
+  if (!window_len.has_value()) return static_cast<std::size_t>(spec.components);
+  const Rational interval = g.component(member).interval;
+  const DtPolicy policy =
+      scope.policy_for(g.component(member).name).value_or(DtPolicy::Adjustable);
+  const std::size_t k = window_sample_capacity(*window_len, interval, policy);
+  return static_cast<std::size_t>(spec.components) * k;
+}
+
 // The type a field has as it leaves its component. Duplicated from
 // lowering.cpp's own file-local helper of the same shape (anonymous
 // namespace, not exported) rather than shared, to keep this pass
-// self-contained.
-ValueType window_source_type(const CouplingGraph& g, FieldId f) {
+// self-contained. `components` is the caller's own choice (today, always
+// `window_export_width()`'s result for a window-scoped export) rather
+// than `spec.components` directly, so this function stays a pure
+// type-assembly helper with no window-width policy of its own.
+ValueType window_source_type(const CouplingGraph& g, FieldId f,
+                             std::size_t components) {
   const FieldSpec& spec = g.field(f);
   const ComponentId owner = g.owner_of(f);
   return ValueType{.kind = ValueKind::Instant,
                    .region = spec.region,
-                   .components = spec.components,
+                   .components = static_cast<int>(components),
                    .units = spec.units,
                    .conservation = spec.conservation,
                    .time = TimeLevel::current(),
@@ -143,6 +201,20 @@ std::unordered_set<std::uint32_t> window_imported_fields(
   return out;
 }
 
+std::size_t window_import_width(const CouplingGraph& g, FieldId f) {
+  for (std::uint32_t i = 0; i < g.iteration_region_count(); ++i) {
+    const IterationRegionDecl& decl = g.iteration_region(IterationRegionIdx{i});
+    if (!decl.window_scope.has_value()) continue;
+    for (const ChannelId cid : decl.channels) {
+      const Channel& ch = g.channel_at(cid);
+      if (ch.target.value() != f.value()) continue;
+      const ComponentId provider = g.owner_of(ch.source);
+      return window_export_width(g, decl, provider, ch.source);
+    }
+  }
+  return static_cast<std::size_t>(g.field(f).components);
+}
+
 void seed_window_source_arcs(LoweringContext& ctx) {
   const CouplingGraph& g = ctx.graph;
   for (std::uint32_t i = 0; i < g.iteration_region_count(); ++i) {
@@ -153,7 +225,8 @@ void seed_window_source_arcs(LoweringContext& ctx) {
       const FieldId exported = member_exported_field(g, decl, m);
       if (!exported.valid()) continue;
       const ArcId out = ctx.dag.add_arc(
-          window_source_type(g, exported),
+          window_source_type(g, exported,
+                             window_export_width(g, decl, m, exported)),
           window_qualified(g, exported) + "/window");
       ctx.source_arc[exported.value()] = out;
       ctx.field_arc[exported.value()] = out;

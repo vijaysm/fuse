@@ -361,6 +361,40 @@ namespace detail {
   return detail::is_jacobi_window_channel(g, ch);
 }
 
+/// The exact number of waveform samples one member's own outgoing
+/// window-scoped field must carry to cover one coupling window: at most
+/// `ceil(window_length / interval)` substep-END samples, plus the
+/// window-START sample, plus one more for a `DtPolicy::Fixed` member's
+/// possible straddling overshoot sample (`WindowSubstep::straddle`,
+/// `fuse::detail::plan_substeps()`, `fuse/runtime/window_coupler.hpp`).
+///
+/// EXACT Rational arithmetic, never `std::ceil` on a `double`: this number
+/// now fixes a COMPILED field width (`window_source_type()`,
+/// `src/ir/window_lowering.cpp`) as well as `validate_coupling_window()`'s
+/// own `E-SCHED-WINDOW-CAPACITY` refusal (`src/schedule/window.cpp`) --
+/// the SAME function, called from both, so the two cannot disagree about
+/// how wide a window-scoped field is. Model layer (not schedule or ir),
+/// since `ir` sits below `schedule` (docs/dev/layering.md) and
+/// `window_lowering.cpp` must reach this from `lower()` itself, the same
+/// reason `effective_channel_lag()` lives here.
+///
+/// `interval` not positive: returns 1 (a harmless minimum). The caller's
+/// own gate (`E-SCHED-WINDOW-SHORTEN`/`E-SCHED-WINDOW-INTERVAL`) is what
+/// actually refuses that case; this function never fails, matching
+/// `effective_channel_lag()`'s own "never fails, refusal is someone
+/// else's job" shape.
+[[nodiscard]] inline std::size_t window_sample_capacity(
+    Rational window_length, Rational interval, DtPolicy policy) {
+  if (!(interval > Rational{0})) return 1;
+  const Rational ratio = window_length / interval;
+  std::int64_t substeps = ratio.num() / ratio.den();
+  if (ratio.num() % ratio.den() != 0) ++substeps;
+  if (substeps < 0) substeps = 0;
+  std::size_t needed = static_cast<std::size_t>(substeps) + 1;
+  if (policy == DtPolicy::Fixed) needed += 1;
+  return needed;
+}
+
 inline Channel& ChannelBuilder::target() { return graph_->channel_mut(id_); }
 
 inline IterationRegionDecl& IterationBuilder::target() {
