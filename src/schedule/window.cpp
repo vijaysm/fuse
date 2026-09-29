@@ -1,7 +1,6 @@
 #include "fuse/schedule/window.hpp"
 
 #include <algorithm>
-#include <cmath>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -247,18 +246,11 @@ Result<void> validate_coupling_window(const CouplingGraph& g,
                                               // this gate's concern.
 
     // How many samples would this member's own outgoing Waveform need to
-    // cover one window? At most ceil(window/interval) substep-end samples,
-    // plus the window-start sample, plus one more for a Fixed member's
-    // straddling overshoot sample.
-    const Rational ratio = window / interval;
-    // ratio.to_double() is safe here: it is used only to size a capacity
-    // check, never as a scheduling decision (those stay exact Rational
-    // arithmetic in WindowCoupler).
-    const double substeps_d = std::ceil(ratio.to_double() - 1e-9);
-    std::size_t substeps =
-        substeps_d > 0.0 ? static_cast<std::size_t>(substeps_d) : 0;
-    std::size_t needed = substeps + 1 /* window-start sample */;
-    if (p.policy == DtPolicy::Fixed) needed += 1;  // possible straddle
+    // cover one window? fuse::window_sample_capacity() (fuse/model/
+    // coupling_graph.hpp), in EXACT Rational arithmetic -- the SAME
+    // function window_lowering.cpp calls to size the compiled field, so
+    // this check and that width cannot disagree.
+    const std::size_t needed = window_sample_capacity(window, interval, p.policy);
     if (needed > waveform_capacity) {
       fail("E-SCHED-WINDOW-CAPACITY",
            "component '" + p.component + "' would need " +

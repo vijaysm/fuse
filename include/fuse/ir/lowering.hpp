@@ -201,6 +201,18 @@ void build_iteration_regions(LoweringContext& ctx);
 [[nodiscard]] std::unordered_set<std::uint32_t> window_imported_fields(
     const CouplingGraph& g);
 
+/// Time windows track (C3): the `components` count field `f`'s own `Sink`
+/// must be built with, when `f` is a window-scoped import (i.e.
+/// `window_imported_fields(g)` names it) -- exactly the SAME width its
+/// PROVIDER's own exported field carries (the identical K-sample flat
+/// array, delivered unchanged; see `window_source_type()`'s own widening
+/// in window_lowering.cpp), never the field's own declared
+/// `FieldSpec::components` alone. Falls back to `g.field(f).components`
+/// (today's behaviour) for a field that is not actually a window import
+/// -- callers only use this after checking `window_imported_fields()`.
+[[nodiscard]] std::size_t window_import_width(const CouplingGraph& g,
+                                              FieldId f);
+
 /// Time windows track: pre-creates the bare output ARC (no producing node
 /// yet) for every window-scoped region member that owns a channel's
 /// source field, and seeds `ctx.source_arc`/`ctx.field_arc` with it --
