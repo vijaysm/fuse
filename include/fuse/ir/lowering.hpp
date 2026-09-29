@@ -6,6 +6,7 @@
 #include <functional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -59,6 +60,19 @@ struct LoweringContext {
   Diagnostics&                              diags;
   std::unordered_map<std::uint32_t, ArcId>  field_arc;
   std::unordered_map<std::uint32_t, ArcId>  source_arc;
+
+  /// Time windows track: `sink_arc[f]` is field `f`'s own `Sink` node's
+  /// output arc, populated by `lower()`'s step 3 (one `Sink` per
+  /// `Requires`/`Bidirectional` field that has a writer) as each one is
+  /// created. Unlike `field_arc[f]` (the value delivered TO the Sink),
+  /// this is the Sink's own OUTPUT -- what `finish_window_regions()`
+  /// (src/ir/window_lowering.cpp) needs for an importing member's
+  /// `OpAttrs::window_import`, which must name the arc the field transfer
+  /// DELIVERS on the importer's own mesh and ranks, never the exporter's
+  /// raw output directly (that would be a real edge into a node with
+  /// empty inputs on the WRONG side of the transfer, and on the wrong
+  /// placement besides).
+  std::unordered_map<std::uint32_t, ArcId>  sink_arc;
 
   /// Every arc that writes a field, in channel declaration order. More than
   /// one is legal exactly when the graph declares how to combine them; the
@@ -165,6 +179,81 @@ void insert_derived_ops(LoweringContext& ctx, ChannelId cid);
 /// residual arcs, and fills `IterationRegion::carried` from
 /// derive_checkpoint_set() below (Phase 7 Task 7.2).
 void build_iteration_regions(LoweringContext& ctx);
+
+/// Time windows track: every field a window-scoped iteration region's
+/// channels source FROM a member component (`fuse::CouplingWindowScope`,
+/// `fuse/model/iteration.hpp`) -- the field an exporting member's own
+/// `OpKind::WindowAdvance` node (`finish_window_regions()` below) produces
+/// instead. `lower()`'s step 1 must not build an ordinary `Source` node
+/// for these; `seed_window_source_arcs()` is what does, in their place.
+[[nodiscard]] std::unordered_set<std::uint32_t> window_provided_fields(
+    const CouplingGraph& g);
+
+/// Time windows track: every field a window-scoped iteration region's
+/// channels deliver TO a member component -- the field whose `Sink` must
+/// exist BEFORE `finish_window_regions()` runs, because that member's own
+/// `OpKind::WindowAdvance` node's `OpAttrs::window_import` names this
+/// Sink's output arc (`ctx.sink_arc`). `lower()`'s step 3 creates this
+/// subset of Sinks FIRST, ahead of `build_iteration_regions()`, and every
+/// other required field's Sink afterwards, in its ordinary position --
+/// so a graph with no window-scoped region (for which this is always
+/// empty) sees no change in node creation order at all.
+[[nodiscard]] std::unordered_set<std::uint32_t> window_imported_fields(
+    const CouplingGraph& g);
+
+/// Time windows track: pre-creates the bare output ARC (no producing node
+/// yet) for every window-scoped region member that owns a channel's
+/// source field, and seeds `ctx.source_arc`/`ctx.field_arc` with it --
+/// exactly what `lower()`'s ordinary step 1 (`Source` per provided field)
+/// would have done, had the field's value come from a `Source` rather
+/// than from this member's own `OpKind::WindowAdvance` node.
+///
+/// Called from `lower()` right after step 1 and BEFORE step 2 (the
+/// ordinary per-channel lowering rule, run UNCHANGED for a window-scoped
+/// region's own channels -- the user's chosen design: waveforms travel
+/// through the ordinary Remap/Transport/Epoch operations, not around
+/// them): that rule reads `ctx.source_arc[[the channel's source field]]`
+/// for ANY channel, window-scoped or not, and this is what gives a
+/// window-scoped one something real to read.
+///
+/// Only the ARC is created here, not the WindowAdvance NODE itself:
+/// `OperatorDAG` is append-only with no node-mutation API, and that
+/// node's OWN `OpAttrs::window_import` cannot be known until the
+/// PARTNER channel's `Sink` exists, which is not until `lower()`'s step 3
+/// has run -- see `finish_window_regions()`.
+void seed_window_source_arcs(LoweringContext& ctx);
+
+/// Time windows track: creates the actual `OpKind::WindowAdvance` node for
+/// every member of every window-scoped iteration region, in
+/// `members_in_first_seen_order()`'s (a duplicate of `fuse::
+/// window_region_members()`, `fuse/schedule/window.hpp` -- `ir` cannot
+/// depend on `schedule`, docs/dev/layering.md) order, against the output
+/// arc `seed_window_source_arcs()` already created for it.
+///
+/// Each node has EMPTY `inputs`, like `Source`: this member's own
+/// exported field transfer reads this node's output as a REAL edge
+/// (`ctx.source_arc`), which is fine -- the node itself has nothing
+/// upstream to close a cycle with -- but the reverse, this node reading
+/// its PARTNER's output as a real edge, would (measured directly, an
+/// earlier pass of this track: schedule() refused with only 2 of 12 nodes
+/// topologically orderable). `OpAttrs::window_import` instead names the
+/// arc the field transfer INTO this member actually DELIVERS -- that
+/// channel's own `Sink` output (`ctx.sink_arc`, populated by `lower()`'s
+/// step 3, which must therefore run before this function), on this
+/// member's own mesh and ranks, never the partner's raw output directly:
+/// metadata only, ordered by TIME (`TickPhase`/`expand()`'s window-
+/// instance ticking) rather than an SSA edge, and proved correct by
+/// `schedule()`'s own `detail::check_window_causality()`
+/// (`fuse/schedule/plan.hpp`), not by this function. A member that owns
+/// no channel's source in this region (a consumer-only role) gets no node
+/// of its own here; nothing else needs one, since nothing reads such a
+/// member's "state" through this mechanism at all.
+///
+/// Called from `lower()` after step 3 (`Sink` per required field) and
+/// before `build_iteration_regions()`, which groups these nodes into the
+/// region's body by their `origin` channel exactly as it already does for
+/// ordinarily-lowered nodes.
+void finish_window_regions(LoweringContext& ctx);
 
 // ---------------------------------------------------------------------------
 // Spec §5.3: the derived checkpoint set (Task 7.2).

@@ -103,6 +103,7 @@ set_target_properties(fuse-coupler-model PROPERTIES
 add_library(fuse-coupler-ir
   ir/lowering.cpp
   ir/regions.cpp
+  ir/window_lowering.cpp
   ir/rules_channel.cpp
   ir/rules_derived.cpp
   ir/checkpoint.cpp

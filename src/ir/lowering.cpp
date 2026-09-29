@@ -32,6 +32,27 @@ std::string qualified(const CouplingGraph& g, FieldId f) {
   return g.component(g.owner_of(f)).name + "." + g.field(f).name;
 }
 
+/// Step 3 of the driver, factored out so it can run in two passes (see
+/// `lower()`'s own comment on `window_imported_fields` for why): a Sink
+/// for field `f`, consuming whatever `ctx.field_arc[f]` currently holds.
+/// No-op (silently) if `f` has no writer yet -- W-NO-WRITER is validate()'s
+/// job, not this function's, and both call sites below rely on that.
+void emit_field_sink(LoweringContext& ctx, const CouplingGraph& g, FieldId f) {
+  const auto it = ctx.field_arc.find(f.value());
+  if (it == ctx.field_arc.end()) return;
+
+  // Find the channel that wrote it, so the Sink can carry its origin.
+  ChannelId origin;
+  for (std::uint32_t c = 0; c < g.channel_count(); ++c) {
+    if (g.channel_at(ChannelId{c}).target == f) { origin = ChannelId{c}; break; }
+  }
+
+  const ArcId sink_arc = ctx.dag.add_arc(source_type(g, f), qualified(g, f));
+  ctx.dag.add_node(OpKind::Sink, {it->second}, sink_arc, OpAttrs{}, origin,
+                   qualified(g, f));
+  ctx.sink_arc[f.value()] = sink_arc;
+}
+
 /// Step 4 of the driver: every node input must be assignable from its arc.
 void type_check(LoweringContext& ctx) {
   const OperatorDAG& d = ctx.dag;
@@ -89,7 +110,14 @@ bool ir_can_emit(OperatorKind kind) noexcept {
 
 LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy) {
   LoweringResult result;
-  LoweringContext ctx{g, result.dag, result.diags, {}, {}, {}, policy};
+  LoweringContext ctx{g, result.dag, result.diags, {}, {}, {}, {}, policy};
+
+  // Time windows track: every field a window-scoped iteration region's
+  // own exporting member provides instead of an ordinary Source
+  // (seed_window_source_arcs(), called after step 1). Computed once, up
+  // front, since step 1 needs it below.
+  const std::unordered_set<std::uint32_t> window_fields =
+      window_provided_fields(g);
 
   // 1. Source node per provided field.
   //
@@ -103,6 +131,7 @@ LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy) {
     const FieldId f{i};
     const Intent intent = g.field(f).intent;
     if (intent != Intent::Provides && intent != Intent::Bidirectional) continue;
+    if (window_fields.count(i)) continue;  // seed_window_source_arcs() provides this
     const ArcId a = ctx.dag.add_arc(source_type(g, f), qualified(g, f));
     ctx.dag.add_node(OpKind::Source, {}, a, OpAttrs{}, ChannelId{},
                      qualified(g, f));
@@ -110,11 +139,28 @@ LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy) {
     ctx.field_arc[i] = a;
   }
 
+  // Time windows track: pre-creates the bare output arc (no producing
+  // node yet) for every window-scoped region member that owns a
+  // channel's source field, seeding ctx.source_arc/ctx.field_arc exactly
+  // as the ordinary Source loop above would have -- so step 2's ordinary
+  // per-channel rule, run UNCHANGED below for a window-scoped region's
+  // own channels too, has something real to read as that channel's
+  // source. See seed_window_source_arcs()'s own doc comment
+  // (fuse/ir/lowering.hpp) for why the actual WindowAdvance NODE is not
+  // created until much later (finish_window_regions(), after step 3).
+  seed_window_source_arcs(ctx);
+
   // 2. One rule application per channel, in id order. The channel rule
   // itself calls insert_derived_ops between Remap and Relax (see
   // rules_channel.cpp): Relax is user-authored and must consume whatever
   // Constrain/Diagnose produced, which is only possible if the derived pass
   // runs before Relax's node is created, not after the whole rule returns.
+  //
+  // Time windows track: a window-scoped region's own channels run through
+  // this SAME rule, unchanged -- the user's chosen design. Their source
+  // reads back the arc seed_window_source_arcs() just seeded; their
+  // ordinary Transport/Remap/Epoch chain, and the Sink step 3 builds for
+  // them below, are exactly what any other cross-placement channel gets.
   for (std::uint32_t i = 0; i < g.channel_count(); ++i) {
     const ChannelId cid{i};
     if (!LoweringRegistry::builtin().apply_first_match(ctx, cid)) {
@@ -258,36 +304,60 @@ LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy) {
     }
   }
 
-  build_iteration_regions(ctx);
-
   // 3. Sink node per required field that a channel actually wrote.
   //
   // For a Bidirectional field no channel ever targets, `ctx.field_arc[i]`
-  // found below is still the Source arc step 1 seeded it with (never rebound,
-  // since no channel wrote it) -- so the Sink built here deliberately
-  // consumes the field's own Source output, producing a degenerate
-  // Source -> Sink self-copy. This looks unintended from here alone; it is
-  // not. See LoweringContext's `field_arc` doc comment in
-  // include/fuse/ir/lowering.hpp (lines ~39-46) for why prove_acyclic() and
-  // expand() are written to expect exactly this shape, and
+  // found by `emit_field_sink()` is still the Source arc step 1 seeded it
+  // with (never rebound, since no channel wrote it) -- so the Sink built
+  // there deliberately consumes the field's own Source output, producing
+  // a degenerate Source -> Sink self-copy. This looks unintended from
+  // here alone; it is not. See LoweringContext's `field_arc` doc comment
+  // in include/fuse/ir/lowering.hpp (lines ~39-46) for why prove_acyclic()
+  // and expand() are written to expect exactly this shape, and
   // Lowering.UnwrittenBidirectionalFieldSelfCopiesThroughOneSink in
   // test/unit/lowering_test.cpp for the regression test that pins it.
+  //
+  // Time windows track: split into two passes rather than moved wholesale,
+  // to keep this step's own node-creation ORDER unchanged for every graph
+  // with no window-scoped region (which is every graph before this
+  // track, and every one after it that does not opt in): only a field a
+  // window member actually IMPORTS needs its Sink before
+  // build_iteration_regions() (so finish_window_regions() below can read
+  // its output arc via ctx.sink_arc, for that importing member's
+  // OpAttrs::window_import); every other required field's Sink -- which
+  // is every one of them on a graph with no window-scoped region --
+  // still lands exactly where step 3 always has, after
+  // build_iteration_regions(), so its node ids and the golden IR fixtures
+  // that pin them are unaffected.
+  const std::unordered_set<std::uint32_t> window_imported =
+      window_imported_fields(g);
   for (std::uint32_t i = 0; i < g.field_count(); ++i) {
     const FieldId f{i};
     const Intent intent = g.field(f).intent;
     if (intent != Intent::Requires && intent != Intent::Bidirectional) continue;
-    const auto it = ctx.field_arc.find(i);
-    if (it == ctx.field_arc.end()) continue;  // W-NO-WRITER is validate()'s job
+    if (!window_imported.count(i)) continue;
+    emit_field_sink(ctx, g, f);
+  }
 
-    // Find the channel that wrote it, so the Sink can carry its origin.
-    ChannelId origin;
-    for (std::uint32_t c = 0; c < g.channel_count(); ++c) {
-      if (g.channel_at(ChannelId{c}).target == f) { origin = ChannelId{c}; break; }
-    }
+  // Time windows track: must run after the window-imported Sink pass
+  // above (an importing member's window_import names a Sink's own output
+  // arc, via ctx.sink_arc) and before build_iteration_regions(), which
+  // groups the WindowAdvance nodes this creates into the region's body by
+  // their origin channel, exactly as it already does for
+  // ordinarily-lowered nodes.
+  finish_window_regions(ctx);
 
-    const ArcId sink_arc = ctx.dag.add_arc(source_type(g, f), qualified(g, f));
-    ctx.dag.add_node(OpKind::Sink, {it->second}, sink_arc, OpAttrs{}, origin,
-                     qualified(g, f));
+  build_iteration_regions(ctx);
+
+  // 3 (continued). Every other required field's Sink, in the same order
+  // step 3 has always used -- this is the ENTIRE step 3 loop for a graph
+  // with no window-scoped region, since window_imported is then empty.
+  for (std::uint32_t i = 0; i < g.field_count(); ++i) {
+    const FieldId f{i};
+    const Intent intent = g.field(f).intent;
+    if (intent != Intent::Requires && intent != Intent::Bidirectional) continue;
+    if (window_imported.count(i)) continue;  // already built above
+    emit_field_sink(ctx, g, f);
   }
 
   // 4. Type check.
