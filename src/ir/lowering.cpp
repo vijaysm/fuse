@@ -66,8 +66,14 @@ void type_check(LoweringContext& ctx) {
 
     bool allow_time = false;
     if (n.origin.valid() && n.origin.value() < ctx.graph.channel_count()) {
-      allow_time =
-          !ctx.graph.channel_at(n.origin).time_level_mismatch_reason.empty();
+      // channel_time_mismatch_is_authorized(), not the channel's own
+      // `time_level_mismatch_reason` directly: a `WaveformIteration::
+      // Jacobi` window's own auto-lag (effective_channel_lag(),
+      // src/ir/rules_channel.cpp step 4) creates this same mismatch on a
+      // channel the user may never have called `.lag()` or
+      // `.allow_time_level_mismatch()` on at all, and the compiler that
+      // chose to apply the shift is what authorizes it.
+      allow_time = channel_time_mismatch_is_authorized(ctx.graph, n.origin);
     }
     if (!assignable_from(produced, required, allow_time)) {
       ctx.diags.add(Severity::Error, "E-IR-TYPE",

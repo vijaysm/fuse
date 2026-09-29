@@ -541,6 +541,15 @@ namespace detail {
 // invalid/out-of-range producer or origin -- a hand-built instruction
 // stream with no real CouplingGraph behind it (this track's own Unit P
 // tests) as much as a graph with no matching channel at all.
+//
+// Reads `effective_channel_lag()` (fuse/model/coupling_graph.hpp), not
+// `Channel::lag` directly: the compiled graph is the single source of
+// truth for which transfers are loop-carried, and `lower()` (src/ir/
+// rules_channel.cpp step 4) applies that SAME function's shift to the
+// arc this reads. A `WaveformIteration::Jacobi` window's transfers are
+// therefore already loop-carried in the compiled graph by the time this
+// runs, whatever `Channel::lag` the user wrote -- this function does not
+// need to know about `WaveformIteration` at all, and does not.
 [[nodiscard]] bool window_import_is_lagged(const CouplingGraph& g,
                                            const OperatorDAG& dag,
                                            ArcId imp) {
@@ -549,7 +558,7 @@ namespace detail {
   if (!producer.valid() || producer.value() >= dag.node_count()) return false;
   const ChannelId origin = dag.node(producer).origin;
   if (!origin.valid() || origin.value() >= g.channel_count()) return false;
-  return g.channel_at(origin).lag != 0;
+  return effective_channel_lag(g, origin) != 0;
 }
 
 Result<void> check_window_causality(

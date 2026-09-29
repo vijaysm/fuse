@@ -200,6 +200,33 @@ TEST(WindowScope, IncommensurateSevenThirteenWindowLengthIsTheNamedComponent) {
   EXPECT_EQ(len.value(), Rational{13});
 }
 
+// `scope_naming_coarse()` defaults to `WaveformIteration::Jacobi`, and
+// `two_clock_fixture()` lags neither of its two channels -- `Well
+// FormedScopeIsAccepted` above already proves Jacobi needs no `.lag()` at
+// all. `GaussSeidel` on the exact same, still-unlagged fixture must be
+// refused: with neither direction cut, the two-component cycle has
+// nothing to break it.
+TEST(WindowScope, GaussSeidelWithNoLagAtAllIsRefused) {
+  const TwoClockFixture f = two_clock_fixture(Rational{1}, Rational{1, 4});
+  CouplingWindowScope s = scope_naming_coarse();
+  s.iteration = fuse::WaveformIteration::GaussSeidel;
+  const auto r = fuse::validate_coupling_window(f.graph, f.region, s);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-SCHED-WINDOW-GAUSSSEIDEL-NOLAG");
+}
+
+// Lagging either one of the two channels breaks the cycle, so GaussSeidel
+// is schedulable again.
+TEST(WindowScope, GaussSeidelWithOneChannelLaggedIsAccepted) {
+  TwoClockFixture f = two_clock_fixture(Rational{1}, Rational{1, 4});
+  ASSERT_EQ(f.region.channels.size(), 2u);
+  f.graph.channel(f.region.channels[0]).lag(1);
+  CouplingWindowScope s = scope_naming_coarse();
+  s.iteration = fuse::WaveformIteration::GaussSeidel;
+  const auto r = fuse::validate_coupling_window(f.graph, f.region, s);
+  EXPECT_TRUE(r.ok()) << (r.ok() ? "" : r.error().message);
+}
+
 TEST(WindowScope, ExplicitIntervalNeedNotMatchAnyComponent) {
   const TwoClockFixture f = two_clock_fixture(Rational{7}, Rational{5});
   CouplingWindowScope s;

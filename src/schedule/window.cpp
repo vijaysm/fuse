@@ -2,8 +2,78 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace fuse {
+
+namespace {
+
+// GaussSeidel needs at least one field transfer in the region's own cycle
+// broken by `Channel::lag`, exactly as an ordinary (non-window) iteration
+// region does: a cycle with every edge unlagged has no valid sweep order
+// (each member would need the OTHER's not-yet-computed current iterate).
+// Built directly over the DECLARED graph -- `region.channels`, not the
+// lowered/expanded DAG -- so this runs at `validate_coupling_window()`
+// time, before any lowering, with a message that names the fix.
+//
+// Only UNLAGGED channels are edges: a lagged channel already reads its
+// partner's PREVIOUS iterate, so it cannot be part of an unresolvable
+// cycle whatever else the group contains. Self-loops (a channel whose
+// source and target are owned by the same component) contribute nothing
+// to a cross-component cycle and are skipped.
+[[nodiscard]] bool has_unbroken_cycle(const CouplingGraph& g,
+                                      const IterationRegionDecl& region) {
+  std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> adj;
+  for (const ChannelId c : region.channels) {
+    const Channel& ch = g.channel_at(c);
+    if (ch.lag != 0) continue;
+    const std::uint32_t from = g.owner_of(ch.source).value();
+    const std::uint32_t to   = g.owner_of(ch.target).value();
+    if (from == to) continue;
+    adj[from].push_back(to);
+  }
+
+  std::unordered_set<std::uint32_t> visited;
+  std::unordered_set<std::uint32_t> on_stack;
+  const auto dfs = [&](std::uint32_t start) {
+    // Explicit stack, not recursion: the number of members in one window
+    // is small, but nothing here bounds it, and a cycle check must not
+    // itself be the thing that overflows the call stack.
+    std::vector<std::pair<std::uint32_t, std::size_t>> stack;
+    stack.push_back({start, 0});
+    visited.insert(start);
+    on_stack.insert(start);
+    while (!stack.empty()) {
+      auto& [v, next] = stack.back();
+      const auto it = adj.find(v);
+      const std::vector<std::uint32_t>* nbrs =
+          (it == adj.end()) ? nullptr : &it->second;
+      if (nbrs != nullptr && next < nbrs->size()) {
+        const std::uint32_t w = (*nbrs)[next];
+        ++next;
+        if (on_stack.count(w)) return true;
+        if (!visited.count(w)) {
+          visited.insert(w);
+          on_stack.insert(w);
+          stack.push_back({w, 0});
+        }
+      } else {
+        on_stack.erase(v);
+        stack.pop_back();
+      }
+    }
+    return false;
+  };
+
+  for (const auto& [v, unused] : adj) {
+    (void)unused;
+    if (!visited.count(v) && dfs(v)) return true;
+  }
+  return false;
+}
+
+}  // namespace
 
 std::vector<ComponentId> window_region_members(
     const CouplingGraph& g, const IterationRegionDecl& region) {
@@ -96,6 +166,19 @@ Result<void> validate_coupling_window(const CouplingGraph& g,
          "CouplingWindowScope::order (" + std::to_string(scope.order) +
              ") must be >= 2: the interpolant and extrapolant at a window "
              "boundary are required to be at least second order");
+  }
+
+  if (scope.iteration == WaveformIteration::GaussSeidel &&
+      has_unbroken_cycle(g, region)) {
+    fail("E-SCHED-WINDOW-GAUSSSEIDEL-NOLAG",
+         "iteration region '" + region.name +
+             "' is WaveformIteration::GaussSeidel, but every field "
+             "transfer among its members is unlagged: the group closes a "
+             "cycle with nothing to break it, exactly as an ordinary "
+             "(non-window) iteration region with no lag does. Either lag "
+             "one direction (Channel::lag(...)), or set "
+             "CouplingWindowScope::iteration = WaveformIteration::Jacobi, "
+             "which needs no .lag() at all");
   }
 
   const std::vector<ComponentId> members = window_region_members(g, region);
