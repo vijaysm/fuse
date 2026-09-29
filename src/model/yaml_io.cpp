@@ -147,6 +147,9 @@ const char* const kFilterNames[]  = {"None", "QR1", "QR2", "QR3"};
 // Time windows track: must stay in DtPolicy's declaration order
 // (fuse/model/iteration.hpp), same reasoning as the three tables above.
 const char* const kDtPolicyNames[] = {"Fixed", "Adjustable"};
+// Time windows track: must stay in WaveformIteration's declaration order
+// (fuse/model/iteration.hpp), same reasoning as the tables above.
+const char* const kWaveformIterationNames[] = {"Jacobi", "GaussSeidel"};
 
 // --- rational parsing ------------------------------------------------------
 
@@ -560,6 +563,8 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
           << YAML::EndMap;
       }
       e << YAML::EndSeq;
+      e << YAML::Key << "iteration" << YAML::Value
+        << to_cstring(scope.iteration);
       e << YAML::EndMap;
     }
     e << YAML::EndMap;
@@ -976,7 +981,7 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
     if (const auto& wn = n["window_scope"]) {
       if (auto e = check_unknown_keys(
               wn, {"window_component", "explicit_interval", "order",
-                   "policies"},
+                   "policies", "iteration"},
               "window_scope block")) {
         return *e;
       }
@@ -1017,6 +1022,15 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
                            "DtPolicy"};
         }
         scope.policies.push_back(std::move(p));
+      }
+      if (wn["iteration"]) {
+        if (!lookup_enum(wn["iteration"].as<std::string>(),
+                         kWaveformIterationNames, scope.iteration)) {
+          return Failure{"E-YAML-PARSE",
+                       "iteration region '" + d.name +
+                           "': window_scope.iteration is not a known "
+                           "WaveformIteration"};
+        }
       }
       d.window_scope = std::move(scope);
     }

@@ -103,6 +103,9 @@ inline CouplingGraph freeze_fixture() {
     scope.policies.push_back({.component = "fluid", .policy = DtPolicy::Fixed});
     scope.policies.push_back(
         {.component = "solid", .policy = DtPolicy::Adjustable});
+    // Non-default like the rest of this scope (v8's reason for the
+    // descriptor version bump): the default is Jacobi.
+    scope.iteration = WaveformIteration::GaussSeidel;
     const_cast<IterationRegionDecl&>(g.iteration_region(IterationRegionIdx{0}))
         .window_scope = std::move(scope);
   }

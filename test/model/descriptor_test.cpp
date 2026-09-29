@@ -334,6 +334,10 @@ TEST(Descriptor, RoundTripPreservesEveryNonDefaultMember) {
   EXPECT_EQ(scope.policies[0].policy, fuse::DtPolicy::Fixed);
   EXPECT_EQ(scope.policies[1].component, "solid");
   EXPECT_EQ(scope.policies[1].policy, fuse::DtPolicy::Adjustable);
+  // v8's reason for the version bump: the default is Jacobi, so a
+  // fixture that round-trips this as GaussSeidel proves the byte is
+  // read, not just defaulted.
+  EXPECT_EQ(scope.iteration, fuse::WaveformIteration::GaussSeidel);
 }
 
 // A region with no window_scope (std::nullopt, the default -- every region
@@ -365,9 +369,35 @@ TEST(Descriptor, RejectsCorruptedWindowScopeDtPolicy) {
         .window_scope = std::move(scope);
   }
   auto bytes = serialize(g);
-  // The policy byte is the last byte serialize() writes for this graph: no
-  // merges, one policy entry (component name "fluid" = 4 bytes + 4-byte
-  // length prefix, then the policy byte).
+  // The policy byte is the second-to-last byte serialize() writes for this
+  // graph: no merges, one policy entry (component name "fluid" = 4 bytes +
+  // 4-byte length prefix, then the policy byte), then v8's own trailing
+  // WaveformIteration byte after it.
+  bytes[bytes.size() - 2] = std::byte{200};
+  const auto r = deserialize(bytes);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-DESC-ENUM");
+}
+
+// Same shape, one byte later: the trailing WaveformIteration byte (v8) is
+// the actual last byte serialize() writes for this graph, and it must be
+// refused exactly like every other enum on the wire when corrupted.
+TEST(Descriptor, RejectsCorruptedWindowScopeIteration) {
+  CouplingGraph g;
+  const auto c = g.add_component(
+      {.name = "fluid", .ranks = {0, 1}, .interval = fuse::Rational{1}});
+  const auto f = g.add_field(c, {.name = "q", .units = u::kWatt});
+  const auto ch = g.add_channel("self", f, f);
+  g.iterate({ch}).name("w");
+  {
+    fuse::CouplingWindowScope scope;
+    scope.explicit_interval = fuse::Rational{1};
+    scope.policies.push_back({.component = "fluid", .policy = fuse::DtPolicy::Fixed});
+    const_cast<fuse::IterationRegionDecl&>(
+        g.iteration_region(fuse::IterationRegionIdx{0}))
+        .window_scope = std::move(scope);
+  }
+  auto bytes = serialize(g);
   bytes.back() = std::byte{200};
   const auto r = deserialize(bytes);
   ASSERT_FALSE(r.ok());
@@ -384,8 +414,8 @@ TEST(Descriptor, RejectsCorruptedWindowScopeDtPolicy) {
 // delivered to the wrong ranks, with nothing to indicate it. The version check
 // is what turns that into an error.
 TEST(Descriptor, SupersededFrozenBytesAreRefusedByThisReader) {
-  for (const char* name :
-       {"waist-v1.bin", "waist-v4.bin", "waist-v5.bin", "waist-v6.bin"}) {
+  for (const char* name : {"waist-v1.bin", "waist-v4.bin", "waist-v5.bin",
+                          "waist-v6.bin", "waist-v7.bin"}) {
     const std::filesystem::path old_golden =
         std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / name;
     ASSERT_TRUE(std::filesystem::exists(old_golden)) << old_golden;
@@ -418,7 +448,7 @@ TEST(Descriptor, TheFrozenV1BytesAreRefusedByThisReader) {
 TEST(Descriptor, MatchesTheFrozenWaistBytes) {
   const auto bytes = fuse::serialize(fuse::testing::freeze_fixture());
   const std::filesystem::path golden =
-      std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / "waist-v7.bin";
+      std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / "waist-v8.bin";
   ASSERT_TRUE(std::filesystem::exists(golden)) << golden;
 
   std::ifstream in(golden, std::ios::binary);

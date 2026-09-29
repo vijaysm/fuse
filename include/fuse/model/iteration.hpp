@@ -288,6 +288,43 @@ enum class DtPolicy {
   return "?";
 }
 
+/// Time windows track: which classical waveform-relaxation scheme a
+/// coupling window's own sweep loop runs (Gander & Vandewalle, "Analysis of
+/// the parareal time-parallel time-integration method", SIAM J. Sci.
+/// Comput. 29(2), 2007, and the earlier waveform-relaxation literature it
+/// surveys -- these two names are exactly the classical Jacobi and
+/// Gauss-Seidel iterations applied to the window's own coupled fixed-point
+/// map, not FUSE-specific terms). Chosen per REGION (`CouplingWindowScope`
+/// carries it, not per-channel): every member of one window sweeps under
+/// the SAME scheme.
+enum class WaveformIteration {
+  /// Every field transfer inside the window's own group is loop-carried,
+  /// whatever `Channel::lag` the user wrote: every member reads every
+  /// partner's PREVIOUS iterate for the whole sweep, exactly as
+  /// `WindowCoupler::sweep_window()` does today (its own `delivered`
+  /// waveforms are rebuilt only BETWEEN sweeps, from the just-accelerated
+  /// iterate, never mid-sweep). The default: it needs no `.lag()` at all to
+  /// be schedulable, since neither direction's own field transfer is ever
+  /// required to have run earlier in the SAME sweep.
+  Jacobi,
+  /// Exactly the field transfers the user declared `.lag(...)` on are
+  /// loop-carried; every other direction is unlagged and must be delivered
+  /// by an EARLIER instruction in the same sweep, same as an ordinary
+  /// (non-window) implicit coupling group today. A two-way window with no
+  /// lagged transfer at all is refused: with neither direction cut, the
+  /// group closes an unbroken cycle with nothing to break it, exactly as
+  /// an ordinary iteration region with no lag does today.
+  GaussSeidel,
+};
+
+[[nodiscard]] constexpr const char* to_cstring(WaveformIteration w) noexcept {
+  switch (w) {
+    case WaveformIteration::Jacobi:      return "Jacobi";
+    case WaveformIteration::GaussSeidel: return "GaussSeidel";
+  }
+  return "?";
+}
+
 /// One member's declared role inside a coupling window
 /// (`CouplingWindowScope::policies`).
 struct WindowMemberPolicy {
@@ -324,6 +361,12 @@ struct CouplingWindowScope {
   /// be >= 2 per the user's ruling ("interpolation and extrapolation are at
   /// least second order"); `Adjustable`/`Fixed` do not change this floor.
   int order = 2;
+
+  /// Time windows track: which classical waveform-relaxation scheme this
+  /// window's own sweep loop runs. Defaults to `WaveformIteration::Jacobi`
+  /// -- the scheme `WindowCoupler` already implements today, and the one
+  /// that needs no `.lag()` declaration at all to be schedulable.
+  WaveformIteration iteration = WaveformIteration::Jacobi;
 
   [[nodiscard]] std::optional<DtPolicy> policy_for(
       std::string_view component) const {
