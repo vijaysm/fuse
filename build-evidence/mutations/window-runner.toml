@@ -136,3 +136,33 @@ test = "runtime.window_coupler"
 # WindowCouplerRefusals and 1 WindowCouplerLayout test, which do not depend
 # on temporal order, were unaffected. File restored and `cmp`-verified
 # byte-identical to the pre-mutation copy afterward.
+
+[[mutation]]
+id = "window-coupler-gaussseidel-sweep-ignores-topological-order"
+area = "runtime/window_coupler"
+describes = "WaveformIteration::GaussSeidel's sweep_order_ is always the bare declaration-order identity permutation, never topological_sweep_order()'s own result: the constructor's GaussSeidel branch is short-circuited false, so the main sweep loop iterates members in the order they were passed to WindowCoupler::create(), not the order the unlagged-channel graph actually requires. Invisible on every fixture that happens to declare its unlagged-channel provider member before its consumer (the two orders coincide by construction there); becomes Jacobi's own behaviour -- consumer reads the provider's SWEEP-START snapshot, not that SAME iterate's fresh output -- the moment a caller declares the provider member second."
+file = "src/runtime/window_coupler.cpp"
+old = """  if (cfg_.iteration == WaveformIteration::GaussSeidel) {
+    sweep_order_ = *topological_sweep_order(members_.size(), channels_);
+  } else {
+    sweep_order_.resize(members_.size());
+    for (std::size_t i = 0; i < members_.size(); ++i) sweep_order_[i] = i;
+  }"""
+new = """  if (false && cfg_.iteration == WaveformIteration::GaussSeidel) {  // MUTATED: always declaration order
+    sweep_order_ = *topological_sweep_order(members_.size(), channels_);
+  } else {
+    sweep_order_.resize(members_.size());
+    for (std::size_t i = 0; i < members_.size(); ++i) sweep_order_[i] = i;
+  }"""
+target = "fuse_runtime_window_coupler_test"
+test = "runtime.window_coupler"
+# PROVED (2026-09-29): exactly 1 of 33 WindowCoupler tests failed --
+# WindowCouplerVerification.GaussSeidelResultIsIndependentOfDeclarationOrder,
+# the only test in this file that declares the unlagged provider member
+# SECOND (make_identity_rig_ordered(..., a_declared_first=false)) and
+# compares its recorded values against the SAME problem declared in the
+# other order. All 32 other tests -- none of which declares a member out
+# of topological order -- were unaffected, confirming this specific gap
+# (flagged after the identity-rig/closed-form review of this track) had
+# no other anchor before this test was added. File restored and
+# `cmp`-verified byte-identical to the pre-mutation copy afterward.

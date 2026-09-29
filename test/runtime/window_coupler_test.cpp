@@ -257,8 +257,19 @@ struct TwoMemberIdentityRig {
   std::unique_ptr<WindowCoupler> coupler;
 };
 
-[[nodiscard]] std::unique_ptr<TwoMemberIdentityRig> make_identity_rig(
-    fuse::WaveformIteration mode, int max_iterations = 1,
+// `a_declared_first`: whether A (the UNLAGGED provider -- a2b -- the one
+// Gauss-Seidel's own topological order must run BEFORE its consumer B)
+// occupies `members[0]` or `members[1]`. The declared ORDER must not
+// change the result: `WindowCoupler::create()` derives the actual sweep
+// order from the unlagged-channel graph, not from this vector's own
+// index order (fuse/runtime/window_coupler.cpp's own
+// topological_sweep_order()). Channel indices are looked up by role
+// (`a_idx`/`b_idx`), never hardcoded, so this genuinely exercises the
+// OTHER declaration order rather than silently building the same one
+// twice under a different name.
+[[nodiscard]] std::unique_ptr<TwoMemberIdentityRig> make_identity_rig_ordered(
+    fuse::WaveformIteration mode, bool a_declared_first,
+    int max_iterations = 1,
     AccelConfig accel = AccelConfig{.kind = AccelKind::None}) {
   auto rig = std::make_unique<TwoMemberIdentityRig>();
   WindowMember mA;
@@ -280,16 +291,29 @@ struct TwoMemberIdentityRig {
   cfg.max_iterations = max_iterations;
   cfg.acceleration = accel;
   cfg.iteration = mode;
+
+  const std::size_t a_idx = a_declared_first ? 0 : 1;
+  const std::size_t b_idx = a_declared_first ? 1 : 0;
+  std::vector<WindowMember> members(2);
+  members[a_idx] = mA;
+  members[b_idx] = mB;
   const std::vector<WindowChannel> channels = {
-      {.provider = 0, .consumer = 1, .lagged = false},
-      {.provider = 1, .consumer = 0, .lagged = true}};
-  auto created = WindowCoupler::create({mA, mB}, channels, cfg);
+      {.provider = a_idx, .consumer = b_idx, .lagged = false},
+      {.provider = b_idx, .consumer = a_idx, .lagged = true}};
+  auto created = WindowCoupler::create(members, channels, cfg);
   if (!created.ok()) {
     ADD_FAILURE() << "WindowCoupler::create failed: " << created.error().message;
     return rig;
   }
   rig->coupler = std::move(created.value());
   return rig;
+}
+
+[[nodiscard]] std::unique_ptr<TwoMemberIdentityRig> make_identity_rig(
+    fuse::WaveformIteration mode, int max_iterations = 1,
+    AccelConfig accel = AccelConfig{.kind = AccelKind::None}) {
+  return make_identity_rig_ordered(mode, /*a_declared_first=*/true,
+                                   max_iterations, accel);
 }
 
 }  // namespace
@@ -365,6 +389,40 @@ TEST(WindowCouplerVerification, GaussSeidelAccelerationActsOnlyOnTheLaggedDirect
   EXPECT_NEAR(rig->a.seen[3].required, 68.33333333333333, 1e-9)
       << "reached an exact fixed point by iterate 2";
   EXPECT_NEAR(rig->b.seen[3].required, 36.666666666666664, 1e-9);
+}
+
+// The sweep order Gauss-Seidel actually uses is derived from the
+// UNLAGGED-channel graph (topological_sweep_order(), src/runtime/
+// window_coupler.cpp), never from `members`' own declaration order --
+// so declaring the unlagged provider (A) SECOND instead of first must
+// not change a single recorded value. A mutation that made the sweep
+// iterate in bare declaration order instead would pass every OTHER test
+// in this file (none of them declares A second), and would fail only
+// here: with A declared second, that mutation sweeps B before A, so B
+// would read A's STALE (not-yet-advanced-this-sweep) delivered value --
+// Jacobi's own behaviour, silently substituted for Gauss-Seidel's.
+TEST(WindowCouplerVerification, GaussSeidelResultIsIndependentOfDeclarationOrder) {
+  auto standard = make_identity_rig_ordered(fuse::WaveformIteration::GaussSeidel,
+                                            /*a_declared_first=*/true, 4,
+                                            AccelConfig{.kind = AccelKind::Aitken});
+  (void)standard->coupler->run_window();
+  auto reordered = make_identity_rig_ordered(fuse::WaveformIteration::GaussSeidel,
+                                             /*a_declared_first=*/false, 4,
+                                             AccelConfig{.kind = AccelKind::Aitken});
+  (void)reordered->coupler->run_window();
+
+  ASSERT_EQ(standard->a.seen.size(), reordered->a.seen.size());
+  ASSERT_EQ(standard->b.seen.size(), reordered->b.seen.size());
+  for (std::size_t k = 0; k < standard->a.seen.size(); ++k) {
+    EXPECT_EQ(standard->a.seen[k].iteration, reordered->a.seen[k].iteration) << "k=" << k;
+    EXPECT_EQ(standard->a.seen[k].required, reordered->a.seen[k].required)
+        << "k=" << k << " (A's own required, declared first vs second)";
+  }
+  for (std::size_t k = 0; k < standard->b.seen.size(); ++k) {
+    EXPECT_EQ(standard->b.seen[k].iteration, reordered->b.seen[k].iteration) << "k=" << k;
+    EXPECT_EQ(standard->b.seen[k].required, reordered->b.seen[k].required)
+        << "k=" << k << " (B's own required, declared first vs second)";
+  }
 }
 
 TEST(WindowCouplerVerification, GaussSeidelReadsThePartnersSameIterateOutput) {
