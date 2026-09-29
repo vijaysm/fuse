@@ -174,6 +174,18 @@ struct WindowMember {
 struct WindowChannel {
   std::size_t provider = 0;
   std::size_t consumer = 0;
+  /// Time windows track: meaningful only when `WindowCouplerConfig::
+  /// iteration == WaveformIteration::GaussSeidel` (silently unused under
+  /// the default `Jacobi`, which never reads it -- see that enumerator's
+  /// own docstring, fuse/model/iteration.hpp). `false` (the default): this
+  /// channel is unlagged, so `sweep_window()` refreshes `delivered[provider]`
+  /// the moment `provider`'s own substep loop finishes THIS sweep, and
+  /// `provider`'s own outgoing waveform is not part of the accelerated
+  /// vector (its value is already exact, not relaxed). `true`: this
+  /// channel is loop-carried, so `consumer` reads `provider`'s PREVIOUS
+  /// sweep's value all the way through this one, and `provider`'s
+  /// outgoing waveform IS accelerated.
+  bool        lagged = false;
 };
 
 /// Time windows track: the exchange seam a graph-level front end needs, so
@@ -235,6 +247,13 @@ struct WindowCouplerConfig {
   int                   max_iterations = 50;
   ConvergenceCriterion  convergence;
   AccelConfig           acceleration{.kind = AccelKind::None};
+  /// Which classical waveform-relaxation scheme `sweep_window()` runs
+  /// (`WaveformIteration`'s own docstring, fuse/model/iteration.hpp).
+  /// Default `Jacobi`: every member's substep loop reads the SAME
+  /// snapshot of every other member's waveform for the whole sweep --
+  /// this class's original, and only, behaviour before this field
+  /// existed, and it must stay byte-identical to it.
+  WaveformIteration     iteration = WaveformIteration::Jacobi;
   /// Default interpolation/extrapolation order, used by any `WindowMember`
   /// whose own `order` is 0. Must be >= 2.
   int                   order = 2;
@@ -333,6 +352,32 @@ class WindowCoupler {
   ///   E-RT-WINDOW-ROLLBACK  a `Fixed` member's `component->supports_rollback()`
   ///                          is false (a straddling step MUST be rolled back
   ///                          and recomputed; there is no fallback)
+  ///
+  /// `cfg.iteration == WaveformIteration::GaussSeidel` only (Jacobi sweeps
+  /// declaration order and needs none of this: every member reads the same
+  /// snapshot regardless of when it runs):
+  ///   E-RT-WINDOW-GAUSSSEIDEL-NOLAG   the directed graph of UNLAGGED
+  ///                          channels (provider -> consumer) has a cycle
+  ///                          -- including the "no channel at all is
+  ///                          lagged" case, which is that graph with EVERY
+  ///                          channel in it. No sweep order can make every
+  ///                          unlagged provider run before its consumer,
+  ///                          the one thing this mode promises. The exact
+  ///                          runtime counterpart of `validate_coupling_
+  ///                          window()`'s own `E-SCHED-WINDOW-GAUSSSEIDEL-
+  ///                          NOLAG` (fuse/schedule/window.hpp) -- one
+  ///                          method (a cycle check over the unlagged-edge
+  ///                          graph), one meaning, at both the compiled-
+  ///                          graph and the standalone-driver level.
+  ///   E-RT-WINDOW-GAUSSSEIDEL-MIXED-LAG   a member provides both a lagged
+  ///                          AND an unlagged outgoing channel. `delivered
+  ///                          [provider]` is one waveform per provider, not
+  ///                          one per channel, so it cannot simultaneously
+  ///                          be "this sweep's fresh value" (what the
+  ///                          unlagged consumer needs) and "last sweep's
+  ///                          value" (what the lagged consumer needs).
+  ///                          Refused rather than silently picking one and
+  ///                          getting the other's consumer wrong.
   [[nodiscard]] static Result<std::unique_ptr<WindowCoupler>> create(
       std::vector<WindowMember> members, std::vector<WindowChannel> channels,
       WindowCouplerConfig cfg);
@@ -384,6 +429,18 @@ class WindowCoupler {
   std::vector<WindowChannel> channels_;
   WindowCouplerConfig        cfg_;
   std::vector<MemberState>   state_;
+  /// The order `sweep_window()` visits members in, WITHIN one sweep --
+  /// what "declaration order" (`members_`'s own index order) meant before
+  /// GaussSeidel existed, and still does under Jacobi (identity
+  /// permutation, computed once at construction, never touched again).
+  /// Under GaussSeidel: a topological order of the UNLAGGED-channel
+  /// precedence graph (provider before consumer), ties broken by
+  /// declaration order for a deterministic, reproducible sweep -- see
+  /// `compute_sweep_order()`. Declaration order alone is not enough: a
+  /// caller could declare members in any order, but the compiled
+  /// schedule's own ordering is fixed by which channel is lagged, not by
+  /// which member the graph happened to add first.
+  std::vector<std::size_t>   sweep_order_;
   /// Never null after construction: `WindowCoupler(...)` builds a plain
   /// `WindowChannelIO` when `cfg_.channel_io` is null, so every call site
   /// below can dereference this unconditionally.

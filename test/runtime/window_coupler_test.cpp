@@ -123,7 +123,9 @@ struct RunResult {
     Rational window_length, Rational intervalA, Rational intervalB,
     int n_windows, DtPolicy pol_a, DtPolicy pol_b,
     AccelKind accel = AccelKind::Aitken, int order = 2,
-    std::size_t waveform_capacity = 4096) {
+    std::size_t waveform_capacity = 4096,
+    fuse::WaveformIteration mode = fuse::WaveformIteration::Jacobi,
+    bool lag_b_to_a = false) {
   auto comp_a = std::make_unique<LinearOdeComponent>("A", kA, kB, kX0);
   auto comp_b = std::make_unique<LinearOdeComponent>("B", kC, kD, kY0);
 
@@ -148,7 +150,13 @@ struct RunResult {
   std::vector<WindowMember> members;
   members.push_back(std::move(mA));
   members.push_back(std::move(mB));
-  const std::vector<WindowChannel> channels = {{0, 1}, {1, 0}};
+  // a2b (A -> B) is never lagged here: under WaveformIteration::GaussSeidel
+  // with lag_b_to_a set, b2a (B -> A) is the one broken direction -- the
+  // same "exactly one lagged, one not" shape every other window fixture in
+  // this codebase uses (Unit B's own two-way IR/schedule golden fixture).
+  const std::vector<WindowChannel> channels = {
+      {.provider = 0, .consumer = 1, .lagged = false},
+      {.provider = 1, .consumer = 0, .lagged = lag_b_to_a}};
 
   WindowCouplerConfig cfg;
   cfg.window_length = window_length;
@@ -156,6 +164,7 @@ struct RunResult {
   cfg.acceleration = AccelConfig{.kind = accel};
   cfg.order = order;
   cfg.waveform_capacity = waveform_capacity;
+  cfg.iteration = mode;
 
   Result<std::unique_ptr<WindowCoupler>> created =
       WindowCoupler::create(members, channels, cfg);
@@ -187,13 +196,192 @@ struct RunResult {
 [[nodiscard]] RunResult run_two_member(
     Rational Tc, Rational hB, int n_windows, DtPolicy pol_a, DtPolicy pol_b,
     AccelKind accel = AccelKind::Aitken, int order = 2,
-    std::size_t waveform_capacity = 4096) {
+    std::size_t waveform_capacity = 4096,
+    fuse::WaveformIteration mode = fuse::WaveformIteration::Jacobi,
+    bool lag_b_to_a = false) {
   RunResult out = run_two_member_general(Tc, Tc, hB, n_windows, pol_a, pol_b,
-                                         accel, order, waveform_capacity);
+                                         accel, order, waveform_capacity, mode,
+                                         lag_b_to_a);
   return out;
 }
 
 }  // namespace
+
+namespace {
+
+// advance() sets its OWN provided value equal to whatever mean it was
+// just fed, ignoring its previous state entirely -- so a member's own
+// output on ANY iterate is exactly, closed-form, whatever it was handed,
+// with no ODE dynamics to fold in. Records every (iteration, required)
+// pair it was ever called with, which is what
+// GaussSeidelReadsThePartnersSameIterateOutput below inspects directly,
+// rather than trying to back out "what delivered[] must have held" from
+// an opaque final state.
+class IdentityRecordingComponent : public Component {
+ public:
+  explicit IdentityRecordingComponent(double x0) : x_(x0), provided_(x0) {}
+  [[nodiscard]] std::string name() const override { return "identity"; }
+  Result<void> register_fields(FieldRegistry&, const CouplingGraph&) override {
+    return Result<void>::success();
+  }
+  Result<void> advance(const StepContext& ctx) override {
+    seen.push_back({ctx.iteration, required_});
+    x_ = required_;
+    provided_ = x_;
+    return Result<void>::success();
+  }
+  Result<void> save_state() override { saved_ = x_; return Result<void>::success(); }
+  Result<void> restore_state() override {
+    x_ = saved_; provided_ = x_; return Result<void>::success();
+  }
+  [[nodiscard]] std::uint64_t capabilities() const override { return fuse::kCapabilityRollback; }
+  [[nodiscard]] double* provided_ptr() { return &provided_; }
+  [[nodiscard]] double* required_ptr() { return &required_; }
+
+  struct Seen { int iteration; double required; };
+  std::vector<Seen> seen;
+
+ private:
+  double x_, provided_, required_ = 0.0, saved_ = 0.0;
+};
+
+// A (x0=5) -> B (x0=100) unlagged; B -> A lagged (so the graph has a lag
+// somewhere, as WaveformIteration::GaussSeidel needs, without it being
+// the direction under test). Window length 1, both intervals 1: exactly
+// one substep each, no subcycling, so the mean channel_io_->mean() reads
+// is the plain 2-knot linear average -- easy closed-form arithmetic, not
+// an empirically-measured number.
+struct TwoMemberIdentityRig {
+  IdentityRecordingComponent a{5.0};
+  IdentityRecordingComponent b{100.0};
+  std::unique_ptr<WindowCoupler> coupler;
+};
+
+[[nodiscard]] std::unique_ptr<TwoMemberIdentityRig> make_identity_rig(
+    fuse::WaveformIteration mode, int max_iterations = 1,
+    AccelConfig accel = AccelConfig{.kind = AccelKind::None}) {
+  auto rig = std::make_unique<TwoMemberIdentityRig>();
+  WindowMember mA;
+  mA.component = &rig->a;
+  mA.name = "A";
+  mA.interval = Rational{1};
+  mA.policy = DtPolicy::Adjustable;
+  mA.provided = rig->a.provided_ptr();
+  mA.required = rig->a.required_ptr();
+  mA.length = 1;
+  WindowMember mB = mA;
+  mB.component = &rig->b;
+  mB.name = "B";
+  mB.provided = rig->b.provided_ptr();
+  mB.required = rig->b.required_ptr();
+
+  WindowCouplerConfig cfg;
+  cfg.window_length = Rational{1};
+  cfg.max_iterations = max_iterations;
+  cfg.acceleration = accel;
+  cfg.iteration = mode;
+  const std::vector<WindowChannel> channels = {
+      {.provider = 0, .consumer = 1, .lagged = false},
+      {.provider = 1, .consumer = 0, .lagged = true}};
+  auto created = WindowCoupler::create({mA, mB}, channels, cfg);
+  if (!created.ok()) {
+    ADD_FAILURE() << "WindowCoupler::create failed: " << created.error().message;
+    return rig;
+  }
+  rig->coupler = std::move(created.value());
+  return rig;
+}
+
+}  // namespace
+
+// THE defining property: within one iterate, GaussSeidel's consumer reads
+// the PROVIDER'S OWN OUTPUT from that SAME iterate, not the sweep-start
+// snapshot Jacobi freezes for the whole sweep. Closed form: A's own
+// window-start value is 5, B's is 100. A -> B is unlagged, so on iterate
+// 0, B's fed mean is the 2-knot linear average of A's [window-start,
+// window-end] values. Window-start is always 5 regardless of mode; what
+// differs is window-end:
+//   Jacobi:      window-end is STILL the seeded initial guess (5, flat-
+//                extrapolated from A's own one-point history) -- A hasn't
+//                produced anything yet from THIS mode's point of view, so
+//                B's mean = (5+5)/2 = 5.
+//   GaussSeidel: A ran first (the unlagged provider must precede its
+//                consumer), and its own iterate-0 OUTPUT is exactly
+//                whatever it was fed (identity dynamics) -- A's own
+//                required on iterate 0 is B's seeded value (100, by the
+//                same flat-extrapolation argument, since B->A is lagged
+//                and B has produced nothing yet either). So A's
+//                window-end value is 100, and B's mean = (5+100)/2 = 52.5.
+// Acceleration acts on the LAGGED direction only: B provides only the
+// lagged channel (b2a), so B's own value going into iterate 1 is what
+// Aitken's `initial_relaxation` (default 0.1, AccelConfig's own default
+// -- deliberately not overridden, so this exercises the SAME factor
+// every other WindowCoupler test in this file already runs under)
+// relaxes; A provides only the unlagged channel (a2b), so A's own value
+// is copied straight through, never relaxed, whatever the omega.
+//
+// Closed form for iterate 0 -> 1, continuing GaussSeidelReadsThePartners
+// SameIterateOutput's own iterate-0 arithmetic (A=100, B=52.5 there):
+//   B's relaxed value feeding iterate 1: x_old=100 (B's own seed), x_new=
+//     52.5 (B's iterate-0 output), omega0=0.1 ->
+//     100 + 0.1*(52.5-100) = 95.25.
+//   A's required on iterate 1 (mean of B's window-start=100 and this
+//     relaxed value): (100+95.25)/2 = 97.625 -- RELAXED, not the
+//     unrelaxed (100+52.5)/2 = 76.25 an omega-blind implementation
+//     would produce.
+//   B's required on iterate 1 (mean of A's window-start=5 and A's iterate-
+//     1 output, UNRELAXED since A is excluded from acceleration):
+//     (5+97.625)/2 = 51.3125.
+// Iterate 1 -> 2 is where "the accelerated vector is not restricted"
+// (build-evidence/mutations/window-runner.toml's own row for this) would
+// actually surface: Aitken's own omega is still just `initial_relaxation`
+// on the FIRST accelerated call (`have_prev_` is false), so including A
+// in that vector changes nothing observable YET -- but by the SECOND
+// accelerated call (the one that produces iterate 2's feed), Aitken's own
+// formula aggregates the PREVIOUS residual across every entry in the
+// vector it was called with, so a wrongly-included A residual changes
+// the omega applied to B too, and through it what A itself reads next.
+// Measured (this build) rather than hand-carried through Aitken's own
+// formula: iterate 2 and 3 both read 68.33333333333333 (A) / 36.
+// 666666666666664 (B) -- the system reaches an exact fixed point by
+// iterate 2, so iterate 3 repeating it is itself part of what this pins.
+TEST(WindowCouplerVerification, GaussSeidelAccelerationActsOnlyOnTheLaggedDirection) {
+  auto rig = make_identity_rig(fuse::WaveformIteration::GaussSeidel, /*max_iterations=*/4,
+                               AccelConfig{.kind = AccelKind::Aitken});
+  (void)rig->coupler->run_window();
+  ASSERT_EQ(rig->a.seen.size(), 4u);
+  ASSERT_EQ(rig->b.seen.size(), 4u);
+  EXPECT_NEAR(rig->a.seen[0].required, 100.0, 1e-9);
+  EXPECT_NEAR(rig->b.seen[0].required, 52.5, 1e-9);
+  EXPECT_NEAR(rig->a.seen[1].required, 97.625, 1e-9)
+      << "the LAGGED direction (A consuming B) should show Aitken's "
+         "relaxation";
+  EXPECT_NEAR(rig->b.seen[1].required, 51.3125, 1e-9)
+      << "the UNLAGGED direction (B consuming A) must NOT be relaxed";
+  EXPECT_NEAR(rig->a.seen[2].required, 68.33333333333333, 1e-9)
+      << "iterate 2's feed depends on Aitken's SECOND accelerated call, "
+         "which is where an unrestricted vector would pollute omega";
+  EXPECT_NEAR(rig->b.seen[2].required, 36.666666666666664, 1e-9);
+  EXPECT_NEAR(rig->a.seen[3].required, 68.33333333333333, 1e-9)
+      << "reached an exact fixed point by iterate 2";
+  EXPECT_NEAR(rig->b.seen[3].required, 36.666666666666664, 1e-9);
+}
+
+TEST(WindowCouplerVerification, GaussSeidelReadsThePartnersSameIterateOutput) {
+  auto rig = make_identity_rig(fuse::WaveformIteration::GaussSeidel);
+  (void)rig->coupler->run_window();  // NOCONVERGE at max_iterations=1 is fine
+  ASSERT_FALSE(rig->b.seen.empty());
+  EXPECT_EQ(rig->b.seen[0].iteration, 0);
+  EXPECT_NEAR(rig->b.seen[0].required, 52.5, 1e-12);
+}
+
+TEST(WindowCouplerVerification, JacobiReadsThePartnersInitialGuessNotTheSameIterateOutput) {
+  auto rig = make_identity_rig(fuse::WaveformIteration::Jacobi);
+  (void)rig->coupler->run_window();
+  ASSERT_FALSE(rig->b.seen.empty());
+  EXPECT_EQ(rig->b.seen[0].iteration, 0);
+  EXPECT_NEAR(rig->b.seen[0].required, 5.0, 1e-12);
+}
 
 // ---------------------------------------------------------------- (a)/(b)
 
@@ -579,6 +767,144 @@ TEST(WindowCouplerVerification, IterationCountsAcrossAccelerators) {
 }
 
 // ---------------------------------------------------------------- (g)
+
+// WaveformIteration::GaussSeidel and the default Jacobi solve the SAME
+// discrete fixed-point system (same substep grid, same channel means) by
+// two different classical iterations; both are checked here against the
+// SAME converged answer, not against each other's convergence path, which
+// is the one thing that legitimately differs between them (iteration
+// counts are exercised separately, IterationCountsAcrossAccelerators
+// above).
+//
+// Tolerance derived from measured error, not an arbitrary round number
+// (this file's own convention -- see IncommensurateSevenThirteenAllPolicy
+// Pairs above): measured (this build) |xA_jacobi - xA_gauss_seidel| across
+// three shapes (m=4 commensurate adjustable/adjustable, and the
+// incommensurate 7:13 case at both fixed/fixed and adjustable/adjustable)
+// tops out at 2.3e-11 -- both modes' own convergence criterion is the
+// default 1e-10 relative residual, and the two iterations' different
+// floating-point summation order costs another couple of decades on top
+// of that. 1e-8 is comfortably above the largest measured value (2.3e-11)
+// without being the old, unexamined round number.
+// Measured (this build), 13:7 fixed/adjustable, 4 windows back to back:
+// jacobi=[16,16,15,14], gauss_seidel=[9,10,9,9] -- Gauss-Seidel converges
+// in noticeably fewer sweeps per window on this problem, which is exactly
+// what "reads the partner's freshest available value instead of a
+// sweep-stale one" should buy. Pinned as a strict inequality per window,
+// not the exact counts (an accelerator or convergence-metric change
+// elsewhere could shift both by the same amount without this test's own
+// point -- Gauss-Seidel beats Jacobi here -- becoming false).
+TEST(WindowCouplerVerification, GaussSeidelConvergesInFewerIterationsOnThisProblem) {
+  const RunResult jacobi = run_two_member(Rational{13}, Rational{7}, 4,
+                                          DtPolicy::Fixed, DtPolicy::Adjustable);
+  const RunResult gauss_seidel = run_two_member(
+      Rational{13}, Rational{7}, 4, DtPolicy::Fixed, DtPolicy::Adjustable,
+      AccelKind::Aitken, 2, 4096, fuse::WaveformIteration::GaussSeidel, true);
+  ASSERT_EQ(jacobi.iterations.size(), gauss_seidel.iterations.size());
+  for (std::size_t w = 0; w < jacobi.iterations.size(); ++w) {
+    EXPECT_LT(gauss_seidel.iterations[w], jacobi.iterations[w]) << "window " << w;
+  }
+}
+
+TEST(WindowCouplerVerification, GaussSeidelConvergesToTheSameDiscreteSolutionAsJacobi) {
+  const struct { Rational Tc, hB; int n_windows; DtPolicy a, b; const char* label; } cases[] = {
+      {Rational{1}, Rational{1, 4}, 5, DtPolicy::Adjustable, DtPolicy::Adjustable,
+       "m=4 adjustable/adjustable"},
+      {Rational{13}, Rational{7}, 3, DtPolicy::Fixed, DtPolicy::Fixed,
+       "7:13 fixed/fixed"},
+      {Rational{13}, Rational{7}, 3, DtPolicy::Adjustable, DtPolicy::Adjustable,
+       "7:13 adjustable/adjustable"},
+  };
+  for (const auto& c : cases) {
+    const RunResult jacobi = run_two_member(c.Tc, c.hB, c.n_windows, c.a, c.b);
+    const RunResult gauss_seidel = run_two_member(
+        c.Tc, c.hB, c.n_windows, c.a, c.b, AccelKind::Aitken, /*order=*/2,
+        /*waveform_capacity=*/4096, fuse::WaveformIteration::GaussSeidel,
+        /*lag_b_to_a=*/true);
+    EXPECT_NEAR(jacobi.xA, gauss_seidel.xA, 1e-8) << c.label;
+    EXPECT_NEAR(jacobi.xB, gauss_seidel.xB, 1e-8) << c.label;
+    for (const int it : gauss_seidel.iterations) EXPECT_GT(it, 0) << c.label;
+  }
+}
+
+// GaussSeidel with NEITHER channel lagged is refused at construction, the
+// exact runtime counterpart of validate_coupling_window()'s own
+// E-SCHED-WINDOW-GAUSSSEIDEL-NOLAG (fuse/schedule/window.hpp): with every
+// channel unlagged, the unlagged-edge graph is the full two-way cycle
+// (a2b: 0->1, b2a: 1->0), and no sweep order can run both members before
+// each other. One method (a cycle check over the unlagged-edge graph),
+// one meaning, at both the compiled-graph and the standalone-driver
+// level -- so the driver refuses exactly the configuration the compiler
+// would refuse to schedule.
+TEST(WindowCouplerRefusals, GaussSeidelWithNoLaggedChannelAtAllIsRefused) {
+  auto comp_a = std::make_unique<LinearOdeComponent>("A", kA, kB, kX0);
+  auto comp_b = std::make_unique<LinearOdeComponent>("B", kC, kD, kY0);
+  WindowMember mA;
+  mA.component = comp_a.get();
+  mA.name = "A";
+  mA.interval = Rational{1};
+  mA.policy = DtPolicy::Adjustable;
+  mA.provided = comp_a->provided_ptr();
+  mA.required = comp_a->required_ptr();
+  mA.length = 1;
+  WindowMember mB = mA;
+  mB.component = comp_b.get();
+  mB.name = "B";
+  mB.provided = comp_b->provided_ptr();
+  mB.required = comp_b->required_ptr();
+
+  WindowCouplerConfig cfg;
+  cfg.window_length = Rational{1};
+  cfg.iteration = fuse::WaveformIteration::GaussSeidel;
+  const std::vector<WindowChannel> channels = {
+      {.provider = 0, .consumer = 1, .lagged = false},
+      {.provider = 1, .consumer = 0, .lagged = false}};
+  const auto r = WindowCoupler::create({mA, mB}, channels, cfg);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-RT-WINDOW-GAUSSSEIDEL-NOLAG");
+}
+
+// A provider with BOTH a lagged and an unlagged outgoing channel: refused
+// rather than silently picking one lag status and getting the other
+// consumer's semantics wrong (WindowCoupler::create()'s own docstring).
+// Member A provides to both B (unlagged) and C (lagged).
+TEST(WindowCouplerRefusals, MixedLagFanOutIsRefused) {
+  auto comp_a = std::make_unique<LinearOdeComponent>("A", kA, kB, kX0);
+  auto comp_b = std::make_unique<LinearOdeComponent>("B", kC, kD, kY0);
+  auto comp_c = std::make_unique<LinearOdeComponent>("C", kC, kD, kY0);
+  WindowMember mA;
+  mA.component = comp_a.get();
+  mA.name = "A";
+  mA.interval = Rational{1};
+  mA.policy = DtPolicy::Adjustable;
+  mA.provided = comp_a->provided_ptr();
+  mA.required = comp_a->required_ptr();
+  mA.length = 1;
+  WindowMember mB = mA;
+  mB.component = comp_b.get();
+  mB.name = "B";
+  mB.provided = comp_b->provided_ptr();
+  mB.required = comp_b->required_ptr();
+  WindowMember mC = mA;
+  mC.component = comp_c.get();
+  mC.name = "C";
+  mC.provided = comp_c->provided_ptr();
+  mC.required = comp_c->required_ptr();
+
+  WindowCouplerConfig cfg;
+  cfg.window_length = Rational{1};
+  cfg.iteration = fuse::WaveformIteration::GaussSeidel;
+  // A -> B unlagged, A -> C lagged, C -> A lagged (so the graph is
+  // otherwise legal -- the mixed fan-out on A is the ONLY thing this
+  // configuration is refused for).
+  const std::vector<WindowChannel> channels = {
+      {.provider = 0, .consumer = 1, .lagged = false},
+      {.provider = 0, .consumer = 2, .lagged = true},
+      {.provider = 2, .consumer = 0, .lagged = true}};
+  const auto r = WindowCoupler::create({mA, mB, mC}, channels, cfg);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-RT-WINDOW-GAUSSSEIDEL-MIXED-LAG");
+}
 
 TEST(WindowCouplerRefusals, EmptyMembersOrChannelsRefused) {
   WindowCouplerConfig cfg;

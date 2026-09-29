@@ -54,6 +54,49 @@ using Substep = detail::WindowSubstep;
 using detail::plan_substeps;
 using detail::mean_over;
 
+// WaveformIteration::GaussSeidel only: a topological order over `channels`'
+// UNLAGGED provider -> consumer edges (an unlagged provider must run
+// before its consumer, within one sweep, or the consumer would see this
+// sweep's stale/seeded value instead of the fresh one GaussSeidel
+// promises). `std::nullopt` if that graph has a cycle -- including "no
+// channel at all is lagged", which is that graph with EVERY channel in
+// it, so this ALSO doubles as the no-lag-at-all refusal
+// (WindowCoupler::create()'s own E-RT-WINDOW-GAUSSSEIDEL-NOLAG): one
+// method (this cycle check), one meaning, whether the cycle is total or
+// partial.
+//
+// Kahn's algorithm, but the next zero-indegree node is always the
+// SMALLEST-INDEX one available, not merely "any" one: declaration order
+// is the tie-break among members with no ordering constraint between
+// them, so two runs of the identical graph return the identical order
+// (this is what a Runner-side dispatch driving the same compiled schedule
+// needs to match, not merely "some" valid topological order).
+[[nodiscard]] std::optional<std::vector<std::size_t>> topological_sweep_order(
+    std::size_t n, const std::vector<WindowChannel>& channels) {
+  std::vector<std::vector<std::size_t>> adj(n);
+  std::vector<std::size_t> indeg(n, 0);
+  for (const WindowChannel& ch : channels) {
+    if (ch.lagged) continue;
+    if (ch.provider >= n || ch.consumer >= n) continue;  // create() already checked
+    adj[ch.provider].push_back(ch.consumer);
+    ++indeg[ch.consumer];
+  }
+  std::vector<bool> done(n, false);
+  std::vector<std::size_t> order;
+  order.reserve(n);
+  for (std::size_t step = 0; step < n; ++step) {
+    std::size_t pick = n;  // sentinel: none found
+    for (std::size_t i = 0; i < n; ++i) {
+      if (!done[i] && indeg[i] == 0) { pick = i; break; }
+    }
+    if (pick == n) return std::nullopt;  // cycle: no zero-indegree node left
+    done[pick] = true;
+    order.push_back(pick);
+    for (const std::size_t nb : adj[pick]) --indeg[nb];
+  }
+  return order;
+}
+
 }  // namespace
 
 double extrapolate_boundary_value(
@@ -158,6 +201,21 @@ WindowCoupler::WindowCoupler(std::vector<WindowMember> members,
       cfg_(std::move(cfg)) {
   channel_io_ = cfg_.channel_io ? cfg_.channel_io
                                 : std::make_shared<WindowChannelIO>();
+  // Jacobi: declaration order, unchanged from before this member existed
+  // (every member reads the same sweep-start snapshot regardless of when
+  // it runs, so no order is actually forced -- declaration order is as
+  // good as any, and byte-identical to today's plain `for (i)` loop).
+  // GaussSeidel: `create()` above already proved `topological_sweep_
+  // order()` succeeds for this exact (members, channels) pair before
+  // this constructor is ever reached (it is private; `create()` is the
+  // only caller), so recomputing it here -- the SAME function, not a
+  // second one that could disagree -- cannot fail.
+  if (cfg_.iteration == WaveformIteration::GaussSeidel) {
+    sweep_order_ = *topological_sweep_order(members_.size(), channels_);
+  } else {
+    sweep_order_.resize(members_.size());
+    for (std::size_t i = 0; i < members_.size(); ++i) sweep_order_[i] = i;
+  }
   state_.resize(members_.size());
   for (std::size_t i = 0; i < members_.size(); ++i) {
     MemberState& st = state_[i];
@@ -265,6 +323,39 @@ Result<std::unique_ptr<WindowCoupler>> WindowCoupler::create(
                        std::to_string(members.size()) + ")"};
     }
   }
+
+  if (cfg.iteration == WaveformIteration::GaussSeidel) {
+    // A member providing both a lagged and an unlagged outgoing channel:
+    // `delivered[provider]` is one waveform per provider, and cannot be
+    // simultaneously this sweep's fresh value (what the unlagged
+    // consumer needs) and last sweep's (what the lagged one needs).
+    for (std::size_t i = 0; i < members.size(); ++i) {
+      bool has_lagged = false, has_unlagged = false;
+      for (const WindowChannel& ch : channels) {
+        if (ch.provider != i) continue;
+        (ch.lagged ? has_lagged : has_unlagged) = true;
+      }
+      if (has_lagged && has_unlagged) {
+        return Failure{"E-RT-WINDOW-GAUSSSEIDEL-MIXED-LAG",
+                     "WindowCoupler::create: member '" + members[i].name +
+                         "' provides both a lagged and an unlagged "
+                         "outgoing channel; WaveformIteration::GaussSeidel "
+                         "needs one delivered waveform per provider, which "
+                         "cannot represent both at once"};
+      }
+    }
+    if (!topological_sweep_order(members.size(), channels).has_value()) {
+      return Failure{"E-RT-WINDOW-GAUSSSEIDEL-NOLAG",
+                   "WindowCoupler::create: the directed graph of UNLAGGED "
+                       "channels has a cycle (every channel unlagged is "
+                       "the sharpest case: no lag at all breaks it). No "
+                       "sweep order can run every unlagged provider before "
+                       "its consumer. Lag at least one direction, or use "
+                       "WaveformIteration::Jacobi instead, which needs no "
+                       ".lag() at all"};
+    }
+  }
+
   return std::unique_ptr<WindowCoupler>(new WindowCoupler(
       std::move(members), std::move(channels), std::move(cfg)));
 }
@@ -450,44 +541,105 @@ Result<void> WindowCoupler::sweep_window(Rational T0, Rational T1) {
     }
   }
 
-  // Waveform built from y_fed/y_new for each (member, element), spanning
-  // [start_clock[i], T1] -- what a consumer reads this sweep.
+  // Member i's own flat (element, substep) sub-range always starts at the
+  // same offset within a canonical-layout `y`, whatever sweep or mode is
+  // running: the SAME nesting order (member, element, substep) that both
+  // `build_delivered_member()` below and the main sweep loop's own `base`
+  // walk. Precomputed once so a GaussSeidel mid-sweep partial rebuild
+  // (member i alone, from `y_new`, the moment i's own substep loop
+  // finishes) reads exactly the slice the next FULL rebuild would have
+  // read for i -- one offset table, so the two cannot disagree.
+  std::vector<std::size_t> member_base(n, 0);
+  {
+    std::size_t acc = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+      member_base[i] = acc;
+      acc += members_[i].length * steps[i].size();
+    }
+  }
+
+  // Waveform built from y_fed/y_new for ONE member's (element, substep)
+  // slice, spanning [start_clock[i], T1] -- what a consumer reads this
+  // sweep. Shared by build_delivered() (called once per member, for
+  // every member, from y_fed or the just-accelerated y_out) and
+  // WaveformIteration::GaussSeidel's own mid-sweep refresh (called once,
+  // for the one member that just finished its substep loop, from y_new).
+  const auto build_delivered_member = [&](std::size_t i,
+                                          const std::vector<double>& y)
+      -> std::vector<std::unique_ptr<Waveform>> {
+    std::vector<std::unique_ptr<Waveform>> wf_i(members_[i].length);
+    std::size_t idx = member_base[i];
+    for (std::size_t e = 0; e < members_[i].length; ++e) {
+      wf_i[e] = std::make_unique<Waveform>(
+          1, cfg_.waveform_capacity, TemporalBasis::Linear, 1);
+      // A Fixed member's start_clock[i] can already be past T0 here (it
+      // committed past the previous window's boundary via a straddling
+      // step whose overshoot resolve_pending_straddles() has since
+      // replayed and corrected). A consumer whose own substep starts at
+      // T0 -- the window-definer's single full-window substep, in
+      // particular -- still needs this member's value there. The value
+      // this member committed at the end of the PREVIOUS window is
+      // exactly that: history's last entry sits at T1(prev) == T0(this
+      // window) by construction, and needs no extrapolation.
+      const Rational lo = std::min(start_clock[i], T0);
+      wf_i[e]->reset(lo, T1);
+      if (start_clock[i] > T0) {
+        double v_t0 = state_[i].history[e].back().second;
+        (void)wf_i[e]->push(T0, &v_t0);
+      }
+      double v0 = start_value[i][e];
+      (void)wf_i[e]->push(start_clock[i], &v0);
+      for (const Substep& sub : steps[i]) {
+        const Rational tc = std::min(sub.t1, T1);
+        double v = y[idx++];
+        if (tc > wf_i[e]->window_end()) continue;  // defensive; cannot happen
+        (void)wf_i[e]->push(tc, &v);
+      }
+    }
+    return wf_i;
+  };
+
   const auto build_delivered = [&](const std::vector<double>& y)
       -> std::vector<std::vector<std::unique_ptr<Waveform>>> {
     std::vector<std::vector<std::unique_ptr<Waveform>>> wf(n);
-    std::size_t idx = 0;
-    for (std::size_t i = 0; i < n; ++i) {
-      wf[i].resize(members_[i].length);
-      for (std::size_t e = 0; e < members_[i].length; ++e) {
-        wf[i][e] = std::make_unique<Waveform>(
-            1, cfg_.waveform_capacity, TemporalBasis::Linear, 1);
-        // A Fixed member's start_clock[i] can already be past T0 here (it
-        // committed past the previous window's boundary via a straddling
-        // step whose overshoot resolve_pending_straddles() has since
-        // replayed and corrected). A consumer whose own substep starts at
-        // T0 -- the window-definer's single full-window substep, in
-        // particular -- still needs this member's value there. The value
-        // this member committed at the end of the PREVIOUS window is
-        // exactly that: history's last entry sits at T1(prev) == T0(this
-        // window) by construction, and needs no extrapolation.
-        const Rational lo = std::min(start_clock[i], T0);
-        wf[i][e]->reset(lo, T1);
-        if (start_clock[i] > T0) {
-          double v_t0 = state_[i].history[e].back().second;
-          (void)wf[i][e]->push(T0, &v_t0);
-        }
-        double v0 = start_value[i][e];
-        (void)wf[i][e]->push(start_clock[i], &v0);
-        for (const Substep& sub : steps[i]) {
-          const Rational tc = std::min(sub.t1, T1);
-          double v = y[idx++];
-          if (tc > wf[i][e]->window_end()) continue;  // defensive; cannot happen
-          (void)wf[i][e]->push(tc, &v);
-        }
-      }
-    }
+    for (std::size_t i = 0; i < n; ++i) wf[i] = build_delivered_member(i, y);
     return wf;
   };
+
+  // WaveformIteration::GaussSeidel only: whether member i provides at
+  // least one UNLAGGED channel. Such a member's own outgoing waveform is
+  // refreshed the moment its substep loop finishes THIS sweep (so a
+  // LATER member in the SAME sweep sees it fresh, not last sweep's
+  // value) and is excluded from the accelerated vector (its value is
+  // already exact -- Gauss-Seidel substitution, not a relaxed iterate).
+  // A member with no outgoing channels, or only LAGGED ones, is
+  // accelerated exactly as every member is under Jacobi.
+  const auto provides_unlagged_channel = [&](std::size_t i) {
+    for (const WindowChannel& ch : channels_) {
+      if (ch.provider == i && !ch.lagged) return true;
+    }
+    return false;
+  };
+
+  // The members whose own outgoing waveform is part of the accelerated
+  // vector: every member under Jacobi (today's behaviour, unchanged);
+  // under GaussSeidel, only those that do not provide an unlagged
+  // channel -- "only the lagged direction's waveform" (this track's own
+  // design note on acceleration). `accel_member_offset[i]` is member i's
+  // own slice's start within the PROJECTED vector, valid only for `i` in
+  // `accel_members`; `member_base[i]` above is its start within the
+  // FULL one -- the projection below copies between the two.
+  std::vector<std::size_t> accel_members;
+  std::vector<std::size_t> accel_member_offset(n, 0);
+  std::size_t accel_total = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (cfg_.iteration == WaveformIteration::Jacobi ||
+        !provides_unlagged_channel(i)) {
+      accel_members.push_back(i);
+      accel_member_offset[i] = accel_total;
+      accel_total += members_[i].length * steps[i].size();
+    }
+  }
 
   std::vector<std::vector<std::unique_ptr<Waveform>>> real_traj(n);  // this sweep's OWN advance() output
   stats_ = WindowIterationStats{};
@@ -509,8 +661,22 @@ Result<void> WindowCoupler::sweep_window(Rational T0, Rational T1) {
     // agrees with the canonical one only for a scalar member or a single
     // substep -- the only cases tested until a field-valued multirate
     // member (Gray-Scott) delivered a "mean" outside the partner's range.
-    std::size_t base = 0;
-    for (std::size_t i = 0; i < n; ++i) {
+    //
+    // `sweep_order_[pos]`, not `pos` itself: under Jacobi this IS the
+    // identity permutation (declaration order, unchanged from before this
+    // member existed); under GaussSeidel it is the topological order the
+    // unlagged channels force (an unlagged provider before its consumer),
+    // computed once at construction (WindowCoupler::WindowCoupler(),
+    // via the SAME topological_sweep_order() WindowCoupler::create() uses
+    // to validate the graph is acyclic in the first place). `base` reads
+    // `member_base[i]` -- member i's own flat offset, precomputed above in
+    // DECLARATION-index order, independent of sweep order -- rather than
+    // accumulating incrementally in loop order, which would silently
+    // transpose the layout the moment sweep order differs from declaration
+    // order.
+    for (std::size_t pos = 0; pos < n; ++pos) {
+      const std::size_t i = sweep_order_[pos];
+      const std::size_t base = member_base[i];
       const WindowMember& m = members_[i];
       const std::size_t n_sub = steps[i].size();
       const auto at = [&](std::size_t e, std::size_t s) { return base + e * n_sub + s; };
@@ -641,7 +807,19 @@ Result<void> WindowCoupler::sweep_window(Rational T0, Rational T1) {
         }
         ++s_idx;
       }
-      base += m.length * n_sub;
+
+      // WaveformIteration::GaussSeidel: member i's own outgoing waveform,
+      // refreshed from what it JUST computed (y_new's now-fully-written
+      // slice for i), so a member swept LATER in this SAME sweep sees it
+      // -- the one thing that distinguishes this from Jacobi, whose
+      // `delivered` never changes within a sweep. `y_new`'s slice for
+      // every OTHER member may still hold an earlier sweep's values at
+      // this point; build_delivered_member(i, y_new) reads only member
+      // i's own slice, so that is never read here.
+      if (cfg_.iteration == WaveformIteration::GaussSeidel &&
+          provides_unlagged_channel(i)) {
+        delivered[i] = build_delivered_member(i, y_new);
+      }
     }
 
     double resid_sq = 0.0, ref_sq = 0.0;
@@ -670,9 +848,41 @@ Result<void> WindowCoupler::sweep_window(Rational T0, Rational T1) {
     if (k + 1 == cfg_.max_iterations) break;
 
     std::vector<double> y_out(total);
-    const Result<void> up = accel_->update(y_fed.data(), y_new.data(),
-                                           y_out.data(), total, k);
-    if (!up.ok()) return up.error();
+    if (cfg_.iteration == WaveformIteration::GaussSeidel) {
+      // Project y_fed/y_new down to the accelerated members' own
+      // slices, accelerate exactly that (never the unlagged-providing
+      // members' entries), then scatter back. An excluded member's own
+      // slice of y_out is a straight copy from y_new -- Gauss-Seidel
+      // substitution, not a relaxed iterate: its value is already
+      // exact given what every other member just computed, the same
+      // reasoning that makes the mid-sweep `delivered` refresh above
+      // read from y_new directly rather than through the accelerator.
+      std::vector<double> y_fed_proj(accel_total), y_new_proj(accel_total),
+          y_out_proj(accel_total);
+      for (const std::size_t i : accel_members) {
+        const std::size_t len = members_[i].length * steps[i].size();
+        std::copy(y_fed.begin() + static_cast<std::ptrdiff_t>(member_base[i]),
+                  y_fed.begin() + static_cast<std::ptrdiff_t>(member_base[i] + len),
+                  y_fed_proj.begin() + static_cast<std::ptrdiff_t>(accel_member_offset[i]));
+        std::copy(y_new.begin() + static_cast<std::ptrdiff_t>(member_base[i]),
+                  y_new.begin() + static_cast<std::ptrdiff_t>(member_base[i] + len),
+                  y_new_proj.begin() + static_cast<std::ptrdiff_t>(accel_member_offset[i]));
+      }
+      const Result<void> up = accel_->update(y_fed_proj.data(), y_new_proj.data(),
+                                             y_out_proj.data(), accel_total, k);
+      if (!up.ok()) return up.error();
+      y_out = y_new;  // default: excluded members pass straight through
+      for (const std::size_t i : accel_members) {
+        const std::size_t len = members_[i].length * steps[i].size();
+        std::copy(y_out_proj.begin() + static_cast<std::ptrdiff_t>(accel_member_offset[i]),
+                  y_out_proj.begin() + static_cast<std::ptrdiff_t>(accel_member_offset[i] + len),
+                  y_out.begin() + static_cast<std::ptrdiff_t>(member_base[i]));
+      }
+    } else {
+      const Result<void> up = accel_->update(y_fed.data(), y_new.data(),
+                                             y_out.data(), total, k);
+      if (!up.ok()) return up.error();
+    }
     y_fed = y_out;
     delivered = build_delivered(y_fed);
   }
