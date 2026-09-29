@@ -68,6 +68,63 @@ new = """        for (std::size_t e = 0; e < m.length; ++e) {
         }"""
 target = "fuse_runtime_window_coupler_test"
 test = "runtime.window_coupler"
+[[mutation]]
+id = "window-coupler-gaussseidel-no-midsweep-refresh"
+area = "runtime/window_coupler"
+describes = "WaveformIteration::GaussSeidel's mid-sweep delivered[] refresh never runs (the condition is short-circuited false): an unlagged-providing member's own outgoing waveform is never updated from y_new the moment its own substep loop finishes, so every member reads the SAME sweep-start snapshot for the whole sweep -- Jacobi's behaviour, silently substituted for Gauss-Seidel's defining property (a later member in the sweep sees an earlier one's SAME-iterate output, not last sweep's)."
+file = "src/runtime/window_coupler.cpp"
+old = """      if (cfg_.iteration == WaveformIteration::GaussSeidel &&
+          provides_unlagged_channel(i)) {
+        delivered[i] = build_delivered_member(i, y_new);
+      }
+    }"""
+new = """      if (false && cfg_.iteration == WaveformIteration::GaussSeidel &&
+          provides_unlagged_channel(i)) {  // MUTATED: no mid-sweep refresh
+        delivered[i] = build_delivered_member(i, y_new);
+      }
+    }"""
+target = "fuse_runtime_window_coupler_test"
+test = "runtime.window_coupler"
+# PROVED (2026-09-29): 3 of 32 WindowCoupler tests failed --
+# WindowCouplerVerification.{GaussSeidelReadsThePartnersSameIterateOutput,
+# GaussSeidelAccelerationActsOnlyOnTheLaggedDirection,
+# GaussSeidelConvergesInFewerIterationsOnThisProblem} -- the first two
+# directly inspect a recording component's own `required` value per
+# iterate against the exact closed form this refresh produces; the third
+# is the indirect consequence (Gauss-Seidel without its own defining
+# refresh converges no faster than Jacobi on the same problem, since it
+# IS Jacobi once this line is disabled). File restored and `cmp`-verified
+# byte-identical to the pre-mutation copy afterward.
+
+[[mutation]]
+id = "window-coupler-gaussseidel-acceleration-not-restricted"
+area = "runtime/window_coupler"
+describes = "WaveformIteration::GaussSeidel's own accelerated-vector projection never runs (the condition is short-circuited false): accel_->update() always receives the FULL (member, element, substep) vector, including the unlagged-providing member's own entries, instead of only the lagged-providing members'. On the FIRST accelerated call within a window this is invisible (Aitken's own omega is still just initial_relaxation, applied per-element regardless of vector composition), but from the SECOND call on, Aitken's own formula aggregates the previous residual across every entry in the vector it was handed, so the wrongly-included member's residual pollutes the omega applied to the correctly-included one too."
+file = "src/runtime/window_coupler.cpp"
+old = """    std::vector<double> y_out(total);
+    if (cfg_.iteration == WaveformIteration::GaussSeidel) {"""
+new = """    std::vector<double> y_out(total);
+    if (false && cfg_.iteration == WaveformIteration::GaussSeidel) {  // MUTATED"""
+target = "fuse_runtime_window_coupler_test"
+test = "runtime.window_coupler"
+# PROVED (2026-09-29): exactly 1 of 32 WindowCoupler tests failed --
+# WindowCouplerVerification.GaussSeidelAccelerationActsOnlyOnTheLaggedDirection,
+# specifically its iterate-2/3 assertions (68.33.../36.66...): iterate 0
+# and 1 are UNCHANGED by this mutation (the first accelerated call's omega
+# is initial_relaxation regardless of vector size, and the SAME mid-sweep
+# refresh this file's sibling mutation targets overwrites the wrongly-
+# relaxed unlagged member's own value before anything reads it) -- only
+# once a SECOND accelerated call aggregates the previous residual across
+# the (now wrongly widened) vector does the omega applied to the correctly
+# -included member actually change. Confirmed the two long-run
+# convergence tests (GaussSeidelConvergesToTheSameDiscreteSolutionAsJacobi,
+# GaussSeidelConvergesInFewerIterationsOnThisProblem) do NOT catch this
+# mutation on their own two-member LinearOdeComponent problem -- measured,
+# not assumed, by running them under this exact mutation before writing
+# this row -- which is why the DEDICATED closed-form identity-component
+# test above is this mutation's only anchor. File restored and
+# `cmp`-verified byte-identical to the pre-mutation copy afterward.
+
 # PROVED (2026-09-28): 6 of 21 WindowCoupler tests failed --
 # WindowCouplerVerification.{ErrorConvergesAtOrderTwoAdjustableAdjustable,
 # ErrorConvergesAtOrderTwoFixedFixedIncommensurate,
