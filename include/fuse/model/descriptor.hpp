@@ -23,6 +23,15 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 /// the seven dimension exponents. A v2 buffer read as v3 would take the next
 /// field's bytes as a scale, so the version gate rejects it rather than admit a
 /// plausible-looking graph with the wrong units.
+/// 8: the waveform-iteration option. A window scope's record (v7) gains one
+///    more byte after the per-member `DtPolicy` list: `WaveformIteration`
+///    (Jacobi or GaussSeidel), which classical scheme the window's own
+///    sweep loop runs. A v7 reader handed a v8 buffer would read the FIRST
+///    window scope's iteration byte as the start of whatever comes next
+///    (the merge table, or the next region's own presence byte) --
+///    everything after it decodes as plausible garbage, the same class of
+///    silent misread every prior bump was made to prevent, so v7 is refused.
+///
 /// 7: the multirate-window-on-the-Runner track. Each iteration region record
 ///    gains an optional `CouplingWindowScope` after its acceleration block: a
 ///    presence byte, and when set, an optional window-defining component name
@@ -53,7 +62,7 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 /// the iteration regions and never see the merge rules, so it would read a
 /// graph that says "one writer per field" from bytes that say otherwise -- and
 /// it would read it successfully. The version check turns that into a refusal.
-inline constexpr std::uint32_t kGraphVersion = 7u;
+inline constexpr std::uint32_t kGraphVersion = 8u;
 
 namespace detail {
 
@@ -255,6 +264,8 @@ class Reader {
         w.str(p.component);
         w.pod(static_cast<std::uint8_t>(p.policy));
       }
+      // v8: the waveform-iteration option.
+      w.pod(static_cast<std::uint8_t>(scope.iteration));
     }
   }
 
@@ -494,7 +505,16 @@ class Reader {
         if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated window scope"};
         scope.policies.push_back(std::move(p));
       }
+      // v8: the waveform-iteration option.
+      const auto iteration_byte = r.pod<std::uint8_t>();
       if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated window scope"};
+      if (iteration_byte >
+          static_cast<std::uint8_t>(WaveformIteration::GaussSeidel)) {
+        return Failure{"E-DESC-ENUM",
+                       "unknown WaveformIteration " +
+                           std::to_string(iteration_byte) + " in window scope"};
+      }
+      scope.iteration = static_cast<WaveformIteration>(iteration_byte);
       d.window_scope = std::move(scope);
     }
     g.add_iteration_region(std::move(d));
