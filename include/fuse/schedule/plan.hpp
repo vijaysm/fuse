@@ -77,8 +77,31 @@ namespace detail {
 /// why it exists: `OpAttrs::window_import` (fuse/ir/op.hpp) is deliberately
 /// not a real `Node::inputs` edge, so `check_dependence_order()` cannot
 /// see it, and this is what checks it instead.
+///
+/// Two rules, chosen per import by whether its DELIVERING field transfer
+/// (the channel that produced the arc `window_import` names, found via
+/// that arc's producer node's own `origin`) is lagged (`Channel::lag != 0`,
+/// `fuse/model/channel.hpp`):
+///   UNLAGGED (today's rule, unchanged): the writer for THIS SAME window
+///     instance must appear strictly earlier in the scheduled stream than
+///     the read -- a same-sweep, Gauss-Seidel-ordered exchange.
+///   LAGGED (loop-carried inside the coupling group, exactly how FSI's own
+///     `.lag(1)` breaks a two-way cycle -- `examples/fsi_channel/main.cpp`):
+///     satisfied when the arc is written for the SAME window instance
+///     ANYWHERE in the stream, position independent. The group's own
+///     re-execution (one sweep per `StepContext::iteration`) is what makes
+///     "written somewhere this window" mean "written last sweep": the
+///     first sweep of a window reads whatever the arc still held from the
+///     previous window's last sweep, which is exactly `WindowCoupler`'s own
+///     initial-guess convention (a Runner-side concern, Unit C of this
+///     track, not checked here). Reading the PREVIOUS WINDOW's value
+///     instead of the previous sweep's would turn waveform relaxation into
+///     an explicit, loosely coupled scheme -- a real accuracy loss, not an
+///     equivalent rewording -- which is why this rule still requires the
+///     SAME `dst_step`, only relaxed on POSITION.
 [[nodiscard]] Result<void> check_window_causality(
-    const OperatorDAG& dag, const std::vector<Instruction>& instructions);
+    const CouplingGraph& g, const OperatorDAG& dag,
+    const std::vector<Instruction>& instructions);
 }  // namespace detail
 
 /// Spec §2 layer 3: immutable after construction. The hot loop interprets this
