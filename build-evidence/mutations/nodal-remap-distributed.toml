@@ -33,14 +33,14 @@
 #   * Row 1 ("row-built-on-every-holder") needs a genuinely SHARED
 #     evaluation-side entity to have anything to bite on. In BOTH this
 #     file's own DisjointRankSets/PartiallyOverlappingRankSets AND the new
-#     Runner test's beam/fluid channel pair, the evaluation side of every
+#     Runner test's beam/fluid field transfer pair, the evaluation side of every
 #     distributed row build is the FLUID mesh -- cell-based (FV), and
 #     `GeometricLineMesh`'s cells are ALWAYS a plain, non-overlapping
 #     partition (only VERTICES, always the NODAL side in this codebase's
-#     channel shapes, are ever ownership-shared). Retargeting to the new
+#     field transfer shapes, are ever ownership-shared). Retargeting to the new
 #     test would not make this row assessable; it would just move the SAME
 #     absence of a shared-eval-entity case to a different test. A genuine
-#     target for this row needs a NODE-TO-NODE "consistent" channel (both
+#     target for this row needs a NODE-TO-NODE "consistent" field transfer (both
 #     sides nodal, so the eval side's OWN vertices are shared too) -- not
 #     built this round, since it is not the shape "H/H^T as the FSI uses
 #     them" (this round's own instruction) actually needs; recorded as an
@@ -145,7 +145,7 @@ requires = "mpi"
 [[mutation]]
 id = "nodal-remap-dist-nullcomm-swallows-real-communicator"
 area = "backend"
-describes = "allgatherv_records' comm_handle == fuse::search::kNullComm guard is replaced by an unconditional true, so a REAL communicator handle (any value other than kNullComm) is silently treated as the single-participant local-copy case too, on a build with no MPI at all -- the exact wrong-answer-with-no-diagnostic failure E-RT-NODAL-DIST-NOMPI exists to prevent (a caller who genuinely has more than one rank, but built without -DFUSE_ENABLE_MPI=ON, would get a plausible-looking LOCAL-ONLY answer instead of a refusal)"
+describes = "allgatherv_records' comm_handle == fuse::search::kNullComm guard is replaced by an unconditional true, so a REAL communicator handle (any value other than kNullComm) is silently treated as the single-participant local-copy case too, on a build with no MPI at all -- the exact wrong-answer-with-no-diagnostic failure E-RT-NODAL-DIST-NOMPI exists to prevent (a caller who genuinely has more than one rank, but built without -DFUSE_ENABLE_MPI=ON, would get a plausible-looking LOCAL-ONLY answer instead of a rejection)"
 file = "src/backend/nodal_remap_distributed.cpp"
 old = "  if (comm_handle == search::kNullComm) {"
 new = "  if (true) {  // MUTATED: every comm_handle is treated as local"
@@ -155,7 +155,7 @@ requires = "no-mpi"
 # KILLED by hand in a sandbox build with -DFUSE_ENABLE_MPI=OFF: mutation
 # applied, rebuilt, RealCommunicatorWithoutMpiRefuses fails (2/3 pass) because
 # build_distributed_interp_rows(..., kNullComm + 1) now succeeds instead of
-# refusing E-RT-NODAL-DIST-NOMPI; file restored byte-for-byte, all 3 passing
+# rejecting E-RT-NODAL-DIST-NOMPI; file restored byte-for-byte, all 3 passing
 # again. SURVIVED on the user's `build-all` (2026-09-28) for a reason that is
 # not a gap: RealCommunicatorWithoutMpiRefuses's own body is
 # `#if !FUSE_HAVE_MPI ... #else GTEST_SKIP() ... #endif`, and `build-all` has
@@ -167,7 +167,7 @@ requires = "no-mpi"
 [[mutation]]
 id = "nodal-remap-dist-domain-verdict-not-agreed-across-ranks"
 area = "backend"
-describes = "build_distributed_interp_rows returns its local scan's own verdict directly (E-INTERP-DOMAIN/E-INTERP-NEWTON/E-INTERP-DEGENERATE on local_failed, success otherwise) instead of calling agree_on_local_failure -- exactly the round-4 defect a real host MPI run found: a rank whose OWN local evaluation entities all lie inside the assembled source returns success while a DIFFERENT rank, holding a genuinely out-of-domain point, returns failure, so at 3+ ranks some ranks refuse and their partners do not, skipping a collective the failing rank never reaches"
+describes = "build_distributed_interp_rows returns its local scan's own outcome directly (E-INTERP-DOMAIN/E-INTERP-NEWTON/E-INTERP-DEGENERATE on local_failed, success otherwise) instead of calling agree_on_local_failure -- exactly the round-4 defect a real host MPI run found: a rank whose OWN local evaluation entities all lie inside the assembled source returns success while a DIFFERENT rank, holding a genuinely out-of-domain point, returns failure, so at 3+ ranks some ranks refuse and their partners do not, skipping a collective the failing rank never reaches"
 file = "src/backend/nodal_remap_distributed.cpp"
 old = '''  const auto agreed = agree_on_local_failure(comm_handle, local_failed, local_fail_code_id,
                                              local_fail_entity_gid, "build_distributed_interp_rows");
@@ -187,9 +187,9 @@ requires = "mpi"
 # through the Tier-0 null-communicator path this track otherwise uses to
 # dodge the "MPI cannot initialise here" limit for everything else in this
 # file: `agree_on_local_failure`'s whole point is to make every rank of
-# `comm_handle` agree on ONE verdict, and with `kNullComm`'s exactly ONE
-# participant there is nothing to disagree with -- the local verdict IS the
-# global verdict, by construction, whether or not the agreement step runs
+# `comm_handle` agree on ONE outcome, and with `kNullComm`'s exactly ONE
+# participant there is nothing to disagree with -- the local outcome IS the
+# global outcome, by construction, whether or not the agreement step runs
 # at all. Applied by hand and rebuilt: ALL 16 InterfaceTransfer/
 # ConsistentInterpPlan cases and all 3 NodalRemapDistributedNullComm cases
 # (including TargetOutsideSourceDomainRefuses, the single-participant
@@ -211,12 +211,12 @@ requires = "mpi"
 #   ctest --test-dir <build> -R 'parallel\\.nodal_remap_distributed\\.[3-5]'
 # Expected kill on the host: with the round-4 fix in place (unmutated),
 # that command should PASS -- every rank of a 3+-rank job agrees on ONE
-# E-INTERP-DOMAIN verdict. Apply this mutation on top of the fix, rebuild,
+# E-INTERP-DOMAIN outcome. Apply this mutation on top of the fix, rebuild,
 # rerun the same command: it should FAIL again, reproducing the ORIGINAL
 # symptom the host run that found this defect reported (`rows_r.ok()`
 # true on a rank whose own local points all lie inside the source, false
 # on a rank that owns the genuinely out-of-domain one) -- this mutation's
 # `new` IS, almost verbatim, the pre-round-4 code. A clean host run of
 # BOTH the unmutated fix (expect PASS) and this mutation (expect the
-# original FAIL to reappear) is the one verdict this sandbox cannot supply
+# original FAIL to reappear) is the one outcome this sandbox cannot supply
 # for itself.

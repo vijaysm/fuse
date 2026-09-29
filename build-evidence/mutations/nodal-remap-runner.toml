@@ -20,7 +20,7 @@
 [[mutation]]
 id = "nodal-remap-runner-method-check-skipped"
 area = "runtime"
-describes = "resolve_remap's method/orientation guard ('consistent' with a nodal source, or 'consistent-transpose' with a nodal target, build distributed rows; anything else still refuses E-RT-REMAP-NODAL-PARALLEL) is replaced by an unconditional true, so a nodal Remap on a multi-rank component via ANY method -- including the default (empty) one that would otherwise fall through to the supermesh FV<->FV-only builder, or a method paired with the WRONG nodal orientation -- takes the distributed-rows path"
+describes = "resolve_remap's method/orientation guard ('consistent' with a nodal source, or 'consistent-transpose' with a nodal target, build distributed rows; anything else still rejects E-RT-REMAP-NODAL-PARALLEL) is replaced by an unconditional true, so a nodal Remap on a multi-rank component via ANY method -- including the default (empty) one that would otherwise fall through to the supermesh FV<->FV-only builder, or a method paired with the WRONG nodal orientation -- takes the distributed-rows path"
 file = "src/runtime/runner.cpp"
 old = "      if (method_matches_orientation) {"
 new = "      if (true) {  // MUTATED: every method takes the distributed nodal path"
@@ -40,7 +40,7 @@ test = "verification.interface_transfer"
 # method/orientation pairing it was never designed to run (the empty
 # default method against a nodal TARGET, which only "consistent-transpose"
 # may use), and its own `is_nodal` precondition check catches the resulting
-# nonsense with a DIFFERENT refusal, not the graph-level one this row
+# nonsense with a DIFFERENT rejection, not the graph-level one this row
 # exists to keep firing. Restored byte-for-byte (cmp against a
 # pre-mutation backup) before the next mutation.
 

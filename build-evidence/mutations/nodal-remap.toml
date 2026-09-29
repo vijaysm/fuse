@@ -76,7 +76,7 @@ test = "backend.nodal_interp"
 [[mutation]]
 id = "nodal-interp-newton-nonconvergence-accepted-silently"
 area = "backend"
-describes = "invert_reference_map's non-convergence refusal (E-INTERP-NEWTON, fired when max_iter is exhausted without the step norm or residual falling under tolerance) is removed; the last (possibly nowhere near converged) iterate is returned marked converged=true instead"
+describes = "invert_reference_map's non-convergence rejection (E-INTERP-NEWTON, fired when max_iter is exhausted without the step norm or residual falling under tolerance) is removed; the last (possibly nowhere near converged) iterate is returned marked converged=true instead"
 file = "include/fuse/backend/general_interp.hpp"
 old = '''  return Failure{"E-INTERP-NEWTON",
                  fmt::format("invert_reference_map: did not converge within {} "
@@ -87,7 +87,7 @@ new = '''  out.converged = true;  // MUTATED: accept an unconverged result silen
 target = "fuse_backend_nodal_interp_test"
 test = "backend.nodal_interp"
 # KILLED. GeneralInterp.NewtonNonConvergenceRefuses (added specifically to
-# make this refusal path deterministically reachable -- max_iter = 0 means
+# make this rejection path deterministically reachable -- max_iter = 0 means
 # the Newton loop body never executes at all, so ANY shape reaches this exact
 # return statement on the very first call, with no need to hunt for a
 # pathologically distorted cell that happens to defeat 50 real iterations)

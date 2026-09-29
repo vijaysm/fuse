@@ -14,7 +14,7 @@
 [[mutation]]
 id = "mls-neighbor-count-refusal-disabled"
 area = "backend"
-describes = "build_mls_weights's E-MLS-NEIGHBORS check for a declared k below the degree's polynomial basis size is disabled. The task's own required row: MlsRefusals.KBelowBasisSizeIsEMlsNeighbors asserts the refusal's CODE, so disabling it is caught even though the local PxP moment matrix built from only k < P neighbours is still mathematically rank-deficient and the least-squares solve two calls later refuses it too -- with the WRONG code (E-MLS-RANK, not E-MLS-NEIGHBORS), which is exactly what the test's EXPECT_EQ on the code catches. Verified to fire: with this mutation applied, KBelowBasisSizeIsEMlsNeighbors fails (actual code E-MLS-RANK, expected E-MLS-NEIGHBORS); TooFewSourcePointsIsEMlsNeighbors (a source side with fewer than k points overall, checked on the very next line, left untouched by this mutation) still passes on its own, confirming the two E-MLS-NEIGHBORS call sites are independently exercised."
+describes = "build_mls_weights's E-MLS-NEIGHBORS check for a declared k below the degree's polynomial basis size is disabled. The task's own required row: MlsRefusals.KBelowBasisSizeIsEMlsNeighbors asserts the rejection's CODE, so disabling it is caught even though the local PxP moment matrix built from only k < P neighbours is still mathematically rank-deficient and the least-squares solve two calls later rejects it too -- with the WRONG code (E-MLS-RANK, not E-MLS-NEIGHBORS), which is exactly what the test's EXPECT_EQ on the code catches. Verified to fire: with this mutation applied, KBelowBasisSizeIsEMlsNeighbors fails (actual code E-MLS-RANK, expected E-MLS-NEIGHBORS); TooFewSourcePointsIsEMlsNeighbors (a source side with fewer than k points overall, checked on the very next line, left untouched by this mutation) still passes on its own, confirming the two E-MLS-NEIGHBORS call sites are independently exercised."
 file = "src/backend/mls_weights.cpp"
 old = "  if (static_cast<std::size_t>(opt.k) < basis_size) {"
 new = "  if (false) {  // opt.k < basis_size -- neighbour-count refusal disabled"
@@ -34,7 +34,7 @@ test = "backend.mls_weights"
 [[mutation]]
 id = "mls-parallel-placement-refusal-disabled"
 area = "runtime"
-describes = "MLS weights are serial; a partitioned cloud gives each rank different neighbours and a silently wrong answer. The Runner refuses an MLS channel whose source or target component is placed on more than one rank. Removing the refusal lets it initialise."
+describes = "MLS weights are serial; a partitioned cloud gives each rank different neighbours and a silently wrong answer. The Runner rejects an MLS field transfer whose source or target component is placed on more than one rank. Removing the rejection lets it initialise."
 file = "src/runtime/runner.cpp"
 old = "          graph.component(owner).ranks.size() > 1U) {"
 new = "          false) {"

@@ -14,7 +14,7 @@
 [[mutation]]
 id = "consistent-interp-nodal-gate-always-true"
 area = "backend"
-describes = "build_consistent_weights_for_plan's is_nodal() gate decides which side of a 'consistent'/'consistent-transpose' channel must be a genuinely nodal (ContinuousGLL order <= 1) field. If it accepted any discretization, an FV (cell-average) field would be silently treated as if it carried nodal DOFs -- the resulting matrix would index into the wrong entities without any refusal."
+describes = "build_consistent_weights_for_plan's is_nodal() gate decides which side of a 'consistent'/'consistent-transpose' field transfer must be a genuinely nodal (ContinuousGLL order <= 1) field. If it accepted any discretization, an FV (cell-average) field would be silently treated as if it carried nodal DOFs -- the resulting matrix would index into the wrong entities without any rejection."
 file = "include/fuse/backend/consistent_interp.hpp"
 old = "[[nodiscard]] inline bool is_nodal(Discretization disc, int order) {\n  return disc == Discretization::ContinuousGLL && order <= 1;\n}"
 new = "[[nodiscard]] inline bool is_nodal(Discretization disc, int order) {\n  (void)disc; (void)order; return true;\n}"
@@ -44,7 +44,7 @@ test = "backend.operator_conformance"
 [[mutation]]
 id = "consistent-interp-disc-check-message-swapped-order"
 area = "backend"
-describes = "The 'consistent' method's discretization gate must check plan.src_disc/plan.src_order (the field being interpolated FROM); the 'consistent-transpose' gate must check plan.tgt_disc/plan.tgt_order (the field being delivered TO). Swapping which side 'consistent' validates would let a channel with a nodal TARGET and an FV SOURCE through as if the source were nodal -- build_consistent_interp_weights would then be asked for target evaluation points on a genuinely nodal target's own vertices while reading source geometry from an FV region, silently building H the wrong way round."
+describes = "The 'consistent' method's discretization gate must check plan.src_disc/plan.src_order (the field being interpolated FROM); the 'consistent-transpose' gate must check plan.tgt_disc/plan.tgt_order (the field being delivered TO). Swapping which side 'consistent' validates would let a field transfer with a nodal TARGET and an FV SOURCE through as if the source were nodal -- build_consistent_interp_weights would then be asked for target evaluation points on a genuinely nodal target's own vertices while reading source geometry from an FV region, silently building H the wrong way round."
 file = "include/fuse/backend/consistent_interp.hpp"
 old = "  if (plan.method == \"consistent\") {\n    if (!is_nodal(plan.src_disc, plan.src_order)) {"
 new = "  if (plan.method == \"consistent\") {\n    if (!is_nodal(plan.tgt_disc, plan.tgt_order)) {"
