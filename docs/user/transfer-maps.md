@@ -58,7 +58,7 @@ be rebuilt.
 | `E-MAP-COVERAGE` | **the distribution check** — a target entity you own has no row, or a row needs a source entity you do not hold |
 
 `E-MAP-COVERAGE` is the one worth understanding. It is what a mismatched
-partition looks like from the reader's side, and it is refused rather than
+partition looks like from the reader's side, and it is rejected rather than
 tolerated because the alternative is a matrix with missing rows: `apply()`
 would leave those targets at zero, which is indistinguishable from a field
 that transferred and happened to be zero.

@@ -27,7 +27,7 @@ the remap path needs to know MLS exists.
 
 ## Declaring the fit -- never a default
 
-`RemapPlan::method` is the only lever a channel has, so the polynomial degree, the neighbour count
+`RemapPlan::method` is the only lever a field transfer has, so the polynomial degree, the neighbour count
 and the radial weight are encoded in it, and all three are **required**:
 
 ```
@@ -35,7 +35,7 @@ mls:degree=<int>,k=<int>,radial=<wendland0|wendland2|wendland4|wendland6>
 ```
 
 `method == "mls"` alone, or any key missing, misspelled, or duplicated, is `E-MLS-OPTIONS`. There is
-no fallback degree, no fallback neighbour count, and no fallback radial family -- a channel author
+no fallback degree, no fallback neighbour count, and no fallback radial family -- a field-transfer author
 who does not say what they want does not get a plausible guess.
 
 `degree` is the TOTAL polynomial degree of the local fit, in the point cloud's own AMBIENT
@@ -47,7 +47,7 @@ manifold-aware fit, which is also what ArborX's own class does.
 `k` must be at least the basis size `C(dim + degree, dim)` (`fuse::mls_basis_size`): fewer
 neighbours than the fit has degrees of freedom is `E-MLS-NEIGHBORS`, checked once per build (as soon
 as the ambient dimension is known) rather than discovered per target as a rank failure. A source
-side with fewer than `k` points overall is the same refusal.
+side with fewer than `k` points overall is the same rejection.
 
 ## Which discretisations have a point extraction
 
@@ -57,10 +57,10 @@ side with fewer than `k` points overall is the same refusal.
 | `ContinuousGLL`, order 1 | `MeshView::centroid(0, i)`, dimension 0 (vertex -- `mesh_view.hpp`'s own nodal convention) |
 | `FV` or `DiscontinuousGLL`, order 0 | `MeshView::centroid(region_dim, i)`, the cell centroid |
 
-Anything else is `E-MLS-DISC`. `RemapFlags::Conservative` is refused outright (`E-MLS-UNSUPPORTED`):
+Anything else is `E-MLS-DISC`. `RemapFlags::Conservative` is rejected outright (`E-MLS-UNSUPPORTED`):
 MLS fits a smooth local polynomial and does not balance a mass budget, and a point cloud need not
 even define `MeshView::measure`. `RemapFlags::Monotone` is checked on the assembled matrix, the same
-way the TempestRemap builder checks it -- refused (`E-MLS-MONOTONE`) only if the check actually
+way the TempestRemap builder checks it -- rejected (`E-MLS-MONOTONE`) only if the check actually
 fails, which is generic for `degree=0` (a normalised weighted average) and not for `degree >= 1`.
 
 ## Why the coefficients are computed here, not read out of ArborX
@@ -78,11 +78,11 @@ reasons:
    already (`box_index.cpp`'s header comment), and confined that to one `.cpp`, not exposed. Wiring
    FUSE's audited, transposable weight matrix to that surface for a feature meant to work without
    MOAB at all would trade a `MOAB` dependency for an unstable-ArborX-internals one.
-2. It would not buy back what this builder's refusals need. `movingLeastSquaresCoefficients`'s
+2. It would not buy back what this builder's rejections need. `movingLeastSquaresCoefficients`'s
    kernel inverts the local moment matrix with a symmetric SVD pseudo-inverse and, when that matrix
    is singular, silently zeroes the dependent rows/columns and substitutes a unit diagonal entry so a
    coefficient always comes out -- no rank, no condition number, no signal to the caller at all. This
-   builder's contract is the opposite: refuse, by name, with a measured condition estimate, when a
+   builder's contract is the opposite: reject, by name, with a measured condition estimate, when a
    target's local fit is rank-deficient.
 
 So the coefficient matrix is computed in FUSE. `fuse::search::BoxIndex::query_nearest` supplies the
@@ -142,7 +142,7 @@ A source point sitting exactly on a target, or several source points sitting exa
 must not crash this builder, and do not: the radial weight is finite (in fact maximal) at distance
 zero, and duplicate points simply degrade the local moment matrix's rank like any other loss of
 geometric information -- caught, if the degradation is severe enough, by the same `E-MLS-RANK`
-refusal a collinear or coplanar neighbour set triggers, with a measured condition estimate in the
+rejection a collinear or coplanar neighbour set triggers, with a measured condition estimate in the
 message. `AllCoincidentNeighboursIsRankDeficient` pins this for a fit whose basis needs more than
 one independent direction; `DuplicateSourcePointsDoNotCrashAndDegreeZeroStillReproducesAConstant`
 pins the case where duplicates are present but the fit (degree 0) still succeeds.
@@ -160,12 +160,12 @@ pins the case where duplicates are present but the fit (degree 0) still succeeds
   non-polynomial field (`ConvergenceOrderIsDegreePlusOneOnRefinement`); the k-nearest support radius
   scales with the grid spacing automatically, which is what gives the right asymptotic order without
   a separately declared radius.
-- **Every named refusal** fires in its own test (`mls_weights_test.cpp`'s `MlsOptions.*` and
-  `MlsRefusals.*` suites): malformed options, an invalid or sub-set region, an unsupported
+- **Every named rejection** fires in its own test (`mls_weights_test.cpp`'s `MlsOptions.*` and
+  `MlsRefusals.*` suites): malformed options, an invalid or sub-set mesh entity set, an unsupported
   `(disc, order)`, `k` below the basis size, a source side with too few points, a rank-deficient
   local fit (with the condition estimate present in the message), the `Conservative` flag, a
   detectably multi-rank backend, and the `Monotone` flag on a fit that is not bound preserving.
-- **Mutation evidence** for the neighbour-count refusal and the polynomial basis construction:
+- **Mutation evidence** for the neighbour-count rejection and the polynomial basis construction:
   `build-evidence/mutations/mls.toml`.
 
 ## Serial only
@@ -176,7 +176,7 @@ boundary could have its true nearest neighbours on another rank, and this builde
 them: a silently locally-correct, globally-wrong answer, the same failure mode `build_remap_halo`
 exists to close for the supermesh path. **Distributed MLS is a follow-on**, not attempted here. Where
 this builder can detect the multi-rank case (a `fuse::native::NativeMeshBackend` reporting
-`num_ranks() > 1`) it refuses `E-MLS-UNSUPPORTED` naming the reason; against an opaque `MeshBackend`
+`num_ranks() > 1`) it rejects the configuration with `E-MLS-UNSUPPORTED`, naming the reason; against an opaque `MeshBackend`
 it cannot recognise, it has no way to detect the case at all, and returns an answer computed only
 from what that rank can see.
 

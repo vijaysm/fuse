@@ -56,5 +56,5 @@ yourself — so that the scaling is visible and reviewable.
 
 Use the weighted norm for new work, especially if you will change resolution or
 rank count. Use the plain norm when you are reproducing a published iteration
-count that was obtained with it. The choice is declared per region, so a setup
+count that was obtained with it. The choice is declared per implicit coupling group, so a setup
 records which one its tolerance refers to.

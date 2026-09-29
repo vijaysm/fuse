@@ -7,7 +7,7 @@ A coupled simulation is authored as a graph, compiled to an inspectable operator
 exact rational time and an initialisation-time deadlock proof, and executed by an allocation-free
 runtime on Kokkos — with collective failure reconciliation, conservative non-matching remap,
 waveform and space-time coupling, quasi-Newton acceleration, and two C ABIs over one canonical
-descriptor.
+serialised coupling specification.
 
 :::{note}
 FUSE is under construction. Pages marked **planned** describe an interface that is specified and

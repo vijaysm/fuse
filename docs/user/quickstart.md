@@ -28,7 +28,7 @@ int main(int argc, char** argv) {
 
 Four things that example does not say out loud:
 
-**Time is exact.** `1_r / 2` is a rational, not a `double`. Component intervals, coupling windows and
+**Time is exact.** `1_r / 2` is a rational, not a `double`. Component intervals, time windows and
 every instruction in the compiled plan use exact arithmetic, so a half-step schedule is still exactly
 in step after ten million steps, and the scheduler can *prove* at initialisation that the coupling
 cannot deadlock.

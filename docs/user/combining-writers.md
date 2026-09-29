@@ -13,7 +13,7 @@ conservation class are identical in both cases. A coupler that picked one for
 you would be guessing at the physics, and the guess would be invisible in the
 results.
 
-So a field with more than one writer and no rule is refused:
+So a field with more than one writer and no rule is rejected:
 
 ```
 error E-MULTI-WRITER: field 'wall_flux' is written by 2 channels, and no rule
@@ -42,15 +42,15 @@ merges:
 |---|---|---|
 | `Sum` | add the contributions | an extensive quantity split across sources: fluxes into one surface add |
 | `Mean` | unweighted arithmetic mean | an intensive quantity sampled by several sources covering comparable extents |
-| `First` | take the first contributing channel in declaration order | an override: a fine-scale source shadowing a background field |
+| `First` | take the first contributing field transfer in declaration order | an override: a fine-scale source shadowing a background field |
 
 `Mean` is unweighted. If the sources cover very different extents, it is
 probably not what you want; weighted merges are not implemented, and the
 absence is deliberate — the weights would have to come from coverage
 information the model does not yet carry.
 
-Every channel targeting the field participates. The rule does not list them,
-because a list is something a later channel can be left out of, and a
+Every field transfer targeting the field participates. The rule does not list them,
+because a list is something a later field transfer can be left out of, and a
 contribution silently dropped is the failure this whole mechanism exists to
 prevent.
 
@@ -61,7 +61,7 @@ warning W-MERGE-UNUSED: field 'wall_flux' declares a Sum merge but is written
 by 1 channel(s); the merge combines nothing
 ```
 
-Usually a channel was renamed or retargeted and the rule was left behind. It
+Usually a field transfer was renamed or retargeted and the rule was left behind. It
 is a warning, not an error: the graph still runs and still means what it says.
 
 ## What it compiles to
@@ -73,6 +73,6 @@ before the field is delivered. You can see it in the plan:
   7  t=1  Merge  node=7  in=[%3, %6]  out=%7  {reason=Sum}
 ```
 
-The combined value is timed at its most recent contribution: if one channel is
-lagged and another is not, the result is available at the unlagged channel's
-step, and the dependence on that channel is preserved in the schedule.
+The combined value is timed at its most recent contribution: if one field transfer is
+lagged and another is not, the result is available at the unlagged field transfer's
+step, and the dependence on that field transfer is preserved in the schedule.

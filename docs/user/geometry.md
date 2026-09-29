@@ -35,7 +35,7 @@ meaningful rather than merely difficult:
 
 Both dimensions are template parameters, so this is enforced when the code is
 compiled rather than when it runs. Asking a volume mesh for a normal is not a
-refusal you discover in a log; it does not build.
+rejection you discover in a log; it does not build.
 
 ## Cells are simplices, and they remember their parent
 
@@ -102,16 +102,16 @@ Measured on non-matching pairs over the unit domain, all residuals at rounding:
 Remapping a mesh onto itself returns exactly the identity: one entry per cell,
 each equal to 1.
 
-### Two things it refuses
+### Two things it rejects
 
 **A surface pair.** The 2D kernel clips in the xy-plane. Handed a surface
 embedded in three-space it would return the measure of its *shadow* — a
-plausible wrong answer — so it refuses with `E-REMAP-NONPLANAR`. A surface pair
+plausible wrong answer — so it rejects with `E-REMAP-NONPLANAR`. A surface pair
 needs a parameterisation, or great-circle geometry on the sphere, which is what
-the TempestRemap tier provides.
+the MOAB-enabled build configuration provides via TempestRemap.
 
 **Anything above order 1.** Piecewise constant is what this path reconstructs.
-Asking for high order without MOAB is refused by name rather than quietly
+Asking for high order without MOAB is rejected by name rather than quietly
 served at order 1.
 
 ### A note on negligible overlaps

@@ -62,7 +62,7 @@ q.slice(1, fuse::all);          // whole extent      (cf. std::full_extent)
 q.slice(1, {2, fuse::end});     // from 2 to the end (cf. std::strided_slice)
 ```
 
-A reversed or out-of-range extent is refused, and the diagnostic names the offending bounds.
+A reversed or out-of-range extent is rejected, and the diagnostic names the offending bounds.
 
 ## Terminals that communicate say so
 
@@ -77,12 +77,12 @@ This matters because the tempting thing to write is a deadlock:
 
 ```cpp
 if (rank == 0) {
-  q.slice(1, fuse::all).to_file(ctx, "q.h5");   // refused, with a diagnostic
+  q.slice(1, fuse::all).to_file(ctx, "q.h5");   // rejected, with a diagnostic
 }
 ```
 
 Ranks 1 and above never enter the collective, so a naive implementation hangs at the *next* one,
-somewhere unrelated. FUSE refuses the call instead and tells you why. `print` is rank-aware by
+somewhere unrelated. FUSE rejects the call instead and tells you why. `print` is rank-aware by
 construction, so you do not have to remember to guard it.
 
 ## Chains cannot dangle
