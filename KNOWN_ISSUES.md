@@ -25,7 +25,7 @@ ctest). Whether the run after `d42caa6` went green is not recorded here; the
 sandbox cannot see GitHub.
 
 **What the five legs still do not cover:** none runs MPI, so every
-`parallel.*`, `layout.*` and MOAB test remains a host-only verdict, and the
+`parallel.*`, `layout.*` and MOAB test remains a host-only outcome, and the
 mutation rows marked `requires = "mpi"` are never assessed by CI. Adding an
 MPI leg (MPICH from apt, `-DFUSE_ENABLE_MPI=ON`, `ctest -L mpi` at 2–4
 ranks) is the one CI change that would move verification off your machine.
@@ -202,12 +202,12 @@ space was actually picked up.
 
 ## B. Mine, and already scheduled — please do not act on these
 
-### ~~B1. Tier 2 does not build: the MOAB backend is unported~~ — CLOSED 2026-09-18, superseded by C1
+### ~~B1. The MOAB-enabled build configuration does not build: the MOAB backend is unported~~ — CLOSED 2026-09-18, superseded by C1
 
 Stale and false as of the S5.2 port: `include/fuse/backend/moab_backend.hpp`
 and `src/backend/moab_backend.cpp` both exist and are wired into
 `fuse-coupler-backend`, so the compile error quoted below cannot reproduce at
-HEAD (REVIEW.md R-23). See C1 below for the current status of tier 2 — it
+HEAD (REVIEW.md R-23). See C1 below for the current status of the MOAB-enabled build configuration — it
 builds; what is still open is a host run of its test suite.
 
 <details><summary>Original text, kept for history</summary>
@@ -226,7 +226,7 @@ differential oracle for this one when it lands.
 
 </details>
 
-### ~~B1a. The no-exceptions build aborts where the library catches its own refusal~~ — CLOSED 2026-09-17
+### ~~B1a. The no-exceptions build aborts where the library catches its own rejection~~ — CLOSED 2026-09-17
 
 Found by running the `tier0-no-exceptions` leg's recipe (11 of 57 aborting),
 fixed in `9975cb3` and `555c62d`. The leg now passes **48/48**, and the normal
@@ -234,7 +234,7 @@ build stays at 65/65.
 
 **What it was.** `FUSE_REFUSE` throws when exceptions are on and
 reports-then-aborts when they are off, so any place the library threw and
-caught *its own* refusal to build a value died before the catch ran.
+caught *its own* rejection to build a value died before the catch ran.
 
 **The fix, applied in two places.** Each operation now has ONE implementation
 that reports, with the throwing spelling layered on top — so the two cannot
@@ -268,7 +268,7 @@ per-case guards if the list grows.
 
 11 BLOCKER, 21 MAJOR. Read `REVIEW.md` §2 first: the fifty-one reduce to six causes, and §4 gives the
 fix order with the gate additions that keep each one closed. Two corrections to THIS file followed
-from it: B1 above was stale (tier 2 builds, see C1) — now closed, above. C1 below understated the
+from it: B1 above was stale (the MOAB-enabled build configuration builds, see C1) — now closed, above. C1 below understated the
 MOAB situation — the test file opened with `#ifdef FUSE_HAVE_MOAB` and no config include, so its 38
 cases compiled to a skip stub in every configuration, host included (`REVIEW.md` R-06, not R-09 as
 first written here; R-09 is the unrelated `step_period()` collective-agreement BLOCKER). `test/backend/moab_mesh_test.cpp` now includes `config.hpp` and tests `#if FUSE_HAVE_MOAB` — the
@@ -276,14 +276,14 @@ cases compile again, but C1's "needs one host run" still stands: nothing here ca
 
 ### C1. The MOAB backend is built but unrun in the sandbox
 
-**Status: needs one host run.** `S5.2` landed 2026-09-18: tier 2 configures,
+**Status: needs one host run.** `S5.2` landed 2026-09-18: the MOAB-enabled build configuration configures,
 compiles and links for the first time, and `test/backend/moab_mesh_test.cpp`
 (38 cases, ported from the parent) is registered whenever MOAB is enabled.
 
-None of it has executed here. Tier 2 requires MPI by the tier ladder, and this
+None of it has executed here. The MOAB-enabled build configuration requires MPI by the build-configuration ladder, and this
 sandbox cannot `MPI_Init` — every test in an MPI-enabled build dies at startup
-in `MPI_Init_thread`, which is why tier 2 reports 81 of 87 failing here and why
-that number says nothing about the code. The ladder is right to refuse MOAB
+in `MPI_Init_thread`, which is why the MOAB-enabled build configuration reports 81 of 87 failing here and why
+that number says nothing about the code. The ladder is right to reject MOAB
 without MPI, so there is no serial configuration to fall back on.
 
 What a host run would establish: the 38 MOAB cases, and in particular the seven
@@ -334,12 +334,12 @@ needed there since the fields were already `std::uint64_t`) now reference.
 
 **The runtime checks the new bits.** `verify_rollback_support()`
 (`src/runtime/checkpoint_support.cpp`, reached from `Runner::initialize()` via
-`verify_iteration_region()`) now also refuses `E-ITER-NONDETERMINISTIC` for a
-component inside an iteration region's checkpoint set whose
+`verify_iteration_region()`) now also rejects `E-ITER-NONDETERMINISTIC` for a
+component inside an implicit coupling group's checkpoint set whose
 `determinism_level()` decodes to `DeterminismLevel::Nondeterministic` — the
-exact refusal `src/model/multiscale.cpp`'s `review_surrogate_contract()`
+exact rejection `src/model/multiscale.cpp`'s `review_surrogate_contract()`
 already predicted in prose ("it is an error to use \[a nondeterministic
-surrogate\] inside an iteration region, which the compiler checks when it
+surrogate\] inside an implicit coupling group, which the compiler checks when it
 knows the graph") but could not itself implement, having no graph and no
 `ComponentSet`. Pinned by `Checkpoint.NondeterministicComponentInsideIterationRegionIsRejected`
 (fires) and `Checkpoint.ExplicitlyBitwiseComponentInsideIterationRegionIsAccepted`
@@ -357,16 +357,16 @@ the rank counts the coupler may use") and a component that never mentioned
 determinism has not made it — reading silence as that claim is exactly the
 assumption this project's rules forbid. So the enumerators are stored at raw
 value + 1, `decode_capability_determinism()` returns `std::nullopt` for zero,
-and an iteration region **warns** (`W-ITER-DETERMINISM-UNDECLARED`,
+and an implicit coupling group **warns** (`W-ITER-DETERMINISM-UNDECLARED`,
 `Checkpoint.UndeclaredDeterminismInsideIterationRegionWarnsAndRuns`) rather
-than refusing — a refusal would reject every component written before the
+than rejecting — a rejection would reject every component written before the
 bitmask. All nine example components now declare their real triple:
 rollback, `Bitwise` (measured by `example.*.omp_identical`), and **hidden
-state = true** — each keeps a clock, a history or a solver's internals that
+state = true** — each keeps a time grid, a history or a solver's internals that
 `register_fields()` never bound and the runtime's byte-for-byte rollback
 check cannot see, which is precisely what their `save_state()` hooks carry.
 
-**Measured, not asserted.** Full tier-0 build (this checkout, this session):
+**Measured, not asserted.** A full build at the base build configuration (this checkout, this session):
 0 errors, 129/130 ctest pass (the 130th, `backend.native_generators.omp1`, is
 a `./.tmp/` shared-path race between two ctest workers under `-j8`, unrelated
 to this change — passes alone; `ctest -R backend.native_generators` 1/1
@@ -400,7 +400,7 @@ change). Sphinx: exit 0.
 `include/fuse/schedule/window.hpp` + `src/schedule/window.cpp`
 (`CouplingWindowScope`, `validate_coupling_window`) and
 `include/fuse/runtime/window_coupler.hpp` + `src/runtime/window_coupler.cpp`
-(`WindowCoupler`) — the multi-clock iteration-window mechanism, docs in
+(`WindowCoupler`) — the multi-time-grid waveform-iteration mechanism, docs in
 [](docs/dev/coupling-windows.md) and [](docs/user/coupling-windows.md).
 
 **History.** This entry originally recorded that the mechanism had been
@@ -417,7 +417,7 @@ the smallest failing case:
    member's window-start value.** Correct only for the very first call
    (right after `save_state()`, before any `advance()` this window); every
    later sweep's call read whatever the PREVIOUS sweep's `advance()` had
-   just left there — the value at the end of the last substep, silently
+   just left there — the value at the end of the last subcycling step, silently
    mislabelled as the value at `start_clock[i]`. This corrupted every
    iterated `mean_over()` after sweep 0 for EVERY case, straddling or not
    (`ErrorConvergesNearOrderTwoAdjustableAdjustable`'s order collapsing to
@@ -426,10 +426,10 @@ the smallest failing case:
    after `save_state()`, and reading that captured copy instead of the live
    pointer inside `build_delivered()`.
 2. **`build_delivered()`'s `Waveform::reset()` started at `start_clock[i]`,
-   not at the window start `T0`.** When a `Fixed` member's clock is already
+   not at the window start `T0`.** When a `Fixed` member's time grid is already
    past `T0` (a resolved straddle from the previous window leaves it there
-   by design), a consumer whose own substep spans the full window --
-   the window-definer's single substep, in particular -- needs that
+   by design), a consumer whose own subcycling step spans the full window --
+   the window-definer's single subcycling step, in particular -- needs that
    member's value starting at `T0`, before the member's own current-window
    data begins. This crashed outright: `Waveform::integrate: [13, 26] is not
    inside the support [14, 26]` (`IncommensurateSevenThirteenAllPolicyPairs`,
@@ -442,7 +442,7 @@ the smallest failing case:
 
 Both bugs were absent from the Python cross-check because Python's
 hand-rolled `wf_integrate`/`wf_evaluate` helpers silently clamp or drop
-out-of-range contributions instead of refusing -- the real
+out-of-range contributions instead of rejecting -- the real
 `fuse::Waveform::integrate()` correctly enforces its documented support
 contract, which is what turned bug 2 into a loud crash instead of a silently
 wrong number. Bug 1 doesn't depend on straddling at all and the Python
@@ -457,12 +457,12 @@ called `restore_state()` before re-advancing on each Gauss-Seidel sweep, so
 it compounded across all 100 sweeps instead of resetting each one, and (b)
 fed each component its partner's raw iterate rather than the MEAN of the
 partner's window-start value and current iterate -- what a single
-full-window substep's `mean_over()` actually evaluates to for a two-knot
+full-window subcycling step's `mean_over()` actually evaluates to for a two-knot
 linear Waveform. Both fixed in the test fixture; `WindowCoupler`'s own code
 needed no change for this one.
 
 **Current state: all 13 `runtime.window_coupler` tests pass** (rebuilt and
-run at tier 0: `cmake --build ./b0 --target fuse_runtime_window_coupler_test
+run at the base build configuration: `cmake --build ./b0 --target fuse_runtime_window_coupler_test
 fuse_schedule_window_scope_test fuse_schedule_multirate_region_test
 fuse_verification_iteration_test fuse_runtime_runner_test && ctest`), along
 with all 14 `schedule.window_scope`, all 3 `schedule.multirate_region`, all
@@ -498,32 +498,32 @@ the fix it silently converged to a different, wrong value
 
 ## D. Real limitations, documented and pinned
 
-### ~~D1. A region's contiguity depends on declaration order~~ — FIXED 2026-09-21
+### ~~D1. An implicit coupling group's contiguity depends on declaration order~~ — FIXED 2026-09-21
 
-Two independent channels on the same clock, one inside an iteration region.
+Two independent field transfers on the same time grid, one inside an implicit coupling group.
 The scheduler ordered an instant by topological rank alone, so the two chains
 interleaved whenever their ranks alternated — and whether they did depended on
-the order the user happened to declare their components in. A region cut in
-half that way was refused (`E-SCHED-REGION`) although an order existed that
+the order the user happened to declare their components in. An implicit coupling group cut in
+half that way was rejected (`E-SCHED-REGION`) although an order existed that
 kept it whole.
 
-The interleaving instruction was usually the region's **own** sink: a
-non-member that reads the region's converged output and must run after the
+The interleaving instruction was usually the group's **own** sink: a
+non-member that reads the group's converged output and must run after the
 loop, which the rank tie-break sometimes placed between two members.
 
 **Fixed** by `group_regions_within_instants()` (`src/schedule/scheduler.cpp`):
-within each (time, phase) instant, emit greedily and prefer an open region's
+within each (time, phase) instant, emit greedily and prefer an open group's
 ready members. Only ready instructions are ever emitted, so it cannot invert a
-dependence — and with no region in an instant the result is the rank order
+dependence — and with no group in an instant the result is the rank order
 itself, which is why every golden IR file is byte-identical.
 
 Grouping is **skipped** for an instant where a non-member reads an arc that a
 member also reads and that no member produces — the same external value the
-region re-advances. That is the hanging-channel hazard
+group re-advances. That is the hanging-field-transfer hazard
 (`Iteration.RejectsAnExplicitChannelHangingOffAnIteratedComponent`): the
 non-member would run once, on one sweep's iterate, so separating the interleave
-would turn a refusal into a silently chosen placement. Such an instant keeps
-the order it had, and with it the verdict it produced before. The first attempt
+would turn a rejection into a silently chosen processor set. Such an instant keeps
+the order it had, and with it the outcome it produced before. The first attempt
 at this fix did separate it, and that test is what caught it.
 
 `ExecutionPlan.ARegionSchedulesWhicheverOrderItsNeighbourIsDeclaredIn` asserts
@@ -535,7 +535,7 @@ removed. `E-SCHED-REGION`'s message no longer mentions declaration order.
 ### ~~D2. One CommGraph-backed Transport per run~~ — FIXED 2026-09-20
 
 `Runner::Impl` holds a single `std::unique_ptr<Transport>`, so a plan with two
-cross-rank channels is refused at `initialize()`:
+cross-rank field transfers is rejected at `initialize()`:
 
 ```
 E-RT-TRANSPORT: this build wires one CommGraph-backed Transport per run, but
@@ -547,7 +547,7 @@ ordinary multiphysics case, and the brief this library exists to serve names
 it. So this is the sharpest remaining limit on what can actually be coupled,
 not a corner.
 
-Surfaced 2026-09-20 by the host Tier 1 run once two earlier faults in the same
+Surfaced 2026-09-20 by the host run of the MPI-enabled build configuration once two earlier faults in the same
 test were cleared (`RunnerTransport.StillRunsASecondChannelAfterARegionFails
 UnderMpi`, which needs exactly this). That test is the acceptance criterion and
 is already written; it fails on this and nothing else.
@@ -557,13 +557,13 @@ CommGraph-backed plan, built inside the per-plan loop of
 `attach_comm_graphs()` — which is where it has to be, because
 `peer_plan_needed`/`send_peers`/`recv_peers` describe the plan being walked
 and are overwritten by the next iteration. Building after the loop, on the
-last plan's peer lists, is what had limited the runner to one channel. Each
+last plan's peer lists, is what had limited the runner to one field transfer. Each
 instance is created from the registry, passed through
 `RunnerConfig::transport_setup`, then planned; every rank builds the same
 number in the same order, which matters because `set_communicator()`
 duplicates the communicator and `build_plan()` is collective. Instances are
 NOT shared between plans: a Transport carries the plan it was built for and
-`prepare()` refuses any other spec. Mutation
+`prepare()` rejects any other spec. Mutation
 `one-transport-shared-across-every-plan` pins that. Verified in the sandbox
 only as far as compiling in all three tiers; the acceptance test is
 `RunnerTransport.StillRunsASecondChannelAfterARegionFailsUnderMpi` and needs
@@ -571,37 +571,37 @@ a host run.
 
 **The superseded plan was** — `transport` becomes a vector indexed by transport plan;
 `attach_comm_graphs()` builds and wires one per plan rather than one per run
-(`src/runtime/runner.cpp:1321` is the refusal, `:1467` the single-instance
+(`src/runtime/runner.cpp:1321` is the rejection, `:1467` the single-instance
 `dynamic_cast` wiring, `:2097` and `:2124` the execution sites). The open
 design question is whether two plans with an identical `TransportSpec` share
 one instance or get one each.
 
 ---
 
-### ~~D6. A component placed nowhere is legal, but a channel from it cannot initialise~~ — RULED AND FIXED 2026-09-22
+### ~~D6. A component placed nowhere is legal, but a field transfer from it cannot initialise~~ — RULED AND FIXED 2026-09-22
 
-`RankSet` said an empty placement was legal; `MpiTransport::build_plan` refused
-one. **Ruling: the refusal is right** — transporting out of a component that
+`RankSet` said an empty processor set was legal; `MpiTransport::build_plan` rejected
+one. **Ruling: the rejection is right** — transporting out of a component that
 exists nowhere is a modelling error, and `RankSet`'s contract was the
 incomplete half.
 
 Fixed accordingly:
 
-- `validate()` now refuses a channel whose source or target component is placed
-  on no rank, with `E-PLACEMENT-EMPTY` naming the component and the channel.
+- `validate()` now rejects a field transfer whose source or target component is placed
+  on no rank, with `E-PLACEMENT-EMPTY` naming the component and the field transfer.
   A model-layer check, so it fires for every transport and before any
   communicator exists — where the previous `E-TRANSPORT-RANKS` told the user
   about a rank set when the mistake was in the graph, and only under MPI.
-- `RankSet`'s contract says empty placement is legal **only for a component
-  with no channels**, and says why.
+- `RankSet`'s contract says an empty processor set is legal **only for a component
+  with no field transfers**, and says why.
 - `docs/user/placement.md` states the same rule from the user's side.
-- Five tests pin both halves — each end refused separately, both ends reported
-  separately, and an empty placement with no channel still accepted, because
+- Five tests pin both halves — each end rejected separately, both ends reported
+  separately, and an empty processor set with no field transfer still accepted, because
   that is the supported way to switch a component off for one run. Two
   mutations (`empty-placement-channel-check-never-fires`,
   `empty-placement-check-fires-on-every-channel`) fail if either half goes.
 
-The transport-level refusal stays exactly as it was: it is now a backstop
+The transport-level rejection stays exactly as it was: it is now a backstop
 rather than the primary diagnosis.
 
 ---
@@ -610,19 +610,19 @@ rather than the primary diagnosis.
 
 **MOAB per-component decomposition (`8cf2dfe`, `0e290ab`).** `MoabMeshBackend::set_placements(placements)`,
 one `RankSet` per graph component (couplers included, read from `graph.component_count()`),
-builds one `moab::Core` and one `moab::ParallelComm` per placement on a sub-communicator split
-from the base communicator over exactly that placement's ranks: iMOAB's application-id model,
+builds one `moab::Core` and one `moab::ParallelComm` per processor set on a sub-communicator split
+from the base communicator over exactly that processor set's ranks: iMOAB's application-id model,
 as approved. `placed_view`/`placed_region_size` answer from that decomposition, and outside the
-placement they return an **empty** view, never the default one. Placement count and ranges are
-agreed over the base communicator before the first split, and every placement's read outcome
-is reconciled there too, so a rank outside a placement is never left waiting. With no
-placements declared every existing caller gets exactly today's answer. The caller declares
-the placements, as with the native and test backends; the Runner does not.
+processor set they return an **empty** view, never the default one. Processor-set count and ranges are
+agreed over the base communicator before the first split, and every processor set's read outcome
+is reconciled there too, so a rank outside a processor set is never left waiting. With no
+processor sets declared every existing caller gets exactly today's answer. The caller declares
+the processor sets, as with the native and test backends; the Runner does not.
 
 **Not run anywhere yet.** No MOAB-linked binary can start in this sandbox (`moab::Core`'s
 constructor calls `MPI_Init_thread`), so the 9 single-process cases in `moab_mesh_test.cpp`,
 the 2–5 rank `parallel.moab_placed_view_mpi.*` tiling test and the 8 rows of
-`build-evidence/mutations/moab-placement.toml` are compiled (tier 2, 0 errors) and traced only:
+`build-evidence/mutations/moab-placement.toml` are compiled (the MOAB-enabled build configuration, 0 errors) and traced only:
 
 ```sh
 ctest --test-dir build-all -R 'backend.moab_mesh|parallel.moab_placed_view_mpi' --output-on-failure
@@ -630,14 +630,14 @@ FUSE_MUTATE_MPI=1 python3 tools/mutate.py --build-dir build-all --area backend
 ```
 
 **What remains of D5:** per-placement remap *weights* built on two independently decomposed
-MOAB placements and compared. The builders already resolve through `placed_view`, but nobody
+MOAB processor sets and compared. The builders already resolve through `placed_view`, but nobody
 has assembled and checked such a matrix.
 
 
 **History.** First recorded as a coverage gap, then corrected to a capability
 gap. The Runner filled both `CommGraphSide`s from one `backend.view(MeshId)`,
 so each rank held one piece of each mesh, shared by every component on it,
-and two partially overlapping placements could not both cover the region.
+and two partially overlapping processor sets could not both cover the mesh entity set.
 
 **Ruling (2026-09-22): per-placement views in one backend**, MOAB's
 application-id model.
@@ -646,15 +646,15 @@ application-id model.
 
 - `MeshBackend::placed_view(MeshId, ComponentId)` and
   `placed_region_size(Region, ComponentId)`. They default to the
-  placement-free answers, so every existing backend and every
-  single-decomposition run behaves exactly as before; tier 0 is unchanged at
+  processor-set-free answers, so every existing backend and every
+  single-decomposition run behaves exactly as before; the base build configuration is unchanged at
   72/72. They are named rather than overloaded because an overload of `view`
-  would be hidden in every derived backend. Contract: identical placements get
+  would be hidden in every derived backend. Contract: identical processor sets get
   identical decompositions, since the IR emits no Transport between them.
-- `RegionSizes` takes the arc's placement (`ValueType::rank_set`), so buffers
+- `RegionSizes` takes the arc's processor set (`ValueType::rank_set`), so buffers
   are sized from their own component's decomposition.
 - The Runner gives each CommGraph side its own component's view. The Remap
-  identity check and the conservation measure use the arc's placement, and
+  identity check and the conservation measure use the arc's processor set, and
   the measure now resolves its mesh **by name** (it had passed the graph's
   `MeshId` straight to the backend, the positional-id hazard
   `make_region_sizes` exists to avoid).
@@ -665,19 +665,19 @@ application-id model.
   never run. Fixed: the peer plan's extent is the larger of the rank's two
   blocks, the source block is staged whole, and only the destination indices
   the plan writes (precomputed, allocation-free) are copied back.
-- ~~`E-RT-REMAP-PLACEMENT`: a Remap on a non-default decomposition refuses~~ —
+- ~~`E-RT-REMAP-PLACEMENT`: a Remap on a non-default decomposition rejects~~ —
   **closed 2026-09-25.** `RemapPlan::placement` carries the component whose
   decomposition the weights index; it is part of `RemapPlan::key()`, and every
   builder (supermesh, MOAB/Tempest, consistent, MLS) resolves its sides through
   `MeshBackend::placed_view(id, placement)`. Asserted where the matrix can be
   read: `Supermesh.WeightsAreBuiltOnThePlacementsOwnDecomposition` gives one
-  placement a target view numbered backwards and requires the row-reversed
+  processor set a target view numbered backwards and requires the row-reversed
   matrix, exactly. (Its first draft reversed BOTH sides — a mirror symmetry of
   a uniform line pair, matrix unchanged — and its own "the matrices coincide"
   guard caught that.) `Runner.AcceptsARemapOnANonDefaultPlacementDecomposition`
-  replaces the refusal test.
+  replaces the rejection test.
 - Three shape tests through one helper (partial at 3–5 ranks, full, disjoint);
-  the test backend builds one decomposition per placement.
+  the test backend builds one decomposition per processor set.
 - Mutations: `remap-ignores-the-placement-decomposition` (now the builder
   reading the default view, killed by the reversed-numbering test) KILLED here;
   `both-commgraph-sides-share-one-view`,
@@ -686,21 +686,21 @@ application-id model.
 
 **D3 note (2026-09-23):** D3's new `TwoIndependentCommGraphChannelsBothDeliver
 InOnePeriod` is the first Runner test to check DATA delivered through TWO
-distinct CommGraph-backed plans (`pi=0`/`pi=1`) in one period, on the same
+distinct CommGraph-backed plans (`pi=0`/`pi=1`) in one coupling cycle, on the same
 per-placement machinery this section built (`attach_comm_graphs()`,
 `graph_transports`). Compiled only, not yet run (C1: this sandbox cannot
 initialize MPI) — noted here so a future change to plan indexing re-runs it
 alongside this section's own three shape tests once the host confirms it.
 
 **Host run 1 (2026-09-23) found a regression I introduced**, now fixed: every
-cross-placement Transport was refused with `E-RT-SIZE` ("reads 12 values ... into
+cross-processor-set Transport was rejected with `E-RT-SIZE` ("reads 12 values ... into
 0"). The Runner held Transport to the rule that an instruction's input and output
 buffers are the same size. That rule held only while both ends shared one view. With
-each end in its own component's decomposition, a rank in one placement and not the
-other legitimately has 12 and 0. Tier 0 could not see it, because serial backends
+each end in its own component's decomposition, a rank in one processor set and not the
+other legitimately has 12 and 0. The base build configuration could not see it, because serial backends
 keep one decomposition. Transport is now exempt from that rule, as Remap already was.
 `check_transport_extents()` reconciles it after the CommGraph plans exist, with its
-verdict agreed across ranks:
+outcome agreed across ranks:
 - a whole-arc copy must still have equal sizes;
 - a matched plan's gather, scatter and local indices must fit their buffers;
 - a peer plan's staged source must equal its input, and its written indices must
@@ -724,10 +724,10 @@ ranks, full overlap at every rank count, and all 18 `layout.*` tests pass, inclu
    `ParallelComm` over one communicator, so with MOAB every component shares one
    decomposition. Partial overlap is therefore proved with the test backend
    only. The MOAB half is one `ParallelComm` per component communicator, with
-   the mesh read once per placement.
+   the mesh read once per processor set.
 3. ~~**Per-placement remap weights**~~ — done 2026-09-25 (above). What remains
    of D5 is the MOAB half (item 2): `MoabMeshBackend::placed_view` still returns
-   the default view for every placement, so on MOAB the per-placement weights
+   the default view for every processor set, so on MOAB the per-placement weights
    are the default weights until one `ParallelComm` per component exists.
 
 ---
@@ -736,7 +736,7 @@ ranks, full overlap at every rank count, and all 18 `layout.*` tests pass, inclu
 
 **Host run 2026-09-28:** `ctest -R 'layout.coupler|parallel.runner_transport|parallel.remap_halo|backend.remap_halo'`
 and `ctest -L omp` all pass on the user's machine. `A-PARTITIONED`'s parallel half therefore
-has a verdict, not just a compile: `RemapHaloMpiSphere.BuildRemapHaloDeliversExactHaloValuesAndRoundTripsExactly`
+has an outcome, not just a compile: `RemapHaloMpiSphere.BuildRemapHaloDeliversExactHaloValuesAndRoundTripsExactly`
 passes at 2 ranks, printing `min_src_coverage=0 max_col_defect=1` for the ATM/OCN pair (rank 0,
 local sums; both meshes span nearly the whole globe in their node coordinates, so the zero
 coverage is not a regional-patch effect — the likeliest reading, a land-masked ocean grid, is
@@ -745,7 +745,7 @@ unconfirmed). `A-SPACES-TRANSPORT` closed with D11. The matrix's one remaining g
 
 `tools/check-parallel-matrix.py` (S5.5) checks that every cell of
 `build-evidence/parallel-matrix.toml` names coverage that exists: the test is
-really in the file, the file is really registered, the refusal is really in the
+really in the file, the file is really registered, the rejection is really in the
 library *and* asserted somewhere, and a claimed rank count is really run. It
 reported **33 claims verified, 0 broken, 2 gaps** when this entry was written.
 Measured on `main` at `b76de49` (2026-09-28, after both closures below and
@@ -772,7 +772,7 @@ when either is off):
 - `RemapHaloMpi.ERemapParallelRefusesAboveOneRankAndNotAtOne` and
   `RemapHaloMpi.EMeshHaloGeometryRefusesTheBoxPairAboveOneRankAndNotAtOne` —
   the `E-REMAP-PARALLEL` and `E-MESH-HALO-GEOMETRY` boundaries
-  `moab_backend.hpp`/`remap_plan.hpp` call load bearing ("`> 1` refuses;
+  `moab_backend.hpp`/`remap_plan.hpp` call load bearing ("`> 1` rejects;
   `== 1` must NOT"), checked on BOTH sides using a generated, non-spherical
   box pair — no mesh file needed, since both boundaries are structural
   (rank count, distinct file sets) and neither depends on real geometry.
@@ -818,7 +818,7 @@ when either is off):
     tolerance for a number never measured would violate this project's own
     "never widen a tolerance to make an assertion pass" rule.
 
-**What compiled at tier 2, in this sandbox**: configuring with
+**What compiled at the MOAB-enabled build configuration, in this sandbox**: configuring with
 `-DFUSE_ENABLE_MOAB=ON -DFUSE_ENABLE_MPI=ON
 -DFUSE_MOAB_MESHFILES=<moab-source>/MeshFiles/unittest` found both real
 files (`fuse: sphere pair for the remap halo: .../wholeATM_T.h5m +
@@ -833,7 +833,7 @@ committed; the D4 heading above carries the measured number).
 `tools/mutate.py --check-anchors` and `tools/check-invariants.py`/
 `check-layering.py` are unaffected (0 violations).
 **UNRUN here, correcting this section's own 2026-09-21 note that the
-serial contract's verdict "comes from a host run"**: it does, and more
+serial contract's outcome "comes from a host run"**: it does, and more
 finally than stated then. This sandbox cannot initialise MPI even at ONE
 process with no `mpiexec` at all (C1) — confirmed for THREE separate
 binaries built against the same MPI-enabled MOAB (the pre-existing serial
@@ -861,7 +861,7 @@ number can only fall by writing the test. A **third** gap appearing, or any
 run (`fuse_add_mpi_test` defaulted to `2 3 4 5`). A single task is not a
 trivial case of the others — every match has both ends on one rank, so the
 same-rank shortcut carries the whole exchange and `MpiTransport` must see
-nothing, which is row 7's requirement from the other side. Tier 1 went from 92
+nothing, which is row 7's requirement from the other side. The MPI-enabled build configuration went from 92
 to 97 registered tests. **Unverified here:** MPI cannot initialise in this
 sandbox, so a test that fails at 1 rank instead of skipping — i.e. one missing
 its `FUSE_REQUIRE_AT_LEAST_RANKS` guard — will only show up on a host run.
@@ -892,8 +892,8 @@ survivors, plus a fourth in `native-mesh.toml` (vertex ownership, below).
 | Survivor | Behaviour with no test that detects it |
 |---|---|
 | `one-transport-shared-across-every-plan` | D2's fix: one Transport per CommGraph-backed plan. Collapsing every plan onto instance 0 fails nothing. |
-| `region-failure-abandons-the-rest-of-the-period` | R-09: a failing period carries the failure forward instead of returning at the region. |
-| `region-residual-skips-the-cross-rank-reduction` | R-10: the region residual is agreed across participants rather than summed rank-locally. |
+| `region-failure-abandons-the-rest-of-the-period` | R-09: a failing coupling cycle carries the failure forward instead of returning at the group. |
+| `region-residual-skips-the-cross-rank-reduction` | R-10: the group's residual is agreed across processes rather than summed rank-locally. |
 
 **D1 is fixed, and the fixture already reflects it — the old "declared first"
 diagnosis in this section was stale.** Reading the checked-out
@@ -910,18 +910,18 @@ instead:
   plan indices `pi=0`/`pi=1` in the existing fixture. The mutant nulls
   `graph_transports[1]`; executing "linkB"'s Transport at `pi=1` then hits the
   `tp == nullptr` guard and returns a clean `E-RT-TRANSPORT`. The OLD test
-  never saw this: it ALSO forces "fluid" to fail inside the region, and
+  never saw this: it ALSO forces "fluid" to fail inside the group, and
   `step_period()`'s failure branch only overwrites `step_failure`
-  `if (!step_failure.has_value())` — the region's failure already claimed
+  `if (!step_failure.has_value())` — the group's failure already claimed
   that slot, so "linkB"'s distinct error code was discarded, masked rather
   than absent. And `cons_b->calls()` never read the DELIVERED DATA, only
   whether the tick ran at all — which it does, from whatever the (possibly
   null-Transport, uninitialized) input buffer held.
 - **`region-failure-abandons-the-rest-of-the-period` (R-09).** Producer_b/
-  consumer_b's own tick sat at the SAME `t=0` the region occupies (interval
+  consumer_b's own tick sat at the SAME `t=0` the group occupies (interval
   `Rational{1}`, same as fluid/solid) — `group_regions_within_instants()`
   only reorders the INSTRUCTION stream inside one `(time, phase)` window, so
-  a same-time observable's position relative to the region is a greedy
+  a same-time observable's position relative to the group is a greedy
   implementation detail, not a property either the fix or the mutant is
   actually about. An "after" that depends on winning that tie-break is not a
   real "after".
@@ -930,7 +930,7 @@ instead:
   rank; because the map is entity-wise with no coupling between entities, a
   RELATIVE criterion's decay rate does not depend on how many entities are
   summed (1 rank-local, or the global 4) — local and agreed residuals reach
-  the SAME verdict on this data regardless of how unequal the entity split
+  the SAME outcome on this data regardless of how unequal the entity split
   is, so the mutant is invisible however many ranks run it.
 
 **Done.** `test/parallel/runner_transport_test.cpp` (owned by this track):
@@ -940,13 +940,13 @@ instead:
   count()`, the "linkB" analogues of the existing "link" data-verification
   helpers.
 - `StillRunsASecondChannelAfterARegionFailsUnderMpi` now puts producer_b/
-  consumer_b on `Rational{1,2}` (two ticks per period, at `t=0` and `t=1/2`)
-  instead of sharing the region's `t=0`. `schedule()`'s own `(time, phase,
+  consumer_b on `Rational{1,2}` (two ticks per coupling cycle, at `t=0` and `t=1/2`)
+  instead of sharing the group's `t=0`. `schedule()`'s own `(time, phase,
   rank)` sort key places the `t=1/2` tick strictly after everything at `t=0`
   — not a tie-break, an ordering guarantee — so `EXPECT_GE(cons_b->calls(),
-  2)` is a genuine "after the region" check now.
+  2)` is a genuine "after the group" check now.
 - New `TwoIndependentCommGraphChannelsBothDeliverInOnePeriod`: nothing fails
-  (no region at all), both "link" and "linkB" run, and both channels' data
+  (no implicit coupling group at all), both "link" and "linkB" run, and both field transfers' data
   is checked by global id. This is the direct kill for the shared-transport
   mutant: no failure exists to mask a distinct error code, and a shared
   instance that happens to work for `pi=0` but corrupts `pi=1` is caught by
@@ -977,10 +977,10 @@ owner is that minimum. `RepartitionConservesGlobalCellCountAndMeasureAndUnique
 Ids` never reads `vertex_owner`/`vertex_is_owned` at all, so it cannot see
 this mutant regardless of rank count.
 
-**Not reachable at Tier 0.** `resolve_vertex_ownership`'s cross-rank
-comparison lives inside `#if FUSE_HAVE_MPI`, which a Tier-0 build does not
+**Not reachable at the base build configuration.** `resolve_vertex_ownership`'s cross-rank
+comparison lives inside `#if FUSE_HAVE_MPI`, which a build at the base build configuration does not
 compile at all (dead-code-eliminated, not just runtime-skipped), and every
-Tier-0 caller of `migrate()` in `test/backend/native_migration_test.cpp`
+base-build-configuration caller of `migrate()` in `test/backend/native_migration_test.cpp`
 passes `kNullComm`, which returns before that `#if` block regardless of
 whether MPI is compiled in. No emulated assertion was added there: there is
 no code path, compiled or not, for one to reach.
@@ -998,7 +998,7 @@ confirm.
 
 ---
 
-### D7. `WindowCoupler` supports at most one straddling member per window, and no Fixed step longer than the window — REFUSED 2026-09-24, support is design work
+### D7. `WindowCoupler` supports at most one straddling member per window, and no Fixed step longer than the window — REJECTED 2026-09-24, support is design work
 
 Found 2026-09-24 while testing an explicit window
 (`test/runtime/window_coupler_test.cpp`) — an explicit window interval
@@ -1020,23 +1020,23 @@ component's step, or an explicit interval"). Two distinct gaps, not one:
    refinement, never order 2.
 2. **A member whose interval exceeds the window by more than double
    must eventually skip a window outright** (real time, tracked by the
-   window index, falls behind the member's own clock by more than one
+   window index, falls behind the member's own time grid by more than one
    window's worth), which nothing in the commit path
    (`sweep_window()`'s per-window `history[e].push_back(...)`,
    `build_delivered()`'s `Waveform::reset(start_clock[i], ...)`) handles:
    `real_traj[i][e]->reset()` is asked for a window with
    `window_begin > window_end` once `start_clock[i]` has raced past the
    current window's own end, and throws `InvalidArgument`. Measured with
-   window=10/d, interval_A=13/d (excess 30%): the substep grid alone
+   window=10/d, interval_A=13/d (excess 30%): the subcycling step grid alone
    (no Waveform involved) shows the first skip at window index 4,
    scale-invariant in d (a property of the 13:10 ratio, not the absolute
    step size) — confirmed by direct simulation, not the WindowCoupler
    build itself, since 1 already stops the run first at a much smaller
    window index for that same configuration.
 
-**Now refused, not run** (`WindowCoupler::create`). Running either case
+**Now rejected, not run** (`WindowCoupler::create`). Running either case
 returned a wrong answer without any diagnostic in the mixed configuration,
-so both are refusals:
+so both are rejections:
 - `E-RT-WINDOW-LONGSTEP`: a Fixed member whose interval exceeds the window.
   This was the mixed case that "never reached order 2": the Fixed 13/d member
   against a 12/d window, which spans a window end it cannot replay.
@@ -1059,7 +1059,7 @@ four phase-aligned refinements. It replaces the earlier
 pending straddle together (reading a CONSISTENT snapshot of each other's
 data, not one already-replayed-this-call and one not), and the commit
 path would need to represent "this member has no new data this window"
-(skip the substep AND the history commit, rather than committing
+(skip the subcycling step AND the history commit, rather than committing
 whatever `last_val` happened to hold) separately from "this member
 straddled." Neither is a mutation-scale fix; both are new design work,
 which is why this is filed here rather than attempted in the bug-fix
@@ -1095,19 +1095,19 @@ as unmanaged `SpanOf`/`ConstSpanOf` views at zero allocation cost:
     kernels, `copy<Space>`/`scale<Space>`, cover what `kernels.hpp`'s
     pointer-based `copy` and a hand-written scale loop did; `Merge`'s Sum/
     Mean reuses the existing `accumulate<Space>` kernel once per input
-    channel, in declaration order, which is the identical zero-then-
+    field transfer, in declaration order, which is the identical zero-then-
     accumulate-in-order the hand-written loop it replaces did.
   * **The remap apply** — `apply_weights`'s COO scan is now a CSR matvec
     (`space_kernels.hpp`'s `remap_apply`, a new multi-component overload for
     `components > 1`), with the CSR built ONCE per plan, in `resolve_remap()`
-    (`build_remap_csr()`), never per period. `RemapWeights::row`'s own header
+    (`build_remap_csr()`), never per coupling cycle. `RemapWeights::row`'s own header
     comment ("target entity, ascending") is NOT trusted as a universal
     invariant — `consistent_interp.hpp`'s `"consistent-transpose"` path
     transposes H's row-sorted triplets and does not re-sort the result, so
     `build_remap_csr()` STABLE-sorts by row itself rather than assuming;
     stability is what makes the CSR's per-row sum bit-identical to
     `apply_weights`' own ascending-k scan regardless of the input's original
-    order (found by a real Tier-0 test failure — `InterfaceTransfer.
+    order (found by a real test failure at the base build configuration — `InterfaceTransfer.
     ConsistentPairRunsThroughTheRunnerExactlyAndBalancesPower` and two
     siblings — that a first cut of this fix, which DID assume `row` was
     always ascending, got wrong; see `include/fuse/backend/remap_plan.hpp`'s
@@ -1121,10 +1121,10 @@ as unmanaged `SpanOf`/`ConstSpanOf` views at zero allocation cost:
     `Kokkos::parallel_for` over `ceil(n / 256)` chunks, each summing its own
     span sequentially into one scratch partial, then a plain host loop sums
     the partials in ascending chunk order — fixed by `n` alone, never by
-    thread count. For `n <= 256` (every existing Tier-0 iteration-region
+    thread count. For `n <= 256` (every existing base-build-configuration implicit-coupling-group
     fixture) this is the identical computation as the single-accumulator sum
     it replaced, bit for bit; scratch is sized once, in `initialize()`, from
-    the largest block any region has, and reused every sweep.
+    the largest block any group has, and reused every sweep.
 
 **A label-length trap, found and fixed the same way it would be found again.**
 `Kokkos::parallel_for`/`parallel_reduce` copy their label into a
@@ -1141,7 +1141,7 @@ it).
 
 **Verified, measured, this session:**
 
-  * Full Tier-0 build: 0 errors. Full Tier-0 `ctest`: **136/136 (100%)**,
+  * A full build at the base build configuration: 0 errors. A full `ctest` at the base build configuration: **136/136 (100%)**,
     including every `example.*.omp_identical` leg (`mms_pair`, `dn_heat`,
     `brusselator` — `fsi_channel` has never had one registered, unrelated to
     this closing) and `ctest -L omp` (29 legs, 100%). Getting the
@@ -1162,7 +1162,7 @@ it).
     (adversarial 1e16/1.0/-1e16/1e-16-magnitude data) with `EXPECT_EQ` — no
     tolerance — at six sizes straddling the chunk boundary; registered with
     `fuse_add_omp_legs`. A new Runner-level test, `runtime.
-    runner_determinism`, drives a real 2048-element iteration region (large
+    runner_determinism`, drives a real 2048-element implicit coupling group (large
     enough to span 8 fixed chunks) through `Relax`/`Residual` and pins the
     delivered field and the residual history to literals measured on this
     session's own passing run, also registered with `fuse_add_omp_legs`.
@@ -1183,7 +1183,7 @@ it).
       unmutated literal — the mutation makes the answer DEPEND ON THREAD
       COUNT, which is exactly what this closing exists to prevent.
     - `runtime-scale-runs-serial-loop` (reverting `OpKind::Scale` to its old
-      hand-written loop) is an HONEST NON-KILL: the full Tier-0 suite still
+      hand-written loop) is an HONEST NON-KILL: the full base-build-configuration suite still
       passed 100% with it applied. No test can distinguish a
       `Kokkos::parallel_for` over independent elements from a serial loop
       computing the identical products with identical rounding — there is no
@@ -1212,24 +1212,24 @@ component boundary, is A5's own next step, not this closing's.
 
 ---
 
-### ~~D12. `--coupler` on the layout driver refused unconditionally: coupler placement was designed but not implemented~~ — CLOSED 2026-09-25
+### ~~D12. `--coupler` on the processor-layout driver rejected unconditionally: routing through a coupler's own processor set was designed but not implemented~~ — CLOSED 2026-09-25
 
 **Fix.** The coupler-placement track (design C,
 `docs/dev/coupler-placement.md`): `ComponentKind::Coupler`, `add_coupler()`,
-`RemapSpec::remap_on`. A channel's Remap now runs on any declared placement
+`RemapSpec::remap_on`. A field transfer's Remap now runs on any declared processor set
 `C` (default: the target's own component) — value moves source -> C ->
 target, remapped on `C`'s decomposition of both meshes, any hop between
-identical placements elided exactly like every other hop. `C = target`
+identical processor sets elided exactly like every other hop. `C = target`
 reproduces today's IR byte for byte (golden IR unchanged;
 `CouplerLowering.CouplerEqualToTargetReproducesTodaysIRExactly`). Descriptor
-bumped to v6 (a component's `kind` byte, a channel's `remap_on` word); YAML
-gains a `couplers:` list and a channel's `remap_on:` key. New validation:
+bumped to v6 (a component's `kind` byte, a field transfer's `remap_on` word); YAML
+gains a `couplers:` list and a field transfer's `remap_on:` key. New validation:
 `E-COUPLER-FIELDS`, `E-CHANNEL-REMAP-ON`, `W-CHANNEL-REMAP-ON-UNUSED`.
 `examples/layout_driver/main.cpp`'s `--coupler e:f` now builds and runs the
-coupler-routed graph instead of refusing; refused only together with
+coupler-routed graph instead of rejecting; rejected only together with
 `--mesh` (that mode builds no field-transfer graph at all).
 
-**Verified at Tier 0** (no MPI in this sandbox): every model/IR/schedule/
+**Verified at the base build configuration** (no MPI in this sandbox): every model/IR/schedule/
 runtime unit test above passes unchanged (no regression when no coupler is
 declared), 8 new `Validate.*` tests pin the validation rules, 7 new
 `CouplerLowering.*`/`LoweringChannel.*` tests pin every lowering shape
@@ -1241,24 +1241,24 @@ nominal-rank) end-to-end job and asserts the coupler-routed result equals
 the direct result exactly (no tolerance) — see
 `test/runtime/runner_test.cpp`.
 
-**Compiled at Tier 1, not run.** `fuse_example_layout_driver` builds cleanly
+**Compiled at the MPI-enabled build configuration, not run.** `fuse_example_layout_driver` builds cleanly
 under `-DFUSE_ENABLE_MPI=ON` with the new code, and `layout.coupler.{3.
 disjoint,3.equals-target,4.overlaps-comp1}` are registered
 (`examples/CMakeLists.txt`) alongside the existing comp1/comp2 shapes.
-`layout.refuse.coupler` (the old "unconditionally refused" pin) is replaced
+`layout.refuse.coupler` (the old "unconditionally rejected" pin) is replaced
 by `layout.refuse.coupler-with-mesh`.
 
 **Host run 2026-09-27: all three `layout.coupler.*` rows FAILED**, each in
 under a second, at `initialize` with `E-MESH-PLACEMENT`. The driver had told
-its backend about two placements (`set_placements({comp1, comp2})`) and the
+its backend about two processor sets (`set_placements({comp1, comp2})`) and the
 coupler was the third component, so `placed_view(mesh, coupler)` had no
-decomposition to return. The library refused correctly; the driver had not
+decomposition to return. The library rejected correctly; the driver had not
 kept the promise the coupler design makes ("a coupler is a component-array
-entry like any other"). Fixed: the driver reads one placement per graph
+entry like any other"). Fixed: the driver reads one processor set per graph
 component, exactly as `runner_transport_test.cpp`'s harness does. That
 harness is also why no gtest caught it — it already did the right thing, and
-the Tier-0 coupler tests use the serial backend, whose `placed_view` returns
-one view for every placement. Three gtests now run the coupler shapes on the
+the base-build-configuration coupler tests use the serial backend, whose `placed_view` returns
+one view for every processor set. Three gtests now run the coupler shapes on the
 partitioned backend
 (`RunnerTransport.{ADisjointCoupler,ACouplerOnTheTargetsRanks,ACouplerOverlappingTheSource}DeliversEveryEntity`,
 matrix cell `A-COUPLER`). Both the rows and the gtests still need the host:
@@ -1268,57 +1268,57 @@ ctest --test-dir build-all -R 'layout.coupler|parallel.runner_transport' --outpu
 ```
 
 **Open, needing a host run to assess (`docs/dev/coupler-placement.md`'s own
-section on it):** `resolve_remap()`'s MLS-serial and nodal-parallel-refusal
-checks size themselves from the channel's declared source/target
-components, not from the operator's actual placement — for a coupler-routed
-nodal remap where the coupler spans more than one rank while the channel's
+section on it):** `resolve_remap()`'s MLS-serial and nodal-parallel-rejection
+checks size themselves from the field transfer's declared source/target
+components, not from the operator's actual processor set — for a coupler-routed
+nodal remap where the coupler spans more than one rank while the field transfer's
 declared endpoints are each single-rank, this could read the wrong rank
 count. Not changed: the existing derivation was tuned through several rounds
 of real host MPI debugging that this sandbox cannot reproduce or verify
 against.
 
-**Also open:** `src/runtime/iteration.cpp`'s iteration-region participant
-fix (a coupler-routed channel inside a region now unions the coupler's
+**Also open:** `src/runtime/iteration.cpp`'s implicit-coupling-group process
+fix (a coupler-routed field transfer inside a group now unions the coupler's
 ranks into `R.participants`) touches a `RunnerConfig::base_communicator`-
-gated code path with no Tier 0 coverage at all — genuinely needs MPI to
+gated code path with no coverage at the base build configuration at all — genuinely needs MPI to
 exercise.
 
 ---
 
-### ~~D10. The conservation check is rank-local, so it refuses instead of checking in parallel~~ — FIXED 2026-09-25
+### ~~D10. The conservation check is rank-local, so it rejects instead of checking in parallel~~ — FIXED 2026-09-25
 
 **Fix (`54a27cc`).** `Constrain` is now collective (`fuse::is_collective`), so
-a rank whose period has already failed still reaches it instead of leaving its
+a rank whose coupling cycle has already failed still reaches it instead of leaving its
 partners inside a reduction; the two owned-share integrals are summed over the
 base communicator in one `MPI_Allreduce` of three doubles — the third a flag
-from any rank whose period is already lost, so a real failure elsewhere is not
+from any rank whose coupling cycle is already lost, so a real failure elsewhere is not
 turned into a spurious conservation error on every partner. Totals, hence the
-verdict, are identical on every rank with no further agreement. The refusal
+outcome, are identical on every rank with no further agreement. The rejection
 `E-RT-CONSERVATION-MPI` and its fixture workaround are gone;
-`Runner.AcceptsAConservationCheckOnAMultiRankTarget` pins the acceptance in
-Tier 0, `parallel.nodal_remap_runner` at 2–5 ranks exercises the reduction
-against its own `MPI_Allreduce` of the same integrals (host verdict pending),
+`Runner.AcceptsAConservationCheckOnAMultiRankTarget` pins the acceptance at
+the base build configuration; `parallel.nodal_remap_runner` at 2–5 ranks exercises the reduction
+against its own `MPI_Allreduce` of the same integrals (host outcome pending),
 and mutations `conservation-check-not-reduced-across-ranks` (MPI) and
 `constrain-classified-local` pin the two halves.
 
 *Original entry follows.*
 
 
-`Runner::Impl` checks a conservative channel by summing this rank's owned share
+`Runner::Impl` checks a conservative field transfer by summing this rank's owned share
 of the integral. With no cross-rank reduction that number is meaningless on a
-multi-rank placement — it would both false-fire on a correct cross-rank remap
-and miss a real error — so the Runner refuses rather than report it
-(`E-RT-CONSERVATION-MPI`, REVIEW.md N-transport-runtime-1). The refusal is
+multi-rank processor set — it would both false-fire on a correct cross-rank remap
+and miss a real error — so the Runner rejects rather than report it
+(`E-RT-CONSERVATION-MPI`, REVIEW.md N-transport-runtime-1). The rejection is
 right; the missing capability is what matters.
 
 **Found on the critical path 2026-09-25.** Every `parallel.nodal_remap_runner`
-case at 2-5 ranks failed at `initialize` on this refusal, because its
-`wall_force` channel is `.conservative()` and its target is placed on several
+case at 2-5 ranks failed at `initialize` on this rejection, because its
+`wall_force` field transfer is `.conservative()` and its target is placed on several
 ranks. That fixture now sets `RunnerConfig::check_conservation = false` and
 performs the same conservation statement itself with `MPI_Allreduce` — which is
 exactly the check the Runner is declining to make.
 
-**Why it is not merely cosmetic.** A conservative channel to a multi-rank target
+**Why it is not merely cosmetic.** A conservative field transfer to a multi-rank target
 is the normal case for FSI in parallel, and today every such job must either
 disable the check or place the target on one rank. The interface load is the
 quantity most worth checking.
@@ -1326,33 +1326,33 @@ quantity most worth checking.
 **What it needs.** The reduction, over the target component's communicator,
 which `Runner::Impl` already holds (it splits one per component from
 `base_communicator`). The integral is a sum over owned entities, so the fix is
-to reduce that sum and compare the totals on every rank, agreeing the verdict
+to reduce that sum and compare the totals on every rank, agreeing the outcome
 the way `check_component_agreement` and `agree_on_local_failure` already do —
 a rank-local comparison would reintroduce the disagreement class of defect
-fixed in `27e55a1`. The refusal then applies only where no communicator is
+fixed in `27e55a1`. The rejection then applies only where no communicator is
 available.
 
 ---
 
-### D8. A Remap into a nodal field on more than one rank is refused — PARTIALLY LIFTED (round 4): two real correctness defects found by a host MPI run are fixed; a real multi-rank host run is still the final verdict
+### D8. A Remap into a nodal field on more than one rank is rejected — PARTIALLY LIFTED (round 4): two real correctness defects found by a host MPI run are fixed; a real multi-rank host run is still the final outcome
 
 `E-RT-REMAP-NODAL-PARALLEL` (`resolve_remap`, `src/runtime/runner.cpp`)
-refuses any Remap whose target is a nodal field (ContinuousGLL order 1) on a
-component placed on more than one rank, UNLESS the channel's method is
+rejects any Remap whose target is a nodal field (ContinuousGLL order 1) on a
+component placed on more than one rank, UNLESS the field transfer's method is
 `"consistent"`/`"consistent-transpose"` (round 2, see below) — for every
 other method (in particular the supermesh conservative default) it still
 fires exactly as originally described here.
 `InterfaceTransfer.ARemapIntoANodalFieldOnSeveralRanksViaASupermeshMethodStillRefuses`
 makes it fire; `InterfaceTransfer.ARemapIntoANodalFieldOnTwoDeclaredRanksIsAcceptedAndMatchesOneRank`
-is the SAME declared two-rank placement, method `"consistent-transpose"`,
+is the SAME declared two-rank processor set, method `"consistent-transpose"`,
 now accepted. Both conditions are read from the declared graph and
-placement, so every rank reaches the same verdict together.
+processor set, so every rank reaches the same outcome together.
 
-**Why a refusal and not the owner sum that was first wired in.** A shared
+**Why a rejection and not the owner sum that was first wired in.** A shared
 vertex's rows on each holder are partial or already complete depending on the
 decomposition the weights were built on. On a replicated source, which is
-every case reachable today because MOAB gives every placement the default
-view (D5 item 2; the builders honour the placement since 2026-09-25, but the
+every case reachable today because MOAB gives every processor set the default
+view (D5 item 2; the builders honour the processor set since 2026-09-25, but the
 only backend with per-placement decompositions is the test one), every holder
 computes the complete row. Summing
 them onto the owner then multiplies the load by the holder count, silently. On
@@ -1364,14 +1364,14 @@ rows without checking; the nodal-fields track found the replicated case.
 **What stays.** Nodal Transport (the same field on both sides, with
 lowest-rank vertex ownership), the shared-vertex primitives
 `accumulate_shared_rows` and `copy_owner_shared_rows`, and their MPI tests in
-`test/parallel/nodal_field_test.cpp`, whose verdicts come from a host run.
+`test/parallel/nodal_field_test.cpp`, whose outcomes come from a host run.
 `reduce_nodal_remap_target()` stays compiled but is unreachable behind the
-refusal: it is the path the refusal will open.
+rejection: it is the path the rejection will open.
 
 **What to do.** Build per-placement remap weights (D5 item 3). Then run a
 genuinely partitioned, non-matching nodal Remap through the Runner at 1 to 5
 ranks: global force conserved, H exact for a linear field, power balanced.
-Lift the refusal only when that passes.
+Lift the rejection only when that passes.
 
 **Progress (2026-09-25, "Nodal remap" track).** `consistent_interp.hpp`'s
 `build_consistent_interp_weights` is no longer 1D-only: a source of
@@ -1385,16 +1385,16 @@ verified serially (`test/backend/nodal_interp_test.cpp`, 22 cases: exact for
 the shape's own affine/multilinear field on a single reference cell, order-2
 convergence on non-matching real meshes for triangles and a cubed sphere,
 H^T conservation and power balance, the lowest-source-global-id tie-break at
-a shared face, and refusals for Pyramid/Polygon (`E-INTERP-SHAPE`, no
+a shared face, and rejections for Pyramid/Polygon (`E-INTERP-SHAPE`, no
 standard nodal basis), a missing `MeshView::cell_vertices` connectivity
 answer, a degenerate cell, an out-of-domain point, an off-surface point, and
-Newton non-convergence) — plus three of those refusal/tie-break rules pinned
+Newton non-convergence) — plus three of those rejection/tie-break rules pinned
 by hand-applied, byte-restored mutations
 (`build-evidence/mutations/nodal-remap.toml`).
 
 **This directly answers D5 item 3's per-placement weights question for the
 CONSISTENT methods specifically** (never for the supermesh conservative
-methods, which since 2026-09-25 build on the placement's view and are
+methods, which since 2026-09-25 build on the processor set's view and are
 otherwise unaffected): a
 new, genuinely partitioned, non-replicated distributed primitive —
 `build_distributed_interp_rows`/`apply_distributed_H`/`apply_distributed_HT`
@@ -1407,13 +1407,13 @@ sum is keyed by the CONTRIBUTING evaluation entity's global id rather than
 by delivery order, which is what makes it bit-identical across rank counts
 rather than merely correct at one). Compiled under `FUSE_ENABLE_MPI=ON`
 (`test/parallel/nodal_remap_distributed_test.cpp`: disjoint, identical and
-partially-overlapping rank sets, plus an out-of-domain refusal); UNRUN in
-this sandbox (MPI cannot initialise here), so its verdict is a host action,
+partially-overlapping rank sets, plus an out-of-domain rejection); UNRUN in
+this sandbox (MPI cannot initialise here), so its outcome is a host action,
 same as every other MPI-gated case in this file.
 
 **Progress (2026-09-25, round 2, "Nodal remap" track): the Runner IS now
 wired, and the null-comm path made it locally verifiable.** Three things
-changed from round 1's "not wired, no local MPI verdict possible" state:
+changed from round 1's "not wired, no local MPI outcome possible" state:
 
 1. **Two-tier containment, general_interp.hpp.** Round 1's single loose
    tolerance (`kRefEps = 0.02`, one boolean "close enough" test feeding a
@@ -1441,12 +1441,12 @@ changed from round 1's "not wired, no local MPI verdict possible" state:
    and both HIGHER than round 1's own measurements at the old (looser,
    tie-break-only) rule, direct evidence that the mis-assigned-cell bug was
    actually costing real accuracy, not merely a theoretical concern.
-2. **A null-communicator (Tier 0) code path, nodal_remap_distributed.{hpp,cpp}.**
+2. **A null-communicator (base build configuration) code path, nodal_remap_distributed.{hpp,cpp}.**
    The file's blanket `#if FUSE_HAVE_MPI` guard (round 1) is gone; only the
    one real MPI call site (`allgatherv_records`) branches on
    `comm_handle == fuse::search::kNullComm` (a local no-op copy, touching no
    MPI symbol) vs. a real communicator (unchanged, `FUSE_HAVE_MPI`-gated,
-   refuses `E-RT-NODAL-DIST-NOMPI` otherwise) — the same convention
+   rejects `E-RT-NODAL-DIST-NOMPI` otherwise) — the same convention
    `fuse::partition::detail::collectives.hpp` already established. The
    serial two-tier fix above was ALSO applied to this file's own
    (previously independently-tolerant) selection loop, since the same bug
@@ -1462,17 +1462,17 @@ changed from round 1's "not wired, no local MPI verdict possible" state:
    `"consistent"`/`"consistent-transpose"` call the new
    `Runner::Impl::build_nodal_dist_remap` (builds one `DistributedInterpRows`
    at setup, via `comm_handle = *config.base_communicator` when set, else
-   `fuse::search::kNullComm`) instead of refusing; every other method still
-   refuses `E-RT-REMAP-NODAL-PARALLEL` exactly as before (per-placement
+   `fuse::search::kNullComm`) instead of rejecting; every other method still
+   rejects `E-RT-REMAP-NODAL-PARALLEL` exactly as before (per-placement
    supermesh weights remain unimplemented, D5 item 3). `execute()`'s
-   `OpKind::Remap` case calls the new `apply_nodal_dist_remap` per period,
+   `OpKind::Remap` case calls the new `apply_nodal_dist_remap` per coupling cycle,
    allocation-free of the ROWS themselves (the `Allgatherv` buffers
    `apply_distributed_H`/`HT` build are a separate, per-call cost — see
    "Known scalability limitation" below). **This is a REAL Runner run, not a
    compile check**: `InterfaceTransfer.ARemapIntoANodalFieldOnTwoDeclaredRanksIsAcceptedAndMatchesOneRank`
-   runs the exact channel pair `ConsistentPairRunsThroughTheRunnerExactlyAndBalancesPower`
+   runs the exact field-transfer pair `ConsistentPairRunsThroughTheRunnerExactlyAndBalancesPower`
    already covers at one declared rank, a SECOND time at a DECLARED
-   two-rank placement (no real second process; `comm_handle` is
+   two-rank processor set (no real second process; `comm_handle` is
    `kNullComm` since `base_communicator` is unset, so this single process
    already owns everything, exactly the null-comm case item 2 proved), and
    checks the two-rank run reproduces the one-rank run's numbers exactly (H
@@ -1480,8 +1480,8 @@ changed from round 1's "not wired, no local MPI verdict possible" state:
    balances) — not merely that it runs without throwing. Two new KILLED
    mutations (`build-evidence/mutations/nodal-remap-runner.toml`) pin the
    method-string dispatch and the transpose density-to-load scaling
-   decision. The full tier-0 suite (101/101, including this new test and
-   every previously-passing case) and the full tier-1 (MPI-enabled) build
+   decision. The full base-build-configuration suite (101/101, including this new test and
+   every previously-passing case) and the full MPI-enabled build configuration build
    both pass/compile with these changes; `check-invariants.py`/
    `check-layering.py`/`mutate.py --check-anchors` all report zero
    violations (160/160 anchors valid).
@@ -1505,7 +1505,7 @@ Transport-side ownership tests), not exclusive to the deleted function.
 **Known scalability limitation, disclosed not hidden: every
 `build_nodal_dist_remap`/`apply_distributed_H`/`apply_distributed_HT` call
 replicates the WHOLE source (or evaluation) mesh's geometry across every
-rank via `MPI_Allgatherv`,** and every period's `apply` re-gathers the
+rank via `MPI_Allgatherv`,** and every coupling cycle's `apply` re-gathers the
 field VALUES the same way. This does not scale to a source mesh too large
 to fit in one rank's memory, and is a documented, deliberate
 robustness-over-efficiency trade (this project's own standing priority),
@@ -1532,7 +1532,7 @@ what closes the "`Runner` needs one `MeshBackend` but the two test backends
 available each bake in a single mesh's shape" gap. `test/parallel/
 nodal_remap_runner_test.cpp` (`NodalRemapRunnerMpi.{DisjointRankSets,
 IdenticalRankSets, PartiallyOverlappingRankSets}`) drives a real beam/fluid
-`"consistent"`/`"consistent-transpose"` channel pair through
+`"consistent"`/`"consistent-transpose"` field-transfer pair through
 `lower -> schedule -> initialize -> run_period` on that backend, at 1-5
 ranks, checking H's exactness pointwise, global force conservation and
 power balance to `1e-13` relative, and -- the property this file's own name
@@ -1558,7 +1558,7 @@ genuinely SHARED evaluation-side entity, and in both the primitive-level
 test and the new Runner test the evaluation side is always the FLUID
 mesh -- cell-based, never ownership-shared in `GeometricLineMesh`'s design
 (only vertices, always the nodal side here, are ever shared). A real target
-for that row needs a node-to-node `"consistent"` channel (both sides
+for that row needs a node-to-node `"consistent"` field transfer (both sides
 nodal), not built this round since it is not the shape "H/H^T as the FSI
 uses them" needs. The "transpose sums in rank order" row remains
 undecidable by ANY single job launch at a fixed rank count, Runner-level or
@@ -1568,16 +1568,16 @@ surfaces for the two-launch (e.g. rank counts 2 and 4) comparison a host
 would run to actually kill it.
 
 **A genuine defect was found and precisely quantified: `apply_nodal_dist_remap`
-does NOT allocate zero per period.** `InterfaceTransfer.
+does NOT allocate zero per coupling cycle.** `InterfaceTransfer.
 ApplyNodalDistRemapHasAConstantMeasuredPerPeriodAllocationCount`
 (interface_transfer_test.cpp) extends the SAME `AllocationCounter`
 instrument `Runner.AllocatesNothingWhileRunning` (runner_test.cpp) uses --
 not by editing that shared, heavily-reused harness (which has no
 nodal-target-on-several-ranks case to extend), but with a second, focused
 test next to it, since teaching the existing harness a new mesh/field/
-channel shape was a materially bigger and riskier change than one more
-self-contained test. Measured, verbatim: **31 allocations per period**,
-constant across all 8 measured periods (no growth, no leak) -- NOT the
+field-transfer shape was a materially bigger and riskier change than one more
+self-contained test. Measured, verbatim: **31 allocations per coupling cycle**,
+constant across all 8 measured coupling cycles (no growth, no leak) -- NOT the
 zero every other Remap kind achieves. The cause is not a bug in the Runner
 wiring itself but the ALREADY-DISCLOSED cost this same D8 entry named in
 round 2: `apply_distributed_H`/`apply_distributed_HT`
@@ -1588,7 +1588,7 @@ about since round 1. This measurement turns that prior qualitative
 disclosure into a concrete number future work can compare against: a
 point-to-point replacement (see the "Known scalability limitation"
 paragraph above) should be expected to reduce this count, and this test's
-own assertion (a CONSTANT count across periods, not a zero one) will keep
+own assertion (a CONSTANT count across coupling cycles, not a zero one) will keep
 catching a regression that makes it grow or leak even after that
 replacement lands.
 
@@ -1596,13 +1596,13 @@ replacement lands.
 correctness defects in round 2/3's own wiring, both fixed here, plus a
 test-authoring bug in round 3's own new test.**
 
-1. **Defect 1 — a rank-local refusal reachable inside a collective
+1. **Defect 1 — a rank-local rejection reachable inside a collective
    function (`nodal_remap_distributed.cpp`).** `build_distributed_interp_rows`
    returned `E-INTERP-DOMAIN`/`E-INTERP-NEWTON`/`E-INTERP-DEGENERATE`
    directly from inside its per-local-evaluation-entity loop, AFTER that
    same function's own `allgatherv_records` collective
    (`gather_global_source`). Since which entities are local differs per
-   rank, one rank could hit the refusal while a DIFFERENT rank, whose own
+   rank, one rank could hit the rejection while a DIFFERENT rank, whose own
    local points were all fine, returned success -- exactly the shape the
    host's own `parallel.nodal_remap_distributed.3/4/5` runs caught
    (`NodalRemapDistributed.TargetOutsideSourceDomainRefuses`:
@@ -1636,18 +1636,18 @@ test-authoring bug in round 3's own new test.**
    command below) is the only way to observe every rank AGREEING, since
    `kNullComm`'s one participant has nothing to disagree with by
    construction -- confirmed empirically, not just argued: the new
-   "domain verdict is not agreed" mutation
+   "domain outcome is not agreed" mutation
    (`build-evidence/mutations/nodal-remap-distributed.toml`) was applied
-   and every Tier-0 test, including the null-comm suite, still passed
+   and every base-build-configuration test, including the null-comm suite, still passed
    unchanged, exactly as expected for a mutation whose effect requires a
    SECOND rank to exist at all.
 
 2. **Defect 2 — the nodal-SOURCE, cell-TARGET direction had no distributed
-   path and no refusal (`runner.cpp`).** `resolve_remap`'s distributed
+   path and no rejection (`runner.cpp`).** `resolve_remap`'s distributed
    trigger read only the REMAP TARGET's kind
    (`region_extent_kind(graph, tgt) == Vertex`), so a `"consistent"`
-   channel whose SOURCE is nodal and target is cells -- exactly
-   `wall_velocity` in the FSI channel pair -- never took the distributed
+   field transfer whose SOURCE is nodal and target is cells -- exactly
+   `wall_velocity` in the FSI field-transfer pair -- never took the distributed
    path regardless of either side's declared rank count, and fell through
    silently to the old rank-local `build_consistent_interp_weights`: on a
    rank owning zero local cells of the (cell) target this fails
@@ -1655,7 +1655,7 @@ test-authoring bug in round 3's own new test.**
    `parallel.nodal_remap_runner.N`, every rank count); on a rank owning
    some cells it would have built weights against only that rank's own
    local view of the source, silently, with no diagnostic. **Fix:** the
-   trigger now reads BOTH regions' kind and BOTH components' declared rank
+   trigger now reads BOTH mesh entity sets' kind and BOTH components' declared rank
    count (`src_ranks`/`dst_ranks`), and fires whenever either side is
    nodal and either component is on more than one rank.
    `Runner::Impl::build_nodal_dist_remap`'s existing `!transpose` branch
@@ -1663,10 +1663,10 @@ test-authoring bug in round 3's own new test.**
    src`, `eval_region = tgt`) -- the bug was purely in the trigger
    condition, not in that function. A method paired with the WRONG
    orientation (e.g. `"consistent-transpose"` with a nodal SOURCE) is
-   refused by name (`E-RT-REMAP-NODAL-PARALLEL`), as is a channel with
+   rejected by name (`E-RT-REMAP-NODAL-PARALLEL`), as is a field transfer with
    BOTH sides nodal (`InterfaceTransfer.BothSidesNodalOnMultipleRanksRefuses`,
    new this round) -- neither `build_nodal_dist_remap` orientation has
-   ever been run against a nodal-to-nodal channel, so it is refused rather
+   ever been run against a nodal-to-nodal field transfer, so it is rejected rather
    than silently picking one convention. A rank with zero local evaluation
    entities already contributed zero rows and still took part in every
    collective before this fix (`build_distributed_interp_rows`'s loop
@@ -1674,20 +1674,20 @@ test-authoring bug in round 3's own new test.**
    own Allgatherv unconditionally regardless of row count) -- re-confirmed
    after Defect 1's agreement step was added, since that call is
    unconditional too. **Verified in this sandbox** (per the review's own
-   instruction: this is exactly what a DECLARED multi-rank placement at
+   instruction: this is exactly what a DECLARED multi-rank processor set at
    `comm_handle == kNullComm` can test without real MPI):
    `InterfaceTransfer.ARemapIntoANodalFieldOnTwoDeclaredRanksIsAcceptedAndMatchesOneRank`
    -- unmodified from round 2, since `beam_ranks{0, 2}` governs BOTH
-   channels' nodal side already -- now ALSO exercises the newly-fixed
-   nodal-source orientation through the SAME declared placement (its own
+   field transfers' nodal side already -- now ALSO exercises the newly-fixed
+   nodal-source orientation through the SAME declared processor set (its own
    `fluid_in` closed-form check is H's correctness proof for that
    direction); `InterfaceTransfer.
    ApplyNodalDistRemapHasAConstantMeasuredPerPeriodAllocationCount`'s
-   measured count rose from round 3's 31 to **50 allocations/period**
-   (still constant across periods), the expected increase now that BOTH
+   measured count rose from round 3's 31 to **50 allocations per coupling cycle**
+   (still constant across coupling cycles), the expected increase now that BOTH
    `wall_velocity` (H) and `wall_force` (H^T D) route through the
-   Allgatherv-based distributed builder instead of one. Full tier-0 ctest
-   (101/101, ~210s), full tier-1 (MPI-enabled) build, `check-invariants.py`/
+   Allgatherv-based distributed builder instead of one. Full base-build-configuration ctest
+   (101/101, ~210s), full MPI-enabled build configuration build, `check-invariants.py`/
    `check-layering.py` (0 violations) and `mutate.py --check-anchors`
    (164/164 valid) all reconfirmed after this fix.
 
@@ -1696,7 +1696,7 @@ test-authoring bug in round 3's own new test.**
    `fluid_ranks{(w+1)/2, w-(w+1)/2}` and `PartiallyOverlappingRankSets`'
    `beam_ranks{0, w-1}`/`fluid_ranks{1, w-1}` place a component on NO rank
    at all below a minimum world size -- the same two-sided-
-   placement-on-one-rank shape commit 2383024 fixed elsewhere. Ad hoc
+   processor-set-on-one-rank shape commit 2383024 fixed elsewhere. Ad hoc
    `GTEST_SKIP` guards already caught this at the exact rank counts where
    it would otherwise misbehave; round 4 replaced them with
    `FUSE_REQUIRE_AT_LEAST_RANKS(2)`/`FUSE_REQUIRE_AT_LEAST_RANKS(3)`
@@ -1714,7 +1714,7 @@ test-authoring bug in round 3's own new test.**
 
 **What is still open, honestly.** (a) No REAL multi-process (2+ actual
 ranks) MPI host run has verified this Runner wiring or the round-4 fixes
-above -- the null-comm (Tier 0) case IS a real run and IS the right
+above -- the null-comm (base build configuration) case IS a real run and IS the right
 physics for a single participant, but it structurally cannot exercise
 cross-rank AGREEMENT (nothing to agree ON with one voice) or a genuine
 partition. The exact commands a host should run:
@@ -1725,23 +1725,23 @@ ctest --test-dir <mpi-build-dir> -R 'parallel\.nodal_remap_runner' -V
 naming, for `nodal_remap_runner`, `IdenticalRankSets`' actual rank-1
 message specifically (defect 3 above). (b)
 `InterfaceDomainPolicy::ClampToBoundary` remains unimplemented in the
-distributed builder (unchanged from round 1). (c) The 50-allocations/period
+distributed builder (unchanged from round 1). (c) The 50-allocations-per-coupling-cycle
 measurement (round 4, was 31 in round 3) is a number to reduce, not (yet)
 a fix -- no attempt was made to eliminate it, since doing so needs a
 scratch-buffer-reusing redesign of `apply_distributed_H`/
 `apply_distributed_HT`'s own, already-tested API, a change of a different
 size and risk than measuring the existing behavior precisely. (d) The
-"domain verdict is not agreed across ranks" mutation
+"domain outcome is not agreed across ranks" mutation
 (`build-evidence/mutations/nodal-remap-distributed.toml`) is NOT-ASSESSED
 in this sandbox for the same single-participant reason as (a) -- a host
 3+-rank run applying it on top of the fix is the only way to KILL it.
-**Lift the refusal for the remaining methods only after (a) and D5 item 3
+**Lift the rejection for the remaining methods only after (a) and D5 item 3
 (per-placement supermesh weights) both land.**
 
 **Host run 2026-09-25 (third): `parallel.nodal_remap_runner` still fails at 1-5 ranks.** The two
 defects above are fixed and `parallel.nodal_remap_distributed` now passes, so this is a third,
 separate cause, and it is NOT any of:
-- the graph, the channels, or the two remap methods;
+- the graph, the field transfers, or the two remap methods;
 - `MultiMeshGeometricBackend`'s own views, geometry or global ids;
 - the H and H^T D weights, or the transposed load;
 - force conservation or interface power balance.
@@ -1755,7 +1755,7 @@ parameters (7/11 and 8/6) and its own serial reference, and passes to 1e-12. Sin
 
 `test/support/partitioned_test_backend.hpp` no longer needs MPI, which is what made that
 bisection possible: its four `MPI_Comm_rank` calls became one `fuse_test::this_rank()` that
-returns 0 without MPI, since at a single participant every declared placement is the whole mesh.
+returns 0 without MPI, since at a single participant every declared processor set is the whole mesh.
 
 **What this still needs from a host**, because MPI cannot initialise in the sandbox at all (not
 even `-np 1`: `mpirun` fails in `HYDU_sock_listen`, and the binary run directly aborts inside
@@ -1835,7 +1835,7 @@ that combined scheme, not to the coupling iteration. Each half alone is bounded:
 **Found and fixed on the way (earlier rounds):**
 - the Crank-Nicolson pressure gradient was fully implicit against a trapezoidal
   viscous term, so the wall traction was p(t_{n+½}) labelled as p(t₁). That
-  caused a sign-alternating growth of |ratio| 2.48 per period. The pressure now
+  caused a sign-alternating growth of |ratio| 2.48 per coupling cycle. The pressure now
   converges at order 2.0013 against p(t₁), and the alternation is gone.
 - the wall-velocity boundary condition used the t₁ value for both Crank-Nicolson
   levels.
@@ -2086,7 +2086,7 @@ either boundary's own labelling) rather than in any single boundary
 condition.
 
 **Round 4: the full discrete energy budget on the coupled map's OWN
-dominant eigenvector, evaluated through one real production period, and
+dominant eigenvector, evaluated through one real production coupling cycle, and
 all three named candidates tested by measurement — none supplies the
 growth.** Method (`FsiEnergyDiag.
 FullBudgetOnTheUnstableModeItselfAttributesTheGrowth`, small diagnostic
@@ -2096,7 +2096,7 @@ imaginary part exactly 0), set `Umax=0` (the ONLY source of the map's
 additive term `b`, since the beam has no forcing of its own — a new
 `CoupledCase::Umax` field, default 1.0, added for this purpose and
 unused by every existing caller), and run `x` through one ACTUAL
-production period (real `Runner`/IQN-ILS, not the finite-difference
+production coupling cycle (real `Runner`/IQN-ILS, not the finite-difference
 linearization). Confirmed the output equals `lambda*x` to 8.8e-8
 relative — genuinely validating `x` as an eigenvector of the real
 nonlinear step, not just of its finite-difference approximation.
@@ -2170,12 +2170,12 @@ standard discrete integration-by-parts identity for a pointwise 4th-
 difference stiffness operator). On the small grid here, `dx_beam=1/6`,
 so this artifact term is **56% of the entire measured `(lambda²-1)·E0`
 growth** — the single largest contributor found this round. **This does
-NOT explain, and fixing it would NOT change, D9's measured per-period
+NOT explain, and fixing it would NOT change, D9's measured per-coupling-cycle
 ratio**: `kinetic_energy()`/`strain_energy()` are never called anywhere
 in the state-map construction (`run_one_coupled_period`, `coupled_map`)
 that produces `rho(M)`, and any quadratic energy functional evaluated on
 a state dominated by a single real eigenvector grows at exactly
-`rho²` per period regardless of which quadratic form is used — verified
+`rho²` per coupling cycle regardless of which quadratic form is used — verified
 structurally (by inspecting every caller of `kinetic_energy()`/
 `strain_energy()`), not merely argued. Left UNFIXED this round (owned
 file, genuine bug, but explicitly not the term the lead asked this round
@@ -2232,7 +2232,7 @@ task's own instructions anticipated has now been tested and excluded.
   the last tagged R-30 in its own description, added while fixing that finding) and two
   are in `runtime-mutations.md` (`region-residual-skips-the-cross-rank-reduction`,
   tagged R-10, and `region-failure-abandons-the-rest-of-the-period`, tagged R-09;
-  `cross-rank-region-check-fires-unconditionally` is tier-0-assessable and KILLED).
+  `cross-rank-region-check-fires-unconditionally` is assessable at the base build configuration and KILLED).
 - **One mutation is declared equivalent**, with a written bound: `ir.scale`'s
   `unlowerable-step-silently-dropped` (`compiler-mutations.md`) — no graph the
   model can currently express reaches the defensive branch it mutates. The
@@ -2253,7 +2253,7 @@ task's own instructions anticipated has now been tested and excluded.
 - **`plans/` is not in the repository.** Task-level plans stay local by design,
   as in both parents; the durable record is `docs/dev/roadmap.md` and the rest
   of `docs/`.
-- **A surface remap pair is refused** (`E-REMAP-NONPLANAR`) rather than
+- **A surface remap pair is rejected** (`E-REMAP-NONPLANAR`) rather than
   supported. The planar kernel would return the measure of the xy shadow, which
   is a plausible wrong answer. A surface pair needs a parameterisation.
 - **The native mesh's `--migrate` layout-driver mode re-verifies MESH
@@ -2273,7 +2273,7 @@ task's own instructions anticipated has now been tested and excluded.
   copy) is exercised only by an MPI test that has not run in this sandbox.**
   `resolve_vertex_ownership`'s Allgatherv-based agreement never executes at
   `comm == kNullComm` (every vertex trivially owned by rank 0 there), so
-  Tier 0 cannot verify the cross-rank rule itself — only
+  the base build configuration cannot verify the cross-rank rule itself — only
   `native_migration_mpi_test.cpp` (2-5 ranks) does, and per C1 this sandbox
   cannot start `mpiexec`. The corresponding mutation
   (`vertex-ownership-rule-picks-max-not-min-rank`,
