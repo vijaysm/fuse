@@ -1,0 +1,34 @@
+# fuse-plan v1
+period=1/4 lockstep=yes instructions=16 buffers=16 coupler_elements=896 regions=1
+buffer 0   %0  elements=64  components=1  region=r0  owner=coupler  persistent=no  "a.a_out/window"
+buffer 1   %1  elements=64  components=1  region=r1  owner=coupler  persistent=no  "b.b_out/window"
+buffer 2   %2  elements=64  components=1  region=r0  owner=coupler  persistent=no  "a2b/transport"
+buffer 3   %3  elements=64  components=1  region=r0  owner=coupler  persistent=no  "a2b/epoch"
+buffer 4   %4  elements=64  components=1  region=r1  owner=coupler  persistent=no  "a2b/remap"
+buffer 5   %5  elements=64  components=1  region=r1  owner=coupler  persistent=no  "a2b/constrain"
+buffer 6   %6  elements=64  components=1  region=r1  owner=coupler  persistent=no  "a2b/diagnose"
+buffer 7   %7  elements=64  components=1  region=r1  owner=coupler  persistent=yes  "b2a/transport"
+buffer 8   %8  elements=64  components=1  region=r1  owner=coupler  persistent=yes  "b2a/epoch"
+buffer 9   %9  elements=64  components=1  region=r0  owner=coupler  persistent=yes  "b2a/remap"
+buffer 10  %10  elements=64  components=1  region=r0  owner=coupler  persistent=yes  "b2a/constrain"
+buffer 11  %11  elements=64  components=1  region=r0  owner=coupler  persistent=yes  "b2a/diagnose"
+buffer 12  %12  elements=64  components=1  region=r1  owner=component  persistent=no  "b.b_in"
+buffer 13  %13  elements=64  components=1  region=r0  owner=component  persistent=no  "a.a_in"
+buffer 14  %14  elements=64  components=1  region=r1  owner=coupler  persistent=no  "a2b/residual"
+buffer 15  %15  elements=64  components=1  region=r0  owner=coupler  persistent=yes  "b2a/residual"
+  0  t=1/4  WindowAdvance  node=12  out=%0  {window_import=%13}  enter=0
+  1  t=1/4  Transport  node=0  in=[%0]  out=%2  {0->1}
+  2  t=1/4  Epoch  node=1  in=[%2]  out=%3  {reason=after-transport}
+  3  t=1/4  Remap  node=2  in=[%3]  out=%4
+  4  t=1/4  Constrain  node=3  in=[%4]  out=%5
+  5  t=1/4  Diagnose  node=4  in=[%5]  out=%6
+  6  t=1/4  Sink  node=10  in=[%6]  out=%12
+  7  t=1/4  WindowAdvance  node=13  out=%1  {window_import=%12}
+  8  t=1/4  Transport  node=5  in=[%1]  out=%7  {1->0}
+  9  t=1/4  Epoch  node=6  in=[%7]  out=%8  {reason=after-transport}
+  10  t=1/4  Remap  node=7  in=[%8]  out=%9
+  11  t=1/4  Constrain  node=8  in=[%9]  out=%10
+  12  t=1/4  Diagnose  node=9  in=[%10]  out=%11
+  13  t=1/4  Sink  node=11  in=[%11]  out=%13
+  14  t=1/4  Residual  node=14  in=[%6]  out=%14
+  15  t=1/4  Residual  node=15  in=[%11]  out=%15  exit=0

@@ -224,7 +224,7 @@ endforeach()
 fuse_add_gtest(ir ir_dag THROWS)
 
 # ---------------------------------------------------------------- schedule
-foreach(t acyclicity acyclicity_sweep expand plan lockstep epoch slab multirate_region window_scope window_causality)
+foreach(t acyclicity acyclicity_sweep expand plan lockstep epoch slab multirate_region window_scope window_causality window_region_golden)
   fuse_add_gtest(schedule ${t})
 endforeach()
 # buffers asserts the overflow refusals are raised, so it aborts in the no-exceptions leg.

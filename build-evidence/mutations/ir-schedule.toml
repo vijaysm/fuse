@@ -188,15 +188,34 @@ test = "ir.lowering_channel"
 [[mutation]]
 id = "window-causality-accepts-any-earlier-write"
 area = "schedule"
-describes = "check_window_causality() accepts a subcycling instance whose import waveform was written at SOME earlier point in the stream, not necessarily for the same time window, so a subcycling node could read the previous window's waveform with no diagnostic."
+describes = "check_window_causality()'s UNLAGGED rule accepts a subcycling instance whose import waveform was written at ANY earlier point in the stream, not necessarily for the same window instance, so an unlagged subcycling node could read the previous window's waveform with no diagnostic. (The LAGGED rule's own relaxed, position-independent check -- window_import_is_lagged() in src/schedule/scheduler.cpp -- is deliberately not this row's target; UnlaggedImportWrittenLaterIsStillRejected and LaggedImportWrittenForADifferentWindowIsRejected in test/schedule/window_causality_test.cpp cover that rule's own two edges directly.)"
 file = "src/schedule/scheduler.cpp"
-old = "            last_written_step[imp.value()] != ins.dst_step) {"
-new = "            last_written_step[imp.value()] < 0) {  // MUTATED: any earlier write"
+old = "                               : last_written_step[imp.value()] == ins.dst_step);"
+new = "                               : last_written_step[imp.value()] >= 0);  // MUTATED: any earlier write"
 target = "fuse_schedule_window_causality_test"
 test = "schedule.window_causality"
-# KILLED by hand 2026-09-29 in a clean export: only
-# WindowCausality.WriterForAnEarlierWindowInstanceDoesNotSatisfyALaterOne fails.
-# Not covered by any row yet: removing the check's CALL in schedule(). Its
-# tests call the function directly, and no compilation rule emits a
-# subcycling node yet, so such a mutation would survive until the time
-# window is compiled through schedule().
+# Expected kill: WindowCausality.WriterForAnEarlierWindowInstanceDoesNotSatisfyALaterOne
+# (an unlagged import written for a DIFFERENT window instance would no
+# longer be refused). Re-verified by hand 2026-09-29 after
+# check_window_causality() gained the CouplingGraph parameter and the
+# lagged/unlagged split.
+
+[[mutation]]
+id = "window-causality-call-removed-from-schedule"
+area = "schedule"
+describes = "schedule() no longer calls detail::check_window_causality() at all: window_ordered is always Result<void>::success() regardless of the compiled instruction stream, so a subcycling node's import waveform ordering is never checked at the schedule() entry point (only test/schedule/window_causality_test.cpp's own direct calls to the function would still catch a violation, and those deliberately bypass lower()/expand()/schedule() -- see that file's own header comment)."
+file = "src/schedule/scheduler.cpp"
+old = "  const Result<void> window_ordered =\n      detail::check_window_causality(g, dag, instructions);"
+new = "  const Result<void> window_ordered = Result<void>::success();  // MUTATED: check never called"
+target = "fuse_schedule_window_region_golden_test"
+test = "schedule.window_region_golden"
+# Expected kill: WindowRegionGolden.SchedulerCallsWindowCausalityOnARealCompiledWindow
+# (a hand-built two-node DAG whose first node's window_import points at the
+# SECOND node's not-yet-written output -- a real violation neither
+# check_dependence_order() nor mark_regions() can catch, since neither node
+# has a real input edge at all -- run through the public schedule() entry
+# point; with the call removed it schedules cleanly instead of failing with
+# E-SCHED-WINDOW-CAUSALITY). Added once Unit B of the multirate-window-on-
+# the-Runner track compiled a real window-scoped region through lower()/
+# schedule() (build_window_regions(), src/ir/window_lowering.cpp) -- before
+# that, no test exercised schedule()'s own call to this check at all.
