@@ -49,6 +49,9 @@ inline std::string attrs_string(OpKind kind, const OpAttrs& a) {
     add("remap=" + f);
   }
   if (!a.method.empty()) add("method=" + a.method);
+  if (a.window_import != def.window_import) {
+    add("window_import=%" + std::to_string(a.window_import.value()));
+  }
   if (kind == OpKind::Transport) {
     add(std::to_string(a.src_rank_set) + "->" + std::to_string(a.dst_rank_set));
   }
