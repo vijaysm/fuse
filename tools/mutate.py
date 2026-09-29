@@ -11,8 +11,8 @@ copy of the tree, builds and runs that target, restores, and writes the log.
 
     tools/mutate.py --build-dir <dir> [--area base] [--write-log]
 
-Never run against a dirty tree: the restore is a copy-back, and the gate refuses
-to start if git status is not clean.
+Never run against a dirty tree: the restore is a copy-back, and the gate rejects
+starting if git status is not clean.
 """
 from __future__ import annotations
 
@@ -246,7 +246,7 @@ def main() -> int:
         lines = [f"# Mutation evidence — `{area}`", "",
                  f"Run {date.today().isoformat()} against build `{args.build_dir.name}`. "
                  "Regenerate with `tools/mutate.py --write-log`; do not edit.", "",
-                 "| Mutation | File | Verdict | Killed by |", "|---|---|---|---|"]
+                 "| Mutation | File | Outcome | Killed by |", "|---|---|---|---|"]
         for m, v, n in results:
             lines.append(f"| `{m['id']}` — {m['describes']} | `{m['file']}` | **{v}** ({n}) | `{m['test']}` |")
         lines += ["", f"**{killed} killed / {len(results)} total.**"]
