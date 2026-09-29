@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -80,6 +81,71 @@
 /// window always sum to the sender's whole-window integral to round-off
 /// (spec: conservative in time).
 namespace fuse {
+
+namespace detail {
+
+/// One substep of a member's own grid within a time window (docs/user/
+/// glossary.md: subcycling). Shared (Unit A of the multirate-window-on-
+/// the-Runner track) so a future subcycling-node runtime dispatch can plan
+/// the same grid `WindowCoupler` does today, from the identical inputs.
+struct WindowSubstep {
+  Rational t0, t1;
+  bool     straddle = false;  ///< true only for the (at most one) last step
+};
+
+/// Spec: choose the window so it never waits for the LCM of two intervals.
+/// A member's own substeps march on ITS OWN grid, `Adjustable` truncating
+/// the last one onto `window_end`, `Fixed` taking it in full even past
+/// `window_end` (the straddling step; see the class comment below). Moved
+/// here from window_coupler.cpp's own anonymous namespace (Unit A, step
+/// 1): a pure function of its arguments, unchanged, now callable by
+/// anything else that needs the identical grid.
+[[nodiscard]] std::pair<std::vector<WindowSubstep>, Rational> plan_substeps(
+    Rational clock, Rational interval, Rational window_end, DtPolicy policy);
+
+/// The mean of `wf` over `[a, b)`, `a < b` required. `wf` must already
+/// cover `[a, b]` (its support, per `Waveform`'s own contract). Moved here
+/// from window_coupler.cpp's own anonymous namespace (Unit A, step 1),
+/// unchanged.
+[[nodiscard]] Result<double> mean_over(const Waveform& wf, Rational a,
+                                       Rational b);
+
+/// Per-window-boundary sample, one per element: what a member COMMITTED at
+/// that time. Used only for extrapolation beyond the most recent window
+/// (`extrapolate_boundary_value`); the finer, within-window trajectory a
+/// partner needs for an in-range mean lives in `WindowMemberState::
+/// last_window_waveform` instead.
+using WindowBoundaryHistory = std::vector<std::pair<Rational, double>>;
+
+/// One member's own subcycling state, tracked across windows (docs/user/
+/// glossary.md: subcycling). Moved here from `WindowCoupler`'s own private
+/// nested `MemberState` (Unit A, step 2): unchanged, now nameable by
+/// anything else that needs to hold or advance a member's state the way
+/// `WindowCoupler` does today.
+struct WindowMemberState {
+  /// Simulated time this member has actually reached (its own state is
+  /// valid here). Equal to the window start unless a `Fixed` member's
+  /// last substep straddled past it.
+  Rational clock{0};
+  /// One list per element, ascending in time, seeded with the initial
+  /// condition (`t=0`, the value bound at `WindowCoupler::create()` time).
+  std::vector<WindowBoundaryHistory> history;
+  /// Set when this member's last committed substep overshot the window it
+  /// was taken in (`DtPolicy::Fixed` only). Cleared by
+  /// `resolve_pending_straddles()` once the overshoot has been replayed
+  /// with that window's converged data.
+  bool     straddle_pending = false;
+  Rational straddle_window_start{0};  ///< checkpoint restore_state() returns to
+  Rational straddle_window_end{0};    ///< the window whose data was provisional
+  /// This member's own converged trajectory over the window that just
+  /// completed (one `Waveform` per element, `TemporalBasis::Linear`); a
+  /// partner reads it for an in-window mean, and a partner's replay
+  /// (`resolve_pending_straddles`) reads it for the "real data" part of a
+  /// straddle recompute. Null before the first window completes.
+  std::vector<std::unique_ptr<Waveform>> last_window_waveform;
+};
+
+}  // namespace detail
 
 /// One participant of a coupling window.
 ///
@@ -191,6 +257,59 @@ struct WindowIterationStats {
   std::vector<double> residual_history;  ///< one entry per sweep, ||G(y)-y||
 };
 
+namespace detail {
+
+/// Advances one member across a chunk `[t_a, t_b)` that straddles a split
+/// point `t_split` (`t_a <= t_split < t_b`, `t_split == t_b` skips the
+/// tail), splitting the `advance()` call exactly at `t_split` instead of
+/// taking one `advance()` over the whole chunk with a single blended mean
+/// and then interpolating the value AT `t_split` between the two endpoint
+/// states -- that interpolation does not recover x(t_split) to the
+/// substep's own order, while splitting the call makes the committed
+/// t_split value as accurate as an ordinary substep's own endpoint (see
+/// `WindowCoupler`'s class comment). Moved here (Unit A, step 3) from its
+/// two, previously duplicated, homes: `WindowCoupler::sweep_window()`'s
+/// per-member substep loop (its `mean_in_window`/`boundary_at_split`/
+/// `extrapolate_tail` read this sweep's live `delivered[]` waveforms) and
+/// `WindowCoupler::resolve_pending_straddles()`'s replay (its callbacks
+/// read the already-converged `last_window_waveform`/`history` from the
+/// window that just completed instead) -- so a future subcycling-node
+/// runtime dispatch can drive the identical choreography from either
+/// data source.
+///
+/// The two existing call sites also differ, EACH IN ITS OWN WAY, on what
+/// a callback returns when no channel feeds this member's element (one
+/// silently defaults to zero, the other leaves `member.required[e]`
+/// unchanged) and on whether a failed boundary lookup propagates or is
+/// silently absorbed -- this function does not choose a policy: each
+/// callback encodes its own call site's existing policy, and this
+/// function's own behaviour is the one thing genuinely shared, the two-
+/// phase split-advance sequencing itself with an exact (never
+/// interpolated) value recorded at the split.
+///
+/// `mean_in_window(e, a, b)`: the value to feed `member.required[e]` for
+/// the FIRST `advance()`, over `[t_a, t_split)`.
+/// `boundary_at_split(e)`: element `e`'s value exactly at `t_split`, for
+/// the blended tail mean.
+/// `extrapolate_tail(e, target)`: element `e`'s extrapolated value at
+/// `target` (== `t_b`), for the same blend.
+/// `out_at_split` (`member.length` doubles, caller-owned and
+/// caller-positioned in whatever layout it needs -- `WindowCoupler`'s
+/// canonical flat (member, element, substep) index for `sweep_window()`,
+/// a throwaway scratch buffer for `resolve_pending_straddles()`) receives
+/// the EXACT value at `t_split` from the first `advance()` call, never an
+/// interpolant.
+[[nodiscard]] Result<void> advance_straddle_split(
+    const WindowMember& member, Rational t_a, Rational t_split, Rational t_b,
+    std::size_t step, int iteration,
+    const std::function<Result<double>(std::size_t, Rational, Rational)>&
+        mean_in_window,
+    const std::function<Result<double>(std::size_t)>& boundary_at_split,
+    const std::function<double(std::size_t, Rational)>& extrapolate_tail,
+    double* out_at_split);
+
+}  // namespace detail
+
 /// Constructed once per iteration region; `run_window()` advances every
 /// member through exactly one window and may be called repeatedly for
 /// consecutive windows (window `w`'s `[T0, T1)` is `[w, w+1) * window_length`
@@ -240,35 +359,15 @@ class WindowCoupler {
   }
 
  private:
-  /// Per-window-boundary sample, one per element: what this member
-  /// COMMITTED at that time. Used only for extrapolation beyond the most
-  /// recent window (`extrapolate_boundary_value`); the finer, within-window
-  /// trajectory a partner needs for an in-range mean lives in
-  /// `last_window_waveform` instead.
-  using BoundaryHistory = std::vector<std::pair<Rational, double>>;
-
-  struct MemberState {
-    /// Simulated time this member has actually reached (its own state is
-    /// valid here). Equal to the window start unless a `Fixed` member's
-    /// last substep straddled past it.
-    Rational clock{0};
-    /// One list per element, ascending in time, seeded with the initial
-    /// condition (`t=0`, the value bound at `WindowCoupler::create()` time).
-    std::vector<BoundaryHistory> history;
-    /// Set when this member's last committed substep overshot the window it
-    /// was taken in (`DtPolicy::Fixed` only). Cleared by
-    /// `resolve_pending_straddles()` once the overshoot has been replayed
-    /// with that window's converged data.
-    bool     straddle_pending = false;
-    Rational straddle_window_start{0};  ///< checkpoint restore_state() returns to
-    Rational straddle_window_end{0};    ///< the window whose data was provisional
-    /// This member's own converged trajectory over the window that just
-    /// completed (one `Waveform` per element, `TemporalBasis::Linear`); a
-    /// partner reads it for an in-window mean, and a partner's replay
-    /// (`resolve_pending_straddles`) reads it for the "real data" part of a
-    /// straddle recompute. Null before the first window completes.
-    std::vector<std::unique_ptr<Waveform>> last_window_waveform;
-  };
+  /// Unit A, step 2: `BoundaryHistory`/`MemberState` are now
+  /// `fuse::detail::WindowBoundaryHistory`/`WindowMemberState`
+  /// (declared above, alongside `plan_substeps`/`mean_over`), unchanged,
+  /// so a future subcycling-node runtime dispatch can hold and advance a
+  /// member's state the same way `WindowCoupler` does today. These
+  /// aliases keep every existing use in this class (`BoundaryHistory`,
+  /// `MemberState`) resolving to them without another line changing.
+  using BoundaryHistory = detail::WindowBoundaryHistory;
+  using MemberState = detail::WindowMemberState;
 
   WindowCoupler(std::vector<WindowMember> members,
                std::vector<WindowChannel> channels, WindowCouplerConfig cfg);
