@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "fuse/ir/dump.hpp"  // detail::attrs_string, detail::pad
+#include "fuse/schedule/window.hpp"
 
 namespace fuse {
 namespace {
@@ -528,9 +529,50 @@ namespace detail {
 /// anonymous here, so a test can exercise it directly against a hand-built
 /// instruction stream (this track's Unit P: the proof must hold before any
 /// lowering rule emits the node it is about).
+// Time windows track: is the field transfer that delivers `imp` a LAGGED
+// one (`Channel::lag != 0`)? Found via `imp`'s producer node's own
+// `origin` -- the channel every node in a lowered chain carries
+// (fuse/ir/lowering.cpp step 2 / src/ir/rules_channel.cpp) -- rather than
+// via region membership: a Sink is deliberately never part of any
+// `IterationRegion::body` (it is downstream of the loop, not inside it;
+// see group_regions_within_instants()'s own comment), so "loop-carried
+// inside the group" is a property of the CHANNEL, not of the writer
+// node's region membership. Returns false (today's strict rule) for an
+// invalid/out-of-range producer or origin -- a hand-built instruction
+// stream with no real CouplingGraph behind it (this track's own Unit P
+// tests) as much as a graph with no matching channel at all.
+[[nodiscard]] bool window_import_is_lagged(const CouplingGraph& g,
+                                           const OperatorDAG& dag,
+                                           ArcId imp) {
+  if (!imp.valid() || imp.value() >= dag.arc_count()) return false;
+  const NodeId producer = dag.arc(imp).producer;
+  if (!producer.valid() || producer.value() >= dag.node_count()) return false;
+  const ChannelId origin = dag.node(producer).origin;
+  if (!origin.valid() || origin.value() >= g.channel_count()) return false;
+  return g.channel_at(origin).lag != 0;
+}
+
 Result<void> check_window_causality(
-    const OperatorDAG& dag, const std::vector<Instruction>& instructions) {
-  // Most recent dst_step at which each arc was written, or -1 if never.
+    const CouplingGraph& g, const OperatorDAG& dag,
+    const std::vector<Instruction>& instructions) {
+  // Pass 1: EVERY (arc, dst_step) pair any instruction ever writes,
+  // position independent -- what a LAGGED import's relaxed rule checks
+  // against, since its writer's own re-execution (one sweep per
+  // `StepContext::iteration`) can legitimately come after this read in
+  // the one static pass the schedule describes.
+  std::vector<std::vector<std::int64_t>> written_steps(dag.arc_count());
+  for (const Instruction& ins : instructions) {
+    if (ins.out.valid() && ins.out.value() < dag.arc_count()) {
+      written_steps[ins.out.value()].push_back(ins.dst_step);
+    }
+  }
+  const auto written_at = [&](ArcId a, std::int64_t step) {
+    const std::vector<std::int64_t>& steps = written_steps[a.value()];
+    return std::find(steps.begin(), steps.end(), step) != steps.end();
+  };
+
+  // Pass 2: most recent dst_step at which each arc was written so far --
+  // the UNLAGGED rule, unchanged from before this track added laggedness.
   std::vector<std::int64_t> last_written_step(dag.arc_count(), -1);
   for (std::size_t i = 0; i < instructions.size(); ++i) {
     const Instruction& ins = instructions[i];
@@ -538,8 +580,11 @@ Result<void> check_window_causality(
       const Node& n = dag.node(ins.origin_node);
       const ArcId imp = n.attrs.window_import;
       if (imp.valid()) {
-        if (imp.value() >= dag.arc_count() ||
-            last_written_step[imp.value()] != ins.dst_step) {
+        const bool lagged = window_import_is_lagged(g, dag, imp);
+        const bool ok = imp.value() < dag.arc_count() &&
+                       (lagged ? written_at(imp, ins.dst_step)
+                               : last_written_step[imp.value()] == ins.dst_step);
+        if (!ok) {
           return Failure{
               "E-SCHED-WINDOW-CAUSALITY",
               "instruction " + std::to_string(i) +
@@ -548,12 +593,18 @@ Result<void> check_window_causality(
                   std::to_string(ins.dst_step) +
                   ") reads its import waveform (arc %" +
                   std::to_string(imp.value()) +
-                  ") before that arc's own writer for this SAME window "
-                  "instance has run earlier in the scheduled stream. The "
-                  "field transfer delivering a subcycling node's import "
-                  "waveform must be ordered before it by TIME (TickPhase), "
-                  "since it is deliberately not a real dependency edge "
-                  "(OpAttrs::window_import's own doc comment) -- this is "
+                  ") " + (lagged
+                             ? "which is never written for this SAME window "
+                               "instance anywhere in the scheduled stream"
+                             : "before that arc's own writer for this SAME "
+                               "window instance has run earlier in the "
+                               "scheduled stream") +
+                  ". The field transfer delivering a subcycling node's "
+                  "import waveform must be ordered before it by TIME "
+                  "(TickPhase) -- or, if loop-carried (Channel::lag != 0), "
+                  "written for the same window instance ANYWHERE in the "
+                  "group -- since it is deliberately not a real dependency "
+                  "edge (OpAttrs::window_import's own doc comment); this is "
                   "either a scheduler defect in that ordering or a graph "
                   "that never delivers the waveform this window at all"};
         }
@@ -659,6 +710,30 @@ ScheduleResult schedule(const CouplingGraph& g, const OperatorDAG& dag,
                         const ClockSet& clocks, const RegionSizes& sizes,
                         ExpandMode mode) {
   ScheduleResult result;
+
+  // Time windows track: the legality gate for a window-scoped iteration
+  // region (fuse::CouplingWindowScope, fuse/schedule/window.hpp) must be
+  // called from schedule(), never from lower()/ir -- ir sits below
+  // schedule (docs/dev/layering.md) and cannot call validate_coupling_
+  // window() itself. Run before expand(), which also needs window_length()
+  // for its own ticking but does not repeat this gate's POLICY/ORDER/
+  // CAPACITY checks, so a misconfigured scope is reported with the precise
+  // code this gate assigns it rather than expand()'s more generic
+  // E-SCHED-EXPAND. `waveform_capacity` uses validate_coupling_window()'s
+  // own default (4096): schedule()'s RegionSizes callback sizes ordinary
+  // per-rank buffers, a different concept, and threading a dedicated
+  // capacity value through schedule()'s own signature is deferred.
+  for (std::uint32_t i = 0; i < g.iteration_region_count(); ++i) {
+    const IterationRegionDecl& decl = g.iteration_region(IterationRegionIdx{i});
+    if (!decl.window_scope.has_value()) continue;
+    const Result<void> legal =
+        validate_coupling_window(g, decl, *decl.window_scope);
+    if (!legal.ok()) {
+      result.diags.add(Severity::Error, legal.error().code,
+                       legal.error().message);
+      return result;
+    }
+  }
 
   const Result<TimedDag> timed = expand(g, dag, clocks, mode);
   if (!timed.ok()) {
@@ -857,7 +932,7 @@ ScheduleResult schedule(const CouplingGraph& g, const OperatorDAG& dag,
   }
 
   const Result<void> window_ordered =
-      detail::check_window_causality(dag, instructions);
+      detail::check_window_causality(g, dag, instructions);
   if (!window_ordered.ok()) {
     result.diags.add(Severity::Error, window_ordered.error().code,
                      window_ordered.error().message);
