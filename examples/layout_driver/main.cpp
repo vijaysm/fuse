@@ -1,7 +1,7 @@
-// PE-layout driver.
+// processor-processor-layout driver.
 //
 // Builds a two-component coupling graph -- comp1 provides a field, comp2
-// requires it, one channel -- over CLI-specified INCLUSIVE rank ranges, and
+// requires it, one field transfer -- over CLI-specified INCLUSIVE rank ranges, and
 // runs it through fuse::Runner with the MPI transport. It is the same recipe
 // test/parallel/runner_transport_test.cpp's TwoComponentJob fixture exercises
 // with Overlap::{Disjoint,Partial,Full}, driven here from the command line
@@ -11,11 +11,11 @@
 //       [--coupler e:f] [--entities N] [--steps K] [--check] [--timing out.csv]
 //
 // --coupler e:f (design C, plans/2026-09-23-coupler-placement-and-
-// migration.md) routes the "link" channel's Remap through a separately
+// migration.md) routes the "link" field transfer's Remap through a separately
 // placed coupler on ranks [e:f]: comp1 -> coupler -> comp2, with the
-// coupler->comp2 hop elided whenever [e:f] is identical to comp2's own
-// range. It always attaches RemapFlags::Conservative to the channel, since
-// comp1 and comp2 share one region here and nothing else would make the
+// coupler->comp2 redistribution omitted whenever [e:f] is identical to comp2's own
+// range. It always attaches RemapFlags::Conservative to the field transfer, since
+// comp1 and comp2 share one mesh entity set here and nothing else would make the
 // coupler's remap_on do anything (validate()'s W-CHANNEL-REMAP-ON-UNUSED).
 // Not supported together with --mesh (that mode never builds this
 // field-transfer graph at all).
@@ -23,7 +23,7 @@
 // The job's PE layout must cover the whole world exactly:
 // min(a,b,c,d[,e,f]) == 0 and max(...) == P-1. A violation, a reversed or
 // unparseable range, a rank outside [0, P-1], or --coupler with --mesh is a
-// refusal on EVERY rank, never a hang -- argv is identical on every rank
+// rejection on EVERY rank, never a hang -- argv is identical on every rank
 // under mpiexec, so every validation decision up to the graph build is
 // deterministic and reached before any collective call, and every
 // collective this binary makes afterwards (Runner::initialize, run_period,
@@ -161,10 +161,10 @@ struct Args {
   // below): instead of the synthetic PartitionedTestBackend field-transfer
   // demonstration above, comp1 and comp2 each get a real
   // fuse::native generated mesh, optionally migrated (--migrate) from
-  // comp1's decomposition onto comp2's placement via RCB. --check in this
+  // comp1's decomposition onto comp2's processor set via RCB. --check in this
   // mode re-verifies MESH data transfer (global cell count, measure, and id
   // uniqueness conserved across the migration) -- not the field-transfer
-  // channel the other mode checks, which this mode does not build at all.
+  // field transfer the other mode checks, which this mode does not build at all.
   // See docs/dev/native-mesh.md "what is deferred": matching migrated
   // entities back to the coupling graph's field-transfer machinery
   // (arbitrary post-migration entity correspondence through MpiTransport)
@@ -347,7 +347,7 @@ void write_timing_csv(const std::string& path, int world, const std::string& lay
 /// The topological dimension `fuse::native::generate_native_mesh("<kind>:...")`
 /// produces, read from the kind alone (before any rank slicing happens) --
 /// needed here to build a matching EMPTY mesh (`NativeMeshBuilder(dim)`) on
-/// a rank that owns none of a placement, since `NativeMeshView` requires
+/// a rank that owns none of a processor set, since `NativeMeshView` requires
 /// every mesh, even an empty one, to declare its dimension up front.
 [[nodiscard]] std::optional<int> infer_native_mesh_dim(const std::string& spec) {
   const auto colon = spec.find(':');
@@ -361,9 +361,9 @@ void write_timing_csv(const std::string& path, int world, const std::string& lay
   return std::nullopt;
 }
 
-/// Builds this rank's slice of `spec` for a placement of `placement_size`
-/// ranks, using LOCAL rank-within-the-placement numbering (so the mesh's
-/// global ids stay independent of which world ranks the placement actually
+/// Builds this rank's slice of `spec` for a processor set of `placement_size`
+/// ranks, using LOCAL rank-within-the-processor-set numbering (so the mesh's
+/// global ids stay independent of which world ranks the processor set actually
 /// occupies) -- or an empty mesh of the right dimension when this rank does
 /// not belong to `ranks`.
 [[nodiscard]] fuse::Result<std::unique_ptr<fuse::native::NativeMeshView>> build_placement_mesh(
@@ -381,10 +381,10 @@ void write_timing_csv(const std::string& path, int world, const std::string& lay
   return fuse::native::NativeMeshView::create_from_host(arrays.value(), world_rank);
 }
 
-/// The whole --mesh/--migrate mode: build comp1's placement mesh, build (or
+/// The whole --mesh/--migrate mode: build comp1's processor set mesh, build (or
 /// migrate onto) comp2's, and under --check report the conservation
 /// properties migration promises (global cell count, total measure, unique
-/// ids) rather than the field-transfer channel the OTHER mode's --check
+/// ids) rather than the field transfer the OTHER mode's --check
 /// verifies -- see Args::mesh_spec's own comment on why the two are
 /// separate claims.
 int run_mesh_migration_mode(const Args& args, int rank, int world) {
@@ -504,7 +504,7 @@ int main(int argc, char** argv) {
   }
 
   // Every provided range, so the bounds check below (and later the coupler
-  // refusal) sees the coupler's numbers exactly as it sees comp1/comp2's.
+  // rejection) sees the coupler's numbers exactly as it sees comp1/comp2's.
   std::vector<const ParsedRange*> all_ranges = {&*args.comp1, &*args.comp2};
   if (args.coupler) all_ranges.push_back(&*args.coupler);
 
@@ -537,9 +537,9 @@ int main(int argc, char** argv) {
               << shape_of(args.comp1->ranks, args.comp2->ranks) << '\n';
   }
 
-  // --coupler is still refused in --mesh/--migrate mode: that mode never
+  // --coupler is still rejected in --mesh/--migrate mode: that mode never
   // builds the field-transfer coupling graph at all (see Args::mesh_spec's
-  // comment), so there is no channel for a coupler placement to attach to.
+  // comment), so there is no field transfer for a coupler processor set to attach to.
   if (args.have_coupler_flag && args.mesh_spec) {
     if (rank == 0) {
       std::cerr << "E-LAYOUT-COUPLER: --coupler is not supported with --mesh\n";
@@ -573,9 +573,9 @@ int main(int argc, char** argv) {
                                 .intent = fuse::Intent::Requires});
   const auto link = graph.add_channel("link", src_field, dst_field);
   if (args.coupler) {
-    // remap() with no flags: the two components' regions are the SAME
-    // region (both fields share `region` above), so nothing about this
-    // channel would otherwise emit a Remap at all -- could_ever_emit_remap
+    // remap() with no flags: the two components' mesh entity sets are the SAME
+    // mesh entity set (both fields share `region` above), so nothing about this
+    // field transfer would otherwise emit a Remap at all -- could_ever_emit_remap
     // (fuse/model/remap_kind.hpp) would be false and remap_on would be
     // W-CHANNEL-REMAP-ON-UNUSED. Conservative asks for one unconditionally,
     // so --coupler always exercises the coupler-placement route it is
@@ -591,9 +591,9 @@ int main(int argc, char** argv) {
   // component-array entry like any other (ComponentKind::Coupler), and the
   // Remap routed through it resolves both meshes with placed_view(mesh,
   // coupler). The first version listed comp1 and comp2 by hand, so with
-  // --coupler the third placement had no decomposition and every coupler
+  // --coupler the third processor set had no decomposition and every coupler
   // layout failed at initialize with E-MESH-PLACEMENT (host run,
-  // 2026-09-27) -- the library refused correctly; the driver had not kept
+  // 2026-09-27) -- the library rejected correctly; the driver had not kept
   // its promise. Read from the graph, as runner_transport_test.cpp does.
   {
     std::vector<fuse::RankSet> placements;
@@ -614,7 +614,7 @@ int main(int argc, char** argv) {
   }
 
   const fuse::ClockSet clocks{graph};
-  // make_region_sizes() is loud by contract (mesh_view.hpp): a region it
+  // make_region_sizes() is loud by contract (mesh_view.hpp): a mesh entity set it
   // cannot size THROWS rather than returning 0, and schedule() lets that
   // propagate. An exception escaping main() in an MPI program is an abort on
   // that rank and a hang for the others if the failure was not unanimous --
@@ -714,7 +714,7 @@ int main(int argc, char** argv) {
     // Mirrors expect_every_destination_entity_delivered
     // (runner_transport_test.cpp): every destination entity must hold its
     // own global id, and the destination's own decomposition must cover the
-    // region exactly once.
+    // mesh entity set exactly once.
     unsigned long local_ok = 0, local_n = 0;
     if (args.comp2->ranks.contains(rank)) {
       const auto v = backend.placed_view(graph.region(region).mesh, fuse::ComponentId{1});

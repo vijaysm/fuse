@@ -13,7 +13,7 @@
 //
 // What Phase 4 *does* have that can be wrong is the TIME behaviour of the
 // exchange: the window reduction the plan performs over a subcycled producer,
-// and the one-period lag with which the result reaches the consumer
+// and the one-coupling-cycle lag with which the result reaches the consumer
 // (`Runner::Impl::step_period`'s tick convention). That has a measurable order,
 // and `MmsOrder` below measures it.
 //
@@ -28,8 +28,8 @@
 // ODE in closed form over each step given a constant input, so NEITHER
 // COMPONENT CONTRIBUTES A DISCRETISATION ERROR. Every bit of the measured
 // error is the coupler's: the window mean the plan forms of S, and the one
-// coupling period by which that mean is late. Both are O(H), so the study
-// below expects and measures first order in the coupling period H. That is the
+// coupling cycle by which that mean is late. Both are O(H), so the study
+// below expects and measures first order in the coupling cycle H. That is the
 // honest order of an explicit, lagged, unaccelerated exchange; Phases 6 and 7
 // are what raise it.
 //
@@ -128,7 +128,7 @@ class AnalyticSource final : public fuse::Component {
   double              t_ = 0.0;
 };
 
-/// Holds whatever the channel delivers, and nothing else.
+/// Holds whatever the field transfer delivers, and nothing else.
 class Receiver final : public fuse::Component {
  public:
   explicit Receiver(std::size_t n) : data_(n, 0.0) {}
@@ -195,7 +195,7 @@ class RelaxResponder final : public fuse::Component {
     for (const fuse::FieldId f : g.component(*cid).fields) {
       // in_, not r_: r_ is this component's own state. Binding the state array
       // to a Requires field would let the coupler overwrite the solution with
-      // the boundary data every period.
+      // the boundary data every coupling cycle.
       auto r = reg.bind(f, fuse::FieldRef{in_.data(),
                                           fuse::Layout{.stride = 1,
                                                        .count = in_.size()},
@@ -356,7 +356,7 @@ TEST(MmsTransfer, ConstantFieldTransfersExactly) {
   }
 }
 
-// Mean accumulation of a linear-in-time signal over [0,1] with 4 substeps
+// Mean accumulation of a linear-in-time signal over [0,1] with 4 subcycling steps
 // gives the average of t = 1/4, 1/2, 3/4, 1, i.e. 5/8.
 TEST(MmsTransfer, MeanOfALinearSignalMatchesTheAnalyticAverage) {
   auto f = build(16, Rational{1, 4}, Rational{1}, fuse::AccumOp::Mean);
@@ -388,7 +388,7 @@ TEST(MmsTransfer, RepeatedRunsAreBitIdentical) {
   }
 }
 
-// Conservation::Extensive is what makes lowering emit the Constrain operator
+// Conservation::Extensive is what makes compilation into the dataflow graph emit the Constrain operator
 // (src/ir/rules_derived.cpp). Without it the DAG holds no Constrain at all,
 // the runner performs no check, and "violations == 0" is true of a build with
 // the conservation machinery deleted -- so the count of checks actually
@@ -441,7 +441,7 @@ constexpr int         kSubsteps = 4;  // source ticks per coupling period
   return std::sqrt(sum);
 }
 
-/// One MMS run to t = 1 with coupling period H = 1/`periods`.
+/// One MMS run to t = 1 with coupling cycle H = 1/`periods`.
 ///
 /// Returns the L2 error of the responder's state against `exact_response`.
 /// A negative return means the run itself failed; the caller asserts on it.
@@ -497,8 +497,8 @@ constexpr std::size_t kRungs = sizeof(kLadder) / sizeof(kLadder[0]);
 
 }  // namespace
 
-// The measurement this whole file exists for: refine the coupling period and
-// watch the error fall at the rate an explicit, one-period-lagged exchange has.
+// The measurement this whole file exists for: refine the coupling cycle and
+// watch the error fall at the rate an explicit, one-coupling-cycle-lagged exchange has.
 TEST(MmsOrder, ErrorFallsAtFirstOrderInTheCouplingPeriod) {
   double err[kRungs] = {};
   std::string table =

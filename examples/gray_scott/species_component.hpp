@@ -5,7 +5,7 @@
 /// the way `LinearOdeComponent` is in
 /// test/runtime/window_coupler_test.cpp: `advance()` reads its partner's
 /// value from a `required` buffer WindowCoupler writes into before the
-/// call -- the partner's MEAN over the substep, per that header's own class
+/// call -- the partner's MEAN over the subcycling step, per that header's own class
 /// comment -- and writes its own new state into `provided`, which for this
 /// component is the same backing array as its internal state (both species
 /// live on the same structured grid, so "provided" is simply "the whole
@@ -189,7 +189,7 @@ class GrayScottSpeciesComponent : public fuse::Component {
 
   // The accumulated coupling flux is part of the checkpoint. Outside it, every
   // coupling sweep and every straddle replay added its flux again, so the
-  // measure counted iterations rather than the committed trajectory's exchange
+  // measure counted iterations rather than the committed waveform's exchange
   // -- off by O(1) at 7:13, where the Fixed member replays.
   fuse::Result<void> save_state() override {
     saved_ = state_;
@@ -205,7 +205,7 @@ class GrayScottSpeciesComponent : public fuse::Component {
   /// solver with no RNG and no unordered reduction (elementwise Kokkos
   /// kernels only), and example.*.omp_identical measures it bit for bit at
   /// one thread and at every core. Hidden state: YES -- advance() mutates
-  /// state that is not bound through register_fields() (the clock, the
+  /// state that is not bound through register_fields() (the time grid, the
   /// history, the solver's internals), which the runtime's byte-for-byte
   /// rollback verification cannot see; save_state() is what carries it.
   [[nodiscard]] std::uint64_t capabilities() const override {

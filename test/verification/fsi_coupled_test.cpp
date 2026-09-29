@@ -14,10 +14,10 @@
 // TO A "STEADY STATE". The beam PDE here (rho_s h_s w_tt + EI w_xxxx = q)
 // carries NO damping term, so a suddenly-applied load makes an undamped
 // beam oscillate about its equilibrium forever -- time-marching Newmark
-// from rest never settles, regardless of how many periods are run. The
+// from rest never settles, regardless of how many coupling cycles are run. The
 // physically sound way to check "the coupled steady state" is therefore the
 // w_tt=0 special case of the same PDE, i.e. `BeamSolver::solve_static()`,
-// fed the load the REAL H^T D channel delivered from the REAL fluid
+// fed the load the REAL H^T D field transfer delivered from the REAL fluid
 // solver's steady traction. This still exercises H, H^T D, the tributary-
 // length conversion and the fluid's own steady solve end to end; it only
 // skips pretending an undamped Newmark march reaches a fixed point it
@@ -102,10 +102,10 @@ fuse::CouplingGraph build_fsi_graph(std::size_t nx_beam, std::size_t nx_fluid,
       .intent = fuse::Intent::Requires});
   const auto fch = g.add_channel("wall_force", force_out, load_in);
   g.channel(fch).remap_method("consistent-transpose").conservative();
-  // The velocity and force channels close a cycle within the period, so
+  // The velocity and force field transfers close a cycle within the coupling cycle, so
   // one of them must carry a lag for the graph to be schedulable at all
   // (E-SCHED-CYCLE otherwise) -- exactly examples/dn_heat/main.cpp's
-  // pattern. Inside the iterate() region below, that lag is precisely
+  // pattern. Inside the iterate() implicit coupling group below, that lag is precisely
   // what the sweep resolves.
   g.channel(fch).lag(1).allow_time_level_mismatch(
       "resolved by the beam-fluid implicit coupling group");
@@ -273,7 +273,7 @@ TEST(FsiCoupled, FluidReconstructedPoiseuilleIsAFixedPointOfCnStep) {
 // every energy check compared the delivered vector with itself. The two tests
 // below state what the force must do, in terms no internal identity can
 // satisfy with the wrong sign:
-//   1. a pressurised channel pushes its wall AWAY from the fluid;
+//   1. a pressurised field transfer pushes its wall AWAY from the fluid;
 //   2. accelerating the wall away from the fluid at rest produces a force that
 //      OPPOSES the acceleration (positive added mass).
 // A sign flip fails both.
@@ -357,7 +357,7 @@ TEST(FsiCoupled, SteadyStateBeamDeflectionMatchesTheAnalyticLinearLoad) {
       // left the beam at w=0 (rest, BeamComponent's default construction)
       // -- NOT its equilibrium -- so the beam was NOT at a fixed point at
       // all: run_period()'s own Newmark march accelerated it away from
-      // w=0 toward equilibrium WITHIN this one period, delivering a
+      // w=0 toward equilibrium WITHIN this one coupling cycle, delivering a
       // non-zero wdot (hence non-zero v_top) back to the fluid, which
       // then genuinely changed the fluid's own pressure field -- an O(1),
       // physically real transient response, not a discretisation error,
@@ -391,7 +391,7 @@ TEST(FsiCoupled, SteadyStateBeamDeflectionMatchesTheAnalyticLinearLoad) {
       // set_state() is a direct solver-level bypass of advance()'s normal
       // write path, so it does not touch the DERIVED, registered
       // "fluid_force" field (force_out_) -- refresh it explicitly so the
-      // runtime's own save_state() (inside run_period(), at the region's
+      // runtime's own save_state() (inside run_period(), at the implicit coupling group's
       // entry) captures a force_out_ that actually matches this seeded
       // state, not whatever advance() last wrote (zero, from
       // construction). Root-caused an earlier round: a fluid.save_state()
@@ -528,7 +528,7 @@ TEST(FsiCoupled, AitkenAndIqnIlsReachTheSameFixedPoint) {
   EXPECT_LT(worst, 1e-6) << "Aitken and IQN-ILS disagree by " << worst << " m";
 }
 
-// Runs one FsiCase with the given acceleration config for one period and
+// Runs one FsiCase with the given acceleration config for one coupling cycle and
 // reports whether the coupling iteration converged, in how many sweeps, and
 // (for Gauss-Seidel) whether the residual grew.
 struct AccelOutcome {

@@ -744,7 +744,7 @@ TEST(CommGraph, PartiallyOverlappingRanksMatchByNearestNeighbor) {
 
 // With identical partitions on both sides, every match has both ends on one
 // rank. Nothing at all may reach MpiTransport -- and the proof that it cannot
-// is that MpiTransport REFUSES the spec this graph produces: the two rank sets
+// is that MpiTransport REJECTS the spec this graph produces: the two rank sets
 // are identical, which is the overlap it rejects by design (R24). If the
 // shortcut were removed, those matches would have to travel through exactly
 // the mechanism that will not carry them.
@@ -785,7 +785,7 @@ TEST(CommGraph, AMatchWithBothEndsOnOneRankNeverReachesMpiTransport) {
   }
 
   if (size > 1) {
-    // The refusal that makes the shortcut necessary rather than merely fast.
+    // The rejection that makes the shortcut necessary rather than merely fast.
     EXPECT_FALSE(g.specs_are_disjoint());
     MpiTransport t;
     ASSERT_TRUE(t.set_communicator(MPI_Comm_c2f(MPI_COMM_WORLD)).ok());
@@ -869,8 +869,8 @@ TEST(CommGraph, NearestNeighborIsDimensionIndependentIn3D) {
 
 // One source at the origin and three queries at exactly the tolerance, just
 // inside it, and just outside it. The first two must match and the third must
-// be refused -- which pins `<=` rather than `<`, and pins that the refusal is
-// a refusal rather than a silent nearest-anything match.
+// be rejected -- which pins `<=` rather than `<`, and pins that the rejection is
+// a rejection rather than a silent nearest-anything match.
 TEST(CommGraph, TheNearestNeighborToleranceBoundaryIsInclusiveAndRefusesBeyond) {
   const double tol = 0.25;
   const int    rank = world_rank();
@@ -920,7 +920,7 @@ TEST(CommGraph, TheNearestNeighborToleranceBoundaryIsInclusiveAndRefusesBeyond) 
     } else {
       ASSERT_FALSE(built.ok()) << "a query " << c.what << " was accepted";
       EXPECT_EQ(built.error().code, "E-COMMGRAPH-NOMATCH");
-      // The refusal names the distance actually found, per spec §6 -- the
+      // The rejection names the distance actually found, per spec §6 -- the
       // practice E-REMAP-COVERAGE already follows.
       EXPECT_NE(built.error().message.find("nearest one found"),
                 std::string::npos)
@@ -1246,7 +1246,7 @@ TEST(CommGraph, TwoIndependentlySplitCommunicatorsAreEnoughToBuildTheGraph) {
 }
 
 // ===========================================================================
-// Refusals and degenerate cases (spec §6)
+// Rejections and degenerate cases (spec §6)
 // ===========================================================================
 
 TEST(CommGraph, NearestNeighborWithoutAToleranceIsRefusedBeforeAnyCollective) {
@@ -1271,7 +1271,7 @@ TEST(CommGraph, NearestNeighborWithoutAToleranceIsRefusedBeforeAnyCollective) {
     ASSERT_FALSE(r2.ok());
     EXPECT_EQ(r2.error().code, "E-COMMGRAPH-OPTS");
 
-    // The mirror image: a tolerance set under GlobalId is refused rather than
+    // The mirror image: a tolerance set under GlobalId is rejected rather than
     // silently ignored, because a caller who set it meant NearestNeighbor.
     opts.mode = MatchMode::GlobalId;
     opts.nn_tolerance = 0.5;
@@ -1282,7 +1282,7 @@ TEST(CommGraph, NearestNeighborWithoutAToleranceIsRefusedBeforeAnyCollective) {
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
-// A wanted id that no source owns is refused, on EVERY rank, naming the id.
+// A wanted id that no source owns is rejected, on EVERY rank, naming the id.
 TEST(CommGraph, AWantedGlobalIdWithNoSourceIsRefusedOnEveryRank) {
   FUSE_REQUIRE_AT_LEAST_RANKS(2);
   const int rank = world_rank();
@@ -1326,7 +1326,7 @@ TEST(CommGraph, AWantedGlobalIdWithNoSourceIsRefusedOnEveryRank) {
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
-// Two source ranks claiming one id is ambiguous ownership, and is refused
+// Two source ranks claiming one id is ambiguous ownership, and is rejected
 // rather than resolved by picking a winner -- the two copies need not agree.
 TEST(CommGraph, TwoSourceRanksOwningOneIdIsRefused) {
   FUSE_REQUIRE_AT_LEAST_RANKS(2);

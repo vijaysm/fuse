@@ -1,14 +1,14 @@
 // test/parallel/moab_placed_view_mpi_test.cpp -- KNOWN_ISSUES D5, the MOAB
-// half: one moab::Core + moab::ParallelComm per declared placement, run
+// half: one moab::Core + moab::ParallelComm per declared processor set, run
 // under a REAL communicator of more than one rank.
 //
 // test/backend/moab_mesh_test.cpp covers everything Mode A (no
-// communicator adopted) can prove without MPI at all -- every refusal this
-// item adds, and that a one-rank placement equal to the whole (size-1)
+// communicator adopted) can prove without MPI at all -- every rejection this
+// item adds, and that a one-rank processor set equal to the whole (size-1)
 // communicator matches the default view exactly. What that file cannot
 // reach is the real split-and-read machinery: a genuine
 // `moab::ParallelComm`, on its own `moab::Core`, split from the base
-// communicator over exactly one placement's ranks, reading a REAL
+// communicator over exactly one processor set's ranks, reading a REAL
 // partitioned MOAB mesh. That needs >1 rank, hence this file.
 //
 // SCOPE, stated rather than assumed: this proves the VIEW layer only --
@@ -30,8 +30,8 @@
 // single test -- confirmed empirically against this tree's PRE-EXISTING
 // fuse_backend_moab_mesh_test binary (it crashes identically on tests this
 // change did not touch), not assumed from this file's own header comment.
-// Compiled here; the verdict comes from a host run, like every other
-// tier-2 MPI test in this tree.
+// Compiled here; the outcome comes from a host run, like every other
+// MOAB-enabled-build-configuration MPI test in this tree.
 
 #include <cstdint>
 #include <set>
@@ -80,13 +80,13 @@ MPI_Comm component_comm(const fuse::RankSet& rs, int rank) {
 }
 
 /// The shape both `TEST`s below share: declare `placements`, load the real
-/// sphere mesh into every one of them, and check -- on EVERY placement --
+/// sphere mesh into every one of them, and check -- on EVERY processor set --
 /// that the entities its OWN ranks own tile the mesh's global entity count
 /// exactly (no cell counted twice, none missing: `MoabMeshView::global_id`
 /// is unique per mesh_view.hpp's own contract, so a duplicate-free local
 /// set on every rank plus a sum that matches the global count together
 /// rule out both a double-owned entity and a dropped one), and that a rank
-/// outside the placement holds none of it.
+/// outside the processor set holds none of it.
 void check_placements_partition_the_mesh(std::vector<fuse::RankSet> placements) {
   int rank = 0;
   int size = 0;
@@ -99,7 +99,7 @@ void check_placements_partition_the_mesh(std::vector<fuse::RankSet> placements) 
   const auto loaded = backend.load({.name = "atm", .source = FUSE_SPHERE_ATM});
   ASSERT_TRUE(loaded.ok()) << loaded.error().code << ": " << loaded.error().message;
 
-  // The GLOBAL entity count, independent of any placement: the default
+  // The GLOBAL entity count, independent of any processor set: the default
   // decomposition's own owned entities, summed over the whole job.
   const auto default_view = backend.view(fuse::MeshId{0});
   ASSERT_TRUE(default_view.ok());
@@ -108,12 +108,12 @@ void check_placements_partition_the_mesh(std::vector<fuse::RankSet> placements) 
       MPI_COMM_WORLD, static_cast<long long>(default_view.value()->owned_count(dim)));
   ASSERT_GT(global_count, 0);
 
-  // One communicator per placement, built by EVERY rank in placement order
+  // One communicator per processor set, built by EVERY rank in processor set order
   // (MPI_Comm_split is collective over MPI_COMM_WORLD; a rank outside the
-  // placement passes MPI_UNDEFINED and gets MPI_COMM_NULL). The first version
-  // split only on ranks inside placement p, so the calls paired up across
-  // DIFFERENT placements -- the host run (2026-09-28) summed two placements
-  // into one "placement total" (1452 = 2 x 726 at 2 ranks) and hung at >= 3.
+  // processor set passes MPI_UNDEFINED and gets MPI_COMM_NULL). The first version
+  // split only on ranks inside processor set p, so the calls paired up across
+  // DIFFERENT processor sets -- the host run (2026-09-28) summed two processor sets
+  // into one "processor set total" (1452 = 2 x 726 at 2 ranks) and hung at >= 3.
   std::vector<MPI_Comm> comms;
   for (const auto& rs : placements) comms.push_back(component_comm(rs, rank));
 
@@ -124,7 +124,7 @@ void check_placements_partition_the_mesh(std::vector<fuse::RankSet> placements) 
     const bool mine = placements[p].contains(rank);
 
     if (!mine) {
-      // Outside the placement: every dimension answers 0, NEVER the
+      // Outside the processor set: every dimension answers 0, NEVER the
       // default decomposition's own count -- the silent-wrong-answer this
       // item exists to remove.
       for (int d = 0; d <= 3; ++d) {
@@ -137,9 +137,9 @@ void check_placements_partition_the_mesh(std::vector<fuse::RankSet> placements) 
     MPI_Comm comp_comm = comms[p];
     ASSERT_NE(comp_comm, MPI_COMM_NULL);
 
-    // 1. This placement's OWN ranks tile the mesh's global entity count
+    // 1. This processor set's OWN ranks tile the mesh's global entity count
     //    exactly -- the whole point of D5's MOAB half: each component
-    //    holds the WHOLE region over its own ranks, not a slice shared
+    //    holds the WHOLE mesh entity set over its own ranks, not a slice shared
     //    with every other component.
     const long long placement_total = allreduce_sum(
         comp_comm, static_cast<long long>(placed.value()->owned_count(dim)));

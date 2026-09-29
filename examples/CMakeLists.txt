@@ -2,7 +2,7 @@
 #
 # They are EXAMPLES, and they are also the only code in the tree that drives
 # the library the way a user would -- building a graph with the fluent API,
-# lowering it, and running it -- rather than assembling a fixture. That makes
+# compiling it into the dataflow graph, and running it -- rather than assembling a fixture. That makes
 # them worth running rather than merely compiling.
 #
 # add_test() here works only because the root CMakeLists.txt adds examples/
@@ -63,7 +63,7 @@ if(FUSE_ENABLE_TESTS)
 endif()
 
 # ---------------------------------------------------------------------------
-# PE-layout driver (plan-track-d). MPI-only: it links fuse::transport for
+# processor-processor-layout driver (plan-track-d). MPI-only: it links fuse::transport for
 # MpiTransport and needs mpiexec to mean anything, so the whole block is
 # gated on FUSE_ENABLE_MPI, exactly as test/CMakeLists.txt gates its own
 # parallel/ targets.
@@ -209,7 +209,7 @@ if(FUSE_ENABLE_MPI)
   # fuse_add_mpi_test (test/CMakeLists.txt) always builds a NEW target from
   # test/<layer>/<name>_test.cpp -- one gtest binary per registration. This is
   # ONE binary, driven by different CLI arguments at each rank count and
-  # placement, so the mpiexec line is written out directly instead.
+  # processor set, so the mpiexec line is written out directly instead.
   function(fuse_add_layout_test name ranks)
     cmake_parse_arguments(ARG "WILL_FAIL" "" "ARGS" ${ARGN})
     add_test(NAME ${name}
@@ -221,7 +221,7 @@ if(FUSE_ENABLE_MPI)
     endif()
   endfunction()
 
-  # Identical, disjoint and partially-overlapping placements at 2, 3 and 4
+  # Identical, disjoint and partially-overlapping processor sets at 2, 3 and 4
   # ranks -- partial overlap needs >= 3 ranks (2 ranks can only be identical
   # or disjoint), and at 3 and 4 ranks one arrangement of each non-identical
   # shape puts comp2 on the LOWER range, not comp1.
@@ -239,7 +239,7 @@ if(FUSE_ENABLE_MPI)
   fuse_add_layout_test(layout.4.c1-1-3.c2-0-2 4 ARGS --comp1 1:3 --comp2 0:2 --check)
   fuse_add_layout_test(layout.4.c1-0-3.c2-0-3 4 ARGS --comp1 0:3 --comp2 0:3 --check)
 
-  # --coupler: the coupler-placement track (design C). The channel always
+  # --coupler: the coupler-placement track (design C). The field transfer always
   # gets RemapFlags::Conservative (main.cpp's own comment on why), so
   # --check still verifies the same "every destination entity holds its own
   # global id" property as the rows above, now routed source -> coupler ->
@@ -249,7 +249,7 @@ if(FUSE_ENABLE_MPI)
     ARGS --comp1 0:0 --comp2 1:1 --coupler 2:2 --check)
   #   * coupler IDENTICAL to comp2's own range -- the coupler -> target hop
   #     is elided (same_as), so this must reproduce the no-coupler result
-  #     bit for bit; the byte-exact claim itself is pinned at Tier 0
+  #     bit for bit; the byte-exact claim itself is pinned at the base build configuration
   #     (CouplerLowering.CouplerEqualToTargetReproducesTodaysIRExactly,
   #     Runner.ACouplerNeedsNoComponentAndDeliversTheIdenticalValue), --check
   #     here confirms delivery still holds under a real multi-rank run.
@@ -258,14 +258,14 @@ if(FUSE_ENABLE_MPI)
   #   * coupler overlapping comp1 (shares rank 1, not identical to either
   #     side) -- needs 4 ranks for the same reason a partial comp1/comp2
   #     overlap needs 3: the shared rank must leave room for the rest of
-  #     each placement to differ.
+  #     each processor set to differ.
   fuse_add_layout_test(layout.coupler.4.overlaps-comp1 4
     ARGS --comp1 0:1 --comp2 2:3 --coupler 1:2 --check)
 
   # --mesh/--migrate: comp2's mesh is comp1's, migrated with RCB onto
-  # comp2's placement (Args::mesh_spec's own comment on what --check means
+  # comp2's processor set (Args::mesh_spec's own comment on what --check means
   # in this mode: cell count and measure conservation, not the field
-  # channel). One box generator per rank count, on the same
+  # field transfer). One box generator per rank count, on the same
   # disjoint/overlapping/identical shapes as the field-transfer rows above.
   fuse_add_layout_test(layout.migrate.2.c1-0-0.c2-1-1 2
     ARGS --comp1 0:0 --comp2 1:1 --mesh hexbox:4x4x4 --migrate --check)
@@ -274,8 +274,8 @@ if(FUSE_ENABLE_MPI)
   fuse_add_layout_test(layout.migrate.4.c1-0-2.c2-1-3 4
     ARGS --comp1 0:2 --comp2 1:3 --mesh hexbox:4x4x4 --migrate --check)
 
-  # Deliberate refusals (docs/dev/testing.md: counts as coverage only when a
-  # test makes the refusal fire). Run at 2 ranks -- the rank count is
+  # Deliberate rejections (docs/dev/testing.md: counts as coverage only when a
+  # test makes the rejection fire). Run at 2 ranks -- the rank count is
   # incidental to what each of these is testing.
   fuse_add_layout_test(layout.refuse.min-nonzero 2 WILL_FAIL
     ARGS --comp1 1:1 --comp2 1:1)
@@ -283,11 +283,11 @@ if(FUSE_ENABLE_MPI)
     ARGS --comp1 0:0 --comp2 0:0)
   fuse_add_layout_test(layout.refuse.reversed-range 2 WILL_FAIL
     ARGS --comp1 1:0 --comp2 0:1)
-  # --coupler is refused only in combination with --mesh (E-LAYOUT-COUPLER):
+  # --coupler is rejected only in combination with --mesh (E-LAYOUT-COUPLER):
   # that mode never builds the field-transfer graph a coupler could attach
-  # to. Plain --coupler is no longer a refusal -- see the layout.coupler.*
+  # to. Plain --coupler is no longer a rejection -- see the layout.coupler.*
   # rows above -- so this replaces the row that used to pin the "not
-  # implemented yet" refusal.
+  # implemented yet" rejection.
   fuse_add_layout_test(layout.refuse.coupler-with-mesh 2 WILL_FAIL
     ARGS --comp1 0:1 --comp2 0:1 --coupler 0:1 --mesh hexbox:4x4x4)
 endif()

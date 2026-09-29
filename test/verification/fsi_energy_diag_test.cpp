@@ -12,9 +12,9 @@
 //
 // over the full carried state -- and, since every boundary datum here is
 // time-INDEPENDENT (the inflow profile is steady, the no-slip walls are
-// steady 0), M and b are the SAME every period: this is genuinely a fixed
-// linear recurrence, not merely "linearised about a trajectory point". Its
-// spectral radius rho(M) is therefore the exact per-period growth factor
+// steady 0), M and b are the SAME every coupling cycle: this is genuinely a fixed
+// linear recurrence, not merely "linearised about a waveform point". Its
+// spectral radius rho(M) is therefore the exact per-coupling-cycle growth factor
 // this whole test suite has been chasing: rho(M) > 1 confirms a genuine
 // SCHEME instability, independent of the coupling iteration (which the
 // existing tests already established converges tightly every window), and
@@ -25,15 +25,15 @@
 //   - BeamComponent: BeamSolver::State { w, wdot, wddot } (interior nodes
 //     only -- the clamped ends are permanently 0, never perturbed);
 //   - FluidComponent: FlowState { u, v, p }, AND `velocity_in_t0_` --
-//     save_state()'s own body treats the wall-velocity-at-this-period's-t0
+//     save_state()'s own body treats the wall-velocity-at-this-coupling-cycle's-t0
 //     snapshot as part of what it captures (see fsi_components.hpp), so it
 //     is "anything else the component checkpoints" this task's instructions
 //     call out, not an incidental detail. `FluidComponent::
 //     set_velocity_in_for_test()` (added this round) is the seam that
 //     makes it independently perturbable -- normally only the "wall_
-//     velocity" channel delivery (H applied to the beam's CURRENT
+//     velocity" field transfer delivery (H applied to the beam's CURRENT
 //     velocity) ever writes it, which is unreachable from outside the
-//     region machinery for an arbitrary, non-trajectory state.
+//     implicit coupling group machinery for an arbitrary, non-waveform state.
 //
 // M is built by finite-differencing this map at x=0 (so b = M*0+b is the
 // zero-state run's own output, and every other run's column is
@@ -237,7 +237,7 @@ Eigen::MatrixXd fluid_alone_map(const fsi::ChannelParams& p, double dt, double e
 // continuity constraint's own Lagrange multiplier, not something that
 // splits into "hypothesis A's own contribution" vs "hypothesis B's own
 // contribution" the way the viscous term does. Consequence: there is no
-// clean R_A + R_B = 0 split to report for the PRESSURE channel the way
+// clean R_A + R_B = 0 split to report for the PRESSURE field transfer the way
 // there is for viscosity -- see this task's own submission for how this
 // was resolved (direct measurement of rho(M) under each candidate
 // traction/outflow formula, rather than insisting on a closed-form local
@@ -537,7 +537,7 @@ FullIdentityResult measure_full_energy_identity(const fsi::ChannelParams& c,
 }
 
 // ---------------------------------------------------------------------------
-// The real coupled system, through the real FUSE graph -- same channel
+// The real coupled system, through the real FUSE graph -- same field transfer
 // declarations as examples/fsi_channel/main.cpp and the other fsi_*_test.cpp
 // files (each of which already duplicates this small graph-builder locally).
 // ---------------------------------------------------------------------------
@@ -656,7 +656,7 @@ CoupledDims coupled_dims(const CoupledCase& c) {
 /// Builds a fresh graph/runner/components, seeds the FULL carried state
 /// (beam interior w/wdot/wddot, fluid u/v/p, and fluid's own checkpointed
 /// velocity_in_t0_ -- see the file header for why that last one is part of
-/// the state) from `x`, runs exactly ONE period, and returns the resulting
+/// the state) from `x`, runs exactly ONE coupling cycle, and returns the resulting
 /// carried state in the same layout.
 Eigen::VectorXd run_one_coupled_period(const CoupledCase& c, const CoupledDims& d,
                                        const Eigen::VectorXd& x) {
@@ -1152,7 +1152,7 @@ TEST(FsiEnergyDiag, CoupledStepMapRevealsTheGrowthMechanism) {
 // via the beam's own exact Newmark energy identity) and to the mass
 // correction that sits outside `cn_step`'s own saddle point -- but on the
 // coupled map `M`'s OWN dominant eigenvector, run through the ACTUAL
-// production Runner/IQN-ILS path for one period. Zero inflow (`Umax=0`)
+// production Runner/IQN-ILS path for one coupling cycle. Zero inflow (`Umax=0`)
 // makes the coupled step's additive term `b` vanish exactly (the beam has
 // no forcing of its own), so a state seeded to an eigenvector `x` of the
 // (purely linear, since `b=0`) map should come back as `lambda*x` to
@@ -1599,7 +1599,7 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
 
   // Round 4's own homogeneous run: Umax=0 so b=0 exactly (only inflow
   // forces this system; the beam has none of its own), letting a SINGLE
-  // real production period on x reproduce lambda*x directly.
+  // real production coupling cycle on x reproduce lambda*x directly.
   CoupledCase c0 = c;
   c0.Umax = 0.0;
   const CoupledPeriodDiag diag = run_one_coupled_period_with_budget(c0, d, x);

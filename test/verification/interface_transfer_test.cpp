@@ -9,13 +9,13 @@
 //     non-matching 1D line pairs is thoroughly verified -- exact conservation
 //     to round-off, observed order >= 1, closed-form weight checks.
 //   * Runner::Impl::resolve_remap() (src/runtime/runner.cpp) already builds
-//     real conservative weights via build_weights() whenever the two regions
+//     real conservative weights via build_weights() whenever the two mesh entity sets
 //     do not coincide, and falls back to an identity copy only when they do.
 //   * Every existing example/verification case (mms_pair, mms_transfer) uses
 //     COINCIDENT meshes, so none of them ever exercises the non-identity path
 //     end to end.
 // So the gap this file closes is purely the end-to-end demonstration: does a
-// channel between two DIFFERENT-resolution line meshes deliver a correct,
+// field transfer between two DIFFERENT-resolution line meshes deliver a correct,
 // checkable answer when driven by lower -> schedule -> Runner, in both the
 // pointwise and the conservative direction, on one graph?
 //
@@ -42,7 +42,7 @@
 //     open_questions.
 //   * "fluid_force" -> "beam_force": an INTEGRATED quantity (traction
 //     integrated to a per-cell force density), Conservation::Extensive,
-//     channel marked `.conservative()`. `ConservativeTransferPreservesTotalForce`
+//     field transfer marked `.conservative()`. `ConservativeTransferPreservesTotalForce`
 //     checks the measure-weighted SUM delivered equals the measure-weighted
 //     sum sent, to round-off (Extensive fields are densities: the conserved
 //     amount is value*measure, confirmed empirically -- the un-weighted sums
@@ -69,7 +69,7 @@
 #include <string>
 #include <vector>
 
-// Nodal-remap track, round 3: apply_nodal_dist_remap's own per-period
+// Nodal-remap track, round 3: apply_nodal_dist_remap's own per-coupling-cycle
 // allocation check (below, ApplyNodalDistRemapHasAConstantMeasuredPerPeriodAllocationCount)
 // needs this. Safe to include here: this file's own test target compiles
 // exactly one .cpp against the prebuilt fuse_test_main -- see the header's
@@ -98,7 +98,7 @@ namespace {
 /// define this composite, so it is built directly from the base exponents.
 inline constexpr fuse::Units kMetersPerSecond{.length = 1, .time = -1};
 
-/// One period through the Runner of a graph with two independent channels:
+/// One coupling cycle through the Runner of a graph with two independent field transfers:
 ///   beam_out  --(plain remap)-->      fluid_in     (pointwise, "velocity")
 ///   fluid_out --(conservative remap)--> beam_in    (integrated, "force")
 /// on two non-matching 1D line meshes. `n_beam != n_fluid` so every weight
@@ -130,7 +130,7 @@ RunResult run_once(const TransferCase& s) {
   const auto fluid = g.add_component(fuse::ComponentDecl{
       .name = "fluid", .ranks = {0, 1}, .interval = Rational{1}});
 
-  // Pointwise channel: beam velocity -> fluid wall. Intensive: the value at a
+  // Pointwise field transfer: beam velocity -> fluid wall. Intensive: the value at a
   // cell IS the pointwise quantity, not an amount to be conserved.
   const auto vel_out = g.add_field(beam, fuse::FieldSpec{
       .name = "beam_velocity", .region = r_beam, .units = kMetersPerSecond,
@@ -142,8 +142,8 @@ RunResult run_once(const TransferCase& s) {
       .intent = fuse::Intent::Requires});
   g.add_channel("wall_velocity", vel_out, vel_in);  // plain remap: no .conservative()
 
-  // Conservative channel: fluid traction (integrated to a per-cell force) ->
-  // beam. Extensive + .conservative() is what makes lowering emit Constrain
+  // Conservative field transfer: fluid traction (integrated to a per-cell force) ->
+  // beam. Extensive + .conservative() is what makes compilation into the dataflow graph emit Constrain
   // and asks build_weights() for a mass-preserving map.
   const auto force_out = g.add_field(fluid, fuse::FieldSpec{
       .name = "fluid_force", .region = r_fluid, .units = u::kNewton,
@@ -153,10 +153,10 @@ RunResult run_once(const TransferCase& s) {
       .name = "beam_force_in", .region = r_beam, .units = u::kNewton,
       .conservation = fuse::Conservation::Extensive,
       .intent = fuse::Intent::Requires});
-  // Both fields are pure functions of x, not of time, so a one-period lag on
-  // the return channel changes nothing about what is measured -- it exists
+  // Both fields are pure functions of x, not of time, so a one-coupling-cycle lag on
+  // the return field transfer changes nothing about what is measured -- it exists
   // only to turn this two-way pair into a legal explicit scheme (spec
-  // §8.2's E-SCHED-CYCLE hard gate refuses an unlagged algebraic loop; this
+  // §8.2's E-SCHED-CYCLE hard gate rejects an unlagged algebraic loop; this
   // test is about transfer accuracy, not about the FSI model's own strong
   // coupling, which is a later phase's concern).
   const auto fch = g.add_channel("wall_force", force_out, force_in);
@@ -258,9 +258,9 @@ RunResult run_once(const TransferCase& s) {
   if (const auto r = runner.initialize(components, registry); !r.ok()) {
     throw std::runtime_error(r.error().message);
   }
-  // Two periods: the lagged force channel delivers period 0's sent value at
-  // period 1. Both source functions are time-independent, so "delivered
-  // after 2 periods" and "sent this period" are the same number.
+  // Two coupling cycles: the lagged force field transfer delivers coupling cycle 0's sent value at
+  // coupling cycle 1. Both source functions are time-independent, so "delivered
+  // after 2 coupling cycles" and "sent this coupling cycle" are the same number.
   if (const auto r = runner.run(components, /*periods=*/2); !r.ok()) {
     throw std::runtime_error(r.error().message);
   }
@@ -359,27 +359,27 @@ TEST(InterfaceTransfer, TransferOrderOnASmoothField) {
 // intx_weights.cpp's public RemapPlan-level entry point, the SAME function
 // resolve_remap() (src/runtime/runner.cpp) calls -- against a REAL
 // CouplingGraph + SerialMeshBackend, at the level the runtime actually
-// dispatches at. Not run through lower()/schedule()/Runner: a channel
+// dispatches at. Not run through lower()/schedule()/Runner: a field transfer
 // between a genuinely nodal field (Discretization::ContinuousGLL order <= 1,
 // SemanticLocation::Vertex) and an FV field (SemanticLocation::Element) is
-// refused by include/fuse/model/connect.hpp's check_channel(), called from
+// rejected by include/fuse/model/connect.hpp's check_channel(), called from
 // src/ir/rules_channel.cpp during lower() -- neither file is owned by this
 // track, and check_channel() hardcodes `request.transfer.kind =
-// TransferKind::Copy` unconditionally, so a location-changing channel has no
+// TransferKind::Copy` unconditionally, so a location-changing field transfer has no
 // way to declare the transfer that would let it through. This is reported
 // exactly as found in the task's open_questions; it is not worked around
 // here. What IS tested here is everything this track owns: build_weights()'s
-// dispatch on `RemapPlan::method`, region resolution through the graph, the
+// dispatch on `RemapPlan::method`, mesh entity set resolution through the graph, the
 // discretization gate, and that the weights returned match
 // build_consistent_interp_weights() called directly on the same MeshViews.
 // ===========================================================================
 
 namespace {
 
-/// A nodal region (dimension 0, one entity per vertex) and an FV region
+/// A nodal mesh entity set (dimension 0, one entity per vertex) and an FV mesh entity set
 /// (dimension 1, one entity per cell) on two independently-resolved
-/// "generated:line" meshes, with no fields or channels -- build_weights()
-/// only needs the graph's meshes and regions, not a validated channel.
+/// "generated:line" meshes, with no fields or field transfers -- build_weights()
+/// only needs the graph's meshes and mesh entity sets, not a validated field transfer.
 struct PlanFixture {
   CouplingGraph        g;
   SerialMeshBackend    backend;
@@ -447,7 +447,7 @@ TEST(ConsistentInterpPlan, ConsistentTransposeMethodDeliversTheConservativeLoad)
   auto pf = plan_fixture(5, 8);
   ASSERT_TRUE(pf);
 
-  // The paired channel: fluid (FV, density) -> beam (nodal, load).
+  // The paired field transfer: fluid (FV, density) -> beam (nodal, load).
   fuse::RemapPlan plan;
   plan.src = pf->r_fluid_cells;
   plan.tgt = pf->r_beam_nodal;
@@ -517,7 +517,7 @@ TEST(ConsistentInterpPlan, UnknownMethodStringRefuses) {
 // The FSI pairing: beam velocity (nodal, ContinuousGLL order 1) to the fluid
 // wall (FV) through H, and the fluid's per-cell force back to beam nodal
 // loads through H^T. Through lower -> schedule -> Runner, not RemapPlan, so a
-// refusal anywhere on the public path shows up here.
+// rejection anywhere on the public path shows up here.
 namespace {
 
 struct NodalResult {
@@ -529,9 +529,9 @@ NodalResult run_consistent_pair(std::size_t n_beam, std::size_t n_fluid,
                                 const std::function<double(double)>& trac,
                                 fuse::RankSet beam_ranks = {0, 1},
                                 // Round 2 (nodal-remap track): lets a caller
-                                // force the "wall_force" channel's own
+                                // force the "wall_force" field transfer's own
                                 // method away from "consistent-transpose",
-                                // to exercise the refusal a non-consistent
+                                // to exercise the rejection a non-consistent
                                 // method into a multi-rank nodal target
                                 // still gets (E-RT-REMAP-NODAL-PARALLEL,
                                 // KNOWN_ISSUES D5 item 3) through this same,
@@ -581,7 +581,7 @@ NodalResult run_consistent_pair(std::size_t n_beam, std::size_t n_fluid,
   auto sched = fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
   if (!sched.ok()) throw std::runtime_error("schedule: " + sched.diags.to_string());
 
-  // One buffer per field, sized by what the backend says the region holds;
+  // One buffer per field, sized by what the backend says the mesh entity set holds;
   // a nodal field needs n+1 values, which is what this test is checking.
   const auto sizes = fuse::make_region_sizes(g, backend);
   NodalResult out;
@@ -666,9 +666,9 @@ TEST(InterfaceTransfer, ConsistentPairRunsThroughTheRunnerExactlyAndBalancesPowe
   EXPECT_NEAR(p_beam, p_fluid, 1e-13 * std::abs(p_fluid)) << "interface power does not balance";
 }
 
-// ---- a nodal field through a PLAIN channel, no remap at all ---------------
+// ---- a nodal field through a PLAIN field transfer, no remap at all ---------------
 //
-// Both ends declare the SAME region on the SAME mesh, so lower/schedule/
+// Both ends declare the SAME mesh entity set on the SAME mesh, so lower/schedule/
 // Runner take the identity-copy path (Runner::Impl's regions_coincide()),
 // never touching consistent_interp.hpp. This isolates the buffer-sizing fix
 // (mesh_view.hpp's field_extent/region_extent_kind, wired into
@@ -748,11 +748,11 @@ TEST(InterfaceTransfer, NodalFieldPassesThroughAPlainChannelOnTheSameMesh) {
   }
 }
 
-// ---- the refusal fires end to end, not just inside field_extent() ---------
+// ---- the rejection fires end to end, not just inside field_extent() ---------
 //
 // A ContinuousGLL field at order 2 (a spectral element this codebase does not
 // implement an extent for) reaches the Runner's own buffer-planning path
-// (make_region_sizes -> plan_buffers -> schedule()) and is refused there,
+// (make_region_sizes -> plan_buffers -> schedule()) and is rejected there,
 // named E-EXTENT-DISC, rather than silently sized by cell count.
 
 TEST(InterfaceTransfer, AnUnimplementedNodalOrderRefusesThroughTheRealSchedulingPath) {
@@ -787,15 +787,15 @@ TEST(InterfaceTransfer, AnUnimplementedNodalOrderRefusesThroughTheRealScheduling
 }
 
 // KNOWN_ISSUES D8, round 2 (2026-09-25): a Remap into a nodal field on more
-// than one rank via "consistent-transpose" is no longer refused --
+// than one rank via "consistent-transpose" is no longer rejected --
 // `Runner::Impl::build_nodal_dist_remap` (runner.cpp) builds distributed
-// rows through nodal_remap_distributed.hpp instead. The placement is
+// rows through nodal_remap_distributed.hpp instead. The processor set is
 // DECLARED (`fuse::RankSet{0, 2}`, two ranks in the graph) but this test
 // still RUNS as one process with no `RunnerConfig::base_communicator` set,
 // so `comm_handle == fuse::search::kNullComm`: exactly the single-
 // participant path test/backend/nodal_remap_distributed_nullcomm_test.cpp
 // exercises on its own hand-built meshes, exercised HERE through the real
-// Runner/CouplingGraph/SerialMeshBackend stack on the SAME channel
+// Runner/CouplingGraph/SerialMeshBackend stack on the SAME field transfer
 // `ConsistentPairRunsThroughTheRunnerExactlyAndBalancesPower` above uses at
 // one rank. With no real communicator, this single process already holds
 // (and owns) every entity of both meshes, so the correct answer is
@@ -804,7 +804,7 @@ TEST(InterfaceTransfer, AnUnimplementedNodalOrderRefusesThroughTheRealScheduling
 // it (build_nodal_dist_remap vs. the plain local weights-apply).
 //
 // Round 4 (defect 2, found by a real host MPI run): `beam_ranks` governs
-// the SAME "beam" component for BOTH channels here -- `vel_out` (the
+// the SAME "beam" component for BOTH field transfers here -- `vel_out` (the
 // SOURCE of "consistent"/H, wall_velocity) and `force_in` (the TARGET of
 // "consistent-transpose"/H^T D, wall_force). Before round 4,
 // resolve_remap's distributed trigger read only the REMAP TARGET's kind,
@@ -815,7 +815,7 @@ TEST(InterfaceTransfer, AnUnimplementedNodalOrderRefusesThroughTheRealScheduling
 // saw the whole mesh and got the right answer by coincidence -- exactly
 // the "declare 2 ranks on the host and it reproduces" masking a real host
 // MPI run exposed, KNOWN_ISSUES.md D8). This SAME test, unmodified, now
-// exercises BOTH orientations at once through the one declared placement:
+// exercises BOTH orientations at once through the one declared processor set:
 // `fluid_in`'s closed-form check below is H's own correctness proof for
 // the newly-covered nodal-SOURCE direction, and `beam_load`'s one-rank
 // comparison is H^T D's, as before.
@@ -851,7 +851,7 @@ TEST(InterfaceTransfer, ARemapIntoANodalFieldOnTwoDeclaredRanksIsAcceptedAndMatc
     got += two_ranks.beam_load[i];
     p_beam += two_ranks.v_nodes[i] * two_ranks.beam_load[i];
   }
-  EXPECT_NEAR(got, sent, 1e-13 * std::abs(sent)) << "H^T lost force on the two-rank placement";
+  EXPECT_NEAR(got, sent, 1e-13 * std::abs(sent)) << "H^T lost force on the two-rank processor set";
   EXPECT_NEAR(p_beam, p_fluid, 1e-13 * std::abs(p_fluid))
       << "interface power does not balance on the two-rank placement";
 }
@@ -859,12 +859,12 @@ TEST(InterfaceTransfer, ARemapIntoANodalFieldOnTwoDeclaredRanksIsAcceptedAndMatc
 // A method OTHER than "consistent"/"consistent-transpose" into a nodal
 // target on more than one rank is unaffected by round 2: per-placement
 // supermesh weights remain unimplemented (KNOWN_ISSUES D5 item 3), so this
-// still refuses -- now for a method-specific reason, since the SAME
-// declared placement with method "consistent-transpose" (the test above)
+// still rejects -- now for a method-specific reason, since the SAME
+// declared processor set with method "consistent-transpose" (the test above)
 // is accepted. `run_consistent_pair`'s own default empty method ("") is
 // neither "consistent" nor "consistent-transpose", so build_weights() would
 // fall through to the supermesh path, which builds FV<->FV weights only --
-// exactly the case this refusal exists for.
+// exactly the case this rejection exists for.
 TEST(InterfaceTransfer, ARemapIntoANodalFieldOnSeveralRanksViaASupermeshMethodStillRefuses) {
   try {
     (void)run_consistent_pair(7, 11, [](double x) { return x; }, [](double) { return 1.0; },
@@ -877,16 +877,16 @@ TEST(InterfaceTransfer, ARemapIntoANodalFieldOnSeveralRanksViaASupermeshMethodSt
 }
 
 // Round 4 (KNOWN_ISSUES.md D8, defect 2(b)): resolve_remap's generalized
-// trigger recognizes a channel whose SOURCE *and* TARGET are both nodal
-// (Vertex-kind) regions, with at least one side's component on more than
-// one rank, but must REFUSE it by name rather than silently pick one
+// trigger recognizes a field transfer whose SOURCE *and* TARGET are both nodal
+// (Vertex-kind) mesh entity sets, with at least one side's component on more than
+// one rank, but must REJECT it by name rather than silently pick one
 // orientation's build_nodal_dist_remap convention over the other --
-// neither has ever been run against a nodal-to-nodal channel. A minimal
-// two-field, one-channel graph (not run_consistent_pair's shared beam/
-// fluid shape, which has no nodal-to-nodal channel to construct without
-// also breaking its OTHER field's region) exercises this directly through
+// neither has ever been run against a nodal-to-nodal field transfer. A minimal
+// two-field, one-field-transfer graph (not run_consistent_pair's shared beam/
+// fluid shape, which has no nodal-to-nodal field transfer to construct without
+// also breaking its OTHER field's mesh entity set) exercises this directly through
 // the real Runner/CouplingGraph/SerialMeshBackend stack, exactly like the
-// supermesh-method refusal above.
+// supermesh-method rejection above.
 TEST(InterfaceTransfer, BothSidesNodalOnMultipleRanksRefuses) {
   CouplingGraph g;
   const auto m_a = g.add_mesh(fuse::MeshDecl{.name = "a_mesh", .source = "generated:line:5"});
@@ -949,20 +949,20 @@ TEST(InterfaceTransfer, BothSidesNodalOnMultipleRanksRefuses) {
 
   Runner runner{g, lowered.dag, sched.plan, backend};
   const auto r = runner.initialize(components, registry);
-  ASSERT_FALSE(r.ok()) << "a nodal-to-nodal channel with a multi-rank side initialised";
+  ASSERT_FALSE(r.ok()) << "a nodal-to-nodal field transfer with a multi-rank side initialised";
   EXPECT_EQ(r.error().code, "E-RT-REMAP-NODAL-PARALLEL") << r.error().message;
   EXPECT_NE(r.error().message.find("BOTH a nodal source and a nodal target"), std::string::npos)
       << r.error().message;
 }
 
-// Nodal-remap track, round 3: apply_nodal_dist_remap's own per-period
+// Nodal-remap track, round 3: apply_nodal_dist_remap's own per-coupling-cycle
 // allocation, checked with the SAME `AllocationCounter` instrument
 // Runner.AllocatesNothingWhileRunning (test/runtime/runner_test.cpp) uses
 // for the ordinary weights-apply path. `Runner.AllocatesNothingWhileRunning`'s
 // own harness (`build(HarnessOpts{...})`, runner_test.cpp) has no
 // nodal-target-on-several-ranks case at all -- extending IT to cover this
 // path would mean teaching that shared, heavily-reused harness a new
-// mesh/field/channel shape it has never needed before, a materially bigger
+// mesh/field/field transfer shape it has never needed before, a materially bigger
 // and riskier change than a second, focused test next to it. This test is
 // that second test -- and it does NOT assert zero, unlike its namesake,
 // because zero is not the true answer here: `apply_distributed_H`/
@@ -970,7 +970,7 @@ TEST(InterfaceTransfer, BothSidesNodalOnMultipleRanksRefuses) {
 // Allgatherv buffers, an unordered_map and (in the H branch) a local-slot
 // copy on EVERY call by design, a cost KNOWN_ISSUES.md D8 already named as
 // "a distinct, documented cost" in round 2 -- this test MEASURES it (a
-// small, constant number per period, not zero, not growing) rather than
+// small, constant number per coupling cycle, not zero, not growing) rather than
 // asserting a bound that was never true, and records the measured number
 // in KNOWN_ISSUES.md D8 as the concrete baseline a future point-to-point
 // implementation should reduce.
@@ -1070,22 +1070,22 @@ TEST(InterfaceTransfer, ApplyNodalDistRemapHasAConstantMeasuredPerPeriodAllocati
   // Warm-up, outside the counter -- mirrors Runner.AllocatesNothingWhileRunning
   // (runner_test.cpp) exactly: anything the FIRST call allocates lazily (a
   // std::function's heap state, a container grown from empty) is still
-  // caught by the counted periods below, since it would already exist by
+  // caught by the counted coupling cycles below, since it would already exist by
   // then were this the only allocation site.
   ASSERT_TRUE(runner.run_period(components).ok());
 
   // MEASURED, NOT ASSERTED ZERO -- and that is the finding this test exists
   // to pin down, not a bug in the TEST. apply_nodal_dist_remap calls
   // apply_distributed_H/apply_distributed_HT (nodal_remap_distributed.hpp)
-  // every period, and those functions build fresh Allgatherv buffers, an
+  // every coupling cycle, and those functions build fresh Allgatherv buffers, an
   // unordered_map, and (in the H branch) a copy of the local input slot on
   // EVERY call by design -- exactly the "Allgatherv buffers apply_distributed_H/HT
   // allocate per call are a distinct, documented cost" this track's own round-2
   // KNOWN_ISSUES.md D8 entry already named, now measured for the first time
   // rather than only asserted. `DistributedInterpRows` itself (the expensive
   // part: locating every point's containing cell) is genuinely built ONCE, at
-  // setup -- what this test actually proves is that the PER-PERIOD count is
-  // small, deterministic and does not grow across periods (no leak, nothing
+  // setup -- what this test actually proves is that the PER-COUPLING-CYCLE count is
+  // small, deterministic and does not grow across coupling cycles (no leak, nothing
   // accumulating), not that it is zero, because it provably is not.
   std::size_t first_period_allocations = 0;
   {
@@ -1137,7 +1137,7 @@ TEST(InterfaceTransfer, MlsVelocityChannelRunsThroughTheRunnerAndIsExactForLinea
 }
 
 // MLS is serial: a partitioned cloud gives each rank different neighbours.
-// Refused from the declared placement, before any weights are built.
+// Rejected from the declared processor set, before any weights are built.
 TEST(InterfaceTransfer, AnMlsChannelOnSeveralRanksIsRefused) {
   try {
     (void)run_consistent_pair(7, 11, [](double x) { return x; }, [](double) { return 1.0; },

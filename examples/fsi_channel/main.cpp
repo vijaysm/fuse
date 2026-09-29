@@ -146,10 +146,10 @@ fuse::CouplingGraph build_graph(std::size_t nx_beam, std::size_t nx_fluid,
       .intent = fuse::Intent::Requires});
   const auto fch = g.add_channel("wall_force", force_out, load_in);
   g.channel(fch).remap_method("consistent-transpose").conservative();
-  // The velocity and force channels close a cycle within the period, so
+  // The velocity and force field transfers close a cycle within the coupling cycle, so
   // one of them must carry a lag for the graph to be schedulable at all
   // (E-SCHED-CYCLE otherwise) -- exactly examples/dn_heat/main.cpp's
-  // pattern. Inside the iterate() region below, that lag is precisely
+  // pattern. Inside the iterate() implicit coupling group below, that lag is precisely
   // what the sweep resolves.
   g.channel(fch).lag(1).allow_time_level_mismatch(
       "resolved by the beam-fluid implicit coupling group");

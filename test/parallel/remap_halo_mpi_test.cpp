@@ -5,7 +5,7 @@
 // one rank to exercise at all:
 //
 //   * the `E-REMAP-PARALLEL` boundary moab_backend.hpp itself calls load
-//     bearing -- "`> 1` refuses; `== 1` must NOT" -- checked on BOTH sides,
+//     bearing -- "`> 1` rejects; `== 1` must NOT" -- checked on BOTH sides,
 //     not assumed from one;
 //   * `E-MESH-HALO-GEOMETRY` firing on a non-spherical partitioned pair
 //     (a generated box pair) and NOT firing on the real spherical pair;
@@ -23,7 +23,7 @@
 // constructor itself calls MPI_Init_thread, so even a single-process run of
 // this binary aborts here. Registered only when FUSE_ENABLE_MOAB AND
 // FUSE_ENABLE_MPI are both on (test/CMakeLists.txt); its outcome comes from
-// a host run, like every other tier-2 MPI test in this tree.
+// a host run, like every other MOAB-enabled-build-configuration MPI test in this tree.
 
 #include <cstdio>
 #include <vector>
@@ -46,7 +46,7 @@ int world_handle() { return static_cast<int>(MPI_Comm_c2f(MPI_COMM_WORLD)); }
 // The generated, NON-SPHERICAL, NON-IDENTITY box pair. Both `E-REMAP-PARALLEL`
 // (build_weights, below) and `E-MESH-HALO-GEOMETRY` (build_remap_halo's own
 // `a.dim != 2` check) are keyed on structural properties -- ranks > 1, the
-// two regions naming different file sets -- that need no real halo geometry
+// two mesh entity sets naming different file sets -- that need no real halo geometry
 // at all, so this fixture needs no mesh file and compiles unconditionally.
 // ---------------------------------------------------------------------------
 struct BoxPairMpi {
@@ -76,10 +76,10 @@ struct BoxPairMpi {
 
 // ---------------------------------------------------------------------------
 // moab_backend.hpp on `communicator_size()`: "THIS VALUE IS LOAD BEARING AND
-// ITS BOUNDARY SHOULD BE TESTED. `> 1` refuses; `== 1` must NOT, because a
+// ITS BOUNDARY SHOULD BE TESTED. `> 1` rejects; `== 1` must NOT, because a
 // one-rank communicator is an ordinary MPI job whose mesh happens to be
 // undivided, every cell is local, and the serial construction is exactly
-// right. Refusing it would take remap away from every MPI run and no serial
+// right. Rejecting it would take remap away from every MPI run and no serial
 // test could see the difference." remap_plan.hpp's E-REMAP-PARALLEL
 // (`build_weights`) is exactly that boundary, checked here at every
 // registered rank count (1..5) rather than assumed to hold on one side
@@ -149,7 +149,7 @@ TEST(RemapHaloMpi, EMeshHaloGeometryRefusesTheBoxPairAboveOneRankAndNotAtOne) {
 // both floating-point noise, not a real deviation from a sphere) -- two
 // different, individually well-formed, spheres. intx_weights.cpp's own
 // radius-agreement check
-// (`kGeomTol = 1e-9`) would refuse that combination outright with
+// (`kGeomTol = 1e-9`) would reject that combination outright with
 // `E-REMAP-GEOMETRY` ("not the same domain"), correctly: the library cannot
 // know two different radii are meant to be the same sphere in different
 // units. `MoabMeshBackend::project_onto_unit_sphere` (added for this cell)

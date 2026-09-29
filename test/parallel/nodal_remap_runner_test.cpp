@@ -1,7 +1,7 @@
 // Nodal-remap track, round 3 (KNOWN_ISSUES.md D8): drives ONE real
 // Runner/CouplingGraph pair through lower -> schedule -> initialize ->
 // run_period, with a beam (nodal, ContinuousGLL order 1) / fluid (FV)
-// channel pair exactly like the FSI channel uses -- "consistent" (H)
+// field transfer pair exactly like the FSI channel uses -- "consistent" (H)
 // forward, "consistent-transpose" (H^T D) backward -- at 1 to 5 real MPI
 // ranks, with beam and fluid INDEPENDENTLY placed on disjoint,
 // partially-overlapping or identical RankSets via the new
@@ -32,7 +32,7 @@
 //
 // MPI CANNOT INITIALISE IN THIS SANDBOX (docs/dev/testing.md): every case
 // here is compiled, never run, in the environment this file was written
-// in. Verdicts are a host action, same posture as every other MPI-gated
+// in. outcomes are a host action, same posture as every other MPI-gated
 // case in this codebase.
 
 #include <fuse/ir/lowering.hpp>
@@ -132,7 +132,7 @@ struct ReferenceResult {
   GeometricLineMesh ref_fluid(n_fluid, 1, 0, 0.0, 1.0);
 
   // H: nodal = beam (src), eval = fluid cells (tgt, dim 1) -- the SAME
-  // orientation the "consistent-transpose" channel's own H build uses
+  // orientation the "consistent-transpose" field transfer's own H build uses
   // (build_consistent_weights_for_plan's comment: "nodal side = plan.tgt
   // (here, the beam), point side = plan.src (here, the fluid)").
   const auto h = fuse::build_consistent_interp_weights(ref_beam, ref_fluid, /*tgt_dim=*/1);
@@ -162,7 +162,7 @@ struct ReferenceResult {
   return out;
 }
 
-/// Runs the beam/fluid consistent + consistent-transpose channel pair
+/// Runs the beam/fluid consistent + consistent-transpose field transfer pair
 /// through a real, MPI-configured Runner, with beam on `beam_ranks` and
 /// fluid on `fluid_ranks` (independently -- possibly disjoint, partially
 /// overlapping, or identical). `vel(x) = a + b*x` (affine, exact for H);
@@ -255,10 +255,10 @@ void run_and_check(std::size_t n_beam, std::size_t n_fluid, fuse::RankSet beam_r
   Runner runner{g, lowered.dag, sched.plan, backend};
   RunnerConfig cfg;
   cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
-  // A placement that spans ranks needs a CommGraph-backed Transport, and the
-  // Runner refuses to build one on the default 'copy' backend
+  // A processor set that spans ranks needs a CommGraph-backed Transport, and the
+  // Runner rejects to build one on the default 'copy' backend
   // (E-RT-TRANSPORT) -- which is what every cross-rank case of this fixture
-  // hit on the host once the earlier refusals were out of the way. Same
+  // hit on the host once the earlier rejections were out of the way. Same
   // convention as runner_transport_test.cpp's mpi_comm_setup(): name the
   // backend, and hand the transport its communicator when it is created.
   cfg.transport = "mpi";
@@ -269,7 +269,7 @@ void run_and_check(std::size_t n_beam, std::size_t n_fluid, fuse::RankSet beam_r
   };
   // check_conservation stays at its default (ON). The Runner's Constrain
   // reduces both integrals over the base communicator (KNOWN_ISSUES.md D10,
-  // 2026-09-25) -- before that it refused a multi-rank target
+  // 2026-09-25) -- before that it rejected a multi-rank target
   // (E-RT-CONSERVATION-MPI) and this fixture had to disable it.
   //
   // `abort_on_violation = true` is NOT the default -- and its absence is
@@ -299,8 +299,8 @@ void run_and_check(std::size_t n_beam, std::size_t n_fluid, fuse::RankSet beam_r
     const auto r = runner.initialize(components, registry, cfg);
     ASSERT_TRUE(r.ok()) << "initialize: " << r.error().code << ": " << r.error().message;
   }
-  // run_period() explicitly, twice -- the wall_force channel's own .lag(1)
-  // needs a second period to have a value to read, exactly like
+  // run_period() explicitly, twice -- the wall_force field transfer's own .lag(1)
+  // needs a second coupling cycle to have a value to read, exactly like
   // run_consistent_pair's run(components, 2) (interface_transfer_test.cpp).
   for (int period = 0; period < 2; ++period) {
     const auto r = runner.run_period(components);
@@ -370,7 +370,7 @@ TEST(NodalRemapRunnerMpi, DisjointRankSets) {
   // `beam_ranks{0, (w+1)/2}` and `fluid_ranks{(w+1)/2, w-(w+1)/2}` are
   // disjoint by construction ONLY when both halves are non-empty; at
   // `w == 1`, `fluid_ranks` has count 0 -- the fluid component would be
-  // placed on NO rank at all, the exact two-sided-placement-on-one-rank
+  // placed on NO rank at all, the exact two-sided-processor-set-on-one-rank
   // shape commit 2383024 already fixed elsewhere in this codebase. An ad
   // hoc `if (fluid_ranks.size() == 0) GTEST_SKIP()` caught this at `w == 1`
   // specifically, but stated the requirement in terms of THIS test's own
@@ -417,29 +417,29 @@ TEST(NodalRemapRunnerMpi, PartiallyOverlappingRankSets) {
 
 // Isolates resolve_remap's `both_on_one_rank` computation from
 // `moves_placement` (mutation "nodal-trigger-misses-two-single-rank-
-// placements", build-evidence/mutations/nodal-fields.toml).
+// processor sets", build-evidence/mutations/nodal-fields.toml).
 //
-// DisjointRankSets above cannot kill that mutation: its two channels both
+// DisjointRankSets above cannot kill that mutation: its two field transfers both
 // use a method that matches its nodal side's orientation exactly
 // ("consistent" with a nodal source, "consistent-transpose" with a nodal
 // target), and `remap_moves_placement()` (fuse/model/remap_kind.hpp) is
-// therefore true for both at lowering, which makes rules_channel.cpp route
-// them through the Epoch-only, placement-changing Remap path with NO
+// therefore true for both during compilation into the dataflow graph, which makes rules_channel.cpp route
+// them through the Epoch-only, processor-set-changing Remap path with NO
 // Transport. At runtime that gives `in_rank_set != remap_rank_set`
 // (`moves_placement == true`) unconditionally whenever the two components'
 // declared ranks genuinely differ -- independent of, and always agreeing
 // with, whatever `both_on_one_rank` computes. Traced by hand and confirmed
 // with a standalone harness linked against this library (SerialMeshBackend,
 // no MPI, no base_communicator; see this track's evidence log): applying
-// the mutation to a fresh build left `DisjointRankSets`'s own two channels'
+// the mutation to a fresh build left `DisjointRankSets`'s own two field transfers'
 // outcome completely unchanged, because `moves_placement` alone already
 // forces entry into the nodal-distributed branch.
 //
-// A channel whose method does NOT match its nodal side's orientation
-// (`remap_moves_placement() == false`) is lowered the OLD way instead: a
+// A field transfer whose method does NOT match its nodal side's orientation
+// (`remap_moves_placement() == false`) is compiled into the dataflow graph the OLD way instead: a
 // real Transport moves the value to the target's declared ranks first, so
 // `in_rank_set == remap_rank_set` and `moves_placement == false`. On such a
-// channel, `both_on_one_rank` is the ONLY gate deciding whether
+// field transfer, `both_on_one_rank` is the ONLY gate deciding whether
 // resolve_remap's nodal-parallel check runs at all -- exactly the gap
 // DisjointRankSets leaves uncovered. This case needs no cross-rank
 // communication to observe: the decision is read entirely from the
@@ -447,19 +447,19 @@ TEST(NodalRemapRunnerMpi, PartiallyOverlappingRankSets) {
 // collective would run, so it is checked here declaratively, the same way
 // `test/verification/interface_transfer_test.cpp`'s
 // `BothSidesNodalOnMultipleRanksRefuses` checks an adjacent declared-only
-// refusal without a real multi-rank launch -- correct code refuses by name
+// rejection without a real multi-rank launch -- correct code rejects by name
 // (E-RT-REMAP-NODAL-PARALLEL) before ever touching the backend; this file's
 // own header already establishes every case here is graph-declared and
 // rank-count-independent for that reason.
 //
-// Confirmed by hand (Tier 0, standalone harness, no MPI): current code
+// Confirmed by hand (base build configuration, standalone harness, no MPI): current code
 // returns E-RT-REMAP-NODAL-PARALLEL ("source: 1, target: 1"); with the
 // mutation applied, `both_on_one_rank` wrongly reports true for this
 // disjoint pair, the whole nodal-parallel check is skipped, and control
 // falls through to the OLD rank-local path, which -- because
-// SerialMeshBackend hands every declared placement the WHOLE (identically
+// SerialMeshBackend hands every declared processor set the WHOLE (identically
 // ordered) mesh regardless of rank -- reports E-RT-REMAP-SIZE instead ("the
-// buffer plan and the mesh backend disagree about the same region", 6 vs 5
+// buffer plan and the mesh backend disagree about the same mesh entity set", 6 vs 5
 // values) once it discovers the vertex- and cell-counts collide under a
 // coincidence check that never should have run. Both outcomes are
 // `!r.ok()`, so a bare `ASSERT_FALSE(r.ok())` cannot tell them apart --
@@ -473,7 +473,7 @@ TEST(NodalRemapRunnerMpi, DisjointSingleRankPlacementRefusesMismatchedOrientatio
   const auto m_b = g.add_mesh(fuse::MeshDecl{.name = "b_mesh", .source = "generated:line:5"});
   const auto r_a = g.add_region(fuse::Region{.name = "r_a", .mesh = m_a, .dimension = 1});
   const auto r_b = g.add_region(fuse::Region{.name = "r_b", .mesh = m_b, .dimension = 1});
-  // Disjoint SINGLE-rank placements -- the exact shape `src_ranks == 1U &&
+  // Disjoint SINGLE-rank processor sets -- the exact shape `src_ranks == 1U &&
   // dst_ranks == 1U` alone cannot distinguish from a coincident single
   // rank; only the `min_rank()` comparison the mutation removes can.
   const auto comp_a = g.add_component(
@@ -491,7 +491,7 @@ TEST(NodalRemapRunnerMpi, DisjointSingleRankPlacementRefusesMismatchedOrientatio
   const auto ch = g.add_channel("a_to_b", f_a, f_b);
   // "consistent-transpose" needs a nodal TARGET; b_field is not nodal, so
   // remap_moves_placement() is false here -- unlike DisjointRankSets'
-  // channels, this one is lowered via a real Transport, and moves_placement
+  // field transfers, this one is compiled into the dataflow graph via a real Transport, and moves_placement
   // cannot mask both_on_one_rank the way it does there.
   g.channel(ch).remap_method("consistent-transpose");
 
@@ -537,7 +537,7 @@ TEST(NodalRemapRunnerMpi, DisjointSingleRankPlacementRefusesMismatchedOrientatio
 
   Runner runner{g, lowered.dag, sched.plan, backend};
   const auto r = runner.initialize(components, registry);
-  ASSERT_FALSE(r.ok()) << "a disjoint single-rank-each nodal channel with a "
+  ASSERT_FALSE(r.ok()) << "a disjoint single-rank-each nodal field transfer with a "
                           "mismatched method initialised";
   EXPECT_EQ(r.error().code, "E-RT-REMAP-NODAL-PARALLEL") << r.error().message;
 }
@@ -549,7 +549,7 @@ TEST(NodalRemapRunnerMpi, DisjointSingleRankPlacementRefusesMismatchedOrientatio
 // BY CONSTRUCTION: its own `placed_view` forwards straight to `view()`
 // regardless of the ComponentId given (see that class's header comment and
 // its `placed_view` body, test/support/partitioned_test_backend.hpp), so no
-// fixture built from it, at any rank count or placement shape, can kill
+// fixture built from it, at any rank count or processor set shape, can kill
 // this mutation. `PartitionedTestBackend` HAS a genuine per-placement
 // decomposition (`set_placements`) but carries no geometry
 // (`PartitionedTestMesh`'s own comment: centroid/measure are unused stubs),
@@ -563,12 +563,12 @@ TEST(NodalRemapRunnerMpi, DisjointSingleRankPlacementRefusesMismatchedOrientatio
 // `set_component_ranks`. Below, `beam_mesh`'s DEFAULT decomposition is
 // deliberately declared over `fluid_ranks` (the WRONG ranks for beam) while
 // `set_component_ranks` gives the beam component its own, correct
-// `beam_ranks` decomposition -- exactly the "one mesh, two placements"
+// `beam_ranks` decomposition -- exactly the "one mesh, two processor sets"
 // shape a coupler/shared-mesh scenario produces, and exactly what
 // `build_nodal_dist_remap`'s own comment (runner.cpp, "Each side as seen by
 // ITS OWN component") says must be read.
 //
-// Verified mechanism (Tier 0, standalone harness, no MPI, see this track's
+// Verified mechanism (base build configuration, standalone harness, no MPI, see this track's
 // evidence log): with the fixture built this way, correct code
 // (`placed_view`) returns the exact affine value at every point (H is
 // P1-exact); the mutation (`view`) makes the nodal side's local view come
@@ -578,12 +578,12 @@ TEST(NodalRemapRunnerMpi, DisjointSingleRankPlacementRefusesMismatchedOrientatio
 // specific TEST (a real 2+-rank MPI shape, using a REAL communicator so it
 // is valid at every registered rank count 1-5, not the single-simulated-
 // rank/null-communicator harness used to prove the mechanism above) has
-// been compiled (Tier 1, MPI-enabled, compile-only -- this sandbox cannot
+// been compiled (MPI-enabled build configuration, compile-only -- this sandbox cannot
 // execute MPI) but NOT run; a host run is what confirms it at real rank
 // counts. Expected signatures: correct code -- every EXPECT_NEAR below
 // passes; mutated code (apply the manifest's old->new by hand, rebuild) --
 // `initialize()` fails and `E-INTERP-NOGEOMETRY` appears in the message,
-// exactly as the Tier-0 double showed.
+// exactly as the base-build-configuration double showed.
 TEST(NodalRemapRunnerMpi, DistributedRemapUsesThePlacedViewNotTheDefaultView) {
   FUSE_REQUIRE_AT_LEAST_RANKS(2);  // needs a real second rank the default view can wrongly omit
   const int w = world_size();

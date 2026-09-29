@@ -4,11 +4,11 @@
 /// strongly coupled through FUSE's implicit coupling group on the non-matching 1D
 /// interface described in docs/user/fsi-channel.md.
 ///
-/// ONE CLOCK. Both components declare the SAME `ComponentDecl::interval`
-/// (the physical time step dt, exactly as a `Rational`), so every period is
+/// ONE TIME GRID. Both components declare the SAME `ComponentDecl::interval`
+/// (the physical time step dt, exactly as a `Rational`), so every coupling cycle is
 /// one dt and there is no sub-cycling or waveform coupling in play here --
 /// the implicit coupling group inside a coupling cycle is what makes the coupling
-/// implicit, not the clock.
+/// implicit, not the time grid.
 ///
 /// FIELDS (see docs/user/interface-transfer.md for `H`/`H^T D`):
 ///   beam provides "beam_velocity"  (nodal, ContinuousGLL order 1)
@@ -22,7 +22,7 @@
 /// length L -- H and H^T only ever see that normalised coordinate. So the
 /// "fluid_force" density this component provides is not the wall traction
 /// itself: it is scaled by L so that, once `consistent-transpose`
-/// multiplies by the SOURCE region's own (normalised) cell measure
+/// multiplies by the SOURCE mesh entity set's own (normalised) cell measure
 /// 1/Nx_fluid, the delivered nodal amount is the correctly-scaled physical
 /// force in newtons (per unit channel depth): traction[i] * (L / Nx_fluid)
 /// = traction[i] * dx_fluid, the physical force on that one wall cell.
@@ -125,7 +125,7 @@ class BeamComponent final : public fuse::Component {
   /// solver with no RNG and no unordered reduction (elementwise Kokkos
   /// kernels only), and example.*.omp_identical measures it bit for bit at
   /// one thread and at every core. Hidden state: YES -- advance() mutates
-  /// state that is not bound through register_fields() (the clock, the
+  /// state that is not bound through register_fields() (the time grid, the
   /// history, the solver's internals), which the runtime's byte-for-byte
   /// rollback verification cannot see; save_state() is what carries it.
   [[nodiscard]] std::uint64_t capabilities() const override {
@@ -148,7 +148,7 @@ class BeamComponent final : public fuse::Component {
   /// comment for why a direct solver seed leaves a derived, registered
   /// field stale otherwise). Used by `fsi_energy_diag_test.cpp` to build
   /// the coupled step map's affine columns from an arbitrary carried
-  /// state, not from a real trajectory.
+  /// state, not from a real waveform.
   void refresh_velocity_from_current_state() {
     const std::vector<double>& v = beam_.velocity();
     std::copy(v.begin(), v.end(), velocity_out_.begin());
@@ -201,9 +201,9 @@ class FluidComponent final : public fuse::Component {
     const double t1 = ctx.t_end.to_double();
     const double dt = t1 - t0;
     if (dt > 0.0) {
-      // velocity_in_t0_ (fixed for every sweep of this period, captured by
-      // save_state() at the period's TRUE start) is the wall velocity at
-      // t0; velocity_in_ (whatever this sweep's coupling channel just
+      // velocity_in_t0_ (fixed for every sweep of this coupling cycle, captured by
+      // save_state() at the coupling cycle's TRUE start) is the wall velocity at
+      // t0; velocity_in_ (whatever this sweep's coupling field transfer just
       // delivered) is the wall velocity at t1. See StokesSolver::step's
       // own header comment for why both time levels matter.
       fluid_.step(dt, t0, t1, velocity_in_t0_, velocity_in_, inflow_);
@@ -246,7 +246,7 @@ class FluidComponent final : public fuse::Component {
 
   fuse::Result<void> save_state() override {
     saved_ = fluid_.save();
-    // Captures the wall velocity at the TRUE start of this period, before
+    // Captures the wall velocity at the TRUE start of this coupling cycle, before
     // any sweep of the upcoming implicit coupling group has overwritten
     // velocity_in_ with a new guess -- see advance()'s own comment.
     velocity_in_t0_ = velocity_in_;
@@ -265,7 +265,7 @@ class FluidComponent final : public fuse::Component {
   /// solver with no RNG and no unordered reduction (elementwise Kokkos
   /// kernels only), and example.*.omp_identical measures it bit for bit at
   /// one thread and at every core. Hidden state: YES -- advance() mutates
-  /// state that is not bound through register_fields() (the clock, the
+  /// state that is not bound through register_fields() (the time grid, the
   /// history, the solver's internals), which the runtime's byte-for-byte
   /// rollback verification cannot see; save_state() is what carries it.
   [[nodiscard]] std::uint64_t capabilities() const override {
@@ -286,7 +286,7 @@ class FluidComponent final : public fuse::Component {
   /// a STALE force_out_ (whatever advance() last wrote, possibly zero from
   /// construction) at save_state() time, while restore_state() recomputes
   /// force_out_ FRESH from the (now-seeded) solver state -- a genuine
-  /// mismatch the checkpoint-consistency check correctly refuses.
+  /// mismatch the checkpoint-consistency check correctly rejects.
   void refresh_force_from_current_state() {
     // wall_traction() is now a CACHED value (StokesSolver::step's own
     // comment), normally refreshed only inside step() -- a direct
@@ -303,12 +303,12 @@ class FluidComponent final : public fuse::Component {
 
   /// Diagnostic-only: directly overwrites the registered, REQUIRES
   /// "fluid_velocity_in" field. A caller building an arbitrary carried
-  /// state (rather than a real trajectory point) needs this because
+  /// state (rather than a real waveform point) needs this because
   /// `save_state()` treats `velocity_in_t0_` as part of what it
   /// checkpoints (a plain copy of whatever `velocity_in_` holds at the
-  /// moment `run_period()` calls it, BEFORE this period's own
-  /// `wall_velocity` channel delivery has run) -- see that comment.
-  /// Normally `velocity_in_` is written only by the channel delivery
+  /// moment `run_period()` calls it, BEFORE this coupling cycle's own
+  /// `wall_velocity` field-transfer delivery has run) -- see that comment.
+  /// Normally `velocity_in_` is written only by the field-transfer delivery
   /// instruction (H applied to the beam's `beam_velocity`), so it is
   /// otherwise unreachable from outside the graph machinery. Used by
   /// `fsi_energy_diag_test.cpp`, which needs `velocity_in_t0_` to be an

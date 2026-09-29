@@ -1,8 +1,8 @@
 // Demo A of spec §11 at the Phase 7 milestone: IMPLICIT coupling.
 //
 // A classical Dirichlet-Neumann pair of heat conduction domains, iterated to
-// its fixed point inside a `g.iterate({...})` region with a derived checkpoint
-// set, a convergence criterion covering both channels, and quasi-Newton
+// its fixed point inside a `g.iterate({...})` implicit coupling group with a derived checkpoint
+// set, a convergence criterion covering both field transfers, and quasi-Newton
 // acceleration. The physics, the analytic solution and the reason the error is
 // attributable to the coupler are all in dn_component.hpp.
 //
@@ -13,8 +13,8 @@
 // runs the SAME graph in several configurations and gates its exit status on
 // the relationships between their errors:
 //
-//   explicit   one sweep per period -- the classical staggered scheme
-//   picard     the same region, iterated to convergence, no acceleration
+//   explicit   one sweep per coupling cycle -- the classical staggered scheme
+//   picard     the same implicit coupling group, iterated to convergence, no acceleration
 //   aitken     ... with Aitken relaxation
 //   iqn-ils    ... with IQN-ILS and no column filter
 //   iqn+qr2    ... with IQN-ILS and AccelConfig's default QR2 filter at its
@@ -22,7 +22,7 @@
 //                  setting for this problem (see the note by iqn_qr2_cfg)
 //   severed    picard, with both participants' incoming fields bound to decoy
 //              arrays: the exchange happens and lands nowhere
-//   *-long     explicit and IQN-ILS over 10x as many periods, so the explicit
+//   *-long     explicit and IQN-ILS over 10x as many coupling cycles, so the explicit
 //              comparison is also made in the asymptotic regime and not only
 //              while the initial transient is still the largest term
 //
@@ -34,20 +34,20 @@
 // Picard.
 //
 // WHAT WAS MEASURED WHILE BUILDING THIS, so the claims above are numbers and
-// not opinions (32 stations, 20 periods, tolerance 1e-8, debug build):
+// not opinions (32 stations, 20 coupling cycles, tolerance 1e-8, debug build):
 //
 //   * deleting either convergence measure -- i.e. writing the single-measure
-//     form spec §5.3's example suggests -- is refused at initialize() with
-//     E-ITER-MEASURE naming the unmeasured channel. Both directions were
+//     form spec §5.3's example suggests -- is rejected at initialize() with
+//     E-ITER-MEASURE naming the unmeasured field transfer. Both directions were
 //     tried. Nothing silently converges to the wrong fixed point here, but
-//     only because the runtime refuses to start.
+//     only because the runtime rejects to start.
 //   * severing the exchange moves the headline number by seven orders of
 //     magnitude, and every partial break is caught too:
 //         connected                        L2 err u = 7.9e-07 K
 //         neumann's flux input severed     L2 err u = 3.03e+01 K
 //         dirichlet's temperature severed  L2 err u = 2.41e+02 K
 //         both severed                     L2 err u = 3.03e+01 K
-//     all three severed runs CONVERGE, in two or three sweeps per period,
+//     all three severed runs CONVERGE, in two or three sweeps per coupling cycle,
 //     with a monotone residual history and no diagnostic of any kind.
 //
 // IQN-ILS, not IQN-IMVJ, deliberately. Measured elsewhere in this project on a
@@ -80,16 +80,16 @@ namespace {
 
 /// 32 interface stations, 8 per material strip.
 constexpr std::size_t  kStations = 32;
-/// 20 coupling periods of H = 1/20, so t runs over one full cycle of T1.
+/// 20 coupling cycles of H = 1/20, so t runs over one full cycle of T1.
 constexpr std::int64_t kPeriods = 20;
 constexpr std::int64_t kPeriodDen = 20;
 /// The asymptotic pair. An explicit run's error contracts by only r = 0.96 per
-/// period, so after 20 periods it is still dominated by its initial transient
+/// coupling cycle, so after 20 coupling cycles it is still dominated by its initial transient
 /// (0.96^20 = 0.44). After 200 it is not (0.96^200 = 3.3e-4).
 constexpr std::int64_t kLongPeriods = 200;
-/// Relative, on both channels. See build_graph().
+/// Relative, on both field transfers. See build_graph().
 constexpr double       kTol = 1.0e-8;
-/// Generous: Picard on this problem needs several hundred sweeps per period,
+/// Generous: Picard on this problem needs several hundred sweeps per coupling cycle,
 /// and the point of quoting that number is that it is large.
 constexpr int          kMaxIterations = 1500;
 
@@ -154,27 +154,27 @@ fuse::CouplingGraph build_graph(fuse::AccelConfig accel, int max_iterations) {
 
   const auto flux = g.add_channel("flux", q_out, q_in);
   const auto temp = g.add_channel("wall_temperature", u_out, u_in);
-  // The two channels close a cycle, so one of them must carry a lag for the
+  // The two field transfers close a cycle, so one of them must carry a lag for the
   // graph to be schedulable at all. Inside an implicit coupling group that lag is
   // what the sweep resolves; that is precisely the difference between implicit
   // and staggered coupling.
   g.channel(temp).lag(1).allow_time_level_mismatch(
       "resolved by the Dirichlet-Neumann implicit coupling group");
 
-  // THE CRITERION COVERS BOTH CHANNELS, and this is not a style choice.
+  // THE CRITERION COVERS BOTH FIELD TRANSFERS, and this is not a style choice.
   // `Converged::Relative(tol, "u_wall")` alone -- the obvious reading of spec
   // §5.3's single-measure example -- would leave the flux residual untested. A
   // quasi-Newton step is a least-squares fit over the CONCATENATED residual
   // and is perfectly capable of zeroing the measured block at the expense of
-  // the unmeasured one: measured on the sibling two-channel test, IQN-ILS
+  // the unmeasured one: measured on the sibling two-field-transfer test, IQN-ILS
   // drove the measured residual to exactly zero on sweep 3 while the other
-  // still stood at 0.8, and the region reported convergence 10% away from the
+  // still stood at 0.8, and the implicit coupling group reported convergence 10% away from the
   // true fixed point with a monotone residual history the whole way. The
-  // runtime now refuses a partially measured region with E-ITER-MEASURE, so
+  // runtime now rejects a partially measured implicit coupling group with E-ITER-MEASURE, so
   // deleting either line below turns this demo into that error rather than
   // into a wrong answer -- but the error is the backstop, not the design.
   //
-  // Relative, not Absolute, because the two channels differ by more than an
+  // Relative, not Absolute, because the two field transfers differ by more than an
   // order of magnitude in scale (about 300 K against 20 W/m^2), so one
   // absolute tolerance cannot mean the same thing for both.
   fuse::ConvergenceCriterion crit;
@@ -383,11 +383,11 @@ int main(int argc, char** argv) {
                                       .filter = fuse::FilterKind::QR2,
                                       .limit = 1.0e-2};
 
-  // One sweep per period is exactly the classical explicit staggered scheme.
-  // The runner refuses to call it converged, which is why it runs lenient.
+  // One sweep per coupling cycle is exactly the classical explicit staggered scheme.
+  // The runner rejects to call it converged, which is why it runs lenient.
   const Outcome expl =
       run_case(picard_cfg, 1, kPeriods, dn::Wiring::Connected, false);
-  // --dump prints the iterated plan, not the explicit one: the region line
+  // --dump prints the iterated plan, not the explicit one: the implicit coupling group line
   // carries max_iter, so dumping the one-sweep configuration would show
   // max_iter=1 and read like an explicit scheme.
   const Outcome picard = run_case(picard_cfg, kMaxIterations, kPeriods,
@@ -525,7 +525,7 @@ int main(int argc, char** argv) {
               " W/m^2 >= " + std::to_string(kImplicitGate));
     check(o.addresses_fixed,
           nm + ": a registered field address moved during the run");
-    // Exactly one advance per period survives; every other sweep was rolled
+    // Exactly one advance per coupling cycle survives; every other sweep was rolled
     // back. q_ and u_ are written from scratch on every sweep, so a runner
     // that never restored anything would still reach the same fixed point --
     // dn::*Slab::history_ is the only state in which a missing rollback is
@@ -651,7 +651,7 @@ int main(int argc, char** argv) {
             picard.checkpoints.find("neumann") != std::string::npos,
         "the derived checkpoint set does not name both participants");
 
-  // 9. Conservation ran. Extensive on the flux channel is what makes lowering
+  // 9. Conservation ran. Extensive on the flux field transfer is what makes compilation into the dataflow graph
   //    emit Constrain; with no check having run, "0 violations" says nothing.
   check(picard.conservation_checks > 0,
         "no conservation check ran, so the reported violation count is "

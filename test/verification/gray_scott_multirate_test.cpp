@@ -16,15 +16,15 @@
 // exercise anything the straddle logic touches.
 //
 // THE ENVELOPE (KNOWN_ISSUES.md D7, E-RT-WINDOW-STRADDLE / -LONGSTEP).
-// WindowCoupler::create refuses a Fixed member whose interval exceeds the
-// window (E-RT-WINDOW-LONGSTEP) and refuses two members that could both
+// WindowCoupler::create rejects a Fixed member whose interval exceeds the
+// window (E-RT-WINDOW-LONGSTEP) and rejects two members that could both
 // straddle the same window end (E-RT-WINDOW-STRADDLE). Every configuration
 // below keeps U as the window itself (so U's "interval exceeds the window"
 // is never true) and gives V an interval that is at most the window's
 // (never true for V either) with only V ever Fixed -- i.e. every case here
 // sits inside the envelope by construction. `RespectsTheStraddleEnvelope`
 // at the bottom confirms a configuration that leaves it (both members
-// Fixed on a window neither divides) is refused with the documented code,
+// Fixed on a window neither divides) is rejected with the documented code,
 // so "respects the envelope" is demonstrated, not merely asserted.
 
 #include <gtest/gtest.h>
@@ -244,7 +244,7 @@ TEST(GrayScottMultirate, IterationCountsAcrossAccelerators) {
 
 TEST(GrayScottMultirate, RespectsTheStraddleEnvelope) {
   // Both members Fixed, both intervals fail to divide the window: outside
-  // the D7 envelope, refused at create() with E-RT-WINDOW-STRADDLE --
+  // the D7 envelope, rejected at create() with E-RT-WINDOW-STRADDLE --
   // demonstrating (not merely asserting) that every configuration ABOVE,
   // which never does this, sits inside it.
   const Grid grid{kN, kL};
