@@ -760,3 +760,140 @@ TEST(WindowCouplerLayout, PackedElementsReproduceEachScalarProblemExactly) {
     }
   }
 }
+
+// ------------------------------------------------------- detail::advance_straddle_split
+
+namespace {
+
+// Records every advance() call (its StepContext and the `required` value
+// seen at call time) and writes a value derived from `required` and the
+// call's own ordinal into `provided`, so a test can tell exactly which
+// call produced which `out_at_split` entry -- a real Component's
+// advance() output could coincidentally look the same whichever call
+// produced it, but this cannot.
+class RecordingComponent : public Component {
+ public:
+  struct Call {
+    Rational t_begin, t_end;
+    std::int64_t step;
+    int iteration;
+    double required_seen;
+  };
+
+  [[nodiscard]] std::string name() const override { return "recording"; }
+  Result<void> register_fields(FieldRegistry&, const CouplingGraph&) override {
+    return Result<void>::success();
+  }
+  Result<void> advance(const StepContext& ctx) override {
+    calls.push_back({ctx.t_begin, ctx.t_end, ctx.step, ctx.iteration, required_});
+    // 1000 marks which call produced this value (1 = first/in-phase call,
+    // 2 = second/tail call); required_ is folded in so a wrong mean would
+    // also be caught, not just a wrong call order.
+    provided_ = static_cast<double>(calls.size()) * 1000.0 + required_;
+    return Result<void>::success();
+  }
+  Result<void> save_state() override { return Result<void>::success(); }
+  Result<void> restore_state() override { return Result<void>::success(); }
+  [[nodiscard]] std::uint64_t capabilities() const override { return 0; }
+
+  double* provided_ptr() { return &provided_; }
+  double* required_ptr() { return &required_; }
+
+  std::vector<Call> calls;
+
+ private:
+  double provided_ = 0.0;
+  double required_ = 0.0;
+};
+
+[[nodiscard]] WindowMember make_member(RecordingComponent& c) {
+  WindowMember m;
+  m.component = &c;
+  m.name = "R";
+  m.provided = c.provided_ptr();
+  m.required = c.required_ptr();
+  m.length = 1;
+  return m;
+}
+
+}  // namespace
+
+TEST(AdvanceStraddleSplit, CallsBothAdvancesInOrderOverTheCorrectBounds) {
+  RecordingComponent c;
+  const WindowMember m = make_member(c);
+  double out = 0.0;
+  const Result<void> r = fuse::detail::advance_straddle_split(
+      m, Rational{2}, Rational{5}, Rational{9}, /*step=*/3, /*iteration=*/4,
+      [](std::size_t, Rational, Rational) -> Result<double> { return 11.0; },
+      [](std::size_t) -> Result<double> { return 13.0; },
+      [](std::size_t, Rational) -> double { return 17.0; }, &out);
+  ASSERT_TRUE(r.ok()) << r.error().message;
+  ASSERT_EQ(c.calls.size(), 2u);
+  EXPECT_EQ(c.calls[0].t_begin, Rational{2});
+  EXPECT_EQ(c.calls[0].t_end, Rational{5});
+  EXPECT_EQ(c.calls[0].step, 3);
+  EXPECT_EQ(c.calls[0].iteration, 4);
+  EXPECT_EQ(c.calls[0].required_seen, 11.0);  // mean_in_window's value
+  EXPECT_EQ(c.calls[1].t_begin, Rational{5});
+  EXPECT_EQ(c.calls[1].t_end, Rational{9});
+  EXPECT_EQ(c.calls[1].step, 3);
+  EXPECT_EQ(c.calls[1].iteration, 4);
+  EXPECT_EQ(c.calls[1].required_seen, 0.5 * (13.0 + 17.0));  // the blended tail mean
+}
+
+TEST(AdvanceStraddleSplit, WritesTheFirstCallsExactValueNeverAnInterpolant) {
+  RecordingComponent c;
+  const WindowMember m = make_member(c);
+  double out = -1.0;
+  const Result<void> r = fuse::detail::advance_straddle_split(
+      m, Rational{0}, Rational{3}, Rational{8}, 0, 0,
+      [](std::size_t, Rational, Rational) -> Result<double> { return 2.0; },
+      [](std::size_t) -> Result<double> { return 100.0; },
+      [](std::size_t, Rational) -> double { return 200.0; }, &out);
+  ASSERT_TRUE(r.ok()) << r.error().message;
+  ASSERT_EQ(c.calls.size(), 2u);
+  // out_at_split is what the FIRST call wrote to `provided` -- 1000*1 + 2.0
+  // -- not the second call's 1000*2 + 150.0, and not any blend of the two.
+  EXPECT_EQ(out, 1000.0 + 2.0);
+  EXPECT_NE(out, c.calls[1].required_seen + 2000.0);
+}
+
+TEST(AdvanceStraddleSplit, SkipsTheSecondAdvanceWhenTheSplitIsTheChunksOwnEnd) {
+  RecordingComponent c;
+  const WindowMember m = make_member(c);
+  bool boundary_called = false, extrapolate_called = false;
+  double out = -1.0;
+  const Result<void> r = fuse::detail::advance_straddle_split(
+      m, Rational{4}, Rational{7}, Rational{7}, 0, 0,
+      [](std::size_t, Rational, Rational) -> Result<double> { return 5.0; },
+      [&](std::size_t) -> Result<double> {
+        boundary_called = true;
+        return 0.0;
+      },
+      [&](std::size_t, Rational) -> double {
+        extrapolate_called = true;
+        return 0.0;
+      },
+      &out);
+  ASSERT_TRUE(r.ok()) << r.error().message;
+  ASSERT_EQ(c.calls.size(), 1u);  // no tail call when t_split == t_b
+  EXPECT_FALSE(boundary_called);
+  EXPECT_FALSE(extrapolate_called);
+  EXPECT_EQ(out, 1000.0 + 5.0);  // still the (only) call's exact value
+}
+
+TEST(AdvanceStraddleSplit, MeanInWindowFailurePropagatesBeforeAnyAdvance) {
+  RecordingComponent c;
+  const WindowMember m = make_member(c);
+  double out = 0.0;
+  const Result<void> r = fuse::detail::advance_straddle_split(
+      m, Rational{0}, Rational{2}, Rational{5}, 0, 0,
+      [](std::size_t, Rational, Rational) -> Result<double> {
+        return fuse::Failure{"E-TEST", "mean_in_window refused"};
+      },
+      [](std::size_t) -> Result<double> { return 0.0; },
+      [](std::size_t, Rational) -> double { return 0.0; }, &out);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-TEST");
+  EXPECT_EQ(c.calls.size(), 0u);
+}
