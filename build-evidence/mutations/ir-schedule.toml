@@ -184,3 +184,19 @@ test = "ir.lowering_channel"
 # condition `type.rank_set != dst_rank_set` is false and this line is never
 # reached there) -- the colocated-but-distinct-identity test is the one
 # that actually exercises this line.
+
+[[mutation]]
+id = "window-causality-accepts-any-earlier-write"
+area = "schedule"
+describes = "check_window_causality() accepts a subcycling instance whose import waveform was written at SOME earlier point in the stream, not necessarily for the same time window, so a subcycling node could read the previous window's waveform with no diagnostic."
+file = "src/schedule/scheduler.cpp"
+old = "            last_written_step[imp.value()] != ins.dst_step) {"
+new = "            last_written_step[imp.value()] < 0) {  // MUTATED: any earlier write"
+target = "fuse_schedule_window_causality_test"
+test = "schedule.window_causality"
+# KILLED by hand 2026-09-29 in a clean export: only
+# WindowCausality.WriterForAnEarlierWindowInstanceDoesNotSatisfyALaterOne fails.
+# Not covered by any row yet: removing the check's CALL in schedule(). Its
+# tests call the function directly, and no compilation rule emits a
+# subcycling node yet, so such a mutation would survive until the time
+# window is compiled through schedule().
