@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Sweep fuse_example_layout_driver over rank counts and placement shapes.
+"""Sweep fuse_example_layout_driver over rank counts and processor-set shapes.
 
-Runs the PE-layout driver (examples/layout_driver/main.cpp) once per
+Runs the processor-layout driver (examples/layout_driver/main.cpp) once per
 (rank count, shape) cell of the sweep, in either STRONG mode (a fixed total
 entity count at every rank count) or WEAK mode (entity count scaled linearly
 with rank count, so the work per rank stays constant), and concatenates every

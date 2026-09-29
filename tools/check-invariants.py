@@ -51,15 +51,15 @@ PRINTF = re.compile(r"\b(printf|fprintf|sprintf|snprintf|puts|fputs)\s*\(")
 DEVICE_HINT = re.compile(r"KOKKOS_(INLINE_)?FUNCTION|KOKKOS_LAMBDA")
 
 
-# I-VERDICT. A deferred verdict must never be cleared. `MpiTransport` defers
-# every local refusal into one `err`, reached by `fail()`, and turns it into a
-# return only at an agreement point where every rank is present. Phase D used
+# I-VERDICT. A deferred outcome must never be cleared. `MpiTransport` defers
+# every local rejection into one `err`, reached by `fail()`, and turns it into a
+# return only at a synchronisation point where every rank is present. Phase D used
 # to clear `err` so it could reuse it as its own loop accumulator, which was
-# harmless while every verdict before it had already been agreed -- and then
-# silently destroyed the components agreement (R-30), a verdict recorded after
+# harmless while every outcome before it had already been agreed -- and then
+# silently destroyed the components agreement (R-30), an outcome recorded after
 # that agreement and read only two phases later. The check ran, was right on
 # every rank, and its answer was thrown away; `build_plan()` returned success
-# on ranks that had just refused, and it took an instrumented run to see it.
+# on ranks that had just rejected, and it took an instrumented run to see it.
 #
 # Declaration and reset look almost identical, so the rule keys off the `;`
 # terminator only being a reset when the line does not also declare the type.
@@ -108,7 +108,7 @@ def scan(root: Path) -> list[str]:
                 is_guard = bool(re.match(r"\s*#\s*ifndef\b", code_only)) and nxt.lstrip().startswith("#error")
                 if library_code and VERDICT_RESET.match(code_only):
                     problems.append(
-                        f"{rel}:{lineno}: clears a deferred verdict (I-VERDICT); "
+                        f"{rel}:{lineno}: clears a deferred outcome (I-VERDICT); "
                         "it is one monotonic value per call, agreed at a "
                         "collective -- use a separate accumulator: "
                         f"{line.strip()}"
@@ -137,7 +137,7 @@ def scan(root: Path) -> list[str]:
                     # The rule's PURPOSE is that no library output depends on the
                     # host's locale: a stream built from the global locale prints
                     # "0,7" under de_DE and groups digits, and the IR and plan
-                    # dumps are byte-compared golden artifacts.
+                    # dumps are byte-compared reference-output artifacts.
                     #
                     # `fmt` gives that by construction, so it stays the default.
                     # A canonical-text writer that instead pins the classic locale
