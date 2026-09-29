@@ -422,9 +422,29 @@ CycleReport prove_acyclic(const CouplingGraph& g, const OperatorDAG& dag,
   // caller that skipped validation or a rule that grows a new way to drop a
   // chain.
   //
-  // Two kinds are terminal by construction and are excluded: a `Sink`'s output
-  // arc is the end of the chain, and a `Residual`'s is read by the iteration
-  // driver through `IterationRegion::residuals`, not by another DAG node.
+  // Three kinds are excluded: a `Sink`'s output arc is the end of the
+  // chain, a `Residual`'s is read by the iteration driver through
+  // `IterationRegion::residuals`, and neither is read by another DAG
+  // node -- both terminal by construction. A `WindowAdvance`'s own
+  // output, unlike those two, IS read by a real DAG node under this
+  // track's chosen design: its member's own field transfer sources FROM
+  // it (`seed_window_source_arcs()`, src/ir/window_lowering.cpp, seeds
+  // exactly the arc `lower_channel()`, src/ir/rules_channel.cpp, then
+  // reads as that channel's `ctx.source_arc`), so this exclusion never
+  // actually fires for one today -- kept anyway, defensively, since a
+  // WindowAdvance node's OTHER outgoing link, a partner's own
+  // `OpAttrs::window_import`, is metadata rather than a real dependency
+  // edge (making it one would close a cycle in this same untimed graph;
+  // see that field's doc comment, fuse/ir/op.hpp) and this scan has no
+  // way to see it -- excluding the kind outright is simpler than proving
+  // this scan would pass anyway for every graph `finish_window_regions()`
+  // can produce. That metadata edge's own completeness is proven by a
+  // dedicated, targeted check instead: `detail::check_window_causality()`
+  // (fuse/schedule/scheduler.cpp) verifies every `window_import` that is
+  // SET is satisfied by a genuine earlier writer (or, if loop-carried, a
+  // same-window writer anywhere in the group) -- the equivalent guarantee
+  // this scan gives an ordinary channel, proven a different way for the
+  // same reason `Residual`'s is.
   //
   // The node scan alone is NOT sufficient, which is why the field scan below
   // it exists. A channel between co-located components on one region with no
@@ -444,7 +464,10 @@ CycleReport prove_acyclic(const CouplingGraph& g, const OperatorDAG& dag,
   // and still correct: with a combine present, no writer's output dangles.
   for (std::uint32_t ni = 0; ni < n_nodes; ++ni) {
     const Node& n = dag.node(NodeId{ni});
-    if (n.kind == OpKind::Sink || n.kind == OpKind::Residual) continue;
+    if (n.kind == OpKind::Sink || n.kind == OpKind::Residual ||
+        n.kind == OpKind::WindowAdvance) {
+      continue;
+    }
     if (!n.origin.valid() || n.origin.value() >= g.channel_count()) continue;
     if (idx.count(ni) == 0) continue;  // not instantiated in this period
     if (!n.output.valid() || n.output.value() >= dag.arc_count()) continue;

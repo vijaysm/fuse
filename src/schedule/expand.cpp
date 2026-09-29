@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "fuse/schedule/slab.hpp"
+#include "fuse/schedule/window.hpp"
 
 namespace fuse {
 namespace {
@@ -130,6 +131,26 @@ bool has_sample(const Channel& ch) {
 /// boundary rule must be one decision, not two that can drift.
 [[nodiscard]] bool claimed_by_channel(const CouplingGraph& g, const Node& n) {
   return n.origin.valid() && n.origin.value() < g.channel_count();
+}
+
+/// Time windows track: the window-scoped IterationRegionDecl that declares
+/// `cid` among its channels, or nullptr if none does. Every node whose
+/// origin is such a channel -- the WindowAdvance node finish_window_regions()
+/// (src/ir/window_lowering.cpp) built from it, that channel's own ordinary
+/// Transport/Remap/Epoch/Sink chain, AND the Residual build_iteration_
+/// regions() (src/ir/regions.cpp) still builds for it unconditionally --
+/// ticks at the window's own length instead of that channel's ordinary
+/// source/target clock.
+[[nodiscard]] const IterationRegionDecl* owning_window_region(
+    const CouplingGraph& g, ChannelId cid) {
+  for (std::uint32_t r = 0; r < g.iteration_region_count(); ++r) {
+    const IterationRegionDecl& decl = g.iteration_region(IterationRegionIdx{r});
+    if (!decl.window_scope.has_value()) continue;
+    for (const ChannelId cid2 : decl.channels) {
+      if (cid2.value() == cid.value()) return &decl;
+    }
+  }
+  return nullptr;
 }
 
 /// The two components a channel connects, or the error the graph earns for
@@ -352,8 +373,28 @@ Result<TimedDag> expand(const CouplingGraph& g, const OperatorDAG& dag,
     // Intervals come from the ClockSet, not from ComponentDecl: Clock's
     // constructor is the thing that guarantees they are positive, and the
     // ClockSet is what the runtime will actually advance.
-    const Rational src_dt = clocks.clock(ends.value().first).interval();
-    const Rational dst_dt = clocks.clock(ends.value().second).interval();
+    //
+    // Time windows track: a window-scoped region's own channel carries
+    // the WHOLE window's waveform as one value (K samples as K field
+    // components, the user's chosen design) -- it changes once per
+    // window, not once per either endpoint's own native tick, so BOTH
+    // ends of its slab decomposition are overridden to the window's own
+    // length instead. This is the ENTIRE accommodation this channel's
+    // chain needs: with src_dt == dst_dt, decompose() lays out exactly
+    // one slab per window instance, and every downstream node (Transport,
+    // Remap, Epoch, Sink -- ordinary nodes, unaware any of this
+    // happened) is emitted by the SAME per-channel loop below as any
+    // other channel's chain, at that slab's end.
+    const IterationRegionDecl* owning_window = owning_window_region(g, cid);
+    Rational src_dt = clocks.clock(ends.value().first).interval();
+    Rational dst_dt = clocks.clock(ends.value().second).interval();
+    if (owning_window != nullptr) {
+      const Result<Rational> wl =
+          window_length(g, *owning_window->window_scope);
+      if (!wl.ok()) return wl.error();
+      src_dt = wl.value();
+      dst_dt = wl.value();
+    }
 
     const Result<std::int64_t> ns = tick_count(out.period, src_dt, "source");
     if (!ns.ok()) return ns.error();
@@ -393,6 +434,16 @@ Result<TimedDag> expand(const CouplingGraph& g, const OperatorDAG& dag,
       // out.nodes is the only vector that grows and nothing points into it.
       const Node& n = dag.node(nid);
       if (n.origin != cid) continue;
+      // Time windows track: a WindowAdvance node (finish_window_regions(),
+      // src/ir/window_lowering.cpp) has this SAME channel as its origin
+      // too, and flows through this loop exactly like the channel's own
+      // Transport/Remap/Epoch/Sink chain -- it has no Sample and no
+      // accumulation of its own, so (like them) it lands in the "no
+      // accumulation: one instance per slab" branch below, at that
+      // slab's end. No special case needed: `src_dt`/`dst_dt`'s window-
+      // length override above already makes that slab the window
+      // instance, which is the only thing that made this node need
+      // different treatment in the first place.
 
       if (sampled && runs_on_source_clock(n.kind)) {
         // One Sample per source tick, inside whichever target step it falls.
