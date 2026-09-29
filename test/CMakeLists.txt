@@ -91,7 +91,12 @@ function(fuse_add_omp_legs test_name target)
   if(ARG_THROWS)
     list(APPEND labels throws)
   endif()
-  foreach(n 1 ${_fuse_host_cores})
+  # One core (or ProcessorCount reading an OMP_NUM_THREADS=1 environment)
+  # makes the list `1 1`, and a second add_test of the same name is a
+  # configure error, so the duplicate is removed.
+  set(_counts 1 ${_fuse_host_cores})
+  list(REMOVE_DUPLICATES _counts)
+  foreach(n IN LISTS _counts)
     add_test(NAME ${test_name}.omp${n} COMMAND ${target} ${ARG_ARGS})
     set_tests_properties(${test_name}.omp${n} PROPERTIES
       LABELS "${labels}"
