@@ -295,6 +295,72 @@ class CouplingGraph {
   std::vector<std::pair<std::uint32_t, MergeSpec>> merges_;  // sorted by field id
 };
 
+/// A channel's lag AS COMPILED, not as authored: the single source of
+/// truth for whether a field transfer is loop-carried, read by BOTH
+/// `lower()` (src/ir/rules_channel.cpp step 4, which applies exactly this
+/// shift) and `schedule()`'s `check_window_causality()`
+/// (src/schedule/scheduler.cpp) -- one function, so the two cannot decide
+/// this differently for the same channel. Model layer (not schedule),
+/// since `ir` sits below `schedule` (docs/dev/layering.md) and must reach
+/// this from `lower()` itself.
+///
+/// Outside any window-scoped iteration region, or inside one whose
+/// `CouplingWindowScope::iteration` is `WaveformIteration::GaussSeidel`,
+/// this is exactly `Channel::lag` -- today's behaviour, unchanged.
+///
+/// Inside a `WaveformIteration::Jacobi` window, every one of the region's
+/// own channels gets the loop-carried shift `.lag(1)` gives, WHATEVER
+/// `Channel::lag` the user wrote: Jacobi reads every partner's PREVIOUS
+/// iterate for the whole sweep (`WindowCoupler::sweep_window()`'s own
+/// scheme), so the group needs no `.lag()` at all to be schedulable, and
+/// what the user did write is not consulted.
+namespace detail {
+// Shared by `effective_channel_lag()` and
+// `channel_time_mismatch_is_authorized()` below: whether `ch` is a member
+// of a `WaveformIteration::Jacobi` window-scoped region's own `channels`.
+// One membership test, so the two functions cannot disagree about which
+// channels Jacobi's auto-lag (and the mismatch it authorizes) covers.
+[[nodiscard]] inline bool is_jacobi_window_channel(const CouplingGraph& g,
+                                                   ChannelId ch) {
+  if (!ch.valid() || ch.value() >= g.channel_count()) return false;
+  for (std::uint32_t i = 0; i < g.iteration_region_count(); ++i) {
+    const IterationRegionDecl& decl = g.iteration_region(IterationRegionIdx{i});
+    if (!decl.window_scope.has_value()) continue;
+    if (decl.window_scope->iteration != WaveformIteration::Jacobi) continue;
+    for (const ChannelId c : decl.channels) {
+      if (c.value() == ch.value()) return true;
+    }
+  }
+  return false;
+}
+}  // namespace detail
+
+[[nodiscard]] inline int effective_channel_lag(const CouplingGraph& g,
+                                               ChannelId ch) {
+  if (!ch.valid() || ch.value() >= g.channel_count()) return 0;
+  if (detail::is_jacobi_window_channel(g, ch)) return 1;
+  return g.channel_at(ch).lag;
+}
+
+/// Whether `lower()`'s own type_check() (src/ir/lowering.cpp step 4) may
+/// admit the time-level shift `effective_channel_lag()` puts on `ch`'s
+/// delivered value, without the user's own `Channel::
+/// time_level_mismatch_reason`. True when the user declared one
+/// themselves via `.allow_time_level_mismatch(...)` (today's rule,
+/// unchanged) -- OR when the shift comes from a `WaveformIteration::
+/// Jacobi` window the COMPILER itself chose to apply, over the user's own
+/// (possibly zero) `Channel::lag`: the same reasoning that makes
+/// `effective_channel_lag()` override `Channel::lag` for such a channel
+/// applies here too, and using the SAME membership test
+/// (`detail::is_jacobi_window_channel`) keeps the two from disagreeing
+/// about which channels this covers.
+[[nodiscard]] inline bool channel_time_mismatch_is_authorized(
+    const CouplingGraph& g, ChannelId ch) {
+  if (!ch.valid() || ch.value() >= g.channel_count()) return false;
+  if (!g.channel_at(ch).time_level_mismatch_reason.empty()) return true;
+  return detail::is_jacobi_window_channel(g, ch);
+}
+
 inline Channel& ChannelBuilder::target() { return graph_->channel_mut(id_); }
 
 inline IterationRegionDecl& IterationBuilder::target() {

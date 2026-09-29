@@ -46,6 +46,8 @@ namespace fuse {
 [[nodiscard]] std::vector<ComponentId> window_region_members(
     const CouplingGraph& g, const IterationRegionDecl& region);
 
+
+
 /// The legality gate for a coupling window, run before any `WindowCoupler`
 /// is built from `g`/`region`/`scope`. Every check is independent and all
 /// are reported (Global Constraints, like `validate()`); the returned
@@ -65,6 +67,13 @@ namespace fuse {
 ///                               `scope.policies`, or `policies` names a
 ///                               component that is not a member.
 ///   E-SCHED-WINDOW-ORDER       `scope.order < 2`.
+///   E-SCHED-WINDOW-GAUSSSEIDEL-NOLAG
+///                              `scope.iteration == WaveformIteration::
+///                              GaussSeidel` and every field transfer among
+///                              `region`'s members is unlagged: the group
+///                              closes a cycle with nothing to break it.
+///                              Lag one direction, or switch to
+///                              `WaveformIteration::Jacobi`.
 ///   E-SCHED-WINDOW-SHORTEN     an `Adjustable` member's own interval is not
 ///                               positive (there is no substep to shorten).
 ///   E-SCHED-WINDOW-CAPACITY    a member's interval is small enough,

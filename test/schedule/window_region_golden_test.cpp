@@ -37,6 +37,7 @@ using fuse::Rational;
 using fuse::Region;
 using fuse::RegionId;
 using fuse::RankSet;
+using fuse::WaveformIteration;
 namespace u = fuse::units;
 
 namespace {
@@ -79,7 +80,9 @@ bool updating() {
 // convention) so the printed IR shows a REAL Remap (cross-mesh) and a REAL
 // Transport (cross-rank) in both directions' chains, not a degenerate
 // same-placement identity.
-CouplingGraph two_member_window_graph() {
+CouplingGraph two_member_window_graph(
+    WaveformIteration mode = WaveformIteration::GaussSeidel,
+    bool lag_back = true) {
   CouplingGraph g;
   const auto ma = g.add_mesh(MeshDecl{.name = "ma"});
   const auto mb = g.add_mesh(MeshDecl{.name = "mb"});
@@ -110,13 +113,24 @@ CouplingGraph two_member_window_graph() {
 
   const auto fwd = g.add_channel("a2b", a_out, b_in);
   const auto back = g.add_channel("b2a", b_out, a_in);
-  g.channel(back).lag(1).allow_time_level_mismatch(
-      "resolved by the a-b coupling window's own sweep, not a real-time lag");
+  if (lag_back) {
+    g.channel(back).lag(1).allow_time_level_mismatch(
+        "resolved by the a-b coupling window's own sweep, not a real-time "
+        "lag");
+  }
 
   CouplingWindowScope scope;
   scope.window_component = "a";
   scope.order = 2;
   scope.policies = {{"a", DtPolicy::Adjustable}, {"b", DtPolicy::Adjustable}};
+  // Default GaussSeidel with `back` lagged, not Jacobi: this fixture's
+  // whole point (comment above) is exactly one lagged transfer and one
+  // unlagged one, checked by check_window_causality()'s two different
+  // rules. Jacobi would force BOTH directions loop-carried regardless of
+  // `back`'s own `.lag(1)`, which never exercises the strict (unlagged)
+  // rule at all. Callers that want the Jacobi/no-lag reference shape pass
+  // `mode`/`lag_back` explicitly (below).
+  scope.iteration = mode;
 
   IterationRegionDecl decl;
   decl.name = "window";
@@ -172,6 +186,103 @@ TEST(WindowRegionGolden, TwoMemberWindowCompilesThroughScheduleAndMatchesTheGold
       << "Schedule changed. If intentional, run:\n"
       << "  FUSE_UPDATE_GOLDEN=1 ctest --test-dir <build> -R window_region_golden\n"
       << "and review the diff.";
+}
+
+// The WaveformIteration::Jacobi reference shape: the SAME two-way fixture,
+// but with NEITHER channel lagged. GaussSeidel mode on this exact graph is
+// `WindowScope.GaussSeidelWithNoLagAtAllIsRefused`'s own case (schedule/
+// window_scope_test.cpp) -- refused at validate_coupling_window() before
+// expand() even runs. Jacobi needs no `.lag()` at all: every transfer in
+// the window's own group is forced loop-carried regardless of what the
+// user wrote, so this compiles and schedules cleanly through the full
+// lower()/schedule() pipeline, proving the mode -- not the channel's own
+// `.lag()` -- is what governs a Jacobi window's causality.
+// A separate golden pair (window_two_member_jacobi.{ir,plan}), byte-compared
+// the same way as the GaussSeidel fixture above, so the two modes'
+// compiled IR genuinely differ where they must: BOTH `a2b` and `b2a`
+// showing the loop-carried [WindowEnd-1, k] time level here (grep the dump
+// below), against exactly ONE of them (`b2a`) in the GaussSeidel golden.
+// If `WaveformIteration` were read only by check_window_causality() and
+// never by lower() itself, this dump would be byte-identical to a
+// same-shaped unlagged GaussSeidel one instead of refusing to compile at
+// all (E-SCHED-WINDOW-GAUSSSEIDEL-NOLAG) -- so this file is the reference
+// output the design asked for, not the accept/refuse outcome alone.
+TEST(WindowRegionGolden, TwoMemberWindowWithNeitherChannelLaggedSchedulesUnderJacobi) {
+  const CouplingGraph g = two_member_window_graph(
+      /*mode=*/WaveformIteration::Jacobi, /*lag_back=*/false);
+
+  const auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+
+  const fuse::ClockSet cs{g};
+  const auto r = fuse::schedule(
+      g, lowered.dag, cs,
+      [](RegionId, int) -> std::size_t { return 64; });
+  ASSERT_TRUE(r.ok()) << r.diags.to_string();
+
+  const std::string ir_path =
+      std::string{FUSE_TEST_GOLDEN_DIR} + "/window_two_member_jacobi.ir";
+  const std::string plan_path =
+      std::string{FUSE_TEST_GOLDEN_DIR} + "/window_two_member_jacobi.plan";
+
+  const std::string actual_ir = dump_text(lowered.dag);
+  const std::string actual_plan = r.plan.to_string();
+
+  // Both directions loop-carried, not just the one channel that happened
+  // to carry an explicit `.lag(1)` in the GaussSeidel fixture above.
+  EXPECT_NE(actual_ir.find("[WindowEnd-1, k]"), std::string::npos);
+  const std::size_t first = actual_ir.find("[WindowEnd-1, k]");
+  EXPECT_NE(actual_ir.find("[WindowEnd-1, k]", first + 1), std::string::npos)
+      << "expected the shift on BOTH transfers under Jacobi:\n" << actual_ir;
+
+  if (updating()) {
+    write_file(ir_path, actual_ir);
+    write_file(plan_path, actual_plan);
+    GTEST_SKIP() << "golden files updated: " << ir_path << ", " << plan_path;
+  }
+
+  const std::string expected_ir = read_file(ir_path);
+  ASSERT_FALSE(expected_ir.empty())
+      << "missing golden file " << ir_path
+      << "\nrun with FUSE_UPDATE_GOLDEN=1 to create it";
+  EXPECT_EQ(actual_ir, expected_ir)
+      << "IR changed. If intentional, run:\n"
+      << "  FUSE_UPDATE_GOLDEN=1 ctest --test-dir <build> -R window_region_golden\n"
+      << "and review the diff.";
+
+  const std::string expected_plan = read_file(plan_path);
+  ASSERT_FALSE(expected_plan.empty())
+      << "missing golden file " << plan_path
+      << "\nrun with FUSE_UPDATE_GOLDEN=1 to create it";
+  EXPECT_EQ(actual_plan, expected_plan)
+      << "Schedule changed. If intentional, run:\n"
+      << "  FUSE_UPDATE_GOLDEN=1 ctest --test-dir <build> -R window_region_golden\n"
+      << "and review the diff.";
+}
+
+// The same unlagged shape under GaussSeidel, through the PUBLIC
+// schedule() entry point rather than window_scope_test.cpp's direct call
+// to validate_coupling_window(): confirms schedule() actually reaches that
+// gate (src/schedule/scheduler.cpp wires it in before expand()) for a
+// window-scoped region compiled from a real graph, not just that the gate
+// itself, called in isolation, would refuse this shape.
+TEST(WindowRegionGolden, TwoMemberWindowWithNeitherChannelLaggedIsRefusedUnderGaussSeidel) {
+  const CouplingGraph g = two_member_window_graph(
+      /*mode=*/WaveformIteration::GaussSeidel, /*lag_back=*/false);
+
+  const auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+
+  const fuse::ClockSet cs{g};
+  const auto r = fuse::schedule(
+      g, lowered.dag, cs,
+      [](RegionId, int) -> std::size_t { return 64; });
+  ASSERT_FALSE(r.ok());
+  bool saw_gaussseidel_nolag = false;
+  for (const auto& item : r.diags.items()) {
+    if (item.code == "E-SCHED-WINDOW-GAUSSSEIDEL-NOLAG") saw_gaussseidel_nolag = true;
+  }
+  EXPECT_TRUE(saw_gaussseidel_nolag) << r.diags.to_string();
 }
 
 // NOTE on what this file does NOT re-verify: two_member_window_graph()

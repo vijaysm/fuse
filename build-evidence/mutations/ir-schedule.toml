@@ -219,3 +219,21 @@ test = "schedule.window_region_golden"
 # the-Runner track compiled a real window-scoped region through lower()/
 # schedule() (build_window_regions(), src/ir/window_lowering.cpp) -- before
 # that, no test exercised schedule()'s own call to this check at all.
+
+[[mutation]]
+id = "jacobi-ignored-at-compile-time"
+area = "compiler"
+describes = "effective_channel_lag() (fuse/model/coupling_graph.hpp) never applies WaveformIteration::Jacobi's forced loop-carried shift: every channel compiles at its own literal Channel::lag regardless of the window's own iteration mode, i.e. a Jacobi-mode window compiles exactly as GaussSeidel would. On the two-member fixture with NEITHER channel lagged (WindowRegionGolden's own Jacobi reference shape), the compiled graph keeps both transfers at [WindowEnd, k] instead of shifting both to [WindowEnd-1, k], and the two-way exchange -- now genuinely unbroken, with neither direction cut -- fails schedule() with E-SCHED-WINDOW-CAUSALITY instead of compiling and scheduling cleanly."
+file = "include/fuse/model/coupling_graph.hpp"
+old = "  if (detail::is_jacobi_window_channel(g, ch)) return 1;"
+new = "  if (false && detail::is_jacobi_window_channel(g, ch)) return 1;  // MUTATED: Jacobi override never applied"
+target = "fuse_schedule_window_region_golden_test"
+test = "schedule.window_region_golden"
+# Expected kill: WindowRegionGolden.TwoMemberWindowWithNeitherChannelLaggedSchedulesUnderJacobi
+# (ASSERT_TRUE(r.ok()) fails: with the override disabled, a genuinely
+# two-way, now-fully-unlagged exchange has nothing breaking its cycle, the
+# same structurally-unsatisfiable shape Unit B's own Sink-membership fix
+# discovered for the exactly-one-lagged case, generalized to zero-lagged --
+# so schedule() refuses with E-SCHED-WINDOW-CAUSALITY well before the test
+# ever reaches its own golden-IR comparison or its "[WindowEnd-1, k]
+# appears twice" substring check). Verified by hand 2026-09-29.

@@ -152,9 +152,17 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
   }
 
   // 4. Lag: a TimeLevel shift, not a node (spec §4.3).
-  if (ch.lag != 0) {
+  //
+  // `effective_channel_lag()` (fuse/model/coupling_graph.hpp), not `ch.lag`
+  // directly: inside a `WaveformIteration::Jacobi` window this channel's
+  // effective lag is 1 whatever `ch.lag` itself says, and this is the ONE
+  // place that decision is applied to the compiled graph -- schedule()'s
+  // own causality check reads the SAME function, so the two cannot
+  // disagree about which transfers are loop-carried.
+  const int effective_lag = effective_channel_lag(g, cid);
+  if (effective_lag != 0) {
     ValueType shifted = type;
-    shifted.time.offset = shifted.time.offset - Rational{ch.lag};
+    shifted.time.offset = shifted.time.offset - Rational{effective_lag};
     // Rebind by emitting nothing: retype the value by threading a fresh arc
     // through a no-op Interpolate would be wrong, so instead record the shift
     // on the next emitted arc. If no further op follows, the Sink sees it.
@@ -286,10 +294,10 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
                        .method = ch.remap.method_override},
                cid, base + "/remap");
     type = remapped;
-  } else if (ch.lag != 0) {
+  } else if (effective_lag != 0) {
     // The lag shift needs somewhere to live when no Remap follows.
-    cur = emit(ctx, OpKind::Interpolate, cur, type, OpAttrs{.lag = ch.lag}, cid,
-               base + "/lag");
+    cur = emit(ctx, OpKind::Interpolate, cur, type, OpAttrs{.lag = effective_lag},
+               cid, base + "/lag");
   }
 
   // 5b. Coupler -> target: the second hop of the coupler-placement rule.
