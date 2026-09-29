@@ -32,7 +32,7 @@ struct Simplex {
   return k == 0 ? p.x : (k == 1 ? p.y : p.z);
 }
 
-/// Every simplex of every entity at `dim`, with its bounding box. Refuses when
+/// Every simplex of every entity at `dim`, with its bounding box. Rejects when
 /// a view carries no geometry: that is legal for a view (the contract says so)
 /// but it is not something to build a supermesh from.
 [[nodiscard]] Result<std::vector<Simplex>> lift(const MeshView& m, int dim,
@@ -194,7 +194,7 @@ Result<RemapWeights> build_supermesh_weights(const MeshView& src,
   // The 2D kernel is PLANAR: it clips in (x, y) and ignores z. Handed a
   // surface embedded in three-space -- a codimension-1 mesh, the box skin for
   // instance -- it would silently return the measure of the shadow on the
-  // xy-plane, which is a plausible number and the wrong one. Refuse instead.
+  // xy-plane, which is a plausible number and the wrong one. Reject instead.
   //
   // Supporting it properly needs a surface parameterisation (or great-circle
   // geometry for the spherical case, which is what the TempestRemap tier is
@@ -260,10 +260,10 @@ Result<RemapWeights> build_supermesh_weights(const MeshView& src,
   // lost to the floor is reported in `max_col_defect` rather than concealed by
   // computing the audit from entries that were then discarded.
   constexpr double kNegligible = 1e-12;
-  // REVIEW.md R-13: the coverage tolerance itself, and the refusal it backs,
+  // REVIEW.md R-13: the coverage tolerance itself, and the rejection it backs,
   // now live in supermesh_detail::audit_coverage -- the same relative
   // tolerance intx_weights.cpp's MOAB path uses for its over_src/over_tgt
-  // audit (`kCoverageTol` there), so the two paths refuse on the same
+  // audit (`kCoverageTol` there), so the two paths reject on the same
   // threshold, and unit-testable directly (test/backend/supermesh_test.cpp).
 
   // Brute force over bounding-box-compatible pairs. This is O(n_t * n_s) box
@@ -330,7 +330,7 @@ Result<RemapWeights> build_supermesh_weights(const MeshView& src,
     src_covered[i] += m;
     tgt_covered[j] += m;
   }
-  // REVIEW.md R-13: the MOAB path refuses E-REMAP-INTX when a cell is
+  // REVIEW.md R-13: the MOAB path rejects E-REMAP-INTX when a cell is
   // assigned more area than it has (intx_weights.cpp's over_src/over_tgt
   // audit, kCoverageTol). This path tracked only the minimum, so the exact
   // defect class R-12 produces -- overlap inflated past the cell it came

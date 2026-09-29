@@ -74,7 +74,7 @@ TEST(Rational, LcmDenominatorGivesFinestCommonTick) {
 // R-15: two coprime denominators just above sqrt(2^63). Their product does
 // not fit int64_t, and a direct std::lcm wrapped to a NEGATIVE value that the
 // constructor then normalised into a small negative "finest tick" with no
-// diagnostic. The fix computes in 128 bits and refuses; this is the test the
+// diagnostic. The fix computes in 128 bits and rejects; this is the test the
 // fix landed without, found by the mutation that reverts it surviving.
 TEST(Rational, LcmDenominatorRefusesAnUnrepresentableCommonTick) {
   const Rational a(1, 3037000493);
@@ -171,7 +171,7 @@ TEST(Rational, Int64MinDenominatorNormalisesWithoutUB) {
 
 // gcd_rational(Rational(INT64_MIN,1), Rational(INT64_MIN,1)) has true gcd
 // |INT64_MIN| == 2^63, which does not fit in int64_t (max is 2^63 - 1).
-// Every member operator throws fuse::Refusal rather than silently narrow
+// Every member operator throws fuse::Rejection rather than silently narrow
 // an unrepresentable reduced value; gcd_rational must honour the same
 // contract instead of letting static_cast<int64_t>(2^63) wrap to INT64_MIN.
 // Enforcement is unconditional (detail::check_fits_i64 throws regardless of
@@ -203,8 +203,8 @@ TEST(Rational, GcdRationalHandlesLargeButRepresentableGcd) {
 // Rational's constructor normalised into num=-1, den=9223372036709301665 --
 // a NEGATIVE rational returned as the gcd of two positive ones, with no
 // diagnostic. ClockSet::finest_interval() calls gcd_rational in a fold, so
-// that negative interval would have propagated straight into §8.3 slab
-// decomposition. Unrepresentable must be an error, not a wrapped answer.
+// that negative interval would have propagated straight into §8.3's
+// decomposition into common-refinement intervals. Unrepresentable must be an error, not a wrapped answer.
 TEST(Rational, GcdRationalThrowsOnUnrepresentableDenominatorLcm) {
   EXPECT_THROW(
       (void)gcd_rational(Rational(1, 3'037'000'493LL), Rational(1, 3'037'000'507LL)),

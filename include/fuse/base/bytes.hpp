@@ -19,7 +19,7 @@
  * key/value split of the same characters: `{"ab", "c"}` and `{"a", "bc"}` are
  * indistinguishable without it. Two records with different meaning would then
  * hash equal, and a compatibility check comparing hashes would admit a
- * connection it should refuse. `put_string` and `put_bytes` therefore always
+ * connection it should reject. `put_string` and `put_bytes` therefore always
  * write a 4-byte count first, even where the calling record happens to have
  * only one variable-length field today and no collision is constructible.
  * That case is a property of the record, not of the encoder, and it changes

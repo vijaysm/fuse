@@ -422,7 +422,7 @@ TEST(OperatorConformance, CompositionSignatureDependsOnTheOrder) {
       << "A o B and B o A hash the same, so a plan could reuse the wrong map";
 }
 
-// ---- shape refusals ------------------------------------------------------
+// ---- shape rejections ------------------------------------------------------
 
 TEST(OperatorConformance, WrongLengthsAreRefusedNotRead) {
   const RemapWeights base = rectangular();
@@ -621,7 +621,7 @@ TEST(ConsistentInterp, DomainEdgeMismatchRefusesByDefault) {
   // [0, 1/3] -- "generated:line:2" gives vertices at 0, 1/2, 1, which DOES
   // span [0,1] fully; a genuinely short domain needs a smaller line count
   // interpreted over a shorter conceptual span, which this generator does
-  // not offer. So instead this refusal is exercised the other direction:
+  // not offer. So instead this rejection is exercised the other direction:
   // node-to-node onto a coarser beam evaluated at NODES beyond the fluid
   // wall's own node range is not representable either. The gap is real: see
   // open_questions for a MeshView test double that can present an arbitrary

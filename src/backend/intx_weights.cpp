@@ -84,7 +84,7 @@ Result<const RemapWeights*> RemapCache::get_or_build(
 
 namespace {
 
-/// A region resolved to a view and a dimension, using only the
+/// A mesh entity set resolved to a view and a dimension, using only the
 /// backend-agnostic `MeshBackend` interface -- no MOAB dependency, so this
 /// compiles and is used identically whether or not `FUSE_HAVE_MOAB` is set.
 struct SupermeshSide {
@@ -118,8 +118,8 @@ struct SupermeshSide {
   }
   const auto mid = backend.mesh_id(graph.mesh(r.mesh).name);
   if (!mid.ok()) return mid.error();
-  // The placement's OWN decomposition (RemapPlan::placement); the default
-  // view when the backend does not distinguish placements.
+  // The processor set's OWN decomposition (RemapPlan::placement); the default
+  // view when the backend does not distinguish processor sets.
   const auto view = backend.placed_view(mid.value(), placement);
   if (!view.ok()) return view.error();
   SupermeshSide s;
@@ -134,9 +134,9 @@ struct SupermeshSide {
 /// back to when the backend handed to `build_weights()` is not a
 /// `MoabMeshBackend` (REVIEW.md N-BACKEND-4: before this fix, a MOAB build's
 /// `build_weights()` always took the MOAB-only path -- via `resolve()`'s
-/// `dynamic_cast<const MoabMeshBackend*>` -- and refused E-REMAP-BACKEND for
-/// a serial mesh pair that a tier-0 build would have served, a capability a
-/// tier-2 build must not lose just because it CAN also do more).
+/// `dynamic_cast<const MoabMeshBackend*>` -- and rejected E-REMAP-BACKEND for
+/// a serial mesh pair that a base build configuration would have served, a capability a
+/// MOAB-enabled build configuration must not lose just because it CAN also do more).
 [[nodiscard]] Result<RemapWeights> build_weights_via_supermesh(
     const RemapPlan& plan, const CouplingGraph& graph,
     const MeshBackend& backend) {
@@ -176,7 +176,7 @@ struct SupermeshSide {
 
 /// Without MOAB, weights come from the dependency-free simplex supermesh.
 ///
-/// This used to refuse, on the grounds that "the supermesh intersection has no
+/// This used to reject, on the grounds that "the supermesh intersection has no
 /// dependency-free implementation". That is no longer true: `supermesh.cpp`
 /// clips the simplices every `MeshView` provides and computes analytic
 /// moments, so lowest-order conservative remap on arbitrary geometry is
@@ -204,7 +204,7 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
   }
 
   // Only what this builder can honour. The checks are deliberately the same
-  // shape as the MOAB path's, so a plan refused there is refused here for the
+  // shape as the MOAB path's, so a plan rejected there is rejected here for the
   // same stated reason rather than silently accepted by the other build.
   if (plan.src_disc != Discretization::FV ||
       plan.tgt_disc != Discretization::FV) {
@@ -442,7 +442,7 @@ template <class T>
   if (any_failed == 0) return local;
 
   // At least one rank failed. Every rank must return the IDENTICAL Failure
-  // -- "some ranks refuse, some proceed" is the hang this exists to rule
+  // -- "some ranks reject, some proceed" is the hang this exists to rule
   // out -- so broadcast the lowest failing rank's message rather than each
   // rank keeping its own.
   const int candidate = local_failed != 0 ? rank : nproc;
@@ -560,7 +560,7 @@ template <class T>
                      backend.name() + "' backend"};
   }
 
-  // NOTE ON THE PARTITIONED CASE. There is no refusal here any more. The
+  // NOTE ON THE PARTITIONED CASE. There is no rejection here any more. The
   // supermesh below intersects the cells this rank HOLDS, and on a partitioned
   // read that is only correct once the source mesh carries a remap halo -- but
   // once it does, this code needs no change at all, because a halo cell is an
@@ -580,7 +580,7 @@ template <class T>
   const auto mid = moab_backend->mesh_id(graph.mesh(r.mesh).name);
   if (!mid.ok()) return mid.error();
 
-  // MoabMeshBackend gives every placement the default decomposition today
+  // MoabMeshBackend gives every processor set the default decomposition today
   // (one ParallelComm per backend, KNOWN_ISSUES D5's MOAB half); routing
   // through placed_view here is what makes that a MOAB change and not a
   // builder change when it lands.
@@ -852,7 +852,7 @@ struct BoxTry {
         kGeomTol * std::max({std::fabs(a.flat[k]), std::fabs(b.flat[k]), 1.0});
     if (!a.active[k] && std::fabs(a.flat[k] - b.flat[k]) > flat_tol) {
       // Both are flat on this axis but at different coordinates: parallel,
-      // disjoint slabs. Their intersection is empty, and pretending otherwise
+      // disjoint common-refinement intervals. Their intersection is empty, and pretending otherwise
       // by ignoring the axis is exactly the silent-wrong-answer case.
       return Failure{"E-REMAP-GEOMETRY",
                    "the two meshes are flat on axis " + std::to_string(k) +
@@ -1348,7 +1348,7 @@ struct Audit {
 }
 
 /// Reduce the audit over the communicator, so every rank reports the same
-/// numbers and, above all, reaches the same accept/refuse outcome.
+/// numbers and, above all, reaches the same accept/reject outcome.
 [[nodiscard]] Result<void> reduce_audit([[maybe_unused]] const Side& src,
                                         [[maybe_unused]] Audit& audit) {
 #ifdef FUSE_REMAP_PARALLEL
@@ -1387,10 +1387,10 @@ struct Audit {
   return Result<void>::success();
 }
 
-/// What to tell someone whose conservative map was refused for coverage.
+/// What to tell someone whose conservative map was rejected for coverage.
 ///
 /// NOT "clear the Conservative flag" when the read is partitioned. On a
-/// partitioned mesh that advice converts a loud, correct refusal into the
+/// partitioned mesh that advice converts a loud, correct rejection into the
 /// silent truncation this whole guard exists to prevent -- measured at two
 /// thirds of the transferred quantity on two ranks. The honest advice there is
 /// to look at the halo, which is what actually decides whether the source
@@ -1607,8 +1607,8 @@ constexpr double kMonotoneRowTol = 1e-12;
 /// that triangle by 1.7e-8 relative (1.2e-10 absolute) -- TempestRemap's own
 /// area-correction step uses a 1e-10 ABSOLUTE threshold and declines to correct
 /// it for the same reason. On the cubed-sphere pairs the same quantity is
-/// 4e-13. Refusing a legitimate lat-lon mesh over 1.7e-8 would be a false
-/// refusal; the thing this check exists to catch -- an overlap polygon
+/// 4e-13. Rejecting a legitimate lat-lon mesh over 1.7e-8 would be a false
+/// rejection; the thing this check exists to catch -- an overlap polygon
 /// attributed to the wrong parent, or counted twice -- is wrong by O(1), not by
 /// eight decimal places.
 constexpr double kHighOrderCoverageTol = 1e-6;
@@ -1884,9 +1884,9 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan,
                  "the two regions come from different MOAB instances"};
   }
 
-  // Serial, a one-rank communicator, or the identity (both regions on one
+  // Serial, a one-rank communicator, or the identity (both mesh entity sets on one
   // mesh) all need no halo. Recorded as BUILT all the same, so a caller may
-  // make the call unconditionally and `build_weights` can key its refusal on
+  // make the call unconditionally and `build_weights` can key its rejection on
   // "was this asked for" rather than on "did it find anything".
   const int ranks = moab_backend->communicator_size();
   if (ranks <= 1 || a.pcomm == nullptr || a.file_set == b.file_set) {
@@ -1915,7 +1915,7 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan,
   // REVIEW.md R-01: fit_surface() reads only this rank's local vertices, so
   // a rank whose local partition happens to be non-spherical (or empty)
   // cannot agree with a peer's answer without reconciling first -- otherwise
-  // that rank refuses here while its peers walk into FindMaxEdges below and
+  // that rank rejects here while its peers walk into FindMaxEdges below and
   // hang waiting for it.
   auto fa = reconcile(a.pcomm, fit_surface(a));
   if (!fa.ok()) return fa.error();
@@ -2077,11 +2077,11 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
   // REVIEW.md N-BACKEND-4: dispatch on the ACTUAL backend the caller handed
   // us, not on which builders this translation unit was compiled with.
   // Every check below this point assumes the MOAB backend (`resolve()`'s own
-  // `dynamic_cast` refuses otherwise with E-REMAP-BACKEND) -- so a plan whose
+  // `dynamic_cast` rejects otherwise with E-REMAP-BACKEND) -- so a plan whose
   // meshes are NOT MoabMeshBackend must take the always-available r3d
   // supermesh path here, exactly as it would in a build with no MOAB at
   // all. Without this, compiling MOAB in silently took away the capability
-  // a tier-0 build has for the identical plan and the identical serial mesh
+  // a base build configuration has for the identical plan and the identical serial mesh
   // pair.
   if (dynamic_cast<const MoabMeshBackend*>(&backend) == nullptr) {
     return build_weights_via_supermesh(plan, graph, backend);
@@ -2116,7 +2116,7 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
                  "or ask for an order above 1."};
   }
   if (want_monotone && order > 1) {
-    // The same refusal the backend makes, made earlier so it also applies to
+    // The same rejection the backend makes, made earlier so it also applies to
     // geometries the backend would reject first and so the reason quoted is the
     // accuracy/monotonicity conflict rather than "not a sphere".
     return Failure{
@@ -2197,7 +2197,7 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
   //
   // `> 1`, not "a communicator was set". A communicator of one rank is an
   // ordinary MPI job whose mesh happens to be undivided; every cell is local
-  // and the serial construction is exactly right. Refusing it would take
+  // and the serial construction is exactly right. Rejecting it would take
   // remap away from every single-rank MPI run, and no serial test can see
   // the difference. REVIEW.md R-11: `test/unit/remap_parallel_test.cpp`,
   // cited here previously as running a one-rank leg to check exactly that,
@@ -2265,13 +2265,13 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
     // is handed a polygon soup that, on a partitioned read, is a piece of a
     // surface with a halo fringe rather than a closed one.
     //
-    // This was CHECKED, not assumed. With this refusal removed and TempestRemap
+    // This was CHECKED, not assumed. With this rejection removed and TempestRemap
     // present, the halo-extended source at 2 ranks gives
     // "E-REMAP-INTX: TempestRemap could not build the overlap mesh ...
     // (return code 0, 1024 overlap faces)" -- it does not merely lose accuracy
     // near the fringe, it fails outright, and it fails by printing while
     // returning success (which is why Task 5.3 reads its Announce stream at
-    // all). Refusing here turns that into one clear sentence at the right
+    // all). Rejecting here turns that into one clear sentence at the right
     // level instead of a backend diagnostic about overlap faces.
     if (a.backend != nullptr && a.backend->communicator_size() > 1 &&
         a.file_set != b.file_set) {
@@ -2290,7 +2290,7 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
     }
     // Geometry classification is FUSE's job, not the backend's: the backend is
     // told what the surface IS and decides whether it can work on it. A mesh
-    // this library cannot classify as a surface at all is refused here, so the
+    // this library cannot classify as a surface at all is rejected here, so the
     // message is the same whether or not a backend happens to be linked in.
     remap_backend::HighOrderRequest req;
     req.order = order;
@@ -2345,7 +2345,7 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
                                                       ptgt.value());
     if (!hi.ok()) return hi.error();
     if (hi.value().order != order) {
-      // The backend contract says it must refuse rather than under-deliver.
+      // The backend contract says it must reject rather than under-deliver.
       // Enforced, because "the backend would never do that" is how a silently
       // degraded map gets shipped.
       return Failure{"E-REMAP-DEGRADED",

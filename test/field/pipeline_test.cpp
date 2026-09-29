@@ -181,17 +181,17 @@ TEST(Pipeline, AnUnboundFieldIsRefusedNotDereferenced) {
   // is bit-for-bit the same state as a legitimately-bound empty partition
   // (see AnEmptyFieldFromABoundZeroCountFieldRefDoesNotRefuse below) -- so it
   // cannot be used to pin "genuinely unbound" here. A non-empty null FieldRef
-  // is the case `FieldRegistry::bind()` itself still refuses unconditionally.
+  // is the case `FieldRegistry::bind()` itself still rejects unconditionally.
   const fuse::FieldRef unbound(
       nullptr, fuse::Layout{.stride = 1, .count = 4}, fuse::MemorySpace::Host);
   EXPECT_THROW((void)fuse::FieldSpan<>::from(unbound), fuse::Refusal);
 }
 
 // The complement of the above (REVIEW.md R-08): a rank that legitimately owns
-// zero elements of a region binds a null pointer with `count == 0`
+// zero elements of a mesh entity set binds a null pointer with `count == 0`
 // (FieldRegistry::bind()'s own allowance, registry.hpp:38-46), and
 // FieldSpan::from() must accept it as an ordinary, empty view rather than
-// refusing it -- refusing it here is an uncaught throw on every rank with a
+// rejecting it -- rejecting it here is an uncaught throw on every rank with a
 // genuinely empty partition, on the ordinary path of a partitioned run.
 TEST(Pipeline, AnEmptyFieldFromABoundZeroCountFieldRefDoesNotRefuse) {
   const fuse::FieldRef empty(
@@ -283,7 +283,7 @@ TEST(Layout, WellFormedAcceptsATightPaddedInterleavedLayout) {
   EXPECT_TRUE((fuse::Layout{.stride = 5, .component_stride = 2, .count = 4,
                             .components = 3}
                    .well_formed()));
-  // One unit tighter than the boundary must still be refused.
+  // One unit tighter than the boundary must still be rejected.
   EXPECT_FALSE((fuse::Layout{.stride = 4, .component_stride = 2, .count = 4,
                              .components = 3}
                     .well_formed()));
@@ -295,7 +295,7 @@ TEST(Layout, WellFormedAcceptsATightPaddedBlockedLayout) {
   EXPECT_TRUE((fuse::Layout{.stride = 2, .component_stride = 5, .count = 3,
                             .components = 2}
                    .well_formed()));
-  // One unit tighter than the boundary must still be refused.
+  // One unit tighter than the boundary must still be rejected.
   EXPECT_FALSE((fuse::Layout{.stride = 2, .component_stride = 4, .count = 3,
                              .components = 2}
                     .well_formed()));

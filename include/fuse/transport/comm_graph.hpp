@@ -9,12 +9,12 @@
 /// correctly given `TransportSpec::src_ranks`/`dst_ranks`/`global_ids`, and
 /// `Runner::Impl::attach_comm_graphs` (`src/runtime/runner.cpp`) is now the
 /// consumer that populates those three from a `CommGraph`, at `setup()`, for
-/// every disjoint-rank `Transport` instruction the lowering emits. Overlapping
+/// every disjoint-rank `Transport` instruction that compilation into the dataflow graph emits. Overlapping
 /// rank sets are supported: the peer-wise plan below is consumed by
 /// `MpiTransport::build_plan_from_peers`, and the same-rank matches by its
 /// local-copy pass (R31, closed 2026-09-16).
 /// mishandled -- see the spec's status section for the complete list of what
-/// ships and what is refused.
+/// ships and what is rejected.
 ///
 /// WHAT IT IS NOT. It is not mesh migration -- no geometry moves. It is not a
 /// remap -- it computes no interpolation weights, and `Remap` still runs after
@@ -39,7 +39,7 @@ namespace fuse {
 
 enum class MatchMode {
   /// Source and destination already share an identity space over the coupled
-  /// region -- coincident meshes, e.g. `test/data/pair.yaml`'s
+  /// mesh entity set -- coincident meshes, e.g. `test/data/pair.yaml`'s
   /// `fluid_wall`/`solid_wall`. Matching is by `MeshView::global_id`.
   GlobalId,
   /// Source and destination do not share an identity space. The destination's
@@ -50,7 +50,7 @@ enum class MatchMode {
 
 /// One end of the rendezvous, as seen by the calling rank.
 struct CommGraphSide {
-  /// This rank's local view of the coupled region, or `nullptr` if this rank
+  /// This rank's local view of the coupled mesh entity set, or `nullptr` if this rank
   /// is not part of this component. Must be non-null exactly when
   /// `comm_handle` names a real communicator.
   const MeshView* mesh = nullptr;
@@ -82,7 +82,7 @@ struct CommGraphOptions {
 
 /// A matched pair whose source and destination live on the same rank.
 ///
-/// LOAD BEARING, NOT AN OPTIMIZATION. `MpiTransport` refuses overlapping
+/// LOAD BEARING, NOT AN OPTIMIZATION. `MpiTransport` rejects overlapping
 /// source/destination rank sets by design (R24, and the note on
 /// `MpiTransport` in transport.hpp): one `global_ids` list cannot describe a
 /// rank that is in both. Splitting same-rank matches out here -- they never
@@ -190,7 +190,7 @@ class CommGraph {
   ///     `MPI_Group_union`/`MPI_Comm_create_group` failed.
   ///   * `E-COMMGRAPH-DUPID` -- one side's own list carries a global id
   ///     twice, or two source ranks claim to own the same id. Ambiguous
-  ///     ownership is refused, never silently resolved.
+  ///     ownership is rejected, never silently resolved.
   ///   * `E-COMMGRAPH-NOMATCH` -- a wanted id has no source (`GlobalId`), or
   ///     a query point has no source centroid within `nn_tolerance`
   ///     (`NearestNeighbor`, naming the point and the nearest distance
@@ -264,13 +264,13 @@ class CommGraph {
   /// FALSE IS NOT AN ERROR, AND IT IS NOT RARE. Under full or partial overlap
   /// one `global_ids` list per rank cannot describe a rank that is a source
   /// for some entities and a destination for others, which is exactly why
-  /// `MpiTransport::build_plan` refuses overlapping rank sets (R24). Under
+  /// `MpiTransport::build_plan` rejects overlapping rank sets (R24). Under
   /// FULL overlap every match is a `local_pairs()` entry and there is nothing
   /// left to transport. Under PARTIAL overlap there is: use `send_plan()` and
   /// `recv_plan()`, which describe it exactly.
   [[nodiscard]] bool specs_are_disjoint() const noexcept;
 
-  /// The reverse leg of a bidirectional channel: the same matched pairs with
+  /// The reverse leg of a bidirectional field transfer: the same matched pairs with
   /// the two sides swapped. O(1) in communication -- no collective, no
   /// recomputation -- because the correspondence is symmetric by construction
   /// in both matching modes.
@@ -279,7 +279,7 @@ class CommGraph {
   /// matching may be many-to-one: two destination entities can match one
   /// source entity. Transposed, that is one entity carrying two global ids --
   /// or rather two entities carrying the same id -- on the new source side,
-  /// which `MpiTransport::build_plan` refuses (`E-TRANSPORT-MATCH`, "pass
+  /// which `MpiTransport::build_plan` rejects (`E-TRANSPORT-MATCH`, "pass
   /// owned entities only"), correctly: which of the two values should be
   /// transported is not defined. `local_pairs()`, `send_plan()` and
   /// `recv_plan()` remain exactly right in that case -- it is a scatter, and
@@ -360,7 +360,7 @@ class CommGraph {
 /// extended here to a Remap's own output.
 ///
 /// COLLECTIVE over `base_comm_handle`, same convention as
-/// `accumulate_shared_rows`. Refuses `E-ACCUM-OWNER` if a global id's
+/// `accumulate_shared_rows`. Rejects `E-ACCUM-OWNER` if a global id's
 /// gathered rows claim zero or more than one owner -- `MeshView::is_owned`
 /// disagreeing with itself across ranks is a mesh contract violation, not
 /// something to silently pick a side on.

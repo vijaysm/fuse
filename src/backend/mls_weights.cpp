@@ -64,7 +64,7 @@ namespace {
 }
 
 // ---------------------------------------------------------------------------
-// Region resolution. Deliberately a SEPARATE, smaller copy of
+// Mesh entity set resolution. Deliberately a SEPARATE, smaller copy of
 // `intx_weights.cpp`'s anonymous-namespace `supermesh_side` rather than a
 // shared call: that helper is not exported past its own translation unit
 // (mls_weights.cpp does not own intx_weights.cpp), and this version accepts
@@ -415,7 +415,7 @@ Result<RemapWeights> build_mls_weights(const RemapPlan& plan, const CouplingGrap
   // `classify_dim` (fuse::search::geometry.hpp) returns 1, 2 or 3 by
   // contract for any non-empty box, never anything else, so there is no
   // "unsupported dimension" branch to check here (and none to test: this
-  // file names no refusal it cannot make fire).
+  // file names no rejection it cannot make fire).
   const int dim = classify_point_dim(src_pts, tgt_pts);
 
   const std::size_t basis_size = mls_basis_size(dim, opt.degree);
@@ -471,7 +471,7 @@ Result<RemapWeights> build_mls_weights(const RemapPlan& plan, const CouplingGrap
       // Cannot happen once n_cols >= k has been checked above (query_nearest
       // caps k only to `size()`, and size() == n_cols here) -- checked
       // anyway rather than assumed, per this file's own "coincident points
-      // must not crash" requirement: a defensive, named refusal is cheaper
+      // must not crash" requirement: a defensive, named rejection is cheaper
       // than a silently short row.
       return Failure{"E-MLS-NEIGHBORS",
                      fmt::format("target {} got {} neighbour(s), fewer than the declared "

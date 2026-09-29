@@ -54,11 +54,11 @@ struct GatheredDoubles {
   std::size_t records = 0;
 };
 
-// `comm_handle == fuse::search::kNullComm`: exactly one participant, so the
+// `comm_handle == fuse::search::kNullComm`: exactly one process, so the
 // caller's own local records already ARE the global list -- a plain copy,
 // touching no MPI symbol at all (this is what lets every function below
-// compile and run at Tier 0). Any other value is a real communicator
-// (`MPI_Comm_c2f`'d by the caller): requires `FUSE_HAVE_MPI`, else refused
+// compile and run at the base build configuration). Any other value is a real communicator
+// (`MPI_Comm_c2f`'d by the caller): requires `FUSE_HAVE_MPI`, else rejected
 // with `E-RT-NODAL-DIST-NOMPI` rather than silently treated as local, which
 // would give a build with MPI disabled a plausible-looking WRONG answer on
 // a genuinely multi-rank communicator.
@@ -113,7 +113,7 @@ struct GatheredDoubles {
 // called after a caller has already round-tripped `comm_handle` through
 // `allgatherv_records` once successfully (both `build_distributed_interp_rows`
 // and `agree_on_local_failure` below satisfy this): a real communicator on a
-// no-MPI build would already have been refused (`E-RT-NODAL-DIST-NOMPI`) by
+// no-MPI build would already have been rejected (`E-RT-NODAL-DIST-NOMPI`) by
 // that earlier call, so by the time this runs, `comm_handle == kNullComm` (0
 // is the genuinely correct answer) or `FUSE_HAVE_MPI` is on and `comm_handle`
 // already named a working communicator (so `MPI_Comm_rank` on it cannot fail
@@ -130,7 +130,7 @@ struct GatheredDoubles {
 #endif
 }
 
-/// THE FIX FOR "a refusal reachable after a collective must be an AGREED
+/// THE FIX FOR "a rejection reachable after a collective must be an AGREED
 /// outcome, not a rank-local one" -- the exact defect a host MPI run found
 /// in `build_distributed_interp_rows`'s per-entity loop (round 4,
 /// KNOWN_ISSUES.md D8): a rank whose own local evaluation entities all lie

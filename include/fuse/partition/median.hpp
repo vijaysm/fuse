@@ -20,8 +20,8 @@
 /// the per-element work (the local axis range, the per-bucket weight sum)
 /// is a Kokkos kernel over whatever memory space `ExecutionSpace` names;
 /// the Allreduce is `detail::allreduce_*`, so this compiles and runs with
-/// `comm == kNullComm` in a Tier 0 (no-MPI) build exactly as it does with a
-/// real communicator in Tier 1.
+/// `comm == kNullComm` in a base (no-MPI) build exactly as it does with a
+/// real communicator in the MPI-enabled build configuration.
 namespace fuse::partition {
 
 struct MedianOptions {

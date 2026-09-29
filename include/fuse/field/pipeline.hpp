@@ -21,14 +21,14 @@
 /// runs slower and allocates. So laziness is pinned by an allocation-count
 /// fence (`test/field/pipeline_test.cpp`), not by inspection.
 ///
-/// WHY NON-TERMINALS REFUSE RATHER THAN RETURN A RESULT. The builder's rule
+/// WHY NON-TERMINALS REJECT RATHER THAN RETURN A RESULT. The builder's rule
 /// (U2) is that authoring calls never return a `Result`, so that one terminal
 /// `validate()` can report every defect at once. The pipeline is the opposite
 /// case: there is nothing to accumulate, the caller's arithmetic is simply
 /// wrong, and a `Result` at every stage would make the chain unwritable. A
-/// reversed or out-of-range extent therefore REFUSES -- `fuse::Refusal`
+/// reversed or out-of-range extent therefore REJECTS -- `fuse::Rejection`
 /// carrying the offending bounds -- which keeps the chain fluent and makes the
-/// mistake loud. With `FUSE_ENABLE_EXCEPTIONS=OFF` a refusal reports and
+/// mistake loud. With `FUSE_ENABLE_EXCEPTIONS=OFF` a rejection reports and
 /// aborts, as everywhere else.
 ///
 /// LIFETIME (U6). Two spellings, ref-qualified:
@@ -55,7 +55,7 @@
 
 namespace fuse {
 
-/// Resolves an `Extent` against a dimension of size `n`, refusing rather than
+/// Resolves an `Extent` against a dimension of size `n`, rejecting rather than
 /// clamping. The bounds are in the message because "out of range" without
 /// them sends the reader back to a debugger for something the library already
 /// knows.
@@ -94,8 +94,8 @@ class FieldSpan {
   /// notion: interleaved and blocked storage are both just stride pairs.
   static FieldSpan from(const FieldRef& f) {
     // Mirror FieldRegistry::bind()'s own allowance exactly (REVIEW.md R-08):
-    // null is refused only when there is something to point AT. A rank that
-    // legitimately owns zero elements of a region binds a null pointer with
+    // null is rejected only when there is something to point AT. A rank that
+    // legitimately owns zero elements of a mesh entity set binds a null pointer with
     // `count == 0`, and that FieldRef is indistinguishable from a genuinely
     // unbound one by pointer alone -- `count` is the only fact that tells
     // them apart, so it has to be part of the guard here too.

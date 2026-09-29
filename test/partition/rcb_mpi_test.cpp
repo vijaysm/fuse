@@ -2,12 +2,12 @@
 //
 // NOT YET RUN: this sandbox cannot initialize MPI (mpiexec cannot bind a
 // port, and a singleton MPI_Init aborts here), so nothing in this file has
-// a result from this environment. It is registered only in a Tier 1 build
+// a result from this environment. It is registered only in an MPI-enabled build
 // (test/CMakeLists.txt gates it on FUSE_ENABLE_MPI); running it is a host
 // action -- see docs/dev/partitioning.md "What is verified where".
 //
 // WHAT THIS CHECKS THAT rcb_partition_test.cpp CANNOT: rcb_partition_test.cpp
-// only exercises the Tier 0 (comm == kNullComm) path -- one participant,
+// only exercises the base build configuration (comm == kNullComm) path -- one process,
 // no MPI symbol touched. The collective sequence in detail::recursive_bisect
 // (the axis-extent Allreduce, the median's histogram Allreduce loop, the
 // tie-weight Allreduce, the tie Allgatherv) is untested by that alone. Here,

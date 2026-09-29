@@ -1,7 +1,7 @@
 // test/partition/mesh_adapter_test.cpp — centroids_of against
 // SerialMeshBackend's generated line and box meshes (the task's named
 // fixture source: "the native mesh does not exist yet"). The
-// E-PART-MIXED-DIM refusal itself is a cross-rank property (see
+// E-PART-MIXED-DIM rejection itself is a cross-rank property (see
 // mesh_adapter.hpp's header comment) and is exercised only under a real
 // communicator -- see rcb_mpi_test.cpp; comm == kNullComm agrees with
 // itself trivially and cannot reach that branch, so it is not repeated

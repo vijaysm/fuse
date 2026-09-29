@@ -54,7 +54,7 @@ TEST(Units, ToStringRoundTripsFamiliarNames) {
 }
 
 // Transform (S1.2): the upstream `assert` on exponent narrowing is now a
-// refusal that fires in every build, including Release. 100 * 100 = 200 does
+// rejection that fires in every build, including Release. 100 * 100 = 200 does
 // not fit int8_t; upstream wrapped it to -56 under NDEBUG.
 TEST(Units, ExponentOverflowIsRefusedInEveryBuild) {
   fuse::ErrorPolicy quiet;

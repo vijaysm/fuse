@@ -1,5 +1,5 @@
 // The native distributed mesh's geometry contract: every cell type's
-// simplex decomposition, the shared-face rule, and the refusals that fire
+// simplex decomposition, the shared-face rule, and the rejections that fire
 // when a cell cannot be decomposed. Closed-form expected values throughout,
 // so a failure points at the geometry code, not a tolerance.
 
@@ -345,7 +345,7 @@ TEST(NativeDistributedMesh, TwoPolyhedralCellsSharingAFaceDeduplicateIt) {
   EXPECT_NEAR(v.measure(3, 1), 1.0, 1e-12);
 }
 
-// ---- refusals -------------------------------------------------------------
+// ---- rejections -------------------------------------------------------------
 
 TEST(NativeDistributedMesh, RefusesAVertexIndexOutOfRange) {
   NativeMeshBuilder b(2);

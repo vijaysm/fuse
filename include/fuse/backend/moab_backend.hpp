@@ -63,7 +63,7 @@ struct MoabNativeMesh {
 /// MEASURES are physical, unsigned, additive and local, exactly as
 /// `MeshView::measure` specifies. See the implementation notes in
 /// `src/backend/moab_backend.cpp` for how each element type is integrated
-/// and which ones are refused.
+/// and which ones are rejected.
 ///
 /// PARALLEL. Without `set_communicator` the backend is serial: every rank
 /// that runs it reads the whole file independently and owns every entity.
@@ -104,26 +104,26 @@ class MoabMeshBackend final : public MeshBackend {
   /// `PartitionedTestBackend::set_placements`
   /// (test/support/partitioned_test_backend.hpp) and `NativeMeshBackend::
   /// set_placed_view`'s own per-placement contract, so a caller that reads
-  /// placements off a `CouplingGraph` (`graph.component_count()`, including
+  /// processor sets off a `CouplingGraph` (`graph.component_count()`, including
   /// `Coupler`-kind entries -- never listed by hand) hands them to every
   /// mesh backend the same way.
   ///
   /// MUST PRECEDE THE FIRST `load()`: each `load()` call afterwards reads
-  /// the SAME source into every declared placement's own decomposition, in
-  /// addition to the backend's default one, so a placement declared after a
-  /// mesh already exists would leave that mesh without one. Refuses
+  /// the SAME source into every declared processor set's own decomposition, in
+  /// addition to the backend's default one, so a processor set declared after a
+  /// mesh already exists would leave that mesh without one. Rejects
   /// `E-MOAB-PLACEMENT` in that case, and if called twice.
   ///
   /// TWO MODES, both usable without ever calling `set_communicator`:
   ///   * NO communicator adopted -- "this rank" is rank 0 of an effective
   ///     size-1 communicator (`partition_rank_of`'s own convention). A
-  ///     placement containing rank 0 IS the default decomposition (there is
+  ///     processor set containing rank 0 IS the default decomposition (there is
   ///     only one rank to hold it); one that does not gets an empty view.
   ///     No MOAB Core, no MPI call, is needed or possible, so this mode
-  ///     -- including its refusals -- is exercised at Tier 0.
+  ///     -- including its rejections -- is exercised at the base build configuration.
   ///   * A communicator IS adopted -- one `moab::ParallelComm`, on its own
   ///     `moab::Core`, split from the BASE communicator over exactly each
-  ///     placement's ranks (iMOAB's application-id model, the ruling of
+  ///     processor set's ranks (iMOAB's application-id model, the ruling of
   ///     2026-09-22). Requires `FUSE_ENABLE_MPI` and an MPI-enabled MOAB;
   ///     `E-MOAB-NOMPI` otherwise, the same boundary `set_communicator`
   ///     itself draws.
@@ -131,15 +131,15 @@ class MoabMeshBackend final : public MeshBackend {
   /// COLLECTIVE over the base communicator when one is adopted: every rank
   /// calls this with the SAME `placements` content, in the same order
   /// relative to its other collectives (the graph is identical on every
-  /// rank, docs/user/placement.md). The placement count and every named
+  /// rank, docs/user/placement.md). The processor set count and every named
   /// rank are agreed BEFORE the first `MPI_Comm_split`, so a caller bug that
   /// hands ranks a different-length or out-of-range `placements` is a
-  /// refusal every rank returns identically, never a hang inside the split
+  /// rejection every rank returns identically, never a hang inside the split
   /// sequence that follows (a rank that disagreed would otherwise return
   /// early while its peers still expect it at the next collective).
   ///
   /// Errors, never throws: `E-MESH-MOVED`; `E-MOAB-PLACEMENT` for a mesh
-  /// already loaded, placements already declared, a rank named outside the
+  /// already loaded, processor sets already declared, a rank named outside the
   /// base communicator's `[0, size)`, or an MPI failure while splitting. No
   /// communicator adopted (the no-communicator mode above) is never an
   /// error, whether or not this build has MPI at all -- that mode needs
@@ -180,7 +180,7 @@ class MoabMeshBackend final : public MeshBackend {
   /// `set_communicator` adopted a communicator, and then that communicator's
   /// size.
   ///
-  /// ADDED FOR THE REMAP PATH (Task 5.5), which needs it to refuse work it
+  /// ADDED FOR THE REMAP PATH (Task 5.5), which needs it to reject work it
   /// cannot do correctly rather than to do it differently. `build_weights`
   /// intersects the cells THIS RANK holds; on a partitioned read that is a
   /// piece of the domain with no halo coverage, so a source cell straddling a
@@ -193,9 +193,9 @@ class MoabMeshBackend final : public MeshBackend {
   /// partitioned read.
   ///
   /// THIS VALUE IS LOAD BEARING AND ITS BOUNDARY SHOULD BE TESTED. `> 1`
-  /// refuses; `== 1` must NOT, because a one-rank communicator is an
+  /// rejects; `== 1` must NOT, because a one-rank communicator is an
   /// ordinary MPI job whose mesh happens to be undivided, every cell is
-  /// local, and the serial construction is exactly right. Refusing it would
+  /// local, and the serial construction is exactly right. Rejecting it would
   /// take remap away from every MPI run and no serial test could see the
   /// difference. Guard on the property that breaks correctness -- the mesh
   /// being DIVIDED -- not on "a communicator exists". REVIEW.md R-11: no
@@ -208,11 +208,11 @@ class MoabMeshBackend final : public MeshBackend {
   /// Never throws.
   [[nodiscard]] int communicator_size() const noexcept;
 
-  /// Local indices of the owned (non-ghost) entities of region `r`.
+  /// Local indices of the owned (non-ghost) entities of mesh entity set `r`.
   ///
-  /// The indices are `MeshView` local indices for the region's dimension --
+  /// The indices are `MeshView` local indices for the mesh entity set's dimension --
   /// the same `i` you pass to `measure(dim, i)` -- restricted to entities
-  /// that are both in the region's entity set and owned by this rank. They
+  /// that are both in the mesh entity set's entity set and owned by this rank. They
   /// are returned in increasing order. A conservation sum uses this to avoid
   /// counting a shared entity once per rank that can see it.
   ///
@@ -220,24 +220,24 @@ class MoabMeshBackend final : public MeshBackend {
   [[nodiscard]] Result<std::vector<std::size_t>> owned_entities(
       const Region& r) const;
 
-  /// The rank that owns entity `local_index` of region `r`, in the
+  /// The rank that owns entity `local_index` of mesh entity set `r`, in the
   /// communicator given to `set_communicator`.
   ///
-  /// `local_index` is a `MeshView` local index for the region's dimension,
+  /// `local_index` is a `MeshView` local index for the mesh entity set's dimension,
   /// as returned by `owned_entities`, NOT a position within that vector.
   /// With no communicator set, the mesh was read serially -- the effective
   /// communicator is `MPI_COMM_SELF`, whose only rank is 0 -- so the answer
   /// is 0.
   ///
   /// Errors: those of `region_size`, plus `E-MESH-INDEX` if `local_index` is
-  /// out of range for the region's dimension.
+  /// out of range for the mesh entity set's dimension.
   [[nodiscard]] Result<int> partition_rank_of(const Region& r,
                                               std::size_t local_index) const;
 
   /// FIXTURE-PREP SEAM, added for the `A-PARTITIONED` parallel-matrix cell
   /// (`build-evidence/parallel-matrix.toml`), used from test code only.
   ///
-  /// `build_remap_halo`'s covering-set construction refuses a spherical pair
+  /// `build_remap_halo`'s covering-set construction rejects a spherical pair
   /// whose two meshes fit to DIFFERENT radii (`E-REMAP-GEOMETRY`, "not the
   /// same domain") -- correctly, because in general two different radii ARE
   /// two different domains and the library cannot know they are meant to be

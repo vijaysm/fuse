@@ -26,7 +26,7 @@ class FieldRegistry {
  public:
   /// Binds `id` to component-owned storage. Rebinding an already-bound field
   /// is an error rather than a silent replacement: swapping a component's
-  /// pointer mid-run is a class of bug worth refusing.
+  /// pointer mid-run is a class of bug worth rejecting.
   ///
   /// On any error the registry is left exactly as it was.
   Result<void> bind(FieldId id, FieldRef ref) {
@@ -35,19 +35,19 @@ class FieldRegistry {
                    "cannot bind storage to an invalid FieldId (the "
                    "default-constructed sentinel)"};
     }
-    // A null pointer is refused only when there is something to point AT.
+    // A null pointer is rejected only when there is something to point AT.
     //
-    // Task 4.1 wrote this as an unconditional refusal, which made a component
-    // that legitimately owns zero elements of a region impossible to bind:
+    // Task 4.1 wrote this as an unconditional rejection, which made a component
+    // that legitimately owns zero elements of a mesh entity set impossible to bind:
     // `std::vector<double>{}.data()` is null, and on a partitioned mesh a rank
-    // owning none of a region is ordinary, not an error (spec §4.1, and the
+    // owning none of a mesh entity set is ordinary, not an error (spec §4.1, and the
     // n->m redistribution of Task 5.4 is built around it). An empty view
     // addresses nothing -- `Layout::well_formed()` already says so explicitly
     // -- so there is no pointer for it to get wrong.
     //
     // The Task 4.1 test that pinned this down, FieldRegistry.RejectsNullData,
     // binds null with count = 4 and is unaffected: what narrows is the
-    // premise, from "null is always refused" to "null is refused for a
+    // premise, from "null is always rejected" to "null is rejected for a
     // non-empty field".
     if (!ref.valid() && ref.layout().count != 0) {
       return Failure{"E-FIELD-NULL", "field " + std::to_string(id.value()) +

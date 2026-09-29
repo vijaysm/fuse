@@ -42,7 +42,7 @@ constexpr void check_fits_i64(Int128 v, const char* what) {
 
 /// The C-ABI shape of a Rational: two int64 in the order every ABI record,
 /// the byte writer and the Fortran shim agree on. Layout-identical to the
-/// spine's `karma_exact_time` and to the `fuse_time` the participant ABI
+/// spine's `karma_exact_time` and to the `fuse_time` the coupled-process ABI
 /// will declare, so a Rational crosses the boundary as this and nothing else.
 struct ExactTimeRecord {
   std::int64_t numerator = 0;
@@ -52,7 +52,7 @@ struct ExactTimeRecord {
 static_assert(sizeof(ExactTimeRecord) == 16 && alignof(ExactTimeRecord) == 8);
 
 /// Exact rational time. Spec §4.3: floating-point time accumulation would
-/// destroy slab decomposition over long runs, so every time quantity in FUSE
+/// destroy the decomposition into common-refinement intervals over long runs, so every time quantity in FUSE
 /// is a Rational.
 ///
 /// Magnitude invariant: num_/den_ is always kept in lowest terms with
@@ -96,7 +96,7 @@ class Rational {
   /// --- exact arithmetic, in two spellings ---------------------------------
   ///
   /// Each operation is implemented ONCE, in the `try_` form, which reports
-  /// failure by returning nothing. The operators are thin wrappers that refuse
+  /// failure by returning nothing. The operators are thin wrappers that reject
   /// when it does. Two spellings and one implementation, so the overflow rule
   /// cannot drift between them.
   ///
@@ -104,10 +104,10 @@ class Rational {
   /// unrepresentable result into a `Result` or a diagnostic rather than let it
   /// propagate -- `ClockSet::checked_common_period()` is documented never to
   /// throw, and the unit-compatibility stages report an unrepresentable
-  /// conversion as a refusal on the channel. Those callers used to wrap the
+  /// conversion as a rejection on the field transfer. Those callers used to wrap the
   /// throwing spelling in `try`/`catch`, which made an exception part of the
   /// library's INTERNAL control flow: with `FUSE_ENABLE_EXCEPTIONS=OFF` a
-  /// refusal aborts instead of unwinding, so the catch never ran and the
+  /// rejection aborts instead of unwinding, so the catch never ran and the
   /// process died inside a test named for the opposite contract
   /// (`Expand.UnrepresentableCommonPeriodIsAnErrorNotAnException`). A path
   /// whose job is to produce a value should never have been throwing.
@@ -213,7 +213,7 @@ class Rational {
   /// Rational{1, <negative>} normalises the sign onto the numerator, so this
   /// silently returned a small NEGATIVE Rational for "the finest tick", a
   /// positive quantity by construction, with no diagnostic). Same Int128
-  /// route as try_gcd_rational's denominator lcm, refusing rather than
+  /// route as try_gcd_rational's denominator lcm, rejecting rather than
   /// admitting a wrapped result.
   [[nodiscard]] static constexpr Rational lcm_denominator(const Rational& a,
                                                           const Rational& b) {
@@ -236,7 +236,7 @@ class Rational {
 
   /// From an ABI record produced by foreign code. The contract says reduced
   /// and positive-denominator; a record that is not is a contract violation
-  /// on the producer's side and is refused rather than repaired (I4) -- a
+  /// on the producer's side and is rejected rather than repaired (I4) -- a
   /// coupler that quietly reduces 2/4 hides a bug in the code it is coupling.
   [[nodiscard]] static Result<Rational> from_record(ExactTimeRecord rec) {
     if (rec.denominator <= 0) {
@@ -284,9 +284,10 @@ class Rational {
 };
 
 /// Largest g such that a and b are both integer multiples of g.
-/// gcd(a/b, c/d) = gcd(a,c) / lcm(b,d). Used by §8.3 slab decomposition.
+/// gcd(a/b, c/d) = gcd(a,c) / lcm(b,d). Used by §8.3's decomposition into
+/// common-refinement intervals.
 /// Largest g such that a and b are both integer multiples of g, or nothing
-/// when that value is not representable. The throwing spelling below refuses
+/// when that value is not representable. The throwing spelling below rejects
 /// on the same condition; this one exists for callers that must report rather
 /// than propagate (see Rational::try_add).
 [[nodiscard]] constexpr std::optional<Rational> try_gcd_rational(
@@ -306,7 +307,7 @@ class Rational {
   // a *negative* int64_t, which Rational's constructor then normalises into a
   // negative rational -- i.e. gcd_rational of two positive intervals silently
   // returns a negative one, and ClockSet::finest_interval() hands that to the
-  // slab decomposition.
+  // decomposition into common-refinement intervals.
   const detail::Int128 ad = a.den();
   const detail::Int128 bd = b.den();
   const detail::Int128 dg = std::gcd(ad, bd);
@@ -315,8 +316,9 @@ class Rational {
   return Rational{static_cast<std::int64_t>(g), static_cast<std::int64_t>(l)};
 }
 
-/// gcd(a/b, c/d) = gcd(a,c) / lcm(b,d). Used by §8.3 slab decomposition.
-/// Refuses where try_gcd_rational() reports nothing.
+/// gcd(a/b, c/d) = gcd(a,c) / lcm(b,d). Used by §8.3's decomposition into
+/// common-refinement intervals.
+/// Rejects where try_gcd_rational() reports nothing.
 [[nodiscard]] constexpr Rational gcd_rational(const Rational& a,
                                               const Rational& b) {
   const auto g = try_gcd_rational(a, b);

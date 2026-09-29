@@ -52,7 +52,7 @@
 /// contract). The physically conservative use of this matrix is via
 /// `apply_transpose`, one call away on the exact same object.
 ///
-/// DENSITY VS LOAD -- READ THIS BEFORE WIRING A FORCE CHANNEL. FUSE's
+/// DENSITY VS LOAD -- READ THIS BEFORE WIRING A FORCE FIELD TRANSFER. FUSE's
 /// `Conservation::Extensive` convention (`remap_plan.hpp`'s "WHICH SUM IS
 /// WHICH") stores a DENSITY: a cell's value integrates to an amount only
 /// once multiplied by that cell's measure. `H^T` needs a LOAD (an already-
@@ -60,11 +60,11 @@
 /// measure of its own to divide a delivered load by on the way out. So the
 /// weights `build_consistent_transpose_weights_for_plan` returns for the
 /// "consistent-transpose" method are not a bare transpose of `H`: each
-/// column (one per source-of-the-channel, i.e. the density side) is
+/// column (one per source-of-the-field-transfer, i.e. the density side) is
 /// pre-multiplied by THAT side's own cell measure, converting density to
 /// load before the H^T contraction runs. Concretely, if `D` is the diagonal
 /// of the point side's cell measures, the matrix returned is `(D H)^T =
-/// H^T D`, applied directly to the density array the channel carries -- so
+/// H^T D`, applied directly to the density array the field transfer carries -- so
 /// the caller never has to perform the density-to-load conversion itself,
 /// and the total delivered is exactly the total sent (see the file's
 /// mutation and test coverage for the identity `sum((H^T D) rho) ==
@@ -72,7 +72,7 @@
 ///
 /// DISCRETE POWER BALANCE. With `H` used forward for a pointwise velocity
 /// `v` (beam -> fluid) and `H^T D` used forward for a fluid density `rho`
-/// (fluid -> beam, `D` its cell measures), the two channels' delivered
+/// (fluid -> beam, `D` its cell measures), the two field transfers' delivered
 /// quantities satisfy `(H v)^T (D rho) == v^T (H^T D rho)` EXACTLY -- not
 /// approximately -- because the left- and right-hand sides are literally
 /// the same bilinear form `v^T H^T D rho` associated differently. This is
@@ -86,7 +86,7 @@
 /// `SemanticLocation::Vertex`). `method == "consistent-transpose"` selects
 /// `H^T D` (the TARGET field must be that same nodal discretization; the
 /// SOURCE field may be `Discretization::FV`, density-convention, in which
-/// case its own region's cell measure supplies `D`, or may itself be nodal
+/// case its own mesh entity set's cell measure supplies `D`, or may itself be nodal
 /// order <= 1, in which case the caller's values are already a load and no
 /// scaling is applied). Both dispatch out of `build_weights()` in
 /// `src/backend/intx_weights.cpp` before its FV<->FV-only check, so neither
@@ -102,7 +102,7 @@
 // ownership of (see the task's `open_questions`), so these functions are
 // `inline` and defined below instead of in a new .cpp this task cannot wire
 // into the library target. They are called only at plan-build time (once per
-// distinct channel, cached by `RemapCache`), never in a per-entity hot loop,
+// distinct field transfer, cached by `RemapCache`), never in a per-entity hot loop,
 // so the cost of a header-only definition is init-time only.
 
 #include <algorithm>
@@ -143,7 +143,7 @@ namespace fuse {
 /// coordinate -- `MeshView` gives no connectivity query, and for a genuine
 /// 1D interface, coordinate order and mesh order coincide.
 ///
-/// REFUSES, never throws:
+/// REJECTS, never throws:
 ///   * `E-INTERP-NOGEOMETRY`  -- `src_nodes` has no dimension-0 entities, or
 ///     `tgt_points` has none at `tgt_dim`.
 ///   * `E-INTERP-DEGENERATE`  -- two source vertices coincide (within
@@ -373,7 +373,7 @@ namespace fuse {
 /// exact prior behaviour byte for byte. `dimension() == 2` or `3` (a
 /// triangle/quad/sphere-surface or tet/hex/prism source) routes to
 /// `build_general_interp_weights` (general_interp.hpp), which needs
-/// `MeshView::cell_vertices` and refuses by name
+/// `MeshView::cell_vertices` and rejects by name
 /// (`E-MESH-NO-CELL-VERTICES`) when the concrete backend does not implement
 /// it.
 ///
@@ -404,7 +404,7 @@ namespace consistent_interp_detail {
 /// Mirrors `intx_weights.cpp`'s anonymous-namespace `supermesh_side`
 /// (duplicated rather than shared: that helper is file-local to a different
 /// translation unit). Resolves a `RegionId` to its `MeshView` and entity
-/// dimension, refusing exactly the cases that helper refuses.
+/// dimension, rejecting exactly the cases that helper rejects.
 struct Side {
   const MeshView* view = nullptr;
   int             dim = 0;
@@ -462,7 +462,7 @@ struct Side {
 /// and `plan.src_order`/`plan.tgt_order`, and returns either `H` or `H^T D`
 /// as documented above.
 ///
-/// Additionally refuses `E-INTERP-METHOD` for any other method string --
+/// Additionally rejects `E-INTERP-METHOD` for any other method string --
 /// callers reach this only after `build_weights()` has already recognised
 /// the method as one of these two, so this is a defensive, not a primary,
 /// check -- and `E-INTERP-DISC` when the side that must be nodal is not
@@ -509,11 +509,11 @@ struct Side {
               to_cstring(plan.tgt_disc), plan.tgt_order)};
     }
     const bool src_is_load = is_nodal(plan.src_disc, plan.src_order);
-    // Build H itself with the SAME orientation the paired forward channel
+    // Build H itself with the SAME orientation the paired forward field transfer
     // would use: nodal side = plan.tgt (here, the "beam"), point side =
     // plan.src (here, the "fluid"). The measure that converts the fluid's
     // density to a load, if one is needed, is therefore plan.src's own
-    // region dimension -- never plan.tgt's, which may be dimension 0 and
+    // mesh entity set dimension -- never plan.tgt's, which may be dimension 0 and
     // therefore have no measure at all.
     const int src_eval_dim = src_is_load ? 0 : src.value().dim;
     auto h = build_consistent_interp_weights(*tgt.value().view,

@@ -38,14 +38,14 @@ inline constexpr int kEpoch = 0x5C14;
 /// An implicit coupling group's per-sweep residual reduction (REVIEW.md R-10), on
 /// the caller's base communicator. Distinct from `kEpoch`: both run a
 /// reduce-then-broadcast over the same schedule shape, but a group's sweep
-/// and a rank-agreement point can be in flight on the same communicator at
-/// once (a region's body may itself contain an Epoch), so sharing a tag
+/// and a synchronisation point can be in flight on the same communicator at
+/// once (an implicit coupling group's body may itself contain an Epoch), so sharing a tag
 /// would let one mechanism's message match the other's receive.
 inline constexpr int kIterationRegion = 0x5C15;
 
 /// The largest tag this library uses. Checked once at setup against the
 /// implementation's `MPI_TAG_UB`, so an implementation with an unusually low
-/// bound is a refusal before the run rather than a failure inside a reduction.
+/// bound is a rejection before the run rather than a failure inside a reduction.
 inline constexpr int kMaxUsed = kIterationRegion;
 
 }  // namespace fuse::tags

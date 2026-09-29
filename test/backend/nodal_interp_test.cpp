@@ -48,7 +48,7 @@ std::vector<double> apply_H(const RemapWeights& w, const std::vector<double>& f)
 // A minimal, hand-built single/few-cell MeshView: exact control over
 // geometry, shape and connectivity, for the properties a generated mesh
 // cannot isolate as cleanly (a single degenerate cell, a point exactly on a
-// shared face, a shape this builder must refuse).
+// shared face, a shape this builder must reject).
 // ===========================================================================
 class ManualCellMesh final : public MeshView {
  public:
@@ -255,7 +255,7 @@ TEST(GeneralInterp, HexIsExactForATrilinearField) {
 }
 
 // ===========================================================================
-// Refusals: every one of them must actually fire.
+// Rejections: every one of them must actually fire.
 // ===========================================================================
 
 TEST(GeneralInterp, PyramidRefusesByName) {
@@ -334,7 +334,7 @@ TEST(GeneralInterp, OutOfDomainRefusesByDefaultAndClampAccepts) {
 TEST(GeneralInterp, OffSurfaceRefusesByDefault) {
   // A flat unit-square quad "surface" cell; a target far off its plane
   // (large z) is neither laterally out of bounds nor within the surface
-  // tolerance -- refused as a domain edge either way.
+  // tolerance -- rejected as a domain edge either way.
   auto src = unit_cell(CellShape::Quad);
   auto tgt = ManualCellMesh::points(0, {{0.5, 0.5, 3.0}});
   const auto h = fuse::build_consistent_interp_weights(*src, *tgt, 0);
@@ -399,7 +399,7 @@ TEST(GeneralInterp, NewtonNonConvergenceRefuses) {
   // Exercises invert_reference_map's own non-convergence path directly
   // (general_interp_detail, exposed by the header) rather than hunting for a
   // pathological cell that happens to defeat 50 iterations: `max_iter = 0`
-  // means the loop body never runs at all, so this MUST refuse
+  // means the loop body never runs at all, so this MUST reject
   // E-INTERP-NEWTON deterministically, on any shape.
   using namespace fuse::general_interp_detail;
   Cell c;
@@ -719,13 +719,13 @@ TEST(CellVerticesQuery, StructuredHexBoxReportsTheRightCorners) {
 }
 
 // Round 2 (nodal-remap track): a StructuredMesh line's dimension-1
-// cell_vertices answer went from "refused" to "implemented", to give
+// cell_vertices answer went from "rejected" to "implemented", to give
 // `nodal_remap_distributed.hpp`'s builder the same connectivity answer on a
 // 'generated:line' mesh that test/verification/interface_transfer_test.cpp's
 // `run_consistent_pair` already relies on for its serial (single-rank)
-// coverage. This test therefore now asserts the ANSWER, not a refusal --
+// coverage. This test therefore now asserts the ANSWER, not a rejection --
 // see StructuredHexBoxStillRefusesAtTheWrongDimension below for what still
-// refuses on this same backend.
+// rejects on this same backend.
 TEST(CellVerticesQuery, StructuredLineReportsConsecutiveEdgeCorners) {
   fuse::SerialMeshBackend backend;
   ASSERT_TRUE(backend.load({.name = "l", .source = "generated:line:4"}).ok());

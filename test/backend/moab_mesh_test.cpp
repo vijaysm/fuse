@@ -620,11 +620,11 @@ TEST(MoabMesh, SetCommunicatorAfterLoadIsRefused) {
 // Every test below runs with NO communicator adopted -- moab_backend.hpp's
 // "Mode A", where "this rank" is rank 0 of an effective size-1 base
 // communicator (`partition_rank_of`'s own documented convention). That is
-// enough to exercise every REFUSAL this item adds, and the one piece of
-// real behaviour Mode A needs no MPI to prove: a one-rank placement equal
+// enough to exercise every REJECTION this item adds, and the one piece of
+// real behaviour Mode A needs no MPI to prove: a one-rank processor set equal
 // to the whole (size-1) communicator must match the default view entity
 // for entity, and one that names no rank at all must be empty. The real
-// split-and-read machinery (a genuine `moab::ParallelComm` per placement)
+// split-and-read machinery (a genuine `moab::ParallelComm` per processor set)
 // needs a communicator of more than one rank and is pinned instead by
 // test/parallel/moab_placed_view_mpi_test.cpp, run on a host.
 // ===========================================================================
@@ -634,7 +634,7 @@ namespace {
 /// Every dimension's entity count, global id set and measure agree between
 /// two views -- "identical decomposition" per mesh_view.hpp's per-placement
 /// contract, checked structurally rather than by pointer identity (a
-/// placement backed by `view()` directly and one that is genuinely a
+/// processor set backed by `view()` directly and one that is genuinely a
 /// second read of the same source must both pass this).
 void expect_same_decomposition(const MeshView& a, const MeshView& b) {
   for (int d = 0; d <= 3; ++d) {
@@ -679,7 +679,7 @@ TEST(MoabMesh, APlacementNamingNoRankIsEmptyNotTheDefault) {
   MoabMeshBackend b;
   // An empty RankSet -- a component switched off this run (docs/user/
   // placement.md) -- names no rank at all, including rank 0, so this
-  // placement's view must be EMPTY, never the default one.
+  // processor set's view must be EMPTY, never the default one.
   ASSERT_TRUE(b.set_placements({RankSet(0, 0)}).ok());
   ASSERT_TRUE(b.load(MeshDecl{.name = "m", .source = "generated:box:2x2x2"}).ok());
   const auto placed = b.placed_view(MeshId{0}, ComponentId{0});

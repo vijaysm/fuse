@@ -25,10 +25,10 @@ MPI_Comm resolve(CommHandle comm) {
 }
 #else
 // A non-null handle in a build with no MPI is a caller error the public
-// entry points (rcb_partition, centroids_of) already refuse with
+// entry points (rcb_partition, centroids_of) already reject with
 // E-PART-NO-MPI before any of these functions are called. Reaching here
 // with one anyway is this library's own bug, not the caller's -- hence
-// FUSE_ASSERT, not another refusal.
+// FUSE_ASSERT, not another rejection.
 void refuse_no_mpi() {
   FUSE_ASSERT(false,
              "fuse::partition::detail collective called with a non-null CommHandle in a "

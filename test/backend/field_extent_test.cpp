@@ -1,14 +1,14 @@
 // "Nodal fields" track, step 1: the ONE definition of a field's extent from
-// (disc, order, region) -- mesh_view.hpp's `field_extent`/`region_extent_kind`
+// (disc, order, mesh entity set) -- mesh_view.hpp's `field_extent`/`region_extent_kind`
 // -- and its wiring into `make_region_sizes` (serial_backend.cpp), which every
 // caller of RegionSizes (schedule/buffers.cpp's `plan_buffers`, and therefore
 // `schedule()`) goes through.
 //
 // Covers: FV/DiscontinuousGLL order 0 (cell count) and ContinuousGLL order 1
 // (vertex count) on 1D (line), 2D (quad AND triangle) and 3D (hexbox AND
-// tetbox) generated meshes; the two named refusals (E-EXTENT-DISC for an
-// unsupported (disc, order), E-EXTENT-MIXED for one region carrying both a
-// cell field and a nodal one); and that a region with no field on it still
+// tetbox) generated meshes; the two named rejections (E-EXTENT-DISC for an
+// unsupported (disc, order), E-EXTENT-MIXED for one mesh entity set carrying both a
+// cell field and a nodal one); and that a mesh entity set with no field on it still
 // defaults to the old, cell-based behaviour.
 
 #include <gtest/gtest.h>
@@ -92,12 +92,12 @@ TEST(FieldExtent, EveryUnimplementedCombinationRefusesNamedly) {
 }
 
 // ---------------------------------------------------------------------------
-// region_extent_kind(): what the GRAPH's fields imply for one region
+// region_extent_kind(): what the GRAPH's fields imply for one mesh entity set
 // ---------------------------------------------------------------------------
 
 namespace {
 
-/// One region on one line mesh, with a single field of `disc`/`order` on it
+/// One mesh entity set on one line mesh, with a single field of `disc`/`order` on it
 /// (or none at all when `disc` is left at its default and no field is added).
 CouplingGraph one_field_graph(Discretization disc, int order,
                              std::string* field_name = nullptr) {
@@ -176,7 +176,7 @@ TEST(RegionExtentKind, ACellFieldAndANodalFieldOnOneRegionRefusesAsMixed) {
 
 namespace {
 
-/// One region on one mesh, with one field of `disc`/`order` declared on it,
+/// One mesh entity set on one mesh, with one field of `disc`/`order` declared on it,
 /// ready for `make_region_sizes`.
 CouplingGraph sizing_graph(const std::string& source, Discretization disc,
                           int order, int region_dim = -1) {
@@ -210,7 +210,7 @@ TEST(MakeRegionSizesNodal, BoxMeshVertexCountIsTheStructuredGridFormula) {
   ASSERT_TRUE(b.load(g.mesh(MeshId{0})).ok());
   const fuse::RegionSizes sizes = fuse::make_region_sizes(g, b);
   EXPECT_EQ(sizes(RegionId{0}, -1), 4u * 3u * 5u);
-  // The same region's CELL count is unaffected -- region_size() on its own,
+  // The same mesh entity set's CELL count is unaffected -- region_size() on its own,
   // with no field in view, still answers the way it always has.
   EXPECT_EQ(b.region_size(g.region(RegionId{0})).value(), 3u * 2u * 4u);
 }

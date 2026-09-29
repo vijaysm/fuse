@@ -42,7 +42,7 @@
 /// memory_space`. Earlier, the views had no explicit space, so on a build
 /// whose default execution space has discrete device memory (CUDA without
 /// UVM, HIP, SYCL) they allocated there -- and `finalize()`'s host-side
-/// assembly loop, which refuses via `Result<void>`/`std::string` and cannot
+/// assembly loop, which rejects via `Result<void>`/`std::string` and cannot
 /// run on a device, dereferenced them directly: an illegal host access to
 /// device memory, undefined behaviour, not caught at compile time. Now:
 ///
@@ -53,7 +53,7 @@
 ///   * `finalize()` assembles through `Kokkos::create_mirror_view` --
 ///     a no-op alias of the same view when `MemorySpace` is already
 ///     host-accessible, and an explicit host allocation plus `deep_copy`
-///     otherwise -- so the refusal logic always runs on host memory it can
+///     otherwise -- so the rejection logic always runs on host memory it can
 ///     legally touch, regardless of where the views actually live.
 ///   * `measure()`, `centroid()` and `normal()` are `KOKKOS_INLINE_FUNCTION`
 ///     (R-14 below), so a kernel that built a device-resident `Mesh` can
@@ -166,7 +166,7 @@ class Mesh {
   [[nodiscard]] const Parents& parents() const noexcept { return parent_; }
 
   /// Validates the connectivity and computes every derived quantity in one
-  /// pass. Refuses rather than computing from a bad index: an out-of-range
+  /// pass. Rejects rather than computing from a bad index: an out-of-range
   /// vertex would otherwise read arbitrary memory and produce a measure that
   /// looks like a number.
   ///
@@ -266,7 +266,7 @@ class Mesh {
   ///
   /// Only declared when the codimension is exactly 1. On a volume mesh this
   /// does not compile, which is the intent: "the normal of a tetrahedron" has
-  /// no answer, and a runtime refusal would be a worse way to learn that.
+  /// no answer, and a runtime rejection would be a worse way to learn that.
   ///
   /// REVIEW.md R-14: `KOKKOS_INLINE_FUNCTION`, and degeneracy is
   /// `FUSE_DEBUG_ASSERT`, not `FUSE_ASSERT` -- see `measure()`. The

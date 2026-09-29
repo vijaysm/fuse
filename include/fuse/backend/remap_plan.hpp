@@ -204,8 +204,8 @@ struct RemapWeights {
                             w.val.size(), w.n_rows, w.n_cols};
 }
 
-/// Spec §5.4: (source region, target region, discretization pair, method) ->
-/// weights, hash-keyed so identical channels share one build.
+/// Spec §5.4: (source mesh entity set, target mesh entity set, discretization pair, method) ->
+/// weights, hash-keyed so identical field transfers share one build.
 ///
 /// `temporal` and `temporal_degree` are unused until Phase 6 Task 6.3. They are
 /// declared now so the struct shape does not change later, and they take part
@@ -224,14 +224,14 @@ struct RemapPlan {
   /// The component whose decomposition of BOTH meshes the weights index.
   /// Weights are a matrix over MeshView local indices, so they are only
   /// meaningful against the views they were built from; a backend that
-  /// gives each placement its own decomposition (`MeshBackend::placed_view`)
+  /// gives each processor set its own decomposition (`MeshBackend::placed_view`)
   /// returns a different local numbering per component, and weights built
   /// on the default view would index the wrong entities -- plausible numbers,
-  /// no diagnostic (that was the E-RT-REMAP-PLACEMENT refusal, KNOWN_ISSUES
+  /// no diagnostic (that was the E-RT-REMAP-PLACEMENT rejection, KNOWN_ISSUES
   /// D5, closed 2026-09-25). Every builder resolves its sides through
   /// `placed_view(id, placement)`; invalid means the default decomposition,
   /// which is what `placed_view`'s default implementation returns anyway.
-  /// Part of `key()`: the same plan on two placements is two matrices.
+  /// Part of `key()`: the same plan on two processor sets is two matrices.
   ComponentId    placement{};
 
   friend bool operator==(const RemapPlan&, const RemapPlan&) = default;
@@ -378,14 +378,14 @@ struct RemapPlan {
 /// reach past the immediate neighbours and the least-squares fit puts negative
 /// entries there. TempestRemap resolves it the same way: setting `fMonotone`
 /// makes it call its first-order kernel, whatever order you asked for. This
-/// library refuses `Monotone` together with an order above 1 rather than
+/// library rejects `Monotone` together with an order above 1 rather than
 /// returning the first-order map under the high-order name.
 ///
 /// INDEX SPACE. `row` and `col` are `MeshView` LOCAL INDICES at the target and
-/// source region's dimension -- the same `i` you pass to `measure(dim, i)` --
+/// source mesh entity set's dimension -- the same `i` you pass to `measure(dim, i)` --
 /// so `n_rows == tgt_view->entity_count(dim)` and `n_cols ==
-/// src_view->entity_count(dim)`. Both regions must therefore designate the
-/// whole mesh at that dimension (`entity_set` empty or "all"); a sub-set region
+/// src_view->entity_count(dim)`. Both mesh entity sets must therefore designate the
+/// whole mesh at that dimension (`entity_set` empty or "all"); a sub-set mesh entity set
 /// is `E-REMAP-REGION`, because `MeshBackend` offers no way to say whether a
 /// buffer for it is indexed by set position or by mesh-local index, and
 /// guessing would produce a matrix that is wrong by a permutation.
@@ -466,30 +466,30 @@ struct RemapPlan {
 /// above. Without one, every overlap crossing a partition boundary is dropped:
 /// measured on a deliberately misaligned pair, 66.7% of the transferred
 /// quantity at two ranks and 91.2% at four, returned as SUCCESS unless
-/// `RemapFlags::Conservative` happens to be set. So `build_weights` refuses a
+/// `RemapFlags::Conservative` happens to be set. So `build_weights` rejects a
 /// partitioned pair for which no halo was built (`E-REMAP-PARALLEL`), and with
 /// one it conserves to 1.2e-15 at two ranks and 7.4e-16 at four, from the
 /// task report that measured this. REVIEW.md R-11: neither number is pinned
 /// by a test in this tree -- `test/unit/remap_parallel_test.cpp` and
 /// `test/unit/remap_halo_parallel_test.cpp`, cited here previously, do not
-/// exist under `test/backend/`. Both the refusal and the halo/conservation
+/// exist under `test/backend/`. Both the rejection and the halo/conservation
 /// path are implemented, untested (docs/dev/testing.md state); see B1/B2
 /// in REVIEW.md for the MPI tests that would verify them.
 ///
-/// The refusal is keyed on the communicator having MORE THAN ONE RANK, not on
+/// The rejection is keyed on the communicator having MORE THAN ONE RANK, not on
 /// a communicator being present: a one-rank communicator is an ordinary MPI
 /// job whose mesh happens to be undivided, every cell is local, and the serial
-/// construction is exactly right. The one-rank leg of the refusal test is a
+/// construction is exactly right. The one-rank leg of the rejection test is a
 /// POSITIVE control for that.
 ///
 /// WHAT IS AND IS NOT COVERED IN PARALLEL:
 ///
 ///   * The FIRST-ORDER conservative supermesh builder: supported and
 ///     conservation-tested at 1, 2 and 4 ranks.
-///   * The HIGH-ORDER builder: refused on a partitioned read. Not a discovered
+///   * The HIGH-ORDER builder: rejected on a partitioned read. Not a discovered
 ///     impossibility -- with a halo the source surface it is handed is a piece
 ///     of the domain plus a fringe rather than a closed one, and its
-///     reconstruction stencils near that fringe are unmeasured. Refused until
+///     reconstruction stencils near that fringe are unmeasured. Rejected until
 ///     someone measures them.
 ///   * NON-SPHERICAL surfaces: the covering-set construction available here is
 ///     spherical only, so a partitioned planar or volume pair is
@@ -497,7 +497,7 @@ struct RemapPlan {
 ///     construction would slot in behind `build_remap_halo` and nothing above
 ///     it would change.
 ///   * The RUNTIME (`Runner`): does not yet run the halo exchange around the
-///     `Remap` operator, and refuses (`E-RT-REMAP-HALO`) rather than applying
+///     `Remap` operator, and rejects (`E-RT-REMAP-HALO`) rather than applying
 ///     a matrix to unfilled halo slots. The library-level sequence
 ///     `build_remap_halo` -> `build_weights` -> `exchange_remap_halo` ->
 ///     `apply_weights` is complete.
@@ -524,13 +524,13 @@ struct RemapPlan {
 ///   * `E-REMAP-NOTEMPEST` -- the plan needs the TempestRemap builder and this
 ///     build's MOAB was configured without TempestRemap.
 ///   * `E-REMAP-MONOTONE`  -- `RemapFlags::Monotone` was asked for and the
-///     matrix that came out is not bound preserving. Not a refusal to try: the
+///     matrix that came out is not bound preserving. Not a rejection to try: the
 ///     map was built and then checked, and the check failed.
 ///   * `E-REMAP-DEGRADED`  -- TempestRemap built a map of LOWER order than the
 ///     one requested (its least-squares fit was too ill-conditioned on this
 ///     mesh pair and it fell back to first order). It reports this only in its
 ///     `Announce` stream, and returns success; this build reads that stream and
-///     refuses rather than handing back a first-order map labelled order N.
+///     rejects rather than handing back a first-order map labelled order N.
 [[nodiscard]] Result<RemapWeights> build_weights(const RemapPlan& plan,
                                                  const CouplingGraph& graph,
                                                  const MeshBackend& backend);
@@ -577,12 +577,12 @@ struct RemapPlan {
 /// discovered.
 ///
 /// Errors, never throws: everything `build_weights` can return while resolving
-/// the two regions, plus `E-MESH-HALO*` from the mesh layer.
+/// the two mesh entity sets, plus `E-MESH-HALO*` from the mesh layer.
 [[nodiscard]] Result<std::size_t> build_remap_halo(const RemapPlan& plan,
                                                    const CouplingGraph& graph,
                                                    MeshBackend& backend);
 
-/// Spec §5.4: weights are built once at setup, shared by identical channels.
+/// Spec §5.4: weights are built once at setup, shared by identical field transfers.
 ///
 /// The returned pointer is stable for the life of the cache -- entries are held
 /// through `unique_ptr`, so rehashing the map does not move the weights -- and

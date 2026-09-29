@@ -52,8 +52,8 @@ struct RcbOptions {
   CoordTransform coord_transform = CoordTransform::Identity;
   GnomonicOptions gnomonic;
 
-  /// See types.hpp. kNullComm (default) means Tier 0: exactly one
-  /// participant, no MPI touched.
+  /// See types.hpp. kNullComm (default) means the base build configuration: exactly one
+  /// process, no MPI touched.
   CommHandle comm = kNullComm;
 };
 
@@ -260,7 +260,7 @@ void recursive_bisect(
 
 }  // namespace detail
 
-/// Entry point. Refuses rather than guesses on a malformed call
+/// Entry point. Rejects rather than guesses on a malformed call
 /// (E-PART-SIZE-MISMATCH, E-PART-NUM-PARTS, E-PART-NO-MPI); every other
 /// degenerate case named in the task -- all points identical, an empty
 /// local input, zero total weight, a single part -- is handled by the SAME

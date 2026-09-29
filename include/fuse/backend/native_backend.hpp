@@ -59,7 +59,7 @@ class NativeMeshBackend final : public MeshBackend {
 
   /// Registers `view` as mesh `id`'s decomposition for `placement`
   /// (mesh_view.hpp's per-placement contract) -- how a caller that just
-  /// migrated a mesh onto a component's own placement makes that result
+  /// migrated a mesh onto a component's own processor set makes that result
   /// reachable through `placed_view`/`placed_region_size`. `placement`
   /// must be valid; use plain `load` (an unplaced, default decomposition)
   /// otherwise.

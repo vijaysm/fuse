@@ -65,7 +65,7 @@ enum class CellShape {
 }
 
 /// How many simplices the decomposition produces. 0 means the shape and corner
-/// count disagree, which the caller must treat as a refusal -- a silently empty
+/// count disagree, which the caller must treat as a rejection -- a silently empty
 /// decomposition would look like a legitimately empty cell.
 [[nodiscard]] KOKKOS_INLINE_FUNCTION constexpr std::size_t cell_simplex_count(
     CellShape s, std::size_t corners) noexcept {

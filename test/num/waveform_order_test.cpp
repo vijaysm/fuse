@@ -6,7 +6,7 @@
 //
 // The refinement being performed matters and is easy to get wrong:
 //
-//   * For a *waveform*, refinement means SHORTENING THE COUPLING WINDOW while
+//   * For a *waveform*, refinement means SHORTENING THE time window of a waveform iteration while
 //     keeping the interpolatory sample count (p+1 samples for a degree-p
 //     representation). That is what actually happens when a component reduces
 //     its coupling interval. Over a window of length h the error is O(h^(p+1)).

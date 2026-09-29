@@ -15,7 +15,7 @@
 
 namespace fuse {
 
-/// Spec §4.4: a field sampled at several points across a coupling window plus
+/// Spec §4.4: a field sampled at several points across a time window of a waveform iteration plus
 /// an interpolation policy. It is the base abstraction for coupled data in
 /// time -- **explicit coupling is the degenerate case** (one sample, `Constant`
 /// basis; see `is_degenerate()`), not a separate code path -- and it is the
@@ -56,7 +56,7 @@ namespace fuse {
 ///   DG(p)      [t_first, t_last]
 ///   Spline(p)  [t_first, t_last]
 ///
-/// `evaluate` and `integrate` REFUSE anything outside the support:
+/// `evaluate` and `integrate` REJECT anything outside the support:
 /// `E-WF-OUTSIDE` and `E-WF-RANGE` respectively. In particular nothing here
 /// ever extrapolates past `t_last` for `Linear`/`DG`/`Spline`, and nothing ever
 /// extrapolates *backwards* before `t_first` for any basis. Silent
@@ -137,7 +137,7 @@ class Waveform {
   /// in `fit_polynomial` the degree-3 fit reproduces an exact cubic to ~1e-14
   /// independently of the window length (measured), but the loss grows quickly
   /// with degree, and returning a fit that does not deliver its claimed order
-  /// is worse than refusing. Task 6.3 should move to an orthogonal basis if it
+  /// is worse than rejecting. Task 6.3 should move to an orthogonal basis if it
   /// needs more.
   static constexpr int kMaxDgDegree = 4;
 
@@ -284,8 +284,8 @@ class Waveform {
 
   /// int_a^b f dt, per element -- the primitive the space-time conservation
   /// check of spec §7.4 needs. `[a, b]` must lie inside the support; anything
-  /// else is `E-WF-RANGE`, for the same reason `evaluate` refuses to
-  /// extrapolate. Exact for `Constant`, `Linear` (piecewise-linear
+  /// else is `E-WF-RANGE`, for the same reason `evaluate` rejects an attempt
+  /// to extrapolate. Exact for `Constant`, `Linear` (piecewise-linear
   /// representation) and `DG` (analytic integral of the fitted polynomial),
   /// and exact for `Spline` up to rounding (two-point Gauss per cubic piece).
   [[nodiscard]] Result<void> integrate(Rational a, Rational b,

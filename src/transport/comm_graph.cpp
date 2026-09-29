@@ -141,7 +141,7 @@ static_assert(sizeof(PtRec) == 56, "PtRec must be padding-free");
 /// Round 2, NearestNeighbor mode: one bucket's outcome on one query. A query
 /// is probed against several buckets, so the requester receives several of
 /// these per entity and reduces them; `found == 0` still carries `dist` so a
-/// refusal can name the nearest distance actually found anywhere.
+/// rejection can name the nearest distance actually found anywhere.
 struct ReplyRec {
   u64    dst_idx = 0;
   u64    gid = 0;
@@ -302,7 +302,7 @@ struct LocalEntities {
 /// contributes every locally visible entity.
 ///
 /// WHY THEY DIFFER. Two source ranks advertising one id is ambiguous
-/// ownership, and `MpiTransport::build_plan` refuses it outright ("pass owned
+/// ownership, and `MpiTransport::build_plan` rejects it outright ("pass owned
 /// entities only, or the value transported would depend on which copy won").
 /// A destination's ghost slots, by contrast, are part of the buffer that has
 /// to be filled -- `MeshView::entity_count` is documented as "the size a

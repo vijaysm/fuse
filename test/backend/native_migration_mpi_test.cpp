@@ -2,17 +2,17 @@
 // mpiexec, RCB-driven.
 //
 // NOT YET RUN: this sandbox cannot initialize MPI (mpiexec cannot bind a
-// port, and a singleton MPI_Init aborts here). Registered only in a Tier 1
+// port, and a singleton MPI_Init aborts here). Registered only in the MPI-enabled build configuration
 // build (test/CMakeLists.txt gates it on FUSE_ENABLE_MPI); running it is a
 // host action -- see docs/dev/native-mesh.md "What is verified where".
 //
-// WHAT THIS CHECKS THAT THE EMULATED TIER-0 TESTS CANNOT: each rank here
+// WHAT THIS CHECKS THAT THE EMULATED BASE-BUILD-CONFIGURATION TESTS CANNOT: each rank here
 // builds its OWN slice via generate_native_mesh(spec, rank, size) -- a
 // REAL distributed mesh, one process per rank, not pack()/unpack() called
 // directly in one process -- then fuse::partition::repartition (RCB +
 // migrate) runs the actual collective sequence
 // (centroids_of's dimension-agreement Allreduce, rcb_partition's own
-// collectives, migrate's Allreduce refusal-agreement, the real
+// collectives, migrate's Allreduce rejection-agreement, the real
 // MPI_Alltoallv exchange, and resolve_vertex_ownership's Allgatherv).
 
 #include "fuse/partition/repartition.hpp"
@@ -122,7 +122,7 @@ TEST(NativeMigrationMpi, RefusesAnAssignmentThatIsIncompleteOnOnlyOneRank) {
   if (rank == 0) dest.pop_back();  // only rank 0's assignment is short
 
   auto result = migrate(*view.value(), dest, world_handle());
-  ASSERT_FALSE(result.ok()) << "every rank must refuse together, including ranks whose own "
+  ASSERT_FALSE(result.ok()) << "every rank must reject together, including ranks whose own "
                                "assignment was fine";
 }
 

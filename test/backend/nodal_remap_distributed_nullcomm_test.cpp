@@ -1,5 +1,5 @@
 // Nodal-remap track, round 2, item 3 ("prove the single-rank/null-
-// communicator path via a tier-0 Runner test"): this file is the
+// communicator path via a base-build-configuration Runner test"): this file is the
 // PRIMITIVE-level half of that proof -- it exercises
 // `fuse::build_distributed_interp_rows`/`apply_distributed_H`/
 // `apply_distributed_HT` (nodal_remap_distributed.hpp) directly, with
@@ -14,7 +14,7 @@
 // touched anywhere in this translation unit.
 //
 // The mesh is a plain, local (no MPI, no RankSet) 1D line -- every entity
-// trivially "owned" by the one and only participant -- built by hand below
+// trivially "owned" by the one and only process -- built by hand below
 // rather than reusing test/support/partitioned_test_backend.hpp's
 // GeometricLineMesh, which unconditionally `#include <mpi.h>` and so cannot
 // be used from a target that has none.
@@ -113,7 +113,7 @@ TEST(NodalRemapDistributedNullComm, AffineFieldIsExactAndLoadIsConserved) {
 
   // H^T D: a unit load on every target vertex, scattered back to the
   // source. Total sent must equal total received -- no MPI reduction
-  // needed with one participant, unlike the MPI test's own version of this
+  // needed with one process, unlike the MPI test's own version of this
   // check.
   std::vector<double> loads(rows.rows.size(), 1.0);
   std::vector<double> out_src;
@@ -125,7 +125,7 @@ TEST(NodalRemapDistributedNullComm, AffineFieldIsExactAndLoadIsConserved) {
   double total_received = 0.0;
   for (const double v : out_src) total_received += v;
   EXPECT_NEAR(total_sent, total_received, 1e-9 * total_sent)
-      << "H^T must conserve the total load with a single participant";
+      << "H^T must conserve the total load with a single process";
 }
 
 TEST(NodalRemapDistributedNullComm, TargetOutsideSourceDomainRefuses) {
@@ -142,7 +142,7 @@ TEST(NodalRemapDistributedNullComm, RealCommunicatorWithoutMpiRefuses) {
   LocalLineMesh src(3, 0.0, 1.0);
   LocalLineMesh tgt(3, 0.0, 1.0);
   // Any handle other than kNullComm names a "real" communicator; this
-  // build has no MPI at all, so it must refuse rather than silently treat
+  // build has no MPI at all, so it must reject rather than silently treat
   // it as local (see nodal_remap_distributed.cpp's allgatherv_records).
   const auto rows_r = fuse::build_distributed_interp_rows(src, tgt, /*eval_dim=*/0,
                                                            fuse::search::kNullComm + 1);

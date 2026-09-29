@@ -131,7 +131,7 @@ template <class T>
 }
 
 /// Conservation checking uses this with MeshView::measure as weights, so the
-/// result is a true integral over the region: `v` carries the intensive field
+/// result is a true integral over the mesh entity set: `v` carries the intensive field
 /// value per element and `w` the element measure (area/volume), giving
 /// units [field] x [measure]. Sequential in ascending index order.
 template <class T>

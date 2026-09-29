@@ -42,8 +42,8 @@
 /// priority explicitly asks for ("robustness and accuracy beats efficiency
 /// always... once we have a verified workflow, we can spend time making it
 /// more efficient"): it replicates the WHOLE source mesh's geometry (not the
-/// field data of every OTHER channel, only this one interpolation's own
-/// source region) on every rank, which does not scale to a source mesh too
+/// field data of every OTHER field transfer, only this one interpolation's own
+/// source mesh entity set) on every rank, which does not scale to a source mesh too
 /// large to fit on one rank, and every `apply_*` call is a fresh
 /// `MPI_Allgatherv`, not a cached point-to-point plan. Revisiting this for a
 /// directory-based, point-to-point implementation once the workflow above is
@@ -64,13 +64,13 @@
 ///
 /// NOT YET WIRED INTO Runner::Impl::resolve_remap AS OF THIS COMMIT (KNOWN_ISSUES.md
 /// D8, round 2, in progress): this file's round-2 change is the null-comm
-/// (Tier 0) code path below, which is a PRECONDITION for that wiring (the
+/// (base build configuration) code path below, which is a PRECONDITION for that wiring (the
 /// intended design is `Runner` building one `DistributedInterpRows` per
 /// nodal Remap instruction at `initialize()`, applying it allocation-free
-/// per period), not the wiring itself. Until that lands, `resolve_remap`
-/// still refuses with `E-RT-REMAP-NODAL-PARALLEL` exactly as it did before
+/// per coupling cycle), not the wiring itself. Until that lands, `resolve_remap`
+/// still rejects with `E-RT-REMAP-NODAL-PARALLEL` exactly as it did before
 /// this file existed; do not read this comment as a statement that the
-/// refusal has been replaced.
+/// rejection has been replaced.
 ///
 /// NO BLANKET `#if FUSE_HAVE_MPI` GATE (round 2 change from the first
 /// submission): the declarations below are ALWAYS visible, mirroring
@@ -79,12 +79,12 @@
 /// comm == kNullComm is a local no-op / identity ... touches no MPI
 /// symbol"). `comm_handle` is a `fuse::search::CommHandle`
 /// (fuse/search/types.hpp): `fuse::search::kNullComm` (0) means exactly one
-/// participant -- the Tier 0 (no-MPI) path this track's Runner test exercises
+/// process -- the base-build-configuration (no-MPI) path this track's Runner test exercises
 /// -- and touches no MPI symbol at all; any other value is a REAL
 /// communicator (`MPI_Comm_c2f`'d by the caller) and requires
-/// `FUSE_HAVE_MPI`, refusing `E-RT-NODAL-DIST-NOMPI` otherwise. This is what
+/// `FUSE_HAVE_MPI`, rejecting `E-RT-NODAL-DIST-NOMPI` otherwise. This is what
 /// makes the SAME algorithm (and the SAME call sites in runner.cpp)
-/// compile and run at Tier 0 as well as under real MPI, rather than needing
+/// compile and run at the base build configuration as well as under real MPI, rather than needing
 /// two separate code paths for the single-rank and multi-rank cases.
 
 #include "fuse/base/config.hpp"
@@ -124,9 +124,9 @@ struct DistributedInterpRows {
 /// `CommGraph::build`/`accumulate_shared_rows` use) -- every rank of it must
 /// call this, including one with zero owned evaluation entities or zero
 /// local source cells. `comm_handle == fuse::search::kNullComm` needs no
-/// MPI at all (exactly one participant; see the file header).
+/// MPI at all (exactly one process; see the file header).
 ///
-/// Refuses, never throws (identically on every rank, since every rank sees
+/// Rejects, never throws (identically on every rank, since every rank sees
 /// the same assembled global mesh): the same codes
 /// `build_general_interp_weights` documents (`E-INTERP-NOGEOMETRY`,
 /// `E-MESH-NO-CELL-VERTICES`, `E-INTERP-SHAPE`, `E-INTERP-DEGENERATE`,

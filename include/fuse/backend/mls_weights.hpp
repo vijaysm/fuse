@@ -11,7 +11,7 @@
 /// (dependency-free) and the MOAB/TempestRemap tier -- both need CELL
 /// TOPOLOGY: a simplex decomposition to clip, or a mesh MOAB can intersect.
 /// `Discretization::PointCloud` has none by definition (`mesh_view.hpp`'s
-/// `field_extent` already refuses it, "a point cloud has no cell topology to
+/// `field_extent` already rejects it, "a point cloud has no cell topology to
 /// size a field by at all"), and a scattered observation network -- gauges,
 /// buoys, a LIDAR return -- is exactly a point cloud. This builder answers a
 /// different question: given a target point and a handful of nearby source
@@ -62,7 +62,7 @@
 ///      artifact that can change shape or vanish in a point release with no
 ///      notice, for a feature (`fuse::backend`) that is supposed to work
 ///      without MOAB at all.
-///   2. It would not have bought back the property this file's refusals
+///   2. It would not have bought back the property this file's rejections
 ///      exist for. `movingLeastSquaresCoefficients`'s kernel inverts the local
 ///      moment matrix with a SYMMETRIC SVD PSEUDO-INVERSE
 ///      (`ArborX::Details::symmetricPseudoInverseSVDKernel`) and, when that
@@ -72,7 +72,7 @@
 ///      `#ifndef NDEBUG` internal `KOKKOS_ASSERT` and no code path that
 ///      returns a rank, a condition number, or any signal to the caller at
 ///      all. This library's contract for this method is the opposite:
-///      REFUSE, by name, with a measured condition estimate, when a target's
+///      REJECT, by name, with a measured condition estimate, when a target's
 ///      local fit is rank-deficient (below). Reaching into ArborX's kernel
 ///      would have to overrule that behaviour after the fact, in a kernel
 ///      not written to expose what it decided.
@@ -105,7 +105,7 @@
 /// OPTIONS ARE DECLARED, NEVER DEFAULTED
 /// ===========================================================================
 ///
-/// `RemapPlan::method` is the one lever a channel has (`RemapSpec::
+/// `RemapPlan::method` is the one lever a field transfer has (`RemapSpec::
 /// method_override`, `ChannelBuilder::remap_method`, threaded verbatim
 /// through `OpAttrs::method` to here) -- there is no separate options struct
 /// on the plan, so the polynomial degree, the neighbour count, and the radial
@@ -118,7 +118,7 @@
 /// All three keys are REQUIRED, in any order, comma-separated, no
 /// whitespace. `method == "mls"` alone, or any key missing, unknown, or
 /// unparsable, is `E-MLS-OPTIONS` -- this file never substitutes a default
-/// degree, neighbour count, or radial weight, because a channel author who
+/// degree, neighbour count, or radial weight, because a field-transfer author who
 /// leaves one out has not stated what map they want and a plausible guess
 /// would give them one anyway, silently. Supported `radial` names:
 /// `wendland0`, `wendland2`, `wendland4`, `wendland6` (Wendland's compactly
@@ -150,19 +150,19 @@
 /// shared dimension are resolved -- ONCE PER BUILD, before any per-target
 /// neighbour search -- and is `E-MLS-NEIGHBORS`, not discovered later, target
 /// by target, as a rank deficiency. A SOURCE side with fewer than `k` points
-/// overall is the same refusal, at the same place.
+/// overall is the same rejection, at the same place.
 ///
 /// ===========================================================================
-/// REFUSALS
+/// REJECTIONS
 /// ===========================================================================
 ///
 /// Errors, never throws (the same contract `build_weights` documents):
 ///
 ///   * `E-MLS-OPTIONS`     -- `method`'s degree/k/radial are missing, malformed,
 ///                            unknown, or duplicated.
-///   * `E-MLS-REGION`      -- a region id, entity set, or mesh id `build_weights`
-///                            would also refuse (mirrors `supermesh_side`'s
-///                            checks; this file resolves its own regions rather
+///   * `E-MLS-REGION`      -- a mesh entity set id, entity set, or mesh id `build_weights`
+///                            would also reject (mirrors `supermesh_side`'s
+///                            checks; this file resolves its own mesh entity sets rather
 ///                            than reaching into `intx_weights.cpp`'s anonymous
 ///                            namespace).
 ///   * `E-MLS-DISC`        -- a `(disc, order)` pair this builder has no point
@@ -171,7 +171,7 @@
 ///                            (vertex, dimension 0, matching `field_extent`'s
 ///                            own nodal convention), `FV` and
 ///                            `DiscontinuousGLL` order 0 (cell centroid,
-///                            the region's own dimension).
+///                            the mesh entity set's own dimension).
 ///   * `E-MLS-NEIGHBORS`   -- `k` below the declared degree's basis size
 ///                            (§ above), or a source side with fewer than `k`
 ///                            points, discovered before any per-target work.
@@ -248,7 +248,7 @@
 /// `+std::numeric_limits<double>::infinity()`: an explicit "not measured, and
 /// not applicable" that reads as failing the claim gate, rather than a
 /// fabricated number that would read as passing it. `RemapFlags::Conservative`
-/// is refused outright (`E-MLS-UNSUPPORTED` above) for the same reason, before
+/// is rejected outright (`E-MLS-UNSUPPORTED` above) for the same reason, before
 /// any matrix is built.
 ///
 /// ===========================================================================
@@ -266,7 +266,7 @@
 /// covering set of source points, sized to the largest declared `k` and
 /// support radius) IS A FOLLOW-ON, not attempted here. Where this file CAN
 /// detect the multi-rank case (the backend is a `NativeMeshBackend` reporting
-/// `num_ranks() > 1`) it refuses `E-MLS-UNSUPPORTED` rather than returning a
+/// `num_ranks() > 1`) it rejects `E-MLS-UNSUPPORTED` rather than returning a
 /// silently partial map; where it cannot (an opaque `MeshBackend`), the
 /// limitation is stated here and in `docs/user/point-cloud-remap.md`, not
 /// enforced, and a caller running this method under a real multi-rank backend
@@ -307,7 +307,7 @@ enum class MlsRadial { Wendland0, Wendland2, Wendland4, Wendland6 };
 /// build, exactly as `parse_mls_options`'s own `E-MLS-NEIGHBORS` check does.
 [[nodiscard]] std::size_t mls_basis_size(int dim, int degree) noexcept;
 
-/// The three channel-declared MLS options, parsed from `RemapPlan::method`.
+/// The three field-transfer-declared MLS options, parsed from `RemapPlan::method`.
 /// Never default-constructed into a valid state by this builder: every field
 /// here corresponds to a REQUIRED key in the method string (see this header's
 /// own "OPTIONS ARE DECLARED" section), and `parse_mls_options` is the only
@@ -325,7 +325,7 @@ struct MlsOptions {
 /// three keys `degree`, `k`, `radial`, each present exactly once, `degree`
 /// a non-negative integer, `k` a positive integer, and `radial` one of
 /// `wendland0`/`wendland2`/`wendland4`/`wendland6`. `method == "mls"` (no
-/// `:` at all) is the same refusal, naming the missing keys.
+/// `:` at all) is the same rejection, naming the missing keys.
 [[nodiscard]] Result<MlsOptions> parse_mls_options(std::string_view method);
 
 /// Moving-least-squares `RemapWeights` for `plan` (dispatch predicate and

@@ -26,7 +26,7 @@ namespace fuse {
 ///   IQN_IMVJ    as IQN_ILS, plus an inverse-Jacobian retained across windows
 // AccelKind, FilterKind and AccelConfig are NOT declared here. They moved to
 // fuse/model/iteration.hpp during the compiler port, because the coupling
-// graph has to name the accelerator a region uses and the model layer must not
+// graph has to name the accelerator an implicit coupling group uses and the model layer must not
 // depend on the numerics layer. This header declares the accelerators
 // themselves; what to configure them with is part of the graph.
 

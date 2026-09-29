@@ -5,7 +5,7 @@
 /// WHICH KERNELS, AND WHY THESE. These are the operations a coupled step
 /// actually spends its time in, in the order they run:
 ///
-///   accumulate  once per SUBSTEP, on every coupled field -- the most
+///   accumulate  once per subcycling step, on every coupled field -- the most
 ///               frequently executed loop in the library
 ///   gather      packs the values a data move sends, once per exchange
 ///   remap_apply the sparse matrix-vector product that IS the field transfer
@@ -36,10 +36,10 @@
 /// asked of a slow run is which phase is slow.
 ///
 /// LABEL LENGTH IS NOT COSMETIC for a kernel the Runner's own hot loop calls
-/// every period. `Kokkos::parallel_for`/`parallel_reduce` copy their label
+/// every coupling cycle. `Kokkos::parallel_for`/`parallel_reduce` copy their label
 /// into a `std::string`, and a label past the standard library's
 /// small-string-optimisation capacity (measured: 22 characters on this
-/// tree's libc++) heap-allocates one -- per call, every period, forever.
+/// tree's libc++) heap-allocates one -- per call, every coupling cycle, forever.
 /// `runtime.iteration`'s allocation-counted tests
 /// (`Iteration.TheSweepLoopAllocatesNothing`/
 /// `TheAcceleratorAllocatesNothingPerUpdate`, test/verification/
@@ -75,11 +75,11 @@ using IndexSpanOf =
     Kokkos::View<const std::size_t*, typename Space::memory_space,
                  Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
 
-/// `acc <- op(acc, sample)`, the per-substep time accumulation.
+/// `acc <- op(acc, sample)`, the per-subcycling step time accumulation.
 ///
-/// `first` is passed rather than derived from a substep counter inside the
+/// `first` is passed rather than derived from a subcycling step counter inside the
 /// kernel: the branch is then uniform across the range instead of per element,
-/// and the caller already knows which substep it is on.
+/// and the caller already knows which subcycling step it is on.
 template <class Space>
 void accumulate(AccumOp op, ConstSpanOf<Space> sample, SpanOf<Space> acc,
                 bool first) {
@@ -136,7 +136,7 @@ void gather(ConstSpanOf<Space> src, IndexSpanOf<Space> index,
 /// NOT a scatter-add, and the index list must not repeat: a repeated target
 /// would make this a race whose result depends on thread scheduling. The
 /// caller is the rank-matching graph, whose target indices are distinct by
-/// construction (it refuses a plan where they are not), so the precondition is
+/// construction (it rejects a plan where they are not), so the precondition is
 /// established where it can be checked rather than re-checked per element in
 /// the kernel.
 template <class Space>
@@ -318,16 +318,16 @@ void remap_apply(IndexSpanOf<Space> row_begin, IndexSpanOf<Space> col,
 /// associative. For `n <= kDeterministicChunk` there is exactly one chunk,
 /// so the grouped sum and the plain ascending sum are the identical
 /// computation and agree bit for bit; a caller whose buffers are all that
-/// small (as the runtime's own iteration-region blocks are, in every
-/// existing Tier-0 fixture) sees no change at all from moving onto this
+/// small (as the runtime's own implicit-coupling-group blocks are, in every
+/// existing base-build-configuration fixture) sees no change at all from moving onto this
 /// scheme. A caller with genuinely larger `n` gets thread-count
 /// independence, not bitwise agreement with a pre-existing single-
 /// accumulator reference -- the same trade `dot`/`weighted_norm_squared`
 /// already document, just resolved differently.
 ///
 /// `scratch` must hold at least `deterministic_chunks(v.extent(0))` entries;
-/// callers size it once, at setup, and reuse it (D11's no-per-period-
-/// allocation rule; `iteration.cpp` sizes it from the largest region block).
+/// callers size it once, at setup, and reuse it (D11's no-per-coupling-cycle-
+/// allocation rule; `iteration.cpp` sizes it from the largest implicit-coupling-group block).
 ///
 /// HOST-ONLY. The finalising sum reads `scratch` with plain host code, so
 /// `Space::memory_space` must be host-accessible -- true of every space this

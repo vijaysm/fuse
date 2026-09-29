@@ -28,7 +28,7 @@
 ///                                       Checked in EVERY build (I6). Throws
 ///                                       InvariantViolation.
 ///   FUSE_THROW(Type, "msg {}", x)      a recoverable error of a named type.
-///   FUSE_REFUSE("E-CODE", "msg {}", x) a deliberate refusal (I4), carrying
+///   FUSE_REFUSE("E-CODE", "msg {}", x) a deliberate rejection (I4), carrying
 ///                                       the error code a test can assert on.
 ///
 /// Every one captures a Backtrace at the throw site, records the MPI rank
@@ -78,7 +78,7 @@ class InvariantViolation : public Error { using Error::Error; };
 class InvalidArgument : public Error { using Error::Error; };
 /// A null where an object was required (a specific InvalidArgument).
 class NullPointer : public InvalidArgument { using InvalidArgument::InvalidArgument; };
-/// A deliberate refusal under invariant I4, with the E-code tests assert on.
+/// A deliberate rejection under invariant I4, with the E-code tests assert on.
 class Refusal : public Error { using Error::Error; };
 /// A declared interface with no implementation behind it yet.
 class NotImplemented : public Error { using Error::Error; };

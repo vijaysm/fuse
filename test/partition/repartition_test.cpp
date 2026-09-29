@@ -1,5 +1,5 @@
 // fuse::partition::repartition: centroids -> rcb_partition -> migrate, at
-// Tier 0 (kNullComm, one participant) where it must be the identity.
+// the base build configuration (kNullComm, one process) where it must be the identity.
 
 #include "fuse/partition/repartition.hpp"
 

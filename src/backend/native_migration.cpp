@@ -316,7 +316,7 @@ Result<std::unique_ptr<NativeMeshView>> migrate(const NativeMeshView& mesh,
 
   // LOCAL validity, computed before any collective (this rank's own
   // Result), then reduced with every other rank -- see the header
-  // comment: a rank must never return this refusal on its own and skip
+  // comment: a rank must never return this rejection on its own and skip
   // the exchange while its neighbours proceed into it.
   auto local = pack_for_migration(mesh, dest, num_ranks);
   const int locally_ok = local.ok() ? 1 : 0;

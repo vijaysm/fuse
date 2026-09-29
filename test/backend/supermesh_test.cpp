@@ -172,7 +172,7 @@ TEST(Supermesh, RemappingOntoTheSameMeshIsTheIdentity) {
   }
 }
 
-// ---- refusals ----------------------------------------------------------
+// ---- rejections ----------------------------------------------------------
 
 TEST(Supermesh, RefusesADimensionItDoesNotDefine) {
   auto p = pair_of("generated:line:4", "generated:line:4");
@@ -185,7 +185,7 @@ TEST(Supermesh, RefusesADimensionItDoesNotDefine) {
 TEST(Supermesh, RefusesASurfacePairRatherThanProjectingIt) {
   // The boundary skin of a box is a 2-manifold in three-space. The planar
   // kernel would clip its xy shadow and return a plausible wrong number, so
-  // it must refuse. This is the guard that keeps "always available" from
+  // it must reject. This is the guard that keeps "always available" from
   // quietly meaning "always answers".
   auto p = pair_of("generated:box:2x2x2", "generated:box:3x3x3");
   ASSERT_TRUE(p != nullptr);
@@ -313,7 +313,7 @@ TEST(Supermesh, WindingOrderOfTheInputDoesNotChangeTheAnswer) {
 TEST(Supermesh, EqualCountEqualMeasureButDifferentArrangementIsNotTheIdentity) {
   // Eight cells of measure 0.125 on both sides, arranged completely
   // differently: a 2x2x2 block against a 8x1x1 column. Before the supermesh
-  // existed this pair was REFUSED, because the only available map was an
+  // existed this pair was REJECTED, because the only available map was an
   // identity and applying one here would have been silently wrong -- same
   // count, same measures, no correspondence.
   //
@@ -732,7 +732,7 @@ TEST(SupermeshDetail, InwardPlaneRefusesAZeroLengthEdgeIn2D) {
   // Face 0 of the "triangle" v omits v[0] and is the edge v[1]-v[2]; make
   // that edge zero-length by placing v[1] and v[2] at the same point. Before
   // R-12 this produced n=(0,0,0), d=0 -- a half-plane that reads `0 >= 0` for
-  // every point, i.e. no constraint at all -- instead of refusing.
+  // every point, i.e. no constraint at all -- instead of rejecting.
   const std::array<fuse::Point, 4> v{{{0.0, 0.0, 0.0},
                                       {1.0, 1.0, 0.0},
                                       {1.0, 1.0, 0.0},   // == v[1]: degenerate
@@ -774,7 +774,7 @@ TEST(SupermeshDetail, InwardPlaneAcceptsAndOrientsANonDegenerateFaceIn2D) {
   EXPECT_GT(n[0] * v[0].x + n[1] * v[0].y + d, 0.0);
 }
 
-// ---- audit_coverage's refusal boundary (REVIEW.md R-13/BK-M3) -----------
+// ---- audit_coverage's rejection boundary (REVIEW.md R-13/BK-M3) -----------
 //
 // The defect class this guards against -- overlap inflated past the cell it
 // came from -- cannot be produced through the public MeshView grammar by a
@@ -811,13 +811,13 @@ TEST(SupermeshDetail, AuditCoverageSkipsAZeroMeasureCellRatherThanDivideByZero) 
 }
 
 // ---- build_weights dispatches on the backend, not on FUSE_HAVE_MOAB -----
-// (REVIEW.md N-BACKEND-4, found on a host tier-2 run: Runner.RemapsBetween-
+// (REVIEW.md N-BACKEND-4, found on a host run of the MOAB-enabled build configuration: Runner.RemapsBetween-
 // DifferentlySizedRegions/RefusesEqualCountRegionsThatAreNotProvablyCoincident/
 // RemapsEqualCountEqualMeasureRegionsInADifferentArrangement all failed with
 // "build_weights needs the MOAB backend" once MOAB was compiled in, because
-// resolve()'s dynamic_cast refused every SerialMeshBackend call unconditionally.
-// This runs identically at tier 0 (where it is the only path there is, so it
-// is a plain sanity check) and at tier 2 (where, before the fix, it failed:
+// resolve()'s dynamic_cast rejected every SerialMeshBackend call unconditionally.
+// This runs identically at the base build configuration (where it is the only path there is, so it
+// is a plain sanity check) and at the MOAB-enabled build configuration (where, before the fix, it failed:
 // `direct` was E-REMAP-BACKEND, not the oracle's weights).
 
 TEST(Supermesh, BuildWeightsReachesTheSupermeshPathForANonMoabBackend) {
@@ -860,7 +860,7 @@ TEST(Supermesh, BuildWeightsReachesTheSupermeshPathForANonMoabBackend) {
   ASSERT_TRUE(oracle.ok()) << oracle.error().code << ": " << oracle.error().message;
 
   // build_weights's dispatch must produce EXACTLY the supermesh builder's own
-  // matrix, not a different (or refused) one.
+  // matrix, not a different (or rejected) one.
   EXPECT_EQ(direct.value().row, oracle.value().row);
   EXPECT_EQ(direct.value().col, oracle.value().col);
   EXPECT_EQ(direct.value().val, oracle.value().val);
@@ -868,7 +868,7 @@ TEST(Supermesh, BuildWeightsReachesTheSupermeshPathForANonMoabBackend) {
   EXPECT_EQ(direct.value().n_cols, oracle.value().n_cols);
 }
 
-// ---- weights follow the PLACEMENT's decomposition (KNOWN_ISSUES D5) -------
+// ---- weights follow the PROCESSOR SET's decomposition (KNOWN_ISSUES D5) -------
 
 namespace {
 
@@ -897,7 +897,7 @@ class ReversedView final : public fuse::MeshView {
   const fuse::MeshView& inner_;
 };
 
-/// Default view for the default placement; the reversed one for component 1.
+/// Default view for the default processor set; the reversed one for component 1.
 class PerPlacementBackend final : public fuse::MeshBackend {
  public:
   PerPlacementBackend(const fuse::SerialMeshBackend& inner, fuse::MeshId target)
@@ -906,7 +906,7 @@ class PerPlacementBackend final : public fuse::MeshBackend {
   [[nodiscard]] fuse::Result<fuse::MeshId> mesh_id(std::string_view n) const override { return inner_.mesh_id(n); }
   [[nodiscard]] fuse::Result<const fuse::MeshView*> view(fuse::MeshId id) const override { return inner_.view(id); }
   [[nodiscard]] fuse::Result<std::size_t> region_size(const fuse::Region& rg) const override { return inner_.region_size(rg); }
-  /// Placement 1 numbers the TARGET mesh backwards and the source as the
+  /// Processor set 1 numbers the TARGET mesh backwards and the source as the
   /// default. Only one side on purpose: reversing both is a mirror symmetry
   /// of a uniform line pair and leaves the matrix unchanged (the first draft
   /// of this test did that, and its own "the two matrices coincide" guard
@@ -961,7 +961,7 @@ TEST(Supermesh, WeightsAreBuiltOnThePlacementsOwnDecomposition) {
 
   const std::string default_key = plan.key();
   plan.placement = fuse::ComponentId{1};
-  EXPECT_NE(plan.key(), default_key) << "two placements must never share a cache entry";
+  EXPECT_NE(plan.key(), default_key) << "two processor sets must never share a cache entry";
   const auto placed = fuse::build_weights(plan, graph, backend);
   ASSERT_TRUE(placed.ok()) << placed.error().code << ": " << placed.error().message;
 

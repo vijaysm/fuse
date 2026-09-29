@@ -37,7 +37,7 @@
 /// WHAT IS AND IS NOT VALIDATED
 /// ===========================================================================
 ///
-/// Validated, each with its own refusal:
+/// Validated, each with its own rejection:
 ///   - `E-MAP-MAGIC` / `E-MAP-VERSION` — not one of our files, or a format
 ///     this build does not read. The version is bumped whenever a field's
 ///     meaning changes, never reused.

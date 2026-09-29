@@ -19,7 +19,7 @@
 //
 // Nothing here names TempestRemap, a cubed sphere, `ncol`, or a great-circle
 // arc. The only backend implemented today happens to be a spherical remapper
-// and refuses `SurfaceKind::Plane` and volumes; a planar or volumetric
+// and rejects `SurfaceKind::Plane` and volumes; a planar or volumetric
 // high-order backend would implement this same function and the generic layer
 // would not change. The sphere-specific parts -- normalising to unit radius,
 // orienting faces outward from the origin -- live in the backend, on its own
@@ -71,7 +71,7 @@ struct HighOrderRequest {
   /// 1 = piecewise constant, 2 = exact for linears, and so on.
   int order = 1;
   /// Bound preservation is REQUIRED, not preferred. A backend that cannot
-  /// deliver it at `order` must refuse, not silently drop the order.
+  /// deliver it at `order` must reject, not silently drop the order.
   bool monotone = false;
 
   SurfaceKind kind = SurfaceKind::Other;
@@ -95,7 +95,7 @@ struct HighOrderResult {
   std::vector<double> src_covered, tgt_covered;  ///< overlap area attributed
 
   /// The order the backend actually delivered. A backend must set this to what
-  /// it built, and must refuse rather than set it below `request.order`.
+  /// it built, and must reject rather than set it below `request.order`.
   int  order = 1;
   bool monotone = false;
 

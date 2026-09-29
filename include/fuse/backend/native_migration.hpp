@@ -17,8 +17,8 @@
 ///                                      as fuse::partition's
 ///                                      detail/collectives.hpp)
 ///   unpack_migrated_mesh(...)       -> a mesh, deduped by global id
-/// `migrate` composes exactly these three, which is also what makes Tier 0
-/// emulation possible: a test can call `pack_for_migration` for P
+/// `migrate` composes exactly these three, which is also what makes
+/// base-build-configuration emulation possible: a test can call `pack_for_migration` for P
 /// simulated ranks, hand each destination's buffers directly to
 /// `unpack_migrated_mesh` (skipping `exchange_migration_buffers`
 /// entirely, since in-process there is nothing to exchange), and check
@@ -46,7 +46,7 @@ namespace fuse::native {
 /// of `mpi.h` (the same boundary convention `fuse::partition::CommHandle`
 /// uses -- duplicated rather than shared, because `backend` sits BELOW
 /// `partition` in the layering order and may not depend on it).
-/// `kNullComm` means Tier 0: exactly one participant, no MPI symbol
+/// `kNullComm` means the base build configuration: exactly one process, no MPI symbol
 /// touched.
 using CommHandle = int;
 inline constexpr CommHandle kNullComm = 0;
@@ -66,10 +66,10 @@ inline constexpr CommHandle kNullComm = 0;
 /// and (for a Polyhedron) its face structure. `num_ranks` sizes the
 /// result.
 ///
-/// Refuses `E-MESH-MIGRATE-INCOMPLETE` when `dest.size()` is not the
+/// Rejects `E-MESH-MIGRATE-INCOMPLETE` when `dest.size()` is not the
 /// owned cell count, `E-MESH-MIGRATE-RANGE` when an entry names a
 /// destination outside `[0, num_ranks)`. This is the LOCAL half of the
-/// collective refusal `migrate` performs -- see its own comment.
+/// collective rejection `migrate` performs -- see its own comment.
 [[nodiscard]] Result<std::vector<std::vector<std::byte>>> pack_for_migration(
     const NativeMeshView& mesh, const std::vector<int>& dest, int num_ranks);
 
@@ -78,14 +78,14 @@ inline constexpr CommHandle kNullComm = 0;
 /// `result[s]` (bytes received from rank `s`), sized by the sender's own
 /// count (an `MPI_Alltoall` for sizes, then `MPI_Alltoallv` for the
 /// payload) -- always staged through host buffers (see the file header).
-/// `comm == kNullComm` is Tier 0: `send` must have exactly one entry, and
+/// `comm == kNullComm` is the base build configuration: `send` must have exactly one entry, and
 /// this is the identity (`result = {send[0]}`), touching no MPI symbol.
 [[nodiscard]] std::vector<std::vector<std::byte>> exchange_migration_buffers(
     const std::vector<std::vector<std::byte>>& send, CommHandle comm);
 
 /// Unpacks every buffer in `received` (this rank's own share, from
 /// `exchange_migration_buffers` or directly from `pack_for_migration` in
-/// an emulated Tier-0 test) into one mesh. Vertices and, for a
+/// an emulated base-build-configuration test) into one mesh. Vertices and, for a
 /// Polyhedron, faces are deduplicated by global id (matching
 /// `NativeMeshBuilder`'s own face-dedup rule: the same vertex SET, in
 /// either cyclic direction). Every unpacked cell is OWNED by this rank
@@ -109,16 +109,16 @@ void resolve_vertex_ownership(MeshArrays<Kokkos::HostSpace>& arrays, CommHandle 
 /// `pack_for_migration` + `exchange_migration_buffers` +
 /// `unpack_migrated_mesh` + `resolve_vertex_ownership`.
 ///
-/// COLLECTIVE REFUSAL. `pack_for_migration`'s two refusals are computed
+/// COLLECTIVE REJECTION. `pack_for_migration`'s two rejections are computed
 /// from LOCAL data (this rank's own `dest`), but a caller must never let
-/// one rank refuse and return while its neighbours proceed into
+/// one rank reject and return while its neighbours proceed into
 /// `exchange_migration_buffers`'s alltoall expecting every rank to
 /// participate -- that is rcb_moab's own "divergent early return causing
 /// hangs" failure mode (see the file header), reproduced if this
 /// function returned the local Result directly. So `migrate` computes
 /// its OWN validity locally, then reduces that outcome with every other
 /// rank via one `MPI_Allreduce(MIN)` BEFORE calling the exchange -- if
-/// any rank is invalid, EVERY rank returns the same refusal, none of
+/// any rank is invalid, EVERY rank returns the same rejection, none of
 /// them touching the alltoall at all.
 [[nodiscard]] Result<std::unique_ptr<NativeMeshView>> migrate(const NativeMeshView& mesh,
                                                               const std::vector<int>& dest,

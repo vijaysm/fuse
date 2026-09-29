@@ -24,7 +24,7 @@
 /// face's corners run counter-clockwise. native_mesh.hpp's volume check
 /// depends on every table entry honouring this -- get one face backwards and
 /// the divergence-theorem cross-check (docs/dev/native-mesh.md) reports the
-/// wrong sign and the cell is refused as not star-shaped, which is how a
+/// wrong sign and the cell is rejected as not star-shaped, which is how a
 /// wrong table entry would be caught, not silently accepted.
 
 #include <cstddef>

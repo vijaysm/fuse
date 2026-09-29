@@ -384,7 +384,7 @@ TEST(TransferMapIo, AMismatchedPartitionIsRefusedNotSilentlyZeroFilled) {
   EXPECT_NE(r.error().message.find("write zero"), std::string::npos)
       << r.error().message;
 
-  // Half right is still refused: coverage is per entity, not a fraction.
+  // Half right is still rejected: coverage is per entity, not a fraction.
   std::vector<std::size_t> overlapping = ids(104, 8);  // 104..111, map has ..107
   const Partition          half{overlapping};
   const auto               h = fuse::localise(p.value(), src_all, half, 2, 2);

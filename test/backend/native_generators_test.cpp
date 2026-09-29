@@ -129,7 +129,7 @@ TEST(NativeGenerators, PolyhedralBoxTotalVolumeIsOneAtEveryRankCount) {
 TEST(NativeGenerators, PrismPyramidMixCellsHaveThePyramidsVolume) {
   // Deliberately check the pyramid orientation this generator picked
   // (native_generators.cpp's comment on the reversed base) by checking
-  // total volume, which would be visibly wrong (refused, or far from 1)
+  // total volume, which would be visibly wrong (rejected, or far from 1)
   // if the pyramids were inverted or degenerate.
   auto arrays = generate_native_mesh("prismpyramidmix:2x2x2", 0, 1);
   ASSERT_TRUE(arrays.ok()) << arrays.error().message;
@@ -160,7 +160,7 @@ TEST(NativeGenerators, CubedSphereHasSixPanelsWithEveryVertexOnTheUnitSphere) {
   }
 }
 
-// ---- refusals ------------------------------------------------------------
+// ---- rejections ------------------------------------------------------------
 
 TEST(NativeGenerators, RefusesAnUnknownGeneratedKind) {
   auto arrays = generate_native_mesh("dodecahedron:5", 0, 1);
