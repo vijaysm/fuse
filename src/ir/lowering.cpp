@@ -2,6 +2,8 @@
 
 #include "fuse/ir/op.hpp"
 
+#include <optional>
+
 namespace fuse {
 
 LoweringRegistry& LoweringRegistry::builtin() {
@@ -15,13 +17,18 @@ LoweringRegistry& LoweringRegistry::builtin() {
 
 namespace {
 
-/// The type a field has as it leaves its component.
-ValueType source_type(const CouplingGraph& g, FieldId f) {
+/// The type a field has as it leaves its component. `components`
+/// defaults to the field's own declared `FieldSpec::components`; a
+/// window-scoped import's Sink (`emit_field_sink()` below) passes
+/// `window_import_width()`'s wider count instead, since that Sink
+/// delivers its provider's whole K-sample flat array unchanged.
+ValueType source_type(const CouplingGraph& g, FieldId f,
+                      std::optional<int> components = std::nullopt) {
   const FieldSpec& spec = g.field(f);
   const ComponentId owner = g.owner_of(f);
   return ValueType{.kind = ValueKind::Instant,
                    .region = spec.region,
-                   .components = spec.components,
+                   .components = components.value_or(spec.components),
                    .units = spec.units,
                    .conservation = spec.conservation,
                    .time = TimeLevel::current(),
@@ -37,7 +44,9 @@ std::string qualified(const CouplingGraph& g, FieldId f) {
 /// for field `f`, consuming whatever `ctx.field_arc[f]` currently holds.
 /// No-op (silently) if `f` has no writer yet -- W-NO-WRITER is validate()'s
 /// job, not this function's, and both call sites below rely on that.
-void emit_field_sink(LoweringContext& ctx, const CouplingGraph& g, FieldId f) {
+void emit_field_sink(LoweringContext& ctx, const CouplingGraph& g, FieldId f,
+                     std::optional<int> components = std::nullopt,
+                     bool is_window_import = false) {
   const auto it = ctx.field_arc.find(f.value());
   if (it == ctx.field_arc.end()) return;
 
@@ -47,9 +56,23 @@ void emit_field_sink(LoweringContext& ctx, const CouplingGraph& g, FieldId f) {
     if (g.channel_at(ChannelId{c}).target == f) { origin = ChannelId{c}; break; }
   }
 
-  const ArcId sink_arc = ctx.dag.add_arc(source_type(g, f), qualified(g, f));
+  // Time windows track (C3): a window-scoped import's own Sink output is
+  // K samples wide, delivered unchanged from its provider -- never the
+  // single value the component's own native Requires storage holds
+  // (window_import_width()'s own comment, fuse/ir/lowering.hpp). The
+  // "/window" label suffix, the SAME convention the window EXPORT side's
+  // own WindowAdvance output already uses, is what plan_buffers()
+  // (src/schedule/buffers.cpp) reads to keep this arc a fresh
+  // coupler-owned scratch buffer instead of aliasing it onto the
+  // component's own registered storage -- which resolve_buffers()
+  // (src/runtime/runner.cpp) would otherwise do unconditionally for any
+  // Sink whose label parses as "component.field" for a real field.
+  const std::string label =
+      qualified(g, f) + (is_window_import ? "/window" : "");
+  const ArcId sink_arc =
+      ctx.dag.add_arc(source_type(g, f, components), label);
   ctx.dag.add_node(OpKind::Sink, {it->second}, sink_arc, OpAttrs{}, origin,
-                   qualified(g, f));
+                   label);
   ctx.sink_arc[f.value()] = sink_arc;
 }
 
@@ -342,7 +365,8 @@ LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy) {
     const Intent intent = g.field(f).intent;
     if (intent != Intent::Requires && intent != Intent::Bidirectional) continue;
     if (!window_imported.count(i)) continue;
-    emit_field_sink(ctx, g, f);
+    emit_field_sink(ctx, g, f, static_cast<int>(window_import_width(g, f)),
+                    /*is_window_import=*/true);
   }
 
   // Time windows track: must run after the window-imported Sink pass
