@@ -304,7 +304,7 @@ TEST(Rational, TheNonThrowingSpellingReportsTheSameCases) {
   EXPECT_FALSE(fuse::Rational::try_mul(big, fuse::Rational{2}).has_value());
   EXPECT_FALSE(fuse::Rational::try_div(tiny, fuse::Rational{kMax, 1}).has_value());
   // Division by zero reports rather than throwing in this spelling, which is
-  // the whole reason it exists -- a caller building a verdict cannot catch.
+  // the whole reason it exists -- a caller building an outcome cannot catch.
   EXPECT_FALSE(fuse::Rational::try_div(big, fuse::Rational{0}).has_value());
   // And it agrees with the operators wherever the result IS representable.
   const auto sum = fuse::Rational::try_add(fuse::Rational{1, 3}, fuse::Rational{1, 6});

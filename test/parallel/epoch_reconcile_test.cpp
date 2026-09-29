@@ -1,8 +1,8 @@
 // What happens to the other ranks when one of them fails mid-step.
 //
 // THE FAILURE THIS GUARDS AGAINST. Two components on disjoint rank sets
-// exchange a field. One rank's component refuses its step. Without a
-// rank-agreement point, that rank returns from run_period() immediately while
+// exchange a field. One rank's component rejects its step. Without a
+// synchronisation point, that rank returns from run_period() immediately while
 // its partners are already inside the transport's collective, waiting for a
 // message it will never send. They block until the scheduler kills the job,
 // and the log shows no failure on any of the ranks that were still running.
@@ -10,7 +10,7 @@
 // WHAT THE LIBRARY DOES INSTEAD. The compiler put an `Epoch` after the data
 // move (docs/dev/rank-agreement.md). The failing rank does NOT return at the
 // point of failure: it carries the failure forward, skipping every instruction
-// except the agreement points, so it still arrives at the reduction its
+// except the synchronisation points, so it still arrives at the reduction its
 // partners are waiting at. Every participant then learns that someone failed
 // and stops, with the failing rank reporting the cause and the others
 // reporting E-RT-EPOCH-PEER.
@@ -86,7 +86,7 @@ class PartitionedTestMesh final : public fuse::MeshView {
   /// it has no coordinates at all -- `centroid` returns the origin and
   /// `measure` returns 1. Reporting zero simplices is therefore the honest
   /// answer, and it is the case MeshView's contract names: a weight builder
-  /// must refuse against this view rather than build an empty supermesh and
+  /// must reject against this view rather than build an empty supermesh and
   /// call it conservative.
   [[nodiscard]] std::size_t simplex_count(int, std::size_t) const override {
     return 0;
@@ -354,7 +354,7 @@ TwoComponentJob make_two_component_job(const std::string& entity_set) {
   return TwoComponentJob{entity_set};
 }
 
-/// Bind every component's storage; the Runner refuses a plan otherwise. Not
+/// Bind every component's storage; the Runner rejects a plan otherwise. Not
 /// part of the brief's TwoComponentJob text, but required by the same
 /// contract test/unit/runner_test.cpp:399-404 documents (`bind_all`): nothing
 /// in Runner::initialize() calls Component::register_fields() for you.
@@ -390,12 +390,12 @@ std::function<fuse::Result<void>(fuse::Transport&)> mpi_comm_setup() {
   };
 }
 
-/// A component that refuses its step on exactly one rank.
+/// A component that rejects its step on exactly one rank.
 ///
-/// Refusing in `advance()` rather than at setup is deliberate: a setup failure
+/// Rejecting in `advance()` rather than at setup is deliberate: a setup failure
 /// is already reconciled by the status-agreement checkpoint in initialize(),
 /// and reusing that path would test the wrong mechanism. This one fails after
-/// the plan is running, which is where only the agreement points can help.
+/// the plan is running, which is where only the synchronisation points can help.
 class FailsOnOneRank final : public fuse::Component {
  public:
   FailsOnOneRank(std::string name, fuse::FieldId field, std::size_t n,
@@ -417,7 +417,7 @@ class FailsOnOneRank final : public fuse::Component {
     ++steps;
     if (current_rank() == failing_rank_) {
       return fuse::Failure{"E-TEST-REFUSED",
-                           "this rank's component refuses to advance"};
+                           "this rank's component rejects its step"};
     }
     return fuse::Result<void>::success();
   }
@@ -441,10 +441,10 @@ TEST(EpochReconcile, TheJobNeedsAtLeastTwoRanks) {
 
 TEST(EpochReconcile, EveryRankStopsWhenOneOfThemFails) {
   auto h = make_two_component_job("");
-  // The component on the LAST rank of the source side refuses. On two ranks
+  // The component on the LAST rank of the source side rejects. On two ranks
   // that is rank 0; on five it is rank 1. Either way it is a rank that takes
   // part in the exchange, which is the case that can hang.
-  // The last rank of the source placement, whichever ranks those are.
+  // The last rank of the source processor set, whichever ranks those are.
   const int failing = h.fluid_.empty() ? 0 : h.fluid_.max_rank();
 
   fuse::ComponentSet cs;
@@ -461,7 +461,7 @@ TEST(EpochReconcile, EveryRankStopsWhenOneOfThemFails) {
   // All three, not just the communicator: with a base communicator the plan
   // gets rank-matching graphs attached, and a graph-backed plan requires the
   // "mpi" transport -- RunnerTransport.ACommGraphBackedPlanRefusesANonMpiTransport
-  // asserts that refusal. Setting only base_communicator is how the first
+  // asserts that rejection. Setting only base_communicator is how the first
   // version of this test failed, at initialize() rather than at the behaviour
   // it meant to check.
   fuse::RunnerConfig cfg;
@@ -479,7 +479,7 @@ TEST(EpochReconcile, EveryRankStopsWhenOneOfThemFails) {
   // next exchange.
   ASSERT_FALSE(r.ok()) << "rank " << current_rank()
                        << " reported success while rank " << failing
-                       << " refused its step";
+                       << " rejected its step";
 
   if (current_rank() == failing) {
     EXPECT_EQ(r.error().code, "E-TEST-REFUSED")
@@ -491,7 +491,7 @@ TEST(EpochReconcile, EveryRankStopsWhenOneOfThemFails) {
 }
 
 TEST(EpochReconcile, AClearRunReconcilesAtEveryAgreementPoint) {
-  // The same plan with nobody failing: the agreement points still run, and the
+  // The same plan with nobody failing: the synchronisation points still run, and the
   // count is a fact worth pinning -- an implementation that skipped them when
   // all was well would pass every correctness test and hang on the first
   // failure.
@@ -509,7 +509,7 @@ TEST(EpochReconcile, AClearRunReconcilesAtEveryAgreementPoint) {
   ASSERT_TRUE(ran.ok()) << ran.error().code << ": " << ran.error().message;
 
   EXPECT_GT(runner.stats().epochs_reconciled, 0u)
-      << "a rank taking part in the exchange reconciled no agreement point";
+      << "a rank taking part in the exchange reconciled no synchronisation point";
 }
 
 // A component is stepped only on the processes of its own processor set

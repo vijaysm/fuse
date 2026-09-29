@@ -1,5 +1,5 @@
 // 2D Stokes channel with an Euler-Bernoulli wall beam, strongly coupled
-// through FUSE's iteration region on a non-matching 1D interface (consistent
+// through FUSE's implicit coupling group on a non-matching 1D interface (consistent
 // H, conservative H^T). docs/user/fsi-channel.md carries the full model,
 // discretisation and coupling write-up; this binary is the runnable driver
 // and the CLI --check gate on top of it.
@@ -152,7 +152,7 @@ fuse::CouplingGraph build_graph(std::size_t nx_beam, std::size_t nx_fluid,
   // pattern. Inside the iterate() region below, that lag is precisely
   // what the sweep resolves.
   g.channel(fch).lag(1).allow_time_level_mismatch(
-      "resolved by the beam-fluid iteration region");
+      "resolved by the beam-fluid implicit coupling group");
 
   fuse::ConvergenceCriterion crit;
   crit.add(fuse::Converged::Relative(1e-7, "beam_velocity"));

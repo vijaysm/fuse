@@ -586,7 +586,7 @@ TEST(Waveform, LargeAbsoluteTimesDoNotDegradeTheFit) {
 // The first R-48 pass hoisted the shared factorization (`PolynomialFitPlan`/
 // `SplineMomentPlan`) out of the per-element loop, but `solve_polynomial_fit`/
 // `solve_cubic_spline_moments` still allocated their own `rhs`/`c` (resp.
-// `r`/`m`) scratch on every element -- the pass2 re-review's PARTIAL verdict.
+// `r`/`m`) scratch on every element -- the pass2 re-review's PARTIAL outcome.
 // This pass closes it with the `_into` entry points. The fence: one
 // `evaluate()` call's allocation count must not depend on the element count,
 // since every allocation left in the per-element loop would make it scale

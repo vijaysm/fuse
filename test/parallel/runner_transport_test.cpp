@@ -56,7 +56,7 @@ int current_rank() {
 /// belongs to only one of them.
 class StubComponent final : public fuse::Component {
  public:
-  /// `rollback`: R-10 (REVIEW.md). An iteration region requires every
+  /// `rollback`: R-10 (REVIEW.md). An implicit coupling group requires every
   /// component it checkpoints to support rollback (E-ITER-NOROLLBACK);
   /// default false matches every existing caller, none of which puts this
   /// component in a region.
@@ -64,7 +64,7 @@ class StubComponent final : public fuse::Component {
   /// default, every existing caller) never refuses; 0 refuses starting with
   /// this component's very FIRST advance() call, the shape
   /// RunnerTransport.StillRunsASecondChannelAfterARegionFailsUnderMpi needs
-  /// to force an iteration region's re-advance to fail on sweep 0 under a
+  /// to force an implicit coupling group's re-advance to fail on sweep 0 under a
   /// real multi-rank run.
   StubComponent(std::string name, fuse::FieldId field, std::size_t count,
                bool rollback = false, int fail_after = -1)
@@ -198,8 +198,8 @@ class TwoComponentJob {
  public:
   /// `entity_set`, when non-empty, is set on the shared region. Task 3's
   /// E-RT-TRANSPORT-REGION test passes "wall"; every other test passes "".
-  /// `with_iteration_region`: R-10 (REVIEW.md) -- wraps the "link" channel
-  /// in an iteration region with a real convergence measure, and makes both
+  /// `with_iteration_region`: R-10 (REVIEW.md) -- wraps the "link" field transfer
+  /// in an implicit coupling group with a real convergence measure, and makes both
   /// components rollback-capable so E-ITER-NOROLLBACK does not mask the
   /// check this exists to reach. Default false leaves every existing caller
   /// of this class exactly as it was. `accel_kind`: which accelerator the
@@ -560,7 +560,7 @@ class LinearFixedPointJob {
   /// `kA`/`tol`: D3 (KNOWN_ISSUES) -- `RegionResidualLocalConvergenceIsNot-
   /// EnoughUnderMpi` passes a `kA` CHOSEN PER RANK (`current_rank() == 0 ?
   /// fast : slow`) so this rank's own LOCAL residual and the region's
-  /// GLOBALLY-AGREED residual reach different convergence verdicts at the
+  /// GLOBALLY-AGREED residual reach different convergence outcomes at the
   /// same sweep -- see that test's own comment for the numbers. Every
   /// existing caller passes neither, keeping `kA = 0.5`/`tol = 1e-10`
   /// (this class's own long-standing values) exactly as before.
@@ -785,9 +785,9 @@ std::function<fuse::Result<void>(fuse::Transport&)> mpi_comm_setup() {
   };
 }
 
-// R-10 (REVIEW.md). Originally: an iteration region's convergence decision
+// R-10 (REVIEW.md). Originally: an implicit coupling group's convergence decision
 // was computed from a purely rank-local residual with no cross-rank
-// agreement, and ANY region spanning more than one rank was refused
+// agreement, and ANY group spanning more than one rank was rejected
 // (E-RT-REGION-MPI) as unverified. Superseded: resolve_regions() and
 // run_region() now reduce the residual across the region's participants on
 // every sweep (reduce_region_residuals(), src/runtime/runner.cpp), so a
@@ -986,7 +986,7 @@ TEST(RunnerTransport, AChannelOutsideTheRegionStillCompletesAfterTheRegionFails)
   const int me = current_rank();
   const bool outside = me == world_size() - 1;
   const auto r = runner.run_period(h.components);
-  // Every rank prints its own verdict: only rank 0's gtest output reaches the
+  // Every rank prints its own outcome: only rank 0's gtest output reaches the
   // log, and the first host run showed one failing rank without its message.
   std::printf("[D3-outside] rank %d (%s): ok=%d code=%s\n", me, outside ? "outside" : "region",
               r.ok() ? 1 : 0, r.ok() ? "-" : r.error().code.c_str());
@@ -1021,7 +1021,7 @@ TEST(RunnerTransport, AChannelOutsideTheRegionStillCompletesAfterTheRegionFails)
 // comment says is legitimately treated as "purely local".
 //
 // TRACED KILL, no hang needed (like `StillRunsASecondChannelAfterARegionFailsUnderMpi`
-// above, this fixture's failure is a clean, local verdict mismatch, not a
+// above, this fixture's failure is a clean, local outcome mismatch, not a
 // collective one): `resolve_regions()`'s OWN per-block guard,
 // `if (b.length == 0 && R.participants.size() <= 1) return Failure{
 // "E-RT-REGION", "... would report convergence after one sweep"};`
@@ -1038,7 +1038,7 @@ TEST(RunnerTransport, AChannelOutsideTheRegionStillCompletesAfterTheRegionFails)
 // correctly counted instead FIRES, on the coupler's rank only, the moment
 // `runner.initialize()` reaches this region. `fluid`/`solid`'s own rank
 // never hits it (their block length is > 0 there), so this is an
-// asymmetric, per-rank INITIALIZE()-time verdict split -- observable with
+// asymmetric, per-rank INITIALIZE()-time outcome split -- observable with
 // nothing collective having run yet, unlike the region-body mutation above.
 TEST(RunnerTransport, IterationRegionParticipantsIncludeADisjointCoupler) {
   FUSE_REQUIRE_AT_LEAST_RANKS(2);  // one rank for fluid/solid (coincident), one for the coupler
@@ -1138,14 +1138,14 @@ TEST(RunnerTransport, RegionConvergesInTheSerialIterationCount) {
 // only OVERWRITES `step_failure` `if (!step_failure.has_value())` (see the
 // R-09 mutation's own `old` line, just above this in the same function),
 // so the region's "E-TEST-ADVANCE-REFUSED" wins and "linkB"'s distinct
-// "E-RT-TRANSPORT" verdict is silently discarded -- masked, not fixed. And
+// "E-RT-TRANSPORT" outcome is silently discarded -- masked, not fixed. And
 // `cons_b->calls()` does not depend on whether "linkB"'s DATA arrived
 // correctly at all: a component's own tick runs from whatever its input
 // buffer already holds, null Transport or not.
 //
 // So THIS test forces nothing to fail (`fail_fluid_after` stays at its
-// default, no iteration region at all -- `with_iteration_region=false`, the
-// mutant needs no region to manifest, and one fewer moving part is one
+// default, no implicit coupling group at all -- `with_iteration_region=false`, the
+// mutant needs no group to manifest, and one fewer moving part is one
 // fewer thing masking a different failure), and checks the DATA delivered
 // through BOTH channels, using the same by-global-id technique
 // `ARunDeliversTheSourceValuesToTheDestinationRanks` uses for "link".
@@ -1205,7 +1205,7 @@ TEST(RunnerTransport, TwoIndependentCommGraphChannelsBothDeliverInOnePeriod) {
 // the map is applied entity-wise with no coupling between entities, a
 // RELATIVE criterion (residual / value) decays at the SAME RATE whether it
 // is summed over 1 entity, 2 entities, or the global 4 -- the local and
-// global verdicts happen to AGREE at every sweep for a uniform `k`, so the
+// global outcomes happen to AGREE at every sweep for a uniform `k`, so the
 // mutation is invisible there no matter how unequal the entity SPLIT is.
 //
 // This fixture instead varies `k` (not the entity count) BY RANK: rank 0
@@ -1614,7 +1614,7 @@ TEST(RunnerTransport, ARankDivergentSetupFailureRefusesOnEveryRank) {
   const auto r = runner.initialize(h.components, h.registry, cfg);
   ASSERT_FALSE(r.ok()) << "rank " << current_rank()
                        << " accepted a job that rank 0 could not set up";
-  // Each rank returns the verdict it is entitled to: the broken rank its own
+  // Each rank returns the outcome it is entitled to: the broken rank its own
   // local diagnostic, the healthy ranks the checkpoint's refusal.
   if (current_rank() == 0) {
     EXPECT_EQ(r.error().code, "E-RT-UNBOUND") << r.error().message;

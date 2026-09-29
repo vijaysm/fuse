@@ -155,11 +155,11 @@ fuse::CouplingGraph build_graph(fuse::AccelConfig accel, int max_iterations) {
   const auto flux = g.add_channel("flux", q_out, q_in);
   const auto temp = g.add_channel("wall_temperature", u_out, u_in);
   // The two channels close a cycle, so one of them must carry a lag for the
-  // graph to be schedulable at all. Inside an iteration region that lag is
+  // graph to be schedulable at all. Inside an implicit coupling group that lag is
   // what the sweep resolves; that is precisely the difference between implicit
   // and staggered coupling.
   g.channel(temp).lag(1).allow_time_level_mismatch(
-      "resolved by the Dirichlet-Neumann iteration region");
+      "resolved by the Dirichlet-Neumann implicit coupling group");
 
   // THE CRITERION COVERS BOTH CHANNELS, and this is not a style choice.
   // `Converged::Relative(tol, "u_wall")` alone -- the obvious reading of spec

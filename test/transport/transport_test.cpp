@@ -107,7 +107,7 @@ TEST(TransportRegistry, ReRegisteringAnExistingNameReplacesIt) {
 TEST(Tags, AreDistinctAndWithinTheGuaranteedBound) {
   using namespace fuse::tags;
   // kIterationRegion (REVIEW.md R-10): the residual-agreement reduction an
-  // iteration region's sweep loop runs on the same base communicator.
+  // implicit coupling group's sweep loop runs on the same base communicator.
   const std::array<int, 4> all{kCrystalRouter, kUnionCommCreate, kEpoch,
                                kIterationRegion};
 
@@ -133,7 +133,7 @@ TEST(Tags, AreDistinctAndWithinTheGuaranteedBound) {
 
 // The two-rank job that failed on the host: rank 0 is the source with 1
 // component, rank 1 the destination with 2. Both ranks gather the same
-// array, so both must reach the same verdict -- and that verdict must be a
+// array, so both must reach the same outcome -- and that outcome must be a
 // disagreement. Added 2026-09-20: the rule read as though it could not fail
 // to fire, and the host run showed both ranks accepting the spec, so the
 // rule is now checked where it can be run.

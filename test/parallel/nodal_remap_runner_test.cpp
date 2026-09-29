@@ -291,7 +291,7 @@ void run_and_check(std::size_t n_beam, std::size_t n_fluid, fuse::RankSet beam_r
   // shape. Setting this true turns that same condition into a hard
   // `E-RT-CONSERVATION` failure (confirmed by the same harness: "integral
   // 10.400000 -> 0.000000" once `abort_on_violation` was flipped on), which
-  // is what actually makes this test check the Runner's verdict against its
+  // is what actually makes this test check the Runner's outcome against its
   // own MPI_Allreduce of the same integrals below -- the claim the comment
   // used to make here without this line being present to back it.
   cfg.abort_on_violation = true;
