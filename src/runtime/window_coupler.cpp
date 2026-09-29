@@ -7,21 +7,11 @@
 
 namespace fuse {
 
-namespace {
+namespace detail {
 
-/// One substep of a member's own grid within a window.
-struct Substep {
-  Rational t0, t1;
-  bool     straddle = false;  ///< true only for the (at most one) last step
-};
-
-/// Spec: choose the window so it never waits for the LCM of two intervals.
-/// A member's own substeps march on ITS OWN grid, `Adjustable` truncating
-/// the last one onto `window_end`, `Fixed` taking it in full even past
-/// `window_end` (the straddling step; see the class comment in the header).
-[[nodiscard]] std::pair<std::vector<Substep>, Rational> plan_substeps(
+std::pair<std::vector<WindowSubstep>, Rational> plan_substeps(
     Rational clock, Rational interval, Rational window_end, DtPolicy policy) {
-  std::vector<Substep> steps;
+  std::vector<WindowSubstep> steps;
   Rational              t = clock;
   while (t < window_end) {
     const Rational end = t + interval;
@@ -41,15 +31,28 @@ struct Substep {
   return {std::move(steps), t};
 }
 
-/// The mean of `wf` over `[a, b)`, `a < b` required. `wf` must already
-/// cover `[a, b]` (its support, per `Waveform`'s own contract).
-[[nodiscard]] Result<double> mean_over(const Waveform& wf, Rational a,
-                                       Rational b) {
+Result<double> mean_over(const Waveform& wf, Rational a, Rational b) {
   double integral = 0.0;
   const Result<void> r = wf.integrate(a, b, &integral);
   if (!r.ok()) return r.error();
   return integral / (b - a).to_double();
 }
+
+}  // namespace detail
+
+namespace {
+
+// Unit A, step 1: `Substep`/`plan_substeps`/`mean_over` are now
+// `fuse::detail::WindowSubstep`/`plan_substeps`/`mean_over`
+// (fuse/runtime/window_coupler.hpp), unchanged, so a future subcycling-
+// node runtime dispatch can call the identical functions. These aliases
+// keep every existing use in THIS file (`Substep`, bare `plan_substeps(...)`,
+// bare `mean_over(...)`) resolving to them without a single other line
+// changing -- the safest way to widen a function's visibility without
+// touching the logic that calls it.
+using Substep = detail::WindowSubstep;
+using detail::plan_substeps;
+using detail::mean_over;
 
 }  // namespace
 
@@ -71,6 +74,53 @@ double extrapolate_boundary_value(
   const double x = (target - history[start].first).to_double();
   return num::eval_polynomial(coeffs, x, 0.0);
 }
+
+namespace detail {
+
+Result<void> advance_straddle_split(
+    const WindowMember& member, Rational t_a, Rational t_split, Rational t_b,
+    std::size_t step, int iteration,
+    const std::function<Result<double>(std::size_t, Rational, Rational)>&
+        mean_in_window,
+    const std::function<Result<double>(std::size_t)>& boundary_at_split,
+    const std::function<double(std::size_t, Rational)>& extrapolate_tail,
+    double* out_at_split) {
+  for (std::size_t e = 0; e < member.length; ++e) {
+    const Result<double> mv = mean_in_window(e, t_a, t_split);
+    if (!mv.ok()) return mv.error();
+    member.required[e] = mv.value();
+  }
+  StepContext ctx_in;
+  ctx_in.t_begin = t_a;
+  ctx_in.t_end = t_split;
+  ctx_in.step = step;
+  ctx_in.iteration = iteration;
+  const Result<void> ar_in = member.component->advance(ctx_in);
+  if (!ar_in.ok()) return ar_in;
+
+  for (std::size_t e = 0; e < member.length; ++e) {
+    out_at_split[e] = member.provided[e];
+  }
+
+  if (t_split < t_b) {
+    for (std::size_t e = 0; e < member.length; ++e) {
+      const Result<double> bv = boundary_at_split(e);
+      if (!bv.ok()) return bv.error();
+      const double v_tail = extrapolate_tail(e, t_b);
+      member.required[e] = 0.5 * (bv.value() + v_tail);
+    }
+    StepContext ctx_tail;
+    ctx_tail.t_begin = t_split;
+    ctx_tail.t_end = t_b;
+    ctx_tail.step = step;
+    ctx_tail.iteration = iteration;
+    const Result<void> ar_tail = member.component->advance(ctx_tail);
+    if (!ar_tail.ok()) return ar_tail;
+  }
+  return Result<void>::success();
+}
+
+}  // namespace detail
 
 Result<double> WindowChannelIO::mean(
     const WindowChannel& /*ch*/, std::size_t e,
@@ -251,54 +301,53 @@ Result<void> WindowCoupler::resolve_pending_straddles(Rational /*T0*/) {
       const Rational end = std::min(clock + m.interval, st.clock);
       if (clock < prev_end && prev_end < end) {
         // This chunk straddles prev_end: split it exactly there, same as
-        // sweep_window's straddling substep.
-        for (std::size_t e = 0; e < m.length; ++e) {
-          double mean_in = 0.0;
-          bool have = false;
-          for (const WindowChannel& ch : channels_) {
-            if (ch.consumer != i) continue;
-            const MemberState& pst = state_[ch.provider];
-            const Result<double> mv = channel_io_->mean(
-                ch, e, pst.last_window_waveform, clock, prev_end);
-            if (!mv.ok()) return mv.error();
-            mean_in = mv.value();
-            have = true;
-          }
-          if (have) m.required[e] = mean_in;
-        }
-        StepContext ctx_in;
-        ctx_in.t_begin = clock;
-        ctx_in.t_end = prev_end;
-        ctx_in.step = window_index_;
-        ctx_in.iteration = 0;
-        const Result<void> ar_in = m.component->advance(ctx_in);
-        if (!ar_in.ok()) return ar_in;
-
-        for (std::size_t e = 0; e < m.length; ++e) {
-          double mean_tail = 0.0;
-          bool have = false;
-          for (const WindowChannel& ch : channels_) {
-            if (ch.consumer != i) continue;
-            const MemberState& pst = state_[ch.provider];
-            const int ord = order_for(ch.provider);
-            const Result<double> bv = channel_io_->boundary(
-                ch, e, pst.last_window_waveform, prev_end);
-            if (!bv.ok()) return bv.error();
-            const double v_bnd = bv.value();
-            const double v_tail =
-                channel_io_->extrapolate(ch, e, pst.history, end, ord);
-            mean_tail = 0.5 * (v_bnd + v_tail);
-            have = true;
-          }
-          if (have) m.required[e] = mean_tail;
-        }
-        StepContext ctx_tail;
-        ctx_tail.t_begin = prev_end;
-        ctx_tail.t_end = end;
-        ctx_tail.step = window_index_;
-        ctx_tail.iteration = 0;
-        const Result<void> ar_tail = m.component->advance(ctx_tail);
-        if (!ar_tail.ok()) return ar_tail;
+        // sweep_window's straddling substep, and via the SAME shared
+        // choreography (`detail::advance_straddle_split()`, Unit A, step
+        // 3) -- here reading the previous window's converged
+        // `last_window_waveform`/`history` instead of this sweep's live
+        // `delivered[]`. The split value itself is never used here (the
+        // replay's whole point is to reproduce the component's state, not
+        // to record it anywhere new), so `out_at_split` is a throwaway
+        // scratch buffer.
+        std::vector<double> scratch(m.length);
+        const Result<void> split_r = detail::advance_straddle_split(
+            m, clock, prev_end, end, window_index_, 0,
+            [&](std::size_t e, Rational a, Rational b) -> Result<double> {
+              double mean_in = m.required[e];
+              for (const WindowChannel& ch : channels_) {
+                if (ch.consumer != i) continue;
+                const MemberState& pst = state_[ch.provider];
+                const Result<double> mv =
+                    channel_io_->mean(ch, e, pst.last_window_waveform, a, b);
+                if (!mv.ok()) return mv.error();
+                mean_in = mv.value();
+              }
+              return mean_in;
+            },
+            [&](std::size_t e) -> Result<double> {
+              double v_bnd = m.required[e];
+              for (const WindowChannel& ch : channels_) {
+                if (ch.consumer != i) continue;
+                const MemberState& pst = state_[ch.provider];
+                const Result<double> bv = channel_io_->boundary(
+                    ch, e, pst.last_window_waveform, prev_end);
+                if (!bv.ok()) return bv.error();
+                v_bnd = bv.value();
+              }
+              return v_bnd;
+            },
+            [&](std::size_t e, Rational target) -> double {
+              double v_tail = m.required[e];
+              for (const WindowChannel& ch : channels_) {
+                if (ch.consumer != i) continue;
+                const MemberState& pst = state_[ch.provider];
+                v_tail = channel_io_->extrapolate(ch, e, pst.history, target,
+                                                  order_for(ch.provider));
+              }
+              return v_tail;
+            },
+            scratch.data());
+        if (!split_r.ok()) return split_r;
         clock = end;
         continue;
       }
@@ -496,63 +545,64 @@ Result<void> WindowCoupler::sweep_window(Rational T0, Rational T1) {
           // advance() calls at the straddle boundary); the single-call
           // interpolation was a divergence from it introduced when this
           // was ported to C++.
-          for (std::size_t e = 0; e < m.length; ++e) {
-            double mean_in = 0.0;
-            for (const WindowChannel& ch : channels_) {
-              if (ch.consumer != i) continue;
-              const Result<double> mv = channel_io_->mean(
-                  ch, e, delivered[ch.provider], sub.t0, T1);
-              if (!mv.ok()) return mv.error();
-              mean_in = mv.value();
-            }
-            m.required[e] = mean_in;
-          }
-          StepContext ctx_in;
-          ctx_in.t_begin = sub.t0;
-          ctx_in.t_end = T1;
-          ctx_in.step = window_index_;
-          ctx_in.iteration = k;
-          const Result<void> ar_in = members_[i].component->advance(ctx_in);
-          if (!ar_in.ok()) return ar_in;
+          // Unit A, step 3: the split-advance choreography itself (advance
+          // to the split point with the in-window mean, record the exact
+          // split value, then -- unless the split point IS the chunk's own
+          // end -- advance the tail with the blended boundary/extrapolate
+          // mean) is shared with `resolve_pending_straddles()`'s replay via
+          // `detail::advance_straddle_split()`; only the callbacks below
+          // (which waveform/history they read) are specific to this sweep.
           std::vector<double> v_at_t1(m.length);
+          const Result<void> split_r = detail::advance_straddle_split(
+              members_[i], sub.t0, T1, sub.t1, window_index_, k,
+              [&](std::size_t e, Rational a, Rational b) -> Result<double> {
+                double mean_in = 0.0;
+                for (const WindowChannel& ch : channels_) {
+                  if (ch.consumer != i) continue;
+                  const Result<double> mv =
+                      channel_io_->mean(ch, e, delivered[ch.provider], a, b);
+                  if (!mv.ok()) return mv.error();
+                  mean_in = mv.value();
+                }
+                return mean_in;
+              },
+              [&](std::size_t e) -> Result<double> {
+                double v_bnd = 0.0;
+                // (void): this call site never checked evaluate()'s Result
+                // before channel_io_ existed either -- preserved exactly,
+                // not a new omission.
+                for (const WindowChannel& ch : channels_) {
+                  if (ch.consumer != i) continue;
+                  const Result<double> bv =
+                      channel_io_->boundary(ch, e, delivered[ch.provider], T1);
+                  if (bv.ok()) v_bnd = bv.value();
+                }
+                return v_bnd;
+              },
+              [&](std::size_t e, Rational target) -> double {
+                double v_tail = 0.0;
+                for (const WindowChannel& ch : channels_) {
+                  if (ch.consumer != i) continue;
+                  v_tail = channel_io_->extrapolate(
+                      ch, e, state_[ch.provider].history, target,
+                      order_for(ch.provider));
+                }
+                return v_tail;
+              },
+              v_at_t1.data());
+          if (!split_r.ok()) return split_r;
           for (std::size_t e = 0; e < m.length; ++e) {
-            v_at_t1[e] = m.provided[e];
             const Result<void> pr = real_traj[i][e]->push(T1, &v_at_t1[e]);
             if (!pr.ok()) return pr.error();
           }
           if (T1 < sub.t1) {
             for (std::size_t e = 0; e < m.length; ++e) {
-              double mean_tail = 0.0;
-              for (const WindowChannel& ch : channels_) {
-                if (ch.consumer != i) continue;
-                double v_bnd = 0.0;
-                // (void): this call site never checked evaluate()'s Result
-                // before channel_io_ existed either -- preserved exactly,
-                // not a new omission.
-                const Result<double> bv =
-                    channel_io_->boundary(ch, e, delivered[ch.provider], T1);
-                if (bv.ok()) v_bnd = bv.value();
-                const double v_tail = channel_io_->extrapolate(
-                    ch, e, state_[ch.provider].history, sub.t1,
-                    order_for(ch.provider));
-                mean_tail = 0.5 * (v_bnd + v_tail);
-              }
-              m.required[e] = mean_tail;
-            }
-            StepContext ctx_tail;
-            ctx_tail.t_begin = T1;
-            ctx_tail.t_end = sub.t1;
-            ctx_tail.step = window_index_;
-            ctx_tail.iteration = k;
-            const Result<void> ar_tail = members_[i].component->advance(ctx_tail);
-            if (!ar_tail.ok()) return ar_tail;
-          }
-          for (std::size_t e = 0; e < m.length; ++e) {
-            if (T1 < sub.t1) {
               double v = m.provided[e];
               const Result<void> pr = real_traj[i][e]->push(sub.t1, &v);
               if (!pr.ok()) return pr.error();
             }
+          }
+          for (std::size_t e = 0; e < m.length; ++e) {
             // The committed/exchanged value for this substep is the EXACT
             // value at T1 from the first advance() call above, never an
             // interpolant -- this is the whole point of the split.
