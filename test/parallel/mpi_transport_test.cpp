@@ -577,7 +577,7 @@ TEST(MpiTransport, BuildPlanRejectsDisagreeingComponentsAcrossRanks) {
   // Printed on every rank, pass or fail: the 2026-09-20 host run had rank 1
   // refusing and rank 0 building a plan, which the assertion alone does not
   // distinguish from both ranks missing the check.
-  std::printf("[components rank %d/%d] components=%d verdict=%s %s\n", rank,
+  std::printf("[components rank %d/%d] components=%d outcome=%s %s\n", rank,
               world_size(), spec.components, r.ok() ? "OK" : "REFUSED",
               r.ok() ? "" : r.error().code.c_str());
   std::fflush(stdout);

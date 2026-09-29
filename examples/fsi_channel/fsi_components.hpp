@@ -1,13 +1,13 @@
 #pragma once
 
 /// The two `fuse::Component`s of the FSI channel: a beam and a fluid,
-/// strongly coupled through FUSE's iteration region on the non-matching 1D
+/// strongly coupled through FUSE's implicit coupling group on the non-matching 1D
 /// interface described in docs/user/fsi-channel.md.
 ///
 /// ONE CLOCK. Both components declare the SAME `ComponentDecl::interval`
 /// (the physical time step dt, exactly as a `Rational`), so every period is
 /// one dt and there is no sub-cycling or waveform coupling in play here --
-/// the iteration region inside a period is what makes the coupling
+/// the implicit coupling group inside a coupling cycle is what makes the coupling
 /// implicit, not the clock.
 ///
 /// FIELDS (see docs/user/interface-transfer.md for `H`/`H^T D`):
@@ -247,7 +247,7 @@ class FluidComponent final : public fuse::Component {
   fuse::Result<void> save_state() override {
     saved_ = fluid_.save();
     // Captures the wall velocity at the TRUE start of this period, before
-    // any sweep of the upcoming iteration region has overwritten
+    // any sweep of the upcoming implicit coupling group has overwritten
     // velocity_in_ with a new guess -- see advance()'s own comment.
     velocity_in_t0_ = velocity_in_;
     return fuse::Result<void>::success();

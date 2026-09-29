@@ -796,7 +796,7 @@ TEST(Iteration, ARelaxedChannelInsideTheRegionStillFindsTheFixedPoint) {
 }
 
 // R12 (upgraded by this investigation -- see the commit message). The
-// handoff scoped R12 as "space-time inside an iteration region is untested,"
+// handoff scoped R12 as "space-time inside an implicit coupling group is untested,"
 // on the assumption that a runnable graph combining the two exists and only
 // lacks a test. It does not exist: EVERY construction attempted here is
 // refused at `Runner::initialize()`, before a single sweep runs, so there is
@@ -889,9 +889,9 @@ TEST(Iteration, ASpacetimeChannelInAnIterationRegionIsRefusedNotSilentlyWrong) {
   Runner runner{g, lowered.dag, sched.plan, backend};
   const auto init = runner.initialize(components, registry);
   ASSERT_FALSE(init.ok())
-      << "a space-time channel inside an iteration region now runs -- R12 "
+      << "a space-time field transfer inside an implicit coupling group now runs -- R12 "
          "needs its idempotency actually tested, not just documented as "
-         "refused";
+         "rejected";
   EXPECT_EQ(init.error().code, "E-RT-REGION");
   EXPECT_NE(init.error().message.find("at or after the region begins"),
            std::string::npos)

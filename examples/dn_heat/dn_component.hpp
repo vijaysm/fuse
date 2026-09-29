@@ -61,9 +61,9 @@
 /// THE SWEEP IS PARALLEL, NOT SERIAL, and it changes the rate. The textbook
 /// Dirichlet-Neumann iteration is a Gauss-Seidel: solve the Dirichlet problem,
 /// hand the FRESH flux to the Neumann problem, solve that, repeat. A FUSE
-/// iteration region restores every checkpointed participant and re-advances
+/// implicit coupling group restores every checkpointed participant and re-advances
 /// them all from the SAME delivered iterate (src/runtime/iteration.cpp:
-/// deliver every block, then run every tick), so both slabs see the previous
+/// deliver every block, then run every tick), so both blocks see the previous
 /// sweep's values -- a Jacobi iteration on the pair (q, u). Writing
 /// dq_k = q_k - q_{k-1} and du_k = u_k - u_{k-1}, one sweep gives
 /// dq_{k+1} = -r du_k and du_{k+1} = dq_k, so a block's norm contracts by r

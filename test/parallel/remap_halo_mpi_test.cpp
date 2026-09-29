@@ -22,7 +22,7 @@
 // FUSE_ENABLE_MPI links against an MPI-enabled MOAB whose moab::Core
 // constructor itself calls MPI_Init_thread, so even a single-process run of
 // this binary aborts here. Registered only when FUSE_ENABLE_MOAB AND
-// FUSE_ENABLE_MPI are both on (test/CMakeLists.txt); its verdict comes from
+// FUSE_ENABLE_MPI are both on (test/CMakeLists.txt); its outcome comes from
 // a host run, like every other tier-2 MPI test in this tree.
 
 #include <cstdio>

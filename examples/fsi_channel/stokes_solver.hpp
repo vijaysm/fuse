@@ -109,7 +109,7 @@ struct FlowState {
   // trapezoidal terms live at (see StokesSolver::step()'s own comment for
   // the full derivation). It is PART OF FlowState, not a separate member,
   // specifically so it rides through save()/restore()/set_state() and the
-  // iteration region's checkpoint verification correctly: a solver-
+  // implicit coupling group's checkpoint verification correctly: a solver-
   // private member `wall_traction()` depends on, that `save()`/`restore()`
   // does not carry, breaks that check the moment it changes between a
   // save and its matching restore -- an earlier round's own experiment
@@ -589,7 +589,7 @@ class StokesSolver {
   /// already interpolated (through H) onto this solver's own nx wall-face
   /// x-positions, AT THE NEW TIME t1 = t0 + dt. `top_wall_v_old` is the
   /// SAME quantity at t0 (the period's start -- CONSTANT across every
-  /// sweep of an iteration region, unlike `top_wall_v_new`, which changes
+  /// sweep of an implicit coupling group, unlike `top_wall_v_new`, which changes
   /// sweep to sweep as the beam's own guess converges).
   ///
   /// TIME-LEVEL CONSISTENCY (found and fixed by isolating a many-period

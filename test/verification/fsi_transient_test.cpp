@@ -90,7 +90,7 @@ fuse::CouplingGraph build_fsi_graph(std::size_t nx_beam, std::size_t nx_fluid,
   // pattern. Inside the iterate() region below, that lag is precisely
   // what the sweep resolves.
   g.channel(fch).lag(1).allow_time_level_mismatch(
-      "resolved by the beam-fluid iteration region");
+      "resolved by the beam-fluid implicit coupling group");
 
   fuse::ConvergenceCriterion crit;
   crit.add(fuse::Converged::Relative(tol, "beam_velocity"));

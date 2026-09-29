@@ -609,7 +609,7 @@ fuse::CouplingGraph build_fsi_graph(const CoupledCase& c) {
   const auto fch = g.add_channel("wall_force", force_out, load_in);
   g.channel(fch).remap_method("consistent-transpose").conservative();
   g.channel(fch).lag(1).allow_time_level_mismatch(
-      "resolved by the beam-fluid iteration region");
+      "resolved by the beam-fluid implicit coupling group");
 
   fuse::ConvergenceCriterion crit;
   crit.add(fuse::Converged::Relative(c.tol, "beam_velocity"));
