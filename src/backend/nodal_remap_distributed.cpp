@@ -131,7 +131,7 @@ struct GatheredDoubles {
 }
 
 /// THE FIX FOR "a refusal reachable after a collective must be an AGREED
-/// verdict, not a rank-local one" -- the exact defect a host MPI run found
+/// outcome, not a rank-local one" -- the exact defect a host MPI run found
 /// in `build_distributed_interp_rows`'s per-entity loop (round 4,
 /// KNOWN_ISSUES.md D8): a rank whose own local evaluation entities all lie
 /// inside the assembled source mesh would return success while a
@@ -210,7 +210,7 @@ enum class FailCode : int {
   return Failure{
       fail_code_str(winning_code_id),
       fmt::format("{}: rank {} could not place its evaluation entity of global id {} ({}); "
-                  "the verdict is AGREED across every rank of the communicator, so every rank "
+                  "the outcome is AGREED across every rank of the communicator, so every rank "
                   "refuses together even though only rank {} saw the failure locally",
                   function_name, winning_rank, winning_gid, fail_code_str(winning_code_id),
                   winning_rank)};
@@ -394,7 +394,7 @@ Result<DistributedInterpRows> build_distributed_interp_rows(const MeshView& src_
   // and the loop then simply stops adding rows; `agree_on_local_failure`
   // below is the single place every rank -- including one with zero local
   // evaluation entities, or one that never fails at all -- takes part in
-  // the SAME collective and returns the SAME verdict.
+  // the SAME collective and returns the SAME outcome.
   bool local_failed = false;
   int local_fail_code_id = 0;
   std::size_t local_fail_entity_gid = 0;
@@ -430,7 +430,7 @@ Result<DistributedInterpRows> build_distributed_interp_rows(const MeshView& src_
       if (!inv.ok()) {
         // E-INTERP-NEWTON or E-INTERP-DEGENERATE, both from
         // invert_reference_map's own documented contract (general_interp.hpp)
-        // -- NOT returned directly; recorded for the agreed verdict below.
+        // -- NOT returned directly; recorded for the agreed outcome below.
         local_failed = true;
         newton_failed = true;
         local_fail_code_id = (inv.error().code == "E-INTERP-DEGENERATE")
@@ -547,7 +547,7 @@ Result<void> apply_distributed_H(const DistributedInterpRows& rows, const MeshVi
   // depends on THIS rank's own rows, so it must never return directly. The
   // scan still runs to completion locally (out_owned is filled wherever
   // possible) so a rank that never fails is not left with a half-filled
-  // buffer if a DIFFERENT rank's verdict turns out to be the failing one;
+  // buffer if a DIFFERENT rank's outcome turns out to be the failing one;
   // the buffer is only ever read by the caller once agree_on_local_failure
   // below confirms success on every rank.
   out_owned.assign(rows.rows.size() * components, 0.0);

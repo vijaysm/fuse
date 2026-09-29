@@ -485,7 +485,7 @@ template <class T>
 /// non-empty -- two ranks can each pass that check while disagreeing with
 /// each other. Every comparison downstream (`a.dim != b.dim`, `a.dim != 2`)
 /// then risks evaluating to a different answer on different ranks, racing
-/// into a collective exactly like the verdict `reconcile<T>` already guards.
+/// into a collective exactly like the outcome `reconcile<T>` already guards.
 /// Agreed the same way: min and max across the communicator must coincide.
 [[nodiscard]] Result<int> reconcile_dim(void* pcomm_raw, int dim,
                                         const std::string& label) {
@@ -616,7 +616,7 @@ template <class T>
   // peer's. Computed as an ordinary local Result and reconciled once, at the
   // return below, rather than at each individual check, so a rank that fails
   // here still reaches whatever collective its peers are about to call next
-  // with the SAME verdict instead of racing ahead of it (rank-agreement.md).
+  // with the SAME outcome instead of racing ahead of it (rank-agreement.md).
   Result<Side> local = [&]() -> Result<Side> {
     if (s.dim < 1 || s.dim > 3) {
       return Failure{"E-REMAP-DIM",
@@ -1348,7 +1348,7 @@ struct Audit {
 }
 
 /// Reduce the audit over the communicator, so every rank reports the same
-/// numbers and, above all, reaches the same accept/refuse verdict.
+/// numbers and, above all, reaches the same accept/refuse outcome.
 [[nodiscard]] Result<void> reduce_audit([[maybe_unused]] const Side& src,
                                         [[maybe_unused]] Audit& audit) {
 #ifdef FUSE_REMAP_PARALLEL
@@ -1486,7 +1486,7 @@ struct Audit {
   //     precisely the failure mode E-REMAP-PARALLEL was added to avoid, so
   //     reproducing it here would be self-defeating. Every quantity that
   //     decides an error below is reduced over the communicator first, so all
-  //     ranks reach the same verdict.
+  //     ranks reach the same outcome.
   // ==========================================================================
   {
     const Result<void> f =

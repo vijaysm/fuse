@@ -68,7 +68,7 @@ static_assert(sizeof(std::size_t) <= sizeof(std::uint64_t),
 
 /// Codes the two agreement Allreduces carry. Ordered so that MPI_MAX picks a
 /// deterministic winner when different ranks fail differently; the message is
-/// this rank's own when it failed, and a pointer to the collective verdict
+/// this rank's own when it failed, and a pointer to the collective outcome
 /// otherwise.
 enum class Err : int {
   None = 0,
@@ -451,7 +451,7 @@ Result<void> MpiTransport::build_plan(const TransportSpec& spec) {
     abort_job(p->comm, "an unknown exception");
   }
 
-  // -- Collective 1: agree on the local verdict ----------------------------
+  // -- Collective 1: agree on the local outcome ----------------------------
   {
     const Err agreed = p->agree(err, &mpi_rc);
     if (agreed != Err::None) {
@@ -489,7 +489,7 @@ Result<void> MpiTransport::build_plan(const TransportSpec& spec) {
   // handshake; this, the older matched path, has none. A disagreement here
   // would size MPI_Alltoallv's count arrays inconsistently across ranks,
   // which is undefined behaviour per the MPI standard -- deferred through
-  // the same `fail()`/`agree()` mechanism as every other verdict in this
+  // the same `fail()`/`agree()` mechanism as every other outcome in this
   // function, so it is still reconciled at Collective 4 rather than left for
   // one rank to discover alone inside the actual data move.
   std::vector<int> all_components(usize, 0);
@@ -525,7 +525,7 @@ Result<void> MpiTransport::build_plan(const TransportSpec& spec) {
     // The rule itself is pure and lives in a header so Tier 0 can test it
     // (fuse/transport/rank_agreement.hpp); only the gather is MPI's. Computed
     // unconditionally so the trace below can report it even when an earlier
-    // verdict already stands.
+    // outcome already stands.
     const auto agreement =
         ::fuse::transport::check_component_agreement(all_components, is_src,
                                                      is_dst);
@@ -595,26 +595,26 @@ Result<void> MpiTransport::build_plan(const TransportSpec& spec) {
 
   // -- Phase D: the matching -----------------------------------------------
   // Deliberately performed in full on EVERY rank rather than only where it is
-  // needed. The inputs are identical everywhere, so the verdict is identical
+  // needed. The inputs are identical everywhere, so the outcome is identical
   // everywhere: "no source holds id g" cannot be a one-rank error return while
   // the others walk into MPI_Alltoallv.
   //
-  // `err` IS NOT RESET HERE, and must not be. It is one monotonic verdict for
+  // `err` IS NOT RESET HERE, and must not be. It is one monotonic outcome for
   // the whole function -- `fail()` keeps the first and ignores later ones --
   // and the loops below read it only to stop early. It used to be cleared at
-  // this point, back when every verdict before it had already been agreed and
+  // this point, back when every outcome before it had already been agreed and
   // returned at Collective 1, so clearing it was harmless. Collective 2b (the
-  // components agreement, R-30) then added a verdict recorded AFTER Collective
+  // components agreement, R-30) then added an outcome recorded AFTER Collective
   // 1 and agreed only at Collective 4 -- on the far side of the clear. The
   // effect was that R-30's check ran, computed the right answer on every rank,
   // and had it erased two phases later: `build_plan()` returned success on
-  // ranks that had just refused. Found 2026-09-21 by tracing the verdict at
+  // ranks that had just rejected. Found 2026-09-21 by tracing the outcome at
   // both ends (FUSE_TRANSPORT_DEBUG) after reading the path five times without
   // seeing it; `MpiTransport.BuildPlanRejectsDisagreeingComponentsAcrossRanks`
   // could not pass until this line went away.
   //
-  // With the verdict kept, a rank that has already refused skips the matching
-  // below -- every rank does, since the verdict is derived from the gathered
+  // With the outcome kept, a rank that has already rejected skips the matching
+  // below -- every rank does, since the outcome is derived from the gathered
   // array and is identical everywhere -- and Phase D holds no collective, so
   // there is nothing for a skipping rank to desynchronise.
   try {
@@ -757,10 +757,10 @@ Result<void> MpiTransport::build_plan(const TransportSpec& spec) {
   {
     const Err agreed = p->agree(err, &mpi_rc);
     if (std::getenv("FUSE_TRANSPORT_DEBUG") != nullptr) {
-      // The pair that localises a lost verdict: `local` is what this rank
+      // The pair that localises a lost outcome: `local` is what this rank
       // decided, `agreed` what the reduction returned. A refusal visible here
       // that still returns success can only be lost between the two.
-      fmt::print(stderr, "[verdict rank {}] local={} agreed={}\n", rank,
+      fmt::print(stderr, "[outcome rank {}] local={} agreed={}\n", rank,
                  static_cast<int>(err), static_cast<int>(agreed));
       std::fflush(stderr);
     }

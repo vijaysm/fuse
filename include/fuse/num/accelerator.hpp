@@ -9,7 +9,7 @@
 #include "fuse/model/iteration.hpp"
 
 /// Spec §5.1 (`Accelerate`: residual history -> correction) and §5.3
-/// (iteration regions). One implementation family serves Picard, constant
+/// (implicit coupling groups). One implementation family serves Picard, constant
 /// relaxation, Aitken, secant, Steffensen, IQN-ILS and IQN-IMVJ, because they
 /// differ only in how much of the residual history they keep and how they
 /// project onto it. Accelerators know no physics: they see a concatenated
@@ -133,7 +133,7 @@ class Accelerator {
   /// ALLOCATION: none, in steady state. Every buffer an implementation needs
   /// is a member, sized on the first call for a given `n` and reused
   /// thereafter (a growing `n` resizes, a shrinking one keeps the larger
-  /// buffer). An accelerated iteration region calls this from inside the sweep
+  /// buffer). An accelerated implicit coupling group calls this from inside the sweep
   /// loop, which spec §2 layer 3 requires to allocate nothing;
   /// Accelerator.SteadyStateUpdateAllocatesNothing and
   /// Iteration.TheAcceleratorAllocatesNothingPerUpdate measure it for every

@@ -35,9 +35,9 @@ inline constexpr int kUnionCommCreate = 0x5C13;
 /// from `kUnionCommCreate` because both use that communicator.
 inline constexpr int kEpoch = 0x5C14;
 
-/// An iteration region's per-sweep residual reduction (REVIEW.md R-10), on
+/// An implicit coupling group's per-sweep residual reduction (REVIEW.md R-10), on
 /// the caller's base communicator. Distinct from `kEpoch`: both run a
-/// reduce-then-broadcast over the same schedule shape, but a region's sweep
+/// reduce-then-broadcast over the same schedule shape, but a group's sweep
 /// and a rank-agreement point can be in flight on the same communicator at
 /// once (a region's body may itself contain an Epoch), so sharing a tag
 /// would let one mechanism's message match the other's receive.
