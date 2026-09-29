@@ -33,7 +33,7 @@
 //   (3) The mass-exchange mismatch: U's own equation removes
 //       -u*v^2 using U's frozen mean of v; V's own equation gains
 //       +u*v^2 using V's frozen mean of u. Because those means differ
-//       (each is the OTHER species' own trajectory, not a shared value),
+//       (each is the OTHER species' own waveform, not a shared value),
 //       "what U removes" and "what V gains" need not cancel exactly.
 //       MassExchangeMismatchConvergesAtOrderTwo measures the SUM (which is
 //       zero iff they cancel) using the SAME refinement runs as (2), and
@@ -53,7 +53,7 @@
 // ASYMPTOTIC REGIME (task requirement: "choose parameters so that the
 // reaction rates times dt are well below 1"). Sections (1)-(3) use
 // F=0.04, k=0.06 (order-1 with Pearson's own values, chosen round for
-// readability). dt (or, for the multi-substep members in sections (2)/
+// readability). dt (or, for the multi-subcycling step members in sections (2)/
 // (3), the coarsest member's own window) ranges from 0.0025 (section (1)'s
 // finest refinement level) up to 0.25 (section (2)'s commensurate m=2,
 // the coarsest level tested anywhere in this file) -- NOT uniformly below
@@ -255,8 +255,8 @@ TEST(GrayScottReference, WindowedVsMonolithicMismatchConvergesAtOrderTwo) {
 // Multirate order: the state error against a fine monolithic reference, and
 // the mismatch between what U removes and what V gains through u v^2, both at
 // order 2 in dt at a fixed ratio. These were disabled while WindowCoupler
-// wrote its (element, substep) sweep vector transposed -- invisible for a
-// scalar member or one substep per window, and the reason U was once fed a
+// wrote its (element, subcycling step) sweep vector transposed -- invisible for a
+// scalar member or one subcycling step per window, and the reason U was once fed a
 // "mean" of V outside V's own range. The mass measure only means something
 // because each species checkpoints its accumulated flux with its state;
 // outside the checkpoint it summed every sweep and replay.
@@ -298,7 +298,7 @@ TEST(GrayScottReference, Order2StateErrorAndMassExchangeSevenThirteen) {
   // test/runtime/window_coupler_test.cpp's asymptotic_refinements(): window
   // = 13 parts, V = 7 parts, d = 35*m, n_windows = 7*m holds
   // T = 7m*13/(35m) = 91/35 = 2.6 fixed across every m, and 7:13's gcd = 1
-  // means the straddle's phase within its own substep repeats every 7
+  // means the straddle's phase within its own subcycling step repeats every 7
   // windows -- n_windows = 7*m is always a whole multiple of that cycle.
   const Grid grid{kN, kL};
   const double T = 2.6;

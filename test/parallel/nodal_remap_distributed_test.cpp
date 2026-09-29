@@ -9,7 +9,7 @@
 //
 // MPI CANNOT INITIALISE IN THIS SANDBOX (docs/dev/testing.md): every case
 // here is compiled, never run, in the environment this file was written in.
-// Verdicts are a host action.
+// outcomes are a host action.
 //
 // WHAT THIS FILE DOES NOT CHECK: bit-identical results ACROSS DIFFERENT rank
 // counts needs two separate job launches compared against each other (the

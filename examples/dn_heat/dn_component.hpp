@@ -70,7 +70,7 @@
 /// only every SECOND sweep and the per-sweep rate is sqrt(r), not r. That is
 /// why the printed Picard residual history falls in near-equal pairs, and why
 /// Picard costs roughly twice the sweeps a serial Dirichlet-Neumann iteration
-/// would. It is a property of the region's execution model, not a defect: the
+/// would. It is a property of the implicit coupling group's execution model, not a defect: the
 /// two participants can be advanced concurrently, which a Gauss-Seidel sweep
 /// cannot.
 ///
@@ -122,14 +122,14 @@ inline constexpr double kStripRatio[kStrips] = {0.50, 0.75, 0.90, 0.96};
   return strip_ratio(i, n) * kK2 * kL1 / kL2;
 }
 
-/// Outer face temperatures [K], on incommensurate periods so the pair does not
+/// Outer face temperatures [K], on incommensurate coupling cycles so the pair does not
 /// simply repeat. T1 lies in [300, 380] and T2 in [265, 295], so
 ///
 ///     T1(t) - T2(t) >= 300 - 295 = 5 K > 0   for every t,
 ///
 /// which is deliberate and load-bearing rather than cosmetic: the interface
 /// flux is proportional to T1 - T2, and a flux that passed through zero would
-/// give the RELATIVE convergence measure on the flux channel a vanishing
+/// give the RELATIVE convergence measure on the flux field transfer a vanishing
 /// reference norm. convergence.hpp then falls back to comparing the residual
 /// absolutely against the same number, silently reinterpreting a dimensionless
 /// tolerance as one in W/m^2. Keeping the flux bounded away from zero keeps
@@ -272,7 +272,7 @@ class DirichletSlab final : public fuse::Component {
   /// solver with no RNG and no unordered reduction (elementwise Kokkos
   /// kernels only), and example.*.omp_identical measures it bit for bit at
   /// one thread and at every core. Hidden state: YES -- advance() mutates
-  /// state that is not bound through register_fields() (the clock, the
+  /// state that is not bound through register_fields() (the time grid, the
   /// history, the solver's internals), which the runtime's byte-for-byte
   /// rollback verification cannot see; save_state() is what carries it.
   [[nodiscard]] std::uint64_t capabilities() const override {
@@ -288,7 +288,7 @@ class DirichletSlab final : public fuse::Component {
   /// only thing in this component that a missing rollback can be seen in: q_
   /// and u_ are written from scratch every sweep, so a runner that never
   /// restored anything would still reach the same fixed point. The checkpoint
-  /// is taken once per coupling period, so after P periods a correct run has
+  /// is taken once per coupling cycle, so after P coupling cycles a correct run has
   /// history() == P exactly, however many thousand sweeps it took. It is not
   /// visible to the runtime's byte comparison of registered storage either --
   /// that checks q_/u_, this is private.
@@ -382,7 +382,7 @@ class NeumannSlab final : public fuse::Component {
   /// solver with no RNG and no unordered reduction (elementwise Kokkos
   /// kernels only), and example.*.omp_identical measures it bit for bit at
   /// one thread and at every core. Hidden state: YES -- advance() mutates
-  /// state that is not bound through register_fields() (the clock, the
+  /// state that is not bound through register_fields() (the time grid, the
   /// history, the solver's internals), which the runtime's byte-for-byte
   /// rollback verification cannot see; save_state() is what carries it.
   [[nodiscard]] std::uint64_t capabilities() const override {

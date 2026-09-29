@@ -46,7 +46,7 @@ inline constexpr double kPi = 3.14159265358979323846;
 ///
 /// Only `Intent::Provides` and `Intent::Bidirectional` fields are bound to
 /// `t_`. A `Requires` field bound to the state array would have the coupler
-/// overwrite the solution with the incoming boundary data every period.
+/// overwrite the solution with the incoming boundary data every coupling cycle.
 class HeatComponent final : public fuse::Component {
  public:
   HeatComponent(std::string name, std::size_t cells, double alpha)
@@ -123,7 +123,7 @@ class HeatComponent final : public fuse::Component {
   /// solver with no RNG and no unordered reduction (elementwise Kokkos
   /// kernels only), and example.*.omp_identical measures it bit for bit at
   /// one thread and at every core. Hidden state: YES -- advance() mutates
-  /// state that is not bound through register_fields() (the clock, the
+  /// state that is not bound through register_fields() (the time grid, the
   /// history, the solver's internals), which the runtime's byte-for-byte
   /// rollback verification cannot see; save_state() is what carries it.
   [[nodiscard]] std::uint64_t capabilities() const override {
@@ -178,7 +178,7 @@ class HeatComponent final : public fuse::Component {
 ///   R(x, t) = sin(pi x) * kappa/(kappa - mu) * (exp(-mu t) - exp(-kappa t))
 ///
 /// so the L2 error this component reports is the coupler's: the window mean
-/// the plan forms of T, plus the one coupling period by which it is late.
+/// the plan forms of T, plus the one coupling cycle by which it is late.
 class RelaxComponent final : public fuse::Component {
  public:
   RelaxComponent(std::string name, std::size_t cells, double kappa, double mu)
@@ -233,7 +233,7 @@ class RelaxComponent final : public fuse::Component {
   /// solver with no RNG and no unordered reduction (elementwise Kokkos
   /// kernels only), and example.*.omp_identical measures it bit for bit at
   /// one thread and at every core. Hidden state: YES -- advance() mutates
-  /// state that is not bound through register_fields() (the clock, the
+  /// state that is not bound through register_fields() (the time grid, the
   /// history, the solver's internals), which the runtime's byte-for-byte
   /// rollback verification cannot see; save_state() is what carries it.
   [[nodiscard]] std::uint64_t capabilities() const override {

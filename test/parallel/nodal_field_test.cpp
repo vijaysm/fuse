@@ -2,8 +2,8 @@
 //
 // NOT YET RUN: this sandbox cannot initialize MPI (docs/dev/testing.md's
 // harness note; see also test/model/descriptor_mpi_test.cpp's identical
-// disclaimer). Every case here is registered at Tier 1 via
-// fuse_add_mpi_test and compiles under FUSE_ENABLE_MPI=ON; verdicts are a
+// disclaimer). Every case here is registered at the MPI-enabled build configuration via
+// fuse_add_mpi_test and compiles under FUSE_ENABLE_MPI=ON; outcomes are a
 // host action.
 //
 // WHAT THIS FILE COVERS, AND WHAT IT HONESTLY DOES NOT:
@@ -15,7 +15,7 @@
 //   (b) the owner is the lowest holding rank --
 //       SharedVertexOwnership.LowestRankOwnsEachSharedVertexAndBoundariesAgree,
 //       directly against SharedVertexLineMesh, no Runner involved.
-//   (c) an H^T load channel conserves the global force exactly, identically
+//   (c) an H^T load field transfer conserves the global force exactly, identically
 //       across rank counts -- AccumulateSharedRows.* below verifies the
 //       STANDALONE reduction primitive (comm_graph.hpp's
 //       accumulate_shared_rows) does this correctly for a deliberately
@@ -29,7 +29,7 @@
 //       the closest this file comes to property (e), and it is explicitly a
 //       manual assembly, not an automatic one.
 //   (d) H exact for a linear field on every rank -- NOT exercised here. This
-//       file's Transport pair sits on the SAME region (no non-matching
+//       file's Transport pair sits on the SAME mesh entity set (no non-matching
 //       interface), so its "transfer" is a same-identity copy, exact for
 //       ANY field by construction, not a demonstration of `consistent_
 //       interp.hpp`'s H operator specifically. A genuine parallel H test

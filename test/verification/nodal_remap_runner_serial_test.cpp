@@ -3,10 +3,10 @@
 // That file is registered only under FUSE_ENABLE_MPI, and its `.1` case failed
 // on the user's host with no message this sandbox could obtain: MPI cannot
 // initialise here at all, not even at one process. But a single participant
-// needs no MPI to be meaningful -- every placement below is the whole mesh,
+// needs no MPI to be meaningful -- every processor set below is the whole mesh,
 // the distributed path is not reached, and MultiMeshGeometricBackend now
 // compiles without MPI (test/support/partitioned_test_backend.hpp). So the
-// same graph, the same backend and the same channels run here, where they can
+// same graph, the same backend and the same field transfers run here, where they can
 // actually be debugged.
 //
 // It is NOT a duplicate of interface_transfer_test.cpp's own consistent pair:

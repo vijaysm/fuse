@@ -588,7 +588,7 @@ class StokesSolver {
   /// One physical CN step: `top_wall_v_new` is the beam's normal velocity
   /// already interpolated (through H) onto this solver's own nx wall-face
   /// x-positions, AT THE NEW TIME t1 = t0 + dt. `top_wall_v_old` is the
-  /// SAME quantity at t0 (the period's start -- CONSTANT across every
+  /// SAME quantity at t0 (the coupling cycle's start -- CONSTANT across every
   /// sweep of an implicit coupling group, unlike `top_wall_v_new`, which changes
   /// sweep to sweep as the beam's own guess converges).
   ///

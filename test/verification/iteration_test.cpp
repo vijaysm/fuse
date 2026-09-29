@@ -26,7 +26,7 @@ namespace u = fuse::units;
 
 // ---------------------------------------------------------------------------
 // Allocation counting. Spec §2 layer 3 requires the interpreted loop to
-// allocate nothing, and Task 4.6 proved that for a plan with no region by
+// allocate nothing, and Task 4.6 proved that for a plan with no implicit coupling group by
 // replacing the global operator new. A sweep loop that allocates per iteration
 // would slip past that test entirely, so the same instrument is used here.
 // ---------------------------------------------------------------------------
@@ -114,9 +114,9 @@ class LinearBlock final : public fuse::Component {
     }
     history_ += 1.0;
     // A pure function of (restored state, inputs, ctx). The drift keeps the
-    // fixed point moving from period to period, so a later period cannot start
+    // fixed point moving from coupling cycle to coupling cycle, so a later coupling cycle cannot start
     // already converged and leave the sweep loop untested. It is zero in
-    // period 0, where every value in this file is asserted.
+    // coupling cycle 0, where every value in this file is asserted.
     const double a = a_ + 0.25 * ctx.t_begin.to_double();
     for (std::size_t i = 0; i < out_.size(); ++i) {
       out_[i] = a + k_ * in_[i];
@@ -271,7 +271,7 @@ CouplingGraph make_graph(AccelConfig accel, int max_iters,
   const auto back = g.add_channel("b2a", b_out, a_in);
   g.channel(back).lag(1).allow_time_level_mismatch("iterated");
   if (channel_relax > 0.0) {
-    // A graph-level Relax inside the region is what makes
+    // A graph-level Relax inside the implicit coupling group is what makes
     // IterationRegion::carried non-empty, so it is the only way to exercise
     // the loop-carried-buffer path at all.
     g.channel(fwd).relax(channel_relax);
@@ -285,14 +285,14 @@ CouplingGraph make_graph(AccelConfig accel, int max_iters,
   return g;
 }
 
-/// BOTH channels, deliberately.
+/// BOTH field transfers, deliberately.
 ///
 /// The obvious single-measure spelling -- `Converged::Relative(tol, "a_out")`
 /// -- measures only the a2b residual, and this pair has two. Measured, before
-/// the runtime learned to refuse it: IQN-ILS zeroed the a2b residual EXACTLY
-/// on sweep 3 while the b2a residual still stood at 0.8, and the region
+/// the runtime learned to reject it: IQN-ILS zeroed the a2b residual EXACTLY
+/// on sweep 3 while the b2a residual still stood at 0.8, and the implicit coupling group
 /// reported convergence at a_out = 2.25 against a true fixed point of 2.5.
-/// resolve_regions() now rejects a partially measured region with
+/// resolve_regions() now rejects a partially measured implicit coupling group with
 /// E-ITER-MEASURE (see RejectsARegionWithAnUnmeasuredChannel).
 fuse::ConvergenceCriterion both_channels(double tol) {
   fuse::ConvergenceCriterion c;
@@ -361,7 +361,7 @@ std::unique_ptr<Fixture> build(AccelConfig accel, int max_iters,
   return build_from(make_graph(accel, max_iters, tol), bkind);
 }
 
-/// Registers, initializes and runs one period. The Runner is owned by the
+/// Registers, initializes and runs one coupling cycle. The Runner is owned by the
 /// fixture, so `f.runner` stays valid for the assertions and nothing leaks
 /// (the asan leg would see it if it did).
 fuse::Result<void> run(Fixture& f, RunnerConfig cfg = {}) {
@@ -538,8 +538,8 @@ TEST(Iteration, IqnIlsConvergesInFewIterations) {
 // counts are not stable across build types, and this problem is only linear
 // per window):
 //
-//   * IMVJ finds the same fixed point as unaccelerated Picard, period after
-//     period, to 1e-8 -- a fast wrong answer is not an answer;
+//   * IMVJ finds the same fixed point as unaccelerated Picard, coupling cycle after
+//     coupling cycle, to 1e-8 -- a fast wrong answer is not an answer;
 //   * what it retains across the window boundary earns its keep. The coupled
 //     operator here is linear with a constant Jacobian and only the constant
 //     term drifts with time, so the inverse Jacobian retained from the first
@@ -641,7 +641,7 @@ TEST(Iteration, ResidualHistoryDecreasesMonotonicallyForPicard) {
 
 TEST(Iteration, ConvergedBeatsExplicitOnTheSameProblem) {
   // One sweep is exactly the explicit scheme: advance once, exchange once. The
-  // runner refuses to call that converged (max_iterations = 1 with a criterion
+  // runner rejects to call that converged (max_iterations = 1 with a criterion
   // it cannot meet), so the comparison is against the state that run leaves.
   auto explicit_run = build(AccelConfig{.kind = AccelKind::None}, 1);
   RunnerConfig lenient;
@@ -716,7 +716,7 @@ TEST(Iteration, NonConvergenceLeavesTheLastIterate) {
 }
 
 // An empty criterion is what a graph arrives with if any boundary it crossed
-// dropped the field -- and it reports satisfied, so the region would stop after
+// dropped the field -- and it reports satisfied, so the implicit coupling group would stop after
 // one sweep and call itself converged.
 TEST(Iteration, RejectsAnEmptyConvergenceCriterion) {
   auto f = build_from(make_graph(AccelConfig{.kind = AccelKind::None}, 10,
@@ -736,8 +736,8 @@ TEST(Iteration, RejectsMaxIterationsBelowOne) {
   EXPECT_EQ(r.error().code, "E-ITER-MAXITER");
 }
 
-// A measure naming a field no residual of the region carries is never tested
-// against anything. Silently ignoring it would leave the region stopping on
+// A measure naming a field no residual of the implicit coupling group carries is never tested
+// against anything. Silently ignoring it would leave the implicit coupling group stopping on
 // whatever measures did match, or running to max_iterations with no measure at
 // all -- both indistinguishable from working.
 TEST(Iteration, RejectsAConvergenceMeasureThatNamesNothing) {
@@ -773,12 +773,12 @@ TEST(Iteration, EveryConjunctIsActuallyTested) {
          "tested at all";
 }
 
-// A graph-level Relax inside the region: the only construct that makes
+// A graph-level Relax inside the implicit coupling group: the only construct that makes
 // IterationRegion::carried non-empty today. It must still converge to the same
 // fixed point, at the same tolerance.
 //
 // This is the case that settles what `carried` means. Restoring the Relax
-// shadow to its period-start value x0 on every sweep -- the literal reading of
+// shadow to its coupling-cycle-start value x0 on every sweep -- the literal reading of
 // src/ir/checkpoint.cpp -- makes the composed map's fixed point satisfy
 // x* = w*chain(x*) + (1-w)*x0, i.e. NOT 2.5. The sweep loop therefore keeps
 // the shadow in step with the delivered iterate instead of resetting it, and
@@ -799,7 +799,7 @@ TEST(Iteration, ARelaxedChannelInsideTheRegionStillFindsTheFixedPoint) {
 // handoff scoped R12 as "space-time inside an implicit coupling group is untested,"
 // on the assumption that a runnable graph combining the two exists and only
 // lacks a test. It does not exist: EVERY construction attempted here is
-// refused at `Runner::initialize()`, before a single sweep runs, so there is
+// rejected at `Runner::initialize()`, before a single sweep runs, so there is
 // no idempotency question to answer against the current runtime -- the
 // combination cannot be built, not merely "wasn't tested."
 //
@@ -807,62 +807,62 @@ TEST(Iteration, ARelaxedChannelInsideTheRegionStillFindsTheFixedPoint) {
 // lower -> schedule -> initialize pipeline, not a reading of the code:
 //
 //   1. `.spacetime(...)` directly on `fwd` (A -> B, both already in the
-//      region, mirroring the pattern `ARelaxedChannelInsideTheRegionStill-
+//      implicit coupling group, mirroring the pattern `ARelaxedChannelInsideTheRegionStill-
 //      FindsTheFixedPoint` uses for Relax). `schedule()` accepts it. Runner
 //      set-up (`resolve_regions()`, src/runtime/iteration.cpp) does not: the
-//      space-time channel's `Sample` node runs "after-ticks" at t=0 -- the
+//      space-time field transfer's `Sample` node runs "after-ticks" at t=0 -- the
 //      exact instant A itself ticks, because a single-source-step history
-//      (the only kind `E-SCHED-REGION`'s contiguity rule admits inside a
-//      region; see R13's note on the same rule) has nothing to wait for
-//      before sampling. That makes `Sample` the region's chronologically
+//      (the only kind `E-SCHED-REGION`'s contiguity rule admits inside an
+//      implicit coupling group; see R13's note on the same rule) has nothing to wait for
+//      before sampling. That makes `Sample` the implicit coupling group's chronologically
 //      first body-member instruction, which pins `enter_time` to 0, and A's
-//      own tick -- which the region must re-run every sweep for the pair to
-//      iterate at all -- is then "at or after the region begins," refused
+//      own tick -- which the implicit coupling group must re-run every sweep for the pair to
+//      iterate at all -- is then "at or after the region begins," rejected
 //      with E-RT-REGION.
 //
-//   2. Moving the space-time channel's SOURCE outside the A<->B cycle, to a
+//   2. Moving the space-time field transfer's SOURCE outside the A<->B cycle, to a
 //      third, non-cyclic component `Ext` feeding a fourth, `Snk`, via
 //      `ext2snk`, with `ext2snk` in the SAME `iterate({fwd, back, ext2snk})`
-//      call (there is no API to extend an already-declared region). This
+//      call (there is no API to extend an already-declared implicit coupling group). This
 //      does not sidestep the problem: `derive_checkpoint_set()`
 //      (src/ir/checkpoint.cpp) pulls in the OWNING component of every
-//      body-member channel, not only the ones forming the cyclic dependency,
+//      body-member field transfer, not only the ones forming the cyclic dependency,
 //      so `Ext` and `Snk` are checkpointed too. `Ext`'s own tick is then
 //      "mine" for the SAME guard, and since `Ext`'s Sample is (by the same
-//      after-ticks reasoning as construction 1) the region's chronologically
+//      after-ticks reasoning as construction 1) the implicit coupling group's chronologically
 //      first instruction, `enter_time` is pinned to 0 again -- and this time
 //      it is A's tick that collides, exactly as in construction 1, just one
 //      hop removed. Every topology tried funnels into the same collision.
 //
 // THE GUARD'S OWN COMMENT IS THEREFORE WRONG. `resolve_regions()`'s tick-time
 // check (src/runtime/iteration.cpp, a few lines above where `R.tick_indices`
-// is built) says: "No graph reaches this today (the coincidence needs a
-// region whose channels straddle two clocks, which E-SCHED-REGION refuses
+// is built) says: "No graph reaches this today (the coincidence needs an
+// implicit coupling group whose field transfers straddle two time grids, which E-SCHED-REGION rejects
 // first), and that is exactly why the guard must not depend on it." A
-// space-time channel's `Sample` node straddles exactly the pair of
-// instants -- "after this tick" and "as the region's own first instruction"
-// -- the comment assumed only two different CLOCKS could straddle. The
+// space-time field transfer's `Sample` node straddles exactly the pair of
+// instants -- "after this tick" and "as the implicit coupling group's own first instruction"
+// -- the comment assumed only two different TIME GRIDS could straddle. The
 // comment is corrected at its source (this file does not carry a copy of
 // it), but the reachability claim is disproved here, concretely, the same
 // way R13 asks `check_region_isolation()`'s reachability to be checked
 // rather than assumed.
 //
 // WHAT THIS MEANS FOR R12 AS ORIGINALLY SCOPED. No idempotency bug was
-// found, and none could be looked for: the runtime refuses the combination
+// found, and none could be looked for: the runtime rejects the combination
 // safely and with a clear diagnostic (E-RT-REGION) rather than running it
 // incorrectly, so nothing here is unsafe. But the item is not closed by "add
 // a test that exercises it," because nothing exercises it -- the correct
 // closure is the negative regression pinned below (this combination stays
-// refused, on purpose, until a future change deliberately relaxes the
-// tick-time guard or gives space-time channels a different scheduling
-// treatment inside regions) plus the corrected comment.
+// rejected, on purpose, until a future change deliberately relaxes the
+// tick-time guard or gives space-time field transfers a different scheduling
+// treatment inside implicit coupling groups) plus the corrected comment.
 TEST(Iteration, ASpacetimeChannelInAnIterationRegionIsRefusedNotSilentlyWrong) {
   CouplingGraph g = make_graph(AccelConfig{.kind = AccelKind::None}, 300,
                                both_channels(1e-10));
   // `fwd` is FieldId-addressed the same way
   // `RejectsAnExplicitChannelHangingOffAnIteratedComponent` reaches into an
-  // already-built graph: channel 0 is "a2b" (A.a_out -> B.b_in), declared
-  // first by `make_graph()` and already a member of its region.
+  // already-built graph: field transfer 0 is "a2b" (A.a_out -> B.b_in), declared
+  // first by `make_graph()` and already a member of its implicit coupling group.
   g.channel(fuse::ChannelId{0})
       .spacetime(fuse::TemporalBasis::Constant, 0, fuse::Window::coupling_period());
 
@@ -873,10 +873,10 @@ TEST(Iteration, ASpacetimeChannelInAnIterationRegionIsRefusedNotSilentlyWrong) {
   const fuse::ClockSet clocks{g};
   const auto sched =
       schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
-  // Unlike the explicit-channel-hanging-off-a-component case, this construction
-  // is NOT caught by `schedule()`: a space-time channel with a single source
+  // Unlike the explicit-field-transfer-hanging-off-a-component case, this construction
+  // is NOT caught by `schedule()`: a space-time field transfer with a single source
   // and target step per period satisfies E-SCHED-REGION's contiguity rule
-  // exactly as an ordinary instant channel would. The refusal is the
+  // exactly as an ordinary instant field transfer would. The rejection is the
   // Runner's, at initialize() time.
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
 
@@ -900,8 +900,8 @@ TEST(Iteration, ASpacetimeChannelInAnIterationRegionIsRefusedNotSilentlyWrong) {
              init.error().message.c_str());
 }
 
-// The finding that changed the fixture. A region whose criterion covers only
-// some of its channels can stop at a point that is not the coupled fixed
+// The finding that changed the fixture. An implicit coupling group whose criterion covers only
+// some of its field transfers can stop at a point that is not the coupled fixed
 // point, and an accelerator makes that the normal case rather than the corner
 // case: measured here, IQN-ILS zeroed the measured residual exactly while the
 // unmeasured one stood at 0.8, reporting convergence at a_out = 2.25 against
@@ -917,11 +917,11 @@ TEST(Iteration, RejectsARegionWithAnUnmeasuredChannel) {
   std::printf("unmeasured channel:\n%s\n", r.error().message.c_str());
 }
 
-// An explicit channel that hangs off a component the region re-advances would
+// An explicit field transfer that hangs off a component the implicit coupling group re-advances would
 // run once, outside the loop, on the pre-iteration value, and the converged
-// iterate would never reach its consumer. Refused -- and refused BEFORE the
-// runner sees it, by schedule()'s contiguity rule, because the extra channel's
-// instructions interleave with the region body. The Runner's own isolation
+// iterate would never reach its consumer. Rejected -- and rejected BEFORE the
+// runner sees it, by schedule()'s contiguity rule, because the extra field transfer's
+// instructions interleave with the implicit coupling group body. The Runner's own isolation
 // check (E-RT-REGION, check_region_isolation) is the backstop for a plan that
 // did not come from schedule(); measured here, every graph this test could
 // construct is stopped one layer earlier, which is why this asserts on
@@ -936,7 +936,7 @@ TEST(Iteration, RejectsAnExplicitChannelHangingOffAnIteratedComponent) {
   const auto c_in = g.add_field(cc, fuse::FieldSpec{
       .name = "c_in", .region = r3, .units = u::kKelvin,
       .intent = fuse::Intent::Requires});
-  // A.a_out is FieldId 0 and is re-advanced by the region on every sweep.
+  // A.a_out is FieldId 0 and is re-advanced by the implicit coupling group on every sweep.
   g.add_channel("a2c", fuse::FieldId{0}, c_in);
 
   fuse::SerialMeshBackend backend;
@@ -962,8 +962,8 @@ TEST(Iteration, RejectsAnExplicitChannelHangingOffAnIteratedComponent) {
 // graph to get a genuinely valid `ExecutionPlan`, then hands `Runner` a
 // byte-for-byte copy with exactly one `Instruction::region_exit` marker moved
 // one slot earlier -- still a well-formed plan (same instructions, same
-// buffers, same arcs; only which one is tagged "last instruction of the
-// region" changes) -- and lets `Runner::initialize()` see it. `Runner`'s
+// buffers, same edges; only which one is tagged "last instruction of the
+// implicit coupling group" changes) -- and lets `Runner::initialize()` see it. `Runner`'s
 // constructor takes an `ExecutionPlan` by value with no provenance check
 // (include/fuse/runtime/runner.hpp), and `Instruction`/`ExecutionPlan` are
 // both public, mutable types (include/fuse/schedule/plan.hpp) built exactly
@@ -971,11 +971,11 @@ TEST(Iteration, RejectsAnExplicitChannelHangingOffAnIteratedComponent) {
 //
 // Option (b) -- reaching this through the real schedule() -> Runner path --
 // was tried first and is not achievable: every construction that puts an
-// out-of-region instruction downstream of a re-advanced component's own
-// output also makes that instruction's node a member of the region body by
-// construction (`build_iteration_regions()`, src/ir/regions.cpp, assigns
-// every node whose origin is a member channel to the body), which
-// `E-SCHED-REGION`'s contiguity rule then refuses first -- the same result
+// out-of-implicit coupling group instruction downstream of a re-advanced component's own
+// output also makes that instruction's node a member of the implicit coupling group body by
+// construction (`build_iteration_regions()`, src/ir/implicit coupling groups.cpp, assigns
+// every node whose origin is a member field transfer to the body), which
+// `E-SCHED-REGION`'s contiguity rule then rejects first -- the same result
 // `RejectsAnExplicitChannelHangingOffAnIteratedComponent` above measures for
 // its own construction. There is no public way to get a body node excluded
 // from `[region_enter, region_exit]` except by handing `Runner` a plan
@@ -984,18 +984,18 @@ TEST(Iteration, RejectsAnExplicitChannelHangingOffAnIteratedComponent) {
 //
 // WHY MOVING `region_exit` REACHES IT, CONCRETELY. `make_graph()`'s plan
 // (dumped by `PrintsTheDerivedCheckpointSet`) marks instruction 9 ("Residual"
-// on the b2a leg, reading arc %7 = "b2a/diagnose") as `region_exit`, the
-// region's last re-executed instruction. Moving that marker to instruction 8
+// on the b2a leg, reading edge %7 = "b2a/diagnose") as `region_exit`, the
+// implicit coupling group's last re-executed instruction. Moving that marker to instruction 8
 // (a2b's own Residual) excludes instruction 9 from every sweep after the
-// first -- it becomes an ordinary once-per-period instruction sitting just
+// first -- it becomes an ordinary once-per-coupling-cycle instruction sitting just
 // past the loop, still reading %7. %7 is downstream of B's own `Source`
 // output (B is checkpointed, re-advanced every sweep), so it is exactly the
 // "tainted" case the isolation check exists to name: a value the loop keeps
 // changing, read by an instruction the loop does not re-run. Concretely,
 // "b2a/residual" would report the FIRST sweep's residual forever after,
-// while the region kept converging around it -- a diagnostic that silently
+// while the implicit coupling group kept converging around it -- a diagnostic that silently
 // stops meaning anything, with no crash and no wrong physics (the fixed
-// point itself does not depend on this arc), which is precisely the
+// point itself does not depend on this edge), which is precisely the
 // low-drama, easy-to-miss failure mode the backstop's own comment describes.
 TEST(Iteration, CheckRegionIsolationCatchesAHandBuiltPlanScheduleWouldRefuse) {
   auto f = build(AccelConfig{.kind = AccelKind::None}, 100);
@@ -1034,7 +1034,7 @@ TEST(Iteration, CheckRegionIsolationCatchesAHandBuiltPlanScheduleWouldRefuse) {
   ASSERT_FALSE(init.ok())
       << "check_region_isolation() did not fire against a plan built to "
          "trip it -- either the backstop or this test's construction of the "
-         "'plan schedule() would refuse' case is broken";
+         "'plan schedule() would reject' case is broken";
   EXPECT_EQ(init.error().code, "E-RT-REGION");
   EXPECT_NE(init.error().message.find("lies outside iteration region"),
            std::string::npos)
@@ -1048,7 +1048,7 @@ TEST(Iteration, CheckRegionIsolationCatchesAHandBuiltPlanScheduleWouldRefuse) {
 // ---------------------------------------------------------------------------
 
 TEST(Iteration, TheSweepLoopAllocatesNothing) {
-  // The components drift with time, so every period has a new fixed point and
+  // The components drift with time, so every coupling cycle has a new fixed point and
   // runs a full set of sweeps -- accelerate, roll back, verify, re-deliver,
   // re-advance -- rather than starting already converged and leaving the loop
   // untested.
@@ -1067,7 +1067,7 @@ TEST(Iteration, TheSweepLoopAllocatesNothing) {
   const std::int64_t swept = f->runner->stats().total_iterations - before;
   std::printf("Picard: %lld sweeps over 8 periods, %zu allocations\n",
               static_cast<long long>(swept), allocations);
-  EXPECT_GT(swept, 8) << "at least one period must have taken several sweeps, "
+  EXPECT_GT(swept, 8) << "at least one coupling cycle must have taken several sweeps, "
                          "or the loop was never exercised";
   EXPECT_EQ(allocations, 0u);
   EXPECT_EQ(f->runner->stats().windows_not_converged, 0);
@@ -1084,7 +1084,7 @@ TEST(Iteration, TheSweepLoopAllocatesNothing) {
 // allocation per update, which is the defect, and by none, which is the fix,
 // so it cannot tell them apart.
 //
-// The first period, run above, is warm-up: a buffer has to be allocated once
+// The first coupling cycle, run above, is warm-up: a buffer has to be allocated once
 // before it can be reused, and "steady state" is the claim.
 TEST(Iteration, TheAcceleratorAllocatesNothingPerUpdate) {
   auto f = build(AccelConfig{.kind = AccelKind::Aitken}, 100);
@@ -1112,7 +1112,7 @@ TEST(Iteration, TheAcceleratorAllocatesNothingPerUpdate) {
 }
 
 // ---------------------------------------------------------------------------
-// The criterion has to survive the narrow waist (spec §3.2).
+// The criterion has to survive the serialised coupling specification (spec §3.2).
 // ---------------------------------------------------------------------------
 
 TEST(Iteration, ConvergenceAndAccelerationCrossTheDescriptor) {
@@ -1150,7 +1150,7 @@ TEST(Iteration, ConvergenceAndAccelerationCrossTheDescriptor) {
 // criterion. If serialize() ignored the field, these bytes would be identical
 // and structurally_equal() would call an unconverging graph equal to a
 // converging one -- which is exactly how a criterion goes missing at the
-// narrow waist without anyone noticing.
+// serialised coupling specification without anyone noticing.
 TEST(Iteration, TheDescriptorDistinguishesGraphsByTheirCriterion) {
   const CouplingGraph with =
       make_graph(AccelConfig{.kind = AccelKind::None}, 30, 1e-10);

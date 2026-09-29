@@ -84,10 +84,10 @@ fuse::CouplingGraph build_fsi_graph(std::size_t nx_beam, std::size_t nx_fluid,
       .intent = fuse::Intent::Requires});
   const auto fch = g.add_channel("wall_force", force_out, load_in);
   g.channel(fch).remap_method("consistent-transpose").conservative();
-  // The velocity and force channels close a cycle within the period, so
+  // The velocity and force field transfers close a cycle within the period, so
   // one of them must carry a lag for the graph to be schedulable at all
   // (E-SCHED-CYCLE otherwise) -- exactly examples/dn_heat/main.cpp's
-  // pattern. Inside the iterate() region below, that lag is precisely
+  // pattern. Inside the iterate() implicit coupling group below, that lag is precisely
   // what the sweep resolves.
   g.channel(fch).lag(1).allow_time_level_mismatch(
       "resolved by the beam-fluid implicit coupling group");
@@ -193,7 +193,7 @@ double run_to_midspan_deflection(std::size_t nx_beam, std::size_t nx_fluid,
     // Beam: static equilibrium under +p(x) (the force ON the wall,
     // stokes_solver.hpp), displaced by a first-mode-shaped perturbation and
     // AT REST. The perturbation is in w, not wdot, on purpose: the fluid's
-    // Poiseuille state has v = 0 at the wall and the channel has delivered
+    // Poiseuille state has v = 0 at the wall and the field transfer has delivered
     // no wall velocity yet, so a nonzero initial wdot would be a wall that
     // jumps into motion at t = 0 -- an impulsive start of the fluid, which
     // is exactly the discontinuity this branch exists to avoid (measured:

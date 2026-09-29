@@ -338,7 +338,7 @@ TEST(MpiTransport, IdleRanksParticipateInsteadOfDeadlocking) {
   exchange_and_check(p, "idle");
 }
 
-// A rank that owns zero elements of a region is ordinary in parallel, not an
+// A rank that owns zero elements of a mesh entity set is ordinary in parallel, not an
 // edge case: it is a member of a rank set, it has nothing to contribute, and
 // `std::vector<double>{}.data()` is null. Both must work.
 TEST(MpiTransport, RankOwningZeroElementsIsOrdinary) {
@@ -404,7 +404,7 @@ TEST(MpiTransport, RankOwningZeroElementsIsOrdinary) {
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
-// Two channels alive at once. Each MpiTransport duplicates the communicator,
+// Two field transfers alive at once. Each MpiTransport duplicates the communicator,
 // so their collectives run in private contexts and cannot be matched with each
 // other however they interleave.
 TEST(MpiTransport, ConcurrentChannelsDoNotCollide) {
@@ -557,7 +557,7 @@ TEST(MpiTransport, BuildPlanRejectsOverlappingRankSets) {
 // TransportSpec::components, unlike build_plan_from_peers()'s Phase B
 // numbering check. Rank 0 calls it with components = 1, rank 1 with
 // components = 2, over an otherwise valid disjoint pattern; every rank must
-// refuse with E-TRANSPORT-PEERMATCH rather than build a plan whose
+// reject with E-TRANSPORT-PEERMATCH rather than build a plan whose
 // MPI_Alltoallv count arrays disagree between the two sides. Needs a host
 // run: the sandbox this was written in cannot launch MPI at all.
 TEST(MpiTransport, BuildPlanRejectsDisagreeingComponentsAcrossRanks) {
@@ -575,7 +575,7 @@ TEST(MpiTransport, BuildPlanRejectsDisagreeingComponentsAcrossRanks) {
   ASSERT_TRUE(t.set_communicator(MPI_Comm_c2f(MPI_COMM_WORLD)).ok());
   const auto r = t.build_plan(spec);
   // Printed on every rank, pass or fail: the 2026-09-20 host run had rank 1
-  // refusing and rank 0 building a plan, which the assertion alone does not
+  // rejecting and rank 0 building a plan, which the assertion alone does not
   // distinguish from both ranks missing the check.
   std::printf("[components rank %d/%d] components=%d outcome=%s %s\n", rank,
               world_size(), spec.components, r.ok() ? "OK" : "REFUSED",
@@ -583,7 +583,7 @@ TEST(MpiTransport, BuildPlanRejectsDisagreeingComponentsAcrossRanks) {
   std::fflush(stdout);
   ASSERT_FALSE(r.ok()) << "rank " << rank
                        << ": ranks disagreed on components, and every rank "
-                          "must refuse together rather than one side sizing "
+                          "must reject together rather than one side sizing "
                           "MPI_Alltoallv from its own, different, count";
   EXPECT_EQ(r.error().code, "E-TRANSPORT-PEERMATCH") << r.error().message;
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
@@ -678,7 +678,7 @@ TEST(MpiTransport, BuildPlanRejectsAnIdListThatDisagreesWithElements) {
 }
 
 // Standing rule 5: sizes are std::size_t and wrap silently, but MPI counts are
-// int. A buffer longer than INT_MAX doubles must be refused, not truncated.
+// int. A buffer longer than INT_MAX doubles must be rejected, not truncated.
 // Reached with a huge component count so the test costs no memory.
 TEST(MpiTransport, BuildPlanRejectsCountsBeyondIntMax) {
   const int size = world_size();
@@ -859,7 +859,7 @@ class HookConsumer final : public fuse::Component {
 };
 
 /// producer (rank 0) -> consumer (rank 1). The rank ranges are DISJOINT, which
-/// is what makes lowering emit an OpKind::Transport at all -- see the
+/// is what makes compilation into the dataflow graph emit an OpKind::Transport at all -- see the
 /// `ranks_differ` computation in src/ir/rules_channel.cpp. Equal cell counts on
 /// both sides so the Remap that follows is the identity SerialMeshBackend can
 /// do; anything else would fail for an unrelated reason.
@@ -951,7 +951,7 @@ TransportSpec plannable_spec(int rank) {
 // The half that DOES work, and the reason the gap below is a plumbing defect
 // rather than a missing feature: the hook really does hand back the very
 // MpiTransport the Runner will use, a communicator really does reach it, and a
-// refusal from its concrete-typed setup really does fail initialize().
+// rejection from its concrete-typed setup really does fail initialize().
 TEST(MpiTransportThroughRunner, TheHookReachesTheRunnersOwnMpiTransport) {
   auto h = make_hook_harness();
   fuse::Runner runner{h->graph, h->dag, h->plan, h->backend};
@@ -971,9 +971,9 @@ TEST(MpiTransportThroughRunner, TheHookReachesTheRunnersOwnMpiTransport) {
     // Runner::initialize(), in the same order.
     const auto comm = mpi->set_communicator(MPI_Comm_c2f(MPI_COMM_WORLD));
     EXPECT_TRUE(comm.ok()) << comm.error().code << ": " << comm.error().message;
-    // Refuse from inside the hook, with a code only MpiTransport produces, so
+    // Reject from inside the hook, with a code only MpiTransport produces, so
     // what comes out of initialize() cannot have been manufactured anywhere
-    // else. An empty spec is refused for a stated reason -- no rank sets.
+    // else. An empty spec is rejected for a stated reason -- no rank sets.
     return mpi->build_plan(TransportSpec{});
   };
 
@@ -991,7 +991,7 @@ TEST(MpiTransportThroughRunner, TheHookReachesTheRunnersOwnMpiTransport) {
 }
 
 // Route 1: plan the spec the Runner will actually hand prepare(). It is
-// refused, because that spec names no ranks. So the hook cannot be satisfied
+// rejected, because that spec names no ranks. So the hook cannot be satisfied
 // by copying the Runner's own spec.
 TEST(MpiTransportThroughRunner, PlanningTheRunnersOwnSpecIsRefusedForNoRanks) {
   auto h = make_hook_harness();

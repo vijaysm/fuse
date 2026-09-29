@@ -6,9 +6,9 @@
 //          T(0,t) = T(1,t) = 0, T(x,0) = sin(pi x).  Provides "T".
 //   right  dR/dt = kappa (T - R), integrated in closed form.  Requires "T_bc".
 //
-// The coupling period is 1/1000 and `left` subcycles four times inside it, so
-// the channel's Mean reduction actually reduces something. The exchange is
-// explicit and lagged by one period (see Runner::Impl::step_period), which is
+// The coupling cycle is 1/1000 and `left` subcycles four times inside it, so
+// the field transfer's Mean reduction actually reduces something. The exchange is
+// explicit and lagged by one coupling cycle (see Runner::Impl::step_period), which is
 // the dominant error in `right`'s answer and the thing this example measures.
 //
 // Both meshes are coincident 64-cell lines: Phase 4's Remap is an identity
@@ -40,7 +40,7 @@ constexpr std::size_t  kCells   = 64;
 constexpr double       kAlpha   = 0.01;
 constexpr double       kKappa   = 2.0;
 constexpr std::int64_t kPeriods = 100;
-/// Coupling period H = 1/1000; `left` takes four steps of H/4 inside it.
+/// Coupling cycle H = 1/1000; `left` takes four steps of H/4 inside it.
 constexpr std::int64_t kPeriodDen  = 1000;
 constexpr std::int64_t kSubsteps   = 4;
 
@@ -73,7 +73,7 @@ fuse::CouplingGraph build_graph(std::size_t cells) {
       .name = "right", .ranks = {1, 1},
       .interval = fuse::Rational{1, kPeriodDen}});
 
-  // Conservation::Extensive is what makes lowering emit the Constrain
+  // Conservation::Extensive is what makes compilation into the dataflow graph emit the Constrain
   // operator; without it the printed check count is zero and says nothing.
   const auto t_out = g.add_field(left, fuse::FieldSpec{
       .name = "T", .region = r_left, .units = fuse::units::kKelvin,

@@ -226,12 +226,12 @@ class StubComponent final : public fuse::Component {
 };
 
 /// Everything a test needs: the graph, the plan, the backend, and the two
-/// stub components, plus helpers that read/write through the SAME region both
-/// components' fields reference (Transport preserves region -- see the plan's
+/// stub components, plus helpers that read/write through the SAME mesh entity set both
+/// components' fields reference (Transport preserves mesh entity set -- see the plan's
 /// Scope Decision -- so there is exactly one to read).
 class TwoComponentJob {
  public:
-  /// `entity_set`, when non-empty, is set on the shared region. Task 3's
+  /// `entity_set`, when non-empty, is set on the shared mesh entity set. Task 3's
   /// E-RT-TRANSPORT-REGION test passes "wall"; every other test passes "".
   explicit TwoComponentJob(const std::string& entity_set)
       // MEMBER DECLARATION ORDER, NOT INITIALIZER-LIST ORDER, decides when
@@ -294,10 +294,10 @@ class TwoComponentJob {
   }
 
   [[nodiscard]] std::size_t count_destination_matches() const {
-    // `fluid` and `solid` share one region and one backend view per rank
+    // `fluid` and `solid` share one mesh entity set and one backend view per rank
     // (the class comment above explains why), so on a rank that belongs to
     // `fluid_` this same view is FLUID's local block, not solid's -- the
-    // "solid" arc's storage there is never written by a correct Transport
+    // "solid" edge's storage there is never written by a correct Transport
     // (its scatter map is empty; see attach_comm_graphs()) and comparing it
     // against this rank's own (fluid-side) global ids would fail for reasons
     // that have nothing to do with delivery correctness. Only a rank actually
