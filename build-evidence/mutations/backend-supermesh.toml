@@ -5,7 +5,7 @@
 [[mutation]]
 id = "supermesh-no-over-coverage-audit"
 area = "backend"
-describes = "the supermesh path's per-cell coverage audit checks only the minimum, so a cell assigned more area than it has (R-12's defect class, or any other overlap-inflation bug) passes silently instead of refusing E-REMAP-INTX (R-13)"
+describes = "the supermesh path's per-cell coverage audit checks only the minimum, so a cell assigned more area than it has (R-12's defect class, or any other overlap-inflation bug) passes silently instead of rejecting E-REMAP-INTX (R-13)"
 file = "src/backend/supermesh.cpp"
 old = "return moments[0] > 0.0 ? moments[0] : 0.0;\n  }"
 new = "return moments[0] > 0.0 ? moments[0] * 1.5 : 0.0;\n  }"
@@ -15,7 +15,7 @@ test = "backend.supermesh"
 [[mutation]]
 id = "map-coverage-check-does-nothing"
 area = "backend"
-describes = "S5.4's distribution check: localise() refuses when a target entity this rank owns has no row in the map. Without it a map written for another partition localises to a matrix with missing rows, and apply() writes zero into a field the map exists to fill -- indistinguishable from a field that transferred and happened to be zero."
+describes = "S5.4's distribution check: localise() rejects when a target entity this rank owns has no row in the map. Without it a map written for another partition localises to a matrix with missing rows, and apply() writes zero into a field the map exists to fill -- indistinguishable from a field that transferred and happened to be zero."
 file = "src/backend/transfer_map_io.cpp"
 old = "  if (missing != 0) {"
 new = "  if (false) {"

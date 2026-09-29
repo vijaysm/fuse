@@ -114,7 +114,7 @@ requires = "mpi"
 [[mutation]]
 id = "nodal-parallel-remap-refusal-disabled"
 area = "runtime"
-describes = "KNOWN_ISSUES D8: resolve_remap's whole nodal-distributed trigger (both the build_nodal_dist_remap success path and the E-RT-REMAP-NODAL-PARALLEL refusal for any other method/orientation) is disabled, so a nodal Remap on a multi-rank component falls through unconditionally to the OLD rank-local path -- the exact shape a real host MPI run found silently mis-answering or failing with the wrong diagnostic (round 4)"
+describes = "KNOWN_ISSUES D8: resolve_remap's whole nodal-distributed trigger (both the build_nodal_dist_remap success path and the E-RT-REMAP-NODAL-PARALLEL rejection for any other method/orientation) is disabled, so a nodal Remap on a multi-rank component falls through unconditionally to the OLD rank-local path -- the exact shape a real host MPI run found silently mis-answering or failing with the wrong diagnostic (round 4)"
 file = "src/runtime/runner.cpp"
 old = "    if ((!both_on_one_rank || moves_placement || config.force_distributed_nodal_remap) &&\n        (src_nodal || tgt_nodal)) {"
 new = "    if (false) {  // MUTATED: the whole nodal-distributed trigger disabled"
@@ -126,7 +126,7 @@ test = "verification.interface_transfer"
 # by hand, rebuilt, and run: InterfaceTransfer.
 # ARemapIntoANodalFieldOnSeveralRanksViaASupermeshMethodStillRefuses fails
 # (the graph-level E-RT-REMAP-NODAL-PARALLEL never fires; initialize() throws
-# a DIFFERENT refusal, E-REMAP-UNSUPPORTED, from the old supermesh builder
+# a DIFFERENT rejection, E-REMAP-UNSUPPORTED, from the old supermesh builder
 # instead, since the whole trigger -- not just this one method's branch --
 # is gone) and InterfaceTransfer.
 # ApplyNodalDistRemapHasAConstantMeasuredPerPeriodAllocationCount also fails
@@ -149,21 +149,21 @@ target = "fuse_parallel_nodal_remap_runner_test"
 test = "parallel.nodal_remap_runner.2"
 requires = "mpi"
 # SURVIVED explained, verified by hand (Tier 0, standalone harness linked
-# against this library, no MPI): DisjointRankSets' own two channels
+# against this library, no MPI): DisjointRankSets' own two field transfers
 # ("consistent" nodal-source, "consistent-transpose" nodal-target) both
 # match remap_moves_placement()'s orientation exactly (fuse/model/
 # remap_kind.hpp), so resolve_remap's `moves_placement` is unconditionally
 # TRUE whenever the two components' ranks genuinely differ -- independent
 # of, and always agreeing with, whatever `both_on_one_rank` computes. The
 # OR at resolve_remap's guard (`!both_on_one_rank || moves_placement || ...`)
-# is satisfied by `moves_placement` alone on this test's own channels, so
+# is satisfied by `moves_placement` alone on this test's own field transfers, so
 # the mutation is fully masked there: applying it by hand and rebuilding
 # left DisjointRankSets' equivalent (SerialMeshBackend, declared disjoint
 # single ranks, no real MPI needed since the decision is graph-declared)
 # completely unaffected.
 #
 # The gap is real but narrower than "needs two ranks": `both_on_one_rank`
-# is the ONLY gate whenever a channel's method does NOT match its nodal
+# is the ONLY gate whenever a field transfer's method does NOT match its nodal
 # side's orientation (remap_moves_placement() == false), which is lowered
 # via a real Transport instead of the Epoch-only path -- a shape no
 # existing test in this file builds. Added
@@ -171,7 +171,7 @@ requires = "mpi"
 # (test/parallel/nodal_remap_runner_test.cpp) to isolate exactly that:
 # same disjoint-single-rank pair, "consistent-transpose" paired with a
 # NODAL SOURCE (orientation mismatch). Confirmed by hand: correct code
-# refuses with E-RT-REMAP-NODAL-PARALLEL ("source: 1, target: 1"); with
+# rejects with E-RT-REMAP-NODAL-PARALLEL ("source: 1, target: 1"); with
 # the mutation applied, `both_on_one_rank` wrongly reports true, the whole
 # nodal-parallel check is skipped, and the OLD rank-local path reports a
 # DIFFERENT code, E-RT-REMAP-SIZE, instead -- a kill an EXACT error-code

@@ -5,7 +5,7 @@
 [[mutation]]
 id = "fieldspan-from-refuses-empty-partition"
 area = "field"
-describes = "FieldSpan::from() reverts to refusing every null FieldRef, including the legitimate count==0 partition (R-08)"
+describes = "FieldSpan::from() reverts to rejecting every null FieldRef, including the legitimate count==0 partition (R-08)"
 file = "include/fuse/field/pipeline.hpp"
 old = "    if (!f.valid() && f.layout().count != 0) {"
 new = "    if (!f.valid()) {"

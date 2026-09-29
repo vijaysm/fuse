@@ -1,4 +1,4 @@
-# Mutations for the FSI channel track (examples/fsi_channel/**,
+# Mutations for the FSI field transfer track (examples/fsi_channel/**,
 # test/verification/fsi_*). Own file per the review-fix protocol: do not
 # edit build-evidence/mutations.toml directly while other tracks hold it
 # dirty.
@@ -96,7 +96,7 @@ test = "verification.fsi_energy_diag"
 [[mutation]]
 id = "fsi-traction-is-the-force-on-the-fluid"
 area = "fsi"
-describes = "KNOWN_ISSUES D9's root cause, reproduced exactly: the wall traction delivered to the beam carries the sign of the force on the FLUID (-p + 2 mu dv/dy) instead of on the wall. A negative added mass: the coupled step map's spectral radius was 1.115466 on the diagnostic grid and the energy grew 1.228 per step, while every self-consistency check (power balance, adjointness, energy budgets) passed, because each compared the delivered vector with itself. Killed only by a test that states the physics: a pressurised channel pushes its wall outward, and accelerating the wall away from the fluid is opposed."
+describes = "KNOWN_ISSUES D9's root cause, reproduced exactly: the wall traction delivered to the beam carries the sign of the force on the FLUID (-p + 2 mu dv/dy) instead of on the wall. A negative added mass: the coupled step map's spectral radius was 1.115466 on the diagnostic grid and the energy grew 1.228 per step, while every self-consistency check (power balance, adjointness, energy budgets) passed, because each compared the delivered vector with itself. Killed only by a test that states the physics: a pressurised field transfer pushes its wall outward, and accelerating the wall away from the fluid is opposed."
 file = "examples/fsi_channel/stokes_solver.hpp"
 old = "        traction[i] = p_wall_mid - 2.0 * p_.mu * dvdy_mid;"
 new = "        traction[i] = -p_wall_mid + 2.0 * p_.mu * dvdy_mid;"

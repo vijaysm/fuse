@@ -5,7 +5,7 @@
 [[mutation]]
 id = "migrate-incomplete-assignment-refusal-disabled"
 area = "backend"
-describes = "pack_for_migration's E-MESH-MIGRATE-INCOMPLETE refusal (dest.size() must equal the owned cell count) is disabled. Without it, a destination array one entry short or long is accepted, silently misassigning every cell from the short point onward -- rcb_moab's own historical failure mode (MeshMigration.cpp, HANDOFF.md) of cells destroyed without a trace."
+describes = "pack_for_migration's E-MESH-MIGRATE-INCOMPLETE rejection (dest.size() must equal the owned cell count) is disabled. Without it, a destination array one entry short or long is accepted, silently misassigning every cell from the short point onward -- rcb_moab's own historical failure mode (MeshMigration.cpp, HANDOFF.md) of cells destroyed without a trace."
 file = "src/backend/native_migration.cpp"
 old = "  if (dest.size() != nowned) {"
 new = "  if (false) {"

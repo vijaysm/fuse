@@ -5,7 +5,7 @@
 [[mutation]]
 id = "cross-rank-region-check-fires-unconditionally"
 area = "runtime"
-describes = "R-10: the cross-rank iteration-region refusal (E-RT-REGION-MPI) fires even with no RunnerConfig::base_communicator configured, wrongly refusing every single-process caller that places a region's components on different declared ranks"
+describes = "R-10: the cross-rank implicit-coupling-group rejection (E-RT-REGION-MPI) fires even with no RunnerConfig::base_communicator configured, wrongly rejecting every single-process caller that places a region's components on different declared ranks"
 file = "src/runtime/iteration.cpp"
 old = "    if (config.base_communicator.has_value()) {"
 new = "    if (true) {"
@@ -23,7 +23,7 @@ test = "runtime.runner"
 [[mutation]]
 id = "build-plan-skips-the-components-agreement"
 area = "transport"
-describes = "R-30: MpiTransport::build_plan() stops checking that every rank in the src/dst rank set agrees on TransportSpec::components, so two ranks calling it with different component counts size MPI_Alltoallv's count arrays inconsistently instead of refusing at setup"
+describes = "R-30: MpiTransport::build_plan() stops checking that every rank in the src/dst rank set agrees on TransportSpec::components, so two ranks calling it with different component counts size MPI_Alltoallv's count arrays inconsistently instead of rejecting at setup"
 file = "src/transport/mpi_transport.cpp"
 old = "      if (!agreement.agreed()) {"
 new = "      if (false) {"
@@ -45,7 +45,7 @@ requires = "mpi"
 [[mutation]]
 id = "conservation-check-not-reduced-across-ranks"
 area = "runtime"
-describes = "KNOWN_ISSUES D10: Constrain compares this rank's owned share of each integral without the Allreduce over the base communicator. On a disjoint two-component placement the source share lives on one rank and the target share on another, so every rank sees a spurious violation (or misses a real one) -- the defect N-transport-runtime-1 named, which the refusal it replaced used to prevent by declining the check altogether."
+describes = "KNOWN_ISSUES D10: Constrain compares this rank's owned share of each integral without the Allreduce over the base communicator. On a disjoint two-component placement the source share lives on one rank and the target share on another, so every rank sees a spurious violation (or misses a real one) -- the defect N-transport-runtime-1 named, which the rejection it replaced used to prevent by declining the check altogether."
 file = "src/runtime/runner.cpp"
 old = "  const bool reduce = config.base_communicator.has_value();"
 new = "  const bool reduce = false;"
@@ -80,7 +80,7 @@ requires = "mpi"
 [[mutation]]
 id = "constrain-classified-local"
 area = "runtime"
-describes = "Constrain back to non-collective while it still reduces: a rank whose period already failed skips it, its partners block in the Allreduce. The MPI runner test's own 120 s timeout is what turns that hang into a verdict; at Tier 0 there is no partner to abandon and the mutant is invisible, as region-failure-abandons-the-rest-of-the-period documents for the same reason."
+describes = "Constrain back to non-collective while it still reduces: a rank whose period already failed skips it, its partners block in the Allreduce. The MPI runner test's own 120 s timeout is what turns that hang into an outcome; at Tier 0 there is no partner to abandon and the mutant is invisible, as region-failure-abandons-the-rest-of-the-period documents for the same reason."
 file = "include/fuse/ir/op.hpp"
 old = "    case OpKind::Constrain:\n      return true;"
 new = "    case OpKind::Constrain:\n      return false;"
@@ -90,7 +90,7 @@ test = "ir.ir_op"
 [[mutation]]
 id = "region-failure-abandons-the-rest-of-the-period"
 area = "runtime"
-describes = "N-transport-runtime-2 / R-09 (REVIEW.md pass2): step_period() returns straight out of the instruction stream the moment an iteration region fails, instead of carrying the failure forward and continuing to walk the stream -- abandoning every later instruction in the same period, including an unrelated channel's Transport/Epoch. Tier 0 (fuse_runtime_runner_test, ASecondChannelStillAdvancesAfterAnUnrelatedRegionFails) cannot distinguish this mutant: with no MPI communicator configured there is no partner rank to abandon, so the SURVIVED verdict there is expected and recorded, not a gap. The real kill is the MPI test below: consumer_b's rank(s), on a disjoint RankSet from the region's, block in linkB's Epoch waiting for a partner that already returned -- the 120s TIMEOUT test property is what turns that into a correct kill rather than a silent PASS."
+describes = "N-transport-runtime-2 / R-09 (REVIEW.md pass2): step_period() returns straight out of the instruction stream the moment an implicit coupling group fails, instead of carrying the failure forward and continuing to walk the stream -- abandoning every later instruction in the same period, including an unrelated field transfer's Transport/Epoch. Tier 0 (fuse_runtime_runner_test, ASecondChannelStillAdvancesAfterAnUnrelatedRegionFails) cannot distinguish this mutant: with no MPI communicator configured there is no partner rank to abandon, so the SURVIVED outcome there is expected and recorded, not a gap. The real kill is the MPI test below: consumer_b's rank(s), on a disjoint RankSet from the region's, block in linkB's Epoch waiting for a partner that already returned -- the 120s TIMEOUT test property is what turns that into a correct kill rather than a silent PASS."
 file = "src/runtime/runner.cpp"
 old = "        if (!step_failure.has_value()) step_failure = rr.error();"
 new = "        return rr.error();  // abandon the rest of the period"
@@ -107,7 +107,7 @@ requires = "mpi"
 # Disjoint) is NOT disjoint from the region -- it IS the region, together
 # with "fluid". R-10's own reduce_region_residuals() (merge_region_payload's
 # `acc[0] = std::min(acc[0], peer[0])`, a tree reduce-then-broadcast) already
-# synchronises the pass/fail verdict to EVERY region participant on the SAME
+# synchronises the pass/fail outcome to EVERY region participant on the SAME
 # sweep, so fluid's AND solid's ranks both see `run_region()` fail
 # SYMMETRICALLY, at the SAME point -- consumer_b (co-located with "solid")
 # never reaches "linkB"'s Epoch expecting a partner that already left,
@@ -157,7 +157,7 @@ requires = "mpi"
 [[mutation]]
 id = "one-transport-shared-across-every-plan"
 area = "transport"
-describes = "D2's fix: every CommGraph-backed plan gets its OWN Transport. Sharing one instance across plans puts the second channel's move() on a Transport planned for the first, which MpiTransport::prepare() refuses -- so the second channel stops working while the first still does."
+describes = "D2's fix: every CommGraph-backed plan gets its OWN Transport. Sharing one instance across plans puts the second field transfer's move() on a Transport planned for the first, which MpiTransport::prepare() rejects -- so the second field transfer stops working while the first still does."
 file = "src/runtime/runner.cpp"
 old = "    graph_transports[pi] = std::move(own);"
 new = "    if (pi == 0) graph_transports[pi] = std::move(own);"
@@ -210,7 +210,7 @@ requires = "mpi"
 [[mutation]]
 id = "peer-extent-is-only-the-source-block"
 area = "runtime"
-describes = "A rank in both partially overlapping placements holds a source block and a destination block of possibly different sizes, and the peer plan indexes each by its own numbering, so the extent must be the larger. Using the source block alone refuses (or truncates) on a rank whose destination block is larger -- including every rank that is only a destination."
+describes = "A rank in both partially overlapping placements holds a source block and a destination block of possibly different sizes, and the peer plan indexes each by its own numbering, so the extent must be the larger. Using the source block alone rejects (or truncates) on a rank whose destination block is larger -- including every rank that is only a destination."
 file = "src/runtime/runner.cpp"
 old = "      p.spec.elements   = std::max(src_n, dst_n);"
 new = "      p.spec.elements   = src_n;"
@@ -221,7 +221,7 @@ requires = "mpi"
 [[mutation]]
 id = "remap-ignores-the-placement-decomposition"
 area = "backend"
-describes = "KNOWN_ISSUES D5, the defect the retired E-RT-REMAP-PLACEMENT refusal stood in front of: the supermesh builder resolving a side from the mesh's DEFAULT view instead of the placement's. Weights then index the wrong local entities on any backend that decomposes per placement -- plausible numbers, no diagnostic. Killed by the reversed-numbering view, where the wrong matrix is the un-permuted one."
+describes = "KNOWN_ISSUES D5, the defect the retired E-RT-REMAP-PLACEMENT rejection stood in front of: the supermesh builder resolving a side from the mesh's DEFAULT view instead of the placement's. Weights then index the wrong local entities on any backend that decomposes per placement -- plausible numbers, no diagnostic. Killed by the reversed-numbering view, where the wrong matrix is the un-permuted one."
 file = "src/backend/intx_weights.cpp"
 old = "  const auto view = backend.placed_view(mid.value(), placement);"
 new = "  const auto view = backend.view(mid.value());"
@@ -231,7 +231,7 @@ test = "backend.supermesh"
 [[mutation]]
 id = "transport-held-to-equal-extents"
 area = "runtime"
-describes = "The regression of 2026-09-23: with per-placement decomposition a Transport's two ends are one region in two components' decompositions, so on a rank in one placement and not the other they differ (12 and 0). Holding Transport to resolve_instructions' equal-size rule refuses every cross-placement plan with E-RT-SIZE before any CommGraph exists; its sizes are reconciled per plan kind in check_transport_extents() instead."
+describes = "The regression of 2026-09-23: with per-placement decomposition a Transport's two ends are one region in two components' decompositions, so on a rank in one placement and not the other they differ (12 and 0). Holding Transport to resolve_instructions' equal-size rule rejects every cross-placement plan with E-RT-SIZE before any CommGraph exists; its sizes are reconciled per plan kind in check_transport_extents() instead."
 file = "src/runtime/runner.cpp"
 old = "    if (ins.kind != OpKind::Remap && ins.kind != OpKind::Transport) {"
 new = "    if (ins.kind != OpKind::Remap) {"
@@ -333,7 +333,7 @@ test = "runtime.runner"
 [[mutation]]
 id = "coupler-region-participants-missing-its-ranks"
 area = "runtime"
-describes = "resolve_regions()'s R.participants union no longer scans the region body's own Transport/Epoch instructions for a coupler's ranks -- it reverts to derive_checkpoint_set()'s components alone, which never names a coupler (it owns no state, so no Source node ever points at it). A channel inside an iteration region that routes through a separately-placed coupler would then leave the coupler's ranks executing the region's Transport/Epoch collectives while sitting outside the residual reduction those collectives are supposed to agree against."
+describes = "resolve_regions()'s R.participants union no longer scans the region body's own Transport/Epoch instructions for a coupler's ranks -- it reverts to derive_checkpoint_set()'s components alone, which never names a coupler (it owns no state, so no Source node ever points at it). A field transfer inside an implicit coupling group that routes through a separately-placed coupler would then leave the coupler's ranks executing the region's Transport/Epoch collectives while sitting outside the residual reduction those collectives are supposed to agree against."
 file = "src/runtime/iteration.cpp"
 old = "      for (std::size_t i = R.enter; i <= R.exit; ++i) {"
 new = "      for (std::size_t i = R.enter; i < R.enter; ++i) {  // MUTATED: empty loop, no coupler ranks added"
@@ -363,20 +363,20 @@ requires = "mpi"
 # sweep"};`, then fires on the COUPLER's rank specifically: its own local
 # `b.length` for this region's coupling-value block is 0 (it owns no
 # checkpointed field), and with the mutation `R.participants.size() <= 1`
-# -- the refusal that is correctly SKIPPED (treated as the ordinary "n ==
+# -- the rejection that is correctly SKIPPED (treated as the ordinary "n ==
 # 0" no-op) when the coupler is counted instead FIRES there. fluid/solid's
 # own rank never hits it (its block length is > 0). This is an asymmetric,
-# per-rank INITIALIZE()-time verdict split, observable before anything
+# per-rank INITIALIZE()-time outcome split, observable before anything
 # collective runs -- confirmed as far as this sandbox can: a Tier-0 double
 # of the SAME shape (PartitionedTestBackend, coupler played by the one
 # simulated rank) reaches `config.base_communicator.has_value()`'s branch
 # correctly (this whole block is NOT #if FUSE_HAVE_MPI-gated, confirmed by
 # reading it) but then fails EARLIER and for an unrelated reason,
-# E-RT-TRANSPORT-NOMPI, because the channel's cross-rank data move needs a
+# E-RT-TRANSPORT-NOMPI, because the field transfer's cross-rank data move needs a
 # real Transport that Tier 0 cannot provide -- i.e. Transport attachment
 # in initialize() runs BEFORE resolve_regions(), which this sandbox cannot
 # get past. The test above compiles (Tier 1, MPI-enabled) but was NOT run;
-# a host run at >= 2 ranks is what confirms the E-RT-REGION verdict on the
+# a host run at >= 2 ranks is what confirms the E-RT-REGION outcome on the
 # coupler's rank.
 
 # KNOWN_ISSUES.md D11 (closing) / matrix cell A-SPACES-TRANSPORT: the

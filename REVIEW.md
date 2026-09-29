@@ -28,8 +28,8 @@ fix step for every finding begins with reading the cited lines.
 | R-05 | [BT-F1](docs/dev/reviews/2026-09-19/build-tools-docs.md) | `.github/workflows/ci.yml:57` | `tier0` CI matrix's `kokkoskernels` leg cannot configure; `FUSE_LINALG_BACKEND` has no such value | reviewer |
 | R-06 | [BT-F2](docs/dev/reviews/2026-09-19/build-tools-docs.md) | `test/backend/moab_mesh_test.cpp:3` | The entire MOAB backend test file compiles to a single skip stub, in every configuration, because its own `#if | **verified here** |
 | R-07 | [BT-F3](docs/dev/reviews/2026-09-19/build-tools-docs.md) | `test/CMakeLists.txt:97-101` | `test/schedule/buffers_test.cpp` and `test/schedule/slab_test.cpp` (33 test cases) are never registered and ha | **verified here** |
-| R-08 | [NL-B1](docs/dev/reviews/2026-09-19/num-linalg-field.md) | `include/fuse/field/pipeline.hpp:96-99` | `FieldSpan::from()` refuses the exact empty-partition `FieldRef` that `FieldRegistry::bind()` was fixed to acc | reviewer |
-| R-09 | [TR-F1](docs/dev/reviews/2026-09-19/transport-runtime.md) | `src/runtime/runner.cpp:2112-2118` | A failing iteration region makes `step_period()` abandon the rest of the period's instruction stream, includin | **verified here** |
+| R-08 | [NL-B1](docs/dev/reviews/2026-09-19/num-linalg-field.md) | `include/fuse/field/pipeline.hpp:96-99` | `FieldSpan::from()` rejects the exact empty-partition `FieldRef` that `FieldRegistry::bind()` was fixed to acc | reviewer |
+| R-09 | [TR-F1](docs/dev/reviews/2026-09-19/transport-runtime.md) | `src/runtime/runner.cpp:2112-2118` | A failing implicit coupling group makes `step_period()` abandon the rest of the period's instruction stream, includin | **verified here** |
 | R-10 | [TR-F2](docs/dev/reviews/2026-09-19/transport-runtime.md) | `src/runtime/iteration.cpp:600-639` | Iteration-region convergence is decided from a purely rank-local residual with no cross-rank agreement; ranks  | **verified here** |
 | R-51 | *(added while fixing, 2026-09-19)* | `test/parallel/comm_graph_test.cpp:1-13` | Only `<gtest/gtest.h>` preceded this file's `#if FUSE_HAVE_MPI` — the same undefined-macro bug as R-06, one directory over — so its 28 CommGraph/Crystal-Router cases compiled to nothing in every configuration. **Fixed in wave 0**, commit `4a2ad6e` (the same commit that added the `test`/`examples` scan and the presence-test rule these two findings motivated). | **verified here** |
 
@@ -52,7 +52,7 @@ fix step for every finding begins with reading the cited lines.
 | R-23 | [BT-F7](docs/dev/reviews/2026-09-19/build-tools-docs.md) | `KNOWN_ISSUES.md:165-176` | B1 ("Tier 2 does not build") is stale and false at HEAD, contradicted by C1 fifty lines below it in the same f | reviewer |
 | R-24 | [BT-F8](docs/dev/reviews/2026-09-19/build-tools-docs.md) | `docs/user/build.md:9,29-37` | The build doc documents a `kokkoskernels` linear-algebra backend that does not exist, omits the real `builtin` | reviewer |
 | R-25 | [BT-F9](docs/dev/reviews/2026-09-19/build-tools-docs.md) | *(absence, whole tree)* | No `install()`/`export()` anywhere; `conventions.md`'s "CMake package `fuse-coupler`" cannot currently be `fin | reviewer |
-| R-26 | [IR-F1](docs/dev/reviews/2026-09-19/ir-schedule.md) | `test/golden/pair_explicit.ir`, `pair_accumulate_remap_relax.ir`, `pair_iterated.ir`; `src | Golden IR-dump regression suite was never ported; the three checked-in golden files are stale (missing `Epoch` | reviewer |
+| R-26 | [IR-F1](docs/dev/reviews/2026-09-19/ir-schedule.md) | `test/golden/pair_explicit.ir`, `pair_accumulate_remap_relax.ir`, `pair_iterated.ir`; `src | Reference-output IR-dump regression suite was never ported; the three checked-in reference-output files are stale (missing `Epoch` | reviewer |
 | R-27 | [IR-F2](docs/dev/reviews/2026-09-19/ir-schedule.md) | `src/ir/lowering.cpp:150-190`; `include/fuse/schedule/plan.hpp:19-21`; `src/schedule/sched | "Merge as a left-fold of pairwise merges" is documented and referenced in an error message, but never implemen | reviewer |
 | R-28 | [IR-F3](docs/dev/reviews/2026-09-19/ir-schedule.md) | `include/fuse/schedule/buffers.hpp:85-93`; `src/schedule/buffers.cpp:147-152` | `buffers.hpp` documents `plan_buffers()`/`try_plan_buffers()` as throwing `std::invalid_argument` / `std::out_ | reviewer |
 | R-29 | [NL-A1](docs/dev/reviews/2026-09-19/num-linalg-field.md) | `include/fuse/field/field_ref.hpp:97-98` | `Layout::well_formed()` rejects valid padded/strided layouts (off-by-one-stride-unit bound) | reviewer |
@@ -75,7 +75,7 @@ fix step for every finding begins with reading the cited lines.
 | R-41 | [BT-F15](docs/dev/reviews/2026-09-19/build-tools-docs.md) | `test/backend/moab_mesh_test.cpp:614` | `FUSE_MOAB_TEST_MESH` is referenced but defined nowhere in the build; that section is permanently dead code in | reviewer |
 | R-42 | [BT-F16](docs/dev/reviews/2026-09-19/build-tools-docs.md) | `cmake/FuseDependencies.cmake:99-101` | `FetchContent_Declare(KokkosKernels ...)` is dead: never `find_package`d or `FetchContent_MakeAvailable`d anyw | reviewer |
 | R-43 | [IR-F4](docs/dev/reviews/2026-09-19/ir-schedule.md) | `src/ir/lowering.cpp:173-179` | Merge's "newest contribution" tie-break silently keeps the first writer when two contributions share `iterate` | reviewer |
-| R-44 | [IR-F5](docs/dev/reviews/2026-09-19/ir-schedule.md) | `src/schedule/scheduler.cpp:599-618` | `E-SCHED-EPOCH-PARTIAL`'s rank-set-mismatch check cannot fire under any lowering path that exists today, so it | reviewer |
+| R-44 | [IR-F5](docs/dev/reviews/2026-09-19/ir-schedule.md) | `src/schedule/scheduler.cpp:599-618` | `E-SCHED-EPOCH-PARTIAL`'s rank-set-mismatch check cannot fire under any path through compilation into the dataflow graph that exists today, so it | reviewer |
 | R-45 | [NL-A2](docs/dev/reviews/2026-09-19/num-linalg-field.md) | `src/num/accel_quasi_newton.cpp:536,632` | `linalg::least_squares_into` skips the `m >= k` precondition its sibling enforces, and the resulting `m < k` p | reviewer |
 | R-46 | [TR-F6](docs/dev/reviews/2026-09-19/transport-runtime.md) | `src/transport/lowfive_transport.cpp:447` | The interception probe dataset name `"__soma_lowfive_probe__"` is a second, purely cosmetic residual upstream  | reviewer |
 
@@ -106,19 +106,19 @@ in the set. `test/backend/moab_mesh_test.cpp` opens with `#ifdef FUSE_HAVE_MOAB`
 configuration — the 38 MOAB cases recorded as "unrun in the sandbox" (KNOWN_ISSUES C1) would not have
 run on the host either (R-06). `test/schedule/buffers_test.cpp` and
 `slab_test.cpp`, 33 cases, are not registered in `test/CMakeLists.txt` at all
-(R-07). The three golden IR dumps were checked in but the test that compares
+(R-07). The three reference-output IR dumps were checked in but the test that compares
 against them was never ported (R-26). The invariant gate that catches the first
 pattern scans `include/fuse` and `src` but not `test/` or `examples/` — the same scope gap the layering
 gate had until 2026-09-17, in a different tool.
 
 **2.2 A rank fails alone and the others wait.** Five findings violate the one rule
-`docs/dev/rank-agreement.md` exists to state: a rank that refuses must still reach every collective
-its partners will reach. `step_period()` returns on a failing iteration region while the comment two
+`docs/dev/rank-agreement.md` exists to state: a rank that rejects its input must still reach every collective
+its partners will reach. `step_period()` returns on a failing implicit coupling group while the comment two
 lines below says the rank must keep executing collectives (R-09); iteration
 convergence is decided from a rank-local residual with no reduction, so a partitioned interface exits
-the region on different iterations per rank (R-10); `build_plan()` has no
+the group on different iterations per rank (R-10); `build_plan()` has no
 cross-rank agreement on the component count (R-30); and the MOAB path has
-data-dependent per-rank refusals ahead of documented collectives in both weight building and halo
+data-dependent per-rank rejections ahead of documented collectives in both weight building and halo
 planning (R-01, R-02). Every one is a hang, not an error message.
 
 **2.3 A macro nothing defines.** The class this project has been bitten by four times is here twice
@@ -135,8 +135,8 @@ but only for namespaces and includes). Wave 0 closed this gap: `check-invariants
 a `SOMA_`/`KARMA_`-prefixed macro anywhere in `fuse::` code — R-06 and R-51 are both fixed by the
 same commit that added it, `4a2ad6e`.
 
-**2.4 Documentation that describes code that is not there.** `KNOWN_ISSUES` B1 still says tier 2 does
-not build, fifteen lines above C1 saying it does (R-23). `build.md` documents
+**2.4 Documentation that describes code that is not there.** `KNOWN_ISSUES` B1 still says the build
+configuration with MOAB enabled does not build, fifteen lines above C1 saying it does (R-23). `build.md` documents
 a `kokkoskernels` backend that was removed (R-24) and the CI matrix still has
 a leg for it that cannot configure (R-05). Backend comments cite five parent
 test files as evidence that were never ported (R-11). `buffers.hpp` documents exception
@@ -167,7 +167,7 @@ changed, and the choice written down.
 | Planned | Actual | Finding |
 |---|---|---|
 | Every port lands as a rename-only commit then a transform (porting.md step 2–4) | The MOAB backend, `tempest_weights.cpp` and both S5 test files landed as single commits | recorded in the plan (S5.2), not in porting.md as an allowed exception |
-| Golden IR regression suite is the first mutation gate (S3.1) | Golden files present, comparing test absent | R-26 |
+| Reference-output IR regression suite is the first mutation gate (S3.1) | Reference-output files present, comparing test absent | R-26 |
 | Parallel tests declare rank requirements through the documented mechanism (testing.md) | Several in-scope parallel tests do not | R-50 |
 | `num.convergence` tests the `fuse::num` layer | The file exercises `fuse::model` only | R-49 |
 | One build-directory convention | **FIXED**: `CMakePresets.json` now uses `build-<preset>`, matching `build-*/` everywhere else | R-40 |
@@ -205,21 +205,22 @@ and every fix to library code carries a test that fails before it and a mutation
    multi-line array parser in `sync-upstream.py` fixed to use `tomllib` (closes
    R-20).
 
-**Wave 1 — BLOCKERs that must precede the first host tier-2 run.**
+**Wave 1 — BLOCKERs that must precede the first host run of the MOAB-enabled build configuration.**
 5. **DONE** (backend fixer, 2026-09-19, verified here). `test/backend/moab_mesh_test.cpp`: includes
-   `config.hpp` and tests `#if FUSE_HAVE_MOAB` now. The 38 cases compile again; a host tier-2 run
-   (this sandbox cannot `MPI_Init`) is still what will run them for the first time — see
+   `config.hpp` and tests `#if FUSE_HAVE_MOAB` now. The 38 cases compile again; a host run of the
+   MOAB-enabled build configuration (this sandbox cannot `MPI_Init`) is still what will run them for
+   the first time — see
    `KNOWN_ISSUES.md` C1 (R-06).
 6. **DONE, wave 0** (`b8e3f54`; see wave 0 item 2 above). `buffers_test` and `slab_test` registered;
-   both pass at tier 0 (R-07).
+   both pass at the base build configuration (R-07).
 7. **DONE, PARTIAL per pass2** (transport-runtime fixer). `runner.cpp` `step_period()`: a failing
-   region records the failure and continues to the remaining collective instructions, exactly as the
-   non-region path does two lines below (R-09). The code fix is correct by
+   implicit coupling group records the failure and continues to the remaining collective instructions, exactly as the
+   non-group path does two lines below (R-09). The code fix is correct by
    inspection (confirmed by the pass2 reviewer reverting it and seeing zero test failures), but it
    still has no mutation entry and no test that distinguishes fixed from broken — see
    `docs/dev/reviews/2026-09-19/pass2/re-transport-runtime.md` N-transport-runtime-2 (MAJOR, open).
 8. **DONE, CONFIRMED-FIXED per pass2**. `iteration.cpp`: convergence measures are reduced across the
-   region's participants before the decision, through the existing `residual_norm` reduction path; a
+   group's processes before the decision, through the existing `residual_norm` reduction path; a
    rank owning no part of the interface contributes the undefined marker, not zero
    (R-10). Test: two ranks with unequal local residuals exit on the same
    iteration, host-verified per `re-transport-runtime.md`.
@@ -227,17 +228,17 @@ and every fix to library code carries a test that fails before it and a mutation
    the same handshake `build_plan_from_peers` already does
    (R-30), per `re-transport-runtime.md`.
 10. **DONE, PARTIAL per pass2**. MOAB `intx_weights.cpp` and `plan_halo_exchange`: every
-    data-dependent refusal ahead of a collective becomes a locally recorded failure that is reduced
-    at the collective, so all ranks refuse together (R-01, R-02). The
+    data-dependent rejection ahead of a collective becomes a locally recorded failure that is reduced
+    at the collective, so all ranks reject together (R-01, R-02). The
     backend pass2 review confirms R-02 CONFIRMED-FIXED but finds R-01's fix incomplete — the same
     hang-hazard class one call frame higher, in the same two functions, still open as
-    N-BACKEND-1 (BLOCKER). Still needs the host tier-2 run for either
+    N-BACKEND-1 (BLOCKER). Still needs a host run of the MOAB-enabled build configuration for either
     to execute.
 11. **DONE, CONFIRMED-FIXED per pass2**. `descriptor.hpp` reader: validate every enumerator read from
-    bytes against its range before the cast, refusing `E-DESC-ENUM`
+    bytes against its range before the cast, rejecting with `E-DESC-ENUM`
     (R-04). Mutation: remove one range check; per `re-base-model.md`.
 12. **DONE, CONFIRMED-FIXED per pass2**. `pipeline.hpp` `FieldSpan::from()`: an empty partition is a
-    valid zero-extent view, not a refusal (R-08) — this is the X3 rule
+    valid zero-extent view, not a rejection (R-08) — this is the X3 rule
     from S1 reaching the pipeline; per `re-num-linalg-field.md`.
 13. **DONE**. `.github/workflows/ci.yml`: `kokkoskernels` leg replaced with `builtin`, the value
     `FUSE_LINALG_BACKEND` actually implements (R-05).
@@ -263,7 +264,7 @@ defect B1a fixed elsewhere and gets the same `try_` treatment.
 **Wave 2 pass2 status, 2026-09-20 (see §6 for detail):** CONFIRMED-FIXED — R-11, R-15, R-16, R-25,
 R-26, R-27, R-28, R-29, R-30, R-32, R-46, R-50 (R-50 is also DEVIATION D-2 in §3, closed the same
 way). PARTIAL — R-12, R-13 (backend: correct fix, mutation entry only, no permanent regression test),
-R-18, R-19 (base-model: guard/refusal covers some but not all call sites — see §6 for the two new
+R-18, R-19 (base-model: guard/rejection covers some but not all call sites — see §6 for the two new
 findings that finish the job). REJECTION-UPHELD — R-17, R-31.
 
 **Wave 3 — MINOR, IMPROVEMENT, DEVIATION.** Group by file. For each DEVIATION in §3, decide and record:
@@ -304,14 +305,14 @@ at HEAD `dbdc872` — the same rubric, verifying every first-pass finding assign
 looking fresh for anything the fix wave introduced or missed. Full reports:
 `docs/dev/reviews/2026-09-19/pass2/re-<layer>.md`.
 
-Totals across the six pass-2 reports, summed from their verification tables: **39 confirmed fixed, 3 rejections upheld, 8 partial, 2 not fixed** (52 verdict rows; one first-pass finding is verified in two layers), and **23 new findings** (the six pass-2 tables sum to 23; two of build-tools-docs' ten were reported from the host tier-2 run rather than by the reviewer, and an earlier headline of 21 excluded them without saying so). Commit `1565cdf`'s body states "forty-five of fifty-one confirmed fixed"; that figure was written from memory and is wrong -- this line is the record.
+Totals across the six pass-2 reports, summed from their verification tables: **39 confirmed fixed, 3 rejections upheld, 8 partial, 2 not fixed** (52 outcome rows; one first-pass finding is verified in two layers), and **23 new findings** (the six pass-2 tables sum to 23; two of build-tools-docs' ten were reported from a host run of the MOAB-enabled build configuration rather than by the reviewer, and an earlier headline of 21 excluded them without saying so). Commit `1565cdf`'s body states "forty-five of fifty-one confirmed fixed"; that figure was written from memory and is wrong -- this line is the record.
 
 | Layer | Confirmed-fixed | Partial | Not-fixed / rejection-upheld | New findings |
 |---|---|---|---|---|
 | backend | 4 (R-02, R-03, R-11, R-33) | 4 (R-01, R-12, R-13, R-14) | 0 | 3 — N-BACKEND-1 BLOCKER, N-BACKEND-2 MAJOR, N-BACKEND-3 MINOR/DEVIATION |
 | base-model | 6 (R-04, R-15, R-16, R-34, R-35; R-17 rejection-upheld) | 2 (R-18, R-19) | 0 | 2 — N-base-model-1 MAJOR, N-base-model-2 MAJOR |
-| build-tools-docs | 16 own-layer, of 17 assigned (R-05, R-06, R-07, R-20–R-25, R-36–R-40, R-42, R-47) + 2 cross-layer (R-51 confirmed, R-31 rejection-upheld) | 0 | 1 at pass 2 (R-41, deferred to backend; fixed in round 2, `08848ec`) | 10 — N-build-tools-docs-1/2 MAJOR, -3/-4/-5/-6/-7 MINOR (-7 out of scope, flagged for backend), -8 IMPROVEMENT, -9 BLOCKER (host-reported tier-2 configure failure, 2026-09-20; fixed), -10 MINOR (host-reported, same date; fixed) |
-| ir-schedule | 5 (R-26, R-27, R-28, R-43, R-44) | 0 | 0 | 2 — N-ir-schedule-1 IMPROVEMENT; N-ir-schedule-2 BLOCKER (a Merge scheduled before the Epochs feeding it, found by the host tier-2 run while N-ir-schedule-1 routed the sweep through `schedule()`; fixed `c92ad1c`) |
+| build-tools-docs | 16 own-layer, of 17 assigned (R-05, R-06, R-07, R-20–R-25, R-36–R-40, R-42, R-47) + 2 cross-layer (R-51 confirmed, R-31 rejection-upheld) | 0 | 1 at pass 2 (R-41, deferred to backend; fixed in round 2, `08848ec`) | 10 — N-build-tools-docs-1/2 MAJOR, -3/-4/-5/-6/-7 MINOR (-7 out of scope, flagged for backend), -8 IMPROVEMENT, -9 BLOCKER (host-reported failure to configure the MOAB-enabled build configuration, 2026-09-20; fixed), -10 MINOR (host-reported, same date; fixed) |
+| ir-schedule | 5 (R-26, R-27, R-28, R-43, R-44) | 0 | 0 | 2 — N-ir-schedule-1 IMPROVEMENT; N-ir-schedule-2 BLOCKER (a merge step scheduled before the synchronisation points feeding it, found by a host run of the MOAB-enabled build configuration while N-ir-schedule-1 routed the sweep through `schedule()`; fixed `c92ad1c`) |
 | num-linalg-field | 3 (R-08, R-29, R-45) | 1 (R-48) | 1 (R-49, DEVIATION, explicitly left for another owner) | 1 — N-num-linalg-field-1 MINOR |
 | transport-runtime | 5 (R-10, R-30, R-32, R-46, R-50) | 1 (R-09) | 1 (R-31, rejection-upheld) | 6 — N-transport-runtime-1/2 MAJOR, -3 MINOR, -4/-6 DEVIATION, -5 IMPROVEMENT |
 
@@ -324,9 +325,9 @@ test yet distinguishes it from the bug). None of the six reports rejected a find
 had accepted, and none overturned a first-pass rejection other than confirming it (R-17, R-31 both
 REJECTION-UPHELD).
 
-**New BLOCKER.** N-BACKEND-1 is the only new BLOCKER: the same per-rank-refusal-ahead-of-a-collective
+**New BLOCKER.** N-BACKEND-1 is the only new BLOCKER: the same per-rank-rejection-ahead-of-a-collective
 hang class as R-01, found one call frame higher in the same two MOAB functions — not yet fixed,
-needs the host tier-2 run to execute either way.
+needs a host run of the MOAB-enabled build configuration to execute either way.
 
 **Cross-cutting pattern.** Four of the eight new build-tools-docs findings (N-3 through N-6, and the
 out-of-scope N-7) are stale cross-references — finding-id mis-citations or dangling doc-page
@@ -340,6 +341,6 @@ own second fix pass, since it sits in `test/backend/**`.
 **Deviation from a full run.** Two of the six pass2 reviews (base-model, num-linalg-field) note their
 own reduced scope: base-model did not independently re-run the static gates (relied on the fixer's
 own claim, cross-checked against everything else read); num-linalg-field's one MPI-only test could
-not run in the sandbox. Tier 2 (MOAB) and any MPI-launched test remain out of reach for all six
+not run in the sandbox. The MOAB-enabled build configuration and any MPI-launched test remain out of reach for all six
 reviews, as at the first review — every claim resting on them is marked PARTIAL or NOT-FIXED above
 rather than reported as a firm result.

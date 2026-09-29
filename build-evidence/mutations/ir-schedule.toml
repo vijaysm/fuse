@@ -14,7 +14,7 @@
 [[mutation]]
 id = "merge-typed-at-first-writer-v2"
 area = "compiler"
-describes = "the combined value inherits the first writer's time level regardless of a later writer's offset (the axis the sweep's random lag placement actually varies -- it excludes iteration regions, so every generated writer already ties on `iterate`), instead of the newest contribution's -- the same regression the now-stale 'merge-typed-at-first-writer' anchored on the pre-two-pass code (R-27/R-43/R-44). Verified by hand: applying this mutation fails schedule.acyclicity_sweep (a False/0u mismatch on the independently-computed loop verdict); the sibling attempt anchored on the `iterate`-reduction line one loop up is a confirmed NO-OP against this test, because the sweep generator never produces a writer set spanning more than one `iterate` value -- do not reintroduce that anchor as this mutation's replacement."
+describes = "the combined value inherits the first writer's time level regardless of a later writer's offset (the axis the sweep's random lag placement actually varies -- it excludes implicit coupling groups, so every generated writer already ties on `iterate`), instead of the newest contribution's -- the same regression the now-stale 'merge-typed-at-first-writer' anchored on the pre-two-pass code (R-27/R-43/R-44). Verified by hand: applying this mutation fails schedule.acyclicity_sweep (a False/0u mismatch on the independently-computed loop outcome); the sibling attempt anchored on the `iterate`-reduction line one loop up is a confirmed NO-OP against this test, because the sweep generator never produces a writer set spanning more than one `iterate` value -- do not reintroduce that anchor as this mutation's replacement."
 file = "src/ir/lowering.cpp"
 old = "        } else if (b.offset > a.offset) {"
 new = "        } else if (false) {"
@@ -36,8 +36,8 @@ test = "schedule.plan"
 # that report's N-ir-schedule-1 IMPROVEMENT: extending
 # schedule.acyclicity_sweep to also call schedule() immediately turned up a
 # real BLOCKER, not just a coverage gap. A Merge combining two or more
-# channels carries `ChannelId{}` origin (fuse/ir/lowering.cpp -- it is not
-# any one of them), so `expand()`'s "no channel claimed" boundary handling
+# field transfers carries `ChannelId{}` origin (fuse/ir/lowering.cpp -- it is not
+# any one of them), so `expand()`'s "no field transfer claimed" boundary handling
 # placed it at its owning component's tick START, the convention meant for
 # Source and an unwritten Sink. When any of its writers actually crosses
 # ranks (needs a real Transport/Epoch pair, unlike every writer in
@@ -54,7 +54,7 @@ test = "schedule.plan"
 [[mutation]]
 id = "merge-placed-at-tick-start-lockstep"
 area = "compiler"
-describes = "in the lockstep fast path, a Merge combining two or more channels is placed at its owning component's tick START (the Source/unwritten-Sink convention) instead of the tick END its Transport/Epoch inputs land on, so it sorts before them and schedule() fails E-SCHED-ORDER on any graph where a writer is not colocated with the merge target"
+describes = "in the lockstep fast path, a Merge combining two or more field transfers is placed at its owning component's tick START (the Source/unwritten-Sink convention) instead of the tick END its Transport/Epoch inputs land on, so it sorts before them and schedule() fails E-SCHED-ORDER on any graph where a writer is not colocated with the merge target"
 file = "src/schedule/expand.cpp"
 old = "    } else if (n.kind == OpKind::Merge) {"
 new = "    } else if (false) {"
@@ -64,7 +64,7 @@ test = "schedule.expand"
 [[mutation]]
 id = "merge-placed-at-tick-start-general"
 area = "compiler"
-describes = "in the general (non-lockstep) path, a Merge combining two or more channels is placed at its owning component's tick START instead of the tick END, the same defect as merge-placed-at-tick-start-lockstep but in the other of expand()'s two emission paths -- ExpandMode::ForceGeneral is required to reach it, since a lockstep graph never takes this branch"
+describes = "in the general (non-lockstep) path, a Merge combining two or more field transfers is placed at its owning component's tick START instead of the tick END, the same defect as merge-placed-at-tick-start-lockstep but in the other of expand()'s two emission paths -- ExpandMode::ForceGeneral is required to reach it, since a lockstep graph never takes this branch"
 file = "src/schedule/expand.cpp"
 old = "    const bool tick_closing = (n.kind == OpKind::Merge);"
 new = "    const bool tick_closing = false;"
@@ -74,7 +74,7 @@ test = "schedule.expand"
 [[mutation]]
 id = "region-grouping-does-nothing"
 area = "compiler"
-describes = "D1's fix: a region's members are grouped inside their instant so declaration order cannot decide whether a coupling schedules. Without the preference the greedy emission degenerates to the old rank order and the declared-second spelling is refused again."
+describes = "D1's fix: a region's members are grouped inside their instant so declaration order cannot decide whether a coupling schedules. Without the preference the greedy emission degenerates to the old rank order and the declared-second spelling is rejected again."
 file = "src/schedule/scheduler.cpp"
 old = "      if (open != kNoRegion) {"
 new = "      if (false) {"
@@ -84,7 +84,7 @@ test = "schedule.plan"
 [[mutation]]
 id = "region-grouping-ignores-entanglement"
 area = "compiler"
-describes = "The other half: grouping must NOT separate a non-member that reads the same external value the region re-advances, because its placement relative to the loop is a modelling decision. Removing the guard lets an explicit channel hanging off an iterated component schedule, on one sweep's iterate, instead of being refused."
+describes = "The other half: grouping must NOT separate a non-member that reads the same external value the region re-advances, because its placement relative to the loop is a modelling decision. Removing the guard lets an explicit field transfer hanging off an iterated component schedule, on one sweep's iterate, instead of being rejected."
 file = "src/schedule/scheduler.cpp"
 old = "    if (!any_member || entangled || hi - lo < 2) {"
 new = "    if (!any_member || hi - lo < 2) {"
@@ -101,7 +101,7 @@ test = "verification.iteration"
 [[mutation]]
 id = "b3-determinism-check-disabled"
 area = "runtime"
-describes = "verify_rollback_support()'s new check (src/runtime/checkpoint_support.cpp) for a component whose capabilities() decodes DeterminismLevel::Nondeterministic inside an iteration region's checkpoint set is disabled, so a nondeterministic component's noise is silently treated as a residual instead of being refused with E-ITER-NONDETERMINISTIC. HAND-VERIFIED (applied to the real file, rebuilt, run, restored, cmp'd byte-identical -- not derived): applying this mutation, rebuilding fuse_runtime_checkpoint_test and running ctest -R '^runtime.checkpoint$' gives exactly one failure, Checkpoint.NondeterministicComponentInsideIterationRegionIsRejected (diags.has_errors() is false, has_code(diags, \"E-ITER-NONDETERMINISTIC\") is false, diags.size() is 0 not 1) -- the other 19 subtests in the suite, including ExplicitlyBitwiseComponentInsideIterationRegionIsAccepted and DefaultDeterminismInsideIterationRegionIsAccepted, pass unchanged. Restored via cmp against a pre-edit copy: byte-identical."
+describes = "verify_rollback_support()'s new check (src/runtime/checkpoint_support.cpp) for a component whose capabilities() decodes DeterminismLevel::Nondeterministic inside an implicit coupling group's checkpoint set is disabled, so a nondeterministic component's noise is silently treated as a residual instead of being rejected with E-ITER-NONDETERMINISTIC. HAND-VERIFIED (applied to the real file, rebuilt, run, restored, cmp'd byte-identical -- not derived): applying this mutation, rebuilding fuse_runtime_checkpoint_test and running ctest -R '^runtime.checkpoint$' gives exactly one failure, Checkpoint.NondeterministicComponentInsideIterationRegionIsRejected (diags.has_errors() is false, has_code(diags, \"E-ITER-NONDETERMINISTIC\") is false, diags.size() is 0 not 1) -- the other 19 subtests in the suite, including ExplicitlyBitwiseComponentInsideIterationRegionIsAccepted and DefaultDeterminismInsideIterationRegionIsAccepted, pass unchanged. Restored via cmp against a pre-edit copy: byte-identical."
 file = "src/runtime/checkpoint_support.cpp"
 old = "    if (level == DeterminismLevel::Nondeterministic) {"
 new = "    if (false) {"
@@ -156,7 +156,7 @@ test = "schedule.window_scope"
 [[mutation]]
 id = "coupler-remap-placement-ignored"
 area = "compiler"
-describes = "the coupler-placement rule's whole effect on where a channel's Remap runs is dropped: coupler_rank_set always falls back to the target's own component, so a channel that declares remap_on is lowered exactly as if it had not -- the value moves source -> target directly (at most one Transport+Epoch pair) and the Remap's placement is always the target's, never a declared coupler's"
+describes = "the coupler-placement rule's whole effect on where a field transfer's Remap runs is dropped: coupler_rank_set always falls back to the target's own component, so a field transfer that declares remap_on is lowered exactly as if it had not -- the value moves source -> target directly (at most one Transport+Epoch pair) and the Remap's placement is always the target's, never a declared coupler's"
 file = "src/ir/rules_channel.cpp"
 old = "      remap_on_could_matter ? static_cast<int>(ch.remap.remap_on.value())\n                            : dst_rank_set;"
 new = "      dst_rank_set;  // MUTATED: remap_on_could_matter never consulted"
@@ -171,7 +171,7 @@ test = "ir.lowering_channel"
 [[mutation]]
 id = "coupler-second-hop-not-elided-when-same-as"
 area = "compiler"
-describes = "the coupler -> target hop's same_as elision is removed: every coupler-routed channel gets a second Transport+Epoch pair even when the coupler's ranks are identical to the target's own (a distinct ComponentId sharing the target's RankSet), which ACouplerColocatedWithTargetStillIdentifiesAsItsOwnPlacement pins as a no-op move"
+describes = "the coupler -> target hop's same_as elision is removed: every coupler-routed field transfer gets a second Transport+Epoch pair even when the coupler's ranks are identical to the target's own (a distinct ComponentId sharing the target's RankSet), which ACouplerColocatedWithTargetStillIdentifiesAsItsOwnPlacement pins as a no-op move"
 file = "src/ir/rules_channel.cpp"
 old = "    if (!cur_ranks.same_as(dst_ranks)) {"
 new = "    if (true) {  // MUTATED: same_as elision removed"
