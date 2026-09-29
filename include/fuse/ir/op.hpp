@@ -218,6 +218,22 @@ struct OpAttrs {
   /// combination it is performing.
   MergeOp       merge = MergeOp::Sum;
 
+  /// Time windows track: `OpKind::WindowAdvance` (subcycling) has EMPTY
+  /// `Node::inputs` -- like `Source` -- because the field transfer that
+  /// delivers its import waveform is on the OTHER end of a two-way time
+  /// window, and making that delivery a real producer/consumer edge back
+  /// into this node creates a genuine cycle in the untimed dataflow graph
+  /// (measured directly: `OperatorDAG::topological_order()` on exactly this
+  /// shape refuses with only 2 of 12 nodes ordered). This edge id names
+  /// that field transfer's own final edge WITHOUT adding a dependency: the
+  /// scheduler's window-causality check (src/schedule/scheduler.cpp) reads
+  /// it to verify ordering by TIME (`TickPhase`) instead, the same
+  /// causality contract every `Source`/`Sample` boundary read already
+  /// relies on rather than an SSA edge. `ArcId{}` (invalid, the default) is
+  /// every node that is not `WindowAdvance` -- `attrs_string()` omits it
+  /// then, so no existing reference dump moves.
+  ArcId         window_import{};
+
   friend bool operator==(const OpAttrs&, const OpAttrs&) = default;
 };
 

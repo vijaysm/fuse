@@ -66,6 +66,21 @@ struct Instruction {
   NodeId                origin_node;
 };
 
+namespace detail {
+/// Time windows track: the ordering proof for the subcycling node
+/// (`OpKind::WindowAdvance`). Exposed here, in `detail`, rather than kept
+/// anonymous in src/schedule/scheduler.cpp (where `schedule()` calls it),
+/// so a test can exercise it directly against a hand-built instruction
+/// stream -- the same reason `detail::RegionBlock` (runner_impl.hpp) is
+/// visible outside its own translation unit. See the definition (its own
+/// doc comment, src/schedule/scheduler.cpp) for the exact invariant and
+/// why it exists: `OpAttrs::window_import` (fuse/ir/op.hpp) is deliberately
+/// not a real `Node::inputs` edge, so `check_dependence_order()` cannot
+/// see it, and this is what checks it instead.
+[[nodiscard]] Result<void> check_window_causality(
+    const OperatorDAG& dag, const std::vector<Instruction>& instructions);
+}  // namespace detail
+
 /// Spec §2 layer 3: immutable after construction. The hot loop interprets this
 /// vector -- no virtual dispatch per DOF, no map lookup, no allocation.
 ///

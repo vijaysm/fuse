@@ -494,6 +494,79 @@ void group_regions_within_instants(const OperatorDAG& dag,
 
 }  // namespace
 
+namespace detail {
+/// Time windows track: the ordering proof for the subcycling node
+/// (`OpKind::WindowAdvance`). Its import waveform is deliberately NOT a
+/// real `Node::inputs` edge (`OpAttrs::window_import`'s own doc comment,
+/// fuse/ir/op.hpp, explains why: a real edge closes a cycle in the untimed
+/// graph). `check_dependence_order()` above therefore cannot see this
+/// dependency at all -- it walks `Node::inputs` only -- so causality here
+/// must be established, and checked, some other way: by TIME. Its export
+/// waveform needs no separate check: a field transfer reading it names it
+/// in a REAL `Node::inputs` edge, which `check_dependence_order()` already
+/// covers.
+///
+/// THE INVARIANT, stated exactly: for every window instance w (identified
+/// by `Instruction::dst_step`, which `expand()` gives the same value to
+/// every node -- channel or subcycling -- decomposed at one window's
+/// length, since both ends of that decomposition are the window length)
+/// and every subcycling node with a valid `window_import`, the instruction
+/// that writes `window_import`'s arc for window instance w must appear
+/// EARLIER in the SCHEDULED STREAM (vector position, not merely time --
+/// position is what the runtime's execute-in-order loops actually read)
+/// than the subcycling node's own instance for w.
+///
+/// Enforced by scanning the stream once, tracking each arc's most
+/// recently-seen writer's `dst_step`; at a subcycling instance, the
+/// tracked step for its `window_import` arc must equal ITS OWN `dst_step`
+/// exactly -- not merely "some earlier write happened", which (unlike
+/// `check_dependence_order()`'s coarser, sufficient-for-its-purpose flag)
+/// would silently accept a subcycling instance reading a STALE window's
+/// value if the graph or the phase assignment is wrong.
+///
+/// Declared in fuse/schedule/plan.hpp's `detail` namespace, not kept
+/// anonymous here, so a test can exercise it directly against a hand-built
+/// instruction stream (this track's Unit P: the proof must hold before any
+/// lowering rule emits the node it is about).
+Result<void> check_window_causality(
+    const OperatorDAG& dag, const std::vector<Instruction>& instructions) {
+  // Most recent dst_step at which each arc was written, or -1 if never.
+  std::vector<std::int64_t> last_written_step(dag.arc_count(), -1);
+  for (std::size_t i = 0; i < instructions.size(); ++i) {
+    const Instruction& ins = instructions[i];
+    if (ins.kind == OpKind::WindowAdvance) {
+      const Node& n = dag.node(ins.origin_node);
+      const ArcId imp = n.attrs.window_import;
+      if (imp.valid()) {
+        if (imp.value() >= dag.arc_count() ||
+            last_written_step[imp.value()] != ins.dst_step) {
+          return Failure{
+              "E-SCHED-WINDOW-CAUSALITY",
+              "instruction " + std::to_string(i) +
+                  " (WindowAdvance \"" + n.label + "\" at t=" +
+                  ins.time.to_string() + ", window instance " +
+                  std::to_string(ins.dst_step) +
+                  ") reads its import waveform (arc %" +
+                  std::to_string(imp.value()) +
+                  ") before that arc's own writer for this SAME window "
+                  "instance has run earlier in the scheduled stream. The "
+                  "field transfer delivering a subcycling node's import "
+                  "waveform must be ordered before it by TIME (TickPhase), "
+                  "since it is deliberately not a real dependency edge "
+                  "(OpAttrs::window_import's own doc comment) -- this is "
+                  "either a scheduler defect in that ordering or a graph "
+                  "that never delivers the waveform this window at all"};
+        }
+      }
+    }
+    if (ins.out.valid() && ins.out.value() < dag.arc_count()) {
+      last_written_step[ins.out.value()] = ins.dst_step;
+    }
+  }
+  return Result<void>::success();
+}
+}  // namespace detail
+
 std::string ExecutionPlan::to_string() const {
   std::ostringstream os;
   // The host application's global locale reaches every default-constructed
@@ -780,6 +853,14 @@ ScheduleResult schedule(const CouplingGraph& g, const OperatorDAG& dag,
   if (!ordered.ok()) {
     result.diags.add(Severity::Error, ordered.error().code,
                      ordered.error().message);
+    return result;
+  }
+
+  const Result<void> window_ordered =
+      detail::check_window_causality(dag, instructions);
+  if (!window_ordered.ok()) {
+    result.diags.add(Severity::Error, window_ordered.error().code,
+                     window_ordered.error().message);
     return result;
   }
 
