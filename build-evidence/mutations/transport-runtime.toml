@@ -269,10 +269,13 @@ id = "window-straddle-tail-mean-drops-boundary-value"
 area = "runtime"
 describes = "the straddling substep's tail portion (beyond the window boundary T1, where the partner has no converged data yet) is fed the MEAN of the boundary value v_bnd (the partner's real, converged value at T1) and v_tail (the partner's value at the substep's true end, from extrapolation) -- dropping v_bnd and feeding v_tail alone breaks that mean, so the tail's forcing no longer represents its true time-average, which the delegated task's asymptotic-regime order tests catch as an accuracy regression. Superseded from an earlier anchor (window-straddle-tail-mean-not-length-weighted) that targeted a single-advance blended-mean formula this file no longer has: sweep_window's straddling substep is now split into two advance() calls at T1 (one on each side) rather than one advance() over a blended mean, so the length-weighted denominator this mutation originally hit does not exist anymore -- see the class comment at that split for why."
 file = "src/runtime/window_coupler.cpp"
-old = "                mean_tail = 0.5 * (v_bnd + v_tail);"
-new = "                mean_tail = v_tail;"
+old = "      member.required[e] = 0.5 * (bv.value() + v_tail);"
+new = "      member.required[e] = v_tail;"
 target = "fuse_runtime_window_coupler_test"
 test = "runtime.window_coupler"
+# Re-pointed 2026-09-29: b83eaf6 moved this split into the shared
+# fuse::detail::advance_straddle_split(), which both the sweep and the
+# replay of a step crossing the window end now call.
 
 [[mutation]]
 id = "window-longstep-refusal-disabled"
