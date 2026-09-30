@@ -272,16 +272,31 @@ int main(int argc, char** argv) {
     cfg.window_length = len;
     cfg.max_iterations = args.max_iterations;
     cfg.acceleration = AccelConfig{.kind = parse_accel(args.accel)};
-    fuse::ConvergenceMeasure measure;
-    measure.kind = fuse::MeasureKind::Relative;
-    measure.tolerance = args.tolerance;
-    measure.field = "brusselator";
-    cfg.convergence.add(measure);
+    // The user's decision (relayed 2026-09-29): a convergence measure
+    // names a field TRANSFER (a WindowChannel, by its own `name`), not
+    // the whole coupled system. Split into the two real transfers, same
+    // kind/tolerance as the single aggregate measure this replaces; both
+    // must be satisfied. Not byte-identical to before by the user's own
+    // choice -- see this program's before/after diagnostics.
+    fuse::ConvergenceMeasure measure_u;
+    measure_u.kind = fuse::MeasureKind::Relative;
+    measure_u.tolerance = args.tolerance;
+    measure_u.field = "u_out";
+    cfg.convergence.add(measure_u);
+    fuse::ConvergenceMeasure measure_v;
+    measure_v.kind = fuse::MeasureKind::Relative;
+    measure_v.tolerance = args.tolerance;
+    measure_v.field = "v_out";
+    cfg.convergence.add(measure_v);
     const double min_dt = std::min(args.dt_u, args.dt_v);
     cfg.waveform_capacity =
         static_cast<std::size_t>(std::ceil(len.to_double() / std::max(min_dt, 1e-9))) + 8;
 
-    auto created = WindowCoupler::create({mu, mv}, {{0, 1}, {1, 0}}, cfg);
+    auto created = WindowCoupler::create(
+        {mu, mv},
+        {{.provider = 0, .consumer = 1, .name = "u_out"},
+         {.provider = 1, .consumer = 0, .name = "v_out"}},
+        cfg);
     if (!created.ok()) {
       std::fprintf(stderr, "FAIL: WindowCoupler::create at t=%.6f: %s\n",
                    boundaries[i].to_double(), created.error().message.c_str());

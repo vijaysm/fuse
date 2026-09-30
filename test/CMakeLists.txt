@@ -398,7 +398,8 @@ if(FUSE_ENABLE_MOAB)
 endif()
 
 # ---------------------------------------------------------------- runtime
-foreach(t runner checkpoint epoch_schedule window_coupler)
+foreach(t runner checkpoint epoch_schedule window_coupler window_runner
+         window_runner_multirate window_runner_straddle)
   fuse_add_gtest(runtime ${t})
 endforeach()
 fuse_add_gtest(runtime component_iface THROWS)

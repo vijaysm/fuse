@@ -32,12 +32,44 @@
 # this file's row below is the one the CURRENT code supports and needed
 # only WindowCoupler's own algorithm to exist.
 #
-# The row below was proved BY HAND (tools/mutate.py was not run except
+# The rows below were proved BY HAND (tools/mutate.py was not run except
 # --check-anchors, per this delegation's constraints): the edit in
 # `old`/`new` was applied directly to the named file with edit_file, the
 # named target was rebuilt, the named test was run and observed to fail
 # with the message quoted in its own comment, then the file was restored
 # and verified byte-identical to a backup with `cmp` before moving on.
+#
+# The row immediately below is the FIRST piece of the schedule()/Runner
+# wiring itself (Unit C3, U1 of the follow-on delegation that made the
+# Runner seed a new window exactly as WindowCoupler does): everything
+# else in this file predates that wiring and mutates the driver
+# (src/runtime/window_coupler.cpp) instead, per this file's own "STATE OF
+# THIS FILE" note above.
+
+[[mutation]]
+id = "window-runner-predictor-replaced-by-persistence"
+area = "runtime/iteration (advance_window)"
+describes = "disables the Runner's own second-order predictor (extrapolate_boundary_value() over this member's own st.history, matching WindowCoupler::sweep_window()'s documented y_fed seed) for the first sweep of a new window instance, falling back unconditionally to the raw import buffer read -- the ZEROTH-order predictor (persistence: read the PREVIOUS window's own converged delivery as this window's own sweep-0 guess) window_coupler.hpp's own class comment documents reverting on the driver side ('needed MORE sweeps to converge ... The fix belongs on the Runner side instead')."
+file = "src/runtime/iteration.cpp"
+old = "    const bool use_predictor = cfg.import_lagged && first_sweep_of_pass;"
+new = "    const bool use_predictor = false && cfg.import_lagged && first_sweep_of_pass;  // MUTATED: predictor disabled"
+target = "fuse_runtime_window_runner_straddle_test"
+test = "runtime.window_runner_straddle"
+# PROVED 2026-09-30: 3 of 5 WindowRunnerStraddle tests failed, reproducing
+# EXACTLY this track's own original failure (measured before this
+# session's fix, and again here after reverting it):
+# SevenThirteenAdjustableAdjustableThroughWindowComponentMatchesDriver
+# (xA/xB off by ~4e-9 relative, advance_count_a 156 vs 154, advance_count_b
+# 312 vs 308), FixedIterationCountMatchesDriverJacobi (xA runner=
+# 0x1.695dbd8732b41p-6 vs driver=-0x1.68c77af3a453ap-1 -- an O(1)
+# divergence, not a rounding-level one, since with kFixedSweeps=1 neither
+# side is anywhere near its fixed point and a zeroth-order seed starts
+# much further from it than a second-order one), FixedIterationCountMatches
+# DriverGaussSeidel (same shape). The two straddle-rejection tests
+# (BCrossingTheWindowEndUnderFixedIsStillRejected,
+# BothMembersFixedAndStraddlingTogetherIsRejected) were unaffected, as
+# expected: neither exercises the predictor path. File restored and
+# `cmp`-verified byte-identical to the pre-mutation copy afterward.
 
 [[mutation]]
 id = "window-runner-point-sample-instead-of-mean"

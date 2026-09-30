@@ -165,7 +165,24 @@ static_assert(kMaxInstructionInputs == 3,
     ++run_id;
     std::size_t j = i;
     std::size_t distinct = 0;
-    while (j < n && owner[instructions[j].origin_node.value()] == r) {
+    const std::size_t want = member_count[static_cast<std::size_t>(r)];
+    // Time windows track: stop the SAME run the moment every member has
+    // appeared once (`distinct == want`), rather than greedily consuming
+    // every following same-owner instruction regardless. A window-scoped
+    // region's own window may tick several times per period (this
+    // function's own top comment); the compiled stream then has SEVERAL
+    // back-to-back passes over the SAME region with nothing non-region
+    // between them (nothing else in a minimal graph interrupts them), so
+    // without this bound the greedy scan would swallow every later pass
+    // into this one run and report a bogus length mismatch even though
+    // each individual pass is perfectly well-formed. This changes nothing
+    // for the genuine error this loop exists to catch (a region whose
+    // channels are NOT all on one clock): a node repeating before every
+    // member has appeared once still leaves `distinct < want` when the
+    // same-owner stretch ends, or inflates `run_len` past `want` once it
+    // does reach `want` -- both still caught below exactly as before.
+    while (j < n && distinct < want &&
+          owner[instructions[j].origin_node.value()] == r) {
       const std::uint32_t nd = instructions[j].origin_node.value();
       if (last_run[nd] != run_id) {
         last_run[nd] = run_id;
@@ -174,7 +191,6 @@ static_assert(kMaxInstructionInputs == 3,
       ++j;
     }
     const std::size_t run_len = j - i;
-    const std::size_t want = member_count[static_cast<std::size_t>(r)];
     if (run_len != want || distinct != want) {
       const OperatorDAG::IterationRegion& reg =
           dag.region_at(RegionIdx{static_cast<std::uint32_t>(r)});

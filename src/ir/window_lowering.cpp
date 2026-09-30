@@ -61,33 +61,6 @@ std::vector<ComponentId> members_in_first_seen_order(
   return members;
 }
 
-// Mirrors fuse::window_length()'s OWN resolution logic (fuse/schedule/
-// window.hpp/window.cpp) exactly, EXCEPT it reports failure as
-// `std::nullopt` rather than a `Failure`: `ir` sits below `schedule`
-// (docs/dev/layering.md), so this layer cannot call window_length()
-// itself, and lower() has no refusal code of its own for a malformed
-// CouplingWindowScope -- that refusal is validate_coupling_window()'s
-// job, reached moments later by schedule(). A nullopt here means "do not
-// widen this member's exported field past its own declared shape" --
-// today's behaviour, before this window ever existed -- leaving the
-// actual diagnostic (E-SCHED-WINDOW-AMBIGUOUS/COMPONENT/INTERVAL) to the
-// check downstream that is equipped to report it.
-std::optional<Rational> window_length_for_lowering(
-    const CouplingGraph& g, const CouplingWindowScope& scope) {
-  const bool has_component = scope.window_component.has_value();
-  const bool has_explicit = scope.explicit_interval.has_value();
-  if (has_component == has_explicit) return std::nullopt;
-  if (has_explicit) {
-    const Rational len = *scope.explicit_interval;
-    return len > Rational{0} ? std::optional<Rational>{len} : std::nullopt;
-  }
-  const std::optional<ComponentId> found =
-      g.find_component(*scope.window_component);
-  if (!found.has_value()) return std::nullopt;
-  const Rational len = g.component(*found).interval;
-  return len > Rational{0} ? std::optional<Rational>{len} : std::nullopt;
-}
-
 // How many `components` THIS member's own exported field carries once it
 // crosses a coupling window: `spec.components` scalar/vector/tensor
 // entries per element, TIMES `window_sample_capacity()` (fuse/model/
@@ -105,12 +78,23 @@ std::size_t window_export_width(const CouplingGraph& g,
                                 ComponentId member, FieldId exported) {
   const FieldSpec& spec = g.field(exported);
   const CouplingWindowScope& scope = *decl.window_scope;
-  const std::optional<Rational> window_len = window_length_for_lowering(g, scope);
-  if (!window_len.has_value()) return static_cast<std::size_t>(spec.components);
+  // fuse::window_length() now lives in the model layer (fuse/model/
+  // coupling_graph.hpp) precisely so this call is legal: ir sits above
+  // model in docs/dev/layering.md's ordering, and this is the SAME
+  // resolution validate_coupling_window() (schedule layer) uses for its
+  // own E-SCHED-WINDOW-AMBIGUOUS/COMPONENT/INTERVAL checks -- one
+  // function, so lowering and schedule() cannot disagree about this
+  // scope's own window length. A malformed scope this call refuses is
+  // left unwidened here (today's pre-window behaviour); the actual
+  // diagnostic is validate_coupling_window()'s job, reached moments
+  // later by schedule().
+  const Result<Rational> window_len = window_length(g, scope);
+  if (!window_len.ok()) return static_cast<std::size_t>(spec.components);
   const Rational interval = g.component(member).interval;
   const DtPolicy policy =
       scope.policy_for(g.component(member).name).value_or(DtPolicy::Adjustable);
-  const std::size_t k = window_sample_capacity(*window_len, interval, policy);
+  const std::size_t k =
+      window_sample_capacity(window_len.value(), interval, policy);
   return static_cast<std::size_t>(spec.components) * k;
 }
 

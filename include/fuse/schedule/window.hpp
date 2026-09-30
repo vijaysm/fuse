@@ -32,13 +32,10 @@
 /// a window-scoped region.
 namespace fuse {
 
-/// The window's length: the named component's own interval, or the explicit
-/// one. `E-SCHED-WINDOW-AMBIGUOUS` if both or neither are set;
-/// `E-SCHED-WINDOW-COMPONENT` if `window_component` does not name a
-/// component in `g`; `E-SCHED-WINDOW-INTERVAL` if the resulting length is
-/// not positive.
-[[nodiscard]] Result<Rational> window_length(const CouplingGraph& g,
-                                             const CouplingWindowScope& scope);
+/// window_length() moved to fuse/model/coupling_graph.hpp (available here
+/// transitively, via this header's own #include above) -- ir sits below
+/// schedule, and window_lowering.cpp needs the identical resolution to
+/// size a compiled field.
 
 /// Every distinct component that owns the source or the target field of one
 /// of `region`'s channels, in first-seen order. What `scope.policies` is

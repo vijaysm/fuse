@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "fuse/num/space_kernels.hpp"
 #include "fuse/num/temporal_basis.hpp"
 
 namespace fuse {
@@ -53,6 +54,59 @@ namespace {
 using Substep = detail::WindowSubstep;
 using detail::plan_substeps;
 using detail::mean_over;
+
+// The user's decision (relayed 2026-09-29): a convergence measure's
+// residual/reference must use "the SAME norm the Runner's block uses
+// (same weighting, same deterministic reduction) so the two cannot
+// disagree by rounding." `iteration.cpp`'s block residual/value norms
+// call `fuse::num::deterministic_norm_squared[_diff]<Space>`
+// (space_kernels.hpp) -- a fixed-size-chunk, sequential-within-chunk,
+// sequential-across-chunk reduction whose own documentation states its
+// result is independent of the actual Kokkos backend/thread count, by
+// construction (chunk boundaries are fixed by `n` alone; only the
+// ASSIGNMENT of chunks to threads varies, and each chunk's own partial
+// is summed in one thread regardless). A plain sequential C++ loop that
+// visits chunks and elements in the SAME ascending order therefore
+// computes the identical bits, with no Kokkos view or execution space
+// needed -- this coupler has neither. `deterministic_chunks`/
+// `kDeterministicChunk` are the plain (non-templated) halves of that
+// same header, reused here so a change to the chunk size cannot make
+// this drift from `iteration.cpp`.
+double deterministic_norm_squared_plain(const double* v, std::size_t n) {
+  const std::size_t n_chunks = num::deterministic_chunks(n);
+  std::vector<double> scratch(n_chunks, 0.0);
+  for (std::size_t c = 0; c < n_chunks; ++c) {
+    const std::size_t begin = c * num::kDeterministicChunk;
+    const std::size_t end =
+        (begin + num::kDeterministicChunk < n) ? begin + num::kDeterministicChunk : n;
+    double s = 0.0;
+    for (std::size_t i = begin; i < end; ++i) s += v[i] * v[i];
+    scratch[c] = s;
+  }
+  double total = 0.0;
+  for (std::size_t c = 0; c < n_chunks; ++c) total += scratch[c];
+  return total;
+}
+
+double deterministic_norm_squared_diff_plain(const double* a, const double* b,
+                                             std::size_t n) {
+  const std::size_t n_chunks = num::deterministic_chunks(n);
+  std::vector<double> scratch(n_chunks, 0.0);
+  for (std::size_t c = 0; c < n_chunks; ++c) {
+    const std::size_t begin = c * num::kDeterministicChunk;
+    const std::size_t end =
+        (begin + num::kDeterministicChunk < n) ? begin + num::kDeterministicChunk : n;
+    double s = 0.0;
+    for (std::size_t i = begin; i < end; ++i) {
+      const double d = a[i] - b[i];
+      s += d * d;
+    }
+    scratch[c] = s;
+  }
+  double total = 0.0;
+  for (std::size_t c = 0; c < n_chunks; ++c) total += scratch[c];
+  return total;
+}
 
 // WaveformIteration::GaussSeidel only: a topological order over `channels`'
 // UNLAGGED provider -> consumer edges (an unlagged provider must run
@@ -216,6 +270,17 @@ WindowCoupler::WindowCoupler(std::vector<WindowMember> members,
     sweep_order_.resize(members_.size());
     for (std::size_t i = 0; i < members_.size(); ++i) sweep_order_[i] = i;
   }
+  // create() already rejected any measure whose `.field` matches no
+  // channel's own `name`, so every lookup below finds one.
+  convergence_channel_.reserve(cfg_.convergence.measures().size());
+  for (const ConvergenceMeasure& cm : cfg_.convergence.measures()) {
+    for (std::size_t c = 0; c < channels_.size(); ++c) {
+      if (channels_[c].name == cm.field) {
+        convergence_channel_.push_back(c);
+        break;
+      }
+    }
+  }
   state_.resize(members_.size());
   for (std::size_t i = 0; i < members_.size(); ++i) {
     MemberState& st = state_[i];
@@ -321,6 +386,28 @@ Result<std::unique_ptr<WindowCoupler>> WindowCoupler::create(
                    "WindowCoupler::create: channel " + std::to_string(c) +
                        " names a member index outside [0, " +
                        std::to_string(members.size()) + ")"};
+    }
+  }
+
+  // The user's decision (relayed 2026-09-29): a convergence measure names
+  // a field TRANSFER -- one of `channels`, by its own `name` -- not a raw
+  // field, and residual/reference for that measure are computed over
+  // ONLY that transfer's own delivered waveform (sweep_window()'s own
+  // per-measure convergence check, below). A measure naming a transfer
+  // this coupler does not have is rejected here, by name, rather than
+  // silently falling back to some default at sweep time.
+  for (const ConvergenceMeasure& cm : cfg.convergence.measures()) {
+    bool found = false;
+    for (const WindowChannel& ch : channels) {
+      if (ch.name == cm.field) { found = true; break; }
+    }
+    if (!found) {
+      return Failure{"E-RT-WINDOW-CONVERGENCE-FIELD",
+                   "WindowCoupler::create: a convergence measure names '" +
+                       cm.field + "', which does not match any channel's "
+                       "own name; every measure must name a field "
+                       "transfer (a WindowChannel::name) this coupler "
+                       "actually has"};
     }
   }
 
@@ -526,16 +613,27 @@ Result<void> WindowCoupler::sweep_window(Rational T0, Rational T1) {
 
   std::vector<double> y_fed(total), y_new(total);
 
-  // Seed y_fed (sweep 0's "what was fed") from each member's committed
-  // history, extrapolated to every one of its own clipped sample times.
+  // Seed y_fed (sweep 0's "what was fed") from the driver's documented
+  // predictor: extrapolate_boundary_value(), a fit of degree >= 1 through
+  // the last max(order, 2) converged window-end values -- the standard
+  // waveform-relaxation predictor, at least second order as the user's
+  // rule requires. (Reverted 2026-09-29: an earlier attempt to seed this
+  // from the previous window's own fine-grained waveform, shifted back
+  // one window length, was a ZEROTH-order predictor in time --
+  // persistence, not extrapolation -- and needed MORE sweeps to converge
+  // (measured: gray_scott_multirate's pinned totals rose 9/13/12 ->
+  // 12/16/15), which a strictly more accurate initial guess cannot do.
+  // The fix belongs on the Runner side instead, matching this predictor
+  // exactly -- see iteration.cpp's own advance_window().)
   {
     std::size_t idx = 0;
     for (std::size_t i = 0; i < n; ++i) {
       for (std::size_t e = 0; e < members_[i].length; ++e) {
         for (const Substep& sub : steps[i]) {
           const Rational tc = std::min(sub.t1, T1);
-          y_fed[idx++] = extrapolate_boundary_value(state_[i].history[e], tc,
-                                                     order_for(i));
+          y_fed[idx] = extrapolate_boundary_value(state_[i].history[e], tc,
+                                                   order_for(i));
+          ++idx;
         }
       }
     }
@@ -822,6 +920,11 @@ Result<void> WindowCoupler::sweep_window(Rational T0, Rational T1) {
       }
     }
 
+    // Global aggregate, over every member's own slice -- UNCHANGED from
+    // before the per-field-transfer measures existed. `residual_history`
+    // (a diagnostic, not a convergence decision) and the empty-set
+    // fallback below both still read this and only this; neither is
+    // affected by which named measures, if any, cfg_.convergence holds.
     double resid_sq = 0.0, ref_sq = 0.0;
     for (std::size_t j = 0; j < total; ++j) {
       const double d = y_new[j] - y_fed[j];
@@ -837,8 +940,27 @@ Result<void> WindowCoupler::sweep_window(Rational T0, Rational T1) {
     if (cfg_.convergence.empty()) {
       converged = resid_norm <= 1e-10 * std::max(1.0, ref_norm);
     } else {
-      const std::vector<double> res(cfg_.convergence.size(), resid_norm);
-      const std::vector<double> ref(cfg_.convergence.size(), ref_norm);
+      // The user's decision (relayed 2026-09-29): "each measure is tested
+      // against the residual of the field transfer it names, as the
+      // Runner does." Measure `mi` names channel `convergence_channel_
+      // [mi]` (create() already proved this index is valid); its
+      // residual/reference are the deterministic norms (matching
+      // iteration.cpp's block computation bit-for-bit, see
+      // deterministic_norm_squared[_diff]_plain above) over ONLY that
+      // channel's CONSUMER's own flat slice of (y_new, y_fed) -- never
+      // the whole coupler's `total`-length vector, which is what made
+      // the driver disagree with the Runner's own per-block stopping
+      // rule before this fix.
+      std::vector<double> res(cfg_.convergence.size());
+      std::vector<double> ref(cfg_.convergence.size());
+      for (std::size_t mi = 0; mi < cfg_.convergence.size(); ++mi) {
+        const std::size_t consumer = channels_[convergence_channel_[mi]].consumer;
+        const std::size_t base = member_base[consumer];
+        const std::size_t len = members_[consumer].length * steps[consumer].size();
+        res[mi] = std::sqrt(deterministic_norm_squared_diff_plain(
+            y_new.data() + base, y_fed.data() + base, len));
+        ref[mi] = std::sqrt(deterministic_norm_squared_plain(y_new.data() + base, len));
+      }
       converged = cfg_.convergence.all_satisfied(res, ref);
     }
     if (converged) {
@@ -887,7 +1009,7 @@ Result<void> WindowCoupler::sweep_window(Rational T0, Rational T1) {
     delivered = build_delivered(y_fed);
   }
 
-  if (!stats_.converged) {
+  if (!stats_.converged && cfg_.abort_on_nonconvergence) {
     return Failure{"E-RT-WINDOW-NOCONVERGE",
                  "coupling window [" + T0.to_string() + ", " + T1.to_string() +
                      ") ran its full " + std::to_string(cfg_.max_iterations) +

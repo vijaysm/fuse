@@ -153,6 +153,34 @@ bool has_sample(const Channel& ch) {
   return nullptr;
 }
 
+/// The window-scoped IterationRegionDecl that lists `owner` among
+/// `window_region_members()`, or nullptr if none does. A member of a time
+/// window is stepped ONLY by its own OpKind::WindowAdvance instruction
+/// (Runner::Impl::build_ticks()'s own window_member_components() exclusion,
+/// src/runtime/runner.cpp: such a member gets no ordinary per-native-
+/// interval Tick at run time, ever). The boundary rule below (every node NO
+/// channel claims -- a component's own Source/Sink/etc., unrelated to any
+/// window channel's chain) must give that member NO INSTRUCTIONS at its own
+/// native interval either, or the compiled stream disagrees with what the
+/// runtime actually does: mark_regions() (src/schedule/scheduler.cpp) would
+/// see extra, distinct-looking instructions inside what should be one
+/// window instance's own contiguous run, and refuse the whole region
+/// (E-SCHED-REGION) even though nothing would actually run twice. This is
+/// the graph-level equivalent of `owning_window_region()` above, keyed by
+/// component rather than channel, because a node this rule places may have
+/// no channel origin at all.
+[[nodiscard]] const IterationRegionDecl* owning_window_region_for_component(
+    const CouplingGraph& g, ComponentId owner) {
+  for (std::uint32_t r = 0; r < g.iteration_region_count(); ++r) {
+    const IterationRegionDecl& decl = g.iteration_region(IterationRegionIdx{r});
+    if (!decl.window_scope.has_value()) continue;
+    for (const ComponentId member : window_region_members(g, decl)) {
+      if (member.value() == owner.value()) return &decl;
+    }
+  }
+  return nullptr;
+}
+
 /// The two components a channel connects, or the error the graph earns for
 /// having an endpoint no component owns.
 [[nodiscard]] Result<std::pair<ComponentId, ComponentId>> channel_endpoints(
@@ -535,7 +563,25 @@ Result<TimedDag> expand(const CouplingGraph& g, const OperatorDAG& dag,
 
     const Result<ComponentId> owner = boundary_owner(g, dag, i, n);
     if (!owner.ok()) return owner.error();
-    const Rational dt = clocks.clock(owner.value()).interval();
+    Rational dt = clocks.clock(owner.value()).interval();
+    // Time windows track: `owner` is stepped ONLY by its own WindowAdvance
+    // instruction (build_ticks()'s own window_member_components()
+    // exclusion, src/runtime/runner.cpp -- no ordinary per-native-interval
+    // Tick ever fires for it), so this boundary-rule node -- unrelated to
+    // any window channel's own chain, which already gets the window-
+    // length override in the channel loop above -- must not tick at
+    // `owner`'s own native interval either: doing so would place extra,
+    // distinct-looking instructions inside what should be one window
+    // instance's own contiguous run, and mark_regions() (scheduler.cpp)
+    // would refuse the region even though nothing would actually run
+    // twice at run time.
+    const IterationRegionDecl* owning_window =
+        owning_window_region_for_component(g, owner.value());
+    if (owning_window != nullptr) {
+      const Result<Rational> wl = window_length(g, *owning_window->window_scope);
+      if (!wl.ok()) return wl.error();
+      dt = wl.value();
+    }
 
     const Result<std::int64_t> nk = tick_count(out.period, dt, "component");
     if (!nk.ok()) return nk.error();
