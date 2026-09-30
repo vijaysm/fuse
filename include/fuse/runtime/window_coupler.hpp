@@ -27,21 +27,35 @@
 /// `examples/brusselator`.
 ///
 /// STATE OF THE GRAPH-LEVEL FRONT END (multirate-window-on-the-Runner
-/// track). Three of its four pieces exist; `schedule()`/`Runner` do not yet
-/// call any of them, so wiring one arbitrary `fuse::CouplingGraph`
-/// declaration all the way through remains DESIGNED ONLY (see the "Five
-/// states", docs/dev/testing.md):
+/// track), current as of Unit C3 (2026-09-30):
 ///   * the opt-in lives on the declaration itself --
 ///     `IterationRegionDecl::window_scope`
 ///     (`fuse::CouplingWindowScope`, `fuse/model/iteration.hpp`), carried
 ///     through the descriptor (v7) and the YAML round trip;
 ///   * `fuse::validate_coupling_window()` (`fuse/schedule/window.hpp`) is
 ///     the legality gate a front end must pass before constructing one of
-///     these -- written, tested, not yet CALLED by `schedule()`, which
-///     still runs its unconditional contiguous-run check
-///     (`mark_regions`, src/schedule/scheduler.cpp) and refuses a
-///     multi-clock region with `E-SCHED-REGION` whether or not
-///     `window_scope` is set;
+///     these, and `schedule()` now calls it for a window-scoped region
+///     (`mark_regions`/`expand.cpp`, src/schedule/) instead of running its
+///     unconditional contiguous-run check and refusing every multi-clock
+///     region with `E-SCHED-REGION`;
+///   * `schedule()`/`Runner` DO now compile and execute a window-scoped
+///     region as one window block: a per-member `OpKind::WindowAdvance`
+///     node with no graph inputs (`src/ir/window_lowering.cpp`), reading
+///     its import through `OpAttrs::window_import` and driven every sweep
+///     by `Runner::Impl::advance_window()` (src/runtime/iteration.cpp) --
+///     resolving `WindowMemberConfig::provided`/`required` from the
+///     `FieldRegistry` the way `RegionBlock` resolves value/feed arcs for
+///     a single-clock region, exactly as this comment used to say was not
+///     yet built. Verified bit-for-bit against this file's own
+///     `WindowCoupler`, both waveform-relaxation modes, for a genuinely
+///     multirate (incommensurate 13:7) pair with `window_component`
+///     naming the slower member (`test/runtime/window_runner_straddle_
+///     test.cpp`) -- including the Runner's own new-window seed (the SAME
+///     `extrapolate_boundary_value()` predictor this class documents
+///     below, over a consumer's own `WindowMemberState::history`, which
+///     needs no partner state because what arrived through the field
+///     transfer at every earlier window's own end IS the provider's own
+///     committed trajectory there);
 ///   * the sweep loop below is driven through `WindowChannelIO`
 ///     (immediately below `WindowChannel`), an exchange seam a future
 ///     front end can override to route a channel's provider->consumer
@@ -49,17 +63,37 @@
 ///     raw-pointer read the base class still performs by default -- built
 ///     and exercised by the existing test suite (which never overrides
 ///     it), NOT YET implemented by anything that does the remap/transport
-///     it exists for.
-/// What is NOT built: `schedule()` recognizing a window-scoped region and
-/// lowering/scheduling it as one window block instead of the per-channel,
-/// per-tick nodes `build_iteration_regions()` (src/ir/regions.cpp) emits
-/// today; the Runner executing that block by resolving
-/// `WindowMember::provided`/`required` from the `FieldRegistry` the way
-/// `RegionBlock` resolves value/feed arcs for a single-clock region; and a
-/// `WindowChannelIO` override that actually performs the remap/transport.
-/// See this track's design notes for why (the arc/Instruction
-/// representation this needs does not yet exist) and the concrete shape
-/// proposed for it.
+///     it exists for. The Runner's own compiled field transfer (Source,
+///     Transport, Remap, Epoch, Sink) is a SEPARATE path from this seam --
+///     it is what carries a window member's K-wide export/import arcs
+///     today -- and is itself still an identity map on every test that
+///     exercises it (matching meshes throughout); a genuine remap across
+///     the window boundary is still open.
+/// What is NOT built: a `DtPolicy::Fixed` member's own step crossing the
+/// window end (the straddling case this class's own `resolve_pending_
+/// straddles()` replays) is rejected outright by the Runner
+/// (`E-RT-WINDOW-STRADDLE-REPLAY`, `advance_window()`'s own top comment) --
+/// the replay itself (`fuse::detail::advance_straddle_split()`, already
+/// shared with this class) is not yet wired into `advance_window()` for a
+/// STRADDLING IMPORT PROVIDER specifically (a member's own self-straddle,
+/// where nothing crosses a component boundary, already works: `advance_
+/// window()` calls the same split there). `fuse::window_sample_times()`
+/// (`fuse/model/coupling_graph.hpp`) exists and is tested against a real
+/// carried-forward `DtPolicy::Fixed` grid over the whole 91-unit period --
+/// the piece meant to let a consumer reconstruct a straddling provider's
+/// own sample times from the graph alone, no partner state -- but is not
+/// yet called from `advance_window()`. See this track's design notes for
+/// the remaining subtlety it does not by itself resolve: once a provider
+/// has straddled at least one window boundary, its own compiled sample
+/// buffer's index 0 no longer holds the value AT this window's own T0 (the
+/// provider's real clock already sits at the next native grid point past
+/// T0 by the time this window's sweep 0 begins) -- `window_sample_times()`
+/// still reports T0 as its own first entry, and reading it must come from
+/// the consumer's own `WindowMemberState::history` (already the exact
+/// value, recorded when the previous window's straddle resolved), never
+/// from the provider's own buffer, with every remaining entry shifted down
+/// by one buffer slot from where it would sit for a non-straddling
+/// provider.
 ///
 /// ---------------------------------------------------------------------------
 /// WHAT ONE `advance()` CALL RECEIVES (why the algorithm looks like it does)
@@ -186,6 +220,12 @@ struct WindowChannel {
   /// sweep's value all the way through this one, and `provider`'s
   /// outgoing waveform IS accelerated.
   bool        lagged = false;
+  /// The user's decision (relayed 2026-09-29): a `WindowCouplerConfig::
+  /// convergence` measure names a field TRANSFER -- this channel -- not
+  /// a raw field. Empty (the default) is fine as long as no measure
+  /// names it; `create()` rejects any measure whose `.field` does not
+  /// match some channel's own `name` here, by name, with a test.
+  std::string name;
 };
 
 /// Time windows track: the exchange seam a graph-level front end needs, so
@@ -266,6 +306,20 @@ struct WindowCouplerConfig {
   /// then constructs a plain `WindowChannelIO`, whose direct-read default
   /// behaviour reproduces the pointer arithmetic this class always used.
   std::shared_ptr<WindowChannelIO> channel_io;
+
+  /// Default `true`: `run_window()` exhausting `max_iterations` without
+  /// meeting `convergence` returns `E-RT-WINDOW-NOCONVERGE`, exactly as
+  /// this class has always behaved -- every existing caller relies on
+  /// that, so the default preserves it byte-for-byte. `false` mirrors
+  /// `RunnerConfig::abort_on_nonconvergence`'s own convention: the window
+  /// still commits (history, `last_window_waveform`, clock, straddle
+  /// bookkeeping) and `window_index_` still advances, with only
+  /// `WindowIterationStats::converged` recording the outcome -- for a
+  /// caller that deliberately sets an unreachable tolerance to force
+  /// every sweep to run (a fixed-iteration-count comparison against
+  /// another implementation, independent of either one's own stopping
+  /// rule), not for ordinary use.
+  bool                  abort_on_nonconvergence = true;
 };
 
 /// Per-window outcome, exposed for the caller (and for the mutation-evidence
@@ -448,6 +502,13 @@ class WindowCoupler {
   std::unique_ptr<Accelerator> accel_;
   std::int64_t               window_index_ = 0;
   WindowIterationStats       stats_;
+  /// One entry per `cfg_.convergence.measures()` entry, in the same
+  /// order: the index into `channels_` that measure's own `.field`
+  /// named. `create()` already rejected any measure naming a channel
+  /// that does not exist, so this is always a valid index once the
+  /// object exists -- resolved once here rather than re-searching
+  /// `channels_` by name every sweep.
+  std::vector<std::size_t>   convergence_channel_;
 };
 
 /// Extrapolates a scalar boundary-value trajectory to `target`, using the

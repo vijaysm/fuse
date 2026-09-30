@@ -2,7 +2,10 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -103,7 +106,8 @@ namespace {
 // Setup
 // ---------------------------------------------------------------------------
 
-Result<void> Runner::Impl::resolve_regions(ComponentSet& components) {
+Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
+                                           FieldRegistry& registry) {
   regions.clear();
   region_stats.clear();
   region_explain.clear();
@@ -188,33 +192,297 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components) {
       }
     }
 
-    // --- one contiguous pass over the body, and only one -------------------
+    // --- every contiguous pass over the body --------------------------------
     // Moved ahead of the participant computation below (it used to follow):
     // that computation now needs [R.enter, R.exit] to see every Transport
     // and Epoch INSIDE the region body, not only the checkpointed
     // components' own declared ranks.
-    std::size_t enters = 0;
-    std::size_t exits = 0;
+    //
+    // Time windows track: an ORDINARY region's own clock ticks once per
+    // schedule period by construction, so mark_regions() (src/schedule/
+    // scheduler.cpp) stamps exactly one (enter, exit) run for it and the
+    // check below is unchanged from before this track. A WINDOW-scoped
+    // region's own window may tick several times per period (a 7:13 ratio
+    // ticks `period / window_length` times), so its body legitimately
+    // appears as that many SEPARATE runs -- each is its own pass, with its
+    // own checkpoint (run_region()'s own top-of-call save_state() for a
+    // window region; see RegionRuntime::window_scoped's comment), not
+    // several independent fixed-point problems sharing one.
+    R.window_scoped = decl.window_scope.has_value();
+    std::size_t pending_enter = stream.size();  // stream.size() == "none open"
     for (std::size_t i = 0; i < stream.size(); ++i) {
       if (stream[i].region_enter == static_cast<std::int32_t>(ri)) {
-        R.enter = i;
-        ++enters;
+        if (pending_enter != stream.size()) {
+          return Failure{"E-RT-REGION",
+                       "iteration region '" + R.name + "' has two enter "
+                       "boundaries with no exit between them, which "
+                       "mark_regions() should never produce"};
+        }
+        pending_enter = i;
       }
       if (stream[i].region_exit == static_cast<std::int32_t>(ri)) {
-        R.exit = i;
-        ++exits;
+        if (pending_enter == stream.size() || i < pending_enter) {
+          return Failure{"E-RT-REGION",
+                       "iteration region '" + R.name + "' has an exit "
+                       "boundary with no matching enter before it"};
+        }
+        R.passes.emplace_back(pending_enter, i);
+        pending_enter = stream.size();
       }
     }
-    if (enters != 1 || exits != 1 || R.exit < R.enter) {
+    if (pending_enter != stream.size()) {
+      return Failure{"E-RT-REGION",
+                   "iteration region '" + R.name +
+                       "' has an enter boundary with no matching exit"};
+    }
+    if (!R.window_scoped && R.passes.size() != 1) {
       return Failure{"E-RT-REGION",
                    "iteration region '" + R.name + "' appears as " +
-                       std::to_string(enters) + " enter and " +
-                       std::to_string(exits) +
-                       " exit boundaries in one period; exactly one pass over "
-                       "the body is required. A body that appears more than "
-                       "once per period is several independent fixed-point "
+                       std::to_string(R.passes.size()) +
+                       " separate passes over the body in one period; "
+                       "exactly one pass is required for a region with no "
+                       "coupling window. A body that appears more than once "
+                       "per period is several independent fixed-point "
                        "problems sharing one checkpoint, which this runner "
-                       "will not guess at: split it into one region per clock"};
+                       "will not guess at: split it into one region per "
+                       "clock, or opt the region into a coupling window"};
+    }
+    if (R.passes.empty()) {
+      return Failure{"E-RT-REGION",
+                   "iteration region '" + R.name +
+                       "' has no pass over its body in this period at all"};
+    }
+    R.enter = R.passes.front().first;
+    R.exit = R.passes.front().second;
+
+    // Time windows track (C3): resolve every window member's own static
+    // config -- window_member_config's own comment (runner_impl.hpp) --
+    // from the graph alone. Every pass of a window-scoped region repeats
+    // the identical instruction shape (only `dst_step`/`time` differ), so
+    // scanning the FIRST pass once, here, at setup, is enough; every
+    // later pass's own WindowAdvance instructions carry the SAME
+    // `origin_node`, per `finish_window_regions()`'s "at most one such
+    // node per member per region" (src/ir/window_lowering.cpp).
+    if (R.window_scoped) {
+      const CouplingWindowScope& scope = *decl.window_scope;
+      const Result<Rational> wlen = window_length(graph, scope);
+      if (!wlen.ok()) return wlen.error();
+      for (std::size_t i = R.enter; i <= R.exit; ++i) {
+        const Instruction& ins = stream[i];
+        if (ins.kind != OpKind::WindowAdvance) continue;
+        const std::uint32_t node = ins.origin_node.value();
+        if (window_member_config.count(node)) continue;
+
+        const int rank_set = dag.arc(ins.out).type.rank_set;
+        if (rank_set < 0) {
+          return Failure{"E-RT-WINDOW-UNPLACED",
+                       "iteration region '" + R.name + "': a WindowAdvance "
+                       "instruction's own output arc has no owning "
+                       "component (rank_set < 0)"};
+        }
+        const ComponentId member{static_cast<std::uint32_t>(rank_set)};
+        const std::string& mname = graph.component(member).name;
+        std::size_t slot = components.size();
+        for (std::size_t j = 0; j < components.size(); ++j) {
+          if (components.at(j).name() == mname) { slot = j; break; }
+        }
+        if (slot == components.size()) {
+          return Failure{"E-RT-WINDOW-UNPLACED",
+                       "iteration region '" + R.name + "': window member '" +
+                           mname + "' is not a registered component"};
+        }
+
+        WindowMemberConfig cfg;
+        cfg.component_slot = slot;
+        cfg.interval = graph.component(member).interval;
+        cfg.policy = scope.policy_for(mname).value_or(DtPolicy::Adjustable);
+        cfg.order = scope.order;
+        cfg.window_length = wlen.value();
+        cfg.capacity =
+            window_sample_capacity(cfg.window_length, cfg.interval, cfg.policy);
+        cfg.window_import = ins.attrs.window_import;
+        cfg.region_index = ri;
+
+        // The channel THIS member sources (its own export) and the one
+        // it targets (its own import), if any -- mirrors member_exported_
+        // field()/member_imported_field() (src/ir/window_lowering.cpp),
+        // duplicated rather than called for the same reason that file
+        // duplicates window_region_members(): those two are file-local to
+        // a different translation unit.
+        FieldId exported_field, imported_field, provider_exported_field;
+        for (const ChannelId cid : decl.channels) {
+          const Channel& ch = graph.channel_at(cid);
+          if (!exported_field.valid() &&
+              graph.owner_of(ch.source).value() == member.value()) {
+            exported_field = ch.source;
+          }
+          if (!imported_field.valid() &&
+              graph.owner_of(ch.target).value() == member.value()) {
+            imported_field = ch.target;
+            provider_exported_field = ch.source;
+            cfg.import_lagged = effective_channel_lag(graph, cid) != 0;
+            const ComponentId provider = graph.owner_of(ch.source);
+            cfg.provider_interval = graph.component(provider).interval;
+            cfg.provider_policy =
+                scope.policy_for(graph.component(provider).name)
+                    .value_or(DtPolicy::Adjustable);
+            cfg.provider_capacity = window_sample_capacity(
+                cfg.window_length, cfg.provider_interval, cfg.provider_policy);
+          }
+        }
+
+        // This member's own NATIVE (single-sample) Provides/Requires
+        // storage -- resolved directly from `registry`, bypassing the arc
+        // system entirely (WindowMemberConfig::provided's own comment,
+        // runner_impl.hpp).
+        if (exported_field.valid()) {
+          Result<FieldRef> pref = registry.get(exported_field);
+          if (!pref.ok()) return pref.error();
+          if (pref.value().layout().components != 1 ||
+              pref.value().layout().stride != 1) {
+            return Failure{"E-RT-WINDOW-LAYOUT",
+                         "iteration region '" + R.name + "': window member '" +
+                             mname + "' exports a field with more than one "
+                             "component per element or a non-contiguous "
+                             "layout, which advance_window() does not yet "
+                             "support"};
+          }
+          cfg.provided = pref.value().data();
+          cfg.length = pref.value().size();
+        }
+        if (imported_field.valid()) {
+          Result<FieldRef> rref = registry.get(imported_field);
+          if (!rref.ok()) return rref.error();
+          if (rref.value().layout().components != 1 ||
+              rref.value().layout().stride != 1) {
+            return Failure{"E-RT-WINDOW-LAYOUT",
+                         "iteration region '" + R.name + "': window member '" +
+                             mname + "' imports a field with more than one "
+                             "component per element or a non-contiguous "
+                             "layout, which advance_window() does not yet "
+                             "support"};
+          }
+          cfg.required = rref.value().data();
+          if (cfg.length == 0) cfg.length = rref.value().size();
+        }
+
+        if (cfg.import_lagged && cfg.window_import.valid()) {
+          R.window_lagged_import_arcs.push_back(cfg.window_import);
+        }
+
+        // Cold start (the user's ruling): before window 0 ever runs, a
+        // consumer's import must read the provider's own registered
+        // INITIAL value, held constant -- exactly what an ORDINARY
+        // (non-window) lag(1) channel already gets for free, because its
+        // Source arc is an ALIAS onto the component's own native storage
+        // (expand.cpp's own "Source moves no data" comment): the live
+        // value there IS the registered initial condition from the
+        // moment register_fields() ran, with no separate buffer to
+        // prime. Neither this member's own K-wide EXPORT arc (`ins.out`)
+        // nor a consumer's K-wide IMPORT arc (`cfg.window_import`) is
+        // such an alias (the C3 buffer-ownership fix, the `/window`-
+        // labelled Sink, plan_buffers.cpp) -- both are genuinely
+        // separate, coupler-owned buffers -- so BOTH are primed
+        // explicitly here, once, at setup, to the SAME constant (this
+        // member's own `cfg.provided` value for its own export; the
+        // provider's own registered value, fetched via `registry.get()`
+        // exactly as `cfg.provided`/`cfg.required` already are, for a
+        // consumer's own import). Priming only the export and relying on
+        // the field transfer (Transport, Remap, Epoch, Sink) to carry it
+        // downstream is not enough for a LAGGED import specifically:
+        // `run_region()`'s own shadow refresh (which a lagged read goes
+        // through) snapshots the import arc's live content BEFORE this
+        // sweep's own body -- including that very chain -- ever runs, so
+        // on window 0's own sweep 0 the chain has not had a chance to
+        // deliver anything yet. Priming the import arc directly closes
+        // that gap; priming the export arc too keeps the chain's own
+        // later, real deliveries (window 0 onward) consistent with what
+        // was seeded, rather than overwriting it with un-primed zeros
+        // the one time the chain DOES run inside sweep 0's own body (an
+        // unlagged import, or a lagged one's later sweeps).
+        if (cfg.provided != nullptr && ins.out.valid() &&
+            ins.out.value() < slots.size()) {
+          detail::Slot& export_slot = slots[ins.out.value()];
+          if (export_slot.data != nullptr &&
+              export_slot.total() == cfg.length * cfg.capacity) {
+            for (std::size_t e = 0; e < cfg.length; ++e) {
+              for (std::size_t s = 0; s < cfg.capacity; ++s) {
+                export_slot.data[e * cfg.capacity + s] = cfg.provided[e];
+              }
+            }
+          }
+        }
+        if (cfg.required != nullptr && cfg.window_import.valid() &&
+            provider_exported_field.valid() &&
+            cfg.window_import.value() < slots.size()) {
+          const Result<FieldRef> provided_ref =
+              registry.get(provider_exported_field);
+          if (!provided_ref.ok()) return provided_ref.error();
+          const double* provider_v0 = provided_ref.value().data();
+          detail::Slot& import_slot = slots[cfg.window_import.value()];
+          if (import_slot.data != nullptr &&
+              import_slot.total() == cfg.length * cfg.provider_capacity) {
+            for (std::size_t e = 0; e < cfg.length; ++e) {
+              for (std::size_t s = 0; s < cfg.provider_capacity; ++s) {
+                import_slot.data[e * cfg.provider_capacity + s] =
+                    provider_v0[e];
+              }
+            }
+          }
+
+          // Time windows track: this member's own straddle-tail
+          // extrapolation (advance_window()'s own comment, the split-
+          // advance callbacks) reads `window_member_state[node].history`
+          // for points BEFORE the window it is currently splitting --
+          // `detail::WindowMemberState::history`'s own struct comment
+          // ("seeded with the initial condition, t=0"), mirrored here
+          // exactly: one list per element, seeded with the SAME
+          // provider value the import arc itself was just primed with,
+          // at t=0, so the very first window that ever straddles
+          // (however early) has at least one point to extrapolate from
+          // instead of `fuse::extrapolate_boundary_value()`'s own
+          // `FUSE_ASSERT(!history.empty())` firing.
+          detail::WindowMemberState& seed_st = window_member_state[node];
+          seed_st.history.assign(cfg.length, {});
+          for (std::size_t e = 0; e < cfg.length; ++e) {
+            seed_st.history[e].push_back({Rational{0}, provider_v0[e]});
+          }
+        }
+
+        window_member_config[node] = cfg;
+        R.window_member_nodes.push_back(NodeId{node});
+      }
+
+      // The D7 envelope (KNOWN_ISSUES.md; WindowCoupler::create()'s own
+      // check, window_coupler.cpp): a member straddles a window end only
+      // if it is Fixed and its own interval does not divide the window.
+      // The replay (run_region()'s own straddle-replay step,
+      // detail::advance_straddle_split()) handles ONE such member per
+      // window -- two replaying against each other's own UNRESOLVED
+      // trajectories at once is the case neither this Runner nor
+      // WindowCoupler supports. Checked here, once per region at setup,
+      // exactly as WindowCoupler checks it once at create() -- a
+      // graph-level property of policy+interval+window_length, not
+      // something that depends on any particular window instance ever
+      // running.
+      bool have_straddler = false;
+      for (const NodeId node : R.window_member_nodes) {
+        const WindowMemberConfig& cfg = window_member_config.at(node.value());
+        if (cfg.policy != DtPolicy::Fixed) continue;
+        if ((cfg.window_length / cfg.interval).is_integer()) continue;
+        if (have_straddler) {
+          return Failure{
+              "E-RT-WINDOW-STRADDLE",
+              "iteration region '" + R.name + "': more than one window "
+              "member is Fixed with a step that does not divide the window "
+              "(" + cfg.window_length.to_string() + "); both can straddle "
+              "one window end, and only one straddling member per window is "
+              "supported (KNOWN_ISSUES.md D7, mirrors WindowCoupler::"
+              "create()'s own refusal). Make all but one of them Adjustable, "
+              "or choose a window every Fixed member's own step divides"};
+        }
+        have_straddler = true;
+      }
     }
 
     // R-10 (REVIEW.md): the convergence decision in run_region() used to be
@@ -341,14 +609,32 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components) {
       // The delivery. Without a Sink the accelerated iterate never reaches a
       // component, so every sweep would re-advance from identical inputs and
       // the residual would sit still until max_iterations ran out.
-      std::size_t sinks = 0;
+      //
+      // Counts DISTINCT origin nodes, not instruction occurrences: an
+      // ordinary region's own delivering Sink can legitimately sit
+      // OUTSIDE [R.enter, R.exit] (region_membership(), scheduler.cpp,
+      // marks a region's own body/residual-producing nodes only, not
+      // every node that feeds one), so restricting the scan range is
+      // wrong; but a window-scoped region's window may tick several
+      // times per period (R.passes' own comment), and each tick is its
+      // OWN separate Instruction carrying the SAME origin_node
+      // (finish_window_regions()'s "at most one such node per member per
+      // region" contract, src/ir/window_lowering.cpp) -- scanning the
+      // whole stream by INSTRUCTION would find one matching Sink per
+      // window instance, all for the identical single Sink NODE, and
+      // report "delivered by 7 Sink instructions" for a 91/13 = 7-window
+      // period where exactly one Sink node genuinely does the delivering.
+      // De-duplicating by node, rather than restricting the range, is
+      // correct for both shapes at once.
+      std::set<std::uint32_t> sink_nodes;
       for (std::size_t i = 0; i < stream.size(); ++i) {
         if (stream[i].kind != OpKind::Sink || stream[i].n_in == 0) continue;
         if (stream[i].in[0].value() != b.value_arc) continue;
         b.sink_instruction = i;
         b.feed_arc = stream[i].out.value();
-        ++sinks;
+        sink_nodes.insert(stream[i].origin_node.value());
       }
+      const std::size_t sinks = sink_nodes.size();
       if (sinks != 1) {
         return Failure{"E-RT-REGION",
                      "iteration region '" + R.name + "': the value on arc %" +
@@ -431,71 +717,85 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components) {
     R.measure_block = std::move(matched.value());
 
     // --- the ticks the sweep re-runs ---------------------------------------
-    const Rational enter_time = stream[R.enter].time;
-    // Validated over `all_ticks`, identical on every process, so every
-    // process reaches the same verdict; only this process's own steps
-    // (`ticks`) are then recorded for re-stepping.
-    std::size_t member_steps = 0;
-    for (std::size_t t = 0; t < all_ticks.size(); ++t) {
-      const bool member =
-          std::find(R.component_slots.begin(), R.component_slots.end(),
-                    all_ticks[t].slot) != R.component_slots.end();
-      if (!member) continue;
-      ++member_steps;
-      // `>=`, not `>`. A member tick at EXACTLY `enter_time` has not run when
-      // the region body starts: the enter instruction is `BeforeTicks` (see
-      // TickPhase), so the main cursor in step_period() has advanced only the
-      // ticks strictly before it. Admitting such a tick here would put it in
-      // `tick_indices`, so every sweep from k=1 would re-advance a component
-      // that never advanced at iteration 0, and the main cursor would advance
-      // it once more after the region exits -- a double advance with no
-      // diagnostic.
-      //
-      // REACHABILITY (R12 follow-up, corrected -- this comment previously
-      // claimed "no graph reaches this today ... which E-SCHED-REGION refuses
-      // first"; that was false, disproved by construction rather than by
-      // argument). A region whose body contains a space-time channel's
-      // `Sample` node reaches it directly: `Sample` runs `AfterTicks` at the
-      // SAME nominal time as the tick that feeds it (a single-source-step
-      // history, the only shape E-SCHED-REGION's contiguity rule admits
-      // inside a region, has nothing to wait for before sampling), so it
-      // becomes the region's chronologically first body-member instruction
-      // and pins `enter_time` to that tick's own time -- after which the
-      // very tick that produced the sampled value fails `ticks[t].time <
-      // enter_time`. This holds whether the space-time channel's source is
-      // one of the region's own re-advanced components, or an external
-      // component pulled into the same checkpoint set because its channel is
-      // a body member (`derive_checkpoint_set()`, src/ir/checkpoint.cpp, does
-      // not distinguish the two). See
-      // `Iteration.ASpacetimeChannelInAnIterationRegionIsRefusedNotSilentlyWrong`
-      // (test/verification/iteration_test.cpp) for both constructions,
-      // measured. The guard still must not depend on reachability being rare
-      // -- it refuses correctly here too -- but "no graph reaches this" is no
-      // longer an accurate reason to leave it undertested.
-      if (!(all_ticks[t].time < enter_time)) {
-        return Failure{"E-RT-REGION",
-                     "component '" + components.at(all_ticks[t].slot).name() +
-                         "' is checkpointed by iteration region '" + R.name +
-                         "' but has an advance at t=" +
-                         all_ticks[t].time.to_string() +
-                         ", at or after the region begins at t=" +
-                         enter_time.to_string() +
-                         ". That advance would run once, outside the loop, "
-                         "from state the region had already iterated"};
+    //
+    // Time windows track: this ENTIRE block is skipped for a window-scoped
+    // region. It re-derives the ordinary re-advance mechanism (a
+    // component's own native-interval Tick, re-run once per sweep via
+    // R.tick_indices) -- but a window member gets NO Tick at all
+    // (build_ticks()'s own window_member_components() exclusion, src/
+    // runtime/runner.cpp): its entire re-advance sequence, every substep,
+    // is driven directly by its own OpKind::WindowAdvance instruction
+    // (advance_window(), called from run_region()'s body loop below), not
+    // by anything this block could find in `all_ticks`/`ticks` at all.
+    // Applying this block's own "re-advances no component" refusal to a
+    // window region would therefore misfire on every one of them.
+    if (!R.window_scoped) {
+      const Rational enter_time = stream[R.enter].time;
+      // Validated over `all_ticks`, identical on every process, so every
+      // process reaches the same verdict; only this process's own steps
+      // (`ticks`) are then recorded for re-stepping.
+      std::size_t member_steps = 0;
+      for (std::size_t t = 0; t < all_ticks.size(); ++t) {
+        const bool member =
+            std::find(R.component_slots.begin(), R.component_slots.end(),
+                      all_ticks[t].slot) != R.component_slots.end();
+        if (!member) continue;
+        ++member_steps;
+        // `>=`, not `>`. A member tick at EXACTLY `enter_time` has not run when
+        // the region body starts: the enter instruction is `BeforeTicks` (see
+        // TickPhase), so the main cursor in step_period() has advanced only the
+        // ticks strictly before it. Admitting such a tick here would put it in
+        // `tick_indices`, so every sweep from k=1 would re-advance a component
+        // that never advanced at iteration 0, and the main cursor would advance
+        // it once more after the region exits -- a double advance with no
+        // diagnostic.
+        //
+        // REACHABILITY (R12 follow-up, corrected -- this comment previously
+        // claimed "no graph reaches this today ... which E-SCHED-REGION refuses
+        // first"; that was false, disproved by construction rather than by
+        // argument). A region whose body contains a space-time channel's
+        // `Sample` node reaches it directly: `Sample` runs `AfterTicks` at the
+        // SAME nominal time as the tick that feeds it (a single-source-step
+        // history, the only shape E-SCHED-REGION's contiguity rule admits
+        // inside a region, has nothing to wait for before sampling), so it
+        // becomes the region's chronologically first body-member instruction
+        // and pins `enter_time` to that tick's own time -- after which the
+        // very tick that produced the sampled value fails `ticks[t].time <
+        // enter_time`. This holds whether the space-time channel's source is
+        // one of the region's own re-advanced components, or an external
+        // component pulled into the same checkpoint set because its channel is
+        // a body member (`derive_checkpoint_set()`, src/ir/checkpoint.cpp, does
+        // not distinguish the two). See
+        // `Iteration.ASpacetimeChannelInAnIterationRegionIsRefusedNotSilentlyWrong`
+        // (test/verification/iteration_test.cpp) for both constructions,
+        // measured. The guard still must not depend on reachability being rare
+        // -- it refuses correctly here too -- but "no graph reaches this" is no
+        // longer an accurate reason to leave it undertested.
+        if (!(all_ticks[t].time < enter_time)) {
+          return Failure{"E-RT-REGION",
+                       "component '" + components.at(all_ticks[t].slot).name() +
+                           "' is checkpointed by iteration region '" + R.name +
+                           "' but has an advance at t=" +
+                           all_ticks[t].time.to_string() +
+                           ", at or after the region begins at t=" +
+                           enter_time.to_string() +
+                           ". That advance would run once, outside the loop, "
+                           "from state the region had already iterated"};
+        }
       }
-    }
-    for (std::size_t t = 0; t < ticks.size(); ++t) {
-      const bool member =
-          std::find(R.component_slots.begin(), R.component_slots.end(),
-                    ticks[t].slot) != R.component_slots.end();
-      if (member && ticks[t].time < enter_time) R.tick_indices.push_back(t);
-    }
-    if (member_steps == 0) {
-      return Failure{"E-RT-REGION",
-                   "iteration region '" + R.name +
-                       "' re-advances no component, so a sweep would recompute "
-                       "the same values from the same inputs for ever"};
-    }
+      for (std::size_t t = 0; t < ticks.size(); ++t) {
+        const bool member =
+            std::find(R.component_slots.begin(), R.component_slots.end(),
+                      ticks[t].slot) != R.component_slots.end();
+        if (member && ticks[t].time < enter_time) R.tick_indices.push_back(t);
+      }
+      if (member_steps == 0) {
+        return Failure{"E-RT-REGION",
+                     "iteration region '" + R.name +
+                         "' re-advances no component, so a sweep would recompute "
+                         "the same values from the same inputs for ever"};
+      }
+    }  // if (!R.window_scoped)
 
     // --- the loop-carried coupler buffers ----------------------------------
     //
@@ -558,6 +858,36 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components) {
     if (!taint.ok()) return taint;
 
     // --- the accelerator ----------------------------------------------------
+    //
+    // A WaveformIteration::GaussSeidel window's own UNLAGGED transfer is
+    // resolved WITHIN the same sweep it is fed from (WindowMemberConfig::
+    // import_lagged's own comment) -- it carries no residual of its own to
+    // accelerate, exactly like WindowCoupler's `accel_members`/
+    // `accel_member_offset`/`accel_total` restriction excludes it from the
+    // accelerated vector there (window_coupler.hpp/.cpp). R.blocks below is
+    // NOT YET restricted the same way: every block this region measures,
+    // lagged or not, currently enters R.accel's vector undifferentiated.
+    // Running a real accelerator over that undifferentiated vector would
+    // accelerate a quantity the method does not define an iterate history
+    // for, which is a silently-wrong answer, not a scoped approximation --
+    // so a GaussSeidel window rejects any accelerator but `AccelKind::None`
+    // until R.blocks carries the same restriction.
+    if (R.window_scoped &&
+        decl.window_scope->iteration == WaveformIteration::GaussSeidel &&
+        decl.acceleration.kind != AccelKind::None) {
+      return Failure{
+          "E-RT-WINDOW-ACCEL",
+          "iteration region '" + R.name + "' is a WaveformIteration::"
+          "GaussSeidel coupling window naming accelerator '" +
+          std::string(to_cstring(decl.acceleration.kind)) +
+          "'; the Runner does not yet exclude the unlagged transfer's own "
+          "residual block from the accelerated vector the way "
+          "WindowCoupler's accel_members/accel_member_offset/accel_total "
+          "restriction does, so accelerating GaussSeidel here would "
+          "compute something other than the method. Use AccelKind::None "
+          "for a GaussSeidel window until that restriction is wired in"};
+    }
+
     Result<std::unique_ptr<Accelerator>> acc =
         make_accelerator(decl.acceleration);
     if (!acc.ok()) return acc.error();
@@ -619,8 +949,18 @@ Result<void> Runner::Impl::check_region_isolation(const detail::RegionRuntime& R
   }
 
   const std::vector<Instruction>& stream = plan.instructions();
+  // Time windows track: a window-scoped region can have more than one
+  // pass in one period (RegionRuntime::passes' own comment) -- every one
+  // of them is inside the loop, not just the first, so every one must be
+  // excluded here.
+  const auto inside_some_pass = [&](std::size_t i) {
+    for (const auto& [pe, px] : R.passes) {
+      if (i >= pe && i <= px) return true;
+    }
+    return false;
+  };
   for (std::size_t i = 0; i < stream.size(); ++i) {
-    if (i >= R.enter && i <= R.exit) continue;
+    if (inside_some_pass(i)) continue;
     bool is_delivery = false;
     for (const detail::RegionBlock& b : R.blocks) {
       if (b.sink_instruction == i) { is_delivery = true; break; }
@@ -651,6 +991,16 @@ Result<void> Runner::Impl::check_region_isolation(const detail::RegionRuntime& R
 
 Result<void> Runner::Impl::checkpoint_regions(ComponentSet& components) {
   for (detail::RegionRuntime& R : regions) {
+    // Time windows track: a window-scoped region's own checkpoint happens
+    // once per PASS (once per window instance), inside run_region()
+    // itself, not once per period here -- see RegionRuntime::
+    // window_scoped's own comment for why an ordinary region's
+    // once-at-period-top timing would be wrong for a window member (it
+    // has no ordinary tick to have advanced yet by period-top, but by the
+    // SECOND window instance in the same period it does, and this
+    // period-top call would capture stale, pre-that-window-instance
+    // state).
+    if (R.window_scoped) continue;
     for (const std::size_t slot : R.component_slots) {
       const Result<void> s = components.at(slot).save_state();
       if (!s.ok()) return s;
@@ -673,7 +1023,8 @@ Result<void> Runner::Impl::checkpoint_regions(ComponentSet& components) {
 // ---------------------------------------------------------------------------
 
 Result<void> Runner::Impl::run_region(ComponentSet& components,
-                                      detail::RegionRuntime& R) {
+                                      detail::RegionRuntime& R,
+                                      std::size_t enter, std::size_t exit) {
   IterationStats& st = region_stats[R.index];
   st.iterations = 0;
   st.converged = false;
@@ -682,6 +1033,31 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
   const std::vector<Instruction>& stream = plan.instructions();
 
   R.accel->reset();
+
+  // Time windows track: a window-scoped region's own checkpoint happens
+  // HERE, once per PASS (once per window instance) -- checkpoint_regions()
+  // (called once per PERIOD, from step_period()) explicitly skips a
+  // window-scoped region, per RegionRuntime::window_scoped's own comment
+  // (a window member has no ordinary tick to have advanced yet by
+  // period-top, but by the SECOND window instance in the same period it
+  // does, and a period-top checkpoint would capture stale, pre-that-
+  // window-instance state). Mirrors checkpoint_regions()'s own body
+  // exactly (save_state() over R.component_slots, then the verify_arcs
+  // byte-capture used later by the rollback-verification check), just
+  // moved to run once per CALL (= once per window instance) instead of
+  // once per period.
+  if (R.window_scoped) {
+    for (const std::size_t slot : R.component_slots) {
+      const Result<void> s = components.at(slot).save_state();
+      if (!s.ok()) return s;
+    }
+    for (std::size_t v = 0; v < R.verify_arcs.size(); ++v) {
+      const detail::Slot& s = slots[R.verify_arcs[v]];
+      if (s.data != nullptr) {
+        num::copy(s.data, R.verify_save[v].data(), R.verify_save[v].size());
+      }
+    }
+  }
 
   // y_0: what the components were ACTUALLY advanced with. Reading the Sink
   // outputs -- the components' own Requires arrays -- rather than recording
@@ -692,7 +1068,21 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
   }
 
   for (int k = 0; k < R.max_iterations; ++k) {
-    for (std::size_t i = R.enter; i <= R.exit; ++i) {
+    // Time windows track: snapshot every LAGGED window_import arc BEFORE
+    // this sweep's own body runs -- R.window_lagged_import_arcs' own
+    // comment (runner_impl.hpp). advance_window() reads `previous[arc]`
+    // for a lagged import instead of the live buffer, so it sees LAST
+    // sweep's delivery (or, at k=0 of a new window instance, the
+    // PREVIOUS window's final delivery -- nothing has touched this arc
+    // since then) regardless of where the delivering Sink sits in the
+    // stream relative to this member's own WindowAdvance instruction.
+    for (const ArcId a : R.window_lagged_import_arcs) {
+      const detail::Slot& s = slots[a.value()];
+      std::vector<double>& shadow = previous[a.value()];
+      if (shadow.size() != s.total()) shadow.assign(s.total(), 0.0);
+      if (s.data != nullptr) num::copy(s.data, shadow.data(), s.total());
+    }
+    for (std::size_t i = enter; i <= exit; ++i) {
       // The same rule as the period loop (`is_collective`, fuse/ir/op.hpp):
       // after a local failure keep executing the collectives, so no partner is
       // left inside one waiting for this rank, and skip the local arithmetic.
@@ -700,7 +1090,17 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
       // times, so a rank that drops out of the exchange desynchronises the
       // remaining iterations rather than just one step.
       if (step_failure.has_value() && !is_collective(stream[i].kind)) continue;
-      const Result<void> e = execute(stream[i], resolved[i]);
+      // Time windows track: execute() has no ComponentSet& and cannot call
+      // advance()/save_state()/restore_state() itself (see its own
+      // OpKind::WindowAdvance case, src/runtime/runner.cpp) -- a
+      // WindowAdvance instruction is dispatched to advance_window()
+      // instead, here, the one place that both has `components` and is
+      // guaranteed a WindowAdvance instruction only ever appears inside
+      // some region's body.
+      const Result<void> e = stream[i].kind == OpKind::WindowAdvance
+                                 ? advance_window(components, stream[i],
+                                                  resolved[i], k)
+                                 : execute(stream[i], resolved[i]);
       if (!e.ok()) {
         if (!step_failure.has_value()) step_failure = e.error();
         if (stream[i].kind == OpKind::Epoch) return *step_failure;
@@ -1007,6 +1407,517 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
                        "converged solution"};
     }
   }
+
+  // This region's own pass is over (converged, or run to max_iterations
+  // with abort_on_nonconvergence == false, exactly the two cases that
+  // reach here): every window-import node's own `st.history` -- the
+  // NEXT window instance's own predictor input (advance_window()'s own
+  // "use_predictor" comment) -- is refreshed here from the LIVE
+  // `window_import` arc, never `previous[]`. advance_window() itself
+  // updates this same entry once EVERY sweep, but from whichever of
+  // `previous[]`/`slots[]` its own `cfg.import_lagged` reads for the
+  // ORDINARY mean-query -- for a LAGGED (Jacobi-forced or GaussSeidel-
+  // declared) import, that is deliberately the PROVIDER's PRECEDING
+  // sweep's delivery, one sweep behind the provider's own truly final
+  // output, and reading it here would carry that same one-sweep lag
+  // into the seed the driver's own analogous record never has (its
+  // `history` commits member i's OWN fresh advance() output once the
+  // whole sweep loop exits, always unlagged from i's own perspective).
+  // `slots[]` is the live buffer every provider's own WindowAdvance
+  // instruction just wrote its final sweep's output into; reading it
+  // NOW, after every node in this region has already run its own last
+  // sweep (this loop's exit, above), is the one point in the pass where
+  // that read cannot race a provider that has not run yet -- unlike
+  // inside advance_window() itself, where dispatch order within the
+  // SAME sweep leaves no such guarantee.
+  if (R.window_scoped) {
+    for (auto& [node, cfg] : window_member_config) {
+      if (cfg.region_index != R.index || !cfg.window_import.valid() ||
+          cfg.required == nullptr) {
+        continue;
+      }
+      const auto dst_it = window_last_dst_step.find(node);
+      if (dst_it == window_last_dst_step.end()) continue;
+      const Rational this_T0 = Rational(dst_it->second) * cfg.window_length;
+      const Rational this_T1 = this_T0 + cfg.window_length;
+      const auto planned = detail::plan_substeps(
+          this_T0, cfg.provider_interval, this_T1, cfg.provider_policy);
+      const std::size_t last_sample = planned.first.size();
+      if (!planned.first.empty() && planned.first.back().straddle) {
+        // The provider itself is still straddling past this_T1 (its own
+        // WindowAdvance already rejected reconstructing THAT grid,
+        // E-RT-WINDOW-STRADDLE-REPLAY, before this region ever reaches
+        // here) -- nothing valid to read.
+        continue;
+      }
+      const detail::Slot& import_slot = slots[cfg.window_import.value()];
+      if (import_slot.data == nullptr) continue;
+      detail::WindowMemberState& st_import = window_member_state[node];
+      for (std::size_t e = 0; e < cfg.length; ++e) {
+        const double v_boundary =
+            import_slot.data[e * cfg.provider_capacity + last_sample];
+        if (st_import.history.size() <= e) st_import.history.resize(e + 1);
+        if (st_import.history[e].empty() ||
+            st_import.history[e].back().first != this_T1) {
+          st_import.history[e].push_back({this_T1, v_boundary});
+        } else {
+          st_import.history[e].back().second = v_boundary;
+        }
+      }
+    }
+  }
+  return Result<void>::success();
+}
+
+// Time windows track (C3): the Jacobi/GaussSeidel design question the
+// former stub above named is resolved -- see fuse::WaveformIteration
+// (fuse/model/iteration.hpp) and effective_channel_lag() (fuse/model/
+// coupling_graph.hpp). What decides "same-sweep-fresh vs previous-sweep"
+// for THIS function is entirely mechanical, below: an UNLAGGED import
+// reads the live `window_import` arc directly (correct automatically,
+// because the provider's own WindowAdvance instruction and field-
+// transfer chain are positioned strictly earlier in this SAME sweep's
+// instruction stream -- window_lowering.cpp's own ordering, checked at
+// schedule time by window_import_is_lagged()'s causality rule); a
+// LAGGED import reads `Impl::previous[window_import]`, snapshotted once
+// per sweep, BEFORE this sweep's body runs, by run_region() itself
+// (R.window_lagged_import_arcs' own comment) -- so a lagged read can
+// never see this sweep's own fresh delivery, regardless of where the
+// delivering Sink sits in the stream. Neither reads anything from a
+// partner's OWN WindowMemberState: every sample TIME below comes from
+// plan_substeps() applied to (window_length, this member's or its
+// import's PROVIDER's own interval/policy, window index) -- the graph
+// alone (WindowMemberConfig's own comment) -- and every sample VALUE
+// comes from the compiled dataflow arc the ordinary channel rule already
+// built. There is no side channel.
+//
+// SCOPED LIMITATION (reported, not hidden): a `DtPolicy::Fixed` member
+// or import-provider whose last substep crosses the window end (a
+// "straddle") is REJECTED outright (`E-RT-WINDOW-STRADDLE-REPLAY`), below,
+// rather than served an approximation. Deliberately a DIFFERENT code
+// from `WindowCoupler::create()`'s own `E-RT-WINDOW-STRADDLE`
+// (window_coupler.cpp): that one refuses only the unsupported case of
+// TWO Fixed members straddling the same window (KNOWN_ISSUES.md D7's
+// envelope), because a SINGLE straddling member is exactly what
+// `resolve_pending_straddles()` DOES support there, via the replay.
+// This function has not wired that replay in at all yet, so it refuses
+// every straddle, including the single-member case WindowCoupler
+// already handles. The correct treatment --
+// WindowCoupler::resolve_pending_straddles()'s two-phase split-advance
+// replay against the previous window's CONVERGED data plus a polynomial
+// extrapolation for whatever ran past it (window_coupler.cpp), boundary
+// value and extrapolated tail both sourced from what arrived through
+// the field transfer, never a partner's state -- is not yet wired into
+// this function. A caller that needs a straddling Fixed member through
+// the Runner must wait for that replay; `DtPolicy::Adjustable` (which
+// plan_substeps() truncates onto the window end, never straddling) is
+// unaffected.
+Result<void> Runner::Impl::advance_window(ComponentSet& components,
+                                          const Instruction& ins,
+                                          const detail::Resolved& /*r*/,
+                                          int iteration) {
+  const std::uint32_t node = ins.origin_node.value();
+  const auto cfg_it = window_member_config.find(node);
+  if (cfg_it == window_member_config.end()) {
+    return Failure{"E-RT-WINDOW-UNPLACED",
+                 "WindowAdvance instruction's own node has no window "
+                 "member config; resolve_regions() should have built one"};
+  }
+  const WindowMemberConfig& cfg = cfg_it->second;
+  detail::WindowMemberState& st = window_member_state[node];
+  Component& comp = components.at(cfg.component_slot);
+
+  const Rational T0 = Rational(ins.dst_step) * cfg.window_length;
+  const Rational T1 = T0 + cfg.window_length;
+
+  const auto last_it = window_last_dst_step.find(node);
+  const bool new_instance =
+      last_it == window_last_dst_step.end() || last_it->second != ins.dst_step;
+  window_last_dst_step[node] = ins.dst_step;
+
+  // `run_region()`'s own k-loop always starts a pass at k=0 (its own
+  // "for (int k = 0; k < R.max_iterations; ++k)" is entirely local to
+  // ONE call, i.e. one pass); `new_instance` (dst_step-based) must agree.
+  // A mismatch means the compiled stream is calling this in a shape
+  // resolve_regions() never anticipated.
+  const bool first_sweep_of_pass = (iteration == 0);
+  if (first_sweep_of_pass != new_instance) {
+    return Failure{"E-RT-WINDOW-SWEEP",
+                 "WindowAdvance: iteration==0 (" +
+                     std::to_string(first_sweep_of_pass) +
+                     ") disagrees with the dst_step-based first-sweep "
+                     "detection (" + std::to_string(new_instance) +
+                     ") for the same call"};
+  }
+
+  Rational pass_start_clock;
+  if (first_sweep_of_pass) {
+    // See this function's own "SCOPED SIMPLIFICATION" comment: carry the
+    // clock, do not replay. `st.clock` already sits wherever the last
+    // substep of the previous window instance left it (past T0 only if
+    // that substep straddled); a member that has never straddled starts
+    // fresh, exactly at this window's own nominal start. Cached in
+    // `window_pass_start_clock` (its own comment, runner_impl.hpp) so
+    // EVERY sweep of this pass plans from the SAME clock, not from
+    // wherever the PREVIOUS sweep's own advance left `st.clock`.
+    pass_start_clock = st.straddle_pending ? st.clock : T0;
+    st.straddle_pending = false;
+    window_pass_start_clock[node] = pass_start_clock;
+  } else {
+    pass_start_clock = window_pass_start_clock.at(node);
+  }
+
+  // This sweep's import trajectory, one Waveform per element, built from
+  // whichever buffer (live or shadow) this import's lag status reads --
+  // this function's own top comment. The LAG is about which SWEEP's
+  // snapshot to read, not which window: `previous[]` holds THIS SAME
+  // window's own previous-sweep delivery on every sweep but the pass's
+  // first, where (there being no earlier sweep of this window yet) it
+  // still holds the PREVIOUS window instance's own final delivery --
+  // exactly the window-to-window seed Jacobi/GaussSeidel's lagged
+  // direction needs at a window boundary.
+  std::vector<Waveform>            import_wf;
+  std::vector<detail::WindowSubstep> import_steps;
+  Rational import_t0{0}, import_t1{0};
+  // fuse/model/iteration.hpp's own WaveformIteration::Jacobi docstring:
+  // every field transfer in a Jacobi window is loop-carried whatever
+  // Channel::lag the user wrote -- `cfg.import_lagged` alone (the
+  // graph's own declared lag, binding only under GaussSeidel) is not
+  // enough here; resolve_regions()'s matching fix to
+  // R.window_lagged_import_arcs is what keeps `previous[]` correctly
+  // populated for this read. `cfg.import_lagged` (below) already covers
+  // the Jacobi case on its own: `effective_channel_lag()`
+  // (fuse/model/coupling_graph.hpp) forces lag=1 for every channel in a
+  // Jacobi window regardless of the graph's own `.lag()` declaration
+  // (its own `is_jacobi_window_channel()` helper), so `cfg.import_lagged`
+  // is already true here for BOTH directions in this file's graphs --
+  // confirmed by instrumented probing this session, not assumed.
+  if (cfg.window_import.valid() && cfg.required != nullptr) {
+    // On the first sweep of a NEW window instance, a LAGGED import has
+    // nothing genuine to read yet (the provider has not run THIS
+    // window): the driver's own documented predictor
+    // (window_coupler.hpp's `WindowCoupler::sweep_window()` comment,
+    // "Seed y_fed ... from the driver's documented predictor:
+    // extrapolate_boundary_value() ... at least second order") is what
+    // must be reproduced here instead of a raw buffer read.
+    // `cfg.import_lagged` alone already selects the lagged case (this
+    // function's own top comment: forced true, both directions, under
+    // Jacobi; declared true for GaussSeidel's lagged direction only).
+    const bool use_predictor = cfg.import_lagged && first_sweep_of_pass;
+    const double* arr = cfg.import_lagged
+                            ? previous[cfg.window_import.value()].data()
+                            : slots[cfg.window_import.value()].data;
+    // No "back one window" shift (reverted this session): the former
+    // shift read `previous[]`'s raw content on the PREVIOUS window's
+    // own time axis and let it stand in for this window's prediction --
+    // a ZEROTH-order predictor (persistence), exactly what window_
+    // coupler.cpp's own class comment documents reverting on the driver
+    // side ("needed MORE sweeps to converge ... The fix belongs on the
+    // Runner side instead"). `import_t0 = T0` unconditionally: a sweep
+    // other than the pass's first already used T0 (the ternary this
+    // replaced only ever touched `first_sweep_of_pass`), and sweep 0
+    // now gets its prediction from `use_predictor` below, on THIS
+    // window's own grid, rather than from a shifted raw read.
+    import_t0 = T0;
+    import_t1 = import_t0 + cfg.window_length;
+    auto planned = detail::plan_substeps(import_t0, cfg.provider_interval,
+                                         import_t1, cfg.provider_policy);
+    import_steps = std::move(planned.first);
+    // A straddling provider's OWN clock (DtPolicy::Fixed, its own
+    // interval not dividing the window) carries an overshoot into every
+    // later window instance -- advance_window()'s own `pass_start_clock`
+    // ternary, for the PROVIDER's own call -- so the provider's REAL
+    // substep grid, from window 2 of any period where it keeps
+    // straddling, is anchored at wherever ITS OWN carried clock sits,
+    // NOT at this window's `import_t0`. `plan_substeps(import_t0, ...)`
+    // here has no way to know that offset without reading the
+    // provider's own `window_pass_start_clock`/`WindowMemberState`
+    // (this function's own top comment: never a partner's state, and
+    // even reading it would race against dispatch order -- the
+    // consumer's own first sweep of a window can run before OR after
+    // the provider's, and only one order leaves the provider's
+    // bookkeeping already updated for THIS window). Reconstructing the
+    // grid from `import_t0` alone is only correct when the provider's
+    // own pass this window starts exactly there, which a straddle from
+    // ANY earlier window already breaks -- silently misreading which
+    // sample corresponds to which time computes something other than
+    // the method, so this rejects rather than approximating a grid this
+    // function cannot actually observe. (The self-straddle case just
+    // below -- THIS member's own last substep crossing T1 -- has no
+    // such gap: it uses its OWN `pass_start_clock`, correct by
+    // construction, never a reconstruction of someone else's.) Whether
+    // `import_t0` is shifted or not does not change this check's own
+    // verdict: `plan_substeps()` is a pure function of the OFFSET from
+    // its own `clock` argument, never of `clock`'s absolute value, so
+    // the straddle pattern this produces is identical either way.
+    if (!import_steps.empty() && import_steps.back().straddle) {
+      return Failure{"E-RT-WINDOW-STRADDLE-REPLAY",
+                   "window member's import provider has a step crossing "
+                   "this window's own end (DtPolicy::Fixed straddle); "
+                   "reconstructing the provider's own substep grid from "
+                   "this window's start, with no way to see the "
+                   "provider's own carried-forward clock offset from an "
+                   "earlier straddle, computes something other than the "
+                   "method, so this rejects rather than risk a silently "
+                   "mislabelled sample"};
+    }
+    import_wf.reserve(cfg.length);
+    for (std::size_t e = 0; e < cfg.length; ++e) {
+      Waveform wf(1, cfg.provider_capacity, TemporalBasis::Linear, 1);
+      wf.reset(import_t0, import_t1);
+      // `st.history` is THIS member's own record of what arrived
+      // through the field transfer at every earlier window's own end
+      // (resolve_regions()'s cold-start seeding comment, and this
+      // function's own history update below) -- never a partner's
+      // state, and always non-empty from setup onward (seeded with the
+      // provider's registered initial value at t=0). What it holds IS
+      // the provider's own committed trajectory at those times, sample
+      // for sample, whether read directly (the driver's own `state_
+      // [i].history`) or through the field transfer (here) -- the two
+      // coincide exactly for an identity remap, which is what every
+      // caller of this function uses today.
+      const bool have_history = e < st.history.size() && !st.history[e].empty();
+      // The window-start sample: the driver's own build_delivered_
+      // member() uses the provider's REAL current value there
+      // (`start_value[i][e]`, captured by save_state() right before
+      // the sweep), never an extrapolation -- and that value equals
+      // `st.history[e].back()` here, because `st.history` is refreshed
+      // at every window's own T1 (run_region()'s post-pass refresh,
+      // or this function's own update below), and T1 of the window
+      // that just finished equals T0 of this one.
+      double v = (use_predictor && have_history)
+                     ? st.history[e].back().second
+                     : arr[e * cfg.provider_capacity + 0];
+      Result<void> p = wf.push(import_t0, &v);
+      if (!p.ok()) return p.error();
+      for (std::size_t s = 0; s < import_steps.size(); ++s) {
+        // A straddling provider (DtPolicy::Fixed, plan_substeps()'s own
+        // contract) commits its LAST sample at `import_t1` -- the exact
+        // split value from ITS OWN advance_window() call's
+        // detail::advance_straddle_split(), never a raw, past-import_t1
+        // substep end -- so the sample must be pushed at the time the
+        // VALUE actually corresponds to, not at `import_steps[s].t1`
+        // (which overshoots `import_t1` for exactly this sample).
+        // Pushing at the wrong (later) time would both violate
+        // Waveform::push()'s own ascending-time contract against this
+        // window's `import_t1` and mislabel the sample for every mean/
+        // boundary query below. (Dead in practice at this point: the
+        // straddle check just above already rejected before this loop
+        // is ever reached whenever `import_steps.back().straddle`, and
+        // only the LAST step can straddle -- kept for the same reason
+        // the driver's own analogous `tc = std::min(sub.t1, T1)` stays
+        // written as a clamp rather than assumed unreachable.)
+        const Rational t =
+            import_steps[s].straddle ? import_t1 : import_steps[s].t1;
+        if (use_predictor && have_history) {
+          v = fuse::extrapolate_boundary_value(st.history[e], t, cfg.order);
+        } else {
+          v = arr[e * cfg.provider_capacity + (s + 1)];
+        }
+        p = wf.push(t, &v);
+        if (!p.ok()) return p.error();
+      }
+      import_wf.push_back(std::move(wf));
+    }
+  }
+
+  auto planned_self =
+      detail::plan_substeps(pass_start_clock, cfg.interval, T1, cfg.policy);
+  const std::vector<detail::WindowSubstep>& steps = planned_self.first;
+  const Rational final_clock = planned_self.second;
+
+  if (steps.size() + 1 > cfg.capacity) {
+    return Failure{"E-RT-WINDOW-CAPACITY",
+                 "window member needs " + std::to_string(steps.size() + 1) +
+                     " samples this window, more than its own compiled "
+                     "capacity (" + std::to_string(cfg.capacity) +
+                     "); window_sample_capacity() should have sized the "
+                     "field wide enough for this not to happen"};
+  }
+
+  double* out = cfg.provided != nullptr ? slots[ins.out.value()].data : nullptr;
+
+  // Sample 0: the window-start value -- whatever `cfg.provided` holds
+  // right now (this member's own state, already restored to the
+  // window-start checkpoint by run_region()'s generic rollback before
+  // every sweep but the first of a fresh window instance).
+  if (out != nullptr) {
+    for (std::size_t e = 0; e < cfg.length; ++e) {
+      out[e * cfg.capacity + 0] = cfg.provided[e];
+    }
+  }
+
+  // `import_t0`'s own shift (this function's own top comment): on the
+  // FIRST sweep of a pass, a LAGGED import's waveform lives on the
+  // PREVIOUS window's own absolute time axis (`[T0-window_length,
+  // T1-window_length)`), while `steps[]` (THIS member's own substeps)
+  // lives on THIS window's (`[T0, T1)`). Querying `steps[s]`'s own
+  // `[t0, t1)` against `import_wf` directly, with no compensating
+  // shift, intersects two ranges that are `window_length` apart and are
+  // NEVER simultaneously within both members' own domains except at one
+  // degenerate point -- every substep's own mean query silently no-ops
+  // (`b > a` false), leaving `cfg.required[e]` at whatever it already
+  // held. `query_shift` re-aligns the substep's own query onto the
+  // SAME axis `import_wf` is built on (zero when there is no shift to
+  // undo, i.e. every sweep but a lagged import's first).
+  const Rational query_shift = import_t0 - T0;
+  // A null `cfg.required` (a pure exporter -- no Requires field in this
+  // region) gives `detail::advance_straddle_split()`'s own unconditional
+  // `member.required[e] = ...` nowhere safe to write if this member's own
+  // last substep straddles below; point it at throwaway scratch storage
+  // instead of `nullptr` in that case. The component's own `advance()`
+  // never reads a field it does not declare, so writing into scratch
+  // rather than the real (absent) buffer changes nothing it can observe.
+  std::vector<double> scratch_required;
+  double* const required_for_split = cfg.required != nullptr
+                                          ? cfg.required
+                                          : (scratch_required.assign(
+                                                 cfg.length, 0.0),
+                                             scratch_required.data());
+  for (std::size_t s = 0; s < steps.size(); ++s) {
+    const detail::WindowSubstep& sub = steps[s];
+    const bool is_last_straddle = (s + 1 == steps.size()) && sub.straddle;
+    if (is_last_straddle) {
+      // This member's OWN last substep crosses T1 (DtPolicy::Fixed, this
+      // member's own interval not dividing the window). Split the
+      // advance() exactly at T1 -- the SAME two-phase choreography
+      // WindowCoupler::sweep_window()'s own inline handling uses, via
+      // the SAME shared detail::advance_straddle_split() -- instead of
+      // one call over the whole straddling chunk with a single blended
+      // mean: the committed/exchanged sample (written to `out` below)
+      // is the value AT T1, from the in-window mean over [sub.t0, T1)
+      // (the SAME formula every other substep already uses, just
+      // clamped to this window's own end); this member's OWN state then
+      // continues past T1 to sub.t1 using a blended boundary (import_wf
+      // evaluated exactly at T1, still inside its own known domain --
+      // `boundary_at_split` below) and extrapolated tail
+      // (`st.history`, this member's own record of what it received at
+      // every PRIOR window's own end, seeded at setup -- resolve_
+      // regions()'s own comment -- never a partner's state) so it stays
+      // on its own native clock across the window boundary.
+      fuse::WindowMember member_view;
+      member_view.component = &comp;
+      member_view.required = required_for_split;
+      member_view.provided = cfg.provided;
+      member_view.length = cfg.length;
+
+      std::vector<double> v_at_t1(cfg.length);
+      const Result<void> split_r = detail::advance_straddle_split(
+          member_view, sub.t0, T1, sub.t1,
+          static_cast<std::size_t>(ins.dst_step), iteration,
+          [&](std::size_t e, Rational a, Rational b) -> Result<double> {
+            if (import_wf.empty()) return required_for_split[e];
+            const Rational qa = a + query_shift;
+            const Rational qb = b + query_shift;
+            const Rational ca = qa < import_t0 ? import_t0 : qa;
+            const Rational cb = qb > import_t1 ? import_t1 : qb;
+            if (cb <= ca) return required_for_split[e];
+            return detail::mean_over(import_wf[e], ca, cb);
+          },
+          [&](std::size_t e) -> Result<double> {
+            if (import_wf.empty()) return required_for_split[e];
+            double v = 0.0;
+            const Result<void> r = import_wf[e].evaluate(import_t1, &v);
+            if (!r.ok()) return required_for_split[e];
+            return v;
+          },
+          [&](std::size_t e, Rational target) -> double {
+            if (e >= st.history.size() || st.history[e].empty()) {
+              return required_for_split[e];
+            }
+            return fuse::extrapolate_boundary_value(st.history[e], target,
+                                                     cfg.order);
+          },
+          v_at_t1.data());
+      if (!split_r.ok()) return split_r.error();
+      if (out != nullptr) {
+        for (std::size_t e = 0; e < cfg.length; ++e) {
+          out[e * cfg.capacity + (s + 1)] = v_at_t1[e];
+        }
+      }
+      continue;
+    }
+
+    if (cfg.required != nullptr && !import_wf.empty()) {
+      for (std::size_t e = 0; e < cfg.length; ++e) {
+        const Rational q0 = sub.t0 + query_shift;
+        const Rational q1 = sub.t1 + query_shift;
+        const Rational a = q0 < import_t0 ? import_t0 : q0;
+        const Rational b = q1 > import_t1 ? import_t1 : q1;
+        if (b > a) {
+          const Result<double> mv = detail::mean_over(import_wf[e], a, b);
+          if (mv.ok()) cfg.required[e] = mv.value();
+        }
+      }
+    }
+    StepContext ctx;
+    ctx.t_begin = sub.t0;
+    ctx.t_end = sub.t1;
+    ctx.step = ins.dst_step;
+    ctx.iteration = iteration;
+    const Result<void> ar = comp.advance(ctx);
+    if (!ar.ok()) return ar;
+    if (out != nullptr) {
+      for (std::size_t e = 0; e < cfg.length; ++e) {
+        out[e * cfg.capacity + (s + 1)] = cfg.provided[e];
+      }
+    }
+  }
+
+  // Every slot beyond the valid count is never read (this function's own
+  // top comment / WindowMemberConfig::capacity) but is zeroed rather than
+  // left as whatever a PREVIOUS, possibly-wider window instance wrote --
+  // a stale nonzero tail is silently-wrong-looking state for anyone
+  // inspecting the raw buffer, even though nothing in this design reads it.
+  if (out != nullptr) {
+    for (std::size_t s2 = steps.size() + 1; s2 < cfg.capacity; ++s2) {
+      for (std::size_t e = 0; e < cfg.length; ++e) out[e * cfg.capacity + s2] = 0.0;
+    }
+  }
+
+  // This member's own record of what it received at THIS window's own
+  // end -- never a partner's state -- for a LATER window's own
+  // straddle-tail `extrapolate_tail` (this function's own top comment,
+  // resolve_regions()'s seeding comment). Skipped when `import_t1 != T1`
+  // (a LAGGED import's own first sweep of a pass, whose `import_wf`
+  // lives on the PREVIOUS window's axis and does not cover T1 at all --
+  // this function's own `query_shift` comment): on that specific sweep
+  // there is nothing meaningful to record yet, so the entry from
+  // whichever earlier sweep or window last updated it is left as is,
+  // exactly the same fallback `extrapolate_tail` already uses when
+  // history is otherwise unusable. `st.history[e].back().first != T1`
+  // (rather than `first_sweep_of_pass`) decides append-vs-refine so the
+  // lagged-first-sweep skip above cannot mistake window N's own first
+  // WRITE for a refinement of window N-1's entry.
+  if (!import_wf.empty() && import_t1 == T1) {
+    for (std::size_t e = 0; e < cfg.length; ++e) {
+      double v_boundary = 0.0;
+      const Result<void> r = import_wf[e].evaluate(import_t1, &v_boundary);
+      if (!r.ok()) continue;
+      if (st.history.size() <= e) st.history.resize(e + 1);
+      if (st.history[e].empty() || st.history[e].back().first != T1) {
+        st.history[e].push_back({T1, v_boundary});
+      } else {
+        st.history[e].back().second = v_boundary;
+      }
+    }
+  }
+
+  st.clock = final_clock;
+  // A straddling last substep (DtPolicy::Fixed, this member's own
+  // interval not dividing the window) leaves `st.clock` past T1: the
+  // NEXT window instance's own `pass_start_clock` (this function's top)
+  // must resume from there, not from that window's own T0, and its
+  // straddle-tail (the split-advance above, run again for whichever of
+  // ITS OWN substeps crosses ITS window's end) reads `st.history` for
+  // points before ITS window -- already covers this member continuing
+  // to straddle every window, not just once.
+  if (!steps.empty() && steps.back().straddle) {
+    st.straddle_pending = true;
+    st.straddle_window_start = T0;
+    st.straddle_window_end = T1;
+  }
+
   return Result<void>::success();
 }
 

@@ -1056,6 +1056,56 @@ TEST(WindowCouplerRefusals, ChannelIndexOutOfRangeRefused) {
   EXPECT_EQ(r.error().code, "E-RT-WINDOW-CHANNEL");
 }
 
+// The user's decision (relayed 2026-09-29): a convergence measure names a
+// field TRANSFER (a WindowChannel, by its own `name`); one naming a
+// transfer the coupler does not have is refused by name at create(),
+// rather than silently falling back to some default at sweep time.
+TEST(WindowCouplerRefusals, ConvergenceMeasureNamingAnUnknownChannelIsRefused) {
+  LinearOdeComponent a("A", 1.0, 1.0, 0.0), b("B", 1.0, 1.0, 0.0);
+  WindowMember mA;
+  mA.component = &a; mA.name = "A"; mA.interval = Rational{1};
+  mA.provided = a.provided_ptr(); mA.required = a.required_ptr();
+  WindowMember mB;
+  mB.component = &b; mB.name = "B"; mB.interval = Rational{1};
+  mB.provided = b.provided_ptr(); mB.required = b.required_ptr();
+  WindowCouplerConfig cfg;
+  cfg.window_length = Rational{1};
+  cfg.convergence.add(
+      fuse::ConvergenceMeasure{fuse::MeasureKind::Relative, 1e-6, "not_a_channel"});
+  const std::vector<WindowChannel> channels = {
+      {.provider = 0, .consumer = 1, .name = "a_out"},
+      {.provider = 1, .consumer = 0, .name = "b_out"}};
+  const auto r = WindowCoupler::create({mA, mB}, channels, cfg);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-RT-WINDOW-CONVERGENCE-FIELD") << r.error().message;
+}
+
+// The companion positive case: every measure names a channel that exists
+// -- create() must succeed, and each measure's own residual is checked
+// against ONLY the channel it names (verified end to end by the driver-
+// vs-Runner acceptance tests in window_runner_straddle_test.cpp, not
+// re-verified numerically here).
+TEST(WindowCouplerRefusals, ConvergenceMeasureNamingAKnownChannelIsAccepted) {
+  LinearOdeComponent a("A", 1.0, 1.0, 0.0), b("B", 1.0, 1.0, 0.0);
+  WindowMember mA;
+  mA.component = &a; mA.name = "A"; mA.interval = Rational{1};
+  mA.provided = a.provided_ptr(); mA.required = a.required_ptr();
+  WindowMember mB;
+  mB.component = &b; mB.name = "B"; mB.interval = Rational{1};
+  mB.provided = b.provided_ptr(); mB.required = b.required_ptr();
+  WindowCouplerConfig cfg;
+  cfg.window_length = Rational{1};
+  cfg.convergence.add(
+      fuse::ConvergenceMeasure{fuse::MeasureKind::Relative, 1e-6, "a_out"});
+  cfg.convergence.add(
+      fuse::ConvergenceMeasure{fuse::MeasureKind::Relative, 1e-6, "b_out"});
+  const std::vector<WindowChannel> channels = {
+      {.provider = 0, .consumer = 1, .name = "a_out"},
+      {.provider = 1, .consumer = 0, .name = "b_out"}};
+  const auto r = WindowCoupler::create({mA, mB}, channels, cfg);
+  ASSERT_TRUE(r.ok()) << r.error().message;
+}
+
 // ---------------------------------------------------------------- layout
 //
 // A field-valued member with several substeps per window. Two independent

@@ -92,10 +92,29 @@ Convergence and acceleration act on the WHOLE window's exchanged trajectory
 — every substep sample, not only the window-end value — exactly as
 [](convergence.md) describes for a single-clock region.
 
+## Through `schedule()` and the Runner
+
+The same declaration also runs through the ordinary compiled path:
+`schedule()` recognizes a region whose `IterationRegionDecl::window_scope`
+is set, and the `Runner` executes it as one window block per instance,
+sweeping to convergence exactly as `WindowCoupler::run_window()` does
+above — no separate driver object to construct. `window_component`/
+`explicit_interval`, `policies`, `order` and `iteration` mean the same
+thing either way; add the region as usual
+(`CouplingGraph::add_iteration_region`) with `decl.window_scope` set.
+
+This path is verified bit-for-bit against `WindowCoupler` itself, both
+waveform-relaxation modes, for a genuinely multirate (incommensurate)
+pair — `test/runtime/window_runner_straddle_test.cpp`.
+
 ## What this does not do yet
 
-`WindowCoupler` is a runtime driver you construct directly from
-`WindowMember`/`WindowChannel`, not (yet) something `schedule()` produces
-from an `IterationRegionDecl` on its own. Wiring the two together —
-resolving `WindowMember::provided`/`required` from the `FieldRegistry` the
-way a single-clock region does — is designed but not built.
+A `DtPolicy::Fixed` member whose own step crosses the window end (the
+*straddling* step, above) is rejected by the Runner
+(`E-RT-WINDOW-STRADDLE-REPLAY`) rather than replayed the way
+`WindowCoupler::resolve_pending_straddles()` replays it for a directly-
+driven `WindowMember`. A member straddling only against its OWN later
+substeps (nothing crossing a component boundary) already works; it is
+specifically a straddling member's role as *another* member's import
+provider that is not yet wired in. `DtPolicy::Adjustable` (which never
+straddles) is unaffected by this gap.

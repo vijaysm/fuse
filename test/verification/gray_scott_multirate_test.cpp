@@ -124,14 +124,29 @@ struct MultirateResult {
   cfg.window_length = window;
   cfg.max_iterations = 200;
   cfg.acceleration = AccelConfig{.kind = accel};
-  ConvergenceMeasure meas;
-  meas.kind = MeasureKind::Relative;
-  meas.tolerance = kCouplingTol;
-  meas.field = "gray_scott";
-  cfg.convergence.add(meas);
+  // The user's decision (relayed 2026-09-29): a convergence measure names
+  // a field TRANSFER (a WindowChannel, by its own `name`), not the whole
+  // coupled system -- see gray_scott_reference_test.cpp's identical
+  // comment. Split into the two real transfers, same kind/tolerance as
+  // the aggregate measure this replaces; not byte-identical to before by
+  // the user's own choice.
+  ConvergenceMeasure meas_u;
+  meas_u.kind = MeasureKind::Relative;
+  meas_u.tolerance = kCouplingTol;
+  meas_u.field = "u_out";
+  cfg.convergence.add(meas_u);
+  ConvergenceMeasure meas_v;
+  meas_v.kind = MeasureKind::Relative;
+  meas_v.tolerance = kCouplingTol;
+  meas_v.field = "v_out";
+  cfg.convergence.add(meas_v);
   cfg.waveform_capacity = 512;
 
-  auto created = WindowCoupler::create({mu, mv}, {{0, 1}, {1, 0}}, cfg);
+  auto created = WindowCoupler::create(
+      {mu, mv},
+      {{.provider = 0, .consumer = 1, .name = "u_out"},
+       {.provider = 1, .consumer = 0, .name = "v_out"}},
+      cfg);
   if (!created.ok()) {
     out.error = created.error().code + ": " + created.error().message;
     return out;
@@ -222,9 +237,24 @@ TEST(GrayScottMultirate, IterationCountsAcrossAccelerators) {
     ASSERT_TRUE(r.ok) << r.error;
     for (int it : r.iterations) *total += it;
   }
-  // MEASURED: 9/13/12 sweeps total (None/Aitken/IQN-ILS) over 4 windows. (It
-  // was 14/17/16 while WindowCoupler wrote its sweep vector transposed; this
-  // pin is what showed the fix changed what each species is fed.) None is NOT the worst here -- on this weakly-coupled, smooth
+  // MEASURED: 9/13/12 sweeps total (None/Aitken/IQN-ILS) over 4 windows.
+  // (It was 14/17/16 while WindowCoupler wrote its sweep vector
+  // transposed, then 9/13/12 once that was fixed. An intermediate Unit
+  // C3 attempt re-seeded window N>0's own first sweep from V's real
+  // previous-window trajectory directly, shifted one window back,
+  // instead of the driver's documented extrapolate_boundary_value()
+  // predictor -- measured to raise this pin to 12/16/15, i.e. MORE
+  // sweeps, which is the tell: that seed was persistence, a
+  // zeroth-order predictor in time, not the second-order-or-better
+  // extrapolation the class is documented to use, and a strictly more
+  // accurate initial guess cannot need more iterations. Reverted; this
+  // pin is back to 9/13/12. Splitting the single aggregate convergence
+  // measure into the two real per-channel transfers (u_out/v_out, Unit
+  // C3's per-field-transfer stopping rule) measured NO change to this
+  // pin -- on this problem the two channels' own residuals track each
+  // other closely enough that testing them separately rather than
+  // combined never changes which sweep first satisfies tolerance.)
+  // None is NOT the worst here -- on this weakly-coupled, smooth
   // problem (Gray-Scott's u*v^2 coupling term is a small perturbation on
   // the diffusion-dominated Newton system at this dt/diffusion scale)
   // plain Picard already converges in very few sweeps per window, and

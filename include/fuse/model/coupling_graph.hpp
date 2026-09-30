@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "fuse/base/result.hpp"
 #include "fuse/model/channel.hpp"
 #include "fuse/model/merge.hpp"
 #include "fuse/model/component.hpp"
@@ -361,6 +362,55 @@ namespace detail {
   return detail::is_jacobi_window_channel(g, ch);
 }
 
+/// The window's length: the named component's own interval, or the
+/// explicit one. `E-SCHED-WINDOW-AMBIGUOUS` if both or neither are set;
+/// `E-SCHED-WINDOW-COMPONENT` if `window_component` does not name a
+/// component in `g`; `E-SCHED-WINDOW-INTERVAL` if the resulting length is
+/// not positive.
+///
+/// Model layer (not schedule), for the SAME reason `window_sample_
+/// capacity()` below is: `ir` sits below `schedule` (docs/dev/
+/// layering.md) and `window_lowering.cpp` needs this exact resolution
+/// (the window length in hand) to size a member's own compiled field,
+/// the same value `validate_coupling_window()` (fuse/schedule/window.hpp)
+/// resolves for its own checks -- one function, so lowering and schedule
+/// cannot resolve two different window lengths for the same scope.
+[[nodiscard]] inline Result<Rational> window_length(
+    const CouplingGraph& g, const CouplingWindowScope& scope) {
+  const bool has_component = scope.window_component.has_value();
+  const bool has_explicit = scope.explicit_interval.has_value();
+  if (has_component == has_explicit) {
+    return Failure{"E-SCHED-WINDOW-AMBIGUOUS",
+                 "CouplingWindowScope must set exactly one of "
+                 "window_component / explicit_interval"};
+  }
+  if (has_explicit) {
+    const Rational len = *scope.explicit_interval;
+    if (!(len > Rational{0})) {
+      return Failure{"E-SCHED-WINDOW-INTERVAL",
+                   "CouplingWindowScope::explicit_interval (" +
+                       len.to_string() + ") must be positive"};
+    }
+    return len;
+  }
+  const std::optional<ComponentId> found =
+      g.find_component(*scope.window_component);
+  if (!found.has_value()) {
+    return Failure{"E-SCHED-WINDOW-COMPONENT",
+                 "CouplingWindowScope::window_component '" +
+                     *scope.window_component +
+                     "' does not name a component in the graph"};
+  }
+  const Rational len = g.component(*found).interval;
+  if (!(len > Rational{0})) {
+    return Failure{"E-SCHED-WINDOW-INTERVAL",
+                 "window-defining component '" + *scope.window_component +
+                     "' has a non-positive interval (" + len.to_string() +
+                     ")"};
+  }
+  return len;
+}
+
 /// The exact number of waveform samples one member's own outgoing
 /// window-scoped field must carry to cover one coupling window: at most
 /// `ceil(window_length / interval)` substep-END samples, plus the
@@ -393,6 +443,100 @@ namespace detail {
   std::size_t needed = static_cast<std::size_t>(substeps) + 1;
   if (policy == DtPolicy::Fixed) needed += 1;
   return needed;
+}
+
+/// The exact sample TIMES (not just how many) a window-scoped member's own
+/// committed trajectory carries within window `window_index` (0-based) of
+/// length `window_length`, from the graph alone: this member's own
+/// `interval`, `policy`, and the absolute time `member_start` its native
+/// grid is anchored at (its own `t=0`, i.e. the initial condition's own
+/// time -- always `Rational{0}` for every caller today, kept as a
+/// parameter because a component free to start its clock elsewhere is
+/// not otherwise excluded by anything in `fuse::Component`'s own
+/// contract). No runtime state -- a straddling member's own carried-
+/// forward clock -- is ever consulted, which is what lets a CONSUMER
+/// compute the identical list a PROVIDER's own grid produces, without
+/// reading the provider's `WindowMemberState` (`fuse::detail::
+/// WindowMemberState`, `fuse/runtime/window_coupler.hpp`): `DtPolicy::
+/// Fixed` never shortens a step to land on a window boundary (its own
+/// docstring), so its Kth substep always ends at EXACTLY `member_start +
+/// K * interval`, in every window that value falls in, whether or not an
+/// earlier window's own straddle carried the member's real clock past
+/// that window's own end -- the grid itself never moves, only which
+/// window each of its points falls into does.
+///
+/// Returned, always: `T0 = member_start + window_index * window_length`,
+/// then every native grid point (`DtPolicy::Fixed`) or restarted-at-T0
+/// grid point (`DtPolicy::Adjustable`, `fuse::detail::plan_substeps()`'s
+/// own contract) strictly inside `(T0, T1)`, then `T1 = T0 +
+/// window_length` -- in ascending order, with no duplicates (`T0`/`T1`
+/// are always present even when they coincide with a native grid point,
+/// because that is where the window's own field transfer needs a
+/// sample regardless of whether the member's own physics needed one
+/// there too).
+///
+/// CALLER'S OWN RESPONSIBILITY -- reading this list against a member's
+/// own compiled sample buffer. A member whose clock has never straddled
+/// a window boundary (every window up to and including this one landed
+/// exactly on a native grid point at its own T0) has one buffer entry
+/// per entry of this list, in the same order: `window_sample_capacity()`
+/// was sized for exactly that correspondence, and it is what today's
+/// only caller (`Runner::Impl::advance_window()`, before this track's
+/// own straddle replay lands) relies on. A member whose clock HAS
+/// carried a straddle into this window (this window's own `T0` is not
+/// itself one of the member's own native grid points -- checkable from
+/// the graph alone, `(T0 - member_start)` not an exact multiple of
+/// `interval`, with no need to ask the member) breaks that
+/// correspondence: this list's own leading `T0` entry has no buffer
+/// slot of its own (the member's real clock skipped past it, straight
+/// to this list's SECOND entry, which is where its window-start
+/// checkpoint value actually sits), and every remaining entry shifts
+/// down by one buffer slot. `T0`'s own value is never lost -- it is
+/// exactly what the consumer's own `WindowMemberState::history`
+/// recorded when this member's straddle resolved at the end of the
+/// PREVIOUS window (`Runner::Impl::advance_window()`'s own history-
+/// update comment) -- but it must be read from there, never
+/// reconstructed from this member's own compiled buffer, whichever
+/// window instance is being read.
+[[nodiscard]] inline std::vector<Rational> window_sample_times(
+    Rational interval, DtPolicy policy, Rational member_start,
+    Rational window_length, std::int64_t window_index) {
+  const Rational T0 = member_start + Rational(window_index) * window_length;
+  const Rational T1 = T0 + window_length;
+  std::vector<Rational> times;
+  times.push_back(T0);
+  if (interval > Rational{0}) {
+    if (policy == DtPolicy::Fixed) {
+      // The member's own GLOBAL grid, anchored at `member_start`,
+      // independent of `window_index`: the first grid point strictly
+      // after `T0`, found by exact-Rational floor division (never a
+      // `double`) rather than by stepping from `member_start` one
+      // `interval` at a time -- the same number either way, but O(1)
+      // instead of O(window_index).
+      const Rational offset = (T0 - member_start) / interval;
+      std::int64_t k = offset.num() / offset.den();  // floor: offset >= 0
+                                                     // always (window_index
+                                                     // >= 0), so truncating
+                                                     // integer division IS
+                                                     // floor division here.
+      Rational t = member_start + Rational(k) * interval;
+      while (!(t > T0)) t = t + interval;
+      while (t < T1) {
+        times.push_back(t);
+        t = t + interval;
+      }
+    } else {
+      // Adjustable: the grid restarts at T0 every window
+      // (`fuse::detail::plan_substeps()`'s own contract).
+      Rational t = T0 + interval;
+      while (t < T1) {
+        times.push_back(t);
+        t = t + interval;
+      }
+    }
+  }
+  times.push_back(T1);
+  return times;
 }
 
 inline Channel& ChannelBuilder::target() { return graph_->channel_mut(id_); }

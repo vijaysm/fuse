@@ -338,8 +338,12 @@ id = "coupler-region-participants-missing-its-ranks"
 area = "runtime"
 describes = "resolve_regions()'s R.participants union no longer scans the region body's own Transport/Epoch instructions for a coupler's ranks -- it reverts to derive_checkpoint_set()'s components alone, which never names a coupler (it owns no state, so no Source node ever points at it). A field transfer inside an implicit coupling group that routes through a separately-placed coupler would then leave the coupler's ranks executing the region's Transport/Epoch collectives while sitting outside the residual reduction those collectives are supposed to agree against."
 file = "src/runtime/iteration.cpp"
-old = "      for (std::size_t i = R.enter; i <= R.exit; ++i) {"
-new = "      for (std::size_t i = R.enter; i < R.enter; ++i) {  // MUTATED: empty loop, no coupler ranks added"
+old = """      for (std::size_t i = R.enter; i <= R.exit; ++i) {
+        const Instruction& ins = stream[i];
+        if (ins.kind != OpKind::Transport && ins.kind != OpKind::Epoch) continue;"""
+new = """      for (std::size_t i = R.enter; i < R.enter; ++i) {  // MUTATED: empty loop, no coupler ranks added
+        const Instruction& ins = stream[i];
+        if (ins.kind != OpKind::Transport && ins.kind != OpKind::Epoch) continue;"""
 target = "fuse_parallel_runner_transport_test"
 test = "parallel.runner_transport.4"
 requires = "mpi"

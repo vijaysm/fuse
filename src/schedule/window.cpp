@@ -91,41 +91,11 @@ std::vector<ComponentId> window_region_members(
   return members;
 }
 
-Result<Rational> window_length(const CouplingGraph& g,
-                               const CouplingWindowScope& scope) {
-  const bool has_component = scope.window_component.has_value();
-  const bool has_explicit   = scope.explicit_interval.has_value();
-  if (has_component == has_explicit) {
-    return Failure{"E-SCHED-WINDOW-AMBIGUOUS",
-                 "CouplingWindowScope must set exactly one of "
-                 "window_component / explicit_interval"};
-  }
-  if (has_explicit) {
-    const Rational len = *scope.explicit_interval;
-    if (!(len > Rational{0})) {
-      return Failure{"E-SCHED-WINDOW-INTERVAL",
-                   "CouplingWindowScope::explicit_interval (" +
-                       len.to_string() + ") must be positive"};
-    }
-    return len;
-  }
-  const std::optional<ComponentId> found =
-      g.find_component(*scope.window_component);
-  if (!found.has_value()) {
-    return Failure{"E-SCHED-WINDOW-COMPONENT",
-                 "CouplingWindowScope::window_component '" +
-                     *scope.window_component +
-                     "' does not name a component in the graph"};
-  }
-  const Rational len = g.component(*found).interval;
-  if (!(len > Rational{0})) {
-    return Failure{"E-SCHED-WINDOW-INTERVAL",
-                 "window-defining component '" + *scope.window_component +
-                     "' has a non-positive interval (" + len.to_string() +
-                     ")"};
-  }
-  return len;
-}
+// window_length() moved to the model layer (fuse/model/coupling_graph.hpp,
+// alongside window_sample_capacity()): ir needs the identical resolution
+// to size a compiled field, and one function is what keeps lowering and
+// schedule() from resolving two different window lengths for the same
+// scope. Declared there now; this file's own callers below are unchanged.
 
 namespace {
 

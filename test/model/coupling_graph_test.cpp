@@ -179,3 +179,87 @@ TEST(CouplingGraph, WindowSampleCapacityMatchesHandDerivedValues) {
       window_sample_capacity(Rational{1}, Rational{0}, DtPolicy::Adjustable),
       1u);
 }
+
+// window_sample_times(): the hand-derived check from this track's own
+// design notes -- B (interval 7, DtPolicy::Fixed), window length 13,
+// window index 1 (the SECOND window: T0=13, T1=26) -- {13, 14, 21, 26}:
+// T0 itself, the two native grid points (0, 7, 14, 21, 28, ...) strictly
+// inside (13, 26), and T1.
+TEST(CouplingGraph, WindowSampleTimesMatchesHandDerivedCheck) {
+  using fuse::DtPolicy;
+  using fuse::window_sample_times;
+
+  const std::vector<Rational> got = window_sample_times(
+      Rational{7}, DtPolicy::Fixed, Rational{0}, Rational{13}, 1);
+  const std::vector<Rational> want = {Rational{13}, Rational{14},
+                                      Rational{21}, Rational{26}};
+  EXPECT_EQ(got, want);
+}
+
+// window_sample_times() is a pure function of the graph alone (interval,
+// policy, member_start, window_length, window_index) -- no runtime
+// state -- which is what is meant to let a CONSUMER (reconstructing a
+// provider's own grid, Runner::Impl::advance_window()'s own top comment)
+// compute the SAME answer the PROVIDER's own subcycling loop does,
+// without ever reading the provider's own carried-forward clock. This
+// test drives a REAL carried-forward clock the way a genuine Fixed
+// subcycling member does -- a straddling step's overshoot carrying into
+// the next window, over every window of the 91-unit (lcm(7,13)) period
+// -- using a small reference re-implementation of `DtPolicy::Fixed`
+// substepping local to this test (never shortening a step, straddling
+// past the window end when the native grid does not land exactly on
+// it), deliberately NOT `fuse::detail::plan_substeps()` itself (a
+// runtime-layer function this model-layer test does not link against),
+// so the two computations share no code, only the same specification.
+// window_sample_times()'s own header comment states the correspondence
+// once there has been a carry-in: its own leading T0 entry has no
+// counterpart in the member's real substep grid (dropped below), and
+// every remaining entry lines up with the member's own next real
+// substep end, one for one.
+TEST(CouplingGraph, WindowSampleTimesAgreesWithTheRealCarriedForwardGrid) {
+  using fuse::DtPolicy;
+  using fuse::window_sample_capacity;
+  using fuse::window_sample_times;
+
+  const Rational window_length{13};
+  const Rational interval{7};
+  const std::size_t capacity =
+      window_sample_capacity(window_length, interval, DtPolicy::Fixed);
+
+  Rational clock{0};  // the member's own REAL, carried-forward clock.
+  for (std::int64_t w = 0; w < 7; ++w) {  // 91 / 13 = 7 windows / period
+    const Rational T0 = Rational(w) * window_length;
+    const Rational T1 = T0 + window_length;
+    const bool has_carry_in = clock > T0;
+
+    // The member's OWN real grid this window: never shortens a step, so
+    // it walks its own native grid from wherever `clock` (this window's
+    // own pass_start_clock, in advance_window()'s own vocabulary)
+    // already sits, straddling past T1 on whichever step first reaches
+    // or exceeds it.
+    std::vector<Rational> real_points;
+    Rational t = clock;
+    while (t < T1) {
+      const Rational end = t + interval;
+      real_points.push_back(end < T1 ? end : (end > T1 ? T1 : end));
+      t = end;
+      if (end >= T1) break;  // that step straddled (or landed exactly);
+                             // the member's real clock now sits at `end`,
+                             // carried into the NEXT window.
+    }
+    const Rational new_clock = t < T1 ? T1 : t;
+
+    const std::vector<Rational> reconstructed = window_sample_times(
+        interval, DtPolicy::Fixed, Rational{0}, window_length, w);
+    ASSERT_GE(reconstructed.size(), 2u) << "window " << w;
+    ASSERT_LE(reconstructed.size(), capacity)
+        << "window " << w << ": window_sample_capacity() must bound every "
+           "window_sample_times() this member can ever produce";
+
+    const std::vector<Rational> expected(
+        reconstructed.begin() + (has_carry_in ? 2 : 1), reconstructed.end());
+    EXPECT_EQ(real_points, expected) << "window " << w;
+
+    clock = new_clock;
+  }
+}

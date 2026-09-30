@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -20,6 +21,7 @@
 #include "fuse/num/kernels.hpp"
 #include "fuse/num/residual_norm.hpp"
 #include "fuse/schedule/slab.hpp"
+#include "fuse/schedule/window.hpp"
 
 #if FUSE_HAVE_MOAB
 // Names no MOAB type -- that is the whole point of the header -- but the class
@@ -1738,6 +1740,40 @@ Result<void> Runner::Impl::resolve_instructions() {
   return check_spacetime_schedule();
 }
 
+namespace {
+
+/// Time windows track: every component that is a member of some
+/// window-scoped iteration region (`fuse::CouplingWindowScope`,
+/// `fuse/model/iteration.hpp`) -- the ones `build_ticks()` below must NOT
+/// give an ordinary per-native-interval `Tick`. Such a member's entire
+/// within-window advance() sequence (every one of its own substeps, not
+/// just one call) is driven by its own `OpKind::WindowAdvance` instruction
+/// (`Runner::Impl::advance_window()`, called from `run_region()`'s body
+/// loop, src/runtime/iteration.cpp) -- unlike an ordinary iteration
+/// region's member, which still gets exactly one ordinary `Tick` per
+/// region pass (its FIRST advance, before the region is ever reached; only
+/// its RE-advances for sweeps k=1,2,... are diverted into
+/// `RegionRuntime::tick_indices`). Giving a window member a `Tick` as well
+/// would advance it twice over the same interval: once here, and once
+/// inside its own `WindowAdvance` instruction's `plan_substeps()`/
+/// `advance_straddle_split()` sequence, which has no way to know the
+/// ordinary tick loop got there first.
+[[nodiscard]] std::unordered_set<std::uint32_t> window_member_components(
+    const CouplingGraph& g) {
+  std::unordered_set<std::uint32_t> out;
+  for (std::uint32_t i = 0; i < g.iteration_region_count(); ++i) {
+    const IterationRegionDecl& decl =
+        g.iteration_region(IterationRegionIdx{i});
+    if (!decl.window_scope.has_value()) continue;
+    for (const ComponentId c : window_region_members(g, decl)) {
+      out.insert(c.value());
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
 Result<void> Runner::Impl::build_ticks(ComponentSet& components) {
   ticks.clear();
 
@@ -1785,6 +1821,11 @@ Result<void> Runner::Impl::build_ticks(ComponentSet& components) {
   all_ticks.clear();
   std::vector<bool> hosted(components.size(), false);
   std::vector<bool> matched(components.size(), false);
+  // Time windows track: computed once, up front -- see
+  // window_member_components()'s own comment for why a member of this set
+  // gets no Tick below, ever, regardless of its own ComponentDecl::interval.
+  const std::unordered_set<std::uint32_t> window_members =
+      window_member_components(graph);
   for (std::uint32_t i = 0; i < graph.component_count(); ++i) {
     const ComponentDecl& decl = graph.component(ComponentId{i});
     if (decl.kind == ComponentKind::Coupler) continue;
@@ -1802,6 +1843,16 @@ Result<void> Runner::Impl::build_ticks(ComponentSet& components) {
                        "would never be advanced"};
     }
     matched[slot] = true;
+
+    // Time windows track: this component's own advance() calls are entirely
+    // owned by its OpKind::WindowAdvance instruction (advance_window(),
+    // src/runtime/iteration.cpp) -- no ordinary Tick, at any interval, is
+    // built for it. Its own ComponentDecl::interval is still read directly
+    // by advance_window() as this member's fine subcycling rate, and still
+    // contributes to ClockSet::checked_common_period()'s LCM (why a 7:13
+    // window naturally produces more than one window instance per period);
+    // neither of those needs a Tick to exist.
+    if (window_members.count(i)) continue;
 
     const Rational dt = decl.interval;
     if (!(dt > Rational{0})) {
@@ -2274,7 +2325,7 @@ Result<void> Runner::Impl::setup(ComponentSet& components,
   // Last: resolve_regions() needs the ticks and the resolved buffers, and it
   // is the single place spec §5.3's preconditions are checked
   // (E-ITER-NOCONVERGE, E-ITER-MAXITER, E-ITER-NOROLLBACK).
-  r = resolve_regions(components);
+  r = resolve_regions(components, registry);
   if (!r.ok()) return r;
 
   // KNOWN_ISSUES.md D11 (closing): scratch for the fixed-chunk deterministic
@@ -2852,27 +2903,36 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
     }
 
     case OpKind::WindowAdvance:
-      // Time windows track: declared (fuse/ir/op.hpp) so a future front end
-      // can name it, but nothing in src/ir or src/schedule emits one yet --
-      // schedule() still runs its unconditional contiguous-run check
-      // (mark_regions, src/schedule/scheduler.cpp) for every region,
-      // window-scoped or not, so a plan containing this op never reaches the
-      // interpreter today. Unlike every other instruction here, subcycling
-      // is not a stateless function of its resolved input/output buffers --
-      // it calls the owning component's advance()/save_state()/
-      // restore_state() directly and carries state across sweeps -- so it
-      // cannot be executed through this switch's uniform
-      // in_ptr()/out_ptr()/span_c()/span_m() convention at all; it needs its
-      // own dispatch with access to the component registry and a persistent
-      // per-member scratch (docs/dev/coupling-windows.md's design notes for
-      // this track cover the shape). Refusing rather than falling through to
-      // a copy, matching Map/Reduce/Closure immediately below: a reserved
-      // operator that behaved as a pass-through would silently run a time
-      // window as though it had been fully executed.
+      // Time windows track: a plan CAN contain this op now (Unit B of this
+      // track compiles a window-scoped region's own field transfers
+      // through the ordinary rules, with a WindowAdvance node per
+      // exporting member; see src/ir/window_lowering.cpp), and it does
+      // reach the interpreter -- but never through THIS switch. Unlike
+      // every other instruction here, subcycling is not a stateless
+      // function of its resolved input/output buffers -- it calls the
+      // owning component's advance()/save_state()/restore_state()
+      // directly and carries state across sweeps -- so it cannot be
+      // executed through this switch's uniform
+      // in_ptr()/out_ptr()/span_c()/span_m() convention, which has no
+      // `ComponentSet&` to call any of those on. `run_region()`'s own
+      // body loop (src/runtime/iteration.cpp) dispatches a
+      // WindowAdvance instruction to `advance_window()` INSTEAD OF
+      // calling this function at all -- reachable because a
+      // WindowAdvance instruction only ever appears inside some window-
+      // scoped region's body (build_iteration_regions(), src/ir/
+      // regions.cpp, includes it by origin like any other node with that
+      // channel's origin). This case is therefore a defensive catch-all
+      // for a WindowAdvance instruction reaching `execute()` from
+      // anywhere else -- which would be a scheduler defect, not a
+      // reachable path today -- and refuses rather than falling through
+      // to a copy, matching Map/Reduce/Closure immediately below: a
+      // reserved operator that behaved as a pass-through would silently
+      // run a time window as though it had been fully executed.
       return Failure{"E-RT-WINDOW-UNWIRED",
-                     "operator 'WindowAdvance' has no interpreter "
-                     "implementation yet; the plan should not have "
-                     "compiled one"};
+                     "operator 'WindowAdvance' reached execute() directly, "
+                     "which has no ComponentSet& to advance/checkpoint the "
+                     "owning member with; it should have been dispatched "
+                     "through run_region()'s own advance_window() instead"};
 
     case OpKind::Map:
     case OpKind::Reduce:
@@ -3204,9 +3264,23 @@ Result<void> Runner::Impl::step_period(ComponentSet& components) {
       ++ti;
     }
     if (ins.region_enter >= 0) {
+      const std::int32_t region_idx = ins.region_enter;
       detail::RegionRuntime& r =
-          regions.at(static_cast<std::size_t>(ins.region_enter));
-      const Result<void> rr = run_region(components, r);
+          regions.at(static_cast<std::size_t>(region_idx));
+      // Time windows track: THIS run's own exit position, not r.exit --
+      // a window-scoped region can have more than one pass per period
+      // (RegionRuntime::passes' own comment), so a stale single r.exit
+      // (fixed at resolve_regions() time to the FIRST pass only) would
+      // desynchronise the walk on the second and later window instances.
+      // `i` is already this pass's own enter (mark_regions() stamped it
+      // there); scan forward for the matching exit, the same technique
+      // mark_regions() itself uses to find one run's own boundary.
+      std::size_t exit_pos = i;
+      while (exit_pos < stream.size() &&
+             stream[exit_pos].region_exit != region_idx) {
+        ++exit_pos;
+      }
+      const Result<void> rr = run_region(components, r, i, exit_pos);
       // R-09 (REVIEW.md): a region failure carries forward exactly like an
       // ordinary instruction failure two branches below -- record it and
       // keep walking the stream -- instead of returning straight out of
@@ -3223,7 +3297,7 @@ Result<void> Runner::Impl::step_period(ComponentSet& components) {
           block_advances_from(slot);
         }
       }
-      i = r.exit + 1;
+      i = exit_pos + 1;
       continue;
     }
     // After a failure this rank keeps executing the COLLECTIVE instructions

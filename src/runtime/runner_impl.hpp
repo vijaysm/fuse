@@ -25,6 +25,8 @@
 #include "fuse/backend/remap_plan.hpp"
 #include "fuse/backend/spacetime.hpp"
 #include "fuse/runtime/runner.hpp"
+#include "fuse/runtime/window_coupler.hpp"
+#include "fuse/schedule/window.hpp"
 
 namespace fuse {
 namespace detail {
@@ -362,9 +364,56 @@ struct RegionBlock {
 struct RegionRuntime {
   std::string name;
   std::size_t index = 0;   // into Impl::regions and Impl::region_stats
-  std::size_t enter = 0;   // first instruction of one pass over the body
-  std::size_t exit = 0;    // last, inclusive
+  std::size_t enter = 0;   // FIRST pass's first instruction (see `passes`)
+  std::size_t exit = 0;    // FIRST pass's last, inclusive
   int         max_iterations = 1;
+
+  /// Time windows track: true for a region whose IterationRegionDecl
+  /// carries a `window_scope` (`fuse::CouplingWindowScope`). Changes two
+  /// things resolve_regions()/run_region() otherwise assume: an ORDINARY
+  /// region's body appears as exactly one contiguous (enter, exit) run
+  /// per schedule period (mark_regions(), src/schedule/scheduler.cpp,
+  /// stamps one run per period because an ordinary region's own clock
+  /// ticks once per period by construction); a WINDOW-scoped region's own
+  /// window may tick several times per period (a 7:13 ratio ticks the
+  /// window's own clock `period / window_length` times), so its body
+  /// appears as that many SEPARATE runs, each needing its own pass
+  /// through run_region() with its OWN checkpoint (mirrors
+  /// WindowCoupler::sweep_window()'s own save_state() at the top of every
+  /// window, not once per period -- see resolve_regions()'s own comment).
+  bool window_scoped = false;
+
+  /// Time windows track: every (enter, exit) run mark_regions() stamped
+  /// for this region in ONE schedule period, in stream order. Exactly one
+  /// entry for an ordinary region (identical to `enter`/`exit` above,
+  /// kept for that case so existing code reading them directly still
+  /// works); one entry PER WINDOW INSTANCE for a window-scoped region.
+  /// step_period() (src/runtime/runner.cpp) reads this to know how many
+  /// times to call run_region() in one period and with which bounds --
+  /// never `enter`/`exit` directly once a region can have more than one
+  /// pass.
+  std::vector<std::pair<std::size_t, std::size_t>> passes;
+
+  /// Time windows track (C3): every LAGGED window_import arc this region
+  /// owns (`Runner::Impl::window_member_config`'s own `import_lagged`).
+  /// `run_region()`'s own sweep loop snapshots each of these into
+  /// `Impl::previous` at the TOP of every sweep, BEFORE any instruction
+  /// in the sweep's body runs -- so a lagged import reads what was
+  /// delivered LAST sweep (Jacobi's/GaussSeidel's lagged direction's own
+  /// rule), never this sweep's own fresh delivery, regardless of where
+  /// the delivering Sink happens to sit in the instruction stream.
+  std::vector<ArcId> window_lagged_import_arcs;
+
+  /// Time windows track: every WindowAdvance node this region owns (one
+  /// per window member, `Runner::Impl::window_member_config`'s own keys
+  /// restricted to this region). `run_region()`'s own straddle-replay
+  /// step, at the top of every window instance's own pass (BEFORE that
+  /// instance's checkpoint is taken -- mirrors WindowCoupler::run_window()
+  /// calling resolve_pending_straddles() before sweep_window()'s own
+  /// save_state()), walks this list to find any member whose PREVIOUS
+  /// window instance left `Impl::window_member_state[node].straddle_
+  /// pending` set.
+  std::vector<NodeId> window_member_nodes;
 
   ConvergenceCriterion         convergence;
   std::unique_ptr<Accelerator> accel;
@@ -544,6 +593,97 @@ struct Runner::Impl {
   std::vector<IterationStats>        region_stats;   // parallel to regions
   std::vector<std::string>           region_explain;  // parallel to regions
 
+  /// Time windows track (C3): everything about ONE window-scoped member
+  /// that `advance_window()` needs and that never changes across sweeps
+  /// or window instances -- resolved ONCE, in `resolve_regions()`, from
+  /// the graph alone (`CouplingWindowScope`, `ComponentDecl::interval`),
+  /// never from a partner's runtime state. Keyed by the `NodeId` of this
+  /// member's OWN `OpKind::WindowAdvance` instruction (stable for the
+  /// whole run; `finish_window_regions()`, src/ir/window_lowering.cpp,
+  /// builds at most one such node per member per region).
+  struct WindowMemberConfig {
+    std::size_t component_slot = 0;  ///< this member's own ComponentSet slot
+    Rational    interval{1};
+    DtPolicy    policy = DtPolicy::Adjustable;
+    int         order = 2;
+    Rational    window_length{1};
+    /// `fuse::window_sample_capacity(window_length, interval, policy)` --
+    /// the SAME function that sized this member's own exported arc
+    /// (`window_lowering.cpp`'s `window_export_width()`), so a mismatch
+    /// between "how wide the compiled field is" and "how many samples
+    /// this member believes it owns" cannot happen.
+    std::size_t capacity = 1;
+    /// Whether THIS member's own IMPORT (not export) is loop-carried,
+    /// per `effective_channel_lag()` (fuse/model/coupling_graph.hpp) --
+    /// the SAME function `lower()`'s own type-check and `window_import_
+    /// is_lagged()` (src/schedule/scheduler.cpp) already use, so
+    /// `advance_window()` cannot disagree with the compiled graph about
+    /// which direction is lagged. `false` when this member has no
+    /// import at all (a pure exporter).
+    bool        import_lagged = false;
+    ArcId       window_import;  ///< this member's own import arc, or invalid
+    std::size_t region_index = 0;  ///< which `regions[]` entry owns this node
+
+    /// This member's own NATIVE (single-sample, per-element) Provides
+    /// storage -- resolved directly from the `FieldRegistry`, per this
+    /// struct's own top comment. `advance()` writes here every substep;
+    /// `advance_window()` copies the result into the correct sample slot
+    /// of the K-wide `ins.out` buffer right after. Null for a
+    /// consumer-only member (owns no channel's source in this region).
+    double*     provided = nullptr;
+    /// This member's own native Requires storage, written by
+    /// `advance_window()` (the substep's mean) right before each
+    /// `advance()` call. Null for a pure exporter.
+    double*     required = nullptr;
+    /// Element count both pointers above share (`FieldRef::size()`).
+    std::size_t length = 0;
+
+    /// The IMPORT's own provider's interval/policy -- needed to interpret
+    /// `window_import`'s flat sample array (its sample TIMES are the
+    /// provider's own `plan_substeps()` grid, not this member's). Graph-
+    /// derived, resolved once alongside everything else above; ignored
+    /// when `window_import` is invalid.
+    Rational    provider_interval{1};
+    DtPolicy    provider_policy = DtPolicy::Adjustable;
+    std::size_t provider_capacity = 1;
+  };
+  std::unordered_map<std::uint32_t, WindowMemberConfig> window_member_config;
+
+  /// Time windows track: one member's own subcycling state, keyed the
+  /// same way as `window_member_config` (the `NodeId` of its own
+  /// `OpKind::WindowAdvance` instruction). `fuse::detail::
+  /// WindowMemberState` (fuse/runtime/window_coupler.hpp, Unit A)
+  /// unchanged -- what `advance_window()` reads and updates every sweep
+  /// for THIS member's own trajectory (clock, history, straddle
+  /// bookkeeping). Never read by a partner: a partner's own sample TIMES
+  /// come from `window_member_config` (the graph alone) and its own
+  /// `dst_step`, never from this map -- there is no side channel between
+  /// two members' own `WindowMemberState`.
+  std::unordered_map<std::uint32_t, detail::WindowMemberState>
+      window_member_state;
+  /// The `Instruction::dst_step` (window instance index) THIS node's
+  /// `advance_window()` last ran for, keyed the same way as
+  /// `window_member_state`. Absent means "never run yet". A call whose
+  /// `dst_step` differs from this is the first sweep of a NEW window
+  /// instance for this member -- see `advance_window()`'s own comment on
+  /// what that triggers (a pending straddle replay, a fresh checkpoint,
+  /// and a fresh substep-grid plan) before this sweep's own work.
+  std::unordered_map<std::uint32_t, std::int64_t> window_last_dst_step;
+  /// Time windows track (C3): the clock `plan_substeps()` starts EVERY
+  /// sweep of the CURRENT pass from -- fixed once, on that pass's own
+  /// first sweep (`iteration == 0`), to either `T0` (no carried
+  /// straddle) or wherever the previous window instance's own overshoot
+  /// left `WindowMemberState::clock`. Read, never written, on every
+  /// later sweep of the SAME pass: `run_region()`'s own generic rollback
+  /// restores this member to the SAME window-start checkpoint before
+  /// every sweep, so every sweep must replan from the SAME starting
+  /// clock -- reading `WindowMemberState::clock` directly instead (as an
+  /// earlier draft of `advance_window()` did) drifts forward every call,
+  /// since that field is ALSO where this sweep's own `final_clock` gets
+  /// recorded, and plans a zero-length (or negative) interval on every
+  /// sweep after the first.
+  std::unordered_map<std::uint32_t, Rational> window_pass_start_clock;
+
   /// KNOWN_ISSUES.md D11 (closing): scratch for the fixed-chunk
   /// deterministic reductions (fuse/num/space_kernels.hpp's
   /// `deterministic_norm_squared`/`deterministic_norm_squared_diff`) that
@@ -692,15 +832,64 @@ struct Runner::Impl {
   // --- src/runtime/iteration.cpp (spec §5.3) -------------------------------
   /// Builds `regions` and refuses every plan whose shape the sweep loop below
   /// cannot execute correctly. Called from setup().
-  Result<void> resolve_regions(ComponentSet& components);
+  /// Time windows track (C3): also resolves each window member's own
+  /// native Provides/Requires field pointers directly from `registry`
+  /// (`WindowMemberConfig::provided`/`required` below) -- bypassing the
+  /// arc system entirely, since a window-scoped export/import has no
+  /// ordinary Source/Sink arc for `resolve_buffers()` to have aliased
+  /// them onto (`seed_window_source_arcs()` replaces the ordinary Source
+  /// node; the K-wide `ins.out` arc is a fresh coupler-owned scratch
+  /// buffer, never the component's own registered storage). Exactly the
+  /// same registry `WindowMember::provided`/`required` (fuse/runtime/
+  /// window_coupler.hpp) documents a caller must bind directly.
+  Result<void> resolve_regions(ComponentSet& components,
+                               FieldRegistry& registry);
   /// Refuses an instruction outside the region that reads a value the region
   /// re-computes on every sweep.
   Result<void> check_region_isolation(const detail::RegionRuntime& r,
                                       const CheckpointSet& cp);
-  /// Checkpoints, at the top of a period, before anything advances.
+  /// Checkpoints, at the top of a period, before anything advances. Time
+  /// windows track: SKIPS a window-scoped region -- see
+  /// `RegionRuntime::window_scoped`'s own comment for why that region's
+  /// own checkpoint instead happens once per PASS, inside `run_region()`
+  /// itself, not once per period here.
   Result<void> checkpoint_regions(ComponentSet& components);
-  /// One region: sweep until converged, exhausted, or failed.
-  Result<void> run_region(ComponentSet& components, detail::RegionRuntime& r);
+  /// One PASS of one region: sweep until converged, exhausted, or failed.
+  /// `enter`/`exit` are THIS pass's own bounds in the instruction stream
+  /// (one entry of `r.passes`) -- explicit, rather than read from
+  /// `r.enter`/`r.exit`, because a window-scoped region may run this
+  /// several times in one period, once per window instance, each with
+  /// different bounds; an ordinary region's caller passes `r.enter`/
+  /// `r.exit` directly (its only pass). For a window-scoped region, also
+  /// does that window instance's OWN checkpoint (save_state() + the byte-
+  /// capture `checkpoint_regions()` does for an ordinary region at
+  /// period-top) as the first act, before the sweep loop.
+  Result<void> run_region(ComponentSet& components, detail::RegionRuntime& r,
+                          std::size_t enter, std::size_t exit);
+  /// Time windows track: executes exactly one `OpKind::WindowAdvance`
+  /// instruction, for exactly one sweep of the region it belongs to.
+  /// Called from `run_region()`'s own body loop INSTEAD OF `execute()`
+  /// for this one instruction kind -- `execute()` has no `ComponentSet&`
+  /// and cannot call `advance()`/`save_state()`/`restore_state()` itself
+  /// (see its own `OpKind::WindowAdvance` case, src/runtime/runner.cpp).
+  /// `iteration` is `run_region()`'s own sweep index `k`. Detects the
+  /// first sweep of a window instance THIS node has not seen before by
+  /// comparing `ins.dst_step` against `window_last_dst_step[node]`
+  /// itself (no separate flag needed: within one pass, every sweep
+  /// k=0,1,2,... calls this with the SAME `dst_step`, so the comparison
+  /// is naturally true only once per pass) -- which is when a pending
+  /// straddle from the PREVIOUS window instance must be resolved and this
+  /// window's own checkpoint/substep grid planned, before any of this
+  /// sweep's own work.
+  ///
+  /// STATUS: stub. Returns E-RT-WINDOW-UNWIRED, same as execute()'s own
+  /// former WindowAdvance case (see that case's own comment, updated to
+  /// point here) -- the real subcycling implementation is blocked on a
+  /// design question flagged to the lead (Jacobi vs Gauss-Seidel exchange
+  /// semantics between two window members within one sweep; see this
+  /// pass's own host.submit_output).
+  Result<void> advance_window(ComponentSet& components, const Instruction& ins,
+                              const detail::Resolved& r, int iteration);
   /// R-10 (REVIEW.md): one sweep's cross-rank residual agreement, reached by
   /// every rank in `r.participants` on every sweep -- including one that has
   /// already locally recorded a step_failure, exactly like reconcile_epoch().

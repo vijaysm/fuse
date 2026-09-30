@@ -148,14 +148,33 @@ struct WindowedRun {
   cfg.window_length = window;
   cfg.max_iterations = 300;
   cfg.acceleration = AccelConfig{.kind = AccelKind::Aitken};
-  ConvergenceMeasure meas;
-  meas.kind = MeasureKind::Relative;
-  meas.tolerance = kCouplingTol;
-  meas.field = "gray_scott";
-  cfg.convergence.add(meas);
+  // The user's decision (relayed 2026-09-29): a convergence measure names
+  // a field TRANSFER (a WindowChannel, by its own `name`), not the whole
+  // coupled system -- there is no single channel a combined "gray_scott"
+  // measure over BOTH directions could name. Split into the two real
+  // transfers, same kind/tolerance as the aggregate measure this
+  // replaces; both must be satisfied (ConvergenceCriterion::
+  // all_satisfied() is a conjunction), which is stricter in general than
+  // one combined relative norm over both directions at once. Not
+  // byte-identical to before by the user's own choice -- see this file's
+  // before/after diagnostics.
+  ConvergenceMeasure meas_u;
+  meas_u.kind = MeasureKind::Relative;
+  meas_u.tolerance = kCouplingTol;
+  meas_u.field = "u_out";
+  cfg.convergence.add(meas_u);
+  ConvergenceMeasure meas_v;
+  meas_v.kind = MeasureKind::Relative;
+  meas_v.tolerance = kCouplingTol;
+  meas_v.field = "v_out";
+  cfg.convergence.add(meas_v);
   cfg.waveform_capacity = 1024;
 
-  auto created = WindowCoupler::create({mu, mv}, {{0, 1}, {1, 0}}, cfg);
+  auto created = WindowCoupler::create(
+      {mu, mv},
+      {{.provider = 0, .consumer = 1, .name = "u_out"},
+       {.provider = 1, .consumer = 0, .name = "v_out"}},
+      cfg);
   if (!created.ok()) {
     out.error = created.error().code + ": " + created.error().message;
     return out;
