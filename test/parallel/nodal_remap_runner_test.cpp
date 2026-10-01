@@ -287,13 +287,18 @@ void run_and_check(std::size_t n_beam, std::size_t n_fluid, fuse::RankSet beam_r
   // deliberately WITHOUT a base communicator -- the same `ci.reduce ==
   // false` branch the mutation forces): `conservation_violations` came back
   // 2 of 4 checks, `worst_conservation_error` 1.0 (100% relative), while
-  // `run_period()` still reported `ok()` -- exactly the silent-survival
-  // shape. Setting this true turns that same condition into a hard
-  // `E-RT-CONSERVATION` failure (confirmed by the same harness: "integral
-  // 10.400000 -> 0.000000" once `abort_on_violation` was flipped on), which
-  // is what actually makes this test check the Runner's outcome against its
-  // own MPI_Allreduce of the same integrals below -- the claim the comment
-  // used to make here without this line being present to back it.
+  // `run_period()` still reported `ok()`. Setting this true makes a violation
+  // a hard `E-RT-CONSERVATION` failure.
+  //
+  // CORRECTION, 2026-10-01 (host run, FUSE_CONSERVATION_DEBUG). Those
+  // "violations" were not the force transfer's: they were a conservation
+  // check on the CONSISTENT velocity transfer (8 beam vertices -> 11 fluid
+  // cells), comparing a vertex sum (10.4) with a cell integral (1.3). A
+  // pointwise interpolation conserves no integral, and compilation no longer
+  // emits a check after one (fuse::is_pointwise_interpolation;
+  // DerivedOps.NoConstrainAfterAPointwiseInterpolation). The check that
+  // remains is the force transfer's, consistent-transpose, Extensive --
+  // the one "conservation-check-not-reduced-across-ranks" targets.
   cfg.abort_on_violation = true;
   {
     const auto r = runner.initialize(components, registry, cfg);

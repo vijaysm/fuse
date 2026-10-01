@@ -98,6 +98,34 @@ TEST(DerivedOps, NoConstrainWhenConservationIsNone) {
   EXPECT_FALSE(contains(kinds(r.dag), OpKind::Constrain));
 }
 
+// A consistent (pointwise) interpolation conserves no integral, so it gets
+// no conservation check; the host found the false violation one produced on
+// 2026-10-01 (a nodal vertex sum compared with a cell integral). A method
+// that does conserve keeps its check. Diagnose is unaffected either way.
+TEST(DerivedOps, NoConstrainAfterAPointwiseInterpolation) {
+  for (const char* m : {"consistent", "mls", "mls:basis=linear"}) {
+    for (const Conservation c : {Conservation::Intensive, Conservation::Extensive}) {
+      CouplingGraph g = pair(false, c);
+      g.channel(fuse::ChannelId{0}).remap_method(m);
+      const auto r = lower(g);
+      ASSERT_TRUE(r.ok()) << m << ": " << r.diags.to_string();
+      const auto k = kinds(r.dag);
+      EXPECT_FALSE(contains(k, OpKind::Constrain)) << m;
+      EXPECT_TRUE(contains(k, OpKind::Diagnose)) << m;
+    }
+  }
+}
+
+TEST(DerivedOps, ConstrainStaysAfterAConservingMethod) {
+  for (const char* m : {"", "conservative", "consistent-transpose", "intx", "tempest"}) {
+    CouplingGraph g = pair(false, Conservation::Extensive);
+    if (*m != '\0') g.channel(fuse::ChannelId{0}).remap_method(m);
+    const auto r = lower(g);
+    ASSERT_TRUE(r.ok()) << "'" << m << "': " << r.diags.to_string();
+    EXPECT_TRUE(contains(kinds(r.dag), OpKind::Constrain)) << "'" << m << "'";
+  }
+}
+
 TEST(DerivedOps, AlwaysInsertsDiagnoseAfterRemap) {
   for (const Conservation c : {Conservation::None, Conservation::Extensive}) {
     const auto r = lower(pair(false, c));
