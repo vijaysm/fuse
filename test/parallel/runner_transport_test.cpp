@@ -1007,8 +1007,20 @@ TEST(RunnerTransport, AChannelOutsideTheRegionStillCompletesAfterTheRegionFails)
   ASSERT_FALSE(r.ok()) << "rank " << me
                        << ": the period must fail everywhere, including on the "
                           "rank that only belongs to linkB";
-  EXPECT_EQ(r.error().code, outside ? "E-RT-EPOCH-PEER" : "E-TEST-ADVANCE-REFUSED")
-      << "rank " << me << ": " << r.error().message;
+  // Only the fluid's own processes step it (3aae2ed), so only they report its
+  // refusal. A process outside the implicit coupling group learns of it at
+  // linkB's Epoch; a process inside the group that does not host the fluid
+  // learns at linkB's Epoch or the group's residual agreement, whichever its
+  // stream reaches first (host, 2026-10-01: E-RT-EPOCH-PEER at 3, 4 and 5).
+  if (h.fluid_.contains(me)) {
+    EXPECT_EQ(r.error().code, "E-TEST-ADVANCE-REFUSED") << "rank " << me << ": " << r.error().message;
+  } else if (outside) {
+    EXPECT_EQ(r.error().code, "E-RT-EPOCH-PEER") << "rank " << me << ": " << r.error().message;
+  } else {
+    EXPECT_TRUE(r.error().code == "E-RT-EPOCH-PEER" || r.error().code == "E-RT-REGION-PEER")
+        << "rank " << me << " does not step the fluid, so it must report a partner's "
+        << "failure, not " << r.error().code << ": " << r.error().message;
+  }
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
