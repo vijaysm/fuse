@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstddef>
 #include <cstdint>
@@ -3115,6 +3116,32 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
         return Failure{"E-RT-CONSERVATION-REDUCE",
                      "a base communicator is configured but this build has no MPI"};
 #endif
+      }
+      // Opt-in, like FUSE_TRANSPORT_DEBUG: one line per check per process,
+      // and a getenv per check otherwise. Prints this process's own shares
+      // (before reduction) next to the totals the verdict uses, plus how
+      // many weights are non-zero on each side, so a wrong ownership or a
+      // wrong weight is visible without a debugger.
+      if (std::getenv("FUSE_CONSERVATION_DEBUG") != nullptr) {
+        const double own_before =
+            num::weighted_sum(src.data, wb.data(), wb.size());
+        const double own_after = num::weighted_sum(out, wa.data(), wa.size());
+        std::size_t nzb = 0, nza = 0;
+        for (const double w : wb) nzb += w != 0.0 ? 1 : 0;
+        for (const double w : wa) nza += w != 0.0 ? 1 : 0;
+        int me = -1;
+#if FUSE_HAVE_MPI
+        if (config.base_communicator.has_value()) {
+          MPI_Comm_rank(MPI_Comm_f2c(static_cast<MPI_Fint>(*config.base_communicator)), &me);
+        }
+#endif
+        std::fprintf(stderr,
+                     "[conservation rank %d period %lld arc %%%u<-%%%u] own before=%.17g "
+                     "(%zu of %zu weights non-zero) own after=%.17g (%zu of %zu) "
+                     "total before=%.17g after=%.17g reduced=%d\n",
+                     me, static_cast<long long>(period_index), ins.out.value(), ci.before_arc, own_before,
+                     nzb, wb.size(), own_after, nza, wa.size(), before, after,
+                     ci.reduce ? 1 : 0);
       }
       const double scale = std::abs(before) > 0.0 ? std::abs(before) : 1.0;
       const double rel = std::abs(after - before) / scale;
