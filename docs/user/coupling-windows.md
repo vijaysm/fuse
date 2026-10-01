@@ -110,11 +110,30 @@ pair — `test/runtime/window_runner_straddle_test.cpp`.
 ## What this does not do yet
 
 A `DtPolicy::Fixed` member whose own step crosses the window end (the
-*straddling* step, above) is rejected by the Runner
-(`E-RT-WINDOW-STRADDLE-REPLAY`) rather than replayed the way
+*straddling* step, above) is replayed by the Runner the same way
 `WindowCoupler::resolve_pending_straddles()` replays it for a directly-
-driven `WindowMember`. A member straddling only against its OWN later
-substeps (nothing crossing a component boundary) already works; it is
-specifically a straddling member's role as *another* member's import
-provider that is not yet wired in. `DtPolicy::Adjustable` (which never
-straddles) is unaffected by this gap.
+driven `WindowMember` — both a member straddling against its own later
+substeps and a straddling member's role as *another* member's import
+provider are wired in and checked bit-for-bit against the driver
+(`test/runtime/window_runner_straddle_test.cpp`). `DtPolicy::Adjustable`
+never straddles, so this does not apply to it.
+
+Three narrower combinations remain unsupported, all still rejected
+outright rather than silently wrong:
+
+- Two `DtPolicy::Fixed` members straddling the *same* window together
+  (`E-RT-WINDOW-STRADDLE`, KNOWN_ISSUES.md D7) — the replay above
+  handles exactly one straddling member per window, never two members
+  replaying against each other's own not-yet-resolved trajectories at
+  once.
+- `WaveformIteration::GaussSeidel` together with a real accelerator on
+  a window region (`E-RT-WINDOW-ACCEL`) — out of scope for this track.
+- A straddling `DtPolicy::Fixed` provider whose channel to its own
+  consumer crosses a genuine (non-identity) `Remap`, or whose provider
+  and consumer are declared on different ranks (`E-RT-WINDOW-STRADDLE-
+  REPUBLISH`) — the replay publishes its own corrected value straight
+  into the consumer's own import storage, which is only exact when
+  that channel moves no data at all (same ranks, same mesh/region);
+  running the publish through the channel's own compiled Transport/
+  Remap chain instead, so a genuine remap or cross-rank transfer is
+  handled rather than refused, is future work.

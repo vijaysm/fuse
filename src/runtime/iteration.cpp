@@ -301,6 +301,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         cfg.capacity =
             window_sample_capacity(cfg.window_length, cfg.interval, cfg.policy);
         cfg.window_import = ins.attrs.window_import;
+        cfg.provider_component_slot = components.size();  // sentinel: none
         cfg.region_index = ri;
 
         // The channel THIS member sources (its own export) and the one
@@ -322,12 +323,62 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
             provider_exported_field = ch.source;
             cfg.import_lagged = effective_channel_lag(graph, cid) != 0;
             const ComponentId provider = graph.owner_of(ch.source);
+            const std::string& pname = graph.component(provider).name;
+            for (std::size_t j = 0; j < components.size(); ++j) {
+              if (components.at(j).name() == pname) {
+                cfg.provider_component_slot = j;
+                break;
+              }
+            }
             cfg.provider_interval = graph.component(provider).interval;
             cfg.provider_policy =
                 scope.policy_for(graph.component(provider).name)
                     .value_or(DtPolicy::Adjustable);
             cfg.provider_capacity = window_sample_capacity(
                 cfg.window_length, cfg.provider_interval, cfg.provider_policy);
+
+            // Time windows track: resolve_pending_window_straddles() (this
+            // function's own sibling, below) publishes a straddling
+            // provider's real post-replay value straight into THIS
+            // consumer's own `window_import` arc, bypassing Transport/
+            // Remap entirely -- exact ONLY when the channel moves no
+            // data at all: same ranks (nothing to send), same region
+            // (nothing to remap). `DtPolicy::Fixed` with an interval
+            // that does not divide the window is what can ever leave a
+            // straddle PENDING in the first place (plan_substeps()'s own
+            // contract; `DtPolicy::Adjustable` never straddles) -- a
+            // channel that could never see a straddle has nothing this
+            // publish ever touches, so it is not rejected here even if
+            // it is itself remapped or cross-rank.
+            const Rational win_over_interval =
+                cfg.window_length / cfg.provider_interval;
+            const bool provider_can_straddle =
+                cfg.provider_policy == DtPolicy::Fixed &&
+                win_over_interval.num() % win_over_interval.den() != 0;
+            const bool same_ranks =
+                graph.component(provider).ranks.same_as(
+                    graph.component(member).ranks);
+            const bool same_region =
+                graph.field(ch.source).region == graph.field(ch.target).region;
+            if (provider_can_straddle && (!same_ranks || !same_region)) {
+              return Failure{
+                  "E-RT-WINDOW-STRADDLE-REPUBLISH",
+                  "iteration region '" + R.name + "': window member '" +
+                      mname + "' imports from '" + pname +
+                      "', a DtPolicy::Fixed provider whose own interval "
+                      "does not divide the window (it can leave a "
+                      "straddle pending), through a channel that is " +
+                      std::string(!same_ranks ? "not on the same ranks"
+                                               : "not on the same region") +
+                      " -- resolve_pending_window_straddles()'s own "
+                      "republish of a straddling provider's real value "
+                      "writes directly into this consumer's own "
+                      "window_import arc, which is only exact for a "
+                      "same-rank, same-region (identity) transfer; a real "
+                      "Transport or Remap between provider and consumer "
+                      "would need to run for this consumer's own copy to "
+                      "be correct, which this publish does not do"};
+            }
           }
         }
 
@@ -1047,6 +1098,15 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
   // moved to run once per CALL (= once per window instance) instead of
   // once per period.
   if (R.window_scoped) {
+    // Resolve any straddle still pending from the PREVIOUS window
+    // instance BEFORE taking THIS window's own checkpoint, below --
+    // that checkpoint would otherwise overwrite the very state the
+    // replay needs to restore_state() back to (resolve_pending_window_
+    // straddles()'s own comment, runner_impl.hpp).
+    const Result<void> replay_r = resolve_pending_window_straddles(
+        components, R);
+    if (!replay_r.ok()) return replay_r.error();
+
     for (const std::size_t slot : R.component_slots) {
       const Result<void> s = components.at(slot).save_state();
       if (!s.ok()) return s;
@@ -1440,16 +1500,24 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
       if (dst_it == window_last_dst_step.end()) continue;
       const Rational this_T0 = Rational(dst_it->second) * cfg.window_length;
       const Rational this_T1 = this_T0 + cfg.window_length;
-      const auto planned = detail::plan_substeps(
-          this_T0, cfg.provider_interval, this_T1, cfg.provider_policy);
-      const std::size_t last_sample = planned.first.size();
-      if (!planned.first.empty() && planned.first.back().straddle) {
-        // The provider itself is still straddling past this_T1 (its own
-        // WindowAdvance already rejected reconstructing THAT grid,
-        // E-RT-WINDOW-STRADDLE-REPLAY, before this region ever reaches
-        // here) -- nothing valid to read.
-        continue;
-      }
+      // `window_sample_times()`/`window_sample_shift()` (fuse/model/
+      // coupling_graph.hpp): the SAME graph-only reconstruction
+      // advance_window() uses for its own import waveform (this
+      // function's own top comment) -- the provider's own buffer
+      // index that holds its value AT `this_T1` is the last entry of
+      // that list, shifted down by one slot whenever an earlier
+      // window's own straddle carried the provider's real clock past
+      // `this_T0` before this window's own sweep 0 ever ran.
+      const std::size_t sample_count =
+          window_sample_times(cfg.provider_interval, cfg.provider_policy,
+                              Rational{0}, cfg.window_length,
+                              dst_it->second)
+              .size();
+      const int shift = window_sample_shift(cfg.provider_interval,
+                                            cfg.provider_policy,
+                                            Rational{0}, this_T0);
+      const std::size_t last_sample =
+          sample_count - 1 - static_cast<std::size_t>(shift);
       const detail::Slot& import_slot = slots[cfg.window_import.value()];
       if (import_slot.data == nullptr) continue;
       detail::WindowMemberState& st_import = window_member_state[node];
@@ -1463,6 +1531,216 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
         } else {
           st_import.history[e].back().second = v_boundary;
         }
+      }
+    }
+  }
+  return Result<void>::success();
+}
+
+// Mirrors WindowCoupler::resolve_pending_straddles() (window_coupler.cpp)
+// on the Runner -- see that function's own comment for WHY a replay is
+// needed at all (not just "carry the clock"): a straddling member's own
+// state, at the end of the window that just finished, was advanced past
+// that window's own end using whichever sweep's import snapshot was live
+// at the time -- for a LAGGED import (Jacobi-forced, or GaussSeidel's own
+// lagged direction), that is ONE SWEEP BEHIND the window's own FINAL,
+// now-authoritative delivery, by design (this function's own sibling,
+// advance_window()'s top comment). This replay redoes every substep
+// since the member's own last checkpoint with that now-authoritative
+// data, so the state `run_region()`'s own NEXT checkpoint (immediately
+// after this call) captures is the one the driver's own single-sweep-
+// lag-free `history` always had.
+Result<void> Runner::Impl::resolve_pending_window_straddles(
+    ComponentSet& components, detail::RegionRuntime& R) {
+  for (const NodeId node : R.window_member_nodes) {
+    detail::WindowMemberState& st = window_member_state[node.value()];
+    if (!st.straddle_pending) continue;
+    const WindowMemberConfig& cfg = window_member_config.at(node.value());
+    Component& comp = components.at(cfg.component_slot);
+    // `straddle_window_start`: the CHECKPOINT's own time (this member's
+    // own clock when it was taken, possibly already past the window's
+    // own nominal start if an EARLIER straddle carried it there --
+    // WindowCoupler's own `WindowMemberState::straddle_window_start`
+    // field comment, mirrored exactly). `nominal_T0`/`prev_T1` are the
+    // window's own boundaries (`prev_T1 - window_length` recovers
+    // `nominal_T0` exactly, since `prev_T1` is always an integer
+    // multiple of `window_length`) -- what this member's own IMPORT is
+    // scoped to, regardless of where ITS OWN checkpoint sat.
+    const Rational checkpoint_clock = st.straddle_window_start;
+    const Rational prev_T1 = st.straddle_window_end;
+    const Rational nominal_T0 = prev_T1 - cfg.window_length;
+    const Rational target_clock = st.clock;
+
+    const Result<void> r0 = comp.restore_state();
+    if (!r0.ok()) return r0;
+
+    // This member's own import over the window that just finished,
+    // [nominal_T0, prev_T1) -- built exactly as advance_window() itself
+    // builds it (the SAME `window_sample_times()`/`window_sample_
+    // shift()` correspondence), but reading the LIVE buffer directly:
+    // this is never a pass's first sweep, so there is no predictor to
+    // apply, and nothing overwrites `slots[cfg.window_import.value()]`
+    // between the window that just finished and this call.
+    std::vector<Waveform> import_wf;
+    if (cfg.window_import.valid() && cfg.required != nullptr) {
+      const double* arr = slots[cfg.window_import.value()].data;
+      const Rational idx_q = nominal_T0 / cfg.window_length;
+      const std::int64_t prev_window_index = idx_q.num() / idx_q.den();
+      const std::vector<Rational> times = window_sample_times(
+          cfg.provider_interval, cfg.provider_policy, Rational{0},
+          cfg.window_length, prev_window_index);
+      const int shift = window_sample_shift(
+          cfg.provider_interval, cfg.provider_policy, Rational{0}, nominal_T0);
+      import_wf.reserve(cfg.length);
+      for (std::size_t e = 0; e < cfg.length; ++e) {
+        Waveform wf(1, cfg.provider_capacity, TemporalBasis::Linear, 1);
+        wf.reset(nominal_T0, prev_T1);
+        const bool have_history =
+            e < st.history.size() && !st.history[e].empty();
+        for (std::size_t k = 0; k < times.size(); ++k) {
+          const double v = (shift == 1 && k == 0)
+              ? (have_history ? st.history[e].back().second
+                              : arr[e * cfg.provider_capacity + 0])
+              : arr[e * cfg.provider_capacity +
+                   (k - static_cast<std::size_t>(shift))];
+          Result<void> p = wf.push(times[k], &v);
+          if (!p.ok()) return p.error();
+        }
+        import_wf.push_back(std::move(wf));
+      }
+    }
+
+    fuse::WindowMember member_view;
+    member_view.component = &comp;
+    member_view.provided = cfg.provided;
+    std::vector<double> scratch_required;
+    member_view.required = cfg.required != nullptr
+        ? cfg.required
+        : (scratch_required.assign(cfg.length, 0.0), scratch_required.data());
+    member_view.length = cfg.length;
+
+    // Replays every substep since this member's own last checkpoint
+    // (`checkpoint_clock`, the value that checkpoint held), up to
+    // `target_clock` (wherever the straddle left `st.clock`) -- at most
+    // ONE chunk straddles `prev_T1` (plan_substeps()'s own contract: an
+    // overshoot is always < this member's own interval), split exactly
+    // there via the SAME shared detail::advance_straddle_split() the
+    // original (now superseded) substep loop used.
+    Rational clock = checkpoint_clock;
+    while (clock < target_clock) {
+      const Rational end = (clock + cfg.interval < target_clock)
+                                ? clock + cfg.interval
+                                : target_clock;
+      const bool this_chunk_straddles = (clock < prev_T1 && prev_T1 < end);
+      if (this_chunk_straddles) {
+        std::vector<double> out_scratch(cfg.length);
+        const Result<void> split_r = detail::advance_straddle_split(
+            member_view, clock, prev_T1, end, 0, 0,
+            [&](std::size_t e, Rational a, Rational b) -> Result<double> {
+              if (import_wf.empty()) return member_view.required[e];
+              const Result<double> v = detail::mean_over(import_wf[e], a, b);
+              return v;
+            },
+            [&](std::size_t e) -> Result<double> {
+              if (import_wf.empty()) return member_view.required[e];
+              double v = 0.0;
+              const Result<void> r = import_wf[e].evaluate(prev_T1, &v);
+              if (!r.ok()) return member_view.required[e];
+              return v;
+            },
+            [&](std::size_t e, Rational target) -> double {
+              if (e >= st.history.size() || st.history[e].empty()) {
+                return member_view.required[e];
+              }
+              const double v = fuse::extrapolate_boundary_value(
+                  st.history[e], target, cfg.order);
+              return v;
+            },
+            out_scratch.data());
+        if (!split_r.ok()) return split_r.error();
+      } else {
+        for (std::size_t e = 0; e < cfg.length; ++e) {
+          if (!import_wf.empty()) {
+            const Result<double> mv = detail::mean_over(import_wf[e], clock, end);
+            if (mv.ok()) member_view.required[e] = mv.value();
+          }
+        }
+        StepContext ctx;
+        ctx.t_begin = clock;
+        ctx.t_end = end;
+        ctx.step = 0;
+        ctx.iteration = 0;
+        const Result<void> ar = comp.advance(ctx);
+        if (!ar.ok()) return ar;
+      }
+      clock = end;
+    }
+    st.straddle_pending = false;
+
+    // Publish the real post-replay value into every OTHER member's own
+    // compiled IMPORT arc, slot 0 -- not into THIS member's own export
+    // arc (`ins.out`), which is a different arc, connected to the
+    // consumer's `window_import` only by the field transfer's
+    // Transport/Remap/Sink chain, and that chain has not run for THIS
+    // window instance yet. The driver's equivalent is
+    // `build_delivered_member()` reading `members_[i].provided[e]`
+    // directly (window_coupler.cpp): the value a LAGGED consumer's
+    // predictor needs at `window_sample_times()` index
+    // `k == window_sample_shift(...)` on the NEXT window's sweep 0.
+    //
+    // KNOWN LIMITATION. Writing straight into the consumer's import arc
+    // bypasses the field transfer, so it is exact only for an identity
+    // transfer between components on the same processor set. That is
+    // ENFORCED, not assumed: resolve_regions() rejects every other
+    // configuration of a provider that can cross a window end
+    // (E-RT-WINDOW-STRADDLE-REPUBLISH), and the loop below fails rather
+    // than skipping if it ever meets one. Sending this value through the
+    // field transfer itself, so that a remap or a separate processor set
+    // is handled, is open. `previous[]`'s once-per-sweep snapshot
+    // (run_region()'s k=0 top) reads `slots[]` strictly AFTER this
+    // function, so it picks up this write.
+    for (auto& [other_node, other_cfg] : window_member_config) {
+      // Not a consumer of THIS provider at all -- a legitimate skip, not
+      // a failure: most entries in this map are not.
+      if (!other_cfg.import_lagged || !other_cfg.window_import.valid()) {
+        continue;
+      }
+      if (other_cfg.provider_component_slot != cfg.component_slot) continue;
+
+      // Past this point, `other_cfg` IS a lagged consumer of this exact
+      // provider, and the setup-time check above (`E-RT-WINDOW-STRADDLE-
+      // REPUBLISH`) already refused any such channel that is not
+      // same-rank/same-region when the provider can straddle -- so
+      // nothing below should legitimately fail. If it does anyway (the
+      // arc id out of range, the slot never allocated, or sized for a
+      // layout this write does not expect), that is exactly the silent-
+      // wrong-answer case the setup check exists to rule out IN
+      // ADVANCE; report it loudly here too rather than skip it quietly,
+      // in case setup's own graph-level check ever missed a path that
+      // reaches this write some other way.
+      if (other_cfg.window_import.value() >= slots.size()) {
+        return Failure{"E-RT-WINDOW-STRADDLE-REPUBLISH",
+                     "resolve_pending_window_straddles(): a lagged "
+                     "consumer's own window_import arc id is out of "
+                     "range; this should have been caught at setup"};
+      }
+      detail::Slot& import_slot = slots[other_cfg.window_import.value()];
+      if (import_slot.data == nullptr) {
+        return Failure{"E-RT-WINDOW-STRADDLE-REPUBLISH",
+                     "resolve_pending_window_straddles(): a lagged "
+                     "consumer's own window_import arc is not allocated "
+                     "on this process -- publishing the straddling "
+                     "provider's real value here would silently leave "
+                     "that process with a stale predictor input"};
+      }
+      if (import_slot.total() != other_cfg.length * other_cfg.provider_capacity) {
+        return Failure{"E-RT-WINDOW-STRADDLE-REPUBLISH",
+                     "resolve_pending_window_straddles(): a lagged "
+                     "consumer's own window_import arc is not sized the "
+                     "way this write expects (length * provider_capacity)"};
+      }
+      for (std::size_t e = 0; e < other_cfg.length && e < cfg.length; ++e) {
+        import_slot.data[e * other_cfg.provider_capacity + 0] = cfg.provided[e];
       }
     }
   }
@@ -1485,33 +1763,37 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
 // never see this sweep's own fresh delivery, regardless of where the
 // delivering Sink sits in the stream. Neither reads anything from a
 // partner's OWN WindowMemberState: every sample TIME below comes from
-// plan_substeps() applied to (window_length, this member's or its
-// import's PROVIDER's own interval/policy, window index) -- the graph
-// alone (WindowMemberConfig's own comment) -- and every sample VALUE
-// comes from the compiled dataflow arc the ordinary channel rule already
-// built. There is no side channel.
+// `window_sample_times()`/`plan_substeps()` applied to (window_length,
+// this member's or its import's PROVIDER's own interval/policy, window
+// index) -- the graph alone (WindowMemberConfig's own comment) -- and
+// every sample VALUE comes from the compiled dataflow arc the ordinary
+// channel rule already built, or (the one exception, and still never a
+// partner's live state) this member's OWN `st.history`, which already
+// holds what arrived through a PAST field transfer. There is no side
+// channel.
 //
-// SCOPED LIMITATION (reported, not hidden): a `DtPolicy::Fixed` member
-// or import-provider whose last substep crosses the window end (a
-// "straddle") is REJECTED outright (`E-RT-WINDOW-STRADDLE-REPLAY`), below,
-// rather than served an approximation. Deliberately a DIFFERENT code
-// from `WindowCoupler::create()`'s own `E-RT-WINDOW-STRADDLE`
-// (window_coupler.cpp): that one refuses only the unsupported case of
-// TWO Fixed members straddling the same window (KNOWN_ISSUES.md D7's
-// envelope), because a SINGLE straddling member is exactly what
-// `resolve_pending_straddles()` DOES support there, via the replay.
-// This function has not wired that replay in at all yet, so it refuses
-// every straddle, including the single-member case WindowCoupler
-// already handles. The correct treatment --
-// WindowCoupler::resolve_pending_straddles()'s two-phase split-advance
-// replay against the previous window's CONVERGED data plus a polynomial
-// extrapolation for whatever ran past it (window_coupler.cpp), boundary
-// value and extrapolated tail both sourced from what arrived through
-// the field transfer, never a partner's state -- is not yet wired into
-// this function. A caller that needs a straddling Fixed member through
-// the Runner must wait for that replay; `DtPolicy::Adjustable` (which
-// plan_substeps() truncates onto the window end, never straddling) is
-// unaffected.
+// A `DtPolicy::Fixed` member's own last substep crossing the window end
+// (a "straddle") is handled two ways depending on whose substep it is.
+// THIS member's own straddle is split in place, below, via `detail::
+// advance_straddle_split()`, giving a provisional value the member's own
+// state carries into the NEXT window instance; `resolve_pending_window_
+// straddles()` (this file, called from `run_region()`, BEFORE this
+// function ever runs for that next instance) then REPLAYS it with that
+// window's own now-final data, following the SAME choreography
+// `WindowCoupler::resolve_pending_straddles()` uses -- NOT YET VERIFIED
+// bit-exact against it (test/runtime/window_runner_straddle_test.cpp's
+// own *FixedBCrossing tests still disagree at this writing; see that
+// file's own comment on the open gap). An IMPORT PROVIDER's straddle is
+// handled by
+// `window_sample_times()`/`window_sample_shift()` (fuse/model/coupling_
+// graph.hpp) reconstructing the provider's own grid and buffer-index
+// correspondence from the graph alone -- verified against the compiled
+// buffer a straddling provider actually writes, and against a real
+// carried-forward clock over a full period, for a provider whose own
+// interval is smaller than the window (the only envelope this track
+// names; KNOWN_ISSUES.md D7 -- TWO Fixed members straddling the SAME
+// window -- remains refused at setup, unconditionally, identically to
+// `WindowCoupler::create()`'s own `E-RT-WINDOW-STRADDLE`).
 Result<void> Runner::Impl::advance_window(ComponentSet& components,
                                           const Instruction& ins,
                                           const detail::Resolved& /*r*/,
@@ -1552,15 +1834,33 @@ Result<void> Runner::Impl::advance_window(ComponentSet& components,
 
   Rational pass_start_clock;
   if (first_sweep_of_pass) {
-    // See this function's own "SCOPED SIMPLIFICATION" comment: carry the
-    // clock, do not replay. `st.clock` already sits wherever the last
-    // substep of the previous window instance left it (past T0 only if
-    // that substep straddled); a member that has never straddled starts
-    // fresh, exactly at this window's own nominal start. Cached in
-    // `window_pass_start_clock` (its own comment, runner_impl.hpp) so
-    // EVERY sweep of this pass plans from the SAME clock, not from
-    // wherever the PREVIOUS sweep's own advance left `st.clock`.
-    pass_start_clock = st.straddle_pending ? st.clock : T0;
+    // `st.clock` already sits wherever the last substep of the previous
+    // window instance left it (past T0 only if that substep straddled);
+    // a member that has never straddled starts fresh, exactly at this
+    // window's own nominal start. Compared against `T0` directly, never
+    // against `st.straddle_pending` -- `resolve_pending_window_
+    // straddles()` (called from `run_region()`, BEFORE this function
+    // ever runs for this pass) already clears that flag once its own
+    // replay resolves it, but `st.clock` itself is untouched by that
+    // replay (the replay redoes the COMPONENT's state, never this
+    // bookkeeping). MEASURED (this session): switching this ternary's
+    // condition from `st.straddle_pending` to `st.clock > T0` fixed a
+    // real bug -- the OLD condition, now always false by the time this
+    // runs (the replay clears it first), was silently collapsing every
+    // post-straddle window back onto `T0`, one whole pass_start_clock
+    // wrong -- confirmed by instrumenting this call and
+    // resolve_pending_window_straddles() temporarily and comparing the
+    // printed T0/T1/clock sequence against the hand-derived (13,7)
+    // schedule (instrumentation since removed). This
+    // fixes THAT bug specifically; it does not, by itself, make the
+    // wider `*FixedBCrossing` comparisons in test/runtime/window_
+    // runner_straddle_test.cpp bit-exact against the driver -- they
+    // still disagree at this writing; see that file's own comment on
+    // the open gap. Cached in `window_pass_start_clock`
+    // (its own comment, runner_impl.hpp) so EVERY sweep of this pass
+    // plans from the SAME clock, not from wherever the PREVIOUS
+    // sweep's own advance left `st.clock`.
+    pass_start_clock = st.clock > T0 ? st.clock : T0;
     st.straddle_pending = false;
     window_pass_start_clock[node] = pass_start_clock;
   } else {
@@ -1577,7 +1877,6 @@ Result<void> Runner::Impl::advance_window(ComponentSet& components,
   // exactly the window-to-window seed Jacobi/GaussSeidel's lagged
   // direction needs at a window boundary.
   std::vector<Waveform>            import_wf;
-  std::vector<detail::WindowSubstep> import_steps;
   Rational import_t0{0}, import_t1{0};
   // fuse/model/iteration.hpp's own WaveformIteration::Jacobi docstring:
   // every field transfer in a Jacobi window is loop-carried whatever
@@ -1607,60 +1906,48 @@ Result<void> Runner::Impl::advance_window(ComponentSet& components,
     const double* arr = cfg.import_lagged
                             ? previous[cfg.window_import.value()].data()
                             : slots[cfg.window_import.value()].data;
-    // No "back one window" shift (reverted this session): the former
-    // shift read `previous[]`'s raw content on the PREVIOUS window's
-    // own time axis and let it stand in for this window's prediction --
-    // a ZEROTH-order predictor (persistence), exactly what window_
-    // coupler.cpp's own class comment documents reverting on the driver
-    // side ("needed MORE sweeps to converge ... The fix belongs on the
-    // Runner side instead"). `import_t0 = T0` unconditionally: a sweep
-    // other than the pass's first already used T0 (the ternary this
-    // replaced only ever touched `first_sweep_of_pass`), and sweep 0
-    // now gets its prediction from `use_predictor` below, on THIS
-    // window's own grid, rather than from a shifted raw read.
+    // `import_t0 = T0` unconditionally (no "back one window" shift):
+    // the driver's own predictor, above, already needs no raw read at
+    // all for the first-sweep-of-a-lagged-pass case, and every other
+    // sweep already used T0.
     import_t0 = T0;
     import_t1 = import_t0 + cfg.window_length;
-    auto planned = detail::plan_substeps(import_t0, cfg.provider_interval,
-                                         import_t1, cfg.provider_policy);
-    import_steps = std::move(planned.first);
-    // A straddling provider's OWN clock (DtPolicy::Fixed, its own
-    // interval not dividing the window) carries an overshoot into every
-    // later window instance -- advance_window()'s own `pass_start_clock`
-    // ternary, for the PROVIDER's own call -- so the provider's REAL
-    // substep grid, from window 2 of any period where it keeps
-    // straddling, is anchored at wherever ITS OWN carried clock sits,
-    // NOT at this window's `import_t0`. `plan_substeps(import_t0, ...)`
-    // here has no way to know that offset without reading the
-    // provider's own `window_pass_start_clock`/`WindowMemberState`
-    // (this function's own top comment: never a partner's state, and
-    // even reading it would race against dispatch order -- the
-    // consumer's own first sweep of a window can run before OR after
-    // the provider's, and only one order leaves the provider's
-    // bookkeeping already updated for THIS window). Reconstructing the
-    // grid from `import_t0` alone is only correct when the provider's
-    // own pass this window starts exactly there, which a straddle from
-    // ANY earlier window already breaks -- silently misreading which
-    // sample corresponds to which time computes something other than
-    // the method, so this rejects rather than approximating a grid this
-    // function cannot actually observe. (The self-straddle case just
-    // below -- THIS member's own last substep crossing T1 -- has no
-    // such gap: it uses its OWN `pass_start_clock`, correct by
-    // construction, never a reconstruction of someone else's.) Whether
-    // `import_t0` is shifted or not does not change this check's own
-    // verdict: `plan_substeps()` is a pure function of the OFFSET from
-    // its own `clock` argument, never of `clock`'s absolute value, so
-    // the straddle pattern this produces is identical either way.
-    if (!import_steps.empty() && import_steps.back().straddle) {
-      return Failure{"E-RT-WINDOW-STRADDLE-REPLAY",
-                   "window member's import provider has a step crossing "
-                   "this window's own end (DtPolicy::Fixed straddle); "
-                   "reconstructing the provider's own substep grid from "
-                   "this window's start, with no way to see the "
-                   "provider's own carried-forward clock offset from an "
-                   "earlier straddle, computes something other than the "
-                   "method, so this rejects rather than risk a silently "
-                   "mislabelled sample"};
-    }
+
+    // `window_sample_times()` (fuse/model/coupling_graph.hpp) names the
+    // exact times this window's import carries, from the graph alone
+    // (the provider's own interval/policy, the window's own length and
+    // index) -- no runtime state, so a CONSUMER can compute it without
+    // ever reading the provider's own `WindowMemberState`. Verified
+    // against a real carried-forward `DtPolicy::Fixed` grid over a full
+    // period (test/model/coupling_graph_test.cpp,
+    // WindowSampleTimesAgreesWithTheRealCarriedForwardGrid) and, below,
+    // against the actual compiled buffer this function's own provider
+    // writes (test/runtime/window_runner_straddle_test.cpp).
+    //
+    // `window_sample_shift()` names how many of the provider's own
+    // buffer slots this list's own LEADING (`T0`) entry has already
+    // been carried past by an EARLIER window's own straddle -- also
+    // graph alone (this window's own `T0`, checked for exact
+    // divisibility by the provider's own interval). `shift == 0`: every
+    // entry maps 1:1 to the SAME buffer index. `shift == 1`: entry 0
+    // (`T0` itself) has no buffer slot of its own -- the provider's
+    // real clock, by the time THIS window's sweep 0 runs, already sits
+    // at the next native grid point past `T0` (an earlier straddle
+    // carried it there), so its buffer's own index 0 holds THAT later
+    // value, not the one at `T0` -- and every entry from 1 on maps to
+    // buffer index `k - 1` instead of `k`.
+    //
+    // `T0`'s own value is never lost when `shift == 1`: it is exactly
+    // what THIS consumer's own `st.history` already recorded when the
+    // provider's straddle resolved at the end of the PREVIOUS window
+    // (this function's own history-update code, below) -- read from
+    // there, never reconstructed from the provider's own buffer.
+    const std::vector<Rational> times = window_sample_times(
+        cfg.provider_interval, cfg.provider_policy, Rational{0},
+        cfg.window_length, static_cast<std::int64_t>(ins.dst_step));
+    const int shift = window_sample_shift(
+        cfg.provider_interval, cfg.provider_policy, Rational{0}, T0);
+
     import_wf.reserve(cfg.length);
     for (std::size_t e = 0; e < cfg.length; ++e) {
       Waveform wf(1, cfg.provider_capacity, TemporalBasis::Linear, 1);
@@ -1677,44 +1964,67 @@ Result<void> Runner::Impl::advance_window(ComponentSet& components,
       // coincide exactly for an identity remap, which is what every
       // caller of this function uses today.
       const bool have_history = e < st.history.size() && !st.history[e].empty();
-      // The window-start sample: the driver's own build_delivered_
-      // member() uses the provider's REAL current value there
-      // (`start_value[i][e]`, captured by save_state() right before
-      // the sweep), never an extrapolation -- and that value equals
-      // `st.history[e].back()` here, because `st.history` is refreshed
-      // at every window's own T1 (run_region()'s post-pass refresh,
-      // or this function's own update below), and T1 of the window
-      // that just finished equals T0 of this one.
-      double v = (use_predictor && have_history)
-                     ? st.history[e].back().second
-                     : arr[e * cfg.provider_capacity + 0];
-      Result<void> p = wf.push(import_t0, &v);
-      if (!p.ok()) return p.error();
-      for (std::size_t s = 0; s < import_steps.size(); ++s) {
-        // A straddling provider (DtPolicy::Fixed, plan_substeps()'s own
-        // contract) commits its LAST sample at `import_t1` -- the exact
-        // split value from ITS OWN advance_window() call's
-        // detail::advance_straddle_split(), never a raw, past-import_t1
-        // substep end -- so the sample must be pushed at the time the
-        // VALUE actually corresponds to, not at `import_steps[s].t1`
-        // (which overshoots `import_t1` for exactly this sample).
-        // Pushing at the wrong (later) time would both violate
-        // Waveform::push()'s own ascending-time contract against this
-        // window's `import_t1` and mislabel the sample for every mean/
-        // boundary query below. (Dead in practice at this point: the
-        // straddle check just above already rejected before this loop
-        // is ever reached whenever `import_steps.back().straddle`, and
-        // only the LAST step can straddle -- kept for the same reason
-        // the driver's own analogous `tc = std::min(sub.t1, T1)` stays
-        // written as a clamp rather than assumed unreachable.)
-        const Rational t =
-            import_steps[s].straddle ? import_t1 : import_steps[s].t1;
-        if (use_predictor && have_history) {
-          v = fuse::extrapolate_boundary_value(st.history[e], t, cfg.order);
+      for (std::size_t k = 0; k < times.size(); ++k) {
+        double v;
+        if (use_predictor) {
+          // The driver's own predictor (window_coupler.hpp's
+          // `WindowCoupler::sweep_window()` comment) never
+          // extrapolates the window-START sample either: `times[0]`
+          // is always `T0`, and build_delivered_member() uses the
+          // provider's REAL current value there (`start_value[i][e]`,
+          // captured by save_state() right before the sweep), never
+          // `extrapolate_boundary_value()` -- reading THIS member's
+          // own history exactly, not through a polynomial fit at one
+          // of its own knots (not guaranteed bit-exact there), is what
+          // keeps this sample identical to the driver's.
+          //
+          // `times[k]` for `k >= 1` is extrapolated UNLESS it is this
+          // provider's own first entry with a buffer slot of its own
+          // (`k == shift`, `window_sample_shift()`'s own return
+          // value): the driver's `build_delivered_member()` inserts a
+          // SECOND real (non-extrapolated) knot there too --
+          // `start_value[i][e]`, the provider's own live state at its
+          // own `start_clock[i]`, which is exactly `times[shift]` when
+          // `shift == 1` (an earlier straddle already carried the
+          // provider's own clock there). `resolve_pending_window_
+          // straddles()` (this function's own sibling) publishes that
+          // SAME real value into this provider's own export, buffer
+          // index 0, the moment its straddle resolves -- before this
+          // pass's sweep 0 ever starts -- so `arr[...+0]` already
+          // holds it here. (An earlier version of this function
+          // extrapolated `k == shift` too, on the mistaken claim that
+          // doing so was "robust to shift ... since neither branch
+          // reads the raw buffer" -- it is not: the driver's own
+          // extra real knot has no extrapolated counterpart, and nothing
+          // published it to the Runner's own buffer until the fix
+          // above.) Every entry PAST that one (`k > shift`) still has
+          // nothing real behind it (the provider has not run ITS OWN
+          // substeps for this window yet), so extrapolation remains
+          // the only option there.
+          if (k == 0) {
+            v = have_history ? st.history[e].back().second
+                              : arr[e * cfg.provider_capacity + 0];
+          } else if (shift == 1 && k == static_cast<std::size_t>(shift)) {
+            v = arr[e * cfg.provider_capacity + 0];
+          } else {
+            v = have_history
+                    ? fuse::extrapolate_boundary_value(st.history[e],
+                                                        times[k], cfg.order)
+                    : arr[e * cfg.provider_capacity + 0];
+          }
+        } else if (shift == 1 && k == 0) {
+          // This entry's value has no buffer slot of its own: the
+          // provider's straddle carried its real clock past T0 before
+          // this window's own sweep 0 ever ran. The consumer's own
+          // history already holds it exactly (recorded when that
+          // straddle resolved at the end of the PREVIOUS window).
+          v = have_history ? st.history[e].back().second
+                            : arr[e * cfg.provider_capacity + 0];
         } else {
-          v = arr[e * cfg.provider_capacity + (s + 1)];
+          v = arr[e * cfg.provider_capacity +
+                 (k - static_cast<std::size_t>(shift))];
         }
-        p = wf.push(t, &v);
+        Result<void> p = wf.push(times[k], &v);
         if (!p.ok()) return p.error();
       }
       import_wf.push_back(std::move(wf));
@@ -1812,7 +2122,8 @@ Result<void> Runner::Impl::advance_window(ComponentSet& components,
             const Rational ca = qa < import_t0 ? import_t0 : qa;
             const Rational cb = qb > import_t1 ? import_t1 : qb;
             if (cb <= ca) return required_for_split[e];
-            return detail::mean_over(import_wf[e], ca, cb);
+            const Result<double> v = detail::mean_over(import_wf[e], ca, cb);
+            return v;
           },
           [&](std::size_t e) -> Result<double> {
             if (import_wf.empty()) return required_for_split[e];
@@ -1825,8 +2136,9 @@ Result<void> Runner::Impl::advance_window(ComponentSet& components,
             if (e >= st.history.size() || st.history[e].empty()) {
               return required_for_split[e];
             }
-            return fuse::extrapolate_boundary_value(st.history[e], target,
-                                                     cfg.order);
+            const double v = fuse::extrapolate_boundary_value(
+                st.history[e], target, cfg.order);
+            return v;
           },
           v_at_t1.data());
       if (!split_r.ok()) return split_r.error();
@@ -1875,33 +2187,26 @@ Result<void> Runner::Impl::advance_window(ComponentSet& components,
     }
   }
 
-  // This member's own record of what it received at THIS window's own
-  // end -- never a partner's state -- for a LATER window's own
-  // straddle-tail `extrapolate_tail` (this function's own top comment,
-  // resolve_regions()'s seeding comment). Skipped when `import_t1 != T1`
-  // (a LAGGED import's own first sweep of a pass, whose `import_wf`
-  // lives on the PREVIOUS window's axis and does not cover T1 at all --
-  // this function's own `query_shift` comment): on that specific sweep
-  // there is nothing meaningful to record yet, so the entry from
-  // whichever earlier sweep or window last updated it is left as is,
-  // exactly the same fallback `extrapolate_tail` already uses when
-  // history is otherwise unusable. `st.history[e].back().first != T1`
-  // (rather than `first_sweep_of_pass`) decides append-vs-refine so the
-  // lagged-first-sweep skip above cannot mistake window N's own first
-  // WRITE for a refinement of window N-1's entry.
-  if (!import_wf.empty() && import_t1 == T1) {
-    for (std::size_t e = 0; e < cfg.length; ++e) {
-      double v_boundary = 0.0;
-      const Result<void> r = import_wf[e].evaluate(import_t1, &v_boundary);
-      if (!r.ok()) continue;
-      if (st.history.size() <= e) st.history.resize(e + 1);
-      if (st.history[e].empty() || st.history[e].back().first != T1) {
-        st.history[e].push_back({T1, v_boundary});
-      } else {
-        st.history[e].back().second = v_boundary;
-      }
-    }
-  }
+  // This member's own record of what it received, for a LATER window's
+  // own straddle-tail `extrapolate_tail` (this function's own top
+  // comment, resolve_regions()'s seeding comment), is intentionally NOT
+  // touched here, mid-sweep. (An earlier version of this function DID
+  // push/refine `st.history[e]` right here, every sweep, from
+  // `import_wf[e]` -- measured, this session, to be the cause of a
+  // real divergence from the driver: THIS member's own self-straddle
+  // split, a few lines above in THIS SAME call, reads `st.history[e]`
+  // for ITS OWN `extrapolate_tail`, and a mid-pass refinement changes
+  // what that read sees sweep over sweep, sweep 1 onward, within the
+  // SAME window -- something the driver's own `state_[i].history` can
+  // never do, because `WindowCoupler::run_window()` commits it exactly
+  // ONCE, strictly after its own sweep loop converges (window_coupler.
+  // cpp's "Commit" comment). `run_region()`'s own post-convergence
+  // refresh, below this function in the file (its own comment: "every
+  // window-import node's own `st.history` ... is refreshed here from
+  // the LIVE `window_import` arc, never `previous[]`"), already writes
+  // the SAME field, correctly, exactly once, after this region's own
+  // k-loop exits -- making the per-sweep write here not just wrong but
+  // redundant.)
 
   st.clock = final_clock;
   // A straddling last substep (DtPolicy::Fixed, this member's own
@@ -1914,7 +2219,22 @@ Result<void> Runner::Impl::advance_window(ComponentSet& components,
   // to straddle every window, not just once.
   if (!steps.empty() && steps.back().straddle) {
     st.straddle_pending = true;
-    st.straddle_window_start = T0;
+    // `pass_start_clock`, NOT `T0`: WindowCoupler's own field comment
+    // (`WindowMemberState::straddle_window_start`, window_coupler.hpp)
+    // names this "checkpoint restore_state() returns to" -- the SAME
+    // `start_clock[i]` (window_coupler.cpp's own sweep_window()) it
+    // assigns there, captured at THIS window's own top, BEFORE any of
+    // its own substeps ran. When this member already carried a straddle
+    // INTO this window, that checkpoint sits at wherever the carry left
+    // it, past `T0` -- not at `T0` itself. MEASURED (this session): the
+    // `T0` version walked the WRONG number of chunks in `resolve_
+    // pending_window_straddles()`'s own replay (an extra, sub-interval
+    // leftover chunk at the tail, from clipping a walk that started too
+    // early against `target_clock`) -- confirmed by instrumenting the
+    // replay's own chunk loop temporarily and comparing its printed
+    // trace against the hand-derived (13,7) schedule (instrumentation
+    // since removed).
+    st.straddle_window_start = pass_start_clock;
     st.straddle_window_end = T1;
   }
 

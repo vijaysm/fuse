@@ -30,12 +30,16 @@
 // instruction per pass, same node) -- fixed by counting distinct nodes
 // instead.
 //
-// Only the non-straddling (Adjustable/Adjustable) case is here so far:
-// a Fixed member genuinely crossing the window end needs the straddle
-// replay (fuse::detail::advance_straddle_split(), not yet wired into
-// advance_window()) -- that case belongs in this same file once the
-// replay lands, not before, since advance_window() currently REJECTS
-// it (E-RT-WINDOW-STRADDLE-REPLAY) rather than approximating it.
+// Both the non-straddling (Adjustable/Adjustable) case and B (interval
+// 7) genuinely crossing the window end (DtPolicy::Fixed, against A's
+// own 13-unit window) are covered below: the straddle replay
+// (fuse::detail::advance_straddle_split()) was already wired in for a
+// member's OWN self-straddle; the remaining piece -- a consumer
+// reconstructing a STRADDLING IMPORT PROVIDER's own grid from the graph
+// alone (fuse::window_sample_times()/window_sample_shift(), fuse/model/
+// coupling_graph.hpp) instead of its runtime state -- is wired in too,
+// and checked bit-for-bit against WindowCoupler here in both waveform-
+// relaxation modes, with and without the default accelerator.
 
 #include <gtest/gtest.h>
 #include <fuse/backend/serial_backend.hpp>
@@ -541,34 +545,106 @@ TEST(WindowRunnerStraddle, SevenThirteenAdjustableAdjustableThroughWindowCompone
 // B (interval 7) does NOT divide the window (A's own interval, 13): under
 // DtPolicy::Fixed, B's own last substep of every window instance crosses
 // the window end. The self-straddle split-advance (this member's OWN
-// substep, planned from its OWN carried-forward `pass_start_clock`) is
-// wired in and correct on its own -- but B, here, is also every OTHER
+// substep, planned from its OWN carried-forward `pass_start_clock`) was
+// already wired in and correct on its own; B, here, is also every OTHER
 // window member's IMPORT PROVIDER, and the CONSUMER side (A's own
-// advance_window() call, reconstructing "what grid did B use" via
-// `plan_substeps(import_t0, ...)`) has no way to see that B's own clock
-// has been carried past a straddle from an EARLIER window: from the
-// second window B ever straddles in, B's real substep grid is anchored
-// wherever ITS OWN carried clock actually sits, not at this window's
-// `import_t0`, and reading `WindowMemberState` directly to find out
-// would race against dispatch order (this function's own new comment,
-// iteration.cpp). Discovered and diagnosed this session; still rejects
-// (E-RT-WINDOW-STRADDLE-REPLAY) until the K-wide sample array's own
-// time contract -- or some other way for a consumer to learn a
-// straddling provider's actual grid -- is designed and wired in. Pins
-// that the rejection still fires correctly for the REAL 13:7 pair with
-// the replay's self-straddle half now live.
-TEST(WindowRunnerStraddle, BCrossingTheWindowEndUnderFixedIsStillRejected) {
+// advance_window() call) now reconstructs "what grid did B use" from
+// the graph alone -- `fuse::window_sample_times()` (B's own native grid,
+// anchored at t=0, independent of any window) and `fuse::window_sample_
+// shift()` (whether this window's own T0 has a buffer slot of its own,
+// or was already carried past by an earlier window's straddle; both
+// fuse/model/coupling_graph.hpp) -- never B's own `WindowMemberState`.
+// Checked against the SAME physics run directly through WindowCoupler.
+// PASSES bit-exactly (EXPECT_EQ, no tolerance), after two further fixes
+// beyond the replay (resolve_pending_window_straddles(), iteration.cpp,
+// mirroring WindowCoupler::resolve_pending_straddles()'s own
+// choreography) this test originally shipped against: (1) a LAGGED
+// consumer's own first-sweep predictor, on the sweep right after a
+// straddle, was extrapolating the ONE sample the provider's real
+// post-replay state already answers exactly (advance_window()'s own
+// "use_predictor" comment -- window_sample_shift()'s own first real
+// buffer index), instead of reading it; resolve_pending_window_
+// straddles() now publishes that value into every consumer's own
+// window_import arc the moment the replay finishes, before this pass's
+// first sweep ever snapshots `previous[]`. (2) advance_window() was
+// refining `st.history[e]` -- read by THIS member's OWN self-straddle
+// split for `extrapolate_tail` -- every sweep, not once per window;
+// the driver's own `state_[i].history` only ever commits once, after
+// its sweep loop converges, so a multi-sweep window (this test's own
+// Jacobi, 1e-12 tolerance, up to 300 iterations -- unlike the other
+// tests in this file, which fix sweeps at 1 specifically to avoid this
+// exact class of difference) saw the Runner's own mid-window
+// refinements where the driver never has any. Both found by a
+// hexfloat trace, identical on both sides, at every
+// `advance_straddle_split()`/plain-`advance()` call -- not by
+// guessing among candidate causes.
+TEST(WindowRunnerStraddle, BCrossingTheWindowEndUnderFixedMatchesDriver) {
   const RunnerResult via_runner = run_via_runner(
       WaveformIteration::Jacobi, DtPolicy::Adjustable, DtPolicy::Fixed,
       AccelKind::None);
-  ASSERT_FALSE(via_runner.ok)
-      << "B is both a self-straddling member and every other member's "
-         "import provider; the consumer side of the replay (reading a "
-         "straddling provider's own carried-forward clock) is not safe "
-         "yet -- see this test's own comment -- so this must still "
-         "refuse rather than risk a silently mislabelled sample";
-  EXPECT_EQ(via_runner.error_code, "E-RT-WINDOW-STRADDLE-REPLAY")
-      << via_runner.error;
+  ASSERT_TRUE(via_runner.ok) << via_runner.error;
+  EXPECT_TRUE(via_runner.converged);
+
+  const RunnerResult via_driver = run_via_driver(
+      WaveformIteration::Jacobi, DtPolicy::Adjustable, DtPolicy::Fixed,
+      AccelKind::None);
+  ASSERT_TRUE(via_driver.ok) << via_driver.error;
+
+  EXPECT_EQ(via_runner.xA, via_driver.xA);
+  EXPECT_EQ(via_runner.xB, via_driver.xB);
+  EXPECT_EQ(via_runner.iterations, via_driver.iterations);
+  EXPECT_EQ(via_runner.advance_count_a, via_driver.advance_count_a);
+  EXPECT_EQ(via_runner.advance_count_b, via_driver.advance_count_b);
+}
+
+// The SHIFT ITSELF, tested directly before anything above relies on it:
+// for every window of the 91-unit (lcm(7,13)) period, B's (interval 7,
+// Fixed) own REAL compiled buffer -- index 0 the window-start
+// checkpoint (B's real value at wherever an earlier straddle carried
+// its clock, iteration.cpp's own convention), index k+1 substep k's own
+// committed value, clipped to T1 for the one straddling last step --
+// built with the SAME `fuse::detail::plan_substeps()` advance_window()
+// itself calls, not a hand-rolled reimplementation. Checks that
+// `fuse::window_sample_times()`'s own list, shifted by `fuse::window_
+// sample_shift()`, names EXACTLY the time each of those real buffer
+// entries holds a value for -- the property advance_window()'s own
+// import-building loop depends on (fuse/model/coupling_graph.hpp).
+TEST(WindowRunnerStraddle, WindowSampleShiftMatchesProviderBufferTimesOverTheWholePeriod) {
+  using fuse::detail::plan_substeps;
+  using fuse::window_sample_shift;
+  using fuse::window_sample_times;
+
+  constexpr Rational kWindowLength{13};
+  constexpr Rational kInterval{7};
+
+  Rational clock{0};  // B's own real, carried-forward clock (advance_
+                      // window()'s own `pass_start_clock`).
+  for (std::int64_t w = 0; w < 7; ++w) {
+    const Rational T0 = Rational(w) * kWindowLength;
+    const Rational T1 = T0 + kWindowLength;
+
+    const auto planned = plan_substeps(clock, kInterval, T1, DtPolicy::Fixed);
+    const std::vector<fuse::detail::WindowSubstep>& steps = planned.first;
+
+    std::vector<Rational> buffer_time;
+    buffer_time.push_back(clock);
+    for (const auto& sub : steps) {
+      buffer_time.push_back(sub.t1 < T1 ? sub.t1 : T1);
+    }
+
+    const std::vector<Rational> times = window_sample_times(
+        kInterval, DtPolicy::Fixed, Rational{0}, kWindowLength, w);
+    const int shift = window_sample_shift(kInterval, DtPolicy::Fixed,
+                                          Rational{0}, T0);
+    ASSERT_EQ(buffer_time.size() + static_cast<std::size_t>(shift),
+              times.size())
+        << "window " << w;
+    for (std::size_t j = 0; j < buffer_time.size(); ++j) {
+      EXPECT_EQ(buffer_time[j], times[j + static_cast<std::size_t>(shift)])
+          << "window " << w << " buffer index " << j;
+    }
+    clock = planned.second;
+  }
 }
 
 // DECISIVE TEST (the user's own framing): SevenThirteenAdjustableAdjustable
@@ -617,14 +693,15 @@ constexpr int kFixedSweeps = 1;
 
 void ExpectFixedIterationMatch(WaveformIteration mode,
                                DtPolicy pol_a = DtPolicy::Adjustable,
-                               DtPolicy pol_b = DtPolicy::Adjustable) {
+                               DtPolicy pol_b = DtPolicy::Adjustable,
+                               AccelKind accel = AccelKind::None) {
   const RunnerResult via_runner = run_via_runner(
-      mode, pol_a, pol_b, AccelKind::None,
+      mode, pol_a, pol_b, accel,
       /*swap_declaration_order=*/false, kFixedSweeps);
   ASSERT_TRUE(via_runner.ok) << via_runner.error;
 
   const RunnerResult via_driver = run_via_driver(
-      mode, pol_a, pol_b, AccelKind::None,
+      mode, pol_a, pol_b, accel,
       /*swap_declaration_order=*/false, kFixedSweeps);
   ASSERT_TRUE(via_driver.ok) << via_driver.error;
 
@@ -677,6 +754,36 @@ TEST(WindowRunnerStraddle, FixedIterationCountMatchesDriverJacobi) {
 
 TEST(WindowRunnerStraddle, FixedIterationCountMatchesDriverGaussSeidel) {
   ExpectFixedIterationMatch(WaveformIteration::GaussSeidel);
+}
+
+// The SAME fixed-sweep-count comparison as the two tests above, but with
+// B (interval 7) crossing the window end every window instance
+// (DtPolicy::Fixed, against A's own 13-unit window) -- the decisive
+// check with the stopping rule removed AND a straddling import
+// provider, in both waveform-relaxation modes.
+TEST(WindowRunnerStraddle, FixedIterationCountMatchesDriverJacobiFixedBCrossing) {
+  ExpectFixedIterationMatch(WaveformIteration::Jacobi, DtPolicy::Adjustable,
+                            DtPolicy::Fixed);
+}
+
+TEST(WindowRunnerStraddle,
+    FixedIterationCountMatchesDriverGaussSeidelFixedBCrossing) {
+  ExpectFixedIterationMatch(WaveformIteration::GaussSeidel,
+                            DtPolicy::Adjustable, DtPolicy::Fixed);
+}
+
+// The SAME B-crosses-the-window-end shape, now WITH the default
+// accelerator (`AccelConfig{}`'s own default, `AccelKind::Constant`,
+// `omega = 0.5` -- fuse/model/iteration.hpp) instead of `AccelKind::
+// None`, under Jacobi. `WaveformIteration::GaussSeidel` with a real
+// accelerator is a SEPARATE, already-refused combination on the Runner
+// (`E-RT-WINDOW-ACCEL`, WindowRunner.GaussSeidelWindowRejectsAccelerated
+// Region, test/runtime/window_runner_test.cpp) that this track's task
+// does not ask this delegation to lift, so it is not exercised here.
+TEST(WindowRunnerStraddle,
+    FixedIterationCountMatchesDriverJacobiFixedBCrossingWithAccel) {
+  ExpectFixedIterationMatch(WaveformIteration::Jacobi, DtPolicy::Adjustable,
+                            DtPolicy::Fixed, AccelKind::Constant);
 }
 
 // KNOWN_ISSUES.md D7 (make_d7_graph()'s own comment): BOTH members Fixed

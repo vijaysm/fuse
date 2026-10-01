@@ -539,6 +539,35 @@ namespace detail {
   return times;
 }
 
+/// Whether `window_sample_times()`'s own leading `T0` entry, for THIS
+/// window, has a buffer slot of its own in the member's compiled sample
+/// buffer -- `0` if it does (every entry maps 1:1 to a buffer index, the
+/// same index), `1` if a carry-in shifts every remaining entry down by
+/// one buffer slot instead (entry 0 has no slot: read it from the
+/// consumer's own history; entry `k >= 1` maps to buffer index `k - 1`).
+/// See `window_sample_times()`'s own header comment for the reasoning.
+///
+/// Exact-Rational, graph alone (`T0`, `interval`, `policy`,
+/// `member_start`), no runtime state: `DtPolicy::Adjustable` never
+/// carries in (its own grid restarts at `T0` every window, so entry 0
+/// -- `T0` itself -- is always that member's real value there); a
+/// `DtPolicy::Fixed` member carries in exactly when this window's own
+/// `T0` is not itself one of its own native grid points (`member_start +
+/// k * interval` for some integer `k`) -- the member's real clock, by
+/// the time this window's sweep 0 runs, already sits at the NEXT native
+/// grid point past `T0`, carried there by an earlier window's own
+/// straddle, so its buffer's own index 0 holds that later value, not the
+/// one AT `T0`.
+[[nodiscard]] inline int window_sample_shift(Rational interval,
+                                             DtPolicy policy,
+                                             Rational member_start,
+                                             Rational T0) {
+  if (policy != DtPolicy::Fixed) return 0;
+  if (!(interval > Rational{0})) return 0;
+  const Rational offset = (T0 - member_start) / interval;
+  return (offset.num() % offset.den() != 0) ? 1 : 0;
+}
+
 inline Channel& ChannelBuilder::target() { return graph_->channel_mut(id_); }
 
 inline IterationRegionDecl& IterationBuilder::target() {

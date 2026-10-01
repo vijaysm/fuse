@@ -384,10 +384,12 @@ TEST(WindowRunnerMultirate, SevenThirteenAdjustableAdjustableJacobiMatchesDriver
 // actually straddles -- 91 is a multiple of both 13 and 7, exactly the
 // "a Fixed step that divides the window never straddles" case
 // window_coupler_test.cpp's own AFixedStepThatDividesTheWindowNever
-// StraddlesAndIsAccepted pins for the driver directly. Confirms the
-// Runner's new straddle rejection (E-RT-WINDOW-STRADDLE-REPLAY,
-// iteration.cpp) does NOT fire for a straddle-FREE Fixed member -- it is
-// specifically the crossing, not the policy label, that trips it.
+// StraddlesAndIsAccepted pins for the driver directly. Confirms a
+// straddle-FREE Fixed member matches the driver with no straddle
+// machinery (resolve_pending_window_straddles(), iteration.cpp)
+// involved at all -- it is specifically the crossing, not the policy
+// label, that would engage it (test/runtime/window_runner_straddle_
+// test.cpp's own tests are where it actually fires).
 TEST(WindowRunnerMultirate, SevenThirteenFixedFixedJacobiMatchesDriver) {
   const RunnerResult via_runner = run_via_runner(
       WaveformIteration::Jacobi, DtPolicy::Fixed, DtPolicy::Fixed,
