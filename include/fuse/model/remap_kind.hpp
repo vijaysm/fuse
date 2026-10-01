@@ -66,6 +66,21 @@ namespace fuse {
 /// whether a declared `remap_on` is honoured at all. One predicate, two
 /// callers, so a channel the warning calls unused cannot be one whose
 /// lowering silently routes through the coupler anyway.
+/// True for a remap method that is a consistent (pointwise) interpolation:
+/// target values are interpolated from the source, which reproduces fields
+/// in the method's approximation space exactly but does NOT preserve the
+/// field's integral. "consistent" (nodal interpolation, the matrix H) and
+/// "mls" / "mls:..." (moving least squares) are. "consistent-transpose"
+/// (H^T, which conserves the total load by construction), "conservative",
+/// "intx", "tempest" and the default (empty: the supermesh conservative
+/// remap) are not. Compilation emits no conservation check after a
+/// pointwise interpolation: there is no conserved integral to compare, and
+/// for a nodal source the two "integrals" would not even be the same
+/// quantity (a vertex sum against a cell integral).
+[[nodiscard]] constexpr bool is_pointwise_interpolation(std::string_view method) noexcept {
+  return method == "consistent" || method == "mls" || method.substr(0, 4) == "mls:";
+}
+
 [[nodiscard]] constexpr bool could_ever_emit_remap(RemapFlags flags,
                                                    const FieldSpec& source,
                                                    const FieldSpec& target,

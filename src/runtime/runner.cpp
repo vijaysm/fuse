@@ -507,6 +507,25 @@ Result<void> Runner::Impl::resolve_constrain(const Instruction& ins,
   // Allreduce of three doubles per conservative channel per period.
   const bool reduce = config.base_communicator.has_value();
 
+  // weights_for() integrates a NODAL field as the plain sum of its owned
+  // values (weight 1 per vertex): correct for an Extensive nodal load, which
+  // is already an amount, and meaningless for an Intensive nodal field, whose
+  // integral needs a vertex measure this library does not define. Refuse
+  // rather than compare a vertex sum with an integral.
+  for (const ArcId a : {before, ins.out}) {
+    const ValueType& t = dag.arc(a).type;
+    if (t.conservation != Conservation::Intensive || !t.region.valid()) continue;
+    const auto kind = region_extent_kind(graph, t.region);
+    if (kind.ok() && kind.value() == RegionExtentKind::Vertex) {
+      return Failure{"E-RT-CONSTRAIN",
+                     "the conservation check on arc %" + std::to_string(ins.out.value()) +
+                         " would integrate an Intensive field on a vertex region (arc %" +
+                         std::to_string(a.value()) +
+                         "), and a vertex has no measure; a nodal field's conserved "
+                         "amount is defined only for an Extensive load"};
+    }
+  }
+
   const Slot& in_slot = slots[before.value()];
   const Slot& out_slot = slots[ins.out.value()];
   const Result<std::uint32_t> wb = weights_for(
