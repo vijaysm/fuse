@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 #include <cstdlib>
 #include <cstddef>
 #include <cstdint>
@@ -19,6 +18,7 @@
 #include <vector>
 
 #include "runner_impl.hpp"
+#include <fmt/format.h>
 #include "fuse/num/kernels.hpp"
 #include "fuse/num/residual_norm.hpp"
 #include "fuse/schedule/slab.hpp"
@@ -3135,13 +3135,13 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
           MPI_Comm_rank(MPI_Comm_f2c(static_cast<MPI_Fint>(*config.base_communicator)), &me);
         }
 #endif
-        std::fprintf(stderr,
-                     "[conservation rank %d period %lld arc %%%u<-%%%u] own before=%.17g "
-                     "(%zu of %zu weights non-zero) own after=%.17g (%zu of %zu) "
-                     "total before=%.17g after=%.17g reduced=%d\n",
-                     me, static_cast<long long>(period_index), ins.out.value(), ci.before_arc, own_before,
-                     nzb, wb.size(), own_after, nza, wa.size(), before, after,
-                     ci.reduce ? 1 : 0);
+        fmt::print(stderr,
+                   "[conservation rank {} period {} arc %{}<-%{}] own before={:.17g} "
+                   "({} of {} weights non-zero) own after={:.17g} ({} of {}) "
+                   "total before={:.17g} after={:.17g} reduced={}\n",
+                   me, period_index, ins.out.value(), ci.before_arc, own_before,
+                   nzb, wb.size(), own_after, nza, wa.size(), before, after,
+                   ci.reduce ? 1 : 0);
       }
       const double scale = std::abs(before) > 0.0 ? std::abs(before) : 1.0;
       const double rel = std::abs(after - before) / scale;
