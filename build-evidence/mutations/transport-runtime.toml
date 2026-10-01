@@ -461,3 +461,17 @@ copy was empty)."""
 # fabricated row; see KNOWN_ISSUES.md D11's closing entry for the same
 # statement made where a reader of the capability gap is more likely to
 # look for it first.
+
+[[mutation]]
+id = "healthy-rank-leaves-at-the-epoch"
+area = "runtime"
+describes = "reconcile_epoch() returns E-RT-EPOCH-PEER on a rank that was fine, instead of recording it: that rank leaves the period at the agreement point while the failing rank walks on through the remaining collective operations, so the failing rank waits forever in the next Transport. The hang the host found on 2026-10-01 once each component is stepped only on its own processes."
+file = "src/runtime/runner.cpp"
+old = "    step_failure = Failure{\"E-RT-EPOCH-PEER\","
+new = "    return Failure{\"E-RT-EPOCH-PEER\","
+target = "fuse_parallel_runner_transport_test"
+test = "parallel.runner_transport.2"
+requires = "mpi"
+# Expected kill: RunnerTransport.StillRunsASecondChannelAfterARegionFailsUnderMpi
+# times out at 2 processes (the host's 2026-10-01 run on 9cafbd1 is this
+# mutant's behaviour). NOT-ASSESSED in the sandbox: MPI cannot start here.

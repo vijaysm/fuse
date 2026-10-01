@@ -474,9 +474,10 @@ TEST(EpochReconcile, EveryRankStopsWhenOneOfThemFails) {
 
   const auto r = runner.run_period(cs);
 
-  // EVERY rank fails. That is the whole point: the run does not continue on
-  // the ranks that were fine, because continuing means blocking alone at the
-  // next exchange.
+  // EVERY rank fails. That is the whole point: a rank that was fine records
+  // its partner's failure at the agreement point and, like the failing rank,
+  // runs only the collective operations for the rest of the period, so no
+  // rank is left waiting alone in an exchange and the period fails on all.
   ASSERT_FALSE(r.ok()) << "rank " << current_rank()
                        << " reported success while rank " << failing
                        << " rejected its step";
