@@ -911,7 +911,20 @@ TEST(RunnerTransport, StillRunsASecondChannelAfterARegionFailsUnderMpi) {
       << "fluid refuses its first advance() inside the region; the period "
          "must report that failure on every rank, including ranks that "
          "belong only to the independent channel";
-  EXPECT_EQ(r.error().code, "E-TEST-ADVANCE-REFUSED") << r.error().message;
+  // Since 3aae2ed the fluid is stepped only on its own processes, so only
+  // they see its refusal; every other process learns of it at an agreement
+  // point -- linkB's Epoch or the implicit coupling group's residual
+  // agreement, whichever its stream reaches first -- and reports that a
+  // partner failed. Exactly those codes, nothing else.
+  if (h.fluid_.contains(current_rank())) {
+    EXPECT_EQ(r.error().code, "E-TEST-ADVANCE-REFUSED") << r.error().message;
+  } else {
+    EXPECT_TRUE(r.error().code == "E-RT-EPOCH-PEER" ||
+                r.error().code == "E-RT-REGION-PEER")
+        << "process " << current_rank() << " does not step the fluid, so it "
+        << "must report a partner's failure, not " << r.error().code << ": "
+        << r.error().message;
+  }
   // Only consumer_b's own processes step it (the runtime steps a component
   // only on its processor set since 2026-09-29), so only they can count.
   if (h.solid_.contains(current_rank())) {
@@ -937,7 +950,7 @@ TEST(RunnerTransport, StillRunsASecondChannelAfterARegionFailsUnderMpi) {
 // consumer_b alone on the last rank, producer_b (on fluid's ranks, inside the
 // implicit coupling group) must still execute linkB's Transport and Epoch after its implicit coupling group
 // fails. Under correct code the outside rank receives, reconciles at that
-// Epoch and stops with E-RT-EPOCH-PEER (runner.cpp, reconcile); under the
+// Epoch, records E-RT-EPOCH-PEER (runner.cpp, reconcile_epoch) and reports it at the period's end; under the
 // mutant producer_b's rank has already returned, and the outside rank blocks
 // in the Transport until ctest's TIMEOUT -- the kill.
 TEST(RunnerTransport, AChannelOutsideTheRegionStillCompletesAfterTheRegionFails) {

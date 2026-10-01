@@ -2574,14 +2574,25 @@ Result<void> Runner::Impl::reconcile_epoch(const Instruction& ins) {
 
   ++stats.epochs_reconciled;
   if (status == 0 && !step_failure.has_value()) {
-    // This rank is fine and a partner is not. Stopping here is the point of
-    // the whole mechanism: proceeding alone means blocking alone at the next
-    // exchange. The rank that actually failed reports its own diagnostic,
-    // which is the one worth reading.
-    return Failure{"E-RT-EPOCH-PEER",
-                   "a rank taking part in this exchange failed; stopping here "
-                   "rather than waiting for it at the next one. The failing "
-                   "rank reports the cause."};
+    // This rank is fine and a partner is not. RECORD the failure; do not
+    // return it. Every participant must leave this agreement point in the
+    // same state: the failing rank already holds a step_failure and walks on
+    // through the rest of the stream, executing only collective operators
+    // (step_period/run_region's failed mode), so a rank that returned here
+    // instead would leave its partners waiting in the next Transport. That
+    // was the hang behind RunnerTransport.StillRunsASecondChannelAfterA
+    // RegionFailsUnderMpi once each component is stepped only on its own
+    // processes (3aae2ed): before it, every process stepped the failing
+    // component, so every process failed and none returned. Recording it
+    // puts this rank in the same failed mode, which is also what the
+    // implicit coupling group's residual agreement does (E-RT-REGION-PEER).
+    // The period still fails on every rank at its end; the failing rank
+    // reports its own cause, which is the diagnostic worth reading.
+    step_failure = Failure{"E-RT-EPOCH-PEER",
+                           "a rank taking part in this exchange failed; this "
+                           "rank ran only the collective operations for the "
+                           "rest of the period. The failing rank reports the "
+                           "cause."};
   }
 #else
   (void)ins;
