@@ -622,6 +622,20 @@ struct Runner::Impl {
     /// import at all (a pure exporter).
     bool        import_lagged = false;
     ArcId       window_import;  ///< this member's own import arc, or invalid
+    /// This member's own IMPORT's own PROVIDER's own `ComponentSet`
+    /// slot (resolved the same way `component_slot` above is, from
+    /// `graph.owner_of(ch.source)` -- graph-derived, never a partner's
+    /// runtime state), or `components.size()` (an out-of-range
+    /// sentinel) when this member has no import. Lets `resolve_
+    /// pending_window_straddles()`, replaying PROVIDER P's own
+    /// overshoot, find every OTHER member's config whose own import
+    /// comes from P (`provider_component_slot == P's own
+    /// component_slot`) and publish P's real post-replay value into
+    /// THAT member's own `window_import` arc -- the one `advance_
+    /// window()`'s own predictor actually reads -- rather than into
+    /// P's own raw export arc, which the compiled Transport/Remap/Sink
+    /// chain has not yet carried anywhere by the time the replay runs.
+    std::size_t provider_component_slot = 0;
     std::size_t region_index = 0;  ///< which `regions[]` entry owns this node
 
     /// This member's own NATIVE (single-sample, per-element) Provides
@@ -866,6 +880,23 @@ struct Runner::Impl {
   /// period-top) as the first act, before the sweep loop.
   Result<void> run_region(ComponentSet& components, detail::RegionRuntime& r,
                           std::size_t enter, std::size_t exit);
+  /// Mirrors `WindowCoupler::resolve_pending_straddles()`
+  /// (window_coupler.cpp) on the Runner: for every window member of `r`
+  /// whose `WindowMemberState::straddle_pending` is still set (a
+  /// `DtPolicy::Fixed` member's last substep of the window that just
+  /// finished crossed that window's own end), replays every substep
+  /// since the member's own LAST checkpoint -- restore_state() then
+  /// re-advance, reading the now-fully-converged data from the window
+  /// that just finished instead of whatever a mid-sweep (possibly
+  /// lagged) snapshot held when that substep first ran. Called from
+  /// `run_region()` itself, BEFORE its own per-window checkpoint
+  /// (`save_state()`): that checkpoint would otherwise overwrite the
+  /// very state this replay needs to restore_state() back to (nothing
+  /// else saves over it in between, exactly the single-checkpoint
+  /// contract `resolve_pending_straddles()`'s own comment documents for
+  /// the driver). A no-op for a region with no pending straddle.
+  Result<void> resolve_pending_window_straddles(ComponentSet& components,
+                                                detail::RegionRuntime& r);
   /// Time windows track: executes exactly one `OpKind::WindowAdvance`
   /// instruction, for exactly one sweep of the region it belongs to.
   /// Called from `run_region()`'s own body loop INSTEAD OF `execute()`

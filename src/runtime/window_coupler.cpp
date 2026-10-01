@@ -447,7 +447,7 @@ Result<std::unique_ptr<WindowCoupler>> WindowCoupler::create(
       std::move(members), std::move(channels), std::move(cfg)));
 }
 
-Result<void> WindowCoupler::resolve_pending_straddles(Rational /*T0*/) {
+Result<void> WindowCoupler::resolve_pending_straddles(Rational T0) {
   // A `Fixed` member that overshot the previous window replays EVERY
   // substep it took since its last checkpoint (still `restore_state()`-able:
   // nothing has saved over it since -- see the class comment on why this,

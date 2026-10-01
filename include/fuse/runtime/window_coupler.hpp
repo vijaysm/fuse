@@ -69,31 +69,54 @@
 ///     today -- and is itself still an identity map on every test that
 ///     exercises it (matching meshes throughout); a genuine remap across
 ///     the window boundary is still open.
-/// What is NOT built: a `DtPolicy::Fixed` member's own step crossing the
-/// window end (the straddling case this class's own `resolve_pending_
-/// straddles()` replays) is rejected outright by the Runner
-/// (`E-RT-WINDOW-STRADDLE-REPLAY`, `advance_window()`'s own top comment) --
-/// the replay itself (`fuse::detail::advance_straddle_split()`, already
-/// shared with this class) is not yet wired into `advance_window()` for a
-/// STRADDLING IMPORT PROVIDER specifically (a member's own self-straddle,
-/// where nothing crosses a component boundary, already works: `advance_
-/// window()` calls the same split there). `fuse::window_sample_times()`
-/// (`fuse/model/coupling_graph.hpp`) exists and is tested against a real
-/// carried-forward `DtPolicy::Fixed` grid over the whole 91-unit period --
-/// the piece meant to let a consumer reconstruct a straddling provider's
-/// own sample times from the graph alone, no partner state -- but is not
-/// yet called from `advance_window()`. See this track's design notes for
-/// the remaining subtlety it does not by itself resolve: once a provider
-/// has straddled at least one window boundary, its own compiled sample
-/// buffer's index 0 no longer holds the value AT this window's own T0 (the
-/// provider's real clock already sits at the next native grid point past
-/// T0 by the time this window's sweep 0 begins) -- `window_sample_times()`
-/// still reports T0 as its own first entry, and reading it must come from
-/// the consumer's own `WindowMemberState::history` (already the exact
-/// value, recorded when the previous window's straddle resolved), never
-/// from the provider's own buffer, with every remaining entry shifted down
+/// A `DtPolicy::Fixed` member's own step crossing the window end (the
+/// straddling case this class's own `resolve_pending_straddles()`
+/// replays) is fully wired into the Runner too, for BOTH roles a
+/// straddling member can play: its own self-straddle (`advance_window()`
+/// calls the same shared `fuse::detail::advance_straddle_split()` this
+/// class does, where nothing crosses a component boundary), and a
+/// STRADDLING IMPORT PROVIDER as seen by some OTHER member (`Runner::
+/// Impl::resolve_pending_window_straddles()`, `src/runtime/iteration.cpp`
+/// -- this class's own mirror, replaying a straddling provider's
+/// overshoot against the window's now-converged data, exactly as this
+/// class's own function of the same name does, and checked bit-for-bit
+/// against it in `test/runtime/window_runner_straddle_test.cpp`).
+/// `fuse::window_sample_times()`/`fuse::window_sample_shift()`
+/// (`fuse/model/coupling_graph.hpp`) are what let a consumer reconstruct
+/// a straddling provider's own sample times and buffer-index shift from
+/// the graph alone, no partner state -- the subtlety both resolve: once
+/// a provider has straddled at least one window boundary, its own
+/// compiled sample buffer's index 0 no longer holds the value AT this
+/// window's own T0 (the provider's real clock already sits at the next
+/// native grid point past T0 by the time this window's sweep 0 begins),
+/// so `advance_window()` reads that one entry from the consumer's own
+/// `WindowMemberState::history` instead (recorded when the previous
+/// window's straddle resolved), and every remaining entry shifted down
 /// by one buffer slot from where it would sit for a non-straddling
-/// provider.
+/// provider. A LAGGED consumer's own first-sweep-of-a-pass predictor has
+/// one further real (non-extrapolated) knot at exactly that same shifted
+/// index -- the provider's own real post-replay state, which `resolve_
+/// pending_window_straddles()` publishes into every such consumer's own
+/// `window_import` arc the moment the replay finishes, before this
+/// pass's first sweep ever snapshots `Impl::previous[]` -- matching this
+/// class's own `build_delivered_member()`, which reads `start_value[i][e]`
+/// directly for the identical reason. That publish writes the value
+/// straight into the consumer's own arc, bypassing whatever Transport/
+/// Remap the channel's own compiled chain would otherwise run between
+/// the provider's export and the consumer's import -- exact ONLY for a
+/// same-rank, same-region (identity) transfer, since (unlike this
+/// class, one object in one address space) the Runner's own provider
+/// and consumer can legitimately be on different ranks or meshes.
+/// `resolve_regions()` (`src/runtime/iteration.cpp`) refuses, at setup,
+/// any channel where a `DtPolicy::Fixed` provider that CAN straddle
+/// (its own interval does not divide the window) feeds a consumer that
+/// is not on the same ranks and the same region (`E-RT-WINDOW-STRADDLE-
+/// REPUBLISH`, `test/runtime/window_runner_test.cpp`'s own
+/// `FixedPolicyStraddleWithGenuineRemapIsRejected`/
+/// `FixedPolicyStraddleWithRankMismatchIsRejected`) -- running the
+/// publish THROUGH the real compiled chain instead, so a genuine remap
+/// or a cross-rank transfer is handled rather than refused, is still
+/// open.
 ///
 /// ---------------------------------------------------------------------------
 /// WHAT ONE `advance()` CALL RECEIVES (why the algorithm looks like it does)

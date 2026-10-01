@@ -72,6 +72,58 @@ test = "runtime.window_runner_straddle"
 # `cmp`-verified byte-identical to the pre-mutation copy afterward.
 
 [[mutation]]
+id = "window-runner-consumer-ignores-sample-shift"
+area = "runtime/iteration (advance_window)"
+describes = "a LAGGED consumer's own import-waveform construction always computes buffer index k (times[k]'s own sample position) as if its provider had never straddled a window boundary, instead of calling fuse::window_sample_shift() (fuse/model/coupling_graph.hpp) to detect that an earlier straddle already carried the provider's real clock past this window's own T0 and shift every buffer-index lookup down by one. Once the provider (B, interval 7, DtPolicy::Fixed, against A's own 13-unit window) has straddled even once -- which it does every window in the (13,7) acceptance fixture -- this reads the WRONG entry of the provider's own K-wide sample buffer for every sample from `times[1]` on, the exact 'consumer computes the provider's sample times from T0 instead of window_sample_times()/window_sample_shift()' defect this track's task named."
+file = "src/runtime/iteration.cpp"
+old = """    const int shift = window_sample_shift(
+        cfg.provider_interval, cfg.provider_policy, Rational{0}, T0);"""
+new = """    const int shift = 0;  // MUTATED: always computed from T0, no shift"""
+target = "fuse_runtime_window_runner_straddle_test"
+test = "runtime.window_runner_straddle"
+# PROVED 2026-10-01, CONTROL THEN MUTANT (both freshly built, md5-
+# checked before and after each build, no stale object reuse). What was
+# actually run, in order: (1) the full 9-test WindowRunnerStraddle
+# suite, confirmed passing shortly before this mutation, on the SAME
+# unmutated file (md5 d9fa70a09b5be5c62c38d2b25f016119); (2) immediately
+# before applying this row's edit, that SAME unmutated file's own
+# FixedIterationCountMatchesDriverGaussSeidelFixedBCrossing run alone
+# (--gtest_filter), confirmed PASSED, as the direct control for the
+# value quoted below. (3) Applying ONLY this row's edit (md5 changes to
+# 14a24173d9bbfd26903c369c2472e7b4) and rebuilding (the object file
+# recompiles -- confirmed in the build log, not a cached hit), THEN
+# running the full 9-test suite again fails exactly 4 of 9 -- every
+# test whose B (interval 7) genuinely straddles under DtPolicy::Fixed:
+# BCrossingTheWindowEndUnderFixedMatchesDriver,
+# FixedIterationCountMatchesDriverJacobiFixedBCrossing,
+# ...GaussSeidelFixedBCrossing, ...JacobiFixedBCrossingWithAccel.
+# GaussSeidelFixedBCrossing's own hexfloat mismatch: via_runner.xA =
+# -0x1.28d126d222725p-17 (-8.8458358826929327e-06) vs the driver's own,
+# unaffected by this mutation, 0x1.c6d2282f01d0cp-15
+# (5.4218879419970929e-05) -- a SIGN flip, not a rounding difference.
+# This value is IDENTICAL, bit for bit, to what this exact test produced
+# earlier in this same delegation round before the fix this mutation
+# reverts existed at all -- expected, not a sign of a weak mutation:
+# forcing shift=0 makes the `k == shift` branch this row's fix added
+# unreachable (`shift==1 && k==shift` is false when shift is forced to
+# 0), so the predictor falls through to the SAME unconditional
+# extrapolation the original, unfixed code ran for every `k >= 1` --
+# bitwise the same formula, bitwise the same inputs, hence bitwise the
+# same output. The 5 OTHER tests -- SevenThirteenAdjustableAdjustable
+# ThroughWindowComponentMatchesDriver (A's own interval 13 trivially
+# divides the window; B stays Adjustable, never straddles),
+# WindowSampleShiftMatchesProviderBufferTimesOverTheWholePeriod (tests
+# window_sample_shift() itself directly, never through advance_window()),
+# FixedIterationCountMatchesDriverJacobi/GaussSeidel (both members
+# Adjustable, no straddle at all), and BothMembersFixedAndStraddling
+# TogetherIsRejected (rejected before this code ever runs) -- were
+# unaffected, as expected: none of them exercises a straddling import
+# provider through this exact code path. File restored and `cmp`-
+# verified byte-identical (md5 d9fa70a09b5be5c62c38d2b25f016119 again)
+# to the pre-mutation copy afterward, then rebuilt once more to confirm
+# all 9 tests pass again on the restored file.
+
+[[mutation]]
 id = "window-runner-point-sample-instead-of-mean"
 area = "runtime/window_coupler"
 describes = "feeds a consumer's non-straddling substep the provider's point sample at the substep END (WindowChannelIO::boundary) instead of the provider's MEAN over the substep (WindowChannelIO::mean) -- the exact 'point samples instead of substep means' defect this track's task named. Second-order accuracy in the exchanged quantity depends specifically on feeding a mean (window_coupler.hpp's own class comment); a point sample is what a naive one-value-per-call reading of Component::advance()'s contract would do instead, and degrades the coupling scheme to first order."
