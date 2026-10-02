@@ -27,9 +27,20 @@ inline CouplingGraph freeze_fixture() {
       // would not exercise the change it exists to pin. Still disjoint from
       // "solid": shared placements are a separate step.
       {.name = "fluid", .ranks = RankSet{std::vector<int>{2, 4, 6}},
-       .interval = Rational{1, 4}});
+       .interval = Rational{1, 4},
+       // LaunchMode::Mpmd at a non-default appnum: descriptor v9's reason
+       // for the version bump (include/fuse/model/launch.hpp).
+       .launch = LaunchSpec{.mode = LaunchMode::Mpmd, .appnum = 1}});
   const auto solid = g.add_component(
-      {.name = "solid", .ranks = {7, 2}, .interval = Rational{1, 3}});
+      {.name = "solid", .ranks = {7, 2}, .interval = Rational{1, 3},
+       // The other non-default launch mode, with every LaunchSpec member at
+       // a non-default value: a round trip over defaults proves nothing
+       // about a member (this file's own opening comment).
+       .launch = LaunchSpec{.mode = LaunchMode::Connect,
+                            .appnum = -1,
+                            .is_acceptor = true,
+                            .port_file = "/tmp/fuse-connect.port",
+                            .service_name = "fuse-solid-fluid"}});
   // A coupler: `ComponentKind::Coupler` is the one non-default enumerator a
   // freeze fixture built only from `add_component()` calls could never
   // reach, and `add_coupler()` is the API that reaches it. Placed disjoint
