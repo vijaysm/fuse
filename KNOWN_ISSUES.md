@@ -2272,7 +2272,7 @@ task's own instructions anticipated has now been tested and excluded.
 
 ---
 
-### D12. The participant ABI's `begin_step`/`end_step` run the period's exchanges once, at the period's end — a one-period lag on every transfer, no time averages, no implicit coupling; the resumable execution loop is the fix
+### ~~D13. The participant ABI's `begin_step`/`end_step` run the period's exchanges once, at the period's end — a one-period lag on every transfer, no time averages, no implicit coupling; the resumable execution loop is the fix~~ — CLOSED 2026-10-02
 
 **Found 2026-10-02**, in the C ABI track's own report (`484d8ee`), and verified by reading
 `src/abi/context.hpp`: every component the graph declares is wrapped in a component whose
@@ -2291,30 +2291,126 @@ whichever externally driven component's `end_step()` completes the period. Betwe
 
 It is exact for exactly one class of graph: every field transfer lagged by one period, no
 accumulation, no implicit coupling group — SOMA's bookkeeping-clock scheme, which is where the
-mechanism came from. It is **not refused** for other graphs today; that is the first thing to
-add if the fix below is delayed.
+mechanism came from.
 
-**The fix** is a Runner that can yield at an externally driven component's `advance()`: run the
-period's instructions up to that tick (so every exchange that feeds this component has run and
-its import is current), return control to the caller at `begin_step()` with the tick's exact
-bounds and the group's checkpoint/restore request, and resume at `end_step()`. Every `advance()`
-the Runner makes goes through one site (`Runner::Impl::advance`, runner.cpp) plus the time-window
-path (iteration.cpp), so the yield point is well defined. Two ways to build it, the choice put to
-the user on 2026-10-02:
+**Fix.** Option 1 of the two choices this entry put to the user, "a resumable execution loop":
+`fuse::Runner::Impl::advance()` (`src/runtime/runner.cpp`), `step_period()`, `run_region()` and
+`advance_window()` (`src/runtime/iteration.cpp`) are now a hand-written C++20 coroutine
+(`detail::Task<T>`, new file `src/runtime/resume.hpp`) that suspends exactly once, at an
+externally driven component's own `advance()` (`Component::is_externally_driven()`, new virtual,
+`include/fuse/runtime/component.hpp`), and resumes from there — never re-entering the loop from
+its start. Every statement these four functions make and the order it makes them in is unchanged;
+the only new control flow is the conditional suspend. The suspended coroutine's frame is reused
+across periods through a size-keyed free list (`FrameArena`, `resume.hpp`), not the global
+allocator, so the per-period hot loop stays allocation-free for an in-process run that never
+suspends at all. The participant ABI (`src/abi/participant.cpp`, `src/abi/context.hpp`) now
+drives this directly: `fuse_begin_step()` resumes the Runner and checks the step it stops at
+against the caller's name (refusing an out-of-turn call with `E-ABI-STEP-ORDER`, naming the
+component the schedule actually expects); `fuse_end_step()` resumes it again, past that component's
+step. `abi_detail::ExternalStepComponent` (new file `src/abi/external_step_component.hpp`) stands
+in for the externally driven component in the graph: a real, byte-exact `save_state()`/
+`restore_state()` pair over its own `Intent::Provides` fields (needed to honestly claim
+`supports_rollback()`, which entering an iteration region requires), and a no-op `advance()` since
+the external caller already wrote those fields directly into the registered storage before
+resuming. A window-scoped iteration region whose replayed member is externally driven is refused
+with the new `E-RT-WINDOW-EXTERNAL-STRADDLE` rather than given suspend support — recorded as an
+open item below, not silently assumed to work.
 
-1. **A resumable execution loop** (the enduring design): `step_period()`, `run_region()` and the
-   window path become C++20 coroutines (or an explicit state machine) that suspend at an external
-   `advance()`. No constraint on the host code's threading or MPI level; the statements and their
-   order are unchanged, so bit-identity with the in-process run is preserved by construction.
-   Cost: the three largest functions in the runtime change shape; the allocation-free-per-period
-   property needs the coroutine frames pre-allocated.
-2. **A Runner thread**: the Runner runs on its own thread and an external `advance()` blocks it
-   until `end_step()`. The loop is untouched. Cost: the host must have initialised MPI at
-   `MPI_THREAD_SERIALIZED` or above (FUSE would check `MPI_Query_thread` and refuse below it),
-   and Kokkos must be initialised by, and used only from, the Runner thread.
+**Verified at the base build configuration** (no MPI in this sandbox), measured directly on this
+host 2026-10-02. Baseline (unmodified `39d3239`, tier-0), at the start of this track's work:
+153/153 tests pass. After this fix, same configuration, in a fresh run at the end: 155/155 tests
+pass. This is a shared checkout other tracks (MPI connect/accept, LowFive) were editing for the
+whole span this track ran, so the +2 is not cleanly this entry's own to account for: a
+`ctest -N` listing comparison between the two build trees shows exactly one new ctest *target*,
+`transport.lowfive`, from the concurrent LowFive track (unrelated to this entry) — the remaining
+difference between that comparison (154 registered in the baseline tree vs. 153 actually run)
+was not chased down further, since it predates this track's own changes either way. This track
+itself added no new ctest target, only 4 new cases inside the pre-existing `abi.participant`
+target.
+`fuse_abi_participant_test` (`test/abi/participant_test.cpp`) grew from 3 to 7 `TEST()` cases: the
+3 pre-existing ones pass unchanged, and 4 new ones each pin a piece of this fix specifically —
+`SuspensionHappensExactlyAtTheScheduledTickNeitherEarlyNorLate` (the exact before/after of an
+import's staleness around a suspend point — see its own long comment for why, on the specific
+2-component point-to-point graph it uses, that is "still stale right after `begin_step()`,
+current right after the partner's `end_step()`", not "current right after `begin_step()`": a
+`lag(1)` channel between two same-interval components is, by the schedule's own construction,
+ordered after both components' ticks, so no suspend placement changes when its import becomes
+current — this is a property of that graph, not of the ABI, and is why
+`test/abi/install_consumer/main.c` still reads its import after `end_step()`, unchanged);
+`BeginStepOutOfTurnIsRefusedNamingTheExpectedComponent`; `SubcycledMeanAccumulation` (a
+quarter-interval producer feeding a time-averaging `Requires` field on a whole-interval consumer —
+the mean is correct mid-period, not just a copy of the period's last substep, which the old
+scheme would have produced); `ImplicitCouplingConvergesLikeInProcess` (a 2-component affine FSI
+graph driven entirely through the ABI, converging through 40 Jacobi sweeps with
+`requires_checkpoint`/`requires_restore` reported correctly on every sweep, to the same
+fixed point — bit-for-bit on every field — as the identical graph driven directly through
+`fuse::Runner`, bypassing the ABI). `Runner.AllocatesNothingWhileRunning`
+(`test/runtime/runner_test.cpp`) passes unchanged: the coroutine conversion adds no steady-state
+allocation. Three mutations recorded in `build-evidence/mutations/abi.toml` (the step-order
+refusal) and the new `build-evidence/mutations/runtime-resume.toml` (the suspend's placement
+relative to the no-op `advance()` it guards — found EQUIVALENT, with the reasoning why; and
+`requires_restore` never being set) confirm each names exactly the test it predicts, applied and
+restored by hand, anchors re-verified with `tools/mutate.py --check-anchors`.
 
-Until one lands: `docs/user/c-abi.md` states the limitation; a graph outside the exact class
-should be refused at `initialize()` with a named error and a test that fires it.
+**Compiled at the MPI-enabled build configuration, not run.** `-DFUSE_ENABLE_MPI=ON` builds
+cleanly against this host's real MPICH with every change above; MPI cannot start in this sandbox,
+so the parallel test suite (`test/parallel/*`) was not run against this fix and is recorded as an
+open item, not claimed here.
+
+**Open items.** A window-scoped iteration region (`fuse::WindowCoupler`) with an externally
+driven straddling member is refused (`E-RT-WINDOW-EXTERNAL-STRADDLE`), not given suspend support —
+no test graph in this codebase currently combines window scoping with an externally driven
+component, so this is a scope reduction recorded here rather than a verified behaviour. The MPI
+build above is compiled, not run; `test/parallel/runner_transport_test.cpp`'s own allocation
+check, and the full parallel suite, remain to be measured on a host that can start MPI.
+
+### D14. LowFive: the two-HDF5-image hazard is closed by a measured configure-time probe; the distributed transport and Demo B are compiled, not run
+
+**The two-HDF5-image hazard (S6 phase 3, "LowFive" track) — CLOSED with a measured,
+configure-time acceptance test; the underlying fix is a host action.** A binary
+linking both MOAB and LowFive can load two independent `libhdf5` images — MOAB's
+dependency is an absolute path, LowFive's may resolve via its own `LC_RPATH` to a
+different prefix — and when it does, LowFive's VOL interception silently does not
+apply to MOAB's own HDF5 traffic (or vice versa): no link error, no runtime error,
+data simply reaches disk. Measured directly on this host, 2026-10-02:
+`/opt/lowfive` (built against MOAB's own `/opt/hdf5`) loads exactly one image of
+each and is safe; `/opt/lowfive-shared` (built against a separately built
+`/opt/hdf5-shared`) loads two of each and reproduces the exact silent-corruption
+symptom (`H5Pset_vol(): "not a file VOL ID"`) while the process still exits 0. Full
+record, including why a static CMake path comparison would have been wrong on this
+very host (`find_package(HDF5)` resolves outside `CMAKE_PREFIX_PATH` via a glob over
+`CMAKE_SYSTEM_PREFIX_PATH`'s default `/opt` entry): `docs/user/lowfive.md`.
+`tools/probe-hdf5-images.{c,sh}` is the acceptance test — it links MOAB and a given
+LowFive prefix, runs the result under a library-loader trace, and counts the
+distinct `libhdf5`/`libhdf5_hl` images that actually load.
+`cmake/FuseDependencies.cmake` runs it at configure time whenever
+`FUSE_ENABLE_LOWFIVE AND FUSE_ENABLE_MOAB` and **refuses the configuration**
+(`FATAL_ERROR`, not a warning) if it measures more than one image, naming the exact
+rebuild line. Verified end to end against this checkout's real
+`cmake/FuseDependencies.cmake`: the matched pairing configures clean, the mismatched
+one refuses with the measured evidence in the error message. `/opt` is not writable
+from the sandbox this track ran in, so rebuilding a LowFive to close a measured gap
+(for instance `/opt/lowfive`'s own stale MPI linkage, a second, unrelated defect
+recorded on the same page) is a host action, not something this entry can close
+further.
+
+**Demo B (two unmodified HDF5 executables, cross-process) — NOT executed; compiles
+against LowFive's documented API only.** The single-process interception path
+(`LowFiveTransport::set_location`/`build_plan`/`move`, unconditionally compiled, part
+of this codebase before this phase) is measured end to end and is not in question.
+Actually crossing an OS process boundary needs LowFive's `DistMetadataVOL` and an MPI
+intercommunicator between the two executables — this phase adds
+`LowFiveTransport::set_intercomm`/`serve_as_producer`/`receive_as_consumer`
+(`src/transport/lowfive_transport.cpp`, declared in `fuse/transport/transport.hpp`)
+against `DistMetadataVOL`'s public header contract, and `examples/demo_b`'s own
+producer/consumer executables plus a minimal rendezvous. None of it has run: MPI
+cannot start in the sandbox this was written in, and this exact combination (FUSE +
+`DistMetadataVOL`) was never implemented in the `upstream/soma` parent project either
+— its own `lowfive_transport.cpp` is single-process only, confirmed by inspection.
+Compiles cleanly under `-DFUSE_ENABLE_LOWFIVE=ON -DFUSE_ENABLE_MPI=ON
+-DFUSE_ENABLE_MOAB=ON` against this host's real MOAB/LowFive/HDF5 (measured
+2026-10-02); the host run that would turn "compiles" into "works" is recorded as an
+open item in this track's report, not claimed here.
 
 ## C. Not defects — do not fix these
 
