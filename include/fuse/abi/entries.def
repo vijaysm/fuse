@@ -105,6 +105,7 @@ FUSE_ABI_STRUCT(fuse_version_info, "what this library is")
 FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
 FUSE_ABI_FIELD(fuse_version,   fuse_version, library,    "semantic version of the library")
 FUSE_ABI_FIELD(uint32_t,       c_int32_t,  abi_version,  "highest table version fuse_coupler_abi() answers")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  reserved,     "0; fills the padding so that an appended member changes sizeof (abi-design.md rule 3)")
 FUSE_ABI_FIELD(const char*,    c_ptr,      string,       "NUL-terminated, static storage, valid for the library's lifetime")
 FUSE_ABI_STRUCT_END(fuse_version_info)
 

@@ -79,6 +79,7 @@ typedef struct fuse_version_info {
   uint32_t     struct_size;
   fuse_version library;  /* semantic version of the library */
   uint32_t     abi_version;  /* highest table version fuse_coupler_abi() answers */
+  uint32_t     reserved;  /* 0; fills the padding so that an appended member changes sizeof (abi-design.md rule 3) */
   const char*  string;  /* NUL-terminated, static storage, valid for the library's lifetime */
 } fuse_version_info;
 
