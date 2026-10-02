@@ -12,6 +12,7 @@
 #include <unordered_map>
 
 #include "fuse/abi/participant.h"
+#include "fuse/abi/provider.h"
 
 #ifndef FUSE_PYTHON3_EXECUTABLE
 #define FUSE_PYTHON3_EXECUTABLE "python3"
@@ -73,6 +74,10 @@ TEST(AbiGolden, StructSizesMatchTheTable) {
       {"fuse_ongoing", sizeof(fuse_ongoing)},
       {"fuse_run_request", sizeof(fuse_run_request)},
       {"fuse_participant_abi_v1", sizeof(fuse_participant_abi_v1)},
+      {"fuse_field_spec", sizeof(fuse_field_spec)},
+      {"fuse_field_table", sizeof(fuse_field_table)},
+      {"fuse_provider_instance", sizeof(fuse_provider_instance)},
+      {"fuse_provider_abi_v1", sizeof(fuse_provider_abi_v1)},
   };
 
   std::ifstream golden(std::string(FUSE_TEST_GOLDEN_DIR) + "/../abi/struct_sizes.golden");
@@ -125,10 +130,14 @@ TEST(AbiGolden, NoStructHasTrailingPaddingALaterMemberCouldHide) {
   FUSE_NO_TRAILING_PADDING(fuse_field_name, field);
   FUSE_NO_TRAILING_PADDING(fuse_field_ref, conservation);
   FUSE_NO_TRAILING_PADDING(fuse_field_view, data);
-  FUSE_NO_TRAILING_PADDING(fuse_step_request, component);
+  FUSE_NO_TRAILING_PADDING(fuse_step_request, reserved);
   FUSE_NO_TRAILING_PADDING(fuse_step_report, t_end);
   FUSE_NO_TRAILING_PADDING(fuse_ongoing, now);
   FUSE_NO_TRAILING_PADDING(fuse_run_request, periods);
   FUSE_NO_TRAILING_PADDING(fuse_participant_abi_v1, run);
+  FUSE_NO_TRAILING_PADDING(fuse_field_spec, element_type);
+  FUSE_NO_TRAILING_PADDING(fuse_field_table, written);
+  FUSE_NO_TRAILING_PADDING(fuse_provider_instance, self);
+  FUSE_NO_TRAILING_PADDING(fuse_provider_abi_v1, capabilities);
 }
 #undef FUSE_NO_TRAILING_PADDING
