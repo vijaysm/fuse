@@ -218,6 +218,29 @@ set_target_properties(fuse-coupler-transport PROPERTIES
 target_sources(fuse-coupler-transport PRIVATE transport/connect.cpp)
 # ---- S6 phase 3, "MPI connect" track: end ---------------------------------
 
+# ---- S6 phase 3, "LowFive" track: begin -----------------------------------
+# transport/lowfive_transport.cpp is already in the add_library() sources
+# list above (every configuration, per that file's own top-of-file comment);
+# what was missing is the actual link: without this, the #include <hdf5.h>
+# and #include <lowfive/...> inside its FUSE_HAVE_LOWFIVE-guarded body have
+# no include path and no library to resolve against the moment anyone
+# actually turns FUSE_ENABLE_LOWFIVE on (cmake/FuseDependencies.cmake's
+# fuse::lowfive target exists; nothing attached it to a consumer before this).
+if(FUSE_ENABLE_LOWFIVE)
+  target_link_libraries(fuse-coupler-transport PRIVATE fuse::lowfive)
+  # LOWFIVE_HAVE_DIST (cmake/FindLowFive.cmake): whether a liblowfive-dist
+  # archive was found alongside the main library. lowfive_transport.cpp's
+  # distributed-mode code (set_intercomm/serve_as_producer/receive_as_consumer)
+  # needs BOTH this and FUSE_HAVE_MPI; without this define it compiles out
+  # even in an MPI build, rather than fail the final link the way
+  # fuse_transport_lowfive_test did against this lab's own LowFive installs
+  # before this check existed (neither ships DistMetadataVOL in the main
+  # library -- see cmake/FindLowFive.cmake's own comment).
+  if(LOWFIVE_HAVE_DIST)
+    target_compile_definitions(fuse-coupler-transport PRIVATE FUSE_LOWFIVE_DIST_LIB_FOUND=1)
+  endif()
+endif()
+# ---- S6 phase 3, "LowFive" track: end -------------------------------------
 
 # ---------------------------------------------------------------- search
 # fuse::search: the ArborX-backed spatial index (BVH point/box queries,

@@ -1,0 +1,73 @@
+# Mutations for S6 phase 3, "LowFive" track. Own file per the review-fix
+# protocol: do not edit build-evidence/mutations.toml directly while other
+# fixers hold it dirty (same convention as field-pipeline.toml).
+
+[[mutation]]
+id = "binding-table-skips-the-duplicate-field-check"
+area = "transport"
+describes = "LowFiveFieldBindingTable::add() silently accepts rebinding a field_name that already has an HDF5 path, instead of refusing with E-LOWFIVE-DUPFIELD"
+file = "include/fuse/transport/lowfive.hpp"
+old = """    if (find_by_field(binding.field_name) != nullptr) {
+      return Failure{"E-LOWFIVE-DUPFIELD","""
+new = """    if (false && find_by_field(binding.field_name) != nullptr) {
+      return Failure{"E-LOWFIVE-DUPFIELD","""
+target = "fuse_transport_lowfive_test"
+test = "transport.lowfive"
+
+[[mutation]]
+id = "binding-table-skips-the-duplicate-path-check"
+area = "transport"
+describes = "LowFiveFieldBindingTable::add() silently accepts two fields bound to the same exact (non-wildcard) HDF5 path, instead of refusing with E-LOWFIVE-DUPPATH -- two buffers would overwrite one dataset with no diagnostic"
+file = "include/fuse/transport/lowfive.hpp"
+old = "if (!is_wildcard && find_by_path(binding.hdf5_path) != nullptr) {"
+new = "if (false && !is_wildcard && find_by_path(binding.hdf5_path) != nullptr) {"
+target = "fuse_transport_lowfive_test"
+test = "transport.lowfive"
+
+[[mutation]]
+id = "split-hdf5-path-accepts-a-second-separator"
+area = "transport"
+describes = "split_hdf5_path() stops checking for a SECOND '.h5/' occurrence, so 'a.h5/b.h5/c' is accepted and silently split at the first separator instead of refused as ambiguous"
+file = "include/fuse/transport/lowfive.hpp"
+old = """  if (hdf5_path.find(sep, first + 1) != std::string::npos) {
+    return Failure{"E-LOWFIVE-PORT",
+                 "'" + hdf5_path + "' contains '.h5/' more than once"};
+  }"""
+new = "  if (false) { (void)sep; }"
+target = "fuse_transport_lowfive_test"
+test = "transport.lowfive"
+
+[[mutation]]
+id = "split-hdf5-path-accepts-an-empty-dataset"
+area = "transport"
+describes = "split_hdf5_path() no longer refuses an empty dataset-path component ('file.h5/'), so a binding with nothing to read or write downstream is accepted"
+file = "include/fuse/transport/lowfive.hpp"
+old = """  if (dataset.empty()) {
+    return Failure{"E-LOWFIVE-PORT",
+                 "'" + hdf5_path + "' has an empty dataset path after '.h5/'"};
+  }"""
+new = "  if (false && dataset.empty()) { (void)0; }"
+target = "fuse_transport_lowfive_test"
+test = "transport.lowfive"
+
+[[mutation]]
+id = "move-allows-the-single-process-roundtrip-in-distributed-mode"
+area = "transport"
+describes = "LowFiveTransport::move() drops its distributed-mode refusal (E-TRANSPORT-LF-DISTRIBUTED), so a caller that already switched to DistMetadataVOL via set_intercomm() would silently attempt the single-process write-then-read-back round trip instead of being told to drive the exchange through serve_as_producer()/receive_as_consumer()"
+file = "src/transport/lowfive_transport.cpp"
+old = """#if FUSE_LOWFIVE_HAVE_DIST
+  if (p->distributed) {
+    return Failure{"E-TRANSPORT-LF-DISTRIBUTED","""
+new = """#if FUSE_LOWFIVE_HAVE_DIST
+  if (false && p->distributed) {
+    return Failure{"E-TRANSPORT-LF-DISTRIBUTED","""
+target = "fuse_transport_lowfive_test"
+test = "transport.lowfive"
+# Needs set_intercomm() to have actually SUCCEEDED (real MPI_Init plus a
+# formed intercommunicator) to reach this branch at all -- the test binary
+# never has one (fuse_test_main is single-process, and per this track's
+# report MPI cannot start in the sandbox this was written in). Same
+# honesty as the five pre-existing `requires = "mpi"` rows in
+# transport-runtime.toml and native-mesh.toml: recording a pass here would
+# be evidence worse than none.
+requires = "mpi"

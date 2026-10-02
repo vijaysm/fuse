@@ -11,7 +11,7 @@
 //
 // 1. The connector is attached programmatically, never through the
 //    HDF5_VOL_CONNECTOR environment variable. The environment-variable path
-//    aborts the process after main returns (docs/BUILDING.md has the trace:
+//    aborts the process after main returns (docs/user/lowfive.md has the trace (this repo, unlike upstream/soma, keeps no docs/BUILDING.md):
 //    HDF5's atexit handler terminates the connector after LowFive's spdlog
 //    statics are already destroyed).
 //
@@ -55,6 +55,31 @@
 #include <lowfive/vol-metadata.hpp>
 #endif
 
+// Distributed mode (Demo B, two executables -- see set_intercomm()'s
+// declaration in fuse/transport/transport.hpp for what this is and the
+// UNEXECUTED caveat that applies to all of it). Needs MPI for the
+// intercommunicator itself, which is why this is a second, narrower guard
+// than plain FUSE_HAVE_LOWFIVE: a LowFive build with FUSE_ENABLE_MPI=OFF has
+// the single-process path above but not this one.
+//
+// ALSO needs FUSE_LOWFIVE_DIST_LIB_FOUND (cmake/FuseDependencies.cmake's
+// LowFive block, via cmake/FindLowFive.cmake's LOWFIVE_HAVE_DIST):
+// LowFive::DistMetadataVOL is compiled into a SEPARATE static archive
+// (liblowfive-dist.a) on both installs measured on this lab's host, not
+// into liblowfive itself -- linking against vol-dist-metadata.hpp's
+// declarations without that archive fails at the FINAL link of whatever
+// links this translation unit, not here, which is exactly what happened to
+// fuse_transport_lowfive_test (2026-10-02) before this second guard
+// existed. A build with MPI but no discovered dist archive therefore still
+// gets the single-process path only, same as a build with no MPI at all.
+#if FUSE_HAVE_LOWFIVE && FUSE_HAVE_MPI && defined(FUSE_LOWFIVE_DIST_LIB_FOUND)
+#include <mpi.h>
+#include <lowfive/vol-dist-metadata.hpp>
+#define FUSE_LOWFIVE_HAVE_DIST 1
+#else
+#define FUSE_LOWFIVE_HAVE_DIST 0
+#endif
+
 namespace fuse {
 namespace {
 
@@ -64,8 +89,20 @@ namespace {
                std::string(what) +
                    " requires a LowFive-enabled build; this one was configured "
                    "without it. Reconfigure with -DFUSE_ENABLE_LOWFIVE=ON and "
-                   "-DCMAKE_PREFIX_PATH=\"/opt/lowfive-shared;/opt/hdf5-shared\" "
-                   "(see docs/BUILDING.md)"};
+                   "-DFUSE_ENABLE_MOAB=ON, -DCMAKE_PREFIX_PATH pointed at a "
+                   "LowFive built against the SAME HDF5 prefix MOAB uses -- "
+                   // R-NN (this track, 2026-10-02): the previous guidance here
+                   // named "/opt/lowfive-shared;/opt/hdf5-shared", which is
+                   // EXACTLY the pairing tools/probe-hdf5-images.sh measures
+                   // as hazardous on this lab's machine (two distinct libhdf5
+                   // images load when it is linked alongside MOAB; see
+                   // docs/user/lowfive.md and KNOWN_ISSUES.md section D).
+                   // cmake/FuseDependencies.cmake now refuses that pairing at
+                   // configure time rather than let it reach here, but a
+                   // string baked into this message is not refused by
+                   // anything, so it must not repeat the mistake.
+                   "cmake/FuseDependencies.cmake's configure-time probe will "
+                   "refuse any pairing that is not (see docs/user/lowfive.md)"};
 }
 #endif
 
@@ -110,7 +147,7 @@ struct VolSingleton {
 
     // ABORT AT EXIT, AND WHY THIS LINE IS HERE.
     //
-    // docs/BUILDING.md records the process dying AFTER main returns with
+    // docs/user/lowfive.md records the process dying AFTER main returns with
     //   libc++abi: terminating due to uncaught exception of type
     //   std::__1::system_error: mutex lock failed: Invalid argument
     // and attributes it to the HDF5_VOL_CONNECTOR plugin-loading path. It is
@@ -142,6 +179,59 @@ VolSingleton& vol_singleton() {
   static VolSingleton* g = new VolSingleton;  // leaked, deliberately
   return *g;
 }
+
+#if FUSE_LOWFIVE_HAVE_DIST
+/// The process-wide DISTRIBUTED VOL registration -- set_intercomm()'s
+/// counterpart to VolSingleton above, and mutually exclusive with it: a
+/// process attaches ONE LowFive connector (see the note on VolSingleton),
+/// so whichever of `vol_singleton()` / `dist_vol_singleton()` is reached
+/// FIRST decides which kind, and the other must never be reached afterward
+/// in the same process. `set_intercomm()` enforces this by being refused
+/// once `set_location()`/`build_plan()` have already created a
+/// (non-distributed) VolSingleton.
+///
+/// UNEXECUTED: constructed from LowFive::DistMetadataVOL's public header
+/// contract (lowfive/vol-dist-metadata.hpp) only; MPI cannot start in the
+/// sandbox this was written in, so nothing below has run. See
+/// docs/user/lowfive.md and this track's report for exactly what that means
+/// for confidence in this path versus the single-process one above, which
+/// IS measured end to end.
+struct DistVolSingleton {
+  LowFive::DistMetadataVOL& vol;
+  LowFive::H5VOLProperty*   prop = nullptr;  // intentionally leaked with `this`
+  hid_t                     vol_id = H5I_INVALID_HID;
+  bool                      registered = false;
+  std::vector<std::string>  claimed;
+
+  DistVolSingleton(MPI_Comm local, MPI_Comm intercomm)
+      : vol(LowFive::DistMetadataVOL::create_DistMetadataVOL(local, intercomm)) {
+    prop = new LowFive::H5VOLProperty(vol);
+    vol_id = prop->vol_id;
+    // Same reasoning as VolSingleton::VolSingleton: this process's own HDF5
+    // traffic for the claimed file(s) is served from memory/over the
+    // intercomm, nothing is kept on close (serve_all() below does the
+    // handoff explicitly instead), and the same post-main teardown hazard
+    // documented on VolSingleton applies here too.
+    vol.set_memory("*", "*");
+    registered = H5VLis_connector_registered_by_name("lowfive") == 1 &&
+                 vol_id >= 0;
+    std::atexit(+[] { H5close(); });
+  }
+
+  DistVolSingleton(const DistVolSingleton&) = delete;
+  DistVolSingleton& operator=(const DistVolSingleton&) = delete;
+};
+
+/// Unlike `vol_singleton()`, this takes the communicators on its FIRST call
+/// (construction time) and ignores them on every later call -- there is only
+/// ever one. A second `set_intercomm()` with different handles in the same
+/// process is refused by comparing against `first_local`/`first_intercomm`
+/// before this is reached a second time; see `LowFiveTransport::set_intercomm`.
+DistVolSingleton& dist_vol_singleton(MPI_Comm local, MPI_Comm intercomm) {
+  static DistVolSingleton* g = new DistVolSingleton(local, intercomm);  // leaked
+  return *g;
+}
+#endif  // FUSE_LOWFIVE_HAVE_DIST
 
 /// UPSTREAM BUG, worked around here. `LowFive::MetadataVOL::drop(std::string)`
 /// does not check `files.find(name)` against `files.end()`; called with a name
@@ -213,6 +303,16 @@ struct LowFiveTransport::Impl {
 
   std::size_t writes_seen = 0;
 
+  // Task 8.4 continuation (Demo B): set once by set_intercomm(), before
+  // set_location(). Decides which VOL singleton build_plan() attaches to --
+  // see the note on DistVolSingleton for why there is only ever one kind
+  // per process. UNEXECUTED path; see transport.hpp's set_intercomm() doc.
+  bool distributed = false;
+#if FUSE_LOWFIVE_HAVE_DIST
+  MPI_Comm    local_comm = MPI_COMM_NULL;
+  MPI_Comm    intercomm = MPI_COMM_NULL;
+#endif
+
 #if FUSE_HAVE_LOWFIVE
   hid_t       fapl = H5I_INVALID_HID;
   hid_t       space = H5I_INVALID_HID;
@@ -226,6 +326,19 @@ struct LowFiveTransport::Impl {
     if (space >= 0) H5Sclose(space);
     if (fapl >= 0) H5Pclose(fapl);
     if (located) {
+#if FUSE_LOWFIVE_HAVE_DIST
+      if (distributed) {
+        // dist_vol_singleton() is only ever constructed via set_intercomm(),
+        // which is the only path that can have set `distributed`; by the
+        // time a located, distributed Impl is destroyed the singleton
+        // already exists, so this does not risk creating one with the wrong
+        // communicators as a destructor side effect.
+        auto& g = dist_vol_singleton(local_comm, intercomm);
+        auto it = std::find(g.claimed.begin(), g.claimed.end(), file);
+        if (it != g.claimed.end()) g.claimed.erase(it);
+        return;
+      }
+#endif
       auto& g = vol_singleton();
       safe_drop(g.vol, file);
       auto it = std::find(g.claimed.begin(), g.claimed.end(), file);
@@ -272,6 +385,121 @@ std::string LowFiveTransport::file_path() const {
 }
 
 // ---------------------------------------------------------------------------
+// set_intercomm / serve_as_producer / receive_as_consumer -- distributed
+// mode, Demo B (Task 8.4 continuation). UNEXECUTED: see the doc comment on
+// set_intercomm() in fuse/transport/transport.hpp.
+// ---------------------------------------------------------------------------
+
+Result<void> LowFiveTransport::set_intercomm(int fortran_local_comm,
+                                             int fortran_intercomm) {
+#if !FUSE_HAVE_LOWFIVE
+  (void)fortran_local_comm;
+  (void)fortran_intercomm;
+  return no_lowfive("LowFiveTransport::set_intercomm()");
+#elif !FUSE_LOWFIVE_HAVE_DIST
+  (void)fortran_local_comm;
+  (void)fortran_intercomm;
+  return Failure{"E-TRANSPORT-NOMPI",
+               "LowFiveTransport::set_intercomm() needs a build configured "
+               "with both -DFUSE_ENABLE_LOWFIVE=ON and -DFUSE_ENABLE_MPI=ON; "
+               "this one has LowFive but not MPI, so only the single-process "
+               "path (set_location/build_plan/move) is available"};
+#else
+  Impl* p = impl_.get();
+  if (p == nullptr) {
+    return Failure{"E-TRANSPORT-LF-LOCATION",
+                 "set_intercomm() on a moved-from LowFiveTransport"};
+  }
+  if (p->located) {
+    return Failure{"E-TRANSPORT-LF-LOCATION",
+                 "set_intercomm() after set_location()/build_plan(); it "
+                 "decides which VOL connector this process attaches and "
+                 "cannot switch once the single-process one is already live"};
+  }
+  int initialized = 0;
+  if (MPI_Initialized(&initialized) != MPI_SUCCESS || initialized == 0) {
+    return Failure{"E-TRANSPORT-MPIINIT",
+                 "MPI is not initialised; MPI_Comm_f2c on a handle from an "
+                 "uninitialised MPI is not meaningful"};
+  }
+  int finalized = 0;
+  if (MPI_Finalized(&finalized) == MPI_SUCCESS && finalized != 0) {
+    return Failure{"E-TRANSPORT-MPIINIT", "MPI has already been finalised"};
+  }
+  const MPI_Comm local = MPI_Comm_f2c(static_cast<MPI_Fint>(fortran_local_comm));
+  const MPI_Comm inter = MPI_Comm_f2c(static_cast<MPI_Fint>(fortran_intercomm));
+  if (local == MPI_COMM_NULL) {
+    return Failure{"E-TRANSPORT-COMM",
+                 "local communicator handle " +
+                     std::to_string(fortran_local_comm) +
+                     " converts to MPI_COMM_NULL"};
+  }
+  if (inter == MPI_COMM_NULL) {
+    return Failure{"E-TRANSPORT-COMM",
+                 "intercommunicator handle " +
+                     std::to_string(fortran_intercomm) +
+                     " converts to MPI_COMM_NULL"};
+  }
+  int is_inter = 0;
+  MPI_Comm_test_inter(inter, &is_inter);
+  if (!is_inter) {
+    return Failure{"E-TRANSPORT-COMM",
+                 "the handle given as the intercommunicator is an ordinary "
+                 "(intra-)communicator; form one with MPI_Comm_connect / "
+                 "MPI_Comm_accept or an MPMD launch's split, not with "
+                 "MPI_Comm_dup/MPI_Comm_split"};
+  }
+  p->distributed = true;
+  p->local_comm = local;
+  p->intercomm = inter;
+  return Result<void>::success();
+#endif
+}
+
+Result<void> LowFiveTransport::serve_as_producer() {
+#if !FUSE_HAVE_LOWFIVE
+  return no_lowfive("LowFiveTransport::serve_as_producer()");
+#elif !FUSE_LOWFIVE_HAVE_DIST
+  return Failure{"E-TRANSPORT-NOMPI",
+               "serve_as_producer() needs -DFUSE_ENABLE_MPI=ON alongside "
+               "-DFUSE_ENABLE_LOWFIVE=ON"};
+#else
+  Impl* p = impl_.get();
+  if (p == nullptr || !p->distributed) {
+    return Failure{"E-TRANSPORT-LF-NOTDIST",
+                 "serve_as_producer() without a prior successful "
+                 "set_intercomm(); there is no intercommunicator to serve "
+                 "across"};
+  }
+  // Public API shape only (vol-dist-metadata.hpp): push whatever this
+  // process has written across the intercommunicator. UNEXECUTED -- see
+  // this method's declaration.
+  dist_vol_singleton(p->local_comm, p->intercomm).vol.serve_all();
+  return Result<void>::success();
+#endif
+}
+
+Result<void> LowFiveTransport::receive_as_consumer() {
+#if !FUSE_HAVE_LOWFIVE
+  return no_lowfive("LowFiveTransport::receive_as_consumer()");
+#elif !FUSE_LOWFIVE_HAVE_DIST
+  return Failure{"E-TRANSPORT-NOMPI",
+               "receive_as_consumer() needs -DFUSE_ENABLE_MPI=ON alongside "
+               "-DFUSE_ENABLE_LOWFIVE=ON"};
+#else
+  Impl* p = impl_.get();
+  if (p == nullptr || !p->distributed) {
+    return Failure{"E-TRANSPORT-LF-NOTDIST",
+                 "receive_as_consumer() without a prior successful "
+                 "set_intercomm()"};
+  }
+  // UNEXECUTED -- see this method's declaration in transport.hpp.
+  dist_vol_singleton(p->local_comm, p->intercomm).vol.broadcast_files();
+  return Result<void>::success();
+#endif
+}
+
+// ---------------------------------------------------------------------------
 // set_location
 // ---------------------------------------------------------------------------
 
@@ -298,8 +526,22 @@ Result<void> LowFiveTransport::set_location(std::string file,
                  "both a file name and a dataset name are required"};
   }
 
-  auto& g = vol_singleton();
-  if (std::find(g.claimed.begin(), g.claimed.end(), file) != g.claimed.end()) {
+  // Distributed mode (set_intercomm() already called) tracks claimed file
+  // names on the DIST singleton, never the non-distributed one -- the two
+  // have independent in-memory file maps. Non-distributed is the common
+  // case, so its lookup is not behind the FUSE_LOWFIVE_HAVE_DIST guard.
+  std::vector<std::string>* claimed = nullptr;
+#if FUSE_LOWFIVE_HAVE_DIST
+  if (p->distributed) {
+    claimed = &dist_vol_singleton(p->local_comm, p->intercomm).claimed;
+  }
+#endif
+  VolSingleton* non_dist = nullptr;
+  if (claimed == nullptr) {
+    non_dist = &vol_singleton();
+    claimed = &non_dist->claimed;
+  }
+  if (std::find(claimed->begin(), claimed->end(), file) != claimed->end()) {
     return Failure{"E-TRANSPORT-LF-LOCATION",
                  "another live LowFiveTransport already uses the file name '" +
                      file +
@@ -309,7 +551,10 @@ Result<void> LowFiveTransport::set_location(std::string file,
 
   // "No file on disk" is only evidence if a file COULD have appeared there.
   // Prove the directory is writable by actually creating and removing a
-  // sentinel next to the path we are about to claim.
+  // sentinel next to the path we are about to claim. Meaningful in
+  // distributed mode too: the producer side still promises nothing reaches
+  // this path, and "could not have written here anyway" would be worthless
+  // evidence of that promise in either mode.
   const std::string sentinel = file + ".soma-writable-probe";
   const int fd = ::open(sentinel.c_str(), O_CREAT | O_EXCL | O_WRONLY, 0600);
   if (fd < 0) {
@@ -323,15 +568,15 @@ Result<void> LowFiveTransport::set_location(std::string file,
   ::unlink(sentinel.c_str());
 
   if (p->located) {
-    auto it = std::find(g.claimed.begin(), g.claimed.end(), p->file);
-    if (it != g.claimed.end()) g.claimed.erase(it);
+    auto it = std::find(claimed->begin(), claimed->end(), p->file);
+    if (it != claimed->end()) claimed->erase(it);
   }
   p->file = std::move(file);
   p->dataset = std::move(dataset);
   p->file_c = p->file.c_str();
   p->dataset_c = p->dataset.c_str();
   p->located = true;
-  g.claimed.push_back(p->file);
+  claimed->push_back(p->file);
   return Result<void>::success();
 #endif
 }
@@ -381,6 +626,65 @@ Result<void> LowFiveTransport::build_plan(const TransportSpec& spec) {
                  "elements * components overflows std::size_t"};
   }
   const std::size_t total = spec.elements * nc;
+
+#if FUSE_LOWFIVE_HAVE_DIST
+  if (p->distributed) {
+    // ---------------------------------------------------------------------
+    // DISTRIBUTED build_plan. Cannot run the single-process round-trip probe
+    // below: the read leg happens in the PEER process, after that process's
+    // own receive_as_consumer()/H5Fopen, which has not happened yet (may
+    // never happen on this rank at all -- a producer-only process has no
+    // read leg ever). What IS provable here, without any I/O: the connector
+    // registered under its OWN name check, and a property list this process
+    // creates actually carries it (the same two checks the non-distributed
+    // path makes before touching HDF5 data, just without the write+read
+    // either side of them). The bit-for-bit, zero-bytes-on-disk claim is
+    // Demo B's own test's job (examples/demo_b), run on the host.
+    // UNEXECUTED -- see set_intercomm()'s doc in transport.hpp.
+    // ---------------------------------------------------------------------
+    auto& dg = dist_vol_singleton(p->local_comm, p->intercomm);
+    if (!dg.registered) {
+      return Failure{"E-TRANSPORT-LF-VOL",
+                   "the distributed LowFive VOL connector did not register; "
+                   "H5VLis_connector_registered_by_name(\"lowfive\") is not 1"};
+    }
+    const hid_t fapl = H5Pcreate(H5P_FILE_ACCESS);
+    if (fapl < 0) {
+      return Failure{"E-TRANSPORT-HDF5", "H5Pcreate(H5P_FILE_ACCESS) failed"};
+    }
+    dg.prop->apply(fapl);
+    hid_t      on_list = H5I_INVALID_HID;
+    const bool got = H5Pget_vol_id(fapl, &on_list) >= 0;
+    const bool matches = got && on_list == dg.vol_id;
+    if (on_list >= 0) H5VLclose(on_list);
+    if (!matches) {
+      H5Pclose(fapl);
+      return Failure{"E-TRANSPORT-LF-VOL",
+                   "H5Pset_vol did not put the distributed LowFive connector "
+                   "on the file-access property list"};
+    }
+    const auto dim = static_cast<hsize_t>(total);
+    const hid_t space = H5Screate_simple(1, &dim, nullptr);
+    if (space < 0) {
+      H5Pclose(fapl);
+      return Failure{"E-TRANSPORT-HDF5",
+                   "H5Screate_simple for " + std::to_string(total) +
+                       " elements failed"};
+    }
+    p->fapl = fapl;
+    p->space = space;
+    p->p_elements = spec.elements;
+    p->p_components = spec.components;
+    p->p_src_rank_set = spec.src_rank_set;
+    p->p_dst_rank_set = spec.dst_rank_set;
+    p->p_n_ids = spec.global_ids.size();
+    p->p_n_src_ranks = spec.src_ranks.size();
+    p->p_n_dst_ranks = spec.dst_ranks.size();
+    p->p_total = total;
+    p->planned = true;
+    return Result<void>::success();
+  }
+#endif  // FUSE_LOWFIVE_HAVE_DIST
 
   auto& g = vol_singleton();
   if (!g.registered) {
@@ -574,6 +878,20 @@ Result<void> LowFiveTransport::move(const double* src, double* dst,
                  "lowfive transport given a null pointer for " +
                      std::to_string(n) + " doubles"};
   }
+#if FUSE_LOWFIVE_HAVE_DIST
+  if (p->distributed) {
+    return Failure{"E-TRANSPORT-LF-DISTRIBUTED",
+                 "move() writes AND reads back within this one call, which "
+                 "is only meaningful when both ends of the channel are in "
+                 "this process. In distributed mode (set_intercomm() was "
+                 "called) the producer and consumer are two different "
+                 "processes: drive the actual write/read through each "
+                 "executable's own, unmodified H5Dwrite/H5Dread "
+                 "(examples/demo_b), with serve_as_producer()/"
+                 "receive_as_consumer() bracketing them -- not through this "
+                 "call"};
+  }
+#endif
 
   auto&             g = vol_singleton();
   const std::size_t before = g.writes;

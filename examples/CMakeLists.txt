@@ -291,3 +291,41 @@ if(FUSE_ENABLE_MPI)
   fuse_add_layout_test(layout.refuse.coupler-with-mesh 2 WILL_FAIL
     ARGS --comp1 0:1 --comp2 0:1 --coupler 0:1 --mesh hexbox:4x4x4)
 endif()
+
+# ---- S6 phase 3, "LowFive" track: begin -----------------------------------
+# Demo B (docs/user/lowfive.md, KNOWN_ISSUES.md section D): two SEPARATE
+# executables, demo_b_producer and demo_b_consumer, coupled purely by
+# LowFive's HDF5-VOL interception across an MPI intercommunicator the two
+# form themselves (examples/demo_b/rendezvous.hpp) -- not launched as one
+# MPMD job. Needs the distributed path (set_intercomm/serve_as_producer/
+# receive_as_consumer), which itself needs FUSE_ENABLE_MPI, a LowFive build,
+# AND the separate liblowfive-dist archive LOWFIVE_HAVE_DIST records
+# (cmake/FindLowFive.cmake); MOAB is NOT required by this example (the
+# producer/consumer link nothing from fuse::backend), so its own hazard
+# probe (cmake/FuseDependencies.cmake's LowFive block) only runs, and only
+# matters, when FUSE_ENABLE_MOAB is ALSO on in the same configure.
+#
+# UNEXECUTED in this checkout -- MPI cannot start in the sandbox this was
+# written in. Compiles against this host's real LowFive/MPI headers
+# (2026-10-02); run via examples/demo_b/run_demo.sh on a host where MPI
+# works, per docs/user/lowfive.md's host_verification_needed commands.
+if(FUSE_ENABLE_LOWFIVE AND FUSE_ENABLE_MPI AND LOWFIVE_HAVE_DIST)
+  add_library(demo_b_producer_hdf5 OBJECT demo_b/producer_hdf5.cpp)
+  target_link_libraries(demo_b_producer_hdf5 PRIVATE fuse::lowfive)
+
+  add_library(demo_b_consumer_hdf5 OBJECT demo_b/consumer_hdf5.cpp)
+  target_link_libraries(demo_b_consumer_hdf5 PRIVATE fuse::lowfive)
+
+  add_executable(demo_b_producer demo_b/producer_main.cpp $<TARGET_OBJECTS:demo_b_producer_hdf5>)
+  target_link_libraries(demo_b_producer PRIVATE fuse::transport MPI::MPI_CXX)
+  target_include_directories(demo_b_producer PRIVATE demo_b)
+
+  add_executable(demo_b_consumer demo_b/consumer_main.cpp $<TARGET_OBJECTS:demo_b_consumer_hdf5>)
+  target_link_libraries(demo_b_consumer PRIVATE fuse::transport MPI::MPI_CXX)
+  target_include_directories(demo_b_consumer PRIVATE demo_b)
+else()
+  message(STATUS "fuse: Demo B (examples/demo_b) needs "
+                 "-DFUSE_ENABLE_LOWFIVE=ON -DFUSE_ENABLE_MPI=ON and a "
+                 "LowFive install shipping liblowfive-dist; not built")
+endif()
+# ---- S6 phase 3, "LowFive" track: end -------------------------------------

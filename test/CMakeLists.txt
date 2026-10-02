@@ -251,6 +251,11 @@ fuse_add_gtest(transport transport)
 # wait_for_port_file). connect() itself needs a second process; see
 # test/parallel/connect below.
 fuse_add_gtest(transport connect)
+# S6 phase 3, "LowFive" track: LowFiveFieldBindingTable/split_hdf5_path (no
+# LowFive needed at all) plus LowFiveTransport's refusal path and the
+# setup-level checks that need no running MPI job -- see the file's own
+# top-of-file comment for exactly what IS and is not covered here.
+fuse_add_gtest(transport lowfive LABELS lowfive)
 
 # ---------------------------------------------------------------- backend
 foreach(t spacetime)

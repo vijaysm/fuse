@@ -223,7 +223,7 @@ class MpiTransport final : public Transport {
 /// HOW THE CONNECTOR IS ATTACHED. Programmatically, via
 /// `LowFive::H5VOLProperty::apply()` on a private FAPL -- **not** through the
 /// `HDF5_VOL_CONNECTOR` environment variable, which makes the process abort
-/// after `main` returns (docs/BUILDING.md records the trace). The connector is
+/// after `main` returns (docs/user/lowfive.md records the trace). The connector is
 /// registered exactly once per process and intentionally never unregistered:
 /// `LowFive::MetadataVOL::create_MetadataVOL()` is a singleton and
 /// `register_plugin()` is not reference counted, so two live `H5VOLProperty`
@@ -331,6 +331,56 @@ class LowFiveTransport final : public Transport {
 
   /// The path that is deliberately never created.
   [[nodiscard]] std::string file_path() const;
+
+  /// Task 8.4 continuation (S6 LowFive track, Demo B): switches this
+  /// transport into LowFive's DISTRIBUTED mode, where data crosses an MPI
+  /// intercommunicator to a PEER PROCESS instead of staying in this
+  /// process's own in-memory file map. This is what makes two separate
+  /// executables -- not two calls in one process -- the actual coupling in
+  /// Demo B (examples/demo_b).
+  ///
+  /// MUST be called before `set_location()`; it decides which VOL connector
+  /// (LowFive's `MetadataVOL` or `DistMetadataVOL`) this process attaches,
+  /// and a process attaches at most one, ever (see the note on
+  /// `vol_singleton()` in lowfive_transport.cpp -- unregistering and
+  /// re-registering a different one is not safe).
+  ///
+  /// `local_comm`/`intercomm` cross this boundary as `MPI_Comm_c2f(...)`
+  /// handles, exactly as `MpiTransport::set_communicator` takes one, so this
+  /// header never names `mpi.h`. `intercomm` is the MPI intercommunicator
+  /// between this process's group and the peer executable's -- obtained via
+  /// `MPI_Comm_connect`/`MPI_Comm_accept` (examples/demo_b's own rendezvous)
+  /// or an MPMD launch's split communicator; forming it is NOT this
+  /// transport's job.
+  ///
+  /// UNEXECUTED IN THIS CHECKOUT: MPI cannot start in the sandbox this was
+  /// written in (docs/user/lowfive.md). The implementation follows
+  /// `LowFive::DistMetadataVOL`'s public header contract
+  /// (lowfive/vol-dist-metadata.hpp) as closely as that contract states it,
+  /// but it has never been run. `host_verification_needed` in this track's
+  /// report names the exact commands; treat a KNOWN_ISSUES.md entry
+  /// referencing this comment as the authoritative caveat, not this one in
+  /// isolation.
+  ///
+  /// Errors: `E-TRANSPORT-NOLOWFIVE`, `E-TRANSPORT-NOMPI` (built without
+  /// `FUSE_ENABLE_MPI`), `E-TRANSPORT-MPIINIT`, `E-TRANSPORT-COMM`,
+  /// `E-TRANSPORT-LF-LOCATION` (called after `set_location`/`build_plan`).
+  Result<void> set_intercomm(int fortran_local_comm, int fortran_intercomm);
+
+  /// Distributed mode only, called by the PRODUCER side after it has
+  /// written its dataset(s) and called its own, unmodified `H5Fclose`:
+  /// pushes the served file across the intercommunicator
+  /// (`DistMetadataVOL::serve_all`). Refused (`E-TRANSPORT-LF-NOTDIST`) if
+  /// `set_intercomm` was never called.
+  Result<void> serve_as_producer();
+
+  /// Distributed mode only, called by the CONSUMER side BEFORE its own,
+  /// unmodified `H5Fopen`: receives the producer's file index across the
+  /// intercommunicator (`DistMetadataVOL::broadcast_files`), so the
+  /// subsequent `H5Fopen` resolves against served, in-memory data rather
+  /// than a file that was never written to disk. Refused
+  /// (`E-TRANSPORT-LF-NOTDIST`) if `set_intercomm` was never called.
+  Result<void> receive_as_consumer();
 
  private:
   struct Impl;
