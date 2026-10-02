@@ -42,12 +42,12 @@ program sizes_test
   type(c_ptr) :: a_pointer
   type(fuse_null) :: v_null
   type(fuse_version_info) :: v_version_info
-  type(fuse_capabilities) :: v_capabilities
+  type(fuse_capability_set) :: v_capabilities
   type(fuse_context_out) :: v_context_out
   type(fuse_error) :: v_error
   type(fuse_graph_source) :: v_graph_source
   type(fuse_graph_sink) :: v_graph_sink
-  type(fuse_setup) :: v_setup
+  type(fuse_setup_options) :: v_setup
   type(fuse_field_name) :: v_field_name
   type(fuse_field_ref) :: v_field_ref
   type(fuse_field_view) :: v_field_view
@@ -62,12 +62,12 @@ program sizes_test
   write(*, '(A," ",I0)') "sizeof(void*)", c_sizeof(a_pointer)
   write(*, '(A," ",I0)') "fuse_null", c_sizeof(v_null)
   write(*, '(A," ",I0)') "fuse_version_info", c_sizeof(v_version_info)
-  write(*, '(A," ",I0)') "fuse_capabilities", c_sizeof(v_capabilities)
+  write(*, '(A," ",I0)') "fuse_capability_set", c_sizeof(v_capabilities)
   write(*, '(A," ",I0)') "fuse_context_out", c_sizeof(v_context_out)
   write(*, '(A," ",I0)') "fuse_error", c_sizeof(v_error)
   write(*, '(A," ",I0)') "fuse_graph_source", c_sizeof(v_graph_source)
   write(*, '(A," ",I0)') "fuse_graph_sink", c_sizeof(v_graph_sink)
-  write(*, '(A," ",I0)') "fuse_setup", c_sizeof(v_setup)
+  write(*, '(A," ",I0)') "fuse_setup_options", c_sizeof(v_setup)
   write(*, '(A," ",I0)') "fuse_field_name", c_sizeof(v_field_name)
   write(*, '(A," ",I0)') "fuse_field_ref", c_sizeof(v_field_ref)
   write(*, '(A," ",I0)') "fuse_field_view", c_sizeof(v_field_view)

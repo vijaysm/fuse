@@ -59,12 +59,12 @@ TEST(AbiGolden, StructSizesMatchTheTable) {
   const std::unordered_map<std::string, std::size_t> measured = {
       {"fuse_null", sizeof(fuse_null)},
       {"fuse_version_info", sizeof(fuse_version_info)},
-      {"fuse_capabilities", sizeof(fuse_capabilities)},
+      {"fuse_capability_set", sizeof(fuse_capability_set)},
       {"fuse_context_out", sizeof(fuse_context_out)},
       {"fuse_error", sizeof(fuse_error)},
       {"fuse_graph_source", sizeof(fuse_graph_source)},
       {"fuse_graph_sink", sizeof(fuse_graph_sink)},
-      {"fuse_setup", sizeof(fuse_setup)},
+      {"fuse_setup_options", sizeof(fuse_setup_options)},
       {"fuse_field_name", sizeof(fuse_field_name)},
       {"fuse_field_ref", sizeof(fuse_field_ref)},
       {"fuse_field_view", sizeof(fuse_field_view)},
@@ -116,12 +116,12 @@ TEST(AbiGolden, StructSizesMatchTheTable) {
 TEST(AbiGolden, NoStructHasTrailingPaddingALaterMemberCouldHide) {
   FUSE_NO_TRAILING_PADDING(fuse_null, struct_size);
   FUSE_NO_TRAILING_PADDING(fuse_version_info, string);
-  FUSE_NO_TRAILING_PADDING(fuse_capabilities, flags);
+  FUSE_NO_TRAILING_PADDING(fuse_capability_set, flags);
   FUSE_NO_TRAILING_PADDING(fuse_context_out, ctx);
   FUSE_NO_TRAILING_PADDING(fuse_error, code);
   FUSE_NO_TRAILING_PADDING(fuse_graph_source, byte_count);
   FUSE_NO_TRAILING_PADDING(fuse_graph_sink, written);
-  FUSE_NO_TRAILING_PADDING(fuse_setup, end_time);
+  FUSE_NO_TRAILING_PADDING(fuse_setup_options, end_time);
   FUSE_NO_TRAILING_PADDING(fuse_field_name, field);
   FUSE_NO_TRAILING_PADDING(fuse_field_ref, conservation);
   FUSE_NO_TRAILING_PADDING(fuse_field_view, data);

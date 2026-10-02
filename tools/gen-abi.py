@@ -185,11 +185,11 @@ def gen_types(spec: Spec) -> str:
     o.append("  int64_t denominator;  /* > 0 */")
     o.append("} fuse_exact_time;")
     o.append("")
-    o.append("typedef struct fuse_version {")
+    o.append("typedef struct fuse_semantic_version {")
     o.append("  uint32_t major;")
     o.append("  uint32_t minor;")
     o.append("  uint32_t patch;")
-    o.append("} fuse_version;")
+    o.append("} fuse_semantic_version;")
     o.append("")
     o.append("/* An opaque coupling context; create() makes one, destroy() ends it. */")
     o.append("typedef struct fuse_ctx fuse_ctx;")
@@ -257,21 +257,21 @@ def _abi_version(spec: Spec) -> str:
 # mapping table there is reproduced as FORTRAN_TYPE / FORTRAN_DEFAULT below so
 # this file is the only place either is spelled out. Every member's `ftype`
 # column in entries.def is already the Fortran kind the design calls for
-# (c_int32_t, c_int64_t, c_ptr, fuse_version, fuse_exact_time); this generator
+# (c_int32_t, c_int64_t, c_ptr, fuse_semantic_version, fuse_exact_time); this generator
 # only has to know how to spell and default-initialise each of those five.
 
 FORTRAN_TYPE = {
     "c_int32_t": "integer(c_int32_t)",
     "c_int64_t": "integer(c_int64_t)",
     "c_ptr": "type(c_ptr)",
-    "fuse_version": "type(fuse_version)",
+    "fuse_semantic_version": "type(fuse_semantic_version)",
     "fuse_exact_time": "type(fuse_exact_time)",
 }
 FORTRAN_DEFAULT = {
     "c_int32_t": "0_c_int32_t",
     "c_int64_t": "0_c_int64_t",
     "c_ptr": "c_null_ptr",
-    "fuse_version": "fuse_version(0_c_int32_t, 0_c_int32_t, 0_c_int32_t)",
+    "fuse_semantic_version": "fuse_semantic_version(0_c_int32_t, 0_c_int32_t, 0_c_int32_t)",
     "fuse_exact_time": "fuse_exact_time(0_c_int64_t, 1_c_int64_t)",
 }
 
@@ -302,36 +302,27 @@ def _fortran_struct_decl(sname: str, fields: list[tuple[str, str, str, str]]) ->
 
 
 def _fortran_entry_names(spec: Spec) -> dict[str, tuple[str, bool]]:
-    """entry name -> (public/specific procedure name, whether it needs the
-    `_struct` suffix because it is also overloaded with a string convenience).
+    """entry name -> (public/specific procedure name, whether it is also
+    overloaded with a string convenience and so needs the `_struct` suffix).
 
-    Three entries (version, capabilities, setup) share their name with an
-    ARGUMENT STRUCT of the same name (fuse_version, fuse_capabilities,
-    fuse_setup -- entries.def's own struct catalogue, not a generator choice);
-    a Fortran module cannot declare a derived type and a procedure under the
-    same name in one scope, unlike C's separate tag/ordinary namespaces. Those
-    three are disambiguated with an `_entry` suffix, applied mechanically to
-    whichever entries collide rather than hand-picked, so a future .def change
-    that introduces a new collision is caught by the same rule instead of
-    silently shadowing a type. See docs/dev/abi-design.md, "Fortran: ffuse",
-    and the open question recorded against this generator.
+    A Fortran module cannot declare a derived type and a procedure under the
+    same name in one scope (unlike C's separate tag/ordinary namespaces), so
+    an entry whose `fuse_<name>` collides with any type the module declares
+    is REFUSED here: the fix is a different type name in entries.def (which
+    is what happened on 2026-10-02 to fuse_capability_set, fuse_setup_options
+    and fuse_semantic_version), never a mangled procedure name. See
+    docs/dev/abi-design.md, "Fortran: ffuse".
     """
-    # fuse_version and fuse_exact_time are hand-written value types (closed,
-    # no struct_size -- abi-design.md rule 4), and fuse_ctx is the hand-written
-    # opaque-handle wrapper; none come from FUSE_ABI_STRUCT, so spec.structs
-    # alone would miss the fuse_version/"version" collision.
-    struct_names = {s[0] for s in spec.structs} | {"fuse_version", "fuse_exact_time", "fuse_ctx"}
+    struct_names = {s[0] for s in spec.structs} | {
+        "fuse_semantic_version", "fuse_exact_time", "fuse_ctx"}
     out: dict[str, tuple[str, bool]] = {}
     for name, _, _, _ in spec.entries:
         base = f"fuse_{name}"
-        overloaded = name in FORTRAN_STRING_ENTRIES
         if base in struct_names:
-            fn_name = f"{base}_entry"
-        elif overloaded:
-            fn_name = f"{base}_struct"
-        else:
-            fn_name = base
-        out[name] = (fn_name, overloaded)
+            sys.exit(f"entry '{name}': the Fortran procedure {base} would collide with the "
+                     f"type {base}; rename the type in entries.def")
+        overloaded = name in FORTRAN_STRING_ENTRIES
+        out[name] = (f"{base}_struct" if overloaded else base, overloaded)
     return out
 
 
@@ -467,11 +458,11 @@ def gen_fortran_module(spec: Spec) -> str:
     o.append("    integer(c_int64_t) :: denominator = 1_c_int64_t")
     o.append("  end type fuse_exact_time")
     o.append("")
-    o.append("  type, bind(C), public :: fuse_version")
+    o.append("  type, bind(C), public :: fuse_semantic_version")
     o.append("    integer(c_int32_t) :: major = 0_c_int32_t")
     o.append("    integer(c_int32_t) :: minor = 0_c_int32_t")
     o.append("    integer(c_int32_t) :: patch = 0_c_int32_t")
-    o.append("  end type fuse_version")
+    o.append("  end type fuse_semantic_version")
     o.append("")
     o.append("  ! An opaque coupling context; wraps the one C_PTR fuse_ctx* resolves to")
     o.append("  ! (abi-design.md, \"Fortran: ffuse\"). create() fills %ptr; destroy() ends it.")

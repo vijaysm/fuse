@@ -188,7 +188,7 @@ fuse_status impl_version(fuse_ctx*, const fuse_null*, fuse_version_info* out) {
       std::string("FUSE ") + FUSE_VERSION_STRING + " (participant ABI v" +
       std::to_string(FUSE_ABI_VERSION) + ")";
   out->struct_size = sizeof(fuse_version_info);
-  out->library = fuse_version{FUSE_PROJECT_VERSION_MAJOR, FUSE_PROJECT_VERSION_MINOR,
+  out->library = fuse_semantic_version{FUSE_PROJECT_VERSION_MAJOR, FUSE_PROJECT_VERSION_MINOR,
                               FUSE_PROJECT_VERSION_PATCH};
   out->abi_version = FUSE_ABI_VERSION;
   out->reserved = 0;
@@ -197,7 +197,7 @@ fuse_status impl_version(fuse_ctx*, const fuse_null*, fuse_version_info* out) {
 }
 
 fuse_status impl_capabilities(fuse_ctx*, const fuse_null*,
-                              fuse_capabilities* out) {
+                              fuse_capability_set* out) {
   if (out == nullptr) return FUSE_ERR_INVALID;
   const fuse_status sz = check_struct_size(out);
   if (sz != FUSE_OK) return sz;
@@ -209,7 +209,7 @@ fuse_status impl_capabilities(fuse_ctx*, const fuse_null*,
   // report): device fields (register_field refuses FUSE_MEMSPACE_DEVICE),
   // checkpoint/restore (no iteration-region support through begin_step/
   // end_step), MPI connect/accept or MPMD, and the LowFive in-memory path.
-  out->struct_size = sizeof(fuse_capabilities);
+  out->struct_size = sizeof(fuse_capability_set);
   out->flags = flags;
   return FUSE_OK;
 }
@@ -365,11 +365,11 @@ fuse_status impl_save_graph(fuse_ctx* ctx, const fuse_null*,
   });
 }
 
-fuse_status impl_setup(fuse_ctx* ctx, const fuse_setup* in, fuse_null*) {
+fuse_status impl_setup(fuse_ctx* ctx, const fuse_setup_options* in, fuse_null*) {
   return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
     if (c.state != fuse_ctx::State::Loaded) {
       return fail(&c, FUSE_ERR_STATE, "E-ABI-SETUP-STATE",
-                 "fuse_setup: must be called after fuse_load_graph and "
+                 "fuse_setup_options: must be called after fuse_load_graph and "
                  "before fuse_initialize");
     }
     const fuse_status sz = check_struct_size(in);
@@ -377,7 +377,7 @@ fuse_status impl_setup(fuse_ctx* ctx, const fuse_setup* in, fuse_null*) {
     if (in->communicator != 0) {
 #if !FUSE_HAVE_MPI
       return fail(&c, FUSE_ERR_UNSUPPORTED, "E-ABI-SETUP-NOMPI",
-                 "fuse_setup: a non-zero communicator was supplied, but this "
+                 "fuse_setup_options: a non-zero communicator was supplied, but this "
                  "build has no MPI");
 #endif
       c.communicator     = in->communicator;
@@ -753,7 +753,7 @@ fuse_status impl_run(fuse_ctx* ctx, const fuse_run_request* in, fuse_null*) {
       if (!c.has_end_time) {
         return fail(&c, FUSE_ERR_INVALID, "E-ABI-RUN-NO-END-TIME",
                    "fuse_run: periods == -1 requires an end_time set by "
-                   "fuse_setup()");
+                   "fuse_setup_options()");
       }
       while (true) {
         const fuse::Rational now =
