@@ -153,11 +153,6 @@ requires = "mpi"
 # puts consumer_b on a rank outside the region: the mutant leaves that rank
 # blocked in linkB's Transport until ctest's TIMEOUT. Traced, compiled, not
 # yet run.
-# 2026-10-02: SURVIVED the host's run after bb6f57f, because the fixture's fluid
-# failed at t=0 and linkB's t=1/2 Epoch then told every process before the
-# group, so all left together. The test now fails the fluid on its second
-# call (inside the group); expected kill: the outside process times out in
-# linkB's t=1 Transport. Awaiting a host run.
 
 [[mutation]]
 id = "one-transport-shared-across-every-plan"
@@ -399,11 +394,6 @@ requires = "mpi"
 # run, restore byte-for-byte via cmp -- tools/mutate.py was not run, per
 # this file's own standing note elsewhere in the tree that it edits
 # repository sources in place and is unsafe against a shared checkout).
-# 2026-10-02: SURVIVED at 4 processes, where fluid/solid already span three
-# processes and the initialize() refusal the test relied on cannot fire.
-# The test now runs a period and requires every process to take the same
-# number of sweeps (more than one); expected kill at every process count.
-# Awaiting a host run.
 
 [[mutation]]
 id = "runtime-reduction-not-deterministic"
