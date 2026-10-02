@@ -25,7 +25,9 @@ ROOT = Path(__file__).resolve().parent.parent
 DEF = ROOT / "include/fuse/abi/entries.def"
 OUT_TYPES = ROOT / "include/fuse/abi/types.h"
 OUT_PARTICIPANT = ROOT / "include/fuse/abi/participant.h"
+OUT_PROVIDER = ROOT / "include/fuse/abi/provider.h"
 OUT_FORTRAN_MODULE = ROOT / "fortran/ffuse.f90"
+OUT_FORTRAN_PROVIDER_MODULE = ROOT / "fortran/ffuse_provider.f90"
 OUT_FORTRAN_SHIM = ROOT / "fortran/fuse_fortran_shim.c"
 
 # Entries whose IN struct (or, for last_error, OUT struct) carries a
@@ -39,7 +41,7 @@ FORTRAN_STRING_ENTRIES = {"load_graph", "field_handle", "begin_step", "end_step"
 
 # ---------------------------------------------------------------- parsing
 
-_MACRO = re.compile(r"^(FUSE_ABI_(?:STRUCT_END|STRUCT|FIELD|ENTRY|ENUM))\((.*)\)\s*$")
+_MACRO = re.compile(r"^(FUSE_ABI_(?:STRUCT_END|STRUCT|FIELD|PROVIDER_ENTRY|ENTRY|ENUM))\((.*)\)\s*$")
 
 
 def _split_args(s: str) -> list[str]:
@@ -80,6 +82,7 @@ class Spec:
         self.enums: list[tuple[str, str, str]] = []
         self.structs: list[tuple[str, str, list[tuple[str, str, str, str]]]] = []
         self.entries: list[tuple[str, str, str, str]] = []
+        self.provider_entries: list[tuple[str, str, str, str]] = []
 
 
 def parse(path: Path = DEF) -> Spec:
@@ -112,6 +115,9 @@ def parse(path: Path = DEF) -> Spec:
         elif kind == "FUSE_ABI_ENTRY":
             name, inp, out, doc = args
             spec.entries.append((name, inp, out, _unquote(doc)))
+        elif kind == "FUSE_ABI_PROVIDER_ENTRY":
+            name, inp, out, doc = args
+            spec.provider_entries.append((name, inp, out, _unquote(doc)))
     if cur is not None:
         sys.exit(f"{path}: struct {cur[0]} never closed")
     _validate(spec)
@@ -132,6 +138,10 @@ def _validate(spec: Spec) -> None:
         for t in (inp, out):
             if t not in names:
                 sys.exit(f"entry {name}: {t} is not a declared struct")
+    for name, inp, out, _ in spec.provider_entries:
+        for t in (inp, out):
+            if t not in names:
+                sys.exit(f"provider entry {name}: {t} is not a declared struct")
     enum_names = [e[0] for e in spec.enums]
     if len(set(enum_names)) != len(enum_names):
         sys.exit("duplicate enumerator")
@@ -194,6 +204,14 @@ def gen_types(spec: Spec) -> str:
     o.append("/* An opaque coupling context; create() makes one, destroy() ends it. */")
     o.append("typedef struct fuse_ctx fuse_ctx;")
     o.append("")
+    o.append("/* An opaque PROVIDER instance -- a plugin's own per-instance handle, taking")
+    o.append(" * the ctx slot of THE ONE RULE's shape on the provider table")
+    o.append(" * (fuse_provider_abi_v1, provider.h). A distinct type from fuse_ctx so the")
+    o.append(" * two directions' handles cannot be passed to each other's tables by")
+    o.append(" * accident. create() makes one, destroy() ends it.")
+    o.append(" */")
+    o.append("typedef struct fuse_provider_ctx fuse_provider_ctx;")
+    o.append("")
     o.append("/* ---- argument structs ------------------------------------------------- */")
     o.append("/* Every struct below begins with `uint32_t struct_size`, which the caller")
     o.append(" * sets to sizeof(the struct it was compiled against). Members are only ever")
@@ -249,6 +267,43 @@ def _abi_version(spec: Spec) -> str:
         if name == "FUSE_ABI_VERSION":
             return value
     sys.exit("FUSE_ABI_VERSION missing from entries.def")
+
+
+def gen_provider(spec: Spec) -> str:
+    o = [BANNER, "#ifndef FUSE_ABI_PROVIDER_H", "#define FUSE_ABI_PROVIDER_H", "",
+         '#include "fuse/abi/types.h"', "", "#ifdef __cplusplus", 'extern "C" {', "#endif", ""]
+    o.append("/* The provider ABI: the coupler drives a plugin through this table. Every")
+    o.append(" * member has the shape")
+    o.append(" *     fuse_status f(fuse_provider_ctx* self, const IN* in, OUT* out);")
+    o.append(" * `self` is the plugin's own per-instance handle (create()'s own output),")
+    o.append(" * a DIFFERENT opaque type from the participant table's fuse_ctx* (types.h),")
+    o.append(" * so the two tables' handles cannot be confused at the call site even")
+    o.append(" * though both are plain pointers to the compiler. `in` and `out` are the")
+    o.append(" * argument structs of types.h, shared with the participant table where they")
+    o.append(" * fit (fuse_field_view, fuse_step_request/fuse_step_report); pass NULL where")
+    o.append(" * the type is fuse_null. The table itself begins with struct_size: a caller")
+    o.append(" * compares it with sizeof(fuse_provider_abi_v1) and uses only the members")
+    o.append(" * that are present, so a v1 host runs a later plugin's v1 subset. */")
+    o.append(f"typedef struct fuse_provider_abi_v{_abi_version(spec)} {{")
+    o.append("  uint32_t struct_size;")
+    o.append("  uint32_t abi_version;")
+    for name, inp, out, doc in spec.provider_entries:
+        o.append("")
+        if doc:
+            o.append(_wrap_doc(doc, "  ").rstrip("\n"))
+        o.append(f"  fuse_status (*{name})(fuse_provider_ctx* self, const {inp}* in, {out}* out);")
+    o.append(f"}} fuse_provider_abi_v{_abi_version(spec)};")
+    o.append("")
+    o.append("/* THE ONE EXPORTED SYMBOL A PLUGIN PROVIDES. Returns the table for")
+    o.append(" * `abi_version`, or NULL when the plugin does not speak that version.")
+    o.append(" * Static storage inside the plugin; never freed. Thread-safe. Several")
+    o.append(" * plugins, each its own shared object, may each export this same name --")
+    o.append(" * fuse::Registry resolves it through each object's own dlopen() handle")
+    o.append(" * (docs/dev/abi-design.md, point 4), never through the global symbol")
+    o.append(" * table, so two plugins exporting it is not a collision. */")
+    o.append("const fuse_provider_abi_v1* fuse_provider_abi(uint32_t abi_version);")
+    o += ["", "#ifdef __cplusplus", "}", "#endif", "", "#endif /* FUSE_ABI_PROVIDER_H */", ""]
+    return "\n".join(o)
 
 
 # --------------------------------------------------------- Fortran: ffuse
@@ -534,6 +589,113 @@ def gen_fortran_module(spec: Spec) -> str:
     return text
 
 
+FORTRAN_PROVIDER_BANNER = """! GENERATED by tools/gen-abi.py from include/fuse/abi/entries.def -- do not
+! edit; edit the .def and run `python3 tools/gen-abi.py --write`. docs/dev/
+! abi-design.md, "Provider direction", is the design this file implements:
+! a Fortran PLUGIN builds a fuse_provider_abi_v1 table out of its own
+! bind(C) procedures (ffuse_provider_set_<entry> below assigns one each via
+! c_funloc), then exports exactly one symbol, fuse_provider_abi, which the
+! plugin's own code defines as a thin wrapper around ffuse_provider_bootstrap.
+! This module never exports fuse_provider_abi itself -- only the plugin's
+! own top-level function may, since the table's content is the plugin's own.
+"""
+
+
+def _fortran_provider_abstract_interface(name: str, inp: str, out: str) -> list[str]:
+    imports = sorted({"c_ptr", "c_int32_t", inp, out})
+    return [
+        f"    function ffuse_provider_{name}_proc(self, in, out) result(status) bind(C)",
+        f"      import :: {', '.join(imports)}",
+        "      type(c_ptr), value :: self",
+        f"      type({inp}), intent(in) :: in",
+        f"      type({out}), intent(inout) :: out",
+        "      integer(c_int32_t) :: status",
+        f"    end function ffuse_provider_{name}_proc",
+    ]
+
+
+def gen_fortran_provider_module(spec: Spec) -> str:
+    o = [FORTRAN_PROVIDER_BANNER, "module ffuse_provider",
+         "  use, intrinsic :: iso_c_binding",
+         "  use ffuse, only: fuse_null, fuse_version_info, fuse_capability_set, &",
+         "                   fuse_field_view, fuse_field_table, fuse_provider_instance, &",
+         "                   fuse_step_request, fuse_step_report, FUSE_ABI_VERSION",
+         "  implicit none",
+         "  private", ""]
+
+    o.append("  ! ---- the provider table (entries.def FUSE_ABI_PROVIDER_ENTRY), bit-for-bit")
+    o.append("  ! the same layout as C's fuse_provider_abi_v1 (provider.h): struct_size,")
+    o.append("  ! abi_version, then one function pointer per entry, in order.")
+    o.append(f"  type, bind(C), public :: fuse_provider_abi_v{_abi_version(spec)}")
+    o.append("    integer(c_int32_t) :: struct_size = 0_c_int32_t")
+    o.append("    integer(c_int32_t) :: abi_version = 0_c_int32_t")
+    for name, _, _, _ in spec.provider_entries:
+        o.append(f"    type(c_funptr) :: {name} = c_null_funptr")
+    o.append(f"  end type fuse_provider_abi_v{_abi_version(spec)}")
+    o.append("")
+
+    o.append("  ! ---- one abstract interface per entry, so a plugin's own bind(C)")
+    o.append("  ! procedure is checked against the table's own expected signature at the")
+    o.append("  ! ffuse_provider_set_<entry> call below, not only at the C call site.")
+    o.append("  abstract interface")
+    for i, (name, inp, out, _) in enumerate(spec.provider_entries):
+        if i:
+            o.append("")
+        o += _fortran_provider_abstract_interface(name, inp, out)
+    o.append("  end interface")
+    o.append("")
+
+    # fuse_provider_abi_v1 itself is already `public` on its own type
+    # declaration above; listing it again here would be a duplicate ACCESS
+    # specification (gfortran rejects it), the same reason gen_fortran_module
+    # never re-lists its own struct names in a `public ::` statement either.
+    public_names = ["ffuse_provider_bootstrap"]
+    public_names += [f"ffuse_provider_set_{name}" for name, _, _, _ in spec.provider_entries]
+    public_names += [f"ffuse_provider_{name}_proc" for name, _, _, _ in spec.provider_entries]
+    o.append("  public :: " + ", &\n            ".join(public_names))
+    o.append("")
+    o.append("contains")
+    o.append("")
+
+    for name, _, _, _ in spec.provider_entries:
+        o += [
+            f"  subroutine ffuse_provider_set_{name}(table, proc)",
+            f"    type(fuse_provider_abi_v{_abi_version(spec)}), intent(inout) :: table",
+            f"    procedure(ffuse_provider_{name}_proc) :: proc",
+            "",
+            f"    table%{name} = c_funloc(proc)",
+            f"  end subroutine ffuse_provider_set_{name}",
+            "",
+        ]
+
+    o += [
+        "  ! A plugin's own exported `fuse_provider_abi(abi_version) bind(C,",
+        "  ! name=\"fuse_provider_abi\")` (docs/dev/abi-design.md, point 4: the plugin",
+        "  ! itself must define that one symbol, never this module) is a one-line",
+        "  ! wrapper around this: `ptr = ffuse_provider_bootstrap(g_table, abi_version)`,",
+        "  ! where g_table is the plugin's own SAVE, TARGET table variable, filled once",
+        "  ! by ffuse_provider_set_<entry> calls above before the host's first lookup.",
+        f"  function ffuse_provider_bootstrap(table, abi_version) result(ptr)",
+        f"    type(fuse_provider_abi_v{_abi_version(spec)}), intent(in), target :: table",
+        "    integer(c_int32_t), value :: abi_version",
+        "    type(c_ptr) :: ptr",
+        "",
+        "    if (abi_version == FUSE_ABI_VERSION) then",
+        "      ptr = c_loc(table)",
+        "    else",
+        "      ptr = c_null_ptr",
+        "    end if",
+        "  end function ffuse_provider_bootstrap",
+        "",
+    ]
+
+    o.append("end module ffuse_provider")
+    text = "\n".join(o)
+    if not text.endswith("\n"):
+        text += "\n"
+    return text
+
+
 def gen_fortran_shim(spec: Spec) -> str:
     o = [SHIM_BANNER, '#include "fuse/abi/participant.h"', "", "#include <pthread.h>", "",
          "#if defined(__GNUC__) || defined(__clang__)",
@@ -572,7 +734,9 @@ def gen_fortran_shim(spec: Spec) -> str:
 OUTPUTS = {
     OUT_TYPES: gen_types,
     OUT_PARTICIPANT: gen_participant,
+    OUT_PROVIDER: gen_provider,
     OUT_FORTRAN_MODULE: gen_fortran_module,
+    OUT_FORTRAN_PROVIDER_MODULE: gen_fortran_provider_module,
     OUT_FORTRAN_SHIM: gen_fortran_shim,
 }
 
@@ -582,14 +746,17 @@ def main() -> int:
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--check", action="store_true")
     g.add_argument("--write", action="store_true")
-    g.add_argument("--print", choices=["types", "participant", "fortran-module", "fortran-shim"])
+    g.add_argument("--print", choices=["types", "participant", "provider", "fortran-module",
+                                        "fortran-provider-module", "fortran-shim"])
     a = ap.parse_args()
     spec = parse()
     if a.print:
         printers = {
             "types": gen_types,
             "participant": gen_participant,
+            "provider": gen_provider,
             "fortran-module": gen_fortran_module,
+            "fortran-provider-module": gen_fortran_provider_module,
             "fortran-shim": gen_fortran_shim,
         }
         sys.stdout.write(printers[a.print](spec))

@@ -139,6 +139,13 @@ module ffuse
   type, bind(C), public :: fuse_step_request
     integer(c_int32_t) :: struct_size = 0_c_int32_t
     type(c_ptr) :: component = c_null_ptr
+    type(fuse_exact_time) :: t_begin = fuse_exact_time(0_c_int64_t, 1_c_int64_t)
+    type(fuse_exact_time) :: t_end = fuse_exact_time(0_c_int64_t, 1_c_int64_t)
+    integer(c_int64_t) :: step = 0_c_int64_t
+    integer(c_int32_t) :: iteration = 0_c_int32_t
+    integer(c_int32_t) :: requires_checkpoint = 0_c_int32_t
+    integer(c_int32_t) :: requires_restore = 0_c_int32_t
+    integer(c_int32_t) :: reserved = 0_c_int32_t
   end type fuse_step_request
 
   type, bind(C), public :: fuse_step_report
@@ -163,6 +170,26 @@ module ffuse
     integer(c_int32_t) :: struct_size = 0_c_int32_t
     integer(c_int64_t) :: periods = 0_c_int64_t
   end type fuse_run_request
+
+  type, bind(C), public :: fuse_field_spec
+    integer(c_int32_t) :: struct_size = 0_c_int32_t
+    type(c_ptr) :: name = c_null_ptr
+    integer(c_int32_t) :: components = 0_c_int32_t
+    integer(c_int32_t) :: intent = 0_c_int32_t
+    integer(c_int32_t) :: element_type = 0_c_int32_t
+  end type fuse_field_spec
+
+  type, bind(C), public :: fuse_field_table
+    integer(c_int32_t) :: struct_size = 0_c_int32_t
+    type(c_ptr) :: buffer = c_null_ptr
+    integer(c_int64_t) :: capacity = 0_c_int64_t
+    integer(c_int64_t) :: written = 0_c_int64_t
+  end type fuse_field_table
+
+  type, bind(C), public :: fuse_provider_instance
+    integer(c_int32_t) :: struct_size = 0_c_int32_t
+    type(c_ptr) :: self = c_null_ptr
+  end type fuse_provider_instance
 
   ! ---- raw bind(C) entry points, exported by libfuse-abi-fortran as
   ! ffuse_<name>; never fuse_<name> (abi-design.md, "Link names").

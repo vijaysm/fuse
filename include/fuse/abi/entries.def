@@ -1,14 +1,24 @@
-/* FUSE participant ABI, version 1: the single source of truth.
+/* FUSE participant AND provider ABIs, version 1: the single source of truth
+ * for both directions (docs/dev/abi-design.md, "Provider direction").
  *
  * Everything the C ABI exposes is listed here once, as X-macros, and three
  * things are generated or checked from this file:
- *   - the function-pointer table initialiser and its struct_size assertion
- *     (src/abi/participant.cpp);
- *   - the Fortran module ffuse (tools/gen-ffuse.py);
- *   - the golden test that include/fuse/abi/types.h and participant.h -- the
- *     plain C a user reads -- agree with this list member for member
- *     (test/abi/entries_golden_test.cpp).
+ *   - the function-pointer table initialisers and their struct_size
+ *     assertions (src/abi/participant.cpp, src/abi/provider_adapter.cpp);
+ *   - the Fortran module ffuse, for both directions (tools/gen-abi.py);
+ *   - the golden test that include/fuse/abi/types.h, participant.h and
+ *     provider.h -- the plain C a user reads -- agree with this list member
+ *     for member (test/abi/entries_golden_test.cpp).
  * The public headers contain no macros (docs/dev/abi-design.md, point 5).
+ *
+ * ONE STRUCT CATALOGUE, TWO TABLES. FUSE_ABI_ENTRY lists the participant
+ * table (a foreign code drives the coupler, fuse_coupler_abi());
+ * FUSE_ABI_PROVIDER_ENTRY lists the provider table (the coupler drives a
+ * plugin, fuse_provider_abi()). Both read from the SAME FUSE_ABI_STRUCT
+ * catalogue above them -- fuse_field_view and the window carried by
+ * fuse_step_request/fuse_step_report are the identical bytes on either
+ * side -- so the two directions cannot drift apart on what a field or a
+ * time bound looks like.
  *
  * THE ONE RULE. Every entry point has the same shape,
  *     fuse_status name(fuse_ctx* ctx, const IN* in, OUT* out);
@@ -37,7 +47,8 @@
  *   FUSE_ABI_FIELD(ctype, ftype, name, doc) one member; ftype is the Fortran
  *                                         kind the generator emits
  *   FUSE_ABI_STRUCT_END(name)
- *   FUSE_ABI_ENTRY(name, in, out, doc)    one table member, in order
+ *   FUSE_ABI_ENTRY(name, in, out, doc)    one participant-table member, in order
+ *   FUSE_ABI_PROVIDER_ENTRY(name, in, out, doc) one provider-table member, in order
  *   FUSE_ABI_ENUM(name, value, doc)       one enumerator
  * Order is the ABI: a new struct member or table entry is appended at the end
  * of its block, never inserted. ABI v1 is frozen when the first consumer
@@ -59,6 +70,10 @@
 #ifndef FUSE_ABI_ENTRY
 #define FUSE_ABI_ENTRY(name, in, out, doc)
 #define FUSE_ABI_ENTRY_DEFINED_HERE
+#endif
+#ifndef FUSE_ABI_PROVIDER_ENTRY
+#define FUSE_ABI_PROVIDER_ENTRY(name, in, out, doc)
+#define FUSE_ABI_PROVIDER_ENTRY_DEFINED_HERE
 #endif
 #ifndef FUSE_ABI_ENUM
 #define FUSE_ABI_ENUM(name, value, doc)
@@ -179,9 +194,16 @@ FUSE_ABI_FIELD(int64_t,        c_int64_t,  component_stride, "elements between c
 FUSE_ABI_FIELD(void*,          c_ptr,      data,         "the storage")
 FUSE_ABI_STRUCT_END(fuse_field_view)
 
-FUSE_ABI_STRUCT(fuse_step_request, "which component is stepping")
+FUSE_ABI_STRUCT(fuse_step_request, "which component is stepping (participant direction); appended members (2026-10-02, the provider direction) carry the window and flags a provider's advance() must honor, so fuse_step_request and fuse_step_report together carry the SAME exact-time shape on both directions (docs/dev/abi-design.md, \"Provider direction\"). begin_step/end_step do not read the appended members")
 FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
 FUSE_ABI_FIELD(const char*,    c_ptr,      component,    "NUL-terminated component name; must be one this process hosts")
+FUSE_ABI_FIELD(fuse_exact_time, fuse_exact_time, t_begin, "provider direction: start of the window advance() must cover; unused by begin_step/end_step")
+FUSE_ABI_FIELD(fuse_exact_time, fuse_exact_time, t_end,   "provider direction: end of the window advance() must cover; unused by begin_step/end_step")
+FUSE_ABI_FIELD(int64_t,        c_int64_t,  step,         "provider direction: step index within the run; unused by begin_step/end_step")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  iteration,    "provider direction: sweep index inside an implicit coupling group, 0 outside; unused by begin_step/end_step")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  requires_checkpoint, "provider direction: 1 if the provider must save its state before advancing; unused by begin_step/end_step")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  requires_restore,    "provider direction: 1 if the provider must restore the state it saved and advance again; unused by begin_step/end_step")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  reserved,     "0; fills the padding so a later appended member changes sizeof (abi-design.md rule 3)")
 FUSE_ABI_STRUCT_END(fuse_step_request)
 
 FUSE_ABI_STRUCT(fuse_step_report, "what the coupler decided about this step; exact time, never a double")
@@ -224,6 +246,51 @@ FUSE_ABI_ENTRY(begin_step,          fuse_step_request,  fuse_step_report,   "the
 FUSE_ABI_ENTRY(end_step,            fuse_step_request,  fuse_step_report,   "the component's exports are read on entry; COLLECTIVE over the component's processes")
 FUSE_ABI_ENTRY(run,                 fuse_run_request,   fuse_null,          "in-process components only; FUSE_ERR_UNSUPPORTED when any component is driven from outside")
 
+/* ---- provider direction (2026-10-02): the coupler calls a plugin --------
+ * The struct catalogue above is SHARED: fuse_null, fuse_version_info,
+ * fuse_capability_set, fuse_field_view and fuse_step_request/fuse_step_report
+ * (grown above with the window fields this direction needs) are reused
+ * exactly as written for the participant direction, so a window or a field
+ * view is the same bytes on either side of the coupler. Only the structs
+ * this direction alone needs are new, below.
+ *
+ * A provider's own per-instance opaque handle takes the ctx slot of THE ONE
+ * RULE's shape, typed `fuse_provider_ctx*` rather than `fuse_ctx*` so the
+ * two directions' handles cannot be passed to each other's tables by
+ * accident -- both are forward-declared opaque structs, so the distinction
+ * is enforced by the type system, not just by convention. */
+
+FUSE_ABI_STRUCT(fuse_field_spec, "one field a provider provides, requires, or both -- one row of what describe() reports")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
+FUSE_ABI_FIELD(const char*,    c_ptr,      name,         "NUL-terminated, valid for the call only")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  components,   "values per entity this provider declares")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  intent,       "0 export (Provides), 1 import (Requires), 2 both -- same convention as fuse_field_ref.intent")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  element_type, "FUSE_ELEMENT_*")
+FUSE_ABI_STRUCT_END(fuse_field_spec)
+
+FUSE_ABI_STRUCT(fuse_field_table, "caller-owned buffer of fuse_field_spec rows; the query-size pattern fuse_graph_sink already uses")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
+FUSE_ABI_FIELD(fuse_field_spec*, c_ptr,    buffer,       "in: caller's array, or NULL to query the count only")
+FUSE_ABI_FIELD(uint64_t,       c_int64_t,  capacity,     "in: rows available in buffer")
+FUSE_ABI_FIELD(uint64_t,       c_int64_t,  written,      "out: rows this provider has; nothing is written when it exceeds capacity")
+FUSE_ABI_STRUCT_END(fuse_field_table)
+
+FUSE_ABI_STRUCT(fuse_provider_instance, "a new provider instance")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
+FUSE_ABI_FIELD(fuse_provider_ctx*, c_ptr,  self,         "owned by the caller until destroy")
+FUSE_ABI_STRUCT_END(fuse_provider_instance)
+
+/* ---- the provider table, in order; appended to, never reordered -------- */
+FUSE_ABI_PROVIDER_ENTRY(version,    fuse_null,          fuse_version_info,   "self may be NULL; the plugin's own library version")
+FUSE_ABI_PROVIDER_ENTRY(create,     fuse_null,          fuse_provider_instance, "self must be NULL")
+FUSE_ABI_PROVIDER_ENTRY(destroy,    fuse_null,          fuse_null,          "a double destroy is FUSE_ERR_INVALID, not a crash")
+FUSE_ABI_PROVIDER_ENTRY(describe,   fuse_null,          fuse_field_table,   "after create, before bind; the fields this instance provides and/or requires")
+FUSE_ABI_PROVIDER_ENTRY(bind,       fuse_field_view,    fuse_null,          "before the first advance; once per field describe() reported; the pointer must stay valid until destroy")
+FUSE_ABI_PROVIDER_ENTRY(advance,    fuse_step_request,  fuse_step_report,   "integrate from in->t_begin to in->t_end; out echoes the window actually run, exactly (rule 6)")
+FUSE_ABI_PROVIDER_ENTRY(save_state, fuse_null,          fuse_null,          "checkpoint the state advance() mutates, so the same interval can be re-advanced; only one checkpoint need be retained")
+FUSE_ABI_PROVIDER_ENTRY(restore_state, fuse_null,       fuse_null,          "restore the state captured by the most recent successful save_state()")
+FUSE_ABI_PROVIDER_ENTRY(capabilities, fuse_null,        fuse_capability_set, "self may be NULL; FUSE_CAP_CHECKPOINT means save_state/restore_state are real, not the default no-op")
+
 #ifdef FUSE_ABI_STRUCT_DEFINED_HERE
 #undef FUSE_ABI_STRUCT
 #undef FUSE_ABI_STRUCT_DEFINED_HERE
@@ -239,6 +306,10 @@ FUSE_ABI_ENTRY(run,                 fuse_run_request,   fuse_null,          "in-
 #ifdef FUSE_ABI_ENTRY_DEFINED_HERE
 #undef FUSE_ABI_ENTRY
 #undef FUSE_ABI_ENTRY_DEFINED_HERE
+#endif
+#ifdef FUSE_ABI_PROVIDER_ENTRY_DEFINED_HERE
+#undef FUSE_ABI_PROVIDER_ENTRY
+#undef FUSE_ABI_PROVIDER_ENTRY_DEFINED_HERE
 #endif
 #ifdef FUSE_ABI_ENUM_DEFINED_HERE
 #undef FUSE_ABI_ENUM

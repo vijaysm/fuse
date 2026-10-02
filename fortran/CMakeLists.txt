@@ -22,8 +22,18 @@
 # not by the configure of this project itself.
 include(GNUInstallDirs)
 
+# ffuse_provider.f90 (S6 phase 4, "Adapter host" track): the provider
+# direction's own Fortran binding -- a Fortran PLUGIN `use`s it to build a
+# fuse_provider_abi_v1 table out of its own bind(C) procedures and export
+# fuse_provider_abi (docs/dev/abi-design.md, "Provider direction"). It `use`s
+# ffuse's own struct declarations (fuse_field_view, fuse_step_request, ...),
+# so it is built into the SAME library, in the same compile, as a plain
+# `.f90` source list dependency -- gfortran resolves `use ffuse` against the
+# .mod ffuse.f90's own compile just emitted into this target's own module
+# directory, with no extra wiring needed.
 add_library(fuse-abi-fortran STATIC
   ${CMAKE_CURRENT_SOURCE_DIR}/ffuse.f90
+  ${CMAKE_CURRENT_SOURCE_DIR}/ffuse_provider.f90
   ${CMAKE_CURRENT_SOURCE_DIR}/fuse_fortran_shim.c
 )
 add_library(fuse::abi-fortran ALIAS fuse-abi-fortran)

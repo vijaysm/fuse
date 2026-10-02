@@ -61,6 +61,14 @@ typedef struct fuse_semantic_version {
 /* An opaque coupling context; create() makes one, destroy() ends it. */
 typedef struct fuse_ctx fuse_ctx;
 
+/* An opaque PROVIDER instance -- a plugin's own per-instance handle, taking
+ * the ctx slot of THE ONE RULE's shape on the provider table
+ * (fuse_provider_abi_v1, provider.h). A distinct type from fuse_ctx so the
+ * two directions' handles cannot be passed to each other's tables by
+ * accident. create() makes one, destroy() ends it.
+ */
+typedef struct fuse_provider_ctx fuse_provider_ctx;
+
 /* ---- argument structs ------------------------------------------------- */
 /* Every struct below begins with `uint32_t struct_size`, which the caller
  * sets to sizeof(the struct it was compiled against). Members are only ever
@@ -164,10 +172,22 @@ typedef struct fuse_field_view {
   void*    data;  /* the storage */
 } fuse_field_view;
 
-/* which component is stepping */
+/* which component is stepping (participant direction); appended members */
+/* (2026-10-02, the provider direction) carry the window and flags a provider's */
+/* advance() must honor, so fuse_step_request and fuse_step_report together */
+/* carry the SAME exact-time shape on both directions (docs/dev/abi-design.md, */
+/* \"Provider direction\"). begin_step/end_step do not read the appended */
+/* members */
 typedef struct fuse_step_request {
-  uint32_t    struct_size;
-  const char* component;  /* NUL-terminated component name; must be one this process hosts */
+  uint32_t        struct_size;
+  const char*     component;  /* NUL-terminated component name; must be one this process hosts */
+  fuse_exact_time t_begin;  /* provider direction: start of the window advance() must cover; unused by begin_step/end_step */
+  fuse_exact_time t_end;  /* provider direction: end of the window advance() must cover; unused by begin_step/end_step */
+  int64_t         step;  /* provider direction: step index within the run; unused by begin_step/end_step */
+  int32_t         iteration;  /* provider direction: sweep index inside an implicit coupling group, 0 outside; unused by begin_step/end_step */
+  int32_t         requires_checkpoint;  /* provider direction: 1 if the provider must save its state before advancing; unused by begin_step/end_step */
+  int32_t         requires_restore;  /* provider direction: 1 if the provider must restore the state it saved and advance again; unused by begin_step/end_step */
+  int32_t         reserved;  /* 0; fills the padding so a later appended member changes sizeof (abi-design.md rule 3) */
 } fuse_step_request;
 
 /* what the coupler decided about this step; exact time, never a double */
@@ -195,6 +215,31 @@ typedef struct fuse_run_request {
   uint32_t struct_size;
   int64_t  periods;  /* how many coupling periods; -1 = until the end time */
 } fuse_run_request;
+
+/* one field a provider provides, requires, or both -- one row of what */
+/* describe() reports */
+typedef struct fuse_field_spec {
+  uint32_t    struct_size;
+  const char* name;  /* NUL-terminated, valid for the call only */
+  int32_t     components;  /* values per entity this provider declares */
+  int32_t     intent;  /* 0 export (Provides), 1 import (Requires), 2 both -- same convention as fuse_field_ref.intent */
+  int32_t     element_type;  /* FUSE_ELEMENT_* */
+} fuse_field_spec;
+
+/* caller-owned buffer of fuse_field_spec rows; the query-size pattern */
+/* fuse_graph_sink already uses */
+typedef struct fuse_field_table {
+  uint32_t         struct_size;
+  fuse_field_spec* buffer;  /* in: caller's array, or NULL to query the count only */
+  uint64_t         capacity;  /* in: rows available in buffer */
+  uint64_t         written;  /* out: rows this provider has; nothing is written when it exceeds capacity */
+} fuse_field_table;
+
+/* a new provider instance */
+typedef struct fuse_provider_instance {
+  uint32_t           struct_size;
+  fuse_provider_ctx* self;  /* owned by the caller until destroy */
+} fuse_provider_instance;
 
 #ifdef __cplusplus
 }
