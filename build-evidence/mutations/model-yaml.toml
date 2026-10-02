@@ -1,0 +1,14 @@
+#  Mutations of the model layer's YAML front end (src/model/yaml_io.cpp).
+
+[[mutation]]
+id = "yaml-coupler-index-ignored"
+area = "model"
+describes = "from_yaml() ignores a coupler's `index` and appends every coupler after the physics components, as the writer's two-section layout did before 2026-10-02; a coupler authored between two physics components comes back after them, every later placement index shifts, and the canonical bytes of the reloaded graph differ from the authored one"
+file = "src/model/yaml_io.cpp"
+old = """    const std::uint32_t at = n["index"] ? n["index"].as<std::uint32_t>()
+                                        : std::numeric_limits<std::uint32_t>::max();"""
+new = """    const std::uint32_t at = std::numeric_limits<std::uint32_t>::max();  // MUTATED: index ignored"""
+target = "fuse_model_yaml_io_test"
+test = "model.yaml_io"
+# KILLED by hand 2026-10-02 in a clean export: only
+# YamlIo.ACouplerAuthoredBetweenPhysicsComponentsKeepsItsIndex fails (17 others pass).

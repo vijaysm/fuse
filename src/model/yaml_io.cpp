@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iterator>
 #include <optional>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -409,7 +410,13 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
   for (std::uint32_t i = 0; i < g.component_count(); ++i) {
     const auto& c = g.component(ComponentId{i});
     if (c.kind != ComponentKind::Coupler) continue;
+    // `index` is the coupler's position in the component array. Component
+    // index is the placement space (every placed_view caller, the IR's
+    // placements, the canonical bytes), so a coupler authored between two
+    // physics components must come back between them, not after all of
+    // them; the two-section layout alone loses that.
     e << YAML::BeginMap << YAML::Key << "name" << YAML::Value << c.name
+      << YAML::Key << "index" << YAML::Value << i
       << YAML::Key << "ranks" << YAML::Value;
     if (c.ranks.is_contiguous() && !c.ranks.empty()) {
       e << YAML::Flow << YAML::BeginMap
@@ -666,6 +673,61 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
   };
   std::vector<PendingField> pending_fields;
 
+  struct PendingCoupler {
+    std::uint32_t index;
+    std::string   name;
+    CouplerDecl   decl;
+  };
+  std::vector<PendingCoupler> pending_couplers;
+  for (const auto& n : root["couplers"]) {
+    if (auto e = check_unknown_keys(n, {"name", "index", "ranks"}, "coupler entry")) {
+      return *e;
+    }
+    CouplerDecl c;
+    c.name = n["name"].as<std::string>();
+    if (n["ranks"]) {
+      if (n["ranks"].IsSequence()) {
+        std::vector<int> ranks;
+        for (const auto& r : n["ranks"]) ranks.push_back(r.as<int>());
+        c.ranks = RankSet{std::move(ranks)};
+      } else {
+        if (auto e = check_unknown_keys(n["ranks"], {"first", "count"},
+                                        "coupler '" + c.name + "' ranks")) {
+          return *e;
+        }
+        c.ranks = RankSet{n["ranks"]["first"].as<int>(),
+                          n["ranks"]["count"].as<int>()};
+      }
+    }
+    // Couplers share the SAME name -> id table channels resolve `source`,
+    // `target` and (below) `remap_on` through, so a channel can name a
+    // coupler exactly as it names a physics component.
+    //
+    // The name is read into a local BEFORE the std::move(c) below: since
+    // C++17, `a[k] = f(std::move(c))` sequences the right operand first, so
+    // `c.name` used directly as the map key would read a moved-from string.
+    const std::string coupler_name = c.name;
+    // A text without `index` (hand-written, most likely) appends its
+    // couplers after every physics component, which is what the writer
+    // produced before `index` existed.
+    const std::uint32_t at = n["index"] ? n["index"].as<std::uint32_t>()
+                                        : std::numeric_limits<std::uint32_t>::max();
+    pending_couplers.push_back({at, coupler_name, std::move(c)});
+  }
+  std::stable_sort(pending_couplers.begin(), pending_couplers.end(),
+                   [](const PendingCoupler& a, const PendingCoupler& b) { return a.index < b.index; });
+  std::size_t next_coupler = 0;
+  // Adds every pending coupler whose declared position is the next slot of
+  // the component array, so interleaving with add_component() below
+  // reproduces the authored order exactly.
+  const auto flush_couplers = [&]() {
+    while (next_coupler < pending_couplers.size() &&
+           pending_couplers[next_coupler].index <= g.component_count()) {
+      PendingCoupler& pc = pending_couplers[next_coupler++];
+      component_by_name[pc.name] = g.add_coupler(std::move(pc.decl));
+    }
+  };
+
   for (const auto& n : root["components"]) {
     if (auto e = check_unknown_keys(
             n, {"name", "ranks", "interval", "fields", "launch"}, "component entry")) {
@@ -724,6 +786,7 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
                      "component '" + c.name + "' has unknown launch mode '" + mode + "'"};
       }
     }
+    flush_couplers();
     const ComponentId cid = g.add_component(c);
     component_by_name[c.name] = cid;
 
@@ -787,35 +850,11 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
     }
   }
 
-  for (const auto& n : root["couplers"]) {
-    if (auto e = check_unknown_keys(n, {"name", "ranks"}, "coupler entry")) {
-      return *e;
-    }
-    CouplerDecl c;
-    c.name = n["name"].as<std::string>();
-    if (n["ranks"]) {
-      if (n["ranks"].IsSequence()) {
-        std::vector<int> ranks;
-        for (const auto& r : n["ranks"]) ranks.push_back(r.as<int>());
-        c.ranks = RankSet{std::move(ranks)};
-      } else {
-        if (auto e = check_unknown_keys(n["ranks"], {"first", "count"},
-                                        "coupler '" + c.name + "' ranks")) {
-          return *e;
-        }
-        c.ranks = RankSet{n["ranks"]["first"].as<int>(),
-                          n["ranks"]["count"].as<int>()};
-      }
-    }
-    // Couplers share the SAME name -> id table channels resolve `source`,
-    // `target` and (below) `remap_on` through, so a channel can name a
-    // coupler exactly as it names a physics component.
-    //
-    // The name is read into a local BEFORE the std::move(c) below: since
-    // C++17, `a[k] = f(std::move(c))` sequences the right operand first, so
-    // `c.name` used directly as the map key would read a moved-from string.
-    const std::string coupler_name = c.name;
-    component_by_name[coupler_name] = g.add_coupler(std::move(c));
+
+  // Couplers declared after the last physics component, or without `index`.
+  while (next_coupler < pending_couplers.size()) {
+    PendingCoupler& pc = pending_couplers[next_coupler++];
+    component_by_name[pc.name] = g.add_coupler(std::move(pc.decl));
   }
 
   // Declaration order. A text without `index` (hand-written, most likely)
