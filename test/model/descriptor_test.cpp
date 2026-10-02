@@ -431,7 +431,8 @@ TEST(Descriptor, RejectsCorruptedLaunchMode) {
 // is what turns that into an error.
 TEST(Descriptor, SupersededFrozenBytesAreRefusedByThisReader) {
   for (const char* name : {"waist-v1.bin", "waist-v4.bin", "waist-v5.bin",
-                          "waist-v6.bin", "waist-v7.bin", "waist-v8.bin"}) {
+                          "waist-v6.bin", "waist-v7.bin", "waist-v8.bin",
+                          "waist-v9.bin"}) {
     const std::filesystem::path old_golden =
         std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / name;
     ASSERT_TRUE(std::filesystem::exists(old_golden)) << old_golden;
@@ -464,7 +465,7 @@ TEST(Descriptor, TheFrozenV1BytesAreRefusedByThisReader) {
 TEST(Descriptor, MatchesTheFrozenWaistBytes) {
   const auto bytes = fuse::serialize(fuse::testing::freeze_fixture());
   const std::filesystem::path golden =
-      std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / "waist-v9.bin";
+      std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / "waist-v10.bin";
   ASSERT_TRUE(std::filesystem::exists(golden)) << golden;
 
   std::ifstream in(golden, std::ios::binary);

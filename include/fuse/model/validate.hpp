@@ -117,6 +117,14 @@ inline Rational channel_window(const CouplingGraph& g, const Channel& ch) {
                 "the rendezvous port");
     }
     // ----: end ----------------------------
+    // ----: begin --------------------------
+    if (c.launch.mode == LaunchMode::Plugin && c.launch.plugin_path.empty()) {
+      d.add(Severity::Error, "E-LAUNCH-PLUGIN-PATH",
+            "component '" + c.name +
+                "' declares a plugin launch with no plugin_path set; "
+                "fuse::abi_detail::Registry has no shared object to dlopen()");
+    }
+    // ----: end ----------------------------
   }
 
   // --- reference integrity -------------------------------------------------
