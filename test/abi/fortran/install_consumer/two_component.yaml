@@ -1,0 +1,44 @@
+# Matches the canonical "upstream -> downstream" fixture
+# test/abi/graph_fixture.hpp builds in C++ and test/abi/install_consumer/
+# main.c (the C sibling) spells out as YAML text for the identical reason
+# stated there: this translation unit cannot link fuse::model to serialize
+# the graph itself. Keeping the two YAML copies textually identical (not a
+# generator from a shared source -- neither consumer links fuse::model) is
+# what makes a value mismatch between the Fortran and C consumers a real
+# finding rather than an artifact of two different graphs.
+#
+# NOT lagged (deliberately -- see graph_fixture.hpp's own header comment,
+# "measuring what lag(k) actually changes"). An earlier version of this
+# fixture, and of this file, carried `lag: 1` on the channel; copying that
+# version verbatim reproduced a real failure (fuse_initialize returning
+# FUSE_ERR_RUNTIME with "E-IR-TYPE: cannot assign Instant<r1, K,
+# [WindowEnd-1, k], ranks=0> to Instant<r1, K, [WindowEnd, k], ranks=1>")
+# that graph_fixture.hpp's history shows was independently found and
+# resolved, on the C++/bytes side, by dropping lag rather than fixing the
+# type rule -- this file is kept in sync with that same resolution.
+version: 1
+meshes:
+  - {name: m1, source: "generated:line:4"}
+  - {name: m2, source: "generated:line:4"}
+regions:
+  - {name: r1, mesh: m1, dimension: 1}
+  - {name: r2, mesh: m2, dimension: 1}
+components:
+  - name: upstream
+    ranks: {first: 0, count: 1}
+    interval: 1
+    fields:
+      - {name: out, region: r1, disc: FV, components: 1, units: K,
+         conservation: None, intent: Provides}
+  - name: downstream
+    ranks: {first: 0, count: 1}
+    interval: 1
+    fields:
+      - {name: in, region: r2, disc: FV, components: 1, units: K,
+         conservation: None, intent: Requires}
+channels:
+  - name: link
+    source: upstream.out
+    target: downstream.in
+    remap: {flags: [Conservative]}
+iteration_regions: []

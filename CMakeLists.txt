@@ -17,6 +17,18 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 option(FUSE_BUILD_UPSTREAM_SOMA  "Build the imported coupler tree under upstream/soma"  ON)
 option(FUSE_BUILD_UPSTREAM_KARMA "Build the imported spine tree under upstream/karma"   OFF)
 
+# Declared here, BEFORE include(FuseDependencies) below, so this option()
+# call is the one that seeds the FUSE_ENABLE_FORTRAN cache entry: a cache
+# variable's initial value comes from whichever option() call reaches it
+# first in a fresh configure, and cmake/FuseDependencies.cmake also declares
+# FUSE_ENABLE_FORTRAN (unused there, default OFF, predating the Fortran
+# binding below) -- without this ordering that later call would win and
+# ffuse would never default on. cmake/FuseFortran.cmake turns this back OFF,
+# with a message rather than a configure error, when no Fortran compiler is
+# found.
+option(FUSE_ENABLE_FORTRAN "Build the Fortran participant binding ffuse (needs a Fortran compiler)" ON)
+include(FuseFortran)
+
 include(CTest)
 
 # The imported coupler tree fetches yaml-cpp 0.8.0, whose CMakeLists declares
