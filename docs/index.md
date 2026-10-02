@@ -39,6 +39,7 @@ user/gray-scott
 user/brusselator
 user/fsi-channel
 user/c-abi
+user/fortran
 ```
 
 ```{toctree}

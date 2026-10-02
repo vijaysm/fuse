@@ -10,4 +10,5 @@ complete two-component coupling, [](fluent-api.md) for the chaining idiom and it
 [](convergence.md) for how an implicit coupling decides it is done,
 [](coupling-windows.md) for coupling two components that do not share a
 time grid, and [](c-abi.md) if you are coupling an existing code through C or
-Fortran.
+Fortran — [](fortran.md) is the Fortran side's own page, for the `ffuse`
+module's generated names and type mapping in full.

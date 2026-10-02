@@ -17,7 +17,7 @@ claim = "types.h and participant.h are exactly what entries.def generates"
 file = "test/abi/entries_golden_test.cpp"
 test = "AbiGolden.HeadersMatchTheEntryList"
 fails_when = "any hand edit to either header, or a .def change without regeneration (runs tools/gen-abi.py --check as a subprocess and asserts exit 0)"
-status = "planned"
+status = "present"
 
 [[row]]
 id = "ABI-GOLDEN-SYMBOLS"
@@ -26,7 +26,7 @@ claim = "libfuse-abi exports exactly one symbol, fuse_coupler_abi"
 file = "test/abi/exported_symbols.golden"
 test = "abi.exported_symbols"
 fails_when = "nm -g --defined-only on the built library, filtered to text symbols, differs from the one-line golden; also fails if the library is built without -fvisibility=hidden"
-status = "planned"
+status = "present"
 
 [[row]]
 id = "ABI-GOLDEN-SIZES"
@@ -35,7 +35,7 @@ claim = "every argument struct's sizeof is the committed value, and sizeof(void*
 file = "test/abi/struct_sizes.golden"
 test = "AbiGolden.StructSizesMatchTheTable"
 fails_when = "a member is appended into trailing padding (sizeof unchanged -> the golden still matches, so this row is paired with ABI-GROWTH below), or any member is added without updating the golden"
-status = "planned"
+status = "present"
 
 [[row]]
 id = "ABI-GROWTH"
@@ -44,7 +44,7 @@ claim = "appending a member to any struct in the .def increases its sizeof"
 file = "test/abi/entries_golden_test.cpp"
 test = "AbiGolden.NoStructHasTrailingPaddingALaterMemberCouldHide"
 fails_when = "for any struct, sizeof(struct) > offsetof(last member) + sizeof(last member) rounded to the struct's alignment -- i.e. there is trailing padding a 4-byte append would vanish into. fuse_version_info was the one case (28 bytes of members in 32) and carries a reserved member since 2026-10-02; the measured table in test/abi/struct_sizes.golden shows zero trailing padding everywhere"
-status = "planned"
+status = "present"
 
 [[row]]
 id = "ABI-SHORT-STRUCT"
@@ -53,7 +53,7 @@ claim = "a struct_size shorter than the first frozen layout is FUSE_ERR_VERSION,
 file = "test/abi/struct_size_test.cpp"
 test = "AbiStructSize.ShortStructIsRefused"
 fails_when = "any entry accepts struct_size = 4 (just the header) for a struct with more members; also for struct_size = 0 and struct_size > FUSE_ABI_MAX_STRUCT_SIZE"
-status = "planned"
+status = "present"
 
 [[row]]
 id = "ABI-LONG-STRUCT"
@@ -62,7 +62,7 @@ claim = "a struct_size longer than this library's layout (a newer caller) is acc
 file = "test/abi/struct_size_test.cpp"
 test = "AbiStructSize.LongerStructFromANewerCallerIsAccepted"
 fails_when = "an entry refuses or misreads a caller struct padded with trailing bytes to sizeof + 64"
-status = "planned"
+status = "present"
 
 [[row]]
 id = "ABI-TABLE-NEGOTIATION"
@@ -71,7 +71,7 @@ claim = "a v1 caller runs against a v2 table, and a v2 caller detects a v1 libra
 file = "test/abi/negotiation_test.cpp"
 test = "AbiNegotiation.V1CallerAgainstV2Table;AbiNegotiation.V2CallerAgainstV1Table"
 fails_when = "the v1 caller (compiled against a copy of participant.h with the v1 table) cannot drive a two-component graph through a hand-built v2 table that appends one entry; or the v2 caller does not see struct_size < sizeof(v2) and use the v1 subset"
-status = "planned"
+status = "present"
 
 [[row]]
 id = "ABI-FAULT-INJECTION"
@@ -80,7 +80,7 @@ claim = "a test can substitute one table entry without relinking"
 file = "test/abi/negotiation_test.cpp"
 test = "AbiNegotiation.ASubstitutedEntryIsCalledInsteadOfTheLibrarys"
 fails_when = "copying the table, replacing begin_step with a stub that returns FUSE_ERR_RUNTIME, and driving a graph does not surface FUSE_ERR_RUNTIME at the first step"
-status = "planned"
+status = "present"
 
 [[row]]
 id = "ABI-C-CONSUMER"
@@ -89,7 +89,7 @@ claim = "a pure-C program links only libfuse-abi from an install tree and runs a
 file = "test/abi/install_consumer/main.c"
 test = "abi.install_consumer_c"
 fails_when = "the installed header set does not compile as C11 -Wpedantic; the consumer needs any library other than libfuse-abi (checked by the link line); or its result differs from the in-process C++ run of the same graph beyond 0 (EXPECT_EQ on every value: same code, same order)"
-status = "planned"
+status = "present"
 
 [[row]]
 id = "ABI-FORTRAN-SIZES"
@@ -98,7 +98,7 @@ claim = "C_SIZEOF of every ffuse derived type equals the C sizeof"
 file = "test/abi/fortran/sizes_test.f90"
 test = "abi.fortran_sizes"
 fails_when = "any type's C_SIZEOF differs from struct_sizes.golden (the Fortran program prints its table; the test diffs it against the golden)"
-status = "planned"
+status = "present"
 
 [[row]]
 id = "ABI-FORTRAN-CONSUMER"
@@ -107,7 +107,7 @@ claim = "a pure-Fortran program links only libfuse-abi-fortran from an install t
 file = "test/abi/fortran/consumer.f90"
 test = "abi.install_consumer_fortran"
 fails_when = "any value differs from the C consumer's output (same graph, same inputs, EXPECT_EQ semantics via a byte diff of the two programs' printed hexfloat results)"
-status = "planned"
+status = "present"
 
 [[row]]
 id = "ABI-EXACT-TIME"
@@ -116,7 +116,7 @@ claim = "step bounds cross the boundary exactly"
 file = "test/abi/participant_test.cpp"
 test = "AbiParticipant.StepBoundsAreTheSchedulesRationals"
 fails_when = "begin_step's fuse_step_report.t_begin/t_end differ from the compiled plan's Rational bounds for a 1/3-step component (a double would)"
-status = "planned"
+status = "present"
 
 [[row]]
 id = "ABI-EXCEPTION-CONTAINMENT"
@@ -125,7 +125,7 @@ claim = "no C++ exception crosses the boundary"
 file = "test/abi/participant_test.cpp"
 test = "AbiParticipant.AThrowingComponentBecomesRuntimeErrorWithTheMessage"
 fails_when = "a graph whose component throws at advance() terminates the process instead of returning FUSE_ERR_RUNTIME with last_error carrying the what()"
-status = "planned"
+status = "present"
 
 [[row]]
 id = "ABI-COLLECTIVE-AGREEMENT"
