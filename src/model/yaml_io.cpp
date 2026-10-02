@@ -343,8 +343,29 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
       e << YAML::EndSeq;
     }
     e
-      << YAML::Key << "interval" << YAML::Value << c.interval.to_string()
-      << YAML::Key << "fields" << YAML::Value << YAML::BeginSeq;
+      << YAML::Key << "interval" << YAML::Value << c.interval.to_string();
+    // Emitted only when non-default, like ComponentKind above: the common
+    // case (today's only case, before this track) is InProcess, and a file
+    // written before S6 phase 3 round-trips with no "launch:" key at all.
+    if (c.launch.mode != LaunchMode::InProcess) {
+      e << YAML::Key << "launch" << YAML::Value << YAML::BeginMap
+        << YAML::Key << "mode" << YAML::Value
+        << (c.launch.mode == LaunchMode::Mpmd ? "mpmd" : "connect");
+      if (c.launch.mode == LaunchMode::Mpmd) {
+        e << YAML::Key << "appnum" << YAML::Value << c.launch.appnum;
+      }
+      if (c.launch.mode == LaunchMode::Connect) {
+        e << YAML::Key << "is_acceptor" << YAML::Value << c.launch.is_acceptor;
+        if (!c.launch.port_file.empty()) {
+          e << YAML::Key << "port_file" << YAML::Value << c.launch.port_file;
+        }
+        if (!c.launch.service_name.empty()) {
+          e << YAML::Key << "service_name" << YAML::Value << c.launch.service_name;
+        }
+      }
+      e << YAML::EndMap;
+    }
+    e << YAML::Key << "fields" << YAML::Value << YAML::BeginSeq;
     for (const FieldId fid : c.fields) {
       const auto& f = g.field(fid);
       // N-base-model-1: f.region is a raw RegionId add_field() accepts with
@@ -641,7 +662,7 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
 
   for (const auto& n : root["components"]) {
     if (auto e = check_unknown_keys(
-            n, {"name", "ranks", "interval", "fields"}, "component entry")) {
+            n, {"name", "ranks", "interval", "fields", "launch"}, "component entry")) {
       return *e;
     }
     ComponentDecl c;
@@ -666,6 +687,31 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
       if (!parse_rational(n["interval"].as<std::string>(), c.interval)) {
         return Failure{"E-YAML-PARSE",
                      "bad interval for component '" + c.name + "'"};
+      }
+    }
+    if (n["launch"]) {
+      const auto& ln = n["launch"];
+      if (auto e = check_unknown_keys(
+              ln, {"mode", "appnum", "is_acceptor", "port_file", "service_name"},
+              "component '" + c.name + "' launch")) {
+        return *e;
+      }
+      if (!ln["mode"]) {
+        return Failure{"E-YAML-PARSE",
+                     "component '" + c.name + "' launch missing 'mode'"};
+      }
+      const auto mode = ln["mode"].as<std::string>();
+      if (mode == "mpmd") {
+        c.launch.mode = LaunchMode::Mpmd;
+        c.launch.appnum = ln["appnum"] ? ln["appnum"].as<int>() : -1;
+      } else if (mode == "connect") {
+        c.launch.mode = LaunchMode::Connect;
+        c.launch.is_acceptor = ln["is_acceptor"] && ln["is_acceptor"].as<bool>();
+        if (ln["port_file"])    c.launch.port_file = ln["port_file"].as<std::string>();
+        if (ln["service_name"]) c.launch.service_name = ln["service_name"].as<std::string>();
+      } else {
+        return Failure{"E-YAML-PARSE",
+                     "component '" + c.name + "' has unknown launch mode '" + mode + "'"};
       }
     }
     const ComponentId cid = g.add_component(c);

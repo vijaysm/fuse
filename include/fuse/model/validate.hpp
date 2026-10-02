@@ -91,6 +91,32 @@ inline Rational channel_window(const CouplingGraph& g, const Channel& ch) {
                   c.name + "'");
       }
     }
+    // ---- S6 phase 3, "MPI connect" track: begin --------------------------
+    // Per-member LaunchSpec checks that need no OTHER component's
+    // declaration (fuse/model/launch.hpp). Cross-component questions --
+    // whether the launched components' RankSets actually partition the
+    // declared world, whether an Mpmd appnum collides with another
+    // component's, whether a Connect pair agrees on exactly one acceptor --
+    // are fuse::transport::validate_launch_layout()'s job instead
+    // (include/fuse/transport/connect.hpp), where the message can name the
+    // other component or the actual runtime layout it disagrees with.
+    if (c.launch.mode == LaunchMode::Mpmd && c.launch.appnum < 0) {
+      d.add(Severity::Error, "E-LAUNCH-APPNUM",
+            "component '" + c.name +
+                "' declares an mpmd launch with no appnum set (appnum " +
+                std::to_string(c.launch.appnum) +
+                "); the MPI_APPNUM this executable is launched as must be "
+                "given explicitly");
+    }
+    if (c.launch.mode == LaunchMode::Connect && c.launch.port_file.empty() &&
+        c.launch.service_name.empty()) {
+      d.add(Severity::Error, "E-LAUNCH-CONNECT-TARGET",
+            "component '" + c.name +
+                "' declares a connect launch with neither port_file nor "
+                "service_name set; connect() has no way to publish or find "
+                "the rendezvous port");
+    }
+    // ---- S6 phase 3, "MPI connect" track: end ----------------------------
   }
 
   // --- reference integrity -------------------------------------------------

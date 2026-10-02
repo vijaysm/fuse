@@ -404,6 +404,22 @@ TEST(Descriptor, RejectsCorruptedWindowScopeIteration) {
   EXPECT_EQ(r.error().code, "E-DESC-ENUM");
 }
 
+// descriptor v9 (S6 phase 3, "MPI connect" track): a component's launch
+// mode byte, same REVIEW.md R-04 pattern as every other enum byte on this
+// wire -- set directly via an out-of-range static_cast rather than by
+// searching serialized bytes for the right offset, since LaunchMode (like
+// every enum class here) accepts an explicit cast to any underlying value.
+TEST(Descriptor, RejectsCorruptedLaunchMode) {
+  CouplingGraph g;
+  fuse::ComponentDecl c{.name = "fluid", .ranks = {0, 1}, .interval = fuse::Rational{1}};
+  c.launch.mode = static_cast<fuse::LaunchMode>(200);
+  g.add_component(std::move(c));
+  const auto bytes = serialize(g);
+  const auto r = deserialize(bytes);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-DESC-ENUM");
+}
+
 // The frozen bytes. `test/golden/waist-v1.bin` is this descriptor's tag: a
 // change to it is an ABI change and must come with a version bump, which is why
 // the test compares bytes rather than re-deriving them.
@@ -415,7 +431,7 @@ TEST(Descriptor, RejectsCorruptedWindowScopeIteration) {
 // is what turns that into an error.
 TEST(Descriptor, SupersededFrozenBytesAreRefusedByThisReader) {
   for (const char* name : {"waist-v1.bin", "waist-v4.bin", "waist-v5.bin",
-                          "waist-v6.bin", "waist-v7.bin"}) {
+                          "waist-v6.bin", "waist-v7.bin", "waist-v8.bin"}) {
     const std::filesystem::path old_golden =
         std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / name;
     ASSERT_TRUE(std::filesystem::exists(old_golden)) << old_golden;
@@ -448,7 +464,7 @@ TEST(Descriptor, TheFrozenV1BytesAreRefusedByThisReader) {
 TEST(Descriptor, MatchesTheFrozenWaistBytes) {
   const auto bytes = fuse::serialize(fuse::testing::freeze_fixture());
   const std::filesystem::path golden =
-      std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / "waist-v8.bin";
+      std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / "waist-v9.bin";
   ASSERT_TRUE(std::filesystem::exists(golden)) << golden;
 
   std::ifstream in(golden, std::ios::binary);

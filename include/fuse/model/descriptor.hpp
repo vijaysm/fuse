@@ -23,6 +23,16 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 /// the seven dimension exponents. A v2 buffer read as v3 would take the next
 /// field's bytes as a scale, so the version gate rejects it rather than admit a
 /// plausible-looking graph with the wrong units.
+/// 9: the interfaces track (S6 phase 3). Each component record gains a
+///    launch record after its `kind` byte: a mode byte (`LaunchMode`:
+///    InProcess, Mpmd or Connect), a signed appnum word, an `is_acceptor`
+///    byte, and two length-prefixed strings (`port_file`, `service_name`).
+///    A v8 reader handed a v9 buffer would read the launch mode byte of the
+///    FIRST component as the start of the next component's field count, and
+///    everything after it would decode as plausible garbage from there on --
+///    the same class of silent misread every prior bump was made to
+///    prevent, so v8 is refused.
+///
 /// 8: the waveform-iteration option. A window scope's record (v7) gains one
 ///    more byte after the per-member `DtPolicy` list: `WaveformIteration`
 ///    (Jacobi or GaussSeidel), which classical scheme the window's own
@@ -62,7 +72,7 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 /// the iteration regions and never see the merge rules, so it would read a
 /// graph that says "one writer per field" from bytes that say otherwise -- and
 /// it would read it successfully. The version check turns that into a refusal.
-inline constexpr std::uint32_t kGraphVersion = 8u;
+inline constexpr std::uint32_t kGraphVersion = 9u;
 
 namespace detail {
 
@@ -188,6 +198,12 @@ class Reader {
     for (const int rank : c.ranks) w.pod(static_cast<std::int32_t>(rank));
     w.rational(c.interval);
     w.pod(static_cast<std::uint8_t>(c.kind));
+    // v9: the launch record (descriptor.hpp's kGraphVersion history).
+    w.pod(static_cast<std::uint8_t>(c.launch.mode));
+    w.pod(static_cast<std::int32_t>(c.launch.appnum));
+    w.pod(static_cast<std::uint8_t>(c.launch.is_acceptor ? 1 : 0));
+    w.str(c.launch.port_file);
+    w.str(c.launch.service_name);
   }
   for (std::uint32_t i = 0; i < g.field_count(); ++i) {
     const auto& f = g.field(FieldId{i});
@@ -359,6 +375,21 @@ class Reader {
                      "unknown component kind " + std::to_string(kind_byte)};
     }
     c.kind = static_cast<ComponentKind>(kind_byte);
+    // v9: the launch record (descriptor.hpp's kGraphVersion history). Same
+    // REVIEW.md R-04 pattern as the kind byte just above: an out-of-range
+    // mode must be refused here, not admitted and later indexed unchecked
+    // by to_cstring()'s switch.
+    const auto launch_mode_byte = r.pod<std::uint8_t>();
+    if (launch_mode_byte > static_cast<std::uint8_t>(LaunchMode::Connect)) {
+      return Failure{"E-DESC-ENUM",
+                     "unknown launch mode " + std::to_string(launch_mode_byte)};
+    }
+    c.launch.mode = static_cast<LaunchMode>(launch_mode_byte);
+    c.launch.appnum = r.pod<std::int32_t>();
+    c.launch.is_acceptor = r.pod<std::uint8_t>() != 0;
+    c.launch.port_file = r.str();
+    c.launch.service_name = r.str();
+    if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated component launch record"};
     g.add_component(std::move(c));
   }
   for (std::uint32_t i = 0; i < n_field; ++i) {

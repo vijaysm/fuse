@@ -73,6 +73,49 @@ TEST(Validate, RejectsDuplicateComponentNames) {
   EXPECT_TRUE(has_code(d, "E-DUP-COMP")) << d.to_string();
 }
 
+// S6 phase 3, "MPI connect" track (fuse/model/launch.hpp). These are the
+// per-member checks validate() itself owns; the cross-component questions
+// (do the launched components' RankSets actually partition the declared
+// world, does an appnum collide with another component's) are
+// fuse::transport::validate_launch_layout()'s job -- see
+// test/transport/connect_test.cpp.
+TEST(Validate, RejectsAnMpmdComponentWithNoAppnum) {
+  Fixture f;
+  f.g.add_component(ComponentDecl{
+      .name = "mpmd-c",
+      .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::Mpmd}});  // appnum defaults to -1
+  const Diagnostics d = validate(f.g);
+  EXPECT_TRUE(has_code(d, "E-LAUNCH-APPNUM")) << d.to_string();
+}
+
+TEST(Validate, AcceptsAnMpmdComponentWithANonNegativeAppnum) {
+  Fixture f;
+  f.g.add_component(ComponentDecl{
+      .name = "mpmd-c",
+      .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::Mpmd, .appnum = 0}});
+  const Diagnostics d = validate(f.g);
+  EXPECT_FALSE(has_code(d, "E-LAUNCH-APPNUM")) << d.to_string();
+}
+
+TEST(Validate, RejectsAConnectComponentWithNoRendezvousTarget) {
+  Fixture f;
+  f.g.add_component(ComponentDecl{
+      .name = "connect-c",
+      .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::Connect}});  // no port_file/service_name
+  const Diagnostics d = validate(f.g);
+  EXPECT_TRUE(has_code(d, "E-LAUNCH-CONNECT-TARGET")) << d.to_string();
+}
+
+TEST(Validate, AcceptsAConnectComponentWithAPortFile) {
+  Fixture f;
+  f.g.add_component(ComponentDecl{
+      .name = "connect-c",
+      .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::Connect,
+                                 .port_file = "/tmp/fuse-connect.port"}});
+  const Diagnostics d = validate(f.g);
+  EXPECT_FALSE(has_code(d, "E-LAUNCH-CONNECT-TARGET")) << d.to_string();
+}
+
 TEST(Validate, RejectsUnitMismatch) {
   Fixture f;
   const auto r = f.g.field(f.dst).region;
@@ -299,12 +342,22 @@ TEST(Validate, DeserializedGraphWithBadWindowComponentDoesNotThrowAndReportsBadR
   w.pod(std::int32_t{0});
   w.rational(Rational{1});
   w.pod(std::uint8_t{0});  // kind = Physics (v6)
+  w.pod(std::uint8_t{0});  // launch.mode = InProcess (v9)
+  w.pod(std::int32_t{-1}); // launch.appnum
+  w.pod(std::uint8_t{0});  // launch.is_acceptor
+  w.str(std::string{});    // launch.port_file
+  w.str(std::string{});    // launch.service_name
   // component 1 = "B", on rank 1
   w.str(std::string{"B"});
   w.pod(std::uint32_t{1});
   w.pod(std::int32_t{1});
   w.rational(Rational{1});
   w.pod(std::uint8_t{0});  // kind = Physics (v6)
+  w.pod(std::uint8_t{0});  // launch.mode = InProcess (v9)
+  w.pod(std::int32_t{-1}); // launch.appnum
+  w.pod(std::uint8_t{0});  // launch.is_acceptor
+  w.str(std::string{});    // launch.port_file
+  w.str(std::string{});    // launch.service_name
   // field 0: owner=A, region=0, Provides
   w.str(std::string{"s"});
   w.pod(std::uint32_t{0});

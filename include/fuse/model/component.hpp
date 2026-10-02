@@ -9,6 +9,7 @@
 
 #include "fuse/base/ids.hpp"
 #include "fuse/base/rational.hpp"
+#include "fuse/model/launch.hpp"
 
 namespace fuse {
 
@@ -201,6 +202,14 @@ struct ComponentDecl {
   // passing through structurally_equal() (which is defined in terms of
   // serialize(), so it cannot see a field neither side writes).
   std::vector<RegionId> regions;
+
+  /// How THIS component's executable finds the rest of the graph when it is
+  /// not run in-process with everyone else (fuse/model/launch.hpp). Default
+  /// `InProcess` keeps every existing `ComponentDecl{...}` aggregate
+  /// initializer and every descriptor written before S6's interfaces track
+  /// meaning what it meant before this field existed (descriptor v9, see
+  /// descriptor.hpp's kGraphVersion history).
+  LaunchSpec launch;
 };
 
 /// `g.add_coupler(CouplerDecl{"C", ranks})`: a placement with no fields and
