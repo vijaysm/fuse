@@ -1,0 +1,101 @@
+# Mutations for the participant C ABI (S6.1 "C ABI" track).
+# Own file per the review-fix protocol: do not edit build-evidence/mutations.toml
+# directly while other fixers hold it dirty.
+#
+# Every row below was applied by hand against the ABI's own src/abi/participant.cpp,
+# rebuilt, run, and confirmed to fail EXACTLY the named test before being restored
+# byte-for-byte (`cmp` against the pre-mutation file showed no difference). The
+# result is recorded in each row's own `result` key.
+
+[[mutation]]
+id = "abi-reader-trusts-a-short-struct"
+area = "abi"
+describes = "check_struct_size's lower bound is removed, so a struct_size shorter than the frozen layout (a truncated-header caller, or struct_size == 0) is accepted instead of refused with FUSE_ERR_VERSION (abi-design.md rule 2)"
+file = "src/abi/participant.cpp"
+old = """template <class T>
+[[nodiscard]] fuse_status check_struct_size(const T* s) noexcept {
+  if (s == nullptr) return FUSE_ERR_INVALID;
+  if (s->struct_size < sizeof(T) ||
+      s->struct_size > static_cast<std::uint32_t>(FUSE_ABI_MAX_STRUCT_SIZE)) {
+    return FUSE_ERR_VERSION;
+  }
+  return FUSE_OK;
+}"""
+new = """template <class T>
+[[nodiscard]] fuse_status check_struct_size(const T* s) noexcept {
+  if (s == nullptr) return FUSE_ERR_INVALID;
+  if (s->struct_size > static_cast<std::uint32_t>(FUSE_ABI_MAX_STRUCT_SIZE)) {
+    return FUSE_ERR_VERSION;
+  }
+  return FUSE_OK;
+}"""
+target = "fuse_abi_struct_size_test"
+test = "abi.struct_size"
+result = "CONFIRMED 2026-10-02: AbiStructSize.ShortStructIsRefused failed exactly as predicted (every struct_size in {0,1,2,3} on fuse_capabilities, and struct_size=2 on fuse_setup, now returned FUSE_OK instead of FUSE_ERR_VERSION); AbiStructSize.LongerStructFromANewerCallerIsAccepted was unaffected (it never exercises the lower bound). Restored; cmp against the pre-mutation file reported no difference."
+
+[[mutation]]
+id = "abi-writer-sets-the-wrong-size"
+area = "abi"
+describes = "the X-macro-generated table initialiser writes struct_size = 0 instead of sizeof(fuse_participant_abi_v1), so a v2 caller's struct_size < sizeof(v2) negotiation check (AbiNegotiation.V2CallerAgainstV1Table) is defeated before it ever reaches the function-pointer prefix"
+file = "src/abi/participant.cpp"
+old = """#define FUSE_ABI_ENTRY(name, in, out, doc) impl_##name,
+const fuse_participant_abi_v1 g_table_v1 = {
+    sizeof(fuse_participant_abi_v1),
+    FUSE_ABI_VERSION,"""
+new = """#define FUSE_ABI_ENTRY(name, in, out, doc) impl_##name,
+const fuse_participant_abi_v1 g_table_v1 = {
+    0,
+    FUSE_ABI_VERSION,"""
+target = "fuse_abi_negotiation_test"
+test = "abi.negotiation"
+result = "CONFIRMED 2026-10-02: AbiNegotiation.V2CallerAgainstV1Table failed on EXPECT_EQ(real->struct_size, sizeof(fuse_participant_abi_v1)) (0 vs 128), exactly as predicted; the two other negotiation cases (V1CallerAgainstV2Table, ASubstitutedEntryIsCalledInsteadOfTheLibrarys) still passed, since neither reads the real table's own struct_size field. Restored; cmp reported no difference."
+
+[[mutation]]
+id = "abi-time-rounded-to-double"
+area = "abi"
+describes = "to_abi_time rounds a Rational through double instead of copying its exact numerator/denominator, which a 1/3-step component's begin_step() bounds expose immediately (abi-design.md rule 6: time never crosses this boundary as a double)"
+file = "src/abi/participant.cpp"
+old = """[[nodiscard]] fuse_exact_time to_abi_time(const fuse::Rational& r) noexcept {
+  const fuse::ExactTimeRecord rec = r.to_record();
+  return fuse_exact_time{rec.numerator, rec.denominator};
+}"""
+new = """[[nodiscard]] fuse_exact_time to_abi_time(const fuse::Rational& r) noexcept {
+  const double d = r.to_double();
+  return fuse_exact_time{static_cast<std::int64_t>(d), 1};
+}"""
+target = "fuse_abi_participant_test"
+test = "abi.participant"
+result = "CONFIRMED 2026-10-02: AbiParticipant.StepBoundsAreTheSchedulesRationals failed at tick 1 (t_end expected numerator=2, denominator=3; got numerator=0, denominator=1) and tick 2 (t_begin expected numerator=2, denominator=3; got numerator=0, denominator=1) -- every non-integer bound truncated to 0 by the double cast, exactly the class of loss rule 6 exists to forbid. The other two AbiParticipant cases, which do not read fuse_exact_time fields, still passed. Restored; cmp reported no difference."
+
+[[mutation]]
+id = "abi-exception-escapes"
+area = "abi"
+describes = "with_ctx's catch-all is removed entirely, so a component's exception (ThrowingComponent::register_fields(), test/abi/participant_test.cpp -- called directly by impl_initialize(), never by fuse::Runner, which already contains an advance()-site exception on its own) propagates out of the C ABI entry point instead of being contained and reported as FUSE_ERR_RUNTIME -- std::terminate under extern \"C\", per abi-design.md's own two rules for this file"
+file = "src/abi/participant.cpp"
+old = """  try {
+    return body(*ctx);
+  } catch (const fuse::Error& e) {
+    return fail(ctx, FUSE_ERR_RUNTIME, std::string(e.code()),
+               std::string(e.what()));
+  } catch (const std::exception& e) {
+    return fail(ctx, FUSE_ERR_RUNTIME, \"E-ABI-EXCEPTION\", e.what());
+  } catch (...) {
+    return fail(ctx, FUSE_ERR_RUNTIME, \"E-ABI-EXCEPTION\",
+               \"fuse: unknown non-std exception at the C ABI boundary\");
+  }"""
+new = """  return body(*ctx);"""
+target = "fuse_abi_participant_test"
+test = "abi.participant"
+result = "CONFIRMED 2026-10-02: the fuse_abi_participant_test BINARY ABORTED with `libc++abi: terminating due to uncaught exception of type std::runtime_error: boom: ThrowingComponent always throws` (exit 134, SIGABRT) instead of AbiParticipant.AThrowingComponentBecomesRuntimeErrorWithTheMessage reporting FUSE_ERR_RUNTIME -- ctest would record the whole binary as a crash/failure, exactly the class of failure this row names. Restored; cmp reported no difference."
+
+[[mutation]]
+id = "abi-second-symbol-exported"
+area = "abi"
+describes = "the link-time export allowlist gains a second name (a real, already-linked Kokkos symbol, standing in for \"a new public entry point someone remembered to allowlist but forgot to also add to the golden file\"), so the built shared library exports two symbols instead of the one test/abi/exported_symbols.golden names. Proves the allowlist, not source-level visibility, is what actually bounds the export set -- confirmed the hard way: the first attempt at this mutation added a second `__attribute__((visibility(\"default\")))` extern \"C\" function in participant.cpp WITHOUT touching the allowlist, and nm still reported exactly one exported symbol, because ld64's -exported_symbols_list silently drops anything not on it regardless of the symbol's own compiled visibility."
+file = "src/abi/exported_symbols.sym"
+old = """_fuse_coupler_abi"""
+new = """_fuse_coupler_abi
+__ZN6Kokkos11num_devicesEv"""
+target = "fuse-abi-shared"
+test = "abi.exported_symbols"
+result = "CONFIRMED 2026-10-02: after rebuilding fuse-abi-shared with the mutated allowlist, `nm -gU` on libfuse-abi.dylib showed two text symbols (ZN6Kokkos11num_devicesEv, fuse_coupler_abi) against the golden file's one; running check_exported_symbols.cmake directly (the same command ctest's abi.exported_symbols issues) FAILED with exactly that diff. Restored; cmp reported no difference."

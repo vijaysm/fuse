@@ -677,6 +677,203 @@ set_tests_properties(install.consumer_find_package PROPERTIES
 
 add_subdirectory(partition)
 
+# ---------------------------------------------------------------- abi (Fortran)
+# ffuse: the Fortran participant binding (build-evidence/abi-matrix.toml rows
+# ABI-FORTRAN-SIZES, ABI-FORTRAN-CONSUMER; docs/dev/abi-design.md, "Fortran:
+# ffuse"). fortran/CMakeLists.txt defines the fuse-abi-fortran target only
+# when FUSE_ENABLE_FORTRAN is ON and a Fortran compiler was actually found
+# (cmake/FuseFortran.cmake) -- ABSENT rather than skipped when it is not, the
+# same convention every fuse_tests_gated_by() case in this file follows, and
+# why this whole section is one `if(TARGET fuse-abi-fortran)` rather than a
+# fuse_tests_gated_by(FUSE_ENABLE_FORTRAN ...) call: there is no single option
+# this depends on (a compiler might simply be missing with the option ON).
+#
+# None of sizes_test.f90 / consumer.f90 / *.cmake under abi/fortran/ match
+# the audit glob below (*/*_test.cpp, one directory level, C++ only), so they
+# are not recorded via fuse_record_test_source -- there is nothing for the
+# audit to double-count or miss.
+if(TARGET fuse-abi-fortran)
+  # ABI-FORTRAN-SIZES: C_SIZEOF of every ffuse derived type against the same
+  # test/abi/struct_sizes.golden the C ABI's own AbiGolden.StructSizesMatch-
+  # TheTable pins. Links fuse-abi-fortran but never calls an ffuse_* entry
+  # (sizes_test.f90 only declares variables of ffuse's types), so the
+  # archive's ffuse.o/fuse_fortran_shim.o members are never pulled into this
+  # executable's link and libfuse-abi's fuse_coupler_abi() is never needed --
+  # confirmed by linking this exact way without libfuse-abi present.
+  add_executable(fuse_abi_fortran_sizes_test abi/fortran/sizes_test.f90)
+  target_link_libraries(fuse_abi_fortran_sizes_test PRIVATE fuse::abi-fortran)
+  add_test(NAME abi.fortran_sizes
+    COMMAND ${CMAKE_COMMAND}
+            -DEXE=$<TARGET_FILE:fuse_abi_fortran_sizes_test>
+            -DGOLDEN=${CMAKE_CURRENT_SOURCE_DIR}/abi/struct_sizes.golden
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/compare_sizes.cmake)
+  set_tests_properties(abi.fortran_sizes PROPERTIES LABELS "abi;fortran")
+
+  # abi-design.md "Link names are ffuse_*, never fuse_*": nm on the ARCHIVE
+  # itself, not a linked executable -- an executable that actually calls an
+  # ffuse_* entry needs libfuse-abi resolved at final link (see
+  # fortran/CMakeLists.txt's own header on why the archive alone does not).
+  add_test(NAME abi.fortran_exports
+    COMMAND ${CMAKE_COMMAND}
+            -DNM=${CMAKE_NM}
+            -DAR=${CMAKE_AR}
+            -DLIBRARY=$<TARGET_FILE:fuse-abi-fortran>
+            -DMEMBER=fuse_fortran_shim.c.o
+            "-DENTRY_NAMES=version;capabilities;create;destroy;last_error;load_graph;save_graph;setup;field_handle;register_field;initialize;is_coupling_ongoing;begin_step;end_step;run"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/check_exports.cmake)
+  set_tests_properties(abi.fortran_exports PROPERTIES LABELS "abi;fortran")
+
+  # consumer.f90 (the ABI-FORTRAN-CONSUMER driver) DOES call ffuse_* entries,
+  # so building it as an ordinary add_executable would need libfuse-abi
+  # resolved at link time whether or not the test ever runs it. Invoking the
+  # compiler directly with -c (no link) verifies the source against ffuse's
+  # real module interfaces -- types, generic overloads, struct_size wiring --
+  # independently of whether libfuse-abi exists yet.
+  add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_consumer_check.o
+    COMMAND ${CMAKE_Fortran_COMPILER} -std=f2008 -Wall -Wextra -Werror -fimplicit-none
+            -I$<TARGET_PROPERTY:fuse-abi-fortran,Fortran_MODULE_DIRECTORY>
+            -c ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/consumer.f90
+            -o ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_consumer_check.o
+    DEPENDS fuse-abi-fortran ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/consumer.f90
+    COMMENT "Compiling test/abi/fortran/consumer.f90 against ffuse (no link)"
+  )
+  add_custom_target(fuse_abi_fortran_consumer_check ALL
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_consumer_check.o)
+  add_test(NAME abi.fortran_consumer_compiles
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
+            --target fuse_abi_fortran_consumer_check)
+  set_tests_properties(abi.fortran_consumer_compiles PROPERTIES
+    LABELS "abi;fortran" RESOURCE_LOCK fuse_build_tree)
+
+  # ABI-FORTRAN-CONSUMER's full run: an install-tree find_package(fuse-coupler)
+  # smoke test, modelled on "install.consumer_find_package" above, that
+  # actually links and runs consumer.f90 -- which needs libfuse-abi (the
+  # sibling track's src/abi) to resolve fuse_coupler_abi() at all. Depending
+  # on TARGET fuse-abi-shared, decided at configure time, means the ctest
+  # NAME abi.install_consumer_fortran exists either way: it runs for real
+  # once that target does, and until then FAILS with the explicit reason in
+  # awaiting_libfuse_abi.cmake -- not silently absent, and not a SKIP that
+  # would read like a pass in a CI summary.
+  #
+  # fuse-abi-shared, not the bare "fuse-abi" the task that specified this
+  # gate named: src/CMakeLists.txt's own abi section (landed by the other
+  # S6-phase-2 track while this one was in progress) builds two variants,
+  # fuse-abi-shared (alias fuse::abi) and fuse-abi-static (alias
+  # fuse::abi-static); no target is literally named fuse-abi. Checked here
+  # specifically because it is the one install_consumer/CMakeLists.txt
+  # actually links -- fuse::abi-static was tried first and failed at this
+  # consumer's own install-tree link with undefined yaml-cpp/r3d symbols
+  # (that CMakeLists.txt's own header has the full account); fuse::abi
+  # (shared) does not have that gap, matching the C sibling's own
+  # install_consumer, which links fuse::abi for the identical reason.
+  if(TARGET fuse-abi-shared)
+    add_test(NAME abi.install_consumer_fortran
+      # -D arguments MUST precede -P: cmake only honours -D definitions that
+      # appear before the script argument on its command line.
+      COMMAND ${CMAKE_COMMAND}
+              -DFUSE_BUILD_DIR=${CMAKE_BINARY_DIR}
+              -DFUSE_INSTALL_PREFIX=${CMAKE_BINARY_DIR}/install-test-fortran
+              -DCONSUMER_SRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/install_consumer
+              -DCONSUMER_BUILD_DIR=${CMAKE_BINARY_DIR}/install_consumer_fortran_build
+              -DCMAKE_COMMAND=${CMAKE_COMMAND}
+              -DCMAKE_GENERATOR=${CMAKE_GENERATOR}
+              "-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
+              -P ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/install_consumer/run-smoke-test.cmake
+    )
+    set_tests_properties(abi.install_consumer_fortran PROPERTIES
+      LABELS "abi;fortran;install"
+      RESOURCE_LOCK fuse_build_tree
+      TIMEOUT 300)
+  else()
+    add_test(NAME abi.install_consumer_fortran
+      COMMAND ${CMAKE_COMMAND} -P
+              ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/awaiting_libfuse_abi.cmake)
+    set_tests_properties(abi.install_consumer_fortran PROPERTIES
+      LABELS "abi;fortran;install")
+  endif()
+endif()
+
+# ---------------------------------------------------------------- abi (C)
+# The participant C ABI's own matrix rows (build-evidence/abi-matrix.toml,
+# S6.1 / "C ABI" track). Each fuse_add_gtest below links fuse::abi
+# (src/CMakeLists.txt's new layer), which PUBLIC-links fuse::runtime, so the
+# usual fuse:: C++ types these test files use directly (Component,
+# FieldRegistry, CouplingGraph, ...) need no extra LIBS.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  set(FUSE_ABI_PYTHON3 "${Python3_EXECUTABLE}")
+else()
+  # Falls back to whatever "python3" resolves to on the test's own PATH at
+  # run time; AbiGolden.HeadersMatchTheEntryList reports a clear spawn
+  # failure rather than a false pass if there is none.
+  set(FUSE_ABI_PYTHON3 "python3")
+endif()
+
+# test/abi/test_support.* is a TEST-ONLY seam into src/abi/'s private
+# fuse_ctx (src/abi/test_support.hpp's own header comment explains why the
+# frozen entries.def has no public equivalent). A tiny static library, not
+# a layer: it is never installed and never part of fuse::abi.
+add_library(fuse_abi_test_support STATIC ${CMAKE_SOURCE_DIR}/src/abi/test_support.cpp)
+target_include_directories(fuse_abi_test_support PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
+target_link_libraries(fuse_abi_test_support PUBLIC fuse::runtime)
+
+fuse_add_gtest(abi entries_golden)
+target_compile_definitions(fuse_abi_entries_golden_test PRIVATE
+  FUSE_PYTHON3_EXECUTABLE="${FUSE_ABI_PYTHON3}"
+  FUSE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
+fuse_add_gtest(abi struct_size)
+
+fuse_add_gtest(abi negotiation)
+
+fuse_add_gtest(abi participant LIBS fuse_abi_test_support)
+target_include_directories(fuse_abi_participant_test PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
+
+# ABI-GOLDEN-SYMBOLS: the built shared library's exported symbol set, via
+# `nm` (test/abi/check_exported_symbols.cmake; see that file for the
+# platform-nm reasoning, ported from upstream/karma's identical check).
+add_test(NAME abi.exported_symbols
+  COMMAND ${CMAKE_COMMAND}
+          -DFUSE_ABI_LIBRARY=$<TARGET_FILE:fuse-abi-shared>
+          -DFUSE_ABI_GOLDEN=${CMAKE_CURRENT_SOURCE_DIR}/abi/exported_symbols.golden
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/abi/check_exported_symbols.cmake)
+set_tests_properties(abi.exported_symbols PROPERTIES LABELS "abi")
+
+# ABI-C-CONSUMER: the in-process C++ half (built as a normal part of this
+# tree) and the pure-C half (built against the INSTALLED package by
+# run-smoke-test.cmake, modelled directly on test/install_consumer's own
+# find_package() smoke test).
+add_executable(fuse_abi_reference abi/install_consumer/reference.cpp)
+target_link_libraries(fuse_abi_reference PRIVATE fuse::runtime)
+
+add_test(NAME abi.install_consumer_c
+  COMMAND ${CMAKE_COMMAND}
+          -DFUSE_BUILD_DIR=${CMAKE_BINARY_DIR}
+          -DFUSE_INSTALL_PREFIX=${CMAKE_BINARY_DIR}/abi-install-test
+          -DCONSUMER_SRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}/abi/install_consumer
+          -DCONSUMER_BUILD_DIR=${CMAKE_BINARY_DIR}/abi_install_consumer_build
+          -DCMAKE_COMMAND=${CMAKE_COMMAND}
+          -DCMAKE_GENERATOR=${CMAKE_GENERATOR}
+          "-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
+          -DFUSE_ABI_REFERENCE_EXE=$<TARGET_FILE:fuse_abi_reference>
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/abi/install_consumer/run-smoke-test.cmake
+)
+set_tests_properties(abi.install_consumer_c PROPERTIES
+  LABELS "abi;install"
+  RESOURCE_LOCK fuse_build_tree  # same reason install.consumer_find_package uses it, above
+  TIMEOUT 300
+)
+
+# ABI-COLLECTIVE-AGREEMENT: tier 1 only, absent (not skipped) in tier 0 for
+# the reason every other MPI-gated test in this file is.
+fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/abi_participant_mpi_test.cpp)
+if(FUSE_ENABLE_MPI)
+  fuse_add_mpi_test(parallel abi_participant_mpi LIBS fuse::abi)
+  target_include_directories(fuse_parallel_abi_participant_mpi_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
+
 # ---------------------------------------------------------------- audit
 # Every *_test.cpp on disk must be registered above or declared gated by a tier
 # option that is OFF in this configuration. Anything else is a test that runs
