@@ -958,11 +958,22 @@ TEST(RunnerTransport, AChannelOutsideTheRegionStillCompletesAfterTheRegionFails)
   auto h = TwoComponentJob("", /*with_iteration_region=*/true,
                            fuse::AccelKind::None,
                            /*with_independent_channel=*/true,
-                           /*fail_fluid_after=*/0, /*shape=*/Overlap::Disjoint,
+                           /*fail_fluid_after=*/1, /*shape=*/Overlap::Disjoint,
                            /*independent_interval=*/fuse::Rational{1, 2},
                            CouplerShape::None,
                            /*independent_consumer_outside_region=*/true);
   ASSERT_GT(h.plan.region_count(), 0u);
+  // WHY THE FLUID FAILS ON ITS SECOND CALL, not its first (2026-10-02). Its
+  // first call is the t=0 step, before linkB's t=1/2 Epoch. Since a healthy
+  // process records a partner's failure at an Epoch and walks on
+  // (reconcile_epoch, bb6f57f), a t=0 failure reaches the outside process
+  // at t=1/2; every process then carries it into the implicit coupling
+  // group, all of them leave the period together, and the mutant below is
+  // invisible (the host's 4-process mutation run left it alive). Failing on
+  // the second call -- the first re-step inside the group's sweep -- happens
+  // after the outside process's last agreement point before the group, so
+  // only the group's processes know, and only correct code brings them on
+  // to linkB's t=1 exchange.
   // PRECONDITION, identical on every rank (the plan is): at least one
   // Transport ordered after the implicit coupling group's exit. That is linkB's t=1 exchange
   // in the stream the host printed for this graph (interval 1/2); if the
@@ -1090,6 +1101,30 @@ TEST(RunnerTransport, IterationRegionParticipantsIncludeADisjointCoupler) {
          "own \"would report convergence after one sweep\" refusal fires on "
          "the coupler's rank for a coupling value that is legitimately "
          "zero-length there: " << init.error().code << ": " << init.error().message;
+
+  // The initialize() check above sees a missing coupler only when the
+  // components alone sit on ONE process (2 processes here). At 3 or more
+  // they already span several, the refusal cannot fire, and the host's
+  // mutation run (2026-10-02, 4 processes) left
+  // "coupler-region-participants-missing-its-ranks" alive. The defect is
+  // still real there: a process outside the residual agreement decides
+  // convergence from its own, empty, coupling block and leaves the implicit
+  // coupling group after one sweep while its partners iterate on. So run a
+  // period and require every process to take the same number of sweeps --
+  // and more than one, or a premature exit could not be told apart.
+  const auto r = runner.run_period(h.components);
+  ASSERT_TRUE(r.ok()) << "rank " << current_rank() << ": " << r.error().code << ": "
+                      << r.error().message;
+  ASSERT_FALSE(runner.iteration_stats().empty());
+  const int mine = runner.iteration_stats().front().iterations;
+  int lo = 0, hi = 0;
+  ASSERT_EQ(MPI_Allreduce(&mine, &lo, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD), MPI_SUCCESS);
+  ASSERT_EQ(MPI_Allreduce(&mine, &hi, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD), MPI_SUCCESS);
+  EXPECT_EQ(lo, hi) << "rank " << current_rank() << " took " << mine
+                    << " sweeps; every process of the implicit coupling group, the "
+                       "coupler's included, must take the same number";
+  EXPECT_GT(hi, 1) << "the group converged in one sweep, so a process leaving "
+                      "after one sweep would be indistinguishable";
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
