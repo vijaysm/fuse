@@ -1,0 +1,50 @@
+# Mutations for the resumable-execution-loop track (S6 phase 3, "S6
+# interfaces": fuse::Runner suspending at an externally driven component's
+# advance() and resuming at end_step(), KNOWN_ISSUES.md D13). Own file per
+# the review-fix protocol: do not edit build-evidence/mutations.toml
+# directly while other tracks hold it dirty.
+#
+# Every row below was applied by hand against this track's own
+# src/runtime/runner.cpp, rebuilt, run, and confirmed to produce the result
+# recorded in each row's own `result` key before being restored
+# byte-for-byte (`cmp` against the pre-mutation file showed no difference).
+# tools/mutate.py --check-anchors was not used to apply these (the task's
+# own constraint); it was run afterwards against the restored tree and
+# reports both rows' anchors valid.
+
+[[mutation]]
+id = "runtime-resume-yield-after-the-tick"
+area = "runtime"
+describes = "Runner::Impl::advance()'s suspend point (co_await detail::ExternalSuspend, the one site every externally driven component's advance() goes through) is moved to AFTER comp.advance(ctx) instead of before it -- the literal 'yield placed after the tick instead of before' this track's task named."
+file = "src/runtime/runner.cpp"
+old = """    pending_external_request = std::move(req);
+    co_await detail::ExternalSuspend{&active_handle};
+  }
+  co_return comp.advance(ctx);
+}"""
+new = """    pending_external_request = std::move(req);
+    const Result<void> advance_result = comp.advance(ctx);
+    co_await detail::ExternalSuspend{&active_handle};
+    co_return advance_result;
+  }
+  co_return comp.advance(ctx);
+}"""
+target = "fuse_abi_participant_test"
+test = "abi.participant"
+result = "EQUIVALENT (checked 2026-10-02, not a kill): all 7 AbiParticipant cases still PASSED after this edit, rebuild, and rerun -- including SuspensionHappensExactlyAtTheScheduledTickNeitherEarlyNorLate and ImplicitCouplingConvergesLikeInProcess, the two that most directly exercise suspend timing. Reason, traced by hand: abi_detail::ExternalStepComponent::advance() (src/abi/external_step_component.hpp) is unconditionally a no-op for every externally driven component -- the external caller already wrote this component's Provides fields directly into the registered storage before resuming, so calling it before or after the suspend changes no observable state; this one reason is independently sufficient, with no claim needed about where step_period()'s merged walk places a feeding channel's delivery relative to this tick in general. (That relative placement is NOT a blanket guarantee either way: test/abi/install_consumer's own same-interval lag(1) graph schedules the delivery strictly AFTER both components' ticks, not before -- measured directly by reverting main.c's read point, see this track's own report. A graph where the delivery DOES fall before this tick would make this mutation's placement matter for THAT graph's own staleness, but it would still not show through ExternalStepComponent's own advance(), for the no-op reason above.) Restored; cmp against the pre-mutation file reported no difference. Recorded here, not silently dropped, per this project's own convention for a mutation that does not reach a tested branch (KNOWN_ISSUES.md section C)."
+
+[[mutation]]
+id = "runtime-resume-requires-restore-never-set"
+area = "runtime"
+describes = "the ExternalAdvanceRequest Runner::Impl::advance() hands back on every externally driven re-advance stops reporting requires_restore -- slot_just_restored[tick.slot] is still cleared (so the flag cannot fire twice), but req.requires_restore is never assigned from it, so it stays false (the struct's default) on every sweep, including the ones where run_region()'s own restore loop (iteration.cpp) really did just call this component's restore_state()."
+file = "src/runtime/runner.cpp"
+old = """    if (tick.slot < slot_just_restored.size()) {
+      req.requires_restore = slot_just_restored[tick.slot] != 0;
+      slot_just_restored[tick.slot] = 0;
+    }"""
+new = """    if (tick.slot < slot_just_restored.size()) {
+      slot_just_restored[tick.slot] = 0;
+    }"""
+target = "fuse_abi_participant_test"
+test = "abi.participant"
+result = "CONFIRMED 2026-10-02: AbiParticipant.ImplicitCouplingConvergesLikeInProcess failed starting at sweep 1 (the first re-sweep after the region's first restore) -- EXPECT_EQ(a_rep.requires_restore, 1) and EXPECT_EQ(b_rep.requires_restore, 1) both reported 0, repeating on every sweep through the run (confirmed at sweep 39, 40, 41 in the captured output). The other six AbiParticipant cases, none of which enters an iteration region, still passed. Restored; cmp against the pre-mutation file reported no difference."

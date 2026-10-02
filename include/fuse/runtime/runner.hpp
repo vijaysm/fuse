@@ -148,6 +148,36 @@ struct IterationStats {
   std::vector<double> residual_history;
 };
 
+/// KNOWN_ISSUES.md D12's fix. One externally driven component's suspended
+/// `advance()` point, reported by `Runner::resume_period()`: every
+/// instruction up to (but not including) this component's own `advance()`
+/// has already run, so every channel that feeds it has been exchanged and
+/// its `Requires` storage is current -- unlike the deferred, end-of-period
+/// scheme this replaces, which could not make that promise.
+struct ExternalAdvanceRequest {
+  /// The graph component name whose turn it now is -- the same string
+  /// `Component::name()` returns, and the same one a caller must pass to
+  /// `fuse_begin_step()` for `resume_period()` to make progress past this
+  /// point. A caller that names a DIFFERENT externally driven component
+  /// here is asking out of turn; the ABI layer (src/abi/participant.cpp)
+  /// turns that into `E-ABI-STEP-ORDER`, naming this component as the one
+  /// the stream actually expects.
+  std::string component;
+  /// The exact interval this component's own `advance()` must cover,
+  /// including the sweep index inside an iteration region (`iteration`,
+  /// StepContext's own doc comment).
+  StepContext ctx;
+  /// True exactly once, on the first time this component is resumed to
+  /// after an iteration region's `save_state()` captured it (spec §5.3).
+  /// `fuse_step_report::requires_checkpoint`'s real meaning, once this
+  /// request reaches the ABI.
+  bool requires_checkpoint = false;
+  /// True exactly once, on the first time this component is resumed to
+  /// after an iteration region's `restore_state()` rolled it back for a
+  /// re-sweep. `fuse_step_report::requires_restore`'s real meaning.
+  bool requires_restore = false;
+};
+
 /// Spec §2 layer 3: interprets the flat instruction stream. Every ArcId is
 /// resolved to a raw pointer once at initialize(); the loop allocates nothing.
 class Runner {
@@ -164,6 +194,31 @@ class Runner {
 
   Result<void> run_period(ComponentSet& components);
   Result<void> run(ComponentSet& components, std::int64_t periods);
+
+  /// KNOWN_ISSUES.md D12's fix: resumes the current period's instruction
+  /// stream from wherever it last suspended (or begins a new period, if
+  /// the previous one ran to completion), executing every instruction up
+  /// to the NEXT externally driven component's own `advance()` point and
+  /// returning that component's `ExternalAdvanceRequest` there -- WITHOUT
+  /// calling `advance()` itself; that happens on the NEXT call to this
+  /// function, which is what src/abi/participant.cpp's `fuse_end_step()`
+  /// drives. A `std::nullopt` result means the period ran to completion
+  /// (every component that still owed this period a tick, in-process or
+  /// external, has had it) with no externally driven component left to
+  /// stop at; the period's own stats (`stats()`) are updated exactly as
+  /// `run_period()` updates them, at the same point in the stream.
+  ///
+  /// Mixing this with `run_period()`/`run()` on the SAME Runner is a
+  /// caller error this does not itself detect: `run_period()` drives a
+  /// period to completion in one call and refuses
+  /// (`E-RT-EXTERNAL-UNSUPPORTED`) if doing so would require suspending,
+  /// so the two are mutually exclusive by construction for any graph with
+  /// an externally driven component, but a graph with NONE could call
+  /// either; callers should pick one and keep to it, as
+  /// src/abi/participant.cpp does (`fuse_run()` vs `fuse_begin_step()`/
+  /// `fuse_end_step()`).
+  Result<std::optional<ExternalAdvanceRequest>> resume_period(
+      ComponentSet& components);
 
   [[nodiscard]] const RunStats& stats() const noexcept;
   /// One entry per iteration region of the plan, in DAG region order,

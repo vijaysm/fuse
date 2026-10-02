@@ -258,6 +258,35 @@ class Component {
   [[nodiscard]] bool carries_hidden_state() const {
     return (capabilities() & kCapabilityHiddenState) != 0;
   }
+
+  /// Whether this component is driven by a caller OUTSIDE fuse::Runner --
+  /// i.e. through the participant ABI's `fuse_begin_step()`/
+  /// `fuse_end_step()` (src/abi/participant.cpp) rather than by
+  /// Runner::Impl's own instruction-stream walk (KNOWN_ISSUES.md D12).
+  ///
+  /// Deliberately a SEPARATE virtual from `capabilities()`, not a new bit
+  /// in that bitmask: `capabilities()` is a property a component author
+  /// states about their own physics (rollback, determinism, hidden
+  /// state), serialized into the model layer's own capability space
+  /// (fuse/model/capabilities.hpp); "who drives my advance() calls" is a
+  /// runtime wiring fact private to src/abi/, never declared by a real
+  /// component and never meaningful outside this one check.
+  ///
+  /// Checked at exactly the points `Runner::Impl::advance()` (runner.cpp)
+  /// and the two direct `comp.advance(ctx)` calls inside
+  /// `advance_window()` (iteration.cpp) are about to call this
+  /// component's own `advance()`: true suspends the coroutine there
+  /// instead (see src/runtime/resume.hpp), handing the caller the exact
+  /// `StepContext` and the checkpoint/restore request before running the
+  /// (no-op, for the one override below) `advance()` itself on resume.
+  ///
+  /// Default false: every Component this header's own tests, and every
+  /// real physics component, construct is driven in-process. The one
+  /// override is `fuse::abi_detail::ExternalStepComponent`
+  /// (src/abi/external_step_component.hpp).
+  [[nodiscard]] virtual bool is_externally_driven() const noexcept {
+    return false;
+  }
 };
 
 namespace detail {

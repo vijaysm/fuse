@@ -1797,6 +1797,15 @@ namespace {
 Result<void> Runner::Impl::build_ticks(ComponentSet& components) {
   ticks.clear();
 
+  // KNOWN_ISSUES.md D12: one entry per ComponentSet slot, consumed by
+  // advance() the next time it is about to suspend for an externally
+  // driven component. Sized here (components.size() is already fixed by
+  // this point in setup()) rather than in resolve_regions(), which runs
+  // afterwards and only knows about the SUBSET of slots a region
+  // checkpoints -- every other slot must still read as "false" (0).
+  slot_just_checkpointed.assign(components.size(), 0);
+  slot_just_restored.assign(components.size(), 0);
+
   const Rational period = plan.period();
   if (!(period > Rational{0})) {
     return Failure{"E-RT-INTERVAL",
@@ -3217,8 +3226,9 @@ bool Runner::Impl::may_advance(std::size_t slot) const {
   return slot < advance_blocked.size() && advance_blocked[slot] == 0;
 }
 
-Result<void> Runner::Impl::advance(ComponentSet& components, const Tick& tick,
-                                   int iteration) {
+detail::Task<Result<void>> Runner::Impl::advance(ComponentSet& components,
+                                                  const Tick& tick,
+                                                  int iteration) {
   StepContext ctx;
   ctx.t_begin = Rational{period_index} * plan.period() + tick.time;
   ctx.t_end = ctx.t_begin + tick.dt;
@@ -3231,15 +3241,42 @@ Result<void> Runner::Impl::advance(ComponentSet& components, const Tick& tick,
   // and a negative dt handed to an integrator is a plausible wrong answer,
   // not a crash.
   if (!ctx.valid()) {
-    return Failure{"E-RT-STEP",
+    co_return Failure{"E-RT-STEP",
                  "step context [" + ctx.t_begin.to_string() + ", " +
                      ctx.t_end.to_string() + ") for component '" +
                      components.at(tick.slot).name() + "' is not valid"};
   }
-  return components.at(tick.slot).advance(ctx);
+  Component& comp = components.at(tick.slot);
+  // KNOWN_ISSUES.md D12: an in-process component takes this branch never --
+  // `is_externally_driven()` is false for every one of them -- so the
+  // statement immediately below (the unconditional `comp.advance(ctx)` this
+  // function has always ended with) runs at exactly the same point in
+  // exactly the same order it always has, with no suspension anywhere in
+  // between. Only `abi_detail::ExternalStepComponent` (src/abi/
+  // external_step_component.hpp) takes it.
+  if (comp.is_externally_driven()) {
+    ExternalAdvanceRequest req;
+    req.component = comp.name();
+    req.ctx = ctx;
+    // Consumed, not just read: each flag must be reported true at most
+    // once, on the first advance() resumed to after the save_state()/
+    // restore_state() that set it (see runner_impl.hpp's own comment on
+    // these two vectors).
+    if (tick.slot < slot_just_checkpointed.size()) {
+      req.requires_checkpoint = slot_just_checkpointed[tick.slot] != 0;
+      slot_just_checkpointed[tick.slot] = 0;
+    }
+    if (tick.slot < slot_just_restored.size()) {
+      req.requires_restore = slot_just_restored[tick.slot] != 0;
+      slot_just_restored[tick.slot] = 0;
+    }
+    pending_external_request = std::move(req);
+    co_await detail::ExternalSuspend{&active_handle};
+  }
+  co_return comp.advance(ctx);
 }
 
-Result<void> Runner::Impl::step_period(ComponentSet& components) {
+detail::Task<Result<void>> Runner::Impl::step_period(ComponentSet& components) {
   const std::vector<Instruction>& stream = plan.instructions();
 
   // The period is one merged walk over two pre-built, pre-sorted sequences:
@@ -3287,7 +3324,7 @@ Result<void> Runner::Impl::step_period(ComponentSet& components) {
   // still decreases, just towards the fixed point of a different operator.
   if (!regions.empty()) {
     const Result<void> c = checkpoint_regions(components);
-    if (!c.ok()) return c;
+    if (!c.ok()) co_return c;
   }
 
   advance_blocked.clear();
@@ -3312,7 +3349,7 @@ Result<void> Runner::Impl::step_period(ComponentSet& components) {
       // as valid as in a period that succeeded, and the period still reports
       // the failure at its end.
       if (may_advance(ticks[ti].slot)) {
-        const Result<void> a = advance(components, ticks[ti], 0);
+        const Result<void> a = co_await advance(components, ticks[ti], 0);
         if (!a.ok()) {
           if (!step_failure.has_value()) step_failure = a.error();
           block_advances_from(ticks[ti].slot);
@@ -3337,7 +3374,7 @@ Result<void> Runner::Impl::step_period(ComponentSet& components) {
              stream[exit_pos].region_exit != region_idx) {
         ++exit_pos;
       }
-      const Result<void> rr = run_region(components, r, i, exit_pos);
+      const Result<void> rr = co_await run_region(components, r, i, exit_pos);
       // R-09 (REVIEW.md): a region failure carries forward exactly like an
       // ordinary instruction failure two branches below -- record it and
       // keep walking the stream -- instead of returning straight out of
@@ -3374,7 +3411,7 @@ Result<void> Runner::Impl::step_period(ComponentSet& components) {
       if (!step_failure.has_value()) step_failure = r.error();
       // An Epoch that fails has already reconciled, so there is nothing left
       // to tell the partners and no reason to keep walking.
-      if (ins.kind == OpKind::Epoch) return *step_failure;
+      if (ins.kind == OpKind::Epoch) co_return *step_failure;
       ++i;
       continue;
     }
@@ -3391,7 +3428,7 @@ Result<void> Runner::Impl::step_period(ComponentSet& components) {
     // routinely ALL land here, so breaking made one component's refusal skip
     // every other component's step, unrelated ones included.
     if (!may_advance(ticks[ti].slot)) continue;
-    const Result<void> a = advance(components, ticks[ti], 0);
+    const Result<void> a = co_await advance(components, ticks[ti], 0);
     if (!a.ok()) {
       if (!step_failure.has_value()) step_failure = a.error();
       block_advances_from(ticks[ti].slot);
@@ -3405,12 +3442,12 @@ Result<void> Runner::Impl::step_period(ComponentSet& components) {
     // that failed did not happen.
     const Failure f = *step_failure;
     step_failure.reset();
-    return f;
+    co_return f;
   }
 
   ++stats.periods;
   ++period_index;
-  return Result<void>::success();
+  co_return Result<void>::success();
 }
 
 // ---------------------------------------------------------------------------
@@ -3558,7 +3595,35 @@ Result<void> Runner::run_period(ComponentSet& components) {
                  "run_period() called before a successful initialize()"};
   }
   try {
-    return impl_->step_period(components);
+    // A fresh, self-contained coroutine: unlike resume_period() below, this
+    // task is driven to completion in this one call and never stored in
+    // impl_->period_task -- the two entry points are mutually exclusive on
+    // a given Runner (runner.hpp's own doc comment on resume_period()).
+    detail::Task<Result<void>> task = impl_->step_period(components);
+    const bool finished = task.resume();
+    if (!finished) {
+      // KNOWN_ISSUES.md D12: step_period() suspends only at a component
+      // whose is_externally_driven() is true (component.hpp) -- nothing a
+      // run_period()/run() caller's own ComponentSet should ever contain,
+      // since that caller has no begin_step()/end_step() to resume past
+      // the suspension with. Refusing by name, rather than deadlocking on
+      // a Task this function then abandons mid-period, is deliberate:
+      // Runner itself cannot tell "a stray external component" from "the
+      // caller meant to use resume_period() and reached for the wrong
+      // method", so it reports the fact rather than guessing which.
+      const std::string name = impl_->pending_external_request.has_value()
+                                   ? impl_->pending_external_request->component
+                                   : std::string{"<unknown>"};
+      impl_->pending_external_request.reset();
+      return Failure{
+          "E-RT-EXTERNAL-UNSUPPORTED",
+          "run_period(): component '" + name +
+              "' is driven from outside the Runner (Component::"
+              "is_externally_driven()); call Runner::resume_period() "
+              "instead of run_period()/run() for a graph with an "
+              "externally driven component"};
+    }
+    return task.take_result();
   } catch (const std::exception& e) {
     return Failure{"E-RT-RUN", std::string{"period failed: "} + e.what()};
   } catch (...) {
@@ -3566,6 +3631,68 @@ Result<void> Runner::run_period(ComponentSet& components) {
                  "period threw an exception that does not derive from "
                  "std::exception"};
   }
+}
+
+Result<std::optional<ExternalAdvanceRequest>> Runner::resume_period(
+    ComponentSet& components) {
+  if (!impl_->initialized) {
+    return Failure{"E-RT-INIT",
+                 "resume_period() called before a successful initialize()"};
+  }
+  try {
+    return impl_->resume_period(components);
+  } catch (const std::exception& e) {
+    return Failure{"E-RT-RUN", std::string{"period failed: "} + e.what()};
+  } catch (...) {
+    return Failure{"E-RT-RUN",
+                 "period threw an exception that does not derive from "
+                 "std::exception"};
+  }
+}
+
+Result<std::optional<ExternalAdvanceRequest>> Runner::Impl::resume_period(
+    ComponentSet& components) {
+  if (!period_task.has_value() || period_task->done()) {
+    // Either the very first call, or the previous period_task ran to
+    // completion and was never read out (resume_period() always reads it
+    // out itself, below, the same call it finishes on) -- either way,
+    // start the next period's coroutine fresh. initial_suspend() is
+    // suspend_always, so nothing in step_period() has run yet, and its
+    // handle is exactly what the next line below must resume.
+    period_task = step_period(components);
+    active_handle = period_task->raw_handle();
+  }
+  pending_external_request.reset();
+  // resume.hpp's own comment on ExternalSuspend: NEVER
+  // `period_task->resume()` here. Once a period has suspended even once,
+  // step_period()'s own handle is no longer the frame actually waiting to
+  // run -- active_handle is, wherever `advance()`/`advance_window()` last
+  // recorded it, possibly several co_awaits deep. Resuming the wrong
+  // handle a second time does not re-enter that frame; it jumps straight
+  // to the awaiting coroutine's OWN resume point and reads a result that
+  // was never produced.
+  active_handle.resume();
+  const bool finished = period_task->done();
+  if (!finished) {
+    if (!pending_external_request.has_value()) {
+      // Invariant violated: Impl::advance() always sets
+      // pending_external_request immediately before co_await'ing
+      // ExternalSuspend{}, which is the ONLY awaiter anywhere in this
+      // file that leaves a resumed Task not done(). Reaching here means
+      // some OTHER suspend point was added without updating this
+      // contract -- a programmer error, not a runtime one.
+      return Failure{"E-RT-RESUME-INVARIANT",
+                   "resume_period(): the period coroutine suspended "
+                   "without recording an ExternalAdvanceRequest"};
+    }
+    ExternalAdvanceRequest req = std::move(*pending_external_request);
+    pending_external_request.reset();
+    return std::optional<ExternalAdvanceRequest>{std::move(req)};
+  }
+  Result<void> r = period_task->take_result();
+  period_task.reset();
+  if (!r.ok()) return r.error();
+  return std::optional<ExternalAdvanceRequest>{};
 }
 
 Result<void> Runner::run(ComponentSet& components, std::int64_t periods) {

@@ -27,6 +27,7 @@
 #include "fuse/runtime/runner.hpp"
 #include "fuse/runtime/window_coupler.hpp"
 #include "fuse/schedule/window.hpp"
+#include "resume.hpp"
 
 namespace fuse {
 namespace detail {
@@ -839,9 +840,59 @@ struct Runner::Impl {
   Result<void> build_ticks(ComponentSet& components);
 
   Result<void> execute(const Instruction& ins, const detail::Resolved& r);
-  Result<void> advance(ComponentSet& components, const detail::Tick& tick,
-                       int iteration);
-  Result<void> step_period(ComponentSet& components);
+  /// KNOWN_ISSUES.md D12. A coroutine (see src/runtime/resume.hpp):
+  /// suspends via `co_await detail::ExternalSuspend{}`, reporting
+  /// `pending_external_request`, when `tick`'s own component is
+  /// `is_externally_driven()` -- BEFORE calling its `advance()` (a no-op
+  /// for the one such component, `abi_detail::ExternalStepComponent`, so
+  /// deferring the call past the suspend changes nothing observable) --
+  /// and calls `advance()` directly, with no suspension at all, for every
+  /// ordinary (in-process) component: the in-process statement order and
+  /// timing are therefore identical to what this function did before it
+  /// became a coroutine.
+  detail::Task<Result<void>> advance(ComponentSet& components,
+                                     const detail::Tick& tick, int iteration);
+  detail::Task<Result<void>> step_period(ComponentSet& components);
+
+  /// KNOWN_ISSUES.md D12's fix, driving `step_period()`'s coroutine from
+  /// outside one call: creates a new `period_task` if the previous one
+  /// ran to completion (or none has started yet), resumes it, and reports
+  /// either the `ExternalAdvanceRequest` it suspended at
+  /// (`pending_external_request`, consumed here) or `std::nullopt` once
+  /// the period itself is over. See runner.hpp's own doc comment on
+  /// `Runner::resume_period()`, which forwards straight to this.
+  Result<std::optional<ExternalAdvanceRequest>> resume_period(
+      ComponentSet& components);
+
+  /// The request `advance()` most recently suspended with, valid only
+  /// between a `period_task->resume()` that returned `false` and the
+  /// `resume_period()` call that reads it out.
+  std::optional<ExternalAdvanceRequest> pending_external_request;
+  /// The in-flight `step_period()` coroutine, alive across every
+  /// suspension until the period it is running completes. Recreated by
+  /// `resume_period()` once the previous one is done.
+  std::optional<detail::Task<Result<void>>> period_task;
+  /// KNOWN_ISSUES.md D12. The handle `resume_period()` must call
+  /// `.resume()` on NEXT -- see resume.hpp's own comment on
+  /// `ExternalSuspend` for why this is never simply `period_task`'s own
+  /// handle after the first suspension. Seeded from `period_task->
+  /// raw_handle()` when a period starts; overwritten by `ExternalSuspend::
+  /// await_suspend()` every time `advance()` or `advance_window()`
+  /// actually suspends, at whatever depth that happens to be.
+  std::coroutine_handle<> active_handle;
+  /// Per-ComponentSet-slot bookkeeping for `ExternalAdvanceRequest::
+  /// requires_checkpoint`/`requires_restore`: set the instant a region's
+  /// `save_state()`/`restore_state()` runs for that slot (checkpoint_
+  /// regions() and run_region()'s own window-scoped checkpoint, both
+  /// runner.cpp/iteration.cpp; run_region()'s restore loop,
+  /// iteration.cpp), consumed (read then cleared) the next time `advance()`
+  /// above is about to suspend for that slot. Sized to `components.size()`
+  /// in build_ticks(); both default to 0 (false) for a component never
+  /// checkpointed by any region, which is the common case and matches
+  /// today's ABI behaviour (`requires_checkpoint`/`requires_restore`
+  /// always 0) for a graph with no iteration region at all.
+  std::vector<char> slot_just_checkpointed;
+  std::vector<char> slot_just_restored;
 
   // --- src/runtime/iteration.cpp (spec §5.3) -------------------------------
   /// Builds `regions` and refuses every plan whose shape the sweep loop below
@@ -878,8 +929,15 @@ struct Runner::Impl {
   /// does that window instance's OWN checkpoint (save_state() + the byte-
   /// capture `checkpoint_regions()` does for an ordinary region at
   /// period-top) as the first act, before the sweep loop.
-  Result<void> run_region(ComponentSet& components, detail::RegionRuntime& r,
-                          std::size_t enter, std::size_t exit);
+  /// KNOWN_ISSUES.md D12. A coroutine (src/runtime/resume.hpp): every
+  /// re-advance this function makes (the `R.tick_indices` loop) goes
+  /// through `advance()` above, `co_await`ed, so a region member that is
+  /// `is_externally_driven()` suspends there exactly like an ordinary
+  /// period-level tick does; every `OpKind::WindowAdvance` dispatch
+  /// (`advance_window()` below) is likewise `co_await`ed.
+  detail::Task<Result<void>> run_region(ComponentSet& components,
+                                        detail::RegionRuntime& r,
+                                        std::size_t enter, std::size_t exit);
   /// Mirrors `WindowCoupler::resolve_pending_straddles()`
   /// (window_coupler.cpp) on the Runner: for every window member of `r`
   /// whose `WindowMemberState::straddle_pending` is still set (a
@@ -895,6 +953,19 @@ struct Runner::Impl {
   /// else saves over it in between, exactly the single-checkpoint
   /// contract `resolve_pending_straddles()`'s own comment documents for
   /// the driver). A no-op for a region with no pending straddle.
+  ///
+  /// NOT a coroutine, deliberately (KNOWN_ISSUES.md D12's own fix
+  /// statement only commits to step_period(), run_region() and the
+  /// window-advance path): its replay calls `comp.advance(ctx)` directly,
+  /// for a member whose PREVIOUS window instance straddled this one's
+  /// boundary, with no `ComponentSet`-tick to suspend through cleanly --
+  /// doing that correctly needs its own accounting of which replayed
+  /// interval an external caller would be asked to redo, which is outside
+  /// this round's scope. Refuses `E-RT-WINDOW-EXTERNAL-STRADDLE` up front
+  /// if the member being replayed `is_externally_driven()`, rather than
+  /// silently calling its (no-op) `advance()` out of the order an
+  /// external caller would see through `fuse_begin_step()`/
+  /// `fuse_end_step()`.
   Result<void> resolve_pending_window_straddles(ComponentSet& components,
                                                 detail::RegionRuntime& r);
   /// Time windows track: executes exactly one `OpKind::WindowAdvance`
@@ -919,8 +990,15 @@ struct Runner::Impl {
   /// design question flagged to the lead (Jacobi vs Gauss-Seidel exchange
   /// semantics between two window members within one sweep; see this
   /// pass's own host.submit_output).
-  Result<void> advance_window(ComponentSet& components, const Instruction& ins,
-                              const detail::Resolved& r, int iteration);
+  /// KNOWN_ISSUES.md D12. A coroutine (src/runtime/resume.hpp): its two
+  /// direct `comp.advance(ctx)` calls each suspend first, via
+  /// `co_await detail::ExternalSuspend{}`, when `comp.is_externally_
+  /// driven()` -- the same rule `advance()` above applies to an ordinary
+  /// tick.
+  detail::Task<Result<void>> advance_window(ComponentSet& components,
+                                            const Instruction& ins,
+                                            const detail::Resolved& r,
+                                            int iteration);
   /// R-10 (REVIEW.md): one sweep's cross-rank residual agreement, reached by
   /// every rank in `r.participants` on every sweep -- including one that has
   /// already locally recorded a step_failure, exactly like reconcile_epoch().

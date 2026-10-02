@@ -1055,6 +1055,10 @@ Result<void> Runner::Impl::checkpoint_regions(ComponentSet& components) {
     for (const std::size_t slot : R.component_slots) {
       const Result<void> s = components.at(slot).save_state();
       if (!s.ok()) return s;
+      // KNOWN_ISSUES.md D12: consumed by advance() the next time it is
+      // about to suspend for this slot -- see runner_impl.hpp's own
+      // comment on slot_just_checkpointed/slot_just_restored.
+      if (slot < slot_just_checkpointed.size()) slot_just_checkpointed[slot] = 1;
     }
     // The bytes the verification below compares against. Taken here, right
     // after save_state(), so they are exactly what the component claims to
@@ -1073,9 +1077,9 @@ Result<void> Runner::Impl::checkpoint_regions(ComponentSet& components) {
 // The sweep loop
 // ---------------------------------------------------------------------------
 
-Result<void> Runner::Impl::run_region(ComponentSet& components,
-                                      detail::RegionRuntime& R,
-                                      std::size_t enter, std::size_t exit) {
+detail::Task<Result<void>> Runner::Impl::run_region(
+    ComponentSet& components, detail::RegionRuntime& R, std::size_t enter,
+    std::size_t exit) {
   IterationStats& st = region_stats[R.index];
   st.iterations = 0;
   st.converged = false;
@@ -1105,11 +1109,13 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
     // straddles()'s own comment, runner_impl.hpp).
     const Result<void> replay_r = resolve_pending_window_straddles(
         components, R);
-    if (!replay_r.ok()) return replay_r.error();
+    if (!replay_r.ok()) co_return replay_r.error();
 
     for (const std::size_t slot : R.component_slots) {
       const Result<void> s = components.at(slot).save_state();
-      if (!s.ok()) return s;
+      if (!s.ok()) co_return s;
+      // KNOWN_ISSUES.md D12: see the matching line in checkpoint_regions().
+      if (slot < slot_just_checkpointed.size()) slot_just_checkpointed[slot] = 1;
     }
     for (std::size_t v = 0; v < R.verify_arcs.size(); ++v) {
       const detail::Slot& s = slots[R.verify_arcs[v]];
@@ -1157,13 +1163,15 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
       // instead, here, the one place that both has `components` and is
       // guaranteed a WindowAdvance instruction only ever appears inside
       // some region's body.
-      const Result<void> e = stream[i].kind == OpKind::WindowAdvance
-                                 ? advance_window(components, stream[i],
-                                                  resolved[i], k)
-                                 : execute(stream[i], resolved[i]);
+      Result<void> e = Result<void>::success();
+      if (stream[i].kind == OpKind::WindowAdvance) {
+        e = co_await advance_window(components, stream[i], resolved[i], k);
+      } else {
+        e = execute(stream[i], resolved[i]);
+      }
       if (!e.ok()) {
         if (!step_failure.has_value()) step_failure = e.error();
-        if (stream[i].kind == OpKind::Epoch) return *step_failure;
+        if (stream[i].kind == OpKind::Epoch) co_return *step_failure;
         continue;
       }
       ++stats.instructions_executed;
@@ -1237,7 +1245,7 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
         payload[1 + 4 * bi + 3] = owned;
       }
       const Result<void> red = reduce_region_residuals(R, payload);
-      if (!red.ok()) return red.error();
+      if (!red.ok()) co_return red.error();
       if (payload[0] < 0.5) {
         // A participant's local failure carries through the reduction
         // exactly as reconcile_epoch() carries an Epoch's: this rank's own
@@ -1259,7 +1267,7 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
             // -- a setup defect (the measure names a coupling value nobody
             // in the region's rank set ever provides), not a converged
             // zero, and not something the sweep loop can recover from.
-            return Failure{
+            co_return Failure{
                 "E-RT-REGION-UNMEASURED",
                 "iteration region '" + R.name + "': no participant of the "
                 "residual agreement owns any part of block " +
@@ -1277,7 +1285,7 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
       // reached this pass, so the partners already know.
       const Failure f = *step_failure;
       step_failure.reset();
-      return f;
+      co_return f;
     }
     ++st.iterations;
     ++stats.total_iterations;
@@ -1340,7 +1348,14 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
     // before it would be undone.
     for (const std::size_t slot : R.component_slots) {
       const Result<void> rs = components.at(slot).restore_state();
-      if (!rs.ok()) return rs;
+      if (!rs.ok()) co_return rs;
+      // KNOWN_ISSUES.md D12: the re-advance below (R.tick_indices) is
+      // this slot's first advance() after THIS restore_state(), so it is
+      // the one that must report requires_restore -- and, since a
+      // restore always supersedes whatever checkpoint flag an earlier
+      // sweep of the SAME region entry left set, clear that one too.
+      if (slot < slot_just_restored.size()) slot_just_restored[slot] = 1;
+      if (slot < slot_just_checkpointed.size()) slot_just_checkpointed[slot] = 0;
     }
 
     // Spec §5.3's verification. `supports_rollback()` was a promise; this is
@@ -1372,7 +1387,7 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
         continue;
       }
       const std::size_t which = R.verify_component[v];
-      return Failure{
+      co_return Failure{
           "E-ITER-ROLLBACK",
           "component '" +
               components.at(R.component_slots[which]).name() +
@@ -1432,7 +1447,7 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
     // Re-advance, over the SAME interval, with ctx.iteration = k + 1.
     for (const std::size_t t : R.tick_indices) {
       if (step_failure.has_value()) break;
-      const Result<void> adv = advance(components, ticks[t], k + 1);
+      const Result<void> adv = co_await advance(components, ticks[t], k + 1);
       if (!adv.ok()) step_failure = adv.error();
     }
     R.x_old.swap(R.x_out);
@@ -1449,13 +1464,13 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
   if (step_failure.has_value()) {
     const Failure f = *step_failure;
     step_failure.reset();
-    return f;
+    co_return f;
   }
 
   if (!st.converged) {
     ++stats.windows_not_converged;
     if (config.abort_on_nonconvergence) {
-      return Failure{"E-RT-NOCONVERGE",
+      co_return Failure{"E-RT-NOCONVERGE",
                    "iteration region '" + R.name + "' ran its full " +
                        std::to_string(R.max_iterations) +
                        " iterations in period " +
@@ -1534,7 +1549,7 @@ Result<void> Runner::Impl::run_region(ComponentSet& components,
       }
     }
   }
-  return Result<void>::success();
+  co_return Result<void>::success();
 }
 
 // Mirrors WindowCoupler::resolve_pending_straddles() (window_coupler.cpp)
@@ -1557,6 +1572,26 @@ Result<void> Runner::Impl::resolve_pending_window_straddles(
     if (!st.straddle_pending) continue;
     const WindowMemberConfig& cfg = window_member_config.at(node.value());
     Component& comp = components.at(cfg.component_slot);
+    // KNOWN_ISSUES.md D12: this function is NOT a coroutine (see its own
+    // declaration comment, runner_impl.hpp) -- its replay below calls
+    // comp.restore_state() and comp.advance(ctx) directly, with no
+    // ComponentSet-tick for a suspend to attach to cleanly. Refuse rather
+    // than call an externally driven component's (no-op) advance() here,
+    // out of any order fuse_begin_step()/fuse_end_step() could make sense
+    // of -- this replay runs BEFORE run_region() takes this window
+    // instance's own checkpoint (this function's own caller), so an
+    // external caller has no step boundary that corresponds to it at all.
+    if (comp.is_externally_driven()) {
+      return Failure{
+          "E-RT-WINDOW-EXTERNAL-STRADDLE",
+          "iteration region '" + R.name + "': component '" + comp.name() +
+              "' is driven from outside the Runner (Component::"
+              "is_externally_driven()) and straddled a window boundary; "
+              "replaying its carried-over substeps has no corresponding "
+              "fuse_begin_step()/fuse_end_step() for an external caller to "
+              "resume through, so this combination is refused rather than "
+              "silently advancing the component out of order"};
+    }
     // `straddle_window_start`: the CHECKPOINT's own time (this member's
     // own clock when it was taken, possibly already past the window's
     // own nominal start if an EARLIER straddle carried it there --
@@ -1794,14 +1829,13 @@ Result<void> Runner::Impl::resolve_pending_window_straddles(
 // names; KNOWN_ISSUES.md D7 -- TWO Fixed members straddling the SAME
 // window -- remains refused at setup, unconditionally, identically to
 // `WindowCoupler::create()`'s own `E-RT-WINDOW-STRADDLE`).
-Result<void> Runner::Impl::advance_window(ComponentSet& components,
-                                          const Instruction& ins,
-                                          const detail::Resolved& /*r*/,
-                                          int iteration) {
+detail::Task<Result<void>> Runner::Impl::advance_window(
+    ComponentSet& components, const Instruction& ins,
+    const detail::Resolved& /*r*/, int iteration) {
   const std::uint32_t node = ins.origin_node.value();
   const auto cfg_it = window_member_config.find(node);
   if (cfg_it == window_member_config.end()) {
-    return Failure{"E-RT-WINDOW-UNPLACED",
+    co_return Failure{"E-RT-WINDOW-UNPLACED",
                  "WindowAdvance instruction's own node has no window "
                  "member config; resolve_regions() should have built one"};
   }
@@ -1824,7 +1858,7 @@ Result<void> Runner::Impl::advance_window(ComponentSet& components,
   // resolve_regions() never anticipated.
   const bool first_sweep_of_pass = (iteration == 0);
   if (first_sweep_of_pass != new_instance) {
-    return Failure{"E-RT-WINDOW-SWEEP",
+    co_return Failure{"E-RT-WINDOW-SWEEP",
                  "WindowAdvance: iteration==0 (" +
                      std::to_string(first_sweep_of_pass) +
                      ") disagrees with the dst_step-based first-sweep "
@@ -2025,7 +2059,7 @@ Result<void> Runner::Impl::advance_window(ComponentSet& components,
                  (k - static_cast<std::size_t>(shift))];
         }
         Result<void> p = wf.push(times[k], &v);
-        if (!p.ok()) return p.error();
+        if (!p.ok()) co_return p.error();
       }
       import_wf.push_back(std::move(wf));
     }
@@ -2037,7 +2071,7 @@ Result<void> Runner::Impl::advance_window(ComponentSet& components,
   const Rational final_clock = planned_self.second;
 
   if (steps.size() + 1 > cfg.capacity) {
-    return Failure{"E-RT-WINDOW-CAPACITY",
+    co_return Failure{"E-RT-WINDOW-CAPACITY",
                  "window member needs " + std::to_string(steps.size() + 1) +
                      " samples this window, more than its own compiled "
                      "capacity (" + std::to_string(cfg.capacity) +
@@ -2141,7 +2175,7 @@ Result<void> Runner::Impl::advance_window(ComponentSet& components,
             return v;
           },
           v_at_t1.data());
-      if (!split_r.ok()) return split_r.error();
+      if (!split_r.ok()) co_return split_r.error();
       if (out != nullptr) {
         for (std::size_t e = 0; e < cfg.length; ++e) {
           out[e * cfg.capacity + (s + 1)] = v_at_t1[e];
@@ -2167,8 +2201,28 @@ Result<void> Runner::Impl::advance_window(ComponentSet& components,
     ctx.t_end = sub.t1;
     ctx.step = ins.dst_step;
     ctx.iteration = iteration;
+    // KNOWN_ISSUES.md D12: same rule as Runner::Impl::advance() (runner.cpp)
+    // -- suspend here, before the call, for the one component override
+    // that is_externally_driven(); every real (in-process) window member
+    // takes the branch never, so the unconditional `comp.advance(ctx)`
+    // immediately below runs at exactly the point and order it always has.
+    if (comp.is_externally_driven()) {
+      ExternalAdvanceRequest req;
+      req.component = comp.name();
+      req.ctx = ctx;
+      if (cfg.component_slot < slot_just_checkpointed.size()) {
+        req.requires_checkpoint = slot_just_checkpointed[cfg.component_slot] != 0;
+        slot_just_checkpointed[cfg.component_slot] = 0;
+      }
+      if (cfg.component_slot < slot_just_restored.size()) {
+        req.requires_restore = slot_just_restored[cfg.component_slot] != 0;
+        slot_just_restored[cfg.component_slot] = 0;
+      }
+      pending_external_request = std::move(req);
+      co_await detail::ExternalSuspend{&active_handle};
+    }
     const Result<void> ar = comp.advance(ctx);
-    if (!ar.ok()) return ar;
+    if (!ar.ok()) co_return ar;
     if (out != nullptr) {
       for (std::size_t e = 0; e < cfg.length; ++e) {
         out[e * cfg.capacity + (s + 1)] = cfg.provided[e];
@@ -2238,7 +2292,7 @@ Result<void> Runner::Impl::advance_window(ComponentSet& components,
     st.straddle_window_end = T1;
   }
 
-  return Result<void>::success();
+  co_return Result<void>::success();
 }
 
 }  // namespace fuse
