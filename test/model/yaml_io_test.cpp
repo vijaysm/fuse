@@ -312,6 +312,52 @@ TEST(YamlIo, RejectsUnknownTopLevelKey) {
 // same graph. Two legs prove nothing about the third: a front-end could lose a
 // member consistently in both directions and its own round-trip would still pass.
 // So the comparison is against the BYTES, which are the definition.
+// Component index is the placement space, so a coupler authored BETWEEN two
+// physics components must come back between them. The writer keeps physics
+// components and couplers in two sections, so this is only true because each
+// coupler carries its `index`; the first graph that authored a component
+// after a coupler (the v10 freeze fixture, S6 phase 4) came back reordered,
+// and the fixture was rearranged to hide it instead of the writer being
+// fixed. This pins the fix.
+TEST(YamlIo, ACouplerAuthoredBetweenPhysicsComponentsKeepsItsIndex) {
+  fuse::CouplingGraph g;
+  (void)g.add_component({.name = "a", .ranks = {0, 2}, .interval = fuse::Rational{1, 1}});
+  const auto mid = g.add_coupler({.name = "hub", .ranks = {2, 1}});
+  const auto b = g.add_component({.name = "b", .ranks = {3, 2}, .interval = fuse::Rational{1, 1}});
+  ASSERT_EQ(mid.value(), 1u);
+  ASSERT_EQ(b.value(), 2u);
+
+  const auto text = fuse::to_yaml(g);
+  ASSERT_TRUE(text.ok()) << text.error().message;
+  const auto parsed = fuse::from_yaml(text.value());
+  ASSERT_TRUE(parsed.ok()) << parsed.error().message;
+
+  ASSERT_EQ(parsed.value().component_count(), 3u);
+  EXPECT_EQ(parsed.value().component(fuse::ComponentId{1}).name, "hub");
+  EXPECT_EQ(parsed.value().component(fuse::ComponentId{1}).kind, fuse::ComponentKind::Coupler);
+  EXPECT_EQ(parsed.value().component(fuse::ComponentId{2}).name, "b");
+  EXPECT_EQ(fuse::serialize(parsed.value()), fuse::serialize(g))
+      << "the round trip moved the coupler, so every placement index after it changed";
+}
+
+// A text without `index` on its couplers (hand-written, or written before
+// the key existed) appends them after every physics component.
+TEST(YamlIo, CouplersWithoutAnIndexAreAppended) {
+  fuse::CouplingGraph g;
+  (void)g.add_component({.name = "a", .ranks = {0, 2}, .interval = fuse::Rational{1, 1}});
+  (void)g.add_coupler({.name = "hub", .ranks = {2, 1}});
+  const auto text = fuse::to_yaml(g);
+  ASSERT_TRUE(text.ok()) << text.error().message;
+  std::string stripped = text.value();
+  const auto k = stripped.find("index: 1");
+  ASSERT_NE(k, std::string::npos) << text.value();
+  stripped.erase(k, std::string("index: 1").size());
+  const auto parsed = fuse::from_yaml(stripped);
+  ASSERT_TRUE(parsed.ok()) << parsed.error().message;
+  ASSERT_EQ(parsed.value().component_count(), 2u);
+  EXPECT_EQ(parsed.value().component(fuse::ComponentId{1}).name, "hub");
+}
+
 TEST(YamlIo, ThreeLegRoundTripIsStructurallyIdentical) {
   const auto authored = fuse::testing::freeze_fixture();   // leg 1: C++
   const auto direct_bytes = fuse::serialize(authored);

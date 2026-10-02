@@ -43,16 +43,11 @@ inline CouplingGraph freeze_fixture() {
                             .service_name = "fuse-solid-fluid"}});
   // A plugin-launched component: `LaunchMode::Plugin` is the one non-default
   // enumerator neither `fluid` nor `solid` could reach (descriptor v10's
-  // reason for the bump, S6 phase 4 "Adapter host" track). Fieldless --
-  // `plugin_path` is the one member this component exists to pin at a
-  // non-default value. Added via `add_component()`, and BEFORE the coupler
-  // below: `to_yaml()`/`from_yaml()` round-trip every physics component
-  // (`add_component()`) before every coupler (`add_coupler()`), in two
-  // separate YAML sections, so a physics component authored AFTER a coupler
-  // in C++ comes back BEFORE it once parsed back -- a real reordering this
-  // fixture must not itself trigger, or `YamlIo.ThreeLegRoundTripIsStructurally
-  // Identical` (test/model/yaml_io_test.cpp) fails on an ordering difference
-  // that has nothing to do with the member this fixture exists to pin.
+  // reason for the bump, S6 phase 4). Fieldless -- `plugin_path` is the one
+  // member this component exists to pin at a non-default value. It sits
+  // before the coupler only because the v10 bytes were frozen that way;
+  // since couplers carry `index` in the YAML, the order no longer matters
+  // for the round trip (YamlIo.ACouplerAuthoredBetweenPhysicsComponentsKeepsItsIndex).
   (void)g.add_component(
       {.name = "gas", .ranks = {3, 5}, .interval = Rational{1, 2},
        .launch = LaunchSpec{.mode = LaunchMode::Plugin,
