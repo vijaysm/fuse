@@ -870,7 +870,7 @@ its `FUSE_REQUIRE_AT_LEAST_RANKS` guard — will only show up on a host run.
 
 ### D3. ~~Four behaviours no test detects~~ — two runtime mutations survive on the host; DEFERRED 2026-10-02 in favour of the core implementation
 
-**State on 2026-10-02 (host runs on `ba0892e`/`64346e1`).** The hang the first host run of
+**State on 2026-10-02 (host runs on `ba0892e` and `ca7f7a5`).** The hang the first host run of
 `StillRunsASecondChannelAfterARegionFailsUnderMpi` hit was a real runtime defect, fixed in
 `bb6f57f`: `reconcile_epoch()` returned `E-RT-EPOCH-PEER` on a healthy process while the failing
 one walked on through the remaining collectives, so the failing one waited forever in the next
@@ -897,8 +897,9 @@ not yet closed:
 
 `ca7f7a5` attempted exactly those two changes (fluid failing on its second call; a period run with
 an `MPI_Allreduce` of per-process sweep counts) and made `parallel.runner_transport` **fail at 2
-processes and time out at 3, 4 and 5** on the host. It is reverted in `64346e1`; the cause was not
-found before the decision to defer. The likely explanations, to check first when this is picked
+processes and time out at 3, 4 and 5** on the host. It is reverted in `d384de7` (`64346e1` is
+`ca7f7a5` under a misleading name: the first revert attempt failed on an invalid flag and the
+following `--amend` only renamed it); the cause was not found before the decision to defer. The likely explanations, to check first when this is picked
 up: (a) a step failure raised *inside* the group's sweep on only some processes reaches the
 group's residual agreement on those processes while the others are already past it, or inside a
 Transport that the failed processes now skip as non-collective — the same class of asymmetry
