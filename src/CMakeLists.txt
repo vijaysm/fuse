@@ -366,6 +366,107 @@ set_target_properties(fuse-coupler-runtime PROPERTIES
   VISIBILITY_INLINES_HIDDEN ON
 )
 
+# ---------------------------------------------------------------- abi
+# The participant C ABI (docs/dev/abi-design.md, docs/user/c-abi.md):
+# fuse_coupler_abi() and the fuse_participant_abi_v1 table behind it. Links
+# fuse::runtime (Runner, ComponentSet) and nothing above it -- the ABI is a
+# thin, exception-containing C wrapper over the same public C++ surface
+# examples/ uses, not a new layer of the coupler itself.
+#
+# Built TWICE from one compilation (an OBJECT library compiled once, linked
+# into both variants) because the task that specified this library asked for
+# both a shared and a static consumer: `fuse::abi` (shared) is what
+# `dlopen()` and the install consumer use; `fuse::abi-static` (the archive)
+# is for a caller that links everything into one binary and wants no extra
+# .so to ship. -fvisibility=hidden is set on the OBJECT library, so it
+# applies identically to both: the static archive's object files carry
+# hidden symbols the same way the shared library's dynamic symbol table
+# does, which is what keeps `fuse_coupler_abi` the one name either variant
+# exposes (abi-design.md point 1).
+add_library(fuse-abi-objects OBJECT
+  abi/participant.cpp
+)
+target_compile_features(fuse-abi-objects PUBLIC cxx_std_20)
+target_link_libraries(fuse-abi-objects PUBLIC fuse::runtime)
+target_compile_definitions(fuse-abi-objects PRIVATE
+  FUSE_PROJECT_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
+  FUSE_PROJECT_VERSION_MINOR=${PROJECT_VERSION_MINOR}
+  FUSE_PROJECT_VERSION_PATCH=${PROJECT_VERSION_PATCH}
+)
+set_target_properties(fuse-abi-objects PROPERTIES
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN ON
+  POSITION_INDEPENDENT_CODE ON
+)
+
+#
+# fuse-abi-objects is linked PRIVATE and only via $<BUILD_LOCAL_INTERFACE:...>:
+# its object files are baked into each variant at link time, but it is a
+# build-time device with no install-time existence of its own (same reason
+# fuse-coupler-model's yaml-cpp link and fuse-coupler-search's ArborX link
+# above use that generator expression) -- an exported target may not
+# PUBLIC-link a target that is not itself part of the same export set, and
+# fuse-abi-objects, being an OBJECT library with no public header of its
+# own, has nothing an installed consumer needs from it directly.
+add_library(fuse-abi-shared SHARED)
+target_link_libraries(fuse-abi-shared
+  PRIVATE $<BUILD_LOCAL_INTERFACE:fuse-abi-objects>
+  PUBLIC  fuse::runtime
+)
+add_library(fuse::abi ALIAS fuse-abi-shared)
+set_target_properties(fuse-abi-shared PROPERTIES
+  EXPORT_NAME abi
+  OUTPUT_NAME fuse-abi
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN ON
+  # fuse::model (pulled in PRIVATE, via fuse-abi-objects, for YAML load/save)
+  # dynamically depends on libyaml-cpp at RUNTIME whenever the yaml-cpp this
+  # build resolved is itself a shared library -- true of a found system
+  # package, never true of r3d (always built from source as a static
+  # archive, the other PRIVATE $<BUILD_LOCAL_INTERFACE:...> dependency this
+  # library pulls in the same way). Every OTHER target in this tree is
+  # static, so this is the first one a dynamic loader ever has to resolve at
+  # all; an installed consumer has no other way to find it, since yaml-cpp
+  # is deliberately not part of the fuse-coupler install package (this
+  # file's own comment on fuse-coupler-model's identical link line explains
+  # why). Pointing INSTALL_RPATH at wherever THIS configure resolved it is
+  # the same answer a consumer's own CMAKE_PREFIX_PATH would need to give
+  # find_package(fuse-coupler) in the first place.
+  INSTALL_RPATH "$<TARGET_FILE_DIR:yaml-cpp::yaml-cpp>"
+)
+# -fvisibility=hidden alone governs only the object files THIS library
+# compiles; every statically-linked fuse:: layer below it carries its own
+# dependencies' default-visibility symbols (Kokkos, fmt, yaml-cpp, ...),
+# which ld would otherwise re-export wholesale. An explicit allowlist at the
+# link step is what makes the one-symbol claim actually true of the built
+# .so/.dylib (see src/abi/exported_symbols.{map,sym}'s own header comments;
+# ported from upstream/karma/src/CMakeLists.txt's identical two-line branch
+# for libkarma_abi).
+if(APPLE)
+  target_link_options(fuse-abi-shared PRIVATE
+    "-Wl,-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/abi/exported_symbols.sym")
+  set_property(TARGET fuse-abi-shared APPEND PROPERTY LINK_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/abi/exported_symbols.sym")
+else()
+  target_link_options(fuse-abi-shared PRIVATE
+    "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/abi/exported_symbols.map")
+  set_property(TARGET fuse-abi-shared APPEND PROPERTY LINK_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/abi/exported_symbols.map")
+endif()
+
+add_library(fuse-abi-static STATIC)
+target_link_libraries(fuse-abi-static
+  PRIVATE $<BUILD_LOCAL_INTERFACE:fuse-abi-objects>
+  PUBLIC  fuse::runtime
+)
+add_library(fuse::abi-static ALIAS fuse-abi-static)
+set_target_properties(fuse-abi-static PROPERTIES
+  EXPORT_NAME abi-static
+  OUTPUT_NAME fuse-abi
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN ON
+)
+
 # ---------------------------------------------------------------- install
 # find_package()-able install of the CMake package docs/dev/conventions.md
 # already names in prose ("CMake package `fuse-coupler`"): every target above
@@ -381,6 +482,21 @@ set(FUSE_INSTALL_TARGETS
 )
 
 install(TARGETS ${FUSE_INSTALL_TARGETS}
+  EXPORT fuse-coupler-targets
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+  INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+# fuse-abi-shared/fuse-abi-static (this file's own "---- abi" section,
+# above): a SEPARATE install(TARGETS) call into the SAME export set, which
+# CMake allows as long as every contributing call runs before the single
+# install(EXPORT fuse-coupler-targets ...) below -- so ABI-C-CONSUMER's
+# find_package(fuse-coupler) + `target_link_libraries(... fuse::abi)`
+# (test/abi/install_consumer/CMakeLists.txt) resolves the same way every
+# other fuse:: alias here does.
+install(TARGETS fuse-abi-shared fuse-abi-static
   EXPORT fuse-coupler-targets
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}

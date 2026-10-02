@@ -1,0 +1,18 @@
+/* ELF/GNU-ld version script for libfuse-abi.so (docs/dev/abi-design.md,
+ * point 1). -fvisibility=hidden (src/CMakeLists.txt's fuse-abi-objects
+ * target) only governs the visibility THIS library's own translation unit
+ * assigns its symbols; every statically-linked dependency below it in the
+ * fuse:: layer stack (Kokkos, fmt, yaml-cpp, ...) was compiled with ITS OWN
+ * default visibility and would otherwise re-export its entire symbol table
+ * through this one once linked in. This explicit allowlist is what actually
+ * makes `nm -g --defined-only` on the built .so show exactly one line
+ * (test/abi/exported_symbols.golden, ctest `abi.exported_symbols`) --
+ * ported from upstream/karma/src/abi/karma_exports.map, which solves the
+ * identical problem for libkarma_abi.
+ */
+FUSE_ABI_1 {
+  global:
+    fuse_coupler_abi;
+  local:
+    *;
+};
