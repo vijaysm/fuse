@@ -12,6 +12,17 @@
 namespace fuse {
 
 inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
+/// 10: the provider direction (S6 phase 4, "Adapter host" track). Each
+///     component record's launch record (v9) gains a FOURTH `LaunchMode`
+///     value, `Plugin`, and one more length-prefixed string after
+///     `service_name`: `plugin_path`, the shared object
+///     `fuse::abi_detail::Registry` dlopen()s for this component
+///     (include/fuse/abi/provider.h). A v9 reader handed a v10 buffer would
+///     read the FIRST component's `plugin_path` length as the start of the
+///     next component's field count, and everything after it would decode
+///     as plausible garbage from there on -- the same class of silent
+///     misread every prior bump was made to prevent, so v9 is refused.
+///
 /// Bumped to 2 by Phase 7 Task 7.5, which added an iteration region's
 /// `convergence` criterion and `acceleration` config to the record. A v1
 /// buffer read as v2 would take the next region's name length out of the
@@ -72,7 +83,7 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 /// the iteration regions and never see the merge rules, so it would read a
 /// graph that says "one writer per field" from bytes that say otherwise -- and
 /// it would read it successfully. The version check turns that into a refusal.
-inline constexpr std::uint32_t kGraphVersion = 9u;
+inline constexpr std::uint32_t kGraphVersion = 10u;
 
 namespace detail {
 
@@ -204,6 +215,8 @@ class Reader {
     w.pod(static_cast<std::uint8_t>(c.launch.is_acceptor ? 1 : 0));
     w.str(c.launch.port_file);
     w.str(c.launch.service_name);
+    // v10: the provider direction (descriptor.hpp's kGraphVersion history).
+    w.str(c.launch.plugin_path);
   }
   for (std::uint32_t i = 0; i < g.field_count(); ++i) {
     const auto& f = g.field(FieldId{i});
@@ -380,7 +393,7 @@ class Reader {
     // mode must be refused here, not admitted and later indexed unchecked
     // by to_cstring()'s switch.
     const auto launch_mode_byte = r.pod<std::uint8_t>();
-    if (launch_mode_byte > static_cast<std::uint8_t>(LaunchMode::Connect)) {
+    if (launch_mode_byte > static_cast<std::uint8_t>(LaunchMode::Plugin)) {
       return Failure{"E-DESC-ENUM",
                      "unknown launch mode " + std::to_string(launch_mode_byte)};
     }
@@ -389,6 +402,8 @@ class Reader {
     c.launch.is_acceptor = r.pod<std::uint8_t>() != 0;
     c.launch.port_file = r.str();
     c.launch.service_name = r.str();
+    // v10: the provider direction (descriptor.hpp's kGraphVersion history).
+    c.launch.plugin_path = r.str();
     if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated component launch record"};
     g.add_component(std::move(c));
   }

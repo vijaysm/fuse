@@ -115,7 +115,10 @@ struct ConnectedWorld {
   bool any = false;
   for (std::uint32_t i = 0; i < g.component_count(); ++i) {
     const auto& c = g.component(ComponentId{i});
-    if (c.launch.mode == LaunchMode::InProcess) continue;
+    // Plugin, like InProcess, shares the host process's own communicator
+    // (launch.hpp's own doc on LaunchMode::Plugin): neither needs a rank
+    // block in the mpmd/connect layout this function checks.
+    if (c.launch.mode == LaunchMode::InProcess || c.launch.mode == LaunchMode::Plugin) continue;
     any = true;
     if (c.ranks.empty() || !c.ranks.is_contiguous()) {
       return Failure{

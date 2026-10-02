@@ -224,6 +224,17 @@ Result<ConnectedWorld> connect(const CouplingGraph& g, int my_world_comm_f,
       return connect_mpmd(g, world);
     case LaunchMode::Connect:
       return connect_pairwise(g, opts.my_component, world, opts);
+    case LaunchMode::Plugin:
+      // A plugin is mounted (fuse::abi_detail::Registry), never launched: it
+      // shares the host process and its communicator exactly like an
+      // InProcess component, so connect() has nothing to do here either
+      // (launch.hpp's own doc on why Plugin is not merely InProcess with a
+      // path attached does not change this call's answer).
+      return Failure{"E-CONNECT-SPEC",
+                     "connect() called for component '" + mine.name +
+                         "', which is declared plugin; there is nothing to "
+                         "connect, and my_world_comm_f already is the base "
+                         "communicator"};
   }
   return Failure{"E-CONNECT-SPEC", "unreachable launch mode"};
 }

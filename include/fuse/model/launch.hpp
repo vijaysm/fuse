@@ -28,13 +28,27 @@ namespace fuse {
 /// side) or `MPI_Comm_connect` (the other side), the port name exchanged
 /// through `port_file` or `service_name`, then merges that intercommunicator
 /// into a base communicator with `MPI_Intercomm_merge`.
-enum class LaunchMode { InProcess, Mpmd, Connect };
+///
+/// `Plugin` (S6 phase 4, "Adapter host" track): this component is not
+/// launched at all -- it is MOUNTED, by `fuse::abi_detail::Registry`, from a
+/// shared object named by `plugin_path` that exports exactly one symbol,
+/// `fuse_provider_abi` (include/fuse/abi/provider.h). A plugin-launched
+/// component shares the host process and its communicator exactly the way
+/// an `InProcess` one does -- `fuse::transport::connect()` is never called
+/// for it either, for the identical reason -- so it is a FOURTH value of
+/// this enum, not a flag combined with one of the other three: "where do my
+/// ranks come from" (the three above) and "where does my code come from"
+/// (in-process native vs. a dlopen()'d plugin) are different questions for
+/// every OTHER mode, but collapse to one for Plugin, which is always
+/// in-process by construction.
+enum class LaunchMode { InProcess, Mpmd, Connect, Plugin };
 
 [[nodiscard]] constexpr const char* to_cstring(LaunchMode m) noexcept {
   switch (m) {
     case LaunchMode::InProcess: return "InProcess";
     case LaunchMode::Mpmd:      return "Mpmd";
     case LaunchMode::Connect:   return "Connect";
+    case LaunchMode::Plugin:    return "Plugin";
   }
   return "Unknown";
 }
@@ -89,6 +103,14 @@ struct LaunchSpec {
   /// model is the ABI's narrow waist (docs/dev/abi-design.md) and a
   /// consumer that does have one should not need a second way to say so.
   std::string service_name;
+
+  /// `Plugin` only: the path to a shared object exporting `fuse_provider_abi`
+  /// (include/fuse/abi/provider.h). Required and non-empty for `Plugin`
+  /// (`E-LAUNCH-PLUGIN-PATH` otherwise, `fuse/model/validate.hpp`); resolved
+  /// however the running process resolves a dlopen() path (absolute, or
+  /// relative to the process's own working directory -- this model carries
+  /// the string verbatim and states no policy of its own).
+  std::string plugin_path;
 };
 
 }  // namespace fuse

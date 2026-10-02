@@ -348,9 +348,11 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
     // case (today's only case, before this track) is InProcess, and a file
     // written before S6 phase 3 round-trips with no "launch:" key at all.
     if (c.launch.mode != LaunchMode::InProcess) {
+      const char* mode_name = "connect";
+      if (c.launch.mode == LaunchMode::Mpmd) mode_name = "mpmd";
+      else if (c.launch.mode == LaunchMode::Plugin) mode_name = "plugin";
       e << YAML::Key << "launch" << YAML::Value << YAML::BeginMap
-        << YAML::Key << "mode" << YAML::Value
-        << (c.launch.mode == LaunchMode::Mpmd ? "mpmd" : "connect");
+        << YAML::Key << "mode" << YAML::Value << mode_name;
       if (c.launch.mode == LaunchMode::Mpmd) {
         e << YAML::Key << "appnum" << YAML::Value << c.launch.appnum;
       }
@@ -362,6 +364,10 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
         if (!c.launch.service_name.empty()) {
           e << YAML::Key << "service_name" << YAML::Value << c.launch.service_name;
         }
+      }
+      // S6 phase 4, "Adapter host" track.
+      if (c.launch.mode == LaunchMode::Plugin) {
+        e << YAML::Key << "plugin_path" << YAML::Value << c.launch.plugin_path;
       }
       e << YAML::EndMap;
     }
@@ -692,7 +698,7 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
     if (n["launch"]) {
       const auto& ln = n["launch"];
       if (auto e = check_unknown_keys(
-              ln, {"mode", "appnum", "is_acceptor", "port_file", "service_name"},
+              ln, {"mode", "appnum", "is_acceptor", "port_file", "service_name", "plugin_path"},
               "component '" + c.name + "' launch")) {
         return *e;
       }
@@ -709,6 +715,10 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
         c.launch.is_acceptor = ln["is_acceptor"] && ln["is_acceptor"].as<bool>();
         if (ln["port_file"])    c.launch.port_file = ln["port_file"].as<std::string>();
         if (ln["service_name"]) c.launch.service_name = ln["service_name"].as<std::string>();
+      } else if (mode == "plugin") {
+        // S6 phase 4, "Adapter host" track.
+        c.launch.mode = LaunchMode::Plugin;
+        if (ln["plugin_path"]) c.launch.plugin_path = ln["plugin_path"].as<std::string>();
       } else {
         return Failure{"E-YAML-PARSE",
                      "component '" + c.name + "' has unknown launch mode '" + mode + "'"};

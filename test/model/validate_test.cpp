@@ -116,6 +116,26 @@ TEST(Validate, AcceptsAConnectComponentWithAPortFile) {
   EXPECT_FALSE(has_code(d, "E-LAUNCH-CONNECT-TARGET")) << d.to_string();
 }
 
+// S6 phase 4, "Adapter host" track.
+TEST(Validate, RejectsAPluginComponentWithNoPluginPath) {
+  Fixture f;
+  f.g.add_component(ComponentDecl{
+      .name = "plugin-c",
+      .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::Plugin}});  // plugin_path defaults empty
+  const Diagnostics d = validate(f.g);
+  EXPECT_TRUE(has_code(d, "E-LAUNCH-PLUGIN-PATH")) << d.to_string();
+}
+
+TEST(Validate, AcceptsAPluginComponentWithAPluginPath) {
+  Fixture f;
+  f.g.add_component(ComponentDecl{
+      .name = "plugin-c",
+      .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::Plugin,
+                                 .plugin_path = "/opt/fuse-plugins/ideal-gas.so"}});
+  const Diagnostics d = validate(f.g);
+  EXPECT_FALSE(has_code(d, "E-LAUNCH-PLUGIN-PATH")) << d.to_string();
+}
+
 TEST(Validate, RejectsUnitMismatch) {
   Fixture f;
   const auto r = f.g.field(f.dst).region;
@@ -347,6 +367,7 @@ TEST(Validate, DeserializedGraphWithBadWindowComponentDoesNotThrowAndReportsBadR
   w.pod(std::uint8_t{0});  // launch.is_acceptor
   w.str(std::string{});    // launch.port_file
   w.str(std::string{});    // launch.service_name
+  w.str(std::string{});    // launch.plugin_path (v10)
   // component 1 = "B", on rank 1
   w.str(std::string{"B"});
   w.pod(std::uint32_t{1});
@@ -358,6 +379,7 @@ TEST(Validate, DeserializedGraphWithBadWindowComponentDoesNotThrowAndReportsBadR
   w.pod(std::uint8_t{0});  // launch.is_acceptor
   w.str(std::string{});    // launch.port_file
   w.str(std::string{});    // launch.service_name
+  w.str(std::string{});    // launch.plugin_path (v10)
   // field 0: owner=A, region=0, Provides
   w.str(std::string{"s"});
   w.pod(std::uint32_t{0});

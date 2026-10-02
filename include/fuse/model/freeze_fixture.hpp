@@ -41,11 +41,27 @@ inline CouplingGraph freeze_fixture() {
                             .is_acceptor = true,
                             .port_file = "/tmp/fuse-connect.port",
                             .service_name = "fuse-solid-fluid"}});
+  // A plugin-launched component: `LaunchMode::Plugin` is the one non-default
+  // enumerator neither `fluid` nor `solid` could reach (descriptor v10's
+  // reason for the bump, S6 phase 4 "Adapter host" track). Fieldless --
+  // `plugin_path` is the one member this component exists to pin at a
+  // non-default value. Added via `add_component()`, and BEFORE the coupler
+  // below: `to_yaml()`/`from_yaml()` round-trip every physics component
+  // (`add_component()`) before every coupler (`add_coupler()`), in two
+  // separate YAML sections, so a physics component authored AFTER a coupler
+  // in C++ comes back BEFORE it once parsed back -- a real reordering this
+  // fixture must not itself trigger, or `YamlIo.ThreeLegRoundTripIsStructurally
+  // Identical` (test/model/yaml_io_test.cpp) fails on an ordering difference
+  // that has nothing to do with the member this fixture exists to pin.
+  (void)g.add_component(
+      {.name = "gas", .ranks = {3, 5}, .interval = Rational{1, 2},
+       .launch = LaunchSpec{.mode = LaunchMode::Plugin,
+                            .plugin_path = "/opt/fuse-plugins/ideal-gas.so"}});
   // A coupler: `ComponentKind::Coupler` is the one non-default enumerator a
   // freeze fixture built only from `add_component()` calls could never
   // reach, and `add_coupler()` is the API that reaches it. Placed disjoint
-  // from both `fluid` and `solid` so the frozen bytes also exercise a real
-  // third placement, not a same_as-elided one.
+  // from `fluid`, `solid` and `gas` so the frozen bytes also exercise a real
+  // fourth placement, not a same_as-elided one.
   const auto coupler = g.add_coupler({.name = "midpoint", .ranks = {9, 1}});
 
   Units kilopascal{.length = -1, .mass = 1, .time = -2};

@@ -125,6 +125,23 @@ TEST(ValidateLaunchLayout, InProcessComponentsAreIgnored) {
   EXPECT_TRUE(r.ok()) << (r.ok() ? "" : r.error().message);
 }
 
+// S6 phase 4, "Adapter host" track: a Plugin component shares the host
+// process exactly like an InProcess one (launch.hpp's own doc on
+// LaunchMode::Plugin), so it imposes no requirement on the launched
+// components' numbering either.
+TEST(ValidateLaunchLayout, PluginComponentsAreIgnored) {
+  CouplingGraph g;
+  g.add_component({.name = "mpmd-a",
+                   .ranks = {0, 2},
+                   .launch = LaunchSpec{.mode = LaunchMode::Mpmd, .appnum = 0}});
+  g.add_component({.name = "ideal-gas",
+                   .ranks = {0, 1},
+                   .launch = LaunchSpec{.mode = LaunchMode::Plugin,
+                                        .plugin_path = "/opt/fuse-plugins/ideal-gas.so"}});
+  const auto r = validate_launch_layout(g);
+  EXPECT_TRUE(r.ok()) << (r.ok() ? "" : r.error().message);
+}
+
 // ---- check_mpmd_layout ------------------------------------------------
 
 TEST(CheckMpmdLayout, AcceptsAMatchingLayout) {
