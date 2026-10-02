@@ -868,7 +868,56 @@ its `FUSE_REQUIRE_AT_LEAST_RANKS` guard — will only show up on a host run.
 
 ---
 
-### D3. ~~Four behaviours no test detects~~ — three KILLED on the host 2026-09-28; one survivor left
+### D3. ~~Four behaviours no test detects~~ — two runtime mutations survive on the host; DEFERRED 2026-10-02 in favour of the core implementation
+
+**State on 2026-10-02 (host runs on `ba0892e`/`64346e1`).** The hang the first host run of
+`StillRunsASecondChannelAfterARegionFailsUnderMpi` hit was a real runtime defect, fixed in
+`bb6f57f`: `reconcile_epoch()` returned `E-RT-EPOCH-PEER` on a healthy process while the failing
+one walked on through the remaining collectives, so the failing one waited forever in the next
+data redistribution. Since `3aae2ed` steps a component only on its own processes, a step failure
+is process-local, which is what exposed it. A healthy process now records the partner's failure
+and runs only the collective operations, as the implicit coupling group's residual agreement
+already did; mutation row `healthy-rank-leaves-at-the-epoch` pins it (**KILLED** on the host).
+
+With that fix, `-L mpi` on the host is green except for the items below, and the runtime
+mutation run is **29 of 31 killed**. The two survivors are gaps in the *tests*, understood but
+not yet closed:
+
+1. **`region-failure-abandons-the-rest-of-the-period`.** The fixture's fluid fails on its very
+   first call, at t=0. `linkB`'s t=1/2 synchronisation point then tells every process about it
+   before the implicit coupling group begins, so under correct code and under the mutant alike all
+   processes leave the period together; `cons_b->calls()` is the same either way. A kill needs
+   the failure to arise *inside* the group, after the outside process's last agreement point.
+2. **`coupler-region-participants-missing-its-ranks`.** `IterationRegionParticipantsIncludeADisjointCoupler`
+   relies on `resolve_regions()`'s "would report convergence after one sweep" refusal, which only
+   fires when the physics components alone sit on one process (2 processes). At 4 processes they
+   span three and the refusal cannot fire. A kill needs an execution-level assertion: every
+   process of the group, the coupler's included, takes the same number of sweeps (and more than
+   one).
+
+`ca7f7a5` attempted exactly those two changes (fluid failing on its second call; a period run with
+an `MPI_Allreduce` of per-process sweep counts) and made `parallel.runner_transport` **fail at 2
+processes and time out at 3, 4 and 5** on the host. It is reverted in `64346e1`; the cause was not
+found before the decision to defer. The likely explanations, to check first when this is picked
+up: (a) a step failure raised *inside* the group's sweep on only some processes reaches the
+group's residual agreement on those processes while the others are already past it, or inside a
+Transport that the failed processes now skip as non-collective — the same class of asymmetry
+`bb6f57f` fixed at the Epoch, one level down; (b) the disjoint-coupler fixture's group may
+converge in one sweep, so the `EXPECT_GT(hi, 1)` guard fails on every process rather than
+exposing anything. Either way these are test-design questions on a fixture that has already
+found four runtime defects; the runtime behaviours the two rows describe are not known to be
+wrong.
+
+Also still **NO-BASELINE** on the host while `runner_transport` was red: `both-commgraph-sides-share-one-view`,
+`peer-plan-staged-through-the-matched-path`, `peer-extent-is-only-the-source-block`,
+`transport-held-to-equal-extents`, `region-residual-skips-the-cross-rank-reduction` — all of
+which were **KILLED** on the previous (green) host run of 2026-10-02 and need only a re-run on
+the reverted tree to be confirmed again.
+
+**Deferred** by the user's decision of 2026-10-02: the core implementation plan comes first;
+example and runner-test hardening resumes after it.
+
+The text below is the entry as it stood after the 2026-09-28 host run.
 
 **Host mutation runs 2026-09-28 (`FUSE_MUTATE_MPI=1`, `build-all`):** `one-transport-shared-across-every-plan`
 (transport area), `region-residual-skips-the-cross-rank-reduction` (runtime) and
