@@ -1,21 +1,19 @@
 # Coupling an existing code (C and Fortran)
 
 :::{note}
-The participant ABI below (`libfuse-abi`, `include/fuse/abi/{types.h,participant.h}`) is
-implemented and tested (`build-evidence/abi-matrix.toml`'s "C ABI" track). The provider ABI (FUSE
-owning the loop and driving your component as a plugin) is still planned; see the
-[roadmap](../dev/roadmap.md). The design rationale for both is in [](../dev/abi-design.md).
+Both ABIs below are implemented and tested (`build-evidence/abi-matrix.toml`'s "C ABI" and
+"S6 phase 4" tracks). The design rationale for both is in [](../dev/abi-design.md).
 :::
 
-FUSE exposes (or will expose) two C ABIs for two opposite situations:
+FUSE exposes two C ABIs for two opposite situations:
 
 **Participant ABI**
 : Your code owns its time loop and drives FUSE. Use this to couple an existing simulation with
   minimal intrusion. This is the one described below.
 
 **Provider ABI**
-: FUSE owns the loop and drives your component as a plugin, possibly loaded at runtime. Not yet
-  implemented.
+: FUSE owns the loop and drives your component as a plugin, loaded at runtime by path named in
+  the graph. See [](providers.md).
 
 Both work the same way: **one exported symbol returns a versioned table of function pointers.** There
 is no prefixed family of symbols to collide with anything else on your system, and the entry points

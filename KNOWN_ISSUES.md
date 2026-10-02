@@ -2412,6 +2412,52 @@ Compiles cleanly under `-DFUSE_ENABLE_LOWFIVE=ON -DFUSE_ENABLE_MPI=ON
 2026-10-02); the host run that would turn "compiles" into "works" is recorded as an
 open item in this track's report, not claimed here.
 
+### D15. The provider direction (S6 phase 4, "Adapter host" track) is implemented and conformance-tested on one process; device fields, mixed checkpoint/restore, and a plugin on a rank subset are not
+
+**What is done, measured 2026-10-02.** `include/fuse/abi/provider.h` (generated from a second
+`entries.def` entry list, `FUSE_ABI_PROVIDER_ENTRY`, sharing the participant direction's own
+struct catalogue); `src/abi/provider_adapter.cpp` (wraps a `fuse_provider_abi_v1*` as a
+`fuse::Component`); `src/abi/registry.cpp` (mounts a native component, an in-memory table, or a
+`dlopen()`'d shared object); `fortran/ffuse_provider.f90` (the Fortran mirror, a plugin author
+assembles the table itself rather than dereferencing one). `test/abi/conformance_test.cpp` runs
+ONE graph (the two-component lag-1 fixture and the subcycled-mean fixture,
+`test/abi/graph_fixture.hpp`) four ways — native C++, a dlopen()'d C plugin
+(`test/abi/plugins/linear_provider.c`), a dlopen()'d Fortran plugin
+(`test/abi/plugins/linear_provider.f90`), and the participant direction — with `EXPECT_EQ` on
+every exchanged value against the native run; plus version/struct_size negotiation,
+describe-mismatch, and advance-error refusal rows, each with a confirmed mutation
+(`build-evidence/mutations/abi-provider.toml`). A `LaunchMode::Plugin` component named in the
+graph (descriptor v10, `plugin_path`) is mounted automatically at `fuse_initialize()` — no
+test-only injection needed — and driven in-process through `fuse_run()` exactly like a native
+component; `ConformanceTest.GraphDeclaredPluginIsAutoMountedAndRun` is the end-to-end proof. A real
+destruction-order bug was caught this way and fixed: `fuse_ctx::plugin_registry` (which
+`dlclose()`s every mounted plugin's shared object) must be declared BEFORE `fuse_ctx::components`
+(the `ComponentSet` holding the `ProviderAdapter`s that call through those same shared objects at
+their own destruction) — C++ destroys members in reverse declaration order, and the wrong order
+reproduced a SIGSEGV inside `ComponentSet`'s own destructor on every run, caught only because this
+track's own conformance test exercises the graph-declared path end to end rather than only through
+test-only injection (which bypasses `fuse_ctx::plugin_registry` entirely and therefore never hit
+this ordering at all).
+
+**What is not covered, named rather than silently absent:**
+- **Device fields.** `register_field`'s own `FUSE_MEMSPACE_DEVICE` refusal
+  (`E-ABI-REGISTER-MEMSPACE`) has a provider-direction counterpart nowhere in this track:
+  `ProviderAdapter` only ever allocates host storage, and a plugin that wanted a device pointer
+  would have no way to ask for one.
+- **Checkpoint/restore through an iteration region mixing native and plugin components.**
+  `ProviderAdapter::save_state()`/`restore_state()` forward to the plugin's own entries when
+  present, but no test puts a plugin-backed component inside an `IterationRegionDecl` alongside a
+  native one and checks the sweep converges identically to an all-native run — the conformance
+  harness's two fixtures are both non-iterated.
+- **A plugin launched on a subset of a component's ranks**, or the interaction between
+  `LaunchMode::Plugin` and `LaunchMode::Mpmd`/`Connect` on different components of the same
+  multi-rank graph, is untested: every fixture here runs single-process, and
+  `fuse::transport::validate_launch_layout()` treats `Plugin` as needing no rank block at all
+  (same as `InProcess`), which is correct for the single-process case this track verified but not
+  separately confirmed for a `Plugin` component that itself spans more than one rank.
+- **MPI.** Every row above is single-process; `ABI-COLLECTIVE-AGREEMENT`'s own host-run caveat
+  applies identically to the provider direction and is not re-stated per row.
+
 ## C. Not defects — do not fix these
 
 - **Five mutations report `NOT-ASSESSED` locally.** They need MPI, and a test

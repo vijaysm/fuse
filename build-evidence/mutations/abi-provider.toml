@@ -1,0 +1,71 @@
+# Mutations for the provider ABI and its adapter/registry (S6 phase 4
+# "Adapter host" track). Own file per the review-fix protocol: do not edit
+# build-evidence/mutations.toml directly while other fixers hold it dirty.
+#
+# Every row below was applied by hand against src/abi/registry.cpp or
+# src/abi/provider_adapter.cpp, rebuilt, run, and confirmed to fail EXACTLY
+# the named test before being restored byte-for-byte (`cmp` against the
+# pre-mutation file showed no difference). The result is recorded in each
+# row's own `result` key.
+
+[[mutation]]
+id = "provider-table-version-check-removed"
+area = "abi-provider"
+describes = "Registry::mount_table's check keeps the struct_size floor but drops the abi_version comparison, so a plugin whose table claims a DIFFERENT abi_version (e.g. 2, against this v1 host) is mounted instead of refused with E-ABI-VERSION"
+file = "src/abi/registry.cpp"
+old = """  if (table->struct_size < sizeof(fuse_provider_abi_v1) || table->abi_version != FUSE_ABI_VERSION) {"""
+new = """  if (table->struct_size < sizeof(fuse_provider_abi_v1)) {"""
+target = "fuse_abi_conformance_test"
+test = "abi.conformance"
+result = "CONFIRMED 2026-10-02: ConformanceTest.ProviderTableVersionMismatchIsRefused failed on ASSERT_FALSE(mounted.ok()) -- mount_table(\"upstream\", &wrong_version) (abi_version = FUSE_ABI_VERSION + 1, struct_size correct) returned success instead of E-ABI-VERSION. The other 11 ConformanceTest cases, none of which mounts a table with a wrong abi_version but a correct struct_size, still passed -- including ProviderTableStructSizeShortIsRefused, which exercises the struct_size half of the SAME conditional and was therefore unaffected by this half being removed. Restored; cmp against the pre-mutation file reported no difference."
+
+[[mutation]]
+id = "provider-table-struct-size-check-removed"
+area = "abi-provider"
+describes = "Registry::mount_table's check keeps the abi_version comparison but drops the struct_size floor, so a table whose struct_size is smaller than sizeof(fuse_provider_abi_v1) -- a truncated-header plugin, or struct_size == 0 -- is mounted instead of refused with E-ABI-VERSION (abi-design.md rule 2, applied to the provider table itself rather than one of its argument structs)"
+file = "src/abi/registry.cpp"
+old = """  if (table->struct_size < sizeof(fuse_provider_abi_v1) || table->abi_version != FUSE_ABI_VERSION) {"""
+new = """  if (table->abi_version != FUSE_ABI_VERSION) {"""
+target = "fuse_abi_conformance_test"
+test = "abi.conformance"
+result = "CONFIRMED 2026-10-02: ConformanceTest.ProviderTableStructSizeShortIsRefused failed on ASSERT_FALSE(mounted.ok()) -- mount_table(\"upstream\", &bad) (struct_size = sizeof(fuse_provider_abi_v1) - 1, abi_version correct) returned success instead of E-ABI-VERSION. The other 11 ConformanceTest cases, including ProviderTableVersionMismatchIsRefused (the abi_version half of the same conditional) and ProviderTableStructSizeLongFromANewerCallerIsAccepted (which the struct_size floor was never meant to refuse), still passed. Restored; cmp against the pre-mutation file reported no difference."
+
+[[mutation]]
+id = "provider-describe-mismatch-check-removed"
+area = "abi-provider"
+describes = "ProviderAdapter::register_fields()'s cross-check between the graph's own field declaration and the plugin's describe() response (components count and intent) is removed, so a plugin whose describe() disagrees with the graph -- here, reporting 2 components for a field the graph declares as 1 -- is accepted instead of refused with E-ABI-DESCRIBE naming the field"
+file = "src/abi/provider_adapter.cpp"
+old = """      const std::int32_t expected_intent = static_cast<std::int32_t>(spec.intent);
+      if (row.components != spec.components ||
+          (row.intent != expected_intent && row.intent != 2 && expected_intent != 2)) {
+        return fuse::Failure{
+            \"E-ABI-DESCRIBE\",
+            \"provider '\" + name_ + \"': describe() disagrees with the graph on field '\" +
+                spec.name + \"' (graph: components=\" + std::to_string(spec.components) +
+                \" intent=\" + std::to_string(expected_intent) +
+                \"; describe(): components=\" + std::to_string(row.components) +
+                \" intent=\" + std::to_string(row.intent) + \")\"};
+      }"""
+new = """      const std::int32_t expected_intent = static_cast<std::int32_t>(spec.intent);
+      (void)expected_intent;"""
+target = "fuse_abi_conformance_test"
+test = "abi.conformance"
+result = "CONFIRMED 2026-10-02: ConformanceTest.PluginDescribeDisagreeingWithTheGraphIsRefused failed twice over -- EXPECT_EQ(t->initialize(...), FUSE_ERR_RUNTIME) got FUSE_OK (0) instead of -4, and the follow-on EXPECT_STREQ(err.code, \"E-ABI-DESCRIBE\") got a NULL err.code (no error was ever recorded) -- the bad-describe plugin's claimed 2 components for a 1-component field was silently accepted and bound with a mismatched layout. The other 11 ConformanceTest cases, none of which mounts a plugin whose describe() disagrees with the graph, still passed. Restored; cmp against the pre-mutation file reported no difference."
+
+[[mutation]]
+id = "provider-adapter-advance-ignores-error"
+area = "abi-provider"
+describes = "ProviderAdapter::advance()'s check of the plugin's own fuse_status return is removed, so a provider whose advance() reports FUSE_ERR_RUNTIME (test/abi/plugins/linear_provider.c, FUSE_TEST_BAD_ADVANCE) is treated as having succeeded instead of surfacing E-ABI-PROVIDER-ADVANCE through the component's own Result<void>, which is the Runner's normal failure path (component.hpp's advance() contract)"
+file = "src/abi/provider_adapter.cpp"
+old = """    const fuse_status rc = table_->advance(self_, &req, &rep);
+    if (rc != FUSE_OK) {
+      return fuse::Failure{\"E-ABI-PROVIDER-ADVANCE\",
+                           \"provider '\" + name_ + \"': advance() returned \" + std::to_string(rc)};
+    }
+    if (!struct_size_ok(&rep)) {"""
+new = """    const fuse_status rc = table_->advance(self_, &req, &rep);
+    (void)rc;
+    if (!struct_size_ok(&rep)) {"""
+target = "fuse_abi_conformance_test"
+test = "abi.conformance"
+result = "CONFIRMED 2026-10-02: ConformanceTest.PluginAdvanceErrorSurfacesAsComponentFailure failed on EXPECT_STREQ(err.code, \"E-ABI-PROVIDER-ADVANCE\") -- the bad-advance plugin's FUSE_ERR_RUNTIME return was no longer read, so run() did not fail on the dropped status code itself. The failure still surfaced (run() still returned FUSE_ERR_RUNTIME, just with err.code == \"E-ABI-PROVIDER-WINDOW\" instead): with the error check gone, the adapter fell through to the window-equality check (rule 6) against `rep`, which the bad-advance plugin never touches (it returns immediately), so rep's zero-initialized t_begin/t_end disagreed with the request's and were caught there instead -- a DIFFERENT refusal than the one this row names, which is itself the finding: removing the error check does not make a misbehaving provider's failure invisible, it only changes which of the adapter's own checks catches it, and this mutation would go undetected only if BOTH checks were removed together. The other 11 ConformanceTest cases, none of which mounts a provider whose advance() fails, still passed. Restored; cmp against the pre-mutation file reported no difference."

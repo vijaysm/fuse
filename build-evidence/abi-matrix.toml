@@ -144,3 +144,89 @@ requires = "mpi"
 #    abi-time-rounded-to-double            t_begin built from a double -> ABI-EXACT-TIME
 #    abi-exception-escapes                 try/catch removed from one entry -> ABI-EXCEPTION-CONTAINMENT
 #    abi-second-symbol-exported            an extra extern "C" function -> ABI-GOLDEN-SYMBOLS
+
+#  ---- the provider direction (S6 phase 4, "Adapter host" track) ----------
+#  The coupler calls a plugin (include/fuse/abi/provider.h); one conformance
+#  harness, test/abi/conformance_test.cpp, drives ONE graph four ways
+#  (native, a C plugin, a Fortran plugin, the participant direction) with
+#  EXPECT_EQ against the native run, plus the negative rows below. Mutation
+#  rows: build-evidence/mutations/abi-provider.toml.
+
+[[row]]
+id = "ABI-PROVIDER-CONFORMANCE"
+rule = 1
+claim = "a provider, mounted as a native component, a dlopen'd C plugin, a dlopen'd Fortran plugin, or driven through the participant direction, produces the IDENTICAL exchanged value every time, for the lag-1 fixture and the subcycled-mean fixture"
+file = "test/abi/conformance_test.cpp"
+test = "abi.conformance (ConformanceTest.LagOneGraphAllFourKindsMatchNative, ConformanceTest.SubcycledMeanGraphAllFourKindsMatchNative)"
+fails_when = "any of the three non-native kinds disagrees with the native run's recorded history for any period, or fails to run at all"
+status = "present"
+
+[[row]]
+id = "ABI-PROVIDER-TABLE-VERSION"
+rule = 2
+claim = "a provider table whose abi_version does not equal FUSE_ABI_VERSION is refused with E-ABI-VERSION, never mounted"
+file = "test/abi/conformance_test.cpp"
+test = "abi.conformance (ConformanceTest.PluginTableVersionMismatchIsRefused, ConformanceTest.ProviderTableVersionMismatchIsRefused)"
+fails_when = "Registry::mount_table/mount_dynamic accepts a table claiming a different abi_version"
+status = "present"
+
+[[row]]
+id = "ABI-PROVIDER-TABLE-STRUCT-SIZE"
+rule = 2
+claim = "a provider table struct_size shorter than sizeof(fuse_provider_abi_v1) is refused with E-ABI-VERSION; one longer (a newer plugin) is accepted"
+file = "test/abi/conformance_test.cpp"
+test = "abi.conformance (ConformanceTest.ProviderTableStructSizeShortIsRefused, ConformanceTest.ProviderTableStructSizeLongFromANewerCallerIsAccepted)"
+fails_when = "Registry::mount_table accepts a short table, or refuses a longer one"
+status = "present"
+
+[[row]]
+id = "ABI-PROVIDER-DESCRIBE"
+rule = 1
+claim = "a provider whose describe() disagrees with the graph's own field declaration (components or intent) is refused with E-ABI-DESCRIBE naming the field, at register_fields() time"
+file = "test/abi/conformance_test.cpp"
+test = "abi.conformance (ConformanceTest.PluginDescribeDisagreeingWithTheGraphIsRefused)"
+fails_when = "ProviderAdapter::register_fields() binds a field whose describe() entry disagrees with the graph instead of refusing"
+status = "present"
+
+[[row]]
+id = "ABI-PROVIDER-ADVANCE-FAILURE"
+rule = 5
+claim = "a provider whose advance() returns a non-FUSE_OK status surfaces as the component's own Result<void> failure through the Runner's normal path, not a silent success or a crash"
+file = "test/abi/conformance_test.cpp"
+test = "abi.conformance (ConformanceTest.PluginAdvanceErrorSurfacesAsComponentFailure)"
+fails_when = "fuse_run() returns FUSE_OK despite the mounted provider's advance() having returned an error"
+status = "present"
+
+[[row]]
+id = "ABI-PROVIDER-LOAD-REFUSAL"
+rule = 4
+claim = "a dlopen() failure (missing file, missing fuse_provider_abi symbol) is refused with E-ABI-LOAD carrying dlerror()'s own text, never silently skipped"
+file = "test/abi/conformance_test.cpp"
+test = "abi.conformance (ConformanceTest.DlopenFailureIsRefusedWithDlerrorText, ConformanceTest.GraphDeclaredPluginWithNoFileIsRefusedAtInitialize)"
+fails_when = "Registry::mount_dynamic succeeds against a nonexistent path, or its error message is empty"
+status = "present"
+
+[[row]]
+id = "ABI-PROVIDER-REGISTRY-DUPLICATE"
+rule = 1
+claim = "the registry never substitutes: mounting a second provider under an already-mounted name is refused with E-ABI-REGISTRY-DUPLICATE"
+file = "test/abi/conformance_test.cpp"
+test = "abi.conformance (ConformanceTest.RegistryRefusesADuplicateName)"
+fails_when = "a second mount_table()/mount_dynamic() call under a name already mounted succeeds, silently replacing the first"
+status = "present"
+
+[[row]]
+id = "ABI-PROVIDER-LAUNCH-KIND"
+rule = 1
+claim = "a component the graph itself declares LaunchMode::Plugin is mounted automatically at fuse_initialize() (never test-injected) and driven in-process through fuse_run(), exactly like a native component"
+file = "test/abi/conformance_test.cpp"
+test = "abi.conformance (ConformanceTest.GraphDeclaredPluginIsAutoMountedAndRun)"
+fails_when = "a graph-declared plugin component is left as the external-step placeholder instead of being mounted, or fuse_run() refuses the graph because of it"
+status = "present"
+
+#  Planned mutation rows (added to build-evidence/mutations/abi-provider.toml,
+#  all already landed and restored -- see that file's own `result` keys):
+#    provider-table-version-check-removed       abi_version check dropped -> ABI-PROVIDER-TABLE-VERSION
+#    provider-table-struct-size-check-removed   struct_size floor dropped -> ABI-PROVIDER-TABLE-STRUCT-SIZE
+#    provider-describe-mismatch-check-removed   describe() cross-check dropped -> ABI-PROVIDER-DESCRIBE
+#    provider-adapter-advance-ignores-error     advance() status ignored -> ABI-PROVIDER-ADVANCE-FAILURE
