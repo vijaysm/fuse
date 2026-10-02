@@ -1,0 +1,17 @@
+sizeof(void*) 8
+fuse_null 4
+fuse_version_info 32
+fuse_capabilities 16
+fuse_context_out 16
+fuse_error 48
+fuse_graph_source 32
+fuse_graph_sink 32
+fuse_setup 40
+fuse_field_name 24
+fuse_field_ref 20
+fuse_field_view 64
+fuse_step_request 16
+fuse_step_report 64
+fuse_ongoing 32
+fuse_run_request 16
+fuse_participant_abi_v1 128
