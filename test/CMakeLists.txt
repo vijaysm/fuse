@@ -701,7 +701,7 @@ endforeach()
 # Eigen3::Eigen (periodic-diffusion backward-Euler, SimplicialLDLT) and
 # Kokkos::kokkos (the reaction kernel) directly, same reasoning as
 # gray_scott's registration just above.
-foreach(t brusselator_weights brusselator_physics)
+foreach(t brusselator_weights brusselator_physics brusselator_runner)
   fuse_add_gtest(verification ${t} NO_LAYER_LIB
                  LIBS fuse::runtime fuse::backend Eigen3::Eigen Kokkos::kokkos)
   target_include_directories(fuse_verification_${t}_test PRIVATE

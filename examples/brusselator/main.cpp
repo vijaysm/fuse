@@ -27,9 +27,12 @@
 
 #include <fuse/backend/native_backend.hpp>
 #include <fuse/backend/remap_plan.hpp>
+#include <fuse/ir/lowering.hpp>
 #include <fuse/model/coupling_graph.hpp>
+#include <fuse/runtime/runner.hpp>
 #include <fuse/runtime/window_coupler.hpp>
 
+#include "brusselator_graph.hpp"
 #include "brusselator_physics.hpp"
 #include "species_component.hpp"
 
@@ -54,6 +57,12 @@ struct Args {
   bool check = false;
   std::string accel = "none";
   std::string out = "results";
+  /// "window" (default, unchanged): `fuse::WindowCoupler`, driven directly
+  /// as this example always has. "runner": the SAME graph compiled
+  /// through `fuse::Runner`, the Time windows track's compiled path
+  /// (docs/user/coupling-windows.md "Through schedule() and the
+  /// Runner") -- see main()'s own comment at the branch.
+  std::string driver = "window";
 };
 
 [[nodiscard]] Args parse_args(int argc, char** argv) {
@@ -79,13 +88,16 @@ struct Args {
     else if (arg == "--check") a.check = true;
     else if (arg == "--accel") a.accel = next(i);
     else if (arg == "--out") a.out = next(i);
+    else if (arg == "--driver") a.driver = next(i);
     else if (arg == "--help") {
       std::cout << "Couple independent U/V native-mesh solvers with FUSE's conservative "
                    "supermesh remap and fuse::WindowCoupler.\n"
                    "--nx-u 16 --ny-u 16 --nx-v 24 --ny-v 24\n"
                    "--dt-u 0.002 --dt-v 0.003 --window 0.02 --end 11.5 --alpha 10\n"
                    "--tolerance 1e-11 --max-iterations 60 --out results\n"
-                   "--accel none|aitken|iqn-ils --no-forcing --save-history --check\n";
+                   "--accel none|aitken|iqn-ils --no-forcing --save-history --check\n"
+                   "--driver window|runner (default window; runner requires every "
+                   "window the same length)\n";
       std::exit(0);
     } else {
       std::fprintf(stderr, "FAIL: unknown argument '%s'\n", arg.c_str());
@@ -148,6 +160,17 @@ void write_field_csv(const std::string& path, const brusselator::NativeGrid& gri
 
 int main(int argc, char** argv) {
   const Args args = parse_args(argc, argv);
+  if (args.driver != "window" && args.driver != "runner") {
+    std::fprintf(stderr, "FAIL: --driver must be 'window' or 'runner', got '%s'\n",
+                 args.driver.c_str());
+    return 1;
+  }
+  // Moved up from just above the window loop (unchanged computation): the
+  // `--driver runner` branch needs `window` to declare the coupling
+  // graph's own `CouplingWindowScope::explicit_interval` before any grid
+  // or weight setup, not only to walk `boundaries` afterwards.
+  const Rational window = to_rational(args.window);
+  const Rational end = to_rational(args.end);
 
   // Both the native mesh backend's own Kokkos::View allocations
   // (MeshArrays<Kokkos::HostSpace>) and this example's own reaction kernel
@@ -190,6 +213,19 @@ int main(int argc, char** argv) {
   const fuse::RegionId u_region = graph.add_region({.name = "u_all", .mesh = u_mesh, .dimension = 2});
   const fuse::RegionId v_region = graph.add_region({.name = "v_all", .mesh = v_mesh, .dimension = 2});
 
+  // U, V, their two window-transfer fields (u_out/v_out, matching the
+  // --driver window path's own WindowChannel names below exactly) and the
+  // coupling-window iteration region (brusselator_graph.hpp) -- declared
+  // on the graph UNCONDITIONALLY, so the graph is self-describing either
+  // way, but only actually compiled and run when --driver runner is
+  // selected (see main()'s own branch, below the window loop setup). The
+  // --driver window path never consults these declarations: WindowCoupler
+  // is handed `mu`/`mv`/`channels` directly and never looks at `graph`.
+  [[maybe_unused]] const brusselator::WindowGraphHandles window_graph =
+      brusselator::add_window_coupling(graph, u_region, to_rational(args.dt_u),
+                                       to_rational(args.dt_v), window, args.tolerance,
+                                       args.max_iterations, parse_accel(args.accel));
+
   fuse::RemapPlan plan_vu;  // V (source) -> U (target): row=U native idx, col=V native idx
   plan_vu.src = v_region;
   plan_vu.tgt = u_region;
@@ -225,6 +261,13 @@ int main(int argc, char** argv) {
                                                            &w_uv.value(), &w_vu.value());
   brusselator::Vector v0_on_u = Eigen::Map<brusselator::Vector>(comp_v->provided_ptr(), n_u);
   auto comp_u = std::make_unique<brusselator::UComponent>("U", u_grid, phys_cfg, v0_on_u);
+  // Raw observers, valid regardless of which driver below ends up OWNING
+  // the pointees: `--driver window` never moves `comp_u`/`comp_v` out of
+  // this scope; `--driver runner` moves them into a `fuse::ComponentSet`,
+  // which outlives every later read through these pointers (`components`
+  // is declared in that branch and not destroyed until main() returns).
+  brusselator::UComponent* const pu = comp_u.get();
+  brusselator::VComponent* const pv = comp_v.get();
 
   WindowMember mu;
   mu.component = comp_u.get();
@@ -244,15 +287,13 @@ int main(int argc, char** argv) {
   mv.required = comp_v->required_ptr();
   mv.length = static_cast<std::size_t>(n_u);  // both channels live on the U grid; see NUMERICS.
 
-  const Rational window = to_rational(args.window);
-  const Rational end = to_rational(args.end);
   const auto boundaries = window_boundaries(window, end);
 
   double max_window_balance_error = 0.0, max_window_exchange_error = 0.0;
   int max_iterations_used = 0;
   long long total_windows = 0;
-  const double initial_mass = comp_u->state().mean() + comp_v->state().mean();
-  double mean_u = comp_u->state().mean(), mean_v = comp_v->state().mean();
+  const double initial_mass = pu->state().mean() + pv->state().mean();
+  double mean_u = pu->state().mean(), mean_v = pv->state().mean();
 
   std::ofstream window_log;
   if (args.save_history) {
@@ -261,94 +302,215 @@ int main(int argc, char** argv) {
     window_log << std::setprecision(17) << "t0,t1,mean_u,mean_v,iterations\n";
   }
 
-  std::size_t i = 0;
-  while (i + 1 < boundaries.size()) {
-    const Rational len = boundaries[i + 1] - boundaries[i];
-    std::size_t j = i;
-    while (j + 1 < boundaries.size() && boundaries[j + 1] - boundaries[j] == len) ++j;
-    const int repeats = static_cast<int>(j - i);
+  // Declared here, OUTSIDE the --driver runner branch below, even though
+  // only that branch populates it: `pu`/`pv` keep pointing at
+  // `comp_u`/`comp_v` after that branch moves them into `components`
+  // (ComponentSet owns them from that point on), and the post-loop
+  // diagnostics/output code below -- shared by both drivers -- reads
+  // `pu->state()`/`pv->state()` after the branch's own closing brace. A
+  // `components` scoped to the branch itself would destroy the owner
+  // there and leave `pu`/`pv` dangling for every line after it.
+  fuse::ComponentSet components;
 
-    WindowCouplerConfig cfg;
-    cfg.window_length = len;
-    cfg.max_iterations = args.max_iterations;
-    cfg.acceleration = AccelConfig{.kind = parse_accel(args.accel)};
-    // The user's decision (relayed 2026-09-29): a convergence measure
-    // names a field TRANSFER (a WindowChannel, by its own `name`), not
-    // the whole coupled system. Split into the two real transfers, same
-    // kind/tolerance as the single aggregate measure this replaces; both
-    // must be satisfied. Not byte-identical to before by the user's own
-    // choice -- see this program's before/after diagnostics.
-    fuse::ConvergenceMeasure measure_u;
-    measure_u.kind = fuse::MeasureKind::Relative;
-    measure_u.tolerance = args.tolerance;
-    measure_u.field = "u_out";
-    cfg.convergence.add(measure_u);
-    fuse::ConvergenceMeasure measure_v;
-    measure_v.kind = fuse::MeasureKind::Relative;
-    measure_v.tolerance = args.tolerance;
-    measure_v.field = "v_out";
-    cfg.convergence.add(measure_v);
-    const double min_dt = std::min(args.dt_u, args.dt_v);
-    cfg.waveform_capacity =
-        static_cast<std::size_t>(std::ceil(len.to_double() / std::max(min_dt, 1e-9))) + 8;
+  if (args.driver == "window") {
+    std::size_t i = 0;
+    while (i + 1 < boundaries.size()) {
+      const Rational len = boundaries[i + 1] - boundaries[i];
+      std::size_t j = i;
+      while (j + 1 < boundaries.size() && boundaries[j + 1] - boundaries[j] == len) ++j;
+      const int repeats = static_cast<int>(j - i);
 
-    auto created = WindowCoupler::create(
-        {mu, mv},
-        {{.provider = 0, .consumer = 1, .name = "u_out"},
-         {.provider = 1, .consumer = 0, .name = "v_out"}},
-        cfg);
-    if (!created.ok()) {
-      std::fprintf(stderr, "FAIL: WindowCoupler::create at t=%.6f: %s\n",
-                   boundaries[i].to_double(), created.error().message.c_str());
-      return 1;
-    }
-    auto coupler = std::move(created.value());
+      WindowCouplerConfig cfg;
+      cfg.window_length = len;
+      cfg.max_iterations = args.max_iterations;
+      cfg.acceleration = AccelConfig{.kind = parse_accel(args.accel)};
+      // The user's decision (relayed 2026-09-29): a convergence measure
+      // names a field TRANSFER (a WindowChannel, by its own `name`), not
+      // the whole coupled system. Split into the two real transfers, same
+      // kind/tolerance as the single aggregate measure this replaces; both
+      // must be satisfied. Not byte-identical to before by the user's own
+      // choice -- see this program's before/after diagnostics.
+      fuse::ConvergenceMeasure measure_u;
+      measure_u.kind = fuse::MeasureKind::Relative;
+      measure_u.tolerance = args.tolerance;
+      measure_u.field = "u_out";
+      cfg.convergence.add(measure_u);
+      fuse::ConvergenceMeasure measure_v;
+      measure_v.kind = fuse::MeasureKind::Relative;
+      measure_v.tolerance = args.tolerance;
+      measure_v.field = "v_out";
+      cfg.convergence.add(measure_v);
+      const double min_dt = std::min(args.dt_u, args.dt_v);
+      cfg.waveform_capacity =
+          static_cast<std::size_t>(std::ceil(len.to_double() / std::max(min_dt, 1e-9))) + 8;
 
-    for (int r = 0; r < repeats; ++r) {
-      const double t0 = boundaries[i + static_cast<std::size_t>(r)].to_double();
-      const double eu0 = comp_u->external_total(), xo0 = comp_u->exchange_out();
-      const double xi0 = comp_v->exchange_in();
-      const double mu0 = mean_u, mv0 = mean_v;
-
-      const auto r_win = coupler->run_window();
-      if (!r_win.ok()) {
-        std::fprintf(stderr, "FAIL: run_window() at t=%.6f: %s\n", t0, r_win.error().message.c_str());
+      auto created = WindowCoupler::create(
+          {mu, mv},
+          {{.provider = 0, .consumer = 1, .name = "u_out"},
+           {.provider = 1, .consumer = 0, .name = "v_out"}},
+          cfg);
+      if (!created.ok()) {
+        std::fprintf(stderr, "FAIL: WindowCoupler::create at t=%.6f: %s\n",
+                     boundaries[i].to_double(), created.error().message.c_str());
         return 1;
       }
-      max_iterations_used = std::max(max_iterations_used, coupler->stats().iterations);
+      auto coupler = std::move(created.value());
+
+      for (int r = 0; r < repeats; ++r) {
+        const double t0 = boundaries[i + static_cast<std::size_t>(r)].to_double();
+        const double eu0 = pu->external_total(), xo0 = pu->exchange_out();
+        const double xi0 = pv->exchange_in();
+        const double mu0 = mean_u, mv0 = mean_v;
+
+        const auto r_win = coupler->run_window();
+        if (!r_win.ok()) {
+          std::fprintf(stderr, "FAIL: run_window() at t=%.6f: %s\n", t0, r_win.error().message.c_str());
+          return 1;
+        }
+        max_iterations_used = std::max(max_iterations_used, coupler->stats().iterations);
+        ++total_windows;
+
+        mean_u = pu->state().mean();
+        mean_v = pv->state().mean();
+        const double d_external = pu->external_total() - eu0;
+        const double d_out = pu->exchange_out() - xo0;
+        const double d_in = pv->exchange_in() - xi0;
+        const double balance_err = std::abs((mean_u + mean_v - mu0 - mv0) - d_external);
+        const double exchange_err = std::abs(d_out - d_in);
+        max_window_balance_error = std::max(max_window_balance_error, balance_err);
+        max_window_exchange_error = std::max(max_window_exchange_error, exchange_err);
+
+        if (pu->state().minCoeff() < -1e-12 || pv->state().minCoeff() < -1e-12) {
+          std::fprintf(stderr, "FAIL: negative concentration at t=%.6f (min U=%.3e min V=%.3e)\n",
+                       boundaries[i + static_cast<std::size_t>(r) + 1].to_double(),
+                       pu->state().minCoeff(), pv->state().minCoeff());
+          return 1;
+        }
+        if (window_log.is_open()) {
+          window_log << t0 << ',' << boundaries[i + static_cast<std::size_t>(r) + 1].to_double() << ','
+                     << mean_u << ',' << mean_v << ',' << coupler->stats().iterations << '\n';
+        }
+      }
+      i = j;
+    }
+  } else {
+    // --driver runner: the SAME graph (`window_graph`, built above),
+    // compiled through `fuse::Runner` instead of driven directly through
+    // `fuse::WindowCoupler` -- docs/user/coupling-windows.md "Through
+    // schedule() and the Runner". Requires every window the SAME length
+    // (`window`): `CouplingWindowScope::explicit_interval` is baked into
+    // ONE compiled schedule here, unlike the --driver window branch
+    // above, which reconstructs a new `WindowCoupler` (and so may change
+    // `cfg.window_length`) at every group of equal-length windows. A
+    // --window/--end combination whose forcing-switch insertion or final
+    // truncation would need a different length is refused below rather
+    // than silently run against the wrong one.
+    for (std::size_t k = 0; k + 1 < boundaries.size(); ++k) {
+      if (boundaries[k + 1] - boundaries[k] != window) {
+        std::fprintf(
+            stderr,
+            "FAIL: E-BRUSS-RUNNER-NONUNIFORM-WINDOWS: window %zu is [%s, %s), length %s, "
+            "expected %s -- the Runner driver requires every window the same length "
+            "(use --driver window for a --window/--end combination that needs a "
+            "shortened or inserted boundary)\n",
+            k, boundaries[k].to_string().c_str(), boundaries[k + 1].to_string().c_str(),
+            (boundaries[k + 1] - boundaries[k]).to_string().c_str(), window.to_string().c_str());
+        return 1;
+      }
+    }
+
+    components.add(std::move(comp_u));
+    components.add(std::move(comp_v));
+
+    fuse::FieldRegistry registry;
+    for (auto& c : components) {
+      const auto r = c.register_fields(registry, graph);
+      if (!r.ok()) {
+        std::fprintf(stderr, "FAIL: register_fields('%s'): %s: %s\n", c.name().c_str(),
+                     r.error().code.c_str(), r.error().message.c_str());
+        return 1;
+      }
+    }
+
+    if (const auto r = brusselator::register_native_window_placements(
+            backend, u_mesh, args.nx_u, args.ny_u, window_graph);
+        !r.ok()) {
+      std::fprintf(stderr, "FAIL: register_native_window_placements: %s: %s\n",
+                   r.error().code.c_str(), r.error().message.c_str());
+      return 1;
+    }
+
+    const auto lowered = lower(graph);
+    if (!lowered.ok()) {
+      std::fprintf(stderr, "FAIL: lower(graph): %s\n", lowered.diags.to_string().c_str());
+      return 1;
+    }
+    const fuse::ClockSet clocks{graph};
+    auto sched = schedule(graph, lowered.dag, clocks, fuse::make_region_sizes(graph, backend));
+    if (!sched.ok()) {
+      std::fprintf(stderr, "FAIL: schedule(graph): %s\n", sched.diags.to_string().c_str());
+      return 1;
+    }
+
+    fuse::RunnerConfig rcfg;
+    // Matches WindowCouplerConfig's own default (the --driver window
+    // branch never overrides it): a window that exhausts max_iterations
+    // without converging fails the run rather than silently continuing.
+    rcfg.abort_on_nonconvergence = true;
+    fuse::Runner runner{graph, lowered.dag, sched.plan, backend};
+    if (const auto r = runner.initialize(components, registry, rcfg); !r.ok()) {
+      std::fprintf(stderr, "FAIL: Runner::initialize: %s\n", r.error().message.c_str());
+      return 1;
+    }
+
+    for (std::size_t k = 0; k + 1 < boundaries.size(); ++k) {
+      const double t0 = boundaries[k].to_double();
+      const double eu0 = pu->external_total(), xo0 = pu->exchange_out();
+      const double xi0 = pv->exchange_in();
+      const double mu0 = mean_u, mv0 = mean_v;
+
+      const auto r_win = runner.run_period(components);
+      if (!r_win.ok()) {
+        std::fprintf(stderr, "FAIL: run_period() at t=%.6f: %s\n", t0, r_win.error().message.c_str());
+        return 1;
+      }
+      if (runner.iteration_stats().empty()) {
+        std::fprintf(stderr, "FAIL: run_period() at t=%.6f recorded no iteration stats\n", t0);
+        return 1;
+      }
+      const int iterations = runner.iteration_stats().front().iterations;
+      max_iterations_used = std::max(max_iterations_used, iterations);
       ++total_windows;
 
-      mean_u = comp_u->state().mean();
-      mean_v = comp_v->state().mean();
-      const double d_external = comp_u->external_total() - eu0;
-      const double d_out = comp_u->exchange_out() - xo0;
-      const double d_in = comp_v->exchange_in() - xi0;
+      mean_u = pu->state().mean();
+      mean_v = pv->state().mean();
+      const double d_external = pu->external_total() - eu0;
+      const double d_out = pu->exchange_out() - xo0;
+      const double d_in = pv->exchange_in() - xi0;
       const double balance_err = std::abs((mean_u + mean_v - mu0 - mv0) - d_external);
       const double exchange_err = std::abs(d_out - d_in);
       max_window_balance_error = std::max(max_window_balance_error, balance_err);
       max_window_exchange_error = std::max(max_window_exchange_error, exchange_err);
 
-      if (comp_u->state().minCoeff() < -1e-12 || comp_v->state().minCoeff() < -1e-12) {
+      if (pu->state().minCoeff() < -1e-12 || pv->state().minCoeff() < -1e-12) {
         std::fprintf(stderr, "FAIL: negative concentration at t=%.6f (min U=%.3e min V=%.3e)\n",
-                     boundaries[i + static_cast<std::size_t>(r) + 1].to_double(),
-                     comp_u->state().minCoeff(), comp_v->state().minCoeff());
+                     boundaries[k + 1].to_double(), pu->state().minCoeff(), pv->state().minCoeff());
         return 1;
       }
       if (window_log.is_open()) {
-        window_log << t0 << ',' << boundaries[i + static_cast<std::size_t>(r) + 1].to_double() << ','
-                   << mean_u << ',' << mean_v << ',' << coupler->stats().iterations << '\n';
+        window_log << t0 << ',' << boundaries[k + 1].to_double() << ',' << mean_u << ','
+                   << mean_v << ',' << iterations << '\n';
       }
     }
-    i = j;
   }
 
   const double global_balance_error =
-      std::abs(mean_u + mean_v - initial_mass - comp_u->external_total());
+      std::abs(mean_u + mean_v - initial_mass - pu->external_total());
 
   std::filesystem::create_directories(args.out);
-  write_field_csv((std::filesystem::path(args.out) / "u.csv").string(), u_grid, comp_u->state(),
+  write_field_csv((std::filesystem::path(args.out) / "u.csv").string(), u_grid, pu->state(),
                   args.end);
-  write_field_csv((std::filesystem::path(args.out) / "v.csv").string(), v_grid, comp_v->state(),
+  write_field_csv((std::filesystem::path(args.out) / "v.csv").string(), v_grid, pv->state(),
                   args.end);
 
   std::ofstream diag(std::filesystem::path(args.out) / "diagnostics.txt");
@@ -417,7 +579,7 @@ int main(int argc, char** argv) {
                    max_window_exchange_error);
       ok = false;
     }
-    if (comp_u->state().minCoeff() < -1e-12 || comp_v->state().minCoeff() < -1e-12) {
+    if (pu->state().minCoeff() < -1e-12 || pv->state().minCoeff() < -1e-12) {
       std::fprintf(stderr, "FAIL(--check): final state has a negative concentration\n");
       ok = false;
     }
