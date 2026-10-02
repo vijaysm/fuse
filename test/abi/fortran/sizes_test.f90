@@ -17,6 +17,14 @@
 program sizes_test
   use, intrinsic :: iso_c_binding
   use ffuse
+  ! fuse_provider_abi_v1 itself is a GENERATED derived type (unlike
+  ! fuse_participant_abi_v1_mirror below, hand-written only for this test):
+  ! the provider table carries no function-pointer-dereferencing problem for
+  ! Fortran the way the participant table does (abi-design.md, "The costs"),
+  ! because a provider plugin ASSEMBLES this table itself via
+  ! ffuse_provider_set_<entry>, never dereferences another library's copy of
+  ! it, so ffuse_provider.f90 generates it directly.
+  use ffuse_provider, only: fuse_provider_abi_v1
   implicit none
 
   type, bind(C) :: fuse_participant_abi_v1_mirror
@@ -56,6 +64,10 @@ program sizes_test
   type(fuse_ongoing) :: v_ongoing
   type(fuse_run_request) :: v_run_request
   type(fuse_participant_abi_v1_mirror) :: v_table
+  type(fuse_field_spec) :: v_field_spec
+  type(fuse_field_table) :: v_field_table
+  type(fuse_provider_instance) :: v_provider_instance
+  type(fuse_provider_abi_v1) :: v_provider_table
 
   a_pointer = c_null_ptr
 
@@ -76,4 +88,8 @@ program sizes_test
   write(*, '(A," ",I0)') "fuse_ongoing", c_sizeof(v_ongoing)
   write(*, '(A," ",I0)') "fuse_run_request", c_sizeof(v_run_request)
   write(*, '(A," ",I0)') "fuse_participant_abi_v1", c_sizeof(v_table)
+  write(*, '(A," ",I0)') "fuse_field_spec", c_sizeof(v_field_spec)
+  write(*, '(A," ",I0)') "fuse_field_table", c_sizeof(v_field_table)
+  write(*, '(A," ",I0)') "fuse_provider_instance", c_sizeof(v_provider_instance)
+  write(*, '(A," ",I0)') "fuse_provider_abi_v1", c_sizeof(v_provider_table)
 end program sizes_test

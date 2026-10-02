@@ -943,6 +943,78 @@ if(FUSE_ENABLE_MPI)
     ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
+# ---------------------------------------------------------------- abi (provider, S6 phase 4)
+# test/abi/conformance_test.cpp's four kinds, two of which need a REAL
+# dlopen()'d shared object (never a hand-built in-memory table standing in
+# for one): one correct C plugin and three deliberately wrong variants (bad
+# version / bad describe / bad advance), all compiled from the SAME source
+# (abi/plugins/linear_provider.c) via compile-time macros so every
+# negative row in build-evidence/abi-matrix.toml exercises the real dlopen
+# path; and one correct Fortran plugin (abi/plugins/linear_provider.f90),
+# built through fuse::abi-fortran's ffuse_provider module (fortran/
+# ffuse_provider.f90) the same way a real Fortran plugin author would.
+add_library(fuse_test_provider_linear SHARED abi/plugins/linear_provider.c)
+target_include_directories(fuse_test_provider_linear PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
+add_library(fuse_test_provider_linear_bad_version SHARED abi/plugins/linear_provider.c)
+target_include_directories(fuse_test_provider_linear_bad_version PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(fuse_test_provider_linear_bad_version PRIVATE FUSE_TEST_BAD_VERSION)
+
+add_library(fuse_test_provider_linear_bad_describe SHARED abi/plugins/linear_provider.c)
+target_include_directories(fuse_test_provider_linear_bad_describe PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(fuse_test_provider_linear_bad_describe PRIVATE FUSE_TEST_BAD_DESCRIBE)
+
+add_library(fuse_test_provider_linear_bad_advance SHARED abi/plugins/linear_provider.c)
+target_include_directories(fuse_test_provider_linear_bad_advance PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(fuse_test_provider_linear_bad_advance PRIVATE FUSE_TEST_BAD_ADVANCE)
+
+# fuse-abi-fortran (ffuse + ffuse_provider + the shim) is a STATIC archive
+# whose only undefined symbol is fuse_coupler_abi -- resolved here because
+# THIS target is the first thing that actually needs it resolved (fortran/
+# CMakeLists.txt's own header comment explains why the archive itself
+# builds with or without libfuse-abi present, but a consumer that LINKS it
+# into something does not get to skip that symbol).
+if(TARGET fuse-abi-fortran AND TARGET fuse-abi-shared)
+  add_library(fuse_test_provider_linear_fortran SHARED abi/plugins/linear_provider.f90)
+  target_link_libraries(fuse_test_provider_linear_fortran PRIVATE fuse::abi-fortran fuse::abi)
+  set(FUSE_TEST_FORTRAN_PROVIDER_AVAILABLE ON)
+else()
+  set(FUSE_TEST_FORTRAN_PROVIDER_AVAILABLE OFF)
+endif()
+
+# NO_LAYER_LIB + fuse::abi-static, not the default fuse::abi (shared): this
+# test calls fuse::abi_detail::Registry/ProviderAdapter directly (the same
+# test-only seam test_support.hpp already uses for fuse_ctx), and those
+# symbols are hidden visibility, never part of libfuse-abi.dylib's dynamic
+# symbol table (src/abi/exported_symbols.{map,sym} allow exactly
+# fuse_coupler_abi) -- the archive variant's object files resolve them at
+# this executable's own static link instead, same as fuse_abi_test_support
+# resolving fuse_ctx's own private layout by linking the sources directly.
+fuse_add_gtest(abi conformance NO_LAYER_LIB LIBS fuse::abi-static fuse_abi_test_support)
+target_include_directories(fuse_abi_conformance_test PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
+add_dependencies(fuse_abi_conformance_test
+  fuse_test_provider_linear fuse_test_provider_linear_bad_version
+  fuse_test_provider_linear_bad_describe fuse_test_provider_linear_bad_advance)
+target_compile_definitions(fuse_abi_conformance_test PRIVATE
+  FUSE_TEST_C_PROVIDER_PLUGIN="$<TARGET_FILE:fuse_test_provider_linear>"
+  FUSE_TEST_C_PROVIDER_PLUGIN_BAD_VERSION="$<TARGET_FILE:fuse_test_provider_linear_bad_version>"
+  FUSE_TEST_C_PROVIDER_PLUGIN_BAD_DESCRIBE="$<TARGET_FILE:fuse_test_provider_linear_bad_describe>"
+  FUSE_TEST_C_PROVIDER_PLUGIN_BAD_ADVANCE="$<TARGET_FILE:fuse_test_provider_linear_bad_advance>"
+)
+if(FUSE_TEST_FORTRAN_PROVIDER_AVAILABLE)
+  add_dependencies(fuse_abi_conformance_test fuse_test_provider_linear_fortran)
+  target_compile_definitions(fuse_abi_conformance_test PRIVATE
+    FUSE_TEST_FORTRAN_PROVIDER_PLUGIN="$<TARGET_FILE:fuse_test_provider_linear_fortran>")
+else()
+  # No Fortran compiler in this configure: the harness still builds, but
+  # ConformanceTest's Kind::FortranPlugin rows dlopen an empty path and
+  # fail with E-ABI-LOAD rather than silently skipping -- a visible
+  # refusal, consistent with this file's own "nothing here ever silently
+  # substitutes" rule.
+  target_compile_definitions(fuse_abi_conformance_test PRIVATE
+    FUSE_TEST_FORTRAN_PROVIDER_PLUGIN="")
+endif()
+
 # ---------------------------------------------------------------- audit
 # Every *_test.cpp on disk must be registered above or declared gated by a tier
 # option that is OFF in this configuration. Anything else is a test that runs
