@@ -1,0 +1,245 @@
+/* FUSE participant ABI, version 1: the single source of truth.
+ *
+ * Everything the C ABI exposes is listed here once, as X-macros, and three
+ * things are generated or checked from this file:
+ *   - the function-pointer table initialiser and its struct_size assertion
+ *     (src/abi/participant.cpp);
+ *   - the Fortran module ffuse (tools/gen-ffuse.py);
+ *   - the golden test that include/fuse/abi/types.h and participant.h -- the
+ *     plain C a user reads -- agree with this list member for member
+ *     (test/abi/entries_golden_test.cpp).
+ * The public headers contain no macros (docs/dev/abi-design.md, point 5).
+ *
+ * THE ONE RULE. Every entry point has the same shape,
+ *     fuse_status name(fuse_ctx* ctx, const IN* in, OUT* out);
+ * where IN and OUT are argument structs whose FIRST member is
+ * `uint32_t struct_size`, set by the caller to sizeof(its own struct). New
+ * arguments are new members APPENDED to a struct; a signature never changes,
+ * and a callee reads only the members that `struct_size` says are present
+ * (and treats the rest as their documented defaults). A caller built against
+ * an older header therefore keeps working against a newer library, and a
+ * caller built against a newer header gets FUSE_ERR_VERSION from an older
+ * library rather than a misread. Value types (fuse_exact_time,
+ * fuse_version) carry no struct_size and NEVER grow: they are closed.
+ *
+ * Two parents contributed, and nothing either exposed is lost:
+ *   SOMA soma_c.h ........ create/destroy/last_error, load/save graph (bytes
+ *                          and YAML), field_handle/register_field with
+ *                          strides and memory space, set_communicator,
+ *                          set_end_time, begin/end_step, requires_checkpoint
+ *                          /restore, is_coupling_ongoing, run_period, run.
+ *   KARMA component ABI .. struct_size convention, exact rational time,
+ *                          element type / ownership enumerators, capability
+ *                          flags, the diagnostic with truncation flag.
+ *
+ * Usage: define the macros you need, include this file, undefine them.
+ *   FUSE_ABI_STRUCT(name, doc)            a struct begins
+ *   FUSE_ABI_FIELD(ctype, ftype, name, doc) one member; ftype is the Fortran
+ *                                         kind the generator emits
+ *   FUSE_ABI_STRUCT_END(name)
+ *   FUSE_ABI_ENTRY(name, in, out, doc)    one table member, in order
+ *   FUSE_ABI_ENUM(name, value, doc)       one enumerator
+ * Order is the ABI: a new struct member or table entry is appended at the end
+ * of its block, never inserted. ABI v1 is frozen when the first consumer
+ * outside this repository links against it; until then this list may change.
+ */
+
+#ifndef FUSE_ABI_STRUCT
+#define FUSE_ABI_STRUCT(name, doc)
+#define FUSE_ABI_STRUCT_DEFINED_HERE
+#endif
+#ifndef FUSE_ABI_FIELD
+#define FUSE_ABI_FIELD(ctype, ftype, name, doc)
+#define FUSE_ABI_FIELD_DEFINED_HERE
+#endif
+#ifndef FUSE_ABI_STRUCT_END
+#define FUSE_ABI_STRUCT_END(name)
+#define FUSE_ABI_STRUCT_END_DEFINED_HERE
+#endif
+#ifndef FUSE_ABI_ENTRY
+#define FUSE_ABI_ENTRY(name, in, out, doc)
+#define FUSE_ABI_ENTRY_DEFINED_HERE
+#endif
+#ifndef FUSE_ABI_ENUM
+#define FUSE_ABI_ENUM(name, value, doc)
+#define FUSE_ABI_ENUM_DEFINED_HERE
+#endif
+
+/* ---- status codes (values are the ABI and never change) ---------------- */
+FUSE_ABI_ENUM(FUSE_OK,              0,  "success")
+FUSE_ABI_ENUM(FUSE_ERR_INVALID,    -1,  "malformed argument: null pointer, out-of-range value, bad handle, unparseable input")
+FUSE_ABI_ENUM(FUSE_ERR_NOTFOUND,   -2,  "well-formed lookup that found nothing: no such component or field")
+FUSE_ABI_ENUM(FUSE_ERR_STATE,      -3,  "valid call in the wrong state: no graph, already initialised, step already open")
+FUSE_ABI_ENUM(FUSE_ERR_RUNTIME,    -4,  "an exception was contained at the boundary or an operation failed; last_error has the reason")
+FUSE_ABI_ENUM(FUSE_ERR_UNSUPPORTED,-5,  "the entry exists in this ABI but this build cannot perform it")
+FUSE_ABI_ENUM(FUSE_ERR_VERSION,    -6,  "struct_size smaller than the oldest layout this library knows, or larger than FUSE_ABI_MAX_STRUCT_SIZE")
+
+/* ---- element types, memory spaces, ownership (fuse_field_view) ---------- */
+FUSE_ABI_ENUM(FUSE_ELEMENT_F64,     0,  "IEEE double")
+FUSE_ABI_ENUM(FUSE_ELEMENT_I64,     1,  "64-bit signed integer (identifiers, not coupled values)")
+FUSE_ABI_ENUM(FUSE_MEMSPACE_HOST,   0,  "pointer addressable by the host CPU")
+FUSE_ABI_ENUM(FUSE_MEMSPACE_DEVICE, 1,  "pointer in the default device memory space of this build's Kokkos")
+FUSE_ABI_ENUM(FUSE_OWNERSHIP_OWNED, 0,  "every entry owned by this process; the default")
+FUSE_ABI_ENUM(FUSE_OWNERSHIP_GHOSTED, 1, "owned entries first, then ghosts; the graph's ownership rule applies")
+FUSE_ABI_ENUM(FUSE_OWNERSHIP_REPLICATED, 2, "the whole field on every process")
+
+/* ---- capability flags (fuse_capabilities.flags) -------------------------- */
+FUSE_ABI_ENUM(FUSE_CAP_DEVICE_FIELDS,  1,  "FUSE_MEMSPACE_DEVICE accepted")
+FUSE_ABI_ENUM(FUSE_CAP_CHECKPOINT,     2,  "requires_checkpoint/requires_restore are meaningful (implicit coupling groups)")
+FUSE_ABI_ENUM(FUSE_CAP_MPI,            4,  "a communicator may be set; without it everything runs on one process")
+FUSE_ABI_ENUM(FUSE_CAP_MPI_CONNECT,    8,  "coupling between separately launched executables over MPI connect/accept or MPMD")
+FUSE_ABI_ENUM(FUSE_CAP_LOWFIVE,       16,  "coupling between executables through LowFive's in-memory HDF5 path")
+FUSE_ABI_ENUM(FUSE_CAP_YAML,          32,  "load_graph accepts a YAML path")
+
+/* ---- limits ------------------------------------------------------------- */
+FUSE_ABI_ENUM(FUSE_ABI_VERSION,        1,  "the table version this header describes")
+FUSE_ABI_ENUM(FUSE_ABI_MAX_STRUCT_SIZE, 65536, "a struct_size above this is a corrupt header, not a future one")
+
+/* ---- argument structs --------------------------------------------------- */
+
+FUSE_ABI_STRUCT(fuse_null, "placeholder for an entry with no input or no output; callers pass NULL")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size, "sizeof(fuse_null)")
+FUSE_ABI_STRUCT_END(fuse_null)
+
+FUSE_ABI_STRUCT(fuse_version_info, "what this library is")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
+FUSE_ABI_FIELD(fuse_version,   fuse_version, library,    "semantic version of the library")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  abi_version,  "highest table version fuse_coupler_abi() answers")
+FUSE_ABI_FIELD(const char*,    c_ptr,      string,       "NUL-terminated, static storage, valid for the library's lifetime")
+FUSE_ABI_STRUCT_END(fuse_version_info)
+
+FUSE_ABI_STRUCT(fuse_capabilities, "what this build can do; FUSE_CAP_* bits")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
+FUSE_ABI_FIELD(uint64_t,       c_int64_t,  flags,        "OR of FUSE_CAP_*")
+FUSE_ABI_STRUCT_END(fuse_capabilities)
+
+FUSE_ABI_STRUCT(fuse_context_out, "a new context")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
+FUSE_ABI_FIELD(fuse_ctx*,      c_ptr,      ctx,          "owned by the caller until destroy")
+FUSE_ABI_STRUCT_END(fuse_context_out)
+
+FUSE_ABI_STRUCT(fuse_error, "the last error on a context (or thread-local when ctx is NULL); the caller owns the buffer")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  status,       "out: the fuse_status of the failed call")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  truncated,    "out: 1 if the message did not fit")
+FUSE_ABI_FIELD(uint64_t,       c_int64_t,  length,       "out: full message length in bytes, excluding the NUL")
+FUSE_ABI_FIELD(char*,          c_ptr,      buffer,       "in: caller's buffer, or NULL to query length only")
+FUSE_ABI_FIELD(uint64_t,       c_int64_t,  capacity,     "in: bytes available in buffer")
+FUSE_ABI_FIELD(const char*,    c_ptr,      code,         "out: the E-... code, static storage, valid until the next failing call")
+FUSE_ABI_STRUCT_END(fuse_error)
+
+FUSE_ABI_STRUCT(fuse_graph_source, "where a coupling graph comes from; exactly one of yaml_path and bytes is set")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
+FUSE_ABI_FIELD(const char*,    c_ptr,      yaml_path,    "NUL-terminated path, or NULL")
+FUSE_ABI_FIELD(const void*,    c_ptr,      bytes,        "canonical descriptor bytes (the frozen model), or NULL")
+FUSE_ABI_FIELD(uint64_t,       c_int64_t,  byte_count,   "length of bytes")
+FUSE_ABI_STRUCT_END(fuse_graph_source)
+
+FUSE_ABI_STRUCT(fuse_graph_sink, "where the loaded graph's canonical bytes are written")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
+FUSE_ABI_FIELD(void*,          c_ptr,      buffer,       "in: caller's buffer, or NULL to query the size")
+FUSE_ABI_FIELD(uint64_t,       c_int64_t,  capacity,     "in: bytes available")
+FUSE_ABI_FIELD(uint64_t,       c_int64_t,  written,      "out: bytes the graph needs; nothing is written when it exceeds capacity")
+FUSE_ABI_STRUCT_END(fuse_graph_sink)
+
+FUSE_ABI_STRUCT(fuse_setup, "process-level settings, before initialize")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
+FUSE_ABI_FIELD(int64_t,        c_int64_t,  communicator, "Fortran handle of the communicator this process couples on (MPI_Comm_c2f), or 0 for none")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  has_end_time, "1 if end_time is set")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  reserved,     "must be 0")
+FUSE_ABI_FIELD(fuse_exact_time, fuse_exact_time, end_time, "when is_coupling_ongoing turns false; the graph's own end otherwise")
+FUSE_ABI_STRUCT_END(fuse_setup)
+
+FUSE_ABI_STRUCT(fuse_field_name, "a field named in the graph")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
+FUSE_ABI_FIELD(const char*,    c_ptr,      component,    "NUL-terminated component name")
+FUSE_ABI_FIELD(const char*,    c_ptr,      field,        "NUL-terminated field name")
+FUSE_ABI_STRUCT_END(fuse_field_name)
+
+FUSE_ABI_STRUCT(fuse_field_ref, "what the graph knows about a named field, resolved once at setup")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  handle,       "pass to register_field; stable for the context's lifetime")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  components,   "values per entity the graph declares")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  intent,       "0 export (Provides), 1 import (Requires), 2 both")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  conservation, "0 none, 1 intensive, 2 extensive")
+FUSE_ABI_STRUCT_END(fuse_field_ref)
+
+FUSE_ABI_STRUCT(fuse_field_view, "caller-owned storage bound to a field; the pointer must stay valid until destroy")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  handle,       "from field_handle")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  element_type, "FUSE_ELEMENT_*")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  memspace,     "FUSE_MEMSPACE_*")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  ownership,    "FUSE_OWNERSHIP_*")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  components,   "values per entity; must equal fuse_field_ref.components")
+FUSE_ABI_FIELD(uint64_t,       c_int64_t,  count,        "entities on this process (owned first when ghosted)")
+FUSE_ABI_FIELD(uint64_t,       c_int64_t,  owned_count,  "owned entities; equals count unless ghosted")
+FUSE_ABI_FIELD(int64_t,        c_int64_t,  stride,       "elements between consecutive entities (1 = packed)")
+FUSE_ABI_FIELD(int64_t,        c_int64_t,  component_stride, "elements between consecutive components of one entity (count*stride = structure-of-arrays, 1 = array-of-structures)")
+FUSE_ABI_FIELD(void*,          c_ptr,      data,         "the storage")
+FUSE_ABI_STRUCT_END(fuse_field_view)
+
+FUSE_ABI_STRUCT(fuse_step_request, "which component is stepping")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
+FUSE_ABI_FIELD(const char*,    c_ptr,      component,    "NUL-terminated component name; must be one this process hosts")
+FUSE_ABI_STRUCT_END(fuse_step_request)
+
+FUSE_ABI_STRUCT(fuse_step_report, "what the coupler decided about this step; exact time, never a double")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  requires_checkpoint, "1 if the component must save its state before advancing (begin_step)")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  requires_restore,    "1 if the component must restore the state it saved and advance again (end_step)")
+FUSE_ABI_FIELD(int64_t,        c_int64_t,  step,         "step index within the run")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  iteration,    "sweep index inside an implicit coupling group; 0 outside")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  reserved,     "0")
+FUSE_ABI_FIELD(fuse_exact_time, fuse_exact_time, t_begin, "start of the step")
+FUSE_ABI_FIELD(fuse_exact_time, fuse_exact_time, t_end,   "end of the step")
+FUSE_ABI_STRUCT_END(fuse_step_report)
+
+FUSE_ABI_STRUCT(fuse_ongoing, "whether and where the coupling stands")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
+FUSE_ABI_FIELD(int32_t,        c_int32_t,  ongoing,      "1 while there is a step left to take")
+FUSE_ABI_FIELD(int64_t,        c_int64_t,  period,       "coupling period index")
+FUSE_ABI_FIELD(fuse_exact_time, fuse_exact_time, now,     "the current coupling time")
+FUSE_ABI_STRUCT_END(fuse_ongoing)
+
+FUSE_ABI_STRUCT(fuse_run_request, "for an in-process driver: let the coupler run the loop")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
+FUSE_ABI_FIELD(int64_t,        c_int64_t,  periods,      "how many coupling periods; -1 = until the end time")
+FUSE_ABI_STRUCT_END(fuse_run_request)
+
+/* ---- the table, in order; appended to, never reordered ----------------- */
+FUSE_ABI_ENTRY(version,             fuse_null,          fuse_version_info,  "ctx may be NULL")
+FUSE_ABI_ENTRY(capabilities,        fuse_null,          fuse_capabilities,  "ctx may be NULL")
+FUSE_ABI_ENTRY(create,              fuse_null,          fuse_context_out,   "ctx must be NULL")
+FUSE_ABI_ENTRY(destroy,             fuse_null,          fuse_null,          "a double destroy is FUSE_ERR_INVALID, not a crash")
+FUSE_ABI_ENTRY(last_error,          fuse_null,          fuse_error,         "ctx NULL asks the thread-local error of a failed create")
+FUSE_ABI_ENTRY(load_graph,          fuse_graph_source,  fuse_null,          "once per context, before setup")
+FUSE_ABI_ENTRY(save_graph,          fuse_null,          fuse_graph_sink,    "the canonical bytes of the loaded graph")
+FUSE_ABI_ENTRY(setup,               fuse_setup,         fuse_null,          "communicator and end time; before initialize; COLLECTIVE over the communicator")
+FUSE_ABI_ENTRY(field_handle,        fuse_field_name,    fuse_field_ref,     "after load_graph")
+FUSE_ABI_ENTRY(register_field,      fuse_field_view,    fuse_null,          "before initialize; once per handle")
+FUSE_ABI_ENTRY(initialize,          fuse_null,          fuse_null,          "compiles and schedules; COLLECTIVE")
+FUSE_ABI_ENTRY(is_coupling_ongoing, fuse_null,          fuse_ongoing,       "")
+FUSE_ABI_ENTRY(begin_step,          fuse_step_request,  fuse_step_report,   "the component's imports are current on return; COLLECTIVE over the component's processes")
+FUSE_ABI_ENTRY(end_step,            fuse_step_request,  fuse_step_report,   "the component's exports are read on entry; COLLECTIVE over the component's processes")
+FUSE_ABI_ENTRY(run,                 fuse_run_request,   fuse_null,          "in-process components only; FUSE_ERR_UNSUPPORTED when any component is driven from outside")
+
+#ifdef FUSE_ABI_STRUCT_DEFINED_HERE
+#undef FUSE_ABI_STRUCT
+#undef FUSE_ABI_STRUCT_DEFINED_HERE
+#endif
+#ifdef FUSE_ABI_FIELD_DEFINED_HERE
+#undef FUSE_ABI_FIELD
+#undef FUSE_ABI_FIELD_DEFINED_HERE
+#endif
+#ifdef FUSE_ABI_STRUCT_END_DEFINED_HERE
+#undef FUSE_ABI_STRUCT_END
+#undef FUSE_ABI_STRUCT_END_DEFINED_HERE
+#endif
+#ifdef FUSE_ABI_ENTRY_DEFINED_HERE
+#undef FUSE_ABI_ENTRY
+#undef FUSE_ABI_ENTRY_DEFINED_HERE
+#endif
+#ifdef FUSE_ABI_ENUM_DEFINED_HERE
+#undef FUSE_ABI_ENUM
+#undef FUSE_ABI_ENUM_DEFINED_HERE
+#endif
