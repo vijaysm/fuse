@@ -1,0 +1,10 @@
+# Mach-O export list for libfuse-abi.dylib (docs/dev/abi-design.md, point 1).
+# See exported_symbols.map's header comment for why this is needed in
+# addition to -fvisibility=hidden: this library statically links every
+# fuse:: layer down to Kokkos and fmt, none of which was compiled with
+# hidden visibility, and ld64's default behaviour is to re-export every
+# defined symbol it pulls in. test/abi/exported_symbols.golden and the
+# `abi.exported_symbols` ctest assert the result of this list is exactly
+# one line. Ported from upstream/karma/src/abi/karma_exports.sym, which
+# solves the identical problem for libkarma_abi.
+_fuse_coupler_abi
