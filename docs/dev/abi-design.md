@@ -155,3 +155,53 @@ cannot disagree with the C header. The mapping rules:
 What this costs: one more generated file and one more library to install. What it buys: a
 Fortran program is written against the same fifteen names and the same structs as a C program,
 and the test that proves the two agree is a `C_SIZEOF` table, not a reading.
+
+## Provider direction
+
+S6 phase 4, "Adapter host" track. The participant ABI above is the coupler being driven; the
+provider ABI (`include/fuse/abi/provider.h`, user docs at [](../user/providers.md)) is the
+opposite: the coupler drives a plugin, loaded at runtime from a shared object a graph names by
+path (`LaunchMode::Plugin`, `include/fuse/model/launch.hpp`).
+
+**One struct catalogue, two tables.** `entries.def` grew a second X-macro,
+`FUSE_ABI_PROVIDER_ENTRY`, generating `fuse_provider_abi_v1` (`tools/gen-abi.py`'s `gen_provider`)
+alongside the existing `FUSE_ABI_ENTRY` / `fuse_participant_abi_v1`. Both tables read from the
+SAME `FUSE_ABI_STRUCT` list above them: `fuse_field_view` is the identical bytes on either side of
+the coupler, and `fuse_step_request`/`fuse_step_report` — grown with the window fields the
+provider direction needs — carry the SAME exact-time shape whichever direction is doing the
+carrying. This is deliberate and is the whole point of one `entries.def`: a field or a time bound
+cannot drift between the two directions because there is only one declaration of what either
+looks like.
+
+**A different opaque handle, on purpose.** The provider table's `self` parameter takes THE ONE
+RULE's `ctx` slot, but is typed `fuse_provider_ctx*`, not `fuse_ctx*` — a distinct forward-declared
+opaque struct, so a coupler's own context and a plugin's own instance handle cannot be passed to
+the wrong table by accident, even though both are plain pointers to the compiler.
+
+**Versioning is the SAME mechanism, applied to the table itself as well as to its structs.** A
+plugin's `fuse_provider_abi(abi_version)` returns `NULL` for a version it does not speak, exactly
+as `fuse_coupler_abi()` does; `fuse::abi_detail::Registry::mount_table()` additionally checks the
+returned table's own `struct_size` and `abi_version` fields before trusting any member pointer in
+it, refusing both failure modes with `E-ABI-VERSION` — the struct_size negotiation this file's own
+"How arguments cross the boundary" section specifies for argument structs is the identical check
+applied one level up, to the table that carries them.
+
+**The adapter and the registry are NOT part of the frozen ABI.** `fuse::abi_detail::ProviderAdapter`
+(`src/abi/provider_adapter.cpp`) wraps a `fuse_provider_abi_v1*` as an ordinary `fuse::Component`,
+so `fuse::Runner` drives a plugin through the identical in-process path it drives any native
+component through; `fuse::abi_detail::Registry` (`src/abi/registry.cpp`) mounts one from a native
+`fuse::Component`, an in-memory table, or a `dlopen()`'d shared object (`mount_component`/
+`mount_table`/`mount_dynamic`). Both are hidden-visibility C++ internals, never exported C symbols
+— they cost this library nothing against "one symbol" (point 1 above), and
+`test/abi/conformance_test.cpp` links them directly the same test-only way `test_support.hpp`
+reaches `fuse_ctx`'s own private layout.
+
+**Fortran gets the mirror of `ffuse`.** `ffuse_provider` (`tools/gen-abi.py`'s
+`gen_fortran_provider_module`, written to `fortran/ffuse_provider.f90`) generates a
+`fuse_provider_abi_v1` derived type with one `c_funptr` member per entry (bit-for-bit the C
+layout, pinned by `test/abi/fortran/sizes_test.f90` the same way every other struct is) and
+`ffuse_provider_set_<entry>()` helpers that assign a plugin author's own `bind(C)` procedures into
+it via `c_funloc`. This is the INVERSE of `ffuse`'s own exception (Fortran keeps flat `bind(C)`
+symbols because a function-pointer struct is unergonomic there): a provider-direction Fortran
+plugin builds and exports the struct itself, since the struct's CONTENT is the plugin's own code,
+not a table a Fortran caller merely dereferences.

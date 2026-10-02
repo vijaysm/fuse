@@ -11,4 +11,6 @@ complete two-component coupling, [](fluent-api.md) for the chaining idiom and it
 [](coupling-windows.md) for coupling two components that do not share a
 time grid, and [](c-abi.md) if you are coupling an existing code through C or
 Fortran — [](fortran.md) is the Fortran side's own page, for the `ffuse`
-module's generated names and type mapping in full.
+module's generated names and type mapping in full. Those three pages are
+about a foreign code driving FUSE; [](providers.md) is the other direction —
+FUSE driving a plugin you write, in C or Fortran, named by path in the graph.
