@@ -676,13 +676,27 @@ struct Runner::Impl {
   /// two members' own `WindowMemberState`.
   std::unordered_map<std::uint32_t, detail::WindowMemberState>
       window_member_state;
-  /// The `Instruction::dst_step` (window instance index) THIS node's
+  /// The ABSOLUTE window instance index (`window_absolute_instance()`,
+  /// not the period-relative `Instruction::dst_step` itself) THIS node's
   /// `advance_window()` last ran for, keyed the same way as
   /// `window_member_state`. Absent means "never run yet". A call whose
-  /// `dst_step` differs from this is the first sweep of a NEW window
-  /// instance for this member -- see `advance_window()`'s own comment on
-  /// what that triggers (a pending straddle replay, a fresh checkpoint,
-  /// and a fresh substep-grid plan) before this sweep's own work.
+  /// absolute instance differs from this is the first sweep of a NEW
+  /// window instance for this member -- see `advance_window()`'s own
+  /// comment on what that triggers (a pending straddle replay, a fresh
+  /// checkpoint, and a fresh substep-grid plan) before this sweep's own
+  /// work.
+  ///
+  /// ABSOLUTE, NOT PERIOD-RELATIVE, because `dst_step` restarts at 0 on
+  /// every `run_period()` call (the compiled `TimedDag` spans one period
+  /// and is replayed verbatim): a window-scoped region with exactly one
+  /// window instance per period (`period == window_length`, the common
+  /// case) has `dst_step == 0` on EVERY call, which a `dst_step`-only
+  /// comparison cannot tell apart from "still the same window instance
+  /// as last time" on the second and subsequent `run_period()` calls --
+  /// found by examples/brusselator's own Runner driver (`--driver
+  /// runner`) needing more than one window, which no existing
+  /// window_runner test (always a single `run_period()` call) had
+  /// exercised. `window_absolute_instance()`'s own comment has the fix.
   std::unordered_map<std::uint32_t, std::int64_t> window_last_dst_step;
   /// Time windows track (C3): the clock `plan_substeps()` starts EVERY
   /// sweep of the CURRENT pass from -- fixed once, on that pass's own
@@ -999,6 +1013,23 @@ struct Runner::Impl {
                                             const Instruction& ins,
                                             const detail::Resolved& r,
                                             int iteration);
+  /// `period_index * (this compiled period / cfg.window_length) +
+  /// dst_step` -- the window instance index counted from the START OF
+  /// THE RUN, never reset between `run_period()` calls, unlike
+  /// `Instruction::dst_step` itself (period-relative: the compiled
+  /// `TimedDag` spans one period and is replayed verbatim by every call,
+  /// so `dst_step` restarts at 0 every time). `window_last_dst_step`'s
+  /// own declaration above has the full account of why a dst_step-only
+  /// computation of a window's own [T0, T1) is wrong on the second and
+  /// later `run_period()` call whenever a region has exactly one window
+  /// instance per period -- this is the SAME fix, for every place that
+  /// turns a window instance index into an absolute simulated time.
+  /// `cfg.window_length` is guaranteed to divide `plan.period()` an
+  /// exact integer number of times (`src/schedule/expand.cpp`'s own
+  /// `tick_count`/E-SCHED-PERIOD refused the schedule otherwise), so the
+  /// division below never has a remainder.
+  [[nodiscard]] std::int64_t window_absolute_instance(
+      const WindowMemberConfig& cfg, std::int64_t dst_step) const;
   /// R-10 (REVIEW.md): one sweep's cross-rank residual agreement, reached by
   /// every rank in `r.participants` on every sweep -- including one that has
   /// already locally recorded a step_failure, exactly like reconcile_epoch().

@@ -1829,6 +1829,21 @@ Result<void> Runner::Impl::resolve_pending_window_straddles(
 // names; KNOWN_ISSUES.md D7 -- TWO Fixed members straddling the SAME
 // window -- remains refused at setup, unconditionally, identically to
 // `WindowCoupler::create()`'s own `E-RT-WINDOW-STRADDLE`).
+std::int64_t Runner::Impl::window_absolute_instance(const WindowMemberConfig& cfg,
+                                                    std::int64_t dst_step) const {
+  const Rational ratio = plan.period() / cfg.window_length;
+  // Guaranteed exact by schedule()'s own E-SCHED-PERIOD check
+  // (src/schedule/expand.cpp's tick_count, called on every window-scoped
+  // channel's overridden src_dt/dst_dt): a window length that did not
+  // divide the compiled period evenly was already refused before this
+  // Runner (or any Runner) was ever constructed.
+  FUSE_ASSERT(ratio.is_integer(),
+             "window_absolute_instance: period {} is not an exact multiple of "
+             "window_length {} -- schedule() should have refused this",
+             plan.period().to_string(), cfg.window_length.to_string());
+  return period_index * ratio.num() + dst_step;
+}
+
 detail::Task<Result<void>> Runner::Impl::advance_window(
     ComponentSet& components, const Instruction& ins,
     const detail::Resolved& /*r*/, int iteration) {
@@ -1843,13 +1858,19 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
   detail::WindowMemberState& st = window_member_state[node];
   Component& comp = components.at(cfg.component_slot);
 
-  const Rational T0 = Rational(ins.dst_step) * cfg.window_length;
+  const std::int64_t absolute_instance =
+      window_absolute_instance(cfg, ins.dst_step);
+  const Rational T0 = Rational(absolute_instance) * cfg.window_length;
   const Rational T1 = T0 + cfg.window_length;
 
   const auto last_it = window_last_dst_step.find(node);
+  // Compared as the ABSOLUTE window instance, not `ins.dst_step` alone --
+  // `window_last_dst_step`'s own declaration (runner_impl.hpp) has the
+  // full account of why a dst_step-only comparison is wrong on the
+  // second and later `run_period()` call.
   const bool new_instance =
-      last_it == window_last_dst_step.end() || last_it->second != ins.dst_step;
-  window_last_dst_step[node] = ins.dst_step;
+      last_it == window_last_dst_step.end() || last_it->second != absolute_instance;
+  window_last_dst_step[node] = absolute_instance;
 
   // `run_region()`'s own k-loop always starts a pass at k=0 (its own
   // "for (int k = 0; k < R.max_iterations; ++k)" is entirely local to
@@ -1978,7 +1999,7 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
     // there, never reconstructed from the provider's own buffer.
     const std::vector<Rational> times = window_sample_times(
         cfg.provider_interval, cfg.provider_policy, Rational{0},
-        cfg.window_length, static_cast<std::int64_t>(ins.dst_step));
+        cfg.window_length, absolute_instance);
     const int shift = window_sample_shift(
         cfg.provider_interval, cfg.provider_policy, Rational{0}, T0);
 
@@ -2148,7 +2169,7 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
       std::vector<double> v_at_t1(cfg.length);
       const Result<void> split_r = detail::advance_straddle_split(
           member_view, sub.t0, T1, sub.t1,
-          static_cast<std::size_t>(ins.dst_step), iteration,
+          static_cast<std::size_t>(absolute_instance), iteration,
           [&](std::size_t e, Rational a, Rational b) -> Result<double> {
             if (import_wf.empty()) return required_for_split[e];
             const Rational qa = a + query_shift;
@@ -2199,7 +2220,12 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
     StepContext ctx;
     ctx.t_begin = sub.t0;
     ctx.t_end = sub.t1;
-    ctx.step = ins.dst_step;
+    // Matches `WindowCoupler::sweep_window()`'s own convention exactly
+    // (`ctx.step = window_index_`, src/runtime/window_coupler.cpp): the
+    // ABSOLUTE window instance count, never `ins.dst_step` alone (period-
+    // relative; `window_absolute_instance()`'s own comment has the full
+    // account).
+    ctx.step = absolute_instance;
     ctx.iteration = iteration;
     // KNOWN_ISSUES.md D12: same rule as Runner::Impl::advance() (runner.cpp)
     // -- suspend here, before the call, for the one component override
