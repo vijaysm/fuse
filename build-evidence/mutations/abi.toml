@@ -99,3 +99,23 @@ __ZN6Kokkos11num_devicesEv"""
 target = "fuse-abi-shared"
 test = "abi.exported_symbols"
 result = "CONFIRMED 2026-10-02: after rebuilding fuse-abi-shared with the mutated allowlist, `nm -gU` on libfuse-abi.dylib showed two text symbols (ZN6Kokkos11num_devicesEv, fuse_coupler_abi) against the golden file's one; running check_exported_symbols.cmake directly (the same command ctest's abi.exported_symbols issues) FAILED with exactly that diff. Restored; cmp reported no difference."
+
+[[mutation]]
+id = "abi-step-order-refusal-removed"
+area = "abi"
+describes = "KNOWN_ISSUES.md D13's fix (S6 resumable-loop track): fuse_begin_step()'s check that the caller is stepping the component the Runner's instruction stream actually expects next is removed, so a component asked to step out of turn is silently accepted (and handed the OTHER component's ExternalAdvanceRequest -- wrong tick bounds, wrong checkpoint/restore flags) instead of refused with E-ABI-STEP-ORDER naming the expected component"
+file = "src/abi/participant.cpp"
+old = """    const fuse::ExternalAdvanceRequest& req = *c.next_request;
+    if (req.component != in->component) {
+      // Not consumed: the stream's own next tick belongs to a DIFFERENT
+      // externally driven component, named here so the caller can step
+      // it first.
+      return fail(&c, FUSE_ERR_STATE, "E-ABI-STEP-ORDER",
+                 std::string("fuse_begin_step: component '") + in->component +
+                     "' asked out of turn; the Runner's instruction stream "
+                     "expects component '" + req.component + "' next");
+    }"""
+new = """    const fuse::ExternalAdvanceRequest& req = *c.next_request;"""
+target = "fuse_abi_participant_test"
+test = "abi.participant"
+result = "CONFIRMED 2026-10-02: AbiParticipant.BeginStepOutOfTurnIsRefusedNamingTheExpectedComponent failed on EXPECT_EQ(t->begin_step(ctx, &down_req, &rep), FUSE_ERR_STATE) -- begin_step(downstream) returned FUSE_OK (0) instead of FUSE_ERR_STATE (-3) when called out of turn. The other six AbiParticipant cases, none of which calls begin_step() out of the schedule's own order, still passed. Restored; cmp against the pre-mutation file reported no difference."

@@ -550,19 +550,22 @@ fuse_status impl_initialize(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
         c.components.add(std::move(comp));
         c.ext[i].in_process = true;
       } else {
-        c.components.add(std::make_unique<ExternalStepComponent>(name));
+        auto ext_comp = std::make_unique<ExternalStepComponent>(name);
+        const fuse::Result<void> r = ext_comp->register_fields(c.fields, c.graph);
+        if (!r.ok()) {
+          return fail(&c, FUSE_ERR_RUNTIME, std::string(r.error().code),
+                     r.error().message);
+        }
+        c.components.add(std::move(ext_comp));
         c.ext[i].in_process = false;
         ++c.external_count;
-        const fuse::Rational interval = c.graph.component(id).interval;
-        const fuse::Rational ticks = c.plan->period() / interval;
-        if (!ticks.is_integer()) {
-          return fail(&c, FUSE_ERR_RUNTIME, "E-ABI-INIT-PERIOD",
-                     "fuse_initialize: component '" + name +
-                         "' interval does not divide the common period "
-                         "evenly (a scheduler invariant; should be "
-                         "unreachable)");
-        }
-        c.ext[i].ticks_per_period = ticks.num();
+        // KNOWN_ISSUES.md D12: no separate per-component tick count is
+        // kept any more -- fuse::Runner::resume_period() (through the
+        // SAME fuse::ClockSet-derived schedule every component, in-process
+        // or external, is built from) is now the single source of when
+        // this component is due, so there is nothing here left to
+        // validate that the real scheduler has not already checked itself
+        // when it built the plan above.
       }
     }
 
@@ -641,6 +644,50 @@ bool resolve_external(fuse_ctx& c, const char* name, const char* fn,
   return true;
 }
 
+/// KNOWN_ISSUES.md D12: calls `runner->resume_period()` if nothing is
+/// already cached in `c.next_request` (see context.hpp's own header
+/// comment), and returns the request it finds -- WITHOUT consuming it;
+/// the caller decides whether it matches `name` and, if so, moves it out
+/// itself. Returns false (and fills `out_code`/`out_message`) only for a
+/// genuine runtime failure or the "nothing due this period" invariant
+/// violation; a name mismatch is the CALLER's concern, checked afterwards,
+/// because leaving the cache populated on a mismatch is exactly what lets
+/// the correctly-named begin_step() that follows see the same request.
+bool prime_next_request(fuse_ctx& c, const char* fn, std::string* out_code,
+                        std::string* out_message) {
+  if (c.next_request.has_value()) return true;
+  const fuse::Result<std::optional<fuse::ExternalAdvanceRequest>> outcome =
+      c.runner->resume_period(c.components);
+  if (!outcome.ok()) {
+    *out_code = outcome.error().code;
+    *out_message = outcome.error().message;
+    return false;
+  }
+  if (!outcome.value().has_value()) {
+    // The period ran to completion with no externally driven component
+    // left to stop at. Unreachable for a well-formed graph that reaches
+    // this point at all: resolve_external() already rejected `name` if it
+    // names an in-process component or doesn't exist, and every
+    // externally driven component ticks at least once per period (the
+    // scheduler's own common-period invariant), so resume_period() cannot
+    // run an entire period to completion without yielding for THIS caller
+    // at least once -- UNLESS it already did, earlier in the SAME period,
+    // and this is a second begin_step() for the same component with no
+    // intervening end_step() of the component the stream expected next in
+    // between, which open_component's own check in impl_begin_step rules
+    // out before this is ever called.
+    *out_code = "E-ABI-STEP-ORDER";
+    *out_message =
+        std::string(fn) +
+        ": the current period has no externally driven component left to "
+        "step; this should be unreachable for a graph with at least one "
+        "such component";
+    return false;
+  }
+  c.next_request = std::move(outcome.value());
+  return true;
+}
+
 fuse_status impl_begin_step(fuse_ctx* ctx, const fuse_step_request* in,
                            fuse_step_report* out) {
   return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
@@ -662,20 +709,41 @@ fuse_status impl_begin_step(fuse_ctx* ctx, const fuse_step_request* in,
                              "component '") +
                      in->component + "'; call fuse_end_step() first");
     }
-    const fuse::Clock& clock = c.clocks->clock(cid);
-    st.t_begin = clock.now();
-    st.t_end   = clock.next();
-    st.open    = true;
+    // KNOWN_ISSUES.md D12: at most one externally driven component may be
+    // open at a time -- see context.hpp's own header comment for why.
+    if (c.open_component.has_value() && *c.open_component != cid) {
+      return fail(&c, FUSE_ERR_STATE, "E-ABI-STEP-ALREADY-OPEN",
+                 std::string("fuse_begin_step: component '") + in->component +
+                     "' cannot begin a step while component '" +
+                     c.graph.component(*c.open_component).name +
+                     "' still has one open; call its fuse_end_step() first");
+    }
+    if (!prime_next_request(c, "fuse_begin_step", &err_code, &err_message)) {
+      return fail(&c, FUSE_ERR_RUNTIME, err_code, err_message);
+    }
+    const fuse::ExternalAdvanceRequest& req = *c.next_request;
+    if (req.component != in->component) {
+      // Not consumed: the stream's own next tick belongs to a DIFFERENT
+      // externally driven component, named here so the caller can step
+      // it first.
+      return fail(&c, FUSE_ERR_STATE, "E-ABI-STEP-ORDER",
+                 std::string("fuse_begin_step: component '") + in->component +
+                     "' asked out of turn; the Runner's instruction stream "
+                     "expects component '" + req.component + "' next");
+    }
+    st.request = req;
+    st.open = true;
+    c.open_component = cid;
+    c.next_request.reset();
 
-    out->struct_size          = sizeof(fuse_step_report);
-    out->requires_checkpoint  = 0;  // no iteration-region support through
-                                    // this ABI yet (open question)
-    out->requires_restore     = 0;
-    out->step                 = clock.step();
-    out->iteration            = 0;
+    out->struct_size         = sizeof(fuse_step_report);
+    out->requires_checkpoint = req.requires_checkpoint ? 1 : 0;
+    out->requires_restore    = req.requires_restore ? 1 : 0;
+    out->step                = req.ctx.step;
+    out->iteration            = req.ctx.iteration;
     out->reserved             = 0;
-    out->t_begin               = to_abi_time(st.t_begin);
-    out->t_end                 = to_abi_time(st.t_end);
+    out->t_begin               = to_abi_time(req.ctx.t_begin);
+    out->t_end                 = to_abi_time(req.ctx.t_end);
     return FUSE_OK;
   });
 }
@@ -700,30 +768,39 @@ fuse_status impl_end_step(fuse_ctx* ctx, const fuse_step_request* in,
                  std::string("fuse_end_step: no step is open on component '") +
                      in->component + "'");
     }
-    st.open = false;
-    c.clocks->clock(cid).advance();
-    ++st.ticks_this_period;
 
+    // Echo exactly what the matching begin_step() reported -- the request
+    // this component's own step was opened with, not whatever the Runner
+    // may have already resumed to below.
     out->struct_size         = sizeof(fuse_step_report);
-    out->requires_checkpoint = 0;
-    out->requires_restore    = 0;
-    out->step                = c.clocks->clock(cid).step() - 1;
-    out->iteration           = 0;
-    out->reserved            = 0;
-    out->t_begin              = to_abi_time(st.t_begin);
-    out->t_end                = to_abi_time(st.t_end);
+    out->requires_checkpoint = st.request.requires_checkpoint ? 1 : 0;
+    out->requires_restore    = st.request.requires_restore ? 1 : 0;
+    out->step                = st.request.ctx.step;
+    out->iteration            = st.request.ctx.iteration;
+    out->reserved             = 0;
+    out->t_begin               = to_abi_time(st.request.ctx.t_begin);
+    out->t_end                 = to_abi_time(st.request.ctx.t_end);
 
-    if (st.ticks_this_period >= st.ticks_per_period) {
-      st.ticks_this_period = 0;
-      ++c.ready_for_period;
+    // KNOWN_ISSUES.md D12: resume the Runner PAST this component's own
+    // (no-op) advance(), to the next externally driven component's
+    // suspension point or the period's end -- caching whichever it finds
+    // for the NEXT fuse_begin_step() to read, exactly as
+    // prime_next_request() does. next_request is known empty here: this
+    // component was open, which only happens after a begin_step() that
+    // consumed it.
+    const fuse::Result<std::optional<fuse::ExternalAdvanceRequest>> outcome =
+        c.runner->resume_period(c.components);
+    if (!outcome.ok()) {
+      return fail(&c, FUSE_ERR_RUNTIME, std::string(outcome.error().code),
+                 outcome.error().message);
     }
-    if (c.ready_for_period >= c.external_count && c.external_count > 0) {
-      c.ready_for_period = 0;
-      const fuse::Result<void> r = c.runner->run_period(c.components);
-      if (!r.ok()) {
-        return fail(&c, FUSE_ERR_RUNTIME, std::string(r.error().code),
-                   r.error().message);
-      }
+    st.open = false;
+    c.open_component.reset();
+    if (outcome.value().has_value()) {
+      c.next_request = std::move(outcome.value());
+    } else {
+      // The period just ran to completion.
+      c.next_request.reset();
       ++c.periods_completed;
     }
     return FUSE_OK;

@@ -76,14 +76,26 @@ for (fuse->is_coupling_ongoing(ctx, NULL, &ongoing); ongoing.ongoing;
 fuse->destroy(ctx, NULL, NULL);
 ```
 
-**What "imports are current" actually means, measured rather than assumed.** A graph with more
-than one externally-driven component defers the real field exchange to the point every one of
-them has completed its step for the current coupling period — known only once the LAST such
-component's `end_step()` returns. Read a `Requires` field after your own `end_step()`, not between
-your `begin_step()`/`end_step()` pair, if another externally-driven component's export feeds it;
-`test/abi/install_consumer/main.c` and `src/abi/context.hpp`'s own header comment work through the
-exact ordering this requires and the open question it leaves (closing it for every possible calling
-order needs a change to `fuse::Runner` itself, not attempted in this pass).
+**What "imports are current" actually means, measured rather than assumed (KNOWN_ISSUES.md D13).**
+`fuse_begin_step()` resumes FUSE's own instruction stream up to this component's own step and stops
+there: every exchange the SAME schedule the in-process `fuse::Runner` would run places before this
+tick — every feeding partner's `Transport`/`Remap` the compiled plan orders earlier — has already
+happened by the time `begin_step()` returns, and a `Requires` field fed by one of those is current
+to read **right there**, between `begin_step()` and `end_step()`, not just after `end_step()`. What
+the schedule places before this tick is a property of the graph, not of this ABI: a `lag(1)`
+channel between two components of the SAME interval is, by construction, ordered *after* both
+components' ticks for the period (the exchange is one period behind on purpose), so its import is
+still the previous period's value at `begin_step()` and only becomes this period's at the START of
+the NEXT period — correct for that graph, not a staleness bug, and unchanged by this fix (measured
+directly; see `AbiParticipant.SuspensionHappensExactlyAtTheScheduledTickNeitherEarlyNorLate`,
+`test/abi/participant_test.cpp`, for the exact before/after). Where the fix changes what a caller
+actually sees: `AbiParticipant.SubcycledMeanAccumulation` (a time-averaging `Requires` field is
+correct mid-period, not just at the period's end) and `AbiParticipant.ImplicitCouplingConvergesLikeInProcess`
+(an iteration region converges through the ABI exactly as it does in-process). The only ordering
+constraint is on the CALLER: a process hosting more than one externally-driven component must call
+`begin_step()`/`end_step()` for each in the order FUSE's own compiled schedule visits their steps —
+calling `begin_step()` for a component out of turn is refused (`E-ABI-STEP-ORDER`), naming the
+component the schedule actually expects next.
 
 ## Time is exact across the boundary too
 
@@ -98,11 +110,16 @@ reference — otherwise a step count of a few million drifts your schedule off t
 
 ## Checkpoints and restarts
 
-Not yet implemented through this ABI: `fuse_step_report::requires_checkpoint` /
-`requires_restore` are always `0` today, because `begin_step()`/`end_step()` do not yet support an
-iteration region driven from outside. An open question in the task that implemented the rest of
-this ABI, not a silent gap — a component that needs implicit coupling's rollback contract must, for
-now, be driven in-process (through `fuse_run()`) rather than through `begin_step()`/`end_step()`.
+An externally-driven component may take part in an implicit coupling region (spec §5.3)
+(KNOWN_ISSUES.md D13). `fuse_step_report::requires_checkpoint` is `1` on the step immediately after
+FUSE's own `save_state()` captured this component — save whatever private state your solver keeps
+that FUSE's registered fields do not cover. `requires_restore` is `1` on every step after a
+re-sweep's `restore_state()` rolled this component back — restore that saved state (and nothing
+else; registered fields are already restored) before advancing. Both are `0` for a component never
+checkpointed by any region, which is every component in a graph with no iteration region at all.
+`fuse_step_report::iteration` is the 0-based sweep index inside the region (0 outside one), exactly
+as `StepContext::iteration` (`include/fuse/runtime/component.hpp`) documents for an in-process
+component.
 
 ## Version compatibility
 
@@ -122,16 +139,19 @@ before calling an entry point that a newer version added; the same comparison ap
 individual argument struct (`fuse/abi/types.h`), each of which carries its own `struct_size` for
 exactly this reason.
 
-## Known limitation
+## How begin_step()/end_step() really drive FUSE
 
-`fuse_begin_step()`/`fuse_end_step()` drive the real `fuse::Runner` by deferring one
-`run_period()` call to the point every externally-driven component in the graph has completed a
-period (`src/abi/context.hpp`'s header comment has the full mechanism). This is exact for the
-ordinary case — reading a `Requires` field after your own `end_step()` — but is not a literal
-implementation of entries.def's "imports are current on return [of begin_step]" for every possible
-interleaving of calls across multiple externally-driven components. Closing that gap fully would
-need `fuse::Runner` itself to support pausing mid-period, which this task's scope did not include;
-see its reported open questions.
+`fuse::Runner::resume_period()` (`include/fuse/runtime/runner.hpp`) is the real `fuse::Runner`,
+resumed from wherever it last suspended rather than driven in one call: it runs the current
+period's instruction stream up to the next externally-driven component's own step and returns there
+— or to the period's end, if no externally-driven component remains due. `fuse_begin_step(name)`
+resumes it and checks the step it stops at against `name`; `fuse_end_step(name)` resumes it again,
+past this component's step, to the following one. `src/abi/context.hpp`'s header comment has the
+full mechanism, including why at most one externally-driven component may have an open step at a
+time on a given context (`E-ABI-STEP-ALREADY-OPEN`) — the Runner is one shared, ordered
+instruction stream, with exactly one current suspension point to resume from, so a process hosting
+several externally-driven components must complete each one's `begin_step()`/`end_step()` pair
+before opening the next.
 
 ## Fortran
 

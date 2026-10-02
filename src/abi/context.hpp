@@ -6,49 +6,52 @@
 /// one (the same contract SOMA's `soma_ctx_s`, upstream/soma/src/capi/soma_c.cpp,
 /// states for its own context struct).
 ///
-/// HOW begin_step()/end_step() DRIVE THE REAL RUNNER WITHOUT CHANGING IT.
+/// HOW begin_step()/end_step() DRIVE THE REAL RUNNER (KNOWN_ISSUES.md D13).
 ///
-/// `fuse::Runner` interprets a flat instruction stream per coupling period
-/// and has no public hook to pause mid-period while a single component's
-/// `advance()` happens outside its own call stack -- adding one would be a
-/// non-trivial addition to src/runtime, and the task that froze
-/// `entries.def` asked for the smallest change that honours it. This file
-/// adds none at all.
+/// `fuse::Runner::resume_period()` (include/fuse/runtime/runner.hpp,
+/// implemented as a C++20 coroutine over the ordinary instruction-stream
+/// walk -- src/runtime/resume.hpp, src/runtime/runner.cpp,
+/// src/runtime/iteration.cpp) resumes the CURRENT period's instruction
+/// stream and runs it up to the next externally driven component's own
+/// `advance()` point, or to the period's end, whichever comes first. Every
+/// component the graph declares is wrapped, at `initialize()`, in an
+/// `ExternalStepComponent` (external_step_component.hpp) whose `advance()`
+/// is a no-op -- the EXTERNAL caller writes that component's storage
+/// directly, through the pointer it handed to `register_field()`, between
+/// its own `begin_step()`/`end_step()` calls -- and whose
+/// `is_externally_driven()` override (component.hpp) is what makes
+/// `resume_period()` suspend there instead of calling it.
 ///
-/// Instead: every component the graph declares is wrapped, at `initialize()`,
-/// in an `ExternalStepComponent` (external_step_component.hpp) whose
-/// `advance()` is a no-op that trusts the storage already holds the right
-/// values -- because the EXTERNAL caller already wrote them, directly into
-/// the pointer it handed to `register_field()`, during the window between
-/// its own `begin_step()`/`end_step()` calls, which never touch
-/// `fuse::Runner` at all. `begin_step()`/`end_step()` instead read and
-/// advance a SEPARATE, purely bookkeeping `fuse::ClockSet` (the same
-/// mechanism SOMA's C ABI uses for its own, exchange-free, begin_step/
-/// end_step pair) built from the identical graph and therefore guaranteed to
-/// agree with the schedule the real `Runner` will walk. Only once every
-/// externally-driven component has completed as many ticks as the plan's
-/// common period requires does `end_step()` call the real
-/// `Runner::run_period()`, exactly once, for that period.
+/// `fuse_begin_step(name)` calls `resume_period()` (or reads the request it
+/// cached from the PREVIOUS `end_step()` call, below) and checks the
+/// yielded request's own component against `name`: a match returns that
+/// request's `StepContext` and checkpoint/restore flags directly --
+/// EXACT, because by construction every instruction before this
+/// suspension point has already run, so every channel feeding this
+/// component has been exchanged and its `Requires` storage holds THIS
+/// period's own delivered value, not a lagged one. A caller naming a
+/// DIFFERENT component than the stream's own next tick is refused
+/// `E-ABI-STEP-ORDER`, naming the component the stream actually expects;
+/// the request stays cached (nothing was advanced) so the correctly-named
+/// `begin_step()` that follows still sees it.
 ///
-/// WHY THIS IS EXACT, measured rather than assumed (test/abi/graph_fixture.hpp
-/// records the same measurement): `run_period()`'s Remap instruction reads
-/// whatever a channel's source field currently holds when the instruction
-/// runs, with no buffering of its own -- `lag(k)` (fuse/model/channel.hpp)
-/// changes TimeLevel typing and accumulation-window bookkeeping, not WHEN a
-/// write becomes visible to a Remap. So deferring `run_period()` to the
-/// moment every externally-driven component has completed its step is
-/// exact PROVIDED every Requires field is read no earlier than its OWN
-/// component's end_step() -- never between a component's own begin_step()
-/// and end_step(), where the period's run_period() call has not
-/// necessarily happened yet (it happens inside whichever externally-driven
-/// component's end_step() is the LAST to complete the period, which is not
-/// knowable to the caller in general). test/abi/install_consumer/main.c and
-/// test/abi/participant_test.cpp's value-checking cases both read a
-/// Requires field only after their own end_step() for exactly this reason,
-/// which is a narrower promise than entries.def's doc string for
-/// begin_step literally states ("imports are current on return"); closing
-/// that gap for every possible caller ordering is an open question in the
-/// task report, not attempted here.
+/// `fuse_end_step(name)` calls `resume_period()` again, resuming the
+/// Runner past this component's own (no-op) `advance()` to the NEXT
+/// suspension point or the period's end -- caching whatever it finds for
+/// the NEXT `begin_step()` to read, exactly as above. Because the two
+/// calls are 1:1 with resume_period()'s own suspend points, only ONE
+/// externally driven component may be open (begin_step() called, end_step()
+/// not yet) at a time on a given context: `fuse_ctx::open_component` is
+/// that invariant, enforced as `E-ABI-STEP-ALREADY-OPEN`. This is a real
+/// tightening versus the deferred, end-of-period scheme D12 replaced --
+/// that scheme let every externally driven component's begin_step()/
+/// end_step() pair interleave freely, because nothing it did actually
+/// advanced the Runner until the last one reported in. The replacement
+/// cannot offer that: the Runner is one shared, ordered instruction
+/// stream, and there is exactly one "current suspension point" to resume
+/// from. A process hosting more than one externally driven component must
+/// now call begin_step()/end_step() for each in the order the compiled
+/// schedule visits their ticks.
 ///
 /// A component the test harness adds directly (fuse::abi_test::inject_component,
 /// test_support.hpp) is driven the opposite way: it is a real
@@ -88,22 +91,15 @@ struct ExternalState {
   /// decided for this slot yet. Set at `fuse_initialize()` time.
   bool in_process = false;
   /// True strictly between a successful `begin_step()` and the matching
-  /// `end_step()` on this component.
+  /// `end_step()` on this component. `fuse_ctx::open_component` names
+  /// WHICH component this is, system-wide (at most one at a time -- see
+  /// this file's own header comment); `open` here is redundant with it but
+  /// kept so `resolve_external()`'s existing per-component checks read the
+  /// same way they always did.
   bool open = false;
-  /// Clock ticks this component has completed since the last time every
-  /// externally-driven component reached the plan's common-period boundary
-  /// together (the point at which the real `Runner::run_period()` runs).
-  std::int64_t ticks_this_period = 0;
-  /// `plan().period() / clock.interval()`, fixed at `initialize()`: how many
-  /// of this component's own ticks make up one common period. Always an
-  /// exact integer -- `fuse::ClockSet::checked_common_period()` guarantees
-  /// the common period is an integer number of ticks of every interval it is
-  /// the LCM of.
-  std::int64_t ticks_per_period = 1;
-  /// The bounds the matching `begin_step()` reported, echoed back by
-  /// `end_step()`.
-  fuse::Rational t_begin{0};
-  fuse::Rational t_end{0};
+  /// The request the matching `begin_step()` reported, echoed back by
+  /// `end_step()` (bounds, step, iteration, checkpoint/restore flags).
+  fuse::ExternalAdvanceRequest request;
 };
 
 }  // namespace fuse::abi_detail
@@ -122,9 +118,11 @@ struct fuse_ctx {
 
   std::optional<fuse::OperatorDAG>   dag;
   std::optional<fuse::ExecutionPlan> plan;
-  /// The reporting-only clock begin_step()/end_step() read; see this file's
-  /// header comment. Built fresh at initialize() from the same graph the
-  /// real fuse::Runner below schedules, so the two are guaranteed to agree.
+  /// Built at initialize() and handed to fuse::schedule() -- the schedule
+  /// itself is derived from it, so it must stay alive for the Runner's
+  /// whole lifetime even though begin_step()/end_step() no longer read it
+  /// directly (KNOWN_ISSUES.md D13: resume_period()'s own StepContext is
+  /// the real bounds now, not a separately bookkept copy of them).
   std::optional<fuse::ClockSet> clocks;
   std::optional<fuse::Runner>   runner;
   fuse::ComponentSet            components;
@@ -133,12 +131,21 @@ struct fuse_ctx {
   /// `graph.component_count()` at initialize() and never resized after.
   std::vector<fuse::abi_detail::ExternalState> ext;
   /// How many of `ext` are NOT in_process. Cached at initialize() so run()
-  /// and end_step() do not rescan on every call.
+  /// does not rescan on every call.
   std::size_t external_count = 0;
-  /// How many externally-driven components have reached their per-period
-  /// tick count since the last real run_period(). Reset to 0 every time it
-  /// reaches external_count, which is also when run_period() actually runs.
-  std::size_t ready_for_period = 0;
+  /// KNOWN_ISSUES.md D13: the request the most recent `resume_period()`
+  /// call yielded and nobody has consumed yet -- set by whichever of
+  /// `fuse_begin_step()` (priming the very first one, or re-reading one a
+  /// mismatched name left behind) or `fuse_end_step()` (resuming past the
+  /// component it just closed) called `resume_period()` last. `std::
+  /// nullopt` means either nothing has been primed yet, or the period
+  /// just ran to completion with nothing further to stop at; the next
+  /// `fuse_begin_step()` calls `resume_period()` itself to find out which.
+  std::optional<fuse::ExternalAdvanceRequest> next_request;
+  /// The ComponentId currently between a successful `begin_step()` and its
+  /// matching `end_step()`, or `std::nullopt` -- see this file's own
+  /// header comment on why at most one may be open at a time.
+  std::optional<fuse::ComponentId> open_component;
   std::int64_t periods_completed = 0;
 
   /// Components the test harness supplied directly
