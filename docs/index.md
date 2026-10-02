@@ -40,6 +40,7 @@ user/brusselator
 user/fsi-channel
 user/c-abi
 user/fortran
+user/multiple-executables
 ```
 
 ```{toctree}

@@ -1,0 +1,2 @@
+rank=2 i=0 value=0x0p+0
+rank=3 i=0 value=0x1p+0
