@@ -530,18 +530,44 @@ fuse_status impl_initialize(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
     c.plan = sched.plan;
 
     // Wire every graph component to either the test-injected real
-    // fuse::Component (driven in-process, through fuse_run()) or a fresh
-    // ExternalStepComponent (driven through fuse_begin_step()/
-    // fuse_end_step()); see context.hpp's header comment.
+    // fuse::Component (driven in-process, through fuse_run()), a
+    // LaunchMode::Plugin component mounted from its own shared object
+    // (S6 phase 4, "Adapter host" track -- also driven in-process: a
+    // provider shares the host's communicator exactly like an InProcess
+    // component, launch.hpp's own doc), or a fresh ExternalStepComponent
+    // (driven through fuse_begin_step()/fuse_end_step()); see context.hpp's
+    // header comment.
     c.ext.assign(c.graph.component_count(), ExternalState{});
     c.external_count = 0;
     for (std::uint32_t i = 0; i < c.graph.component_count(); ++i) {
       const fuse::ComponentId id{i};
-      const std::string& name = c.graph.component(id).name;
+      const fuse::ComponentDecl& decl = c.graph.component(id);
+      const std::string& name = decl.name;
       auto it = c.injected.find(name);
       if (it != c.injected.end()) {
         std::unique_ptr<fuse::Component> comp = std::move(it->second);
         c.injected.erase(it);
+        const fuse::Result<void> r = comp->register_fields(c.fields, c.graph);
+        if (!r.ok()) {
+          return fail(&c, FUSE_ERR_RUNTIME, std::string(r.error().code),
+                     r.error().message);
+        }
+        c.components.add(std::move(comp));
+        c.ext[i].in_process = true;
+      } else if (decl.launch.mode == fuse::LaunchMode::Plugin) {
+        const fuse::Result<void> mounted =
+            c.plugin_registry.mount_dynamic(name, decl.launch.plugin_path);
+        if (!mounted.ok()) {
+          return fail(&c, FUSE_ERR_RUNTIME, std::string(mounted.error().code),
+                     mounted.error().message);
+        }
+        fuse::Result<std::unique_ptr<fuse::Component>> extracted =
+            c.plugin_registry.extract(name);
+        if (!extracted.ok()) {
+          return fail(&c, FUSE_ERR_RUNTIME, std::string(extracted.error().code),
+                     extracted.error().message);
+        }
+        std::unique_ptr<fuse::Component> comp = std::move(extracted).value();
         const fuse::Result<void> r = comp->register_fields(c.fields, c.graph);
         if (!r.ok()) {
           return fail(&c, FUSE_ERR_RUNTIME, std::string(r.error().code),

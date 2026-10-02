@@ -419,8 +419,20 @@ set_target_properties(fuse-coupler-runtime PROPERTIES
 # hidden symbols the same way the shared library's dynamic symbol table
 # does, which is what keeps `fuse_coupler_abi` the one name either variant
 # exposes (abi-design.md point 1).
+# abi/provider_adapter.cpp and abi/registry.cpp (S6 phase 4, "Adapter host"
+# track): the provider direction's own C++ infrastructure -- wrapping a
+# fuse_provider_abi_v1 table as a fuse::Component, and mounting one from a
+# native Component, an in-memory table, or a dlopen'd shared object.
+# Neither exports a NEW C symbol (both are internal to this OBJECT library
+# and hidden the same way participant.cpp's own helpers are; the one C
+# symbol a PLUGIN exports, fuse_provider_abi, is never defined here -- it is
+# the plugin's own), so they cost this library nothing against "one symbol"
+# (abi-design.md point 1) while giving test/abi/conformance_test.cpp a
+# single mechanism for all four kinds it drives.
 add_library(fuse-abi-objects OBJECT
   abi/participant.cpp
+  abi/provider_adapter.cpp
+  abi/registry.cpp
 )
 target_compile_features(fuse-abi-objects PUBLIC cxx_std_20)
 target_link_libraries(fuse-abi-objects PUBLIC fuse::runtime)
@@ -446,7 +458,7 @@ set_target_properties(fuse-abi-objects PROPERTIES
 # own, has nothing an installed consumer needs from it directly.
 add_library(fuse-abi-shared SHARED)
 target_link_libraries(fuse-abi-shared
-  PRIVATE $<BUILD_LOCAL_INTERFACE:fuse-abi-objects>
+  PRIVATE $<BUILD_LOCAL_INTERFACE:fuse-abi-objects> ${CMAKE_DL_LIBS}
   PUBLIC  fuse::runtime
 )
 add_library(fuse::abi ALIAS fuse-abi-shared)
@@ -492,7 +504,7 @@ endif()
 
 add_library(fuse-abi-static STATIC)
 target_link_libraries(fuse-abi-static
-  PRIVATE $<BUILD_LOCAL_INTERFACE:fuse-abi-objects>
+  PRIVATE $<BUILD_LOCAL_INTERFACE:fuse-abi-objects> ${CMAKE_DL_LIBS}
   PUBLIC  fuse::runtime
 )
 add_library(fuse::abi-static ALIAS fuse-abi-static)

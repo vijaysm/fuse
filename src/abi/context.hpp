@@ -80,6 +80,8 @@
 #include "fuse/schedule/clock.hpp"
 #include "fuse/schedule/plan.hpp"
 
+#include "registry.hpp"
+
 namespace fuse::abi_detail {
 
 /// One externally-driven graph component's bookkeeping. Indexed by
@@ -115,6 +117,24 @@ struct fuse_ctx {
   fuse::CouplingGraph     graph;
   fuse::FieldRegistry     fields;
   fuse::SerialMeshBackend backend;
+
+  /// S6 phase 4, "Adapter host" track: mounts every `LaunchMode::Plugin`
+  /// component's shared object at initialize() time
+  /// (fuse::abi_detail::Registry::mount_dynamic). DECLARED BEFORE
+  /// `components` BELOW, DELIBERATELY: members are destroyed in REVERSE
+  /// declaration order, and every ProviderAdapter a dynamic mount builds
+  /// keeps calling through its plugin's table -- static storage inside the
+  /// still-open shared object this registry's own destructor dlclose()s.
+  /// Declaring `plugin_registry` here means it is destroyed AFTER
+  /// `components` (and `runner`, which also sits between them for the same
+  /// reason), so every ProviderAdapter has already run its own destructor
+  /// (which calls table_->destroy() one last time) before the library
+  /// backing that table is ever unloaded. Declaring it after `components`
+  /// instead reproduces EXACTLY the use-after-unload
+  /// ConformanceTest.GraphDeclaredPluginIsAutoMountedAndRun caught the hard
+  /// way (a SIGSEGV inside ComponentSet's own destructor, confirmed with
+  /// fprintf checkpoints and removed once the fix below was identified).
+  fuse::abi_detail::Registry plugin_registry;
 
   std::optional<fuse::OperatorDAG>   dag;
   std::optional<fuse::ExecutionPlan> plan;
