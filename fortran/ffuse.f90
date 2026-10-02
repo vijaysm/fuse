@@ -39,11 +39,11 @@ module ffuse
     integer(c_int64_t) :: denominator = 1_c_int64_t
   end type fuse_exact_time
 
-  type, bind(C), public :: fuse_version
+  type, bind(C), public :: fuse_semantic_version
     integer(c_int32_t) :: major = 0_c_int32_t
     integer(c_int32_t) :: minor = 0_c_int32_t
     integer(c_int32_t) :: patch = 0_c_int32_t
-  end type fuse_version
+  end type fuse_semantic_version
 
   ! An opaque coupling context; wraps the one C_PTR fuse_ctx* resolves to
   ! (abi-design.md, "Fortran: ffuse"). create() fills %ptr; destroy() ends it.
@@ -60,16 +60,16 @@ module ffuse
 
   type, bind(C), public :: fuse_version_info
     integer(c_int32_t) :: struct_size = 0_c_int32_t
-    type(fuse_version) :: library = fuse_version(0_c_int32_t, 0_c_int32_t, 0_c_int32_t)
+    type(fuse_semantic_version) :: library = fuse_semantic_version(0_c_int32_t, 0_c_int32_t, 0_c_int32_t)
     integer(c_int32_t) :: abi_version = 0_c_int32_t
     integer(c_int32_t) :: reserved = 0_c_int32_t
     type(c_ptr) :: string = c_null_ptr
   end type fuse_version_info
 
-  type, bind(C), public :: fuse_capabilities
+  type, bind(C), public :: fuse_capability_set
     integer(c_int32_t) :: struct_size = 0_c_int32_t
     integer(c_int64_t) :: flags = 0_c_int64_t
-  end type fuse_capabilities
+  end type fuse_capability_set
 
   type, bind(C), public :: fuse_context_out
     integer(c_int32_t) :: struct_size = 0_c_int32_t
@@ -100,13 +100,13 @@ module ffuse
     integer(c_int64_t) :: written = 0_c_int64_t
   end type fuse_graph_sink
 
-  type, bind(C), public :: fuse_setup
+  type, bind(C), public :: fuse_setup_options
     integer(c_int32_t) :: struct_size = 0_c_int32_t
     integer(c_int64_t) :: communicator = 0_c_int64_t
     integer(c_int32_t) :: has_end_time = 0_c_int32_t
     integer(c_int32_t) :: reserved = 0_c_int32_t
     type(fuse_exact_time) :: end_time = fuse_exact_time(0_c_int64_t, 1_c_int64_t)
-  end type fuse_setup
+  end type fuse_setup_options
 
   type, bind(C), public :: fuse_field_name
     integer(c_int32_t) :: struct_size = 0_c_int32_t
@@ -176,10 +176,10 @@ module ffuse
     end function ffuse_version
 
     function ffuse_capabilities(ctx, in, out) result(status) bind(C, name="ffuse_capabilities")
-      import :: c_int32_t, c_ptr, fuse_capabilities, fuse_null
+      import :: c_int32_t, c_ptr, fuse_capability_set, fuse_null
       type(c_ptr), value :: ctx
       type(fuse_null), intent(in) :: in
-      type(fuse_capabilities), intent(inout) :: out
+      type(fuse_capability_set), intent(inout) :: out
       integer(c_int32_t) :: status
     end function ffuse_capabilities
 
@@ -224,9 +224,9 @@ module ffuse
     end function ffuse_save_graph
 
     function ffuse_setup(ctx, in, out) result(status) bind(C, name="ffuse_setup")
-      import :: c_int32_t, c_ptr, fuse_null, fuse_setup
+      import :: c_int32_t, c_ptr, fuse_null, fuse_setup_options
       type(c_ptr), value :: ctx
-      type(fuse_setup), intent(in) :: in
+      type(fuse_setup_options), intent(in) :: in
       type(fuse_null), intent(inout) :: out
       integer(c_int32_t) :: status
     end function ffuse_setup
@@ -288,14 +288,14 @@ module ffuse
     end function ffuse_run
   end interface
 
-  public :: fuse_version_entry, &
-            fuse_capabilities_entry, &
+  public :: fuse_version, &
+            fuse_capabilities, &
             fuse_create, &
             fuse_destroy, &
             fuse_last_error, &
             fuse_load_graph, &
             fuse_save_graph, &
-            fuse_setup_entry, &
+            fuse_setup, &
             fuse_field_handle, &
             fuse_register_field, &
             fuse_initialize, &
@@ -326,7 +326,7 @@ module ffuse
 
 contains
 
-  function fuse_version_entry(ctx, in, out) result(status)
+  function fuse_version(ctx, in, out) result(status)
     type(fuse_ctx), intent(in) :: ctx
     type(fuse_null), intent(inout) :: in
     type(fuse_version_info), intent(inout) :: out
@@ -335,18 +335,18 @@ contains
     in%struct_size = int(c_sizeof(in), c_int32_t)
     out%struct_size = int(c_sizeof(out), c_int32_t)
     status = ffuse_version(ctx%ptr, in, out)
-  end function fuse_version_entry
+  end function fuse_version
 
-  function fuse_capabilities_entry(ctx, in, out) result(status)
+  function fuse_capabilities(ctx, in, out) result(status)
     type(fuse_ctx), intent(in) :: ctx
     type(fuse_null), intent(inout) :: in
-    type(fuse_capabilities), intent(inout) :: out
+    type(fuse_capability_set), intent(inout) :: out
     integer(c_int32_t) :: status
 
     in%struct_size = int(c_sizeof(in), c_int32_t)
     out%struct_size = int(c_sizeof(out), c_int32_t)
     status = ffuse_capabilities(ctx%ptr, in, out)
-  end function fuse_capabilities_entry
+  end function fuse_capabilities
 
   function fuse_create(ctx, in, out) result(status)
     type(fuse_ctx), intent(in) :: ctx
@@ -440,16 +440,16 @@ contains
     status = ffuse_save_graph(ctx%ptr, in, out)
   end function fuse_save_graph
 
-  function fuse_setup_entry(ctx, in, out) result(status)
+  function fuse_setup(ctx, in, out) result(status)
     type(fuse_ctx), intent(in) :: ctx
-    type(fuse_setup), intent(inout) :: in
+    type(fuse_setup_options), intent(inout) :: in
     type(fuse_null), intent(inout) :: out
     integer(c_int32_t) :: status
 
     in%struct_size = int(c_sizeof(in), c_int32_t)
     out%struct_size = int(c_sizeof(out), c_int32_t)
     status = ffuse_setup(ctx%ptr, in, out)
-  end function fuse_setup_entry
+  end function fuse_setup
 
   function fuse_field_handle_struct(ctx, in, out) result(status)
     type(fuse_ctx), intent(in) :: ctx

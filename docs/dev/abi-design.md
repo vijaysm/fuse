@@ -8,7 +8,7 @@ decision looks arbitrary until you have hit the alternative.
 FUSE needs a C ABI for two opposite reasons: a **participant ABI** so a foreign code with its own
 time loop can drive the coupler, and a **provider ABI** so the coupler can drive a plugin. C symbols
 are unmangled and global, and the natural names collide. libfuse (Filesystem in Userspace) is
-installed on essentially every Linux and HPC system and owns `fuse_*`, including `fuse_version`,
+installed on essentially every Linux and HPC system and owns `fuse_*`, including `fuse_semantic_version`,
 `fuse_new`, `fuse_loop`, `struct fuse_args`, `struct fuse_buf` and `struct fuse_chan` — the last
 three being names a coupler would plausibly want. Any process linking both is exposed, and symbol
 interposition makes the failure mode a *wrong call*, not a link error.
@@ -97,7 +97,7 @@ rules, each of which a test enforces:
    declared together with an explicit `reserved` member that pushes `sizeof` up, or widened to
    64 bits. (Golden: `test/abi/struct_sizes.golden`, one line per struct, with
    `sizeof(void*) == 8` asserted; a change to the table is a deliberate, reviewed commit.)
-4. **Value types never grow.** `fuse_exact_time` and `fuse_version` carry no `struct_size`; they are
+4. **Value types never grow.** `fuse_exact_time` and `fuse_semantic_version` carry no `struct_size`; they are
    closed, and a new kind of time would be a new type.
 5. **Nothing is allocated across the boundary.** Buffers (error messages, graph bytes) are the
    caller's, sized by a length query; strings are NUL-terminated and valid for the call only;
@@ -122,9 +122,10 @@ cannot disagree with the C header. The mapping rules:
 | `uint32_t`, `int32_t` | `integer(c_int32_t)` | unsigned fields hold values below 2^31 by construction (`FUSE_ABI_MAX_STRUCT_SIZE`); documented |
 | `int64_t`, `uint64_t` | `integer(c_int64_t)` | |
 | any pointer | `type(c_ptr)` | `c_loc()` of a `target` array; the caller keeps it alive as the C rule says |
-| `fuse_exact_time`, `fuse_version` | `type, bind(C)` of the same name | closed value types |
+| `fuse_exact_time`, `fuse_semantic_version` | `type, bind(C)` of the same name | closed value types |
 | `fuse_ctx*` | `type(fuse_ctx)` wrapping one `type(c_ptr)` | opaque |
 | entry `name` | module procedure `fuse_name(ctx, in, out)`; link symbol `ffuse_name` | see below |
+| a type whose name equals an entry's `fuse_name` | refused by the generator | Fortran has one namespace for types and procedures; the type is renamed in the `.def` (hence `fuse_capability_set`, `fuse_setup_options`, `fuse_semantic_version`) |
 | `FUSE_OK`, `FUSE_ERR_*`, `FUSE_ELEMENT_*`, ... | `integer(c_int32_t), parameter` of the same name | |
 
 - **Link names are `ffuse_*`, never `fuse_*`.** The Fortran-visible names *are* `fuse_*`, because a

@@ -31,7 +31,7 @@ new = """template <class T>
 }"""
 target = "fuse_abi_struct_size_test"
 test = "abi.struct_size"
-result = "CONFIRMED 2026-10-02: AbiStructSize.ShortStructIsRefused failed exactly as predicted (every struct_size in {0,1,2,3} on fuse_capabilities, and struct_size=2 on fuse_setup, now returned FUSE_OK instead of FUSE_ERR_VERSION); AbiStructSize.LongerStructFromANewerCallerIsAccepted was unaffected (it never exercises the lower bound). Restored; cmp against the pre-mutation file reported no difference."
+result = "CONFIRMED 2026-10-02: AbiStructSize.ShortStructIsRefused failed exactly as predicted (every struct_size in {0,1,2,3} on fuse_capability_set, and struct_size=2 on fuse_setup_options, now returned FUSE_OK instead of FUSE_ERR_VERSION); AbiStructSize.LongerStructFromANewerCallerIsAccepted was unaffected (it never exercises the lower bound). Restored; cmp against the pre-mutation file reported no difference."
 
 [[mutation]]
 id = "abi-writer-sets-the-wrong-size"

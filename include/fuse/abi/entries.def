@@ -20,7 +20,7 @@
  * an older header therefore keeps working against a newer library, and a
  * caller built against a newer header gets FUSE_ERR_VERSION from an older
  * library rather than a misread. Value types (fuse_exact_time,
- * fuse_version) carry no struct_size and NEVER grow: they are closed.
+ * fuse_semantic_version) carry no struct_size and NEVER grow: they are closed.
  *
  * Two parents contributed, and nothing either exposed is lost:
  *   SOMA soma_c.h ........ create/destroy/last_error, load/save graph (bytes
@@ -83,7 +83,7 @@ FUSE_ABI_ENUM(FUSE_OWNERSHIP_OWNED, 0,  "every entry owned by this process; the 
 FUSE_ABI_ENUM(FUSE_OWNERSHIP_GHOSTED, 1, "owned entries first, then ghosts; the graph's ownership rule applies")
 FUSE_ABI_ENUM(FUSE_OWNERSHIP_REPLICATED, 2, "the whole field on every process")
 
-/* ---- capability flags (fuse_capabilities.flags) -------------------------- */
+/* ---- capability flags (fuse_capability_set.flags) -------------------------- */
 FUSE_ABI_ENUM(FUSE_CAP_DEVICE_FIELDS,  1,  "FUSE_MEMSPACE_DEVICE accepted")
 FUSE_ABI_ENUM(FUSE_CAP_CHECKPOINT,     2,  "requires_checkpoint/requires_restore are meaningful (implicit coupling groups)")
 FUSE_ABI_ENUM(FUSE_CAP_MPI,            4,  "a communicator may be set; without it everything runs on one process")
@@ -103,16 +103,16 @@ FUSE_ABI_STRUCT_END(fuse_null)
 
 FUSE_ABI_STRUCT(fuse_version_info, "what this library is")
 FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
-FUSE_ABI_FIELD(fuse_version,   fuse_version, library,    "semantic version of the library")
+FUSE_ABI_FIELD(fuse_semantic_version,   fuse_semantic_version, library,    "semantic version of the library")
 FUSE_ABI_FIELD(uint32_t,       c_int32_t,  abi_version,  "highest table version fuse_coupler_abi() answers")
 FUSE_ABI_FIELD(uint32_t,       c_int32_t,  reserved,     "0; fills the padding so that an appended member changes sizeof (abi-design.md rule 3)")
 FUSE_ABI_FIELD(const char*,    c_ptr,      string,       "NUL-terminated, static storage, valid for the library's lifetime")
 FUSE_ABI_STRUCT_END(fuse_version_info)
 
-FUSE_ABI_STRUCT(fuse_capabilities, "what this build can do; FUSE_CAP_* bits")
+FUSE_ABI_STRUCT(fuse_capability_set, "what this build can do; FUSE_CAP_* bits")
 FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
 FUSE_ABI_FIELD(uint64_t,       c_int64_t,  flags,        "OR of FUSE_CAP_*")
-FUSE_ABI_STRUCT_END(fuse_capabilities)
+FUSE_ABI_STRUCT_END(fuse_capability_set)
 
 FUSE_ABI_STRUCT(fuse_context_out, "a new context")
 FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
@@ -143,13 +143,13 @@ FUSE_ABI_FIELD(uint64_t,       c_int64_t,  capacity,     "in: bytes available")
 FUSE_ABI_FIELD(uint64_t,       c_int64_t,  written,      "out: bytes the graph needs; nothing is written when it exceeds capacity")
 FUSE_ABI_STRUCT_END(fuse_graph_sink)
 
-FUSE_ABI_STRUCT(fuse_setup, "process-level settings, before initialize")
+FUSE_ABI_STRUCT(fuse_setup_options, "process-level settings, before initialize")
 FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
 FUSE_ABI_FIELD(int64_t,        c_int64_t,  communicator, "Fortran handle of the communicator this process couples on (MPI_Comm_c2f), or 0 for none")
 FUSE_ABI_FIELD(int32_t,        c_int32_t,  has_end_time, "1 if end_time is set")
 FUSE_ABI_FIELD(int32_t,        c_int32_t,  reserved,     "must be 0")
 FUSE_ABI_FIELD(fuse_exact_time, fuse_exact_time, end_time, "when is_coupling_ongoing turns false; the graph's own end otherwise")
-FUSE_ABI_STRUCT_END(fuse_setup)
+FUSE_ABI_STRUCT_END(fuse_setup_options)
 
 FUSE_ABI_STRUCT(fuse_field_name, "a field named in the graph")
 FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
@@ -209,13 +209,13 @@ FUSE_ABI_STRUCT_END(fuse_run_request)
 
 /* ---- the table, in order; appended to, never reordered ----------------- */
 FUSE_ABI_ENTRY(version,             fuse_null,          fuse_version_info,  "ctx may be NULL")
-FUSE_ABI_ENTRY(capabilities,        fuse_null,          fuse_capabilities,  "ctx may be NULL")
+FUSE_ABI_ENTRY(capabilities,        fuse_null,          fuse_capability_set,  "ctx may be NULL")
 FUSE_ABI_ENTRY(create,              fuse_null,          fuse_context_out,   "ctx must be NULL")
 FUSE_ABI_ENTRY(destroy,             fuse_null,          fuse_null,          "a double destroy is FUSE_ERR_INVALID, not a crash")
 FUSE_ABI_ENTRY(last_error,          fuse_null,          fuse_error,         "ctx NULL asks the thread-local error of a failed create")
 FUSE_ABI_ENTRY(load_graph,          fuse_graph_source,  fuse_null,          "once per context, before setup")
 FUSE_ABI_ENTRY(save_graph,          fuse_null,          fuse_graph_sink,    "the canonical bytes of the loaded graph")
-FUSE_ABI_ENTRY(setup,               fuse_setup,         fuse_null,          "communicator and end time; before initialize; COLLECTIVE over the communicator")
+FUSE_ABI_ENTRY(setup,               fuse_setup_options,         fuse_null,          "communicator and end time; before initialize; COLLECTIVE over the communicator")
 FUSE_ABI_ENTRY(field_handle,        fuse_field_name,    fuse_field_ref,     "after load_graph")
 FUSE_ABI_ENTRY(register_field,      fuse_field_view,    fuse_null,          "before initialize; once per handle")
 FUSE_ABI_ENTRY(initialize,          fuse_null,          fuse_null,          "compiles and schedules; COLLECTIVE")

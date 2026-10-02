@@ -73,9 +73,9 @@ Every member has the shape `fuse_<entry>(ctx, in, out)`, matching the C side's
 | `uint32_t`, `int32_t` | `integer(c_int32_t)` | unsigned fields hold values below 2³¹ by construction (`FUSE_ABI_MAX_STRUCT_SIZE`) |
 | `int64_t`, `uint64_t` | `integer(c_int64_t)` | |
 | any pointer | `type(c_ptr)` | `c_loc()` of a `target` array; the caller keeps it alive the same way the C rule requires |
-| `fuse_exact_time`, `fuse_version` | `type, bind(C)` of the same name | closed value types, no `struct_size`, never grow |
+| `fuse_exact_time`, `fuse_semantic_version` | `type, bind(C)` of the same name | closed value types, no `struct_size`, never grow |
 | `fuse_ctx*` (the leading argument of every entry) | `type(fuse_ctx)` wrapping one `type(c_ptr)` | opaque; `create()` fills `%ptr`, `destroy()` ends it |
-| entry `name` | `fuse_name(ctx, in, out)`; link symbol `ffuse_name` | three entries (`version`, `capabilities`, `setup`) share their name with an argument struct of the same name, which Fortran cannot have alongside a procedure of that name in one module — those three are `fuse_version_entry`, `fuse_capabilities_entry`, `fuse_setup_entry` instead |
+| entry `name` | `fuse_name(ctx, in, out)`; link symbol `ffuse_name` | every entry, without exception: no type shares an entry's name |
 | `FUSE_OK`, `FUSE_ERR_*`, `FUSE_ELEMENT_*`, ... | `integer(c_int32_t), parameter` of the same name | |
 
 **`struct_size` is set by the module, not by you.** Every generated `fuse_name` sets
@@ -96,7 +96,7 @@ as an overload of the same `fuse_<entry>` name alongside the struct-taking form;
 you manage the `fuse_error` struct's `buffer`/`capacity`/`length` members directly (though that raw
 form is still there if you want it).
 
-**Communicators** are the Fortran MPI handle — `fuse_setup%communicator`, `integer(c_int64_t)`,
+**Communicators** are the Fortran MPI handle — `fuse_setup_options%communicator`, `integer(c_int64_t)`,
 built from `MPI_Comm_c2f` on your side; FUSE recovers it with `MPI_Comm_f2c`, the same convention
 `MoabMeshBackend::set_communicator` uses everywhere else in this library. Leave it `0` (the default)
 to run with no communicator at all.

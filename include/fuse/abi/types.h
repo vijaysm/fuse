@@ -52,11 +52,11 @@ typedef struct fuse_exact_time {
   int64_t denominator;  /* > 0 */
 } fuse_exact_time;
 
-typedef struct fuse_version {
+typedef struct fuse_semantic_version {
   uint32_t major;
   uint32_t minor;
   uint32_t patch;
-} fuse_version;
+} fuse_semantic_version;
 
 /* An opaque coupling context; create() makes one, destroy() ends it. */
 typedef struct fuse_ctx fuse_ctx;
@@ -76,18 +76,18 @@ typedef struct fuse_null {
 
 /* what this library is */
 typedef struct fuse_version_info {
-  uint32_t     struct_size;
-  fuse_version library;  /* semantic version of the library */
-  uint32_t     abi_version;  /* highest table version fuse_coupler_abi() answers */
-  uint32_t     reserved;  /* 0; fills the padding so that an appended member changes sizeof (abi-design.md rule 3) */
-  const char*  string;  /* NUL-terminated, static storage, valid for the library's lifetime */
+  uint32_t              struct_size;
+  fuse_semantic_version library;  /* semantic version of the library */
+  uint32_t              abi_version;  /* highest table version fuse_coupler_abi() answers */
+  uint32_t              reserved;  /* 0; fills the padding so that an appended member changes sizeof (abi-design.md rule 3) */
+  const char*           string;  /* NUL-terminated, static storage, valid for the library's lifetime */
 } fuse_version_info;
 
 /* what this build can do; FUSE_CAP_* bits */
-typedef struct fuse_capabilities {
+typedef struct fuse_capability_set {
   uint32_t struct_size;
   uint64_t flags;  /* OR of FUSE_CAP_* */
-} fuse_capabilities;
+} fuse_capability_set;
 
 /* a new context */
 typedef struct fuse_context_out {
@@ -124,13 +124,13 @@ typedef struct fuse_graph_sink {
 } fuse_graph_sink;
 
 /* process-level settings, before initialize */
-typedef struct fuse_setup {
+typedef struct fuse_setup_options {
   uint32_t        struct_size;
   int64_t         communicator;  /* Fortran handle of the communicator this process couples on (MPI_Comm_c2f), or 0 for none */
   int32_t         has_end_time;  /* 1 if end_time is set */
   int32_t         reserved;  /* must be 0 */
   fuse_exact_time end_time;  /* when is_coupling_ongoing turns false; the graph's own end otherwise */
-} fuse_setup;
+} fuse_setup_options;
 
 /* a field named in the graph */
 typedef struct fuse_field_name {

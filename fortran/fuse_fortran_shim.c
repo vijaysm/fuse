@@ -37,7 +37,7 @@ FUSE_FORTRAN_EXPORT fuse_status ffuse_version(fuse_ctx* ctx, const fuse_null* in
   return table->version(ctx, in, out);
 }
 
-FUSE_FORTRAN_EXPORT fuse_status ffuse_capabilities(fuse_ctx* ctx, const fuse_null* in, fuse_capabilities* out) {
+FUSE_FORTRAN_EXPORT fuse_status ffuse_capabilities(fuse_ctx* ctx, const fuse_null* in, fuse_capability_set* out) {
   const fuse_participant_abi_v1* table = fuse_fortran_shim_table();
   if (!table || !table->capabilities) return FUSE_ERR_UNSUPPORTED;
   return table->capabilities(ctx, in, out);
@@ -73,7 +73,7 @@ FUSE_FORTRAN_EXPORT fuse_status ffuse_save_graph(fuse_ctx* ctx, const fuse_null*
   return table->save_graph(ctx, in, out);
 }
 
-FUSE_FORTRAN_EXPORT fuse_status ffuse_setup(fuse_ctx* ctx, const fuse_setup* in, fuse_null* out) {
+FUSE_FORTRAN_EXPORT fuse_status ffuse_setup(fuse_ctx* ctx, const fuse_setup_options* in, fuse_null* out) {
   const fuse_participant_abi_v1* table = fuse_fortran_shim_table();
   if (!table || !table->setup) return FUSE_ERR_UNSUPPORTED;
   return table->setup(ctx, in, out);

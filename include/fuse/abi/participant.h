@@ -27,7 +27,7 @@ typedef struct fuse_participant_abi_v1 {
   fuse_status (*version)(fuse_ctx* ctx, const fuse_null* in, fuse_version_info* out);
 
   /* ctx may be NULL */
-  fuse_status (*capabilities)(fuse_ctx* ctx, const fuse_null* in, fuse_capabilities* out);
+  fuse_status (*capabilities)(fuse_ctx* ctx, const fuse_null* in, fuse_capability_set* out);
 
   /* ctx must be NULL */
   fuse_status (*create)(fuse_ctx* ctx, const fuse_null* in, fuse_context_out* out);
@@ -46,7 +46,7 @@ typedef struct fuse_participant_abi_v1 {
 
   /* communicator and end time; before initialize; COLLECTIVE over the */
   /* communicator */
-  fuse_status (*setup)(fuse_ctx* ctx, const fuse_setup* in, fuse_null* out);
+  fuse_status (*setup)(fuse_ctx* ctx, const fuse_setup_options* in, fuse_null* out);
 
   /* after load_graph */
   fuse_status (*field_handle)(fuse_ctx* ctx, const fuse_field_name* in, fuse_field_ref* out);
