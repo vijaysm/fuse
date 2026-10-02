@@ -642,8 +642,102 @@ macro(fuse_resolve_dependencies)
     pkg_check_modules(PETSc REQUIRED IMPORTED_TARGET PETSc)   # found, never fetched
   endif()
   if(FUSE_ENABLE_LOWFIVE)
-    find_package(HDF5 REQUIRED COMPONENTS C)   # must be a SHARED build; LowFive dlopens the VOL
-    find_package(LowFive REQUIRED)
+    # ------------------------------------------------------------ LowFive
+    # Task 8.4 / S6 LowFive track. must be a SHARED HDF5 build; LowFive
+    # dlopens the VOL, and a static HDF5 cannot back a runtime-loaded plugin.
+    find_package(HDF5 REQUIRED COMPONENTS C)
+    find_package(LowFive REQUIRED)   # cmake/FindLowFive.cmake: no vendor config ships one
+
+    if(TARGET HDF5::HDF5)
+      set(_fuse_lowfive_hdf5_target HDF5::HDF5)
+    else()
+      # Older CMake's bundled FindHDF5.cmake sets only the legacy variables;
+      # wrap them the same defensive way MOAB's old-style config is wrapped
+      # a few dozen lines above, rather than assume a target exists.
+      if(NOT TARGET fuse-hdf5-raw)
+        add_library(fuse-hdf5-raw INTERFACE IMPORTED GLOBAL)
+        target_include_directories(fuse-hdf5-raw SYSTEM INTERFACE ${HDF5_INCLUDE_DIRS})
+        target_link_libraries(fuse-hdf5-raw INTERFACE ${HDF5_C_LIBRARIES} ${HDF5_LIBRARIES})
+      endif()
+      set(_fuse_lowfive_hdf5_target fuse-hdf5-raw)
+    endif()
+
+    if(NOT TARGET fuse::lowfive)
+      add_library(fuse-lowfive INTERFACE IMPORTED GLOBAL)
+      add_library(fuse::lowfive ALIAS fuse-lowfive)
+      target_link_libraries(fuse-lowfive INTERFACE fuse::lowfive-raw ${_fuse_lowfive_hdf5_target})
+      if(FUSE_ENABLE_MPI AND TARGET MPI::MPI_CXX)
+        # LowFive's own headers are built against MPI (vol-metadata.hpp
+        # forward-declares diy::mpi types); see cmake/FindLowFive.cmake.
+        target_link_libraries(fuse-lowfive INTERFACE MPI::MPI_CXX)
+      endif()
+    endif()
+
+    # ---- the two-HDF5-image hazard: DYNAMIC acceptance test, at configure
+    # time, not a warning. KNOWN_ISSUES.md section D, docs/user/lowfive.md,
+    # tools/probe-hdf5-images.{c,sh}. The hazard needs BOTH libraries linked
+    # into the same binary, so it only applies when MOAB is also enabled;
+    # with FUSE_ENABLE_MOAB=OFF there is nothing for LowFive's HDF5 to
+    # collide with and the probe would prove nothing.
+    if(FUSE_ENABLE_MOAB)
+      get_filename_component(_fuse_lowfive_root "${LOWFIVE_INCLUDE_DIR}" DIRECTORY)
+      get_filename_component(_fuse_moab_root "${MOAB_LIBRARY_DIRS}" DIRECTORY)
+      list(GET HDF5_INCLUDE_DIRS 0 _fuse_hdf5_include0)
+      get_filename_component(_fuse_hdf5_root "${_fuse_hdf5_include0}" DIRECTORY)
+      set(_fuse_probe_script "${PROJECT_SOURCE_DIR}/tools/probe-hdf5-images.sh")
+      if(NOT EXISTS "${_fuse_probe_script}")
+        message(FATAL_ERROR
+          "fuse: ${_fuse_probe_script} is missing; cannot verify LowFive and "
+          "MOAB can safely share a process (KNOWN_ISSUES.md section D). This "
+          "check is not optional -- see docs/user/lowfive.md.")
+      endif()
+      message(STATUS "fuse: probing for the two-HDF5-image hazard "
+                     "(lowfive=${_fuse_lowfive_root} moab=${_fuse_moab_root} "
+                     "hdf5=${_fuse_hdf5_root}) ...")
+      # Pass what THIS configure already resolved -- MOAB's own compiler and
+      # its package include dirs (MOAB_CXX, MOAB_PACKAGE_INCLUDES, both set
+      # by MOABConfig.cmake above) and the fmt include FindLowFive.cmake
+      # settled on -- rather than let the script fall back to its own /opt
+      # defaults, which are this lab's but not necessarily the next host's.
+      string(REPLACE ";" " " _fuse_moab_extra_includes_sp "${MOAB_PACKAGE_INCLUDES}")
+      execute_process(
+        COMMAND "${CMAKE_COMMAND}" -E env
+          "FUSE_PROBE_CXX=${MOAB_CXX}"
+          "FUSE_PROBE_MOAB_EXTRA_INCLUDES=${_fuse_moab_extra_includes_sp}"
+          "FUSE_PROBE_FMT_INCLUDE=${LOWFIVE_FMT_INCLUDE_DIR}"
+          "FUSE_PROBE_BUILD_DIR=${CMAKE_BINARY_DIR}/fuse-probe-hdf5-images"
+          "${_fuse_probe_script}" "${_fuse_lowfive_root}" "${_fuse_moab_root}" "${_fuse_hdf5_root}"
+        RESULT_VARIABLE _fuse_probe_result
+        OUTPUT_VARIABLE _fuse_probe_output
+        ERROR_VARIABLE  _fuse_probe_error)
+      message(STATUS "${_fuse_probe_output}")
+      if(_fuse_probe_result EQUAL 1)
+        message(FATAL_ERROR
+          "fuse: REFUSING this configuration. tools/probe-hdf5-images.sh "
+          "measured more than one libhdf5 image loading when this LowFive "
+          "(${_fuse_lowfive_root}) and this MOAB (${_fuse_moab_root}) are "
+          "linked into one process -- LowFive's VOL interception would "
+          "silently not apply to MOAB's own HDF5 traffic (or vice versa), "
+          "with no link error and no runtime error. Full probe output:\n"
+          "${_fuse_probe_output}\n${_fuse_probe_error}\n"
+          "Rebuild LowFive against the SAME HDF5 prefix MOAB uses "
+          "(see the probe's own output above, and docs/user/lowfive.md) and "
+          "point -DCMAKE_PREFIX_PATH at that new prefix instead.")
+      elseif(NOT _fuse_probe_result EQUAL 0)
+        message(FATAL_ERROR
+          "fuse: tools/probe-hdf5-images.sh could not determine whether the "
+          "two-HDF5-image hazard applies here (exit ${_fuse_probe_result}, "
+          "unrelated to the hazard itself -- see its output above and "
+          "docs/user/lowfive.md). Configuring FUSE_ENABLE_LOWFIVE with MOAB "
+          "also enabled without this proof is exactly the silent failure "
+          "mode this check exists to prevent, so this is refused rather "
+          "than downgraded to a warning.")
+      endif()
+    else()
+      message(STATUS "fuse: FUSE_ENABLE_MOAB is OFF; the two-HDF5-image "
+                     "hazard needs both libraries linked to occur, so the "
+                     "probe is skipped (nothing to test).")
+    endif()
   endif()
 
   # A build that cannot say which versions it used cannot reproduce its own result.
