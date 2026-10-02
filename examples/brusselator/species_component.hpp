@@ -93,10 +93,33 @@ class UComponent final : public fuse::Component {
 
   [[nodiscard]] std::string name() const override { return name_; }
 
-  fuse::Result<void> register_fields(fuse::FieldRegistry&, const fuse::CouplingGraph&) override {
-    // WindowCoupler binds provided()/required() directly, exactly like
-    // gray_scott's GrayScottSpeciesComponent -- see that header's own
-    // comment on why this is a no-op here.
+  /// `fuse::WindowCoupler` (examples/brusselator/main.cpp's `--driver
+  /// window`) binds `provided_ptr()`/`required_ptr()` directly, never
+  /// calling this -- so this body is exercised only by the Runner path
+  /// (`--driver runner`, `fuse::Runner::initialize()`), which resolves a
+  /// window-scoped member's storage through the `FieldRegistry` exactly as
+  /// an ordinary single-clock component's `value_arc`/`feed_arc` is
+  /// resolved (window_coupler.hpp's own class comment). Binds `u_out`
+  /// (`Intent::Provides`, this component's `q`) to `provided_.data()` and
+  /// `u_in` (`Intent::Requires`, the V data this component receives) to
+  /// `required_.data()`, both `n_` doubles -- the SAME storage the
+  /// WindowCoupler path reads/writes through `provided_ptr()`/
+  /// `required_ptr()`, so the two drivers exercise one physics object
+  /// rather than two.
+  fuse::Result<void> register_fields(fuse::FieldRegistry& reg, const fuse::CouplingGraph& g) override {
+    const auto cid = g.find_component(name_);
+    if (!cid.has_value()) {
+      return fuse::Failure{"E-BRUSS-COMP", "component '" + name_ + "' not in graph"};
+    }
+    for (const fuse::FieldId f : g.component(*cid).fields) {
+      const bool provides = g.field(f).intent == fuse::Intent::Provides;
+      double* base = provides ? provided_.data() : required_.data();
+      auto r = reg.bind(f, fuse::FieldRef{base,
+                                          fuse::Layout{.stride = 1,
+                                                       .count = static_cast<std::size_t>(n_)},
+                                          fuse::MemorySpace::Host});
+      if (!r.ok()) return r;
+    }
     return fuse::Result<void>::success();
   }
 
@@ -255,7 +278,27 @@ class VComponent final : public fuse::Component {
 
   [[nodiscard]] std::string name() const override { return name_; }
 
-  fuse::Result<void> register_fields(fuse::FieldRegistry&, const fuse::CouplingGraph&) override {
+  /// See `UComponent::register_fields()`'s comment: exercised only by the
+  /// Runner path. Binds `v_out` (`Intent::Provides`, `P_VU(state_)` on the
+  /// U grid) to `provided_.data()` and `v_in` (`Intent::Requires`, the raw
+  /// q this component receives on the U grid) to `required_.data()`, both
+  /// `n_u_` doubles -- both of this component's window-transfer fields
+  /// live on `n_u_`, not `n_v_` (the file header's "both members use
+  /// `WindowMember::length = N_u`").
+  fuse::Result<void> register_fields(fuse::FieldRegistry& reg, const fuse::CouplingGraph& g) override {
+    const auto cid = g.find_component(name_);
+    if (!cid.has_value()) {
+      return fuse::Failure{"E-BRUSS-COMP", "component '" + name_ + "' not in graph"};
+    }
+    for (const fuse::FieldId f : g.component(*cid).fields) {
+      const bool provides = g.field(f).intent == fuse::Intent::Provides;
+      double* base = provides ? provided_.data() : required_.data();
+      auto r = reg.bind(f, fuse::FieldRef{base,
+                                          fuse::Layout{.stride = 1,
+                                                       .count = static_cast<std::size_t>(n_u_)},
+                                          fuse::MemorySpace::Host});
+      if (!r.ok()) return r;
+    }
     return fuse::Result<void>::success();
   }
 
