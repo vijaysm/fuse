@@ -206,6 +206,19 @@ set_target_properties(fuse-coupler-transport PROPERTIES
   VISIBILITY_INLINES_HIDDEN ON
 )
 
+# ---- S6 phase 3, "MPI connect" track: begin -------------------------------
+# transport/connect.cpp: fuse::transport::connect() (inter-executable rank
+# rendezvous). Added unconditionally, not inside the FUSE_ENABLE_MPI block
+# above, for the same reason backend/nodal_remap_distributed.cpp is (see
+# that file's own comment in this script): its MPI-calling body is entirely
+# inside `#if FUSE_HAVE_MPI`, so it compiles to an empty translation unit
+# without MPI, and its MPI-free helpers (validate_launch_layout,
+# check_mpmd_layout, wait_for_port_file) are header-only inline functions in
+# connect.hpp, needing no library source at all to be tier-0 testable.
+target_sources(fuse-coupler-transport PRIVATE transport/connect.cpp)
+# ---- S6 phase 3, "MPI connect" track: end ---------------------------------
+
+
 # ---------------------------------------------------------------- search
 # fuse::search: the ArborX-backed spatial index (BVH point/box queries,
 # k-nearest, and the distributed variant) fuse::backend can build spatial

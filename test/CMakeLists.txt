@@ -246,6 +246,11 @@ fuse_add_gtest(runtime field_ref THROWS LIBS fuse::runtime)
 
 # ---------------------------------------------------------------- transport
 fuse_add_gtest(transport transport)
+# S6 phase 3, "MPI connect" track: tier-0 unit tests of connect.hpp's
+# MPI-free helpers (validate_launch_layout, check_mpmd_layout,
+# wait_for_port_file). connect() itself needs a second process; see
+# test/parallel/connect below.
+fuse_add_gtest(transport connect)
 
 # ---------------------------------------------------------------- backend
 foreach(t spacetime)
@@ -490,6 +495,65 @@ if(FUSE_ENABLE_MPI)
   # nothing (REVIEW.md R-51).
   target_include_directories(fuse_parallel_comm_graph_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 endif()
+
+# ---- S6 phase 3, "MPI connect" track: begin -------------------------------
+# test/parallel/connect/: two separately built executables exchanging a
+# field through fuse::transport::connect() + the Runner, in both launch
+# modes (launcher-style MPMD, and true separate-executable MPMD via
+# MPI_Open_port/accept/connect). See connect_common.hpp's own header
+# comment for the design and run_pair.sh for how the host actually drives
+# the pair. MPI cannot start in this sandbox at all (KNOWN_ISSUES.md C1),
+# so every ctest row below is a host_verification_needed item; what IS
+# verified here is that all three targets build at tier 1.
+
+# connect_golden: tier-0, MPI-free (connect_partition.hpp has no <mpi.h> at
+# all), unconditionally buildable -- a human-run tool, same convention as
+# tools/src/write_golden_descriptor.cpp, not a registered ctest case. The
+# committed golden-*.txt files under test/parallel/connect/ were produced by
+# running it, exactly as that tool's own golden files were.
+add_executable(fuse_parallel_connect_golden EXCLUDE_FROM_ALL parallel/connect/connect_golden.cpp)
+target_include_directories(fuse_parallel_connect_golden PRIVATE parallel/connect)
+target_link_libraries(fuse_parallel_connect_golden PRIVATE fuse::model)
+
+if(FUSE_ENABLE_MPI)
+  add_executable(fuse_parallel_connect_a parallel/connect/connect_a.cpp)
+  add_executable(fuse_parallel_connect_b parallel/connect/connect_b.cpp)
+  foreach(t fuse_parallel_connect_a fuse_parallel_connect_b)
+    target_include_directories(${t} PRIVATE parallel/connect)
+    target_link_libraries(${t} PRIVATE fuse::runtime fuse::transport MPI::MPI_CXX)
+  endforeach()
+
+  # Six host rows: {mpmd, accept} x {1+1, 2+3, 3+2}. `RESOURCE_LOCK` is not
+  # used here -- unlike the abi install_consumer rows, each row's scratch
+  # directory (a fresh ctest-test-dir-relative path per row) is private to
+  # it, so concurrent rows do not race the same port file.
+  # Parallel lists, not a list of pairs: CMake flattens a quoted "a;b"
+  # element the moment it is handed to another list(GET)/foreach, so a
+  # nested-list encoding silently loses its grouping (found configuring
+  # this very block -- "list index: 1 out of range").
+  set(_fuse_connect_nas 1 2 3)
+  set(_fuse_connect_nbs 1 3 2)
+  list(LENGTH _fuse_connect_nas _fuse_connect_n_pairs)
+  math(EXPR _fuse_connect_last_idx "${_fuse_connect_n_pairs} - 1")
+  foreach(_idx RANGE 0 ${_fuse_connect_last_idx})
+    list(GET _fuse_connect_nas ${_idx} _na)
+    list(GET _fuse_connect_nbs ${_idx} _nb)
+    foreach(_mode mpmd accept)
+      set(_name parallel.connect.${_mode}.${_na}+${_nb})
+      set(_scratch ${CMAKE_CURRENT_BINARY_DIR}/connect-scratch/${_mode}-${_na}+${_nb})
+      set(_golden ${CMAKE_CURRENT_SOURCE_DIR}/parallel/connect/golden-${_na}+${_nb}.txt)
+      add_test(NAME ${_name}
+        COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/parallel/connect/run_pair.sh
+                ${_mode} ${MPIEXEC_EXECUTABLE} ${_na} ${_nb}
+                $<TARGET_FILE:fuse_parallel_connect_a>
+                $<TARGET_FILE:fuse_parallel_connect_b>
+                ${_golden} ${_scratch} 60)
+      set_tests_properties(${_name} PROPERTIES
+        LABELS "parallel;mpi;connect" TIMEOUT 120)
+    endforeach()
+  endforeach()
+endif()
+# ---- S6 phase 3, "MPI connect" track: end ---------------------------------
 
 # ---------------------------------------------------------------- linalg
 fuse_add_gtest(linalg least_squares THROWS)

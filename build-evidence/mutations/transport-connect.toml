@@ -1,0 +1,76 @@
+# Mutations for fuse::transport::connect() (S6 phase 3, "MPI connect" track).
+# Own file per the review-fix protocol: do not edit build-evidence/mutations.toml
+# directly while other fixers hold it dirty.
+#
+# Every row below was applied by hand against include/fuse/transport/connect.hpp,
+# rebuilt at the base (tier-0, no-MPI) build configuration, run, and confirmed to fail
+# EXACTLY the named test (or, for the timeout row, to hang rather than
+# complete -- the predicted failure mode IS the hang) before being restored
+# byte-for-byte (`cmp` against the pre-mutation file showed no difference).
+# All three are tier-0 reachable: validate_launch_layout(), check_mpmd_layout()
+# and wait_for_port_file() are pure, MPI-free functions (connect.hpp's own
+# module comment explains why), so every row here was hand-verified, unlike a
+# row that would need a live multi-rank job this sandbox cannot start
+# (KNOWN_ISSUES.md C1).
+
+[[mutation]]
+id = "connect-merge-order-not-enforced"
+area = "transport"
+describes = "validate_launch_layout()'s requirement that a launched component start exactly where the previous one (in the graph's own declaration order) ended is removed, so two components whose RankSets are disjoint and cover the world but are NOT consecutive blocks in that order -- the layout MPI_Intercomm_merge's high/low argument and MPMD's own appnum partitioning actually produce when fixed by component order -- are accepted instead of refused. This is the row the task names 'merge order swapped': a graph that declared its two connect-mode components in one order but whose real launch merged them in the other would silently get a base communicator numbered backwards relative to what the graph says, with nothing to catch it."
+file = "include/fuse/transport/connect.hpp"
+old = """    if (c.ranks.min_rank() != expected_start) {
+      return Failure{
+          "E-CONNECT-SPEC",
+          "component '" + c.name + "' starts at rank " +
+              std::to_string(c.ranks.min_rank()) +
+              ", but the launched components before it in the graph's own "
+              "order occupy ranks [0, " + std::to_string(expected_start) +
+              "); the launched components' rank sets must be consecutive "
+              "blocks in the graph's component order, because that order is "
+              "what fixes MPI_Intercomm_merge's and MPMD's own rank "
+              "numbering"};
+    }
+    expected_start = c.ranks.max_rank() + 1;"""
+new = """    expected_start = c.ranks.max_rank() + 1;"""
+target = "fuse_transport_connect_test"
+test = "transport.connect"
+result = "CONFIRMED 2026-10-02: ValidateLaunchLayout.RefusesRanksNotStartingWhereThePreviousComponentEnded failed exactly as predicted (a declared gap between two launched components' RankSets was accepted instead of refused with E-CONNECT-SPEC); ValidateLaunchLayout.RefusesOverlappingRankSets also failed, since it depends on the same check from the other direction (an overlap instead of a gap). Every other case in the binary (12 of 14) was unaffected. Restored; cmp against the pre-mutation file reported no difference."
+
+[[mutation]]
+id = "connect-appnum-not-checked"
+area = "transport"
+describes = "check_mpmd_layout()'s check that every appnum a rank actually reports at runtime names a declared Mpmd component is replaced with a silent `continue`, so a rank misclassified by the launcher's own argument order (an appnum no component in the graph names at all) runs as a stray, uncoupled participant instead of failing the job. This is the row the task names 'appnum check removed'."
+file = "include/fuse/transport/connect.hpp"
+old = """    const auto it = component_by_appnum.find(appnum);
+    if (it == component_by_appnum.end()) {
+      return Failure{
+          "E-CONNECT-APPNUM",
+          "rank(s) report MPI_APPNUM " + std::to_string(appnum) +
+              ", which no mpmd component in the graph declares"};
+    }
+    const ComponentDecl& comp = g.component(it->second);"""
+new = """    const auto it = component_by_appnum.find(appnum);
+    if (it == component_by_appnum.end()) {
+      continue;
+    }
+    const ComponentDecl& comp = g.component(it->second);"""
+target = "fuse_transport_connect_test"
+test = "transport.connect"
+result = "CONFIRMED 2026-10-02: CheckMpmdLayout.RefusesAnAppnumNoComponentDeclares failed exactly as predicted (an undeclared appnum reported by its own rank, disjoint from both declared components' RankSets, was silently accepted instead of refused with E-CONNECT-APPNUM). Every other case in the binary (13 of 14) was unaffected. NOTE: the first version of this test case put the stray appnum on a rank that also belonged to one declared component's reporting set, which shifted that component's OWN rank-set match and fired a DIFFERENT check (RefusesWhenTheDeclaredRankSetDisagreesWithTheActualOne's equality test) with the same error code -- a false pass that this mutation itself exposed; the test was rewritten to put the stray appnum on its own rank, outside both declared RankSets, before this result was recorded. Restored; cmp against the pre-mutation file reported no difference."
+
+[[mutation]]
+id = "connect-timeout-not-checked"
+area = "transport"
+describes = "wait_for_port_file()'s deadline check is removed, so a partner that never publishes its port file is polled forever instead of being refused with E-CONNECT-TIMEOUT once timeout_s has elapsed -- a hang instead of a named refusal, which is exactly the failure mode connect.hpp's own module comment says this function exists to prevent. This is the row the task names 'timeout check removed'."
+file = "include/fuse/transport/connect.hpp"
+old = """    if (std::chrono::steady_clock::now() >= deadline) {
+      return Failure{
+          "E-CONNECT-TIMEOUT",
+          "no port name appeared at '" + path + "' within " +
+              std::to_string(timeout_s) + "s"};
+    }
+    std::this_thread::sleep_for(std::chrono::duration<double>(poll_interval_s));"""
+new = """    std::this_thread::sleep_for(std::chrono::duration<double>(poll_interval_s));"""
+target = "fuse_transport_connect_test"
+test = "transport.connect"
+result = "CONFIRMED 2026-10-02: WaitForPortFile.RefusesWithoutSleepingWhenTimeoutIsZero did not complete -- run under `timeout 3`, the process was killed (exit 124) instead of returning, which is the predicted failure mode itself (a hang, not a reported test failure) for a path whose own point is to turn 'partner never arrives' into a bounded refusal rather than an unbounded wait. Restored; cmp against the pre-mutation file reported no difference, and the restored binary's full connect_test suite (14 of 14) passed."
