@@ -2272,6 +2272,50 @@ task's own instructions anticipated has now been tested and excluded.
 
 ---
 
+### D12. The participant ABI's `begin_step`/`end_step` run the period's exchanges once, at the period's end — a one-period lag on every transfer, no time averages, no implicit coupling; the resumable execution loop is the fix
+
+**Found 2026-10-02**, in the C ABI track's own report (`484d8ee`), and verified by reading
+`src/abi/context.hpp`: every component the graph declares is wrapped in a component whose
+`advance()` is a no-op, and `Runner::run_period()` is called exactly once per period, inside
+whichever externally driven component's `end_step()` completes the period. Between a component's
+`begin_step()` and `end_step()` the Runner has not run, so:
+
+- an **import is not current when `begin_step()` returns**; it holds the previous period's
+  exchange whatever the graph's `lag()` says. `entries.def` promises otherwise ("the component's
+  imports are current on return"), and the tests work around it by reading an import only after
+  their own `end_step()`;
+- everything the schedule places **within** a period is lost: a subcycled component's `Sample` /
+  `Accumulate` operations all run at the end and read the same final storage, so a time average
+  is wrong; an implicit coupling group cannot iterate, and `fuse_step_report.requires_checkpoint`
+  / `requires_restore` are always 0.
+
+It is exact for exactly one class of graph: every field transfer lagged by one period, no
+accumulation, no implicit coupling group — SOMA's bookkeeping-clock scheme, which is where the
+mechanism came from. It is **not refused** for other graphs today; that is the first thing to
+add if the fix below is delayed.
+
+**The fix** is a Runner that can yield at an externally driven component's `advance()`: run the
+period's instructions up to that tick (so every exchange that feeds this component has run and
+its import is current), return control to the caller at `begin_step()` with the tick's exact
+bounds and the group's checkpoint/restore request, and resume at `end_step()`. Every `advance()`
+the Runner makes goes through one site (`Runner::Impl::advance`, runner.cpp) plus the time-window
+path (iteration.cpp), so the yield point is well defined. Two ways to build it, the choice put to
+the user on 2026-10-02:
+
+1. **A resumable execution loop** (the enduring design): `step_period()`, `run_region()` and the
+   window path become C++20 coroutines (or an explicit state machine) that suspend at an external
+   `advance()`. No constraint on the host code's threading or MPI level; the statements and their
+   order are unchanged, so bit-identity with the in-process run is preserved by construction.
+   Cost: the three largest functions in the runtime change shape; the allocation-free-per-period
+   property needs the coroutine frames pre-allocated.
+2. **A Runner thread**: the Runner runs on its own thread and an external `advance()` blocks it
+   until `end_step()`. The loop is untouched. Cost: the host must have initialised MPI at
+   `MPI_THREAD_SERIALIZED` or above (FUSE would check `MPI_Query_thread` and refuse below it),
+   and Kokkos must be initialised by, and used only from, the Runner thread.
+
+Until one lands: `docs/user/c-abi.md` states the limitation; a graph outside the exact class
+should be refused at `initialize()` with a named error and a test that fires it.
+
 ## C. Not defects — do not fix these
 
 - **Five mutations report `NOT-ASSESSED` locally.** They need MPI, and a test
