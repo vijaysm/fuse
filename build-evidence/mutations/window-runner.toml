@@ -252,6 +252,47 @@ test = "runtime.window_coupler"
 # `cmp`-verified byte-identical to the pre-mutation copy afterward.
 
 [[mutation]]
+id = "window-runner-sample0-reads-live-provided-every-sweep"
+area = "runtime/iteration (advance_window)"
+describes = "advance_window()'s own window-start 'Sample 0' re-stamp re-reads the LIVE cfg.provided[e] pointer on every sweep instead of the value cached once on the pass's own first sweep (Runner::Impl::window_start_value) -- Component::restore_state() is only contractually required to restore what save_state() captured (the component's own hidden state), never to resynchronize a Provides field that is itself a function of that state, so from the second sweep of a window on this mislabels the PREVIOUS (rejected) sweep's own last advance() output as the window-start value. The EXACT defect WindowCoupler::sweep_window()'s own start_value[i][e] (window_coupler.cpp's own comment) was already fixed to remove on the driver side, for the identical reason."
+file = "src/runtime/iteration.cpp"
+old = """  std::vector<double>& start_value = window_start_value[node];
+  if (first_sweep_of_pass) {
+    start_value.assign(cfg.provided, cfg.provided + cfg.length);
+  }"""
+new = """  std::vector<double>& start_value = window_start_value[node];
+  if (true) {  // MUTATED: always true, so start_value re-reads the live (possibly stale) pointer every sweep
+    start_value.assign(cfg.provided, cfg.provided + cfg.length);
+  }"""
+target = "fuse_verification_brusselator_runner_test"
+test = "verification.brusselator_runner"
+# Expected kill: BrusselatorRunner.PerWindowStateMatchesDriverWithStoppingRuleRemoved
+# (the only enabled test in this binary sensitive enough to catch it: the
+# Brusselator's own multi-element, multi-substep, genuinely nonlinear
+# fixture, over 150 windows with the stopping rule removed so the
+# comparison cannot be confounded by a convergence-decision difference).
+# Every scalar (length-1), single-substep-per-window window_runner_*_test.cpp
+# fixture is a confirmed NO-OP against this mutation: Sample 0 and the live
+# `cfg.provided[e]` coincide for a member whose own window has exactly one
+# substep per window AND converges in one sweep, which is every existing
+# fixture's own shape -- this is why the defect went undetected until the
+# Brusselator's own first multi-sweep, multi-element window-scoped Runner
+# fixture existed. Verified BY HAND 2026-10-02/03 (see this delegation's
+# report to the lead), capturing the mutated run's COMPLETE, untruncated
+# stdout (not piped through `tail`): EVERY ONE of the 150 windows fails
+# EXPECT_EQ on via_runner.u0_per_window[w] vs via_driver.u0_per_window[w] --
+# the first failing window printed by the test itself is window 0
+# (via_runner=1.6145208346472208 vs via_driver=1.6144249929590395), i.e. the
+# mutation is caught immediately, not "well before the end" of some
+# longer-surviving run. (An earlier hand-check that inspected only the last
+# 20 lines of this same output mistook the tail's own window-148/149
+# failures -- visible only because `tail` truncated everything before them
+# -- for the first divergence; the untruncated capture above corrects that.)
+# Restoring the two-line fix and re-running makes the test pass again,
+# bit-for-bit, across all 150 windows. File restored and re-verified
+# byte-identical afterward.
+
+[[mutation]]
 id = "window-runner-new-instance-uses-period-relative-dst-step"
 area = "runtime/iteration (advance_window)"
 describes = "commit 7939643: Runner::Impl::advance_window()'s own 'is this the first sweep of a new window instance' detection, and its T0/T1 computation, use Instruction::dst_step directly instead of window_absolute_instance(cfg, ins.dst_step) -- dst_step is PERIOD-relative (it resets to 0 every run_period() call, since the compiled TimedDag spans exactly one period and is replayed verbatim), so a window-scoped region with exactly one window instance per period sees dst_step==0 on EVERY run_period() call, not just the first, and silently never advances past window 0: every SECOND and later call to run_period() leaves every window member's state frozen bit-identically."

@@ -713,6 +713,33 @@ struct Runner::Impl {
   /// sweep after the first.
   std::unordered_map<std::uint32_t, Rational> window_pass_start_clock;
 
+  /// Time windows track: this member's own PROVIDES value at the window's
+  /// own start (T0), cached ONCE on the pass's own first sweep
+  /// (`first_sweep_of_pass`), keyed the same way as
+  /// `window_pass_start_clock`. Read, never written, on every later sweep
+  /// of the SAME pass -- the EXACT SAME shape of bug `window_pass_start_
+  /// clock`'s own comment documents for the clock, now for the exported
+  /// value instead: `run_region()`'s own generic rollback restores this
+  /// member's registered state to the window-start checkpoint before
+  /// every sweep, but `Component::restore_state()` is contractually only
+  /// required to restore what `save_state()` captured (the component's
+  /// own hidden state) -- NOT to resynchronize a `Provides` field that is
+  /// itself a FUNCTION of that hidden state (e.g. a remap of it), which
+  /// stays at whatever the REJECTED sweep's own last `advance()` call
+  /// left it holding. Reading `cfg.provided[e]` live at the top of every
+  /// sweep -- as `advance_window()`'s own "Sample 0" write used to --
+  /// therefore mislabels the PREVIOUS sweep's own end-of-window value as
+  /// the window-start one from the second sweep on, exactly the defect
+  /// `WindowCoupler::sweep_window()`'s own `start_value[i][e]` (window_
+  /// coupler.cpp's own comment: "captured ONCE, right after save_state(),
+  /// before any advance() this window can mutate `provided`") was fixed
+  /// to remove on the driver side -- found here by a hexfloat trace
+  /// against that same driver on the Brusselator's own parameters
+  /// (max_window_balance_error 1.686e-03, exactly the pre-fix historical
+  /// defect's own signature, docs/user/gray-scott.md's sibling account
+  /// and docs/user/brusselator.md's own 2026-09-26 history).
+  std::unordered_map<std::uint32_t, std::vector<double>> window_start_value;
+
   /// KNOWN_ISSUES.md D11 (closing): scratch for the fixed-chunk
   /// deterministic reductions (fuse/num/space_kernels.hpp's
   /// `deterministic_norm_squared`/`deterministic_norm_squared_diff`) that
