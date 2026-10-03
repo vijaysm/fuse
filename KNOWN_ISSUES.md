@@ -2715,7 +2715,7 @@ BUILD cleanly into `fuse_verification_brusselator_{participants,check}_test` und
 both pass — no binary built in the MPI-enabled tree was run, per this sandbox's own standing
 constraint, C1 above); none of the four `host_verification_needed` rows above have been run.
 
-### D19. The coupling-window path (`src/runtime/iteration.cpp`) has never run across more than one process — OPEN, Unit 2b
+### D19. The coupling-window path (`src/runtime/iteration.cpp`) has never run across more than one process — FIXED IN THE SANDBOX 2026-10-03, awaiting the host
 
 **Found this session**, reviewing Conformance Unit 2's own host rows before they can be run: every
 coupling-window test anywhere in this suite is tier 0 (one process). The window path has NO
@@ -2748,22 +2748,79 @@ certain hang, for (at least) four separate reasons:
 **Scope: Unit 2b**, in five ordered steps, each with its own tier-0 test (the 20 existing window
 tests plus the Brusselator as the bit-for-bit oracle for the single-process case):
 
-- **(a) Hosting.** `this_process` (the Runner already carries it) threaded into
+- **(a) Hosting — DONE (`0eb576a`).** `this_process` (the Runner already carries it) threaded into
   `WindowMemberConfig`; a non-hosted member takes no substeps, no `advance()`/save/restore calls, no
   `ExternalSuspend` — its own export arc on that rank is whatever Transport delivers.
-- **(b) Priming through the transfer.** The import prime at `resolve_regions()` must come through
-  the field transfer (Transport/Remap/Sink from the provider's own export arc), never from
-  `registry.get(provider_exported_field)` directly.
-- **(c) Agreed convergence.** The per-block residual/reference norms of a window region reduced
-  across the region's participants (the union of its members' processor sets) before the stop/
-  continue decision, in a fixed, deterministic order.
-- **(d) Ranks without a component.** `fuse_run()` legal on a process hosting no externally-driven
-  component (narrow `E-ABI-RUN-EXTERNAL` to refuse only when an externally-driven component IS
-  hosted here) — `coupler_main.c`'s and the placeholder ranks' own loop becomes a `run()` call for
-  the same `--periods` the physics ranks step, rather than nothing.
-- **(e) `verification.window.mpi.{2,3}`**: the existing 7:13 window fixture as a REAL two/three-
-  process `Runner` run (members on disjoint ranks), compared bit for bit against the single-process
-  `Runner` — the window path's first actual MPI test, smaller than the Brusselator.
+- **(b) Priming through the transfer — DONE (`2df7052`).** The import prime at `resolve_regions()`
+  now comes through the field transfer (the channel's own compiled Transport/Remap/Epoch/Sink chain,
+  re-run once from the provider's own export arc), never from `registry.get(provider_exported_field)`
+  directly.
+  **Correction to this entry's own original model, measured while building (b):** a window
+  channel's own `Interpolate` node NEVER carries a real `TemporalBasis` — confirmed by dumping the
+  actual compiled instruction stream for both a plain and a genuinely multirate (7:13) window graph:
+  neither ever emits an `OpKind::Sample`, and `resolve_spacetime()` (`runner.cpp`) only builds a
+  `SpacetimeInfo` for a node with `OpAttrs::basis != TemporalBasis::None`, which
+  `src/ir/window_lowering.cpp` never sets for a window channel (it compiles the `lag(k)` no-op
+  shape). So every window-channel `Interpolate` always takes `execute()`'s own `r.spacetime < 0`
+  plain-copy branch; `advance_window()` hands over the complete K-wide waveform in one buffer every
+  sweep, and there is no incremental, Sample-fed history for a window channel to depend on at all.
+  **A reader building on this path does not need to seed `SpacetimeInfo::history` for a window
+  channel — there is nothing there to seed.** (This entry originally assumed otherwise; measured and
+  corrected 2026-10-03.)
+- **(c) Agreed convergence — DONE.** The per-block residual/reference norms of a window region
+  reduced across the region's participants (the union of its members' processor sets) before the
+  stop/continue decision, in a fixed, deterministic order: `decide_window_convergence()`
+  (`include/fuse/runtime/window_convergence.hpp`), a new pure function in the same no-MPI,
+  tier-0-testable style as `rank_agreement.hpp`/`epoch_schedule.hpp`, fed by a new point-to-point
+  all-to-all exchange (`Runner::Impl::gather_window_block_samples()`, new tag `kWindowConvergence`
+  — never a true `MPI_Allgather`, since `R.participants` is a subset of `base`'s own ranks, matching
+  `reduce_region_residuals()`'s own convention). A block whose value is not hosted here contributes
+  no sample rather than an uninitialised one — `WindowMemberConfig::hosted` gates ownership only
+  when `R.participants.size() > 1` (a real multi-rank scenario where a different rank genuinely
+  supplies the value); with no second rank, a block stays owned, since disowning it there would make
+  it unmeasurable by anyone. Six pure-function tests in `test/runtime/window_convergence_test.cpp`,
+  including a direct instantiation of "a rank deciding from its local pairs only" (the lead's own
+  suggested mutation). The cross-rank agreement itself — as opposed to the wiring that reaches
+  `decide_window_convergence()` at all, which IS tier-0-killed, broadly and immediately — has no
+  tier-0 oracle (every sandbox fixture has exactly one effective participant); its real proof is
+  `parallel.window_runner_mpi.{2,3}` (step (e)), a host row.
+- **(d) Ranks without a component — DONE.** `fuse_run()` legal on a process hosting no
+  externally-driven component: `Runner::hosts_component(ComponentId) const -> bool`, a new public
+  method generalising `WindowMemberConfig::hosted`'s own rule, replaces `impl_run()`'s blanket
+  `c.external_count > 0` graph-level refusal (`src/abi/participant.cpp`) with a per-component loop —
+  explicitly skipping `ComponentKind::Coupler` entries, which never get `in_process` set at all and
+  so would otherwise be wrongly refused on a rank hosting only a coupler. `coupler_main.c`'s and
+  `u_main.c`'s own placeholder ranks now call `fuse_run()` for `--periods` periods instead of doing
+  nothing between `initialize()`/`destroy()`. Tier-0-tested via a new test-only ABI seam,
+  `fuse::abi_test::force_this_process()` (mirrors `inject_component()`'s own precedent: no entry in
+  the frozen public ABI lets a C caller name a rank without a real communicator) —
+  `AbiParticipant.RunAcceptedOnAProcessHostingOnlyTheCoupler` and
+  `AbiParticipant.RunStillRefusedOnAProcessHostingAnExternalComponent`, both passing; the
+  coupler-exclusion fix specifically validated by the former. `docs/user/c-abi.md` updated with a new
+  "`fuse_run()` and ranks without a component of their own" section.
+- **(e) `parallel.window_runner_mpi.{2,3}` — DONE (sandbox build only).** The 7:13 LCM-window fixture
+  (`window_runner_multirate_test.cpp`'s own shape: A interval 13, B interval 7, window 91, so neither
+  member ever straddles) as a REAL multi-process `Runner` run — A and B on genuinely disjoint ranks
+  (0 and 1), a third, uncoupled component C added at 3 ranks (rank 2, no channels, proving its mere
+  presence does not perturb the window) — compared, `EXPECT_EQ`, against the single-process `Runner`
+  on every per-window final value AND every per-window iteration count, not merely completion.
+  `test/parallel/window_runner_mpi_test.cpp`, registered via `fuse_add_mpi_test(parallel
+  window_runner_mpi LIBS fuse::runtime RANKS 2 3)`. Build-verified only: `b1mpi` (tier 1,
+  `FUSE_ENABLE_MPI=ON`) builds and links `fuse_parallel_window_runner_mpi_test` clean, and `ctest -N`
+  there confirms the two rows exist (`parallel.window_runner_mpi.2`, `parallel.window_runner_mpi.3`);
+  MPI cannot start in this sandbox at all (C1), so neither row has actually been RUN here. This is
+  the host row that settles both (c)'s cross-rank agreement (no tier-0 oracle, as noted above) and
+  (b)'s narrower registry-vs-chain comparison (`window-prime-length`/`window-runner` mutation notes,
+  `build-evidence/mutations/`), neither of which a single sandboxed process can distinguish from its
+  alternative.
 
-**Not pursued before this entry was written** (recorded at the START of Unit 2b, per instruction, so
-the record survives even if the unit is interrupted partway).
+**Fixed in the sandbox, awaiting the host.** Steps (a)-(e) above are all implemented and tier-0/
+build verified (163/163 tier-0 tests pass; tier 1 — `FUSE_ENABLE_MPI=ON` — builds clean including the
+new MPI test and the Brusselator's `coupler_main`/`u_main` placeholder-rank changes); every mutation
+tried has a decisive sandbox-side kill except the two comparisons named above, which by their own
+nature need a second real rank to even pose the question. None of this has been run under real MPI —
+this sandbox cannot start it (C1) — so the fix is unconfirmed until a host executes:
+- `verification.brusselator.participants.mpmd.{3,5}` (Unit 2, pre-existing)
+- `verification.brusselator.participants.accept.{3,5}` (Unit 2, pre-existing)
+- `parallel.window_runner_mpi.2` (step (e), new)
+- `parallel.window_runner_mpi.3` (step (e), new)
