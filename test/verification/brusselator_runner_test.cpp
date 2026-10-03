@@ -306,9 +306,8 @@ int g_fixed_iterations = 0;
   const int max_iters = g_fixed_iterations > 0 ? g_fixed_iterations : kMaxIterations;
   const brusselator::WindowGraphHandles handles = brusselator::add_window_coupling(
       graph, u_region, dt_u, dt_v, window, tol, max_iters, AccelKind::None, mode);
-  if (const auto r = brusselator::register_native_window_placements(
-          rig->backend, u_mesh, kNxU, kNyU, handles);
-      !r.ok()) {
+  (void)handles;
+  if (const auto r = rig->backend.register_default_placements(graph, u_mesh); !r.ok()) {
     out.error = r.error().message;
     return out;
   }
