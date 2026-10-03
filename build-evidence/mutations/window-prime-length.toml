@@ -1,0 +1,57 @@
+# Mutation for Conformance Unit 2's Defect 2 fix (coupler-placement
+# track): Runner::Impl::resolve_regions()'s own cold-start priming of a
+# window member's import arc and straddle-tail history indexed the
+# PROVIDER's own exported-field buffer (`provider_v0`) using THIS
+# member's own exported-field length (`cfg.length`) as the loop bound --
+# a real heap-buffer-overflow READ whenever the provider's field is
+# smaller. Found by ASan on a cross-resolution two-member window
+# (reported to the lead as Finding 3(a)). Own file per the review-fix
+# protocol.
+#
+# IMPORTANT, read before trusting a green run of this row's own `test`:
+# an out-of-bounds READ into an adjacent heap allocation does not
+# reliably crash or produce an observably wrong value in an ordinary
+# (non-sanitized) build -- verified BY HAND: with this mutation applied,
+# `runtime.window_runner_mismatched_length` PASSES cleanly under the
+# plain Debug build (no crash, no EXPECT/ASSERT failure; the read
+# recovers whatever happened to sit in the heap immediately after A's
+# 4-element buffer, and the test does not pin down that exact garbage
+# value since it is not deterministic). This row exists for
+# --check-anchors coverage and for the day this code path grows an
+# actual value-level regression test, but the REAL oracle for this
+# specific defect is AddressSanitizer: with the SAME mutation applied in
+# a `-fsanitize=address,undefined` build, the test aborts with
+# "AddressSanitizer: heap-buffer-overflow ... in
+# fuse::Runner::Impl::resolve_regions" pointing at the exact mutated
+# line, and with the mutation reverted the ASan build passes cleanly.
+# Neither run was executed through tools/mutate.py --build-dir (it
+# refuses on an uncommitted tree, same constraint as every other row
+# added this session) -- both were proved by hand: the mutation applied
+# directly with edit_file, the target rebuilt (once in the ordinary
+# tree, once in a separate ASan-flagged tree), run, observed, then the
+# file restored and verified byte-identical to a backup with `cmp`
+# before the next step.
+
+[[mutation]]
+id = "resolve-regions-window-prime-unbounded-provider-read"
+area = "runtime/iteration (resolve_regions, window cold-start priming)"
+describes = "removes the std::min(cfg.length, provider_length) bound this session's Defect 2 fix added, restoring the original unbounded read of provider_v0[e] for e up to cfg.length (THIS member's own length) regardless of the provider's own, possibly smaller, exported-field length -- the heap-buffer-overflow READ Finding 3(a) measured."
+file = "src/runtime/iteration.cpp"
+old = "          const std::size_t prime_count = std::min(cfg.length, provider_length);"
+new = "          const std::size_t prime_count = cfg.length;  // MUTATED: no bound"
+target = "fuse_runtime_window_runner_mismatched_length_test"
+test = "runtime.window_runner_mismatched_length"
+# PROVED BY HAND, twice (see this file's own header for why a plain-
+# build pass here is not itself the real proof):
+#   Ordinary Debug build: PASSES despite the mutation (not a useful
+#     oracle for THIS defect -- recorded so a future reader does not
+#     mistake a green run here for "the bug is caught").
+#   ASan build (-fsanitize=address,undefined, scratch tree, removed
+#     after use): ABORTS -- "SUMMARY: AddressSanitizer: heap-buffer-
+#     overflow iteration.cpp:564 in
+#     fuse::Runner::Impl::resolve_regions(fuse::ComponentSet&,
+#     fuse::FieldRegistry&)", the allocation backtrace pointing at
+#     VectorBlock's own 4-element `out_`/`in_` vectors (component "A").
+#     Reverting the mutation and rebuilding under the SAME ASan tree
+#     passes cleanly (exit 0), both before and after this row's own
+#     hand-verification pass.

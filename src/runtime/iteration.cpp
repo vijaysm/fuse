@@ -525,10 +525,40 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
               registry.get(provider_exported_field);
           if (!provided_ref.ok()) return provided_ref.error();
           const double* provider_v0 = provided_ref.value().data();
+          // The PROVIDER's own exported-field length -- NOT cfg.length,
+          // which is THIS member's own exported (or, absent an export,
+          // imported) length, read from a DIFFERENT field a few lines
+          // above. The two agree whenever this is a same-resolution
+          // transfer (the common case, and every case the existing
+          // suite covered before Conformance Unit 2's own cross-
+          // resolution U/V box graph), but nothing enforces that they
+          // must: a real heap-buffer-overflow READ of `provider_v0[e]`
+          // for e in [provider_length, cfg.length) resulted whenever
+          // cfg.length (this member's own, larger) was used as the loop
+          // bound to index `provider_v0` (the provider's own, smaller,
+          // buffer) -- found by ASan on a two-member window with
+          // mismatched field lengths (reported to the lead as Finding
+          // 3(a); fixed here as Conformance Unit 2's own Defect 2).
+          const std::size_t provider_length = provided_ref.value().size();
+          // Bounds BOTH ends: `provider_v0[e]` is valid only for
+          // e < provider_length; `import_slot.data`/`seed_st.history[e]`
+          // below are sized to cfg.length (the check on import_slot.
+          // total() just below still gates on cfg.length -- that is
+          // THIS buffer's own real size, unchanged). When the two
+          // differ, priming is necessarily partial: entries
+          // [prime_count, cfg.length) are left at whatever import_slot/
+          // history already held (zero-initialized storage, or an
+          // empty history list) -- a correct REMAP between the two
+          // resolutions is a real Transport/Remap, which this one-time
+          // cold-start shortcut has never attempted (the comment above
+          // this block already says as much for the lagged, same-rank
+          // case; cross-resolution is the same limitation, not a new
+          // one introduced by this fix).
+          const std::size_t prime_count = std::min(cfg.length, provider_length);
           detail::Slot& import_slot = slots[cfg.window_import.value()];
           if (import_slot.data != nullptr &&
               import_slot.total() == cfg.length * cfg.provider_capacity) {
-            for (std::size_t e = 0; e < cfg.length; ++e) {
+            for (std::size_t e = 0; e < prime_count; ++e) {
               for (std::size_t s = 0; s < cfg.provider_capacity; ++s) {
                 import_slot.data[e * cfg.provider_capacity + s] =
                     provider_v0[e];
@@ -547,10 +577,16 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
           // at t=0, so the very first window that ever straddles
           // (however early) has at least one point to extrapolate from
           // instead of `fuse::extrapolate_boundary_value()`'s own
-          // `FUSE_ASSERT(!history.empty())` firing.
+          // `FUSE_ASSERT(!history.empty())` firing. `seed_st.history`
+          // itself is still sized to cfg.length (THIS member's own
+          // element count, what every other reader of `history` -- e.g.
+          // the straddle replay -- indexes by); only the SEEDING loop
+          // is bounded by `prime_count`, so an element beyond the
+          // provider's own length is left with an EMPTY history list,
+          // same residual limitation as the import_slot priming above.
           detail::WindowMemberState& seed_st = window_member_state[node];
           seed_st.history.assign(cfg.length, {});
-          for (std::size_t e = 0; e < cfg.length; ++e) {
+          for (std::size_t e = 0; e < prime_count; ++e) {
             seed_st.history[e].push_back({Rational{0}, provider_v0[e]});
           }
         }
