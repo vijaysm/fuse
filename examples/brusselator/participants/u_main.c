@@ -261,6 +261,27 @@ int main(int argc, char** argv) {
     bruss_u_destroy(uh);
     free(u_in);
     free(u_out);
+  } else {
+    /* Unit 2b (D19), step (d): a bundled-coupler placeholder rank
+     * (accept mode, --ranks-coupler > 0) hosts no externally driven
+     * component -- fuse_run() is now legal here (Runner::hosts_
+     * component() says so; fuse_run()'s own E-ABI-RUN-EXTERNAL refusal
+     * only fires when one IS hosted). This is the ONLY way this rank
+     * can execute its own share of the period's collectives (the
+     * Transport/Remap routed through it) at all: it registers no
+     * field, so begin_step()/end_step() have nothing to drive, and
+     * before this fix this branch did not exist -- this rank called
+     * neither, leaving U's own rank blocked in the first Transport
+     * that needed this one's participation (KNOWN_ISSUES.md D19,
+     * evidence 4). Same --periods every physics rank steps, so every
+     * rank's own period count agrees (the schedule's own common-
+     * period invariant depends on it). */
+    fuse_run_request req;
+    memset(&req, 0, sizeof(req));
+    req.struct_size = sizeof(req);
+    req.periods = periods;
+    rc = t->run(ctx, &req, NULL);
+    if (rc != FUSE_OK) fail(ctx, "run", rc);
   }
 
   rc = t->destroy(ctx, NULL, NULL);

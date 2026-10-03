@@ -191,3 +191,14 @@ new = """    const char* my_component = in->my_component;
 target = "fuse_abi_struct_size_test"
 test = "abi.struct_size"
 result = "PROVED BY HAND 2026-10-03 (tools/mutate.py --area abi refuses against this uncommitted tree, the same constraint recorded for every other row in this file). Applied to a scratch ASan tree (-fsanitize=address,undefined -fno-omit-frame-pointer): AbiStructSize.OldCallerStructSizeNeverReadsMyComponent (the heap-exact-buffer test this row targets) ABORTED with 'AddressSanitizer: heap-buffer-overflow ... participant.cpp:439 in impl_setup', exactly the read this guard exists to prevent. Restored from a /tmp backup; cmp reported no difference; full rebuild (both the tier-0 bafter tree and the tier-1 b1mpi tree) confirmed the test passes again."
+
+[[mutation]]
+id = "run-external-refuses-unconditionally-not-by-hosting"
+area = "abi"
+describes = "Unit 2b (D19), step (d): fuse_run()'s own E-ABI-RUN-EXTERNAL refusal is narrowed to 'an externally driven component IS HOSTED ON THIS PROCESS' (Runner::hosts_component()), from 'the GRAPH declares one anywhere at all' (c.external_count > 0). Reverting to the blanket check refuses fuse_run() even on a process hosting ONLY a ComponentKind::Coupler placement (no advance() to drive at all) -- exactly the gap that left coupler_main.c's/u_main.c's own placeholder ranks calling neither fuse_run() nor fuse_begin_step()/fuse_end_step() between fuse_initialize() and fuse_destroy() (KNOWN_ISSUES.md D19, evidence 4)."
+file = "src/abi/participant.cpp"
+old = "    bool external_hosted_here = false;"
+new = "    bool external_hosted_here = c.external_count > 0;  // MUTATED: blanket check"
+target = "fuse_abi_participant_test"
+test = "abi.participant"
+result = "PROVED BY HAND 2026-10-03 (tools/mutate.py --area abi refuses against this uncommitted tree, same constraint as every other row in this file). Applied directly to the ordinary bafter build: AbiParticipant.RunAcceptedOnAProcessHostingOnlyTheCoupler -- built specifically for this row, force_this_process(ctx, 5) on a rank hosting only a coupler placement disjoint from alpha's/beta's own RankSet{0,1} -- failed exactly as predicted: fuse_run() returned FUSE_ERR_UNSUPPORTED (-5) instead of FUSE_OK. AbiParticipant.RunStillRefusedOnAProcessHostingAnExternalComponent (the complementary case, force_this_process(ctx, 0)) was unaffected, as expected -- that rank hosts an external component either way. Restored from a /tmp backup; sha256 reported no difference; full rebuild confirmed both tests pass again, 163/163 overall."

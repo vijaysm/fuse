@@ -14,4 +14,11 @@ bool inject_component(fuse_ctx* ctx, const std::string& component_name,
   return true;
 }
 
+bool force_this_process(fuse_ctx* ctx, int rank) {
+  if (ctx == nullptr) return false;
+  if (ctx->state != fuse_ctx::State::Loaded) return false;
+  ctx->test_force_this_process = rank;
+  return true;
+}
+
 }  // namespace fuse::abi_test

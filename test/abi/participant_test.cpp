@@ -1170,3 +1170,191 @@ TEST(AbiParticipant, IsCouplingOngoingReportsThePlanFirstComponentNotTheFirstDec
 
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
+
+namespace {
+
+// Unit 2b (D19), step (d) -- RANKS WITHOUT A COMPONENT. The SAME shape as
+// fuse::abi_test::build_implicit_window_coupling_graph() ("alpha"/"beta",
+// both window-scoped, both externally driven), plus a THIRD,
+// ComponentKind::Coupler placement -- a pure placement, on its own rank,
+// unconnected to any channel (a coupler's own role is routing a Remap
+// through `remap_on()`, which this test does not need: only its own
+// RankSet, disjoint from alpha's/beta's, matters here) -- on a DIFFERENT
+// rank from alpha/beta, so `fuse::abi_test::force_this_process()` can put
+// the caller on either side of the hosting line this step draws.
+[[nodiscard]] fuse::CouplingGraph build_window_graph_with_coupler_rank(
+    int cells, int max_iterations, fuse::RankSet alpha_beta_ranks,
+    fuse::RankSet coupler_ranks) {
+  fuse::CouplingGraph g;
+  const auto ma = g.add_mesh(
+      fuse::MeshDecl{.name = "ma", .source = "generated:line:" + std::to_string(cells)});
+  const auto mb = g.add_mesh(
+      fuse::MeshDecl{.name = "mb", .source = "generated:line:" + std::to_string(cells)});
+  const auto ra = g.add_region(fuse::Region{.name = "ra", .mesh = ma, .dimension = 1});
+  const auto rb = g.add_region(fuse::Region{.name = "rb", .mesh = mb, .dimension = 1});
+  const auto a = g.add_component(fuse::ComponentDecl{
+      .name = "alpha", .ranks = alpha_beta_ranks, .interval = fuse::Rational{1}});
+  const auto b = g.add_component(fuse::ComponentDecl{
+      .name = "beta", .ranks = alpha_beta_ranks, .interval = fuse::Rational{1}});
+  g.add_coupler(fuse::CouplerDecl{.name = "coupler", .ranks = coupler_ranks});
+
+  const auto a_out = g.add_field(
+      a, fuse::FieldSpec{.name = "a_out", .region = ra, .components = 1,
+                        .units = fuse::units::kKelvin,
+                        .intent = fuse::Intent::Provides});
+  const auto b_in = g.add_field(
+      b, fuse::FieldSpec{.name = "b_in", .region = rb, .components = 1,
+                        .units = fuse::units::kKelvin,
+                        .intent = fuse::Intent::Requires});
+  const auto b_out = g.add_field(
+      b, fuse::FieldSpec{.name = "b_out", .region = rb, .components = 1,
+                        .units = fuse::units::kHeatFluxDensity,
+                        .intent = fuse::Intent::Provides});
+  const auto a_in = g.add_field(
+      a, fuse::FieldSpec{.name = "a_in", .region = ra, .components = 1,
+                        .units = fuse::units::kHeatFluxDensity,
+                        .intent = fuse::Intent::Requires});
+
+  const auto fwd = g.add_channel("a2b", a_out, b_in);
+  const auto back = g.add_channel("b2a", b_out, a_in);
+  g.channel(back).lag(1).allow_time_level_mismatch(
+      "resolved by the window's own sweep, not a real-time lag");
+  g.channel(back).relax(0.7);
+
+  fuse::CouplingWindowScope scope;
+  scope.explicit_interval = fuse::Rational{1};
+  scope.order = 2;
+  scope.policies = {{"alpha", fuse::DtPolicy::Adjustable},
+                    {"beta", fuse::DtPolicy::Adjustable}};
+  scope.iteration = fuse::WaveformIteration::Jacobi;
+
+  fuse::ConvergenceCriterion convergence;
+  convergence.add(fuse::Converged::Relative(1e-9, "a_out"));
+  convergence.add(fuse::Converged::Relative(1e-9, "a_in"));
+  g.add_iteration_region(fuse::IterationRegionDecl{
+      .name = "window", .channels = {fwd, back}, .max_iterations = max_iterations,
+      .convergence = convergence, .window_scope = scope});
+  return g;
+}
+
+void register_alpha_beta_fields(const fuse_participant_abi_v1* t, fuse_ctx* ctx,
+                                int cells, double* a_out, double* a_in,
+                                double* b_out, double* b_in) {
+  auto register_one = [&](const char* component, const char* field, double* data) {
+    fuse_field_name fname{.struct_size = sizeof(fname)};
+    fname.component = component;
+    fname.field = field;
+    fuse_field_ref fref{.struct_size = sizeof(fref)};
+    ASSERT_EQ(t->field_handle(ctx, &fname, &fref), FUSE_OK);
+    fuse_field_view fview{.struct_size = sizeof(fview)};
+    fview.handle = fref.handle;
+    fview.element_type = FUSE_ELEMENT_F64;
+    fview.memspace = FUSE_MEMSPACE_HOST;
+    fview.ownership = FUSE_OWNERSHIP_OWNED;
+    fview.components = 1;
+    fview.count = static_cast<std::uint64_t>(cells);
+    fview.owned_count = static_cast<std::uint64_t>(cells);
+    fview.stride = 1;
+    fview.data = data;
+    ASSERT_EQ(t->register_field(ctx, &fview, nullptr), FUSE_OK);
+  };
+  register_one("alpha", "a_out", a_out);
+  register_one("alpha", "a_in", a_in);
+  register_one("beta", "b_out", b_out);
+  register_one("beta", "b_in", b_in);
+}
+
+}  // namespace
+
+TEST(AbiParticipant, RunAcceptedOnAProcessHostingOnlyTheCoupler) {
+  constexpr int kCells = 4;
+  constexpr int kMaxIterations = 30;
+  const fuse::CouplingGraph g = build_window_graph_with_coupler_rank(
+      kCells, kMaxIterations, /*alpha_beta_ranks=*/fuse::RankSet{0, 1},
+      /*coupler_ranks=*/fuse::RankSet{5, 1});
+  const auto bytes = fuse::serialize(g);
+
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  fuse_context_out co{.struct_size = sizeof(co)};
+  ASSERT_EQ(t->create(nullptr, nullptr, &co), FUSE_OK);
+  fuse_ctx* ctx = co.ctx;
+  fuse_graph_source src{.struct_size = sizeof(src)};
+  src.bytes = bytes.data();
+  src.byte_count = bytes.size();
+  ASSERT_EQ(t->load_graph(ctx, &src, nullptr), FUSE_OK);
+
+  // Rank 5 hosts neither "alpha" (RankSet{0,1}) nor "beta" (same) -- only
+  // the coupler, a placement with no advance() to drive at all.
+  ASSERT_TRUE(fuse::abi_test::force_this_process(ctx, 5));
+
+  double a_out[kCells] = {0, 0, 0, 0};
+  double a_in[kCells] = {0, 0, 0, 0};
+  double b_out[kCells] = {0, 0, 0, 0};
+  double b_in[kCells] = {0, 0, 0, 0};
+  register_alpha_beta_fields(t, ctx, kCells, a_out, a_in, b_out, b_in);
+
+  ASSERT_EQ(t->initialize(ctx, nullptr, nullptr), FUSE_OK);
+
+  fuse_run_request req{.struct_size = sizeof(req)};
+  req.periods = 1;
+  const fuse_status rc = t->run(ctx, &req, nullptr);
+  if (rc != FUSE_OK) {
+    fuse_error err{.struct_size = sizeof(err)};
+    char buf[2048] = {0};
+    err.buffer = buf;
+    err.capacity = sizeof(buf);
+    t->last_error(ctx, nullptr, &err);
+    ADD_FAILURE() << "fuse_run unexpectedly refused on the coupler-only "
+                  << "rank (" << (err.code ? err.code : "?") << "): " << buf;
+  }
+  EXPECT_EQ(rc, FUSE_OK);
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+TEST(AbiParticipant, RunStillRefusedOnAProcessHostingAnExternalComponent) {
+  constexpr int kCells = 4;
+  constexpr int kMaxIterations = 30;
+  const fuse::CouplingGraph g = build_window_graph_with_coupler_rank(
+      kCells, kMaxIterations, /*alpha_beta_ranks=*/fuse::RankSet{0, 1},
+      /*coupler_ranks=*/fuse::RankSet{5, 1});
+  const auto bytes = fuse::serialize(g);
+
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  fuse_context_out co{.struct_size = sizeof(co)};
+  ASSERT_EQ(t->create(nullptr, nullptr, &co), FUSE_OK);
+  fuse_ctx* ctx = co.ctx;
+  fuse_graph_source src{.struct_size = sizeof(src)};
+  src.bytes = bytes.data();
+  src.byte_count = bytes.size();
+  ASSERT_EQ(t->load_graph(ctx, &src, nullptr), FUSE_OK);
+
+  // Rank 0 hosts BOTH "alpha" and "beta" (RankSet{0,1}) -- two externally
+  // driven components, same as every OTHER test in this file that never
+  // calls force_this_process() at all (this_process stays unset there,
+  // which this rule treats identically to "every component hosted").
+  ASSERT_TRUE(fuse::abi_test::force_this_process(ctx, 0));
+
+  double a_out[kCells] = {0, 0, 0, 0};
+  double a_in[kCells] = {0, 0, 0, 0};
+  double b_out[kCells] = {0, 0, 0, 0};
+  double b_in[kCells] = {0, 0, 0, 0};
+  register_alpha_beta_fields(t, ctx, kCells, a_out, a_in, b_out, b_in);
+
+  ASSERT_EQ(t->initialize(ctx, nullptr, nullptr), FUSE_OK);
+
+  fuse_run_request req{.struct_size = sizeof(req)};
+  req.periods = 1;
+  const fuse_status rc = t->run(ctx, &req, nullptr);
+  EXPECT_EQ(rc, FUSE_ERR_UNSUPPORTED);
+  fuse_error err{.struct_size = sizeof(err)};
+  char buf[2048] = {0};
+  err.buffer = buf;
+  err.capacity = sizeof(buf);
+  ASSERT_EQ(t->last_error(ctx, nullptr, &err), FUSE_OK);
+  EXPECT_STREQ(err.code, "E-ABI-RUN-EXTERNAL");
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}

@@ -732,6 +732,10 @@ fuse_status impl_initialize(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
     if (c.communicator_set) {
       config.base_communicator = static_cast<int>(c.communicator);
     }
+    // Unit 2b (D19), step (d): fuse::abi_test::force_this_process()'s own
+    // seam -- std::nullopt (the default) leaves config exactly what it
+    // was before this field existed.
+    config.force_this_process = c.test_force_this_process;
     c.runner.emplace(c.graph, *c.dag, *c.plan, *c.backend);
     const fuse::Result<void> r =
         c.runner->initialize(c.components, c.fields, config);
@@ -1066,11 +1070,47 @@ fuse_status impl_run(fuse_ctx* ctx, const fuse_run_request* in, fuse_null*) {
     }
     const fuse_status sz = check_struct_size(in);
     if (sz != FUSE_OK) return sz;
-    if (c.external_count > 0) {
+    // Unit 2b (D19), step (d): narrowed from "the GRAPH declares an
+    // externally driven component anywhere at all" to "one IS HOSTED ON
+    // THIS PROCESS" -- Runner::hosts_component()'s own rule (step (a)'s
+    // hosting formula, generalised past window members). A process
+    // hosting none at all -- a dedicated coupler rank, or a placeholder
+    // rank in a bundled MPMD run (KNOWN_ISSUES.md D19's own evidence 4)
+    // -- has nothing here for fuse_begin_step()/fuse_end_step() to drive
+    // in the first place, so fuse_run() is the ONLY way it can ever
+    // execute its own share of the period's collectives (Transport/
+    // Epoch) at all; refusing it unconditionally just because SOME
+    // OTHER rank's own component is external is exactly the gap that
+    // left coupler_main.c's/u_main.c's own placeholder ranks calling
+    // neither fuse_run() nor fuse_begin_step()/fuse_end_step() between
+    // fuse_initialize() and fuse_destroy() -- never executing the
+    // Transports the physics ranks were waiting on.
+    bool external_hosted_here = false;
+    for (std::size_t i = 0; i < c.ext.size(); ++i) {
+      const fuse::ComponentId cid{static_cast<std::uint32_t>(i)};
+      // A ComponentKind::Coupler entry gets no ExternalStepComponent at
+      // all (fuse_initialize()'s own `if (decl.kind == ComponentKind::
+      // Coupler) continue;`) -- its own c.ext[i] stays at ExternalState{}
+      // 's default, in_process == false, which means nothing here: it is
+      // not "externally driven", it is simply never populated. Checking
+      // hosts_component() for it anyway would refuse fuse_run() on a
+      // rank that hosts ONLY a coupler placement, the exact case this
+      // fix exists to allow.
+      if (cid.value() < c.graph.component_count() &&
+          c.graph.component(cid).kind == fuse::ComponentKind::Coupler) {
+        continue;
+      }
+      if (c.ext[i].in_process) continue;
+      if (c.runner->hosts_component(cid)) {
+        external_hosted_here = true;
+        break;
+      }
+    }
+    if (external_hosted_here) {
       return fail(&c, FUSE_ERR_UNSUPPORTED, "E-ABI-RUN-EXTERNAL",
-                 "fuse_run: at least one component in this graph is driven "
-                 "from outside (fuse_begin_step/fuse_end_step); drive the "
-                 "run with those instead");
+                 "fuse_run: an externally driven component (fuse_begin_step/"
+                 "fuse_end_step) is hosted on this process; drive the run "
+                 "with those instead");
     }
     if (in->periods < -1) {
       return fail(&c, FUSE_ERR_INVALID, "E-ABI-RUN-PERIODS",

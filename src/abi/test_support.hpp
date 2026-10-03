@@ -41,4 +41,17 @@ namespace fuse::abi_test {
 bool inject_component(fuse_ctx* ctx, const std::string& component_name,
                       std::unique_ptr<fuse::Component> c);
 
+/// Unit 2b (D19), step (d). Sets the per-rank identity `fuse_initialize()`
+/// passes into `fuse::RunnerConfig::force_this_process`, so a tier-0 test
+/// (no MPI, no `fuse_setup_options()` communicator) can exercise `Runner::
+/// hosts_component()`'s own per-rank hosting rule -- and, through it,
+/// `fuse_run()`'s own narrowed `E-ABI-RUN-EXTERNAL` refusal -- on a single
+/// process, the same reason `inject_component()` exists: no entry in the
+/// frozen public ABI has a way to say this.
+///
+/// Must be called after a successful `fuse_load_graph()` and before
+/// `fuse_initialize()`. Returns false (and leaves `ctx` unchanged) when
+/// `ctx` is null or the context is not in the `Loaded` state.
+bool force_this_process(fuse_ctx* ctx, int rank);
+
 }  // namespace fuse::abi_test

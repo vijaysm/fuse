@@ -192,6 +192,18 @@ struct fuse_ctx {
   /// afterwards.
   std::unordered_map<std::string, std::unique_ptr<fuse::Component>> injected;
 
+  /// Unit 2b (D19), step (d): `fuse::abi_test::force_this_process`'s own
+  /// override, consumed (passed into `fuse::RunnerConfig::
+  /// force_this_process`) at initialize() time -- the SAME test-only
+  /// seam `injected` is, for the SAME reason (`inject_component()`'s own
+  /// header comment): no entry in the frozen public ABI lets a C caller
+  /// name a rank without a real communicator, so this is how a tier-0
+  /// test exercises `Runner::hosts_component()`'s own per-rank hosting
+  /// rule without one. `std::nullopt` (the default) changes nothing --
+  /// every existing caller that never calls `force_this_process` keeps
+  /// meaning exactly what it always meant.
+  std::optional<int> test_force_this_process;
+
   // --- setup() state, consumed at initialize() ---
   bool               communicator_set = false;
   std::int64_t       communicator = 0;

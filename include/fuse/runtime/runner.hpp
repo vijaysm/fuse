@@ -267,6 +267,19 @@ class Runner {
       const noexcept;
   [[nodiscard]] Result<const double*> buffer(ArcId arc) const;
 
+  /// Unit 2b (D19), step (d): whether THIS process hosts `component` --
+  /// the same rule `WindowMemberConfig::hosted` (step (a)) already
+  /// applies to a window member, generalised to any component. `true`
+  /// before `initialize()` has run (nothing to disagree with yet) or
+  /// whenever no per-rank identity is configured (`RunnerConfig::
+  /// force_this_process`/`base_communicator` both unset -- tier 0, or a
+  /// genuinely single-rank run): every existing caller that never names
+  /// a rank keeps meaning exactly what it always meant. The ABI layer
+  /// (`src/abi/participant.cpp`) reads this to narrow `fuse_run()`'s own
+  /// `E-ABI-RUN-EXTERNAL` refusal to "an externally driven component IS
+  /// hosted here", rather than "the GRAPH declares one anywhere at all".
+  [[nodiscard]] bool hosts_component(ComponentId component) const;
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
