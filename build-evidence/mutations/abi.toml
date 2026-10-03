@@ -174,3 +174,20 @@ new = """      } else {
 target = "fuse_abi_participant_test"
 test = "abi.participant"
 result = "PROVED BY HAND 2026-10-03 (tools/mutate.py --area abi refuses against this uncommitted tree, same constraint recorded for every other row in this file). Applied directly to the ordinary bafter build (no sanitizer needed -- this is a pure logic/value regression, not a memory-safety one): AbiParticipant.IsCouplingOngoingReportsThePlanFirstComponentNotTheFirstDeclaredOne failed exactly as predicted (ongoing.next_component read -2 instead of beta's ComponentId, 1); BrusselatorParticipants.ExternallyDrivenMultiSubstepWindowDrivenByNextComponent ALSO failed (period 0 step 0: next_component resolved to neither U nor V, got -2), confirming the harness itself depends on this refinement now that it no longer guesses U first. Restored from a /tmp backup; cmp reported no difference; full rebuild confirmed both tests pass again."
+
+[[mutation]]
+id = "abi-setup-reads-my-component-past-an-old-callers-struct-size"
+area = "abi"
+describes = "docs/dev/abi-design.md rule 2's read-side mirror: impl_setup() reads in->my_component unconditionally, ignoring struct_size_covers() -- an old caller's fuse_setup_options*, heap-allocated at exactly the pre-growth size (my_component did not exist when it was compiled), gets a read past the end of its own allocation"
+file = "src/abi/participant.cpp"
+old = """    const char* my_component =
+        struct_size_covers(in->struct_size, offsetof(fuse_setup_options, my_component) +
+                                                sizeof(in->my_component))
+            ? in->my_component
+            : nullptr;
+    if (in->communicator != 0) {"""
+new = """    const char* my_component = in->my_component;
+    if (in->communicator != 0) {"""
+target = "fuse_abi_struct_size_test"
+test = "abi.struct_size"
+result = "PROVED BY HAND 2026-10-03 (tools/mutate.py --area abi refuses against this uncommitted tree, the same constraint recorded for every other row in this file). Applied to a scratch ASan tree (-fsanitize=address,undefined -fno-omit-frame-pointer): AbiStructSize.OldCallerStructSizeNeverReadsMyComponent (the heap-exact-buffer test this row targets) ABORTED with 'AddressSanitizer: heap-buffer-overflow ... participant.cpp:439 in impl_setup', exactly the read this guard exists to prevent. Restored from a /tmp backup; cmp reported no difference; full rebuild (both the tier-0 bafter tree and the tier-1 b1mpi tree) confirmed the test passes again."
