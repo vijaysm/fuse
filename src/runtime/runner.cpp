@@ -2718,6 +2718,120 @@ Result<void> Runner::Impl::reduce_region_residuals(
   return Result<void>::success();
 }
 
+Result<void> Runner::Impl::gather_window_block_samples(
+    const detail::RegionRuntime& r, bool local_ok,
+    const std::vector<WindowBlockSample>& mine,
+    std::vector<std::vector<WindowBlockSample>>& gathered_out,
+    bool& all_ok_out) {
+  if (r.participants.size() <= 1) {
+    gathered_out.assign(1, mine);
+    all_ok_out = local_ok;
+    return Result<void>::success();
+  }
+#if FUSE_HAVE_MPI
+  const MPI_Comm base =
+      MPI_Comm_f2c(static_cast<MPI_Fint>(*config.base_communicator));
+  if (base == MPI_COMM_NULL) {
+    return Failure{"E-RT-WINDOW-COMM",
+                   "RunnerConfig::base_communicator is MPI_COMM_NULL at "
+                   "iteration region '" + r.name +
+                       "'s window convergence agreement"};
+  }
+  int me = 0;
+  if (MPI_Comm_rank(base, &me) != MPI_SUCCESS) {
+    return Failure{"E-RT-WINDOW-COMM",
+                   "MPI_Comm_rank failed at iteration region '" + r.name +
+                       "'s window convergence agreement"};
+  }
+  const std::vector<int>& part = r.participants;
+  const auto self = std::find(part.begin(), part.end(), me);
+  if (self == part.end()) {
+    // Not a participant -- mirrors reduce_region_residuals()'s own early
+    // return. Nothing to contribute, nothing to wait for.
+    gathered_out.clear();
+    all_ok_out = true;
+    return Result<void>::success();
+  }
+  const auto n = static_cast<int>(part.size());
+  const auto my_index = static_cast<int>(std::distance(part.begin(), self));
+  const std::size_t nb = mine.size();
+  const std::size_t width = 1 + 3 * nb;
+
+  std::vector<double> mine_flat(width);
+  mine_flat[0] = local_ok ? 1.0 : 0.0;
+  for (std::size_t bi = 0; bi < nb; ++bi) {
+    mine_flat[1 + 3 * bi + 0] = mine[bi].residual_sq;
+    mine_flat[1 + 3 * bi + 1] = mine[bi].reference_sq;
+    mine_flat[1 + 3 * bi + 2] = mine[bi].owned ? 1.0 : 0.0;
+  }
+
+  // All-to-all over `part`, point-to-point, exactly as reconcile_epoch()/
+  // reduce_region_residuals() address peers over this SAME base
+  // communicator -- never a sub-communicator built just for this (R.
+  // participants is a subset of `base`'s own ranks; a TRUE MPI_Allgather
+  // would need every rank of `base` to call it, which a non-participant
+  // never does). Non-blocking sends so no participant can deadlock
+  // waiting on a send before its own partners have posted their receives.
+  std::vector<double> all_flat(static_cast<std::size_t>(n) * width);
+  std::copy(mine_flat.begin(), mine_flat.end(),
+            all_flat.begin() +
+                static_cast<std::size_t>(my_index) * width);
+
+  std::vector<MPI_Request> sends;
+  sends.reserve(static_cast<std::size_t>(n > 0 ? n - 1 : 0));
+  for (int j = 0; j < n; ++j) {
+    if (j == my_index) continue;
+    MPI_Request req;
+    if (MPI_Isend(mine_flat.data(), static_cast<int>(width), MPI_DOUBLE,
+                 part[static_cast<std::size_t>(j)], tags::kWindowConvergence,
+                 base, &req) != MPI_SUCCESS) {
+      return Failure{"E-RT-WINDOW-COMM",
+                   "MPI_Isend failed while gathering iteration region '" +
+                       r.name + "'s window convergence samples"};
+    }
+    sends.push_back(req);
+  }
+  for (int j = 0; j < n; ++j) {
+    if (j == my_index) continue;
+    if (MPI_Recv(all_flat.data() + static_cast<std::size_t>(j) * width,
+                 static_cast<int>(width), MPI_DOUBLE,
+                 part[static_cast<std::size_t>(j)], tags::kWindowConvergence,
+                 base, MPI_STATUS_IGNORE) != MPI_SUCCESS) {
+      return Failure{"E-RT-WINDOW-COMM",
+                   "MPI_Recv failed while gathering iteration region '" +
+                       r.name + "'s window convergence samples"};
+    }
+  }
+  if (!sends.empty() &&
+      MPI_Waitall(static_cast<int>(sends.size()), sends.data(),
+                  MPI_STATUSES_IGNORE) != MPI_SUCCESS) {
+    return Failure{"E-RT-WINDOW-COMM",
+                 "MPI_Waitall failed while gathering iteration region '" +
+                     r.name + "'s window convergence samples"};
+  }
+
+  gathered_out.assign(static_cast<std::size_t>(n), std::vector<WindowBlockSample>(nb));
+  all_ok_out = true;
+  for (int ri = 0; ri < n; ++ri) {
+    const double* row = all_flat.data() + static_cast<std::size_t>(ri) * width;
+    if (row[0] < 0.5) all_ok_out = false;
+    for (std::size_t bi = 0; bi < nb; ++bi) {
+      WindowBlockSample& s = gathered_out[static_cast<std::size_t>(ri)][bi];
+      s.residual_sq = row[1 + 3 * bi + 0];
+      s.reference_sq = row[1 + 3 * bi + 1];
+      s.owned = row[1 + 3 * bi + 2] != 0.0;
+    }
+  }
+#else
+  (void)r;
+  (void)local_ok;
+  (void)mine;
+  gathered_out.assign(1, mine);
+  all_ok_out = local_ok;
+#endif
+  return Result<void>::success();
+}
+
 Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
   const auto in_ptr = [&](std::uint8_t k) -> const double* {
     return slots[ins.in[k].value()].data;
@@ -3799,6 +3913,26 @@ Result<const double*> Runner::buffer(ArcId arc) const {
     return Failure{"E-RT-ARC", "no buffer for arc " + std::to_string(arc.value())};
   }
   return static_cast<const double*>(impl_->slots[arc.value()].data);
+}
+
+bool Runner::hosts_component(ComponentId component) const {
+  // The IDENTICAL formula build_ticks()'s own `hosted[]` and Unit 2b's
+  // own `WindowMemberConfig::hosted` already use, read from the SAME
+  // `this_process` (set once, in build_ticks(), called from
+  // initialize() -- std::nullopt beforehand, which this treats the same
+  // as "unset": every component hosted, exactly as every existing
+  // caller that never configures a per-rank identity already expects).
+  // An invalid or out-of-range id has nothing to disagree about hosting
+  // with the graph, so it defaults to `true` rather than refusing --
+  // the caller's own validation (E-ABI-RUN-* and friends) is a better
+  // place to reject a bad ComponentId than a hosting query is.
+  if (!impl_->this_process.has_value()) return true;
+  if (!component.valid() ||
+      component.value() >= impl_->graph.component_count()) {
+    return true;
+  }
+  return impl_->graph.component(component).ranks.contains(
+      *impl_->this_process);
 }
 
 }  // namespace fuse

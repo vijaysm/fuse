@@ -43,9 +43,21 @@ inline constexpr int kEpoch = 0x5C14;
 /// would let one mechanism's message match the other's receive.
 inline constexpr int kIterationRegion = 0x5C15;
 
+/// Unit 2b (D19), step (c): a window-scoped iteration region's own per-
+/// sweep convergence agreement, on the caller's base communicator --
+/// point-to-point to every other participant (mirrors `kIterationRegion`'s
+/// own reduce-then-broadcast in spirit; the exchange itself is an
+/// all-to-all, not a tree, since the decision reads every participant's
+/// OWN contribution rather than a pre-combined one -- `decide_window_
+/// convergence()`'s own top comment). Distinct from `kIterationRegion`:
+/// an ordinary region nested inside a window member's own advance() could
+/// run its OWN residual reduction while this one is still in flight on
+/// the same communicator.
+inline constexpr int kWindowConvergence = 0x5C16;
+
 /// The largest tag this library uses. Checked once at setup against the
 /// implementation's `MPI_TAG_UB`, so an implementation with an unusually low
 /// bound is a rejection before the run rather than a failure inside a reduction.
-inline constexpr int kMaxUsed = kIterationRegion;
+inline constexpr int kMaxUsed = kWindowConvergence;
 
 }  // namespace fuse::tags

@@ -316,8 +316,16 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
     // MatchesDriver` (test/verification/brusselator_runner_test.cpp)
     // pass EXPECT_EQ over the full 150-window span with the real
     // stopping rule, both waveform iterations.
-    std::unordered_map<std::uint32_t, std::pair<std::size_t, std::size_t>>
-        window_export_meta;
+    // Unit 2b (D19), step (c): the third field is `hosted` -- the SAME
+    // `WindowMemberConfig::hosted` this exporting member's own cfg
+    // already carries, read back here (RegionBlock::window_hosted's own
+    // comment) rather than recomputed, so the two can never disagree.
+    struct WindowExportMeta {
+      std::size_t capacity = 0;
+      std::size_t valid_substeps = 0;
+      bool hosted = true;
+    };
+    std::unordered_map<std::uint32_t, WindowExportMeta> window_export_meta;
     if (R.window_scoped) {
       const CouplingWindowScope& scope = *decl.window_scope;
       const Result<Rational> wlen = window_length(graph, scope);
@@ -549,8 +557,8 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
               window_sample_capacity(cfg.window_length, cfg.interval,
                                      DtPolicy::Adjustable) -
               1;
-          window_export_meta[ins.out.value()] = {cfg.capacity,
-                                                  valid_substeps};
+          window_export_meta[ins.out.value()] = {cfg.capacity, valid_substeps,
+                                                  cfg.hosted};
         }
       }
 
@@ -838,8 +846,9 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         for (int hop = 0; hop <= kMaxHops; ++hop) {
           const auto found = window_export_meta.find(probe);
           if (found != window_export_meta.end()) {
-            b.window_export_capacity = found->second.first;
-            b.window_export_valid_substeps = found->second.second;
+            b.window_export_capacity = found->second.capacity;
+            b.window_export_valid_substeps = found->second.valid_substeps;
+            b.window_hosted = found->second.hosted;
             break;
           }
           if (probe >= slots.size()) break;
@@ -1475,7 +1484,88 @@ detail::Task<Result<void>> Runner::Impl::run_region(
     // than its own local slice. `R.participants.size() <= 1` (no
     // communicator, or every checkpointed component on one rank) skips
     // this entirely -- run_region() is then exactly what it always was.
-    if (R.participants.size() > 1) {
+    //
+    // Unit 2b (D19), step (c): a window-scoped region's own agreement is
+    // `decide_window_convergence()` (fuse/runtime/window_convergence.hpp),
+    // not this tree-combine -- its blocks are gated by `WindowMemberConfig
+    // ::hosted` (RegionBlock::window_hosted), not `length > 0`: a
+    // non-hosted rank's own `block_residual`/`block_value` are computed
+    // from whatever stale buffer sits in `slots[]` (nothing writes there;
+    // `advance_window()` skips a non-hosted member entirely, step (a)),
+    // which is not a legitimate "I own zero of this" the way an ordinary
+    // channel's empty local array already is -- length-gating it the same
+    // way would silently fold uninitialized memory into the sum below.
+    bool window_converged = false;
+    if (R.window_scoped) {
+      const std::size_t nb = R.blocks.size();
+      std::vector<WindowBlockSample> mine(nb);
+      // `window_hosted` only ever excludes a block's own LOCAL
+      // contribution because some OTHER rank is trusted to supply the
+      // real one through the real transfer (steps a/b) -- a trust that
+      // only makes sense when `R.participants` names more than this one
+      // rank. With `R.participants.size() <= 1` (no real communicator at
+      // all, including a tier-0 `force_this_process` injection with
+      // nothing else behind it) there is no other rank to supply
+      // anything: gating by `window_hosted` there would make a block
+      // unmeasured by EVERYONE rather than measured locally, a strictly
+      // worse outcome than this function existing at all.
+      const bool gate_by_hosted = R.participants.size() > 1;
+      for (std::size_t bi = 0; bi < nb; ++bi) {
+        const bool owned_here =
+            !step_failure.has_value() &&
+            (!gate_by_hosted || R.blocks[bi].window_hosted);
+        mine[bi].owned = owned_here;
+        mine[bi].residual_sq =
+            owned_here ? R.block_residual[bi] * R.block_residual[bi] : 0.0;
+        mine[bi].reference_sq =
+            owned_here ? R.block_value[bi] * R.block_value[bi] : 0.0;
+      }
+      std::vector<std::vector<WindowBlockSample>> gathered;
+      bool all_ok = true;
+      const Result<void> gr = gather_window_block_samples(
+          R, !step_failure.has_value(), mine, gathered, all_ok);
+      if (!gr.ok()) co_return gr.error();
+
+      if (!all_ok) {
+        // A participant's local failure carries through the exchange
+        // exactly as reconcile_epoch() carries an Epoch's -- see the
+        // ordinary-region comment below, which this mirrors.
+        if (!step_failure.has_value()) {
+          step_failure = Failure{
+              "E-RT-WINDOW-PEER",
+              "a rank taking part in iteration region '" + R.name +
+                  "'s window convergence agreement failed; stopping here "
+                  "rather than waiting for it at the next sweep. The "
+                  "failing rank reports the cause."};
+        }
+      } else if (!gathered.empty()) {
+        // `gathered.empty()`: this rank is not a participant of this
+        // window region's own agreement at all (`gather_window_block_
+        // samples()`'s own early return) -- nothing to decide here,
+        // mirroring `R.participants.size() <= 1`'s own "exactly what it
+        // always was" for the single-process case, where `gathered ==
+        // {mine}` (never empty) and every block is hosted by
+        // construction (step (a)'s own `!this_process.has_value()`
+        // branch), so the sum below is this rank's own value alone --
+        // bit-identical to the pre-this-fix local decision.
+        const WindowConvergenceResult wc = decide_window_convergence(
+            gathered, R.convergence, R.measure_block, R.block_first,
+            k == 0, R.residual_norms, R.reference_norms);
+        if (wc.unmeasured_block >= 0) {
+          co_return Failure{
+              "E-RT-WINDOW-UNMEASURED",
+              "iteration region '" + R.name + "': no participant of the "
+              "window convergence agreement owns any part of block " +
+                  std::to_string(wc.unmeasured_block) +
+                  "'s coupling value this sweep"};
+        }
+        for (std::size_t bi = 0; bi < nb; ++bi) {
+          R.block_residual[bi] = wc.block_residual[bi];
+          R.block_value[bi] = wc.block_value[bi];
+        }
+        window_converged = wc.converged;
+      }
+    } else if (R.participants.size() > 1) {
       const std::size_t nb = R.blocks.size();
       std::vector<double> payload(1 + 4 * nb);
       payload[0] = step_failure.has_value() ? 0.0 : 1.0;
@@ -1542,35 +1632,56 @@ detail::Task<Result<void>> Runner::Impl::run_region(
     ++st.iterations;
     ++stats.total_iterations;
 
-    if (k == 0) {
+    if (R.window_scoped) {
+      // decide_window_convergence() already did the measure-mapping and
+      // the all_satisfied() call (its own last act) -- it needs
+      // `R.convergence.measures()` to resolve each measure's own
+      // Relative-vs-ResidualRelative reference, which is exactly why it
+      // takes `R.convergence` as a parameter rather than leaving that
+      // mapping to be repeated out here. `R.residual_norms`/`R.
+      // reference_norms` were written in place by that same call, so a
+      // reader of either after this sweep sees the SAME agreed values
+      // run_period()'s own explanations/stats consult.
+      double total = 0.0;
       for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
-        R.block_first[bi] = R.block_residual[bi];
+        total += R.block_residual[bi] * R.block_residual[bi];
       }
-    }
-    double total = 0.0;
-    for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
-      total += R.block_residual[bi] * R.block_residual[bi];
-    }
-    st.residual_history.push_back(std::sqrt(total));
+      st.residual_history.push_back(std::sqrt(total));
+      if (window_converged) {
+        st.converged = true;
+        break;
+      }
+    } else {
+      if (k == 0) {
+        for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
+          R.block_first[bi] = R.block_residual[bi];
+        }
+      }
+      double total = 0.0;
+      for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
+        total += R.block_residual[bi] * R.block_residual[bi];
+      }
+      st.residual_history.push_back(std::sqrt(total));
 
-    for (std::size_t mi = 0; mi < R.measure_block.size(); ++mi) {
-      const std::size_t bi = R.measure_block[mi];
-      R.residual_norms[mi] = R.block_residual[bi];
-      // convergence.hpp: Relative divides by the norm of the current value,
-      // ResidualRelative by the first residual of the window. Same arithmetic,
-      // different reference, and the enumerator is the only thing that says
-      // which -- so it has to be honoured here, not approximated.
-      R.reference_norms[mi] =
-          R.convergence.measures()[mi].kind == MeasureKind::ResidualRelative
-              ? R.block_first[bi]
-              : R.block_value[bi];
-    }
-    // Throws only on a size mismatch, which resolve_regions() made impossible;
-    // run_period()'s catch turns it into E-RT-RUN rather than letting it out of
-    // a Result-returning call.
-    if (R.convergence.all_satisfied(R.residual_norms, R.reference_norms)) {
-      st.converged = true;
-      break;
+      for (std::size_t mi = 0; mi < R.measure_block.size(); ++mi) {
+        const std::size_t bi = R.measure_block[mi];
+        R.residual_norms[mi] = R.block_residual[bi];
+        // convergence.hpp: Relative divides by the norm of the current value,
+        // ResidualRelative by the first residual of the window. Same arithmetic,
+        // different reference, and the enumerator is the only thing that says
+        // which -- so it has to be honoured here, not approximated.
+        R.reference_norms[mi] =
+            R.convergence.measures()[mi].kind == MeasureKind::ResidualRelative
+                ? R.block_first[bi]
+                : R.block_value[bi];
+      }
+      // Throws only on a size mismatch, which resolve_regions() made
+      // impossible; run_period()'s catch turns it into E-RT-RUN rather
+      // than letting it out of a Result-returning call.
+      if (R.convergence.all_satisfied(R.residual_norms, R.reference_norms)) {
+        st.converged = true;
+        break;
+      }
     }
     if (k + 1 == R.max_iterations) break;
 

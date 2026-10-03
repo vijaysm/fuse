@@ -25,6 +25,7 @@
 #include "fuse/backend/remap_plan.hpp"
 #include "fuse/backend/spacetime.hpp"
 #include "fuse/runtime/runner.hpp"
+#include "fuse/runtime/window_convergence.hpp"
 #include "fuse/runtime/window_coupler.hpp"
 #include "fuse/schedule/window.hpp"
 #include "resume.hpp"
@@ -381,6 +382,20 @@ struct RegionBlock {
   /// reserves one more slot than it actually fills on a
   /// non-straddling window instance).
   std::size_t window_export_valid_substeps = 0;
+  /// Unit 2b (D19), step (c): `true` when `value_arc` is NOT a window
+  /// member's own export (an ordinary channel, where "owned" is decided
+  /// by `length > 0` as it always was), OR when it IS one and this
+  /// process hosts that member (`WindowMemberConfig::hosted` -- the
+  /// SAME field `window_export_meta` is keyed by, step (a)). `false`
+  /// only for a window block whose exporting member is NOT hosted here:
+  /// this rank's own `block_residual`/`block_value` for that block are
+  /// computed from whatever stale buffer sits in `slots[]` (nothing
+  /// writes there; `advance_window()` skips a non-hosted member
+  /// entirely) and must never be treated as "I own zero" the way an
+  /// ordinary channel's `length == 0` already is -- `decide_window_
+  /// convergence()`'s own `WindowBlockSample::owned` reads this, not
+  /// `length`, for a window-scoped region.
+  bool window_hosted = true;
 };
 
 /// Everything one iteration region needs, resolved once in initialize().
@@ -1155,6 +1170,27 @@ struct Runner::Impl {
 
   Result<void> reduce_region_residuals(const detail::RegionRuntime& r,
                                        std::vector<double>& payload);
+
+  /// Unit 2b (D19), step (c): gathers every participant's own
+  /// `WindowBlockSample` array (one per `r.blocks`) for a window-scoped
+  /// region's convergence agreement -- `decide_window_convergence()`'s
+  /// own input. An all-to-all point-to-point exchange over `r.
+  /// participants`, not a tree (unlike `reduce_region_residuals()`): the
+  /// decision needs every participant's OWN contribution individually
+  /// (to exclude a non-hosted rank's one block without discarding its
+  /// other, legitimately-owned ones), not a single pre-combined value.
+  /// `local_ok` is this rank's own `!step_failure.has_value()`, carried
+  /// alongside the samples so a locally-failed rank's contribution is
+  /// visible to every other participant in the SAME exchange, exactly as
+  /// `reduce_region_residuals()`'s own `payload[0]` is. `all_ok_out` is
+  /// true only when every gathered rank reports ok. No-ops (`gathered_
+  /// out = {mine}`, `all_ok_out = local_ok`) when `r.participants.size()
+  /// <= 1` -- the single-process case, nothing to gather.
+  Result<void> gather_window_block_samples(
+      const detail::RegionRuntime& r, bool local_ok,
+      const std::vector<WindowBlockSample>& mine,
+      std::vector<std::vector<WindowBlockSample>>& gathered_out,
+      bool& all_ok_out);
 };
 
 }  // namespace fuse

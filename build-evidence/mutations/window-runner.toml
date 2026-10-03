@@ -414,8 +414,47 @@ test = "runtime.window_runner_straddle"
 # transported value from, so "read the local registry" and "receive
 # the real transport" are reading the IDENTICAL single-process data
 # either way. That specific comparison can only be falsified by a real
-# multi-rank run -- `verification.window.mpi.{2,3}` (step (e)), a host
+# multi-rank run -- `parallel.window_runner_mpi.{2,3}` (step (e)), a host
 # row never executed in this sandbox. Recorded here rather than as its
 # own row so a future reader does not mistake "162/162 passed" for
 # "this comparison was proven" -- it demonstrates only that the pass
 # existing/not-existing is what carries tier-0 weight.
+
+[[mutation]]
+id = "window-runner-convergence-agreement-disabled"
+area = "runtime/iteration (run_region, Unit 2b step (c), D19)"
+describes = "run_region()'s own per-sweep convergence decision now branches on R.window_scoped: a window-scoped region's own agreement is decide_window_convergence() (fuse/runtime/window_convergence.hpp), gated on WindowMemberConfig::hosted per block rather than the ordinary R-10 path's length>0 gate. Disabling the branch (forcing it to fall through to the ordinary else-if arm, which never recognises a window-scoped region's own blocks the same way) leaves window_converged permanently false -- the region's own measure-mapping/all_satisfied() call, still gated by R.window_scoped further down the SAME function, is the one place that actually sets st.converged for a window region, and it reads window_converged, never recomputing its own verdict."
+file = "src/runtime/iteration.cpp"
+old = """    if (R.window_scoped) {
+      const std::size_t nb = R.blocks.size();
+      std::vector<WindowBlockSample> mine(nb);"""
+new = """    if (false) {  // MUTATED: window convergence agreement disabled
+      const std::size_t nb = R.blocks.size();
+      std::vector<WindowBlockSample> mine(nb);"""
+target = "fuse_runtime_window_runner_test"
+test = "runtime.window_runner"
+# Expected kill: broad and immediate -- every window-scoped test binary in
+# the suite. Verified BY HAND 2026-10-03 (see this delegation's report to
+# the lead): with the mutation applied, 163-test ctest run reports 7
+# FAILED: runtime.window_runner, runtime.window_runner_multirate,
+# runtime.window_runner_straddle, verification.brusselator_runner,
+# verification.brusselator_participants, abi.participant,
+# example.brusselator.runner -- every binary that exercises a window-
+# scoped region at all, none surviving. Reverting the one-line mutation
+# and rebuilding makes all 163 tests pass again, bit-for-bit; file
+# restored and re-verified byte-identical (sha256) afterward.
+#
+# This mutation demonstrates the WIRING matters (the branch must be
+# reached at all); it does NOT by itself demonstrate the CROSS-RANK
+# agreement inside decide_window_convergence() matters, since every
+# fixture in this sandbox has exactly one effective participant
+# (R.participants.size() <= 1 everywhere -- no real base_communicator is
+# ever configured here). That property IS demonstrated, without MPI, by
+# the pure-function tests in test/runtime/window_convergence_test.cpp
+# (WindowConvergence.EachBlockIsSummedOnlyFromItsOwningRanks and
+# WindowConvergence.MutationDecidingFromOneRanksOwnPairsOnlyDisagrees in
+# particular, the latter built specifically to instantiate the lead's own
+# "a rank deciding from its local pairs only" mutation as a direct
+# comparison, since decide_window_convergence() is new code with no PRIOR
+# behaviour on this exact line to revert to). The real end-to-end,
+# multi-rank proof is parallel.window_runner_mpi.{2,3} (step (e)), a host row.

@@ -36,8 +36,13 @@ id = "region-residual-skips-the-cross-rank-reduction"
 area = "runtime"
 describes = "R-10: run_region() stops agreeing the residual across the region's participants and falls back to each rank's own local Euclidean sum, exactly the defect the fix closes. On RunnerTransport.RegionConvergesInTheSerialIterationCount's unequal 2/1/1-style split this desynchronises which sweep each rank exits on -- the expected kill is the iteration-count assertion failing outright on the ranks that finish before the timeout, or the whole job timing out (a slower rank's partners move on to the region's own exit instructions while it is still sweeping, which is the hang rank-agreement.md's Epoch exists to prevent and this reduction is the region-local analogue of); either is a correct kill for this mutation, and the 120s TIMEOUT test property makes the second case an unambiguous FAILED rather than a silent PASS."
 file = "src/runtime/iteration.cpp"
-old = "    if (R.participants.size() > 1) {"
-new = "    if (false) {"
+# Anchor updated 2026-10-03, Unit 2b (D19) step (c): this ordinary-
+# region gate is now the SECOND arm of an if/window_scoped/else-if
+# chain (a window-scoped region's own agreement, `decide_window_
+# convergence()`, is the first arm) -- same condition, same effect for
+# an ordinary region, different surrounding punctuation only.
+old = "    } else if (R.participants.size() > 1) {"
+new = "    } else if (false) {"
 target = "fuse_parallel_runner_transport_test"
 test = "parallel.runner_transport.2"
 requires = "mpi"
