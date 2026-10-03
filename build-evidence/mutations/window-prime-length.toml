@@ -32,26 +32,42 @@
 # file restored and verified byte-identical to a backup with `cmp`
 # before the next step.
 
-[[mutation]]
-id = "resolve-regions-window-prime-unbounded-provider-read"
-area = "runtime/iteration (resolve_regions, window cold-start priming)"
-describes = "removes the std::min(cfg.length, provider_length) bound this session's Defect 2 fix added, restoring the original unbounded read of provider_v0[e] for e up to cfg.length (THIS member's own length) regardless of the provider's own, possibly smaller, exported-field length -- the heap-buffer-overflow READ Finding 3(a) measured."
-file = "src/runtime/iteration.cpp"
-old = "          const std::size_t prime_count = std::min(cfg.length, provider_length);"
-new = "          const std::size_t prime_count = cfg.length;  // MUTATED: no bound"
-target = "fuse_runtime_window_runner_mismatched_length_test"
-test = "runtime.window_runner_mismatched_length"
-# PROVED BY HAND, twice (see this file's own header for why a plain-
-# build pass here is not itself the real proof):
-#   Ordinary Debug build: PASSES despite the mutation (not a useful
-#     oracle for THIS defect -- recorded so a future reader does not
-#     mistake a green run here for "the bug is caught").
-#   ASan build (-fsanitize=address,undefined, scratch tree, removed
-#     after use): ABORTS -- "SUMMARY: AddressSanitizer: heap-buffer-
-#     overflow iteration.cpp:564 in
-#     fuse::Runner::Impl::resolve_regions(fuse::ComponentSet&,
-#     fuse::FieldRegistry&)", the allocation backtrace pointing at
-#     VectorBlock's own 4-element `out_`/`in_` vectors (component "A").
-#     Reverting the mutation and rebuilding under the SAME ASan tree
-#     passes cleanly (exit 0), both before and after this row's own
-#     hand-verification pass.
+# RETIRED 2026-10-03, Unit 2b (D19) step (b): the row below (`resolve-
+# regions-window-prime-unbounded-provider-read`) mutated a line --
+# `const std::size_t prime_count = std::min(cfg.length, provider_length);`
+# -- that no longer exists. Step (b) removed the whole manual,
+# direct-`registry.get(provider_exported_field)`-based import-priming
+# block this bound lived in (KNOWN_ISSUES.md D19, evidence 3: that read
+# is the provider's own LOCAL FieldRegistry entry, not necessarily
+# correct cross-rank) and replaced it with a second pass that re-runs
+# the channel's own COMPILED delivery chain (Transport/Remap/Epoch/
+# Sink) once, through `execute()` -- the same bounds-safe, resolution-
+# aware code path `run_region()`'s own sweep loop already uses every
+# sweep. There is no longer a raw pointer read of the provider's own
+# buffer indexed by the CONSUMER's own (possibly larger) length
+# anywhere in this function -- the exact shape Defect 2 found -- so the
+# defect CLASS this row proved is caught is now eliminated by
+# construction, not merely bounded. `runtime.window_runner_mismatched_
+# length` (A: 4 values, B: 9, a REAL cross-mesh remap) still passes,
+# unchanged, under the new code -- confirmed 2026-10-03, full `bafter`
+# rebuild + `ctest`, 162/162 -- demonstrating the real Remap now
+# resolves the length difference correctly rather than the old code's
+# silent partial-prime workaround ("a correct REMAP between the two
+# resolutions ... this one-time cold-start shortcut has never
+# attempted", the very comment this fix deleted).
+#
+# The nearest analogue in the NEW code is defensive, not correctness-
+# critical: `advance_window.cpp`'s [sic -- iteration.cpp's] new
+# straddle-history seed bounds `prime_count` by
+# `import_slot.total() / cfg.provider_capacity` (the CONSUMER's own,
+# already-correctly-sized `window_import` slot -- the real Sink's own
+# output, not the provider's buffer). Removing that bound is NOT a
+# meaningful mutation: `import_slot` is allocated to exactly
+# `cfg.length * cfg.provider_capacity` by `plan_buffers.cpp` for every
+# existing fixture, so the two bounds always agree and the mutated line
+# produces an identical `prime_count` -- a true no-op, the same "cannot
+# demonstrate a difference" caveat this file's own header already
+# flagged for the ASan-only case above. No replacement row is recorded
+# for it for that reason; a future fixture that genuinely allocates
+# `window_import` smaller than `cfg.length * cfg.provider_capacity`
+# (none exists today) would be the first one able to exercise it.

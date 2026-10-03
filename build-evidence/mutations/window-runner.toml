@@ -348,3 +348,74 @@ test = "verification.brusselator_runner"
 # measured. Reverting the one-line fix and re-running makes both tests
 # pass again, bit-for-bit, across the full 150-window span. File restored
 # and re-verified byte-identical afterward.
+
+[[mutation]]
+id = "window-runner-hosting-ignored"
+area = "runtime/iteration (advance_window, Unit 2b step (a), D19)"
+describes = "advance_window() has no hosting check at all before this fix: WindowMemberConfig::hosted is computed in resolve_regions() (the SAME !this_process.has_value() || ranks.contains(*this_process) formula build_ticks() already uses for ordinary ticks) but advance_window() never reads it, so a window member not on this process's own rank still takes every substep, calls advance()/save_state()/restore_state(), and raises ExternalSuspend exactly as if it were hosted here -- the certain-deadlock defect (D19) the lead's rebuttal of the prior Unit 2 report identified: on more than one process, every rank runs every window member's full physics, including members whose own inputs/state live only on a DIFFERENT rank."
+file = "src/runtime/iteration.cpp"
+old = """  if (!cfg.hosted) co_return Result<void>::success();"""
+new = """  if (false) co_return Result<void>::success();  // MUTATED: hosting ignored"""
+target = "fuse_runtime_window_runner_test"
+test = "runtime.window_runner"
+# Expected kill: WindowRunner.NonHostedMemberTakesNoSubstepsAndMatchesTheHostedExport
+# (the only test in window_runner_test.cpp/window_runner_straddle_test.cpp/
+# window_runner_multirate_test.cpp that forces RunnerConfig::force_this_process
+# to a rank where one window member's own RankSet is absent -- every OTHER
+# existing window fixture leaves this_process unset, where cfg.hosted is
+# unconditionally true per its own formula, and is therefore a confirmed
+# NO-OP against this mutation). Verified BY HAND 2026-10-03 (see this
+# delegation's report to the lead): with the mutation applied, the test
+# FAILS -- EXPECT_EQ(b->advance_count, 0) (window_runner_test.cpp:897)
+# reports b->advance_count == 3, i.e. B's advance() ran despite B's own
+# RankSet{1,1} excluding the forced this_process == 0. Reverting the
+# one-line fix and re-running makes the test pass again; file restored
+# and re-verified byte-identical (sha256) afterward, then rebuilt clean
+# (162/162 tests passing, 229/229 mutation anchors valid).
+
+[[mutation]]
+id = "window-runner-priming-through-transfer-disabled"
+area = "runtime/iteration (resolve_regions, Unit 2b step (b), D19)"
+describes = "resolve_regions()'s second pass (Unit 2b step (b)) re-runs each importing member's own compiled delivery chain (Transport/Remap/Epoch/Interpolate/Sink) once, at setup, so a window member's own cfg.window_import arc and straddle-tail history are primed through the real field transfer rather than a direct registry.get(provider_exported_field) read of the provider's own FieldRegistry entry (KNOWN_ISSUES.md D19, evidence 3). Disabling this pass entirely -- skipping every member unconditionally -- removes ALL cold-start priming of a consumer's own import arc and straddle history, leaving both at whatever default the slot/map already holds (zero, an empty history list)."
+file = "src/runtime/iteration.cpp"
+old = "        if (!cfg.import_channel.valid()) continue;"
+new = "        if (true) continue;  // MUTATED: step (b) pass 2 disabled"
+target = "fuse_runtime_window_runner_straddle_test"
+test = "runtime.window_runner_straddle"
+# Expected kill: every test in BOTH window_runner_straddle_test.cpp
+# (7/9 tests -- the 2 that pass regardless are a straddle-REJECTION
+# test and a rank-mismatch-REJECTION test, neither of which ever
+# reaches a real sweep) and window_runner_multirate_test.cpp (7/7
+# tests). window_runner_test.cpp's own fixtures are a confirmed NO-OP
+# against this mutation: every one of them uses a provider whose true
+# cold-start value happens to be exactly 0.0 (the LinearBlock default
+# `a=0,k=0` degenerate case, or a provider that is never imported from
+# at window 0), which coincides with the un-primed default regardless
+# of whether this pass runs -- not evidence the mutation is survived,
+# just that those fixtures cannot distinguish "primed to 0" from
+# "never primed, defaults to 0". Verified BY HAND 2026-10-03 (see this
+# delegation's report to the lead): with the mutation applied, 7/9
+# WindowRunnerStraddle tests and 7/7 WindowRunnerMultirate tests FAIL
+# (EXPECT_EQ against the WindowCoupler driver's own closed-form/
+# reference values, first disagreeing at window 0's own sweep 0 in
+# every case checked) -- a broad, immediate, decisive kill, not a
+# marginal one. Reverting the mutation and rebuilding makes all 162
+# tier-0 tests pass again, bit-for-bit; file restored and re-verified
+# byte-identical (sha256) afterward.
+#
+# A NARROWER mutation the lead's own addendum suggested --
+# specifically reverting THIS pass's own transfer-chain execution back
+# to a direct `registry.get(provider_exported_field)` read (the
+# pre-fix code's own approach), rather than disabling the pass
+# outright -- was ALSO hand-tried and found to have NO tier-0 oracle:
+# all 162 tests still pass. This is expected, not a gap in the fix: a
+# single-process `force_this_process` simulation of "the provider is
+# not hosted here" has no SECOND rank to source a genuinely different
+# transported value from, so "read the local registry" and "receive
+# the real transport" are reading the IDENTICAL single-process data
+# either way. That specific comparison can only be falsified by a real
+# multi-rank run -- `verification.window.mpi.{2,3}` (step (e)), a host
+# row never executed in this sandbox. Recorded here rather than as its
+# own row so a future reader does not mistake "162/162 passed" for
+# "this comparison was proven" -- it demonstrates only that the pass
+# existing/not-existing is what carries tier-0 weight.

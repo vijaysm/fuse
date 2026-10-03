@@ -349,6 +349,12 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
 
         WindowMemberConfig cfg;
         cfg.component_slot = slot;
+        // Unit 2b (D19): the IDENTICAL formula build_ticks()'s own
+        // `hosted[]` uses for ordinary ticks, read from the SAME
+        // `this_process` member (set once, there, before resolve_regions()
+        // ever runs -- Runner::initialize()'s own call order).
+        cfg.hosted = !this_process.has_value() ||
+                    graph.component(member).ranks.contains(*this_process);
         cfg.interval = graph.component(member).interval;
         cfg.policy = scope.policy_for(mname).value_or(DtPolicy::Adjustable);
         cfg.order = scope.order;
@@ -365,7 +371,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         // duplicated rather than called for the same reason that file
         // duplicates window_region_members(): those two are file-local to
         // a different translation unit.
-        FieldId exported_field, imported_field, provider_exported_field;
+        FieldId exported_field, imported_field;
         for (const ChannelId cid : decl.channels) {
           const Channel& ch = graph.channel_at(cid);
           if (!exported_field.valid() &&
@@ -375,7 +381,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
           if (!imported_field.valid() &&
               graph.owner_of(ch.target).value() == member.value()) {
             imported_field = ch.target;
-            provider_exported_field = ch.source;
+            cfg.import_channel = cid;
             cfg.import_lagged = effective_channel_lag(graph, cid) != 0;
             const ComponentId provider = graph.owner_of(ch.source);
             const std::string& pname = graph.component(provider).name;
@@ -484,29 +490,40 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         // (expand.cpp's own "Source moves no data" comment): the live
         // value there IS the registered initial condition from the
         // moment register_fields() ran, with no separate buffer to
-        // prime. Neither this member's own K-wide EXPORT arc (`ins.out`)
-        // nor a consumer's K-wide IMPORT arc (`cfg.window_import`) is
+        // prime. This member's own K-wide EXPORT arc (`ins.out`) is NOT
         // such an alias (the C3 buffer-ownership fix, the `/window`-
-        // labelled Sink, plan_buffers.cpp) -- both are genuinely
-        // separate, coupler-owned buffers -- so BOTH are primed
-        // explicitly here, once, at setup, to the SAME constant (this
-        // member's own `cfg.provided` value for its own export; the
-        // provider's own registered value, fetched via `registry.get()`
-        // exactly as `cfg.provided`/`cfg.required` already are, for a
-        // consumer's own import). Priming only the export and relying on
-        // the field transfer (Transport, Remap, Epoch, Sink) to carry it
-        // downstream is not enough for a LAGGED import specifically:
-        // `run_region()`'s own shadow refresh (which a lagged read goes
-        // through) snapshots the import arc's live content BEFORE this
-        // sweep's own body -- including that very chain -- ever runs, so
-        // on window 0's own sweep 0 the chain has not had a chance to
-        // deliver anything yet. Priming the import arc directly closes
-        // that gap; priming the export arc too keeps the chain's own
-        // later, real deliveries (window 0 onward) consistent with what
-        // was seeded, rather than overwriting it with un-primed zeros
-        // the one time the chain DOES run inside sweep 0's own body (an
-        // unlagged import, or a lagged one's later sweeps).
-        if (cfg.provided != nullptr && ins.out.valid() &&
+        // labelled Sink, plan_buffers.cpp) -- it is a genuinely
+        // separate, coupler-owned buffer -- so it is primed explicitly
+        // here, once, at setup, to this member's own `cfg.provided`
+        // value (every element, every one of `cfg.capacity`'s own
+        // sample slots, so a consumer's lagged shadow-refresh --
+        // `run_region()`'s own snapshot BEFORE this sweep's own body,
+        // including the field-transfer chain, ever runs -- has
+        // something real to see on window 0's own sweep 0, before that
+        // chain has delivered anything). A CONSUMER's own K-wide IMPORT
+        // arc (`cfg.window_import`) is primed too, but not here: Unit 2b
+        // (D19), step (b) moved that to a SECOND pass over this same
+        // region's own members, below, once every member's own export
+        // (this block, for every one of them) is guaranteed primed --
+        // see that pass's own top comment for why.
+        // Unit 2b (D19), step (b) correction (the lead's own addendum,
+        // 2026-10-03): gated on `cfg.hosted`. THIS member's own
+        // `cfg.provided` is read from THIS rank's own local
+        // `registry.get(exported_field)` a few lines above -- which,
+        // on a rank that does not host this member, is whatever an
+        // externally-driven stand-in's own placeholder storage holds,
+        // NOT a reliable mirror of the real, hosted value (the exact
+        // gap step (a) already exists to stop pretending otherwise for
+        // this member's own PHYSICS; priming its EXPORT arc from that
+        // same unreliable storage here would be the identical mistake
+        // one step removed). Priming only where hosted leaves `ins.out`
+        // on every OTHER rank at whatever default the slot already
+        // has; those ranks never need it to be meaningful locally --
+        // the pass below delivers the correct, HOSTED value to
+        // whichever rank's own `window_import` needs it, through a
+        // real Transport, not by every rank separately guessing at its
+        // own copy of someone else's state.
+        if (cfg.hosted && cfg.provided != nullptr && ins.out.valid() &&
             ins.out.value() < slots.size()) {
           detail::Slot& export_slot = slots[ins.out.value()];
           if (export_slot.data != nullptr &&
@@ -516,78 +533,6 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
                 export_slot.data[e * cfg.capacity + s] = cfg.provided[e];
               }
             }
-          }
-        }
-        if (cfg.required != nullptr && cfg.window_import.valid() &&
-            provider_exported_field.valid() &&
-            cfg.window_import.value() < slots.size()) {
-          const Result<FieldRef> provided_ref =
-              registry.get(provider_exported_field);
-          if (!provided_ref.ok()) return provided_ref.error();
-          const double* provider_v0 = provided_ref.value().data();
-          // The PROVIDER's own exported-field length -- NOT cfg.length,
-          // which is THIS member's own exported (or, absent an export,
-          // imported) length, read from a DIFFERENT field a few lines
-          // above. The two agree whenever this is a same-resolution
-          // transfer (the common case, and every case the existing
-          // suite covered before Conformance Unit 2's own cross-
-          // resolution U/V box graph), but nothing enforces that they
-          // must: a real heap-buffer-overflow READ of `provider_v0[e]`
-          // for e in [provider_length, cfg.length) resulted whenever
-          // cfg.length (this member's own, larger) was used as the loop
-          // bound to index `provider_v0` (the provider's own, smaller,
-          // buffer) -- found by ASan on a two-member window with
-          // mismatched field lengths (reported to the lead as Finding
-          // 3(a); fixed here as Conformance Unit 2's own Defect 2).
-          const std::size_t provider_length = provided_ref.value().size();
-          // Bounds BOTH ends: `provider_v0[e]` is valid only for
-          // e < provider_length; `import_slot.data`/`seed_st.history[e]`
-          // below are sized to cfg.length (the check on import_slot.
-          // total() just below still gates on cfg.length -- that is
-          // THIS buffer's own real size, unchanged). When the two
-          // differ, priming is necessarily partial: entries
-          // [prime_count, cfg.length) are left at whatever import_slot/
-          // history already held (zero-initialized storage, or an
-          // empty history list) -- a correct REMAP between the two
-          // resolutions is a real Transport/Remap, which this one-time
-          // cold-start shortcut has never attempted (the comment above
-          // this block already says as much for the lagged, same-rank
-          // case; cross-resolution is the same limitation, not a new
-          // one introduced by this fix).
-          const std::size_t prime_count = std::min(cfg.length, provider_length);
-          detail::Slot& import_slot = slots[cfg.window_import.value()];
-          if (import_slot.data != nullptr &&
-              import_slot.total() == cfg.length * cfg.provider_capacity) {
-            for (std::size_t e = 0; e < prime_count; ++e) {
-              for (std::size_t s = 0; s < cfg.provider_capacity; ++s) {
-                import_slot.data[e * cfg.provider_capacity + s] =
-                    provider_v0[e];
-              }
-            }
-          }
-
-          // Time windows track: this member's own straddle-tail
-          // extrapolation (advance_window()'s own comment, the split-
-          // advance callbacks) reads `window_member_state[node].history`
-          // for points BEFORE the window it is currently splitting --
-          // `detail::WindowMemberState::history`'s own struct comment
-          // ("seeded with the initial condition, t=0"), mirrored here
-          // exactly: one list per element, seeded with the SAME
-          // provider value the import arc itself was just primed with,
-          // at t=0, so the very first window that ever straddles
-          // (however early) has at least one point to extrapolate from
-          // instead of `fuse::extrapolate_boundary_value()`'s own
-          // `FUSE_ASSERT(!history.empty())` firing. `seed_st.history`
-          // itself is still sized to cfg.length (THIS member's own
-          // element count, what every other reader of `history` -- e.g.
-          // the straddle replay -- indexes by); only the SEEDING loop
-          // is bounded by `prime_count`, so an element beyond the
-          // provider's own length is left with an EMPTY history list,
-          // same residual limitation as the import_slot priming above.
-          detail::WindowMemberState& seed_st = window_member_state[node];
-          seed_st.history.assign(cfg.length, {});
-          for (std::size_t e = 0; e < prime_count; ++e) {
-            seed_st.history[e].push_back({Rational{0}, provider_v0[e]});
           }
         }
 
@@ -606,6 +551,110 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
               1;
           window_export_meta[ins.out.value()] = {cfg.capacity,
                                                   valid_substeps};
+        }
+      }
+
+      // Unit 2b (D19), step (b) -- PRIMING THROUGH THE TRANSFER. A
+      // second pass over this SAME region's own window members, in the
+      // SAME stream order every rank already traverses identically
+      // (the pass just above): by now every member's own EXPORT arc
+      // (`ins.out`) is primed from `cfg.provided` (that pass's own
+      // last act, unconditionally, regardless of which member is
+      // hosted where) -- so every provider THIS pass could possibly
+      // need is already correct, however this consumer/provider pair
+      // happened to fall relative to each other in stream order.
+      // Without this second pass, a consumer processed BEFORE its own
+      // provider in the first pass would read that provider's own
+      // `ins.out` before it was primed.
+      //
+      // For each importing member, finds and re-runs its own channel's
+      // compiled delivery chain -- window_lowering.cpp's own "compiles
+      // through the ORDINARY per-channel rule (Remap/Transport/Epoch,
+      // Sink)" -- exactly once, so `cfg.window_import` ends up holding
+      // whatever that chain actually delivers (a real cross-rank
+      // Transport when provider and consumer are on different ranks;
+      // a local copy otherwise), never a direct
+      // `registry.get(provider_exported_field)` read of the PROVIDER's
+      // own FieldRegistry entry (KNOWN_ISSUES.md D19, evidence 3) --
+      // which is only ever the provider's own local, same-process copy
+      // and, on a rank that does not host the provider, is not even
+      // guaranteed to be kept current by anything (Unit 2b, step (a)'s
+      // own hosting check stops calling that provider's `advance()`
+      // there at all).
+      //
+      // SAFE from `SpacetimeInfo::history` reading stale/zero data (a
+      // real risk for an ORDINARY channel's own temporal remap, which
+      // accumulates history incrementally via `OpKind::Sample` across
+      // several real ticks before a rarer consumer's own Interpolate
+      // ever reads it): confirmed by inspecting the COMPILED stream
+      // for both a plain and a genuinely multirate (7:13) window graph
+      // -- window_lowering.cpp never emits a node with
+      // `OpAttrs::basis != TemporalBasis::None` for a window channel,
+      // so `resolve_spacetime()` never builds a `SpacetimeInfo` for one
+      // at all, and every Interpolate this chain can contain always
+      // takes the `r.spacetime < 0` plain-copy branch (`execute()`'s
+      // own `OpKind::Interpolate` case) -- the window's own K-wide
+      // waveform is handed over complete, in one buffer
+      // (`advance_window()`'s own output), every sweep; there is no
+      // incremental history for a window channel to depend on in the
+      // first place.
+      //
+      // NOT YET INDEPENDENTLY VERIFIED: that re-running `OpKind::Epoch`
+      // (a real cross-rank `reconcile_epoch()` agreement) and
+      // `OpKind::Transport` here, once per channel, extra, ahead of
+      // `run_region()`'s own first real sweep, is collective-safe
+      // across actual MPI ranks. The argument is that every rank reaches
+      // this SAME pass, over the SAME compiled stream, in the SAME
+      // order (nothing here branches on `cfg.hosted` or on which rank
+      // this is), so the call is matched identically everywhere -- but
+      // this sandbox cannot run multi-rank MPI, so this is a claim, not
+      // a demonstrated fact. Flagged for `verification.window.mpi.{2,3}`
+      // (step (e)) to confirm or refute.
+      for (std::size_t i = R.enter; i <= R.exit; ++i) {
+        const Instruction& ins = stream[i];
+        if (ins.kind != OpKind::WindowAdvance) continue;
+        const std::uint32_t node = ins.origin_node.value();
+        const auto cfg_it = window_member_config.find(node);
+        if (cfg_it == window_member_config.end()) continue;
+        const WindowMemberConfig& cfg = cfg_it->second;
+        if (!cfg.import_channel.valid()) continue;
+        if (cfg.required == nullptr || !cfg.window_import.valid() ||
+            cfg.window_import.value() >= slots.size()) {
+          continue;
+        }
+
+        std::vector<std::size_t> chain;
+        for (std::size_t j = R.enter; j <= R.exit; ++j) {
+          if (stream[j].kind == OpKind::WindowAdvance) continue;
+          const Node& origin = dag.node(stream[j].origin_node);
+          if (origin.origin == cfg.import_channel) chain.push_back(j);
+        }
+        for (const std::size_t j : chain) {
+          const Result<void> e = execute(stream[j], resolved[j]);
+          if (!e.ok()) return e;
+        }
+
+        // Time windows track: this member's own straddle-tail
+        // extrapolation history, seeded from the SAME value the chain
+        // above just delivered (mirrors the pre-existing seeding
+        // exactly -- `detail::WindowMemberState::history`'s own struct
+        // comment, "seeded with the initial condition, t=0") -- read
+        // back from `cfg.window_import`'s own sample 0 (every one of
+        // its `cfg.provider_capacity` samples holds the SAME constant
+        // after a cold-start delivery, by construction: nothing has
+        // diverged between them yet), rather than from a second,
+        // separate provider read.
+        const detail::Slot& import_slot = slots[cfg.window_import.value()];
+        const std::size_t prime_count =
+            cfg.provider_capacity > 0
+                ? std::min(cfg.length,
+                           import_slot.total() / cfg.provider_capacity)
+                : 0;
+        detail::WindowMemberState& seed_st = window_member_state[node];
+        seed_st.history.assign(cfg.length, {});
+        for (std::size_t e = 0; e < prime_count; ++e) {
+          seed_st.history[e].push_back(
+              {Rational{0}, import_slot.data[e * cfg.provider_capacity]});
         }
       }
 
@@ -2058,6 +2107,26 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
                  "member config; resolve_regions() should have built one"};
   }
   const WindowMemberConfig& cfg = cfg_it->second;
+
+  // Unit 2b (D19): a member not hosted on this process takes no
+  // substeps, calls neither advance() nor save_state()/restore_state(),
+  // and yields no ExternalSuspend -- checked FIRST, before any of this
+  // function's own bookkeeping (window_last_dst_step, window_pass_
+  // start_clock, WindowMemberState::clock/history/straddle_pending),
+  // every one of which is read elsewhere only through a map lookup that
+  // already tolerates a missing entry as "skip" (run_region()'s own
+  // post-convergence history refresh: `if (dst_it == window_last_dst_
+  // step.end()) continue;`; resolve_pending_window_straddles(): `if
+  // (!st.straddle_pending) continue;`, true by construction when this
+  // member's own WindowMemberState is never touched at all) -- so
+  // leaving every one of this member's own per-node maps untouched here
+  // is self-consistent with every existing reader, not merely untested.
+  // This member's own export arc (`ins.out`) is correspondingly left
+  // untouched too: on more than one process, the field transfer
+  // (Transport/Remap/Sink) delivers it instead; this function's own job
+  // on a non-hosted rank is to do nothing at all.
+  if (!cfg.hosted) co_return Result<void>::success();
+
   detail::WindowMemberState& st = window_member_state[node];
   Component& comp = components.at(cfg.component_slot);
 
