@@ -70,7 +70,7 @@
 
 #include "fuse/abi/types.h"
 
-#include "fuse/backend/serial_backend.hpp"
+#include "fuse/backend/native_backend.hpp"
 #include "fuse/base/rational.hpp"
 #include "fuse/field/registry.hpp"
 #include "fuse/ir/lowering.hpp"
@@ -116,7 +116,25 @@ struct fuse_ctx {
 
   fuse::CouplingGraph     graph;
   fuse::FieldRegistry     fields;
-  fuse::SerialMeshBackend backend;
+  /// `fuse::native::NativeMeshBackend`, not `fuse::SerialMeshBackend`: a
+  /// generated mesh needs the per-placement decomposition NativeMeshBackend
+  /// supports (`register_default_placements`, include/fuse/backend/
+  /// native_backend.hpp) -- a graph with an `add_coupler()`/`remap_on()`
+  /// placement, or two components on different regions of the same mesh,
+  /// cannot initialize through this ABI at all on SerialMeshBackend, which
+  /// has no per-placement concept. `std::optional`, not a plain member:
+  /// NativeMeshBackend has no default constructor (it needs this PROCESS's
+  /// own `(rank, num_ranks)`, known only once `fuse_setup_options()`'s own
+  /// communicator -- or its absence -- has been read, which happens at
+  /// `fuse_initialize()` time, well after `fuse_ctx` itself is
+  /// constructed); `impl_initialize` (participant.cpp) constructs it in
+  /// place, exactly once, before the mesh-loading loop that is its first
+  /// use. Found and fixed this session (Conformance Unit 2): the hardcoded
+  /// SerialMeshBackend this replaced could not express the above at all.
+  /// The full ABI suite needs re-running against this swap before it can
+  /// be called verified -- track that against the ctest run this change
+  /// is reported with, not this comment.
+  std::optional<fuse::native::NativeMeshBackend> backend;
 
   /// S6 phase 4, "Adapter host" track: mounts every `LaunchMode::Plugin`
   /// component's shared object at initialize() time
