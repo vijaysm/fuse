@@ -409,7 +409,8 @@ endif()
 
 # ---------------------------------------------------------------- runtime
 foreach(t runner checkpoint epoch_schedule window_coupler window_runner
-         window_runner_multirate window_runner_straddle)
+         window_runner_multirate window_runner_straddle
+         window_runner_mismatched_length)
   fuse_add_gtest(runtime ${t})
 endforeach()
 fuse_add_gtest(runtime component_iface THROWS)

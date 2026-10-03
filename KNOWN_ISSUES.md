@@ -2539,3 +2539,73 @@ Also check whether any carried state is determined only through an average, as p
 a_n under the midpoint load is the candidate, since the eigenvector carries 14% of its mass in the
 beam acceleration.
 
+### D16. A window member's cold-start priming over-read a smaller provider buffer — FIXED 2026-10-03
+
+Found by ASan on a two-member window-scoped region whose members export fields of different
+lengths (Conformance Unit 2, the coupler-placement track's own cross-resolution U/V box graph).
+`Runner::Impl::resolve_regions()` (`src/runtime/iteration.cpp`), setting up a window member's
+cold-start import priming before window 0 ever runs, read `provider_v0[e]` — the PROVIDER's own
+exported-field buffer — for `e` up to `cfg.length`, THIS member's own exported (or, absent an
+export, imported) field length, resolved from a different field entirely a few lines earlier.
+Whenever the provider's own field was smaller, this read past the end of its buffer: a real
+heap-buffer-overflow READ, confirmed by ASan — `SUMMARY: AddressSanitizer: heap-buffer-overflow
+iteration.cpp:534 in fuse::Runner::Impl::resolve_regions` on the original box-graph harness
+(5/5 runs, identical stack), and reproduced independently on a fresh, minimal two-member window
+(mesh "a" 4 cells, mesh "b" 9 cells) built for this fix.
+
+**Fixed** by bounding both affected loops (the import-arc priming loop and the straddle-tail
+history seeding loop right after it) to `std::min(cfg.length, provider_length)`, where
+`provider_length` is the provider's own exported field's real size
+(`provided_ref.value().size()`). When the two lengths differ, priming is necessarily partial —
+entries `[prime_count, cfg.length)` are left at whatever `import_slot`/`history` already held
+(zero-initialized storage, an empty history list) — a correct cross-resolution prime would need a
+real Transport/Remap, which this one-time cold-start shortcut has never attempted even in the
+same-resolution case (see the surrounding comment on why the identity-only shortcut exists at
+all). Covered by `test/runtime/window_runner_mismatched_length_test.cpp`
+(`WindowRunnerMismatchedLength.InitializeAndOnePeriodSucceedWithoutOverflow`) and
+`build-evidence/mutations/window-prime-length.toml`'s own row — with the important caveat, recorded
+in that row's own comment, that an ordinary (non-sanitized) build does NOT reliably fail on this
+mutation (the over-read recovers whatever garbage sits past the small buffer without crashing);
+AddressSanitizer is the real oracle for this specific defect, and was run by hand both with the
+mutation applied (aborts, heap-buffer-overflow, pointing at the mutated line) and with it reverted
+(clean, exit 0).
+
+**Whether this explains the separately-measured same-resolution uniform-collapse finding: NO, not
+confirmed.** A prior session found that remapping two IDENTICAL-resolution meshes sometimes
+produced a uniform weight matrix instead of a true identity. This defect requires a length
+MISMATCH to trigger at all (`provider_length < cfg.length`); a same-resolution pair never
+satisfies that condition, so this fix cannot be the explanation, and a focused diagnostic this
+session (`Supermesh.ScratchBoxNxMx1IdenticalPairDiagnostic`, test/backend/supermesh_test.cpp, added
+then fully reverted) separately confirmed the generator and supermesh builder are correct on an
+identical 3x3x1 pair (exact identity matrix, `min_src_coverage=min_tgt_coverage=1`). The
+uniform-collapse finding's own root cause remains open.
+
+### D17. `--accel aitken` converges through `--driver runner` but not through `--driver window`, on the identical `AccelConfig` — OPEN, not pursued (Conformance Unit 2's own scope needs no accelerator)
+
+Measured on the Brusselator example (`examples/brusselator/main.cpp`) at its own default
+parameters (`--dt-u 0.002 --dt-v 0.003 --window 0.02`, `A=3.4 B=1 alpha=10`):
+
+- `--driver window --accel aitken --end 0.5 --check`: exits 1, no output directory created.
+  stderr: `FAIL: run_window() at t=0.060000: coupling window [3/50, 2/25) ran its full 60
+  iterations without meeting its convergence criterion` — windows 0–2 (t=0, 0.02, 0.04) converge;
+  window 3 (t=0.06) does not, and never recovers even at `--max-iterations 500` (same window, same
+  failure, confirmed on `--end 0.1`).
+- `--driver runner --accel aitken --end 0.5 --check`: converges throughout —
+  `max_iterations=31` (well under the 60 cap), `max_window_balance_error=2.227e-13`,
+  `--check: OK`.
+
+Both sides build the identical `AccelConfig{.kind = AccelKind::Aitken}` (default everything else)
+from the same CLI flag — confirmed by reading both call sites in `main.cpp` directly (lines ~227
+and ~326 as of this session). The asymmetry is real, not a CLI-parsing difference and not a
+crash: a genuine convergence disagreement between the two drivers on IDENTICAL physics and an
+identical accelerator configuration, isolated to the `--driver window` path specifically (the
+direct `WindowCoupler` driver, not `fuse::Runner`).
+
+**Not root-caused.** Aitken's own quasi-Newton relaxation numerics (`src/num/
+accel_relaxation.cpp`) are a genuinely separate investigation from Conformance Unit 2's own scope,
+and the Brusselator's own conformance case (both Unit 1 and Unit 2) uses no accelerator either
+way — `AccelKind::None` throughout. Recorded here, per the lead's own instruction, because the
+`--driver window` path is the REFERENCE driver for everything Aitken-accelerated elsewhere in the
+suite, and this asymmetry should be understood before Aitken is treated as a conformance case
+anywhere.
+

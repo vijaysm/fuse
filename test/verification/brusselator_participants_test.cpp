@@ -11,73 +11,54 @@
 // `u_region` (species_component.hpp's own file header explains why), so
 // the coupler-routed Remap this compiles is the IDENTITY.
 //
-// DISABLED, two open findings, both measured and reported to the lead
-// rather than guessed past -- this is the FIRST test anywhere in the
-// suite to drive TWO externally-driven window members (U and V both
-// suspended at their own WindowAdvance, stepped by this test's own loop
-// via the SAME shim functions u_main.c/v_main.f90 call) through the SAME
-// coupler-routed, EXPLICIT-interval window region together.
+// This is the FIRST test anywhere in the suite to drive TWO externally-
+// driven window members (U and V both suspended at their own
+// WindowAdvance, stepped by this test's own loop via the SAME shim
+// functions u_main.c/v_main.f90 call) through the SAME coupler-routed,
+// EXPLICIT-interval window region together.
 // AbiParticipant.ExternallyDrivenWindowMemberMatchesInProcessRunner
-// (test/abi/participant_test.cpp, this session) proved the single-member
-// case; every existing window-region ABI test (that one included) also
-// happens to use window == each member's own interval (one substep per
-// window) -- never checked against this file's own
-// WaveformIteration::Jacobi, two-member, EXPLICIT-interval combination.
+// (test/abi/participant_test.cpp) proved the single-member case.
 //
-// Finding A (window == dt_u == dt_v, the degenerate one-substep-per-
-// window case, kDtU=kDtV=kWindow=1/500): `bruss_u_step()`/`bruss_v_step()`
-// are both called once per sweep, U then V, exactly ImplicitCoupling's
-// own established pattern (test/abi/participant_test.cpp) -- every
-// begin_step()/end_step() call returns FUSE_OK throughout. Measured
-// (fprintf trace, since reverted): U's own state STAIRCASES -- stabilizes
-// within 1-2 sweeps to a plateau, holds it for a FIXED 8 sweeps, then
-// JUMPS to a new plateau as `u_rep.t_begin`/`t_end` silently advance to
-// the NEXT 1/500-wide span (0/1->1/500->2/500->3/500->...) -- i.e. the
-// schedule is progressing through MULTIPLE successive window instances
-// on its own, each converging in ~2 sweeps, not one. Simultaneously,
-// `is_coupling_ongoing()`'s own `period` AND `now` fields stay at 0 and
-// 0/1 respectively through at least 4 such window instances (30 sweeps
-// total) -- `now` never advancing past 0/1 even while `t_begin`/`t_end`
-// for the ACTUAL step calls visibly progress is the sharper of the two
-// symptoms: whatever clock `is_coupling_ongoing()` reads is not the same
-// one `begin_step()`/`end_step()` advance for this graph shape. The
-// reference run's OWN `run_period()` reports converging ONE window in
-// `ref_iterations[0]=4` sweeps per call, consistent with "one call = one
-// window" (brusselator_runner_test.cpp's own established reading); the
-// ABI side's own per-window convergence (~2 sweeps per plateau) is at
-// least in the same neighborhood, but this test could not find a
-// trustworthy "window N has committed" signal to stop on and read state
-// at the right instant, and never found a point where `period`/`now`
-// agreed that one coupling window had elapsed at all.
+// History (left here because it explains why this file still uses the
+// degenerate window == dt_u == dt_v case, kDtU=kDtV=kWindow=1/500,
+// rather than Unit 1's own dt_u != dt_v != window shape): this test was
+// originally DISABLED on two findings, both reported to the lead rather
+// than guessed past. Finding A -- is_coupling_ongoing()'s own period/now
+// never advanced, and U's own state staircased through several window
+// instances before settling -- was a real library defect, not a test
+// bug: ClockSet's own aggregates (common_period/finest_interval/
+// checked_common_period/is_lockstep/earliest_next/due_at) folded a
+// coupler's default interval (Rational{1}, since it declares none of
+// its own) into the lcm/gcd like any physics component's real interval,
+// silently inflating this graph's own compiled period to lcm(1/50, 1) =
+// 1 -- 50 window instances per period instead of one.
+// include/fuse/schedule/clock.hpp's own ClockSet constructor comment has
+// the full account; fixed there (Conformance Unit 2, Defect 1), covered
+// by test/schedule/clock_test.cpp's ClockSet.ACouplersDefaultInterval
+// NeverEntersTheLcmOrGcd and test/schedule/window_region_golden_test.cpp's
+// WindowRegionGolden.ACouplerDoesNotEnterTheWindowPeriod. RE-MEASURED
+// after that fix: this test now PASSES outright with no further change
+// needed here -- is_coupling_ongoing()'s period/now track correctly once
+// the period itself is right, so there is no second defect in
+// impl_is_coupling_ongoing.
 //
-// Finding B (window = 4*dt_u, matching Unit 1's own typical dt_u != dt_v
-// != window shape rather than the degenerate case above): the very
-// FIRST sweep's `begin_step(V)` -- immediately after U's own first
-// begin_step/bruss_u_step/end_step, the ImplicitCoupling precedent's own
-// call order -- fails outright:
-//   E-ABI-STEP-ORDER: fuse_begin_step: component 'V' asked out of turn;
-//   the Runner's instruction stream expects component 'U' next
-// i.e. for a window spanning several of U's/V's own substeps, the
-// compiled instruction stream does NOT want strict U-then-V alternation
-// once per Picard sweep -- it wants (by this error's own account)
-// several of U's own substeps serviced before V gets a turn at all. No
-// existing test (grepped: no window-region ABI test combines
-// remap_on/add_coupler with a window wider than one member's own
-// interval) establishes what the correct call PATTERN is for this case
-// -- whether a caller is expected to retry the other component on
-// E-ABI-STEP-ORDER (round-robin, driven by the error itself) or there is
-// a direct "whose turn" query this file did not find.
-//
-// Both findings are measured, not claimed explained -- reported to the
-// lead at the Unit 2 progress checkpoint (same conversation) rather than
-// guessed past silently. Left DISABLED (not deleted): the graph
-// construction, the ABI lifecycle (create/load_graph/register_field/
-// initialize, including the u_out/v_out cold-start seeding fix below,
-// which IS verified correct -- it eliminated the much larger,
-// unconditional divergence an earlier version of this file had), and the
-// shim calls themselves are exercised and did not fault; only the
-// per-sweep call PATTERN for two simultaneous externally-driven window
-// members remains open.
+// Finding B (window spans more than one of a member's own substeps) was
+// a SEPARATE defect from Finding A: strict U-then-V alternation once
+// per Picard sweep gets E-ABI-STEP-ORDER (component asked out of turn)
+// the moment a window spans more than one of a member's own substeps,
+// because there is then no single fixed alternation that is right for
+// every sweep. FIXED as Defect 3 by growing the ABI: `next_component`
+// appended to fuse_step_report/fuse_ongoing (entries.def's own comment
+// on that field has the full account), resolved for free inside
+// fuse_end_step()'s own pre-existing resume_period() call -- no new
+// cost, no retry loop. ExternallyDrivenMultiSubstepWindowDrivenByNext
+// Component below is the non-degenerate case this mechanism was built
+// for: window == 4*dt_u == 4*dt_v, so each Picard sweep takes four U
+// ticks and four V ticks, in whatever order the Runner's own schedule
+// actually interleaves them -- driven with ZERO guessing past the
+// very first call of each period (declaration order breaks that one
+// tie, same convention test/abi/participant_test.cpp's own
+// StepBoundsAreTheSchedulesRationals relies on).
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -142,7 +123,8 @@ struct GraphAndWeights {
   fuse::RemapWeights weights_vu, weights_uv;  // V->U, U->V (main.cpp's own names)
 };
 
-[[nodiscard]] GraphAndWeights build_graph_and_weights() {
+[[nodiscard]] GraphAndWeights build_graph_and_weights(
+    Rational dt_u = kDtU, Rational dt_v = kDtV, Rational window = kWindow) {
   fuse::native::NativeMeshBackend backend(/*rank=*/0, /*num_ranks=*/1);
   auto u_grid_r = brusselator::NativeGrid::make(backend, "u", kNxU, kNyU);
   auto v_grid_r = brusselator::NativeGrid::make(backend, "v", kNxV, kNyV);
@@ -158,7 +140,7 @@ struct GraphAndWeights {
   const fuse::RegionId v_region = graph.add_region({.name = "v_all", .mesh = v_mesh, .dimension = 2});
 
   const brusselator::WindowGraphHandles handles = brusselator::add_window_coupling(
-      graph, u_region, kDtU, kDtV, kWindow, kTolerance, kMaxIterations,
+      graph, u_region, dt_u, dt_v, window, kTolerance, kMaxIterations,
       fuse::AccelKind::None, WaveformIteration::Jacobi, RankSet{0, 1});
 
   fuse::RemapPlan plan_vu;
@@ -185,7 +167,7 @@ const fuse_participant_abi_v1* Table() {
 
 }  // namespace
 
-TEST(BrusselatorParticipants, DISABLED_ExternallyDrivenBothMembersMatchInProcessRunner) {
+TEST(BrusselatorParticipants, ExternallyDrivenBothMembersMatchInProcessRunner) {
   const brusselator::PhysicsConfig cfg;  // defaults: diffusion=10, A=3.4, B=1, forcing=true
 
   // --- Reference: fuse::Runner driven directly, Unit 1's own graph
@@ -275,8 +257,7 @@ TEST(BrusselatorParticipants, DISABLED_ExternallyDrivenBothMembersMatchInProcess
   // initialized default (an earlier version of this setup did) produced
   // a much larger, unconditional divergence from the very first sweep;
   // this fix removed that specific divergence (confirmed by comparing
-  // traces with and without it) -- what remains open is Finding A/B
-  // above, a separate issue in the per-sweep call PATTERN.
+  // traces with and without it).
   brusselator::VComponent abi_v_seed("V", abi_setup.u_grid, abi_setup.v_grid, cfg,
                                      &abi_setup.weights_uv, &abi_setup.weights_vu);
   std::vector<double> v0_on_u(static_cast<std::size_t>(nu), 0.0);
@@ -345,14 +326,11 @@ TEST(BrusselatorParticipants, DISABLED_ExternallyDrivenBothMembersMatchInProcess
   fuse_step_request v_req{.struct_size = sizeof(v_req)};
   v_req.component = "V";
 
-  // Finding A/B (this file's own header): neither the precomputed-
-  // sweep-count termination this loop uses, nor is_coupling_ongoing()'s
-  // own period/now, were found to reliably signal "one coupling window
-  // has elapsed" for this graph shape -- kept as the SIMPLEST faithful
-  // reproduction (ImplicitCoupling's own established call pattern, U
-  // then V, once per sweep, for ref_iterations[p] sweeps) rather than
-  // a guessed-at adaptive protocol, so a future fix attempt has a clean,
-  // minimal starting point.
+  // ImplicitCoupling's own established call pattern (test/abi/
+  // participant_test.cpp): U then V, once per sweep, for
+  // ref_iterations[p] sweeps -- exactly one substep per window (this
+  // file's own header explains why: window == dt_u == dt_v here, the
+  // degenerate case Finding B's own E-ABI-STEP-ORDER does not reach).
   for (int p = 0; p < kPeriods; ++p) {
     for (int sweep = 0; sweep < ref_iterations[p]; ++sweep) {
       fuse_step_report u_rep{.struct_size = sizeof(u_rep)};
@@ -390,6 +368,219 @@ TEST(BrusselatorParticipants, DISABLED_ExternallyDrivenBothMembersMatchInProcess
     fuse_ongoing ongoing{.struct_size = sizeof(ongoing)};
     ASSERT_EQ(t->is_coupling_ongoing(ctx, nullptr, &ongoing), FUSE_OK);
     EXPECT_EQ(ongoing.period, p + 1) << "period " << p;
+
+    SCOPED_TRACE("period " + std::to_string(p));
+    std::vector<double> u_state(static_cast<std::size_t>(nu)), v_state(static_cast<std::size_t>(nv));
+    bruss_u_state(uh, u_state.data());
+    bruss_v_state(vh, v_state.data());
+    ASSERT_EQ(static_cast<int>(u_state.size()), ref_u_state[p].size());
+    for (std::size_t i = 0; i < u_state.size(); ++i) {
+      EXPECT_EQ(u_state[i], ref_u_state[p][static_cast<int>(i)]) << "U state[" << i << "]";
+    }
+    ASSERT_EQ(static_cast<int>(v_state.size()), ref_v_state[p].size());
+    for (std::size_t i = 0; i < v_state.size(); ++i) {
+      EXPECT_EQ(v_state[i], ref_v_state[p][static_cast<int>(i)]) << "V state[" << i << "]";
+    }
+  }
+
+  bruss_u_destroy(uh);
+  bruss_v_destroy(vh);
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+// BrusselatorParticipants.ExternallyDrivenMultiSubstepWindowDrivenByNextComponent
+// (Defect 3). window == 4*dt_u == 4*dt_v: Finding B's own non-degenerate
+// shape, where a single fixed U-then-V alternation is wrong (each Picard
+// sweep now takes four ticks of EACH member, interleaved by the Runner's
+// own schedule, not by this test's guess). Driven purely by
+// fuse_step_report::next_component/fuse_ongoing::next_component after the
+// one declaration-order tie at the very start of each period -- no
+// E-ABI-STEP-ORDER retry anywhere in this loop.
+TEST(BrusselatorParticipants, ExternallyDrivenMultiSubstepWindowDrivenByNextComponent) {
+  const brusselator::PhysicsConfig cfg;
+  const Rational kFineDtU{1, 2000}, kFineDtV{1, 2000}, kFineWindow{1, 500};  // window = 4*dt_u = 4*dt_v
+  constexpr int kFinePeriods = 2;
+
+  // --- Reference: fuse::Runner driven directly. ---
+  GraphAndWeights ref = build_graph_and_weights(kFineDtU, kFineDtV, kFineWindow);
+  ASSERT_TRUE(ref.backend.register_default_placements(ref.graph, ref.u_mesh).ok());
+  const auto ref_lowered = fuse::lower(ref.graph);
+  ASSERT_TRUE(ref_lowered.ok()) << ref_lowered.diags.to_string();
+  const fuse::ClockSet ref_clocks{ref.graph};
+  const auto ref_sched = fuse::schedule(ref.graph, ref_lowered.dag, ref_clocks,
+                                        fuse::make_region_sizes(ref.graph, ref.backend));
+  ASSERT_TRUE(ref_sched.ok()) << ref_sched.diags.to_string();
+
+  auto ref_comp_v = std::make_unique<brusselator::VComponent>(
+      "V", ref.u_grid, ref.v_grid, cfg, &ref.weights_uv, &ref.weights_vu);
+  const brusselator::Vector ref_v0_on_u =
+      Eigen::Map<brusselator::Vector>(ref_comp_v->provided_ptr(), ref.u_grid.size());
+  auto ref_comp_u = std::make_unique<brusselator::UComponent>("U", ref.u_grid, cfg, ref_v0_on_u);
+
+  ComponentSet ref_components;
+  ref_components.add(std::move(ref_comp_u));
+  ref_components.add(std::move(ref_comp_v));
+  FieldRegistry ref_registry;
+  for (auto& c : ref_components) ASSERT_TRUE(c.register_fields(ref_registry, ref.graph).ok());
+
+  fuse::Runner ref_runner{ref.graph, ref_lowered.dag, ref_sched.plan, ref.backend};
+  fuse::RunnerConfig ref_rcfg;
+  {
+    const auto init_r = ref_runner.initialize(ref_components, ref_registry, ref_rcfg);
+    ASSERT_TRUE(init_r.ok()) << init_r.error().code << ": " << init_r.error().message;
+  }
+  std::vector<brusselator::Vector> ref_u_state(kFinePeriods), ref_v_state(kFinePeriods);
+  for (int p = 0; p < kFinePeriods; ++p) {
+    const auto ran = ref_runner.run_period(ref_components);
+    ASSERT_TRUE(ran.ok()) << ran.error().code << ": " << ran.error().message << " (period " << p << ")";
+    ASSERT_TRUE(ref_runner.iteration_stats().front().converged)
+        << "reference run must converge for this comparison to mean anything (period " << p << ")";
+    ref_u_state[p] = static_cast<brusselator::UComponent*>(ref_components.find("U"))->state();
+    ref_v_state[p] = static_cast<brusselator::VComponent*>(ref_components.find("V"))->state();
+  }
+
+  // --- Same graph, driven entirely through the ABI, turn order resolved
+  // via next_component. ---
+  GraphAndWeights abi_setup = build_graph_and_weights(kFineDtU, kFineDtV, kFineWindow);
+  const auto bytes = fuse::serialize(abi_setup.graph);
+
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  fuse_context_out co{.struct_size = sizeof(co)};
+  ASSERT_EQ(t->create(nullptr, nullptr, &co), FUSE_OK);
+  fuse_ctx* ctx = co.ctx;
+  fuse_graph_source src{.struct_size = sizeof(src)};
+  src.bytes = bytes.data();
+  src.byte_count = bytes.size();
+  ASSERT_EQ(t->load_graph(ctx, &src, nullptr), FUSE_OK);
+
+  const int nu = kNxU * kNyU, nv = kNxV * kNyV;
+  std::vector<double> u_out(nu, 0.0), u_in(nu, 0.0), v_out(nu, 0.0), v_in(nu, 0.0);
+
+  brusselator::VComponent abi_v_seed("V", abi_setup.u_grid, abi_setup.v_grid, cfg,
+                                     &abi_setup.weights_uv, &abi_setup.weights_vu);
+  std::vector<double> v0_on_u(static_cast<std::size_t>(nu), 0.0);
+  for (int i = 0; i < nu; ++i) v0_on_u[static_cast<std::size_t>(i)] = abi_v_seed.provided_ptr()[i];
+  brusselator::UComponent abi_u_seed(
+      "U", abi_setup.u_grid, cfg, Eigen::Map<const brusselator::Vector>(v0_on_u.data(), nu));
+  for (int i = 0; i < nu; ++i) {
+    u_out[static_cast<std::size_t>(i)] = abi_u_seed.provided_ptr()[i];
+    v_out[static_cast<std::size_t>(i)] = abi_v_seed.provided_ptr()[i];
+  }
+
+  auto register_one = [&](const char* component, const char* field, double* data, int n) {
+    fuse_field_name fname{.struct_size = sizeof(fname)};
+    fname.component = component;
+    fname.field = field;
+    fuse_field_ref fref{.struct_size = sizeof(fref)};
+    ASSERT_EQ(t->field_handle(ctx, &fname, &fref), FUSE_OK);
+    fuse_field_view fview{.struct_size = sizeof(fview)};
+    fview.handle = fref.handle;
+    fview.element_type = FUSE_ELEMENT_F64;
+    fview.memspace = FUSE_MEMSPACE_HOST;
+    fview.ownership = FUSE_OWNERSHIP_OWNED;
+    fview.components = 1;
+    fview.count = static_cast<uint64_t>(n);
+    fview.owned_count = static_cast<uint64_t>(n);
+    fview.stride = 1;
+    fview.data = data;
+    ASSERT_EQ(t->register_field(ctx, &fview, nullptr), FUSE_OK);
+  };
+  register_one("U", "u_out", u_out.data(), nu);
+  register_one("U", "u_in", u_in.data(), nu);
+  register_one("V", "v_out", v_out.data(), nu);
+  register_one("V", "v_in", v_in.data(), nu);
+
+  {
+    const fuse_status init_rc = t->initialize(ctx, nullptr, nullptr);
+    if (init_rc != FUSE_OK) {
+      char buf[2048] = {0};
+      fuse_error err{.struct_size = sizeof(err)};
+      err.buffer = buf;
+      err.capacity = sizeof(buf);
+      t->last_error(ctx, nullptr, &err);
+      ADD_FAILURE() << "initialize failed (" << init_rc << "): "
+                    << (err.code ? err.code : "?") << ": " << buf;
+    }
+    ASSERT_EQ(init_rc, FUSE_OK);
+  }
+
+  bruss_u_handle* uh = bruss_u_create(kNxU, kNyU, cfg.diffusion, cfg.A, cfg.B,
+                                     cfg.forcing ? 1 : 0, v0_on_u.data());
+  ASSERT_NE(uh, nullptr);
+  bruss_v_handle* vh = bruss_v_create(kNxU, kNyU, kNxV, kNyV, cfg.diffusion);
+  ASSERT_NE(vh, nullptr);
+  ASSERT_EQ(bruss_v_size(vh), nu);
+
+  fuse_step_request u_req{.struct_size = sizeof(u_req)};
+  u_req.component = "U";
+  fuse_step_request v_req{.struct_size = sizeof(v_req)};
+  v_req.component = "V";
+  const auto u_cid = abi_setup.graph.find_component("U");
+  const auto v_cid = abi_setup.graph.find_component("V");
+  ASSERT_TRUE(u_cid.has_value());
+  ASSERT_TRUE(v_cid.has_value());
+  const std::int32_t u_idx = static_cast<std::int32_t>(u_cid->value());
+  const std::int32_t v_idx = static_cast<std::int32_t>(v_cid->value());
+  ASSERT_NE(u_idx, v_idx);
+
+  for (int p = 0; p < kFinePeriods; ++p) {
+    // The one tie this loop ever guesses: both members' very first tick
+    // of a period starts at the same instant, and nothing is cached yet
+    // for fuse_is_coupling_ongoing() to report for free (it stays
+    // side-effect-free by design -- see its own comment in
+    // src/abi/participant.cpp). U was declared first, so U opens, same
+    // convention test/abi/participant_test.cpp's own
+    // StepBoundsAreTheSchedulesRationals relies on.
+    std::int32_t next = u_idx;
+    int step_count = 0;
+    while (true) {
+      const bool is_u = (next == u_idx);
+      ASSERT_TRUE(is_u || next == v_idx)
+          << "period " << p << " step " << step_count
+          << ": next_component resolved to neither U (" << u_idx
+          << ") nor V (" << v_idx << "), got " << next;
+      fuse_step_request& req = is_u ? u_req : v_req;
+      fuse_step_report rep{.struct_size = sizeof(rep)};
+      ASSERT_EQ(t->begin_step(ctx, &req, &rep), FUSE_OK)
+          << "period " << p << " step " << step_count << " (" << (is_u ? "U" : "V") << ")";
+      EXPECT_EQ(rep.next_component, -2)
+          << "begin_step() cannot resolve next_component synchronously (its own comment "
+             "in entries.def explains why) -- period " << p << " step " << step_count;
+      if (is_u) {
+        if (rep.requires_checkpoint) bruss_u_save_state(uh);
+        if (rep.requires_restore) bruss_u_restore_state(uh);
+        ASSERT_EQ(bruss_u_step(uh, rep.t_begin.numerator, rep.t_begin.denominator,
+                               rep.t_end.numerator, rep.t_end.denominator,
+                               u_in.data(), u_out.data()), 0)
+            << bruss_u_last_error(uh);
+      } else {
+        if (rep.requires_checkpoint) bruss_v_save_state(vh);
+        if (rep.requires_restore) bruss_v_restore_state(vh);
+        ASSERT_EQ(bruss_v_step(vh, rep.t_begin.numerator, rep.t_begin.denominator,
+                               rep.t_end.numerator, rep.t_end.denominator,
+                               v_in.data(), v_out.data()), 0)
+            << bruss_v_last_error(vh);
+      }
+      fuse_step_report end_rep{.struct_size = sizeof(end_rep)};
+      ASSERT_EQ(t->end_step(ctx, &req, &end_rep), FUSE_OK)
+          << "period " << p << " step " << step_count << " (" << (is_u ? "U" : "V") << ")";
+      ++step_count;
+      if (end_rep.next_component == -1) break;  // period complete
+      next = end_rep.next_component;
+    }
+
+    fuse_ongoing ongoing{.struct_size = sizeof(ongoing)};
+    ASSERT_EQ(t->is_coupling_ongoing(ctx, nullptr, &ongoing), FUSE_OK);
+    EXPECT_EQ(ongoing.period, p + 1) << "period " << p;
+    // is_coupling_ongoing() never calls resume_period() itself (see its
+    // own comment in src/abi/participant.cpp), and the LAST end_step()
+    // above reset c.next_request on closing the period -- so this read
+    // is -2 ("undetermined without stepping"), not -1: with nothing
+    // cached, "the period just closed" and "the next period has not
+    // been primed yet" are the same state from here, and only -1 means
+    // specifically "this graph has nothing externally driven at all".
+    EXPECT_EQ(ongoing.next_component, -2) << "period " << p << " just closed";
 
     SCOPED_TRACE("period " + std::to_string(p));
     std::vector<double> u_state(static_cast<std::size_t>(nu)), v_state(static_cast<std::size_t>(nv));
