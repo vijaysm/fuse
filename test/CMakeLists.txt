@@ -408,8 +408,8 @@ if(FUSE_ENABLE_MOAB)
 endif()
 
 # ---------------------------------------------------------------- runtime
-foreach(t runner checkpoint epoch_schedule window_coupler window_runner
-         window_runner_multirate window_runner_straddle
+foreach(t runner checkpoint epoch_schedule window_convergence window_coupler
+         window_runner window_runner_multirate window_runner_straddle
          window_runner_mismatched_length)
   fuse_add_gtest(runtime ${t})
 endforeach()
@@ -455,7 +455,7 @@ fuse_tests_gated_by(FUSE_ENABLE_MPI
   parallel/runner_transport_test.cpp parallel/comm_graph_test.cpp
   parallel/mpi_transport_test.cpp parallel/epoch_reconcile_test.cpp
   parallel/nodal_field_test.cpp parallel/nodal_remap_distributed_test.cpp
-  parallel/nodal_remap_runner_test.cpp)
+  parallel/nodal_remap_runner_test.cpp parallel/window_runner_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
   foreach(t runner_transport comm_graph mpi_transport)
     fuse_add_mpi_test(parallel ${t} LIBS fuse::runtime)
@@ -492,6 +492,12 @@ if(FUSE_ENABLE_MPI)
   # failed as designed. Keeping the premise true is the fix; a guard would
   # turn a file with nothing to say at one rank into three silent skips.
   fuse_add_mpi_test(parallel epoch_reconcile LIBS fuse::runtime RANKS 2 3 4 5)
+  # D19 (KNOWN_ISSUES.md), Unit 2b step (e): the window-scoped iteration
+  # path's own first real-MPI test. RANKS 2 3 only -- the 7:13 fixture
+  # declares exactly two coupled members (A, B); at 2 ranks they are
+  # disjoint, at 3 a genuinely uncoupled third component (C) is added so
+  # its presence is proven not to perturb the window's agreed answer.
+  fuse_add_mpi_test(parallel window_runner_mpi LIBS fuse::runtime RANKS 2 3)
   # comm_graph_test exercises CrystalRouter directly, which is a private
   # implementation header under src/transport/ -- the transport layer's public
   # surface is CommGraph. The parent gave this one test src/ on its include
