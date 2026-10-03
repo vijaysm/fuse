@@ -247,7 +247,7 @@ FUSE_ABI_ENTRY(initialize,          fuse_null,          fuse_null,          "com
 FUSE_ABI_ENTRY(is_coupling_ongoing, fuse_null,          fuse_ongoing,       "")
 FUSE_ABI_ENTRY(begin_step,          fuse_step_request,  fuse_step_report,   "the component's imports are current on return; COLLECTIVE over the component's processes")
 FUSE_ABI_ENTRY(end_step,            fuse_step_request,  fuse_step_report,   "the component's exports are read on entry; COLLECTIVE over the component's processes")
-FUSE_ABI_ENTRY(run,                 fuse_run_request,   fuse_null,          "in-process components only; FUSE_ERR_UNSUPPORTED when any component is driven from outside")
+FUSE_ABI_ENTRY(run,                 fuse_run_request,   fuse_null,          "FUSE_ERR_UNSUPPORTED (E-ABI-RUN-EXTERNAL) only when an externally driven component is HOSTED ON THIS PROCESS; legal on a process hosting none at all (a coupler-only placement, or any rank with no externally driven component of its own), which still executes this call's own share of the period's collectives")
 
 /* ---- provider direction (2026-10-02): the coupler calls a plugin --------
  * The struct catalogue above is SHARED: fuse_null, fuse_version_info,

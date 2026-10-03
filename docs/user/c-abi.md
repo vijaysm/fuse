@@ -108,8 +108,10 @@ component index FUSE's own compiled instruction stream expects at THIS process's
 - **At a period's own start** (nothing resolved yet this period), `fuse_is_coupling_ongoing()`
   answers straight from the compiled plan — the first externally driven component of a period is
   a fixed property of the schedule, the same every period, with no need to resume the instruction
-  stream to find out. `-1` means a graph with no externally-driven component at all (`fuse_run()`
-  drives those).
+  stream to find out. `-1` means THIS PROCESS hosts no externally-driven component of its own
+  (`fuse_run()` drives those processes) — either because the graph has none at all, or because
+  this process happens to host none of the ones it does declare (a dedicated coupler rank, or any
+  other rank whose own components are all driven in-process).
 - **Mid-period**, after at least one step, `fuse_end_step()` resolves the real answer for free —
   it already resumes the instruction stream internally to find out what comes next, so reading
   `next_component` off its own report costs nothing extra.
@@ -125,6 +127,23 @@ each `end_step()`'s own report for every step after that. `next_component` was a
 build that only allocated the pre-growth struct never has this member written into its memory at
 all, and keeps
 working exactly as it did before this field existed.
+
+## `fuse_run()` and ranks without a component of their own
+
+`fuse_run()` drives a graph in process, for a caller that does not need to step any component from
+outside at all. It refuses (`FUSE_ERR_UNSUPPORTED`, `E-ABI-RUN-EXTERNAL`) only when **an externally
+driven component is hosted on this process** — never merely because the graph declares one
+*somewhere*. A process whose own components are all driven in process, and a process that hosts no
+component at all (a dedicated coupler placement, or any other rank with nothing of its own to
+step), can both call `fuse_run()` freely, even in a graph that has externally driven components on
+*other* ranks.
+
+This matters for a bundled, multi-executable coupling: a rank that hosts only a coupler placement
+has no `begin_step()`/`end_step()` of its own to call, but it still owes its partners their own
+share of every period's collectives (the Transport/Remap a channel routes through it). `fuse_run()`
+is how that rank executes its own period, with the same `periods` argument every physics rank steps
+— drive it exactly as a fully in-process caller would, from `fuse_initialize()` straight through to
+`fuse_destroy()`, registering no field at all.
 
 ## Time is exact across the boundary too
 

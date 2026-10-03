@@ -67,8 +67,11 @@ typedef struct fuse_participant_abi_v1 {
   /* processes */
   fuse_status (*end_step)(fuse_ctx* ctx, const fuse_step_request* in, fuse_step_report* out);
 
-  /* in-process components only; FUSE_ERR_UNSUPPORTED when any component is */
-  /* driven from outside */
+  /* FUSE_ERR_UNSUPPORTED (E-ABI-RUN-EXTERNAL) only when an externally driven */
+  /* component is HOSTED ON THIS PROCESS; legal on a process hosting none at */
+  /* all (a coupler-only placement, or any rank with no externally driven */
+  /* component of its own), which still executes this call's own share of the */
+  /* period's collectives */
   fuse_status (*run)(fuse_ctx* ctx, const fuse_run_request* in, fuse_null* out);
 } fuse_participant_abi_v1;
 
