@@ -542,6 +542,21 @@ fuse_status impl_initialize(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
     for (std::uint32_t i = 0; i < c.graph.component_count(); ++i) {
       const fuse::ComponentId id{i};
       const fuse::ComponentDecl& decl = c.graph.component(id);
+      // A ComponentKind::Coupler entry is a placement, not a physics
+      // participant: it has no register_fields()/advance() to supply, gets
+      // no Tick, and is never stepped through fuse_begin_step()/
+      // fuse_end_step() (src/runtime/runner.cpp's own step-list builder
+      // skips it for the identical reason, in the comment right above its
+      // own `if (decl.kind == ComponentKind::Coupler) continue;`). Before
+      // this fix, this loop built an ExternalStepComponent for it anyway,
+      // which that same runner.cpp step-list builder then rejected with
+      // E-RT-COMPONENT ("component 'coupler' is not declared in the
+      // coupling graph") the moment any graph loaded through this ABI had
+      // an add_coupler() placement -- found this session, driving the
+      // Brusselator participant graph (examples/brusselator/participants/
+      // participant_graph.hpp) through fuse_coupler_abi() for the first
+      // time anywhere in the suite.
+      if (decl.kind == fuse::ComponentKind::Coupler) continue;
       const std::string& name = decl.name;
       auto it = c.injected.find(name);
       if (it != c.injected.end()) {
