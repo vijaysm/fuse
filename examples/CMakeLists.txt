@@ -141,23 +141,18 @@ if(FUSE_ENABLE_TESTS)
 
   # Time windows track (Conformance, Unit 1): `--driver runner` (main.cpp)
   # runs the SAME graph through fuse::Runner instead of fuse::WindowCoupler
-  # (docs/user/coupling-windows.md "Through schedule() and the Runner").
-  # NOT YET REGISTERED as a ctest row at this example's own default
-  # parameters (--window 0.02, --dt-u 0.002, --dt-v 0.003) -- two open
-  # issues, both recorded in the Unit 1 report (plans/2026-09-15-fuse-plan.md
-  # S6 exit section) rather than worked around here:
-  #   1. `schedule()` requires a window-scoped region's own window length to
-  #      divide `lcm()` of every `ComponentDecl::interval` in the graph
-  #      (E-SCHED-PERIOD) -- this example's own 0.02 does not divide
-  #      lcm(0.002, 0.003) = 0.006, so this exact command line is refused at
-  #      schedule time, independent of finding 2.
-  #   2. Even past that, test/verification/brusselator_runner_test.cpp found
-  #      the Runner settles at a measurably different fixed point from the
-  #      driver for a multi-element, nonlinear window member (not yet
-  #      root-caused; see that file's own header).
-  # Once both are resolved, this row is `fuse_example_brusselator --window
-  # 0.006 --end 0.3 --check --driver runner` (0.006 divides evenly, 0.3 is
-  # an exact multiple of it) or whatever parameters the fix settles on.
+  # (docs/user/coupling-windows.md "Through schedule() and the Runner"), at
+  # this example's own default parameters (--window 0.02, --dt-u 0.002,
+  # --dt-v 0.003) -- the same span example.brusselator above covers, so a
+  # --check failure here means the Runner and the driver disagree on THIS
+  # example, not a special-cased schedule. Four `fuse::Runner` defects
+  # (test/verification/brusselator_runner_test.cpp's own header) stood
+  # between this row and passing; all four are fixed as of this row's own
+  # registration, each regression-tested there against the full existing
+  # window_runner_* suite.
+  add_test(NAME example.brusselator.runner
+           COMMAND fuse_example_brusselator --driver runner --end 0.5 --check)
+  set_tests_properties(example.brusselator.runner PROPERTIES LABELS "example")
 
   # Thread-count determinism of the Kokkos reaction kernel, bit for bit --
   # the same convention mms_pair/dn_heat use (tools/compare-runs.cmake),
