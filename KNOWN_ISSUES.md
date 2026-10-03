@@ -2714,3 +2714,56 @@ BUILD cleanly into `fuse_verification_brusselator_{participants,check}_test` und
 `FUSE_ENABLE_MPI=ON` too, but were only ever EXECUTED in the tier-0, FUSE_ENABLE_MPI=OFF tree, where
 both pass — no binary built in the MPI-enabled tree was run, per this sandbox's own standing
 constraint, C1 above); none of the four `host_verification_needed` rows above have been run.
+
+### D19. The coupling-window path (`src/runtime/iteration.cpp`) has never run across more than one process — OPEN, Unit 2b
+
+**Found this session**, reviewing Conformance Unit 2's own host rows before they can be run: every
+coupling-window test anywhere in this suite is tier 0 (one process). The window path has NO
+analogue of the ordinary-tick path's own per-process hosting check (`runner.cpp`'s `hosted[]`,
+`~1902`, `3aae2ed`; `grep -n 'this_process\|hosted\|ranks.contains' src/runtime/iteration.cpp`
+returns nothing), and this is not merely a missing optimisation — on more than one process it is a
+certain hang, for (at least) four separate reasons:
+
+1. **No hosting check at all.** `advance_window()` would call EVERY window member's `advance()` on
+   EVERY rank — the redundant physics the user rejected when windows were designed — and, through
+   the ABI, would yield `ExternalSuspend` for a component on ranks where no process will ever call
+   `begin_step()` for it.
+2. **Priming reads the wrong address space.** `resolve_regions()`'s cold-start priming reads
+   `registry.get(provider_exported_field)` and the provider's `v0` directly — a provider's field
+   exists only in the provider's own address space; a rank that does not host the provider has
+   nothing to read.
+3. **The convergence decision is not agreed.** A window region's stopping decision is computed from
+   LOCAL block norms; with members on different ranks, each rank sees only its own blocks, so
+   different ranks could reach different stop/continue verdicts — the exact class of defect this
+   project has fixed twice already (`E-RT-EPOCH-PEER`, region residual reductions): a collective
+   path returning on a locally-computed condition.
+4. **`coupler_main.c`'s and `u_main.c`'s own placeholder ranks never run the Runner at all** — they
+   call `initialize()` then `destroy()`, with no `run()`/`begin_step`/`end_step` in between. The
+   period's own Transports to and from the coupler's ranks, and the Remap routed through them, are
+   executed BY THE RUNNER; a rank that never runs the Runner never executes them, so U's and V's own
+   ranks would block forever in the first Transport that needs the coupler's participation. Unit
+   2's own four host rows (`verification.brusselator.participants.{mpmd,accept}.{3,5}`) would hang
+   on first contact with real MPI, not merely fail a numeric check.
+
+**Scope: Unit 2b**, in five ordered steps, each with its own tier-0 test (the 20 existing window
+tests plus the Brusselator as the bit-for-bit oracle for the single-process case):
+
+- **(a) Hosting.** `this_process` (the Runner already carries it) threaded into
+  `WindowMemberConfig`; a non-hosted member takes no substeps, no `advance()`/save/restore calls, no
+  `ExternalSuspend` — its own export arc on that rank is whatever Transport delivers.
+- **(b) Priming through the transfer.** The import prime at `resolve_regions()` must come through
+  the field transfer (Transport/Remap/Sink from the provider's own export arc), never from
+  `registry.get(provider_exported_field)` directly.
+- **(c) Agreed convergence.** The per-block residual/reference norms of a window region reduced
+  across the region's participants (the union of its members' processor sets) before the stop/
+  continue decision, in a fixed, deterministic order.
+- **(d) Ranks without a component.** `fuse_run()` legal on a process hosting no externally-driven
+  component (narrow `E-ABI-RUN-EXTERNAL` to refuse only when an externally-driven component IS
+  hosted here) — `coupler_main.c`'s and the placeholder ranks' own loop becomes a `run()` call for
+  the same `--periods` the physics ranks step, rather than nothing.
+- **(e) `verification.window.mpi.{2,3}`**: the existing 7:13 window fixture as a REAL two/three-
+  process `Runner` run (members on disjoint ranks), compared bit for bit against the single-process
+  `Runner` — the window path's first actual MPI test, smaller than the Brusselator.
+
+**Not pursued before this entry was written** (recorded at the START of Unit 2b, per instruction, so
+the record survives even if the unit is interrupted partway).
