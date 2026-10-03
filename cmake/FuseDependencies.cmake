@@ -452,7 +452,20 @@ macro(fuse_resolve_dependencies)
   endif()
 
   if(FUSE_ENABLE_MPI)
-    find_package(MPI REQUIRED COMPONENTS C CXX)
+    if(FUSE_ENABLE_FORTRAN)
+      # Conformance Unit 2's own v_main.f90/v_loop.f90 (examples/
+      # brusselator/participants/) call MPI_Init/MPI_Comm_rank/MPI_Comm_
+      # size/MPI_Finalize/MPI_Abort directly through the standard Fortran
+      # `mpi` module, needing MPI::MPI_Fortran -- requested only when
+      # FUSE_ENABLE_FORTRAN already enabled the Fortran language (include
+      # (FuseFortran) above runs before this file, cmake/FuseFortran.cmake's
+      # own header comment), so this request is never made on a machine
+      # with no Fortran compiler (FUSE_ENABLE_FORTRAN would already have
+      # been forced back OFF there).
+      find_package(MPI REQUIRED COMPONENTS C CXX Fortran)
+    else()
+      find_package(MPI REQUIRED COMPONENTS C CXX)
+    endif()
   endif()
   if(FUSE_ENABLE_MOAB)
     # MOAB ships an OLD-STYLE config: it sets MOAB_INCLUDE_DIRS /

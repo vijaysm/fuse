@@ -170,6 +170,139 @@ if(FUSE_ENABLE_TESTS)
   endif()
 endif()
 
+# Conformance, Unit 2 ("Brusselator as separately built participants"):
+# graph AUTHORING, kept deliberately separate from PARTICIPATING (the
+# lead's own Q2 ruling) -- this tool calls brusselator_graph.hpp's own
+# add_window_coupling() and writes the result as text YAML
+# (fuse::to_yaml(), include/fuse/model/yaml_io.hpp), so u_main.c/
+# v_main.f90 (examples/brusselator/participants, built only under
+# FUSE_ENABLE_MPI below) never construct a fuse::CouplingGraph
+# themselves -- they call fuse_load_graph() on this tool's own output
+# and nothing else. Needs no MPI itself (it only builds a graph object
+# and writes text), so built unconditionally, same as
+# fuse_example_brusselator above; the
+# verification.brusselator.graph_tool.reproduces_reference row
+# registered just below proves it reproduces the one committed
+# reference YAML (examples/brusselator/participants/
+# reference_mpmd_3.yaml) byte for byte.
+add_executable(brusselator_graph_tool
+  brusselator/participants/brusselator_graph_tool.cpp)
+target_link_libraries(brusselator_graph_tool PRIVATE fuse::model)
+target_include_directories(brusselator_graph_tool PRIVATE brusselator)
+
+if(FUSE_ENABLE_TESTS)
+  # --ranks-u 1 --ranks-v 1 --ranks-coupler 1 --launch mpmd is the ONE
+  # committed reference layout (examples/brusselator/participants/
+  # reference_mpmd_3.yaml) -- the documented example of what a user
+  # writes by hand for the {3}-rank mpmd ctest row.
+  add_test(NAME verification.brusselator.graph_tool.reproduces_reference
+           COMMAND ${CMAKE_COMMAND}
+                   -DBIN=$<TARGET_FILE:brusselator_graph_tool>
+                   "-DARGS=--ranks-u;1;--ranks-v;1;--ranks-coupler;1;--launch;mpmd"
+                   -DOUT=${CMAKE_CURRENT_BINARY_DIR}/graph_tool_reproduced_mpmd_3.yaml
+                   -DREFERENCE=${CMAKE_SOURCE_DIR}/examples/brusselator/participants/reference_mpmd_3.yaml
+                   -P ${CMAKE_SOURCE_DIR}/tools/verify-graph-tool-reference.cmake)
+  set_tests_properties(verification.brusselator.graph_tool.reproduces_reference
+                       PROPERTIES LABELS "verification")
+endif()
+
+# Conformance, Unit 2 (Q3): the --check assembler, run against u_main.c's
+# and v_main.f90's own printed per-window logs after a real host run
+# (ctest rows registered in test/CMakeLists.txt pipe both executables'
+# logs into this tool as their last step). Needs no MPI -- it is pure
+# text parsing (brusselator_check_core.hpp's own log-format comment) --
+# so, like brusselator_graph_tool above, built unconditionally; its own
+# tier-0 test (test/verification/brusselator_check_test.cpp) exercises
+# brusselator_check_core's logic directly, without a subprocess.
+add_executable(brusselator_check
+  brusselator/participants/brusselator_check.cpp
+  brusselator/participants/brusselator_check_core.cpp)
+
+# The three participant/coupler executables themselves (Conformance,
+# Unit 2) -- tier 1 (FUSE_ENABLE_MPI) only, since each genuinely needs
+# MPI (u_main.c's/coupler_main.c's own MPI_Init/MPI_Comm_c2f,
+# v_main.f90's own `use mpi`), unlike the two tools above. Each is PURE
+# C (u_main.c, coupler_main.c, u_loop.c) or PURE FORTRAN (v_main.f90,
+# v_loop.f90) in its own coupling-facing code -- only the shared physics
+# (shim.cpp) is C++ (u_main.c's own header comment has the full
+# rationale). Never run in THIS sandbox (KNOWN_ISSUES.md C1: MPI cannot
+# start here at all) -- build-verified only; test/CMakeLists.txt's own
+# verification.brusselator.participants.{mpmd,accept}.{3,5} rows below
+# register the real host invocations.
+if(FUSE_ENABLE_MPI)
+  add_executable(brusselator_coupler_main
+    brusselator/participants/coupler_main.c)
+  target_link_libraries(brusselator_coupler_main PRIVATE fuse::abi MPI::MPI_C)
+
+  add_executable(brusselator_u_main
+    brusselator/participants/u_main.c
+    brusselator/participants/u_loop.c
+    brusselator/participants/shim.cpp)
+  target_link_libraries(brusselator_u_main PRIVATE
+    fuse::abi MPI::MPI_C Eigen3::Eigen Kokkos::kokkos)
+  target_include_directories(brusselator_u_main PRIVATE brusselator)
+
+  if(TARGET fuse-abi-fortran)
+    add_executable(brusselator_v_main
+      brusselator/participants/v_main.f90
+      brusselator/participants/v_loop.f90
+      brusselator/participants/shim.cpp)
+    target_link_libraries(brusselator_v_main PRIVATE
+      fuse::abi fuse::abi-fortran MPI::MPI_Fortran MPI::MPI_C Eigen3::Eigen Kokkos::kokkos)
+    target_include_directories(brusselator_v_main PRIVATE brusselator)
+  else()
+    message(STATUS "fuse: FUSE_ENABLE_MPI is ON but no Fortran compiler was found; "
+                   "brusselator_v_main (Conformance Unit 2) will not be built")
+  endif()
+endif()
+
+# ---- Conformance Unit 2, "Brusselator as separately built participants":
+# host rows begin -----------------------------------------------------------
+# MPI cannot start in this sandbox at all (KNOWN_ISSUES.md C1), so --
+# exactly like test/CMakeLists.txt's own parallel.connect.* rows, whose
+# host_verification_needed convention this mirrors -- every row below is
+# a host_verification_needed item; what IS verified here is that every
+# executable involved builds at tier 1 (confirmed this session) and that
+# brusselator_graph_tool reproduces its own committed reference YAML byte
+# for byte (verification.brusselator.graph_tool.reproduces_reference,
+# registered just above). Registered HERE, not in test/CMakeLists.txt,
+# because add_subdirectory(test) runs before add_subdirectory(examples)
+# at the top level (CMakeLists.txt) -- a TARGET check against these
+# executables in test/CMakeLists.txt would always be false (found this
+# session: the rows silently failed to register there).
+#
+# {3,5} name each row's total world size. mpmd: ranks_u + ranks_v +
+# ranks_coupler = 3 (1+1+1) or 5 (2+2+1), three app segments. accept:
+# U's own executable carries ranks_u + ranks_coupler (2 or 3), V's
+# carries ranks_v (1 or 2) -- Q1's ruling, KNOWN_ISSUES.md D18.
+if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND TARGET brusselator_u_main AND TARGET brusselator_v_main)
+  set(_fuse_bp_world_3_u 1)
+  set(_fuse_bp_world_3_v 1)
+  set(_fuse_bp_world_3_c 1)
+  set(_fuse_bp_world_5_u 2)
+  set(_fuse_bp_world_5_v 2)
+  set(_fuse_bp_world_5_c 1)
+  foreach(_world 3 5)
+    foreach(_mode mpmd accept)
+      set(_name verification.brusselator.participants.${_mode}.${_world})
+      set(_scratch ${CMAKE_CURRENT_BINARY_DIR}/brusselator-participants-scratch/${_mode}-${_world})
+      add_test(NAME ${_name}
+        COMMAND bash ${CMAKE_SOURCE_DIR}/test/parallel/brusselator_participants/run_participants.sh
+                ${_mode} ${MPIEXEC_EXECUTABLE}
+                ${_fuse_bp_world_${_world}_u} ${_fuse_bp_world_${_world}_v} ${_fuse_bp_world_${_world}_c}
+                $<TARGET_FILE:brusselator_graph_tool>
+                $<TARGET_FILE:brusselator_u_main>
+                $<TARGET_FILE:brusselator_v_main>
+                $<TARGET_FILE:brusselator_coupler_main>
+                $<TARGET_FILE:brusselator_check>
+                ${_scratch} 2 60)
+      set_tests_properties(${_name} PROPERTIES
+        LABELS "parallel;mpi;verification;brusselator" TIMEOUT 120)
+    endforeach()
+  endforeach()
+endif()
+# ---- Conformance Unit 2 host rows: end -------------------------------------
+
 # ---------------------------------------------------------------------------
 # FSI channel (FSI track): a 2D unsteady-Stokes channel with an Euler-
 # Bernoulli wall beam, strongly coupled on a non-matching 1D interface
