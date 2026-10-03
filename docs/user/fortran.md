@@ -65,6 +65,14 @@ Every member has the shape `fuse_<entry>(ctx, in, out)`, matching the C side's
 `fuse_null` where C passes `NULL`. `status` is the function result, compared against the
 `FUSE_OK` / `FUSE_ERR_*` parameters `ffuse` also exports.
 
+A process hosting only one externally-driven component, as above, never needs to know what comes
+next — there is only ever one component to call. A process hosting more than one must call
+`fuse_begin_step`/`fuse_end_step` in the order FUSE's own compiled schedule visits their steps;
+`report%next_component` (on both `fuse_step_report` and `fuse_ongoing`) names that order directly
+rather than leaving you to guess it and recover from `E-ABI-STEP-ORDER` — see [](c-abi.md)'s own
+"Knowing the order in advance" section for the full contract (`-1`/`-2` sentinels included); it
+applies identically here, member for member.
+
 ## Type mapping
 
 | In `entries.def` | In Fortran | Note |

@@ -990,3 +990,102 @@ TEST(AbiParticipant, ExternallyDrivenWindowMemberMatchesInProcessRunner) {
 
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
+
+// AbiParticipant.OldCallerStructSizeNeverTouchesNextComponent (Defect 3,
+// docs/dev/abi-design.md rule 2's "old caller still works" half of the
+// contract for fuse_step_report/fuse_ongoing's own growth). Heap-allocates
+// EXACTLY the pre-Defect-3 byte count for each struct -- the same
+// offsetof-derived expression src/abi/participant.cpp's own
+// FirstFrozenStructSize<T> specializations use -- so a write past it is a
+// genuine heap-buffer-overflow, not a benign write into slack the
+// allocator happened to round up to. An old caller's buffer really is
+// exactly this size; next_component did not exist when it was compiled.
+TEST(AbiParticipant, OldCallerStructSizeNeverTouchesNextComponent) {
+  constexpr std::size_t kOldStepReportSize =
+      offsetof(fuse_step_report, t_end) + sizeof(fuse_exact_time);
+  constexpr std::size_t kOldOngoingSize =
+      offsetof(fuse_ongoing, now) + sizeof(fuse_exact_time);
+  static_assert(kOldStepReportSize < sizeof(fuse_step_report),
+               "next_component must have grown fuse_step_report (rule 3)");
+  static_assert(kOldOngoingSize < sizeof(fuse_ongoing),
+               "next_component must have grown fuse_ongoing (rule 3)");
+
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  const auto bytes = fuse::abi_test::build_two_component_lag1_bytes();
+  fuse_ctx* ctx = CreateAndLoad(t, bytes);
+
+  double up_storage[4] = {0, 0, 0, 0};
+  double down_storage[4] = {0, 0, 0, 0};
+  fuse_field_name fname{.struct_size = sizeof(fname)};
+  fname.component = "upstream";
+  fname.field = "out";
+  fuse_field_ref fref{.struct_size = sizeof(fref)};
+  ASSERT_EQ(t->field_handle(ctx, &fname, &fref), FUSE_OK);
+  fuse_field_view fview{.struct_size = sizeof(fview)};
+  fview.handle = fref.handle;
+  fview.element_type = FUSE_ELEMENT_F64;
+  fview.memspace = FUSE_MEMSPACE_HOST;
+  fview.ownership = FUSE_OWNERSHIP_OWNED;
+  fview.components = 1;
+  fview.count = 4;
+  fview.owned_count = 4;
+  fview.stride = 1;
+  fview.data = up_storage;
+  ASSERT_EQ(t->register_field(ctx, &fview, nullptr), FUSE_OK);
+  fname.component = "downstream";
+  fname.field = "in";
+  ASSERT_EQ(t->field_handle(ctx, &fname, &fref), FUSE_OK);
+  fview.handle = fref.handle;
+  fview.data = down_storage;
+  ASSERT_EQ(t->register_field(ctx, &fview, nullptr), FUSE_OK);
+
+  ASSERT_EQ(t->initialize(ctx, nullptr, nullptr), FUSE_OK);
+
+  fuse_step_request req{.struct_size = sizeof(req)};
+  req.component = "upstream";
+
+  // An old caller's fuse_step_report*, heap-exact: struct_size names the
+  // pre-growth layout, and there is no byte beyond it for this entry
+  // point to write into.
+  auto old_rep_buf = std::make_unique<std::byte[]>(kOldStepReportSize);
+  auto* old_rep = reinterpret_cast<fuse_step_report*>(old_rep_buf.get());
+  old_rep->struct_size = static_cast<std::uint32_t>(kOldStepReportSize);
+  ASSERT_EQ(t->begin_step(ctx, &req, old_rep), FUSE_OK);
+  // struct_size itself is always safely rewritten (offset 0, within any
+  // valid caller's allocation -- see struct_size_covers()'s own comment);
+  // the CURRENT, grown size is what's reported, same as every other
+  // argument struct already does for a from-this-library's-own-table
+  // caller.
+  EXPECT_EQ(old_rep->struct_size, sizeof(fuse_step_report));
+  EXPECT_EQ(old_rep->step, 0);
+
+  auto old_end_buf = std::make_unique<std::byte[]>(kOldStepReportSize);
+  auto* old_end = reinterpret_cast<fuse_step_report*>(old_end_buf.get());
+  old_end->struct_size = static_cast<std::uint32_t>(kOldStepReportSize);
+  ASSERT_EQ(t->end_step(ctx, &req, old_end), FUSE_OK);
+  EXPECT_EQ(old_end->struct_size, sizeof(fuse_step_report));
+
+  // Same proof for fuse_ongoing.
+  auto old_ongoing_buf = std::make_unique<std::byte[]>(kOldOngoingSize);
+  auto* old_ongoing = reinterpret_cast<fuse_ongoing*>(old_ongoing_buf.get());
+  old_ongoing->struct_size = static_cast<std::uint32_t>(kOldOngoingSize);
+  ASSERT_EQ(t->is_coupling_ongoing(ctx, nullptr, old_ongoing), FUSE_OK);
+  EXPECT_EQ(old_ongoing->struct_size, sizeof(fuse_ongoing));
+
+  // A NEW caller, by contrast, DOES see next_component -- -2 from
+  // begin_step() (undetermined until end_step()), and a resolved index or
+  // -1 from is_coupling_ongoing() once something is cached.
+  fuse_step_request down_req{.struct_size = sizeof(down_req)};
+  down_req.component = "downstream";
+  fuse_step_report new_begin{.struct_size = sizeof(new_begin)};
+  ASSERT_EQ(t->begin_step(ctx, &down_req, &new_begin), FUSE_OK);
+  EXPECT_EQ(new_begin.next_component, -2);
+  fuse_step_report new_end{.struct_size = sizeof(new_end)};
+  ASSERT_EQ(t->end_step(ctx, &down_req, &new_end), FUSE_OK);
+  // The period is now complete (both components took their one tick):
+  // nothing left to resolve, so -1, not a real index.
+  EXPECT_EQ(new_end.next_component, -1);
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}

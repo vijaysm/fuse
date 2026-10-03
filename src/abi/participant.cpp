@@ -55,19 +55,64 @@ using fuse::abi_detail::ExternalState;
 
 // ----------------------------------------------------------- struct_size
 
-/// abi-design.md rule 2. `T`'s CURRENT (and, so far, only) frozen layout is
-/// exactly `sizeof(T)`: every argument struct in entries.def has shipped one
-/// version so far, so "smaller than the oldest known layout" and "smaller
-/// than sizeof(T)" are the same test today. A second frozen layout would
-/// change this to a per-type minimum, not this function's shape.
+/// abi-design.md rule 2's "first frozen layout" minimum, per struct type.
+/// Defaults to the struct's own CURRENT `sizeof`, which is exactly right
+/// for every struct in entries.def that has shipped exactly one layout so
+/// far (there was, until Defect 3's `next_component`, no OTHER case to get
+/// wrong). A struct that has since grown by appending a member specializes
+/// this template to its ORIGINAL size, computed from its own last
+/// pre-growth member so there is no magic number to drift from the
+/// header -- see the fuse_step_report/fuse_ongoing specializations below,
+/// just after their own growth was appended 2026-10-03 (entries.def's
+/// comment on `next_component` explains why).
+template <class T>
+struct FirstFrozenStructSize {
+  static constexpr std::size_t value = sizeof(T);
+};
+
+template <>
+struct FirstFrozenStructSize<fuse_step_report> {
+  static constexpr std::size_t value =
+      offsetof(fuse_step_report, t_end) + sizeof(fuse_exact_time);
+};
+
+template <>
+struct FirstFrozenStructSize<fuse_ongoing> {
+  static constexpr std::size_t value =
+      offsetof(fuse_ongoing, now) + sizeof(fuse_exact_time);
+};
+
+/// abi-design.md rule 2. A `struct_size` smaller than `T`'s first frozen
+/// layout, or larger than FUSE_ABI_MAX_STRUCT_SIZE, is FUSE_ERR_VERSION.
+/// Before Defect 3 this bound was always `sizeof(T)` (current); now that
+/// fuse_step_report/fuse_ongoing have a second, larger frozen layout, an
+/// OLD caller's smaller-but-still-valid struct_size must keep passing here
+/// -- see FirstFrozenStructSize above, and struct_size_covers() below for
+/// the matching write-side guard every appended member needs.
 template <class T>
 [[nodiscard]] fuse_status check_struct_size(const T* s) noexcept {
   if (s == nullptr) return FUSE_ERR_INVALID;
-  if (s->struct_size < sizeof(T) ||
+  if (s->struct_size < FirstFrozenStructSize<T>::value ||
       s->struct_size > static_cast<std::uint32_t>(FUSE_ABI_MAX_STRUCT_SIZE)) {
     return FUSE_ERR_VERSION;
   }
   return FUSE_OK;
+}
+
+/// The write-side mirror of rule 2, for an appended member: `declared` is
+/// the OUT struct_size the caller passed in, captured before this entry
+/// point's own unconditional `out->struct_size = sizeof(T)` overwrites it
+/// (that overwrite is always safe on its own -- struct_size sits at offset
+/// 0, which every valid caller's allocation covers -- but it would hide the
+/// caller's REAL declared size from this check if read afterwards).
+/// `through` is `offsetof(T, member) + sizeof(member)` at each call site.
+/// A caller whose declared struct_size does not reach `through` allocated
+/// no storage for `member`; writing it anyway would be this ABI boundary's
+/// own version of Defect 2's heap overflow, just on the other side of the
+/// call.
+[[nodiscard]] inline bool struct_size_covers(std::uint32_t declared,
+                                             std::size_t through) noexcept {
+  return declared >= through;
 }
 
 // ----------------------------------------------------- handle validity
@@ -660,6 +705,7 @@ fuse_status impl_is_coupling_ongoing(fuse_ctx* ctx, const fuse_null*,
     if (out == nullptr) return FUSE_ERR_INVALID;
     const fuse_status sz = check_struct_size(out);
     if (sz != FUSE_OK) return sz;
+    const std::uint32_t declared_out_size = out->struct_size;
     out->struct_size = sizeof(fuse_ongoing);
     out->period      = c.periods_completed;
     const fuse::Rational now = c.plan->period() * fuse::Rational{c.periods_completed};
@@ -670,6 +716,39 @@ fuse_status impl_is_coupling_ongoing(fuse_ctx* ctx, const fuse_null*,
       out->ongoing = 1;
     } else {
       out->ongoing = (now < c.end_time) ? 1 : 0;
+    }
+    // Defect 3 (entries.def's comment on this field). This function must
+    // stay side-effect-free -- it always has been, and a caller is free to
+    // call it as many times as it likes between steps. Resolving a REAL
+    // answer would mean calling prime_next_request(), which calls
+    // runner->resume_period(): a genuine side effect that actually
+    // executes ordinary instructions, not a cache lookup. Running that
+    // from here is actively unsafe, not just impure: this entry point has
+    // no way to know whether the CURRENT period has already closed (ask
+    // again later is the only correct answer at that point), and calling
+    // resume_period() past a closed period starts advancing a period
+    // nobody asked for, using whatever the registry currently holds as
+    // its input -- exactly the corruption an earlier version of this fix
+    // produced against AbiParticipant.ExternallyDrivenWindowMemberMatchesInProcessRunner
+    // (fuse_is_coupling_ongoing() called once after the test's one
+    // period had already fully run, which re-entered resume_period() and
+    // silently re-ran part of the window's iteration on top of its own
+    // converged output). So: report only what is ALREADY cached, for
+    // free, from a prior fuse_begin_step()/fuse_end_step() this period;
+    // otherwise -2 ("undetermined without stepping"), the same sentinel
+    // fuse_begin_step() reports for the same underlying reason.
+    if (struct_size_covers(declared_out_size,
+                           offsetof(fuse_ongoing, next_component) +
+                               sizeof(out->next_component))) {
+      if (c.external_count == 0) {
+        out->next_component = -1;
+      } else if (c.next_request.has_value()) {
+        const auto cid = c.graph.find_component(c.next_request->component);
+        out->next_component =
+            cid.has_value() ? static_cast<std::int32_t>(cid->value()) : -1;
+      } else {
+        out->next_component = -2;
+      }
     }
     return FUSE_OK;
   });
@@ -761,6 +840,7 @@ fuse_status impl_begin_step(fuse_ctx* ctx, const fuse_step_request* in,
     if (out == nullptr) return FUSE_ERR_INVALID;
     const fuse_status osz = check_struct_size(out);
     if (osz != FUSE_OK) return osz;
+    const std::uint32_t declared_out_size = out->struct_size;
     fuse::ComponentId cid;
     std::string err_code, err_message;
     if (!resolve_external(c, in->component, "fuse_begin_step", &cid,
@@ -809,6 +889,19 @@ fuse_status impl_begin_step(fuse_ctx* ctx, const fuse_step_request* in,
     out->reserved             = 0;
     out->t_begin               = to_abi_time(req.ctx.t_begin);
     out->t_end                 = to_abi_time(req.ctx.t_end);
+    // Defect 3 (entries.def's comment on this field). Unlike
+    // fuse_is_coupling_ongoing()/fuse_end_step(), begin_step() cannot
+    // resolve a real answer here: THIS component's own advance() has not
+    // run yet, so the Runner has not been asked to resume past it, and the
+    // real "next" answer only exists once the MATCHING fuse_end_step()
+    // calls resume_period() again. -2 says exactly that, distinct from -1
+    // ("period complete") so a caller never confuses "ask again later"
+    // with "nothing left this period".
+    if (struct_size_covers(declared_out_size,
+                           offsetof(fuse_step_report, next_component) +
+                               sizeof(out->next_component))) {
+      out->next_component = -2;
+    }
     return FUSE_OK;
   });
 }
@@ -821,6 +914,7 @@ fuse_status impl_end_step(fuse_ctx* ctx, const fuse_step_request* in,
     if (out == nullptr) return FUSE_ERR_INVALID;
     const fuse_status osz = check_struct_size(out);
     if (osz != FUSE_OK) return osz;
+    const std::uint32_t declared_out_size = out->struct_size;
     fuse::ComponentId cid;
     std::string err_code, err_message;
     if (!resolve_external(c, in->component, "fuse_end_step", &cid, &err_code,
@@ -867,6 +961,25 @@ fuse_status impl_end_step(fuse_ctx* ctx, const fuse_step_request* in,
       // The period just ran to completion.
       c.next_request.reset();
       ++c.periods_completed;
+    }
+    // Defect 3 (entries.def's comment on this field). Resolved from the
+    // SAME resume_period() outcome this call already ran to refill
+    // c.next_request above -- no extra cost, and no extra failure mode
+    // beyond the one `outcome.ok()` already guards. Read c.next_request
+    // itself rather than `outcome.value()`: the branch above may have
+    // moved the engaged optional's contents out of it, and an
+    // already-moved-from fuse::ExternalAdvanceRequest is not a value this
+    // function may read again.
+    if (struct_size_covers(declared_out_size,
+                           offsetof(fuse_step_report, next_component) +
+                               sizeof(out->next_component))) {
+      if (!c.next_request.has_value()) {
+        out->next_component = -1;
+      } else {
+        const auto cid = c.graph.find_component(c.next_request->component);
+        out->next_component =
+            cid.has_value() ? static_cast<std::int32_t>(cid->value()) : -1;
+      }
     }
     return FUSE_OK;
   });
