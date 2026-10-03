@@ -28,6 +28,10 @@
 
 #include <Kokkos_Core.hpp>
 
+#if FUSE_HAVE_MPI
+#include <mpi.h>
+#endif
+
 #include "fuse/backend/mesh_view.hpp"
 #include "fuse/base/error.hpp"
 #include "fuse/base/rational.hpp"
@@ -503,9 +507,29 @@ fuse_status impl_initialize(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
                  "fuse_initialize: the graph does not validate:\n" +
                      diags.to_string());
     }
+    // This process's own (rank, num_ranks) -- NativeMeshBackend's own
+    // construction argument, needed before the mesh-loading loop below
+    // can run at all. Derived from the communicator fuse_setup_options()
+    // recorded, if any (consumed here, same as the RunnerConfig block
+    // further down uses it); (0, 1) otherwise -- correct by construction
+    // for the single-process case (context.hpp's own comment on
+    // `backend`), and the only case this sandbox can ever execute.
+    int rank = 0, num_ranks = 1;
+#if FUSE_HAVE_MPI
+    if (c.communicator_set) {
+      const MPI_Comm base = MPI_Comm_f2c(static_cast<MPI_Fint>(c.communicator));
+      if (base == MPI_COMM_NULL || MPI_Comm_rank(base, &rank) != MPI_SUCCESS ||
+          MPI_Comm_size(base, &num_ranks) != MPI_SUCCESS) {
+        return fail(&c, FUSE_ERR_RUNTIME, "E-ABI-INIT-COMM",
+                   "fuse_initialize: could not read this process's rank/size "
+                   "from the communicator fuse_setup_options() recorded");
+      }
+    }
+#endif
+    c.backend.emplace(rank, num_ranks);
     for (std::uint32_t i = 0; i < c.graph.mesh_count(); ++i) {
       const fuse::Result<void> r =
-          c.backend.load(c.graph.mesh(fuse::MeshId{i}));
+          c.backend->load(c.graph.mesh(fuse::MeshId{i}), c.graph);
       if (!r.ok()) {
         return fail(&c, FUSE_ERR_RUNTIME, std::string(r.error().code),
                    r.error().message);
@@ -519,7 +543,7 @@ fuse_status impl_initialize(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
     }
     c.dag    = lowered.dag;
     c.clocks = fuse::ClockSet{c.graph};
-    const fuse::RegionSizes sizes = fuse::make_region_sizes(c.graph, c.backend);
+    const fuse::RegionSizes sizes = fuse::make_region_sizes(c.graph, *c.backend);
     const fuse::ScheduleResult sched =
         fuse::schedule(c.graph, *c.dag, *c.clocks, sizes);
     if (!sched.ok()) {
@@ -614,7 +638,7 @@ fuse_status impl_initialize(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
     if (c.communicator_set) {
       config.base_communicator = static_cast<int>(c.communicator);
     }
-    c.runner.emplace(c.graph, *c.dag, *c.plan, c.backend);
+    c.runner.emplace(c.graph, *c.dag, *c.plan, *c.backend);
     const fuse::Result<void> r =
         c.runner->initialize(c.components, c.fields, config);
     if (!r.ok()) {

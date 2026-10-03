@@ -48,6 +48,54 @@ Result<void> NativeMeshBackend::load(const MeshDecl& decl) {
   return Result<void>::success();
 }
 
+Result<void> NativeMeshBackend::register_default_placements(const CouplingGraph& graph,
+                                                             MeshId id) {
+  const MeshDecl& decl = graph.mesh(id);
+  constexpr std::string_view kPrefix = "generated:";
+  if (decl.source.rfind(kPrefix, 0) != 0) {
+    // A file mesh cannot be regenerated on an arbitrary RankSet -- see
+    // this method's own header comment.
+    return Result<void>::success();
+  }
+  const std::string spec = decl.source.substr(kPrefix.size());
+
+  // EVERY component in the graph, unconditionally -- not just the ones
+  // that look like they own a field on this mesh or are named by some
+  // channel's remap_on. Tried the narrower, field-ownership-plus-
+  // coupler-routing version first and it was WRONG: a plain (no
+  // remap_on) cross-mesh Remap resolves its weights on `dag.arc(ins.
+  // out).type.rank_set` (runner.cpp's own resolve_remap()), which is a
+  // DEDUPLICATED RankSet index, not necessarily the owning component's
+  // own ComponentId -- two components sharing an IDENTICAL RankSet
+  // (the common tier-0 case: every component on rank 0) collapse to
+  // the SAME index, which can then numerically coincide with a
+  // DIFFERENT component's own id and ask for that component's
+  // placement on a mesh it owns no field on at all (confirmed: AbiNegotiation's
+  // two-component lag1 fixture, both components on RankSet{0,1}, hit
+  // exactly this). Reverse-engineering every path that can derive a
+  // placement this way is not worth it when every placement this
+  // backend can ever generate is the SAME cheap, deterministic
+  // (rank_, num_ranks_) view regardless of which component asks for it
+  // (tier-0: one process IS every placement) -- so hand out all of
+  // them.
+  for (std::uint32_t c = 0; c < graph.component_count(); ++c) {
+    auto arrays = generate_native_mesh(spec, rank_, num_ranks_);
+    if (!arrays.ok()) return arrays.error();
+    auto view_r = NativeMeshView::create_from_host(arrays.value(), rank_);
+    if (!view_r.ok()) return view_r.error();
+    const Result<void> set = set_placed_view(id, ComponentId{c}, std::move(view_r.value()));
+    if (!set.ok()) return set;
+  }
+  return Result<void>::success();
+}
+
+Result<void> NativeMeshBackend::load(const MeshDecl& decl, const CouplingGraph& graph) {
+  const Result<void> loaded = load(decl);
+  if (!loaded.ok()) return loaded;
+  const MeshId id{static_cast<std::uint32_t>(impl_->meshes.size() - 1)};
+  return register_default_placements(graph, id);
+}
+
 Result<MeshId> NativeMeshBackend::mesh_id(std::string_view name) const {
   if (name.empty()) {
     return Failure{"E-MESH-NAME", "the empty mesh name matches nothing"};
