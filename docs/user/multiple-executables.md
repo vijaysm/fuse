@@ -109,10 +109,49 @@ strided, or out-of-sequence `RankSet` is refused with `E-CONNECT-SPEC` before an
 |---|---|
 | `E-LAUNCH-APPNUM` | (graph build) an `Mpmd` component has no `appnum` set |
 | `E-LAUNCH-CONNECT-TARGET` | (graph build) a `Connect` component has neither `port_file` nor `service_name` |
-| `E-CONNECT-SPEC` | the launched components' `RankSet`s are not consecutive blocks in graph order; two `Mpmd` components share one `appnum`; or a non-`Mpmd`/`Connect` component was handed to `connect()` |
+| `E-CONNECT-SPEC` | the launched components' `RankSet`s are not consecutive blocks in graph order; two `Mpmd` components share one `appnum`; a non-`Mpmd`/`Connect` component was handed to `connect()`; or more than TWO components declare `Connect` (KNOWN_ISSUES.md D18 -- `Mpmd` has no such limit, only true separate-executable `Connect` launches) |
 | `E-CONNECT-APPNUM` | the real `MPI_APPNUM` layout at runtime disagrees with the graph (an undeclared appnum, or a declared one whose ranks do not match) |
 | `E-CONNECT-TIMEOUT` | the non-acceptor side waited longer than `timeout_s` for the port file |
 
 See [](placement.md) for `RankSet` itself, and [](c-abi.md) if the other executable is not written
 against this library's own `CouplingGraph` API at all — a participant driven through the C or
 Fortran ABI declares its launch style the same way, through the descriptor it was handed.
+
+## A C or Fortran participant never calls `connect()` itself
+
+Everything above is a C++ call against a `fuse::CouplingGraph` the executable built or loaded
+itself. A participant written in C or Fortran has neither: it loads a graph someone else authored
+(`fuse_load_graph`) and never touches `fuse::transport::connect()`, or any other C++, at all —
+`fuse_setup_options::my_component` is the one field that makes this possible. Set it to the name of
+the component THIS process plays, with `communicator` holding this executable's own
+`MPI_COMM_WORLD` (as a Fortran handle, `MPI_Comm_c2f`):
+
+```c
+fuse_setup_options opts = {.struct_size = sizeof(opts)};
+opts.communicator  = MPI_Comm_c2f(MPI_COMM_WORLD);
+opts.my_component  = "ocean";
+fuse_coupler_abi(FUSE_ABI_VERSION)->setup(ctx, &opts, NULL);
+```
+
+`fuse_setup()` reads `my_component`'s own `LaunchSpec` straight off the already-loaded graph and
+does exactly what the C++ call above does: nothing extra for `InProcess`/`Plugin` (`communicator`
+is already the base communicator); `MPI_APPNUM` checking for `Mpmd`; the full accept/connect/merge
+handshake for `Connect`. Either way, `communicator` as GIVEN is the WORLD communicator this
+executable started with, and what `fuse_setup()` stores internally afterward is the real base one
+— the caller never sees the difference, or the intercommunicator machinery, at all.
+`examples/brusselator/participants/{u_main.c,v_main.f90,coupler_main.c}` (Conformance Unit 2) are the
+worked example: the same three-component graph (the coupler included) as every other page in this
+guide, authored once by a small C++ tool (`brusselator_graph_tool --ranks-u N --ranks-v N
+--ranks-coupler N --launch mpmd|accept --out graph.yaml`) and loaded by `u_main.c`/`v_main.f90`/
+`coupler_main.c`, none of which link any C++ of their own (`shim.cpp`, the Brusselator physics
+itself, is the one C++ translation unit either participant's own loop body calls into, through a
+plain C-ABI wrapper — [](../dev/abi-design.md) distinguishes this from the ABI's own ban on a
+foreign caller touching `fuse::` C++ directly). `--launch accept` bundles the coupler's own ranks
+into the acceptor executable's (`u_main.c`'s) own `MPI_COMM_WORLD` rather than giving it a third
+`Connect`-mode executable of its own — see `E-CONNECT-SPEC`'s row below and KNOWN_ISSUES.md D18 for
+why. `brusselator_check` (same directory) reads both executables' own printed per-window logs and
+reproduces `examples/brusselator/main.cpp`'s own `--check` verdict from them.
+`test/parallel/brusselator_participants/run_participants.sh` is the host driver
+(`verification.brusselator.participants.{mpmd,accept}.{3,5}`, `host_verification_needed`: MPI cannot
+start in this sandbox, KNOWN_ISSUES.md C1 — every executable involved is confirmed to BUILD at tier 1,
+not yet run).

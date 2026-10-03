@@ -2609,3 +2609,108 @@ way — `AccelKind::None` throughout. Recorded here, per the lead's own instruct
 suite, and this asymmetry should be understood before Aitken is treated as a conformance case
 anywhere.
 
+
+### D18. `fuse::transport::connect()`'s `Connect`-mode path supports exactly two components; a third refuses `E-CONNECT-SPEC` — OPEN, not pursued (Conformance Unit 2 routes around it)
+
+`connect_pairwise()` (`src/transport/connect.cpp`) reads, verbatim:
+
+```
+if (order.size() != 2) {
+  return Failure{"E-CONNECT-SPEC",
+                 "pairwise connect() supports exactly two connect-mode "
+                 "components; the graph declares " + std::to_string(order.size())};
+}
+```
+
+`order` is `connect_mode_components()`'s own fixed, graph-declared order of every component whose
+`LaunchSpec::mode` is `Connect` (not `InProcess`, `Mpmd`, or `Plugin`). Three or more such
+components refuse outright, before any MPI call happens — `LaunchMode::Mpmd` has no such limit
+(launcher-style MPMD is one shared `MPI_COMM_WORLD` from the start; `MPI_APPNUM` checking scales to
+any number of segments), but true separate-executable launches (`MPI_Open_port`/`MPI_Comm_accept`/
+`MPI_Comm_connect`, then `MPI_Intercomm_merge`) are implemented as a single pairwise handshake,
+fixed by `MPI_Intercomm_merge(intercomm, i_am_first ? 0 : 1, &merged)` into exactly the two-member
+ordering `connect_pairwise()`'s own `order` establishes.
+
+**Found this session** (Conformance Unit 2, Time Windows track) while scoping
+`examples/brusselator/participants/{u_main.c,v_main.f90}`: the participant graph has THREE
+components (U, V, and the coupler the Defect 1 fix added), so an `accept`-mode run with all three
+as separate `Connect`-mode executables is not supported today.
+
+**Routed around, not fixed, per the lead's own ruling**: a processor set is ranks, not
+executables — the coupler's ranks are declared `LaunchMode::InProcess` and live inside the
+*acceptor* executable's own `MPI_COMM_WORLD` (U's executable launched with its own ranks plus the
+coupler's), so `accept` mode is two real `Connect`-mode executables (U+coupler, and V) merging
+through the existing pairwise path, while `mpmd` mode is three ordinary app segments (no pairwise
+limit to route around there at all). Both modes still exercise the SAME three-component graph; only
+which executable's `MPI_COMM_WORLD` the coupler's ranks happen to sit inside differs.
+
+**The generalisation, sketched but not implemented.** `connect_pairwise()`'s own numbering —
+`connect_mode_components()`'s fixed graph order, with `MPI_Intercomm_merge`'s second argument
+(`high` in the MPI standard's own terms) fixed by position in that order rather than by
+acceptor/connector role — already IS the mechanism an N-way version would reuse, just run `N-1`
+times instead of once: component 0's world and component 1's world merge first (exactly today's
+path) into an intermediate communicator spanning `{0,1}`; that intermediate communicator then plays
+the "local" side of a SECOND `MPI_Comm_accept`/`MPI_Comm_connect` against component 2's own world
+(`MPI_Comm_accept`'s local-communicator argument is not required to be `MPI_COMM_WORLD` — any
+communicator works, which is exactly what makes a chain of merges possible rather than only a
+single pairwise one), producing a communicator spanning `{0,1,2}`; and so on, in
+`connect_mode_components()`'s own fixed order, until every `Connect`-mode component has joined.
+Which single rank of the growing intermediate communicator plays "acceptor" for the NEXT merge (and
+where its port name is published) is the one real design choice a chain adds beyond today's single
+pairwise case — reusing `LaunchSpec::is_acceptor`/`port_file` per ADJACENT PAIR in the chain, rather
+than per component, is the natural reading of the field's existing meaning, but was not worked out
+in enough detail here to commit to as a fix: Conformance Unit 2 needs no more than this routing to
+make its own two cases match, and this is recorded instead of built so the next person extending
+`connect()` itself does not have to re-derive this from scratch.
+
+**Not pursued further this session.** `docs/user/multiple-executables.md` now points here from its
+own `E-CONNECT-SPEC` row.
+
+**Follow-up (same track, later in Unit 2): implemented, build-verified, not yet host-run.**
+`examples/brusselator/participants/{brusselator_graph_tool,u_main.c,v_main.f90,coupler_main.c,
+brusselator_check}` now exist. `brusselator_graph_tool --launch accept` declares U's own
+`ComponentDecl::ranks` to span its FULL local executable world (its own physics ranks plus any
+bundled coupler ranks), and the coupler's own `ranks` as the trailing, legally overlapping subset of
+that range (`fuse::RankSet`'s own documented "overlap is legal") — `validate_launch_layout()` skips
+`InProcess` components (the coupler) entirely when checking that `Connect`/`Mpmd` components occupy
+consecutive blocks, so U's own declared range has to already include every rank the merge will
+actually place before V's for the two checks to agree; confirmed (`validate()` and
+`validate_launch_layout()` both return OK) against the generated graph for both `--launch mpmd` and
+`--launch accept`, `--ranks-u 1 --ranks-v 1 --ranks-coupler 1`. `u_main.c`'s own `--ranks-u` tells it,
+per rank of its own local world, whether to act as a real U-physics rank (register fields, drive
+`u_loop_step`) or as a bundled coupler placeholder rank (register nothing, skip the step loop
+entirely) — every rank still calls `fuse_setup()`/`fuse_initialize()` identically, since
+`MPI_Comm_accept`/`MPI_Intercomm_merge` are collective over this executable's WHOLE local
+`MPI_COMM_WORLD`, not just its "real" U ranks.
+
+**Open mechanical question (Q4, not yet answered by the lead, beyond Q1–Q3): does a coupler
+placeholder rank need to call `fuse_begin_step`/`fuse_end_step` at all?** This session's own
+`u_main.c` has a bundled coupler placeholder rank skip the step loop ENTIRELY (no field registered,
+no `begin_step`/`end_step` call for "U" from that rank) — reasoned by analogy with
+`examples/layout_driver/main.cpp` (a true SPMD multi-component driver, where every rank calls
+`Runner::run_period()` identically regardless of which component(s) it hosts, and a `Coupler`
+component needs no `ComponentSet` entry of its own at all), but NOT verified against the Runner's own
+internal remap collectives, which this sandbox cannot exercise (MPI cannot start here at all, C1
+above). If a coupler placeholder rank's own step-loop participation turns out to matter, the fix is
+local to `u_main.c`'s/`coupler_main.c`'s own loop structure, not to `connect()` or the graph model —
+flagged here for the first host run to settle.
+
+**Host rows registered, not run.** `test/parallel/brusselator_participants/run_participants.sh` (ctest
+rows `verification.brusselator.participants.{mpmd,accept}.{3,5}`, `examples/CMakeLists.txt`) drives:
+
+```
+mpmd (3):    mpiexec -n 1 brusselator_u_main --graph g.yaml --log u.log --periods 2 \
+                   : -n 1 brusselator_v_main --graph g.yaml --log v.log --periods 2 \
+                   : -n 1 brusselator_coupler_main --graph g.yaml
+mpmd (5):    ranks 2/2/1 in the same three-segment shape
+accept (3):  mpiexec -n 2 brusselator_u_main --graph g.yaml --log u.log --ranks-u 1 --periods 2   (acceptor, backgrounded)
+             mpiexec -n 1 brusselator_v_main --graph g.yaml --log v.log --periods 2               (connector)
+accept (5):  U's executable at 3 ranks (--ranks-u 2), V's at 2
+```
+followed in every row by `brusselator_check --u-log u.log --v-log v.log`. All four executables and
+`brusselator_graph_tool`/`brusselator_check` build cleanly at tier 1 (confirmed this session, both
+trees' full `cmake --build`; the tier-0 harness's own `u_loop.c`/`v_loop.f90` sources additionally
+BUILD cleanly into `fuse_verification_brusselator_{participants,check}_test` under
+`FUSE_ENABLE_MPI=ON` too, but were only ever EXECUTED in the tier-0, FUSE_ENABLE_MPI=OFF tree, where
+both pass — no binary built in the MPI-enabled tree was run, per this sandbox's own standing
+constraint, C1 above); none of the four `host_verification_needed` rows above have been run.
