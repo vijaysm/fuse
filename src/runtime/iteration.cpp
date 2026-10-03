@@ -2102,13 +2102,27 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
 
   double* out = cfg.provided != nullptr ? slots[ins.out.value()].data : nullptr;
 
-  // Sample 0: the window-start value -- whatever `cfg.provided` holds
-  // right now (this member's own state, already restored to the
-  // window-start checkpoint by run_region()'s generic rollback before
-  // every sweep but the first of a fresh window instance).
+  // Sample 0: the window-start value. NEVER `cfg.provided[e]` read live --
+  // `Component::restore_state()` is only contractually required to
+  // restore what `save_state()` captured (the component's own hidden
+  // state); a `Provides` field that is itself a function of that hidden
+  // state (e.g. a remap of it) is not guaranteed to be resynchronized by
+  // restore_state() alone, and run_region()'s own generic rollback never
+  // touches it directly. Reading `cfg.provided[e]` here on the second and
+  // later sweeps of a pass would then mislabel whatever the PREVIOUS
+  // (rejected) sweep's own last `advance()` call left behind as the
+  // window-start value -- exactly the defect `WindowCoupler::
+  // sweep_window()`'s own `start_value[i][e]` (window_coupler.cpp's own
+  // comment) was fixed to remove on the driver side. Cached once, on
+  // this pass's own first sweep, mirroring `window_pass_start_clock`'s
+  // own pattern (this struct's own comment) for exactly the same reason.
+  std::vector<double>& start_value = window_start_value[node];
+  if (first_sweep_of_pass) {
+    start_value.assign(cfg.provided, cfg.provided + cfg.length);
+  }
   if (out != nullptr) {
     for (std::size_t e = 0; e < cfg.length; ++e) {
-      out[e * cfg.capacity + 0] = cfg.provided[e];
+      out[e * cfg.capacity + 0] = start_value[e];
     }
   }
 
