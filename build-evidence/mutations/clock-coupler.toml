@@ -1,0 +1,38 @@
+# Mutations for Conformance Unit 2's Defect 1 fix (coupler-placement
+# track): ClockSet's own aggregates (common_period/finest_interval/
+# checked_common_period/is_lockstep/earliest_next/due_at) folded a
+# ComponentKind::Coupler entry's default interval (Rational{1}, since a
+# coupler declares none of its own) into their answer exactly like a real
+# physics component's interval -- silently inflating a window-scoped
+# graph's own compiled period to lcm(window, 1) whenever the window is
+# shorter than 1 (the Brusselator's own 1/50: 50 window instances per
+# period instead of one). Own file per the review-fix protocol.
+
+[[mutation]]
+id = "clockset-coupler-reenters-checked-common-period"
+area = "schedule"
+describes = "deletes ClockSet::checked_common_period()'s own coupler-skip guard, so a ComponentKind::Coupler entry's default interval (Rational{1}) re-enters the lcm/gcd exactly as it did before this session's fix -- the Brusselator's own window (1/50) compiles to a period of 1 instead of 1/50 whenever a coupler is present."
+file = "include/fuse/schedule/clock.hpp"
+old = "    for (std::size_t i = 0; i < clocks_.size(); ++i) {\n      if (coupler_[i]) continue;\n      const Clock& c = clocks_[i];\n      if (!any) {\n        period = c.interval();"
+new = "    for (std::size_t i = 0; i < clocks_.size(); ++i) {\n      const Clock& c = clocks_[i];\n      if (!any) {\n        period = c.interval();"
+target = "fuse_schedule_window_region_golden_test"
+test = "schedule.window_region_golden"
+# PROVED BY HAND (tools/mutate.py --build-dir --area schedule refused:
+# "include/ or src/ has uncommitted changes" -- this fix was not yet
+# committed when this row was written, same constraint brusselator.toml's
+# own header names): the `old` text above was applied to clock.hpp
+# directly with edit_file, fuse_schedule_window_region_golden_test and
+# fuse_schedule_clock_test were rebuilt, and both of the following were
+# observed to fail, then clock.hpp was restored and verified byte-
+# identical to a backup with `cmp` before this row was finalized:
+#   WindowRegionGolden.ACouplerDoesNotEnterTheWindowPeriod --
+#     result.plan.period() read Rational(1), not Rational(1, 50)
+#   ClockSet.ACouplersDefaultIntervalNeverEntersTheLcmOrGcd --
+#     checked.value() read Rational(1), not Rational(1, 50)
+# WindowRegionGolden.ACouplerDoesNotEnterTheOrdinaryPeriodEither was NOT
+# re-checked under this same mutation -- its own period (lcm(1/3, 1/2) =
+# 1) coincides with the buggy lcm(1, 1) = 1 there, so it would likely be
+# a false negative for this specific row regardless; it is the window
+# case that actually distinguishes the two, which is why
+# ACouplerDoesNotEnterTheWindowPeriod, not the ordinary-period sibling,
+# is this row's own target.

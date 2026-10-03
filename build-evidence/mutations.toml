@@ -290,8 +290,14 @@ id = "common-period-throws-instead-of-reporting"
 area = "compiler"
 describes = "checked_common_period uses the throwing lcm instead of the reporting one, so an unrepresentable period escapes a function documented never to throw -- and aborts outright when exceptions are disabled"
 file = "include/fuse/schedule/clock.hpp"
-old = "        const auto p = try_lcm_rational(period, c.interval());"
-new = "        const auto p = std::optional<Rational>{lcm_rational(period, c.interval())};"
+# Indentation changed (8 spaces -> 6) when Conformance Unit 2's Defect 1
+# fix restructured this loop to skip ComponentKind::Coupler entries (the
+# `if (!clocks_.empty()) { for (const Clock& c : clocks_) ... }` wrapper
+# became a single `for (std::size_t i ...) { if (coupler_[i]) continue;
+# ... }`, one nesting level shallower) -- the mutation itself (throwing
+# lcm instead of reporting) is unchanged.
+old = "      const auto p = try_lcm_rational(period, c.interval());"
+new = "      const auto p = std::optional<Rational>{lcm_rational(period, c.interval())};"
 target = "fuse_schedule_expand_test"
 test = "schedule.expand"
 

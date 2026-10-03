@@ -134,11 +134,39 @@ class ClockSet {
   /// `window_member_components()` already gives it no ordinary Tick at
   /// all, at any interval -- this is the same exemption, applied to the
   /// clock the PERIOD is computed from, not only to the tick list).
+  ///
+  /// A `ComponentKind::Coupler` entry gets a `Clock` object too (kept
+  /// dense so `ComponentId` indexing into `clocks_` stays valid -- the
+  /// `clock(ComponentId)` accessor and `size() == component_count()`
+  /// both depend on that), but `coupler_[i]` records that it is one, and
+  /// every aggregate below (`common_period()`, `finest_interval()`,
+  /// `checked_common_period()`, `is_lockstep()`, `earliest_next()`,
+  /// `due_at()`) skips it. docs/dev/coupler-placement.md's own table
+  /// claimed this class was "coupler-safe by construction" on the
+  /// grounds that nothing ever calls `advance()` on a coupler's clock
+  /// (true -- `build_ticks()` never schedules it a `Tick`) -- but every
+  /// one of the aggregates folds EVERY clock_'s own `interval()` into
+  /// its answer regardless of whether `advance()` is ever called on it,
+  /// and `ComponentDecl::interval` defaults to `Rational{1}` (a coupler
+  /// declares no interval of its own at all). A coupler added to a
+  /// window-scoped graph whose own window is shorter than 1 (true of
+  /// the Brusselator's own 1/50, or any window under a second) silently
+  /// pulled `lcm(window, 1) = 1` into the compiled period -- the
+  /// Brusselator's own window re-ran 500 times before
+  /// `is_coupling_ongoing()`'s period/now ever advanced once, since
+  /// nothing else in the graph needed that many window instances to
+  /// finish a period. Found and fixed this session (Conformance Unit 2)
+  /// -- the two coupler tests already in the suite
+  /// (window_runner_test.cpp's own WindowChannelRemapRoutedToCoupler
+  /// MatchesIdentityClosedForm, layout_driver) never saw it because
+  /// their own physics intervals already happen to be exactly 1.
   explicit ClockSet(const CouplingGraph& g) {
     clocks_.reserve(g.component_count());
+    coupler_.reserve(g.component_count());
     for (std::uint32_t i = 0; i < g.component_count(); ++i) {
       const ComponentId cid{i};
-      Rational interval = g.component(cid).interval;
+      const ComponentDecl& comp = g.component(cid);
+      Rational interval = comp.interval;
       for (std::uint32_t r = 0; r < g.iteration_region_count(); ++r) {
         const IterationRegionDecl& decl =
             g.iteration_region(IterationRegionIdx{r});
@@ -160,6 +188,7 @@ class ClockSet {
                 // not a configuration anything else here supports either.
       }
       clocks_.emplace_back(interval);
+      coupler_.push_back(comp.kind == ComponentKind::Coupler);
     }
   }
 
@@ -173,8 +202,9 @@ class ClockSet {
   [[nodiscard]] Rational earliest_next() const {
     Rational best{0};
     bool first = true;
-    for (const Clock& c : clocks_) {
-      const Rational n = c.next();
+    for (std::size_t i = 0; i < clocks_.size(); ++i) {
+      if (coupler_[i]) continue;  // no clock, by design -- see the ctor's own comment
+      const Rational n = clocks_[i].next();
       if (first || n < best) {
         best = n;
         first = false;
@@ -186,6 +216,7 @@ class ClockSet {
   [[nodiscard]] std::vector<ComponentId> due_at(Rational t) const {
     std::vector<ComponentId> due;
     for (std::size_t i = 0; i < clocks_.size(); ++i) {
+      if (coupler_[i]) continue;  // no clock, by design -- see the ctor's own comment
       if (clocks_[i].at(t)) {
         due.push_back(ComponentId{static_cast<std::uint32_t>(i)});
       }
@@ -193,29 +224,55 @@ class ClockSet {
     return due;
   }
 
-  /// Spec §8.2: lockstep is the degenerate case and gets a fast path.
+  /// Spec §8.2: lockstep is the degenerate case and gets a fast path. A
+  /// coupler's own default interval (Rational{1}, since it declares
+  /// none) never participates -- see the ctor's own comment.
   [[nodiscard]] bool is_lockstep() const {
-    if (clocks_.empty()) return true;
-    const Rational first = clocks_.front().interval();
-    return std::all_of(clocks_.begin(), clocks_.end(),
-                       [&](const Clock& c) { return c.interval() == first; });
+    std::optional<Rational> first;
+    for (std::size_t i = 0; i < clocks_.size(); ++i) {
+      if (coupler_[i]) continue;
+      if (!first.has_value()) {
+        first = clocks_[i].interval();
+        continue;
+      }
+      if (clocks_[i].interval() != *first) return false;
+    }
+    return true;
   }
 
   /// Shortest span after which every clock is simultaneously at a tick.
   /// Throws std::logic_error if the LCM is not representable; callers that
-  /// must not throw use checked_common_period() instead.
+  /// must not throw use checked_common_period() instead. A coupler's own
+  /// clock never participates -- see the ctor's own comment.
   [[nodiscard]] Rational common_period() const {
-    if (clocks_.empty()) return Rational{1};
-    Rational p = clocks_.front().interval();
-    for (const Clock& c : clocks_) p = lcm_rational(p, c.interval());
+    Rational p{1};
+    bool any = false;
+    for (std::size_t i = 0; i < clocks_.size(); ++i) {
+      if (coupler_[i]) continue;
+      if (!any) {
+        p = clocks_[i].interval();
+        any = true;
+        continue;
+      }
+      p = lcm_rational(p, clocks_[i].interval());
+    }
     return p;
   }
 
-  /// Finest interval in the set; the slab grid resolution.
+  /// Finest interval in the set; the slab grid resolution. A coupler's
+  /// own clock never participates -- see the ctor's own comment.
   [[nodiscard]] Rational finest_interval() const {
-    if (clocks_.empty()) return Rational{1};
-    Rational f = clocks_.front().interval();
-    for (const Clock& c : clocks_) f = gcd_rational(f, c.interval());
+    Rational f{1};
+    bool any = false;
+    for (std::size_t i = 0; i < clocks_.size(); ++i) {
+      if (coupler_[i]) continue;
+      if (!any) {
+        f = clocks_[i].interval();
+        any = true;
+        continue;
+      }
+      f = gcd_rational(f, clocks_[i].interval());
+    }
     return f;
   }
 
@@ -223,7 +280,13 @@ class ClockSet {
   /// spanning more than kMaxPeriodTicks ticks of the finest interval, or one
   /// that is not representable at all, is reported as E-SCHED-PERIOD rather
   /// than handed downstream to build an unusable slab decomposition.
-  /// Never throws.
+  /// Never throws. A coupler's own clock never participates -- see the
+  /// ctor's own comment: its default interval (Rational{1}, since it
+  /// declares none of its own) must never enter this lcm/gcd, or a
+  /// window-scoped graph whose real period is shorter than 1 gets
+  /// lcm(period, 1) = 1 folded in silently (measured: the Brusselator's
+  /// own 1/50 window, once a coupler was added, re-ran 500 times before
+  /// one compiled period elapsed).
   [[nodiscard]] Result<Rational> checked_common_period() const {
     // No try/catch, and that is the point: this function is documented never
     // to throw, and an exception must not be the mechanism by which it keeps
@@ -234,25 +297,30 @@ class ClockSet {
     // was written to handle. Every step below reports instead.
     Rational period{1};
     Rational finest{1};
-    if (!clocks_.empty()) {
-      period = clocks_.front().interval();
-      finest = period;
-      for (const Clock& c : clocks_) {
-        const auto p = try_lcm_rational(period, c.interval());
-        if (!p) {
-          return Failure{"E-SCHED-PERIOD",
-                         "common period is not representable: the least common "
-                         "multiple of the clock intervals overflows"};
-        }
-        period = *p;
-        const auto f = try_gcd_rational(finest, c.interval());
-        if (!f) {
-          return Failure{"E-SCHED-PERIOD",
-                         "the finest interval is not representable: the greatest "
-                         "common divisor of the clock intervals overflows"};
-        }
-        finest = *f;
+    bool any = false;
+    for (std::size_t i = 0; i < clocks_.size(); ++i) {
+      if (coupler_[i]) continue;
+      const Clock& c = clocks_[i];
+      if (!any) {
+        period = c.interval();
+        finest = period;
+        any = true;
+        continue;
       }
+      const auto p = try_lcm_rational(period, c.interval());
+      if (!p) {
+        return Failure{"E-SCHED-PERIOD",
+                       "common period is not representable: the least common "
+                       "multiple of the clock intervals overflows"};
+      }
+      period = *p;
+      const auto f = try_gcd_rational(finest, c.interval());
+      if (!f) {
+        return Failure{"E-SCHED-PERIOD",
+                       "the finest interval is not representable: the greatest "
+                       "common divisor of the clock intervals overflows"};
+      }
+      finest = *f;
     }
     const auto maybe_ticks = Rational::try_div(period, finest);
     if (!maybe_ticks) {
@@ -274,6 +342,11 @@ class ClockSet {
 
  private:
   std::vector<Clock> clocks_;
+  /// Parallel to `clocks_`: `coupler_[i]` is true when `clocks_[i]` backs a
+  /// `ComponentKind::Coupler` entry, which owns no clock of its own by
+  /// design (the ctor's own comment) -- kept dense, like `clocks_` itself,
+  /// so index `i` always means the same `ComponentId` in both.
+  std::vector<bool> coupler_;
 };
 
 }  // namespace fuse

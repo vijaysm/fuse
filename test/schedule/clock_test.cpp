@@ -198,6 +198,41 @@ TEST(ClockSet, CheckedCommonPeriodReportsOverflowAsAnError) {
   EXPECT_EQ(r.error().code, "E-SCHED-PERIOD");
 }
 
+// Conformance Unit 2, defect found by the lead: ComponentDecl::interval
+// defaults to Rational{1} (a coupler declares no interval of its own --
+// component.hpp's own comment on CouplerDecl/ComponentKind::Coupler), and
+// before this fix every one of ClockSet's own aggregates folded that
+// default straight into its answer like any physics component's real
+// interval. One physics component at 1/50 plus a coupler must still give
+// period/finest_interval 1/50, not lcm(1/50, 1) = 1 -- the 50 window
+// instances per period Conformance Unit 2's own tier-0 harness measured.
+// MUTATION: reverting ClockSet's own coupler exclusion (deleting the
+// `if (coupler_[i]) continue;` guards) makes this fail -- both EXPECT_EQ
+// below would instead see Rational{1}.
+TEST(ClockSet, ACouplersDefaultIntervalNeverEntersTheLcmOrGcd) {
+  CouplingGraph g;
+  g.add_component(ComponentDecl{.name = "p", .interval = Rational{1, 50}});
+  g.add_coupler(fuse::CouplerDecl{.name = "c", .ranks = fuse::RankSet{0, 1}});
+  const ClockSet cs{g};
+  ASSERT_EQ(cs.size(), 2u);  // dense: the coupler still gets a Clock slot
+  EXPECT_EQ(cs.common_period(), Rational(1, 50));
+  EXPECT_EQ(cs.finest_interval(), Rational(1, 50));
+  const auto checked = cs.checked_common_period();
+  ASSERT_TRUE(checked.ok()) << checked.error().message;
+  EXPECT_EQ(checked.value(), Rational(1, 50));
+}
+
+// Same defect, is_lockstep(): a single physics component is trivially
+// lockstep with itself; a coupler's own default interval (1, which
+// differs from 1/50) must not be read as a second, mismatched clock.
+TEST(ClockSet, ACouplerDoesNotBreakLockstepDetection) {
+  CouplingGraph g;
+  g.add_component(ComponentDecl{.name = "p", .interval = Rational{1, 50}});
+  g.add_coupler(fuse::CouplerDecl{.name = "c", .ranks = fuse::RankSet{0, 1}});
+  const ClockSet cs{g};
+  EXPECT_TRUE(cs.is_lockstep());
+}
+
 TEST(ClockSet, EmptyGraphIsLockstepWithUnitPeriod) {
   const CouplingGraph g;
   const ClockSet cs{g};

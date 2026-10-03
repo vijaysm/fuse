@@ -495,3 +495,114 @@ TEST(WindowRegionGolden, BrusselatorsOwnDtAndWindowScheduleWithoutAnLcmPeriod) {
     EXPECT_NE(item.code, "E-SCHED-PERIOD") << result.diags.to_string();
   }
 }
+
+// Conformance Unit 2, defect found by the lead reading ClockSet's own
+// constructor: a ComponentKind::Coupler entry's ComponentDecl::interval
+// defaults to Rational{1} (a coupler declares no interval of its own at
+// all -- component.hpp's own comment), and before this fix every
+// ClockSet aggregate (common_period/finest_interval/
+// checked_common_period/is_lockstep/earliest_next/due_at) folded that
+// default straight into its answer, same as any physics component's
+// real interval. Adding a coupler to the SAME graph the test immediately
+// above builds (window 1/50) silently pulled lcm(1/50, 1) = 1 into the
+// compiled period -- 50 window instances per period instead of one --
+// which is exactly what Conformance Unit 2's own tier-0 harness measured
+// as "is_coupling_ongoing()'s period/now never advance" before this fix
+// was identified. MUTATION: reverting ClockSet's own coupler exclusion
+// (letting the coupler's Clock back into the lcm/gcd again) must make
+// this fail -- EXPECT_EQ(result.plan.period(), 1/50) would instead see
+// 1, and the two-component sibling test below would see 6 instead of 1.
+TEST(WindowRegionGolden, ACouplerDoesNotEnterTheWindowPeriod) {
+  CouplingGraph g;
+  const auto m = g.add_mesh(MeshDecl{.name = "m"});
+  const auto r = g.add_region(Region{.name = "r", .mesh = m});
+
+  const auto comp_u = g.add_component(ComponentDecl{
+      .name = "U", .ranks = RankSet{0, 1}, .interval = Rational{1, 500}});
+  const auto comp_v = g.add_component(ComponentDecl{
+      .name = "V", .ranks = RankSet{0, 1}, .interval = Rational{3, 1000}});
+
+  const auto u_out = g.add_field(comp_u, FieldSpec{
+      .name = "u_out", .region = r, .units = u::kKelvin,
+      .conservation = Conservation::Extensive, .intent = Intent::Provides});
+  const auto v_in = g.add_field(comp_v, FieldSpec{
+      .name = "v_in", .region = r, .units = u::kKelvin,
+      .conservation = Conservation::Extensive, .intent = Intent::Requires});
+  const auto v_out = g.add_field(comp_v, FieldSpec{
+      .name = "v_out", .region = r, .units = u::kKelvin,
+      .conservation = Conservation::Extensive, .intent = Intent::Provides});
+  const auto u_in = g.add_field(comp_u, FieldSpec{
+      .name = "u_in", .region = r, .units = u::kKelvin,
+      .conservation = Conservation::Extensive, .intent = Intent::Requires});
+
+  const auto fwd = g.add_channel("u2v", u_out, v_in);
+  const auto back = g.add_channel("v2u", v_out, u_in);
+  g.channel(back).lag(1).allow_time_level_mismatch(
+      "resolved by the window's own sweep, not a real-time lag");
+
+  // Conformance Unit 2's own ruling: the identity-remap shape -- a
+  // coupler on its own processor set, both channels routed through it.
+  const auto coupler =
+      g.add_coupler(fuse::CouplerDecl{.name = "coupler", .ranks = RankSet{0, 1}});
+  g.channel(fwd).remap(fuse::RemapFlags::Conservative).remap_on(coupler);
+  g.channel(back).remap(fuse::RemapFlags::Conservative).remap_on(coupler);
+
+  CouplingWindowScope scope;
+  scope.explicit_interval = Rational{1, 50};  // 0.02
+  scope.order = 2;
+  scope.policies = {{"U", DtPolicy::Adjustable}, {"V", DtPolicy::Adjustable}};
+  scope.iteration = WaveformIteration::Jacobi;
+
+  IterationRegionDecl decl;
+  decl.name = "window";
+  decl.channels = {fwd, back};
+  decl.max_iterations = 20;
+  decl.window_scope = scope;
+  g.add_iteration_region(decl);
+
+  const auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+
+  const fuse::ClockSet cs{g};
+  const auto result = fuse::schedule(
+      g, lowered.dag, cs, [](RegionId, int) -> std::size_t { return 64; });
+  ASSERT_TRUE(result.ok()) << result.diags.to_string();
+  EXPECT_EQ(result.plan.period(), Rational(1, 50))
+      << "the coupler's own default interval (1, since it declares none) "
+         "must not enter the compiled period";
+  for (const auto& item : result.diags.items()) {
+    EXPECT_NE(item.code, "E-SCHED-PERIOD") << result.diags.to_string();
+  }
+}
+
+// The companion case without a window at all: two ordinary components at
+// intervals 1/3 and 1/2 (period 1 = lcm(1/3, 1/2)), plus a coupler --
+// the period must stay exactly 1, not lcm(1, 1) (which happens to also
+// be 1, so this alone would not catch the defect) and not be disturbed
+// by the coupler's presence at all. Paired with ClockSet's own direct
+// unit test (test/schedule/clock_test.cpp,
+// ClockSet.ACouplersDefaultIntervalNeverEntersTheLcmOrGcd) which checks
+// a case where lcm(period, 1) WOULD visibly differ from period (a
+// period under 1).
+TEST(WindowRegionGolden, ACouplerDoesNotEnterTheOrdinaryPeriodEither) {
+  CouplingGraph g;
+  const auto m = g.add_mesh(MeshDecl{.name = "m"});
+  const auto r = g.add_region(Region{.name = "r", .mesh = m});
+
+  const auto comp_a =
+      g.add_component(ComponentDecl{.name = "a", .interval = Rational{1, 3}});
+  const auto comp_b =
+      g.add_component(ComponentDecl{.name = "b", .interval = Rational{1, 2}});
+  (void)g.add_field(comp_a, FieldSpec{.name = "a_out", .region = r, .units = u::kKelvin,
+                                      .conservation = Conservation::Extensive,
+                                      .intent = Intent::Provides});
+  (void)g.add_field(comp_b, FieldSpec{.name = "b_out", .region = r, .units = u::kKelvin,
+                                      .conservation = Conservation::Extensive,
+                                      .intent = Intent::Provides});
+  (void)g.add_coupler(fuse::CouplerDecl{.name = "coupler", .ranks = RankSet{0, 1}});
+
+  const fuse::ClockSet cs{g};
+  const auto period = cs.checked_common_period();
+  ASSERT_TRUE(period.ok()) << period.error().message;
+  EXPECT_EQ(period.value(), Rational{1});
+}
