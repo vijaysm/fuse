@@ -15,7 +15,7 @@ file = "src/abi/participant.cpp"
 old = """template <class T>
 [[nodiscard]] fuse_status check_struct_size(const T* s) noexcept {
   if (s == nullptr) return FUSE_ERR_INVALID;
-  if (s->struct_size < sizeof(T) ||
+  if (s->struct_size < FirstFrozenStructSize<T>::value ||
       s->struct_size > static_cast<std::uint32_t>(FUSE_ABI_MAX_STRUCT_SIZE)) {
     return FUSE_ERR_VERSION;
   }
@@ -31,7 +31,7 @@ new = """template <class T>
 }"""
 target = "fuse_abi_struct_size_test"
 test = "abi.struct_size"
-result = "CONFIRMED 2026-10-02: AbiStructSize.ShortStructIsRefused failed exactly as predicted (every struct_size in {0,1,2,3} on fuse_capability_set, and struct_size=2 on fuse_setup_options, now returned FUSE_OK instead of FUSE_ERR_VERSION); AbiStructSize.LongerStructFromANewerCallerIsAccepted was unaffected (it never exercises the lower bound). Restored; cmp against the pre-mutation file reported no difference."
+result = "CONFIRMED 2026-10-02: AbiStructSize.ShortStructIsRefused failed exactly as predicted (every struct_size in {0,1,2,3} on fuse_capability_set, and struct_size=2 on fuse_setup_options, now returned FUSE_OK instead of FUSE_ERR_VERSION); AbiStructSize.LongerStructFromANewerCallerIsAccepted was unaffected (it never exercises the lower bound). Anchor text updated 2026-10-03 for Defect 3's FirstFrozenStructSize<T> refactor (the per-type minimum check_struct_size now reads, replacing the former bare sizeof(T)) and RE-PROVED BY HAND against the new text the same day: applying it made AbiStructSize.ShortStructIsRefused fail (t->setup() returned FUSE_OK/0 instead of FUSE_ERR_VERSION/-6 for a struct_size=2 fuse_setup_options), LongerStructFromANewerCallerIsAccepted still passed, and the file was restored and confirmed byte-identical via cmp."
 
 [[mutation]]
 id = "abi-writer-sets-the-wrong-size"
@@ -119,3 +119,28 @@ new = """    const fuse::ExternalAdvanceRequest& req = *c.next_request;"""
 target = "fuse_abi_participant_test"
 test = "abi.participant"
 result = "CONFIRMED 2026-10-02: AbiParticipant.BeginStepOutOfTurnIsRefusedNamingTheExpectedComponent failed on EXPECT_EQ(t->begin_step(ctx, &down_req, &rep), FUSE_ERR_STATE) -- begin_step(downstream) returned FUSE_OK (0) instead of FUSE_ERR_STATE (-3) when called out of turn. The other six AbiParticipant cases, none of which calls begin_step() out of the schedule's own order, still passed. Restored; cmp against the pre-mutation file reported no difference."
+
+[[mutation]]
+id = "abi-begin-step-writes-next-component-past-an-old-callers-struct-size"
+area = "abi"
+describes = "Defect 3 (docs/dev/abi-design.md rule 2's write-side mirror): impl_begin_step() writes out->next_component unconditionally, ignoring struct_size_covers() -- an old caller's fuse_step_report*, heap-allocated at exactly the pre-Defect-3 size (no next_component field existed when it was compiled), gets a write past the end of its own allocation"
+file = "src/abi/participant.cpp"
+old = """    if (struct_size_covers(declared_out_size,
+                           offsetof(fuse_step_report, next_component) +
+                               sizeof(out->next_component))) {
+      out->next_component = -2;
+    }
+    return FUSE_OK;
+  });
+}
+
+fuse_status impl_end_step(fuse_ctx* ctx, const fuse_step_request* in,"""
+new = """    out->next_component = -2;
+    return FUSE_OK;
+  });
+}
+
+fuse_status impl_end_step(fuse_ctx* ctx, const fuse_step_request* in,"""
+target = "fuse_abi_participant_test"
+test = "abi.participant"
+result = "PROVED BY HAND 2026-10-03 (tools/mutate.py --area abi could not run against this uncommitted tree -- the gate refuses with 'include/ or src/ has uncommitted changes; the gate restores by copy-back', the same constraint recorded for Defects 1 and 2). Applied to a scratch ASan tree (-fsanitize=address,undefined -fno-omit-frame-pointer): AbiParticipant.OldCallerStructSizeNeverTouchesNextComponent (the heap-exact-buffer test this row targets) ABORTED with 'AddressSanitizer: heap-buffer-overflow ... participant.cpp:900 in impl_begin_step', exactly the write this guard exists to prevent. MEASURED AGAIN in the ordinary (non-ASan) bafter tree with the same mutation: gtest itself printed '[ OK ] ... [PASSED] 1 test' (the 4-byte write past a 64/72-byte heap allocation did not visibly corrupt the fields the test asserts on) but the PROCESS then exited 139 (SIGSEGV) during teardown -- malloc's own heap-metadata corruption surfacing on a later free(), not a sanitizer. So unlike Defect 2 (whose plain build ran clean to completion), this particular overflow crashes even without a sanitizer, just one allocation's destructor later than the overflowing write itself; ASan's report is still the one that names the exact line and the exact kind of defect, so it remains the decisive oracle, with the plain-build crash as corroborating (if less legible) evidence. Restored from a /tmp backup both times; cmp reported no difference both times."

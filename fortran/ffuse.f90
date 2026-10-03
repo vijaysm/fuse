@@ -157,6 +157,7 @@ module ffuse
     integer(c_int32_t) :: reserved = 0_c_int32_t
     type(fuse_exact_time) :: t_begin = fuse_exact_time(0_c_int64_t, 1_c_int64_t)
     type(fuse_exact_time) :: t_end = fuse_exact_time(0_c_int64_t, 1_c_int64_t)
+    integer(c_int32_t) :: next_component = 0_c_int32_t
   end type fuse_step_report
 
   type, bind(C), public :: fuse_ongoing
@@ -164,6 +165,7 @@ module ffuse
     integer(c_int32_t) :: ongoing = 0_c_int32_t
     integer(c_int64_t) :: period = 0_c_int64_t
     type(fuse_exact_time) :: now = fuse_exact_time(0_c_int64_t, 1_c_int64_t)
+    integer(c_int32_t) :: next_component = 0_c_int32_t
   end type fuse_ongoing
 
   type, bind(C), public :: fuse_run_request

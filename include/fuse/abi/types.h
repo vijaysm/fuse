@@ -200,6 +200,7 @@ typedef struct fuse_step_report {
   int32_t         reserved;  /* 0 */
   fuse_exact_time t_begin;  /* start of the step */
   fuse_exact_time t_end;  /* end of the step */
+  int32_t         next_component;  /* participant direction: fuse_end_step() sets this to the graph-declared component index the compiled instruction stream expects at this process's own NEXT begin_step, or -1 if that call closed the period -- resolving it is exactly what fuse_end_step() already does internally to advance the stream, so no extra work is spent finding out. fuse_begin_step() cannot resolve it yet (this component's own advance() has not run; the NEXT request is not known until the matching fuse_end_step() runs it) and reports -2, meaning undetermined -- call fuse_end_step() first; unused by the provider's advance(). Appended 2026-10-03 so several externally driven window members sharing a window of more than one substep have a direct answer instead of a guessed call order (E-ABI-STEP-ORDER otherwise) */
 } fuse_step_report;
 
 /* whether and where the coupling stands */
@@ -208,6 +209,7 @@ typedef struct fuse_ongoing {
   int32_t         ongoing;  /* 1 while there is a step left to take */
   int64_t         period;  /* coupling period index */
   fuse_exact_time now;  /* the current coupling time */
+  int32_t         next_component;  /* fuse_is_coupling_ongoing() stays side-effect-free -- it always has been safe to call any number of times between steps, and resolving a real answer would require actually resuming the instruction stream, which is not a free read. So this reports the graph-declared component index the compiled instruction stream expects at this process's own NEXT begin_step ONLY when a prior fuse_begin_step()/fuse_end_step() this period already resolved it and left it cached, which this call is free to read; -1 ONLY for a graph with no externally driven component at all (fuse_run() drives those, so there is never anything to resolve); -2 (same sentinel fuse_step_report.next_component uses) in every other case nothing is cached for -- including right after a period just closed, which looks identical to \"the next period has not been primed yet\" without actually resuming the stream to tell them apart -- call fuse_begin_step()/fuse_end_step() first. Appended 2026-10-03; see fuse_step_report.next_component's own comment for why */
 } fuse_ongoing;
 
 /* for an in-process driver: let the coupler run the loop */

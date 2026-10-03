@@ -95,6 +95,31 @@ constraint is on the CALLER: a process hosting more than one externally-driven c
 calling `begin_step()` for a component out of turn is refused (`E-ABI-STEP-ORDER`), naming the
 component the schedule actually expects next.
 
+**Knowing the order in advance, not just on refusal (`next_component`).** A fixed alternation
+(call A, then B, then A again, ...) is only right when every externally-driven component ticks
+once per coupling window; once a window spans more than one of a member's own substeps — a
+coupling window of `4*dt_u` against a member that ticks every `dt_u`, say — there is no single
+fixed order that is right for every Picard sweep, and guessing wrong just to learn the real order
+from `E-ABI-STEP-ORDER`'s own error message does not scale past the first mistake. `fuse_ongoing`
+and `fuse_step_report` both carry a `next_component` member for exactly this: the graph-declared
+component index FUSE's own compiled instruction stream expects at THIS process's own next
+`begin_step()`, or `-1` when nothing is due (a graph with no externally-driven component at all,
+for `fuse_is_coupling_ongoing()`'s own copy of the field). `fuse_end_step()` resolves a real answer
+for free — it already resumes the instruction stream internally to find out what comes next, so
+reading `next_component` off its own report costs nothing extra. `fuse_begin_step()` cannot resolve
+it synchronously (this component's own step has not run yet, so the stream has not been asked to
+look past it) and reports `-2` ("undetermined — call `fuse_end_step()` first"); the same sentinel
+appears in `fuse_ongoing::next_component` whenever nothing has been resolved and cached yet by a
+prior step this period (`fuse_is_coupling_ongoing()` never resumes the stream itself to find out —
+it stays exactly as side-effect-free as it always was). A caller driving several externally-driven
+window members therefore only ever guesses once, at the very first step of each period (broken by
+the graph's own declaration order, the same tie-break the schedule itself uses); every step after
+that reads `next_component` off the previous `end_step()`'s own report and never calls
+`begin_step()` out of turn again. `next_component` was appended after `fuse_step_report`/
+`fuse_ongoing` first shipped (see "Version compatibility" below): an older build that only
+allocated the pre-growth struct never has this member written into its memory at all, and keeps
+working exactly as it did before this field existed.
+
 ## Time is exact across the boundary too
 
 ```c
