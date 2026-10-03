@@ -561,6 +561,7 @@ if(FUSE_ENABLE_MPI)
 endif()
 # ---- S6 phase 3, "MPI connect" track: end ---------------------------------
 
+
 # ---------------------------------------------------------------- linalg
 fuse_add_gtest(linalg least_squares THROWS)
 fuse_add_gtest(backend native_mesh THROWS)
@@ -714,20 +715,56 @@ endforeach()
 fuse_add_omp_legs(verification.brusselator_physics fuse_verification_brusselator_physics_test)
 
 # Brusselator as separately built participants (Conformance, Unit 2): the
-# tier-0 harness -- drives the SAME extern "C" shim (examples/brusselator/
-# participants/shim.cpp) examples/brusselator/participants/u_main.c and
-# v_main.f90 call, through the participant ABI, in one process, against
-# an in-process fuse::Runner reference on the identical graph shape. Needs
-# fuse::abi (fuse_coupler_abi()) in addition to the ordinary Brusselator
-# deps, and the participants/ subdirectory on top of examples/brusselator/
-# itself.
-fuse_add_gtest(verification brusselator_participants NO_LAYER_LIB
-               LIBS fuse::runtime fuse::backend fuse::abi Eigen3::Eigen Kokkos::kokkos)
-target_include_directories(fuse_verification_brusselator_participants_test PRIVATE
-  ${CMAKE_SOURCE_DIR}/examples/brusselator
-  ${CMAKE_SOURCE_DIR}/examples/brusselator/participants)
-target_sources(fuse_verification_brusselator_participants_test PRIVATE
-  ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/shim.cpp)
+# tier-0 harness -- drives the SAME u_loop_step() (u_loop.c, PURE C) and
+# bruss_v_loop_step() (v_loop.f90, PURE FORTRAN) examples/brusselator/
+# participants/u_main.c and v_main.f90 call, through the participant ABI,
+# in one process, against an in-process fuse::Runner reference on the
+# identical graph shape. Each language's own coupling-facing loop body is
+# written in that language (not a shared C++ helper) -- the whole point
+# of this conformance case is a C code and a Fortran code each driving
+# FUSE through the ABI in their own language; only the user's Brusselator
+# physics (shim.cpp's own bruss_u_step/bruss_v_step) is C++. This harness
+# therefore needs fuse-abi-fortran (ffuse, v_loop.f90's own `use ffuse`)
+# in addition to fuse::abi (fuse_coupler_abi()) and the ordinary
+# Brusselator deps, so the whole section is gated on Fortran being
+# available, the same `if(TARGET fuse-abi-fortran)` convention this
+# file's own fortran/ section below uses.
+if(TARGET fuse-abi-fortran)
+  fuse_add_gtest(verification brusselator_participants NO_LAYER_LIB
+                 LIBS fuse::runtime fuse::backend fuse::abi fuse::abi-fortran Eigen3::Eigen Kokkos::kokkos)
+  target_include_directories(fuse_verification_brusselator_participants_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/brusselator
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants)
+  target_sources(fuse_verification_brusselator_participants_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/shim.cpp
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/u_loop.c
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/v_loop.f90)
+  # Two targets below (this one and brusselator_check) both compile
+  # v_loop.f90 into a `v_loop_mod` .mod file; CMake's default Fortran
+  # module output directory is not automatically per-target the way the
+  # object directory is, so a parallel build of both from a clean tree
+  # races on the same .mod path ("Cannot rename module file") -- each
+  # gets its own subdirectory to avoid that.
+  set_target_properties(fuse_verification_brusselator_participants_test PROPERTIES
+    Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/brusselator_participants_fortran_modules)
+
+  # brusselator_check's own assembler logic (Conformance, Unit 2, Q3),
+  # exercised directly (no subprocess) against a real shim-driven run --
+  # same deps as brusselator_participants above, plus brusselator_check_
+  # core.cpp itself.
+  fuse_add_gtest(verification brusselator_check NO_LAYER_LIB
+                 LIBS fuse::runtime fuse::backend fuse::abi fuse::abi-fortran Eigen3::Eigen Kokkos::kokkos)
+  target_include_directories(fuse_verification_brusselator_check_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/brusselator
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants)
+  target_sources(fuse_verification_brusselator_check_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/shim.cpp
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/u_loop.c
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/v_loop.f90
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/brusselator_check_core.cpp)
+  set_target_properties(fuse_verification_brusselator_check_test PROPERTIES
+    Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/brusselator_check_fortran_modules)
+endif()
 
 # ---------------------------------------------------------------- install
 # find_package(fuse-coupler) smoke test (REVIEW.md R-25/BT-F9): install this

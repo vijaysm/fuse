@@ -79,6 +79,8 @@
 
 #include "brusselator_graph.hpp"
 #include "shim.h"
+#include "u_loop.h"
+#include "v_loop.h"
 #include "species_component.hpp"
 
 namespace {
@@ -334,37 +336,21 @@ TEST(BrusselatorParticipants, ExternallyDrivenBothMembersMatchInProcessRunner) {
   // degenerate case Finding B's own E-ABI-STEP-ORDER does not reach).
   for (int p = 0; p < kPeriods; ++p) {
     for (int sweep = 0; sweep < ref_iterations[p]; ++sweep) {
-      fuse_step_report u_rep{.struct_size = sizeof(u_rep)};
-      ASSERT_EQ(t->begin_step(ctx, &u_req, &u_rep), FUSE_OK) << "period " << p << " sweep " << sweep;
-      // requires_checkpoint/requires_restore (KNOWN_ISSUES.md D12): an
-      // externally-driven window member's own integrator state is
-      // opaque to the Runner -- it cannot roll U/V back to the
-      // window-start checkpoint itself the way it does for an
-      // in-process Component's own save_state()/restore_state(), so it
-      // tells THIS caller when to do it instead.
-      if (u_rep.requires_checkpoint) bruss_u_save_state(uh);
-      if (u_rep.requires_restore) bruss_u_restore_state(uh);
-      // Exact rationals straight through to the shim -- not two doubles:
-      // shim.h's own comment on bruss_u_step() has the full account of
-      // why `t_end - t_begin` as a double subtraction is not always
-      // bit-identical to the exact rational difference.
-      ASSERT_EQ(bruss_u_step(uh, u_rep.t_begin.numerator, u_rep.t_begin.denominator,
-                             u_rep.t_end.numerator, u_rep.t_end.denominator,
-                             u_in.data(), u_out.data()), 0)
-          << bruss_u_last_error(uh);
-      ASSERT_EQ(t->end_step(ctx, &u_req, &u_rep), FUSE_OK) << "period " << p << " sweep " << sweep;
+      // u_loop_step() (u_loop.c, PURE C) and bruss_v_loop_step()
+      // (v_loop.f90, PURE FORTRAN) are the SAME functions u_main.c's/
+      // v_main.f90's own time loops call -- the lead's own "the tier-0
+      // harness drives the real mains' loop bodies" instruction, with
+      // each language's own loop body written in that language (not a
+      // shared C++ helper): each wraps exactly the begin_step ->
+      // checkpoint/restore -> bruss_*_step -> end_step sequence this
+      // file used to inline by hand.
+      fuse_step_report u_rep{.struct_size = sizeof(u_rep)}, u_begin_rep{.struct_size = sizeof(u_begin_rep)};
+      ASSERT_EQ(u_loop_step(ctx, uh, &u_req, u_in.data(), u_out.data(), &u_rep, &u_begin_rep), FUSE_OK)
+          << "period " << p << " sweep " << sweep << ": " << bruss_u_last_error(uh);
 
-      fuse_step_report v_rep{.struct_size = sizeof(v_rep)};
-      ASSERT_EQ(t->begin_step(ctx, &v_req, &v_rep), FUSE_OK) << "period " << p << " sweep " << sweep;
-      if (v_rep.requires_checkpoint) bruss_v_save_state(vh);
-      if (v_rep.requires_restore) bruss_v_restore_state(vh);
-      // Exact rationals straight through, exactly like bruss_u_step above
-      // -- shim.h's own comment on bruss_v_step has the full account.
-      ASSERT_EQ(bruss_v_step(vh, v_rep.t_begin.numerator, v_rep.t_begin.denominator,
-                             v_rep.t_end.numerator, v_rep.t_end.denominator,
-                             v_in.data(), v_out.data()), 0)
-          << bruss_v_last_error(vh);
-      ASSERT_EQ(t->end_step(ctx, &v_req, &v_rep), FUSE_OK) << "period " << p << " sweep " << sweep;
+      fuse_step_report v_rep{.struct_size = sizeof(v_rep)}, v_begin_rep{.struct_size = sizeof(v_begin_rep)};
+      ASSERT_EQ(bruss_v_loop_step(ctx, vh, &v_req, v_in.data(), v_out.data(), &v_rep, &v_begin_rep), FUSE_OK)
+          << "period " << p << " sweep " << sweep << ": " << bruss_v_last_error(vh);
     }
     fuse_ongoing ongoing{.struct_size = sizeof(ongoing)};
     ASSERT_EQ(t->is_coupling_ongoing(ctx, nullptr, &ongoing), FUSE_OK);
@@ -545,30 +531,22 @@ TEST(BrusselatorParticipants, ExternallyDrivenMultiSubstepWindowDrivenByNextComp
           << ": next_component resolved to neither U (" << u_idx
           << ") nor V (" << v_idx << "), got " << next;
       fuse_step_request& req = is_u ? u_req : v_req;
-      fuse_step_report rep{.struct_size = sizeof(rep)};
-      ASSERT_EQ(t->begin_step(ctx, &req, &rep), FUSE_OK)
-          << "period " << p << " step " << step_count << " (" << (is_u ? "U" : "V") << ")";
-      EXPECT_EQ(rep.next_component, -2)
+      // u_loop_step() (u_loop.c) / bruss_v_loop_step() (v_loop.f90) --
+      // the SAME functions u_main.c/v_main.f90 call, each written in its
+      // own executable's language. `begin_rep` is requested only to keep
+      // exercising the next_component == -2 invariant this test always
+      // has.
+      fuse_step_report end_rep{.struct_size = sizeof(end_rep)};
+      fuse_step_report begin_rep{.struct_size = sizeof(begin_rep)};
+      const fuse_status rc = is_u
+          ? u_loop_step(ctx, uh, &req, u_in.data(), u_out.data(), &end_rep, &begin_rep)
+          : bruss_v_loop_step(ctx, vh, &req, v_in.data(), v_out.data(), &end_rep, &begin_rep);
+      ASSERT_EQ(rc, FUSE_OK)
+          << "period " << p << " step " << step_count << " (" << (is_u ? "U" : "V")
+          << "): " << (is_u ? bruss_u_last_error(uh) : bruss_v_last_error(vh));
+      EXPECT_EQ(begin_rep.next_component, -2)
           << "begin_step() cannot resolve next_component synchronously (its own comment "
              "in entries.def explains why) -- period " << p << " step " << step_count;
-      if (is_u) {
-        if (rep.requires_checkpoint) bruss_u_save_state(uh);
-        if (rep.requires_restore) bruss_u_restore_state(uh);
-        ASSERT_EQ(bruss_u_step(uh, rep.t_begin.numerator, rep.t_begin.denominator,
-                               rep.t_end.numerator, rep.t_end.denominator,
-                               u_in.data(), u_out.data()), 0)
-            << bruss_u_last_error(uh);
-      } else {
-        if (rep.requires_checkpoint) bruss_v_save_state(vh);
-        if (rep.requires_restore) bruss_v_restore_state(vh);
-        ASSERT_EQ(bruss_v_step(vh, rep.t_begin.numerator, rep.t_begin.denominator,
-                               rep.t_end.numerator, rep.t_end.denominator,
-                               v_in.data(), v_out.data()), 0)
-            << bruss_v_last_error(vh);
-      }
-      fuse_step_report end_rep{.struct_size = sizeof(end_rep)};
-      ASSERT_EQ(t->end_step(ctx, &req, &end_rep), FUSE_OK)
-          << "period " << p << " step " << step_count << " (" << (is_u ? "U" : "V") << ")";
       ++step_count;
       if (end_rep.next_component == -1) break;  // period complete
       next = end_rep.next_component;
