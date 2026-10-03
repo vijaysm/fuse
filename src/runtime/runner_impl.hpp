@@ -929,6 +929,25 @@ struct Runner::Impl {
   Result<std::optional<ExternalAdvanceRequest>> resume_period(
       ComponentSet& components);
 
+  /// Defect 3's own refinement (Conformance Unit 2): every component the
+  /// compiled stream visits at a period's own start (time 0), in the
+  /// EXACT order it visits them -- in-process and externally driven
+  /// alike, whichever this is called for picks out the one it cares
+  /// about. A STATIC property of the plan: `ticks` and `plan.instructions()`
+  /// are both built once, at `build_ticks()`/`schedule()` time, and a
+  /// period's own start repeats identically every period (the schedule's
+  /// own common-period invariant), so there is exactly one answer for the
+  /// whole run, not one per period. Mirrors `step_period()`'s own merge
+  /// walk (ticks interleaved with the instruction stream, windows walked
+  /// by their first instance's own body) structurally, but calls nothing
+  /// that executes anything -- no `advance()`, no coroutine, no
+  /// `co_await`, no `resume_period()` -- so it carries NONE of
+  /// `resume_period()`'s own side effects and is safe to call any number
+  /// of times, from any state, including before a period has even
+  /// started. See `Runner::components_due_at_period_start()` (runner.hpp)
+  /// for why `fuse_is_coupling_ongoing()` needed this.
+  [[nodiscard]] std::vector<ComponentId> components_due_at_period_start() const;
+
   /// The request `advance()` most recently suspended with, valid only
   /// between a `period_task->resume()` that returned `false` and the
   /// `resume_period()` call that reads it out.

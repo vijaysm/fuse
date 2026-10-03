@@ -159,7 +159,25 @@ namespace fuse::abi_test {
 [[nodiscard]] inline fuse::CouplingGraph build_implicit_window_coupling_graph(
     int cells = 4, int max_iterations = 30,
     fuse::DtPolicy pol_a = fuse::DtPolicy::Adjustable,
-    fuse::DtPolicy pol_b = fuse::DtPolicy::Adjustable) {
+    fuse::DtPolicy pol_b = fuse::DtPolicy::Adjustable,
+    // Defect 3's own refinement (Conformance Unit 2): `decl.channels`' own
+    // order, not declaration order, is what `members_in_first_seen_order()`
+    // (src/ir/window_lowering.cpp, mirroring window_region_members()) walks
+    // to decide which member's WindowAdvance node is created FIRST, which
+    // in turn is what makes it appear first in the compiled instruction
+    // stream (no other tie-break applies -- a WindowAdvance node has no
+    // formal DAG inputs at all, op.hpp's own comment on
+    // OpAttrs::window_import explains why). `false` (the default)
+    // reproduces every existing caller's own graph exactly: channels =
+    // {fwd, back}, alpha (declared first) first in plan order too. `true`
+    // swaps the list to {back, fwd} -- beta (declared SECOND) is listed
+    // first via `back`'s own source, so beta's WindowAdvance is created
+    // first despite alpha being ComponentId 0: a graph where "first
+    // declared" and "first in plan order" genuinely disagree, needed to
+    // prove fuse_is_coupling_ongoing() reads the PLAN, not declaration
+    // order (AbiParticipant.IsCouplingOngoingReportsThePlanFirstComponent,
+    // NotTheFirstDeclaredOne).
+    bool reorder_channels_so_beta_is_first_in_plan_order = false) {
   fuse::CouplingGraph g;
   const auto ma = g.add_mesh(
       fuse::MeshDecl{.name = "ma", .source = "generated:line:" + std::to_string(cells)});
@@ -204,8 +222,12 @@ namespace fuse::abi_test {
   fuse::ConvergenceCriterion convergence;
   convergence.add(fuse::Converged::Relative(1e-9, "a_out"));
   convergence.add(fuse::Converged::Relative(1e-9, "a_in"));
+  const std::vector<fuse::ChannelId> channel_order =
+      reorder_channels_so_beta_is_first_in_plan_order
+          ? std::vector<fuse::ChannelId>{back, fwd}
+          : std::vector<fuse::ChannelId>{fwd, back};
   g.add_iteration_region(fuse::IterationRegionDecl{
-      .name = "window", .channels = {fwd, back}, .max_iterations = max_iterations,
+      .name = "window", .channels = channel_order, .max_iterations = max_iterations,
       .convergence = convergence, .window_scope = scope});
   return g;
 }
@@ -213,9 +235,11 @@ namespace fuse::abi_test {
 [[nodiscard]] inline std::vector<std::byte> build_implicit_window_coupling_bytes(
     int cells = 4, int max_iterations = 30,
     fuse::DtPolicy pol_a = fuse::DtPolicy::Adjustable,
-    fuse::DtPolicy pol_b = fuse::DtPolicy::Adjustable) {
-  return fuse::serialize(
-      build_implicit_window_coupling_graph(cells, max_iterations, pol_a, pol_b));
+    fuse::DtPolicy pol_b = fuse::DtPolicy::Adjustable,
+    bool reorder_channels_so_beta_is_first_in_plan_order = false) {
+  return fuse::serialize(build_implicit_window_coupling_graph(
+      cells, max_iterations, pol_a, pol_b,
+      reorder_channels_so_beta_is_first_in_plan_order));
 }
 
 }  // namespace fuse::abi_test

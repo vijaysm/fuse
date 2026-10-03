@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "fuse/base/ids.hpp"
 #include "fuse/field/registry.hpp"
 #include "fuse/backend/mesh_view.hpp"
 #include "fuse/runtime/component.hpp"
@@ -219,6 +220,25 @@ class Runner {
   /// `fuse_end_step()`).
   Result<std::optional<ExternalAdvanceRequest>> resume_period(
       ComponentSet& components);
+
+  /// Defect 3's own refinement (Conformance Unit 2, docs/dev/abi-design.md):
+  /// `fuse_is_coupling_ongoing()` originally had no way to answer
+  /// `next_component` AT A PERIOD'S OWN START without calling
+  /// `resume_period()` -- a real side effect a previously side-effect-free
+  /// entry point must never pay for just to answer a status query. But the
+  /// instruction stream is static once `schedule()` has built it: the
+  /// FIRST externally driven component of a period is a property of the
+  /// compiled plan, not of where execution happens to be right now, and
+  /// is the SAME for every period (the schedule's own common-period
+  /// invariant). This returns every component the compiled stream visits
+  /// at time 0 of a period, in the EXACT order it visits them -- both
+  /// in-process and externally driven, since only the caller (the ABI
+  /// layer, `src/abi/participant.cpp`) knows which components in THIS
+  /// process are externally driven; it picks the first one that is. No
+  /// `advance()` call, no coroutine, no suspension: safe to call from any
+  /// state, any number of times, including before `resume_period()` has
+  /// ever been called at all.
+  [[nodiscard]] std::vector<ComponentId> components_due_at_period_start() const;
 
   [[nodiscard]] const RunStats& stats() const noexcept;
   /// One entry per iteration region of the plan, in DAG region order,

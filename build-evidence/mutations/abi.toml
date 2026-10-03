@@ -144,3 +144,33 @@ fuse_status impl_end_step(fuse_ctx* ctx, const fuse_step_request* in,"""
 target = "fuse_abi_participant_test"
 test = "abi.participant"
 result = "PROVED BY HAND 2026-10-03 (tools/mutate.py --area abi could not run against this uncommitted tree -- the gate refuses with 'include/ or src/ has uncommitted changes; the gate restores by copy-back', the same constraint recorded for Defects 1 and 2). Applied to a scratch ASan tree (-fsanitize=address,undefined -fno-omit-frame-pointer): AbiParticipant.OldCallerStructSizeNeverTouchesNextComponent (the heap-exact-buffer test this row targets) ABORTED with 'AddressSanitizer: heap-buffer-overflow ... participant.cpp:900 in impl_begin_step', exactly the write this guard exists to prevent. MEASURED AGAIN in the ordinary (non-ASan) bafter tree with the same mutation: gtest itself printed '[ OK ] ... [PASSED] 1 test' (the 4-byte write past a 64/72-byte heap allocation did not visibly corrupt the fields the test asserts on) but the PROCESS then exited 139 (SIGSEGV) during teardown -- malloc's own heap-metadata corruption surfacing on a later free(), not a sanitizer. So unlike Defect 2 (whose plain build ran clean to completion), this particular overflow crashes even without a sanitizer, just one allocation's destructor later than the overflowing write itself; ASan's report is still the one that names the exact line and the exact kind of defect, so it remains the decisive oracle, with the plain-build crash as corroborating (if less legible) evidence. Restored from a /tmp backup both times; cmp reported no difference both times."
+
+[[mutation]]
+id = "abi-is-coupling-ongoing-reverts-to-undetermined-at-period-start"
+area = "abi"
+describes = "Defect 3's own refinement (Conformance Unit 2): impl_is_coupling_ongoing()'s uncached branch is reverted to the pre-refinement -2 sentinel instead of resolving next_component from Runner::components_due_at_period_start() -- a period's own start again reports 'undetermined without stepping' instead of a real, plan-derived answer, forcing a caller back to guessing the first component of every period"
+file = "src/abi/participant.cpp"
+old = """      } else {
+        out->next_component = -1;
+        for (const fuse::ComponentId cid :
+             c.runner->components_due_at_period_start()) {
+          if (cid.value() < c.ext.size() && !c.ext[cid.value()].in_process) {
+            out->next_component = static_cast<std::int32_t>(cid.value());
+            break;
+          }
+        }
+        // Unreachable for a well-formed graph with external_count > 0:
+        // every externally driven component has a substep at period-time
+        // 0 (either an ordinary Tick{k=0,...} or a window member's first
+        // instance's own first substep), so the loop above always finds
+        // one and the -1 default is never actually used here. Left as
+        // the safe fallback rather than an assert, matching this
+        // function's own "fail gracefully, never a new hard-failure
+        // mode" convention elsewhere in this file.
+      }"""
+new = """      } else {
+        out->next_component = -2;
+      }"""
+target = "fuse_abi_participant_test"
+test = "abi.participant"
+result = "PROVED BY HAND 2026-10-03 (tools/mutate.py --area abi refuses against this uncommitted tree, same constraint recorded for every other row in this file). Applied directly to the ordinary bafter build (no sanitizer needed -- this is a pure logic/value regression, not a memory-safety one): AbiParticipant.IsCouplingOngoingReportsThePlanFirstComponentNotTheFirstDeclaredOne failed exactly as predicted (ongoing.next_component read -2 instead of beta's ComponentId, 1); BrusselatorParticipants.ExternallyDrivenMultiSubstepWindowDrivenByNextComponent ALSO failed (period 0 step 0: next_component resolved to neither U nor V, got -2), confirming the harness itself depends on this refinement now that it no longer guesses U first. Restored from a /tmp backup; cmp reported no difference; full rebuild confirmed both tests pass again."

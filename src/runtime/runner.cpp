@@ -3650,6 +3650,69 @@ Result<std::optional<ExternalAdvanceRequest>> Runner::resume_period(
   }
 }
 
+std::vector<ComponentId> Runner::components_due_at_period_start() const {
+  return impl_->components_due_at_period_start();
+}
+
+std::vector<ComponentId> Runner::Impl::components_due_at_period_start() const {
+  std::vector<ComponentId> out;
+  const Rational zero{0};
+  // Ordinary (non-window) ticks ALWAYS include a k=0 entry, at time 0,
+  // for every ordinary component (build_ticks()'s own "Rational{k}*dt"
+  // for k = 0 .. n-1) -- and a window region's own first-pass block is
+  // NEVER stamped earlier than its own (strictly positive) window
+  // length: a WindowAdvance instruction is a chain node, stamped at the
+  // SLAB END per plan.hpp's own documented convention ("chain nodes at
+  // the slab end"), not at its start -- MEASURED directly against this
+  // exact confusion (an earlier version of this function filtered
+  // WindowAdvance instructions by `.time == 0` and found every one of
+  // them excluded, since their `.time` is the window's own end, e.g.
+  // 1/500 for a 1/500 window, never 0). So whenever `ticks` is non-empty
+  // at all, its own time-0 prefix -- already sorted ascending by
+  // (time, order), build_ticks()'s own stable_sort -- is unconditionally
+  // the period's own first due point; no window region can tie with it,
+  // let alone beat it.
+  for (const detail::Tick& tk : ticks) {
+    if (tk.time != zero) break;  // sorted ascending: nothing past here ties
+    out.push_back(ComponentId{tk.order});
+  }
+  if (!out.empty()) return out;
+
+  // No ordinary component at all in this graph (every one is a window
+  // member, or there are truly none) -- the period's own first due point
+  // is the FIRST window region's own first pass, found by ITS position
+  // in the (already time-sorted) instruction stream: the earliest
+  // `region_enter` reached walking from the front. Within that block,
+  // WindowAdvance instructions appear in the SAME order
+  // members_in_first_seen_order() (src/ir/window_lowering.cpp) created
+  // their nodes in -- a WindowAdvance node has no formal DAG inputs at
+  // all (op.hpp's own comment on OpAttrs::window_import explains why),
+  // so NodeId/creation order, not a dependency edge, is what the
+  // scheduler's own tie-break (time, phase, topological rank, NodeId)
+  // actually uses to order two members against each other.
+  const std::vector<Instruction>& stream = plan.instructions();
+  std::size_t i = 0;
+  while (i < stream.size() && stream[i].region_enter < 0) ++i;
+  if (i >= stream.size()) return out;  // no region either: truly nothing due
+  std::size_t exit_pos = i;
+  while (exit_pos < stream.size() &&
+         stream[exit_pos].region_exit != stream[i].region_enter) {
+    ++exit_pos;
+  }
+  for (std::size_t k = i; k <= exit_pos && k < stream.size(); ++k) {
+    const Instruction& wi = stream[k];
+    if (wi.kind != OpKind::WindowAdvance) continue;
+    // Mirrors resolve_regions()'s own lookup (src/runtime/iteration.cpp):
+    // a WindowAdvance instruction's own output arc carries the owning
+    // member's graph ComponentId as `rank_set`.
+    const int rank_set = dag.arc(wi.out).type.rank_set;
+    if (rank_set >= 0) {
+      out.push_back(ComponentId{static_cast<std::uint32_t>(rank_set)});
+    }
+  }
+  return out;
+}
+
 Result<std::optional<ExternalAdvanceRequest>> Runner::Impl::resume_period(
     ComponentSet& components) {
   if (!period_task.has_value() || period_task->done()) {

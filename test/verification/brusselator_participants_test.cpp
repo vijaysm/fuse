@@ -55,10 +55,11 @@
 // Component below is the non-degenerate case this mechanism was built
 // for: window == 4*dt_u == 4*dt_v, so each Picard sweep takes four U
 // ticks and four V ticks, in whatever order the Runner's own schedule
-// actually interleaves them -- driven with ZERO guessing past the
-// very first call of each period (declaration order breaks that one
-// tie, same convention test/abi/participant_test.cpp's own
-// StepBoundsAreTheSchedulesRationals relies on).
+// actually interleaves them -- driven with ZERO guessing anywhere,
+// including the very first call of each period: fuse_is_coupling_
+// ongoing() resolves next_component straight from the compiled plan
+// (Runner::components_due_at_period_start(), no side effect) rather
+// than this test assuming declaration order.
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -393,9 +394,10 @@ TEST(BrusselatorParticipants, ExternallyDrivenBothMembersMatchInProcessRunner) {
 // shape, where a single fixed U-then-V alternation is wrong (each Picard
 // sweep now takes four ticks of EACH member, interleaved by the Runner's
 // own schedule, not by this test's guess). Driven purely by
-// fuse_step_report::next_component/fuse_ongoing::next_component after the
-// one declaration-order tie at the very start of each period -- no
-// E-ABI-STEP-ORDER retry anywhere in this loop.
+// fuse_step_report::next_component/fuse_ongoing::next_component, with
+// NO guessing anywhere, including the very first call of each period
+// (fuse_is_coupling_ongoing() resolves that straight from the plan) --
+// no E-ABI-STEP-ORDER retry anywhere in this loop.
 TEST(BrusselatorParticipants, ExternallyDrivenMultiSubstepWindowDrivenByNextComponent) {
   const brusselator::PhysicsConfig cfg;
   const Rational kFineDtU{1, 2000}, kFineDtV{1, 2000}, kFineWindow{1, 500};  // window = 4*dt_u = 4*dt_v
@@ -525,14 +527,16 @@ TEST(BrusselatorParticipants, ExternallyDrivenMultiSubstepWindowDrivenByNextComp
   ASSERT_NE(u_idx, v_idx);
 
   for (int p = 0; p < kFinePeriods; ++p) {
-    // The one tie this loop ever guesses: both members' very first tick
-    // of a period starts at the same instant, and nothing is cached yet
-    // for fuse_is_coupling_ongoing() to report for free (it stays
-    // side-effect-free by design -- see its own comment in
-    // src/abi/participant.cpp). U was declared first, so U opens, same
-    // convention test/abi/participant_test.cpp's own
-    // StepBoundsAreTheSchedulesRationals relies on.
-    std::int32_t next = u_idx;
+    // No guessing anywhere in this loop, including the very first call
+    // of a period: fuse_is_coupling_ongoing() resolves next_component
+    // straight from the compiled plan when nothing is cached yet
+    // (src/abi/participant.cpp's own comment on this; Runner::
+    // components_due_at_period_start(), runner.hpp), with no side
+    // effect and no resumption of the instruction stream.
+    fuse_ongoing period_start{.struct_size = sizeof(period_start)};
+    ASSERT_EQ(t->is_coupling_ongoing(ctx, nullptr, &period_start), FUSE_OK)
+        << "period " << p;
+    std::int32_t next = period_start.next_component;
     int step_count = 0;
     while (true) {
       const bool is_u = (next == u_idx);
@@ -575,12 +579,13 @@ TEST(BrusselatorParticipants, ExternallyDrivenMultiSubstepWindowDrivenByNextComp
     EXPECT_EQ(ongoing.period, p + 1) << "period " << p;
     // is_coupling_ongoing() never calls resume_period() itself (see its
     // own comment in src/abi/participant.cpp), and the LAST end_step()
-    // above reset c.next_request on closing the period -- so this read
-    // is -2 ("undetermined without stepping"), not -1: with nothing
-    // cached, "the period just closed" and "the next period has not
-    // been primed yet" are the same state from here, and only -1 means
-    // specifically "this graph has nothing externally driven at all".
-    EXPECT_EQ(ongoing.next_component, -2) << "period " << p << " just closed";
+    // above reset c.next_request on closing the period. Nothing cached
+    // means exactly "a period is about to start, whichever one" -- the
+    // SAME answer this loop's own period-start read above gets, since
+    // the plan repeats identically every period -- so this is
+    // Runner::components_due_at_period_start()'s own first entry again
+    // (U, same as every period's own start), not a sentinel.
+    EXPECT_EQ(ongoing.next_component, u_idx) << "period " << p << " just closed";
 
     SCOPED_TRACE("period " + std::to_string(p));
     std::vector<double> u_state(static_cast<std::size_t>(nu)), v_state(static_cast<std::size_t>(nv));
