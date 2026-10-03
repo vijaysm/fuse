@@ -57,6 +57,26 @@ test = "example.brusselator"
 # `cmp` before submission.
 
 [[mutation]]
+id = "brusselator-exchange-out-reports-start-of-step-rate"
+area = "examples/brusselator/participants"
+describes = "Conformance Unit 2, Q3's own mutation ('restore dt*q_prev in the shim'): replaces the SAME trapezoidal exchange_out_ bookkeeping the sibling row above tests (0.5*dt*(q_prev_.mean()+q_new.mean())) with dt*q_prev_.mean() -- the start-of-step rate, not the Riemann-on-q_new variant the sibling row exercises. Proven against brusselator_check_core's own assembler (test/verification/brusselator_check_test.cpp), not against main.cpp's in-process --check: U's own reported exchange_out and V's own reported exchange_in, read from two SEPARATE logs the way u_main.c/v_main.f90 would really produce them, stop agreeing once U measures its own export at the wrong end of the step."
+file = "examples/brusselator/species_core.hpp"
+old = "    exchange_out_ += 0.5 * dt * (q_prev_.mean() + q_new.mean());"
+new = "    exchange_out_ += dt * q_prev_.mean();"
+target = "fuse_verification_brusselator_check_test"
+test = "verification.brusselator_check"
+# PROVED by hand (backup/restore via cmp, same protocol as every row in
+# this file): BrusselatorCheck.PassesOnARealShimDrivenRun, which passes
+# on the unmutated tree, failed with max_window_exchange_error=2.972e-05
+# against the 1e-9 threshold (max_window_balance_error and
+# global_balance_error stayed under their own thresholds -- this
+# mutation's own effect is isolated to the U/V exchange-agreement check,
+# exactly the diagnostic Q3's own "assembler" tool exists to catch,
+# consistent with the sibling row's own note that this bookkeeping does
+# not change U's simulated trajectory, only what it REPORTS exchanging).
+# Restored and verified byte-identical with `cmp` before the next row.
+
+[[mutation]]
 id = "brusselator-u-consumes-start-of-step-reaction"
 area = "examples/brusselator"
 describes = "The first version of this port: U's step consumed dt*q_prev (the start-of-step rate) while WindowCoupler delivered V the trapezoid 0.5*dt*(q_prev+q_new) of the same samples, so the two species exchanged different amounts of one reaction and the Toy's discrete budget identity held only to first order (1.686e-3 per window). Restoring it must fail the round-off budget thresholds."
