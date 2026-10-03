@@ -801,3 +801,192 @@ TEST(AbiParticipant, ImplicitCouplingConvergesLikeInProcess) {
 
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
+
+// Time windows track (Conformance, Unit 2): the FIRST test driving a
+// WINDOW-scoped member (fuse::CouplingWindowScope, not merely an ordinary
+// iteration region) through fuse_begin_step()/fuse_end_step() -- read
+// from src/abi/participant.cpp and src/runtime/iteration.cpp before
+// writing this: Runner::Impl::advance_window()'s own externally-driven
+// branch (its own "KNOWN_ISSUES.md D12" comment, right before the
+// `if (comp.is_externally_driven())` block) ALREADY computes
+// `cfg.required[e]` as the substep MEAN before suspending -- the exact
+// semantics docs/user/c-abi.md's own "What imports are current actually
+// means" section documents for a window member -- and ALREADY writes
+// `cfg.provided[e]` into the window's own K-wide export buffer on
+// resume, through the SAME `co_await detail::ExternalSuspend{}` protocol
+// `Runner::Impl::advance()` (runner.cpp) uses for an ordinary tick. The
+// mechanism was not missing; it was simply never driven by a test. This
+// one proves it, against the in-process fuse::Runner as the oracle, the
+// same technique ImplicitCouplingConvergesLikeInProcess above uses for
+// an ordinary region.
+TEST(AbiParticipant, ExternallyDrivenWindowMemberMatchesInProcessRunner) {
+  constexpr int kCells = 4;
+  constexpr int kMaxIterations = 60;  // ImplicitCouplingConvergesLikeInProcess's own figure
+
+  // --- Reference: fuse::Runner driven directly, bypassing the ABI. ---
+  const fuse::CouplingGraph g =
+      fuse::abi_test::build_implicit_window_coupling_graph(kCells, kMaxIterations);
+  fuse::SerialMeshBackend backend;
+  for (std::uint32_t i = 0; i < g.mesh_count(); ++i) {
+    ASSERT_TRUE(backend.load(g.mesh(fuse::MeshId{i})).ok());
+  }
+  const fuse::LoweringResult lowered = fuse::lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+  const fuse::ClockSet clocks{g};
+  const fuse::ScheduleResult sched =
+      fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+  ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
+
+  fuse::ComponentSet ref_components;
+  ref_components.add(std::make_unique<AffineComponent>(
+      "alpha", "a_out", "a_in", /*scale=*/-1.0, /*offset=*/10.0, kCells));
+  ref_components.add(std::make_unique<AffineComponent>(
+      "beta", "b_out", "b_in", /*scale=*/0.5, /*offset=*/0.0, kCells));
+  fuse::FieldRegistry ref_registry;
+  for (auto& comp : ref_components) {
+    ASSERT_TRUE(comp.register_fields(ref_registry, g).ok());
+  }
+  fuse::Runner ref_runner{g, lowered.dag, sched.plan, backend};
+  {
+    const fuse::Result<void> init_r = ref_runner.initialize(ref_components, ref_registry);
+    ASSERT_TRUE(init_r.ok()) << init_r.error().code << ": " << init_r.error().message;
+  }
+  ASSERT_TRUE(ref_runner.run_period(ref_components).ok());
+  ASSERT_EQ(ref_runner.iteration_stats().size(), 1u);
+  const int ref_iterations = ref_runner.iteration_stats()[0].iterations;
+  ASSERT_GT(ref_iterations, 0);
+  ASSERT_TRUE(ref_runner.iteration_stats()[0].converged)
+      << "reference run must converge within " << kMaxIterations
+      << " sweeps for this comparison to mean anything";
+
+  double ref_a_out[kCells], ref_a_in[kCells], ref_b_out[kCells], ref_b_in[kCells];
+  {
+    const auto a_f = g.find_component("alpha");
+    ASSERT_TRUE(a_f.has_value());
+    for (int i = 0; i < kCells; ++i) {
+      ref_a_out[i] = ref_registry.get(g.component(*a_f).fields[0]).value().at(
+          static_cast<std::size_t>(i));
+      ref_a_in[i] = ref_registry.get(g.component(*a_f).fields[1]).value().at(
+          static_cast<std::size_t>(i));
+    }
+    const auto b_f = g.find_component("beta");
+    ASSERT_TRUE(b_f.has_value());
+    for (int i = 0; i < kCells; ++i) {
+      ref_b_in[i] = ref_registry.get(g.component(*b_f).fields[0]).value().at(
+          static_cast<std::size_t>(i));
+      ref_b_out[i] = ref_registry.get(g.component(*b_f).fields[1]).value().at(
+          static_cast<std::size_t>(i));
+    }
+  }
+
+  // --- Same graph, driven entirely through the ABI, both members
+  // externally driven -- the Unit 2 shape (U and V both externally
+  // driven) in miniature. ---
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  const auto bytes =
+      fuse::abi_test::build_implicit_window_coupling_bytes(kCells, kMaxIterations);
+  fuse_ctx* ctx = CreateAndLoad(t, bytes);
+
+  double a_out[kCells] = {0, 0, 0, 0};
+  double a_in[kCells] = {0, 0, 0, 0};
+  double b_out[kCells] = {0, 0, 0, 0};
+  double b_in[kCells] = {0, 0, 0, 0};
+
+  auto register_one = [&](const char* component, const char* field, double* data) {
+    fuse_field_name fname{.struct_size = sizeof(fname)};
+    fname.component = component;
+    fname.field = field;
+    fuse_field_ref fref{.struct_size = sizeof(fref)};
+    ASSERT_EQ(t->field_handle(ctx, &fname, &fref), FUSE_OK);
+    fuse_field_view fview{.struct_size = sizeof(fview)};
+    fview.handle = fref.handle;
+    fview.element_type = FUSE_ELEMENT_F64;
+    fview.memspace = FUSE_MEMSPACE_HOST;
+    fview.ownership = FUSE_OWNERSHIP_OWNED;
+    fview.components = 1;
+    fview.count = kCells;
+    fview.owned_count = kCells;
+    fview.stride = 1;
+    fview.data = data;
+    ASSERT_EQ(t->register_field(ctx, &fview, nullptr), FUSE_OK);
+  };
+  register_one("alpha", "a_out", a_out);
+  register_one("alpha", "a_in", a_in);
+  register_one("beta", "b_out", b_out);
+  register_one("beta", "b_in", b_in);
+
+  ASSERT_EQ(t->initialize(ctx, nullptr, nullptr), FUSE_OK);
+
+  fuse_step_request a_req{.struct_size = sizeof(a_req)};
+  a_req.component = "alpha";
+  fuse_step_request b_req{.struct_size = sizeof(b_req)};
+  b_req.component = "beta";
+
+  for (int sweep = 0; sweep < ref_iterations; ++sweep) {
+    fuse_step_report a_rep{.struct_size = sizeof(a_rep)};
+    ASSERT_EQ(t->begin_step(ctx, &a_req, &a_rep), FUSE_OK) << "sweep " << sweep;
+    // advance_window()'s own per-window checkpoint (run_region()'s own
+    // "once per PASS" comment) coincides with the period boundary for
+    // this fixture's own single-instance-per-period window -- same
+    // timing as the ordinary region's own checkpoint_regions(), so the
+    // same requires_checkpoint/requires_restore pattern applies.
+    if (sweep == 0) {
+      EXPECT_EQ(a_rep.requires_checkpoint, 1) << "sweep " << sweep;
+      EXPECT_EQ(a_rep.requires_restore, 0) << "sweep " << sweep;
+    } else {
+      EXPECT_EQ(a_rep.requires_checkpoint, 0) << "sweep " << sweep;
+      EXPECT_EQ(a_rep.requires_restore, 1) << "sweep " << sweep;
+    }
+    EXPECT_EQ(a_rep.iteration, sweep) << "sweep " << sweep;
+    // The window's own [t_begin, t_end) for this single-substep,
+    // window_length=1 fixture is the whole window, [0, 1) -- proves
+    // advance_window()'s own `ctx.t_begin = sub.t0; ctx.t_end = sub.t1;`
+    // (set before the externally-driven suspend) reaches the ABI
+    // caller unchanged, exactly as the generic ctx-to-report mapping
+    // in fuse_begin_step() (src/abi/participant.cpp) promises for ANY
+    // advance() call site, window or ordinary.
+    EXPECT_EQ(a_rep.t_begin.numerator, 0) << "sweep " << sweep;
+    EXPECT_EQ(a_rep.t_begin.denominator, 1) << "sweep " << sweep;
+    EXPECT_EQ(a_rep.t_end.numerator, 1) << "sweep " << sweep;
+    EXPECT_EQ(a_rep.t_end.denominator, 1) << "sweep " << sweep;
+    for (int i = 0; i < kCells; ++i) a_out[i] = 10.0 - a_in[i];
+    ASSERT_EQ(t->end_step(ctx, &a_req, &a_rep), FUSE_OK) << "sweep " << sweep;
+
+    fuse_step_report b_rep{.struct_size = sizeof(b_rep)};
+    ASSERT_EQ(t->begin_step(ctx, &b_req, &b_rep), FUSE_OK) << "sweep " << sweep;
+    if (sweep == 0) {
+      EXPECT_EQ(b_rep.requires_checkpoint, 1) << "sweep " << sweep;
+      EXPECT_EQ(b_rep.requires_restore, 0) << "sweep " << sweep;
+    } else {
+      EXPECT_EQ(b_rep.requires_checkpoint, 0) << "sweep " << sweep;
+      EXPECT_EQ(b_rep.requires_restore, 1) << "sweep " << sweep;
+    }
+    for (int i = 0; i < kCells; ++i) b_out[i] = 0.5 * b_in[i];
+    {
+      const fuse_status rc = t->end_step(ctx, &b_req, &b_rep);
+      if (rc != FUSE_OK) {
+        fuse_error err{.struct_size = sizeof(err)};
+        char buf[512] = {0};
+        err.buffer = buf;
+        err.capacity = sizeof(buf);
+        t->last_error(ctx, nullptr, &err);
+        ASSERT_EQ(rc, FUSE_OK) << "sweep " << sweep << ": " << buf;
+      }
+    }
+  }
+
+  fuse_ongoing ongoing{.struct_size = sizeof(ongoing)};
+  ASSERT_EQ(t->is_coupling_ongoing(ctx, nullptr, &ongoing), FUSE_OK);
+  EXPECT_EQ(ongoing.period, 1)
+      << "exactly ref_iterations sweeps must complete the one period";
+
+  for (int i = 0; i < kCells; ++i) {
+    EXPECT_DOUBLE_EQ(a_out[i], ref_a_out[i]) << "a_out[" << i << "]";
+    EXPECT_DOUBLE_EQ(a_in[i], ref_a_in[i]) << "a_in[" << i << "]";
+    EXPECT_DOUBLE_EQ(b_out[i], ref_b_out[i]) << "b_out[" << i << "]";
+    EXPECT_DOUBLE_EQ(b_in[i], ref_b_in[i]) << "b_in[" << i << "]";
+  }
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}

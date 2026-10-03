@@ -635,3 +635,110 @@ TEST(WindowRunner, FixedPolicyStraddleWithRankMismatchIsRejected) {
   EXPECT_EQ(init.error().code, "E-RT-WINDOW-STRADDLE-REPUBLISH")
       << init.error().message;
 }
+
+// Time windows track (Conformance, Unit 2 start): does a window-scoped
+// channel's own Remap run correctly when ROUTED to a third placement
+// (fuse::ComponentKind::Coupler / RemapSpec::remap_on), the shape Unit 2
+// needs for U/V/Coupler on three separate rank sets -- never exercised
+// together anywhere in the existing suite BEFORE this test (grepped: no
+// runtime test combined window_scope with remap_on/add_coupler).
+// make_single_window_graph()'s own identity-remap closed form (30/19,
+// 44/19) is the oracle: if the coupler-routed remap reproduces the
+// identity transfer correctly (forced via an explicit Conservative flag,
+// layout_driver/main.cpp's own technique, since both ends already share
+// one mesh/region), the converged values must be unchanged from
+// SingleWindowRegionExecutesAndConverges above. PASSES: the mechanism
+// was not missing, only untested -- docs/dev/coupler-placement.md's own
+// enumerated call sites (R.participants, resolve_remap(), etc.) are
+// already window-agnostic, exactly as they are launch-mode-agnostic.
+TEST(WindowRunner, WindowChannelRemapRoutedToCouplerMatchesIdentityClosedForm) {
+  CouplingGraph g;
+  const auto m = g.add_mesh(MeshDecl{.name = "m", .source = "generated:line:1"});
+  const auto r = g.add_region(Region{.name = "r", .mesh = m, .dimension = 1});
+
+  const auto a = g.add_component(ComponentDecl{
+      .name = "A", .ranks = RankSet{0, 0}, .interval = Rational{1}});
+  const auto b = g.add_component(ComponentDecl{
+      .name = "B", .ranks = RankSet{0, 0}, .interval = Rational{1}});
+
+  const auto a_out = g.add_field(a, FieldSpec{.name = "a_out", .region = r,
+                                              .units = u::kKelvin,
+                                              .conservation = Conservation::Extensive,
+                                              .intent = Intent::Provides});
+  const auto b_in = g.add_field(b, FieldSpec{.name = "b_in", .region = r,
+                                             .units = u::kKelvin,
+                                             .conservation = Conservation::Extensive,
+                                             .intent = Intent::Requires});
+  const auto b_out = g.add_field(b, FieldSpec{.name = "b_out", .region = r,
+                                              .units = u::kKelvin,
+                                              .conservation = Conservation::Extensive,
+                                              .intent = Intent::Provides});
+  const auto a_in = g.add_field(a, FieldSpec{.name = "a_in", .region = r,
+                                             .units = u::kKelvin,
+                                             .conservation = Conservation::Extensive,
+                                             .intent = Intent::Requires});
+
+  const auto fwd = g.add_channel("a2b", a_out, b_in);
+  const auto back = g.add_channel("b2a", b_out, a_in);
+  g.channel(back).lag(1).allow_time_level_mismatch(
+      "resolved by the a-b coupling window's own sweep, not a real-time lag");
+
+  // layout_driver/main.cpp's own technique: same mesh/region on both ends,
+  // so nothing would otherwise emit a Remap at all -- Conservative asks
+  // for one unconditionally, forcing the coupler-routed path regardless.
+  const auto coupler = g.add_coupler(
+      fuse::CouplerDecl{.name = "coupler", .ranks = RankSet{0, 0}});
+  g.channel(fwd).remap(fuse::RemapFlags::Conservative).remap_on(coupler);
+
+  CouplingWindowScope scope;
+  scope.window_component = "A";
+  scope.order = 2;
+  scope.policies = {{"A", DtPolicy::Adjustable}, {"B", DtPolicy::Adjustable}};
+  scope.iteration = WaveformIteration::GaussSeidel;
+
+  IterationRegionDecl decl;
+  decl.name = "window";
+  decl.channels = {fwd, back};
+  decl.max_iterations = 50;
+  decl.convergence.add(
+      fuse::ConvergenceMeasure{fuse::MeasureKind::Absolute, 1e-12, "a_out"});
+  decl.convergence.add(
+      fuse::ConvergenceMeasure{fuse::MeasureKind::Absolute, 1e-12, "b_out"});
+  decl.window_scope = scope;
+  decl.acceleration.kind = fuse::AccelKind::None;
+  g.add_iteration_region(decl);
+
+  const auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+
+  fuse::SerialMeshBackend backend;
+  ASSERT_TRUE(backend.load(g.mesh(fuse::MeshId{0})).ok());
+  const fuse::ClockSet clocks{g};
+  const auto sched =
+      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+  ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
+
+  auto a_owned = std::make_unique<LinearBlock>("A", 1.0, 0.5);
+  auto b_owned = std::make_unique<LinearBlock>("B", 2.0, 0.4);
+  LinearBlock* lb_a = a_owned.get();
+  LinearBlock* lb_b = b_owned.get();
+  ComponentSet components;
+  components.add(std::move(a_owned));
+  components.add(std::move(b_owned));
+  FieldRegistry registry;
+  for (auto& c : components) ASSERT_TRUE(c.register_fields(registry, g).ok());
+
+  Runner runner{g, lowered.dag, sched.plan, backend};
+  const auto init = runner.initialize(components, registry);
+  ASSERT_TRUE(init.ok()) << init.error().message;
+
+  const auto ran = runner.run_period(components);
+  ASSERT_TRUE(ran.ok()) << ran.error().message;
+
+  ASSERT_EQ(runner.iteration_stats().size(), 1u);
+  const fuse::IterationStats& st = runner.iteration_stats().front();
+  EXPECT_TRUE(st.converged) << "did not converge in " << st.iterations
+                            << " sweeps";
+  EXPECT_NEAR(lb_a->out(), 30.0 / 19.0, 1e-9);
+  EXPECT_NEAR(lb_b->out(), 44.0 / 19.0, 1e-9);
+}
