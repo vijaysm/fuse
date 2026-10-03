@@ -258,3 +258,35 @@ test = "schedule.window_region_golden"
 # so schedule() refuses with E-SCHED-WINDOW-CAUSALITY well before the test
 # ever reaches its own golden-IR comparison or its "[WindowEnd-1, k]
 # appears twice" substring check). Verified by hand 2026-09-29.
+
+[[mutation]]
+id = "mark-regions-no-distinct-bound-on-multi-instance-window"
+area = "compiler"
+describes = "mark_regions() (src/schedule/scheduler.cpp) stops a same-owner run the moment every one of a region's member nodes has appeared once (`distinct == want`), rather than greedily consuming every following same-owner instruction -- its own comment: a window-scoped region's own window may tick several times per period, and without this bound a compiled period containing several back-to-back window passes (nothing else interleaved) would have the greedy scan swallow every later pass into the first run, reporting a bogus length mismatch even though each individual pass is well-formed."
+file = "src/schedule/scheduler.cpp"
+old = """    while (j < n && distinct < want &&
+          owner[instructions[j].origin_node.value()] == r) {"""
+new = """    while (j < n && true &&  // MUTATED: distinct<want bound removed, reproducing the pre-fix greedy-swallow bug
+          owner[instructions[j].origin_node.value()] == r) {"""
+target = "fuse_runtime_window_runner_multirate_test"
+test = "runtime.window_runner_multirate"
+# Expected kill: WindowRunnerMultirate.WindowRegionMixedWithOrdinaryComponentAcrossRepeatedPeriods
+# (Time windows track, Unit 1, Q2) -- the only fixture in this file, or in
+# window_runner_test.cpp/window_runner_straddle_test.cpp, that mixes a
+# multi-instance-per-period window region with a SEPARATE ordinary
+# (non-window) component's own tick in the SAME period: every other
+# window-scoped fixture either has exactly one window instance per
+# period, or has NOTHING else interleaved between consecutive instances,
+# so the greedy scan this bound prevents would swallow consecutive
+# window passes into one run regardless, happening to still total `want`
+# member nodes and pass undetected. MEASURED as a no-op against the 6
+# pre-existing tests of window_runner_multirate_test.cpp only; against
+# window_runner_test.cpp and window_runner_straddle_test.cpp it is
+# expected, not measured, to be a no-op (not run with the mutation
+# applied). Verified BY HAND 2026-10-03 (see this delegation's report to
+# the lead): with the bound removed, schedule() itself fails with
+# E-SCHED-REGION ("has 8 member nodes, but instructions 0..23 ... form a
+# run of 24 covering 8 of them") on this fixture specifically, while
+# every OTHER test in this file still passes unaffected. Reverting the
+# one-line fix and re-running makes it pass again; file restored and
+# re-verified byte-identical afterward (all 7 tests in this binary pass).
