@@ -94,16 +94,34 @@ struct WindowGraphHandles {
 /// graph that merely resembles one. `std::nullopt` (the default)
 /// reproduces every existing caller's own graph exactly -- no coupler
 /// component, no Remap, untouched.
+///
+/// `u_ranks`/`v_ranks`/`u_launch`/`v_launch`/`coupler_launch`: also
+/// Conformance Unit 2's own addition, for `examples/brusselator/
+/// participants/brusselator_graph_tool` -- the in-process callers above
+/// (the tier-0 harness, `main.cpp`) never pass them, so their default
+/// (`RankSet{0, 1}`, `LaunchSpec{}` i.e. `LaunchMode::InProcess`)
+/// reproduces exactly what this function declared before these
+/// parameters existed. A `CouplerDecl` built through `g.add_coupler()`
+/// cannot itself carry a `LaunchSpec` (`fuse::CouplerDecl` has no such
+/// field -- `component.hpp`'s own comment on it), so a non-default
+/// `coupler_launch` is applied by constructing the coupler's
+/// `ComponentDecl` directly with `kind = ComponentKind::Coupler`
+/// (exactly what `add_coupler()` does internally; there is no separate
+/// coupler array for `g.add_component()` to treat differently).
 [[nodiscard]] inline WindowGraphHandles add_window_coupling(
     fuse::CouplingGraph& g, fuse::RegionId u_region, fuse::Rational dt_u,
     fuse::Rational dt_v, fuse::Rational window, double tolerance,
     int max_iterations, fuse::AccelKind accel,
     fuse::WaveformIteration iteration_mode = fuse::WaveformIteration::Jacobi,
-    std::optional<fuse::RankSet> coupler_ranks = std::nullopt) {
+    std::optional<fuse::RankSet> coupler_ranks = std::nullopt,
+    fuse::RankSet u_ranks = fuse::RankSet{0, 1},
+    fuse::RankSet v_ranks = fuse::RankSet{0, 1},
+    fuse::LaunchSpec u_launch = {}, fuse::LaunchSpec v_launch = {},
+    fuse::LaunchSpec coupler_launch = {}) {
   using fuse::ComponentDecl;
+  using fuse::ComponentKind;
   using fuse::Conservation;
   using fuse::ConvergenceMeasure;
-  using fuse::CouplerDecl;
   using fuse::CouplingWindowScope;
   using fuse::DtPolicy;
   using fuse::FieldSpec;
@@ -115,9 +133,9 @@ struct WindowGraphHandles {
   using fuse::WindowMemberPolicy;
 
   const fuse::ComponentId u = g.add_component(
-      ComponentDecl{.name = "U", .ranks = RankSet{0, 1}, .interval = dt_u});
+      ComponentDecl{.name = "U", .ranks = u_ranks, .interval = dt_u, .launch = u_launch});
   const fuse::ComponentId v = g.add_component(
-      ComponentDecl{.name = "V", .ranks = RankSet{0, 1}, .interval = dt_v});
+      ComponentDecl{.name = "V", .ranks = v_ranks, .interval = dt_v, .launch = v_launch});
 
   const fuse::FieldId u_out = g.add_field(
       u, FieldSpec{.name = "u_out",
@@ -153,7 +171,14 @@ struct WindowGraphHandles {
 
   fuse::ComponentId coupler{};
   if (coupler_ranks.has_value()) {
-    coupler = g.add_coupler(CouplerDecl{.name = "coupler", .ranks = *coupler_ranks});
+    // `g.add_coupler(CouplerDecl{...})` cannot carry a LaunchSpec (this
+    // function's own header comment on `coupler_launch`), so build the
+    // same ComponentDecl `add_coupler()` would, by hand, with `launch`
+    // set.
+    coupler = g.add_component(ComponentDecl{.name = "coupler",
+                                             .ranks = *coupler_ranks,
+                                             .kind = ComponentKind::Coupler,
+                                             .launch = coupler_launch});
     g.channel(ch_u2v).remap(RemapFlags::Conservative).remap_on(coupler);
     g.channel(ch_v2u).remap(RemapFlags::Conservative).remap_on(coupler);
   }
