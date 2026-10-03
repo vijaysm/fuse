@@ -717,26 +717,35 @@ fuse_status impl_is_coupling_ongoing(fuse_ctx* ctx, const fuse_null*,
     } else {
       out->ongoing = (now < c.end_time) ? 1 : 0;
     }
-    // Defect 3 (entries.def's comment on this field). This function must
-    // stay side-effect-free -- it always has been, and a caller is free to
-    // call it as many times as it likes between steps. Resolving a REAL
-    // answer would mean calling prime_next_request(), which calls
-    // runner->resume_period(): a genuine side effect that actually
-    // executes ordinary instructions, not a cache lookup. Running that
-    // from here is actively unsafe, not just impure: this entry point has
-    // no way to know whether the CURRENT period has already closed (ask
-    // again later is the only correct answer at that point), and calling
-    // resume_period() past a closed period starts advancing a period
-    // nobody asked for, using whatever the registry currently holds as
-    // its input -- exactly the corruption an earlier version of this fix
-    // produced against AbiParticipant.ExternallyDrivenWindowMemberMatchesInProcessRunner
-    // (fuse_is_coupling_ongoing() called once after the test's one
-    // period had already fully run, which re-entered resume_period() and
-    // silently re-ran part of the window's iteration on top of its own
-    // converged output). So: report only what is ALREADY cached, for
-    // free, from a prior fuse_begin_step()/fuse_end_step() this period;
-    // otherwise -2 ("undetermined without stepping"), the same sentinel
-    // fuse_begin_step() reports for the same underlying reason.
+    // Defect 3, refined (entries.def's comment on this field). This
+    // function must stay side-effect-free -- it always has been, and a
+    // caller is free to call it as many times as it likes between steps.
+    // Resolving a MID-PERIOD answer would mean calling
+    // prime_next_request(), which calls runner->resume_period(): a
+    // genuine side effect that actually executes ordinary instructions,
+    // not a cache lookup -- unsafe here for exactly the reason an
+    // earlier version of this fix demonstrated by corrupting
+    // AbiParticipant.ExternallyDrivenWindowMemberMatchesInProcessRunner
+    // (fuse_is_coupling_ongoing() called once after a period had already
+    // fully run, which re-entered resume_period() and silently re-ran
+    // part of the window's iteration on top of its own converged
+    // output). BUT a period's own START is not a mid-period question at
+    // all: the compiled instruction stream is static once schedule() has
+    // built it, and the first externally driven component of a period is
+    // the SAME one every period (the schedule's own common-period
+    // invariant) -- knowable from the plan alone, for free, no
+    // resumption required. So: if something is already cached from a
+    // prior fuse_begin_step()/fuse_end_step() THIS period, report that
+    // (free, as before); otherwise -- nothing cached means exactly "a
+    // period is about to start, whichever one" -- read the answer
+    // straight off Runner::components_due_at_period_start() (a pure,
+    // non-resuming query over the plan) and report the first entry that
+    // is NOT in_process, i.e. the first one this process's own caller
+    // could possibly be asked to step. -2 ("undetermined without
+    // stepping") is no longer reachable from here at all; it stays
+    // fuse_begin_step()'s own answer for the genuinely mid-period case
+    // (this component's own advance() has not run yet, so even the
+    // compiled plan cannot say what comes right after it).
     if (struct_size_covers(declared_out_size,
                            offsetof(fuse_ongoing, next_component) +
                                sizeof(out->next_component))) {
@@ -747,7 +756,22 @@ fuse_status impl_is_coupling_ongoing(fuse_ctx* ctx, const fuse_null*,
         out->next_component =
             cid.has_value() ? static_cast<std::int32_t>(cid->value()) : -1;
       } else {
-        out->next_component = -2;
+        out->next_component = -1;
+        for (const fuse::ComponentId cid :
+             c.runner->components_due_at_period_start()) {
+          if (cid.value() < c.ext.size() && !c.ext[cid.value()].in_process) {
+            out->next_component = static_cast<std::int32_t>(cid.value());
+            break;
+          }
+        }
+        // Unreachable for a well-formed graph with external_count > 0:
+        // every externally driven component has a substep at period-time
+        // 0 (either an ordinary Tick{k=0,...} or a window member's first
+        // instance's own first substep), so the loop above always finds
+        // one and the -1 default is never actually used here. Left as
+        // the safe fallback rather than an assert, matching this
+        // function's own "fail gracefully, never a new hard-failure
+        // mode" convention elsewhere in this file.
       }
     }
     return FUSE_OK;

@@ -103,21 +103,27 @@ fixed order that is right for every Picard sweep, and guessing wrong just to lea
 from `E-ABI-STEP-ORDER`'s own error message does not scale past the first mistake. `fuse_ongoing`
 and `fuse_step_report` both carry a `next_component` member for exactly this: the graph-declared
 component index FUSE's own compiled instruction stream expects at THIS process's own next
-`begin_step()`, or `-1` when nothing is due (a graph with no externally-driven component at all,
-for `fuse_is_coupling_ongoing()`'s own copy of the field). `fuse_end_step()` resolves a real answer
-for free — it already resumes the instruction stream internally to find out what comes next, so
-reading `next_component` off its own report costs nothing extra. `fuse_begin_step()` cannot resolve
-it synchronously (this component's own step has not run yet, so the stream has not been asked to
-look past it) and reports `-2` ("undetermined — call `fuse_end_step()` first"); the same sentinel
-appears in `fuse_ongoing::next_component` whenever nothing has been resolved and cached yet by a
-prior step this period (`fuse_is_coupling_ongoing()` never resumes the stream itself to find out —
-it stays exactly as side-effect-free as it always was). A caller driving several externally-driven
-window members therefore only ever guesses once, at the very first step of each period (broken by
-the graph's own declaration order, the same tie-break the schedule itself uses); every step after
-that reads `next_component` off the previous `end_step()`'s own report and never calls
-`begin_step()` out of turn again. `next_component` was appended after `fuse_step_report`/
-`fuse_ongoing` first shipped (see "Version compatibility" below): an older build that only
-allocated the pre-growth struct never has this member written into its memory at all, and keeps
+`begin_step()`. A caller never has to guess, not even for the very first step of a period:
+
+- **At a period's own start** (nothing resolved yet this period), `fuse_is_coupling_ongoing()`
+  answers straight from the compiled plan — the first externally driven component of a period is
+  a fixed property of the schedule, the same every period, with no need to resume the instruction
+  stream to find out. `-1` means a graph with no externally-driven component at all (`fuse_run()`
+  drives those).
+- **Mid-period**, after at least one step, `fuse_end_step()` resolves the real answer for free —
+  it already resumes the instruction stream internally to find out what comes next, so reading
+  `next_component` off its own report costs nothing extra.
+- **`fuse_begin_step()`** alone cannot resolve it synchronously (this component's own step has not
+  run yet, so the stream has not been asked to look past it) and reports `-2` ("undetermined —
+  call `fuse_end_step()` first"); this is the ONLY place `-2` appears — `fuse_is_coupling_ongoing()`
+  always has a real answer, from the plan or from a prior step's own cache.
+
+A caller driving several externally-driven window members therefore never guesses: query
+`fuse_is_coupling_ongoing()` once at the start of each period, then read `next_component` off
+each `end_step()`'s own report for every step after that. `next_component` was appended after
+`fuse_step_report`/`fuse_ongoing` first shipped (see "Version compatibility" below): an older
+build that only allocated the pre-growth struct never has this member written into its memory at
+all, and keeps
 working exactly as it did before this field existed.
 
 ## Time is exact across the boundary too

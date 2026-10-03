@@ -1089,3 +1089,84 @@ TEST(AbiParticipant, OldCallerStructSizeNeverTouchesNextComponent) {
 
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
+
+// AbiParticipant.IsCouplingOngoingReportsThePlanFirstComponentNotTheFirst
+// DeclaredOne (Defect 3's own refinement). "alpha" is declared FIRST
+// (ComponentId 0) and "beta" SECOND (ComponentId 1), same as every other
+// test built on build_implicit_window_coupling_graph() -- but this
+// fixture's own `reorder_channels_so_beta_is_first_in_plan_order` flag
+// swaps the window region's own `decl.channels` list, so beta's
+// WindowAdvance node is created FIRST during lowering despite being
+// declared second (members_in_first_seen_order(), src/ir/
+// window_lowering.cpp, walks `decl.channels` in order, not declaration
+// order -- see that fixture's own comment for the full mechanism). If
+// fuse_is_coupling_ongoing() answered from declaration order (the bug
+// this test exists to catch), it would report alpha (0); reading the
+// compiled plan instead reports beta (1).
+TEST(AbiParticipant, IsCouplingOngoingReportsThePlanFirstComponentNotTheFirstDeclaredOne) {
+  constexpr int kCells = 4;
+  constexpr int kMaxIterations = 60;
+
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  const auto bytes = fuse::abi_test::build_implicit_window_coupling_bytes(
+      kCells, kMaxIterations, fuse::DtPolicy::Adjustable, fuse::DtPolicy::Adjustable,
+      /*reorder_channels_so_beta_is_first_in_plan_order=*/true);
+  fuse_ctx* ctx = CreateAndLoad(t, bytes);
+
+  double a_out[kCells] = {0, 0, 0, 0};
+  double a_in[kCells] = {0, 0, 0, 0};
+  double b_out[kCells] = {0, 0, 0, 0};
+  double b_in[kCells] = {0, 0, 0, 0};
+  auto register_one = [&](const char* component, const char* field, double* data) {
+    fuse_field_name fname{.struct_size = sizeof(fname)};
+    fname.component = component;
+    fname.field = field;
+    fuse_field_ref fref{.struct_size = sizeof(fref)};
+    ASSERT_EQ(t->field_handle(ctx, &fname, &fref), FUSE_OK);
+    fuse_field_view fview{.struct_size = sizeof(fview)};
+    fview.handle = fref.handle;
+    fview.element_type = FUSE_ELEMENT_F64;
+    fview.memspace = FUSE_MEMSPACE_HOST;
+    fview.ownership = FUSE_OWNERSHIP_OWNED;
+    fview.components = 1;
+    fview.count = kCells;
+    fview.owned_count = kCells;
+    fview.stride = 1;
+    fview.data = data;
+    ASSERT_EQ(t->register_field(ctx, &fview, nullptr), FUSE_OK);
+  };
+  register_one("alpha", "a_out", a_out);
+  register_one("alpha", "a_in", a_in);
+  register_one("beta", "b_out", b_out);
+  register_one("beta", "b_in", b_in);
+
+  ASSERT_EQ(t->initialize(ctx, nullptr, nullptr), FUSE_OK);
+
+  // Nothing has been stepped yet -- this is exactly the period-start
+  // case Runner::components_due_at_period_start() exists for.
+  fuse_ongoing ongoing{.struct_size = sizeof(ongoing)};
+  ASSERT_EQ(t->is_coupling_ongoing(ctx, nullptr, &ongoing), FUSE_OK);
+
+  // fuse_ctx is opaque here (test_support.hpp only forward-declares it);
+  // build the identical graph object again, the same way the reference
+  // side of every other test in this file does, purely to read off
+  // alpha's/beta's own ComponentId values.
+  const fuse::CouplingGraph g = fuse::abi_test::build_implicit_window_coupling_graph(
+      kCells, kMaxIterations, fuse::DtPolicy::Adjustable, fuse::DtPolicy::Adjustable,
+      /*reorder_channels_so_beta_is_first_in_plan_order=*/true);
+  const auto alpha_id = g.find_component("alpha");
+  const auto beta_id = g.find_component("beta");
+  ASSERT_TRUE(alpha_id.has_value());
+  ASSERT_TRUE(beta_id.has_value());
+  ASSERT_EQ(alpha_id->value(), 0u) << "alpha must be declared first for this test to mean anything";
+  ASSERT_EQ(beta_id->value(), 1u) << "beta must be declared second for this test to mean anything";
+
+  EXPECT_EQ(ongoing.next_component, static_cast<std::int32_t>(beta_id->value()))
+      << "fuse_is_coupling_ongoing() must report the PLAN's own first externally "
+         "driven component (beta, declared SECOND but first in plan order via "
+         "this fixture's reordered decl.channels), not declaration order "
+         "(which would wrongly report alpha, ComponentId 0)";
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
