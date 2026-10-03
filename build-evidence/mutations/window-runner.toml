@@ -323,3 +323,28 @@ test = "runtime.window_runner_multirate"
 # Runner and is therefore a confirmed NO-OP against this mutation -- do
 # not use any of them as this row's `target`/`test`. File restored and
 # re-verified byte-identical afterward (all 6 tests in this binary pass).
+
+[[mutation]]
+id = "window-runner-named-measure-includes-window-start-sample"
+area = "runtime/iteration (run_region, per-block residual)"
+describes = "run_region()'s own per-block, named-measure residual norm summed the window-scoped value arc's FULL window_export_capacity-wide buffer -- window-START sample included -- instead of stripping it first (RegionBlock::window_export_capacity/window_export_valid_substeps, resolve_regions()'s own window_export_meta). The driver's own named-measure residual (WindowCoupler::sweep_window()'s own comment) sums EXACTLY the consumer's own substep count, never +1 for the window-start sample, which never changes within one window instance and so only inflates the REFERENCE norm, never the residual -- loosening a MeasureKind::Relative tolerance just enough to converge one sweep earlier than the driver on the Brusselator's own window 20."
+file = "src/runtime/iteration.cpp"
+old = """      if (b.window_export_capacity > 0) {
+        const std::size_t capacity = b.window_export_capacity;"""
+new = """      if (false) {  // MUTATED: never strips the window-start sample, reproducing defect (d)
+        const std::size_t capacity = b.window_export_capacity;"""
+target = "fuse_verification_brusselator_runner_test"
+test = "verification.brusselator_runner"
+# Expected kill: BrusselatorRunner.JacobiMatchesDriver and
+# BrusselatorRunner.GaussSeidelMatchesDriver -- the only two tests in this
+# binary that run the REAL stopping rule (not the fixed-iterations
+# bisection PerWindowStateMatchesDriverWithStoppingRuleRemoved relies on,
+# which is a confirmed NO-OP against this mutation: with the stopping
+# rule never consulted, inflating the reference norm changes nothing).
+# Verified BY HAND 2026-10-03 (see this delegation's report to the lead):
+# with the mutation applied, both tests FAIL -- EXPECT_EQ on
+# iterations_per_window[w] (brusselator_runner_test.cpp:363) first
+# disagrees at window 20, exactly where this defect was originally
+# measured. Reverting the one-line fix and re-running makes both tests
+# pass again, bit-for-bit, across the full 150-window span. File restored
+# and re-verified byte-identical afterward.

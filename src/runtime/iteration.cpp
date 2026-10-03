@@ -263,6 +263,61 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
     // later pass's own WindowAdvance instructions carry the SAME
     // `origin_node`, per `finish_window_regions()`'s "at most one such
     // node per member per region" (src/ir/window_lowering.cpp).
+    //
+    // Keyed by a window member's own EXPORT arc id (`ins.out.value()`).
+    // A channel's residual block's own `value_arc` (resolve_regions()'s
+    // own residual-blocks loop, below) is NOT necessarily this id
+    // directly: the lookup there walks back through any interposed
+    // single-input, size-preserving node first (the Brusselator's own
+    // graph puts exactly one `OpKind::Interpolate` resample between the
+    // two, measured 2026-10-03 -- a shape-PRESERVING resample for an
+    // identity transfer with no real fuse::Remap, brusselator_graph.
+    // hpp's own "WHY BOTH TRANSFER FIELDS LIVE ON u_region" comment, not
+    // a no-op alias, so the two arc ids genuinely differ).
+    //
+    // Value: {capacity, valid_substeps} -- `capacity` is this member's
+    // own `WindowMemberConfig::capacity` (the per-element stride the
+    // raw arc is laid out with: sample 0 is the window-START value,
+    // samples 1..capacity-1 are the per-substep END values written by
+    // `advance_window()`); `valid_substeps` is the POLICY-INDEPENDENT
+    // count of real substep-end samples -- `window_sample_capacity
+    // (window_length, interval, DtPolicy::Adjustable) - 1`, i.e.
+    // `ceil(window_length / interval)` -- never `capacity - 1` directly,
+    // since a `DtPolicy::Fixed` member's own `capacity` reserves one
+    // MORE slot than it actually fills on a non-straddling window
+    // instance (`window_sample_capacity()`'s own doc comment,
+    // fuse/model/coupling_graph.hpp).
+    //
+    // The per-block residual computation below (this function's own
+    // sweep-loop counterpart in `run_region()`) consults this to strip
+    // the window-start sample before norming, matching the driver's own
+    // named-measure residual (`WindowCoupler::sweep_window()`'s own
+    // comment: "ONLY that channel's CONSUMER's own flat slice", sized
+    // to EXACTLY `steps[consumer].size()`, never +1). MEASURED,
+    // 2026-10-03 (this delegation's own report), against the
+    // Brusselator's own window 20, sweep k=1 -- pairing each side's own
+    // measure by its NUMERIC VALUE, not by channel label, since the two
+    // sides name the same pair of quantities in SWAPPED order (the
+    // Runner's own block for channel `u2v` holds U's own export, the
+    // SAME quantity the driver's own "v_out"-named measure reads via
+    // channel `v2u`'s consumer being U -- `WindowCoupler::sweep_window
+    // ()`'s own "each measure is tested against the residual of the
+    // field transfer it names, as the Runner does" comment describes
+    // the FORMULA, not this index correspondence): before this fix, the
+    // Runner's own u2v block (element length 256, capacity 11) summed
+    // 2816 entries against the driver's own paired measure's 2560
+    // (element length 256, 10 substeps) -- 256 too many, i.e. exactly
+    // one extra entry per element, the window-start sample; the two
+    // sides' own `ref` hexfloats disagreed from the third significant
+    // hex digit on (`0x1.6be7e489b2a8cp+5` vs `0x1.5b510b3c3ad89p+5`).
+    // After this fix, stripping that one entry, the two sides' own
+    // `res`/`ref` are bit-for-bit identical at every sweep k>=1 of
+    // window 20, and `BrusselatorRunner.{Jacobi,GaussSeidel}
+    // MatchesDriver` (test/verification/brusselator_runner_test.cpp)
+    // pass EXPECT_EQ over the full 150-window span with the real
+    // stopping rule, both waveform iterations.
+    std::unordered_map<std::uint32_t, std::pair<std::size_t, std::size_t>>
+        window_export_meta;
     if (R.window_scoped) {
       const CouplingWindowScope& scope = *decl.window_scope;
       const Result<Rational> wlen = window_length(graph, scope);
@@ -502,6 +557,20 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
 
         window_member_config[node] = cfg;
         R.window_member_nodes.push_back(NodeId{node});
+
+        // This member's own export arc -- window_export_meta's own
+        // top comment -- regardless of whether cfg.provided is null
+        // (a consumer-only member exports nothing, so ins.out for its
+        // own WindowAdvance instruction is never a channel's
+        // value_arc and this entry is simply never looked up).
+        if (ins.out.valid()) {
+          const std::size_t valid_substeps =
+              window_sample_capacity(cfg.window_length, cfg.interval,
+                                     DtPolicy::Adjustable) -
+              1;
+          window_export_meta[ins.out.value()] = {cfg.capacity,
+                                                  valid_substeps};
+        }
       }
 
       // The D7 envelope (KNOWN_ISSUES.md; WindowCoupler::create()'s own
@@ -656,6 +725,51 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
                                         "' measures an arc with no buffer"};
       }
       b.length = slots[b.value_arc].total();
+
+      // window_export_meta's own top comment, above: resolve whether
+      // this channel's value arc is a window member's own export, and
+      // if so, this block's own residual computation (run_region())
+      // strips the window-start sample before norming.
+      //
+      // `b.value_arc` itself is the Residual node's own input, NOT
+      // necessarily the WindowAdvance instruction's own raw `ins.out`
+      // directly: measured, 2026-10-03 (this delegation's own report),
+      // the Brusselator's own graph interposes one `OpKind::Interpolate`
+      // node (a SHAPE-PRESERVING resample of the window waveform, same
+      // `length*capacity` total() in as out, for an identity transfer
+      // with no real fuse::Remap -- brusselator_graph.hpp's own "WHY
+      // BOTH TRANSFER FIELDS LIVE ON u_region" comment) between the raw
+      // export and the Residual's own input. Walk back through a
+      // bounded chain of such single-input, size-preserving nodes
+      // (never more than `kMaxHops`, so a graph shape this was never
+      // measured against fails CLOSED -- `b.window_export_capacity`
+      // stays 0, this block's own residual reverts to the unstripped,
+      // pre-this-fix computation, rather than silently matching the
+      // wrong arc) until `window_export_meta` resolves or the chain
+      // runs out.
+      {
+        constexpr int kMaxHops = 4;
+        std::uint32_t probe = b.value_arc;
+        for (int hop = 0; hop <= kMaxHops; ++hop) {
+          const auto found = window_export_meta.find(probe);
+          if (found != window_export_meta.end()) {
+            b.window_export_capacity = found->second.first;
+            b.window_export_valid_substeps = found->second.second;
+            break;
+          }
+          if (probe >= slots.size()) break;
+          const NodeId probe_prod = dag.arc(ArcId{probe}).producer;
+          if (!probe_prod.valid()) break;
+          const auto& pn = dag.node(probe_prod);
+          if (pn.inputs.size() != 1) break;
+          const std::uint32_t next = pn.inputs.front().value();
+          if (next >= slots.size() ||
+              slots[next].total() != slots[probe].total()) {
+            break;
+          }
+          probe = next;
+        }
+      }
 
       // The delivery. Without a Sink the accelerated iterate never reaches a
       // component, so every sweep would re-advance from identical inputs and
@@ -1080,6 +1194,14 @@ Result<void> Runner::Impl::checkpoint_regions(ComponentSet& components) {
 detail::Task<Result<void>> Runner::Impl::run_region(
     ComponentSet& components, detail::RegionRuntime& R, std::size_t enter,
     std::size_t exit) {
+  // Re-used, per-sweep scratch for the per-block residual computation
+  // below: a window-scoped block's own stripped (window-start sample
+  // excluded) copy of x_new_block/x_old_block, built fresh every sweep
+  // from whichever block in R.blocks is currently widest (RegionBlock::
+  // window_export_capacity's own top comment, runner_impl.hpp).
+  // std::vector::resize() is a no-op once big enough, so this never
+  // reallocates past the first sweep that needs it.
+  std::vector<double> window_residual_new, window_residual_old;
   IterationStats& st = region_stats[R.index];
   st.iterations = 0;
   st.converged = false;
@@ -1206,13 +1328,58 @@ detail::Task<Result<void>> Runner::Impl::run_region(
                                num::SpanOf<HostExecSpace>(x_new_block,
                                                           b.length));
 
-      const std::size_t n_chunks = num::deterministic_chunks(b.length);
+      // Time windows track: a window-scoped value arc carries one
+      // window-START sample (index 0 of every element's own
+      // `window_export_capacity`-wide stride) ahead of its real
+      // substep-end samples -- RegionBlock::window_export_capacity's
+      // own top comment (runner_impl.hpp). That sample never changes
+      // within one window instance (Runner::Impl::window_start_value's
+      // own fix), so it never contributes to the RESIDUAL, but DOES
+      // inflate the VALUE norm by a constant every sweep -- loosening
+      // a `MeasureKind::Relative` tolerance and able to flip the
+      // convergence decision onto a different sweep than the driver's
+      // own named-measure residual, which is sized to EXACTLY the
+      // member's own substep count and never includes it
+      // (`WindowCoupler::sweep_window()`'s own comment). Measured,
+      // 2026-10-03 (this delegation's own report): the Brusselator's
+      // own window 20. Gathered into scratch, in the SAME element-
+      // major order the driver's own flat vector uses, so the two
+      // sides norm the identical set of entries -- never touching
+      // `x_new_block`/`x_old_block` (== `R.x_new`/`R.x_old`)
+      // themselves, which the accelerator and the rollback-
+      // verification byte-capture both read over the FULL arc and
+      // must keep seeing exactly what `advance_window()` wrote.
+      std::size_t norm_length = b.length;
+      const double* new_ptr = x_new_block;
+      const double* old_ptr = x_old_block;
+      if (b.window_export_capacity > 0) {
+        const std::size_t capacity = b.window_export_capacity;
+        const std::size_t n_sub = b.window_export_valid_substeps;
+        const std::size_t elem_len = b.length / capacity;
+        norm_length = elem_len * n_sub;
+        window_residual_new.resize(norm_length);
+        window_residual_old.resize(norm_length);
+        for (std::size_t e = 0; e < elem_len; ++e) {
+          std::copy(x_new_block + e * capacity + 1,
+                    x_new_block + e * capacity + 1 + n_sub,
+                    window_residual_new.begin() +
+                        static_cast<std::ptrdiff_t>(e * n_sub));
+          std::copy(x_old_block + e * capacity + 1,
+                    x_old_block + e * capacity + 1 + n_sub,
+                    window_residual_old.begin() +
+                        static_cast<std::ptrdiff_t>(e * n_sub));
+        }
+        new_ptr = window_residual_new.data();
+        old_ptr = window_residual_old.data();
+      }
+
+      const std::size_t n_chunks = num::deterministic_chunks(norm_length);
       num::SpanOf<HostExecSpace> scratch(reduction_scratch.data(), n_chunks);
       const double vs = num::deterministic_norm_squared<HostExecSpace>(
-          num::ConstSpanOf<HostExecSpace>(x_new_block, b.length), scratch);
+          num::ConstSpanOf<HostExecSpace>(new_ptr, norm_length), scratch);
       const double rs = num::deterministic_norm_squared_diff<HostExecSpace>(
-          num::ConstSpanOf<HostExecSpace>(x_new_block, b.length),
-          num::ConstSpanOf<HostExecSpace>(x_old_block, b.length), scratch);
+          num::ConstSpanOf<HostExecSpace>(new_ptr, norm_length),
+          num::ConstSpanOf<HostExecSpace>(old_ptr, norm_length), scratch);
       R.block_residual[bi] = std::sqrt(rs);
       R.block_value[bi] = std::sqrt(vs);
     }

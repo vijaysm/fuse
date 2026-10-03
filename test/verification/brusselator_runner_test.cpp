@@ -9,8 +9,8 @@
 // every advance().
 //
 // STATUS (Unit 1 exit, see the lead's own ledger): building this test
-// found and this session FIXED THREE real `fuse::Runner` defects, every
-// one regression-tested against the full existing window_runner_* suite
+// found and FIXED FOUR real `fuse::Runner` defects, every one
+// regression-tested against the full existing window_runner_* suite
 // (unaffected) --
 //   (a) `Runner::Impl::advance_window()`'s own "first sweep of a new
 //       window instance" detection compared `Instruction::dst_step`
@@ -54,6 +54,33 @@
 //       KNOWN_ISSUES) already named and fixed once, on the driver side,
 //       for the identical reason. After the fix: 1.703e-13 (round-off),
 //       bit-for-bit identical to the driver's own figure.
+//   (d) `run_region()`'s own per-block, named-measure residual norm
+//       (`MeasureKind::Relative`, the only kind the Brusselator's own
+//       graph uses) summed the window-scoped value arc's FULL
+//       `capacity`-wide buffer -- window-START sample included -- while
+//       `WindowCoupler::sweep_window()`'s own named-measure residual
+//       (its own comment: "each measure is tested against the residual
+//       of the field transfer it names, as the Runner does") sums
+//       EXACTLY the consumer's own substep count, never +1 for the
+//       window-start sample. That sample never changes within one
+//       window instance (fix (c)'s own `window_start_value`), so it
+//       never moved the RESIDUAL, but inflated the Runner's own
+//       reference norm by a constant every sweep, loosening a Relative
+//       tolerance just enough to converge one sweep earlier than the
+//       driver on the example's own window 20 -- the two sides'
+//       hexfloat `ref` values disagreeing from the third significant
+//       digit (`0x1.6be7e489b2a8cp+5` vs `0x1.5b510b3c3ad89p+5` at
+//       sweep k=1), confirmed NOT a repeat of (c) by the fixed-
+//       iterations bisection below (`PerWindowStateMatchesDriverWith
+//       StoppingRuleRemoved`): every one of the 150 windows' own
+//       committed state matched bit for bit with the stopping rule
+//       removed, so only the DECISION, never the state, disagreed.
+//       `RegionBlock::window_export_capacity`/`window_export_valid_
+//       substeps` (src/runtime/runner_impl.hpp) and the stripped-
+//       gather norm in `run_region()` (src/runtime/iteration.cpp) are
+//       the fix. After it, `JacobiMatchesDriver`/`GaussSeidelMatches
+//       Driver` below pass EXPECT_EQ bit for bit over the full
+//       150-window span, both waveform iterations.
 //
 // Grid: small (mutually non-nested, not a divisor/multiple of one
 // another, so the supermesh remap genuinely overlaps cells) -- this
@@ -375,20 +402,23 @@ TEST(BrusselatorRunner, DISABLED_DiagnosticFixedIterations) {
   expect_vectors_equal(via_runner.v_final, via_driver.v_final, "V state (fixed-iterations)");
 }
 
-// Isolates the OPEN finding above (JacobiMatchesDriver/GaussSeidelMatchesDriver's
-// own one-ULP divergence from window 20 on) from defect (c): the SAME
-// 150-window comparison, with the stopping rule taken out of the picture
-// entirely (window_runner_straddle_test.cpp's own "unreachable tolerance,
-// fixed sweep count" technique -- this file's own DISABLED_
-// DiagnosticFixedIterations used it for defect (c)). PASSES: every one of
-// the 150 windows' own committed U[0] is bit-for-bit identical between the
-// Runner and the driver when neither side's own convergence check is ever
-// consulted -- conclusive evidence that the open finding is a convergence-
-// DECISION sensitivity (a last-ULP difference in the two sides' own
-// residual-norm computations occasionally crossing the 1e-10 threshold on
+// Isolated defect (d) above (JacobiMatchesDriver/GaussSeidelMatchesDriver's
+// own one-sweep convergence-decision divergence from window 20 on, before
+// that fix) from defect (c): the SAME 150-window comparison, with the
+// stopping rule taken out of the picture entirely (window_runner_
+// straddle_test.cpp's own "unreachable tolerance, fixed sweep count"
+// technique -- this file's own DISABLED_DiagnosticFixedIterations used it
+// for defect (c)). PASSES: every one of the 150 windows' own committed
+// U[0] is bit-for-bit identical between the Runner and the driver when
+// neither side's own convergence check is ever consulted -- this is what
+// proved defect (d) a convergence-DECISION sensitivity (a residual/
+// reference-norm difference occasionally crossing the 1e-10 threshold on
 // a different sweep), not a second instance of defect (c)'s own state
 // corruption, which this exact technique already proved present at EVERY
-// window once forced sweeps were used.
+// window once forced sweeps were used. Kept, post-fix, as a standing
+// regression distinct from JacobiMatchesDriver below: it isolates STATE
+// from the DECISION, so a future regression in either shows up as a
+// failure in the test that actually isolates it.
 TEST(BrusselatorRunner, PerWindowStateMatchesDriverWithStoppingRuleRemoved) {
   g_fixed_iterations = 15;
   const RunResult via_runner = run_via_runner(WaveformIteration::Jacobi);
@@ -402,7 +432,14 @@ TEST(BrusselatorRunner, PerWindowStateMatchesDriverWithStoppingRuleRemoved) {
   }
 }
 
-TEST(BrusselatorRunner, DISABLED_JacobiMatchesDriver) {
+// Unit 1's own acceptance bar: the Runner, driven by the real stopping
+// rule (not the fixed-iterations bisection above), bit for bit against
+// the driver over the full 150-window span -- committed state AND
+// iteration count both. Depends on all four defects in this file's own
+// header being fixed; before defect (d)'s own fix this failed first at
+// window 20 (a one-sweep iteration-count disagreement), after matching
+// bit for bit through window 19.
+TEST(BrusselatorRunner, JacobiMatchesDriver) {
   const RunResult via_runner = run_via_runner(WaveformIteration::Jacobi);
   ASSERT_TRUE(via_runner.ok) << via_runner.error;
   const RunResult via_driver = run_via_driver(WaveformIteration::Jacobi);
@@ -417,7 +454,7 @@ TEST(BrusselatorRunner, DISABLED_JacobiMatchesDriver) {
   }
 }
 
-TEST(BrusselatorRunner, DISABLED_GaussSeidelMatchesDriver) {
+TEST(BrusselatorRunner, GaussSeidelMatchesDriver) {
   const RunResult via_runner = run_via_runner(WaveformIteration::GaussSeidel);
   ASSERT_TRUE(via_runner.ok) << via_runner.error;
   const RunResult via_driver = run_via_driver(WaveformIteration::GaussSeidel);

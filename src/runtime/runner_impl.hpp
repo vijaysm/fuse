@@ -357,6 +357,30 @@ struct RegionBlock {
   std::string   channel_name;
   std::string   source_field;
   std::string   target_field;
+
+  /// 0 when `value_arc` is not a window member's own export arc (an
+  /// ordinary, non-window channel, or a window channel this lookup
+  /// could not resolve -- resolve_regions()'s own `window_export_meta`
+  /// top comment, src/runtime/iteration.cpp); otherwise the exporting
+  /// member's own `WindowMemberConfig::capacity`, the per-element
+  /// stride `value_arc`'s raw samples are laid out with (sample 0 is
+  /// the window-START value, 1..capacity-1 the per-substep END
+  /// values). `run_region()`'s own per-block residual computation
+  /// strips sample 0 before norming, using this and
+  /// `window_export_valid_substeps` below, whenever this is nonzero --
+  /// never touching `length`/`offset` themselves, which the
+  /// accelerator and the rollback-verification byte-capture both read
+  /// over the FULL arc and must keep seeing exactly what
+  /// `advance_window()` wrote.
+  std::size_t window_export_capacity = 0;
+  /// Meaningful only when `window_export_capacity > 0`: the POLICY-
+  /// INDEPENDENT count of real substep-end samples, `window_export_
+  /// meta`'s own top comment -- `window_sample_capacity(window_length,
+  /// interval, DtPolicy::Adjustable) - 1`, never `window_export_
+  /// capacity - 1` directly (a `DtPolicy::Fixed` member's own capacity
+  /// reserves one more slot than it actually fills on a
+  /// non-straddling window instance).
+  std::size_t window_export_valid_substeps = 0;
 };
 
 /// Everything one iteration region needs, resolved once in initialize().
