@@ -108,10 +108,12 @@ TEST(Tags, AreDistinctAndWithinTheGuaranteedBound) {
   using namespace fuse::tags;
   // kIterationRegion: the residual-agreement reduction an
   // implicit coupling group's sweep loop runs on the same base communicator.
-  const std::array<int, 4> all{kCrystalRouter, kUnionCommCreate, kEpoch,
-                               kIterationRegion};
+  // kWindowConvergence (, step (c)): a window-scoped region's
+  // own per-sweep convergence agreement, same communicator.
+  const std::array<int, 5> all{kCrystalRouter, kUnionCommCreate, kEpoch,
+                               kIterationRegion, kWindowConvergence};
 
-  std::array<int, 4> sorted = all;
+  std::array<int, 5> sorted = all;
   std::sort(sorted.begin(), sorted.end());
   EXPECT_EQ(std::adjacent_find(sorted.begin(), sorted.end()), sorted.end())
       << "two tags share a value; on a shared communicator that is a hang";
