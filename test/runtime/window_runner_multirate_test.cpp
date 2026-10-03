@@ -510,3 +510,150 @@ TEST(WindowRunnerMultirate, GaussSeidelResultIsIndependentOfDeclarationOrderThro
   EXPECT_EQ(b_first.xA, driver_b_first.xA);
   EXPECT_EQ(b_first.xB, driver_b_first.xB);
 }
+
+// Commit 7939643: Runner::Impl::advance_window()'s own "is this the first
+// sweep of a new window instance" detection used to compare
+// Instruction::dst_step directly -- PERIOD-relative, since the compiled
+// TimedDag spans exactly one period and is replayed verbatim by every
+// run_period() call -- so a window-scoped region with exactly one window
+// instance per period (this file's own 91-unit LCM window: one instance
+// per 91-unit period, both before and after ClockSet's later fix) saw
+// dst_step==0 on EVERY run_period() call, not just the first, and
+// silently never advanced past window 0: every SECOND and later call to
+// run_period() left every window member's state frozen bit-identically
+// (verified by hand with debug prints before the fix existed). Fixed by
+// Runner::Impl::window_absolute_instance() (src/runtime/iteration.cpp),
+// which tracks the window's own absolute instance number across repeated
+// run_period() calls instead of resetting it to the period-relative
+// dst_step every call. Regression-guards that fix directly: every OTHER
+// test in this file calls run_period()/run_window() exactly ONCE, which
+// the pre-fix bug could never fail (a frozen window 0 replayed as window
+// 1 is observable only on a SECOND call) -- this one calls both sides
+// THREE times in a row on the SAME Runner/WindowCoupler and components,
+// checked bit-for-bit at every call, not just the first.
+TEST(WindowRunnerMultirate, ThreeConsecutivePeriodsMatchDriverAcrossRepeatedCalls) {
+  constexpr int kPeriods = 3;
+  const WaveformIteration mode = WaveformIteration::Jacobi;
+  const DtPolicy pol_a = DtPolicy::Adjustable, pol_b = DtPolicy::Adjustable;
+  const AccelKind accel = AccelKind::None;
+
+  // --- Runner side: ONE Runner, built once, run_period() called 3 times.
+  const CouplingGraph g = make_multirate_graph(mode, pol_a, pol_b, accel);
+  const auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+
+  fuse::SerialMeshBackend backend;
+  ASSERT_TRUE(backend.load(g.mesh(fuse::MeshId{0})).ok());
+  const fuse::ClockSet clocks{g};
+  const auto sched =
+      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+  ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
+
+  auto a_owned = std::make_unique<LinearOdeComponent>("A", kAA, kAB, kAX0);
+  auto b_owned = std::make_unique<LinearOdeComponent>("B", kAC, kAD, kAY0);
+  LinearOdeComponent* a = a_owned.get();
+  LinearOdeComponent* b = b_owned.get();
+  ComponentSet components;
+  components.add(std::move(a_owned));
+  components.add(std::move(b_owned));
+  FieldRegistry registry;
+  for (auto& c : components) ASSERT_TRUE(c.register_fields(registry, g).ok());
+
+  Runner runner{g, lowered.dag, sched.plan, backend};
+  const auto init = runner.initialize(components, registry);
+  ASSERT_TRUE(init.ok()) << init.error().message;
+
+  std::vector<RunnerResult> via_runner(kPeriods);
+  for (int w = 0; w < kPeriods; ++w) {
+    const auto ran = runner.run_period(components);
+    ASSERT_TRUE(ran.ok()) << ran.error().message << " (period " << w << ")";
+    ASSERT_FALSE(runner.iteration_stats().empty());
+    const fuse::IterationStats& st = runner.iteration_stats().front();
+    via_runner[w].ok = true;
+    via_runner[w].converged = st.converged;
+    via_runner[w].iterations = st.iterations;
+    via_runner[w].xA = a->x();
+    via_runner[w].xB = b->x();
+    via_runner[w].advance_count_a = a->advance_count;
+    via_runner[w].advance_count_b = b->advance_count;
+  }
+
+  // --- Driver side: ONE WindowCoupler, built once, run_window() called
+  // the SAME 3 times.
+  auto comp_a = std::make_unique<LinearOdeComponent>("A", kAA, kAB, kAX0);
+  auto comp_b = std::make_unique<LinearOdeComponent>("B", kAC, kAD, kAY0);
+
+  WindowMember mA;
+  mA.component = comp_a.get();
+  mA.name = "A";
+  mA.interval = Rational{13};
+  mA.policy = pol_a;
+  mA.provided = comp_a->provided_ptr();
+  mA.required = comp_a->required_ptr();
+  mA.length = 1;
+
+  WindowMember mB;
+  mB.component = comp_b.get();
+  mB.name = "B";
+  mB.interval = Rational{7};
+  mB.policy = pol_b;
+  mB.provided = comp_b->provided_ptr();
+  mB.required = comp_b->required_ptr();
+  mB.length = 1;
+
+  std::vector<WindowMember> members;
+  members.push_back(std::move(mA));
+  members.push_back(std::move(mB));
+  const std::vector<WindowChannel> channels = {
+      {.provider = 0, .consumer = 1, .lagged = false, .name = "a_out"},
+      {.provider = 1, .consumer = 0, .lagged = true, .name = "b_out"}};
+
+  WindowCouplerConfig cfg;
+  cfg.window_length = Rational{91};
+  cfg.max_iterations = 300;
+  cfg.acceleration = AccelConfig{.kind = accel};
+  cfg.order = 2;
+  cfg.waveform_capacity = 4096;
+  cfg.iteration = mode;
+  cfg.convergence.add(
+      fuse::ConvergenceMeasure{fuse::MeasureKind::Absolute, 1e-12, "a_out"});
+  cfg.convergence.add(
+      fuse::ConvergenceMeasure{fuse::MeasureKind::Absolute, 1e-12, "b_out"});
+
+  Result<std::unique_ptr<WindowCoupler>> created =
+      WindowCoupler::create(members, channels, cfg);
+  ASSERT_TRUE(created.ok()) << created.error().message;
+  std::unique_ptr<WindowCoupler> coupler = std::move(created.value());
+
+  std::vector<RunnerResult> via_driver(kPeriods);
+  for (int w = 0; w < kPeriods; ++w) {
+    const Result<void> r = coupler->run_window();
+    ASSERT_TRUE(r.ok()) << r.error().message << " (window " << w << ")";
+    via_driver[w].ok = true;
+    via_driver[w].converged = true;
+    via_driver[w].iterations = coupler->stats().iterations;
+    via_driver[w].xA = comp_a->x();
+    via_driver[w].xB = comp_b->x();
+    via_driver[w].advance_count_a = comp_a->advance_count;
+    via_driver[w].advance_count_b = comp_b->advance_count;
+  }
+
+  for (int w = 0; w < kPeriods; ++w) {
+    SCOPED_TRACE("period " + std::to_string(w));
+    EXPECT_EQ(via_runner[w].xA, via_driver[w].xA);
+    EXPECT_EQ(via_runner[w].xB, via_driver[w].xB);
+    EXPECT_EQ(via_runner[w].iterations, via_driver[w].iterations);
+    EXPECT_EQ(via_runner[w].advance_count_a, via_driver[w].advance_count_a);
+    EXPECT_EQ(via_runner[w].advance_count_b, via_driver[w].advance_count_b);
+  }
+  // Decisive against the pre-fix bug specifically: window 1 and window 2
+  // must NOT equal window 0 (a frozen Runner replays window 0's own
+  // state bit-for-bit on every later call) -- the driver side (never
+  // bugged) already proves the physics genuinely keeps moving, so a
+  // Runner that regressed to the old bug would fail here even if it
+  // coincidentally matched the driver's own window 0 value three times.
+  EXPECT_NE(via_driver[0].xA, via_driver[1].xA);
+  EXPECT_NE(via_driver[1].xA, via_driver[2].xA);
+  EXPECT_NE(via_runner[0].xA, via_runner[1].xA);
+  EXPECT_NE(via_runner[1].xA, via_runner[2].xA);
+}

@@ -250,3 +250,35 @@ test = "runtime.window_coupler"
 # (flagged after the identity-rig/closed-form review of this track) had
 # no other anchor before this test was added. File restored and
 # `cmp`-verified byte-identical to the pre-mutation copy afterward.
+
+[[mutation]]
+id = "window-runner-new-instance-uses-period-relative-dst-step"
+area = "runtime/iteration (advance_window)"
+describes = "commit 7939643: Runner::Impl::advance_window()'s own 'is this the first sweep of a new window instance' detection, and its T0/T1 computation, use Instruction::dst_step directly instead of window_absolute_instance(cfg, ins.dst_step) -- dst_step is PERIOD-relative (it resets to 0 every run_period() call, since the compiled TimedDag spans exactly one period and is replayed verbatim), so a window-scoped region with exactly one window instance per period sees dst_step==0 on EVERY run_period() call, not just the first, and silently never advances past window 0: every SECOND and later call to run_period() leaves every window member's state frozen bit-identically."
+file = "src/runtime/iteration.cpp"
+old = """  const std::int64_t absolute_instance =
+      window_absolute_instance(cfg, ins.dst_step);"""
+new = """  const std::int64_t absolute_instance = ins.dst_step;  // MUTATED: period-relative, not absolute"""
+target = "fuse_runtime_window_runner_multirate_test"
+test = "runtime.window_runner_multirate"
+# Expected kill: WindowRunnerMultirate.ThreeConsecutivePeriodsMatchDriverAcrossRepeatedCalls
+# (the only test in this file -- or in window_runner_test.cpp/window_runner_
+# straddle_test.cpp -- that calls run_period() more than once on the SAME
+# Runner). Verified BY HAND 2026-10-02 (see this delegation's report to the
+# lead): reverting the two-line fix and re-running the test fails it, but
+# NOT via the silently-frozen-state path the pre-fix bug originally showed
+# (that path is now caught earlier): run_period()'s SECOND call itself
+# returns E-RT-WINDOW-SWEEP, "WindowAdvance: iteration==0 (1) disagrees
+# with the dst_step-based first-sweep detection (0) for the same call
+# (period 1)" -- a separate, pre-existing internal consistency check
+# (`first_sweep_of_pass` vs `new_instance`, both iteration.cpp) catches the
+# period-relative dst_step's own disagreement with the run_region() k-loop
+# before any state ever gets corrupted silently. Either way the mutation is
+# KILLED (ASSERT_TRUE(ran.ok()) fails on period 1) -- just by a harder
+# failure than the original bug report described, which is itself useful
+# evidence the consistency check added alongside this fix is doing real
+# work. Every OTHER test in this file, and in window_runner_test.cpp/
+# window_runner_straddle_test.cpp, calls run_period() exactly once per
+# Runner and is therefore a confirmed NO-OP against this mutation -- do
+# not use any of them as this row's `target`/`test`. File restored and
+# re-verified byte-identical afterward (all 6 tests in this binary pass).
