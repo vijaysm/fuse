@@ -49,6 +49,7 @@
 /// (`WindowChannel::lagged`'s own docstring: "silently unused under the
 /// default Jacobi").
 
+#include <optional>
 #include <string>
 
 #include <fuse/backend/native_backend.hpp>
@@ -60,12 +61,15 @@ namespace brusselator {
 
 /// The two component ids `add_window_coupling` creates, so a caller can
 /// attach its own `Component` instances to them via
-/// `ComponentSet`/`register_fields()`.
+/// `ComponentSet`/`register_fields()`. `coupler` is set only when
+/// `add_window_coupling`'s own `coupler_ranks` argument was given --
+/// `ComponentId{}` (invalid) otherwise.
 struct WindowGraphHandles {
   fuse::ComponentId u_component;
   fuse::ComponentId v_component;
   fuse::ChannelId   u_to_v;
   fuse::ChannelId   v_to_u;
+  fuse::ComponentId coupler{};
 };
 
 /// Adds U, V, their four window-transfer fields and the window-scoped
@@ -75,14 +79,31 @@ struct WindowGraphHandles {
 /// `iteration_mode == WaveformIteration::GaussSeidel` marks `v_to_u`
 /// lagged so `E-SCHED-WINDOW-GAUSSSEIDEL-NOLAG` does not fire; under
 /// `Jacobi` this has no effect.
+///
+/// `coupler_ranks`: Conformance Unit 2's own addition -- when set, adds
+/// a THIRD `ComponentKind::Coupler` placement and routes BOTH channels'
+/// `.remap(RemapFlags::Conservative).remap_on(coupler)` through it,
+/// exactly `examples/layout_driver/main.cpp`'s own `--coupler` flag does
+/// for its own single channel. Both channels already connect two fields
+/// on the SAME region (`u_region` -- this file's own "WHY BOTH TRANSFER
+/// FIELDS LIVE ON u_region" header comment), so the Remap this compiles
+/// is the IDENTITY: U as a separately-built participant, V as another,
+/// and the coupler as a third, reproduce Unit 1's own `--driver window`/
+/// `runner` values bit for bit, which is what makes the executables this
+/// graph shape feeds a genuine conformance case rather than a different
+/// graph that merely resembles one. `std::nullopt` (the default)
+/// reproduces every existing caller's own graph exactly -- no coupler
+/// component, no Remap, untouched.
 [[nodiscard]] inline WindowGraphHandles add_window_coupling(
     fuse::CouplingGraph& g, fuse::RegionId u_region, fuse::Rational dt_u,
     fuse::Rational dt_v, fuse::Rational window, double tolerance,
     int max_iterations, fuse::AccelKind accel,
-    fuse::WaveformIteration iteration_mode = fuse::WaveformIteration::Jacobi) {
+    fuse::WaveformIteration iteration_mode = fuse::WaveformIteration::Jacobi,
+    std::optional<fuse::RankSet> coupler_ranks = std::nullopt) {
   using fuse::ComponentDecl;
   using fuse::Conservation;
   using fuse::ConvergenceMeasure;
+  using fuse::CouplerDecl;
   using fuse::CouplingWindowScope;
   using fuse::DtPolicy;
   using fuse::FieldSpec;
@@ -90,6 +111,7 @@ struct WindowGraphHandles {
   using fuse::IterationRegionDecl;
   using fuse::MeasureKind;
   using fuse::RankSet;
+  using fuse::RemapFlags;
   using fuse::WindowMemberPolicy;
 
   const fuse::ComponentId u = g.add_component(
@@ -129,6 +151,13 @@ struct WindowGraphHandles {
         "resolved by the U-V coupling window's own sweep, not a real-time lag");
   }
 
+  fuse::ComponentId coupler{};
+  if (coupler_ranks.has_value()) {
+    coupler = g.add_coupler(CouplerDecl{.name = "coupler", .ranks = *coupler_ranks});
+    g.channel(ch_u2v).remap(RemapFlags::Conservative).remap_on(coupler);
+    g.channel(ch_v2u).remap(RemapFlags::Conservative).remap_on(coupler);
+  }
+
   IterationRegionDecl decl;
   decl.name = "brusselator_window";
   decl.channels = {ch_u2v, ch_v2u};
@@ -146,37 +175,7 @@ struct WindowGraphHandles {
   decl.window_scope = scope;
   g.add_iteration_region(decl);
 
-  return WindowGraphHandles{u, v, ch_u2v, ch_v2u};
-}
-
-/// `fuse::native::NativeMeshBackend` keeps a SEPARATE decomposition per
-/// (mesh, placement) pair (`set_placed_view`/`placed_view`,
-/// include/fuse/backend/native_backend.hpp): the one `NativeGrid::make`
-/// loads (examples/brusselator/brusselator_physics.hpp) is reachable only
-/// through the UNPLACED `view()`/`region_size()` overloads. Both
-/// `fuse::make_region_sizes` (schedule-time buffer sizing,
-/// src/backend/serial_backend.cpp) and `fuse::Runner` itself (every
-/// `backend.placed_view(mesh, component)` call in src/runtime/runner.cpp)
-/// resolve a FIELD's mesh through its OWNING COMPONENT's placement, never
-/// the unplaced default -- so U and V both need their OWN placed view of
-/// `u_mesh` registered before `schedule()`/`Runner::initialize()` run, even
-/// though this example is single-rank and every placement is identical to
-/// the unplaced one (no real migration anywhere in this graph). Call this
-/// once, right after `add_window_coupling`, with the SAME `u_mesh`/
-/// `nx_u`/`ny_u` `NativeGrid::make("u", ...)` loaded `backend` with.
-[[nodiscard]] inline fuse::Result<void> register_native_window_placements(
-    fuse::native::NativeMeshBackend& backend, fuse::MeshId u_mesh, int nx_u, int ny_u,
-    const WindowGraphHandles& handles) {
-  const std::string spec = "quad:" + std::to_string(nx_u) + "x" + std::to_string(ny_u);
-  for (const fuse::ComponentId cid : {handles.u_component, handles.v_component}) {
-    auto arrays = fuse::native::generate_native_mesh(spec, backend.rank(), backend.num_ranks());
-    if (!arrays.ok()) return arrays.error();
-    auto view = fuse::native::NativeMeshView::create_from_host(arrays.value(), backend.rank());
-    if (!view.ok()) return view.error();
-    auto set = backend.set_placed_view(u_mesh, cid, std::move(view.value()));
-    if (!set.ok()) return set.error();
-  }
-  return fuse::Result<void>::success();
+  return WindowGraphHandles{u, v, ch_u2v, ch_v2u, coupler};
 }
 
 }  // namespace brusselator

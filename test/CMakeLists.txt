@@ -712,6 +712,22 @@ endforeach()
 # legs are the ones that are load-bearing here.
 fuse_add_omp_legs(verification.brusselator_physics fuse_verification_brusselator_physics_test)
 
+# Brusselator as separately built participants (Conformance, Unit 2): the
+# tier-0 harness -- drives the SAME extern "C" shim (examples/brusselator/
+# participants/shim.cpp) examples/brusselator/participants/u_main.c and
+# v_main.f90 call, through the participant ABI, in one process, against
+# an in-process fuse::Runner reference on the identical graph shape. Needs
+# fuse::abi (fuse_coupler_abi()) in addition to the ordinary Brusselator
+# deps, and the participants/ subdirectory on top of examples/brusselator/
+# itself.
+fuse_add_gtest(verification brusselator_participants NO_LAYER_LIB
+               LIBS fuse::runtime fuse::backend fuse::abi Eigen3::Eigen Kokkos::kokkos)
+target_include_directories(fuse_verification_brusselator_participants_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/examples/brusselator
+  ${CMAKE_SOURCE_DIR}/examples/brusselator/participants)
+target_sources(fuse_verification_brusselator_participants_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/shim.cpp)
+
 # ---------------------------------------------------------------- install
 # find_package(fuse-coupler) smoke test (REVIEW.md R-25/BT-F9): install this
 # build, configure and build a tiny STANDALONE consumer project against the

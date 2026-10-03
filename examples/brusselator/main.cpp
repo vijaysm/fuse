@@ -432,10 +432,15 @@ int main(int argc, char** argv) {
       }
     }
 
-    if (const auto r = brusselator::register_native_window_placements(
-            backend, u_mesh, args.nx_u, args.ny_u, window_graph);
-        !r.ok()) {
-      std::fprintf(stderr, "FAIL: register_native_window_placements: %s: %s\n",
+    // U and V both need their own placed view of u_mesh (both transfer
+    // fields live there -- brusselator_graph.hpp's own file header),
+    // registered before schedule()/Runner::initialize() run. Discovered
+    // automatically from the graph now (NativeMeshBackend::
+    // register_default_placements, include/fuse/backend/native_backend.hpp) --
+    // this example used to build that by hand, once per generated mesh;
+    // the logic now lives in the backend, not here.
+    if (const auto r = backend.register_default_placements(graph, u_mesh); !r.ok()) {
+      std::fprintf(stderr, "FAIL: register_default_placements: %s: %s\n",
                    r.error().code.c_str(), r.error().message.c_str());
       return 1;
     }
