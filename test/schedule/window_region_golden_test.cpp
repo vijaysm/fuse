@@ -419,3 +419,79 @@ TEST(WindowRegionGolden, SchedulerCallsWindowCausalityOnARealCompiledWindow) {
   }
   EXPECT_TRUE(saw_causality_error) << r.diags.to_string();
 }
+
+// KNOWN_ISSUES.md / the plan's own standing ruling against a disguised
+// least-common-multiple window: examples/brusselator/main.cpp's own
+// defaults (--dt-u 0.002 --dt-v 0.003 --window 0.02) are exactly the
+// shape that ruling rejects if a window-scoped member's own fine
+// subcycling interval still feeds the compiled schedule's period --
+// lcm(0.002, 0.003) = 0.006, and 0.02 does not divide 0.006 evenly
+// (E-SCHED-PERIOD), even though neither `advance_window()` nor the
+// window itself has any such requirement: U's own interval (0.002)
+// divides the window evenly (10 whole substeps); V's own (0.003) does
+// not (0.02 / 0.003 is not an integer -- DtPolicy::Adjustable's own
+// final, shorter substep is what makes that legal at all). ClockSet's
+// fix (a window-scoped member's clock is its region's window length,
+// never its own fine interval) makes the compiled period the window
+// length itself, 0.02 -- not 0.006 -- so this schedules cleanly. A
+// mutation reverting that fix (restoring `decl.interval` as every
+// window member's own clock) must make this fail with E-SCHED-PERIOD
+// again; checked by tools/mutate.py's own anchor over ClockSet's
+// constructor (include/fuse/schedule/clock.hpp).
+TEST(WindowRegionGolden, BrusselatorsOwnDtAndWindowScheduleWithoutAnLcmPeriod) {
+  CouplingGraph g;
+  const auto m = g.add_mesh(MeshDecl{.name = "m"});
+  const auto r = g.add_region(Region{.name = "r", .mesh = m});
+
+  const auto comp_u = g.add_component(ComponentDecl{
+      .name = "U", .ranks = RankSet{0, 1}, .interval = Rational{1, 500}});
+  const auto comp_v = g.add_component(ComponentDecl{
+      .name = "V", .ranks = RankSet{0, 1}, .interval = Rational{3, 1000}});
+
+  const auto u_out = g.add_field(comp_u, FieldSpec{
+      .name = "u_out", .region = r, .units = u::kKelvin,
+      .conservation = Conservation::Extensive, .intent = Intent::Provides});
+  const auto v_in = g.add_field(comp_v, FieldSpec{
+      .name = "v_in", .region = r, .units = u::kKelvin,
+      .conservation = Conservation::Extensive, .intent = Intent::Requires});
+  const auto v_out = g.add_field(comp_v, FieldSpec{
+      .name = "v_out", .region = r, .units = u::kKelvin,
+      .conservation = Conservation::Extensive, .intent = Intent::Provides});
+  const auto u_in = g.add_field(comp_u, FieldSpec{
+      .name = "u_in", .region = r, .units = u::kKelvin,
+      .conservation = Conservation::Extensive, .intent = Intent::Requires});
+
+  const auto fwd = g.add_channel("u2v", u_out, v_in);
+  const auto back = g.add_channel("v2u", v_out, u_in);
+  g.channel(back).lag(1).allow_time_level_mismatch(
+      "resolved by the window's own sweep, not a real-time lag");
+
+  CouplingWindowScope scope;
+  // explicit_interval, not window_component: the window (0.02) is
+  // neither member's own interval, matching the Brusselator's own
+  // --window flag being independent of --dt-u/--dt-v.
+  scope.explicit_interval = Rational{1, 50};  // 0.02
+  scope.order = 2;
+  scope.policies = {{"U", DtPolicy::Adjustable}, {"V", DtPolicy::Adjustable}};
+  scope.iteration = WaveformIteration::Jacobi;
+
+  IterationRegionDecl decl;
+  decl.name = "window";
+  decl.channels = {fwd, back};
+  decl.max_iterations = 20;
+  decl.window_scope = scope;
+  g.add_iteration_region(decl);
+
+  const auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+
+  const fuse::ClockSet cs{g};
+  const auto result = fuse::schedule(
+      g, lowered.dag, cs, [](RegionId, int) -> std::size_t { return 64; });
+  ASSERT_TRUE(result.ok()) << result.diags.to_string();
+  const Rational expected_period{1, 50};
+  EXPECT_EQ(result.plan.period(), expected_period);
+  for (const auto& item : result.diags.items()) {
+    EXPECT_NE(item.code, "E-SCHED-PERIOD") << result.diags.to_string();
+  }
+}

@@ -221,6 +221,27 @@ test = "schedule.window_region_golden"
 # that, no test exercised schedule()'s own call to this check at all.
 
 [[mutation]]
+id = "clockset-window-member-reverts-to-own-interval"
+area = "compiler"
+describes = "ClockSet's own constructor (include/fuse/schedule/clock.hpp) never substitutes a window-scoped member's region's own window length for its clock: every component's clock is unconditionally its own ComponentDecl::interval again, the exact 'a window member's own fine subcycling interval still feeds checked_common_period()'s LCM' defect the user's standing ruling (KNOWN_ISSUES.md / the plan, against a disguised least-common-multiple window) was fixed to remove. On the Brusselator's own dt_u=0.002/dt_v=0.003/window=0.02 shape (WindowRegionGolden.BrusselatorsOwnDtAndWindowScheduleWithoutAnLcmPeriod), the compiled period reverts to lcm(0.002, 0.003) = 0.006, which 0.02 does not divide evenly, so schedule() fails E-SCHED-PERIOD instead of succeeding with period 0.02."
+file = "include/fuse/schedule/clock.hpp"
+old = "        if (std::find(members.begin(), members.end(), cid) == members.end()) {"
+new = "        if (true) {  // MUTATED: window membership never found, so every component keeps its own ComponentDecl::interval"
+target = "fuse_schedule_window_region_golden_test"
+test = "schedule.window_region_golden"
+# Expected kill: WindowRegionGolden.BrusselatorsOwnDtAndWindowScheduleWithoutAnLcmPeriod
+# (ASSERT_TRUE(result.ok()) fails: with the window-length substitution
+# disabled, U's own interval 1/500 and V's own interval 3/1000 both feed
+# checked_common_period()'s LCM again -- lcm(1/500, 3/1000) = 3/500, which
+# the window length 1/50 does not divide evenly -- so schedule() refuses
+# with E-SCHED-PERIOD well before ever reaching the period/diagnostics
+# assertions). Verified by hand 2026-10-02 (see this delegation's report
+# to the lead): reverting the fix line, rebuilding
+# fuse_schedule_window_region_golden_test, and re-running it reproduces
+# exactly this failure; restoring the line byte-identical makes all 6
+# tests in that binary pass again.
+
+[[mutation]]
 id = "jacobi-ignored-at-compile-time"
 area = "compiler"
 describes = "effective_channel_lag() (fuse/model/coupling_graph.hpp) never applies WaveformIteration::Jacobi's forced loop-carried shift: every channel compiles at its own literal Channel::lag regardless of the window's own iteration mode, i.e. a Jacobi-mode window compiles exactly as GaussSeidel would. On the two-member fixture with NEITHER channel lagged (WindowRegionGolden's own Jacobi reference shape), the compiled graph keeps both transfers at [WindowEnd, k] instead of shifting both to [WindowEnd-1, k], and the two-way exchange -- now genuinely unbroken, with neither direction cut -- fails schedule() with E-SCHED-WINDOW-CAUSALITY instead of compiling and scheduling cleanly."

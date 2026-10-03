@@ -13,6 +13,7 @@
 #include "fuse/base/result.hpp"
 #include "fuse/model/coupling_graph.hpp"
 #include "fuse/base/error.hpp"
+#include "fuse/schedule/window.hpp"
 
 namespace fuse {
 
@@ -111,11 +112,54 @@ class Clock {
 /// The partially ordered set of component clocks the runtime advances.
 class ClockSet {
  public:
+  /// Spec: never a least-common-multiple window (the user's own standing
+  /// ruling, KNOWN_ISSUES.md and the plan -- a coupling window exists
+  /// precisely so two components' several substeps are coupled through
+  /// the temporal interpolant, exactly or conservatively, instead of
+  /// waiting for their LCM). A window-scoped member's own ComponentDecl::
+  /// interval is its FINE subcycling rate -- read directly from the
+  /// graph by `Runner::Impl::advance_window()`'s own `WindowMemberConfig::
+  /// interval` (src/runtime/iteration.cpp), never through this class --
+  /// and must never also stand in as this member's CLOCK for scheduling
+  /// purposes, or `checked_common_period()`'s own LCM reintroduces
+  /// exactly the rejected rule: a window whose length does not divide
+  /// lcm(every member's own fine interval) would be refused
+  /// (E-SCHED-PERIOD) even though `advance_window()` has no such
+  /// requirement at all (an `Adjustable` member truncates its last
+  /// substep at the window end; a `Fixed` member straddles and replays
+  /// -- window_coupler.hpp's own class comment). A window-scoped
+  /// member's own CLOCK is instead its region's own WINDOW LENGTH: the
+  /// member ticks, from the rest of the compiled schedule's point of
+  /// view, once per window instance (`Runner::Impl::build_ticks()`'s own
+  /// `window_member_components()` already gives it no ordinary Tick at
+  /// all, at any interval -- this is the same exemption, applied to the
+  /// clock the PERIOD is computed from, not only to the tick list).
   explicit ClockSet(const CouplingGraph& g) {
     clocks_.reserve(g.component_count());
-    for (std::size_t i = 0; i < g.component_count(); ++i) {
-      clocks_.emplace_back(
-          g.component(ComponentId{static_cast<std::uint32_t>(i)}).interval);
+    for (std::uint32_t i = 0; i < g.component_count(); ++i) {
+      const ComponentId cid{i};
+      Rational interval = g.component(cid).interval;
+      for (std::uint32_t r = 0; r < g.iteration_region_count(); ++r) {
+        const IterationRegionDecl& decl =
+            g.iteration_region(IterationRegionIdx{r});
+        if (!decl.window_scope.has_value()) continue;
+        const std::vector<ComponentId> members = window_region_members(g, decl);
+        if (std::find(members.begin(), members.end(), cid) == members.end()) {
+          continue;
+        }
+        const Result<Rational> wl = window_length(g, *decl.window_scope);
+        if (!wl.ok()) {
+          FUSE_THROW(InvalidArgument, "{}",
+                     "ClockSet::ClockSet: component '" + g.component(cid).name +
+                         "' belongs to window-scoped region '" + decl.name +
+                         "' whose own window length could not be resolved: " +
+                         wl.error().code + ": " + wl.error().message);
+        }
+        interval = wl.value();
+        break;  // a component declared in more than one window region is
+                // not a configuration anything else here supports either.
+      }
+      clocks_.emplace_back(interval);
     }
   }
 

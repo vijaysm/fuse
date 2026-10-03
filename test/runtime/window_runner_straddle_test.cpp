@@ -12,19 +12,28 @@
 // diagnostic-only role).
 //
 // Getting window_component="A" to schedule a genuinely non-dividing pair
-// at all needed two scheduler-layer fixes, both regression-guarded here
-// via the passing case below: (1) expand.cpp's own "boundary rule" (every
-// node no channel claims) was ticking a window member's own Source/Sink
-// at ITS native interval, not the window's -- overridden to the window's
-// own length, mirroring the channel-chain loop's existing override; (2)
-// mark_regions() (scheduler.cpp) was greedily consuming an ENTIRE
-// contiguous run of same-region instructions regardless of node repeats,
-// so a window that ticks several times per period (here, 7 times: 91 =
-// lcm(7,13) is the OVERALL clock period regardless of the window's own
+// at all needed two scheduler-layer fixes: (1) expand.cpp's own
+// "boundary rule" (every node no channel claims) was ticking a window
+// member's own Source/Sink at ITS native interval, not the window's --
+// overridden to the window's own length, mirroring the channel-chain
+// loop's existing override; still regression-guarded here via the
+// passing case below. (2) mark_regions() (scheduler.cpp) was greedily
+// consuming an ENTIRE contiguous run of same-region instructions
+// regardless of node repeats, so a window that ticks several times per
+// period (at the time this fix was made, 7 times: 91 = lcm(7,13) was
+// the OVERALL clock period regardless of the window's own 13-unit
 // length) had its 7 separate passes merged into one bogus "56 covers 8"
 // run instead of 7 clean ones -- fixed by stopping each run the moment
-// every member has appeared once. A third, runtime-layer fix was needed
-// too: resolve_regions()'s own residual-Sink count assumed one Sink
+// every member has appeared once. ClockSet's OWN later fix (KNOWN_
+// ISSUES.md -- a window member's clock is its region's window length,
+// never its fine interval) means this file's own graph (every component
+// a member of the one window region) no longer compiles a period wider
+// than one window instance, so mark_regions()'s multi-pass-per-period
+// case is no longer regression-guarded HERE; it still applies whenever
+// a window region coexists with an ordinary, non-window-scoped
+// component (or a second window region of a different length) in the
+// same graph. A third, runtime-layer fix was needed too:
+// resolve_regions()'s own residual-Sink count assumed one Sink
 // INSTRUCTION per Sink NODE, which undercounts correctly for an ordinary
 // region but overcounts for a window region's own repeated passes (one
 // instruction per pass, same node) -- fixed by counting distinct nodes
@@ -158,8 +167,15 @@ constexpr double kAA = 1.3, kAB = 0.7, kAC = 0.9, kAD = 0.5;
 constexpr double kAX0 = 1.0, kAY0 = 0.2;
 
 // A <-> B, both directions through the FULL compiled graph
-// (lower()+schedule()+Runner), window length 91 = lcm(13, 7), A's own
-// interval 13, B's own interval 7. `swap_declaration_order`: whether B's
+// (lower()+schedule()+Runner). window_component="A" makes the window A's
+// own 13-unit step; A's own interval is 13, B's own interval (its fine
+// subcycling rate, read directly by advance_window(), never through
+// ClockSet) is 7. The compiled schedule's own period -- ClockSet's own
+// fix, KNOWN_ISSUES.md -- is now the window length itself, 13 (both A
+// and B are members of the one window region, so both clocks are 13;
+// lcm(13,13)=13), not 91=lcm(13,7) as it was before that fix (a window
+// member's own fine interval no longer feeds the period's LCM).
+// `swap_declaration_order`: whether B's
 // ComponentDecl/fields are added to the graph BEFORE A's -- Gauss-
 // Seidel's own sweep order must come from topological_sweep_order()
 // (the unlagged channel's own direction), never from declaration order
@@ -366,21 +382,34 @@ RunnerResult run_via_runner(WaveformIteration mode, DtPolicy pol_a,
     return out;
   }
 
-  const auto ran = runner.run_period(components);
-  if (!ran.ok()) {
-    out.error = ran.error().message;
-    out.error_code = ran.error().code;
-    return out;
+  // ClockSet's own fix (KNOWN_ISSUES.md -- a window-scoped member's CLOCK
+  // for scheduling purposes is its region's window length, never its
+  // fine subcycling interval, so a window member never reintroduces an
+  // LCM window by way of its own substep rate) makes A's -- and, because
+  // B is a member of the SAME region, B's as well -- effective clock
+  // the 13-unit window length rather than A's 13/B's 7 own intervals.
+  // The compiled schedule's period is therefore 13 (lcm(13,13)), not 91
+  // (lcm(13,7)): one window instance per run_period() call, not seven.
+  // Looping run_period() 7 times is the Runner-side equivalent of
+  // run_via_driver()'s own 7 run_window() calls below, over the SAME
+  // 91-time-unit span.
+  for (int w = 0; w < 7; ++w) {
+    const auto ran = runner.run_period(components);
+    if (!ran.ok()) {
+      out.error = ran.error().message;
+      out.error_code = ran.error().code;
+      return out;
+    }
+    if (runner.iteration_stats().empty()) {
+      out.error = "no iteration stats recorded";
+      return out;
+    }
+    const fuse::IterationStats& st = runner.iteration_stats().front();
+    out.converged = st.converged;
+    out.iterations = st.iterations;
   }
 
-  if (runner.iteration_stats().empty()) {
-    out.error = "no iteration stats recorded";
-    return out;
-  }
-  const fuse::IterationStats& st = runner.iteration_stats().front();
   out.ok = true;
-  out.converged = st.converged;
-  out.iterations = st.iterations;
   out.xA = a->x();
   out.xB = b->x();
   out.advance_count_a = a->advance_count;
@@ -467,15 +496,14 @@ RunnerResult run_via_driver(WaveformIteration mode, DtPolicy pol_a,
   if (!created.ok()) { out.error = created.error().message; return out; }
   std::unique_ptr<WindowCoupler> coupler = std::move(created.value());
 
-  // The Runner side's own run_period() advances through the WHOLE clock
-  // period (91 = lcm(7,13) time units, regardless of the window's own
-  // length): window_component="A" makes the window A's own 13-unit step,
-  // so one period is 91/13 = 7 separate window instances, all inside
-  // that ONE run_period() call. run_window() here is one window's worth
-  // (13 units); looping it 7 times is the driver-side equivalent of the
-  // same period, so advance_count_a/b (both components' own running
-  // totals, incremented by every advance() call across every window)
-  // land on a directly comparable cumulative count.
+  // run_window() here is one window's worth (13 units); looping it 7
+  // times covers the same 91-unit span as run_via_runner()'s own 7
+  // run_period() calls (ClockSet's own fix makes a window-scoped
+  // member's clock its region's window length, so the compiled
+  // schedule's period is 13, not 91 -- one window instance per
+  // run_period() call), so advance_count_a/b (both components' own
+  // running totals, incremented by every advance() call across every
+  // window) land on a directly comparable cumulative count.
   for (int w = 0; w < 7; ++w) {
     const Result<void> r = coupler->run_window();
     if (!r.ok()) {
@@ -524,9 +552,9 @@ TEST(WindowRunnerStraddle, SevenThirteenAdjustableAdjustableThroughWindowCompone
   EXPECT_EQ(via_runner.iterations, via_driver.iterations);
   EXPECT_EQ(via_runner.advance_count_a, via_driver.advance_count_a);
   EXPECT_EQ(via_runner.advance_count_b, via_driver.advance_count_b);
-  // Every substep of every sweep actually ran, over the WHOLE period (all
-  // 7 window instances of make_multirate_graph()'s window_component="A"
-  // scope, not just the last one `iterations` itself describes): a
+  // Every substep of every sweep actually ran, over all 7 window
+  // instances run_via_runner()'s own loop advances through (not just
+  // the last one `iterations` itself describes): a
   // per-iterate count, not just "ran". `7 * iterations`/`13 * iterations`
   // held only if every window took the SAME sweep count as the last --
   // measured false the moment this test's own xA/xB mismatch was fixed
