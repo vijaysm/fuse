@@ -657,3 +657,206 @@ TEST(WindowRunnerMultirate, ThreeConsecutivePeriodsMatchDriverAcrossRepeatedCall
   EXPECT_NE(via_runner[0].xA, via_runner[1].xA);
   EXPECT_NE(via_runner[1].xA, via_runner[2].xA);
 }
+
+// Regression for the `mark_regions()` multi-instance-per-period coverage
+// the LCM-shaped fixtures above cannot exercise: every window region in
+// this file so far has window_length == period (exactly one window
+// instance per `run_period()` call), so a `mark_regions()` defect that
+// corrupted the SECOND or THIRD instance within the SAME period would
+// never show up above, only across REPEATED calls (the test just above
+// this one). Here: A/B's own window region has length 1/3, and a third,
+// wholly separate, UNCOUPLED component C ticks at an ORDINARY (non-
+// window) interval of 1/2 -- lcm(1/3, 1/2) = 1, so schedule() compiles
+// ONE period containing THREE separate window-A/B passes interleaved
+// with TWO ordinary C ticks, and `run_period()` must replay that same
+// interleaving correctly on a SECOND call, not just the first.
+//
+// C is intentionally uncoupled (no channels, no fields) -- it exists
+// only to force this period shape; A/B's own physics does not depend on
+// it, so any A/B mismatch against the driver (a pure, C-free
+// WindowCoupler advancing the identical three window instances per
+// period) is attributable to `mark_regions()`/`run_period()`'s own
+// handling of the interleaving, not to C itself.
+TEST(WindowRunnerMultirate, WindowRegionMixedWithOrdinaryComponentAcrossRepeatedPeriods) {
+  constexpr int kPeriods = 2;
+  constexpr int kInstancesPerPeriod = 3;  // period 1 / window length 1/3
+  const WaveformIteration mode = WaveformIteration::Jacobi;
+  const DtPolicy pol_a = DtPolicy::Adjustable, pol_b = DtPolicy::Adjustable;
+
+  // --- Runner side: A, B (window-scoped, length 1/3) + C (ordinary,
+  // interval 1/2, uncoupled), ONE Runner, run_period() called twice.
+  CouplingGraph g;
+  const auto m = g.add_mesh(MeshDecl{.name = "m", .source = "generated:line:1"});
+  const auto r = g.add_region(Region{.name = "r", .mesh = m, .dimension = 1});
+
+  const auto a = g.add_component(ComponentDecl{
+      .name = "A", .ranks = RankSet{0, 0}, .interval = Rational{1, 3}});
+  const auto b = g.add_component(ComponentDecl{
+      .name = "B", .ranks = RankSet{0, 0}, .interval = Rational{1, 3}});
+  const auto c = g.add_component(ComponentDecl{
+      .name = "C", .ranks = RankSet{0, 0}, .interval = Rational{1, 2}});
+  (void)c;  // uncoupled: no fields, no channels -- present only for its clock
+
+  const auto a_out = g.add_field(a, FieldSpec{.name = "a_out", .region = r,
+                                              .units = u::kKelvin,
+                                              .conservation = Conservation::Extensive,
+                                              .intent = Intent::Provides});
+  const auto b_in = g.add_field(b, FieldSpec{.name = "b_in", .region = r,
+                                             .units = u::kKelvin,
+                                             .conservation = Conservation::Extensive,
+                                             .intent = Intent::Requires});
+  const auto b_out = g.add_field(b, FieldSpec{.name = "b_out", .region = r,
+                                              .units = u::kKelvin,
+                                              .conservation = Conservation::Extensive,
+                                              .intent = Intent::Provides});
+  const auto a_in = g.add_field(a, FieldSpec{.name = "a_in", .region = r,
+                                             .units = u::kKelvin,
+                                             .conservation = Conservation::Extensive,
+                                             .intent = Intent::Requires});
+
+  const auto fwd = g.add_channel("a2b", a_out, b_in);
+  const auto back = g.add_channel("b2a", b_out, a_in);
+  g.channel(back).lag(1).allow_time_level_mismatch(
+      "resolved by the a-b coupling window's own sweep, not a real-time lag");
+
+  CouplingWindowScope scope;
+  scope.explicit_interval = Rational{1, 3};
+  scope.order = 2;
+  scope.policies = {{"A", pol_a}, {"B", pol_b}};
+  scope.iteration = mode;
+
+  IterationRegionDecl decl;
+  decl.name = "window";
+  decl.channels = {fwd, back};
+  decl.max_iterations = 300;
+  decl.convergence.add(
+      fuse::ConvergenceMeasure{fuse::MeasureKind::Absolute, 1e-12, "a_out"});
+  decl.convergence.add(
+      fuse::ConvergenceMeasure{fuse::MeasureKind::Absolute, 1e-12, "b_out"});
+  decl.window_scope = scope;
+  decl.acceleration.kind = AccelKind::None;
+  g.add_iteration_region(decl);
+
+  const auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+
+  fuse::SerialMeshBackend backend;
+  ASSERT_TRUE(backend.load(g.mesh(fuse::MeshId{0})).ok());
+  const fuse::ClockSet clocks{g};
+  const Result<Rational> period = clocks.checked_common_period();
+  ASSERT_TRUE(period.ok()) << period.error().message;
+  EXPECT_EQ(period.value(), Rational{1})
+      << "lcm(window length 1/3, C's own interval 1/2) must be 1 for this "
+         "fixture to exercise three window instances per period";
+  const auto sched =
+      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+  ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
+
+  auto a_owned = std::make_unique<LinearOdeComponent>("A", kAA, kAB, kAX0);
+  auto b_owned = std::make_unique<LinearOdeComponent>("B", kAC, kAD, kAY0);
+  auto c_owned = std::make_unique<LinearOdeComponent>("C", kAA, kAB, kAX0);
+  LinearOdeComponent* rt_a = a_owned.get();
+  LinearOdeComponent* rt_b = b_owned.get();
+  ComponentSet components;
+  components.add(std::move(a_owned));
+  components.add(std::move(b_owned));
+  components.add(std::move(c_owned));
+  FieldRegistry registry;
+  for (auto& comp : components) ASSERT_TRUE(comp.register_fields(registry, g).ok());
+
+  Runner runner{g, lowered.dag, sched.plan, backend};
+  const auto init = runner.initialize(components, registry);
+  ASSERT_TRUE(init.ok()) << init.error().message;
+
+  std::vector<RunnerResult> via_runner(kPeriods);
+  for (int w = 0; w < kPeriods; ++w) {
+    const auto ran = runner.run_period(components);
+    ASSERT_TRUE(ran.ok()) << ran.error().message << " (period " << w << ")";
+    via_runner[w].ok = true;
+    via_runner[w].xA = rt_a->x();
+    via_runner[w].xB = rt_b->x();
+    via_runner[w].advance_count_a = rt_a->advance_count;
+    via_runner[w].advance_count_b = rt_b->advance_count;
+  }
+
+  // --- Driver side: a pure, C-free WindowCoupler advancing the IDENTICAL
+  // three window instances per period, twice over -- run_window() called
+  // kPeriods * kInstancesPerPeriod times, checkpointed every
+  // kInstancesPerPeriod-th call to align with the Runner's own
+  // run_period() boundaries.
+  auto comp_a = std::make_unique<LinearOdeComponent>("A", kAA, kAB, kAX0);
+  auto comp_b = std::make_unique<LinearOdeComponent>("B", kAC, kAD, kAY0);
+
+  WindowMember mA;
+  mA.component = comp_a.get();
+  mA.name = "A";
+  mA.interval = Rational{1, 3};
+  mA.policy = pol_a;
+  mA.provided = comp_a->provided_ptr();
+  mA.required = comp_a->required_ptr();
+  mA.length = 1;
+
+  WindowMember mB;
+  mB.component = comp_b.get();
+  mB.name = "B";
+  mB.interval = Rational{1, 3};
+  mB.policy = pol_b;
+  mB.provided = comp_b->provided_ptr();
+  mB.required = comp_b->required_ptr();
+  mB.length = 1;
+
+  std::vector<WindowMember> members;
+  members.push_back(std::move(mA));
+  members.push_back(std::move(mB));
+  const std::vector<WindowChannel> channels = {
+      {.provider = 0, .consumer = 1, .lagged = false, .name = "a_out"},
+      {.provider = 1, .consumer = 0, .lagged = true, .name = "b_out"}};
+
+  WindowCouplerConfig cfg;
+  cfg.window_length = Rational{1, 3};
+  cfg.max_iterations = 300;
+  cfg.acceleration = AccelConfig{.kind = AccelKind::None};
+  cfg.order = 2;
+  cfg.waveform_capacity = 4096;
+  cfg.iteration = mode;
+  cfg.convergence.add(
+      fuse::ConvergenceMeasure{fuse::MeasureKind::Absolute, 1e-12, "a_out"});
+  cfg.convergence.add(
+      fuse::ConvergenceMeasure{fuse::MeasureKind::Absolute, 1e-12, "b_out"});
+
+  Result<std::unique_ptr<WindowCoupler>> created =
+      WindowCoupler::create(members, channels, cfg);
+  ASSERT_TRUE(created.ok()) << created.error().message;
+  std::unique_ptr<WindowCoupler> coupler = std::move(created.value());
+
+  std::vector<RunnerResult> via_driver(kPeriods);
+  for (int w = 0; w < kPeriods; ++w) {
+    for (int inst = 0; inst < kInstancesPerPeriod; ++inst) {
+      const Result<void> rr = coupler->run_window();
+      ASSERT_TRUE(rr.ok()) << rr.error().message << " (period " << w
+                           << " instance " << inst << ")";
+    }
+    via_driver[w].ok = true;
+    via_driver[w].xA = comp_a->x();
+    via_driver[w].xB = comp_b->x();
+    via_driver[w].advance_count_a = comp_a->advance_count;
+    via_driver[w].advance_count_b = comp_b->advance_count;
+  }
+
+  for (int w = 0; w < kPeriods; ++w) {
+    SCOPED_TRACE("period " + std::to_string(w));
+    EXPECT_EQ(via_runner[w].xA, via_driver[w].xA);
+    EXPECT_EQ(via_runner[w].xB, via_driver[w].xB);
+    EXPECT_EQ(via_runner[w].advance_count_a, via_driver[w].advance_count_a);
+    EXPECT_EQ(via_runner[w].advance_count_b, via_driver[w].advance_count_b);
+  }
+  // Decisive against a `mark_regions()` defect that silently collapses
+  // the three per-period window instances into fewer (or freezes after
+  // the first, the SAME failure mode commit 7939643's own fix addressed
+  // across PERIODS, now checked WITHIN one): the driver side (never
+  // bugged) already proves the physics keeps moving instance to
+  // instance, so a Runner regression would fail here even if it
+  // coincidentally matched the driver's own period-0 value twice.
+  EXPECT_NE(via_driver[0].xA, via_driver[1].xA);
+  EXPECT_NE(via_runner[0].xA, via_runner[1].xA);
+}
