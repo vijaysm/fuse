@@ -6,7 +6,7 @@ fuse_context_out 16
 fuse_error 48
 fuse_graph_source 32
 fuse_graph_sink 32
-fuse_setup_options 40
+fuse_setup_options 48
 fuse_field_name 24
 fuse_field_ref 20
 fuse_field_view 64

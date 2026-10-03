@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <vector>
 
 #include "fuse/abi/participant.h"
@@ -91,5 +92,36 @@ TEST(AbiStructSize, LongerStructFromANewerCallerIsAccepted) {
   setup.communicator = 0;
   setup.has_end_time = 0;
   EXPECT_EQ(t->setup(ctx, &setup, nullptr), FUSE_OK);
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+// AbiStructSize.OldCallerStructSizeNeverReadsMyComponent (fuse_setup_options'
+// own growth, examples/brusselator/participants: Conformance Unit 2).
+// Heap-allocates EXACTLY the pre-growth byte count -- the same
+// offsetof-derived expression src/abi/participant.cpp's own
+// FirstFrozenStructSize<fuse_setup_options> specialization uses -- so a
+// read past it is a genuine heap-buffer-overflow, not a benign read of
+// slack the allocator happened to round up to. An old caller's buffer
+// really is exactly this size; my_component did not exist when it was
+// compiled, so fuse_setup() must never read the bytes where it would live.
+TEST(AbiStructSize, OldCallerStructSizeNeverReadsMyComponent) {
+  constexpr std::size_t kOldSize =
+      offsetof(fuse_setup_options, end_time) + sizeof(fuse_exact_time);
+  static_assert(kOldSize < sizeof(fuse_setup_options),
+               "my_component must have grown fuse_setup_options (rule 3)");
+
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  fuse_ctx* ctx = LoadedContext(t);
+
+  auto buf = std::make_unique<std::byte[]>(kOldSize);
+  auto* old_opts = reinterpret_cast<fuse_setup_options*>(buf.get());
+  old_opts->struct_size  = static_cast<std::uint32_t>(kOldSize);
+  old_opts->communicator = 0;
+  old_opts->has_end_time = 0;
+  old_opts->reserved     = 0;
+  old_opts->end_time     = fuse_exact_time{.numerator = 0, .denominator = 1};
+  EXPECT_EQ(t->setup(ctx, old_opts, nullptr), FUSE_OK);
+
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }

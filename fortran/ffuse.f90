@@ -106,6 +106,7 @@ module ffuse
     integer(c_int32_t) :: has_end_time = 0_c_int32_t
     integer(c_int32_t) :: reserved = 0_c_int32_t
     type(fuse_exact_time) :: end_time = fuse_exact_time(0_c_int64_t, 1_c_int64_t)
+    type(c_ptr) :: my_component = c_null_ptr
   end type fuse_setup_options
 
   type, bind(C), public :: fuse_field_name

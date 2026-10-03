@@ -44,6 +44,7 @@
 #include "fuse/model/validate.hpp"
 #include "fuse/model/yaml_io.hpp"
 #include "fuse/schedule/plan.hpp"
+#include "fuse/transport/connect.hpp"
 
 #include "context.hpp"
 #include "external_step_component.hpp"
@@ -80,6 +81,14 @@ template <>
 struct FirstFrozenStructSize<fuse_ongoing> {
   static constexpr std::size_t value =
       offsetof(fuse_ongoing, now) + sizeof(fuse_exact_time);
+};
+
+template <>
+struct FirstFrozenStructSize<fuse_setup_options> {
+  // The layout shipped before my_component was appended 2026-10-03; see
+  // entries.def's own comment on that field.
+  static constexpr std::size_t value =
+      offsetof(fuse_setup_options, end_time) + sizeof(fuse_exact_time);
 };
 
 /// abi-design.md rule 2. A `struct_size` smaller than `T`'s first frozen
@@ -423,6 +432,15 @@ fuse_status impl_setup(fuse_ctx* ctx, const fuse_setup_options* in, fuse_null*) 
     }
     const fuse_status sz = check_struct_size(in);
     if (sz != FUSE_OK) return sz;
+    // entries.def's own comment on my_component: an old caller's smaller
+    // struct_size never allocated this member, so it is read ONLY when
+    // struct_size_covers it -- exactly the write-side guard's own mirror,
+    // on the read side this time (abi-design.md rule 2).
+    const char* my_component =
+        struct_size_covers(in->struct_size, offsetof(fuse_setup_options, my_component) +
+                                                sizeof(in->my_component))
+            ? in->my_component
+            : nullptr;
     if (in->communicator != 0) {
 #if !FUSE_HAVE_MPI
       return fail(&c, FUSE_ERR_UNSUPPORTED, "E-ABI-SETUP-NOMPI",
@@ -431,6 +449,37 @@ fuse_status impl_setup(fuse_ctx* ctx, const fuse_setup_options* in, fuse_null*) 
 #endif
       c.communicator     = in->communicator;
       c.communicator_set = true;
+#if FUSE_HAVE_MPI
+      // my_component's own comment (entries.def): form the real base
+      // communicator via fuse::transport::connect() when the loaded
+      // graph's own LaunchSpec for this component says so -- the ONE
+      // thing that keeps a C or Fortran caller from ever having to link
+      // or call into C++ to take part in a multi-executable run.
+      if (my_component != nullptr) {
+        const auto cid = c.graph.find_component(my_component);
+        if (!cid.has_value()) {
+          return fail(&c, FUSE_ERR_INVALID, "E-ABI-SETUP-COMPONENT",
+                     std::string("fuse_setup_options: my_component names '") +
+                         my_component + "', which the loaded graph does not declare");
+        }
+        const fuse::LaunchMode mode = c.graph.component(*cid).launch.mode;
+        if (mode == fuse::LaunchMode::Mpmd || mode == fuse::LaunchMode::Connect) {
+          fuse::transport::ConnectOptions copts;
+          copts.my_component = *cid;
+          const fuse::Result<fuse::transport::ConnectedWorld> connected =
+              fuse::transport::connect(c.graph, static_cast<int>(in->communicator), copts);
+          if (!connected.ok()) {
+            return fail(&c, FUSE_ERR_RUNTIME, std::string(connected.error().code),
+                       connected.error().message);
+          }
+          c.communicator = connected.value().base_comm_f;
+        }
+        // InProcess/Plugin: nothing to do -- in->communicator already is
+        // the base communicator, exactly as when my_component is NULL
+        // (fuse::transport::connect() itself refuses to be called for
+        // either, for the identical reason).
+      }
+#endif
     }
     if (in->has_end_time) {
       const fuse::Result<fuse::Rational> t = from_abi_time(in->end_time);
