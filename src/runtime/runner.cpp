@@ -1832,7 +1832,18 @@ Result<void> Runner::Impl::build_ticks(ComponentSet& components) {
   // one process, exactly as before. Found by the D3 host run (2026-09-28): a
   // process outside a component's processor set was calling its advance(),
   // where the component's own communicator is MPI_COMM_NULL.
-  std::optional<int> this_process;
+  // Unit 2b (D19): `this_process` is now `Runner::Impl::this_process`, a
+  // member (its own declaration comment has the full account), not a
+  // local -- reset here, at the top of the ONE place that computes it,
+  // so a second `build_ticks()` call (if initialize() ever runs twice)
+  // never sees a stale value from a previous call.
+  this_process.reset();
+  if (config.force_this_process.has_value()) {
+    // RunnerConfig::force_this_process's own comment: a tier-0 test's
+    // override, taking priority over base_communicator so a build with
+    // no MPI compiled in at all can still exercise per-rank hosting.
+    this_process = config.force_this_process;
+  } else {
 #if FUSE_HAVE_MPI
   if (config.base_communicator.has_value()) {
     const MPI_Comm base =
@@ -1846,6 +1857,7 @@ Result<void> Runner::Impl::build_ticks(ComponentSet& components) {
     this_process = rank;
   }
 #endif
+  }
 
   all_ticks.clear();
   std::vector<bool> hosted(components.size(), false);

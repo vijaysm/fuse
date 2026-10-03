@@ -498,6 +498,16 @@ struct Runner::Impl {
   const MeshBackend&   backend;
   RunnerConfig         config;
 
+  /// Unit 2b (D19): this process's own rank in `config.base_communicator`,
+  /// or unset when no base communicator is configured (tier 0, or a
+  /// single-rank run) -- the SAME value `build_ticks()` already computed
+  /// locally for the ordinary-tick `hosted[]` check (its own comment there
+  /// has the full account), now a member so `resolve_regions()`, called
+  /// right after `build_ticks()` in `initialize()`, can read the identical
+  /// value when resolving each window member's own `WindowMemberConfig::
+  /// hosted` below -- one computation, not two that could drift apart.
+  std::optional<int>   this_process;
+
   /// KNOWN_ISSUES.md D11 (closing): the coupling hot loop runs on Kokkos'
   /// DEFAULT HOST execution space -- OpenMP if the build enabled it, Serial
   /// otherwise (`Kokkos::DefaultHostExecutionSpace`'s own definition) --
@@ -628,6 +638,34 @@ struct Runner::Impl {
   /// builds at most one such node per member per region).
   struct WindowMemberConfig {
     std::size_t component_slot = 0;  ///< this member's own ComponentSet slot
+    /// Unit 2b (D19): whether THIS process hosts this member -- resolved
+    /// once in `resolve_regions()` from `Runner::Impl::this_process` and
+    /// this member's own `ComponentDecl::ranks`, the IDENTICAL formula
+    /// `build_ticks()`'s own `hosted[]` already uses for ordinary ticks
+    /// (that array's own comment has the full account). `true`
+    /// unconditionally when `this_process` is unset (tier 0, or a
+    /// single-rank run) -- every existing single-process caller keeps
+    /// meaning exactly what it meant before this field existed.
+    /// `advance_window()` reads this FIRST, before anything else: a
+    /// non-hosted member takes no substeps, calls neither `advance()`
+    /// nor `save_state()`/`restore_state()`, and yields no
+    /// `ExternalSuspend` -- its own export arc is left untouched here,
+    /// for the field transfer (Transport/Remap/Sink) to deliver instead.
+    bool        hosted = true;
+    /// Unit 2b (D19), step (b): the channel this member's own IMPORT
+    /// came through -- `ChannelId{}` (invalid, the default) when this
+    /// member imports nothing. Set in `resolve_regions()`'s first pass
+    /// alongside `provider_exported_field`/`cfg.required`, read back in
+    /// its second pass (after every member's own EXPORT arc has been
+    /// primed, this struct's own `cfg.provided` -> `ins.out`) to find
+    /// and re-run this channel's own compiled delivery chain --
+    /// Transport/Epoch/Interpolate/Sink, whichever of those
+    /// window_lowering.cpp's "ordinary per-channel rule" actually
+    /// emitted -- exactly once, so this member's own `window_import`
+    /// arc is primed THROUGH that chain and never through a direct
+    /// `registry.get(provider_exported_field)` read (KNOWN_ISSUES.md
+    /// D19's own evidence 3).
+    ChannelId   import_channel;
     Rational    interval{1};
     DtPolicy    policy = DtPolicy::Adjustable;
     int         order = 2;

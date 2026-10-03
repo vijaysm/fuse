@@ -72,6 +72,21 @@ struct RunnerConfig {
   /// "unset" value to use as a sentinel: 0 is a legal handle.
   std::optional<int> base_communicator;
 
+  /// Unit 2b (D19): overrides `build_ticks()`'s own `this_process`
+  /// computation directly, bypassing `base_communicator`/`MPI_Comm_rank`
+  /// entirely -- the SAME reason `force_distributed_nodal_remap` above
+  /// exists: a tier-0 build (no MPI compiled in at all) can exercise the
+  /// per-rank HOSTING decision (ordinary ticks' own `hosted[]`, and
+  /// Unit 2b's own `WindowMemberConfig::hosted`) with a specific rank
+  /// number, with no real communicator, no launcher, and no `#if
+  /// FUSE_HAVE_MPI` branch ever taken. `base_communicator` need not be
+  /// set at all when this is -- a test that wants both a pretend "rank 1
+  /// of 3" placement AND genuine ordinary-tick filtering sets only this
+  /// one field. Left unset (the default) for every production caller,
+  /// which continues to derive `this_process` from `base_communicator`
+  /// exactly as before this field existed.
+  std::optional<int> force_this_process;
+
   /// Task 8.5's gap-closer. `Transport`'s virtual interface (prepare/move/
   /// name/is_local) has no hook for a backend's one-time, backend-specific
   /// setup -- `MpiTransport::set_communicator`+`build_plan` or

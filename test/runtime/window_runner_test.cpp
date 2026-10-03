@@ -171,6 +171,70 @@ CouplingGraph make_single_window_graph(
 // AccelKind::None so the ONLY thing this graph can fail on is the
 // straddle rejection itself, not the (separately tested) GaussSeidel-
 // accel one.
+// Unit 2b (D19): the SAME two-member shape as make_single_window_graph()
+// (Jacobi only -- hosting is orthogonal to the waveform-iteration mode,
+// and Jacobi is the simpler closed form), but A and B are declared on
+// DISJOINT single-rank processor sets (make_straddle_window_graph_with_
+// rank_mismatch()'s own RankSet{0,1}/RankSet{1,1} precedent, a few lines
+// below) rather than the empty `RankSet{0,0}` every OTHER graph in this
+// file uses -- empty ranks are invisible to the hosting check
+// (`WindowMemberConfig::hosted`'s own formula skips it entirely whenever
+// `this_process` is unset, which every other test here leaves true), but
+// this one graph is built SPECIFICALLY to be driven with `RunnerConfig::
+// force_this_process` set, where the ranks are what the hosting decision
+// actually reads.
+CouplingGraph make_single_window_graph_with_disjoint_ranks() {
+  CouplingGraph g;
+  const auto m = g.add_mesh(MeshDecl{.name = "m", .source = "generated:line:1"});
+  const auto r = g.add_region(Region{.name = "r", .mesh = m, .dimension = 1});
+
+  const auto a = g.add_component(ComponentDecl{
+      .name = "A", .ranks = RankSet{0, 1}, .interval = Rational{1}});
+  const auto b = g.add_component(ComponentDecl{
+      .name = "B", .ranks = RankSet{1, 1}, .interval = Rational{1}});
+
+  const auto a_out = g.add_field(a, FieldSpec{.name = "a_out", .region = r,
+                                              .units = u::kKelvin,
+                                              .conservation = Conservation::Extensive,
+                                              .intent = Intent::Provides});
+  const auto b_in = g.add_field(b, FieldSpec{.name = "b_in", .region = r,
+                                             .units = u::kKelvin,
+                                             .conservation = Conservation::Extensive,
+                                             .intent = Intent::Requires});
+  const auto b_out = g.add_field(b, FieldSpec{.name = "b_out", .region = r,
+                                              .units = u::kKelvin,
+                                              .conservation = Conservation::Extensive,
+                                              .intent = Intent::Provides});
+  const auto a_in = g.add_field(a, FieldSpec{.name = "a_in", .region = r,
+                                             .units = u::kKelvin,
+                                             .conservation = Conservation::Extensive,
+                                             .intent = Intent::Requires});
+
+  const auto fwd = g.add_channel("a2b", a_out, b_in);
+  const auto back = g.add_channel("b2a", b_out, a_in);
+  g.channel(back).lag(1).allow_time_level_mismatch(
+      "resolved by the a-b coupling window's own sweep, not a real-time lag");
+
+  CouplingWindowScope scope;
+  scope.window_component = "A";
+  scope.order = 2;
+  scope.policies = {{"A", DtPolicy::Adjustable}, {"B", DtPolicy::Adjustable}};
+  scope.iteration = WaveformIteration::Jacobi;
+
+  IterationRegionDecl decl;
+  decl.name = "window";
+  decl.channels = {fwd, back};
+  decl.max_iterations = 50;
+  decl.convergence.add(
+      fuse::ConvergenceMeasure{fuse::MeasureKind::Absolute, 1e-12, "a_out"});
+  decl.convergence.add(
+      fuse::ConvergenceMeasure{fuse::MeasureKind::Absolute, 1e-12, "b_out"});
+  decl.window_scope = scope;
+  decl.acceleration.kind = fuse::AccelKind::None;
+  g.add_iteration_region(decl);
+  return g;
+}
+
 CouplingGraph make_straddle_window_graph() {
   CouplingGraph g;
   const auto m = g.add_mesh(MeshDecl{.name = "m", .source = "generated:line:1"});
@@ -741,4 +805,97 @@ TEST(WindowRunner, WindowChannelRemapRoutedToCouplerMatchesIdentityClosedForm) {
                             << " sweeps";
   EXPECT_NEAR(lb_a->out(), 30.0 / 19.0, 1e-9);
   EXPECT_NEAR(lb_b->out(), 44.0 / 19.0, 1e-9);
+}
+
+// Unit 2b (D19), step (a) -- HOSTING: a window member not on this
+// process's own rank takes no substeps, calls neither advance() nor
+// save_state()/restore_state(), and yields no ExternalSuspend; its own
+// export arc is left untouched here for the field transfer to deliver
+// instead.
+//
+// B is built with k=0 (`out' = a + 0*in = a`, independent of its own
+// import) AND a=0 (so that constant equals LinearBlock's own default
+// cold-start `out_` of 0.0 exactly) -- chosen SPECIFICALLY so resolve_
+// regions()'s own one-time, hosting-INDEPENDENT cold-start priming
+// (this function's own "Cold start" comment) already delivers B's own
+// TRUE value for every window of the run, with nothing further to
+// deliver afterward. This sidesteps a real gap found while designing
+// this test: `Runner`'s own public API (deliberately) exposes no way to
+// WRITE an arbitrary arc's buffer (only `buffer(ArcId) const`, read-
+// only, and no public accessor for a window member's own export ArcId
+// at all) -- so a literal "stub Transport delivering B's own real,
+// evolving export every window" is not buildable from outside `Runner::
+// Impl` without new public API surface this unit does not add. A
+// constant-output B sidesteps the need for one: there is nothing to
+// deliver PAST the one-time cold start, so hosting's own skip and the
+// existing priming are jointly sufficient, and the comparison below is
+// still bit-for-bit, not approximate. The genuinely cross-rank,
+// evolving-export case is step (e)'s own job (`verification.window.
+// mpi.{2,3}`), where a REAL Transport does real delivery and no stub is
+// needed at all.
+TEST(WindowRunner, NonHostedMemberTakesNoSubstepsAndMatchesTheHostedExport) {
+  constexpr std::int64_t kPeriods = 2;
+
+  const CouplingGraph g = make_single_window_graph_with_disjoint_ranks();
+  const auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+  fuse::SerialMeshBackend backend;
+  ASSERT_TRUE(backend.load(g.mesh(fuse::MeshId{0})).ok());
+  const fuse::ClockSet clocks{g};
+  const auto sched =
+      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+  ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
+
+  // --- Reference: both members hosted (this_process unset, the default
+  // every other test in this file already relies on). ---
+  double ref_a_out = 0.0;
+  {
+    auto a_owned = std::make_unique<LinearBlock>("A", 1.0, 0.5);
+    auto b_owned = std::make_unique<LinearBlock>("B", 0.0, 0.0);
+    LinearBlock* a = a_owned.get();
+    LinearBlock* b = b_owned.get();
+    ComponentSet components;
+    components.add(std::move(a_owned));
+    components.add(std::move(b_owned));
+    FieldRegistry registry;
+    for (auto& c : components) ASSERT_TRUE(c.register_fields(registry, g).ok());
+
+    Runner runner{g, lowered.dag, sched.plan, backend};
+    ASSERT_TRUE(runner.initialize(components, registry).ok());
+    ASSERT_TRUE(runner.run(components, kPeriods).ok());
+
+    EXPECT_GT(a->advance_count, 0) << "reference A must actually run";
+    EXPECT_GT(b->advance_count, 0) << "reference B must actually run";
+    ref_a_out = a->out();
+  }
+
+  // --- Forced: this_process == 0 -- A (RankSet{0,1}) is hosted, B
+  // (RankSet{1,1}) is not. Same graph, same schedule (both are graph-
+  // derived, identical either way), fresh components/registry/Runner
+  // (the reference run above already consumed its own). ---
+  {
+    fuse::RunnerConfig cfg;
+    cfg.force_this_process = 0;
+
+    auto a_owned = std::make_unique<LinearBlock>("A", 1.0, 0.5);
+    auto b_owned = std::make_unique<LinearBlock>("B", 0.0, 0.0);
+    LinearBlock* a = a_owned.get();
+    LinearBlock* b = b_owned.get();
+    ComponentSet components;
+    components.add(std::move(a_owned));
+    components.add(std::move(b_owned));
+    FieldRegistry registry;
+    for (auto& c : components) ASSERT_TRUE(c.register_fields(registry, g).ok());
+
+    Runner runner{g, lowered.dag, sched.plan, backend};
+    const auto init = runner.initialize(components, registry, cfg);
+    ASSERT_TRUE(init.ok()) << init.error().code << ": " << init.error().message;
+    const auto ran = runner.run(components, kPeriods);
+    ASSERT_TRUE(ran.ok()) << ran.error().code << ": " << ran.error().message;
+
+    EXPECT_GT(a->advance_count, 0) << "hosted A must still run";
+    EXPECT_EQ(b->advance_count, 0) << "non-hosted B must never call advance()";
+    EXPECT_EQ(a->out(), ref_a_out)
+        << "A's own export must be bit-identical to the fully-hosted reference";
+  }
 }
