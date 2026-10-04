@@ -331,27 +331,52 @@ cross-mesh (3x3/4x4) Brusselator LowFive graph — two `ExternalDelivery`
 nodes (one per LowFive-bound channel), zero `Transport`, zero `Epoch`.
 Full tier-0 (166/166) and all 5 repo-health gates clean throughout.
 
-**Not yet done, and why this half stops here rather than claiming
-completion:** the lead's design additionally calls for a new `field_view`
-ABI accessor (`fuse_field_view` gains an appended `window_samples`
-member; a new ABI entry returns a view of a window member's own K-wide
-buffer by field handle) so an application -- or, for the tier-0 oracle,
-a test harness standing in for one -- can actually reach the
-`WindowAdvance` node's own export buffer and the new `ExternalDelivery`
-arc's import buffer, both of which stay private, Runner-owned scratch
-(no existing `register_field()` binding reaches either, window-scoped or
-not: see `src/schedule/buffers.cpp`'s own `is_window_arc()` exclusion).
-That accessor, the golden-IR regeneration for the LowFive Brusselator
-graph, and the two-member tier-0 harness test (with its two named
-mutations) are not implemented this round. Separately, and reported as
-asked: whether a window member's own application code can tell "this is
-my last substep of the current sweep" from `fuse_step_request`/
-`fuse_step_report` alone -- yes, from `t_end` (already populated for the
-participant direction, `src/abi/participant.cpp:967-1018`) checked
-against the window boundary, using the SAME window-length constant the
-participant's own `main()` is already built with (identical to how every
-existing Brusselator participant matches its CLI flags to the graph
-tool's); no appended `int32_t` is needed for this piece.
+**The ABI view of the window buffers, implemented and measured --
+2026-10-04.** `fuse_field_view` gains an appended `window_samples`
+member (`include/fuse/abi/entries.def`, by the growth rules --
+`FirstFrozenStructSize<fuse_field_view>` records the pre-growth size, an
+old caller's smaller `struct_size` never has it written). A new
+participant-table entry, `view_field` (named to avoid colliding with the
+`fuse_field_view` *type* once Fortran lower-cases both -- `field_view`
+was the first name tried and `tools/gen-abi.py` caught the collision),
+appended LAST per the table's own append-only rule (an entry inserted
+mid-table would have shifted every later member's offset for an
+existing caller -- caught and fixed before committing, by
+`test/abi/negotiation_test.cpp`'s own `FakeV2Table` size check). Before
+this change there was no FUSE-to-application view accessor at all --
+only `register_field()` (application-to-FUSE). `Runner::field_window_
+view(FieldId)` (next to `buffer()`, `include/fuse/runtime/runner.hpp`)
+is the C++ accessor `impl_view_field` (`src/abi/participant.cpp`) calls:
+two new FieldId-keyed maps (`window_export_field_arc`, `window_import_
+field_arc`, populated in `resolve_regions()` alongside `window_member_
+config` itself, from the SAME `exported_field`/`imported_field` that
+function already resolves, not re-derived) answer "is this field part
+of a coupling window" in O(1); a field in neither map gets `window_
+samples = 0` and the ABI layer falls back to its own registered
+storage, so the new entry answers uniformly for ANY field, window-scoped
+or not. Layout measured against `Runner::Impl::resolve_regions()`'s own
+priming loop (`data[e * K + s]`, entity-major then sample,
+`src/runtime/iteration.cpp`) and reported the same way an ordinary
+multi-component field already is: `components` widened to the field's
+own declared width times `window_samples`, `count` unchanged (entities).
+Full tier-0 (166/166) and all 5 repo-health gates clean.
+
+**Not yet done:** a Runner-level test exercising `field_window_view()`
+against a REAL, running Brusselator LowFive graph (the real species
+components, not a stub) is not written -- doing so needs either the
+Brusselator's own component classes wired to a window-scoped LowFive
+graph, or a smaller stand-in; neither was built this round. The golden-
+IR regeneration for the LowFive Brusselator graph, and the two-member
+tier-0 harness test (with its two named mutations), remain for the next
+segment. Separately, and reported as asked: whether a window member's
+own application code can tell "this is my last substep of the current
+sweep" from `fuse_step_request`/`fuse_step_report` alone -- yes, from
+`t_end` (already populated for the participant direction, `src/abi/
+participant.cpp:967-1018`) checked against the window boundary, using
+the SAME window-length constant the participant's own `main()` is
+already built with (identical to how every existing Brusselator
+participant matches its CLI flags to the graph tool's); no appended
+`int32_t` is needed for this piece.
 
 ## Distributed (cross-process) interception — Demo B
 
