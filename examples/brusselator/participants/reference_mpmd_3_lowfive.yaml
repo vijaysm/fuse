@@ -1,0 +1,116 @@
+version: 1
+meshes:
+  - name: u
+    source: generated:quad:3x3
+  - name: v
+    source: generated:quad:4x4
+regions:
+  - name: u_all
+    mesh: u
+    entity_set: ""
+    dimension: 2
+  - name: v_all
+    mesh: v
+    entity_set: ""
+    dimension: 2
+components:
+  - name: U
+    ranks: {first: 0, count: 1}
+    interval: 1/500
+    launch:
+      mode: mpmd
+      appnum: 0
+    fields:
+      - name: u_out
+        index: 0
+        region: u_all
+        disc: FV
+        order: 0
+        components: 1
+        units: 1
+        conservation: Extensive
+        intent: Provides
+        hdf5_path: brusselator_u.h5/grid/u_out
+      - name: u_in
+        index: 1
+        region: u_all
+        disc: FV
+        order: 0
+        components: 1
+        units: 1
+        conservation: Intensive
+        intent: Requires
+  - name: V
+    ranks: {first: 1, count: 1}
+    interval: 1/500
+    launch:
+      mode: mpmd
+      appnum: 1
+    fields:
+      - name: v_out
+        index: 2
+        region: u_all
+        disc: FV
+        order: 0
+        components: 1
+        units: 1
+        conservation: Intensive
+        intent: Provides
+        hdf5_path: brusselator_v.h5/grid/v_out
+      - name: v_in
+        index: 3
+        region: u_all
+        disc: FV
+        order: 0
+        components: 1
+        units: 1
+        conservation: Extensive
+        intent: Requires
+  - name: lowfive
+    ranks: {first: 0, count: 3}
+    interval: 1
+    launch:
+      mode: lowfive
+    fields:
+      []
+couplers:
+  - name: coupler
+    index: 2
+    ranks: {first: 2, count: 1}
+channels:
+  - name: u2v
+    source: U.u_out
+    target: V.v_in
+    accumulate: {op: Instant, window: coupling_period}
+    remap:
+      flags: [Conservative]
+      remap_on: coupler
+  - name: v2u
+    source: V.v_out
+    target: U.u_in
+    accumulate: {op: Instant, window: coupling_period}
+    remap:
+      flags: [Conservative]
+      remap_on: coupler
+iteration_regions:
+  - name: brusselator_window
+    channels: [u2v, v2u]
+    max_iterations: 60
+    convergence:
+      - {kind: Relative, tolerance: 1e-10, field: u_out}
+      - {kind: Relative, tolerance: 1e-10, field: v_out}
+    acceleration:
+      kind: None
+      initial_relaxation: 0.10000000000000001
+      omega: 0.5
+      reuse: 8
+      filter: QR2
+      limit: 0.01
+      scale_fields: true
+    window_scope:
+      explicit_interval: 1/500
+      order: 2
+      policies:
+        - {component: U, policy: Adjustable}
+        - {component: V, policy: Adjustable}
+      iteration: Jacobi
