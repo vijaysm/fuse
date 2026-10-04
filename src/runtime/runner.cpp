@@ -3923,6 +3923,38 @@ Result<const double*> Runner::buffer(ArcId arc) const {
   return static_cast<const double*>(impl_->slots[arc.value()].data);
 }
 
+Result<Runner::FieldWindowView> Runner::field_window_view(FieldId field) const {
+  if (!field.valid() || field.value() >= impl_->graph.field_count()) {
+    return Failure{"E-RT-FIELD", "no such field"};
+  }
+  ArcId arc;
+  const auto exp_it = impl_->window_export_field_arc.find(field.value());
+  if (exp_it != impl_->window_export_field_arc.end()) {
+    arc = exp_it->second;
+  } else {
+    const auto imp_it = impl_->window_import_field_arc.find(field.value());
+    if (imp_it != impl_->window_import_field_arc.end()) arc = imp_it->second;
+  }
+  if (!arc.valid()) {
+    // Not window-scoped at all -- the ABI layer's own registered storage
+    // answers this field, not the Runner.
+    return FieldWindowView{};
+  }
+  if (arc.value() >= impl_->slots.size()) {
+    return Failure{"E-RT-ARC", "window arc has no resolved buffer"};
+  }
+  const detail::Slot& slot = impl_->slots[arc.value()];
+  const int field_components = impl_->graph.field(field).components;
+  const int arc_components = impl_->dag.arc(arc).type.components;
+  const std::int32_t window_samples =
+      field_components > 0
+          ? static_cast<std::int32_t>(arc_components / field_components)
+          : 0;
+  return FieldWindowView{static_cast<const double*>(slot.data),
+                         static_cast<std::uint64_t>(slot.total()),
+                         window_samples};
+}
+
 bool Runner::hosts_component(ComponentId component) const {
   // The IDENTICAL formula build_ticks()'s own `hosted[]` and Unit 2b's
   // own `WindowMemberConfig::hosted` already use, read from the SAME

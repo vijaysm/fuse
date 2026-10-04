@@ -135,6 +135,7 @@ module ffuse
     integer(c_int64_t) :: stride = 0_c_int64_t
     integer(c_int64_t) :: component_stride = 0_c_int64_t
     type(c_ptr) :: data = c_null_ptr
+    integer(c_int32_t) :: window_samples = 0_c_int32_t
   end type fuse_field_view
 
   type, bind(C), public :: fuse_step_request
@@ -316,6 +317,14 @@ module ffuse
       type(fuse_null), intent(inout) :: out
       integer(c_int32_t) :: status
     end function ffuse_run
+
+    function ffuse_view_field(ctx, in, out) result(status) bind(C, name="ffuse_view_field")
+      import :: c_int32_t, c_ptr, fuse_field_ref, fuse_field_view
+      type(c_ptr), value :: ctx
+      type(fuse_field_ref), intent(in) :: in
+      type(fuse_field_view), intent(inout) :: out
+      integer(c_int32_t) :: status
+    end function ffuse_view_field
   end interface
 
   public :: fuse_version, &
@@ -332,7 +341,8 @@ module ffuse
             fuse_is_coupling_ongoing, &
             fuse_begin_step, &
             fuse_end_step, &
-            fuse_run
+            fuse_run, &
+            fuse_view_field
 
   interface fuse_last_error
     module procedure fuse_last_error_struct, fuse_last_error_message
@@ -600,5 +610,16 @@ contains
     out%struct_size = int(c_sizeof(out), c_int32_t)
     status = ffuse_run(ctx%ptr, in, out)
   end function fuse_run
+
+  function fuse_view_field(ctx, in, out) result(status)
+    type(fuse_ctx), intent(in) :: ctx
+    type(fuse_field_ref), intent(inout) :: in
+    type(fuse_field_view), intent(inout) :: out
+    integer(c_int32_t) :: status
+
+    in%struct_size = int(c_sizeof(in), c_int32_t)
+    out%struct_size = int(c_sizeof(out), c_int32_t)
+    status = ffuse_view_field(ctx%ptr, in, out)
+  end function fuse_view_field
 
 end module ffuse

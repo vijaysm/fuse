@@ -267,6 +267,31 @@ class Runner {
       const noexcept;
   [[nodiscard]] Result<const double*> buffer(ArcId arc) const;
 
+  /// Unit 3 (S6 phase 3, Conformance): the C++ side of the ABI's new
+  /// `view_field` entry (fuse_field_view's own `window_samples` member,
+  /// include/fuse/abi/entries.def). For a field that is part of a
+  /// coupling window (export or import), `window_samples` is the
+  /// window's own sample capacity K and `data`/`count` describe the
+  /// window path's own private buffer -- the WindowAdvance node's own
+  /// output for an export, or the arc the window path reads the import
+  /// from (ordinarily the window Sink's own arc; for a LowFive-bound
+  /// channel, the ExternalDelivery arc instead) -- neither of which
+  /// `register_field()`'s ordinary per-component storage ever aliases
+  /// (`plan_buffers()`'s own `is_window_arc()` exclusion,
+  /// src/schedule/buffers.cpp). `window_samples` is 0, and `data`/
+  /// `count` are left null/zero, for a field with no window scope at
+  /// all -- the ABI layer (`src/abi/participant.cpp`) falls back to
+  /// this context's own registered storage in that case, so this
+  /// accessor need only ever answer the window question. Available
+  /// only after `initialize()` (the window buffers do not exist before
+  /// it); `E-RT-FIELD` for an out-of-range id.
+  struct FieldWindowView {
+    const double* data = nullptr;
+    std::uint64_t count = 0;
+    std::int32_t  window_samples = 0;
+  };
+  [[nodiscard]] Result<FieldWindowView> field_window_view(FieldId field) const;
+
   /// Unit 2b (D19), step (d): whether THIS process hosts `component` --
   /// the same rule `WindowMemberConfig::hosted` (step (a)) already
   /// applies to a window member, generalised to any component. `true`

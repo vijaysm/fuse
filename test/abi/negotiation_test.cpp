@@ -41,6 +41,14 @@ struct FakeV2Table {
   decltype(fuse_participant_abi_v1::begin_step) begin_step;
   decltype(fuse_participant_abi_v1::end_step) end_step;
   decltype(fuse_participant_abi_v1::run) run;
+  // Unit 3 (S6 phase 3, Conformance), appended 2026-10-04 to entries.def
+  // LAST (the table's own "appended to, never reordered" rule) -- this
+  // fixture's own top comment requires matching the real member order
+  // exactly, or the static_assert below (sizeof(FakeV2Table) > sizeof
+  // (fuse_participant_abi_v1)) would start failing the moment the real
+  // table grows to the same entry count this fixture always enumerated
+  // by hand.
+  decltype(fuse_participant_abi_v1::view_field) view_field;
   // The appended v2 member. Never read by a v1 caller (struct_size says it
   // isn't there) and never read by this test's "v2 caller" EITHER, when the
   // table it was handed turns out to be a real v1 one -- see

@@ -13,7 +13,8 @@
 ! ergonomically", which is exactly why ffuse exists as flat ffuse_* symbols
 ! instead), so this mirror type exists ONLY in this test, to pin the one
 ! other number struct_sizes.golden records: struct_size + abi_version
-! (4 + 4 bytes) plus one C_FUNPTR per of the 15 entries.
+! (4 + 4 bytes) plus one C_FUNPTR per of the 16 entries (Unit 3, S6 phase
+! 3 Conformance, 2026-10-04: view_field appended last).
 program sizes_test
   use, intrinsic :: iso_c_binding
   use ffuse
@@ -45,6 +46,7 @@ program sizes_test
     type(c_funptr) :: begin_step = c_null_funptr
     type(c_funptr) :: end_step = c_null_funptr
     type(c_funptr) :: run = c_null_funptr
+    type(c_funptr) :: view_field = c_null_funptr
   end type fuse_participant_abi_v1_mirror
 
   type(c_ptr) :: a_pointer

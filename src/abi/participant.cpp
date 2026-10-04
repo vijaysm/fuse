@@ -91,6 +91,15 @@ struct FirstFrozenStructSize<fuse_setup_options> {
       offsetof(fuse_setup_options, end_time) + sizeof(fuse_exact_time);
 };
 
+template <>
+struct FirstFrozenStructSize<fuse_field_view> {
+  // The layout shipped before window_samples was appended 2026-10-04;
+  // see entries.def's own comment on that field. `data` is the last
+  // pre-growth member.
+  static constexpr std::size_t value =
+      offsetof(fuse_field_view, data) + sizeof(void*);
+};
+
 /// abi-design.md rule 2. A `struct_size` smaller than `T`'s first frozen
 /// layout, or larger than FUSE_ABI_MAX_STRUCT_SIZE, is FUSE_ERR_VERSION.
 /// Before Defect 3 this bound was always `sizeof(T)` (current); now that
@@ -583,6 +592,100 @@ fuse_status impl_register_field(fuse_ctx* ctx, const fuse_field_view* in,
     if (!bound.ok()) {
       return fail(&c, FUSE_ERR_INVALID, std::string(bound.error().code),
                  bound.error().message);
+    }
+    return FUSE_OK;
+  });
+}
+
+// Unit 3 (S6 phase 3, Conformance): the reverse of impl_register_field
+// above -- FUSE hands back a view of its own storage for `in->handle`,
+// rather than the caller handing FUSE a pointer. Before initialize(), or
+// for a field with no window scope at all, that storage is exactly the
+// native buffer register_field() was given (c.fields' own copy); after
+// initialize(), a window-scoped field instead gets the window path's own
+// private buffer, through Runner::field_window_view() (window_samples'
+// own comment, entries.def, has the full account of which arc that is).
+fuse_status impl_view_field(fuse_ctx* ctx, const fuse_field_ref* in,
+                           fuse_field_view* out) {
+  return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
+    const fuse_status sz = check_struct_size(in);
+    if (sz != FUSE_OK) return sz;
+    if (out == nullptr) return FUSE_ERR_INVALID;
+    const fuse_status osz = check_struct_size(out);
+    if (osz != FUSE_OK) return osz;
+    const std::uint32_t declared_out_size = out->struct_size;
+
+    if (in->handle < 0 ||
+        static_cast<std::uint32_t>(in->handle) >= c.graph.field_count()) {
+      return fail(&c, FUSE_ERR_NOTFOUND, "E-ABI-VIEW-FIELD-HANDLE",
+                 "fuse_view_field: handle does not name a field in the "
+                 "loaded graph");
+    }
+    const fuse::FieldId field{static_cast<std::uint32_t>(in->handle)};
+
+    const double* data = nullptr;
+    std::uint64_t count = 0;
+    std::int32_t window_samples = 0;
+    if (c.runner.has_value()) {
+      const fuse::Result<fuse::Runner::FieldWindowView> wv =
+          c.runner->field_window_view(field);
+      if (!wv.ok()) {
+        return fail(&c, FUSE_ERR_RUNTIME, std::string(wv.error().code),
+                   wv.error().message);
+      }
+      if (wv.value().window_samples > 0) {
+        data = wv.value().data;
+        count = wv.value().count;
+        window_samples = wv.value().window_samples;
+      }
+    }
+    if (data == nullptr) {
+      // Not window-scoped (or not initialized yet): the native storage
+      // this context's own register_field() was given, same as
+      // impl_register_field binds from above.
+      const fuse::Result<fuse::FieldRef> ref = c.fields.get(field);
+      if (!ref.ok()) {
+        return fail(&c, FUSE_ERR_INVALID, std::string(ref.error().code),
+                   ref.error().message);
+      }
+      data = ref.value().data();
+      count = static_cast<std::uint64_t>(ref.value().size());
+    }
+
+    const fuse::FieldSpec& spec = c.graph.field(field);
+    // `count` from the window branch above is slot.total() = entities *
+    // window_samples (the arc's own type.components is spec.components *
+    // window_samples, and a window member's field is constrained to
+    // spec.components == 1 -- src/runtime/iteration.cpp's own
+    // E-RT-WINDOW-LAYOUT check -- so this division is exact, never a
+    // truncation); from the ordinary branch, `count` is already entities
+    // and window_samples is 0, so dividing by 1 is a no-op.
+    const std::uint64_t entities =
+        count / static_cast<std::uint64_t>(window_samples > 0 ? window_samples : 1);
+    // Reported the SAME way an ordinary multi-component field already
+    // is: `components` widened by the window's own sample count,
+    // `count` unchanged (entities), array-of-structures (component_
+    // stride = 1, stride = components) -- which for a window view is
+    // exactly the entity-major, then-sample layout this entry's own
+    // window_samples doc measures against Runner::Impl::resolve_
+    // regions()'s priming loop (`data[e * K + s]`, src/runtime/
+    // iteration.cpp).
+    out->struct_size   = sizeof(fuse_field_view);
+    out->handle         = in->handle;
+    out->element_type   = FUSE_ELEMENT_F64;
+    out->memspace       = FUSE_MEMSPACE_HOST;
+    out->ownership      = FUSE_OWNERSHIP_OWNED;
+    out->components     = spec.components *
+                          static_cast<int32_t>(window_samples > 0 ? window_samples : 1);
+    out->count          = entities;
+    out->owned_count    = out->count;
+    out->stride         = out->components;
+    out->component_stride = 1;
+    out->data           = const_cast<double*>(data);
+    if (struct_size_covers(declared_out_size,
+                           offsetof(fuse_field_view, window_samples) +
+                               sizeof(out->window_samples))) {
+      out->window_samples = window_samples;
     }
     return FUSE_OK;
   });

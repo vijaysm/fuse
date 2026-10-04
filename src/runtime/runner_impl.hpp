@@ -741,6 +741,18 @@ struct Runner::Impl {
   };
   std::unordered_map<std::uint32_t, WindowMemberConfig> window_member_config;
 
+  /// Unit 3 (S6 phase 3, Conformance): `Runner::field_window_view()`'s own
+  /// lookup tables, keyed by FieldId (not by the WindowAdvance NodeId
+  /// `window_member_config` uses) since the ABI caller names a field, not
+  /// a node. Populated alongside `window_member_config` itself, in
+  /// `resolve_regions()`, from the SAME `exported_field`/`imported_field`
+  /// that function already resolves there -- not re-derived. `_arc` is
+  /// the arc field_window_view() reads through `buffer()`'s own `slots`;
+  /// a field present in neither map is not window-scoped at all (field_
+  /// window_view()'s "window_samples = 0" fallback).
+  std::unordered_map<std::uint32_t, ArcId> window_export_field_arc;
+  std::unordered_map<std::uint32_t, ArcId> window_import_field_arc;
+
   /// Time windows track: one member's own subcycling state, keyed the
   /// same way as `window_member_config` (the `NodeId` of its own
   /// `OpKind::WindowAdvance` instruction). `fuse::detail::

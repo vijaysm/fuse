@@ -547,6 +547,24 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         window_member_config[node] = cfg;
         R.window_member_nodes.push_back(NodeId{node});
 
+        // Unit 3: Runner::field_window_view()'s own lookup, keyed by the
+        // field the ABI caller actually names rather than this node.
+        // `exported_field`/`imported_field` are the SAME FieldIds this
+        // function already resolved a few lines above; `ins.out` is this
+        // member's own WindowAdvance output (the K-wide export buffer),
+        // and `cfg.window_import` is the arc the window path reads the
+        // import from -- the window Sink's own arc ordinarily, or for a
+        // LowFive-bound channel the ExternalDelivery arc, whichever
+        // finish_window_regions() resolved; either way, the SAME arc
+        // `window_import` already names, so this is not a second
+        // resolution that could disagree with it.
+        if (exported_field.valid()) {
+          window_export_field_arc[exported_field.value()] = ins.out;
+        }
+        if (imported_field.valid() && cfg.window_import.valid()) {
+          window_import_field_arc[imported_field.value()] = cfg.window_import;
+        }
+
         // This member's own export arc -- window_export_meta's own
         // top comment -- regardless of whether cfg.provided is null
         // (a consumer-only member exports nothing, so ins.out for its

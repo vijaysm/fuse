@@ -73,6 +73,25 @@ typedef struct fuse_participant_abi_v1 {
   /* component of its own), which still executes this call's own share of the */
   /* period's collectives */
   fuse_status (*run)(fuse_ctx* ctx, const fuse_run_request* in, fuse_null* out);
+
+  /* Unit 3 (S6 phase 3, Conformance), appended 2026-10-04 -- LAST, per this */
+  /* table's own append-only rule above (an entry inserted mid-table would */
+  /* shift every later member's offset, breaking a caller compiled against the */
+  /* previous layout): the reverse of register_field -- FUSE hands back a view */
+  /* of ITS OWN storage for the named handle, rather than the caller handing */
+  /* FUSE a pointer. Named view_field, not field_view, because the latter */
+  /* collides with the fuse_field_view TYPE it returns once Fortran lower-cases */
+  /* both (tools/gen-abi.py's own check). Before initialize, this is the same */
+  /* native storage register_field was already given (an early call is legal */
+  /* but pointless: the application already holds that pointer). After */
+  /* initialize, a window-scoped field (see fuse_field_view's own */
+  /* window_samples comment) returns the window path's own private buffer */
+  /* instead -- the one surface through which an application participating in a */
+  /* LowFive-bound window channel reads the waveform it must write, or writes */
+  /* the waveform it must deliver, with no other FUSE call involved in the */
+  /* transfer itself. FUSE_ERR_NOTFOUND if the handle names no field in the */
+  /* loaded graph. */
+  fuse_status (*view_field)(fuse_ctx* ctx, const fuse_field_ref* in, fuse_field_view* out);
 } fuse_participant_abi_v1;
 
 /* THE ONE EXPORTED SYMBOL. Returns the table for `abi_version`, or NULL
