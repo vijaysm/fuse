@@ -2485,9 +2485,52 @@ intercommunicator rendezvous plus a new small ABI surface to hand
 `access_plist_handle()`'s value to pure C/Fortran callers, since neither
 language may include `fuse/transport/transport.hpp` directly) — is real,
 separable design and implementation work, not a mechanical extension of
-what exists. Recommended as its own follow-up unit once the lead has
-picked one of the two shapes; this entry records the choice as still open
-rather than silently assuming one.
+what exists.
+
+**Correction to this entry's own framing above, per the lead's ruling
+2026-10-04: the Runner-Transport design this entry argued for was the wrong
+frame.** A LowFive-bound channel's two ends are, BY DESIGN, ordinary,
+unmodified HDF5 callers — spec §6 mode 4's own contract is "no FUSE-specific
+call on either side" (`docs/user/lowfive.md` line 4). `LowFiveTransport::
+move()`, and the Runner's per-plan Transport machinery this entry traced,
+is the right tool for a channel FUSE itself must move end to end; it is the
+wrong tool for this one. The corrected design (`docs/user/lowfive.md`'s new
+"Unit 3... an application-performed transfer" section has the full account):
+FUSE's job on such a channel is the schedule, the window semantics, any
+Remap the two sides' meshes need, the convergence decision, and installing
+LowFive's VOL bindings — never the bytes. No ABI growth (the earlier
+`hdf5_fapl` proposal is withdrawn): an application needing a FUSE-provided
+property list would itself be a FUSE-specific call, which the contract
+above forbids.
+
+**A new, measured blocker found while re-attempting this, 2026-10-04:
+BOTH `liblowfive.dylib` and `liblowfive-dist.dylib` carry an identical,
+unresolvable `@rpath/libfmt.8.dylib` dependency** (`otool -L` on both,
+docs/user/lowfive.md's own subsection has the exact output) — not only the
+separate distributed archive, as an earlier pass at this wrongly concluded
+from the dyld error's own wording (it names `-dist` only because that is the
+one dyld happens to check first; `otool` shows the dependency on the MAIN
+shared library too). No `libfmt.8.dylib` exists anywhere under `/opt` or any
+installed conda/homebrew prefix (9, 11 and 12 are present; not 8). Every
+LowFive-linked binary therefore fails at `dlopen`, including the
+single-process path this page elsewhere calls "implemented, measured" —
+that measurement predates this finding and was not re-confirmed against
+this exact install. Separately, `/opt/lowfive` HAS been rebuilt since this
+page's own stale-MPI-linkage paragraph was written (`otool` now shows the
+current `libmpicxx.0.dylib`, not `.12`) — that specific, earlier defect is
+closed; this libfmt one is a different, still-open one. Full account,
+including the forced-not-found CMake probe that isolated the libfmt
+dependency from a separate, already-documented distributed-archive LINK
+failure (missing `fmt::v8::...` symbols for the static `.a`, a different
+problem from this dlopen-time one): `docs/user/lowfive.md`'s own subsection.
+This sandbox has no writable `/opt` and was declined permission to install
+a workaround via a new package environment; fixing `/opt/lowfive`'s own
+shared-library dependency is a host action, like the hazard already on this
+page. Until it is fixed,
+step 5 of the lead's own 3a design ("if ordinary H5Dread in V cannot see
+U's in-memory write within one process, stop and report the measured
+behaviour") cannot be reached at all — there is nothing to measure yet,
+only LowFive's own header contracts to read.
 
 ### D15. The provider direction (S6 phase 4, "Adapter host" track) is implemented and conformance-tested on one process; device fields, mixed checkpoint/restore, and a plugin on a rank subset are not
 

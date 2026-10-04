@@ -83,16 +83,22 @@ probe: vol_id=648518346341351425 fapl_vol_matches=NO
 mismatch and reports it; nothing in HDF5 or the OS would have surfaced it otherwise.
 
 **`/opt/lowfive` (the pairing that measures as safe) could not be run to full
-completion by this probe either, but for an UNRELATED reason**: its own
-`liblowfive.dylib` links against `/opt/mpich/lib/libmpicxx.12.dylib`, an MPICH ABI
-version older than the one currently installed at `/opt/mpich`
-(`libmpicxx.0.dylib`, MPICH 5.0 per `mpichversion`). The process aborts at load time
-with `Library not loaded: .../libmpicxx.12.dylib` — but only AFTER the loader has
-already mapped both `libhdf5`/`libhdf5_hl` (confirmed by inspecting the trace up to
-that point), so the image-count verdict is unaffected. This is a second, independent
-defect in this lab's `/opt/lowfive` install (a stale MPI linkage), not the hazard this
-page is about; `tools/probe-hdf5-images.sh` reports it as a separate warning rather
-than folding it into the PASS/FAIL verdict.
+completion by this probe either, but for an UNRELATED reason, measured
+2026-10-02**: its own `liblowfive.dylib` linked against
+`/opt/mpich/lib/libmpicxx.12.dylib`, an MPICH ABI version older than the one
+then installed at `/opt/mpich` (`libmpicxx.0.dylib`, MPICH 5.0 per
+`mpichversion`). The process aborted at load time with `Library not loaded:
+.../libmpicxx.12.dylib` — but only AFTER the loader had already mapped both
+`libhdf5`/`libhdf5_hl` (confirmed by inspecting the trace up to that point),
+so the image-count verdict was unaffected. This was a second, independent
+defect in this lab's `/opt/lowfive` install (a stale MPI linkage), not the
+hazard this page is about; `tools/probe-hdf5-images.sh` reported it as a
+separate warning rather than folding it into the PASS/FAIL verdict.
+**STALE as of 2026-10-04: `/opt/lowfive` has since been rebuilt and now links
+the current `libmpicxx.0.dylib`/`libmpi.0.dylib`/`libpmpi.0.dylib` — this
+specific defect is closed. It has been superseded by a DIFFERENT, still-open
+one (both shared libraries' identical `@rpath/libfmt.8.dylib` dependency),
+measured below under "A third `/opt/lowfive` install defect".**
 
 ### Why a dynamic probe, not a static CMake check
 
@@ -167,6 +173,132 @@ call, not just at setup, so a connector that stops intercepting mid-run fails lo
 (`E-TRANSPORT-LF-NOINTERCEPT`/`E-TRANSPORT-LF-ONDISK`) instead of quietly writing real
 files. This path needs only `FUSE_ENABLE_LOWFIVE`, not MPI, and is exercised directly
 in `test/transport/lowfive_test.cpp`.
+
+### A third `/opt/lowfive` install defect, measured 2026-10-04: neither shared library can load on this host
+
+The two-HDF5-image hazard above is not the only defect this lab's `/opt/lowfive`
+install carries, and the stale-MPI-linkage paragraph in "The fix, and why it is a
+host action" is now itself stale: `otool -L` on both shared libraries, run
+2026-10-04, shows
+
+```
+$ otool -L /opt/lowfive/lib/liblowfive.dylib
+	@rpath/liblowfive.dylib ...
+	@rpath/libfmt.8.dylib (compatibility version 8.0.0, current version 8.1.1)
+	...
+	/opt/mpich/lib/libmpicxx.0.dylib ...
+	/opt/mpich/lib/libmpi.0.dylib ...
+	/opt/mpich/lib/libpmpi.0.dylib ...
+
+$ otool -L /opt/lowfive/lib/liblowfive-dist.dylib
+	@rpath/liblowfive-dist.dylib ...
+	@rpath/liblowfive.dylib ...
+	...
+	@rpath/libfmt.8.dylib (compatibility version 8.0.0, current version 8.1.1)
+	/opt/mpich/lib/libmpicxx.0.dylib ...
+	/opt/mpich/lib/libmpi.0.dylib ...
+	/opt/mpich/lib/libpmpi.0.dylib ...
+```
+
+**The MPI linkage is current now** — `libmpicxx.0.dylib`/`libmpi.0.dylib`/
+`libpmpi.0.dylib`, not the stale `libmpicxx.12.dylib` this page recorded
+2026-10-02: `/opt/lowfive` has been rebuilt since that paragraph was written,
+and that specific defect is closed.
+
+**Both libraries now carry an identical, unresolvable `@rpath/libfmt.8.dylib`
+dependency.** This host has only fmt 12 (`/opt/homebrew/lib/libfmt.12.dylib`,
+`libfmt.12.2.0.dylib`) — no `libfmt.8.dylib` anywhere under `/opt` or any
+installed conda/homebrew prefix. The dyld error actually observed running
+`fuse_transport_lowfive_test` names `liblowfive-dist.dylib` as the referencer
+(load order — it is checked first):
+
+```
+dyld[99193]: Library not loaded: @rpath/libfmt.8.dylib
+  Referenced from: <...> /opt/lowfive/lib/liblowfive-dist.dylib
+  Reason: tried: '/opt/lowfive/lib/libfmt.8.dylib' (no such file), ...
+```
+
+— but the `otool -L` evidence above shows the identical dependency on the MAIN
+`liblowfive.dylib` too, so this is not specific to the distributed archive. A
+separate, EARLIER link-time failure (`fmt::v8::detail::...` symbols missing
+for `liblowfive-dist.a`, the static archive, compiled against a real,
+non-header-only fmt 8) is a different, already-isolated defect: forcing CMake
+to treat `liblowfive-dist` as not-found
+(`-DLOWFIVE_DIST_LIBRARY=LOWFIVE_DIST_LIBRARY-NOTFOUND`) removes that link
+failure, confirming it was specific to the static archive — but the resulting
+binary still fails to even start, at `dlopen`, on the identical
+`libfmt.8.dylib` dependency the main shared library itself carries.
+
+This means **no LowFive-linked binary can execute in this sandbox at all**, not
+even the single-process path this page calls "implemented, measured" above —
+that measurement predates this finding and was not re-confirmed against this
+exact `/opt/lowfive` state. Relinking `/opt/lowfive`'s shared libraries against
+an fmt this host actually has (or installing a compatible `libfmt.8.dylib`
+for them to find) is a host action, like the hazard above; this sandbox has no
+writable `/opt` and was declined permission to install a workaround via a new
+package environment. Until that is fixed, every claim below the "Unit 3: a
+LowFive-bound channel is an application-performed transfer" section is argued
+from reading LowFive's own header contracts, not measured by running
+anything.
+
+## Unit 3 (S6 phase 3, Conformance): a LowFive-bound channel is an application-performed transfer
+
+**Design decision, recorded before implementation, per the lead's own ruling
+2026-10-04.** A channel whose field sets `hdf5_path` (`FieldSpec::hdf5_path`,
+`fuse/model/field_spec.hpp`) is NOT moved by any `fuse::Transport`, including
+`LowFiveTransport::move()`. The entire premise of putting LowFive in this
+coupler is spec §6 mode 4's own contract: **"no FUSE-specific call on either
+side"** — a code that already writes HDF5 couples with another that already
+reads it, with LowFive intercepting in memory, and FUSE never touches the
+bytes. `LowFiveTransport::move()` (its own internal `H5Fcreate`/`H5Dwrite`
+then `H5Fopen`/`H5Dread` in one call, `src/transport/lowfive_transport.cpp`)
+is the RIGHT tool for a channel FUSE itself must move end to end with no
+unmodified external writer/reader — which is exactly what it already serves,
+and remains unchanged — but it is the WRONG tool for this one, where the two
+ends are ALREADY ordinary, unmodified HDF5 callers by design.
+
+What FUSE does for a LowFive-bound channel instead: the schedule (when U must
+have written before V may read), the waveform/window semantics (how many
+samples the channel carries per window), Interpolate/Remap/Constrain if the
+two sides' meshes differ, the convergence decision, and installing LowFive's
+VOL connector with the right file/dataset bindings
+(`fuse::build_lowfive_bindings()`, `fuse/transport/lowfive_graph.hpp`) so
+neither side's H5Dwrite/H5Dread ever reaches a real disk. Everything else —
+the actual bytes — is the two applications' own, ordinary HDF5 calls, exactly
+as spec §6 mode 4 promises.
+
+**How the VOL gets onto the application's own `H5Fcreate`/`H5Fopen` call,
+with literal `H5P_DEFAULT`: HDF5's own default-VOL mechanism, THE design,
+unmeasured until the host unblocks.** `LowFive::H5VOLProperty::apply(hid_t
+list)` (`lowfive/H5VOLProperty.hpp`) is the only attachment primitive
+LowFive's own header exposes, and it takes an EXPLICIT property list — an
+application calling it itself would be a FUSE-specific call, contradicting
+spec §6 mode 4's contract. The mechanism that keeps the contract literal is
+HDF5's own: HDF5 reads the `HDF5_VOL_CONNECTOR` and `HDF5_PLUGIN_PATH`
+environment variables at library initialisation and makes the named
+connector the default for every `H5P_DEFAULT` file access thereafter — no
+caller-side property-list call of any kind. LowFive ships no loadable plugin
+of its own (`vol-metadata.hpp` exposes only the programmatic
+`H5VOLProperty`/`MetadataVOL` path this page's single-process section
+already uses), so **FUSE ships one**: a small shared library
+(`src/transport/lowfive_plugin.cpp`, target `fuse-lowfive-vol`) exporting
+the two symbols HDF5's plugin loader looks for,
+`H5PLget_plugin_type`/`H5PLget_plugin_info`, which on load constructs
+LowFive's `MetadataVOL` singleton with `set_memory`/`set_keep` (identical to
+`VolSingleton`'s own constructor, `lowfive_transport.cpp:133-143`, including
+its `std::atexit(+[]{ H5close(); })` teardown-ordering fix — the SAME
+mutex-destruction-order hazard "The `HDF5_VOL_CONNECTOR` abort" section
+below records applies here too, and the fix is the same one, just carried
+by this new plugin's own constructor instead of `VolSingleton`'s) and the
+field bindings, read from an environment variable `FUSE_LOWFIVE_BINDINGS`
+naming the graph's own YAML path, through `fuse::build_lowfive_bindings()`.
+The launcher — the ctest row, or a user's own job script — sets the two
+HDF5 variables (and `FUSE_LOWFIVE_BINDINGS`); `uv_lowfive_main.c`'s own
+`H5Fcreate`/`H5Dwrite`/`H5Fopen`/`H5Dread` calls are then genuinely ordinary,
+with no FUSE call anywhere in them. **Unmeasured until the host's LowFive
+loads at all** (the libfmt.8 blocker above) — this is recorded as the
+design, not implemented yet; implementing a plugin that cannot be run here
+would be writing code with no way to catch its own mistakes.
 
 ## Distributed (cross-process) interception — Demo B
 
@@ -258,6 +390,18 @@ registered — the fix in both codebases is the same: register
 `std::atexit(+[]{ H5close(); })` as part of constructing the VOL singleton, which
 puts it ahead of HDF5's own atexit registration in the LIFO unwind order, so it runs
 first. `VolSingleton`'s constructor (`lowfive_transport.cpp`) does exactly this.
+
+**Does not rule out `HDF5_VOL_CONNECTOR` for Unit 3's own plugin
+(`fuse-lowfive-vol`, "Unit 3" section above).** What aborted here was loading
+LowFive's OWN connector through the env-var mechanism with no fix in
+place at all; the fix itself — `std::atexit(+[]{ H5close(); })`, registered
+before any native-VOL HDF5 call — is a property of WHEN it runs, not of
+WHICH loading path reached it. `fuse-lowfive-vol`'s own
+`H5PLget_plugin_info` carries the identical fix in its own construction
+path, so the mechanism this abort argues against programmatic-vs-plugin in
+general is available to FUSE's plugin the same way it is to `VolSingleton`
+today — unmeasured, like the rest of that design, until the host's LowFive
+loads at all.
 
 ## See also
 
