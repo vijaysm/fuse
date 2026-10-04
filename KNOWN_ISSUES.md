@@ -2412,6 +2412,83 @@ Compiles cleanly under `-DFUSE_ENABLE_LOWFIVE=ON -DFUSE_ENABLE_MPI=ON
 2026-10-02); the host run that would turn "compiles" into "works" is recorded as an
 open item in this track's report, not claimed here.
 
+**Unit 3 ("the same U/V pair over LowFive") — graph/model layer DONE and
+tier-0 tested; the participant mains' own H5Dwrite/H5Dread wiring NOT
+implemented, for a reason found while scoping it (below).**
+
+DONE: `FieldSpec::hdf5_path` (`std::optional<std::string>`, `include/fuse/
+model/field_spec.hpp`), descriptor v11 (`include/fuse/model/descriptor.hpp`,
+golden `test/golden/waist-v11.bin`), full `to_yaml`/`from_yaml` round trip
+(`hdf5_path:` under a field entry), and a fifth `LaunchMode` value,
+`LowFive` (`include/fuse/model/launch.hpp`) — a component declares it to
+say "I need LowFive interception set up," independently of that
+component's OWN launch story (Mpmd/Connect/InProcess), the same way a
+`Coupler` is a placement separate from the physics components it serves.
+`validate()` (`fuse/model/validate.hpp`) refuses a field whose `hdf5_path`
+is set with no `LaunchMode::LowFive` component anywhere in the graph
+(`E-LOWFIVE-NO-COMPONENT`) and refuses two fields sharing the exact same
+non-wildcard path (`E-LOWFIVE-DUPPATH`, mirroring `LowFiveFieldBindingTable
+::add`'s own existing rule one layer down). `fuse::build_lowfive_bindings()`
+(new file `include/fuse/transport/lowfive_graph.hpp`, transport layer since
+it depends on `CouplingGraph`) builds a `LowFiveFieldBindingTable` FROM a
+graph's own fields, qualified `"<component>.<field>"`; the standalone type
+and its own hand-built-table constructor (`fuse/transport/lowfive.hpp`) are
+untouched, exactly as asked. `brusselator_graph_tool`'s new `--transport
+lowfive` flag sets `hdf5_path` on both `u_out` and `v_out` (the two
+transfer/export fields) and adds a separate, fieldless `LaunchMode::LowFive`
+component spanning every rank in use; a new committed reference
+(`examples/brusselator/participants/reference_mpmd_3_lowfive.yaml`) pins its
+output byte for byte (`verification.brusselator.graph_tool.reproduces_
+reference_lowfive`), and `test/verification/brusselator_graph_tool_lowfive_
+test.cpp` proves the graph it writes actually `validate()`s clean (plus the
+negative control: the same fields without the LowFive component are
+refused). Two new mutation rows, both hand-verified with a decisive,
+exact-predicted kill: `hdf5-path-ignored-on-serialisation` (descriptor.hpp)
+and `hdf5-path-duplicate-check-disabled` (validate.hpp) —
+`build-evidence/mutations/base-model.toml`. All of this needs no LowFive,
+no HDF5 and no MPI; it is exercised by the ordinary tier-0 suite (166/166
+passing) and all 5 repo-health gates.
+
+**Found while implementing, not before: adding `LaunchMode::LowFive` left
+`fuse::transport::connect()`'s own exhaustive `switch (launch.mode)`
+(`src/transport/connect.cpp`) silently missing the new case** — a real
+gap, caught only because this session additionally configured and built a
+genuine `-DFUSE_ENABLE_LOWFIVE=ON -DFUSE_ENABLE_MPI=ON` tree against this
+host's `/opt/lowfive`+`/opt/hdf5` (a stronger check than this sandbox had
+previously used for this track: compiler warnings, not just tier-0 green).
+Fixed: `LowFive` now refuses with `E-CONNECT-SPEC` exactly like `InProcess`
+and `Plugin` (nothing to connect; a LowFive-launched component's ranks come
+from whatever other launch story applies, or none). No tier-0 test reaches
+this branch — `connect()` itself requires `MPI_Initialized`, same as
+`InProcess`/`Plugin`'s own identical, equally untested branches — so this
+is a compile-time fix with no new regression test, consistent with those
+two siblings' own existing coverage gap.
+
+**NOT implemented: the participant mains' own `--transport lowfive` mode**
+(U calling plain `H5Dwrite`, V plain `H5Dread`, FUSE's job limited to
+registering the VOL connector and hand the caller a ready `fapl_id` —
+`LowFiveTransport::access_plist_handle()`'s own documented purpose). Scoped
+out, not merely postponed, for a concrete reason found while designing it:
+LowFive's single-process interception (`MetadataVOL`) — the ONLY path this
+codebase has ever measured end to end — needs the writer and the reader in
+the SAME process's address space. The graph `--transport lowfive` builds
+places U and V on DISJOINT ranks (mirroring every other Unit 2/2b fixture,
+`--launch mpmd`), which needs the DISTRIBUTED path (`DistMetadataVOL`, an
+MPI intercommunicator) — the same path D14's own Demo B section above
+already records as compiled against LowFive's documented API but never
+run, and whose rendezvous design (reuse `connect()`, or stay with Demo B's
+own local one) is already an open question for the lead. Wiring U/V's
+existing, large participant mains into either path — same-process
+co-location (a materially different graph shape than every other
+Brusselator fixture) or the unmeasured distributed one (a new
+intercommunicator rendezvous plus a new small ABI surface to hand
+`access_plist_handle()`'s value to pure C/Fortran callers, since neither
+language may include `fuse/transport/transport.hpp` directly) — is real,
+separable design and implementation work, not a mechanical extension of
+what exists. Recommended as its own follow-up unit once the lead has
+picked one of the two shapes; this entry records the choice as still open
+rather than silently assuming one.
+
 ### D15. The provider direction (S6 phase 4, "Adapter host" track) is implemented and conformance-tested on one process; device fields, mixed checkpoint/restore, and a plugin on a rank subset are not
 
 **What is done, measured 2026-10-02.** `include/fuse/abi/provider.h` (generated from a second
