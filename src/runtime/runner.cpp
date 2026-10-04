@@ -2862,6 +2862,14 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
       // The arc already aliases component storage; nothing to do.
       break;
 
+    case OpKind::ExternalDelivery:
+      // The application (or, for the tier-0 oracle, the test harness
+      // standing in for it) fills this arc's buffer directly -- by the
+      // point an H5Dread or its stand-in would occur -- before this
+      // instruction runs; nothing to do here. See OpKind::ExternalDelivery
+      // (include/fuse/ir/op.hpp) and docs/user/lowfive.md, Unit 3.
+      break;
+
     case OpKind::Sink:
     case OpKind::Accelerate: {  // Phase 7 replaces this with a real accelerator.
       if (ins.n_in == 0 || !ins.out.valid()) break;

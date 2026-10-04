@@ -59,6 +59,39 @@ enum class OpKind {
   /// docs/dev/coupling-windows.md for why a component receives a mean, not a
   /// point sample.
   WindowAdvance,
+
+  /// Unit 3 (S6 phase 3, Conformance): a zero-input boundary node, shaped
+  /// like `Source`, for a channel whose data movement an APPLICATION
+  /// performs outside the graph -- today, the LowFive-bound case
+  /// (`FieldSpec::hdf5_path` set on the channel's source field), where the
+  /// transfer is an ordinary HDF5 write/read FUSE never touches
+  /// (docs/user/lowfive.md, "a LowFive-bound channel is an
+  /// application-performed transfer").
+  ///
+  /// `lower_channel()` (src/ir/rules_channel.cpp) emits this in place of
+  /// reading the channel's own `ctx.source_arc[source]` -- severing the
+  /// DAG edge from the source field's own producer (its ordinary `Source`
+  /// or, for a window-scoped export, its `WindowAdvance`) to this
+  /// channel's chain entirely, since in the deployments this exists for,
+  /// the two sides may be different processes with no such edge at all.
+  /// The rest of the channel's chain (Scale, Remap, Extrapolate, the
+  /// window-importing Sink) is unchanged downstream of it.
+  ///
+  /// Deliberately NOT one of `acyclicity.cpp`'s Source/Sink endpoint kinds
+  /// (`prove_acyclic()`'s own Source side=1 / Sink side=0 classification):
+  /// an externally-delivered arc performs no computation and closes no
+  /// algebraic loop through this graph, so including it there would make
+  /// `validate()` report a cycle across two components that, in the
+  /// deployment this exists for, never meet inside one coupled run at all.
+  ///
+  /// Its own output arc is NOT given `plan_buffers()`'s `component_owned`
+  /// treatment (src/schedule/buffers.cpp): there is no registered field
+  /// storage to alias it to for a window-scoped channel (the window
+  /// Sink's own output is excluded from that aliasing for the identical
+  /// reason, `is_window_arc()` there) -- it stays a private, Runner-owned
+  /// scratch buffer, reachable by the application only through the new
+  /// `field_view` ABI accessor (docs/user/lowfive.md, Unit 3).
+  ExternalDelivery,
 };
 
 /// Whether executing this operator involves the other ranks of its exchange.
@@ -89,6 +122,12 @@ enum class OpKind {
     case OpKind::Remap: case OpKind::Merge: case OpKind::Relax:
     case OpKind::Residual: case OpKind::Accelerate:
     case OpKind::Diagnose: case OpKind::Scale:
+      return false;
+    // A zero-input boundary node, same reasoning as Source: it involves no
+    // other rank set of this graph's own exchange (the application-
+    // performed transfer that fills it happens entirely outside this
+    // instruction stream).
+    case OpKind::ExternalDelivery:
       return false;
     // Reserved for multiscale, refused by the scheduler. Answering "not
     // collective" here would be a guess about an operator nobody has written.
@@ -129,6 +168,7 @@ enum class OpKind {
     case OpKind::Reduce:      return "Reduce";
     case OpKind::Closure:     return "Closure";
     case OpKind::WindowAdvance: return "WindowAdvance";
+    case OpKind::ExternalDelivery: return "ExternalDelivery";
   }
   return "Unknown";
 }

@@ -98,6 +98,65 @@ TEST(ChannelLowering, SpecExampleEmitsSampleAccumulateRemapRelax) {
   EXPECT_LT(index_of(k, OpKind::Remap), index_of(k, OpKind::Relax));
 }
 
+// Unit 3 (S6 phase 3, Conformance): a LowFive-bound channel's source field
+// sets FieldSpec::hdf5_path; lower_channel() (src/ir/rules_channel.cpp)
+// must substitute a zero-input ExternalDelivery node for the ordinary
+// Source-arc read, and the Transport this channel would otherwise need
+// (fluid/solid's rank sets overlap but are not identical, so an ordinary
+// channel between them DOES emit one -- MinimalChannelIsSourceRemapSink's
+// own Pair, reused unchanged here) must not appear at all.
+TEST(ChannelLowering, LowFiveBoundChannelEmitsExternalDeliveryNotTransport) {
+  Pair p = make_pair();
+  const fuse::Channel& ch = p.g.channel_at(p.ch);
+  const_cast<FieldSpec&>(p.g.field(ch.source)).hdf5_path =
+      "fluid_out.h5/grid/heat_flux";
+
+  const auto r = lower(p.g);
+  ASSERT_TRUE(r.ok()) << r.diags.to_string();
+  const auto k = kinds_in_order(r.dag);
+
+  EXPECT_TRUE(contains(k, OpKind::ExternalDelivery));
+  EXPECT_FALSE(contains(k, OpKind::Transport));
+  EXPECT_FALSE(contains(k, OpKind::Epoch));
+  // Remap still runs -- the regions still differ -- just fed from the
+  // externally-delivered arc instead of a Transport's.
+  EXPECT_TRUE(contains(k, OpKind::Remap));
+  EXPECT_TRUE(contains(k, OpKind::Sink));
+  EXPECT_LT(index_of(k, OpKind::ExternalDelivery), index_of(k, OpKind::Remap));
+  EXPECT_LT(index_of(k, OpKind::Remap), index_of(k, OpKind::Sink));
+
+  bool found = false;
+  for (std::uint32_t i = 0; i < r.dag.node_count(); ++i) {
+    const auto& n = r.dag.node(fuse::NodeId{i});
+    if (n.kind != OpKind::ExternalDelivery) continue;
+    found = true;
+    EXPECT_TRUE(n.inputs.empty())
+        << "ExternalDelivery must be a genuine SSA root, zero inputs";
+    ASSERT_TRUE(n.output.valid());
+    // Same shape (region/units/components/conservation/rank_set) as the
+    // source field's own producer would have carried -- the rest of the
+    // chain (Remap, Sink) must be unable to tell the difference.
+    const auto& out_type = r.dag.arc(n.output).type;
+    EXPECT_EQ(out_type.units, u::kHeatFluxDensity);
+    EXPECT_EQ(out_type.conservation, Conservation::Extensive);
+    // The application's own read lands on the CONSUMER's placement (the
+    // same reason this channel now needs no Transport at all), not the
+    // producer's.
+    EXPECT_EQ(out_type.rank_set, static_cast<int>(p.g.owner_of(ch.target).value()));
+  }
+  EXPECT_TRUE(found);
+
+  // The source field's own ordinary Source node still exists (its
+  // component's own export computation is unaffected) but this channel no
+  // longer consumes it -- confirmed by there being exactly one Source node
+  // and it feeding no Remap/ExternalDelivery/Sink at all in this DAG.
+  int source_count = 0;
+  for (std::uint32_t i = 0; i < r.dag.node_count(); ++i) {
+    if (r.dag.node(fuse::NodeId{i}).kind == OpKind::Source) ++source_count;
+  }
+  EXPECT_EQ(source_count, 1);
+}
+
 TEST(ChannelLowering, RemapChangesRegionAndNothingElse) {
   Pair p = make_pair();
   p.g.channel(p.ch).remap(RemapFlags::Conservative);

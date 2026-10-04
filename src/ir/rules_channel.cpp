@@ -38,8 +38,53 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
     return true;  // claimed, but failed
   }
 
-  ArcId cur = it->second;
+  // Unit 3 (S6 phase 3, Conformance): a LowFive-bound channel
+  // (`FieldSpec::hdf5_path` set on the source field) is an
+  // APPLICATION-performed transfer -- the field's own producer (its
+  // ordinary `Source`, or for a window-scoped export its
+  // `WindowAdvance`) still runs exactly as it does today, but this
+  // channel's own chain does not read its output: the DAG edge is
+  // severed here, in favour of a fresh, zero-input `ExternalDelivery`
+  // node of the identical shape, which the application (an ordinary
+  // HDF5 write/read, through the installed VOL) or, for the tier-0
+  // oracle, a test harness fills from outside this graph entirely. See
+  // OpKind::ExternalDelivery (include/fuse/ir/op.hpp) and
+  // docs/user/lowfive.md, Unit 3, for why: in the deployment this
+  // exists for, the source field's own producer and this channel's
+  // consumer may be different processes with no such edge at all.
+  //
+  // Everything below this point -- unit conversion, Remap, Extrapolate,
+  // the window-importing Sink -- is unchanged: it operates on `cur`/
+  // `type` exactly as it would for an ordinary channel, unaware of
+  // where the value came from.
+  const ArcId source_producer = it->second;
+  const bool lowfive_bound = g.field(ch.source).hdf5_path.has_value();
+
+  ArcId cur = source_producer;
   ValueType type = ctx.dag.arc(cur).type;
+  if (lowfive_bound) {
+    // The value the application's own read (H5Dread, or the tier-0
+    // harness's stand-in) produces lands on the CONSUMER's own
+    // placement, not the producer's: it is that application's own
+    // process that performed the read, same as an ordinary field it
+    // reads into its own registered storage. Carrying the producer's
+    // rank_set forward here would make every step below that checks
+    // "does this value need to move to reach its target" (the Transport-
+    // before-Remap and coupler-second-hop logic further down) try to
+    // insert a move FUSE must not perform for this channel at all.
+    ValueType delivered = ctx.dag.arc(source_producer).type;
+    delivered.rank_set = static_cast<int>(g.owner_of(ch.target).value());
+    // Zero inputs, same construction as lower()'s own step-1 Source nodes
+    // (lowering.cpp) and finish_window_regions()'s WindowAdvance node
+    // (window_lowering.cpp) -- `emit()` just below always threads exactly
+    // one input, which is wrong for a genuine SSA root.
+    const ArcId out =
+        ctx.dag.add_arc(delivered, base + "/external_delivery");
+    ctx.dag.add_node(OpKind::ExternalDelivery, {}, out, OpAttrs{}, cid,
+                     base + "/external_delivery");
+    cur = out;
+    type = delivered;
+  }
 
   // 1. The conversions the connection check authorized.
   //
@@ -237,6 +282,13 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
         g.component(ComponentId{static_cast<std::uint32_t>(coupler_rank_set)}).ranks;
     ranks_differ = !src_ranks.same_as(dst_ranks);
   }
+  // Unit 3: the application's own read already delivered the value onto
+  // the consumer's placement (the ExternalDelivery arc above was typed
+  // with dst_rank_set for exactly this reason) -- FUSE performs no data
+  // move of its own on this channel, so neither hop below (Transport-
+  // before-Remap here, nor the coupler-second-hop Transport at 5b) may
+  // fire, whatever a rank-set comparison alone would otherwise say.
+  if (lowfive_bound) ranks_differ = false;
 
   if (ranks_differ && remap_moves) {
     // The agreement point still comes first, for the same reason it follows a

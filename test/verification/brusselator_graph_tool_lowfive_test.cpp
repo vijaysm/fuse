@@ -11,6 +11,8 @@
 
 #include <gtest/gtest.h>
 
+#include "fuse/ir/lowering.hpp"
+#include "fuse/ir/op.hpp"
 #include "fuse/model/validate.hpp"
 #include "fuse/model/yaml_io.hpp"
 
@@ -23,6 +25,7 @@ using fuse::FieldSpec;
 using fuse::LaunchMode;
 using fuse::LaunchSpec;
 using fuse::MeshDecl;
+using fuse::OpKind;
 using fuse::Rational;
 using fuse::RankSet;
 using fuse::Region;
@@ -91,4 +94,39 @@ TEST(BrusselatorGraphToolLowFive, OmittingTheLowFiveComponentIsRefused) {
       if (item.code == "E-LOWFIVE-NO-COMPONENT") return true;
     return false;
   }()) << d.to_string();
+}
+
+// Unit 3 (S6 phase 3, Conformance), IR/runtime half: the real tool-built
+// graph -- window-scoped (add_window_coupling()), u_mesh/v_mesh genuinely
+// different (3x3 vs 4x4, so Remap is actually needed), u_ranks/v_ranks
+// genuinely different ({0,1} vs {1,1}) -- lowers with no OpKind::Transport
+// and no OpKind::Epoch anywhere in the u2v/v2u channels' own chain, and an
+// OpKind::ExternalDelivery node stands in their place. This is the same
+// mechanism LoweringChannel.LowFiveBoundChannelEmitsExternalDeliveryNot
+// Transport (test/ir/lowering_channel_test.cpp) proves on a synthetic
+// single-clock pair; this test is what proves the window-scoped and
+// genuinely-cross-rank case (the Brusselator's own LowFive graph) behaves
+// identically, not merely a graph built to make the mechanism look clean.
+TEST(BrusselatorGraphToolLowFive, LowersWithExternalDeliveryAndNoTransport) {
+  const CouplingGraph g = build_lowfive_graph();
+  const auto r = fuse::lower(g);
+  ASSERT_TRUE(r.ok()) << r.diags.to_string();
+
+  int external_delivery_count = 0, transport_count = 0, epoch_count = 0;
+  for (std::uint32_t i = 0; i < r.dag.node_count(); ++i) {
+    const auto& n = r.dag.node(fuse::NodeId{i});
+    if (n.kind == OpKind::ExternalDelivery) {
+      ++external_delivery_count;
+      EXPECT_TRUE(n.inputs.empty());
+    } else if (n.kind == OpKind::Transport) {
+      ++transport_count;
+    } else if (n.kind == OpKind::Epoch) {
+      ++epoch_count;
+    }
+  }
+  // Two LowFive-bound channels (u2v carries u_out, v2u carries v_out) ->
+  // two ExternalDelivery nodes, one per channel.
+  EXPECT_EQ(external_delivery_count, 2);
+  EXPECT_EQ(transport_count, 0);
+  EXPECT_EQ(epoch_count, 0);
 }
