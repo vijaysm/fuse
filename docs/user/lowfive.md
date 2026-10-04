@@ -300,6 +300,59 @@ loads at all** (the libfmt.8 blocker above) — this is recorded as the
 design, not implemented yet; implementing a plugin that cannot be run here
 would be writing code with no way to catch its own mistakes.
 
+**IR/runtime half, implemented and measured (no LowFive/HDF5 needed) —
+2026-10-04.** `lower_channel()` (`src/ir/rules_channel.cpp`) emits a new
+zero-input `OpKind::ExternalDelivery` node (`include/fuse/ir/op.hpp`) in
+place of reading the channel's own producing arc, when the source field
+sets `hdf5_path`. This severs the DAG edge from the field's own producer
+(its ordinary `Source`, or for a window-scoped export its
+`WindowAdvance`) to this channel's own chain — correct for a deployment
+where the two sides may be different processes with no such edge at all
+— while that producer keeps running unaffected (the component's own
+export computation is not touched). The new node's arc is typed with the
+CONSUMER's own rank_set, not the producer's (the application's own read
+lands on the reader's own placement), which is also what makes the
+Transport-before-Remap and coupler-second-hop logic further down in the
+same function correctly emit neither a `Transport` nor an `Epoch` for
+this channel's data hop — confirmed, not assumed: `ranks_differ` is
+forced `false` for a LowFive-bound channel rather than left to a
+rank-set comparison that would otherwise still fire one. Everything
+downstream (Scale, Remap when the two meshes differ, Extrapolate, the
+window-importing Sink) is unchanged, operating on the externally-delivered
+arc exactly as it would on a Transport's.
+
+Measured against two graphs, both green: `test/ir/lowering_channel_test.cpp`'s
+`LowFiveBoundChannelEmitsExternalDeliveryNotTransport` (a synthetic,
+non-window, two-rank-set pair) and
+`test/verification/brusselator_graph_tool_lowfive_test.cpp`'s
+`LowersWithExternalDeliveryAndNoTransport`, against the REAL tool-built,
+window-scoped, genuinely cross-rank (`{0,1}`/`{1,1}`), genuinely
+cross-mesh (3x3/4x4) Brusselator LowFive graph — two `ExternalDelivery`
+nodes (one per LowFive-bound channel), zero `Transport`, zero `Epoch`.
+Full tier-0 (166/166) and all 5 repo-health gates clean throughout.
+
+**Not yet done, and why this half stops here rather than claiming
+completion:** the lead's design additionally calls for a new `field_view`
+ABI accessor (`fuse_field_view` gains an appended `window_samples`
+member; a new ABI entry returns a view of a window member's own K-wide
+buffer by field handle) so an application -- or, for the tier-0 oracle,
+a test harness standing in for one -- can actually reach the
+`WindowAdvance` node's own export buffer and the new `ExternalDelivery`
+arc's import buffer, both of which stay private, Runner-owned scratch
+(no existing `register_field()` binding reaches either, window-scoped or
+not: see `src/schedule/buffers.cpp`'s own `is_window_arc()` exclusion).
+That accessor, the golden-IR regeneration for the LowFive Brusselator
+graph, and the two-member tier-0 harness test (with its two named
+mutations) are not implemented this round. Separately, and reported as
+asked: whether a window member's own application code can tell "this is
+my last substep of the current sweep" from `fuse_step_request`/
+`fuse_step_report` alone -- yes, from `t_end` (already populated for the
+participant direction, `src/abi/participant.cpp:967-1018`) checked
+against the window boundary, using the SAME window-length constant the
+participant's own `main()` is already built with (identical to how every
+existing Brusselator participant matches its CLI flags to the graph
+tool's); no appended `int32_t` is needed for this piece.
+
 ## Distributed (cross-process) interception — Demo B
 
 **Status: compiles against LowFive's public header contract
