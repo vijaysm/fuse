@@ -191,19 +191,39 @@ TEST(LowFiveTransport, MoveBeforeBuildPlanIsRefused) {
 }
 
 #if FUSE_HAVE_MPI
-TEST(LowFiveTransport, SetIntercommRefusesAnOrdinaryIntracommunicator) {
-  // MPI_COMM_WORLD, converted to its Fortran handle, is an intracommunicator
-  // -- exactly the mistake set_intercomm() must catch (its doc in
-  // transport.hpp: "form one with MPI_Comm_connect/accept ... not with
-  // MPI_Comm_dup/MPI_Comm_split"). This runs WITHOUT MPI_Init: the
-  // uninitialised-MPI refusal fires first in that case, which this test
-  // also accepts, since it is not what the test is pinning -- what matters
-  // is that no handle to a non-inter communicator is ever accepted.
+#include <mpi.h>
+TEST(LowFiveTransport, SetIntercommRefusesANullHandle) {
+  // A handle of 0 is not a communicator. This must be refused BEFORE any
+  // MPI query on it: the host run of 2026-10-04 aborted inside
+  // MPI_Comm_test_inter (MPICH's default handler is fatal) because the
+  // check came after the query. Without MPI_Init the uninitialised-MPI
+  // refusal fires first, which is also acceptable here.
   LowFiveTransport t;
   const auto r = t.set_intercomm(0, 0);
   ASSERT_FALSE(r.ok());
   EXPECT_TRUE(r.error().code == "E-TRANSPORT-MPIINIT" ||
-              r.error().code == "E-TRANSPORT-COMM")
+              r.error().code == "E-TRANSPORT-COMM" ||
+              r.error().code == "E-TRANSPORT-NOMPI" ||
+              r.error().code == "E-TRANSPORT-NOLOWFIVE")
+      << r.error().code << ": " << r.error().message;
+}
+
+TEST(LowFiveTransport, SetIntercommRefusesAnOrdinaryIntracommunicator) {
+  // MPI_COMM_WORLD, as its Fortran handle, is a real intracommunicator --
+  // exactly the mistake set_intercomm() must catch (transport.hpp: "form
+  // one with MPI_Comm_connect/accept ... not with MPI_Comm_dup/
+  // MPI_Comm_split"). The check needs a live MPI; when the binary runs
+  // without MPI_Init the test skips rather than pin the wrong refusal.
+  int initialized = 0;
+  MPI_Initialized(&initialized);
+  if (!initialized) GTEST_SKIP() << "needs MPI_Init to hold a real intracommunicator";
+  LowFiveTransport t;
+  const int world = static_cast<int>(MPI_Comm_c2f(MPI_COMM_WORLD));
+  const auto r = t.set_intercomm(world, world);
+  ASSERT_FALSE(r.ok());
+  EXPECT_TRUE(r.error().code == "E-TRANSPORT-COMM" ||
+              r.error().code == "E-TRANSPORT-NOMPI" ||
+              r.error().code == "E-TRANSPORT-NOLOWFIVE")
       << r.error().code << ": " << r.error().message;
 }
 #else
