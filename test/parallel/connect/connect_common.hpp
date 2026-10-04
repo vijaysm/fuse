@@ -284,15 +284,20 @@ struct Args {
     launch_a = fuse::LaunchSpec{.mode = fuse::LaunchMode::Mpmd, .appnum = 0};
     launch_b = fuse::LaunchSpec{.mode = fuse::LaunchMode::Mpmd, .appnum = 1};
   } else {
-    // Exactly one side is the acceptor; the CLI distinguishes accept/connect
-    // per executable, not per component, so both LaunchSpecs are stamped
-    // from whichever side's CLI said --launch accept.
-    const bool a_is_acceptor = (args.launch == CliLaunch::Accept);
+    // Exactly one side is the acceptor, and BOTH executables must say the
+    // same one: each builds this graph from its own command line, and the
+    // first host run (2026-10-02, connect-scratch/accept-1+1/b.log) showed
+    // the connector publishing a port file, because this used to read
+    // `a_is_acceptor = (args.launch == Accept)` -- true on connect_a's
+    // command line, false on connect_b's, so each side made itself the
+    // acceptor and both waited in MPI_Comm_accept. Component "a" is the
+    // acceptor by the graph, full stop; the --launch flag only names which
+    // executable this is, and must agree with the side being played.
     launch_a = fuse::LaunchSpec{.mode = fuse::LaunchMode::Connect,
-                                .is_acceptor = a_is_acceptor,
+                                .is_acceptor = true,
                                 .port_file = args.port_file};
     launch_b = fuse::LaunchSpec{.mode = fuse::LaunchMode::Connect,
-                                .is_acceptor = !a_is_acceptor,
+                                .is_acceptor = false,
                                 .port_file = args.port_file};
   }
 
