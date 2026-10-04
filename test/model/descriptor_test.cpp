@@ -338,6 +338,15 @@ TEST(Descriptor, RoundTripPreservesEveryNonDefaultMember) {
   // fixture that round-trips this as GaussSeidel proves the byte is
   // read, not just defaulted.
   EXPECT_EQ(scope.iteration, fuse::WaveformIteration::GaussSeidel);
+
+  // v11's reason for the version bump ("LowFive" track, Unit 3):
+  // FieldSpec::hdf5_path and LaunchMode::LowFive.
+  ASSERT_TRUE(f.hdf5_path.has_value());
+  EXPECT_EQ(*f.hdf5_path, "fluid_out.h5/grid/heat_flux");
+  const auto probe = read_back.value().find_component("probe");
+  ASSERT_TRUE(probe.has_value());
+  EXPECT_EQ(read_back.value().component(*probe).launch.mode,
+            fuse::LaunchMode::LowFive);
 }
 
 // A region with no window_scope (std::nullopt, the default -- every region
@@ -432,7 +441,7 @@ TEST(Descriptor, RejectsCorruptedLaunchMode) {
 TEST(Descriptor, SupersededFrozenBytesAreRefusedByThisReader) {
   for (const char* name : {"waist-v1.bin", "waist-v4.bin", "waist-v5.bin",
                           "waist-v6.bin", "waist-v7.bin", "waist-v8.bin",
-                          "waist-v9.bin"}) {
+                          "waist-v9.bin", "waist-v10.bin"}) {
     const std::filesystem::path old_golden =
         std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / name;
     ASSERT_TRUE(std::filesystem::exists(old_golden)) << old_golden;
@@ -465,7 +474,7 @@ TEST(Descriptor, TheFrozenV1BytesAreRefusedByThisReader) {
 TEST(Descriptor, MatchesTheFrozenWaistBytes) {
   const auto bytes = fuse::serialize(fuse::testing::freeze_fixture());
   const std::filesystem::path golden =
-      std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / "waist-v10.bin";
+      std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / "waist-v11.bin";
   ASSERT_TRUE(std::filesystem::exists(golden)) << golden;
 
   std::ifstream in(golden, std::ios::binary);

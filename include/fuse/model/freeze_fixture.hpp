@@ -52,11 +52,23 @@ inline CouplingGraph freeze_fixture() {
       {.name = "gas", .ranks = {3, 5}, .interval = Rational{1, 2},
        .launch = LaunchSpec{.mode = LaunchMode::Plugin,
                             .plugin_path = "/opt/fuse-plugins/ideal-gas.so"}});
+  // A LowFive-launched component: `LaunchMode::LowFive` is the FIFTH
+  // launch-mode enumerator (descriptor v11's reason for the bump, S6 phase
+  // 3 "LowFive" track, Unit 3), carrying no LaunchSpec member of its own
+  // beyond the mode byte. Fieldless, like "gas" above -- it exists only to
+  // pin this one enumerator at a non-default value; `q_out.hdf5_path`
+  // above is the member that actually needs a LowFive-launched component
+  // to be present for validate() to accept it, but freeze_fixture is never
+  // run through validate() (this file's own opening comment), so the two
+  // are independent for this round trip's purposes.
+  (void)g.add_component(
+      {.name = "probe", .ranks = {10, 1}, .interval = Rational{1},
+       .launch = LaunchSpec{.mode = LaunchMode::LowFive}});
   // A coupler: `ComponentKind::Coupler` is the one non-default enumerator a
   // freeze fixture built only from `add_component()` calls could never
   // reach, and `add_coupler()` is the API that reaches it. Placed disjoint
-  // from `fluid`, `solid` and `gas` so the frozen bytes also exercise a real
-  // fourth placement, not a same_as-elided one.
+  // from `fluid`, `solid`, `gas` and `probe` so the frozen bytes also
+  // exercise a real fifth placement, not a same_as-elided one.
   const auto coupler = g.add_coupler({.name = "midpoint", .ranks = {9, 1}});
 
   Units kilopascal{.length = -1, .mass = 1, .time = -2};
@@ -69,7 +81,14 @@ inline CouplingGraph freeze_fixture() {
                                          .components = 3,
                                          .units = kilopascal,
                                          .conservation = Conservation::Extensive,
-                                         .intent = Intent::Provides});
+                                         .intent = Intent::Provides,
+                                         // S6 phase 3 ("LowFive" track), Unit
+                                         // 3: descriptor v11's reason for the
+                                         // bump. Paired with "probe"'s own
+                                         // LaunchMode::LowFive below -- a
+                                         // round trip over defaults proves
+                                         // nothing about either member.
+                                         .hdf5_path = "fluid_out.h5/grid/heat_flux"});
   const auto q_in = g.add_field(solid, {.name = "heat_flux",
                                         .region = region,
                                         .disc = Discretization::FV,

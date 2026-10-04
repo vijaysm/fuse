@@ -12,6 +12,19 @@
 namespace fuse {
 
 inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
+/// 11: the "LowFive" track, Unit 3. Each field record gains a presence byte
+///     after `intent`, and when set, one more length-prefixed string:
+///     `hdf5_path` (`FieldSpec::hdf5_path`, fuse/model/field_spec.hpp). Also
+///     adds a FIFTH `LaunchMode` value, `LowFive` (fuse/model/launch.hpp) --
+///     no new bytes of its own (it carries no LaunchSpec member beyond the
+///     mode byte itself), but the enum-range check on that byte has to
+///     widen to admit it, same as every prior LaunchMode addition. A v10
+///     reader handed a v11 buffer would read the FIRST field's hdf5_path
+///     presence byte as the start of the next field's name length, and
+///     everything after it would decode as plausible garbage from there on
+///     -- the same class of silent misread every prior bump was made to
+///     prevent, so v10 is refused.
+///
 /// 10: the provider direction (S6 phase 4, "Adapter host" track). Each
 ///     component record's launch record (v9) gains a FOURTH `LaunchMode`
 ///     value, `Plugin`, and one more length-prefixed string after
@@ -83,7 +96,7 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 /// the iteration regions and never see the merge rules, so it would read a
 /// graph that says "one writer per field" from bytes that say otherwise -- and
 /// it would read it successfully. The version check turns that into a refusal.
-inline constexpr std::uint32_t kGraphVersion = 10u;
+inline constexpr std::uint32_t kGraphVersion = 11u;
 
 namespace detail {
 
@@ -229,6 +242,10 @@ class Reader {
     w.units(f.units);
     w.pod(static_cast<std::uint8_t>(f.conservation));
     w.pod(static_cast<std::uint8_t>(f.intent));
+    // v11: the "LowFive" track, Unit 3 (descriptor.hpp's kGraphVersion
+    // history).
+    w.pod(static_cast<std::uint8_t>(f.hdf5_path.has_value() ? 1 : 0));
+    if (f.hdf5_path.has_value()) w.str(*f.hdf5_path);
   }
   for (std::uint32_t i = 0; i < g.channel_count(); ++i) {
     const auto& c = g.channel_at(ChannelId{i});
@@ -393,7 +410,9 @@ class Reader {
     // mode must be refused here, not admitted and later indexed unchecked
     // by to_cstring()'s switch.
     const auto launch_mode_byte = r.pod<std::uint8_t>();
-    if (launch_mode_byte > static_cast<std::uint8_t>(LaunchMode::Plugin)) {
+    // v11: the "LowFive" track, Unit 3 (descriptor.hpp's kGraphVersion
+    // history) widens this to admit LaunchMode::LowFive.
+    if (launch_mode_byte > static_cast<std::uint8_t>(LaunchMode::LowFive)) {
       return Failure{"E-DESC-ENUM",
                      "unknown launch mode " + std::to_string(launch_mode_byte)};
     }
@@ -418,6 +437,9 @@ class Reader {
     f.units = r.units();
     f.conservation = static_cast<Conservation>(r.pod<std::uint8_t>());
     f.intent = static_cast<Intent>(r.pod<std::uint8_t>());
+    // v11: the "LowFive" track, Unit 3 (descriptor.hpp's kGraphVersion
+    // history).
+    if (r.pod<std::uint8_t>() != 0) f.hdf5_path = r.str();
     if (!r.ok() || owner.value() >= n_comp) {
       return Failure{"E-DESC-TRUNC", "truncated or invalid field table"};
     }

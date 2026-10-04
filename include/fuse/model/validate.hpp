@@ -60,6 +60,16 @@ inline Rational channel_window(const CouplingGraph& g, const Channel& ch) {
 
   // --- name uniqueness -----------------------------------------------------
   std::unordered_set<std::string> comp_names;
+  // S6 phase 3 ("LowFive" track), Unit 3: whether ANY component in the
+  // graph declares LaunchMode::LowFive. Checked against every field's own
+  // hdf5_path below (E-LOWFIVE-NO-COMPONENT) -- a field whose bytes move
+  // through LowFive-intercepted HDF5 needs at least one component in the
+  // graph actually set up to run that interception (fuse_setup()'s own
+  // per-component dispatch, docs/user/lowfive.md); this check does not
+  // require that component to be the FIELD's own owner, since the single-
+  // process interception path (the only one measured end to end) makes
+  // the connector a process-wide registration, not a per-component one.
+  bool any_lowfive_component = false;
   for (std::uint32_t i = 0; i < g.component_count(); ++i) {
     const auto& c = g.component(ComponentId{i});
     if (!comp_names.insert(c.name).second) {
@@ -125,9 +135,21 @@ inline Rational channel_window(const CouplingGraph& g, const Channel& ch) {
                 "fuse::abi_detail::Registry has no shared object to dlopen()");
     }
     // ---- S6 phase 4, "Adapter host" track: end ----------------------------
+    if (c.launch.mode == LaunchMode::LowFive) any_lowfive_component = true;
   }
 
   // --- reference integrity -------------------------------------------------
+  // S6 phase 3 ("LowFive" track), Unit 3: hdf5_path -> the first field id
+  // seen claiming it, so a later field naming the SAME exact path can be
+  // reported against the earlier one. Ascending field-id order, like the
+  // multi-writer check further down, so the diagnostic text is
+  // reproducible run to run. A leading '*' in the file component is a
+  // wildcard (LowFiveFieldBindingTable::add's own rule, fuse/transport/
+  // lowfive.hpp) and is deliberately excluded here too: two wildcard
+  // bindings on different real files are the ordinary multi-field case,
+  // and this layer has no more way to know the real file than that one
+  // does.
+  std::unordered_map<std::string, std::uint32_t> hdf5_path_first_field;
   for (std::uint32_t i = 0; i < g.field_count(); ++i) {
     const auto& f = g.field(FieldId{i});
     if (!f.region.valid() || f.region.value() >= g.region_count()) {
@@ -147,6 +169,28 @@ inline Rational channel_window(const CouplingGraph& g, const Channel& ch) {
       d.add(Severity::Error, "E-SHAPE",
             "field '" + f.name + "' has a non-positive component count " +
                 std::to_string(f.components));
+    }
+    if (f.hdf5_path.has_value()) {
+      if (!any_lowfive_component) {
+        d.add(Severity::Error, "E-LOWFIVE-NO-COMPONENT",
+              "field '" + f.name + "' sets hdf5_path '" + *f.hdf5_path +
+                  "', but no component in the graph declares "
+                  "LaunchMode::LowFive; nothing would set up the "
+                  "interception this field's transfer depends on");
+      }
+      const bool is_wildcard = !f.hdf5_path->empty() && f.hdf5_path->front() == '*';
+      if (!is_wildcard) {
+        const auto [it, inserted] =
+            hdf5_path_first_field.try_emplace(*f.hdf5_path, i);
+        if (!inserted) {
+          d.add(Severity::Error, "E-LOWFIVE-DUPPATH",
+                "field '" + f.name + "' and field '" +
+                    g.field(FieldId{it->second}).name +
+                    "' both set hdf5_path '" + *f.hdf5_path +
+                    "'; two fields would silently overwrite each other's "
+                    "dataset");
+        }
+      }
     }
   }
   for (std::uint32_t i = 0; i < g.region_count(); ++i) {

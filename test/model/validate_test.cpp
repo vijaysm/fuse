@@ -390,6 +390,7 @@ TEST(Validate, DeserializedGraphWithBadWindowComponentDoesNotThrowAndReportsBadR
   w.units(u::kDimensionless);
   w.pod(std::uint8_t{1});  // conservation = Extensive
   w.pod(std::uint8_t{0});  // intent = Provides
+  w.pod(std::uint8_t{0});  // hdf5_path presence = unset (v11)
   // field 1: owner=B, region=0, Requires
   w.str(std::string{"t"});
   w.pod(std::uint32_t{1});
@@ -400,6 +401,7 @@ TEST(Validate, DeserializedGraphWithBadWindowComponentDoesNotThrowAndReportsBadR
   w.units(u::kDimensionless);
   w.pod(std::uint8_t{1});
   w.pod(std::uint8_t{1});  // intent = Requires
+  w.pod(std::uint8_t{0});  // hdf5_path presence = unset (v11)
   // channel: field 0 -> field 1, accumulate window names nonexistent
   // component 99 -- this is the byte-level equivalent of the direct-API
   // bug above, and deserialize() does not reject it.
@@ -656,4 +658,53 @@ TEST(Validate, RemapOnACouplerPlacedNowhereIsNotRefusedWhenItWouldNotBeUsed) {
   const Diagnostics d = validate(f.g);
   EXPECT_FALSE(has_code(d, "E-PLACEMENT-EMPTY")) << d.to_string();
   EXPECT_TRUE(has_code(d, "W-CHANNEL-REMAP-ON-UNUSED")) << d.to_string();
+}
+
+// ---- hdf5_path (S6 phase 3, "LowFive" track, Unit 3) -------------------
+
+TEST(Validate, FieldWithHdf5PathButNoLowFiveComponentIsRefused) {
+  Fixture f;
+  const_cast<FieldSpec&>(f.g.field(f.src)).hdf5_path = "producer_out.h5/grid/q";
+  const Diagnostics d = validate(f.g);
+  EXPECT_TRUE(has_code(d, "E-LOWFIVE-NO-COMPONENT")) << d.to_string();
+}
+
+TEST(Validate, FieldWithHdf5PathAndALowFiveComponentIsAccepted) {
+  Fixture f;
+  const_cast<FieldSpec&>(f.g.field(f.src)).hdf5_path = "producer_out.h5/grid/q";
+  f.g.add_component(ComponentDecl{
+      .name = "interceptor", .ranks = fuse::RankSet{2, 1},
+      .interval = Rational{1},
+      .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::LowFive}});
+  const Diagnostics d = validate(f.g);
+  EXPECT_FALSE(has_code(d, "E-LOWFIVE-NO-COMPONENT")) << d.to_string();
+  EXPECT_FALSE(d.has_errors()) << d.to_string();
+}
+
+TEST(Validate, TwoFieldsSharingAnHdf5PathAreRefused) {
+  Fixture f;
+  f.g.add_component(ComponentDecl{
+      .name = "interceptor", .ranks = fuse::RankSet{2, 1},
+      .interval = Rational{1},
+      .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::LowFive}});
+  const_cast<FieldSpec&>(f.g.field(f.src)).hdf5_path = "shared.h5/grid/q";
+  const_cast<FieldSpec&>(f.g.field(f.dst)).hdf5_path = "shared.h5/grid/q";
+  const Diagnostics d = validate(f.g);
+  EXPECT_TRUE(has_code(d, "E-LOWFIVE-DUPPATH")) << d.to_string();
+}
+
+// The wildcard exclusion mirrors LowFiveFieldBindingTable::add's own rule
+// (fuse/transport/lowfive.hpp): two wildcard bindings on different real
+// files are the ordinary multi-field case, and this layer has no more way
+// to know the real file than that one does.
+TEST(Validate, WildcardHdf5PathsAreNotCheckedForCollision) {
+  Fixture f;
+  f.g.add_component(ComponentDecl{
+      .name = "interceptor", .ranks = fuse::RankSet{2, 1},
+      .interval = Rational{1},
+      .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::LowFive}});
+  const_cast<FieldSpec&>(f.g.field(f.src)).hdf5_path = "*.h5/grid/q";
+  const_cast<FieldSpec&>(f.g.field(f.dst)).hdf5_path = "*.h5/grid/q";
+  const Diagnostics d = validate(f.g);
+  EXPECT_FALSE(has_code(d, "E-LOWFIVE-DUPPATH")) << d.to_string();
 }

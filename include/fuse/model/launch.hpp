@@ -41,7 +41,22 @@ namespace fuse {
 /// (in-process native vs. a dlopen()'d plugin) are different questions for
 /// every OTHER mode, but collapse to one for Plugin, which is always
 /// in-process by construction.
-enum class LaunchMode { InProcess, Mpmd, Connect, Plugin };
+///
+/// `LowFive` (S6 phase 3, "LowFive" track, Unit 3): this component
+/// exchanges at least one of its fields not through an ordinary FUSE
+/// Transport but through plain HDF5 calls LowFive intercepts in memory
+/// (`FieldSpec::hdf5_path`, fuse/model/field_spec.hpp; docs/user/
+/// lowfive.md). Like `Plugin`, this is a FIFTH, independent value rather
+/// than a flag on one of the first three: "where do my ranks come from"
+/// is unaffected -- a LowFive-launched component still joins the base
+/// communicator however its OWN separate launch story says (today,
+/// always in-process; the distributed, cross-executable case, like
+/// Demo B's own DistMetadataVOL path, is a host-only, unexecuted
+/// extension of this value, not a different one) -- what changes is
+/// only "how do my fields that name an hdf5_path move." `validate()`
+/// (fuse/model/validate.hpp) requires at least one component to declare
+/// this mode before any field may set `hdf5_path` at all.
+enum class LaunchMode { InProcess, Mpmd, Connect, Plugin, LowFive };
 
 [[nodiscard]] constexpr const char* to_cstring(LaunchMode m) noexcept {
   switch (m) {
@@ -49,6 +64,7 @@ enum class LaunchMode { InProcess, Mpmd, Connect, Plugin };
     case LaunchMode::Mpmd:      return "Mpmd";
     case LaunchMode::Connect:   return "Connect";
     case LaunchMode::Plugin:    return "Plugin";
+    case LaunchMode::LowFive:   return "LowFive";
   }
   return "Unknown";
 }

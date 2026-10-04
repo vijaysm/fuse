@@ -130,3 +130,24 @@ old = "      if (!comp.ranks.empty()) continue;"
 new = "      if (false) continue;"
 target = "fuse_model_validate_test"
 test = "model.validate"
+
+[[mutation]]
+id = "hdf5-path-ignored-on-serialisation"
+area = "model"
+describes = "S6 phase 3 (\"LowFive\" track), Unit 3. serialize() stops writing FieldSpec::hdf5_path at all (always writing the v11 presence byte as 0, and never writing the string even when set), so a descriptor round trip silently drops every field's hdf5_path -- a graph authored with LowFive transfers would deserialize as though none of them had one, with no diagnostic anywhere."
+file = "include/fuse/model/descriptor.hpp"
+old = """    w.pod(static_cast<std::uint8_t>(f.hdf5_path.has_value() ? 1 : 0));
+    if (f.hdf5_path.has_value()) w.str(*f.hdf5_path);"""
+new = """    w.pod(static_cast<std::uint8_t>(0));  // MUTATED: hdf5_path ignored on serialisation"""
+target = "fuse_model_descriptor_test"
+test = "model.descriptor"
+
+[[mutation]]
+id = "hdf5-path-duplicate-check-disabled"
+area = "model"
+describes = "S6 phase 3 (\"LowFive\" track), Unit 3. validate()'s graph-wide hdf5_path uniqueness check (E-LOWFIVE-DUPPATH) never fires, so two fields bound to the exact same HDF5 path validate clean -- two buffers would silently overwrite each other's dataset the first time a run actually wrote through LowFive, with nothing at authoring time to say so. The analogous check inside LowFiveFieldBindingTable::add() itself is a SEPARATE mutation (build-evidence/mutations/transport-lowfive.toml's own binding-table-skips-the-duplicate-path-check) -- this one is validate()'s own, graph-wide version, reachable from a hand-authored YAML/descriptor that never goes through build_lowfive_bindings() at all."
+file = "include/fuse/model/validate.hpp"
+old = "        if (!inserted) {"
+new = "        if (false) {"
+target = "fuse_model_validate_test"
+test = "model.validate"

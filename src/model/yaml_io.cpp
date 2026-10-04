@@ -352,6 +352,7 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
       const char* mode_name = "connect";
       if (c.launch.mode == LaunchMode::Mpmd) mode_name = "mpmd";
       else if (c.launch.mode == LaunchMode::Plugin) mode_name = "plugin";
+      else if (c.launch.mode == LaunchMode::LowFive) mode_name = "lowfive";
       e << YAML::Key << "launch" << YAML::Value << YAML::BeginMap
         << YAML::Key << "mode" << YAML::Value << mode_name;
       if (c.launch.mode == LaunchMode::Mpmd) {
@@ -399,8 +400,14 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
         << YAML::Key << "components" << YAML::Value << f.components
         << YAML::Key << "units" << YAML::Value << units_node(f.units)
         << YAML::Key << "conservation" << YAML::Value << to_cstring(f.conservation)
-        << YAML::Key << "intent" << YAML::Value << to_cstring(f.intent)
-        << YAML::EndMap;
+        << YAML::Key << "intent" << YAML::Value << to_cstring(f.intent);
+      // S6 phase 3 ("LowFive" track), Unit 3. Emitted only when set, like
+      // launch above: every field before this track round-trips with no
+      // "hdf5_path" key at all.
+      if (f.hdf5_path.has_value()) {
+        e << YAML::Key << "hdf5_path" << YAML::Value << *f.hdf5_path;
+      }
+      e << YAML::EndMap;
     }
     e << YAML::EndSeq << YAML::EndMap;
   }
@@ -781,6 +788,10 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
         // S6 phase 4, "Adapter host" track.
         c.launch.mode = LaunchMode::Plugin;
         if (ln["plugin_path"]) c.launch.plugin_path = ln["plugin_path"].as<std::string>();
+      } else if (mode == "lowfive") {
+        // S6 phase 3, "LowFive" track, Unit 3. No extra LaunchSpec member
+        // of its own -- see launch.hpp's own doc comment on this value.
+        c.launch.mode = LaunchMode::LowFive;
       } else {
         return Failure{"E-YAML-PARSE",
                      "component '" + c.name + "' has unknown launch mode '" + mode + "'"};
@@ -794,7 +805,7 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
       if (auto e = check_unknown_keys(
               fn,
               {"name", "region", "disc", "order", "components", "units",
-               "conservation", "intent", "index"},
+               "conservation", "intent", "index", "hdf5_path"},
               "field entry in component '" + c.name + "'")) {
         return *e;
       }
@@ -841,6 +852,13 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
           !lookup_enum(fn["intent"].as<std::string>(), kIntentNames, f.intent)) {
         return Failure{"E-YAML-PARSE", "unknown intent"};
       }
+      // S6 phase 3 ("LowFive" track), Unit 3. validate() (fuse/model/
+      // validate.hpp), not here, enforces the two graph-wide rules this
+      // can set up (a LowFive-launched component must exist; no two
+      // fields may share a path) -- from_yaml() only has one field's own
+      // text in view at this point, same reason "conservation"/"intent"
+      // above are not cross-checked here either.
+      if (fn["hdf5_path"]) f.hdf5_path = fn["hdf5_path"].as<std::string>();
       // Collected, not added: the fields are added below in declaration
       // order so the ids match the graph this text came from.
       pending_fields.push_back(PendingField{
