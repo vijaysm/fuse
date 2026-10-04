@@ -549,20 +549,48 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
 
         // Unit 3: Runner::field_window_view()'s own lookup, keyed by the
         // field the ABI caller actually names rather than this node.
-        // `exported_field`/`imported_field` are the SAME FieldIds this
-        // function already resolved a few lines above; `ins.out` is this
-        // member's own WindowAdvance output (the K-wide export buffer),
-        // and `cfg.window_import` is the arc the window path reads the
-        // import from -- the window Sink's own arc ordinarily, or for a
-        // LowFive-bound channel the ExternalDelivery arc, whichever
-        // finish_window_regions() resolved; either way, the SAME arc
-        // `window_import` already names, so this is not a second
-        // resolution that could disagree with it.
+        // `exported_field` is the SAME FieldId this function already
+        // resolved a few lines above; `ins.out` is this member's own
+        // WindowAdvance output (the K-wide export buffer).
         if (exported_field.valid()) {
           window_export_field_arc[exported_field.value()] = ins.out;
         }
+        // For the import: `cfg.window_import` is the window Sink's own
+        // OUTPUT arc -- the right answer for an ORDINARY channel (a
+        // read-only view of what the window path delivered), but the
+        // WRONG one for a LowFive-bound channel, where it is instead
+        // the SINK's own `num::copy` -- run every period, overwriting
+        // whatever a harness/application wrote there -- that reads from
+        // the ExternalDelivery arc feeding it. An application (or the
+        // tier-0 harness) needs to write into THAT feeding arc, which
+        // nothing else ever touches (OpKind::ExternalDelivery's own
+        // runner.cpp case is a no-op), for the write to survive past
+        // the Sink's own copy. Found by walking the DAG backward from
+        // the Sink's own output (no direct producer-of-arc lookup
+        // exists; this scan runs once per window member at setup, not
+        // per period) rather than re-deriving it from the graph, so it
+        // cannot disagree with what finish_window_regions() actually
+        // built.
         if (imported_field.valid() && cfg.window_import.valid()) {
-          window_import_field_arc[imported_field.value()] = cfg.window_import;
+          ArcId import_view_arc = cfg.window_import;
+          const bool import_lowfive_bound =
+              cfg.import_channel.valid() &&
+              graph
+                  .field(graph.channel_at(cfg.import_channel).source)
+                  .hdf5_path.has_value();
+          if (import_lowfive_bound) {
+            for (std::uint32_t ni = 0; ni < dag.node_count(); ++ni) {
+              const Node& sink_candidate = dag.node(NodeId{ni});
+              if (sink_candidate.kind == OpKind::Sink &&
+                  sink_candidate.output.valid() &&
+                  sink_candidate.output.value() == cfg.window_import.value() &&
+                  !sink_candidate.inputs.empty()) {
+                import_view_arc = sink_candidate.inputs.front();
+                break;
+              }
+            }
+          }
+          window_import_field_arc[imported_field.value()] = import_view_arc;
         }
 
         // This member's own export arc -- window_export_meta's own
