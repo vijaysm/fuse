@@ -235,6 +235,23 @@ Result<ConnectedWorld> connect(const CouplingGraph& g, int my_world_comm_f,
                          "', which is declared plugin; there is nothing to "
                          "connect, and my_world_comm_f already is the base "
                          "communicator"};
+    case LaunchMode::LowFive:
+      // S6 phase 3 ("LowFive" track), Unit 3. Today's only implemented
+      // case (launch.hpp's own doc on this value) is in-process: the
+      // ranks a LowFive-launched component runs on come from whatever
+      // OTHER launch story this run uses (or none at all), never from
+      // this call -- same refusal shape as InProcess/Plugin above. The
+      // distributed, cross-executable extension this value's own doc
+      // comment names (DistMetadataVOL's own intercommunicator) is
+      // explicitly NOT this function's job either way
+      // (docs/user/lowfive.md's own "forming the intercommunicator is
+      // explicitly NOT this transport's job" ruling for Demo B's
+      // identical case).
+      return Failure{"E-CONNECT-SPEC",
+                     "connect() called for component '" + mine.name +
+                         "', which is declared lowfive; there is nothing to "
+                         "connect, and my_world_comm_f already is the base "
+                         "communicator"};
   }
   return Failure{"E-CONNECT-SPEC", "unreachable launch mode"};
 }

@@ -256,6 +256,12 @@ fuse_add_gtest(transport connect)
 # setup-level checks that need no running MPI job -- see the file's own
 # top-of-file comment for exactly what IS and is not covered here.
 fuse_add_gtest(transport lowfive LABELS lowfive)
+# Unit 3's own graph-aware builder (fuse/transport/lowfive_graph.hpp): a
+# separate test binary, not appended to lowfive_test.cpp, for the same
+# reason that file is a separate header -- this one needs
+# fuse/model/coupling_graph.hpp, which lowfive_test.cpp's own tests
+# deliberately do not.
+fuse_add_gtest(transport lowfive_graph LABELS lowfive)
 
 # ---------------------------------------------------------------- backend
 foreach(t spacetime)
@@ -715,6 +721,14 @@ foreach(t brusselator_weights brusselator_physics brusselator_runner)
   target_include_directories(fuse_verification_${t}_test PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/brusselator)
 endforeach()
+# S6 phase 3 ("LowFive" track), Unit 3: brusselator_graph_tool.cpp's own
+# --transport lowfive wiring, reproduced directly against validate() --
+# see the test file's own header comment for why this is not redundant
+# with the byte-for-byte reference-YAML ctest row.
+fuse_add_gtest(verification brusselator_graph_tool_lowfive NO_LAYER_LIB
+               LIBS fuse::model fuse::backend)
+target_include_directories(fuse_verification_brusselator_graph_tool_lowfive_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/examples/brusselator)
 # The weights oracle is pure host arithmetic (no Kokkos kernel of its own);
 # the physics suite's ReactionKokkosMatchesTheClosedForm IS one, so its omp
 # legs are the ones that are load-bearing here.
