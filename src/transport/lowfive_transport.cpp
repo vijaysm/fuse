@@ -426,6 +426,16 @@ Result<void> LowFiveTransport::set_intercomm(int fortran_local_comm,
   if (MPI_Finalized(&finalized) == MPI_SUCCESS && finalized != 0) {
     return Failure{"E-TRANSPORT-MPIINIT", "MPI has already been finalised"};
   }
+  // Refuse a null handle BEFORE any query on it: MPICH's default error
+  // handler aborts the process inside MPI_Comm_test_inter on an invalid
+  // handle instead of returning (seen on the host 2026-10-04, handle 0).
+  if (fortran_local_comm == 0 || fortran_intercomm == 0 ||
+      MPI_Comm_f2c(static_cast<MPI_Fint>(fortran_local_comm)) == MPI_COMM_NULL ||
+      MPI_Comm_f2c(static_cast<MPI_Fint>(fortran_intercomm)) == MPI_COMM_NULL) {
+    return Failure{"E-TRANSPORT-COMM",
+                 "set_intercomm() needs two live communicators; a handle of 0 "
+                 "or MPI_COMM_NULL is not one"};
+  }
   const MPI_Comm local = MPI_Comm_f2c(static_cast<MPI_Fint>(fortran_local_comm));
   const MPI_Comm inter = MPI_Comm_f2c(static_cast<MPI_Fint>(fortran_intercomm));
   if (local == MPI_COMM_NULL) {
