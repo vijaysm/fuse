@@ -11,6 +11,8 @@
 
 #include <gtest/gtest.h>
 
+#include <unistd.h>
+
 namespace {
 using namespace fuse::native;
 
@@ -237,13 +239,24 @@ TEST(NativeBackend, PlacedViewIsReachableAfterSetPlacedView) {
 
 // ---- file round trip ------------------------------------------------------
 
+// The ctest rows backend.native_generators, .omp1 and .omp8 run this same
+// binary, and `ctest -j` runs them at once; a fixed name under TempDir()
+// made two of them write and remove the same file, failing the round trip
+// once in every few full-suite runs (first seen 2026-09-30, reproduced
+// 2026-10-04 with eight concurrent copies on a clean HEAD). The process id
+// makes the path this process's own.
+[[nodiscard]] static std::string scratch_vtk_path(const char* stem) {
+  return std::string(::testing::TempDir()) + "native_mesh_roundtrip_" + stem + "_" +
+         std::to_string(static_cast<long long>(::getpid())) + ".vtk";
+}
+
 TEST(NativeMeshIo, VtkRoundTripReproducesAHexBoxExactly) {
   auto arrays = generate_native_mesh("hexbox:3x2x2", 0, 1);
   ASSERT_TRUE(arrays.ok());
   auto view = NativeMeshView::create_from_host(arrays.value(), 0);
   ASSERT_TRUE(view.ok());
 
-  const std::string path = std::string(::testing::TempDir()) + "native_mesh_roundtrip_hex.vtk";
+  const std::string path = scratch_vtk_path("hex");
   auto w = write_native_mesh_file(path, *view.value(), 0);
   ASSERT_TRUE(w.ok()) << w.error().message;
 
@@ -273,7 +286,7 @@ TEST(NativeMeshIo, VtkRoundTripReproducesAPolyhedralMeshExactly) {
   auto view = NativeMeshView::create_from_host(arrays.value(), 0);
   ASSERT_TRUE(view.ok());
 
-  const std::string path = std::string(::testing::TempDir()) + "native_mesh_roundtrip_poly.vtk";
+  const std::string path = scratch_vtk_path("poly");
   auto w = write_native_mesh_file(path, *view.value(), 0);
   ASSERT_TRUE(w.ok()) << w.error().message;
 
