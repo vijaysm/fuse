@@ -89,6 +89,12 @@ struct Args {
   std::string launch;  // "mpmd" | "accept"
   std::string out;
   std::string port_file = "brusselator_connect.port";
+  // S6 phase 3 ("LowFive" track), Unit 3: "fuse" (the default, every run
+  // before this track) moves u_out/v_out through FUSE's own ordinary
+  // Transport; "lowfive" additionally sets FieldSpec::hdf5_path on both
+  // and adds a LowFive-launched component so validate() accepts it (this
+  // file's own `write_lowfive_declarations` below has the full account).
+  std::string transport = "fuse";
   bool ok = false;
   std::string error;
 };
@@ -122,6 +128,9 @@ struct Args {
     } else if (arg == "--port-file") {
       auto v = next("--port-file"); if (!v) return a;
       a.port_file = *v;
+    } else if (arg == "--transport") {
+      auto v = next("--transport"); if (!v) return a;
+      a.transport = *v;
     } else {
       a.error = "unrecognized argument: " + arg;
       return a;
@@ -129,6 +138,10 @@ struct Args {
   }
   if (a.launch != "mpmd" && a.launch != "accept") {
     a.error = "--launch must be 'mpmd' or 'accept' (got '" + a.launch + "')";
+    return a;
+  }
+  if (a.transport != "fuse" && a.transport != "lowfive") {
+    a.error = "--transport must be 'fuse' or 'lowfive' (got '" + a.transport + "')";
     return a;
   }
   if (a.out.empty()) {
@@ -210,6 +223,35 @@ int main(int argc, char** argv) {
       fuse::AccelKind::None, fuse::WaveformIteration::Jacobi, coupler_ranks,
       u_ranks, v_ranks, u_launch, v_launch, coupler_launch);
   (void)handles;
+
+  // S6 phase 3 ("LowFive" track), Unit 3. A SEPARATE, fieldless component
+  // declares LaunchMode::LowFive -- not U or V's own launch mode, which
+  // stays whatever --launch chose (mpmd/accept): "where do my ranks come
+  // from" (U/V's own launch story) and "does ANY component here need
+  // LowFive interception set up" (this one) are different questions, the
+  // same way a Coupler is a placement separate from the physics
+  // components it serves (docs/dev/coupler-placement.md). Its own ranks
+  // span every rank in use, so validate() accepts the graph regardless of
+  // which rank ends up running fuse_setup() first -- fuse_setup()'s own
+  // per-process dispatch (docs/user/lowfive.md) is what actually decides,
+  // at run time, which processes set up the interception.
+  if (args.transport == "lowfive") {
+    const auto u_out = graph.find_field(handles.u_component, "u_out");
+    const auto v_out = graph.find_field(handles.v_component, "v_out");
+    if (!u_out || !v_out) {
+      std::fprintf(stderr, "FAIL: could not find u_out/v_out fields\n");
+      return 1;
+    }
+    const_cast<fuse::FieldSpec&>(graph.field(*u_out)).hdf5_path =
+        "brusselator_u.h5/grid/u_out";
+    const_cast<fuse::FieldSpec&>(graph.field(*v_out)).hdf5_path =
+        "brusselator_v.h5/grid/v_out";
+    const int total_ranks = args.ranks_u + args.ranks_v + args.ranks_coupler;
+    (void)graph.add_component(
+        {.name = "lowfive", .ranks = fuse::RankSet{0, total_ranks},
+         .interval = fuse::Rational{1},
+         .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::LowFive}});
+  }
 
   const auto yaml = fuse::to_yaml(graph);
   if (!yaml.ok()) {

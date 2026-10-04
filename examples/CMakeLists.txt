@@ -204,6 +204,22 @@ if(FUSE_ENABLE_TESTS)
                    -P ${CMAKE_SOURCE_DIR}/tools/verify-graph-tool-reference.cmake)
   set_tests_properties(verification.brusselator.graph_tool.reproduces_reference
                        PROPERTIES LABELS "verification")
+
+  # S6 phase 3 ("LowFive" track), Unit 3: the SAME {3}-rank mpmd layout,
+  # plus --transport lowfive -- byte-for-byte against examples/
+  # brusselator/participants/reference_mpmd_3_lowfive.yaml, exactly the
+  # same convention as the row above. Needs no MPI, no LowFive and no
+  # FUSE_HAVE_LOWFIVE: the graph tool only ever writes text, regardless
+  # of which transport the text describes.
+  add_test(NAME verification.brusselator.graph_tool.reproduces_reference_lowfive
+           COMMAND ${CMAKE_COMMAND}
+                   -DBIN=$<TARGET_FILE:brusselator_graph_tool>
+                   "-DARGS=--ranks-u;1;--ranks-v;1;--ranks-coupler;1;--launch;mpmd;--transport;lowfive"
+                   -DOUT=${CMAKE_CURRENT_BINARY_DIR}/graph_tool_reproduced_mpmd_3_lowfive.yaml
+                   -DREFERENCE=${CMAKE_SOURCE_DIR}/examples/brusselator/participants/reference_mpmd_3_lowfive.yaml
+                   -P ${CMAKE_SOURCE_DIR}/tools/verify-graph-tool-reference.cmake)
+  set_tests_properties(verification.brusselator.graph_tool.reproduces_reference_lowfive
+                       PROPERTIES LABELS "verification")
 endif()
 
 # Conformance, Unit 2 (Q3): the --check assembler, run against u_main.c's
