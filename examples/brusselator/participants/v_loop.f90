@@ -128,6 +128,24 @@ contains
     status = fuse_begin_step(fctx, req, out_begin_rep)
     if (status /= FUSE_OK) return
 
+    ! fuse_step_report::step_opened's own comment (entries.def): resuming
+    ! past a pending delivery proxy can legitimately roll this call into
+    ! a NEW period whose own first request names a different component
+    ! than "V" -- a time-window member cannot know from outside whether
+    ! the coupling iteration it shares a window with has converged. No
+    ! step opened in that case (out_begin_rep%next_component names who IS
+    ! due instead): nothing to checkpoint, no physics to run, no
+    ! end_step() to call. The caller's own loop body is the one place
+    ! that must notice and call fuse_begin_step() again with that
+    ! next_component -- this function only reports FUSE_OK with out_rep
+    ! left at its own default (zeroed).
+    if (out_begin_rep%step_opened == 0) then
+      out_rep = fuse_step_report()
+      out_rep%struct_size = int(c_sizeof(out_rep), c_int32_t)
+      status = FUSE_OK
+      return
+    end if
+
     if (out_begin_rep%requires_checkpoint /= 0) call bruss_v_save_state(vh)
     if (out_begin_rep%requires_restore /= 0) call bruss_v_restore_state(vh)
 

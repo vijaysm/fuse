@@ -585,12 +585,89 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
                   sink_candidate.output.valid() &&
                   sink_candidate.output.value() == cfg.window_import.value() &&
                   !sink_candidate.inputs.empty()) {
-                import_view_arc = sink_candidate.inputs.front();
+                // Unit 3 (S6 phase 3, Conformance): walk ALL the way
+                // back to this chain's own TRUE root (ExternalDelivery,
+                // by construction for a LowFive-bound channel's
+                // chain_entry_arc, src/ir/rules_channel.cpp -- its own
+                // `source_producer` input, include/fuse/ir/op.hpp's own
+                // comment on that node, is an ordering edge this walk
+                // must NOT follow, the loop below's own stop condition)
+                // -- NOT just one hop past the Sink. One hop was
+                // correct when this fix (f7fc3dc)
+                // landed, because Constrain/Diagnose were never
+                // emitted for a LowFive channel then (insert_derived_
+                // ops()'s own channel_chain() silently found no nodes,
+                // Finding C, src/ir/rules_derived.cpp): the Sink's own
+                // direct input WAS the ExternalDelivery arc. After
+                // that fix, Constrain/Diagnose sit between Remap and
+                // the Sink, so the Sink's own direct input is
+                // Diagnose's OUTPUT -- an arc OpKind::Diagnose's own
+                // execute() case (runner.cpp) overwrites every sweep
+                // with `num::copy()` from ITS OWN input, discarding
+                // anything an application wrote there between
+                // sweeps. MEASURED (this session's own report): the
+                // Brusselator LowFive harness's own residual/reference
+                // norms for the channel this broke stuck at EXACTLY
+                // `0x0p+0` every sweep, because the application's
+                // write (through the WRONG arc this one-hop walk
+                // handed it) never reached the real ExternalDelivery
+                // arc at all, which stayed at its own unwritten
+                // (zero) default while Diagnose kept copying from it.
+                ArcId walk = sink_candidate.inputs.front();
+                while (true) {
+                  const NodeId producer = dag.arc(walk).producer;
+                  if (!producer.valid()) break;  // defensive: no producer at all
+                  const Node& producer_node = dag.node(producer);
+                  // ExternalDelivery is this walk's own true destination
+                  // regardless of its own input count: `walk` already
+                  // names ITS OWN OUTPUT arc here, the one the
+                  // application writes into (view_field()'s own
+                  // target). That node now carries `source_producer` as
+                  // an input of its own (include/fuse/ir/op.hpp's own
+                  // comment on OpKind::ExternalDelivery has the full
+                  // account) -- an ORDERING edge for the scheduler, not
+                  // a data path -- so this walk must stop HERE, not
+                  // follow it one hop further back into the field's own
+                  // producer, a DIFFERENT arc the application never
+                  // touches at all.
+                  if (producer_node.kind == OpKind::ExternalDelivery) break;
+                  // Exactly one input: keep walking back through it.
+                  // Zero (the true root for an ordinary channel: its
+                  // own Source/WindowAdvance) or more than one
+                  // (unexpected for this single-input chain) both stop
+                  // HERE too, with `walk` already holding the right
+                  // answer.
+                  if (producer_node.inputs.size() != 1) break;
+                  walk = producer_node.inputs.front();
+                }
+                import_view_arc = walk;
+                // The general lesson this fix is one instance of: the
+                // application's own arc is always the chain's TRUE
+                // ROOT -- the arc an `ExternalDelivery` node's own
+                // execute() case never writes, so only the application
+                // ever does -- whatever operators -- Remap, Constrain,
+                // Diagnose, or whatever a later channel-lowering change
+                // inserts -- sit between it and the Sink. A fixed hop
+                // count names a SPECIFIC chain shape, not the invariant
+                // that shape is supposed to express, and silently stops
+                // being correct the next time that shape changes;
+                // walking back to the root, as done here, is not.
                 break;
               }
             }
           }
           window_import_field_arc[imported_field.value()] = import_view_arc;
+          // Unit 3 (S6 phase 3, Conformance): `cfg` here is the SAME
+          // local variable already copied into `window_member_config[
+          // node]` above (this function's own line, before this block),
+          // so mutating `cfg` itself from this point on would not reach
+          // the stored copy -- write directly into the map entry. See
+          // `WindowMemberConfig::window_import_delivery_arc`'s own
+          // comment (runner_impl.hpp) for why `advance_window()` needs
+          // this SAME `import_view_arc` (not `cfg.window_import`) for
+          // its own t=0 history correction.
+          window_member_config[node].window_import_delivery_arc =
+              import_view_arc;
         }
 
         // This member's own export arc -- window_export_meta's own
@@ -1347,6 +1424,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
   st.converged = false;
   st.residual_history.clear();  // keeps the capacity reserved at setup
 
+
   const std::vector<Instruction>& stream = plan.instructions();
 
   R.accel->reset();
@@ -1425,9 +1503,19 @@ detail::Task<Result<void>> Runner::Impl::run_region(
       // instead, here, the one place that both has `components` and is
       // guaranteed a WindowAdvance instruction only ever appears inside
       // some region's body.
+      //
+      // Unit 3 (S6 phase 3, Conformance): an ExternalDelivery instruction
+      // is dispatched to deliver_external() for the identical reason --
+      // it is the one place with `components`, needed to resolve the
+      // importing ComponentId to a real Component& and ask whether it
+      // is_externally_driven(), which decides whether this delivery must
+      // suspend the Runner for the application at all (deliver_external()'s
+      // own comment, runner_impl.hpp, has the full account).
       Result<void> e = Result<void>::success();
       if (stream[i].kind == OpKind::WindowAdvance) {
         e = co_await advance_window(components, stream[i], resolved[i], k);
+      } else if (stream[i].kind == OpKind::ExternalDelivery) {
+        e = co_await deliver_external(components, stream[i], i);
       } else {
         e = execute(stream[i], resolved[i]);
       }
@@ -1437,6 +1525,90 @@ detail::Task<Result<void>> Runner::Impl::run_region(
         continue;
       }
       ++stats.instructions_executed;
+    }
+
+    // `R.x_old`'s own pre-loop seed (this function's own top, reading
+    // `slots[b.feed_arc]`) is wrong for a LowFive-bound channel's member's
+    // own FIRST EVER window instance, for the SAME reason advance_window()
+    // 's own predictor fix (this function's own sibling, this session)
+    // was needed: resolve_regions()'s "ordinary prime" pass can only
+    // deliver a real value synchronously for a Transport-rooted channel;
+    // an ExternalDelivery-rooted one's own `execute()` case is a no-op by
+    // design, so that pre-loop read saw whatever zero-initialized garbage
+    // the arc started with -- MEASURED (this session, full-vector L2
+    // norms, not one element): |x_old| == 0x0p+0 exactly for the LowFive
+    // harness's own window 1, where the matching ordinary run's own
+    // |x_old| was the genuine, nonzero cold-start value.
+    //
+    // `window_member_state[node].history[e].front()` -- seeded by that
+    // SAME pass, and ALREADY corrected for a LowFive channel's own t=0
+    // entry by advance_window()'s own fix, the FIRST time THIS sweep's
+    // own stream (just above) reached that member's own WindowAdvance
+    // instruction -- is the value `b.feed_arc` was always supposed to
+    // hold here, available only AFTER that instruction runs, which is why
+    // this correction sits here and not at the pre-loop seed (where the
+    // fix would not yet exist to read): moving the READ, not re-deriving
+    // the VALUE a second time. Restricted to k == 0 (this read is the
+    // k==0 residual's own y, never touched again -- every later sweep's
+    // own x_old comes from `R.x_old.swap(R.x_out)`, below) AND to this
+    // member's own FIRST EVER window instance (`history[e].size() == 1`:
+    // only the t=0 seed exists, no later window's own post-convergence
+    // refresh, below in this file, has appended a second entry yet) -- a
+    // later window instance's own pre-loop read already carries the
+    // PREVIOUS window's own genuinely converged delivery, correct as is,
+    // and must not be replaced by the t=0 entry here, which by then names
+    // a different time entirely. A no-op for an ordinary channel's own
+    // first window either way: there, `b.feed_arc` and this history entry
+    // already agree bit-for-bit.
+    if (k == 0) {
+      for (const detail::RegionBlock& b : R.blocks) {
+        const detail::WindowMemberState* seed_state = nullptr;
+        std::size_t seed_length = 0;
+        std::size_t seed_capacity = 1;
+        for (const auto& [node, cfg] : window_member_config) {
+          if (cfg.window_import.valid() &&
+              cfg.window_import.value() == b.feed_arc) {
+            const auto st_it = window_member_state.find(node);
+            if (st_it != window_member_state.end()) {
+              seed_state = &st_it->second;
+              seed_length = cfg.length;
+              seed_capacity = cfg.provider_capacity;
+            }
+            break;
+          }
+        }
+        if (seed_state == nullptr) continue;
+        bool use_history = seed_state->history.size() >= seed_length;
+        for (std::size_t e = 0; use_history && e < seed_length; ++e) {
+          if (seed_state->history[e].size() != 1 ||
+              seed_state->history[e].front().first != Rational{0}) {
+            use_history = false;
+          }
+        }
+        if (!use_history) continue;
+        // `b.length` is NOT `seed_length` (this member's own count of
+        // SPATIAL elements, `cfg.length` -- the same count `history` is
+        // indexed by): it is that same count TIMES `cfg.provider_capacity`
+        // (`b.feed_arc`'s own full buffer stride, same layout
+        // `resolve_regions()`'s own cold-start seed reads with `e *
+        // cfg.provider_capacity`, above in this file). Replicating each
+        // element's own t=0 value across its own `provider_capacity`
+        // slots -- not writing just the first `seed_length` entries,
+        // leaving the rest at whatever `b.feed_arc`'s pre-loop seed left
+        // them (a LowFive channel's own zero, for every slot past the
+        // first `seed_length`) -- is what a cold-start buffer actually
+        // looks like: every sample constant, nothing yet diverged between
+        // them (the SAME invariant resolve_regions()'s own comment names
+        // for the ordinary case).
+        double* x_old_block = R.x_old.data() + b.offset;
+        for (std::size_t e = 0; e < seed_length; ++e) {
+          const double v = seed_state->history[e].front().second;
+          for (std::size_t s = 0; s < seed_capacity; ++s) {
+            const std::size_t idx = e * seed_capacity + s;
+            if (idx < b.length) x_old_block[idx] = v;
+          }
+        }
+      }
     }
 
     // G(y), and the residual G(y) - y. Computed unconditionally, even after
@@ -2448,6 +2620,77 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
       // coincide exactly for an identity remap, which is what every
       // caller of this function uses today.
       const bool have_history = e < st.history.size() && !st.history[e].empty();
+
+      // The t=0 entry this member's own `st.history[e]` started with
+      // (resolve_regions()'s own "ordinary prime" pass, its own comment
+      // there) was taken by EXECUTING this channel's own chain once, at
+      // fuse_initialize() -- correct for an ordinary (Transport-rooted)
+      // channel, since Transport genuinely moves the provider's
+      // registered initial value synchronously at that point, but WRONG
+      // for an ExternalDelivery-rooted (LowFive-bound) one: that node's
+      // own `execute()` case is a no-op (by design -- the application's
+      // write is what carries the value, not an `execute()` call, even
+      // though the node now carries an input of its own, include/fuse/
+      // ir/op.hpp's own comment on OpKind::ExternalDelivery), so that
+      // "ordinary prime" pass, running
+      // BEFORE the application's own first write has happened, recorded
+      // whatever zero-initialized garbage the arc started with. MEASURED
+      // (this session, paired `TRACE seed`/`TRACE predictor` lines, both
+      // channels): window 1's own sweep 0 used v=0x0p+0 here where the
+      // reference run's own equivalent read 0x1.7f96603e92f42p+0 /
+      // -0x1.edc01ec2c97a2p+0 -- the harness's own extra sweeps (24 vs
+      // the reference's 12) and window 2's own divergent final state
+      // both trace to this single wrong entry (the latter through
+      // `extrapolate_boundary_value()`'s own fit, below, which keeps
+      // reading it as one of its knots until something overwrites it).
+      //
+      // An EARLIER version of this fix read `slots[cfg.window_import.
+      // value()]` here -- the window Sink's own downstream COPY --
+      // on the claim that "by THIS point in THIS call, this member's
+      // own chain (Remap..Sink, stream order strictly ahead of this
+      // WindowAdvance) has ALREADY executed for real this sweep". That
+      // held under the instruction ordering in force when this fix was
+      // written (both members' own chains grouped together, both ahead
+      // of both WindowAdvance calls), but NOT under the scheduling-order
+      // fix now in effect (OpKind::ExternalDelivery's own comment,
+      // include/fuse/ir/op.hpp): stream order interleaves per member --
+      // WindowAdvance(U) -> Sink(V's import, fed by U) -> WindowAdvance(
+      // V) -> Sink(U's import, fed by V) -- so U's OWN import chain
+      // (fed by V) does not run until AFTER U's own WindowAdvance, and
+      // `slots[cfg.window_import.value()]` is still whatever the PRIOR
+      // sweep (or, on sweep 0, the "ordinary prime" pass above) left
+      // there when U reaches this line. MEASURED (this session, traced
+      // per sweep, hexfloat, both members' own WindowAdvance output and
+      // Sink input side by side against the in-process reference): the
+      // harness's own window 0 sweep 0 WindowAdvance output for U
+      // matched the reference exactly at element 0 (the window-start
+      // sample, never touched by this correction) but diverged from
+      // element 1 onward, by roughly 4 in an O(1) quantity -- traced
+      // directly to this read picking up stale data for U specifically
+      // (V's own equivalent read was fine: V's import chain, fed by U,
+      // already ran earlier in the SAME sweep). `cfg.
+      // window_import_delivery_arc` (WindowMemberConfig's own comment,
+      // runner_impl.hpp) is the fix: the SAME chain-root arc `view_field(
+      // )` already resolves for a LowFive-bound export, which holds the
+      // application's actual write the instant it happens, with no
+      // dependency on this member's own import chain having run yet
+      // this sweep. Equal to `cfg.window_import` for an ordinary channel
+      // (no walk-back needed there), so this is a no-op change for that
+      // kind; it must happen before the k-loop below, since `k >= 1`'s
+      // own extrapolation reads this SAME entry as one of its fit
+      // points.
+      const ArcId t0_correction_arc = cfg.window_import_delivery_arc.valid()
+                                           ? cfg.window_import_delivery_arc
+                                           : cfg.window_import;
+      if (use_predictor && T0 == Rational{0} && e < st.history.size() &&
+          !st.history[e].empty() && st.history[e].front().first == Rational{0} &&
+          t0_correction_arc.value() < slots.size() &&
+          slots[t0_correction_arc.value()].data != nullptr) {
+        st.history[e].front().second =
+            slots[t0_correction_arc.value()]
+                .data[e * cfg.provider_capacity + 0];
+      }
+
       for (std::size_t k = 0; k < times.size(); ++k) {
         double v;
         if (use_predictor) {
@@ -2761,6 +3004,73 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
     st.straddle_window_end = T1;
   }
 
+  co_return Result<void>::success();
+}
+
+detail::Task<Result<void>> Runner::Impl::deliver_external(
+    ComponentSet& components, const Instruction& ins,
+    std::size_t instruction_index) {
+  // lower_channel()'s own LowFive substitution (src/ir/rules_channel.cpp):
+  // `delivered.rank_set = g.owner_of(ch.target).value()` -- the importing
+  // component's graph ComponentId, carried on this instruction's own
+  // output arc's type precisely so this lookup needs no new OpAttrs field.
+  const int rank_set = dag.arc(ins.out).type.rank_set;
+  if (rank_set < 0) {
+    // Defensive: not reachable today (deliver_external()'s own header
+    // comment, runner_impl.hpp) -- every ExternalDelivery arc's rank_set
+    // is set by construction, the same way advance_window()'s own
+    // OpKind::WindowAdvance case defends against a node reaching it with
+    // no window member config.
+    co_return Failure{"E-RT-DELIVERY-UNPLACED",
+                 "ExternalDelivery instruction's own output arc has no "
+                 "importing component recorded"};
+  }
+  const ComponentId importer{static_cast<std::uint32_t>(rank_set)};
+  const ComponentDecl& decl = graph.component(importer);
+  // The lead's own ruling (2026-10-04): on U's own process, a channel
+  // whose importer is V (not hosted here) is a no-op, exactly as
+  // `advance_window()` is for a non-hosted member (that function's own
+  // `if (!cfg.hosted) co_return Result<void>::success();`, right above
+  // in this file) -- the SAME formula `build_ticks()`'s own `hosted[]`
+  // and `resolve_regions()`'s own `WindowMemberConfig::hosted` both use,
+  // read from the SAME `this_process` member. Checked BEFORE looking the
+  // component up in `components`: on a real multi-process run, a
+  // non-hosted component is never registered in THIS process's own
+  // ComponentSet at all, so a lookup would fail where a plain no-op is
+  // correct.
+  const bool hosted = !this_process.has_value() ||
+                      decl.ranks.contains(*this_process);
+  if (!hosted) co_return Result<void>::success();
+  Component* comp = components.find(decl.name);
+  if (comp == nullptr) {
+    co_return Failure{"E-RT-DELIVERY-UNPLACED",
+                 "ExternalDelivery instruction names importing component '" +
+                     decl.name + "', hosted on this process, but no "
+                     "Component with that name is in this ComponentSet"};
+  }
+  // An in-process importer is refused earlier, at fuse_initialize()
+  // (E-ABI-DELIVERY-INPROCESS, src/abi/participant.cpp) -- unreachable
+  // here by construction (deliver_external()'s own header comment);
+  // `is_externally_driven()` is still read, not assumed, the same
+  // defensive posture advance()'s own identical check uses for an
+  // ordinary tick.
+  if (comp->is_externally_driven()) {
+    ExternalAdvanceRequest req;
+    req.component = decl.name;
+    req.is_delivery_due = true;
+    req.delivery_instruction_index = instruction_index;
+    pending_external_request = std::move(req);
+    co_await detail::ExternalSuspend{&active_handle};
+  }
+  // The value is already in place: the application's own out-of-band
+  // write (H5Dwrite/H5Dread through the installed VOL, or the tier-0
+  // harness's view_field + memcpy stand-in) targets THIS instruction's
+  // own output arc directly, the same arc `view_field` resolves to for a
+  // LowFive-bound import (src/abi/participant.cpp's own impl_view_field).
+  // execute()'s own OpKind::ExternalDelivery case (src/runtime/
+  // runner.cpp) is the identical no-op, for an ExternalDelivery
+  // instruction that reaches it from outside any region (this
+  // function's own header comment, runner_impl.hpp).
   co_return Result<void>::success();
 }
 

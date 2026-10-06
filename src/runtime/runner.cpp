@@ -2866,8 +2866,12 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
       // The application (or, for the tier-0 oracle, the test harness
       // standing in for it) fills this arc's buffer directly -- by the
       // point an H5Dread or its stand-in would occur -- before this
-      // instruction runs; nothing to do here. See OpKind::ExternalDelivery
-      // (include/fuse/ir/op.hpp) and docs/user/lowfive.md, Unit 3.
+      // instruction runs; nothing to do here. `ins.in[0]` (lower_channel(),
+      // src/ir/rules_channel.cpp) exists ONLY to give the scheduler the
+      // same ordering constraint `Transport`'s own input gives it for an
+      // ordinary channel -- deliberately never read here. See
+      // OpKind::ExternalDelivery (include/fuse/ir/op.hpp) and
+      // docs/user/lowfive.md, Unit 3.
       break;
 
     case OpKind::Sink:
@@ -3845,6 +3849,136 @@ std::vector<ComponentId> Runner::Impl::components_due_at_period_start() const {
     }
   }
   return out;
+}
+
+std::optional<ComponentId> Runner::next_real_advance_after(
+    const ComponentSet& components, std::size_t instruction_index) const {
+  return impl_->next_real_advance_after(components, instruction_index);
+}
+
+std::optional<ComponentId> Runner::Impl::next_real_advance_after(
+    const ComponentSet& components, std::size_t instruction_index) const {
+  const std::vector<Instruction>& stream = plan.instructions();
+  if (instruction_index >= stream.size()) return std::nullopt;
+  const Rational from_time = stream[instruction_index].time;
+
+  // The SAME hosted formula deliver_external() and build_ticks()'s own
+  // hosted[] use, plus the externally-driven check deliver_external()
+  // also makes before suspending -- a candidate failing either is
+  // skipped (not returned), because the scan keeps going: the next
+  // eligible one further out is still a real candidate, unlike
+  // components_due_at_period_start()'s own "return everything, caller
+  // picks the first eligible one", which only works for a genuine tie
+  // at time 0 (this function's own declaration, runner_impl.hpp, has
+  // the full account of the difference).
+  const auto eligible = [&](const ComponentId cid) -> bool {
+    const ComponentDecl& decl = graph.component(cid);
+    const bool hosted =
+        !this_process.has_value() || decl.ranks.contains(*this_process);
+    if (!hosted) return false;
+    const Component* comp = components.find(decl.name);
+    return comp != nullptr && comp->is_externally_driven();
+  };
+
+  // Ordinary ticks strictly after this instruction's own time -- `ticks`,
+  // not `all_ticks`, is already filtered to this process's own hosted
+  // components (build_ticks()'s own comment on the two), but NOT to
+  // externally-driven ones, so `eligible()` still has work to do.
+  std::optional<ComponentId> tick_candidate;
+  Rational tick_candidate_time{0};
+  for (const detail::Tick& tk : ticks) {
+    if (!(tk.time > from_time)) continue;
+    const ComponentId cid{tk.order};
+    if (!eligible(cid)) continue;
+    if (!tick_candidate.has_value() || tk.time < tick_candidate_time ||
+        (tk.time == tick_candidate_time && tk.order < tick_candidate->value())) {
+      tick_candidate = cid;
+      tick_candidate_time = tk.time;
+    }
+  }
+
+  // WindowAdvance instructions later in the SAME compiled stream --
+  // components_due_at_period_start()'s own region scan, starting from
+  // `instruction_index + 1` instead of the stream's front; stream order
+  // is already this period's own schedule order, so the first eligible
+  // one found is the earliest.
+  //
+  // The lead's own ruling (2026-10-04, correcting the SAME day's earlier
+  // one): a plain forward scan to `stream.size()` is only correct when
+  // `instruction_index` lies outside every iteration region. Inside one,
+  // whether the scan may walk past that region's own `exit` depends on a
+  // convergence decision the region's sweep loop makes AFTER this
+  // instruction runs -- not yet taken, and not knowable from the
+  // compiled plan alone. So: if `instruction_index` falls inside some
+  // region's own (enter, exit) pass, the forward scan is bounded to that
+  // pass's own `exit`, and -- finding nothing there -- WRAPS to that same
+  // pass's own `enter` and continues up to (not including)
+  // `instruction_index`, because that is the instruction sequence the
+  // sweep loop actually runs if it loops back for another sweep. The
+  // result is therefore a CONDITIONAL answer -- "the component due IF
+  // the iteration continues" (ExternalAdvanceRequest::is_delivery_due's
+  // own comment, runner.hpp, states this plainly) -- never a promise:
+  // whether the iteration really continues is resolved for real only by
+  // actually resuming the Runner (prime_next_request()'s own rollover,
+  // src/abi/participant.cpp), which is free to find the region converged
+  // and the period over instead. Only when `instruction_index` lies
+  // outside every region does "found nothing" legitimately mean "nothing
+  // remains in this compiled period", the case the caller's own fallback
+  // to the next period's start (components_due_at_period_start()) is
+  // for.
+  std::optional<std::pair<std::size_t, std::size_t>> containing_pass;
+  for (const detail::RegionRuntime& region : regions) {
+    for (const auto& [enter, exit] : region.passes) {
+      if (instruction_index >= enter && instruction_index <= exit) {
+        containing_pass = std::make_pair(enter, exit);
+        break;
+      }
+    }
+    if (containing_pass.has_value()) break;
+  }
+  const std::size_t forward_limit =
+      containing_pass.has_value() ? containing_pass->second + 1 : stream.size();
+  std::optional<ComponentId> window_candidate;
+  Rational window_candidate_time{0};
+  for (std::size_t k = instruction_index + 1; k < forward_limit; ++k) {
+    if (stream[k].kind != OpKind::WindowAdvance) continue;
+    const int rank_set = dag.arc(stream[k].out).type.rank_set;
+    if (rank_set < 0) continue;
+    const ComponentId cid{static_cast<std::uint32_t>(rank_set)};
+    if (!eligible(cid)) continue;
+    window_candidate = cid;
+    window_candidate_time = stream[k].time;
+    break;
+  }
+  if (!window_candidate.has_value() && containing_pass.has_value()) {
+    // Not found forward to this pass's own exit: wrap to its own entry,
+    // the instruction sequence the sweep loop actually resumes at if it
+    // loops back for another sweep (this function's own header comment,
+    // runner.hpp -- NOT a fall-through to the next period, since we are
+    // still inside a region).
+    for (std::size_t k = containing_pass->first; k < instruction_index; ++k) {
+      if (stream[k].kind != OpKind::WindowAdvance) continue;
+      const int rank_set = dag.arc(stream[k].out).type.rank_set;
+      if (rank_set < 0) continue;
+      const ComponentId cid{static_cast<std::uint32_t>(rank_set)};
+      if (!eligible(cid)) continue;
+      window_candidate = cid;
+      window_candidate_time = stream[k].time;
+      break;
+    }
+  }
+
+  if (tick_candidate.has_value() && window_candidate.has_value()) {
+    // A genuine tie between an ordinary tick and a window boundary is
+    // not exercised by any graph this codebase tests today; broken
+    // toward the window candidate, arbitrarily but deterministically
+    // (this function's own declaration, runner_impl.hpp).
+    return (tick_candidate_time < window_candidate_time) ? tick_candidate
+                                                          : window_candidate;
+  }
+  if (tick_candidate.has_value()) return tick_candidate;
+  if (window_candidate.has_value()) return window_candidate;
+  return std::nullopt;
 }
 
 Result<std::optional<ExternalAdvanceRequest>> Runner::Impl::resume_period(

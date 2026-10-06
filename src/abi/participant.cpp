@@ -831,6 +831,38 @@ fuse_status impl_initialize(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
       }
     }
 
+    // Unit 3 (S6 phase 3, Conformance): a LowFive-bound channel's own
+    // ExternalDelivery instruction (src/ir/rules_channel.cpp's
+    // lower_channel()) suspends the Runner's own coroutine chain for the
+    // IMPORTING component (deliver_external(), src/runtime/iteration.cpp)
+    // -- which only resumes through fuse_begin_step()/fuse_end_step(), so
+    // an importer driven in-process (c.ext[...].in_process, set just
+    // above) would leave the suspension permanently pending: it never
+    // calls either entry point. Refused here, at initialize(), rather
+    // than discovered as a hang -- the same reasoning E-ABI-STEP-IN-
+    // PROCESS already applies to an in-process component NAMED directly
+    // in a fuse_begin_step()/fuse_end_step() call (resolve_external()
+    // above in this file), just checked against the graph instead of a
+    // caller's own argument, since nothing the application passes names
+    // the importer here.
+    for (std::size_t ch = 0; ch < c.graph.channel_count(); ++ch) {
+      const fuse::Channel& channel =
+          c.graph.channel_at(fuse::ChannelId{static_cast<std::uint32_t>(ch)});
+      if (!c.graph.field(channel.source).hdf5_path.has_value()) continue;
+      const fuse::ComponentId importer = c.graph.owner_of(channel.target);
+      if (importer.value() < c.ext.size() && c.ext[importer.value()].in_process) {
+        return fail(&c, FUSE_ERR_INVALID, "E-ABI-DELIVERY-INPROCESS",
+                   "fuse_initialize: channel '" + channel.name +
+                       "' is LowFive-bound (its source field sets "
+                       "FieldSpec::hdf5_path), but its importer '" +
+                       c.graph.component(importer).name +
+                       "' is driven in-process; an ExternalDelivery "
+                       "suspension can only resume through "
+                       "fuse_begin_step()/fuse_end_step(), which an "
+                       "in-process component never calls");
+      }
+    }
+
     fuse::RunnerConfig config{};
     if (c.communicator_set) {
       config.base_communicator = static_cast<int>(c.communicator);
@@ -850,6 +882,57 @@ fuse_status impl_initialize(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
     return FUSE_OK;
   });
 }
+
+std::int32_t first_external_component_due_at_period_start(fuse_ctx& c) {
+  for (const fuse::ComponentId cid : c.runner->components_due_at_period_start()) {
+    if (cid.value() < c.ext.size() && !c.ext[cid.value()].in_process) {
+      return static_cast<std::int32_t>(cid.value());
+    }
+  }
+  return -1;
+}
+
+/// Unit 3 (S6 phase 3, Conformance), the lead's own corrected ruling
+/// (2026-10-04): resolves the `next_component` value a CACHED request
+/// (`c.next_request`, assumed to already have a value) reports --
+/// shared by `fuse_is_coupling_ongoing()` and `fuse_end_step()`, the
+/// two entry points that report this field from outside an open step.
+/// `next_component` has exactly ONE meaning everywhere: the component
+/// whose `fuse_begin_step()` the Runner expects next. A request with
+/// `is_delivery_due` set names an IMPORTER, not a component whose turn
+/// it is (`ExternalAdvanceRequest::is_delivery_due`'s own comment,
+/// `include/fuse/runtime/runner.hpp`, has the full account of the
+/// earlier, wrong "purely informational" rule this replaces), so it is
+/// resolved FURTHER here, via `Runner::next_real_advance_after()`, a
+/// static forward scan of the compiled plan -- never reported
+/// directly.
+std::int32_t resolve_cached_next_component(fuse_ctx& c) {
+  const fuse::ExternalAdvanceRequest& req = *c.next_request;
+  if (!req.is_delivery_due) {
+    const auto cid = c.graph.find_component(req.component);
+    return cid.has_value() ? static_cast<std::int32_t>(cid->value()) : -1;
+  }
+  const auto resolved = c.runner->next_real_advance_after(
+      c.components, req.delivery_instruction_index);
+  if (resolved.has_value()) {
+    // Conditional, not a promise, when the delivery lies inside an
+    // iteration region (next_real_advance_after()'s own comment,
+    // runner_impl.hpp): the component due IF that region's own sweep
+    // loop continues. prime_next_request()'s own rollover is what
+    // resolves this for real, and may legitimately disagree by rolling
+    // into a new period instead -- fuse_step_report::step_opened (and
+    // fuse_begin_step()'s own consuming loop) is where that disagreement
+    // surfaces, never here.
+    return static_cast<std::int32_t>(resolved->value());
+  }
+  // Ran off the end of this period without finding a real advance,
+  // WITHOUT the instruction lying inside any iteration region (inside
+  // one, next_real_advance_after() always finds its own wrapped
+  // answer first): the schedule repeats identically every period, so
+  // the NEXT one's own start is the answer.
+  return first_external_component_due_at_period_start(c);
+}
+
 
 fuse_status impl_is_coupling_ongoing(fuse_ctx* ctx, const fuse_null*,
                                     fuse_ongoing* out) {
@@ -908,26 +991,18 @@ fuse_status impl_is_coupling_ongoing(fuse_ctx* ctx, const fuse_null*,
       if (c.external_count == 0) {
         out->next_component = -1;
       } else if (c.next_request.has_value()) {
-        const auto cid = c.graph.find_component(c.next_request->component);
-        out->next_component =
-            cid.has_value() ? static_cast<std::int32_t>(cid->value()) : -1;
+        out->next_component = resolve_cached_next_component(c);
       } else {
-        out->next_component = -1;
-        for (const fuse::ComponentId cid :
-             c.runner->components_due_at_period_start()) {
-          if (cid.value() < c.ext.size() && !c.ext[cid.value()].in_process) {
-            out->next_component = static_cast<std::int32_t>(cid.value());
-            break;
-          }
-        }
         // Unreachable for a well-formed graph with external_count > 0:
         // every externally driven component has a substep at period-time
         // 0 (either an ordinary Tick{k=0,...} or a window member's first
-        // instance's own first substep), so the loop above always finds
-        // one and the -1 default is never actually used here. Left as
-        // the safe fallback rather than an assert, matching this
-        // function's own "fail gracefully, never a new hard-failure
-        // mode" convention elsewhere in this file.
+        // instance's own first substep), so
+        // first_external_component_due_at_period_start()'s own loop
+        // always finds one and its -1 default is never actually used
+        // here. Left as the safe fallback rather than an assert,
+        // matching this function's own "fail gracefully, never a new
+        // hard-failure mode" convention elsewhere in this file.
+        out->next_component = first_external_component_due_at_period_start(c);
       }
     }
     return FUSE_OK;
@@ -973,14 +1048,83 @@ bool resolve_external(fuse_ctx& c, const char* name, const char* fn,
 /// comment), and returns the request it finds -- WITHOUT consuming it;
 /// the caller decides whether it matches `name` and, if so, moves it out
 /// itself. Returns false (and fills `out_code`/`out_message`) only for a
-/// genuine runtime failure or the "nothing due this period" invariant
-/// violation; a name mismatch is the CALLER's concern, checked afterwards,
-/// because leaving the cache populated on a mismatch is exactly what lets
-/// the correctly-named begin_step() that follows see the same request.
-bool prime_next_request(fuse_ctx& c, const char* fn, std::string* out_code,
-                        std::string* out_message) {
+/// genuine runtime failure; a name mismatch is the CALLER's concern,
+/// checked afterwards, because leaving the cache populated on a mismatch
+/// is exactly what lets the correctly-named begin_step() that follows see
+/// the same request.
+///
+/// The lead's own ruling (2026-10-04), SUPERSEDING an earlier one the
+/// SAME day that treated `resume_period()` returning nothing as always
+/// unreachable: that was right for `fuse_is_coupling_ongoing()`'s own
+/// "nothing cached" branch and for a GENUINE mismatch rejected earlier
+/// (resolve_external() already refuses `name` if it is in-process or
+/// unknown, and open_component's own check in impl_begin_step rules out
+/// a second begin_step() for the same component with no intervening
+/// end_step()), but wrong for THIS call site once a scheduling-order fix
+/// (`OpKind::ExternalDelivery`'s own comment, `include/fuse/ir/op.hpp`)
+/// made it possible for `resume_period()`, resumed from a delivery
+/// proxy's own suspend point, to run an iteration region through to real
+/// convergence and on into the period's own end: every externally driven
+/// component still ticks at least once per period (the scheduler's own
+/// common-period invariant), but THIS period already collected that
+/// tick earlier, before the proxy was cached -- resuming past the proxy
+/// can legitimately find nothing left to do here, not because the
+/// invariant broke, but because this period is simply over. That is a
+/// legitimate outcome, not an error: `*rolled_over` is set, this
+/// period's own bookkeeping is completed exactly as `fuse_run()` would
+/// at a period's end (`++c.periods_completed`), and the next period is
+/// started and its own first request primed immediately, in the SAME
+/// call -- `fuse_begin_step()`'s own caller (below) decides, from
+/// whether the newly primed request's component matches the one it was
+/// asked for, whether to open a step as usual or report `fuse_step_
+/// report::step_opened = 0` instead (that field's own comment, `entries.
+/// def`, has the full account). Only if THAT second `resume_period()`
+/// ALSO finds nothing is the common-period invariant genuinely violated,
+/// which remains unreachable for a well-formed graph and is still
+/// reported as `E-ABI-STEP-ORDER`.
+///
+/// The lead's own ruling (2026-10-04), the SAME day, closing the one way
+/// this rollover could otherwise run away: nothing above bounds how many
+/// times a period can roll into the next one, and a graph whose window
+/// never fails to converge (the common case once state reaches a fixed
+/// point) would let it happen without end, exactly the hang a caller
+/// driving by `fuse_is_coupling_ongoing()`'s own `ongoing` flag must
+/// never see from inside the library. So: before the SECOND
+/// `resume_period()` call below actually starts a new period,
+/// `c.has_end_time` is checked the SAME way `fuse_is_coupling_ongoing()`
+/// already does (`c.plan->period() * Rational{c.periods_completed} <
+/// c.end_time`) -- using the JUST-INCREMENTED `periods_completed`,
+/// because that product is exactly the NEW period's own start time, the
+/// same quantity `fuse_run()`'s own `periods == -1` loop tests before
+/// calling `run_period()` again. At or past `end_time`, the run is
+/// simply over: `c.next_request` is left empty (not an error) and this
+/// function still returns `true` -- `fuse_begin_step()`'s own caller
+/// reads the empty cache as "nothing more, ever" (distinct from a
+/// request that merely mismatches `C`) and reports `step_opened = 0`,
+/// `next_component = -1`, exactly what `fuse_is_coupling_ongoing()`
+/// already reports as `ongoing = 0` once resumed this far. Without a
+/// `has_end_time` bound at all, there is nothing to refuse against --
+/// the run is unbounded by the caller's own declared intent, and rolling
+/// forever is exactly what an unbounded run means.
+bool prime_next_request(fuse_ctx& c, const char* fn, bool* rolled_over,
+                        std::string* out_code, std::string* out_message) {
+  *rolled_over = false;
   if (c.next_request.has_value()) return true;
-  const fuse::Result<std::optional<fuse::ExternalAdvanceRequest>> outcome =
+  // The lead's own ruling (2026-10-04): this call might be reached fresh
+  // (not through the rollover below) after a PRIOR call already closed
+  // the run's own last period -- fuse_end_step()'s own "the period just
+  // ran to completion" branch (below, this file) leaves c.next_request
+  // empty exactly that way for a graph where it is reachable at all.
+  // Checked here, before EITHER resume_period() call, so a begin_step()
+  // the caller makes anyway (ignoring fuse_is_coupling_ongoing()'s own
+  // `ongoing = 0`) never starts a new period's own coroutine at all --
+  // the SAME `c.plan->period() * Rational{c.periods_completed} <
+  // c.end_time` test that function already uses.
+  if (c.has_end_time &&
+      !(c.plan->period() * fuse::Rational{c.periods_completed} < c.end_time)) {
+    return true;
+  }
+  fuse::Result<std::optional<fuse::ExternalAdvanceRequest>> outcome =
       c.runner->resume_period(c.components);
   if (!outcome.ok()) {
     *out_code = outcome.error().code;
@@ -988,25 +1132,42 @@ bool prime_next_request(fuse_ctx& c, const char* fn, std::string* out_code,
     return false;
   }
   if (!outcome.value().has_value()) {
-    // The period ran to completion with no externally driven component
-    // left to stop at. Unreachable for a well-formed graph that reaches
-    // this point at all: resolve_external() already rejected `name` if it
-    // names an in-process component or doesn't exist, and every
-    // externally driven component ticks at least once per period (the
-    // scheduler's own common-period invariant), so resume_period() cannot
-    // run an entire period to completion without yielding for THIS caller
-    // at least once -- UNLESS it already did, earlier in the SAME period,
-    // and this is a second begin_step() for the same component with no
-    // intervening end_step() of the component the stream expected next in
-    // between, which open_component's own check in impl_begin_step rules
-    // out before this is ever called.
-    *out_code = "E-ABI-STEP-ORDER";
-    *out_message =
-        std::string(fn) +
-        ": the current period has no externally driven component left to "
-        "step; this should be unreachable for a graph with at least one "
-        "such component";
-    return false;
+    // This period is over (see this function's own comment above for
+    // why that is expected here, not a violation of the "ticks at least
+    // once" invariant): complete its bookkeeping exactly as fuse_run()
+    // would at a period's end, then start the next one and prime ITS
+    // OWN first request, in this same call -- UNLESS the next period's
+    // own start would be at or past the run's own declared end_time
+    // (this function's own comment above), in which case the run is
+    // simply over and c.next_request is left empty.
+    ++c.periods_completed;
+    *rolled_over = true;
+    if (c.has_end_time) {
+      const fuse::Rational now =
+          c.plan->period() * fuse::Rational{c.periods_completed};
+      if (!(now < c.end_time)) {
+        c.next_request.reset();
+        return true;
+      }
+    }
+    outcome = c.runner->resume_period(c.components);
+    if (!outcome.ok()) {
+      *out_code = outcome.error().code;
+      *out_message = outcome.error().message;
+      return false;
+    }
+    if (!outcome.value().has_value()) {
+      // Two periods in a row with no externally driven component to
+      // stop at: THIS is the genuine invariant violation, unreachable
+      // for a well-formed graph with at least one such component.
+      *out_code = "E-ABI-STEP-ORDER";
+      *out_message =
+          std::string(fn) +
+          ": the current period has no externally driven component left "
+          "to step; this should be unreachable for a graph with at least "
+          "one such component";
+      return false;
+    }
   }
   c.next_request = std::move(outcome.value());
   return true;
@@ -1043,18 +1204,176 @@ fuse_status impl_begin_step(fuse_ctx* ctx, const fuse_step_request* in,
                      c.graph.component(*c.open_component).name +
                      "' still has one open; call its fuse_end_step() first");
     }
-    if (!prime_next_request(c, "fuse_begin_step", &err_code, &err_message)) {
+    bool rolled_over = false;
+    bool this_call_rolled_over = false;
+    if (!prime_next_request(c, "fuse_begin_step", &this_call_rolled_over,
+                            &err_code, &err_message)) {
       return fail(&c, FUSE_ERR_RUNTIME, err_code, err_message);
     }
+    rolled_over = rolled_over || this_call_rolled_over;
+    // Unit 3 (S6 phase 3, Conformance), per the lead's own ruling
+    // (2026-10-04): a cached request with `is_delivery_due` set names an
+    // IMPORTER purely as information ("this channel's import is due; if
+    // you produce it, write it now") -- it is not a claim that THIS
+    // caller, or any particular component, must consume it next.
+    // `fuse_begin_step(C)` consumes EVERY pending delivery proxy it
+    // encounters while resuming, WHATEVER component each one names, not
+    // only ones that happen to match `C` -- the proxy's only job is to
+    // return control to the application once between the production of
+    // a value and its consumption, and WHO makes the next ABI call is
+    // irrelevant to that job. Only the REAL advance request this walk
+    // eventually reaches is checked against `C` (the ordinary mismatch
+    // check immediately below). Terminates because every loop iteration
+    // consumes the ONE outstanding proxy and resume_period() always
+    // makes forward progress through the compiled stream (it never
+    // re-suspends at the SAME instruction twice without executing
+    // something in between); the loop ends at a real advance request
+    // (is_delivery_due false) or prime_next_request()'s own genuine
+    // E-ABI-STEP-ORDER (two periods in a row with nothing to stop at).
+    //
+    // SECOND correction, the SAME day: "the period completing" is no
+    // longer itself an error prime_next_request() can return here --
+    // once resuming past a proxy runs a time-window's own iteration
+    // through to real convergence and on into the period's end,
+    // prime_next_request() rolls over to the next period and primes ITS
+    // OWN first request instead of failing (that function's own
+    // comment has the full account). `rolled_over` tracks whether that
+    // happened on ANY iteration of this loop (or the priming call
+    // above), because it changes how a mismatch below is handled: a
+    // mismatch reached WITHOUT a rollover is the ordinary out-of-turn
+    // refusal (unchanged, and the ordinary non-window/non-LowFive path
+    // never rolls over, so this stays byte-identical there); a mismatch
+    // reached WITH one is not an error at all (`fuse_step_report::
+    // step_opened`'s own comment, entries.def, has the full account).
+    while (c.next_request.has_value() && c.next_request->is_delivery_due) {
+      c.next_request.reset();
+      if (!prime_next_request(c, "fuse_begin_step", &this_call_rolled_over,
+                              &err_code, &err_message)) {
+        return fail(&c, FUSE_ERR_RUNTIME, err_code, err_message);
+      }
+      rolled_over = rolled_over || this_call_rolled_over;
+    }
+    if (!c.next_request.has_value()) {
+      // The lead's own ruling (2026-10-04): prime_next_request()'s own
+      // rollover refused to start a period past the run's declared
+      // end_time (that function's own comment has the full account) --
+      // this run is simply over, the SAME fact fuse_is_coupling_ongoing()
+      // already reports as `ongoing = 0` once resumed this far (the
+      // SAME `c.plan->period() * Rational{c.periods_completed} <
+      // c.end_time` test). No step opens on ANY component; -1 names
+      // nothing because there is nothing left, not because of a
+      // mismatch (fuse_step_report::step_opened's own comment,
+      // entries.def).
+      out->struct_size         = sizeof(fuse_step_report);
+      out->requires_checkpoint = 0;
+      out->requires_restore    = 0;
+      out->step                = 0;
+      out->iteration            = 0;
+      out->reserved             = 0;
+      out->t_begin               = to_abi_time(fuse::Rational{0});
+      out->t_end                 = to_abi_time(fuse::Rational{0});
+      if (struct_size_covers(declared_out_size,
+                             offsetof(fuse_step_report, next_component) +
+                                 sizeof(out->next_component))) {
+        out->next_component = -1;
+      }
+      if (struct_size_covers(declared_out_size,
+                             offsetof(fuse_step_report, step_opened) +
+                                 sizeof(out->step_opened))) {
+        out->step_opened = 0;
+      }
+      if (struct_size_covers(declared_out_size,
+                             offsetof(fuse_step_report, period) +
+                                 sizeof(out->period))) {
+        out->period = static_cast<std::int32_t>(c.periods_completed);
+      }
+      return FUSE_OK;
+    }
     const fuse::ExternalAdvanceRequest& req = *c.next_request;
-    if (req.component != in->component) {
-      // Not consumed: the stream's own next tick belongs to a DIFFERENT
-      // externally driven component, named here so the caller can step
-      // it first.
-      return fail(&c, FUSE_ERR_STATE, "E-ABI-STEP-ORDER",
-                 std::string("fuse_begin_step: component '") + in->component +
-                     "' asked out of turn; the Runner's instruction stream "
-                     "expects component '" + req.component + "' next");
+    // Unit 3a (S6 phase 3, Conformance), this round's own correction
+    // (2026-10-06): a MATCHED rollover -- `req.component == in->
+    // component`, but `rolled_over` is true -- used to fall through to
+    // the step_opened=1 path below unconditionally ("whether or not a
+    // period rollover happened first to reach it", this function's own
+    // comment there, now corrected). MEASURED (this session, UCore::
+    // step()'s own temporary per-call trace, test/verification/
+    // brusselator_lowfive_harness_test.cpp's own ExternalDeliveryMatches
+    // InProcessRunner): that let THIS SAME call run the new period's
+    // own first physics substep before any caller outside the Runner
+    // could observe the period having changed at all (fuse_is_coupling_
+    // ongoing()'s own `period` field does not advance until the
+    // FOLLOWING call, by which point the physics already ran) -- there
+    // was no external vantage point from which a window member's own
+    // committed state could be read at the true period boundary. A
+    // matched rollover is no longer special-cased: it is folded into
+    // the SAME `treat_as_mismatch` branch an unmatched rollover already
+    // takes (step_opened=0, request left unconsumed, `next_component`
+    // names `req.component` so the caller's own next call picks the
+    // SAME request back up and actually runs it) -- one extra, cheap
+    // begin_step()/end_step() round trip at a period boundary, in
+    // exchange for every window member's own state being observable
+    // from outside at the period's own true end, matched or not.
+    const bool treat_as_mismatch = (req.component != in->component) || rolled_over;
+    if (treat_as_mismatch) {
+      if (req.component != in->component && !rolled_over) {
+        // Not consumed: the stream's own next tick belongs to a
+        // DIFFERENT externally driven component, named here so the
+        // caller can step it first. Unaffected by this day's rollover
+        // correction: no period boundary was crossed to reach this
+        // request, so it is the ordinary out-of-turn mistake it always
+        // was.
+        return fail(&c, FUSE_ERR_STATE, "E-ABI-STEP-ORDER",
+                   std::string("fuse_begin_step: component '") +
+                       in->component +
+                       "' asked out of turn; the Runner's instruction "
+                       "stream expects component '" + req.component +
+                       "' next");
+      }
+      // Resuming past a proxy rolled this call into a NEW period -- a
+      // legitimate outcome (a time-window member on one side of an
+      // implicit coupling iteration cannot know from outside whether
+      // that iteration has converged), not an error, whether the new
+      // period's own first request names a DIFFERENT component (the
+      // `req.component != in->component` disjunct) or the SAME one
+      // (this fix's own disjunct, `rolled_over` alone -- see the
+      // comment above `treat_as_mismatch`). No step opens on ANY
+      // component either way; the caller's own loop body must call
+      // fuse_begin_step() again with the component named below, which
+      // in the matched case is simply `in->component` again -- the
+      // SAME, still-unconsumed `req` runs on that very next call.
+      out->struct_size         = sizeof(fuse_step_report);
+      out->requires_checkpoint = 0;
+      out->requires_restore    = 0;
+      out->step                = 0;
+      out->iteration            = 0;
+      out->reserved             = 0;
+      out->t_begin               = to_abi_time(fuse::Rational{0});
+      out->t_end                 = to_abi_time(fuse::Rational{0});
+      if (struct_size_covers(declared_out_size,
+                             offsetof(fuse_step_report, next_component) +
+                                 sizeof(out->next_component))) {
+        // req is a real advance request (is_delivery_due false), by the
+        // SAME common-period invariant prime_next_request()'s own
+        // comment relies on: a period's own first instruction is never
+        // a delivery, so resolve_cached_next_component()'s delivery-due
+        // branch is not needed here.
+        const auto resolved_cid = c.graph.find_component(req.component);
+        out->next_component =
+            resolved_cid.has_value()
+                ? static_cast<std::int32_t>(resolved_cid->value())
+                : -1;
+      }
+      if (struct_size_covers(declared_out_size,
+                             offsetof(fuse_step_report, step_opened) +
+                                 sizeof(out->step_opened))) {
+        out->step_opened = 0;
+      }
+      if (struct_size_covers(declared_out_size,
+                             offsetof(fuse_step_report, period) +
+                                 sizeof(out->period))) {
+        out->period = static_cast<std::int32_t>(c.periods_completed);
+      }
+      return FUSE_OK;
     }
     st.request = req;
     st.open = true;
@@ -1081,6 +1400,28 @@ fuse_status impl_begin_step(fuse_ctx* ctx, const fuse_step_request* in,
                            offsetof(fuse_step_report, next_component) +
                                sizeof(out->next_component))) {
       out->next_component = -2;
+    }
+    // step_opened's own comment, entries.def: 1 here always -- reached
+    // only when `!treat_as_mismatch`, i.e. `req.component == in->
+    // component && !rolled_over` (this round's own correction, above):
+    // a step just opened on the component this call was asked for, and
+    // no period rollover was needed to reach it at all -- a MATCHED
+    // rollover no longer falls through to this branch; see
+    // `treat_as_mismatch`'s own comment for why.
+    if (struct_size_covers(declared_out_size,
+                           offsetof(fuse_step_report, step_opened) +
+                               sizeof(out->step_opened))) {
+      out->step_opened = 1;
+    }
+    // period's own comment, entries.def: set here too, for uniformity
+    // with every other return path in this function -- `rolled_over`
+    // is always false on this branch now (above), so this is simply
+    // `c.periods_completed`'s own current value, nothing left for a
+    // caller to otherwise miss.
+    if (struct_size_covers(declared_out_size,
+                           offsetof(fuse_step_report, period) +
+                               sizeof(out->period))) {
+      out->period = static_cast<std::int32_t>(c.periods_completed);
     }
     return FUSE_OK;
   });
@@ -1119,6 +1460,16 @@ fuse_status impl_end_step(fuse_ctx* ctx, const fuse_step_request* in,
     out->reserved             = 0;
     out->t_begin               = to_abi_time(st.request.ctx.t_begin);
     out->t_end                 = to_abi_time(st.request.ctx.t_end);
+    // step_opened's own comment, entries.def: always 1 from
+    // fuse_end_step() -- this call only ever echoes a step that WAS
+    // open (the E-ABI-STEP-NOT-OPEN refusal above rules out the only
+    // other case), so it is never the one place `step_opened = 0` is
+    // reported.
+    if (struct_size_covers(declared_out_size,
+                           offsetof(fuse_step_report, step_opened) +
+                               sizeof(out->step_opened))) {
+      out->step_opened = 1;
+    }
 
     // KNOWN_ISSUES.md D12: resume the Runner PAST this component's own
     // (no-op) advance(), to the next externally driven component's
@@ -1156,10 +1507,17 @@ fuse_status impl_end_step(fuse_ctx* ctx, const fuse_step_request* in,
       if (!c.next_request.has_value()) {
         out->next_component = -1;
       } else {
-        const auto cid = c.graph.find_component(c.next_request->component);
-        out->next_component =
-            cid.has_value() ? static_cast<std::int32_t>(cid->value()) : -1;
+        out->next_component = resolve_cached_next_component(c);
       }
+    }
+    // period's own comment, entries.def: the SAME counter
+    // fuse_ongoing::period reports, read after the resume_period() call
+    // above that may just have incremented it (the "period just ran to
+    // completion" branch).
+    if (struct_size_covers(declared_out_size,
+                           offsetof(fuse_step_report, period) +
+                               sizeof(out->period))) {
+      out->period = static_cast<std::int32_t>(c.periods_completed);
     }
     return FUSE_OK;
   });

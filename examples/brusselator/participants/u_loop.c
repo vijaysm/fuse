@@ -16,6 +16,22 @@ fuse_status u_loop_step(fuse_ctx* ctx, bruss_u_handle* uh, fuse_step_request* re
   const fuse_status begin_rc = t->begin_step(ctx, req, out_begin_rep);
   if (begin_rc != FUSE_OK) return begin_rc;
 
+  /* fuse_step_report::step_opened's own comment (entries.def): resuming
+   * past a pending delivery proxy can legitimately roll this call into a
+   * NEW period whose own first request names a different component than
+   * "U" -- a time-window member cannot know from outside whether the
+   * coupling iteration it shares a window with has converged. No step
+   * opened in that case (out_begin_rep->next_component names who IS due
+   * instead): nothing to checkpoint, no physics to run, no end_step() to
+   * call. The caller's own loop body is the one place that must notice
+   * and call fuse_begin_step() again with that next_component -- this
+   * function only reports FUSE_OK with *out_rep left zeroed. */
+  if (!out_begin_rep->step_opened) {
+    memset(out_rep, 0, sizeof(*out_rep));
+    out_rep->struct_size = sizeof(*out_rep);
+    return FUSE_OK;
+  }
+
   if (out_begin_rep->requires_checkpoint) bruss_u_save_state(uh);
   if (out_begin_rep->requires_restore) bruss_u_restore_state(uh);
 

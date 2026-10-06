@@ -192,6 +192,88 @@ struct ExternalAdvanceRequest {
   /// after an iteration region's `restore_state()` rolled it back for a
   /// re-sweep. `fuse_step_report::requires_restore`'s real meaning.
   bool requires_restore = false;
+  /// Unit 3 (S6 phase 3, Conformance). True when this request was
+  /// recorded by `Runner::Impl::deliver_external()`
+  /// (src/runtime/iteration.cpp), not by `advance()`: `component` names
+  /// the component an `OpKind::ExternalDelivery` instruction's own
+  /// output arc is bound for (the IMPORTER), not a component whose own
+  /// `advance()` is next. `ctx`/`requires_checkpoint`/`requires_restore`
+  /// above are meaningless on a request with this flag set and are left
+  /// at their defaults.
+  ///
+  /// The lead's own ruling (2026-10-04), SUPERSEDING an earlier one the
+  /// SAME day that called `component` here "purely informational" on a
+  /// report: that was wrong, and produced a real contradiction (a
+  /// fuse_begin_step() call that correctly consumed every pending proxy
+  /// regardless of name still reached a real request naming a DIFFERENT
+  /// component than the one `next_component` had just reported,
+  /// because the proxy's own importer need not be the same component
+  /// whose real advance comes next in the compiled stream). The
+  /// corrected rule: `next_component` has exactly ONE meaning
+  /// everywhere -- the component whose `fuse_begin_step()` the Runner
+  /// expects next. A delivery proxy is not a component's turn, so it
+  /// NEVER supplies that name directly: `fuse_end_step()`/`fuse_is_
+  /// coupling_ongoing()`, finding a cached request with this flag set,
+  /// report `next_component` by scanning FORWARD in the compiled
+  /// stream from `delivery_instruction_index` (below) for the first
+  /// real advance of an externally driven, hosted component --
+  /// `Runner::Impl::next_real_advance_after()` (src/runtime/
+  /// runner.cpp), the same kind of static plan scan
+  /// `components_due_at_period_start()` already does.
+  ///
+  /// SECOND correction, the SAME day, once a scheduling-order fix
+  /// (`fuse::OpKind::ExternalDelivery`'s own comment, `include/fuse/
+  /// ir/op.hpp`) made a delivery instruction's own position coincide
+  /// with the END of a time-window's per-sweep instruction range: a
+  /// plain forward scan to the end of the compiled stream is only
+  /// correct OUTSIDE every iteration region, because INSIDE one,
+  /// whether execution continues past the region's own `exit` or loops
+  /// back for another sweep is a convergence decision the region's own
+  /// sweep loop makes AFTER this instruction runs -- not yet taken, not
+  /// knowable from the compiled plan alone, and not something ANY
+  /// static scan can resolve. So `next_real_advance_after()` now bounds
+  /// its forward scan to the containing region's own pass `exit` and,
+  /// finding nothing there, WRAPS to that pass's own `enter` and scans
+  /// up to (not including) `delivery_instruction_index` -- the
+  /// instruction sequence the sweep loop actually runs on another
+  /// sweep. Only when the instruction lies outside every region does
+  /// "found nothing" fall through to `components_due_at_period_start()`
+  /// 's own answer for the next period, as before. The reported
+  /// `next_component` is therefore a CONDITIONAL answer -- the
+  /// component due IF the iteration continues -- never a promise of
+  /// what `fuse_begin_step()` will actually do next.
+  ///
+  /// Because no static scan can know whether the iteration actually
+  /// continues, `fuse_begin_step(C)`'s own resumption is the one place
+  /// the real answer is resolved, and it may legitimately disagree with
+  /// the conditional guess above: whatever `C` names, it still resumes
+  /// the Runner PAST every pending proxy it encounters while priming --
+  /// whatever component each one names, not only ones matching `C` --
+  /// but if that resumption runs the region through to real convergence
+  /// and on into the period's own end, `prime_next_request()` (src/abi/
+  /// participant.cpp) treats that as a legitimate outcome, not an
+  /// error: it completes this period's bookkeeping exactly as
+  /// `fuse_run()` would at a period's end, starts the next one, and
+  /// primes ITS OWN first request. `fuse_step_report::step_opened`
+  /// (appended 2026-10-04, `entries.def`) reports which happened -- 1
+  /// if a step opened on `C` as usual (whether or not a period
+  /// rollover occurred first), 0 if the rolled-over period's own first
+  /// request names a DIFFERENT component, in which case NO step is
+  /// open on ANY component and the caller's own loop body must call
+  /// `fuse_begin_step()` again with `fuse_step_report::next_component`.
+  /// Only a mismatch reached WITHOUT a period rollover remains the
+  /// ordinary `E-ABI-STEP-ORDER` out-of-turn refusal. Never open a step
+  /// directly off a request with this flag set. The writer never needs
+  /// to know which import is "due"; it writes what it produced, when
+  /// it produced it -- `docs/user/c-abi.md` documents the full
+  /// protocol, including `step_opened`.
+  bool is_delivery_due = false;
+  /// Valid only when `is_delivery_due`: this request's own `OpKind::
+  /// ExternalDelivery` instruction's index into `ExecutionPlan::
+  /// instructions()`, the SAME index `Runner::Impl::run_region()`
+  /// passes to `deliver_external()` -- `next_real_advance_after()`'s
+  /// own scan starting point.
+  std::size_t delivery_instruction_index = 0;
 };
 
 /// Spec §2 layer 3: interprets the flat instruction stream. Every ArcId is
@@ -254,6 +336,21 @@ class Runner {
   /// state, any number of times, including before `resume_period()` has
   /// ever been called at all.
   [[nodiscard]] std::vector<ComponentId> components_due_at_period_start() const;
+
+  /// Unit 3 (S6 phase 3, Conformance): resolves `next_component` when
+  /// the cached request is a delivery proxy
+  /// (`ExternalAdvanceRequest::is_delivery_due`'s own comment, above,
+  /// has the full account of why the proxy's own importer name is
+  /// never the right answer to report). `Runner::Impl::next_real_
+  /// advance_after()` (`src/runtime/runner_impl.hpp`) has the scan's
+  /// own full documentation. Returns `std::nullopt` if the scan runs
+  /// off the end of this period; the caller (`src/abi/participant.cpp`)
+  /// wraps to `components_due_at_period_start()`'s own answer, since
+  /// the schedule repeats identically every period. Like that
+  /// function, a pure query over the compiled plan: no `advance()`
+  /// call, no coroutine, no suspension, safe from any state.
+  [[nodiscard]] std::optional<ComponentId> next_real_advance_after(
+      const ComponentSet& components, std::size_t instruction_index) const;
 
   [[nodiscard]] const RunStats& stats() const noexcept;
   /// One entry per iteration region of the plan, in DAG region order,

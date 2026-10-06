@@ -700,6 +700,38 @@ struct Runner::Impl {
     /// import at all (a pure exporter).
     bool        import_lagged = false;
     ArcId       window_import;  ///< this member's own import arc, or invalid
+    /// Unit 3 (S6 phase 3, Conformance), MEASURED this session (traced,
+    /// element 0, hexfloat, both channels, period 0 side by side against
+    /// the in-process reference -- the lead's own instruction): the SAME
+    /// `import_view_arc` resolve_regions()'s own walk-back already
+    /// computes for `window_import_field_arc` (this file's own comment
+    /// on that walk has the full account) -- the chain's TRUE root, an
+    /// ordinary channel's own `window_import` for that kind and a
+    /// LowFive-bound one's own `ExternalDelivery` arc for this kind,
+    /// ALWAYS holding the application's actual write the instant it
+    /// happens, regardless of whether this member's own import CHAIN
+    /// (Remap..Sink) has executed yet THIS sweep. `advance_window()`'s
+    /// own t=0 history-correction (this file) needs exactly that: under
+    /// the scheduling-order fix (OpKind::ExternalDelivery's own comment,
+    /// include/fuse/ir/op.hpp), a member scheduled BEFORE its own
+    /// import's source_producer (U, in the two-member Brusselator graph,
+    /// since V's own WindowAdvance -- and therefore U's own import
+    /// chain, which stands after it -- runs AFTER U's) reaches its own
+    /// t=0 correction before that chain has ever run this sweep, so
+    /// `window_import`'s own buffer (the Sink's downstream COPY) is
+    /// still unwritten -- MEASURED: the harness's own window 0 sweep 0
+    /// WindowAdvance output for U already diverged from the reference
+    /// at substep 1, by roughly 4 in an O(1) quantity, traced directly
+    /// to this read. `window_import`, by contrast, is read everywhere
+    /// ELSE in this file for the ordinary, LAGGED per-sweep import
+    /// (`previous[]`/`slots[]`, both read deliberately one sweep late
+    /// for Jacobi/GaussSeidel), which this field must never replace:
+    /// only the t=0 correction, which explicitly wants the LIVE value
+    /// the instant it exists, uses it. Equal to `window_import` for an
+    /// ordinary channel (no walk-back needed there, `import_view_arc`'s
+    /// own initializer); invalid when this member imports nothing, the
+    /// same as `window_import`.
+    ArcId       window_import_delivery_arc;
     /// This member's own IMPORT's own PROVIDER's own `ComponentSet`
     /// slot (resolved the same way `component_slot` above is, from
     /// `graph.owner_of(ch.source)` -- graph-derived, never a partner's
@@ -1013,6 +1045,77 @@ struct Runner::Impl {
   /// for why `fuse_is_coupling_ongoing()` needed this.
   [[nodiscard]] std::vector<ComponentId> components_due_at_period_start() const;
 
+  /// Unit 3 (S6 phase 3, Conformance), the lead's own corrected ruling
+  /// (2026-10-04, superseding an earlier same-day one): resolves what
+  /// `next_component` must report when the cached request is a
+  /// delivery proxy (`ExternalAdvanceRequest::is_delivery_due`,
+  /// runner.hpp, has the full account of why the proxy's own importer
+  /// name is never the right answer) -- the SAME kind of static plan
+  /// scan `components_due_at_period_start()` performs for a period's
+  /// own start, just starting from a given position in the stream
+  /// instead of from its front. `instruction_index` is `ExternalAdvance
+  /// Request::delivery_instruction_index`: the `ExternalDelivery`
+  /// instruction's own index into `plan.instructions()`.
+  ///
+  /// Scans TWO sources forward from `instruction_index`, exactly the
+  /// two `step_period()`'s own merge walk draws from: ordinary ticks
+  /// (`ticks`, already filtered to this process's own hosted
+  /// components by `resolve_regions()`'s own caller) with `time`
+  /// strictly after this instruction's own `time`, and `WindowAdvance`
+  /// instructions later in `plan.instructions()` -- for each, the
+  /// OWNING component must be `is_externally_driven()` (read via
+  /// `components`, the same way `deliver_external()` reads it) AND
+  /// hosted on this process (the SAME `this_process`/`RankSet::
+  /// contains()` formula `deliver_external()` and `build_ticks()`'s own
+  /// `hosted[]` both use) -- a candidate failing either check is
+  /// skipped, not returned, because the NEXT eligible one further out
+  /// is still a candidate (unlike `components_due_at_period_start()`,
+  /// which returns every period-0 component unfiltered and leaves the
+  /// caller to pick the first eligible one: that works there because
+  /// everything at time 0 is a genuine tie with no ordering between
+  /// them, but a forward scan has a real order to respect, and
+  /// stopping at the first in-process one would wrongly ignore the
+  /// first EXTERNAL one one step later -- the reason this function
+  /// filters internally instead). Whichever of the two sources' earliest
+  /// eligible candidate has the smaller `time` wins; a genuine tie
+  /// between an ordinary tick and a window boundary is not exercised by
+  /// any graph this codebase tests today and is broken toward the
+  /// window candidate, arbitrarily but deterministically.
+  ///
+  /// The `WindowAdvance` scan is bounded, not a plain walk to
+  /// `plan.instructions().size()`: the lead's own ruling (2026-10-04),
+  /// correcting the SAME day's first version of this function, once a
+  /// scheduling-order fix made a delivery instruction's own position
+  /// coincide with the END of a region's per-sweep instruction range.
+  /// If `instruction_index` lies inside some `RegionRuntime`'s own
+  /// `passes` entry (enter, exit), the forward scan stops at that
+  /// `exit` and, finding nothing there, WRAPS to that SAME pass's own
+  /// `enter` and continues up to (not including) `instruction_index` --
+  /// the instruction sequence the sweep loop actually executes if it
+  /// loops back for another sweep, never instructions past `exit` that
+  /// belong only if the region does NOT loop back, a convergence
+  /// decision this static scan cannot make. Only when
+  /// `instruction_index` lies outside every region's every pass does
+  /// the scan run the plain, unbounded walk to `plan.instructions().
+  /// size()`. Returns `std::nullopt` if even that -- or the bounded
+  /// scan plus its own wrap -- finds nothing: the caller wraps to
+  /// `components_due_at_period_start()`'s own answer for the NEXT
+  /// period, since the schedule repeats identically every period (this
+  /// remains correct ONLY outside a region, where there is no sweep
+  /// loop left to account for). The answer this function returns from
+  /// inside a region is therefore conditional -- the component due IF
+  /// the iteration continues -- which is exactly why
+  /// `ExternalAdvanceRequest::is_delivery_due`'s own comment
+  /// (`include/fuse/runtime/runner.hpp`) states it may disagree with
+  /// what `fuse_begin_step()` actually does next: only resuming the
+  /// Runner for real can resolve whether the region converges. Like
+  /// `components_due_at_period_start()`, calls nothing that executes
+  /// anything: a pure function of the compiled plan, `ticks`, `regions`,
+  /// and the (already-wired, read-only) `components`, safe to call from
+  /// any state.
+  [[nodiscard]] std::optional<ComponentId> next_real_advance_after(
+      const ComponentSet& components, std::size_t instruction_index) const;
+
   /// The request `advance()` most recently suspended with, valid only
   /// between a `period_task->resume()` that returned `false` and the
   /// `resume_period()` call that reads it out.
@@ -1148,6 +1251,62 @@ struct Runner::Impl {
                                             const Instruction& ins,
                                             const detail::Resolved& r,
                                             int iteration);
+  /// Unit 3 (S6 phase 3, Conformance): executes exactly one
+  /// `OpKind::ExternalDelivery` instruction, for exactly one sweep of the
+  /// region it belongs to. Called from `run_region()`'s own body loop
+  /// INSTEAD OF `execute()` for this one instruction kind -- mirrors
+  /// `advance_window()` immediately above, for the same reason: this is
+  /// the one place that both has `components` (to resolve the importing
+  /// `ComponentId` to a real `Component&`) and is reachable every time an
+  /// `ExternalDelivery` instruction appears inside a window-scoped
+  /// region's body (which, today, every one does -- `lower_channel()`
+  /// only emits `ExternalDelivery` for a channel whose source field sets
+  /// `hdf5_path`, and every such field in this codebase is window-scoped;
+  /// an ExternalDelivery reaching `step_period()`'s own top-level loop
+  /// outside any region is not handled by this fix and falls through to
+  /// `execute()`'s own pre-existing no-op case there, unchanged).
+  ///
+  /// The importing component's own `ComponentId` is read directly off
+  /// `dag.arc(ins.out).type.rank_set` -- `lower_channel()`'s own LowFive
+  /// substitution sets it there (`delivered.rank_set =
+  /// g.owner_of(ch.target).value()`), so no new `OpAttrs` field is
+  /// needed. First checked against hosting, the SAME formula
+  /// `build_ticks()`'s own `hosted[]` and `resolve_regions()`'s own
+  /// `WindowMemberConfig::hosted` both use (`this_process`): on a
+  /// process that does not host the importer, this is a no-op, exactly
+  /// as `advance_window()` is for a non-hosted member -- on U's own
+  /// process, a channel whose importer is V suspends nothing and writes
+  /// nothing, because V's own process handles its own end of that
+  /// delivery independently. When the importer IS hosted here and
+  /// `is_externally_driven()`, suspends via `co_await detail::
+  /// ExternalSuspend{}` exactly like `advance()`/`advance_window()` do,
+  /// with `pending_external_request.is_delivery_due = true` and
+  /// `component` set to the importer's own name --
+  /// `ExternalAdvanceRequest::is_delivery_due`'s own comment
+  /// (`include/fuse/runtime/runner.hpp`) has the full ABI-side contract
+  /// this sets up: the lead's own ruling (2026-10-04) is that
+  /// `fuse_begin_step(C)`, WHATEVER `C` names, resumes the Runner past
+  /// EVERY pending delivery proxy it encounters while resuming --
+  /// whatever component each one names, not only ones matching `C` --
+  /// until it reaches a real advance request, which is the only thing
+  /// checked against `C`; `next_component` naming a proxy's own
+  /// importer is purely informational, never a claim that importer
+  /// must call next. An importer that is NOT externally driven
+  /// (in-process) is refused earlier, at `fuse_initialize()`
+  /// (`E-ABI-DELIVERY-INPROCESS`, src/abi/participant.cpp) --
+  /// unreachable here by construction, so this function does not
+  /// re-check it; a validation gap that let one through would silently
+  /// become `E-RT-RESUME-INVARIANT` the first time `resume_period()`
+  /// tried to resume past it, not a hang, since an in-process component
+  /// never calls `fuse_begin_step()` to perform that resume at all.
+  /// `instruction_index` is this instruction's own index into
+  /// `plan.instructions()` -- `run_region()`'s own loop variable at the
+  /// call site -- recorded on the pending request as `ExternalAdvance
+  /// Request::delivery_instruction_index` so `next_real_advance_after()`
+  /// knows where to start its own forward scan.
+  detail::Task<Result<void>> deliver_external(ComponentSet& components,
+                                              const Instruction& ins,
+                                              std::size_t instruction_index);
   /// `period_index * (this compiled period / cfg.window_length) +
   /// dst_step` -- the window instance index counted from the START OF
   /// THE RUN, never reset between `run_period()` calls, unlike
