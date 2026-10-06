@@ -749,6 +749,30 @@ fuse_add_omp_legs(verification.brusselator_physics fuse_verification_brusselator
 # Brusselator deps, so the whole section is gated on Fortran being
 # available, the same `if(TARGET fuse-abi-fortran)` convention this
 # file's own fortran/ section below uses.
+#
+# The audit below (its own "every *_test.cpp on disk must be registered or
+# declared gated" comment) globs *.cpp only, so these four -- all four
+# only ever built inside THIS if(TARGET) block, never behind a
+# fuse_add_gtest() call when the target is absent -- are otherwise
+# invisible to it: unregistered AND undeclared, a hard configure failure
+# the moment FUSE_ENABLE_FORTRAN is OFF (this host's own build-all) rather
+# than only when no Fortran compiler is found. Declaring them gated by
+# FUSE_ENABLE_FORTRAN, not by a `TARGET fuse-abi-fortran` test (which the
+# audit's own fuse_tests_gated_by() cannot express -- it takes an option,
+# not a generator-expression condition), is sound because
+# cmake/FuseFortran.cmake forces FUSE_ENABLE_FORTRAN OFF whenever no
+# Fortran compiler is actually found, so by the time this file is
+# processed (after that include()) the option and the target's existence
+# always agree -- unlike fortran/'s own sizes_test.f90/consumer.f90 (this
+# file's comment above the fortran/ section), which are never Fortran
+# themselves and so were never a candidate for this same fix; the
+# `if(TARGET fuse-abi-fortran)` guard below is UNCHANGED and still the
+# real gate -- this call only teaches the audit about the same decision.
+fuse_tests_gated_by(FUSE_ENABLE_FORTRAN
+  verification/brusselator_participants_test.cpp
+  verification/brusselator_check_test.cpp
+  verification/brusselator_lowfive_harness_test.cpp
+  verification/brusselator_asymmetric_dt_isolation_test.cpp)
 if(TARGET fuse-abi-fortran)
   fuse_add_gtest(verification brusselator_participants NO_LAYER_LIB
                  LIBS fuse::runtime fuse::backend fuse::abi fuse::abi-fortran Eigen3::Eigen Kokkos::kokkos)
@@ -784,6 +808,52 @@ if(TARGET fuse-abi-fortran)
     ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/brusselator_check_core.cpp)
   set_target_properties(fuse_verification_brusselator_check_test PROPERTIES
     Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/brusselator_check_fortran_modules)
+
+  # LowFive-free half of Unit 3a's tier-0 oracle (S6 phase 3,
+  # Conformance): the SAME participant-ABI harness as above, on a graph
+  # whose u_out/v_out set FieldSpec::hdf5_path, with the harness's own
+  # view_field+memcpy calls standing in for the H5Dwrite/H5Dread an
+  # application would do -- no LowFive, no HDF5, no MPI needed; same
+  # deps as brusselator_check above. ctest row verification.brusselator_
+  # lowfive_harness (fuse_add_gtest's own ${layer}.${name} convention,
+  # underscores throughout like every other multi-word row in this
+  # file -- brusselator_check, brusselator_participants -- not the
+  # dotted verification.brusselator.lowfive.harness form first typed in
+  # chat, which would need a differently-named source file to match).
+  fuse_add_gtest(verification brusselator_lowfive_harness NO_LAYER_LIB
+                 LIBS fuse::runtime fuse::backend fuse::abi fuse::abi-fortran Eigen3::Eigen Kokkos::kokkos)
+  target_include_directories(fuse_verification_brusselator_lowfive_harness_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/brusselator
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants)
+  target_sources(fuse_verification_brusselator_lowfive_harness_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/shim.cpp
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/u_loop.c
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/v_loop.f90
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/brusselator_check_core.cpp)
+  set_target_properties(fuse_verification_brusselator_lowfive_harness_test PROPERTIES
+    Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/brusselator_lowfive_harness_fortran_modules)
+  set_tests_properties(verification.brusselator_lowfive_harness PROPERTIES
+    LABELS "verification;lowfive")
+
+  # Isolation run (the lead's own instruction, 2026-10-04): the
+  # IDENTICAL asymmetric-dt_u/dt_v graph and ABI-driven next_component
+  # loop as brusselator_lowfive_harness above, but with no hdf5_path and
+  # no LowFive component at all -- an ORDINARY Transport-delivered
+  # channel -- to separate a pre-existing Runner defect in externally-
+  # driven members with dt_u != dt_v (which no test before this one
+  # exercised) from something specific to the ExternalDelivery path.
+  fuse_add_gtest(verification brusselator_asymmetric_dt_isolation NO_LAYER_LIB
+                 LIBS fuse::runtime fuse::backend fuse::abi fuse::abi-fortran Eigen3::Eigen Kokkos::kokkos)
+  target_include_directories(fuse_verification_brusselator_asymmetric_dt_isolation_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/brusselator
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants)
+  target_sources(fuse_verification_brusselator_asymmetric_dt_isolation_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/shim.cpp
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/u_loop.c
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/v_loop.f90
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/brusselator_check_core.cpp)
+  set_target_properties(fuse_verification_brusselator_asymmetric_dt_isolation_test PROPERTIES
+    Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/brusselator_asymmetric_dt_isolation_fortran_modules)
 endif()
 
 # ---------------------------------------------------------------- install
