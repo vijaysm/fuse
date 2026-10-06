@@ -139,7 +139,7 @@ bool ir_can_emit(OperatorKind kind) noexcept {
 
 LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy) {
   LoweringResult result;
-  LoweringContext ctx{g, result.dag, result.diags, {}, {}, {}, {}, policy};
+  LoweringContext ctx{g, result.dag, result.diags, {}, {}, {}, {}, {}, policy};
 
   // Time windows track: every field a window-scoped iteration region's
   // own exporting member provides instead of an ordinary Source
