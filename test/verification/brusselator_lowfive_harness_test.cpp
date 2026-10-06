@@ -709,10 +709,13 @@ TEST(BrusselatorLowFiveHarness, ExternalDeliveryMatchesInProcessRunner) {
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 
   // brusselator_check OK on the harness's own printed halves.
-  const std::string u_path =
-      std::string(::testing::UnitTest::GetInstance()->current_test_info()->name()) + "_u.log";
-  const std::string v_path =
-      std::string(::testing::UnitTest::GetInstance()->current_test_info()->name()) + "_v.log";
+  // Under TempDir(), not the working directory: run from a shell this
+  // binary otherwise leaves two logs wherever the caller stands (it left
+  // them at the repository root once).
+  const std::string stem = std::string(::testing::TempDir()) +
+      ::testing::UnitTest::GetInstance()->current_test_info()->name();
+  const std::string u_path = stem + "_u.log";
+  const std::string v_path = stem + "_v.log";
   {
     std::ofstream u(u_path);
     for (const auto& l : u_lines) u << l;

@@ -100,11 +100,17 @@ TEST(ChannelLowering, SpecExampleEmitsSampleAccumulateRemapRelax) {
 
 // Unit 3 (S6 phase 3, Conformance): a LowFive-bound channel's source field
 // sets FieldSpec::hdf5_path; lower_channel() (src/ir/rules_channel.cpp)
-// must substitute a zero-input ExternalDelivery node for the ordinary
-// Source-arc read, and the Transport this channel would otherwise need
-// (fluid/solid's rank sets overlap but are not identical, so an ordinary
+// must substitute an ExternalDelivery node for the ordinary Source-arc
+// read, and the Transport this channel would otherwise need (fluid/
+// solid's rank sets overlap but are not identical, so an ordinary
 // channel between them DOES emit one -- MinimalChannelIsSourceRemapSink's
-// own Pair, reused unchanged here) must not appear at all.
+// own Pair, reused unchanged here) must not appear at all. ExternalDelivery
+// carries the source field's own producer (here, Source) as its ONE input
+// -- an ORDERING edge only (OpKind::ExternalDelivery's own comment, op.hpp;
+// MEASURED, a later session: severing it entirely let the scheduler place
+// this node before the exporting member's own last substep in the SAME
+// sweep, reading stale data) -- its execute() case never reads that
+// input; the application's own write is what fills its output.
 TEST(ChannelLowering, LowFiveBoundChannelEmitsExternalDeliveryNotTransport) {
   Pair p = make_pair();
   const fuse::Channel& ch = p.g.channel_at(p.ch);
@@ -130,8 +136,15 @@ TEST(ChannelLowering, LowFiveBoundChannelEmitsExternalDeliveryNotTransport) {
     const auto& n = r.dag.node(fuse::NodeId{i});
     if (n.kind != OpKind::ExternalDelivery) continue;
     found = true;
-    EXPECT_TRUE(n.inputs.empty())
-        << "ExternalDelivery must be a genuine SSA root, zero inputs";
+    // ONE input, an ordering edge onto the source field's own producer
+    // (here, Source) -- not a data dependency (execute()'s own
+    // ExternalDelivery case, src/runtime/runner.cpp, never reads it);
+    // see this test's own top comment and OpKind::ExternalDelivery's
+    // own comment (op.hpp) for why severing it is wrong, not simpler.
+    ASSERT_EQ(n.inputs.size(), 1u)
+        << "ExternalDelivery must carry its source field's own producer "
+           "as an ordering input, not zero inputs";
+    EXPECT_EQ(r.dag.node(r.dag.arc(n.inputs.front()).producer).kind, OpKind::Source);
     ASSERT_TRUE(n.output.valid());
     // Same shape (region/units/components/conservation/rank_set) as the
     // source field's own producer would have carried -- the rest of the
