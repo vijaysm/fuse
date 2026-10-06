@@ -60,22 +60,38 @@ enum class OpKind {
   /// point sample.
   WindowAdvance,
 
-  /// Unit 3 (S6 phase 3, Conformance): a zero-input boundary node, shaped
-  /// like `Source`, for a channel whose data movement an APPLICATION
+  /// Unit 3 (S6 phase 3, Conformance): a boundary node, shaped like
+  /// `Source` but for a channel whose data movement an APPLICATION
   /// performs outside the graph -- today, the LowFive-bound case
   /// (`FieldSpec::hdf5_path` set on the channel's source field), where the
   /// transfer is an ordinary HDF5 write/read FUSE never touches
   /// (docs/user/lowfive.md, "a LowFive-bound channel is an
   /// application-performed transfer").
   ///
-  /// `lower_channel()` (src/ir/rules_channel.cpp) emits this in place of
-  /// reading the channel's own `ctx.source_arc[source]` -- severing the
-  /// DAG edge from the source field's own producer (its ordinary `Source`
-  /// or, for a window-scoped export, its `WindowAdvance`) to this
-  /// channel's chain entirely, since in the deployments this exists for,
-  /// the two sides may be different processes with no such edge at all.
-  /// The rest of the channel's chain (Scale, Remap, Extrapolate, the
-  /// window-importing Sink) is unchanged downstream of it.
+  /// `lower_channel()` (src/ir/rules_channel.cpp) emits this carrying the
+  /// SAME single input `Transport` would have had for the identical
+  /// channel -- the source field's own producer (its ordinary `Source`
+  /// or, for a window-scoped export, its `WindowAdvance`) -- but its own
+  /// `execute()` case (src/runtime/runner.cpp) never reads that input: it
+  /// is purely an ORDERING EDGE, there so the scheduler places this node
+  /// exactly where `Transport` would stand, on every process, the same
+  /// way it does for the distributed ordinary case (the stream is static
+  /// and identical everywhere). `Transport`'s own input carries a REAL
+  /// data dependency (it moves the producer's own value); this node's
+  /// input carries none, because the application's own write is what
+  /// fills its output -- but the ORDERING that dependency enforces is
+  /// still required: whatever the application writes after the
+  /// producer's own last substep must be consumed after that substep and
+  /// before the importer's own advance, the identical slot `Transport`
+  /// occupies. Severing the edge entirely (an earlier version of this
+  /// node had no input at all) left the scheduler with nothing forcing
+  /// that order, and a LowFive-bound channel's own chain could and did
+  /// get scheduled before the exporting member's own `WindowAdvance` in
+  /// the SAME sweep -- reading last sweep's state instead of this one's
+  /// (MEASURED this session; not yet recorded as its own divergence note
+  /// in docs/user/lowfive.md). The rest of the channel's chain (Scale,
+  /// Remap, Extrapolate, the window-importing
+  /// Sink) is unchanged downstream of it.
   ///
   /// Deliberately NOT one of `acyclicity.cpp`'s Source/Sink endpoint kinds
   /// (`prove_acyclic()`'s own Source side=1 / Sink side=0 classification):
@@ -123,10 +139,11 @@ enum class OpKind {
     case OpKind::Residual: case OpKind::Accelerate:
     case OpKind::Diagnose: case OpKind::Scale:
       return false;
-    // A zero-input boundary node, same reasoning as Source: it involves no
-    // other rank set of this graph's own exchange (the application-
-    // performed transfer that fills it happens entirely outside this
-    // instruction stream).
+    // Same reasoning as Source: it involves no other rank set of this
+    // graph's own exchange (the application-performed transfer that
+    // fills it happens entirely outside this instruction stream). Its
+    // own input (this enum's own comment on ExternalDelivery) is an
+    // ordering edge within ONE process, never a cross-rank exchange.
     case OpKind::ExternalDelivery:
       return false;
     // Reserved for multiscale, refused by the scheduler. Answering "not

@@ -74,6 +74,24 @@ struct LoweringContext {
   /// placement besides).
   std::unordered_map<std::uint32_t, ArcId>  sink_arc;
 
+  /// Unit 3 (S6 phase 3, Conformance): the arc THIS channel's own chain
+  /// actually begins at, keyed by `ChannelId::value()` -- `source_arc[f]`
+  /// for an ordinary channel, but the channel's own `ExternalDelivery` arc
+  /// for a LowFive-bound one, since `lower_channel()` gives that node zero
+  /// inputs and never reads `source_arc[f]` at all (see its own comment on
+  /// why: the value lands on the consumer's placement, not the producer's).
+  /// Populated by `lower_channel()` (`src/ir/rules_channel.cpp`) once `cur`
+  /// is settled, immediately after the LowFive substitution (or its
+  /// absence); read by `insert_derived_ops()`'s `channel_chain()`
+  /// (`src/ir/rules_derived.cpp`), which used to start from `source_arc[f]`
+  /// unconditionally and so silently found no nodes of this channel's own
+  /// origin downstream of a severed `ExternalDelivery` root -- `has_remap`
+  /// came back false and both `Constrain` and `Diagnose` went unemitted for
+  /// every LowFive-bound channel, contradicting docs/user/lowfive.md's own
+  /// stated design. Keyed by channel, not field, because a field can be
+  /// read by more than one channel and each has its own entry point.
+  std::unordered_map<std::uint32_t, ArcId>  chain_entry_arc;
+
   /// Every arc that writes a field, in channel declaration order. More than
   /// one is legal exactly when the graph declares how to combine them; the
   /// combine node is emitted once all channels have lowered.

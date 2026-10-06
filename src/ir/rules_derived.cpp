@@ -45,17 +45,29 @@ void insert_derived_ops(LoweringContext& ctx, ChannelId cid) {
   const auto tgt_it = ctx.field_arc.find(ch.target.value());
   if (tgt_it == ctx.field_arc.end()) return;  // the rule failed; nothing to do
 
-  // `source_arc`, not `field_arc`: this is the head of the chain the channel
-  // rule just emitted, and lower_channel starts that chain at the source
-  // field's own `Source` arc. For an Intent::Bidirectional source field
-  // `field_arc` points at whatever channel last wrote it, and walking from
-  // there would find no node of this channel, so `has_remap` would come out
-  // false and Constrain/Diagnose would silently not be emitted. See
-  // LoweringContext for the invariant.
-  const auto src_it = ctx.source_arc.find(ch.source.value());
-  if (src_it == ctx.source_arc.end()) return;
+  // `chain_entry_arc`, not `source_arc`: this is the head of the chain
+  // `lower_channel()` actually emitted FOR THIS CHANNEL -- the source
+  // field's own `Source`/`WindowAdvance` arc for an ordinary channel, but
+  // the channel's own `ExternalDelivery` node's OWN OUTPUT arc for a
+  // LowFive-bound one, since this channel's chain reads what THAT node
+  // produces (the application's own write), never `source_arc` directly
+  // -- unchanged by `ExternalDelivery` carrying `source_producer` as an
+  // ordering-only input of its own (include/fuse/ir/op.hpp's own comment
+  // on that node has the full account; `channel_chain()`, below, must
+  // still start AT the delivery node, not at ITS OWN input, which is
+  // `source_arc` again and would defeat the whole point of this fix).
+  // Walking from `source_arc` unconditionally used to find no node of
+  // this channel's origin downstream of a severed `ExternalDelivery`
+  // root, so `has_remap` came back false and Constrain/Diagnose went
+  // silently unemitted for every LowFive-bound channel -- this is the
+  // fix. For an ordinary channel `chain_entry_arc[cid] ==
+  // source_arc[ch.source]` always, so nothing changes there; see
+  // LoweringContext for the `field_arc`-vs-`source_arc` invariant this
+  // still relies on for `Bidirectional` fields.
+  const auto entry_it = ctx.chain_entry_arc.find(cid.value());
+  if (entry_it == ctx.chain_entry_arc.end()) return;
 
-  const std::vector<NodeId> chain = channel_chain(ctx, cid, src_it->second);
+  const std::vector<NodeId> chain = channel_chain(ctx, cid, entry_it->second);
 
   ArcId cur = tgt_it->second;
   ValueType type = ctx.dag.arc(cur).type;

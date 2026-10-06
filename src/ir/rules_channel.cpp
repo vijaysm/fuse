@@ -43,15 +43,31 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
   // APPLICATION-performed transfer -- the field's own producer (its
   // ordinary `Source`, or for a window-scoped export its
   // `WindowAdvance`) still runs exactly as it does today, but this
-  // channel's own chain does not read its output: the DAG edge is
-  // severed here, in favour of a fresh, zero-input `ExternalDelivery`
-  // node of the identical shape, which the application (an ordinary
-  // HDF5 write/read, through the installed VOL) or, for the tier-0
-  // oracle, a test harness fills from outside this graph entirely. See
-  // OpKind::ExternalDelivery (include/fuse/ir/op.hpp) and
-  // docs/user/lowfive.md, Unit 3, for why: in the deployment this
-  // exists for, the source field's own producer and this channel's
-  // consumer may be different processes with no such edge at all.
+  // channel's own chain does not READ its output: `ExternalDelivery`'s
+  // own `execute()` case (src/runtime/runner.cpp) ignores its input, and
+  // the application (an ordinary HDF5 write/read, through the installed
+  // VOL, or for the tier-0 oracle, a test harness) fills its output from
+  // outside this graph entirely. See OpKind::ExternalDelivery
+  // (include/fuse/ir/op.hpp) and docs/user/lowfive.md, Unit 3, for why:
+  // in the deployment this exists for, the source field's own producer
+  // and this channel's consumer may be different processes with no such
+  // DATA edge at all.
+  //
+  // The DAG edge is NOT severed, though -- it is given the SAME input
+  // `Transport` would have had for this same channel (`source_producer`,
+  // below), an earlier version of this node did not, and that was wrong:
+  // with no input at all, nothing forces the scheduler to place this
+  // node where `Transport` stands (after the source field's own
+  // producer, before the channel's own Remap/Diagnose/Sink), and it was
+  // measured, this session, to place a LowFive-bound channel's own
+  // chain BEFORE the exporting member's own WindowAdvance in the SAME
+  // sweep instead -- reading last sweep's state, not this one's (not
+  // yet recorded as its own divergence note in docs/user/lowfive.md).
+  // Carrying that SAME edge here is what gives the scheduler the
+  // ordering constraint it needs, on every process, exactly as it has
+  // for `Transport` in the
+  // distributed ordinary case (the stream is static and identical
+  // everywhere) -- without making this node READ anything through it.
   //
   // Everything below this point -- unit conversion, Remap, Extrapolate,
   // the window-importing Sink -- is unchanged: it operates on `cur`/
@@ -74,17 +90,27 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
     // insert a move FUSE must not perform for this channel at all.
     ValueType delivered = ctx.dag.arc(source_producer).type;
     delivered.rank_set = static_cast<int>(g.owner_of(ch.target).value());
-    // Zero inputs, same construction as lower()'s own step-1 Source nodes
-    // (lowering.cpp) and finish_window_regions()'s WindowAdvance node
-    // (window_lowering.cpp) -- `emit()` just below always threads exactly
-    // one input, which is wrong for a genuine SSA root.
+    // `source_producer` as the ONE input -- the same arc `Transport`
+    // would take as its own input for this identical channel (the
+    // `emit(ctx, OpKind::Transport, cur, ...)` calls below, `cur` still
+    // equal to `source_producer` at that point for an ordinary channel).
+    // `execute()`'s own ExternalDelivery case (src/runtime/runner.cpp)
+    // never reads it -- this enum's own top comment (include/fuse/ir/
+    // op.hpp) has the full account of why an ordering edge with no data
+    // read is still the right edge to carry.
     const ArcId out =
         ctx.dag.add_arc(delivered, base + "/external_delivery");
-    ctx.dag.add_node(OpKind::ExternalDelivery, {}, out, OpAttrs{}, cid,
-                     base + "/external_delivery");
+    ctx.dag.add_node(OpKind::ExternalDelivery, {source_producer}, out,
+                     OpAttrs{}, cid, base + "/external_delivery");
     cur = out;
     type = delivered;
   }
+  // `cur` is now this channel's own entry point -- `source_producer` for an
+  // ordinary channel, the fresh `ExternalDelivery` arc for a LowFive-bound
+  // one -- and `insert_derived_ops()`'s `channel_chain()` needs exactly
+  // this, not `source_arc[ch.source]` unconditionally (LoweringContext's
+  // own comment on `chain_entry_arc` has the full account of why).
+  ctx.chain_entry_arc[cid.value()] = cur;
 
   // 1. The conversions the connection check authorized.
   //
