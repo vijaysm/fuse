@@ -247,9 +247,23 @@ int main(int argc, char** argv) {
     const_cast<fuse::FieldSpec&>(graph.field(*v_out)).hdf5_path =
         "brusselator_v.h5/grid/v_out";
     const int total_ranks = args.ranks_u + args.ranks_v + args.ranks_coupler;
+    // Unit 3 (S6 phase 3, Conformance): MEASURED (brusselator_lowfive_
+    // harness_test.cpp's own first run that ever drove this fieldless
+    // marker through a live Runner/ABI): with no explicit `.kind` -- the
+    // ComponentDecl default, ComponentKind::Physics -- fuse_initialize()'s
+    // own wiring loop (src/abi/participant.cpp) does not exempt it the
+    // way it exempts a real ComponentKind::Coupler entry
+    // (`if (decl.kind == ComponentKind::Coupler) continue;`), so it
+    // becomes a THIRD externally driven component and any caller's own
+    // begin_step() loop has no step call for it. brusselator_graph_tool_
+    // lowfive_test.cpp never caught this because neither of its own
+    // tests drives the generated graph through a live Runner/ABI at all
+    // -- this component had the identical omission from the day it was
+    // added until this fix, unobserved for exactly that reason.
     (void)graph.add_component(
         {.name = "lowfive", .ranks = fuse::RankSet{0, total_ranks},
          .interval = fuse::Rational{1},
+         .kind = fuse::ComponentKind::Coupler,
          .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::LowFive}});
   }
 

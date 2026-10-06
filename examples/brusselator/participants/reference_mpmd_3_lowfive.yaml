@@ -66,17 +66,13 @@ components:
         units: 1
         conservation: Extensive
         intent: Requires
-  - name: lowfive
-    ranks: {first: 0, count: 3}
-    interval: 1
-    launch:
-      mode: lowfive
-    fields:
-      []
 couplers:
   - name: coupler
     index: 2
     ranks: {first: 2, count: 1}
+  - name: lowfive
+    index: 3
+    ranks: {first: 0, count: 3}
 channels:
   - name: u2v
     source: U.u_out

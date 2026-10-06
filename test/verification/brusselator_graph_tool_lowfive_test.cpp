@@ -60,8 +60,18 @@ CouplingGraph build_lowfive_graph() {
   EXPECT_TRUE(v_out.has_value());
   const_cast<FieldSpec&>(g.field(*u_out)).hdf5_path = "brusselator_u.h5/grid/u_out";
   const_cast<FieldSpec&>(g.field(*v_out)).hdf5_path = "brusselator_v.h5/grid/v_out";
+  // `.kind = ComponentKind::Coupler`: mirrors brusselator_graph_tool.cpp's
+  // own fix (that file's own comment on this identical declaration has
+  // the full account -- a fieldless marker with no explicit `.kind`
+  // defaults to ComponentKind::Physics, becoming a THIRD externally
+  // driven component fuse_initialize() never exempts). Neither test in
+  // this file drives the generated graph through a live Runner/ABI, so
+  // this mirror's own omission would have gone unnoticed exactly as the
+  // real tool's own did -- fixed here anyway so this file's own claim to
+  // mirror the real tool's invocation stays true.
   (void)g.add_component({.name = "lowfive", .ranks = RankSet{0, 3},
                          .interval = Rational{1},
+                         .kind = fuse::ComponentKind::Coupler,
                          .launch = LaunchSpec{.mode = LaunchMode::LowFive}});
   return g;
 }
@@ -117,7 +127,17 @@ TEST(BrusselatorGraphToolLowFive, LowersWithExternalDeliveryAndNoTransport) {
     const auto& n = r.dag.node(fuse::NodeId{i});
     if (n.kind == OpKind::ExternalDelivery) {
       ++external_delivery_count;
-      EXPECT_TRUE(n.inputs.empty());
+      // ONE input, an ORDERING edge onto the source field's own
+      // producer -- here, a window-scoped export, so WindowAdvance
+      // (OpKind::ExternalDelivery's own comment, op.hpp; the scheduling-
+      // order fix this comment documents, MEASURED a later session,
+      // needs this edge to place the node after the exporting member's
+      // own last substep this sweep) -- never a data dependency
+      // (execute()'s own ExternalDelivery case, src/runtime/runner.cpp,
+      // does not read it).
+      ASSERT_EQ(n.inputs.size(), 1u);
+      EXPECT_EQ(r.dag.node(r.dag.arc(n.inputs.front()).producer).kind,
+                OpKind::WindowAdvance);
     } else if (n.kind == OpKind::Transport) {
       ++transport_count;
     } else if (n.kind == OpKind::Epoch) {
