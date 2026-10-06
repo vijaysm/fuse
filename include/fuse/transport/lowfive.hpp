@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "fuse/base/result.hpp"
+#include "fuse/model/component.hpp"
 
 namespace fuse {
 
@@ -157,5 +158,114 @@ class LowFiveFieldBindingTable {
  private:
   std::vector<LowFiveFieldBinding> bindings_;
 };
+
+/// Unit 3b (S6 phase 3, Conformance): the writer/reader intercommunicator
+/// `DistMetadataVOL` needs for the distributed interception path
+/// (docs/user/lowfive.md's own account of why the single-process
+/// `MetadataVOL` cannot serve two separate OS processes). Derived from
+/// `connect()`'s own base communicator (connect.hpp's own module comment:
+/// "every rank of every component in the graph, numbered exactly as the
+/// graph's RankSets say") -- NOT a second accept/connect handshake; U and
+/// V are already merged into one communicator by the time `fuse_setup()`
+/// returns, and this plan is exactly what `MPI_Comm_split()` +
+/// `MPI_Intercomm_create()` need to carve a FRESH writer<->reader
+/// intercommunicator back out of it, for LowFive's own exclusive use.
+///
+/// SPLIT FOR TESTABILITY, the same reasoning connect.hpp's own module
+/// comment gives: this struct and `plan_lowfive_rendezvous()` below are
+/// pure functions of two already-known `RankSet`s and a rank number --
+/// no MPI call, so they run in the base build configuration this sandbox
+/// can always start, instead of only inside a job MPI cannot launch here
+/// (KNOWN_ISSUES.md C1). The actual `MPI_Comm_split`/`MPI_Intercomm_
+/// create` calls this plan feeds are `#if FUSE_HAVE_MPI`-guarded,
+/// alongside `connect()`'s own MPI-calling functions.
+struct LowFiveRendezvousPlan {
+  /// True if this rank is on the writer's side (the field whose
+  /// `hdf5_path`-bound export this run's own H5Dwrite calls belong to);
+  /// false on the reader's side. Which side's `RankSet` `this_rank`
+  /// belongs to, computed once so a caller never has to ask twice.
+  bool is_writer = false;
+  /// `MPI_Comm_split()`'s own `color` argument for this rank: 0 for the
+  /// writer's side, 1 for the reader's -- the two groups
+  /// `MPI_Intercomm_create()` then joins.
+  int split_color = 0;
+  /// `MPI_Comm_split()`'s own `key` argument for this rank: its position
+  /// within its OWN side's `RankSet` (`RankSet::index_of`), preserving
+  /// the graph's own declared rank order inside the split communicator
+  /// rather than leaving it to whatever order `MPI_Comm_split` happens
+  /// to assign when ranks tie (every key here is already distinct, so
+  /// there is no tie to break, but the order itself is the graph's own,
+  /// not MPI's).
+  int split_key = 0;
+  /// `MPI_Intercomm_create()`'s own `local_leader` argument: the chosen
+  /// leader's rank WITHIN the split-off local communicator. Always 0 --
+  /// the leader is defined as the side's own lowest base-communicator
+  /// rank (`RankSet::min_rank()`), which lands at index 0 after
+  /// `MPI_Comm_split` (ranks are split preserving relative order via
+  /// `split_key` above) -- written out explicitly rather than left for
+  /// a caller to assume, since `MPI_Intercomm_create` takes it as a
+  /// REQUIRED argument, not a default.
+  int local_leader = 0;
+  /// `MPI_Intercomm_create()`'s own `remote_leader` argument: the OTHER
+  /// side's leader rank, but in `peer_comm`'s own numbering -- here, the
+  /// base communicator's, since `peer_comm` is the base communicator
+  /// itself (both sides already share it; no separate port/accept
+  /// handshake is needed to find each other, unlike the ORIGINAL
+  /// U<->V connect() this intercommunicator is carved back out of).
+  /// Equals the other side's own `RankSet::min_rank()`.
+  int remote_leader = 0;
+  /// `MPI_Intercomm_create()`'s own `tag` argument: fixed, not derived
+  /// from either RankSet, because both sides must agree on it without
+  /// communicating first and the two sides' own rank-set arithmetic
+  /// gives no reason to vary it run to run. Chosen away from 0 (easy to
+  /// collide with a caller's own untagged traffic) and documented here
+  /// as the one place that matters, since nothing else in this struct
+  /// depends on it.
+  int tag = 0x1073;
+};
+
+/// Computes `LowFiveRendezvousPlan` for `this_rank` from the writer's and
+/// reader's own `RankSet`s (both already in the base communicator's
+/// numbering, per `connect()`'s own contract). Errors (`Failure`, never a
+/// throw):
+///   `E-LOWFIVE-RENDEZVOUS-OVERLAP`  the two RankSets share a rank -- a
+///     single process cannot be split into two different MPI_Comm_split
+///     colors at once, and a channel's own writer and reader being the
+///     SAME rank is the single-process case this function is not for
+///     (MetadataVOL, not DistMetadataVOL -- docs/user/lowfive.md).
+///   `E-LOWFIVE-RENDEZVOUS-UNPLACED`  `this_rank` is in neither RankSet --
+///     a rank with no part in this channel has no intercommunicator to
+///     join at all, and asking for one is a caller error, not a
+///     legitimate "neither side" configuration (unlike an ordinary
+///     coupler rank, which `fuse_run()` still drives through the
+///     Runner's own collectives; this plan is LowFive-specific and a
+///     bystander rank simply never calls into it).
+[[nodiscard]] inline Result<LowFiveRendezvousPlan> plan_lowfive_rendezvous(
+    const RankSet& writer_ranks, const RankSet& reader_ranks, int this_rank) {
+  if (writer_ranks.overlaps(reader_ranks)) {
+    return Failure{"E-LOWFIVE-RENDEZVOUS-OVERLAP",
+                 "the writer's and reader's own RankSets share at least "
+                 "one rank; a single process cannot join both sides of "
+                 "this intercommunicator"};
+  }
+  const bool is_writer = writer_ranks.contains(this_rank);
+  const bool is_reader = reader_ranks.contains(this_rank);
+  if (!is_writer && !is_reader) {
+    return Failure{"E-LOWFIVE-RENDEZVOUS-UNPLACED",
+                 "rank " + std::to_string(this_rank) +
+                     " is in neither the writer's nor the reader's own "
+                     "RankSet; it has no part in this channel's own "
+                     "rendezvous"};
+  }
+  const RankSet& own = is_writer ? writer_ranks : reader_ranks;
+  const RankSet& other = is_writer ? reader_ranks : writer_ranks;
+  LowFiveRendezvousPlan plan;
+  plan.is_writer = is_writer;
+  plan.split_color = is_writer ? 0 : 1;
+  plan.split_key = own.index_of(this_rank);
+  plan.local_leader = 0;
+  plan.remote_leader = other.min_rank();
+  return plan;
+}
 
 }  // namespace fuse

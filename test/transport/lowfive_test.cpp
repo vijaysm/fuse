@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include <string>
+#include <vector>
 
 using fuse::LowFiveFieldBinding;
 using fuse::LowFiveFieldBindingTable;
@@ -129,6 +130,71 @@ TEST(LowFiveFieldBindingTable, AllowsTwoWildcardFilesOnDifferentDatasets) {
       LowFiveFieldBinding{.field_name = "r", .hdf5_path = "*.h5/grid/r"});
   EXPECT_TRUE(r.ok()) << r.error().code << ": " << r.error().message;
   EXPECT_EQ(table.size(), 2u);
+}
+
+// ---------------------------------------------------------------------------
+// plan_lowfive_rendezvous -- Unit 3b's own rank-set arithmetic, pure and
+// MPI-free (the same "split for testability" reasoning connect.hpp's own
+// module comment gives), so it runs in the base build configuration this
+// sandbox can always start rather than only inside an MPI job it cannot.
+// ---------------------------------------------------------------------------
+
+TEST(PlanLowFiveRendezvous, WriterSideReadsItsOwnSplitAndRemoteLeader) {
+  const fuse::RankSet writer{0, 2};   // {0, 1}
+  const fuse::RankSet reader{2, 3};   // {2, 3, 4}
+  const auto p = fuse::plan_lowfive_rendezvous(writer, reader, /*this_rank=*/1);
+  ASSERT_TRUE(p.ok()) << p.error().code << ": " << p.error().message;
+  EXPECT_TRUE(p.value().is_writer);
+  EXPECT_EQ(p.value().split_color, 0);
+  EXPECT_EQ(p.value().split_key, 1);     // rank 1 is index 1 within {0,1}
+  EXPECT_EQ(p.value().local_leader, 0);
+  EXPECT_EQ(p.value().remote_leader, 2); // reader's own min_rank()
+}
+
+TEST(PlanLowFiveRendezvous, ReaderSideReadsItsOwnSplitAndRemoteLeader) {
+  const fuse::RankSet writer{0, 2};   // {0, 1}
+  const fuse::RankSet reader{2, 3};   // {2, 3, 4}
+  const auto p = fuse::plan_lowfive_rendezvous(writer, reader, /*this_rank=*/4);
+  ASSERT_TRUE(p.ok()) << p.error().code << ": " << p.error().message;
+  EXPECT_FALSE(p.value().is_writer);
+  EXPECT_EQ(p.value().split_color, 1);
+  EXPECT_EQ(p.value().split_key, 2);     // rank 4 is index 2 within {2,3,4}
+  EXPECT_EQ(p.value().local_leader, 0);
+  EXPECT_EQ(p.value().remote_leader, 0); // writer's own min_rank()
+}
+
+// A non-contiguous RankSet (the graph's own declared order, not a launcher
+// assumption of contiguity) still gives a stable split_key via index_of,
+// not the raw rank number -- the one place this arithmetic is genuinely
+// non-trivial rather than reading a field straight off RankSet.
+TEST(PlanLowFiveRendezvous, NonContiguousRankSetsUseIndexOfNotTheRawRank) {
+  const fuse::RankSet writer{std::vector<int>{5, 1, 3}};   // sorted: {1, 3, 5}
+  const fuse::RankSet reader{std::vector<int>{8, 2}};      // sorted: {2, 8}
+  const auto p5 = fuse::plan_lowfive_rendezvous(writer, reader, 5);
+  ASSERT_TRUE(p5.ok());
+  EXPECT_EQ(p5.value().split_key, 2);   // 5 is index 2 within {1,3,5}
+  EXPECT_EQ(p5.value().remote_leader, 2);
+  const auto p8 = fuse::plan_lowfive_rendezvous(writer, reader, 8);
+  ASSERT_TRUE(p8.ok());
+  EXPECT_FALSE(p8.value().is_writer);
+  EXPECT_EQ(p8.value().split_key, 1);   // 8 is index 1 within {2,8}
+  EXPECT_EQ(p8.value().remote_leader, 1);
+}
+
+TEST(PlanLowFiveRendezvous, OverlappingRankSetsAreRefused) {
+  const fuse::RankSet writer{0, 3};  // {0,1,2}
+  const fuse::RankSet reader{2, 3};  // {2,3,4}
+  const auto p = fuse::plan_lowfive_rendezvous(writer, reader, 2);
+  ASSERT_FALSE(p.ok());
+  EXPECT_EQ(p.error().code, "E-LOWFIVE-RENDEZVOUS-OVERLAP");
+}
+
+TEST(PlanLowFiveRendezvous, ARankInNeitherSetIsRefused) {
+  const fuse::RankSet writer{0, 2};  // {0,1}
+  const fuse::RankSet reader{2, 2};  // {2,3}
+  const auto p = fuse::plan_lowfive_rendezvous(writer, reader, 9);
+  ASSERT_FALSE(p.ok());
+  EXPECT_EQ(p.error().code, "E-LOWFIVE-RENDEZVOUS-UNPLACED");
 }
 
 // ---------------------------------------------------------------------------
