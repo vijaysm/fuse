@@ -10,6 +10,7 @@
 using fuse::AccumOp;
 using fuse::ComponentDecl;
 using fuse::ComponentId;
+using fuse::ComponentKind;
 using fuse::Conservation;
 using fuse::CouplingGraph;
 using fuse::deserialize;
@@ -674,18 +675,56 @@ TEST(Validate, FieldWithHdf5PathAndALowFiveComponentIsAccepted) {
   const_cast<FieldSpec&>(f.g.field(f.src)).hdf5_path = "producer_out.h5/grid/q";
   f.g.add_component(ComponentDecl{
       .name = "interceptor", .ranks = fuse::RankSet{2, 1},
-      .interval = Rational{1},
+      .interval = Rational{1}, .kind = ComponentKind::Coupler,
       .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::LowFive}});
   const Diagnostics d = validate(f.g);
   EXPECT_FALSE(has_code(d, "E-LOWFIVE-NO-COMPONENT")) << d.to_string();
   EXPECT_FALSE(d.has_errors()) << d.to_string();
 }
 
+// Unit 3a's own closing item (the lead's own ruling): a LaunchMode::
+// LowFive component is a placement, the same role an ordinary coupler
+// already plays -- it must declare kind=Coupler and own no fields, or
+// fuse_initialize()'s own wiring loop (src/abi/participant.cpp) has no
+// exemption for it and it becomes a spurious externally-driven
+// component with no step call anywhere in a caller's own loop (MEASURED,
+// this track's own session history, before the graph tool and this
+// file's own fixtures were fixed to declare .kind = Coupler by hand).
+TEST(Validate, ALowFiveComponentDeclaringPhysicsKindIsRefused) {
+  Fixture f;
+  const_cast<FieldSpec&>(f.g.field(f.src)).hdf5_path = "producer_out.h5/grid/q";
+  // kind left at its default (Physics) -- the exact mistake this check
+  // exists to catch.
+  f.g.add_component(ComponentDecl{
+      .name = "interceptor", .ranks = fuse::RankSet{2, 1},
+      .interval = Rational{1},
+      .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::LowFive}});
+  const Diagnostics d = validate(f.g);
+  EXPECT_TRUE(has_code(d, "E-LOWFIVE-COMPONENT-KIND")) << d.to_string();
+}
+
+TEST(Validate, ALowFiveComponentOwningFieldsIsRefused) {
+  Fixture f;
+  const_cast<FieldSpec&>(f.g.field(f.src)).hdf5_path = "producer_out.h5/grid/q";
+  const auto interceptor = f.g.add_component(ComponentDecl{
+      .name = "interceptor", .ranks = fuse::RankSet{2, 1},
+      .interval = Rational{1}, .kind = ComponentKind::Coupler,
+      .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::LowFive}});
+  // Nothing in the public API stops a caller from add_field()-ing onto a
+  // Coupler's ComponentId (ACouplerOwningFieldsIsRefused, above, proves
+  // the SAME gap for an ordinary coupler placement) -- declaring
+  // kind=Coupler correctly is not, by itself, enough.
+  (void)f.g.add_field(interceptor,
+                      FieldSpec{.name = "stray", .region = f.g.field(f.src).region});
+  const Diagnostics d = validate(f.g);
+  EXPECT_TRUE(has_code(d, "E-LOWFIVE-COMPONENT-KIND")) << d.to_string();
+}
+
 TEST(Validate, TwoFieldsSharingAnHdf5PathAreRefused) {
   Fixture f;
   f.g.add_component(ComponentDecl{
       .name = "interceptor", .ranks = fuse::RankSet{2, 1},
-      .interval = Rational{1},
+      .interval = Rational{1}, .kind = ComponentKind::Coupler,
       .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::LowFive}});
   const_cast<FieldSpec&>(f.g.field(f.src)).hdf5_path = "shared.h5/grid/q";
   const_cast<FieldSpec&>(f.g.field(f.dst)).hdf5_path = "shared.h5/grid/q";
@@ -701,7 +740,7 @@ TEST(Validate, WildcardHdf5PathsAreNotCheckedForCollision) {
   Fixture f;
   f.g.add_component(ComponentDecl{
       .name = "interceptor", .ranks = fuse::RankSet{2, 1},
-      .interval = Rational{1},
+      .interval = Rational{1}, .kind = ComponentKind::Coupler,
       .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::LowFive}});
   const_cast<FieldSpec&>(f.g.field(f.src)).hdf5_path = "*.h5/grid/q";
   const_cast<FieldSpec&>(f.g.field(f.dst)).hdf5_path = "*.h5/grid/q";

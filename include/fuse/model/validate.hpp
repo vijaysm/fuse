@@ -135,7 +135,37 @@ inline Rational channel_window(const CouplingGraph& g, const Channel& ch) {
                 "fuse::abi_detail::Registry has no shared object to dlopen()");
     }
     // ---- S6 phase 4, "Adapter host" track: end ----------------------------
-    if (c.launch.mode == LaunchMode::LowFive) any_lowfive_component = true;
+    if (c.launch.mode == LaunchMode::LowFive) {
+      any_lowfive_component = true;
+      // Unit 3a's own closing item (the lead's own ruling, 2026-10-0X): a
+      // LaunchMode::LowFive component is a placement, the same role a
+      // Coupler already plays for an ordinary remap_on routing -- it has
+      // no register_fields() of its own to call, no advance(), and gets
+      // no Tick (fuse_initialize()'s own wiring loop, src/abi/
+      // participant.cpp, exempts a ComponentKind::Coupler entry for
+      // exactly that reason). Declaring kind == Physics (the
+      // ComponentDecl default) or owning fields would make it a THIRD
+      // kind of participant this graph has no machinery for at all --
+      // MEASURED, this track's own session history: every caller that
+      // ever declared this marker with no explicit .kind got a spurious
+      // externally-driven component (resolved to it at period start,
+      // with no step call for it anywhere in the caller's own loop)
+      // before the tool and this test's own fixture were fixed to
+      // declare .kind = Coupler by hand. This check pins the RULE, not
+      // the tool's own present habit of getting it right.
+      if (c.kind != ComponentKind::Coupler || !c.fields.empty()) {
+        d.add(Severity::Error, "E-LOWFIVE-COMPONENT-KIND",
+              "component '" + c.name +
+                  "' declares LaunchMode::LowFive but is not a bare "
+                  "placement (kind=Coupler, no fields); it has kind=" +
+                  (c.kind == ComponentKind::Coupler ? "Coupler" : "Physics") +
+                  " and " + std::to_string(c.fields.size()) +
+                  " field(s) -- a LowFive marker component is never "
+                  "stepped and owns no fields of its own, the same rule "
+                  "E-COUPLER-FIELDS already enforces for an ordinary "
+                  "coupler placement");
+      }
+    }
   }
 
   // --- reference integrity -------------------------------------------------
