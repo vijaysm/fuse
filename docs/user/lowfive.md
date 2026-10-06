@@ -302,14 +302,26 @@ would be writing code with no way to catch its own mistakes.
 
 **IR/runtime half, implemented and measured (no LowFive/HDF5 needed) —
 2026-10-04.** `lower_channel()` (`src/ir/rules_channel.cpp`) emits a new
-zero-input `OpKind::ExternalDelivery` node (`include/fuse/ir/op.hpp`) in
-place of reading the channel's own producing arc, when the source field
-sets `hdf5_path`. This severs the DAG edge from the field's own producer
-(its ordinary `Source`, or for a window-scoped export its
-`WindowAdvance`) to this channel's own chain — correct for a deployment
-where the two sides may be different processes with no such edge at all
-— while that producer keeps running unaffected (the component's own
-export computation is not touched). The new node's arc is typed with the
+`OpKind::ExternalDelivery` node (`include/fuse/ir/op.hpp`) in place of
+reading the channel's own producing arc, when the source field sets
+`hdf5_path`. This severs the DATA edge FUSE would otherwise read the
+field's own producer (its ordinary `Source`, or for a window-scoped
+export its `WindowAdvance`) through — correct for a deployment where the
+two sides may be different processes with no such edge at all — while
+that producer keeps running unaffected (the component's own export
+computation is not touched), and the application (an ordinary HDF5
+write/read, or a test harness standing in for one) fills the new node's
+own output instead. The DAG edge from that same producer is NOT severed,
+though: `ExternalDelivery` carries it as an input of its own, same as
+`Transport` would for an ordinary channel — an ORDERING edge only, never
+read by `execute()` — so the scheduler places this node exactly where
+`Transport` would stand (after the producer, before the channel's own
+Remap/Diagnose/Sink), on every process. An earlier version of this node
+had no input at all, and a LowFive-bound channel's own chain was
+measured, this session, to get scheduled before the exporting member's
+own `WindowAdvance` within the SAME sweep instead of after it — reading
+last sweep's state, not the fresh one Transport's own ordering guarantees
+for the ordinary case. The new node's arc is typed with the
 CONSUMER's own rank_set, not the producer's (the application's own read
 lands on the reader's own placement), which is also what makes the
 Transport-before-Remap and coupler-second-hop logic further down in the
@@ -361,15 +373,56 @@ multi-component field already is: `components` widened to the field's
 own declared width times `window_samples`, `count` unchanged (entities).
 Full tier-0 (166/166) and all 5 repo-health gates clean.
 
-**Not yet done:** a Runner-level test exercising `field_window_view()`
-against a REAL, running Brusselator LowFive graph (the real species
-components, not a stub) is not written -- doing so needs either the
-Brusselator's own component classes wired to a window-scoped LowFive
-graph, or a smaller stand-in; neither was built this round. The golden-
-IR regeneration for the LowFive Brusselator graph, and the two-member
-tier-0 harness test (with its two named mutations), remain for the next
-segment. Separately, and reported as asked: whether a window member's
-own application code can tell "this is my last substep of the current
+**Unit 3a ("single process, the measured path"), the LowFive-free half —
+DONE.** `test/verification/brusselator_lowfive_harness_test.cpp` drives
+the real Brusselator species core (the SAME step functions `u_main.c`/
+`v_main.f90` call, through the shim) over a genuinely multirate,
+window-scoped, LowFive-bound graph, with `view_field()` + `memcpy()`
+standing in for an application's H5Dwrite/H5Dread pair at every delivery
+point. `BrusselatorLowFiveHarness.ExternalDeliveryMatchesInProcessRunner`
+matches a reference `fuse::Runner` bit for bit — not just the final
+state but every intermediate sweep, with identical iteration counts in
+both waveform directions — pinned with no tolerance anywhere
+(`EXPECT_EQ`, hexfloat on the first differing value were there one).
+
+Reaching that bit-exact match took two real library fixes, both
+permanent, not test-only workarounds (full account in `KNOWN_ISSUES.md`
+D14's own "Unit 3a" paragraph):
+
+1. An `ExternalDelivery` instruction is now a genuine suspension point
+   (`Runner::Impl::deliver_external()`, `src/runtime/iteration.cpp`),
+   not the no-op it started as — the Runner hands control back to the
+   application between a LowFive-bound export and its import, exactly
+   as it already does for a component's own `advance()`. The ABI's own
+   `fuse_step_report::step_opened` field (appended for this) and the
+   corrected `next_component` resolution (`Runner::Impl::next_real_
+   advance_after()`, wrapping to a region's own entry when a forward
+   scan from the delivery finds nothing before the region's exit) are
+   what let a caller resume past it correctly; `docs/user/c-abi.md`'s
+   protocol section documents the resulting loop shape.
+2. `WindowMemberConfig::window_import_delivery_arc` (`src/runtime/
+   runner_impl.hpp`) fixes a t=0 read in `advance_window()` that
+   assumed the importing member's own chain had already run this
+   sweep — true before the scheduling-order fix that moved a delivery
+   instruction's own position to coincide with a sweep's own end, false
+   after.
+
+Covered, beyond the harness itself: a byte-exact golden-IR fixture
+(`test/golden/pair_lowfive_bound.ir`, `GoldenIr.PairLowFiveBound`)
+pinning the compiled `ExternalDelivery` shape independent of runtime
+behavior; three dedicated `AbiParticipant` cases in `test/abi/
+participant_test.cpp` for the rollover mechanics at the ABI boundary
+(a matched rollover, an end-time-bounded run, and case (ii) — a
+purpose-built graph where the window's own region-entry and the true
+period-start component are different components by construction); and
+six hand-proved mutations (`build-evidence/mutations/abi.toml` and
+`build-evidence/mutations/transport-lowfive.toml`) confirming the
+suspension, the cold-start delivery, and the `lowfive_bound` channel
+classification are each load-bearing, not redundant with anything else.
+Full tier-0 and all 5 repo-health gates clean throughout.
+
+Separately, and reported as asked: whether a window member's own
+application code can tell "this is my last substep of the current
 sweep" from `fuse_step_request`/`fuse_step_report` alone -- yes, from
 `t_end` (already populated for the participant direction, `src/abi/
 participant.cpp:967-1018`) checked against the window boundary, using
@@ -377,6 +430,12 @@ the SAME window-length constant the participant's own `main()` is
 already built with (identical to how every existing Brusselator
 participant matches its CLI flags to the graph tool's); no appended
 `int32_t` is needed for this piece.
+
+**Still not done:** the participant mains' own `H5Dwrite`/`H5Dread`
+wiring against REAL HDF5/LowFive (the distributed, cross-process half)
+— blocked on the host-side libfmt/two-image issues this page's earlier
+sections record, unrelated to anything Unit 3a's own library fixes
+touch.
 
 ## Distributed (cross-process) interception — Demo B
 

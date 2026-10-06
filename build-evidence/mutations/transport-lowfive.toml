@@ -71,3 +71,55 @@ test = "transport.lowfive"
 # transport-runtime.toml and native-mesh.toml: recording a pass here would
 # be evidence worse than none.
 requires = "mpi"
+
+[[mutation]]
+id = "lowfive-external-delivery-suspension-removed"
+area = "runtime"
+describes = "Unit 3 (S6 phase 3, Conformance): Runner::Impl::deliver_external()'s own suspension (co_await detail::ExternalSuspend, the one place an ExternalDelivery instruction hands control back to the application between a LowFive-bound export and its import) is removed, restoring the pre-fix no-op: resume_period() runs straight through the delivery instruction without ever stopping, so the consumer reads the arc before the application's own out-of-band write (the harness's deliver()/memcpy stand-in) has any chance to run."
+file = "src/runtime/iteration.cpp"
+old = """  if (comp->is_externally_driven()) {
+    ExternalAdvanceRequest req;
+    req.component = decl.name;
+    req.is_delivery_due = true;
+    req.delivery_instruction_index = instruction_index;
+    pending_external_request = std::move(req);
+    co_await detail::ExternalSuspend{&active_handle};
+  }"""
+new = """  if (false) {  // MUTATED: suspension removed, today's pre-fix no-op.
+    ExternalAdvanceRequest req;
+    req.component = decl.name;
+    req.is_delivery_due = true;
+    req.delivery_instruction_index = instruction_index;
+    pending_external_request = std::move(req);
+    co_await detail::ExternalSuspend{&active_handle};
+  }"""
+target = "fuse_verification_brusselator_lowfive_harness_test"
+test = "verification.brusselator_lowfive_harness"
+result = "PROVED BY HAND 2026-10-06 (tools/mutate.py --area runtime refuses against this uncommitted tree, the same constraint recorded for every abi.toml row this session). BrusselatorLowFiveHarness.ExternalDeliveryMatchesInProcessRunner failed with a LARGE divergence (window 2 V state[15]: harness=2.0001970622998524 vs ref=2.0198178343380699, not ULP noise) and the harness's own loop stopped at window_idx=2 of kPeriods=3 (an EXPECT_EQ(window_idx, kPeriods) failure, 'not all requested windows were validated') -- the measured pre-fix state this mutation is named for. Restored from a /tmp backup; cmp reported no difference; rebuild confirmed both BrusselatorLowFiveHarness cases pass again."
+
+[[mutation]]
+id = "lowfive-bound-determination-forced-false"
+area = "ir"
+describes = "Unit 3 (S6 phase 3, Conformance): rules_channel.cpp's own lowfive_bound flag (g.field(ch.source).hdf5_path.has_value(), the sole switch between compiling a channel as OpKind::ExternalDelivery or an ordinary OpKind::Transport) is forced false unconditionally, so a channel whose source field sets hdf5_path compiles as an ordinary Transport-delivered channel regardless -- FUSE moves the data itself, on top of the harness's own out-of-band deliver()/memcpy stand-in."
+file = "src/ir/rules_channel.cpp"
+old = "  const bool lowfive_bound = g.field(ch.source).hdf5_path.has_value();"
+new = "  const bool lowfive_bound = false;  // MUTATED: forced false."
+target = "fuse_verification_brusselator_lowfive_harness_test"
+test = "verification.brusselator_lowfive_harness"
+result = "PROVED BY HAND 2026-10-06 (tools/mutate.py --area ir refuses against this uncommitted tree, same constraint as the row above). BrusselatorLowFiveHarness.ExternalDeliveryMatchesInProcessRunner failed exactly as predicted: deliver()'s own 'destination already equals the source before the copy' ASSERT_FALSE(already_equal) fired for BOTH channels (U.u_out -> V.v_in and V.v_out -> U.u_in) -- the reappeared Transport had already moved the value FUSE's own way before the harness's manual copy ran, and the run again stopped short at window_idx=2 of kPeriods=3. Restored from a /tmp backup; cmp reported no difference; rebuild confirmed both BrusselatorLowFiveHarness cases pass again."
+
+[[mutation]]
+id = "lowfive-cold-start-delivery-omitted"
+area = "verification"
+describes = "Unit 3 (S6 phase 3, Conformance), the lead's own item 3 (2026-10-04): the harness's own cold-start delivery -- two deliver() calls, each exporter's initial (pre-any-step) u_out/v_out into the other's import, made once before the very first fuse_begin_step() of the run, because resolve_regions()'s own ordinary prime pass (fuse_initialize()) is a no-op for an ExternalDelivery arc and nothing else ever fills period 0's first waveform -- is removed from the TEST itself (not the library), leaving both LowFive-bound imports at their zero-initialized buffer values for period 0's own first sweep. Proves the cold-start delivery is load-bearing application behavior, not redundant with anything the library already does."
+file = "test/verification/brusselator_lowfive_harness_test.cpp"
+old = """  deliver(t, ctx, "U", "u_out", "V", "v_in");
+  deliver(t, ctx, "V", "v_out", "U", "u_in");
+
+  // fuse_step_report::step_opened's own comment (entries.def): on THIS"""
+new = """  // MUTATED: cold-start delivery omitted.
+
+  // fuse_step_report::step_opened's own comment (entries.def): on THIS"""
+target = "fuse_verification_brusselator_lowfive_harness_test"
+test = "verification.brusselator_lowfive_harness"
+result = "PROVED BY HAND 2026-10-06. BrusselatorLowFiveHarness.ExternalDeliveryMatchesInProcessRunner failed with a small but genuine (non-ULP) divergence first visible at window 3 (V state[14]: harness=2.0226125012540876 vs ref=2.0226125012540699, and state[15] similarly) -- the cold zero buffer propagating through period 0's own first sweep before washing out, exactly the gap the lead's own item 3 identified. Restored from a /tmp backup; cmp reported no difference; rebuild confirmed both BrusselatorLowFiveHarness cases pass again."

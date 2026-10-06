@@ -128,6 +128,53 @@ build that only allocated the pre-growth struct never has this member written in
 all, and keeps
 working exactly as it did before this field existed.
 
+## `step_opened`: the one report field a window member sharing a LowFive-bound channel must check
+
+A time-window member on one side of an implicit coupling iteration cannot know from outside
+whether that iteration has converged — the decision is made by the sweep loop itself, after this
+component's own step runs, and nothing in `fuse_step_report`/`fuse_ongoing` can tell a caller in
+advance whether `fuse_begin_step()` is about to open an ordinary step or instead resume straight
+through a period's own end. This matters in exactly one case: a channel whose source field sets
+`hdf5_path` (S6 phase 3, "LowFive" track, `lowfive.md`) compiles to an `ExternalDelivery`
+instruction, which suspends the Runner between the exporting member's own step and the importing
+member's — the one place an application-performed transfer (an `H5Dwrite`/`H5Dread` pair, or
+`view_field()` + `memcpy()` in the tier-0 harness) must run. Resuming past that suspension can
+legitimately discover the current period has converged and run straight into the next one's own
+first request, all within the SAME `fuse_begin_step()` call.
+
+`fuse_step_report::step_opened` is `1` on every ordinary step — the step this call was asked for
+actually opened, exactly as every call before this field existed always did. It is `0` when
+resuming instead ran a period to its end and primed the next one's first request, WITHOUT opening
+a step on the component `fuse_begin_step()` was asked for: that component's real next turn may
+belong to a different period, or a different component, than the one a caller watching only
+`next_component`'s own mid-period hint would expect (that hint is a CONDITIONAL answer — the
+component due if the current iteration continues — never a promise of what the next
+`fuse_begin_step()` call will actually do, because whether the iteration continues is a
+convergence decision not yet taken when the hint is reported). On `step_opened == 0`:
+
+- No step is open on ANY component — a matching `fuse_end_step()` on the component this call named
+  is refused (`E-ABI-STEP-NOT-OPEN`), the same refusal any unmatched `end_step()` already gets.
+- `next_component` names the component whose request is now pending — the caller's own loop body
+  must call `fuse_begin_step()` with THAT name next, before doing anything else. If it happens to
+  be the SAME component the caller just asked for (a *matched* rollover — the new period's own
+  first-due component coincides with what was asked), the very next call opens its step normally;
+  if it names a DIFFERENT component (a *mismatched* rollover), that one opens instead.
+- `period` is set on this report too (unlike every other `fuse_step_report` field, which is
+  meaningless when no step opened) — the one signal that distinguishes a rollover reached this way
+  from an ordinary first call of a period a caller already knew about from `fuse_is_coupling_
+  ongoing()`'s own, separately-read `period`.
+
+This is a legitimate outcome, not an error: unlike the ordinary out-of-turn mistake
+(`E-ABI-STEP-ORDER`, above), nothing was asked wrong here, and the caller's own loop simply needs
+one extra, cheap `begin_step()`/`end_step()` round trip at the period boundary. `step_opened` is
+always `1` on the ordinary path (no time window, or no LowFive-bound channel feeding one), which
+still always opens the step it is asked for — this field changes nothing there, and an old caller
+whose `struct_size` predates it reads it as `1`, matching every call's behavior before it existed
+(the growth-only rule, "Version compatibility" below). A caller driving a LowFive-bound window
+member's loop body therefore reads `step_opened` on every `fuse_begin_step()` report and, on `0`,
+calls `fuse_begin_step(next_component)` again immediately rather than treating `end_step()` as
+reachable.
+
 ## `fuse_run()` and ranks without a component of their own
 
 `fuse_run()` drives a graph in process, for a caller that does not need to step any component from

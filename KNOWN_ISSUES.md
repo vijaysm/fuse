@@ -2532,6 +2532,75 @@ U's in-memory write within one process, stop and report the measured
 behaviour") cannot be reached at all — there is nothing to measure yet,
 only LowFive's own header contracts to read.
 
+**Unit 3a ("single process, the measured path"), the LowFive-free half —
+DONE, tier-0 tested, no HDF5/LowFive/MPI required.** This is the half that
+needed no libfmt-blocked host dependency to reach: a LowFive-bound
+channel's two ends are driven through the ordinary participant ABI
+(`fuse_begin_step()`/`fuse_end_step()`), with the harness's own
+`view_field()` + `memcpy()` standing in for the H5Dwrite/H5Dread pair an
+application would use. Two real defects were found and fixed along the
+way, both now permanent library behavior, not test-only workarounds:
+
+1. `WindowMemberConfig::window_import_delivery_arc` (`src/runtime/
+   runner_impl.hpp`): `advance_window()`'s own "t=0 correction" read
+   `slots[cfg.window_import.value()]` assuming the importing member's
+   own chain had already run this sweep — true under the old,
+   non-interleaved instruction ordering, false once a scheduling-order
+   fix (`OpKind::ExternalDelivery`'s own comment, `include/fuse/ir/
+   op.hpp`) made a LowFive-bound delivery's own position coincide with
+   the sweep's own end. Fixed by resolving the t=0 read through the SAME
+   chain-root walk `view_field()` already used for a LowFive-bound
+   export, stopping at `OpKind::ExternalDelivery` instead of assuming
+   the chain had already executed.
+2. `prime_next_request()` (`src/abi/participant.cpp`): a *matched*
+   rollover (the caller asks for component `C`, resuming past a cached
+   delivery proxy discovers the period has converged and rolled over,
+   and the new period's own first-due component happens to BE `C`) used
+   to fall through to the ordinary `step_opened = 1` path unconditionally
+   — running the new period's first physics substep within the SAME
+   call that performed the rollover, before any external caller could
+   observe the period transition at all (`fuse_is_coupling_ongoing()`'s
+   own `period` field lags one call behind by construction). Fixed by
+   folding a matched rollover into the SAME `step_opened = 0` branch an
+   *un*matched one already takes: `treat_as_mismatch = (req.component !=
+   in->component) || rolled_over`, trading one extra, cheap begin_step()/
+   end_step() round trip at every period boundary for a clean,
+   physics-free observation point at the period's own true end, matched
+   or not. `fuse_step_report::step_opened` (appended for exactly this)
+   and `::period` (appended so a caller can tell a matched rollover from
+   an ordinary first call) are the ABI surface this created; both are
+   growth-only, byte-identical for an old caller (`abi-design.md` rule 2),
+   and the ordinary non-window, non-LowFive path never rolls over, so it
+   stays byte-identical to before this fix.
+
+Covered by `test/verification/brusselator_lowfive_harness_test.cpp`
+(`BrusselatorLowFiveHarness.ExternalDeliveryMatchesInProcessRunner`,
+bit-for-bit against an in-process `fuse::Runner` reference, identical
+sweep counts in both waveform iterations) and, at the ABI level directly,
+by three new `AbiParticipant` cases in `test/abi/participant_test.cpp`:
+`EndTimeBoundedRunRefusesPastItsOwnDeclaredEnd` (a matched rollover right
+at a run's own declared end), and `MismatchedRolloverNamesTheRealPeriod
+StartComponent` (case (ii): a purpose-built graph where the window's own
+fixed region-entry and the true period-start component are DIFFERENT
+components by construction, proving the mismatch names the real one, not
+the hint). A dedicated golden-IR fixture, `test/data/pair_lowfive_bound.
+yaml` / `test/golden/pair_lowfive_bound.ir` (`GoldenIr.PairLowFiveBound`),
+pins the compiled shape (`ExternalDelivery`, one input — an ordering edge
+to the source field's own producer, not a data dependency — never
+`Transport`) byte-exact at the IR level, independent of the behavioral
+harness. Six mutations recorded, all hand-proved: the rollover fix itself
+(`abi-prime-next-request-rollover-removed`, `build-evidence/mutations/
+abi.toml`) and five Unit-3-specific ones in `build-evidence/mutations/
+transport-lowfive.toml` (the ExternalDelivery suspension removed, the
+cold-start delivery omitted from the harness, `lowfive_bound` forced
+false in `rules_channel.cpp`, plus the two pre-existing binding-table
+checks). Full account of the investigation (the scheduling-order fix,
+the per-sweep hexfloat tracing that isolated the two defects above, and
+the case (i)/(ii) distinction) lives in this track's own session
+history; `docs/user/lowfive.md`'s "Unit 3a" section and `docs/user/
+c-abi.md`'s protocol section document the resulting behavior for a
+caller.
+
 ### D15. The provider direction (S6 phase 4, "Adapter host" track) is implemented and conformance-tested on one process; device fields, mixed checkpoint/restore, and a plugin on a rank subset are not
 
 **What is done, measured 2026-10-02.** `include/fuse/abi/provider.h` (generated from a second

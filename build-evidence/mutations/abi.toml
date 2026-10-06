@@ -105,17 +105,25 @@ id = "abi-step-order-refusal-removed"
 area = "abi"
 describes = "KNOWN_ISSUES.md D13's fix (S6 resumable-loop track): fuse_begin_step()'s check that the caller is stepping the component the Runner's instruction stream actually expects next is removed, so a component asked to step out of turn is silently accepted (and handed the OTHER component's ExternalAdvanceRequest -- wrong tick bounds, wrong checkpoint/restore flags) instead of refused with E-ABI-STEP-ORDER naming the expected component"
 file = "src/abi/participant.cpp"
-old = """    const fuse::ExternalAdvanceRequest& req = *c.next_request;
-    if (req.component != in->component) {
-      // Not consumed: the stream's own next tick belongs to a DIFFERENT
-      // externally driven component, named here so the caller can step
-      // it first.
-      return fail(&c, FUSE_ERR_STATE, "E-ABI-STEP-ORDER",
-                 std::string("fuse_begin_step: component '") + in->component +
-                     "' asked out of turn; the Runner's instruction stream "
-                     "expects component '" + req.component + "' next");
-    }"""
-new = """    const fuse::ExternalAdvanceRequest& req = *c.next_request;"""
+old = """    const bool treat_as_mismatch = (req.component != in->component) || rolled_over;
+    if (treat_as_mismatch) {
+      if (req.component != in->component && !rolled_over) {
+        // Not consumed: the stream's own next tick belongs to a
+        // DIFFERENT externally driven component, named here so the
+        // caller can step it first. Unaffected by this day's rollover
+        // correction: no period boundary was crossed to reach this
+        // request, so it is the ordinary out-of-turn mistake it always
+        // was.
+        return fail(&c, FUSE_ERR_STATE, "E-ABI-STEP-ORDER",
+                   std::string("fuse_begin_step: component '") +
+                       in->component +
+                       "' asked out of turn; the Runner's instruction "
+                       "stream expects component '" + req.component +
+                       "' next");
+      }"""
+new = """    const bool treat_as_mismatch = rolled_over;
+    if (treat_as_mismatch) {
+      if (false) {"""
 target = "fuse_abi_participant_test"
 test = "abi.participant"
 result = "CONFIRMED 2026-10-02: AbiParticipant.BeginStepOutOfTurnIsRefusedNamingTheExpectedComponent failed on EXPECT_EQ(t->begin_step(ctx, &down_req, &rep), FUSE_ERR_STATE) -- begin_step(downstream) returned FUSE_OK (0) instead of FUSE_ERR_STATE (-3) when called out of turn. The other six AbiParticipant cases, none of which calls begin_step() out of the schedule's own order, still passed. Restored; cmp against the pre-mutation file reported no difference."
@@ -129,18 +137,8 @@ old = """    if (struct_size_covers(declared_out_size,
                            offsetof(fuse_step_report, next_component) +
                                sizeof(out->next_component))) {
       out->next_component = -2;
-    }
-    return FUSE_OK;
-  });
-}
-
-fuse_status impl_end_step(fuse_ctx* ctx, const fuse_step_request* in,"""
-new = """    out->next_component = -2;
-    return FUSE_OK;
-  });
-}
-
-fuse_status impl_end_step(fuse_ctx* ctx, const fuse_step_request* in,"""
+    }"""
+new = """    out->next_component = -2;"""
 target = "fuse_abi_participant_test"
 test = "abi.participant"
 result = "PROVED BY HAND 2026-10-03 (tools/mutate.py --area abi could not run against this uncommitted tree -- the gate refuses with 'include/ or src/ has uncommitted changes; the gate restores by copy-back', the same constraint recorded for Defects 1 and 2). Applied to a scratch ASan tree (-fsanitize=address,undefined -fno-omit-frame-pointer): AbiParticipant.OldCallerStructSizeNeverTouchesNextComponent (the heap-exact-buffer test this row targets) ABORTED with 'AddressSanitizer: heap-buffer-overflow ... participant.cpp:900 in impl_begin_step', exactly the write this guard exists to prevent. MEASURED AGAIN in the ordinary (non-ASan) bafter tree with the same mutation: gtest itself printed '[ OK ] ... [PASSED] 1 test' (the 4-byte write past a 64/72-byte heap allocation did not visibly corrupt the fields the test asserts on) but the PROCESS then exited 139 (SIGSEGV) during teardown -- malloc's own heap-metadata corruption surfacing on a later free(), not a sanitizer. So unlike Defect 2 (whose plain build ran clean to completion), this particular overflow crashes even without a sanitizer, just one allocation's destructor later than the overflowing write itself; ASan's report is still the one that names the exact line and the exact kind of defect, so it remains the decisive oracle, with the plain-build crash as corroborating (if less legible) evidence. Restored from a /tmp backup both times; cmp reported no difference both times."
@@ -151,22 +149,16 @@ area = "abi"
 describes = "Defect 3's own refinement (Conformance Unit 2): impl_is_coupling_ongoing()'s uncached branch is reverted to the pre-refinement -2 sentinel instead of resolving next_component from Runner::components_due_at_period_start() -- a period's own start again reports 'undetermined without stepping' instead of a real, plan-derived answer, forcing a caller back to guessing the first component of every period"
 file = "src/abi/participant.cpp"
 old = """      } else {
-        out->next_component = -1;
-        for (const fuse::ComponentId cid :
-             c.runner->components_due_at_period_start()) {
-          if (cid.value() < c.ext.size() && !c.ext[cid.value()].in_process) {
-            out->next_component = static_cast<std::int32_t>(cid.value());
-            break;
-          }
-        }
         // Unreachable for a well-formed graph with external_count > 0:
         // every externally driven component has a substep at period-time
         // 0 (either an ordinary Tick{k=0,...} or a window member's first
-        // instance's own first substep), so the loop above always finds
-        // one and the -1 default is never actually used here. Left as
-        // the safe fallback rather than an assert, matching this
-        // function's own "fail gracefully, never a new hard-failure
-        // mode" convention elsewhere in this file.
+        // instance's own first substep), so
+        // first_external_component_due_at_period_start()'s own loop
+        // always finds one and its -1 default is never actually used
+        // here. Left as the safe fallback rather than an assert,
+        // matching this function's own "fail gracefully, never a new
+        // hard-failure mode" convention elsewhere in this file.
+        out->next_component = first_external_component_due_at_period_start(c);
       }"""
 new = """      } else {
         out->next_component = -2;
@@ -202,3 +194,61 @@ new = "    bool external_hosted_here = c.external_count > 0;  // MUTATED: blanke
 target = "fuse_abi_participant_test"
 test = "abi.participant"
 result = "PROVED BY HAND 2026-10-03 (tools/mutate.py --area abi refuses against this uncommitted tree, same constraint as every other row in this file). Applied directly to the ordinary bafter build: AbiParticipant.RunAcceptedOnAProcessHostingOnlyTheCoupler -- built specifically for this row, force_this_process(ctx, 5) on a rank hosting only a coupler placement disjoint from alpha's/beta's own RankSet{0,1} -- failed exactly as predicted: fuse_run() returned FUSE_ERR_UNSUPPORTED (-5) instead of FUSE_OK. AbiParticipant.RunStillRefusedOnAProcessHostingAnExternalComponent (the complementary case, force_this_process(ctx, 0)) was unaffected, as expected -- that rank hosts an external component either way. Restored from a /tmp backup; sha256 reported no difference; full rebuild confirmed both tests pass again, 163/163 overall."
+
+[[mutation]]
+id = "abi-prime-next-request-rollover-removed"
+area = "abi"
+describes = "the lead's own ruling (2026-10-04), item 2: prime_next_request()'s legitimate rollover path -- resume_period() finding nothing left in the current period is treated as the period simply having run to completion, not an error, and a second resume_period() call starts the next one -- is removed. Restores the PRE-fix 'unreachable' guard unconditionally: the first resume_period() returning nothing is immediately reported as E-ABI-STEP-ORDER, the same genuine-invariant-violation error correctly reserved for a SECOND consecutive empty period, now wrongly raised on an ordinary, legitimate period-end reached by resuming past a cached LowFive delivery proxy."
+file = "src/abi/participant.cpp"
+old = """  if (!outcome.value().has_value()) {
+    // This period is over (see this function's own comment above for
+    // why that is expected here, not a violation of the \"ticks at least
+    // once\" invariant): complete its bookkeeping exactly as fuse_run()
+    // would at a period's end, then start the next one and prime ITS
+    // OWN first request, in this same call -- UNLESS the next period's
+    // own start would be at or past the run's own declared end_time
+    // (this function's own comment above), in which case the run is
+    // simply over and c.next_request is left empty.
+    ++c.periods_completed;
+    *rolled_over = true;
+    if (c.has_end_time) {
+      const fuse::Rational now =
+          c.plan->period() * fuse::Rational{c.periods_completed};
+      if (!(now < c.end_time)) {
+        c.next_request.reset();
+        return true;
+      }
+    }
+    outcome = c.runner->resume_period(c.components);
+    if (!outcome.ok()) {
+      *out_code = outcome.error().code;
+      *out_message = outcome.error().message;
+      return false;
+    }
+    if (!outcome.value().has_value()) {
+      // Two periods in a row with no externally driven component to
+      // stop at: THIS is the genuine invariant violation, unreachable
+      // for a well-formed graph with at least one such component.
+      *out_code = \"E-ABI-STEP-ORDER\";
+      *out_message =
+          std::string(fn) +
+          \": the current period has no externally driven component left \"
+          \"to step; this should be unreachable for a graph with at least \"
+          \"one such component\";
+      return false;
+    }
+  }"""
+new = """  if (!outcome.value().has_value()) {
+    // MUTATED: restores the pre-fix \"unreachable\" guard unconditionally
+    // -- no legitimate rollover path at all.
+    *out_code = \"E-ABI-STEP-ORDER\";
+    *out_message =
+        std::string(fn) +
+        \": the current period has no externally driven component left \"
+        \"to step; this should be unreachable for a graph with at least \"
+        \"one such component\";
+    return false;
+  }"""
+target = "fuse_abi_participant_test"
+test = "abi.participant"
+result = "PROVED BY HAND 2026-10-06 (tools/mutate.py --area abi refuses against this uncommitted tree, same constraint recorded for every other row in this file). Applied directly to the ordinary bafter build: AbiParticipant.MismatchedRolloverNamesTheRealPeriodStartComponent -- built specifically for this row, a genuinely multirate LowFive-bound window whose delivery proxy survives to the exact sweep that converges -- failed exactly as predicted: fuse_begin_step() at the rollover point returned FUSE_ERR_RUNTIME (-4) instead of FUSE_OK (0). The other 13 AbiParticipant cases, none of which resumes past a cached delivery proxy that then discovers the period has ended, were unaffected. Restored from a /tmp backup; cmp reported no difference; full rebuild confirmed all 14 tests pass again."
