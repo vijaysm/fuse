@@ -73,6 +73,14 @@ void check_golden(const std::string& name) {
 TEST(GoldenIr, PairExplicit)             { check_golden("pair_explicit"); }
 TEST(GoldenIr, PairAccumulateRemapRelax) { check_golden("pair_accumulate_remap_relax"); }
 TEST(GoldenIr, PairIterated)             { check_golden("pair_iterated"); }
+// Unit 3 (S6 phase 3, Conformance, Unit 3a): a LowFive-bound channel (the
+// source field's own hdf5_path) compiles as OpKind::ExternalDelivery, not
+// OpKind::Transport -- pins the shape "a LowFive-bound channel is an
+// application-performed transfer" (docs/user/lowfive.md) at the IR level,
+// byte-exact, so a future lowering change that silently moves data for
+// this channel again is caught here, not just by the behavioral harness
+// (test/verification/brusselator_lowfive_harness_test.cpp).
+TEST(GoldenIr, PairLowFiveBound)         { check_golden("pair_lowfive_bound"); }
 
 // Spec §2.1: the architecture's central claim is that operator order is
 // explicit and therefore checkable. If these two dumps were ever equal, the

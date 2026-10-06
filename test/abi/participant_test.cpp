@@ -13,12 +13,15 @@
 
 #include "fuse/abi/participant.h"
 #include "fuse/backend/mesh_view.hpp"
+#include "fuse/backend/native_backend.hpp"
 #include "fuse/backend/serial_backend.hpp"
 #include "fuse/base/rational.hpp"
 #include "fuse/field/registry.hpp"
 #include "fuse/ir/lowering.hpp"
 #include "fuse/model/capabilities.hpp"
 #include "fuse/model/coupling_graph.hpp"
+#include "fuse/model/field_spec.hpp"
+#include "fuse/model/launch.hpp"
 #include "fuse/runtime/component.hpp"
 #include "fuse/runtime/runner.hpp"
 #include "fuse/schedule/clock.hpp"
@@ -991,15 +994,392 @@ TEST(AbiParticipant, ExternallyDrivenWindowMemberMatchesInProcessRunner) {
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
 
-// AbiParticipant.OldCallerStructSizeNeverTouchesNextComponent (Defect 3,
-// docs/dev/abi-design.md rule 2's "old caller still works" half of the
-// contract for fuse_step_report/fuse_ongoing's own growth). Heap-allocates
-// EXACTLY the pre-Defect-3 byte count for each struct -- the same
-// offsetof-derived expression src/abi/participant.cpp's own
-// FirstFrozenStructSize<T> specializations use -- so a write past it is a
-// genuine heap-buffer-overflow, not a benign write into slack the
-// allocator happened to round up to. An old caller's buffer really is
-// exactly this size; next_component did not exist when it was compiled.
+// AbiParticipant.EndTimeBoundedRunRefusesPastItsOwnDeclaredEnd (S6 phase 3,
+// Conformance, Unit 3a): fuse_setup()'s own `end_time` bounds
+// prime_next_request()'s own rollover (src/abi/participant.cpp) -- a
+// begin_step() that would start a period at or past the declared end
+// leaves c.next_request empty (success, not an error) instead of rolling
+// over, so this call reports step_opened=0, next_component=-1 (nothing
+// left, not a mismatch -- fuse_step_report::step_opened's own comment,
+// entries.def), and fuse_is_coupling_ongoing() reports ongoing=0. This is
+// the ABI-level unit test for the SAME mechanism brusselator_lowfive_
+// harness_test.cpp's own loop relies on (that test's own `kPeriods`
+// bound), isolated here from that test's LowFive/Fortran machinery, using
+// ExternallyDrivenWindowMemberMatchesInProcessRunner's own fixture
+// (window_length=1, one window per period) immediately above.
+TEST(AbiParticipant, EndTimeBoundedRunRefusesPastItsOwnDeclaredEnd) {
+  constexpr int kCells = 4;
+  constexpr int kMaxIterations = 60;
+  constexpr int kPeriods = 2;
+
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  const auto bytes =
+      fuse::abi_test::build_implicit_window_coupling_bytes(kCells, kMaxIterations);
+  fuse_context_out co{.struct_size = sizeof(co)};
+  ASSERT_EQ(t->create(nullptr, nullptr, &co), FUSE_OK);
+  fuse_ctx* ctx = co.ctx;
+  fuse_graph_source src{.struct_size = sizeof(src)};
+  src.bytes = bytes.data();
+  src.byte_count = bytes.size();
+  ASSERT_EQ(t->load_graph(ctx, &src, nullptr), FUSE_OK);
+
+  {
+    // window_length=1 for this fixture (ExternallyDrivenWindowMember
+    // MatchesInProcessRunner's own comment on a_rep.t_begin/t_end, just
+    // above), so kPeriods periods end at exactly kPeriods.
+    fuse_setup_options opts{.struct_size = sizeof(opts)};
+    opts.has_end_time = 1;
+    opts.end_time = fuse_exact_time{kPeriods, 1};
+    ASSERT_EQ(t->setup(ctx, &opts, nullptr), FUSE_OK);
+  }
+
+  double a_out[kCells] = {0, 0, 0, 0};
+  double a_in[kCells] = {0, 0, 0, 0};
+  double b_out[kCells] = {0, 0, 0, 0};
+  double b_in[kCells] = {0, 0, 0, 0};
+  auto register_one = [&](const char* component, const char* field, double* data) {
+    fuse_field_name fname{.struct_size = sizeof(fname)};
+    fname.component = component;
+    fname.field = field;
+    fuse_field_ref fref{.struct_size = sizeof(fref)};
+    ASSERT_EQ(t->field_handle(ctx, &fname, &fref), FUSE_OK);
+    fuse_field_view fview{.struct_size = sizeof(fview)};
+    fview.handle = fref.handle;
+    fview.element_type = FUSE_ELEMENT_F64;
+    fview.memspace = FUSE_MEMSPACE_HOST;
+    fview.ownership = FUSE_OWNERSHIP_OWNED;
+    fview.components = 1;
+    fview.count = kCells;
+    fview.owned_count = kCells;
+    fview.stride = 1;
+    fview.data = data;
+    ASSERT_EQ(t->register_field(ctx, &fview, nullptr), FUSE_OK);
+  };
+  register_one("alpha", "a_out", a_out);
+  register_one("alpha", "a_in", a_in);
+  register_one("beta", "b_out", b_out);
+  register_one("beta", "b_in", b_in);
+  ASSERT_EQ(t->initialize(ctx, nullptr, nullptr), FUSE_OK);
+
+  fuse_step_request a_req{.struct_size = sizeof(a_req)};
+  a_req.component = "alpha";
+  fuse_step_request b_req{.struct_size = sizeof(b_req)};
+  b_req.component = "beta";
+
+  // Drive by fuse_is_coupling_ongoing()'s own next_component, the SAME
+  // shape brusselator_lowfive_harness_test.cpp's own loop uses, rather
+  // than a hardcoded sweep count -- this fixture's own window converges
+  // in a graph-dependent number of sweeps per period. A safety cap
+  // (not kPeriods itself) guards against an infinite loop if end_time
+  // ever stopped bounding this correctly; it is never meant to be tight.
+  constexpr int kSafetyCap = 1000;
+  int step_count = 0;
+  for (; step_count < kSafetyCap; ++step_count) {
+    fuse_ongoing ongoing{.struct_size = sizeof(ongoing)};
+    ASSERT_EQ(t->is_coupling_ongoing(ctx, nullptr, &ongoing), FUSE_OK)
+        << "step " << step_count;
+    if (!ongoing.ongoing) break;
+    const bool is_a = (ongoing.next_component == 0);
+    fuse_step_request& req = is_a ? a_req : b_req;
+    fuse_step_report brep{.struct_size = sizeof(brep)};
+    ASSERT_EQ(t->begin_step(ctx, &req, &brep), FUSE_OK) << "step " << step_count;
+    if (!brep.step_opened) continue;
+    if (is_a) {
+      for (int i = 0; i < kCells; ++i) a_out[i] = 10.0 - a_in[i];
+    } else {
+      for (int i = 0; i < kCells; ++i) b_out[i] = 0.5 * b_in[i];
+    }
+    fuse_step_report erep{.struct_size = sizeof(erep)};
+    ASSERT_EQ(t->end_step(ctx, &req, &erep), FUSE_OK) << "step " << step_count;
+  }
+  ASSERT_LT(step_count, kSafetyCap) << "run never reached its own declared end_time";
+
+  // The run is over: a FURTHER begin_step() call must succeed (nothing
+  // left is not an error) with step_opened=0 and next_component=-1 --
+  // and fuse_is_coupling_ongoing() must agree.
+  fuse_step_report past_end_rep{.struct_size = sizeof(past_end_rep)};
+  ASSERT_EQ(t->begin_step(ctx, &a_req, &past_end_rep), FUSE_OK);
+  EXPECT_EQ(past_end_rep.step_opened, 0);
+  EXPECT_EQ(past_end_rep.next_component, -1);
+
+  fuse_ongoing ongoing_after{.struct_size = sizeof(ongoing_after)};
+  ASSERT_EQ(t->is_coupling_ongoing(ctx, nullptr, &ongoing_after), FUSE_OK);
+  EXPECT_EQ(ongoing_after.ongoing, 0);
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+// AbiParticipant.MismatchedRolloverNamesTheRealPeriodStartComponent (S6
+// phase 3, Conformance, Unit 3a): case (ii) of the lead's own ruling --
+// a caller's begin_step() resumes past a period boundary (rolled_over
+// true in prime_next_request()'s own terms, src/abi/participant.cpp)
+// and the NEW period's own first-due component is NOT the one this call
+// named. This is the mismatch branch `treat_as_mismatch` takes for a
+// genuinely different reason than an ordinary (non-rollover) out-of-turn
+// mistake (BeginStepOutOfTurnIsRefusedNamingTheExpectedComponent, this
+// file) -- not an error here, since the caller could not have known from
+// outside which component a still-converging window's own next period
+// would start on.
+//
+// Built, not found by chance: a THIRD externally driven component,
+// "gamma", ticking once per period OUTSIDE the window region entirely
+// (an ordinary, non-window channel feeds "alpha" a value from it, never
+// read meaningfully). `Runner::components_due_at_period_start()`
+// (runner.hpp's own doc) answers "gamma" for this graph, a fixed
+// property of the plan -- gamma's own ordinary tick always precedes the
+// window region, by `build_ticks()`'s own "time-0 ordinary ticks beat
+// any window region" rule (runner.cpp's own comment on that function).
+// But EVERY conditional "next_component" hint resolved while a delivery
+// proxy is cached (`Runner::Impl::next_real_advance_after()`'s own wrap-
+// to-region's-own-entry rule, once the forward scan from the delivery
+// instruction finds nothing before the region's exit) names "alpha",
+// the window's own fixed region-entry, REGARDLESS of whether the sweep
+// that follows is another iteration or the one that converges and ends
+// the period. So the two are declared to disagree on purpose: region-
+// entry (alpha, what every hint during the window says) is NOT period-
+// start (gamma, what actually happens once the window converges) --
+// exactly the lead's own phrasing.
+//
+// The LowFive-bound channel is "beta"'s own b_out -> "alpha"'s a_in
+// (the BACK channel), not the forward one, and "beta" is declared on a
+// 1/2 interval against "alpha"'s 1 (genuinely multirate: two beta
+// substeps per alpha substep, per sweep) -- both load-bearing. MEASURED
+// (this test's own temporary instruction-stream dump, since removed):
+// a channel's own ExternalDelivery instruction is placed right after
+// its PRODUCER's own WindowAdvance (op.hpp's own ordering-edge
+// comment), so binding the FORWARD channel (alpha's a_out, produced
+// first in the sweep) lets the very next real begin_step() call absorb
+// the delivery proxy silently, with the window converging in ONE sweep
+// and no rollover ever reached at all -- this test's own first draft.
+// Binding the BACK channel instead puts the delivery right after
+// "beta"'s own (last) WindowAdvance, immediately before the sweep's own
+// convergence check; being on a shorter interval than "alpha" is what
+// forces the window to take several sweeps to converge (a 1:1 window
+// with this same update rule converges after exactly one), long enough
+// for the mismatch to be the thing this test is actually checking
+// rather than an accident of how fast the iteration happens to settle.
+//
+// Driving by the hint throughout (never guessing): the call that
+// follows "next_component = alpha" after the LAST sweep's delivery
+// proxy finds the window already converged, rolls `c.periods_completed`
+// forward, and discovers period 1's real first request names "gamma",
+// not "alpha" -- `step_opened = 0`, `next_component` = gamma's
+// ComponentId, `period` = 1, and NO step opens on alpha, beta, or gamma.
+// Stepping the named component ("gamma") next succeeds normally and the
+// SAME still-unconsumed request runs -- confirmed by reading "a_out"/
+// "b_out" unchanged by the mismatched call itself (no physics ran twice).
+TEST(AbiParticipant, MismatchedRolloverNamesTheRealPeriodStartComponent) {
+  using fuse::ComponentDecl;
+  using fuse::ComponentKind;
+  using fuse::ConvergenceCriterion;
+  using fuse::CouplingGraph;
+  using fuse::CouplingWindowScope;
+  using fuse::DtPolicy;
+  using fuse::FieldSpec;
+  using fuse::Intent;
+  using fuse::IterationRegionDecl;
+  using fuse::LaunchMode;
+  using fuse::LaunchSpec;
+  using fuse::MeshDecl;
+  using fuse::Rational;
+  using fuse::RankSet;
+  using fuse::Region;
+  using fuse::WaveformIteration;
+
+  CouplingGraph g;
+  const auto ma = g.add_mesh(MeshDecl{.name = "ma", .source = "generated:line:4"});
+  const auto mb = g.add_mesh(MeshDecl{.name = "mb", .source = "generated:line:4"});
+  const auto mg = g.add_mesh(MeshDecl{.name = "mg", .source = "generated:line:4"});
+  const auto ra = g.add_region(Region{.name = "ra", .mesh = ma, .dimension = 1});
+  const auto rb = g.add_region(Region{.name = "rb", .mesh = mb, .dimension = 1});
+  const auto rg = g.add_region(Region{.name = "rg", .mesh = mg, .dimension = 1});
+
+  const auto gamma = g.add_component(
+      ComponentDecl{.name = "gamma", .ranks = RankSet{0, 1}, .interval = Rational{1}});
+  const auto a = g.add_component(
+      ComponentDecl{.name = "alpha", .ranks = RankSet{0, 1}, .interval = Rational{1}});
+  const auto b = g.add_component(
+      ComponentDecl{.name = "beta", .ranks = RankSet{0, 1}, .interval = Rational{1, 2}});
+
+  const auto g_out = g.add_field(
+      gamma, FieldSpec{.name = "g_out", .region = rg, .components = 1,
+                       .units = fuse::units::kKelvin, .intent = Intent::Provides});
+  const auto a_out = g.add_field(
+      a, FieldSpec{.name = "a_out", .region = ra, .components = 1,
+                  .units = fuse::units::kKelvin, .intent = Intent::Provides});
+  const auto b_in = g.add_field(
+      b, FieldSpec{.name = "b_in", .region = rb, .components = 1,
+                  .units = fuse::units::kKelvin, .intent = Intent::Requires});
+  const auto b_out = g.add_field(
+      b, FieldSpec{.name = "b_out", .region = rb, .components = 1,
+                  .units = fuse::units::kHeatFluxDensity, .intent = Intent::Provides});
+  const auto a_in = g.add_field(
+      a, FieldSpec{.name = "a_in", .region = ra, .components = 1,
+                  .units = fuse::units::kHeatFluxDensity, .intent = Intent::Requires});
+  const auto g_in = g.add_field(
+      a, FieldSpec{.name = "g_in", .region = ra, .components = 1,
+                  .units = fuse::units::kKelvin, .intent = Intent::Requires});
+  (void)g.add_channel("g2a", g_out, g_in);  // ordinary; outside the window region
+
+  // LowFive-bound on the BACK channel (beta's own b_out): see this
+  // test's own header comment above for why this, and beta's own 1/2
+  // interval, are both load-bearing.
+  const_cast<FieldSpec&>(g.field(b_out)).hdf5_path = "scratch_case_ii.h5/x";
+  (void)g.add_component(ComponentDecl{.name = "lowfive", .ranks = RankSet{0, 1},
+                                      .interval = Rational{1},
+                                      .kind = ComponentKind::Coupler,
+                                      .launch = LaunchSpec{.mode = LaunchMode::LowFive}});
+
+  const auto fwd = g.add_channel("a2b", a_out, b_in);
+  const auto back = g.add_channel("b2a", b_out, a_in);
+  g.channel(back).lag(1).allow_time_level_mismatch(
+      "resolved by the window's own sweep, not a real-time lag");
+  g.channel(back).relax(0.7);
+
+  CouplingWindowScope scope;
+  scope.explicit_interval = Rational{1};
+  scope.order = 2;
+  scope.policies = {{"alpha", DtPolicy::Adjustable}, {"beta", DtPolicy::Adjustable}};
+  scope.iteration = WaveformIteration::Jacobi;
+
+  ConvergenceCriterion convergence;
+  convergence.add(fuse::Converged::Relative(1e-9, "a_out"));
+  convergence.add(fuse::Converged::Relative(1e-9, "a_in"));
+  g.add_iteration_region(IterationRegionDecl{
+      .name = "window", .channels = {fwd, back}, .max_iterations = 60,
+      .convergence = convergence, .window_scope = scope});
+
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  const auto bytes = fuse::serialize(g);
+  fuse_ctx* ctx = CreateAndLoad(t, bytes);
+
+  double gbuf[4] = {0, 0, 0, 0}, gabuf[4] = {0, 0, 0, 0};
+  double abuf[4] = {0, 0, 0, 0}, a2buf[4] = {0, 0, 0, 0};
+  double bbuf[4] = {0, 0, 0, 0}, b2buf[4] = {0, 0, 0, 0};
+  auto register_one = [&](const char* component, const char* field, double* data) {
+    fuse_field_name fname{.struct_size = sizeof(fname)};
+    fname.component = component;
+    fname.field = field;
+    fuse_field_ref fref{.struct_size = sizeof(fref)};
+    ASSERT_EQ(t->field_handle(ctx, &fname, &fref), FUSE_OK);
+    fuse_field_view fview{.struct_size = sizeof(fview)};
+    fview.handle = fref.handle;
+    fview.element_type = FUSE_ELEMENT_F64;
+    fview.memspace = FUSE_MEMSPACE_HOST;
+    fview.ownership = FUSE_OWNERSHIP_OWNED;
+    fview.components = 1;
+    fview.count = 4;
+    fview.owned_count = 4;
+    fview.stride = 1;
+    fview.data = data;
+    ASSERT_EQ(t->register_field(ctx, &fview, nullptr), FUSE_OK);
+  };
+  register_one("gamma", "g_out", gbuf);
+  register_one("alpha", "g_in", gabuf);
+  register_one("alpha", "a_out", abuf);
+  register_one("alpha", "a_in", a2buf);
+  register_one("beta", "b_in", bbuf);
+  register_one("beta", "b_out", b2buf);
+  ASSERT_EQ(t->initialize(ctx, nullptr, nullptr), FUSE_OK);
+
+  // Confirmed property of the plan, read with no side effect at all:
+  // period-start is gamma (ComponentId 0), not alpha (ComponentId 1) --
+  // the SAME claim this test's own comment makes, checked directly.
+  fuse_ongoing ongoing0{.struct_size = sizeof(ongoing0)};
+  ASSERT_EQ(t->is_coupling_ongoing(ctx, nullptr, &ongoing0), FUSE_OK);
+  ASSERT_EQ(ongoing0.next_component, 0) << "expected gamma to be period-start";
+
+  fuse_step_request g_req{.struct_size = sizeof(g_req)};
+  g_req.component = "gamma";
+  fuse_step_request a_req{.struct_size = sizeof(a_req)};
+  a_req.component = "alpha";
+  fuse_step_request b_req{.struct_size = sizeof(b_req)};
+  b_req.component = "beta";
+
+  // Period 0's own gamma tick: the very first call ever made, so there
+  // is nothing to roll over yet -- step_opened must be 1.
+  fuse_step_report g_begin{.struct_size = sizeof(g_begin)};
+  ASSERT_EQ(t->begin_step(ctx, &g_req, &g_begin), FUSE_OK);
+  ASSERT_EQ(g_begin.step_opened, 1);
+  gbuf[0] = 1.0;
+  fuse_step_report g_end{.struct_size = sizeof(g_end)};
+  ASSERT_EQ(t->end_step(ctx, &g_req, &g_end), FUSE_OK);
+
+  // Drive the window via the hint reported by the PRECEDING call
+  // (g_end's, then each begin_step()/end_step()'s own next_component)
+  // -- never guess; the conditional hint during the window may
+  // legitimately differ sweep to sweep, and "wrong" is exactly what
+  // this test is checking for at the eventual rollover. A safety cap
+  // bounds the loop well above max_iterations=60.
+  bool saw_mismatch = false;
+  std::int32_t mismatch_next_component = -3;
+  std::int32_t mismatch_period = -3;
+  double a_out_before_mismatch = 0.0, b_out_before_mismatch = 0.0;
+  std::int32_t next_hint = g_end.next_component;
+  for (int k = 0; k < 400 && !saw_mismatch; ++k) {
+    if (next_hint != 1 && next_hint != 2) {
+      // -1 ("nothing cached", fuse_end_step()'s own direct period-
+      // complete handling) -- read a fresh hint with no side effect,
+      // the SAME free read this test already checked once above.
+      fuse_ongoing ongoing{.struct_size = sizeof(ongoing)};
+      ASSERT_EQ(t->is_coupling_ongoing(ctx, nullptr, &ongoing), FUSE_OK) << "k=" << k;
+      next_hint = ongoing.next_component;
+    }
+    const bool want_alpha = (next_hint == 1);
+    ASSERT_TRUE(want_alpha || next_hint == 2) << "k=" << k << " hint=" << next_hint;
+    fuse_step_request& req = want_alpha ? a_req : b_req;
+    // The application's own job for a LowFive-bound channel (docs/
+    // user/lowfive.md): FUSE performs no transport for b2a at all, so
+    // the "H5Dwrite(beta) + H5Dread(alpha)" this stands in for is this
+    // one copy, done unconditionally before every alpha substep --
+    // idempotent if called when nothing new is due, and the only way
+    // alpha's own "a_in" ever reflects beta's latest "b_out" here.
+    if (want_alpha) a2buf[0] = b2buf[0];
+    fuse_step_report brep{.struct_size = sizeof(brep)};
+    ASSERT_EQ(t->begin_step(ctx, &req, &brep), FUSE_OK) << "k=" << k;
+    if (brep.step_opened == 0) {
+      saw_mismatch = true;
+      mismatch_next_component = brep.next_component;
+      mismatch_period = brep.period;
+      a_out_before_mismatch = abuf[0];
+      b_out_before_mismatch = b2buf[0];
+      break;
+    }
+    if (want_alpha) {
+      abuf[0] = 10.0 - a2buf[0];
+    } else {
+      b2buf[0] = 0.5 * bbuf[0];
+    }
+    fuse_step_report erep{.struct_size = sizeof(erep)};
+    ASSERT_EQ(t->end_step(ctx, &req, &erep), FUSE_OK) << "k=" << k;
+    next_hint = erep.next_component;
+  }
+  ASSERT_TRUE(saw_mismatch) << "the window never rolled over within the safety cap";
+
+  // Case (ii) itself: the mismatch names gamma (period-start), not
+  // alpha (what every hint during the window said, and what this call
+  // was actually asked for) -- and it is period 1, not period 0.
+  EXPECT_EQ(mismatch_next_component, 0) << "expected gamma's ComponentId";
+  EXPECT_EQ(mismatch_period, 1);
+
+  // No physics ran twice on the mismatched call: alpha's/beta's own
+  // exported values are exactly what the LAST successful sweep left.
+  EXPECT_EQ(abuf[0], a_out_before_mismatch);
+  EXPECT_EQ(b2buf[0], b_out_before_mismatch);
+
+  // The pending request survived the mismatch untouched: stepping the
+  // NAMED component (gamma) next succeeds normally.
+  fuse_step_report g_begin2{.struct_size = sizeof(g_begin2)};
+  ASSERT_EQ(t->begin_step(ctx, &g_req, &g_begin2), FUSE_OK);
+  EXPECT_EQ(g_begin2.step_opened, 1);
+  EXPECT_EQ(g_begin2.period, 1);
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+
 TEST(AbiParticipant, OldCallerStructSizeNeverTouchesNextComponent) {
   constexpr std::size_t kOldStepReportSize =
       offsetof(fuse_step_report, t_end) + sizeof(fuse_exact_time);
