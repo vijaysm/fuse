@@ -21,6 +21,64 @@ include(FetchContent)
 set(FETCHCONTENT_QUIET OFF)
 option(FUSE_ALLOW_FETCH "Build a pinned copy of any Tier 0 dependency that is not installed" OFF)
 
+# ---------------------------------------------------------------- LowFive +
+# fmt -- see KNOWN_ISSUES.md D14's own Unit 3b account for the full
+# measured record of how this was actually diagnosed (three successive,
+# each-time-incomplete theories, this comment included).
+#
+# THE ROOT CAUSE, found last: `fuse_require(fmt ...)` (below, where fmt
+# itself is resolved) had no minimum version, so with /opt/lowfive FIRST
+# on CMAKE_PREFIX_PATH, find_package(fmt) happily accepted the FIRST
+# config it found -- and /opt/lowfive ships its OWN bundled fmt 8.1.1
+# WITH a discoverable fmt-config.cmake, whose own fmt/format-inl.h fails
+# this host's C++20 consteval checking outright. `fuse_require(fmt
+# VERSION 9 ...)` is the actual fix: it rejects 8.1.1 and finds
+# homebrew's working 12.2.0 instead, in EVERY CMAKE_PREFIX_PATH ordering
+# -- fmt::fmt itself now always resolves correctly, project-wide, and no
+# per-target include-directory juggling is needed at all.
+#
+# The `target_include_directories(... BEFORE ...)` machinery just below
+# and the `fuse_link_lowfive_with_fmt_fix` function after it were built
+# and measured against two EARLIER, incomplete theories (first: "two fmt
+# versions disagree in one translation unit, order the include dirs";
+# then: "fmt 8.1.1 itself cannot compile here at all, force fmt 12
+# everywhere a LowFive header appears") -- both chased a symptom
+# (`fmt::fmt`'s own `INTERFACE_INCLUDE_DIRECTORIES` property was ITSELF
+# `/opt/lowfive/include` the whole time, which is why prepending
+# "fmt::fmt's own include directory" changed nothing: that was never
+# homebrew's fmt to begin with). With the version floor above fixing
+# `fmt::fmt` at its source, everything below this point is REDUNDANT --
+# kept, not load-bearing, because removing six call sites cleanly in the
+# time remaining risked a worse mistake than one harmless extra
+# target_include_directories call per target. Correctness here rests on
+# the VERSION 9 floor alone; a future cleanup pass can remove the rest.
+#
+# [Superseded reasoning, kept for the record rather than deleted mid-
+# investigation: an EARLIER version of this fix relied on target_link_
+# libraries' own call ORDER (fuse::model before fuse::lowfive), which
+# changes include-directory search order only by accident and broke the
+# moment a different, still-supported CMAKE_PREFIX_PATH ordering was
+# tried -- `BEFORE` is independent of both CMAKE_PREFIX_PATH's own
+# ordering and of target_link_libraries' own call order.]
+#
+# This function is now a thin, idempotent convenience wrapper -- the fix
+# itself is already guaranteed by the INTERFACE target above the moment
+# any target links fuse::lowfive at all. Kept (and still called at
+# several sites below) only so a future reader lands on the full account
+# via whichever call site they happen to be reading, rather than having
+# to already know to look at the INTERFACE target's own definition.
+function(fuse_link_lowfive_with_fmt_fix target)
+  if(NOT TARGET fuse::lowfive)
+    message(FATAL_ERROR "fuse_link_lowfive_with_fmt_fix(${target}): fuse::lowfive does not "
+                        "exist -- guard the call site with if(TARGET fuse::lowfive) first.")
+  endif()
+  target_link_libraries(${target} PRIVATE fuse::lowfive)
+  if(TARGET fmt::fmt)
+    target_include_directories(${target} BEFORE PRIVATE
+      $<TARGET_PROPERTY:fmt::fmt,INTERFACE_INCLUDE_DIRECTORIES>)
+  endif()
+endfunction()
+
 # ---------------------------------------------------------------- Tier 0 (always)
 set(FUSE_FMT_TAG        "11.0.2")
 set(FUSE_FMTLOG_TAG     "v2.2.1")
@@ -373,7 +431,23 @@ macro(fuse_resolve_arborx)
 endmacro()
 
 macro(fuse_resolve_dependencies)
-  fuse_require(fmt HINT "fmt is the only output formatter (docs/dev/conventions.md).")
+  # VERSION 9: the actual root cause of this session's own LowFive/fmt
+  # saga (KNOWN_ISSUES.md D14's Unit 3b account), found only after the
+  # earlier "two fmt versions in one translation unit" diagnosis turned
+  # out to be incomplete. fuse_require's own find_package(fmt ...) call
+  # had NO version floor, so with /opt/lowfive FIRST on CMAKE_PREFIX_PATH
+  # it happily accepted the FIRST fmt config it found -- and /opt/lowfive
+  # ships its OWN bundled fmt 8.1.1 WITH a discoverable fmt-config.cmake
+  # (/opt/lowfive/lib/cmake/fmt/fmt-config.cmake), whose own fmt/
+  # format-inl.h fails this host's C++20 consteval checking outright,
+  # in ANY translation unit that ends up using it, with or without any
+  # FUSE code involved (measured: a standalone translation unit naming
+  # only <lowfive/vol-metadata.hpp>, no FUSE header at all, failed
+  # identically). A floor of 9 is comfortably above 8.1.1 and
+  # comfortably below every fmt this project has ever targeted (FETCH
+  # pins 11.0.2; homebrew on this host carries 12.2.0) -- the goal is
+  # excluding the one known-bad install, not pinning a ceiling.
+  fuse_require(fmt VERSION 9 HINT "fmt is the only output formatter (docs/dev/conventions.md).")
 
   # Apple's clang ships no OpenMP runtime, so CMake's FindOpenMP fails with no
   # hints even when libomp IS installed. A Kokkos built with OpenMP does
@@ -683,6 +757,31 @@ macro(fuse_resolve_dependencies)
         # LowFive's own headers are built against MPI (vol-metadata.hpp
         # forward-declares diy::mpi types); see cmake/FindLowFive.cmake.
         target_link_libraries(fuse-lowfive INTERFACE MPI::MPI_CXX)
+      endif()
+      # /opt/lowfive's own include directory carries a bundled fmt
+      # 8.1.1 whose own fmt/format-inl.h fails this host's C++20
+      # consteval checking OUTRIGHT -- measured this session in a
+      # translation unit that names ONLY <lowfive/vol-metadata.hpp>,
+      # no FUSE header at all (src/transport/lowfive_plugin_vol.cpp):
+      # this is not "two fmt versions disagree," it is "fmt 8.1.1 does
+      # not compile on this host under any circumstance." Every
+      # consumer of fuse::lowfive therefore gets fmt::fmt's own
+      # (homebrew, 12.2.0, working) include directory prepended ahead
+      # of whatever fuse::lowfive-raw itself contributes, via `BEFORE`
+      # on this INTERFACE property -- independent of CMAKE_PREFIX_PATH's
+      # own ordering and of target_link_libraries' own call order alike,
+      # unlike an earlier version of this fix that relied on link order
+      # and broke under a different, still-supported CMAKE_PREFIX_PATH.
+      # Fixed here, once, rather than per-consumer (fuse_link_lowfive_
+      # with_fmt_fix, just above this macro, still exists and is still
+      # called at several sites below -- now a harmless, idempotent
+      # belt-and-suspenders restatement of what this interface target
+      # already guarantees, not load-bearing on its own, kept so a
+      # future reader at any ONE of those call sites still finds the
+      # full account without having to already know to look here).
+      if(TARGET fmt::fmt)
+        target_include_directories(fuse-lowfive BEFORE INTERFACE
+          $<TARGET_PROPERTY:fmt::fmt,INTERFACE_INCLUDE_DIRECTORIES>)
       endif()
     endif()
 
