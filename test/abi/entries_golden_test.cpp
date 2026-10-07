@@ -131,7 +131,7 @@ TEST(AbiGolden, NoStructHasTrailingPaddingALaterMemberCouldHide) {
   FUSE_NO_TRAILING_PADDING(fuse_field_ref, conservation);
   FUSE_NO_TRAILING_PADDING(fuse_field_view, window_samples);
   FUSE_NO_TRAILING_PADDING(fuse_step_request, reserved);
-  FUSE_NO_TRAILING_PADDING(fuse_step_report, period);
+  FUSE_NO_TRAILING_PADDING(fuse_step_report, delivery_field);
   FUSE_NO_TRAILING_PADDING(fuse_ongoing, next_component);
   FUSE_NO_TRAILING_PADDING(fuse_run_request, periods);
   FUSE_NO_TRAILING_PADDING(fuse_participant_abi_v1, view_field);

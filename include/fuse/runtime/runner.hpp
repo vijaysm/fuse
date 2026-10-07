@@ -263,10 +263,12 @@ struct ExternalAdvanceRequest {
   /// `fuse_begin_step()` again with `fuse_step_report::next_component`.
   /// Only a mismatch reached WITHOUT a period rollover remains the
   /// ordinary `E-ABI-STEP-ORDER` out-of-turn refusal. Never open a step
-  /// directly off a request with this flag set. The writer never needs
-  /// to know which import is "due"; it writes what it produced, when
-  /// it produced it -- `docs/user/c-abi.md` documents the full
-  /// protocol, including `step_opened`.
+  /// directly off a request with this flag set. S6 phase 3 (Conformance,
+  /// Unit 3b), item 2's own correction: the writer DOES need to know
+  /// which export is due, once a graph has more than one independently-
+  /// paced LowFive-bound channel -- `delivery_field` below is what tells
+  /// it -- `docs/user/c-abi.md` documents the full protocol, including
+  /// `step_opened`.
   bool is_delivery_due = false;
   /// Valid only when `is_delivery_due`: this request's own `OpKind::
   /// ExternalDelivery` instruction's index into `ExecutionPlan::
@@ -274,6 +276,19 @@ struct ExternalAdvanceRequest {
   /// passes to `deliver_external()` -- `next_real_advance_after()`'s
   /// own scan starting point.
   std::size_t delivery_instruction_index = 0;
+  /// Valid only when `is_delivery_due`: the delivering channel's own
+  /// SOURCE field, as a `FieldId::value()` -- the SAME id space
+  /// `fuse_field_ref::handle` uses (`impl_field_handle()`, src/abi/
+  /// participant.cpp). `Runner::Impl::deliver_external()` sets this from
+  /// the `OpKind::ExternalDelivery` node's own origin channel
+  /// (`Node::origin`, `fuse/ir/op.hpp`) -- ONE channel, ONE field, no
+  /// guessing which of a graph's several LowFive-bound channels this
+  /// particular suspension is about. `fuse_step_report::delivery_field`
+  /// (entries.def) is this value, verbatim, on the report that resumes
+  /// past this request. -1 is never a valid value here (a delivery-due
+  /// request always names a real field); it exists only as `fuse_step_
+  /// report::delivery_field`'s own default when `delivery_pending` is 0.
+  std::int32_t delivery_field = -1;
 };
 
 /// Spec §2 layer 3: interprets the flat instruction stream. Every ArcId is

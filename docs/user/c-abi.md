@@ -175,6 +175,48 @@ member's loop body therefore reads `step_opened` on every `fuse_begin_step()` re
 calls `fuse_begin_step(next_component)` again immediately rather than treating `end_step()` as
 reachable.
 
+## `delivery_pending`: when the application-performed transfer must actually run
+
+`step_opened == 0` says a rollover reached this call; it does not, by itself, say whether that
+rollover passed through a LowFive-bound channel's own suspension (the one place an
+application-performed transfer is required at all, this document's own `step_opened` section
+above) or simply primed an ordinary period's first request with nothing for the caller to move.
+`fuse_step_report::delivery_pending` resolves that directly: it is `1` on the report of the
+`fuse_begin_step()` call that returned because the Runner suspended at a LowFive-bound channel's
+own `ExternalDelivery` proxy, and `0` on every other report — the "run is over" report, every
+ordinary substep's `begin_step()`/`end_step()` report, and every `fuse_end_step()` report without
+exception (mirroring `step_opened`'s own always-`1`-from-`end_step()` precedent: a matching
+reason, the opposite value, since `end_step()` only ever echoes a step that WAS open).
+
+**One proxy, one report, one field.** A graph can have more than one LowFive-bound channel, each
+with its own `ExternalDelivery` proxy, and the two ends of the SAME channel can be hosted on
+different processes — so `deliver_external()` (the Runner's own suspension point) suspends once
+for the exporting process (right after that channel's own producer finishes a sweep: "your export
+is complete, write it") and once for the importing process ("this channel's import is due"), and
+every one of those suspensions is reported on its OWN `fuse_begin_step()` call — never collapsed
+or drained into a single report the way an earlier version of this protocol did. `fuse_step_report
+::delivery_field` names WHICH channel a given `delivery_pending == 1` report is about: the
+channel's own SOURCE field, as the same `FieldId`-derived handle `fuse_field_ref::handle` uses
+(`fuse_field_handle()`'s own convention) — `-1` whenever `delivery_pending` is `0`.
+
+The protocol this makes exact: **on a report with `delivery_pending == 1` naming field `F`
+(`delivery_field`): if you produce `F`, `H5Dwrite` it; if you consume `F`, `H5Dread` it; then call
+`fuse_begin_step(next_component)` — never at any other point in the loop.** A caller checks `F`
+against the field handles of whatever it produces and consumes (resolved once, at setup, via
+`fuse_field_handle()`) and acts only on a match — no guessing which of a graph's possibly several
+independently-paced LowFive-bound channels this particular suspension is about, and no assuming
+every owned import/export is simultaneously ready. Reading or writing on every ordinary substep
+(the simplification Unit 3b's own harness and both Brusselator mains used before this field
+existed) is no longer just unnecessary — on a graph with more than one LowFive-bound channel
+running at different paces it is wrong, since it can write or read a value before its own
+producer has actually finished the sweep it belongs to. An old caller whose `struct_size` predates
+`delivery_pending`/`delivery_field` never has either field written into its memory at all, and
+keeps working exactly as it did before (the growth-only rule, "Version compatibility" below) —
+which is also, not coincidentally, why `step_opened` alone was never enough to tell a NEW caller a
+transfer is owed: a graph can roll over for reasons `step_opened` reports identically whether or
+not a LowFive-bound channel was involved, and only `delivery_pending`/`delivery_field` distinguish
+the two and name which one.
+
 ## `fuse_run()` and ranks without a component of their own
 
 `fuse_run()` drives a graph in process, for a caller that does not need to step any component from

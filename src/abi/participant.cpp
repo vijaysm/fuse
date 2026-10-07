@@ -893,44 +893,32 @@ std::int32_t first_external_component_due_at_period_start(fuse_ctx& c) {
 }
 
 /// Unit 3 (S6 phase 3, Conformance), the lead's own corrected ruling
-/// (2026-10-04): resolves the `next_component` value a CACHED request
+/// (2026-10-04), ITSELF SUPERSEDED this round (item 2 -- see
+/// `impl_begin_step()`'s own is_delivery_due branch above for the full
+/// account): resolves the `next_component` value a CACHED request
 /// (`c.next_request`, assumed to already have a value) reports --
-/// shared by `fuse_is_coupling_ongoing()` and `fuse_end_step()`, the
-/// two entry points that report this field from outside an open step.
-/// `next_component` has exactly ONE meaning everywhere: the component
-/// whose `fuse_begin_step()` the Runner expects next. A request with
-/// `is_delivery_due` set names an IMPORTER, not a component whose turn
-/// it is (`ExternalAdvanceRequest::is_delivery_due`'s own comment,
-/// `include/fuse/runtime/runner.hpp`, has the full account of the
-/// earlier, wrong "purely informational" rule this replaces), so it is
-/// resolved FURTHER here, via `Runner::next_real_advance_after()`, a
-/// static forward scan of the compiled plan -- never reported
-/// directly.
+/// shared by `fuse_is_coupling_ongoing()`, `fuse_end_step()`, and
+/// `fuse_begin_step()`'s own is_delivery_due branch, the three entry
+/// points that report this field. `next_component` has exactly ONE
+/// meaning everywhere: the component whose `fuse_begin_step()` the
+/// Runner expects next. Under the OLD (single-direction, importer-
+/// only-suspends) delivery design, an `is_delivery_due` request was
+/// "purely informational" -- its own `component` named the importer,
+/// but the CALLER needed no action beyond skipping ahead to the next
+/// REAL advance, resolved via a forward scan, `Runner::
+/// next_real_advance_after()`. That rule is now wrong: `delivery_field`
+/// (entries.def's own comment) requires the CALLER to act (H5Dwrite if
+/// producing the named field, H5Dread if consuming it) before its own
+/// next `fuse_begin_step()`, and `deliver_external()` (src/runtime/
+/// iteration.cpp) now suspends for BOTH the exporter and the importer
+/// of a channel, each its own request naming the SPECIFIC component
+/// that must act -- so `req.component` is always meaningful and always
+/// reported directly, exactly like a real (non-delivery) request;
+/// there is no longer a separate "real next stepper" to scan ahead to.
 std::int32_t resolve_cached_next_component(fuse_ctx& c) {
   const fuse::ExternalAdvanceRequest& req = *c.next_request;
-  if (!req.is_delivery_due) {
-    const auto cid = c.graph.find_component(req.component);
-    return cid.has_value() ? static_cast<std::int32_t>(cid->value()) : -1;
-  }
-  const auto resolved = c.runner->next_real_advance_after(
-      c.components, req.delivery_instruction_index);
-  if (resolved.has_value()) {
-    // Conditional, not a promise, when the delivery lies inside an
-    // iteration region (next_real_advance_after()'s own comment,
-    // runner_impl.hpp): the component due IF that region's own sweep
-    // loop continues. prime_next_request()'s own rollover is what
-    // resolves this for real, and may legitimately disagree by rolling
-    // into a new period instead -- fuse_step_report::step_opened (and
-    // fuse_begin_step()'s own consuming loop) is where that disagreement
-    // surfaces, never here.
-    return static_cast<std::int32_t>(resolved->value());
-  }
-  // Ran off the end of this period without finding a real advance,
-  // WITHOUT the instruction lying inside any iteration region (inside
-  // one, next_real_advance_after() always finds its own wrapped
-  // answer first): the schedule repeats identically every period, so
-  // the NEXT one's own start is the answer.
-  return first_external_component_due_at_period_start(c);
+  const auto cid = c.graph.find_component(req.component);
+  return cid.has_value() ? static_cast<std::int32_t>(cid->value()) : -1;
 }
 
 
@@ -1211,47 +1199,93 @@ fuse_status impl_begin_step(fuse_ctx* ctx, const fuse_step_request* in,
       return fail(&c, FUSE_ERR_RUNTIME, err_code, err_message);
     }
     rolled_over = rolled_over || this_call_rolled_over;
-    // Unit 3 (S6 phase 3, Conformance), per the lead's own ruling
-    // (2026-10-04): a cached request with `is_delivery_due` set names an
-    // IMPORTER purely as information ("this channel's import is due; if
-    // you produce it, write it now") -- it is not a claim that THIS
-    // caller, or any particular component, must consume it next.
-    // `fuse_begin_step(C)` consumes EVERY pending delivery proxy it
-    // encounters while resuming, WHATEVER component each one names, not
-    // only ones that happen to match `C` -- the proxy's only job is to
-    // return control to the application once between the production of
-    // a value and its consumption, and WHO makes the next ABI call is
-    // irrelevant to that job. Only the REAL advance request this walk
-    // eventually reaches is checked against `C` (the ordinary mismatch
-    // check immediately below). Terminates because every loop iteration
-    // consumes the ONE outstanding proxy and resume_period() always
-    // makes forward progress through the compiled stream (it never
-    // re-suspends at the SAME instruction twice without executing
-    // something in between); the loop ends at a real advance request
-    // (is_delivery_due false) or prime_next_request()'s own genuine
-    // E-ABI-STEP-ORDER (two periods in a row with nothing to stop at).
+    // S6 phase 3 (Conformance, Unit 3b), item 2 of this round,
+    // SUPERSEDING the lead's own earlier (2026-10-04) ruling that this
+    // call "consumes EVERY pending delivery proxy it encounters while
+    // resuming, WHATEVER component each one names" and drains silently
+    // to the first REAL advance request: that was right as long as a
+    // delivery proxy carried no information beyond its own existence,
+    // but is wrong now that `delivery_field` (entries.def's own
+    // comment) must name WHICH field each one is about -- draining
+    // silently discards every proxy's own field identity except the
+    // last one found, the exact bug this round's own report traced
+    // (KNOWN_ISSUES.md D14): `deliver_external()` (src/runtime/
+    // iteration.cpp) now suspends for the EXPORTER as well as the
+    // importer, so a single channel's own delivery produces TWO
+    // back-to-back is_delivery_due requests whenever both ends are
+    // hosted on this process, with nothing real between them for a
+    // draining loop to stop at.
     //
-    // SECOND correction, the SAME day: "the period completing" is no
-    // longer itself an error prime_next_request() can return here --
-    // once resuming past a proxy runs a time-window's own iteration
-    // through to real convergence and on into the period's end,
-    // prime_next_request() rolls over to the next period and primes ITS
-    // OWN first request instead of failing (that function's own
-    // comment has the full account). `rolled_over` tracks whether that
-    // happened on ANY iteration of this loop (or the priming call
-    // above), because it changes how a mismatch below is handled: a
-    // mismatch reached WITHOUT a rollover is the ordinary out-of-turn
-    // refusal (unchanged, and the ordinary non-window/non-LowFive path
-    // never rolls over, so this stays byte-identical there); a mismatch
-    // reached WITH one is not an error at all (`fuse_step_report::
-    // step_opened`'s own comment, entries.def, has the full account).
-    while (c.next_request.has_value() && c.next_request->is_delivery_due) {
+    // The corrected rule: EVERY is_delivery_due request is its own
+    // externally visible stop, reported in full and consumed ONE at a
+    // time -- never looped past. `resolve_cached_next_component()`
+    // (this file, above) is the SAME forward-scan `fuse_end_step()`/
+    // `fuse_is_coupling_ongoing()` already use for an identical cached
+    // request, so all three entry points resolve `next_component`
+    // identically for a delivery-due request; it must run BEFORE
+    // `c.next_request.reset()` below, since it reads directly off
+    // `c.next_request`.
+    if (c.next_request.has_value() && c.next_request->is_delivery_due) {
+      const std::int32_t delivery_next = resolve_cached_next_component(c);
+      const std::int32_t delivery_field_value = c.next_request->delivery_field;
       c.next_request.reset();
-      if (!prime_next_request(c, "fuse_begin_step", &this_call_rolled_over,
-                              &err_code, &err_message)) {
-        return fail(&c, FUSE_ERR_RUNTIME, err_code, err_message);
+      // Deliberately NOT re-primed here (an earlier version of this
+      // round's own fix did, and was wrong): `prime_next_request()`
+      // calls `resume_period()`, which RESUMES THE COROUTINE -- for an
+      // importer's own is_delivery_due stop, whatever comes next
+      // (another sweep, or the window's own convergence check) reads
+      // the import buffer the CALLER has not yet refreshed (its own
+      // H5Dread, this report's entire reason for existing, has not run
+      // yet). Resuming here reads that buffer BEFORE the caller's own
+      // update -- observed as a window "converging" after a single
+      // stale-data sweep instead of its real iteration count
+      // (`RunExternalDeliveryMatchesInProcessRunner`'s own sweep-count
+      // diagnostic caught this: harness max sweep index 0 against a
+      // reference of 11). Left reset, the CALLER's own next
+      // `fuse_begin_step()` re-primes it (the existing call at this
+      // function's own top, above) -- AFTER that caller has acted on
+      // THIS report, the only point priming is safe. A caller needing
+      // `next_component` before then (e.g. `fuse_is_coupling_ongoing()`
+      // sandwiched in between) must use THIS report's own value, not
+      // re-query -- the harness's own loop does exactly that (`next_
+      // hint`, test/verification/brusselator_lowfive_harness_test.cpp).
+      out->struct_size         = sizeof(fuse_step_report);
+      out->requires_checkpoint = 0;
+      out->requires_restore    = 0;
+      out->step                = 0;
+      out->iteration            = 0;
+      out->reserved             = 0;
+      out->t_begin               = to_abi_time(fuse::Rational{0});
+      out->t_end                 = to_abi_time(fuse::Rational{0});
+      if (struct_size_covers(declared_out_size,
+                             offsetof(fuse_step_report, next_component) +
+                                 sizeof(out->next_component))) {
+        out->next_component = delivery_next;
       }
-      rolled_over = rolled_over || this_call_rolled_over;
+      if (struct_size_covers(declared_out_size,
+                             offsetof(fuse_step_report, step_opened) +
+                                 sizeof(out->step_opened))) {
+        out->step_opened = 0;
+      }
+      if (struct_size_covers(declared_out_size,
+                             offsetof(fuse_step_report, period) +
+                                 sizeof(out->period))) {
+        out->period = static_cast<std::int32_t>(c.periods_completed);
+      }
+      // delivery_pending's own comment, entries.def: this report exists
+      // BECAUSE a LowFive-bound delivery proxy was just consumed -- the
+      // one case, distinct from an ordinary rollover, this bit signals.
+      if (struct_size_covers(declared_out_size,
+                             offsetof(fuse_step_report, delivery_pending) +
+                                 sizeof(out->delivery_pending))) {
+        out->delivery_pending = 1;
+      }
+      if (struct_size_covers(declared_out_size,
+                             offsetof(fuse_step_report, delivery_field) +
+                                 sizeof(out->delivery_field))) {
+        out->delivery_field = delivery_field_value;
+      }
+      return FUSE_OK;
     }
     if (!c.next_request.has_value()) {
       // The lead's own ruling (2026-10-04): prime_next_request()'s own
@@ -1286,6 +1320,18 @@ fuse_status impl_begin_step(fuse_ctx* ctx, const fuse_step_request* in,
                              offsetof(fuse_step_report, period) +
                                  sizeof(out->period))) {
         out->period = static_cast<std::int32_t>(c.periods_completed);
+      }
+      // delivery_pending's own comment, entries.def: the run simply
+      // ended (nothing left, not a suspension) -- nothing is pending.
+      if (struct_size_covers(declared_out_size,
+                             offsetof(fuse_step_report, delivery_pending) +
+                                 sizeof(out->delivery_pending))) {
+        out->delivery_pending = 0;
+      }
+      if (struct_size_covers(declared_out_size,
+                             offsetof(fuse_step_report, delivery_field) +
+                                 sizeof(out->delivery_field))) {
+        out->delivery_field = -1;
       }
       return FUSE_OK;
     }
@@ -1373,6 +1419,26 @@ fuse_status impl_begin_step(fuse_ctx* ctx, const fuse_step_request* in,
                                  sizeof(out->period))) {
         out->period = static_cast<std::int32_t>(c.periods_completed);
       }
+      // delivery_pending's own comment, entries.def: `treat_as_mismatch`
+      // is reached here ONLY via `rolled_over` (the other disjunct,
+      // `req.component != in->component && !rolled_over`, already
+      // returned via `fail()` above with E-ABI-STEP-ORDER) -- an
+      // ORDINARY period rollover (prime_next_request()'s own "period is
+      // over, start the next one" mechanism), never a delivery: this
+      // round's own correction (item 2) intercepts every is_delivery_due
+      // request earlier, in its own dedicated branch above, and returns
+      // from there directly -- `c.next_request` reaching this point is
+      // never delivery-due by construction. 0 here, always.
+      if (struct_size_covers(declared_out_size,
+                             offsetof(fuse_step_report, delivery_pending) +
+                                 sizeof(out->delivery_pending))) {
+        out->delivery_pending = 0;
+      }
+      if (struct_size_covers(declared_out_size,
+                             offsetof(fuse_step_report, delivery_field) +
+                                 sizeof(out->delivery_field))) {
+        out->delivery_field = -1;
+      }
       return FUSE_OK;
     }
     st.request = req;
@@ -1422,6 +1488,18 @@ fuse_status impl_begin_step(fuse_ctx* ctx, const fuse_step_request* in,
                            offsetof(fuse_step_report, period) +
                                sizeof(out->period))) {
       out->period = static_cast<std::int32_t>(c.periods_completed);
+    }
+    // delivery_pending's own comment, entries.def: a step just opened
+    // on the component this call was asked for -- nothing is pending.
+    if (struct_size_covers(declared_out_size,
+                           offsetof(fuse_step_report, delivery_pending) +
+                               sizeof(out->delivery_pending))) {
+      out->delivery_pending = 0;
+    }
+    if (struct_size_covers(declared_out_size,
+                           offsetof(fuse_step_report, delivery_field) +
+                               sizeof(out->delivery_field))) {
+      out->delivery_field = -1;
     }
     return FUSE_OK;
   });
@@ -1518,6 +1596,22 @@ fuse_status impl_end_step(fuse_ctx* ctx, const fuse_step_request* in,
                            offsetof(fuse_step_report, period) +
                                sizeof(out->period))) {
       out->period = static_cast<std::int32_t>(c.periods_completed);
+    }
+    // delivery_pending's own comment, entries.def: always 0 from
+    // fuse_end_step(), the same reason step_opened is always 1 here --
+    // this call only ever echoes a step that WAS open, never the call
+    // that suspends at a delivery proxy (that is always reported by a
+    // FOLLOWING fuse_begin_step(), its own dedicated is_delivery_due
+    // branch, above).
+    if (struct_size_covers(declared_out_size,
+                           offsetof(fuse_step_report, delivery_pending) +
+                               sizeof(out->delivery_pending))) {
+      out->delivery_pending = 0;
+    }
+    if (struct_size_covers(declared_out_size,
+                           offsetof(fuse_step_report, delivery_field) +
+                               sizeof(out->delivery_field))) {
+      out->delivery_field = -1;
     }
     return FUSE_OK;
   });

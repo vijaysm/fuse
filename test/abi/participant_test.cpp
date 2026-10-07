@@ -1338,7 +1338,18 @@ TEST(AbiParticipant, MismatchedRolloverNamesTheRealPeriodStartComponent) {
     // alpha's own "a_in" ever reflects beta's latest "b_out" here.
     if (want_alpha) a2buf[0] = b2buf[0];
     fuse_step_report brep{.struct_size = sizeof(brep)};
-    ASSERT_EQ(t->begin_step(ctx, &req, &brep), FUSE_OK) << "k=" << k;
+    const fuse_status brc = t->begin_step(ctx, &req, &brep);
+    ASSERT_EQ(brc, FUSE_OK) << "k=" << k;
+    if (brep.step_opened == 0 && brep.delivery_pending == 1) {
+      // S6 phase 3 (Conformance, Unit 3b), item 2 of this round: an
+      // ORDINARY mid-sweep delivery stop, not the period-ending
+      // mismatch this test is looking for -- every ExternalDelivery
+      // proxy is now its own externally visible report (never silently
+      // drained), so this fires on every sweep along the way, not only
+      // the last one. Re-request per next_component and keep going.
+      next_hint = brep.next_component;
+      continue;
+    }
     if (brep.step_opened == 0) {
       saw_mismatch = true;
       mismatch_next_component = brep.next_component;
@@ -1735,6 +1746,308 @@ TEST(AbiParticipant, RunStillRefusedOnAProcessHostingAnExternalComponent) {
   err.capacity = sizeof(buf);
   ASSERT_EQ(t->last_error(ctx, nullptr, &err), FUSE_OK);
   EXPECT_STREQ(err.code, "E-ABI-RUN-EXTERNAL");
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+// AbiParticipant.DeliveryPendingIsSetExactlyOncePerLowFiveSuspension (S6
+// phase 3, Conformance, Unit 3b): `delivery_pending` (entries.def's own
+// comment on the field) must read 1 on the report of the begin_step() call
+// that returned because the Runner suspended at a LowFive-bound channel's
+// own delivery proxy, and 0 on every other report -- never left to an
+// implicit zero-init rely-by-accident.
+//
+// Same shape as MismatchedRolloverNamesTheRealPeriodStartComponent above,
+// minus "gamma": a two-member (alpha/beta) window, beta on a 1/2 interval
+// against alpha's 1 (multirate, several sweeps per period), the BACK
+// channel (beta's b_out -> alpha's a_in) LowFive-bound. Without a third,
+// outside-the-window component, period-start names alpha itself -- the
+// SAME component every mid-window hint already named -- so every
+// rollover this graph produces is a MATCHED one. Unit 3a's own fix folded
+// matched and unmatched rollovers into the same `step_opened = 0` branch
+// (entries.def's comment on that field), so this is still a clean probe
+// of `delivery_pending` specifically, not a repeat of the mismatch case
+// above.
+//
+// Driven for THREE periods. Prediction, from reading participant.cpp's
+// four report-construction sites (this round's own work): delivery_pending
+// is 1 on EXACTLY the one report per period that crosses the rollover
+// (`treat_as_mismatch`, reached only via `rolled_over`), 0 on every
+// ordinary substep's begin_step()/end_step() report in between, and 0 on
+// the final "run is over" report once all three periods are driven.
+// AbiParticipant.DeliveryFieldNamesTheRightChannelOnEachSuspension (S6
+// phase 3, Conformance, Unit 3b), item 2 of this round, SUPERSEDING the
+// single-channel version this test name replaces: with BOTH channels of
+// a two-member window LowFive-bound (a_out forward, b_out back -- the
+// REAL Brusselator shape, examples/brusselator/brusselator_graph.hpp's
+// own build_lowfive_plan()), and deliver_external() now suspending for
+// the EXPORTER as well as the importer (this round's own item 2(a)),
+// every is_delivery_due suspension is its own report (never silently
+// drained), and `delivery_field` must name EXACTLY the channel whose
+// own ExternalDelivery proxy produced it -- a_out's own handle or
+// b_out's own handle, never anything else, and never -1 while
+// delivery_pending==1.
+TEST(AbiParticipant, DeliveryFieldNamesTheRightChannelOnEachSuspension) {
+  using fuse::ComponentDecl;
+  using fuse::ComponentKind;
+  using fuse::ConvergenceCriterion;
+  using fuse::CouplingGraph;
+  using fuse::CouplingWindowScope;
+  using fuse::DtPolicy;
+  using fuse::FieldSpec;
+  using fuse::Intent;
+  using fuse::IterationRegionDecl;
+  using fuse::LaunchMode;
+  using fuse::LaunchSpec;
+  using fuse::MeshDecl;
+  using fuse::Rational;
+  using fuse::RankSet;
+  using fuse::Region;
+  using fuse::WaveformIteration;
+
+  CouplingGraph g;
+  const auto ma = g.add_mesh(MeshDecl{.name = "ma", .source = "generated:line:4"});
+  const auto mb = g.add_mesh(MeshDecl{.name = "mb", .source = "generated:line:4"});
+  const auto ra = g.add_region(Region{.name = "ra", .mesh = ma, .dimension = 1});
+  const auto rb = g.add_region(Region{.name = "rb", .mesh = mb, .dimension = 1});
+
+  const auto a = g.add_component(
+      ComponentDecl{.name = "alpha", .ranks = RankSet{0, 1}, .interval = Rational{1}});
+  const auto b = g.add_component(
+      ComponentDecl{.name = "beta", .ranks = RankSet{0, 1}, .interval = Rational{1, 2}});
+
+  const auto a_out = g.add_field(
+      a, FieldSpec{.name = "a_out", .region = ra, .components = 1,
+                  .units = fuse::units::kKelvin, .intent = Intent::Provides});
+  const auto b_in = g.add_field(
+      b, FieldSpec{.name = "b_in", .region = rb, .components = 1,
+                  .units = fuse::units::kKelvin, .intent = Intent::Requires});
+  const auto b_out = g.add_field(
+      b, FieldSpec{.name = "b_out", .region = rb, .components = 1,
+                  .units = fuse::units::kHeatFluxDensity, .intent = Intent::Provides});
+  const auto a_in = g.add_field(
+      a, FieldSpec{.name = "a_in", .region = ra, .components = 1,
+                  .units = fuse::units::kHeatFluxDensity, .intent = Intent::Requires});
+
+  // BOTH directions LowFive-bound, the real Brusselator shape -- not
+  // just the back channel, as this test's own prior (single-channel)
+  // version used.
+  const_cast<FieldSpec&>(g.field(a_out)).hdf5_path = "scratch_delivery_field_a.h5/x";
+  const_cast<FieldSpec&>(g.field(b_out)).hdf5_path = "scratch_delivery_field_b.h5/x";
+  (void)g.add_component(ComponentDecl{.name = "lowfive", .ranks = RankSet{0, 1},
+                                      .interval = Rational{1},
+                                      .kind = ComponentKind::Coupler,
+                                      .launch = LaunchSpec{.mode = LaunchMode::LowFive}});
+
+  const auto fwd = g.add_channel("a2b", a_out, b_in);
+  const auto back = g.add_channel("b2a", b_out, a_in);
+  g.channel(back).lag(1).allow_time_level_mismatch(
+      "resolved by the window's own sweep, not a real-time lag");
+  g.channel(back).relax(0.7);
+
+  CouplingWindowScope scope;
+  scope.explicit_interval = Rational{1};
+  scope.order = 2;
+  scope.policies = {{"alpha", DtPolicy::Adjustable}, {"beta", DtPolicy::Adjustable}};
+  scope.iteration = WaveformIteration::Jacobi;
+
+  ConvergenceCriterion convergence;
+  convergence.add(fuse::Converged::Relative(1e-9, "a_out"));
+  convergence.add(fuse::Converged::Relative(1e-9, "a_in"));
+  g.add_iteration_region(IterationRegionDecl{
+      .name = "window", .channels = {fwd, back}, .max_iterations = 60,
+      .convergence = convergence, .window_scope = scope});
+
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  const auto bytes = fuse::serialize(g);
+  fuse_ctx* ctx = CreateAndLoad(t, bytes);
+
+  double abuf[4] = {0, 0, 0, 0}, a2buf[4] = {0, 0, 0, 0};
+  double bbuf[4] = {0, 0, 0, 0}, b2buf[4] = {0, 0, 0, 0};
+  std::int32_t a_out_handle = -1, b_out_handle = -1;
+  auto register_one = [&](const char* component, const char* field, double* data) {
+    fuse_field_name fname{.struct_size = sizeof(fname)};
+    fname.component = component;
+    fname.field = field;
+    fuse_field_ref fref{.struct_size = sizeof(fref)};
+    ASSERT_EQ(t->field_handle(ctx, &fname, &fref), FUSE_OK);
+    if (std::string(field) == "a_out") a_out_handle = fref.handle;
+    if (std::string(field) == "b_out") b_out_handle = fref.handle;
+    fuse_field_view fview{.struct_size = sizeof(fview)};
+    fview.handle = fref.handle;
+    fview.element_type = FUSE_ELEMENT_F64;
+    fview.memspace = FUSE_MEMSPACE_HOST;
+    fview.ownership = FUSE_OWNERSHIP_OWNED;
+    fview.components = 1;
+    fview.count = 4;
+    fview.owned_count = 4;
+    fview.stride = 1;
+    fview.data = data;
+    ASSERT_EQ(t->register_field(ctx, &fview, nullptr), FUSE_OK);
+  };
+  register_one("alpha", "a_out", abuf);
+  register_one("alpha", "a_in", a2buf);
+  register_one("beta", "b_in", bbuf);
+  register_one("beta", "b_out", b2buf);
+  ASSERT_EQ(t->initialize(ctx, nullptr, nullptr), FUSE_OK);
+  ASSERT_GE(a_out_handle, 0);
+  ASSERT_GE(b_out_handle, 0);
+  ASSERT_NE(a_out_handle, b_out_handle);
+
+  fuse_step_request a_req{.struct_size = sizeof(a_req)};
+  a_req.component = "alpha";
+  fuse_step_request b_req{.struct_size = sizeof(b_req)};
+  b_req.component = "beta";
+
+  // Period-start is alpha (ComponentId 0) from the very first call -- no
+  // outside-the-window component to name instead, unlike the mismatch
+  // test above.
+  fuse_ongoing ongoing0{.struct_size = sizeof(ongoing0)};
+  ASSERT_EQ(t->is_coupling_ongoing(ctx, nullptr, &ongoing0), FUSE_OK);
+  ASSERT_EQ(ongoing0.next_component, 0) << "expected alpha to be period-start";
+
+  constexpr int kPeriodsToDrive = 2;
+  int last_period = 0;
+  int delivery_pending_ones = 0;
+  int saw_a_out = 0, saw_b_out = 0;
+  std::int32_t next_hint = 0;  // alpha, the only period-start component here.
+  for (int k = 0; k < 4000 && last_period < kPeriodsToDrive; ++k) {
+    if (next_hint != 0 && next_hint != 1) {
+      fuse_ongoing ongoing{.struct_size = sizeof(ongoing)};
+      ASSERT_EQ(t->is_coupling_ongoing(ctx, nullptr, &ongoing), FUSE_OK) << "k=" << k;
+      next_hint = ongoing.next_component;
+    }
+    const bool want_alpha = (next_hint == 0);
+    ASSERT_TRUE(want_alpha || next_hint == 1) << "k=" << k << " hint=" << next_hint;
+    fuse_step_request& req = want_alpha ? a_req : b_req;
+    fuse_step_report brep{.struct_size = sizeof(brep)};
+    ASSERT_EQ(t->begin_step(ctx, &req, &brep), FUSE_OK) << "k=" << k;
+    last_period = brep.period;
+    if (brep.delivery_pending == 1) {
+      ++delivery_pending_ones;
+      EXPECT_EQ(brep.step_opened, 0)
+          << "k=" << k << ": delivery_pending=1 must coincide with step_opened=0";
+      EXPECT_TRUE(brep.delivery_field == a_out_handle ||
+                 brep.delivery_field == b_out_handle)
+          << "k=" << k << ": delivery_field=" << brep.delivery_field
+          << " names neither a_out (" << a_out_handle << ") nor b_out ("
+          << b_out_handle << ")";
+      // docs/user/c-abi.md's own protocol: on delivery_pending==1 naming
+      // F, write F if producing it, read F if consuming it.
+      if (brep.delivery_field == a_out_handle) {
+        ++saw_a_out;
+        a2buf[0] = abuf[0];  // consumer's own stand-in for H5Dread(a_out)
+      } else if (brep.delivery_field == b_out_handle) {
+        ++saw_b_out;
+        a2buf[0] = b2buf[0];  // consumer's own stand-in for H5Dread(b_out)
+      }
+      next_hint = brep.next_component;
+      continue;  // No step opened; re-request per `brep.next_component`.
+    }
+    EXPECT_EQ(brep.delivery_field, -1)
+        << "k=" << k << ": delivery_field must be -1 whenever delivery_pending is 0";
+    if (brep.step_opened == 0) {
+      // A legitimate, non-delivery period rollover (this graph's own
+      // window converging cleanly, the SAME event
+      // MismatchedRolloverNamesTheRealPeriodStartComponent's own header
+      // comment documents for a plain, non-LowFive case) -- unlike this
+      // test's own EARLIER (single-channel, single-proxy-per-period)
+      // version, a rollover here is no longer guaranteed to coincide
+      // with the LAST delivery, now that every delivery is its own
+      // separate, earlier stop (this round's own item 2 correction).
+      // Re-request per next_component, same as a delivery stop.
+      next_hint = brep.next_component;
+      continue;
+    }
+    if (want_alpha) {
+      abuf[0] = 10.0 - a2buf[0];
+    } else {
+      b2buf[0] = 0.5 * bbuf[0];
+    }
+    fuse_step_report erep{.struct_size = sizeof(erep)};
+    ASSERT_EQ(t->end_step(ctx, &req, &erep), FUSE_OK) << "k=" << k;
+    EXPECT_EQ(erep.delivery_pending, 0)
+        << "k=" << k << ": fuse_end_step() must always report 0";
+    EXPECT_EQ(erep.delivery_field, -1)
+        << "k=" << k << ": fuse_end_step() must always report delivery_field=-1";
+    next_hint = erep.next_component;
+  }
+
+  // The headline claim: BOTH channels' own field get named at least
+  // once -- never silently dropped, never confused with each other.
+  EXPECT_GT(saw_a_out, 0) << "a_out's own delivery was never reported";
+  EXPECT_GT(saw_b_out, 0) << "b_out's own delivery was never reported";
+  EXPECT_GT(delivery_pending_ones, 0);
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+// AbiParticipant.DeliveryPendingIsAlwaysZeroOnAnOrdinaryGraph (S6 phase 3,
+// Conformance, Unit 3b): the ordinary (non-window, non-LowFive) path never
+// rolls over at all (step_opened's own comment, entries.def) -- so every
+// begin_step()/end_step() report's delivery_pending must read 0, driven
+// across several periods, never left to chance.
+TEST(AbiParticipant, DeliveryPendingIsAlwaysZeroOnAnOrdinaryGraph) {
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  const auto bytes = fuse::abi_test::build_two_component_lag1_bytes();
+  fuse_ctx* ctx = CreateAndLoad(t, bytes);
+
+  double up_storage[4] = {1, 2, 3, 4};
+  double down_storage[4] = {0, 0, 0, 0};
+  auto register_one = [&](const char* component, const char* field, double* data) {
+    fuse_field_name fname{.struct_size = sizeof(fname)};
+    fname.component = component;
+    fname.field = field;
+    fuse_field_ref fref{.struct_size = sizeof(fref)};
+    ASSERT_EQ(t->field_handle(ctx, &fname, &fref), FUSE_OK);
+    fuse_field_view fview{.struct_size = sizeof(fview)};
+    fview.handle = fref.handle;
+    fview.element_type = FUSE_ELEMENT_F64;
+    fview.memspace = FUSE_MEMSPACE_HOST;
+    fview.ownership = FUSE_OWNERSHIP_OWNED;
+    fview.components = 1;
+    fview.count = 4;
+    fview.owned_count = 4;
+    fview.stride = 1;
+    fview.data = data;
+    ASSERT_EQ(t->register_field(ctx, &fview, nullptr), FUSE_OK);
+  };
+  register_one("upstream", "out", up_storage);
+  register_one("downstream", "in", down_storage);
+  ASSERT_EQ(t->initialize(ctx, nullptr, nullptr), FUSE_OK);
+
+  fuse_step_request up_req{.struct_size = sizeof(up_req)};
+  up_req.component = "upstream";
+  fuse_step_request down_req{.struct_size = sizeof(down_req)};
+  down_req.component = "downstream";
+
+  int reports_checked = 0;
+  for (int period = 0; period < 5; ++period) {
+    for (fuse_step_request* req : {&up_req, &down_req}) {
+      fuse_step_report brep{.struct_size = sizeof(brep)};
+      ASSERT_EQ(t->begin_step(ctx, req, &brep), FUSE_OK)
+          << "period=" << period << " component=" << req->component;
+      EXPECT_EQ(brep.step_opened, 1);
+      EXPECT_EQ(brep.delivery_pending, 0)
+          << "period=" << period << " component=" << req->component
+          << ": the ordinary path never rolls over, delivery_pending must"
+             " stay 0";
+      EXPECT_EQ(brep.delivery_field, -1)
+          << "period=" << period << " component=" << req->component;
+      ++reports_checked;
+      fuse_step_report erep{.struct_size = sizeof(erep)};
+      ASSERT_EQ(t->end_step(ctx, req, &erep), FUSE_OK)
+          << "period=" << period << " component=" << req->component;
+      EXPECT_EQ(erep.delivery_pending, 0)
+          << "period=" << period << " component=" << req->component;
+      EXPECT_EQ(erep.delivery_field, -1)
+          << "period=" << period << " component=" << req->component;
+      ++reports_checked;
+    }
+  }
+  EXPECT_EQ(reports_checked, 20);
 
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }

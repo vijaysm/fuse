@@ -3026,41 +3026,96 @@ detail::Task<Result<void>> Runner::Impl::deliver_external(
                  "importing component recorded"};
   }
   const ComponentId importer{static_cast<std::uint32_t>(rank_set)};
-  const ComponentDecl& decl = graph.component(importer);
-  // The lead's own ruling (2026-10-04): on U's own process, a channel
-  // whose importer is V (not hosted here) is a no-op, exactly as
-  // `advance_window()` is for a non-hosted member (that function's own
-  // `if (!cfg.hosted) co_return Result<void>::success();`, right above
-  // in this file) -- the SAME formula `build_ticks()`'s own `hosted[]`
-  // and `resolve_regions()`'s own `WindowMemberConfig::hosted` both use,
-  // read from the SAME `this_process` member. Checked BEFORE looking the
-  // component up in `components`: on a real multi-process run, a
-  // non-hosted component is never registered in THIS process's own
-  // ComponentSet at all, so a lookup would fail where a plain no-op is
-  // correct.
-  const bool hosted = !this_process.has_value() ||
-                      decl.ranks.contains(*this_process);
-  if (!hosted) co_return Result<void>::success();
-  Component* comp = components.find(decl.name);
-  if (comp == nullptr) {
-    co_return Failure{"E-RT-DELIVERY-UNPLACED",
-                 "ExternalDelivery instruction names importing component '" +
-                     decl.name + "', hosted on this process, but no "
-                     "Component with that name is in this ComponentSet"};
+  const ComponentDecl& importer_decl = graph.component(importer);
+
+  // S6 phase 3 (Conformance, Unit 3b), item 2 of this round: the
+  // exporter, resolved from this instruction's own origin channel
+  // (`Node::origin`, set by `lower_channel()`'s `ctx.dag.add_node(
+  // OpKind::ExternalDelivery, {source_producer}, out, OpAttrs{}, cid,
+  // ...)`, src/ir/rules_channel.cpp) -- the channel's own SOURCE field's
+  // owning component. Needed for `delivery_field` below (one channel,
+  // one field, regardless of which end this suspension is for) and for
+  // the exporter's own suspension immediately following.
+  const ChannelId origin_channel = dag.node(ins.origin_node).origin;
+  const Channel& ch = graph.channel_at(origin_channel);
+  const ComponentId exporter = graph.owner_of(ch.source);
+  const ComponentDecl& exporter_decl = graph.component(exporter);
+  const std::int32_t delivery_field = static_cast<std::int32_t>(ch.source.value());
+
+  // The lead's own ruling (2026-10-04, extended this round): on a
+  // process hosting neither end of this channel, the whole instruction
+  // is a no-op, exactly as `advance_window()` is for a non-hosted
+  // member (that function's own `if (!cfg.hosted) co_return Result<
+  // void>::success();`, right above in this file) -- the SAME formula
+  // `build_ticks()`'s own `hosted[]` and `resolve_regions()`'s own
+  // `WindowMemberConfig::hosted` both use, read from the SAME
+  // `this_process` member. Checked BEFORE looking either component up
+  // in `components`: on a real multi-process run, a non-hosted
+  // component is never registered in THIS process's own ComponentSet
+  // at all, so a lookup would fail where a plain no-op is correct.
+  const bool exporter_hosted = !this_process.has_value() ||
+                               exporter_decl.ranks.contains(*this_process);
+  const bool importer_hosted = !this_process.has_value() ||
+                               importer_decl.ranks.contains(*this_process);
+  if (!exporter_hosted && !importer_hosted) co_return Result<void>::success();
+
+  // S6 phase 3 (Conformance, Unit 3b), item 2 of this round: the
+  // ordering edge (OpKind::ExternalDelivery's own comment, op.hpp) puts
+  // this instruction right after the exporter's own last substep of a
+  // sweep -- on the EXPORTER's own process, that suspension is exactly
+  // "your export of this sweep is complete; write it now". Without
+  // this, a distributed writer process (one that hosts the exporter but
+  // not the importer) never learns when to write at all -- the
+  // single-process harness this track's own earlier tests used hid the
+  // gap because both ends were always hosted together (KNOWN_ISSUES.md
+  // D14's own account of the finding this closes). Suspended FIRST,
+  // matching the real time order ("export done" precedes "import due").
+  if (exporter_hosted) {
+    Component* exp_comp = components.find(exporter_decl.name);
+    if (exp_comp == nullptr) {
+      co_return Failure{"E-RT-DELIVERY-UNPLACED",
+                   "ExternalDelivery instruction names exporting component '" +
+                       exporter_decl.name + "', hosted on this process, but "
+                       "no Component with that name is in this ComponentSet"};
+    }
+    // An in-process exporter whose own channel is LowFive-bound is
+    // refused earlier for the SAME reason an in-process importer is
+    // (E-ABI-DELIVERY-INPROCESS, src/abi/participant.cpp) -- unreachable
+    // here by construction; still read, not assumed, the same defensive
+    // posture advance()'s own identical check uses for an ordinary tick.
+    if (exp_comp->is_externally_driven()) {
+      ExternalAdvanceRequest req;
+      req.component = exporter_decl.name;
+      req.is_delivery_due = true;
+      req.delivery_instruction_index = instruction_index;
+      req.delivery_field = delivery_field;
+      pending_external_request = std::move(req);
+      co_await detail::ExternalSuspend{&active_handle};
+    }
   }
-  // An in-process importer is refused earlier, at fuse_initialize()
-  // (E-ABI-DELIVERY-INPROCESS, src/abi/participant.cpp) -- unreachable
-  // here by construction (deliver_external()'s own header comment);
-  // `is_externally_driven()` is still read, not assumed, the same
-  // defensive posture advance()'s own identical check uses for an
-  // ordinary tick.
-  if (comp->is_externally_driven()) {
-    ExternalAdvanceRequest req;
-    req.component = decl.name;
-    req.is_delivery_due = true;
-    req.delivery_instruction_index = instruction_index;
-    pending_external_request = std::move(req);
-    co_await detail::ExternalSuspend{&active_handle};
+  if (importer_hosted) {
+    Component* comp = components.find(importer_decl.name);
+    if (comp == nullptr) {
+      co_return Failure{"E-RT-DELIVERY-UNPLACED",
+                   "ExternalDelivery instruction names importing component '" +
+                       importer_decl.name + "', hosted on this process, but "
+                       "no Component with that name is in this ComponentSet"};
+    }
+    // An in-process importer is refused earlier, at fuse_initialize()
+    // (E-ABI-DELIVERY-INPROCESS, src/abi/participant.cpp) -- unreachable
+    // here by construction (deliver_external()'s own header comment);
+    // `is_externally_driven()` is still read, not assumed, the same
+    // defensive posture advance()'s own identical check uses for an
+    // ordinary tick.
+    if (comp->is_externally_driven()) {
+      ExternalAdvanceRequest req;
+      req.component = importer_decl.name;
+      req.is_delivery_due = true;
+      req.delivery_instruction_index = instruction_index;
+      req.delivery_field = delivery_field;
+      pending_external_request = std::move(req);
+      co_await detail::ExternalSuspend{&active_handle};
+    }
   }
   // The value is already in place: the application's own out-of-band
   // write (H5Dwrite/H5Dread through the installed VOL, or the tier-0
