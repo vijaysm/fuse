@@ -4,9 +4,14 @@
 #include <string>
 #include <utility>
 
+#include "fuse/base/config.hpp"
 #include "fuse/base/rational.hpp"
 
 #include "../species_core.hpp"
+
+#if FUSE_HAVE_LOWFIVE
+#include <hdf5.h>
+#endif
 
 namespace {
 
@@ -138,5 +143,157 @@ void bruss_v_state(const bruss_v_handle* h, double* out) {
 
 double bruss_v_exchange_in(const bruss_v_handle* h) { return h->core.exchange_in(); }
 const char* bruss_v_last_error(const bruss_v_handle* h) { return h->last_error.c_str(); }
+
+}  // extern "C"
+
+namespace {
+
+// Copies `msg` into `errbuf` (capacity `errbuf_len`), truncated, always
+// NUL-terminated -- shim.h's own out-parameter convention for the two
+// functions below. A null/zero-length errbuf is a no-op, not a fault: a
+// caller that does not want the message (unlikely, but not this
+// function's call to refuse) still gets the nonzero return code.
+void CopyErrorMessage(const std::string& msg, char* errbuf, long long errbuf_len) {
+  if (!errbuf || errbuf_len <= 0) return;
+  const auto cap = static_cast<std::size_t>(errbuf_len - 1);
+  const std::size_t n = msg.size() < cap ? msg.size() : cap;
+  std::memcpy(errbuf, msg.data(), n);
+  errbuf[n] = '\0';
+}
+
+}  // namespace
+
+#if FUSE_HAVE_LOWFIVE
+
+namespace {
+
+// Shared by both functions below: HDF5's own C error-reporting
+// convention (H5Eget_current_stack/H5Eprint2-style walking) is a lot of
+// machinery for a demo shim -- this just formats the HDF5 call that
+// failed and leaves the detailed stack on stderr, where HDF5's own
+// default error handler already sent it (never disabled here).
+std::string Hdf5CallFailed(const char* what, const char* file, const char* dataset) {
+  return std::string("HDF5 call failed: ") + what + " (file=" + file +
+         ", dataset=" + dataset + ") -- see stderr for the HDF5 stack trace";
+}
+
+}  // namespace
+
+#endif  // FUSE_HAVE_LOWFIVE
+
+// `extern "C" { ... }` wraps BOTH branches of every #if below (rather
+// than each branch opening/closing its own) -- the preprocessor sees
+// only one branch per build, and an extern "C" opened inside a branch
+// that the OTHER build's preprocessor pass skips entirely would leave
+// this file's one closing brace (the end of this translation unit)
+// unmatched in that configuration. Caught by this session's own
+// standalone syntax check against FUSE_HAVE_LOWFIVE=0 before it reached
+// a real build.
+extern "C" {
+
+int bruss_lowfive_available(void) { return FUSE_HAVE_LOWFIVE; }
+
+#if FUSE_HAVE_LOWFIVE
+
+int bruss_lowfive_write(const char* file, const char* dataset,
+                        const double* data, long long n,
+                        char* errbuf, long long errbuf_len) {
+  // Literal H5P_DEFAULT on every call, per shim.h's own comment: the VOL
+  // that makes this interception rather than a real file on disk is
+  // attached process-wide (HDF5_VOL_CONNECTOR/HDF5_PLUGIN_PATH), not by
+  // any property-list argument this function passes -- the whole point
+  // of this track's chosen attachment mechanism (docs/user/lowfive.md).
+  const hid_t fid = H5Fcreate(file, H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+  if (fid < 0) {
+    CopyErrorMessage(Hdf5CallFailed("H5Fcreate", file, dataset), errbuf, errbuf_len);
+    return 1;
+  }
+  const hsize_t dims[1] = {static_cast<hsize_t>(n)};
+  const hid_t space = H5Screate_simple(1, dims, nullptr);
+  if (space < 0) {
+    H5Fclose(fid);
+    CopyErrorMessage(Hdf5CallFailed("H5Screate_simple", file, dataset), errbuf, errbuf_len);
+    return 1;
+  }
+  const hid_t did = H5Dcreate2(fid, dataset, H5T_NATIVE_DOUBLE, space, H5P_DEFAULT,
+                               H5P_DEFAULT, H5P_DEFAULT);
+  if (did < 0) {
+    H5Sclose(space);
+    H5Fclose(fid);
+    CopyErrorMessage(Hdf5CallFailed("H5Dcreate2", file, dataset), errbuf, errbuf_len);
+    return 1;
+  }
+  const herr_t wrc =
+      H5Dwrite(did, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
+  H5Dclose(did);
+  H5Sclose(space);
+  H5Fclose(fid);
+  if (wrc < 0) {
+    CopyErrorMessage(Hdf5CallFailed("H5Dwrite", file, dataset), errbuf, errbuf_len);
+    return 1;
+  }
+  return 0;
+}
+
+int bruss_lowfive_read(const char* file, const char* dataset,
+                       double* data, long long n,
+                       char* errbuf, long long errbuf_len) {
+  const hid_t fid = H5Fopen(file, H5F_ACC_RDONLY, H5P_DEFAULT);
+  if (fid < 0) {
+    CopyErrorMessage(Hdf5CallFailed("H5Fopen", file, dataset), errbuf, errbuf_len);
+    return 1;
+  }
+  const hid_t did = H5Dopen2(fid, dataset, H5P_DEFAULT);
+  if (did < 0) {
+    H5Fclose(fid);
+    CopyErrorMessage(Hdf5CallFailed("H5Dopen2", file, dataset), errbuf, errbuf_len);
+    return 1;
+  }
+  // `n` is the caller's own buffer length, checked against the dataset's
+  // actual extent rather than trusted -- a mismatch here means the
+  // writer's and this reader's own graphs disagree about this field's
+  // width, which a silently short/overrunning H5Dread must never paper
+  // over.
+  const hid_t space = H5Dget_space(did);
+  hsize_t dims[1] = {0};
+  if (space >= 0) H5Sget_simple_extent_dims(space, dims, nullptr);
+  if (space < 0 || dims[0] != static_cast<hsize_t>(n)) {
+    if (space >= 0) H5Sclose(space);
+    H5Dclose(did);
+    H5Fclose(fid);
+    CopyErrorMessage(
+        Hdf5CallFailed("H5Dget_space/extent-mismatch", file, dataset), errbuf,
+        errbuf_len);
+    return 1;
+  }
+  H5Sclose(space);
+  const herr_t rrc =
+      H5Dread(did, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
+  H5Dclose(did);
+  H5Fclose(fid);
+  if (rrc < 0) {
+    CopyErrorMessage(Hdf5CallFailed("H5Dread", file, dataset), errbuf, errbuf_len);
+    return 1;
+  }
+  return 0;
+}
+
+#else  // !FUSE_HAVE_LOWFIVE
+
+int bruss_lowfive_write(const char*, const char*, const double*, long long,
+                        char* errbuf, long long errbuf_len) {
+  CopyErrorMessage("not built with LowFive (FUSE_ENABLE_LOWFIVE was OFF)", errbuf,
+                   errbuf_len);
+  return 1;
+}
+
+int bruss_lowfive_read(const char*, const char*, double*, long long,
+                       char* errbuf, long long errbuf_len) {
+  CopyErrorMessage("not built with LowFive (FUSE_ENABLE_LOWFIVE was OFF)", errbuf,
+                   errbuf_len);
+  return 1;
+}
+
+#endif  // FUSE_HAVE_LOWFIVE
 
 }  // extern "C"
