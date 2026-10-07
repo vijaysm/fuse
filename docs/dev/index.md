@@ -17,4 +17,6 @@ discretization decides its buffer extent (`ContinuousGLL` order 1 is sized by ve
 cell count) and what lowest-rank vertex ownership means for a nodal field in parallel.
 [](coupler-placement.md) covers the separately-placed coupler: the `ComponentKind` representation
 decision, the rule that lowers `source -> C -> target`, and every `component_count()` call site
-checked against it.
+checked against it. [](conformance.md) defines what "conformance" means for an external code
+coupling through the participant ABI, and is the record of every Runner and window-path defect
+the Conformance track found holding an external path to that bar.
