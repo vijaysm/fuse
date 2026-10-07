@@ -253,3 +253,15 @@ target = "fuse_abi_participant_test"
 test = "abi.participant"
 result = "PROVED BY HAND 2026-10-06 (tools/mutate.py --area abi refuses against this uncommitted tree, same constraint recorded for every other row in this file). Applied directly to the ordinary bafter build: AbiParticipant.MismatchedRolloverNamesTheRealPeriodStartComponent -- built specifically for this row, a genuinely multirate LowFive-bound window whose delivery proxy survives to the exact sweep that converges -- failed exactly as predicted: fuse_begin_step() at the rollover point returned FUSE_ERR_RUNTIME (-4) instead of FUSE_OK (0). The other 13 AbiParticipant cases, none of which resumes past a cached delivery proxy that then discovers the period has ended, were unaffected. Restored from a /tmp backup; cmp reported no difference; full rebuild confirmed all 14 tests pass again."
 
+
+[[mutation]]
+id = "abi-last-error-truncation-copies-nothing"
+area = "abi"
+describes = "last_error with a buffer smaller than the message sets truncated but copies nothing, so a caller printing the buffer reads uninitialised bytes; the header promises the prefix that fits, NUL-terminated. This was the shipped behaviour until 2026-10-07."
+file = "src/abi/participant.cpp"
+old = "    if (out->capacity > 0) {\n      const std::size_t n"
+new = "    if (false) {\n      const std::size_t n"
+target = "fuse_abi_participant_test"
+test = "abi.participant"
+# KILLED by hand 2026-10-07 in a clean export: only
+# AbiParticipant.LastErrorCopiesThePrefixThatFitsWhenTruncated fails.

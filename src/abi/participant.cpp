@@ -372,7 +372,15 @@ fuse_status impl_last_error(fuse_ctx* ctx, const fuse_null*, fuse_error* out) {
     return FUSE_OK;
   }
   if (out->capacity < msg->size() + 1) {
+    // Copy the prefix that fits, NUL-terminated, as the header promises
+    // ("as much of the message as fits"); the first version copied nothing
+    // on truncation and left the caller printing an uninitialised buffer.
     out->truncated = 1;
+    if (out->capacity > 0) {
+      const std::size_t n = static_cast<std::size_t>(out->capacity) - 1;
+      std::memcpy(out->buffer, msg->c_str(), n);
+      out->buffer[n] = '\0';
+    }
     return FUSE_OK;
   }
   std::memcpy(out->buffer, msg->c_str(), msg->size() + 1);
