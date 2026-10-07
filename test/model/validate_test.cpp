@@ -747,3 +747,93 @@ TEST(Validate, WildcardHdf5PathsAreNotCheckedForCollision) {
   const Diagnostics d = validate(f.g);
   EXPECT_FALSE(has_code(d, "E-LOWFIVE-DUPPATH")) << d.to_string();
 }
+
+namespace {
+
+// A two-member (alpha/beta) window-scoped graph on the REAL Brusselator
+// example's own dt_u/dt_v/window (examples/brusselator/participants/
+// brusselator_graph_tool.cpp, this round's own item 2(b) update):
+// dt_u=1/500, dt_v=3/1000, window=1/50. beta's own back channel
+// (b_out -> a_in) is lagged -- required for GaussSeidel (a two-way
+// window with no lagged transfer at all is refused, WaveformIteration's
+// own comment, fuse/model/iteration.hpp) -- `extra_back_lag` lets a
+// caller push the lag past the window on purpose, for the companion
+// refusal test below.
+[[nodiscard]] CouplingGraph build_real_parameter_window_graph(
+    fuse::WaveformIteration wi, int back_lag = 1) {
+  using fuse::ChannelId;
+  using fuse::ConvergenceCriterion;
+  using fuse::CouplingWindowScope;
+  using fuse::DtPolicy;
+  using fuse::IterationRegionDecl;
+  CouplingGraph g;
+  const auto ma = g.add_mesh(MeshDecl{.name = "ma", .source = "generated:line:4"});
+  const auto mb = g.add_mesh(MeshDecl{.name = "mb", .source = "generated:line:4"});
+  const auto ra = g.add_region(Region{.name = "ra", .mesh = ma, .dimension = 1});
+  const auto rb = g.add_region(Region{.name = "rb", .mesh = mb, .dimension = 1});
+  const auto a = g.add_component(ComponentDecl{
+      .name = "alpha", .ranks = fuse::RankSet{0, 1}, .interval = Rational{2, 1000}});
+  const auto b = g.add_component(ComponentDecl{
+      .name = "beta", .ranks = fuse::RankSet{0, 1}, .interval = Rational{3, 1000}});
+  const auto a_out = g.add_field(
+      a, FieldSpec{.name = "a_out", .region = ra, .components = 1,
+                  .units = u::kKelvin, .intent = Intent::Provides});
+  const auto b_in = g.add_field(
+      b, FieldSpec{.name = "b_in", .region = rb, .components = 1,
+                  .units = u::kKelvin, .intent = Intent::Requires});
+  const auto b_out = g.add_field(
+      b, FieldSpec{.name = "b_out", .region = rb, .components = 1,
+                  .units = u::kHeatFluxDensity, .intent = Intent::Provides});
+  const auto a_in = g.add_field(
+      a, FieldSpec{.name = "a_in", .region = ra, .components = 1,
+                  .units = u::kHeatFluxDensity, .intent = Intent::Requires});
+  const auto fwd = g.add_channel("a2b", a_out, b_in);
+  const ChannelId back = g.add_channel("b2a", b_out, a_in);
+  if (wi == fuse::WaveformIteration::GaussSeidel || back_lag != 1) {
+    g.channel(back).lag(back_lag).allow_time_level_mismatch(
+        "resolved by the window's own sweep, not a real-time lag");
+  }
+  CouplingWindowScope scope;
+  scope.explicit_interval = Rational{2, 100};  // 1/50
+  scope.order = 2;
+  scope.policies = {{"alpha", DtPolicy::Adjustable}, {"beta", DtPolicy::Adjustable}};
+  scope.iteration = wi;
+  ConvergenceCriterion convergence;
+  convergence.add(fuse::Converged::Relative(1e-9, "a_out"));
+  convergence.add(fuse::Converged::Relative(1e-9, "a_in"));
+  g.add_iteration_region(IterationRegionDecl{
+      .name = "window", .channels = {fwd, back}, .max_iterations = 60,
+      .convergence = convergence, .window_scope = scope});
+  return g;
+}
+
+}  // namespace
+
+// S6 phase 3 (Conformance, Unit 3b), item 2's own firing test: the real
+// Brusselator parameters (dt_u=1/500, dt_v=3/1000, window=1/50) under
+// GaussSeidel -- beta's own back channel lagged by 1*dt_v=3/1000, well
+// under the WINDOW's own 1/50, but OVER the target component's own
+// interval (alpha's 1/500) that channel_window()'s stale fallback used
+// to measure it against (KNOWN_ISSUES.md D14's own account of the bug
+// this closes). Must validate clean -- no E-LAG, and no OTHER error
+// introduced by the fix.
+TEST(Validate, GaussSeidelWindowLagWithinTheRealWindowValidates) {
+  const CouplingGraph g =
+      build_real_parameter_window_graph(fuse::WaveformIteration::GaussSeidel);
+  const Diagnostics d = validate(g);
+  EXPECT_FALSE(has_code(d, "E-LAG")) << d.to_string();
+  EXPECT_FALSE(d.has_errors()) << d.to_string();
+}
+
+// The companion refusal: a lag genuinely longer than the WINDOW itself
+// (not merely longer than some unrelated component's own interval) must
+// still be refused -- channel_window()'s fix measures against the
+// window-scoped region's own explicit_interval, not against "no check at
+// all". back_lag=20 at dt_v=3/1000 spans 20*3/1000=3/50, over the
+// window's own 1/50.
+TEST(Validate, RejectsLagExceedingTheWindowItself) {
+  const CouplingGraph g = build_real_parameter_window_graph(
+      fuse::WaveformIteration::GaussSeidel, /*back_lag=*/20);
+  const Diagnostics d = validate(g);
+  EXPECT_TRUE(has_code(d, "E-LAG")) << d.to_string();
+}

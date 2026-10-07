@@ -34,7 +34,36 @@ inline bool window_component_ok(const CouplingGraph& g, const Window& w) {
 /// already confirmed window_component_ok(g, ch.accumulate.window); this
 /// still degrades to Rational{1} defensively rather than calling .at() on an
 /// out-of-range id, so it can never itself be the thing that throws.
-inline Rational channel_window(const CouplingGraph& g, const Channel& ch) {
+///
+/// A channel that belongs to a `CouplingWindowScope`-governed
+/// `IterationRegionDecl` measures its lag against THAT region's own window
+/// length (`fuse::window_length()`, `fuse/model/coupling_graph.hpp` --
+/// the SAME function `window_lowering.cpp` and `validate_coupling_window()`
+/// resolve, so this check and the schedule itself cannot disagree about
+/// what the window is), never the target component's own `.interval` --
+/// that fallback is for a channel outside any time window entirely (the
+/// `Window::Kind::CouplingPeriod` case below), where "the period the value
+/// must survive" genuinely is the target's own tick. Conflating the two
+/// was invisible as long as every window-scoped test graph happened to set
+/// dt_u == window (S6 phase 3, Conformance, Unit 3b, item 2's own finding,
+/// KNOWN_ISSUES.md D14): `channel_window()` was answering "the target's
+/// own interval" by construction, which only ever matched the window's
+/// real length by coincidence.
+inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
+                               const Channel& ch) {
+  if (cid.valid() && cid.value() < g.channel_count()) {
+    for (std::uint32_t i = 0; i < g.iteration_region_count(); ++i) {
+      const IterationRegionDecl& decl = g.iteration_region(IterationRegionIdx{i});
+      if (!decl.window_scope.has_value()) continue;
+      bool member = false;
+      for (const ChannelId c : decl.channels) {
+        if (c.value() == cid.value()) { member = true; break; }
+      }
+      if (!member) continue;
+      const Result<Rational> wl = window_length(g, *decl.window_scope);
+      return wl.ok() ? wl.value() : Rational{1};
+    }
+  }
   const Window& w = ch.accumulate.window;
   switch (w.kind) {
     case Window::Kind::Explicit:
@@ -45,6 +74,8 @@ inline Rational channel_window(const CouplingGraph& g, const Channel& ch) {
     case Window::Kind::CouplingPeriod:
     default: {
       // The target's interval defines the period the value must survive.
+      // Reached only for a channel OUTSIDE any window-scoped region --
+      // the loop above already returned for one inside.
       const ComponentId tgt = g.owner_of(ch.target);
       return g.component(tgt).interval;
     }
@@ -412,7 +443,7 @@ inline Rational channel_window(const CouplingGraph& g, const Channel& ch) {
     if (ch.lag != 0 && accum_window_ok) {
       const Rational span =
           Rational{std::abs(ch.lag)} * g.component(g.owner_of(ch.source)).interval;
-      const Rational window = detail::channel_window(g, ch);
+      const Rational window = detail::channel_window(g, cid, ch);
       if (span > window) {
         d.add(Severity::Error, "E-LAG",
               "lag spans " + span.to_string() + " but the coupling window is " +

@@ -162,3 +162,35 @@ new = "      if (false) {  // MUTATED: E-LOWFIVE-COMPONENT-KIND disabled."
 target = "fuse_model_validate_test"
 test = "model.validate"
 result = "PROVED BY HAND 2026-10-06 (tools/mutate.py --area model refuses against this uncommitted tree -- the same constraint recorded for every other hand-proved row in this session's own files -- the check itself was added in the same uncommitted edit this mutation targets). Validate.ALowFiveComponentDeclaringPhysicsKindIsRefused and Validate.ALowFiveComponentOwningFieldsIsRefused both failed exactly as predicted: has_code(d, \"E-LOWFIVE-COMPONENT-KIND\") read false where the test expects true (the fields-owning case still reported E-COUPLER-FIELDS, a separate, unaffected check, confirming the test is checking the SPECIFIC code, not just d.has_errors()). The other 41 Validate cases were unaffected. Restored from a /tmp backup; cmp reported no difference; rebuild confirmed all 43 tests pass again."
+
+[[mutation]]
+id = "model-channel-window-ignores-window-scope"
+area = "model"
+describes = "channel_window() (include/fuse/model/validate.hpp) no longer resolves a channel's own window-scoped IterationRegionDecl before falling back to the target component's own interval -- the exact pre-fix bug (S6 phase 3, Conformance, Unit 3b, item 2): a GaussSeidel channel's lag is measured against the wrong, unrelated quantity whenever the window length and the target's own interval differ"
+file = "include/fuse/model/validate.hpp"
+old = """inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
+                               const Channel& ch) {
+  if (cid.valid() && cid.value() < g.channel_count()) {
+    for (std::uint32_t i = 0; i < g.iteration_region_count(); ++i) {
+      const IterationRegionDecl& decl = g.iteration_region(IterationRegionIdx{i});
+      if (!decl.window_scope.has_value()) continue;
+      bool member = false;
+      for (const ChannelId c : decl.channels) {
+        if (c.value() == cid.value()) { member = true; break; }
+      }
+      if (!member) continue;
+      const Result<Rational> wl = window_length(g, *decl.window_scope);
+      return wl.ok() ? wl.value() : Rational{1};
+    }
+  }
+  const Window& w = ch.accumulate.window;"""
+new = """inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
+                               const Channel& ch) {
+  // MUTATED: the window-scoped-region lookup restored to a no-op --
+  // falls straight through to the stale target-component-interval
+  // fallback below, unconditionally, exactly the pre-fix bug.
+  (void)cid;
+  const Window& w = ch.accumulate.window;"""
+target = "fuse_model_validate_test"
+test = "model.validate"
+result = "PROVED BY HAND 2026-10-07 (tools/mutate.py --check-anchors refuses against this uncommitted tree, same constraint recorded for every other row in this file). Applied directly to the ordinary bafter build: Validate.GaussSeidelWindowLagWithinTheRealWindowValidates (built specifically for this row, item 2 of this round) failed exactly as predicted -- 'error E-LAG: lag spans 3/1000 but the coupling window is 1/500 [channel 'b2a']', the identical message the real brusselator_participants_test/brusselator_lowfive_harness_test GaussSeidel cases hit before this fix. Validate.RejectsLagExceedingTheWindowItself and Validate.RejectsLagExceedingWindow (the ordinary, non-window case) were both unaffected -- the former because an even-more-excessive lag still exceeds the (wrong) fallback window too, the latter because it never touches a window-scoped region at all. Restored from a /tmp backup; cmp reported no difference; full rebuild confirmed all three tests pass again."
