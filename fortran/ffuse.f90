@@ -164,6 +164,10 @@ module ffuse
     integer(c_int32_t) :: step_opened = 0_c_int32_t
     integer(c_int32_t) :: reserved3 = 0_c_int32_t
     integer(c_int32_t) :: period = 0_c_int32_t
+    integer(c_int32_t) :: reserved4 = 0_c_int32_t
+    integer(c_int32_t) :: delivery_pending = 0_c_int32_t
+    integer(c_int32_t) :: reserved5 = 0_c_int32_t
+    integer(c_int32_t) :: delivery_field = 0_c_int32_t
   end type fuse_step_report
 
   type, bind(C), public :: fuse_ongoing
