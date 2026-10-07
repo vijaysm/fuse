@@ -64,33 +64,73 @@
  * hardcoded choice (brusselator_graph_tool.cpp's own `--transport lowfive`
  * block) -- u_main.c has no ABI query for a field's own hdf5_path, so this
  * mirrors the SAME "reproduce the tool's own build-time constant" pattern
- * this file already uses for nx/ny below. kWindow is the graph tool's own
- * kDtU/kDtV/kWindow (1/500, all three equal -- the degenerate one-
- * substep-per-window case: every step this binary ever takes is both the
- * first and the last substep of its own sweep), needed so this loop can
- * tell a sweep boundary from `t_begin`/`t_end` alone, the same way
- * Unit 3a's own closing note found an application could (docs/user/
- * lowfive.md, c-abi.md). */
+ * this file already uses for nx/ny below. */
 #define U_LOWFIVE_OWN_FILE "brusselator_u.h5"
 #define U_LOWFIVE_OWN_DATASET "/grid/u_out"
 #define U_LOWFIVE_PEER_FILE "brusselator_v.h5"
 #define U_LOWFIVE_PEER_DATASET "/grid/v_out"
-static const long long kWindowNum = 1, kWindowDen = 500;
 
-/* A step's own t_end/t_begin (fuse_exact_time, exact rationals) checked
- * against the window boundary by cross-multiplication -- t is a multiple
- * of kWindow iff (t.num * kWindowDen) is an exact multiple of
- * (kWindowNum * t.den); no floating point anywhere in this test. */
-static int u_lowfive_at_window_boundary(long long t_num, long long t_den) {
-  const long long lhs = t_num * kWindowDen;
-  const long long rhs = kWindowNum * t_den;
-  if (rhs == 0) return 0;
-  return (lhs % rhs) == 0;
-}
+/* Unit 3b, item 2(a): `fuse_step_report::delivery_pending` (entries.def,
+ * docs/user/c-abi.md's own new section) replaces this file's own prior
+ * window-boundary arithmetic entirely -- the ABI itself now names the
+ * exact call at which a real H5Dwrite/H5Dread pair is owed, independent
+ * of this binary's own dt/window constants (which item 2(b) of this same
+ * round changes to the real example's own values; this file no longer
+ * needs to track them at all). A degenerate one-substep-per-window graph
+ * made "before every substep" and "before a sweep's first substep"
+ * coincide by accident, which is what let the prior version of this file
+ * get away with reading unconditionally -- recorded in KNOWN_ISSUES.md
+ * D14 as a scope limit now closed. */
 
 static void u_lowfive_fail_io(const char* what, int rc, const char* errbuf) {
   fprintf(stderr, "FAIL(u_main): %s: rc=%d %s\n", what, rc, errbuf);
   MPI_Abort(MPI_COMM_WORLD, 1);
+}
+
+static void fail(fuse_ctx* ctx, const char* what, fuse_status rc);
+
+/* view_field(u_out), NOT u_out itself: the application's job is the
+ * window's own K-wide waveform buffer, not the single-sample native
+ * storage register_field() was given (shim.h's own u_out is q at t_end
+ * only). Shared by the cold-start write and the steady-state
+ * delivery_pending-gated one below -- same call, two call sites. */
+static void u_lowfive_write_export(const fuse_participant_abi_v1* t, fuse_ctx* ctx,
+                                   const fuse_field_ref* out_ref) {
+  fuse_field_view out_view;
+  memset(&out_view, 0, sizeof(out_view));
+  out_view.struct_size = sizeof(out_view);
+  fuse_status rc = t->view_field(ctx, out_ref, &out_view);
+  if (rc != FUSE_OK) fail(ctx, "view_field(u_out)", rc);
+  if (out_view.window_samples > 0 && out_view.data) {
+    const long long nvals = (long long)out_view.count * out_view.components;
+    char errbuf[2048];
+    const int io_rc =
+        bruss_lowfive_write(U_LOWFIVE_OWN_FILE, U_LOWFIVE_OWN_DATASET,
+                            (const double*)out_view.data, nvals, errbuf,
+                            (long long)sizeof(errbuf));
+    if (io_rc != 0) u_lowfive_fail_io("bruss_lowfive_write(u_out)", io_rc, errbuf);
+  }
+}
+
+/* view_field(u_in), NOT u_in itself -- the window Sink copies from there
+ * into u_in as part of the SAME mechanics it already uses for an
+ * ordinary channel (docs/user/lowfive.md's own Unit 3 account). */
+static void u_lowfive_read_import(const fuse_participant_abi_v1* t, fuse_ctx* ctx,
+                                  const fuse_field_ref* in_ref) {
+  fuse_field_view in_view;
+  memset(&in_view, 0, sizeof(in_view));
+  in_view.struct_size = sizeof(in_view);
+  fuse_status rc = t->view_field(ctx, in_ref, &in_view);
+  if (rc != FUSE_OK) fail(ctx, "view_field(u_in)", rc);
+  if (in_view.window_samples > 0 && in_view.data) {
+    const long long nvals = (long long)in_view.count * in_view.components;
+    char errbuf[2048];
+    const int io_rc =
+        bruss_lowfive_read(U_LOWFIVE_PEER_FILE, U_LOWFIVE_PEER_DATASET,
+                           (double*)in_view.data, nvals, errbuf,
+                           (long long)sizeof(errbuf));
+    if (io_rc != 0) u_lowfive_fail_io("bruss_lowfive_read(u_in)", io_rc, errbuf);
+  }
 }
 
 static void fail(fuse_ctx* ctx, const char* what, fuse_status rc) {
@@ -200,9 +240,11 @@ int main(int argc, char** argv) {
    * u_in_ref's own prior scope, which never needed to survive past field
    * registration) -- the lowfive write/read block in the period loop
    * further down needs these same handles again. */
-  fuse_field_ref u_out_ref, u_in_ref;
+  fuse_field_ref u_out_ref, u_in_ref, v_out_peer_ref;
   memset(&u_out_ref, 0, sizeof(u_out_ref));
   memset(&u_in_ref, 0, sizeof(u_in_ref));
+  memset(&v_out_peer_ref, 0, sizeof(v_out_peer_ref));
+  v_out_peer_ref.handle = -1;
 
   if (is_physics_rank) {
     memset(&u_out_ref, 0, sizeof(u_out_ref));
@@ -259,12 +301,41 @@ int main(int argc, char** argv) {
     rc = t->register_field(ctx, &view, NULL);
     if (rc != FUSE_OK) fail(ctx, "register_field(u_in)", rc);
 
+    /* delivery_field (docs/user/c-abi.md's own protocol) names the
+     * delivering channel's own SOURCE field -- "v_out" for the channel
+     * this component CONSUMES (b2a's own source, not "u_in", its own
+     * target) -- so matching it needs the PEER's own field handle, not
+     * just this component's own u_out/u_in. A graph-wide lookup
+     * (any component's name, not just "U") -- fuse_field_handle()
+     * resolves straight off the loaded graph, which every process has a
+     * full copy of regardless of which components it hosts. */
+    if (use_lowfive) {
+      fname.component = "V";
+      fname.field = "v_out";
+      rc = t->field_handle(ctx, &fname, &v_out_peer_ref);
+      if (rc != FUSE_OK) fail(ctx, "field_handle(v_out)", rc);
+    }
+
     log = fopen(log_path, "w");
     if (!log) fail(ctx, "fopen(log)", FUSE_ERR_RUNTIME);
   }
 
   rc = t->initialize(ctx, NULL, NULL);
   if (rc != FUSE_OK) fail(ctx, "initialize", rc);
+
+  if (is_physics_rank && use_lowfive) {
+    /* Cold start (docs/user/c-abi.md's own `delivery_pending` section;
+     * the harness's own precedent, test/verification/
+     * brusselator_lowfive_harness_test.cpp): period 0's very first
+     * ExternalDelivery suspension is hit before any step at all, inside
+     * fuse_begin_step()'s own first-ever call -- too late for this
+     * process to know ahead of time it must deliver first. Write this
+     * component's own INITIAL (pre-any-step) u_out and read the peer's
+     * -- constant over the window by construction, nothing has run
+     * yet to vary either -- unconditionally, once, before the loop. */
+    u_lowfive_write_export(t, ctx, &u_out_ref);
+    u_lowfive_read_import(t, ctx, &u_in_ref);
+  }
 
   if (is_physics_rank) {
     double* baseline_state = (double*)calloc((size_t)nu, sizeof(double));
@@ -295,64 +366,24 @@ int main(int argc, char** argv) {
        * ever due on this process's own ranks. */
       fuse_step_report rep, begin_rep;
       for (;;) {
-        /* Unit 3b: before begin_step of a sweep's first substep, read the
-         * import with H5Dread, into the LowFive-bound channel's own
-         * ExternalDelivery arc (view_field(u_in), NOT u_in itself -- the
-         * window Sink copies from there into u_in as part of the SAME
-         * mechanics it already uses for an ordinary channel, docs/user/
-         * lowfive.md's own Unit 3 account). This reference graph is the
-         * degenerate one-substep-per-window case (kDtU == kWindow in
-         * brusselator_graph_tool.cpp), so "before every substep" and
-         * "before a sweep's first substep" coincide; a caller on a
-         * genuinely multi-substep-per-window graph would need the
-         * boundary check this file cannot perform here (u_main.c has no
-         * way to know an UPCOMING step's own t_begin before calling
-         * begin_step for it) -- recorded as this wiring's own scope limit
-         * in KNOWN_ISSUES.md D14. */
-        if (use_lowfive) {
-          fuse_field_view in_view;
-          memset(&in_view, 0, sizeof(in_view));
-          in_view.struct_size = sizeof(in_view);
-          rc = t->view_field(ctx, &u_in_ref, &in_view);
-          if (rc != FUSE_OK) fail(ctx, "view_field(u_in)", rc);
-          if (in_view.window_samples > 0 && in_view.data) {
-            const long long nvals = (long long)in_view.count * in_view.components;
-            char errbuf[2048];
-            const int io_rc =
-                bruss_lowfive_read(U_LOWFIVE_PEER_FILE, U_LOWFIVE_PEER_DATASET,
-                                   (double*)in_view.data, nvals, errbuf,
-                                   (long long)sizeof(errbuf));
-            if (io_rc != 0) u_lowfive_fail_io("bruss_lowfive_read(u_in)", io_rc, errbuf);
-          }
-        }
-
         rc = u_loop_step(ctx, uh, &req, u_in, u_out, &rep, &begin_rep);
         if (rc != FUSE_OK) fail(ctx, "u_loop_step", rc);
 
-        /* After the last substep of a sweep, write the K-wide export
-         * with H5Dwrite -- view_field(u_out) rather than u_out itself,
-         * for the same reason the read above targets the import's own
-         * arc: the application's job is the window's own waveform
-         * buffer, not the single-sample native storage register_field()
-         * was given (shim.h's own u_out is q at t_end only; the window
-         * path's own buffer, view_field's own `data`, is the full K-wide
-         * sweep this channel's consumer needs). */
-        if (use_lowfive && begin_rep.step_opened &&
-            u_lowfive_at_window_boundary(begin_rep.t_end.numerator,
-                                         begin_rep.t_end.denominator)) {
-          fuse_field_view out_view;
-          memset(&out_view, 0, sizeof(out_view));
-          out_view.struct_size = sizeof(out_view);
-          rc = t->view_field(ctx, &u_out_ref, &out_view);
-          if (rc != FUSE_OK) fail(ctx, "view_field(u_out)", rc);
-          if (out_view.window_samples > 0 && out_view.data) {
-            const long long nvals = (long long)out_view.count * out_view.components;
-            char errbuf[2048];
-            const int io_rc =
-                bruss_lowfive_write(U_LOWFIVE_OWN_FILE, U_LOWFIVE_OWN_DATASET,
-                                    (const double*)out_view.data, nvals, errbuf,
-                                    (long long)sizeof(errbuf));
-            if (io_rc != 0) u_lowfive_fail_io("bruss_lowfive_write(u_out)", io_rc, errbuf);
+        /* docs/user/c-abi.md's own `delivery_pending`/`delivery_field`
+         * protocol: on a report naming field F, write F if producing it
+         * or read F if consuming it, then begin_step() again -- never
+         * elsewhere, and never both unconditionally (a graph with more
+         * than one independently-paced LowFive-bound channel can report
+         * a field THIS component is neither producing nor consuming at
+         * all, this round's own corrected rule). view_field(u_out), not
+         * u_out itself, still holds the sweep that JUST completed
+         * (nothing has overwritten it yet, since this call's own physics
+         * -- if any ran -- is for the NEXT sweep, not this report's). */
+        if (use_lowfive && begin_rep.delivery_pending) {
+          if (begin_rep.delivery_field == u_out_ref.handle) {
+            u_lowfive_write_export(t, ctx, &u_out_ref);
+          } else if (begin_rep.delivery_field == v_out_peer_ref.handle) {
+            u_lowfive_read_import(t, ctx, &u_in_ref);
           }
         }
 

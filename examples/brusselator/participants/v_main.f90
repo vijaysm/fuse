@@ -56,7 +56,7 @@ program v_main
   type(fuse_null) :: nothing
   type(fuse_context_out) :: made
   type(fuse_setup_options) :: setup
-  type(fuse_field_ref) :: v_out_ref, v_in_ref
+  type(fuse_field_ref) :: v_out_ref, v_in_ref, u_out_peer_ref
   type(fuse_field_view) :: view
   integer(c_int32_t) :: status
   type(c_ptr) :: vh
@@ -86,7 +86,6 @@ program v_main
   ! assigned once, just below, and never changed again.
   character(len=17), target :: kOwnFile, kPeerFile
   character(len=12), target :: kOwnDataset, kPeerDataset
-  integer(c_long_long), parameter :: kWindowNum = 1_c_long_long, kWindowDen = 500_c_long_long
 
   ! ---- the two bruss_lowfive_* HDF5 calls and the one build-config
   ! query, through shim.cpp's own extern "C" export (shim.h's own header
@@ -220,6 +219,20 @@ program v_main
   status = fuse_register_field(ctx, view, nothing)
   call check(status, "register_field(v_in)")
 
+  ! delivery_field (docs/user/c-abi.md's own protocol) names the
+  ! delivering channel's own SOURCE field -- "u_out" for the channel this
+  ! component CONSUMES (a2b's own source, not "v_in", its own target) --
+  ! so matching it needs the PEER's own field handle, not just this
+  ! component's own v_out/v_in. A graph-wide lookup (any component's
+  ! name, not just "V") -- fuse_field_handle() resolves straight off the
+  ! loaded graph, which every process has a full copy of regardless of
+  ! which components it hosts.
+  u_out_peer_ref%handle = -1
+  if (use_lowfive) then
+    status = fuse_field_handle(ctx, "U", "u_out", u_out_peer_ref)
+    call check(status, "field_handle(u_out)")
+  end if
+
   vh = bruss_v_create(nx_u, ny_u, nx_v, ny_v, kDiffusion)
   if (.not. c_associated(vh)) then
     write(0, '(A)') "FAIL(v_main): bruss_v_create returned NULL"
@@ -239,51 +252,44 @@ program v_main
 
   req%component = c_loc(my_component_name)  ! "V" + NUL, built above
 
+  ! Cold start (docs/user/c-abi.md's own `delivery_pending` section; the
+  ! harness's own precedent, test/verification/
+  ! brusselator_lowfive_harness_test.cpp): period 0's very first
+  ! ExternalDelivery suspension is hit before any step at all, inside
+  ! fuse_begin_step()'s own first-ever call -- too late for this process
+  ! to know ahead of time it must deliver first. Write this component's
+  ! own INITIAL (pre-any-step) v_out and read the peer's -- constant over
+  ! the window by construction, nothing has run yet to vary either --
+  ! unconditionally, once, before the loop.
+  if (use_lowfive) then
+    call v_lowfive_write_export()
+    call v_lowfive_read_import()
+  end if
+
   do p = 0, periods - 1
     ! This process hosts only "V" (shim.h's own precedent) -- like
     ! u_main.c, it never needs next_component: no other component is
     ! ever due on this process's own ranks, so it simply loops calling
     ! v_loop_step() for "V" until the PERIOD closes.
     do
-      ! Unit 3b: before begin_step of a sweep's first substep, read the
-      ! import with H5Dread, into the LowFive-bound channel's own
-      ! ExternalDelivery arc (fuse_view_field(v_in_ref), NOT v_in itself)
-      ! -- u_main.c's own header comment on the identical block has the
-      ! full account, including this reference graph's own degenerate
-      ! one-substep-per-window shape and this wiring's resulting scope
-      ! limit (KNOWN_ISSUES.md D14).
-      if (use_lowfive) then
-        status = fuse_view_field(ctx, v_in_ref, view)
-        call check(status, "view_field(v_in)")
-        if (view%window_samples > 0 .and. c_associated(view%data)) then
-          io_rc = bruss_lowfive_read(c_loc(kPeerFile), c_loc(kPeerDataset), &
-              view%data, int(view%count, c_long_long) * int(view%components, c_long_long), &
-              c_loc(errbuf), int(len(errbuf), c_long_long))
-          if (io_rc /= 0) then
-            write(0, '(A,A)') "FAIL(v_main): bruss_lowfive_read(v_in): ", cstr_message(errbuf)
-            call MPI_Abort(MPI_COMM_WORLD, 1, ierr)
-          end if
-        end if
-      end if
-
       status = v_loop_step(ctx%ptr, vh, req, c_loc(v_in), c_loc(v_out), rep, begin_rep)
       call check(status, "v_loop_step")
 
-      ! After the last substep of a sweep, write the K-wide export with
-      ! H5Dwrite -- fuse_view_field(v_out_ref), not v_out itself, for the
-      ! same reason the read above targets the import's own arc.
-      if (use_lowfive .and. begin_rep%step_opened /= 0 .and. &
-          at_window_boundary(begin_rep%t_end%numerator, begin_rep%t_end%denominator)) then
-        status = fuse_view_field(ctx, v_out_ref, view)
-        call check(status, "view_field(v_out)")
-        if (view%window_samples > 0 .and. c_associated(view%data)) then
-          io_rc = bruss_lowfive_write(c_loc(kOwnFile), c_loc(kOwnDataset), &
-              view%data, int(view%count, c_long_long) * int(view%components, c_long_long), &
-              c_loc(errbuf), int(len(errbuf), c_long_long))
-          if (io_rc /= 0) then
-            write(0, '(A,A)') "FAIL(v_main): bruss_lowfive_write(v_out): ", cstr_message(errbuf)
-            call MPI_Abort(MPI_COMM_WORLD, 1, ierr)
-          end if
+      ! docs/user/c-abi.md's own `delivery_pending`/`delivery_field`
+      ! protocol: on a report naming field F, write F if producing it or
+      ! read F if consuming it, then begin_step() again -- never
+      ! elsewhere, and never both unconditionally (a graph with more
+      ! than one independently-paced LowFive-bound channel can report a
+      ! field THIS component is neither producing nor consuming at all,
+      ! this round's own corrected rule). fuse_view_field(v_out_ref),
+      ! not v_out itself, still holds the sweep that JUST completed
+      ! (nothing has overwritten it yet, since this call's own physics
+      ! -- if any ran -- is for the NEXT sweep, not this report's).
+      if (use_lowfive .and. begin_rep%delivery_pending /= 0) then
+        if (begin_rep%delivery_field == v_out_ref%handle) then
+          call v_lowfive_write_export()
+        else if (begin_rep%delivery_field == u_out_peer_ref%handle) then
+          call v_lowfive_read_import()
         end if
       end if
 
@@ -332,20 +338,41 @@ contains
     end if
   end function cstr_message
 
-  ! u_main.c's own u_lowfive_at_window_boundary -- a step's own t_end
-  ! (fuse_exact_time, an exact rational) checked against the window
-  ! boundary (kWindowNum/kWindowDen) by cross-multiplication, no floating
-  ! point anywhere in this test.
-  logical function at_window_boundary(t_num, t_den)
-    integer(c_int64_t), intent(in) :: t_num, t_den
-    integer(c_long_long) :: lhs, rhs
-    lhs = t_num * kWindowDen
-    rhs = kWindowNum * t_den
-    if (rhs == 0) then
-      at_window_boundary = .false.
-    else
-      at_window_boundary = (mod(lhs, rhs) == 0)
+  ! view%data (fuse_view_field(v_out_ref)), NOT v_out itself: the
+  ! application's job is the window's own K-wide waveform buffer, not the
+  ! single-sample native storage register_field() was given. Shared by
+  ! the cold-start write and the steady-state delivery_pending-gated one
+  ! above -- same call, two call sites (u_main.c's own
+  ! u_lowfive_write_export mirrors this).
+  subroutine v_lowfive_write_export()
+    status = fuse_view_field(ctx, v_out_ref, view)
+    call check(status, "view_field(v_out)")
+    if (view%window_samples > 0 .and. c_associated(view%data)) then
+      io_rc = bruss_lowfive_write(c_loc(kOwnFile), c_loc(kOwnDataset), &
+          view%data, int(view%count, c_long_long) * int(view%components, c_long_long), &
+          c_loc(errbuf), int(len(errbuf), c_long_long))
+      if (io_rc /= 0) then
+        write(0, '(A,A)') "FAIL(v_main): bruss_lowfive_write(v_out): ", cstr_message(errbuf)
+        call MPI_Abort(MPI_COMM_WORLD, 1, ierr)
+      end if
     end if
-  end function at_window_boundary
+  end subroutine v_lowfive_write_export
+
+  ! fuse_view_field(v_in_ref), NOT v_in itself -- the window Sink copies
+  ! from there into v_in as part of the SAME mechanics it already uses
+  ! for an ordinary channel (docs/user/lowfive.md's own Unit 3 account).
+  subroutine v_lowfive_read_import()
+    status = fuse_view_field(ctx, v_in_ref, view)
+    call check(status, "view_field(v_in)")
+    if (view%window_samples > 0 .and. c_associated(view%data)) then
+      io_rc = bruss_lowfive_read(c_loc(kPeerFile), c_loc(kPeerDataset), &
+          view%data, int(view%count, c_long_long) * int(view%components, c_long_long), &
+          c_loc(errbuf), int(len(errbuf), c_long_long))
+      if (io_rc /= 0) then
+        write(0, '(A,A)') "FAIL(v_main): bruss_lowfive_read(v_in): ", cstr_message(errbuf)
+        call MPI_Abort(MPI_COMM_WORLD, 1, ierr)
+      end if
+    end if
+  end subroutine v_lowfive_read_import
 
 end program v_main

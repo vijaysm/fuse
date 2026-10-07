@@ -1,9 +1,9 @@
 version: 1
 meshes:
   - name: u
-    source: generated:quad:3x3
+    source: generated:quad:16x16
   - name: v
-    source: generated:quad:4x4
+    source: generated:quad:24x24
 regions:
   - name: u_all
     mesh: u
@@ -41,7 +41,7 @@ components:
         intent: Requires
   - name: V
     ranks: {first: 1, count: 1}
-    interval: 1/500
+    interval: 3/1000
     launch:
       mode: mpmd
       appnum: 1
@@ -88,8 +88,8 @@ iteration_regions:
     channels: [u2v, v2u]
     max_iterations: 60
     convergence:
-      - {kind: Relative, tolerance: 1e-10, field: u_out}
-      - {kind: Relative, tolerance: 1e-10, field: v_out}
+      - {kind: Relative, tolerance: 9.9999999999999994e-12, field: u_out}
+      - {kind: Relative, tolerance: 9.9999999999999994e-12, field: v_out}
     acceleration:
       kind: None
       initial_relaxation: 0.10000000000000001
@@ -99,7 +99,7 @@ iteration_regions:
       limit: 0.01
       scale_fields: true
     window_scope:
-      explicit_interval: 1/500
+      explicit_interval: 1/50
       order: 2
       policies:
         - {component: U, policy: Adjustable}

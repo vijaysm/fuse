@@ -68,18 +68,30 @@
 namespace {
 
 // Mirrors test/verification/brusselator_participants_test.cpp's own
-// kNxU/kNyU/kNxV/kNyV/kDtU/kDtV/kWindow/kTolerance/kMaxIterations
-// (the degenerate, one-substep-per-window case) exactly, so a graph
-// this tool writes and a graph that test builds in-process describe
-// the identical physics problem -- the point of Unit 2's own
+// kNxU/kNyU/kNxV/kNyV/kDtU/kDtV/kWindow/kTolerance/kMaxIterations, so a
+// graph this tool writes and a graph that test builds in-process
+// describe the identical physics problem -- the point of Unit 2's own
 // conformance claim. Duplicated here rather than shared through a
 // header because the two are different translation units with
 // different link graphs (this tool links no gtest, the test links no
-// CLI-argument parsing) and the values are few, small, and already
-// pinned by that test's own passing EXPECT_EQ runs.
-constexpr int kNxU = 3, kNyU = 3, kNxV = 4, kNyV = 4;
-const fuse::Rational kDtU{1, 500}, kDtV{1, 500}, kWindow{1, 500};
-constexpr double kTolerance = 1e-10;
+// CLI-argument parsing) and the values are few.
+//
+// S6 phase 3 (Conformance, Unit 3b), item 2(b): the REAL Brusselator
+// example's own parameters (examples/brusselator/main.cpp's own Args
+// defaults: --nx-u 16 --ny-u 16 --nx-v 24 --ny-v 24 --dt-u 0.002
+// --dt-v 0.003 --window 0.02 --tolerance 1e-11 --max-iterations 60),
+// not the small/degenerate placeholder this tool and the two
+// conformance tests used through Unit 3a -- dt_u/dt_v/window are no
+// longer all equal, so this is genuinely multi-substep-per-window now
+// (10 U-substeps, ~6.67 -> 7 V-substeps per window; `delivery_pending`,
+// item 2(a) of this same round, is what makes a caller no longer need
+// to track that ratio itself). `reference_mpmd_3.yaml`/
+// `reference_mpmd_3_lowfive.yaml` (this tool's own golden outputs) were
+// regenerated against these values -- see this round's own report for
+// the before/after `reproduces_reference` byte-identity measurement.
+constexpr int kNxU = 16, kNyU = 16, kNxV = 24, kNyV = 24;
+const fuse::Rational kDtU{2, 1000}, kDtV{3, 1000}, kWindow{2, 100};
+constexpr double kTolerance = 1e-11;
 constexpr int kMaxIterations = 60;
 
 struct Args {
