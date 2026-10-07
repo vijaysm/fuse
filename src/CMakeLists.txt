@@ -227,7 +227,23 @@ target_sources(fuse-coupler-transport PRIVATE transport/connect.cpp)
 # actually turns FUSE_ENABLE_LOWFIVE on (cmake/FuseDependencies.cmake's
 # fuse::lowfive target exists; nothing attached it to a consumer before this).
 if(FUSE_ENABLE_LOWFIVE)
-  target_link_libraries(fuse-coupler-transport PRIVATE fuse::lowfive)
+  # fuse_link_lowfive_with_fmt_fix (cmake/FuseDependencies.cmake, defined
+  # near the top of this file) links fuse::lowfive AND applies the
+  # order-independent fmt fix every file in THIS target needs -- not
+  # just lowfive_transport.cpp, which is the only one that actually
+  # names a <lowfive/...> header, but comm_graph.cpp/connect.cpp/copy_
+  # transport.cpp/crystal_router.cpp/mpi_transport.cpp too, since CMake
+  # applies a target's own include directories to every one of its
+  # sources, and every one of them transitively includes fuse/base/
+  # result.hpp (via fuse/transport/transport.hpp) and needs fmt 12.
+  # Measured, this session, from a FRESH configure with /opt/lowfive;
+  # /opt/hdf5 FIRST on CMAKE_PREFIX_PATH: EVERY source in this target
+  # failed with an identical fmt/format-inl.h consteval error, including
+  # lowfive_transport.cpp itself -- contradicting this track's own
+  # earlier assumption ("lowfive_transport.cpp compiles because it
+  # includes no FUSE fmt-using header": false, it includes
+  # transport.hpp, which includes result.hpp directly).
+  fuse_link_lowfive_with_fmt_fix(fuse-coupler-transport)
   # LOWFIVE_HAVE_DIST (cmake/FindLowFive.cmake): whether a liblowfive-dist
   # archive was found alongside the main library. lowfive_transport.cpp's
   # distributed-mode code (set_intercomm/serve_as_producer/receive_as_consumer)
@@ -239,6 +255,73 @@ if(FUSE_ENABLE_LOWFIVE)
   if(LOWFIVE_HAVE_DIST)
     target_compile_definitions(fuse-coupler-transport PRIVATE FUSE_LOWFIVE_DIST_LIB_FOUND=1)
   endif()
+
+  # ---- S6 phase 3 (Conformance, "LowFive" track), Unit 3b: the loadable
+  # HDF5 VOL plugin -----------------------------------------------------
+  # TWO OBJECT libraries with DISJOINT dependencies, not one translation
+  # unit linking both fuse::model and fuse::lowfive -- the lead's own
+  # ruling after a from-clean-configure build failure a single-TU version
+  # (and, separately, a single-link-order "fix" to it) both missed:
+  # lowfive_plugin_internal.hpp's own header comment has the full account
+  # of why ANY translation unit seeing both a FUSE header that needs fmt
+  # 12 (fuse/base/result.hpp) and a LowFive header (whose own include
+  # directory carries a bundled, incompatible fmt 8.1.1) fails to
+  # compile, REGARDLESS of target_link_libraries order -- the only
+  # configure-order-independent fix is to never let one translation unit
+  # see both at all. OBJECT, not merely "two .cpp files in one target":
+  # a target's own include directories apply to EVERY one of its
+  # sources (the exact mechanism that made fuse-coupler-transport's
+  # OTHER, non-LowFive files fail too, just above), so the two
+  # halves need their OWN, separate targets with their own, separate
+  # dependencies -- then combined into the one SHARED library HDF5's
+  # loader actually dlopen()s.
+  add_library(fuse-lowfive-vol-graph OBJECT transport/lowfive_plugin_graph.cpp)
+  target_link_libraries(fuse-lowfive-vol-graph PRIVATE fuse::model fuse::base)
+  # NEVER fuse::lowfive here -- see the block comment above. MPI::MPI_CXX
+  # only for <mpi.h>'s own include path (this file's #if FUSE_HAVE_MPI
+  # body, world-rank/world-size queries only) -- not fuse::lowfive's own
+  # MPI dependency, which this file never touches.
+  if(FUSE_ENABLE_MPI AND TARGET MPI::MPI_CXX)
+    target_link_libraries(fuse-lowfive-vol-graph PRIVATE MPI::MPI_CXX)
+  endif()
+
+  add_library(fuse-lowfive-vol-impl OBJECT transport/lowfive_plugin_vol.cpp)
+  target_link_libraries(fuse-lowfive-vol-impl PRIVATE fuse::lowfive fuse::base)
+  # fuse::base ONLY for fuse/base/config.hpp's own FUSE_HAVE_* macros
+  # (zero includes of its own, by construction -- config.hpp.in's own
+  # generated content is #define lines only); NEVER fuse::model.
+
+  if(LOWFIVE_HAVE_DIST)
+    target_compile_definitions(fuse-lowfive-vol-graph PRIVATE FUSE_LOWFIVE_DIST_LIB_FOUND=1)
+    target_compile_definitions(fuse-lowfive-vol-impl PRIVATE FUSE_LOWFIVE_DIST_LIB_FOUND=1)
+  endif()
+
+  # SHARED, not the default STATIC every other fuse-coupler-* target
+  # uses: HDF5's HDF5_PLUGIN_PATH loader dlopen()s this file directly --
+  # a static archive is not a thing HDF5's loader can load at all, the
+  # same must-be-shared constraint cmake/FuseDependencies.cmake's own
+  # comment records for HDF5 itself ("LowFive dlopens the VOL, and a
+  # static HDF5 cannot back a runtime-loaded plugin"). Linking the two
+  # OBJECT libraries (not $<TARGET_OBJECTS:...>, CMake's own older,
+  # manual spelling of the same thing) also re-propagates each one's own
+  # PRIVATE link requirements (fuse::lowfive's libraries, fuse::model's)
+  # onto the final link step, which actually producing a loadable .so
+  # needs even though neither half's OWN compile needed the other's.
+  add_library(fuse-lowfive-vol SHARED)
+  target_link_libraries(fuse-lowfive-vol PRIVATE fuse-lowfive-vol-graph fuse-lowfive-vol-impl)
+  set_target_properties(fuse-lowfive-vol PROPERTIES
+    # HDF5's own plugin-naming convention (H5PL_PATH's own scan):
+    # a loadable VOL's filename is otherwise unconstrained -- this
+    # name is this plugin's own choice, documented here and in the
+    # ctest ENVIRONMENT that points HDF5_PLUGIN_PATH at its directory
+    # (examples/CMakeLists.txt's own lowfive ctest rows).
+    OUTPUT_NAME fuse_lowfive_vol
+  )
+  # Deliberately NOT CXX_VISIBILITY_PRESET hidden, unlike every other
+  # fuse-coupler-* target in this file: the two extern "C" H5PLget_
+  # plugin_* symbols (defined in lowfive_plugin_vol.cpp) ARE this
+  # plugin's entire public API (HDF5's own loader contract fixes their
+  # names and requires default visibility to dlsym() them).
 endif()
 # ---- S6 phase 3, "LowFive" track: end -------------------------------------
 
