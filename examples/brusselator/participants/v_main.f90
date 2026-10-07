@@ -50,6 +50,7 @@ program v_main
   real(c_double), parameter :: kDiffusion = 10.0d0
 
   character(len=512) :: graph_path, log_path, arg
+  character(len=16) :: transport
   integer :: periods, ierr, world_rank, world_size, nargs, i, log_unit, p
   type(fuse_ctx) :: ctx
   type(fuse_null) :: nothing
@@ -66,10 +67,59 @@ program v_main
   type(fuse_step_request) :: req
   type(fuse_step_report) :: rep, begin_rep
   real(c_double) :: mean_v
+  logical :: use_lowfive
+  integer(c_int) :: io_rc
+  character(len=2048), target :: errbuf
+
+  ! S6 phase 3 (Conformance, "LowFive" track), Unit 3b. Mirrors u_main.c's
+  ! own hardcoded hdf5_path/window constants (that file's own header
+  ! comment has the full rationale: no ABI query exists for a field's own
+  ! hdf5_path, or for the graph's own window length, so both participant
+  ! mains reproduce brusselator_graph_tool.cpp's own build-time constants
+  ! rather than query them). V's own export is v_out (brusselator_v.h5/
+  ! grid/v_out); its import is u_out's own hdf5_path (brusselator_u.h5/
+  ! grid/u_out) -- the two mains' own constants are each other's peer,
+  ! by construction.
+  ! NOT `parameter`: c_loc() (used below, where these are passed to the
+  ! bruss_lowfive_* C-ABI calls) requires an actual TARGET variable, which
+  ! a compile-time named constant cannot be in Fortran -- these are
+  ! assigned once, just below, and never changed again.
+  character(len=17), target :: kOwnFile, kPeerFile
+  character(len=12), target :: kOwnDataset, kPeerDataset
+  integer(c_long_long), parameter :: kWindowNum = 1_c_long_long, kWindowDen = 500_c_long_long
+
+  ! ---- the two bruss_lowfive_* HDF5 calls and the one build-config
+  ! query, through shim.cpp's own extern "C" export (shim.h's own header
+  ! comment has the full account of why this exists at all: no HDF5
+  ! Fortran module ships with this host's /opt/hdf5). ----
+  interface
+    function bruss_lowfive_available() result(avail) &
+        bind(C, name="bruss_lowfive_available")
+      import :: c_int
+      integer(c_int) :: avail
+    end function bruss_lowfive_available
+
+    function bruss_lowfive_write(file, dataset, data, n, errbuf, errbuf_len) &
+        result(rc) bind(C, name="bruss_lowfive_write")
+      import :: c_ptr, c_long_long, c_int
+      type(c_ptr), value :: file, dataset, data, errbuf
+      integer(c_long_long), value :: n, errbuf_len
+      integer(c_int) :: rc
+    end function bruss_lowfive_write
+
+    function bruss_lowfive_read(file, dataset, data, n, errbuf, errbuf_len) &
+        result(rc) bind(C, name="bruss_lowfive_read")
+      import :: c_ptr, c_long_long, c_int
+      type(c_ptr), value :: file, dataset, data, errbuf
+      integer(c_long_long), value :: n, errbuf_len
+      integer(c_int) :: rc
+    end function bruss_lowfive_read
+  end interface
 
   graph_path = ""
   log_path = ""
   periods = 2
+  transport = "fuse"
   nargs = command_argument_count()
   i = 1
   do while (i <= nargs)
@@ -84,15 +134,40 @@ program v_main
       call get_command_argument(i + 1, arg)
       read(arg, *) periods
       i = i + 2
+    else if (trim(arg) == "--transport" .and. i < nargs) then
+      call get_command_argument(i + 1, arg)
+      transport = trim(arg)
+      i = i + 2
     else
       write(0, '(A,A)') "v_main: unrecognized argument: ", trim(arg)
       call exit(1)
     end if
   end do
   if (len_trim(graph_path) == 0 .or. len_trim(log_path) == 0) then
-    write(0, '(A)') "usage: v_main --graph graph.yaml --log v.log [--periods N]"
+    write(0, '(A)') "usage: v_main --graph graph.yaml --log v.log [--periods N] " // &
+        "[--transport fuse|lowfive]"
     call exit(1)
   end if
+  if (trim(transport) /= "fuse" .and. trim(transport) /= "lowfive") then
+    write(0, '(A,A,A)') "v_main: --transport must be 'fuse' or 'lowfive' (got '", &
+        trim(transport), "')"
+    call exit(1)
+  end if
+  use_lowfive = (trim(transport) == "lowfive")
+  if (use_lowfive .and. bruss_lowfive_available() == 0) then
+    write(0, '(A)') "v_main: --transport lowfive requires a build configured with " // &
+        "-DFUSE_ENABLE_LOWFIVE=ON; this binary was not"
+    call exit(1)
+  end if
+  ! V's own export is v_out (brusselator_v.h5/grid/v_out); its import is
+  ! U's own export (brusselator_u.h5/grid/u_out) -- u_main.c's own
+  ! U_LOWFIVE_OWN_FILE/U_LOWFIVE_PEER_FILE constants are this pair's
+  ! mirror image, by construction (both mains reproduce brusselator_
+  ! graph_tool.cpp's own hardcoded hdf5_path strings).
+  kOwnFile = "brusselator_v.h5" // c_null_char
+  kOwnDataset = "/grid/v_out" // c_null_char
+  kPeerFile = "brusselator_u.h5" // c_null_char
+  kPeerDataset = "/grid/u_out" // c_null_char
 
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD, world_rank, ierr)
@@ -170,8 +245,48 @@ program v_main
     ! ever due on this process's own ranks, so it simply loops calling
     ! v_loop_step() for "V" until the PERIOD closes.
     do
+      ! Unit 3b: before begin_step of a sweep's first substep, read the
+      ! import with H5Dread, into the LowFive-bound channel's own
+      ! ExternalDelivery arc (fuse_view_field(v_in_ref), NOT v_in itself)
+      ! -- u_main.c's own header comment on the identical block has the
+      ! full account, including this reference graph's own degenerate
+      ! one-substep-per-window shape and this wiring's resulting scope
+      ! limit (KNOWN_ISSUES.md D14).
+      if (use_lowfive) then
+        status = fuse_view_field(ctx, v_in_ref, view)
+        call check(status, "view_field(v_in)")
+        if (view%window_samples > 0 .and. c_associated(view%data)) then
+          io_rc = bruss_lowfive_read(c_loc(kPeerFile), c_loc(kPeerDataset), &
+              view%data, int(view%count, c_long_long) * int(view%components, c_long_long), &
+              c_loc(errbuf), int(len(errbuf), c_long_long))
+          if (io_rc /= 0) then
+            write(0, '(A,A)') "FAIL(v_main): bruss_lowfive_read(v_in): ", cstr_message(errbuf)
+            call MPI_Abort(MPI_COMM_WORLD, 1, ierr)
+          end if
+        end if
+      end if
+
       status = v_loop_step(ctx%ptr, vh, req, c_loc(v_in), c_loc(v_out), rep, begin_rep)
       call check(status, "v_loop_step")
+
+      ! After the last substep of a sweep, write the K-wide export with
+      ! H5Dwrite -- fuse_view_field(v_out_ref), not v_out itself, for the
+      ! same reason the read above targets the import's own arc.
+      if (use_lowfive .and. begin_rep%step_opened /= 0 .and. &
+          at_window_boundary(begin_rep%t_end%numerator, begin_rep%t_end%denominator)) then
+        status = fuse_view_field(ctx, v_out_ref, view)
+        call check(status, "view_field(v_out)")
+        if (view%window_samples > 0 .and. c_associated(view%data)) then
+          io_rc = bruss_lowfive_write(c_loc(kOwnFile), c_loc(kOwnDataset), &
+              view%data, int(view%count, c_long_long) * int(view%components, c_long_long), &
+              c_loc(errbuf), int(len(errbuf), c_long_long))
+          if (io_rc /= 0) then
+            write(0, '(A,A)') "FAIL(v_main): bruss_lowfive_write(v_out): ", cstr_message(errbuf)
+            call MPI_Abort(MPI_COMM_WORLD, 1, ierr)
+          end if
+        end if
+      end if
+
       if (rep%next_component == -1) exit  ! period complete
     end do
 
@@ -201,5 +316,36 @@ contains
       call MPI_Abort(MPI_COMM_WORLD, 1, abort_ierr)
     end if
   end subroutine check
+
+  ! `errbuf` is a fixed-length Fortran buffer the C side NUL-terminates
+  ! (shim.h's own convention) but never blank-pads -- trim() alone would
+  ! print the whole 2048-byte buffer, garbage past the NUL included.
+  function cstr_message(buf) result(msg)
+    character(len=*), intent(in) :: buf
+    character(len=:), allocatable :: msg
+    integer :: nul_pos
+    nul_pos = index(buf, c_null_char)
+    if (nul_pos > 1) then
+      msg = buf(1:nul_pos - 1)
+    else
+      msg = ""
+    end if
+  end function cstr_message
+
+  ! u_main.c's own u_lowfive_at_window_boundary -- a step's own t_end
+  ! (fuse_exact_time, an exact rational) checked against the window
+  ! boundary (kWindowNum/kWindowDen) by cross-multiplication, no floating
+  ! point anywhere in this test.
+  logical function at_window_boundary(t_num, t_den)
+    integer(c_int64_t), intent(in) :: t_num, t_den
+    integer(c_long_long) :: lhs, rhs
+    lhs = t_num * kWindowDen
+    rhs = kWindowNum * t_den
+    if (rhs == 0) then
+      at_window_boundary = .false.
+    else
+      at_window_boundary = (mod(lhs, rhs) == 0)
+    end if
+  end function at_window_boundary
 
 end program v_main

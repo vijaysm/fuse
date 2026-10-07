@@ -35,14 +35,25 @@
 #   run_participants.sh <mode: mpmd|accept> <mpiexec> \
 #     <ranks_u> <ranks_v> <ranks_coupler> \
 #     <graph_tool_exe> <u_main_exe> <v_main_exe> <coupler_main_exe> \
-#     <check_exe> <scratch_dir> [periods] [timeout_s]
+#     <check_exe> <scratch_dir> [periods] [timeout_s] [transport]
+#
+# [transport] (S6 phase 3, "LowFive" track, Unit 3b): "fuse" (default) or
+# "lowfive", passed through verbatim as --transport to graph_tool/u_main/
+# v_main (brusselator_graph_tool.cpp's own --transport flag decides
+# whether u_out/v_out get an hdf5_path at all; u_main.c's/v_main.f90's
+# own --transport decides whether their loop bodies perform the real
+# H5Dwrite/H5Dread this track adds). The VOL connector that makes LowFive
+# interception apply at all is NOT this script's concern -- it is
+# attached process-wide via HDF5_VOL_CONNECTOR/HDF5_PLUGIN_PATH, which
+# the CALLER (examples/CMakeLists.txt's own lowfive ctest rows) sets in
+# the test's own ENVIRONMENT, per docs/user/lowfive.md.
 set -u
 
 MODE="$1"; MPIEXEC="$2"
 RANKS_U="$3"; RANKS_V="$4"; RANKS_COUPLER="$5"
 GRAPH_TOOL="$6"; U_MAIN="$7"; V_MAIN="$8"; COUPLER_MAIN="$9"
 shift 9
-CHECK="$1"; SCRATCH="$2"; PERIODS="${3:-2}"; TIMEOUT="${4:-60}"
+CHECK="$1"; SCRATCH="$2"; PERIODS="${3:-2}"; TIMEOUT="${4:-60}"; TRANSPORT="${5:-fuse}"
 
 mkdir -p "$SCRATCH"
 GRAPH="$SCRATCH/graph.yaml"
@@ -52,22 +63,25 @@ V_LOG="$SCRATCH/v.log"
 rm -f "$GRAPH" "$PORT_FILE" "$U_LOG" "$V_LOG"
 
 "$GRAPH_TOOL" --ranks-u "$RANKS_U" --ranks-v "$RANKS_V" --ranks-coupler "$RANKS_COUPLER" \
-    --launch "$MODE" --out "$GRAPH" --port-file "$PORT_FILE" || exit 1
+    --launch "$MODE" --out "$GRAPH" --port-file "$PORT_FILE" --transport "$TRANSPORT" || exit 1
 
 RC=0
 if [ "$MODE" = "mpmd" ]; then
   "$MPIEXEC" -n "$RANKS_U" "$U_MAIN" --graph "$GRAPH" --log "$U_LOG" --periods "$PERIODS" \
+      --transport "$TRANSPORT" \
       : -n "$RANKS_V" "$V_MAIN" --graph "$GRAPH" --log "$V_LOG" --periods "$PERIODS" \
+      --transport "$TRANSPORT" \
       : -n "$RANKS_COUPLER" "$COUPLER_MAIN" --graph "$GRAPH" \
       > "$SCRATCH/combined.log" 2>&1
   RC=$?
 elif [ "$MODE" = "accept" ]; then
   U_WORLD=$((RANKS_U + RANKS_COUPLER))
   "$MPIEXEC" -n "$U_WORLD" "$U_MAIN" --graph "$GRAPH" --log "$U_LOG" \
-      --ranks-u "$RANKS_U" --periods "$PERIODS" > "$SCRATCH/u_stdout.log" 2>&1 &
+      --ranks-u "$RANKS_U" --periods "$PERIODS" --transport "$TRANSPORT" \
+      > "$SCRATCH/u_stdout.log" 2>&1 &
   PID_U=$!
   "$MPIEXEC" -n "$RANKS_V" "$V_MAIN" --graph "$GRAPH" --log "$V_LOG" \
-      --periods "$PERIODS" > "$SCRATCH/v_stdout.log" 2>&1 &
+      --periods "$PERIODS" --transport "$TRANSPORT" > "$SCRATCH/v_stdout.log" 2>&1 &
   PID_V=$!
   wait "$PID_U" || RC=1
   wait "$PID_V" || RC=1

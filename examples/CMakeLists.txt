@@ -258,6 +258,30 @@ if(FUSE_ENABLE_MPI)
     fuse::abi MPI::MPI_C Eigen3::Eigen Kokkos::kokkos)
   target_include_directories(brusselator_u_main PRIVATE brusselator)
 
+  # S6 phase 3 (Conformance, "LowFive" track), Unit 3b: shim.cpp's own
+  # bruss_lowfive_write/read (behind FUSE_HAVE_LOWFIVE) call the real
+  # HDF5 C API -- fuse::lowfive (cmake/FuseDependencies.cmake, which this
+  # directory's own fuse_resolve_dependencies() call already ran before
+  # add_subdirectory(examples) reached here, CMakeLists.txt) carries
+  # HDF5 plus the LowFive libraries themselves. The connector attachment
+  # this track chose (the HDF5_VOL_CONNECTOR/HDF5_PLUGIN_PATH env-var
+  # mechanism, docs/user/lowfive.md) needs no LowFive SYMBOL in THIS
+  # executable at all -- only ordinary HDF5 calls -- but linking the one
+  # `fuse::lowfive` target already resolved is simpler than teasing the
+  # raw HDF5-only half back out, and costs nothing an ordinary HDF5
+  # dependency does not already cost.
+  # fuse_link_lowfive_with_fmt_fix (cmake/FuseDependencies.cmake): plain
+  # target_link_libraries(... fuse::lowfive ...) here is not enough --
+  # shim.cpp also includes fuse/base/rational.hpp (-> result.hpp -> fmt
+  # 12), in the SAME translation unit as <hdf5.h>, and fuse::lowfive's
+  # own include directory carries a bundled, incompatible fmt. See that
+  # function's own comment and KNOWN_ISSUES.md D14's Unit 3b account for
+  # the full measured record (an earlier, single-link-order version of
+  # this fix broke under a different CMAKE_PREFIX_PATH ordering).
+  if(TARGET fuse::lowfive)
+    fuse_link_lowfive_with_fmt_fix(brusselator_u_main)
+  endif()
+
   if(TARGET fuse-abi-fortran)
     add_executable(brusselator_v_main
       brusselator/participants/v_main.f90
@@ -266,6 +290,9 @@ if(FUSE_ENABLE_MPI)
     target_link_libraries(brusselator_v_main PRIVATE
       fuse::abi fuse::abi-fortran MPI::MPI_Fortran MPI::MPI_C Eigen3::Eigen Kokkos::kokkos)
     target_include_directories(brusselator_v_main PRIVATE brusselator)
+    if(TARGET fuse::lowfive)
+      fuse_link_lowfive_with_fmt_fix(brusselator_v_main)
+    endif()
   else()
     message(STATUS "fuse: FUSE_ENABLE_MPI is ON but no Fortran compiler was found; "
                    "brusselator_v_main (Conformance Unit 2) will not be built")
@@ -318,6 +345,51 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND TARGET brusselator_u_main AND TARGE
   endforeach()
 endif()
 # ---- Conformance Unit 2 host rows: end -------------------------------------
+
+# ---- S6 phase 3 (Conformance, "LowFive" track), Unit 3b host rows:
+# begin -----------------------------------------------------------------
+# Same host_verification_needed status as the plain rows just above, PLUS
+# the host's LowFive still needs the fmt-12 rebuild (KNOWN_ISSUES.md D14)
+# before `fuse-lowfive-vol` can even load -- marked there explicitly.
+# World size 3 only (1+1+1): item 3's own ask names .lowfive.{mpmd,accept}.3,
+# not .5; the degenerate reference graph (brusselator_graph_tool.cpp's own
+# kDtU == kWindow) this track measured against never needed more than one
+# rank per component to prove the wiring, and a second world size would
+# only repeat it.
+#
+# HDF5_VOL_CONNECTOR/HDF5_PLUGIN_PATH: the two env vars docs/user/
+# lowfive.md's own "Unit 3" design names as the attachment mechanism --
+# set here, in the test's own ENVIRONMENT, per the lead's own instruction,
+# rather than inside run_participants.sh, so a host operator reading
+# `ctest --show-only` sees exactly what this row depends on.
+# FUSE_LOWFIVE_BINDINGS names the SAME graph.yaml run_participants.sh's
+# own graph_tool step writes -- a fixed, predictable path relative to
+# each row's own scratch directory, computed here rather than returned
+# by the script (CMake, not the shell, is where every OTHER row's own
+# path convention already lives).
+if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND FUSE_ENABLE_LOWFIVE
+   AND TARGET brusselator_u_main AND TARGET brusselator_v_main
+   AND TARGET fuse-lowfive-vol)
+  foreach(_mode mpmd accept)
+    set(_name verification.brusselator.participants.lowfive.${_mode}.3)
+    set(_scratch ${CMAKE_CURRENT_BINARY_DIR}/brusselator-participants-scratch/lowfive-${_mode}-3)
+    add_test(NAME ${_name}
+      COMMAND bash ${CMAKE_SOURCE_DIR}/test/parallel/brusselator_participants/run_participants.sh
+              ${_mode} ${MPIEXEC_EXECUTABLE}
+              1 1 1
+              $<TARGET_FILE:brusselator_graph_tool>
+              $<TARGET_FILE:brusselator_u_main>
+              $<TARGET_FILE:brusselator_v_main>
+              $<TARGET_FILE:brusselator_coupler_main>
+              $<TARGET_FILE:brusselator_check>
+              ${_scratch} 2 60 lowfive)
+    set_tests_properties(${_name} PROPERTIES
+      LABELS "parallel;mpi;lowfive;verification;brusselator"
+      TIMEOUT 120
+      ENVIRONMENT "HDF5_VOL_CONNECTOR=lowfive;HDF5_PLUGIN_PATH=$<TARGET_FILE_DIR:fuse-lowfive-vol>;FUSE_LOWFIVE_BINDINGS=${_scratch}/graph.yaml")
+  endforeach()
+endif()
+# ---- S6 phase 3 Unit 3b host rows: end ---------------------------------
 
 # ---------------------------------------------------------------------------
 # FSI channel (FSI track): a 2D unsteady-Stokes channel with an Euler-

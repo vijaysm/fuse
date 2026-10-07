@@ -783,6 +783,17 @@ if(TARGET fuse-abi-fortran)
     ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/shim.cpp
     ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/u_loop.c
     ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/v_loop.f90)
+  # shim.cpp's own #if FUSE_HAVE_LOWFIVE body needs <hdf5.h> on the
+  # include path whenever that macro is 1, regardless of which
+  # CMakeLists.txt directory compiles it -- examples/CMakeLists.txt's
+  # own brusselator_u_main/brusselator_v_main already link fuse::lowfive
+  # for exactly this; every OTHER target below that also lists shim.cpp
+  # as a source needs the identical link, found only once this session
+  # actually configured -DFUSE_ENABLE_LOWFIVE=ON (bafter's own tier-0
+  # tree never has it ON, so compiling shim.cpp there never needed it).
+  if(TARGET fuse::lowfive)
+    fuse_link_lowfive_with_fmt_fix(fuse_verification_brusselator_participants_test)
+  endif()
   # Two targets below (this one and brusselator_check) both compile
   # v_loop.f90 into a `v_loop_mod` .mod file; CMake's default Fortran
   # module output directory is not automatically per-target the way the
@@ -806,6 +817,9 @@ if(TARGET fuse-abi-fortran)
     ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/u_loop.c
     ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/v_loop.f90
     ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/brusselator_check_core.cpp)
+  if(TARGET fuse::lowfive)
+    fuse_link_lowfive_with_fmt_fix(fuse_verification_brusselator_check_test)
+  endif()
   set_target_properties(fuse_verification_brusselator_check_test PROPERTIES
     Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/brusselator_check_fortran_modules)
 
@@ -830,6 +844,9 @@ if(TARGET fuse-abi-fortran)
     ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/u_loop.c
     ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/v_loop.f90
     ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/brusselator_check_core.cpp)
+  if(TARGET fuse::lowfive)
+    fuse_link_lowfive_with_fmt_fix(fuse_verification_brusselator_lowfive_harness_test)
+  endif()
   set_target_properties(fuse_verification_brusselator_lowfive_harness_test PROPERTIES
     Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/brusselator_lowfive_harness_fortran_modules)
   set_tests_properties(verification.brusselator_lowfive_harness PROPERTIES
@@ -852,6 +869,9 @@ if(TARGET fuse-abi-fortran)
     ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/u_loop.c
     ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/v_loop.f90
     ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/brusselator_check_core.cpp)
+  if(TARGET fuse::lowfive)
+    fuse_link_lowfive_with_fmt_fix(fuse_verification_brusselator_asymmetric_dt_isolation_test)
+  endif()
   set_target_properties(fuse_verification_brusselator_asymmetric_dt_isolation_test PROPERTIES
     Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/brusselator_asymmetric_dt_isolation_fortran_modules)
 endif()

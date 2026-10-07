@@ -119,6 +119,47 @@ void bruss_v_state(const bruss_v_handle* h, double* out);
 double bruss_v_exchange_in(const bruss_v_handle* h);
 const char* bruss_v_last_error(const bruss_v_handle* h);
 
+/* S6 phase 3 (Conformance, "LowFive" track), Unit 3b: the ordinary,
+ * no-FUSE-call-at-all HDF5 write/read a window member's own loop performs
+ * directly against its export/import, with the VOL connector that makes
+ * this interception rather than a real file attached process-wide by
+ * HDF5's own HDF5_VOL_CONNECTOR/HDF5_PLUGIN_PATH mechanism (docs/user/
+ * lowfive.md's "Unit 3" design) -- this shim exists ONLY so u_main.c
+ * (pure C, already links this translation unit) and v_main.f90 (pure
+ * Fortran, no HDF5 Fortran module in this install -- checked, /opt/hdf5
+ * ships no Fortran bindings) can issue the SAME two HDF5 calls (H5Fcreate/
+ * H5Dcreate2/H5Dwrite/H5Fclose and H5Fopen/H5Dopen2/H5Dread/H5Fclose) once
+ * rather than twice, exactly as this file's own header comment already
+ * does for bruss_u_step/bruss_v_step. `fapl_id` is deliberately NOT a
+ * parameter here, unlike LowFiveTransport::access_plist_handle() (the
+ * DIFFERENT, programmatic-attachment path examples/demo_b uses): a literal
+ * H5P_DEFAULT is the whole point of the env-var attachment mechanism this
+ * track's instruction specifies, so both calls always pass it.
+ *
+ * Returns 0 on success; nonzero on failure, with a message copied into
+ * errbuf (truncated to errbuf_len - 1 bytes, always NUL-terminated) --
+ * the same out-parameter convention access_plist_handle()'s own callers
+ * use, rather than bruss_*_last_error()'s per-handle convention, since
+ * there is no handle here. Without -DFUSE_ENABLE_LOWFIVE=ON, both
+ * functions return nonzero immediately with "not built with LowFive" in
+ * errbuf, never touching HDF5 at all (no `hdf5.h` on this build's own
+ * include path in that configuration). */
+int bruss_lowfive_write(const char* file, const char* dataset,
+                        const double* data, long long n,
+                        char* errbuf, long long errbuf_len);
+int bruss_lowfive_read(const char* file, const char* dataset,
+                       double* data, long long n,
+                       char* errbuf, long long errbuf_len);
+
+/* 1 iff this build was configured with -DFUSE_ENABLE_LOWFIVE=ON, 0
+ * otherwise. v_main.f90's own early refusal check needs this as a plain
+ * runtime query -- unlike u_main.c, which can read the matching build-
+ * config header directly (a C-safe header), v_main.f90 is pure Fortran
+ * with no way to read a C preprocessor macro, and this codebase ships no
+ * HDF5 Fortran module to probe for instead (checked: /opt/hdf5 has
+ * none). */
+int bruss_lowfive_available(void);
+
 #ifdef __cplusplus
 }
 #endif
