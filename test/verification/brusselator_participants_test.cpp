@@ -62,6 +62,7 @@
 // than this test assuming declaration order.
 #include <gtest/gtest.h>
 
+#include <ios>
 #include <memory>
 #include <string>
 #include <vector>
@@ -92,21 +93,33 @@ using fuse::RankSet;
 using fuse::Result;
 using fuse::WaveformIteration;
 
-// Mutually non-nested grids (brusselator_graph.hpp's own convention) --
-// this file's job is the structural claim (does the ABI-driven run
-// match Unit 1's own in-process Runner, bit for bit, on the IDENTICAL
-// graph) at a size that runs in milliseconds, not the physics scale
-// examples/brusselator/main.cpp's own ctest rows already cover.
-constexpr int kNxU = 3, kNyU = 3, kNxV = 4, kNyV = 4;
+// S6 phase 3 (Conformance, Unit 3b), item 2(c): the REAL Brusselator
+// example's own grid (examples/brusselator/main.cpp's own Args
+// defaults: --nx-u 16 --ny-u 16 --nx-v 24 --ny-v 24), not the small/
+// degenerate placeholder this file used through Unit 3a -- mirrors
+// brusselator_graph_tool.cpp's own item 2(b) update exactly, so the
+// graph this file builds in-process and the graph that tool writes
+// still describe the identical physics problem.
+constexpr int kNxU = 16, kNyU = 16, kNxV = 24, kNyV = 24;
 
-// dt_u == dt_v == window: the degenerate, one-substep-per-window case --
-// this file's own header, Finding A, has the full account of why even
-// this simplest case is not yet understood for two simultaneous
-// externally-driven window members.
-const Rational kDtU{1, 500}, kDtV{1, 500}, kWindow{1, 500};
-constexpr double kTolerance = 1e-10;
+// dt_u != dt_v != window (the REAL example's own values, no longer the
+// degenerate dt_u == dt_v == window case Finding A/B's own history
+// above used): dt_u=0.002 divides window=0.02 exactly (10 substeps);
+// dt_v=0.003 does not (0.02/0.003 = 6.67), so DtPolicy::Adjustable
+// (CouplingWindowScope's own default, add_window_coupling) rounds V's
+// own substep count UP to 7 and shrinks each substep to fit the window
+// exactly -- confirmed below as `kExpectedVSubstepsPerWindow`, not
+// assumed. `ExternallyDrivenBothMembersMatchInProcessRunner{Jacobi,
+// GaussSeidel}` below are the first conformance tests anywhere in this
+// suite to drive this genuinely non-integer, two-member multirate
+// shape end to end -- the lead's own flagged risk ("the first time the
+// externally driven window path meets a 10:7 substep ratio").
+const Rational kDtU{2, 1000}, kDtV{3, 1000}, kWindow{2, 100};
+constexpr double kTolerance = 1e-11;
 constexpr int kMaxIterations = 60;
-constexpr int kPeriods = 2;
+// --end 3 at window=1/50 (0.02): 3 / 0.02 = 150 windows exactly, the
+// lead's own instruction.
+constexpr int kPeriods = 150;
 
 /// Everything `main.cpp` builds once, shared by the reference Runner and
 /// (for the ABI-driven side) `bruss_v_create`'s own internal copy --
@@ -127,7 +140,8 @@ struct GraphAndWeights {
 };
 
 [[nodiscard]] GraphAndWeights build_graph_and_weights(
-    Rational dt_u = kDtU, Rational dt_v = kDtV, Rational window = kWindow) {
+    Rational dt_u = kDtU, Rational dt_v = kDtV, Rational window = kWindow,
+    WaveformIteration iteration_mode = WaveformIteration::Jacobi) {
   fuse::native::NativeMeshBackend backend(/*rank=*/0, /*num_ranks=*/1);
   auto u_grid_r = brusselator::NativeGrid::make(backend, "u", kNxU, kNyU);
   auto v_grid_r = brusselator::NativeGrid::make(backend, "v", kNxV, kNyV);
@@ -144,7 +158,7 @@ struct GraphAndWeights {
 
   const brusselator::WindowGraphHandles handles = brusselator::add_window_coupling(
       graph, u_region, dt_u, dt_v, window, kTolerance, kMaxIterations,
-      fuse::AccelKind::None, WaveformIteration::Jacobi, RankSet{0, 1});
+      fuse::AccelKind::None, iteration_mode, RankSet{0, 1});
 
   fuse::RemapPlan plan_vu;
   plan_vu.src = v_region;
@@ -170,12 +184,26 @@ const fuse_participant_abi_v1* Table() {
 
 }  // namespace
 
-TEST(BrusselatorParticipants, ExternallyDrivenBothMembersMatchInProcessRunner) {
+// S6 phase 3 (Conformance, Unit 3b), item 2(c): the REAL Brusselator
+// example's own parameters (file-level kNxU/kDtU/kDtV/kWindow above),
+// both waveform iterations, driven for kPeriods=150 windows (--end 3
+// at window=1/50) -- the first conformance test anywhere in this suite
+// to drive two simultaneously externally-driven window members through
+// a genuinely non-integer multirate shape (U: 10 substeps/window
+// exactly; V: 0.02/0.003 = 6.67, rounded up to 7 by DtPolicy::
+// Adjustable -- confirmed below, not assumed). Driven by next_component
+// throughout (ExternallyDrivenMultiSubstepWindowDrivenByNextComponent's
+// own discipline, below) -- U-then-V fixed alternation, the degenerate
+// case's own driving pattern, is wrong here for the same reason Finding
+// B originally found it wrong: a sweep does not take the same number of
+// U-ticks as V-ticks, so no fixed alternation is ever right for every
+// sweep.
+void RunBothMembersMatchInProcessRunner(WaveformIteration wi) {
   const brusselator::PhysicsConfig cfg;  // defaults: diffusion=10, A=3.4, B=1, forcing=true
 
   // --- Reference: fuse::Runner driven directly, Unit 1's own graph
   // (plus the coupler), Unit 1's own UComponent/VComponent. ---
-  GraphAndWeights ref = build_graph_and_weights();
+  GraphAndWeights ref = build_graph_and_weights(kDtU, kDtV, kWindow, wi);
   // ONE call, on u_mesh only -- brusselator_runner_test.cpp's own
   // make_rig()+run_via_runner() precedent (this session's earlier item 2
   // work): every component's placement on a tier-0 backend is the same
@@ -228,7 +256,7 @@ TEST(BrusselatorParticipants, ExternallyDrivenBothMembersMatchInProcessRunner) {
   // --- Same graph, driven entirely through the ABI: BOTH U and V
   // externally driven, stepped by the SAME shim functions u_main.c/
   // v_main.f90 call -- the Unit 2 shape in miniature, in one process.
-  GraphAndWeights abi_setup = build_graph_and_weights();
+  GraphAndWeights abi_setup = build_graph_and_weights(kDtU, kDtV, kWindow, wi);
   const auto bytes = fuse::serialize(abi_setup.graph);
 
   const auto* t = Table();
@@ -256,11 +284,7 @@ TEST(BrusselatorParticipants, ExternallyDrivenBothMembersMatchInProcessRunner) {
   // hand -- throwaway UComponent/VComponent instances, exactly the
   // physics bruss_u_create()/bruss_v_create() below will reconstruct
   // internally for the real run, read only for their constructors' own
-  // initial provided_ptr(). VERIFIED: leaving u_out/v_out at the zero-
-  // initialized default (an earlier version of this setup did) produced
-  // a much larger, unconditional divergence from the very first sweep;
-  // this fix removed that specific divergence (confirmed by comparing
-  // traces with and without it).
+  // initial provided_ptr().
   brusselator::VComponent abi_v_seed("V", abi_setup.u_grid, abi_setup.v_grid, cfg,
                                      &abi_setup.weights_uv, &abi_setup.weights_vu);
   std::vector<double> v0_on_u(static_cast<std::size_t>(nu), 0.0);
@@ -328,33 +352,68 @@ TEST(BrusselatorParticipants, ExternallyDrivenBothMembersMatchInProcessRunner) {
   u_req.component = "U";
   fuse_step_request v_req{.struct_size = sizeof(v_req)};
   v_req.component = "V";
+  const auto u_cid = abi_setup.graph.find_component("U");
+  const auto v_cid = abi_setup.graph.find_component("V");
+  ASSERT_TRUE(u_cid.has_value());
+  ASSERT_TRUE(v_cid.has_value());
+  const std::int32_t u_idx = static_cast<std::int32_t>(u_cid->value());
+  const std::int32_t v_idx = static_cast<std::int32_t>(v_cid->value());
+  ASSERT_NE(u_idx, v_idx);
 
-  // ImplicitCoupling's own established call pattern (test/abi/
-  // participant_test.cpp): U then V, once per sweep, for
-  // ref_iterations[p] sweeps -- exactly one substep per window (this
-  // file's own header explains why: window == dt_u == dt_v here, the
-  // degenerate case Finding B's own E-ABI-STEP-ORDER does not reach).
+  // Confirmed, not assumed (this test's own header comment above): V's
+  // own substep count per window, counted directly off the step
+  // sequence below (u_substeps/v_substeps), must come out to exactly 10
+  // and 7 respectively for period 0 -- the "10:7" ratio the lead's own
+  // instruction named.
+  constexpr int kExpectedUSubstepsPerWindow = 10;
+  constexpr int kExpectedVSubstepsPerWindow = 7;
+
   for (int p = 0; p < kPeriods; ++p) {
-    for (int sweep = 0; sweep < ref_iterations[p]; ++sweep) {
-      // u_loop_step() (u_loop.c, PURE C) and bruss_v_loop_step()
-      // (v_loop.f90, PURE FORTRAN) are the SAME functions u_main.c's/
-      // v_main.f90's own time loops call -- the lead's own "the tier-0
-      // harness drives the real mains' loop bodies" instruction, with
-      // each language's own loop body written in that language (not a
-      // shared C++ helper): each wraps exactly the begin_step ->
-      // checkpoint/restore -> bruss_*_step -> end_step sequence this
-      // file used to inline by hand.
-      fuse_step_report u_rep{.struct_size = sizeof(u_rep)}, u_begin_rep{.struct_size = sizeof(u_begin_rep)};
-      ASSERT_EQ(u_loop_step(ctx, uh, &u_req, u_in.data(), u_out.data(), &u_rep, &u_begin_rep), FUSE_OK)
-          << "period " << p << " sweep " << sweep << ": " << bruss_u_last_error(uh);
-
-      fuse_step_report v_rep{.struct_size = sizeof(v_rep)}, v_begin_rep{.struct_size = sizeof(v_begin_rep)};
-      ASSERT_EQ(bruss_v_loop_step(ctx, vh, &v_req, v_in.data(), v_out.data(), &v_rep, &v_begin_rep), FUSE_OK)
-          << "period " << p << " sweep " << sweep << ": " << bruss_v_last_error(vh);
+    // No guessing anywhere in this loop, including the very first call
+    // of a period: fuse_is_coupling_ongoing() resolves next_component
+    // straight from the compiled plan when nothing is cached yet
+    // (src/abi/participant.cpp's own comment on this; Runner::
+    // components_due_at_period_start(), runner.hpp), with no side
+    // effect and no resumption of the instruction stream.
+    fuse_ongoing period_start{.struct_size = sizeof(period_start)};
+    ASSERT_EQ(t->is_coupling_ongoing(ctx, nullptr, &period_start), FUSE_OK)
+        << "period " << p;
+    std::int32_t next = period_start.next_component;
+    int step_count = 0, u_substeps = 0, v_substeps = 0;
+    while (true) {
+      const bool is_u = (next == u_idx);
+      ASSERT_TRUE(is_u || next == v_idx)
+          << "period " << p << " step " << step_count
+          << ": next_component resolved to neither U (" << u_idx
+          << ") nor V (" << v_idx << "), got " << next;
+      fuse_step_request& req = is_u ? u_req : v_req;
+      fuse_step_report end_rep{.struct_size = sizeof(end_rep)};
+      fuse_step_report begin_rep{.struct_size = sizeof(begin_rep)};
+      const fuse_status rc = is_u
+          ? u_loop_step(ctx, uh, &req, u_in.data(), u_out.data(), &end_rep, &begin_rep)
+          : bruss_v_loop_step(ctx, vh, &req, v_in.data(), v_out.data(), &end_rep, &begin_rep);
+      ASSERT_EQ(rc, FUSE_OK)
+          << "period " << p << " step " << step_count << " (" << (is_u ? "U" : "V")
+          << "): " << (is_u ? bruss_u_last_error(uh) : bruss_v_last_error(vh));
+      EXPECT_EQ(begin_rep.next_component, -2)
+          << "begin_step() cannot resolve next_component synchronously (its own comment "
+             "in entries.def explains why) -- period " << p << " step " << step_count;
+      if (is_u) ++u_substeps; else ++v_substeps;
+      ++step_count;
+      if (end_rep.next_component == -1) break;  // period complete
+      next = end_rep.next_component;
     }
+    ASSERT_EQ(ref_iterations[p] * kExpectedUSubstepsPerWindow, u_substeps)
+        << "period " << p << ": U substep count did not match "
+           "ref_iterations[p] * 10 -- the sweep count itself diverged from Unit 1's own";
+    ASSERT_EQ(ref_iterations[p] * kExpectedVSubstepsPerWindow, v_substeps)
+        << "period " << p << ": V substep count did not match "
+           "ref_iterations[p] * 7 -- the sweep count itself diverged from Unit 1's own";
+
     fuse_ongoing ongoing{.struct_size = sizeof(ongoing)};
     ASSERT_EQ(t->is_coupling_ongoing(ctx, nullptr, &ongoing), FUSE_OK);
     EXPECT_EQ(ongoing.period, p + 1) << "period " << p;
+    EXPECT_EQ(ongoing.next_component, u_idx) << "period " << p << " just closed";
 
     SCOPED_TRACE("period " + std::to_string(p));
     std::vector<double> u_state(static_cast<std::size_t>(nu)), v_state(static_cast<std::size_t>(nv));
@@ -362,17 +421,33 @@ TEST(BrusselatorParticipants, ExternallyDrivenBothMembersMatchInProcessRunner) {
     bruss_v_state(vh, v_state.data());
     ASSERT_EQ(static_cast<int>(u_state.size()), ref_u_state[p].size());
     for (std::size_t i = 0; i < u_state.size(); ++i) {
-      EXPECT_EQ(u_state[i], ref_u_state[p][static_cast<int>(i)]) << "U state[" << i << "]";
+      ASSERT_EQ(u_state[i], ref_u_state[p][static_cast<int>(i)])
+          << "window " << (p + 1) << " U state[" << i << "]: harness="
+          << std::hexfloat << u_state[i] << " ref=" << ref_u_state[p][static_cast<int>(i)]
+          << std::defaultfloat
+          << " -- stopping at the first divergence, per the lead's own instruction";
     }
     ASSERT_EQ(static_cast<int>(v_state.size()), ref_v_state[p].size());
     for (std::size_t i = 0; i < v_state.size(); ++i) {
-      EXPECT_EQ(v_state[i], ref_v_state[p][static_cast<int>(i)]) << "V state[" << i << "]";
+      ASSERT_EQ(v_state[i], ref_v_state[p][static_cast<int>(i)])
+          << "window " << (p + 1) << " V state[" << i << "]: harness="
+          << std::hexfloat << v_state[i] << " ref=" << ref_v_state[p][static_cast<int>(i)]
+          << std::defaultfloat
+          << " -- stopping at the first divergence, per the lead's own instruction";
     }
   }
 
   bruss_u_destroy(uh);
   bruss_v_destroy(vh);
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+TEST(BrusselatorParticipants, ExternallyDrivenBothMembersMatchInProcessRunnerJacobi) {
+  RunBothMembersMatchInProcessRunner(WaveformIteration::Jacobi);
+}
+
+TEST(BrusselatorParticipants, ExternallyDrivenBothMembersMatchInProcessRunnerGaussSeidel) {
+  RunBothMembersMatchInProcessRunner(WaveformIteration::GaussSeidel);
 }
 
 // BrusselatorParticipants.ExternallyDrivenMultiSubstepWindowDrivenByNextComponent

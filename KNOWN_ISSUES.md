@@ -2715,7 +2715,10 @@ Conformance Unit 2/2b row this mirrors.**
    at several call sites are a now-redundant belt-and-suspenders left
    over from the two earlier, incomplete theories (recorded in that
    function's own comment rather than deleted) — correctness rests on
-   the `VERSION 9` floor alone.
+   the `VERSION 9` floor alone. **Lead's own ruling, accepting this
+   item:** `fuse_link_lowfive_with_fmt_fix()` has been redundant since
+   commit `f59b446` (the `VERSION 9` floor); left in place for now, a
+   cleanup pass may remove it.
 4. ctest rows `verification.brusselator.participants.lowfive.{mpmd,
    accept}.3` (`examples/CMakeLists.txt`), registered only when
    `FUSE_ENABLE_LOWFIVE`, `FUSE_ENABLE_MPI`, the Fortran target, and
@@ -2734,6 +2737,100 @@ Conformance Unit 2/2b row this mirrors.**
    the full build (not a named subset) built clean both times, including
    `brusselator_u_main`, `brusselator_v_main`, `fuse-lowfive-vol`, and
    `fuse-coupler-transport`.
+
+**Item 2 (this round): `delivery_pending`/`delivery_field` (ABI growth), the
+real-parameter conformance tests, and the two findings they surfaced --
+BOTH NOW FIXED.**
+`fuse_step_report::delivery_pending` (entries.def, docs/user/c-abi.md's own
+new section) is 1 on exactly the one report per LowFive-bound rollover,
+confirmed both by a dedicated ABI-level test (`AbiParticipant.
+DeliveryPendingIsAlwaysZeroOnAnOrdinaryGraph`) and by a hand-proved mutation
+(`build-evidence/mutations/abi.toml`). `u_main.c`/`v_main.f90` were
+rewritten to use it (cold-start write+read once, then gated on
+`delivery_pending` only, replacing the prior "read before every substep"
+simplification) and compile clean under the full tier-1+LowFive+MPI+Fortran
+build. `brusselator_graph_tool.cpp`'s own constants were moved onto the real
+example's own parameters (16x16/24x24, dt_u=1/500, dt_v=3/1000, window=1/50,
+tolerance=1e-11); `reference_mpmd_3.yaml`/`reference_mpmd_3_lowfive.yaml`
+were regenerated — `verification.brusselator.graph_tool.reproduces_reference
+[_lowfive]` measured to FAIL against the old committed YAML, then PASS
+against the regenerated one.
+
+`test/verification/brusselator_participants_test.cpp` (no LowFive channel,
+direct ABI access) was moved onto the same real parameters, driven by
+`next_component` (not a fixed alternation — the real dt_u:dt_v:window ratio
+is genuinely 10:7, not an integer multiple of either), parameterized on both
+waveform iterations, run for `kPeriods=150` (`--end 3`). **Both Jacobi AND
+GaussSeidel PASS** bit for bit against Unit 1's own in-process `Runner`
+across all 150 windows (measured: U takes exactly 10 substeps/window, V
+exactly 7, confirmed by counting, not assumed).
+
+**Finding 1, FIXED: `channel_window()`'s own E-LAG validation gap.**
+`fuse::detail::channel_window()` (`include/fuse/model/validate.hpp`): for a
+channel with no `Explicit`/`FromComponent` accumulate window, it fell back
+to `Window::Kind::CouplingPeriod`'s own answer, "the TARGET component's own
+`.interval`" (U's, 1/500) — a notion of "the coupling window" that predates
+`CouplingWindowScope` and had no path to that scope's own `explicit_interval`
+(1/50) at all; GaussSeidel's own back channel ('v2u') tripped `E-LAG: lag
+spans 3/1000 but the coupling window is 1/500`. Invisible through Unit 3a
+(dt_u = window = 1/500 there, so the wrong and right answers coincided by
+accident). **Fix**: `channel_window()` now resolves the channel's own
+`IterationRegionDecl` first and, if it has a `CouplingWindowScope`, shares
+`fuse::window_length()` (the SAME function the scheduler/`ClockSet` already
+use) to compute the real window — falling through to the old switch-based
+logic only for a channel OUTSIDE any window-scoped region. Two new tests
+(`Validate.GaussSeidelWindowLagWithinTheRealWindowValidates`,
+`Validate.RejectsLagExceedingTheWindowItself`) and a hand-proved mutation
+(`build-evidence/mutations/base-model.toml`,
+`model-channel-window-ignores-window-scope`) cover it.
+
+**Finding 2, FIXED: `delivery_pending` needed `delivery_field`, and the
+writer needed its own suspend too.** Two related gaps, both in
+`fuse::detail::deliver_external()` (`src/runtime/iteration.cpp`):
+(a) the ordering edge (`OpKind::ExternalDelivery`'s own comment, `op.hpp`)
+puts the delivery instruction right after the EXPORTER's own last substep of
+a sweep, but the function only ever suspended for the IMPORTER — a
+distributed writer process (one that hosts the exporter but not the
+importer) never learned when to write at all, a gap the single-process
+harness this track's own earlier tests used had hidden (both ends were
+always hosted together); and (b) `delivery_pending` alone cannot discriminate
+WHICH of a graph's independently-paced LowFive-bound channels fired —
+measured as a substantial (not ULP-scale) Jacobi divergence at window 1
+once the harness was moved onto a real TWO-channel (`u_out`, `v_out`) graph
+(harness=1.5913141996331861 vs ref=1.6009991770349754), traced to "deliver
+everything whenever the bit is 1" copying a direction whose own producer had
+not actually finished the sweep yet.
+
+**Fix**: `deliver_external()` now suspends for the exporter (first, matching
+real time order) AND the importer, independently checked; each suspend
+carries a new `delivery_field` (`fuse_step_report`/`fuse_field_ref`'s own ABI
+growth, entries.def, `sizeof(fuse_step_report)` 96 → 104 bytes) naming the
+channel's own SOURCE field, regardless of which end the suspension is for.
+`impl_begin_step()`'s old drain-while-loop (silently collapsing consecutive
+delivery-due requests to the last one's info — the exact mechanism behind
+the Jacobi regression above) was replaced with a single-stop branch: every
+`is_delivery_due` request is its own externally visible report, consumed
+exactly once. The protocol (docs/user/c-abi.md): "on a report naming field
+F, write F if producing it or read F if consuming it, then
+`fuse_begin_step()` again." A single-process caller driving more than one
+externally-driven component (the harness; real distributed mains never face
+this) must gate the action on `begin_rep.next_component` — the delivery's
+own addressed component, which `resolve_cached_next_component()` now reports
+directly for an `is_delivery_due` request instead of forward-scanning to
+"the next real stepper" — not on which identity it happened to call
+`fuse_begin_step()` with (`in->component` is never checked for a delivery-due
+request, by design: either end may ask and get the same cached answer).
+
+Tests: `AbiParticipant.DeliveryFieldNamesTheRightChannelOnEachSuspension`
+(two-channel graph, asserts both channels' own fields appear and neither is
+ever missed); `brusselator_participants_test` and
+`brusselator_lowfive_harness_test`, both waveform iterations, all 150
+windows, bit for bit, with matching sweep counts. Mutations (hand-proved,
+`build-evidence/mutations/transport-lowfive.toml`):
+`lowfive-external-delivery-suspension-removed` (importer's own suspend
+removed → E-ABI-STEP-ORDER) and `lowfive-delivery-field-wrong-channel`
+(source field swapped for target → the harness's own field-matching
+assertion fires).
 
 ### D15. The provider direction (S6 phase 4, "Adapter host" track) is implemented and conformance-tested on one process; device fields, mixed checkpoint/restore, and a plugin on a rank subset are not
 

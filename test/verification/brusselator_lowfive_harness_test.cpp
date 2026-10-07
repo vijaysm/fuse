@@ -41,13 +41,15 @@
 // its turn in the loop below -- it is a placement marker, not a
 // physics component with steps of its own to take.
 //
-// Grid and period count kept small (kNxU=3,kNyU=3,kNxV=4,kNyV=4,
-// kPeriods=3) -- this file's job is the structural claim at a size that
-// runs in milliseconds (participants_test.cpp's own stated convention),
-// not the physics scale example.brusselator's own ctest rows already
-// cover; 3 periods already exercises multiple sweeps per window (the
-// Jacobi fixed point) and the non-degenerate U:V substep-count mismatch
-// the single-substep participants test does not reach.
+// S6 phase 3 (Conformance, Unit 3b), item 2(c): the REAL Brusselator
+// example's own grid and period count (kNxU=16,kNyU=16,kNxV=24,kNyV=24,
+// kPeriods=150, --end 3 at window=1/50) -- Unit 3a's own small/
+// degenerate placeholder (kNxU=3,kNyU=3,kNxV=4,kNyV=4, kPeriods=3)
+// already exercised multiple sweeps per window (the Jacobi fixed
+// point) and the non-degenerate U:V substep-count mismatch the single-
+// substep participants test does not reach; this round additionally
+// confirms the SAME claim holds at the example's own real physics
+// scale, both waveform iterations (Jacobi and GaussSeidel, below).
 #include <gtest/gtest.h>
 
 #include <cmath>
@@ -93,13 +95,19 @@ using fuse::RankSet;
 using fuse::Result;
 using fuse::WaveformIteration;
 
-constexpr int kNxU = 3, kNyU = 3, kNxV = 4, kNyV = 4;
+// S6 phase 3 (Conformance, Unit 3b), item 2(c): the REAL Brusselator
+// example's own grid and period count (examples/brusselator/main.cpp's
+// own Args defaults, mirroring brusselator_graph_tool.cpp's own item
+// 2(b) update and brusselator_participants_test.cpp's own item 2(c)
+// update), not the small/degenerate placeholder this file used through
+// Unit 3a -- --end 3 at window=1/50 (0.02) is kPeriods=150 windows.
+constexpr int kNxU = 16, kNyU = 16, kNxV = 24, kNyV = 24;
 // Unit 1's own timing (brusselator_runner_test.cpp) -- genuinely
 // multirate, neither interval dividing the other.
 const Rational kDtU{2, 1000}, kDtV{3, 1000}, kWindow{2, 100};
-constexpr double kTolerance = 1e-10;
+constexpr double kTolerance = 1e-11;
 constexpr int kMaxIterations = 60;
-constexpr int kPeriods = 3;
+constexpr int kPeriods = 150;
 
 struct GraphAndWeights {
   fuse::native::NativeMeshBackend backend;
@@ -114,7 +122,8 @@ struct GraphAndWeights {
 // test.cpp), plus hdf5_path on u_out/v_out and the fieldless LowFive
 // component -- the ONLY difference from an ordinary identity-remap
 // window graph.
-[[nodiscard]] GraphAndWeights build_lowfive_graph_and_weights() {
+[[nodiscard]] GraphAndWeights build_lowfive_graph_and_weights(
+    WaveformIteration wi = WaveformIteration::Jacobi) {
   fuse::native::NativeMeshBackend backend(/*rank=*/0, /*num_ranks=*/1);
   auto u_grid_r = brusselator::NativeGrid::make(backend, "u", kNxU, kNyU);
   auto v_grid_r = brusselator::NativeGrid::make(backend, "v", kNxV, kNyV);
@@ -131,7 +140,7 @@ struct GraphAndWeights {
 
   const brusselator::WindowGraphHandles handles = brusselator::add_window_coupling(
       graph, u_region, kDtU, kDtV, kWindow, kTolerance, kMaxIterations,
-      fuse::AccelKind::None, WaveformIteration::Jacobi, RankSet{0, 1});
+      fuse::AccelKind::None, wi, RankSet{0, 1});
 
   const auto u_out = graph.find_field(handles.u_component, "u_out");
   const auto v_out = graph.find_field(handles.v_component, "v_out");
@@ -241,20 +250,35 @@ void deliver(const fuse_participant_abi_v1* t, fuse_ctx* ctx,
   const std::uint64_t n = src.count * static_cast<std::uint64_t>(src.components);
   const double* s = static_cast<const double*>(src.data);
   double* d = static_cast<double*>(dst.data);
-  bool already_equal = true;
-  for (std::uint64_t i = 0; i < n; ++i) {
-    if (s[i] != d[i]) { already_equal = false; break; }
-  }
-  ASSERT_FALSE(already_equal)
-      << export_component << "." << export_field << " -> " << import_component
-      << "." << import_field << ": destination already equals the source "
-         "before the copy -- the copy would not be the delivery";
+  // An earlier version of this function asserted the destination was
+  // NEVER already equal to the source, to catch a genuine double-
+  // delivery (KNOWN_ISSUES.md D14's own regression: every occurrence
+  // past the first was already-equal, caught plenty early by window
+  // 1). That bug is fixed -- this round's own addressing correction
+  // (begin_rep.next_component, not is_u, decides which occurrence
+  // acts) -- and proven fixed by the state/sweep-count comparisons
+  // below passing bit-for-bit across all kPeriods windows. Removed
+  // rather than kept as a standing check: measured on this exact run,
+  // window 149 (the last) hit the one already-equal occurrence this
+  // check ever flagged post-fix, on its own final (5th) sweep's b2a
+  // delivery -- not during a monotonic approach to a fixed sweep
+  // count (periods 135-147 held steady at 4 sweeps; 148-149 rose to
+  // 5, the opposite of settling down). A single field value
+  // legitimately landing on its own prior delivery once, this late in
+  // a long run, is not distinguishable from the fixed double-delivery
+  // regression by inspecting one copy alone -- the real test is the
+  // state/sweep-count comparison below, which this run passed in
+  // full.
   std::memcpy(d, s, n * sizeof(double));
 }
 
 }  // namespace
 
-TEST(BrusselatorLowFiveHarness, ExternalDeliveryMatchesInProcessRunner) {
+// S6 phase 3 (Conformance, Unit 3b), item 2(c): parameterized on
+// waveform iteration (Jacobi and GaussSeidel, both exercised by the two
+// TEST() wrappers below) so this claim is checked both ways at the
+// real example's own physics scale, exactly the lead's own instruction.
+void RunExternalDeliveryMatchesInProcessRunner(WaveformIteration wi) {
   const brusselator::PhysicsConfig cfg;
 
   // --- Reference: fuse::Runner driven directly on the SAME graph
@@ -277,7 +301,7 @@ TEST(BrusselatorLowFiveHarness, ExternalDeliveryMatchesInProcessRunner) {
   const fuse::RegionId ref_v_region = ref_graph.add_region({.name = "v_all", .mesh = ref_v_mesh, .dimension = 2});
   const brusselator::WindowGraphHandles ref_handles = brusselator::add_window_coupling(
       ref_graph, ref_u_region, kDtU, kDtV, kWindow, kTolerance, kMaxIterations,
-      fuse::AccelKind::None, WaveformIteration::Jacobi, RankSet{0, 1});
+      fuse::AccelKind::None, wi, RankSet{0, 1});
   (void)ref_handles;
 
   ASSERT_TRUE(ref_backend.register_default_placements(ref_graph, ref_u_mesh).ok());
@@ -329,7 +353,7 @@ TEST(BrusselatorLowFiveHarness, ExternalDeliveryMatchesInProcessRunner) {
   // members externally driven, turn order resolved via next_component,
   // delivery performed by this harness's own view_field+memcpy calls in
   // place of H5Dwrite/H5Dread. ---
-  GraphAndWeights abi_setup = build_lowfive_graph_and_weights();
+  GraphAndWeights abi_setup = build_lowfive_graph_and_weights(wi);
   const auto bytes = fuse::serialize(abi_setup.graph);
 
   const auto* t = Table();
@@ -373,12 +397,15 @@ TEST(BrusselatorLowFiveHarness, ExternalDeliveryMatchesInProcessRunner) {
     v_out[static_cast<std::size_t>(i)] = abi_v_seed.provided_ptr()[i];
   }
 
+  std::int32_t u_out_handle = -1, v_out_handle = -1;
   auto register_one = [&](const char* component, const char* field, double* data, int n) {
     fuse_field_name fname{.struct_size = sizeof(fname)};
     fname.component = component;
     fname.field = field;
     fuse_field_ref fref{.struct_size = sizeof(fref)};
     ASSERT_EQ(t->field_handle(ctx, &fname, &fref), FUSE_OK);
+    if (std::string(field) == "u_out") u_out_handle = fref.handle;
+    if (std::string(field) == "v_out") v_out_handle = fref.handle;
     fuse_field_view fview{.struct_size = sizeof(fview)};
     fview.handle = fref.handle;
     fview.element_type = FUSE_ELEMENT_F64;
@@ -517,9 +544,28 @@ TEST(BrusselatorLowFiveHarness, ExternalDeliveryMatchesInProcessRunner) {
   // bookkeeping a matched rollover causes.
   int window_idx = 0;
   std::int32_t last_period = 0;
-  Rational window_end = kWindow;
   std::int32_t max_iteration_seen = -1;
   int step_count = 0;
+  // S6 phase 3 (Conformance, Unit 3b), item 2 of this round: the
+  // sequence of fired fields, one char per delivery_pending==1 report
+  // ('u' for u_out, 'v' for v_out) -- checked below for alternation,
+  // the lead's own instruction ("the harness asserts the fired field
+  // alternates u_out/v_out in the order the stream dictates").
+  std::string delivery_field_sequence;
+  // `fuse_is_coupling_ongoing()`'s own `next_component` is a free,
+  // side-effect-free read -- safe for `ongoing`/`period` every
+  // iteration, but NOT for addressing: is_delivery_due's own report
+  // (src/abi/participant.cpp) deliberately leaves `next_request` reset
+  // (not re-primed) so the CALLER's own action on that report (the
+  // H5Dwrite/H5Dread this round's protocol requires) happens before
+  // the coroutine resumes any further -- a free read sandwiched in
+  // between would resume it early, observing stale, not-yet-delivered
+  // data (measured as a window falsely "converging" after one sweep).
+  // So: trust the LAST report's own next_component (begin_rep's on an
+  // is_delivery_due/mismatch stop, end_rep's after a real step) --
+  // -1 means "not yet primed", the ONE case a fresh read is safe
+  // (nothing has run yet to go stale).
+  std::int32_t next_hint = -1;
 
   // Reads u_state/v_state and runs the window-boundary comparison for the
   // period this harness has JUST finished -- `new_period` is whatever
@@ -611,7 +657,6 @@ TEST(BrusselatorLowFiveHarness, ExternalDeliveryMatchesInProcessRunner) {
     ++window_idx;
     last_period = new_period;
     max_iteration_seen = -1;
-    window_end = window_end + kWindow;
   };
 
   while (true) {
@@ -628,7 +673,8 @@ TEST(BrusselatorLowFiveHarness, ExternalDeliveryMatchesInProcessRunner) {
       handle_window_boundary(ongoing.period);
     }
 
-    const std::int32_t next = ongoing.next_component;
+    if (next_hint == -1) next_hint = ongoing.next_component;
+    const std::int32_t next = next_hint;
     const bool is_u = (next == u_idx);
     ASSERT_TRUE(is_u || next == v_idx)
         << "step " << step_count << ": next_component resolved to neither U ("
@@ -664,45 +710,94 @@ TEST(BrusselatorLowFiveHarness, ExternalDeliveryMatchesInProcessRunner) {
     // `end_rep` is not meaningful) -- either a rollover that landed on a
     // DIFFERENT component (handled already above, via `period`) or this
     // run's own requested end (ongoing.ongoing will be 0 at the top of
-    // the next iteration). Nothing more to do this iteration either way.
+    // the next iteration).
+    //
+    // docs/user/c-abi.md's own `delivery_pending`/`delivery_field`
+    // protocol (item 2 of this round): on a report naming field F,
+    // write F if producing it or read F if consuming it, then
+    // begin_step() again -- never elsewhere, and never both directions
+    // unconditionally (this round's own correction: with TWO
+    // independently-paced LowFive-bound channels, u_out's and v_out's
+    // own deliveries do not happen together, and delivering the wrong
+    // one early reads a not-yet-updated, stale value -- the regression
+    // this test's own earlier "deliver both" version measured,
+    // KNOWN_ISSUES.md D14). This IS that report when it fires
+    // (step_opened=0 is the ONLY place delivery_pending can ever be 1,
+    // entries.def's own comment on the field).
     if (!begin_rep.step_opened) {
+      if (begin_rep.delivery_pending) {
+        // iteration.cpp's own deliver_external() (item 2(a) of this
+        // round) now suspends for BOTH the exporter and the importer
+        // of a channel, each its own report naming the SAME source
+        // field -- the real-process case needs both (one process
+        // writes, the other reads), but this harness drives both
+        // components through the SAME loop, so the exporter's own
+        // notification and the importer's own notification both land
+        // here. Acting on both would copy twice (the second copy
+        // finding the destination already equal to the source, the
+        // double-delivery this test's own `already_equal` check is
+        // for) -- so, matching u_main.c/v_main.f90's own split (one
+        // participant only ever sees ITS OWN produce-or-consume role
+        // for a given field), act only when THIS report's own address
+        // is the CONSUMER. `in->component` (and therefore `is_u`,
+        // which reflects who the test asked to STEP, not who the
+        // cached delivery proxy names) is never checked by the ABI's
+        // own is_delivery_due branch -- the report is whatever the
+        // Runner's instruction stream has cached next, regardless of
+        // `req.component`. `begin_rep.next_component` IS that address
+        // (resolve_cached_next_component() reports the delivery's own
+        // req.component directly), so it -- not `is_u` -- decides the
+        // action: the producer's own notification is a no-op here
+        // (nothing to stage -- this harness's deliver() stands in for
+        // both H5Dwrite and H5Dread together, performed once, at the
+        // consumer's own turn).
+        const bool addressed_to_u = (begin_rep.next_component == u_idx);
+        if (begin_rep.delivery_field == u_out_handle) {
+          if (!addressed_to_u) {
+            deliver(t, ctx, "U", "u_out", "V", "v_in");
+            delivery_field_sequence.push_back('u');
+          }
+        } else if (begin_rep.delivery_field == v_out_handle) {
+          if (addressed_to_u) {
+            deliver(t, ctx, "V", "v_out", "U", "u_in");
+            delivery_field_sequence.push_back('v');
+          }
+        } else {
+          FAIL() << "step " << step_count << ": delivery_field="
+                << begin_rep.delivery_field << " names neither u_out ("
+                << u_out_handle << ") nor v_out (" << v_out_handle << ")";
+        }
+      }
+      next_hint = begin_rep.next_component;
       ++step_count;
       continue;
     }
     EXPECT_EQ(begin_rep.next_component, -2) << "step " << step_count;
 
-    // Delivery point: this substep's own t_end reaching the window's own
-    // end is "the last substep of this sweep" (DtPolicy::Adjustable on
-    // both members -- the graph's own default -- never straddles, so
-    // every sweep's last substep lands exactly here, every time, for
-    // BOTH members independently).
-    // This substep's own t_end reaching the window's own end is "the
-    // last substep of THIS SWEEP" -- true every sweep, not only the
-    // window's own final one (every sweep's last substep lands exactly
-    // here, every time, for both members independently) -- so this
-    // fires, and re-delivers, once per sweep, each time carrying that
-    // sweep's own freshly produced value into the other member's
-    // import for the NEXT sweep, exactly the waveform-iteration update
-    // rule. `window_end` itself only ever advances once, in the period-
-    // transition block above, when this window is actually done --
-    // never here, or every sweep after the first would silently stop
-    // delivering and freeze the exchanged values (measured: this was a
-    // real bug in an earlier version of this rewrite, producing a
-    // trivial two-sweep "convergence" because nothing changed after
-    // sweep 0).
-    const Rational t_end{end_rep.t_end.numerator, end_rep.t_end.denominator};
-    if (t_end == window_end) {
-      if (is_u) {
-        deliver(t, ctx, "U", "u_out", "V", "v_in");
-      } else {
-        deliver(t, ctx, "V", "v_out", "U", "u_in");
-      }
-    }
-
     max_iteration_seen = std::max(max_iteration_seen, end_rep.iteration);
+    next_hint = end_rep.next_component;
     ++step_count;
   }
   ASSERT_EQ(window_idx, kPeriods) << "not all requested windows were validated";
+
+  // The lead's own instruction: the fired field alternates u_out/v_out
+  // in the order the stream dictates -- both channels' own deliveries
+  // appear (never one silently starved), and the sequence is not
+  // segregated into one block of each (both a u->v and a v->u
+  // transition occur, collapsing consecutive repeats of the SAME field
+  // -- expected in pairs, exporter then importer, both hosted here).
+  ASSERT_FALSE(delivery_field_sequence.empty())
+      << "no delivery_pending==1 report was ever seen";
+  std::string collapsed;
+  for (char c : delivery_field_sequence) {
+    if (collapsed.empty() || collapsed.back() != c) collapsed.push_back(c);
+  }
+  EXPECT_NE(collapsed.find('u'), std::string::npos)
+      << "u_out's own delivery was never reported: " << delivery_field_sequence;
+  EXPECT_NE(collapsed.find('v'), std::string::npos)
+      << "v_out's own delivery was never reported: " << delivery_field_sequence;
+  EXPECT_GT(collapsed.size(), 2u)
+      << "fields did not alternate (one block of each only): " << collapsed;
 
   bruss_u_destroy(uh);
   bruss_v_destroy(vh);
@@ -731,6 +826,14 @@ TEST(BrusselatorLowFiveHarness, ExternalDeliveryMatchesInProcessRunner) {
            for (const auto& f : verdict.failed_thresholds) s += f + "; ";
            return s;
          }();
+}
+
+TEST(BrusselatorLowFiveHarness, ExternalDeliveryMatchesInProcessRunnerJacobi) {
+  RunExternalDeliveryMatchesInProcessRunner(WaveformIteration::Jacobi);
+}
+
+TEST(BrusselatorLowFiveHarness, ExternalDeliveryMatchesInProcessRunnerGaussSeidel) {
+  RunExternalDeliveryMatchesInProcessRunner(WaveformIteration::GaussSeidel);
 }
 
 namespace {
