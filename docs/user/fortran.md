@@ -73,6 +73,21 @@ rather than leaving you to guess it and recover from `E-ABI-STEP-ORDER` — see 
 "Knowing the order in advance" section for the full contract (`-1`/`-2` sentinels included); it
 applies identically here, member for member.
 
+## The participant loop in a real external code
+
+The program above is a minimal, hand-written illustration. This is the loop an actual unmodified
+Fortran code runs — `v_loop_step()`, the function `examples/brusselator/participants/v_main.f90`
+calls once per substep, driving the Brusselator's own `V` species through exactly the entry points
+[](c-abi.md) documents (`fuse_begin_step`, `step_opened`, `requires_checkpoint`/`requires_restore`,
+`fuse_end_step`), with no FUSE-specific logic anywhere else in that program. It is the Fortran twin
+of [](c-abi.md)'s own `u_loop_step()` — the SAME Brusselator pair, `U`'s side in C, `V`'s in
+Fortran, each driven through its own language's ABI only:
+
+```{literalinclude} ../../examples/brusselator/participants/v_loop.f90
+:language: fortran
+:lines: 112-161
+```
+
 ## Type mapping
 
 | In `entries.def` | In Fortran | Note |
