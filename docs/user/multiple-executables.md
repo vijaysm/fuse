@@ -154,4 +154,21 @@ reproduces `examples/brusselator/main.cpp`'s own `--check` verdict from them.
 `test/parallel/brusselator_participants/run_participants.sh` is the host driver
 (`verification.brusselator.participants.{mpmd,accept}.{3,5}`, `host_verification_needed`: MPI cannot
 start in this sandbox, KNOWN_ISSUES.md C1 — every executable involved is confirmed to BUILD at tier 1,
-not yet run).
+not yet run). What that script's own `mpiexec` lines actually are, exactly as `ctest` runs them (the
+world-size-3 case; `{3,5}`'s own `ranks_u`/`ranks_v`/`ranks_coupler` are `1/1/1` and `2/2/1`):
+
+```
+# mpmd.3: one mpiexec, three ':'-separated app segments
+mpiexec -n 1 brusselator_u_main --graph graph.yaml --log u.log --periods 2 \
+    : -n 1 brusselator_v_main --graph graph.yaml --log v.log --periods 2 \
+    : -n 1 brusselator_coupler_main --graph graph.yaml
+
+# accept.3: two mpiexec invocations -- U's executable is the acceptor and
+# carries the coupler's own bundled rank in its local MPI_COMM_WORLD
+mpiexec -n 2 brusselator_u_main --graph graph.yaml --log u.log --ranks-u 1 --periods 2 &
+mpiexec -n 1 brusselator_v_main --graph graph.yaml --log v.log --periods 2 &
+wait
+
+# both modes, every row
+brusselator_check --u-log u.log --v-log v.log
+```

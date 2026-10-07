@@ -293,12 +293,49 @@ by this new plugin's own constructor instead of `VolSingleton`'s) and the
 field bindings, read from an environment variable `FUSE_LOWFIVE_BINDINGS`
 naming the graph's own YAML path, through `fuse::build_lowfive_bindings()`.
 The launcher — the ctest row, or a user's own job script — sets the two
-HDF5 variables (and `FUSE_LOWFIVE_BINDINGS`); `uv_lowfive_main.c`'s own
-`H5Fcreate`/`H5Dwrite`/`H5Fopen`/`H5Dread` calls are then genuinely ordinary,
-with no FUSE call anywhere in them. **Unmeasured until the host's LowFive
-loads at all** (the libfmt.8 blocker above) — this is recorded as the
-design, not implemented yet; implementing a plugin that cannot be run here
-would be writing code with no way to catch its own mistakes.
+HDF5 variables (and `FUSE_LOWFIVE_BINDINGS`); on the application side, this
+is the Brusselator's own `u_main.c`/`v_main.f90` (not a separate
+LowFive-specific main, as an earlier plan for this section assumed before
+Unit 3b was actually built — `examples/brusselator/participants/
+{u_main.c,v_main.f90}` gained a `--transport lowfive` flag instead,
+KNOWN_ISSUES.md D14's own Unit 3b account), calling `H5Fcreate`/`H5Dwrite`/
+`H5Fopen`/`H5Dread` through a small shim (`examples/brusselator/
+participants/shim.{h,cpp}`'s own `bruss_lowfive_write`/`bruss_lowfive_read`
+— plain HDF5, `H5P_DEFAULT`, needed only because this host's own HDF5 ships
+no Fortran module for `v_main.f90` to call directly) gated on
+`fuse_step_report::delivery_pending`/`delivery_field` (`docs/user/
+c-abi.md`'s own protocol), never on every substep.
+
+**Host command lines, exactly as `ctest` runs them**
+(`verification.brusselator.participants.lowfive.{mpmd,accept}.3`,
+`examples/CMakeLists.txt`) — world size 3 only (1+1+1), the two environment
+variables above set in the test's own `ENVIRONMENT`, not inside the driver
+script, so `ctest --show-only` shows a host operator exactly what each row
+depends on:
+
+```
+# both rows, same two variables (plus FUSE_LOWFIVE_BINDINGS, computed per
+# row from its own scratch directory -- see run_participants.sh)
+export HDF5_VOL_CONNECTOR=lowfive
+export HDF5_PLUGIN_PATH=<directory containing fuse-lowfive-vol>
+
+# lowfive.mpmd.3
+mpiexec -n 1 brusselator_u_main --graph graph.yaml --log u.log --periods 2 --transport lowfive \
+    : -n 1 brusselator_v_main --graph graph.yaml --log v.log --periods 2 --transport lowfive \
+    : -n 1 brusselator_coupler_main --graph graph.yaml
+
+# lowfive.accept.3
+mpiexec -n 2 brusselator_u_main --graph graph.yaml --log u.log --ranks-u 1 --periods 2 --transport lowfive &
+mpiexec -n 1 brusselator_v_main --graph graph.yaml --log v.log --periods 2 --transport lowfive &
+wait
+
+brusselator_check --u-log u.log --v-log v.log
+```
+
+**Unmeasured until the host's LowFive loads at all** (the libfmt.8 blocker
+above, KNOWN_ISSUES.md D14's own consolidated "what remains" list) — the
+tier-1+LowFive build is confirmed clean; the two rows above have not been
+run.
 
 **IR/runtime half, implemented and measured (no LowFive/HDF5 needed) —
 2026-10-04.** `lower_channel()` (`src/ir/rules_channel.cpp`) emits a new

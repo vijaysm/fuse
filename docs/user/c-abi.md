@@ -74,6 +74,38 @@ for (fuse->is_coupling_ongoing(ctx, NULL, &ongoing); ongoing.ongoing;
 fuse->destroy(ctx, NULL, NULL);
 ```
 
+**Reading an error.** Every entry point above returns a `fuse_status` — `FUSE_OK` (`0`) or a
+negative `FUSE_ERR_*` — but not the message. `fuse->last_error(ctx, NULL, &err)` fills a caller-owned
+`fuse_error` with the failed call's own `E-...` code (`err.code`, static storage, valid until the
+next failing call), its full message length (`err.length`), and as much of the message text as fits
+in `err.buffer`/`err.capacity`, always NUL-terminated (`err.truncated` is `1` if it did not fit, and
+`err.length` is then the length a second call would need; pass `buffer = NULL` to query the length
+alone, without copying anything):
+
+```c
+fuse_error err = {.struct_size = sizeof(err)};
+char buf[256];
+err.buffer = buf;
+err.capacity = sizeof(buf);
+if (fuse->begin_step(ctx, &req, &rep) != FUSE_OK) {
+  fuse->last_error(ctx, NULL, &err);
+  fprintf(stderr, "%s: %s%s\n", err.code, buf, err.truncated ? " [...]" : "");
+}
+```
+
+`ctx` may be `NULL` here specifically to read the thread-local error of a failed `fuse->create()` —
+the one call that cannot yet have a context to attach an error to.
+
+**Two entries this document otherwise has no occasion to use.** `fuse->capabilities(NULL, NULL,
+&caps)` reports what this build can do as a `FUSE_CAP_*` bit set (`fuse/abi/types.h`) — a caller
+that must work across more than one FUSE build checks this before relying on an optional feature,
+the same way it checks `struct_size` before calling an entry a newer header added ("Version
+compatibility" below). `fuse->save_graph(ctx, NULL, &sink)` writes the loaded graph's own canonical
+bytes back out (`fuse_graph_sink::buffer`/`capacity`/`written`, the mirror of `load_graph`'s
+`fuse_graph_source`) — for a caller that loaded a graph from YAML and wants the canonical descriptor
+bytes to pass along (to a second process, or to store alongside a checkpoint), not a round trip any
+example above needs.
+
 **What "imports are current" actually means, measured rather than assumed (KNOWN_ISSUES.md D13).**
 `fuse_begin_step()` resumes FUSE's own instruction stream up to this component's own step and stops
 there: every exchange the SAME schedule the in-process `fuse::Runner` would run places before this
@@ -275,6 +307,38 @@ If you compiled against a newer header than the library you are running, compare
 before calling an entry point that a newer version added; the same comparison applies to every
 individual argument struct (`fuse/abi/types.h`), each of which carries its own `struct_size` for
 exactly this reason.
+
+**Growth history, stated once.** The three structs this document discusses members of by name have
+each grown since they were first frozen — every append documented, by commit, where it landed:
+
+| Struct | `sizeof` | Commit | What that append added |
+|---|---|---|---|
+| `fuse_step_request` | 16 → 72 | `612b153` | the provider direction's own window/flags members (`t_begin`, `t_end`, `step`, `iteration`, `requires_checkpoint`, `requires_restore`, `reserved`) — unused by `begin_step`/`end_step`, read only by a provider's own `advance()` |
+| `fuse_ongoing` | 32 → 40 | `da33572` | `next_component` ("Knowing the order in advance" above) |
+| `fuse_step_report` | 64 → 72 | `da33572` | `next_component`, alongside `fuse_ongoing`'s own append |
+| `fuse_step_report` | 72 → 88 | `f768fb3` | `step_opened` and `period` together (the "`step_opened`" section above) |
+| `fuse_step_report` | 88 → 104 | `dfcd9d1` | `delivery_pending` and `delivery_field` together (the "`delivery_pending`" section above) |
+
+Every intermediate append also claims its own few bytes of trailing padding as an explicitly named
+`reserved*` member (`abi-design.md` rule 3: a struct whose size does not change when a member is
+appended would let that member hide inside existing padding, invisible to the `struct_size`
+comparison every caller is supposed to make) — visible in `include/fuse/abi/entries.def` itself,
+not repeated member by member here.
+
+## The participant loop in a real external code
+
+The example above is a minimal, hand-written illustration. This is the loop an actual unmodified
+external code runs — `u_loop_step()`, the function `examples/brusselator/participants/u_main.c`
+calls once per substep, driving the Brusselator's own `U` species through exactly the entry points
+documented above (`begin_step`, `step_opened`, `requires_checkpoint`/`requires_restore`,
+`end_step`), with no FUSE-specific logic anywhere else in that program:
+
+```{literalinclude} ../../examples/brusselator/participants/u_loop.c
+:language: c
+```
+
+The Fortran side of the SAME Brusselator pair — `V`'s own `v_loop_step()` — is in
+[](fortran.md)'s own matching section, member for member.
 
 ## How begin_step()/end_step() really drive FUSE
 
