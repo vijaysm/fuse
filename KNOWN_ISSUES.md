@@ -2601,6 +2601,140 @@ history; `docs/user/lowfive.md`'s "Unit 3a" section and `docs/user/
 c-abi.md`'s protocol section document the resulting behavior for a
 caller.
 
+**Unit 3b ("the distributed shape"): implemented, LowFive-free as far as
+the sandbox allows — the real HDF5/LowFive path compiles against this
+host's headers and nothing further; host-only, like every other
+Conformance Unit 2/2b row this mirrors.**
+
+1. `fuse::plan_lowfive_rendezvous(writer_ranks, reader_ranks, this_rank)`
+   (`include/fuse/transport/lowfive.hpp`) — pure, MPI-free rank-set
+   arithmetic (`MPI_Comm_split`'s own color/key and
+   `MPI_Intercomm_create`'s own local/remote leader), mirroring
+   `connect.hpp`'s own "split for testability" convention. `E-LOWFIVE-
+   RENDEZVOUS-OVERLAP` (the two sets share a rank) and `E-LOWFIVE-
+   RENDEZVOUS-UNPLACED` (`this_rank` in neither). Five new tests in
+   `test/transport/lowfive_test.cpp`, including one deliberately
+   non-contiguous `RankSet` proving `split_key` comes from `index_of`,
+   not the raw rank number. Tier-0, no MPI needed to test the arithmetic
+   itself.
+2. `u_main.c`/`v_main.f90` gain `--transport lowfive`: after a sweep's
+   last substep (`t_end` at a window boundary, checked by exact-rational
+   cross-multiplication — no floating point), `view_field()` the K-wide
+   export and `H5Dwrite` it to the field's own `hdf5_path`; before a
+   sweep's own substeps, `view_field()` the LowFive-bound import's own
+   `ExternalDelivery` arc and `H5Dread` into it. Both calls are PLAIN
+   HDF5 (`H5P_DEFAULT`, no FUSE-specific call) through a new, tiny
+   extern "C" shim (`examples/brusselator/participants/shim.{h,cpp}`:
+   `bruss_lowfive_write`/`bruss_lowfive_read`/`bruss_lowfive_available`)
+   rather than calling HDF5 directly from each language -- the C side
+   could (u_main.c is already pure C), but the Fortran side cannot:
+   this host's `/opt/hdf5` ships no Fortran module at all (checked), and
+   this codebase's own established pattern for exactly this situation is
+   shim.cpp, already linked into both mains for the physics core.
+   `bruss_lowfive_available()` lets v_main.f90 refuse early with a clear
+   message when `FUSE_HAVE_LOWFIVE` is 0 -- it has no C preprocessor to
+   read that macro with directly, unlike u_main.c.
+   Known scope limit, recorded rather than silently assumed away: neither
+   main can know an UPCOMING step's own `t_begin` before calling
+   `begin_step` for it, so the read happens before EVERY substep, not
+   provably only a sweep's first -- correct for this track's own
+   reference graph (`brusselator_graph_tool.cpp`'s `kDtU == kWindow`, the
+   degenerate one-substep-per-window case) and merely redundant, not
+   wrong, on a graph with more than one substep per sweep.
+3. The VOL attachment itself is the `HDF5_VOL_CONNECTOR`/
+   `HDF5_PLUGIN_PATH` environment-variable mechanism `docs/user/
+   lowfive.md`'s own "Unit 3" section designed for the single-process
+   case, extended here to the distributed one: a new target,
+   `fuse-lowfive-vol` (a SHARED library HDF5's loader `dlopen()`s),
+   exports the two required extern "C" symbols. On first call it reads
+   `FUSE_LOWFIVE_BINDINGS` (a graph YAML path), applies every
+   LowFive-bound field's own `hdf5_path` via `set_memory()`, and — if an
+   MPI world of more than one rank and a LowFive-bound channel naming
+   this rank are both present — builds the writer/reader
+   intercommunicator itself via `plan_lowfive_rendezvous()` (item 1)
+   plus `MPI_Comm_split`/`MPI_Intercomm_create`, then constructs
+   `LowFive::DistMetadataVOL` instead of the single-process
+   `MetadataVOL`. **Categorically less confidence than anything else in
+   this entry**: this cannot be measured even once in this sandbox (the
+   libfmt.8 dlopen blocker above still applies — LowFive cannot load at
+   all here, so neither can a plugin built against it), it is scoped to
+   MPMD launch only (ACCEPT mode's own merged base communicator is never
+   exposed back to a caller through any ABI query, an open question for
+   the lead rather than a silent guess), and the connector name this
+   plugin's own ctest rows pass to `HDF5_VOL_CONNECTOR` ("lowfive") is
+   this track's best reading of LowFive's own `VOLBase::name` member, not
+   something this session found a way to confirm from headers alone.
+
+   **A real, from-clean-configure build DOES catch real problems a
+   build against an already-warm cache cannot — the lead's own rejection
+   of this item's first pass, and the three-theory diagnosis that
+   followed, are the record of that.** The first version (one
+   translation unit, `lowfive_plugin.cpp`) built clean ONLY because of
+   an accidental `target_link_libraries` call order; a fresh configure
+   with `/opt/lowfive;/opt/hdf5` FIRST on `CMAKE_PREFIX_PATH` (the lead's
+   own clean-export check) reproduced the exact failure the lead
+   reported: `/opt/lowfive/include/fmt/format-inl.h` fails this host's
+   C++20 consteval checking. The plugin is now two translation units
+   with disjoint CMake dependencies — `lowfive_plugin_graph.cpp` (fuse
+   model/base only, builds the field-binding list and the rendezvous
+   plan) and `lowfive_plugin_vol.cpp` (LowFive/HDF5/MPI only, never a
+   FUSE header beyond `base/config.hpp`), handing plain data across a
+   third, dependency-free header — per the lead's own instruction, and a
+   real fix: unlike the link-order version, no translation unit here can
+   ever see both fmt-pulling header families at once, regardless of how
+   `CMAKE_PREFIX_PATH` is ordered.
+
+   That TU split alone was NOT the whole story, though — measured, not
+   assumed, after the split still failed under the lead's own prefix
+   ordering: `lowfive_plugin_vol.cpp`, which never includes a single
+   FUSE header, failed with the IDENTICAL consteval error, proving the
+   problem was never "two fmt versions in one translation unit" at all.
+   **The actual root cause: `/opt/lowfive` ships its own bundled fmt
+   8.1.1 WITH a discoverable CMake package config
+   (`/opt/lowfive/lib/cmake/fmt/fmt-config.cmake`), and this project's
+   own `fuse_require(fmt ...)` call had no minimum version — with
+   `/opt/lowfive` first on `CMAKE_PREFIX_PATH`, `find_package(fmt)`
+   simply accepted the first config it found, and `fmt::fmt` resolved to
+   LowFive's bundled, broken 8.1.1 copy project-wide, not to homebrew's
+   working 12.2.0.** Fixed at the source: `fuse_require(fmt VERSION 9
+   ...)` (`cmake/FuseDependencies.cmake`) rejects 8.1.1 and finds
+   homebrew's 12.2.0 instead, in either `CMAKE_PREFIX_PATH` ordering.
+   Measured this session, from two FRESH configures (`/opt/lowfive;
+   /opt/hdf5` first, and last, on `CMAKE_PREFIX_PATH`, exactly the two
+   orderings the lead asked this to be proven against): both build every
+   target clean, including `fuse-coupler-transport` (`lowfive_
+   transport.cpp` and its four non-LowFive siblings, which the version-
+   less `fuse_require(fmt ...)` call had ALSO been silently exposing to
+   the same failure — this track's own earlier claim that "`lowfive_
+   transport.cpp` compiles because it includes no FUSE fmt-using header"
+   was wrong: it includes `fuse/transport/transport.hpp`, which includes
+   `fuse/base/result.hpp` directly) and every shim.cpp-compiling target
+   in both `examples/CMakeLists.txt` and `test/CMakeLists.txt`.
+   `cmake/FuseDependencies.cmake`'s own `fuse_link_lowfive_with_fmt_fix()`
+   function and the `BEFORE`-ordered include directory it still applies
+   at several call sites are a now-redundant belt-and-suspenders left
+   over from the two earlier, incomplete theories (recorded in that
+   function's own comment rather than deleted) — correctness rests on
+   the `VERSION 9` floor alone.
+4. ctest rows `verification.brusselator.participants.lowfive.{mpmd,
+   accept}.3` (`examples/CMakeLists.txt`), registered only when
+   `FUSE_ENABLE_LOWFIVE`, `FUSE_ENABLE_MPI`, the Fortran target, and
+   `fuse-lowfive-vol` all exist — world size 3 only (1+1+1), this track's
+   own degenerate reference graph never needing more to prove the wiring.
+   `HDF5_VOL_CONNECTOR`/`HDF5_PLUGIN_PATH`/`FUSE_LOWFIVE_BINDINGS` are set
+   in the test's own `ENVIRONMENT`, not inside `run_participants.sh`
+   (extended with a new, optional trailing `[transport]` argument passed
+   through to all three executables), so `ctest --show-only` shows a host
+   operator exactly what each row depends on.
+5. Tier-1+LowFive configure AND build (not run), each from a FRESH
+   configure, verified TWICE this session with `CMAKE_PREFIX_PATH`
+   reversed between runs (`/opt/lowfive;/opt/hdf5` first, then last;
+   otherwise identical: `-DFUSE_ENABLE_MPI=ON -DFUSE_ENABLE_LOWFIVE=ON
+   -DFUSE_ENABLE_FORTRAN=ON -DHDF5_ROOT=/opt/hdf5`) — every target in
+   the full build (not a named subset) built clean both times, including
+   `brusselator_u_main`, `brusselator_v_main`, `fuse-lowfive-vol`, and
+   `fuse-coupler-transport`.
+
 ### D15. The provider direction (S6 phase 4, "Adapter host" track) is implemented and conformance-tested on one process; device fields, mixed checkpoint/restore, and a plugin on a rank subset are not
 
 **What is done, measured 2026-10-02.** `include/fuse/abi/provider.h` (generated from a second
