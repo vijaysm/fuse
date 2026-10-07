@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
@@ -307,6 +308,53 @@ TEST(AbiParticipant, AThrowingComponentBecomesRuntimeErrorWithTheMessage) {
   ASSERT_EQ(t->last_error(ctx, nullptr, &err), FUSE_OK);
   const std::string message(buf);
   EXPECT_NE(message.find("boom"), std::string::npos) << "last_error: " << message;
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+// A buffer too small for the message gets the prefix that fits, NUL-terminated,
+// truncated = 1, and the full length -- the contract c-abi.md's example relies
+// on. The first implementation copied NOTHING on truncation, so a caller
+// printing the buffer read uninitialised bytes.
+TEST(AbiParticipant, LastErrorCopiesThePrefixThatFitsWhenTruncated) {
+  const auto* t = Table();
+  const auto bytes = fuse::abi_test::build_two_component_lag1_bytes();
+  fuse_ctx* ctx = CreateAndLoad(t, bytes);
+  ASSERT_TRUE(fuse::abi_test::inject_component(
+      ctx, "upstream", std::make_unique<ThrowingComponent>("upstream")));
+  ASSERT_TRUE(fuse::abi_test::inject_component(
+      ctx, "downstream", std::make_unique<TrivialComponent>("downstream")));
+  ASSERT_EQ(t->initialize(ctx, nullptr, nullptr), FUSE_ERR_RUNTIME);
+
+  fuse_error full{.struct_size = sizeof(full)};
+  char big[1024];
+  std::memset(big, 'X', sizeof(big));
+  full.buffer = big;
+  full.capacity = sizeof(big);
+  ASSERT_EQ(t->last_error(ctx, nullptr, &full), FUSE_OK);
+  ASSERT_EQ(full.truncated, 0);
+  const std::string whole(big);
+  ASSERT_GT(whole.size(), 8u);
+  EXPECT_EQ(full.length, whole.size());
+
+  fuse_error part{.struct_size = sizeof(part)};
+  char small[8];
+  std::memset(small, 'X', sizeof(small));
+  part.buffer = small;
+  part.capacity = sizeof(small);
+  ASSERT_EQ(t->last_error(ctx, nullptr, &part), FUSE_OK);
+  EXPECT_EQ(part.truncated, 1);
+  EXPECT_EQ(part.length, whole.size()) << "length is the full message's, not the copied prefix's";
+  EXPECT_EQ(small[7], '\0') << "the truncated copy must be NUL-terminated";
+  EXPECT_EQ(std::string(small), whole.substr(0, 7));
+
+  fuse_error none{.struct_size = sizeof(none)};
+  char one[1] = {'X'};
+  none.buffer = one;
+  none.capacity = 0;
+  ASSERT_EQ(t->last_error(ctx, nullptr, &none), FUSE_OK);
+  EXPECT_EQ(none.truncated, 1);
+  EXPECT_EQ(one[0], 'X') << "capacity 0 must write nothing";
 
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
