@@ -168,7 +168,7 @@ inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
     // ---- S6 phase 4, "Adapter host" track: end ----------------------------
     if (c.launch.mode == LaunchMode::LowFive) {
       any_lowfive_component = true;
-      // Unit 3a's own closing item (the lead's own ruling, 2026-10-0X): a
+      // Unit 3a's own closing item (the lead's own ruling, 2026-10-06): a
       // LaunchMode::LowFive component is a placement, the same role a
       // Coupler already plays for an ordinary remap_on routing -- it has
       // no register_fields() of its own to call, no advance(), and gets
