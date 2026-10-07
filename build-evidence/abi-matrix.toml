@@ -2,10 +2,27 @@
 #
 #  Every row names the test that pins one claim about the participant ABI,
 #  the file it lives in, and WHAT MAKES IT FAIL: a row whose failure
-#  condition cannot be stated is not a test. `status` is "planned" until the
-#  test exists and has run; tools/check-abi-matrix.py (Phase 2) turns a
-#  "present" row whose test or file is missing into a gate failure, the way
-#  tools/check-parallel-matrix.py does for the parallel matrix.
+#  condition cannot be stated is not a test. tools/check-abi-matrix.py
+#  (Phase 2, not yet built) would turn a row whose test or file is missing
+#  into a gate failure, the way tools/check-parallel-matrix.py does for the
+#  parallel matrix -- until it exists, this file is read by eye.
+#
+#  `status` (S6 phase 3, Unit 4, record-consistency pass: replaces the
+#  earlier two-value present/planned scheme with what each row's own test
+#  has actually been measured to do, not merely whether it exists):
+#    measured-tier-0  the named test runs, and passes, in the ordinary
+#                      (no MPI, no LowFive) sandbox ctest suite -- every row
+#                      below with this status was confirmed passing in the
+#                      SAME ctest run this pass's own report cites.
+#    built-only        the named test's own file compiles and links clean in
+#                      SOME configured tier, but has not been run anywhere
+#                      yet -- neither this sandbox (missing a capability it
+#                      needs) nor a host (not yet attempted).
+#    host-only          the named test needs a capability this sandbox
+#                      cannot provide at all (real MPI, chiefly) -- confirmed
+#                      to BUILD clean where that applies, awaiting a host run
+#                      to turn "builds" into "passes". `requires` names the
+#                      missing capability.
 #
 #  Rules under test are numbered as in docs/dev/abi-design.md, "How
 #  arguments cross the boundary".
@@ -17,7 +34,7 @@ claim = "types.h and participant.h are exactly what entries.def generates"
 file = "test/abi/entries_golden_test.cpp"
 test = "AbiGolden.HeadersMatchTheEntryList"
 fails_when = "any hand edit to either header, or a .def change without regeneration (runs tools/gen-abi.py --check as a subprocess and asserts exit 0)"
-status = "present"
+status = "measured-tier-0"
 
 [[row]]
 id = "ABI-GOLDEN-SYMBOLS"
@@ -26,7 +43,7 @@ claim = "libfuse-abi exports exactly one symbol, fuse_coupler_abi"
 file = "test/abi/exported_symbols.golden"
 test = "abi.exported_symbols"
 fails_when = "nm -g --defined-only on the built library, filtered to text symbols, differs from the one-line golden; also fails if the library is built without -fvisibility=hidden"
-status = "present"
+status = "measured-tier-0"
 
 [[row]]
 id = "ABI-GOLDEN-SIZES"
@@ -35,7 +52,7 @@ claim = "every argument struct's sizeof is the committed value, and sizeof(void*
 file = "test/abi/struct_sizes.golden"
 test = "AbiGolden.StructSizesMatchTheTable"
 fails_when = "a member is appended into trailing padding (sizeof unchanged -> the golden still matches, so this row is paired with ABI-GROWTH below), or any member is added without updating the golden"
-status = "present"
+status = "measured-tier-0"
 
 [[row]]
 id = "ABI-GROWTH"
@@ -44,7 +61,7 @@ claim = "appending a member to any struct in the .def increases its sizeof"
 file = "test/abi/entries_golden_test.cpp"
 test = "AbiGolden.NoStructHasTrailingPaddingALaterMemberCouldHide"
 fails_when = "for any struct, sizeof(struct) > offsetof(last member) + sizeof(last member) rounded to the struct's alignment -- i.e. there is trailing padding a 4-byte append would vanish into. fuse_version_info was the one case (28 bytes of members in 32) and carries a reserved member since 2026-10-02; the measured table in test/abi/struct_sizes.golden shows zero trailing padding everywhere"
-status = "present"
+status = "measured-tier-0"
 
 [[row]]
 id = "ABI-SHORT-STRUCT"
@@ -53,7 +70,7 @@ claim = "a struct_size shorter than the first frozen layout is FUSE_ERR_VERSION,
 file = "test/abi/struct_size_test.cpp"
 test = "AbiStructSize.ShortStructIsRefused"
 fails_when = "any entry accepts struct_size = 4 (just the header) for a struct with more members; also for struct_size = 0 and struct_size > FUSE_ABI_MAX_STRUCT_SIZE"
-status = "present"
+status = "measured-tier-0"
 
 [[row]]
 id = "ABI-LONG-STRUCT"
@@ -62,7 +79,7 @@ claim = "a struct_size longer than this library's layout (a newer caller) is acc
 file = "test/abi/struct_size_test.cpp"
 test = "AbiStructSize.LongerStructFromANewerCallerIsAccepted"
 fails_when = "an entry refuses or misreads a caller struct padded with trailing bytes to sizeof + 64"
-status = "present"
+status = "measured-tier-0"
 
 [[row]]
 id = "ABI-TABLE-NEGOTIATION"
@@ -71,7 +88,7 @@ claim = "a v1 caller runs against a v2 table, and a v2 caller detects a v1 libra
 file = "test/abi/negotiation_test.cpp"
 test = "AbiNegotiation.V1CallerAgainstV2Table;AbiNegotiation.V2CallerAgainstV1Table"
 fails_when = "the v1 caller (compiled against a copy of participant.h with the v1 table) cannot drive a two-component graph through a hand-built v2 table that appends one entry; or the v2 caller does not see struct_size < sizeof(v2) and use the v1 subset"
-status = "present"
+status = "measured-tier-0"
 
 [[row]]
 id = "ABI-FAULT-INJECTION"
@@ -80,7 +97,7 @@ claim = "a test can substitute one table entry without relinking"
 file = "test/abi/negotiation_test.cpp"
 test = "AbiNegotiation.ASubstitutedEntryIsCalledInsteadOfTheLibrarys"
 fails_when = "copying the table, replacing begin_step with a stub that returns FUSE_ERR_RUNTIME, and driving a graph does not surface FUSE_ERR_RUNTIME at the first step"
-status = "present"
+status = "measured-tier-0"
 
 [[row]]
 id = "ABI-C-CONSUMER"
@@ -89,7 +106,7 @@ claim = "a pure-C program links only libfuse-abi from an install tree and runs a
 file = "test/abi/install_consumer/main.c"
 test = "abi.install_consumer_c"
 fails_when = "the installed header set does not compile as C11 -Wpedantic; the consumer needs any library other than libfuse-abi (checked by the link line); or its result differs from the in-process C++ run of the same graph beyond 0 (EXPECT_EQ on every value: same code, same order)"
-status = "present"
+status = "measured-tier-0"
 
 [[row]]
 id = "ABI-FORTRAN-SIZES"
@@ -98,7 +115,7 @@ claim = "C_SIZEOF of every ffuse derived type equals the C sizeof"
 file = "test/abi/fortran/sizes_test.f90"
 test = "abi.fortran_sizes"
 fails_when = "any type's C_SIZEOF differs from struct_sizes.golden (the Fortran program prints its table; the test diffs it against the golden)"
-status = "present"
+status = "measured-tier-0"
 
 [[row]]
 id = "ABI-FORTRAN-CONSUMER"
@@ -107,7 +124,7 @@ claim = "a pure-Fortran program links only libfuse-abi-fortran from an install t
 file = "test/abi/fortran/consumer.f90"
 test = "abi.install_consumer_fortran"
 fails_when = "any value differs from the C consumer's output (same graph, same inputs, EXPECT_EQ semantics via a byte diff of the two programs' printed hexfloat results)"
-status = "present"
+status = "measured-tier-0"
 
 [[row]]
 id = "ABI-EXACT-TIME"
@@ -116,7 +133,7 @@ claim = "step bounds cross the boundary exactly"
 file = "test/abi/participant_test.cpp"
 test = "AbiParticipant.StepBoundsAreTheSchedulesRationals"
 fails_when = "begin_step's fuse_step_report.t_begin/t_end differ from the compiled plan's Rational bounds for a 1/3-step component (a double would)"
-status = "present"
+status = "measured-tier-0"
 
 [[row]]
 id = "ABI-EXCEPTION-CONTAINMENT"
@@ -125,16 +142,16 @@ claim = "no C++ exception crosses the boundary"
 file = "test/abi/participant_test.cpp"
 test = "AbiParticipant.AThrowingComponentBecomesRuntimeErrorWithTheMessage"
 fails_when = "a graph whose component throws at advance() terminates the process instead of returning FUSE_ERR_RUNTIME with last_error carrying the what()"
-status = "present"
+status = "measured-tier-0"
 
 [[row]]
 id = "ABI-COLLECTIVE-AGREEMENT"
 rule = 7
 claim = "a failure on one process of a collective entry is reported on every process"
 file = "test/parallel/abi_participant_mpi_test.cpp"
-test = "parallel.abi_participant.2"
+test = "AbiParticipantMpi.IsCouplingOngoingAgreesAcrossRanksAfterOnePeriod (ctest row parallel.abi_participant_mpi.2; corrected from the stale parallel.abi_participant.2 this pass found)"
 fails_when = "initialize() or begin_step() returns FUSE_OK on one process and an error on another for the same call (a rank-local refusal inside a collective, the class fixed in bb6f57f)"
-status = "planned"
+status = "host-only"
 requires = "mpi"
 
 #  Planned mutation rows (added to build-evidence/mutations/abi.toml in
@@ -159,7 +176,7 @@ claim = "a provider, mounted as a native component, a dlopen'd C plugin, a dlope
 file = "test/abi/conformance_test.cpp"
 test = "abi.conformance (ConformanceTest.LagOneGraphAllFourKindsMatchNative, ConformanceTest.SubcycledMeanGraphAllFourKindsMatchNative)"
 fails_when = "any of the three non-native kinds disagrees with the native run's recorded history for any period, or fails to run at all"
-status = "present"
+status = "measured-tier-0"
 
 [[row]]
 id = "ABI-PROVIDER-TABLE-VERSION"
@@ -168,7 +185,7 @@ claim = "a provider table whose abi_version does not equal FUSE_ABI_VERSION is r
 file = "test/abi/conformance_test.cpp"
 test = "abi.conformance (ConformanceTest.PluginTableVersionMismatchIsRefused, ConformanceTest.ProviderTableVersionMismatchIsRefused)"
 fails_when = "Registry::mount_table/mount_dynamic accepts a table claiming a different abi_version"
-status = "present"
+status = "measured-tier-0"
 
 [[row]]
 id = "ABI-PROVIDER-TABLE-STRUCT-SIZE"
@@ -177,7 +194,7 @@ claim = "a provider table struct_size shorter than sizeof(fuse_provider_abi_v1) 
 file = "test/abi/conformance_test.cpp"
 test = "abi.conformance (ConformanceTest.ProviderTableStructSizeShortIsRefused, ConformanceTest.ProviderTableStructSizeLongFromANewerCallerIsAccepted)"
 fails_when = "Registry::mount_table accepts a short table, or refuses a longer one"
-status = "present"
+status = "measured-tier-0"
 
 [[row]]
 id = "ABI-PROVIDER-DESCRIBE"
@@ -186,7 +203,7 @@ claim = "a provider whose describe() disagrees with the graph's own field declar
 file = "test/abi/conformance_test.cpp"
 test = "abi.conformance (ConformanceTest.PluginDescribeDisagreeingWithTheGraphIsRefused)"
 fails_when = "ProviderAdapter::register_fields() binds a field whose describe() entry disagrees with the graph instead of refusing"
-status = "present"
+status = "measured-tier-0"
 
 [[row]]
 id = "ABI-PROVIDER-ADVANCE-FAILURE"
@@ -195,7 +212,7 @@ claim = "a provider whose advance() returns a non-FUSE_OK status surfaces as the
 file = "test/abi/conformance_test.cpp"
 test = "abi.conformance (ConformanceTest.PluginAdvanceErrorSurfacesAsComponentFailure)"
 fails_when = "fuse_run() returns FUSE_OK despite the mounted provider's advance() having returned an error"
-status = "present"
+status = "measured-tier-0"
 
 [[row]]
 id = "ABI-PROVIDER-LOAD-REFUSAL"
@@ -204,7 +221,7 @@ claim = "a dlopen() failure (missing file, missing fuse_provider_abi symbol) is 
 file = "test/abi/conformance_test.cpp"
 test = "abi.conformance (ConformanceTest.DlopenFailureIsRefusedWithDlerrorText, ConformanceTest.GraphDeclaredPluginWithNoFileIsRefusedAtInitialize)"
 fails_when = "Registry::mount_dynamic succeeds against a nonexistent path, or its error message is empty"
-status = "present"
+status = "measured-tier-0"
 
 [[row]]
 id = "ABI-PROVIDER-REGISTRY-DUPLICATE"
@@ -213,7 +230,7 @@ claim = "the registry never substitutes: mounting a second provider under an alr
 file = "test/abi/conformance_test.cpp"
 test = "abi.conformance (ConformanceTest.RegistryRefusesADuplicateName)"
 fails_when = "a second mount_table()/mount_dynamic() call under a name already mounted succeeds, silently replacing the first"
-status = "present"
+status = "measured-tier-0"
 
 [[row]]
 id = "ABI-PROVIDER-LAUNCH-KIND"
@@ -222,7 +239,7 @@ claim = "a component the graph itself declares LaunchMode::Plugin is mounted aut
 file = "test/abi/conformance_test.cpp"
 test = "abi.conformance (ConformanceTest.GraphDeclaredPluginIsAutoMountedAndRun)"
 fails_when = "a graph-declared plugin component is left as the external-step placeholder instead of being mounted, or fuse_run() refuses the graph because of it"
-status = "present"
+status = "measured-tier-0"
 
 #  Planned mutation rows (added to build-evidence/mutations/abi-provider.toml,
 #  all already landed and restored -- see that file's own `result` keys):

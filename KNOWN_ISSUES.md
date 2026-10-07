@@ -165,20 +165,68 @@ difference at `--end 0.1` shrinks monotonically under 1x–8x refinement with
 measured orders 0.73, 0.76, 0.86, and the two codes' Richardson limits agree
 to `1.4e-6`.
 
-Against the four properties above this is honest about what it shows: it
+Against the four properties above this was honest about what it showed: it
 hands us its existing arrays (Eigen vectors, wrapped, not copied) — that one
-holds. It is not a separate executable, does not run its own time loop, and
-does not run on its own processes: those need the C ABI and a
-component-driven entry, which do not exist yet. **A4 stays open for those
-three**, and the Brusselator is the code they will be shown on.
+held from the start. It was not a separate executable, did not run its own
+time loop, and did not run on its own processes.
 
-**What to do — when S6 comes up, not now.** For the three remaining
-properties, either the Brusselator itself driven from its own `main` through
-the C ABI, or a second code; say which. The
-stand-in is a weaker result and would be reported as such, naming which of the
-four properties above went untested — a program we wrote knows our conventions
-even when it is built separately, so it cannot show that an unfamiliar code
-works.
+**ANSWERED, S6 phase 3 (Conformance): all four properties now demonstrated
+on the SAME Brusselator, through the C ABI — `u_main.c`/`v_main.f90`.
+One is measured in this sandbox; three build clean here and are host-only
+(MPI cannot start in this sandbox, C1).**
+
+1. **Separate executable, its own build system, not linked into our test
+   suite.** `examples/brusselator/participants/{u_main.c,v_main.f90}`
+   (`examples/CMakeLists.txt`'s own `brusselator_u_main`/`brusselator_v_main`
+   targets) — genuinely separate programs, each with its own `main`, linking
+   only `fuse::abi`/`fuse::abi-fortran` (never `fuse::runtime` or any other
+   internal library), launched by
+   `test/parallel/brusselator_participants/run_participants.sh` as
+   independent `mpiexec` segments. **Built, host-only**: confirmed clean at
+   tier 1 (`-DFUSE_ENABLE_MPI=ON -DFUSE_ENABLE_FORTRAN=ON`) this phase,
+   including under `-DFUSE_ENABLE_LOWFIVE=ON` too; the executables
+   themselves have not been RUN (ctest rows below).
+2. **Runs its own time loop, calls FUSE when it wants to exchange.**
+   `examples/brusselator/participants/{u_loop.c,v_loop.f90}` — the SAME
+   loop-step functions `u_main.c`/`v_main.f90` call, structured exactly as an
+   unmodified external code's own driver would be: `fuse_begin_step()`,
+   advance local physics, `fuse_end_step()`, repeat, with no FUSE call in
+   between. **Measured-tier-0**: `verification.brusselator_participants`
+   and `verification.brusselator_lowfive_harness` drive these SAME loop
+   functions directly, single-process, both waveform iterations, bit for
+   bit against Unit 1's own in-process `Runner` across the example's full
+   150-window span — the loop structure itself, independent of process
+   placement, is proven correct, not merely compiled.
+3. **Runs on its own set of processes, alongside another code on
+   different processes.** `verification.brusselator.participants.
+   {mpmd,accept}.{3,5}` (`examples/CMakeLists.txt`) — U, V, and the coupler
+   as genuinely separate `mpiexec` segments (`mpmd`) or separate
+   executables merging through `MPI_Comm_accept`/`MPI_Comm_connect`
+   (`accept`, KNOWN_ISSUES.md D18's own routing). **Built, host-only**:
+   all four executables build clean at tier 1 this phase; none of these
+   four rows has been run (MPI cannot start here, C1).
+4. **Hands us its existing arrays — and, as the fourth property's own
+   strongest form, does not even need to hand FUSE the bytes, only tell it
+   when to move them.** `--transport lowfive`:
+   `verification.brusselator.participants.lowfive.{mpmd,accept}.3` — U and
+   V exchange through a real `H5Dwrite`/`H5Dread` pair LowFive intercepts,
+   FUSE itself touching no byte of the transferred field (`docs/user/
+   lowfive.md`'s own contract). **Built, host-only, with an ADDITIONAL host
+   dependency** beyond the plain rows above: the tier-1+LowFive build is
+   confirmed clean this phase, but the two rows also need the host's own
+   `/opt/lowfive` rebuilt against fmt 9+ before `fuse-lowfive-vol` can even
+   `dlopen` (KNOWN_ISSUES.md D14's own consolidated "what remains" list
+   names this first).
+
+**A4 is answered — every property has a named demonstration — with one
+honest qualification carried forward, not newly found here: all three
+multi-process properties (2, 3, 4 in the ORIGINAL ordering; items 1, 3, 4
+above) are confirmed only as far as this sandbox can confirm anything
+needing real MPI — a clean BUILD, never a RUN. The single-process property
+(own time loop) is the one with an actual bit-for-bit measurement behind
+it. Closing A4 all the way to "measured" needs a host; the exact rows are
+named above and, for the LowFive pair, carry their own further dependency,
+tracked once, in D14, not repeated here.**
 
 ### A5. A device number waits on a GPU machine — your sequencing
 
@@ -2832,6 +2880,39 @@ removed → E-ABI-STEP-ORDER) and `lowfive-delivery-field-wrong-channel`
 (source field swapped for target → the harness's own field-matching
 assertion fires).
 
+**What remains for this entry (S6 phase 3, Unit 4, consolidated 2026-10-07
+— every open thread this entry's own prose raised above, gathered here
+once; nothing below is repeated in D18 or D19, and the plain (non-LowFive)
+participant rows those two entries track are NOT re-listed here):**
+
+1. **Host action: rebuild `/opt/lowfive` (and `/opt/lowfive-dist`) against
+   fmt 9 or newer.** Both ship a bundled fmt 8.1.1 and both carry an
+   unresolvable `@rpath/libfmt.8.dylib` dependency (measured via `otool
+   -L`) — no `libfmt.8.dylib` exists anywhere on this host, so every
+   LowFive-linked binary fails at `dlopen`, including the single-process
+   path. Blocks items 2-4 below entirely; nothing past this point can be
+   attempted, only read from headers, until it is done.
+2. **Host step: the connector-name check.** `HDF5_VOL_CONNECTOR=lowfive`
+   is this track's own best reading of LowFive's `VOLBase::name` member —
+   not something confirmed from headers alone, and not checkable until
+   item 1 lets `fuse-lowfive-vol` actually load. First host attempt should
+   confirm the name matches before trusting anything downstream of it.
+3. **Open question for the lead: the accept-mode intercommunicator gap.**
+   ACCEPT mode's own merged base communicator is never exposed back to a
+   caller through any ABI query, so `fuse-lowfive-vol`'s own rendezvous
+   logic (item 3 of the Unit 3b account above) has no way to reach it on
+   that path — scoped to MPMD launch only until this is answered.
+   Blocks `verification.brusselator.participants.lowfive.accept.3`
+   specifically; `.mpmd.3` does not need it.
+4. **ctest rows, host-only, blocked on item 1:**
+   `verification.brusselator.participants.lowfive.mpmd.3`,
+   `verification.brusselator.participants.lowfive.accept.3` (the second
+   additionally blocked on item 3).
+5. **Host run: Demo B** (`examples/demo_b`'s producer/consumer
+   executables) — compiles against LowFive's documented
+   `DistMetadataVOL` API only; never run. Needs item 1 and a real MPI
+   intercommunicator between two genuinely separate processes.
+
 ### D15. The provider direction (S6 phase 4, "Adapter host" track) is implemented and conformance-tested on one process; device fields, mixed checkpoint/restore, and a plugin on a rank subset are not
 
 **What is done, measured 2026-10-02.** `include/fuse/abi/provider.h` (generated from a second
@@ -3133,7 +3214,20 @@ trees' full `cmake --build`; the tier-0 harness's own `u_loop.c`/`v_loop.f90` so
 BUILD cleanly into `fuse_verification_brusselator_{participants,check}_test` under
 `FUSE_ENABLE_MPI=ON` too, but were only ever EXECUTED in the tier-0, FUSE_ENABLE_MPI=OFF tree, where
 both pass — no binary built in the MPI-enabled tree was run, per this sandbox's own standing
-constraint, C1 above); none of the four `host_verification_needed` rows above have been run.
+constraint, C1 above).
+
+**What remains for this entry (S6 phase 3, Unit 4, consolidated 2026-10-07):**
+
+1. **Design work, sketched, not implemented, not scheduled:** the N-way
+   generalisation of `connect_pairwise()` above — not a ctest row or a host
+   step, so not repeated as one; Conformance Unit 2 needs no more than
+   today's routing and is not blocked on it.
+2. **Q4 (does a coupler placeholder rank need to call `fuse_begin_step`/
+   `fuse_end_step` at all?) is settled by the SAME host run D19's own
+   "what remains" list tracks — not a separate row, and not re-listed
+   here.** The four ctest rows that answer it
+   (`verification.brusselator.participants.{mpmd,accept}.{3,5}`) are D19's
+   own to own; see that entry.
 
 ### D19. The coupling-window path (`src/runtime/iteration.cpp`) has never run across more than one process — FIXED IN THE SANDBOX 2026-10-03, awaiting the host
 
