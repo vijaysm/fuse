@@ -74,3 +74,21 @@ new = """    std::this_thread::sleep_for(std::chrono::duration<double>(poll_inte
 target = "fuse_transport_connect_test"
 test = "transport.connect"
 result = "CONFIRMED 2026-10-02: WaitForPortFile.RefusesWithoutSleepingWhenTimeoutIsZero did not complete -- run under `timeout 3`, the process was killed (exit 124) instead of returning, which is the predicted failure mode itself (a hang, not a reported test failure) for a path whose own point is to turn 'partner never arrives' into a bounded refusal rather than an unbounded wait. Restored; cmp against the pre-mutation file reported no difference, and the restored binary's full connect_test suite (14 of 14) passed."
+
+[[mutation]]
+id = "connect-mode-teardown-frees-instead-of-disconnecting"
+area = "transport/connect (disconnect)"
+describes = "A Connect-mode base communicator must be released with MPI_Comm_disconnect, not MPI_Comm_free: MPI_Comm_accept/MPI_Comm_connect leave the two separately launched programs connected, MPI_Finalize is collective across connected programs, and freeing the handle locally does not end the connection. Measured on the host 2026-10-08 in the form this mutation restores: the acceptor died in MPICH's own communicator bookkeeping (MPII_CommL_forget, EXC_BAD_ACCESS on a freed communicator) and the connector failed as collateral."
+file = "src/transport/connect.cpp"
+old = "  const int rc = is_connection ? MPI_Comm_disconnect(&c) : MPI_Comm_free(&c);"
+new = "  const int rc = MPI_Comm_free(&c);  // MUTATED: local free for a connection"
+target = "fuse_parallel_connect_a"
+test = "parallel.connect.accept.1+1"
+requires = "mpi"
+# HOST-ONLY, and honestly so: this rule has no tier-0 oracle of any kind.
+# connect() and disconnect() are both inside #if FUSE_HAVE_MPI, the sandbox
+# cannot MPI_Init at all, and the difference between the two calls is
+# invisible within a single program -- it is about whether a SECOND program
+# is still connected. The kill is parallel.connect.accept.*, which only the
+# host runs. Not hand-verified here for that reason; the fix's own evidence
+# is the host run that produced the crash and the host run that clears it.

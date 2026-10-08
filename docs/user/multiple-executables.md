@@ -172,3 +172,29 @@ wait
 # both modes, every row
 brusselator_check --u-log u.log --v-log v.log
 ```
+
+## Releasing the base communicator
+
+`connect()` forms a communicator; `disconnect()` releases it, and every caller must call it
+before `MPI_Finalize`:
+
+```cpp
+auto connected = fuse::transport::connect(graph, world_comm_f, opts);
+{
+  // everything that uses connected.value().base_comm_f -- the Runner, the
+  // transport, anything that duplicated it -- lives in here
+}
+if (auto r = fuse::transport::disconnect(connected.value()); !r.ok()) { /* ... */ }
+MPI_Finalize();
+```
+
+The order is not housekeeping. In `connect` mode the base communicator is merged from an
+intercommunicator, which leaves the two programs *connected*: `MPI_Finalize` is then collective
+across both of them, and a program that finalizes while still connected leaves an operation
+half-finished on a peer that is no longer listening. In MPMD mode the handle is a duplicate of
+the caller's own world and `disconnect()` simply frees it; the call is the same either way, which
+is the point — a caller does not have to know which mode it ended up in. It is idempotent and safe
+on the result of a failed `connect()`.
+
+A participant that reaches FUSE through the C or Fortran ABI has nothing to do: `fuse_destroy()`
+releases the connection the same way, after the runner it owns is gone.
