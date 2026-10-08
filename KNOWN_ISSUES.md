@@ -322,11 +322,28 @@ cases compiled to a skip stub in every configuration, host included (`REVIEW.md`
 first written here; R-09 is the unrelated `step_period()` collective-agreement BLOCKER). `test/backend/moab_mesh_test.cpp` now includes `config.hpp` and tests `#if FUSE_HAVE_MOAB` — the
 cases compile again, but C1's "needs one host run" still stands: nothing here can `MPI_Init`.
 
-### C1. The MOAB backend is built but unrun in the sandbox
+### ~~C1. The MOAB backend is built but unrun in the sandbox~~ — CLOSED: every MOAB row passes on the host, 2026-10-08
 
-**Status: needs one host run.** `S5.2` landed 2026-09-18: the MOAB-enabled build configuration configures,
+**Host run, 2026-10-08 (the user's machine, `build-all`, `ctest -L moab`):
+12 of 12 rows pass**, `backend.moab_mesh` (47 cases) and `backend.remap_halo`
+(8) in 0.57 s and 0.05 s, plus the ten multi-rank rows this entry's own
+"needs one host run" was written before: `parallel.remap_halo_mpi.{1..5}`
+and `parallel.moab_placed_view_mpi.{1..5}`, 0.06–0.59 s each. The seven cases
+whose expectations this port moved from `std::out_of_range` to
+`fuse::InvalidArgument` are inside that count and pass. Nothing about the
+MOAB backend is unrun any more; what is still unrun is the mutation gate over
+it (`FUSE_MUTATE_MPI=1 python3 tools/mutate.py --build-dir build-all --area
+backend`), which is a question about the tests' own strength, not the code's.
+
+The ten multi-rank rows were registered all along and `ctest -L moab` did not
+select them: `fuse_add_mpi_test` had no `LABELS` option until `1ad9efc`, so
+the selector reported 2 rows where the build had 12 — a label gap that read
+as a coverage gap.
+
+**Status before that run: needs one host run.** `S5.2` landed 2026-09-18: the MOAB-enabled build configuration configures,
 compiles and links for the first time, and `test/backend/moab_mesh_test.cpp`
-(38 cases, ported from the parent) is registered whenever MOAB is enabled.
+(47 cases as of 2026-10-08; 38 when this entry was written, ported from the
+parent) is registered whenever MOAB is enabled.
 
 None of it has executed here. The MOAB-enabled build configuration requires MPI by the build-configuration ladder, and this
 sandbox cannot `MPI_Init` — every test in an MPI-enabled build dies at startup
@@ -670,10 +687,18 @@ the processor sets, as with the native and test backends; the Runner does not.
 **Not run anywhere yet.** No MOAB-linked binary can start in this sandbox (`moab::Core`'s
 constructor calls `MPI_Init_thread`), so the 9 single-process cases in `moab_mesh_test.cpp`,
 the 2–5 rank `parallel.moab_placed_view_mpi.*` tiling test and the 8 rows of
-`build-evidence/mutations/moab-placement.toml` are compiled (the MOAB-enabled build configuration, 0 errors) and traced only:
+`build-evidence/mutations/moab-placement.toml` were compiled (the MOAB-enabled build configuration, 0 errors) and traced only.
+
+**HOST-VERIFIED 2026-10-08.** The user's run: `parallel.moab_placed_view_mpi.{1..5}`
+pass at 1, 2, 3, 4 and 5 ranks (0.06–0.33 s), alongside `backend.moab_mesh`'s
+47 cases and the five `parallel.remap_halo_mpi` legs — 12 of 12 MOAB rows, no
+failures. So one `moab::Core` and one `moab::ParallelComm` per processor set,
+split from the base communicator, answering `placed_view`/`placed_region_size`
+from that decomposition and returning an empty view outside the processor set,
+is now measured at every rank count it registers, not inferred. What is still
+unrun is the mutation gate over those tests:
 
 ```sh
-ctest --test-dir build-all -R 'backend.moab_mesh|parallel.moab_placed_view_mpi' --output-on-failure
 FUSE_MUTATE_MPI=1 python3 tools/mutate.py --build-dir build-all --area backend
 ```
 
