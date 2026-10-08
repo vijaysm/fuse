@@ -104,6 +104,7 @@ namespace {
   }
   ConnectedWorld out;
   out.base_comm_f = static_cast<int>(MPI_Comm_c2f(dup));
+  out.teardown = ConnectedWorld::Teardown::Free;
   return out;
 }
 
@@ -186,6 +187,9 @@ namespace {
 
   ConnectedWorld out;
   out.base_comm_f = static_cast<int>(MPI_Comm_c2f(merged));
+  // Not Free: this communicator carries the connection between two
+  // separately launched programs (connect.hpp's own Teardown comment).
+  out.teardown = ConnectedWorld::Teardown::Disconnect;
   return out;
 }
 
@@ -254,6 +258,49 @@ Result<ConnectedWorld> connect(const CouplingGraph& g, int my_world_comm_f,
                          "communicator"};
   }
   return Failure{"E-CONNECT-SPEC", "unreachable launch mode"};
+}
+
+
+Result<void> disconnect(ConnectedWorld& w) {
+  if (w.teardown == ConnectedWorld::Teardown::None || w.base_comm_f < 0) {
+    // Already released, or never formed. Idempotent on purpose: a caller
+    // unwinding from a failure should not have to work out whether it got
+    // far enough to owe a teardown.
+    w.base_comm_f = -1;
+    w.teardown = ConnectedWorld::Teardown::None;
+    return Result<void>::success();
+  }
+  int finalized = 0;
+  if (MPI_Finalized(&finalized) != MPI_SUCCESS || finalized != 0) {
+    return Failure{"E-CONNECT-FINALIZED",
+                   "disconnect() called after MPI_Finalize; the communicator "
+                   "connect() formed can no longer be released, and for a "
+                   "Connect-mode handle MPI_Finalize itself was collective "
+                   "over a program this one was still connected to"};
+  }
+  MPI_Comm c = MPI_Comm_f2c(static_cast<MPI_Fint>(w.base_comm_f));
+  if (c == MPI_COMM_NULL) {
+    w.base_comm_f = -1;
+    w.teardown = ConnectedWorld::Teardown::None;
+    return Result<void>::success();
+  }
+  const bool is_connection =
+      w.teardown == ConnectedWorld::Teardown::Disconnect;
+  // Both are collective over the communicator, and MPI_Comm_disconnect is
+  // additionally collective over the OTHER program: it returns only once
+  // the peer reaches its own call, which is what makes the two programs
+  // independently finalizable afterwards.
+  const int rc = is_connection ? MPI_Comm_disconnect(&c) : MPI_Comm_free(&c);
+  if (rc != MPI_SUCCESS) {
+    return Failure{"E-CONNECT-MPI",
+                   std::string(is_connection ? "MPI_Comm_disconnect"
+                                             : "MPI_Comm_free") +
+                       " failed while releasing the base communicator: " +
+                       mpi_error_text(rc)};
+  }
+  w.base_comm_f = -1;
+  w.teardown = ConnectedWorld::Teardown::None;
+  return Result<void>::success();
 }
 
 }  // namespace fuse::transport
