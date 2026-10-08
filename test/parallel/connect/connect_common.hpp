@@ -348,7 +348,7 @@ struct Args {
     MPI_Fint f = MPI_Comm_c2f(MPI_COMM_WORLD);
     world_comm_f = static_cast<int>(f);
   }
-  const auto connected = fuse::transport::connect(g, world_comm_f, copts);
+  auto connected = fuse::transport::connect(g, world_comm_f, copts);
   if (!connected.ok()) {
     std::fprintf(stderr, "connect() refused: [%s] %s\n",
                 connected.error().code.c_str(), connected.error().message.c_str());
@@ -358,6 +358,12 @@ struct Args {
   const int base_comm_f = connected.value().base_comm_f;
   const MPI_Comm base_comm = MPI_Comm_f2c(static_cast<MPI_Fint>(base_comm_f));
 
+  // Everything that USES the base communicator lives inside this scope, so
+  // the backend, the Runner and the transport's own duplicate are all
+  // destroyed before fuse::transport::disconnect() below -- which must
+  // itself precede MPI_Finalize (connect.hpp's own doc on why that order is
+  // load-bearing for a Connect-mode handle, and not merely tidy).
+  {
   int merged_rank = 0;
   MPI_Comm_rank(base_comm, &merged_rank);
 
@@ -444,7 +450,14 @@ struct Args {
     std::printf("rank=%d i=%zu value=%a\n", merged_rank, i, b->data()[i]);
   }
   std::fflush(stdout);
+  }  // end of the scope that uses the base communicator
 
+  if (auto r = fuse::transport::disconnect(connected.value()); !r.ok()) {
+    std::fprintf(stderr, "disconnect() failed: [%s] %s\n",
+                r.error().code.c_str(), r.error().message.c_str());
+    MPI_Abort(MPI_COMM_WORLD, 1);
+    return 1;
+  }
   MPI_Finalize();
   return 0;
 }
