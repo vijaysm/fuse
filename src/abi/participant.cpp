@@ -340,7 +340,23 @@ fuse_status impl_destroy(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
       std::lock_guard<std::mutex> lock(t.mu);
       t.live.erase(static_cast<const void*>(&c));
     }
+    // Taken out of the context BEFORE the delete, and released AFTER it:
+    // the Runner and its transport hold duplicates of this communicator and
+    // must be destroyed first, and the error cannot be reported through a
+    // context that no longer exists -- hence the thread-local error, the
+    // same channel fuse_last_error() reads for a null handle.
+    fuse::transport::ConnectedWorld owned = c.connected;
+    c.connected = fuse::transport::ConnectedWorld{};
     delete &c;
+#if FUSE_HAVE_MPI
+    if (auto r = fuse::transport::disconnect(owned); !r.ok()) {
+      thread_error_code()    = r.error().code;
+      thread_error_message() = r.error().message;
+      return FUSE_ERR_RUNTIME;
+    }
+#else
+    (void)owned;
+#endif
     return FUSE_OK;
   });
 }
@@ -490,6 +506,10 @@ fuse_status impl_setup(fuse_ctx* ctx, const fuse_setup_options* in, fuse_null*) 
                        connected.error().message);
           }
           c.communicator = connected.value().base_comm_f;
+          // destroy() releases it (context.hpp's own comment on this
+          // field): until disconnect() runs, this program and its partner
+          // are connected, and neither can finalize on its own.
+          c.connected = connected.value();
         }
         // InProcess/Plugin: nothing to do -- in->communicator already is
         // the base communicator, exactly as when my_component is NULL

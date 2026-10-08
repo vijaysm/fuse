@@ -79,6 +79,7 @@
 #include "fuse/runtime/runner.hpp"
 #include "fuse/schedule/clock.hpp"
 #include "fuse/schedule/plan.hpp"
+#include "fuse/transport/connect.hpp"
 
 #include "registry.hpp"
 
@@ -207,6 +208,15 @@ struct fuse_ctx {
   // --- setup() state, consumed at initialize() ---
   bool               communicator_set = false;
   std::int64_t       communicator = 0;
+
+  /// What `fuse::transport::connect()` formed during setup(), when this
+  /// context's own component is launched rather than in-process. Held so
+  /// that destroy() can release it: a `Connect`-mode communicator leaves
+  /// the two programs connected until `fuse::transport::disconnect()` runs,
+  /// and `MPI_Finalize` is collective across connected programs. Default
+  /// (`Teardown::None`) for every in-process caller, where connect() is
+  /// never called and there is nothing to release.
+  fuse::transport::ConnectedWorld connected;
   bool               has_end_time = false;
   fuse::Rational     end_time{0};
 
