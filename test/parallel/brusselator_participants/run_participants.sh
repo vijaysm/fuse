@@ -67,11 +67,29 @@ rm -f "$GRAPH" "$PORT_FILE" "$U_LOG" "$V_LOG"
 
 RC=0
 if [ "$MODE" = "mpmd" ]; then
-  "$MPIEXEC" -n "$RANKS_U" "$U_MAIN" --graph "$GRAPH" --log "$U_LOG" --periods "$PERIODS" \
+  # Each app segment redirects its OWN stdout and stderr, through a shell
+  # per segment, rather than all three sharing one redirect of the
+  # launcher's. A single mpiexec gives one merged stream in which nothing
+  # says which program spoke, and three programs failing at once is the
+  # normal case here -- one of them is the cause and the other two are
+  # reacting to a dead peer. Diagnosing the 2026-10-08 MPMD failure from
+  # `combined.log` was not possible for exactly this reason: a Kokkos
+  # error and a SIGABRT, from an unknown pair of the three. `combined.log`
+  # is still written for the launcher's own messages (the BAD TERMINATION
+  # report, which belongs to no segment).
+  # ...and per RANK within a segment, since a segment may have several
+  # (the 5-rank row runs U and V on two each) and they would otherwise
+  # interleave into one file. PMI_RANK is the launcher's own, so the
+  # suffix is the world rank; absent one, 0.
+  SEG='f="$1"; shift; exec "$@" > "${f}.${PMI_RANK:-0}.log" 2>&1'
+  "$MPIEXEC" -n "$RANKS_U" sh -c "$SEG" seg "$SCRATCH/u_stdout" \
+      "$U_MAIN" --graph "$GRAPH" --log "$U_LOG" --periods "$PERIODS" \
       --transport "$TRANSPORT" \
-      : -n "$RANKS_V" "$V_MAIN" --graph "$GRAPH" --log "$V_LOG" --periods "$PERIODS" \
+      : -n "$RANKS_V" sh -c "$SEG" seg "$SCRATCH/v_stdout" \
+      "$V_MAIN" --graph "$GRAPH" --log "$V_LOG" --periods "$PERIODS" \
       --transport "$TRANSPORT" \
-      : -n "$RANKS_COUPLER" "$COUPLER_MAIN" --graph "$GRAPH" \
+      : -n "$RANKS_COUPLER" sh -c "$SEG" seg "$SCRATCH/coupler_stdout" \
+      "$COUPLER_MAIN" --graph "$GRAPH" \
       > "$SCRATCH/combined.log" 2>&1
   RC=$?
 elif [ "$MODE" = "accept" ]; then
