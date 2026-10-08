@@ -12,3 +12,13 @@ target = "fuse_model_yaml_io_test"
 test = "model.yaml_io"
 # KILLED by hand 2026-10-02 in a clean export: only
 # YamlIo.ACouplerAuthoredBetweenPhysicsComponentsKeepsItsIndex fails (17 others pass).
+
+[[mutation]]
+id = "a-couplers-launch-mode-is-dropped-by-the-writer"
+area = "model/yaml_io (the couplers section)"
+describes = "A coupler's LaunchSpec must survive the YAML round trip. It is the same launch record every component record carries -- a coupler IS a component-array entry -- and the program launched on the coupler's own ranks reads its mode from the file to decide whether to call connect(). Dropped, the coupler loads as in-process, never joins connect()'s collective over the whole world, and every other program waits in it forever: the Brusselator's MPMD participant rows hung their full 120 s with an empty combined.log (host, 2026-10-08). Killed by the round-trip test, which also compares the canonical bytes."
+file = "src/model/yaml_io.cpp"
+old = "    if (const char* mode_name = launch_mode_name(c.launch)) {"
+new = "    if (const char* mode_name = nullptr) {  // MUTATED: coupler launch dropped"
+target = "fuse_model_yaml_io_test"
+test = "model.yaml_io"
