@@ -319,6 +319,54 @@ TEST(YamlIo, RejectsUnknownTopLevelKey) {
 // after a coupler (the v10 freeze fixture, S6 phase 4) came back reordered,
 // and the fixture was rearranged to hide it instead of the writer being
 // fixed. This pins the fix.
+// A coupler that is LAUNCHED as its own program -- its own MPMD segment,
+// with its own appnum -- must say so in the file, or the program that
+// loads the graph on the coupler's own ranks believes it is in-process and
+// never joins the collective connect() makes over the whole world. That is
+// not a theoretical loss: the Brusselator's MPMD participant rows hung for
+// their full 120 s with an empty combined.log on the host (2026-10-08),
+// U and V waiting in connect_mpmd()'s MPI_Allgather for a third
+// participant whose own executable had decided it had nothing to connect.
+// The graph tool had always BUILT the right LaunchSpec; the file was where
+// it was lost.
+TEST(YamlIo, ALaunchedCouplerKeepsItsLaunchModeAcrossTheRoundTrip) {
+  fuse::CouplingGraph g;
+  (void)g.add_component({.name = "a", .ranks = {0, 2}, .interval = fuse::Rational{1, 1}});
+  const auto hub = g.add_coupler(
+      {.name = "hub",
+       .ranks = {2, 1},
+       .launch = {.mode = fuse::LaunchMode::Mpmd, .appnum = 2}});
+  ASSERT_TRUE(hub.valid());
+
+  const auto text = fuse::to_yaml(g);
+  ASSERT_TRUE(text.ok()) << text.error().message;
+  const auto parsed = fuse::from_yaml(text.value());
+  ASSERT_TRUE(parsed.ok()) << parsed.error().message;
+
+  const auto& back = parsed.value().component(hub);
+  EXPECT_EQ(back.kind, fuse::ComponentKind::Coupler);
+  EXPECT_EQ(back.launch.mode, fuse::LaunchMode::Mpmd)
+      << "a coupler reloaded as in-process never calls connect(), and the "
+         "programs that do call it then wait for it forever";
+  EXPECT_EQ(back.launch.appnum, 2);
+  EXPECT_EQ(fuse::serialize(parsed.value()), fuse::serialize(g))
+      << "the launch record is part of every component record's own bytes";
+}
+
+// An in-process coupler writes no launch block at all, which is what keeps
+// a file written before couplers could carry one byte-identical.
+TEST(YamlIo, AnInProcessCouplerWritesNoLaunchBlock) {
+  fuse::CouplingGraph g;
+  (void)g.add_component({.name = "a", .ranks = {0, 2}, .interval = fuse::Rational{1, 1}});
+  (void)g.add_coupler({.name = "plain", .ranks = {2, 1}});
+  const auto text = fuse::to_yaml(g);
+  ASSERT_TRUE(text.ok()) << text.error().message;
+  const auto at = text.value().find("plain");
+  ASSERT_NE(at, std::string::npos);
+  EXPECT_EQ(text.value().find("launch", at), std::string::npos)
+      << text.value().substr(at);
+}
+
 TEST(YamlIo, ACouplerAuthoredBetweenPhysicsComponentsKeepsItsIndex) {
   fuse::CouplingGraph g;
   (void)g.add_component({.name = "a", .ranks = {0, 2}, .interval = fuse::Rational{1, 1}});

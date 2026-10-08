@@ -3168,6 +3168,32 @@ mutation `connect-mode-teardown-frees-instead-of-disconnecting`
 (`build-evidence/mutations/transport-connect.toml`, `requires = "mpi"`) is marked host-only for
 the same reason.
 
+### ~~D21. A launched coupler's mode was lost in the file, hanging every MPMD run~~ — FIXED 2026-10-08, awaiting the host
+
+**Measured (the user's host, 2026-10-08).** `verification.brusselator.participants.mpmd.{3,5}` timed
+out at 120 s with `combined.log` zero bytes and no `u.log`/`v.log` at all — nothing had started.
+
+**Cause.** `connect_mpmd()` agrees the MPMD layout with an `MPI_Allgather` of `MPI_APPNUM` over the
+whole world, so every rank of that world must call `connect()`. The coupler's own program does call
+`fuse_setup()` with `my_component = "coupler"`, and `brusselator_graph_tool.cpp` does build
+`LaunchSpec{Mpmd, appnum = 2}` for it — but `CouplerDecl` had no `launch` field, `add_coupler()`
+dropped it, and the writer emitted only `name`, `index` and `ranks` for a coupler. The mode
+therefore never survived the file the three programs load, the coupler came back in-process, its
+rank never called `connect()`, and U and V waited in the collective for a participant that was
+never going to arrive. The example had noticed half of this and worked around it by building the
+coupler's `ComponentDecl` by hand with `launch` set; that fixed the in-memory graph and not the
+file, which is the only thing the other two programs see.
+
+**Fix.** `CouplerDecl` carries a `LaunchSpec`, `add_coupler()` passes it through, and the YAML
+writes and reads a coupler's `launch:` block with the same helpers the component entries use —
+omitted entirely for an in-process coupler, so files written before this are byte-identical.
+No descriptor version bump: the launch record was already part of every component record's bytes
+(`descriptor.hpp`'s v9), and a coupler is a component-array entry.
+
+**Pinned by** `YamlIo.ALaunchedCouplerKeepsItsLaunchModeAcrossTheRoundTrip` (mode, appnum and the
+canonical bytes) and `YamlIo.AnInProcessCouplerWritesNoLaunchBlock`, with the mutation
+`a-couplers-launch-mode-is-dropped-by-the-writer`. The hang itself is host-only.
+
 ### D18. `fuse::transport::connect()`'s `Connect`-mode path supports exactly two components; a third refuses `E-CONNECT-SPEC` — OPEN, not pursued (Conformance Unit 2 routes around it)
 
 `connect_pairwise()` (`src/transport/connect.cpp`) reads, verbatim:
