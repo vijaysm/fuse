@@ -3,6 +3,11 @@
 
 #include "fuse_test_main.hpp"
 
+// std::accumulate, for the per-rank failure gather below. <string> and
+// <vector> arrive with fuse_test_main.hpp, which the invariants gate reads
+// as an explicit include of this file's own needs.
+#include <numeric>
+
 namespace fuse::testing {
 
 int self_communicator_handle() {
@@ -26,15 +31,35 @@ bool requires_at_least_ranks(int minimum) { return g_size >= minimum; }
 void MpiFailureReducer::OnTestEnd(const ::testing::TestInfo& info) {
 #if FUSE_HAVE_MPI
   const int local_failed = info.result()->Failed() ? 1 : 0;
-  int failing_ranks = 0;
+  // Gathered rather than summed so the report can NAME the failing ranks. A
+  // count alone is what a reader gets from ctest, and it is not enough: a
+  // launcher commonly forwards only one rank's stdout, so the failing rank's
+  // own assertion text can be absent from the log entirely and "failed on 1
+  // of 3 rank(s)" is then the whole evidence (measured on the host,
+  // 2026-10-08, parallel.window_runner_mpi.3). Which rank failed is the half
+  // of the diagnosis that does survive this reduction, so it is carried.
   // Collective: every rank runs the same tests in the same order, so this matches.
-  MPI_Allreduce(&local_failed, &failing_ranks, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+  std::vector<int> per_rank(static_cast<std::size_t>(g_size), 0);
+  MPI_Allgather(&local_failed, 1, MPI_INT, per_rank.data(), 1, MPI_INT,
+                MPI_COMM_WORLD);
+  const int failing_ranks =
+      std::accumulate(per_rank.begin(), per_rank.end(), 0);
   if (failing_ranks > 0 && local_failed == 0) {
+    std::string which;
+    for (int r = 0; r < g_size; ++r) {
+      if (per_rank[static_cast<std::size_t>(r)] == 0) continue;
+      if (!which.empty()) which += ", ";
+      which += std::to_string(r);
+    }
     // Fail this rank too. Without this the suite's exit status depends on which rank
     // ctest happens to observe, and a partial failure can leave peers in a collective.
-    ADD_FAILURE() << "failed on " << failing_ranks << " of " << g_size
-                  << " rank(s); this rank's assertions passed. Reported here so the "
-                     "test fails uniformly and no rank proceeds to the next collective.";
+    ADD_FAILURE() << "failed on rank(s) " << which << " of " << g_size
+                  << "; this rank (" << g_rank
+                  << ") passed its own assertions. Reported here so the "
+                     "test fails uniformly and no rank proceeds to the next "
+                     "collective. For the failing rank's own output, rerun "
+                     "with a per-rank capture: mpiexec -n "
+                  << g_size << " -outfile-pattern=/tmp/<name>-%r.out <binary>";
   }
 #else
   (void)info;
