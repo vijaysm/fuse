@@ -153,13 +153,21 @@ function(fuse_add_upstream_main_test layer name)
   set_tests_properties(${layer}.${name} PROPERTIES LABELS "${layer};upstream-main")
 endfunction()
 
-# fuse_add_mpi_test(<layer> <name> [LIBS ...] [RANKS n...]) -> mpiexec at each
-# rank count. Default ranks 2 3 4 5: an odd count is included on purpose, since
-# a bug that appears only when the ranks do not divide evenly is the usual kind.
+# fuse_add_mpi_test(<layer> <name> [LIBS ...] [RANKS n...] [LABELS ...]) ->
+# mpiexec at each rank count. Default ranks 1 2 3 4 5 (see the body): an odd
+# count is included on purpose, since a bug that appears only when the ranks do
+# not divide evenly is the usual kind.
 # Every leg carries a timeout, not because these are slow: the failure they
 # guard against IS a hang, so a regression must fail rather than stall CI.
+#
+# LABELS appends ctest labels beyond the `<layer>;mpi;parallel` every leg
+# carries, so a row whose test needs an optional dependency can be selected
+# with the others that need it -- `ctest -L moab` missed the MOAB multi-rank
+# rows until this option existed (the user's host run, 2026-10-08, reported two
+# MOAB rows where the build registers twelve), which is exactly the kind of
+# gap that makes a selector read as coverage it does not have.
 function(fuse_add_mpi_test layer name)
-  cmake_parse_arguments(ARG "" "" "LIBS;RANKS" ${ARGN})
+  cmake_parse_arguments(ARG "" "" "LIBS;RANKS;LABELS" ${ARGN})
   if(NOT ARG_RANKS)
     # 1 included deliberately (S5.5, build-evidence/parallel-matrix.toml row
     # A-RANKS). A single task is not a trivial case of the others: every match
@@ -176,10 +184,14 @@ function(fuse_add_mpi_test layer name)
   target_link_libraries(${target} PRIVATE fuse_test_main ${ARG_LIBS})
   target_compile_definitions(${target} PRIVATE FUSE_TEST_GOLDEN_DIR="${FUSE_TEST_GOLDEN_DIR}"
                                              FUSE_TEST_DATA_DIR="${FUSE_TEST_DATA_DIR}")
+  # REMOVE_DUPLICATES because `<layer>` is itself `parallel` for every row in
+  # test/parallel/, which spelled the label list `parallel;mpi;parallel`.
+  set(_fuse_mpi_labels "${layer}" mpi parallel ${ARG_LABELS})
+  list(REMOVE_DUPLICATES _fuse_mpi_labels)
   foreach(n IN LISTS ARG_RANKS)
     add_test(NAME ${layer}.${name}.${n}
              COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${n} $<TARGET_FILE:${target}>)
-    set_tests_properties(${layer}.${name}.${n} PROPERTIES TIMEOUT 120 LABELS "${layer};mpi;parallel")
+    set_tests_properties(${layer}.${name}.${n} PROPERTIES TIMEOUT 120 LABELS "${_fuse_mpi_labels}")
   endforeach()
 endfunction()
 
@@ -390,7 +402,7 @@ if(FUSE_ENABLE_MOAB)
   # test/parallel/remap_halo_mpi_test.cpp's own header for what each case
   # pins. Rank counts default to 1 2 3 4 5, same as every other mpi cell.
   if(FUSE_ENABLE_MOAB_MPI)
-    fuse_add_mpi_test(parallel remap_halo_mpi LIBS fuse::backend MPI::MPI_CXX)
+    fuse_add_mpi_test(parallel remap_halo_mpi LIBS fuse::backend MPI::MPI_CXX LABELS moab)
     if(FUSE_SPHERE_ATM_FILE AND FUSE_SPHERE_OCN_FILE)
       target_compile_definitions(fuse_parallel_remap_halo_mpi_test PRIVATE
         FUSE_SPHERE_ATM="${FUSE_SPHERE_ATM_FILE}"
@@ -405,7 +417,7 @@ if(FUSE_ENABLE_MOAB)
     # (moab_backend.cpp's `generate*` builds the same mesh on every rank,
     # with no PARALLEL_RESOLVE_SHARED_ENTS step), so it cannot exercise a
     # genuine per-placement partition at all.
-    fuse_add_mpi_test(parallel moab_placed_view_mpi LIBS fuse::backend MPI::MPI_CXX)
+    fuse_add_mpi_test(parallel moab_placed_view_mpi LIBS fuse::backend MPI::MPI_CXX LABELS moab)
     if(FUSE_SPHERE_ATM_FILE)
       target_compile_definitions(fuse_parallel_moab_placed_view_mpi_test PRIVATE
         FUSE_SPHERE_ATM="${FUSE_SPHERE_ATM_FILE}")
