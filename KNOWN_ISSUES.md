@@ -3136,6 +3136,38 @@ suite, and this asymmetry should be understood before Aitken is treated as a con
 anywhere.
 
 
+### ~~D20. `connect()` never released its base communicator, so an accept-mode run crashed in `MPI_Finalize`~~ — FIXED 2026-10-08, awaiting the host
+
+**Measured (the user's host, 2026-10-08).** `parallel.connect.accept.1+1` failed with the acceptor
+taking signal 11. Under `lldb` (run *under* `mpiexec` — a participant started without a launcher
+dies in MPICH's own singleton init first, which cost one round trip) the crash is
+`EXC_BAD_ACCESS` at `dbginit.c:515` in `MPII_CommL_forget`, reading `p->comm_next` through a
+pointer of repeating `0xEF` — MPICH's freed-object fill. That function runs while MPI destroys a
+communicator, so the crash is MPI tearing down a communicator list that already holds a destroyed
+entry, not a fault in this library's own statements.
+
+**Cause.** `MPI_Comm_accept`/`MPI_Comm_connect` leave the two separately launched programs
+*connected* in the MPI sense, and `MPI_Finalize` is collective across connected programs. Nothing
+in the library or its callers ever called `MPI_Comm_disconnect`: the only one in the tree was in
+the LowFive demo. `connect()`'s MPMD path duplicates an ordinary communicator and owes no such
+teardown, which is exactly why `parallel.connect.mpmd.*` passed throughout.
+
+**Fix.** `ConnectedWorld` records which teardown its handle owes (`Free` for an MPMD duplicate,
+`Disconnect` for a merged connection, `None` for a failed or already-released handle), and
+`fuse::transport::disconnect()` performs it, idempotently, refusing with `E-CONNECT-FINALIZED`
+if called after `MPI_Finalize`. Both callers release before finalizing: the connect test now
+scopes everything that uses the communicator so the `Runner` and the transport's own duplicate
+are destroyed first, and the participant ABI holds the handle in its context and releases it in
+`fuse_destroy()` — taken out of the context before the delete and released after it, for the same
+ordering reason.
+
+**No tier-0 oracle.** `connect()` and `disconnect()` are both MPI-only, and the difference between
+disconnecting and freeing is invisible inside one program: it is about whether a second program is
+still connected. Tier 1 builds; the proof is the host's own `parallel.connect.accept.*`, and the
+mutation `connect-mode-teardown-frees-instead-of-disconnecting`
+(`build-evidence/mutations/transport-connect.toml`, `requires = "mpi"`) is marked host-only for
+the same reason.
+
 ### D18. `fuse::transport::connect()`'s `Connect`-mode path supports exactly two components; a third refuses `E-CONNECT-SPEC` — OPEN, not pursued (Conformance Unit 2 routes around it)
 
 `connect_pairwise()` (`src/transport/connect.cpp`) reads, verbatim:
