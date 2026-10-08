@@ -379,6 +379,30 @@ class Runner {
       const noexcept;
   [[nodiscard]] Result<const double*> buffer(ArcId arc) const;
 
+  /// TEST-ONLY (never for production use, and not part of the stable
+  /// Runner API -- the same reason `fuse::abi_test::force_this_process()`
+  /// (src/abi/test_support.hpp) reaches past the frozen ABI for a test
+  /// that has nowhere else to stand): after a successful `initialize()`,
+  /// whether the window-scoped residual block for the channel named
+  /// `channel_name` (`RegionBlock::channel_name`, the SAME name
+  /// `CouplingGraph::add_channel()` was given) is owned on this process
+  /// (`RegionBlock::window_hosted`, src/runtime/runner_impl.hpp's own
+  /// comment has the full account of what "owned" means for a window
+  /// block). `std::nullopt` when no region of this plan has a block for
+  /// that channel, or `initialize()` has not yet succeeded.
+  ///
+  /// Exists because `window_hosted` is private implementation state with
+  /// no production-code reader outside `run_region()` itself, and the
+  /// rule that resolves it (`WindowMemberConfig::export_consumer_hosted`)
+  /// has no public-API effect reachable without a real multi-rank
+  /// communicator (`run_region()`'s own `gate_by_hosted` only consults it
+  /// when `RegionRuntime::participants.size() > 1`, which requires
+  /// `RunnerConfig::base_communicator` -- refused outright on a build
+  /// with no MPI). `test/runtime/window_hosting_test.cpp` is this seam's
+  /// only caller.
+  [[nodiscard]] std::optional<bool> test_only_window_block_hosted(
+      const std::string& channel_name) const;
+
   /// Unit 3 (S6 phase 3, Conformance): the C++ side of the ABI's new
   /// `view_field` entry (fuse_field_view's own `window_samples` member,
   /// include/fuse/abi/entries.def). For a field that is part of a
