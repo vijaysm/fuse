@@ -180,7 +180,16 @@ namespace {
   // connect_pairwise() comment above and connect.hpp's `connect()` doc).
   MPI_Comm merged = MPI_COMM_NULL;
   rc = MPI_Intercomm_merge(intercomm, i_am_first ? 0 : 1, &merged);
-  MPI_Comm_free(&intercomm);
+  // MPI_Comm_disconnect, not MPI_Comm_free: this intercommunicator is the
+  // connection itself, and freeing it locally leaves the peer's half in
+  // place. Measured on the host 2026-10-08 -- with MPI_Comm_free here the
+  // acceptor took SIGSEGV inside MPICH's own communicator bookkeeping
+  // (MPII_CommL_forget, reading a freed communicator) about a tenth of a
+  // second in, long before MPI_Finalize, and the connector then failed
+  // dup'ing the merged communicator. Both sides reach this point together,
+  // so the collective is matched. The merged communicator survives it and
+  // is what the caller gets; it is released separately by disconnect().
+  MPI_Comm_disconnect(&intercomm);
   if (rc != MPI_SUCCESS) {
     return Failure{"E-CONNECT-MPI", "MPI_Intercomm_merge failed: " + mpi_error_text(rc)};
   }
