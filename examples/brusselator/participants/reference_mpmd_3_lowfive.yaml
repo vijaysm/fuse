@@ -70,9 +70,14 @@ couplers:
   - name: coupler
     index: 2
     ranks: {first: 2, count: 1}
+    launch:
+      mode: mpmd
+      appnum: 2
   - name: lowfive
     index: 3
     ranks: {first: 0, count: 3}
+    launch:
+      mode: lowfive
 channels:
   - name: u2v
     source: U.u_out

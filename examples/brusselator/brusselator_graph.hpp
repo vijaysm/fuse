@@ -101,13 +101,10 @@ struct WindowGraphHandles {
 /// (the tier-0 harness, `main.cpp`) never pass them, so their default
 /// (`RankSet{0, 1}`, `LaunchSpec{}` i.e. `LaunchMode::InProcess`)
 /// reproduces exactly what this function declared before these
-/// parameters existed. A `CouplerDecl` built through `g.add_coupler()`
-/// cannot itself carry a `LaunchSpec` (`fuse::CouplerDecl` has no such
-/// field -- `component.hpp`'s own comment on it), so a non-default
-/// `coupler_launch` is applied by constructing the coupler's
-/// `ComponentDecl` directly with `kind = ComponentKind::Coupler`
-/// (exactly what `add_coupler()` does internally; there is no separate
-/// coupler array for `g.add_component()` to treat differently).
+/// parameters existed. `coupler_launch` rides on the `CouplerDecl`
+/// itself: a coupler launched as its own program must take part in
+/// `connect()`'s own collective like any other launched entry, which is
+/// why that field exists at all (`component.hpp`'s own comment on it).
 [[nodiscard]] inline WindowGraphHandles add_window_coupling(
     fuse::CouplingGraph& g, fuse::RegionId u_region, fuse::Rational dt_u,
     fuse::Rational dt_v, fuse::Rational window, double tolerance,
@@ -171,14 +168,9 @@ struct WindowGraphHandles {
 
   fuse::ComponentId coupler{};
   if (coupler_ranks.has_value()) {
-    // `g.add_coupler(CouplerDecl{...})` cannot carry a LaunchSpec (this
-    // function's own header comment on `coupler_launch`), so build the
-    // same ComponentDecl `add_coupler()` would, by hand, with `launch`
-    // set.
-    coupler = g.add_component(ComponentDecl{.name = "coupler",
-                                             .ranks = *coupler_ranks,
-                                             .kind = ComponentKind::Coupler,
-                                             .launch = coupler_launch});
+    coupler = g.add_coupler(fuse::CouplerDecl{.name = "coupler",
+                                        .ranks = *coupler_ranks,
+                                        .launch = coupler_launch});
     g.channel(ch_u2v).remap(RemapFlags::Conservative).remap_on(coupler);
     g.channel(ch_v2u).remap(RemapFlags::Conservative).remap_on(coupler);
   }
