@@ -276,6 +276,84 @@ Result<Window> parse_window(const YAML::Node& wn,
 
 }  // namespace
 
+
+/// The `launch:` block, written identically for a component and for a
+/// coupler. A coupler is a component-array entry whose kind is Coupler, so
+/// its launch record is the same record; it is written from the couplers
+/// section only because that is where the entry lives in the file.
+void write_launch(YAML::Emitter& e, const LaunchSpec& launch,
+                  const char* mode_name) {
+  e << YAML::Key << "launch" << YAML::Value << YAML::BeginMap
+    << YAML::Key << "mode" << YAML::Value << mode_name;
+  if (launch.mode == LaunchMode::Mpmd) {
+    e << YAML::Key << "appnum" << YAML::Value << launch.appnum;
+  }
+  if (launch.mode == LaunchMode::Connect) {
+    e << YAML::Key << "is_acceptor" << YAML::Value << launch.is_acceptor;
+    if (!launch.port_file.empty()) {
+      e << YAML::Key << "port_file" << YAML::Value << launch.port_file;
+    }
+    if (!launch.service_name.empty()) {
+      e << YAML::Key << "service_name" << YAML::Value << launch.service_name;
+    }
+  }
+  // S6 phase 4, "Adapter host" track.
+  if (launch.mode == LaunchMode::Plugin) {
+    e << YAML::Key << "plugin_path" << YAML::Value << launch.plugin_path;
+  }
+  e << YAML::EndMap;
+}
+
+/// `mode_name` for an emitter, or nullptr when there is nothing to write
+/// (an in-process entry carries no `launch:` block at all, which is what
+/// keeps every existing file byte-identical).
+const char* launch_mode_name(const LaunchSpec& launch) {
+  switch (launch.mode) {
+    case LaunchMode::InProcess: return nullptr;
+    case LaunchMode::Mpmd:      return "mpmd";
+    case LaunchMode::Connect:   return "connect";
+    case LaunchMode::Plugin:    return "plugin";
+    case LaunchMode::LowFive:   return "lowfive";
+  }
+  return nullptr;
+}
+
+/// The reader's half. `who` names the entry in any diagnostic.
+[[nodiscard]] std::optional<Failure> read_launch(const YAML::Node& ln,
+                                                 const std::string& who,
+                                                 LaunchSpec& launch) {
+  if (auto e = check_unknown_keys(
+          ln, {"mode", "appnum", "is_acceptor", "port_file", "service_name", "plugin_path"},
+          who + " launch")) {
+    return *e;
+  }
+  if (!ln["mode"]) {
+    return Failure{"E-YAML-PARSE", who + " launch missing 'mode'"};
+  }
+  const auto mode = ln["mode"].as<std::string>();
+  if (mode == "mpmd") {
+    launch.mode = LaunchMode::Mpmd;
+    launch.appnum = ln["appnum"] ? ln["appnum"].as<int>() : -1;
+  } else if (mode == "connect") {
+    launch.mode = LaunchMode::Connect;
+    launch.is_acceptor = ln["is_acceptor"] && ln["is_acceptor"].as<bool>();
+    if (ln["port_file"])    launch.port_file = ln["port_file"].as<std::string>();
+    if (ln["service_name"]) launch.service_name = ln["service_name"].as<std::string>();
+  } else if (mode == "plugin") {
+    // S6 phase 4, "Adapter host" track.
+    launch.mode = LaunchMode::Plugin;
+    if (ln["plugin_path"]) launch.plugin_path = ln["plugin_path"].as<std::string>();
+  } else if (mode == "lowfive") {
+    // S6 phase 3, "LowFive" track, Unit 3. No extra LaunchSpec member of
+    // its own -- see launch.hpp's own doc comment on this value.
+    launch.mode = LaunchMode::LowFive;
+  } else {
+    return Failure{"E-YAML-PARSE",
+                   who + " has unknown launch mode '" + mode + "'"};
+  }
+  return std::nullopt;
+}
+
 Result<std::string> to_yaml(const CouplingGraph& g) {
   YAML::Emitter e;
   e << YAML::BeginMap;
@@ -353,25 +431,7 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
       if (c.launch.mode == LaunchMode::Mpmd) mode_name = "mpmd";
       else if (c.launch.mode == LaunchMode::Plugin) mode_name = "plugin";
       else if (c.launch.mode == LaunchMode::LowFive) mode_name = "lowfive";
-      e << YAML::Key << "launch" << YAML::Value << YAML::BeginMap
-        << YAML::Key << "mode" << YAML::Value << mode_name;
-      if (c.launch.mode == LaunchMode::Mpmd) {
-        e << YAML::Key << "appnum" << YAML::Value << c.launch.appnum;
-      }
-      if (c.launch.mode == LaunchMode::Connect) {
-        e << YAML::Key << "is_acceptor" << YAML::Value << c.launch.is_acceptor;
-        if (!c.launch.port_file.empty()) {
-          e << YAML::Key << "port_file" << YAML::Value << c.launch.port_file;
-        }
-        if (!c.launch.service_name.empty()) {
-          e << YAML::Key << "service_name" << YAML::Value << c.launch.service_name;
-        }
-      }
-      // S6 phase 4, "Adapter host" track.
-      if (c.launch.mode == LaunchMode::Plugin) {
-        e << YAML::Key << "plugin_path" << YAML::Value << c.launch.plugin_path;
-      }
-      e << YAML::EndMap;
+      write_launch(e, c.launch, mode_name);
     }
     e << YAML::Key << "fields" << YAML::Value << YAML::BeginSeq;
     for (const FieldId fid : c.fields) {
@@ -434,6 +494,12 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
       e << YAML::Flow << YAML::BeginSeq;
       for (const int rank : c.ranks) e << rank;
       e << YAML::EndSeq;
+    }
+    // A coupler launched as its own program says so, exactly as a
+    // component does. Omitted for an in-process coupler, so every file
+    // written before couplers could carry this is byte-identical still.
+    if (const char* mode_name = launch_mode_name(c.launch)) {
+      write_launch(e, c.launch, mode_name);
     }
     e << YAML::EndMap;
   }
@@ -687,7 +753,7 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
   };
   std::vector<PendingCoupler> pending_couplers;
   for (const auto& n : root["couplers"]) {
-    if (auto e = check_unknown_keys(n, {"name", "index", "ranks"}, "coupler entry")) {
+    if (auto e = check_unknown_keys(n, {"name", "index", "ranks", "launch"}, "coupler entry")) {
       return *e;
     }
     CouplerDecl c;
@@ -704,6 +770,11 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
         }
         c.ranks = RankSet{n["ranks"]["first"].as<int>(),
                           n["ranks"]["count"].as<int>()};
+      }
+    }
+    if (n["launch"]) {
+      if (auto e = read_launch(n["launch"], "coupler '" + c.name + "'", c.launch)) {
+        return *e;
       }
     }
     // Couplers share the SAME name -> id table channels resolve `source`,
@@ -765,36 +836,8 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
       }
     }
     if (n["launch"]) {
-      const auto& ln = n["launch"];
-      if (auto e = check_unknown_keys(
-              ln, {"mode", "appnum", "is_acceptor", "port_file", "service_name", "plugin_path"},
-              "component '" + c.name + "' launch")) {
+      if (auto e = read_launch(n["launch"], "component '" + c.name + "'", c.launch)) {
         return *e;
-      }
-      if (!ln["mode"]) {
-        return Failure{"E-YAML-PARSE",
-                     "component '" + c.name + "' launch missing 'mode'"};
-      }
-      const auto mode = ln["mode"].as<std::string>();
-      if (mode == "mpmd") {
-        c.launch.mode = LaunchMode::Mpmd;
-        c.launch.appnum = ln["appnum"] ? ln["appnum"].as<int>() : -1;
-      } else if (mode == "connect") {
-        c.launch.mode = LaunchMode::Connect;
-        c.launch.is_acceptor = ln["is_acceptor"] && ln["is_acceptor"].as<bool>();
-        if (ln["port_file"])    c.launch.port_file = ln["port_file"].as<std::string>();
-        if (ln["service_name"]) c.launch.service_name = ln["service_name"].as<std::string>();
-      } else if (mode == "plugin") {
-        // S6 phase 4, "Adapter host" track.
-        c.launch.mode = LaunchMode::Plugin;
-        if (ln["plugin_path"]) c.launch.plugin_path = ln["plugin_path"].as<std::string>();
-      } else if (mode == "lowfive") {
-        // S6 phase 3, "LowFive" track, Unit 3. No extra LaunchSpec member
-        // of its own -- see launch.hpp's own doc comment on this value.
-        c.launch.mode = LaunchMode::LowFive;
-      } else {
-        return Failure{"E-YAML-PARSE",
-                     "component '" + c.name + "' has unknown launch mode '" + mode + "'"};
       }
     }
     flush_couplers();

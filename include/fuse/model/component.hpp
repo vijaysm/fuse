@@ -222,6 +222,20 @@ struct ComponentDecl {
 struct CouplerDecl {
   std::string name;
   RankSet     ranks;
+
+  /// How this coupler's own ranks are launched, when it runs as its own
+  /// program rather than inside a component's executable. A coupler owns
+  /// no fields and is never advanced, but it still takes part in every
+  /// collective of the base communicator -- including the one `connect()`
+  /// itself makes -- so a coupler launched as its own MPMD segment must
+  /// say so here, exactly as a component does. Left at its default
+  /// (`LaunchMode::InProcess`) a coupler shares whichever executable its
+  /// ranks already belong to, which is the accept-mode arrangement.
+  /// Measured consequence of not carrying this, 2026-10-08: the
+  /// Brusselator's MPMD rows hung with no output at all, U and V waiting
+  /// in `connect_mpmd()`'s collective for a coupler rank that never
+  /// called `connect()`.
+  LaunchSpec  launch;
 };
 
 /// The time span an accumulation or space-time projection covers.

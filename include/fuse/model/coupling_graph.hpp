@@ -147,7 +147,8 @@ class CouplingGraph {
   ComponentId add_coupler(CouplerDecl d) {
     return add_component(ComponentDecl{.name = std::move(d.name),
                                        .ranks = std::move(d.ranks),
-                                       .kind = ComponentKind::Coupler});
+                                       .kind = ComponentKind::Coupler,
+                                       .launch = std::move(d.launch)});
   }
 
   FieldId add_field(ComponentId owner, FieldSpec f) {
