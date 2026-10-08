@@ -4050,6 +4050,16 @@ const std::vector<std::string>& Runner::checkpoint_explanations()
   return impl_->region_explain;
 }
 
+std::optional<bool> Runner::test_only_window_block_hosted(
+    const std::string& channel_name) const {
+  for (const detail::RegionRuntime& region : impl_->regions) {
+    for (const detail::RegionBlock& b : region.blocks) {
+      if (b.channel_name == channel_name) return b.window_hosted;
+    }
+  }
+  return std::nullopt;
+}
+
 Result<const double*> Runner::buffer(ArcId arc) const {
   if (!arc.valid() || arc.value() >= impl_->slots.size()) {
     return Failure{"E-RT-ARC", "no buffer for arc " + std::to_string(arc.value())};
