@@ -21,9 +21,14 @@
 // communicating about it at all (same principle `rank_agreement.hpp`
 // names: nothing here needs MPI to be checkable). The real run (A on
 // rank 0, B on rank 1 -- a genuine cross-rank window coupling) is then
-// compared against it, EXPECT_EQ, on every rank: every per-window final
-// value (x_a(), x_b()) AND every per-window iteration count, not merely
-// whether the run completes.
+// compared against it, EXPECT_EQ, on every rank for the agreed per-window
+// iteration count (decide_window_convergence()'s own agreement must be
+// identical everywhere), and for each member's own per-window final value
+// (x_a(), x_b()) only on the ranks that host that member -- since
+// 0eb576a a member advances ONLY on its own processor set, a rank that
+// does not host it never touches its real state at all (RankSet::
+// contains(), not a literal rank number, decides which comparisons a
+// given rank makes). Not merely whether the run completes.
 //
 // THE 3-RANK CASE adds an UNCOUPLED component C on rank 2 -- no
 // channels, no window membership, a plain interval-1 tick -- proving a
@@ -317,8 +322,9 @@ TEST(WindowRunnerMpi, TwoDisjointRanksMatchTheSingleProcessReference) {
   ASSERT_TRUE(ref.ok) << ref.error;
 
   // Under test: A on rank 0, B on rank 1 -- a genuine cross-rank window.
-  const CouplingGraph mpi_graph =
-      build_window_graph(RankSet{0, 1}, RankSet{1, 1});
+  const RankSet a_ranks{0, 1};
+  const RankSet b_ranks{1, 1};
+  const CouplingGraph mpi_graph = build_window_graph(a_ranks, b_ranks);
   RunnerConfig cfg;
   cfg.transport = "mpi";
   cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
@@ -326,12 +332,33 @@ TEST(WindowRunnerMpi, TwoDisjointRanksMatchTheSingleProcessReference) {
   const RunOutcome got = run_window(mpi_graph, kPeriods, cfg, false);
   ASSERT_TRUE(got.ok) << got.error << " (rank " << current_rank() << ")";
 
+  // Found alongside the hosting defect this host run also exposed
+  // (KNOWN_ISSUES.md D19, `WindowMemberConfig::export_consumer_hosted`):
+  // since 0eb576a a member advances ONLY on its own processor set, so a
+  // rank that does not host a given member never touches that member's
+  // OWN `x()` at all -- it stays at its registered initial value there,
+  // never the real, partner-updated state. Comparing `x_a_per_window`/
+  // `x_b_per_window` on EVERY rank (the pre-this-fix code) therefore
+  // compared A's own real trajectory against B's rank's own untouched
+  // copy of A's initial condition, which is not a meaningful check and
+  // was the direct cause of this test's own `got.x_b_per_window[0] ==
+  // 0.2` (B's unmodified `kAY0`) symptom on the host. Each member's own
+  // state is compared only on the ranks that host it -- the ranks.
+  // contains() membership test the graph itself declares, not a literal
+  // rank number -- while the AGREED sweep count stays compared on every
+  // rank, since decide_window_convergence() must agree it everywhere.
+  const bool hosts_a = a_ranks.contains(current_rank());
+  const bool hosts_b = b_ranks.contains(current_rank());
   ASSERT_EQ(got.x_a_per_window.size(), ref.x_a_per_window.size());
   for (std::size_t w = 0; w < ref.x_a_per_window.size(); ++w) {
-    EXPECT_EQ(got.x_a_per_window[w], ref.x_a_per_window[w])
-        << "window " << w << ", rank " << current_rank();
-    EXPECT_EQ(got.x_b_per_window[w], ref.x_b_per_window[w])
-        << "window " << w << ", rank " << current_rank();
+    if (hosts_a) {
+      EXPECT_EQ(got.x_a_per_window[w], ref.x_a_per_window[w])
+          << "window " << w << ", rank " << current_rank();
+    }
+    if (hosts_b) {
+      EXPECT_EQ(got.x_b_per_window[w], ref.x_b_per_window[w])
+          << "window " << w << ", rank " << current_rank();
+    }
     EXPECT_EQ(got.iterations_per_window[w], ref.iterations_per_window[w])
         << "window " << w << ", rank " << current_rank()
         << " -- every rank must agree the SAME sweep count (step (c), "
@@ -349,8 +376,10 @@ TEST(WindowRunnerMpi, ThreeRanksWithAnUncoupledThirdMatchTheReference) {
   ASSERT_TRUE(ref.ok) << ref.error;
 
   // A on rank 0, B on rank 1, C (uncoupled, no channels) on rank 2.
+  const RankSet a_ranks{0, 1};
+  const RankSet b_ranks{1, 1};
   const CouplingGraph mpi_graph = build_window_graph(
-      RankSet{0, 1}, RankSet{1, 1}, /*with_uncoupled_c=*/true, RankSet{2, 1});
+      a_ranks, b_ranks, /*with_uncoupled_c=*/true, RankSet{2, 1});
   RunnerConfig cfg;
   cfg.transport = "mpi";
   cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
@@ -358,12 +387,23 @@ TEST(WindowRunnerMpi, ThreeRanksWithAnUncoupledThirdMatchTheReference) {
   const RunOutcome got = run_window(mpi_graph, kPeriods, cfg, /*with_c=*/true);
   ASSERT_TRUE(got.ok) << got.error << " (rank " << current_rank() << ")";
 
+  // Same correction as TwoDisjointRanksMatchTheSingleProcessReference's own
+  // comment: a member's own state is observable only on the ranks that
+  // host it (0eb576a). Rank 2 (C, uncoupled) hosts neither A nor B, so it
+  // compares only the agreed sweep count, which is exactly the property
+  // this test is named for.
+  const bool hosts_a = a_ranks.contains(current_rank());
+  const bool hosts_b = b_ranks.contains(current_rank());
   ASSERT_EQ(got.x_a_per_window.size(), ref.x_a_per_window.size());
   for (std::size_t w = 0; w < ref.x_a_per_window.size(); ++w) {
-    EXPECT_EQ(got.x_a_per_window[w], ref.x_a_per_window[w])
-        << "window " << w << ", rank " << current_rank();
-    EXPECT_EQ(got.x_b_per_window[w], ref.x_b_per_window[w])
-        << "window " << w << ", rank " << current_rank();
+    if (hosts_a) {
+      EXPECT_EQ(got.x_a_per_window[w], ref.x_a_per_window[w])
+          << "window " << w << ", rank " << current_rank();
+    }
+    if (hosts_b) {
+      EXPECT_EQ(got.x_b_per_window[w], ref.x_b_per_window[w])
+          << "window " << w << ", rank " << current_rank();
+    }
     EXPECT_EQ(got.iterations_per_window[w], ref.iterations_per_window[w])
         << "window " << w << ", rank " << current_rank()
         << " -- an uncoupled third rank must not perturb the window's own "
