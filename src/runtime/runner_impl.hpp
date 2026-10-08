@@ -382,19 +382,36 @@ struct RegionBlock {
   /// reserves one more slot than it actually fills on a
   /// non-straddling window instance).
   std::size_t window_export_valid_substeps = 0;
-  /// Unit 2b (D19), step (c): `true` when `value_arc` is NOT a window
-  /// member's own export (an ordinary channel, where "owned" is decided
-  /// by `length > 0` as it always was), OR when it IS one and this
-  /// process hosts that member (`WindowMemberConfig::hosted` -- the
-  /// SAME field `window_export_meta` is keyed by, step (a)). `false`
-  /// only for a window block whose exporting member is NOT hosted here:
-  /// this rank's own `block_residual`/`block_value` for that block are
-  /// computed from whatever stale buffer sits in `slots[]` (nothing
-  /// writes there; `advance_window()` skips a non-hosted member
-  /// entirely) and must never be treated as "I own zero" the way an
-  /// ordinary channel's `length == 0` already is -- `decide_window_
-  /// convergence()`'s own `WindowBlockSample::owned` reads this, not
-  /// `length`, for a window-scoped region.
+  /// Unit 2b (D19), step (c), CORRECTED (measured against a real host
+  /// MPI run of `parallel.window_runner_mpi.{2,3}`, 2026-10-08): `true`
+  /// when `value_arc` is NOT a window member's own export (an ordinary
+  /// channel, where "owned" is decided by `length > 0` as it always
+  /// was), OR when it IS one and the processor set that CONSUMES this
+  /// export is hosted here (`WindowMemberConfig::export_consumer_
+  /// hosted` -- the field `window_export_meta` is keyed by, step (a)'s
+  /// correction). `false` only for a window block whose CONSUMER is NOT
+  /// hosted here.
+  ///
+  /// This is deliberately the CONSUMER's own hosting, not the
+  /// EXPORTER's: the compiled delivery chain a window block's residual
+  /// measures (Transport/Epoch/Remap/Constrain/Diagnose) executes on
+  /// the consumer's own processor set, so that is the one rank whose
+  /// local `block_residual`/`block_value` for this block are ever
+  /// genuinely written. Storing the EXPORTER's own hosting here (the
+  /// pre-correction code) made the exporter's rank -- which never
+  /// writes this block's buffer at all -- claim ownership, and the
+  /// consumer's rank -- the only rank that does -- disclaim it; see
+  /// `WindowMemberConfig::export_consumer_hosted`'s own comment for the
+  /// measured host symptom this produced
+  /// (`parallel.window_runner_mpi.{2,3}` converging after exactly one
+  /// sweep with the partner's own state never updated).
+  ///
+  /// A non-owning rank's own `block_residual`/`block_value` for this
+  /// block are computed from whatever stale buffer sits in `slots[]`
+  /// (nothing writes there on that rank) and must never be treated as
+  /// "I own zero" the way an ordinary channel's `length == 0` already
+  /// is -- `decide_window_convergence()`'s own `WindowBlockSample::
+  /// owned` reads this, not `length`, for a window-scoped region.
   bool window_hosted = true;
 };
 
@@ -667,6 +684,43 @@ struct Runner::Impl {
     /// `ExternalSuspend` -- its own export arc is left untouched here,
     /// for the field transfer (Transport/Remap/Sink) to deliver instead.
     bool        hosted = true;
+    /// Unit 2b (D19) correction, measured against a real host MPI run of
+    /// `parallel.window_runner_mpi.{2,3}` (2026-10-08): whether the
+    /// processor set that CONSUMES this member's own export -- the
+    /// channel's TARGET component, resolved the identical way `hosted`
+    /// above resolves THIS member's own processor set -- includes
+    /// `this_process`. `true` whenever this member exports nothing (no
+    /// channel to consume it) or `this_process` is unset, the same
+    /// permissive default `hosted` itself uses.
+    ///
+    /// `window_export_meta` (src/runtime/iteration.cpp) is keyed by
+    /// THIS member's own export arc but must answer a question about
+    /// the OTHER end of the field transfer: a window-scoped block's
+    /// residual is measured on the CONSUMER's own processor set (the
+    /// compiled Transport/Epoch/Remap/Constrain/Diagnose chain runs
+    /// there, never on the exporter's), so the flag `run_region()`
+    /// gates convergence ownership with must say "is the consumer
+    /// hosted here", not "is the exporter hosted here". Before this
+    /// field existed, `window_export_meta` stored `hosted` (THIS
+    /// member's own flag) instead: `test/golden/window_two_member.plan`
+    /// shows the a2b block's value arc (%6, `a2b/diagnose`) is reached
+    /// from A's export (%0) only through `Transport{0->1} -> Epoch ->
+    /// Remap -> Constrain -> Diagnose`, the chain B's own processor set
+    /// executes -- so on A's rank, the a2b block was wrongly marked
+    /// owned (A's own `hosted` is true there) even though A's rank
+    /// never writes %6 at all, and on B's rank it was wrongly marked
+    /// NOT owned (A's own `hosted` is false there) even though B's rank
+    /// is the one genuine owner. Both ranks disagreed with the truth in
+    /// the same wrong direction for the mirrored b2a block. MEASURED
+    /// consequence on the host run: `window_export_meta`'s stale,
+    /// never-written local buffer on the wrongly-"owning" rank read as
+    /// a 0/0 residual/reference pair, which `decide_window_convergence
+    /// ()` accepts as converged (`0 <= tol * 0`) on sweep 0 --
+    /// `got.iterations_per_window[0] == 1` against a reference of 37,
+    /// and every later window the same way (35, 25, 15, 3 vs 1 every
+    /// time), with `got.x_b_per_window[0] == 0.2`, its own unmodified
+    /// initial value, since no real exchange ever ran to convergence.
+    bool        export_consumer_hosted = true;
     /// Unit 2b (D19), step (b): the channel this member's own IMPORT
     /// came through -- `ChannelId{}` (invalid, the default) when this
     /// member imports nothing. Set in `resolve_regions()`'s first pass

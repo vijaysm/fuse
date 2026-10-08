@@ -316,10 +316,19 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
     // MatchesDriver` (test/verification/brusselator_runner_test.cpp)
     // pass EXPECT_EQ over the full 150-window span with the real
     // stopping rule, both waveform iterations.
-    // Unit 2b (D19), step (c): the third field is `hosted` -- the SAME
-    // `WindowMemberConfig::hosted` this exporting member's own cfg
-    // already carries, read back here (RegionBlock::window_hosted's own
-    // comment) rather than recomputed, so the two can never disagree.
+    // Unit 2b (D19), step (c), CORRECTED (measured against a real host
+    // MPI run of `parallel.window_runner_mpi.{2,3}`, 2026-10-08): the
+    // third field is `hosted`, but it must be the CONSUMER's own
+    // hosting -- `WindowMemberConfig::export_consumer_hosted`, that
+    // struct's own comment has the full measured account -- never this
+    // EXPORTING member's own `WindowMemberConfig::hosted`. A window
+    // block's residual is measured through the compiled delivery chain
+    // (Transport/Epoch/Remap/Constrain/Diagnose), which runs on the
+    // CONSUMER's own processor set, not the exporter's; storing the
+    // exporter's own `hosted` here told `run_region()`'s convergence
+    // gate (RegionBlock::window_hosted's own comment) the wrong rank
+    // owns each block, exactly backwards for both directions of a
+    // disjoint-ranks channel.
     struct WindowExportMeta {
       std::size_t capacity = 0;
       std::size_t valid_substeps = 0;
@@ -385,6 +394,15 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
           if (!exported_field.valid() &&
               graph.owner_of(ch.source).value() == member.value()) {
             exported_field = ch.source;
+            // `WindowMemberConfig::export_consumer_hosted`'s own
+            // comment: this member's own export is MEASURED on the
+            // channel's TARGET component's own processor set, resolved
+            // by the identical formula `hosted` above uses for THIS
+            // member's own processor set.
+            const ComponentId consumer = graph.owner_of(ch.target);
+            cfg.export_consumer_hosted =
+                !this_process.has_value() ||
+                graph.component(consumer).ranks.contains(*this_process);
           }
           if (!imported_field.valid() &&
               graph.owner_of(ch.target).value() == member.value()) {
@@ -681,7 +699,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
                                      DtPolicy::Adjustable) -
               1;
           window_export_meta[ins.out.value()] = {cfg.capacity, valid_substeps,
-                                                  cfg.hosted};
+                                                  cfg.export_consumer_hosted};
         }
       }
 
@@ -1058,6 +1076,29 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
       if (origin.valid() && origin.value() < graph.channel_count()) {
         const Channel& ch = graph.channel_at(origin);
         b.channel_name = ch.name;
+        // Ownership of a WINDOW block, resolved from THIS block's own
+        // channel rather than from the exporting member it shares an
+        // export arc with. `window_export_meta`'s own flag (read above,
+        // through the hop walk) is per MEMBER: one member exporting to
+        // two channels whose targets sit on different processor sets
+        // gives both blocks that member's single answer, and one of them
+        // is then wrong -- the same inversion this gate was just fixed
+        // for, one level in. The block knows its own channel here, so
+        // ask it directly: the rank that writes a block's residual and
+        // reference buffers is the one hosting the channel's TARGET,
+        // whose compiled chain (Transport -> ... -> Sink, test/golden/
+        // window_two_member.plan) runs on exactly that component's own
+        // processor set. Only for a window block: an ordinary channel's
+        // ownership is still `length > 0`, untouched above.
+        if (b.window_export_capacity > 0 && ch.target.valid() &&
+            ch.target.value() < graph.field_count()) {
+          const ComponentId consumer = graph.owner_of(ch.target);
+          if (consumer.valid() && consumer.value() < graph.component_count()) {
+            b.window_hosted =
+                !this_process.has_value() ||
+                graph.component(consumer).ranks.contains(*this_process);
+          }
+        }
         if (ch.source.valid() && ch.source.value() < graph.field_count()) {
           b.source_field = graph.field(ch.source).name;
         }
@@ -1706,13 +1747,14 @@ detail::Task<Result<void>> Runner::Impl::run_region(
     // Unit 2b (D19), step (c): a window-scoped region's own agreement is
     // `decide_window_convergence()` (fuse/runtime/window_convergence.hpp),
     // not this tree-combine -- its blocks are gated by `WindowMemberConfig
-    // ::hosted` (RegionBlock::window_hosted), not `length > 0`: a
-    // non-hosted rank's own `block_residual`/`block_value` are computed
-    // from whatever stale buffer sits in `slots[]` (nothing writes there;
-    // `advance_window()` skips a non-hosted member entirely, step (a)),
-    // which is not a legitimate "I own zero of this" the way an ordinary
-    // channel's empty local array already is -- length-gating it the same
-    // way would silently fold uninitialized memory into the sum below.
+    // ::export_consumer_hosted` (RegionBlock::window_hosted), not
+    // `length > 0`: a non-owning rank's own `block_residual`/
+    // `block_value` are computed from whatever stale buffer sits in
+    // `slots[]` (nothing writes there on a rank that does not execute
+    // this block's own delivery chain), which is not a legitimate "I own
+    // zero of this" the way an ordinary channel's empty local array
+    // already is -- length-gating it the same way would silently fold
+    // uninitialized memory into the sum below.
     bool window_converged = false;
     if (R.window_scoped) {
       const std::size_t nb = R.blocks.size();
