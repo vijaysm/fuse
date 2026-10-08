@@ -458,3 +458,61 @@ test = "runtime.window_runner"
 # comparison, since decide_window_convergence() is new code with no PRIOR
 # behaviour on this exact line to revert to). The real end-to-end,
 # multi-rank proof is parallel.window_runner_mpi.{2,3} (step (e)), a host row.
+
+[[mutation]]
+id = "window-runner-export-ownership-uses-the-exporter"
+area = "runtime/iteration (resolve_regions, Unit 2b step (c) correction, D19)"
+describes = "window_export_meta's third field (consulted by RegionBlock::window_hosted, the per-block convergence-ownership gate run_region() reads) must be whether the CONSUMER of this member's own export is hosted here (WindowMemberConfig::export_consumer_hosted), never whether the EXPORTER itself is (WindowMemberConfig::hosted) -- a window block's residual is measured through the compiled delivery chain (Transport/Epoch/Remap/Constrain/Diagnose), which runs on the CONSUMER's own processor set, not the exporter's. This is the defect a real host MPI run of parallel.window_runner_mpi.{2,3} found 2026-10-08: on a disjoint-ranks channel, storing the exporter's own hosted flag here makes the exporting rank wrongly claim a block it never writes, and the consuming rank -- the only rank that does write it -- wrongly disclaim it, so decide_window_convergence() sums a stale 0/0 residual/reference pair and reports converged after exactly one sweep, with the partner's own state never updated (got.iterations_per_window[0] == 1 against a reference of 37; got.x_b_per_window[0] == 0.2, B's own unmodified initial value). Reverting to the exporter's own `cfg.hosted` reproduces exactly that inversion."
+file = "src/runtime/iteration.cpp"
+old = """          window_export_meta[ins.out.value()] = {cfg.capacity, valid_substeps,
+                                                  cfg.export_consumer_hosted};"""
+new = """          window_export_meta[ins.out.value()] = {cfg.capacity, valid_substeps,
+                                                  cfg.hosted};  // MUTATED: exporter-side flag restored"""
+target = "fuse_runtime_window_hosting_test"
+test = "runtime.window_hosting"
+# Expected kill: WindowHosting.BlockOwnershipFollowsTheConsumersProcessorSetOnAsRank
+# and WindowHosting.BlockOwnershipFollowsTheConsumersProcessorSetOnBsRank (the
+# two tests that force this_process to a rank where the two window members'
+# own RankSets are DISJOINT -- window_hosting_test.cpp's own
+# two_member_window_graph_disjoint_ranks(), mirroring window_runner_test.
+# cpp's own make_single_window_graph_with_disjoint_ranks() precedent).
+# WindowHosting.EveryBlockIsOwnedWhenBothMembersShareOneRank is a confirmed
+# NO-OP against this mutation: when every member shares one rank, this_
+# process is a member of every component's own RankSet, so cfg.hosted and
+# cfg.export_consumer_hosted agree (both true) regardless of which one
+# window_export_meta stores -- the single-process/single-rank shape every
+# OTHER window test in this suite already uses cannot distinguish the two
+# formulas, which is the whole reason this defect had no tier-0 oracle
+# before this fix.
+#
+# Verified BY HAND 2026-10-08: with the mutation applied, `ctest -L runtime`
+# (13 tests) reports exactly 1 FAILED -- runtime.window_hosting -- no other
+# runtime test affected. Run directly for the exact values:
+# `fuse_runtime_window_hosting_test` reports, on A's own rank (0):
+#   a2b: Actual true, Expected false ("a2b's own consumer is B, on rank 1
+#        -- not hosted on A's own rank 0")
+#   b2a: Actual false, Expected true ("b2a's own consumer is A, hosted
+#        right here on rank 0")
+# and the exact mirror on B's own rank (1) -- both predicted inversions,
+# decisively. Reverting the mutation and rebuilding restores
+# `ctest -L runtime` to 13/13 passed; file restored and re-verified
+# byte-identical (sha256 f09a133e19d8ab4224abb21740b047c48177d895877e2ab1
+# cd61210db66728b8) afterward.
+
+[[mutation]]
+id = "window-block-ownership-resolved-per-member-not-per-channel"
+area = "runtime/iteration (resolve_regions, the per-block ownership branch)"
+describes = "A window block's convergence ownership is resolved from the block's OWN channel target, not from the exporting member's single export_consumer_hosted. The member-level flag resolves against the FIRST channel in decl.channels whose source is that member's export, so one member feeding two consumers on different processor sets hands both blocks one answer and is wrong for one of them on every rank -- the same inversion as the exporter-side flag, one level in. Killed by the fan-out case, where a2b and a2c share an export arc and have consumers on rank 1 and rank 2."
+file = "src/runtime/iteration.cpp"
+old = "        if (b.window_export_capacity > 0 && ch.target.valid() &&"
+new = "        if (false && b.window_export_capacity > 0 && ch.target.valid() &&"
+target = "fuse_runtime_window_hosting_test"
+test = "runtime.window_hosting"
+# Verified BY HAND 2026-10-08 on a clean export of the worktree: with the
+# mutation applied, fuse_runtime_window_hosting_test reports exactly one
+# failure, WindowHosting.FanOutBlocksFollowTheirOwnConsumerNotTheFirstChannel,
+# at the a2c assertion -- "Actual: true" where the consumer C is on rank 2 and
+# the forced process is rank 1. The other three cases are confirmed no-ops:
+# with one consumer per export the member-level flag and the per-channel one
+# agree by construction. Restored byte-identically (cmp against the worktree
+# copy) and rebuilt: 4/4 pass.

@@ -3323,6 +3323,42 @@ tests plus the Brusselator as the bit-for-bit oracle for the single-process case
   `decide_window_convergence()` at all, which IS tier-0-killed, broadly and immediately — has no
   tier-0 oracle (every sandbox fixture has exactly one effective participant); its real proof is
   `parallel.window_runner_mpi.{2,3}` (step (e)), a host row.
+  **CORRECTION, measured against the host run of `parallel.window_runner_mpi.{2,3}`
+  (2026-10-08) — FIXED:** that host run FAILED (not merely unconfirmed): window 0, rank 0,
+  `got.iterations_per_window[0] == 1` against a reference of 37 (windows 1-4: reference 35, 25, 15, 3
+  vs `got` 1 every time), `got.x_b_per_window[0] == 0.2`, B's own unmodified initial value. Root
+  cause: `window_export_meta` (`src/runtime/iteration.cpp`) stored the EXPORTING member's own
+  `WindowMemberConfig::hosted` where `RegionBlock::window_hosted` (consulted by `run_region()`'s own
+  `gate_by_hosted` above) needs whether the CONSUMER is hosted here — a window block's residual is
+  measured through the compiled delivery chain (Transport/Epoch/Remap/Constrain/Diagnose), which runs
+  on the consumer's own processor set, not the exporter's. On a disjoint-ranks channel this inverted
+  ownership in both directions at once: the exporting rank wrongly claimed a block it never writes,
+  and the consuming rank — the only rank that does — wrongly disclaimed it, so both sides summed a
+  stale 0/0 residual/reference pair that reads as trivially converged. Fixed by a new
+  `WindowMemberConfig::export_consumer_hosted` field (resolved from the channel's TARGET component's
+  own processor set, the identical formula `hosted` itself uses), which `window_export_meta` now
+  stores instead. Pinned by `test/runtime/window_hosting_test.cpp` (white-box over the public
+  `Runner` API plus one test-only accessor, `Runner::test_only_window_block_hosted()`, since
+  `RegionBlock::window_hosted`'s own gate is only ever reached with a real `base_communicator`, which
+  a no-MPI build refuses outright) and a new pure-function case in `window_convergence_test.cpp`;
+  mutation `window-runner-export-ownership-uses-the-exporter`
+  (`build-evidence/mutations/window-runner.toml`) restores the exporter-side flag and is killed by
+  exactly the two rank-specific `WindowHosting` tests. **Then taken one level further:** that
+  field is per MEMBER, resolved against the first channel whose source is the member's export, so a
+  member feeding two consumers on different processor sets would hand both blocks one answer. Each
+  block now resolves its own ownership from its own channel's target (`resolve_regions()`, the
+  `window_export_capacity > 0` branch), which is where the block's channel is already known;
+  `WindowHosting.FanOutBlocksFollowTheirOwnConsumerNotTheFirstChannel` builds exactly that graph (one
+  export, consumers on ranks 1 and 2) and the mutation
+  `window-block-ownership-resolved-per-member-not-per-channel` kills it. Writing that fixture also
+  measured a neighbouring refusal worth recording: a convergence measure naming the fanned-out SOURCE
+  field is refused with `E-ITER-MEASURE` (it matches two residuals, and exactly one is required), so
+  each consumer's own field is what such a region names. **Also found and fixed in the same host run:**
+  `window_runner_mpi_test.cpp` compared a member's own `x()` on EVERY rank, but since `0eb576a` a
+  member advances only on its own processor set — a rank that does not host a member never touches
+  its real state, so the test was comparing a hosting rank's real trajectory against a non-hosting
+  rank's untouched initial value. Each member's own state is now compared only on the ranks
+  `RankSet::contains()` says host it; the agreed sweep count stays compared on every rank.
 - **(d) Ranks without a component — DONE.** `fuse_run()` legal on a process hosting no
   externally-driven component: `Runner::hosts_component(ComponentId) const -> bool`, a new public
   method generalising `WindowMemberConfig::hosted`'s own rule, replaces `impl_run()`'s blanket
