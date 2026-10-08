@@ -81,6 +81,27 @@ struct ConnectOptions {
 /// already take.
 struct ConnectedWorld {
   int base_comm_f = -1;
+
+  /// What `disconnect()` must do with `base_comm_f`. The two launch modes
+  /// produce communicators with different obligations, and the difference
+  /// is not visible from the handle itself, so it is recorded here.
+  enum class Teardown {
+    None,        ///< Nothing to release (a failed or default-constructed handle).
+    Free,        ///< `Mpmd`: a duplicate of the caller's own world.
+    Disconnect,  ///< `Connect`: merged from an intercommunicator, so the two
+                 ///< separately launched programs are CONNECTED in the MPI
+                 ///< sense until this is done. `MPI_Finalize` is collective
+                 ///< over connected programs; leaving this undone is what
+                 ///< crashed the acceptor inside MPICH's own communicator
+                 ///< bookkeeping (`MPII_CommL_forget`, reading a freed
+                 ///< communicator) on the host, 2026-10-08. The connector
+                 ///< then failed too, in whatever way it happened to be
+                 ///< waiting -- an MPICH-internal communicator failure in
+                 ///< the `ctest` run, `E-CONNECT-TIMEOUT` in a later manual
+                 ///< run -- always as collateral of the dead peer, never on
+                 ///< its own account.
+  };
+  Teardown teardown = Teardown::None;
 };
 
 /// Pure, MPI-free. Checks that the graph's launched components' `RankSet`s
@@ -275,6 +296,28 @@ struct ConnectedWorld {
 [[nodiscard]] Result<ConnectedWorld> connect(const CouplingGraph& g,
                                              int my_world_comm_f,
                                              const ConnectOptions& opts);
+
+/// Releases what `connect()` formed, and MUST be called before
+/// `MPI_Finalize` by every caller of `connect()`.
+///
+/// For a `Connect`-mode handle this is `MPI_Comm_disconnect`, and it is not
+/// housekeeping: `MPI_Comm_accept`/`MPI_Comm_connect` leave the two
+/// separately launched programs CONNECTED, which makes `MPI_Finalize`
+/// collective across both of them. A program that finalizes while still
+/// connected is not doing something merely untidy -- it is leaving an
+/// operation half-finished on a peer that is no longer listening.
+/// For an `Mpmd` handle it is `MPI_Comm_free` of the duplicate `connect()`
+/// made; for a default-constructed or already-released handle it is a
+/// no-op success, so calling it twice, or on the result of a failed
+/// `connect()`, is safe.
+///
+/// `base_comm_f` is set to -1 and the teardown to `None` on success, so the
+/// handle cannot be released twice. The communicator must be out of use by
+/// then: anything that duplicated it (`MpiTransport::set_communicator`, a
+/// `Runner` built over it) must be destroyed FIRST. Called after
+/// `MPI_Finalize` it refuses with `E-CONNECT-FINALIZED` rather than
+/// reaching into a torn-down MPI.
+[[nodiscard]] Result<void> disconnect(ConnectedWorld& w);
 #endif  // FUSE_HAVE_MPI
 
 }  // namespace fuse::transport
