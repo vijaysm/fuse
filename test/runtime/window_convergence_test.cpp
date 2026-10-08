@@ -219,4 +219,61 @@ TEST(WindowConvergence, MutationDecidingFromOneRanksOwnPairsOnlyDisagrees) {
          "verdict -- exactly the defect this step closes";
 }
 
+TEST(WindowConvergence,
+    OwnershipSplitAcrossParticipantsAgreesWithTheSingleParticipantDecision) {
+  // Unit 2b (D19) correction's own pure-function case (this step's own rule
+  // is `WindowMemberConfig::export_consumer_hosted`, iteration.cpp/
+  // runner_impl.hpp; `decide_window_convergence()` itself is unchanged by
+  // that fix -- it already summed only the OWNING entries, whichever rank
+  // they happened to be on. This pins that `decide_window_convergence()`
+  // does not care WHICH participant owns a block, only THAT exactly one
+  // real measurement reaches it per block): the exact two-rank shape a
+  // disjoint-ranks window channel produces -- block 0 (say, a2b) owned
+  // only by participant 1 (B's own rank, the consumer of A's export),
+  // block 1 (b2a) owned only by participant 0 (A's own rank, the consumer
+  // of B's export) -- must reach IDENTICAL block_residual/block_value and
+  // IDENTICAL `converged` as the single-participant case with both blocks
+  // owned locally, since the non-owning participant's own entry for each
+  // block contributes nothing (owned == false, excluded before any
+  // arithmetic touches it, `EachBlockIsSummedOnlyFromItsOwningRanks`'s own
+  // proof above).
+  const ConvergenceCriterion measures = two_absolute_measures(1e-9);
+  const std::vector<std::size_t> measure_block{0, 1};
+  std::vector<double> rn, fn;
+
+  std::vector<double> block_first_single{0.0, 0.0};
+  const WindowConvergenceResult single = decide_window_convergence(
+      {{WindowBlockSample{4e-20, 9.0, true},
+        WindowBlockSample{1.6e-19, 16.0, true}}},
+      measures, measure_block, block_first_single, /*first_sweep=*/true, rn,
+      fn);
+  ASSERT_EQ(single.unmeasured_block, -1);
+
+  // Participant 0 hosts block 1's own consumer (A) only; participant 1
+  // hosts block 0's own consumer (B) only -- each entry for the block it
+  // does NOT consume is zero-and-unowned, exactly the shape run_region()
+  // builds for a disjoint-ranks window region (RegionBlock::window_hosted
+  // per block, per rank).
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  std::vector<double> block_first_split{0.0, 0.0};
+  const std::vector<std::vector<WindowBlockSample>> split{
+      /*participant 0 (hosts A, consumes b2a -> owns block 1 only)*/
+      {WindowBlockSample{nan, nan, false},
+       WindowBlockSample{1.6e-19, 16.0, true}},
+      /*participant 1 (hosts B, consumes a2b -> owns block 0 only)*/
+      {WindowBlockSample{4e-20, 9.0, true},
+       WindowBlockSample{nan, nan, false}},
+  };
+  const WindowConvergenceResult from_split = decide_window_convergence(
+      split, measures, measure_block, block_first_split, /*first_sweep=*/true,
+      rn, fn);
+
+  ASSERT_EQ(from_split.unmeasured_block, -1);
+  EXPECT_DOUBLE_EQ(from_split.block_residual[0], single.block_residual[0]);
+  EXPECT_DOUBLE_EQ(from_split.block_residual[1], single.block_residual[1]);
+  EXPECT_DOUBLE_EQ(from_split.block_value[0], single.block_value[0]);
+  EXPECT_DOUBLE_EQ(from_split.block_value[1], single.block_value[1]);
+  EXPECT_EQ(from_split.converged, single.converged);
+}
+
 }  // namespace
