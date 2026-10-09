@@ -542,6 +542,40 @@ TEST(WindowRunner, SingleWindowRegionExecutesAndConverges) {
 // restriction is wired in, a GaussSeidel window naming any accelerator
 // but AccelKind::None must be REJECTED at Runner setup, not silently
 // accelerated wrong.
+// A window member whose registered export is not the field's size on
+// this rank is refused at initialize(), not silently half-primed. Measured
+// on the host 2026-10-09: two participant programs registered 9-element
+// buffers (a stale 3x3 grid constant) against 256-cell fields; the
+// ordinary bind's E-RT-SIZE never saw them because a window member's
+// native storage is read directly from the registry, and the priming's
+// own size guard quietly skipped -- so the run proceeded on the wrong grid
+// with a zero first window and a trajectory nothing could explain.
+// `BWithVectorOut` exports TWO values where the one-cell line mesh has one,
+// which is the same defect from the other side.
+TEST(WindowRunner, RefusesAWindowMemberWhoseExportIsNotTheFieldsSize) {
+  const CouplingGraph g = make_single_window_graph(WaveformIteration::GaussSeidel);
+  const auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+  fuse::SerialMeshBackend backend;
+  ASSERT_TRUE(backend.load(g.mesh(fuse::MeshId{0})).ok());
+  const fuse::ClockSet clocks{g};
+  const auto sched =
+      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+  ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
+  ComponentSet components;
+  components.add(std::make_unique<LinearBlock>("A", 1.0, 0.5));
+  components.add(std::make_unique<BWithVectorOut>("B", 2.0, 0.4));
+  FieldRegistry registry;
+  for (auto& c : components) ASSERT_TRUE(c.register_fields(registry, g).ok());
+  Runner runner{g, lowered.dag, sched.plan, backend};
+  const auto init = runner.initialize(components, registry);
+  ASSERT_FALSE(init.ok()) << "a 2-value export on a 1-cell field was accepted";
+  EXPECT_EQ(init.error().code, "E-RT-SIZE") << init.error().message;
+  EXPECT_NE(init.error().message.find("'B'"), std::string::npos) << init.error().message;
+  EXPECT_NE(init.error().message.find("registered 2 values"), std::string::npos)
+      << init.error().message;
+}
+
 TEST(WindowRunner, GaussSeidelWindowRejectsAcceleratedRegion) {
   const CouplingGraph g = make_single_window_graph(
       WaveformIteration::GaussSeidel, fuse::AccelKind::Constant);
