@@ -74,6 +74,19 @@ for (fuse->is_coupling_ongoing(ctx, NULL, &ongoing); ongoing.ongoing;
 fuse->destroy(ctx, NULL, NULL);
 ```
 
+**Your export must hold its initial value before `initialize()`.** For a component in a
+coupling window (`docs/user/coupling-windows.md`), `initialize()` primes the first window's t = 0 sample
+from whatever the storage you registered for the export holds at that moment, and the partner
+integrates that sample. An in-process component's constructor has already written its initial
+value there; your program has to do the same by hand — compute the export at t = 0 (for a
+reaction rate that depends on the partner's initial state, that means knowing the partner's
+initial export too; `examples/brusselator/participants/u_main.c` rebuilds a throwaway partner
+for it) and store it before calling `initialize()`. Left at zero, the first window's exchange is
+measurably short on one side and nothing refuses it. The storage must also be the field's size on
+this process: a shorter or longer registration is refused at `initialize()` with `E-RT-SIZE`.
+This startup contract — a participant knowing its partner's initial export — is recorded as a
+limitation in `KNOWN_ISSUES.md` D25; a coupler-delivered initial exchange would remove it.
+
 **Reading an error.** Every entry point above returns a `fuse_status` — `FUSE_OK` (`0`) or a
 negative `FUSE_ERR_*` — but not the message. `fuse->last_error(ctx, NULL, &err)` fills a caller-owned
 `fuse_error` with the failed call's own `E-...` code (`err.code`, static storage, valid until the

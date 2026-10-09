@@ -3208,6 +3208,56 @@ rank 2, and 24 for one spanning ranks 1 and 2.
 **Not the whole of multi-executable yet.** This clears the exchange plan's inputs; what
 the MPMD rows do beyond it is unmeasured until they run again.
 
+### ~~D25. A separately launched participant could not run a coupling window~~ — CLOSED 2026-10-09 (host-measured)
+
+**Found by the first MPMD runs that reached `initialize()` (D24 cleared the exchange plan),
+on the host, 2026-10-09.** Four defects in sequence, each exposed by the fix before it;
+all four fixed, and `verification.brusselator.participants.mpmd.3` passes with
+`max_window_balance_error`/`global_balance_error`/`max_window_exchange_error` all within
+the check's thresholds, final means matching the single-process example to 2 ulp
+(`mean_u` 1.5865861881738454 vs 1.5865861881738459; `mean_v` 1.998222640303883 vs
+1.9982226403038819).
+
+1. **A window member's storage was resolved on every rank.** `resolve_regions()` read every
+   member's native Provides/Requires storage from the registry on every rank; a separately
+   launched participant binds only its own fields, so `U`'s rank refused `E-RT-UNBOUND` on `V`'s
+   export. Unseen by `parallel.window_runner_mpi` because its `ComponentSet` holds every
+   component on every rank. The binding is now gated on `cfg.hosted`; every reader of those
+   pointers already tolerated null.
+2. **…which made the initialize-time seed chain's selection per rank.** The chain that
+   delivers each member's initial export to its consumer (Transport → Remap → Epoch) was
+   skipped where `cfg.required == nullptr` — after fix 1, on every non-hosting rank. Measured
+   with the macOS `sample` tool: all three programs in `MPI_Alltoallv`, U and V from this chain
+   inside `Runner::initialize()`, the coupler from `run_region()`'s first real Transport — the
+   collective mismatch the standing rule names. The chain's selection is now structural
+   (`window_import` valid and in range), and the per-rank seeding that follows is guarded
+   separately. The code's own comment had marked this collective safety "NOT YET INDEPENDENTLY
+   VERIFIED"; this is the verification.
+3. **Both participants carried a stale 3×3/4×4 grid**, from before `43fe58d` moved the graph
+   tool to 16×16/24×24, so they registered 9-element buffers against 256-cell fields. Nothing
+   refused it: the ordinary bind's `E-RT-SIZE` is bypassed by the window member's direct
+   registry read, and the priming's own size guard quietly skipped. The run then produced a
+   trajectory irreconcilable with the single-process example (first-window exchange 40% short).
+   Now: the same read refuses `E-RT-SIZE` (`WindowRunner.RefusesAWindowMemberWhoseExportIsNotTheFieldsSize`,
+   mutation `window-member-size-check-dropped`), and the grid and physics constants live in ONE
+   header, `examples/brusselator/participants/brusselator_grid.h`, included by the graph tool
+   and U and read by the Fortran V through `bruss_grid_dims()`.
+4. **Neither participant put its initial export into the registered storage.** The Runner
+   primes the first window's t=0 sample from whatever the export storage holds at
+   `initialize()`; the in-process components hold their constructor's value there, the tier-0
+   harness copies it in by hand, the standalone programs left `calloc`'s zero. U also seeded
+   its initial rate from a zero V. Both now do what the harness does: `bruss_u_provided()` /
+   `bruss_v_provided()` into the export before `initialize()`, and U reads a throwaway V's
+   initial `P_VU(V0)` for its own initial rate.
+
+**A startup-contract limitation worth naming, not deciding here:** item 4 means a participant
+must know its partner's initial export before `fuse_initialize()`. A coupler-delivered initial
+exchange (imports delivered before exports are frozen) would remove the need for U to
+reconstruct V at all. Recorded; the user's call.
+
+**Still host-only:** the 5-rank row (`mpmd.5`) was not run after the fixes — it exceeds the
+four-task rule — and the accept rows remain blocked by D23.
+
 ### D23. Accept/connect cannot complete on MPICH's `ch3:nemesis` device when both programs share a node
 
 **Status: not a defect in this library; it needs a different MPI build.** Every
@@ -3307,7 +3357,7 @@ being constructed before initialize() has been called` from every participant th
 links C++, while a pure-C one (the Brusselator's coupler) reaches the same point in
 silence.
 
-### ~~D21. A launched coupler's mode was lost in the file, hanging every MPMD run~~ — FIXED 2026-10-08, awaiting the host
+### ~~D21. A launched coupler's mode was lost in the file, hanging every MPMD run~~ — CLOSED 2026-10-09: the MPMD rows reach `connect()` and beyond on the host (D25)
 
 **Measured (the user's host, 2026-10-08).** `verification.brusselator.participants.mpmd.{3,5}` timed
 out at 120 s with `combined.log` zero bytes and no `u.log`/`v.log` at all — nothing had started.
@@ -3451,7 +3501,7 @@ constraint, C1 above).
    (`verification.brusselator.participants.{mpmd,accept}.{3,5}`) are D19's
    own to own; see that entry.
 
-### D19. The coupling-window path (`src/runtime/iteration.cpp`) has never run across more than one process — FIXED IN THE SANDBOX 2026-10-03, awaiting the host
+### ~~D19. The coupling-window path (`src/runtime/iteration.cpp`) has never run across more than one process~~ — CLOSED 2026-10-09: `parallel.window_runner_mpi.{2,3}` pass on the host (2026-10-08) and the three-executable Brusselator runs through it (D25)
 
 **Found this session**, reviewing Conformance Unit 2's own host rows before they can be run: every
 coupling-window test anywhere in this suite is tier 0 (one process). The window path has NO
