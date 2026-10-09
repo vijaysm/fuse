@@ -2127,7 +2127,32 @@ Result<void> Runner::Impl::attach_comm_graphs() {
     opts.nn_tolerance = 0.0;
 
     auto built = CommGraph::build(MPI_Comm_c2f(base), src_side, dst_side, opts);
-    if (!built.ok()) { status = built.error(); break; }
+    if (!built.ok()) {
+      // CommGraph reports the reconciliation in ITS own terms -- a global id,
+      // a union rank -- because that is all it is given. Which exchange, and
+      // what each side actually offered, is knowable only here, and without
+      // it a failure says that some id is unowned while naming neither the
+      // channel nor the side that should have owned it. Appended rather than
+      // replacing: the id and union rank are what locate the entity.
+      const auto& src_c = graph.component(ComponentId{src_cid});
+      const auto& dst_c = graph.component(ComponentId{dst_cid});
+      const auto side_extent = [dim](bool mine, const MeshView* v) {
+        if (!mine) return std::string{"not hosted on this rank"};
+        if (v == nullptr) return std::string{"hosted but no view"};
+        return std::to_string(v->owned_count(dim)) + " owned of " +
+               std::to_string(v->entity_count(dim));
+      };
+      status = Failure{
+          built.error().code,
+          built.error().message + " [exchange: region '" + reg.name +
+              "' on mesh '" + graph.mesh(reg_side.mesh).name + "', dimension " +
+              std::to_string(dim) + "; source '" + src_c.name + "' offers " +
+              side_extent(in_src, src_side.mesh) + "; destination '" +
+              dst_c.name + "' offers " + side_extent(in_dst, dst_side.mesh) +
+              "; this rank is " + std::to_string(my_rank) + " of the base "
+              "communicator]"};
+      break;
+    }
     const CommGraph& g = built.value();
 
     // Which of the two transport plan forms this exchange needs. Identical or
