@@ -29,6 +29,25 @@ typedef struct bruss_v_handle bruss_v_handle;
  * constructor uses, so the very first window's own reaction has
  * something real to compute from. Returns NULL on allocation failure
  * only (never on a physics error -- step() reports those). */
+/* The grid and physics constants of brusselator_grid.h, for a caller that
+ * cannot include a C header (v_main.f90). One source of truth: see that
+ * header's own comment for what happened when there were three. */
+void bruss_grid_dims(int* nx_u, int* ny_u, int* nx_v, int* ny_v);
+double bruss_diffusion(void);
+
+/* This component's CURRENT `provided` value (length size()) -- right after
+ * create(), the INITIAL one: q at t=0 for U, P_VU(V) at t=0 for V. A
+ * participant copies it into the storage it registers for its export
+ * BEFORE fuse_initialize(), because the Runner primes the first window's
+ * t=0 sample from whatever that storage holds at initialize -- the
+ * in-process components hold their constructor's own value there, and an
+ * externally driven participant must put the same value there by hand
+ * (test/verification/brusselator_participants_test.cpp does exactly this;
+ * the standalone programs did not, and the first window's exchange was
+ * then measured 40% short on the host, 2026-10-09). */
+void bruss_u_provided(const bruss_u_handle* h, double* out);
+void bruss_v_provided(const bruss_v_handle* h, double* out);
+
 bruss_u_handle* bruss_u_create(int nx, int ny, double diffusion, double A,
                                double B, int forcing,
                                const double* initial_v_on_u);
