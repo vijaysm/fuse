@@ -3168,6 +3168,43 @@ mutation `connect-mode-teardown-frees-instead-of-disconnecting`
 (`build-evidence/mutations/transport-connect.toml`, `requires = "mpi"`) is marked host-only for
 the same reason.
 
+### ~~D22. A shared Kokkos aborts the process at exit~~ — CLOSED 2026-10-09
+
+**What it was.** `Kokkos::initialize()` registers its own exit hook, and that hook ran
+at a point where the libraries Kokkos itself sits on -- the OpenMP runtime above all --
+had already been torn down. The process finished its work, printed every expected
+value, and then died: `libc++abi: terminating due to uncaught exception of type
+std::__1::system_error: mutex lock failed: Invalid argument`, locking a mutex in an
+image that was already gone.
+
+None of this was new code. It was invisible for as long as Kokkos was a STATIC library
+linked inside `libfuse-abi`, destroyed along with the library that held it; it appeared
+the day Kokkos was rebuilt as a shared library on this lab's machine (2026-10-09), when
+it became an image of its own with its own place in the teardown order.
+`abi.install_consumer_c` and `abi.install_consumer_fortran` both failed exactly this
+way -- after printing `installed C consumer ok` and all four expected values -- and an
+aborting MPMD participant printed the same message.
+
+**Fix.** `ensure_kokkos_initialized()` registers a `std::atexit` hook of its own,
+immediately after `Kokkos::initialize()`. `atexit` is LIFO, so this hook runs BEFORE
+Kokkos's, while the runtime underneath is intact; Kokkos's own hook then finds itself
+already finalized and does nothing. This is not finalizing from `fuse_destroy()`, which
+that function's own comment rules out for good reason -- by the time an atexit hook
+runs, no caller can create another context.
+
+**Pinned by** the two install-consumer rows, which are a real oracle for it, and the
+mutation `kokkos-is-left-to-its-own-exit-hook`.
+
+**Note for a future reader.** Both failures of 2026-10-09 came from Kokkos changing
+from static to shared, and only one of them was ours in this sense. The other -- two
+copies of Kokkos's process-wide state, one in the participant executable and one in
+`libfuse-abi.dylib`, with `fuse_create()` initialising one and the mesh `View` checked
+against the other -- went away with the shared build and needed no source change. If a
+future install is static again, that one returns: the symptom is `Kokkos ERROR: ... is
+being constructed before initialize() has been called` from every participant that
+links C++, while a pure-C one (the Brusselator's coupler) reaches the same point in
+silence.
+
 ### ~~D21. A launched coupler's mode was lost in the file, hanging every MPMD run~~ — FIXED 2026-10-08, awaiting the host
 
 **Measured (the user's host, 2026-10-08).** `verification.brusselator.participants.mpmd.{3,5}` timed
