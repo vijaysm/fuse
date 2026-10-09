@@ -526,11 +526,14 @@ old = "          if (cfg.capacity > 0 && ins.out.valid() && ins.out.value() < sl
 new = "          if (false && cfg.capacity > 0 && ins.out.valid() && ins.out.value() < slots.size() &&"
 target = "fuse_runtime_window_runner_test"
 test = "runtime.window_runner"
-# Verified BY HAND 2026-10-09 on a clean export of the worktree: with the
-# mutation applied, exactly RefusesAWindowMemberWhoseExportIsNotTheFieldsSize
-# fails ("Value of: init.ok() Actual: true -- a 2-value export on a 1-cell
-# field was accepted"); the other 7 cases pass. Restored byte-identically
-# (cmp against the worktree copy): 8/8.
+# Verified BY HAND 2026-10-09 on a clean export of HEAD, the whole binary
+# UNFILTERED under the mutation: "[ FAILED ] 1 test" --
+# RefusesAWindowMemberWhoseExportIsNotTheFieldsSize ("Value of: init.ok()
+# Actual: true -- a 2-value export on a 1-cell field was accepted") -- and
+# "[ PASSED ] 7 tests." (A first pass ran only the filtered case under the
+# mutation and claimed the other seven from the pre-mutation run; the
+# auditor caught it and this is the rerun.) Restored byte-identically (cmp
+# against the worktree copy).
 
 [[mutation]]
 id = "seed-chain-selected-per-rank"
