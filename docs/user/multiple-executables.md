@@ -199,6 +199,38 @@ on the result of a failed `connect()`.
 A participant that reaches FUSE through the C or Fortran ABI has nothing to do: `fuse_destroy()`
 releases the connection the same way, after the runner it owns is gone.
 
+## Which launch modes this build offers
+
+The two modes do not ask the same things of an MPI. **MPMD** needs only
+`MPI_APPNUM`, which every launcher provides. **Accept/connect** needs dynamic
+process management *and* needs it to work between two jobs that share a node,
+which not every installation can do.
+
+So the build measures it rather than assuming. At configure time, with MPI
+enabled, `tools/probe-mpi-dynamic.sh` compiles a small program and launches it
+twice -- one job accepting, one connecting -- and performs the same sequence
+`connect()` performs: open a port, accept, connect, merge, collective,
+disconnect. The verdict sets `FUSE_ENABLE_CONNECT_ACCEPT`, which you can
+override on the command line:
+
+```sh
+cmake -S . -B build -DFUSE_ENABLE_MPI=ON -DFUSE_ENABLE_CONNECT_ACCEPT=OFF
+```
+
+There are three verdicts, not two, and the third matters:
+
+| probe says | `FUSE_ENABLE_CONNECT_ACCEPT` | what you see |
+|---|---|---|
+| the two jobs connected | `ON` | the accept rows are registered and run |
+| they did not | `OFF` | the accept rows are not registered, and a `connect`-mode component is refused at `connect()` with `E-CONNECT-ACCEPT-UNAVAILABLE` |
+| could not be tested | `ON` | a configure message says so; the rows run and report for themselves |
+
+The third case is the ordinary one on a cluster login node, where `mpiexec`
+cannot start a job without an allocation. Disabling a working capability there
+would be the worse error, so an untested probe leaves the mode enabled.
+
+MPMD is never gated on any of this.
+
 ## A note on the MPI implementation
 
 Accept/connect needs an MPI whose dynamic process management works between two jobs on

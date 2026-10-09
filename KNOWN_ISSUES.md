@@ -3203,6 +3203,17 @@ The MPMD path is unaffected and all `parallel.connect.mpmd.*` rows pass, because
 every peer belongs to ONE job launched by one `mpiexec` and is genuinely
 shared-memory-reachable.
 
+**Detected at configure time since 2026-10-09.** `tools/probe-mpi-dynamic.sh`
+launches two jobs on this machine and performs the sequence `connect()`
+performs; `cmake/FuseDependencies.cmake` sets `FUSE_ENABLE_CONNECT_ACCEPT` from
+the verdict. On an MPI that cannot carry the mode the accept rows are no longer
+registered, and a `connect`-mode component is refused at `connect()` with
+`E-CONNECT-ACCEPT-UNAVAILABLE` naming MPMD as the way out, rather than aborting
+inside MPI. The probe distinguishes "could not test" from "measured broken" and
+leaves the mode ON for the former -- a login node where `mpiexec` needs an
+allocation is the ordinary case, and disabling a working capability there would
+be worse than a row that fails loudly.
+
 **What would clear it**, in order of preference:
 
 1. An MPICH built with `--with-device=ch4` -- the default since MPICH 4.0, with a
