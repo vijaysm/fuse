@@ -46,6 +46,7 @@
 #include "fuse/model/yaml_io.hpp"
 #include "fuse/schedule/plan.hpp"
 #include "fuse/transport/connect.hpp"
+#include "fuse/transport/transport.hpp"
 
 #include "context.hpp"
 #include "external_step_component.hpp"
@@ -918,6 +919,37 @@ fuse_status impl_initialize(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
     fuse::RunnerConfig config{};
     if (c.communicator_set) {
       config.base_communicator = static_cast<int>(c.communicator);
+      // A communicator means the components may live on different ranks,
+      // and data between ranks moves only through the "mpi" transport --
+      // the default "copy" is the single-address-space one. Setting the
+      // communicator alone, as this block did until 2026-10-09, builds the
+      // exchange plan and then refuses at the first Transport instruction:
+      // `a CommGraph-backed Transport plan requires the "mpi" transport
+      // backend, but the configured transport is 'copy'`, measured on the
+      // host from every MPMD participant at once. The in-process C++
+      // callers (test/parallel/connect/connect_common.hpp) have always set
+      // all three together; the ABI was written when every participant it
+      // drove was in one process, and nothing exercised this until the
+      // Brusselator's three programs did.
+      //
+      // The transport's own setup is the Runner's `transport_setup` hook,
+      // since `Transport&` cannot express a communicator handle: the hook
+      // hands the base communicator to the concrete MpiTransport, which
+      // duplicates it (collective, every rank, in the same order -- the
+      // Runner calls the hook exactly once, before any instruction).
+      config.transport = "mpi";
+#if FUSE_HAVE_MPI
+      const int base_f = static_cast<int>(c.communicator);
+      config.transport_setup = [base_f](fuse::Transport& t) -> fuse::Result<void> {
+        auto* mpi = dynamic_cast<fuse::MpiTransport*>(&t);
+        if (mpi == nullptr) {
+          return fuse::Failure{"E-ABI-TRANSPORT",
+                               "fuse_initialize: the \"mpi\" transport was requested but "
+                               "the registry built something else"};
+        }
+        return mpi->set_communicator(base_f);
+      };
+#endif  // FUSE_HAVE_MPI  (without it a non-zero communicator was already refused in setup)
     }
     // Unit 2b (D19), step (d): fuse::abi_test::force_this_process()'s own
     // seam -- std::nullopt (the default) leaves config exactly what it
