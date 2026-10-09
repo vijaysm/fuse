@@ -195,6 +195,13 @@ if(FUSE_ENABLE_MPI)
   )
 endif()
 add_library(fuse::transport ALIAS fuse-coupler-transport)
+
+# The accept/connect launch mode, as cmake/FuseDependencies.cmake's probe left
+# it. PUBLIC because connect.hpp's `kConnectAcceptEnabled` reads it, and a
+# consumer that saw a different value than the library was built with would
+# take the opposite branch at the call site from the one the library serves.
+target_compile_definitions(fuse-coupler-transport PUBLIC
+  FUSE_CONNECT_ACCEPT_ENABLED=$<BOOL:${FUSE_ENABLE_CONNECT_ACCEPT}>)
 target_compile_features(fuse-coupler-transport PUBLIC cxx_std_20)
 target_link_libraries(fuse-coupler-transport PUBLIC fuse::schedule)
 if(FUSE_ENABLE_MPI)

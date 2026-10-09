@@ -327,6 +327,15 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND TARGET brusselator_u_main AND TARGE
   set(_fuse_bp_world_5_c 1)
   foreach(_world 3 5)
     foreach(_mode mpmd accept)
+    # The accept rows exist only where the MPI can carry them. Skipping
+    # rather than registering-and-failing: a row that cannot pass on this
+    # installation is not a measurement, and a permanently red row teaches a
+    # reader to ignore the colour. cmake/FuseDependencies.cmake decides
+    # FUSE_ENABLE_CONNECT_ACCEPT by measurement, and leaves it ON when it
+    # could not test, so nothing is hidden on a machine that was never probed.
+    if(_mode STREQUAL "accept" AND NOT FUSE_ENABLE_CONNECT_ACCEPT)
+      continue()
+    endif()
       set(_name verification.brusselator.participants.${_mode}.${_world})
       set(_scratch ${CMAKE_CURRENT_BINARY_DIR}/brusselator-participants-scratch/${_mode}-${_world})
       add_test(NAME ${_name}
@@ -371,6 +380,10 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND FUSE_ENABLE_LOWFIVE
    AND TARGET brusselator_u_main AND TARGET brusselator_v_main
    AND TARGET fuse-lowfive-vol)
   foreach(_mode mpmd accept)
+    # Same gate as the non-LowFive rows above.
+    if(_mode STREQUAL "accept" AND NOT FUSE_ENABLE_CONNECT_ACCEPT)
+      continue()
+    endif()
     set(_name verification.brusselator.participants.lowfive.${_mode}.3)
     set(_scratch ${CMAKE_CURRENT_BINARY_DIR}/brusselator-participants-scratch/lowfive-${_mode}-3)
     add_test(NAME ${_name}

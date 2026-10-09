@@ -569,6 +569,13 @@ if(FUSE_ENABLE_MPI)
     list(GET _fuse_connect_nas ${_idx} _na)
     list(GET _fuse_connect_nbs ${_idx} _nb)
     foreach(_mode mpmd accept)
+      # Registered only where this MPI can carry the mode -- examples/
+      # CMakeLists.txt's own gate on the participant rows has the reasoning.
+      # FUSE_ENABLE_CONNECT_ACCEPT is measured at configure time and stays ON
+      # when it could not be measured.
+      if(_mode STREQUAL "accept" AND NOT FUSE_ENABLE_CONNECT_ACCEPT)
+        continue()
+      endif()
       set(_name parallel.connect.${_mode}.${_na}+${_nb})
       set(_scratch ${CMAKE_CURRENT_BINARY_DIR}/connect-scratch/${_mode}-${_na}+${_nb})
       set(_golden ${CMAKE_CURRENT_SOURCE_DIR}/parallel/connect/golden-${_na}+${_nb}.txt)
