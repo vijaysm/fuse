@@ -4,10 +4,12 @@
 // also check, so a bug here would otherwise surface confusingly there.
 
 #include "fuse/backend/native_backend.hpp"
+#include "fuse/model/coupling_graph.hpp"
 #include "fuse/backend/native_mesh_io.hpp"
 
 #include <cstdio>
 #include <set>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -235,6 +237,76 @@ TEST(NativeBackend, PlacedViewIsReachableAfterSetPlacedView) {
   auto v = backend.placed_view(id.value(), placement);
   ASSERT_TRUE(v.ok()) << v.error().message;
   EXPECT_EQ(v.value()->entity_count(2), 9u);  // the OTHER decomposition, not the default's 4
+}
+
+// ---- each placement over its OWN ranks (KNOWN_ISSUES D24) ----------------
+
+// The defect this pins needs no MPI to reproduce, because the backend takes
+// its position in the run as a constructor argument: a process at rank 2 of
+// 3 used to hand EVERY component rank 2's slice of a three-way split, so a
+// component that lives alone on rank 2 received a third of its own mesh.
+// Two such components then had no ids in common and no exchange between
+// them could be built. What a component's rank set says is what it gets.
+TEST(NativeBackend, APlacementIsDecomposedOverItsOwnRanksNotTheWholeRun) {
+  fuse::CouplingGraph g;
+  g.add_mesh(fuse::MeshDecl{"m", "generated:quad:6x6"});
+  const auto a = g.add_component(
+      fuse::ComponentDecl{.name = "A", .ranks = fuse::RankSet(std::vector<int>{0})});
+  const auto b = g.add_component(
+      fuse::ComponentDecl{.name = "B", .ranks = fuse::RankSet(std::vector<int>{2})});
+
+  // This process is rank 2 of 3, and hosts B alone.
+  NativeMeshBackend backend(2, 3);
+  ASSERT_TRUE(backend.load(fuse::MeshDecl{"m", "generated:quad:6x6"}, g).ok());
+  const auto id = backend.mesh_id("m");
+  ASSERT_TRUE(id.ok());
+
+  const auto whole = generate_native_mesh("quad:6x6", 0, 1);
+  ASSERT_TRUE(whole.ok());
+  const std::size_t all_cells = whole.value().cell_count();
+  ASSERT_EQ(all_cells, 36u);
+
+  // B is alone on this rank, so its decomposition is one part: the whole
+  // mesh. Under the defect this was rank 2's third of 36.
+  const auto vb = backend.placed_view(id.value(), b);
+  ASSERT_TRUE(vb.ok()) << vb.error().message;
+  EXPECT_EQ(vb.value()->owned_count(2), all_cells)
+      << "a component alone on this rank owns its whole mesh, not this "
+         "rank's share of a decomposition over the entire run";
+
+  // A does not live here at all. Empty, not a failure and not someone
+  // else's share: every rank resolves every placement, because the
+  // exchange plan is collective, and only the hosting ranks read it.
+  const auto va = backend.placed_view(id.value(), a);
+  ASSERT_TRUE(va.ok()) << va.error().message;
+  EXPECT_EQ(va.value()->owned_count(2), 0u);
+  EXPECT_EQ(va.value()->dimension(), vb.value()->dimension());
+}
+
+// The multi-rank component still splits: this is not "every placement gets
+// everything", which would silently undo decomposition itself.
+TEST(NativeBackend, APlacementSpanningSeveralRanksStillSplitsAmongThem) {
+  fuse::CouplingGraph g;
+  g.add_mesh(fuse::MeshDecl{"m", "generated:quad:6x6"});
+  const auto spread = g.add_component(fuse::ComponentDecl{
+      .name = "spread", .ranks = fuse::RankSet(std::vector<int>{1, 2})});
+
+  std::size_t total = 0;
+  for (int r : {1, 2}) {
+    NativeMeshBackend backend(r, 3);
+    ASSERT_TRUE(backend.load(fuse::MeshDecl{"m", "generated:quad:6x6"}, g).ok());
+    const auto id = backend.mesh_id("m");
+    ASSERT_TRUE(id.ok());
+    const auto v = backend.placed_view(id.value(), spread);
+    ASSERT_TRUE(v.ok()) << v.error().message;
+    EXPECT_GT(v.value()->owned_count(2), 0u) << "rank " << r;
+    EXPECT_LT(v.value()->owned_count(2), 36u) << "rank " << r;
+    total += v.value()->owned_count(2);
+  }
+  // Two ranks, two parts, and between them exactly the mesh -- the halves of
+  // a two-way split, NOT ranks 1 and 2 of a three-way one (which would sum
+  // to less than the whole).
+  EXPECT_EQ(total, 36u);
 }
 
 // ---- file round trip ------------------------------------------------------

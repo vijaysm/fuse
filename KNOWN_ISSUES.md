@@ -3168,6 +3168,46 @@ mutation `connect-mode-teardown-frees-instead-of-disconnecting`
 (`build-evidence/mutations/transport-connect.toml`, `requires = "mpi"`) is marked host-only for
 the same reason.
 
+### ~~D24. Every placement got this rank's slice of the whole run~~ — CLOSED 2026-10-09
+
+**What it was.** `NativeMeshBackend::register_default_placements()` generated every
+component's placed view as `generate_native_mesh(spec, rank_, num_ranks_)` -- this
+process's slice of a decomposition over the ENTIRE base communicator, the same answer
+for every component. Its own comment said why that was thought safe: "every placement
+this backend can ever generate is the SAME cheap, deterministic `(rank_, num_ranks_)`
+view regardless of which component asks for it (tier-0: one process IS every
+placement)". One process is indeed every placement. A component whose rank set is a
+strict subset of the run is not, and a coupler on its own processor set is exactly
+that.
+
+**How it surfaced.** The first MPMD run with each component in its own executable
+(host, 2026-10-09). U, alone on rank 0, received 96 cells of a 176-cell mesh; the
+coupler, alone on rank 2, received the other 80. The two placements had no global ids
+in common, so the exchange plan found no source for what the destination wanted:
+`destination union rank 1 wants global id 178 ... but no source rank owns it`. The
+message named neither the channel nor the sides until `src/runtime/runner.cpp` was
+taught to append them, which is what made this diagnosable at all.
+
+**Fix.** A placement is decomposed over its own `RankSet`, indexed by this process's
+position within it, so a one-rank component holds its whole mesh wherever that rank
+sits in the base communicator. A component that does not live on this rank gets an
+empty view of the right dimension -- the contract `MoabMeshBackend::placed_view`
+already answered outside a processor set -- rather than a failure, because every rank
+resolves every placement (the exchange plan is collective) while only hosting ranks
+read one. On one process every rank set is `{0}` at position 0 of 1, so no tier-0
+answer changed; the suite did not move.
+
+**Pinned by** `NativeBackend.APlacementIsDecomposedOverItsOwnRanksNotTheWholeRun` and
+`NativeBackend.APlacementSpanningSeveralRanksStillSplitsAmongThem`, both of which need
+no MPI -- the backend takes its position in the run as a constructor argument, so a
+serial test can be rank 2 of 3. The mutation
+`every-placement-gets-this-ranks-slice-of-the-whole-run` restores the old line and they
+fail with exactly the arithmetic of the defect: 12 of 36 for the component alone on
+rank 2, and 24 for one spanning ranks 1 and 2.
+
+**Not the whole of multi-executable yet.** This clears the exchange plan's inputs; what
+the MPMD rows do beyond it is unmeasured until they run again.
+
 ### D23. Accept/connect cannot complete on MPICH's `ch3:nemesis` device when both programs share a node
 
 **Status: not a defect in this library; it needs a different MPI build.** Every
