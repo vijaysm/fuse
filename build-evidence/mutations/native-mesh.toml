@@ -52,3 +52,13 @@ old = "  return std::abs(dot(t.a - t.d, cross(t.b - t.d, t.c - t.d))) / 6.0;"
 new = "  return std::abs(dot(t.a - t.d, cross(t.b - t.d, t.c - t.d))) / 5.0;"
 target = "fuse_backend_native_distributed_mesh_test"
 test = "backend.native_distributed_mesh"
+
+[[mutation]]
+id = "every-placement-gets-this-ranks-slice-of-the-whole-run"
+area = "backend/native (register_default_placements)"
+describes = "A component's placed view must be its mesh decomposed over THAT component's ranks, indexed by this process's position within them -- not this process's slice of a decomposition over the whole base communicator. The two agree on one process, which is why this stood until a run put each component in its own executable: a 6x6 mesh on a component alone at rank 2 of 3 comes back as 12 cells instead of 36, and two such components share no global ids at all, so no exchange between them can be built."
+file = "src/backend/native_backend.cpp"
+old = "      if (hosted_here) {"
+new = "      if (false) {"
+target = "fuse_backend_native_generators_test"
+test = "backend.native_generators"
