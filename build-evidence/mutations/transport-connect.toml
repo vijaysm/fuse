@@ -92,3 +92,13 @@ requires = "mpi"
 # is still connected. The kill is parallel.connect.accept.*, which only the
 # host runs. Not hand-verified here for that reason; the fix's own evidence
 # is the host run that produced the crash and the host run that clears it.
+
+[[mutation]]
+id = "the-accept-capability-gate-waves-everything-through"
+area = "transport/connect (check_connect_accept_available)"
+describes = "A build that does not offer the accept/connect launch mode must REFUSE a connect-mode component at connect(), naming MPMD as the way out, rather than proceeding into an MPI that cannot carry it and aborting inside MPI_Intercomm_merge (KNOWN_ISSUES D23). The decision is taken as an argument rather than read from the macro so that the refusal can be exercised in any build: a tier-0 build, having no MPI, compiles the constant false and runs the refusing case for real."
+file = "src/transport/connect.cpp"
+old = "  if (enabled) return Result<void>::success();"
+new = "  if (true) return Result<void>::success();"
+target = "fuse_transport_connect_test"
+test = "transport.connect"

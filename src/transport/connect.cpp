@@ -236,6 +236,11 @@ Result<ConnectedWorld> connect(const CouplingGraph& g, int my_world_comm_f,
     case LaunchMode::Mpmd:
       return connect_mpmd(g, world);
     case LaunchMode::Connect:
+      if (auto r = check_connect_accept_available(kConnectAcceptEnabled,
+                                                  mine.name);
+          !r.ok()) {
+        return r.error();
+      }
       return connect_pairwise(g, opts.my_component, world, opts);
     case LaunchMode::Plugin:
       // A plugin is mounted (fuse::abi_detail::Registry), never launched: it
@@ -315,3 +320,24 @@ Result<void> disconnect(ConnectedWorld& w) {
 }  // namespace fuse::transport
 
 #endif  // FUSE_HAVE_MPI
+
+namespace fuse::transport {
+
+Result<void> check_connect_accept_available(bool enabled,
+                                            const std::string& component_name) {
+  if (enabled) return Result<void>::success();
+  return Failure{
+      "E-CONNECT-ACCEPT-UNAVAILABLE",
+      "component '" + component_name +
+          "' is declared launch mode 'connect', but this build does not offer "
+          "that mode: tools/probe-mpi-dynamic.sh measured that this MPI cannot "
+          "connect two separately launched jobs on one node, so "
+          "FUSE_ENABLE_CONNECT_ACCEPT is OFF (KNOWN_ISSUES.md D23). Launch the "
+          "components as MPMD segments of one mpiexec instead, which needs "
+          "nothing this MPI lacks, or build against an MPI whose dynamic "
+          "process management works between same-node jobs -- for MPICH that "
+          "means --with-device=ch4."};
+}
+
+}  // namespace fuse::transport
+

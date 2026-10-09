@@ -245,3 +245,41 @@ TEST(WaitForPortFile, RefusesWhenTheFileExistsButIsEmpty) {
   ASSERT_FALSE(r.ok());
   EXPECT_EQ(r.error().code, "E-CONNECT-TIMEOUT");
 }
+
+// ---- the accept/connect capability gate (KNOWN_ISSUES D23) ---------------
+
+// The verdict itself is settled at configure time, so the refusal is reached
+// in a normal build only on a machine whose MPI cannot carry the mode. Taking
+// the decision as an argument is what lets it be exercised anywhere: the gate
+// that nobody can make fire is the gate nobody has read.
+TEST(ConnectAcceptCapability, RefusesAConnectComponentWhenTheModeIsUnavailable) {
+  const auto r = fuse::transport::check_connect_accept_available(
+      /*enabled=*/false, "ocean");
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-CONNECT-ACCEPT-UNAVAILABLE");
+  // The message must name the component, so a reader knows WHICH declaration
+  // to change, and the way out, so the refusal is actionable rather than a
+  // dead end: MPMD needs nothing this MPI lacks.
+  EXPECT_NE(r.error().message.find("ocean"), std::string::npos)
+      << r.error().message;
+  EXPECT_NE(r.error().message.find("MPMD"), std::string::npos)
+      << r.error().message;
+  EXPECT_NE(r.error().message.find("D23"), std::string::npos)
+      << r.error().message;
+}
+
+TEST(ConnectAcceptCapability, SaysNothingWhenTheModeIsAvailable) {
+  EXPECT_TRUE(
+      fuse::transport::check_connect_accept_available(true, "ocean").ok());
+}
+
+// Whatever this build decided, the constant and the build setting agree --
+// a consumer compiled against a different value than the library would take
+// the opposite branch at the call site from the one the library serves.
+TEST(ConnectAcceptCapability, TheConstantMatchesTheBuildSetting) {
+#if defined(FUSE_CONNECT_ACCEPT_ENABLED) && FUSE_CONNECT_ACCEPT_ENABLED
+  EXPECT_TRUE(fuse::transport::kConnectAcceptEnabled);
+#else
+  EXPECT_FALSE(fuse::transport::kConnectAcceptEnabled);
+#endif
+}

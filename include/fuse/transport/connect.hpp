@@ -48,6 +48,31 @@
 
 namespace fuse::transport {
 
+/// Whether this build offers the `Connect` launch mode, decided at configure
+/// time by `tools/probe-mpi-dynamic.sh`: an MPI may provide
+/// `MPI_Comm_accept`/`MPI_Comm_connect` and still be unable to use them
+/// between two jobs on one node (`KNOWN_ISSUES.md` D23). `Mpmd` is not
+/// affected and is never gated on this.
+inline constexpr bool kConnectAcceptEnabled =
+#if defined(FUSE_CONNECT_ACCEPT_ENABLED) && FUSE_CONNECT_ACCEPT_ENABLED
+    true;
+#else
+    false;
+#endif
+
+/// The refusal `connect()` returns for a `Connect`-mode component when this
+/// build does not offer that mode. Separate from the switch that calls it so
+/// that it can be made to fire without rebuilding: the condition is settled
+/// at configure time, and a refusal nothing can exercise is a refusal nobody
+/// has checked.
+[[nodiscard]] Result<void> check_connect_accept_available(
+    bool enabled, const std::string& component_name);
+
+// (Deliberately above the `#if FUSE_HAVE_MPI` below: the verdict is a build
+// setting, not an MPI call, and a tier-0 build must be able to exercise the
+// refusal. Everything after the guard needs a real MPI to say anything.)
+
+
 /// What `connect()` needs beyond the graph and this process's local world.
 struct ConnectOptions {
   /// Which component of `g` this process's local `MPI_COMM_WORLD` (or, in
