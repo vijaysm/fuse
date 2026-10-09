@@ -20,6 +20,7 @@
 
 #include <cstddef>
 #include <cstring>
+#include <cstdlib>   // std::atexit, for the Kokkos finalize hook
 #include <mutex>
 #include <new>
 #include <span>
@@ -296,11 +297,34 @@ fuse_status impl_capabilities(fuse_ctx*, const fuse_null*,
 /// process's own exit, exactly like fuse_test_main.cpp's Kokkos::ScopeGuard
 /// does for every other test binary in this tree -- the cost stated
 /// plainly rather than discovered later.
+/// ...but "left for the process's own exit" has to mean an exit this
+/// library controls the ORDER of. Kokkos::initialize() registers its own
+/// exit hook, and that hook runs at a point where the libraries Kokkos
+/// itself sits on -- the OpenMP runtime above all -- may already have been
+/// torn down. With a statically linked Kokkos that ordering happened to
+/// hold; with a shared one it does not, and the process aborts AFTER
+/// finishing its work with "mutex lock failed: Invalid argument", locking
+/// a mutex in an image that is already gone. Measured 2026-10-09, when
+/// Kokkos was rebuilt as a shared library on this lab's machine: the
+/// installed C and Fortran consumers both printed their results and every
+/// expected value, then died in exit.
+///
+/// std::atexit is LIFO, so a hook registered HERE -- after
+/// Kokkos::initialize() has registered its own -- runs BEFORE it, while
+/// the runtime underneath is still intact. Kokkos's own hook then finds
+/// itself already finalized and does nothing. This is not finalizing from
+/// fuse_destroy(), which the paragraph above rules out for good reason: by
+/// the time an atexit hook runs, no caller can create another context.
 void ensure_kokkos_initialized() {
   static std::once_flag once;
   std::call_once(once, [] {
     if (!Kokkos::is_initialized() && !Kokkos::is_finalized()) {
       Kokkos::initialize();
+      std::atexit([] {
+        if (Kokkos::is_initialized() && !Kokkos::is_finalized()) {
+          Kokkos::finalize();
+        }
+      });
     }
   });
 }
