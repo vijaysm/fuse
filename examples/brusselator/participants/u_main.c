@@ -240,10 +240,24 @@ int main(int argc, char** argv) {
    * u_in_ref's own prior scope, which never needed to survive past field
    * registration) -- the lowfive write/read block in the period loop
    * further down needs these same handles again. */
+  /* struct_size on EVERY one of them, here where they are declared. An
+   * out struct is negotiated exactly like an in struct: the library reads
+   * the caller's struct_size to learn which layout it was compiled
+   * against, and a zero is not "unset, use the current layout" but a
+   * version older than anything it knows -- FUSE_ERR_VERSION. Only
+   * u_out_ref used to get one (set again at its own lookup below), so
+   * field_handle("u_in") failed with -6 the first time this program ran
+   * far enough to reach it (host, 2026-10-09). The tier-0 conformance
+   * harness drives the SAME loops through the same ABI and never saw it,
+   * because it is a different caller: this is u_main.c's own bug, and the
+   * negotiation check is what caught it. */
   fuse_field_ref u_out_ref, u_in_ref, v_out_peer_ref;
   memset(&u_out_ref, 0, sizeof(u_out_ref));
+  u_out_ref.struct_size = sizeof(u_out_ref);
   memset(&u_in_ref, 0, sizeof(u_in_ref));
+  u_in_ref.struct_size = sizeof(u_in_ref);
   memset(&v_out_peer_ref, 0, sizeof(v_out_peer_ref));
+  v_out_peer_ref.struct_size = sizeof(v_out_peer_ref);
   v_out_peer_ref.handle = -1;
 
   if (is_physics_rank) {
