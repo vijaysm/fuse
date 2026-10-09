@@ -35,12 +35,19 @@
 enum { kPortWaitSeconds = 30 };
 
 int main(int argc, char** argv) {
-  if (argc != 3) {
-    fprintf(stderr, "usage: %s {accept|connect} <port-file>\n", argv[0]);
+  /* `selftest` takes no port file; the other two require one. Getting this
+   * wrong made the probe report "cannot launch an MPI process here" on a
+   * machine whose launcher was fine (host, 2026-10-09) -- the preflight was
+   * failing on its own usage message, which is exactly the confusion between
+   * "could not test" and "measured" that the three verdicts exist to avoid. */
+  const int selftest = (argc == 2 && strcmp(argv[1], "selftest") == 0);
+  if (!selftest && argc != 3) {
+    fprintf(stderr, "usage: %s {accept|connect} <port-file> | %s selftest\n",
+            argv[0], argv[0]);
     return 2;
   }
   const char* mode = argv[1];
-  const char* path = argv[2];
+  const char* path = selftest ? "" : argv[2];
 
   MPI_Init(&argc, &argv);
   int rank = 0;
