@@ -79,11 +79,63 @@ Result<void> NativeMeshBackend::register_default_placements(const CouplingGraph&
   // (tier-0: one process IS every placement) -- so hand out all of
   // them.
   for (std::uint32_t c = 0; c < graph.component_count(); ++c) {
-    auto arrays = generate_native_mesh(spec, rank_, num_ranks_);
-    if (!arrays.ok()) return arrays.error();
-    auto view_r = NativeMeshView::create_from_host(arrays.value(), rank_);
-    if (!view_r.ok()) return view_r.error();
-    const Result<void> set = set_placed_view(id, ComponentId{c}, std::move(view_r.value()));
+    // EACH PLACEMENT OVER ITS OWN RANKS. The paragraph above is right that
+    // the view is cheap and deterministic, and was wrong about what it
+    // should be a function of: `(rank_, num_ranks_)` is this process's
+    // place in the BASE communicator, so every component was handed this
+    // rank's slice of a decomposition over every rank in the run --
+    // "one process IS every placement", which holds on one process and
+    // fails the moment a component's rank set is a strict subset of it.
+    //
+    // Measured on the host 2026-10-09, the first run with each component
+    // in its own executable: a 176-cell mesh declared on U (one rank) and
+    // on a coupler (one other rank) gave U 96 cells and the coupler 80 --
+    // one decomposition cut across two placements instead of each holding
+    // its own whole mesh. The exchange then had no source for the ids the
+    // other side wanted, which is what the destination saw
+    // (`CommGraph`'s NoMatch; KNOWN_ISSUES D24).
+    //
+    // A component's decomposition is over ITS ranks, indexed by this
+    // process's position WITHIN that rank set -- so a one-rank component
+    // gets the whole mesh wherever its rank happens to sit in the base
+    // communicator. On one process this is the same answer as before
+    // (every rank set is {0}, position 0 of 1), which is why no tier-0
+    // test moved.
+    const RankSet& rs = graph.component(ComponentId{c}).ranks;
+    int placement_rank = rank_;
+    int placement_size = num_ranks_;
+    bool hosted_here    = true;
+    if (!rs.empty()) {
+      hosted_here = rs.contains(rank_);
+      if (hosted_here) {
+        const auto& r  = rs.ranks();
+        placement_rank = static_cast<int>(
+            std::lower_bound(r.begin(), r.end(), rank_) - r.begin());
+        placement_size = static_cast<int>(rs.size());
+      }
+    }
+    std::unique_ptr<NativeMeshView> view;
+    if (hosted_here) {
+      auto arrays = generate_native_mesh(spec, placement_rank, placement_size);
+      if (!arrays.ok()) return arrays.error();
+      auto view_r = NativeMeshView::create_from_host(arrays.value(), rank_);
+      if (!view_r.ok()) return view_r.error();
+      view = std::move(view_r.value());
+    } else {
+      // Outside the processor set: an EMPTY view of the right dimension,
+      // which is what MoabMeshBackend::placed_view already answers there
+      // (mesh_view.hpp's contract). Not a failure -- every rank asks for
+      // every placement, because the exchange plan is collective and both
+      // sides must be resolvable everywhere; only the ranks that host a
+      // side read anything from it.
+      MeshArrays<Kokkos::HostSpace> empty;
+      const auto                    dflt = this->view(id);
+      empty.dim = dflt.ok() ? dflt.value()->dimension() : 0;
+      auto view_r = NativeMeshView::create_from_host(empty, rank_);
+      if (!view_r.ok()) return view_r.error();
+      view = std::move(view_r.value());
+    }
+    const Result<void> set = set_placed_view(id, ComponentId{c}, std::move(view));
     if (!set.ok()) return set;
   }
   return Result<void>::success();
