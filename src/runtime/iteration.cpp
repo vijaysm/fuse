@@ -473,7 +473,23 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         // storage -- resolved directly from `registry`, bypassing the arc
         // system entirely (WindowMemberConfig::provided's own comment,
         // runner_impl.hpp).
-        if (exported_field.valid()) {
+        //
+        // ONLY WHERE THE MEMBER IS HOSTED. A rank binds the fields of the
+        // components it runs and no others: a separately launched
+        // participant registers its own storage and has never heard of
+        // the other programs' arrays. Resolving every member's storage on
+        // every rank therefore refused `E-FIELD-UNBOUND` ("field 2 is not
+        // bound") from the first MPMD run that got this far (host,
+        // 2026-10-09, from U and from the coupler at once). It went
+        // unseen in `parallel.window_runner_mpi` because that test's
+        // ComponentSet holds EVERY component on every rank, so everything
+        // is bound everywhere -- a shape no real multi-executable run has.
+        // Every reader of `provided`/`required` already tolerates null
+        // (the priming at `cfg.hosted && cfg.provided != nullptr`, the
+        // seeding and convergence reads at `cfg.required == nullptr`), and
+        // advance_window() returns at once for a non-hosted member, so a
+        // null here is a complete answer, not a deferred failure.
+        if (cfg.hosted && exported_field.valid()) {
           Result<FieldRef> pref = registry.get(exported_field);
           if (!pref.ok()) return pref.error();
           if (pref.value().layout().components != 1 ||
@@ -485,10 +501,32 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
                              "layout, which advance_window() does not yet "
                              "support"};
           }
+          // The registered storage must be the field's size on this
+          // rank. Measured on the host 2026-10-09: two participant
+          // programs registered 9-element buffers (a stale 3x3 grid
+          // constant) against 256-cell fields, nothing refused it, and
+          // the priming below -- whose own guard `export_slot.total() ==
+          // cfg.length * cfg.capacity` then quietly skipped -- delivered a
+          // zero initial window while the physics ran on the wrong grid.
+          // runner.cpp's ordinary bind already refuses this (E-RT-SIZE);
+          // this read bypasses that bind, so it refuses the same way.
+          if (cfg.capacity > 0 && ins.out.valid() && ins.out.value() < slots.size() &&
+              slots[ins.out.value()].data != nullptr &&
+              slots[ins.out.value()].total() != pref.value().size() * cfg.capacity) {
+            return Failure{"E-RT-SIZE",
+                         "iteration region '" + R.name + "': window member '" +
+                             mname + "' registered " +
+                             std::to_string(pref.value().size()) +
+                             " values for its export, but the plan sizes that "
+                             "field at " +
+                             std::to_string(slots[ins.out.value()].total() / cfg.capacity) +
+                             " on this rank; a short registration is a heap "
+                             "over-read in the priming and the hot loop"};
+          }
           cfg.provided = pref.value().data();
           cfg.length = pref.value().size();
         }
-        if (imported_field.valid()) {
+        if (cfg.hosted && imported_field.valid()) {
           Result<FieldRef> rref = registry.get(imported_field);
           if (!rref.ok()) return rref.error();
           if (rref.value().layout().components != 1 ||
@@ -767,7 +805,22 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         if (cfg_it == window_member_config.end()) continue;
         const WindowMemberConfig& cfg = cfg_it->second;
         if (!cfg.import_channel.valid()) continue;
-        if (cfg.required == nullptr || !cfg.window_import.valid() ||
+        // STRUCTURAL conditions only, in front of a collective. Every test
+        // here must evaluate the same on every rank, because the chain
+        // below contains Transport (an Alltoallv over the base communicator)
+        // and Epoch (a cross-rank agreement). The storage pointer
+        // `cfg.required` is NOT such a condition: since the binding above
+        // became per-hosting it is null on every rank that does not host
+        // this member, and `continue`-ing on it here sent the hosting ranks
+        // into the collective alone. Measured on the host 2026-10-09 with
+        // the macOS sampler, all three MPMD programs in MPI_Alltoallv -- U
+        // and V from THIS pass inside Runner::initialize(), the coupler
+        // (hosting no window member, so skipping here) from run_region()'s
+        // first real Transport. The "NOT YET INDEPENDENTLY VERIFIED" above
+        // is thereby answered: matched when nothing branches per rank, and
+        // this branch did. `required` is read only in the seeding below,
+        // which is per-rank by nature and guards it itself.
+        if (!cfg.window_import.valid() ||
             cfg.window_import.value() >= slots.size()) {
           continue;
         }
@@ -782,6 +835,10 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
           const Result<void> e = execute(stream[j], resolved[j]);
           if (!e.ok()) return e;
         }
+        // Seeding is per rank and reads this member's own storage: only
+        // where that storage exists. A non-hosted rank ran the chain above
+        // (it had to -- collective) and has nothing of its own to seed.
+        if (!cfg.hosted || cfg.required == nullptr) continue;
 
         // Time windows track: this member's own straddle-tail
         // extrapolation history, seeded from the SAME value the chain

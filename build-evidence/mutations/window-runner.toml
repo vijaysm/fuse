@@ -516,3 +516,36 @@ test = "runtime.window_hosting"
 # with one consumer per export the member-level flag and the per-channel one
 # agree by construction. Restored byte-identically (cmp against the worktree
 # copy) and rebuilt: 4/4 pass.
+
+[[mutation]]
+id = "window-member-size-check-dropped"
+area = "runtime"
+describes = "D25 item 3: a window member's export storage read directly from the registry bypasses the ordinary bind's E-RT-SIZE. Two host participants registered 9 values against 256-cell fields and ran on the wrong grid. Dropping the check accepts a 2-value export on a 1-cell field."
+file = "src/runtime/iteration.cpp"
+old = "          if (cfg.capacity > 0 && ins.out.valid() && ins.out.value() < slots.size() &&"
+new = "          if (false && cfg.capacity > 0 && ins.out.valid() && ins.out.value() < slots.size() &&"
+target = "fuse_runtime_window_runner_test"
+test = "runtime.window_runner"
+# Verified BY HAND 2026-10-09 on a clean export of the worktree: with the
+# mutation applied, exactly RefusesAWindowMemberWhoseExportIsNotTheFieldsSize
+# fails ("Value of: init.ok() Actual: true -- a 2-value export on a 1-cell
+# field was accepted"); the other 7 cases pass. Restored byte-identically
+# (cmp against the worktree copy): 8/8.
+
+[[mutation]]
+id = "seed-chain-selected-per-rank"
+area = "runtime"
+describes = "D25 item 2: the initialize-time seed chain (Transport, Remap, Epoch -- collective) selected on a per-rank storage pointer, so a non-hosting rank skipped a collective the hosting ranks entered. Only observable across processes; the host run that measured it is the oracle."
+file = "src/runtime/iteration.cpp"
+old = "        if (!cfg.window_import.valid() ||"
+new = "        if (cfg.required == nullptr || !cfg.window_import.valid() ||"
+target = "brusselator_u_main"
+test = "verification.brusselator.participants.mpmd.3"
+# The mutated file is in the runtime library every participant links; the
+# row names one of them as the rebuild target (CMake rebuilds the library
+# behind it, and the ctest row launches all three).
+requires = "mpi"
+# Not killable at tier 0: on one process every member is hosted and the
+# two conditions agree. Measured on the host 2026-10-09 BEFORE the fix as a
+# hang of all three programs in MPI_Alltoallv (macOS sample); AFTER, the
+# row passes in 1.6 s. A FUSE_MUTATE_MPI=1 run on the host is the gate.
