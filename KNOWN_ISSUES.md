@@ -3214,9 +3214,9 @@ the MPMD rows do beyond it is unmeasured until they run again.
 on the host, 2026-10-09.** Four defects in sequence, each exposed by the fix before it;
 all four fixed, and `verification.brusselator.participants.mpmd.3` passes with
 `max_window_balance_error`/`global_balance_error`/`max_window_exchange_error` all within
-the check's thresholds, final means matching the single-process example to 2 ulp
-(`mean_u` 1.5865861881738454 vs 1.5865861881738459; `mean_v` 1.998222640303883 vs
-1.9982226403038819).
+the check's thresholds, final means matching the single-process example to 2 ulp in
+`mean_u` (1.5865861881738454 vs 1.5865861881738459, 4.4e-16) and 5 ulp in `mean_v`
+(1.998222640303883 vs 1.9982226403038819, 1.1e-15).
 
 1. **A window member's storage was resolved on every rank.** `resolve_regions()` read every
    member's native Provides/Requires storage from the registry on every rank; a separately
