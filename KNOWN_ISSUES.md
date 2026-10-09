@@ -3168,6 +3168,57 @@ mutation `connect-mode-teardown-frees-instead-of-disconnecting`
 (`build-evidence/mutations/transport-connect.toml`, `requires = "mpi"`) is marked host-only for
 the same reason.
 
+### D23. Accept/connect cannot complete on MPICH's `ch3:nemesis` device when both programs share a node
+
+**Status: not a defect in this library; it needs a different MPI build.** Every
+`parallel.connect.accept.*` row, and the `verification.brusselator.participants.accept.*`
+rows with it, aborts inside `MPI_Intercomm_merge`. Measured on the host 2026-10-09, with
+a debugger on each side in turn -- the two stacks are identical frame for frame:
+
+```
+Assertion failed in file ../src/mpid/ch3/channels/nemesis/include/mpid_nem_inline.h
+at line 325: vc_ch->is_local
+  MPID_nem_mpich_sendv_header  <- the SHARED-MEMORY send path
+  MPIDI_CH3_iSendv
+  MPIDI_CH3_EagerContigIsend
+  MPID_Isend
+  MPIC_Sendrecv
+  MPIR_Intercomm_merge_impl
+  MPI_Intercomm_merge
+  fuse::transport::connect_pairwise
+```
+
+MPICH takes its shared-memory send path for a virtual connection whose own `is_local`
+flag says it is not shared-memory-reachable, which is exactly what a peer obtained
+through `MPI_Comm_accept`/`MPI_Comm_connect` is: a process in a DIFFERENT job, with no
+shared-memory segment in common, even when it happens to sit on the same node. Merging
+a dynamically established intercommunicator is precisely what `MPI_Intercomm_merge` is
+specified for, and `connect_pairwise` passes a different `high` on each side as it must,
+so there is nothing here for this library to fix.
+
+`MPIR_CVAR_NOLOCAL=1` does not help (measured): the shared-memory path is taken
+unconditionally at that point rather than being chosen from the flag.
+
+The MPMD path is unaffected and all `parallel.connect.mpmd.*` rows pass, because there
+every peer belongs to ONE job launched by one `mpiexec` and is genuinely
+shared-memory-reachable.
+
+**What would clear it**, in order of preference:
+
+1. An MPICH built with `--with-device=ch4` -- the default since MPICH 4.0, with a
+   different path for dynamic connections. The host's build is
+   `--with-device=ch3 --enable-g=most --enable-fast=none`; the assertions that make
+   this visible are compiled in by `--enable-g=most`, and a release build would take
+   the shared-memory path on a connection that has none rather than abort.
+2. Open MPI, whose dynamic process management does not share this limitation.
+3. Two separate nodes, which removes the same-node misclassification. Not available
+   on a laptop, and not a fix.
+
+Until then the accept rows are expected to fail on this host, and the accept-mode code
+path they cover is unverified by measurement. Everything the accept path shares with
+MPMD -- the launch-spec round trip, the port file, `connect()`'s own refusals, the
+teardown of D20 and the intercommunicator disconnect -- is covered by rows that do pass.
+
 ### ~~D22. A shared Kokkos aborts the process at exit~~ — CLOSED 2026-10-09
 
 **What it was.** `Kokkos::initialize()` registers its own exit hook, and that hook ran

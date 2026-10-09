@@ -198,3 +198,12 @@ on the result of a failed `connect()`.
 
 A participant that reaches FUSE through the C or Fortran ABI has nothing to do: `fuse_destroy()`
 releases the connection the same way, after the runner it owns is gone.
+
+## A note on the MPI implementation
+
+Accept/connect needs an MPI whose dynamic process management works between two jobs on
+the same node. MPICH's `ch3:nemesis` device does not: it takes its shared-memory send
+path when merging the intercommunicator, and a peer in another job has no shared memory
+to take it over, so both programs abort inside `MPI_Intercomm_merge` (`KNOWN_ISSUES`
+D23). Use an MPICH built with `--with-device=ch4` -- the default since MPICH 4.0 -- or
+Open MPI. The MPMD launch mode is unaffected, since there every rank belongs to one job.
