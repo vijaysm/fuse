@@ -540,6 +540,72 @@ macro(fuse_resolve_dependencies)
     else()
       find_package(MPI REQUIRED COMPONENTS C CXX)
     endif()
+
+    # ---- can this MPI connect two separately launched programs?
+    # The two multi-executable launch modes do not need the same things from
+    # an MPI. MPMD asks only for MPI_APPNUM, which every launcher provides.
+    # Accept/connect asks for dynamic process management AND for it to work
+    # between two jobs that share a node, which is where MPICH's ch3:nemesis
+    # device fails (KNOWN_ISSUES.md D23). So the capability is probed, not
+    # assumed, and the two modes are enabled separately.
+    #
+    # Unlike the two-HDF5-image probe above, a failure here is NOT fatal: it
+    # disables one launch mode and leaves everything else -- including MPMD,
+    # which is the mode the examples use -- working.
+    #
+    # THREE verdicts, not two, and the third is why this is written out
+    # rather than inlined: "could not test" must behave differently from
+    # "measured broken". A login node where `mpiexec` cannot start a job
+    # without an allocation is the ordinary case of the former, and
+    # disabling a working capability there would be a worse error than
+    # leaving a broken one enabled, which merely fails loudly at the rows
+    # that use it. So untested leaves the mode ON and says so.
+    set(_fuse_dyn_script "${PROJECT_SOURCE_DIR}/tools/probe-mpi-dynamic.sh")
+    set(_fuse_dyn_default ON)
+    set(_fuse_dyn_verdict "assumed (probe not run)")
+    if(NOT DEFINED FUSE_MPI_DYNAMIC_PROBED AND EXISTS "${_fuse_dyn_script}")
+      message(STATUS "fuse: probing whether this MPI can connect two same-node jobs ...")
+      execute_process(
+        COMMAND "${CMAKE_COMMAND}" -E env
+          "FUSE_PROBE_MPICC=${MPI_C_COMPILER}"
+          "FUSE_PROBE_MPIEXEC=${MPIEXEC_EXECUTABLE}"
+          "FUSE_PROBE_BUILD_DIR=${CMAKE_BINARY_DIR}/fuse-probe-mpi-dynamic"
+          "${_fuse_dyn_script}"
+        RESULT_VARIABLE _fuse_dyn_result
+        OUTPUT_VARIABLE _fuse_dyn_output
+        ERROR_VARIABLE  _fuse_dyn_error)
+      if(_fuse_dyn_result EQUAL 0)
+        set(_fuse_dyn_default ON)
+        set(_fuse_dyn_verdict "measured working")
+        message(STATUS "fuse: accept/connect works on this MPI")
+      elseif(_fuse_dyn_result EQUAL 1)
+        set(_fuse_dyn_default OFF)
+        set(_fuse_dyn_verdict "measured broken")
+        message(STATUS
+          "fuse: this MPI cannot connect two same-node jobs, so the "
+          "accept/connect launch mode is DISABLED (KNOWN_ISSUES.md D23). "
+          "MPMD is unaffected. Probe output:\n${_fuse_dyn_output}${_fuse_dyn_error}")
+      else()
+        set(_fuse_dyn_default ON)
+        set(_fuse_dyn_verdict "not tested")
+        message(STATUS
+          "fuse: could not test accept/connect here (the probe could not "
+          "build or launch), so the mode is left enabled and its rows will "
+          "report for themselves. Reason:\n${_fuse_dyn_error}")
+      endif()
+      set(FUSE_MPI_DYNAMIC_PROBED "${_fuse_dyn_verdict}" CACHE INTERNAL
+          "Verdict of tools/probe-mpi-dynamic.sh")
+    elseif(DEFINED FUSE_MPI_DYNAMIC_PROBED)
+      set(_fuse_dyn_verdict "${FUSE_MPI_DYNAMIC_PROBED}")
+      if(_fuse_dyn_verdict STREQUAL "measured broken")
+        set(_fuse_dyn_default OFF)
+      endif()
+    endif()
+    option(FUSE_ENABLE_CONNECT_ACCEPT
+           "Multi-executable: the accept/connect launch mode (needs an MPI whose dynamic process management works between same-node jobs)"
+           ${_fuse_dyn_default})
+    message(STATUS "fuse: accept/connect launch mode: "
+                   "${FUSE_ENABLE_CONNECT_ACCEPT} (${_fuse_dyn_verdict})")
   endif()
   if(FUSE_ENABLE_MOAB)
     # MOAB ships an OLD-STYLE config: it sets MOAB_INCLUDE_DIRS /
