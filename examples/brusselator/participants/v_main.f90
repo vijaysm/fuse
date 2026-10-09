@@ -46,8 +46,10 @@ program v_main
   use v_loop_mod
   implicit none
 
-  integer, parameter :: nx_u = 3, ny_u = 3, nx_v = 4, ny_v = 4  ! brusselator_graph_tool.cpp's own kNxU/kNyU/kNxV/kNyV
-  real(c_double), parameter :: kDiffusion = 10.0d0
+  ! brusselator_grid.h's grid and diffusion, through the shim (bruss_grid_dims):
+  ! one source of truth with the graph tool and U. Set below, before use.
+  integer(c_int) :: nx_u, ny_u, nx_v, ny_v
+  real(c_double) :: kDiffusion
 
   character(len=512) :: graph_path, log_path, arg
   character(len=16) :: transport
@@ -191,6 +193,8 @@ program v_main
   status = fuse_setup(ctx, setup, nothing)
   call check(status, "setup")
 
+  call bruss_grid_dims(nx_u, ny_u, nx_v, ny_v)
+  kDiffusion = bruss_diffusion()
   nu = nx_u * ny_u  ! both of V's window-transfer fields live on U's own
                     ! grid -- species_component.hpp's own file header
                     ! explains why (brusselator_graph.hpp mirrors it)
@@ -238,6 +242,11 @@ program v_main
     write(0, '(A)') "FAIL(v_main): bruss_v_create returned NULL"
     call MPI_Abort(MPI_COMM_WORLD, 1, ierr)
   end if
+  ! P_VU(V0) into the storage registered for v_out: the Runner primes the
+  ! first window's t=0 sample from it at fuse_initialize (shim.h, and
+  ! u_main.c's own matching block). Left at zero, U's first window started
+  ! from a V that did not exist.
+  call bruss_v_provided(vh, c_loc(v_out))
 
   status = fuse_initialize(ctx, nothing, nothing)
   call check(status, "initialize")

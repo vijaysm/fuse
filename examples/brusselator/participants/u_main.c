@@ -58,6 +58,7 @@
 
 #include "fuse/abi/participant.h"
 #include "fuse/base/config.hpp"
+#include "brusselator_grid.h"
 #include "u_loop.h"
 
 /* S6 phase 3 (Conformance, "LowFive" track), Unit 3b. The graph tool's own
@@ -271,26 +272,49 @@ int main(int argc, char** argv) {
     rc = t->field_handle(ctx, &fname, &u_out_ref);
     if (rc != FUSE_OK) fail(ctx, "field_handle(u_out)", rc);
 
-    /* NOTE: this reference implementation's own grid shape (nx, ny) must
-     * match brusselator_graph_tool's own hardcoded kNxU/kNyU
-     * (reproduced here as a build-time constant rather than queried
-     * through the ABI, since the participant ABI has no "field length"
-     * query beyond the view the caller itself supplies -- the caller is
-     * expected to know its own grid, the same way u_main's own
-     * `--ranks-u` is a caller-supplied fact about this run's layout,
-     * not something fuse_load_graph() reports back). */
-    const int nx = 3, ny = 3; /* brusselator_graph_tool.cpp's own kNxU/kNyU */
+    /* The grid is brusselator_grid.h's, the SAME header the graph tool
+     * writes the meshes from. The participant ABI has no "field length"
+     * query (the caller is expected to know its own grid), which is
+     * exactly why the number must come from one place: this file carried
+     * its own copy, the graph tool moved to 16x16 and this stayed at 3x3,
+     * and a 9-element registration against a 256-cell field ran for two
+     * days before the host measured a trajectory nothing could explain. */
+    const int nx = BRUSS_NX_U, ny = BRUSS_NY_U;
     nu = nx * ny;
     u_out = (double*)calloc((size_t)nu, sizeof(double));
     u_in = (double*)calloc((size_t)nu, sizeof(double));
 
-    uh = bruss_u_create(nx, ny, /*diffusion=*/10.0, /*A=*/3.4, /*B=*/1.0,
-                        /*forcing=*/1, u_in /* initial_v_on_u: zero is a
-                                               valid, if not bit-identical
-                                               to the tier-0 harness's own
-                                               seeded, starting point for
-                                               a standalone host run */);
+    /* INITIAL COUPLING STATE, the same way the tier-0 harness builds it
+     * (test/verification/brusselator_participants_test.cpp, "U seeded
+     * from V's own initial provided value"): U's initial reaction rate
+     * depends on V's initial state on U's grid, and V's initial state is
+     * not uniform, so "zero is a valid starting point" (what this block
+     * said until 2026-10-09) is a DIFFERENT problem from the one V and the
+     * single-process example solve. A throwaway V, built from the same
+     * header's grid, is read for its constructor's own initial P_VU(V0)
+     * and discarded -- deterministic, cheap, and bit-identical to what the
+     * real V in the other program starts from.
+     *
+     * This is a limitation of the current startup contract worth naming:
+     * a participant must know its partner's initial export before
+     * fuse_initialize(), because the Runner primes the first window from
+     * the storage registered at that point. A coupler-delivered initial
+     * exchange (imports delivered before exports are frozen) would remove
+     * the need for U to reconstruct V at all. */
+    {
+      bruss_v_handle* v_seed = bruss_v_create(nx, ny, BRUSS_NX_V, BRUSS_NY_V, BRUSS_DIFFUSION);
+      if (!v_seed) fail(ctx, "bruss_v_create (initial seed)", FUSE_ERR_RUNTIME);
+      bruss_v_provided(v_seed, u_in); /* P_VU(V0), on U's grid */
+      bruss_v_destroy(v_seed);
+    }
+    uh = bruss_u_create(nx, ny, BRUSS_DIFFUSION, BRUSS_A, BRUSS_B, BRUSS_FORCING, u_in);
     if (!uh) fail(ctx, "bruss_u_create", FUSE_ERR_RUNTIME);
+    /* q at t=0 into the storage registered below: the Runner primes the
+     * first window's t=0 sample from it at fuse_initialize(), and V
+     * integrates that sample. Left at calloc's zero, V received a window
+     * whose first sample was 0 while U consumed from its real q0, and the
+     * two sides' exchange disagreed by exactly that half-interval. */
+    bruss_u_provided(uh, u_out);
 
     fuse_field_view view;
     memset(&view, 0, sizeof(view));

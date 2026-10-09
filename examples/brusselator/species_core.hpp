@@ -360,6 +360,20 @@ class VParticipant {
   [[nodiscard]] int n_u() const { return n_u_; }
   [[nodiscard]] const Vector& state() const { return core_->state(); }
   [[nodiscard]] double exchange_in() const { return core_->exchange_in(); }
+  /// `P_VU(state())` on the U grid, size `n_u()` -- what `step()` hands
+  /// back as `provided`, computed from the CURRENT state. Right after
+  /// construction that is the initial P_VU(V0): the value
+  /// `VComponent::provided_` holds from ITS constructor
+  /// (species_component.hpp, `remap_state_to_u(&provided_)`), which an
+  /// externally driven V must copy into its registered export before
+  /// fuse_initialize() for the first window's t=0 sample to be V's and
+  /// not calloc's (shim.h, bruss_v_provided). Non-const only because
+  /// `remap_state_to_u` is; it writes nothing of the participant's own.
+  [[nodiscard]] Vector provided() {
+    Vector out(n_u_);
+    remap_state_to_u(&out);
+    return out;
+  }
 
  private:
   VParticipant(fuse::native::NativeMeshBackend backend, NativeGrid u_grid, NativeGrid v_grid,

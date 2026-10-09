@@ -64,6 +64,7 @@
 #include "fuse/model/yaml_io.hpp"
 
 #include "brusselator_graph.hpp"
+#include "brusselator_grid.h"
 
 namespace {
 
@@ -89,7 +90,7 @@ namespace {
 // `reference_mpmd_3_lowfive.yaml` (this tool's own golden outputs) were
 // regenerated against these values -- see this round's own report for
 // the before/after `reproduces_reference` byte-identity measurement.
-constexpr int kNxU = 16, kNyU = 16, kNxV = 24, kNyV = 24;
+constexpr int kNxU = BRUSS_NX_U, kNyU = BRUSS_NY_U, kNxV = BRUSS_NX_V, kNyV = BRUSS_NY_V;  // brusselator_grid.h
 const fuse::Rational kDtU{2, 1000}, kDtV{3, 1000}, kWindow{2, 100};
 constexpr double kTolerance = 1e-11;
 constexpr int kMaxIterations = 60;

@@ -30,6 +30,7 @@ module v_loop_mod
   public :: bruss_v_create, bruss_v_destroy, bruss_v_size, bruss_v_step
   public :: bruss_v_save_state, bruss_v_restore_state, bruss_v_state
   public :: bruss_v_exchange_in, bruss_v_last_error
+  public :: bruss_grid_dims, bruss_diffusion, bruss_v_provided
 
   ! ---- shim.h's own bruss_v_* C-ABI functions (shim.cpp, a C++
   ! translation unit exporting extern "C" -- this interface block is
@@ -79,6 +80,29 @@ module v_loop_mod
       type(c_ptr), value :: h
       type(c_ptr), value :: out
     end subroutine bruss_v_state
+
+    ! The grid of brusselator_grid.h -- the one place it lives (that
+    ! header's own comment), read through the shim because Fortran cannot
+    ! include it. This file carried its own `nx_u = 3` until 2026-10-09.
+    subroutine bruss_grid_dims(nx_u, ny_u, nx_v, ny_v) bind(C, name="bruss_grid_dims")
+      import :: c_int
+      integer(c_int) :: nx_u, ny_u, nx_v, ny_v
+    end subroutine bruss_grid_dims
+
+    function bruss_diffusion() result(d) bind(C, name="bruss_diffusion")
+      import :: c_double
+      real(c_double) :: d
+    end function bruss_diffusion
+
+    ! V's CURRENT provided value (length bruss_v_size), the initial
+    ! P_VU(V0) right after create -- copied into v_out before
+    ! fuse_initialize, since the Runner primes the first window's t=0
+    ! sample from the registered storage (shim.h's own comment).
+    subroutine bruss_v_provided(h, out) bind(C, name="bruss_v_provided")
+      import :: c_ptr
+      type(c_ptr), value :: h
+      type(c_ptr), value :: out
+    end subroutine bruss_v_provided
 
     function bruss_v_exchange_in(h) result(x) bind(C, name="bruss_v_exchange_in")
       import :: c_ptr, c_double

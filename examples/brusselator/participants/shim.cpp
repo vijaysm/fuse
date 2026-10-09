@@ -1,4 +1,5 @@
 #include "shim.h"
+#include "brusselator_grid.h"
 
 #include <cstring>
 #include <string>
@@ -59,6 +60,19 @@ bruss_u_handle* bruss_u_create(int nx, int ny, double diffusion, double A,
   return new (std::nothrow) bruss_u_handle(nx, ny, cfg, std::move(v0));
 }
 
+void bruss_grid_dims(int* nx_u, int* ny_u, int* nx_v, int* ny_v) {
+  if (nx_u) *nx_u = BRUSS_NX_U;
+  if (ny_u) *ny_u = BRUSS_NY_U;
+  if (nx_v) *nx_v = BRUSS_NX_V;
+  if (ny_v) *ny_v = BRUSS_NY_V;
+}
+double bruss_diffusion(void) { return BRUSS_DIFFUSION; }
+
+void bruss_u_provided(const bruss_u_handle* h, double* out) {
+  const brusselator::Vector& p = h->core.provided();
+  for (int i = 0; i < h->core.n(); ++i) out[i] = p[i];
+}
+
 void bruss_u_destroy(bruss_u_handle* h) { delete h; }
 
 int bruss_u_size(const bruss_u_handle* h) { return h->core.n(); }
@@ -105,6 +119,13 @@ bruss_v_handle* bruss_v_create(int nx_u, int ny_u, int nx_v, int ny_v, double di
   auto made = brusselator::VParticipant::make(nx_u, ny_u, nx_v, ny_v, diffusion);
   if (!made.ok()) return nullptr;
   return new (std::nothrow) bruss_v_handle(std::move(made.value()));
+}
+
+void bruss_v_provided(const bruss_v_handle* h, double* out) {
+  // const_cast: provided() is non-const only because the remap helper it
+  // calls is; nothing observable changes (species_core.hpp's own note).
+  const brusselator::Vector p = const_cast<bruss_v_handle*>(h)->core.provided();
+  for (int i = 0; i < h->core.n_u(); ++i) out[i] = p[i];
 }
 
 void bruss_v_destroy(bruss_v_handle* h) { delete h; }
