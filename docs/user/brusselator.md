@@ -162,12 +162,13 @@ and `state`: V grid -> U slab transfers) is now routed through the same
 `fuse::build_remap_halo`/`build_weights`/exchanger machinery the mesh/physics
 decomposition already used for everything else -- see "VParticipant
 two-sided remap decomposition" below for the measured agreement, including
-on a genuinely ADOPTING halo (KNOWN_ISSUES.md D29, closed). One piece
-remains open: a HOST run -- a real `MPI_Comm_split`-formed, more-than-one-
-rank V communicator has never been exercised end to end on a machine that
-can start MPI (`v_main.f90`'s own header comment has the full account) --
-`verification.brusselator.participants.mpmd.5` is build-verified only, in
-this sandbox, for exactly that reason.
+on a genuinely ADOPTING halo (KNOWN_ISSUES.md D29, closed). The host run
+followed on 2026-10-10: `verification.brusselator.participants.mpmd.5` --
+U on two ranks, V on two, the coupler on one, each rank's communicator
+formed by one `MPI_Comm_split` keyed on the component -- passes, with the
+final means 8.9e-14 (`mean_u`) and 9.4e-14 (`mean_v`) from the
+single-process example, the decomposed Schur solve's round-off, and the
+3-rank row bit-identical to it (KNOWN_ISSUES.md D25's host paragraph).
 
 **The mesh.** `NativeGrid::make` loads its backend at
 `backend.rank()`/`backend.num_ranks()`. `fuse::native::NativeMeshBackend`

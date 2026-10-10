@@ -3250,7 +3250,7 @@ does this bookkeeping in the TEST, not through a library call; nothing in the Ha
 needed a library-level reverse exchange, but a future native-backend conservation-audit tool would
 want one.
 
-### D28. U's own species-core solver seam is closed; the mpmd.5 row that would first exercise it across a real two-rank U is still host-only
+### ~~D28. U's own species-core solver seam is closed; the mpmd.5 row that would first exercise it across a real two-rank U is still host-only~~ — CLOSED 2026-10-10 (host run, see D25's host paragraph)
 
 **Closed this session (species-core decomposition track): the implicit diffusion SOLVE**, the one
 piece D-series' own grid-decomposition entries left open (see "The solver seam" in
@@ -3393,9 +3393,10 @@ never does that: it checks `weights->n_rows != out.elements` and refuses with
 `E-RT-REMAP-SIZE` (`src/runtime/runner.cpp`) rather than applying. Nothing to fix in the
 builders.
 
-**Still host-only, same shape as D25's own gap.** The `mpmd.5` row (`--ranks-v 2`, the one row where V
-spans more than one rank) still cannot be run in this sandbox (C1: MPI cannot start here). This entry's
-own fix removes the one KNOWN correctness gap that stood between that row and a real host run -- the
+**No longer host-only: `mpmd.5` passed on the host 2026-10-10 (D25's host paragraph has the
+numbers).** The text below is the state before that run. The `mpmd.5` row (`--ranks-v 2`, the one row where V
+spans more than one rank) could not be run in this sandbox (C1: MPI cannot start here). This entry's
+own fix removed the one KNOWN correctness gap that stood between that row and a real host run -- the
 `u_main.c`/`v_main.f90`/`coupler_main.c` three-color `MPI_Comm_split` choreography, and `v_main.f90`'s
 cross-check of `v_rank`/`v_size` against `--ranks-v`, are unaffected by this change and remain
 unexercised past a build check.
@@ -3446,8 +3447,23 @@ must know its partner's initial export before `fuse_initialize()`. A coupler-del
 exchange (imports delivered before exports are frozen) would remove the need for U to
 reconstruct V at all. Recorded; the user's call.
 
-**Still host-only:** the 5-rank row (`mpmd.5`) was not run after the fixes — it exceeds the
-four-task rule — and the accept rows remain blocked by D23.
+**Host run 2026-10-10 (main after `e76881c`): `verification.brusselator.participants.mpmd.5`
+PASSES** -- U on two ranks, V on two, the coupler on one, five programs' worth of ranks under one
+`mpiexec`, 1.37 s. Two participant defects stood in front of it, both found by the new size check
+and the merged log: `v_main.f90` registered the whole U grid (256) for its two U-grid fields where
+the plan sizes them per V rank (128) -- refused `E-RT-SIZE`, now `bruss_owned_size(nx_u, ny_u,
+v_rank, v_size)` as `u_main.c` already did; and both participants logged a per-rank partial mean
+with every rank writing the same `--log` path -- now the species' global mean through the core's
+own reducer (`bruss_u_state_mean`/`bruss_v_state_mean`, a collective every rank calls) and rank 0
+alone writes. Measured against the single-process example (`mean_u` 1.5865861881738459, `mean_v`
+1.9982226403038819): the 3-rank row is now BIT-IDENTICAL in both means (0 ulp; the earlier 2 and 5
+ulp were the participants' own sequential summation against the example's Eigen sum); the 5-rank
+row differs by 8.9e-14 in `mean_u` and 9.4e-14 in `mean_v` (relative 5.6e-14 / 4.7e-14) -- the
+decomposed Schur solve's own round-off, consistent with the 2-partition in-process bound of
+4.5e-14 -- with `exchange_in`/`exchange_out` within 1e-14 of the 3-rank values and the
+conservation check within its thresholds.
+
+The accept rows remain blocked by D23.
 
 ### D23. Accept/connect cannot complete on MPICH's `ch3:nemesis` device when both programs share a node
 
