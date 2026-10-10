@@ -28,7 +28,15 @@
 ! own executable is always "pure V", in both mpmd and accept layouts
 ! (brusselator_graph_tool.cpp's own header comment has the layout
 ! rationale). So every rank of this program's own MPI_COMM_WORLD is a
-! real V-physics rank -- no --ranks-v flag is needed here.
+! real V-physics rank. Even so, --ranks-u/--ranks-v (below) are still
+! read: V's OWN physics-only communicator now comes from a REAL
+! MPI_Comm_split (color 1, matching u_main.c's own color 0 and
+! coupler_main.c's own color 2 -- see that split's own comment below),
+! so this program could derive v_rank/v_size from it alone; the flags
+! are kept anyway and cross-checked against the split's own
+! MPI_Comm_size, so a mismatch between what the launcher SAID V's shape
+! was and what the real communicator SAYS it is aborts loudly rather
+! than running on whichever one happened to be wrong.
 !
 ! LOG FORMAT: decimal, not hexfloat -- Fortran has no printf("%a")
 ! equivalent, so this program writes `ES25.17E3` (17 significant digits,
@@ -66,15 +74,18 @@ program v_main
   ! track's own layout -- brusselator_graph_tool.cpp's component order
   ! is U, V, coupler, so an mpmd run genuinely needs ranks_v passed
   ! explicitly whenever ranks_coupler > 0, which test/parallel/
-  ! brusselator_participants/run_participants.sh now does). --solver
-  ! mirrors u_main.c's own flag (species_core.hpp's own SolverKind;
-  ! "auto" resolves to direct at v_size==1, this track's only working
-  ! case today -- VParticipant::make refuses v_size>1 regardless of
-  ! solver, species_core.hpp's own E-BRUSS-V-DECOMPOSED-REMAP).
+  ! brusselator_participants/run_participants.sh now does). Halo track:
+  ! v_size (handed to bruss_v_create below) now comes from the REAL
+  ! `v_comm` (the color-1 split, below), not purely from these flags --
+  ! `ranks_u_offset`/`ranks_v_declared` are kept only as a CROSS-CHECK
+  ! against it (a disagreement aborts loudly) and for the diagnostic
+  ! message if `bruss_v_create` itself refuses. --solver mirrors
+  ! u_main.c's own flag (species_core.hpp's own SolverKind; "auto"
+  ! resolves to direct at v_size==1, schur otherwise).
   integer :: ranks_u_offset, ranks_v_declared, v_rank, v_size
   character(len=16) :: solver
   integer :: periods, ierr, world_rank, world_size, nargs, i, log_unit, p
-  integer :: dummy_comm
+  integer :: v_comm
   type(fuse_ctx) :: ctx
   type(fuse_null) :: nothing
   type(fuse_context_out) :: made
@@ -213,28 +224,48 @@ program v_main
   call MPI_Comm_size(MPI_COMM_WORLD, world_size, ierr)
 
   ! Physics track: COLLECTIVE over MPI_COMM_WORLD, matching u_main.c's
-  ! own MPI_Comm_split that forms U's physics-only communicator -- in
-  ! mpmd mode MPI_COMM_WORLD is the SHARED world every ':'-segment's
-  ! ranks (U, V, the coupler) number into, so U's own split is a
-  ! collective over ALL of them, not just U's own ranks; every rank not
-  ! in U's own block (every one of V's, here) must call a MATCHING
-  ! MPI_Comm_split with color MPI_UNDEFINED or U's ranks hang waiting
-  ! for a peer that never arrives (this track's own standing lesson: a
-  ! collective must never be skipped). The result is never used here --
-  ! V needs no communicator of its own (its own decomposition is refused
-  ! outright at v_size > 1, below, with no communication required to
-  ! decide that) -- only the collective's OWN participation matters. In
-  ! accept mode this program's own MPI_COMM_WORLD contains only V's own
-  ! ranks (Q1's ruling, this file's own header comment), so this is a
-  ! self-contained, harmless no-op collective there.
-  call MPI_Comm_split(MPI_COMM_WORLD, MPI_UNDEFINED, world_rank, dummy_comm, ierr)
+  ! own MPI_Comm_split and coupler_main.c's own -- in mpmd mode
+  ! MPI_COMM_WORLD is the SHARED world every ':'-segment's ranks (U, V,
+  ! the coupler) number into, so each program's own split is a
+  ! collective over ALL of them, not just its own ranks; a rank that
+  ! never called a matching split would strand the other two programs'
+  ! own ranks inside theirs (this track's own standing lesson: a
+  ! collective must never be skipped).
+  !
+  ! COLOR = COMPONENT INDEX (U 0, V 1, coupler 2), key = world rank --
+  ! replacing the earlier "V calls MPI_UNDEFINED to opt out of U's own
+  ! split" form with ONE uniform call shape every program makes, each
+  ! naming its own fixed color (u_main.c's and coupler_main.c's own
+  ! comments on their own identical-shaped calls have the full account,
+  ! including the choreography mismatch this exact collective caused on
+  ! the host once already when the three programs entered it in
+  ! different orders). UNLIKE the old MPI_UNDEFINED form, this result IS
+  ! used now: `v_comm` is V's own real physics-only communicator,
+  ! handed to `bruss_v_create` below as `comm_f` so a decomposed V's own
+  ! `NativeMeshBackend::set_communicator` has something real to adopt.
+  ! In accept mode this program's own MPI_COMM_WORLD contains only V's
+  ! own ranks (Q1's ruling, this file's own header comment), so `v_comm`
+  ! there is isomorphic to MPI_COMM_WORLD itself -- a harmless, correct
+  ! no-op split, not a special case.
+  call MPI_Comm_split(MPI_COMM_WORLD, 1, world_rank, v_comm, ierr)
+  call MPI_Comm_rank(v_comm, v_rank, ierr)
+  call MPI_Comm_size(v_comm, v_size, ierr)
 
-  ! V's own rank/size within its own component block -- PURE ARITHMETIC,
-  ! no communication needed: --ranks-u/--ranks-v (above) already name
-  ! where that block starts and how large it is.
+  ! Cross-check against --ranks-u/--ranks-v (above): the two mechanisms
+  ! must agree (both describe the SAME physical fact, V's own component
+  ! size, computed two different ways -- real-communicator size here,
+  ! launcher-supplied arithmetic there). A mismatch means the launcher
+  ! (run_participants.sh) passed a flag that does not match the actual
+  ! mpiexec layout it ran, which is a launch-script bug worth aborting
+  ! on loudly rather than silently trusting one source over the other.
   if (ranks_v_declared < 0) ranks_v_declared = world_size - ranks_u_offset
-  v_rank = world_rank - ranks_u_offset
-  v_size = ranks_v_declared
+  if (ranks_v_declared /= v_size) then
+    write(0, '(A,I0,A,I0,A)') &
+        "FAIL(v_main): --ranks-v (or its world_size-derived default) says ", ranks_v_declared, &
+        " but the real color-1 communicator says ", v_size, &
+        " -- the launcher's own flags disagree with the actual mpiexec layout"
+    call MPI_Abort(MPI_COMM_WORLD, 1, ierr)
+  end if
 
   status = fuse_create(ctx, nothing, made)
   call check(status, "create")
@@ -300,11 +331,16 @@ program v_main
   end if
 
   solver_cstr = trim(solver) // c_null_char
+  ! comm_f = v_comm itself: Fortran's own MPI binding never needs
+  ! MPI_Comm_c2f() (this file's own header comment has the full
+  ! account) -- v_comm IS already the Fortran-integer handle
+  ! fuse::native::CommHandle expects.
   vh = bruss_v_create(nx_u, ny_u, nx_v, ny_v, kDiffusion, v_rank, v_size, &
-                      int(0, c_int64_t), c_loc(solver_cstr))
+                      int(v_comm, c_int64_t), c_loc(solver_cstr))
   if (.not. c_associated(vh)) then
     write(0, '(A,I0,A,I0,A)') "FAIL(v_main): bruss_v_create returned NULL (v_rank=", v_rank, &
-        ", v_size=", v_size, " -- v_size>1 refuses today, E-BRUSS-V-DECOMPOSED-REMAP)"
+        ", v_size=", v_size, " -- see bruss_v_last_error on a handle this call never returned; " // &
+        "check the solver string and, at v_size>1, whether this build has real MPI)"
     call MPI_Abort(MPI_COMM_WORLD, 1, ierr)
   end if
   ! P_VU(V0) into the storage registered for v_out: the Runner primes the
@@ -383,6 +419,7 @@ program v_main
   status = fuse_destroy(ctx, nothing, nothing)
   call check(status, "destroy")
 
+  call MPI_Comm_free(v_comm, ierr)
   call MPI_Finalize(ierr)
 
 contains

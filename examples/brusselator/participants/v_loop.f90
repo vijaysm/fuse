@@ -37,13 +37,15 @@ module v_loop_mod
   ! what lets pure Fortran call them without ever seeing a C++ type). ----
   interface
     ! Physics track: `rank`/`num_ranks` are V's own component placement;
-    ! `comm_f` an MPI_Comm_c2f handle of V's own physics-only
+    ! `comm_f` the Fortran-integer value of V's own physics-only
     ! communicator (ignored when num_ranks<=1 -- shim.h's own doc
-    ! comment); `solver` a NUL-terminated C string (species_core.hpp's
-    ! own `parse_solver_kind`). v_main.f90's own header comment on this
-    ! call explains why V passes comm_f=0 unconditionally today: V's own
-    ! decomposition (num_ranks>1) refuses before any communication is
-    ! needed (VParticipant::make's own E-BRUSS-V-DECOMPOSED-REMAP).
+    ! comment). Fortran's MPI binding already represents a communicator
+    ! as the same integer MPI_Comm_c2f() would produce for the
+    ! equivalent C handle, so v_main.f90 passes its own v_comm (from the
+    ! color=1 MPI_Comm_split every program in the launch now makes --
+    ! that file's own header comment has the full account) straight
+    ! through with no conversion call needed; `solver` a NUL-terminated
+    ! C string (species_core.hpp's own `parse_solver_kind`).
     function bruss_v_create(nx_u, ny_u, nx_v, ny_v, diffusion, rank, num_ranks, comm_f, solver) &
         result(h) bind(C, name="bruss_v_create")
       import :: c_int, c_int64_t, c_double, c_ptr

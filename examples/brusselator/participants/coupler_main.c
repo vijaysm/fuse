@@ -86,15 +86,28 @@ int main(int argc, char** argv) {
   }
 
   /* Physics track: COLLECTIVE over MPI_COMM_WORLD, matching u_main.c's
-   * own MPI_Comm_split that forms U's physics-only communicator --
-   * MPI_COMM_WORLD here is the SHARED world every ':'-segment of this
-   * mpmd mpiexec invocation numbers into (coupler_main is MPMD-only,
-   * this file's own header comment), so U's own split is a collective
-   * over every rank of every segment, not just U's own; a coupler rank
-   * that never calls a matching split would strand U's ranks inside it
-   * (this track's own standing lesson: a collective must never be
-   * skipped). The result (always MPI_COMM_NULL -- this rank is never
-   * one of U's physics ranks) is never used.
+   * and v_main.f90's own MPI_Comm_split -- MPI_COMM_WORLD here is the
+   * SHARED world every ':'-segment of this mpmd mpiexec invocation
+   * numbers into (coupler_main is MPMD-only, this file's own header
+   * comment), so each program's own split is a collective over every
+   * rank of every segment, not just its own; a coupler rank that never
+   * called a matching split would strand the other two programs' own
+   * ranks inside theirs (this track's own standing lesson: a collective
+   * must never be skipped).
+   *
+   * COLOR = COMPONENT INDEX (U 0, V 1, coupler 2), key = world rank --
+   * ONE uniform split shape across all three programs, each naming its
+   * own fixed color, rather than the earlier "U's own color plus
+   * everyone else opts out with MPI_UNDEFINED" form: that form put the
+   * ENTIRE burden of "did every non-U program remember to opt out at the
+   * right point" on files that have nothing else to do with U's own
+   * split, which is exactly the class of mismatch this choreography
+   * already found once (see this comment's own ORDER MATTERS paragraph
+   * below) -- naming a REAL, fixed color here is no harder to get right
+   * than MPI_UNDEFINED was, and reads the same in all three files. The
+   * resulting communicator is still never used by this program (the
+   * coupler has no physics of its own to decompose), but it is a real,
+   * valid one now, not MPI_COMM_NULL -- freed unconditionally below.
    *
    * ORDER MATTERS: this split comes right after MPI_Init and BEFORE
    * load_graph/setup, where u_main.c and v_main.f90 place theirs.
@@ -105,11 +118,11 @@ int main(int argc, char** argv) {
    * key) exchange from inside MPI_Comm_split: "Message from rank 0 and
    * tag 7 truncated; 8 bytes received but buffer size is 4". Every
    * program must enter the same collectives in the same order. */
+  MPI_Comm coupler_comm = MPI_COMM_NULL;
   {
-    int dummy_comm_rank_unused = 0;
-    MPI_Comm dummy_comm = MPI_COMM_NULL;
-    MPI_Comm_rank(MPI_COMM_WORLD, &dummy_comm_rank_unused);
-    MPI_Comm_split(MPI_COMM_WORLD, MPI_UNDEFINED, dummy_comm_rank_unused, &dummy_comm);
+    int world_rank_for_split = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &world_rank_for_split);
+    MPI_Comm_split(MPI_COMM_WORLD, /*color=*/2, world_rank_for_split, &coupler_comm);
   }
 
 
@@ -154,6 +167,7 @@ int main(int argc, char** argv) {
   rc = t->destroy(ctx, NULL, NULL);
   if (rc != FUSE_OK) fail(NULL, "destroy", rc);
 
+  MPI_Comm_free(&coupler_comm);
   MPI_Finalize();
   return 0;
 }
