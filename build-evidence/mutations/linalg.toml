@@ -1,0 +1,80 @@
+# Mutation evidence for the "Containers" track (DistVector/DistSparseMatrix).
+# Own file per the review-fix protocol (see linalg-least-squares.toml's own
+# header comment): do not edit build-evidence/mutations.toml directly while
+# other fixers hold it dirty. Discovered automatically by tools/mutate.py's
+# load_manifest() (every build-evidence/mutations/*.toml), no separate
+# registration needed.
+#
+# All three rows were HAND-PROVEN (standing rule: tools/mutate.py itself
+# mutates the real source tree in place and requires a clean `git status`,
+# which this track does not assume here) -- on a byte-for-byte restored
+# copy of the file, the exact sequence `tools/mutate.py` itself would run:
+# apply the `old` -> `new` text, rebuild `target` with
+# `cmake --build <dir> --target <target>`, run the WHOLE binary unfiltered
+# (no `ctest -R`, no gtest filter), record which cases failed and how many
+# passed, restore the original text, and `cmp` the restored file against a
+# saved backup to confirm the restore is exact. None needs `requires =
+# "mpi"`: every one is killed by an in-process two-partition tier-0 test
+# (dist_vector_test.cpp / dist_sparse_matrix_test.cpp), never by
+# test/parallel/linalg_mpi_test.cpp, which this sandbox cannot run at all.
+
+[[mutation]]
+id = "linalg-ghost-remote-index-off-by-one"
+area = "linalg"
+describes = "DistSparseMatrix::from_triplets records each ghost's remote_local_index one past the owner's actual local position, so the GhostPattern a DistVector's exchanger follows points at the WRONG entry of the owner's owned block -- the 'ghost unpack index' mutation row. Killed at tier 0 by the in-process two-partition exchanger (no MPI needed): DistSparseMatrixFromTriplets.DerivesGhostPatternFromOffProcessColumnsAscending asserts the exact remote_local_index values directly, and DistSparseMatrixApply's periodic-Laplacian and random-nonsymmetric cases feed the shifted pattern through a real apply() against a serial ground truth."
+file = "src/linalg/dist_sparse_matrix.cpp"
+old = """    pattern.remote_local_index[g] =
+        static_cast<std::int64_t>(global_col) - owners.row_lo[static_cast<std::size_t>(owner)];"""
+new = """    pattern.remote_local_index[g] =
+        static_cast<std::int64_t>(global_col) - owners.row_lo[static_cast<std::size_t>(owner)] + 1;"""
+target = "fuse_linalg_dist_sparse_matrix_test"
+test = "linalg.dist_sparse_matrix"
+# Hand-proved 2026-10-09 against a byte-identical restored copy: 8 cases in
+# the target before mutation (all pass); after mutation, applied by hand and
+# the WHOLE binary run unfiltered, 3 fail --
+# DistSparseMatrixFromTriplets.DerivesGhostPatternFromOffProcessColumnsAscending,
+# DistSparseMatrixApply.PeriodicLaplacian16x16SplitInTwoRowSlabs,
+# DistSparseMatrixApply.RandomNonsymmetricFiveNonzerosPerRow -- 5 pass. File
+# restored and `cmp`-verified byte-identical to the pre-mutation copy.
+
+[[mutation]]
+id = "linalg-off-diagonal-product-dropped"
+area = "linalg"
+describes = "DistSparseMatrix::apply's off-diagonal (ghost-column) CSR product loop is given an upper bound equal to its own lower bound, so it runs zero iterations and every off-process contribution to y = A x is silently dropped -- the 'off-diagonal product dropped' mutation row. A one-partition matrix has an empty off-diagonal block already, so only a genuinely two-partition case can kill this; both DistSparseMatrixApply two-partition cases do, at tier 0, with no MPI."
+file = "src/linalg/dist_sparse_matrix.cpp"
+old = """    for (std::size_t k = off_row_ptr_[i]; k < off_row_ptr_[i + 1]; ++k) {
+      acc += off_val_[k] * xd[local_rows_ + off_col_idx_[k]];
+    }"""
+new = """    for (std::size_t k = off_row_ptr_[i]; k < off_row_ptr_[i]; ++k) {
+      acc += off_val_[k] * xd[local_rows_ + off_col_idx_[k]];
+    }"""
+target = "fuse_linalg_dist_sparse_matrix_test"
+test = "linalg.dist_sparse_matrix"
+# Hand-proved 2026-10-09 the same way: 8 pass before; after mutation, 2 fail
+# (DistSparseMatrixApply.PeriodicLaplacian16x16SplitInTwoRowSlabs,
+# DistSparseMatrixApply.RandomNonsymmetricFiveNonzerosPerRow), 6 pass --
+# DiagonalNeedsNoCommunication and the single-partition-adjacent checks are
+# unaffected, exactly as expected for a block this mutation never touches.
+# File restored and `cmp`-verified byte-identical.
+
+[[mutation]]
+id = "linalg-dot-reduction-skipped"
+area = "linalg"
+describes = "DistVector::dot returns the owned-block LOCAL partial sum directly, never calling the injected Reducer -- the 'dot reduction skipped' mutation row the task names explicitly, with the instruction that the in-process two-partition test (not only an MPI one) must kill it. It does: on one rank the local partial already IS the global answer (SerialReducer::sum is the identity), so DistVectorOneRank's own case cannot tell the difference and still passes -- but DistVectorTwoPartitionFake.DotAndNorm2EqualTheGatheredSerialReduction bakes in a nonzero peer contribution via its own Reducer test double, and a dot()/norm2() that never adds it disagrees with the gathered serial answer."
+file = "src/linalg/dist_vector.cpp"
+old = """  for (std::size_t i = 0; i < owned_n_; ++i) local += storage_[i] * other.storage_[i];
+  return reducer_->sum(local);"""
+new = """  for (std::size_t i = 0; i < owned_n_; ++i) local += storage_[i] * other.storage_[i];
+  return local;"""
+target = "fuse_linalg_dist_vector_test"
+test = "linalg.dist_vector"
+# Hand-proved 2026-10-09 (re-proved after LinalgComm.SerialReducerIs...
+# was added to the same binary, which changes the total from 3 to 4): 4
+# pass before; after mutation, 1 fails
+# (DistVectorTwoPartitionFake.DotAndNorm2EqualTheGatheredSerialReduction,
+# all three of its own assertions -- a0.dot(b0), a0_self.norm2(), and
+# a1.dot(b1) -- disagreeing with the gathered reference), 3 pass
+# (DistVectorOneRank's case and the direct Reducer test are both
+# unaffected, as predicted: one rank's local partial already is the global
+# answer, and the Reducer test never touches DistVector::dot at all).
+# File restored and `cmp`-verified byte-identical.

@@ -473,8 +473,13 @@ fuse_tests_gated_by(FUSE_ENABLE_MPI
   parallel/runner_transport_test.cpp parallel/comm_graph_test.cpp
   parallel/mpi_transport_test.cpp parallel/epoch_reconcile_test.cpp
   parallel/nodal_field_test.cpp parallel/nodal_remap_distributed_test.cpp
-  parallel/nodal_remap_runner_test.cpp parallel/window_runner_mpi_test.cpp)
+  parallel/nodal_remap_runner_test.cpp parallel/window_runner_mpi_test.cpp
+  parallel/linalg_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
+  # "Containers" track, tier 1: make_mpi_reducer/make_mpi_exchanger and the
+  # DistVector/DistSparseMatrix operations built on them, over a real
+  # MPI_COMM_WORLD. RANKS 2 only, per the task: built here, run on the host.
+  fuse_add_mpi_test(parallel linalg_mpi LIBS fuse::linalg RANKS 2 LABELS linalg)
   foreach(t runner_transport comm_graph mpi_transport)
     fuse_add_mpi_test(parallel ${t} LIBS fuse::runtime)
   endforeach()
@@ -595,6 +600,14 @@ endif()
 
 # ---------------------------------------------------------------- linalg
 fuse_add_gtest(linalg least_squares THROWS)
+# "Containers" track: DistVector/DistSparseMatrix at tier 0 -- a one-rank
+# build against a plain vector, and an in-process "fake" two-partition
+# split that measures the ghost-pattern and reduction logic without MPI
+# (see each file's own header comment). THROWS: both assert shape
+# mismatches (DistVector::check_same_distribution,
+# DistSparseMatrix::apply/diagonal) as caller mistakes.
+fuse_add_gtest(linalg dist_vector THROWS)
+fuse_add_gtest(linalg dist_sparse_matrix THROWS)
 fuse_add_gtest(backend native_mesh THROWS)
 fuse_add_gtest(backend native_distributed_mesh THROWS)
 fuse_add_gtest(backend native_generators THROWS)
