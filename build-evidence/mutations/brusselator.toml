@@ -16,6 +16,20 @@
 # species_component.hpp verbatim, which is why `--check-anchors` found all
 # three `old` strings at 0 occurrences in the old file. The lines
 # themselves, and what proved each row originally, are unchanged.
+#
+# Species-core decomposition track (this delegation): the two rows whose
+# `old`/`new` text touches exchange_out_'s own trapezoidal bookkeeping
+# (`brusselator-exchange-bookkeeping-drops-trapezoid`,
+# `brusselator-exchange-out-reports-start-of-step-rate`) had their
+# anchors updated from `q_prev_.mean()`/`q_new.mean()` to
+# `global_mean(q_prev_)`/`global_mean(q_new)` -- this session's own
+# UCore rewrite (owned_size()-sized state under decomposition) replaced
+# every bare `.mean()` on a SlabField with a `global_mean()` helper that
+# routes through the injected Reducer, since a plain `.mean()` would
+# average only this rank's own owned band once num_ranks() > 1. Both
+# rows were re-proved by hand against the SAME targets/thresholds as
+# before (`--check-anchors` confirms no other row in this file went
+# stale from that same rewrite).
 
 [[mutation]]
 id = "brusselator-v-exchange-wrong-sign"
@@ -39,17 +53,23 @@ test = "example.brusselator"
 [[mutation]]
 id = "brusselator-exchange-bookkeeping-drops-trapezoid"
 area = "examples/brusselator"
-describes = "replaces the trapezoidal exchange-conservation bookkeeping (0.5*dt*(q_prev_.mean()+q_new.mean())) with a plain Riemann term (dt*q_new.mean()) -- UComponent::provided_ and the physical exchange U actually delivers are unchanged (still q_new, still fed to WindowCoupler exactly the same way), but the DIAGNOSTIC accumulator UComponent uses to measure 'what U reports it exchanged' no longer matches the quadrature WindowCoupler's own Linear-waveform reconstruction actually uses when integrating that same reported signal for V, so the exchange-conservation check sees a spurious O(dt) mismatch that is an artifact of the bookkeeping, not of the physics."
+describes = "replaces the trapezoidal exchange-conservation bookkeeping (0.5*dt*(global_mean(q_prev_)+global_mean(q_new))) with a plain Riemann term (dt*global_mean(q_new)) -- UComponent::provided_ and the physical exchange U actually delivers are unchanged (still q_new, still fed to WindowCoupler exactly the same way), but the DIAGNOSTIC accumulator UComponent uses to measure 'what U reports it exchanged' no longer matches the quadrature WindowCoupler's own Linear-waveform reconstruction actually uses when integrating that same reported signal for V, so the exchange-conservation check sees a spurious O(dt) mismatch that is an artifact of the bookkeeping, not of the physics."
 file = "examples/brusselator/species_core.hpp"
-old = "    exchange_out_ += 0.5 * dt * (q_prev_.mean() + q_new.mean());"
-new = "    exchange_out_ += dt * q_new.mean();"
+old = "    exchange_out_ += 0.5 * dt * (global_mean(q_prev_) + global_mean(q_new));"
+new = "    exchange_out_ += dt * global_mean(q_new);"
 target = "fuse_example_brusselator"
 test = "example.brusselator"
-# PROVED: at --end 0.5, --check failed with max_window_exchange_error=
-# 1.686e-03 against the round-off threshold 1e-9 (both max_window_balance_
-# error=1.686e-03 and final_mean_u/v were UNCHANGED from the unmutated
-# run, confirming the mutation affects only the diagnostic, not the
-# simulated trajectory). This is the exact defect an earlier version of
+# PROVED (re-proved this session against the `global_mean()` anchor
+# above; the original run, against the pre-decomposition `.mean()` text,
+# measured 1.686e-03 -- the two differ in the fourth digit, consistent
+# with `global_mean()` reducing through `reducer_->sum()` rather than
+# calling `SlabField::mean()` directly, a different but mathematically
+# equivalent summation order at `num_ranks() == 1`): at --end 0.5,
+# --check failed with max_window_exchange_error=1.691e-03 against the
+# round-off threshold 1e-9 (max_window_balance_error=1.703e-13 and
+# final_mean_u/v were UNCHANGED from the unmutated run's own values,
+# confirming the mutation affects only the diagnostic, not the simulated
+# trajectory). This is the exact defect an earlier version of
 # UComponent::advance had before this trapezoidal fix was written (see
 # that method's own comment): reporting q_prev_ as `provided_` and
 # accumulating a plain Riemann sum measured max_window_exchange_error
@@ -59,10 +79,10 @@ test = "example.brusselator"
 [[mutation]]
 id = "brusselator-exchange-out-reports-start-of-step-rate"
 area = "examples/brusselator/participants"
-describes = "Conformance Unit 2, Q3's own mutation ('restore dt*q_prev in the shim'): replaces the SAME trapezoidal exchange_out_ bookkeeping the sibling row above tests (0.5*dt*(q_prev_.mean()+q_new.mean())) with dt*q_prev_.mean() -- the start-of-step rate, not the Riemann-on-q_new variant the sibling row exercises. Proven against brusselator_check_core's own assembler (test/verification/brusselator_check_test.cpp), not against main.cpp's in-process --check: U's own reported exchange_out and V's own reported exchange_in, read from two SEPARATE logs the way u_main.c/v_main.f90 would really produce them, stop agreeing once U measures its own export at the wrong end of the step."
+describes = "Conformance Unit 2, Q3's own mutation ('restore dt*q_prev in the shim'): replaces the SAME trapezoidal exchange_out_ bookkeeping the sibling row above tests (0.5*dt*(global_mean(q_prev_)+global_mean(q_new))) with dt*global_mean(q_prev_) -- the start-of-step rate, not the Riemann-on-q_new variant the sibling row exercises. Proven against brusselator_check_core's own assembler (test/verification/brusselator_check_test.cpp), not against main.cpp's in-process --check: U's own reported exchange_out and V's own reported exchange_in, read from two SEPARATE logs the way u_main.c/v_main.f90 would really produce them, stop agreeing once U measures its own export at the wrong end of the step."
 file = "examples/brusselator/species_core.hpp"
-old = "    exchange_out_ += 0.5 * dt * (q_prev_.mean() + q_new.mean());"
-new = "    exchange_out_ += dt * q_prev_.mean();"
+old = "    exchange_out_ += 0.5 * dt * (global_mean(q_prev_) + global_mean(q_new));"
+new = "    exchange_out_ += dt * global_mean(q_prev_);"
 target = "fuse_verification_brusselator_check_test"
 test = "verification.brusselator_check"
 # PROVED by hand (backup/restore via cmp, same protocol as every row in
@@ -180,4 +200,87 @@ test = "verification.brusselator_grid_decomposition"
 # firing is what both ASSERT_TRUE(grid.ok())-style checks in this file
 # caught, not a crash. Stated as observed on this build/compiler, not as
 # a guaranteed detection mechanism a different allocator would reproduce.
+
+# Species-core solver track (this delegation: "put the solvers into the
+# species cores" -- SchurDiffusionSolver/KrylovDiffusionSolver,
+# species_core.hpp): proved against the new in-process N-partition
+# harness (brusselator_species_core_decomposition_test.cpp's own
+# thread-barrier collective simulator), not against a real MPI run --
+# none of the three needs `requires = "mpi"`: the harness's
+# BarrierReducer/BarrierGhostExchanger reproduce a real N-way collective's
+# OBSERVABLE behaviour (values AND, for the third row, a stranded
+# collective) in-process, and UCore's own reaction-loop control flow
+# (which is what forced that harness design over the sequential
+# "two-pass replay" pattern elsewhere in this repository) is exercised
+# identically either way.
+
+[[mutation]]
+id = "brusselator-schur-coefficient-wrong-sign"
+area = "examples/brusselator"
+describes = "SchurDiffusionSolver::factor's own backward-Euler coefficient (dt*diffusion/scale, the SAME quantity DirectDiffusionSolver's dense assembly and KrylovDiffusionSolver's triplets both use) is negated, turning the periodic-diffusion operator (1+extra_diagonal)*I - dt*diffusion*L_h into (1+extra_diagonal)*I + dt*diffusion*L_h -- backward diffusion, an operator with no reason to stay well-conditioned at the step sizes this example uses."
+file = "examples/brusselator/species_core.hpp"
+old = "      const double coefficient = dt * diffusion / scale;"
+new = "      const double coefficient = -dt * diffusion / scale;"
+target = "fuse_verification_brusselator_species_core_decomposition_test"
+test = "verification.brusselator_species_core_decomposition"
+# PROVED (this session): of the 9 cases, 3 FAILED -- the Schur-based ones,
+# .TwoPartitionSchurMatchesSingleRankUCore (max_abs_diff=3.079e+175),
+# .ThreePartitionSchurMatchesSingleRankUCore (UCore's own reaction loop
+# itself reported "UCore: diffusion solve failed or produced a non-finite
+# state" on several of its fixed-point iterations before the final
+# max_abs_diff assertion even ran), and
+# .TwoPartitionVDiffusionCoreMatchesSingleRank (max_abs_diff=1.577e+09) --
+# the mis-signed operator's factorization is itself unstable enough to
+# blow up within the fixed 20-step/2-window run this test performs. The
+# 6 Krylov-based and Direct-only cases PASSED unaffected (neither
+# SchurDiffusionSolver nor its coefficient is on their call path).
+# Restored and verified byte-identical with `cmp` before the next row.
+
+[[mutation]]
+id = "brusselator-krylov-matrix-diagonal-drops-mass-term"
+area = "examples/brusselator"
+describes = "KrylovDiffusionSolver::factor's own diagonal triplet (scale + dt*diffusion*2*(xx+yy), the SAME (1+extra_diagonal)*I + ... stencil SchurDiffusionSolver's coefficient and DirectDiffusionSolver's dense assembly both encode) drops the scale term entirely, assembling just the Laplacian's own diagonal with no identity/mass contribution -- JacobiPreconditioner::from_matrix (no communication, DistSparseMatrix::diagonal() only) silently preconditions off the WRONG operator's diagonal, and pcg()/gmres() iterate against a matrix that no longer has (1+extra_diagonal)*I - dt*diffusion*L_h's own diagonal dominance."
+file = "examples/brusselator/species_core.hpp"
+old = "          triplets.push_back({row, row, scale + dt * diffusion * 2.0 * (xx + yy)});"
+new = "          triplets.push_back({row, row, dt * diffusion * 2.0 * (xx + yy)});"
+target = "fuse_verification_brusselator_species_core_decomposition_test"
+test = "verification.brusselator_species_core_decomposition"
+# PROVED (this session): of the 9 cases, 3 FAILED -- all three that reach
+# KrylovDiffusionSolver's own factor(): .DeriveKrylovSolverTolerance (the
+# sweep itself failed partway through with repeated "UCore: diffusion
+# solve failed or produced a non-finite state" -- pcg/gmres stopped
+# converging once the diagonal no longer dominates the row),
+# .TwoPartitionPcgMatchesSingleRankWithinDerivedTolerance, and
+# .TwoPartitionGmresMatchesSingleRankWithinDerivedTolerance
+# (max_abs_diff=1.303e+00, ten-plus orders of magnitude over its
+# 1e-12 bound). The 6 Schur-based and Direct-only cases PASSED unaffected
+# (DistSparseMatrix/JacobiPreconditioner are not on their call path).
+# Restored and verified byte-identical with `cmp` before the next row.
+
+[[mutation]]
+id = "brusselator-krylov-matrix-drops-global-row-offset"
+area = "examples/brusselator"
+describes = "KrylovDiffusionSolver::factor's own DistSparseMatrix::from_triplets call passes the LOCAL row band (0, (j_hi-j_lo)*nx) instead of the GLOBAL one (j_lo*nx, j_hi*nx) -- the exact RowOwnership convention mismatch this track's own measurement work found once already (DistSparseMatrix::from_triplets interprets row_lo/row_hi in GLOBAL cell units; SchurSlabSolver::factor's own j_lo/j_hi argument is a SEPARATE, grid-row-unit convention -- NativeGrid::row_ownership() vs ::row_ownership_by_grid_row()), reproduced here on the Krylov path's own assembly instead."
+file = "examples/brusselator/species_core.hpp"
+old = "      auto built = fuse::linalg::DistSparseMatrix::from_triplets(\n          j_lo_ * nx_, j_hi_ * nx_, global_n, triplets, reducer_, row_ownership_);"
+new = "      auto built = fuse::linalg::DistSparseMatrix::from_triplets(\n          0, (j_hi_ - j_lo_) * nx_, global_n, triplets, reducer_, row_ownership_);"
+target = "fuse_verification_brusselator_species_core_decomposition_test"
+test = "verification.brusselator_species_core_decomposition"
+# PROVED (this session): this row does NOT fail cleanly -- it HANGS.
+# Every rank still believes it owns global rows [0, (j_hi-j_lo)*nx) (every
+# rank's own LOCAL band, relabelled as if it started at row 0), so the
+# ranks' own row claims now overlap instead of tiling the global index
+# space; .DeriveKrylovSolverTolerance (the first case that reaches
+# KrylovDiffusionSolver::factor) never returns -- `timeout 30` on a
+# direct re-run (--gtest_filter engaging only the Schur/Krylov cases)
+# confirms the two Schur cases ahead of it in registration order still
+# pass and print normally, then nothing more is printed before the
+# timeout kills the process. This is the collective-stranding failure
+# mode this track's own "LESSONS FROM TODAY'S HOST RUNS" warns about, not
+# a wrong-answer one: a rank whose row claim disagrees with its peers'
+# own view of the global index space can leave one of the matrix's own
+# ghost-pattern/allgather calls waiting on a peer that already moved on,
+# or on one that never participates at all. Restored and verified
+# byte-identical with `cmp`; the killed process left no state to clean up
+# (the test binary's own in-process threads, not a separate executable).
 # Restored and verified byte-identical with `cmp` before submission.
