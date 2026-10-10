@@ -42,7 +42,6 @@ namespace {
 using fuse::Result;
 using fuse::linalg::DistSparseMatrix;
 using fuse::linalg::DistVector;
-using fuse::linalg::GhostPattern;
 using fuse::linalg::gmres;
 using fuse::linalg::GmresOptions;
 using fuse::linalg::IdentityPreconditioner;
@@ -100,10 +99,19 @@ TEST(KrylovMpi, PcgConvergesOnAPeriodicDiagonallyDominantSpdSystem) {
   ASSERT_TRUE(result.ok()) << result.error().message;
   EXPECT_TRUE(result.value().converged);
 
-  DistVector ax(owned_n, fuse::linalg::make_mpi_exchanger(comm_f, GhostPattern{}, owned_n),
+  // `ax`/`r` are built against `b`'s OWN ghost pattern, not an empty one:
+  // unlike test/parallel/linalg_mpi_test.cpp's own `y` (apply's output,
+  // used standalone and never combined with a ghosted vector), `r` below
+  // is immediately `copy_from(b)`'d, and DistVector::copy_from asserts
+  // TOTAL size equality (owned AND ghost) -- a zero-ghost `r` next to a
+  // ghosted `b` is exactly the "10 vs 12" mismatch this comment now heads
+  // off, caught on the host (not here, where MPI cannot start) on first
+  // run of this file's main(), fixed the same way `x`/`b` are already
+  // built two paragraphs up.
+  DistVector ax(owned_n, fuse::linalg::make_mpi_exchanger(comm_f, m.value().ghost_pattern(), owned_n),
                fuse::linalg::make_mpi_reducer(comm_f));
   ASSERT_TRUE(m.value().apply(x, ax).ok());
-  DistVector r(owned_n, fuse::linalg::make_mpi_exchanger(comm_f, GhostPattern{}, owned_n),
+  DistVector r(owned_n, fuse::linalg::make_mpi_exchanger(comm_f, m.value().ghost_pattern(), owned_n),
               fuse::linalg::make_mpi_reducer(comm_f));
   r.copy_from(b);
   r.axpy(-1.0, ax);
@@ -145,10 +153,12 @@ TEST(KrylovMpi, GmresConvergesOnAPeriodicNonsymmetricDiagonallyDominantSystem) {
   ASSERT_TRUE(result.ok()) << result.error().message;
   EXPECT_TRUE(result.value().converged);
 
-  DistVector ax(owned_n, fuse::linalg::make_mpi_exchanger(comm_f, GhostPattern{}, owned_n),
+  // Same fix as the PCG case above: `b`'s own ghost pattern, not an empty
+  // one, since `r` below is `copy_from(b)`'d.
+  DistVector ax(owned_n, fuse::linalg::make_mpi_exchanger(comm_f, m.value().ghost_pattern(), owned_n),
                fuse::linalg::make_mpi_reducer(comm_f));
   ASSERT_TRUE(m.value().apply(x, ax).ok());
-  DistVector r(owned_n, fuse::linalg::make_mpi_exchanger(comm_f, GhostPattern{}, owned_n),
+  DistVector r(owned_n, fuse::linalg::make_mpi_exchanger(comm_f, m.value().ghost_pattern(), owned_n),
               fuse::linalg::make_mpi_reducer(comm_f));
   r.copy_from(b);
   r.axpy(-1.0, ax);
