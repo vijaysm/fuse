@@ -83,112 +83,36 @@
 #include "fuse/base/error.hpp"
 #include "fuse/base/ids.hpp"
 #include "fuse/base/result.hpp"
+#include "fuse/linalg/comm.hpp"
+#include "fuse/linalg/dist_sparse_matrix.hpp"
 
 namespace brusselator {
 
 using Vector = Eigen::VectorXd;
 using Sparse = Eigen::SparseMatrix<double>;
 
-/// One ghost cell's provenance: which rank owns it, and that owner's own
-/// LOCAL canonical index for it. Shaped identically to FUSE's planned
-/// `fuse::linalg::GhostPattern` (the Containers track's distributed-vector
-/// interface contract) so that when that type lands, a caller here is a
-/// substitution, not a redesign: same two parallel arrays, same meaning,
-/// same ghost order. Entries run in the order `NativeGrid::ghost_pattern`
-/// documents (below row's `nx` cells, then above row's `nx` cells).
-struct GridGhostPattern {
-  std::vector<int> owner_rank;
-  std::vector<std::int64_t> remote_local_index;
-};
-
-/// Exchanges ghost values given this rank's owned values, shaped
-/// identically to the planned `fuse::linalg::GhostExchanger::update`: the
-/// pattern itself is fixed at construction (never passed to `update`), so
-/// the per-step cost is exactly one communication, not a rebuild of who-
-/// owns-what. No MPI header appears here or in any implementation this
-/// example links into its tier-0 build -- `SelfHaloExchanger` below is the
-/// one implementation in scope for this track; an MPI implementation
-/// belongs beside `fuse::linalg::make_mpi_exchanger`, not in this header.
-class GridHaloExchanger {
- public:
-  virtual ~GridHaloExchanger() = default;
-  [[nodiscard]] virtual fuse::Result<void> update(const double* owned, std::size_t owned_n,
-                                                  double* ghosts, std::size_t ghost_n) const = 0;
-};
-
-/// A global reduction over the ranks of one component's own communicator,
-/// shaped identically to the planned `fuse::linalg::Reducer`: sum and max
-/// of a value contributed by every rank, plus this rank's position within
-/// that communicator. `SerialReducer` below (`rank() == 0`, `size() == 1`)
-/// is the one implementation in scope for this track; an MPI
-/// implementation belongs beside `fuse::linalg::make_mpi_reducer`.
-class GridReducer {
- public:
-  virtual ~GridReducer() = default;
-  [[nodiscard]] virtual double sum(double local) const = 0;
-  [[nodiscard]] virtual double max(double local) const = 0;
-  [[nodiscard]] virtual int rank() const = 0;
-  [[nodiscard]] virtual int size() const = 0;
-};
-
-/// The reducer for a component that runs on exactly one rank: every value
-/// is already global, so `sum`/`max` return their argument unchanged.
-class SerialReducer final : public GridReducer {
- public:
-  [[nodiscard]] double sum(double local) const override { return local; }
-  [[nodiscard]] double max(double local) const override { return local; }
-  [[nodiscard]] int rank() const override { return 0; }
-  [[nodiscard]] int size() const override { return 1; }
-};
-
-[[nodiscard]] inline std::shared_ptr<GridReducer> make_serial_reducer() {
-  return std::make_shared<SerialReducer>();
-}
-
-/// The exchanger for a `GridGhostPattern` whose every `owner_rank` is THIS
-/// rank: every ghost is a copy of one of this rank's own owned cells (the
-/// grid's own periodic wrap rows at `num_ranks()==1`; see
-/// `NativeGrid::ghost_pattern`'s own comment for why that is also true of
-/// the row immediately below/above this band even when it is not this
-/// rank's wrap row at `num_ranks()>1` and that OTHER rank is the one this
-/// exchanger would need to reach -- which is exactly why `update` refuses
-/// rather than silently reading the wrong buffer when `owner_rank` names
-/// anyone else: this type is a same-buffer gather, not a substitute for
-/// real communication.
-class SelfHaloExchanger final : public GridHaloExchanger {
- public:
-  explicit SelfHaloExchanger(GridGhostPattern pattern) : pattern_(std::move(pattern)) {}
-
-  [[nodiscard]] fuse::Result<void> update(const double* owned, std::size_t owned_n,
-                                          double* ghosts, std::size_t ghost_n) const override {
-    if (ghost_n != pattern_.owner_rank.size()) {
-      return fuse::Failure{"E-BRUSS-HALO-SIZE",
-                           "SelfHaloExchanger::update: ghost_n=" + std::to_string(ghost_n) +
-                               " does not match the pattern's " +
-                               std::to_string(pattern_.owner_rank.size()) + " entries"};
-    }
-    for (std::size_t g = 0; g < ghost_n; ++g) {
-      if (pattern_.owner_rank[g] != 0) {
-        return fuse::Failure{"E-BRUSS-HALO-REMOTE",
-                             "SelfHaloExchanger::update: ghost " + std::to_string(g) +
-                                 " is owned by rank " + std::to_string(pattern_.owner_rank[g]) +
-                                 ", not this (single) rank -- a real exchange is needed"};
-      }
-      const auto local = static_cast<std::size_t>(pattern_.remote_local_index[g]);
-      if (local >= owned_n) {
-        return fuse::Failure{"E-BRUSS-HALO-REMOTE",
-                             "SelfHaloExchanger::update: ghost " + std::to_string(g) +
-                                 " names local index " + std::to_string(local) +
-                                 " >= owned_n=" + std::to_string(owned_n)};
-      }
-      ghosts[g] = owned[local];
-    }
-    return fuse::Result<void>::success();
-  }
-
- private:
-  GridGhostPattern pattern_;
-};
+/// Grid track -> Solvers/Containers tracks substitution (not a redesign):
+/// this header used to carry its own `GridGhostPattern`/`GridHaloExchanger`/
+/// `GridReducer`/`SelfHaloExchanger`/`SerialReducer`, hand-written to the
+/// EXACT shape `fuse::linalg`'s own `GhostPattern`/`GhostExchanger`/
+/// `Reducer`/`make_serial_exchanger`/`make_serial_reducer`
+/// (include/fuse/linalg/comm.hpp) were always going to land as -- that
+/// substitution has now landed: every name below is the `fuse::linalg`
+/// type itself, aliased under its old name so every existing caller in
+/// this directory (and the grid/participants tests this track owns)
+/// compiles unchanged. `NativeGrid`'s own public shape (`ghost_pattern()`,
+/// `SlabField::update_ghosts`/`owned_mean`) is therefore unaffected: the
+/// method signatures already matched (`comm.hpp`'s own header comment on
+/// `GhostExchanger::update` says so), so this is a type substitution, not
+/// an interface change. `make_serial_exchanger()`/`make_serial_reducer()`
+/// replace the one-rank `SelfHaloExchanger`/`SerialReducer` this header
+/// used to define itself; an MPI pair comes from
+/// `fuse::linalg::make_mpi_exchanger`/`make_mpi_reducer` in the
+/// participants (examples/brusselator/participants), never from a type
+/// defined here.
+using GridGhostPattern = fuse::linalg::GhostPattern;
+using GridHaloExchanger = fuse::linalg::GhostExchanger;
+using GridReducer = fuse::linalg::Reducer;
 
 /// A cell-centred nx*ny periodic grid backed by FUSE's native mesh, plus
 /// the canonical (Toy-matching) index that lets the rest of this example's
@@ -263,6 +187,55 @@ class NativeGrid {
       if (j >= static_cast<int>(lo) && j < static_cast<int>(hi)) return r;
     }
     return num_ranks_ > 0 ? num_ranks_ - 1 : 0;
+  }
+
+  /// This grid's row decomposition, restated as a CELL-indexed
+  /// `fuse::linalg::RowOwnership` -- `DistSparseMatrix::from_triplets`'s
+  /// own convention (dist_sparse_matrix.hpp): `row_lo[r]` ascending, one
+  /// entry per participant, ranging over the `nx()*ny()` CELL rows of the
+  /// periodic-Laplacian system this grid's own diffusion solve assembles,
+  /// NOT over the `ny()` GRID rows `rank_slice` itself splits. `row_lo[r]
+  /// = rank_slice(ny, r, num_ranks).first * nx` for every rank `r` --
+  /// derived with NO communication, the same `fuse::native::rank_slice`
+  /// call every rank already makes locally for its own band in `make()`,
+  /// just repeated here for every OTHER rank too (a pure function of
+  /// `nx()`/`ny()`/`num_ranks()`, identical on every rank by construction,
+  /// not a value one rank learns from another). For `SchurSlabSolver`'s
+  /// OWN row-ownership argument, which reinterprets the SAME
+  /// `fuse::linalg::RowOwnership` TYPE over `ny()` GRID rows instead
+  /// (schur_slab.hpp's own doc comment: "reinterpreted here over the
+  /// grid's `ny` ROWS rather than its `nx*ny` CELLS") see
+  /// `row_ownership_by_grid_row()` below -- the two are NOT
+  /// interchangeable despite sharing a type, a genuine convention
+  /// difference between `DistSparseMatrix` and `SchurSlabSolver`, not a
+  /// copy-paste duplication; found and fixed this session after
+  /// `SchurSlabSolver::factor`'s own `FUSE_ASSERT` caught the mismatch
+  /// (`row_ownership.row_lo[...]` disagreeing with the `j_lo` argument by
+  /// exactly a factor of `nx`).
+  [[nodiscard]] fuse::linalg::RowOwnership row_ownership() const {
+    fuse::linalg::RowOwnership owners;
+    owners.row_lo.resize(static_cast<std::size_t>(num_ranks_));
+    for (int r = 0; r < num_ranks_; ++r) {
+      const auto [lo, hi] = fuse::native::rank_slice(static_cast<std::size_t>(ny_), r, num_ranks_);
+      (void)hi;
+      owners.row_lo[static_cast<std::size_t>(r)] = static_cast<std::int64_t>(lo) * nx_;
+    }
+    return owners;
+  }
+
+  /// `SchurSlabSolver::factor`'s own row-ownership argument: the SAME
+  /// split as `row_ownership()` above, but over `ny()` GRID rows (plain
+  /// `rank_slice(ny, r, num_ranks).first`, no `* nx` scaling) -- see that
+  /// method's own doc comment for why the two differ.
+  [[nodiscard]] fuse::linalg::RowOwnership row_ownership_by_grid_row() const {
+    fuse::linalg::RowOwnership owners;
+    owners.row_lo.resize(static_cast<std::size_t>(num_ranks_));
+    for (int r = 0; r < num_ranks_; ++r) {
+      const auto [lo, hi] = fuse::native::rank_slice(static_cast<std::size_t>(ny_), r, num_ranks_);
+      (void)hi;
+      owners.row_lo[static_cast<std::size_t>(r)] = static_cast<std::int64_t>(lo);
+    }
+    return owners;
   }
 
   /// The one periodic row of ghosts above and below this rank's own band,
