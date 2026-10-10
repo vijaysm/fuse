@@ -773,6 +773,22 @@ class VDiffusionCore {
 /// -> V (target)" pair) -- this class owns that machinery so neither
 /// `species_component.hpp` nor a real participant process needs to
 /// duplicate it.
+///
+/// DECOMPOSED (Halo track): both remaps now route through FUSE's own
+/// distributed weights -- `fuse::build_remap_halo` widens each direction's
+/// SOURCE mesh with the off-rank cells its own target boundary crosses
+/// (docs/dev/native-halo.md), `fuse::build_weights` then intersects only
+/// the cells THIS rank holds (owned + adopted), and an injected
+/// `GhostExchanger` fills the adopted cells' field VALUES before each
+/// `apply_weights` call. TWO DIFFERENT ghost sets exist on two DIFFERENT
+/// views here, and must never be confused: `NativeGrid::ghost_pattern()`
+/// (brusselator_physics.hpp) is the GRID's own one-row periodic stencil
+/// halo, over LOCAL CANONICAL order, that a diffusion solve's own
+/// `GhostExchangerFactory` use (species_core.hpp's own comment on that
+/// factory); `remap_halo_pattern()` (below) is the REMAP's own adopted-
+/// cell halo, over NATIVE MESH local-index order, built fresh per
+/// direction from `NativeMeshBackend::remap_halo_pattern`. Neither this
+/// class nor `NativeGrid` ever builds one from the other's pattern.
 class VParticipant {
  public:
   VParticipant(const VParticipant&) = delete;
@@ -780,81 +796,186 @@ class VParticipant {
   VParticipant(VParticipant&&) = default;
   VParticipant& operator=(VParticipant&&) = default;
 
-  /// `rank`/`num_ranks`: V's own component placement -- defaulted to
-  /// `(0, 1)` for every EXISTING caller (the in-process example never
-  /// decomposes V). `num_ranks > 1` is refused immediately
-  /// (`E-BRUSS-V-DECOMPOSED-REMAP`), before any mesh or weight work: this
-  /// class's own two-sided remap (`step()`'s `apply_weights` calls, both
-  /// directions) is hand-built over a SINGLE-rank V grid -- it reads
-  /// `v_grid_`'s FULL native-order storage directly (`to_native`/
-  /// `to_canonical`, `n_v_` entries), which does not exist as a single
-  /// contiguous buffer once V's own grid is split into per-rank row
-  /// bands. Routing this remap through FUSE's distributed weights (the
-  /// backend's own `placed_view`s and the exchange plan over V's
-  /// communicator, not a local `apply_weights` call) is a DIFFERENT
-  /// track's own work (see this delegation's own task statement); this
-  /// refusal is what lets a decomposed V participant fail loudly at
-  /// `VParticipant::make()` instead of silently computing a wrong remap
-  /// from a `NativeGrid` built at `num_ranks() > 1` that this class was
-  /// never updated to read correctly. Test fires:
-  /// `BrusselatorSpeciesCoreDecomposition.
-  /// VParticipantRefusesDecomposedVRanks`.
-  [[nodiscard]] static fuse::Result<VParticipant> make(int nx_u, int ny_u, int nx_v, int ny_v,
-                                                        double diffusion, int rank = 0,
-                                                        int num_ranks = 1,
-                                                        SolverKind solver = SolverKind::Auto,
-                                                        double solver_tolerance = 1e-13) {
-    if (num_ranks > 1) {
-      return fuse::Failure{
-          "E-BRUSS-V-DECOMPOSED-REMAP",
-          "VParticipant::make: V's own two-sided remap (apply_weights, both directions) is "
-          "hand-built over a single-rank V grid and does not yet route through FUSE's "
-          "distributed remap weights -- num_ranks=" + std::to_string(num_ranks) +
-              " requested; a separate track (routing V's remap through distributed weights) "
-              "removes this refusal"};
-    }
-    fuse::native::NativeMeshBackend backend(rank, num_ranks);
+  /// `backend`: THIS component's own `fuse::native::NativeMeshBackend`,
+  /// constructed AND (whenever `backend.num_ranks() > 1`)
+  /// `set_communicator()`-ed by the CALLER -- injected by value, like
+  /// `reducer`/`make_exchanger` below, rather than built internally,
+  /// specifically so a tier-0 test can pre-install a halo by hand
+  /// (`NativeMeshBackend::commit_remap_halo`, the SAME production seam
+  /// `test/backend/native_halo_test.cpp`'s own `BackendFixture` uses) and
+  /// have this factory SKIP calling the real, MPI-backed
+  /// `fuse::build_remap_halo` for a triple that is already built (the
+  /// `has_remap_halo` checks below): `fuse::native::build_native_remap_
+  /// halo` has NO in-process multi-rank path at all in a build without
+  /// MPI (`E-MESH-NO-MPI`) -- the same reason `test/parallel/native_halo_
+  /// mpi_test.cpp` is build-verified only here, never run.
+  ///
+  /// `rank`/`num_ranks` are no longer separate parameters: both are
+  /// `backend.rank()`/`backend.num_ranks()`, which `NativeGrid::make`
+  /// already reads off the backend it is handed, so repeating them here
+  /// could only ever disagree with the backend's own truth, never add
+  /// information.
+  ///
+  /// Split into `make_grids` (just the two `NativeGrid::make` calls) and
+  /// `make_from_grids` (graph/halo/weights/exchangers/construct) --
+  /// `NativeGrid::make` itself REQUIRES an UNWIDENED view (its own
+  /// `E-BRUSS-MESH-COUNT` check: `entity_count(2)` must equal exactly
+  /// `nx*owned_rows`, before any halo ever adopts a cell), so a caller
+  /// that wants to pre-install a halo by hand (this class's own `make`
+  /// doc comment above) must do so AFTER `make_grids` and BEFORE
+  /// `make_from_grids` -- a window this one-shot `make` below does not
+  /// expose, by design: it always builds BOTH grids first, then the
+  /// halo/weights, in that fixed order, exactly like a production caller.
+  [[nodiscard]] static fuse::Result<std::pair<NativeGrid, NativeGrid>> make_grids(
+      fuse::native::NativeMeshBackend& backend, int nx_u, int ny_u, int nx_v, int ny_v) {
     auto u_grid_r = NativeGrid::make(backend, "u", nx_u, ny_u);
     if (!u_grid_r.ok()) return u_grid_r.error();
     auto v_grid_r = NativeGrid::make(backend, "v", nx_v, ny_v);
     if (!v_grid_r.ok()) return v_grid_r.error();
+    return std::make_pair(std::move(u_grid_r.value()), std::move(v_grid_r.value()));
+  }
+
+  [[nodiscard]] static fuse::Result<VParticipant> make_from_grids(
+      fuse::native::NativeMeshBackend backend, NativeGrid u_grid, NativeGrid v_grid, double diffusion,
+      SolverKind solver = SolverKind::Auto, double solver_tolerance = 1e-13,
+      std::shared_ptr<const fuse::linalg::Reducer> reducer = nullptr,
+      GhostExchangerFactory make_exchanger = nullptr) {
+    const fuse::MeshId u_mid = u_grid.mesh_id();
+    const fuse::MeshId v_mid = v_grid.mesh_id();
+    const int nx_u = u_grid.nx(), ny_u = u_grid.ny(), nx_v = v_grid.nx(), ny_v = v_grid.ny();
 
     fuse::CouplingGraph g;
-    const fuse::MeshId u_mesh = g.add_mesh(
+    const fuse::MeshId g_u_mesh = g.add_mesh(
         {.name = "u", .source = "generated:quad:" + std::to_string(nx_u) + "x" +
                                  std::to_string(ny_u)});
-    const fuse::MeshId v_mesh = g.add_mesh(
+    const fuse::MeshId g_v_mesh = g.add_mesh(
         {.name = "v", .source = "generated:quad:" + std::to_string(nx_v) + "x" +
                                  std::to_string(ny_v)});
-    const fuse::RegionId u_region = g.add_region({.name = "u_all", .mesh = u_mesh, .dimension = 2});
-    const fuse::RegionId v_region = g.add_region({.name = "v_all", .mesh = v_mesh, .dimension = 2});
+    const fuse::RegionId u_region = g.add_region({.name = "u_all", .mesh = g_u_mesh, .dimension = 2});
+    const fuse::RegionId v_region = g.add_region({.name = "v_all", .mesh = g_v_mesh, .dimension = 2});
 
     fuse::RemapPlan plan_vu;  // V (source) -> U (target)
     plan_vu.src = v_region;
     plan_vu.tgt = u_region;
-    auto w_vu = fuse::build_weights(plan_vu, g, backend);
-    if (!w_vu.ok()) return w_vu.error();
     fuse::RemapPlan plan_uv;  // U (source) -> V (target)
     plan_uv.src = u_region;
     plan_uv.tgt = v_region;
+
+    // The remap halo, BEFORE anything sizes a buffer from entity_count
+    // (remap_plan.hpp's own "ORDER MATTERS" discipline) -- for BOTH
+    // directions, since U's own mesh is this participant's SOURCE for one
+    // direction and TARGET for the other, and likewise for V's. Skipped
+    // per direction when a caller already installed that triple's own
+    // halo -- see `make`'s own comment above.
+    if (!backend.has_remap_halo(u_mid, v_mid, 2)) {
+      auto adopted_uv = fuse::build_remap_halo(plan_uv, g, backend);
+      if (!adopted_uv.ok()) return adopted_uv.error();
+    }
+    if (!backend.has_remap_halo(v_mid, u_mid, 2)) {
+      auto adopted_vu = fuse::build_remap_halo(plan_vu, g, backend);
+      if (!adopted_vu.ok()) return adopted_vu.error();
+    }
+
+    auto w_vu = fuse::build_weights(plan_vu, g, backend);
+    if (!w_vu.ok()) return w_vu.error();
     auto w_uv = fuse::build_weights(plan_uv, g, backend);
     if (!w_uv.ok()) return w_uv.error();
 
-    return VParticipant(std::move(backend), std::move(u_grid_r.value()),
-                        std::move(v_grid_r.value()), diffusion, solver, solver_tolerance,
-                        std::move(w_vu.value()), std::move(w_uv.value()));
+    // The remap halo's OWN exchanger pair, one per direction (DIFFERENT
+    // patterns/owned counts, so two DIFFERENT exchanger instances, never
+    // shared) -- NOT the grid's own `ghost_pattern()`/stencil halo (this
+    // class's own file comment above explains why the two must stay
+    // separate).
+    GhostExchangerFactory exchanger_factory =
+        make_exchanger ? make_exchanger : serial_exchanger_factory();
+    auto pattern_uv = backend.remap_halo_pattern(u_mid, v_mid, 2);
+    if (!pattern_uv.ok()) return pattern_uv.error();
+    auto exchanger_uv =
+        exchanger_factory(pattern_uv.value(), static_cast<std::size_t>(u_grid.owned_size()));
+    if (!exchanger_uv) {
+      return fuse::Failure{"E-BRUSS-V-REMAP-EXCHANGER",
+                           "VParticipant::make_from_grids: make_exchanger returned null building "
+                           "the U->V remap halo's own exchanger (num_ranks() > 1 without "
+                           "FUSE_ENABLE_MPI?)"};
+    }
+    auto pattern_vu = backend.remap_halo_pattern(v_mid, u_mid, 2);
+    if (!pattern_vu.ok()) return pattern_vu.error();
+    // KNOWN_ISSUES D29: with cells ADOPTED in either direction (a
+    // decomposition whose U and V bands do not cover the same y-range,
+    // e.g. 16 rows as 6/5/5 against 24 as 8/8/8) this class measurably
+    // disagrees with the single-rank reference (exchange_in off by 3.1e-4
+    // from the first sub-step) and later trips a bounds assertion in the
+    // diffusion solve, although the halo pipeline itself is proven correct
+    // at that split (test/backend/native_halo_test.cpp). Until the defect
+    // is found, that configuration REFUSES rather than running wrong. The
+    // aligned decompositions (8+8 / 12+12) adopt nothing and are verified.
+    // The count DIFFERS between ranks (the halo test measured 0/16/16 at
+    // three ranks), so the decision is agreed through the reducer before
+    // any rank returns: a rank that adopted nothing refuses along with its
+    // peers instead of walking alone into the first exchange.
+    {
+      const auto& agree = reducer ? reducer : fuse::linalg::make_serial_reducer();
+      const double local_adopted = static_cast<double>(pattern_uv.value().owner_rank.size() +
+                                                       pattern_vu.value().owner_rank.size());
+      const double total_adopted = agree->sum(local_adopted);
+      if (total_adopted > 0.0) {
+        return fuse::Failure{
+            "E-BRUSS-V-REMAP-ADOPTION",
+            "VParticipant::make_from_grids: this decomposition adopts " +
+                std::to_string(static_cast<long long>(total_adopted)) +
+                " cells across ranks (this rank: " +
+                std::to_string(pattern_uv.value().owner_rank.size()) + " U, " +
+                std::to_string(pattern_vu.value().owner_rank.size()) +
+                " V); V's two-sided remap over an adopting halo is KNOWN_ISSUES D29 and "
+                "refuses until fixed. Decompose U and V so that each rank's bands cover the "
+                "same y-range (row counts divisible by the rank count)."};
+      }
+    }
+    auto exchanger_vu =
+        exchanger_factory(pattern_vu.value(), static_cast<std::size_t>(v_grid.owned_size()));
+    if (!exchanger_vu) {
+      return fuse::Failure{"E-BRUSS-V-REMAP-EXCHANGER",
+                           "VParticipant::make_from_grids: make_exchanger returned null building "
+                           "the V->U remap halo's own exchanger (num_ranks() > 1 without "
+                           "FUSE_ENABLE_MPI?)"};
+    }
+
+    return VParticipant(std::move(backend), std::move(u_grid), std::move(v_grid), diffusion, solver,
+                        solver_tolerance, std::move(w_vu.value()), std::move(w_uv.value()),
+                        std::move(exchanger_uv), std::move(exchanger_vu),
+                        reducer ? std::move(reducer) : fuse::linalg::make_serial_reducer(),
+                        exchanger_factory);
   }
 
-  /// `required`: the raw q mean this step, on the U grid (unremapped),
-  /// size `n_u()`. On success, `provided` (size `n_u()`) receives
-  /// `P_VU(state())`, valid at t_begin+dt -- exactly `VComponent::
-  /// advance()`'s own two-sided remap (species_component.hpp).
+  [[nodiscard]] static fuse::Result<VParticipant> make(
+      fuse::native::NativeMeshBackend backend, int nx_u, int ny_u, int nx_v, int ny_v,
+      double diffusion, SolverKind solver = SolverKind::Auto, double solver_tolerance = 1e-13,
+      std::shared_ptr<const fuse::linalg::Reducer> reducer = nullptr,
+      GhostExchangerFactory make_exchanger = nullptr) {
+    auto grids = make_grids(backend, nx_u, ny_u, nx_v, ny_v);
+    if (!grids.ok()) return grids.error();
+    return make_from_grids(std::move(backend), std::move(grids.value().first),
+                           std::move(grids.value().second), diffusion, solver, solver_tolerance,
+                           std::move(reducer), std::move(make_exchanger));
+  }
+
+  /// `required`: the raw q mean this step, on U's own grid (unremapped,
+  /// OWNED-sized: this rank's own `n_u()` band of it), ALREADY what the
+  /// caller's own decomposition of U hands over -- a decomposed V never
+  /// sees more of U's grid than its own remap needs. On success,
+  /// `provided` (size `n_u()`) receives `P_VU(state())`, valid at
+  /// t_begin+dt -- exactly `VComponent::advance()`'s own two-sided remap
+  /// (species_component.hpp).
   [[nodiscard]] fuse::Result<void> step(double dt, const Vector& required, Vector* provided) {
-    std::vector<double> q_native_u(static_cast<std::size_t>(n_u_));
-    {
-      Vector q_canonical_u = required;
-      u_grid_.to_native(q_canonical_u, &q_native_u);
-    }
+    std::vector<double> q_native_owned_u;
+    u_grid_.to_native(required, &q_native_owned_u);
+    std::vector<double> q_native_u(q_native_owned_u.size() + exchanger_uv_->ghost_size());
+    std::copy(q_native_owned_u.begin(), q_native_owned_u.end(), q_native_u.begin());
+    auto updated = exchanger_uv_->update(q_native_owned_u.data(), q_native_owned_u.size(),
+                                         q_native_u.data() + q_native_owned_u.size(),
+                                         exchanger_uv_->ghost_size());
+    if (!updated.ok()) return updated.error();
+
     std::vector<double> q_native_v(static_cast<std::size_t>(n_v_), 0.0);
     auto applied = fuse::apply_weights(weights_uv_, q_native_u.data(), q_native_v.data(), 1);
     if (!applied.ok()) return applied.error();
@@ -863,8 +984,7 @@ class VParticipant {
 
     const fuse::Result<void> r = core_->step(dt, q_on_v);
     if (!r.ok()) return r;
-    remap_state_to_u(provided);
-    return fuse::Result<void>::success();
+    return remap_state_to_u(provided);
   }
 
   void save_state() { core_->save_state(); }
@@ -873,30 +993,37 @@ class VParticipant {
   [[nodiscard]] int n_u() const { return n_u_; }
   [[nodiscard]] const Vector& state() const { return core_->state(); }
   [[nodiscard]] double exchange_in() const { return core_->exchange_in(); }
-  /// `P_VU(state())` on the U grid, size `n_u()` -- what `step()` hands
-  /// back as `provided`, computed from the CURRENT state. Right after
-  /// construction that is the initial P_VU(V0): the value
-  /// `VComponent::provided_` holds from ITS constructor
-  /// (species_component.hpp, `remap_state_to_u(&provided_)`), which an
-  /// externally driven V must copy into its registered export before
-  /// fuse_initialize() for the first window's t=0 sample to be V's and
-  /// not calloc's (shim.h, bruss_v_provided). Non-const only because
-  /// `remap_state_to_u` is; it writes nothing of the participant's own.
-  [[nodiscard]] Vector provided() {
+  /// `P_VU(state())` on U's own grid (this rank's own owned band, size
+  /// `n_u()`) -- what `step()` hands back as `provided`, computed from
+  /// the CURRENT state. Right after construction that is the initial
+  /// P_VU(V0): the value `VComponent::provided_` holds from ITS
+  /// constructor (species_component.hpp, `remap_state_to_u(&provided_)`),
+  /// which an externally driven V must copy into its registered export
+  /// before fuse_initialize() for the first window's t=0 sample to be
+  /// V's and not calloc's (shim.h, bruss_v_provided). `fuse::Result`, not
+  /// a bare `Vector`, now that the remap it performs (`apply_weights`
+  /// over an exchanger-filled, possibly-decomposed source buffer) has
+  /// real failure modes a single-rank hand-apply never did.
+  [[nodiscard]] fuse::Result<Vector> provided() {
     Vector out(n_u_);
-    remap_state_to_u(&out);
+    auto r = remap_state_to_u(&out);
+    if (!r.ok()) return r.error();
     return out;
   }
 
  private:
   VParticipant(fuse::native::NativeMeshBackend backend, NativeGrid u_grid, NativeGrid v_grid,
               double diffusion, SolverKind solver, double solver_tolerance,
-              fuse::RemapWeights weights_vu, fuse::RemapWeights weights_uv)
+              fuse::RemapWeights weights_vu, fuse::RemapWeights weights_uv,
+              std::shared_ptr<const fuse::linalg::GhostExchanger> exchanger_uv,
+              std::shared_ptr<const fuse::linalg::GhostExchanger> exchanger_vu,
+              std::shared_ptr<const fuse::linalg::Reducer> reducer,
+              GhostExchangerFactory make_exchanger)
       : backend_(std::move(backend)),
         u_grid_(std::move(u_grid)),
         v_grid_(std::move(v_grid)),
-        n_u_(u_grid_.size()),
-        n_v_(v_grid_.size()),
+        n_u_(u_grid_.owned_size()),
+        n_v_(v_grid_.owned_size()),
         // heap-allocated: originally because VDiffusionCore held an
         // Eigen::SimplicialLDLT factorization object directly, which Eigen
         // makes neither copyable nor movable, and a direct VDiffusionCore
@@ -908,17 +1035,30 @@ class VParticipant {
         // constructs the handle's VParticipant from VParticipant::make()'s
         // return, and a second, independent reason to keep the indirection
         // was not worth removing for its own sake in this change.
-        core_(std::make_unique<VDiffusionCore>(v_grid_, diffusion, solver, solver_tolerance)),
+        core_(std::make_unique<VDiffusionCore>(v_grid_, diffusion, solver, solver_tolerance, reducer,
+                                               make_exchanger)),
         weights_vu_(std::move(weights_vu)),
-        weights_uv_(std::move(weights_uv)) {}
+        weights_uv_(std::move(weights_uv)),
+        exchanger_uv_(std::move(exchanger_uv)),
+        exchanger_vu_(std::move(exchanger_vu)) {}
 
-  /// provided = P_VU(state()): V's own new state remapped onto the U grid.
-  void remap_state_to_u(Vector* out) {
-    std::vector<double> v_native(static_cast<std::size_t>(n_v_));
-    v_grid_.to_native(core_->state(), &v_native);
+  /// provided = P_VU(state()): V's own new state (this rank's own owned
+  /// band) remapped onto U's own grid (this rank's own owned band).
+  [[nodiscard]] fuse::Result<void> remap_state_to_u(Vector* out) {
+    std::vector<double> v_native_owned;
+    v_grid_.to_native(core_->state(), &v_native_owned);
+    std::vector<double> v_native(v_native_owned.size() + exchanger_vu_->ghost_size());
+    std::copy(v_native_owned.begin(), v_native_owned.end(), v_native.begin());
+    auto updated = exchanger_vu_->update(v_native_owned.data(), v_native_owned.size(),
+                                         v_native.data() + v_native_owned.size(),
+                                         exchanger_vu_->ghost_size());
+    if (!updated.ok()) return updated.error();
+
     std::vector<double> u_native(static_cast<std::size_t>(n_u_), 0.0);
-    (void)fuse::apply_weights(weights_vu_, v_native.data(), u_native.data(), 1);
+    auto applied = fuse::apply_weights(weights_vu_, v_native.data(), u_native.data(), 1);
+    if (!applied.ok()) return applied.error();
     u_grid_.to_canonical(u_native, out);
+    return fuse::Result<void>::success();
   }
 
   fuse::native::NativeMeshBackend backend_;
@@ -927,6 +1067,8 @@ class VParticipant {
   std::unique_ptr<VDiffusionCore> core_;
   fuse::RemapWeights weights_vu_;  ///< V grid -> U grid
   fuse::RemapWeights weights_uv_;  ///< U grid -> V grid
+  std::shared_ptr<const fuse::linalg::GhostExchanger> exchanger_uv_;  ///< fills U's adopted cells
+  std::shared_ptr<const fuse::linalg::GhostExchanger> exchanger_vu_;  ///< fills V's adopted cells
 };
 
 }  // namespace brusselator

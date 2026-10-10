@@ -205,21 +205,52 @@ const char* bruss_u_last_error(const bruss_u_handle* h) { return h->last_error.c
 
 bruss_v_handle* bruss_v_create(int nx_u, int ny_u, int nx_v, int ny_v, double diffusion,
                                int rank, int num_ranks, int64_t comm_f, const char* solver) {
-  (void)comm_f;  // VParticipant::make refuses num_ranks>1 before any communication is needed
   const auto kind_r = brusselator::parse_solver_kind(solver ? solver : "auto");
   if (!kind_r.ok()) return nullptr;
-  auto made =
-      brusselator::VParticipant::make(nx_u, ny_u, nx_v, ny_v, diffusion, rank, num_ranks,
-                                      kind_r.value());
-  if (!made.ok()) return nullptr;
-  return new (std::nothrow) bruss_v_handle(std::move(made.value()));
+
+  fuse::native::NativeMeshBackend backend(rank, num_ranks);
+  // Halo track: set BEFORE loading U/V (native_halo_mpi_test.cpp's own
+  // Fixture order) so `fuse::build_remap_halo`'s own `communicator_size()`
+  // check, made inside `VParticipant::make`, sees the real value. A
+  // single rank never adopts anything regardless (`communicator_size()`
+  // reports 1 with no communicator set at all, the same no-op this
+  // header's own doc comment on `set_communicator` states), so skipping
+  // the call at `num_ranks<=1` changes nothing observable and avoids
+  // dereferencing a communicator handle nothing provided one for.
+  if (num_ranks > 1) backend.set_communicator(static_cast<fuse::native::CommHandle>(comm_f));
+
+  auto reducer = MakeReducerFor(num_ranks, comm_f);
+  if (!reducer) return nullptr;
+  auto exchanger_factory = MakeExchangerFactoryFor(num_ranks, comm_f);
+  if (!exchanger_factory) return nullptr;
+
+  // Same reasoning as bruss_u_create's own try/catch: a caller-
+  // configuration mistake (e.g. SolverKind::Direct at num_ranks() > 1)
+  // THROWS fuse::InvalidArgument from inside make_diffusion_solver
+  // (species_core.hpp, called from VDiffusionCore's own constructor,
+  // itself called from VParticipant::make), which must never cross this
+  // extern "C" boundary.
+  try {
+    auto made = brusselator::VParticipant::make(std::move(backend), nx_u, ny_u, nx_v, ny_v,
+                                                diffusion, kind_r.value(), /*solver_tolerance=*/1e-13,
+                                                std::move(reducer), std::move(exchanger_factory));
+    if (!made.ok()) return nullptr;
+    return new (std::nothrow) bruss_v_handle(std::move(made.value()));
+  } catch (const fuse::Error&) {
+    return nullptr;
+  }
 }
 
 void bruss_v_provided(const bruss_v_handle* h, double* out) {
   // const_cast: provided() is non-const only because the remap helper it
   // calls is; nothing observable changes (species_core.hpp's own note).
-  const brusselator::Vector p = const_cast<bruss_v_handle*>(h)->core.provided();
-  for (int i = 0; i < h->core.n_u(); ++i) out[i] = p[i];
+  auto p = const_cast<bruss_v_handle*>(h)->core.provided();
+  if (!p.ok()) {
+    const_cast<bruss_v_handle*>(h)->last_error = ToStdString(p.error());
+    for (int i = 0; i < h->core.n_u(); ++i) out[i] = 0.0;
+    return;
+  }
+  for (int i = 0; i < h->core.n_u(); ++i) out[i] = p.value()[i];
 }
 
 void bruss_v_destroy(bruss_v_handle* h) { delete h; }

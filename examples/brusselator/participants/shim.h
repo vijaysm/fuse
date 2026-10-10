@@ -72,7 +72,13 @@ int bruss_owned_slice(const double* whole, int nx, int ny, int rank, int num_ran
  * externally driven participant must put the same value there by hand
  * (test/verification/brusselator_participants_test.cpp does exactly this;
  * the standalone programs did not, and the first window's exchange was
- * then measured 40% short on the host, 2026-10-09). */
+ * then measured 40% short on the host, 2026-10-09).
+ *
+ * `bruss_v_provided`'s own remap (Halo track) can now fail -- an
+ * exchanger-filled, possibly-decomposed `apply_weights` call, not a
+ * single-rank hand-apply -- in which case `out` is left ZEROED and
+ * `bruss_v_last_error(h)` reports why; `bruss_u_provided` has no such
+ * failure mode (no remap of its own) and always succeeds. */
 void bruss_u_provided(const bruss_u_handle* h, double* out);
 void bruss_v_provided(const bruss_v_handle* h, double* out);
 
@@ -146,10 +152,14 @@ const char* bruss_u_last_error(const bruss_u_handle* h);
  * alone is this function's only diagnostic, exactly like
  * bruss_u_create()'s own contract. `rank`/`num_ranks`/`comm_f`/`solver`
  * mirror bruss_u_create()'s own (this header's comment on that function
- * has the full account) -- EXCEPT that `num_ranks > 1` is itself refused
- * (NULL return) here: `VParticipant::make`'s own `E-BRUSS-V-DECOMPOSED-
- * REMAP` refusal (species_core.hpp), since V's two-sided remap is not yet
- * routed through FUSE's distributed weights (a different track's work).
+ * has the full account): V's two sided remap (U grid -> V slab for q,
+ * V grid -> U slab for state) is now routed through the SAME
+ * build_remap_halo/build_weights/exchanger machinery VParticipant::make
+ * uses for its own grid decomposition (species_core.hpp's own header
+ * comment on VParticipant has the full account) -- `num_ranks > 1` is
+ * no longer refused here. At `num_ranks > 1` without a real MPI build,
+ * the underlying `fuse::native::build_native_remap_halo` call returns
+ * `E-MESH-NO-MPI` (NULL return, same diagnostic contract as above).
  * `solver` selects V's OWN diffusion solve only (independent of U's). */
 bruss_v_handle* bruss_v_create(int nx_u, int ny_u, int nx_v, int ny_v, double diffusion,
                                int rank, int num_ranks, int64_t comm_f, const char* solver);
