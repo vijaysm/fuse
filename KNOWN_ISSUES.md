@@ -3232,6 +3232,35 @@ like the examples do.
 examples gated by `if(FUSE_LINALG_BACKEND STREQUAL "eigen")`, with a configure-time
 message listing what is skipped) or the option is retired. Not decided here.
 
+### D30. Two bit-for-bit tests fail by one ulp in a Release build — a decision on floating-point contraction
+
+**Measured 2026-10-10 on a clean export of `cd26801`, `-DCMAKE_BUILD_TYPE=Release`, otherwise the
+tier-0 configuration** (found by the example-documentation pass, which built the `tier0-release`
+preset; reproduced by the lead):
+
+- `DistVectorOneRank.ArithmeticMatchesAPlainLoopBitForBit` (`linalg.dist_vector`):
+  `-2.159199103107206` vs `-2.1591991031072011` — one ulp.
+- `SpaceKernels/0.DeterministicReductionsMatchTheChunkedReferenceExactly` and the OpenMP leg
+  (`num.space_kernels`): `1.2895225459088601e+34` vs `1.2895225459088599e+34` and
+  `1.3007153382180115e+34` vs `1.3007153382180113e+34` — one ulp each.
+
+Every one of the 179 tier-0 rows passes in Debug, which is the configuration every commit this
+cycle was verified in, and nothing in the build sets a contraction policy (`-ffp-contract`,
+`-ffast-math` and `-fp-model` appear nowhere in `CMakeLists.txt`, `cmake/` or `src/CMakeLists.txt`
+— grepped). Apple clang contracts `a*b + c` into a fused multiply-add at `-O2` and not at `-O0`,
+so a kernel and the plain loop it is compared against round differently once either is
+contracted and the other is not. The tests are not wrong about what they measure; they measure a
+property — bit-identity between two evaluation orders — that holds only without contraction.
+
+**Not fixed, because it is a decision rather than a defect.** Two defensible answers, and they
+pull in different directions: (a) set `-ffp-contract=off` for every target, which makes a Release
+build reproduce a Debug build's bits (the goldens and the bit-for-bit comparisons then hold in both)
+at the cost of the slightly more accurate fused results; or (b) keep contraction and restate the
+three assertions as a measured one-ulp bound in Release, with the goldens re-pinned per build
+type. The robustness rule favours (a); the accuracy rule, read literally, favours (b). Until the
+owner decides, the Release configuration is **built and known to fail these three cases**, and no
+Release number is cited anywhere in the documentation.
+
 ### D27. The native backend's remap halo has no `accumulate_remap_halo` counterpart
 
 **Closed for the forward direction, 2026-10-10 ("Halo" track):** `fuse::native::NativeMeshBackend`
