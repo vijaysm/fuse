@@ -3250,6 +3250,54 @@ does this bookkeeping in the TEST, not through a library call; nothing in the Ha
 needed a library-level reverse exchange, but a future native-backend conservation-audit tool would
 want one.
 
+### D28. U's own species-core solver seam is closed; the mpmd.5 row that would first exercise it across a real two-rank U is still host-only
+
+**Closed this session (species-core decomposition track): the implicit diffusion SOLVE**, the one
+piece D-series' own grid-decomposition entries left open (see "The solver seam" in
+`docs/user/brusselator.md`), now decomposes with U's own grid. `UCore`/`VDiffusionCore`
+(`examples/brusselator/species_core.hpp`) select a `DiffusionSolver` per `PhysicsConfig::solver`
+(`SolverKind::Auto`/`Direct`/`Schur`/`Pcg`/`Gmres`, a new `--solver` flag on `u_main.c`/`v_main.f90`):
+`SchurDiffusionSolver` wraps the Solvers track's `fuse::linalg::SchurSlabSolver`;
+`KrylovDiffusionSolver` assembles the same operator as a `fuse::linalg::DistSparseMatrix` and solves
+it with `fuse::linalg::pcg`/`gmres` under a `JacobiPreconditioner`. `u_main.c` now forms its own
+physics-only sub-communicator (`MPI_Comm_split` on `is_physics_rank`), reads `u_rank`/`u_size` from
+it instead of assuming `nx*ny` is the whole grid, and passes both plus the new `--solver` string and
+an `MPI_Comm_c2f` handle through the participant ABI (`bruss_u_create`'s four new trailing
+parameters). V's own CLI/ABI plumbing (`--ranks-u`/`--ranks-v`/`--solver` on `v_main.f90`,
+`bruss_v_create`'s matching trailing parameters) is prepared identically, but `VParticipant::make`
+still refuses outright at `num_ranks() > 1` (`E-BRUSS-V-DECOMPOSED-REMAP`) — V's two-sided remap
+routed through FUSE's distributed weights is a separate ("Halo") track's own work, explicitly out of
+scope here.
+
+**Verified in the sandbox:** a new in-process N-partition harness,
+`test/verification/brusselator_species_core_decomposition_test.cpp` (9 tests, all passing), measures
+each decomposed solver against a `num_ranks() == 1` `DirectDiffusionSolver` reference — `Schur`
+agrees to 2.4e-14/4.5e-14 (U, 2/3 partitions) and 2.7e-15 (V); `Pcg`/`Gmres` agree to 5.9e-14/5.5e-14
+at the chosen `solver_tolerance = 1e-13` (swept from `1e-8` through `1e-13` to derive that default —
+see "Species-core solver decomposition" in `docs/user/brusselator.md`). The full tier-0 suite passes
+179/179 after the change, and `fuse_example_brusselator --end 0.1 --check` remains byte-identical to
+the committed reference (`final_mean_u`/`final_mean_v` unchanged to all printed digits) — `Auto`
+resolves to the original `Direct` path at `num_ranks() == 1`, so every existing single-rank caller is
+unaffected. Three new mutation rows (`build-evidence/mutations/brusselator.toml`:
+`brusselator-schur-coefficient-wrong-sign`, `brusselator-krylov-matrix-diagonal-drops-mass-term`,
+`brusselator-krylov-matrix-drops-global-row-offset`) are each hand-proved against this harness; the
+third does not fail cleanly — it HANGS (a stranded collective, the failure mode D21/D25 both name),
+proved instead by a `timeout`-bounded rerun.
+
+**Still host-only, same shape as D25's own gap.** `u_main.c`'s new `MPI_Comm_split` is collective
+over the WHOLE shared `MPI_COMM_WORLD` an mpmd launch gives every segment (`u_main.c`, `v_main.f90`,
+`coupler_main.c` all numbered into one world) — so `v_main.f90` and `coupler_main.c` each now carry a
+MATCHING `MPI_Comm_split(..., MPI_UNDEFINED, ...)` call at the equivalent point in their own startup,
+purely so U's own split does not strand them. This choreography across three separately-compiled
+executables has never been run: this sandbox cannot start MPI at all (C1), and D25 itself recorded
+that `mpmd.5` — the one row where U would actually span more than one rank — was never run even
+before this change, because it exceeds the four-task rule. `mpmd.3`'s own U segment is one rank, so
+it cannot exercise `MPI_Comm_split` with a non-trivial physics group at all. The next host run that
+matters for this track is `mpmd.5` with `--solver schur` (or `pcg`/`gmres`) on U's own two ranks —
+confirming both the split choreography above and the decomposed solver agreement this entry's own
+tier-0 numbers can only approximate with an in-process thread-barrier stand-in for a real
+`Reducer`/`GhostExchanger`.
+
 ### ~~D25. A separately launched participant could not run a coupling window~~ — CLOSED 2026-10-09 (host-measured)
 
 **Found by the first MPMD runs that reached `initialize()` (D24 cleared the exchange plan),
