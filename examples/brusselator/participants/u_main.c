@@ -220,20 +220,38 @@ int main(int argc, char** argv) {
    * forms "U's own physics-only communicator" regardless of which mode
    * put which ranks into this process's MPI_COMM_WORLD.
    *
+   * COLOR = COMPONENT INDEX (U 0, V 1, coupler 2), not "0 or
+   * MPI_UNDEFINED" as an earlier version of this file had it: v_main.f90
+   * and coupler_main.c now call the IDENTICAL split
+   * (MPI_Comm_split(MPI_COMM_WORLD, <their own fixed color>, world_rank,
+   * ...)) at the equivalent point in their own startup, so every rank of
+   * every ':'-segment in an mpmd launch names a color exactly once and
+   * none ever needs MPI_UNDEFINED -- one uniform call shape across all
+   * three files, rather than "the physics owner's own color plus
+   * everyone else opts out", which was harder to keep synchronized
+   * correctly across three separately-compiled executables (this is
+   * exactly the kind of choreography mismatch this track's own host run
+   * found once already: coupler_main.c's own matching call, placed AFTER
+   * setup() instead of before load_graph(), met U's own split at the
+   * wrong logical point and truncated a later Allgather -- the lead's own
+   * fix, 2026-10-10). A non-physics (bundled coupler placeholder, accept
+   * mode only) rank's own color is 2, same as a real coupler_main.c
+   * process's in mpmd mode; it reads back a real (if unused)
+   * communicator rather than MPI_COMM_NULL, and frees it unconditionally
+   * below rather than only when physics.
+   *
    * COLLECTIVE: MPI_Comm_split is called by EVERY rank of this
    * executable's own world, physics and non-physics alike (the same
    * "every rank calls every split" discipline src/runtime/runner.cpp's
    * own base-communicator formation uses, and this track's own standing
    * lesson: a collective must never be skipped on a locally computed
-   * condition) -- a non-physics (bundled coupler placeholder) rank gets
-   * MPI_COMM_NULL back (color MPI_UNDEFINED) and never touches u_comm
-   * again. `key = world_rank` preserves this process's own relative
+   * condition). `key = world_rank` preserves this process's own relative
    * rank order inside the new communicator, so a physics rank's OWN
    * position within u_comm is identical to its position within
    * MPI_COMM_WORLD's own [0, ranks_u) block -- u_rank below is that
    * position, read back rather than assumed. */
   MPI_Comm u_comm = MPI_COMM_NULL;
-  MPI_Comm_split(MPI_COMM_WORLD, is_physics_rank ? 0 : MPI_UNDEFINED, world_rank, &u_comm);
+  MPI_Comm_split(MPI_COMM_WORLD, is_physics_rank ? 0 : 2, world_rank, &u_comm);
   int u_rank = 0, u_size = 1;
   if (is_physics_rank) {
     MPI_Comm_rank(u_comm, &u_rank);
@@ -531,7 +549,10 @@ int main(int argc, char** argv) {
   rc = t->destroy(ctx, NULL, NULL);
   if (rc != FUSE_OK) fail(NULL, "destroy", rc);
 
-  if (u_comm != MPI_COMM_NULL) MPI_Comm_free(&u_comm);
+  /* Unconditional: u_comm is never MPI_COMM_NULL now that every rank's
+   * own color is 0 or 2 (never MPI_UNDEFINED) -- see this split's own
+   * comment above. */
+  MPI_Comm_free(&u_comm);
   MPI_Finalize();
   return 0;
 }
