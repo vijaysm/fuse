@@ -210,6 +210,18 @@ class TwoPartitionReducer : public Reducer {
   [[nodiscard]] int rank() const override { return rank_; }
   [[nodiscard]] int size() const override { return 2; }
 
+  // Added by the "Schur-slab" track (docs/dev/schur-slab-solver.md) when
+  // Reducer gained allgather() as a new pure virtual method (comm.hpp,
+  // reported there as "the one change to the containers") -- not exercised
+  // by this file's own tests (DistVector's dot/norm2/norm_inf never call
+  // it), implemented only so this class stays instantiable. Writes this
+  // participant's own `send` into its own slot of `recv`; the peer's own
+  // slot is left whatever the caller initialised it to, since no peer
+  // object exists for this fake to read from.
+  void allgather(const double* send, std::size_t n_each, double* recv) const override {
+    std::copy(send, send + n_each, recv + static_cast<std::size_t>(rank_) * n_each);
+  }
+
  private:
   int rank_;
   double peer_sum_;

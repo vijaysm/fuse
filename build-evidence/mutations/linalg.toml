@@ -78,3 +78,185 @@ test = "linalg.dist_vector"
 # unaffected, as predicted: one rank's local partial already is the global
 # answer, and the Reducer test never touches DistVector::dot at all).
 # File restored and `cmp`-verified byte-identical.
+
+# "Krylov" track: fuse::linalg::pcg/gmres (include/fuse/linalg/{pcg,gmres}.hpp),
+# header-only templates with no corresponding .cpp -- every row below
+# mutates the header directly. All four were HAND-PROVEN the same way the
+# three rows above were (apply `old` -> `new` to the real source tree,
+# rebuild the target, run the WHOLE binary unfiltered -- no `ctest -R`, no
+# gtest filter -- record which cases failed and how many passed, restore
+# the original text, `cmp` the restored file against a saved backup to
+# confirm the restore is exact), because `tools/mutate.py` itself refuses
+# to start against a dirty `include`/`src` tree, which this track's own
+# uncommitted new headers already are. None needs `requires = "mpi"`:
+# every one is killed by the tier-0 binary (test/linalg/pcg_test.cpp,
+# test/linalg/gmres_test.cpp), never by test/parallel/krylov_mpi_test.cpp,
+# which this sandbox cannot run at all.
+
+[[mutation]]
+id = "krylov-pcg-beta-stale-rz"
+area = "linalg"
+describes = "pcg's Polak-Ribiere-style beta = (r,z)_new / (r,z)_old divides the NEW inner product by itself instead of the previous iteration's -- the 'beta uses the stale rz' mutation row the task names explicitly, making beta exactly 1.0 on every iteration regardless of the actual conjugacy the recurrence needs. Killed at tier 0 by the periodic-Laplacian and random-SPD iterate-for-iterate comparisons against Eigen::ConjugateGradient (a beta of 1.0 is a different search direction from iteration 2 on, so the traces diverge immediately), the ill-conditioned recompute-discipline case, and the Jacobi-converges-faster case; survived only by the two refusal cases, which never reach a second iteration's beta at all."
+file = "include/fuse/linalg/pcg.hpp"
+old = """    const double beta = rz_new / rz_old;"""
+new = """    const double beta = rz_old / rz_old;"""
+target = "fuse_linalg_pcg_test"
+test = "linalg.pcg"
+# Hand-proved 2026-10-10 against a byte-identical restored copy: 6 cases
+# in the target before mutation (all pass); after mutation, applied by
+# hand and the WHOLE binary run unfiltered, 4 fail --
+# PcgAgreesWithEigen.PeriodicLaplacianIdentityAndJacobi,
+# PcgAgreesWithEigen.RandomSpdIdentityAndJacobi,
+# PcgRecomputesTrueResidual.IllConditionedDiagonalConvergesToTheTrueTolerance,
+# PcgJacobi.ConvergesInFewerIterationsThanIdentityOnADiagonallyScaledSystem
+# -- 2 pass (both PcgRefusals cases, which never reach a second iteration).
+# File restored and `cmp`-verified byte-identical.
+
+[[mutation]]
+id = "krylov-pcg-stopping-test-on-recurrence-not-recomputed"
+area = "linalg"
+describes = "pcg's candidate-convergence check tests the CHEAP RECURRENCE residual's own norm (already known true, by construction, at that point in the branch) instead of the FRESHLY RECOMPUTED one before reporting convergence -- the 'stopping test on the recurrence residual instead of the recomputed one' mutation row the task names explicitly, with the instruction that the test must be designed so the two differ. PcgRecomputesTrueResidual's ill-conditioned diagonal matrix (condition number 1e12, rel_tol 1e-13) is exactly that design: the recurrence first reads below tolerance while an independently recomputed residual is still far above it, so the mutated code reports a convergence this test's own independent recompute (done outside the solver entirely) rejects. The five other, well-conditioned cases cannot tell the difference -- their recurrence and recomputed residuals already agree closely enough that trusting either gives the same answer -- which is the reason this needed its own purpose-built matrix rather than being caught by the general iterate-for-iterate comparisons."
+file = "include/fuse/linalg/pcg.hpp"
+old = """      if (true_norm <= opt.rel_tol * b_norm) {"""
+new = """      if (recurrence_norm <= opt.rel_tol * b_norm) {"""
+target = "fuse_linalg_pcg_test"
+test = "linalg.pcg"
+# Hand-proved 2026-10-10: 6 pass before; after mutation, 1 fails --
+# PcgRecomputesTrueResidual.IllConditionedDiagonalConvergesToTheTrueTolerance,
+# on its own independent-recompute assertion (reported relative residual
+# 4.245e-12 against tolerance 1e-13) -- 5 pass (the five well-conditioned
+# cases, exactly as the `describes` field predicts). File restored and
+# `cmp`-verified byte-identical.
+
+[[mutation]]
+id = "krylov-pcg-preconditioner-skipped"
+area = "linalg"
+describes = "pcg's main-loop z <- M^-1 r is replaced by z <- r (the identity's own effect) -- the 'the preconditioner skipped' mutation row the task names explicitly. A constant-diagonal matrix (the periodic Laplacian, every diagonal entry equal) cannot distinguish this: M = c*I is a scalar multiple of the identity for CG, which leaves every iterate's DIRECTION unchanged and only rescales a quantity CG's own ratios cancel out again, so that case survives by coincidence, not by the preconditioner actually having been skipped. A matrix with a genuinely VARYING diagonal (the random SPD case) cannot: killed there from iteration 2 on, once the single un-mutated initial precondition-and-build-p step (before this loop starts) stops dominating the trajectory."
+file = "include/fuse/linalg/pcg.hpp"
+old = """    if (Result<void> s = m.apply(r, z); !s.ok()) return s.error();
+    const double rz_new = r.dot(z);"""
+new = """    z.copy_from(r);
+    const double rz_new = r.dot(z);"""
+target = "fuse_linalg_pcg_test"
+test = "linalg.pcg"
+# Hand-proved 2026-10-10: 6 pass before; after mutation, 1 fails --
+# PcgAgreesWithEigen.RandomSpdIdentityAndJacobi, on its jacobi sub-case
+# from iteration 2 on (e.g. iteration 2: ours 0.1375 vs Eigen's Jacobi
+# 0.1231, a 0.0144 gap against a 1e-9 bound) -- 5 pass, INCLUDING
+# PcgAgreesWithEigen.PeriodicLaplacianIdentityAndJacobi and
+# PcgJacobi.ConvergesInFewerIterationsThanIdentityOnADiagonallyScaledSystem,
+# exactly as the `describes` field's constant-diagonal argument predicts
+# (confirmed, not assumed: both were individually re-examined after this
+# run, not inferred from the one failure alone). File restored and
+# `cmp`-verified byte-identical.
+
+[[mutation]]
+id = "krylov-gmres-givens-rotation-one-row-only"
+area = "linalg"
+describes = "gmres's application of the newly computed Givens rotation to the right-hand-side pair g[k], g[k+1] updates ONLY g[k] and leaves g[k+1] at its pre-rotation value -- the 'the Givens rotation applied to only one of the two rows' mutation row the task names explicitly. g[k+1] carries the residual-norm estimate for the NEXT Arnoldi step and feeds the NEXT rotation's own g update, so the corruption compounds: the residual estimate reads near zero from the very first rotation (losing the beta contribution the true residual still carries), triggering a spurious candidate convergence that this file's own recompute-before-reporting discipline correctly rejects every time, exhausting the iteration budget without ever genuinely converging."
+file = "include/fuse/linalg/gmres.hpp"
+old = """      const double g_k = g[k];
+      g[k] = c_k * g_k + s_k * g[k + 1];
+      g[k + 1] = -s_k * g_k + c_k * g[k + 1];"""
+new = """      const double g_k = g[k];
+      g[k] = c_k * g_k + s_k * g[k + 1];"""
+target = "fuse_linalg_gmres_test"
+test = "linalg.gmres"
+# Hand-proved 2026-10-10: 3 pass before; after mutation, 2 fail --
+# GmresAgreesWithEigen.RandomNonsymmetricIdentity and
+# GmresJacobi.ConvergesAndAgreesWithSparseLuOnADiagonallyScaledSystem, both
+# with E-LINALG-NO-CONVERGENCE ("did not converge within 300 iterations;
+# last relative residual 0.000000e+00" -- the corrupted estimate reading
+# exactly zero, exactly as the `describes` field predicts) -- 1 passes
+# (GmresRefusals' own tiny-iteration-cap case, which never reaches a
+# second Arnoldi step at all). File restored and `cmp`-verified byte-identical.
+
+# "Schur-slab" track: SchurSlabSolver (docs/dev/schur-slab-solver.md), the
+# exact distributed direct solver for the backward-Euler periodic Laplacian
+# on row bands. All three rows HAND-PROVEN the same way the rows above were
+# (this track's own checkout had other tracks' uncommitted edits already in
+# place, so `tools/mutate.py`'s own "never run against a dirty tree" guard
+# does not apply here -- the sequence below is exactly what it would run):
+# apply the `old` -> `new` text to src/linalg/schur_slab.cpp, rebuild
+# fuse_linalg_schur_slab_test, run the WHOLE binary unfiltered, record
+# which cases failed and how many passed, restore the original text, `cmp`
+# the restored file against a saved backup to confirm the restore is exact.
+# None needs `requires = "mpi"`: every one is killed (or, for the third,
+# produces its own documented, verified non-kill) at tier 0 by the
+# in-process N-way ring-allgather fake (test/linalg/schur_slab_test.cpp),
+# never by test/parallel/schur_slab_mpi_test.cpp, which this sandbox cannot
+# run at all.
+
+[[mutation]]
+id = "schur-slab-wrap-coupling-dropped"
+area = "linalg"
+describes = "SchurSlabSolver::factor's own 2*nx-row contribution to the assembled Schur complement writes the periodic-wrap coupling (this rank's FIRST interface row to its predecessor's LAST interface row) only when rank != 0, silently dropping it for rank 0 specifically -- the 'wrap coupling dropped' row the task names explicitly. Dropping it from only ONE side of the coupling (the other rank's own symmetric write, 'last row <-> successor's first row', is untouched) is what makes this mutation meaningful at all: the Schur complement is explicitly symmetrised before its dense LDLT factorisation (src/linalg/schur_slab.cpp's own comment on that line explains why -- Eigen::LDLT's default Lower mode reads only one triangle, so a bug that corrupts only the discarded triangle would otherwise never reach the factorisation), so a HALF-dropped coupling survives as a measurable, half-strength value rather than vanishing. Killed at tier 0 by every multi-partition case that includes rank 0 (all of them, since rank 0 always owns the first row band): the periodic-wrap case (SchurSlabSolverPeriodicWrap) and every SchurSlabSolverMultiPartition case."
+file = "src/linalg/schur_slab.cpp"
+old = """  for (int i = 0; i < nx; ++i) {
+    row_block(i, prev_last_col_lo + i) += vert_val;       // first row <-> predecessor's last row
+    row_block(nx + i, next_first_col_lo + i) += vert_val;  // last row <-> successor's first row
+  }"""
+new = """  for (int i = 0; i < nx; ++i) {
+    if (rank != 0) row_block(i, prev_last_col_lo + i) += vert_val;       // first row <-> predecessor's last row
+    row_block(nx + i, next_first_col_lo + i) += vert_val;  // last row <-> successor's first row
+  }"""
+target = "fuse_linalg_schur_slab_test"
+test = "linalg.schur_slab"
+# Hand-proved 2026-10-09 against a byte-identical restored copy: 9 cases in
+# the target before mutation (all pass). After mutation, applied by hand
+# and the WHOLE binary run unfiltered: 5 pass (SchurSlabSolverOneRank --
+# the nranks==1 path never touches row_block at all; both
+# SchurSlabSolverRefusal cases -- the refusal fires before this code runs;
+# both LinalgComm cases -- direct Reducer::allgather checks, no
+# SchurSlabSolver involved), 4 fail
+# (SchurSlabSolverMultiPartition.FourByEightTwoPartitionsAgreesWithWholeGridReference,
+# .TwoPartitions16x16AgreesWithWholeGridReference,
+# .ThreePartitionsNySeventeenNotDivisibleByThree,
+# SchurSlabSolverPeriodicWrap.ForcingOnlyOnLastRowReachesFirstRowOnlyThroughTheWrap
+# -- every case that assembles a multi-rank Schur complement including rank
+# 0). File restored and `cmp`-verified byte-identical to the pre-mutation copy.
+
+[[mutation]]
+id = "schur-slab-contribution-omitted"
+area = "linalg"
+describes = "SchurSlabSolver::factor writes its own 2*nx x 2*nx diagonal block of the assembled Schur complement (S_own, the Schur-reduced interface block for THIS rank's own row band) only when rank != 0 -- rank 0's own diagonal block (including its own interface rows' diagonal entries, which hold the operator's own 1 + 2*coefficient*(xx+yy) term) is left at zero -- the 'Schur contribution from one slab omitted' row the task names explicitly. Killed at tier 0 the same way the wrap-coupling row above is: every multi-partition case includes rank 0's own contribution, so a zeroed diagonal block (producing, among other things, a singular or wildly indefinite assembled matrix) disagrees with the whole-grid reference everywhere rank 0's own interface rows are read."
+file = "src/linalg/schur_slab.cpp"
+old = """  Eigen::MatrixXd row_block = Eigen::MatrixXd::Zero(2 * nx, g_total);
+  row_block.block(0, own_col_lo, 2 * nx, 2 * nx) = s_own;"""
+new = """  Eigen::MatrixXd row_block = Eigen::MatrixXd::Zero(2 * nx, g_total);
+  if (rank != 0) row_block.block(0, own_col_lo, 2 * nx, 2 * nx) = s_own;"""
+target = "fuse_linalg_schur_slab_test"
+test = "linalg.schur_slab"
+# Hand-proved 2026-10-09 the same way: 9 pass before; after mutation, 5
+# pass (the SAME 5 as the row above -- SchurSlabSolverOneRank, both
+# SchurSlabSolverRefusal cases, both LinalgComm cases), 4 fail (the SAME 4
+# multi-partition/periodic-wrap cases as the row above). File restored and
+# `cmp`-verified byte-identical.
+
+[[mutation]]
+id = "schur-slab-back-substitution-transposition"
+area = "linalg"
+describes = "SchurSlabSolver::solve's own local back-substitution x_I = A_II^-1(b_I - A_IG x_G) (src/linalg/schur_slab.cpp) uses A_IG.transpose() (A_GI's own role, correct only for the Schur-reduction cross term built earlier in the SAME function and in factor()) in place of A_IG itself -- the 'back-substitution using A_IG instead of A_GI (transposition)' row the task names explicitly. VERIFIED, NOT ASSUMED, by hand-proof: this specific swap is dimensionally valid ONLY where n_interior (= (local_rows-2)*nx) equals 2*nx, which solving for local_rows gives as local_rows==4 for ANY nx -- and at local_rows==4 there are exactly 2 interior rows, each adjacent to EXACTLY ONE interface row, which makes A_IG provably equal to vert_val * I_{2nx} (a scalar multiple of the identity) at that one shape -- its own transpose, bit for bit. The mutation is therefore NOT caught by a grid chosen for shape-compatibility alone; test/linalg/schur_slab_test.cpp deliberately declares its one such case (nx=4, ny=8, 2 ranks, SchurSlabSolverMultiPartition.FourByEightTwoPartitionsAgreesWithWholeGridReference) FIRST among the multi-partition tests so the mutation's own kill -- a genuine Eigen dimension assertion on the VERY NEXT case, where shapes do not coincide -- is a reproducible declaration-order fact, not an accident of whichever case the test binary happens to reach first. docs/dev/schur-slab-solver.md's own account of this mutation has the full derivation."
+file = "src/linalg/schur_slab.cpp"
+old = """    x_interior = impl_->interior_factor.solve(b_interior - impl_->a_ig * x_g_own);"""
+new = """    x_interior = impl_->interior_factor.solve(b_interior - impl_->a_ig.transpose() * x_g_own);"""
+target = "fuse_linalg_schur_slab_test"
+test = "linalg.schur_slab"
+# Hand-proved 2026-10-09 against a byte-identical restored copy, TWICE (the
+# second time after reordering the test file so the shape-matched case
+# runs first -- both runs agree on every number below): 9 pass before.
+# After mutation, applied by hand and the WHOLE binary run unfiltered: 2
+# cases run -- SchurSlabSolverOneRank.BitIdenticalToWholeGridSparseCholesky
+# PASSES (the nranks==1 path never builds a_ig at all), then
+# SchurSlabSolverMultiPartition.FourByEightTwoPartitionsAgreesWithWholeGridReference
+# ALSO PASSES -- MEASURED to be a true mathematical no-op at this grid (see
+# `describes`), not a weak assertion -- and then the process ABORTS inside
+# SchurSlabSolverMultiPartition.TwoPartitions16x16AgreesWithWholeGridReference
+# on `Assertion failed: (lhs.cols() == rhs.rows() && "invalid matrix
+# product" ...)` (Eigen's own Product.h:224, n_interior=96 vs. 2*nx=32);
+# the remaining 6 cases never execute because the process is gone. ctest's
+# own row for this binary FAILS (nonzero exit via SIGABRT), which is the
+# "fails" half of the mutation contract honestly delivered by a crash
+# rather than a wrong-number assertion -- a tier-0 finding, no MPI
+# involved. File restored and `cmp`-verified byte-identical to the
+# pre-mutation copy both times.

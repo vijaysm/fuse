@@ -474,7 +474,8 @@ fuse_tests_gated_by(FUSE_ENABLE_MPI
   parallel/mpi_transport_test.cpp parallel/epoch_reconcile_test.cpp
   parallel/nodal_field_test.cpp parallel/nodal_remap_distributed_test.cpp
   parallel/nodal_remap_runner_test.cpp parallel/window_runner_mpi_test.cpp
-  parallel/linalg_mpi_test.cpp parallel/brusselator_grid_mpi_test.cpp)
+  parallel/linalg_mpi_test.cpp parallel/brusselator_grid_mpi_test.cpp
+  parallel/schur_slab_mpi_test.cpp parallel/krylov_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
   foreach(t runner_transport comm_graph mpi_transport)
     fuse_add_mpi_test(parallel ${t} LIBS fuse::runtime)
@@ -483,6 +484,20 @@ if(FUSE_ENABLE_MPI)
   # DistVector/DistSparseMatrix operations built on them, over a real
   # MPI_COMM_WORLD. RANKS 2 only, per the task: built here, run on the host.
   fuse_add_mpi_test(parallel linalg_mpi LIBS fuse::linalg RANKS 2 LABELS linalg)
+  # "Schur-slab" track, tier 1: SchurSlabSolver and Reducer::allgather's own
+  # MPI implementation, over a real MPI_COMM_WORLD. RANKS 2 3, per the task:
+  # built here, run on the host.
+  fuse_add_mpi_test(parallel schur_slab_mpi LIBS fuse::linalg Eigen3::Eigen RANKS 2 3 LABELS linalg)
+  target_include_directories(fuse_parallel_schur_slab_mpi_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/brusselator)
+  # "Krylov" track, tier 1: pcg/gmres (both header-only templates, so there
+  # is no fuse::linalg symbol of their own to exercise -- this target
+  # proves they compile and link against a real MPI_COMM_WORLD reducer/
+  # exchanger) over the SAME closed-form reference
+  # test/parallel/linalg_mpi_test.cpp's own header comment describes.
+  # RANKS 2 only, per the task: built here, never run here (MPI cannot
+  # start in this sandbox), run on the host.
+  fuse_add_mpi_test(parallel krylov_mpi LIBS fuse::linalg RANKS 2 LABELS linalg)
   # "Nodal fields" track, step 2: SharedVertexLineMesh's lowest-rank
   # ownership, a plain nodal Transport's every-copy-matches-owner property,
   # and the standalone accumulate_shared_rows reduction (comm_graph.hpp).
@@ -617,6 +632,26 @@ fuse_add_gtest(linalg least_squares THROWS)
 # DistSparseMatrix::apply/diagonal) as caller mistakes.
 fuse_add_gtest(linalg dist_vector THROWS)
 fuse_add_gtest(linalg dist_sparse_matrix THROWS)
+# "Krylov" track: native preconditioned conjugate gradient and restarted,
+# right-preconditioned GMRES(m) (include/fuse/linalg/{pcg,gmres}.hpp),
+# checked one rank against Eigen::ConjugateGradient and Eigen's unsupported
+# GMRES, identity and Jacobi preconditioned, plus the refusal and
+# mutation-distinguishing cases each file's own header comment describes.
+# THROWS: JacobiPreconditioner::apply asserts a shape mismatch against the
+# diagonal it was built from, the same caller-mistake split DistVector's
+# own axpy/dot already draw.
+fuse_add_gtest(linalg pcg THROWS LIBS Eigen3::Eigen)
+fuse_add_gtest(linalg gmres THROWS LIBS Eigen3::Eigen)
+# "Schur-slab" track: the exact distributed direct solver for the
+# backward-Euler periodic Laplacian on row bands (docs/dev/
+# schur-slab-solver.md) -- a one-rank bit-identical check against the Toy's
+# own whole-grid SparseCholesky reference (Eigen3::Eigen, brusselator's own
+# periodic_laplacian), 2- and 3-way in-process fake-partition correctness,
+# the periodic-wrap case, and the <2-row refusal. THROWS: FUSE_ASSERT guards
+# a null Reducer and a moved-from solve() as caller mistakes.
+fuse_add_gtest(linalg schur_slab THROWS LIBS Eigen3::Eigen)
+target_include_directories(fuse_linalg_schur_slab_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/examples/brusselator)
 fuse_add_gtest(backend native_mesh THROWS)
 fuse_add_gtest(backend native_distributed_mesh THROWS)
 fuse_add_gtest(backend native_generators THROWS)
