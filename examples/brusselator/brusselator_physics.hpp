@@ -25,9 +25,26 @@
 /// coincidence: `NativeGrid::make` recovers the (i, j) <-> native local
 /// cell index correspondence by reading back each cell's own
 /// `MeshView::centroid`, so it is correct even if a future native-mesh
-/// change reorders cells (e.g. under partitioning; this example runs at
-/// one rank only -- MPI does not initialise in this sandbox -- but the
-/// recovery does not depend on that).
+/// change reorders cells.
+///
+/// DECOMPOSITION (Grid track). `NativeGrid::make` loads `backend` at
+/// `backend.rank()`/`backend.num_ranks()`: `fuse::native::NativeMeshBackend`
+/// slabs a generated quad grid by ROWS (`fuse::native::rank_slice(ny, rank,
+/// num_ranks)` over the row index), so the view this rank sees is already
+/// its own contiguous row band, owned cells only -- the native mesh carries
+/// no ghost cells of its own (src/backend/native_generators.cpp never
+/// builds one). `NativeGrid` exposes that band (`j_lo`/`j_hi`/`owned_rows`)
+/// and a LOCAL canonical index `(j - j_lo)*nx + i` over it, plus a one-row
+/// periodic halo (`ghost_pattern`) that a `SlabField` (below) exchanges
+/// through an injected `GridHaloExchanger` -- never MPI directly, so this
+/// header stays includable by the tier-0 (no-MPI) build. At `num_ranks ==
+/// 1` the row band is the whole grid (`j_lo = 0`, `j_hi = ny`), the local
+/// index equals the GLOBAL canonical index `j*nx+i` this header already
+/// used, and the two halo rows are the grid's own periodic wrap rows --
+/// every existing whole-grid caller (`UCore`, `VDiffusionCore`,
+/// `VParticipant`) is unaffected; see docs/user/brusselator.md's grid-
+/// decomposition section for the full contract and what remains undone (the
+/// decomposed diffusion SOLVE is a different track's work, not this one's).
 ///
 /// FIELD STORAGE. Every field this example solves for is kept as a plain
 /// `Eigen::VectorXd` in CANONICAL order (`index(i,j) = j*nx+i`, matching
@@ -54,7 +71,11 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 #include "fuse/backend/mesh_view.hpp"
@@ -67,6 +88,107 @@ namespace brusselator {
 
 using Vector = Eigen::VectorXd;
 using Sparse = Eigen::SparseMatrix<double>;
+
+/// One ghost cell's provenance: which rank owns it, and that owner's own
+/// LOCAL canonical index for it. Shaped identically to FUSE's planned
+/// `fuse::linalg::GhostPattern` (the Containers track's distributed-vector
+/// interface contract) so that when that type lands, a caller here is a
+/// substitution, not a redesign: same two parallel arrays, same meaning,
+/// same ghost order. Entries run in the order `NativeGrid::ghost_pattern`
+/// documents (below row's `nx` cells, then above row's `nx` cells).
+struct GridGhostPattern {
+  std::vector<int> owner_rank;
+  std::vector<std::int64_t> remote_local_index;
+};
+
+/// Exchanges ghost values given this rank's owned values, shaped
+/// identically to the planned `fuse::linalg::GhostExchanger::update`: the
+/// pattern itself is fixed at construction (never passed to `update`), so
+/// the per-step cost is exactly one communication, not a rebuild of who-
+/// owns-what. No MPI header appears here or in any implementation this
+/// example links into its tier-0 build -- `SelfHaloExchanger` below is the
+/// one implementation in scope for this track; an MPI implementation
+/// belongs beside `fuse::linalg::make_mpi_exchanger`, not in this header.
+class GridHaloExchanger {
+ public:
+  virtual ~GridHaloExchanger() = default;
+  [[nodiscard]] virtual fuse::Result<void> update(const double* owned, std::size_t owned_n,
+                                                  double* ghosts, std::size_t ghost_n) const = 0;
+};
+
+/// A global reduction over the ranks of one component's own communicator,
+/// shaped identically to the planned `fuse::linalg::Reducer`: sum and max
+/// of a value contributed by every rank, plus this rank's position within
+/// that communicator. `SerialReducer` below (`rank() == 0`, `size() == 1`)
+/// is the one implementation in scope for this track; an MPI
+/// implementation belongs beside `fuse::linalg::make_mpi_reducer`.
+class GridReducer {
+ public:
+  virtual ~GridReducer() = default;
+  [[nodiscard]] virtual double sum(double local) const = 0;
+  [[nodiscard]] virtual double max(double local) const = 0;
+  [[nodiscard]] virtual int rank() const = 0;
+  [[nodiscard]] virtual int size() const = 0;
+};
+
+/// The reducer for a component that runs on exactly one rank: every value
+/// is already global, so `sum`/`max` return their argument unchanged.
+class SerialReducer final : public GridReducer {
+ public:
+  [[nodiscard]] double sum(double local) const override { return local; }
+  [[nodiscard]] double max(double local) const override { return local; }
+  [[nodiscard]] int rank() const override { return 0; }
+  [[nodiscard]] int size() const override { return 1; }
+};
+
+[[nodiscard]] inline std::shared_ptr<GridReducer> make_serial_reducer() {
+  return std::make_shared<SerialReducer>();
+}
+
+/// The exchanger for a `GridGhostPattern` whose every `owner_rank` is THIS
+/// rank: every ghost is a copy of one of this rank's own owned cells (the
+/// grid's own periodic wrap rows at `num_ranks()==1`; see
+/// `NativeGrid::ghost_pattern`'s own comment for why that is also true of
+/// the row immediately below/above this band even when it is not this
+/// rank's wrap row at `num_ranks()>1` and that OTHER rank is the one this
+/// exchanger would need to reach -- which is exactly why `update` refuses
+/// rather than silently reading the wrong buffer when `owner_rank` names
+/// anyone else: this type is a same-buffer gather, not a substitute for
+/// real communication.
+class SelfHaloExchanger final : public GridHaloExchanger {
+ public:
+  explicit SelfHaloExchanger(GridGhostPattern pattern) : pattern_(std::move(pattern)) {}
+
+  [[nodiscard]] fuse::Result<void> update(const double* owned, std::size_t owned_n,
+                                          double* ghosts, std::size_t ghost_n) const override {
+    if (ghost_n != pattern_.owner_rank.size()) {
+      return fuse::Failure{"E-BRUSS-HALO-SIZE",
+                           "SelfHaloExchanger::update: ghost_n=" + std::to_string(ghost_n) +
+                               " does not match the pattern's " +
+                               std::to_string(pattern_.owner_rank.size()) + " entries"};
+    }
+    for (std::size_t g = 0; g < ghost_n; ++g) {
+      if (pattern_.owner_rank[g] != 0) {
+        return fuse::Failure{"E-BRUSS-HALO-REMOTE",
+                             "SelfHaloExchanger::update: ghost " + std::to_string(g) +
+                                 " is owned by rank " + std::to_string(pattern_.owner_rank[g]) +
+                                 ", not this (single) rank -- a real exchange is needed"};
+      }
+      const auto local = static_cast<std::size_t>(pattern_.remote_local_index[g]);
+      if (local >= owned_n) {
+        return fuse::Failure{"E-BRUSS-HALO-REMOTE",
+                             "SelfHaloExchanger::update: ghost " + std::to_string(g) +
+                                 " names local index " + std::to_string(local) +
+                                 " >= owned_n=" + std::to_string(owned_n)};
+      }
+      ghosts[g] = owned[local];
+    }
+    return fuse::Result<void>::success();
+  }
+
+ private:
+  GridGhostPattern pattern_;
+};
 
 /// A cell-centred nx*ny periodic grid backed by FUSE's native mesh, plus
 /// the canonical (Toy-matching) index that lets the rest of this example's
@@ -93,42 +215,136 @@ class NativeGrid {
 
   [[nodiscard]] int nx() const noexcept { return nx_; }
   [[nodiscard]] int ny() const noexcept { return ny_; }
+  /// The GLOBAL grid size, nx*ny -- unchanged meaning from before
+  /// decomposition landed (every existing caller at num_ranks()==1 reads
+  /// this as "the whole grid", which it still is: j_lo()==0, j_hi()==ny()
+  /// there). Not this rank's owned count; see `owned_size()` for that.
   [[nodiscard]] int size() const noexcept { return nx_ * ny_; }
   [[nodiscard]] double x(int i) const noexcept { return (i + 0.5) / static_cast<double>(nx_); }
   [[nodiscard]] double y(int j) const noexcept { return (j + 0.5) / static_cast<double>(ny_); }
+  /// GLOBAL canonical index `j*nx+i`, `j` a GLOBAL row -- the whole-grid
+  /// convention every existing caller (UCore, VDiffusionCore, VParticipant,
+  /// the free functions below) already uses, unaffected by decomposition.
   [[nodiscard]] int index(int i, int j) const noexcept { return j * nx_ + i; }
 
   [[nodiscard]] fuse::MeshId mesh_id() const noexcept { return mesh_id_; }
 
-  /// The native-mesh local cell index corresponding to canonical index
-  /// `c = j*nx+i`. Exposed for verification code (entry-by-entry weight
-  /// comparisons against an oracle built in canonical order) -- ordinary
-  /// field transfer should use `to_native`/`to_canonical` below instead.
+  /// --- decomposition over this component's own ranks (Grid track) -------
+  ///
+  /// `backend.rank()`/`backend.num_ranks()` at `make()` time, kept so a
+  /// caller can tell whether it is looking at a slab or the whole grid
+  /// without re-deriving it from `j_lo`/`j_hi`.
+  [[nodiscard]] int rank() const noexcept { return rank_; }
+  [[nodiscard]] int num_ranks() const noexcept { return num_ranks_; }
+  /// This rank's row band, GLOBAL row indices, half-open: `[j_lo(), j_hi())`.
+  /// `fuse::native::rank_slice(ny, rank, num_ranks)` -- the same split the
+  /// native generator itself used to decide which cells to build, so the
+  /// band named here and the band the backend actually populated agree by
+  /// construction, not by re-derivation.
+  [[nodiscard]] int j_lo() const noexcept { return j_lo_; }
+  [[nodiscard]] int j_hi() const noexcept { return j_hi_; }
+  [[nodiscard]] int owned_rows() const noexcept { return j_hi_ - j_lo_; }
+  /// This rank's owned cell count, nx*owned_rows() -- equals `size()` at
+  /// num_ranks()==1 (`j_lo()==0`, `j_hi()==ny()`), strictly smaller than it
+  /// when this component is decomposed over more than one rank.
+  [[nodiscard]] int owned_size() const noexcept { return nx_ * owned_rows(); }
+  /// LOCAL canonical index `(j - j_lo())*nx + i` of a cell whose GLOBAL row
+  /// is `j` (`j_lo() <= j < j_hi()`) -- what `SlabField`'s owned block and
+  /// `native_of_canonical_` are addressed by. Equals `index(i, j)` whenever
+  /// `j_lo() == 0` (in particular at num_ranks()==1), by construction.
+  [[nodiscard]] int local_index(int i, int j) const noexcept { return (j - j_lo_) * nx_ + i; }
+
+  /// Which rank owns GLOBAL row `j` of this grid's ny rows, by the SAME
+  /// `fuse::native::rank_slice` split `make()` used for its own band -- a
+  /// caller never has to reverse-engineer the split by hand.
+  [[nodiscard]] int owner_of_row(int j) const {
+    for (int r = 0; r < num_ranks_; ++r) {
+      const auto [lo, hi] = fuse::native::rank_slice(static_cast<std::size_t>(ny_), r, num_ranks_);
+      if (j >= static_cast<int>(lo) && j < static_cast<int>(hi)) return r;
+    }
+    return num_ranks_ > 0 ? num_ranks_ - 1 : 0;
+  }
+
+  /// The one periodic row of ghosts above and below this rank's own band,
+  /// GhostPattern-shaped (`fuse::linalg::GhostPattern`'s planned contract:
+  /// one `owner_rank`/`remote_local_index` pair per ghost, in ghost order).
+  /// Order: the `nx()` cells of the row BELOW this band first (GLOBAL row
+  /// `(j_lo()-1+ny()) % ny()`), then the `nx()` cells of the row ABOVE it
+  /// (GLOBAL row `j_hi() % ny()`) -- `SlabField::ghosts()`'s own layout.
+  ///
+  /// Every row-band split is contiguous, so the row immediately below this
+  /// band is always the LAST row of whichever band owns it (itself, when
+  /// `num_ranks()==1` and it wraps to `ny()-1`), and the row immediately
+  /// above is always the FIRST row of whichever band owns it (itself,
+  /// wrapping to row 0) -- which is why this needs no communication to
+  /// build: each ghost's `remote_local_index` is `(owned_rows(owner)-1)*nx+i`
+  /// for the row below, `i` for the row above, with no dependence on where
+  /// the owner's own band starts.
+  [[nodiscard]] GridGhostPattern ghost_pattern() const {
+    GridGhostPattern pattern;
+    pattern.owner_rank.resize(static_cast<std::size_t>(2 * nx_));
+    pattern.remote_local_index.resize(static_cast<std::size_t>(2 * nx_));
+    const int below_row = ((j_lo_ - 1) % ny_ + ny_) % ny_;
+    const int above_row = j_hi_ % ny_;
+    const int below_owner = owner_of_row(below_row);
+    const int above_owner = owner_of_row(above_row);
+    const auto [below_lo, below_hi] =
+        fuse::native::rank_slice(static_cast<std::size_t>(ny_), below_owner, num_ranks_);
+    const int below_owned_rows = static_cast<int>(below_hi - below_lo);
+    for (int i = 0; i < nx_; ++i) {
+      pattern.owner_rank[static_cast<std::size_t>(i)] = below_owner;
+      pattern.remote_local_index[static_cast<std::size_t>(i)] =
+          static_cast<std::int64_t>((below_owned_rows - 1) * nx_ + i);
+      pattern.owner_rank[static_cast<std::size_t>(nx_ + i)] = above_owner;
+      pattern.remote_local_index[static_cast<std::size_t>(nx_ + i)] = static_cast<std::int64_t>(i);
+    }
+    return pattern;
+  }
+
+  /// The native-mesh local cell index corresponding to LOCAL canonical
+  /// index `c = (j - j_lo())*nx+i`. Exposed for verification code (entry-
+  /// by-entry weight comparisons against an oracle built in canonical
+  /// order) -- ordinary field transfer should use `to_native`/`to_canonical`
+  /// below instead. Equals the GLOBAL-canonical-indexed lookup whenever
+  /// `j_lo() == 0`.
   [[nodiscard]] int native_index_of(int c) const noexcept { return native_of_canonical_[static_cast<std::size_t>(c)]; }
 
-  /// Gathers a canonical-order field into native-mesh local-index order
-  /// (what fuse::RemapWeights addresses).
+  /// Gathers an OWNED, LOCAL-canonical-order field (size `owned_size()`)
+  /// into native-mesh local-index order (what fuse::RemapWeights
+  /// addresses). At num_ranks()==1, `owned_size() == size()` and LOCAL ==
+  /// GLOBAL canonical order, so this is byte-identical to before
+  /// decomposition landed.
   void to_native(const Vector& canonical, std::vector<double>* native) const {
-    native->resize(static_cast<std::size_t>(size()));
-    for (int c = 0; c < size(); ++c) (*native)[static_cast<std::size_t>(native_of_canonical_[static_cast<std::size_t>(c)])] = canonical[c];
+    native->resize(static_cast<std::size_t>(owned_size()));
+    for (int c = 0; c < owned_size(); ++c) (*native)[static_cast<std::size_t>(native_of_canonical_[static_cast<std::size_t>(c)])] = canonical[c];
   }
-  /// Scatters a native-mesh-ordered field back into canonical order.
+  /// Scatters a native-mesh-ordered field back into OWNED, LOCAL-canonical
+  /// order.
   void to_canonical(const std::vector<double>& native, Vector* canonical) const {
-    canonical->resize(size());
-    for (int c = 0; c < size(); ++c) (*canonical)[c] = native[static_cast<std::size_t>(native_of_canonical_[static_cast<std::size_t>(c)])];
+    canonical->resize(owned_size());
+    for (int c = 0; c < owned_size(); ++c) (*canonical)[c] = native[static_cast<std::size_t>(native_of_canonical_[static_cast<std::size_t>(c)])];
   }
 
  private:
   NativeGrid(int nx, int ny) : nx_(nx), ny_(ny) {}
 
   int nx_ = 0, ny_ = 0;
+  int rank_ = 0, num_ranks_ = 1;
+  int j_lo_ = 0, j_hi_ = 0;  ///< this rank's GLOBAL row band, [j_lo_, j_hi_)
   fuse::MeshId mesh_id_{};
-  std::vector<int> native_of_canonical_;  ///< native_of_canonical_[j*nx+i] = native local index
+  std::vector<int> native_of_canonical_;  ///< indexed by LOCAL canonical index (j-j_lo_)*nx+i
 };
 
 inline fuse::Result<NativeGrid> NativeGrid::make(fuse::native::NativeMeshBackend& backend,
                                                  const std::string& name, int nx, int ny) {
   NativeGrid g(nx, ny);
+  g.rank_ = backend.rank();
+  g.num_ranks_ = backend.num_ranks();
+  std::tie(g.j_lo_, g.j_hi_) = [&] {
+    const auto [lo, hi] =
+        fuse::native::rank_slice(static_cast<std::size_t>(ny), g.rank_, g.num_ranks_);
+    return std::pair<int, int>(static_cast<int>(lo), static_cast<int>(hi));
+  }();
   const std::string source =
       "generated:quad:" + std::to_string(nx) + "x" + std::to_string(ny);
   auto loaded = backend.load(fuse::MeshDecl{.name = name, .source = source});
@@ -145,32 +361,39 @@ inline fuse::Result<NativeGrid> NativeGrid::make(fuse::native::NativeMeshBackend
   if (!view_r.ok()) return view_r.error();
   const fuse::MeshView* view = view_r.value();
   const std::size_t n2 = view->entity_count(2);
-  if (n2 != static_cast<std::size_t>(nx) * static_cast<std::size_t>(ny)) {
+  const std::size_t expected_owned =
+      static_cast<std::size_t>(nx) * static_cast<std::size_t>(g.owned_rows());
+  if (n2 != expected_owned) {
     return fuse::Failure{"E-BRUSS-MESH-COUNT",
                         "NativeGrid::make('" + name + "'): native mesh reports " +
-                            std::to_string(n2) + " dimension-2 entities, expected " +
-                            std::to_string(nx * ny)};
+                            std::to_string(n2) + " dimension-2 entities on rank " +
+                            std::to_string(g.rank_) + " of " + std::to_string(g.num_ranks_) +
+                            ", expected " + std::to_string(expected_owned) + " (" +
+                            std::to_string(nx) + " x rows [" + std::to_string(g.j_lo_) + ", " +
+                            std::to_string(g.j_hi_) + "))"};
   }
-  g.native_of_canonical_.assign(static_cast<std::size_t>(nx * ny), -1);
-  std::vector<int> seen(static_cast<std::size_t>(nx * ny), -1);
+  g.native_of_canonical_.assign(expected_owned, -1);
+  std::vector<int> seen(expected_owned, -1);
   for (std::size_t native_idx = 0; native_idx < n2; ++native_idx) {
     const fuse::Point c = view->centroid(2, native_idx);
     const int i = static_cast<int>(std::lround(c.x * nx - 0.5));
     const int j = static_cast<int>(std::lround(c.y * ny - 0.5));
-    if (i < 0 || i >= nx || j < 0 || j >= ny ||
+    if (i < 0 || i >= nx || j < g.j_lo_ || j >= g.j_hi_ ||
         std::abs(c.x - g.x(i)) > 0.25 / nx || std::abs(c.y - g.y(j)) > 0.25 / ny) {
       return fuse::Failure{"E-BRUSS-MESH-INDEX",
                           "NativeGrid::make('" + name + "'): native cell " +
                               std::to_string(native_idx) + " centroid (" +
                               std::to_string(c.x) + ", " + std::to_string(c.y) +
-                              ") does not land on a unique (i,j) of a " + std::to_string(nx) +
-                              "x" + std::to_string(ny) + " periodic grid"};
+                              ") does not land on a unique (i,j) of this rank's own row band "
+                              "[" + std::to_string(g.j_lo_) + ", " + std::to_string(g.j_hi_) +
+                              ") of a " + std::to_string(nx) + "x" + std::to_string(ny) +
+                              " periodic grid"};
     }
-    const int canonical = g.index(i, j);
+    const int canonical = g.local_index(i, j);
     if (seen[static_cast<std::size_t>(canonical)] != -1) {
       return fuse::Failure{"E-BRUSS-MESH-INDEX",
                           "NativeGrid::make('" + name + "'): two native cells mapped to the "
-                          "same canonical index " + std::to_string(canonical)};
+                          "same local canonical index " + std::to_string(canonical)};
     }
     seen[static_cast<std::size_t>(canonical)] = 1;
     g.native_of_canonical_[static_cast<std::size_t>(canonical)] = static_cast<int>(native_idx);
@@ -229,6 +452,44 @@ inline fuse::Result<NativeGrid> NativeGrid::make(fuse::native::NativeMeshBackend
   return result;
 }
 
+/// `initial_condition(is_u, nx, ny)` restricted to the GLOBAL row band
+/// `[j_lo, j_lo+owned_rows)`, stored in LOCAL canonical order
+/// `(j-j_lo)*nx+i` -- the explicit (no-solve, no-stencil) part of building
+/// a decomposed component's own initial state. Same formula, same operand
+/// order per row as the whole-grid function; at `j_lo==0`,
+/// `owned_rows==ny` the two loops visit identical (i, j, s) triples in the
+/// identical order, so the result is byte-identical to
+/// `initial_condition(is_u, nx, ny)` in that case (measured, not assumed --
+/// see the grid-decomposition test).
+[[nodiscard]] inline Vector initial_condition_owned(bool is_u, int nx, int ny, int j_lo,
+                                                    int owned_rows) {
+  Vector result(nx * owned_rows);
+  for (int lj = 0; lj < owned_rows; ++lj) {
+    const int j = j_lo + lj;
+    for (int i = 0; i < nx; ++i) {
+      const double s = is_u ? (j + 0.5) / static_cast<double>(ny) : (i + 0.5) / static_cast<double>(nx);
+      result[lj * nx + i] = (is_u ? 22.0 : 27.0) * std::pow(s * (1 - s), 1.5);
+    }
+  }
+  return result;
+}
+
+/// `forcing_mask(nx, ny)` restricted the same way `initial_condition_owned`
+/// restricts `initial_condition` -- same per-row formula and operand order,
+/// byte-identical to the whole-grid function at `j_lo==0`, `owned_rows==ny`.
+[[nodiscard]] inline Vector forcing_mask_owned(int nx, int ny, int j_lo, int owned_rows) {
+  Vector result(nx * owned_rows);
+  for (int lj = 0; lj < owned_rows; ++lj) {
+    const int j = j_lo + lj;
+    const double y = (j + 0.5) / static_cast<double>(ny);
+    for (int i = 0; i < nx; ++i) {
+      const double x = (i + 0.5) / static_cast<double>(nx);
+      result[lj * nx + i] = (std::pow(x - 0.3, 2) + std::pow(y - 0.6, 2) <= 0.01) ? 5.0 : 0.0;
+    }
+  }
+  return result;
+}
+
 /// Exact activated duration of the forcing over `[t_begin, t_end)`:
 /// `max(0, t_end - max(t_begin, 1.1))`, the Toy's own closed form
 /// (src/brusselator.cpp `Component::advance`), so a step that straddles
@@ -237,13 +498,36 @@ inline fuse::Result<NativeGrid> NativeGrid::make(fuse::native::NativeMeshBackend
   return std::max(0.0, t_end - std::max(t_begin, 1.1));
 }
 
+/// Core of `reaction_kokkos`: `q[m] = u[m]^2*v[m] - A*u[m]` over `n`
+/// pointer-addressed entries -- the same `Kokkos::parallel_for` either way,
+/// so it runs equally over a whole canonical vector (`reaction_kokkos`,
+/// below) or over just a `NativeGrid`'s OWNED cells (`SlabField::owned()`,
+/// size `owned_size()`): the reaction is pointwise, so it needs no ghost
+/// value in either case. `u`, `v`, `q` must each have at least `n` entries.
+inline void reaction_kokkos_span(const double* u, const double* v, double* q, int n) {
+  Kokkos::View<const double*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>> u_view(
+      u, n);
+  Kokkos::View<const double*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>> v_view(
+      v, n);
+  Kokkos::View<double*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>> q_view(
+      q, n);
+  Kokkos::parallel_for(
+      "brusselator::reaction",
+      Kokkos::RangePolicy<Kokkos::DefaultHostExecutionSpace>(0, n),
+      KOKKOS_LAMBDA(const int m) {
+        q_view(m) = u_view(m) * u_view(m) * v_view(m) - 3.4 * u_view(m);
+      });
+}
+
 /// q = U^2*V_on_u_grid - A*U, componentwise, computed on a
 /// `Kokkos::View<double*>` with `Kokkos::parallel_for` over the canonical
 /// cell index space -- the reaction kernel this port moves onto Kokkos
 /// (see the file header). `A = 3.4`, matching the Toy exactly
 /// (src/brusselator.cpp `reaction`, which hardcodes the same constant).
 /// `u` and `v_on_u_grid` must both have the same size; `q_out` is resized
-/// and overwritten.
+/// and overwritten. A thin wrapper over `reaction_kokkos_span` (the same
+/// Kokkos call, unchanged), kept so every existing whole-grid caller
+/// stays byte-identical.
 inline void reaction_kokkos(const Vector& u, const Vector& v_on_u_grid, Vector* q_out) {
   const int n = static_cast<int>(u.size());
   if (v_on_u_grid.size() != n) {
@@ -252,18 +536,63 @@ inline void reaction_kokkos(const Vector& u, const Vector& v_on_u_grid, Vector* 
                   " entries, v_on_u_grid has " + std::to_string(v_on_u_grid.size()));
   }
   q_out->resize(n);
-  Kokkos::View<const double*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>> u_view(
-      u.data(), n);
-  Kokkos::View<const double*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>> v_view(
-      v_on_u_grid.data(), n);
-  Kokkos::View<double*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>> q_view(
-      q_out->data(), n);
-  Kokkos::parallel_for(
-      "brusselator::reaction",
-      Kokkos::RangePolicy<Kokkos::DefaultHostExecutionSpace>(0, n),
-      KOKKOS_LAMBDA(const int m) {
-        q_view(m) = u_view(m) * u_view(m) * v_view(m) - 3.4 * u_view(m);
-      });
+  reaction_kokkos_span(u.data(), v_on_u_grid.data(), q_out->data(), n);
 }
+
+/// An owned-plus-ghost field over one rank's row band: `owned_size()`
+/// entries this rank is responsible for, then `ghost_size()` copies of
+/// neighbouring ranks' boundary rows -- the same contiguous "owned block
+/// then ghosts" layout the Containers track's planned
+/// `fuse::linalg::DistVector` uses (`data()[0..owned_size())` owned,
+/// `[owned_size()..size())` ghosts), so adopting that type later moves
+/// this storage, not this class's callers.
+class SlabField {
+ public:
+  SlabField(std::size_t owned_n, std::size_t ghost_n)
+      : owned_n_(owned_n), data_(Vector::Zero(static_cast<int>(owned_n + ghost_n))) {}
+
+  [[nodiscard]] double* data() noexcept { return data_.data(); }
+  [[nodiscard]] const double* data() const noexcept { return data_.data(); }
+  [[nodiscard]] double* owned() noexcept { return data_.data(); }
+  [[nodiscard]] const double* owned() const noexcept { return data_.data(); }
+  [[nodiscard]] double* ghosts() noexcept { return data_.data() + owned_n_; }
+  [[nodiscard]] const double* ghosts() const noexcept { return data_.data() + owned_n_; }
+  [[nodiscard]] std::size_t owned_size() const noexcept { return owned_n_; }
+  [[nodiscard]] std::size_t ghost_size() const noexcept {
+    return static_cast<std::size_t>(data_.size()) - owned_n_;
+  }
+  [[nodiscard]] std::size_t size() const noexcept { return static_cast<std::size_t>(data_.size()); }
+
+  /// Copies `src`'s `n` entries into the owned block (`n` must equal
+  /// `owned_size()`); the usual way to seed a `SlabField` from
+  /// `initial_condition_owned`/`forcing_mask_owned`'s `Vector` result.
+  void assign_owned(const Vector& src) {
+    for (std::size_t k = 0; k < owned_n_; ++k) data_[static_cast<int>(k)] = src[static_cast<int>(k)];
+  }
+
+  /// Refreshes the ghost block by calling through to the injected
+  /// exchanger with this field's own owned/ghost buffers -- never
+  /// resolves the pattern itself (the exchanger was built from one, at
+  /// construction; see `GridHaloExchanger`'s own comment).
+  [[nodiscard]] fuse::Result<void> update_ghosts(const GridHaloExchanger& exchanger) {
+    return exchanger.update(owned(), owned_size(), ghosts(), ghost_size());
+  }
+
+  /// Global mean over OWNED cells only: this rank's own partial sum,
+  /// reduced across the component's own communicator by `reducer`, divided
+  /// by the GLOBAL cell count `global_n` -- never by a locally reduced
+  /// count, so a caller that passes the wrong `global_n` is a caller bug
+  /// this cannot mask (the requirement this exists to satisfy: "every
+  /// mean/sum as owned partial + injected global reduction").
+  [[nodiscard]] double owned_mean(const GridReducer& reducer, std::size_t global_n) const {
+    double local_sum = 0.0;
+    for (std::size_t k = 0; k < owned_n_; ++k) local_sum += data_[static_cast<int>(k)];
+    return reducer.sum(local_sum) / static_cast<double>(global_n);
+  }
+
+ private:
+  std::size_t owned_n_;
+  Vector data_;
+};
 
 }  // namespace brusselator
