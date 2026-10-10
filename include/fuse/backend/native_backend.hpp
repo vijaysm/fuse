@@ -8,6 +8,8 @@
 
 #include "fuse/backend/mesh_view.hpp"
 #include "fuse/backend/native_mesh.hpp"
+#include "fuse/backend/native_migration.hpp"  // CommHandle, kNullComm
+#include "fuse/linalg/comm.hpp"               // GhostPattern
 
 namespace fuse::native {
 
@@ -128,11 +130,110 @@ class NativeMeshBackend final : public MeshBackend {
   [[nodiscard]] int rank() const noexcept { return rank_; }
   [[nodiscard]] int num_ranks() const noexcept { return num_ranks_; }
 
+  // =========================================================================
+  // THE PLANAR/VOLUMETRIC REMAP HALO. See docs/dev/native-halo.md for the
+  // construction and src/backend/native_halo.cpp for the implementation;
+  // this is the bookkeeping half, the same split moab_backend.hpp draws
+  // between its own `adopt_remap_halo`/`has_remap_halo` (bookkeeping, here)
+  // and `build_remap_halo`'s covering-set geometry (src/backend/
+  // intx_weights.cpp, which dispatches to `fuse::native::build_native_
+  // remap_halo` for THIS backend).
+  // =========================================================================
+
+  /// Adopts a real MPI communicator for the covering-set exchange. A
+  /// Fortran handle (`MPI_Comm_c2f`), never an MPI type, per this header's
+  /// own no-mpi.h convention. `kNullComm` (the default before this is
+  /// called) means no covering-set exchange is possible; `build_remap_halo`
+  /// then treats every mesh here as serial, exactly as `MoabMeshBackend`
+  /// treats a null `ParallelComm`.
+  void set_communicator(CommHandle comm) noexcept;
+  [[nodiscard]] CommHandle communicator() const noexcept;
+
+  /// `1` with no communicator adopted (every cell is local, so the serial
+  /// construction is exactly right -- the same "undivided mesh" case
+  /// `MoabMeshBackend::communicator_size()` documents), `num_ranks()`
+  /// otherwise. NOT `num_ranks()` unconditionally: `(rank, num_ranks)` is
+  /// supplied at construction for mesh GENERATION, which needs no MPI
+  /// symbol at all, so a caller that never adopts a communicator must still
+  /// get the serial answer here.
+  [[nodiscard]] int communicator_size() const noexcept;
+
+  /// Whether `build_remap_halo(source, target, dim)` (remap_plan.hpp, via
+  /// `fuse::native::build_native_remap_halo`) has run for this triple.
+  /// Zero cells adopted is a legitimate, already-built answer -- this is
+  /// "was it asked for", not "did it find anything" -- matching
+  /// `MoabMeshBackend::has_remap_halo`'s own contract exactly.
+  [[nodiscard]] bool has_remap_halo(MeshId source, MeshId target, int dim) const noexcept;
+
+  /// Where each of `source`'s adopted (non-owned) cells at dimension `dim`
+  /// came from, in the order they were appended to the mesh (after every
+  /// owned cell -- see `native_halo.cpp`'s own comment on why that is the
+  /// order and not an accident of it). `owner_rank[g]` is the rank that
+  /// OWNS the cell; `remote_local_index[g]` is that rank's own position for
+  /// it among ITS OWNED cells, ascending local-index order -- the "owned
+  /// block" position `fuse::linalg::DistVector`/`GhostExchanger` already use
+  /// (comm.hpp), so this pattern plugs directly into
+  /// `fuse::linalg::make_mpi_exchanger` to fill the adopted cells' field
+  /// values before `apply_weights`.
+  ///
+  /// `E-MESH-HALO` if no halo was built for this triple at all (distinct
+  /// from the legitimate zero-cells answer, which returns an empty pattern
+  /// successfully).
+  [[nodiscard]] Result<fuse::linalg::GhostPattern> remap_halo_pattern(MeshId source,
+                                                                      MeshId target,
+                                                                      int dim) const;
+
+  /// INTERNAL SEAM for `native_halo.cpp`'s covering-set construction, which
+  /// needs `NativeMeshView`'s own extended accessors (`cell_vertices`,
+  /// `vertex_x`, ...) that the abstract `MeshView`/`placed_view` do not
+  /// expose. The pointer's lifetime is the backend's, like `view()`'s --
+  /// EXCEPT across a call to `commit_remap_halo` below, which replaces it
+  /// (see that method's own comment). Nothing but the native halo
+  /// machinery may call this.
+  [[nodiscard]] Result<const NativeMeshView*> native_view(MeshId id,
+                                                          ComponentId placement) const;
+
+  /// INTERNAL SEAM, the other half of `native_view` above: replaces mesh
+  /// `source`'s view at `placement` (the default decomposition when
+  /// `placement` is invalid) with `new_source_view` -- which already
+  /// contains every existing cell/vertex PLUS the newly adopted ones,
+  /// built by `fuse::native::merge_halo_cells` and
+  /// `NativeMeshView::create_from_host` -- and records `pattern` against
+  /// `(source, target, dim)` so `has_remap_halo`/`remap_halo_pattern`
+  /// answer it afterward. `new_source_view == nullptr` means the
+  /// zero-cells-adopted no-op (one rank, no communicator, or source and
+  /// target are the identity): nothing to replace, `pattern` is expected
+  /// to be empty, and only the bookkeeping is recorded.
+  ///
+  /// DEVIATION FROM THE MOAB BACKEND'S OWN POINTER-STABILITY CONTRACT
+  /// (`mesh_view.hpp`'s "the pointer is owned by the backend and stays
+  /// valid until the backend is destroyed or moved from"): `MoabMeshBackend
+  /// ::adopt_remap_halo` grows MOAB's own entity set IN PLACE, so its
+  /// `MeshView*` never changes identity. Growing a `NativeMeshView` in
+  /// place would mean re-deriving its per-cell simplex decomposition,
+  /// centroid and measure by hand for just the new cells -- exactly the
+  /// logic `NativeMeshView::create_from_host` already has, tested, for
+  /// every cell shape this mesh supports. Rebuilding the WHOLE view through
+  /// that one tested path and swapping the stored pointer was judged the
+  /// more robust choice (standing priority: robustness over efficiency),
+  /// at the cost that a caller must not cache a raw `MeshView*` obtained
+  /// before `build_remap_halo` and keep using it afterward -- which
+  /// `remap_plan.hpp`'s own "ORDER MATTERS" discipline (halo before any
+  /// buffer is sized) already requires of every caller. `resolve()`/
+  /// `supermesh_side()` in `intx_weights.cpp` always re-fetch the view by
+  /// `(MeshId, ComponentId)`, never hold one across a halo build, so this
+  /// is safe for every path this library drives itself. Recorded here
+  /// rather than left to be discovered as an undocumented diff.
+  Result<void> commit_remap_halo(MeshId source, ComponentId placement,
+                                 std::unique_ptr<NativeMeshView> new_source_view,
+                                 MeshId target, int dim, fuse::linalg::GhostPattern pattern);
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
   int rank_;
   int num_ranks_;
+  CommHandle communicator_ = kNullComm;
 };
 
 /// The distributed slice of index range `[0, n)` this rank owns, as a

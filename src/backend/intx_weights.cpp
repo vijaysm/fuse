@@ -3,6 +3,7 @@
 #include "fuse/base/config.hpp"
 #include "fuse/backend/consistent_interp.hpp"
 #include "fuse/backend/mls_weights.hpp"
+#include "fuse/backend/native_halo.hpp"
 #include "fuse/backend/remap_plan.hpp"
 #include "fuse/backend/supermesh.hpp"
 
@@ -90,6 +91,13 @@ namespace {
 struct SupermeshSide {
   const MeshView* view = nullptr;
   int dim = 0;
+  // The backend's own MeshId for this side, needed by the native remap
+  // halo's E-REMAP-PARALLEL check below (and by `build_remap_halo`'s
+  // native branch) to ask the backend-specific questions
+  // `fuse::native::NativeMeshBackend` answers beyond the generic
+  // `MeshBackend` interface -- the same reason `resolve()`'s own `Side`
+  // (MOAB's equivalent, above) carries a `mid` field.
+  MeshId mid;
 };
 
 [[nodiscard]] Result<SupermeshSide> supermesh_side(const CouplingGraph& graph,
@@ -124,6 +132,7 @@ struct SupermeshSide {
   if (!view.ok()) return view.error();
   SupermeshSide s;
   s.view = view.value();
+  s.mid = mid.value();
   s.dim = r.dimension >= 0 ? r.dimension : s.view->dimension();
   return s;
 }
@@ -165,6 +174,35 @@ struct SupermeshSide {
                      std::to_string(d.value().dim) +
                      "; a conservative FV remap needs the same dimension on "
                      "both sides"};
+  }
+  // ==========================================================================
+  // THE PARTITIONED CASE, for `fuse::native::NativeMeshBackend` (docs/dev/
+  // native-halo.md). This builder intersects the cells this rank HOLDS --
+  // correct on a partitioned read only once the source mesh carries a remap
+  // halo built by `fuse::native::build_native_remap_halo`, exactly the MOAB
+  // path's own E-REMAP-PARALLEL reasoning (below, in the FUSE_HAVE_MOAB half
+  // of this file) applied to the one other backend that can report more
+  // than one rank. `s.mid.value() == d.mid.value()` is the identity map (the
+  // same region on both sides): every one of the source's cells IS a target
+  // cell already, local by construction, so no halo is ever needed for it.
+  // ==========================================================================
+  if (const auto* native_backend = dynamic_cast<const native::NativeMeshBackend*>(&backend)) {
+    if (native_backend->communicator_size() > 1 && s.value().mid.value() != d.value().mid.value() &&
+        !native_backend->has_remap_halo(s.value().mid, d.value().mid, s.value().dim)) {
+      return Failure{
+          "E-REMAP-PARALLEL",
+          "the native mesh backend reports a communicator of " +
+              std::to_string(native_backend->communicator_size()) +
+              " ranks, so its meshes are partitioned, and no remap halo has been "
+              "built for this source/target pair. The supermesh is built from the "
+              "cells this rank holds; without a halo the source cells that overlap "
+              "this rank's target cells but live on another rank are simply "
+              "absent, and every overlap crossing a partition boundary is dropped. "
+              "Call build_remap_halo(plan, graph, backend) after loading the "
+              "meshes and BEFORE anything sizes a buffer on them (it changes "
+              "entity_count, and so region_size), or read the meshes without a "
+              "communicator and remap redundantly on every rank."};
+    }
   }
   return build_supermesh_weights(*s.value().view, *d.value().view,
                                  s.value().dim);
@@ -217,14 +255,35 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
   return build_weights_via_supermesh(plan, graph, backend);
 }
 
-Result<std::size_t> build_remap_halo(const RemapPlan&, const CouplingGraph&,
-                                     MeshBackend&) {
-  // A successful no-op, not an error: without MOAB there is no partitioned
-  // read to build a halo for, and a caller that makes the call
-  // unconditionally (which the header invites) must not have to branch on
-  // which backends were compiled in. `build_weights` in this build goes
-  // through the always-available supermesh path, which needs no halo: it
-  // works on the cells each rank already holds.
+Result<std::size_t> build_remap_halo(const RemapPlan& plan, const CouplingGraph& graph,
+                                     MeshBackend& backend) {
+  // `fuse::native::NativeMeshBackend` can report more than one rank with no
+  // MOAB at all (docs/dev/native-halo.md), so its own planar/volumetric
+  // covering-set construction must dispatch here too, not only in the
+  // FUSE_HAVE_MOAB half of this file below -- the same dynamic_cast split
+  // `build_weights_via_supermesh` above already uses for its own
+  // E-REMAP-PARALLEL check.
+  if (auto* native_backend = dynamic_cast<native::NativeMeshBackend*>(&backend)) {
+    auto src = supermesh_side(graph, backend, plan.src, plan.placement, "source");
+    if (!src.ok()) return src.error();
+    auto tgt = supermesh_side(graph, backend, plan.tgt, plan.placement, "target");
+    if (!tgt.ok()) return tgt.error();
+    if (src.value().dim != tgt.value().dim) {
+      return Failure{"E-REMAP-DIM",
+                   "the source cells are dimension " + std::to_string(src.value().dim) +
+                       " and the target cells dimension " +
+                       std::to_string(tgt.value().dim) +
+                       "; a halo pairs one with the other and needs the same dimension "
+                       "on both"};
+    }
+    return native::build_native_remap_halo(*native_backend, src.value().mid, tgt.value().mid,
+                                          src.value().dim, plan.placement);
+  }
+  // A successful no-op, not an error: without MOAB there is no OTHER
+  // partitioned read to build a halo for (the native backend's own case is
+  // handled above), and a caller that makes the call unconditionally
+  // (which the header invites) must not have to branch on which backends
+  // were compiled in.
   return std::size_t{0};
 }
 
@@ -1857,6 +1916,28 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan,
                                      const CouplingGraph& graph,
                                      MeshBackend& backend) {
   using namespace remap_detail;  // NOLINT: file-local detail namespace
+
+  // `fuse::native::NativeMeshBackend` dispatches here too (docs/dev/
+  // native-halo.md), BEFORE the MOAB-only rejection below: in a build with
+  // both MOAB and the native backend compiled in, a native mesh pair must
+  // not lose the planar/volumetric halo capability just because this
+  // translation unit also knows how to build a spherical one for MOAB.
+  if (auto* native_backend = dynamic_cast<native::NativeMeshBackend*>(&backend)) {
+    auto src = supermesh_side(graph, backend, plan.src, plan.placement, "source");
+    if (!src.ok()) return src.error();
+    auto tgt = supermesh_side(graph, backend, plan.tgt, plan.placement, "target");
+    if (!tgt.ok()) return tgt.error();
+    if (src.value().dim != tgt.value().dim) {
+      return Failure{"E-REMAP-DIM",
+                   "the source cells are dimension " + std::to_string(src.value().dim) +
+                       " and the target cells dimension " +
+                       std::to_string(tgt.value().dim) +
+                       "; a halo pairs one with the other and needs the same dimension "
+                       "on both"};
+    }
+    return native::build_native_remap_halo(*native_backend, src.value().mid, tgt.value().mid,
+                                          src.value().dim, plan.placement);
+  }
 
   auto* moab_backend = dynamic_cast<MoabMeshBackend*>(&backend);
   if (moab_backend == nullptr) {

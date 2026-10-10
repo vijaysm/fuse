@@ -413,6 +413,12 @@ add_library(fuse-coupler-backend
   backend/native_backend.cpp
   backend/native_mesh_io.cpp
   backend/native_migration.cpp
+  # The planar/volumetric remap halo for NativeMeshBackend (docs/dev/
+  # native-halo.md, "Halo" track). Its own single MPI translation unit for
+  # the box allgather, the same isolation native_migration.cpp uses one
+  # function up; the pack/merge/covering-set pieces are pure and compile
+  # unconditionally.
+  backend/native_halo.cpp
   # Supermesh intersection: the real implementation needs MOAB, and the
   # file's own no-MOAB path refuses with E-REMAP-NOMOAB rather than
   # leaving the symbol undefined. S5 turns the option on.
