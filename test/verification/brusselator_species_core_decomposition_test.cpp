@@ -29,6 +29,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <limits>
 #include <map>
@@ -1107,26 +1108,14 @@ constexpr int kNxVHalo = 12, kNyVHalo = 12;  // example's own 16x16/24x24, at a 
                                              // own 2-rank fixture).
 constexpr int kNyUHalo3 = 12, kNyVHalo3 = 18;  // 8x12 U / 12x18 V: divides evenly by 3 in
                                                // BOTH meshes (zero adopted cells, like the 2-rank
-                                               // case above) -- a genuinely MISALIGNED 3-way split
-                                               // (e.g. 16/24 rows, 6/5/5 vs 8/8/8) WAS tried this
-                                               // session and measurably broke: decomposed.exchange_in
-                                               // diverged from the single-rank reference by ~3e-4
-                                               // (nowhere near round-off) from the very first
-                                               // sub-step onward, and later sub-steps intermittently
-                                               // crashed inside the diffusion solve (an Eigen Block
-                                               // assertion) -- reproducible with EITHER Schur or Pcg,
-                                               // at both this ratio and a 16x16/24x24 square ratio
-                                               // identical to test/backend/native_halo_test.cpp's own
-                                               // PROVEN-correct 3-rank-misaligned fixture, so the
-                                               // defect is specific to VParticipant's OWN use of an
-                                               // adopting halo (step()/remap_state_to_u), not to the
-                                               // halo-construction pipeline those other tests already
-                                               // cover. NOT ROOT-CAUSED in the time available this
-                                               // session -- see the submitted report's open_questions.
-                                               // Kept at the zero-adopt split here so this test keeps
-                                               // proving what IS measured correct (aligned 3-way
-                                               // decomposition through VParticipant) rather than
-                                               // shipping a known-unreliable assertion.
+                                               // case above) -- the ALIGNED 3-way split.
+// KNOWN_ISSUES D29 (CLOSED): the genuinely MISALIGNED 3-way split (16 U rows
+// as 6/5/5 against 24 V rows as 8/8/8, so SOME U cell crosses a V partition
+// boundary) that used to measurably disagree with the single-rank reference
+// -- see VParticipant::make_from_grids's own comment for the measured cause
+// and fix. `ThreePartitionVParticipantMatchesSingleRankMisaligned` below now
+// drives exactly this split end to end.
+constexpr int kNyUMis = 16, kNyVMis = 24;  // 6/5/5 vs 8/8/8 over 3 partitions
 
 }  // namespace
 
@@ -1180,54 +1169,6 @@ TEST(BrusselatorSpeciesCoreDecomposition, TwoPartitionVParticipantMatchesSingleR
   EXPECT_LT(max_abs_diff, 1e-12);
 }
 
-// KNOWN_ISSUES D29: a decomposition whose U and V bands do not cover the
-// same y-range ADOPTS cells in the remap halo (16 rows as 6/5/5 against 24
-// as 8/8/8: the halo test measures 0/16/16 adopted at three ranks), and
-// VParticipant over such a halo measurably disagrees with the single-rank
-// reference. Until that is fixed the configuration must REFUSE on every
-// rank -- agreed through the reducer, since the adopted count differs per
-// rank and a rank that adopted nothing must not walk alone into the first
-// exchange. The aligned case directly above adopts nothing and runs.
-TEST(BrusselatorSpeciesCoreDecomposition, ThreePartitionVParticipantRefusesAnAdoptingHalo) {
-  constexpr int kNyUMis = 16, kNyVMis = 24;  // 6/5/5 vs 8/8/8 over 3 partitions
-  auto ranks = build_decomposed_v_ranks(kNxUHalo, kNyUMis, kNxVHalo, kNyVMis, 3);
-  const BarrierGroup group(3);
-  std::vector<std::string> codes(3);
-  std::vector<std::string> messages(3);
-  auto cores = make_cores_concurrently<VParticipant>(3, [&](int r) -> std::unique_ptr<VParticipant> {
-    auto& rk = ranks[static_cast<std::size_t>(r)];
-    auto made = VParticipant::make_from_grids(std::move(*rk.backend), std::move(rk.u_grid),
-                                              std::move(rk.v_grid), /*diffusion=*/10.0,
-                                              SolverKind::Schur, 1e-12, group.make_reducer(r, 3),
-                                              group.make_exchanger_factory(r, 3));
-    if (!made.ok()) {
-      codes[static_cast<std::size_t>(r)] = made.error().code;
-      messages[static_cast<std::size_t>(r)] = made.error().message;
-    }
-    return nullptr;
-  });
-  for (int r = 0; r < 3; ++r) {
-    EXPECT_EQ(codes[static_cast<std::size_t>(r)], "E-BRUSS-V-REMAP-ADOPTION")
-        << "rank " << r << ": " << messages[static_cast<std::size_t>(r)];
-  }
-  // Every rank adopts SOMETHING here, in at least one direction (measured
-  // on the clean-export run: rank 0 "0 U, 12 V", rank 1 "8 U, 12 V", rank 2
-  // "8 U, 0 V", 40 in all; a draft asserted rank 0 adopts "0 U, 0 V" and it
-  // did not). The reason is rank_slice's shape: the extra rows go
-  // to the FIRST ranks, so rank 0's U band and V band coincide only when
-  // both row counts divide evenly by the rank count -- and then nothing is
-  // adopted anywhere. No reachable decomposition has one rank adopting
-  // nothing while another adopts, which is why the agreement through the
-  // reducer in make_from_grids cannot be given a mutation row that kills it
-  // in this example (the "local count instead of the reduced sum" mutant
-  // passes this test): it is kept as the correct form of a refusal in front
-  // of collectives, with this measured reason recorded instead of a row.
-  for (int r = 0; r < 3; ++r) {
-    std::fprintf(stderr, "[RefusesAnAdoptingHalo] rank %d: %s\n", r,
-                 messages[static_cast<std::size_t>(r)].c_str());
-  }
-}
-
 TEST(BrusselatorSpeciesCoreDecomposition, ThreePartitionVParticipantMatchesSingleRank) {
   NativeMeshBackend ref_backend(0, 1);
   auto reference_r = VParticipant::make(std::move(ref_backend), kNxUHalo, kNyUHalo3, kNxVHalo,
@@ -1269,4 +1210,124 @@ TEST(BrusselatorSpeciesCoreDecomposition, ThreePartitionVParticipantMatchesSingl
   }
   std::fprintf(stderr, "[ThreePartitionVParticipantMatchesSingleRank] max_abs_diff=%.3e\n", max_abs_diff);
   EXPECT_LT(max_abs_diff, 1e-11);
+}
+
+// KNOWN_ISSUES D29 (CLOSED): the genuinely MISALIGNED 3-way split (U's 16
+// rows as 6/5/5 against V's 24 as 8/8/8 -- SOME U cell crosses a V
+// partition boundary, adopting cells in BOTH remap halo directions,
+// measured per-rank at make_from_grids time as rank 0 "0 U, 12 V", rank 1
+// "8 U, 12 V", rank 2 "8 U, 0 V" under FUSE_BRUSS_DEBUG=1). This used to
+// diverge from the single-rank reference by ~3.1e-4 in exchange_in from the
+// first sub-step and later crash inside the diffusion solve (an Eigen
+// Block.h bounds assertion) -- a heap buffer overflow in `step()`/
+// `remap_state_to_u()`, not a halo-construction defect (the pipeline itself
+// is independently proven correct at this split by
+// test/backend/native_halo_test.cpp's own `ThreeRanksMisalignedAdoptsExactly
+// WhatTheOracleComputes`/`ThreeRanksMisalignedCompleteWeightsAndLinearField
+// Reproduction`). See VParticipant::make_from_grids's own comment for the
+// measured cause and fix (size the `apply_weights` destination buffer from
+// the weights' own `n_rows`, not the pre-halo owned count).
+TEST(BrusselatorSpeciesCoreDecomposition, ThreePartitionVParticipantMatchesSingleRankMisaligned) {
+  NativeMeshBackend ref_backend(0, 1);
+  auto reference_r = VParticipant::make(std::move(ref_backend), kNxUHalo, kNyUMis, kNxVHalo,
+                                        kNyVMis, /*diffusion=*/10.0, SolverKind::Direct);
+  ASSERT_TRUE(reference_r.ok()) << reference_r.error().message;
+  VParticipant reference = std::move(reference_r.value());
+
+  auto u_partitioned = make_partitioned_grid("u", kNxUHalo, kNyUMis, 3);
+  auto ranks = build_decomposed_v_ranks(kNxUHalo, kNyUMis, kNxVHalo, kNyVMis, 3);
+
+  const BarrierGroup group(3);
+  auto cores = make_cores_concurrently<VParticipant>(3, [&](int r) {
+    auto& rk = ranks[static_cast<std::size_t>(r)];
+    auto made = VParticipant::make_from_grids(std::move(*rk.backend), std::move(rk.u_grid),
+                                              std::move(rk.v_grid), /*diffusion=*/10.0,
+                                              SolverKind::Schur, 1e-12, group.make_reducer(r, 3),
+                                              group.make_exchanger_factory(r, 3));
+    EXPECT_TRUE(made.ok()) << (made.ok() ? "" : made.error().message);
+    return std::make_unique<VParticipant>(std::move(made.value()));
+  });
+
+  const double dt = 0.003;
+  Vector required = brusselator::initial_condition(/*is_u=*/false, kNxUHalo, kNyUMis);
+
+  double max_abs_diff = 0.0;
+  double exchange_in_single = 0.0;
+  for (int sub = 0; sub < 6; ++sub) {
+    Vector ref_provided(reference.n_u());
+    const auto ref = reference.step(dt, required, &ref_provided);
+    ASSERT_TRUE(ref.ok()) << ref.error().message;
+    exchange_in_single = reference.exchange_in();
+
+    const auto decomposed = step_all_v_partitions(cores, u_partitioned.grids, dt, required);
+    for (int c = 0; c < kNxUHalo * kNyUMis; ++c) {
+      max_abs_diff = std::max(max_abs_diff, std::abs(decomposed.provided[c] - ref_provided[c]));
+    }
+    EXPECT_LT(decomposed.exchange_in_max_disagreement, 1e-9) << "sub-step " << sub;
+    EXPECT_NEAR(decomposed.exchange_in, exchange_in_single, 1e-9) << "sub-step " << sub;
+  }
+  // Measured (this fixture, Schur, 6 sub-steps): 1.732e-14. 1e-11 keeps the
+  // same two-orders-of-magnitude margin the ALIGNED 3-way test above uses
+  // over ITS OWN measured 7.994e-15 (KNOWN_ISSUES D29's "Verified correct ON
+  // AN ALIGNED split" note).
+  std::fprintf(stderr,
+               "[ThreePartitionVParticipantMatchesSingleRankMisaligned] max_abs_diff=%.3e\n",
+               max_abs_diff);
+  EXPECT_LT(max_abs_diff, 1e-11);
+}
+
+// Same misaligned split, the Krylov (Pcg) solver instead of Schur -- the
+// OTHER solver kind KNOWN_ISSUES D29 named as independently reproducing the
+// pre-fix defect (ruling out a single solver's own code being the cause),
+// over 20 sub-steps rather than 6 to rule out any slow growth the original
+// "enters once, from the first sub-step" measurement did not have room to
+// see.
+TEST(BrusselatorSpeciesCoreDecomposition, ThreePartitionVParticipantMatchesSingleRankMisalignedPcg) {
+  NativeMeshBackend ref_backend(0, 1);
+  auto reference_r = VParticipant::make(std::move(ref_backend), kNxUHalo, kNyUMis, kNxVHalo,
+                                        kNyVMis, /*diffusion=*/10.0, SolverKind::Direct);
+  ASSERT_TRUE(reference_r.ok()) << reference_r.error().message;
+  VParticipant reference = std::move(reference_r.value());
+
+  auto u_partitioned = make_partitioned_grid("u", kNxUHalo, kNyUMis, 3);
+  auto ranks = build_decomposed_v_ranks(kNxUHalo, kNyUMis, kNxVHalo, kNyVMis, 3);
+
+  const BarrierGroup group(3);
+  auto cores = make_cores_concurrently<VParticipant>(3, [&](int r) {
+    auto& rk = ranks[static_cast<std::size_t>(r)];
+    auto made = VParticipant::make_from_grids(std::move(*rk.backend), std::move(rk.u_grid),
+                                              std::move(rk.v_grid), /*diffusion=*/10.0,
+                                              SolverKind::Pcg, 1e-13, group.make_reducer(r, 3),
+                                              group.make_exchanger_factory(r, 3));
+    EXPECT_TRUE(made.ok()) << (made.ok() ? "" : made.error().message);
+    return std::make_unique<VParticipant>(std::move(made.value()));
+  });
+
+  const double dt = 0.003;
+  Vector required = brusselator::initial_condition(/*is_u=*/false, kNxUHalo, kNyUMis);
+
+  double max_abs_diff = 0.0;
+  double max_exchange_in_diff = 0.0;
+  for (int sub = 0; sub < 20; ++sub) {
+    Vector ref_provided(reference.n_u());
+    const auto ref = reference.step(dt, required, &ref_provided);
+    ASSERT_TRUE(ref.ok()) << ref.error().message;
+    const double exchange_in_single = reference.exchange_in();
+
+    const auto decomposed = step_all_v_partitions(cores, u_partitioned.grids, dt, required);
+    for (int c = 0; c < kNxUHalo * kNyUMis; ++c) {
+      max_abs_diff = std::max(max_abs_diff, std::abs(decomposed.provided[c] - ref_provided[c]));
+    }
+    max_exchange_in_diff =
+        std::max(max_exchange_in_diff, std::abs(decomposed.exchange_in - exchange_in_single));
+    EXPECT_LT(decomposed.exchange_in_max_disagreement, 1e-9) << "sub-step " << sub;
+  }
+  // Measured (this fixture, Pcg, 20 sub-steps): max_abs_diff=5.262e-14,
+  // max_exchange_in_diff=1.388e-17.
+  std::fprintf(stderr,
+               "[ThreePartitionVParticipantMatchesSingleRankMisalignedPcg] max_abs_diff=%.3e "
+               "max_exchange_in_diff=%.3e\n",
+               max_abs_diff, max_exchange_in_diff);
+  EXPECT_LT(max_abs_diff, 1e-11);
+  EXPECT_LT(max_exchange_in_diff, 1e-9);
 }

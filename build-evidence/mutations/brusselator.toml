@@ -310,11 +310,11 @@ test = "verification.brusselator_species_core_decomposition"
 # submission.
 
 [[mutation]]
-id = "brusselator-vparticipant-adopting-halo-not-refused"
-area = "brusselator"
-describes = "KNOWN_ISSUES D29 guard: VParticipant::make_from_grids must REFUSE a decomposition whose remap halo adopted cells (U and V bands covering different y-ranges), because over such a halo it measurably disagrees with the single-rank reference. Dropping the guard lets the misaligned 6/5/5 vs 8/8/8 split construct and run wrong. The decision is agreed through the reducer; the agreement itself has no killing row for a verified reason recorded in the test (rank_slice gives extra rows to the first ranks, so no reachable split has one rank adopting nothing while another adopts)."
+id = "brusselator-vparticipant-stale-adopted-ghost-not-exchanged"
+area = "examples/brusselator"
+describes = "KNOWN_ISSUES D29 (CLOSED): VParticipant::step() must actually call the U->V remap halo's own GhostExchanger::update() before apply_weights -- skipping it (leaving the adopted/ghost slots at their zero-initialized default instead of the real cross-rank values, the 'exchanger update skipped before apply -> stale adopted values' failure mode named when the fix landed) must be caught by the misaligned decomposition test, not only by the aligned ones (which adopt zero cells and so cannot distinguish a skipped update from a correct one -- every ghost slot is empty either way). Hand-proved 2026-10-10 on the unfiltered test binary: with this mutation applied, ThreePartitionVParticipantMatchesSingleRankMisaligned's max_abs_diff rises from 1.732e-14 to 3.170e-03 and ThreePartitionVParticipantMatchesSingleRankMisalignedPcg's from 5.262e-14 to 8.408e-03, both far past the 1e-11 bound; both FAIL. File restored and verified byte-identical with cmp before submission."
 file = "examples/brusselator/species_core.hpp"
-old = "      if (total_adopted > 0.0) {"
-new = "      if (total_adopted < 0.0) {"
+old = "    auto updated = exchanger_uv_->update(q_native_owned_u.data(), q_native_owned_u.size(),\n                                         q_native_u.data() + q_native_owned_u.size(),\n                                         exchanger_uv_->ghost_size());\n    if (!updated.ok()) return updated.error();"
+new = "    auto updated = fuse::Result<void>::success();\n    if (!updated.ok()) return updated.error();"
 target = "fuse_verification_brusselator_species_core_decomposition_test"
 test = "verification.brusselator_species_core_decomposition"
