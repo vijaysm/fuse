@@ -141,9 +141,21 @@ set_target_properties(fuse-coupler-schedule PROPERTIES
 # One dense least-squares solve behind one declaration, so the acceleration
 # code does not know which factorisation is present. Sits beside `num` rather
 # than under it: `num` calls it, nothing calls `num` from here.
+#
+# "Containers" track: the row-distributed DistVector/DistSparseMatrix pair
+# (comm_serial.cpp is the always-built, one-participant Reducer/
+# GhostExchanger; comm_mpi.cpp is the MPI implementation of the same two
+# facades, added below only under FUSE_ENABLE_MPI, the same conditional
+# fuse::transport uses for its own MPI-only translation units).
 add_library(fuse-coupler-linalg
   linalg/least_squares.cpp
+  linalg/comm_serial.cpp
+  linalg/dist_vector.cpp
+  linalg/dist_sparse_matrix.cpp
 )
+if(FUSE_ENABLE_MPI)
+  target_sources(fuse-coupler-linalg PRIVATE linalg/comm_mpi.cpp)
+endif()
 add_library(fuse::linalg ALIAS fuse-coupler-linalg)
 target_compile_features(fuse-coupler-linalg PUBLIC cxx_std_20)
 target_link_libraries(fuse-coupler-linalg PUBLIC fuse::base)
@@ -151,6 +163,12 @@ target_link_libraries(fuse-coupler-linalg PUBLIC fuse::base)
 # Eigen must not land on a consumer's include path.
 if(FUSE_LINALG_BACKEND STREQUAL "eigen")
   target_link_libraries(fuse-coupler-linalg PRIVATE Eigen3::Eigen)
+endif()
+# PRIVATE: comm_mpi.cpp is the only translation unit in this library that
+# names an MPI type (comm.hpp's own header comment); no public header here
+# includes mpi.h, so a consumer of fuse::linalg never needs this link.
+if(FUSE_ENABLE_MPI)
+  target_link_libraries(fuse-coupler-linalg PRIVATE MPI::MPI_CXX)
 endif()
 set_target_properties(fuse-coupler-linalg PROPERTIES
   EXPORT_NAME linalg
