@@ -3208,6 +3208,30 @@ rank 2, and 24 for one spanning ranks 1 and 2.
 **Not the whole of multi-executable yet.** This clears the exchange plan's inputs; what
 the MPMD rows do beyond it is unmeasured until they run again.
 
+### D26. `FUSE_LINALG_BACKEND=builtin` has not configured since the examples linked Eigen directly
+
+**Measured 2026-10-10 on a clean export of `9d9ab7a`** (before the Krylov and Schur
+solvers landed): `cmake -DFUSE_LINALG_BACKEND=builtin` fails at configure with
+`Target "fuse_verification_fsi_stokes_mms_test" links to: Eigen3::Eigen` (and the same
+for `fsi_beam`, `fsi_coupled`, and every other test or example that names
+`Eigen3::Eigen` directly -- 11 sites in `test/CMakeLists.txt`, 8 in
+`examples/CMakeLists.txt`, each with a comment saying it relies on `eigen` being the
+default). The option still selects the least-squares facade's implementation and is
+reported by `fuse::linalg::configured_backend()`, but the configuration as a whole is
+not buildable, and nothing refused it at the option.
+
+**What the new solvers do about it.** `SchurSlabSolver` needs Eigen's `SimplicialLDLT`
+and dense `LDLT`, so `src/linalg/schur_slab.cpp` is compiled only for the `eigen`
+backend; for `builtin`, `schur_slab_unavailable.cpp` keeps the class and `factor()`
+refuses with `E-LINALG-SCHUR-BACKEND`, so `fuse::linalg` itself still builds without
+Eigen (measured: `--target fuse-coupler-linalg` builds clean under `builtin`). PCG and
+GMRES are header-only and need nothing. Their tests compare against Eigen and link it
+like the examples do.
+
+**Open:** either `builtin` becomes a real configuration again (the Eigen-linked tests and
+examples gated by `if(FUSE_LINALG_BACKEND STREQUAL "eigen")`, with a configure-time
+message listing what is skipped) or the option is retired. Not decided here.
+
 ### ~~D25. A separately launched participant could not run a coupling window~~ — CLOSED 2026-10-09 (host-measured)
 
 **Found by the first MPMD runs that reached `initialize()` (D24 cleared the exchange plan),

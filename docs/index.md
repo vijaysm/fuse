@@ -63,6 +63,8 @@ dev/partitioning
 dev/native-mesh
 dev/search
 dev/linalg-distributed
+dev/linalg-krylov
+dev/schur-slab-solver
 dev/coupling-windows
 dev/nodal-fields
 dev/coupler-placement
