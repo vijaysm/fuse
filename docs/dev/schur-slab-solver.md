@@ -382,7 +382,10 @@ fixed inputs (`nx`/`ny`/`j_lo`/`j_hi`/`coefficient`, and for `solve()`, this
 rank's own already-fixed rhs) -- nothing a warm-up call could leave mutated
 that the real call would see differently.
 `test/parallel/schur_slab_mpi_test.cpp` repeats the 2- and 3-rank
-properties over a REAL `MPI_COMM_WORLD`, compiled here, run on the host.
+properties over a REAL `MPI_COMM_WORLD`, compiled here, run on the host:
+`parallel.schur_slab_mpi.2`/`.3` both passed 2026-10-10 (0.26 s, 0.07 s) --
+the same host run that found the one-row-band collective-stranding defect
+this page's own "HOST-FOUND BUG" section above describes.
 
 ## Measured bounds (round-off, not a discretisation difference)
 

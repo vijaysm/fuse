@@ -153,4 +153,18 @@ reduction -- the three mutation rows in
 `build-evidence/mutations/linalg.toml` -- without any MPI symbol in the
 test binary. `test/parallel/linalg_mpi_test.cpp` repeats the same
 properties over a REAL `MPI_COMM_WORLD`, compiled in a tier-1 build and
-run on the host, never here.
+run on the host, never here: `parallel.linalg_mpi.2` passed on the host
+2026-10-10 (0.40 s).
+
+## `Reducer::allgather`
+
+`Reducer` grew a fourth method after this page was first written:
+`allgather(send, n_each, recv)` concatenates every participant's own
+`send` into `recv`, in rank order — `recv[r*n_each .. (r+1)*n_each)`
+becomes participant `r`'s own `send`, for every `r`. Unlike `sum`/`max`,
+which reduce TO one value, this is the one operation that assembles a
+value every rank must hold IN FULL (the Schur complement a decomposed
+direct solve needs, [](schur-slab-solver.md)) from each rank's own
+contiguous contribution, with no reduction of the values themselves.
+Added for, and used by, `fuse::linalg::SchurSlabSolver` alone as of this
+writing; `DistVector`/`DistSparseMatrix` themselves have no caller for it.
