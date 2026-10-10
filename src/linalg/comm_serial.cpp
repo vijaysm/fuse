@@ -4,6 +4,8 @@
 
 #include "fuse/linalg/comm.hpp"
 
+#include <algorithm>
+
 #include "fuse/base/error.hpp"
 
 namespace fuse::linalg {
@@ -23,6 +25,13 @@ class SerialReducer : public Reducer {
   [[nodiscard]] double max(double local) const override { return local; }
   [[nodiscard]] int rank() const override { return 0; }
   [[nodiscard]] int size() const override { return 1; }
+
+  void allgather(const double* send, std::size_t n_each, double* recv) const override {
+    // One participant: the concatenation over `[0, size())` is this
+    // participant's own `send`, copied once, same as every other
+    // `SerialReducer` operation being its argument's identity.
+    std::copy(send, send + n_each, recv);
+  }
 };
 
 class SerialExchanger : public GhostExchanger {
