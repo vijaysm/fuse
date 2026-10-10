@@ -37,6 +37,8 @@
 #include <Eigen/SparseCore>
 
 #include <cmath>
+#include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <string>
@@ -44,12 +46,73 @@
 #include <vector>
 
 #include "fuse/backend/remap_plan.hpp"
+#include "fuse/base/error.hpp"
 #include "fuse/base/result.hpp"
 #include "fuse/model/coupling_graph.hpp"
+#include "fuse/linalg/dist_sparse_matrix.hpp"
+#include "fuse/linalg/dist_vector.hpp"
+#include "fuse/linalg/gmres.hpp"
+#include "fuse/linalg/pcg.hpp"
+#include "fuse/linalg/preconditioner.hpp"
+#include "fuse/linalg/schur_slab.hpp"
 
 #include "brusselator_physics.hpp"
 
 namespace brusselator {
+
+/// Physics track (closing the Grid track's own solver seam): which
+/// `DiffusionSolver` implementation (below) `UCore`/`VDiffusionCore`
+/// build. `Auto` (the default) resolves to `Direct` at `num_ranks() == 1`
+/// (every goldened single-rank caller: the in-process example, the 3-rank
+/// MPMD row) and to `Schur` at `num_ranks() > 1` -- an exact direct solve
+/// stays the default wherever one is affordable, consistent with this
+/// project's standing rule that robustness and accuracy outweigh
+/// efficiency. `Pcg`/`Gmres` are selectable explicitly (a participant's
+/// own `--solver` flag) at any rank count, including 1 (where they are
+/// exercised against `DirectDiffusionSolver`'s own answer, not only
+/// against each other).
+enum class SolverKind { Auto, Direct, Schur, Pcg, Gmres };
+
+/// Parses a participant's `--solver` flag (or any other string-sourced
+/// solver selection) into a `SolverKind`. Refuses `E-BRUSS-SOLVER-UNKNOWN`
+/// for anything else -- a caller typo in a solver name must be a named,
+/// caught refusal, not a silent fall-through to the default (test fires:
+/// `BrusselatorSpeciesCoreDecomposition.ParseSolverKindRefusesUnknownName`).
+[[nodiscard]] inline fuse::Result<SolverKind> parse_solver_kind(const std::string& s) {
+  if (s == "auto") return SolverKind::Auto;
+  if (s == "direct") return SolverKind::Direct;
+  if (s == "schur") return SolverKind::Schur;
+  if (s == "pcg") return SolverKind::Pcg;
+  if (s == "gmres") return SolverKind::Gmres;
+  return fuse::Failure{"E-BRUSS-SOLVER-UNKNOWN",
+                       "parse_solver_kind: unknown diffusion solver '" + s +
+                           "' (want one of auto|direct|schur|pcg|gmres)"};
+}
+
+/// Builds the `fuse::linalg::GhostExchanger` a `KrylovDiffusionSolver`
+/// (below) needs for its assembled operator's own `DistVector`s, from
+/// THAT operator's own derived `GhostPattern` (`DistSparseMatrix::
+/// ghost_pattern()`, fixed by `from_triplets` from the triplets and row
+/// ownership actually given it -- NOT necessarily in the same ghost ORDER
+/// `NativeGrid::ghost_pattern()` uses for its own below-row-then-above-row
+/// convention, so a caller must build the exchanger from the OPERATOR's
+/// pattern, never the grid's, once the operator exists; see
+/// docs/dev/linalg-distributed.md's "the UNIQUE set of such columns,
+/// sorted ascending by global column" for why the two need not agree).
+/// `fuse::linalg::make_serial_exchanger()` at `num_ranks() == 1` (the
+/// operator's own ghost pattern is then empty: every off-diagonal column
+/// of a periodic 1-rank Laplacian is still this rank's own); the
+/// participants build one from `fuse::linalg::make_mpi_exchanger`
+/// instead; the tier-0 two/three-partition verification test builds an
+/// in-process stand-in from the SAME pattern.
+using GhostExchangerFactory = std::function<std::shared_ptr<const fuse::linalg::GhostExchanger>(
+    const fuse::linalg::GhostPattern&, std::size_t)>;
+
+[[nodiscard]] inline GhostExchangerFactory serial_exchanger_factory() {
+  return [](const fuse::linalg::GhostPattern&, std::size_t) {
+    return fuse::linalg::make_serial_exchanger();
+  };
+}
 
 /// Shared physical parameters, all defaulted to the Toy's own values
 /// (README.md "Model and reference"). Moved here (from
@@ -62,24 +125,48 @@ struct PhysicsConfig {
   double A = 3.4;
   double B = 1.0;
   bool   forcing = true;
+  /// Physics track: which `DiffusionSolver` `UCore` builds (`VDiffusionCore`
+  /// takes its own, separate `SolverKind` argument -- V's diffusion solve
+  /// is independent of U's, species_core.hpp's own file header explains
+  /// why `VDiffusionCore` is a distinct class rather than a second
+  /// `UCore` instance).
+  SolverKind solver = SolverKind::Auto;
+  /// Relative residual tolerance `Pcg`/`Gmres` stop at -- DERIVED:
+  /// `BrusselatorSpeciesCoreDecomposition.DeriveKrylovSolverTolerance`
+  /// (test/verification/brusselator_species_core_decomposition_test.cpp)
+  /// sweeps `rel_tol` from `1e-8` to `1e-13` for both `Pcg` and `Gmres`
+  /// and measures each one's max|difference| against the single-rank
+  /// `Direct` reference over a 2-partition, 2-window run (`--dt-u 0.002`,
+  /// 20 steps) at this example's own defaults. MEASURED (this session,
+  /// this build): `1e-11` -> 3.3e-12 (pcg) / 1.5e-12 (gmres); `1e-12` ->
+  /// 1.4e-13 / 1.4e-13; `1e-13` -> 5.9e-14 / 5.5e-14 -- the SAME order of
+  /// magnitude `TwoPartitionSchurMatchesSingleRankUCore` measures for an
+  /// EXACT row-banded solve against the same reference (2.4e-14, pure
+  /// floating-point summation-order disagreement, no iteration involved
+  /// at all). `1e-13` is the tightest of the swept values whose own cost
+  /// (a handful of extra PCG/GMRES iterations) is still negligible at
+  /// this example's grid sizes, and it is the value that keeps a Krylov
+  /// solve's own disagreement closest to that exact-solve floor rather
+  /// than merely "small" -- this project's standing rule (robustness and
+  /// accuracy over efficiency) favours it over a looser value that would
+  /// also have passed. `Schur` needs no such tolerance (an exact solve,
+  /// bounded only by the same round-off `Direct` already carries).
+  double solver_tolerance = 1e-13;
 };
 
 /// The one thing `UCore`/`VDiffusionCore` need from a linear solve: factor
 /// `(1 + extra_diagonal)*I - dt*diffusion*Laplacian` once per distinct `dt`
 /// (re-using the cached factorisation under the SAME tolerance test both
 /// classes already used before this seam existed) and solve it for a
-/// right-hand side that changes every step. This is the seam the Grid
-/// track leaves for a decomposed (`num_ranks() > 1`) solve -- the
-/// implicit diffusion SOLVE itself is explicitly not this track's work
-/// (brusselator_physics.hpp's own file header names whose it is):
-/// `DirectDiffusionSolver` below, `Eigen::SimplicialLDLT` over the WHOLE
-/// nx*ny grid, is the one implementation today, and the only one valid
-/// at `num_ranks() == 1` (every current caller). A second implementation
-/// -- built on the Containers track's planned `fuse::linalg::
-/// DistSparseMatrix`/`DistVector` and the Solvers track's Schur-
-/// complement solve for the slab-decomposed periodic Laplacian -- plugs
-/// in here once those land; `UCore`/`VDiffusionCore` call through this
-/// interface and would not change.
+/// right-hand side that changes every step. `DirectDiffusionSolver`
+/// below, `Eigen::SimplicialLDLT` over the WHOLE nx*ny grid, is valid
+/// only at `num_ranks() == 1`. `SchurDiffusionSolver` (exact, built on
+/// `fuse::linalg::SchurSlabSolver`) and `KrylovDiffusionSolver` (`Pcg`/
+/// `Gmres`, built on `fuse::linalg::DistSparseMatrix`/`DistVector`) are
+/// the `num_ranks() > 1` implementations of this SAME interface the Grid
+/// track's own seam was left for -- `UCore`/`VDiffusionCore` call
+/// through this interface and do not change per solver kind; only
+/// `make_diffusion_solver` (below) picks which concrete type to build.
 class DiffusionSolver {
  public:
   virtual ~DiffusionSolver() = default;
@@ -136,6 +223,269 @@ class DirectDiffusionSolver final : public DiffusionSolver {
   double factored_step_ = -1.0;
 };
 
+/// `fuse::linalg::SchurSlabSolver` over this rank's own row band -- an
+/// EXACT direct solve of `(1 + extra_diagonal)*I - dt*diffusion*L_h`,
+/// valid at any `num_ranks() >= 1`. `SchurSlabSolver::factor` only knows
+/// the unit-coefficient form `A = I - coefficient*L_h`; the rescaling
+/// below (`scale = 1 + extra_diagonal`, `coefficient = dt*diffusion /
+/// scale`) is exact, not an approximation: `A = scale*I - dt*diffusion*
+/// L_h = scale*(I - coefficient*L_h)`, so solving `A x = rhs` is exactly
+/// `(I - coefficient*L_h) x = rhs/scale` for the SAME `x` -- no further
+/// rescaling of the solution is needed. At `extra_diagonal == 0` (every
+/// `VDiffusionCore` call) `scale == 1` and this is a no-op identity.
+class SchurDiffusionSolver final : public DiffusionSolver {
+ public:
+  SchurDiffusionSolver(int nx, std::int64_t ny, std::int64_t j_lo, std::int64_t j_hi,
+                       fuse::linalg::RowOwnership row_ownership,
+                       std::shared_ptr<const fuse::linalg::Reducer> reducer)
+      : nx_(nx),
+        ny_(ny),
+        j_lo_(j_lo),
+        j_hi_(j_hi),
+        row_ownership_(std::move(row_ownership)),
+        reducer_(std::move(reducer)),
+        owned_n_(static_cast<std::size_t>((j_hi_ - j_lo_) * nx_)),
+        // Schur's own `solve()` needs no ghost communication at all (its
+        // one allgather is internal to `factor()`/`solve()`, never
+        // exposed through `DistVector::update_ghosts()` -- schur_slab.hpp's
+        // own class comment) -- the zero-ghost serial exchanger is the
+        // correct choice regardless of `reducer_`'s own rank count, not a
+        // single-rank special case.
+        exchanger_(fuse::linalg::make_serial_exchanger()) {}
+
+  [[nodiscard]] fuse::Result<void> factor(double dt, double diffusion,
+                                          double extra_diagonal) override {
+    if (!factored_ ||
+        std::abs(dt - factored_dt_) > 32 * std::numeric_limits<double>::epsilon() * std::max(dt, 1.0) ||
+        extra_diagonal != factored_extra_diagonal_) {
+      const double scale = 1.0 + extra_diagonal;
+      const double coefficient = dt * diffusion / scale;
+      auto solved = fuse::linalg::SchurSlabSolver::factor(nx_, ny_, j_lo_, j_hi_, coefficient,
+                                                           row_ownership_, reducer_);
+      if (!solved.ok()) {
+        return fuse::Failure{"E-BRUSS-DIFFUSION-FACTORIZE",
+                             "SchurDiffusionSolver: " + solved.error().code + ": " +
+                                 solved.error().message};
+      }
+      solver_ = std::make_unique<fuse::linalg::SchurSlabSolver>(std::move(solved.value()));
+      scale_ = scale;
+      factored_dt_ = dt;
+      factored_extra_diagonal_ = extra_diagonal;
+      factored_ = true;
+    }
+    return fuse::Result<void>::success();
+  }
+
+  [[nodiscard]] fuse::Result<Vector> solve(const Vector& rhs) override {
+    fuse::linalg::DistVector rhs_dv(owned_n_, exchanger_, reducer_);
+    for (std::size_t k = 0; k < owned_n_; ++k) {
+      rhs_dv.data()[k] = rhs[static_cast<int>(k)] / scale_;
+    }
+    fuse::linalg::DistVector x_dv(owned_n_, exchanger_, reducer_);
+    x_dv.set_zero();
+    const fuse::Result<void> solved = solver_->solve(rhs_dv, x_dv);
+    if (!solved.ok()) {
+      return fuse::Failure{"E-BRUSS-DIFFUSION-SOLVE",
+                           "SchurDiffusionSolver: " + solved.error().code + ": " +
+                               solved.error().message};
+    }
+    Vector out(static_cast<int>(owned_n_));
+    for (std::size_t k = 0; k < owned_n_; ++k) out[static_cast<int>(k)] = x_dv.data()[k];
+    if (!out.allFinite()) {
+      return fuse::Failure{"E-BRUSS-DIFFUSION-SOLVE",
+                           "SchurDiffusionSolver: solve produced a non-finite state"};
+    }
+    return out;
+  }
+
+ private:
+  int nx_;
+  std::int64_t ny_, j_lo_, j_hi_;
+  fuse::linalg::RowOwnership row_ownership_;
+  std::shared_ptr<const fuse::linalg::Reducer> reducer_;
+  std::size_t owned_n_;
+  std::shared_ptr<const fuse::linalg::GhostExchanger> exchanger_;
+  std::unique_ptr<fuse::linalg::SchurSlabSolver> solver_;
+  double scale_ = 1.0;
+  bool factored_ = false;
+  double factored_dt_ = -1.0;
+  double factored_extra_diagonal_ = 0.0;
+};
+
+/// `fuse::linalg::pcg`/`gmres` over a `fuse::linalg::DistSparseMatrix`
+/// assembly of `(1 + extra_diagonal)*I - dt*diffusion*L_h`, row-banded
+/// exactly as `SchurDiffusionSolver` above, with a `JacobiPreconditioner`
+/// (`DistSparseMatrix::diagonal()`, no communication) -- the native,
+/// dependency-free Krylov alternative this track's deliverables name.
+/// Global triplets use the SAME canonical index `j*nx+i` and the SAME
+/// stencil coefficients `periodic_laplacian` builds (brusselator_physics.hpp),
+/// restricted to this rank's own row band `[j_lo, j_hi)`; the off-process
+/// columns (periodic neighbours across a row-band boundary) become the
+/// matrix's own `ghost_pattern()`, NOT `NativeGrid::ghost_pattern()` --
+/// see `GhostExchangerFactory`'s own comment for why a caller must build
+/// its exchanger from the former.
+class KrylovDiffusionSolver final : public DiffusionSolver {
+ public:
+  enum class Algorithm { Pcg, Gmres };
+
+  KrylovDiffusionSolver(Algorithm algo, int nx, std::int64_t ny, std::int64_t j_lo,
+                       std::int64_t j_hi, fuse::linalg::RowOwnership row_ownership,
+                       std::shared_ptr<const fuse::linalg::Reducer> reducer,
+                       GhostExchangerFactory make_exchanger, double rel_tol)
+      : algo_(algo),
+        nx_(nx),
+        ny_(ny),
+        j_lo_(j_lo),
+        j_hi_(j_hi),
+        row_ownership_(std::move(row_ownership)),
+        reducer_(std::move(reducer)),
+        make_exchanger_(std::move(make_exchanger)),
+        owned_n_(static_cast<std::size_t>((j_hi_ - j_lo_) * nx_)),
+        rel_tol_(rel_tol) {}
+
+  [[nodiscard]] fuse::Result<void> factor(double dt, double diffusion,
+                                          double extra_diagonal) override {
+    if (!factored_ ||
+        std::abs(dt - factored_dt_) > 32 * std::numeric_limits<double>::epsilon() * std::max(dt, 1.0) ||
+        extra_diagonal != factored_extra_diagonal_) {
+      const double scale = 1.0 + extra_diagonal;
+      const double xx = static_cast<double>(nx_) * nx_;
+      const double yy = static_cast<double>(ny_) * ny_;
+      const std::int64_t global_n = static_cast<std::int64_t>(nx_) * ny_;
+      const auto index = [this](std::int64_t i, std::int64_t j) { return j * nx_ + i; };
+      std::vector<fuse::linalg::Triplet> triplets;
+      triplets.reserve(owned_n_ * 5);
+      for (std::int64_t j = j_lo_; j < j_hi_; ++j) {
+        for (std::int64_t i = 0; i < nx_; ++i) {
+          const std::int64_t row = index(i, j);
+          triplets.push_back({row, row, scale + dt * diffusion * 2.0 * (xx + yy)});
+          triplets.push_back({row, index((i + 1) % nx_, j), -dt * diffusion * xx});
+          triplets.push_back({row, index((i + nx_ - 1) % nx_, j), -dt * diffusion * xx});
+          triplets.push_back({row, index(i, (j + 1) % ny_), -dt * diffusion * yy});
+          triplets.push_back({row, index(i, (j + ny_ - 1) % ny_), -dt * diffusion * yy});
+        }
+      }
+      auto built = fuse::linalg::DistSparseMatrix::from_triplets(
+          j_lo_ * nx_, j_hi_ * nx_, global_n, triplets, reducer_, row_ownership_);
+      if (!built.ok()) {
+        return fuse::Failure{"E-BRUSS-DIFFUSION-FACTORIZE",
+                             "KrylovDiffusionSolver: " + built.error().code + ": " +
+                                 built.error().message};
+      }
+      matrix_ = std::make_unique<fuse::linalg::DistSparseMatrix>(std::move(built.value()));
+      exchanger_ = make_exchanger_(matrix_->ghost_pattern(), owned_n_);
+      auto jac = fuse::linalg::JacobiPreconditioner::from_matrix(*matrix_);
+      if (!jac.ok()) {
+        return fuse::Failure{"E-BRUSS-DIFFUSION-FACTORIZE",
+                             "KrylovDiffusionSolver: " + jac.error().code + ": " +
+                                 jac.error().message};
+      }
+      precond_ = std::make_unique<fuse::linalg::JacobiPreconditioner>(std::move(jac.value()));
+      factored_dt_ = dt;
+      factored_extra_diagonal_ = extra_diagonal;
+      factored_ = true;
+    }
+    return fuse::Result<void>::success();
+  }
+
+  [[nodiscard]] fuse::Result<Vector> solve(const Vector& rhs) override {
+    fuse::linalg::DistVector b(owned_n_, exchanger_, reducer_);
+    for (std::size_t k = 0; k < owned_n_; ++k) b.data()[k] = rhs[static_cast<int>(k)];
+    fuse::linalg::DistVector x(owned_n_, exchanger_, reducer_);
+    x.set_zero();
+
+    fuse::Result<fuse::linalg::SolverReport> rep{fuse::linalg::SolverReport{}};
+    if (algo_ == Algorithm::Pcg) {
+      fuse::linalg::PcgOptions opt;
+      opt.rel_tol = rel_tol_;
+      rep = fuse::linalg::pcg(*matrix_, *precond_, x, b, opt);
+    } else {
+      fuse::linalg::GmresOptions opt;
+      opt.rel_tol = rel_tol_;
+      rep = fuse::linalg::gmres(*matrix_, *precond_, x, b, opt);
+    }
+    if (!rep.ok()) {
+      return fuse::Failure{"E-BRUSS-DIFFUSION-SOLVE",
+                           "KrylovDiffusionSolver: " + rep.error().code + ": " +
+                               rep.error().message};
+    }
+    Vector out(static_cast<int>(owned_n_));
+    for (std::size_t k = 0; k < owned_n_; ++k) out[static_cast<int>(k)] = x.data()[k];
+    if (!out.allFinite()) {
+      return fuse::Failure{"E-BRUSS-DIFFUSION-SOLVE",
+                           "KrylovDiffusionSolver: solve produced a non-finite state"};
+    }
+    return out;
+  }
+
+ private:
+  Algorithm algo_;
+  int nx_;
+  std::int64_t ny_, j_lo_, j_hi_;
+  fuse::linalg::RowOwnership row_ownership_;
+  std::shared_ptr<const fuse::linalg::Reducer> reducer_;
+  GhostExchangerFactory make_exchanger_;
+  std::size_t owned_n_;
+  double rel_tol_;
+  std::unique_ptr<fuse::linalg::DistSparseMatrix> matrix_;
+  std::shared_ptr<const fuse::linalg::GhostExchanger> exchanger_;
+  std::unique_ptr<fuse::linalg::JacobiPreconditioner> precond_;
+  bool factored_ = false;
+  double factored_dt_ = -1.0;
+  double factored_extra_diagonal_ = 0.0;
+};
+
+/// Picks and builds the `DiffusionSolver` implementation `kind` names,
+/// resolving `SolverKind::Auto` by `num_ranks()` (this enum's own doc
+/// comment). `grid` is read only at construction (row band, ownership,
+/// `nx`/`ny`); nothing here keeps a reference to it.
+///
+/// Throws `fuse::InvalidArgument` (a caller-configuration mistake, not a
+/// data-dependent failure -- the same split `reaction_kokkos`'s own size
+/// check draws) for `SolverKind::Direct` requested explicitly at
+/// `num_ranks() > 1`: `DirectDiffusionSolver` is a whole-grid factorisation
+/// that cannot be correct over a row band alone, so this is refused at
+/// construction rather than left to fail confusingly deep inside a solve
+/// (test fires: `BrusselatorSpeciesCoreDecomposition.
+/// DirectSolverRefusesWhenDecomposed`).
+[[nodiscard]] inline std::unique_ptr<DiffusionSolver> make_diffusion_solver(
+    const NativeGrid& grid, SolverKind kind, double rel_tol,
+    std::shared_ptr<const fuse::linalg::Reducer> reducer,
+    const GhostExchangerFactory& make_exchanger) {
+  SolverKind resolved = kind;
+  if (resolved == SolverKind::Auto) {
+    resolved = grid.num_ranks() == 1 ? SolverKind::Direct : SolverKind::Schur;
+  }
+  switch (resolved) {
+    case SolverKind::Direct:
+      if (grid.num_ranks() != 1) {
+        FUSE_THROW(fuse::InvalidArgument, "{}",
+                  std::string("make_diffusion_solver: SolverKind::Direct requires num_ranks()==1, "
+                              "got ") +
+                      std::to_string(grid.num_ranks()) +
+                      " (E-BRUSS-DIFFUSION-DIRECT-DECOMPOSED)");
+      }
+      return std::make_unique<DirectDiffusionSolver>(periodic_laplacian(grid.nx(), grid.ny()));
+    case SolverKind::Schur:
+      // SchurSlabSolver reinterprets fuse::linalg::RowOwnership over ny()
+      // GRID rows, not nx()*ny() cells -- row_ownership_by_grid_row(),
+      // not row_ownership() (that one is for DistSparseMatrix, below).
+      return std::make_unique<SchurDiffusionSolver>(
+          grid.nx(), grid.ny(), grid.j_lo(), grid.j_hi(), grid.row_ownership_by_grid_row(), reducer);
+    case SolverKind::Pcg:
+      return std::make_unique<KrylovDiffusionSolver>(
+          KrylovDiffusionSolver::Algorithm::Pcg, grid.nx(), grid.ny(), grid.j_lo(), grid.j_hi(),
+          grid.row_ownership(), reducer, make_exchanger, rel_tol);
+    case SolverKind::Gmres:
+      return std::make_unique<KrylovDiffusionSolver>(
+          KrylovDiffusionSolver::Algorithm::Gmres, grid.nx(), grid.ny(), grid.j_lo(), grid.j_hi(),
+          grid.row_ownership(), reducer, make_exchanger, rel_tol);
+    case SolverKind::Auto:
+      break;  // unreachable: resolved above
+  }
+  FUSE_THROW(fuse::InvalidArgument, "{}", std::string("make_diffusion_solver: unresolved SolverKind"));
+}
+
 /// U_t = a*Lap(U) + B - U + q + f, extracted verbatim from
 /// UComponent::advance() (species_component.hpp's own file header has
 /// the full derivation and the measured conservation consequence of the
@@ -145,13 +495,30 @@ class DirectDiffusionSolver final : public DiffusionSolver {
 /// machinery linked in at all.
 class UCore {
  public:
-  UCore(int nx, int ny, PhysicsConfig cfg, Vector initial_v_on_u)
-      : n_(nx * ny),
+  /// `grid`: U's own `NativeGrid` (possibly decomposed over
+  /// `grid.num_ranks()` ranks -- every vector below is sized
+  /// `grid.owned_size()`, THIS rank's own row band, not `grid.size()`;
+  /// at `num_ranks() == 1` the two are equal and every computation below
+  /// is byte-identical to before this constructor took a grid rather than
+  /// a bare `nx, ny` pair). `reducer`/`make_exchanger` default to the
+  /// one-rank, zero-ghost pair (`fuse::linalg::make_serial_reducer()`/
+  /// `serial_exchanger_factory()`) -- the only choice that is ever valid
+  /// at `num_ranks() == 1` (every in-process caller: `UComponent`, the
+  /// 3-rank MPMD row's own single-rank "U"); a decomposed participant
+  /// (examples/brusselator/participants) supplies real ones.
+  UCore(const NativeGrid& grid, PhysicsConfig cfg, Vector initial_v_on_u,
+        std::shared_ptr<const fuse::linalg::Reducer> reducer = nullptr,
+        GhostExchangerFactory make_exchanger = nullptr)
+      : n_(grid.owned_size()),
+        global_n_(grid.size()),
         cfg_(cfg),
-        solver_(std::make_unique<DirectDiffusionSolver>(periodic_laplacian(nx, ny))),
-        mask_(forcing_mask(nx, ny)),
-        mask_mean_(mask_.mean()),
-        state_(initial_condition(/*is_u=*/true, nx, ny)),
+        reducer_(reducer ? std::move(reducer) : fuse::linalg::make_serial_reducer()),
+        solver_(make_diffusion_solver(grid, cfg.solver, cfg.solver_tolerance, reducer_,
+                                      make_exchanger ? make_exchanger : serial_exchanger_factory())),
+        mask_(forcing_mask_owned(grid.nx(), grid.ny(), grid.j_lo(), grid.owned_rows())),
+        mask_mean_(global_mean(mask_)),
+        state_(initial_condition_owned(/*is_u=*/true, grid.nx(), grid.ny(), grid.j_lo(),
+                                       grid.owned_rows())),
         required_(std::move(initial_v_on_u)),
         provided_(n_),
         q_prev_(n_),
@@ -228,8 +595,22 @@ class UCore {
       next = std::move(solved.value());
       Vector q_next(n_);
       reaction_kokkos(next, required_, &q_next);
-      const double change = (q_next - q_new).lpNorm<Eigen::Infinity>();
-      const double scale = 1.0 + q_next.lpNorm<Eigen::Infinity>();
+      // GLOBAL, not this rank's own partial: a decomposed solve() (Schur,
+      // Pcg, Gmres) is COLLECTIVE, so every rank must take the SAME
+      // branch below and therefore call solve() the SAME number of times
+      // -- a per-rank LOCAL `change`/`scale` could let one rank's own
+      // owned band converge a step early and stop calling solve() while
+      // its peers keep going, stranding them inside the next collective
+      // (the same hazard this track's own standing lesson names for a
+      // refusal; this is the fixed-point loop's own instance of it). Two
+      // `Reducer::max` calls over the SAME `fuse::linalg::Reducer` every
+      // rank's `solve()` already shares make every rank's own `change`/
+      // `scale` IDENTICAL, so the `break` below fires on the same `k`
+      // everywhere. At `num_ranks()==1` (`make_serial_reducer()`),
+      // `max(local)` returns `local` unchanged, so this is byte-identical
+      // to the local `lpNorm<Eigen::Infinity>()` this replaced.
+      const double change = reducer_->max((q_next - q_new).lpNorm<Eigen::Infinity>());
+      const double scale = reducer_->max(1.0 + q_next.lpNorm<Eigen::Infinity>());
       q_new = std::move(q_next);
       if (change <= kReactionTolerance * scale) { converged = true; break; }
     }
@@ -241,8 +622,8 @@ class UCore {
                                std::to_string(t_begin) + ", " + std::to_string(t_end) + "]"};
     }
     state_ = std::move(next);
-    external_total_ += dt * cfg_.B - dt * state_.mean() + active * mask_mean_;
-    exchange_out_ += 0.5 * dt * (q_prev_.mean() + q_new.mean());
+    external_total_ += dt * cfg_.B - dt * global_mean(state_) + active * mask_mean_;
+    exchange_out_ += 0.5 * dt * (global_mean(q_prev_) + global_mean(q_new));
     provided_ = q_new;
     q_prev_ = std::move(q_new);
     return fuse::Result<void>::success();
@@ -261,6 +642,12 @@ class UCore {
     q_prev_ = saved_q_prev_;
   }
 
+  /// This rank's own OWNED count (`grid.owned_size()` at construction) --
+  /// equals the grid's GLOBAL cell count at `num_ranks()==1`, every
+  /// existing (undecomposed) caller's own reading of `n()`. `required`/
+  /// `provided`/`state` are all this size, not the global one; see
+  /// `global_mean()` for how a GLOBAL quantity (every diagnostic
+  /// accumulator) is computed from them regardless.
   [[nodiscard]] int n() const { return n_; }
   [[nodiscard]] const Vector& state() const { return state_; }
   [[nodiscard]] const Vector& provided() const { return provided_; }
@@ -271,8 +658,22 @@ class UCore {
   static constexpr double kReactionTolerance = 1e-13;
   static constexpr int    kMaxReactionIterations = 50;
 
+  /// This rank's own owned partial sum of `owned`, reduced across every
+  /// rank of `reducer_` and divided by the GLOBAL cell count `global_n_`
+  /// -- never by `owned.size()`, which would silently report each rank's
+  /// own share as if it were the whole mean (the same requirement
+  /// `SlabField::owned_mean`, brusselator_physics.hpp, states for the
+  /// explicit-quantity kernels). At `num_ranks()==1`, `global_n_==n_` and
+  /// `reducer_->sum(local)==local`, so this equals `owned.mean()` bit for
+  /// bit (`Eigen::VectorXd::mean()` is itself `sum()/size()`).
+  [[nodiscard]] double global_mean(const Vector& owned) const {
+    return reducer_->sum(owned.sum()) / static_cast<double>(global_n_);
+  }
+
   int n_;
+  int global_n_;
   PhysicsConfig cfg_;
+  std::shared_ptr<const fuse::linalg::Reducer> reducer_;
   std::unique_ptr<DiffusionSolver> solver_;
   Vector mask_;
   double mask_mean_;
@@ -288,10 +689,25 @@ class UCore {
 /// explains why the remap half is deliberately NOT here.
 class VDiffusionCore {
  public:
-  VDiffusionCore(int nx, int ny, double diffusion, Vector initial_state)
-      : n_(nx * ny), diffusion_(diffusion),
-        solver_(std::make_unique<DirectDiffusionSolver>(periodic_laplacian(nx, ny))),
-        state_(std::move(initial_state)), saved_state_(n_) {}
+  /// `grid`: V's own `NativeGrid` (possibly decomposed, mirroring
+  /// `UCore`'s own constructor comment above). `solver`/`solver_tolerance`
+  /// select the `DiffusionSolver` the same way `PhysicsConfig::solver`/
+  /// `solver_tolerance` do for `UCore` -- a SEPARATE choice from U's own
+  /// (species_core.hpp's own file header explains why V's diffusion
+  /// solve is independent of U's).
+  VDiffusionCore(const NativeGrid& grid, double diffusion, SolverKind solver = SolverKind::Auto,
+                double solver_tolerance = 1e-13,
+                std::shared_ptr<const fuse::linalg::Reducer> reducer = nullptr,
+                GhostExchangerFactory make_exchanger = nullptr)
+      : n_(grid.owned_size()),
+        global_n_(grid.size()),
+        diffusion_(diffusion),
+        reducer_(reducer ? std::move(reducer) : fuse::linalg::make_serial_reducer()),
+        solver_(make_diffusion_solver(grid, solver, solver_tolerance, reducer_,
+                                      make_exchanger ? make_exchanger : serial_exchanger_factory())),
+        state_(initial_condition_owned(/*is_u=*/false, grid.nx(), grid.ny(), grid.j_lo(),
+                                       grid.owned_rows())),
+        saved_state_(n_) {}
 
   /// `q_on_v`: the reaction rate mean over this step, ALREADY on this
   /// grid (size n()). On success, `state()` is valid at t_end = t_begin+dt.
@@ -308,7 +724,7 @@ class VDiffusionCore {
                            "VDiffusionCore: diffusion solve failed or produced a non-finite state"};
     }
     state_ = std::move(solved.value());
-    exchange_in_ += dt * q_on_v.mean();
+    exchange_in_ += dt * global_mean(q_on_v);
     return fuse::Result<void>::success();
   }
 
@@ -326,8 +742,16 @@ class VDiffusionCore {
   [[nodiscard]] double exchange_in() const { return exchange_in_; }
 
  private:
+  /// See `UCore::global_mean`'s own comment -- identical reasoning, a
+  /// separate copy because `VDiffusionCore` has no dependency on `UCore`.
+  [[nodiscard]] double global_mean(const Vector& owned) const {
+    return reducer_->sum(owned.sum()) / static_cast<double>(global_n_);
+  }
+
   int n_;
+  int global_n_;
   double diffusion_;
+  std::shared_ptr<const fuse::linalg::Reducer> reducer_;
   std::unique_ptr<DiffusionSolver> solver_;
   Vector state_, saved_state_;
   double exchange_in_ = 0.0, saved_exchange_in_ = 0.0;
@@ -356,9 +780,40 @@ class VParticipant {
   VParticipant(VParticipant&&) = default;
   VParticipant& operator=(VParticipant&&) = default;
 
+  /// `rank`/`num_ranks`: V's own component placement -- defaulted to
+  /// `(0, 1)` for every EXISTING caller (the in-process example never
+  /// decomposes V). `num_ranks > 1` is refused immediately
+  /// (`E-BRUSS-V-DECOMPOSED-REMAP`), before any mesh or weight work: this
+  /// class's own two-sided remap (`step()`'s `apply_weights` calls, both
+  /// directions) is hand-built over a SINGLE-rank V grid -- it reads
+  /// `v_grid_`'s FULL native-order storage directly (`to_native`/
+  /// `to_canonical`, `n_v_` entries), which does not exist as a single
+  /// contiguous buffer once V's own grid is split into per-rank row
+  /// bands. Routing this remap through FUSE's distributed weights (the
+  /// backend's own `placed_view`s and the exchange plan over V's
+  /// communicator, not a local `apply_weights` call) is a DIFFERENT
+  /// track's own work (see this delegation's own task statement); this
+  /// refusal is what lets a decomposed V participant fail loudly at
+  /// `VParticipant::make()` instead of silently computing a wrong remap
+  /// from a `NativeGrid` built at `num_ranks() > 1` that this class was
+  /// never updated to read correctly. Test fires:
+  /// `BrusselatorSpeciesCoreDecomposition.
+  /// VParticipantRefusesDecomposedVRanks`.
   [[nodiscard]] static fuse::Result<VParticipant> make(int nx_u, int ny_u, int nx_v, int ny_v,
-                                                        double diffusion) {
-    fuse::native::NativeMeshBackend backend(/*rank=*/0, /*num_ranks=*/1);
+                                                        double diffusion, int rank = 0,
+                                                        int num_ranks = 1,
+                                                        SolverKind solver = SolverKind::Auto,
+                                                        double solver_tolerance = 1e-13) {
+    if (num_ranks > 1) {
+      return fuse::Failure{
+          "E-BRUSS-V-DECOMPOSED-REMAP",
+          "VParticipant::make: V's own two-sided remap (apply_weights, both directions) is "
+          "hand-built over a single-rank V grid and does not yet route through FUSE's "
+          "distributed remap weights -- num_ranks=" + std::to_string(num_ranks) +
+              " requested; a separate track (routing V's remap through distributed weights) "
+              "removes this refusal"};
+    }
+    fuse::native::NativeMeshBackend backend(rank, num_ranks);
     auto u_grid_r = NativeGrid::make(backend, "u", nx_u, ny_u);
     if (!u_grid_r.ok()) return u_grid_r.error();
     auto v_grid_r = NativeGrid::make(backend, "v", nx_v, ny_v);
@@ -386,8 +841,8 @@ class VParticipant {
     if (!w_uv.ok()) return w_uv.error();
 
     return VParticipant(std::move(backend), std::move(u_grid_r.value()),
-                        std::move(v_grid_r.value()), diffusion, std::move(w_vu.value()),
-                        std::move(w_uv.value()));
+                        std::move(v_grid_r.value()), diffusion, solver, solver_tolerance,
+                        std::move(w_vu.value()), std::move(w_uv.value()));
   }
 
   /// `required`: the raw q mean this step, on the U grid (unremapped),
@@ -435,7 +890,8 @@ class VParticipant {
 
  private:
   VParticipant(fuse::native::NativeMeshBackend backend, NativeGrid u_grid, NativeGrid v_grid,
-              double diffusion, fuse::RemapWeights weights_vu, fuse::RemapWeights weights_uv)
+              double diffusion, SolverKind solver, double solver_tolerance,
+              fuse::RemapWeights weights_vu, fuse::RemapWeights weights_uv)
       : backend_(std::move(backend)),
         u_grid_(std::move(u_grid)),
         v_grid_(std::move(v_grid)),
@@ -452,9 +908,7 @@ class VParticipant {
         // constructs the handle's VParticipant from VParticipant::make()'s
         // return, and a second, independent reason to keep the indirection
         // was not worth removing for its own sake in this change.
-        core_(std::make_unique<VDiffusionCore>(
-            v_grid_.nx(), v_grid_.ny(), diffusion,
-            initial_condition(/*is_u=*/false, v_grid_.nx(), v_grid_.ny()))),
+        core_(std::make_unique<VDiffusionCore>(v_grid_, diffusion, solver, solver_tolerance)),
         weights_vu_(std::move(weights_vu)),
         weights_uv_(std::move(weights_uv)) {}
 
