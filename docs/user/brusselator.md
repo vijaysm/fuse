@@ -153,9 +153,13 @@ per-cell, no-cross-talk kernel Kokkos exists for.
 
 ## Grid decomposition over the component's own ranks
 
-The mesh and the explicit (no linear solve) physics are decomposed over
-however many ranks U or V's own component runs on; the implicit diffusion
-SOLVE is a different track's own work (below) and is not decomposed here.
+The mesh, the explicit (no linear solve) physics, AND (since the species-core
+solver work below) the implicit diffusion solve are all decomposed over
+however many ranks U's own component runs on. V's own grid/physics/solver
+follow the identical path, but `VParticipant::make` refuses outright whenever
+asked for `num_ranks() > 1` (`E-BRUSS-V-DECOMPOSED-REMAP`): V's two-sided
+remap is not yet routed through FUSE's distributed weights, a separate
+track's own work, and that is the one piece left open here.
 
 **The mesh.** `NativeGrid::make` loads its backend at
 `backend.rank()`/`backend.num_ranks()`. `fuse::native::NativeMeshBackend`
@@ -175,25 +179,26 @@ output was checked directly, not assumed -- see "Byte-identical at
 `num_ranks() == 1`" below.
 
 **The halo.** One periodic row above and below this rank's own band is
-exposed as `NativeGrid::ghost_pattern()`, shaped identically to FUSE's
-planned `fuse::linalg::GhostPattern` (the Containers track's own
-distributed-vector interface): one `owner_rank`/`remote_local_index` pair
-per ghost cell, in a fixed order (the below row's `nx` cells, then the
+exposed as `NativeGrid::ghost_pattern()`, returning FUSE's own
+`fuse::linalg::GhostPattern` (the Containers track's own distributed-vector
+interface) directly -- `brusselator_physics.hpp`'s own `GridGhostPattern` is
+a type alias for it, not a lookalike: one `owner_rank`/`remote_local_index`
+pair per ghost cell, in a fixed order (the below row's `nx` cells, then the
 above row's). Every row band is contiguous, so the row below this band is
 always the LAST row of whichever rank owns it, and the row above is always
 the FIRST row of whichever rank owns it (itself, wrapping, at
 `num_ranks() == 1`) -- which is why the pattern needs no communication to
 build. `SlabField` holds a component's own state as one contiguous buffer,
-owned block then ghost block (the same layout the planned
-`fuse::linalg::DistVector` uses), and refreshes its ghosts through an
-injected `GridHaloExchanger` (`update(owned, owned_n, ghosts, ghost_n)`,
-shaped identically to the planned `fuse::linalg::GhostExchanger::update`)
--- a same-buffer gather at `num_ranks() == 1` (`SelfHaloExchanger`), an
-in-process two-buffer copy in the tier-0 two-partition test, and real
-`MPI_Sendrecv` in the tier-1 test (`test/parallel/
-brusselator_grid_mpi_test.cpp`, built, not run in this sandbox -- MPI
-cannot start here). No MPI header appears in any example header this
-track touched; the layering gate (`tools/check-layering.py`) enforces it.
+owned block then ghost block (the same layout `fuse::linalg::DistVector`
+uses), and refreshes its ghosts through an injected `GridHaloExchanger`
+(`update(owned, owned_n, ghosts, ghost_n)`) -- an alias for
+`fuse::linalg::GhostExchanger` itself: a same-buffer gather at
+`num_ranks() == 1` (`fuse::linalg::make_serial_exchanger()`), an in-process
+two-buffer copy in the tier-0 two-partition test, and real `MPI_Sendrecv` in
+the tier-1 test (`test/parallel/brusselator_grid_mpi_test.cpp`, built, not
+run in this sandbox -- MPI cannot start here). No MPI header appears in any
+example header this track touched; the layering gate
+(`tools/check-layering.py`) enforces it.
 
 **The explicit parts.** Reaction (`reaction_kokkos_span`, the same
 `Kokkos::parallel_for` `reaction_kokkos` already ran, now addressable by
@@ -201,28 +206,40 @@ raw pointer and size so it runs equally over a whole canonical vector or
 over just a `SlabField`'s owned block), the forcing mask and the initial
 condition (`forcing_mask_owned`/`initial_condition_owned`, the same
 per-row formula restricted to `[j_lo, j_lo+owned_rows)`) and every mean
-(`SlabField::owned_mean`) are each an owned-cells computation; the mean is
-specifically an owned PARTIAL sum reduced across the component's own
-communicator through an injected `GridReducer` (`sum`/`max`/`rank`/`size`,
-shaped identically to the planned `fuse::linalg::Reducer`) -- never a
-locally-reduced count divided into a local sum, which would silently
-report each rank's own share as if it were the global value. None of these
-three needs a ghost value: the reaction is pointwise and the forcing mask
-and initial condition have no stencil, so the halo exists for the SOLVE
-seam below, not for these.
+(`SlabField::owned_mean`, and `UCore`/`VDiffusionCore`'s own `global_mean()`
+helper) are each an owned-cells computation; the mean is specifically an
+owned PARTIAL sum reduced across the component's own communicator through
+an injected `GridReducer` (`sum`/`max`/`rank`/`size`/`allgather` -- an
+alias for `fuse::linalg::Reducer` itself) -- never a locally-reduced count
+divided into a local sum, which would silently report each rank's own share
+as if it were the global value. The forcing mask and initial condition need
+no ghost value (no stencil); the reaction is pointwise over OWNED cells only
+-- it is the solver seam below that needs both the halo and the reduction.
 
-**The solver seam.** `UCore`/`VDiffusionCore` (species_core.hpp) now call a
-small `DiffusionSolver` interface (`factor`/`solve`) rather than running
-`Eigen::SimplicialLDLT` inline; `DirectDiffusionSolver` -- the same
-factor/solve bodies, moved rather than rewritten -- is the one
-implementation today, valid only at `num_ranks() == 1` (every current
-caller). A `num_ranks() > 1` implementation, built on the Containers
-track's planned `fuse::linalg::DistSparseMatrix`/`DistVector` and the
-Solvers track's Schur-complement solve for the slab-decomposed backward-
-Euler periodic Laplacian, is a second implementation of this SAME
-interface once those land; `UCore`/`VDiffusionCore` would not change.
-This is the one piece of this example's numerics the Grid track does not
-decompose -- recorded as the open seam, not papered over.
+**The solver seam (closed).** `UCore`/`VDiffusionCore` (species_core.hpp)
+call a small `DiffusionSolver` interface (`factor`/`solve`) rather than
+running `Eigen::SimplicialLDLT` inline, selected per `PhysicsConfig::solver`
+(`SolverKind::Auto`/`Direct`/`Schur`/`Pcg`/`Gmres`, `--solver` on
+`u_main.c`/`v_main.f90`): `DirectDiffusionSolver` -- the original
+factor/solve bodies, moved rather than rewritten -- remains valid only at
+`num_ranks() == 1` and refuses otherwise (`E-BRUSS-DIFFUSION-DIRECT-
+DECOMPOSED`); `SchurDiffusionSolver` wraps the Solvers track's
+`fuse::linalg::SchurSlabSolver` (the slab-decomposed backward-Euler periodic
+Laplacian's own Schur-complement solve); `KrylovDiffusionSolver` assembles
+the same operator as a `fuse::linalg::DistSparseMatrix` (global 5-point-
+stencil triplets restricted to this rank's own row band) and solves it with
+`fuse::linalg::pcg`/`gmres` under a `JacobiPreconditioner`. `SolverKind::Auto`
+resolves to `Direct` at `num_ranks() == 1` and `Schur` otherwise, so every
+existing single-rank caller is unaffected. `UCore`/`VDiffusionCore`'s own
+constructors take the grid's own `NativeGrid` (not bare `nx`/`ny`) plus an
+injected `Reducer` and `GhostExchangerFactory`, since `UCore`'s own reaction
+fixed-point loop decides convergence from a `reducer_->max()` over the
+WHOLE component (never a per-rank norm) -- the diffusion solve underneath is
+collective, so a rank that decided convergence from local data alone could
+strand its peers in the next collective call. See "Species-core solver
+decomposition" under "Measured results" below for the agreement numbers
+that close this seam; what is NOT yet decomposed (V's own two-sided remap)
+is noted above, at the top of this section.
 
 **Byte-identical at `num_ranks() == 1`.** Checked directly: the unmodified
 and the decomposition-carrying trees were each built into a fresh
@@ -272,6 +289,40 @@ Both directions also verified: `P·1 = 1` and `area_target^T·P = area_source^T`
 (the two Toy `Transfer` invariants), applying the map to a constant field
 reproduces the constant, and the same holds on the Toy's own "nonmatching"
 pair (U 17x13, V 11x19).
+
+### Species-core solver decomposition (`verification.brusselator_species_core_decomposition`)
+
+Measured in-process against a `num_ranks() == 1` `DirectDiffusionSolver`
+reference, on `UCore`/`VDiffusionCore` instances built one per partition and
+stepped concurrently (one `std::thread` per rank; `UCore`'s own constructor
+and reaction loop each issue a collective, so a sequential build/step would
+deadlock -- the test's own thread-barrier `BarrierReducer`/
+`BarrierGhostExchanger` reproduce an N-way `fuse::linalg::Reducer`/
+`GhostExchanger` in-process, standing in for a real `mpiexec` this sandbox
+cannot start):
+
+| case | partitions | max\\|diff\\| vs. single-rank Direct |
+|---|---:|---:|
+| `SchurDiffusionSolver`, U (8x8 grid, 20 steps / 2 windows) | 2 | 2.420e-14 |
+| `SchurDiffusionSolver`, U (8x12 grid) | 3 | 4.485e-14 |
+| `SchurDiffusionSolver`, V | 2 | 2.665e-15 |
+
+`KrylovDiffusionSolver`'s own `rel_tol` was swept against the same reference
+to derive `PhysicsConfig::solver_tolerance`'s default:
+
+| `rel_tol` | Pcg max\\|diff\\| | Gmres max\\|diff\\| |
+|---:|---:|---:|
+| 1e-8  | 4.602e-9  | 4.631e-9  |
+| 1e-9  | 5.196e-10 | 4.583e-10 |
+| 1e-10 | 3.387e-11 | 2.186e-11 |
+| 1e-11 | 3.344e-12 | 1.475e-12 |
+| 1e-12 | 1.421e-13 | 1.421e-13 |
+| 1e-13 | 5.862e-14 | 5.462e-14 |
+
+`solver_tolerance` defaults to `1e-13`, the tightest value swept -- closest
+to the Schur path's exact-solve floor -- per this project's standing
+robustness-over-efficiency rule, not the loosest value that happened to
+pass.
 
 ### Agreement with the Toy at the defaults, short run (`--end 0.1`)
 
