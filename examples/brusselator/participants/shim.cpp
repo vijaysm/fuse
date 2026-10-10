@@ -201,6 +201,7 @@ void bruss_u_state(const bruss_u_handle* h, double* out) {
 
 double bruss_u_external_total(const bruss_u_handle* h) { return h->core.external_total(); }
 double bruss_u_exchange_out(const bruss_u_handle* h) { return h->core.exchange_out(); }
+double bruss_u_state_mean(const bruss_u_handle* h) { return h->core.state_mean(); }
 const char* bruss_u_last_error(const bruss_u_handle* h) { return h->last_error.c_str(); }
 
 bruss_v_handle* bruss_v_create(int nx_u, int ny_u, int nx_v, int ny_v, double diffusion,
@@ -288,6 +289,7 @@ void bruss_v_state(const bruss_v_handle* h, double* out) {
 }
 
 double bruss_v_exchange_in(const bruss_v_handle* h) { return h->core.exchange_in(); }
+double bruss_v_state_mean(const bruss_v_handle* h) { return h->core.state_mean(); }
 const char* bruss_v_last_error(const bruss_v_handle* h) { return h->last_error.c_str(); }
 
 }  // extern "C"
