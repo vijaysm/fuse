@@ -433,8 +433,10 @@ int main(int argc, char** argv) {
       if (rc != FUSE_OK) fail(ctx, "field_handle(v_out)", rc);
     }
 
-    log = fopen(log_path, "w");
-    if (!log) fail(ctx, "fopen(log)", FUSE_ERR_RUNTIME);
+    if (u_rank == 0) {  /* one writer per --log path; see the mean's comment below */
+      log = fopen(log_path, "w");
+      if (!log) fail(ctx, "fopen(log)", FUSE_ERR_RUNTIME);
+    }
   }
 
   rc = t->initialize(ctx, NULL, NULL);
@@ -455,14 +457,15 @@ int main(int argc, char** argv) {
   }
 
   if (is_physics_rank) {
-    double* baseline_state = (double*)calloc((size_t)nu, sizeof(double));
-    bruss_u_state(uh, baseline_state);
-    double baseline_mean_u = 0.0;
-    for (int i = 0; i < nu; ++i) baseline_mean_u += baseline_state[i];
-    baseline_mean_u /= (double)nu;
-    free(baseline_state);
-    fprintf(log, "window=0 mean_u=%a external_total=%a exchange_out=%a\n", baseline_mean_u,
-            bruss_u_external_total(uh), bruss_u_exchange_out(uh));
+    /* The logged mean is the WHOLE species' (bruss_u_state_mean, one
+     * reduction over U's ranks -- collective, so every rank calls it) and
+     * only rank 0 writes: a per-rank loop over the owned slab is a partial
+     * mean, and two ranks opening one --log path clobber each other. On
+     * one rank this is the same number as before, bit for bit. */
+    const double baseline_mean_u = bruss_u_state_mean(uh);
+    if (log)
+      fprintf(log, "window=0 mean_u=%a external_total=%a exchange_out=%a\n", baseline_mean_u,
+              bruss_u_external_total(uh), bruss_u_exchange_out(uh));
 
     fuse_step_request req;
     memset(&req, 0, sizeof(req));
@@ -509,17 +512,12 @@ int main(int argc, char** argv) {
       /* u_out holds q (the reaction term), NOT U's own state -- the log
        * format's own mean_u is the STATE mean (bruss_u_state), matching
        * main.cpp's own pu->state().mean(). */
-      double* state = (double*)calloc((size_t)nu, sizeof(double));
-      bruss_u_state(uh, state);
-      double mean_u = 0.0;
-      for (int i = 0; i < nu; ++i) mean_u += state[i];
-      mean_u /= (double)nu;
-      free(state);
-
-      fprintf(log, "window=%d mean_u=%a external_total=%a exchange_out=%a\n",
-              p + 1, mean_u, bruss_u_external_total(uh), bruss_u_exchange_out(uh));
+      const double mean_u = bruss_u_state_mean(uh);  /* collective, see window 0 */
+      if (log)
+        fprintf(log, "window=%d mean_u=%a external_total=%a exchange_out=%a\n",
+                p + 1, mean_u, bruss_u_external_total(uh), bruss_u_exchange_out(uh));
     }
-    fclose(log);
+    if (log) fclose(log);
     bruss_u_destroy(uh);
     free(u_in);
     free(u_out);

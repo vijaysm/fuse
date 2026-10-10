@@ -131,6 +131,10 @@ void bruss_u_restore_state(bruss_u_handle* h);
 void bruss_u_state(const bruss_u_handle* h, double* out);
 double bruss_u_external_total(const bruss_u_handle* h);
 double bruss_u_exchange_out(const bruss_u_handle* h);
+/* The whole species' mean over every rank of the component -- a
+ * COLLECTIVE every rank must call (one reduction). What the log's mean_u
+ * means; a loop over this rank's owned slab is only a partial mean. */
+double bruss_u_state_mean(const bruss_u_handle* h);
 /* Valid only after a bruss_u_step() call that returned nonzero; the
  * pointer is owned by `h` and invalidated by the next bruss_u_step()
  * call or by bruss_u_destroy(). */
@@ -196,6 +200,8 @@ void bruss_v_restore_state(bruss_v_handle* h);
  * verification against the in-process reference only; no graph field
  * is this shape. */
 void bruss_v_state(const bruss_v_handle* h, double* out);
+/* See bruss_u_state_mean: collective over V's ranks. */
+double bruss_v_state_mean(const bruss_v_handle* h);
 double bruss_v_exchange_in(const bruss_v_handle* h);
 const char* bruss_v_last_error(const bruss_v_handle* h);
 

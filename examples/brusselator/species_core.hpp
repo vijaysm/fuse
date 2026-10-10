@@ -655,6 +655,12 @@ class UCore {
   [[nodiscard]] const Vector& provided() const { return provided_; }
   [[nodiscard]] double external_total() const { return external_total_; }
   [[nodiscard]] double exchange_out() const { return exchange_out_; }
+  /// The mean of the WHOLE species over every rank's owned cells: one
+  /// reduction, so it is a collective every rank of the component must
+  /// call. On one rank it is `state().mean()` bit for bit. A participant's
+  /// own loop over its owned slab gives a per-rank partial mean, which the
+  /// first 5-rank host run (2026-10-10) would have logged as if global.
+  [[nodiscard]] double state_mean() const { return global_mean(state_); }
 
  private:
   static constexpr double kReactionTolerance = 1e-13;
@@ -742,6 +748,8 @@ class VDiffusionCore {
   [[nodiscard]] int n() const { return n_; }
   [[nodiscard]] const Vector& state() const { return state_; }
   [[nodiscard]] double exchange_in() const { return exchange_in_; }
+  /// See `UCore::state_mean`: the whole species' mean, a collective.
+  [[nodiscard]] double state_mean() const { return global_mean(state_); }
 
  private:
   /// See `UCore::global_mean`'s own comment -- identical reasoning, a
@@ -1034,6 +1042,7 @@ class VParticipant {
   [[nodiscard]] int n_u() const { return n_u_; }
   [[nodiscard]] const Vector& state() const { return core_->state(); }
   [[nodiscard]] double exchange_in() const { return core_->exchange_in(); }
+  [[nodiscard]] double state_mean() const { return core_->state_mean(); }
   /// `P_VU(state())` on U's own grid (this rank's own owned band, size
   /// `n_u()`) -- what `step()` hands back as `provided`, computed from
   /// the CURRENT state. Right after construction that is the initial
