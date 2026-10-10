@@ -105,7 +105,12 @@ thing either way; add the region as usual
 
 This path is verified bit-for-bit against `WindowCoupler` itself, both
 waveform-relaxation modes, for a genuinely multirate (incommensurate)
-pair — `test/runtime/window_runner_straddle_test.cpp`.
+pair — `test/runtime/window_runner_straddle_test.cpp`. It is also
+host-verified across more than one MPI rank (`parallel.window_runner_mpi.{2,3}`,
+KNOWN_ISSUES.md D19) and across separately launched, separately compiled
+executables — the window a member of the Brusselator example runs
+([](multiple-executables.md)) is this same compiled path, not a second
+implementation.
 
 ## What this does not do yet
 

@@ -39,7 +39,17 @@ products, and batched small solves. These sit behind one facade with two interch
 
 Neither backend's types appear in any FUSE public header, so your code never inherits the choice. A
 device-capable (KokkosKernels) backend was designed but is not implemented — `FUSE_LINALG_BACKEND`
-accepts only `builtin` or `eigen` today (REVIEW.md R-24).
+accepts only `builtin` or `eigen` today (REVIEW.md R-24; the default is `eigen`).
+
+**`builtin` does not currently configure a full build.** `fuse::linalg` itself — including the
+distributed Krylov solvers ([](../dev/linalg-distributed.md), [](../dev/linalg-krylov.md)) — builds
+clean under `builtin`, but several tests and examples link `Eigen3::Eigen` directly regardless of
+the chosen backend (every caller of `SchurSlabSolver`, which needs Eigen's sparse and dense direct
+factorisations and has no `builtin` implementation — `factor()` refuses with
+`E-LINALG-SCHUR-BACKEND` there instead), so configuring `-DFUSE_LINALG_BACKEND=builtin` today fails
+at configure time on those targets rather than silently dropping them (KNOWN_ISSUES.md D26).
+Building `fuse::linalg` or `fuse::base`/`fuse::model`/`fuse::ir`/`fuse::schedule` on their own under
+`builtin` is unaffected.
 
 ## Dependency versions
 
@@ -89,6 +99,28 @@ number reveals. Extending the fetch machinery to them is a later decision, delib
 
 Every configured build writes `fuse-resolved-dependencies.txt` recording, per dependency, whether it
 was **found** (with version and config directory) or **fetched**.
+
+### The accept/connect launch mode is probed, not assumed
+
+With `FUSE_ENABLE_MPI=ON`, configuring also runs `tools/probe-mpi-dynamic.sh`: it compiles a small
+program, launches it twice as two separate jobs — one accepting, one connecting — and performs the
+same `MPI_Open_port`/`MPI_Comm_accept`/`MPI_Comm_connect`/`MPI_Intercomm_merge` sequence
+`fuse::transport::connect()` performs for a genuinely separate-executable coupling
+([](multiple-executables.md)). The verdict sets the `FUSE_ENABLE_CONNECT_ACCEPT` option, which can
+be overridden directly:
+
+```bash
+cmake -S . -B build -DFUSE_ENABLE_MPI=ON -DFUSE_ENABLE_CONNECT_ACCEPT=OFF
+```
+
+When the probe measures the mode broken on this MPI build (MPICH's `ch3:nemesis` device aborts
+merging an intercommunicator between two same-node jobs it has no shared memory for —
+KNOWN_ISSUES.md D23), the accept/connect test rows are not registered and a `Connect`-mode
+component is refused at `connect()` with `E-CONNECT-ACCEPT-UNAVAILABLE` rather than aborting inside
+MPI. When the probe cannot run at all (a login node where `mpiexec` needs an allocation, the
+ordinary case on a cluster), the mode is left enabled and its own rows report for themselves — the
+probe only refuses what it has actually measured broken. The launcher-style MPMD launch mode needs
+only `MPI_APPNUM`, which every MPI provides, and is never gated by this probe.
 
 ### Two Kokkos installs on one machine
 

@@ -152,9 +152,15 @@ into the acceptor executable's (`u_main.c`'s) own `MPI_COMM_WORLD` rather than g
 why. `brusselator_check` (same directory) reads both executables' own printed per-window logs and
 reproduces `examples/brusselator/main.cpp`'s own `--check` verdict from them.
 `test/parallel/brusselator_participants/run_participants.sh` is the host driver
-(`verification.brusselator.participants.{mpmd,accept}.{3,5}`, `host_verification_needed`: MPI cannot
-start in this sandbox, KNOWN_ISSUES.md C1 — every executable involved is confirmed to BUILD at tier 1,
-not yet run). What that script's own `mpiexec` lines actually are, exactly as `ctest` runs them (the
+(`verification.brusselator.participants.{mpmd,accept}.{3,5}`). MPI cannot start in this sandbox
+(KNOWN_ISSUES.md C1), so every row is compile-verified here and **run on the host**: the `mpmd.3`
+and `mpmd.5` rows passed there 2026-10-09/2026-10-10 (KNOWN_ISSUES.md D25) — `mpmd.3`'s final means
+match the single-process `examples/brusselator` reference bit-for-bit (0 ulp in both `mean_u` and
+`mean_v`), and `mpmd.5` (U on two ranks, V on two, the coupler on one — the first row where a
+participant genuinely spans more than one rank) differs from that same reference by 8.9e-14 in
+`mean_u` and 9.4e-14 in `mean_v`, consistent with the decomposed Schur solve's own round-off bound.
+The `accept.{3,5}` rows remain unrun — D23, below, blocks every accept/connect row on this host's
+MPI build regardless of this track. What that script's own `mpiexec` lines actually are, exactly as `ctest` runs them (the
 world-size-3 case; `{3,5}`'s own `ranks_u`/`ranks_v`/`ranks_coupler` are `1/1/1` and `2/2/1`):
 
 ```

@@ -97,6 +97,20 @@ References are listed at the end; a bracketed number points into that list.
 | `Runner` | runtime | The part of FUSE that executes the schedule. |
 | descriptor, "narrow waist" | serialised coupling specification | The versioned binary encoding of the coupling specification shared by the C++, C/Fortran and YAML front ends. |
 
+## Linear algebra
+
+| Identifier in the code | Term | Definition |
+|---|---|---|
+| `fuse::linalg::DistVector` | row-distributed dense vector | A dense vector split across participants by row, each holding an owned block in its own local order plus a ghost region — copies of entries other participants own, refreshed on request. |
+| `fuse::linalg::DistSparseMatrix` | row-distributed sparse matrix | A sparse matrix split across participants by whole rows, each row held as a diagonal block (this participant's own columns) and an off-process block (every other column). |
+| `fuse::linalg::Reducer`, `GhostExchanger` | global reduction, ghost update | The two communication facades `DistVector`/`DistSparseMatrix` ask of communication: a global reduction over owned entries, and a one-shot exchange refreshing a ghost region along a pattern built once. |
+| `fuse::linalg::LinearOperator`, `MatrixFreeOperator` | matrix, Jacobian-free operator | The structural (duck-typed) concept a Krylov solver needs from "a matrix": `apply(x, y)` computing `y = A x`. A `MatrixFreeOperator` wraps a caller-supplied callable computing a Jacobian-vector product without ever assembling the Jacobian. |
+| `fuse::linalg::pcg` | preconditioned conjugate gradient (PCG) | An iterative solver for a symmetric positive-definite system, right-preconditioned by the Hestenes–Stiefel recurrence [17]. |
+| `fuse::linalg::gmres` | restarted GMRES, GMRES(*m*) | An iterative solver for a general (non-symmetric) system by minimising the residual over a Krylov subspace, restarted every *m* steps [18]. |
+| `fuse::linalg::Preconditioner`, `JacobiPreconditioner` | preconditioner, Jacobi (diagonal) preconditioner | An approximate solve, `apply(x, y)` computing `y = M⁻¹x`, substituted for the exact inverse to accelerate a Krylov iteration. The Jacobi preconditioner uses the matrix's own diagonal. |
+| `fuse::linalg::SchurSlabSolver` | Schur-complement direct solver | An exact distributed direct solver for a banded system, by eliminating each participant's interior unknowns locally and solving the much smaller Schur complement system over the interface unknowns alone [19]. |
+| "row band" (`fuse::native::rank_slice`) | subdomain | One participant's contiguous range of rows of a row-partitioned grid — the domain-decomposition literature's term is *subdomain* [19]; this project keeps "row band" in code and prose to avoid colliding with "slab", the unrelated time-domain term above. |
+
 ## Verification and testing
 
 | Identifier in the code | Term | Definition |
@@ -126,3 +140,6 @@ References are listed at the end; a bracketed number points into that list.
 14. V. S. Mahadevan, I. Grindeanu, R. Jacob and J. Sarich. Improving climate model coupling through a complete mesh representation: a case study with E3SM (v1) and MOAB (v5.x). *Geosci. Model Dev.* 13:2355–2377, 2020.
 15. J. Larson, R. Jacob and E. Ong. The Model Coupling Toolkit: a new Fortran90 toolkit for building multiphysics parallel coupled models. *Int. J. High Perform. Comput. Appl.* 19(3):277–292, 2005.
 16. R. A. DeMillo, R. J. Lipton and F. G. Sayward. Hints on test data selection: help for the practicing programmer. *Computer* 11(4):34–41, 1978.
+17. M. R. Hestenes and E. Stiefel. Methods of conjugate gradients for solving linear systems. *J. Res. Natl. Bur. Stand.* 49(6):409–436, 1952.
+18. Y. Saad and M. H. Schultz. GMRES: a generalized minimal residual algorithm for solving nonsymmetric linear systems. *SIAM J. Sci. Stat. Comput.* 7(3):856–869, 1986.
+19. B. Smith, P. Bjørstad and W. Gropp. *Domain Decomposition: Parallel Multilevel Methods for Elliptic Partial Differential Equations*. Cambridge University Press, 1996.
