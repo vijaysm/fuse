@@ -3232,6 +3232,24 @@ like the examples do.
 examples gated by `if(FUSE_LINALG_BACKEND STREQUAL "eigen")`, with a configure-time
 message listing what is skipped) or the option is retired. Not decided here.
 
+### D27. The native backend's remap halo has no `accumulate_remap_halo` counterpart
+
+**Closed for the forward direction, 2026-10-10 ("Halo" track):** `fuse::native::NativeMeshBackend`
+now builds a planar/volumetric remap halo (`build_native_remap_halo`,
+`src/backend/native_halo.cpp`; docs/dev/native-halo.md) via the same `build_remap_halo` ->
+`build_weights` -> exchange -> `apply_weights` sequence `remap_plan.hpp` documents for MOAB, and
+`remap_halo_pattern()`'s `fuse::linalg::GhostPattern` plugs directly into
+`fuse::linalg::make_mpi_exchanger` for the FORWARD fill (owner's field value -> halo copy) before
+`apply_weights`.
+
+**Open:** `MoabMeshBackend::accumulate_remap_halo` -- the REVERSE exchange (each halo slot's
+contribution added back to its owner, then zeroed), built specifically for a conservation audit
+that sums a source cell's weight contributions across every rank holding a copy of it -- has no
+native counterpart. `test/backend/native_halo_test.cpp`'s own column-mass-by-global-id check
+does this bookkeeping in the TEST, not through a library call; nothing in the Halo track's scope
+needed a library-level reverse exchange, but a future native-backend conservation-audit tool would
+want one.
+
 ### ~~D25. A separately launched participant could not run a coupling window~~ — CLOSED 2026-10-09 (host-measured)
 
 **Found by the first MPMD runs that reached `initialize()` (D24 cleared the exchange plan),
