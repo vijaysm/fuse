@@ -284,3 +284,37 @@ test = "verification.brusselator_species_core_decomposition"
 # byte-identical with `cmp`; the killed process left no state to clean up
 # (the test binary's own in-process threads, not a separate executable).
 # Restored and verified byte-identical with `cmp` before submission.
+
+[[mutation]]
+id = "brusselator-vparticipant-uv-halo-build-skipped"
+area = "examples/brusselator"
+describes = "VParticipant::make_from_grids's own U->V direction halo-build guard is inverted (`if (backend.has_remap_halo(...))` instead of `if (!backend.has_remap_halo(...))`), so fuse::build_remap_halo is called ONLY when a halo is already installed -- for a fresh backend (the one-shot VParticipant::make path every EXISTING single-rank caller uses) it is never called at all, leaving the later backend.remap_halo_pattern(u_mid, v_mid, 2) call (building this direction's own exchanger) with no pattern to find."
+file = "examples/brusselator/species_core.hpp"
+old = "    if (!backend.has_remap_halo(u_mid, v_mid, 2)) {"
+new = "    if (backend.has_remap_halo(u_mid, v_mid, 2)) {"
+target = "fuse_verification_brusselator_species_core_decomposition_test"
+test = "verification.brusselator_species_core_decomposition"
+# PROVED (this session): of the 11 cases, 2 FAILED -- both the
+# single-rank REFERENCE construction inside .TwoPartitionVParticipantMatchesSingleRank
+# and .ThreePartitionVParticipantMatchesSingleRank (each builds its own num_ranks()==1
+# reference via the SAME VParticipant::make -> make_from_grids path the mutation hits):
+# "no remap halo has been built for source mesh 0, target mesh 1, dimension 2; call
+# build_remap_halo first" (E-MESH-HALO, from NativeMeshBackend::remap_halo_pattern) --
+# NOT the E-REMAP-PARALLEL this row's own name might suggest, because the one-shot
+# make() path that EVERY single-rank caller (including these tests' own references)
+# uses needs build_remap_halo to run unconditionally too, not only at num_ranks()>1 --
+# the reference fails before the decomposed side is ever reached. The 9 other cases
+# (UCore/VDiffusionCore-only, and VParticipantFailsCleanlyWithoutMPIWhenAskedToDecompose,
+# whose OWN failure comes from the UNCHANGED V->U direction check reaching E-MESH-NO-MPI
+# first) PASSED unaffected. Restored and verified byte-identical with `cmp` before
+# submission.
+
+[[mutation]]
+id = "brusselator-vparticipant-adopting-halo-not-refused"
+area = "brusselator"
+describes = "KNOWN_ISSUES D29 guard: VParticipant::make_from_grids must REFUSE a decomposition whose remap halo adopted cells (U and V bands covering different y-ranges), because over such a halo it measurably disagrees with the single-rank reference. Dropping the guard lets the misaligned 6/5/5 vs 8/8/8 split construct and run wrong. The decision is agreed through the reducer; the agreement itself has no killing row for a verified reason recorded in the test (rank_slice gives extra rows to the first ranks, so no reachable split has one rank adopting nothing while another adopts)."
+file = "examples/brusselator/species_core.hpp"
+old = "      if (total_adopted > 0.0) {"
+new = "      if (total_adopted < 0.0) {"
+target = "fuse_verification_brusselator_species_core_decomposition_test"
+test = "verification.brusselator_species_core_decomposition"

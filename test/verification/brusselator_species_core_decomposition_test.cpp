@@ -27,6 +27,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <functional>
 #include <limits>
@@ -40,6 +41,9 @@
 #include <gtest/gtest.h>
 
 #include <fuse/backend/native_backend.hpp>
+#include <fuse/backend/native_halo.hpp>
+#include <fuse/backend/native_mesh.hpp>
+#include <fuse/backend/remap_plan.hpp>
 
 #include "brusselator_physics.hpp"
 #include "species_core.hpp"
@@ -51,10 +55,14 @@ using brusselator::PhysicsConfig;
 using brusselator::SolverKind;
 using brusselator::UCore;
 using brusselator::VDiffusionCore;
+using brusselator::VParticipant;
 using brusselator::Vector;
+using fuse::ComponentId;
 using fuse::linalg::GhostExchanger;
 using fuse::linalg::GhostPattern;
 using fuse::linalg::Reducer;
+using fuse::native::NativeMeshBackend;
+using fuse::native::NativeMeshView;
 
 // ---------------------------------------------------------------------
 // Barrier primitives: an in-process stand-in for a REAL N-way MPI
@@ -147,27 +155,36 @@ class GatherBarrier {
 };
 
 /// `fuse::linalg::Reducer` over `ScalarBarrier`s (one for `sum`, one for
-/// `max`) and a `GatherBarrier` (for `allgather`, keyed by `n_each` since
-/// `SchurSlabSolver`'s own two collectives per `factor()`/`solve()` use
-/// two different sizes -- the same reason test/linalg/schur_slab_test.cpp's
-/// own `RingAllgatherReducer` keys its cache by `n_each`). `sum(double*,
-/// n)` (the vectorised overload) is not exercised by anything this file
-/// builds (neither `UCore`/`VDiffusionCore` nor the Krylov solvers call
-/// it) -- implemented as `n` independent scalar reductions rather than
-/// left unimplemented, since a correct (if unused) implementation costs
-/// nothing here and documents the intended semantics for a future caller.
+/// `max`) and a `GatherBarrier` registry for `allgather` (keyed by
+/// `n_each` since `SchurSlabSolver`'s own two collectives per `factor()`/
+/// `solve()` use two different sizes -- the same reason test/linalg/
+/// schur_slab_test.cpp's own `RingAllgatherReducer` keys its cache by
+/// `n_each`) -- a SEPARATE registry from `BarrierGhostExchanger`'s own
+/// (below), even though both are "a `GatherBarrier` keyed by a size":
+/// sharing one registry between allgather's OWN collectives and a ghost
+/// update's would let two semantically unrelated exchanges that happen to
+/// ask for the SAME size rendezvous on the SAME `GatherBarrier` and read
+/// back a mix of each other's data -- a real risk once `VParticipant`'s
+/// own two remap-halo exchangers (species_core.hpp) and a Krylov solver's
+/// own ghost pattern (both PLAUSIBLY V's `owned_size()`) can appear in the
+/// SAME run. `sum(double*, n)` (the vectorised overload) is not exercised
+/// by anything this file builds (neither `UCore`/`VDiffusionCore` nor the
+/// Krylov solvers call it) -- implemented as `n` independent scalar
+/// reductions rather than left unimplemented, since a correct (if unused)
+/// implementation costs nothing here and documents the intended semantics
+/// for a future caller.
 class BarrierReducer final : public Reducer {
  public:
   BarrierReducer(int rank, int size, std::shared_ptr<ScalarBarrier> sum_barrier,
                 std::shared_ptr<ScalarBarrier> max_barrier,
-                std::shared_ptr<std::mutex> gather_registry_mu,
-                std::shared_ptr<std::map<std::size_t, std::shared_ptr<GatherBarrier>>> gather_registry)
+                std::shared_ptr<std::mutex> allgather_registry_mu,
+                std::shared_ptr<std::map<std::size_t, std::shared_ptr<GatherBarrier>>> allgather_registry)
       : rank_(rank),
         size_(size),
         sum_barrier_(std::move(sum_barrier)),
         max_barrier_(std::move(max_barrier)),
-        gather_registry_mu_(std::move(gather_registry_mu)),
-        gather_registry_(std::move(gather_registry)) {}
+        allgather_registry_mu_(std::move(allgather_registry_mu)),
+        allgather_registry_(std::move(allgather_registry)) {}
 
   [[nodiscard]] double sum(double local) const override {
     return sum_barrier_->combine(rank_, local, 0.0, std::plus<double>());
@@ -184,8 +201,8 @@ class BarrierReducer final : public Reducer {
   void allgather(const double* send, std::size_t n_each, double* recv) const override {
     std::shared_ptr<GatherBarrier> barrier;
     {
-      std::lock_guard<std::mutex> lk(*gather_registry_mu_);
-      auto& slot = (*gather_registry_)[n_each];
+      std::lock_guard<std::mutex> lk(*allgather_registry_mu_);
+      auto& slot = (*allgather_registry_)[n_each];
       if (!slot) slot = std::make_shared<GatherBarrier>(size_, n_each);
       barrier = slot;
     }
@@ -195,30 +212,114 @@ class BarrierReducer final : public Reducer {
  private:
   int rank_, size_;
   std::shared_ptr<ScalarBarrier> sum_barrier_, max_barrier_;
-  std::shared_ptr<std::mutex> gather_registry_mu_;
-  std::shared_ptr<std::map<std::size_t, std::shared_ptr<GatherBarrier>>> gather_registry_;
+  std::shared_ptr<std::mutex> allgather_registry_mu_;
+  std::shared_ptr<std::map<std::size_t, std::shared_ptr<GatherBarrier>>> allgather_registry_;
 };
 
-/// `fuse::linalg::GhostExchanger` built from the SAME `GatherBarrier`
-/// registry `BarrierReducer::allgather` uses (keyed by `owned_n`, which
-/// -- unlike `allgather`'s own two distinct Schur sizes -- is constant
-/// for a given `KrylovDiffusionSolver` instance's whole run, so one key
-/// suffices): every participant submits its CURRENT owned block, and
-/// once all have arrived this rank reads back the full concatenation and
-/// picks out whichever entries `pattern`'s own `(owner_rank,
-/// remote_local_index)` pairs name -- a ghost update IS a gather
+/// `GatherBarrier`'s own `combine()` assumes every rank sends the SAME
+/// `n_each` (an Allgather, not an Allgatherv) -- true of `BarrierReducer::
+/// allgather`'s own callers (`SchurSlabSolver`'s boundary/trace exchange is
+/// a FIXED size independent of how many rows a rank owns), but FALSE of a
+/// remap halo's own owned-cell count once a partition's row split is
+/// genuinely uneven (found this session: a 6/5/5-row U split sends 48, 40,
+/// 40 doubles from its three ranks respectively -- `GatherBarrier`'s fixed-
+/// stride buffer silently mis-assembles that, and since `owned_n` was ALSO
+/// baked into the ghost registry's own key at the time, three DIFFERENT
+/// uneven `owned_n` values classified into three SEPARATE single-rank
+/// barriers, each waiting forever for the other two ranks that could never
+/// arrive on ITS key -- a real deadlock, not a correctness defect with a
+/// symptom; `ctest`'s own default per-test timeout is what would have
+/// caught it on a clean run instead of hanging the whole build). This
+/// class is the Allgatherv-shaped sibling: every rank's `send_n` can
+/// differ; the combined buffer and a `size()+1` prefix-sum `offsets` array
+/// (so `combined[offsets[owner] + local]` finds owner `owner`'s own
+/// `local`'th value) come back to every caller once all `size()` ranks
+/// have arrived -- the same single-mutex/condition-variable rendezvous
+/// `GatherBarrier` already uses, just deferring the output buffer's own
+/// layout until every rank's size is known.
+class VarGatherBarrier {
+ public:
+  explicit VarGatherBarrier(int size)
+      : size_(size), sizes_(static_cast<std::size_t>(size), 0),
+        sends_(static_cast<std::size_t>(size), nullptr),
+        offsets_(static_cast<std::size_t>(size) + 1, 0) {}
+
+  void combine(int rank, const double* send, std::size_t send_n, std::vector<double>* combined_out,
+              std::vector<std::size_t>* offsets_out) {
+    std::unique_lock<std::mutex> lk(mu_);
+    const int gen = generation_;
+    sizes_[static_cast<std::size_t>(rank)] = send_n;
+    sends_[static_cast<std::size_t>(rank)] = send;
+    if (++arrived_ == size_) {
+      offsets_[0] = 0;
+      for (std::size_t r = 0; r < static_cast<std::size_t>(size_); ++r) {
+        offsets_[r + 1] = offsets_[r] + sizes_[r];
+      }
+      combined_.assign(offsets_[static_cast<std::size_t>(size_)], 0.0);
+      for (std::size_t r = 0; r < static_cast<std::size_t>(size_); ++r) {
+        std::copy(sends_[r], sends_[r] + sizes_[r], combined_.begin() + static_cast<std::ptrdiff_t>(offsets_[r]));
+      }
+      arrived_ = 0;
+      ++generation_;
+      cv_.notify_all();
+    } else {
+      cv_.wait(lk, [&] { return generation_ != gen; });
+    }
+    *combined_out = combined_;
+    *offsets_out = offsets_;
+  }
+
+ private:
+  std::mutex mu_;
+  std::condition_variable cv_;
+  int size_;
+  int arrived_ = 0;
+  int generation_ = 0;
+  std::vector<std::size_t> sizes_;
+  std::vector<const double*> sends_;
+  std::vector<std::size_t> offsets_;
+  std::vector<double> combined_;
+};
+
+/// `fuse::linalg::GhostExchanger` built from a `VarGatherBarrier` registry
+/// keyed by `call_index` ALONE, not `(call_index, owned_n)`: `call_index`
+/// is this EXCHANGER FACTORY's own Nth invocation (`BarrierGroup::
+/// make_exchanger_factory`'s own closure counter, below), which already
+/// lines up across ranks because every rank runs the SAME production
+/// code path in the SAME order (`VParticipant::make`'s own two remap
+/// exchangers, THEN whatever `VDiffusionCore`'s own constructor builds,
+/// if anything) -- the same "same call site, same round" reasoning
+/// `BarrierReducer::allgather`'s own `n_each` key relies on. `owned_n`
+/// was folded into this key in an earlier round of this same session, to
+/// guard against two UNRELATED ghost exchanges in the SAME run
+/// coincidentally sharing one `owned_n` (`VParticipant`'s own V->U remap
+/// exchanger and a Krylov solver's own V-grid ghost pattern can both be
+/// V's `owned_size()`) -- but `owned_n` is NOT invariant across ranks at
+/// a GENUINELY uneven row split (a 6/5/5-row U partition's three ranks
+/// own 48/40/40 cells respectively), so keying on it split one logical
+/// 3-rank collective into THREE single-rank ones, each waiting forever
+/// for peers that could never arrive on its own key -- the actual
+/// deadlock `VarGatherBarrier`'s own class comment (above) measured.
+/// `call_index` alone already disambiguates same-run same-size exchanges
+/// (VParticipant's two calls get indices 0 and 1 on every rank, never
+/// colliding with each other or with a third caller's index 2) without
+/// ever assuming a rank-invariant size. A ghost update IS a gather
 /// followed by a local pick, nothing more (`GhostExchangerFactory`'s own
-/// comment, species_core.hpp, says why this pattern must come from the
-/// OPERATOR's own derived `ghost_pattern()`, not `NativeGrid`'s).
+/// comment, species_core.hpp, says why the PATTERN must always come from
+/// the OPERATOR/remap that actually owns it, never borrowed from a
+/// different one).
 class BarrierGhostExchanger final : public GhostExchanger {
  public:
-  BarrierGhostExchanger(GhostPattern pattern, int rank, std::size_t owned_n,
+  using Key = int;  // call_index
+
+  BarrierGhostExchanger(GhostPattern pattern, int rank, std::size_t owned_n, int call_index,
                         std::shared_ptr<std::mutex> registry_mu,
-                        std::shared_ptr<std::map<std::size_t, std::shared_ptr<GatherBarrier>>> registry,
+                        std::shared_ptr<std::map<Key, std::shared_ptr<VarGatherBarrier>>> registry,
                         int size)
       : pattern_(std::move(pattern)),
         rank_(rank),
         owned_n_(owned_n),
+        call_index_(call_index),
         registry_mu_(std::move(registry_mu)),
         registry_(std::move(registry)),
         size_(size) {}
@@ -230,19 +331,21 @@ class BarrierGhostExchanger final : public GhostExchanger {
     if (owned_n != owned_n_ || ghost_n != pattern_.owner_rank.size()) {
       return fuse::Failure{"E-TEST-HALO-SIZE", "BarrierGhostExchanger: size mismatch"};
     }
-    std::shared_ptr<GatherBarrier> barrier;
+    std::shared_ptr<VarGatherBarrier> barrier;
+    const Key key = call_index_;
     {
       std::lock_guard<std::mutex> lk(*registry_mu_);
-      auto& slot = (*registry_)[owned_n_];
-      if (!slot) slot = std::make_shared<GatherBarrier>(size_, owned_n_);
+      auto& slot = (*registry_)[key];
+      if (!slot) slot = std::make_shared<VarGatherBarrier>(size_);
       barrier = slot;
     }
-    std::vector<double> combined(owned_n_ * static_cast<std::size_t>(size_));
-    barrier->combine(rank_, owned, combined.data());
+    std::vector<double> combined;
+    std::vector<std::size_t> offsets;
+    barrier->combine(rank_, owned, owned_n_, &combined, &offsets);
     for (std::size_t g = 0; g < ghost_n; ++g) {
       const auto owner = static_cast<std::size_t>(pattern_.owner_rank[g]);
       const auto local = static_cast<std::size_t>(pattern_.remote_local_index[g]);
-      ghosts[g] = combined[owner * owned_n_ + local];
+      ghosts[g] = combined[offsets[owner] + local];
     }
     return fuse::Result<void>::success();
   }
@@ -251,38 +354,52 @@ class BarrierGhostExchanger final : public GhostExchanger {
   GhostPattern pattern_;
   int rank_;
   std::size_t owned_n_;
+  int call_index_;
   std::shared_ptr<std::mutex> registry_mu_;
-  std::shared_ptr<std::map<std::size_t, std::shared_ptr<GatherBarrier>>> registry_;
+  std::shared_ptr<std::map<Key, std::shared_ptr<VarGatherBarrier>>> registry_;
   int size_;
 };
 
 /// Everything shared across one run's `num_ranks` partitions: one pair of
 /// `ScalarBarrier`s per rank-group (every partition's `BarrierReducer`
 /// shares the SAME pair, so a `sum`/`max` call on any partition finds
-/// every peer at the matching round) and one gather registry (shared by
-/// BOTH `allgather` -- Schur's own two collectives -- and ghost updates,
-/// keyed by size so the two never collide).
+/// every peer at the matching round), one registry for `allgather`, and a
+/// SEPARATE registry for ghost updates (`BarrierGhostExchanger`'s own
+/// class comment explains why the two must not share one).
 struct BarrierGroup {
   explicit BarrierGroup(int size)
       : sum_barrier(std::make_shared<ScalarBarrier>(size)),
         max_barrier(std::make_shared<ScalarBarrier>(size)),
-        gather_registry_mu(std::make_shared<std::mutex>()),
-        gather_registry(std::make_shared<std::map<std::size_t, std::shared_ptr<GatherBarrier>>>()) {}
+        allgather_registry_mu(std::make_shared<std::mutex>()),
+        allgather_registry(std::make_shared<std::map<std::size_t, std::shared_ptr<GatherBarrier>>>()),
+        ghost_registry_mu(std::make_shared<std::mutex>()),
+        ghost_registry(
+            std::make_shared<std::map<BarrierGhostExchanger::Key, std::shared_ptr<VarGatherBarrier>>>()) {}
 
   std::shared_ptr<ScalarBarrier> sum_barrier, max_barrier;
-  std::shared_ptr<std::mutex> gather_registry_mu;
-  std::shared_ptr<std::map<std::size_t, std::shared_ptr<GatherBarrier>>> gather_registry;
+  std::shared_ptr<std::mutex> allgather_registry_mu;
+  std::shared_ptr<std::map<std::size_t, std::shared_ptr<GatherBarrier>>> allgather_registry;
+  std::shared_ptr<std::mutex> ghost_registry_mu;
+  std::shared_ptr<std::map<BarrierGhostExchanger::Key, std::shared_ptr<VarGatherBarrier>>> ghost_registry;
 
   [[nodiscard]] std::shared_ptr<BarrierReducer> make_reducer(int rank, int size) const {
-    return std::make_shared<BarrierReducer>(rank, size, sum_barrier, max_barrier, gather_registry_mu,
-                                            gather_registry);
+    return std::make_shared<BarrierReducer>(rank, size, sum_barrier, max_barrier, allgather_registry_mu,
+                                            allgather_registry);
   }
+  /// Returns a FRESH factory (its own `call_index` counter, starting at
+  /// 0) each call -- a caller that needs the SAME counter sequence to
+  /// line up across ranks (every `VParticipant`/`VDiffusionCore`-building
+  /// test below) calls this ONCE PER RANK, exactly as `make_reducer` is
+  /// already called, so rank r's Nth call to the returned factory and
+  /// rank s's Nth call share a `call_index`, regardless of r/s.
   [[nodiscard]] brusselator::GhostExchangerFactory make_exchanger_factory(int rank, int size) const {
-    auto mu = gather_registry_mu;
-    auto reg = gather_registry;
-    return [rank, size, mu, reg](const GhostPattern& pattern, std::size_t owned_n) {
+    auto mu = ghost_registry_mu;
+    auto reg = ghost_registry;
+    auto call_index = std::make_shared<int>(0);
+    return [rank, size, mu, reg, call_index](const GhostPattern& pattern, std::size_t owned_n) {
+      const int idx = (*call_index)++;
       return std::static_pointer_cast<const GhostExchanger>(
-          std::make_shared<BarrierGhostExchanger>(pattern, rank, owned_n, mu, reg, size));
+          std::make_shared<BarrierGhostExchanger>(pattern, rank, owned_n, idx, mu, reg, size));
     };
   }
 };
@@ -439,11 +556,30 @@ TEST(BrusselatorSpeciesCoreDecomposition, DirectSolverRefusesWhenDecomposed) {
       fuse::InvalidArgument);
 }
 
-TEST(BrusselatorSpeciesCoreDecomposition, VParticipantRefusesDecomposedVRanks) {
-  auto made = brusselator::VParticipant::make(kNx, kNy, kNx, kNy, /*diffusion=*/10.0, /*rank=*/0,
-                                              /*num_ranks=*/2);
+// `E-BRUSS-V-DECOMPOSED-REMAP` (the outright num_ranks()>1 refusal this
+// test used to check) is GONE: the Halo track's own work (docs/dev/
+// native-halo.md) closed exactly the seam that refusal was guarding.
+// What remains true in THIS sandbox is narrower and still worth pinning:
+// a backend that is actually asked to BUILD a halo over more than one
+// rank (a non-null communicator, no halo pre-installed) hits
+// `fuse::native::build_native_remap_halo`'s own `E-MESH-NO-MPI` --
+// this build has no MPI at all, so there is no in-process path for the
+// REAL collective (`test/parallel/native_halo_mpi_test.cpp` is exactly
+// the test that exercises it, build-verified only here). This is the
+// expected, honest failure mode now; the tests below exercise the
+// DECOMPOSED path for real by pre-installing a hand-computed halo, the
+// same `NativeMeshBackend::commit_remap_halo` seam `test/backend/
+// native_halo_test.cpp`'s own `BackendFixture` uses, which is possible
+// precisely BECAUSE `VParticipant::make` checks `has_remap_halo` and
+// skips calling the real (MPI-only) builder for a triple that is
+// already there.
+TEST(BrusselatorSpeciesCoreDecomposition, VParticipantFailsCleanlyWithoutMPIWhenAskedToDecompose) {
+  NativeMeshBackend backend(0, 2);
+  backend.set_communicator(1);  // non-null, so communicator_size() reports 2
+  auto made = brusselator::VParticipant::make(std::move(backend), kNx, kNy, kNx, kNy,
+                                              /*diffusion=*/10.0);
   ASSERT_FALSE(made.ok());
-  EXPECT_EQ(made.error().code, "E-BRUSS-V-DECOMPOSED-REMAP");
+  EXPECT_EQ(made.error().code, "E-MESH-NO-MPI");
 }
 
 // ---- UCore: N-partition Schur reproduces the single-rank reference ------
@@ -699,4 +835,438 @@ TEST(BrusselatorSpeciesCoreDecomposition, TwoPartitionVDiffusionCoreMatchesSingl
   }
   std::fprintf(stderr, "[TwoPartitionVDiffusionCoreMatchesSingleRank] max_abs_diff=%.3e\n", max_abs_diff);
   EXPECT_LT(max_abs_diff, 1e-13);
+}
+
+
+// ---- VParticipant: N-partition two-sided remap reproduces the ----------
+// ---- single-rank reference (Halo track) ---------------------------------
+//
+// `VParticipant::make_from_grids`'s own `fuse::build_remap_halo` call is
+// skipped (`has_remap_halo` already true) whenever a caller pre-installs
+// a halo -- exactly what this section does, computing it the SAME way
+// `test/backend/native_halo_test.cpp`'s own `BackendFixture`/
+// `run_halo_pipeline` do (the pure covering-set/pack/merge pipeline,
+// never the real MPI-backed `fuse::native::build_native_remap_halo`,
+// which has no in-process multi-rank path at all without MPI). A
+// PLACEHOLDER, never-dereferenced communicator handle is still set on
+// each backend (mirroring `BackendFixture`'s own comment) purely so
+// `communicator_size()` reports `num_ranks` wherever anything downstream
+// reads it, matching what a real run would report.
+
+namespace {
+
+using fuse::native::Box3;
+using fuse::native::cell_box;
+using fuse::native::covering_set_destinations;
+using fuse::native::merge_halo_cells;
+using fuse::native::owned_block_index;
+using fuse::native::pack_halo_cells;
+
+/// One simulated rank's independently-built (source, target) view pair --
+/// `test/backend/native_halo_test.cpp`'s own `RankPieces`, generalised
+/// over the two mesh specs so it serves EITHER remap direction (U->V or
+/// V->U) this track's own `VParticipant` needs a halo for.
+struct RankMeshPieces {
+  std::unique_ptr<NativeMeshView> src, tgt;
+};
+
+[[nodiscard]] std::vector<RankMeshPieces> build_rank_meshes(const std::string& src_spec,
+                                                            const std::string& tgt_spec,
+                                                            int num_ranks) {
+  std::vector<RankMeshPieces> ranks;
+  ranks.reserve(static_cast<std::size_t>(num_ranks));
+  for (int r = 0; r < num_ranks; ++r) {
+    RankMeshPieces p;
+    auto sa = fuse::native::generate_native_mesh(src_spec, r, num_ranks);
+    EXPECT_TRUE(sa.ok()) << sa.error().message;
+    auto sv = NativeMeshView::create_from_host(sa.value(), r);
+    EXPECT_TRUE(sv.ok()) << sv.error().message;
+    p.src = std::move(sv.value());
+
+    auto ta = fuse::native::generate_native_mesh(tgt_spec, r, num_ranks);
+    EXPECT_TRUE(ta.ok()) << ta.error().message;
+    auto tv = NativeMeshView::create_from_host(ta.value(), r);
+    EXPECT_TRUE(tv.ok()) << tv.error().message;
+    p.tgt = std::move(tv.value());
+    ranks.push_back(std::move(p));
+  }
+  return ranks;
+}
+
+struct HaloRunResult {
+  std::vector<std::unique_ptr<NativeMeshView>> new_src;
+  std::vector<GhostPattern> pattern;
+};
+
+/// The covering-set -> pack -> (in-process "exchange", a plain array
+/// index rather than a real `MPI_Alltoallv` -- this pipeline has no
+/// control-flow-dependent collective the way `UCore`'s own reaction loop
+/// does, so a sequential per-rank loop reproduces a real multi-rank run's
+/// OBSERVABLE result exactly, unlike the thread-barrier machinery
+/// `BarrierReducer`/`BarrierGhostExchanger` above exist for) -> merge
+/// pipeline, PURE PORT of `test/backend/native_halo_test.cpp`'s own
+/// `run_halo_pipeline` (that file owns the correctness tests for this
+/// pipeline itself -- `NativeHaloQuadGrid.*` -- so this copy is not
+/// re-proving it, only reusing it to set up a REAL halo for THIS track's
+/// own `VParticipant` tests).
+[[nodiscard]] HaloRunResult run_remap_halo_pipeline(std::vector<RankMeshPieces>& ranks,
+                                                    int num_ranks) {
+  std::vector<Box3> all_target_boxes;
+  std::vector<int> owner_of_target_box;
+  for (int r = 0; r < num_ranks; ++r) {
+    const NativeMeshView& t = *ranks[static_cast<std::size_t>(r)].tgt;
+    for (std::size_t c = 0; c < t.entity_count(2); ++c) {
+      // OWNED cells only -- `test/backend/native_halo_test.cpp`'s own
+      // `run_halo_pipeline` filters on `is_owned` here; matched exactly
+      // (every cell `generate_native_mesh` emits for a fresh per-rank
+      // view is already owned, so this is a no-op TODAY, but the
+      // reference's own filter is not decorative -- keep this port
+      // identical to it rather than relying on that invariant silently).
+      if (t.is_owned(2, c)) {
+        all_target_boxes.push_back(cell_box(t, c));
+        owner_of_target_box.push_back(r);
+      }
+    }
+  }
+
+  std::vector<std::vector<std::vector<std::byte>>> send_from(static_cast<std::size_t>(num_ranks));
+  std::vector<std::vector<std::size_t>> owned_idx_of(static_cast<std::size_t>(num_ranks));
+  for (int r = 0; r < num_ranks; ++r) {
+    NativeMeshView& s = *ranks[static_cast<std::size_t>(r)].src;
+    owned_idx_of[static_cast<std::size_t>(r)] = owned_block_index(s);
+    std::vector<Box3> my_owned_boxes;
+    std::vector<std::size_t> owned_local_index;
+    for (std::size_t c = 0; c < s.entity_count(2); ++c) {
+      if (s.is_owned(2, c)) {
+        my_owned_boxes.push_back(cell_box(s, c));
+        owned_local_index.push_back(c);
+      }
+    }
+    const auto dest_for_owned =
+        covering_set_destinations(my_owned_boxes, r, all_target_boxes, owner_of_target_box);
+    std::vector<std::vector<std::size_t>> send_by_local_index(static_cast<std::size_t>(num_ranks));
+    for (std::size_t i = 0; i < dest_for_owned.size(); ++i) {
+      for (int d : dest_for_owned[i]) {
+        send_by_local_index[static_cast<std::size_t>(d)].push_back(owned_local_index[i]);
+      }
+    }
+    send_from[static_cast<std::size_t>(r)] =
+        pack_halo_cells(s, send_by_local_index, owned_idx_of[static_cast<std::size_t>(r)], r, num_ranks);
+  }
+
+  HaloRunResult result;
+  result.new_src.resize(static_cast<std::size_t>(num_ranks));
+  result.pattern.resize(static_cast<std::size_t>(num_ranks));
+  for (int r = 0; r < num_ranks; ++r) {
+    std::vector<std::vector<std::byte>> received;
+    received.reserve(static_cast<std::size_t>(num_ranks));
+    for (int s = 0; s < num_ranks; ++s) {
+      received.push_back(send_from[static_cast<std::size_t>(s)][static_cast<std::size_t>(r)]);
+    }
+    std::vector<int> owner_rank;
+    std::vector<std::int64_t> owner_owned_index;
+    auto merged = merge_halo_cells(*ranks[static_cast<std::size_t>(r)].src, received, r, &owner_rank,
+                                   &owner_owned_index);
+    EXPECT_TRUE(merged.ok()) << "rank " << r << ": " << merged.error().message;
+    auto new_view = NativeMeshView::create_from_host(merged.value(), r);
+    EXPECT_TRUE(new_view.ok()) << "rank " << r << ": " << new_view.error().message;
+    result.new_src[static_cast<std::size_t>(r)] = std::move(new_view.value());
+    result.pattern[static_cast<std::size_t>(r)].owner_rank = owner_rank;
+    result.pattern[static_cast<std::size_t>(r)].remote_local_index = owner_owned_index;
+  }
+  return result;
+}
+
+/// One rank's fully-prepared pieces: the backend (halo already installed
+/// both directions, via the real `commit_remap_halo` seam) plus the TWO
+/// `NativeGrid`s `NativeGrid::make` already validated as UNWIDENED --
+/// `VParticipant::make_grids` MUST run before the halo is installed (its
+/// own `E-BRUSS-MESH-COUNT` check requires an exact `nx*owned_rows`
+/// `entity_count`, which a pre-installed halo would violate), so this
+/// function's own call order below is not incidental.
+struct DecomposedVRank {
+  std::unique_ptr<NativeMeshBackend> backend;
+  NativeGrid u_grid, v_grid;
+};
+
+/// Builds `num_ranks` ranks' worth of `(backend, u_grid, v_grid)`, each
+/// backend's BOTH remap halos (U->V and V->U) pre-installed via the real
+/// `commit_remap_halo` seam -- ready to hand to `VParticipant::
+/// make_from_grids` one at a time (it will see `has_remap_halo()==true`
+/// for both triples and skip its own internal `fuse::build_remap_halo`
+/// call, which has no in-process path without real MPI).
+[[nodiscard]] std::vector<DecomposedVRank> build_decomposed_v_ranks(int nx_u, int ny_u, int nx_v,
+                                                                    int ny_v, int num_ranks) {
+  const std::string u_spec = "quad:" + std::to_string(nx_u) + "x" + std::to_string(ny_u);
+  const std::string v_spec = "quad:" + std::to_string(nx_v) + "x" + std::to_string(ny_v);
+
+  auto uv_ranks = build_rank_meshes(u_spec, v_spec, num_ranks);  // src=u, tgt=v
+  auto uv_run = run_remap_halo_pipeline(uv_ranks, num_ranks);
+  auto vu_ranks = build_rank_meshes(v_spec, u_spec, num_ranks);  // src=v, tgt=u
+  auto vu_run = run_remap_halo_pipeline(vu_ranks, num_ranks);
+
+  std::vector<DecomposedVRank> out;
+  out.reserve(static_cast<std::size_t>(num_ranks));
+  for (int r = 0; r < num_ranks; ++r) {
+    auto backend = std::make_unique<NativeMeshBackend>(r, num_ranks);
+    backend->set_communicator(1);  // placeholder, never dereferenced -- see this section's header
+
+    // `make_grids` FIRST, on the unwidened backend -- see this function's
+    // own comment above.
+    auto grids = VParticipant::make_grids(*backend, nx_u, ny_u, nx_v, ny_v);
+    EXPECT_TRUE(grids.ok()) << (grids.ok() ? "" : grids.error().message);
+    NativeGrid u_grid = std::move(grids.value().first);
+    NativeGrid v_grid = std::move(grids.value().second);
+    const fuse::MeshId u_mid = u_grid.mesh_id();
+    const fuse::MeshId v_mid = v_grid.mesh_id();
+
+    auto committed_uv = backend->commit_remap_halo(u_mid, ComponentId{},
+                                                   std::move(uv_run.new_src[static_cast<std::size_t>(r)]),
+                                                   v_mid, 2, uv_run.pattern[static_cast<std::size_t>(r)]);
+    EXPECT_TRUE(committed_uv.ok()) << committed_uv.error().message;
+    auto committed_vu = backend->commit_remap_halo(v_mid, ComponentId{},
+                                                   std::move(vu_run.new_src[static_cast<std::size_t>(r)]),
+                                                   u_mid, 2, vu_run.pattern[static_cast<std::size_t>(r)]);
+    EXPECT_TRUE(committed_vu.ok()) << committed_vu.error().message;
+
+    out.push_back(DecomposedVRank{std::move(backend), std::move(u_grid), std::move(v_grid)});
+  }
+  return out;
+}
+
+/// Runs one `VParticipant::step()` per partition CONCURRENTLY (one
+/// `std::thread` each -- `VDiffusionCore`'s own constructor/solve issue
+/// collectives, the SAME reason `make_cores_concurrently`/
+/// `step_all_partitions` above run threaded). `required_whole`: U-grid-
+/// shaped (whole), sliced to each partition's own owned band -- mirrors
+/// `step_all_partitions`'s own contract; a real run would hand a
+/// genuinely decomposed U's OWN per-rank share, not a slice of a shared
+/// whole, but the slicing itself is identical either way.
+struct VStepResult {
+  Vector provided;  // U-grid-shaped, reassembled from every partition's own band
+  // `VDiffusionCore::exchange_in()` is ALREADY a globally-reduced
+  // quantity (`dt * global_mean(q_on_v)`, global_mean's own `reducer_->
+  // sum(...)/global_n_` an allreduce-based mean, not a per-rank partial),
+  // so every partition reports the SAME value by construction -- checked
+  // explicitly below (`max_disagreement`), not assumed, since a defect
+  // that broke the reduction would otherwise be invisible to a check that
+  // only ever reads rank 0's own copy.
+  double exchange_in = 0.0;
+  double exchange_in_max_disagreement = 0.0;
+};
+
+[[nodiscard]] VStepResult step_all_v_partitions(std::vector<std::unique_ptr<VParticipant>>& cores,
+                                                const std::vector<NativeGrid>& u_grids, double dt,
+                                                const Vector& required_whole) {
+  const int num_ranks = static_cast<int>(cores.size());
+  std::vector<fuse::Result<void>> results(static_cast<std::size_t>(num_ranks),
+                                          fuse::Result<void>::success());
+  std::vector<Vector> provided_per_rank(static_cast<std::size_t>(num_ranks));
+  std::vector<std::thread> threads;
+  threads.reserve(static_cast<std::size_t>(num_ranks));
+  for (int r = 0; r < num_ranks; ++r) {
+    threads.emplace_back([&, r] {
+      const auto& g = u_grids[static_cast<std::size_t>(r)];
+      Vector required_owned = slice_owned(required_whole, g);
+      Vector provided(g.owned_size());
+      results[static_cast<std::size_t>(r)] = cores[static_cast<std::size_t>(r)]->step(
+          dt, required_owned, &provided);
+      provided_per_rank[static_cast<std::size_t>(r)] = std::move(provided);
+    });
+  }
+  for (auto& th : threads) th.join();
+  for (const auto& r : results) EXPECT_TRUE(r.ok()) << (r.ok() ? "" : r.error().message);
+
+  const int nx = u_grids.front().nx(), ny = u_grids.front().ny();
+  VStepResult out;
+  out.provided = Vector(nx * ny);
+  for (int r = 0; r < num_ranks; ++r) {
+    const auto& g = u_grids[static_cast<std::size_t>(r)];
+    for (int lj = 0; lj < g.owned_rows(); ++lj) {
+      const int j = g.j_lo() + lj;
+      for (int i = 0; i < g.nx(); ++i) {
+        out.provided[g.index(i, j)] = provided_per_rank[static_cast<std::size_t>(r)][g.local_index(i, j)];
+      }
+    }
+    const double this_rank = cores[static_cast<std::size_t>(r)]->exchange_in();
+    if (r == 0) {
+      out.exchange_in = this_rank;
+    } else {
+      out.exchange_in_max_disagreement =
+          std::max(out.exchange_in_max_disagreement, std::abs(this_rank - out.exchange_in));
+    }
+  }
+  return out;
+}
+
+constexpr int kNxUHalo = 8, kNyUHalo = 8;    // 8x8 U / 12x12 V -- same 2:3 cell-width ratio as the
+constexpr int kNxVHalo = 12, kNyVHalo = 12;  // example's own 16x16/24x24, at a size the tier-0
+                                             // halo pipeline above runs quickly. The row split
+                                             // aligns exactly at y=0.5 for 2 ranks, so this case
+                                             // adopts ZERO cells (mirrors native_halo_test.cpp's
+                                             // own 2-rank fixture).
+constexpr int kNyUHalo3 = 12, kNyVHalo3 = 18;  // 8x12 U / 12x18 V: divides evenly by 3 in
+                                               // BOTH meshes (zero adopted cells, like the 2-rank
+                                               // case above) -- a genuinely MISALIGNED 3-way split
+                                               // (e.g. 16/24 rows, 6/5/5 vs 8/8/8) WAS tried this
+                                               // session and measurably broke: decomposed.exchange_in
+                                               // diverged from the single-rank reference by ~3e-4
+                                               // (nowhere near round-off) from the very first
+                                               // sub-step onward, and later sub-steps intermittently
+                                               // crashed inside the diffusion solve (an Eigen Block
+                                               // assertion) -- reproducible with EITHER Schur or Pcg,
+                                               // at both this ratio and a 16x16/24x24 square ratio
+                                               // identical to test/backend/native_halo_test.cpp's own
+                                               // PROVEN-correct 3-rank-misaligned fixture, so the
+                                               // defect is specific to VParticipant's OWN use of an
+                                               // adopting halo (step()/remap_state_to_u), not to the
+                                               // halo-construction pipeline those other tests already
+                                               // cover. NOT ROOT-CAUSED in the time available this
+                                               // session -- see the submitted report's open_questions.
+                                               // Kept at the zero-adopt split here so this test keeps
+                                               // proving what IS measured correct (aligned 3-way
+                                               // decomposition through VParticipant) rather than
+                                               // shipping a known-unreliable assertion.
+
+}  // namespace
+
+TEST(BrusselatorSpeciesCoreDecomposition, TwoPartitionVParticipantMatchesSingleRank) {
+  // Single-rank reference: a fresh, undecomposed backend, exactly what
+  // every EXISTING in-process caller already builds.
+  NativeMeshBackend ref_backend(0, 1);
+  auto reference_r = VParticipant::make(std::move(ref_backend), kNxUHalo, kNyUHalo, kNxVHalo,
+                                        kNyVHalo, /*diffusion=*/10.0, SolverKind::Direct);
+  ASSERT_TRUE(reference_r.ok()) << reference_r.error().message;
+  VParticipant reference = std::move(reference_r.value());
+
+  auto u_partitioned = make_partitioned_grid("u", kNxUHalo, kNyUHalo, 2);
+  auto ranks = build_decomposed_v_ranks(kNxUHalo, kNyUHalo, kNxVHalo, kNyVHalo, 2);
+
+  const BarrierGroup group(2);
+  auto cores = make_cores_concurrently<VParticipant>(2, [&](int r) {
+    auto& rk = ranks[static_cast<std::size_t>(r)];
+    auto made = VParticipant::make_from_grids(std::move(*rk.backend), std::move(rk.u_grid),
+                                              std::move(rk.v_grid), /*diffusion=*/10.0,
+                                              SolverKind::Schur, 1e-12, group.make_reducer(r, 2),
+                                              group.make_exchanger_factory(r, 2));
+    EXPECT_TRUE(made.ok()) << (made.ok() ? "" : made.error().message);
+    return std::make_unique<VParticipant>(std::move(made.value()));
+  });
+
+  const double dt = 0.003;
+  Vector required = brusselator::initial_condition(/*is_u=*/false, kNxUHalo, kNyUHalo);  // q stand-in, on U's grid
+
+  double max_abs_diff = 0.0;
+  double exchange_in_single = 0.0;
+  for (int sub = 0; sub < 6; ++sub) {
+    Vector ref_provided(reference.n_u());
+    const auto ref = reference.step(dt, required, &ref_provided);
+    ASSERT_TRUE(ref.ok()) << ref.error().message;
+    exchange_in_single = reference.exchange_in();
+
+    const auto decomposed = step_all_v_partitions(cores, u_partitioned.grids, dt, required);
+    for (int c = 0; c < kNxUHalo * kNyUHalo; ++c) {
+      max_abs_diff = std::max(max_abs_diff, std::abs(decomposed.provided[c] - ref_provided[c]));
+    }
+    // Conservation: every partition's own globally-reduced exchange_in()
+    // must agree with every OTHER partition's (a real defect in the
+    // reduction would make them diverge, invisible to a check that only
+    // ever read one partition's own copy) AND with the single-rank
+    // reference's.
+    EXPECT_LT(decomposed.exchange_in_max_disagreement, 1e-12) << "sub-step " << sub;
+    EXPECT_NEAR(decomposed.exchange_in, exchange_in_single, 1e-9) << "sub-step " << sub;
+  }
+  std::fprintf(stderr, "[TwoPartitionVParticipantMatchesSingleRank] max_abs_diff=%.3e\n", max_abs_diff);
+  EXPECT_LT(max_abs_diff, 1e-12);
+}
+
+// KNOWN_ISSUES D29: a decomposition whose U and V bands do not cover the
+// same y-range ADOPTS cells in the remap halo (16 rows as 6/5/5 against 24
+// as 8/8/8: the halo test measures 0/16/16 adopted at three ranks), and
+// VParticipant over such a halo measurably disagrees with the single-rank
+// reference. Until that is fixed the configuration must REFUSE on every
+// rank -- agreed through the reducer, since the adopted count differs per
+// rank and a rank that adopted nothing must not walk alone into the first
+// exchange. The aligned case directly above adopts nothing and runs.
+TEST(BrusselatorSpeciesCoreDecomposition, ThreePartitionVParticipantRefusesAnAdoptingHalo) {
+  constexpr int kNyUMis = 16, kNyVMis = 24;  // 6/5/5 vs 8/8/8 over 3 partitions
+  auto ranks = build_decomposed_v_ranks(kNxUHalo, kNyUMis, kNxVHalo, kNyVMis, 3);
+  const BarrierGroup group(3);
+  std::vector<std::string> codes(3);
+  std::vector<std::string> messages(3);
+  auto cores = make_cores_concurrently<VParticipant>(3, [&](int r) -> std::unique_ptr<VParticipant> {
+    auto& rk = ranks[static_cast<std::size_t>(r)];
+    auto made = VParticipant::make_from_grids(std::move(*rk.backend), std::move(rk.u_grid),
+                                              std::move(rk.v_grid), /*diffusion=*/10.0,
+                                              SolverKind::Schur, 1e-12, group.make_reducer(r, 3),
+                                              group.make_exchanger_factory(r, 3));
+    if (!made.ok()) {
+      codes[static_cast<std::size_t>(r)] = made.error().code;
+      messages[static_cast<std::size_t>(r)] = made.error().message;
+    }
+    return nullptr;
+  });
+  for (int r = 0; r < 3; ++r) {
+    EXPECT_EQ(codes[static_cast<std::size_t>(r)], "E-BRUSS-V-REMAP-ADOPTION")
+        << "rank " << r << ": " << messages[static_cast<std::size_t>(r)];
+  }
+  // Every rank adopts SOMETHING here, in at least one direction (measured
+  // on the clean-export run: rank 0 "0 U, 12 V", rank 1 "8 U, 12 V", rank 2
+  // "8 U, 0 V", 40 in all; a draft asserted rank 0 adopts "0 U, 0 V" and it
+  // did not). The reason is rank_slice's shape: the extra rows go
+  // to the FIRST ranks, so rank 0's U band and V band coincide only when
+  // both row counts divide evenly by the rank count -- and then nothing is
+  // adopted anywhere. No reachable decomposition has one rank adopting
+  // nothing while another adopts, which is why the agreement through the
+  // reducer in make_from_grids cannot be given a mutation row that kills it
+  // in this example (the "local count instead of the reduced sum" mutant
+  // passes this test): it is kept as the correct form of a refusal in front
+  // of collectives, with this measured reason recorded instead of a row.
+  for (int r = 0; r < 3; ++r) {
+    std::fprintf(stderr, "[RefusesAnAdoptingHalo] rank %d: %s\n", r,
+                 messages[static_cast<std::size_t>(r)].c_str());
+  }
+}
+
+TEST(BrusselatorSpeciesCoreDecomposition, ThreePartitionVParticipantMatchesSingleRank) {
+  NativeMeshBackend ref_backend(0, 1);
+  auto reference_r = VParticipant::make(std::move(ref_backend), kNxUHalo, kNyUHalo3, kNxVHalo,
+                                        kNyVHalo3, /*diffusion=*/10.0, SolverKind::Direct);
+  ASSERT_TRUE(reference_r.ok()) << reference_r.error().message;
+  VParticipant reference = std::move(reference_r.value());
+
+  auto u_partitioned = make_partitioned_grid("u", kNxUHalo, kNyUHalo3, 3);
+  auto ranks = build_decomposed_v_ranks(kNxUHalo, kNyUHalo3, kNxVHalo, kNyVHalo3, 3);
+
+  const BarrierGroup group(3);
+  auto cores = make_cores_concurrently<VParticipant>(3, [&](int r) {
+    auto& rk = ranks[static_cast<std::size_t>(r)];
+    auto made = VParticipant::make_from_grids(std::move(*rk.backend), std::move(rk.u_grid),
+                                              std::move(rk.v_grid), /*diffusion=*/10.0,
+                                              SolverKind::Schur, 1e-12, group.make_reducer(r, 3),
+                                              group.make_exchanger_factory(r, 3));
+    EXPECT_TRUE(made.ok()) << (made.ok() ? "" : made.error().message);
+    return std::make_unique<VParticipant>(std::move(made.value()));
+  });
+
+  const double dt = 0.003;
+  Vector required = brusselator::initial_condition(/*is_u=*/false, kNxUHalo, kNyUHalo3);
+
+  double max_abs_diff = 0.0;
+  double exchange_in_single = 0.0;
+  for (int sub = 0; sub < 6; ++sub) {
+    Vector ref_provided(reference.n_u());
+    const auto ref = reference.step(dt, required, &ref_provided);
+    ASSERT_TRUE(ref.ok()) << ref.error().message;
+    exchange_in_single = reference.exchange_in();
+
+    const auto decomposed = step_all_v_partitions(cores, u_partitioned.grids, dt, required);
+    for (int c = 0; c < kNxUHalo * kNyUHalo3; ++c) {
+      max_abs_diff = std::max(max_abs_diff, std::abs(decomposed.provided[c] - ref_provided[c]));
+    }
+    EXPECT_LT(decomposed.exchange_in_max_disagreement, 1e-12) << "sub-step " << sub;
+    EXPECT_NEAR(decomposed.exchange_in, exchange_in_single, 1e-9) << "sub-step " << sub;
+  }
+  std::fprintf(stderr, "[ThreePartitionVParticipantMatchesSingleRank] max_abs_diff=%.3e\n", max_abs_diff);
+  EXPECT_LT(max_abs_diff, 1e-11);
 }
