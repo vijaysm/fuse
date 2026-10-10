@@ -30,7 +30,7 @@ module v_loop_mod
   public :: bruss_v_create, bruss_v_destroy, bruss_v_size, bruss_v_step
   public :: bruss_v_save_state, bruss_v_restore_state, bruss_v_state
   public :: bruss_v_exchange_in, bruss_v_last_error
-  public :: bruss_grid_dims, bruss_diffusion, bruss_v_provided
+  public :: bruss_grid_dims, bruss_diffusion, bruss_v_provided, bruss_owned_size, bruss_v_state_mean
 
   ! ---- shim.h's own bruss_v_* C-ABI functions (shim.cpp, a C++
   ! translation unit exporting extern "C" -- this interface block is
@@ -101,6 +101,15 @@ module v_loop_mod
       integer(c_int) :: nx_u, ny_u, nx_v, ny_v
     end subroutine bruss_grid_dims
 
+    ! The number of cells of an nx x ny grid that `rank` of `num_ranks`
+    ! owns under the library's own row decomposition (shim.h): what the
+    ! Runner sizes a field on that grid at on this rank.
+    function bruss_owned_size(nx, ny, rank, num_ranks) result(n) bind(C, name="bruss_owned_size")
+      import :: c_int
+      integer(c_int), value :: nx, ny, rank, num_ranks
+      integer(c_int) :: n
+    end function bruss_owned_size
+
     function bruss_diffusion() result(d) bind(C, name="bruss_diffusion")
       import :: c_double
       real(c_double) :: d
@@ -115,6 +124,14 @@ module v_loop_mod
       type(c_ptr), value :: h
       type(c_ptr), value :: out
     end subroutine bruss_v_provided
+
+    ! The whole species' mean over every V rank -- a COLLECTIVE every rank
+    ! must call (shim.h). What the log's mean_v means.
+    function bruss_v_state_mean(h) result(m) bind(C, name="bruss_v_state_mean")
+      import :: c_ptr, c_double
+      type(c_ptr), value :: h
+      real(c_double) :: m
+    end function bruss_v_state_mean
 
     function bruss_v_exchange_in(h) result(x) bind(C, name="bruss_v_exchange_in")
       import :: c_ptr, c_double

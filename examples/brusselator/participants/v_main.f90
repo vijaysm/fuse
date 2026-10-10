@@ -95,7 +95,6 @@ program v_main
   integer(c_int32_t) :: status
   type(c_ptr) :: vh
   real(c_double), target, allocatable :: v_out(:), v_in(:)
-  real(c_double), allocatable, target :: v_native_state(:)
   character(len=2), target :: my_component_name
   character(len=17), target :: solver_cstr
   integer :: nu
@@ -288,9 +287,17 @@ program v_main
 
   call bruss_grid_dims(nx_u, ny_u, nx_v, ny_v)
   kDiffusion = bruss_diffusion()
-  nu = nx_u * ny_u  ! both of V's window-transfer fields live on U's own
-                    ! grid -- species_component.hpp's own file header
-                    ! explains why (brusselator_graph.hpp mirrors it)
+  ! Both of V's window-transfer fields live on U's own grid
+  ! (species_component.hpp's file header explains why; brusselator_graph.hpp
+  ! mirrors it) -- and on THIS rank's band of it. The Runner sizes every
+  ! field of a placement by the placement's own decomposition (D24), so a
+  ! V on two ranks owns half of U's 16x16 grid per rank, 128 cells, exactly
+  ! as u_main.c sizes its own storage with bruss_owned_size. The first
+  ! 5-rank host run (2026-10-10) registered the whole grid here and was
+  ! refused: "registered 256 values for its export, but the plan sizes that
+  ! field at 128 on this rank" (E-RT-SIZE, the window member's size check).
+  ! On one rank this is nx_u*ny_u, as before.
+  nu = bruss_owned_size(nx_u, ny_u, v_rank, v_size)
   allocate(v_out(nu), v_in(nu))
   v_out = 0.0d0
   v_in = 0.0d0
@@ -352,12 +359,16 @@ program v_main
   status = fuse_initialize(ctx, nothing, nothing)
   call check(status, "initialize")
 
-  open(newunit=log_unit, file=trim(log_path), status="replace", action="write")
+  ! One writer per --log path (rank 0); every rank still computes the
+  ! mean below, since bruss_v_state_mean is a collective over V's ranks.
+  if (v_rank == 0) then
+    open(newunit=log_unit, file=trim(log_path), status="replace", action="write")
+  end if
 
-  allocate(v_native_state(nx_v * ny_v))
-  call bruss_v_state(vh, c_loc(v_native_state))
-  mean_v = sum(v_native_state) / real(size(v_native_state), c_double)
-  write(log_unit, '(A,ES25.17E3,A,ES25.17E3)') &
+  ! The WHOLE species' mean (one reduction over V's ranks), not this rank's
+  ! slab: bit-identical to the old sum/size on one rank.
+  mean_v = bruss_v_state_mean(vh)
+  if (v_rank == 0) write(log_unit, '(A,ES25.17E3,A,ES25.17E3)') &
       "window=0 mean_v=", mean_v, " exchange_in=", bruss_v_exchange_in(vh)
 
   req%component = c_loc(my_component_name)  ! "V" + NUL, built above
@@ -406,15 +417,14 @@ program v_main
       if (rep%next_component == -1) exit  ! period complete
     end do
 
-    call bruss_v_state(vh, c_loc(v_native_state))
-    mean_v = sum(v_native_state) / real(size(v_native_state), c_double)
-    write(log_unit, '(A,I0,A,ES25.17E3,A,ES25.17E3)') &
+    mean_v = bruss_v_state_mean(vh)  ! collective, see window 0
+    if (v_rank == 0) write(log_unit, '(A,I0,A,ES25.17E3,A,ES25.17E3)') &
         "window=", p + 1, " mean_v=", mean_v, " exchange_in=", bruss_v_exchange_in(vh)
   end do
 
-  close(log_unit)
+  if (v_rank == 0) close(log_unit)
   call bruss_v_destroy(vh)
-  deallocate(v_out, v_in, v_native_state)
+  deallocate(v_out, v_in)
 
   status = fuse_destroy(ctx, nothing, nothing)
   call check(status, "destroy")
@@ -428,8 +438,22 @@ contains
     integer(c_int32_t), intent(in) :: status_in
     character(len=*), intent(in) :: what
     integer :: abort_ierr
+    character(len=2048) :: detail
+    integer(c_int32_t) :: detail_status
     if (status_in /= FUSE_OK) then
+      ! The status alone names a class (-4 is FUSE_ERR_RUNTIME, "an exception
+      ! was contained at the boundary"), not the cause. The first 5-rank host
+      ! run (2026-10-10) printed exactly that and nothing else from V, so
+      ! the library's own message is read back the way u_main.c's fail()
+      ! does with t->last_error. The context may be unset when `what` is
+      ! "create"; then there is no message to read and the status stands.
       write(0, '(A,A,A,I0)') "FAIL(v_main): ", what, ": status=", status_in
+      if (c_associated(ctx%ptr)) then
+        detail_status = fuse_last_error(ctx, detail)
+        if (detail_status == FUSE_OK .and. len_trim(detail) > 0) then
+          write(0, '(A,A)') "  ", trim(detail)
+        end if
+      end if
       call MPI_Abort(MPI_COMM_WORLD, 1, abort_ierr)
     end if
   end subroutine check
