@@ -96,7 +96,11 @@ rules, each of which a test enforces:
    member from an old caller's padding. So a member that would fit in trailing padding is instead
    declared together with an explicit `reserved` member that pushes `sizeof` up, or widened to
    64 bits. (Golden: `test/abi/struct_sizes.golden`, one line per struct, with
-   `sizeof(void*) == 8` asserted; a change to the table is a deliberate, reviewed commit.)
+   `sizeof(void*) == 8` asserted; a change to the table is a deliberate, reviewed commit.) The
+   current table, literalincluded so this page cannot drift from it:
+
+   ```{literalinclude} ../../test/abi/struct_sizes.golden
+   ```
 4. **Value types never grow.** `fuse_exact_time` and `fuse_semantic_version` carry no `struct_size`; they are
    closed, and a new kind of time would be a new type.
 5. **Nothing is allocated across the boundary.** Buffers (error messages, graph bytes) are the

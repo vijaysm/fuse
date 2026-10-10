@@ -106,7 +106,8 @@ where none is owed.
   start here at all, docs/dev/testing.md): the same scenario under a REAL `MPI_COMM_WORLD`, with
   `build_native_remap_halo` performing its own real collectives and
   `fuse::linalg::make_mpi_exchanger` (not an in-process stand-in) filling the adopted cells' field
-  values. Registered at `RANKS 2 3` (test/CMakeLists.txt); its outcome comes from a host run.
+  values. Registered at `RANKS 2 3` (test/CMakeLists.txt); `parallel.native_halo_mpi.{2,3}` both
+  passed on the host 2026-10-10 (0.37 s, 0.08 s).
 - `build-evidence/mutations/native-mesh.toml`'s `native-halo-*` rows: hand-proven against a scratch copy
   (apply, rebuild, run `fuse_backend_native_halo_test` whole and unfiltered, record the exact
   pass/fail split, restore and `cmp` byte-identical).

@@ -2,21 +2,65 @@
 
 FUSE unifies two verified code bases: a coupling compiler and runtime, and a coupling spine
 contributing the semantic model, compatibility inference, collective reconciliation and provider ABI.
-The import baselines are pinned in `UPSTREAMS.lock` at the repository root.
+The import baselines are pinned in `UPSTREAMS.lock` at the repository root. [](roadmap.md) is the
+staged build order and where the tree currently stands against it — read it second if you want the
+state of the project before the design pages below; everything else here is organized to be read in
+order, foundations first.
 
-Read [](invariants.md) first — it is short, and every page after it assumes those rules. Then
-[](layering.md) for where code goes, [](conventions.md) for how it is written, and [](testing.md) for
-what "done" means here, and [](rank-agreement.md) for how the compiler keeps a failure on one
-rank from becoming a hang on all of them.
+## Foundations — read these first
 
-How code moves out of `upstream/` and into `fuse::` — the procedure, the naming map, and the
-retirement schedule — is [](porting.md). The staged build order lives in [](roadmap.md).
+[](invariants.md) is short, and every page after it assumes those rules. Then [](layering.md) for
+where code goes (the thirteen layers `tools/check-layering.py` enforces, bottom to top: `base`,
+`linalg`, `model`, `ir`, `schedule`, `num`, `field`, `search`, `backend`, `partition`, `transport`,
+`runtime`, `abi`), [](conventions.md) for how code is written (naming, formatting, commit messages,
+the project's own vocabulary), and [](testing.md) for what "done" means here — the five states
+every capability is in, the test harness, and the host-verified parallel results, since this
+sandbox cannot start MPI at all and every multi-rank result is a host run.
+
+## Correctness mechanisms
+
+[](rank-agreement.md) is how the compiler keeps a failure on one rank from becoming a hang on
+every other — the `Epoch` operator, what a failed rank still executes, and the lessons three
+separate host runs have added to it since (a refusal decided from local data alone can still
+strand a peer in a later collective; a window block's ownership is the consumer's, not the
+exporter's). [](debugging.md) covers how FUSE fails and how you find out why: the error mechanism,
+the on-error hook (attach a debugger to one rank under MPI), and the opt-in tracing environment
+variables (`FUSE_SCHEDULE_DEBUG`, `FUSE_TRANSPORT_DEBUG`, `FUSE_CONSERVATION_DEBUG`,
+`FUSE_BRUSS_DEBUG`) that have each closed a real defect.
+
+## Porting and the C ABI
+
+[](porting.md) is the procedure for moving code out of `upstream/` and into `fuse::` — the naming
+map and the retirement schedule. [](abi-design.md) is why the C ABI exports one symbol per
+direction rather than a prefixed family, and the rules for growing an argument struct without
+breaking a caller built against an older one.
+
+## Backends and numerics
+
+[](operators.md) is the one interface (`LinearOperator`) every spatial transfer and solver
+implements. [](partitioning.md) is the Kokkos-view RCB partitioner. [](native-mesh.md) is the
+native, MOAB-free distributed mesh; [](native-halo.md) is its remap halo (the off-rank source
+cells a partitioned read needs adopted locally before a conservative remap can run).
+[](search.md) is the ArborX-backed spatial index backends query, and why it sits below `backend`
+in the layering rather than above it. [](linalg-distributed.md) is the row-distributed dense
+vector and sparse matrix (`DistVector`/`DistSparseMatrix`) every native parallel solver is built
+on; [](linalg-krylov.md) is the native PCG and right-preconditioned GMRES(m) built on those;
+[](schur-slab-solver.md) is the exact distributed direct solver for a row-band-decomposed periodic
+Laplacian, and the one-row-band refusal that taught the rank-agreement lesson above.
+
+## Runtime features
+
 [](coupling-windows.md) covers the multi-clock iteration-window mechanism (schedule-time opt-in
-plus runtime driver) for whoever next touches it. [](nodal-fields.md) covers how a field's
-discretization decides its buffer extent (`ContinuousGLL` order 1 is sized by vertex count, not
-cell count) and what lowest-rank vertex ownership means for a nodal field in parallel.
-[](coupler-placement.md) covers the separately-placed coupler: the `ComponentKind` representation
-decision, the rule that lowers `source -> C -> target`, and every `component_count()` call site
-checked against it. [](conformance.md) defines what "conformance" means for an external code
-coupling through the participant ABI, and is the record of every Runner and window-path defect
-the Conformance track found holding an external path to that bar.
+plus runtime driver). [](nodal-fields.md) covers how a field's discretization decides its buffer
+extent (`ContinuousGLL` order 1 is sized by vertex count, not cell count) and what lowest-rank
+vertex ownership means for a nodal field in parallel. [](coupler-placement.md) covers the
+separately-placed coupler: the `ComponentKind` representation decision, the rule that lowers
+`source -> C -> target`, and every `component_count()` call site checked against it.
+
+## Holding an external path to the bar
+
+[](conformance.md) defines what "conformance" means for an external code coupling through the
+participant ABI, and is the record of every Runner and window-path defect the Conformance track
+found holding an external path to that bar — the Brusselator, as a separately-launched,
+multi-executable participant, is the external code that track and every one since has measured
+against.

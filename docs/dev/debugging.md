@@ -144,3 +144,34 @@ group the members, but not when a non-member reads an external value the
 region re-advances. Reading a diagnostic beats reading the code that produces
 it, and this session spent that lesson twice (see also
 `FUSE_TRANSPORT_DEBUG` in `rank-agreement.md`).
+
+## Opt-in traces outside `base/error.hpp`'s own mechanism
+
+The on-error hook above is for something that already failed. Several places
+in the tree additionally gate an ordinary diagnostic `fmt::print`/`fprintf`
+behind a `std::getenv` check of their own — the same "one line per check, a
+`getenv` otherwise" convention `FUSE_TRANSPORT_DEBUG` established — for a
+quantity that is not wrong, just worth seeing without attaching a debugger:
+
+`FUSE_CONSERVATION_DEBUG`
+: `src/runtime/runner.cpp`'s conservation-integral check prints this
+  process's own before/after weighted sums next to the totals the verdict
+  reduces, plus how many weights are non-zero on each side — enough to see a
+  wrong ownership or a wrong weight without instrumenting the check itself.
+
+`FUSE_BRUSS_DEBUG`
+: `examples/brusselator/species_core.hpp` prints each rank's owned/adopted
+  cell counts at `make_from_grids()` and a step-level trace in `step()`. This
+  is what localised D29 (a remap destination buffer sized from the wrong
+  rank's pre-halo owned count, overflowing a `std::vector<double>`): tracing
+  with `FUSE_BRUSS_DEBUG=1` at a 3-rank misaligned split showed
+  `weights_uv(n_rows=108, ...)` against a cached `n_v_=96` — the 12-row gap
+  being exactly that rank's own measured `adopted_v(vu)=12` — which turned
+  "corrupted heap, wrong answer from sub-step 0" into a one-line diagnosis.
+  No decision in the library rests on this trace; it is purely diagnostic,
+  the same contract `FUSE_CONSERVATION_DEBUG` and `FUSE_TRANSPORT_DEBUG` keep.
+
+Neither is a general mechanism the way `FUSE_ON_ERROR`/`base/error.hpp` is —
+each is one `getenv` check at one site, added by the track that needed it.
+A future similar trace should follow the same convention (opt-in, one line
+per check, named for what it traces) rather than invent a new one.

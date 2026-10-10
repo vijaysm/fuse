@@ -41,6 +41,27 @@ FUSE_REQUIRE_RANKS(4);              // wrong size is a clear skip, never a silen
 FUSE_REQUIRE_AT_LEAST_RANKS(2);
 ```
 
+### Naming the failing ranks, not just counting them
+
+Reducing the failure status across the communicator answers "did this test
+pass", but a launcher commonly forwards only one rank's stdout, so the rank
+that actually failed can be entirely absent from the log — "failed on 1 of 3
+rank(s)" is then the whole evidence (measured on the host, 2026-10-08,
+`parallel.window_runner_mpi.3`). `MpiFailureReducer::OnTestEnd`
+(`test/support/fuse_test_main.cpp`) now `MPI_Allgather`s each rank's own
+pass/fail bit — collective, since every rank runs the same tests in the same
+order — and a rank that passed its own assertions but sees a peer fail adds
+its own `ADD_FAILURE()` naming which rank(s) failed, so the test fails
+uniformly (no rank proceeds alone into the next collective) and the report
+names where to look:
+
+```
+failed on rank(s) 2 of 3; this rank (0) passed its own assertions. Reported
+here so the test fails uniformly and no rank proceeds to the next
+collective. For the failing rank's own output, rerun with a per-rank
+capture: mpiexec -n 3 -outfile-pattern=/tmp/<name>-%r.out <binary>
+```
+
 ## Device coverage is a build option, not a second test file
 
 ```cpp
@@ -177,10 +198,43 @@ rather than claims:
 | 2026-09-17 | full suite **855 tests, 0 failures**, 36.2 s real; 4 skips, all of them the parent suite's MOAB-dependent cases. Adds the 4 `example`, 2 `compile_fail`, 1 `field` and 1 `num` (typed, per execution space) entries. Both `requires = "mpi"` transport mutations **killed** under `FUSE_MUTATE_MPI=1`. |
 | 2026-09-17 | **Kokkos 5.1.0** (`OPENMP;SERIAL`) replaced 4.6.0 (`THREADS;SERIAL`) on the machine. Tier 0 65/65 and Tier 1 builds after two fixes: Apple clang needs a libomp hint, and `FindOpenMP` had selected GNU `libgomp` whose ABI lacks the `__kmpc_*` entry points Kokkos' objects call. Kernels now instantiate on `Kokkos::OpenMP` and `Serial`; **Threads is no longer enabled anywhere**, so that space is currently unexercised. |
 | 2026-09-17 | full suite **855 tests, 0 failures**, 49.7 s real, on the upgraded **Kokkos 5.1.0** (`OPENMP;SERIAL`). Same 4 parent-suite MOAB skips. Confirms the two OpenMP resolution fixes on the host, not just in the sandbox. |
+| 2026-10-08 | **MOAB, 12 of 12 rows, no failures**: `parallel.moab_placed_view_mpi.{1..5}` (0.06–0.33 s) alongside `backend.moab_mesh`'s 47 cases and the five `parallel.remap_halo_mpi` legs (`KNOWN_ISSUES.md` D5). `parallel.window_runner_mpi.{2,3}` pass (D19). `parallel.connect.mpmd.*` pass throughout; `parallel.connect.accept.*` fails on this MPICH `ch3:nemesis` build when both programs share a node — not a library defect (D23). |
+| 2026-10-09 | `verification.brusselator.participants.mpmd.3` passes: `max_window_balance_error`/`global_balance_error`/`max_window_exchange_error` within threshold, final means within 2 ulp (`mean_u`) and 5 ulp (`mean_v`) of the single-process example (D25). The Schur-complement row-band solver's one-row-band refusal is found to strand a peer inside the Schur-assembly allgather when decided from local data alone, and fixed to decide from `row_ownership` (a pure function every rank already holds) instead — no collective needed for the refusal itself (`docs/dev/schur-slab-solver.md`, commit `3b43bd0`). |
+| 2026-10-10 | On `main` `e76881c`, eight rows in one `ctest` invocation, no failures: `parallel.linalg_mpi.2` (0.40 s), `parallel.schur_slab_mpi.2` (0.26 s), `.3` (0.07 s), `parallel.krylov_mpi.2` (0.31 s), `parallel.brusselator_grid_mpi.2` (0.29 s), `parallel.native_halo_mpi.2` (0.37 s), `.3` (0.08 s), `verification.brusselator.participants.mpmd.3` (2.34 s). The first host run of each of the first seven, two days earlier, had found one defect per track (a refusal returned on one rank's data before a collective; crossed `MPI_Sendrecv` tags in a test's halo exchange; a test combining vectors of different ghost layouts), all fixed before this run. |
+| 2026-10-10 | `verification.brusselator.participants.mpmd.5` passes (D25): U on two ranks, V on two, the coupler on one, 1.37 s. Bit-identical to the single-process example at 3 ranks (0 ulp in both means); the 5-rank row differs by 8.9e-14 in `mean_u` and 9.4e-14 in `mean_v` (relative 5.6e-14/4.7e-14) — the decomposed Schur solve's own round-off, consistent with the in-process 2-partition bound of 4.5e-14. The species-core decomposition track's own in-process harness (`test/verification/brusselator_species_core_decomposition_test.cpp`, 9 tests) measures the decomposed `Schur`/`Pcg`/`Gmres` diffusion solvers against a single-rank reference to 2.7e-15–5.9e-14. Full tier-0 suite unaffected throughout (179/179; see "Tier-0 row count" below). |
 
 The 2026-09-16 run is what makes the rank-agreement mechanism verified rather
 than asserted: `parallel.epoch_reconcile` fails one rank's component mid-step
-and requires every other rank to return a failure instead of blocking.
+and requires every other rank to return a failure instead of blocking. The
+2026-10-08/09/10 runs are the first on this machine to exercise a THIRD
+process boundary at once (U, V and the coupler each their own executable,
+`verification.brusselator.participants.mpmd.{3,5}`) and the first to run the
+native distributed linear-algebra containers, the Krylov solvers and the
+Schur-complement row-band solver under a real `MPI_COMM_WORLD` rather than
+the in-process fakes `docs/dev/linalg-distributed.md`/`linalg-krylov.md`/
+`schur-slab-solver.md`/`native-halo.md` describe: `parallel.linalg_mpi.2`,
+`parallel.krylov_mpi.2`, `parallel.schur_slab_mpi.{2,3}`,
+`parallel.brusselator_grid_mpi.2` and `parallel.native_halo_mpi.{2,3}` all
+pass (0.07–0.40 s each) — the 2026-10-10 row in the table above is that run,
+on `main` `e76881c`, together with `mpmd.3`.
+
+## Tier-0 row count, recounted
+
+The count depends on the configuration, so two measured figures are given
+rather than one. **179** is the tier-0 count in the configuration every commit
+this week was verified in: a clean export, Debug, Eigen linear-algebra
+backend, no MPI, no MOAB, no LowFive (`ctest` reports "100% tests passed, 0
+tests failed out of 179"). A `ctest --show-only=json-v1` query against the
+full host configuration (`build-all`, MPI, MOAB and LowFive all enabled)
+counts **181** non-`mpi`-labelled rows out of 289 total; the difference is the
+serial MOAB and LowFive rows that configuration adds, not a disagreement. The call-site count (`fuse_add_gtest`/`fuse_add_mpi_test`/
+`fuse_add_upstream_main_test`/`fuse_add_layout_test`/`fuse_add_omp_legs` in
+`test/CMakeLists.txt` and `examples/CMakeLists.txt`) is 110, not 90 — the
+discrepancy is `fuse_add_mpi_test`/`fuse_add_layout_test` each expanding to up
+to five `ctest` rows (one per rank count) from one call site, so "calls" and
+"rows" are never the same number and neither figure is wrong, they are
+answering different questions. Recounted from the build tree, not asserted
+from either prior figure.
 
 ## Convergence and iteration verification
 

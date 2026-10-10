@@ -233,3 +233,96 @@ be true localised in one run what argument had failed to find five times.
 `tools/check-invariants.py` now refuses any `err = Err::None;` in library code
 (**I-VERDICT**). If a phase needs its own accumulator, it gets its own
 variable.
+
+## "Decided from local data alone" is not automatically safe
+
+`DistSparseMatrix::from_triplets`'s own refusals (`E-LINALG-FOREIGN-ROW`,
+`E-LINALG-COL-RANGE`, [](linalg-distributed.md)) return on a condition this
+rank alone can see, and that is fine *there*, because nothing later in that
+call issues a collective the refusal would need to be agreed before. It is
+easy to read that as a general rule — "a local refusal never needs to agree
+with its peers" — and it is not one.
+
+`SchurSlabSolver::factor` ([](schur-slab-solver.md)) first checked whether
+*this rank's own* row band had fewer than two rows and returned immediately
+if so, before ever reaching the Schur-complement assembly's own
+`Reducer::allgather`. A real two-rank run (`parallel.schur_slab_mpi.2`, host,
+2026-10-10) put a one-row band on rank 0 and a fine one on rank 1: rank 0
+refused and returned without entering the allgather; rank 1's own check
+passed, so it called the allgather alone — and MPICH reported "Message
+truncated", one rank waiting inside a collective nobody else had entered.
+The fix was not to add a collective in front of the refusal (correct, more
+expensive); `row_ownership` already gives every rank every participant's own
+row-band bounds, so "does *any* band have fewer than two rows" is a pure
+function of input every rank already holds in full — scanning all bands
+costs `O(nranks)` CPU and no communication, and every rank reaches the
+identical conclusion with no collective needed at all. The question to ask
+of any refusal that looks locally decided is not "can I compute this from my
+own data" but "does something *later in this same call*, on a path this
+refusal skips, perform a real collective — and if every rank's local
+decision need not agree, can one of them reach it while another does not."
+
+## A tag that is right in file order can still be paired wrong at the call site
+
+`MPI_Sendrecv` bundles a send and a receive in one call, and each endpoint
+chooses its OWN tag for each; nothing enforces that the two calls on a given
+pair of ranks agree on which tag is "my last row" and which is "my first
+row" unless the author lines them up by hand. `test/parallel/
+brusselator_grid_mpi_test.cpp`'s halo exchange sent its last row under tag 0
+and waited for the PEER's tag 1 in the same call, then its first row under
+tag 1 waiting for the peer's tag 0 — correct per-rank bookkeeping, crossed
+between ranks: each rank's first `MPI_Sendrecv` then needed a message the
+peer only sends from its SECOND call, which the peer reaches only after its
+own first call completes. Both ranks sampled inside `MPIR_Sendrecv_impl` on
+the first host run (2026-10-09), neither returning — diagnosed with macOS's
+`sample` tool (see "Diagnosed with `sample`, not re-read code" below), the
+same way D25's seed-chain hang was. The fix pairs the send and receive of
+ONE call under the SAME tag (both ranks send their last row under tag 0 and
+receive the peer's last row in the same call; then the same for the first
+row under tag 1) rather than threading two different tags through two calls
+by hand.
+
+## Ownership of a window block is the consumer's, not the exporter's
+
+A window-scoped region's per-block residual is measured through the
+compiled delivery chain (Transport/Epoch/Remap/Constrain/Diagnose), which
+runs on the CONSUMER's own processor set — not the exporter's. The runtime's
+`window_export_meta` stored the EXPORTING member's own `hosted` flag where
+the consumer's own hosting status was needed, which on a disjoint-ranks
+channel inverts ownership in both directions at once: the exporting rank
+wrongly claims a block it never writes, and the consuming rank — the only
+one that does — wrongly disclaims it, so both sides sum a stale 0/0
+residual/reference pair that reads as trivially converged. A host run of
+`parallel.window_runner_mpi.{2,3}` (2026-10-08) measured exactly this:
+`iterations_per_window[0] == 1` against a reference of 37, not a crash, a
+silently wrong converged answer. Fixed with a field resolved from the
+channel's TARGET component's own processor set
+(`WindowMemberConfig::export_consumer_hosted`) rather than reusing the
+exporter's own flag, then taken one level further: ownership is resolved
+PER BLOCK from that block's own channel, not per member from the first
+channel a fan-out member happens to feed, since a member feeding two
+consumers on different processor sets would otherwise hand both blocks the
+wrong one's answer. `KNOWN_ISSUES.md` D25 has the full account. The general
+form: when a quantity is computed in one place (the exporter) but consumed
+and measured in another (the consumer), "is this hosted here" is a question
+about the CONSUMER's processor set, not the producer's, however natural it
+reads to ask the producer first.
+
+## Diagnosed with `sample`, not re-read code
+
+A fifth re-reading of a hang rarely finds what the first four missed; a
+sampling profiler attached to the stuck processes usually does in one shot.
+D25's own seed-chain hang — three MPMD programs each stuck inside
+`MPI_Alltoallv`, two of them (U and V) inside `Runner::initialize()`'s
+seed-delivery chain and the third (the coupler) inside `run_region()`'s
+first real Transport — was found this way on the host (2026-10-09): macOS's
+`sample <pid>` on each of the three stuck processes named exactly which
+collective each was blocked in and from where, which is what made "the
+initialize-time seed chain's selection is per-rank, and after the hosting
+fix it skips the non-hosting ranks entirely" discoverable at all rather than
+guessed at. The same instrument found the crossed-tag `MPI_Sendrecv` hang
+above. Where `FUSE_TRANSPORT_DEBUG`/`FUSE_SCHEDULE_DEBUG` ([](debugging.md))
+print what the library THINKS it is doing, `sample` shows what every rank is
+actually doing RIGHT NOW — the two are complementary, and a stranded
+collective is squarely `sample`'s case: the library-side trace has nothing
+to print because nothing failed, every rank is just waiting.

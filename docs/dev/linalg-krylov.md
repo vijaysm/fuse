@@ -109,7 +109,8 @@ Measured at tier 0, one rank, against Eigen (`test/linalg/{pcg,gmres}_test.cpp`)
   absent diagonal entry).
 * `test/parallel/krylov_mpi_test.cpp` (tier 1, `RANKS 2`, built here, never run here -- MPI cannot
   start in this sandbox, [](testing.md)) repeats convergence and an independently recomputed
-  residual check for both solvers over a real `MPI_COMM_WORLD`.
+  residual check for both solvers over a real `MPI_COMM_WORLD`. `parallel.krylov_mpi.2` passed on
+  the host 2026-10-10 (0.31 s).
 
 Not verified here: breakdown (an exactly rank-deficient Krylov subspace) is handled defensively
 (`gmres.hpp`'s own comments) but no test constructs a genuine breakdown case, since the random test
