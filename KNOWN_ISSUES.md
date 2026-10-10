@@ -3267,7 +3267,7 @@ parameters). V's own CLI/ABI plumbing (`--ranks-u`/`--ranks-v`/`--solver` on `v_
 `bruss_v_create`'s matching trailing parameters) is prepared identically, but `VParticipant::make`
 still refuses outright at `num_ranks() > 1` (`E-BRUSS-V-DECOMPOSED-REMAP`) — V's two-sided remap
 routed through FUSE's distributed weights is a separate ("Halo") track's own work, explicitly out of
-scope here.
+scope here. **Superseded by D29**, which closes exactly that gap.
 
 **Verified in the sandbox:** a new in-process N-partition harness,
 `test/verification/brusselator_species_core_decomposition_test.cpp` (9 tests, all passing), measures
@@ -3288,7 +3288,9 @@ proved instead by a `timeout`-bounded rerun.
 over the WHOLE shared `MPI_COMM_WORLD` an mpmd launch gives every segment (`u_main.c`, `v_main.f90`,
 `coupler_main.c` all numbered into one world) — so `v_main.f90` and `coupler_main.c` each now carry a
 MATCHING `MPI_Comm_split(..., MPI_UNDEFINED, ...)` call at the equivalent point in their own startup,
-purely so U's own split does not strand them. This choreography across three separately-compiled
+purely so U's own split does not strand them. (D29 replaces this one-color-plus-`MPI_UNDEFINED`
+form with a single three-color split every one of the three programs now makes identically.)
+This choreography across three separately-compiled
 executables has never been run: this sandbox cannot start MPI at all (C1), and D25 itself recorded
 that `mpmd.5` — the one row where U would actually span more than one rank — was never run even
 before this change, because it exceeds the four-task rule. `mpmd.3`'s own U segment is one rank, so
@@ -3297,6 +3299,76 @@ matters for this track is `mpmd.5` with `--solver schur` (or `pcg`/`gmres`) on U
 confirming both the split choreography above and the decomposed solver agreement this entry's own
 tier-0 numbers can only approximate with an in-process thread-barrier stand-in for a real
 `Reducer`/`GhostExchanger`.
+
+### D29. V's two-sided remap is routed through the native halo on an ALIGNED decomposition; a genuinely adopting halo through `VParticipant` measurably disagrees with the single-rank reference
+
+**Guard (lead, 2026-10-10):** until the defect below is found, `VParticipant::make_from_grids`
+REFUSES any decomposition whose remap halo adopted cells, in either direction, with
+`E-BRUSS-V-REMAP-ADOPTION` -- agreed through the reducer first, since the adopted count differs
+per rank. `ThreePartitionVParticipantRefusesAnAdoptingHalo` makes it fire on the 6/5/5 vs 8/8/8
+split on all three ranks; the mutation row `brusselator-vparticipant-adopting-halo-not-refused`
+is killed by it. The aligned decompositions (row counts divisible by the rank count) adopt
+nothing and run, verified to round-off. Nothing runs wrong silently.
+
+**Closed this session (Halo track, lifting D28's own exclusion): the outright `num_ranks() > 1`
+refusal** (`E-BRUSS-V-DECOMPOSED-REMAP`) is GONE from `VParticipant::make`. `VParticipant::make_grids`/
+`make_from_grids` split the former one-shot `make()` into two stages (`NativeGrid::make`'s own
+`E-BRUSS-MESH-COUNT` check requires an UNWIDENED view, so the halo cannot be pre-installed before the
+grids exist) and build BOTH directions' remap halo (`q`: U grid -> V slab; `state`: V grid -> U slab)
+through the same `fuse::build_remap_halo`/`build_weights`/`backend.remap_halo_pattern`/
+`fuse::linalg::make_mpi_exchanger` sequence `docs/dev/native-halo.md` documents, each direction its
+own `GhostExchanger` (`shim.h`/`shim.cpp`'s own `bruss_v_create`/`bruss_v_provided` now propagate the
+resulting `fuse::Result<Vector>` failure mode instead of assuming V's remap cannot fail).
+
+**Verified correct ON AN ALIGNED split (zero adopted cells either direction):**
+`test/verification/brusselator_species_core_decomposition_test.cpp`'s `TwoPartitionVParticipant
+MatchesSingleRank` (8+8/12+12 rows) and `ThreePartitionVParticipantMatchesSingleRank` (4+4+4/6+6+6
+rows) both reproduce a `num_ranks()==1` reference to round-off (1.821e-14, 7.994e-15 — see "VParticipant
+two-sided remap decomposition" in `docs/user/brusselator.md`). The full tier-0 suite passes 179/179
+after the change.
+
+**Open — NOT a round-off gap, a real one:** a genuinely MISALIGNED 3-way split (U's 16 rows as 6/5/5
+against V's 24 as 8/8/8, so SOME U cell must cross a V partition boundary — the exact scenario
+`test/backend/native_halo_test.cpp`'s own `NativeHaloQuadGrid.ThreeRanksMisalignedAdoptsExactlyWhat
+TheOracleComputes` and `NativeHaloBuildWeights.ThreeRanksMisalignedCompleteWeightsAndLinearField
+Reproduction` already prove correct, independent of `VParticipant`, against an oracle) was tried as a
+THIRD `VParticipant` test row this session. It did not reproduce the single-rank reference:
+`exchange_in` (a globally-reduced quantity, so a reduction defect would be visible, and was checked
+for) disagreed by roughly 3e-4 from the very FIRST sub-step onward — far above round-off — and stayed
+there at a fixed magnitude rather than growing, meaning the error enters once (consistent with a wrong
+one-time ghost value or a wrong per-rank weight, not a per-step accumulating bug). Several later
+sub-steps additionally crashed inside the diffusion solve itself (an Eigen `Block.h` bounds assertion),
+reproducible with EITHER `SolverKind::Schur` or `SolverKind::Pcg` (ruling out a single solver's own
+code), and at BOTH the 16x16/24x24 (square, identical aspect ratio to `native_halo_test.cpp`'s own
+proven fixture) and an 8x... rectangular ratio (ruling out a square-vs-rectangular grid assumption).
+Because the UNDERLYING halo-construction pipeline is independently proven correct at this exact ratio,
+the defect is narrowed to how `VParticipant::make_from_grids`/`step()`/`remap_state_to_u()` DRIVES that
+pipeline (the per-rank ordering of `q_native_u`'s owned-then-ghost buffer feeding `apply_weights`, or
+something in how the two exchangers and the diffusion solver's own reducer interleave within one
+`step()` call, are the two most likely remaining candidates) — not root-caused in the time available
+this session. `test/verification/brusselator_species_core_decomposition_test.cpp`'s own `kNyUHalo3`/
+`kNyVHalo3` constants are kept at the ALIGNED values (12/18) rather than shipping a row that fails
+roughly half the time it is run; a stand-alone stress test of the new in-process ghost-exchange barrier
+class (`VarGatherBarrier`) found and fixed a real bug there first (a registry key that included
+`owned_n`, which is NOT rank-invariant under a genuinely uneven split, splitting one logical 3-rank
+collective into isolated single-rank ones that waited forever for peers that could never arrive — fixed
+by keying on `call_index` alone), but fixing that did not close this gap; the exchange_in/crash
+symptom persists after that fix.
+
+**Not attempted on a real host:** the `--ranks-u`/`--ranks-v` CLI flags on `u_main.c`/`v_main.f90` are
+unchanged in effect; what changed this session is the CHOREOGRAPHY each of `u_main.c`, `v_main.f90`,
+`coupler_main.c` uses to form ITS OWN component sub-communicator. Each now makes exactly ONE
+`MPI_Comm_split` call, with a FIXED color naming its own component (U=0, V=1, coupler=2) and key=world
+rank — replacing the previous "U splits with a real color, everyone else opts out with
+`MPI_UNDEFINED`" form, which put the entire burden of "did every non-U program remember to opt out at
+the right point" on files with nothing else to do with U's own split (see coupler_main.c's own ORDER
+MATTERS comment for the host-found choreography bug — a truncated `MPI_Allgather` — that motivated this
+change). V's own `v_rank`/`v_size` now come from this REAL communicator (`MPI_Comm_rank`/`_size` on
+it), cross-checked against the `--ranks-u`/`--ranks-v` flags (abort on disagreement) rather than
+computed from the flags alone. This has never been run: this sandbox cannot start MPI at all (C1), and
+even once real MPI is available, D29's own open correctness gap above means a decomposed-V host row
+(`mpmd.5`, the one row with `--ranks-v 2`) is NOT expected to pass until that gap closes. `mpmd.3`'s own
+V segment is one rank, so it exercises none of this.
 
 ### ~~D25. A separately launched participant could not run a coupling window~~ — CLOSED 2026-10-09 (host-measured)
 

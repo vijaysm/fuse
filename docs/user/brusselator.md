@@ -156,10 +156,21 @@ per-cell, no-cross-talk kernel Kokkos exists for.
 The mesh, the explicit (no linear solve) physics, AND (since the species-core
 solver work below) the implicit diffusion solve are all decomposed over
 however many ranks U's own component runs on. V's own grid/physics/solver
-follow the identical path, but `VParticipant::make` refuses outright whenever
-asked for `num_ranks() > 1` (`E-BRUSS-V-DECOMPOSED-REMAP`): V's two-sided
-remap is not yet routed through FUSE's distributed weights, a separate
-track's own work, and that is the one piece left open here.
+follow the identical path, and (since the Halo track's own work, docs/dev/
+native-halo.md) `VParticipant`'s two-sided remap (the `q`: U grid -> V slab,
+and `state`: V grid -> U slab transfers) is now routed through the same
+`fuse::build_remap_halo`/`build_weights`/exchanger machinery the mesh/physics
+decomposition already used for everything else -- see "VParticipant
+two-sided remap decomposition" below for the measured agreement, and that
+section's own note on what is NOT yet measured correct (a genuinely
+adopting halo through `VParticipant`, as opposed to the mesh/weights
+machinery an adopting halo itself exercises, which is proven correct
+independently -- KNOWN_ISSUES.md D29). Two pieces remain open: that
+correctness gap, and a HOST run -- a real `MPI_Comm_split`-formed, more-
+than-one-rank V communicator has never been exercised end to end on a
+machine that can start MPI (`v_main.f90`'s own header comment has the full
+account) -- `verification.brusselator.participants.mpmd.5` is build-
+verified only, in this sandbox, for exactly that reason.
 
 **The mesh.** `NativeGrid::make` loads its backend at
 `backend.rank()`/`backend.num_ranks()`. `fuse::native::NativeMeshBackend`
@@ -323,6 +334,40 @@ to derive `PhysicsConfig::solver_tolerance`'s default:
 to the Schur path's exact-solve floor -- per this project's standing
 robustness-over-efficiency rule, not the loosest value that happened to
 pass.
+
+### VParticipant two-sided remap decomposition (`verification.brusselator_species_core_decomposition`)
+
+Measured the same way as the species-core solver rows above (in-process,
+thread-barrier reducer/exchanger standing in for a real `mpiexec`), but now
+exercising `VParticipant::step`/`remap_state_to_u`'s OWN two remaps (`q`: U
+grid -> V slab; `state`: V grid -> U slab) over a decomposed V, each
+direction's halo pre-installed through the same `NativeMeshBackend::
+commit_remap_halo` seam `test/backend/native_halo_test.cpp`'s own
+`BackendFixture` uses, against a `num_ranks() == 1` `VParticipant` reference
+stepping the identical trajectory:
+
+| case | partitions | max\\|diff\\| vs. single-rank `VParticipant` |
+|---|---:|---:|
+| aligned split (8+8 / 12+12 rows, zero adopted ghost cells) | 2 | 1.821e-14 |
+| aligned split (4+4+4 / 6+6+6 rows, zero adopted ghost cells) | 3 | 7.994e-15 |
+
+Both partitionings reproduce the single-rank reference to round-off, in the
+same 1e-14/1e-15 band as the diffusion-only agreement measured above (the
+2-partition `V` row there, 2.665e-15, is itself the tightest of the three) --
+the two-sided remap's own `apply_weights` call adds no measurable error
+beyond what the diffusion solve already carries, ON a split where neither
+direction's halo adopts any cell. **A genuinely MISALIGNED 3-way split (one
+of 6/5/5 U rows against 8/8/8 V rows, and separately a 16x16/24x24 square
+grid identical to `test/backend/native_halo_test.cpp`'s own proven 3-rank
+fixture) was tried this session and did NOT reproduce the reference** --
+`exchange_in` diverged by roughly 3e-4 from the very first sub-step, and
+later sub-steps intermittently crashed inside the diffusion solve. Since
+`test/backend/native_halo_test.cpp`'s own `ThreeRanksMisalignedAdoptsExactly
+WhatTheOracleComputes`/`...CompleteWeightsAndLinearFieldReproduction` tests
+already prove the underlying halo-construction pipeline correct at exactly
+this ratio, the defect is specific to how `VParticipant` itself drives an
+adopting halo (`step()`/`remap_state_to_u()`), not to halo construction --
+not root-caused in the time available; see KNOWN_ISSUES.md D29.
 
 ### Agreement with the Toy at the defaults, short run (`--end 0.1`)
 
