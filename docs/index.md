@@ -62,6 +62,7 @@ dev/abi-design
 dev/partitioning
 dev/native-mesh
 dev/search
+dev/linalg-distributed
 dev/coupling-windows
 dev/nodal-fields
 dev/coupler-placement
