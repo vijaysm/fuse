@@ -88,10 +88,18 @@ class TwoRankMpiHaloExchanger final : public GridHaloExchanger {
     std::vector<double> recv_first(static_cast<std::size_t>(nx_)), recv_last(static_cast<std::size_t>(nx_));
     // This rank's LAST row becomes the other's "below" ghost; this rank's
     // FIRST row becomes the other's "above" ghost -- tag 0/1 names which.
-    MPI_Sendrecv(send_last.data(), nx_, MPI_DOUBLE, other, 0, recv_first.data(), nx_, MPI_DOUBLE,
-                other, 1, comm_, MPI_STATUS_IGNORE);
-    MPI_Sendrecv(send_first.data(), nx_, MPI_DOUBLE, other, 1, recv_last.data(), nx_, MPI_DOUBLE,
+    // The send and the receive of ONE call carry the same tag: both ranks
+    // send their last row (tag 0) and receive the peer's last row in the
+    // same call, then the same for the first row (tag 1). The first host
+    // run (2026-10-10) hung here with the receives crossed (call 1 sending
+    // tag 0 and waiting for tag 1): each rank's first MPI_Sendrecv then
+    // needed the message the peer only sends from its SECOND call, which
+    // the peer reaches only after its first completes -- both ranks sampled
+    // inside MPIR_Sendrecv_impl, neither returning.
+    MPI_Sendrecv(send_last.data(), nx_, MPI_DOUBLE, other, 0, recv_last.data(), nx_, MPI_DOUBLE,
                 other, 0, comm_, MPI_STATUS_IGNORE);
+    MPI_Sendrecv(send_first.data(), nx_, MPI_DOUBLE, other, 1, recv_first.data(), nx_, MPI_DOUBLE,
+                other, 1, comm_, MPI_STATUS_IGNORE);
     // ghosts[0..nx) = below row = other's last row (received as recv_last);
     // ghosts[nx..2nx) = above row = other's first row (recv_first) -- the
     // SAME order NativeGrid::ghost_pattern documents.
