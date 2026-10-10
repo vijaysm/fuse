@@ -61,6 +61,7 @@ dev/porting
 dev/abi-design
 dev/partitioning
 dev/native-mesh
+dev/native-halo
 dev/search
 dev/linalg-distributed
 dev/linalg-krylov
