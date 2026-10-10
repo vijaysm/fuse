@@ -58,10 +58,13 @@ either, so `E-RT-WINDOW-LONGSTEP` never fires; only V is ever the
 straddling member, so `E-RT-WINDOW-STRADDLE` (which fires when TWO members
 could straddle the same window) never fires either.
 
-## Running the example
+## Building and running it
 
-```
-fuse_example_gray_scott --n 64 --dt 0.5 --ratio 1|m|"p:q" \
+Tier 0 is enough — no MPI, no MOAB:
+
+```sh
+cmake --preset tier0-release && cmake --build --preset tier0-release
+<build-dir>/examples/fuse_example_gray_scott --n 64 --dt 0.5 --ratio 1|m|"p:q" \
     --policy fixed|adjustable --accel none|aitken|iqn-ils \
     --t-end 50 --check --output snapshot.csv
 ```
@@ -70,7 +73,22 @@ fuse_example_gray_scott --n 64 --dt 0.5 --ratio 1|m|"p:q" \
 parts and V is 7 (incommensurate). `--check` runs a short internal
 self-consistency probe (see "Chosen tolerances" below) and exits non-zero
 on failure. `--output` writes a CSV snapshot (`i,j,x,y,u,v`) of the final
-state.
+state. `--F`, `--k`, `--Du`, `--Dv`, `--L` override the reaction-diffusion
+parameters and domain size from their defaults above.
+
+The `ctest` row `example.gray_scott` runs
+`fuse_example_gray_scott --n 24 --ratio 2 --t-end 4 --dt 0.1 --check`.
+Measured on this build (macOS arm64, AppleClang 21.0.0, Kokkos 5.1.0
+OpenMP+Serial, tier0-release):
+
+```
+Gray-Scott windowed coupling: n=24 ratio=2 policy=adjustable accel=aitken dt=0.1 t_end=4 windows=20 total_iterations=81
+  u range [0.459793, 1], v range [4.67742e-70, 0.269348]
+  --check: m=1 windowed vs monolithic max diff 3.039e-08 (OK)
+```
+
+`example.gray_scott.omp_identical` runs the identical command at one OpenMP thread and at every host
+core and diffs the output byte for byte; verified on this build at 1 and 12 threads.
 
 ## Verification summary
 
@@ -114,11 +132,12 @@ clean order-2 signal once past this ladder's coarsest point), not merely
 the coupling-iteration residual, and it does **not** vanish at an
 arbitrary fixed dt. `example.gray_scott`'s own `--check` uses `--dt 0.1`
 specifically because at that dt the term is already below the tight
-bound (measured: diff 3.0e-08 against a 1.0e-06 bound); loosening the
-bound instead of choosing that operating point was considered and
-rejected (the task's own instruction not to loosen an order/tolerance
-bound to paper over a real discrepancy applies here as much as to a pure
-order-of-convergence assertion).
+bound (measured on this build: diff 3.039e-08 against a 1.0e-06 bound,
+consistent with the 3.022e-08 recorded when the bound was chosen);
+loosening the bound instead of choosing that operating point was
+considered and rejected (the task's own instruction not to loosen an
+order/tolerance bound to paper over a real discrepancy applies here as
+much as to a pure order-of-convergence assertion).
 
 **For ratio != 1 (commensurate m=2/4 and 7:13)** the state error against
 a fine monolithic reference falls at order 2 in dt, every refinement step
@@ -197,3 +216,13 @@ The sweep now writes each sample at its computed canonical index.
 two independent scalar problems into one length-2 member. It fails on the old
 code (0.4136 against 0.4074) and passes on the fix, to within the iteration
 tolerance (about 1e-11).
+
+## State
+
+**Verified.** `example.gray_scott` and `example.gray_scott.omp_identical` pass at tier 0 on this
+build (above); `gray_scott_mms_test`, `gray_scott_multirate_test`, and `gray_scott_reference_test`
+cover the species solver's own order, the multirate coupling's convergence under every accelerator,
+and agreement with the monolithic reference, respectively, each with the measured numbers quoted in
+"Verification summary". No multi-rank or MOAB-dependent path exists for this example: both species
+live on one shared structured grid with an identity remap, so there is nothing for a distributed
+mesh backend to add.
