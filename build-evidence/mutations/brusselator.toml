@@ -85,3 +85,99 @@ old = "      const Vector rhs = rhs_base + (0.5 * dt) * (q_prev_ + q_new);"
 new = "      const Vector rhs = rhs_base + dt * q_prev_;"
 target = "fuse_example_brusselator"
 test = "example.brusselator"
+
+# Grid track (NativeGrid decomposition, ghost halo, explicit-parts
+# parallelisation over owned+ghost storage). Own rows per the review-fix
+# protocol: file is examples/brusselator/brusselator_physics.hpp, which
+# this track owns and which did not exist in this mutation set before
+# this session. Every row below was proved BY HAND exactly as the
+# protocol above requires: `cp` a backup, apply the edit with a scripted
+# string replacement (not a manual retype, to rule out a typo being what
+# actually failed), rebuild `fuse_verification_brusselator_grid_decomposition_test`,
+# run the WHOLE binary unfiltered, record exactly which cases failed and
+# their message, restore from the backup, `cmp` byte-identical before the
+# next row.
+
+[[mutation]]
+id = "brusselator-ghost-wrapped-the-wrong-way"
+area = "examples/brusselator"
+describes = "NativeGrid::ghost_pattern: swaps which half of the pattern (the below row's nx entries vs the above row's) receives below_owner/below's-last-row-formula vs above_owner/above's-first-row-formula -- the ghost labelled \"above\" ends up holding the below neighbour's data and vice versa, exactly the 'ghost above taken from below' defect class this row is named for."
+file = "examples/brusselator/brusselator_physics.hpp"
+old = """      pattern.owner_rank[static_cast<std::size_t>(i)] = below_owner;
+      pattern.remote_local_index[static_cast<std::size_t>(i)] =
+          static_cast<std::int64_t>((below_owned_rows - 1) * nx_ + i);
+      pattern.owner_rank[static_cast<std::size_t>(nx_ + i)] = above_owner;
+      pattern.remote_local_index[static_cast<std::size_t>(nx_ + i)] = static_cast<std::int64_t>(i);"""
+new = """      pattern.owner_rank[static_cast<std::size_t>(i)] = above_owner;
+      pattern.remote_local_index[static_cast<std::size_t>(i)] = static_cast<std::int64_t>(i);
+      pattern.owner_rank[static_cast<std::size_t>(nx_ + i)] = below_owner;
+      pattern.remote_local_index[static_cast<std::size_t>(nx_ + i)] =
+          static_cast<std::int64_t>((below_owned_rows - 1) * nx_ + i);"""
+target = "fuse_verification_brusselator_grid_decomposition_test"
+test = "verification.brusselator_grid_decomposition"
+# PROVED (this session): of the 4 cases in the unfiltered binary, 2 FAILED
+# -- BrusselatorGridDecomposition.SingleRankOwnsTheWholeGridAndHalosAreTheWrapRows
+# (expected remote_local_index entries 8*13+i/i for the below/above halves,
+# got the swapped i/8*13+i, caught entry-by-entry) and
+# .TwoPartitionGhostExchangeReproducesTheNeighbourRow (rank 1's ghosts
+# after a real two-partition exchange held the WRONG neighbour row's
+# values, e.g. u1.ghosts()[5]=5 where grid1.index(5,3)=29 was expected,
+# and u1.ghosts()[8+4]=28 where grid1.index(4,0)=4 was expected -- the
+# exact values this file's own test asserts). The other 2 cases
+# (.OwnedCountMatchesThePlacedViewOnEachOfTwoRanks,
+# .OwnedPlusGhostExplicitQuantitiesMatchTheSinglePartitionResult) still
+# PASSED, because neither reads a ghost VALUE -- a ghost-only defect does
+# not perturb a placement-count check or a purely-pointwise/reduction
+# explicit-quantity check, which is exactly why this track's own test file
+# needed a THIRD test (the exchange one) beyond those two to pin ghost
+# correctness at all. Restored and verified byte-identical with `cmp`
+# before the next row.
+
+[[mutation]]
+id = "brusselator-owned-mean-drops-the-reduction"
+area = "examples/brusselator"
+describes = "SlabField::owned_mean divides this rank's own local partial sum by global_n directly, never calling reducer.sum() -- each rank's 'global' mean is actually only its own owned share of the total, violating the requirement that every mean/sum be an owned partial PLUS an injected global reduction."
+file = "examples/brusselator/brusselator_physics.hpp"
+old = "    return reducer.sum(local_sum) / static_cast<double>(global_n);"
+new = "    return local_sum / static_cast<double>(global_n);"
+target = "fuse_verification_brusselator_grid_decomposition_test"
+test = "verification.brusselator_grid_decomposition"
+# PROVED (this session): of the 4 cases, 1 FAILED --
+# .OwnedPlusGhostExplicitQuantitiesMatchTheSinglePartitionResult, with
+# `mean0`=0 (rank 0's own 4x8 band of the forcing mask has no nonzero
+# cell) against `mean1`=0.15625 (rank 1's own partial, which happens to
+# hold both of the mask's 2 nonzero cells) -- "both ranks must compute
+# the SAME global mean" failed outright, and the final comparison against
+# the whole-grid value failed with measured_diff=0.15625 against the
+# 1e-9 bound. The other 3 cases PASSED (none of them calls owned_mean).
+# Restored and verified byte-identical with `cmp` before the next row.
+
+[[mutation]]
+id = "brusselator-local-canonical-index-off-by-j-lo"
+area = "examples/brusselator"
+describes = "NativeGrid::make's recovery loop indexes native_of_canonical_ (sized to this rank's OWNED cell count) with the GLOBAL canonical index g.index(i,j) = j*nx+i instead of the LOCAL one g.local_index(i,j) = (j-j_lo)*nx+i -- invisible at num_ranks()==1 (j_lo()==0 makes the two identical by construction) and only observable once a rank's own row band does not start at global row 0."
+file = "examples/brusselator/brusselator_physics.hpp"
+old = "    const int canonical = g.local_index(i, j);"
+new = "    const int canonical = g.index(i, j);"
+target = "fuse_verification_brusselator_grid_decomposition_test"
+test = "verification.brusselator_grid_decomposition"
+# PROVED (this session): of the 4 cases, 3 FAILED and 1 PASSED. The one
+# that passed, .SingleRankOwnsTheWholeGridAndHalosAreTheWrapRows, is
+# EXACTLY the num_ranks()==1 case this row's own description says is
+# invisible (j_lo()==0 there, so the mutation computes the identical
+# index). The other 3 -- .OwnedCountMatchesThePlacedViewOnEachOfTwoRanks,
+# .TwoPartitionGhostExchangeReproducesTheNeighbourRow,
+# .OwnedPlusGhostExplicitQuantitiesMatchTheSinglePartitionResult -- all
+# construct a rank-1-of-2 NativeGrid (j_lo()==4 on an 8x8 or 16x16 grid),
+# where the mutated index runs past native_of_canonical_'s own
+# rank-sized allocation; `NativeGrid::make` itself returned
+# `!ok()` (observed message: "E-BRUSS-MESH-INDEX: ... two native cells
+# mapped to the same local canonical index 128" for the 16x16/2-rank case,
+# "... index 32" for the 8x8/2-rank case) rather than the out-of-bounds
+# write silently corrupting memory -- this build's std::vector::operator[]
+# happened to alias the dedup `seen` check's own storage in a way that
+# reliably tripped the existing duplicate-index refusal; that refusal
+# firing is what both ASSERT_TRUE(grid.ok())-style checks in this file
+# caught, not a crash. Stated as observed on this build/compiler, not as
+# a guaranteed detection mechanism a different allocator would reproduce.
+# Restored and verified byte-identical with `cmp` before submission.

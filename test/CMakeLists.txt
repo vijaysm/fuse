@@ -474,15 +474,15 @@ fuse_tests_gated_by(FUSE_ENABLE_MPI
   parallel/mpi_transport_test.cpp parallel/epoch_reconcile_test.cpp
   parallel/nodal_field_test.cpp parallel/nodal_remap_distributed_test.cpp
   parallel/nodal_remap_runner_test.cpp parallel/window_runner_mpi_test.cpp
-  parallel/linalg_mpi_test.cpp)
+  parallel/linalg_mpi_test.cpp parallel/brusselator_grid_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
+  foreach(t runner_transport comm_graph mpi_transport)
+    fuse_add_mpi_test(parallel ${t} LIBS fuse::runtime)
+  endforeach()
   # "Containers" track, tier 1: make_mpi_reducer/make_mpi_exchanger and the
   # DistVector/DistSparseMatrix operations built on them, over a real
   # MPI_COMM_WORLD. RANKS 2 only, per the task: built here, run on the host.
   fuse_add_mpi_test(parallel linalg_mpi LIBS fuse::linalg RANKS 2 LABELS linalg)
-  foreach(t runner_transport comm_graph mpi_transport)
-    fuse_add_mpi_test(parallel ${t} LIBS fuse::runtime)
-  endforeach()
   # "Nodal fields" track, step 2: SharedVertexLineMesh's lowest-rank
   # ownership, a plain nodal Transport's every-copy-matches-owner property,
   # and the standalone accumulate_shared_rows reduction (comm_graph.hpp).
@@ -521,6 +521,15 @@ if(FUSE_ENABLE_MPI)
   # disjoint, at 3 a genuinely uncoupled third component (C) is added so
   # its presence is proven not to perturb the window's agreed answer.
   fuse_add_mpi_test(parallel window_runner_mpi LIBS fuse::runtime RANKS 2 3)
+  # Grid track: test/verification/brusselator_grid_decomposition_test.cpp's
+  # requirements 2-4 repeated on 2 real ranks. RANKS 2 only, per the task
+  # ("the tier-1 test repeats 2-4 on 2 real ranks"); the test-local MPI
+  # reducer/exchanger it defines are specific to that rank count.
+  fuse_add_mpi_test(parallel brusselator_grid_mpi
+                     LIBS fuse::runtime fuse::backend fuse::model Eigen3::Eigen Kokkos::kokkos
+                     RANKS 2)
+  target_include_directories(fuse_parallel_brusselator_grid_mpi_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/brusselator)
   # comm_graph_test exercises CrystalRouter directly, which is a private
   # implementation header under src/transport/ -- the transport layer's public
   # surface is CommGraph. The parent gave this one test src/ on its include
@@ -747,9 +756,9 @@ endforeach()
 # Eigen3::Eigen (periodic-diffusion backward-Euler, SimplicialLDLT) and
 # Kokkos::kokkos (the reaction kernel) directly, same reasoning as
 # gray_scott's registration just above.
-foreach(t brusselator_weights brusselator_physics brusselator_runner)
+foreach(t brusselator_weights brusselator_physics brusselator_runner brusselator_grid_decomposition)
   fuse_add_gtest(verification ${t} NO_LAYER_LIB
-                 LIBS fuse::runtime fuse::backend Eigen3::Eigen Kokkos::kokkos)
+                 LIBS fuse::runtime fuse::backend fuse::model Eigen3::Eigen Kokkos::kokkos)
   target_include_directories(fuse_verification_${t}_test PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/brusselator)
 endforeach()
