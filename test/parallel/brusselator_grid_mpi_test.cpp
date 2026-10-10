@@ -48,6 +48,11 @@ class MpiReducer final : public GridReducer {
     MPI_Allreduce(&local, &total, 1, MPI_DOUBLE, MPI_SUM, comm_);
     return total;
   }
+  void sum(double* inout, std::size_t n) const override {
+    std::vector<double> total(n);
+    MPI_Allreduce(inout, total.data(), static_cast<int>(n), MPI_DOUBLE, MPI_SUM, comm_);
+    std::copy(total.begin(), total.end(), inout);
+  }
   [[nodiscard]] double max(double local) const override {
     double total = 0.0;
     MPI_Allreduce(&local, &total, 1, MPI_DOUBLE, MPI_MAX, comm_);
@@ -55,6 +60,10 @@ class MpiReducer final : public GridReducer {
   }
   [[nodiscard]] int rank() const override { return rank_; }
   [[nodiscard]] int size() const override { return size_; }
+  void allgather(const double* send, std::size_t n_each, double* recv) const override {
+    MPI_Allgather(send, static_cast<int>(n_each), MPI_DOUBLE, recv, static_cast<int>(n_each),
+                 MPI_DOUBLE, comm_);
+  }
 
  private:
   MPI_Comm comm_;
@@ -70,6 +79,8 @@ class MpiReducer final : public GridReducer {
 class TwoRankMpiHaloExchanger final : public GridHaloExchanger {
  public:
   TwoRankMpiHaloExchanger(MPI_Comm comm, int nx) : comm_(comm), nx_(nx) {}
+
+  [[nodiscard]] std::size_t ghost_size() const override { return static_cast<std::size_t>(2 * nx_); }
 
   [[nodiscard]] fuse::Result<void> update(const double* owned, std::size_t owned_n,
                                           double* ghosts, std::size_t ghost_n) const override {

@@ -137,6 +137,8 @@ class TwoPartitionHaloExchanger final : public GridHaloExchanger {
         other_owned_(other_owned),
         other_owned_n_(other_owned_n) {}
 
+  [[nodiscard]] std::size_t ghost_size() const override { return pattern_.owner_rank.size(); }
+
   [[nodiscard]] fuse::Result<void> update(const double* owned, std::size_t owned_n,
                                           double* ghosts, std::size_t ghost_n) const override {
     if (ghost_n != pattern_.owner_rank.size()) {
@@ -170,15 +172,42 @@ class TwoPartitionHaloExchanger final : public GridHaloExchanger {
 /// the OTHER partition's own locally-computed value (determined once,
 /// outside, by the test driver -- the same two numbers an MPI_Allreduce
 /// over 2 ranks would combine) and fold it in, so `rank()`/`size()` read
-/// as a real 2-rank communicator would.
+/// as a real 2-rank communicator would. `sum(double*, n)`/`allgather` are
+/// the two `fuse::linalg::Reducer` members this test's own `GridReducer`
+/// alias did not carry before the Grid-track substitution (brusselator_
+/// physics.hpp's own comment on that alias) -- added here so this
+/// concrete type satisfies the now-abstract interface; neither is
+/// exercised by the two tests that use `PairedReducer` (both call only
+/// the scalar `sum`/`max` this class already implemented), so they are
+/// simple, uncontested implementations (a per-scalar loop; a 2-rank
+/// gather of the two already-known `send` buffers in rank order).
 class PairedReducer final : public GridReducer {
  public:
   PairedReducer(int rank, double other_sum, double other_max)
       : rank_(rank), other_sum_(other_sum), other_max_(other_max) {}
   [[nodiscard]] double sum(double local) const override { return local + other_sum_; }
+  void sum(double* inout, std::size_t n) const override {
+    for (std::size_t k = 0; k < n; ++k) inout[k] += other_sum_;
+  }
   [[nodiscard]] double max(double local) const override { return std::max(local, other_max_); }
   [[nodiscard]] int rank() const override { return rank_; }
   [[nodiscard]] int size() const override { return 2; }
+  void allgather(const double* send, std::size_t n_each, double* recv) const override {
+    // Not exercised by this test (PairedReducer's own class comment);
+    // provided only so this concrete type satisfies the abstract
+    // interface. This rank's own `send` goes in its own slot; the other
+    // rank's slot cannot be answered from this rank's own data alone
+    // (unlike `sum`/`max`, which fold in a PRECOMPUTED other-rank value)
+    // -- refused via FUSE_ASSERT rather than silently left zero, so a
+    // future caller that DOES need this discovers the gap immediately
+    // rather than reading plausible-looking garbage.
+    (void)send;
+    (void)recv;
+    FUSE_ASSERT(false,
+               "PairedReducer::allgather: not implemented (not needed by any test that "
+               "constructs this type); rank={} n_each={}",
+               rank_, n_each);
+  }
 
  private:
   int rank_;
