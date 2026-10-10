@@ -109,25 +109,71 @@ in-process reference (`DirectDiffusionSolver`,
 decomposes its grid sees the identical operator, assembled and factored
 the identical way.
 
-**`nranks >= 2` needs `local_rows >= 2`.** A row band's first and last row
-must be 2 DISTINCT rows for the block structure below to have a 2-row-wide
-(`2*nx` entries) interface at all; a 1-row band would have to use its one
-row as both `k=0` and `k=local_rows-1` at once, double-counting it between
-the (then zero-sized) interior block and an interface block sized for 2
-rows. `factor()` refuses this, `E-LINALG-SCHUR-SLAB`
+**`nranks >= 2` needs `local_rows >= 2` ON EVERY RANK, not just this one.**
+A row band's first and last row must be 2 DISTINCT rows for the block
+structure below to have a 2-row-wide (`2*nx` entries) interface at all; a
+1-row band would have to use its one row as both `k=0` and
+`k=local_rows-1` at once, double-counting it between the (then zero-sized)
+interior block and an interface block sized for 2 rows. `factor()` refuses
+this, `E-LINALG-SCHUR-SLAB`
 (`test/linalg/schur_slab_test.cpp`'s
 `SchurSlabSolverRefusal.OneRowBandRefusesWithoutFactorizing`/
 `EmptyRowBandAlsoRefuses`) -- a caller sizes `nranks` so `ny >= 2*nranks`,
 which this grid and partition were always meant to allow, and silently
 handling the 1-row case would hide a misconfigured decomposition instead of
-surfacing it. **This refusal is LOCAL, never collective**: it is answerable
-from this rank's own `j_lo`/`j_hi` alone, before the one collective
-`factor()` performs (the Schur-complement allgather, below) -- so one
-rank's own row band being too small cannot leave its peers waiting inside a
-collective that only some of them reach, the same "never return on a
-locally computed condition" discipline
-`DistSparseMatrix::from_triplets`'s own header comment already states for
-its `E-LINALG-FOREIGN-ROW`/`E-LINALG-COL-RANGE` refusals.
+surfacing it.
+
+**HOST-FOUND BUG (2026-10-10, commit 3b43bd0), and the general principle it
+forced.** The first version of this check was answerable from this rank's
+own `j_lo`/`j_hi` alone and returned immediately on that -- which reads, at
+first glance, like exactly the "never return on a locally computed
+condition" discipline `DistSparseMatrix::from_triplets`'s own header
+comment states for its `E-LINALG-FOREIGN-ROW`/`E-LINALG-COL-RANGE`
+refusals. It is not: THAT discipline is about never SKIPPING a collective
+on a condition some ranks see and others do not; it does not by itself
+make "decided from my own local data" safe, because `factor()` performs a
+REAL collective later (the Schur-assembly allgather) regardless of which
+rank refuses. A real run (`parallel.schur_slab_mpi.2`/`.3`) put a 1-row
+band on one rank and a fine one on another: the undersized rank refused
+and returned without ever reaching that allgather, while the fine-banded
+rank sailed past its OWN (passing) check and called it alone -- MPICH's
+own `MPI_Allgather` reported "Message truncated", exactly one rank waiting
+inside a collective nobody else entered.
+
+The fix is NOT "add a collective before this refusal" (the obvious, more
+expensive fix) -- it is to notice that `row_ownership` already gives
+EVERY rank the full partition (every participant's own `row_lo`, the
+same array the `FUSE_ASSERT` block above already trusts for THIS rank's
+own `j_lo`/`j_hi`), so the condition "does ANY row band have fewer than 2
+rows" is NOT, in fact, locally computed at all -- it is a PURE FUNCTION of
+input every rank already holds in full. Scanning all `nranks` bands from
+`row_ownership` (not just this rank's own) costs nothing (`O(nranks)` pure
+CPU, zero communication) and makes every rank reach the IDENTICAL
+conclusion with the IDENTICAL message, with no collective needed at all --
+cheaper AND correct, rather than correct only at the cost of an extra
+`Reducer::allgather`. `test/linalg/schur_slab_test.cpp`'s
+`SchurSlabSolverRefusal.OneRowBandRefusesOnEveryRankWithoutStrandingAnyoneInACollective`
+calls `factor()` for both a fine-banded and an undersized-banded rank and
+checks both the refusal AND that both ranks made the identical (zero)
+number of `allgather` calls.
+
+**The OTHER kind of divergence this audit found: numerical, not
+structural.** A factorisation's own outcome (the interior `SimplicialLDLT`,
+and the interior solve that builds the Schur correction) genuinely CANNOT
+be predicted from `row_ownership` -- it depends on this rank's own
+assembled VALUES, which no peer can see, so the row-band fix's trick does
+not apply. THIS condition needs a real collective: `ranks_not_ok`
+(`src/linalg/schur_slab.cpp`) gathers every rank's own pass/fail vote
+(`Reducer::allgather` of one double per rank) before any rank returns, so
+a factorisation failing on only SOME ranks (never expected for this
+operator's SPD structure, but checked rather than assumed) cannot strand
+the others inside the Schur-assembly allgather either. The same pattern
+protects the analogous check in `solve()` (the interior solve that builds
+the reduced interface right-hand side), before ITS OWN `b_G` allgather.
+`build-evidence/mutations/linalg.toml`'s
+`schur-slab-row-band-agreement-dropped` and
+`schur-slab-interior-factorization-agreement-dropped` rows hand-prove both
+fixes by reverting each one to the pre-fix, locally-decided form in turn.
 
 ## The block system
 

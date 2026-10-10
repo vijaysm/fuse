@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <string>
 #include <vector>
 
 #include <Eigen/Dense>
@@ -63,6 +64,45 @@ SpMat periodic_laplacian_duplicate(int nx, int ny) {
   SpMat result(nx * ny, nx * ny);
   result.setFromTriplets(entries.begin(), entries.end());
   return result;
+}
+
+/// Agrees, across every rank, whether `local_ok` holds EVERYWHERE -- ONE
+/// `Reducer::allgather` of a single double per rank. Returns the (always
+/// ascending) rank indices that reported `!local_ok`, empty when every
+/// rank agrees; every rank reads the SAME `recv`, so every rank builds the
+/// SAME list with no further communication.
+///
+/// This is the collective every refusal in this file that depends on
+/// RANK-VARYING RUNTIME DATA (a factorisation's own numerical outcome,
+/// which no rank can predict from another's inputs) must perform BEFORE
+/// returning -- found missing on the host, 2026-10-10: the row-band-size
+/// refusal below USED TO be decided from this rank's own `local_rows`
+/// alone and return immediately, which is a DIFFERENT, STRONGER fix than
+/// this function provides (that refusal needs no collective at all, since
+/// `row_ownership` already gives every rank the full partition -- see
+/// `factor()`'s own comment at that check) -- but a numerical
+/// factorisation failure genuinely CANNOT be predicted from
+/// `row_ownership` alone, so it is this function's own collective that
+/// keeps it from stranding a peer the same way.
+std::vector<int> ranks_not_ok(const Reducer& reducer, bool local_ok) {
+  const int nranks = reducer.size();
+  const double send = local_ok ? 0.0 : 1.0;
+  std::vector<double> recv(static_cast<std::size_t>(nranks));
+  reducer.allgather(&send, 1, recv.data());
+  std::vector<int> bad;
+  for (int r = 0; r < nranks; ++r) {
+    if (recv[static_cast<std::size_t>(r)] != 0.0) bad.push_back(r);
+  }
+  return bad;
+}
+
+std::string format_rank_list(const std::vector<int>& ranks) {
+  std::string out;
+  for (std::size_t k = 0; k < ranks.size(); ++k) {
+    if (k > 0) out += ", ";
+    out += std::to_string(ranks[k]);
+  }
+  return out;
 }
 
 }  // namespace
@@ -156,19 +196,54 @@ Result<SchurSlabSolver> SchurSlabSolver::factor(int nx, std::int64_t ny, std::in
   }
 
   // -------------------------------------------------------------------
-  // nranks >= 2: this rank's own row band needs 2 distinct rows (E4 in
+  // nranks >= 2: EVERY rank's own row band needs 2 distinct rows (E4 in
   // docs/dev/schur-slab-solver.md) to have a first AND a last interface
-  // row at all.
-  // -------------------------------------------------------------------
-  if (local_rows < 2) {
+  // row at all -- not just THIS rank's own.
+  //
+  // HOST-FOUND BUG (2026-10-10), FIXED HERE: this used to check only
+  // `local_rows < 2` and return immediately on THAT alone -- a collective
+  // path (the Schur-assembly `allgather` below) returning on a condition
+  // computed from THIS rank's own data violates the standing rule that a
+  // collective path must never do that. On the host, rank 0's single-row
+  // band refused and returned without ever reaching that allgather, while
+  // every other rank's own band was fine and sailed on into it alone;
+  // MPICH's own "Message truncated" in MPI_Allgather is exactly one rank
+  // waiting inside a collective nobody else entered.
+  //
+  // The fix needs NO new collective at all: `row_ownership` already gives
+  // EVERY rank the full partition (every participant's own `row_lo`, the
+  // same convention the FUSE_ASSERT block above already trusts for THIS
+  // rank's own `j_lo`/`j_hi`), so every rank can determine -- by scanning
+  // ALL `nranks` bands locally, with zero communication -- whether ANY
+  // band anywhere is undersized, and reach the IDENTICAL conclusion with
+  // the IDENTICAL message, before the one real collective this function
+  // performs.
+  std::vector<int> undersized_ranks;
+  for (int r = 0; r < nranks; ++r) {
+    const std::int64_t r_lo = row_ownership.row_lo[static_cast<std::size_t>(r)];
+    const std::int64_t r_hi =
+        (r + 1 < nranks) ? row_ownership.row_lo[static_cast<std::size_t>(r + 1)] : ny;
+    if (r_hi - r_lo < 2) undersized_ranks.push_back(r);
+  }
+  if (!undersized_ranks.empty()) {
+    std::string detail;
+    for (std::size_t k = 0; k < undersized_ranks.size(); ++k) {
+      const int r = undersized_ranks[k];
+      const std::int64_t r_lo = row_ownership.row_lo[static_cast<std::size_t>(r)];
+      const std::int64_t r_hi =
+          (r + 1 < nranks) ? row_ownership.row_lo[static_cast<std::size_t>(r + 1)] : ny;
+      if (k > 0) detail += "; ";
+      detail += fmt::format("rank {} owns {} row(s) [{}, {})", r, r_hi - r_lo, r_lo, r_hi);
+    }
     return Failure{
         "E-LINALG-SCHUR-SLAB",
-        fmt::format("SchurSlabSolver::factor: this rank's own row band owns {} row(s) "
-                   "([{}, {})) of a {}-rank partition; a Schur-complement row band needs at "
-                   "least 2 rows so its first and last row are 2 DISTINCT interface rows -- a "
-                   "1-row (or empty) band would have to use its one row as both, double-"
-                   "counting it",
-                   local_rows, j_lo, j_hi, nranks)};
+        fmt::format("SchurSlabSolver::factor: {} of {} ranks' own row bands own fewer than 2 "
+                   "rows ({}); a Schur-complement row band needs at least 2 rows so its first "
+                   "and last row are 2 DISTINCT interface rows -- a 1-row (or empty) band would "
+                   "have to use its one row as both, double-counting it. Decided identically on "
+                   "every rank from row_ownership alone, before the one collective this function "
+                   "performs, so no rank is left waiting inside it.",
+                   undersized_ranks.size(), nranks, detail)};
   }
 
   const double xx = double(nx) * nx;
@@ -231,27 +306,43 @@ Result<SchurSlabSolver> SchurSlabSolver::factor(int nx, std::int64_t ny, std::in
   impl->n_interior = n_interior;
   impl->a_ig = a_ig;
 
+  // Unlike the row-band-size refusal above, a factorisation's own
+  // numerical outcome genuinely CANNOT be predicted from row_ownership
+  // alone -- it depends on this rank's own assembled VALUES, which no
+  // peer can see. `local_ok` is therefore decided locally but NOT acted
+  // on locally: every rank's own vote is agreed by `ranks_not_ok` (ONE
+  // small collective) before anyone returns, so a factorisation that
+  // fails on only SOME ranks' own interior matrix (never expected for
+  // this operator's SPD structure, but checked rather than assumed) can
+  // never strand the others inside the Schur-assembly allgather below --
+  // the same stranding hazard the row-band-size refusal was found to have
+  // on the host, fixed here the OTHER way the task's own diagnosis named
+  // ("agreed first... then every rank refuses with the same code").
+  bool local_ok = true;
+  Eigen::MatrixXd s_own = a_gg_own;
   if (n_interior > 0) {
     SpMat interior(n_interior, n_interior);
     interior.setFromTriplets(interior_triplets.begin(), interior_triplets.end());
     impl->interior_factor.compute(interior);
     if (impl->interior_factor.info() != Eigen::Success) {
-      return Failure{"E-LINALG-SCHUR-SLAB-FACTORIZE",
-                    "SchurSlabSolver::factor: interior SimplicialLDLT factorization failed"};
+      local_ok = false;
+    } else {
+      // S_own = A_GG_own - A_GI * A_II^-1 * A_IG = A_GG_own - A_IG^T * (A_II^-1 A_IG).
+      const Eigen::MatrixXd y = impl->interior_factor.solve(a_ig);
+      if (impl->interior_factor.info() != Eigen::Success) {
+        local_ok = false;
+      } else {
+        s_own = a_gg_own - a_ig.transpose() * y;
+      }
     }
   }
 
-  // S_own = A_GG_own - A_GI * A_II^-1 * A_IG = A_GG_own - A_IG^T * (A_II^-1 A_IG).
-  Eigen::MatrixXd s_own;
-  if (n_interior > 0) {
-    const Eigen::MatrixXd y = impl->interior_factor.solve(a_ig);
-    if (impl->interior_factor.info() != Eigen::Success) {
-      return Failure{"E-LINALG-SCHUR-SLAB-FACTORIZE",
-                    "SchurSlabSolver::factor: interior solve for the Schur correction failed"};
-    }
-    s_own = a_gg_own - a_ig.transpose() * y;
-  } else {
-    s_own = a_gg_own;
+  if (const auto failed = ranks_not_ok(*reducer, local_ok); !failed.empty()) {
+    return Failure{"E-LINALG-SCHUR-SLAB-FACTORIZE",
+                  fmt::format("SchurSlabSolver::factor: interior factorisation failed on "
+                             "rank(s) {}; agreed across every rank before the Schur "
+                             "complement's own allgather, so no rank is left waiting inside it",
+                             format_rank_list(failed))};
   }
 
   // The periodic ring of row bands: predecessor and successor are fixed by
@@ -370,19 +461,28 @@ Result<void> SchurSlabSolver::solve(const DistVector& rhs_owned, DistVector& x_o
   // local to this rank -- A_GI only reaches this rank's OWN interior rows
   // (docs/dev/schur-slab-solver.md: an interior row's two neighbours are
   // both inside its own row band by definition).
+  //
+  // AGREED before the b_G allgather below, not returned on locally -- the
+  // same stranding hazard factor()'s own interior-factorisation check has
+  // (this file's own `ranks_not_ok` comment has the full account): a
+  // solve that fails on only SOME ranks' own interior system must not
+  // strand the others inside that collective.
   Eigen::VectorXd interior_y;
-  Eigen::VectorXd b_g_reduced_own;
+  bool local_ok = true;
   if (n_interior > 0) {
     interior_y = impl_->interior_factor.solve(b_interior);
-    if (impl_->interior_factor.info() != Eigen::Success) {
-      return Failure{"E-LINALG-SCHUR-SLAB-SOLVE",
-                    "SchurSlabSolver::solve: interior solve for the reduced interface rhs "
-                    "failed"};
-    }
-    b_g_reduced_own = b_g_own - impl_->a_ig.transpose() * interior_y;
-  } else {
-    b_g_reduced_own = b_g_own;
+    if (impl_->interior_factor.info() != Eigen::Success) local_ok = false;
   }
+  if (const auto failed = ranks_not_ok(*impl_->reducer, local_ok); !failed.empty()) {
+    return Failure{"E-LINALG-SCHUR-SLAB-SOLVE",
+                  fmt::format("SchurSlabSolver::solve: interior solve for the reduced "
+                             "interface rhs failed on rank(s) {}; agreed across every rank "
+                             "before the reduced-rhs allgather, so no rank is left waiting "
+                             "inside it",
+                             format_rank_list(failed))};
+  }
+  const Eigen::VectorXd b_g_reduced_own =
+      (n_interior > 0) ? Eigen::VectorXd(b_g_own - impl_->a_ig.transpose() * interior_y) : b_g_own;
 
   std::vector<double> send(static_cast<std::size_t>(2 * nx));
   std::copy(b_g_reduced_own.data(), b_g_reduced_own.data() + 2 * nx, send.begin());

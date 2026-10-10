@@ -260,3 +260,78 @@ test = "linalg.schur_slab"
 # rather than a wrong-number assertion -- a tier-0 finding, no MPI
 # involved. File restored and `cmp`-verified byte-identical to the
 # pre-mutation copy both times.
+
+# HOST-FOUND BUG, FIXED 2026-10-10: a host run of commit 3b43bd0
+# (parallel.schur_slab_mpi.2/.3) found factor()'s row-band-size refusal
+# deciding from THIS rank's own `local_rows` alone and returning
+# immediately -- a collective path (the Schur-assembly allgather)
+# returning on a locally computed condition, the standing rule's own
+# forbidden pattern -- which MPICH's own "Message truncated" in
+# MPI_Allgather confirmed: rank 1's single-row band refused and returned
+# without ever calling that allgather, while rank 0's fine band sailed on
+# into it alone. Fixed two ways, matching the task's own diagnosis
+# exactly: (1) the row-band-size refusal now needs NO collective at all --
+# decided from `row_ownership` alone, which every rank already holds in
+# full; (2) a genuinely rank-varying condition (a factorisation's own
+# numerical outcome) that CANNOT be predicted from shared metadata is
+# AGREED via one small `Reducer::allgather` (`ranks_not_ok`,
+# src/linalg/schur_slab.cpp) before any rank returns. Both rows below are
+# hand-proven the same way every other row in this file is.
+
+[[mutation]]
+id = "schur-slab-row-band-agreement-dropped"
+area = "linalg"
+describes = "SchurSlabSolver::factor's row-band-size refusal is reverted to deciding from THIS rank's own band alone (the loop that scans every rank's own row_ownership entry is narrowed to iterate only `r == rank`) -- reproducing the EXACT host-found bug (2026-10-10, commit 3b43bd0): a rank whose OWN band is fine never learns that a PEER's band is undersized, so it proceeds past the refusal into the Schur-assembly allgather alone while the undersized rank refuses and returns without ever calling it. Killed at tier 0 by SchurSlabSolverRefusal.OneRowBandRefusesOnEveryRankWithoutStrandingAnyoneInACollective, which calls factor() for BOTH a fine-banded rank and an undersized one and asserts BOTH refuse."
+file = "src/linalg/schur_slab.cpp"
+old = """  std::vector<int> undersized_ranks;
+  for (int r = 0; r < nranks; ++r) {"""
+new = """  std::vector<int> undersized_ranks;
+  for (int r = rank; r <= rank; ++r) {"""
+target = "fuse_linalg_schur_slab_test"
+test = "linalg.schur_slab"
+# Hand-proved 2026-10-10 against a byte-identical restored copy: 11 cases
+# in the target before mutation (all pass -- this row and the one below
+# were added alongside two new regression tests, bringing the suite from
+# 9 to 11 cases). After mutation, applied by hand and the WHOLE binary run
+# unfiltered: 10 pass, 1 fails
+# (SchurSlabSolverRefusal.OneRowBandRefusesOnEveryRankWithoutStrandingAnyoneInACollective,
+# specifically on `result0.ok()` being unexpectedly true -- rank 0's own
+# fine band no longer learns that rank 1's band is undersized). Every
+# OTHER case, including the two single-rank refusal checks
+# (OneRowBandRefusesWithoutFactorizing, EmptyRowBandAlsoRefuses, which
+# only ever call factor() for the undersized rank itself and so cannot
+# distinguish "this rank's own check" from "every rank's own check"),
+# passes unaffected, exactly as expected for a mutation that only breaks
+# the OTHER rank's view. File restored and `cmp`-verified byte-identical.
+
+[[mutation]]
+id = "schur-slab-interior-factorization-agreement-dropped"
+area = "linalg"
+describes = "SchurSlabSolver::factor's interior-factorisation agreement (`ranks_not_ok`, ONE small allgather before the Schur-assembly allgather) is bypassed, reverting to deciding `failed` from THIS rank's own `local_ok` alone with no collective at all -- the SAME class of host-found bug as the row-band-size row above, but for the genuinely rank-varying condition (a factorisation's numerical outcome) that a shared-metadata check like the row-band fix cannot cover. Killed at tier 0 by SchurSlabSolverRefusal.InteriorFactorizationFailureOnOneRankIsAgreedWithoutStrandingAnyoneInACollective, which forces rank 1's own interior matrix to be EXACTLY singular (a coefficient chosen so 2*(nx^2+ny^2) is an exact power of 2, zeroing the interior diagonal bit-for-bit, confirmed by Eigen's own info()) while rank 0's stays well-conditioned, and asserts BOTH ranks refuse together."
+file = "src/linalg/schur_slab.cpp"
+old = """  if (const auto failed = ranks_not_ok(*reducer, local_ok); !failed.empty()) {
+    return Failure{"E-LINALG-SCHUR-SLAB-FACTORIZE",
+                  fmt::format("SchurSlabSolver::factor: interior factorisation failed on "
+                             "rank(s) {}; agreed across every rank before the Schur "
+                             "complement's own allgather, so no rank is left waiting inside it",
+                             format_rank_list(failed))};
+  }"""
+new = """  const std::vector<int> failed = local_ok ? std::vector<int>{} : std::vector<int>{rank};
+  if (!failed.empty()) {
+    return Failure{"E-LINALG-SCHUR-SLAB-FACTORIZE",
+                  fmt::format("SchurSlabSolver::factor: interior factorisation failed on "
+                             "rank(s) {}; agreed across every rank before the Schur "
+                             "complement's own allgather, so no rank is left waiting inside it",
+                             format_rank_list(failed))};
+  }"""
+target = "fuse_linalg_schur_slab_test"
+test = "linalg.schur_slab"
+# Hand-proved 2026-10-10 against a byte-identical restored copy: 11 pass
+# before. After mutation, applied by hand and the WHOLE binary run
+# unfiltered: 10 pass, 1 fails
+# (SchurSlabSolverRefusal.InteriorFactorizationFailureOnOneRankIsAgreedWithoutStrandingAnyoneInACollective
+# -- rank 0's own interior factored fine and no longer learns that rank
+# 1's own interior failed, so rank 0 incorrectly reports success). Every
+# other case, including the row-band-size regression above (a DIFFERENT
+# code path, never reached when local_rows >= 2 on every rank), is
+# unaffected. File restored and `cmp`-verified byte-identical.
