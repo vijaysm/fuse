@@ -664,6 +664,21 @@ if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(backend native_migration_mpi LIBS fuse::backend fuse::partition MPI::MPI_CXX
                     RANKS 2 3 4 5)
 endif()
+# The native mesh backend's planar/volumetric remap halo ("Halo" track,
+# docs/dev/native-halo.md): the in-process-emulated pure-function pieces,
+# the Brusselator-shaped 16x16/24x24 quad-grid scenario at 2 (aligned) and
+# 3 (misaligned) ranks, and build_weights completeness after the halo --
+# all at tier 0, no MPI linked, actually run in this sandbox. The parallel
+# half under a REAL communicator is test/parallel/native_halo_mpi_test.cpp.
+fuse_add_gtest(backend native_halo THROWS)
+fuse_add_omp_legs(backend.native_halo fuse_backend_native_halo_test THROWS)
+# The parallel half, under a REAL communicator of more than one rank: needs
+# only FUSE_ENABLE_MPI (no MOAB) since the native backend's own covering-set
+# construction is planar/volumetric, not spherical.
+fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/native_halo_mpi_test.cpp)
+if(FUSE_ENABLE_MPI)
+  fuse_add_mpi_test(parallel native_halo_mpi LIBS fuse::backend MPI::MPI_CXX RANKS 2 3)
+endif()
 fuse_add_gtest(backend supermesh THROWS)
 fuse_add_gtest(backend transfer_map_io THROWS)
 # supermesh_test reaches src/backend/supermesh_detail.hpp directly, a private
