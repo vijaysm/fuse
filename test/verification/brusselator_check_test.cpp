@@ -147,8 +147,10 @@ WrittenLogs run_and_log(const ::testing::TestInfo* info) {
   EXPECT_EQ(t->initialize(ctx, nullptr, nullptr), FUSE_OK);
 
   bruss_u_handle* uh = bruss_u_create(kNxU, kNyU, cfg.diffusion, cfg.A, cfg.B,
-                                      cfg.forcing ? 1 : 0, v0_on_u.data());
-  bruss_v_handle* vh = bruss_v_create(kNxU, kNyU, kNxV, kNyV, cfg.diffusion);
+                                      cfg.forcing ? 1 : 0, v0_on_u.data(),
+                                      /*rank=*/0, /*num_ranks=*/1, /*comm_f=*/0, "auto");
+  bruss_v_handle* vh = bruss_v_create(kNxU, kNyU, kNxV, kNyV, cfg.diffusion,
+                                      /*rank=*/0, /*num_ranks=*/1, /*comm_f=*/0, "auto");
   EXPECT_NE(uh, nullptr);
   EXPECT_NE(vh, nullptr);
 

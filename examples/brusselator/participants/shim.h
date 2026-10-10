@@ -1,6 +1,8 @@
 #ifndef FUSE_EXAMPLES_BRUSSELATOR_PARTICIPANTS_SHIM_H_
 #define FUSE_EXAMPLES_BRUSSELATOR_PARTICIPANTS_SHIM_H_
 
+#include <stdint.h>
+
 /* Time windows track (Conformance, Unit 2): the tiny extern "C" shim both
  * the C main (u_main.c) and the Fortran main (v_main.f90, through
  * iso_c_binding's own bind(C) convention -- identical calling convention,
@@ -35,6 +37,32 @@ typedef struct bruss_v_handle bruss_v_handle;
 void bruss_grid_dims(int* nx_u, int* ny_u, int* nx_v, int* ny_v);
 double bruss_diffusion(void);
 
+/* Physics track: THIS rank's own owned cell count of an `nx`x`ny`
+ * periodic grid split `fuse::native::rank_slice`'s own way over
+ * `num_ranks` ranks (brusselator_physics.hpp's own `NativeGrid::
+ * owned_size()`) -- what a decomposed participant must register
+ * (bruss_u_create()'s own `initial_v_on_u`, and the field storage
+ * u_main.c/v_main.f90 register through the ABI) instead of the GLOBAL
+ * `nx*ny` every single-rank caller uses. Returns -1 if `nx`/`ny` cannot
+ * be laid out as a periodic grid at this `rank`/`num_ranks` (the same
+ * conditions `NativeGrid::make`'s own E-BRUSS-MESH-* refusals cover) --
+ * there is no handle yet to report a message through, mirroring
+ * bruss_u_create()'s own NULL-return convention. */
+int bruss_owned_size(int nx, int ny, int rank, int num_ranks);
+
+/* `whole[j*nx+i]` (GLOBAL canonical order, length nx*ny) restricted to
+ * this rank's own owned band, in LOCAL canonical order (length
+ * bruss_owned_size(nx, ny, rank, num_ranks)) -- what a decomposed
+ * participant needs to seed its OWN `initial_v_on_u` (bruss_u_create)
+ * from a whole-grid-sized value (u_main.c's own "throwaway V, built at
+ * rank 0 of 1, to seed the first window's reaction" trick hands back a
+ * whole U-grid-sized array regardless of U's own decomposition -- this
+ * function is how each U rank then takes only its own slice of it).
+ * Returns nonzero (no message: no handle exists yet) if `nx`/`ny` cannot
+ * be laid out as a periodic grid at this `rank`/`num_ranks`. */
+int bruss_owned_slice(const double* whole, int nx, int ny, int rank, int num_ranks,
+                      double* owned_out);
+
 /* This component's CURRENT `provided` value (length size()) -- right after
  * create(), the INITIAL one: q at t=0 for U, P_VU(V) at t=0 for V. A
  * participant copies it into the storage it registers for its export
@@ -48,9 +76,25 @@ double bruss_diffusion(void);
 void bruss_u_provided(const bruss_u_handle* h, double* out);
 void bruss_v_provided(const bruss_v_handle* h, double* out);
 
+/* Physics track (closing the Grid track's own solver seam): `rank`/
+ * `num_ranks` are THIS component's own placement -- 0/1 for every
+ * EXISTING caller (the tier-0 harness, the in-process example path),
+ * which must keep passing exactly that; there is no default at the C
+ * ABI. `comm_f` is an `MPI_Comm_c2f` handle of this component's OWN
+ * physics-only communicator (the sub-communicator a decomposed caller
+ * forms by `MPI_Comm_split`ting its local world on is_physics_rank --
+ * u_main.c's own header comment has the full account), consulted ONLY
+ * when `num_ranks > 1`; ignored (any value, including 0) otherwise.
+ * `solver`: "auto" (default: direct at num_ranks()==1, schur at >1),
+ * "direct", "schur", "pcg", or "gmres" (species_core.hpp's own
+ * `parse_solver_kind`) -- an unrecognised name is refused the same way
+ * an allocation failure is, by returning NULL (no handle exists yet to
+ * report a message through). */
 bruss_u_handle* bruss_u_create(int nx, int ny, double diffusion, double A,
                                double B, int forcing,
-                               const double* initial_v_on_u);
+                               const double* initial_v_on_u,
+                               int rank, int num_ranks, int64_t comm_f,
+                               const char* solver);
 void bruss_u_destroy(bruss_u_handle* h);
 int bruss_u_size(const bruss_u_handle* h);
 
@@ -100,8 +144,15 @@ const char* bruss_u_last_error(const bruss_u_handle* h);
  * failure (an nx/ny that cannot be laid out as a periodic grid) --
  * there is no handle yet to report the error through, so a NULL return
  * alone is this function's only diagnostic, exactly like
- * bruss_u_create()'s own contract. */
-bruss_v_handle* bruss_v_create(int nx_u, int ny_u, int nx_v, int ny_v, double diffusion);
+ * bruss_u_create()'s own contract. `rank`/`num_ranks`/`comm_f`/`solver`
+ * mirror bruss_u_create()'s own (this header's comment on that function
+ * has the full account) -- EXCEPT that `num_ranks > 1` is itself refused
+ * (NULL return) here: `VParticipant::make`'s own `E-BRUSS-V-DECOMPOSED-
+ * REMAP` refusal (species_core.hpp), since V's two-sided remap is not yet
+ * routed through FUSE's distributed weights (a different track's work).
+ * `solver` selects V's OWN diffusion solve only (independent of U's). */
+bruss_v_handle* bruss_v_create(int nx_u, int ny_u, int nx_v, int ny_v, double diffusion,
+                               int rank, int num_ranks, int64_t comm_f, const char* solver);
 void bruss_v_destroy(bruss_v_handle* h);
 /* The length bruss_v_step()'s own `required`/`provided_out` use -- U's
  * own grid size (nx_u*ny_u), NOT V's own (nx_v*ny_v): both of V's

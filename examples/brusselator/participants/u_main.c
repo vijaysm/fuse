@@ -52,6 +52,7 @@
  * Q1-Q3; build-verified only.
  */
 #include <mpi.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -156,6 +157,12 @@ int main(int argc, char** argv) {
   int ranks_u = -1; /* -1 = "all of my local world" (mpmd default) */
   int periods = 2;
   const char* transport = "fuse";
+  /* Physics track: "auto" resolves to the direct (whole-grid) solver at
+   * ranks_u==1 and to schur at ranks_u>1 (species_core.hpp's own
+   * SolverKind::Auto doc comment) -- the task's own "--solver flag
+   * defaulting to schur on >1 rank" is exactly this default, with no
+   * special-casing needed here. */
+  const char* solver = "auto";
 
   for (int i = 1; i < argc; ++i) {
     if (strcmp(argv[i], "--graph") == 0 && i + 1 < argc) {
@@ -168,6 +175,8 @@ int main(int argc, char** argv) {
       periods = atoi(argv[++i]);
     } else if (strcmp(argv[i], "--transport") == 0 && i + 1 < argc) {
       transport = argv[++i];
+    } else if (strcmp(argv[i], "--solver") == 0 && i + 1 < argc) {
+      solver = argv[++i];
     } else {
       fprintf(stderr, "u_main: unrecognized argument: %s\n", argv[i]);
       return 1;
@@ -176,7 +185,7 @@ int main(int argc, char** argv) {
   if (!graph_path || !log_path) {
     fprintf(stderr,
             "usage: u_main --graph graph.yaml --log u.log [--ranks-u N] "
-            "[--periods N] [--transport fuse|lowfive]\n");
+            "[--periods N] [--transport fuse|lowfive] [--solver auto|direct|schur|pcg|gmres]\n");
     return 1;
   }
   if (strcmp(transport, "fuse") != 0 && strcmp(transport, "lowfive") != 0) {
@@ -198,6 +207,38 @@ int main(int argc, char** argv) {
   MPI_Comm_size(MPI_COMM_WORLD, &world_size);
   if (ranks_u < 0) ranks_u = world_size; /* mpmd: every local rank is U */
   const int is_physics_rank = (world_rank < ranks_u);
+
+  /* Physics track: THIS executable's own MPI_COMM_WORLD is NOT "U's own
+   * world" in mpmd mode -- it is the SHARED world every ':'-separated
+   * mpiexec segment's ranks number into one block each (U first, by the
+   * graph's own component order, validate_launch_layout()'s own
+   * requirement), so U's physics ranks are exactly [0, ranks_u) of it,
+   * but V's and the coupler's own ranks share the SAME MPI_COMM_WORLD
+   * too. In accept mode this executable's local world IS already "U
+   * plus its own bundled coupler ranks" only, but the split below is
+   * correct and a no-op-equivalent either way: it is what actually
+   * forms "U's own physics-only communicator" regardless of which mode
+   * put which ranks into this process's MPI_COMM_WORLD.
+   *
+   * COLLECTIVE: MPI_Comm_split is called by EVERY rank of this
+   * executable's own world, physics and non-physics alike (the same
+   * "every rank calls every split" discipline src/runtime/runner.cpp's
+   * own base-communicator formation uses, and this track's own standing
+   * lesson: a collective must never be skipped on a locally computed
+   * condition) -- a non-physics (bundled coupler placeholder) rank gets
+   * MPI_COMM_NULL back (color MPI_UNDEFINED) and never touches u_comm
+   * again. `key = world_rank` preserves this process's own relative
+   * rank order inside the new communicator, so a physics rank's OWN
+   * position within u_comm is identical to its position within
+   * MPI_COMM_WORLD's own [0, ranks_u) block -- u_rank below is that
+   * position, read back rather than assumed. */
+  MPI_Comm u_comm = MPI_COMM_NULL;
+  MPI_Comm_split(MPI_COMM_WORLD, is_physics_rank ? 0 : MPI_UNDEFINED, world_rank, &u_comm);
+  int u_rank = 0, u_size = 1;
+  if (is_physics_rank) {
+    MPI_Comm_rank(u_comm, &u_rank);
+    MPI_Comm_size(u_comm, &u_size);
+  }
 
   const fuse_participant_abi_v1* t = fuse_coupler_abi(FUSE_ABI_VERSION);
   if (!t) {
@@ -280,7 +321,15 @@ int main(int argc, char** argv) {
      * and a 9-element registration against a 256-cell field ran for two
      * days before the host measured a trajectory nothing could explain. */
     const int nx = BRUSS_NX_U, ny = BRUSS_NY_U;
-    nu = nx * ny;
+    /* Physics track: OWNED size at (u_rank, u_size), not the GLOBAL
+     * nx*ny every pre-decomposition caller used -- at u_size==1 the two
+     * are equal (u_rank==0 forced above), so this is byte-identical to
+     * before for every row this file's own ctest rows exercise today
+     * (ranks_u 1 or 2; the latter genuinely decomposed). The registered
+     * field storage below (view.count/owned_count) is this SAME nu, per
+     * the Runner's own per-placement sizing (D24/D25). */
+    nu = bruss_owned_size(nx, ny, u_rank, u_size);
+    if (nu < 0) fail(ctx, "bruss_owned_size", FUSE_ERR_RUNTIME);
     u_out = (double*)calloc((size_t)nu, sizeof(double));
     u_in = (double*)calloc((size_t)nu, sizeof(double));
 
@@ -293,7 +342,12 @@ int main(int argc, char** argv) {
      * single-process example solve. A throwaway V, built from the same
      * header's grid, is read for its constructor's own initial P_VU(V0)
      * and discarded -- deterministic, cheap, and bit-identical to what the
-     * real V in the other program starts from.
+     * real V in the other program starts from. The throwaway V is always
+     * SINGLE-rank (V's own decomposition is a different track's work --
+     * species_core.hpp's own VParticipant::make refuses otherwise), so
+     * its own bruss_v_provided() hands back the WHOLE U grid
+     * (nx*ny); bruss_owned_slice() is what restricts that down to THIS
+     * U rank's own owned band before it ever reaches bruss_u_create().
      *
      * This is a limitation of the current startup contract worth naming:
      * a participant must know its partner's initial export before
@@ -302,12 +356,19 @@ int main(int argc, char** argv) {
      * exchange (imports delivered before exports are frozen) would remove
      * the need for U to reconstruct V at all. */
     {
-      bruss_v_handle* v_seed = bruss_v_create(nx, ny, BRUSS_NX_V, BRUSS_NY_V, BRUSS_DIFFUSION);
+      bruss_v_handle* v_seed = bruss_v_create(nx, ny, BRUSS_NX_V, BRUSS_NY_V, BRUSS_DIFFUSION,
+                                              /*rank=*/0, /*num_ranks=*/1, /*comm_f=*/0, "auto");
       if (!v_seed) fail(ctx, "bruss_v_create (initial seed)", FUSE_ERR_RUNTIME);
-      bruss_v_provided(v_seed, u_in); /* P_VU(V0), on U's grid */
+      double* v_seed_whole = (double*)calloc((size_t)(nx * ny), sizeof(double));
+      bruss_v_provided(v_seed, v_seed_whole); /* P_VU(V0), WHOLE U grid */
       bruss_v_destroy(v_seed);
+      if (bruss_owned_slice(v_seed_whole, nx, ny, u_rank, u_size, u_in) != 0) {
+        fail(ctx, "bruss_owned_slice (initial seed)", FUSE_ERR_RUNTIME);
+      }
+      free(v_seed_whole);
     }
-    uh = bruss_u_create(nx, ny, BRUSS_DIFFUSION, BRUSS_A, BRUSS_B, BRUSS_FORCING, u_in);
+    uh = bruss_u_create(nx, ny, BRUSS_DIFFUSION, BRUSS_A, BRUSS_B, BRUSS_FORCING, u_in, u_rank,
+                        u_size, (int64_t)MPI_Comm_c2f(u_comm), solver);
     if (!uh) fail(ctx, "bruss_u_create", FUSE_ERR_RUNTIME);
     /* q at t=0 into the storage registered below: the Runner primes the
      * first window's t=0 sample from it at fuse_initialize(), and V
@@ -470,6 +531,7 @@ int main(int argc, char** argv) {
   rc = t->destroy(ctx, NULL, NULL);
   if (rc != FUSE_OK) fail(NULL, "destroy", rc);
 
+  if (u_comm != MPI_COMM_NULL) MPI_Comm_free(&u_comm);
   MPI_Finalize();
   return 0;
 }

@@ -35,7 +35,7 @@
 #   run_participants.sh <mode: mpmd|accept> <mpiexec> \
 #     <ranks_u> <ranks_v> <ranks_coupler> \
 #     <graph_tool_exe> <u_main_exe> <v_main_exe> <coupler_main_exe> \
-#     <check_exe> <scratch_dir> [periods] [timeout_s] [transport]
+#     <check_exe> <scratch_dir> [periods] [timeout_s] [transport] [solver]
 #
 # [transport] (S6 phase 3, "LowFive" track, Unit 3b): "fuse" (default) or
 # "lowfive", passed through verbatim as --transport to graph_tool/u_main/
@@ -47,6 +47,10 @@
 # attached process-wide via HDF5_VOL_CONNECTOR/HDF5_PLUGIN_PATH, which
 # the CALLER (examples/CMakeLists.txt's own lowfive ctest rows) sets in
 # the test's own ENVIRONMENT, per docs/user/lowfive.md.
+#
+# [solver] (Physics track): "auto" (default -- direct at 1 rank, schur at
+# >1), "direct", "schur", "pcg", or "gmres" (species_core.hpp's own
+# SolverKind), passed through verbatim as --solver to u_main/v_main.
 set -u
 
 MODE="$1"; MPIEXEC="$2"
@@ -54,6 +58,7 @@ RANKS_U="$3"; RANKS_V="$4"; RANKS_COUPLER="$5"
 GRAPH_TOOL="$6"; U_MAIN="$7"; V_MAIN="$8"; COUPLER_MAIN="$9"
 shift 9
 CHECK="$1"; SCRATCH="$2"; PERIODS="${3:-2}"; TIMEOUT="${4:-60}"; TRANSPORT="${5:-fuse}"
+SOLVER="${6:-auto}"
 
 mkdir -p "$SCRATCH"
 GRAPH="$SCRATCH/graph.yaml"
@@ -84,10 +89,11 @@ if [ "$MODE" = "mpmd" ]; then
   SEG='f="$1"; shift; exec "$@" > "${f}.${PMI_RANK:-0}.log" 2>&1'
   "$MPIEXEC" -n "$RANKS_U" sh -c "$SEG" seg "$SCRATCH/u_stdout" \
       "$U_MAIN" --graph "$GRAPH" --log "$U_LOG" --periods "$PERIODS" \
-      --transport "$TRANSPORT" \
+      --transport "$TRANSPORT" --solver "$SOLVER" \
       : -n "$RANKS_V" sh -c "$SEG" seg "$SCRATCH/v_stdout" \
       "$V_MAIN" --graph "$GRAPH" --log "$V_LOG" --periods "$PERIODS" \
-      --transport "$TRANSPORT" \
+      --transport "$TRANSPORT" --ranks-u "$RANKS_U" --ranks-v "$RANKS_V" \
+      --solver "$SOLVER" \
       : -n "$RANKS_COUPLER" sh -c "$SEG" seg "$SCRATCH/coupler_stdout" \
       "$COUPLER_MAIN" --graph "$GRAPH" \
       > "$SCRATCH/combined.log" 2>&1
@@ -96,10 +102,12 @@ elif [ "$MODE" = "accept" ]; then
   U_WORLD=$((RANKS_U + RANKS_COUPLER))
   "$MPIEXEC" -n "$U_WORLD" "$U_MAIN" --graph "$GRAPH" --log "$U_LOG" \
       --ranks-u "$RANKS_U" --periods "$PERIODS" --transport "$TRANSPORT" \
+      --solver "$SOLVER" \
       > "$SCRATCH/u_stdout.log" 2>&1 &
   PID_U=$!
   "$MPIEXEC" -n "$RANKS_V" "$V_MAIN" --graph "$GRAPH" --log "$V_LOG" \
-      --periods "$PERIODS" --transport "$TRANSPORT" > "$SCRATCH/v_stdout.log" 2>&1 &
+      --periods "$PERIODS" --transport "$TRANSPORT" --solver "$SOLVER" \
+      > "$SCRATCH/v_stdout.log" 2>&1 &
   PID_V=$!
   wait "$PID_U" || RC=1
   wait "$PID_V" || RC=1

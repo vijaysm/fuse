@@ -5,8 +5,10 @@
 #include <string>
 #include <utility>
 
+#include "fuse/backend/native_backend.hpp"
 #include "fuse/base/config.hpp"
 #include "fuse/base/rational.hpp"
+#include "fuse/linalg/comm.hpp"
 
 #include "../species_core.hpp"
 
@@ -27,15 +29,49 @@ std::string ToStdString(const fuse::Failure& f) {
   return f.code + ": " + f.message;
 }
 
+// Physics track: the communication pair a decomposed (`num_ranks > 1`)
+// participant needs, built from the caller's own `comm_f` (an
+// `MPI_Comm_c2f` handle of THIS component's physics-only communicator --
+// shim.h's own doc comment on `bruss_u_create`/`bruss_v_create` has the
+// full account). A null `shared_ptr`/empty `std::function` return is this
+// pair's own failure sentinel (no exception crosses the C ABI from here):
+// `num_ranks > 1` in a build without `FUSE_ENABLE_MPI` is exactly that
+// failure, since there is no other way to form a real cross-rank
+// collective.
+std::shared_ptr<const fuse::linalg::Reducer> MakeReducerFor(int num_ranks, int64_t comm_f) {
+  if (num_ranks <= 1) return fuse::linalg::make_serial_reducer();
+#if FUSE_HAVE_MPI
+  return fuse::linalg::make_mpi_reducer(static_cast<int>(comm_f));
+#else
+  (void)comm_f;
+  return nullptr;
+#endif
+}
+
+brusselator::GhostExchangerFactory MakeExchangerFactoryFor(int num_ranks, int64_t comm_f) {
+  if (num_ranks <= 1) return brusselator::serial_exchanger_factory();
+#if FUSE_HAVE_MPI
+  const int local_comm_f = static_cast<int>(comm_f);
+  return [local_comm_f](const fuse::linalg::GhostPattern& pattern, std::size_t owned_n) {
+    return fuse::linalg::make_mpi_exchanger(local_comm_f, pattern, owned_n);
+  };
+#else
+  (void)comm_f;
+  return brusselator::GhostExchangerFactory{};
+#endif
+}
+
 }  // namespace
 
 struct bruss_u_handle {
   brusselator::UCore core;
   std::string last_error;
 
-  bruss_u_handle(int nx, int ny, brusselator::PhysicsConfig cfg,
-                brusselator::Vector initial_v_on_u)
-      : core(nx, ny, cfg, std::move(initial_v_on_u)) {}
+  bruss_u_handle(const brusselator::NativeGrid& grid, brusselator::PhysicsConfig cfg,
+                brusselator::Vector initial_v_on_u,
+                std::shared_ptr<const fuse::linalg::Reducer> reducer,
+                brusselator::GhostExchangerFactory make_exchanger)
+      : core(grid, cfg, std::move(initial_v_on_u), std::move(reducer), std::move(make_exchanger)) {}
 };
 
 struct bruss_v_handle {
@@ -49,15 +85,45 @@ extern "C" {
 
 bruss_u_handle* bruss_u_create(int nx, int ny, double diffusion, double A,
                                double B, int forcing,
-                               const double* initial_v_on_u) {
+                               const double* initial_v_on_u,
+                               int rank, int num_ranks, int64_t comm_f,
+                               const char* solver) {
+  const auto kind_r = brusselator::parse_solver_kind(solver ? solver : "auto");
+  if (!kind_r.ok()) return nullptr;
+
+  fuse::native::NativeMeshBackend backend(rank, num_ranks);
+  auto grid_r = brusselator::NativeGrid::make(backend, "u", nx, ny);
+  if (!grid_r.ok()) return nullptr;
+  const brusselator::NativeGrid& grid = grid_r.value();
+
+  auto reducer = MakeReducerFor(num_ranks, comm_f);
+  if (!reducer) return nullptr;
+  auto exchanger_factory = MakeExchangerFactoryFor(num_ranks, comm_f);
+  if (!exchanger_factory) return nullptr;
+
   brusselator::PhysicsConfig cfg;
   cfg.diffusion = diffusion;
   cfg.A = A;
   cfg.B = B;
   cfg.forcing = forcing != 0;
-  brusselator::Vector v0(nx * ny);
-  for (int i = 0; i < nx * ny; ++i) v0[i] = initial_v_on_u[i];
-  return new (std::nothrow) bruss_u_handle(nx, ny, cfg, std::move(v0));
+  cfg.solver = kind_r.value();
+
+  brusselator::Vector v0(grid.owned_size());
+  for (int i = 0; i < grid.owned_size(); ++i) v0[i] = initial_v_on_u[i];
+
+  // make_diffusion_solver (species_core.hpp, called from UCore's own
+  // constructor) THROWS fuse::InvalidArgument for a caller-configuration
+  // mistake (SolverKind::Direct explicitly requested at num_ranks() > 1)
+  // -- a C++ exception must never cross this extern "C" boundary (u_main.c/
+  // v_main.f90 are not exception-aware frames), so it is caught here and
+  // turned into this function's own NULL-return convention, exactly like
+  // every other construction-time failure above.
+  try {
+    return new (std::nothrow)
+        bruss_u_handle(grid, cfg, std::move(v0), std::move(reducer), std::move(exchanger_factory));
+  } catch (const fuse::Error&) {
+    return nullptr;
+  }
 }
 
 void bruss_grid_dims(int* nx_u, int* ny_u, int* nx_v, int* ny_v) {
@@ -67,6 +133,28 @@ void bruss_grid_dims(int* nx_u, int* ny_u, int* nx_v, int* ny_v) {
   if (ny_v) *ny_v = BRUSS_NY_V;
 }
 double bruss_diffusion(void) { return BRUSS_DIFFUSION; }
+
+int bruss_owned_size(int nx, int ny, int rank, int num_ranks) {
+  fuse::native::NativeMeshBackend backend(rank, num_ranks);
+  auto grid_r = brusselator::NativeGrid::make(backend, "owned_size_probe", nx, ny);
+  if (!grid_r.ok()) return -1;
+  return grid_r.value().owned_size();
+}
+
+int bruss_owned_slice(const double* whole, int nx, int ny, int rank, int num_ranks,
+                      double* owned_out) {
+  fuse::native::NativeMeshBackend backend(rank, num_ranks);
+  auto grid_r = brusselator::NativeGrid::make(backend, "owned_slice_probe", nx, ny);
+  if (!grid_r.ok()) return 1;
+  const brusselator::NativeGrid& grid = grid_r.value();
+  for (int lj = 0; lj < grid.owned_rows(); ++lj) {
+    const int j = grid.j_lo() + lj;
+    for (int i = 0; i < nx; ++i) {
+      owned_out[grid.local_index(i, j)] = whole[grid.index(i, j)];
+    }
+  }
+  return 0;
+}
 
 void bruss_u_provided(const bruss_u_handle* h, double* out) {
   const brusselator::Vector& p = h->core.provided();
@@ -115,8 +203,14 @@ double bruss_u_external_total(const bruss_u_handle* h) { return h->core.external
 double bruss_u_exchange_out(const bruss_u_handle* h) { return h->core.exchange_out(); }
 const char* bruss_u_last_error(const bruss_u_handle* h) { return h->last_error.c_str(); }
 
-bruss_v_handle* bruss_v_create(int nx_u, int ny_u, int nx_v, int ny_v, double diffusion) {
-  auto made = brusselator::VParticipant::make(nx_u, ny_u, nx_v, ny_v, diffusion);
+bruss_v_handle* bruss_v_create(int nx_u, int ny_u, int nx_v, int ny_v, double diffusion,
+                               int rank, int num_ranks, int64_t comm_f, const char* solver) {
+  (void)comm_f;  // VParticipant::make refuses num_ranks>1 before any communication is needed
+  const auto kind_r = brusselator::parse_solver_kind(solver ? solver : "auto");
+  if (!kind_r.ok()) return nullptr;
+  auto made =
+      brusselator::VParticipant::make(nx_u, ny_u, nx_v, ny_v, diffusion, rank, num_ranks,
+                                      kind_r.value());
   if (!made.ok()) return nullptr;
   return new (std::nothrow) bruss_v_handle(std::move(made.value()));
 }

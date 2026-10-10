@@ -36,11 +36,21 @@ module v_loop_mod
   ! translation unit exporting extern "C" -- this interface block is
   ! what lets pure Fortran call them without ever seeing a C++ type). ----
   interface
-    function bruss_v_create(nx_u, ny_u, nx_v, ny_v, diffusion) result(h) &
-        bind(C, name="bruss_v_create")
-      import :: c_int, c_double, c_ptr
-      integer(c_int), value :: nx_u, ny_u, nx_v, ny_v
+    ! Physics track: `rank`/`num_ranks` are V's own component placement;
+    ! `comm_f` an MPI_Comm_c2f handle of V's own physics-only
+    ! communicator (ignored when num_ranks<=1 -- shim.h's own doc
+    ! comment); `solver` a NUL-terminated C string (species_core.hpp's
+    ! own `parse_solver_kind`). v_main.f90's own header comment on this
+    ! call explains why V passes comm_f=0 unconditionally today: V's own
+    ! decomposition (num_ranks>1) refuses before any communication is
+    ! needed (VParticipant::make's own E-BRUSS-V-DECOMPOSED-REMAP).
+    function bruss_v_create(nx_u, ny_u, nx_v, ny_v, diffusion, rank, num_ranks, comm_f, solver) &
+        result(h) bind(C, name="bruss_v_create")
+      import :: c_int, c_int64_t, c_double, c_ptr
+      integer(c_int), value :: nx_u, ny_u, nx_v, ny_v, rank, num_ranks
       real(c_double), value :: diffusion
+      integer(c_int64_t), value :: comm_f
+      type(c_ptr), value :: solver
       type(c_ptr) :: h
     end function bruss_v_create
 

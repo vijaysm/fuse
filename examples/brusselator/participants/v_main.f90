@@ -53,7 +53,28 @@ program v_main
 
   character(len=512) :: graph_path, log_path, arg
   character(len=16) :: transport
+  ! Physics track: --ranks-u is the OFFSET into this program's own
+  ! MPI_COMM_WORLD at which V's own block starts (0 in accept mode,
+  ! where this executable's local world contains only V's own ranks;
+  ! the real ranks_u in mpmd mode, where MPI_COMM_WORLD is the SHARED
+  ! world every ':'-segment of one mpiexec numbers into, U's own block
+  ! first -- u_main.c's own header comment has the full account).
+  ! --ranks-v is V's own component size, -1 (the default) meaning
+  ! "world_size - ranks_u", correct whenever V's own block is the LAST
+  ! one in this program's own world (accept mode always; mpmd mode only
+  ! when there is no bundled-coupler segment AFTER V, which is this
+  ! track's own layout -- brusselator_graph_tool.cpp's component order
+  ! is U, V, coupler, so an mpmd run genuinely needs ranks_v passed
+  ! explicitly whenever ranks_coupler > 0, which test/parallel/
+  ! brusselator_participants/run_participants.sh now does). --solver
+  ! mirrors u_main.c's own flag (species_core.hpp's own SolverKind;
+  ! "auto" resolves to direct at v_size==1, this track's only working
+  ! case today -- VParticipant::make refuses v_size>1 regardless of
+  ! solver, species_core.hpp's own E-BRUSS-V-DECOMPOSED-REMAP).
+  integer :: ranks_u_offset, ranks_v_declared, v_rank, v_size
+  character(len=16) :: solver
   integer :: periods, ierr, world_rank, world_size, nargs, i, log_unit, p
+  integer :: dummy_comm
   type(fuse_ctx) :: ctx
   type(fuse_null) :: nothing
   type(fuse_context_out) :: made
@@ -65,6 +86,7 @@ program v_main
   real(c_double), target, allocatable :: v_out(:), v_in(:)
   real(c_double), allocatable, target :: v_native_state(:)
   character(len=2), target :: my_component_name
+  character(len=17), target :: solver_cstr
   integer :: nu
   type(fuse_step_request) :: req
   type(fuse_step_report) :: rep, begin_rep
@@ -121,6 +143,9 @@ program v_main
   log_path = ""
   periods = 2
   transport = "fuse"
+  ranks_u_offset = 0
+  ranks_v_declared = -1
+  solver = "auto"
   nargs = command_argument_count()
   i = 1
   do while (i <= nargs)
@@ -139,6 +164,18 @@ program v_main
       call get_command_argument(i + 1, arg)
       transport = trim(arg)
       i = i + 2
+    else if (trim(arg) == "--ranks-u" .and. i < nargs) then
+      call get_command_argument(i + 1, arg)
+      read(arg, *) ranks_u_offset
+      i = i + 2
+    else if (trim(arg) == "--ranks-v" .and. i < nargs) then
+      call get_command_argument(i + 1, arg)
+      read(arg, *) ranks_v_declared
+      i = i + 2
+    else if (trim(arg) == "--solver" .and. i < nargs) then
+      call get_command_argument(i + 1, arg)
+      solver = trim(arg)
+      i = i + 2
     else
       write(0, '(A,A)') "v_main: unrecognized argument: ", trim(arg)
       call exit(1)
@@ -146,7 +183,8 @@ program v_main
   end do
   if (len_trim(graph_path) == 0 .or. len_trim(log_path) == 0) then
     write(0, '(A)') "usage: v_main --graph graph.yaml --log v.log [--periods N] " // &
-        "[--transport fuse|lowfive]"
+        "[--transport fuse|lowfive] [--ranks-u N] [--ranks-v N] " // &
+        "[--solver auto|direct|schur|pcg|gmres]"
     call exit(1)
   end if
   if (trim(transport) /= "fuse" .and. trim(transport) /= "lowfive") then
@@ -173,6 +211,30 @@ program v_main
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD, world_rank, ierr)
   call MPI_Comm_size(MPI_COMM_WORLD, world_size, ierr)
+
+  ! Physics track: COLLECTIVE over MPI_COMM_WORLD, matching u_main.c's
+  ! own MPI_Comm_split that forms U's physics-only communicator -- in
+  ! mpmd mode MPI_COMM_WORLD is the SHARED world every ':'-segment's
+  ! ranks (U, V, the coupler) number into, so U's own split is a
+  ! collective over ALL of them, not just U's own ranks; every rank not
+  ! in U's own block (every one of V's, here) must call a MATCHING
+  ! MPI_Comm_split with color MPI_UNDEFINED or U's ranks hang waiting
+  ! for a peer that never arrives (this track's own standing lesson: a
+  ! collective must never be skipped). The result is never used here --
+  ! V needs no communicator of its own (its own decomposition is refused
+  ! outright at v_size > 1, below, with no communication required to
+  ! decide that) -- only the collective's OWN participation matters. In
+  ! accept mode this program's own MPI_COMM_WORLD contains only V's own
+  ! ranks (Q1's ruling, this file's own header comment), so this is a
+  ! self-contained, harmless no-op collective there.
+  call MPI_Comm_split(MPI_COMM_WORLD, MPI_UNDEFINED, world_rank, dummy_comm, ierr)
+
+  ! V's own rank/size within its own component block -- PURE ARITHMETIC,
+  ! no communication needed: --ranks-u/--ranks-v (above) already name
+  ! where that block starts and how large it is.
+  if (ranks_v_declared < 0) ranks_v_declared = world_size - ranks_u_offset
+  v_rank = world_rank - ranks_u_offset
+  v_size = ranks_v_declared
 
   status = fuse_create(ctx, nothing, made)
   call check(status, "create")
@@ -237,9 +299,12 @@ program v_main
     call check(status, "field_handle(u_out)")
   end if
 
-  vh = bruss_v_create(nx_u, ny_u, nx_v, ny_v, kDiffusion)
+  solver_cstr = trim(solver) // c_null_char
+  vh = bruss_v_create(nx_u, ny_u, nx_v, ny_v, kDiffusion, v_rank, v_size, &
+                      int(0, c_int64_t), c_loc(solver_cstr))
   if (.not. c_associated(vh)) then
-    write(0, '(A)') "FAIL(v_main): bruss_v_create returned NULL"
+    write(0, '(A,I0,A,I0,A)') "FAIL(v_main): bruss_v_create returned NULL (v_rank=", v_rank, &
+        ", v_size=", v_size, " -- v_size>1 refuses today, E-BRUSS-V-DECOMPOSED-REMAP)"
     call MPI_Abort(MPI_COMM_WORLD, 1, ierr)
   end if
   ! P_VU(V0) into the storage registered for v_out: the Runner primes the

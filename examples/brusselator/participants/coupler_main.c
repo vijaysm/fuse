@@ -85,6 +85,34 @@ int main(int argc, char** argv) {
     MPI_Abort(MPI_COMM_WORLD, 1);
   }
 
+  /* Physics track: COLLECTIVE over MPI_COMM_WORLD, matching u_main.c's
+   * own MPI_Comm_split that forms U's physics-only communicator --
+   * MPI_COMM_WORLD here is the SHARED world every ':'-segment of this
+   * mpmd mpiexec invocation numbers into (coupler_main is MPMD-only,
+   * this file's own header comment), so U's own split is a collective
+   * over every rank of every segment, not just U's own; a coupler rank
+   * that never calls a matching split would strand U's ranks inside it
+   * (this track's own standing lesson: a collective must never be
+   * skipped). The result (always MPI_COMM_NULL -- this rank is never
+   * one of U's physics ranks) is never used.
+   *
+   * ORDER MATTERS: this split comes right after MPI_Init and BEFORE
+   * load_graph/setup, where u_main.c and v_main.f90 place theirs.
+   * setup() runs connect(), itself a collective over the same world
+   * (connect_mpmd's MPI_Allgather of one int per rank); the first host
+   * run of this choreography (2026-10-10) had the coupler split AFTER
+   * setup, so the coupler's 4-byte Allgather met U's 8-byte (color,
+   * key) exchange from inside MPI_Comm_split: "Message from rank 0 and
+   * tag 7 truncated; 8 bytes received but buffer size is 4". Every
+   * program must enter the same collectives in the same order. */
+  {
+    int dummy_comm_rank_unused = 0;
+    MPI_Comm dummy_comm = MPI_COMM_NULL;
+    MPI_Comm_rank(MPI_COMM_WORLD, &dummy_comm_rank_unused);
+    MPI_Comm_split(MPI_COMM_WORLD, MPI_UNDEFINED, dummy_comm_rank_unused, &dummy_comm);
+  }
+
+
   fuse_context_out co;
   memset(&co, 0, sizeof(co));
   co.struct_size = sizeof(co);
