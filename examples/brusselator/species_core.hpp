@@ -64,6 +64,78 @@ struct PhysicsConfig {
   bool   forcing = true;
 };
 
+/// The one thing `UCore`/`VDiffusionCore` need from a linear solve: factor
+/// `(1 + extra_diagonal)*I - dt*diffusion*Laplacian` once per distinct `dt`
+/// (re-using the cached factorisation under the SAME tolerance test both
+/// classes already used before this seam existed) and solve it for a
+/// right-hand side that changes every step. This is the seam the Grid
+/// track leaves for a decomposed (`num_ranks() > 1`) solve -- the
+/// implicit diffusion SOLVE itself is explicitly not this track's work
+/// (brusselator_physics.hpp's own file header names whose it is):
+/// `DirectDiffusionSolver` below, `Eigen::SimplicialLDLT` over the WHOLE
+/// nx*ny grid, is the one implementation today, and the only one valid
+/// at `num_ranks() == 1` (every current caller). A second implementation
+/// -- built on the Containers track's planned `fuse::linalg::
+/// DistSparseMatrix`/`DistVector` and the Solvers track's Schur-
+/// complement solve for the slab-decomposed periodic Laplacian -- plugs
+/// in here once those land; `UCore`/`VDiffusionCore` call through this
+/// interface and would not change.
+class DiffusionSolver {
+ public:
+  virtual ~DiffusionSolver() = default;
+
+  /// (Re)factors the matrix if `dt` differs from the last factored step by
+  /// more than the caller's own re-factorisation tolerance; a no-op
+  /// otherwise -- exactly the gated re-factorisation `UCore::step`/
+  /// `VDiffusionCore::step` ran inline before this seam existed.
+  /// `extra_diagonal` is `UCore`'s own `+dt` term (`VDiffusionCore` passes
+  /// 0, its own unchanged diagonal).
+  [[nodiscard]] virtual fuse::Result<void> factor(double dt, double diffusion,
+                                                   double extra_diagonal) = 0;
+  [[nodiscard]] virtual fuse::Result<Vector> solve(const Vector& rhs) = 0;
+};
+
+/// `Eigen::SimplicialLDLT` over the whole nx*ny periodic Laplacian --
+/// `DiffusionSolver`'s one implementation today. The factor/solve bodies
+/// are copied verbatim from `UCore::step`/`VDiffusionCore::step`'s own
+/// inline code (this refactor's only change is WHERE that code lives),
+/// so a caller at `num_ranks() == 1` sees byte-identical arithmetic.
+class DirectDiffusionSolver final : public DiffusionSolver {
+ public:
+  explicit DirectDiffusionSolver(Sparse laplacian) : laplacian_(std::move(laplacian)) {}
+
+  [[nodiscard]] fuse::Result<void> factor(double dt, double diffusion,
+                                          double extra_diagonal) override {
+    if (factored_step_ < 0.0 ||
+        std::abs(dt - factored_step_) > 32 * std::numeric_limits<double>::epsilon() * dt) {
+      Eigen::SparseMatrix<double> matrix = (-dt * diffusion) * laplacian_;
+      const int n = static_cast<int>(laplacian_.rows());
+      for (int i = 0; i < n; ++i) matrix.coeffRef(i, i) += 1.0 + extra_diagonal;
+      factor_.compute(matrix);
+      if (factor_.info() != Eigen::Success) {
+        return fuse::Failure{"E-BRUSS-DIFFUSION-FACTORIZE",
+                             "DirectDiffusionSolver: factorization failed"};
+      }
+      factored_step_ = dt;
+    }
+    return fuse::Result<void>::success();
+  }
+
+  [[nodiscard]] fuse::Result<Vector> solve(const Vector& rhs) override {
+    Vector next = factor_.solve(rhs);
+    if (factor_.info() != Eigen::Success || !next.allFinite()) {
+      return fuse::Failure{"E-BRUSS-DIFFUSION-SOLVE",
+                           "DirectDiffusionSolver: solve failed or produced a non-finite state"};
+    }
+    return next;
+  }
+
+ private:
+  Sparse laplacian_;
+  Eigen::SimplicialLDLT<Sparse> factor_;
+  double factored_step_ = -1.0;
+};
+
 /// U_t = a*Lap(U) + B - U + q + f, extracted verbatim from
 /// UComponent::advance() (species_component.hpp's own file header has
 /// the full derivation and the measured conservation consequence of the
@@ -76,7 +148,7 @@ class UCore {
   UCore(int nx, int ny, PhysicsConfig cfg, Vector initial_v_on_u)
       : n_(nx * ny),
         cfg_(cfg),
-        laplacian_(periodic_laplacian(nx, ny)),
+        solver_(std::make_unique<DirectDiffusionSolver>(periodic_laplacian(nx, ny))),
         mask_(forcing_mask(nx, ny)),
         mask_mean_(mask_.mean()),
         state_(initial_condition(/*is_u=*/true, nx, ny)),
@@ -139,26 +211,21 @@ class UCore {
     Vector rhs_base = state_.array() + dt * cfg_.B;
     if (cfg_.forcing && active > 0.0) rhs_base += active * mask_;
 
-    if (factored_step_ < 0.0 ||
-        std::abs(dt - factored_step_) > 32 * std::numeric_limits<double>::epsilon() * dt) {
-      Eigen::SparseMatrix<double> matrix = (-dt * cfg_.diffusion) * laplacian_;
-      for (int i = 0; i < n_; ++i) matrix.coeffRef(i, i) += 1.0 + dt;
-      factor_.compute(matrix);
-      if (factor_.info() != Eigen::Success) {
-        return fuse::Failure{"E-BRUSS-U-FACTORIZE", "UCore: diffusion factorization failed"};
-      }
-      factored_step_ = dt;
+    if (const auto factored = solver_->factor(dt, cfg_.diffusion, /*extra_diagonal=*/dt);
+        !factored.ok()) {
+      return fuse::Failure{"E-BRUSS-U-FACTORIZE", "UCore: diffusion factorization failed"};
     }
     Vector q_new = q_prev_;
     Vector next(n_);
     bool converged = false;
     for (int k = 0; k < kMaxReactionIterations; ++k) {
       const Vector rhs = rhs_base + (0.5 * dt) * (q_prev_ + q_new);
-      next = factor_.solve(rhs);
-      if (factor_.info() != Eigen::Success || !next.allFinite()) {
+      auto solved = solver_->solve(rhs);
+      if (!solved.ok()) {
         return fuse::Failure{"E-BRUSS-U-SOLVE",
                              "UCore: diffusion solve failed or produced a non-finite state"};
       }
+      next = std::move(solved.value());
       Vector q_next(n_);
       reaction_kokkos(next, required_, &q_next);
       const double change = (q_next - q_new).lpNorm<Eigen::Infinity>();
@@ -206,14 +273,12 @@ class UCore {
 
   int n_;
   PhysicsConfig cfg_;
-  Sparse laplacian_;
+  std::unique_ptr<DiffusionSolver> solver_;
   Vector mask_;
   double mask_mean_;
   Vector state_;
   Vector required_, provided_, q_prev_;
   Vector saved_state_, saved_q_prev_;
-  Eigen::SimplicialLDLT<Sparse> factor_;
-  double factored_step_ = -1.0;
   double external_total_ = 0.0, saved_external_total_ = 0.0;
   double exchange_out_ = 0.0, saved_exchange_out_ = 0.0;
 };
@@ -224,7 +289,8 @@ class UCore {
 class VDiffusionCore {
  public:
   VDiffusionCore(int nx, int ny, double diffusion, Vector initial_state)
-      : n_(nx * ny), diffusion_(diffusion), laplacian_(periodic_laplacian(nx, ny)),
+      : n_(nx * ny), diffusion_(diffusion),
+        solver_(std::make_unique<DirectDiffusionSolver>(periodic_laplacian(nx, ny))),
         state_(std::move(initial_state)), saved_state_(n_) {}
 
   /// `q_on_v`: the reaction rate mean over this step, ALREADY on this
@@ -232,22 +298,16 @@ class VDiffusionCore {
   [[nodiscard]] fuse::Result<void> step(double dt, const Vector& q_on_v) {
     if (dt <= 0.0) return fuse::Result<void>::success();
     Vector rhs = state_ - dt * q_on_v;
-    if (factored_step_ < 0.0 ||
-        std::abs(dt - factored_step_) > 32 * std::numeric_limits<double>::epsilon() * dt) {
-      Eigen::SparseMatrix<double> matrix = (-dt * diffusion_) * laplacian_;
-      for (int i = 0; i < n_; ++i) matrix.coeffRef(i, i) += 1.0;
-      factor_.compute(matrix);
-      if (factor_.info() != Eigen::Success) {
-        return fuse::Failure{"E-BRUSS-V-FACTORIZE", "VDiffusionCore: diffusion factorization failed"};
-      }
-      factored_step_ = dt;
+    if (const auto factored = solver_->factor(dt, diffusion_, /*extra_diagonal=*/0.0);
+        !factored.ok()) {
+      return fuse::Failure{"E-BRUSS-V-FACTORIZE", "VDiffusionCore: diffusion factorization failed"};
     }
-    Vector next = factor_.solve(rhs);
-    if (factor_.info() != Eigen::Success || !next.allFinite()) {
+    auto solved = solver_->solve(rhs);
+    if (!solved.ok()) {
       return fuse::Failure{"E-BRUSS-V-SOLVE",
                            "VDiffusionCore: diffusion solve failed or produced a non-finite state"};
     }
-    state_ = std::move(next);
+    state_ = std::move(solved.value());
     exchange_in_ += dt * q_on_v.mean();
     return fuse::Result<void>::success();
   }
@@ -268,10 +328,8 @@ class VDiffusionCore {
  private:
   int n_;
   double diffusion_;
-  Sparse laplacian_;
+  std::unique_ptr<DiffusionSolver> solver_;
   Vector state_, saved_state_;
-  Eigen::SimplicialLDLT<Sparse> factor_;
-  double factored_step_ = -1.0;
   double exchange_in_ = 0.0, saved_exchange_in_ = 0.0;
 };
 
@@ -383,13 +441,17 @@ class VParticipant {
         v_grid_(std::move(v_grid)),
         n_u_(u_grid_.size()),
         n_v_(v_grid_.size()),
-        // heap-allocated: VDiffusionCore holds an Eigen::SimplicialLDLT
-        // factorization object, which Eigen makes neither copyable nor
-        // movable (its own base class only implements move at a level
-        // that still leaves the derived solver type immovable) -- a
-        // direct VDiffusionCore member would make VParticipant itself
-        // immovable, and bruss_v_create() (shim.cpp) move-constructs
-        // the handle's VParticipant from VParticipant::make()'s return.
+        // heap-allocated: originally because VDiffusionCore held an
+        // Eigen::SimplicialLDLT factorization object directly, which Eigen
+        // makes neither copyable nor movable, and a direct VDiffusionCore
+        // member would therefore have made VParticipant itself immovable.
+        // The Grid track's DiffusionSolver seam (above) moved that
+        // factorization behind a std::unique_ptr<DiffusionSolver>, so
+        // VDiffusionCore is movable on its own merits now too -- kept
+        // heap-allocated anyway: bruss_v_create() (shim.cpp) move-
+        // constructs the handle's VParticipant from VParticipant::make()'s
+        // return, and a second, independent reason to keep the indirection
+        // was not worth removing for its own sake in this change.
         core_(std::make_unique<VDiffusionCore>(
             v_grid_.nx(), v_grid_.ny(), diffusion,
             initial_condition(/*is_u=*/false, v_grid_.nx(), v_grid_.ny()))),
