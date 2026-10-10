@@ -85,6 +85,11 @@ class MpiReducer : public Reducer {
   [[nodiscard]] int rank() const override { return rank_; }
   [[nodiscard]] int size() const override { return size_; }
 
+  void allgather(const double* send, std::size_t n_each, double* recv) const override {
+    MPI_Allgather(send, static_cast<int>(n_each), MPI_DOUBLE, recv, static_cast<int>(n_each),
+                 MPI_DOUBLE, comm_);
+  }
+
  private:
   MPI_Comm comm_;
   int rank_ = 0;

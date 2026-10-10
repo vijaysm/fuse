@@ -163,6 +163,16 @@ target_link_libraries(fuse-coupler-linalg PUBLIC fuse::base)
 # Eigen must not land on a consumer's include path.
 if(FUSE_LINALG_BACKEND STREQUAL "eigen")
   target_link_libraries(fuse-coupler-linalg PRIVATE Eigen3::Eigen)
+  # The exact distributed direct solver for the backward-Euler periodic
+  # Laplacian on row bands (docs/dev/schur-slab-solver.md) factors with
+  # Eigen's SimplicialLDLT and dense LDLT and has no built-in alternative,
+  # so it is part of the Eigen backend: with FUSE_LINALG_BACKEND=builtin the
+  # class still exists and factor() refuses with E-LINALG-SCHUR-BACKEND
+  # (schur_slab_unavailable.cpp), the same way the facade reports its
+  # backend, rather than fuse::linalg becoming unbuildable without Eigen.
+  target_sources(fuse-coupler-linalg PRIVATE linalg/schur_slab.cpp)
+else()
+  target_sources(fuse-coupler-linalg PRIVATE linalg/schur_slab_unavailable.cpp)
 endif()
 # PRIVATE: comm_mpi.cpp is the only translation unit in this library that
 # names an MPI type (comm.hpp's own header comment); no public header here

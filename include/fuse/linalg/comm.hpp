@@ -51,6 +51,20 @@ class Reducer {
   [[nodiscard]] virtual int rank() const = 0;
   /// The number of participants, `>= 1`.
   [[nodiscard]] virtual int size() const = 0;
+
+  /// `recv[r*n_each .. (r+1)*n_each)` becomes participant `r`'s own `send`,
+  /// for every `r` in `[0, size())`, in RANK ORDER -- the one collective
+  /// `fuse::linalg::SchurSlabSolver` needs that `sum`/`max` cannot answer:
+  /// assembling a dense matrix or vector that every rank must hold in full
+  /// (the Schur complement itself, and its reduced interface right-hand
+  /// side), from each rank's own contiguous contribution, with no
+  /// reduction of the values themselves. `send` carries `n_each` entries;
+  /// `recv` must have room for `n_each * size()`. The "Containers" track's
+  /// own two facades (comm.hpp's header comment) are UNCHANGED otherwise;
+  /// this is the one addition the Schur-complement solver's own task
+  /// authorised explicitly, reported here as instructed rather than left
+  /// to be discovered as an undocumented diff.
+  virtual void allgather(const double* send, std::size_t n_each, double* recv) const = 0;
 };
 
 /// One rank, no MPI symbol touched: `sum`/`max` are the identity, `rank()
