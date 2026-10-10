@@ -3,6 +3,7 @@
 
 #include <map>
 #include <string>
+#include <tuple>
 #include <utility>
 
 #include "fuse/base/error.hpp"
@@ -16,6 +17,12 @@ struct NativeMeshBackend::Impl {
   // reserves an invalid ComponentId to mean "the default decomposition",
   // so that key never appears here.
   std::map<std::pair<std::uint32_t, std::uint32_t>, std::unique_ptr<NativeMeshView>> placed;
+  // The remap halo's bookkeeping half (native_backend.hpp's own comment):
+  // keyed by (source mesh index, target mesh index, dimension). Presence,
+  // not the pattern's size, is "has_remap_halo" -- an empty GhostPattern is
+  // a legitimately built, zero-cell halo.
+  std::map<std::tuple<std::uint32_t, std::uint32_t, int>, fuse::linalg::GhostPattern>
+      halo_pattern;
 };
 
 NativeMeshBackend::NativeMeshBackend(int rank, int num_ranks)
@@ -246,6 +253,75 @@ Result<std::size_t> NativeMeshBackend::placed_region_size(const Region& r,
                               r.entity_set)};
   }
   return view_r.value()->entity_count(dim);
+}
+
+void NativeMeshBackend::set_communicator(CommHandle comm) noexcept { communicator_ = comm; }
+
+CommHandle NativeMeshBackend::communicator() const noexcept { return communicator_; }
+
+int NativeMeshBackend::communicator_size() const noexcept {
+  return communicator_ == kNullComm ? 1 : num_ranks_;
+}
+
+bool NativeMeshBackend::has_remap_halo(MeshId source, MeshId target, int dim) const noexcept {
+  return impl_->halo_pattern.count({source.value(), target.value(), dim}) > 0;
+}
+
+Result<fuse::linalg::GhostPattern> NativeMeshBackend::remap_halo_pattern(MeshId source,
+                                                                         MeshId target,
+                                                                         int dim) const {
+  const auto it = impl_->halo_pattern.find({source.value(), target.value(), dim});
+  if (it == impl_->halo_pattern.end()) {
+    return Failure{"E-MESH-HALO",
+                   fmt::format("no remap halo has been built for source mesh {}, target mesh "
+                              "{}, dimension {}; call build_remap_halo first",
+                              source.value(), target.value(), dim)};
+  }
+  return it->second;
+}
+
+Result<const NativeMeshView*> NativeMeshBackend::native_view(MeshId id,
+                                                              ComponentId placement) const {
+  if (!placement.valid()) {
+    if (!id.valid() || id.value() >= impl_->meshes.size()) {
+      return Failure{"E-MESH-ID", fmt::format("no mesh with id {}", id.value())};
+    }
+    return impl_->meshes[id.value()].get();
+  }
+  if (!id.valid() || id.value() >= impl_->meshes.size()) {
+    return Failure{"E-MESH-ID", fmt::format("no mesh with id {}", id.value())};
+  }
+  const auto it = impl_->placed.find({id.value(), placement.value()});
+  if (it == impl_->placed.end()) {
+    return Failure{"E-MESH-PLACEMENT",
+                   fmt::format("mesh {} has no decomposition registered for placement {}",
+                              id.value(), placement.value())};
+  }
+  return it->second.get();
+}
+
+Result<void> NativeMeshBackend::commit_remap_halo(MeshId source, ComponentId placement,
+                                                  std::unique_ptr<NativeMeshView> new_source_view,
+                                                  MeshId target, int dim,
+                                                  fuse::linalg::GhostPattern pattern) {
+  if (!source.valid() || source.value() >= impl_->meshes.size()) {
+    return Failure{"E-MESH-ID", fmt::format("no mesh with id {}", source.value())};
+  }
+  if (new_source_view != nullptr) {
+    if (placement.valid()) {
+      const auto it = impl_->placed.find({source.value(), placement.value()});
+      if (it == impl_->placed.end()) {
+        return Failure{"E-MESH-PLACEMENT",
+                       fmt::format("mesh {} has no decomposition registered for placement {}",
+                                  source.value(), placement.value())};
+      }
+      it->second = std::move(new_source_view);
+    } else {
+      impl_->meshes[source.value()] = std::move(new_source_view);
+    }
+  }
+  impl_->halo_pattern[{source.value(), target.value(), dim}] = std::move(pattern);
+  return Result<void>::success();
 }
 
 }  // namespace fuse::native

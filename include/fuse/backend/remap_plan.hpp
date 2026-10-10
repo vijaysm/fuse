@@ -564,12 +564,16 @@ struct RemapPlan {
 /// communicator of one rank, is a successful no-op, so a caller may make the
 /// call unconditionally.
 ///
-/// GEOMETRY. The covering-set construction available here handles SPHERICAL
-/// surfaces only, so a partitioned pair that is not one is
-/// `E-MESH-HALO-GEOMETRY`, naming that axis. That is a limit of the backend
-/// doing the construction, not of the idea: a planar or volumetric covering
-/// construction would slot in behind this same call and nothing above it would
-/// change.
+/// GEOMETRY. The construction is backend-specific, dispatched by
+/// `dynamic_cast` exactly as `build_weights` itself dispatches. Against
+/// `MoabMeshBackend` the covering-set construction available here handles
+/// SPHERICAL surfaces only, so a partitioned pair that is not one is
+/// `E-MESH-HALO-GEOMETRY`, naming that axis -- a limit of THAT backend's own
+/// construction, not of the idea. Against `fuse::native::NativeMeshBackend`
+/// (docs/dev/native-halo.md) the construction is planar/volumetric: an
+/// axis-aligned bounding-box overlap test that does not depend on
+/// topological dimension at all, so there is no geometry restriction to
+/// name for that backend.
 ///
 /// COST. One covering-set construction plus one allgather of the owned global
 /// ids, which is O(total cells) per rank -- the same ceiling
