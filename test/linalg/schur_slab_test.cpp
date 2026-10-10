@@ -26,6 +26,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <random>
 #include <utility>
@@ -108,10 +109,22 @@ Eigen::VectorXd whole_grid_reference_solve(int nx, int ny, double coefficient,
 // warm-up pass's call could leave mutated that the real pass would see.
 // ---------------------------------------------------------------------
 
+// Keyed by `n_each`: SchurSlabSolver now performs TWO DISTINCT collectives
+// per `factor()`/`solve()` call (the small, 1-double-per-rank AGREEMENT
+// round `ranks_not_ok` -- src/linalg/schur_slab.cpp -- added 2026-10-10
+// after a host run found the row-band-size refusal stranding a peer
+// rank inside the ORIGINAL allgather below it; then that original,
+// much-larger Schur-/rhs-assembly round). A single shared cache vector
+// would have one round's own slot overwritten by the other's differently-
+// sized payload mid-call; keying by `n_each` (which differs by
+// CONSTRUCTION between the agreement round and the assembly round, for
+// any nx this file uses) keeps them in separate slots instead.
 class RingAllgatherReducer : public Reducer {
  public:
-  RingAllgatherReducer(int rank, int size, std::shared_ptr<std::vector<std::vector<double>>> cache)
-      : rank_(rank), size_(size), cache_(std::move(cache)) {}
+  using Cache = std::map<std::size_t, std::vector<std::vector<double>>>;
+
+  RingAllgatherReducer(int rank, int size, std::shared_ptr<Cache> caches)
+      : rank_(rank), size_(size), caches_(std::move(caches)) {}
 
   // Not exercised by SchurSlabSolver (it uses only allgather/rank/size);
   // implemented as the one-participant identity so an accidental call
@@ -123,9 +136,12 @@ class RingAllgatherReducer : public Reducer {
   [[nodiscard]] int size() const override { return size_; }
 
   void allgather(const double* send, std::size_t n_each, double* recv) const override {
-    (*cache_)[static_cast<std::size_t>(rank_)].assign(send, send + n_each);
+    ++allgather_calls_;
+    auto& cache = (*caches_)[n_each];
+    if (cache.empty()) cache.resize(static_cast<std::size_t>(size_));
+    cache[static_cast<std::size_t>(rank_)].assign(send, send + n_each);
     for (int r = 0; r < size_; ++r) {
-      const auto& slot = (*cache_)[static_cast<std::size_t>(r)];
+      const auto& slot = cache[static_cast<std::size_t>(r)];
       if (slot.size() == n_each) {
         std::copy(slot.begin(), slot.end(), recv + static_cast<std::size_t>(r) * n_each);
       } else {
@@ -135,10 +151,18 @@ class RingAllgatherReducer : public Reducer {
     }
   }
 
+  /// How many times THIS rank's own `allgather()` has been called --
+  /// SchurSlabSolverRefusal's own stranding regressions compare this
+  /// across ranks directly: two ranks that disagree about whether a
+  /// refusal fires must still agree on how many collectives each one
+  /// entered, or one of them was left waiting in a REAL MPI run.
+  [[nodiscard]] int allgather_call_count() const { return allgather_calls_; }
+
  private:
   int rank_;
   int size_;
-  std::shared_ptr<std::vector<std::vector<double>>> cache_;
+  std::shared_ptr<Cache> caches_;
+  mutable int allgather_calls_ = 0;
 };
 
 /// Runs `make_call(rank)` for every rank in `[0, nranks)` TWICE -- see the
@@ -154,10 +178,10 @@ auto two_pass_collective(int nranks, F&& make_call) -> std::vector<std::invoke_r
 }
 
 std::vector<std::shared_ptr<RingAllgatherReducer>> make_ring_reducers(int nranks) {
-  auto cache = std::make_shared<std::vector<std::vector<double>>>(static_cast<std::size_t>(nranks));
+  auto caches = std::make_shared<RingAllgatherReducer::Cache>();
   std::vector<std::shared_ptr<RingAllgatherReducer>> reducers;
   reducers.reserve(static_cast<std::size_t>(nranks));
-  for (int r = 0; r < nranks; ++r) reducers.push_back(std::make_shared<RingAllgatherReducer>(r, nranks, cache));
+  for (int r = 0; r < nranks; ++r) reducers.push_back(std::make_shared<RingAllgatherReducer>(r, nranks, caches));
   return reducers;
 }
 
@@ -355,10 +379,15 @@ TEST(SchurSlabSolverRefusal, OneRowBandRefusesWithoutFactorizing) {
   constexpr int nx = 4;
   constexpr std::int64_t ny = 10;
   // 2 participants, row_lo = {0, 9}: rank 1 owns exactly row 9 -- one row.
+  // Calling factor() for rank 1 ALONE (never rank 0) and still getting the
+  // refusal is the point: row_ownership already names every participant's
+  // own band, so rank 1 needs no reply from rank 0 to know rank 1's own
+  // band is undersized.
   RowOwnership owners{{0, 9}};
-  auto result = SchurSlabSolver::factor(nx, ny, /*j_lo=*/9, /*j_hi=*/10, /*coefficient=*/0.5,
-                                        owners, std::make_shared<RingAllgatherReducer>(
-                                                   1, 2, std::make_shared<std::vector<std::vector<double>>>(2)));
+  auto caches = std::make_shared<RingAllgatherReducer::Cache>();
+  auto result = SchurSlabSolver::factor(
+      nx, ny, /*j_lo=*/9, /*j_hi=*/10, /*coefficient=*/0.5, owners,
+      std::make_shared<RingAllgatherReducer>(1, 2, caches));
   ASSERT_FALSE(result.ok());
   EXPECT_EQ(result.error().code, "E-LINALG-SCHUR-SLAB");
 }
@@ -368,11 +397,115 @@ TEST(SchurSlabSolverRefusal, EmptyRowBandAlsoRefuses) {
   constexpr std::int64_t ny = 10;
   // 3 participants, row_lo = {0, 5, 10}: rank 2 would own [10, 10) -- empty.
   RowOwnership owners{{0, 5, 10}};
-  auto result = SchurSlabSolver::factor(nx, ny, /*j_lo=*/10, /*j_hi=*/10, /*coefficient=*/0.5,
-                                        owners, std::make_shared<RingAllgatherReducer>(
-                                                   2, 3, std::make_shared<std::vector<std::vector<double>>>(3)));
+  auto caches = std::make_shared<RingAllgatherReducer::Cache>();
+  auto result = SchurSlabSolver::factor(
+      nx, ny, /*j_lo=*/10, /*j_hi=*/10, /*coefficient=*/0.5, owners,
+      std::make_shared<RingAllgatherReducer>(2, 3, caches));
   ASSERT_FALSE(result.ok());
   EXPECT_EQ(result.error().code, "E-LINALG-SCHUR-SLAB");
+}
+
+// ---------------------------------------------------------------------
+// HOST-FOUND REGRESSION (2026-10-10): factor()'s row-band-size refusal
+// used to be decided from THIS rank's own `local_rows` alone and return
+// immediately -- a collective path (the Schur-assembly allgather)
+// returning on a condition computed from only ONE rank's own data, the
+// standing rule's own forbidden pattern. On the host, rank 1's single-row
+// band refused and returned without ever calling that allgather, while
+// rank 0's own fine band sailed past the (per-rank) check and reached it
+// ALONE -- MPICH's own "Message truncated" in MPI_Allgather is exactly
+// one rank waiting inside a collective nobody else entered. Fixed by
+// deciding the refusal from `row_ownership` alone (every rank already
+// holds the identical array), which needs NO collective at all, so every
+// rank reaches the SAME conclusion with the SAME (zero) number of
+// allgather calls either way -- checked directly below, not inferred.
+// ---------------------------------------------------------------------
+
+TEST(SchurSlabSolverRefusal, OneRowBandRefusesOnEveryRankWithoutStrandingAnyoneInACollective) {
+  constexpr int nx = 4;
+  constexpr std::int64_t ny = 9;  // rank 0: 8 rows; rank 1: 1 row.
+  const RowOwnership owners{{0, 8}};
+  const auto reducers = make_ring_reducers(2);
+
+  auto result0 = SchurSlabSolver::factor(nx, ny, /*j_lo=*/0, /*j_hi=*/8, 0.5, owners, reducers[0]);
+  auto result1 = SchurSlabSolver::factor(nx, ny, /*j_lo=*/8, /*j_hi=*/9, 0.5, owners, reducers[1]);
+
+  ASSERT_FALSE(result0.ok()) << "rank 0's own band is fine, but EVERY rank must refuse together";
+  EXPECT_EQ(result0.error().code, "E-LINALG-SCHUR-SLAB");
+  ASSERT_FALSE(result1.ok());
+  EXPECT_EQ(result1.error().code, "E-LINALG-SCHUR-SLAB");
+
+  // Neither rank may be left waiting inside a collective the other never
+  // reaches: both made the SAME number of allgather calls -- zero, since
+  // this refusal needs no collective at all.
+  EXPECT_EQ(reducers[0]->allgather_call_count(), reducers[1]->allgather_call_count());
+  EXPECT_EQ(reducers[0]->allgather_call_count(), 0);
+}
+
+// ---------------------------------------------------------------------
+// The OTHER half of the same host diagnosis: a factorisation's own
+// numerical outcome CANNOT be predicted from row_ownership (unlike the
+// row-band-size case above), so it genuinely needs the collective
+// agreement `ranks_not_ok` (src/linalg/schur_slab.cpp) performs. Proven
+// with a LEGITIMATE, non-physical-but-interface-valid input: nx=1
+// collapses the horizontal stencil into the diagonal (periodic self-loop,
+// `(i+-1) mod 1 == i`), giving an EFFECTIVE interior diagonal of
+// `1 + 2*coefficient*ny^2` -- `coefficient = -1/(2*ny^2)` makes that
+// EXACTLY zero, leaving an interior tridiagonal block with zero diagonal
+// and 0.5 off-diagonal entries, a textbook singular pattern (hand-verified
+// determinant 0, confirmed by Eigen's own `info() == NumericalIssue`).
+// Nothing in this interface asserts the two ranks' own `coefficient`
+// arguments agree, so handing rank 1 this pathological value while rank 0
+// keeps an ordinary one is a legitimate way to make ONE rank's own
+// interior factorisation fail while the other's succeeds, with no
+// internal access at all.
+//
+// MEASURED, not merely algebraic: a coefficient derived to make the
+// interior's own diagonal `1 + 2*coefficient*(xx+yy)` exactly zero only
+// actually LANDS on exactly zero in double-precision arithmetic when
+// `2*(xx+yy)` is itself an exact power of 2 (otherwise the division and
+// the back-multiplication each round, leaving a ~1e-17 residual that
+// Eigen's SimplicialLDLT silently accepts as Success -- tried first with
+// nx=1 ny=10, confirmed NOT to trigger a failure, kept here as the reason
+// nx=ny=8 was chosen instead: 8^2+8^2=128=2^7 exactly, so
+// coefficient=-1/256 zeroes the diagonal bit-for-bit, and Eigen's own
+// info() reports NumericalIssue for the resulting interior block,
+// confirmed by running it before writing this assertion).
+// ---------------------------------------------------------------------
+
+TEST(SchurSlabSolverRefusal,
+    InteriorFactorizationFailureOnOneRankIsAgreedWithoutStrandingAnyoneInACollective) {
+  constexpr int nx = 8;
+  constexpr std::int64_t ny = 8;  // both ranks own 4 rows -> n_interior = 2*nx = 16 each.
+  const RowOwnership owners{{0, 4}};
+  constexpr double singular_coefficient = -1.0 / (2.0 * (double(nx) * nx + double(ny) * ny));
+
+  // Pre-seed the agreement round's own cache slots directly with the
+  // FINAL vote each rank will cast (rank 0 ok, rank 1 not) -- both votes
+  // are pure functions of that rank's OWN fixed inputs (never of its
+  // peer's), so this is not "cheating": it sidesteps the two_pass_collective
+  // helper's own sequential-warm-up ordering (which cannot, by itself,
+  // settle a round whose OUTCOME determines whether a SECOND, differently-
+  // sized collective is even attempted) without changing what either rank
+  // computes.
+  auto caches = std::make_shared<RingAllgatherReducer::Cache>();
+  (*caches)[1] = {{0.0}, {1.0}};  // n_each == 1 is the agreement round's own key
+  auto reducer0 = std::make_shared<RingAllgatherReducer>(0, 2, caches);
+  auto reducer1 = std::make_shared<RingAllgatherReducer>(1, 2, caches);
+
+  auto result0 = SchurSlabSolver::factor(nx, ny, 0, 4, /*coefficient=*/0.5, owners, reducer0);
+  auto result1 = SchurSlabSolver::factor(nx, ny, 4, 8, singular_coefficient, owners, reducer1);
+
+  ASSERT_FALSE(result0.ok()) << "rank 0's OWN interior factored fine, but it must still agree to fail";
+  EXPECT_EQ(result0.error().code, "E-LINALG-SCHUR-SLAB-FACTORIZE");
+  ASSERT_FALSE(result1.ok());
+  EXPECT_EQ(result1.error().code, "E-LINALG-SCHUR-SLAB-FACTORIZE");
+
+  // Both ranks made exactly ONE allgather call (the agreement round
+  // itself); neither reached the much larger Schur-assembly round the
+  // agreement exists to guard.
+  EXPECT_EQ(reducer0->allgather_call_count(), reducer1->allgather_call_count());
+  EXPECT_EQ(reducer0->allgather_call_count(), 1);
 }
 
 // ---------------------------------------------------------------------
