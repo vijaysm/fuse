@@ -3300,76 +3300,105 @@ confirming both the split choreography above and the decomposed solver agreement
 tier-0 numbers can only approximate with an in-process thread-barrier stand-in for a real
 `Reducer`/`GhostExchanger`.
 
-### D29. V's two-sided remap is routed through the native halo on an ALIGNED decomposition; a genuinely adopting halo through `VParticipant` measurably disagrees with the single-rank reference
+### ~~D29. V's two-sided remap over an adopting halo measurably disagreed with the single-rank reference~~ — CLOSED 2026-10-10 (root-caused and fixed)
 
-**Guard (lead, 2026-10-10):** until the defect below is found, `VParticipant::make_from_grids`
-REFUSES any decomposition whose remap halo adopted cells, in either direction, with
-`E-BRUSS-V-REMAP-ADOPTION` -- agreed through the reducer first, since the adopted count differs
-per rank. `ThreePartitionVParticipantRefusesAnAdoptingHalo` makes it fire on the 6/5/5 vs 8/8/8
-split on all three ranks; the mutation row `brusselator-vparticipant-adopting-halo-not-refused`
-is killed by it. The aligned decompositions (row counts divisible by the rank count) adopt
-nothing and run, verified to round-off. Nothing runs wrong silently.
+**Closed this session.** The guard added when this entry was opened — `VParticipant::make_from_grids`
+refusing any decomposition whose remap halo adopted cells, in either direction, with
+`E-BRUSS-V-REMAP-ADOPTION` — is REMOVED: `ThreePartitionVParticipantRefusesAnAdoptingHalo` and the
+mutation row `brusselator-vparticipant-adopting-halo-not-refused` are both gone, superseded by the
+tests and mutation row below.
 
-**Closed this session (Halo track, lifting D28's own exclusion): the outright `num_ranks() > 1`
-refusal** (`E-BRUSS-V-DECOMPOSED-REMAP`) is GONE from `VParticipant::make`. `VParticipant::make_grids`/
-`make_from_grids` split the former one-shot `make()` into two stages (`NativeGrid::make`'s own
-`E-BRUSS-MESH-COUNT` check requires an UNWIDENED view, so the halo cannot be pre-installed before the
-grids exist) and build BOTH directions' remap halo (`q`: U grid -> V slab; `state`: V grid -> U slab)
-through the same `fuse::build_remap_halo`/`build_weights`/`backend.remap_halo_pattern`/
-`fuse::linalg::make_mpi_exchanger` sequence `docs/dev/native-halo.md` documents, each direction its
-own `GhostExchanger` (`shim.h`/`shim.cpp`'s own `bruss_v_create`/`bruss_v_provided` now propagate the
-resulting `fuse::Result<Vector>` failure mode instead of assuming V's remap cannot fail).
+**Root cause, measured by instrumenting (not guessed from reading).** `VParticipant::step()`'s own
+`q_native_v` buffer (the `apply_weights(weights_uv_, ...)` destination for the U->V remap) and
+`remap_state_to_u()`'s own `u_native` buffer (the `apply_weights(weights_vu_, ...)` destination for the
+V->U remap) were each sized from this rank's OWNED cell count (`n_v_`/`n_u_`, cached at `make_grids()`
+time, BEFORE either direction's halo is built). `RemapWeights::n_rows` (`remap_plan.hpp`: "target
+entities (local)") is documented, correctly and intentionally, to mean the target mesh's CURRENT local
+entity count -- owned plus ghost, the same "local = owned plus ghost" convention `MeshView::entity_count`
+itself documents (`mesh_view.hpp`) -- and `fuse::build_supermesh_weights` (`src/backend/supermesh.cpp`)
+honours exactly that: `w.n_rows = tgt.entity_count(dim)`. `apply_weights` (`remap_plan.hpp`)
+unconditionally zeros and writes `dst[0, n_rows)`.
 
-**Verified correct ON AN ALIGNED split (zero adopted cells either direction):**
-`test/verification/brusselator_species_core_decomposition_test.cpp`'s `TwoPartitionVParticipant
-MatchesSingleRank` (8+8/12+12 rows) and `ThreePartitionVParticipantMatchesSingleRank` (4+4+4/6+6+6
-rows) both reproduce a `num_ranks()==1` reference to round-off (1.821e-14, 7.994e-15 — see "VParticipant
-two-sided remap decomposition" in `docs/user/brusselator.md`). The full tier-0 suite passes 179/179
-after the change.
+U and V are each the SOURCE of one halo direction and the TARGET of the other, on the SAME backend: V is
+widened (gains adopted cells) as the source of the V->U halo, and that SAME V mesh is also the TARGET of
+the U->V weights (`w_uv`), built AFTER both halos. Whenever V was ALSO widened (because this rank
+adopted V cells for the V->U direction), `weights_uv_.n_rows` is `owned_size(V) + adopted_v`, not
+`owned_size(V)` -- and `q_native_v`, sized from the stale pre-halo `n_v_`, was too small by exactly the
+adopted count. `apply_weights`' unconditional zero-and-write loop then wrote past the end of that
+`std::vector<double>` -- a heap buffer overflow, not merely a wrong value. The symmetric case (U widened
+as the source of the U->V halo, inflating `weights_vu_.n_rows` beyond `n_u_`) overflows `u_native` in
+`remap_state_to_u()` the same way. Measured on the instrumented scratch build (U 16 rows as 6/5/5, V 24
+as 8/8/8, 3 ranks, `FUSE_BRUSS_DEBUG=1`): rank 0 traced `weights_uv(n_rows=108, n_cols=48)` against
+`n_v_=96` (12 extra rows -- exactly its own measured `adopted_v(vu)=12`); ranks 1 and 2 traced an
+analogous overflow of `u_native` from their own nonzero `adopted_u(uv)=8`. This explains both original
+symptoms precisely: the overflow corrupts whatever heap memory follows the undersized vector, read back
+as though it were real row values from the very FIRST `apply_weights` call (the measured 3.1e-4
+`exchange_in` disagreement present from sub-step 0, never growing -- exactly "the error enters once");
+and on later steps, the corrupted heap trips an `Eigen::Block.h` bounds assertion when the diffusion
+solve (Schur or Pcg alike -- neither solver's own code is involved) reads memory the overflow had
+clobbered.
 
-**Open — NOT a round-off gap, a real one:** a genuinely MISALIGNED 3-way split (U's 16 rows as 6/5/5
-against V's 24 as 8/8/8, so SOME U cell must cross a V partition boundary — the exact scenario
-`test/backend/native_halo_test.cpp`'s own `NativeHaloQuadGrid.ThreeRanksMisalignedAdoptsExactlyWhat
-TheOracleComputes` and `NativeHaloBuildWeights.ThreeRanksMisalignedCompleteWeightsAndLinearField
-Reproduction` already prove correct, independent of `VParticipant`, against an oracle) was tried as a
-THIRD `VParticipant` test row this session. It did not reproduce the single-rank reference:
-`exchange_in` (a globally-reduced quantity, so a reduction defect would be visible, and was checked
-for) disagreed by roughly 3e-4 from the very FIRST sub-step onward — far above round-off — and stayed
-there at a fixed magnitude rather than growing, meaning the error enters once (consistent with a wrong
-one-time ghost value or a wrong per-rank weight, not a per-step accumulating bug). Several later
-sub-steps additionally crashed inside the diffusion solve itself (an Eigen `Block.h` bounds assertion),
-reproducible with EITHER `SolverKind::Schur` or `SolverKind::Pcg` (ruling out a single solver's own
-code), and at BOTH the 16x16/24x24 (square, identical aspect ratio to `native_halo_test.cpp`'s own
-proven fixture) and an 8x... rectangular ratio (ruling out a square-vs-rectangular grid assumption).
-Because the UNDERLYING halo-construction pipeline is independently proven correct at this exact ratio,
-the defect is narrowed to how `VParticipant::make_from_grids`/`step()`/`remap_state_to_u()` DRIVES that
-pipeline (the per-rank ordering of `q_native_u`'s owned-then-ghost buffer feeding `apply_weights`, or
-something in how the two exchangers and the diffusion solver's own reducer interleave within one
-`step()` call, are the two most likely remaining candidates) — not root-caused in the time available
-this session. `test/verification/brusselator_species_core_decomposition_test.cpp`'s own `kNyUHalo3`/
-`kNyVHalo3` constants are kept at the ALIGNED values (12/18) rather than shipping a row that fails
-roughly half the time it is run; a stand-alone stress test of the new in-process ghost-exchange barrier
-class (`VarGatherBarrier`) found and fixed a real bug there first (a registry key that included
-`owned_n`, which is NOT rank-invariant under a genuinely uneven split, splitting one logical 3-rank
-collective into isolated single-rank ones that waited forever for peers that could never arrive — fixed
-by keying on `call_index` alone), but fixing that did not close this gap; the exchange_in/crash
-symptom persists after that fix.
+Of the candidates this entry's own "Open" note listed when it was written, the fix matches candidate (b)
+("a buffer sized from the PRE-halo entity_count") exactly, once sharpened: it is not that something was
+cached from a view at `make_grids()` time in general (the grid's own `nx`/`ny`/`owned_rows`/
+`native_of_canonical_` are all fine, precisely because they describe only the UNWIDENED owned block,
+which widening never touches) -- it is specifically the two `apply_weights` DESTINATION buffers, each
+sized from the wrong rank's wrong-direction owned count instead of from the weights matrix that actually
+produced the data going into it.
 
-**Not attempted on a real host:** the `--ranks-u`/`--ranks-v` CLI flags on `u_main.c`/`v_main.f90` are
-unchanged in effect; what changed this session is the CHOREOGRAPHY each of `u_main.c`, `v_main.f90`,
-`coupler_main.c` uses to form ITS OWN component sub-communicator. Each now makes exactly ONE
-`MPI_Comm_split` call, with a FIXED color naming its own component (U=0, V=1, coupler=2) and key=world
-rank — replacing the previous "U splits with a real color, everyone else opts out with
-`MPI_UNDEFINED`" form, which put the entire burden of "did every non-U program remember to opt out at
-the right point" on files with nothing else to do with U's own split (see coupler_main.c's own ORDER
-MATTERS comment for the host-found choreography bug — a truncated `MPI_Allgather` — that motivated this
-change). V's own `v_rank`/`v_size` now come from this REAL communicator (`MPI_Comm_rank`/`_size` on
-it), cross-checked against the `--ranks-u`/`--ranks-v` flags (abort on disagreement) rather than
-computed from the flags alone. This has never been run: this sandbox cannot start MPI at all (C1), and
-even once real MPI is available, D29's own open correctness gap above means a decomposed-V host row
-(`mpmd.5`, the one row with `--ranks-v 2`) is NOT expected to pass until that gap closes. `mpmd.3`'s own
-V segment is one rank, so it exercises none of this.
+**Fix** (`examples/brusselator/species_core.hpp`): `step()` now sizes `q_native_v` from
+`weights_uv_.n_rows`; `remap_state_to_u()` now sizes `u_native` from `weights_vu_.n_rows`. Both are safe
+to read back through `to_canonical()` unchanged: `to_canonical()` addresses only `native_of_canonical_`
+entries, which are all built from the UNWIDENED view at `make_grids()` time and so never point past
+`owned_size()`, regardless of how large the weights-sized buffer actually is. No refusal is needed any
+more.
 
+**Verified correct on the previously-failing MISALIGNED split** (U 16 rows as 6/5/5 against V 24 as
+8/8/8, 3 ranks -- adopting rank 0 "0 U, 12 V", rank 1 "8 U, 12 V", rank 2 "8 U, 0 V" cells, traced under
+`FUSE_BRUSS_DEBUG=1`): `test/verification/brusselator_species_core_decomposition_test.cpp`'s
+`ThreePartitionVParticipantMatchesSingleRankMisaligned` (`SolverKind::Schur`, 6 sub-steps) measures
+`max_abs_diff = 1.732e-14` against the single-rank reference, and
+`ThreePartitionVParticipantMatchesSingleRankMisalignedPcg` (`SolverKind::Pcg`, 20 sub-steps, to rule out
+any slow growth the original 6-sub-step run had no room to see) measures `max_abs_diff = 5.262e-14`,
+`max_exchange_in_diff = 1.388e-17` -- both round-off, both solver kinds, no crash. The full tier-0 suite
+(ctest, which registers one entry per test BINARY, not per `TEST()` case -- `ThreePartitionVParticipant
+RefusesAnAdoptingHalo`'s removal and the two new cases' addition are both internal to the existing
+`verification.brusselator_species_core_decomposition` binary) passes 179/179, unchanged from before this
+fix. The halo-construction pipeline itself was never the defect -- `test/backend/native_halo_test.cpp`'s own
+`ThreeRanksMisalignedAdoptsExactlyWhatTheOracleComputes`/
+`ThreeRanksMisalignedCompleteWeightsAndLinearFieldReproduction` already proved it correct at this split,
+one direction at a time; this entry's own bug only appears once BOTH directions' halos are built on the
+SAME backend, each mesh widened as the source of one direction and read as the (now also widened) target
+of the other -- a scenario those single-direction tests never construct.
+
+**Mutation.** `brusselator-vparticipant-adopting-halo-not-refused` is retired (the refusal it killed no
+longer exists). `brusselator-vparticipant-stale-adopted-ghost-not-exchanged`
+(`build-evidence/mutations/brusselator.toml`) replaces it: skipping `exchanger_uv_->update()` in
+`step()` (leaving the adopted/ghost slots at their zero-initialized default -- "stale" -- instead of the
+real cross-rank values) is caught ONLY by the misaligned tests above (the aligned ones adopt zero cells,
+so a skipped update is indistinguishable from a correct one there -- every ghost slot is empty either
+way). Hand-proved 2026-10-10 on the unfiltered test binary: with the mutation applied,
+`ThreePartitionVParticipantMatchesSingleRankMisaligned`'s `max_abs_diff` rises from `1.732e-14` to
+`3.170e-03` and `...MisalignedPcg`'s from `5.262e-14` to `8.408e-03`, both far past the `1e-11` bound;
+both FAIL cleanly. File restored and verified byte-identical with `cmp` before submission.
+
+**The MOAB-backed builder is NOT a second instance (lead, measured 2026-10-10).** The
+sub-agent flagged `w.n_rows = tgt.cells.size()` in `src/backend/intx_weights.cpp` (three
+sites) as "the same row-count-inflation shape". It is the same CONVENTION, not a defect: every
+builder -- supermesh (`w.n_rows = tgt.entity_count(dim)`), MOAB, MLS -- sizes the weights over
+the target's whole local view, owned and non-owned alike, which is what `RemapWeights::n_rows`
+is documented to mean. The defect here was a CALLER (this example) allocating the destination
+from a count it had cached before the view was widened. The Runner, the library's own caller,
+never does that: it checks `weights->n_rows != out.elements` and refuses with
+`E-RT-REMAP-SIZE` (`src/runtime/runner.cpp`) rather than applying. Nothing to fix in the
+builders.
+
+**Still host-only, same shape as D25's own gap.** The `mpmd.5` row (`--ranks-v 2`, the one row where V
+spans more than one rank) still cannot be run in this sandbox (C1: MPI cannot start here). This entry's
+own fix removes the one KNOWN correctness gap that stood between that row and a real host run -- the
+`u_main.c`/`v_main.f90`/`coupler_main.c` three-color `MPI_Comm_split` choreography, and `v_main.f90`'s
+cross-check of `v_rank`/`v_size` against `--ranks-v`, are unaffected by this change and remain
+unexercised past a build check.
 ### ~~D25. A separately launched participant could not run a coupling window~~ — CLOSED 2026-10-09 (host-measured)
 
 **Found by the first MPMD runs that reached `initialize()` (D24 cleared the exchange plan),

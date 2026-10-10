@@ -161,16 +161,13 @@ native-halo.md) `VParticipant`'s two-sided remap (the `q`: U grid -> V slab,
 and `state`: V grid -> U slab transfers) is now routed through the same
 `fuse::build_remap_halo`/`build_weights`/exchanger machinery the mesh/physics
 decomposition already used for everything else -- see "VParticipant
-two-sided remap decomposition" below for the measured agreement, and that
-section's own note on what is NOT yet measured correct (a genuinely
-adopting halo through `VParticipant`, as opposed to the mesh/weights
-machinery an adopting halo itself exercises, which is proven correct
-independently -- KNOWN_ISSUES.md D29). Two pieces remain open: that
-correctness gap, and a HOST run -- a real `MPI_Comm_split`-formed, more-
-than-one-rank V communicator has never been exercised end to end on a
-machine that can start MPI (`v_main.f90`'s own header comment has the full
-account) -- `verification.brusselator.participants.mpmd.5` is build-
-verified only, in this sandbox, for exactly that reason.
+two-sided remap decomposition" below for the measured agreement, including
+on a genuinely ADOPTING halo (KNOWN_ISSUES.md D29, closed). One piece
+remains open: a HOST run -- a real `MPI_Comm_split`-formed, more-than-one-
+rank V communicator has never been exercised end to end on a machine that
+can start MPI (`v_main.f90`'s own header comment has the full account) --
+`verification.brusselator.participants.mpmd.5` is build-verified only, in
+this sandbox, for exactly that reason.
 
 **The mesh.** `NativeGrid::make` loads its backend at
 `backend.rank()`/`backend.num_ranks()`. `fuse::native::NativeMeshBackend`
@@ -346,28 +343,41 @@ commit_remap_halo` seam `test/backend/native_halo_test.cpp`'s own
 `BackendFixture` uses, against a `num_ranks() == 1` `VParticipant` reference
 stepping the identical trajectory:
 
-| case | partitions | max\\|diff\\| vs. single-rank `VParticipant` |
-|---|---:|---:|
-| aligned split (8+8 / 12+12 rows, zero adopted ghost cells) | 2 | 1.821e-14 |
-| aligned split (4+4+4 / 6+6+6 rows, zero adopted ghost cells) | 3 | 7.994e-15 |
+| case | partitions | solver | sub-steps | max\\|diff\\| vs. single-rank `VParticipant` |
+|---|---:|---|---:|---:|
+| aligned split (8+8 / 12+12 rows, zero adopted ghost cells) | 2 | Schur | 6 | 1.821e-14 |
+| aligned split (4+4+4 / 6+6+6 rows, zero adopted ghost cells) | 3 | Schur | 6 | 7.994e-15 |
+| MISALIGNED split (6/5/5 U rows / 8/8/8 V rows, adopting both directions) | 3 | Schur | 6 | 1.732e-14 |
+| MISALIGNED split (6/5/5 U rows / 8/8/8 V rows, adopting both directions) | 3 | Pcg | 20 | 5.262e-14 |
 
-Both partitionings reproduce the single-rank reference to round-off, in the
-same 1e-14/1e-15 band as the diffusion-only agreement measured above (the
-2-partition `V` row there, 2.665e-15, is itself the tightest of the three) --
-the two-sided remap's own `apply_weights` call adds no measurable error
-beyond what the diffusion solve already carries, ON a split where neither
-direction's halo adopts any cell. **A genuinely MISALIGNED 3-way split (one
-of 6/5/5 U rows against 8/8/8 V rows, and separately a 16x16/24x24 square
-grid identical to `test/backend/native_halo_test.cpp`'s own proven 3-rank
-fixture) was tried this session and did NOT reproduce the reference** --
-`exchange_in` diverged by roughly 3e-4 from the very first sub-step, and
-later sub-steps intermittently crashed inside the diffusion solve. Since
-`test/backend/native_halo_test.cpp`'s own `ThreeRanksMisalignedAdoptsExactly
-WhatTheOracleComputes`/`...CompleteWeightsAndLinearFieldReproduction` tests
-already prove the underlying halo-construction pipeline correct at exactly
-this ratio, the defect is specific to how `VParticipant` itself drives an
-adopting halo (`step()`/`remap_state_to_u()`), not to halo construction --
-not root-caused in the time available; see KNOWN_ISSUES.md D29.
+All four reproduce the single-rank reference to round-off, in the same
+1e-14/1e-15 band as the diffusion-only agreement measured above (the
+2-partition `V` row there, 2.665e-15, is itself the tightest). The two
+MISALIGNED rows adopt cells in one or both remap halo directions (measured
+per rank at `make_from_grids` time, `FUSE_BRUSS_DEBUG=1`: rank 0 "0 U,
+12 V", rank 1 "8 U, 12 V", rank 2 "8 U, 0 V") and are the configuration
+KNOWN_ISSUES.md D29 tracked as refusing, then as measurably disagreeing with
+the reference once the refusal was lifted by hand: `VParticipant::step()`/
+`remap_state_to_u()` sized their `apply_weights` destination buffers from
+this rank's pre-halo OWNED count rather than from the weights matrix's own
+`n_rows` (the target mesh's CURRENT, post-halo local entity count -- larger
+than owned whenever that mesh was ALSO widened as the source of the OTHER
+transfer direction on the same backend), so `apply_weights`' unconditional
+zero-and-write loop overflowed the buffer -- the measured 3.1e-4
+`exchange_in` disagreement from the first sub-step, and the later
+`Eigen::Block.h` assertion, were both downstream of that overflow, not of
+the halo-construction pipeline (`test/backend/native_halo_test.cpp`'s own
+`ThreeRanksMisalignedAdoptsExactlyWhatTheOracleComputes`/`...CompleteWeights
+AndLinearFieldReproduction` tests already proved that correct at this exact
+ratio, one direction at a time). See KNOWN_ISSUES.md D29 (closed) for the
+full measurement and fix.
+
+**Trace.** `FUSE_BRUSS_DEBUG=1` in the environment makes `VParticipant::
+make_from_grids`/`step` print, to stderr, this rank's owned/adopted counts
+in each direction, the weights matrix shapes `step()` builds its buffers
+from, the first few exchanged ghost values, and `q_on_v`'s sum and
+`exchange_in` after each step -- an opt-in diagnostic (no cost when unset),
+not a substitute for the tests above.
 
 ### Agreement with the Toy at the defaults, short run (`--end 0.1`)
 
