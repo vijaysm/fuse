@@ -38,6 +38,8 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -900,36 +902,32 @@ class VParticipant {
     }
     auto pattern_vu = backend.remap_halo_pattern(v_mid, u_mid, 2);
     if (!pattern_vu.ok()) return pattern_vu.error();
-    // KNOWN_ISSUES D29: with cells ADOPTED in either direction (a
-    // decomposition whose U and V bands do not cover the same y-range,
-    // e.g. 16 rows as 6/5/5 against 24 as 8/8/8) this class measurably
-    // disagrees with the single-rank reference (exchange_in off by 3.1e-4
-    // from the first sub-step) and later trips a bounds assertion in the
-    // diffusion solve, although the halo pipeline itself is proven correct
-    // at that split (test/backend/native_halo_test.cpp). Until the defect
-    // is found, that configuration REFUSES rather than running wrong. The
-    // aligned decompositions (8+8 / 12+12) adopt nothing and are verified.
-    // The count DIFFERS between ranks (the halo test measured 0/16/16 at
-    // three ranks), so the decision is agreed through the reducer before
-    // any rank returns: a rank that adopted nothing refuses along with its
-    // peers instead of walking alone into the first exchange.
-    {
-      const auto& agree = reducer ? reducer : fuse::linalg::make_serial_reducer();
-      const double local_adopted = static_cast<double>(pattern_uv.value().owner_rank.size() +
-                                                       pattern_vu.value().owner_rank.size());
-      const double total_adopted = agree->sum(local_adopted);
-      if (total_adopted > 0.0) {
-        return fuse::Failure{
-            "E-BRUSS-V-REMAP-ADOPTION",
-            "VParticipant::make_from_grids: this decomposition adopts " +
-                std::to_string(static_cast<long long>(total_adopted)) +
-                " cells across ranks (this rank: " +
-                std::to_string(pattern_uv.value().owner_rank.size()) + " U, " +
-                std::to_string(pattern_vu.value().owner_rank.size()) +
-                " V); V's two-sided remap over an adopting halo is KNOWN_ISSUES D29 and "
-                "refuses until fixed. Decompose U and V so that each rank's bands cover the "
-                "same y-range (row counts divisible by the rank count)."};
-      }
+    // KNOWN_ISSUES D29 (CLOSED): a decomposition whose U and V bands do not
+    // cover the same y-range (e.g. 16 rows as 6/5/5 against 24 as 8/8/8)
+    // ADOPTS cells in one or both directions' remap halo. This USED to
+    // measurably disagree with the single-rank reference: `step()` and
+    // `remap_state_to_u()` sized their `apply_weights` destination buffers
+    // from this rank's OWNED count (`n_v_`/`n_u_`, cached before any halo
+    // widening) rather than from the weights' own `n_rows` (the TARGET
+    // mesh's CURRENT, post-halo local entity count -- larger than owned
+    // whenever that same mesh was ALSO widened as the SOURCE of the OTHER
+    // transfer direction on this backend). `apply_weights` unconditionally
+    // zeros and writes `dst[0, n_rows)`, so the undersized buffer overflowed
+    // -- measured as a 3.1e-4 `exchange_in` disagreement from the first
+    // sub-step (reading whatever heap memory followed the allocation) and,
+    // on later steps, an Eigen `Block.h` bounds assertion once the
+    // corrupted heap was read back inside the diffusion solve. Fixed by
+    // sizing `q_native_v`/`u_native` from `weights_uv_.n_rows`/
+    // `weights_vu_.n_rows` instead (see `step()`/`remap_state_to_u()`'s own
+    // comments) -- no refusal is needed any more; this rank's own
+    // owned/adopted counts are traced below (`FUSE_BRUSS_DEBUG`) purely as
+    // an optional diagnostic, with no decision resting on them.
+    if (std::getenv("FUSE_BRUSS_DEBUG") != nullptr) {
+      std::fprintf(stderr,
+                   "[D29 rank=%d] make_from_grids: owned_u=%d owned_v=%d adopted_u(uv)=%zu "
+                   "adopted_v(vu)=%zu\n",
+                   backend.rank(), u_grid.owned_size(), v_grid.owned_size(),
+                   pattern_uv.value().owner_rank.size(), pattern_vu.value().owner_rank.size());
     }
     auto exchanger_vu =
         exchanger_factory(pattern_vu.value(), static_cast<std::size_t>(v_grid.owned_size()));
@@ -967,6 +965,7 @@ class VParticipant {
   /// t_begin+dt -- exactly `VComponent::advance()`'s own two-sided remap
   /// (species_component.hpp).
   [[nodiscard]] fuse::Result<void> step(double dt, const Vector& required, Vector* provided) {
+    const bool trace = std::getenv("FUSE_BRUSS_DEBUG") != nullptr;
     std::vector<double> q_native_owned_u;
     u_grid_.to_native(required, &q_native_owned_u);
     std::vector<double> q_native_u(q_native_owned_u.size() + exchanger_uv_->ghost_size());
@@ -976,14 +975,56 @@ class VParticipant {
                                          exchanger_uv_->ghost_size());
     if (!updated.ok()) return updated.error();
 
-    std::vector<double> q_native_v(static_cast<std::size_t>(n_v_), 0.0);
+    if (trace) {
+      std::fprintf(stderr,
+                   "[D29 rank=%d] step: owned_u=%zu ghost_uv=%zu q_native_u.size=%zu "
+                   "weights_uv(n_rows=%zu,n_cols=%zu) n_v_=%d\n",
+                   backend_.rank(), q_native_owned_u.size(), exchanger_uv_->ghost_size(),
+                   q_native_u.size(), weights_uv_.n_rows, weights_uv_.n_cols, n_v_);
+      for (std::size_t g = 0; g < std::min<std::size_t>(exchanger_uv_->ghost_size(), 4); ++g) {
+        std::fprintf(stderr, "[D29 rank=%d]   ghost_uv[%zu] = %.17g\n", backend_.rank(), g,
+                     q_native_u[q_native_owned_u.size() + g]);
+      }
+    }
+
+    // `weights_uv_.n_rows` is V's CURRENT (post-halo) local entity count --
+    // `owned_size(V)` plus whatever V was ALSO widened by as the SOURCE of
+    // the OTHER direction's halo (V->U), built on this same backend before
+    // this one (KNOWN_ISSUES D29): V's own role as a target here and as a
+    // source for remap_state_to_u() are independent widenings of the SAME
+    // mesh, and `RemapWeights::n_rows` (remap_plan.hpp: "target entities
+    // (local)") always means the FULL local count, owned plus ghost,
+    // matching `MeshView::entity_count`'s own "owned plus ghost" contract --
+    // never the PRE-halo owned-only count `n_v_` cached at `make_grids()`
+    // time. Sizing this buffer from `n_v_` let `apply_weights` (which
+    // unconditionally zeros and writes `dst[0, n_rows)`) write past the end
+    // of a too-small std::vector whenever V had been widened -- a heap
+    // buffer overflow, not merely a wrong value: measured as a 3.1e-4
+    // disagreement in exchange_in from the very first sub-step (reading
+    // whatever followed the undersized allocation) and, on later steps, an
+    // Eigen Block.h bounds assertion once the corrupted heap was read back
+    // by the diffusion solve. The extra (ghost) rows this allocates are
+    // never read afterward: `to_canonical` only ever addresses native
+    // indices below `owned_size(V)`, via `native_of_canonical_`, which is
+    // built from the UNWIDENED view at `make_grids()` time and therefore
+    // never points past it.
+    std::vector<double> q_native_v(weights_uv_.n_rows, 0.0);
     auto applied = fuse::apply_weights(weights_uv_, q_native_u.data(), q_native_v.data(), 1);
     if (!applied.ok()) return applied.error();
     Vector q_on_v(n_v_);
     v_grid_.to_canonical(q_native_v, &q_on_v);
 
+    if (trace) {
+      std::fprintf(stderr, "[D29 rank=%d] step: q_on_v.sum=%.17g q_on_v.size=%d\n", backend_.rank(),
+                   q_on_v.sum(), n_v_);
+    }
+
     const fuse::Result<void> r = core_->step(dt, q_on_v);
     if (!r.ok()) return r;
+    if (trace) {
+      std::fprintf(stderr, "[D29 rank=%d] step: exchange_in=%.17g\n", backend_.rank(),
+                   core_->exchange_in());
+    }
     return remap_state_to_u(provided);
   }
 
@@ -1054,7 +1095,13 @@ class VParticipant {
                                          exchanger_vu_->ghost_size());
     if (!updated.ok()) return updated.error();
 
-    std::vector<double> u_native(static_cast<std::size_t>(n_u_), 0.0);
+    // See `step()`'s own comment on `q_native_v` above for why this is
+    // `weights_vu_.n_rows` (U's CURRENT, post-halo local entity count) and
+    // not the PRE-halo owned-only `n_u_`: U is widened as the SOURCE of the
+    // U->V halo (`exchanger_uv_`'s own pattern) independently of its role as
+    // the TARGET here, and the same overflow this fixes there applies here
+    // whenever that widening is nonzero.
+    std::vector<double> u_native(weights_vu_.n_rows, 0.0);
     auto applied = fuse::apply_weights(weights_vu_, v_native.data(), u_native.data(), 1);
     if (!applied.ok()) return applied.error();
     u_grid_.to_canonical(u_native, out);
