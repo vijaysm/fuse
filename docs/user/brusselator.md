@@ -151,6 +151,101 @@ permutation) where a parallel kernel would not change the asymptotic cost
 at these grid sizes, unlike the reaction term, which is exactly the kind of
 per-cell, no-cross-talk kernel Kokkos exists for.
 
+## Grid decomposition over the component's own ranks
+
+The mesh and the explicit (no linear solve) physics are decomposed over
+however many ranks U or V's own component runs on; the implicit diffusion
+SOLVE is a different track's own work (below) and is not decomposed here.
+
+**The mesh.** `NativeGrid::make` loads its backend at
+`backend.rank()`/`backend.num_ranks()`. `fuse::native::NativeMeshBackend`
+slabs a generated `"generated:quad:NxM"` mesh by ROWS
+(`fuse::native::rank_slice(ny, rank, num_ranks)`, src/backend/
+native_generators.cpp), so this rank's view is already its own contiguous
+row band, owned cells only -- the native mesh carries no ghost cells of
+its own. `NativeGrid` exposes that band as `j_lo()`/`j_hi()`/
+`owned_rows()`/`owned_size()`, and a LOCAL canonical index
+`local_index(i, j) = (j - j_lo())*nx + i` over it, alongside the GLOBAL
+`index(i, j) = j*nx + i` every whole-grid caller already used. At
+`num_ranks() == 1` the row band is the whole grid (`j_lo() == 0`,
+`j_hi() == ny()`), the local index equals the global one, and every
+existing whole-grid caller (`UCore`, `VDiffusionCore`, `VParticipant`, the
+in-process example, the participant-ABI shim) is unaffected: byte-identical
+output was checked directly, not assumed -- see "Byte-identical at
+`num_ranks() == 1`" below.
+
+**The halo.** One periodic row above and below this rank's own band is
+exposed as `NativeGrid::ghost_pattern()`, shaped identically to FUSE's
+planned `fuse::linalg::GhostPattern` (the Containers track's own
+distributed-vector interface): one `owner_rank`/`remote_local_index` pair
+per ghost cell, in a fixed order (the below row's `nx` cells, then the
+above row's). Every row band is contiguous, so the row below this band is
+always the LAST row of whichever rank owns it, and the row above is always
+the FIRST row of whichever rank owns it (itself, wrapping, at
+`num_ranks() == 1`) -- which is why the pattern needs no communication to
+build. `SlabField` holds a component's own state as one contiguous buffer,
+owned block then ghost block (the same layout the planned
+`fuse::linalg::DistVector` uses), and refreshes its ghosts through an
+injected `GridHaloExchanger` (`update(owned, owned_n, ghosts, ghost_n)`,
+shaped identically to the planned `fuse::linalg::GhostExchanger::update`)
+-- a same-buffer gather at `num_ranks() == 1` (`SelfHaloExchanger`), an
+in-process two-buffer copy in the tier-0 two-partition test, and real
+`MPI_Sendrecv` in the tier-1 test (`test/parallel/
+brusselator_grid_mpi_test.cpp`, built, not run in this sandbox -- MPI
+cannot start here). No MPI header appears in any example header this
+track touched; the layering gate (`tools/check-layering.py`) enforces it.
+
+**The explicit parts.** Reaction (`reaction_kokkos_span`, the same
+`Kokkos::parallel_for` `reaction_kokkos` already ran, now addressable by
+raw pointer and size so it runs equally over a whole canonical vector or
+over just a `SlabField`'s owned block), the forcing mask and the initial
+condition (`forcing_mask_owned`/`initial_condition_owned`, the same
+per-row formula restricted to `[j_lo, j_lo+owned_rows)`) and every mean
+(`SlabField::owned_mean`) are each an owned-cells computation; the mean is
+specifically an owned PARTIAL sum reduced across the component's own
+communicator through an injected `GridReducer` (`sum`/`max`/`rank`/`size`,
+shaped identically to the planned `fuse::linalg::Reducer`) -- never a
+locally-reduced count divided into a local sum, which would silently
+report each rank's own share as if it were the global value. None of these
+three needs a ghost value: the reaction is pointwise and the forcing mask
+and initial condition have no stencil, so the halo exists for the SOLVE
+seam below, not for these.
+
+**The solver seam.** `UCore`/`VDiffusionCore` (species_core.hpp) now call a
+small `DiffusionSolver` interface (`factor`/`solve`) rather than running
+`Eigen::SimplicialLDLT` inline; `DirectDiffusionSolver` -- the same
+factor/solve bodies, moved rather than rewritten -- is the one
+implementation today, valid only at `num_ranks() == 1` (every current
+caller). A `num_ranks() > 1` implementation, built on the Containers
+track's planned `fuse::linalg::DistSparseMatrix`/`DistVector` and the
+Solvers track's Schur-complement solve for the slab-decomposed backward-
+Euler periodic Laplacian, is a second implementation of this SAME
+interface once those land; `UCore`/`VDiffusionCore` would not change.
+This is the one piece of this example's numerics the Grid track does not
+decompose -- recorded as the open seam, not papered over.
+
+**Byte-identical at `num_ranks() == 1`.** Checked directly: the unmodified
+and the decomposition-carrying trees were each built into a fresh
+`fuse_example_brusselator`, run with identical arguments
+(`--nx-u 16 --ny-u 16 --nx-v 24 --ny-v 24 --dt-u 0.002 --dt-v 0.003
+--window 0.02 --end 0.1`), and `cmp` found their `u.csv`, `v.csv` and
+`diagnostics.txt` outputs byte-for-byte IDENTICAL -- not merely close at
+displayed precision. The full brusselator ctest row set (16 rows,
+including the new `verification.brusselator_grid_decomposition`) passed
+100% on the decomposition-carrying tree.
+
+**What this track measured about reduction order.** Reproducing one
+whole-grid field's mean from two partitions' owned partial sums plus a
+reduction is NOT always bit-identical to computing the mean over the
+whole vector directly, because floating addition is not associative: for
+the forcing mask (mostly zero, the few nonzero terms exactly
+representable) the two agreed EXACTLY on an 8x8 two-partition test; for
+the initial condition and the reaction kernel's output (every cell a
+non-trivial fraction) the two differed by `4.4408920985006262e-16`, one
+ulp at that magnitude. Both are far inside the `1e-9` bound the
+decomposition test checks, which was set from this measurement, not
+tuned to pass it.
+
 ## Measured results
 
 All numbers below were measured on this build (macOS arm64, AppleClang
