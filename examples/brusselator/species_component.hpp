@@ -74,7 +74,7 @@ class UComponent final : public fuse::Component {
   UComponent(std::string name, const NativeGrid& grid, PhysicsConfig cfg, Vector initial_v_on_u)
       : name_(std::move(name)),
         n_(grid.size()),
-        core_(grid.nx(), grid.ny(), cfg, initial_v_on_u),
+        core_(grid, cfg, initial_v_on_u),
         required_(std::move(initial_v_on_u)),
         provided_(core_.provided()) {}
 
@@ -180,8 +180,7 @@ class VComponent final : public fuse::Component {
         v_grid_(&v_grid),
         n_u_(u_grid.size()),
         n_v_(v_grid.size()),
-        core_(v_grid.nx(), v_grid.ny(), cfg.diffusion,
-              initial_condition(/*is_u=*/false, v_grid.nx(), v_grid.ny())),
+        core_(v_grid, cfg.diffusion),
         required_(Vector::Zero(n_u_)),
         provided_(n_u_),
         weights_uv_(weights_uv),
