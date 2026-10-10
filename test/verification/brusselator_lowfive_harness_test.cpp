@@ -438,9 +438,11 @@ void RunExternalDeliveryMatchesInProcessRunner(WaveformIteration wi) {
   }
 
   bruss_u_handle* uh = bruss_u_create(kNxU, kNyU, cfg.diffusion, cfg.A, cfg.B,
-                                     cfg.forcing ? 1 : 0, v0_on_u.data());
+                                     cfg.forcing ? 1 : 0, v0_on_u.data(),
+                                     /*rank=*/0, /*num_ranks=*/1, /*comm_f=*/0, "auto");
   ASSERT_NE(uh, nullptr);
-  bruss_v_handle* vh = bruss_v_create(kNxU, kNyU, kNxV, kNyV, cfg.diffusion);
+  bruss_v_handle* vh = bruss_v_create(kNxU, kNyU, kNxV, kNyV, cfg.diffusion,
+                                     /*rank=*/0, /*num_ranks=*/1, /*comm_f=*/0, "auto");
   ASSERT_NE(vh, nullptr);
   ASSERT_EQ(bruss_v_size(vh), nu);
 
