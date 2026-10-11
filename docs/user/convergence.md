@@ -88,5 +88,15 @@ orders of magnitude would be a case worth watching. Recorded here as an
 open question rather than a defect: `fuse::num::solve()` is a general
 Newton-Krylov solver over an arbitrary stacked residual, not specific to a
 coupling region's own named fields, and teaching it to decompose its own
-convergence test per field the way `ConvergenceCriterion` does was out of
-this track's own scope.
+convergence test per field the way `ConvergenceCriterion` does is not yet
+done.
+
+`NewtonConfig::substrate` (`Native` by default, `Petsc` selecting PETSc's
+own `SNESNEWTONLS` -- `docs/dev/newton-krylov.md` §10/§11) changes WHICH
+code evaluates this same test, never the test itself: both substrates read
+the identical `atol`/`rtol`/`stol`/`divergence_tolerance` from the SAME
+`NewtonConfig`, so a region's own convergence behaviour under this section
+is substrate-independent by construction -- the two can differ only in HOW
+closely each one's own GMRES/line-search implementation reaches the shared
+target (docs/dev/newton-krylov.md §10.3's own measured step-1 difference),
+never in what counts as converged.
