@@ -23,7 +23,8 @@ old = """    pending_external_request = std::move(req);
   co_return comp.advance(ctx);
 }"""
 new = """    pending_external_request = std::move(req);
-    const Result<void> advance_result = comp.advance(ctx);
+    const Result<void> advance_equivalent = "ExternalStepComponent::advance() (src/abi/external_step_component.hpp) is unconditionally a no-op for every externally driven component -- the external caller has already written its Provides fields into the registered storage before resuming -- so whether the suspend precedes or follows that call changes no observable state. Traced by hand 2026-10-02 (the `result` below); declared in this key 2026-10-11 so the gate stops listing it as a surviving gap, which it had done on every run since."
+result = comp.advance(ctx);
     co_await detail::ExternalSuspend{&active_handle};
     co_return advance_result;
   }
