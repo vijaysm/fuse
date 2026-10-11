@@ -173,10 +173,13 @@ SpMat real_stokes_matrix(std::size_t nx = 10, std::size_t ny = 6) {
 // The coupling iterations both examples drive (IQN-ILS fixed point on the
 // interface traction; the energy diagnostic's finite-difference linearisation)
 // converge through a DETERMINISTIC rounding floor and stall on one that
-// jitters. On the real Stokes matrix cusolverRfSolve alone is not bitwise
-// reproducible (~4% of identical-input repeats differ, by ~kappa*eps); the
-// backend's refinement step is what suppresses that. 300 repeats, agreement
-// to working precision -- this test fails without the refinement step.
+// jitters. This pins same-input reproducibility: 300 back-to-back repeats,
+// agreement to working precision. What it does and does not prove: the raw
+// cusolverRfSolve turned out to be reproducible back-to-back on this matrix
+// (this test PASSED with the refinement step removed -- its RED did not
+// fail), so it is a regression guard on the property, not evidence that the
+// refinement step is what provides it. The refinement step's justification
+// is the forward-error test below and the in-situ fsi_transient pass.
 TEST(SparseSolveBackend, RepeatedSolvesOfTheRealStokesSystemAgreeToWorkingPrecision) {
   const SpMat A = real_stokes_matrix();
   ASSERT_EQ(A.rows(), 196);
