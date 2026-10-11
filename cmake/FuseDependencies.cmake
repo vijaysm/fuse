@@ -607,6 +607,17 @@ macro(fuse_resolve_dependencies)
     # rejects an installed 5.x outright. The facade uses dense QR, small
     # least-squares and sparse products, whose API is identical across both.
     fuse_require(Eigen3 NAMES Eigen3 HINT "Set FUSE_LINALG_BACKEND=builtin to use the built-in factorisation instead.")
+    # Every TU here goes through nvcc_wrapper when Kokkos has CUDA (see the
+    # Kokkos::CUDA block above), and Eigen under nvcc marks every method
+    # EIGEN_DEVICE_FUNC (= __host__ __device__), which nvcc then warns about
+    # on every explicitly-defaulted constructor (#20012-D, hundreds of lines
+    # per TU from DenseStorage.h alone). Nothing in this tree uses an Eigen
+    # type inside a Kokkos kernel -- Eigen is host-side linear algebra in the
+    # linalg facade and the examples' solvers -- so Eigen's own switch for
+    # "not used in device code" is the right fix, not a warning suppression.
+    if(TARGET Kokkos::CUDA)
+      target_compile_definitions(Eigen3::Eigen INTERFACE EIGEN_NO_CUDA)
+    endif()
   endif()
   # `builtin` resolves nothing: that is the point of having it.
 
