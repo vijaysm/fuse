@@ -70,7 +70,7 @@ old = """      const Result<void> supported =
 new = """      R.newton = true;"""
 target = "fuse_runtime_newton_region_test"
 test = "runtime.newton_region"
-result = "Hand-proved 2026-10-10: 11 cases, all pass before; after mutation, 1 fails (NewtonRegion.AWindowScopedRegionSelectingNewtonIsRefusedAtSetup -- initialize() now succeeds on a window-scoped Newton-selected region instead of refusing it with E-NEWTON-UNSUPPORTED-REGION), 10 pass. File restored and cmp-verified byte-identical; rebuilt and reran to confirm all 11 pass again."
+result = "Re-proved 2026-10-11 from a clean export after S7.2 lifted the window-scoped refusal this row used to kill through (the user's build-all gate had reported it SURVIVED): under the mutation fuse_runtime_newton_region_test reports [ FAILED ] 1 test, NewtonRegion.AnExternallyDrivenMemberIsRefusedAtSetup (initialize() succeeds on a region with an externally driven member instead of refusing E-NEWTON-UNSUPPORTED-REGION), [ PASSED ] 15 tests; file restored and cmp-verified against the worktree."
 
 [[mutation]]
 id = "newton-verification-sweep-commit-ignored"

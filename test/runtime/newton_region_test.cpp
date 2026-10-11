@@ -261,6 +261,36 @@ namespace {
 
 constexpr std::size_t kNewtonN = dn::kStrips;
 
+/// `dn::NeumannSlab` as the Runner would see an ABI participant: every
+/// call forwarded, `is_externally_driven()` true. `NeumannSlab` is
+/// `final`, so this is a wrapper, not a subclass. It exists for exactly
+/// one test -- the Newton region's own eager refusal of an externally
+/// driven member (`check_region_supports_newton()`,
+/// src/runtime/fixed_point_residual.cpp) -- which kills
+/// build-evidence/mutations/runtime.toml's
+/// newton-region-eager-validation-skipped now that the window-scoped
+/// refusal it used to kill through has been lifted (S7.2 WindowNewton).
+class ExternallyDrivenNeumann final : public fuse::Component {
+ public:
+  explicit ExternallyDrivenNeumann(std::unique_ptr<dn::NeumannSlab> inner)
+      : inner_(std::move(inner)) {}
+  [[nodiscard]] std::string name() const override { return inner_->name(); }
+  fuse::Result<void> register_fields(fuse::FieldRegistry& registry,
+                                     const fuse::CouplingGraph& graph) override {
+    return inner_->register_fields(registry, graph);
+  }
+  fuse::Result<void> advance(const fuse::StepContext& ctx) override { return inner_->advance(ctx); }
+  fuse::Result<void> save_state() override { return inner_->save_state(); }
+  fuse::Result<void> restore_state() override { return inner_->restore_state(); }
+  [[nodiscard]] std::uint64_t capabilities() const override { return inner_->capabilities(); }
+  [[nodiscard]] bool is_externally_driven() const noexcept override { return true; }
+  [[nodiscard]] fuse::ImplicitComponent* implicit() override { return inner_->implicit(); }
+  [[nodiscard]] dn::NeumannSlab& inner() { return *inner_; }
+
+ private:
+  std::unique_ptr<dn::NeumannSlab> inner_;
+};
+
 struct NewtonDnHeatFixture {
   fuse::CouplingGraph        graph;
   fuse::SerialMeshBackend    backend;
@@ -301,7 +331,8 @@ NewtonDnHeatFixture make_newton_setup(
     int max_iterations, fuse::NewtonConfig cfg = {},
     fuse::RunnerConfig rcfg = {}, double beta = 0.0,
     double neumann_initial_u = std::numeric_limits<double>::quiet_NaN(),
-    const std::function<void(fuse::CouplingGraph&)>& mutate_before_init = nullptr) {
+    const std::function<void(fuse::CouplingGraph&)>& mutate_before_init = nullptr,
+    bool neumann_externally_driven = false) {
   NewtonDnHeatFixture s;
   fuse::CouplingGraph& g = s.graph;
   const std::string src = "generated:line:" + std::to_string(kNewtonN);
@@ -368,7 +399,11 @@ NewtonDnHeatFixture make_newton_setup(
   s.dirichlet = dirichlet.get();
   s.neumann = neumann.get();
   s.components.add(std::move(dirichlet));
-  s.components.add(std::move(neumann));
+  if (neumann_externally_driven) {
+    s.components.add(std::make_unique<ExternallyDrivenNeumann>(std::move(neumann)));
+  } else {
+    s.components.add(std::move(neumann));
+  }
   for (auto& c : s.components) {
     const auto r = c.register_fields(s.registry, g);
     if (!r.ok()) ADD_FAILURE() << "register_fields: " << r.error().message;
@@ -505,6 +540,21 @@ TEST(NewtonRegion, VerificationSweepDeliversTheConvergedStateToTheComponents) {
 // caller (this track's own Brusselator wiring, add_window_coupling())
 // can reach, since that function always configures every member it
 // declares.
+// The eager validation at setup: a Newton-selected region with a member
+// the Runner does not drive itself (an ABI participant, here stood in for
+// by a wrapper reporting is_externally_driven()) is refused at
+// initialize(), by name, before any residual is ever evaluated.
+TEST(NewtonRegion, AnExternallyDrivenMemberIsRefusedAtSetup) {
+  NewtonDnHeatFixture s = make_newton_setup(
+      /*max_iterations=*/30, /*cfg=*/{}, /*rcfg=*/{}, /*beta=*/0.0,
+      /*neumann_initial_u=*/std::numeric_limits<double>::quiet_NaN(),
+      /*mutate_before_init=*/nullptr, /*neumann_externally_driven=*/true);
+  ASSERT_FALSE(s.init.ok());
+  EXPECT_EQ(s.init.error().code, "E-NEWTON-UNSUPPORTED-REGION") << s.init.error().message;
+  EXPECT_NE(s.init.error().message.find("neumann"), std::string::npos) << s.init.error().message;
+  EXPECT_NE(s.init.error().message.find("externally"), std::string::npos) << s.init.error().message;
+}
+
 TEST(NewtonRegion, AWindowScopedRegionWithNoConfiguredWindowMembersIsANoOp) {
   NewtonDnHeatFixture s = make_newton_setup(
       /*max_iterations=*/30, /*cfg=*/{}, /*rcfg=*/{}, /*beta=*/0.0,
