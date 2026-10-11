@@ -393,6 +393,23 @@ Result<std::size_t> build_native_remap_halo(NativeMeshBackend& backend, MeshId s
                "the native backend reports a communicator of " + std::to_string(ranks) +
                    " ranks, but this build has no MPI"};
 #else
+  // The same guard MoabMeshBackend::set_communicator() makes: a build WITH
+  // MPI whose process never called MPI_Init (every tier-0 test binary in a
+  // tier-1 build tree) must refuse here, not reach the MPI_Allgather below
+  // with a handle MPI_Comm_f2c cannot interpret. Measured 2026-10-11: the
+  // tier-0 row verification.brusselator_species_core_decomposition aborted
+  // inside internal_Allgather ("Invalid communicator") in the user's MPI
+  // build, where the same case refuses E-MESH-NO-MPI in a build without MPI.
+  {
+    int initialized = 0;
+    if (MPI_Initialized(&initialized) != MPI_SUCCESS || initialized == 0) {
+      return Failure{"E-MESH-MPIINIT",
+                   "the native backend reports a communicator of " +
+                       std::to_string(ranks) +
+                       " ranks, but MPI is not initialised in this process; the "
+                       "covering-set halo is a collective and cannot be built"};
+    }
+  }
   auto src_r = backend.native_view(source, placement);
   if (!src_r.ok()) return src_r.error();
   auto tgt_r = backend.native_view(target, placement);
