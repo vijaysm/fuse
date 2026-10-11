@@ -3919,3 +3919,36 @@ test, `parallel.window_newton_mpi.{2,3}` (mirroring `parallel.window_runner_mpi.
 instance's final Newton iterate AND iteration/GMRES count against the single-process `Runner` on the
 identical graph — the SAME cross-rank-agreement property `window_runner_mpi_test.cpp` already proves for
 Picard, now for Newton's own reductions specifically.
+
+### D32. The PETSc solver plugin is the deferred second substrate behind the S7 seam — DEFERRED 2026-10-11, by decision
+
+S7 was built on the library's own linear algebra first, by the user's decision of 2026-10-10: a
+native Jacobian-free Newton-Krylov coupler (`fuse::num::solve()`, `docs/dev/newton-krylov.md`)
+replicating the mechanisms that make PETSc SNES's `NEWTONLS` robust — the Walker–Pernice
+finite-difference step, Eisenstat–Walker forcing, the cubic-backtracking, critical-point and damped
+line searches, named convergence and divergence tests, a lagged block-Jacobi preconditioner — with
+no PETSc dependency. PETSc remains the intended second substrate for problems the native solver
+should not carry (very large or stiff coupled systems, preconditioners the library does not have),
+and it plugs in behind the SAME seam: a `fuse::LinearizationToken` whose `apply_jacobian` is a
+`MatShell`/`MatMFFD` and whose `apply_preconditioner` is a `PC`, or a `SNES` driving
+`Runner::region_fixed_point_residual()`'s `F` directly. Nothing in the seam is PETSc-shaped and
+nothing in the Newton solver knows which substrate a token comes from.
+
+**State today.** `FUSE_ENABLE_PETSC` is a configure option (`cmake/FuseDependencies.cmake:121`,
+tier 3, requires `FUSE_ENABLE_MOAB`) that locates PETSc through `pkg-config` and defines
+`FUSE_HAVE_PETSC` in `fuse/base/config.hpp`, and nothing more: no source file under `src/` or
+`include/` tests that macro, and no target links the imported library. Three PETSc installations are on the
+development host, none of them matching this build: `/opt/petsc/chi-tech` (3.19, 64-bit indices,
+HYPRE), `/opt/petsc/download-moab` (3.25, debug, MOAB, built against `/opt/mpich`), and
+`/opt/petsc/debug-bare` (3.17, debug). Which to build against — or whether to build a fresh
+PETSc with Kokkos, 64-bit indices and the host's MPICH — is the owner's decision; the plugin
+should not pick one by accident of what `find_package` sees first.
+
+**What a plugin track owes when it is opened.** The derivative gate (`linalg.derivative_gate`,
+`docs/dev/derivative-gate.md`) on the PETSc-backed token: the adjoint identity on
+`MatMult`/`MatMultTranspose`, the Taylor-remainder order on `MatMFFD`'s action, and agreement with
+the native MFFD action to a measured bound. dn_heat and the Brusselator by the PETSc path against
+the native results recorded in `docs/user/dn-heat.md` and `docs/user/brusselator.md` — same
+graphs, same tolerances, iteration counts and final means side by side. A refusal when
+`FUSE_ENABLE_PETSC` is off and a graph selects the PETSc substrate, with a test that makes it fire.
+

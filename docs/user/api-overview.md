@@ -66,8 +66,13 @@ accelerator.hpp`), `fuse::num::field_norm(NormKind::MeasureWeightedRms, …)` (t
 partition-independent convergence measure), `fuse::Waveform` (a field's trajectory over a time
 window), and the portable per-step kernels in `num/space_kernels.hpp` (`accumulate`, `gather`,
 `remap_apply`, `relax`, `dot`), checked on every Kokkos execution space the build enables against
-the plain-loop oracle in `num/kernels.hpp`. Covered by [](convergence.md), [](coupling-windows.md)
-and [](field-pipeline.md). **Verified.**
+the plain-loop oracle in `num/kernels.hpp`; and `fuse::num::solve()` (`num/newton_krylov.hpp`,
+`num/line_search.hpp`), the Jacobian-free Newton-Krylov solver a region selects with
+`AccelKind::Newton` — finite-difference Jacobian action, right-preconditioned GMRES with
+Eisenstat–Walker forcing, three line searches, named convergence and divergence codes, and a
+block-Jacobi preconditioner composed from each member's `fuse::LinearizationToken`. Covered by
+[](convergence.md) (the Newton section), [](coupling-windows.md), [](field-pipeline.md), and the
+developer page `dev/newton-krylov.md`. **Verified** (tier 0; the window form on one rank only, D31).
 
 ## `fuse::backend` — meshes and remap
 
@@ -92,9 +97,13 @@ serial-only by design (rejects a detectably multi-rank backend outright).
 region refreshed by an injected `Reducer`/`GhostExchanger`); `fuse::linalg::pcg()`/`gmres()`
 (preconditioned Krylov solvers, iterate-for-iterate against Eigen's own implementations at one
 rank); `fuse::linalg::SchurSlabSolver` (an exact distributed direct solver for a row-banded
-periodic Laplacian). [](glossary.md)'s "Linear algebra" section and [](build.md) (the
-`FUSE_LINALG_BACKEND` choice, and D26's caveat that `builtin` does not currently configure a full
-build) are the pages that touch it today; there is no dedicated user-guide page yet.
+periodic Laplacian); and the derivative gate (`linalg/derivative_gate.hpp`: `adjoint_gate`,
+`taylor_remainder_order`, `matrix_free_agreement`), which any operator claiming a transpose or a
+Jacobian is checked against before a Newton or adjoint claim cites it. [](glossary.md)'s "Linear
+algebra" section and [](build.md) (the `FUSE_LINALG_BACKEND` choice, and D26's caveat that `builtin`
+does not currently configure a full build) are the pages that touch it today; the developer pages
+are `dev/linalg-distributed.md`, `dev/linalg-krylov.md`, `dev/schur-slab-solver.md` and
+`dev/derivative-gate.md`. There is no dedicated user-guide page yet.
 **Verified** in serial against Eigen, and host-run at 2–3 ranks (`parallel.linalg_mpi`,
 `parallel.krylov_mpi`, `parallel.schur_slab_mpi.{2,3}`) — `docs/dev/schur-slab-solver.md` records a
 host-found and fixed collective-safety defect from that run, which is what a real multi-rank run is

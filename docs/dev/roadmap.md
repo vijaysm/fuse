@@ -4,9 +4,9 @@ FUSE is built in ten stages. Each has a falsifiable exit condition, and the orde
 order, not a preference: the canonical descriptor is frozen before anything binary depends on it, and
 imported code lands byte-identical before it is transformed ([](invariants.md) `I8`).
 
-Recounted from the tree at `cd26801` (537 commits), not carried forward from an earlier pass: S0–S6
-are complete, S7 has its own native building blocks but neither its capability seam nor its PETSc
-plugin, S8 has not started, and S9 has not started (no execution-space type beyond
+Recounted from the tree at `6a4f0c5` (560 commits), not carried forward from an earlier pass: S0–S6
+are complete, S7's native path is complete and measured (seam, derivative gate, Newton-Krylov
+coupler on dn_heat and the Brusselator) with the PETSc plugin deferred as D32, S8 has not started, and S9 has not started (no execution-space type beyond
 `Kokkos::{OpenMP,Serial}` appears anywhere in `include/` or `src/` — grepped, zero hits).
 
 | Stage | What it delivers | State and exit evidence |
@@ -18,7 +18,7 @@ plugin, S8 has not started, and S9 has not started (no execution-space type beyo
 | **S4** | One runtime: both entry modes, transactions on plan buffers, portable kernels, waveforms and acceleration | **done** (2026-09-17) — runtime, numerics, transport and the serial mesh ported; a rank that fails mid-step reconciles at every remaining agreement point ([](rank-agreement.md)); manufactured-solution and iteration verification matching the parent (order 1.005); the lazy field pipeline in and tested |
 | **S5** | Backends under one operator interface: mesh, remap, transport, persisted maps | **done** (parallel matrix gate landed `0d920c9`, 2026-09-21; MOAB wired 2026-09-18, host-verified 12/12 rows 2026-10-08, [](testing.md)) — `LinearOperator`, the MOAB and native mesh backends, every transport, and the conservative supermesh/native remap halos ([](native-halo.md)) all pass their tier-0 and (where applicable) host-run rows |
 | **S6** | Interfaces: both ABIs on one descriptor, adapter host, Fortran, YAML, external processes | **functionally done** (conformance case closed `839ffa5`, 2026-10-07) — participant and provider ABIs, the registry/adapter host, Fortran (`ffuse`/`ffuse_provider`), YAML, and an unmodified external executable coupling through the participant ABI, demonstrated by the Brusselator across three and five separately-launched ranks ([](conformance.md), `KNOWN_ISSUES.md` D19/D21/D22/D24/D25). **Not met:** the stage's own retirement exit (`upstream/soma` deleted) — 181 files still live under `upstream/soma`, `UPSTREAMS.lock`'s `retired` field for it is still empty — and the **Python** binding named in this stage's original scope was never built (only a cross-check reference model in Python exists, for validating the C++ window driver, `KNOWN_ISSUES.md` A3's naming proposal is the only trace of a real `pfuse` package) |
-| **S7** | Implicit and monolithic solvers | **in progress** — the native building blocks exist and are verified: `fuse::linalg::DistVector`/`DistSparseMatrix` ([](linalg-distributed.md)), `pcg`/`gmres` ([](linalg-krylov.md)), and `SchurSlabSolver` ([](schur-slab-solver.md)), all checked against Eigen on one rank and host-verified in parallel 2026-10-09/10. They solve the Brusselator's own implicit diffusion step, selectably, with the single-rank reference unchanged ([](../user/brusselator.md), `KNOWN_ISSUES.md` D28/D29). **Absent:** `ImplicitComponent`/`LinearizationToken` (S7.1's capability seam — no occurrence anywhere in `include/`/`src/`/`test/`), a PETSc plugin (S7.2 — `FUSE_ENABLE_PETSC` is a configure-time option with no code path reading it), and adjoint/Newton convergence verification (S7.3) |
+| **S7** | Implicit and monolithic solvers | **native path complete 2026-10-11** — the residual/linearisation seam (`fuse::ImplicitComponent`/`fuse::LinearizationToken`, [](newton-krylov.md) §1–3), the derivative gate ([](derivative-gate.md): adjoint identity over eleven operator cases, Taylor-remainder order with the round-off plateau detected, assembled-vs-matrix-free agreement), and `fuse::num::solve()` — Jacobian-free Newton-Krylov with the Walker–Pernice step, right-preconditioned `gmres`, Eisenstat–Walker forcing, cubic-backtracking/critical-point/damped line searches, named convergence codes and a lagged block-Jacobi preconditioner over the members' tokens — selectable as `AccelKind::Newton` on an ordinary or a coupling-window region. Measured: dn_heat order 2.0 ± 0.24 on a temperature-dependent conductivity ([](../user/dn-heat.md)); the Brusselator's window converges in 50/50 windows in both waveform forms where Aitken fails at the third, final means agreeing with Picard to 2e-13 ([](../user/brusselator.md)). Built on the S7 linear algebra: `DistVector`/`DistSparseMatrix` ([](linalg-distributed.md)), `pcg`/`gmres` ([](linalg-krylov.md)), `SchurSlabSolver` ([](schur-slab-solver.md)). **Open:** multi-rank window Newton (D31, reducer seam in place), the PETSc plugin as the second substrate behind the same seam (D32), Newton's plain 2-norm convergence test vs the measure-weighted norms ([](../user/convergence.md)) |
 | **S8** | `physics-kit`: the optional finite-element component | **not started** — no `physics-kit/` directory exists |
 | **S9** | Portability and scale: budgets, cluster rehearsal, adversarial suite | **not started** — no execution space beyond `Kokkos::{OpenMP,Serial}` is instantiated anywhere (grepped `include/`, `src/`: zero `Kokkos::Cuda`/`HIP`/`SYCL`); no measurement harness, no cluster rehearsal, no device build |
 
@@ -54,9 +54,10 @@ rank: two real correctness defects found by a host MPI run are fixed, a further 
 final outcome); D3 (two runtime mutations survive on the host; deferred 2026-10-02 in favour of the
 core implementation).
 
-**S7 / solvers** — the absences in the stage table above (S7.1's capability seam, S7.2's PETSc
-plugin, S7.3's adjoint verification) are the open work itself, not yet tracked as `D` entries because
-no track has been asked to close them.
+**S7 / solvers** — what remains is tracked: D31 (Newton over a window on more than one rank), D32
+(the PETSc plugin behind the same `ImplicitComponent`/`LinearizationToken` seam, for problems the native
+solver should not carry), and the open design note on Newton's convergence norm in
+[](../user/convergence.md).
 
 ## What the end state is
 
