@@ -11,7 +11,11 @@
 #include <vector>
 
 #include "runner_impl.hpp"
+#include "fuse/linalg/comm.hpp"
+#include "fuse/linalg/dist_vector.hpp"
 #include "fuse/num/kernels.hpp"
+#include "fuse/num/newton_krylov.hpp"
+#include "fuse/runtime/fixed_point_residual.hpp"
 
 /// Spec §5.3: executing an iteration region.
 ///
@@ -1369,19 +1373,40 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
           "for a GaussSeidel window until that restriction is wired in"};
     }
 
-    Result<std::unique_ptr<Accelerator>> acc =
-        make_accelerator(decl.acceleration);
-    if (!acc.ok()) return acc.error();
-    R.accel = std::move(acc.value());
-    if (R.blocks.size() > 1) {
-      // Per-field scaling (spec §5.3) needs to know where each field starts.
-      std::vector<std::size_t> offsets;
-      offsets.reserve(R.blocks.size());
-      for (const detail::RegionBlock& b : R.blocks) offsets.push_back(b.offset);
-      R.accel->set_field_partition(std::move(offsets));
+    // S7.2: a Newton-selected region is not accelerated at all -- the
+    // Newton-Krylov solve (run_region_newton(), this file's own sibling
+    // below) replaces the whole Picard sweep loop, not just the quasi-
+    // Newton update inside it. make_accelerator() is never called for
+    // one: it has no `case AccelKind::Newton` (src/num/accel_relaxation.
+    // cpp has no `default:` either, so it would refuse with E-ACCEL-KIND
+    // rather than silently construct the wrong thing -- this branch is
+    // what keeps that refusal from ever firing in practice). `R.accel`
+    // stays null; `R.newton` is what run_region() reads to take the
+    // Newton path before ever touching `accel`.
+    if (decl.acceleration.kind == AccelKind::Newton) {
+      const Result<void> supported =
+          check_region_supports_newton(components, ri);
+      if (!supported.ok()) return supported;
+      R.newton = true;
+    } else {
+      Result<std::unique_ptr<Accelerator>> acc =
+          make_accelerator(decl.acceleration);
+      if (!acc.ok()) return acc.error();
+      R.accel = std::move(acc.value());
+      if (R.blocks.size() > 1) {
+        // Per-field scaling (spec §5.3) needs to know where each field starts.
+        std::vector<std::size_t> offsets;
+        offsets.reserve(R.blocks.size());
+        for (const detail::RegionBlock& b : R.blocks) offsets.push_back(b.offset);
+        R.accel->set_field_partition(std::move(offsets));
+      }
     }
 
-    // --- everything the sweep loop touches, sized once ----------------------
+    // --- everything the sweep loop touches, sized once -----------------
+    // (R.newton regions read R.residual_norms/R.reference_norms/
+    // region_stats[ri].residual_history too -- run_region_newton()'s own
+    // verification-sweep bookkeeping -- so this sizing is shared, not
+    // skipped for them.)
     R.x_old.assign(R.n, 0.0);
     R.x_new.assign(R.n, 0.0);
     R.x_out.assign(R.n, 0.0);
@@ -1504,12 +1529,308 @@ Result<void> Runner::Impl::checkpoint_regions(ComponentSet& components) {
 }
 
 // ---------------------------------------------------------------------------
+// The Newton-Krylov solve (S7.2)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// `fuse::model::LineSearchKind` (fuse/model/iteration.hpp) ->
+/// `fuse::num::LineSearchKind` (fuse/num/line_search.hpp) -- the "one call
+/// site" iteration.hpp's own comment on `fuse::LineSearchKind` names. An
+/// explicit switch, no `default:` (this build does not pass `-Werror`, so a
+/// non-exhaustive switch here is at most a `-Wswitch` warning, not a
+/// compile failure) -- the model layer gaining an enumerator this layer has
+/// not learned about yet falls through to the `FUSE_ASSERT(false, ...)`
+/// below, a RUNTIME refusal, rather than silently returning a wrong
+/// translation.
+[[nodiscard]] num::LineSearchKind to_num_line_search_kind(LineSearchKind k) {
+  switch (k) {
+    case LineSearchKind::BT:    return num::LineSearchKind::BT;
+    case LineSearchKind::CP:    return num::LineSearchKind::CP;
+    case LineSearchKind::Basic: return num::LineSearchKind::Basic;
+  }
+  FUSE_ASSERT(false, "unknown fuse::LineSearchKind {}",
+              static_cast<int>(k));
+  return num::LineSearchKind::BT;
+}
+
+/// Same translation, for `EisenstatWalkerChoice`.
+[[nodiscard]] num::EisenstatWalkerChoice to_num_ew_choice(EisenstatWalkerChoice c) {
+  switch (c) {
+    case EisenstatWalkerChoice::Constant: return num::EisenstatWalkerChoice::Constant;
+    case EisenstatWalkerChoice::Choice1:  return num::EisenstatWalkerChoice::Choice1;
+    case EisenstatWalkerChoice::Choice2:  return num::EisenstatWalkerChoice::Choice2;
+  }
+  FUSE_ASSERT(false, "unknown fuse::EisenstatWalkerChoice {}",
+              static_cast<int>(c));
+  return num::EisenstatWalkerChoice::Choice2;
+}
+
+/// Builds `fuse::num::NewtonKrylovOptions` from the model-level
+/// `NewtonConfig` a graph author wrote -- the translation iteration.hpp's
+/// own comment on `LineSearchKind` and `NewtonConfig` both point at. MFFD's
+/// own `error_rel`/`min_direction_norm` are deliberately absent from
+/// `NewtonConfig` (model/iteration.hpp's own field list) and so stay at
+/// `MffdOptions`'s own defaults here: the "WHAT was asked for, not how it
+/// is computed" split this file's own header comment keeps for
+/// `AccelConfig`/`Accelerator` applies identically to Newton's own
+/// matrix-free differencing, which is an implementation detail of HOW the
+/// Jacobian action is computed, not something a graph author asks for.
+[[nodiscard]] num::NewtonKrylovOptions newton_options_from_config(
+    const NewtonConfig& cfg) {
+  num::NewtonKrylovOptions opt;
+  opt.atol = cfg.atol;
+  opt.rtol = cfg.rtol;
+  opt.stol = cfg.stol;
+  opt.divergence_tolerance = cfg.divergence_tolerance;
+  opt.max_nonlinear_iterations = cfg.max_nonlinear_iterations;
+  opt.max_function_evaluations = cfg.max_function_evaluations;
+
+  opt.forcing.choice = to_num_ew_choice(cfg.forcing_choice);
+  opt.forcing.gamma = cfg.forcing_gamma;
+  opt.forcing.alpha = cfg.forcing_alpha;
+  opt.forcing.eta_initial = cfg.eta_initial;
+  opt.forcing.eta_max = cfg.eta_max;
+  opt.forcing.eta_min = cfg.eta_min;
+  opt.forcing.safeguard_threshold = cfg.forcing_safeguard_threshold;
+  opt.forcing.eta_constant = cfg.forcing_eta_constant;
+
+  opt.gmres.restart = static_cast<std::size_t>(cfg.gmres_restart);
+  opt.gmres.max_iterations = cfg.gmres_max_iterations;
+  // opt.gmres.rel_tol is overwritten every Newton step with that step's
+  // own eta_k (NewtonKrylovOptions::gmres's own doc comment) -- left at
+  // GmresOptions's own default here, never read.
+
+  opt.line_search.kind = to_num_line_search_kind(cfg.line_search_kind);
+  opt.line_search.armijo_alpha = cfg.armijo_alpha;
+  opt.line_search.lambda_min = cfg.lambda_min;
+  opt.line_search.max_backtracks = cfg.max_backtracks;
+  opt.line_search.secant_tol = cfg.secant_tol;
+  opt.line_search.max_secant_steps = cfg.max_secant_steps;
+  opt.line_search.damping = cfg.damping;
+
+  opt.preconditioner_lag = cfg.preconditioner_lag;
+  return opt;
+}
+
+}  // namespace
+
+/// S7.2: the Newton-Krylov solve that replaces the Picard sweep loop
+/// entirely for a region with `RegionRuntime::newton` set.
+///
+/// WHY THIS IS NOT run_region()'S OWN k-LOOP. A Picard sweep's own
+/// residual IS the iterate the next sweep starts from (R.x_old.swap(R.
+/// x_out), run_region()'s own last line) -- one evaluation of G buys one
+/// step of progress. A Newton step needs MANY evaluations of F at points
+/// the solver itself chooses (a Jacobian action's own perturbed point, a
+/// line search's own trial points) before it has anything worth
+/// delivering, and `Runner::Impl::evaluate_region_residual()`
+/// (src/runtime/fixed_point_residual.cpp -- `Runner::
+/// region_fixed_point_residual()` is the PUBLIC wrapper around the SAME
+/// function, for a caller outside Impl that only has a `Runner&`; this
+/// function, already inside Impl, calls evaluate_region_residual()
+/// directly, with no extra indirection through that wrapper) is exactly
+/// the side-effect-free, evaluate-F-at-an-arbitrary-x primitive that lets
+/// the solver choose those points freely without run_region()'s own sweep
+/// bookkeeping (checkpoints, shadows, carried buffers) ever seeing them.
+/// So this function does not iterate `k`; it hands the ENTIRE solve to
+/// `fuse::num::solve()` in one call, then performs exactly one additional,
+/// COMMITTING evaluation (`evaluate_region_residual(..., commit = true)`)
+/// at the converged iterate -- the "verification sweep" the task's own
+/// brief names, which is what turns Newton's own side-effect-free
+/// bookkeeping into the region's real, persisted state, the same way a
+/// Picard sweep's own delivery does.
+///
+/// RANK AGREEMENT. `check_region_supports_newton()` (called from
+/// resolve_regions(), eagerly) already refuses a region with more than
+/// one cross-rank participant (E-NEWTON-UNSUPPORTED-REGION) -- every rank
+/// that reaches this function is therefore the region's ONLY participant,
+/// alone on its own communicator-free serial solve, so docs/dev/
+/// rank-agreement.md's own concern (a collective path returning on a
+/// locally computed condition) does not arise here: there is no
+/// collective in this function at all. Lifting that restriction (Step 4,
+/// the Brusselator's own coupling window) is this track's own next
+/// section.
+Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
+                                             detail::RegionRuntime& R) {
+  IterationStats& st = region_stats[R.index];
+  st.iterations = 0;
+  st.converged = false;
+  st.residual_history.clear();
+
+  const IterationRegionDecl& decl = graph.iteration_region(
+      RegionIdx{static_cast<std::uint32_t>(R.index)});
+
+  // `Runner::region_fixed_point_residual()` (src/runtime/fixed_point_
+  // residual.cpp) is the PUBLIC wrapper around this exact call, built for
+  // a caller outside Runner::Impl that only has a `Runner&`; from here,
+  // already inside Impl, calling `evaluate_region_residual()` directly
+  // is the same evaluation with no extra indirection.
+  const std::size_t region_index = R.index;
+  ComponentSet* comps = &components;
+  const num::ResidualFn f = [this, region_index, comps](
+                                linalg::DistVector& in, linalg::DistVector& out) {
+    return evaluate_region_residual(
+        *comps, region_index,
+        std::span<const double>(in.data(), in.owned_size()),
+        std::span<double>(out.data(), out.owned_size()));
+  };
+
+  const auto exchanger = linalg::make_serial_exchanger();
+  const auto reducer = linalg::make_serial_reducer();
+  linalg::DistVector x(R.n, exchanger, reducer);
+  // Seed x with y_0: what the components were ACTUALLY advanced with --
+  // run_region()'s own top-of-function comment, read here from the SAME
+  // feed arcs rather than re-derived, so a Newton-selected region starts
+  // from exactly the point a Picard-accelerated one would.
+  for (const detail::RegionBlock& b : R.blocks) {
+    num::copy(slots[b.feed_arc].data, x.data() + b.offset, b.length);
+  }
+
+  // step_period()'s own top comment (runner.cpp): "By the time control
+  // reaches the region the participants have already advanced once" --
+  // checkpoint_regions() saves BEFORE that first, generic tick specifically
+  // so a Picard sweep loop's own repeated restore_state() undoes it along
+  // with every later sweep's own advance, every single sweep re-deriving
+  // from the SAME pre-tick snapshot. `evaluate_region_residual()`'s own
+  // save/restore is self-referential -- it restores to WHATEVER it most
+  // recently saved, not to checkpoint_regions()'s own earlier point -- so
+  // without this, that first generic tick is never undone by anything, and
+  // the verification sweep's own single committed advance lands on top of
+  // it: TWO real advances per period baked into persisted state instead of
+  // one. The region's own dataflow is unaffected (`x` above is already a
+  // COPY, taken before this call, and every `evaluate_region_residual()`
+  // call re-delivers it and re-executes the body from scratch regardless of
+  // what state restoring here leaves q_/u_ in) -- measured directly,
+  // dn_heat's own DirichletSlab::history()/NeumannSlab::history() (private,
+  // checkpointed accumulators with no other purpose) read 2x the period
+  // count without this restore, and exactly the period count with it,
+  // confirming it is bookkeeping-only and not a residual/seed correctness
+  // issue -- but history()'s own contract (examples/dn_heat/dn_component.
+  // hpp: "after P coupling cycles a correct run has history() == P exactly")
+  // is a real invariant the demo's own gates read, and nothing upstream of
+  // this function is positioned to restore it on a Newton-selected region's
+  // behalf.
+  for (const std::size_t slot : R.component_slots) {
+    const Result<void> r = components.at(slot).restore_state();
+    if (!r.ok()) return r;
+  }
+
+  const num::NewtonKrylovOptions opt =
+      newton_options_from_config(decl.newton_config);
+
+  // The block-Jacobi preconditioner hook (Step 1's own mechanism) is
+  // wired here only as far as a region whose blocks are laid out exactly
+  // one-per-component needs: `use_block_jacobi_preconditioner` defaults
+  // to false, and neither example this track measures sets it yet (open
+  // question in this track's own report) -- `precond_apply`/
+  // `refresh_precond` both stay `nullptr`, `fuse::num::solve()`'s own
+  // documented "no preconditioning at all" case.
+  const num::PreconditionerApplyFn precond_apply = nullptr;
+  const num::RefreshPreconditionerFn refresh_precond = nullptr;
+
+  const Result<num::NewtonResult> solved =
+      num::solve(f, x, precond_apply, refresh_precond, opt);
+  if (!solved.ok()) return solved.error();
+  const num::NewtonResult& nr = solved.value();
+
+  st.iterations = nr.iterations;
+
+  for (const num::NewtonIterationRecord& rec : nr.trace) {
+    st.residual_history.push_back(rec.norm_f);
+  }
+  st.residual_history.push_back(nr.final_residual_norm);
+
+  if (!num::is_converged(nr.status)) {
+    ++stats.windows_not_converged;
+    if (config.abort_on_nonconvergence) {
+      return Failure{
+          "E-RT-NOCONVERGE",
+          "iteration region '" + R.name + "' did not converge by Newton's "
+              "own test in period " + std::to_string(period_index) +
+              ": " + std::string(num::to_cstring(nr.status)) +
+              " after " + std::to_string(nr.iterations) +
+              " Newton iteration(s), ||F|| = " +
+              std::to_string(nr.final_residual_norm) +
+              " (||F_0|| = " + std::to_string(nr.initial_residual_norm) +
+              "). The values left behind are Newton's own last iterate, "
+              "not a converged solution"};
+    }
+    // Deliver the last iterate anyway, matching the Picard path's own
+    // "non-convergence still leaves a well-defined state" rule (this
+    // file's own top comment, point 3) -- commit below runs regardless.
+  } else {
+    st.converged = true;
+  }
+
+  // The verification sweep: one COMMITTING evaluation at Newton's own
+  // final iterate, making it the region's real, persisted state rather
+  // than one more side-effect-free probe. `f_commit` is discarded --
+  // `nr.final_residual_norm` above already reports ||F|| at this exact
+  // point, computed by the SAME `evaluate_region_residual()` the last
+  // non-committing call inside `fuse::num::solve()` used; recomputing it
+  // here would at best repeat that number and at worst disagree with it
+  // over nothing but a restore/re-advance round trip's own floating-point
+  // noise.
+  std::vector<double> f_commit(R.n, 0.0);
+  const Result<void> commit_r = evaluate_region_residual(
+      components, R.index,
+      std::span<const double>(x.data(), x.owned_size()),
+      std::span<double>(f_commit.data(), f_commit.size()),
+      /*commit=*/true);
+  if (!commit_r.ok()) return commit_r;
+
+  for (const detail::RegionBlock& b : R.blocks) {
+    const double* fed = x.data() + b.offset;
+    for (const std::uint32_t arc : {b.value_arc, b.residual_arc}) {
+      std::vector<double>& shadow = previous[arc];
+      if (shadow.size() == b.length) num::copy(fed, shadow.data(), b.length);
+    }
+  }
+  for (std::size_t mi = 0; mi < R.measure_block.size(); ++mi) {
+    const std::size_t bi = R.measure_block[mi];
+    const detail::RegionBlock& b = R.blocks[bi];
+    double block_total = 0.0;
+    for (std::size_t j = 0; j < b.length; ++j) {
+      block_total += f_commit[b.offset + j] * f_commit[b.offset + j];
+    }
+    R.residual_norms[mi] = std::sqrt(block_total);
+    double value_total = 0.0;
+    for (std::size_t j = 0; j < b.length; ++j) {
+      const double v = x.data()[b.offset + j];
+      value_total += v * v;
+    }
+    R.reference_norms[mi] =
+        decl.convergence.measures()[mi].kind == MeasureKind::ResidualRelative
+            ? nr.initial_residual_norm
+            : std::sqrt(value_total);
+  }
+
+  ++stats.total_iterations;
+  return Result<void>::success();
+}
+
+// ---------------------------------------------------------------------------
 // The sweep loop
 // ---------------------------------------------------------------------------
 
 detail::Task<Result<void>> Runner::Impl::run_region(
     ComponentSet& components, detail::RegionRuntime& R, std::size_t enter,
     std::size_t exit) {
+  // S7.2: a Newton-selected region bypasses every line below -- none of
+  // it applies (there is no accelerator to R.accel->reset(), and the
+  // Picard sweep loop's own checkpoint/deliver/re-advance cycle is not
+  // how a Newton solve makes progress; see run_region_newton()'s own
+  // comment, this file's own sibling, for why). `enter`/`exit` are not
+  // read here either: run_region_newton() reaches the region's body
+  // through `Runner::Impl::evaluate_region_residual()` (src/runtime/
+  // fixed_point_residual.cpp, called directly, not through the public
+  // `Runner::region_fixed_point_residual()` wrapper), which reads
+  // `R.enter`/`R.exit` itself.
+  if (R.newton) {
+    co_return run_region_newton(components, R);
+  }
+
   // Re-used, per-sweep scratch for the per-block residual computation
   // below: a window-scoped block's own stripped (window-start sample
   // excluded) copy of x_new_block/x_old_block, built fresh every sweep

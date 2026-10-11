@@ -19,28 +19,77 @@
 [[mutation]]
 id = "fixed-point-residual-feed-value-arc-not-restored"
 area = "runtime"
-describes = "the restore step's own snapshot-restore of every block's feed arc (the component Requires storage the caller's x was delivered into) and value arc is skipped entirely (wrapped in `if (false) { ... }`), while component save_state()/restore_state() and the carried-arc restore still run. A caller's out-of-band residual evaluation then leaves the LAST x it evaluated sitting in every member's own Requires storage, so a later, ordinary Picard sweep over the same region starts from that stale delivered value instead of from what the region's own schedule last delivered -- a silent perturbation of the Runner's subsequent behaviour, not a crash."
+describes = "S7.2's own `commit`/`skip_restore` gate (added after this row was first written) now wraps this exact block; the mutation keeps the SAME effect -- short-circuiting the condition to `false` -- rather than re-deriving a new one, since the defect this row exists to catch (the restore never running) is identical either way. The restore step's own snapshot-restore of every block's feed arc (the component Requires storage the caller's x was delivered into) and value arc is skipped entirely, while component save_state()/restore_state() and the carried-arc restore still run. A caller's out-of-band residual evaluation then leaves the LAST x it evaluated sitting in every member's own Requires storage, so a later, ordinary Picard sweep over the same region starts from that stale delivered value instead of from what the region's own schedule last delivered -- a silent perturbation of the Runner's subsequent behaviour, not a crash."
 file = "src/runtime/fixed_point_residual.cpp"
-old = """  for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
-    const detail::RegionBlock& b = R.blocks[bi];
-    if (!feed_snapshot[bi].empty()) {
-      num::copy(feed_snapshot[bi].data(), slots[b.feed_arc].data, b.length);
-    }
-    if (!value_snapshot[bi].empty()) {
-      num::copy(value_snapshot[bi].data(), slots[b.value_arc].data, b.length);
+old = """  if (!skip_restore) {
+    for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
+      const detail::RegionBlock& b = R.blocks[bi];
+      if (!feed_snapshot[bi].empty()) {
+        num::copy(feed_snapshot[bi].data(), slots[b.feed_arc].data, b.length);
+      }
+      if (!value_snapshot[bi].empty()) {
+        num::copy(value_snapshot[bi].data(), slots[b.value_arc].data, b.length);
+      }
     }
   }"""
 new = """  if (false) {
-  for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
-    const detail::RegionBlock& b = R.blocks[bi];
-    if (!feed_snapshot[bi].empty()) {
-      num::copy(feed_snapshot[bi].data(), slots[b.feed_arc].data, b.length);
+    for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
+      const detail::RegionBlock& b = R.blocks[bi];
+      if (!feed_snapshot[bi].empty()) {
+        num::copy(feed_snapshot[bi].data(), slots[b.feed_arc].data, b.length);
+      }
+      if (!value_snapshot[bi].empty()) {
+        num::copy(value_snapshot[bi].data(), slots[b.value_arc].data, b.length);
+      }
     }
-    if (!value_snapshot[bi].empty()) {
-      num::copy(value_snapshot[bi].data(), slots[b.value_arc].data, b.length);
-    }
-  }
   }"""
 target = "fuse_runtime_fixed_point_residual_test"
 test = "runtime.fixed_point_residual"
 result = "KILLED (2026-10-10): FixedPointResidual.EvaluatingFDoesNotPerturbTheRunnersOwnPicardIteration FAILED (probed.neumann->u()/probed.dirichlet->q() after the Runner's own run() diverged from a fresh baseline run's values -- e.g. u[0] 293.566... vs 293.582..., q[3] 52.617... vs -218.426...); the other 5 cases in the binary still PASSED. Restored; cmp against the pre-mutation file reported no difference."
+
+# S7.2's own rows: the Newton runtime wiring (run_region_newton(),
+# check_region_supports_newton(), and evaluate_region_residual()'s own
+# `commit` parameter -- all src/runtime/iteration.cpp and
+# src/runtime/fixed_point_residual.cpp). Same hand-proof discipline as
+# every row in this project's build-evidence/mutations/*.toml: backed up,
+# mutated, rebuilt (`cmake --build /tmp/newton/b0 --target
+# fuse_runtime_newton_region_test`), run UNFILTERED, restored,
+# cmp-verified byte-identical, rebuilt and reran to confirm the full
+# count returns. Build directory: /tmp/newton/b0 (tier 0, this track's
+# own scratch build).
+
+[[mutation]]
+id = "newton-region-eager-validation-skipped"
+area = "runtime"
+describes = "resolve_regions() sets RegionRuntime::newton = true for an AccelKind::Newton region WITHOUT first calling check_region_supports_newton() -- a window-scoped or multi-participant Newton-selected region would then only be refused (or silently misbehave) whenever run_region_newton() first runs, at the start of the first period, instead of at initialize() the way every other setup-time refusal in resolve_regions() is."
+file = "src/runtime/iteration.cpp"
+old = """      const Result<void> supported =
+          check_region_supports_newton(components, ri);
+      if (!supported.ok()) return supported;
+      R.newton = true;"""
+new = """      R.newton = true;"""
+target = "fuse_runtime_newton_region_test"
+test = "runtime.newton_region"
+result = "Hand-proved 2026-10-10: 11 cases, all pass before; after mutation, 1 fails (NewtonRegion.AWindowScopedRegionSelectingNewtonIsRefusedAtSetup -- initialize() now succeeds on a window-scoped Newton-selected region instead of refusing it with E-NEWTON-UNSUPPORTED-REGION), 10 pass. File restored and cmp-verified byte-identical; rebuilt and reran to confirm all 11 pass again."
+
+[[mutation]]
+id = "newton-verification-sweep-commit-ignored"
+area = "runtime"
+describes = "evaluate_region_residual()'s own `commit` parameter is short-circuited to never skip the restore (`skip_restore = false && commit && ...`), so run_region_newton()'s own verification-sweep call (commit = true) restores the components back to their PRE-Newton checkpoint instead of leaving Newton's converged iterate as the region's real, persisted state -- the Newton solve would report NewtonStatus::Converged and a tiny final_residual_norm, yet the components themselves would be left holding whatever they held before Newton ran at all."
+file = "src/runtime/fixed_point_residual.cpp"
+old = """  const bool skip_restore = commit && adv_err.ok() && body_err.ok();"""
+new = """  const bool skip_restore = false && commit && adv_err.ok() && body_err.ok();"""
+target = "fuse_runtime_newton_region_test"
+test = "runtime.newton_region"
+result = "Hand-proved 2026-10-10: 11 cases, all pass before; after mutation, 1 fails (NewtonRegion.VerificationSweepDeliversTheConvergedStateToTheComponents -- e.g. neumann's u()[3] read back as 270.337 against the exact solution's 304.458, the PRE-Newton value components.add() left them at, not Newton's own converged iterate), 10 pass. File restored and cmp-verified byte-identical; rebuilt and reran to confirm all 11 pass again."
+
+[[mutation]]
+id = "newton-nonconvergence-not-reported"
+area = "runtime"
+describes = "run_region_newton()'s own non-convergence check is short-circuited to never fire (`if (false && !num::is_converged(nr.status))`), so exhausting the Newton iteration budget (or any other DivergedXxx status) falls straight into the `else` branch and is reported as converged -- the SAME class of silent-acceptance defect E-RT-NOCONVERGE exists to catch on the Picard path, now checked on the Newton one."
+file = "src/runtime/iteration.cpp"
+old = """  if (!num::is_converged(nr.status)) {"""
+new = """  if (false && !num::is_converged(nr.status)) {"""
+target = "fuse_runtime_newton_region_test"
+test = "runtime.newton_region"
+result = "Hand-proved 2026-10-10: 11 cases, all pass before; after mutation, 1 fails (NewtonRegion.ExhaustingTheNewtonIterationBudgetReportsNonConvergence -- run_period() returns success instead of E-RT-NOCONVERGE for a region whose NewtonConfig::max_nonlinear_iterations is 0), 10 pass. File restored and cmp-verified byte-identical; rebuilt and reran to confirm all 11 pass again."

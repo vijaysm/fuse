@@ -47,16 +47,15 @@
 /// window/parallel semantics have not been worked out here.
 namespace fuse {
 
-Result<void> Runner::Impl::evaluate_region_residual(
-    ComponentSet& components, std::size_t region_index,
-    std::span<const double> x, std::span<double> f_out) {
+Result<void> Runner::Impl::check_region_supports_newton(
+    ComponentSet& components, std::size_t region_index) const {
   if (region_index >= regions.size()) {
     return Failure{"E-RT-REGION",
                  "region index " + std::to_string(region_index) +
                      " is out of range (" + std::to_string(regions.size()) +
                      " region(s))"};
   }
-  detail::RegionRuntime& R = regions[region_index];
+  const detail::RegionRuntime& R = regions[region_index];
 
   if (R.window_scoped) {
     return Failure{"E-NEWTON-UNSUPPORTED-REGION",
@@ -71,13 +70,6 @@ Result<void> Runner::Impl::evaluate_region_residual(
                      "fixed-point residual seam covers only a single-"
                      "participant region"};
   }
-  if (x.size() != R.n || f_out.size() != R.n) {
-    return Failure{"E-RT-REGION",
-                 "iteration region '" + R.name + "' has a stacked interface "
-                     "vector of length " + std::to_string(R.n) +
-                     "; got in.size()=" + std::to_string(x.size()) +
-                     ", out.size()=" + std::to_string(f_out.size())};
-  }
   for (const std::size_t t : R.tick_indices) {
     if (components.at(ticks[t].slot).is_externally_driven()) {
       return Failure{"E-NEWTON-UNSUPPORTED-REGION",
@@ -87,6 +79,26 @@ Result<void> Runner::Impl::evaluate_region_residual(
                        "'); S7.1's fixed-point residual seam covers only "
                        "in-process members"};
     }
+  }
+  return Result<void>::success();
+}
+
+Result<void> Runner::Impl::evaluate_region_residual(
+    ComponentSet& components, std::size_t region_index,
+    std::span<const double> x, std::span<double> f_out, bool commit) {
+  if (const Result<void> supported =
+          check_region_supports_newton(components, region_index);
+      !supported.ok()) {
+    return supported;
+  }
+  detail::RegionRuntime& R = regions[region_index];
+
+  if (x.size() != R.n || f_out.size() != R.n) {
+    return Failure{"E-RT-REGION",
+                 "iteration region '" + R.name + "' has a stacked interface "
+                     "vector of length " + std::to_string(R.n) +
+                     "; got in.size()=" + std::to_string(x.size()) +
+                     ", out.size()=" + std::to_string(f_out.size())};
   }
 
   // --- save: component state, the region's own loop-carried buffers, and
@@ -185,24 +197,38 @@ Result<void> Runner::Impl::evaluate_region_residual(
   // partial advance never leaves the Runner's state straddling two points
   // -- the same "restore everything this call touched" rule run_region()'s
   // own rollback step follows.
+  //
+  // `commit`'s one exception: on the SUCCESS path (adv_err/body_err both
+  // ok), skip the restore entirely, leaving the delivered x/advanced
+  // state/executed body as this call's real, persisted effect --
+  // run_region_newton()'s own "verification sweep" (src/runtime/
+  // iteration.cpp) is the one caller that passes `commit = true`, exactly
+  // once, at the Newton solve's own converged iterate. A FAILURE still
+  // restores regardless of `commit`: a partial advance is never something
+  // a caller asked to keep.
+  const bool skip_restore = commit && adv_err.ok() && body_err.ok();
   Result<void> restore_err = Result<void>::success();
-  for (const std::size_t slot : R.component_slots) {
-    const Result<void> rs = components.at(slot).restore_state();
-    if (!rs.ok() && restore_err.ok()) restore_err = rs;
-  }
-  for (std::size_t i = 0; i < R.carried_arcs.size(); ++i) {
-    detail::Slot& s = slots[R.carried_arcs[i]];
-    if (s.data != nullptr && !carried_snapshot[i].empty()) {
-      num::copy(carried_snapshot[i].data(), s.data, carried_snapshot[i].size());
+  if (!skip_restore) {
+    for (const std::size_t slot : R.component_slots) {
+      const Result<void> rs = components.at(slot).restore_state();
+      if (!rs.ok() && restore_err.ok()) restore_err = rs;
+    }
+    for (std::size_t i = 0; i < R.carried_arcs.size(); ++i) {
+      detail::Slot& s = slots[R.carried_arcs[i]];
+      if (s.data != nullptr && !carried_snapshot[i].empty()) {
+        num::copy(carried_snapshot[i].data(), s.data, carried_snapshot[i].size());
+      }
     }
   }
-  for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
-    const detail::RegionBlock& b = R.blocks[bi];
-    if (!feed_snapshot[bi].empty()) {
-      num::copy(feed_snapshot[bi].data(), slots[b.feed_arc].data, b.length);
-    }
-    if (!value_snapshot[bi].empty()) {
-      num::copy(value_snapshot[bi].data(), slots[b.value_arc].data, b.length);
+  if (!skip_restore) {
+    for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
+      const detail::RegionBlock& b = R.blocks[bi];
+      if (!feed_snapshot[bi].empty()) {
+        num::copy(feed_snapshot[bi].data(), slots[b.feed_arc].data, b.length);
+      }
+      if (!value_snapshot[bi].empty()) {
+        num::copy(value_snapshot[bi].data(), slots[b.value_arc].data, b.length);
+      }
     }
   }
 

@@ -476,6 +476,17 @@ struct RegionRuntime {
   ConvergenceCriterion         convergence;
   std::unique_ptr<Accelerator> accel;
 
+  /// S7.2: true for a region whose IterationRegionDecl::acceleration.kind
+  /// is AccelKind::Newton. `accel` stays null for such a region --
+  /// resolve_regions() never calls make_accelerator() for it, because
+  /// Newton is not an Accelerator and make_accelerator() refuses
+  /// AccelKind::Newton with E-ACCEL-KIND (src/num/accel_relaxation.cpp
+  /// has no `case` for it). run_region() reads this flag, before ever
+  /// touching `accel`, to run the Newton-Krylov solve (run_region_newton(),
+  /// this file's own sibling in iteration.cpp) instead of the Picard sweep
+  /// loop entirely.
+  bool newton = false;
+
   std::vector<RegionBlock> blocks;
   std::size_t              n = 0;  // total length of the concatenated iterate
 
@@ -1065,10 +1076,49 @@ struct Runner::Impl {
   /// definition) for the full save/restore contract and the single-
   /// participant, non-window, non-externally-driven scope it is
   /// restricted to.
+  ///
+  /// `commit`: S7.2's own addition. `false` (the default, and S7.1's own
+  /// original meaning) restores every component and arc this call touched
+  /// before returning, so repeated calls at arbitrary `x` are side-effect
+  /// free -- what a Newton iteration's own Jacobian-action and line-search
+  /// trial evaluations need. `true` skips that restore, leaving the
+  /// delivered `x`/advanced state/executed body exactly as this call left
+  /// them -- `run_region_newton()`'s own "verification sweep", the one
+  /// evaluation whose point (the converged iterate) is meant to become the
+  /// region's real, persisted state rather than be undone.
   Result<void> evaluate_region_residual(ComponentSet& components,
                                         std::size_t region_index,
                                         std::span<const double> x,
-                                        std::span<double> f_out);
+                                        std::span<double> f_out,
+                                        bool commit = false);
+
+  /// S7.2's own eager validation: the SAME three checks
+  /// evaluate_region_residual() enforces lazily on its first call
+  /// (non-window, single cross-rank participant, no externally driven
+  /// member), run once at setup from resolve_regions() so a Newton-
+  /// selected region this Runner cannot yet solve is refused with
+  /// E-NEWTON-UNSUPPORTED-REGION before the first period runs rather than
+  /// on it -- resolve_regions()'s own "fail fast" rule (this file's top
+  /// comment, src/runtime/iteration.cpp) applied to this track's own new
+  /// region shape. One function so the two call sites (here and
+  /// evaluate_region_residual() itself) cannot drift apart on what
+  /// "supported" means.
+  Result<void> check_region_supports_newton(ComponentSet& components,
+                                            std::size_t region_index) const;
+
+  /// S7.2: the Newton-Krylov solve that replaces the Picard sweep loop
+  /// entirely for a region with `RegionRuntime::newton` set -- called from
+  /// run_region() before any of the Picard-only setup (R.accel->reset(),
+  /// the window-scoped checkpoint, the x_old seed) runs, since none of it
+  /// applies to this region. See its own definition in
+  /// src/runtime/iteration.cpp for the full account: one
+  /// fuse::num::solve() call over Runner::region_fixed_point_residual()'s
+  /// `evaluate`, then one `commit = true` evaluation at the converged
+  /// iterate (the "verification sweep") to make it the region's real,
+  /// persisted state and to populate region_stats the same way a Picard
+  /// sweep would.
+  Result<void> run_region_newton(ComponentSet& components,
+                                 detail::RegionRuntime& R);
 
   /// KNOWN_ISSUES.md D12. A coroutine (see src/runtime/resume.hpp):
   /// suspends via `co_await detail::ExternalSuspend{}`, reporting
