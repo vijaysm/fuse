@@ -47,6 +47,11 @@ vector and sparse matrix (`DistVector`/`DistSparseMatrix`) every native parallel
 on; [](linalg-krylov.md) is the native PCG and right-preconditioned GMRES(m) built on those;
 [](schur-slab-solver.md) is the exact distributed direct solver for a row-band-decomposed periodic
 Laplacian, and the one-row-band refusal that taught the rank-agreement lesson above.
+[](derivative-gate.md) is the adjoint-identity, Taylor-remainder and assembled-vs-matrix-free
+checks every derivative-bearing operator passes before a Newton claim may cite it; and
+[](newton-krylov.md) is the residual/linearisation seam, the native Jacobian-free Newton-Krylov
+solver with its SNES counterparts tabulated, and the measured convergence on dn_heat and the
+Brusselator's coupling window.
 
 ## Runtime features
 
