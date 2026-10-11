@@ -318,3 +318,31 @@ old = "    auto updated = exchanger_uv_->update(q_native_owned_u.data(), q_nativ
 new = "    auto updated = fuse::Result<void>::success();\n    if (!updated.ok()) return updated.error();"
 target = "fuse_verification_brusselator_species_core_decomposition_test"
 test = "verification.brusselator_species_core_decomposition"
+
+# S7.2 WindowNewton (newton-krylov.md Sec. 9.5, 9.7's own test plan): the
+# per-sample block-Jacobi preconditioner solve `UCore::apply_diffusion_
+# preconditioner()` performs, read by `UComponent::apply_preconditioner()`
+# (species_component.hpp) once per window sample. `VDiffusionCore::
+# apply_diffusion_preconditioner()` carries the identical defect class
+# (same shape, separate function) but is not repeated as its own row,
+# because at this rig's problem scale it is NOT independently killable:
+# measured 2026-10-11 (this row's own `result`) that mutating U's function
+# alone moves the pinned count, mutating V's alone does not (the test still
+# passes), and mutating both does -- U's preconditioner dominates here. One
+# row on U represents the pattern; V's is covered only in combination. Hand-proved
+# 2026-10-11: backed up (md5 75b1d8825dd6924e2de99348236292ba), rebuilt
+# (`ninja fuse_verification_brusselator_runner_test`), run UNFILTERED,
+# restored, cmp-verified byte-identical, rebuilt and reran to confirm the
+# test passes again. Build directory: /tmp/winnewton/b0 (tier 0, this
+# track's own scratch build).
+
+[[mutation]]
+id = "brusselator-preconditioner-solve-replaced-by-identity"
+area = "examples/brusselator"
+describes = "UCore::apply_diffusion_preconditioner() replaced by the identity map (`return r;`, skipping solver_->factor()/solve() entirely) -- the Newton solve's own block-Jacobi preconditioner becomes mathematically equivalent to no preconditioner at all for U's own block (fuse::num::IdentityPreconditioner, the path NewtonConfig::use_block_jacobi_preconditioner = false already takes), silently discarding the physics-based preconditioning newton-krylov.md Sec. 9.5 asks for while still reporting kCapabilityLinearization and running without error."
+file = "examples/brusselator/species_core.hpp"
+old = "  [[nodiscard]] fuse::Result<Vector> apply_diffusion_preconditioner(double dt, const Vector& r) {\n    if (const auto factored = solver_->factor(dt, cfg_.diffusion,\n                                              /*extra_diagonal=*/dt);\n        !factored.ok()) {\n      return fuse::Failure{\"E-BRUSS-U-PRECOND-FACTORIZE\",\n                           \"UCore::apply_diffusion_preconditioner: factorization failed\"};\n    }\n    auto solved = solver_->solve(r);\n    if (!solved.ok()) {\n      return fuse::Failure{\"E-BRUSS-U-PRECOND-SOLVE\",\n                           \"UCore::apply_diffusion_preconditioner: solve failed or \"\n                           \"produced a non-finite result\"};\n    }\n    return solved;\n  }"
+new = "  [[nodiscard]] fuse::Result<Vector> apply_diffusion_preconditioner(double dt, const Vector& r) {\n    (void)dt;\n    return r;\n  }"
+target = "fuse_verification_brusselator_runner_test"
+test = "verification.brusselator_runner"
+result = "Hand-proved 2026-10-11: with ONLY UCore's own function mutated to the identity (the old/new pair above, VDiffusionCore's own function untouched), BrusselatorRunner.NewtonConvergesInAPinnedIterationCountWithTheBlockJacobiPreconditioner FAILS -- with_bj.iterations_per_window.front() reads 3 instead of the pinned 4, identical to the without_bj (no-preconditioner) path's own count. (Separately tried: mutating ONLY VDiffusionCore's own function, UCore's left alone, does NOT move the count -- the test still PASSES; U's own preconditioner solve alone is sufficient to be load-bearing for the pinned count, V's own alone is not, at this Rig's problem scale -- mutating BOTH at once, tried earlier in this same session, does fail it, consistent with U's own contribution dominating.) File restored and cmp-verified byte-identical; rebuilt and reran to confirm the test passes again."

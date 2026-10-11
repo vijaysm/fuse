@@ -420,3 +420,731 @@ the public `Runner` API; what the test DOES assert is that the run converges (a 
 failure the solver cannot recover from reports `NewtonStatus::DivergedLineSearch` instead,
 caught the same way the non-convergence test above catches `DivergedMaxIterations`) and needs
 more than the affine problem's own one-Newton-step case.
+
+## 9. Newton over a coupling window -- design (Stage A), IMPLEMENTED (Stage B, 2026-10-11)
+
+This section began as the WindowNewton track's own Stage A: a design,
+bounded by measurement, for lifting `check_region_supports_newton()`'s
+`E-NEWTON-UNSUPPORTED-REGION` refusal on a window-scoped region
+(`fixed_point_residual.cpp`'s own header comment: "Lifting either is
+follow-on work for the JFNK track (S7.2), not this seam"; `newton_krylov.hpp`'s
+`BlockJacobiPreconditioner` comment names the identical boundary: "a
+cross-rank block-Jacobi preconditioner is a later step's work, once the
+fixed-point residual itself is lifted to a window-scoped, multi-participant
+region"). Sec. 9.1-9.8 below are Stage A's own text, UNCHANGED (the lead's
+own instruction: "keep measurements") -- every claim in them was either a
+line-numbered citation of the window path as it stood before Stage B, or a
+number measured against the UNMODIFIED Brusselator example at Stage A time.
+**Stage B (2026-10-11) built the design Sec. 9.1-9.7 describes**, against
+the SAME checkout (`bbe1a1a` at Stage A time); Sec. 9.9 below is the new,
+Stage-B-only section recording what was actually built, the four open
+questions' own resolutions, and the measurements taken against the NOW
+Newton-capable Brusselator example.
+
+### 9.1 What `x` is
+
+The ordinary-region seam's `x` is the stacked FEED values of every
+`RegionBlock` (`run_region_newton()`'s own seed loop,
+`iteration.cpp:1686-1688`: `num::copy(slots[b.feed_arc].data, x.data() +
+b.offset, b.length)`). A window-scoped region's accelerator already
+consumes the SAME shape of vector -- `R.accel->update(R.x_old.data(),
+R.x_new.data(), R.x_out.data(), R.n, k)` (`iteration.cpp:2327-2328`) runs
+over the full, per-block concatenation `R.blocks` -- so `x` for a
+window-Newton region is that same concatenation, with one exclusion:
+
+**Layout.** One contiguous slice per included `RegionBlock`, each slice
+itself `(element, sample)`-major: `b.length` doubles, where sample 0 is the
+window-START value and samples `1..window_export_capacity-1` are the
+per-substep END values (`RegionBlock::window_export_capacity`'s own comment,
+`runner_impl.hpp:363-377`; the write pattern is `advance_window()`'s own
+`out[e * cfg.capacity + s]`, `iteration.cpp:3217-3220,3309,3361`). This is
+`WindowCoupler`'s own `accel_members`/`member_base` layout exactly
+(`window_coupler.cpp:775-789`: `at(e, s) = base + e * n_sub + s`), modulo
+the ordinary driver's own exclusion of the window-start sample from its
+`accel_total` tally (`window_coupler.cpp:738`: `steps[i].size()`, no `+1`)
+-- the Runner's own `R.x_old`/`R.n` keeps sample 0 in the vector because
+`RegionBlock::length`/`offset` are the FULL arc (`RegionBlock::
+window_export_capacity`'s own comment: "never touching `length`/`offset`
+themselves, which the accelerator ... must keep seeing exactly what
+`advance_window()` wrote"). A Newton `x` should follow `R.x_old`'s own
+convention (full per-block length, sample 0 included): `evaluate_region_
+residual()`'s ordinary-region analogue delivers `x` wholesale into
+`b.feed_arc` and reads `G(x)` wholesale back from `b.value_arc`, and
+`advance_window()` reads sample 0 (`start_value`) as a SEPARATE, cached
+quantity it never re-derives from the rest of the vector
+(`iteration.cpp:3212-3220`) -- so the window-start sample is logically part
+of `x` even though no part of `F(x) = x - G(x)`'s own RESIDUAL depends on
+it (`run_region()`'s own residual-norm computation strips it,
+`iteration.cpp:2087-2106`, for exactly that reason). Carrying it in `x`
+costs nothing (it stays fixed under `advance_window()`'s own `first_sweep_
+of_pass` convention, Sec. 9.3) and avoids inventing a second, shorter
+vector shape nothing else in the Runner uses.
+
+**Exclusion.** `R.blocks` today is NOT restricted to lagged transfers --
+the `E-RT-WINDOW-ACCEL` refusal exists PRECISELY because the accelerator
+has no such restriction and would therefore be wrong under GaussSeidel
+(`iteration.cpp:1347-1373`: "R.blocks below is NOT YET restricted the same
+way ... Running a real accelerator over that undifferentiated vector would
+accelerate a quantity the method does not define an iterate history for").
+A window-Newton region's `x` MUST NOT inherit that gap: it is built from
+`R.blocks` restricted to the blocks whose `feed_arc` is a member of `R.
+window_lagged_import_arcs` ("every LAGGED window_import arc this region
+owns", `runner_impl.hpp:455-463`, populated at `iteration.cpp:550-552` from
+`cfg.import_lagged`). This is exactly `WindowCoupler`'s own `accel_members`
+restriction translated to the Runner's own bookkeeping:
+`provides_unlagged_channel(i)` (`window_coupler.cpp:715-720`) excludes a
+member that provides an UNLAGGED channel; `cfg.import_lagged` is the
+CONSUMER-side mirror of the identical fact (`effective_channel_lag()`,
+`fuse/model/coupling_graph.hpp`, is the one function both
+`window_import_is_lagged()` at schedule time and `cfg.import_lagged` at
+runtime read, per `WindowMemberConfig::import_lagged`'s own comment,
+`runner_impl.hpp:760-767`) -- a block whose `feed_arc` is NOT in `R.window_
+lagged_import_arcs` is precisely the GaussSeidel unlagged direction
+`WindowCoupler` excludes, and under `WaveformIteration::Jacobi` EVERY
+channel is forced lagged (`cfg.import_lagged`'s own comment: "`effective_
+channel_lag()` ... forces lag=1 for every channel in a Jacobi window"), so
+every block is included -- "every member is accelerated under Jacobi"
+reproduced exactly.
+
+**Measured length, Brusselator at its own defaults** (`--dt-u 0.002 --dt-v
+0.003 --window 0.02`, `--nx-u 16 --ny-u 16`; both transfer fields live on
+the U grid, `n_u = 256`, per `species_component.hpp`'s own "both channels
+live on the U grid" comment and `main.cpp`'s `mv.length = n_u`):
+`window_sample_capacity(window_length, interval, Adjustable)` = `ceil(window/
+interval) + 1` (`coupling_graph.hpp:505-515`, no `DtPolicy::Fixed` `+1`
+since both members are `Adjustable`, `main.cpp`'s own `mu.policy`/`mv.
+policy`). U: `ceil(0.02/0.002)+1 = 11`. V: `ceil(0.02/0.003)+1 = ceil(6.667)
++1 = 8`. The Brusselator example's own graph is Jacobi by default (`add_
+window_coupling()` is called with no `iteration_mode` override,
+`brusselator_graph.hpp:112`'s own default `WaveformIteration::Jacobi`), so
+BOTH blocks are lagged and both are included:
+
+| block | consumer grid elements | provider capacity | block length |
+|---|---|---|---|
+| V->U (U's own `required_`) | 256 | 8 (V) | 2048 |
+| U->V (V's own `required_`) | 256 | 11 (U) | 2816 |
+| **total `n`** | | | **4864** |
+
+### 9.2 What one evaluation must snapshot and restore
+
+The ordinary seam's checkpoint set (`evaluate_region_residual()`,
+`fixed_point_residual.cpp:102-134`) is: component state
+(`save_state()`/`restore_state()`), `R.carried_arcs`, and every block's
+`feed_arc`/`value_arc` -- added only after a measured failure
+(`FixedPointResidual.EvaluatingFDoesNotPerturbTheRunnersOwnPicardIteration`)
+showed the FIRST version (component state + carried arcs alone, the
+`derive_checkpoint_set()`-proved sweep-to-sweep survivors) was insufficient
+for an ARBITRARY caller-chosen `x`. A window sweep mutates strictly more
+Runner-owned state than an ordinary one, none of it visible to
+`derive_checkpoint_set()` (that analysis is about a component's own
+checkpointed state and the region's declared `carried` buffers -- it has no
+notion of `Runner::Impl`'s own per-node maps at all). Enumerated against
+`advance_window()`'s own read/write sites:
+
+| state | mutated by | covered today by component save/restore? | must the window-Newton seam snapshot/restore it? |
+|---|---|---|---|
+| component hidden state | `comp.advance(ctx)` | YES (`save_state()`/`restore_state()`, `component_slots`) | reuse as-is |
+| `window_member_state[node].clock` | `st.clock = final_clock` every call, unconditionally (`iteration.cpp:3398`) | NO | YES -- read by `resolve_pending_window_straddles()` on the NEXT window instance (`st.clock` as `target_clock`, `iteration.cpp:2609`) and, within THIS pass, discarded in favour of the cached `window_pass_start_clock` (Sec. 9.3) -- but a non-committing probe must not leave a trial value sitting where the NEXT pass's straddle replay would read it |
+| `.straddle_pending`/`.straddle_window_start`/`.straddle_window_end` | set when `steps.back().straddle` (`iteration.cpp:3407-3425`) | NO | YES, same reason -- read by `resolve_pending_window_straddles()` at the TOP of the NEXT window instance's pass (`iteration.cpp:2574`), before this region is ever re-entered |
+| `.history` | **not** mutated inside `advance_window()` at all (explicit design: "intentionally NOT touched here, mid-sweep", `iteration.cpp:3377-3396`); mutated exactly once, by `run_region()`'s own post-loop refresh, from the LIVE `window_import` buffer, after the Picard loop exits (`iteration.cpp:2488-2553`) | NO | Only the COMMITTING evaluation may perform this refresh (mirrors `run_region()`'s own one-time, post-convergence timing exactly); every non-committing evaluation must leave `.history` untouched, which it already is "for free" as long as the window-Newton residual function reuses `advance_window()` unchanged |
+| `.last_window_waveform` | **never**, in the Runner path -- `WindowCoupler`-only field (`window_coupler.cpp:1041`, `channel_io_`'s own straddle handling); `src/runtime/iteration.cpp` never reads or writes it | n/a | n/a -- not part of the Runner's own window state at all |
+| `window_last_dst_step[node]` | every call, unconditionally, BEFORE the `first_sweep_of_pass` branch (`iteration.cpp:2895`) | NO | Idempotent within one pass (same `absolute_instance` every call) -- no restore needed as long as every evaluation of the SAME pass passes the SAME `ins.dst_step`; a restore IS needed across passes if a probe is ever issued against the wrong pass, which the seam must refuse rather than allow |
+| `window_pass_start_clock[node]` | ONLY at `first_sweep_of_pass` (`iteration.cpp:2940-2942`); read, never rewritten, by every later evaluation of the SAME pass | NO | NOT restored between evaluations of the SAME pass -- it is this pass's own equivalent of `R.x_old`'s seed: fixed once, read by every `F` evaluation Newton performs. Must be reset (or allowed to re-seed) only when a NEW window instance's pass begins |
+| `window_start_value[node]` | ONLY at `first_sweep_of_pass` (`iteration.cpp:3212-3215`) | NO | same as `window_pass_start_clock` -- a pass-scoped cache, not a per-evaluation one |
+| `previous[arc]` for `arc` in `R.window_lagged_import_arcs` | `run_region()`'s own k-loop top, once per Picard SWEEP (`iteration.cpp:1905-1910`), from the live `slots[arc]` | NO | YES, and differently from the ordinary seam: this is where `x`'s own lagged-import slice must be DELIVERED (Sec. 9.1's block selection is exactly these arcs) -- `advance_window()` reads `previous[cfg.window_import.value()]` for a lagged import (`iteration.cpp:2983-2985`), never `slots[]` directly, so a window-Newton evaluation writes `x`'s block into `previous[]`, not into `slots[b.feed_arc]` the way the ordinary seam does |
+| `slots[b.feed_arc]` (the consumer's own `window_import` storage, i.e. `cfg.required`'s backing arc) | the compiled Sink, inside the region body (`b.sink_instruction`) | NO (not a component) | YES, mirrored from the ordinary seam's identical snapshot/restore of `feed_arc`/`value_arc` -- this is where `G(x)` is read back after the body executes |
+| `R.carried_arcs` | region body | same as ordinary | reuse as-is |
+
+**The Seam track's own lesson applies again, pre-emptively.** The first
+version of `evaluate_region_residual()` under-covered the checkpoint set by
+one category (feed/value arcs) and a test caught it; this table identifies
+SIX categories of Runner-owned, non-component state a window sweep touches
+that the ordinary seam's checkpoint set has no notion of at all
+(`clock`/`straddle_*`/`window_last_dst_step` need restore;
+`window_pass_start_clock`/`window_start_value` need deliberate
+NON-restore, scoped to the pass rather than the evaluation; `previous[]`
+needs to become a DELIVERY target, not a restore-only snapshot). Missing
+any one of the restore-needing three reproduces the ordinary seam's own
+historical defect in a new place: the Runner re-entering the region (the
+NEXT window instance, or the Runner's own Picard path for the SAME region
+if Newton's capability check ever becomes a runtime choice rather than a
+setup-time one) would see a trial `x`'s leftover effect instead of the
+committed one.
+
+### 9.3 The coroutine structure's own constraint
+
+`advance_window()` is re-entered once per Picard SWEEP of ONE window
+instance (`run_region()`'s k-loop, `iteration.cpp:1896` onward, dispatches
+`co_await advance_window(components, stream[i], resolved[i], k)` at
+`iteration.cpp:1936` for every `k`). Its `iteration` parameter drives
+exactly three decisions, ALL gated on `first_sweep_of_pass = (iteration ==
+0)` (`iteration.cpp:2902`):
+
+1. **New-instance detection.** `first_sweep_of_pass` must AGREE with the
+   dst_step-derived `new_instance` test, or the call is refused
+   (`E-RT-WINDOW-SWEEP`, `iteration.cpp:2903-2910`) -- this is a
+   consistency check between "the caller's own claim about where in the
+   pass this is" and "what the compiled stream's own `dst_step` says",
+   and it is NOT negotiable: a window-Newton residual function cannot
+   invent its own `iteration` numbering independent of this check.
+2. **`pass_start_clock`/`window_start_value` seeding vs. reading**
+   (`iteration.cpp:2912-2945`, `3212-3220`) -- computed from `st.clock`
+   and `cfg.provided` ONLY at `iteration == 0`, cached, and read
+   UNCONDITIONALLY (never recomputed) at `iteration > 0`.
+3. **The lagged-import predictor** (`use_predictor = cfg.import_lagged &&
+   first_sweep_of_pass`, `iteration.cpp:2982`) -- extrapolates
+   (`extrapolate_boundary_value()`) from `st.history` ONLY on the pass's
+   first sweep; every later sweep reads the live/shadow buffer directly.
+
+**Consequently: a window sweep CAN be re-run from a provided `x` without
+re-entering the pass, but only as `iteration > 0`.** `iteration == 0` is
+not "the first Newton evaluation of this window instance" -- it is
+specifically "there is no genuine prior sweep to extrapolate from, use the
+predictor instead", a case that applies ONCE, at the moment this window
+instance is entered, regardless of which solver (Picard or Newton) drives
+it. The design: the window-Newton residual function for one window instance
+calls `advance_window(..., iteration = 0)` EXACTLY ONCE, to seed
+`window_pass_start_clock`/`window_start_value` and apply the predictor to
+the FIRST `x` it evaluates at (the ordinary seam's own analogue: `run_
+region_newton()` seeds `x` from `slots[b.feed_arc]`, "what the components
+were ACTUALLY advanced with", before ever calling `f`; here that
+role is played by the predictor's own extrapolated value, which IS "what
+the components would have been advanced with" absent a real prior sweep).
+Every SUBSEQUENT call -- the Jacobian action's own perturbed evaluation,
+every line-search trial, every later Newton iterate, and the final
+committing evaluation -- passes `iteration = 1` (a fixed, non-zero
+constant; nothing downstream of `first_sweep_of_pass` distinguishes
+`iteration = 1` from `iteration = 7`): `pass_start_clock`/`window_start_
+value` read the cached values from the SAME `iteration == 0` call, and the
+lagged import reads `previous[]`/`slots[]` directly rather than
+extrapolating. This is why Sec. 9.2 lists `previous[arc]` as the lagged
+import's OWN delivery target rather than a restore-only snapshot: at
+`iteration > 0`, `advance_window()`'s read of `previous[cfg.window_import.
+value()]` (`iteration.cpp:2984`) IS the read of `x`'s own lagged-import
+slice, so the residual function writes `x`'s block there before calling
+`advance_window()`, exactly the way `evaluate_region_residual()` writes
+`x`'s block into `slots[b.feed_arc]` for an ordinary region.
+
+**One real gap this surfaces, not papered over.** The very first Newton
+evaluation of a window instance is seeded by the PREDICTOR
+(`extrapolate_boundary_value()`), not by a caller-chosen `x` -- there is no
+"what the components were actually advanced with" to read for a window
+instance's own first sweep the way the ordinary seam reads `slots[b.feed_
+arc]`, because nothing has been delivered into `previous[]` yet for THIS
+window instance (it still holds the PREVIOUS window's final delivery, by
+design, `iteration.cpp:2950-2955`). Newton's own first iterate `x_0` is
+therefore NOT free to be "the predictor's value" if the solver wants to
+start somewhere else (e.g. the previous window's own converged state, with
+no extrapolation): the predictor path and the "deliver an arbitrary x0"
+path are two different code shapes in `advance_window()` today
+(`use_predictor` true vs. false), and only the FIRST is reachable at
+`iteration == 0`. The design choice this track proposes (open question,
+Sec. 9.8): seed Newton's `x_0` from the SAME predictor-extrapolated vector
+`advance_window(iteration=0)` already computes internally -- i.e., call it
+once with `iteration = 0` and `x` not yet known, read back what it wrote
+into the export buffer as `x_0`'s block for that member -- rather than
+inventing a second "deliver a caller-chosen x on the very first sweep of a
+pass" code path alongside the predictor. This keeps `advance_window()`
+itself unchanged; the window-Newton seam only ever calls it with `iteration`
+in `{0, 1}`, never writes `x` before the `iteration = 0` call, and extracts
+`x_0` from its output afterward.
+
+### 9.4 Rank agreement
+
+`run_region()`'s own window-scoped branch computes a PER-RANK
+`WindowBlockSample{residual_sq, reference_sq, owned}` per block
+(`iteration.cpp:2140-2161`), gathers every participant's array via
+`gather_window_block_samples()` (point-to-point over the region's own
+`R.participants`, `runner.cpp:2746-2839` -- NOT a true `MPI_Allgather`,
+for the same reason `reduce_region_residuals()` isn't one: `R.participants`
+is a subset of the base communicator's ranks, `runner.cpp:2793-2799`), and
+reduces with `decide_window_convergence()` -- a flat sum of OWNED
+contributions, in ascending rank-index order, pure and unit-testable at
+tier 0 with a hand-built `gathered` array (`window_convergence.hpp:81-85`).
+
+A window-Newton solve's OWN two reductions -- `F`'s norm (for the outer
+Newton convergence test) and GMRES's own inner products (for the Krylov
+iteration itself) -- need the IDENTICAL agreement: every rank that hosts
+any part of this window region's `x` must see the same scalar, summed over
+exactly `R.participants`, in the same fixed order. `fuse::linalg::Reducer`
+(`comm.hpp:35-62`) is already the single point every norm/dot product in
+`fuse::num::solve()` goes through -- `DistVector::dot()`/`norm2()` call
+through the `Reducer` the vector was CONSTRUCTED with
+(`dist_vector.hpp:48-50`), and `run_region_newton()` already builds `x`
+with a specific, swappable choice: `linalg::make_serial_reducer()`
+(`iteration.cpp:1679-1681`). **The single-rank design already does what the
+multi-rank lift needs**: nothing in `fuse::num::solve()`, `MffdJacobianAction`,
+or `gmres()` ever reduces a scalar directly -- every one goes through the
+`DistVector` it was handed, which goes through whatever `Reducer` that
+vector carries. Lifting rank agreement is therefore confined to ONE
+decision at the call site in a future `run_region_newton_window()`: which
+`Reducer` to construct `x` with.
+
+**What that `Reducer` must be is the one open design point here, not a
+reducer that already exists.** `make_mpi_reducer(int comm_f)`
+(`comm.hpp:141`) takes a REAL `MPI_Comm` handle and reduces over EVERY rank
+of that communicator -- exactly wrong for a region whose `R.participants`
+is a subset of the base communicator (the same reason `reduce_region_
+residuals()`/`gather_window_block_samples()` use point-to-point addressing
+over `part[]` rather than a sub-communicator built from it,
+`runner.cpp:2596-2601`'s own "WHY NOT A SUB-COMMUNICATOR" --
+`MPI_Comm_free` is collective and ties a communicator's lifetime to the
+Runner's own, which this track inherits rather than re-litigates). The
+window-Newton lift therefore needs a NEW `Reducer` implementation --
+call it `ParticipantSetReducer` for this discussion -- that performs
+`sum`/`max`/`allgather` via the SAME `epoch_schedule()`-driven
+point-to-point exchange `gather_window_block_samples()` already proves
+correct over `R.participants`, not a call to `make_mpi_reducer()`. This is
+a NEW class, not a config choice between two existing `Reducer`s -- flagged
+here rather than left implicit, because it is schedulable, bounded work
+(one class implementing four virtual methods against an already-proven
+communication pattern) but it is not nothing, and Stage B's own scope
+should name it as a deliverable if the lift is approved for this step
+rather than deferred.
+
+### 9.5 The block preconditioner
+
+**What the species block of the Jacobian actually is.** `F(x) = x - G(x)`
+where `G`, for one block (one directed channel over one window), is the
+composition of: (a) the window's own temporal reconstruction of `x`'s
+samples into a `Waveform` (`advance_window()`'s own `import_wf`,
+`Waveform(1, cfg.provider_capacity, TemporalBasis::Linear, 1)`,
+`iteration.cpp:3030`), (b) that waveform's MEAN over each of the
+IMPORTING species' own substeps (`detail::mean_over`, read as `cfg.
+required[e]` immediately before each `comp.advance(ctx)` call,
+`iteration.cpp:3315-3326`), and (c) the importing species' own chain of
+backward-Euler substeps (`UCore::step()`/`VDiffusionCore::step()`,
+`species_core.hpp`, each one `DiffusionSolver::solve()` against a
+FACTORED `(1 + extra_diagonal)*I - dt*diffusion*Laplacian` system,
+`species_core.hpp:182-220`), run ONCE PER SUBSTEP, serially, each one
+depending on the previous substep's own output state. `dG_i/dx_j` (species
+`i`'s own exported block with respect to species `j`'s own imported
+samples) is therefore NOT block-diagonal in TIME: substep `k`'s own state
+depends on every earlier substep, so the TRUE Jacobian action chains `n_sub`
+applications of (one substep's own sensitivity to its own mean input) times
+(the mean-over-substep operator's own sensitivity to the waveform's
+control points) -- a dense, lower-triangular-in-substep-index structure
+per species block, exactly what `MffdJacobianAction`'s own one-sided finite
+difference already computes CORRECTLY (it differences the WHOLE `G`, chain
+and all) but a hand-assembled preconditioner cannot cheaply reproduce
+exactly.
+
+**What a per-species preconditioner can honestly approximate.** The
+DOMINANT linear operator inside that chain, substep by substep, is exactly
+`DiffusionSolver::solve()`'s own already-factored system -- the reaction
+term is EXPLICIT in both species (`UComponent`'s own file header: "q...
+enters explicitly... keeping U's own linear system LINEAR"; `species_core.
+hpp`'s own `DiffusionSolver` comment: "a right-hand side that changes every
+step", the FACTORIZATION itself depending only on `dt`/`diffusion`, never
+on the coupling term). The honest answer the task anticipates: **the
+preconditioner acts PER SAMPLE, through the species' own already-factored
+solve, treating each of the window's `n_sub` output samples as
+independently preconditioned by ONE application of that species' own
+`DiffusionSolver::solve()`** -- a block-DIAGONAL-IN-TIME approximation of a
+Jacobian that is genuinely lower-triangular-in-time, i.e. it drops the
+substep-to-substep CHAINING (sample `k`'s sensitivity to sample `k-1`'s own
+perturbation) and keeps only each sample's own LOCAL diffusion response.
+This is a real approximation, not the exact diagonal block `Linearization
+Token::apply_preconditioner`'s own ordinary-region contract describes (that
+contract is ONE `evaluate_residual()` call at a frozen time level; a window
+member's own residual is `n_sub` chained calls, which S7.1's
+`ImplicitComponent` interface -- built for the single-clock case -- does
+not describe at all). Concretely: `PreconditionerBlock::apply(r, z)` for
+species `i`'s own block calls the identical `DiffusionSolver::solve()`
+already built and factored for that species (`UCore`/`VDiffusionCore`'s own
+diffusion-solver member, unchanged), once per `(element-block, sample)`
+slice of `r`, reusing the CURRENT factorization (same `dt`, same
+`diffusion`) -- no new factorization, no new assembly.
+
+**Cost.** One `DiffusionSolver::solve()` call is one sparse triangular
+back-substitution against an ALREADY-FACTORED matrix (`Eigen::
+SimplicialLDLT::solve()`, `species_core.hpp:213-220`) -- the SAME cost
+`advance()` already pays once per substep, with no reaction/coupling-term
+evaluation, no remap, no waveform construction. Applying the preconditioner
+once therefore costs roughly `n_sub` solves per included block (11 for U,
+8 for V at the Brusselator's own defaults) -- MUCH cheaper than one `G`
+evaluation, which pays the SAME `n_sub` solves PLUS the nonlinear reaction
+term, the remap (`fuse::apply_weights`), and the window's own waveform
+book-keeping, for BOTH species. A single GMRES iteration needs one
+preconditioner application and one Jacobian action (one MFFD evaluation of
+`F`, i.e. one full `G`); a Newton step needs the forcing-term-selected
+number of GMRES iterations (dn_heat's own measured range: 2 for a loose
+`eta_0 = 0.3`, more as `eta_k` tightens, Sec. 8.2) plus the line search's
+own trial evaluations. The preconditioner's own cost is therefore a SMALL
+ADD-ON to each already-necessary Jacobian action, not a new expense of the
+same order as a full window advance -- consistent with its purpose
+(reducing the NUMBER of GMRES iterations needed per Newton step), not with
+replacing Picard's own per-sweep cost.
+
+### 9.6 Measurements taken, no library change
+
+All of the following were measured this session against the unmodified
+`examples/brusselator` binary, built at `/tmp/winnewton/b0` (tier 0,
+`-DCMAKE_BUILD_TYPE=Debug`) from this checkout; every number below is from
+that binary's own stdout/`windows.csv`, not estimated.
+
+**Picard (`--accel none`) sweep counts, `--driver runner`, defaults
+(`--dt-u 0.002 --dt-v 0.003 --window 0.02`), first five windows (`--end
+0.1`):** 12, 12, 9, 9, 9 sweeps -- decreasing, never growing, as the system
+approaches its own slowly-decaying transient (confirmed over `--end 1.0`,
+50 windows: the count decreases monotonically from 12 to 7 and stays
+there). Byte-identical between `--driver window` and `--driver runner` at
+every window (both print `max_iterations=12`, identical `windows.csv`
+columns) -- the two drivers agree on Picard exactly, as Conformance
+Units 1/2 already established.
+
+**Aitken (`--accel aitken`) reproduces KNOWN_ISSUES D17 exactly.**
+`--driver window --accel aitken --end 0.1`: converges windows 0-1 (16, 16
+sweeps), then FAILS at window index 2 (`t=0.060000`) after the full 60-
+sweep budget -- the identical failure D17 records at `--end 0.5`.
+`--driver runner --accel aitken --end 0.1`: converges throughout, but the
+sweep count GROWS every window rather than settling -- 16, 17, 24, 28, 31
+-- where Picard's own count over the SAME five windows DECREASES (12, 12,
+9, 9, 9). Aitken is measurably getting WORSE, window over window, on a
+problem Picard itself finds easier over time. This is the clearest
+evidence this session has for Newton's OWN value proposition on this
+example: not "fewer sweeps than Picard" (Picard is already cheap and
+improving here) but "robust where a quasi-Newton accelerator is not" --
+Aitken's own instability (not merely slowness) on the IDENTICAL graph and
+parameters is a real, measured failure mode a Jacobian-based method is not
+expected to share (JFNK's own convergence theory ties its local rate to the
+TRUE Jacobian, not to a rank-1 secant update's own history-dependent
+coefficient).
+
+**No Picard-diverges-or-crawls case was found within the CLI-exposed
+parameter space.** Swept this session: `--window` from 0.02 to 2.0 (12,
+18 [0.08], 20 [0.16], 26 [0.32], 28 [0.5], 32 [1.0] sweeps -- sub-linear
+growth, no divergence); `--alpha` (diffusion) from 10 to 200 at the
+default window (NO measurable change in sweep count at all -- 12, 12, 9,
+9, 9 identically at every value tried, because the coupling that drives
+Jacobi's own contraction is the EXPLICIT reaction term, not the implicit
+diffusion solve); `--no-forcing` (no change). **This is a genuine
+limitation of this measurement, stated plainly rather than papered over**:
+the Brusselator example's own CLI does not expose `WaveformIteration`
+(`brusselator_graph.hpp`'s own `iteration_mode` parameter defaults to
+`Jacobi` and is never threaded through `main.cpp`'s argument parser), and
+GaussSeidel -- or a deliberately stiffer reaction constant (`A`/`B` are
+compiled in at `3.4`/`1`, not CLI-tunable either) -- is the more likely
+place Picard's own contraction factor would exceed 1, given that D17
+already shows GaussSeidel-adjacent instability (Aitken diverging under
+the direct `WindowCoupler` driver). **Proposed Newton test case** (for
+Stage B, pending a code change this Stage does not make): add a
+`--iteration-mode jacobi|gauss-seidel` flag to `examples/brusselator/
+main.cpp` (a two-line change, threading `WaveformIteration` through to
+`add_window_coupling()`'s existing parameter) and measure Picard/Aitken/
+Newton under GaussSeidel at the SAME defaults -- if GaussSeidel's own
+unlagged-direction substitution pushes the LAGGED direction's own
+contraction past 1 (plausible: GaussSeidel's own per-sweep update is a
+STRONGER, not weaker, coupling than Jacobi's, since the unlagged member
+sees the OTHER member's freshest value within the same sweep), that is
+the named Newton case; if it does not, the search continues from there
+rather than from a parameter this session already ruled out.
+
+**F-evaluation count, relative to Picard's own measured sweep counts.** A
+Newton step needs one `F(x_k)` evaluation, `GMRES`'s own iteration count
+(via `MffdJacobianAction`) evaluations of `F` for the Jacobian action,
+and the line search's own trial evaluations when the full step is
+rejected. dn_heat's own measured counts (Sec. 8.2-8.4): 3 Newton steps for
+the forcing-dominated affine case (`eta_0 = 0.3`, 2 GMRES iterations on
+the first linear solve); 3-4 Newton steps for the quadratic-rate nonlinear
+case under near-exact forcing (more GMRES work per step, traded for fewer
+steps); 7 Newton steps with one line-search backtrack (4 trials) on a
+deliberately poor initial guess. Applying the SAME order of magnitude to
+the window case -- unpreconditioned, so GMRES needs more iterations per
+Newton step than the preconditioned design of Sec. 9.5 would need -- a
+plausible total is on the order of 15-30 `F` evaluations for one window
+solve (3-5 Newton steps x 3-6 GMRES iterations each, plus occasional line
+search trials), each `F` evaluation costing roughly what one Picard sweep
+costs (one full window advance of both species). Against Picard's OWN
+measured 9-12 sweeps at the SAME defaults, Newton is therefore PLAUSIBLY
+MORE EXPENSIVE in raw evaluation count on this well-behaved problem --
+consistent with Sec. 9.5's own conclusion and with the task's own
+expectation: Newton's value here is robustness where Picard's contraction
+factor is poor (Sec. 9.6's own GaussSeidel proposal) or where a
+quasi-Newton accelerator is unstable (Aitken, measured above), not raw
+sweep count on a problem Picard already handles cheaply.
+
+### 9.7 Test plan, and the files Stage B would touch
+
+**Serial tests pinning Sec. 9.2's re-enterability claim** (new file,
+`test/runtime/window_fixed_point_residual_test.cpp`, mirroring `test/
+runtime/fixed_point_residual_test.cpp`'s own structure):
+
+1. `WindowFixedPointResidual.RepeatedEvaluationAtTheSamePointIsBitIdentical`
+   -- two `F` evaluations at the identical `x` (`iteration = 1` both times)
+   produce bit-identical `F(x)`, mirroring the ordinary seam's own test of
+   the same name.
+2. `WindowFixedPointResidual.APicardWindowPassAfterOneFEvaluationIsBitIdenticalToAFreshOne`
+   -- evaluate `F` once (non-committing) at an
+   arbitrary `x`, then run the SAME window instance through the Runner's
+   own Picard path from its genuine starting point; the result must be
+   bit-identical to a window instance that never saw the out-of-band
+   evaluation at all -- the direct window-region analogue of
+   `EvaluatingFDoesNotPerturbTheRunnersOwnPicardIteration`.
+3. `WindowFixedPointResidual.TheIterationZeroCallSeedsThePassAndIterationOneDoesNotReseedIt`
+   -- pins Sec. 9.3's own two-call convention directly:
+   call with `iteration = 0` once, then `iteration = 1` twice at two
+   DIFFERENT `x`, and assert `window_pass_start_clock`/`window_start_value`
+   (exposed to the test the same way `window_member_state` already is,
+   through a test-only accessor or a white-box test in `src/runtime/`)
+   are identical across all three calls.
+4. `WindowFixedPointResidual.CommittingEvaluationRefreshesHistoryExactlyOnceNonCommittingDoesNotTouchIt`
+   -- pins the Sec. 9.2 table's own
+   `.history` row: several non-committing evaluations, then one committing
+   one; `st.history` must show exactly the committing call's own effect,
+   matching `run_region()`'s own post-loop refresh bit for bit.
+5. `WindowFixedPointResidual.GaussSeidelUnlaggedBlockIsExcludedFromX` --
+   builds a GaussSeidel two-member window with one unlagged direction, and
+   asserts `x`'s own length/offsets cover only the lagged block -- the
+   direct test of Sec. 9.1's own exclusion rule, which also proves
+   `E-RT-WINDOW-ACCEL`'s own gap (Sec. 9.1's opening citation) is not
+   silently reproduced in the Newton seam.
+6. `WindowFixedPointResidual.MutationRowsForEachUnrestoredStateCategory`
+   -- one test per Sec. 9.2 table row marked "YES": disable that row's own
+   restore and show a SPECIFIC, named test fails (`build-evidence/
+   mutations/runtime.toml`, new rows `window-newton-clock-not-restored`,
+   `window-newton-straddle-state-not-restored`, hand-proven per the
+   standing mutation discipline).
+
+**Brusselator comparison table** (extends `test/verification/brusselator_
+*_test.cpp`, Stage B's own addition): Picard/Aitken/Newton sweep (or
+Newton-step) counts and final `mean_u`/`mean_v` at the SAME defaults this
+session measured, plus the GaussSeidel case Sec. 9.6 proposes once its
+own CLI flag exists, with Newton's own quadratic rate measured the same
+way Sec. 8.3 measures it for dn_heat (`q_k` fit over the trailing triples
+of `||F||` still above the `1e-10 * ||F_0||` floor).
+
+**Files Stage B would touch**, if the lead approves this design:
+`src/runtime/iteration.cpp` (`check_region_supports_newton()`'s
+window-scoped refusal narrowed to multi-participant/externally-driven only;
+a new `run_region_newton_window()` sibling to `run_region_newton()`; the
+`x`-block selection of Sec. 9.1 inside a new `evaluate_window_region_
+residual()` sibling to `evaluate_region_residual()`), `src/runtime/
+runner_impl.hpp` (declarations for the above, plus whatever accessor Sec.
+9.7's white-box tests need), `src/linalg/comm_mpi.cpp` and `include/fuse/
+linalg/comm.hpp` (the `ParticipantSetReducer` of Sec. 9.4, if the lead
+wants the multi-rank hook built now rather than left for a later step --
+Sec. 9.8's own open question), `examples/brusselator/species_component.hpp`
+(the `ImplicitComponent` seam, Sec. 9.5 -- note this needs a WINDOW-aware
+residual/linearisation shape S7.1's own `ImplicitComponent` does not
+provide today, Sec. 9.8's own second open question), `examples/brusselator/
+species_core.hpp` (exposing `DiffusionSolver` through a const accessor for
+the preconditioner block), `examples/brusselator/main.cpp` (`--accel
+newton`, and the `--iteration-mode` flag Sec. 9.6 proposes),
+`test/runtime/window_fixed_point_residual_test.cpp` (new, Sec. 9.7),
+`test/verification/brusselator_species_core_decomposition_test.cpp` (one
+Newton case at 2 partitions, per the task's own brief), `build-evidence/
+mutations/{runtime,brusselator}.toml` (new rows), `docs/user/
+brusselator.md` (Newton results).
+
+### 9.8 Open questions for the lead
+
+1. **Newton's `x_0` on a window instance's first sweep** (Sec. 9.3): seed
+   it from `advance_window(iteration=0)`'s own predictor output (this
+   track's proposal -- no new code path in `advance_window()` itself,
+   only in the new residual-function wrapper around it) rather than adding
+   a second, caller-chosen-`x0` code path inside `advance_window()`
+   alongside the existing predictor. The alternative (a real second path)
+   would let Newton start from an arbitrary seed on the very first sweep,
+   at the cost of a second branch in already-dense, heavily-commented
+   code the Seam/Time-windows tracks fought hard to get right.
+2. **The `ParticipantSetReducer` of Sec. 9.4** is new code, not a
+   configuration choice between two existing `Reducer`s -- should Stage B
+   build it now (so the multi-rank lift truly is "flip the Reducer" when
+   it comes), or defer it and ship Stage B single-rank only (`R.
+   participants.size() <= 1`, mirroring `check_region_supports_newton()`'s
+   OWN existing restriction for an ordinary Newton region), leaving the
+   Reducer for the step that actually exercises 2-3 ranks on the host?
+   This track's recommendation is to defer it: nothing in Sec. 9.1-9.3's
+   design depends on it, and building a communication primitive with no
+   host-side test able to exercise it (this sandbox cannot run `mpiexec`,
+   per the standing rules) risks the SAME kind of unverified-until-the-
+   host-runs defect `KNOWN_ISSUES.md` D24 and D20 both describe.
+3. **S7.1's `ImplicitComponent` interface does not describe a window
+   member's own residual/linearisation** (Sec. 9.5): `evaluate_residual()`
+   is one call, at a frozen time level, for an ordinary region; a window
+   member's own residual is `n_sub` chained `advance()` calls. This design
+   does NOT propose extending `ImplicitComponent` itself (out of this
+   track's own file ownership, `fuse/runtime/component.hpp`) -- it
+   proposes that `species_component.hpp` builds its OWN `LinearizationToken`-
+   shaped object directly, outside the `Component::implicit()` query
+   entirely, read only by the window-Newton seam's own block-Jacobi
+   wiring (a narrower, example-local interface, not a library-wide one).
+   The lead may prefer the opposite: extend `ImplicitComponent` with a
+   window-aware residual method now, so a FUTURE window-Newton component
+   (not just the Brusselator's own species) gets the same seam S7.1 built
+   for the ordinary case. This track did not have evidence (a second
+   window-Newton use case) to justify that generalisation yet.
+4. **The GaussSeidel/stiff-parameter Newton test case** (Sec. 9.6) needs a
+   code change (an `--iteration-mode` CLI flag) this Stage does not make.
+   Confirm before Stage B whether adding that flag is in scope for this
+   step, or whether the Newton case should instead be a NEW, purpose-built
+   test fixture (smaller, hand-constructed, not the Brusselator example)
+   where a divergent Picard contraction factor can be set directly rather
+   than searched for.
+
+**RESOLVED (lead's go-ahead, 2026-10-11) -- see Sec. 9.9 for what each
+decision actually produced:**
+1. ACCEPTED as proposed: `x_0` seeds from `advance_window(iteration=0)`'s
+   own predictor output.
+2. DEFERRED: Stage B is single-rank only (`R.participants.size() <= 1`,
+   unchanged); the Reducer SEAM is built (`RegionRuntime::newton_reducer`)
+   so a later multi-rank step is a Reducer swap, not a re-plumb -- the
+   reducer's own cross-rank body is `KNOWN_ISSUES.md` D31, new.
+3. `species_component.hpp` builds its own `fuse::LinearizationToken`
+   directly on `UComponent`/`VComponent` (the library-wide `fuse::
+   LinearizationToken`, not a narrower example-local shape) -- NOT an
+   `ImplicitComponent` extension; `ImplicitComponent::evaluate_residual()`
+   on a window member is interpreted as computing `G` alone (this
+   member's own exported block from its own window of substeps), not
+   `x - G`, following `dn_component.hpp`'s own `DirichletSlab::
+   evaluate_residual()` precedent -- never called by this seam's own
+   runtime wiring either way (Sec. 9.9.3).
+4. No Picard-divergent case was found in CLI-reachable parameter space
+   (Stage A's own finding, Sec. 9.6); the `--iteration-mode` CLI flag WAS
+   added (in scope after all), and the Newton test case became "every
+   window converges where Aitken's own D17 instability does not"
+   (Sec. 9.9.4), not a Picard-divergent one.
+
+### 9.9 Stage B record (2026-10-11): what was built, and what was measured
+
+**Implementation.** `Runner::Impl::run_region_newton_window()`/
+`evaluate_window_region_residual()` (src/runtime/iteration.cpp, new,
+alongside the existing `run_region_newton()`/`evaluate_region_residual()`
+the ordinary seam already had) do exactly what Sec. 9.1-9.5 describe:
+`check_region_supports_newton()`'s window-scoped refusal narrowed to the
+two checks it shares with the ordinary seam (participant count,
+externally-driven members); the window-Newton interface vector built
+per Sec. 9.1's layout, GaussSeidel-excluded blocks never appearing in it;
+the Sec. 9.2 checkpoint table's save/restore bracket; the Sec. 9.3
+two-call (`iteration = 0` once, `1` thereafter) convention, driven
+synchronously (`Task::resume()`/`take_result()`, Sec. 9.3's own
+coroutine-constraint finding held); the Sec. 9.5 block preconditioner via
+a `fuse::LinearizationToken` on `UComponent`/`VComponent` directly
+(`apply_jacobian`/`apply_jacobian_transpose` refuse `E-NEWTON-NO-JACOBIAN-
+ACTION`, never called by this seam's own MFFD-based Jacobian action).
+`examples/brusselator/main.cpp` gained `--accel newton`, `--iteration-mode
+{jacobi,gauss-seidel}`, and `--no-block-jacobi`.
+
+**File list correction against Sec. 9.7's own prediction.** Two files
+needed touching beyond that list, for reasons only visible once the wiring
+was actually built: `examples/brusselator/brusselator_graph.hpp`
+(`add_window_coupling()` needed a trailing `NewtonConfig` parameter and
+the `requires_residual_capability`/`requires_linearization_capability`
+auto-trigger `IterationBuilder::newton()` already does for a graph built
+through that builder -- `add_window_coupling()` builds its
+`IterationRegionDecl` directly and has no builder to inherit the trigger
+from) and `include/fuse/runtime/runner.hpp`/`include/fuse/runtime/
+fixed_point_residual.hpp` (two new TEST/DIAGNOSTIC-ONLY public accessors,
+`Runner::window_region_fixed_point_residual()`/`debug_window_member_
+snapshots()`, mirroring `region_fixed_point_residual()`'s own S7.1
+precedent for the window seam -- Sec. 9.7's own test plan needed SOME way
+to drive `evaluate_window_region_residual()` from outside `Runner::Impl`,
+and no such door existed yet).
+
+**9.9.1 Convergence, measured against the real Brusselator.** At the
+example's own defaults (`dt_u=0.002, dt_v=0.003, window=0.02`, `--driver
+runner --accel newton`), every window instance converges:
+- `--end 1.0` (50 windows), Jacobi, WITH the block-Jacobi preconditioner:
+  50/50 converged (`NewtonStatus::ConvergedRelative`), 0 divergences. The
+  FIRST window (the hardest -- furthest from the limit cycle) needs 4
+  outer Newton iterations; by the last few windows (the trajectory
+  settled into its own oscillatory regime) that drops to 3, with the
+  per-step GMRES iteration count falling from ~70 (first window, last
+  Newton step) to 2-6 (late windows).
+- The SAME run with `--iteration-mode gauss-seidel`: 50/50 converged,
+  IDENTICAL final `mean_u`/`mean_v` (`0.668994004315`/`2.8189403867`, to
+  every printed digit) to the Jacobi run -- the physical answer does not
+  depend on which waveform-iteration mode reached it.
+- `--no-block-jacobi` (the `fuse::num::IdentityPreconditioner` path): also
+  50/50 converged, SAME final means, fewer outer iterations on the first
+  window (3, not 4) -- a real preconditioner changes the PATH to
+  convergence, never whether convergence happens, on this problem.
+- A longer run, `--end 11.5` (the example's own default `end`, 575
+  windows): cut short at 222 consecutive windows for runtime (each window
+  at `eta_min = 1e-6`, see 9.9.2, costs noticeably more GMRES work than at
+  the chosen default) -- 222/222 converged, 0 divergences, before the run
+  was interrupted. Not a claim about windows 223-575; a claim about the
+  222 actually observed.
+
+**9.9.2 A genuine numerical finding: `NewtonConfig::eta_min` needed a
+floor for this problem.** At `eta_min`'s own SNES-matching default
+(`0.0`), the FIRST window's Newton solve diverges:
+`DivergedLinearSolve` after 3 steps, `||F|| = 1.15e-5` (already ~9e-8
+relative to `||F_0|| = 125.2`) -- `FUSE_NEWTON_DEBUG=1` tracing (a new,
+permanent env-gated diagnostic, `src/runtime/iteration.cpp`, matching the
+codebase's own `FUSE_SCHEDULE_DEBUG`/`FUSE_TRANSPORT_DEBUG`/
+`FUSE_NODAL_DEBUG`/`FUSE_CONSERVATION_DEBUG` convention) shows the 4th
+step's own Eisenstat-Walker forcing term reaching `eta ~= 6.6e-9` --
+below the finite-difference noise floor the MFFD Jacobian action can
+actually supply when `F` itself composes MANY chained substeps (11 for U,
+8 for V) rather than one `G` evaluation. `eta_min = 1e-4` (two orders of
+magnitude above the observed stagnation point) removes the stall in
+EVERY window tried, at a small fraction of the GMRES cost `eta_min =
+1e-6` also removes it at (`examples/brusselator/main.cpp`'s own comment
+has the two measurements side by side). This is exactly the scenario
+`NewtonConfig::eta_min`'s own doc comment names as the reason the field
+exists, not a defect in this track's own wiring -- see that comment
+(`fuse/model/iteration.hpp`) and `main.cpp`'s own citation of it.
+
+**9.9.3 The `x` layout, measured exactly as Sec. 9.1 predicted.**
+`RegionRuntime::newton_n` reads `4864` under Jacobi at the example's own
+defaults -- the EXACT total Sec. 9.1 computed by hand (U-capacity-11 ×
+256 = 2816, "u2v"; V-capacity-8 × 256 = 2048, "v2u"). Under GaussSeidel,
+`newton_n` drops to `2048`: the "u2v" block (length 2816) is excluded,
+"v2u" (length 2048) remains -- confirmed directly (a debug dump of every
+`RegionBlock::channel_name`/`length`/`newton_offset`), not inferred from
+the total alone, closing the possibility that the WRONG block was
+excluded while the arithmetic happened to still add up.
+
+**9.9.4 The Newton test case: Aitken's own D17 instability, not a
+Picard-divergent one.** Stage A found no Picard-divergent case in
+CLI-reachable parameter space (Sec. 9.6); Stage B's own Newton run at the
+SAME defaults where `--accel aitken` reproduces `KNOWN_ISSUES.md` D17's
+instability (window index 2, `--driver window`) converges cleanly every
+window instead -- the comparison this track's test case actually is.
+
+**9.9.5 Tests added** (`test/runtime/window_fixed_point_residual_test.cpp`,
+new, 6 cases on a synthetic two-member linear-ODE window region -- NOT
+the Brusselator, so these stay fast and isolated from the Brusselator's
+own straddling/remap complexity): re-enterability (`F` twice at the same
+`x`, bit-identical), the Sec. 9.3 two-call convention (`window_pass_
+start_clock`/`window_start_value` identical across an `iteration = 0`
+call and two different-`x` `iteration = 1` calls), an interleaved extra
+probe not perturbing the real committed result, the committing-evaluation
+`.history` refresh happening exactly once, the GaussSeidel exclusion rule
+(by channel name, not just by count), and bit-for-bit agreement between
+two full Newton runs from the same inputs. `test/runtime/newton_region_
+test.cpp`'s own pre-existing `AWindowScopedRegionSelectingNewtonIsRefused
+AtSetup` -- which pinned the NOW-LIFTED blanket refusal -- is renamed and
+re-asserted as `AWindowScopedRegionWithNoConfiguredWindowMembersIsANoOp`
+(a window-scoped region with no real window members resolves `newton_n =
+0` and converges as a no-op, rather than either refusing or crashing).
+`test/verification/brusselator_species_core_decomposition_test.cpp`
+gained a 2-partition case for `apply_diffusion_preconditioner()`
+specifically (not just `step()`, already covered) --
+`TwoPartitionVDiffusionCoreApplyPreconditionerMatchesSingleRank`,
+max_abs_diff `2.168e-18`. `test/verification/brusselator_runner_test.cpp`
+gained `NewtonConvergesInAPinnedIterationCountWithTheBlockJacobiPrecondit
+ioner` (the pinning test `build-evidence/mutations/brusselator.toml`'s
+own `brusselator-preconditioner-solve-replaced-by-identity` row kills).
+Full tier-0 suite: 187/187 (186 + this track's own one new ctest entry),
+100% passing, including every pre-existing Picard/Aitken/IQN-ILS/
+LowFive/omp_identical case.
+
+**9.9.6 What Stage B did NOT verify.** Multi-rank (`KNOWN_ISSUES.md` D31,
+new) -- the `ParticipantSetReducer` is a comment, not code, and no test
+exercises more than one rank. The window_member_state `clock`/
+`straddle_*` restore (Sec. 9.2's table): mutating the `clock` restore
+specifically was tried against both the synthetic fixture and the real
+(straddling) Brusselator and did NOT change either's observed output --
+consistent with the table's own note that `clock` is "within THIS pass,
+discarded in favour of the cached `window_pass_start_clock`" for every
+sweep's own restart point, so a leaked trial value is overwritten by the
+next sweep's own fresh computation regardless; the restore is still
+correct defensive practice for the ONE place that DOES read it directly
+(`resolve_pending_window_straddles()`, the NEXT window instance), but
+proving that specific path needs a two-window-instance, Fixed-policy
+(genuinely straddling), post-commit-probe fixture this track did not
+build. Reported here rather than claimed via a fabricated mutation
+`result`.

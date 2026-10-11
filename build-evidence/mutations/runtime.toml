@@ -88,8 +88,70 @@ id = "newton-nonconvergence-not-reported"
 area = "runtime"
 describes = "run_region_newton()'s own non-convergence check is short-circuited to never fire (`if (false && !num::is_converged(nr.status))`), so exhausting the Newton iteration budget (or any other DivergedXxx status) falls straight into the `else` branch and is reported as converged -- the SAME class of silent-acceptance defect E-RT-NOCONVERGE exists to catch on the Picard path, now checked on the Newton one."
 file = "src/runtime/iteration.cpp"
-old = """  if (!num::is_converged(nr.status)) {"""
-new = """  if (false && !num::is_converged(nr.status)) {"""
+old = """  st.iterations = nr.iterations;
+
+  for (const num::NewtonIterationRecord& rec : nr.trace) {
+    st.residual_history.push_back(rec.norm_f);
+  }
+  st.residual_history.push_back(nr.final_residual_norm);
+
+  if (!num::is_converged(nr.status)) {"""
+new = """  st.iterations = nr.iterations;
+
+  for (const num::NewtonIterationRecord& rec : nr.trace) {
+    st.residual_history.push_back(rec.norm_f);
+  }
+  st.residual_history.push_back(nr.final_residual_norm);
+
+  if (false && !num::is_converged(nr.status)) {"""
 target = "fuse_runtime_newton_region_test"
 test = "runtime.newton_region"
 result = "Hand-proved 2026-10-10: 11 cases, all pass before; after mutation, 1 fails (NewtonRegion.ExhaustingTheNewtonIterationBudgetReportsNonConvergence -- run_period() returns success instead of E-RT-NOCONVERGE for a region whose NewtonConfig::max_nonlinear_iterations is 0), 10 pass. File restored and cmp-verified byte-identical; rebuilt and reran to confirm all 11 pass again."
+
+# The same reporting block exists on the WINDOW-scoped Newton path
+# (run_region_newton_window, added by the WindowNewton track after the row
+# above, which widened its anchor to stay unique). This anchor is the window
+# path's own history-loop spacing (no blank line before the for-loop).
+[[mutation]]
+id = "window-newton-nonconvergence-not-reported"
+area = "runtime"
+describes = "run_region_newton_window() ignores a non-converged NewtonStatus: the window is counted as converged and the run proceeds. Must be killed by a window Newton test that exhausts the iteration budget and requires it reported."
+file = "src/runtime/iteration.cpp"
+old = """  st.iterations = nr.iterations;
+  for (const num::NewtonIterationRecord& rec : nr.trace) {
+    st.residual_history.push_back(rec.norm_f);
+  }
+  st.residual_history.push_back(nr.final_residual_norm);
+
+  if (!num::is_converged(nr.status)) {"""
+new = """  st.iterations = nr.iterations;
+  for (const num::NewtonIterationRecord& rec : nr.trace) {
+    st.residual_history.push_back(rec.norm_f);
+  }
+  st.residual_history.push_back(nr.final_residual_norm);
+
+  if (false && !num::is_converged(nr.status)) {"""
+target = "fuse_runtime_window_fixed_point_residual_test"
+test = "runtime.window_fixed_point_residual"
+result = "UNPROVEN -- lead-added 2026-10-11 so the two sites stay distinct; no window test yet exhausts the Newton budget. Hand-proof and the test are owed before the next runtime mutation gate run."
+
+# S7.2 WindowNewton (newton-krylov.md Sec. 9.1, 9.7's own test plan): the
+# window-Newton interface vector's own GaussSeidel exclusion rule
+# (resolve_regions(), the `R.window_scoped` branch computing `RegionBlock::
+# newton_offset`/`RegionRuntime::newton_n`). Same hand-proof discipline:
+# backed up (md5 10e6bf78d89881f534abab62f52487bf), mutated, rebuilt
+# (`ninja fuse_runtime_window_fixed_point_residual_test`), run UNFILTERED,
+# restored, cmp-verified byte-identical, rebuilt and reran to confirm the
+# full count returns. Build directory: /tmp/winnewton/b0 (tier 0, this
+# track's own scratch build).
+
+[[mutation]]
+id = "window-newton-gauss-seidel-exclusion-dropped"
+area = "runtime"
+describes = "resolve_regions()'s own GaussSeidel-exclusion loop short-circuits `if (!lagged) continue;` to never skip (`if (false && !lagged) continue;`), so EVERY block -- including the unlagged channel GaussSeidel resolves deterministically within the sweep and Newton has no residual to solve for -- gets a real `newton_offset` and is folded into `RegionRuntime::newton_n`. The window-Newton interface vector `x` then carries a block that has no genuine degree of freedom, exactly the gap `E-RT-WINDOW-ACCEL`'s own GaussSeidel refusal (this same file) exists to prevent for every OTHER accelerator, now silently reproduced in the Newton seam specifically."
+file = "src/runtime/iteration.cpp"
+old = """          if (!lagged) continue;  // GaussSeidel's own unlagged transfer"""
+new = """          if (false && !lagged) continue;  // GaussSeidel's own unlagged transfer"""
+target = "fuse_runtime_window_fixed_point_residual_test"
+test = "runtime.window_fixed_point_residual"
+result = "Hand-proved 2026-10-11: 6 cases, all pass before; after mutation, 1 fails (WindowFixedPointResidual.GaussSeidelUnlaggedBlockIsExcludedFromX -- excluded_lengths.size() reads 0 instead of 1, i.e. the GaussSeidel region's own `n` grew to include the channel GaussSeidel already resolves deterministically), 5 pass. File restored and cmp-verified byte-identical; rebuilt and reran to confirm all 6 pass again."

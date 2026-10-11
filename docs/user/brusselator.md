@@ -252,6 +252,52 @@ machine, and a 2x/4x/8x ladder at that endpoint would cost tens of minutes per p
 already established at the shorter interval — a deliberate scope reduction, not a gap in the claim,
 since nothing about the discretisation changes between `t=0.1` and `t=11.5`.
 
+## Newton acceleration (S7.2 WindowNewton)
+
+`--accel newton` (via `--driver runner` only -- `--driver window` refuses
+it cleanly, `E-ACCEL-KIND`, since `WindowCoupler` has no Newton-Krylov
+path) solves the whole coupling window as one Newton-Krylov problem
+instead of a Picard/Aitken/IQN-ILS sweep, following `docs/dev/newton-
+krylov.md` Section 9's own design. `--iteration-mode gauss-seidel` and
+`--no-block-jacobi` (the per-species physics-based preconditioner, ON by
+default) are both available under every `--accel` value, not only
+`newton`. Measured on this build, `--driver runner --accel newton`:
+
+| Quantity | Value |
+|---|---:|
+| Windows converged, `--end 1.0` (50 windows), Jacobi, block-Jacobi preconditioner | 50/50, 0 divergences |
+| Windows converged, SAME run, `--iteration-mode gauss-seidel` | 50/50, 0 divergences |
+| Windows converged, SAME run, `--no-block-jacobi` | 50/50, 0 divergences |
+| final_mean_u / final_mean_v, all three of the above | 0.668994004315 / 2.8189403867 (identical) |
+| Outer Newton iterations, first window (block-Jacobi / identity) | 4 / 3 |
+| Outer Newton iterations, late windows (block-Jacobi) | 3 |
+| GMRES iterations, last Newton step, first window &rarr; late windows | ~70 &rarr; 2-6 |
+| Windows converged, `--end 11.5` (575 windows, the example's own default) | 222/222 observed before the run was cut short for runtime, 0 divergences |
+| `max_window_balance_error` / `global_balance_error`, `--end 1.0` | 1.158e-13 / 4.663e-12 |
+
+`NewtonConfig::eta_min` (the Eisenstat-Walker forcing term's own floor,
+`0.0` by default) is set to `1e-4` for this example -- at the SNES-
+matching default, the first window's Newton solve stalls
+(`DivergedLinearSolve`) once the forcing term tightens past the
+finite-difference Jacobian action's own noise floor, even though `||F||`
+has already dropped seven orders of magnitude; `main.cpp`'s own comment
+on the `NewtonConfig` construction has the full measurement (`eta`
+reaching `~6.6e-9` while `||F||/||F_0|| ~ 9e-8`) and the cost/accuracy
+tradeoff against the tighter `eta_min = 1e-6` (also removes the stall,
+at far more GMRES work per window). `docs/dev/newton-krylov.md` Section
+9.9.2 has the full account.
+
+The Newton test case is not a Picard-divergent one (no such case was
+found in CLI-reachable parameter space, Section 9.6 of the design doc) --
+it is the SAME defaults where `--accel aitken` reproduces `KNOWN_ISSUES.md`
+D17's own instability (window index 2, `--driver window`): Newton
+converges every window there instead.
+
+Single-rank only: `RegionRuntime::newton_reducer` routes every norm/inner
+product through a `fuse::linalg::Reducer`, but the reducer Newton's
+window seam constructs today is unconditionally the serial one -- a real
+cross-rank `ParticipantSetReducer` is `KNOWN_ISSUES.md` D31, open.
+
 ## `--check`
 
 Exits non-zero unless: every window converged; the final U and V fields are `>= -1e-12` everywhere;
@@ -273,9 +319,12 @@ cmake --preset tier0-release && cmake --build --preset tier0-release
 Outputs `u.csv`, `v.csv` (final fields, `time,x,y,value`, the Toy's own format) and
 `diagnostics.txt` (parameters and the measured residuals above, in the Toy's own key names) under
 `--out`. `--save-history` additionally writes `windows.csv` (`t0,t1,mean_u,mean_v,iterations` per
-window). `--accel none|aitken|iqn-ils` selects `fuse::WindowCouplerConfig::acceleration` (the Toy is
-unrelaxed Picard, its only option). `--driver window|runner` selects `fuse::WindowCoupler` (default)
-or `fuse::Runner` directly — both pass `--check` identically (see "Measured results"). `--no-forcing`,
+window). `--accel none|aitken|iqn-ils|newton` selects `fuse::WindowCouplerConfig::acceleration` (the Toy is
+unrelaxed Picard, its only option); `newton` is `--driver runner`-only (see "Newton acceleration"
+above). `--iteration-mode jacobi|gauss-seidel` and `--no-block-jacobi` (the per-species
+block-Jacobi preconditioner, default ON) apply under any `--accel` value. `--driver window|runner`
+selects `fuse::WindowCoupler` (default) or `fuse::Runner` directly — both pass `--check`
+identically for every `--accel` value `--driver window` supports (see "Measured results"). `--no-forcing`,
 `--tolerance`, `--max-iterations`, `--alpha` mirror the Toy's own flags of the same name.
 
 For the multi-executable path (tier 1, a Fortran compiler for V, host-verified for `mpmd` only):

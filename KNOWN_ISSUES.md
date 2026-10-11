@@ -3882,3 +3882,40 @@ this sandbox cannot start it (C1) — so the fix is unconfirmed until a host exe
 - `verification.brusselator.participants.accept.{3,5}` (Unit 2, pre-existing)
 - `parallel.window_runner_mpi.2` (step (e), new)
 - `parallel.window_runner_mpi.3` (step (e), new)
+
+### D31. Newton over a coupling window (S7.2 WindowNewton, `newton-krylov.md` Sec. 9) is single-rank only; the multi-rank `ParticipantSetReducer` is a comment, not code — DEFERRED 2026-10-11, host confirmation needed
+
+`Runner::Impl::run_region_newton_window()`/`evaluate_window_region_residual()` (src/runtime/iteration.cpp)
+implement Newton-Krylov over a WINDOW-scoped coupling region, reusing `check_region_supports_newton()`'s
+own `R.participants.size() > 1` refusal (`E-NEWTON-UNSUPPORTED-REGION`) unchanged from the ordinary
+(non-window) seam — a window-scoped Newton region with more than one cross-rank participant is refused
+at setup exactly as it always was, never reaching the new code at all. Every norm and inner product
+`fuse::num::solve()`'s own GMRES/line-search/forcing-term machinery computes over the window's own
+Newton interface vector is already routed through a `fuse::linalg::Reducer` held by the region
+(`RegionRuntime::newton_reducer`, `src/runtime/runner_impl.hpp`) rather than inlined as a local
+sum-of-squares — but the reducer `resolve_regions()` (`src/runtime/iteration.cpp`) actually constructs
+there is unconditionally `fuse::linalg::make_serial_reducer()`: a real cross-rank `ParticipantSetReducer`
+(summing a local norm/inner product across exactly `R.participants`, the SAME rank set `decide_window_
+convergence()`'s own existing cross-rank reduction for Picard's sweep loop already uses) is a comment on
+`RegionRuntime::newton_reducer`'s own declaration documenting the FUTURE contract, not an implementation —
+there is no code anywhere in this track that builds one, and no test exercises more than one rank.
+
+**Why deferred rather than built now:** the task's own lead decision (2026-10-11, Stage B go-ahead)
+scoped this track to single-rank only, explicitly asking for the Reducer SEAM (so a later multi-rank
+step is a reducer swap, not a re-plumb of every call site) without the reducer's own cross-rank body.
+Building `ParticipantSetReducer` honestly needs a real multi-rank host run to prove against — this
+sandbox cannot start MPI (C1, same constraint D5/D8/D14/D23 already name) — so writing it now would be
+exactly the same "implemented, never run under real MPI" category those issues already carry, for a
+genuinely new reduction rather than a variant of one already host-verified elsewhere.
+
+**What a host run must verify before this is closed:** a `ParticipantSetReducer` (new, `src/linalg/
+comm_mpi.cpp` + `include/fuse/linalg/comm.hpp`, the files `newton-krylov.md` Sec. 9.4/9.7 already name
+for this) that sums a local scalar across exactly one iteration region's own `R.participants` ranks (not
+the full `base_communicator`, the same "this region's own rank subset, not the whole run" scoping
+`decide_window_convergence()`'s existing reduction already gets right); `resolve_regions()` building one
+for a window-scoped Newton region instead of `make_serial_reducer()` unconditionally; and a new host
+test, `parallel.window_newton_mpi.{2,3}` (mirroring `parallel.window_runner_mpi.{2,3}`'s own shape, step
+(e) above, on a window region with `AccelKind::Newton` instead of Picard) comparing every window
+instance's final Newton iterate AND iteration/GMRES count against the single-process `Runner` on the
+identical graph — the SAME cross-rank-agreement property `window_runner_mpi_test.cpp` already proves for
+Picard, now for Newton's own reductions specifically.
