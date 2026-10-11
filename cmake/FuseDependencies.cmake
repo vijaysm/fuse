@@ -839,6 +839,27 @@ macro(fuse_resolve_dependencies)
         endif()
       endif()
     endforeach()
+    # Same gap, one level down: MOAB_LIBRARY_DIRS is MOAB's own config's
+    # idea of where its dependencies live, and it can just as easily omit
+    # one -- HDF5 here is pulled into libMOAB.so only transitively (through
+    # NetCDF), so MOAB_LIBRARY_DIRS never names HDF5_DIR/lib at all. That is
+    # harmless as long as libMOAB.so's own rpath lists it instead, but this
+    # project does not control that rpath, and a MOAB rebuilt against a
+    # different dependency tree can land with one missing (measured
+    # 2026-10-10: libMOAB.so.5's rpath carries only the MPI-stack spack
+    # paths, not NetCDF/PnetCDF/HDF5/TempestRemap/Zoltan at all, breaking
+    # every MOAB-linked binary with "libTempestRemap.so.0: cannot open
+    # shared object file" even though nothing in this repository had
+    # changed). Filled in the same way the include-dirs gap above is.
+    foreach(_pkg NETCDF PNETCDF HDF5 TEMPESTREMAP ZOLTAN)
+      set(_pkg_lib "${${_pkg}_DIR}/lib")
+      if(MOAB_USE_${_pkg} AND ${_pkg}_DIR AND IS_DIRECTORY "${_pkg_lib}")
+        list(FIND MOAB_LIBRARY_DIRS "${_pkg_lib}" _pkg_lib_idx)
+        if(_pkg_lib_idx EQUAL -1)
+          list(APPEND MOAB_LIBRARY_DIRS "${_pkg_lib}")
+        endif()
+      endif()
+    endforeach()
     if(MOAB_USE_TEMPESTREMAP)
       set(_fuse_tempest_reachable FALSE)
       foreach(_d IN LISTS MOAB_INCLUDE_DIRS)

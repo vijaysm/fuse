@@ -429,8 +429,34 @@ fuse_tests_gated_by(FUSE_ENABLE_MOAB_MPI parallel/remap_halo_mpi_test.cpp
   parallel/moab_placed_view_mpi_test.cpp)
 
 if(FUSE_ENABLE_MOAB)
+  # MOAB_LIBRARY_DIRS (cmake/FuseDependencies.cmake) is this project's own
+  # best record of where every one of MOAB's dependencies' shared libraries
+  # live, filled in from each MOAB_USE_<PKG>/<PKG>_DIR pair when MOAB's own
+  # config does not already list it. It is NOT enough to rely on a MOAB
+  # binary's rpath alone: this toolchain's gcc passes --as-needed on every
+  # link by default (`gcc -dumpspecs`), which drops a dependency library
+  # from a binary's own NEEDED list the moment nothing in THIS project's
+  # sources calls its symbols directly (true of every moab_mesh_test.cpp
+  # case, which never touches TempestRemap/NetCDF/PnetCDF/Zoltan directly) --
+  # so resolving it at runtime falls on libMOAB.so's OWN rpath instead,
+  # which is not this project's to guarantee complete. Measured 2026-10-10:
+  # a MOAB rebuilt against a different dependency tree landed with a rpath
+  # naming only its MPI-stack paths, breaking backend.moab_mesh and the
+  # abi.install_consumer_* tests with "libTempestRemap.so.0: cannot open
+  # shared object file" though nothing in this repository had changed.
+  # Prepending every one of MOAB_LIBRARY_DIRS to LD_LIBRARY_PATH at test run
+  # time (not baked into any one binary's own rpath, which --as-needed can
+  # still defeat) makes this independent of what libMOAB.so's own rpath
+  # does or does not list.
+  set(_fuse_moab_env_mods "")
+  foreach(_fuse_moab_libdir IN LISTS MOAB_LIBRARY_DIRS)
+    list(APPEND _fuse_moab_env_mods "LD_LIBRARY_PATH=path_list_prepend:${_fuse_moab_libdir}")
+  endforeach()
+
   fuse_add_gtest(backend moab_mesh THROWS LABELS moab)
+  set_tests_properties(backend.moab_mesh PROPERTIES ENVIRONMENT_MODIFICATION "${_fuse_moab_env_mods}")
   fuse_add_gtest(backend remap_halo THROWS LABELS moab)
+  set_tests_properties(backend.remap_halo PROPERTIES ENVIRONMENT_MODIFICATION "${_fuse_moab_env_mods}")
   # REVIEW.md R-41 (BT-F15): a real, non-planar, non-matching MOAB mesh, not
   # a generated box. MOAB installs a 3456-quad cubed sphere under
   # share/examples/fortran relative to its own include prefix; discovered
@@ -509,6 +535,10 @@ if(FUSE_ENABLE_MOAB)
         FUSE_SPHERE_ATM="${FUSE_SPHERE_ATM_FILE}"
         FUSE_SPHERE_OCN="${FUSE_SPHERE_OCN_FILE}")
     endif()
+    foreach(_fuse_moab_mpi_rank 1 2 3 4 5)
+      set_tests_properties(parallel.remap_halo_mpi.${_fuse_moab_mpi_rank} PROPERTIES
+        ENVIRONMENT_MODIFICATION "${_fuse_moab_env_mods}")
+    endforeach()
 
     # KNOWN_ISSUES D5, the MOAB half: MoabMeshBackend::set_placements /
     # placed_view under a REAL communicator of more than one rank. See
@@ -523,6 +553,10 @@ if(FUSE_ENABLE_MOAB)
       target_compile_definitions(fuse_parallel_moab_placed_view_mpi_test PRIVATE
         FUSE_SPHERE_ATM="${FUSE_SPHERE_ATM_FILE}")
     endif()
+    foreach(_fuse_moab_mpi_rank 1 2 3 4 5)
+      set_tests_properties(parallel.moab_placed_view_mpi.${_fuse_moab_mpi_rank} PROPERTIES
+        ENVIRONMENT_MODIFICATION "${_fuse_moab_env_mods}")
+    endforeach()
   endif()
 endif()
 
@@ -1270,6 +1304,10 @@ if(TARGET fuse-abi-fortran)
       LABELS "abi;fortran;install"
       RESOURCE_LOCK fuse_build_tree
       TIMEOUT 300)
+    if(_fuse_moab_env_mods)
+      set_tests_properties(abi.install_consumer_fortran PROPERTIES
+        ENVIRONMENT_MODIFICATION "${_fuse_moab_env_mods}")
+    endif()
   else()
     add_test(NAME abi.install_consumer_fortran
       COMMAND ${CMAKE_COMMAND} -P
@@ -1349,6 +1387,10 @@ set_tests_properties(abi.install_consumer_c PROPERTIES
   RESOURCE_LOCK fuse_build_tree  # same reason install.consumer_find_package uses it, above
   TIMEOUT 300
 )
+if(_fuse_moab_env_mods)
+  set_tests_properties(abi.install_consumer_c PROPERTIES
+    ENVIRONMENT_MODIFICATION "${_fuse_moab_env_mods}")
+endif()
 
 # ABI-COLLECTIVE-AGREEMENT: tier 1 only, absent (not skipped) in tier 0 for
 # the reason every other MPI-gated test in this file is.
