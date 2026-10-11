@@ -471,6 +471,31 @@ class Runner {
   [[nodiscard]] Result<FixedPointResidual> region_fixed_point_residual(
       std::size_t region_index, ComponentSet& components);
 
+  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.7's own test plan):
+  /// TEST/DIAGNOSTIC-ONLY, the window-scoped sibling of `region_fixed_
+  /// point_residual()` above -- see `WindowFixedPointResidual`'s own
+  /// comment (fuse/runtime/fixed_point_residual.hpp) for the shape and
+  /// `Runner::Impl::evaluate_window_region_residual()` (src/runtime/
+  /// runner_impl.hpp) for the save/restore contract `evaluate` carries.
+  /// No production caller: `run_region_newton_window()` reaches the same
+  /// function directly. Refuses the same way `region_fixed_point_
+  /// residual()` does for an out-of-range `region_index` or a `Runner`
+  /// not yet `initialize()`d; additionally refuses `E-RT-REGION` when
+  /// `region_index` does not name a WINDOW-scoped region (use `region_
+  /// fixed_point_residual()` for an ordinary one).
+  [[nodiscard]] Result<WindowFixedPointResidual> window_region_fixed_point_residual(
+      std::size_t region_index, ComponentSet& components);
+
+  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.7's own test plan):
+  /// TEST/DIAGNOSTIC-ONLY snapshot of every window member's own
+  /// checkpoint state for iteration region `region_index` -- see
+  /// `WindowMemberDebugSnapshot`'s own comment (fuse/runtime/fixed_
+  /// point_residual.hpp) for the fields and what they let a test pin.
+  /// One entry per `RegionRuntime::window_member_nodes`, in that order.
+  /// Refuses the same way `window_region_fixed_point_residual()` does.
+  [[nodiscard]] Result<std::vector<WindowMemberDebugSnapshot>>
+  debug_window_member_snapshots(std::size_t region_index) const;
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

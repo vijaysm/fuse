@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "fuse/base/rational.hpp"
 #include "fuse/base/result.hpp"
 
 namespace fuse {
@@ -59,6 +60,85 @@ struct FixedPointResidual {
   std::vector<std::size_t> offsets;
   std::vector<std::size_t> lengths;
   std::vector<std::string> channel_names;
+};
+
+/// S7.2 WindowNewton (newton-krylov.md Sec. 9.1-9.2, 9.7's own test plan):
+/// the window-scoped sibling of `FixedPointResidual`, letting
+/// `window_fixed_point_residual_test.cpp` exercise `Runner::Impl::
+/// evaluate_window_region_residual()` the same way `FixedPointResidual`
+/// lets S7.1's own test exercise the ordinary seam -- see
+/// `Runner::window_region_fixed_point_residual()` (fuse/runtime/
+/// runner.hpp) for how one is obtained. TEST/DIAGNOSTIC-ONLY: no
+/// production caller drives a window region this way (`run_region_
+/// newton_window()` calls `evaluate_window_region_residual()` directly).
+struct WindowFixedPointResidual {
+  /// `x`/`f_out` are `n` long, in the SAME (element,sample)-major,
+  /// GaussSeidel-excluded-blocks-never-appear-here layout Sec. 9.1
+  /// describes. `g_out`, when non-empty, additionally receives `G(x)`
+  /// (`evaluate_window_region_residual()`'s own `g_out`); pass an empty
+  /// span when only `F` is wanted. `iteration` is `advance_window()`'s
+  /// own parameter, forwarded verbatim -- `0` exactly once per window
+  /// instance (the predictor-seeding call, `x` ignored), `1` for every
+  /// other call; see `evaluate_window_region_residual()`'s own comment
+  /// for the full two-call convention and the `E-RT-WINDOW-SWEEP`
+  /// refusal a third value earns. `commit`, when true, makes this
+  /// window instance's own result real (the `.history` refresh) instead
+  /// of restoring every snapshot this call took.
+  std::function<Result<void>(int iteration, std::span<const double> x,
+                              std::span<double> f_out, std::span<double> g_out,
+                              bool commit)>
+      evaluate;
+
+  /// Length of `x`/`f_out` -- `RegionRuntime::newton_n`, the Newton-
+  /// included blocks only.
+  std::size_t n = 0;
+  std::vector<std::size_t> offsets;
+  std::vector<std::size_t> lengths;
+  std::vector<std::string> channel_names;
+
+  /// The GaussSeidel-excluded blocks (`RegionBlock::newton_offset ==
+  /// RegionBlock::kNotInNewtonVector`) -- never appear in `x`/`f_out`,
+  /// listed here so a test can confirm WHICH channel was excluded, not
+  /// only that the total length dropped by the right amount (Sec. 9.7's
+  /// own `GaussSeidelUnlaggedBlockIsExcludedFromX`).
+  std::vector<std::size_t> excluded_lengths;
+  std::vector<std::string> excluded_channel_names;
+};
+
+/// TEST/DIAGNOSTIC-ONLY (Sec. 9.7's own `TheIterationZeroCallSeedsThePass
+/// AndIterationOneDoesNotReseedIt` and the mutation rows for Sec. 9.2's
+/// table): one window member's own checkpoint state, the fields
+/// `evaluate_window_region_residual()`'s own save/restore bracket reads
+/// and writes -- `Runner::debug_window_member_snapshots()` (fuse/
+/// runtime/runner.hpp) returns one of these per `RegionRuntime::
+/// window_member_nodes`, in that order.
+struct WindowMemberDebugSnapshot {
+  /// This member's own `ComponentSet` slot (`WindowMemberConfig::
+  /// component_slot`) -- resolve to a name via `components.at(slot).
+  /// name()` using the SAME `ComponentSet` the region was initialized
+  /// with; there is no node-to-name map on the public side of this
+  /// seam otherwise.
+  std::size_t component_slot = 0;
+
+  /// `WindowMemberState::clock`/`straddle_pending`/`straddle_window_
+  /// start`/`straddle_window_end` (fuse/runtime/window_coupler.hpp) --
+  /// everything `evaluate_window_region_residual()`'s own save/restore
+  /// bracket touches for this member EXCEPT `history`/`last_window_
+  /// waveform` (neither copyable nor needed by Sec. 9.7's own tests).
+  Rational clock{0};
+  bool     straddle_pending = false;
+  Rational straddle_window_start{0};
+  Rational straddle_window_end{0};
+
+  /// `Runner::Impl::window_pass_start_clock`/`window_start_value` for
+  /// this member -- absent (both flags false, `pass_start_value` empty)
+  /// until this pass's own `iteration == 0` sweep writes them; THE SAME
+  /// value, bit for bit, on every later call within the SAME pass (Sec.
+  /// 9.3's own two-call convention) -- that invariant is what Sec. 9.7's
+  /// own test 3 pins directly.
+  bool                has_pass_start_clock = false;
+  Rational            pass_start_clock{0};
+  std::vector<double> pass_start_value;
 };
 
 }  // namespace fuse

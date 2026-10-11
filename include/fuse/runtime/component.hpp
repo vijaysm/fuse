@@ -134,13 +134,17 @@ class ImplicitComponent {
  public:
   virtual ~ImplicitComponent() = default;
 
-  /// This component's own contribution to the coupled residual at time
-  /// level `ctx.t_end`, given the interface values it `Requires` inside
-  /// the region (already remapped and time-interpolated by FUSE, exactly
-  /// as `advance()` would see them at the SAME `ctx`) in `interface_in`,
-  /// in the stacking order `fuse::FixedPointResidual`
-  /// (fuse/runtime/fixed_point_residual.hpp) assembles a region's blocks
-  /// in.
+  /// This component's own block of the fixed-point map, G_i(x): the values
+  /// it would `Provide` at time level `ctx.t_end` given the interface
+  /// values it `Requires` inside the region (already remapped and
+  /// time-interpolated by FUSE, exactly as `advance()` would see them at
+  /// the SAME `ctx`) in `interface_in`, in the stacking order
+  /// `fuse::FixedPointResidual` (fuse/runtime/fixed_point_residual.hpp)
+  /// assembles a region's blocks in. `residual_out` is G_i ALONE -- the
+  /// Runner forms the region's residual F(x) = x - G(x) itself, so a
+  /// component never subtracts `interface_in` here (dn_heat's
+  /// DirichletSlab/NeumannSlab and the Brusselator's species components
+  /// are the two implementations, and both return G_i).
   ///
   /// MUST NOT mutate any state `advance()` would mutate -- registered
   /// field storage, private state, anything `save_state()` would need to
@@ -163,6 +167,41 @@ class ImplicitComponent {
   ///
   /// Returning an error aborts the Newton step the same way an error from
   /// `advance()` aborts an explicit one; the coupler does not retry.
+  ///
+  /// WHAT "A FROZEN TIME LEVEL" MEANS FOR A WINDOW-SCOPED MEMBER (S7.2
+  /// WindowNewton, newton-krylov.md Sec. 9). The paragraph above
+  /// describes an ORDINARY (single-clock) region, where `ctx.t_end` is
+  /// one instant and `interface_in`/`residual_out` are each one field's
+  /// worth of plain values. `Runner::Impl::evaluate_window_region_
+  /// residual()` (src/runtime/iteration.cpp) -- the window-scoped
+  /// seam -- never calls this method at all; it reaches a window
+  /// member's own `G` through `advance_window()`'s own substep loop
+  /// directly, the same way the ORDINARY seam's `evaluate_region_
+  /// residual()` reaches an ordinary member's own `G` through `advance()`
+  /// directly rather than through this interface (see that function's
+  /// own class-level comment on `DirichletSlab`, examples/dn_heat/
+  /// dn_component.hpp: this method exists to satisfy the capability gate
+  /// HONESTLY, not to be the Newton solver's own call path). For a
+  /// window-scoped member that chooses to implement this method anyway
+  /// (as `examples/brusselator/species_component.hpp`'s `UComponent`/
+  /// `VComponent` do, to make `kCapabilityResidual` true for a real
+  /// reason), "a frozen time level" generalises to a FROZEN WINDOW:
+  /// `ctx.t_begin`/`ctx.t_end` span the WHOLE window `[T0, T1)`, not one
+  /// instant; `interface_in` is this member's own stacked, per-element,
+  /// per-sample import over that window (the SAME `(element, sample)`
+  /// layout `RegionBlock::window_export_capacity` documents, sample 0
+  /// the window-start value); and `residual_out` is this member's own
+  /// stacked EXPORT over the SAME window, in the identical layout --
+  /// i.e. this component's own `G` for the window, computed by running
+  /// its own substeps across `[T0, T1)` exactly as `advance_window()`
+  /// would, without advancing (mutating) anything -- never `x - G`, the
+  /// genuine residual, which only the Runner itself assembles, one level
+  /// up, by comparing this output against the interface vector's own
+  /// matching block (`evaluate_window_region_residual()`'s own `f_out =
+  /// x - g`). The purity contract above is UNCHANGED and, if anything,
+  /// harder to satisfy for a window member: every one of its own
+  /// substeps must run on a SAVED/RESTORED copy of its state, not the
+  /// live one `advance_window()` mutates.
   virtual Result<void> evaluate_residual(const StepContext& ctx,
                                          std::span<const double> interface_in,
                                          std::span<double> residual_out) = 0;

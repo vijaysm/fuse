@@ -57,12 +57,18 @@ Result<void> Runner::Impl::check_region_supports_newton(
   }
   const detail::RegionRuntime& R = regions[region_index];
 
-  if (R.window_scoped) {
-    return Failure{"E-NEWTON-UNSUPPORTED-REGION",
-                 "iteration region '" + R.name +
-                     "' is window-scoped; S7.1's fixed-point residual seam "
-                     "covers only an ordinary (non-window) region"};
-  }
+  // S7.2 WindowNewton: the blanket "window-scoped is always refused" rule
+  // this function used to apply here is GONE -- `evaluate_window_region_
+  // residual()` (src/runtime/iteration.cpp) is the window-scoped sibling
+  // this check now ALSO gates, sharing the two checks below with the
+  // ordinary seam (`evaluate_region_residual()`'s own ordinary-seam-only
+  // refusal, immediately below in that function, is where "window-scoped"
+  // is refused for THAT function specifically -- the ordinary seam's own
+  // ADVANCE/body machinery is genuinely wrong for a window region, never
+  // lifted). A window-scoped region's own `R.participants`/`R.tick_
+  // indices` are populated the identical way an ordinary region's are
+  // (`resolve_regions()`'s own single derivation, shared by both shapes),
+  // so the two checks below need no window-specific branch of their own.
   if (R.participants.size() > 1) {
     return Failure{"E-NEWTON-UNSUPPORTED-REGION",
                  "iteration region '" + R.name +
@@ -92,6 +98,24 @@ Result<void> Runner::Impl::evaluate_region_residual(
     return supported;
   }
   detail::RegionRuntime& R = regions[region_index];
+
+  // S7.2 WindowNewton: this function's own body (below) is the ORDINARY
+  // seam -- it advances `R.tick_indices` directly, once, over `R.enter..
+  // R.exit`, with no notion of a window's own multiple substeps, lagged-
+  // import predictor, or straddle bookkeeping. A window-scoped region
+  // needs `evaluate_window_region_residual()` (this file's own sibling,
+  // src/runtime/iteration.cpp) instead -- refused HERE, specifically,
+  // rather than folded into `check_region_supports_newton()` above
+  // (which now accepts a window-scoped region, since BOTH functions
+  // share its two general checks; only this function's own machinery is
+  // ordinary-only).
+  if (R.window_scoped) {
+    return Failure{"E-NEWTON-UNSUPPORTED-REGION",
+                 "iteration region '" + R.name +
+                     "' is window-scoped; evaluate_region_residual() is the "
+                     "ordinary (non-window) seam -- evaluate_window_region_"
+                     "residual() is the window-scoped one"};
+  }
 
   if (x.size() != R.n || f_out.size() != R.n) {
     return Failure{"E-RT-REGION",

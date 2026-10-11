@@ -19,6 +19,7 @@
 #include <Kokkos_Core.hpp>
 
 #include "fuse/ir/lowering.hpp"
+#include "fuse/linalg/comm.hpp"
 #include "fuse/num/accelerator.hpp"
 #include "fuse/num/space_kernels.hpp"
 #include "fuse/model/iteration.hpp"
@@ -414,6 +415,27 @@ struct RegionBlock {
   /// is -- `decide_window_convergence()`'s own `WindowBlockSample::
   /// owned` reads this, not `length`, for a window-scoped region.
   bool window_hosted = true;
+
+  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.1's own exclusion rule):
+  /// this block's own offset within the WINDOW-NEWTON interface vector
+  /// (`RegionRuntime::newton_n` long), or `kNotInNewtonVector` when this
+  /// block is excluded from it -- a `WaveformIteration::GaussSeidel`
+  /// window's own UNLAGGED transfer, which `WindowCoupler::accel_members`
+  /// (`provides_unlagged_channel()`, src/runtime/window_coupler.cpp)
+  /// excludes from acceleration for the identical reason (its own value
+  /// is resolved WITHIN the sweep it is fed from, so it carries no
+  /// residual of its own to accelerate or linearise). Computed once in
+  /// `resolve_regions()`, from whether this block's own `feed_arc` is a
+  /// member of `RegionRuntime::window_lagged_import_arcs` -- never
+  /// re-derived per Newton evaluation. DISTINCT from `offset` above,
+  /// which is this block's own position in the FULL Picard/accelerator
+  /// vector (`RegionRuntime::x_old`, length `n`) and is never restricted
+  /// this way -- `offset`/`length` must keep seeing exactly what
+  /// `advance_window()` wrote (this struct's own `window_export_capacity`
+  /// comment), which a Newton-only exclusion must not disturb.
+  static constexpr std::size_t kNotInNewtonVector =
+      static_cast<std::size_t>(-1);
+  std::size_t newton_offset = kNotInNewtonVector;
 };
 
 /// Everything one iteration region needs, resolved once in initialize().
@@ -531,6 +553,61 @@ struct RegionRuntime {
   /// region's components all sit on one rank, and run_region() computes its
   /// residual purely locally, exactly as it always has.
   std::vector<int> participants;
+
+  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.1): the length of the
+  /// WINDOW-NEWTON interface vector `run_region_newton_window()` builds
+  /// for THIS region -- the sum of `RegionBlock::length` over every block
+  /// whose own `newton_offset != RegionBlock::kNotInNewtonVector`. Equal
+  /// to `n` under `WaveformIteration::Jacobi` (every block lagged, none
+  /// excluded); strictly less under `GaussSeidel` (the unlagged
+  /// transfer's own block excluded). Meaningless (left at 0) for a
+  /// non-window region, which sizes its own Newton vector from `n`
+  /// directly (`run_region_newton()`'s own seed loop, unchanged).
+  std::size_t newton_n = 0;
+
+  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.4): the `fuse::linalg::
+  /// Reducer` every norm and inner product `run_region_newton_window()`'s
+  /// own `fuse::num::solve()` call computes goes through -- held HERE,
+  /// by the region, built ONCE in `resolve_regions()`, rather than
+  /// constructed fresh inside `run_region_newton_window()` the way
+  /// `run_region_newton()` (the ordinary seam) still does: the lead's
+  /// own ruling on this track's ONE open rank-agreement question is that
+  /// the single-rank code must already route every reduction through a
+  /// `Reducer` object the region owns, so that lifting rank agreement to
+  /// a real multi-rank region later is a REDUCER SWAP at this one
+  /// assignment, not a search for every call site that reduces a scalar
+  /// directly (`fuse::linalg::DistVector::dot()`/`norm2()` already read
+  /// through whichever `Reducer` the vector was constructed with --
+  /// `dist_vector.hpp` -- so nothing downstream of this field needs to
+  /// change at all).
+  ///
+  /// `fuse::linalg::make_serial_reducer()` today, UNCONDITIONALLY: Stage
+  /// B of this track is single-rank only (`check_region_supports_newton()`
+  /// still refuses `R.participants.size() > 1`, identically to the
+  /// ordinary Newton seam), so there is nothing to reduce across ranks
+  /// yet. THE CONTRACT THE FUTURE MULTI-RANK REDUCER MUST MEET, recorded
+  /// here rather than built (KNOWN_ISSUES.md D31 is the tracking item):
+  /// a `ParticipantSetReducer` constructed over `RegionRuntime::
+  /// participants` (NOT a real `MPI_Comm` -- `fuse::linalg::
+  /// make_mpi_reducer()`'s own contract reduces over an ENTIRE
+  /// communicator, and `participants` is in general a PROPER SUBSET of
+  /// the base communicator's own ranks, exactly the reason
+  /// `reduce_region_residuals()`/`gather_window_block_samples()`
+  /// (runner.cpp) address peers by POINT-TO-POINT send/recv over
+  /// `epoch_schedule()`'s own fixed schedule rather than call a true
+  /// `MPI_Allgather`/`MPI_Reduce` on a freshly-built sub-communicator --
+  /// `runner.cpp`'s own "WHY NOT A SUB-COMMUNICATOR" comment on
+  /// `reconcile_epoch()` gives the lifetime reason: `MPI_Comm_free` is
+  /// collective and ties a communicator's lifetime to the Runner's own,
+  /// which a per-region Reducer built fresh at `resolve_regions()` time
+  /// would inherit with no good place to release it). `sum()`/`max()`/
+  /// `allgather()` would therefore each be ONE non-blocking point-to-
+  /// point exchange over `participants`, in ascending rank-index order,
+  /// built on the SAME `fuse::tags`/`EpochSchedule` machinery those two
+  /// functions already prove correct -- a NEW class, not a call to an
+  /// existing factory, and not built in this stage: see KNOWN_ISSUES.md
+  /// D31 for the test that will verify it on the host once it exists.
+  std::shared_ptr<const linalg::Reducer> newton_reducer;
 };
 
 }  // namespace detail
@@ -1119,6 +1196,93 @@ struct Runner::Impl {
   /// sweep would.
   Result<void> run_region_newton(ComponentSet& components,
                                  detail::RegionRuntime& R);
+
+  /// S7.2 WindowNewton (newton-krylov.md Sec. 9): the window-scoped
+  /// sibling of `run_region_newton()` above -- called from `run_region()`
+  /// in place of the Picard sweep loop for a window-scoped region with
+  /// `RegionRuntime::newton` set, AFTER that function's own straddle
+  /// replay and per-pass checkpoint already ran (unlike the ordinary
+  /// seam, a window region's checkpoint is genuinely needed: Newton's
+  /// own verification-sweep commit is this window instance's real
+  /// advance, and the NEXT window instance's own straddle replay, if
+  /// any, restores to exactly this checkpoint). `enter`/`exit` are THIS
+  /// pass's own bounds (`run_region()`'s own parameters, read because a
+  /// window-scoped region's body range differs between window instances
+  /// within one period -- `run_region_newton()`'s own ordinary-region
+  /// version needs no such parameter because an ordinary region has
+  /// exactly one pass). See src/runtime/iteration.cpp for the full
+  /// account: seeds Newton's own `x_0` from `advance_window(iteration=0)`
+  /// 's own predictor output (newton-krylov.md Sec. 9.3's own open
+  /// question, decided), hands the whole solve to `fuse::num::solve()`
+  /// over `evaluate_window_region_residual()`, then one `commit = true`
+  /// evaluation at the converged iterate.
+  Result<void> run_region_newton_window(ComponentSet& components,
+                                        detail::RegionRuntime& R,
+                                        std::size_t enter, std::size_t exit);
+
+  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.1-9.2): the window-scoped
+  /// sibling of `evaluate_region_residual()` above. `x`/`f_out` are
+  /// `RegionRuntime::newton_n` long -- the GaussSeidel-excluded blocks
+  /// (`RegionBlock::newton_offset == RegionBlock::kNotInNewtonVector`)
+  /// never appear in either span. `iteration` is `advance_window()`'s
+  /// own parameter, forwarded verbatim: `0` exactly once per window
+  /// instance (the predictor-seeding call `run_region_newton_window()`
+  /// makes before `x_0` is known, where `x` is ignored -- see that
+  /// function's own comment), `1` for every other call (the Jacobian
+  /// action's own perturbed evaluations, every line-search trial, every
+  /// later Newton iterate, and the final committing evaluation) --
+  /// `advance_window()`'s own `first_sweep_of_pass`/`new_instance`
+  /// agreement check (`E-RT-WINDOW-SWEEP`) is what makes a THIRD value
+  /// here refuse rather than silently misbehave.
+  ///
+  /// `g_out`, when non-empty, additionally receives `G(x)` itself (this
+  /// window instance's own freshly-advanced export samples, for every
+  /// INCLUDED block, in the same layout as `x`/`f_out`) -- the one thing
+  /// the predictor-seeding call needs that an ordinary `F(x) = x - G(x)`
+  /// evaluation does not: there is no real `x_0` to seed `x` with at that
+  /// call (nothing has been delivered into `previous[]` for THIS window
+  /// instance yet, newton-krylov.md Sec. 9.3's own "one real gap"), so
+  /// `run_region_newton_window()` reads `G` directly rather than
+  /// recovering it from `F` and a placeholder `x`.
+  ///
+  /// Save/restore contract (newton-krylov.md Sec. 9.2's own table):
+  /// component state (`component_slots`), `R.carried_arcs`, every
+  /// block's own `feed_arc`/`value_arc` (ALL of `R.blocks`, not only the
+  /// Newton-included ones -- a GaussSeidel-excluded block's own value is
+  /// still resolved and delivered within the sweep this call runs), and
+  /// every window member's own `clock`/`straddle_pending`/
+  /// `straddle_window_start`/`straddle_window_end` (`window_member_state`,
+  /// keyed by `R.window_member_nodes`) are snapshotted before this call's
+  /// own body executes and restored after it UNLESS `commit` is true, in
+  /// which case the SAME post-loop `.history` refresh `run_region()`'s
+  /// own Picard path performs (iteration.cpp, after its k-loop exits) is
+  /// performed instead, exactly once. `window_pass_start_clock`/
+  /// `window_start_value` (the pass-scoped caches `advance_window()`
+  /// itself only ever writes at `iteration == 0`) and
+  /// `window_last_dst_step` (idempotent within one pass) are
+  /// DELIBERATELY NEVER touched here -- Sec. 9.2's own table names why.
+  Result<void> evaluate_window_region_residual(
+      ComponentSet& components, std::size_t region_index, std::size_t enter,
+      std::size_t exit, int iteration, std::span<const double> x,
+      std::span<double> f_out, std::span<double> g_out, bool commit = false);
+
+  /// Extracted from `run_region()`'s own post-Picard-loop body (src/
+  /// runtime/iteration.cpp) so `run_region_newton_window()`'s own
+  /// committing evaluation can call the IDENTICAL `st.history` refresh
+  /// -- see that extraction's own comment for why. No behaviour change
+  /// at the original call site.
+  void refresh_window_member_history(detail::RegionRuntime& R);
+
+  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.5): the `LinearizationToken*`
+  /// of the component that PROVIDES the window channel whose consumer-side
+  /// `window_import` arc is `feed_arc` -- `nullptr` if no such channel, or
+  /// the provider lacks a usable one (`kCapabilityLinearization` unset, or
+  /// `implicit()`/`linearization()` returns null). A member function (not
+  /// a free function) because `window_member_config`'s own declared type,
+  /// `WindowMemberConfig`, is a private nested type of `Runner::Impl` and
+  /// cannot be named from outside it.
+  [[nodiscard]] LinearizationToken* window_block_provider_token(
+      ComponentSet& components, std::uint32_t feed_arc);
 
   /// KNOWN_ISSUES.md D12. A coroutine (see src/runtime/resume.hpp):
   /// suspends via `co_await detail::ExternalSuspend{}`, reporting

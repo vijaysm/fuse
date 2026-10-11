@@ -10,6 +10,8 @@
 #include <utility>
 #include <vector>
 
+#include <fmt/format.h>
+
 #include "runner_impl.hpp"
 #include "fuse/linalg/comm.hpp"
 #include "fuse/linalg/dist_vector.hpp"
@@ -1357,9 +1359,21 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
     // for, which is a silently-wrong answer, not a scoped approximation --
     // so a GaussSeidel window rejects any accelerator but `AccelKind::None`
     // until R.blocks carries the same restriction.
+    //
+    // S7.2 WindowNewton: `AccelKind::Newton` is excluded from this check,
+    // not merely another case of it -- a Newton-selected region is not an
+    // `Accelerator` at all (this function's own very next `if`, below),
+    // and `run_region_newton_window()`'s own interface vector IS built
+    // with the GaussSeidel restriction this comment names (newton-krylov.
+    // md Sec. 9.1: `RegionBlock::newton_offset`, computed below from
+    // `R.window_lagged_import_arcs`, excludes exactly the unlagged
+    // transfer this refusal exists to protect against). Refusing Newton
+    // here too would block a combination this track's own design
+    // specifically lifted.
     if (R.window_scoped &&
         decl.window_scope->iteration == WaveformIteration::GaussSeidel &&
-        decl.acceleration.kind != AccelKind::None) {
+        decl.acceleration.kind != AccelKind::None &&
+        decl.acceleration.kind != AccelKind::Newton) {
       return Failure{
           "E-RT-WINDOW-ACCEL",
           "iteration region '" + R.name + "' is a WaveformIteration::"
@@ -1388,6 +1402,43 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
           check_region_supports_newton(components, ri);
       if (!supported.ok()) return supported;
       R.newton = true;
+
+      // S7.2 WindowNewton (newton-krylov.md Sec. 9.1): the window-Newton
+      // interface vector's own layout, computed ONCE here from `R.blocks`
+      // and `R.window_lagged_import_arcs` (both already final by this
+      // point in this function), never re-derived per evaluation. A
+      // non-window Newton region's own vector is `R.x_old`'s (`n` long,
+      // no exclusion -- `run_region_newton()`'s own seed loop reads
+      // `b.offset` directly, unchanged); `newton_offset`/`newton_n` are
+      // meaningful ONLY for `R.window_scoped`, left at their defaults
+      // (every block's own `newton_offset == RegionBlock::
+      // kNotInNewtonVector`, `R.newton_n == 0`) otherwise.
+      if (R.window_scoped) {
+        std::size_t running = 0;
+        for (detail::RegionBlock& b : R.blocks) {
+          const bool lagged =
+              std::find(R.window_lagged_import_arcs.begin(),
+                       R.window_lagged_import_arcs.end(),
+                       ArcId{b.feed_arc}) != R.window_lagged_import_arcs.end();
+          if (!lagged) continue;  // GaussSeidel's own unlagged transfer
+          b.newton_offset = running;
+          running += b.length;
+        }
+        R.newton_n = running;
+      }
+
+      // S7.2 WindowNewton (newton-krylov.md Sec. 9.4): held by the
+      // region so every norm/inner product `run_region_newton_window()`'s
+      // own `fuse::num::solve()` call computes goes through ONE place --
+      // `RegionRuntime::newton_reducer`'s own comment (runner_impl.hpp)
+      // has the full account of why this, rather than a reducer
+      // constructed fresh inside that function, is what makes a future
+      // multi-rank lift a reducer swap. `check_region_supports_newton()`
+      // above already refused `R.participants.size() > 1`, so this is
+      // unconditionally the serial reducer today -- never `make_mpi_
+      // reducer()`, which reduces over a whole communicator, not over
+      // `R.participants` (a possible proper subset of it).
+      R.newton_reducer = linalg::make_serial_reducer();
     } else {
       Result<std::unique_ptr<Accelerator>> acc =
           make_accelerator(decl.acceleration);
@@ -1811,23 +1862,480 @@ Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
 }
 
 // ---------------------------------------------------------------------------
+// S7.2 WindowNewton: Newton-Krylov over a coupling window (newton-krylov.md
+// Sec. 9, the design this track's own Stage B implements).
+// ---------------------------------------------------------------------------
+
+/// newton-krylov.md Sec. 9.1-9.2: `F(x) = x - G(x)` for a WINDOW-scoped
+/// region, `x`/`f_out` laid out per `RegionBlock::newton_offset` (the
+/// GaussSeidel-excluded blocks never appear in either span -- Sec. 9.1's
+/// own exclusion rule). `iteration` is `advance_window()`'s own
+/// parameter, forwarded verbatim (Sec. 9.3): `0` exactly once per window
+/// instance, from `run_region_newton_window()`'s own predictor-seeding
+/// call, where `x` is never delivered (nothing has been written into
+/// `previous[]` for THIS window instance yet, and `advance_window()`'s
+/// own predictor branch at `iteration == 0` does not read it regardless
+/// -- Sec. 9.3's own "one real gap", resolved by reading `g_out` instead
+/// of `x` there); `1` for every other call this track's own design
+/// settled on using a single non-zero constant for (the Jacobian
+/// action's own perturbed evaluations, every line-search trial, every
+/// later Newton iterate, and the final committing evaluation).
+Result<void> Runner::Impl::evaluate_window_region_residual(
+    ComponentSet& components, std::size_t region_index, std::size_t enter,
+    std::size_t exit, int iteration, std::span<const double> x,
+    std::span<double> f_out, std::span<double> g_out, bool commit) {
+  if (region_index >= regions.size()) {
+    return Failure{"E-RT-REGION",
+                 "region index " + std::to_string(region_index) +
+                     " is out of range (" + std::to_string(regions.size()) +
+                     " region(s))"};
+  }
+  detail::RegionRuntime& R = regions[region_index];
+
+  // This function's own ordinary-seam sibling (evaluate_region_residual(),
+  // src/runtime/fixed_point_residual.cpp) refuses a window-scoped region;
+  // this one refuses the opposite shape, for the identical reason -- its
+  // own body below reads `R.newton_offset`/drives `advance_window()`,
+  // neither of which an ordinary region's `RegionBlock`s carry.
+  if (!R.window_scoped) {
+    return Failure{"E-NEWTON-UNSUPPORTED-REGION",
+                 "iteration region '" + R.name + "' is not window-scoped; "
+                     "evaluate_window_region_residual() is the window-"
+                     "scoped seam -- evaluate_region_residual() is the "
+                     "ordinary one"};
+  }
+  if (const Result<void> supported =
+          check_region_supports_newton(components, region_index);
+      !supported.ok()) {
+    return supported;
+  }
+  if (x.size() != R.newton_n || f_out.size() != R.newton_n) {
+    return Failure{"E-RT-REGION",
+                 "iteration region '" + R.name + "' has a window-Newton "
+                     "interface vector of length " +
+                     std::to_string(R.newton_n) + "; got in.size()=" +
+                     std::to_string(x.size()) + ", out.size()=" +
+                     std::to_string(f_out.size())};
+  }
+  if (!g_out.empty() && g_out.size() != R.newton_n) {
+    return Failure{"E-RT-REGION",
+                 "iteration region '" + R.name + "'s own g_out must be "
+                     "empty or " + std::to_string(R.newton_n) +
+                     " long; got " + std::to_string(g_out.size())};
+  }
+
+  // --- save: component state, carried arcs, EVERY block's own feed/value
+  // arc (not only the Newton-included ones -- a GaussSeidel-excluded
+  // block is still resolved and delivered within this same sweep, newton-
+  // krylov.md Sec. 9.2's own table), and every window member's own
+  // clock/straddle bookkeeping this region owns --------------------------
+  for (const std::size_t slot : R.component_slots) {
+    const Result<void> s = components.at(slot).save_state();
+    if (!s.ok()) return s;
+  }
+  std::vector<std::vector<double>> carried_snapshot(R.carried_arcs.size());
+  for (std::size_t i = 0; i < R.carried_arcs.size(); ++i) {
+    const detail::Slot& s = slots[R.carried_arcs[i]];
+    if (s.data != nullptr) {
+      carried_snapshot[i].assign(s.data, s.data + s.total());
+    }
+  }
+  std::vector<std::vector<double>> feed_snapshot(R.blocks.size());
+  std::vector<std::vector<double>> value_snapshot(R.blocks.size());
+  for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
+    const detail::RegionBlock& b = R.blocks[bi];
+    const double* feed = slots[b.feed_arc].data;
+    if (feed != nullptr) feed_snapshot[bi].assign(feed, feed + b.length);
+    const double* value = slots[b.value_arc].data;
+    if (value != nullptr) value_snapshot[bi].assign(value, value + b.length);
+  }
+  struct SavedWindowMemberState {
+    Rational clock;
+    bool     straddle_pending = false;
+    Rational straddle_window_start;
+    Rational straddle_window_end;
+  };
+  std::unordered_map<std::uint32_t, SavedWindowMemberState> saved_wms;
+  for (const NodeId node : R.window_member_nodes) {
+    const detail::WindowMemberState& st = window_member_state[node.value()];
+    saved_wms[node.value()] = SavedWindowMemberState{
+        st.clock, st.straddle_pending, st.straddle_window_start,
+        st.straddle_window_end};
+  }
+
+  // --- deliver x into every Newton-included block's own lagged import
+  // shadow (`previous[]`, the SAME buffer advance_window() reads for a
+  // lagged import at iteration > 0 -- Sec. 9.3's own account of why this,
+  // not `slots[b.feed_arc]`, is the delivery target here). Skipped at
+  // iteration == 0: advance_window()'s own predictor branch does not
+  // read it there regardless (Sec. 9.3), and no caller of this function
+  // has a genuine x_0 to deliver yet at that call. -------------------------
+  if (iteration != 0) {
+    for (const detail::RegionBlock& b : R.blocks) {
+      if (b.newton_offset == detail::RegionBlock::kNotInNewtonVector) {
+        continue;
+      }
+      std::vector<double>& shadow = previous[b.feed_arc];
+      if (shadow.size() != b.length) shadow.assign(b.length, 0.0);
+      num::copy(x.data() + b.newton_offset, shadow.data(), b.length);
+    }
+  }
+
+  // --- run the window body: WindowAdvance drives advance_window()
+  // synchronously (check_region_supports_newton() already refused every
+  // externally driven member, so the coroutine it returns always runs to
+  // completion on this one .resume() call -- src/runtime/resume.hpp's own
+  // Task<T>::resume()); everything else is the same execute() every
+  // ordinary instruction already goes through. ---------------------------
+  const std::vector<Instruction>& stream = plan.instructions();
+  Result<void> body_err = Result<void>::success();
+  for (std::size_t i = enter; i <= exit; ++i) {
+    if (stream[i].kind == OpKind::WindowAdvance) {
+      detail::Task<Result<void>> task =
+          advance_window(components, stream[i], resolved[i], iteration);
+      const bool finished = task.resume();
+      if (!finished) {
+        body_err = Failure{
+            "E-RT-WINDOW-EXTERNAL",
+            "iteration region '" + R.name + "': a window member suspended "
+                "for an external caller inside evaluate_window_region_"
+                "residual(); check_region_supports_newton() should have "
+                "refused this region before this point"};
+        break;
+      }
+      body_err = task.take_result();
+    } else {
+      body_err = execute(stream[i], resolved[i]);
+    }
+    if (!body_err.ok()) break;
+  }
+
+  // --- F(x) = x - G(x), and G(x) itself when asked, read before any
+  // restore below undoes it -------------------------------------------
+  if (body_err.ok()) {
+    for (const detail::RegionBlock& b : R.blocks) {
+      if (b.newton_offset == detail::RegionBlock::kNotInNewtonVector) {
+        continue;
+      }
+      const double* g = slots[b.value_arc].data;
+      for (std::size_t j = 0; j < b.length; ++j) {
+        f_out[b.newton_offset + j] = x[b.newton_offset + j] - g[j];
+        if (!g_out.empty()) g_out[b.newton_offset + j] = g[j];
+      }
+    }
+  }
+
+  // --- restore everything above, UNLESS this is the success-path commit
+  // -- in which case run `run_region()`'s own post-loop `.history`
+  // refresh instead, making this window instance's converged iterate the
+  // region's real, persisted state exactly as the ordinary seam's
+  // verification sweep does. A FAILURE still restores regardless of
+  // `commit`: a partial advance is never something a caller asked to
+  // keep (evaluate_region_residual()'s own identical rule). ---------------
+  const bool skip_restore = commit && body_err.ok();
+  Result<void> restore_err = Result<void>::success();
+  if (skip_restore) {
+    refresh_window_member_history(R);
+  } else {
+    for (const std::size_t slot : R.component_slots) {
+      const Result<void> rs = components.at(slot).restore_state();
+      if (!rs.ok() && restore_err.ok()) restore_err = rs;
+    }
+    for (std::size_t i = 0; i < R.carried_arcs.size(); ++i) {
+      detail::Slot& s = slots[R.carried_arcs[i]];
+      if (s.data != nullptr && !carried_snapshot[i].empty()) {
+        num::copy(carried_snapshot[i].data(), s.data, carried_snapshot[i].size());
+      }
+    }
+    for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
+      const detail::RegionBlock& b = R.blocks[bi];
+      if (!feed_snapshot[bi].empty()) {
+        num::copy(feed_snapshot[bi].data(), slots[b.feed_arc].data, b.length);
+      }
+      if (!value_snapshot[bi].empty()) {
+        num::copy(value_snapshot[bi].data(), slots[b.value_arc].data, b.length);
+      }
+    }
+    for (const NodeId node : R.window_member_nodes) {
+      const auto it = saved_wms.find(node.value());
+      if (it == saved_wms.end()) continue;
+      detail::WindowMemberState& st = window_member_state[node.value()];
+      st.clock = it->second.clock;
+      st.straddle_pending = it->second.straddle_pending;
+      st.straddle_window_start = it->second.straddle_window_start;
+      st.straddle_window_end = it->second.straddle_window_end;
+    }
+  }
+
+  if (!body_err.ok()) return body_err;
+  return restore_err;
+}
+
+/// S7.2 WindowNewton (newton-krylov.md Sec. 9.5): one species' own
+/// physics-based block preconditioner, PER INCLUDED NEWTON BLOCK -- see
+/// `species_component.hpp`'s own `LinearizationToken` for why `rows() ==
+/// cols()`, both equal to the providing species' own exported block
+/// length, is the deliberate, documented departure from `apply_jacobian`'s
+/// own (unused here) rows=export/cols=import convention. A member of
+/// `Runner::Impl` (not a free function) specifically so it can read
+/// `window_member_config` without naming `Runner::Impl` from outside it
+/// -- `Impl` is a private nested type of `Runner` (`include/fuse/runtime/
+/// runner.hpp`), so a qualified `Runner::Impl::WindowMemberConfig` in a
+/// free function's own signature is an access violation even with the
+/// full definition visible via `runner_impl.hpp`.
+LinearizationToken* Runner::Impl::window_block_provider_token(
+    ComponentSet& components, std::uint32_t feed_arc) {
+  for (const auto& [node, cfg] : window_member_config) {
+    if (!cfg.window_import.valid() || cfg.window_import.value() != feed_arc) {
+      continue;
+    }
+    Component& provider = components.at(cfg.provider_component_slot);
+    if ((provider.capabilities() & kCapabilityLinearization) == 0) {
+      return nullptr;
+    }
+    ImplicitComponent* ic = provider.implicit();
+    return ic == nullptr ? nullptr : ic->linearization();
+  }
+  return nullptr;
+}
+
+/// S7.2 WindowNewton (newton-krylov.md Sec. 9): the window-scoped sibling
+/// of `run_region_newton()`. See this function's own declaration
+/// (runner_impl.hpp) and the design doc's Sec. 9.3/9.4/9.5 for the full
+/// account of the three things that differ from the ordinary seam: the
+/// `iteration = 0` predictor-seeding call that produces `x_0` (Sec. 9.3),
+/// the `Reducer` the region itself holds rather than one built fresh here
+/// (Sec. 9.4), and the per-species block-Jacobi preconditioner built from
+/// `fuse::LinearizationToken::apply_preconditioner()` when the graph asks
+/// for one (Sec. 9.5).
+Result<void> Runner::Impl::run_region_newton_window(
+    ComponentSet& components, detail::RegionRuntime& R, std::size_t enter,
+    std::size_t exit) {
+  IterationStats& st = region_stats[R.index];
+  st.iterations = 0;
+  st.converged = false;
+  st.residual_history.clear();
+
+  const IterationRegionDecl& decl = graph.iteration_region(
+      RegionIdx{static_cast<std::uint32_t>(R.index)});
+
+  if (std::getenv("FUSE_NEWTON_DEBUG") != nullptr) {
+    fmt::print(stderr, "[newton-debug] region={} newton_n={}\n", R.name,
+              R.newton_n);
+    for (const detail::RegionBlock& b : R.blocks) {
+      fmt::print(stderr, "[newton-debug]   block channel={} length={} newton_offset={}\n",
+                b.channel_name, b.length,
+                b.newton_offset == detail::RegionBlock::kNotInNewtonVector
+                    ? std::string("EXCLUDED")
+                    : std::to_string(b.newton_offset));
+    }
+  }
+
+  const std::size_t region_index = R.index;
+  ComponentSet* comps = &components;
+  const num::ResidualFn f = [this, region_index, comps, enter, exit](
+                                linalg::DistVector& in, linalg::DistVector& out) {
+    return evaluate_window_region_residual(
+        *comps, region_index, enter, exit, /*iteration=*/1,
+        std::span<const double>(in.data(), in.owned_size()),
+        std::span<double>(out.data(), out.owned_size()), std::span<double>(),
+        /*commit=*/false);
+  };
+
+  // newton-krylov.md Sec. 9.3: the predictor-seeding call, EXACTLY once,
+  // `iteration = 0`. `x_seed_unused` is never delivered (the function's
+  // own comment on why); `g_out` receives the predictor's own output
+  // directly, which becomes Newton's own `x_0`.
+  std::vector<double> x0(R.newton_n, 0.0);
+  {
+    std::vector<double> x_seed_unused(R.newton_n, 0.0);
+    std::vector<double> f_seed_unused(R.newton_n, 0.0);
+    const Result<void> seed_r = evaluate_window_region_residual(
+        components, region_index, enter, exit, /*iteration=*/0,
+        std::span<const double>(x_seed_unused.data(), x_seed_unused.size()),
+        std::span<double>(f_seed_unused.data(), f_seed_unused.size()),
+        std::span<double>(x0.data(), x0.size()), /*commit=*/false);
+    if (!seed_r.ok()) return seed_r.error();
+  }
+
+  const auto exchanger = linalg::make_serial_exchanger();
+  linalg::DistVector x(R.newton_n, exchanger, R.newton_reducer);
+  num::copy(x0.data(), x.data(), R.newton_n);
+
+  const num::NewtonKrylovOptions opt =
+      newton_options_from_config(decl.newton_config);
+
+  // newton-krylov.md Sec. 9.5: the block preconditioner, built only when
+  // the graph asks for one AND every included block's own providing
+  // component actually offers a usable token -- `verify_newton_
+  // capability_support()` (resolve_regions(), called when `decl.newton_
+  // config.use_block_jacobi_preconditioner` set `requires_linearization_
+  // capability`) already refused this region at setup if any checkpointed
+  // component lacked `kCapabilityLinearization`, so `tok == nullptr`
+  // below is unreachable in practice when that flag is set -- checked
+  // anyway, not trusted, the same posture the capability bit itself is
+  // read with everywhere else.
+  std::vector<num::PreconditionerBlock> precond_blocks;
+  bool precond_ok = decl.newton_config.use_block_jacobi_preconditioner;
+  if (precond_ok) {
+    for (const detail::RegionBlock& b : R.blocks) {
+      if (b.newton_offset == detail::RegionBlock::kNotInNewtonVector) {
+        continue;
+      }
+      LinearizationToken* tok = window_block_provider_token(components, b.feed_arc);
+      if (tok == nullptr) {
+        precond_ok = false;
+        break;
+      }
+      num::PreconditionerBlock pb;
+      pb.offset = b.newton_offset;
+      pb.length = b.length;
+      pb.apply = [tok](std::span<const double> r, std::span<double> z) {
+        return tok->apply_preconditioner(r, z);
+      };
+      precond_blocks.push_back(std::move(pb));
+    }
+  }
+  std::optional<num::BlockJacobiPreconditioner> bjp;
+  if (precond_ok) {
+    Result<num::BlockJacobiPreconditioner> built =
+        num::BlockJacobiPreconditioner::from_blocks(
+            std::move(precond_blocks), R.newton_n);
+    if (!built.ok()) return built.error();
+    bjp.emplace(std::move(built.value()));
+  }
+  const num::PreconditionerApplyFn precond_apply =
+      bjp.has_value()
+          ? num::PreconditionerApplyFn(
+                [&bjp](linalg::DistVector& r, linalg::DistVector& z) {
+                  return bjp->apply(r, z);
+                })
+          : nullptr;
+  // newton-krylov.md Sec. 9.5's own per-sample solve needs no refresh --
+  // it is a FIXED operator (the species' own already-factored diffusion
+  // system, independent of the Newton iterate), so there is nothing a
+  // `preconditioner_lag` rebuild would ever change.
+  const num::RefreshPreconditionerFn refresh_precond = nullptr;
+
+  const Result<num::NewtonResult> solved =
+      num::solve(f, x, precond_apply, refresh_precond, opt);
+  if (!solved.ok()) return solved.error();
+  const num::NewtonResult& nr = solved.value();
+
+  if (std::getenv("FUSE_NEWTON_DEBUG") != nullptr) {
+    for (const num::NewtonIterationRecord& rec : nr.trace) {
+      fmt::print(stderr,
+                "[newton-debug] it={} norm_f={:.6e} eta={:.6e} "
+                "gmres_it={} gmres_res={:.6e} ls_lambda={:.6e} "
+                "precond_refreshed={} mffd_evals={}\n",
+                rec.iteration, rec.norm_f, rec.eta, rec.gmres_iterations,
+                rec.gmres_residual_norm, rec.line_search_lambda,
+                rec.preconditioner_refreshed ? 1 : 0, rec.mffd_steps.size());
+    }
+    fmt::print(stderr, "[newton-debug] status={} final={:.6e} initial={:.6e}\n",
+              num::to_cstring(nr.status), nr.final_residual_norm,
+              nr.initial_residual_norm);
+  }
+
+  st.iterations = nr.iterations;
+  for (const num::NewtonIterationRecord& rec : nr.trace) {
+    st.residual_history.push_back(rec.norm_f);
+  }
+  st.residual_history.push_back(nr.final_residual_norm);
+
+  if (!num::is_converged(nr.status)) {
+    ++stats.windows_not_converged;
+    if (config.abort_on_nonconvergence) {
+      return Failure{
+          "E-RT-NOCONVERGE",
+          "iteration region '" + R.name + "' did not converge by Newton's "
+              "own test in period " + std::to_string(period_index) +
+              ": " + std::string(num::to_cstring(nr.status)) +
+              " after " + std::to_string(nr.iterations) +
+              " Newton iteration(s), ||F|| = " +
+              std::to_string(nr.final_residual_norm) +
+              " (||F_0|| = " + std::to_string(nr.initial_residual_norm) +
+              "). The values left behind are Newton's own last iterate, "
+              "not a converged solution"};
+    }
+  } else {
+    st.converged = true;
+  }
+
+  // The verification sweep: one COMMITTING evaluation at Newton's own
+  // final iterate, making it this window instance's real, persisted
+  // state (the `.history` refresh included -- see `evaluate_window_
+  // region_residual()`'s own `skip_restore` branch) rather than one more
+  // side-effect-free probe.
+  std::vector<double> f_commit(R.newton_n, 0.0);
+  const Result<void> commit_r = evaluate_window_region_residual(
+      components, region_index, enter, exit, /*iteration=*/1,
+      std::span<const double>(x.data(), x.owned_size()),
+      std::span<double>(f_commit.data(), f_commit.size()), std::span<double>(),
+      /*commit=*/true);
+  if (!commit_r.ok()) return commit_r;
+
+  for (std::size_t mi = 0; mi < R.measure_block.size(); ++mi) {
+    const std::size_t bi = R.measure_block[mi];
+    const detail::RegionBlock& b = R.blocks[bi];
+    if (b.newton_offset == detail::RegionBlock::kNotInNewtonVector) {
+      // A convergence measure naming a GaussSeidel-excluded (unlagged)
+      // channel has no residual of its own to report by construction --
+      // its value is resolved exactly, within the sweep, every time
+      // (this file's own E-RT-WINDOW-ACCEL comment). Defensive, not
+      // reached by any graph this track's own tests build.
+      R.residual_norms[mi] = 0.0;
+      R.reference_norms[mi] = 0.0;
+      continue;
+    }
+    double block_total = 0.0;
+    for (std::size_t j = 0; j < b.length; ++j) {
+      block_total += f_commit[b.newton_offset + j] * f_commit[b.newton_offset + j];
+    }
+    R.residual_norms[mi] = std::sqrt(block_total);
+    double value_total = 0.0;
+    for (std::size_t j = 0; j < b.length; ++j) {
+      const double v = x.data()[b.newton_offset + j];
+      value_total += v * v;
+    }
+    R.reference_norms[mi] =
+        decl.convergence.measures()[mi].kind == MeasureKind::ResidualRelative
+            ? nr.initial_residual_norm
+            : std::sqrt(value_total);
+  }
+
+  ++stats.total_iterations;
+  return Result<void>::success();
+}
+
+// ---------------------------------------------------------------------------
 // The sweep loop
 // ---------------------------------------------------------------------------
 
 detail::Task<Result<void>> Runner::Impl::run_region(
     ComponentSet& components, detail::RegionRuntime& R, std::size_t enter,
     std::size_t exit) {
-  // S7.2: a Newton-selected region bypasses every line below -- none of
-  // it applies (there is no accelerator to R.accel->reset(), and the
-  // Picard sweep loop's own checkpoint/deliver/re-advance cycle is not
-  // how a Newton solve makes progress; see run_region_newton()'s own
-  // comment, this file's own sibling, for why). `enter`/`exit` are not
-  // read here either: run_region_newton() reaches the region's body
-  // through `Runner::Impl::evaluate_region_residual()` (src/runtime/
-  // fixed_point_residual.cpp, called directly, not through the public
-  // `Runner::region_fixed_point_residual()` wrapper), which reads
-  // `R.enter`/`R.exit` itself.
-  if (R.newton) {
+  // S7.2: a Newton-selected ORDINARY (non-window) region bypasses every
+  // line below -- none of it applies (there is no accelerator to R.
+  // accel->reset(), and the Picard sweep loop's own checkpoint/deliver/
+  // re-advance cycle is not how a Newton solve makes progress; see
+  // run_region_newton()'s own comment, this file's own sibling, for
+  // why). `enter`/`exit` are not read here either: run_region_newton()
+  // reaches the region's body through `Runner::Impl::evaluate_region_
+  // residual()` (src/runtime/fixed_point_residual.cpp, called directly,
+  // not through the public `Runner::region_fixed_point_residual()`
+  // wrapper), which reads `R.enter`/`R.exit` itself.
+  //
+  // S7.2 WindowNewton: a window-scoped Newton region does NOT bypass
+  // everything below -- unlike the ordinary case, it genuinely needs
+  // the straddle replay and per-pass checkpoint just below (this
+  // window instance's own verification-sweep commit IS this pass's
+  // real advance, and the NEXT instance's own straddle replay, if any,
+  // restores to exactly this checkpoint, the same way a Picard pass's
+  // own commit does) -- so its own dispatch is deferred to AFTER that
+  // block, not here. `R.newton && R.window_scoped` is excluded from
+  // this early return for exactly that reason.
+  if (R.newton && !R.window_scoped) {
     co_return run_region_newton(components, R);
   }
 
@@ -1847,7 +2355,13 @@ detail::Task<Result<void>> Runner::Impl::run_region(
 
   const std::vector<Instruction>& stream = plan.instructions();
 
-  R.accel->reset();
+  // S7.2 WindowNewton: `R.accel` stays null for a Newton-selected region
+  // (resolve_regions()'s own comment on the point: "make_accelerator()
+  // is never called for one") -- skipped here for exactly the reason
+  // the ordinary seam's own early return above skips it entirely; a
+  // window-scoped Newton region reaches THIS line (it did not take that
+  // early return) but must not dereference a null `R.accel` either.
+  if (!R.newton) R.accel->reset();
 
   // Time windows track: a window-scoped region's own checkpoint happens
   // HERE, once per PASS (once per window instance) -- checkpoint_regions()
@@ -1883,6 +2397,18 @@ detail::Task<Result<void>> Runner::Impl::run_region(
         num::copy(s.data, R.verify_save[v].data(), R.verify_save[v].size());
       }
     }
+  }
+
+  // S7.2 WindowNewton: the dispatch this function's own top comment
+  // deferred -- NOW, after the straddle replay and this window
+  // instance's own checkpoint have run, exactly like the Picard path
+  // below gets them, but BEFORE the Picard-only `y_0` seed and sweep
+  // loop that follow, neither of which apply to a Newton-selected
+  // region. `R.window_scoped` is implied true here (the only way to
+  // reach this point with `R.newton` set -- the early return above
+  // already took every ordinary Newton region out).
+  if (R.newton) {
+    co_return run_region_newton_window(components, R, enter, exit);
   }
 
   // y_0: what the components were ACTUALLY advanced with. Reading the Sink
@@ -2507,51 +3033,158 @@ detail::Task<Result<void>> Runner::Impl::run_region(
   // that read cannot race a provider that has not run yet -- unlike
   // inside advance_window() itself, where dispatch order within the
   // SAME sweep leaves no such guarantee.
-  if (R.window_scoped) {
-    for (auto& [node, cfg] : window_member_config) {
-      if (cfg.region_index != R.index || !cfg.window_import.valid() ||
-          cfg.required == nullptr) {
-        continue;
-      }
-      const auto dst_it = window_last_dst_step.find(node);
-      if (dst_it == window_last_dst_step.end()) continue;
-      const Rational this_T0 = Rational(dst_it->second) * cfg.window_length;
-      const Rational this_T1 = this_T0 + cfg.window_length;
-      // `window_sample_times()`/`window_sample_shift()` (fuse/model/
-      // coupling_graph.hpp): the SAME graph-only reconstruction
-      // advance_window() uses for its own import waveform (this
-      // function's own top comment) -- the provider's own buffer
-      // index that holds its value AT `this_T1` is the last entry of
-      // that list, shifted down by one slot whenever an earlier
-      // window's own straddle carried the provider's real clock past
-      // `this_T0` before this window's own sweep 0 ever ran.
-      const std::size_t sample_count =
-          window_sample_times(cfg.provider_interval, cfg.provider_policy,
-                              Rational{0}, cfg.window_length,
-                              dst_it->second)
-              .size();
-      const int shift = window_sample_shift(cfg.provider_interval,
-                                            cfg.provider_policy,
-                                            Rational{0}, this_T0);
-      const std::size_t last_sample =
-          sample_count - 1 - static_cast<std::size_t>(shift);
-      const detail::Slot& import_slot = slots[cfg.window_import.value()];
-      if (import_slot.data == nullptr) continue;
-      detail::WindowMemberState& st_import = window_member_state[node];
-      for (std::size_t e = 0; e < cfg.length; ++e) {
-        const double v_boundary =
-            import_slot.data[e * cfg.provider_capacity + last_sample];
-        if (st_import.history.size() <= e) st_import.history.resize(e + 1);
-        if (st_import.history[e].empty() ||
-            st_import.history[e].back().first != this_T1) {
-          st_import.history[e].push_back({this_T1, v_boundary});
-        } else {
-          st_import.history[e].back().second = v_boundary;
-        }
+  if (R.window_scoped) refresh_window_member_history(R);
+  co_return Result<void>::success();
+}
+
+// S7.2 WindowNewton: extracted verbatim from this function's own sibling
+// above (run_region()'s post-loop history refresh) with NO behaviour
+// change, so `run_region_newton_window()`'s own committing evaluation
+// (src/runtime/iteration.cpp, this file's own sibling below) can call
+// the IDENTICAL refresh instead of duplicating it -- a Newton region's
+// own window instance is over the moment its one committing evaluation
+// returns, exactly the point this function's own callers already reach
+// it from. See this block's own original comment, preserved at the
+// (sole) remaining call site above, for the full account of WHY `slots[]`
+// rather than `previous[]`, and why NOW rather than mid-sweep.
+void Runner::Impl::refresh_window_member_history(detail::RegionRuntime& R) {
+  for (auto& [node, cfg] : window_member_config) {
+    if (cfg.region_index != R.index || !cfg.window_import.valid() ||
+        cfg.required == nullptr) {
+      continue;
+    }
+    const auto dst_it = window_last_dst_step.find(node);
+    if (dst_it == window_last_dst_step.end()) continue;
+    const Rational this_T0 = Rational(dst_it->second) * cfg.window_length;
+    const Rational this_T1 = this_T0 + cfg.window_length;
+    const std::size_t sample_count =
+        window_sample_times(cfg.provider_interval, cfg.provider_policy,
+                            Rational{0}, cfg.window_length,
+                            dst_it->second)
+            .size();
+    const int shift = window_sample_shift(cfg.provider_interval,
+                                          cfg.provider_policy,
+                                          Rational{0}, this_T0);
+    const std::size_t last_sample =
+        sample_count - 1 - static_cast<std::size_t>(shift);
+    const detail::Slot& import_slot = slots[cfg.window_import.value()];
+    if (import_slot.data == nullptr) continue;
+    detail::WindowMemberState& st_import = window_member_state[node];
+    for (std::size_t e = 0; e < cfg.length; ++e) {
+      const double v_boundary =
+          import_slot.data[e * cfg.provider_capacity + last_sample];
+      if (st_import.history.size() <= e) st_import.history.resize(e + 1);
+      if (st_import.history[e].empty() ||
+          st_import.history[e].back().first != this_T1) {
+        st_import.history[e].push_back({this_T1, v_boundary});
+      } else {
+        st_import.history[e].back().second = v_boundary;
       }
     }
   }
-  co_return Result<void>::success();
+}
+
+// S7.2 WindowNewton (newton-krylov.md Sec. 9.7's own test plan):
+// TEST/DIAGNOSTIC-ONLY public accessors, mirroring `Runner::region_
+// fixed_point_residual()`'s own pattern (src/runtime/fixed_point_
+// residual.cpp) for the window-scoped seam -- see `WindowFixedPoint
+// Residual`/`WindowMemberDebugSnapshot`'s own comments (fuse/runtime/
+// fixed_point_residual.hpp) for what each field is for. No production
+// caller: `run_region_newton_window()` reaches `evaluate_window_region_
+// residual()` and the member-state maps directly, never through these.
+Result<WindowFixedPointResidual> Runner::window_region_fixed_point_residual(
+    std::size_t region_index, ComponentSet& components) {
+  if (!impl_->initialized) {
+    return Failure{"E-RT-REGION",
+                 "window_region_fixed_point_residual() called before a "
+                 "successful initialize()"};
+  }
+  if (region_index >= impl_->regions.size()) {
+    return Failure{"E-RT-REGION",
+                 "region index " + std::to_string(region_index) +
+                     " is out of range (" +
+                     std::to_string(impl_->regions.size()) + " region(s))"};
+  }
+  detail::RegionRuntime& R = impl_->regions[region_index];
+  if (!R.window_scoped) {
+    return Failure{"E-RT-REGION",
+                 "region '" + R.name + "' is not window-scoped; use "
+                     "region_fixed_point_residual() instead"};
+  }
+
+  WindowFixedPointResidual out;
+  out.n = R.newton_n;
+  for (const detail::RegionBlock& b : R.blocks) {
+    if (b.newton_offset == detail::RegionBlock::kNotInNewtonVector) {
+      out.excluded_lengths.push_back(b.length);
+      out.excluded_channel_names.push_back(b.channel_name);
+    } else {
+      out.offsets.push_back(b.newton_offset);
+      out.lengths.push_back(b.length);
+      out.channel_names.push_back(b.channel_name);
+    }
+  }
+
+  Impl* impl = impl_.get();
+  ComponentSet* comps = &components;
+  const std::size_t enter = R.enter;
+  const std::size_t exit = R.exit;
+  out.evaluate = [impl, region_index, comps, enter, exit](
+                     int iteration, std::span<const double> x,
+                     std::span<double> f_out, std::span<double> g_out,
+                     bool commit) {
+    return impl->evaluate_window_region_residual(
+        *comps, region_index, enter, exit, iteration, x, f_out, g_out, commit);
+  };
+  return out;
+}
+
+Result<std::vector<WindowMemberDebugSnapshot>>
+Runner::debug_window_member_snapshots(std::size_t region_index) const {
+  if (!impl_->initialized) {
+    return Failure{"E-RT-REGION",
+                 "debug_window_member_snapshots() called before a "
+                 "successful initialize()"};
+  }
+  if (region_index >= impl_->regions.size()) {
+    return Failure{"E-RT-REGION",
+                 "region index " + std::to_string(region_index) +
+                     " is out of range (" +
+                     std::to_string(impl_->regions.size()) + " region(s))"};
+  }
+  const detail::RegionRuntime& R = impl_->regions[region_index];
+  if (!R.window_scoped) {
+    return Failure{"E-RT-REGION",
+                 "region '" + R.name + "' is not window-scoped"};
+  }
+
+  std::vector<WindowMemberDebugSnapshot> out;
+  out.reserve(R.window_member_nodes.size());
+  for (const NodeId node : R.window_member_nodes) {
+    WindowMemberDebugSnapshot snap;
+    const auto cfg_it = impl_->window_member_config.find(node.value());
+    if (cfg_it != impl_->window_member_config.end()) {
+      snap.component_slot = cfg_it->second.component_slot;
+    }
+    const auto st_it = impl_->window_member_state.find(node.value());
+    if (st_it != impl_->window_member_state.end()) {
+      snap.clock = st_it->second.clock;
+      snap.straddle_pending = st_it->second.straddle_pending;
+      snap.straddle_window_start = st_it->second.straddle_window_start;
+      snap.straddle_window_end = st_it->second.straddle_window_end;
+    }
+    const auto pc_it = impl_->window_pass_start_clock.find(node.value());
+    if (pc_it != impl_->window_pass_start_clock.end()) {
+      snap.has_pass_start_clock = true;
+      snap.pass_start_clock = pc_it->second;
+    }
+    const auto pv_it = impl_->window_start_value.find(node.value());
+    if (pv_it != impl_->window_start_value.end()) {
+      snap.pass_start_value = pv_it->second;
+    }
+    out.push_back(std::move(snap));
+  }
+  return out;
 }
 
 // Mirrors WindowCoupler::resolve_pending_straddles() (window_coupler.cpp)
