@@ -329,15 +329,39 @@ void remap_apply(IndexSpanOf<Space> row_begin, IndexSpanOf<Space> col,
 /// callers size it once, at setup, and reuse it (D11's no-per-coupling-cycle-
 /// allocation rule; `iteration.cpp` sizes it from the largest implicit-coupling-group block).
 ///
-/// HOST-ONLY. The finalising sum reads `scratch` with plain host code, so
-/// `Space::memory_space` must be host-accessible -- true of every space this
-/// tree can build (Serial, Threads, OpenMP). A device space would need a
-/// `deep_copy` of the partials to a host mirror before that sum, which nothing
-/// here does: closing THAT gap is A5's device work, not this one's.
+/// The finalising sum reads `scratch`'s partials in a plain sequential loop,
+/// which needs host-accessible memory. On a HostSpace-accessible `Space`
+/// (Serial, Threads, OpenMP) that is `scratch` itself, no copy. On a device
+/// space (Kokkos::Cuda) it is a host mirror `scratch` is `deep_copy`'d into
+/// first -- A5's device path (KNOWN_ISSUES.md D11), closed by
+/// `finalize_deterministic_scratch` below.
 inline constexpr std::size_t kDeterministicChunk = 256;
 
 [[nodiscard]] inline std::size_t deterministic_chunks(std::size_t n) {
   return (n + kDeterministicChunk - 1) / kDeterministicChunk;
+}
+
+/// Shared finalize step for `deterministic_dot`/`deterministic_sum`/
+/// `deterministic_norm_squared_diff`: reduces the first `n_chunks` partials
+/// `scratch` holds, in ascending chunk order (same fixed-order contract the
+/// three callers document). A HostSpace-accessible `Space` reads `scratch`
+/// directly; otherwise the partials are `deep_copy`'d to a host mirror first,
+/// since `scratch` then lives in device memory a plain host loop cannot see.
+template <class Space>
+[[nodiscard]] double finalize_deterministic_scratch(SpanOf<Space> scratch,
+                                                     std::size_t n_chunks) {
+  if constexpr (Kokkos::SpaceAccessibility<
+                    Kokkos::HostSpace, typename Space::memory_space>::accessible) {
+    double total = 0.0;
+    for (std::size_t c = 0; c < n_chunks; ++c) total += scratch(c);
+    return total;
+  } else {
+    const auto host_scratch = Kokkos::create_mirror_view(scratch);
+    Kokkos::deep_copy(host_scratch, scratch);
+    double total = 0.0;
+    for (std::size_t c = 0; c < n_chunks; ++c) total += host_scratch(c);
+    return total;
+  }
 }
 
 /// `sum_i a_i b_i`, fixed-order. `deterministic_norm_squared` below is
@@ -346,12 +370,6 @@ template <class Space>
 [[nodiscard]] double deterministic_dot(ConstSpanOf<Space> a,
                                        ConstSpanOf<Space> b,
                                        SpanOf<Space> scratch) {
-  static_assert(
-      Kokkos::SpaceAccessibility<Kokkos::HostSpace,
-                                 typename Space::memory_space>::accessible,
-      "deterministic_dot's fixed-order finalize reads `scratch` directly "
-      "from host code; a device memory space needs a deep_copy first "
-      "(KNOWN_ISSUES.md D11, remaining work under A5)");
   const std::size_t n = a.extent(0);
   const std::size_t n_chunks = deterministic_chunks(n);
   Kokkos::parallel_for(
@@ -364,9 +382,7 @@ template <class Space>
         for (std::size_t i = begin; i < end; ++i) s += a(i) * b(i);
         scratch(c) = s;
       });
-  double total = 0.0;
-  for (std::size_t c = 0; c < n_chunks; ++c) total += scratch(c);
-  return total;
+  return finalize_deterministic_scratch<Space>(scratch, n_chunks);
 }
 
 /// `sum_i v_i`, fixed-order. See `deterministic_dot`'s comment for the scheme
@@ -374,12 +390,6 @@ template <class Space>
 template <class Space>
 [[nodiscard]] double deterministic_sum(ConstSpanOf<Space> v,
                                        SpanOf<Space> scratch) {
-  static_assert(
-      Kokkos::SpaceAccessibility<Kokkos::HostSpace,
-                                 typename Space::memory_space>::accessible,
-      "deterministic_sum's fixed-order finalize reads `scratch` directly "
-      "from host code; a device memory space needs a deep_copy first "
-      "(KNOWN_ISSUES.md D11, remaining work under A5)");
   const std::size_t n = v.extent(0);
   const std::size_t n_chunks = deterministic_chunks(n);
   Kokkos::parallel_for(
@@ -392,9 +402,7 @@ template <class Space>
         for (std::size_t i = begin; i < end; ++i) s += v(i);
         scratch(c) = s;
       });
-  double total = 0.0;
-  for (std::size_t c = 0; c < n_chunks; ++c) total += scratch(c);
-  return total;
+  return finalize_deterministic_scratch<Space>(scratch, n_chunks);
 }
 
 /// `sum_i v_i^2`, fixed-order. `deterministic_dot(v, v, scratch)` exactly:
@@ -416,12 +424,6 @@ template <class Space>
 [[nodiscard]] double deterministic_norm_squared_diff(ConstSpanOf<Space> a,
                                                       ConstSpanOf<Space> b,
                                                       SpanOf<Space> scratch) {
-  static_assert(
-      Kokkos::SpaceAccessibility<Kokkos::HostSpace,
-                                 typename Space::memory_space>::accessible,
-      "deterministic_norm_squared_diff's fixed-order finalize reads "
-      "`scratch` directly from host code; a device memory space needs a "
-      "deep_copy first (KNOWN_ISSUES.md D11, remaining work under A5)");
   const std::size_t n = a.extent(0);
   const std::size_t n_chunks = deterministic_chunks(n);
   Kokkos::parallel_for(
@@ -438,9 +440,7 @@ template <class Space>
         }
         scratch(c) = s;
       });
-  double total = 0.0;
-  for (std::size_t c = 0; c < n_chunks; ++c) total += scratch(c);
-  return total;
+  return finalize_deterministic_scratch<Space>(scratch, n_chunks);
 }
 
 }  // namespace fuse::num
