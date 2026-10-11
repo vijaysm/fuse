@@ -259,6 +259,129 @@ enum class AccelKind {
   Steffensen,
   IQN_ILS,
   IQN_IMVJ,
+  /// S7.2: the native Jacobian-free Newton-Krylov coupler
+  /// (`fuse::num::solve()`, fuse/num/newton_krylov.hpp), selected the same
+  /// way every quasi-Newton kind above is -- through
+  /// `IterationRegionDecl::acceleration.kind` -- even though it replaces
+  /// the ENTIRE sweep (Newton owns its own inner Krylov and line-search
+  /// loop, where every kind above instead post-processes one Picard sweep
+  /// per outer iteration). `docs/dev/newton-krylov.md`'s own design page
+  /// (S7.1) anticipated exactly this: "the Newton solver itself (S7.2)
+  /// adds its own AccelKind value and sets these flags when that value is
+  /// chosen" -- `IterationRegionDecl::requires_residual_capability`/
+  /// `requires_linearization_capability`, which `IterationBuilder::
+  /// accelerate()`/`::newton()` below set automatically for exactly that
+  /// reason, so a graph author cannot select Newton and forget the
+  /// capability a Newton-solved region needs from every member.
+  ///
+  /// APPENDED AT THE END, not inserted in any more "natural" position:
+  /// `fuse::model::yaml_io`'s `kAccelNames` table and
+  /// `fuse::descriptor`'s binary encoding both index this enum
+  /// positionally (REVIEW.md R-04's pattern), so a reordering would
+  /// silently relabel every already-serialized graph's accelerator.
+  Newton,
+};
+
+/// S7.2: which of SNESLineSearchBT/CP/Basic's own strategies the Newton
+/// solver's line search uses. Mirrors `fuse::num::LineSearchKind`
+/// (fuse/num/line_search.hpp) exactly -- declared again here, rather than
+/// reused from there, for the SAME layering reason `AccelKind` itself is
+/// declared in this header and not in fuse::num: the model layer must not
+/// depend on the numerics layer (this file's own header comment). The
+/// runtime wiring (a later step of this track) translates one into the
+/// other at the one call site that constructs a `fuse::num::
+/// NewtonKrylovOptions` from a `NewtonConfig`.
+enum class LineSearchKind { BT, CP, Basic };
+
+[[nodiscard]] constexpr const char* to_cstring(LineSearchKind k) noexcept {
+  switch (k) {
+    case LineSearchKind::BT:    return "BT";
+    case LineSearchKind::CP:    return "CP";
+    case LineSearchKind::Basic: return "Basic";
+  }
+  return "?";
+}
+
+/// S7.2: which Eisenstat-Walker forcing-term formula
+/// (Eisenstat & Walker, SIAM J. Sci. Comput. 17, 1996) the Newton solver's
+/// linear-solve tolerance follows. Mirrors `fuse::num::
+/// EisenstatWalkerChoice` for the same reason `LineSearchKind` above does.
+enum class EisenstatWalkerChoice { Constant, Choice1, Choice2 };
+
+[[nodiscard]] constexpr const char* to_cstring(EisenstatWalkerChoice c) noexcept {
+  switch (c) {
+    case EisenstatWalkerChoice::Constant: return "Constant";
+    case EisenstatWalkerChoice::Choice1:  return "Choice1";
+    case EisenstatWalkerChoice::Choice2:  return "Choice2";
+  }
+  return "?";
+}
+
+/// S7.2: WHAT was asked of the Newton solver, named the same way
+/// `AccelConfig` already does for the quasi-Newton ladder -- every numeric
+/// default here is SNES's own default for the matching option
+/// (`docs/dev/newton-krylov.md`'s own table names each one), except
+/// `eta_min`, which SNES has no counterpart for (its own forcing term can
+/// reach exactly zero; this track's own brief asked for a nonzero floor).
+/// Read only when `IterationRegionDecl::acceleration.kind ==
+/// AccelKind::Newton`; otherwise ignored, the same "declaration carries it,
+/// nothing acts on it until selected" convention `window_scope` already
+/// uses.
+struct NewtonConfig {
+  LineSearchKind line_search_kind = LineSearchKind::BT;
+  EisenstatWalkerChoice forcing_choice = EisenstatWalkerChoice::Choice2;
+
+  /// Eisenstat-Walker's own tuning constants (`fuse::num::
+  /// EisenstatWalkerOptions`'s identically named fields carry the full
+  /// citation and the over-solving-safeguard rationale). `eta_min` is the
+  /// one constant with no SNES counterpart -- its own forcing term can
+  /// reach exactly zero (an exact linear solve); this one cannot, per the
+  /// task's own brief ("a cap eta_max = 0.9 and floor").
+  double forcing_gamma = 0.9;
+  double forcing_alpha = 2.0;
+  double eta_initial = 0.3;
+  double eta_max = 0.9;
+  double eta_min = 1e-4;
+  double forcing_safeguard_threshold = 0.1;
+  double forcing_eta_constant = 0.1;
+
+  double atol = 1e-50;
+  double rtol = 1e-8;
+  double stol = 1e-8;
+  double divergence_tolerance = 1e4;
+  int    max_nonlinear_iterations = 50;
+  std::size_t max_function_evaluations = 10000;
+
+  /// Line search's own tuning constants (`fuse::num::LineSearchOptions`'s
+  /// identically named fields). Read only for the `line_search_kind` they
+  /// apply to -- `armijo_alpha`/`lambda_min`/`max_backtracks` for BT,
+  /// `secant_tol`/`max_secant_steps` for CP, `damping` for Basic.
+  double armijo_alpha = 1e-4;
+  double lambda_min = 1e-12;
+  int    max_backtracks = 40;
+  double secant_tol = 1e-10;
+  int    max_secant_steps = 40;
+  double damping = 1.0;
+
+  /// GMRES(m)'s own restart and iteration budget.
+  int gmres_restart = 30;
+  std::size_t gmres_max_iterations = 1000;
+
+  /// Rebuild the preconditioner every this-many Newton steps (and always
+  /// before the first) -- SNES's own `-snes_lag_jacobian`.
+  int preconditioner_lag = 1;
+
+  /// Whether this region's Newton solve wants each member's own
+  /// physics-based block-Jacobi preconditioner (`fuse::num::
+  /// BlockJacobiPreconditioner`, composing every member's
+  /// `LinearizationToken::apply_preconditioner`) rather than the
+  /// identity. `true` here is what `IterationBuilder::newton()` reads to
+  /// additionally set `requires_linearization_capability` -- a component
+  /// cannot supply a preconditioner block without first being asked to
+  /// linearise, so asking for one without the capability bit would be a
+  /// silent fallback to the identity rather than the physics-based
+  /// preconditioner the author actually requested.
+  bool use_block_jacobi_preconditioner = false;
 };
 
 /// Time windows track: how a component's own sub-stepping relates to a

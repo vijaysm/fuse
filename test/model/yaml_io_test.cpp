@@ -441,3 +441,123 @@ TEST(YamlIo, FixtureSurvivesAnEmitParseCycleByteForByte) {
 
   EXPECT_EQ(fuse::serialize(again.value()), once);
 }
+
+// ---------------------------------------------------------------------------
+// S7.2: AccelKind::Newton and NewtonConfig. NOT checked via
+// structurally_equal()/serialize() (the canonical-bytes descriptor,
+// fuse/model/descriptor.hpp, does not cross either requires_residual_
+// capability/requires_linearization_capability or newton_config at all --
+// out of this track's own ownership, recorded as an open question in its
+// report rather than silently assumed covered) -- checked directly against
+// the restored IterationRegionDecl's own fields instead, which IS what
+// this track's yaml_io.cpp round-trips.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+CouplingGraph newton_graph(fuse::NewtonConfig cfg) {
+  CouplingGraph g = pair_graph();
+  // pair_graph() adds exactly one channel ("flux"), so it is ChannelId{0}.
+  g.iterate({fuse::ChannelId{0}}).newton(cfg);
+  return g;
+}
+
+}  // namespace
+
+TEST(YamlIo, NewtonKindAndConfigSurviveTheTextRoundTrip) {
+  fuse::NewtonConfig cfg;
+  cfg.line_search_kind = fuse::LineSearchKind::CP;
+  cfg.forcing_choice = fuse::EisenstatWalkerChoice::Choice1;
+  cfg.atol = 1e-9;
+  cfg.rtol = 1e-7;
+  cfg.stol = 1e-6;
+  cfg.divergence_tolerance = 5e3;
+  cfg.max_nonlinear_iterations = 37;
+  cfg.max_function_evaluations = 4321;
+  cfg.gmres_restart = 17;
+  cfg.gmres_max_iterations = 777;
+  cfg.preconditioner_lag = 3;
+  cfg.use_block_jacobi_preconditioner = true;
+  cfg.forcing_gamma = 0.8;
+  cfg.eta_min = 2e-4;
+
+  const CouplingGraph original = newton_graph(cfg);
+  const auto text = to_yaml(original);
+  ASSERT_TRUE(text.ok()) << text.error().message;
+  const auto restored = from_yaml(text.value());
+  ASSERT_TRUE(restored.ok()) << restored.error().message;
+
+  const auto& want = original.iteration_region(fuse::IterationRegionIdx{0});
+  const auto& got = restored.value().iteration_region(fuse::IterationRegionIdx{0});
+
+  EXPECT_EQ(got.acceleration.kind, fuse::AccelKind::Newton);
+  EXPECT_TRUE(got.requires_residual_capability);
+  EXPECT_TRUE(got.requires_linearization_capability);
+
+  EXPECT_EQ(got.newton_config.line_search_kind, want.newton_config.line_search_kind);
+  EXPECT_EQ(got.newton_config.forcing_choice, want.newton_config.forcing_choice);
+  EXPECT_DOUBLE_EQ(got.newton_config.atol, want.newton_config.atol);
+  EXPECT_DOUBLE_EQ(got.newton_config.rtol, want.newton_config.rtol);
+  EXPECT_DOUBLE_EQ(got.newton_config.stol, want.newton_config.stol);
+  EXPECT_DOUBLE_EQ(got.newton_config.divergence_tolerance,
+                   want.newton_config.divergence_tolerance);
+  EXPECT_EQ(got.newton_config.max_nonlinear_iterations,
+           want.newton_config.max_nonlinear_iterations);
+  EXPECT_EQ(got.newton_config.max_function_evaluations,
+           want.newton_config.max_function_evaluations);
+  EXPECT_EQ(got.newton_config.gmres_restart, want.newton_config.gmres_restart);
+  EXPECT_EQ(got.newton_config.gmres_max_iterations, want.newton_config.gmres_max_iterations);
+  EXPECT_EQ(got.newton_config.preconditioner_lag, want.newton_config.preconditioner_lag);
+  EXPECT_EQ(got.newton_config.use_block_jacobi_preconditioner,
+           want.newton_config.use_block_jacobi_preconditioner);
+  EXPECT_DOUBLE_EQ(got.newton_config.forcing_gamma, want.newton_config.forcing_gamma);
+  EXPECT_DOUBLE_EQ(got.newton_config.eta_min, want.newton_config.eta_min);
+}
+
+// The same auto-trigger the C++ builder applies (IterationBuilder::
+// accelerate()) must apply on the YAML read side too: a hand-written YAML
+// file that selects Newton but forgets (or omits) the capability keys must
+// still come back with requires_residual_capability true, never silently
+// trusting the omitted/false value.
+TEST(YamlIo, HandWrittenYamlSelectingNewtonGetsTheCapabilityFlagEvenWhenOmitted) {
+  const CouplingGraph original = newton_graph(fuse::NewtonConfig{});
+  const auto text = to_yaml(original);
+  ASSERT_TRUE(text.ok()) << text.error().message;
+  // Strip the explicit capability keys and the newton_config block
+  // entirely, simulating a hand-written file that never mentions them --
+  // only "acceleration: {kind: Newton, ...}" survives.
+  std::string stripped = text.value();
+  const auto drop_line_containing = [&](const char* needle) {
+    std::size_t pos = stripped.find(needle);
+    while (pos != std::string::npos) {
+      const std::size_t line_start = stripped.rfind('\n', pos) + 1;
+      const std::size_t line_end = stripped.find('\n', pos) + 1;
+      stripped.erase(line_start, line_end - line_start);
+      pos = stripped.find(needle);
+    }
+  };
+  drop_line_containing("requires_residual_capability");
+  drop_line_containing("requires_linearization_capability");
+
+  const auto restored = from_yaml(stripped);
+  ASSERT_TRUE(restored.ok()) << restored.error().message;
+  const auto& got = restored.value().iteration_region(fuse::IterationRegionIdx{0});
+  EXPECT_EQ(got.acceleration.kind, fuse::AccelKind::Newton);
+  EXPECT_TRUE(got.requires_residual_capability)
+      << "selecting Newton must set this even when the key is absent from the file";
+}
+
+TEST(YamlIo, UnknownKeyInNewtonConfigBlockIsRefused) {
+  const CouplingGraph original = newton_graph(fuse::NewtonConfig{});
+  const auto text = to_yaml(original);
+  ASSERT_TRUE(text.ok()) << text.error().message;
+  std::string mutated = text.value();
+  const std::size_t pos = mutated.find("newton_config:");
+  ASSERT_NE(pos, std::string::npos);
+  const std::size_t insert_at = mutated.find('\n', pos) + 1;
+  mutated.insert(insert_at, "      bogus_key: 1\n");
+
+  const auto restored = from_yaml(mutated);
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-UNKNOWN-KEY");
+}

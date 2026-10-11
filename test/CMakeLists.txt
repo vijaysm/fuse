@@ -255,6 +255,17 @@ endforeach()
 foreach(t temporal_basis waveform accelerator)
   fuse_add_gtest(num ${t} THROWS)
 endforeach()
+# S7.2: the native Newton-Krylov coupler. line_search is pure scalar
+# arithmetic (no DistVector), so it needs nothing beyond fuse::num itself;
+# newton_krylov drives fuse::linalg::gmres/DistVector directly, so it needs
+# LIBS fuse::linalg explicitly -- a test binary is a separate consumer of
+# fuse::num's public headers and needs its own access to the linalg types
+# those headers name, which fuse-coupler-num links only PRIVATEly. Its own
+# two-partition rank-agreement case spins real std::thread workers; no
+# extra LIBS entry for that -- libc++/libSystem on this project's Apple
+# Clang toolchain need no separate -lpthread for <thread>.
+fuse_add_gtest(num line_search)
+fuse_add_gtest(num newton_krylov LIBS fuse::linalg)
 
 # ---------------------------------------------------------------- field
 # field_ref/registry are header-only, so the test builds against the
@@ -449,6 +460,11 @@ fuse_add_gtest(runtime implicit_component)
 fuse_add_gtest(runtime fixed_point_residual LIBS fuse::runtime fuse::backend)
 target_include_directories(fuse_runtime_fixed_point_residual_test PRIVATE
   ${CMAKE_SOURCE_DIR}/examples/dn_heat)
+# S7.2: proves the graph-level trigger -- IterationBuilder::accelerate()/
+# ::newton() setting requires_residual_capability/requires_linearization_
+# capability -- end to end through the SAME verify_iteration_region() entry
+# point Runner::Impl::resolve_regions() calls at initialize().
+fuse_add_gtest(runtime newton_region)
 # KNOWN_ISSUES.md D11 (closing) / matrix cell A-SPACES-TRANSPORT: a
 # Runner-level, 2048-element iteration region -- large enough to span
 # several of space_kernels.hpp's fixed reduction chunks -- pinned to exact

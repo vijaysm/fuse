@@ -45,3 +45,48 @@ new = """  if (false && (token.rows() != expected_rows || token.cols() != expect
 target = "fuse_model_newton_capability_test"
 test = "model.newton_capability"
 result = "KILLED (2026-10-10): NewtonCapability.TokenWithWrongRowsIsRejected and NewtonCapability.TokenWithWrongColsIsRejected both FAILED; the other 11 cases still PASSED. Restored; cmp reported no difference."
+
+# S7.2's own rows: AccelKind::Newton selectable from the graph, both in C++
+# (IterationBuilder::accelerate()/::newton()) and through the YAML text
+# format (src/model/yaml_io.cpp) -- the auto-trigger that sets
+# requires_residual_capability/requires_linearization_capability the
+# moment Newton is selected, so neither spelling can select Newton and
+# silently skip the capability gate above. Same hand-proof discipline:
+# backed up, mutated, rebuilt with `cmake --build <dir> --target <target>`,
+# run UNFILTERED, restored, `cmp`-verified byte-identical.
+
+[[mutation]]
+id = "newton-builder-accelerate-auto-trigger-removed"
+area = "model"
+describes = "IterationBuilder::accelerate() no longer sets requires_residual_capability/requires_linearization_capability when AccelKind::Newton is selected -- a graph authored with .accelerate({.kind = AccelKind::Newton}) would silently carry no capability requirement at all, so a component lacking fuse::ImplicitComponent would never be refused."
+file = "include/fuse/model/coupling_graph.hpp"
+old = """  t.acceleration = cfg;
+  if (cfg.kind == AccelKind::Newton) {
+    t.requires_residual_capability = true;
+    if (t.newton_config.use_block_jacobi_preconditioner) {
+      t.requires_linearization_capability = true;
+    }
+  }
+  return *this;
+}
+
+inline IterationBuilder& IterationBuilder::initial_relaxation"""
+new = """  t.acceleration = cfg;
+  return *this;
+}
+
+inline IterationBuilder& IterationBuilder::initial_relaxation"""
+target = "fuse_runtime_newton_region_test"
+test = "runtime.newton_region"
+result = "Hand-proved 2026-10-10: 7 cases, all pass before; after mutation, 2 fail (NewtonRegion.AccelerateWithNewtonKindSetsRequiresResidualCapability, which checks the flag directly, and NewtonRegion.GraphLevelNewtonSelectionRefusesAComponentLackingResidualCapability, which carries the flag through lower()/verify_iteration_region() to the actual E-NEWTON-CAPABILITY refusal), 5 pass. File restored and cmp-verified byte-identical; rebuilt and reran to confirm all 7 pass again."
+
+[[mutation]]
+id = "newton-yaml-deserialize-auto-trigger-removed"
+area = "model"
+describes = "yaml_io.cpp's deserialize-side auto-trigger (the same rule accelerate() applies in C++, repeated on the read path so a HAND-WRITTEN YAML file gets the identical protection) is disabled, so a YAML file that selects acceleration.kind: Newton but never writes requires_residual_capability: true explicitly comes back with that flag false -- silently bypassing the capability gate for every YAML-authored graph, even though the SAME graph built in C++ via .newton()/.accelerate() would have been protected."
+file = "src/model/yaml_io.cpp"
+old = """    if (d.acceleration.kind == AccelKind::Newton) {"""
+new = """    if (false) {"""
+target = "fuse_model_yaml_io_test"
+test = "model.yaml_io"
+result = "Hand-proved 2026-10-10: 23 cases, all pass before; after mutation, 1 fails (YamlIo.HandWrittenYamlSelectingNewtonGetsTheCapabilityFlagEvenWhenOmitted, which strips the explicit capability keys from the emitted text before reparsing, isolating exactly this auto-trigger), 22 pass. File restored and cmp-verified byte-identical; rebuilt and reran to confirm all 23 pass again."

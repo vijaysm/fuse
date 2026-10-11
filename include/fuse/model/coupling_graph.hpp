@@ -104,6 +104,15 @@ struct IterationRegionDecl {
   /// -- a component cannot linearise a residual it was never asked to
   /// evaluate. Defaults to `false`.
   bool requires_linearization_capability = false;
+
+  /// S7.2's own Newton-specific options (`fuse::NewtonConfig`,
+  /// fuse/model/iteration.hpp): line search strategy, forcing-term
+  /// choice, lag, GMRES restart/budget, tolerances. Read ONLY when
+  /// `acceleration.kind == AccelKind::Newton`; present unconditionally
+  /// (rather than `std::optional`) the same way `AccelConfig` itself is,
+  /// so a region declared before this member existed carries SNES's own
+  /// defaults with no special-casing anywhere that reads it.
+  NewtonConfig newton_config{};
 };
 
 class CouplingGraph;
@@ -126,12 +135,42 @@ class IterationBuilder {
   /// `ConvergenceMeasure`, and spec §5.3's example passes one directly.
   IterationBuilder& until(ConvergenceMeasure m);
   IterationBuilder& max_iterations(int n);
+  /// Sets `acceleration` to `cfg`. S7.2's own addition: when
+  /// `cfg.kind == AccelKind::Newton`, this ALSO sets
+  /// `requires_residual_capability = true` (and, when
+  /// `newton_config.use_block_jacobi_preconditioner` is already `true` at
+  /// the time this is called, `requires_linearization_capability` too) --
+  /// so choosing Newton through the generic `AccelConfig` spelling cannot
+  /// silently skip the capability gate `verify_newton_capability_support()`
+  /// enforces at `initialize()`. Selecting any OTHER kind leaves both
+  /// capability flags exactly as they were (a region can ask for the
+  /// residual capability without Newton, e.g. a future solver reusing the
+  /// same seam; this method never clears a flag it did not itself set).
   IterationBuilder& accelerate(AccelConfig cfg);
   /// Sets `acceleration.initial_relaxation`. There is deliberately no second
   /// `initial_relaxation` field on the declaration: two spellings of one
   /// number is a silent disagreement waiting to happen.
   IterationBuilder& initial_relaxation(double omega);
   IterationBuilder& name(std::string n);
+
+  /// S7.2: selects `AccelKind::Newton` with the given options in one call,
+  /// and sets `requires_residual_capability = true` unconditionally plus
+  /// `requires_linearization_capability = cfg.use_block_jacobi_preconditioner`
+  /// -- the single-method spelling `accelerate({.kind = AccelKind::Newton})`
+  /// would otherwise need two more calls (`.requires_residual()` and,
+  /// conditionally, `.requires_linearization()`) to say the same thing.
+  IterationBuilder& newton(NewtonConfig cfg = {});
+
+  /// S7.1's own fluent setters, left out of that track's brief (its own
+  /// comment on `IterationRegionDecl::requires_residual_capability`: "the
+  /// Newton solver itself (S7.2) adds its own AccelKind value and sets
+  /// these flags") -- added here, by the track that needed them, rather
+  /// than guessed at by the track that did not. Exposed independently of
+  /// `accelerate()`/`newton()` for a region that wants the residual seam
+  /// without Newton itself (S7.1's own non-goal, but not this type's to
+  /// forbid).
+  IterationBuilder& requires_residual(bool v = true);
+  IterationBuilder& requires_linearization(bool v = true);
 
   [[nodiscard]] IterationRegionIdx id() const noexcept { return id_; }
 
@@ -621,7 +660,14 @@ inline IterationBuilder& IterationBuilder::max_iterations(int n) {
 }
 
 inline IterationBuilder& IterationBuilder::accelerate(AccelConfig cfg) {
-  target().acceleration = cfg;
+  IterationRegionDecl& t = target();
+  t.acceleration = cfg;
+  if (cfg.kind == AccelKind::Newton) {
+    t.requires_residual_capability = true;
+    if (t.newton_config.use_block_jacobi_preconditioner) {
+      t.requires_linearization_capability = true;
+    }
+  }
   return *this;
 }
 
@@ -632,6 +678,27 @@ inline IterationBuilder& IterationBuilder::initial_relaxation(double omega) {
 
 inline IterationBuilder& IterationBuilder::name(std::string n) {
   target().name = std::move(n);
+  return *this;
+}
+
+inline IterationBuilder& IterationBuilder::newton(NewtonConfig cfg) {
+  IterationRegionDecl& t = target();
+  t.newton_config = cfg;
+  t.acceleration.kind = AccelKind::Newton;
+  t.requires_residual_capability = true;
+  if (cfg.use_block_jacobi_preconditioner) {
+    t.requires_linearization_capability = true;
+  }
+  return *this;
+}
+
+inline IterationBuilder& IterationBuilder::requires_residual(bool v) {
+  target().requires_residual_capability = v;
+  return *this;
+}
+
+inline IterationBuilder& IterationBuilder::requires_linearization(bool v) {
+  target().requires_linearization_capability = v;
   return *this;
 }
 

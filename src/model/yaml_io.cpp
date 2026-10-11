@@ -143,8 +143,21 @@ const char* const kMeasureNames[] = {"Relative", "Absolute",
                                      "AbsoluteOrRelative", "ResidualRelative"};
 const char* const kAccelNames[]   = {"None",       "Constant", "Aitken",
                                      "Secant",     "Steffensen",
-                                     "IQN_ILS",    "IQN_IMVJ"};
+                                     "IQN_ILS",    "IQN_IMVJ",
+                                     // S7.2: APPENDED, never inserted -- this
+                                     // array is indexed positionally by
+                                     // AccelKind's own declaration order
+                                     // (this file's own comment above), and
+                                     // Newton was itself appended at the end
+                                     // of that enum for the identical
+                                     // reason.
+                                     "Newton"};
 const char* const kFilterNames[]  = {"None", "QR1", "QR2", "QR3"};
+// S7.2: fuse::LineSearchKind / fuse::EisenstatWalkerChoice
+// (fuse/model/iteration.hpp), same positional-index convention as every
+// table above.
+const char* const kLineSearchNames[] = {"BT", "CP", "Basic"};
+const char* const kEwChoiceNames[]   = {"Constant", "Choice1", "Choice2"};
 // Time windows track: must stay in DtPolicy's declaration order
 // (fuse/model/iteration.hpp), same reasoning as the three tables above.
 const char* const kDtPolicyNames[] = {"Fixed", "Adjustable"};
@@ -650,6 +663,70 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
       << YAML::Key << "scale_fields" << YAML::Value
       << r.acceleration.scale_fields
       << YAML::EndMap;
+    // S7.1/S7.2's own capability seam. Emitted ONLY when set (unlike
+    // `convergence` above): `false` is every pre-S7.1 region's own
+    // implicit state, including every non-Newton region a concurrent
+    // track's own committed YAML already carries (examples/brusselator/
+    // participants/reference_mpmd_3.yaml, found drifting the moment this
+    // was emitted unconditionally) -- an omitted key here reads back as
+    // exactly that default, so there is nothing for a human to lose by it
+    // staying silent. Still enough to round-trip a Newton region that
+    // sets either flag: the read side below applies the SAME auto-trigger
+    // `IterationBuilder::newton()`/`::accelerate()` already guarantee in
+    // C++, so `acceleration.kind: Newton` alone (with neither key present)
+    // still comes back requiring the residual capability.
+    if (r.requires_residual_capability) {
+      e << YAML::Key << "requires_residual_capability" << YAML::Value << true;
+    }
+    if (r.requires_linearization_capability) {
+      e << YAML::Key << "requires_linearization_capability" << YAML::Value << true;
+    }
+    // S7.2's own Newton options. Conditional on the kind actually being
+    // Newton (unlike the two booleans above): twenty-odd fields that mean
+    // nothing for every OTHER accelerator would otherwise clutter every
+    // region's YAML, the same reasoning `window_scope`'s own conditional
+    // emission below already follows for an opt-in block.
+    if (r.acceleration.kind == AccelKind::Newton) {
+      const NewtonConfig& nc = r.newton_config;
+      e << YAML::Key << "newton_config" << YAML::Value << YAML::BeginMap
+        << YAML::Key << "line_search_kind" << YAML::Value
+        << enum_name(nc.line_search_kind, kLineSearchNames)
+        << YAML::Key << "forcing_choice" << YAML::Value
+        << enum_name(nc.forcing_choice, kEwChoiceNames)
+        << YAML::Key << "forcing_gamma" << YAML::Value << nc.forcing_gamma
+        << YAML::Key << "forcing_alpha" << YAML::Value << nc.forcing_alpha
+        << YAML::Key << "eta_initial" << YAML::Value << nc.eta_initial
+        << YAML::Key << "eta_max" << YAML::Value << nc.eta_max
+        << YAML::Key << "eta_min" << YAML::Value << nc.eta_min
+        << YAML::Key << "forcing_safeguard_threshold" << YAML::Value
+        << nc.forcing_safeguard_threshold
+        << YAML::Key << "forcing_eta_constant" << YAML::Value
+        << nc.forcing_eta_constant
+        << YAML::Key << "atol" << YAML::Value << nc.atol
+        << YAML::Key << "rtol" << YAML::Value << nc.rtol
+        << YAML::Key << "stol" << YAML::Value << nc.stol
+        << YAML::Key << "divergence_tolerance" << YAML::Value
+        << nc.divergence_tolerance
+        << YAML::Key << "max_nonlinear_iterations" << YAML::Value
+        << nc.max_nonlinear_iterations
+        << YAML::Key << "max_function_evaluations" << YAML::Value
+        << static_cast<std::uint64_t>(nc.max_function_evaluations)
+        << YAML::Key << "armijo_alpha" << YAML::Value << nc.armijo_alpha
+        << YAML::Key << "lambda_min" << YAML::Value << nc.lambda_min
+        << YAML::Key << "max_backtracks" << YAML::Value << nc.max_backtracks
+        << YAML::Key << "secant_tol" << YAML::Value << nc.secant_tol
+        << YAML::Key << "max_secant_steps" << YAML::Value
+        << nc.max_secant_steps
+        << YAML::Key << "damping" << YAML::Value << nc.damping
+        << YAML::Key << "gmres_restart" << YAML::Value << nc.gmres_restart
+        << YAML::Key << "gmres_max_iterations" << YAML::Value
+        << static_cast<std::uint64_t>(nc.gmres_max_iterations)
+        << YAML::Key << "preconditioner_lag" << YAML::Value
+        << nc.preconditioner_lag
+        << YAML::Key << "use_block_jacobi_preconditioner" << YAML::Value
+        << nc.use_block_jacobi_preconditioner
+        << YAML::EndMap;
+    }
     if (r.window_scope.has_value()) {
       const CouplingWindowScope& scope = *r.window_scope;
       e << YAML::Key << "window_scope" << YAML::Value << YAML::BeginMap;
@@ -1067,7 +1144,10 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
   for (const auto& n : root["iteration_regions"]) {
     if (auto e = check_unknown_keys(
             n, {"name", "channels", "max_iterations", "convergence",
-                "acceleration", "window_scope"},
+                "acceleration", "window_scope",
+                // S7.1/S7.2's own capability seam.
+                "requires_residual_capability",
+                "requires_linearization_capability", "newton_config"},
             "iteration region entry")) {
       return *e;
     }
@@ -1132,6 +1212,99 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
       if (an["limit"]) d.acceleration.limit = an["limit"].as<double>();
       if (an["scale_fields"]) {
         d.acceleration.scale_fields = an["scale_fields"].as<bool>();
+      }
+    }
+    if (n["requires_residual_capability"]) {
+      d.requires_residual_capability = n["requires_residual_capability"].as<bool>();
+    }
+    if (n["requires_linearization_capability"]) {
+      d.requires_linearization_capability =
+          n["requires_linearization_capability"].as<bool>();
+    }
+    if (const auto& nn = n["newton_config"]) {
+      if (auto e = check_unknown_keys(
+              nn,
+              {"line_search_kind", "forcing_choice", "forcing_gamma",
+               "forcing_alpha", "eta_initial", "eta_max", "eta_min",
+               "forcing_safeguard_threshold", "forcing_eta_constant", "atol",
+               "rtol", "stol", "divergence_tolerance",
+               "max_nonlinear_iterations", "max_function_evaluations",
+               "armijo_alpha", "lambda_min", "max_backtracks", "secant_tol",
+               "max_secant_steps", "damping", "gmres_restart",
+               "gmres_max_iterations", "preconditioner_lag",
+               "use_block_jacobi_preconditioner"},
+              "newton_config block")) {
+        return *e;
+      }
+      NewtonConfig& nc = d.newton_config;
+      if (nn["line_search_kind"] &&
+          !lookup_enum(nn["line_search_kind"].as<std::string>(), kLineSearchNames,
+                       nc.line_search_kind)) {
+        return Failure{"E-YAML-PARSE", "unknown newton_config.line_search_kind '" +
+                                         nn["line_search_kind"].as<std::string>() + "'"};
+      }
+      if (nn["forcing_choice"] &&
+          !lookup_enum(nn["forcing_choice"].as<std::string>(), kEwChoiceNames,
+                       nc.forcing_choice)) {
+        return Failure{"E-YAML-PARSE", "unknown newton_config.forcing_choice '" +
+                                         nn["forcing_choice"].as<std::string>() + "'"};
+      }
+      if (nn["forcing_gamma"]) nc.forcing_gamma = nn["forcing_gamma"].as<double>();
+      if (nn["forcing_alpha"]) nc.forcing_alpha = nn["forcing_alpha"].as<double>();
+      if (nn["eta_initial"]) nc.eta_initial = nn["eta_initial"].as<double>();
+      if (nn["eta_max"]) nc.eta_max = nn["eta_max"].as<double>();
+      if (nn["eta_min"]) nc.eta_min = nn["eta_min"].as<double>();
+      if (nn["forcing_safeguard_threshold"]) {
+        nc.forcing_safeguard_threshold = nn["forcing_safeguard_threshold"].as<double>();
+      }
+      if (nn["forcing_eta_constant"]) {
+        nc.forcing_eta_constant = nn["forcing_eta_constant"].as<double>();
+      }
+      if (nn["atol"]) nc.atol = nn["atol"].as<double>();
+      if (nn["rtol"]) nc.rtol = nn["rtol"].as<double>();
+      if (nn["stol"]) nc.stol = nn["stol"].as<double>();
+      if (nn["divergence_tolerance"]) {
+        nc.divergence_tolerance = nn["divergence_tolerance"].as<double>();
+      }
+      if (nn["max_nonlinear_iterations"]) {
+        nc.max_nonlinear_iterations = nn["max_nonlinear_iterations"].as<int>();
+      }
+      if (nn["max_function_evaluations"]) {
+        nc.max_function_evaluations =
+            nn["max_function_evaluations"].as<std::size_t>();
+      }
+      if (nn["armijo_alpha"]) nc.armijo_alpha = nn["armijo_alpha"].as<double>();
+      if (nn["lambda_min"]) nc.lambda_min = nn["lambda_min"].as<double>();
+      if (nn["max_backtracks"]) nc.max_backtracks = nn["max_backtracks"].as<int>();
+      if (nn["secant_tol"]) nc.secant_tol = nn["secant_tol"].as<double>();
+      if (nn["max_secant_steps"]) {
+        nc.max_secant_steps = nn["max_secant_steps"].as<int>();
+      }
+      if (nn["damping"]) nc.damping = nn["damping"].as<double>();
+      if (nn["gmres_restart"]) nc.gmres_restart = nn["gmres_restart"].as<int>();
+      if (nn["gmres_max_iterations"]) {
+        nc.gmres_max_iterations = nn["gmres_max_iterations"].as<std::size_t>();
+      }
+      if (nn["preconditioner_lag"]) {
+        nc.preconditioner_lag = nn["preconditioner_lag"].as<int>();
+      }
+      if (nn["use_block_jacobi_preconditioner"]) {
+        nc.use_block_jacobi_preconditioner =
+            nn["use_block_jacobi_preconditioner"].as<bool>();
+      }
+    }
+    // The SAME auto-trigger `IterationBuilder::accelerate()`/`::newton()`
+    // apply in C++ (fuse/model/coupling_graph.hpp): a YAML-authored region
+    // that selects Newton must not be able to omit the capability bit by
+    // omission any more than a C++-authored one can. Applied AFTER both
+    // blocks above are read, so an explicit `requires_residual_capability:
+    // false` paired with `acceleration.kind: Newton` is overridden the
+    // same way the builder overrides it -- never silently honoured as "no
+    // capability needed", which would defeat the whole seam.
+    if (d.acceleration.kind == AccelKind::Newton) {
+      d.requires_residual_capability = true;
+      if (d.newton_config.use_block_jacobi_preconditioner) {
+        d.requires_linearization_capability = true;
       }
     }
     if (const auto& wn = n["window_scope"]) {
