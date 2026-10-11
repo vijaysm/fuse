@@ -474,7 +474,38 @@ TEST(NewtonRegion, VerificationSweepDeliversTheConvergedStateToTheComponents) {
   }
 }
 
-TEST(NewtonRegion, AWindowScopedRegionSelectingNewtonIsRefusedAtSetup) {
+// S7.2 WindowNewton, CORRECTED (newton-krylov.md Sec. 9.7, 2026-10): this
+// test's own ORIGINAL name/assertion ("...IsRefusedAtSetup", `ASSERT_
+// FALSE(s.init.ok())`, `E-NEWTON-UNSUPPORTED-REGION`) pinned the
+// blanket "window-scoped is always refused for Newton" rule that rule
+// existed ONLY as a placeholder for this track's own work --
+// `check_region_supports_newton()`'s own comment (src/runtime/fixed_
+// point_residual.cpp) says so directly. Lifting it is this track's
+// entire point, so the assertion flips: `initialize()` now ACCEPTS a
+// window-scoped Newton region (window_fixed_point_residual_test.cpp's
+// own fixture proves a PROPERLY configured one solves correctly).
+//
+// This fixture specifically, though, bolts a bare `CouplingWindowScope`
+// onto dirichlet/neumann -- two components `add_window_coupling()`
+// never configured as real window members (no per-member policy/
+// capacity, no window-transfer channel) -- a MISCONFIGURED window
+// region, not a real one. `resolve_regions()` finds no window member
+// nodes for it (`R.window_member_nodes` stays empty) and so resolves
+// `R.newton_n = 0`: `run_region_newton_window()`'s own Newton solve
+// over a ZERO-length interface vector converges in zero iterations
+// without ever calling `advance()` on either component -- a silent,
+// well-defined NO-OP, not a crash and not a refusal. MEASURED (2026-10-
+// 10): `run_period()` succeeds; `dirichlet`/`neumann`'s own `time()`
+// stays at the pre-run initial value, `history()` stays 0 -- proof
+// nothing advanced, a real test rather than resting on "it didn't
+// throw". A genuinely-configured window region failing to validate
+// THIS way (rather than refusing with a clear diagnostic naming the
+// missing member configuration) is this test's own documented gap,
+// not something Stage B closes -- it is not the scenario any real
+// caller (this track's own Brusselator wiring, add_window_coupling())
+// can reach, since that function always configures every member it
+// declares.
+TEST(NewtonRegion, AWindowScopedRegionWithNoConfiguredWindowMembersIsANoOp) {
   NewtonDnHeatFixture s = make_newton_setup(
       /*max_iterations=*/30, /*cfg=*/{}, /*rcfg=*/{}, /*beta=*/0.0,
       /*neumann_initial_u=*/std::numeric_limits<double>::quiet_NaN(),
@@ -485,9 +516,20 @@ TEST(NewtonRegion, AWindowScopedRegionSelectingNewtonIsRefusedAtSetup) {
             g.iteration_region(fuse::IterationRegionIdx{0}))
             .window_scope = std::move(scope);
       });
-  ASSERT_FALSE(s.init.ok());
-  EXPECT_EQ(s.init.error().code, "E-NEWTON-UNSUPPORTED-REGION")
-      << s.init.error().message;
+  ASSERT_TRUE(s.init.ok()) << s.init.error().message;
+
+  const double dirichlet_time_before = s.dirichlet->time();
+  const double neumann_time_before = s.neumann->time();
+  const double dirichlet_history_before = s.dirichlet->history();
+  const double neumann_history_before = s.neumann->history();
+
+  const auto r = s.runner->run_period(s.components);
+  ASSERT_TRUE(r.ok()) << r.error().message;
+
+  EXPECT_DOUBLE_EQ(s.dirichlet->time(), dirichlet_time_before);
+  EXPECT_DOUBLE_EQ(s.neumann->time(), neumann_time_before);
+  EXPECT_DOUBLE_EQ(s.dirichlet->history(), dirichlet_history_before);
+  EXPECT_DOUBLE_EQ(s.neumann->history(), neumann_history_before);
 }
 
 TEST(NewtonRegion, ExhaustingTheNewtonIterationBudgetReportsNonConvergence) {

@@ -838,6 +838,77 @@ TEST(BrusselatorSpeciesCoreDecomposition, TwoPartitionVDiffusionCoreMatchesSingl
   EXPECT_LT(max_abs_diff, 1e-13);
 }
 
+// S7.2 WindowNewton (newton-krylov.md Sec. 9.5, the task's own brief):
+// `VDiffusionCore::apply_diffusion_preconditioner()` -- the per-sample
+// block-Jacobi preconditioner solve `VComponent::apply_preconditioner()`
+// (species_component.hpp) calls once per window sample -- reuses the
+// SAME `solver_` this file's own `step()` comparison above already
+// proves decomposes correctly; this test is the direct analogue for the
+// preconditioner's own entry point specifically, at 2 partitions,
+// proving the Newton seam's own block preconditioner is not silently
+// wrong under the domain decomposition examples/brusselator's real
+// multi-rank deployment (`VParticipant`) uses.
+TEST(BrusselatorSpeciesCoreDecomposition, TwoPartitionVDiffusionCoreApplyPreconditionerMatchesSingleRank) {
+  auto partitioned = make_partitioned_grid("g", kNx, kNy, 2);
+  fuse::native::NativeMeshBackend whole_backend(0, 1);
+  auto whole_grid_r = NativeGrid::make(whole_backend, "g", kNx, kNy);
+  ASSERT_TRUE(whole_grid_r.ok());
+  const NativeGrid& whole_grid = whole_grid_r.value();
+
+  VDiffusionCore reference(whole_grid, /*diffusion=*/10.0, SolverKind::Direct);
+
+  const BarrierGroup group(2);
+  auto cores = make_cores_concurrently<VDiffusionCore>(2, [&](int r) {
+    return std::make_unique<VDiffusionCore>(
+        partitioned.grids[static_cast<std::size_t>(r)], /*diffusion=*/10.0, SolverKind::Schur,
+        1e-12, group.make_reducer(r, 2), group.make_exchanger_factory(r, 2));
+  });
+
+  const double dt = 0.003;
+  Vector r_on_v = Vector::Zero(kNx * kNy);
+  for (int c = 0; c < kNx * kNy; ++c) r_on_v[c] = 0.01 * static_cast<double>((c % 5) - 2);
+
+  const auto ref = reference.apply_diffusion_preconditioner(dt, r_on_v);
+  ASSERT_TRUE(ref.ok()) << ref.error().message;
+
+  std::vector<fuse::Result<Vector>> results(2, fuse::Result<Vector>{fuse::Failure{"", ""}});
+  std::vector<std::thread> threads;
+  for (int r = 0; r < 2; ++r) {
+    threads.emplace_back([&, r] {
+      const auto& g = partitioned.grids[static_cast<std::size_t>(r)];
+      Vector r_owned(g.owned_size());
+      for (int lj = 0; lj < g.owned_rows(); ++lj) {
+        const int j = g.j_lo() + lj;
+        for (int i = 0; i < g.nx(); ++i) r_owned[g.local_index(i, j)] = r_on_v[g.index(i, j)];
+      }
+      results[static_cast<std::size_t>(r)] =
+          cores[static_cast<std::size_t>(r)]->apply_diffusion_preconditioner(dt, r_owned);
+    });
+  }
+  for (auto& th : threads) th.join();
+
+  double max_abs_diff = 0.0;
+  for (int r = 0; r < 2; ++r) {
+    ASSERT_TRUE(results[static_cast<std::size_t>(r)].ok())
+        << results[static_cast<std::size_t>(r)].error().message;
+    const Vector& z = results[static_cast<std::size_t>(r)].value();
+    const auto& g = partitioned.grids[static_cast<std::size_t>(r)];
+    for (int lj = 0; lj < g.owned_rows(); ++lj) {
+      const int j = g.j_lo() + lj;
+      for (int i = 0; i < g.nx(); ++i) {
+        max_abs_diff = std::max(
+            max_abs_diff,
+            std::abs(z[g.local_index(i, j)] - ref.value()[g.index(i, j)]));
+      }
+    }
+  }
+  std::fprintf(stderr,
+              "[TwoPartitionVDiffusionCoreApplyPreconditionerMatchesSingleRank] "
+              "max_abs_diff=%.3e\n",
+              max_abs_diff);
+  EXPECT_LT(max_abs_diff, 1e-13);
+}
+
 
 // ---- VParticipant: N-partition two-sided remap reproduces the ----------
 // ---- single-rank reference (Halo track) ---------------------------------

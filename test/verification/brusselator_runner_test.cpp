@@ -169,7 +169,14 @@ struct Rig {
       : backend(std::move(backend_in)), u_grid(std::move(u)), v_grid(std::move(v)) {}
 };
 
-[[nodiscard]] Result<std::unique_ptr<Rig>> make_rig() {
+// `with_window_metadata`: S7.2 WindowNewton's own trailing UComponent/
+// VComponent constructor args (own_interval/partner_interval/window_
+// length), needed only so `capabilities()` reports `kCapabilityResidual`
+// (and `kCapabilityLinearization` when the preconditioner is requested)
+// -- defaulted to `false` so every EXISTING call site (Picard/Aitken,
+// neither of which needs either bit) keeps building the SAME Rig it
+// always has.
+[[nodiscard]] Result<std::unique_ptr<Rig>> make_rig(bool with_window_metadata = false) {
   fuse::native::NativeMeshBackend backend{0, 1};
   auto u_grid_r = brusselator::NativeGrid::make(backend, "u", kNxU, kNyU);
   if (!u_grid_r.ok()) return u_grid_r.error();
@@ -205,11 +212,19 @@ struct Rig {
   brusselator::PhysicsConfig cfg;
   cfg.forcing = false;  // see file header
   const int n_u = rig->u_grid.size();
+  const fuse::Rational dt_u{std::llround(kDtU * 1000000), 1000000};
+  const fuse::Rational dt_v{std::llround(kDtV * 1000000), 1000000};
+  const fuse::Rational window{std::llround(kWindow * 1000000), 1000000};
+  const fuse::Rational unset{0};
   rig->comp_v = std::make_unique<brusselator::VComponent>(
-      "V", rig->u_grid, rig->v_grid, cfg, &rig->w_uv, &rig->w_vu);
+      "V", rig->u_grid, rig->v_grid, cfg, &rig->w_uv, &rig->w_vu,
+      with_window_metadata ? dt_v : unset, with_window_metadata ? dt_u : unset,
+      with_window_metadata ? window : unset);
   brusselator::Vector v0_on_u =
       Eigen::Map<brusselator::Vector>(rig->comp_v->provided_ptr(), n_u);
-  rig->comp_u = std::make_unique<brusselator::UComponent>("U", rig->u_grid, cfg, v0_on_u);
+  rig->comp_u = std::make_unique<brusselator::UComponent>(
+      "U", rig->u_grid, cfg, v0_on_u, with_window_metadata ? dt_u : unset,
+      with_window_metadata ? dt_v : unset, with_window_metadata ? window : unset);
   return rig;
 }
 
@@ -355,6 +370,89 @@ int g_fixed_iterations = 0;
   return out;
 }
 
+// S7.2 WindowNewton (newton-krylov.md Sec. 9.6-9.7): the SAME `--driver
+// runner` path `run_via_runner()` above exercises for Picard, selecting
+// `AccelKind::Newton` instead and building the Rig WITH window metadata
+// (`make_rig(/*with_window_metadata=*/true)`) -- the trailing UComponent/
+// VComponent constructor args `capabilities()` needs to honestly report
+// `kCapabilityResidual`/`kCapabilityLinearization`. `build-evidence/
+// mutations/brusselator.toml`'s own `brusselator-preconditioner-solve-
+// replaced-by-identity` row hand-proves `BrusselatorRunner.NewtonConverges
+// InAPinnedIterationCountWithTheBlockJacobiPreconditioner` (below) is
+// sensitive to the per-sample solve this function's own preconditioner
+// wiring calls.
+[[nodiscard]] RunResult run_via_runner_newton(bool use_block_jacobi_preconditioner) {
+  RunResult out;
+  auto rig_r = make_rig(/*with_window_metadata=*/true);
+  if (!rig_r.ok()) { out.error = rig_r.error().message; return out; }
+  auto rig = std::move(rig_r.value());
+
+  fuse::CouplingGraph graph;
+  const fuse::MeshId u_mesh = graph.add_mesh(
+      {.name = "u", .source = "generated:quad:" + std::to_string(kNxU) + "x" + std::to_string(kNyU)});
+  const fuse::MeshId v_mesh = graph.add_mesh(
+      {.name = "v", .source = "generated:quad:" + std::to_string(kNxV) + "x" + std::to_string(kNyV)});
+  const fuse::RegionId u_region = graph.add_region({.name = "u_all", .mesh = u_mesh, .dimension = 2});
+  (void)graph.add_region({.name = "v_all", .mesh = v_mesh, .dimension = 2});
+
+  const Rational dt_u{std::llround(kDtU * 1000000), 1000000};
+  const Rational dt_v{std::llround(kDtV * 1000000), 1000000};
+  const Rational window{std::llround(kWindow * 1000000), 1000000};
+  fuse::NewtonConfig newton_cfg;
+  newton_cfg.use_block_jacobi_preconditioner = use_block_jacobi_preconditioner;
+  newton_cfg.eta_min = 1e-4;  // examples/brusselator/main.cpp's own choice; see that file's comment
+  const brusselator::WindowGraphHandles handles = brusselator::add_window_coupling(
+      graph, u_region, dt_u, dt_v, window, kTol, kMaxIterations, AccelKind::Newton,
+      WaveformIteration::Jacobi, /*coupler_ranks=*/std::nullopt,
+      /*u_ranks=*/fuse::RankSet{0, 0}, /*v_ranks=*/fuse::RankSet{0, 0},
+      /*u_launch=*/fuse::LaunchSpec{}, /*v_launch=*/fuse::LaunchSpec{},
+      /*coupler_launch=*/fuse::LaunchSpec{}, newton_cfg);
+  (void)handles;
+  if (const auto r = rig->backend.register_default_placements(graph, u_mesh); !r.ok()) {
+    out.error = r.error().message;
+    return out;
+  }
+
+  ComponentSet components;
+  components.add(std::move(rig->comp_u));
+  components.add(std::move(rig->comp_v));
+
+  FieldRegistry registry;
+  for (auto& c : components) {
+    const auto r = c.register_fields(registry, graph);
+    if (!r.ok()) { out.error = r.error().message; return out; }
+  }
+
+  const auto lowered = lower(graph);
+  if (!lowered.ok()) { out.error = lowered.diags.to_string(); return out; }
+  const fuse::ClockSet clocks{graph};
+  auto sched = schedule(graph, lowered.dag, clocks, fuse::make_region_sizes(graph, rig->backend));
+  if (!sched.ok()) { out.error = sched.diags.to_string(); return out; }
+
+  fuse::RunnerConfig rcfg;
+  rcfg.abort_on_nonconvergence = true;
+  fuse::Runner runner{graph, lowered.dag, sched.plan, rig->backend};
+  const auto init = runner.initialize(components, registry, rcfg);
+  if (!init.ok()) { out.error = init.error().message; return out; }
+
+  brusselator::UComponent* pu = nullptr;
+  brusselator::VComponent* pv = nullptr;
+  for (auto& c : components) {
+    if (c.name() == "U") pu = dynamic_cast<brusselator::UComponent*>(&c);
+    if (c.name() == "V") pv = dynamic_cast<brusselator::VComponent*>(&c);
+  }
+  if (pu == nullptr || pv == nullptr) { out.error = "component lookup failed"; return out; }
+
+  const auto r = runner.run_period(components);
+  if (!r.ok()) { out.error = r.error().message; return out; }
+  if (runner.iteration_stats().empty()) { out.error = "no iteration stats"; return out; }
+  out.iterations_per_window.push_back(runner.iteration_stats().front().iterations);
+  out.ok = true;
+  out.u_final = pu->state();
+  out.v_final = pv->state();
+  return out;
+}
+
 void expect_vectors_equal(const brusselator::Vector& a, const brusselator::Vector& b,
                           const char* label) {
   ASSERT_EQ(a.size(), b.size()) << label;
@@ -473,6 +571,42 @@ TEST(BrusselatorRunner, GaussSeidelMatchesDriver) {
 // pin for their own problems) -- confirms this test actually exercises
 // two distinct algorithms, not one mode silently falling back to the
 // other.
+// S7.2 WindowNewton (newton-krylov.md Sec. 9.6-9.7): the window-Newton
+// seam converges this graph in a PINNED outer-Newton-iteration count
+// with the real per-species block-Jacobi preconditioner --
+// `build-evidence/mutations/brusselator.toml`'s own
+// `brusselator-preconditioner-solve-replaced-by-identity` row hand-
+// proves replacing `UCore`/`VDiffusionCore::apply_diffusion_
+// preconditioner()`'s own per-sample solve with the identity changes
+// this count (measured: 3 instead of 4 at this Rig's smaller 5x5/7x7
+// grid -- SHORTER than this file's own 16x16/24x24 example default,
+// deliberately, so this test runs in milliseconds).
+TEST(BrusselatorRunner, NewtonConvergesInAPinnedIterationCountWithTheBlockJacobiPreconditioner) {
+  const RunResult with_bj = run_via_runner_newton(/*use_block_jacobi_preconditioner=*/true);
+  ASSERT_TRUE(with_bj.ok) << with_bj.error;
+  ASSERT_EQ(with_bj.iterations_per_window.size(), 1u);
+  EXPECT_EQ(with_bj.iterations_per_window.front(), 4);
+
+  const RunResult without_bj = run_via_runner_newton(/*use_block_jacobi_preconditioner=*/false);
+  ASSERT_TRUE(without_bj.ok) << without_bj.error;
+  ASSERT_EQ(without_bj.iterations_per_window.size(), 1u);
+  EXPECT_EQ(without_bj.iterations_per_window.front(), 3);
+
+  // Both converge to the SAME physical answer WITHIN Newton's own
+  // convergence tolerance, regardless of which preconditioner path got
+  // them there -- but not BIT-identically: different preconditioners
+  // take different GMRES/line-search paths through the tolerance band,
+  // landing at slightly different points inside it (measured: ~3e-13,
+  // consistent with NewtonConfig::rtol's own 1e-8 relative-to-||F_0||
+  // floor at this Rig's problem scale).
+  for (Eigen::Index i = 0; i < with_bj.u_final.size(); ++i) {
+    EXPECT_NEAR(with_bj.u_final[i], without_bj.u_final[i], 1e-9) << "u_final[" << i << "]";
+  }
+  for (Eigen::Index i = 0; i < with_bj.v_final.size(); ++i) {
+    EXPECT_NEAR(with_bj.v_final[i], without_bj.v_final[i], 1e-9) << "v_final[" << i << "]";
+  }
+}
+
 TEST(BrusselatorRunner, GaussSeidelConvergesInNoMoreIterationsThanJacobi) {
   const RunResult jacobi = run_via_runner(WaveformIteration::Jacobi);
   ASSERT_TRUE(jacobi.ok) << jacobi.error;

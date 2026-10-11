@@ -471,6 +471,11 @@ target_include_directories(fuse_runtime_fixed_point_residual_test PRIVATE
 fuse_add_gtest(runtime newton_region LIBS fuse::runtime fuse::backend)
 target_include_directories(fuse_runtime_newton_region_test PRIVATE
   ${CMAKE_SOURCE_DIR}/examples/dn_heat)
+# S7.2 WindowNewton (newton-krylov.md Sec. 9.7's own test plan): the
+# window-scoped seam's own re-enterability/seeding/snapshot/GaussSeidel-
+# exclusion properties, over a synthetic two-member linear-ODE window
+# region (this file's own fixture, not examples/brusselator's).
+fuse_add_gtest(runtime window_fixed_point_residual LIBS fuse::runtime fuse::backend)
 # KNOWN_ISSUES.md D11 (closing) / matrix cell A-SPACES-TRANSPORT: a
 # Runner-level, 2048-element iteration region -- large enough to span
 # several of space_kernels.hpp's fixed reduction chunks -- pinned to exact
