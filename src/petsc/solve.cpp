@@ -170,17 +170,6 @@ PetscErrorCode snes_monitor(SNES snes, PetscInt its, PetscReal fnorm, void* raw_
   return PETSC_SUCCESS;
 }
 
-/// `SNESConvergedReason` -> `fuse::num::NewtonStatus` (docs/dev/
-/// newton-krylov.md Sec. 10's own table). Every reason this track's own
-/// tests can reach maps to a named native status; the six reasons that
-/// have no native counterpart at all (`SNES_CONVERGED_ITS`,
-/// `SNES_CONVERGED_USER`, `SNES_DIVERGED_INNER`, `SNES_DIVERGED_LOCAL_MIN`,
-/// `SNES_DIVERGED_TR_DELTA`, `SNES_DIVERGED_USER`) fall to
-/// `DivergedMaxIterations` as the closest "did not reach a named
-/// convergence test" fallback -- recorded here rather than silently
-/// reused, and never reached by `SNESNEWTONLS` with no trust region, no
-/// user convergence/divergence test, and no inner solve, which is every
-/// configuration this driver builds.
 // ---- the Eisenstat-Walker floor SNES does not have -------------------------
 //
 // fuse::num clamps every forcing term to [eta_min, eta_max]
@@ -232,6 +221,17 @@ PetscErrorCode destroy_forcing_floor(void* raw) {
   return ierr;
 }
 
+/// `SNESConvergedReason` -> `fuse::num::NewtonStatus` (docs/dev/
+/// newton-krylov.md Sec. 10's own table). Every reason this track's own
+/// tests can reach maps to a named native status; the six reasons that
+/// have no native counterpart at all (`SNES_CONVERGED_ITS`,
+/// `SNES_CONVERGED_USER`, `SNES_DIVERGED_INNER`, `SNES_DIVERGED_LOCAL_MIN`,
+/// `SNES_DIVERGED_TR_DELTA`, `SNES_DIVERGED_USER`) fall to
+/// `DivergedMaxIterations` as the closest "did not reach a named
+/// convergence test" fallback -- recorded here rather than silently
+/// reused, and never reached by `SNESNEWTONLS` with no trust region, no
+/// user convergence/divergence test, and no inner solve, which is every
+/// configuration this driver builds.
 fuse::num::NewtonStatus map_reason(SNESConvergedReason reason) {
   switch (reason) {
     case SNES_CONVERGED_FNORM_ABS:
