@@ -644,6 +644,41 @@ class UCore {
     q_prev_ = saved_q_prev_;
   }
 
+  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.5): `z = M^-1 r` for this
+  /// species' own block-Jacobi preconditioner, `M` the SAME `(1 +
+  /// extra_diagonal)*I - dt*diffusion*Laplacian` system `step()` itself
+  /// factors and solves every substep -- `dt`/`extra_diagonal` convention
+  /// IDENTICAL to `step()`'s own call (`extra_diagonal = dt`, this
+  /// class's own reaction term's `+dt` diagonal contribution). Calling
+  /// `factor()` here is deliberately NOT skipped as "already factored by
+  /// the last `step()` call": `factor()` is itself idempotent at an
+  /// unchanged `dt` (`DiffusionSolver::factor()`'s own doc, species_core.
+  /// hpp above -- "a no-op otherwise"), so re-asserting it costs nothing
+  /// when a prior `step()` already factored this exact `dt`, and makes
+  /// this method callable correctly even before any `step()` ever ran
+  /// (a Newton solve's own preconditioner-refresh call, if one were ever
+  /// wired at a `preconditioner_lag` boundary preceding the first
+  /// substep). No state (`state_`/`q_prev_`/the accumulators) is read or
+  /// written -- `solver_` is the ONLY member this touches, matching the
+  /// per-sample, block-diagonal-in-time approximation newton-krylov.md
+  /// Sec. 9.5 derives (the TRUE, lower-triangular-in-time sensitivity is
+  /// never assembled; this is honestly a smoother, not an inverse).
+  [[nodiscard]] fuse::Result<Vector> apply_diffusion_preconditioner(double dt, const Vector& r) {
+    if (const auto factored = solver_->factor(dt, cfg_.diffusion,
+                                              /*extra_diagonal=*/dt);
+        !factored.ok()) {
+      return fuse::Failure{"E-BRUSS-U-PRECOND-FACTORIZE",
+                           "UCore::apply_diffusion_preconditioner: factorization failed"};
+    }
+    auto solved = solver_->solve(r);
+    if (!solved.ok()) {
+      return fuse::Failure{"E-BRUSS-U-PRECOND-SOLVE",
+                           "UCore::apply_diffusion_preconditioner: solve failed or "
+                           "produced a non-finite result"};
+    }
+    return solved;
+  }
+
   /// This rank's own OWNED count (`grid.owned_size()` at construction) --
   /// equals the grid's GLOBAL cell count at `num_ranks()==1`, every
   /// existing (undecomposed) caller's own reading of `n()`. `required`/
@@ -743,6 +778,27 @@ class VDiffusionCore {
   void restore_state() {
     state_ = saved_state_;
     exchange_in_ = saved_exchange_in_;
+  }
+
+  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.5): `UCore::apply_
+  /// diffusion_preconditioner()`'s own comment, mirrored exactly --
+  /// `extra_diagonal = 0.0` is `VDiffusionCore::step()`'s own unchanged
+  /// convention (this class's own file header: "a SEPARATE choice from
+  /// U's own"), not an omission.
+  [[nodiscard]] fuse::Result<Vector> apply_diffusion_preconditioner(double dt, const Vector& r) {
+    if (const auto factored = solver_->factor(dt, diffusion_, /*extra_diagonal=*/0.0);
+        !factored.ok()) {
+      return fuse::Failure{"E-BRUSS-V-PRECOND-FACTORIZE",
+                           "VDiffusionCore::apply_diffusion_preconditioner: factorization "
+                           "failed"};
+    }
+    auto solved = solver_->solve(r);
+    if (!solved.ok()) {
+      return fuse::Failure{"E-BRUSS-V-PRECOND-SOLVE",
+                           "VDiffusionCore::apply_diffusion_preconditioner: solve failed or "
+                           "produced a non-finite result"};
+    }
+    return solved;
   }
 
   [[nodiscard]] int n() const { return n_; }

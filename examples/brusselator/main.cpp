@@ -63,6 +63,25 @@ struct Args {
   /// (docs/user/coupling-windows.md "Through schedule() and the
   /// Runner") -- see main()'s own comment at the branch.
   std::string driver = "window";
+  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.6): "jacobi" (default,
+  /// unchanged -- every window channel lagged) or "gauss-seidel" (the
+  /// v2u channel lagged, u2v resolved within the sweep it is fed from --
+  /// `brusselator_graph.hpp::add_window_coupling()`'s own `iteration_
+  /// mode` parameter, never exposed on this CLI before this track).
+  /// Read by BOTH drivers: `--driver window` builds its own
+  /// `WindowCouplerConfig::iteration` from it directly; `--driver
+  /// runner` threads it into the graph.
+  std::string iteration_mode = "jacobi";
+  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.5): whether `--accel
+  /// newton` additionally asks for the per-species block-Jacobi
+  /// preconditioner (`NewtonConfig::use_block_jacobi_preconditioner`).
+  /// Defaulting to ON (not NewtonConfig's own OFF default) is this
+  /// example's own choice, not the library's: demonstrating the
+  /// physics-based preconditioner IS this track's own point, so a
+  /// reader who types `--accel newton` and nothing else sees it;
+  /// `--no-block-jacobi` reproduces the plain, unpreconditioned solve
+  /// for comparison.
+  bool block_jacobi = true;
 };
 
 [[nodiscard]] Args parse_args(int argc, char** argv) {
@@ -89,15 +108,19 @@ struct Args {
     else if (arg == "--accel") a.accel = next(i);
     else if (arg == "--out") a.out = next(i);
     else if (arg == "--driver") a.driver = next(i);
+    else if (arg == "--iteration-mode") a.iteration_mode = next(i);
+    else if (arg == "--no-block-jacobi") a.block_jacobi = false;
     else if (arg == "--help") {
       std::cout << "Couple independent U/V native-mesh solvers with FUSE's conservative "
                    "supermesh remap and fuse::WindowCoupler.\n"
                    "--nx-u 16 --ny-u 16 --nx-v 24 --ny-v 24\n"
                    "--dt-u 0.002 --dt-v 0.003 --window 0.02 --end 11.5 --alpha 10\n"
                    "--tolerance 1e-11 --max-iterations 60 --out results\n"
-                   "--accel none|aitken|iqn-ils --no-forcing --save-history --check\n"
+                   "--accel none|aitken|iqn-ils|newton --no-forcing --save-history --check\n"
                    "--driver window|runner (default window; runner requires every "
-                   "window the same length)\n";
+                   "window the same length)\n"
+                   "--iteration-mode jacobi|gauss-seidel (default jacobi)\n"
+                   "--no-block-jacobi (--accel newton's own default is ON)\n";
       std::exit(0);
     } else {
       std::fprintf(stderr, "FAIL: unknown argument '%s'\n", arg.c_str());
@@ -110,7 +133,24 @@ struct Args {
 [[nodiscard]] AccelKind parse_accel(const std::string& s) {
   if (s == "aitken") return AccelKind::Aitken;
   if (s == "iqn-ils" || s == "iqn") return AccelKind::IQN_ILS;
+  // S7.2 WindowNewton (newton-krylov.md Sec. 7): `AccelKind::Newton`,
+  // never routed through `make_accelerator()` -- `resolve_regions()`'s
+  // own `if (decl.acceleration.kind == AccelKind::Newton)` branch takes
+  // the Newton path before `R.accel` is ever touched (iteration.cpp).
+  if (s == "newton") return AccelKind::Newton;
   return AccelKind::None;
+}
+
+/// S7.2 WindowNewton (newton-krylov.md Sec. 9.6): the `--iteration-mode`
+/// flag's own parser -- `fuse::WaveformIteration::Jacobi` is the default
+/// for any value other than exactly "gauss-seidel", matching every other
+/// flag on this CLI's own "unrecognised value falls back to the default"
+/// convention (`parse_accel`'s own identical shape, above).
+[[nodiscard]] fuse::WaveformIteration parse_iteration_mode(const std::string& s) {
+  if (s == "gauss-seidel" || s == "gaussseidel" || s == "gs") {
+    return fuse::WaveformIteration::GaussSeidel;
+  }
+  return fuse::WaveformIteration::Jacobi;
 }
 
 /// Decimal -> exact Rational at a fixed denominator, exactly the
@@ -221,10 +261,53 @@ int main(int argc, char** argv) {
   // selected (see main()'s own branch, below the window loop setup). The
   // --driver window path never consults these declarations: WindowCoupler
   // is handed `mu`/`mv`/`channels` directly and never looks at `graph`.
+  // S7.2 WindowNewton (newton-krylov.md Sec. 9.6): `newton_cfg.use_block_
+  // jacobi_preconditioner` is read by `add_window_coupling()` only when
+  // `parse_accel(args.accel) == AccelKind::Newton` (that function's own
+  // auto-trigger) -- harmlessly ignored otherwise, so passing it
+  // unconditionally changes nothing for every other `--accel` value.
+  fuse::NewtonConfig newton_cfg;
+  newton_cfg.use_block_jacobi_preconditioner = args.block_jacobi;
+  // `eta_min`'s own default (0.0, SNES's own) lets Eisenstat-Walker Choice2
+  // tighten the forcing term without a floor -- fine for a single-evaluation
+  // `G`, but this region's own `F` composes MFFD over a WHOLE window's worth
+  // of substeps (11 U-steps, 8 V-steps at the defaults), and the forcing
+  // term's own quadratic tightening (`forcing_alpha = 2.0`) reaches a
+  // demanded GMRES relative tolerance below MFFD's finite-difference noise
+  // floor in as few as 3 Newton steps at these defaults (observed, FUSE_
+  // NEWTON_DEBUG trace, with `eta_min` still at its 0.0 default: eta
+  // reaching ~6.6e-9 for the 4th step while ||F|| was already at ~9e-8
+  // relative to ||F_0|| -- GMRES's own convergence test
+  // (`E-LINALG-NO-CONVERGENCE`) then fails to reach that eta -- the trace
+  // records 0 completed outer GMRES iterations against a demanded
+  // tolerance the finite-difference Jacobian action cannot supply at that
+  // scale, despite 1208 MFFD evaluations spent trying -- reported as
+  // `DivergedLinearSolve` even though the nonlinear iterate itself was
+  // already converged for every practical purpose). A floor here is
+  // exactly the caller-set option `NewtonConfig::eta_min`'s own doc
+  // comment (`fuse/model/iteration.hpp`) names for this case. `1e-4`
+  // (two orders of magnitude above the observed stagnation point) was
+  // chosen over a tighter floor such as `1e-6` after measuring both:
+  // `1e-6` also converges every window (575/575 windows, `--end 11.5`,
+  // confirmed without divergence over the first 222 before being cut
+  // short for runtime) but spends 70-110 GMRES iterations on the last
+  // Newton step of EVERY window chasing a linear-solve accuracy the
+  // outer nonlinear test does not need; `1e-4` converges the same windows
+  // in the same 3-4 Newton steps at a fraction of the GMRES cost (as low
+  // as 2-6 iterations per step once the trajectory settles into its
+  // oscillatory regime, `--end 1.0` measurement, 50/50 windows).
+  newton_cfg.eta_min = 1e-4;
   [[maybe_unused]] const brusselator::WindowGraphHandles window_graph =
       brusselator::add_window_coupling(graph, u_region, to_rational(args.dt_u),
                                        to_rational(args.dt_v), window, args.tolerance,
-                                       args.max_iterations, parse_accel(args.accel));
+                                       args.max_iterations, parse_accel(args.accel),
+                                       parse_iteration_mode(args.iteration_mode),
+                                       /*coupler_ranks=*/std::nullopt,
+                                       /*u_ranks=*/fuse::RankSet{0, 1},
+                                       /*v_ranks=*/fuse::RankSet{0, 1},
+                                       /*u_launch=*/fuse::LaunchSpec{},
+                                       /*v_launch=*/fuse::LaunchSpec{},
+                                       /*coupler_launch=*/fuse::LaunchSpec{}, newton_cfg);
 
   fuse::RemapPlan plan_vu;  // V (source) -> U (target): row=U native idx, col=V native idx
   plan_vu.src = v_region;
@@ -257,10 +340,17 @@ int main(int argc, char** argv) {
   phys_cfg.diffusion = args.alpha;
   phys_cfg.forcing = args.forcing;
 
-  auto comp_v = std::make_unique<brusselator::VComponent>("V", u_grid, v_grid, phys_cfg,
-                                                           &w_uv.value(), &w_vu.value());
+  // S7.2 WindowNewton (newton-krylov.md Sec. 9.5): the window metadata
+  // `UComponent`/`VComponent`'s own `evaluate_residual()`/`linearization()`
+  // need -- harmless to pass unconditionally (every pre-existing `--accel`
+  // value never calls either; `capabilities()` gates on it being set, not
+  // on which `--accel` was chosen).
+  auto comp_v = std::make_unique<brusselator::VComponent>(
+      "V", u_grid, v_grid, phys_cfg, &w_uv.value(), &w_vu.value(), to_rational(args.dt_v),
+      to_rational(args.dt_u), window);
   brusselator::Vector v0_on_u = Eigen::Map<brusselator::Vector>(comp_v->provided_ptr(), n_u);
-  auto comp_u = std::make_unique<brusselator::UComponent>("U", u_grid, phys_cfg, v0_on_u);
+  auto comp_u = std::make_unique<brusselator::UComponent>(
+      "U", u_grid, phys_cfg, v0_on_u, to_rational(args.dt_u), to_rational(args.dt_v), window);
   // Raw observers, valid regardless of which driver below ends up OWNING
   // the pointees: `--driver window` never moves `comp_u`/`comp_v` out of
   // this scope; `--driver runner` moves them into a `fuse::ComponentSet`,
@@ -324,6 +414,15 @@ int main(int argc, char** argv) {
       cfg.window_length = len;
       cfg.max_iterations = args.max_iterations;
       cfg.acceleration = AccelConfig{.kind = parse_accel(args.accel)};
+      // S7.2 WindowNewton (newton-krylov.md Sec. 9.6): --accel newton is
+      // Runner-only (make_accelerator() has no case for it, and
+      // WindowCoupler never gained a Newton solve of its own) -- a
+      // caller asking for both refuses cleanly, with E-ACCEL-KIND, from
+      // inside WindowCoupler::create() below, the same existing refusal
+      // this CLI already relies on for every other mistyped --accel
+      // value; nothing added here makes that combination succeed.
+      const fuse::WaveformIteration iteration_mode = parse_iteration_mode(args.iteration_mode);
+      cfg.iteration = iteration_mode;
       // The user's decision (relayed 2026-09-29): a convergence measure
       // names a field TRANSFER (a WindowChannel, by its own `name`), not
       // the whole coupled system. Split into the two real transfers, same
@@ -344,10 +443,18 @@ int main(int argc, char** argv) {
       cfg.waveform_capacity =
           static_cast<std::size_t>(std::ceil(len.to_double() / std::max(min_dt, 1e-9))) + 8;
 
+      // S7.2 WindowNewton (newton-krylov.md Sec. 9.6): under
+      // GaussSeidel, "v_out" (V -> U) is the lagged direction --
+      // `brusselator_graph.hpp::add_window_coupling()`'s own identical
+      // choice for `ch_v2u` under the same mode, reproduced here so the
+      // two drivers agree on which direction is lagged. Silently
+      // ignored under Jacobi (`WindowChannel::lagged`'s own docstring).
       auto created = WindowCoupler::create(
           {mu, mv},
           {{.provider = 0, .consumer = 1, .name = "u_out"},
-           {.provider = 1, .consumer = 0, .name = "v_out"}},
+           {.provider = 1, .consumer = 0,
+            .lagged = iteration_mode == fuse::WaveformIteration::GaussSeidel,
+            .name = "v_out"}},
           cfg);
       if (!created.ok()) {
         std::fprintf(stderr, "FAIL: WindowCoupler::create at t=%.6f: %s\n",

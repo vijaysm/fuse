@@ -105,6 +105,18 @@ struct WindowGraphHandles {
 /// itself: a coupler launched as its own program must take part in
 /// `connect()`'s own collective like any other launched entry, which is
 /// why that field exists at all (`component.hpp`'s own comment on it).
+/// `newton_config`: S7.2 WindowNewton's own addition (newton-krylov.md
+/// Sec. 9, trailing and defaulted -- every existing caller passing
+/// `accel != AccelKind::Newton` is unaffected). Read only when `accel ==
+/// AccelKind::Newton`, in which case `decl.requires_residual_capability`
+/// is set unconditionally and `decl.requires_linearization_capability`
+/// is set when `newton_config.use_block_jacobi_preconditioner` is --
+/// the SAME auto-trigger `fuse::IterationBuilder::accelerate()`/`::
+/// newton()` apply for a graph built through that fluent API
+/// (newton-krylov.md Sec. 7), reproduced BY HAND here because this
+/// function builds `decl` directly rather than through `IterationBuilder`
+/// (its own call below, `g.add_iteration_region(decl)`, never passes
+/// through that builder either).
 [[nodiscard]] inline WindowGraphHandles add_window_coupling(
     fuse::CouplingGraph& g, fuse::RegionId u_region, fuse::Rational dt_u,
     fuse::Rational dt_v, fuse::Rational window, double tolerance,
@@ -114,7 +126,18 @@ struct WindowGraphHandles {
     fuse::RankSet u_ranks = fuse::RankSet{0, 1},
     fuse::RankSet v_ranks = fuse::RankSet{0, 1},
     fuse::LaunchSpec u_launch = {}, fuse::LaunchSpec v_launch = {},
-    fuse::LaunchSpec coupler_launch = {}) {
+    fuse::LaunchSpec coupler_launch = {},
+    // `newton_config` is LAST, not alongside `iteration_mode` above,
+    // DELIBERATELY: every pre-existing call site that passes one or more
+    // of the RankSet/LaunchSpec parameters above POSITIONALLY (`test/
+    // verification/brusselator_participants_test.cpp`, `examples/
+    // brusselator/participants/brusselator_graph_tool.cpp`) would bind
+    // the wrong argument to the wrong parameter, or fail to compile
+    // outright, if this were inserted any earlier in the list --
+    // appending it after every existing parameter, all of which already
+    // have defaults, is the only placement that changes nothing for any
+    // existing caller.
+    fuse::NewtonConfig newton_config = fuse::NewtonConfig{}) {
   using fuse::ComponentDecl;
   using fuse::ComponentKind;
   using fuse::Conservation;
@@ -182,6 +205,16 @@ struct WindowGraphHandles {
   decl.convergence.add(ConvergenceMeasure{MeasureKind::Relative, tolerance, "u_out"});
   decl.convergence.add(ConvergenceMeasure{MeasureKind::Relative, tolerance, "v_out"});
   decl.acceleration.kind = accel;
+  // S7.2 WindowNewton: the SAME auto-trigger `fuse::IterationBuilder::
+  // accelerate()`/`::newton()` apply (newton-krylov.md Sec. 7), by hand,
+  // since this function never goes through that builder.
+  if (accel == fuse::AccelKind::Newton) {
+    decl.requires_residual_capability = true;
+    decl.newton_config = newton_config;
+    if (newton_config.use_block_jacobi_preconditioner) {
+      decl.requires_linearization_capability = true;
+    }
+  }
 
   CouplingWindowScope scope;
   scope.explicit_interval = window;
