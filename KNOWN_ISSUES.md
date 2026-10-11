@@ -228,7 +228,7 @@ it. Closing A4 all the way to "measured" needs a host; the exact rows are
 named above and, for the LowFive pair, carry their own further dependency,
 tracked once, in D14, not repeated here.**
 
-### A5. A device number waits on a GPU machine — your sequencing
+### ~~A5. A device number waits on a GPU machine — your sequencing~~ — CLOSED 2026-10-11: measured on a real GPU, at the kernel layer AND through `Runner::Impl::execute()` itself
 
 **Your call, recorded 2026-09-17: get host threading fully working first, then
 retry on a machine with a GPU.** That is the right order, and the host-threading
@@ -236,15 +236,67 @@ half is now measured rather than asserted: 65/65 on `Threads Serial` from the
 installed Kokkos and 65/65 on `OpenMP Serial` from a fetched one, both recorded
 in the note under A1. Those are all three host-parallel spaces.
 
-Nothing in the code has to change for a GPU. The typed kernel tests instantiate
-on whatever spaces the build enables, so on a CUDA- or HIP-enabled Kokkos they
-pick up the device space automatically and the startup banner will name it. What
-that run would add is a *measured* number; parameterisation is a precondition
-for device performance, not evidence of it, and the headers say so.
+~~Nothing in the code has to change for a GPU.~~ That was true at the kernel
+layer and is now measured there: on a GeForce GTX 1050 Ti (sm_61, toolkit
+`/usr/local/cuda-12.5`) against a `/opt/kokkos` built with
+`Kokkos_DEVICES=OPENMP;SERIAL;CUDA`, `ctest -R space_kernels -V` prints
+`[ spaces ] enabled: Cuda OpenMP Serial (default Cuda)` and all 27 typed
+kernel tests (9 per space, `Kokkos::Cuda` included) pass with zero code
+changes — exactly the number the previous version of this entry asked for.
 
-**What to do.** Nothing until you have the machine. Then configure against a
-GPU-enabled Kokkos and run the suite; the banner tells you whether the device
-space was actually picked up.
+It was NOT true one layer up, and that is what this closure adds. The
+`Runner::Impl::execute()` instruction stream was hard-wired to
+`Kokkos::DefaultHostExecutionSpace`: a GPU build ran every kernel-layer unit
+test on the device and every coupling workload on the host. The fix (branch
+`vijaysm/kokkos-device`, design and reasoning in
+`docs/dev/runner-device-dispatch.md`):
+
+- `RunnerConfig::execution_space` (`Host`, the default, or `Device`).
+  `execute()` is now a two-line dispatcher over `execute_on<Space>()`; the 9
+  `OpKind` cases that were already Kokkos-templated (`Interpolate` identity,
+  `Remap` identity + weighted, `Sample` non-spacetime, `Accumulate`,
+  `Extrapolate`, `Merge`, `Scale`, `Relax`, `Residual`) run on the requested
+  space; the host-only cases (`Transport`'s MPI `move()`, `Epoch`,
+  `Constrain`, `Sink`, ...) are untouched. Host mode is byte-identical to the
+  old code: the span helpers wrap the raw host pointer when the space is
+  host-accessible, so the 279 pre-existing tests exercise the same
+  instantiation they always did.
+- Device mode stages each dispatched instruction's arcs (and `previous[]`
+  for `Relax`/`Residual`) through one device buffer allocated in `setup()`
+  (`fuse::dev_staging`, four lanes of the widest slot — nothing in the sweep
+  loop allocates, the standing invariant on `reduction_scratch`), with the
+  remap CSR mirrored to the device once at `resolve_remap()` time.
+  Requesting `Device` on a build whose Kokkos has no CUDA/HIP/SYCL backend is
+  refused at `setup()` with `E-RT-DEVICE`, not silently downgraded.
+- `RunStats::device_dispatches` counts instructions that really ran on the
+  device (0 in `Host` mode), and `Runner::device_execution_space_name()`
+  names the space the build would use, so a test can assert the device path
+  was taken rather than infer it.
+
+**Measured** (`test/runtime/runner_device_test.cpp`, ctest row
+`runtime.runner_device`): the same two coupling scenarios — a four-substep
+`Mean` accumulation with identity remap, and an 8→6-cell weighted remap
+followed by a 0.5 relaxation — run through the real `Runner` once on `Host`
+and once on `Device` (`device_execution_space_name()` == `"Cuda"` on this
+machine, `device_dispatches > 0` on the device run). Accumulate/Scale/copy
+agree **bitwise**; `Relax` and weighted `Remap` agree to `1e-14` relative,
+not bitwise, because nvcc contracts `a*b+c` into FMA inside `RelaxFunctor`/
+`RemapMultiFunctor` (the same gap D36 closed for the deterministic reductions
+with `unfused_multiply_add`; those two kernels were left as-is because
+`build-evidence/mutations.toml` anchors their exact source lines). Full
+suite after the change: 280/280 on `ctest -j1` (279 in one run; the one
+failure, `abi.fortran_consumer_compiles`, was a nested-cmake reconfigure
+tripping over a not-yet-registered test source from unrelated in-flight
+work in the same tree, and passed on re-run with nothing else changed).
+
+**Honest expectation, stated rather than hidden**: the device path is slower
+than the host path for these workloads, not faster — every device-dispatched
+instruction adds a host→device→host staging round trip the host path does not
+pay, and the arcs are a few dozen doubles. This closure is the dispatch
+pattern proven end-to-end with a measured number, not a performance claim;
+a device-resident field storage (no staging) is the follow-on if one is ever
+wanted, and `docs/dev/runner-device-dispatch.md` records why `previous[]`
+could not simply be made device-native (`advance_window()` reads it).
 
 ---
 

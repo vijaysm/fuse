@@ -123,15 +123,18 @@ number we already have." That is the scope below.
 3. Device-resident companions, each allocated **once** (never per-instruction
    — this file has a standing "nothing in the sweep loop may allocate"
    invariant, stated on `reduction_scratch`'s own comment and
-   `iteration.cpp`'s header): per-arc field mirrors (deep_copy staged in/out
-   around each device-dispatched instruction), a device-space companion to
-   `detail::RemapCsr` (built via one `deep_copy` from the already-built host
-   triplets — the expensive stable-sort/prefix-scan still only ever runs once,
-   on host), a device-space companion to `reduction_scratch` (reusing
-   `space_kernels.hpp`'s existing `finalize_deterministic_scratch`
-   mirror+`deep_copy` idiom verbatim), and device-native (no staging needed)
-   versions of `previous[]`/spacetime `history`, since nothing outside
-   `execute()` itself ever touches those two.
+   `iteration.cpp`'s header). **As built** (the plan's version of this item
+   was revised during implementation; the deviations and why are in "What
+   was actually built" below): one device staging buffer
+   (`Impl::device_staging`, label `fuse::dev_staging`, `kDeviceStagingSlots`
+   = 4 lanes each `max(slots[i].total())` doubles) allocated at the end of
+   `setup()` only when `execution_space == Device`, through which each
+   device-dispatched instruction's arcs are deep_copy-staged in before the
+   kernel and written back after; and a device-space twin of
+   `detail::RemapCsr` (`RemapCsrOf<DeviceMemSpace>`, `remap_csr_device[]`)
+   built by `mirror_remap_csr()` via three `deep_copy`s from the already-built
+   host triplets at `resolve_remap()` time — the expensive stable-sort/
+   prefix-scan still only ever runs once, on host.
 4. Staged rollout, **full ctest suite must stay green after every stage**
    before the next one starts (see the plan file for the exact 5-stage
    breakdown and what each commit contains). Stage 2 (templating `execute()`
@@ -139,13 +142,73 @@ number we already have." That is the scope below.
    the "already host-only" vs. "needs `Space`" list above line by line, don't
    just trust a green test run, since the existing 279 tests only exercise
    the host branch either way.
-5. A new test (`test/runtime/runner_device_test.cpp` or similar) runs a
-   representative multi-instruction coupling scenario through the real
-   `Runner::Impl::execute()` on both `Host` and `Device`, asserts
-   bit-identical results (deterministic reductions make this valid) and
-   asserts the device run's space name really is `"Cuda"` on this machine.
+5. A new test (`test/runtime/runner_device_test.cpp`, ctest row
+   `runtime.runner_device`) runs two representative multi-instruction
+   coupling scenarios through the real `Runner` on both `Host` and `Device`,
+   asserts the device run's space name really is `"Cuda"` on this machine
+   and that `RunStats::device_dispatches > 0`, and compares results: bitwise
+   for the accumulate/scale/copy-shaped instructions, to `1e-14` relative
+   for `Relax`/weighted `Remap` (see "What was actually built" for why not
+   bitwise there).
 6. `KNOWN_ISSUES.md`'s A5 gets a final update recording this — now genuinely
    covering `Runner::Impl`, not just the kernel-layer unit tests.
+
+## What was actually built (Part A, 2026-10-11) — deviations from the plan above
+
+Part A is complete on `vijaysm/kokkos-device`; each stage is its own commit
+(see `git log`). Four things differ from the design as planned, each decided
+when the code contradicted the plan's assumption:
+
+- **`previous[]` is staged, not device-native.** The plan said nothing
+  outside `execute()` touches `previous[]`. Wrong: `advance_window()` reads
+  it (`runner_impl.hpp`, the `WindowMemberConfig` comment: "previous[]/
+  slots[] both read deliberately one sweep late"). A device-native copy
+  would have desynchronised the window path. So `Relax`/`Residual` stage
+  `previous[]` through the same per-instruction device lanes as the arcs;
+  host memory stays authoritative. Cost: one extra deep_copy pair per
+  `Relax`/`Residual` on the device path — performance only, which this
+  document already concedes for the whole device path.
+- **No `reduction_scratch` device companion.** It is used only by
+  `iteration.cpp`'s deterministic norms over host arc buffers, which stay
+  host-resident under this port. If `iteration.cpp` ever dispatches on
+  `Space` it needs its own companion then; nothing today does.
+- **Per-instruction staging buffer instead of per-arc mirrors.** One
+  `device_staging` buffer of four lanes (an instruction reads at most three
+  spans — `in`, `in2`/`weights`, `previous` — and writes one) sized to the
+  widest slot is simpler and allocates less than one mirror per arc, and
+  keeps the same "allocated once in `setup()`, never in the sweep loop"
+  property. Lanes are keyed by host pointer within one instruction, so an
+  arc that appears twice (e.g. in-place `Scale`) uses one lane; a lane is
+  widened in place if a later span over the same pointer is longer
+  (writing dirty data back first). Overflow of either bound is an
+  `E-RT-DEVICE` failure, never silent truncation.
+- **Relax/Remap are not bit-identical to host.** nvcc contracts `a*b+c`
+  into a fused multiply-add inside `RelaxFunctor`/`RemapMultiFunctor` — the
+  same gap D36 closed for the deterministic dot/norm reductions with
+  `unfused_multiply_add`. Those two kernels were left untouched because
+  `build-evidence/mutations.toml` anchors their exact source lines; the test
+  asserts `<= 1e-14` relative for those two shapes and bitwise for the rest.
+  Closing the gap for real means applying D36's idiom to the two functors
+  and re-anchoring the mutation rows — a separate, small change if anyone
+  wants bitwise there.
+
+Two observables were added so the test can prove the device path ran rather
+than infer it: `RunStats::device_dispatches` (an `int64` counter, following
+`remap_weight_builds`' "a counter and not a boolean" precedent; 0 in `Host`
+mode) and `Runner::device_execution_space_name()` (static,
+`DeviceExecSpace::name()`). The refusal when `Device` is requested on a
+build with no device backend is a `setup()`-time `E-RT-DEVICE` failure (the
+plan said "`E-RT-NO-DEVICE` or similar"; `E-RT-<NOUN>` matches the existing
+code family). That branch is unreachable on a CUDA build, so its test
+`GTEST_SKIP`s here with the build's device space named in the skip message.
+
+One build-environment fact worth knowing before running anything: every TU
+that sees a Kokkos header must go through `/opt/kokkos/bin/nvcc_wrapper`,
+which `mpicxx` picks up from `OMPI_CXX` (set by `CMakePresets.json`'s
+`_machine` preset). A bare `cmake --build build-all` from a shell without
+`OMPI_CXX=/opt/kokkos/bin/nvcc_wrapper` exported fails on every
+Kokkos-touching TU with g++ rejecting `-Wext-lambda-captures-this`/
+`-arch=sm_61`. Pre-existing, not introduced here.
 
 **Honest expectation to state in the final report, not hide**: this makes
 `Runner`'s device path slower than its host path, not faster (every
