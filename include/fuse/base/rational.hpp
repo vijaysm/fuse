@@ -3,7 +3,6 @@
 #include <compare>
 #include <cstdint>
 #include <limits>
-#include <numeric>
 #include <optional>
 #include <string>
 
@@ -37,6 +36,22 @@ constexpr void check_fits_i64(Int128 v, const char* what) {
   if (!fits_i64(v)) {
     FUSE_REFUSE("E-BASE-RATIONAL-OVERFLOW", "{}", what);
   }
+}
+
+/// std::gcd rejects Int128 outright under nvcc's host pass: libstdc++'s
+/// is_integral_v<__int128> -- which std::gcd's own static_assert requires --
+/// is false there (GCC's own front end recognises it; nvcc's EDG one does
+/// not), so Kokkos' CUDA build needs its own gcd instead of the standard
+/// one. Same contract as std::gcd: the sign of the inputs does not matter.
+constexpr Int128 gcd128(Int128 a, Int128 b) noexcept {
+  if (a < 0) a = -a;
+  if (b < 0) b = -b;
+  while (b != 0) {
+    const Int128 t = b;
+    b = a % b;
+    a = t;
+  }
+  return a;
 }
 }  // namespace detail
 
@@ -219,7 +234,7 @@ class Rational {
                                                           const Rational& b) {
     const detail::Int128 ad = a.den_;
     const detail::Int128 bd = b.den_;
-    const detail::Int128 dg = std::gcd(ad, bd);
+    const detail::Int128 dg = detail::gcd128(ad, bd);
     const detail::Int128 l = (ad / dg) * bd;  // divide first: no needless growth
     detail::check_fits_i64(l, "Rational::lcm_denominator: denominator lcm overflow");
     return Rational{1, static_cast<std::int64_t>(l)};
@@ -270,7 +285,7 @@ class Rational {
       d = -d;
     }
     const detail::Int128 an = n < 0 ? -n : n;
-    const detail::Int128 g = std::gcd(an, d);
+    const detail::Int128 g = detail::gcd128(an, d);
     if (g > 1) {
       n /= g;
       d /= g;
@@ -297,7 +312,7 @@ class Rational {
   const detail::Int128 an_wide = a.num();
   const detail::Int128 bn_wide = b.num();
   const detail::Int128 g =
-      std::gcd(an_wide < 0 ? -an_wide : an_wide, bn_wide < 0 ? -bn_wide : bn_wide);
+      detail::gcd128(an_wide < 0 ? -an_wide : an_wide, bn_wide < 0 ? -bn_wide : bn_wide);
   // |INT64_MIN| == 2^63 does not fit in int64_t (max 2^63 - 1), so narrowing
   // it silently would wrap back to INT64_MIN.
   if (!detail::fits_i64(g)) return std::nullopt;
@@ -310,7 +325,7 @@ class Rational {
   // decomposition into common-refinement intervals.
   const detail::Int128 ad = a.den();
   const detail::Int128 bd = b.den();
-  const detail::Int128 dg = std::gcd(ad, bd);
+  const detail::Int128 dg = detail::gcd128(ad, bd);
   const detail::Int128 l = (ad / dg) * bd;  // divide first: no needless growth
   if (!detail::fits_i64(l)) return std::nullopt;
   return Rational{static_cast<std::int64_t>(g), static_cast<std::int64_t>(l)};
