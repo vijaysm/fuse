@@ -3261,6 +3261,60 @@ type. The robustness rule favours (a); the accuracy rule, read literally, favour
 owner decides, the Release configuration is **built and known to fail these three cases**, and no
 Release number is cited anywhere in the documentation.
 
+### ~~D31. This host's Open MPI (4.1.5) hangs in `MPI_Alltoallv` on any communicator but `MPI_COMM_WORLD`~~ — WORKED AROUND 2026-10-10
+
+**Measured 2026-10-10**, tracking down a hang in `parallel.mpi_transport.{4,5}`, `parallel.comm_graph.{4,5}`
+and every other multi-rank test whose binary calls `MPI_Alltoallv` on a communicator `MpiTransport`,
+`fuse::transport::connect()`, the MOAB backend or `CommGraph`'s union-communicator construction had
+itself produced (`MPI_Comm_dup`, `MPI_Comm_split`+`MPI_Comm_create_group`, or similar) rather than
+`MPI_COMM_WORLD` straight from `MPI_Init`. Reproduced in isolation with zero fuse or Kokkos code: a
+bare `MPI_Comm_dup(MPI_COMM_WORLD, &dup)` followed by one `MPI_Alltoallv` on `dup`, at 4 ranks, with
+either a disjoint-halves pattern (2 senders, 2 receivers) or a fully dense one. Rank 0 always returns
+from the call; every other rank is still inside it when the process is killed. The identical pattern
+on `MPI_COMM_WORLD` itself, unchanged, always completes.
+
+An initial hypothesis — `MPI_Comm_dup` returning locally on some ranks before an internal context-id
+handshake settles on all of them, under `MPI_THREAD_MULTIPLE` — turned out to be wrong, and the
+`MPI_Barrier` added to close it (on the four communicator-creation sites named above) did **not**
+fix anything: the same reproducer still hangs with an `MPI_Barrier` on `dup` placed immediately
+before the `MPI_Alltoallv`, and the hang reproduces identically under `MPI_THREAD_FUNNELED` and even
+plain `MPI_Init` with no threading support requested at all, and independent of which BTL (`vader`,
+`tcp`) or PML (`ob1`) carries the traffic. Those barriers were removed again once this was clear —
+they cost a synchronisation per communicator for no effect.
+
+What actually isolates it: `ompi_info --param coll tuned --level 9`'s `coll_tuned_alltoallv_algorithm`
+control variable. Forcing algorithm 1 ("basic_linear" — this build's own default choice for a non-
+`MPI_COMM_WORLD` communicator at this rank count, confirmed via `--mca coll_tuned_alltoallv_algorithm 1`)
+hangs every time; forcing algorithm 2 ("pairwise") passes every time, on the isolated reproducer and
+on the real `fuse_parallel_mpi_transport_test`/`fuse_parallel_comm_graph_test` binaries alike (30/30
+and 28/28 subtests respectively, where they previously hung). This reads as a real bug in this Open
+MPI build's `coll/tuned` component's basic_linear alltoallv implementation for non-`COMM_WORLD`
+communicators, not anything about thread level, BTL, or fuse's own collective sequencing.
+
+**Worked around, not fixed** (this project does not own Open MPI): every `fuse_add_mpi_test` and
+`fuse_partition_add_mpi_test` row (`test/CMakeLists.txt`, `test/partition/CMakeLists.txt`), the
+`parallel.connect.*` rows and the `verification.brusselator.participants.*` rows (both in
+`examples/CMakeLists.txt`) now set `OMPI_MCA_coll_tuned_use_dynamic_rules=1` and
+`OMPI_MCA_coll_tuned_alltoallv_algorithm=2` in their `ENVIRONMENT` test property. Harmless on any
+other MPI (an `OMPI_MCA_*` variable an MPICH or other `mpiexec` does not recognise is simply unused
+environment, not an error), and a correctness-preserving algorithm choice everywhere dynamic rules
+reach on Open MPI itself — just not necessarily the fastest one at rank counts this project does not
+target. A regression guard lives at `MpiTransportDiag.RawAlltoallvDisjointHalvesOnADuplicatedCommAtFourRanks`
+(`test/parallel/mpi_transport_test.cpp`): it fails fast if this workaround is ever missing or stops
+being effective, rather than leaving the next host run to rediscover it as an unexplained 120s
+timeout. **Anyone running a fuse binary directly against this exact Open MPI build, outside ctest,
+needs the same two environment variables set** to avoid the same hang.
+
+A separate, unrelated host quirk surfaced by the same investigation: every `n=5` row
+(`model.descriptor_mpi.5`, `parallel.mpi_transport.5`, `parallel.comm_graph.5`, and every other
+rank-5 row) failed outright with Open MPI's own "not enough slots" refusal, even though the host has
+8 logical CPUs. `lscpu` says why: 4 physical cores behind those 8 (hyperthreading), and Open MPI
+sizes its default slot count from physical cores, not `nproc`. The same `ENVIRONMENT` lines above
+also carry `OMPI_MCA_rmaps_base_oversubscribe=1` (the environment-variable equivalent of `mpiexec
+--oversubscribe`) for exactly this reason -- these are correctness tests at a handful of ranks, not
+a throughput benchmark, so running more ranks than physical cores is the point at `n=5`, not a
+mistake to refuse.
+
 ### D27. The native backend's remap halo has no `accumulate_remap_halo` counterpart
 
 **Closed for the forward direction, 2026-10-10 ("Halo" track):** `fuse::native::NativeMeshBackend`
