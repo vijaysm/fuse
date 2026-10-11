@@ -1148,3 +1148,236 @@ proving that specific path needs a two-window-instance, Fixed-policy
 (genuinely straddling), post-commit-probe fixture this track did not
 build. Reported here rather than claimed via a fabricated mutation
 `result`.
+
+## 10. The PETSc substrate (PetscToken track, S7.2b, 2026-10-11)
+
+This section is the second substrate behind the SAME Newton seam §1-§5
+describe: a `fuse::LinearizationToken` whose Jacobian action is PETSc's
+own `MATMFFD` (Walker-Pernice differencing, `MATMFFD_WP` -- the identical
+rule `fuse::num::MffdJacobianAction` (§6.1) implements natively) and whose
+preconditioner is a PETSc `PC`, plus a `SNES` (`SNESNEWTONLS`) driver over
+the identical `fuse::num::ResidualFn`/`NewtonResult` shapes the native
+`fuse::num::solve()` already uses. Nothing in §1-§9's own seam is
+PETSc-shaped, and nothing in the native Newton solver (§6-§9) knows which
+substrate a `LinearizationToken` comes from -- this track adds a SECOND
+implementation behind the same interface, never a change to the first.
+`FUSE_ENABLE_PETSC` has no hard dependency anywhere in the library: a
+build without it carries zero `fuse::petsc::*` symbols (the library target
+`fuse-coupler-petsc`, src/CMakeLists.txt, does not exist at all in that
+configuration) and the existing 187 tier-0 rows are byte-for-byte
+unaffected (verified this track: 187/187 pass, identical row count, with
+`FUSE_ENABLE_PETSC` OFF).
+
+### 10.1 The token: `fuse::petsc::MffdToken`, `make_assembled_token`
+
+`include/fuse/petsc/token.hpp` / `src/petsc/token.cpp`. No PETSc type
+names appear in the public header at all (`tools/check-layering.py`'s
+`FORBIDDEN_PUBLIC` rule matches `petsc` in any `#include` line, at any
+layer, with no exception carved out for this one) -- every `<petsc.h>`
+call lives in the two private `.cpp` files, behind plain
+`std::span`/`DistVector` shapes.
+
+`fuse::petsc::MffdToken` extends `fuse::LinearizationToken` with two
+methods the base interface has no notion of: `set_base_point(x, fx = {})`
+(the linearisation point `apply_jacobian()` differences around -- `fx`,
+when supplied, is `F(x)` already known by the caller, avoiding one extra
+evaluation `MATMFFD` would otherwise spend internally recomputing it) and
+`set_block_preconditioner(blocks)` (installs a `PCSHELL` composing the
+SAME `fuse::num::BlockJacobiPreconditioner::from_blocks` the native
+solver's own §6.1 mechanism 6 uses -- reused, not reimplemented, so the
+tiling-coverage check (`E-NEWTON-PRECOND-COVERAGE`) and the per-block
+apply are identical code on both substrates). `apply_jacobian_transpose`
+unconditionally refuses `E-PETSC-NO-TRANSPOSE`: `MATMFFD` has no
+transpose (a one-sided finite-difference action is not
+invertible-by-transpose), so this token refuses rather than asking PETSc
+for an operation that would itself fail less legibly.
+`apply_jacobian`/`apply_preconditioner` both refuse `E-PETSC-MFFD-NO-POINT`
+before the first `set_base_point()` call, the identical "programmer
+error, refused" shape `MffdJacobianAction::apply`'s own
+`E-NEWTON-MFFD-NO-POINT` uses.
+
+`fuse::petsc::make_assembled_token` wraps a real, assembled `MATAIJ`
+(`MatCreateSeqAIJ` from a caller-supplied triplet list) instead of an
+`MATMFFD` -- the counterpart the adjoint-identity check needs, since the
+MFFD token above has no transpose to test against at all. Both
+`apply_jacobian`/`apply_jacobian_transpose` are genuine `MatMult`/
+`MatMultTranspose` calls against the same matrix.
+
+**Initialisation ownership.** `fuse::petsc::ensure_initialized(comm_f)`
+initialises PETSc on the communicator `comm_f` (an `MPI_Comm_c2f()`
+handle, `fuse::linalg::make_mpi_reducer`'s own convention) ONLY IF
+`PetscInitialized()` currently reads false, and records that THIS call
+was the one that did it; every later call, from anywhere in the process,
+is a no-op success. `finalize_if_owned()` calls `PetscFinalize()` ONLY
+when this library's own `ensure_initialized()` was the one that actually
+initialised PETSc, and relies on PETSc's OWN internal tracking of
+whether IT called `MPI_Init()` to decide whether `PetscFinalize()` should
+call `MPI_Finalize()` -- this library's own flag only needs to answer
+"did I call `PetscInitialize()` at all", never "did I call `MPI_Init()`",
+since the two can legitimately disagree (a process that already had MPI
+up before any PETSc call) and PETSc's own bookkeeping already gets that
+right. `test/petsc/init_test.cpp` is its own, separate ctest binary
+(`petsc.init`), never sharing a process with `petsc.token`/
+`petsc.derivative_gate`/`petsc.snes`: `MPI_Finalize()` is irreversible
+within a process, so the full init-then-finalize cycle is exercised in
+ONE process that does nothing PETSc-related afterward, while every other
+petsc test calls `ensure_initialized()` (idempotently) and never
+finalises, relying on process exit.
+
+**CMake.** `fuse-coupler-petsc` (src/CMakeLists.txt, the topmost layer
+section) builds only under `FUSE_ENABLE_PETSC`, links `PkgConfig::PETSc`
+and `MPI::MPI_C` both PRIVATE (PETSc's own `.pc` file's `Cflags` carries
+only its own include directory, never MPI's, even though `<petsc.h>`
+unconditionally includes `<mpi.h>` -- `cmake/FuseDependencies.cmake`'s own
+comment on the `FUSE_ENABLE_PETSC` block has the measured detail: PETSc
+links MPI regardless of `FUSE_ENABLE_MPI`, since the PETSc install itself
+was configured with MPI). `cmake/FuseDependencies.cmake`'s old
+`FUSE_ENABLE_PETSC requires FUSE_ENABLE_MOAB` gate (tier 3 requiring tier
+2) is REMOVED: that bundling was for a PETSc+MOAB physics kit (a
+mesh-aware solver integration), never for the solver plugin this track
+builds, which needs neither MOAB nor a mesh at all -- a tier-0 build
+(`FUSE_ENABLE_MPI=OFF`, hence `FUSE_ENABLE_MOAB=OFF` too) can therefore
+carry `FUSE_ENABLE_PETSC=ON` alone, confirmed by configuring and building
+exactly that combination this track. `tools/check-layering.py` gained one
+new layer, `petsc`, placed LAST (topmost, after `abi`): it depends on
+`runtime` (`fuse::LinearizationToken`) and `num`
+(`BlockJacobiPreconditioner`), both already far below `abi`, and nothing
+in the library depends on it, so placing it after every existing entry
+needs no argument about exactly where between `runtime` and `abi` it
+belongs and guarantees nothing already-ranked could be made to depend on
+it by a future insertion between the two. `ALLOWED_PUBLIC_THIRD_PARTY["petsc"]`
+is the empty set, like `linalg`'s own entry -- nothing third-party is
+named in this layer's public surface at all.
+
+### 10.2 The SNES driver: `fuse::petsc::solve()`
+
+`include/fuse/petsc/solve.hpp` / `src/petsc/solve.cpp`. `SnesOptions`
+wraps `fuse::num::NewtonKrylovOptions` directly (not a parallel
+declaration that could drift from it) plus the one thing the native
+struct has no notion of, `comm_f`. `SNESSetFromOptions()` is NEVER
+called: every option comes from `SnesOptions`, FUSE's own configuration,
+never the process command line.
+
+| Native (`fuse::num::NewtonKrylovOptions`) | PETSc (`fuse::petsc::solve()`) |
+|---|---|
+| `atol`/`rtol`/`stol`/`max_nonlinear_iterations`/`max_function_evaluations` | `SNESSetTolerances()` |
+| `divergence_tolerance` | `SNESSetDivergenceTolerance()` |
+| `mffd.error_rel` | `MatMFFDSetFunctionError()` on the `MatCreateSNESMF()`-built Jacobian |
+| `mffd.min_direction_norm` | no PETSc counterpart -- `MATMFFD_WP` itself has no floor on `\|\|v\|\|` (§6.2's own correction) |
+| `gmres.restart`/`gmres.max_iterations` | `KSPGMRESSetRestart()`/`KSPSetTolerances()`'s own `maxits`, `KSPSetPCSide(PC_RIGHT)` |
+| `forcing` (choice, gamma, alpha, eta_initial, eta_max) | `SNESKSPSetUseEW()` + `SNESKSPSetParametersEW()`, SAME six constants; `alpha2` (an SNES-only parameter this project's struct has no field for) passed as `alpha` again, an approximation never exercised by Choice2 (this track's own test problems) |
+| `forcing.eta_min` | no PETSc counterpart at all -- SNES's own forcing term has no floor; a measured dn_heat/Brusselator finding (§8.2, §9.9.2) that the native solver needed `eta_min` to avoid stalling near convergence has NO equivalent mitigation on this substrate, an open question below |
+| `line_search.kind` | `SNESLINESEARCHBT`/`CP`/`NONE` (SNES's 3.26 deprecation renamed `BASIC` to `NONE`; same mechanism) |
+| `line_search.damping` (Basic only) | `SNESLineSearchSetDamping()` |
+| `line_search.armijo_alpha`/`lambda_min`/`max_backtracks`/the safeguard clamps | left at SNES's own defaults (which this project's own defaults were derived FROM, §6.2) -- not individually propagated; a caller that changes one of these away from its default sees no effect on the PETSc substrate, a known, documented gap rather than a silent one |
+| `preconditioner_lag` | a `SNESMonitorSet()` callback refreshing the caller's `RefreshPreconditionerFn` every `preconditioner_lag` steps (and once before the first), mirroring the native solver's own split between a matrix-free Jacobian (never lagged) and a lagged preconditioner |
+
+**SNESConvergedReason -> NewtonStatus.** `SNES_CONVERGED_FNORM_ABS` ->
+`ConvergedAbsolute`; `SNES_CONVERGED_FNORM_RELATIVE` -> `ConvergedRelative`;
+`SNES_CONVERGED_SNORM_RELATIVE` -> `ConvergedStep`;
+`SNES_DIVERGED_FUNCTION_COUNT` -> `DivergedFunctionCount`;
+`SNES_DIVERGED_LINE_SEARCH` -> `DivergedLineSearch`; `SNES_DIVERGED_DTOL`
+-> `DivergedResidualGrowth`; `SNES_DIVERGED_LINEAR_SOLVE` ->
+`DivergedLinearSolve`; `SNES_DIVERGED_MAX_IT` -> `DivergedMaxIterations`;
+`SNES_DIVERGED_FUNCTION_DOMAIN`/`FUNCTION_NANORINF`/`JACOBIAN_DOMAIN`/
+`OBJECTIVE_DOMAIN` -> `DivergedFunctionError`. Every reason with no
+native counterpart at all (`SNES_CONVERGED_ITS`, `SNES_CONVERGED_USER`,
+`SNES_DIVERGED_INNER`, `SNES_DIVERGED_LOCAL_MIN`, `SNES_DIVERGED_TR_DELTA`,
+`SNES_DIVERGED_USER`) falls to `DivergedMaxIterations`, the closest
+"did not reach a named convergence test" fallback -- never reached by
+`SNESNEWTONLS` with no trust region, no user convergence test and no
+inner solve, every configuration this driver builds.
+
+**Scope.** Single-rank only (`x.owned_size() == x.size()`, no ghost
+region), refusing `E-PETSC-SOLVE-MULTIRANK` otherwise -- the identical
+restriction §4's "Scope" paragraph states for the native seam itself.
+
+### 10.3 Measured on the host (2026-10-11)
+
+The sandbox this track built in cannot complete a bare `MPI_Init()` (MPICH's
+debugger-attach mutex assertion in `dbginit.c`), so every number below was
+obtained on the development host, in two trees: `build-all` (the `all` preset,
+MPI on, the harness calling `MPI_Init`) and a tier-0 tree with PETSc alone
+(`FUSE_ENABLE_PETSC=ON`, no FUSE MPI, nothing calling `MPI_Init` before PETSc).
+All four rows pass in both: `petsc.init`, `petsc.token` (13 cases),
+`petsc.derivative_gate` (5), `petsc.snes` (4).
+
+**Initialisation ownership, both branches measured.** In the tier-0 tree
+`ensure_initialized()` finds MPI down, leaves `PETSC_COMM_WORLD` at its
+default and `PetscInitialize` calls `MPI_Init` itself; `finalize_if_owned()`
+then releases both (`MPI_Finalized` reads 1 afterwards). In the MPI tree it
+finds MPI up, sets `PETSC_COMM_WORLD` from the caller's handle and
+`PetscFinalize` leaves MPI running. The first draft set `PETSC_COMM_WORLD`
+unconditionally, which made `PetscInitialize` skip `MPI_Init` and fail with
+`PETSC_ERR_SUP` (56) in any tier-0 process -- on every host, not only in the
+sandbox. A third state matters: `MPI_Initialized` stays true after
+`MPI_Finalize`, so a second `ensure_initialized()` after a release would
+walk into a finalised MPICH and abort; it now refuses `E-PETSC-MPI-FINALIZED`,
+and the tier-0 init binary's second case makes that refusal fire.
+
+**Derivative gate on the PETSc tokens.** Adjoint identity on the assembled
+`MATAIJ` token: defect 8.9e-16 against a bound of 6.1e-13 (ratio 0.0015).
+Taylor-remainder order of the MFFD token's action: 2.018 (quadratic), 2.007
+(atan), no plateau reached in the step range. Agreement with the native
+`MffdJacobianAction` on the same `F`, `x`, `a`: both rules produced
+**exactly the same step**, `h = 2.7191341248866288e-08`, and the two actions
+agree to a maximum defect of **0** (bit-identical) against a derived bound of
+1.1e-13 -- PETSc's `wp.c` and `fuse::num::MffdJacobianAction` implement the
+same formula with the same `error_rel`, and on this problem the same
+operations in the same order. The control case for the adjoint gate first
+used `x == y`, for which the identity holds for every operator; it now uses
+distinct vectors and fails the deliberately wrong transpose as intended.
+
+**SNES against the native solver**, same problems, same `x0`, same options
+(Eisenstat-Walker choice 2, BT line search):
+
+| problem | substrate | steps | final ‖F‖ |
+|---|---|---|---|
+| quadratic | native | 5 | 3.19e-12 |
+| quadratic | PETSc  | 5 | 3.37e-12 |
+| atan | native | 5 | 2.75e-11 |
+| atan | PETSc  | 5 | 2.75e-11 |
+
+Step-1 residual, quadratic: native 6.1571776626130736, PETSc
+6.1571779027533156 -- a relative difference of 3.9e-8, consistent with the
+two GMRES implementations' different Arnoldi arithmetic at a forcing term of
+0.3. The line-search factors agree step for step (0.2576 then 1 on the
+quadratic; 0.0293, 0.4186 then 1 on atan); the two traces record the factor
+against different steps (the native trace stores the λ that produced the
+next iterate, SNES's monitor the λ that produced the current one), which is
+a convention difference, not a solver one.
+
+**Mutations.** Four rows in `build-evidence/mutations/petsc.toml`, each
+hand-proved on the host's tier-0 tree: the swapped transpose fails exactly
+the adjoint case; the base point not communicated to PETSc fails exactly the
+Jacobian-agreement case; the swapped preconditioner arguments fail exactly
+the block-Jacobi case; the dropped `MPI_Finalized` check aborts the init
+binary after its first case.
+
+### 10.4 Open questions for the lead
+
+1. **`forcing.eta_min` has no PETSc counterpart** (10.2's own table): the
+   Brusselator's own measured finding (§9.9.2) that the native solver
+   needed a nonzero `eta_min` floor to avoid stalling the LAST linear
+   solve near convergence has no mitigation on the PETSc substrate at
+   all -- `SNESKSPSetParametersEW()` has no floor parameter. Whether this
+   matters in practice can only be measured once `petsc.snes` actually
+   runs a problem that reaches that regime; flagged here rather than
+   silently assumed absent.
+2. **`MffdToken::set_base_point()`'s own interface shape** (the concrete
+   type carries `set_base_point`/`set_block_preconditioner` beyond the
+   base `fuse::LinearizationToken` interface, rather than the factory
+   returning the base type with the point fixed at construction) --
+   this track's own choice, to let a caller re-linearise a retained token
+   in place (what a Newton loop repeating over many steps needs); the
+   lead may prefer a narrower interface if nothing beyond this track's
+   own tests ever needs the richer one.
+3. **The line-search tolerance fields left at PETSc's own defaults**
+   (10.2's own table row) -- propagating `armijo_alpha`/`lambda_min`/
+   `max_backtracks`/the safeguard clamps individually is mechanical
+   (`SNESLineSearchSetTolerances()`) but was not done this track, since
+   no test exercises a non-default value on this substrate yet.
+4. **The host run itself**: this track cannot name a date by which
+   `KNOWN_ISSUES.md` D32 closes, since it depends on a host whose
+   `/opt/mpich` (or an alternative MPI) can complete `MPI_Init()` --
+   outside this track's own scope to arrange.

@@ -3955,3 +3955,46 @@ the native results recorded in `docs/user/dn-heat.md` and `docs/user/brusselator
 graphs, same tolerances, iteration counts and final means side by side. A refusal when
 `FUSE_ENABLE_PETSC` is off and a graph selects the PETSc substrate, with a test that makes it fire.
 
+**Built 2026-10-11 (PetscToken track, S7.2b) and measured on the host the same day — all four
+`petsc.*` rows pass in the MPI tree and in a tier-0 PETSc-only tree; `docs/dev/newton-krylov.md`
+§10.3 carries the numbers. The sandbox the track built in cannot complete a bare `MPI_Init()`, so
+the measurements are the host's.** `src/petsc/{init,token,solve}.cpp` and `include/fuse/petsc/{token,solve}.hpp` implement
+exactly the plugin this entry asked for: `fuse::petsc::MffdToken` (a `fuse::LinearizationToken`
+backed by `MATMFFD`/`MATMFFD_WP`, `apply_jacobian_transpose` refusing `E-PETSC-NO-TRANSPOSE`,
+`apply_preconditioner` through a `PC` — `PCNONE` by default, `PCSHELL` composing the SAME
+`fuse::num::BlockJacobiPreconditioner` the native solver uses for its own block-Jacobi, reused
+rather than reimplemented), `fuse::petsc::make_assembled_token` (a real `MATAIJ`, for the adjoint
+test the MFFD token itself has no transpose to run), and `fuse::petsc::solve()` (`SNESNEWTONLS`,
+`MatCreateSNESMF`/`MATMFFD_WP`, `KSPGMRES` right-preconditioned, `SNESKSPSetUseEW` with the SAME
+six Eisenstat-Walker constants `NewtonKrylovOptions` already uses, `SNESLINESEARCHBT`/`CP`/`NONE`
+selectable, `SNESConvergedReason` mapped onto the native `NewtonStatus`). `tools/check-layering.py`
+gained a `petsc` layer (topmost, `ALLOWED_PUBLIC_THIRD_PARTY` empty — no PETSc type anywhere in a
+public header) and reports 0 violations; `cmake/FuseDependencies.cmake`'s old
+`FUSE_ENABLE_PETSC requires FUSE_ENABLE_MOAB` gate is gone (the solver plugin needs neither MOAB
+nor a mesh — that bundling was for a PETSc+MOAB physics kit this track is not). Clean tier-0
+builds, BOTH with and without `FUSE_ENABLE_PETSC`, 0 compiler errors; `FUSE_ENABLE_PETSC=OFF`
+registers exactly the pre-existing 187 tier-0 rows (100% pass, unchanged); `FUSE_ENABLE_PETSC=ON`
+registers 191 (187 + `petsc.{init,token,derivative_gate,snes}`), and a tier-1 compile
+(`-DFUSE_ENABLE_MPI=ON -DFUSE_ENABLE_FORTRAN=ON -DFUSE_ENABLE_PETSC=ON`) of every touched target
+succeeds with 0 errors.
+
+**Where the measurements came from.** The sandbox the track built in cannot complete a bare
+`MPI_Init()` (MPICH's debugger-attach mutex assertion in `dbginit.c`, independent of PETSc — a
+single-process constraint, more severe than C1's launcher one), so the track compiled and
+registered everything and the lead ran it on the development host in two trees, `build-all`
+(MPI on) and a tier-0 PETSc-only tree. Three defects the sandbox could not show were found and
+fixed there: `ensure_initialized()` set `PETSC_COMM_WORLD` before `PetscInitialize` even with MPI
+down, which made PETSc skip `MPI_Init` and fail with `PETSC_ERR_SUP` in every tier-0 process;
+both tokens' `PC` had no operator attached, so `PCSetUp` refused "Missing A matrix" on every
+`apply_preconditioner`; and the adjoint gate's control case used `x == y`, for which the identity
+holds for any operator. A fourth was found by the corrected init test itself: `MPI_Initialized`
+stays true after `MPI_Finalize`, so a second initialisation after a release walked into a
+finalised MPICH; it now refuses `E-PETSC-MPI-FINALIZED`. All four `petsc.toml` rows are
+hand-proved on the host's tier-0 tree (each kills exactly the case that guards it; the dropped
+finalize check aborts the binary after its first case).
+
+**What remains before this entry can close** (plan S7.2b phase 2): per-region substrate selection
+(`NewtonConfig` substrate `native`/`petsc` through YAML and the descriptor, `E-NEWTON-PETSC-UNAVAILABLE`
+in a build without PETSc with a test that fires it), dn_heat and the Brusselator by the PETSc path
+recorded beside the native results, and the `forcing.eta_min` gap (`docs/dev/newton-krylov.md` §10.4:
+SNES has no forcing floor, and the Brusselator window needed one on the native substrate).
