@@ -28,6 +28,7 @@
 
 #include "fuse/num/newton_krylov.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <condition_variable>
 #include <limits>
@@ -133,10 +134,11 @@ TEST(Mffd, ActionAgreesWithAnalyticJacobianToOrderH) {
   ASSERT_EQ(mffd.trace().size(), 1u);
   const double h = mffd.trace().front().h;
 
-  // Walker-Pernice: h = error_rel * sqrt(1 + ||x||) / max(||v||, umin).
+  // Walker-Pernice: h = error_rel * sqrt(1 + ||x||) / max(||v||, min_direction_norm).
   const double x_norm = std::sqrt(x0[0] * x0[0] + x0[1] * x0[1]);
   const double v_norm = std::sqrt(v0[0] * v0[0] + v0[1] * v0[1]);
-  const double expect_h = mffd_opt.error_rel * std::sqrt(1.0 + x_norm) / std::max(v_norm, mffd_opt.umin);
+  const double expect_h =
+      mffd_opt.error_rel * std::sqrt(1.0 + x_norm) / std::max(v_norm, mffd_opt.min_direction_norm);
   EXPECT_NEAR(h, expect_h, 1e-15 * expect_h);
 
   // Analytic J v = [2 x0 v0, 2 x1 v1].
@@ -203,6 +205,34 @@ TEST(Mffd, ApplyBeforeSetPointIsRefused) {
   Result<void> r = mffd.apply(v, jv);
   ASSERT_FALSE(r.ok());
   EXPECT_EQ(r.error().code, "E-NEWTON-MFFD-NO-POINT");
+}
+
+// Correction (a): v = 0 exactly is not a corner case -- fuse::linalg::gmres()
+// evaluates its own first matrix-vector product at the initial guess d = 0
+// before any Arnoldi step, so apply()'s very first call on every Newton
+// step sees this. Without min_direction_norm's zero-division safeguard,
+// h would be +inf (finite/0) and x + h*v would be x + inf*0, IEEE 754's
+// NaN. The correct action at v = 0 is exactly the zero vector, whatever
+// finite h the floor produces (x + h*0 == x identically).
+TEST(Mffd, ZeroDirectionIsSafeAndReturnsExactlyZero) {
+  const std::vector<double> c = {4.0, 9.0};
+  DistVector x = vec_from(std::vector<double>{3.0, 1.0});
+  DistVector fx = vec_sized(2);
+  ASSERT_TRUE(quadratic_residual(c)(x, fx).ok());
+
+  MffdJacobianAction mffd(quadratic_residual(c));
+  mffd.set_point(x, fx);
+  DistVector v = vec_sized(2);  // zero by construction (DistVector's own ctor)
+  v.set_zero();
+  DistVector jv = vec_sized(2);
+  ASSERT_TRUE(mffd.apply(v, jv).ok());
+
+  ASSERT_EQ(mffd.trace().size(), 1u);
+  const double h = mffd.trace().front().h;
+  ASSERT_TRUE(std::isfinite(h));
+  EXPECT_GT(h, 0.0);
+  EXPECT_EQ(jv.data()[0], 0.0);
+  EXPECT_EQ(jv.data()[1], 0.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -355,11 +385,6 @@ TEST(NewtonKrylovLineSearch, BtEngagesAndRecoversOnAPoorInitialGuess) {
   EXPECT_TRUE(is_converged(res.status)) << to_cstring(res.status);
   EXPECT_NEAR(x.data()[0], 0.0, 1e-6);
 }
-
-// ---------------------------------------------------------------------------
-// 5. Named convergence and divergence tests -- each fired by directly
-//    constructing its condition.
-// ---------------------------------------------------------------------------
 
 TEST(NewtonKrylovConvergence, AbsoluteFiresWhenAtolIsTheLooseTest) {
   const std::vector<double> c = {0.3};

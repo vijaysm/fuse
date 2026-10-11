@@ -320,9 +320,15 @@ enum class EisenstatWalkerChoice { Constant, Choice1, Choice2 };
 /// S7.2: WHAT was asked of the Newton solver, named the same way
 /// `AccelConfig` already does for the quasi-Newton ladder -- every numeric
 /// default here is SNES's own default for the matching option
-/// (`docs/dev/newton-krylov.md`'s own table names each one), except
-/// `eta_min`, which SNES has no counterpart for (its own forcing term can
-/// reach exactly zero; this track's own brief asked for a nonzero floor).
+/// (`docs/dev/newton-krylov.md`'s own table names each one): SNES's own
+/// forcing term clamps only at `eta_max`, never below (it can reach an
+/// exact linear solve), so `eta_min`'s default is `0.0`, what makes that
+/// default actually BE SNES's own -- the option itself still exists for a
+/// caller who wants a nonzero floor, the possibility the task's own brief
+/// named ("a cap eta_max = 0.9 and floor"), without presenting it as
+/// something SNES does by default (CORRECTED: an earlier draft defaulted
+/// this to `1e-4` as a judgement call presented alongside this struct's
+/// genuinely-SNES defaults).
 /// Read only when `IterationRegionDecl::acceleration.kind ==
 /// AccelKind::Newton`; otherwise ignored, the same "declaration carries it,
 /// nothing acts on it until selected" convention `window_scope` already
@@ -333,15 +339,12 @@ struct NewtonConfig {
 
   /// Eisenstat-Walker's own tuning constants (`fuse::num::
   /// EisenstatWalkerOptions`'s identically named fields carry the full
-  /// citation and the over-solving-safeguard rationale). `eta_min` is the
-  /// one constant with no SNES counterpart -- its own forcing term can
-  /// reach exactly zero (an exact linear solve); this one cannot, per the
-  /// task's own brief ("a cap eta_max = 0.9 and floor").
+  /// citation and the over-solving-safeguard rationale).
   double forcing_gamma = 0.9;
   double forcing_alpha = 2.0;
   double eta_initial = 0.3;
   double eta_max = 0.9;
-  double eta_min = 1e-4;
+  double eta_min = 0.0;
   double forcing_safeguard_threshold = 0.1;
   double forcing_eta_constant = 0.1;
 
