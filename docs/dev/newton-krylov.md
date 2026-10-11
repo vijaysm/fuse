@@ -163,7 +163,7 @@ that was never measured).
 
 | # | This project | PETSc SNES counterpart | Option name here |
 |---|---|---|---|
-| 1 | `fuse::num::MffdJacobianAction` -- matrix-free Jacobian action by one-sided finite difference, `J(x) v ~= (F(x+hv)-F(x))/h`, `h` from the Walker-Pernice rule `h = error_rel * sqrt(1+\|\|x\|\|) / max(\|\|v\|\|, umin)` (Pernice & Walker, "NITSOL", SIAM J. Sci. Comput. 19, 1998) | `MATMFFD_WP` (the default `MatCreateSNESMF` differencing routine) | `NewtonKrylovOptions::mffd` (`MffdOptions::error_rel`, `::umin`) |
+| 1 | `fuse::num::MffdJacobianAction` -- matrix-free Jacobian action by one-sided finite difference, `J(x) v ~= (F(x+hv)-F(x))/h`, `h` from the Walker-Pernice rule `h = error_rel * sqrt(1+\|\|x\|\|) / max(\|\|v\|\|, min_direction_norm)` (Pernice & Walker, "NITSOL", SIAM J. Sci. Comput. 19, 1998) | `MATMFFD_WP` (the default `MatCreateSNESMF` differencing routine; WP's own `wp.c` has NO `umin` parameter at all -- that belongs to the DIFFERENT routine `MATMFFD_DS`/Dennis-Schnabel, a distinct formula this project does not implement; WP's own tunable besides `error_rel` is `-mat_mffd_compute_normu`, unrelated to any floor) | `NewtonKrylovOptions::mffd` (`MffdOptions::error_rel`, `::min_direction_norm`) |
 | 2 | `fuse::linalg::gmres` over a `MatrixFreeOperator` wrapping (1), right-preconditioned by (6) or the identity | `KSPGMRES` with the matrix-free `Mat` from `MatCreateSNESMF`, right preconditioning (`-ksp_pc_side right`, SNES's own default for a matrix-free Jacobian) | `NewtonKrylovOptions::gmres` (`restart`, `max_iterations`) |
 | 3 | `fuse::num::eisenstat_walker_eta` -- Eisenstat-Walker forcing, choice 1 or 2, with the over-solving safeguard and a cap/floor | `SNESKSPSetUseEW` / `-snes_ksp_ew`, choices 1/2/constant (`-snes_ksp_ew_version`) | `NewtonKrylovOptions::forcing` (`EisenstatWalkerOptions`) |
 | 4 | `fuse::num::backtracking_line_search` / `critical_point_line_search` / `basic_line_search` | `SNESLINESEARCHBT` / `SNESLINESEARCHCP` / `SNESLINESEARCHBASIC` | `NewtonKrylovOptions::line_search` (`LineSearchOptions`, `LineSearchKind`) |
@@ -177,21 +177,28 @@ is SNES's own default for the matching option (`-snes_atol 1e-50`, `-snes_rtol 1
 `-snes_stol 1e-8`, `-snes_divergence_tolerance 1e4`, `-snes_max_it 50`,
 `-snes_max_funcs 10000`; `-snes_ksp_ew_version 2`, `gamma=0.9`, `alpha=2.0`,
 `-snes_ksp_ew_rtol0 0.3`, `-snes_ksp_ew_rtolmax 0.9`; `-snes_linesearch_alpha 1e-4`,
-`-snes_linesearch_minlambda 1e-12`; `-snes_lag_jacobian 1`), EXCEPT two this track added on
-its own judgement, recorded here rather than presented as something SNES also does:
+`-snes_linesearch_minlambda 1e-12`; `-snes_lag_jacobian 1`) -- including
+`EisenstatWalkerOptions::eta_min`/`NewtonConfig::eta_min`, defaulted to `0.0` (CORRECTED: an
+earlier draft of this page defaulted it to `1e-4` as a judgement call; SNES's own forcing
+term has no nonzero floor at all -- it can reach an exact linear solve, `eta = 0` -- so `0.0`
+is what makes this default actually BE SNES's default, with the option itself still present
+for a caller who wants a nonzero floor the task's own brief named as a possibility).
 
-* `EisenstatWalkerOptions::eta_min = 1e-4` -- SNES's own forcing term has no nonzero floor
-  (it can reach an exact linear solve, `eta = 0`); this one cannot. The task's own brief asked
-  for "a cap eta_max = 0.9 and floor", so a floor was added where SNES has none. `1e-4` is a
-  judgement call, not a measurement -- see KNOWN_ISSUES.md / this track's own report for
-  whether a user ever needs to change it.
-* `MffdOptions::umin = 1e-6` -- SNES's own `-mat_mffd_umin` default, reused here as the floor
-  on `\|\|v\|\|` in the Walker-Pernice step rather than on the point norm `\|\|x\|\|` its own
-  documentation describes it for; this track's own reading of the formula (§2 above derived
-  it as "error_rel * sqrt(1+\|\|x\|\|) / \|\|v\|\|") needed a safeguard on the DIVISOR, which is
-  `\|\|v\|\|`, not `\|\|x\|\|` -- so the same constant is reused for a structurally different
-  role than PETSc's own option description states. Flagged as an open question in this
-  track's own report rather than asserted as equivalent without being checked.
+`MffdOptions::min_direction_norm` is NOT an SNES default and does not claim to be one
+(CORRECTED: an earlier draft of this page named this field `umin` and presented its default
+as PETSc's own `-mat_mffd_umin`; that option belongs to `MATMFFD_DS`, a differencing routine
+this project does not implement, with its own, different formula -- `MATMFFD_WP`'s own
+`wp.c` has no `umin` parameter at all). It is a pure zero-division safeguard on `\|\|v\|\|`,
+the Walker-Pernice step's own divisor, reached ROUTINELY rather than only in a corner case:
+`fuse::linalg::gmres()` evaluates its own first matrix-vector product at the initial guess
+`d = 0`, so `apply()`'s first call on every Newton step sees `v = 0` exactly, and without a
+floor `h` would be `+inf` (a finite numerator over an exact-zero denominator) and `x + h*v`
+would be IEEE 754's NaN (`inf * 0`). Defaulted to `std::numeric_limits<double>::min() * 1e8`
+-- the smallest NORMAL double times a margin, chosen only to stay away from zero and from
+the denormal range. The value does not affect CORRECTNESS at `v = 0`: the true action there
+is exactly the zero vector regardless of which positive `h` the floor produces, since
+`x + h*0 == x` identically, proved directly by `Mffd.ZeroDirectionIsSafeAndReturnsExactlyZero`
+(test/num/newton_krylov_test.cpp).
 
 ### 6.3 What integrates where
 
@@ -250,19 +257,166 @@ that could otherwise drift apart). `IterationBuilder::requires_residual()`/
 track to add -- exist independently of Newton, for a region that wants the residual seam
 without selecting Newton at all.
 
-**What does NOT yet cross the binary descriptor.** `include/fuse/model/descriptor.hpp` is
-outside this track's own file ownership (not listed among the files this track was asked to
-touch), and a `kGraphVersion` bump is exactly the kind of change that needs the whole
-project's attention, not one track's in isolation -- so `AccelKind::Newton` and
-`NewtonConfig` were deliberately left OFF the canonical binary descriptor's wire format.
-Concretely: `fuse::serialize()` happily writes whatever ordinal `AccelKind::Newton` has
-(the write side has no bounds check, as today), but `fuse::deserialize()`'s existing
-`accel_kind > IQN_IMVJ` bound check -- UNCHANGED by this track -- refuses it with
-`E-DESC-ENUM` ("unknown acceleration kind 7"), and `NewtonConfig`'s own fields are not
-written at all. This is a real, open limitation (a Newton-selected region survives a C++
-round trip and a YAML round trip, proven by `test/model/yaml_io_test.cpp`'s own cases, but
-not a trip through the binary descriptor -- the C ABI/Fortran/cross-process path), recorded
-here and in this track's own report rather than silently assumed covered. Lifting it is
-whichever track owns `descriptor.hpp` next deciding a version bump is warranted, following
-the exact mechanical process `kGraphVersion`'s own version-history comment and
-`tools/src/write_golden_descriptor.cpp` already establish.
+**The binary descriptor: `kGraphVersion` 11 -> 12.** `AccelKind::Newton` and `NewtonConfig`
+now cross `include/fuse/model/descriptor.hpp`'s wire format too -- the gap the previous
+revision of this section recorded as open is closed. Each iteration region record gains,
+appended after its window-scope block (the same append-only placement every version bump
+since v7 uses): the two capability bytes
+(`IterationRegionDecl::requires_residual_capability`/`::requires_linearization_capability`)
+and `NewtonConfig`'s own 25 fields in full, in the struct's declared order -- two enum bytes
+(`line_search_kind`, `forcing_choice`), 15 doubles, 5 signed 32-bit words, 2 unsigned 64-bit
+counts, and a final presence byte for `use_block_jacobi_preconditioner`. Both are written
+UNCONDITIONALLY, matching the existing unconditional-write convention `acceleration` itself
+already follows -- so `requires_residual_capability`/`::requires_linearization_capability`
+survive a round trip even when set independently of Newton selection, via
+`IterationBuilder::requires_residual()`/`::requires_linearization()`. The accelerator-kind
+bound check `deserialize()` applies widens from `AccelKind::IQN_IMVJ` to `AccelKind::Newton`
+(ordinal 7); a v11 reader handed a v12 buffer would read the first region's
+residual-capability byte as the start of whatever comes next, so v12 bytes are refused by a
+v11 reader (and v11 bytes, in turn, by this v12 reader's own version check) -- exactly the
+class of silent misread every prior bump exists to prevent, which the version check turns
+into `E-DESC-VERSION` instead. `test/golden/waist-v12.bin` is the new frozen fixture
+(`freeze_fixture()` gained a second iteration region selecting `AccelKind::Newton` with every
+`NewtonConfig` member away from its default, for the same reason every other optional member
+in that fixture is pinned non-default: a member that round-trips to its own default proves
+nothing about whether it was actually read back or silently dropped); `waist-v11.bin` moved
+to the superseded, refused list alongside v1 and v4-v10.
+`build-evidence/mutations/model.toml`'s `descriptor-accel-kind-bound-not-widened` row
+hand-proves the bound widening itself is load-bearing: reverting it to the pre-v12 bound makes
+`Descriptor.RoundTripPreservesEveryNonDefaultMember` fail with `E-DESC-ENUM` ("unknown
+acceleration kind 7"), because the fixture's own Newton region can no longer be read back.
+
+## 8. dn_heat by Newton
+
+### 8.1 The runtime wiring
+
+A Newton-selected region bypasses `run_region()`'s own Picard sweep loop entirely, rather than
+replacing just the quasi-Newton update inside it: `Runner::Impl::run_region_newton()`
+(src/runtime/iteration.cpp) hands the WHOLE solve to `fuse::num::solve()` in one call, over an
+`evaluate` built from `Runner::Impl::evaluate_region_residual()` (the SAME side-effect-free
+`F(x) = x - G(x)` primitive S7.1 built, wrapped into `fuse::num::ResidualFn`'s `DistVector`
+calling convention via `linalg::make_serial_exchanger()`/`make_serial_reducer()` -- Newton is
+restricted to a single cross-rank participant, so no real communication is ever injected).
+`resolve_regions()` never calls `make_accelerator()` for a Newton-selected region -- it has no
+`case AccelKind::Newton` and would refuse with `E-ACCEL-KIND` -- and instead eagerly validates
+the SAME three conditions `evaluate_region_residual()` itself checks lazily (non-window, single
+participant, no externally driven member) through one shared function,
+`check_region_supports_newton()`, so a Newton-selected region this Runner cannot yet solve is
+refused with `E-NEWTON-UNSUPPORTED-REGION` at `initialize()` rather than at the first period.
+
+**The verification sweep.** Once `fuse::num::solve()` returns, `evaluate_region_residual()`
+gains a `commit` parameter (default `false`, S7.1's own original meaning: restore everything
+this call touched, so repeated evaluations are side-effect free). `run_region_newton()` calls
+it exactly once more, with `commit = true`, at the converged iterate -- the SAME deliver/
+advance/execute-body sequence every other evaluation performed, except the restore at the end
+is skipped, so Newton's own converged point becomes the region's real, persisted state (the
+components' registered storage, the loop-carried buffers) instead of one more probe. A FAILURE
+during that commit still restores regardless of the flag: nothing here is allowed to leave a
+partial advance in place.
+
+**Non-convergence** is reported the same way the Picard path's own `E-RT-NOCONVERGE` is, naming
+the region and, in addition, Newton's own `NewtonStatus` code
+(`build-evidence/mutations/runtime.toml`'s `newton-nonconvergence-not-reported` row proves this
+check is load-bearing). The block-Jacobi preconditioner hook (Step 1's own mechanism) is wired
+as far as `NewtonConfig::use_block_jacobi_preconditioner` -- neither dn_heat test in this track
+sets it, so `precond_apply`/`refresh_precond` both stay `nullptr` (the plain, unpreconditioned
+matrix-free iteration); composing one from each region member's own `LinearizationToken` across
+blocks that are not one-per-component, in general, is open scope, recorded in this track's own
+report.
+
+### 8.2 Measured: one Newton step is not what SNES's own defaults give
+
+The task's own assumption -- "Newton converges in ONE Newton step" on dn_heat's affine map --
+does not hold under SNES's own default Eisenstat-Walker forcing (`eta_initial = 0.3`). MEASURED
+(`NewtonRegion.ConvergesInThreeNewtonStepsOnTheAffineProblemUnderEwForcing`,
+test/runtime/newton_region_test.cpp): `eta_0 = 0.3` deliberately stops the FIRST linear solve at
+30% relative accuracy (GMRES needs only 2 of a possible many iterations), so the first Newton
+direction is not the exact affine root even though the Jacobian itself is exact; three total
+Newton steps are needed (`||F||`: 765.78 -> 68.77 -> 0.288 -> 2.6e-8). This is textbook inexact-
+Newton behaviour -- trading a cheap, loose early linear solve against one or two more nonlinear
+steps overall -- not a defect, and it is exactly what Eisenstat & Walker's own forcing exists to
+do. A `NewtonConfig` with a tighter/near-exact constant forcing term would converge in fewer
+steps, at the cost of more GMRES work on each one; that trade is not this track's own default.
+
+### 8.3 The nonlinear variant, and the quadratic rate measured
+
+`DirichletSlab` (examples/dn_heat/dn_component.hpp) gained a nonlinear conductivity,
+`k1_eff(i, T) = k1_at(i, n) * (1 + beta * (T - t_ref) / t_ref)`, `T` the local wall temperature
+being solved for (`u_in_[i]`, or `interface_in[i]` inside `evaluate_residual()` -- the two
+compute the identical formula, duplicated rather than shared, because `evaluate_residual()`'s
+own contract forbids the mutation `advance()` is free to do). `beta = 0.0`, every existing call
+site's own default, makes `k1_eff` reduce to `k1_at(i, n) * 1.0` EXACTLY -- measured directly,
+`Dn.NonlinearAtBetaZeroIsBitIdenticalToTheAffineMap` -- so every mode this project already ships
+(picard, aitken, iqn-ils, iqn+qr2, severed) is unaffected.
+
+MEASURED (`NewtonRegion.QuadraticRateMeasuredOnTheNonlinearProblem`), at `beta = 0.1` (a 10%
+conductivity swing, mild enough that Picard's own per-station contraction stays below 1 even at
+the strongest strip: `k1_eff`'s own multiplier stays within roughly [0.90, 1.03] over dn_heat's
+own working temperatures, so the worst case is `0.96 * 1.03 < 1`) and a near-exact forcing term
+(pinned tight specifically to isolate Newton's own order from Eisenstat-Walker's own deliberate
+under-solving, §8.2 above): `||F||` = 7.284e+02, 8.823e+01, 7.762e-01, 5.659e-05. Fitting
+`q_k = log(||F_{k+1}||/||F_k||) / log(||F_k||/||F_{k-1}||)` over the two triples both still above
+a `1e-10 * ||F_0||` round-off floor: `q_1 ~= 2.24`, `q_2 ~= 2.01` -- **order 2.0 +- 0.24**, the
+spread this track measured rather than assumed. (The run stops at `rtol = 1e-4` rather than
+SNES's own default `1e-8`: reaching `1e-8` from here needs a near-machine-precision LAST linear
+solve this unpreconditioned, matrix-free iteration cannot complete within a sane GMRES budget --
+not a defect in Eisenstat-Walker or GMRES, the ordinary cost of the last couple of orders of
+magnitude with no preconditioner, recorded as an open question: a physics-based block-Jacobi
+preconditioner is the mechanism that would make that last solve cheap.)
+
+### 8.3b A bookkeeping-only defect found and fixed while measuring 8.3
+
+Measuring §8.3 surfaced a genuine, if numerically harmless, defect in
+`run_region_newton()`'s very first version: `step_period()`'s own top comment
+(src/runtime/runner.cpp) states that by the time control reaches ANY region,
+every participant has already been advanced once by the generic per-period
+tick walk, and `checkpoint_regions()` saves BEFORE that tick specifically so
+a Picard sweep loop's own repeated `restore_state()` calls -- which all
+target `checkpoint_regions()`'s own save point -- undo it along with every
+sweep's own advance. `evaluate_region_residual()`'s own save/restore is
+self-referential: every call restores to what IT most recently saved, never
+to `checkpoint_regions()`'s earlier point. A Newton-selected region therefore
+never undid that first generic tick, and the verification sweep's one
+committed advance landed on top of it: two real advances baked into
+persisted state per period instead of one. MEASURED directly: `dn::
+DirichletSlab::history()`/`dn::NeumannSlab::history()` (private, checkpointed
+accumulators the project's own contract -- dn_component.hpp -- states read
+"P exactly" after P coupling cycles) read 40 after 20 periods, not 20.
+
+Numerically harmless: `q_`/`u_` are overwritten from scratch by the LAST
+(committed) `evaluate_region_residual()` call regardless of what the extra,
+un-rolled-back tick left them at, and the L2-error and beta=0 bit-identical
+gates already in this track's own tests did not move. But `history()`'s own
+contract is a real invariant examples/dn_heat/main.cpp's own picard/aitken/
+iqn-ils gates already read for every other row, and a Newton-selected
+region silently breaking it is exactly the kind of defect a byte-level
+rollback/bookkeeping discipline exists to catch. Fixed by adding one
+`restore_state()` call over `R.component_slots`, right after seeding `x`
+(already a COPY at that point, so the restore cannot perturb Newton's own
+seed) and before calling `fuse::num::solve()` -- `NewtonRegion.
+HistoryAccumulatesExactlyOncePerPeriodNotTwice` (test/runtime/
+newton_region_test.cpp) is the regression test, and `build-evidence/
+mutations/dn-heat.toml`'s own `dn-heat-newton-generic-tick-restore-removed`
+row hand-proves the fix is load-bearing.
+
+### 8.4 The line search, shown to engage and recover on dn_heat itself
+
+Step 1's own `NewtonKrylovLineSearch.BtEngagesAndRecoversOnAPoorInitialGuess`
+(test/num/newton_krylov_test.cpp) proves the MECHANISM on a synthetic problem designed to need
+it (`atan`'s own saturating tail). This track's own
+`NewtonRegion.LineSearchEngagesAndRecoversFromADeliberatelyPoorGuess`
+(test/runtime/newton_region_test.cpp) shows the mechanism is correctly REACHED through the real
+runtime wiring on dn_heat itself: `beta = 2.0` and `NeumannSlab`'s own initial interface
+temperature overridden to 2000 K (dn_heat's own physical range is a few hundred K) is far enough
+from the root that a full Newton step overshoots. MEASURED (a trace printed by hand and removed
+once read, reproduced twice): the first step (`k = 0`) is a full step (`lambda = 1`,
+`||F||` 765.78 -> 193.05); the SECOND step's own full Newton step is rejected by Armijo and BT
+backtracks to `lambda = 0.025` after 4 trials (`||F||` -> 189.01 -- genuine recovery, not a free
+ride); every step after that takes a full step again, and the iteration converges in 7 total
+steps (`||F||` -> 7.98e-4). `IterationStats` (fuse/runtime/runner.hpp, outside this track's own
+file ownership) carries `residual_history` but not a per-step accepted lambda, so the lambda
+values themselves are recorded here as a measurement rather than asserted on directly through
+the public `Runner` API; what the test DOES assert is that the run converges (a line-search
+failure the solver cannot recover from reports `NewtonStatus::DivergedLineSearch` instead,
+caught the same way the non-convergence test above catches `DivergedMaxIterations`) and needs
+more than the affine problem's own one-Newton-step case.

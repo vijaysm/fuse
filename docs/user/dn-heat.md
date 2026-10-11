@@ -139,6 +139,68 @@ all gates passed
 `--dump` prints the IR/plan pair instead of running anything (see [mms_pair](mms-pair.md) for the
 shared convention, asserted the same way by the `example.dn_heat.dump` ctest row).
 
+## Newton
+
+`AccelKind::Newton` (selected with `.newton(cfg)` on the iteration region
+rather than `.accelerate(accel)`) solves the SAME graph with S7.2's native
+Jacobian-free Newton-Krylov coupler instead of a quasi-Newton accelerator
+wrapped around the Picard sweep -- the full design is
+[docs/dev/newton-krylov.md](../dev/newton-krylov.md). `examples/dn_heat/
+main.cpp`'s own `newton` row runs it on the IDENTICAL affine map every other
+row above solves (`DirichletSlab`'s own `beta = 0.0` default, bit-identical
+to today's map -- `Dn.NonlinearAtBetaZeroIsBitIdenticalToTheAffineMap`,
+test/runtime/newton_region_test.cpp); a `newton-nl` row (informational, like
+`iqn+qr2` above) solves a REAL nonlinearity (`beta = 0.1`, a temperature-
+dependent wall conductivity) to measure the quadratic convergence rate
+Newton's own method promises.
+
+Measured on a tier-0 Debug scratch build (not the release build the table
+above was measured on -- Newton's own sweep accounting differs enough from
+the Picard-family rows that the two are not meant to be read side by side as
+one table; see the NOTE line below):
+
+```
+  newton        20       20      0   4.159e-11  6.321e-11   3.631e-10  5.960e-10
+  NOTE: 'newton' row's own sweeps column (20) counts one per coupling period,
+  not one per Newton step -- a Newton-selected region bypasses the Picard
+  sweep loop entirely and so does not accumulate `total_iterations` the way
+  the rows above do. The final period alone took 4 Newton step(s).
+  newton       4 sweeps: 5.68e+01 4.31e+00 1.77e-02 3.26e-09
+
+  newton-nl    4 sweeps: 5.68e+01 4.31e+00 1.78e-02 1.45e-08
+  newton-nl fitted order(s) from consecutive residual triples above the
+  round-off floor: 2.13 2.55
+```
+
+Newton agrees with Picard/Aitken/IQN-ILS to within the same agreement gate
+those three hold each other to, converges in 4 Newton steps in the period
+measured (against Picard's hundreds of sweeps for the same period, though
+the two counts are not directly comparable -- a Newton step costs a full
+GMRES solve, typically several MFFD-perturbed residual evaluations, where a
+Picard sweep costs exactly one), and is bit-for-bit reproducible across two
+runs of the same configuration. The fitted order on the nonlinear variant,
+2.13 and 2.55 at this point in the trajectory, is within the "order 2.0 +-
+measured" claim the unit test's own independent measurement
+(`NewtonRegion.QuadraticRateMeasuredOnTheNonlinearProblem`, docs/dev/
+newton-krylov.md §8.3) makes more precisely (2.24, 2.01) at a different
+point in the coupled system's own time history -- the two measurements
+agree that the order is close to 2, not that they are measuring identical
+numbers, since `newton-nl` runs the nonlinearity over 20 real coupling
+periods (the state keeps evolving) where the unit test isolates a single
+period in a hand-built fixture.
+
+The line search is shown to engage and recover from a deliberately poor
+initial guess in `NewtonRegion.LineSearchEngagesAndRecoversFromA
+DeliberatelyPoorGuess` (test/runtime/newton_region_test.cpp) rather than in
+this example binary -- reproducing that specific combination
+(`beta = 2.0`, `NeumannSlab`'s own initial guess forced to 2000 K) inside
+`main.cpp`'s own gated configuration matrix was judged not to add
+information the dedicated unit test does not already carry, and keeping it
+out of this binary's own gate list avoids adding a configuration whose own
+correctness gates would need to tolerate the SAME sign-flip/stall regime the
+unit test's own beta sweep found at larger nonlinearity (docs/dev/
+newton-krylov.md §8.4).
+
 ## Measured against
 
 `ctest` row `example.dn_heat` runs the configuration matrix above and gates exit status on exactly

@@ -25,6 +25,23 @@
 //   *-long     explicit and IQN-ILS over 10x as many coupling cycles, so the explicit
 //              comparison is also made in the asymptotic regime and not only
 //              while the initial transient is still the largest term
+//   newton     the SAME affine graph (dn::DirichletSlab's beta = 0.0 default,
+//              so its own conductivity is identical to every row above), with
+//              the iteration region selecting S7.2's native Jacobian-free
+//              Newton-Krylov solver (`.newton()`) instead of `.accelerate()`.
+//              Enters the SAME correctness gates (agree with picard, converged,
+//              reproducible) as the quasi-Newton rows; "sweeps" means something
+//              different for it (one per coupling period, not one per Newton
+//              step -- see the dedicated NOTE at its own print_row call) and is
+//              deliberately left out of the "took fewer sweeps" ladder gate 6
+//              compares the Picard-family rows on.
+//   newton-nl  dn::DirichletSlab::beta = 0.1 (a real nonlinearity in the wall's
+//              own conductivity, docs/dev/newton-krylov.md §8.3), still solved
+//              by Newton: informational, like iqn+qr2, reporting the FITTED
+//              convergence order from the final period's own residual history
+//              rather than entering the correctness ladder (it is not the same
+//              physical problem the other rows solve, so it has no fixed point
+//              to agree with them about).
 //
 // The gates: the implicit runs must agree with each other and with the
 // analytic solution; the implicit answer must beat the explicit one by orders
@@ -63,6 +80,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -189,6 +207,67 @@ fuse::CouplingGraph build_graph(fuse::AccelConfig accel, int max_iterations) {
   return g;
 }
 
+/// S7.2's own overload: the IDENTICAL mesh/region/component/field/channel/
+/// convergence-criterion setup above, differing only in the iteration
+/// region's own final call -- `.newton(cfg)` rather than `.accelerate(accel)`.
+/// A second function, not a `bool`/`std::variant` parameter threaded through
+/// the one above, so the picard/aitken/iqn-ils/iqn+qr2/severed rows this file
+/// already gates on keep calling the UNCHANGED original and stay provably
+/// untouched by this addition (cmp against a HEAD build of this same binary
+/// is how that claim is checked, not just asserted).
+fuse::CouplingGraph build_graph(fuse::NewtonConfig cfg, int max_iterations) {
+  fuse::CouplingGraph g;
+  const std::string src = "generated:line:" + std::to_string(kStations);
+
+  const auto m1 = g.add_mesh(fuse::MeshDecl{.name = "iface_1", .source = src});
+  const auto m2 = g.add_mesh(fuse::MeshDecl{.name = "iface_2", .source = src});
+  const auto r1 = g.add_region(
+      fuse::Region{.name = "iface_1", .mesh = m1, .dimension = 1});
+  const auto r2 = g.add_region(
+      fuse::Region{.name = "iface_2", .mesh = m2, .dimension = 1});
+
+  const auto cd = g.add_component(fuse::ComponentDecl{
+      .name = "dirichlet", .ranks = {0, 1},
+      .interval = fuse::Rational{1, kPeriodDen}});
+  const auto cn = g.add_component(fuse::ComponentDecl{
+      .name = "neumann", .ranks = {1, 1},
+      .interval = fuse::Rational{1, kPeriodDen}});
+
+  const auto q_out = g.add_field(cd, fuse::FieldSpec{
+      .name = "q_wall", .region = r1, .units = fuse::units::kHeatFluxDensity,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Provides});
+  const auto u_in = g.add_field(cd, fuse::FieldSpec{
+      .name = "u_wall_in", .region = r1, .units = fuse::units::kKelvin,
+      .conservation = fuse::Conservation::Intensive,
+      .intent = fuse::Intent::Requires});
+  const auto q_in = g.add_field(cn, fuse::FieldSpec{
+      .name = "q_wall_in", .region = r2,
+      .units = fuse::units::kHeatFluxDensity,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Requires});
+  const auto u_out = g.add_field(cn, fuse::FieldSpec{
+      .name = "u_wall", .region = r2, .units = fuse::units::kKelvin,
+      .conservation = fuse::Conservation::Intensive,
+      .intent = fuse::Intent::Provides});
+
+  const auto flux = g.add_channel("flux", q_out, q_in);
+  const auto temp = g.add_channel("wall_temperature", u_out, u_in);
+  g.channel(temp).lag(1).allow_time_level_mismatch(
+      "resolved by the Dirichlet-Neumann implicit coupling group");
+
+  fuse::ConvergenceCriterion crit;
+  crit.add(fuse::Converged::Relative(kTol, "u_wall"));
+  crit.add(fuse::Converged::Relative(kTol, "q_wall"));
+
+  g.iterate({flux, temp})
+      .name("dirichlet_neumann")
+      .until(std::move(crit))
+      .max_iterations(max_iterations)
+      .newton(cfg);
+  return g;
+}
+
 struct Outcome {
   bool                ok = false;
   std::string         error;
@@ -311,6 +390,128 @@ Outcome run_case(fuse::AccelConfig accel, int max_iterations,
   return o;
 }
 
+/// S7.2's own overload. A near-duplicate of the body above rather than a
+/// shared helper the two funnel through, for the same reason the
+/// `build_graph` overload above is a second function and not a branch in the
+/// first: the original's every line stays provably untouched.
+///
+/// `dirichlet_beta`/`neumann_initial_u` both default to the values that make
+/// `dn::DirichletSlab`/`dn::NeumannSlab` behave exactly as the picard/aitken/
+/// iqn-ils rows' own components do (beta = 0.0 is bit-identical to the affine
+/// map; initial_u = NaN means "the component's own today's T_outer_2(0.0)",
+/// its own existing default) -- the `newton` row below passes neither, so it
+/// solves the IDENTICAL physical problem the other rows do. `newton-nl`
+/// passes beta = 0.1 for a real nonlinearity.
+Outcome run_case(fuse::NewtonConfig cfg, int max_iterations,
+                 std::int64_t periods, dn::Wiring wiring,
+                 bool abort_on_nonconvergence, double dirichlet_beta = 0.0,
+                 double neumann_initial_u =
+                     std::numeric_limits<double>::quiet_NaN(),
+                 bool dump = false) {
+  Outcome o;
+  o.periods = periods;
+  fuse::CouplingGraph graph = build_graph(cfg, max_iterations);
+
+  fuse::SerialMeshBackend backend;
+  for (std::uint32_t i = 0; i < graph.mesh_count(); ++i) {
+    const auto r = backend.load(graph.mesh(fuse::MeshId{i}));
+    if (!r.ok()) { o.error = "mesh load: " + r.error().message; return o; }
+  }
+
+  const auto lowered = lower(graph);
+  if (!lowered.ok()) { o.error = lowered.diags.to_string(); return o; }
+
+  const fuse::ClockSet clocks{graph};
+  auto sched = schedule(graph, lowered.dag, clocks,
+                        fuse::make_region_sizes(graph, backend));
+  if (!sched.ok()) { o.error = sched.diags.to_string(); return o; }
+
+  if (dump) {
+    std::printf("=== IR ===\n%s\n=== PLAN ===\n%s\n",
+                dump_text(lowered.dag).c_str(),
+                sched.plan.to_string().c_str());
+  }
+
+  fuse::ComponentSet components;
+  auto dirichlet = std::make_unique<dn::DirichletSlab>(
+      "dirichlet", kStations, wiring, dirichlet_beta);
+  auto neumann = std::make_unique<dn::NeumannSlab>(
+      "neumann", kStations, wiring, neumann_initial_u);
+  dn::DirichletSlab* d = dirichlet.get();
+  dn::NeumannSlab*   n = neumann.get();
+  components.add(std::move(dirichlet));
+  components.add(std::move(neumann));
+
+  const double* d_addr = d->registered_provides();
+  const double* n_addr = n->registered_provides();
+
+  fuse::FieldRegistry registry;
+  for (auto& c : components) {
+    const auto r = c.register_fields(registry, graph);
+    if (!r.ok()) { o.error = "register_fields: " + r.error().message; return o; }
+  }
+
+  fuse::RunnerConfig cfg2;
+  cfg2.abort_on_nonconvergence = abort_on_nonconvergence;
+  fuse::Runner runner{graph, lowered.dag, sched.plan, backend};
+  if (const auto r = runner.initialize(components, registry, cfg2); !r.ok()) {
+    o.error = "initialize: " + r.error().message;
+    return o;
+  }
+  if (!runner.checkpoint_explanations().empty()) {
+    o.checkpoints = runner.checkpoint_explanations().front();
+  }
+  if (const auto r = runner.run(components, periods); !r.ok()) {
+    o.error = "run: " + r.error().message;
+    return o;
+  }
+
+  o.addresses_fixed = (d_addr == d->registered_provides()) &&
+                      (n_addr == n->registered_provides());
+  o.sweeps = runner.stats().total_iterations;
+  o.not_converged = runner.stats().windows_not_converged;
+  o.checkpoint_verifications = runner.stats().checkpoint_verifications;
+  o.conservation_checks = runner.stats().conservation_checks;
+  o.conservation_violations = runner.stats().conservation_violations;
+  o.worst_conservation = runner.stats().worst_conservation_error;
+  if (!runner.iteration_stats().empty()) {
+    o.last_residuals = runner.iteration_stats().front().residual_history;
+  }
+
+  const double t = n->time();
+  o.t_final = t;
+  o.u_final = n->u();
+  o.q_final = d->q();
+  const auto ue = [&](std::size_t i) { return dn::exact_u(i, kStations, t); };
+  const auto qe = [&](std::size_t i) { return dn::exact_q(i, kStations, t); };
+  o.u_l2 = dn::l2_error(o.u_final, ue);
+  o.u_max = dn::max_error(o.u_final, ue);
+  o.q_l2 = dn::l2_error(o.q_final, qe);
+  o.q_max = dn::max_error(o.q_final, qe);
+  o.u_norm = dn::l2_norm(o.u_final);
+  o.d_history = d->history();
+  o.n_history = n->history();
+  o.ok = true;
+  return o;
+}
+
+/// The orders S7.2's own `NewtonRegion.QuadraticRateMeasuredOnTheNonlinear
+/// Problem` (test/runtime/newton_region_test.cpp) fits, reproduced here so
+/// the claim is a number THIS binary also measures and gates on, not only
+/// the unit test: q_k over every consecutive residual triple still above a
+/// round-off floor relative to the period's own ||F_0||.
+std::vector<double> fitted_orders(const std::vector<double>& h) {
+  std::vector<double> orders;
+  if (h.size() < 4) return orders;
+  const double floor = h.front() * 1.0e-10;
+  for (std::size_t k = 1; k + 1 < h.size(); ++k) {
+    if (h[k - 1] <= floor || h[k] <= floor || h[k + 1] <= floor) continue;
+    if (h[k] >= h[k - 1] || h[k + 1] >= h[k]) continue;
+    orders.push_back(std::log(h[k + 1] / h[k]) / std::log(h[k] / h[k - 1]));
+  }
+  return orders;
+}
+
 void print_row(const char* label, const Outcome& o) {
   std::printf("  %-9s %6lld %8lld %6lld  %10.3e %10.3e  %10.3e %10.3e\n", label,
               static_cast<long long>(o.periods),
@@ -411,16 +612,45 @@ int main(int argc, char** argv) {
   const Outcome repeat =
       run_case(iqn_cfg, kMaxIterations, kPeriods, dn::Wiring::Connected, true);
 
-  // Every configuration a gate below reads must have run. iqn+qr2 is
-  // deliberately NOT in this list: it is an informational row measuring what
-  // AccelConfig's default filter costs here, it runs with
-  // abort_on_nonconvergence off by design, and E-ACCEL-DIVERGED from a
-  // deliberately badly filtered least-squares solve is a documented runtime
-  // outcome rather than a regression. Its failure is printed, not fatal.
-  const Outcome* all[] = {&expl,      &picard,   &aitken, &iqn,
-                          &severed,   &expl_long, &iqn_long, &repeat};
-  const char*    names[] = {"explicit",  "picard",   "aitken",   "iqn-ils",
-                            "severed",   "expl-long", "iqn-long", "repeat"};
+  // S7.2: the SAME affine graph (beta = 0.0, the default, bit-identical to
+  // every row above -- Dn.NonlinearAtBetaZeroIsBitIdenticalToTheAffineMap,
+  // test/runtime/newton_region_test.cpp), solved by the native Jacobian-free
+  // Newton-Krylov region instead of a quasi-Newton accelerator wrapped around
+  // the Picard sweep.
+  const fuse::NewtonConfig newton_cfg{};
+  const Outcome newton =
+      run_case(newton_cfg, kMaxIterations, kPeriods, dn::Wiring::Connected,
+               true);
+  // Bit-for-bit reproducibility of the Newton configuration too -- the same
+  // non-triviality guard gate 7 below applies to iqn/repeat.
+  const Outcome newton_repeat =
+      run_case(newton_cfg, kMaxIterations, kPeriods, dn::Wiring::Connected,
+               true);
+  // Informational, like iqn+qr2: a REAL nonlinearity in the wall's own
+  // conductivity (beta = 0.1, docs/dev/newton-krylov.md §8.3), rtol loosened
+  // to 1e-4 for the SAME reason the dedicated unit test loosens it -- reaching
+  // 1e-8 from here needs a near-machine-precision last linear solve this
+  // unpreconditioned, matrix-free iteration cannot complete within a sane
+  // GMRES budget, and the quadratic order is already visible two orders of
+  // magnitude earlier. Not in the `all[]` run-completed list below for the
+  // same reason iqn_qr2 is not: a different physical problem than the other
+  // rows solve, with its own informational gate (order ~= 2.0) below instead.
+  fuse::NewtonConfig newton_nl_cfg{};
+  newton_nl_cfg.rtol = 1.0e-4;
+  const Outcome newton_nl =
+      run_case(newton_nl_cfg, kMaxIterations, kPeriods, dn::Wiring::Connected,
+               false, /*dirichlet_beta=*/0.1);
+
+  // Every configuration a gate below reads must have run. iqn+qr2 and
+  // newton-nl are deliberately NOT in this list: they are informational rows
+  // (see their own construction above), run with abort_on_nonconvergence off
+  // by design, and a failure to converge is a documented runtime outcome
+  // rather than a regression. Their failure is printed, not fatal.
+  const Outcome* all[] = {&expl,      &picard,   &aitken,  &iqn,     &severed,
+                          &expl_long, &iqn_long, &repeat,  &newton,  &newton_repeat};
+  const char*    names[] = {"explicit",  "picard",   "aitken",     "iqn-ils",
+                            "severed",   "expl-long", "iqn-long",  "repeat",
+                            "newton",    "newton-repeat"};
   constexpr std::size_t kCases = sizeof(all) / sizeof(all[0]);
   for (std::size_t i = 0; i < kCases; ++i) {
     if (!all[i]->ok) {
@@ -432,6 +662,10 @@ int main(int argc, char** argv) {
   if (!iqn_qr2.ok) {
     std::printf("NOTE: the informational iqn+qr2 row did not complete: %s\n",
                 iqn_qr2.error.c_str());
+  }
+  if (!newton_nl.ok) {
+    std::printf("NOTE: the informational newton-nl row did not complete: %s\n",
+                newton_nl.error.c_str());
   }
 
   std::printf(
@@ -466,6 +700,15 @@ int main(int argc, char** argv) {
   print_row("severed", severed);
   print_row("expl-long", expl_long);
   print_row("iqn-long", iqn_long);
+  print_row("newton", newton);
+  std::printf(
+      "  NOTE: 'newton' row's own sweeps column (%lld) counts one per "
+      "coupling period, not one per Newton step -- a Newton-selected region "
+      "bypasses the Picard sweep loop entirely (docs/dev/newton-krylov.md "
+      "§8.1) and so does not accumulate `total_iterations` the way the rows "
+      "above do. The final period alone took %zu Newton step(s) (its own "
+      "residual history below).\n",
+      static_cast<long long>(newton.sweeps), newton.last_residuals.size());
   std::printf("\n");
 
   std::printf("residual history of the final period (2-norm of the "
@@ -474,6 +717,22 @@ int main(int argc, char** argv) {
   print_residuals("aitken", aitken.last_residuals);
   print_residuals("iqn-ils", iqn.last_residuals);
   print_residuals("severed", severed.last_residuals);
+  print_residuals("newton", newton.last_residuals);
+  std::printf("\n");
+
+  // The nonlinear, informational row: dn_heat's own quadratic-rate claim,
+  // measured by THIS binary rather than only test/runtime/newton_region_
+  // test.cpp's NewtonRegion.QuadraticRateMeasuredOnTheNonlinearProblem.
+  if (newton_nl.ok) {
+    print_residuals("newton-nl", newton_nl.last_residuals);
+    const std::vector<double> orders = fitted_orders(newton_nl.last_residuals);
+    std::printf("  newton-nl fitted order(s) from consecutive residual "
+                "triples above the round-off floor:");
+    for (const double q : orders) std::printf(" %.2f", q);
+    std::printf("%s\n", orders.empty() ? " (none -- too few samples "
+                                          "above the floor)"
+                                        : "");
+  }
   std::printf("\n");
 
   std::printf(
@@ -548,6 +807,47 @@ int main(int argc, char** argv) {
               " periods is not an iteration, it is an explicit scheme");
   }
 
+  // 1b. The Newton-selected region, gated separately from gate 1 above: its
+  //     own "sweeps" (runner.stats().total_iterations) counts one per
+  //     coupling period, not one per Newton step (docs/dev/newton-krylov.md
+  //     §8.1), so the `sweeps > periods` check above would read it as "not
+  //     an iteration" -- true of the COUNTER, false of what actually ran.
+  //     `checkpoint_verifications` is also not asserted here: it counts the
+  //     OUTER checkpoint/rollback byte-verification a REJECTED Picard sweep
+  //     triggers, and a Newton-selected region has no rejected-sweep
+  //     rollback to verify (its own commit is the only non-restored write,
+  //     docs/dev/newton-krylov.md §8.1) -- 0 here is the honest answer, not
+  //     a missing check.
+  check(newton.not_converged == 0,
+        "newton: " + std::to_string(newton.not_converged) +
+            " window(s) hit max_nonlinear_iterations without converging");
+  check(newton.u_l2 < kImplicitGate,
+        "newton: interface temperature L2 error " +
+            std::to_string(newton.u_l2) + " K >= " +
+            std::to_string(kImplicitGate));
+  check(newton.q_l2 < kImplicitGate,
+        "newton: interface flux L2 error " + std::to_string(newton.q_l2) +
+            " W/m^2 >= " + std::to_string(kImplicitGate));
+  check(newton.addresses_fixed,
+        "newton: a registered field address moved during the run");
+  // docs/dev/newton-krylov.md §8.3b: this track's own fix for a genuine,
+  // numerically-harmless bookkeeping defect found while measuring §8.3 --
+  // run_region_newton() originally left the generic per-period tick every
+  // region (Newton or Picard) is already advanced by before its own body
+  // runs un-rolled-back, so this read 2x the period count. Regression-
+  // tested directly in test/runtime/newton_region_test.cpp's own
+  // NewtonRegion.HistoryAccumulatesExactlyOncePerPeriodNotTwice; asserted
+  // here too because this binary is where the ORIGINAL defect was found.
+  check(newton.d_history == static_cast<double>(newton.periods) &&
+            newton.n_history == static_cast<double>(newton.periods),
+        "newton: private component state accumulated to " +
+            std::to_string(newton.d_history) + "/" +
+            std::to_string(newton.n_history) + " over " +
+            std::to_string(newton.periods) +
+            " periods; with a working rollback it must be exactly " +
+            std::to_string(newton.periods) +
+            ", one surviving advance per coupling period");
+
   // 2. The answer must be an answer. Every ratio gate below would pass
   //    trivially on a field of zeros.
   check(picard.u_norm > 100.0,
@@ -564,6 +864,12 @@ int main(int argc, char** argv) {
   check(disagreement(picard, iqn) < kAgreementGate,
         "Picard and IQN-ILS disagree by " +
             std::to_string(disagreement(picard, iqn)) + " K");
+  // S7.2's own native solver is held to the SAME agreement gate: a
+  // different fixed point here would mean Newton and the quasi-Newton
+  // accelerators are not solving the same coupling problem.
+  check(disagreement(picard, newton) < kAgreementGate,
+        "Picard and Newton disagree by " +
+            std::to_string(disagreement(picard, newton)) + " K");
 
   // 4. IMPLICIT BEATS EXPLICIT, cold and asymptotically. Without this the demo
   //    performs implicit coupling without demonstrating that it bought
@@ -643,6 +949,22 @@ int main(int argc, char** argv) {
               iqn.u_norm,
               *std::min_element(iqn.u_final.begin(), iqn.u_final.end()),
               *std::max_element(iqn.u_final.begin(), iqn.u_final.end()));
+
+  // 7b. The same non-triviality guard, for Newton: GMRES/MFFD/line-search
+  //     all carry floating-point machinery of their own, none of it seeded
+  //     from anything but the components' own deterministic advance().
+  const bool newton_identical =
+      newton_repeat.u_final.size() == newton.u_final.size() &&
+      newton_repeat.q_final.size() == newton.q_final.size() &&
+      std::memcmp(newton_repeat.u_final.data(), newton.u_final.data(),
+                  newton.u_final.size() * sizeof(double)) == 0 &&
+      std::memcmp(newton_repeat.q_final.data(), newton.q_final.data(),
+                  newton.q_final.size() * sizeof(double)) == 0;
+  check(newton_identical,
+        "two runs of the same Newton configuration were not bit-identical");
+  check(newton_repeat.sweeps == newton.sweeps,
+        "two runs of the same Newton configuration took different sweep "
+        "counts");
 
   // 8. The derived checkpoint set was printed, and it names both participants.
   //    The user never wrote the set down, so a set they cannot read is a set

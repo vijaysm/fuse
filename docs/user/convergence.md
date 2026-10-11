@@ -58,3 +58,35 @@ Use the weighted norm for new work, especially if you will change resolution or
 rank count. Use the plain norm when you are reproducing a published iteration
 count that was obtained with it. The choice is declared per implicit coupling group, so a setup
 records which one its tolerance refers to.
+
+## Newton's own convergence tests
+
+A region selecting `AccelKind::Newton` does not go through
+`ConvergenceCriterion`/`NormKind` at all: `fuse::num::solve()`'s own
+`atol`/`rtol`/`stol` (`NewtonConfig`, the model-level mirror of `fuse::num::
+NewtonKrylovOptions`) test the PLAIN Euclidean 2-norm over the region's whole
+stacked residual vector (`DistVector::norm2()`) -- the "it depends on four
+things that are not physics" table above applies to it exactly as it does to
+the plain norm's own entry there, with one further consequence worth naming
+explicitly: every field transfer the region measures is concatenated into
+ONE vector before Newton's own norm is taken, so a region mixing fields of
+different units (dn_heat's own `u_wall`, kelvin, and `q_wall`, W/m^2) is
+tested by a single number with no unit of its own, computed the same way
+`field_norm()`'s `E-NORM-UNITS` check exists specifically to refuse.
+`rtol`'s own RELATIVE form (`||F_k|| <= rtol * ||F_0||`) keeps this from
+being as unit-dependent as it looks (both numerator and denominator mix the
+same two fields in the same proportion, so a global rescaling of either
+field cancels), but it does not make the two fields' own convergence
+independently legible the way two separate `ConvergenceCriterion` measures
+do for a Picard-accelerated region: a field whose own error happens to
+dominate the concatenated norm's magnitude can mask slower convergence in
+the other. Measured on dn_heat (docs/dev/newton-krylov.md §8): `u_wall`
+(order 300 K) and `q_wall` (order 10 W/m^2) differ by roughly an order of
+magnitude, not enough to hide either field's own convergence in this
+track's own measurements, but a region whose fields differ by several more
+orders of magnitude would be a case worth watching. Recorded here as an
+open question rather than a defect: `fuse::num::solve()` is a general
+Newton-Krylov solver over an arbitrary stacked residual, not specific to a
+coupling region's own named fields, and teaching it to decompose its own
+convergence test per field the way `ConvergenceCriterion` does was out of
+this track's own scope.

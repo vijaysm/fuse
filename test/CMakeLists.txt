@@ -463,8 +463,14 @@ target_include_directories(fuse_runtime_fixed_point_residual_test PRIVATE
 # S7.2: proves the graph-level trigger -- IterationBuilder::accelerate()/
 # ::newton() setting requires_residual_capability/requires_linearization_
 # capability -- end to end through the SAME verify_iteration_region() entry
-# point Runner::Impl::resolve_regions() calls at initialize().
-fuse_add_gtest(runtime newton_region)
+# point Runner::Impl::resolve_regions() calls at initialize() -- AND (this
+# file's own later TEST()s) the runtime wiring itself: a real Runner
+# solving examples/dn_heat's own affine Dirichlet-Neumann pair by Newton.
+# Reuses that example's header the same way
+# fuse_runtime_fixed_point_residual_test does, just above.
+fuse_add_gtest(runtime newton_region LIBS fuse::runtime fuse::backend)
+target_include_directories(fuse_runtime_newton_region_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/examples/dn_heat)
 # KNOWN_ISSUES.md D11 (closing) / matrix cell A-SPACES-TRANSPORT: a
 # Runner-level, 2048-element iteration region -- large enough to span
 # several of space_kernels.hpp's fixed reduction chunks -- pinned to exact
