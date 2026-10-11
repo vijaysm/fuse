@@ -150,6 +150,48 @@ inline CouplingGraph freeze_fixture() {
     const_cast<IterationRegionDecl&>(g.iteration_region(IterationRegionIdx{0}))
         .window_scope = std::move(scope);
   }
+
+  // A second region selecting AccelKind::Newton, with every NewtonConfig
+  // member away from its default: descriptor v12's reason for the version
+  // bump (S7.2, the native Jacobian-free Newton-Krylov coupler). Without
+  // this, the "outer" region above still has acceleration.kind == Aitken,
+  // so a frozen file built from it alone would never exercise the eighth
+  // accelerator-kind ordinal, and a NewtonConfig that round-trips to its
+  // own defaults proves nothing about any one of its 25 fields being read
+  // back correctly rather than silently dropped (this file's own opening
+  // comment). `.newton()` sets `requires_residual_capability` on its own;
+  // `use_block_jacobi_preconditioner = true` below is what additionally
+  // asks it to set `requires_linearization_capability`, so this region
+  // exercises both capability bytes at `true` together.
+  g.iterate({ch})
+      .name("newton")
+      .max_iterations(9)
+      .until(Converged::Relative(1e-9, "heat_flux"))
+      .newton(NewtonConfig{.line_search_kind = LineSearchKind::CP,
+                           .forcing_choice = EisenstatWalkerChoice::Choice1,
+                           .forcing_gamma = 0.85,
+                           .forcing_alpha = 1.8,
+                           .eta_initial = 0.4,
+                           .eta_max = 0.8,
+                           .eta_min = 1e-6,
+                           .forcing_safeguard_threshold = 0.2,
+                           .forcing_eta_constant = 0.2,
+                           .atol = 1e-11,
+                           .rtol = 1e-7,
+                           .stol = 1e-9,
+                           .divergence_tolerance = 5e3,
+                           .max_nonlinear_iterations = 9,
+                           .max_function_evaluations = 777,
+                           .armijo_alpha = 2e-4,
+                           .lambda_min = 1e-11,
+                           .max_backtracks = 30,
+                           .secant_tol = 1e-9,
+                           .max_secant_steps = 25,
+                           .damping = 0.75,
+                           .gmres_restart = 24,
+                           .gmres_max_iterations = 500,
+                           .preconditioner_lag = 3,
+                           .use_block_jacobi_preconditioner = true});
   return g;
 }
 }  // namespace fuse::testing

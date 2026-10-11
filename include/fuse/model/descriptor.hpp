@@ -12,6 +12,23 @@
 namespace fuse {
 
 inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
+/// 12: S7.2, the native Jacobian-free Newton-Krylov coupler. Each iteration
+///     region record gains, after its window-scope block: two capability
+///     bytes (`IterationRegionDecl::requires_residual_capability`,
+///     `::requires_linearization_capability`), and `NewtonConfig`'s own
+///     25 fields in full (two enum bytes -- `line_search_kind`,
+///     `forcing_choice` -- then 15 doubles, 5 signed words, 2 unsigned
+///     64-bit counts, and a final presence byte for
+///     `use_block_jacobi_preconditioner`), appended in the SAME declaration
+///     order `fuse::NewtonConfig` (fuse/model/iteration.hpp) lists them.
+///     Also widens the accelerator-kind bound check to admit
+///     `AccelKind::Newton` (ordinal 7, appended after `IQN_IMVJ`). A v11
+///     reader handed a v12 buffer would read the FIRST region's residual-
+///     capability byte as the start of whatever comes next (the next
+///     region's own name length, or the merge table) -- everything after
+///     it decodes as plausible garbage, the same class of silent misread
+///     every prior bump was made to prevent, so v11 is refused.
+///
 /// 11: the "LowFive" track, Unit 3. Each field record gains a presence byte
 ///     after `intent`, and when set, one more length-prefixed string:
 ///     `hdf5_path` (`FieldSpec::hdf5_path`, fuse/model/field_spec.hpp). Also
@@ -96,7 +113,7 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 /// the iteration regions and never see the merge rules, so it would read a
 /// graph that says "one writer per field" from bytes that say otherwise -- and
 /// it would read it successfully. The version check turns that into a refusal.
-inline constexpr std::uint32_t kGraphVersion = 11u;
+inline constexpr std::uint32_t kGraphVersion = 12u;
 
 namespace detail {
 
@@ -313,6 +330,44 @@ class Reader {
       // v8: the waveform-iteration option.
       w.pod(static_cast<std::uint8_t>(scope.iteration));
     }
+
+    // v12: S7.2's own Newton-Krylov coupler (descriptor.hpp's
+    // kGraphVersion history). The two capability bytes first, then
+    // NewtonConfig in full, in its own declaration order -- always
+    // written, the same unconditional convention `acceleration` itself
+    // already uses (not gated on `acceleration.kind == AccelKind::Newton`,
+    // so a region's own capability flags survive even when set by
+    // IterationBuilder::requires_residual() independently of Newton).
+    w.pod(static_cast<std::uint8_t>(r.requires_residual_capability ? 1 : 0));
+    w.pod(static_cast<std::uint8_t>(r.requires_linearization_capability ? 1 : 0));
+    {
+      const NewtonConfig& nc = r.newton_config;
+      w.pod(static_cast<std::uint8_t>(nc.line_search_kind));
+      w.pod(static_cast<std::uint8_t>(nc.forcing_choice));
+      w.pod(nc.forcing_gamma);
+      w.pod(nc.forcing_alpha);
+      w.pod(nc.eta_initial);
+      w.pod(nc.eta_max);
+      w.pod(nc.eta_min);
+      w.pod(nc.forcing_safeguard_threshold);
+      w.pod(nc.forcing_eta_constant);
+      w.pod(nc.atol);
+      w.pod(nc.rtol);
+      w.pod(nc.stol);
+      w.pod(nc.divergence_tolerance);
+      w.pod(static_cast<std::int32_t>(nc.max_nonlinear_iterations));
+      w.pod(static_cast<std::uint64_t>(nc.max_function_evaluations));
+      w.pod(nc.armijo_alpha);
+      w.pod(nc.lambda_min);
+      w.pod(static_cast<std::int32_t>(nc.max_backtracks));
+      w.pod(nc.secant_tol);
+      w.pod(static_cast<std::int32_t>(nc.max_secant_steps));
+      w.pod(nc.damping);
+      w.pod(static_cast<std::int32_t>(nc.gmres_restart));
+      w.pod(static_cast<std::uint64_t>(nc.gmres_max_iterations));
+      w.pod(static_cast<std::int32_t>(nc.preconditioner_lag));
+      w.pod(static_cast<std::uint8_t>(nc.use_block_jacobi_preconditioner ? 1 : 0));
+    }
   }
 
   // The merge table. Sorted by field id in the graph, so the bytes are the
@@ -523,7 +578,9 @@ class Reader {
     // are read from the same untrusted buffer and indexed unchecked by
     // to_yaml()'s kAccelNames/kFilterNames tables.
     const auto accel_kind = r.pod<std::uint8_t>();
-    if (accel_kind > static_cast<std::uint8_t>(AccelKind::IQN_IMVJ)) {
+    // v12: widened to admit AccelKind::Newton (descriptor.hpp's
+    // kGraphVersion history).
+    if (accel_kind > static_cast<std::uint8_t>(AccelKind::Newton)) {
       return Failure{"E-DESC-ENUM",
                      "unknown acceleration kind " + std::to_string(accel_kind)};
     }
@@ -585,6 +642,52 @@ class Reader {
       scope.iteration = static_cast<WaveformIteration>(iteration_byte);
       d.window_scope = std::move(scope);
     }
+
+    // v12: S7.2's own Newton-Krylov coupler (descriptor.hpp's
+    // kGraphVersion history). Mirrors the write side's own order exactly:
+    // the two capability bytes, then NewtonConfig in full.
+    d.requires_residual_capability = r.pod<std::uint8_t>() != 0;
+    d.requires_linearization_capability = r.pod<std::uint8_t>() != 0;
+    if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated iteration region capability bytes"};
+    {
+      NewtonConfig& nc = d.newton_config;
+      const auto ls_kind = r.pod<std::uint8_t>();
+      if (ls_kind > static_cast<std::uint8_t>(LineSearchKind::Basic)) {
+        return Failure{"E-DESC-ENUM",
+                       "unknown newton_config.line_search_kind " + std::to_string(ls_kind)};
+      }
+      nc.line_search_kind = static_cast<LineSearchKind>(ls_kind);
+      const auto ew_choice = r.pod<std::uint8_t>();
+      if (ew_choice > static_cast<std::uint8_t>(EisenstatWalkerChoice::Choice2)) {
+        return Failure{"E-DESC-ENUM",
+                       "unknown newton_config.forcing_choice " + std::to_string(ew_choice)};
+      }
+      nc.forcing_choice = static_cast<EisenstatWalkerChoice>(ew_choice);
+      nc.forcing_gamma = r.pod<double>();
+      nc.forcing_alpha = r.pod<double>();
+      nc.eta_initial = r.pod<double>();
+      nc.eta_max = r.pod<double>();
+      nc.eta_min = r.pod<double>();
+      nc.forcing_safeguard_threshold = r.pod<double>();
+      nc.forcing_eta_constant = r.pod<double>();
+      nc.atol = r.pod<double>();
+      nc.rtol = r.pod<double>();
+      nc.stol = r.pod<double>();
+      nc.divergence_tolerance = r.pod<double>();
+      nc.max_nonlinear_iterations = r.pod<std::int32_t>();
+      nc.max_function_evaluations = r.pod<std::uint64_t>();
+      nc.armijo_alpha = r.pod<double>();
+      nc.lambda_min = r.pod<double>();
+      nc.max_backtracks = r.pod<std::int32_t>();
+      nc.secant_tol = r.pod<double>();
+      nc.max_secant_steps = r.pod<std::int32_t>();
+      nc.damping = r.pod<double>();
+      nc.gmres_restart = r.pod<std::int32_t>();
+      nc.gmres_max_iterations = r.pod<std::uint64_t>();
+      nc.preconditioner_lag = r.pod<std::int32_t>();
+      nc.use_block_jacobi_preconditioner = r.pod<std::uint8_t>() != 0;
+    }
+    if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated newton_config"};
     g.add_iteration_region(std::move(d));
   }
 
