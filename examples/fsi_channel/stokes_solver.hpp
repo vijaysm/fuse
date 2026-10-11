@@ -59,10 +59,12 @@
 /// mu, rho) or `pin_` -- both are fixed for the object's entire lifetime by
 /// the constructor -- and `step()` rebuilds `bcs` with a hardcoded,
 /// unchanging shape (no-slip top/bottom, Dirichlet/outflow left/right) on
-/// every call. `dt` is therefore the ONLY input that can make A differ from
-/// one `step()` call to the next on a given instance, and the cache is keyed
-/// on exactly that value: the factorisation is recomputed whenever `dt`
-/// changes and reused, bit-for-bit, only when it doesn't -- A's own numeric
+/// every call. `dt`, and whether a `p0` is supplied (it switches the
+/// pressure-gradient coefficient between 1/dx and 0.5/dx -- see below), are
+/// therefore the ONLY inputs that can make A differ from one `step()` call
+/// to the next on a given instance, and the cache is keyed on exactly those
+/// two: the factorisation is recomputed whenever either changes and reused,
+/// bit-for-bit, only when neither does -- A's own numeric
 /// values are then bit-identical to the matrix the cached factors came from,
 /// so this changes wall-clock only, never the computed field. `cn_step()`
 /// itself, called directly (not through `StokesSolver`) by
@@ -78,7 +80,15 @@
 /// flow only into `rhs` -- every `bcs.*` closure that reads them lands in an
 /// identity row (`trip.emplace_back(row, row, 1.0)`) contributing a fixed
 /// `1.0` to A and the time-varying value to `rhs` alone -- so none of them
-/// can invalidate a `dt`-keyed cache.
+/// can invalidate the cache. `p0` is the exception, and the reason the key
+/// is not `dt` alone: its VALUES flow only into `rhs`, but its PRESENCE
+/// selects the trapezoidal pressure-gradient coefficient (`p_coeff`), which
+/// is an entry of A. `StokesSolver::step()` always passes `nullptr` today, so
+/// a `dt`-only key happened to be correct for it; the key records the form
+/// anyway so the cache cannot hand a direct `cn_step()` caller a
+/// factorisation of the wrong matrix (`FsiStokesLuCache` in
+/// `fsi_stokes_mms_test.cpp` proves the mismatch is a 30-unit error, not a
+/// rounding one).
 
 #include <algorithm>
 #include <cmath>
@@ -179,6 +189,11 @@ struct CnStepLuCache {
   // (examples/common/sparse_solve_backend.hpp): same calls, same results.
   fuse_examples::SparseLuBackend lu;
   double cached_dt = std::numeric_limits<double>::quiet_NaN();
+  // Whether the cached A carries the trapezoidal pressure-gradient
+  // coefficient (0.5/dx, p0 supplied) or the fully implicit one (1/dx, p0 ==
+  // nullptr). The two matrices differ, so the cache is keyed on this too
+  // (fsi_stokes_mms_test's FsiStokesLuCache case is the regression guard).
+  bool   cached_trapezoidal = false;
   bool   valid = false;
 };
 
@@ -599,9 +614,11 @@ struct CnStepLuCache {
   fuse_examples::SparseLuBackend  local_lu;
   fuse_examples::SparseLuBackend* lu = &local_lu;
   bool need_factor = true;
+  const bool trapezoidal = p0 != nullptr;
   if (lu_cache != nullptr) {
     lu = &lu_cache->lu;
-    need_factor = !lu_cache->valid || lu_cache->cached_dt != dt;
+    need_factor = !lu_cache->valid || lu_cache->cached_dt != dt ||
+                  lu_cache->cached_trapezoidal != trapezoidal;
   }
   if (need_factor) {
     lu->compute(A);
@@ -610,6 +627,7 @@ struct CnStepLuCache {
     }
     if (lu_cache != nullptr) {
       lu_cache->cached_dt = dt;
+      lu_cache->cached_trapezoidal = trapezoidal;
       lu_cache->valid = true;
     }
   }
