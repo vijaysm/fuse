@@ -213,6 +213,11 @@ fuse_add_gtest(model validate THROWS)
 # fuse/model/iteration.hpp, not fuse/num, and this test never included
 # anything from fuse/num.
 fuse_add_gtest(model iteration THROWS)
+# S7.1's Newton-Krylov seam: the capability-rejection tests, before any
+# Newton solver exists. Needs fuse::runtime for ComponentSet/Component and
+# for verify_newton_capability_support()'s own implementation
+# (src/runtime/checkpoint_support.cpp, part of that library).
+fuse_add_gtest(model newton_capability LIBS fuse::runtime)
 
 # Tier 1 only. Absent rather than skipped in Tier 0: there is no MPI to run it
 # with, and a skipped test reads like a passing one in a summary line.
@@ -432,6 +437,18 @@ foreach(t runner checkpoint epoch_schedule window_convergence window_coupler
   fuse_add_gtest(runtime ${t})
 endforeach()
 fuse_add_gtest(runtime component_iface THROWS)
+# S7.1's residual/linearisation seam: fuse::ImplicitComponent,
+# fuse::LinearizationToken and Component::implicit() themselves (header-
+# only; the model-level capability refusal is model.newton_capability).
+fuse_add_gtest(runtime implicit_component)
+# S7.1's Newton-Krylov seam: the fixed-point residual F(x) = x - G(x) over
+# the Runner. Reuses examples/dn_heat's Dirichlet-Neumann pair for the
+# contraction-factor test, so it needs that example's own header on its
+# include path (the same pattern test/parallel/schur_slab_mpi_test.cpp
+# already uses for examples/brusselator, below).
+fuse_add_gtest(runtime fixed_point_residual LIBS fuse::runtime fuse::backend)
+target_include_directories(fuse_runtime_fixed_point_residual_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/examples/dn_heat)
 # KNOWN_ISSUES.md D11 (closing) / matrix cell A-SPACES-TRANSPORT: a
 # Runner-level, 2048-element iteration region -- large enough to span
 # several of space_kernels.hpp's fixed reduction chunks -- pinned to exact

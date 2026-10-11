@@ -11,6 +11,7 @@
 #include "fuse/field/registry.hpp"
 #include "fuse/backend/mesh_view.hpp"
 #include "fuse/runtime/component.hpp"
+#include "fuse/runtime/fixed_point_residual.hpp"
 #include "fuse/schedule/plan.hpp"
 #include "fuse/transport/transport.hpp"
 
@@ -440,6 +441,35 @@ class Runner {
   /// `E-ABI-RUN-EXTERNAL` refusal to "an externally driven component IS
   /// hosted here", rather than "the GRAPH declares one anywhere at all".
   [[nodiscard]] bool hosts_component(ComponentId component) const;
+
+  /// S7.1's Newton-Krylov seam. A `fuse::FixedPointResidual` for iteration
+  /// region `region_index` (the same indexing `iteration_stats()` uses),
+  /// in place of letting this `Runner` drive that region's own Picard
+  /// sweep loop: the JFNK track's Newton solver (S7.2) calls `evaluate`
+  /// instead of `run_period()`/`run()` ever reaching this region.
+  ///
+  /// `evaluate(x, f)` computes `f = x - G(x)`, `G` one Picard sweep of the
+  /// region's body delivered with `x` on the interface, bracketed by
+  /// every checkpointed member's own `save_state()`/`restore_state()` and
+  /// by a snapshot/restore of every coupler-owned loop-carried buffer the
+  /// region tracks (`IterationRegionDecl`'s own derived checkpoint set) --
+  /// so a call leaves every member's state, and the region's own
+  /// coupler-side buffers, exactly as it found them. The region may be
+  /// re-entered afterward, by this same call or by `run_period()`'s own
+  /// Picard loop, and reaches the same fixed point it would have without
+  /// the evaluation, bit for bit.
+  ///
+  /// SCOPE (S7.1 only; lifting these is the JFNK track's own work, not
+  /// this seam's): refuses `E-NEWTON-UNSUPPORTED-REGION` for a window-
+  /// scoped region, a region with more than one cross-rank participant, or
+  /// a region with an externally driven member -- none of those have a
+  /// Picard sweep this function can run standalone without also
+  /// reimplementing `run_region()`'s own window/parallel machinery, which
+  /// is out of scope for the seam itself. Available only after a
+  /// successful `initialize()`; refuses `E-RT-REGION` for an out-of-range
+  /// `region_index`.
+  [[nodiscard]] Result<FixedPointResidual> region_fixed_point_residual(
+      std::size_t region_index, ComponentSet& components);
 
  private:
   struct Impl;

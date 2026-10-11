@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -1056,6 +1057,19 @@ struct Runner::Impl {
   Result<void> build_ticks(ComponentSet& components);
 
   Result<void> execute(const Instruction& ins, const detail::Resolved& r);
+
+  /// S7.1's Newton-Krylov seam. `f_out = x - G(x)` for region
+  /// `region_index`, `G` one Picard sweep of that region's body delivered
+  /// with `x` on the interface -- see fuse/runtime/fixed_point_residual.hpp
+  /// and src/runtime/fixed_point_residual.cpp (this method's own
+  /// definition) for the full save/restore contract and the single-
+  /// participant, non-window, non-externally-driven scope it is
+  /// restricted to.
+  Result<void> evaluate_region_residual(ComponentSet& components,
+                                        std::size_t region_index,
+                                        std::span<const double> x,
+                                        std::span<double> f_out);
+
   /// KNOWN_ISSUES.md D12. A coroutine (see src/runtime/resume.hpp):
   /// suspends via `co_await detail::ExternalSuspend{}`, reporting
   /// `pending_external_request`, when `tick`'s own component is
