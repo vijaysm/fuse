@@ -45,19 +45,46 @@
 /// section specifies.
 ///
 /// THE SADDLE-POINT SYSTEM `[A B^T; B 0] x = rhs` (A the momentum block, B
-/// the discrete divergence) is assembled fresh every step and factorised
-/// with `Eigen::SparseLU` -- no factorisation is cached across steps.
-/// Priority per this project's standing rule ("robustness and accuracy
-/// beats efficiency always"): the grids this example and its tests use are
-/// small enough (a few hundred to a few thousand unknowns) that refactoring
-/// every step costs milliseconds, and a fresh factorisation can never go
-/// stale relative to a boundary condition that changes shape or a solver
-/// re-tared with different parameters mid-run.
+/// the discrete divergence) is assembled fresh every `cn_step()` call -- the
+/// RHS always needs it, since it is built in the same triplet loops as A --
+/// but the `Eigen::SparseLU` FACTORISATION of A is now cached and reused
+/// across `StokesSolver::step()` calls whenever `dt` is unchanged (see
+/// `CnStepLuCache`, `StokesSolver::lu_cache_`, below). This used to be an
+/// unconditional "assemble and refactorise every step, never cache" policy,
+/// justified by this project's standing rule ("robustness and accuracy
+/// beats efficiency always") on the grounds that a fresh factorisation can
+/// never go stale relative to a boundary condition that changes shape or a
+/// solver re-tared with different parameters mid-run. That risk does not
+/// actually apply to `StokesSolver`: it has NO public setter for `p_` (grid,
+/// mu, rho) or `pin_` -- both are fixed for the object's entire lifetime by
+/// the constructor -- and `step()` rebuilds `bcs` with a hardcoded,
+/// unchanging shape (no-slip top/bottom, Dirichlet/outflow left/right) on
+/// every call. `dt` is therefore the ONLY input that can make A differ from
+/// one `step()` call to the next on a given instance, and the cache is keyed
+/// on exactly that value: the factorisation is recomputed whenever `dt`
+/// changes and reused, bit-for-bit, only when it doesn't -- A's own numeric
+/// values are then bit-identical to the matrix the cached factors came from,
+/// so this changes wall-clock only, never the computed field. `cn_step()`
+/// itself, called directly (not through `StokesSolver`) by
+/// `fsi_stokes_mms_test.cpp` across a sweep of DIFFERENT grids/mu/rho/bcs,
+/// passes no cache (`lu_cache = nullptr`, the default) and keeps the
+/// original always-fresh-factorisation behaviour exactly, since nothing
+/// about ITS inputs is guaranteed fixed across calls. This mirrors
+/// `BeamSolver::rebuild_effective_midpoint()`'s own
+/// `keff2_lu_`/`cached_dt2_`/`keff2_valid_` pattern in this same file
+/// (`beam_solver.hpp`) -- same justification, same guard shape, applied here
+/// to the fluid side's saddle-point solve. The other per-call arguments
+/// (`top_wall_v_old`/`top_wall_v_new`/`inflow_u`, `t0`/`t1`, `u0`/`v0`) all
+/// flow only into `rhs` -- every `bcs.*` closure that reads them lands in an
+/// identity row (`trip.emplace_back(row, row, 1.0)`) contributing a fixed
+/// `1.0` to A and the time-varying value to `rhs` alone -- so none of them
+/// can invalidate a `dt`-keyed cache.
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <functional>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -134,6 +161,23 @@ namespace detail {
 
 }  // namespace detail
 
+/// Optional cross-call cache for `cn_step`'s saddle-point factorisation.
+/// When non-null, `cn_step` reuses the cached `Eigen::SparseLU` numeric
+/// factorisation whenever `dt` matches the value it was built from, instead
+/// of refactorising an assembled-but-numerically-identical A. Safe ONLY if
+/// every OTHER input that feeds the matrix (grid, mu, rho, pin, bcs shape)
+/// also stays fixed across every call sharing one cache -- see `cn_step`'s
+/// own header comment above for why that holds for `StokesSolver::step()`
+/// specifically. A caller that cannot make that guarantee (e.g.
+/// `fsi_stokes_mms_test.cpp`, which varies grid/mu/rho/bcs across calls)
+/// passes `nullptr` (the default) and gets the original
+/// always-fresh-factorisation behaviour, unchanged.
+struct CnStepLuCache {
+  Eigen::SparseLU<Eigen::SparseMatrix<double>> lu;
+  double cached_dt = std::numeric_limits<double>::quiet_NaN();
+  bool   valid = false;
+};
+
 /// One Crank-Nicolson step of the saddle-point system above, from
 /// `(u0, v0)` at time `t0` to the returned state at `t1 = t0 + dt`.
 /// `bcs` is evaluated at `t1` for the implicit (unknown) array's boundary
@@ -183,7 +227,13 @@ namespace detail {
                                       // StokesSolver::step() passes one, so
                                       // FluidComponent's own p1 is genuinely
                                       // t1-accurate.
-                                      const std::vector<double>* p0 = nullptr) {
+                                      const std::vector<double>* p0 = nullptr,
+                                      // Optional: see CnStepLuCache's own
+                                      // comment. nullptr (the default)
+                                      // preserves the original
+                                      // always-fresh-factorisation behaviour
+                                      // exactly.
+                                      CnStepLuCache* lu_cache = nullptr) {
   using detail::idx_p;
   using detail::idx_u;
   using detail::idx_v;
@@ -537,13 +587,30 @@ namespace detail {
   A.setFromTriplets(trip.begin(), trip.end());
   A.makeCompressed();
   if (debug_matrix_out) *debug_matrix_out = A;
-  Eigen::SparseLU<Eigen::SparseMatrix<double>> lu;
-  lu.compute(A);
-  if (lu.info() != Eigen::Success) {
-    throw std::runtime_error("cn_step: SparseLU factorization failed");
+
+  // See CnStepLuCache's own comment: lu_cache == nullptr (every direct
+  // cn_step() caller except StokesSolver::step()) takes need_factor's
+  // unconditional-true branch below, identical to the original
+  // unconditional `lu.compute(A)` every call.
+  Eigen::SparseLU<Eigen::SparseMatrix<double>> local_lu;
+  Eigen::SparseLU<Eigen::SparseMatrix<double>>* lu = &local_lu;
+  bool need_factor = true;
+  if (lu_cache != nullptr) {
+    lu = &lu_cache->lu;
+    need_factor = !lu_cache->valid || lu_cache->cached_dt != dt;
   }
-  const Eigen::VectorXd sol = lu.solve(rhs);
-  if (lu.info() != Eigen::Success) {
+  if (need_factor) {
+    lu->compute(A);
+    if (lu->info() != Eigen::Success) {
+      throw std::runtime_error("cn_step: SparseLU factorization failed");
+    }
+    if (lu_cache != nullptr) {
+      lu_cache->cached_dt = dt;
+      lu_cache->valid = true;
+    }
+  }
+  const Eigen::VectorXd sol = lu->solve(rhs);
+  if (lu->info() != Eigen::Success) {
     throw std::runtime_error("cn_step: SparseLU solve failed");
   }
 
@@ -682,7 +749,8 @@ class StokesSolver {
     // mechanism sustaining D9's coupled energy growth; that mechanism is
     // still open (KNOWN_ISSUES.md D9's "round 2" section).
     FlowState next =
-        cn_step(p_, bcs, SourceTerms{}, dt, t0, t1, u_, v_, pin_, nullptr, nullptr);
+        cn_step(p_, bcs, SourceTerms{}, dt, t0, t1, u_, v_, pin_, nullptr, nullptr,
+               &lu_cache_);
 
     // GLOBAL MASS CONSERVATION AT THE OUTFLOW -- kept, independent of the
     // pressure-labelling fix above. This is a correct statement of
@@ -873,6 +941,14 @@ class StokesSolver {
   PressurePin   pin_;
   std::vector<double> u_, v_, p_field_;
   std::vector<double> traction_mid_;  // see wall_traction()'s own comment
+
+  // Cross-step cache for cn_step's saddle-point factorisation -- see
+  // CnStepLuCache's own comment for exactly what this is and why it's safe
+  // here: StokesSolver has no setters for p_ or pin_ (grid, mu, rho, pin are
+  // fixed for the object's entire lifetime), and step() rebuilds `bcs` with
+  // a hardcoded shape every call, so `dt` is the ONLY input to cn_step's
+  // matrix that can vary call to call on a single instance.
+  CnStepLuCache lu_cache_;
 };
 
 }  // namespace fsi
