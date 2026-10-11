@@ -80,13 +80,34 @@ using IndexSpanOf =
 /// `first` is passed rather than derived from a subcycling step counter inside the
 /// kernel: the branch is then uniform across the range instead of per element,
 /// and the caller already knows which subcycling step it is on.
+// A named functor, not KOKKOS_LAMBDA: nvcc's extended-lambda ABI heap-
+// allocates a dispatch wrapper for every closure it creates (visible as
+// `__nv_hdl_wrapper_t`/`__nv_hdl_create_wrapper` in a backtrace), once per
+// CALL, regardless of what the closure captures -- a cost that does not
+// exist under a non-CUDA-enabled Kokkos build (no extended lambda, no
+// wrapper), and nothing short of removing the closure avoids it when
+// `OMPI_CXX=nvcc_wrapper` actually routes a host-only instantiation like
+// `accumulate<Kokkos::OpenMP>` through nvcc anyway. `Runner.
+// AllocatesNothingWhileRunning` (test/runtime/runner_test.cpp) is what
+// caught this, the same role `runtime.iteration`'s own allocation-counted
+// tests played for the label-length issue the comment above already
+// documents. A plain functor is a concrete type, never an anonymous
+// closure, so none of this machinery applies to it.
+//
+// Each functor's `operator()` body below is copied verbatim, same text and
+// indentation, from the `KOKKOS_LAMBDA` it replaces -- `build-evidence/
+// mutations.toml`'s own anchors for this file match exact source lines
+// inside these bodies (e.g. "accumulate-forgets-the-first-sample",
+// "relax-swaps-its-weights"), and a mutation anchor that goes stale here
+// would be the same hazard the `remap_apply`/`remap_multi` note two
+// functions below already warns about.
 template <class Space>
-void accumulate(AccumOp op, ConstSpanOf<Space> sample, SpanOf<Space> acc,
-                bool first) {
-  const std::size_t n = acc.extent(0);
-  Kokkos::parallel_for(
-      "fuse::accumulate", Kokkos::RangePolicy<Space>(0, n),
-      KOKKOS_LAMBDA(const std::size_t i) {
+struct AccumulateFunctor {
+  AccumOp op;
+  ConstSpanOf<Space> sample;
+  SpanOf<Space> acc;
+  bool first;
+  KOKKOS_INLINE_FUNCTION void operator()(const std::size_t i) const {
         switch (op) {
           case AccumOp::Instant:
             acc(i) = sample(i);
@@ -105,30 +126,56 @@ void accumulate(AccumOp op, ConstSpanOf<Space> sample, SpanOf<Space> acc,
                            : (sample(i) > acc(i) ? sample(i) : acc(i));
             break;
         }
-      });
+  }
+};
+
+template <class Space>
+void accumulate(AccumOp op, ConstSpanOf<Space> sample, SpanOf<Space> acc,
+                bool first) {
+  const std::size_t n = acc.extent(0);
+  Kokkos::parallel_for("fuse::accum", Kokkos::RangePolicy<Space>(0, n),
+                       AccumulateFunctor<Space>{op, sample, acc, first});
 }
 
 /// `out <- omega * current + (1 - omega) * previous`, one iteration sweep's
 /// relaxation.
+template <class Space>
+struct RelaxFunctor {
+  double omega;
+  ConstSpanOf<Space> previous;
+  ConstSpanOf<Space> current;
+  SpanOf<Space> out;
+  double one_minus;
+  KOKKOS_INLINE_FUNCTION void operator()(const std::size_t i) const {
+        out(i) = omega * current(i) + one_minus * previous(i);
+  }
+};
+
 template <class Space>
 void relax(double omega, ConstSpanOf<Space> previous,
            ConstSpanOf<Space> current, SpanOf<Space> out) {
   const double one_minus = 1.0 - omega;
   Kokkos::parallel_for(
       "fuse::relax", Kokkos::RangePolicy<Space>(0, out.extent(0)),
-      KOKKOS_LAMBDA(const std::size_t i) {
-        out(i) = omega * current(i) + one_minus * previous(i);
-      });
+      RelaxFunctor<Space>{omega, previous, current, out, one_minus});
 }
 
 /// `dst[k] <- src[index[k]]` -- packing a message, or reading an interface
 /// subset out of a whole-mesh field.
 template <class Space>
+struct GatherFunctor {
+  ConstSpanOf<Space> src;
+  IndexSpanOf<Space> index;
+  SpanOf<Space> dst;
+  KOKKOS_INLINE_FUNCTION void operator()(const std::size_t k) const { dst(k) = src(index(k)); }
+};
+
+template <class Space>
 void gather(ConstSpanOf<Space> src, IndexSpanOf<Space> index,
             SpanOf<Space> dst) {
   Kokkos::parallel_for(
       "fuse::gather", Kokkos::RangePolicy<Space>(0, index.extent(0)),
-      KOKKOS_LAMBDA(const std::size_t k) { dst(k) = src(index(k)); });
+      GatherFunctor<Space>{src, index, dst});
 }
 
 /// `dst[index[k]] <- src[k]` -- unpacking what arrived.
@@ -140,11 +187,19 @@ void gather(ConstSpanOf<Space> src, IndexSpanOf<Space> index,
 /// established where it can be checked rather than re-checked per element in
 /// the kernel.
 template <class Space>
+struct ScatterFunctor {
+  ConstSpanOf<Space> src;
+  IndexSpanOf<Space> index;
+  SpanOf<Space> dst;
+  KOKKOS_INLINE_FUNCTION void operator()(const std::size_t k) const { dst(index(k)) = src(k); }
+};
+
+template <class Space>
 void scatter(ConstSpanOf<Space> src, IndexSpanOf<Space> index,
              SpanOf<Space> dst) {
   Kokkos::parallel_for(
       "fuse::scatter", Kokkos::RangePolicy<Space>(0, index.extent(0)),
-      KOKKOS_LAMBDA(const std::size_t k) { dst(index(k)) = src(k); });
+      ScatterFunctor<Space>{src, index, dst});
 }
 
 /// `y <- W x` for the remap matrix in coordinate form, one row per thread.
@@ -155,19 +210,29 @@ void scatter(ConstSpanOf<Space> src, IndexSpanOf<Space> index,
 /// atomics: a thread writes exactly one `y(j)` and no other thread touches it.
 /// A scatter over entries instead would need an atomic add per entry.
 template <class Space>
-void remap_apply(IndexSpanOf<Space> row_begin, IndexSpanOf<Space> col,
-                 ConstSpanOf<Space> val, ConstSpanOf<Space> x,
-                 SpanOf<Space> y) {
-  const std::size_t rows = y.extent(0);
-  Kokkos::parallel_for(
-      "fuse::remap_apply", Kokkos::RangePolicy<Space>(0, rows),
-      KOKKOS_LAMBDA(const std::size_t j) {
+struct RemapApplyFunctor {
+  IndexSpanOf<Space> row_begin;
+  IndexSpanOf<Space> col;
+  ConstSpanOf<Space> val;
+  ConstSpanOf<Space> x;
+  SpanOf<Space> y;
+  KOKKOS_INLINE_FUNCTION void operator()(const std::size_t j) const {
         double s = 0.0;
         for (std::size_t k = row_begin(j); k < row_begin(j + 1); ++k) {
           s += val(k) * x(col(k));
         }
         y(j) = s;
-      });
+  }
+};
+
+template <class Space>
+void remap_apply(IndexSpanOf<Space> row_begin, IndexSpanOf<Space> col,
+                 ConstSpanOf<Space> val, ConstSpanOf<Space> x,
+                 SpanOf<Space> y) {
+  const std::size_t rows = y.extent(0);
+  Kokkos::parallel_for(
+      "fuse::remap_app", Kokkos::RangePolicy<Space>(0, rows),
+      RemapApplyFunctor<Space>{row_begin, col, val, x, y});
 }
 
 /// `sum_i a_i b_i`. The convergence measure's reduction.
@@ -234,28 +299,51 @@ template <class Space>
 /// component-owned array wrapped as a `SpanOf`/`ConstSpanOf` rather than a
 /// raw pointer no space has been chosen for.
 template <class Space>
+struct CopyFunctor {
+  ConstSpanOf<Space> src;
+  SpanOf<Space> dst;
+  KOKKOS_INLINE_FUNCTION void operator()(const std::size_t i) const { dst(i) = src(i); }
+};
+
+template <class Space>
 void copy(ConstSpanOf<Space> src, SpanOf<Space> dst) {
   Kokkos::parallel_for(
       "fuse::copy", Kokkos::RangePolicy<Space>(0, dst.extent(0)),
-      KOKKOS_LAMBDA(const std::size_t i) { dst(i) = src(i); });
+      CopyFunctor<Space>{src, dst});
 }
 
 /// `dst[i] <- factor * src[i]`. `OpKind::Scale`'s whole operator.
 template <class Space>
+struct ScaleFunctor {
+  double factor;
+  ConstSpanOf<Space> src;
+  SpanOf<Space> dst;
+  KOKKOS_INLINE_FUNCTION void operator()(const std::size_t i) const { dst(i) = factor * src(i); }
+};
+
+template <class Space>
 void scale(double factor, ConstSpanOf<Space> src, SpanOf<Space> dst) {
   Kokkos::parallel_for(
       "fuse::scale", Kokkos::RangePolicy<Space>(0, dst.extent(0)),
-      KOKKOS_LAMBDA(const std::size_t i) { dst(i) = factor * src(i); });
+      ScaleFunctor<Space>{factor, src, dst});
 }
 
 /// `out[i] <- a[i] - b[i]`. `OpKind::Residual`'s two shapes (`a - b` and
 /// `a - prev`) are the same subtraction against a different second operand,
 /// so one kernel covers both; the caller decides what `b` aliases.
 template <class Space>
+struct ResidualFunctor {
+  ConstSpanOf<Space> a;
+  ConstSpanOf<Space> b;
+  SpanOf<Space> out;
+  KOKKOS_INLINE_FUNCTION void operator()(const std::size_t i) const { out(i) = a(i) - b(i); }
+};
+
+template <class Space>
 void residual(ConstSpanOf<Space> a, ConstSpanOf<Space> b, SpanOf<Space> out) {
   Kokkos::parallel_for(
       "fuse::residual", Kokkos::RangePolicy<Space>(0, out.extent(0)),
-      KOKKOS_LAMBDA(const std::size_t i) { out(i) = a(i) - b(i); });
+      ResidualFunctor<Space>{a, b, out});
 }
 
 /// The multi-component sibling of `remap_apply` above: `y <- W x` with `x`
@@ -266,13 +354,14 @@ void residual(ConstSpanOf<Space> a, ConstSpanOf<Space> b, SpanOf<Space> out) {
 /// `components != 1`, which is why this overload takes it explicitly rather
 /// than reusing the single-component one's `y.extent(0)` row count).
 template <class Space>
-void remap_apply(IndexSpanOf<Space> row_begin, IndexSpanOf<Space> col,
-                 ConstSpanOf<Space> val, ConstSpanOf<Space> x,
-                 SpanOf<Space> y, std::size_t components) {
-  const std::size_t rows = row_begin.extent(0) - 1;
-  Kokkos::parallel_for(
-      "fuse::remap_multi", Kokkos::RangePolicy<Space>(0, rows),
-      KOKKOS_LAMBDA(const std::size_t j) {
+struct RemapMultiFunctor {
+  IndexSpanOf<Space> row_begin;
+  IndexSpanOf<Space> col;
+  ConstSpanOf<Space> val;
+  ConstSpanOf<Space> x;
+  SpanOf<Space> y;
+  std::size_t components;
+  KOKKOS_INLINE_FUNCTION void operator()(const std::size_t j) const {
         const std::size_t base = j * components;
         for (std::size_t c = 0; c < components; ++c) y(base + c) = 0.0;
         // Deliberately not textually identical to the single-component
@@ -290,7 +379,17 @@ void remap_apply(IndexSpanOf<Space> row_begin, IndexSpanOf<Space> col,
             y(base + c) += v * x(cbase + c);
           }
         }
-      });
+  }
+};
+
+template <class Space>
+void remap_apply(IndexSpanOf<Space> row_begin, IndexSpanOf<Space> col,
+                 ConstSpanOf<Space> val, ConstSpanOf<Space> x,
+                 SpanOf<Space> y, std::size_t components) {
+  const std::size_t rows = row_begin.extent(0) - 1;
+  Kokkos::parallel_for(
+      "fuse::remap_mc", Kokkos::RangePolicy<Space>(0, rows),
+      RemapMultiFunctor<Space>{row_begin, col, val, x, y, components});
 }
 
 /// Fixed-order reductions whose answer does not depend on the execution
@@ -364,6 +463,28 @@ template <class Space>
   }
 }
 
+// Named functors, not KOKKOS_LAMBDA, for the same reason the comment above
+// `AccumulateFunctor` gives: nvcc's extended-lambda ABI heap-allocates a
+// dispatch wrapper on every call, and these three kernels are exactly what
+// `iteration.cpp`'s own block residual/value-norm reductions call every sweep
+// (`Iteration.TheSweepLoopAllocatesNothing`/`TheAcceleratorAllocatesNothing-
+// PerUpdate`, test/verification/iteration_test.cpp, is what caught it).
+template <class Space>
+struct DeterministicDotFunctor {
+  ConstSpanOf<Space> a;
+  ConstSpanOf<Space> b;
+  SpanOf<Space> scratch;
+  std::size_t n;
+  KOKKOS_INLINE_FUNCTION void operator()(const std::size_t c) const {
+        const std::size_t begin = c * kDeterministicChunk;
+        const std::size_t end =
+            (begin + kDeterministicChunk < n) ? begin + kDeterministicChunk : n;
+        double s = 0.0;
+        for (std::size_t i = begin; i < end; ++i) s += a(i) * b(i);
+        scratch(c) = s;
+  }
+};
+
 /// `sum_i a_i b_i`, fixed-order. `deterministic_norm_squared` below is
 /// `deterministic_dot(v, v, scratch)`.
 template <class Space>
@@ -372,18 +493,25 @@ template <class Space>
                                        SpanOf<Space> scratch) {
   const std::size_t n = a.extent(0);
   const std::size_t n_chunks = deterministic_chunks(n);
-  Kokkos::parallel_for(
-      "fuse::det_dot_part", Kokkos::RangePolicy<Space>(0, n_chunks),
-      KOKKOS_LAMBDA(const std::size_t c) {
+  Kokkos::parallel_for("fuse::det_dot", Kokkos::RangePolicy<Space>(0, n_chunks),
+                       DeterministicDotFunctor<Space>{a, b, scratch, n});
+  return finalize_deterministic_scratch<Space>(scratch, n_chunks);
+}
+
+template <class Space>
+struct DeterministicSumFunctor {
+  ConstSpanOf<Space> v;
+  SpanOf<Space> scratch;
+  std::size_t n;
+  KOKKOS_INLINE_FUNCTION void operator()(const std::size_t c) const {
         const std::size_t begin = c * kDeterministicChunk;
         const std::size_t end =
             (begin + kDeterministicChunk < n) ? begin + kDeterministicChunk : n;
         double s = 0.0;
-        for (std::size_t i = begin; i < end; ++i) s += a(i) * b(i);
+        for (std::size_t i = begin; i < end; ++i) s += v(i);
         scratch(c) = s;
-      });
-  return finalize_deterministic_scratch<Space>(scratch, n_chunks);
-}
+  }
+};
 
 /// `sum_i v_i`, fixed-order. See `deterministic_dot`'s comment for the scheme
 /// and what it does and does not promise.
@@ -392,16 +520,8 @@ template <class Space>
                                        SpanOf<Space> scratch) {
   const std::size_t n = v.extent(0);
   const std::size_t n_chunks = deterministic_chunks(n);
-  Kokkos::parallel_for(
-      "fuse::det_sum_part", Kokkos::RangePolicy<Space>(0, n_chunks),
-      KOKKOS_LAMBDA(const std::size_t c) {
-        const std::size_t begin = c * kDeterministicChunk;
-        const std::size_t end =
-            (begin + kDeterministicChunk < n) ? begin + kDeterministicChunk : n;
-        double s = 0.0;
-        for (std::size_t i = begin; i < end; ++i) s += v(i);
-        scratch(c) = s;
-      });
+  Kokkos::parallel_for("fuse::det_sum", Kokkos::RangePolicy<Space>(0, n_chunks),
+                       DeterministicSumFunctor<Space>{v, scratch, n});
   return finalize_deterministic_scratch<Space>(scratch, n_chunks);
 }
 
@@ -416,6 +536,25 @@ template <class Space>
   return deterministic_dot<Space>(v, v, scratch);
 }
 
+template <class Space>
+struct DeterministicNormSquaredDiffFunctor {
+  ConstSpanOf<Space> a;
+  ConstSpanOf<Space> b;
+  SpanOf<Space> scratch;
+  std::size_t n;
+  KOKKOS_INLINE_FUNCTION void operator()(const std::size_t c) const {
+        const std::size_t begin = c * kDeterministicChunk;
+        const std::size_t end =
+            (begin + kDeterministicChunk < n) ? begin + kDeterministicChunk : n;
+        double s = 0.0;
+        for (std::size_t i = begin; i < end; ++i) {
+          const double d = a(i) - b(i);
+          s += d * d;
+        }
+        scratch(c) = s;
+  }
+};
+
 /// `sum_i (a_i - b_i)^2`, fixed-order. `iteration.cpp`'s block RESIDUAL norm:
 /// avoids materialising `a - b` into a third buffer (and the allocation, or
 /// third scratch array, that would cost) by folding the subtraction into the
@@ -426,20 +565,8 @@ template <class Space>
                                                       SpanOf<Space> scratch) {
   const std::size_t n = a.extent(0);
   const std::size_t n_chunks = deterministic_chunks(n);
-  Kokkos::parallel_for(
-      "fuse::det_nsd_part",
-      Kokkos::RangePolicy<Space>(0, n_chunks),
-      KOKKOS_LAMBDA(const std::size_t c) {
-        const std::size_t begin = c * kDeterministicChunk;
-        const std::size_t end =
-            (begin + kDeterministicChunk < n) ? begin + kDeterministicChunk : n;
-        double s = 0.0;
-        for (std::size_t i = begin; i < end; ++i) {
-          const double d = a(i) - b(i);
-          s += d * d;
-        }
-        scratch(c) = s;
-      });
+  Kokkos::parallel_for("fuse::det_nsd", Kokkos::RangePolicy<Space>(0, n_chunks),
+                       DeterministicNormSquaredDiffFunctor<Space>{a, b, scratch, n});
   return finalize_deterministic_scratch<Space>(scratch, n_chunks);
 }
 
