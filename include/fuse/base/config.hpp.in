@@ -27,3 +27,13 @@
 // macro the headers actually define: with several Kokkos installs on one machine
 // the include path can pick one and the linker another.
 #define FUSE_KOKKOS_VERSION_EXPECTED "@Kokkos_VERSION@"
+// Compiler id/version, whether this configure routes every translation unit
+// through nvcc_wrapper (Kokkos::CUDA existing, not just OMPI_CXX being set --
+// CMakePresets.json sets OMPI_CXX unconditionally, but it is a no-op
+// passthrough to the host compiler when Kokkos has no CUDA backend), and the
+// target architecture. Host-only floating-point code can measure different
+// results under nvcc's host pass than under the host compiler directly, even
+// with no device code anywhere in the translation unit; this id is how a
+// per-toolchain pinned-value baseline (e.g. test/golden/accelerator.golden)
+// picks the row that applies to THIS build.
+#define FUSE_TOOLCHAIN_ID "@FUSE_TOOLCHAIN_ID@"

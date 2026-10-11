@@ -23,6 +23,13 @@ else()
   set(FUSE_LINALG_EIGEN 0)
 endif()
 set(FUSE_HAVE_PETSC  ${FUSE_ENABLE_PETSC})
+# See config.hpp.in's own comment on FUSE_TOOLCHAIN_ID for why TARGET
+# Kokkos::CUDA, not OMPI_CXX, is the bit that matters here.
+set(FUSE_TOOLCHAIN_ID "${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}")
+if(TARGET Kokkos::CUDA)
+  string(APPEND FUSE_TOOLCHAIN_ID "-nvcc_wrapper")
+endif()
+string(APPEND FUSE_TOOLCHAIN_ID "-${CMAKE_SYSTEM_PROCESSOR}")
 configure_file(${PROJECT_SOURCE_DIR}/include/fuse/base/config.hpp.in
                ${PROJECT_BINARY_DIR}/include/fuse/base/config.hpp @ONLY)
 
