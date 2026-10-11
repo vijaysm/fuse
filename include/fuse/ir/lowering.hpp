@@ -336,6 +336,24 @@ struct CheckpointSet {
                                                   const CheckpointSet& set,
                                                   const ComponentSet& components);
 
+/// S7.1's Newton-Krylov seam. Over the SAME checkpoint set
+/// `verify_rollback_support()` checks -- the Newton coupler re-advances
+/// these components' own residuals exactly where Picard would re-advance
+/// their state, so the same universe of components applies -- refuses a
+/// member that cannot supply what a Newton-solved region needs from it.
+///
+/// `E-NEWTON-CAPABILITY`, naming the component, when `requires_residual`
+/// is true and `Component::capabilities()` does not set
+/// `kCapabilityResidual` (fuse::ImplicitComponent is not implemented; see
+/// fuse/runtime/component.hpp), or when `requires_linearization` is true
+/// and `kCapabilityLinearization` is unset. Both flags false (no Newton
+/// solver selected for this region, `IterationRegionDecl`'s own default)
+/// makes every call a no-op.
+[[nodiscard]] Diagnostics verify_newton_capability_support(
+    const CouplingGraph& g, const CheckpointSet& set,
+    const ComponentSet& components, bool requires_residual,
+    bool requires_linearization);
+
 /// Everything about an iteration region's DECLARATION that can be judged from
 /// the graph alone -- no DAG, no `ComponentSet`, no mesh backend:
 ///
@@ -410,11 +428,17 @@ struct MeasureTarget {
 /// single sweep: an explicit scheme masquerading as a converged implicit one,
 /// with a convergence report that says it converged. Also `E-ITER-MAXITER`
 /// when `max_iterations < 1`, which would run the body zero times.
-/// Then everything verify_rollback_support() checks.
+/// Then everything verify_rollback_support() checks, and -- when
+/// `requires_residual_capability`/`requires_linearization_capability` is
+/// true, S7.1's own addition -- everything verify_newton_capability_
+/// support() checks. Both default to `false` (no Newton solver selected
+/// for this region), so every pre-S7.1 call site is unchanged.
 [[nodiscard]] Diagnostics verify_iteration_region(
     const CouplingGraph& g, const OperatorDAG& dag,
     const OperatorDAG::IterationRegion& region,
-    const ConvergenceCriterion& convergence, const ComponentSet& components);
+    const ConvergenceCriterion& convergence, const ComponentSet& components,
+    bool requires_residual_capability = false,
+    bool requires_linearization_capability = false);
 
 /// Defined across src/ir/rules_channel.cpp and src/ir/rules_derived.cpp.
 void register_builtin_rules(LoweringRegistry& reg);

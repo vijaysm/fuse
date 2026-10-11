@@ -75,6 +75,35 @@ struct IterationRegionDecl {
   /// states" and this track's design notes) -- adding that call is a
   /// separate, not-yet-made change to scheduler.cpp.
   std::optional<CouplingWindowScope> window_scope;
+
+  /// S7.1's Newton-Krylov seam. `true` requires every member of this
+  /// region to set `kCapabilityResidual` (fuse/model/capabilities.hpp),
+  /// i.e. to implement `fuse::ImplicitComponent`
+  /// (fuse/runtime/component.hpp) -- checked at `initialize()` by
+  /// `fuse::verify_newton_capability_support()` and refused with
+  /// `E-NEWTON-CAPABILITY`, naming the component, when it does not.
+  ///
+  /// A FIELD ON THE DECLARATION, NOT A NEW `AccelKind` ENUMERATOR: the
+  /// Newton solver itself (S7.2) is a separate, not-yet-landed track that
+  /// will add its own `AccelKind` value and set this flag when that value
+  /// is chosen; this field exists on its own so the capability refusal
+  /// (S7.1) can be tested before any Newton code exists, per this track's
+  /// own brief. Defaults to `false`: every region declared before this
+  /// member existed asks for nothing new.
+  bool requires_residual_capability = false;
+
+  /// S7.1's Newton-Krylov seam. `true` additionally requires every member
+  /// to set `kCapabilityLinearization`, i.e. to be prepared to return a
+  /// usable `fuse::LinearizationToken` from `ImplicitComponent::
+  /// linearization()` once it has been asked for a residual -- the
+  /// physics-based block-Jacobi preconditioner (S7.2) needs this from
+  /// every member it preconditions; a Newton loop driven purely by a
+  /// matrix-free Jacobian action with no physics-based preconditioner does
+  /// not. Independent of `requires_residual_capability` in the type
+  /// system, though every region that sets this should also set that one
+  /// -- a component cannot linearise a residual it was never asked to
+  /// evaluate. Defaults to `false`.
+  bool requires_linearization_capability = false;
 };
 
 class CouplingGraph;

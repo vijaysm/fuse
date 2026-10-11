@@ -157,9 +157,10 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
     // criterion to live, so the E-ITER-NOCONVERGE check could never run and a
     // region with no convergence measure would stop after one sweep and report
     // success. E-ITER-MAXITER and E-ITER-NOROLLBACK come from the same call.
-    const Diagnostics gate = verify_iteration_region(graph, dag, reg,
-                                                     decl.convergence,
-                                                     components);
+    const Diagnostics gate = verify_iteration_region(
+        graph, dag, reg, decl.convergence, components,
+        decl.requires_residual_capability,
+        decl.requires_linearization_capability);
     if (gate.has_errors()) return first_error(gate, "E-ITER-REGION");
 
     const CheckpointSet cp = derive_checkpoint_set(graph, dag, reg);

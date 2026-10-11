@@ -99,17 +99,78 @@ Diagnostics verify_rollback_support(const CouplingGraph& g,
   return diags;
 }
 
+// S7.1's Newton-Krylov seam. Mirrors verify_rollback_support() immediately
+// above: same checkpoint set, same "an unverifiable claim is refused, not
+// assumed" rule for a component the set names that is not registered at
+// all (already reported by verify_rollback_support() over the same set;
+// this function adds nothing further for that case so the two diagnostics
+// are not duplicated).
+Diagnostics verify_newton_capability_support(const CouplingGraph& g,
+                                             const CheckpointSet& set,
+                                             const ComponentSet& components,
+                                             bool requires_residual,
+                                             bool requires_linearization) {
+  Diagnostics diags;
+  if (!requires_residual && !requires_linearization) {
+    // No Newton solver selected for this region (IterationRegionDecl's own
+    // default): nothing to check, exactly like a region that declares no
+    // accelerator incurring no extra rollback check beyond the existing one.
+    return diags;
+  }
+  for (const ComponentId c : set.components) {
+    if (!c.valid() || c.value() >= g.component_count()) continue;  // reported above
+    const std::string& name = g.component(c).name;
+    const Component* impl = components.find(name);
+    if (impl == nullptr) continue;  // reported above
+
+    const std::uint64_t caps = impl->capabilities();
+    if (requires_residual && (caps & kCapabilityResidual) == 0) {
+      diags.add(
+          Severity::Error, "E-NEWTON-CAPABILITY",
+          "component '" + name +
+              "' is a member of a Newton-solved iteration region, so the "
+              "coupler must be able to evaluate its own contribution to the "
+              "coupled residual at a frozen time level without advancing "
+              "its state, but capabilities() does not set "
+              "kCapabilityResidual. Implement fuse::ImplicitComponent:: "
+              "evaluate_residual(), override Component::implicit() to "
+              "return it, and set kCapabilityResidual in capabilities()",
+          "component '" + name + "'");
+      continue;  // no residual capability: asking about linearization too
+                 // would just repeat the same missing-interface defect.
+    }
+    if (requires_linearization && (caps & kCapabilityLinearization) == 0) {
+      diags.add(
+          Severity::Error, "E-NEWTON-CAPABILITY",
+          "component '" + name +
+              "' is a member of a Newton-solved iteration region whose "
+              "preconditioner needs this component's own linearisation, but "
+              "capabilities() does not set kCapabilityLinearization. "
+              "Return a usable fuse::LinearizationToken from "
+              "ImplicitComponent::linearization() once evaluate_residual() "
+              "has been called, and set kCapabilityLinearization in "
+              "capabilities()",
+          "component '" + name + "'");
+    }
+  }
+  return diags;
+}
+
 Diagnostics verify_iteration_region(const CouplingGraph& g,
                                     const OperatorDAG& dag,
                                     const OperatorDAG::IterationRegion& region,
                                     const ConvergenceCriterion& convergence,
-                                    const ComponentSet& components) {
+                                    const ComponentSet& components,
+                                    bool requires_residual_capability,
+                                    bool requires_linearization_capability) {
   Diagnostics diags = verify_iteration_declaration(
       region.name, region.max_iterations, convergence);
 
-  diags.merge(
-      verify_rollback_support(g, derive_checkpoint_set(g, dag, region),
-                              components));
+  const CheckpointSet set = derive_checkpoint_set(g, dag, region);
+  diags.merge(verify_rollback_support(g, set, components));
+  diags.merge(verify_newton_capability_support(
+      g, set, components, requires_residual_capability,
+      requires_linearization_capability));
   return diags;
 }
 
