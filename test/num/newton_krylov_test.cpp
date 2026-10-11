@@ -114,7 +114,7 @@ std::vector<double> quadratic_residual_span(const std::vector<double>& c,
 
 }  // namespace
 
-TEST(Mffd, ActionAgreesWithAnalyticJacobianToOrderH) {
+TEST(Mffd, ActionAgreesWithAnalyticJacobianAtTheWalkerPerniceStep) {
   const std::vector<double> c = {4.0, 9.0};
   const std::vector<double> x0 = {3.0, 1.0};
   const std::vector<double> v0 = {1.0, 0.5};
@@ -239,7 +239,7 @@ TEST(Mffd, ZeroDirectionIsSafeAndReturnsExactlyZero) {
 // 3. Eisenstat-Walker forcing.
 // ---------------------------------------------------------------------------
 
-TEST(EisenstatWalker, FirstStepAlwaysUsesEtaInitialRegardlessOfChoice) {
+TEST(EisenstatWalker, FirstStepUsesEtaInitialForEveryChoiceButConstant) {
   EisenstatWalkerOptions opt;
   opt.eta_initial = 0.3;
   for (EisenstatWalkerChoice c : {EisenstatWalkerChoice::Constant, EisenstatWalkerChoice::Choice1,

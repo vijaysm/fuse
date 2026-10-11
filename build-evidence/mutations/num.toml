@@ -45,7 +45,7 @@ target = "fuse_num_newton_krylov_test"
 test = "num.newton_krylov"
 # Hand-proved 2026-10-10 against a byte-identical backup: 25 cases in the
 # target before mutation (all pass); after mutation, applied by hand and the
-# WHOLE binary run unfiltered, 12 fail (Mffd.ActionAgreesWithAnalyticJacobianToOrderH,
+# WHOLE binary run unfiltered, 12 fail (Mffd.ActionAgreesWithAnalyticJacobianAtTheWalkerPerniceStep,
 # NewtonKrylovLineSearch.BtEngagesAndRecoversOnAPoorInitialGuess, both
 # NewtonKrylovConvergence.AbsoluteFiresWhenAtolIsTheLooseTest and
 # RelativeFiresWhenAtolIsUnreachable and StepFiresOnAQuinticWhoseConvergenceIsLinearNotQuadratic,
