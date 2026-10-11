@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "fuse/base/ids.hpp"
@@ -167,6 +168,14 @@ struct RunStats {
   /// Rank-agreement points this rank took part in. Zero in a serial run,
   /// and zero is correct there: with one rank there is nobody to agree with.
   std::size_t epochs_reconciled = 0;
+  /// A5: instructions whose elementwise kernels ran on the device space
+  /// (`RunnerConfig::execution_space == Device`). Exactly 0 under the `Host`
+  /// default. A counter for the same reason `remap_weight_builds` is one:
+  /// the host and device paths are meant to agree numerically, so no
+  /// delivered value can tell "the device computed it" from "the host did",
+  /// and a test that wants to assert the device path was actually exercised
+  /// asserts on this.
+  std::int64_t device_dispatches = 0;
 };
 
 /// Per-region outcome of the most recent period (spec §5.3).
@@ -319,6 +328,14 @@ class Runner {
 
   Result<void> initialize(ComponentSet& components, FieldRegistry& registry,
                           const RunnerConfig& config = {});
+
+  /// A5: the Kokkos execution space `RunnerConfig::RunnerExecutionSpace::
+  /// Device` resolves to on THIS build -- `"Cuda"` against a CUDA-enabled
+  /// Kokkos, `"HIP"`/`"SYCL"` likewise. Equal to the host space's own name
+  /// when no device backend was compiled in, which is exactly the build
+  /// `initialize()` refuses `Device` on (`E-RT-DEVICE`), so a caller can
+  /// ask before configuring rather than after failing.
+  [[nodiscard]] static std::string_view device_execution_space_name() noexcept;
 
   Result<void> run_period(ComponentSet& components);
   Result<void> run(ComponentSet& components, std::int64_t periods);
