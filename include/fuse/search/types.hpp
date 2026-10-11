@@ -53,9 +53,13 @@ struct Tolerance {
 /// Defined independently here rather than reused from `fuse::partition`:
 /// partition sits ABOVE both backend and search in the layer ordering, so
 /// depending on it would be the same forbidden upward reach `mesh_adapter.hpp`
-/// avoids for `fuse::backend`. `kNullComm` (0) means "no communicator":
-/// exactly one participant, no MPI symbol touched at all.
+/// avoids for `fuse::backend`. `kNullComm` (-1) means "no communicator":
+/// exactly one participant, no MPI symbol touched at all. Negative, not 0:
+/// OpenMPI's `MPI_Comm_c2f` hands out small sequential NON-NEGATIVE Fortran
+/// handles with no reserved always-invalid value (even `MPI_COMM_WORLD`
+/// itself can legitimately come back as `0`), so `0` would silently collide
+/// with a real communicator and get treated as "no MPI".
 using CommHandle = int;
-inline constexpr CommHandle kNullComm = 0;
+inline constexpr CommHandle kNullComm = -1;
 
 }  // namespace fuse::search

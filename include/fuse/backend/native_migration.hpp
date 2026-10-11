@@ -46,10 +46,14 @@ namespace fuse::native {
 /// of `mpi.h` (the same boundary convention `fuse::partition::CommHandle`
 /// uses -- duplicated rather than shared, because `backend` sits BELOW
 /// `partition` in the layering order and may not depend on it).
-/// `kNullComm` means the base build configuration: exactly one process, no MPI symbol
-/// touched.
+/// `kNullComm` (-1) means the base build configuration: exactly one process, no
+/// MPI symbol touched. Negative, not 0: OpenMPI's `MPI_Comm_c2f` hands out
+/// small sequential NON-NEGATIVE Fortran handles with no reserved
+/// always-invalid value (even `MPI_COMM_WORLD` itself can legitimately come
+/// back as `0`), so `0` would silently collide with a real communicator and
+/// get treated as "no MPI".
 using CommHandle = int;
-inline constexpr CommHandle kNullComm = 0;
+inline constexpr CommHandle kNullComm = -1;
 
 /// True if the MPI library this was built against reports CUDA- or
 /// HIP-aware buffers (a configure-time probe; always false in a build
