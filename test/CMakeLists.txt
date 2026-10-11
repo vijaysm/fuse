@@ -267,6 +267,30 @@ endforeach()
 fuse_add_gtest(num line_search)
 fuse_add_gtest(num newton_krylov LIBS fuse::linalg)
 
+# ---------------------------------------------------------------- petsc
+# S7's Newton seam, second substrate (PetscToken track, 2026-10-11). Every
+# row here needs fuse::linalg explicitly, the SAME reason num.newton_krylov
+# does just above: fuse-coupler-petsc links fuse::num PUBLIC, which links
+# fuse::linalg only PRIVATEly, so DistVector/make_serial_exchanger symbols
+# are not propagated to a separate test-binary consumer. Registered ONLY
+# when FUSE_ENABLE_PETSC (fuse::petsc does not exist as a target otherwise)
+# -- ABSENT, not skipped, in the other configuration, so a disabled suite
+# never reads as a passing one (fuse_tests_gated_by's own contract).
+if(FUSE_ENABLE_PETSC)
+  # init_test.cpp calls MPI_Initialized()/MPI_Finalized() directly (to pin
+  # the PetscInitialize()-owns-MPI_Init() ownership rule) -- it needs
+  # MPI::MPI_C's own include path, which fuse-coupler-petsc does not
+  # propagate (PRIVATE, cmake/FuseDependencies.cmake's own comment on why).
+  fuse_add_gtest(petsc init LIBS fuse::linalg MPI::MPI_C)
+  fuse_add_gtest(petsc token LIBS fuse::linalg)
+  fuse_add_gtest(petsc derivative_gate LIBS fuse::linalg)
+  fuse_add_gtest(petsc snes LIBS fuse::linalg)
+else()
+  fuse_tests_gated_by(FUSE_ENABLE_PETSC
+    petsc/init_test.cpp petsc/token_test.cpp petsc/derivative_gate_test.cpp
+    petsc/snes_test.cpp)
+endif()
+
 # ---------------------------------------------------------------- field
 # field_ref/registry are header-only, so the test builds against the
 # lowest layer that provides their dependencies.
