@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "gray_scott_physics.hpp"
+#include "sparse_solve_backend.hpp"
 
 namespace gray_scott {
 
@@ -189,7 +190,9 @@ class MonolithicGrayScott {
   // analyzePattern() is computed ONCE, lazily, on the first Jacobian ever
   // assembled; every subsequent iteration only needs factorize()+solve(),
   // which re-read the CURRENT numeric values and carry no staleness risk.
-  Eigen::SparseLU<Eigen::SparseMatrix<double>> jac_solver_;
+  // SparseLuBackend IS Eigen::SparseLU unless FUSE_ENABLE_CUSPARSE is on
+  // (examples/common/sparse_solve_backend.hpp): same calls, same results.
+  fuse_examples::SparseLuBackend jac_solver_;
   bool jac_pattern_analyzed_ = false;
 };
 
