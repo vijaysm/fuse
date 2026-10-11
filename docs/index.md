@@ -73,6 +73,7 @@ dev/search
 dev/linalg-distributed
 dev/linalg-krylov
 dev/schur-slab-solver
+dev/derivative-gate
 dev/newton-krylov
 dev/coupling-windows
 dev/nodal-fields
