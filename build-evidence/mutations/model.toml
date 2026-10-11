@@ -1,0 +1,47 @@
+# Mutations for S7.1 (the Newton-Krylov residual/linearisation seam):
+# fuse::verify_newton_capability_support() (model-level capability
+# refusal, E-NEWTON-CAPABILITY) and fuse::verify_linearization_shape()
+# (E-NEWTON-SHAPE). Own file per the review-fix protocol: do not edit
+# build-evidence/mutations.toml directly while other tracks hold it dirty.
+#
+# Every row below was applied by hand against this track's own files,
+# rebuilt (`cmake --build . --target fuse_model_newton_capability_test`),
+# run UNFILTERED, and confirmed to produce the result recorded in each
+# row's own `result` key before being restored byte-for-byte (`cmp`
+# against the pre-mutation file showed no difference). Build directory:
+# /tmp/seam/b0 (tier 0, this track's own scratch build).
+
+[[mutation]]
+id = "newton-capability-residual-bit-unchecked"
+area = "model"
+describes = "verify_newton_capability_support()'s own residual-capability gate is short-circuited to never fire (`false && requires_residual && ...`), so a Newton region that requires kCapabilityResidual no longer refuses a member that lacks it."
+file = "src/runtime/checkpoint_support.cpp"
+old = """    const std::uint64_t caps = impl->capabilities();
+    if (requires_residual && (caps & kCapabilityResidual) == 0) {"""
+new = """    const std::uint64_t caps = impl->capabilities();
+    if (false && requires_residual && (caps & kCapabilityResidual) == 0) {"""
+target = "fuse_model_newton_capability_test"
+test = "model.newton_capability"
+result = "KILLED (2026-10-10): NewtonCapability.ComponentWithoutResidualCapabilityIsRejected and NewtonCapability.RegionRequiringResidualRejectsAComponentLackingIt both FAILED (the E-NEWTON-CAPABILITY diagnostic the test asserts on never appears); the other 11 cases in the binary still PASSED. Restored; cmp against the pre-mutation file reported no difference."
+
+[[mutation]]
+id = "newton-capability-linearization-bit-unchecked"
+area = "model"
+describes = "verify_newton_capability_support()'s own linearization-capability gate is short-circuited to never fire, so a Newton region that requires kCapabilityLinearization no longer refuses a member with the residual capability but not the linearisation one."
+file = "src/runtime/checkpoint_support.cpp"
+old = """    if (requires_linearization && (caps & kCapabilityLinearization) == 0) {"""
+new = """    if (false && requires_linearization && (caps & kCapabilityLinearization) == 0) {"""
+target = "fuse_model_newton_capability_test"
+test = "model.newton_capability"
+result = "KILLED (2026-10-10): NewtonCapability.ComponentWithResidualButNotLinearizationIsRejected FAILED; the other 12 cases still PASSED. Restored; cmp reported no difference."
+
+[[mutation]]
+id = "newton-shape-check-disabled"
+area = "model"
+describes = "fuse::verify_linearization_shape() (fuse/runtime/component.hpp)'s own rows()/cols() comparison is short-circuited to never fire, so a LinearizationToken of the wrong shape is silently accepted instead of refused with E-NEWTON-SHAPE."
+file = "include/fuse/runtime/component.hpp"
+old = """  if (token.rows() != expected_rows || token.cols() != expected_cols) {"""
+new = """  if (false && (token.rows() != expected_rows || token.cols() != expected_cols)) {"""
+target = "fuse_model_newton_capability_test"
+test = "model.newton_capability"
+result = "KILLED (2026-10-10): NewtonCapability.TokenWithWrongRowsIsRejected and NewtonCapability.TokenWithWrongColsIsRejected both FAILED; the other 11 cases still PASSED. Restored; cmp reported no difference."
