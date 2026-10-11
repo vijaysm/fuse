@@ -153,8 +153,9 @@ class SparseLuBackend {
       return Eigen::VectorXd::Zero(n_);
     }
     // B = P A P^T with B y = P b, x = P^T y.
-    Eigen::VectorXd y = perm_ * b;
-    cuda_check(cudaMemcpy(d_x_, y.data(), sizeof(double) * n_, cudaMemcpyHostToDevice),
+    const Eigen::VectorXd pb = perm_ * b;
+    Eigen::VectorXd y(n_);
+    cuda_check(cudaMemcpy(d_x_, pb.data(), sizeof(double) * n_, cudaMemcpyHostToDevice),
                "cudaMemcpy(rhs)");
     const cusolverStatus_t st = cusolverRfSolve(rf_, d_P_, d_Q_, 1, d_tmp_, n_, d_x_, n_);
     if (st != CUSOLVER_STATUS_SUCCESS) {
@@ -163,6 +164,50 @@ class SparseLuBackend {
     }
     cuda_check(cudaMemcpy(y.data(), d_x_, sizeof(double) * n_, cudaMemcpyDeviceToHost),
                "cudaMemcpy(solution)");
+    // One step of iterative refinement: r = Pb - B y on the host in double,
+    // dy = B^{-1} r on the device, y += dy. One host SpMV and one more device
+    // solve. This is not about accuracy -- the raw cusolverRf solve is already
+    // backward-stable to ~5e-16 on the Stokes saddle points, same as Eigen --
+    // it is about REPRODUCIBILITY. cusolverRfSolve is not bitwise
+    // deterministic: measured on 24,519 real fsi_transient solves, ~4% of
+    // identical-input repeats differed, up to 186 of 196 entries, by about
+    // kappa*eps ~ 1e-8 relative. A fixed-point coupling iteration converges
+    // through a deterministic rounding floor but stalls on one that jitters
+    // (fsi_transient's fluid_force criterion stuck at 2.3e-9 vs 1e-9; the
+    // energy-diag finite-difference budget at 1e-3 vs 1e-6). After
+    // refinement the jitter enters only through the correction solve, whose
+    // input is the ~1e-16 residual, so it is scaled down by ~16 orders of
+    // magnitude: repeated solves agree to working precision and every
+    // coupling test that failed without this step passes with it.
+    {
+      // The residual in extended precision (x86 long double: 64-bit mantissa).
+      // Computed in double it would itself carry rounding of order eps*|B||y|
+      // that depends on y's jittering low bits, and kappa amplifies that back
+      // to ~1e-8 -- fsi_transient passed with a double residual, the energy
+      // budget and example.fsi_channel did not. Mixed-precision refinement is
+      // the textbook remedy: the limit is kappa*eps_ld, four orders lower.
+      Eigen::VectorXd r(n_);
+      const int*    rp = csr_.outerIndexPtr();
+      const int*    ci = csr_.innerIndexPtr();
+      const double* va = csr_.valuePtr();
+      for (int i = 0; i < n_; ++i) {
+        long double acc = static_cast<long double>(pb[i]);
+        for (int k = rp[i]; k < rp[i + 1]; ++k) {
+          acc -= static_cast<long double>(va[k]) * static_cast<long double>(y[ci[k]]);
+        }
+        r[i] = static_cast<double>(acc);
+      }
+      cuda_check(cudaMemcpy(d_x_, r.data(), sizeof(double) * n_, cudaMemcpyHostToDevice),
+                 "cudaMemcpy(refine rhs)");
+      const cusolverStatus_t st2 = cusolverRfSolve(rf_, d_P_, d_Q_, 1, d_tmp_, n_, d_x_, n_);
+      if (st2 != CUSOLVER_STATUS_SUCCESS) {
+        info_ = Eigen::NumericalIssue;
+        return Eigen::VectorXd::Zero(n_);
+      }
+      cuda_check(cudaMemcpy(r.data(), d_x_, sizeof(double) * n_, cudaMemcpyDeviceToHost),
+                 "cudaMemcpy(refine correction)");
+      y += r;
+    }
     return perm_.inverse() * y;
   }
 

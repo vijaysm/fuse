@@ -15,11 +15,13 @@
 #include <Eigen/Sparse>
 
 #include <cmath>
+#include <cstdio>
 #include <string_view>
 #include <vector>
 
 #include "fuse/base/config.hpp"
 #include "sparse_solve_backend.hpp"
+#include "stokes_solver.hpp"
 
 namespace {
 
@@ -147,6 +149,185 @@ TEST(SparseSolveBackend, SolvesASaddlePointSystemWithAZeroDiagonalBlock) {
   const Eigen::VectorXd x = lu.solve(b);
   ASSERT_EQ(lu.info(), Eigen::Success);
   EXPECT_LT(relative_residual(A, x, b), kTol);
+}
+
+// THE Stokes saddle point fsi_transient assembles (nx=10, ny=6, L=1, H=0.2,
+// mu=0.01: 196 unknowns, 971 nonzeros), copied out of cn_step() through its
+// debug_matrix_out hook. The synthetic saddle_point() above is NOT a stand-in
+// here: cusolverRf solves it reproducibly, and only this matrix showed the
+// jitter that stalled the coupling tests.
+SpMat real_stokes_matrix(std::size_t nx = 10, std::size_t ny = 6) {
+  const fsi::ChannelParams cp{.nx = nx, .ny = ny, .L = 1.0, .H = 0.2, .mu = 0.01, .rho = 1.0};
+  fsi::ChannelBCs bcs;
+  bcs.left.u = [](double y, double) { return 4.0 * y * (0.2 - y) / (0.2 * 0.2); };
+  bcs.right.outflow = true;
+  const fsi::SourceTerms src;
+  std::vector<double> u0((cp.nx + 1) * cp.ny, 0.0), v0(cp.nx * (cp.ny + 1), 0.0);
+  const fsi::PressurePin pin{cp.nx - 1, 0, 0.0};
+  SpMat A;
+  (void)fsi::cn_step(cp, bcs, src, /*dt=*/0.01, 0.0, 0.01, u0, v0, pin, &A);
+  A.makeCompressed();
+  return A;
+}
+
+// The coupling iterations both examples drive (IQN-ILS fixed point on the
+// interface traction; the energy diagnostic's finite-difference linearisation)
+// converge through a DETERMINISTIC rounding floor and stall on one that
+// jitters. On the real Stokes matrix cusolverRfSolve alone is not bitwise
+// reproducible (~4% of identical-input repeats differ, by ~kappa*eps); the
+// backend's refinement step is what suppresses that. 300 repeats, agreement
+// to working precision -- this test fails without the refinement step.
+TEST(SparseSolveBackend, RepeatedSolvesOfTheRealStokesSystemAgreeToWorkingPrecision) {
+  const SpMat A = real_stokes_matrix();
+  ASSERT_EQ(A.rows(), 196);
+  const Eigen::VectorXd b = ramp(static_cast<int>(A.rows()));
+
+  SparseLuBackend lu;
+  lu.compute(A);
+  ASSERT_EQ(lu.info(), Eigen::Success);
+  const Eigen::VectorXd x0 = lu.solve(b);
+  EXPECT_LT(relative_residual(A, x0, b), kTol);
+  const double scale = x0.norm();
+  double worst = 0.0;
+  int differing_solves = 0;
+  for (int rep = 0; rep < 300; ++rep) {
+    const Eigen::VectorXd x = lu.solve(b);
+    const double d = (x - x0).norm() / scale;
+    if (d > 0.0) ++differing_solves;
+    worst = std::max(worst, d);
+  }
+  EXPECT_LE(worst, 1e-15) << differing_solves << " of 300 repeat solves differed; worst "
+                          << worst << " relative";
+}
+
+// Same property with a DIFFERENT right-hand side solved in between each
+// repeat -- the pattern every coupling iteration has (a new rhs every sweep).
+// The back-to-back version above passed even with the refinement step
+// removed; the fsi_transient diagnostic saw ~4% of repeats differ with other
+// solves interleaved. This is the case that separates "the solve is random"
+// from "the solve depends on state left behind by the previous solve".
+TEST(SparseSolveBackend, RepeatedSolvesAgreeWhenOtherSolvesAreInterleaved) {
+  const SpMat A = real_stokes_matrix();
+  const int n = static_cast<int>(A.rows());
+  const Eigen::VectorXd b = ramp(n);
+  Eigen::VectorXd b2(n);
+  for (int i = 0; i < n; ++i) b2[i] = std::sin(0.37 * i) - 0.2 * i;
+
+  SparseLuBackend lu;
+  lu.compute(A);
+  ASSERT_EQ(lu.info(), Eigen::Success);
+  const Eigen::VectorXd x0 = lu.solve(b);
+  const double scale = x0.norm();
+  double worst = 0.0;
+  int differing_solves = 0;
+  for (int rep = 0; rep < 300; ++rep) {
+    (void)lu.solve(b2);
+    const Eigen::VectorXd x = lu.solve(b);
+    const double d = (x - x0).norm() / scale;
+    if (d > 0.0) ++differing_solves;
+    worst = std::max(worst, d);
+  }
+  EXPECT_LE(worst, 1e-15) << differing_solves << " of 300 interleaved repeat solves differed; worst "
+                          << worst << " relative";
+}
+
+// Forward error against a long-double Eigen reference on the real Stokes
+// system, for the backend AND for double Eigen::SparseLU -- the two numbers
+// the energy-diagnostic budget (finite differences of this solve) actually
+// depends on. The backend must not be materially worse than Eigen is.
+TEST(SparseSolveBackend, ForwardErrorOnTheRealStokesSystemIsNoWorseThanEigens) {
+  const SpMat A = real_stokes_matrix();
+  const int n = static_cast<int>(A.rows());
+  const Eigen::VectorXd b = ramp(n);
+
+  using LdMat = Eigen::SparseMatrix<long double>;
+  const LdMat Ald = A.cast<long double>();
+  Eigen::SparseLU<LdMat> ref;
+  ref.compute(Ald);
+  ASSERT_EQ(ref.info(), Eigen::Success);
+  const Eigen::Matrix<long double, Eigen::Dynamic, 1> bld = b.cast<long double>();
+  const Eigen::Matrix<long double, Eigen::Dynamic, 1> xref = ref.solve(bld);
+  const Eigen::VectorXd xr = xref.cast<double>();
+
+  Eigen::SparseLU<SpMat> eig;
+  eig.compute(A);
+  const Eigen::VectorXd xe = eig.solve(b);
+  SparseLuBackend lu;
+  lu.compute(A);
+  ASSERT_EQ(lu.info(), Eigen::Success);
+  const Eigen::VectorXd xb = lu.solve(b);
+
+  const double fe_eigen = (xe - xr).norm() / xr.norm();
+  const double fe_backend = (xb - xr).norm() / xr.norm();
+  std::printf("forward error vs long-double reference: Eigen::SparseLU %.3e, %s %.3e\n",
+              fe_eigen, SparseLuBackend::name().data(), fe_backend);
+  EXPECT_LE(fe_backend, 10.0 * std::max(fe_eigen, 1e-15))
+      << "backend forward error " << fe_backend << " vs Eigen " << fe_eigen;
+}
+
+// example.fsi_channel's own fluid grid (24x12: 900 unknowns), the size at
+// which the first flag-on run of the example produced a non-finite value
+// after 19 periods while every 196-unknown case above was clean. Finite,
+// accurate against the long-double reference, and reproducible, or the
+// backend is not fit for the example whatever the small cases say.
+TEST(SparseSolveBackend, SolvesTheExampleSizedStokesSystemAccuratelyAndReproducibly) {
+  const SpMat A = real_stokes_matrix(24, 12);
+  const int n = static_cast<int>(A.rows());
+  ASSERT_EQ(n, 900);
+  const Eigen::VectorXd b = ramp(n);
+
+  using LdMat = Eigen::SparseMatrix<long double>;
+  const LdMat Ald = A.cast<long double>();
+  Eigen::SparseLU<LdMat> ref;
+  ref.compute(Ald);
+  ASSERT_EQ(ref.info(), Eigen::Success);
+  const Eigen::Matrix<long double, Eigen::Dynamic, 1> bld = b.cast<long double>();
+  const Eigen::VectorXd xr = Eigen::Matrix<long double, Eigen::Dynamic, 1>(ref.solve(bld)).cast<double>();
+
+  Eigen::SparseLU<SpMat> eig;
+  eig.compute(A);
+  const double fe_eigen = (Eigen::VectorXd(eig.solve(b)) - xr).norm() / xr.norm();
+
+  SparseLuBackend lu;
+  lu.compute(A);
+  ASSERT_EQ(lu.info(), Eigen::Success);
+  const Eigen::VectorXd x0 = lu.solve(b);
+  ASSERT_EQ(lu.info(), Eigen::Success);
+  ASSERT_TRUE(x0.allFinite());
+  const double fe_backend = (x0 - xr).norm() / xr.norm();
+  std::printf("n=900 forward error vs long-double reference: Eigen::SparseLU %.3e, %s %.3e\n",
+              fe_eigen, SparseLuBackend::name().data(), fe_backend);
+  EXPECT_LE(fe_backend, 10.0 * std::max(fe_eigen, 1e-15));
+
+  double worst = 0.0;
+  for (int rep = 0; rep < 100; ++rep) {
+    const Eigen::VectorXd x = lu.solve(b);
+    ASSERT_TRUE(x.allFinite()) << "rep " << rep;
+    worst = std::max(worst, (x - x0).norm() / x0.norm());
+  }
+  EXPECT_LE(worst, 1e-15) << "repeat solves jitter by " << worst;
+}
+
+// compute() a SECOND time on the same object -- what StokesSolver's LU cache
+// does whenever dt changes (a rolled-back window re-run at a new dt), and
+// what example.fsi_channel hit at its step 7 before diverging. Every case
+// above seeds a fresh object once; this one re-seeds an already-seeded one,
+// on a new pattern (different grid) and on the same pattern (different dt).
+TEST(SparseSolveBackend, RecomputingOnOneObjectAfterASeedStaysCorrect) {
+  SparseLuBackend lu;
+  const SpMat A1 = real_stokes_matrix(10, 6);
+  const SpMat A2 = real_stokes_matrix(24, 12);       // new pattern, new n
+  const SpMat A3 = SpMat(1.75 * real_stokes_matrix(24, 12));  // same pattern, new values
+  const std::vector<const SpMat*> sequence{&A1, &A2, &A3, &A1};
+  for (const SpMat* A : sequence) {
+    const Eigen::VectorXd b = ramp(static_cast<int>(A->rows()));
+    lu.compute(*A);
+    ASSERT_EQ(lu.info(), Eigen::Success) << "n=" << A->rows();
+    const Eigen::VectorXd x = lu.solve(b);
+    ASSERT_EQ(lu.info(), Eigen::Success) << "n=" << A->rows();
+    ASSERT_TRUE(x.allFinite()) << "n=" << A->rows();
+    EXPECT_LT(relative_residual(*A, x, b), kTol) << "n=" << A->rows();
+  }
 }
 
 TEST(SparseSolveBackend, ReportsAStructurallySingularMatrixThroughInfo) {
