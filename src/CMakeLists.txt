@@ -640,25 +640,42 @@ target_link_libraries(fuse-abi-shared
   PUBLIC  fuse::runtime
 )
 add_library(fuse::abi ALIAS fuse-abi-shared)
+# fuse::model (pulled in PRIVATE, via fuse-abi-objects, for YAML load/save)
+# dynamically depends on libyaml-cpp at RUNTIME whenever the yaml-cpp this
+# build resolved is itself a shared library -- true of a found system
+# package, never true of r3d (always built from source as a static
+# archive, the other PRIVATE $<BUILD_LOCAL_INTERFACE:...> dependency this
+# library pulls in the same way). Kokkos is in the same position (always a
+# found, external SHARED library, at a path this project's own
+# CMAKE_PREFIX_PATH resolved, never on the system's default search path or
+# in ldconfig's cache) -- and once FUSE_ENABLE_MOAB is ON, so are MOAB and
+# every one of ITS found-not-fetched dependencies that MOAB's own config
+# doesn't already carry an rpath entry for (MOAB_LIBRARY_DIRS, the same
+# per-package fixup FuseDependencies.cmake builds for target_link_directories
+# above). fmt and yaml-cpp happen to share one directory on this machine, and
+# OpenBLAS is a system package already on the default search path, which is
+# why this was long mistaken for a single-library, yaml-cpp-only gap: an
+# installed consumer that actually exercises a MOAB-enabled build (every
+# abi.install_consumer_* test does, in the "all" tier) hit exactly this, as
+# "libkokkoscore.so.5.2: cannot open shared object file", once yaml-cpp's
+# own directory stopped being the one thing missing. An installed consumer
+# has no other way to find any of these, since none is part of the
+# fuse-coupler install package (this file's own comment on
+# fuse-coupler-model's identical link line explains why, for yaml-cpp).
+# Pointing INSTALL_RPATH at wherever THIS configure resolved each of them is
+# the same answer a consumer's own CMAKE_PREFIX_PATH would need to give
+# find_package(fuse-coupler) in the first place.
+set(_fuse_abi_install_rpath "$<TARGET_FILE_DIR:yaml-cpp::yaml-cpp>"
+                            "$<TARGET_FILE_DIR:Kokkos::kokkoscore>")
+if(FUSE_ENABLE_MOAB)
+  list(APPEND _fuse_abi_install_rpath ${MOAB_LIBRARY_DIRS})
+endif()
 set_target_properties(fuse-abi-shared PROPERTIES
   EXPORT_NAME abi
   OUTPUT_NAME fuse-abi
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
-  # fuse::model (pulled in PRIVATE, via fuse-abi-objects, for YAML load/save)
-  # dynamically depends on libyaml-cpp at RUNTIME whenever the yaml-cpp this
-  # build resolved is itself a shared library -- true of a found system
-  # package, never true of r3d (always built from source as a static
-  # archive, the other PRIVATE $<BUILD_LOCAL_INTERFACE:...> dependency this
-  # library pulls in the same way). Every OTHER target in this tree is
-  # static, so this is the first one a dynamic loader ever has to resolve at
-  # all; an installed consumer has no other way to find it, since yaml-cpp
-  # is deliberately not part of the fuse-coupler install package (this
-  # file's own comment on fuse-coupler-model's identical link line explains
-  # why). Pointing INSTALL_RPATH at wherever THIS configure resolved it is
-  # the same answer a consumer's own CMAKE_PREFIX_PATH would need to give
-  # find_package(fuse-coupler) in the first place.
-  INSTALL_RPATH "$<TARGET_FILE_DIR:yaml-cpp::yaml-cpp>"
+  INSTALL_RPATH "${_fuse_abi_install_rpath}"
 )
 # -fvisibility=hidden alone governs only the object files THIS library
 # compiles; every statically-linked fuse:: layer below it carries its own
