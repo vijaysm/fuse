@@ -42,6 +42,7 @@
 #include <gtest/gtest.h>
 
 #include <fuse/backend/native_backend.hpp>
+#include <fuse/base/config.hpp>  // FUSE_HAVE_MPI, read by the no-MPI case below
 #include <fuse/backend/native_halo.hpp>
 #include <fuse/backend/native_mesh.hpp>
 #include <fuse/backend/remap_plan.hpp>
@@ -564,7 +565,8 @@ TEST(BrusselatorSpeciesCoreDecomposition, DirectSolverRefusesWhenDecomposed) {
 // a backend that is actually asked to BUILD a halo over more than one
 // rank (a non-null communicator, no halo pre-installed) hits
 // `fuse::native::build_native_remap_halo`'s own `E-MESH-NO-MPI` --
-// this build has no MPI at all, so there is no in-process path for the
+// a tier-0 build has no MPI at all, and a tier-1 one has not initialised
+// it, so there is no in-process path for the
 // REAL collective (`test/parallel/native_halo_mpi_test.cpp` is exactly
 // the test that exercises it, build-verified only here). This is the
 // expected, honest failure mode now; the tests below exercise the
@@ -575,12 +577,30 @@ TEST(BrusselatorSpeciesCoreDecomposition, DirectSolverRefusesWhenDecomposed) {
 // skips calling the real (MPI-only) builder for a triple that is
 // already there.
 TEST(BrusselatorSpeciesCoreDecomposition, VParticipantFailsCleanlyWithoutMPIWhenAskedToDecompose) {
+#if FUSE_HAVE_MPI
+  // In a build WITH MPI the test harness has already called MPI_Init, so
+  // "without MPI" is false here and the communicator handle below (1, a
+  // stand-in) would reach a real MPI_Allgather -- which is exactly how
+  // this case aborted ("Invalid communicator") in the user's tier-1 tree
+  // on 2026-10-11. The collective itself is measured by
+  // parallel.native_halo_mpi.{2,3} on the host; this case is the no-MPI
+  // build's refusal only.
+  GTEST_SKIP() << "meaningful only in a build without MPI; the collective is covered by "
+                  "parallel.native_halo_mpi";
+#endif
   NativeMeshBackend backend(0, 2);
   backend.set_communicator(1);  // non-null, so communicator_size() reports 2
   auto made = brusselator::VParticipant::make(std::move(backend), kNx, kNy, kNx, kNy,
                                               /*diffusion=*/10.0);
   ASSERT_FALSE(made.ok());
-  EXPECT_EQ(made.error().code, "E-MESH-NO-MPI");
+  // Two builds, two honest refusals for the same request: a build without
+  // MPI cannot have the collective at all (E-MESH-NO-MPI); a build WITH
+  // MPI whose process never called MPI_Init -- this tier-0 binary inside a
+  // tier-1 tree -- must refuse before any MPI call (E-MESH-MPIINIT). The
+  // first run of this case in an MPI build (2026-10-11) aborted inside
+  // MPI_Allgather instead, which is the defect the second code closes.
+  EXPECT_TRUE(made.error().code == "E-MESH-NO-MPI" || made.error().code == "E-MESH-MPIINIT")
+      << made.error().code << ": " << made.error().message;
 }
 
 // ---- UCore: N-partition Schur reproduces the single-rank reference ------
