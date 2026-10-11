@@ -35,7 +35,7 @@ Result<void> MffdJacobianAction::apply(DistVector& v, DistVector& jv) {
   }
   const double x_norm = x_->norm2();
   const double v_norm_raw = v.norm2();
-  const double v_norm = std::max(v_norm_raw, opt_.umin);
+  const double v_norm = std::max(v_norm_raw, opt_.min_direction_norm);
   const double h = opt_.error_rel * std::sqrt(1.0 + x_norm) / v_norm;
 
   trace_.push_back(MffdRecord{h, x_norm, v_norm_raw});

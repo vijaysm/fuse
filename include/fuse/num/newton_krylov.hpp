@@ -103,19 +103,36 @@ struct MffdOptions {
   /// PETSc's MATMFFD_WP uses the same default (its own `-mat_mffd_err`,
   /// documented as `sqrt(eps_mach)` when left unset).
   double error_rel = default_mffd_error_rel();
-  /// Floor on `||v||_2` (the direction's own norm) before it divides the
-  /// Walker-Pernice step: PETSc's own `-mat_mffd_umin` default, 1e-6.
-  /// Without this floor a near-zero search direction (plausible once a
-  /// Krylov iteration is nearly converged, or a right-preconditioned
-  /// direction `z = M^-1 v` that the preconditioner has shrunk) makes `h`
-  /// blow up rather than merely large.
-  double umin = 1e-6;
+  /// A pure zero-division safeguard on `||v||_2` (the direction's own
+  /// norm) before it divides the Walker-Pernice step -- NOT PETSc's
+  /// `-mat_mffd_umin`, which is a parameter of the DIFFERENT differencing
+  /// routine `MATMFFD_DS` (Dennis-Schnabel: `h = error_rel * u'a / ||a||^2`
+  /// when `|u'a| > umin ||a||_1`, else a `umin`-scaled fallback -- a
+  /// direction-norm floor with a different formula entirely).
+  /// `MATMFFD_WP`'s own routine (`wp.c`) has no `umin` parameter at all
+  /// (its own tunable is `-mat_mffd_compute_normu`, whether to recompute
+  /// `||x||` every call rather than cache it -- unrelated to this floor).
+  /// Named and valued accordingly: `min_direction_norm` is the smallest
+  /// NORMAL double times a margin (`std::numeric_limits<double>::min() *
+  /// 1e8`), chosen only to keep the divisor away from zero and from the
+  /// denormal range, never to approximate any PETSc option. The floor is
+  /// reached routinely, not just in a corner case: `fuse::linalg::gmres()`
+  /// evaluates its OWN first matrix-vector product at the initial guess
+  /// `d = 0` before any Arnoldi step runs, so `apply()`'s very first call
+  /// on every Newton step sees `v = 0` exactly -- without a floor, `h`
+  /// would be `+inf` (a nonzero numerator over an exact-zero denominator),
+  /// and `x + h*v` would be `x + inf*0`, IEEE 754's own NaN. The actual
+  /// Jacobian action in that case is mathematically exact regardless of
+  /// which positive `h` is used: `v = 0` means `x + h*v == x`, so
+  /// `F(x+h*v) - F(x) == 0` identically and `apply()` returns the zero
+  /// vector whatever finite `h` this floor produces.
+  double min_direction_norm = std::numeric_limits<double>::min() * 1e8;
 };
 
 /// One `apply()` call's own step, recorded so a test can confirm the
 /// Walker-Pernice rule was actually followed -- `h = error_rel *
-/// sqrt(1 + ||x||_2) / max(||v||_2, umin)`, Pernice & Walker (1998)'s own
-/// differencing parameter for `MATMFFD_WP`.
+/// sqrt(1 + ||x||_2) / max(||v||_2, min_direction_norm)`, Pernice & Walker
+/// (1998)'s own differencing parameter for `MATMFFD_WP`.
 struct MffdRecord {
   double h = 0.0;
   double x_norm = 0.0;
@@ -204,12 +221,15 @@ struct EisenstatWalkerOptions {
   /// Hard cap -- SNES's own `-snes_ksp_ew_rtolmax`.
   double eta_max = 0.9;
   /// Floor. SNES's own forcing-term code clamps only at `eta_max`, not
-  /// below; a NONZERO floor is this track's own addition (the task's own
-  /// instruction: "a cap eta_max = 0.9 and floor"), recorded as a design
-  /// choice in docs/dev/newton-krylov.md rather than presented as SNES's
-  /// own default, since SNES's forcing term can reach exactly zero (an
-  /// exact linear solve) and this one cannot.
-  double eta_min = 1e-4;
+  /// below -- its forcing term can reach exactly zero (an exact linear
+  /// solve). The OPTION exists because the task's own brief named "a cap
+  /// eta_max = 0.9 and floor" as a possibility, but the DEFAULT is `0.0`
+  /// precisely so that it is SNES's own default (CORRECTED: an earlier
+  /// draft defaulted this to `1e-4` as a judgement call, presented
+  /// alongside options that are genuinely SNES's own defaults, which
+  /// understated how many of this file's defaults are actually
+  /// unmodified SNES behaviour).
+  double eta_min = 0.0;
   /// The over-solving safeguard (Eisenstat & Walker 1996, eq. 3.5-ish;
   /// SNES's own implementation): when `gamma * eta_{k-1}^alpha > 0.1`,
   /// `eta_k` is floored at `gamma * eta_{k-1}^alpha` rather than left at
