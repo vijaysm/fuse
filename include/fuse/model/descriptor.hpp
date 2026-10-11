@@ -12,6 +12,24 @@
 namespace fuse {
 
 inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
+/// 13: S7.2b (PetscSelect track), the per-region Newton substrate
+///     selector. `NewtonConfig` (fuse/model/iteration.hpp) gains one more
+///     field, `substrate` (`fuse::NewtonSubstrate`, Native or Petsc),
+///     appended at the END of the v12 NewtonConfig block -- one more enum
+///     byte after `use_block_jacobi_preconditioner`, following v12's own
+///     append-only placement exactly (every earlier NewtonConfig field
+///     keeps its wire offset; only the block's own trailing length
+///     grows, from 161 to 162 bytes including the two capability bytes).
+///     No `AccelKind` change and no widening of its own bound check --
+///     `substrate` is independent of which accelerator is selected, read
+///     unconditionally for every region exactly like every other
+///     NewtonConfig field already is. A v12 reader handed a v13 buffer
+///     would read the FIRST region's substrate byte as the start of
+///     whatever comes next (the next region's own name length, or the
+///     merge table) -- everything after it decodes as plausible garbage,
+///     the same class of silent misread every prior bump was made to
+///     prevent, so v12 is refused.
+///
 /// 12: S7.2, the native Jacobian-free Newton-Krylov coupler. Each iteration
 ///     region record gains, after its window-scope block: two capability
 ///     bytes (`IterationRegionDecl::requires_residual_capability`,
@@ -113,7 +131,7 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 /// the iteration regions and never see the merge rules, so it would read a
 /// graph that says "one writer per field" from bytes that say otherwise -- and
 /// it would read it successfully. The version check turns that into a refusal.
-inline constexpr std::uint32_t kGraphVersion = 12u;
+inline constexpr std::uint32_t kGraphVersion = 13u;
 
 namespace detail {
 
@@ -367,6 +385,10 @@ class Reader {
       w.pod(static_cast<std::uint64_t>(nc.gmres_max_iterations));
       w.pod(static_cast<std::int32_t>(nc.preconditioner_lag));
       w.pod(static_cast<std::uint8_t>(nc.use_block_jacobi_preconditioner ? 1 : 0));
+      // v13: S7.2b's own per-region substrate selector (descriptor.hpp's
+      // kGraphVersion history), appended at the END of the block,
+      // following v12's own append-only placement exactly.
+      w.pod(static_cast<std::uint8_t>(nc.substrate));
     }
   }
 
@@ -686,6 +708,15 @@ class Reader {
       nc.gmres_max_iterations = r.pod<std::uint64_t>();
       nc.preconditioner_lag = r.pod<std::int32_t>();
       nc.use_block_jacobi_preconditioner = r.pod<std::uint8_t>() != 0;
+      // v13: S7.2b's own per-region substrate selector (descriptor.hpp's
+      // kGraphVersion history). Mirrors the write side's own order:
+      // appended at the END of the block, read last.
+      const auto substrate_byte = r.pod<std::uint8_t>();
+      if (substrate_byte > static_cast<std::uint8_t>(NewtonSubstrate::Petsc)) {
+        return Failure{"E-DESC-ENUM",
+                       "unknown newton_config.substrate " + std::to_string(substrate_byte)};
+      }
+      nc.substrate = static_cast<NewtonSubstrate>(substrate_byte);
     }
     if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated newton_config"};
     g.add_iteration_region(std::move(d));

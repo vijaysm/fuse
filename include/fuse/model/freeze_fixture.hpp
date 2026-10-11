@@ -157,12 +157,17 @@ inline CouplingGraph freeze_fixture() {
   // this, the "outer" region above still has acceleration.kind == Aitken,
   // so a frozen file built from it alone would never exercise the eighth
   // accelerator-kind ordinal, and a NewtonConfig that round-trips to its
-  // own defaults proves nothing about any one of its 25 fields being read
+  // own defaults proves nothing about any one of its 26 fields being read
   // back correctly rather than silently dropped (this file's own opening
   // comment). `.newton()` sets `requires_residual_capability` on its own;
   // `use_block_jacobi_preconditioner = true` below is what additionally
   // asks it to set `requires_linearization_capability`, so this region
-  // exercises both capability bytes at `true` together.
+  // exercises both capability bytes at `true` together. `.substrate =
+  // NewtonSubstrate::Petsc` (descriptor v13's own reason for the version
+  // bump, PetscSelect track) is this region's own non-default pin for
+  // that field -- it is NEVER actually solved (freeze_fixture is never
+  // run through a Runner, this file's own opening comment), only
+  // round-tripped through the descriptor.
   g.iterate({ch})
       .name("newton")
       .max_iterations(9)
@@ -191,7 +196,8 @@ inline CouplingGraph freeze_fixture() {
                            .gmres_restart = 24,
                            .gmres_max_iterations = 500,
                            .preconditioner_lag = 3,
-                           .use_block_jacobi_preconditioner = true});
+                           .use_block_jacobi_preconditioner = true,
+                           .substrate = NewtonSubstrate::Petsc});
   return g;
 }
 }  // namespace fuse::testing

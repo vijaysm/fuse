@@ -480,6 +480,10 @@ TEST(YamlIo, NewtonKindAndConfigSurviveTheTextRoundTrip) {
   cfg.use_block_jacobi_preconditioner = true;
   cfg.forcing_gamma = 0.8;
   cfg.eta_min = 2e-4;
+  // S7.2b (PetscSelect track): non-default, so the round trip actually
+  // exercises reading the field back rather than reconfirming a default
+  // both sides happen to agree on.
+  cfg.substrate = fuse::NewtonSubstrate::Petsc;
 
   const CouplingGraph original = newton_graph(cfg);
   const auto text = to_yaml(original);
@@ -512,6 +516,27 @@ TEST(YamlIo, NewtonKindAndConfigSurviveTheTextRoundTrip) {
            want.newton_config.use_block_jacobi_preconditioner);
   EXPECT_DOUBLE_EQ(got.newton_config.forcing_gamma, want.newton_config.forcing_gamma);
   EXPECT_DOUBLE_EQ(got.newton_config.eta_min, want.newton_config.eta_min);
+  EXPECT_EQ(got.newton_config.substrate, want.newton_config.substrate);
+  EXPECT_EQ(got.newton_config.substrate, fuse::NewtonSubstrate::Petsc);
+}
+
+// An unrecognised newton_config.substrate value must be refused the same
+// way an unrecognised line_search_kind/forcing_choice already is (this
+// file's own RejectsUnknownKeyInChannelBlock-style discipline, applied to
+// enum VALUES rather than keys) -- never silently defaulted to Native,
+// which would make a graph author's typo mean something they never asked
+// for.
+TEST(YamlIo, RejectsUnknownNewtonConfigSubstrate) {
+  const CouplingGraph original = newton_graph(fuse::NewtonConfig{});
+  const auto text = to_yaml(original);
+  ASSERT_TRUE(text.ok()) << text.error().message;
+  std::string corrupted = text.value();
+  const auto pos = corrupted.find("substrate: Native");
+  ASSERT_NE(pos, std::string::npos);
+  corrupted.replace(pos, std::string("substrate: Native").size(), "substrate: quantum");
+  const auto restored = from_yaml(corrupted);
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
 }
 
 // The same auto-trigger the C++ builder applies (IterationBuilder::

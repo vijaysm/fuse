@@ -250,37 +250,47 @@ TEST(Descriptor, RejectsCorruptedIterationRegionEnums) {
   // limit(8) scale_fields(1) -- 31 bytes total. v7 adds a 1-byte
   // window_scope presence flag right after it (0 here: `d` sets none), so
   // the acceleration block sits 32 bytes before the END OF THAT BLOCK's
-  // OWN SUCCESSOR. v12 (descriptor.hpp's kGraphVersion history) appends a
-  // 161-byte block of its own right after the window_scope flag (two
-  // capability bytes, then NewtonConfig's 25 fields: 2 enum bytes, 15
-  // doubles, 5 int32s, 2 uint64s, 1 bool byte -- 2+120+20+16+1=159, plus
-  // the 2 capability bytes = 161), so the acceleration block now sits
-  // 32+161 = 193 bytes before the end of this region's record
-  // (merge_count == 0, the last thing written).
+  // OWN SUCCESSOR. v13 (descriptor.hpp's kGraphVersion history) appends a
+  // 162-byte block of its own right after the window_scope flag (two
+  // capability bytes, then NewtonConfig's 26 fields: 2 enum bytes, 15
+  // doubles, 5 int32s, 2 uint64s, 1 bool byte, 1 more enum byte for v13's
+  // own `substrate` -- 2+120+20+16+1+1=160, plus the 2 capability bytes =
+  // 162), so the acceleration block now sits 32+162 = 194 bytes before
+  // the end of this region's record (merge_count == 0, the last thing
+  // written).
   auto accel_kind = bytes;
-  accel_kind[bytes.size() - 193] = std::byte{200};
+  accel_kind[bytes.size() - 194] = std::byte{200};
   EXPECT_EQ(deserialize(accel_kind).error().code, "E-DESC-ENUM")
       << "corrupted acceleration kind byte was not refused";
 
   auto accel_filter = bytes;
-  accel_filter[bytes.size() - 172] = std::byte{200};
+  accel_filter[bytes.size() - 173] = std::byte{200};
   EXPECT_EQ(deserialize(accel_filter).error().code, "E-DESC-ENUM")
       << "corrupted acceleration filter byte was not refused";
 
   // measure.kind(1) tolerance(8) field(4 + 1, "q") + the 32-byte
-  // acceleration-plus-window-scope-flag block + the 161-byte v12 Newton
-  // block above == 45 + 161 = 206 bytes after it.
+  // acceleration-plus-window-scope-flag block + the 162-byte v13 Newton
+  // block above == 45 + 162 = 207 bytes after it.
   auto measure_kind = bytes;
-  measure_kind[bytes.size() - 207] = std::byte{200};
+  measure_kind[bytes.size() - 208] = std::byte{200};
   EXPECT_EQ(deserialize(measure_kind).error().code, "E-DESC-ENUM")
       << "corrupted convergence measure kind byte was not refused";
 
   // v12's own accelerator-kind bound: ordinal 8 is one past AccelKind::
   // Newton (7), the first value still refused after the widened check.
+  // v13 did not move this byte (it did not change AccelKind at all).
   auto newton_kind_out_of_range = bytes;
-  newton_kind_out_of_range[bytes.size() - 193] = std::byte{8};
+  newton_kind_out_of_range[bytes.size() - 194] = std::byte{8};
   EXPECT_EQ(deserialize(newton_kind_out_of_range).error().code, "E-DESC-ENUM")
       << "an accelerator kind one past AccelKind::Newton was not refused";
+
+  // v13's own bound check: NewtonConfig::substrate is the LAST byte of
+  // the per-region record (merge_count == 0 here), so it sits at offset 1
+  // from the end. Ordinal 2 is one past NewtonSubstrate::Petsc (1).
+  auto newton_substrate_out_of_range = bytes;
+  newton_substrate_out_of_range[bytes.size() - 1] = std::byte{2};
+  EXPECT_EQ(deserialize(newton_substrate_out_of_range).error().code, "E-DESC-ENUM")
+      << "a newton_config.substrate one past NewtonSubstrate::Petsc was not refused";
 
   // The unpatched buffer must still read back cleanly, or the offsets above
   // are wrong rather than the deserializer.
@@ -386,6 +396,9 @@ TEST(Descriptor, RoundTripPreservesEveryNonDefaultMember) {
   EXPECT_EQ(cfg.max_nonlinear_iterations, 9);
   EXPECT_EQ(cfg.gmres_max_iterations, 500u);
   EXPECT_TRUE(cfg.use_block_jacobi_preconditioner);
+  // v13's reason for the version bump (S7.2b, PetscSelect track):
+  // NewtonConfig::substrate, appended at the end of the block.
+  EXPECT_EQ(cfg.substrate, fuse::NewtonSubstrate::Petsc);
 }
 
 // A region with no window_scope (std::nullopt, the default -- every region
@@ -420,21 +433,21 @@ TEST(Descriptor, RejectsCorruptedWindowScopeDtPolicy) {
   // The policy byte used to be the second-to-last byte serialize() writes
   // for this graph: no merges, one policy entry (component name "fluid" =
   // 4 bytes + 4-byte length prefix, then the policy byte), then v8's own
-  // trailing WaveformIteration byte after it. v12 appends its own
-  // 161-byte block (two capability bytes, then NewtonConfig's 25 fields --
+  // trailing WaveformIteration byte after it. v13 appends its own
+  // 162-byte block (two capability bytes, then NewtonConfig's 26 fields --
   // see RejectsCorruptedIterationRegionEnums for the field tally) AFTER
-  // the window_scope block, unconditionally, so that byte is now 161
-  // bytes earlier than the new end of the buffer: 2 + 161 = 163.
-  bytes[bytes.size() - 163] = std::byte{200};
+  // the window_scope block, unconditionally, so that byte is now 162
+  // bytes earlier than the new end of the buffer: 2 + 162 = 164.
+  bytes[bytes.size() - 164] = std::byte{200};
   const auto r = deserialize(bytes);
   ASSERT_FALSE(r.ok());
   EXPECT_EQ(r.error().code, "E-DESC-ENUM");
 }
 
 // Same shape, one byte later: the trailing WaveformIteration byte (v8) used
-// to be the actual last byte serialize() writes for this graph; v12's own
-// 161-byte block (see RejectsCorruptedWindowScopeDtPolicy) now follows it
-// unconditionally, so it must be refused 162 bytes before the new end, not
+// to be the actual last byte serialize() writes for this graph; v13's own
+// 162-byte block (see RejectsCorruptedWindowScopeDtPolicy) now follows it
+// unconditionally, so it must be refused 163 bytes before the new end, not
 // at the new last byte.
 TEST(Descriptor, RejectsCorruptedWindowScopeIteration) {
   CouplingGraph g;
@@ -452,7 +465,7 @@ TEST(Descriptor, RejectsCorruptedWindowScopeIteration) {
         .window_scope = std::move(scope);
   }
   auto bytes = serialize(g);
-  bytes[bytes.size() - 162] = std::byte{200};
+  bytes[bytes.size() - 163] = std::byte{200};
   const auto r = deserialize(bytes);
   ASSERT_FALSE(r.ok());
   EXPECT_EQ(r.error().code, "E-DESC-ENUM");
@@ -486,7 +499,8 @@ TEST(Descriptor, RejectsCorruptedLaunchMode) {
 TEST(Descriptor, SupersededFrozenBytesAreRefusedByThisReader) {
   for (const char* name : {"waist-v1.bin", "waist-v4.bin", "waist-v5.bin",
                           "waist-v6.bin", "waist-v7.bin", "waist-v8.bin",
-                          "waist-v9.bin", "waist-v10.bin", "waist-v11.bin"}) {
+                          "waist-v9.bin", "waist-v10.bin", "waist-v11.bin",
+                          "waist-v12.bin"}) {
     const std::filesystem::path old_golden =
         std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / name;
     ASSERT_TRUE(std::filesystem::exists(old_golden)) << old_golden;
@@ -519,7 +533,7 @@ TEST(Descriptor, TheFrozenV1BytesAreRefusedByThisReader) {
 TEST(Descriptor, MatchesTheFrozenWaistBytes) {
   const auto bytes = fuse::serialize(fuse::testing::freeze_fixture());
   const std::filesystem::path golden =
-      std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / "waist-v12.bin";
+      std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / "waist-v13.bin";
   ASSERT_TRUE(std::filesystem::exists(golden)) << golden;
 
   std::ifstream in(golden, std::ios::binary);

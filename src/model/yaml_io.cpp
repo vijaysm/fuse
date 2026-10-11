@@ -158,6 +158,13 @@ const char* const kFilterNames[]  = {"None", "QR1", "QR2", "QR3"};
 // table above.
 const char* const kLineSearchNames[] = {"BT", "CP", "Basic"};
 const char* const kEwChoiceNames[]   = {"Constant", "Choice1", "Choice2"};
+// fuse::NewtonSubstrate (fuse/model/iteration.hpp), same positional-index
+// convention and the same spelling rule as every other enum table on this
+// page: the C++ enumerator name verbatim. (A first draft wrote these
+// lowercase; one rule for all enum keys beats a special case.) The
+// examples' command-line flag `--substrate native|petsc` is a separate,
+// user-facing spelling and stays lowercase there.
+const char* const kNewtonSubstrateNames[] = {"Native", "Petsc"};
 // Time windows track: must stay in DtPolicy's declaration order
 // (fuse/model/iteration.hpp), same reasoning as the three tables above.
 const char* const kDtPolicyNames[] = {"Fixed", "Adjustable"};
@@ -725,6 +732,8 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
         << nc.preconditioner_lag
         << YAML::Key << "use_block_jacobi_preconditioner" << YAML::Value
         << nc.use_block_jacobi_preconditioner
+        << YAML::Key << "substrate" << YAML::Value
+        << enum_name(nc.substrate, kNewtonSubstrateNames)
         << YAML::EndMap;
     }
     if (r.window_scope.has_value()) {
@@ -1232,7 +1241,7 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
                "armijo_alpha", "lambda_min", "max_backtracks", "secant_tol",
                "max_secant_steps", "damping", "gmres_restart",
                "gmres_max_iterations", "preconditioner_lag",
-               "use_block_jacobi_preconditioner"},
+               "use_block_jacobi_preconditioner", "substrate"},
               "newton_config block")) {
         return *e;
       }
@@ -1291,6 +1300,12 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
       if (nn["use_block_jacobi_preconditioner"]) {
         nc.use_block_jacobi_preconditioner =
             nn["use_block_jacobi_preconditioner"].as<bool>();
+      }
+      if (nn["substrate"] &&
+          !lookup_enum(nn["substrate"].as<std::string>(), kNewtonSubstrateNames,
+                       nc.substrate)) {
+        return Failure{"E-YAML-PARSE", "unknown newton_config.substrate '" +
+                                         nn["substrate"].as<std::string>() + "'"};
       }
     }
     // The SAME auto-trigger `IterationBuilder::accelerate()`/`::newton()`

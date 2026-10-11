@@ -109,3 +109,22 @@ new = """    if (accel_kind > static_cast<std::uint8_t>(AccelKind::IQN_IMVJ)) {"
 target = "fuse_model_descriptor_test"
 test = "model.descriptor"
 result = "Hand-proved 2026-10-10: 21 cases, all pass before; after mutation, 1 fails (Descriptor.RoundTripPreservesEveryNonDefaultMember, whose freeze_fixture() second region selects AccelKind::Newton and is refused on deserialize() with 'unknown acceleration kind 7'), 20 pass. MatchesTheFrozenWaistBytes is unaffected (it only calls serialize(), never deserialize()) -- expected, not a gap: RoundTripPreservesEveryNonDefaultMember is the test that exercises the read path. File restored and cmp-verified byte-identical; rebuilt and reran to confirm all 21 pass again."
+
+# descriptor v13's own row (S7.2b, PetscSelect track): NewtonConfig::
+# substrate's own bound check, mirroring descriptor-accel-kind-bound-
+# not-widened immediately above for the identical reason -- a reader
+# that never refuses an out-of-range substrate byte would admit a
+# corrupted or adversarially-constructed descriptor as if it named
+# NewtonSubstrate::Native or ::Petsc, silently misreading whatever
+# enumerator the byte's own numeric value happened to be past.
+
+[[mutation]]
+id = "descriptor-newton-substrate-bound-not-widened"
+area = "model"
+describes = "deserialize()'s own newton_config.substrate bound check is disabled (if (false) instead of if (substrate_byte > ...)), so an out-of-range substrate byte is accepted and static_cast onto NewtonSubstrate silently, rather than refused with E-DESC-ENUM -- a corrupted descriptor's substrate byte would read back as an enumerator that was never written, exactly the class of silent misread every other enum bound check on this wire exists to prevent."
+file = "include/fuse/model/descriptor.hpp"
+old = """      if (substrate_byte > static_cast<std::uint8_t>(NewtonSubstrate::Petsc)) {"""
+new = """      if (false) {"""
+target = "fuse_model_descriptor_test"
+test = "model.descriptor"
+result = "Hand-proved 2026-10-11, /tmp/petscselect/b0 (tier-0 without PETSc): 21 cases, all pass before; after mutation, 1 fails (Descriptor.RejectsCorruptedIterationRegionEnums -- its own newton_substrate_out_of_range case: deserialize() accepts the out-of-range substrate byte 2 instead of refusing E-DESC-ENUM), 20 pass. File restored and md5/cmp-verified byte-identical; rebuilt and reran to confirm all 21 pass again."
