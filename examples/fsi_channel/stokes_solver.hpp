@@ -90,6 +90,8 @@
 
 #include <Eigen/Sparse>
 
+#include "sparse_solve_backend.hpp"
+
 namespace fsi {
 
 /// One side of the channel. `outflow` selects the zero-gradient (Neumann)
@@ -173,7 +175,9 @@ namespace detail {
 /// passes `nullptr` (the default) and gets the original
 /// always-fresh-factorisation behaviour, unchanged.
 struct CnStepLuCache {
-  Eigen::SparseLU<Eigen::SparseMatrix<double>> lu;
+  // SparseLuBackend IS Eigen::SparseLU unless FUSE_ENABLE_CUSPARSE is on
+  // (examples/common/sparse_solve_backend.hpp): same calls, same results.
+  fuse_examples::SparseLuBackend lu;
   double cached_dt = std::numeric_limits<double>::quiet_NaN();
   bool   valid = false;
 };
@@ -592,8 +596,8 @@ struct CnStepLuCache {
   // cn_step() caller except StokesSolver::step()) takes need_factor's
   // unconditional-true branch below, identical to the original
   // unconditional `lu.compute(A)` every call.
-  Eigen::SparseLU<Eigen::SparseMatrix<double>> local_lu;
-  Eigen::SparseLU<Eigen::SparseMatrix<double>>* lu = &local_lu;
+  fuse_examples::SparseLuBackend  local_lu;
+  fuse_examples::SparseLuBackend* lu = &local_lu;
   bool need_factor = true;
   if (lu_cache != nullptr) {
     lu = &lu_cache->lu;
