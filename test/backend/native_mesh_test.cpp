@@ -14,11 +14,24 @@ namespace {
 
 using fuse::native::Mesh;
 
+// Pinned to host memory, not Mesh's default (Kokkos::DefaultExecutionSpace's
+// own memory space): every test below fills points()/cells()/parents() and
+// reads normal()/vertex() directly from host code, which is only valid for a
+// host-accessible space. Kokkos::DefaultExecutionSpace is Cuda on a
+// CUDA-enabled build, whose memory_space is CudaSpace -- device-only memory
+// with no host access at all -- so the default silently produced an illegal
+// host dereference of device memory (SIGSEGV) on exactly those builds,
+// everywhere in this file. The rest of the codebase already pins its own
+// host-resident mesh type explicitly (MeshArrays<Kokkos::HostSpace>,
+// src/backend/native_mesh.cpp and friends); this test should too.
+template <int M, int S>
+using TestMesh = Mesh<M, S, Kokkos::DefaultHostExecutionSpace::memory_space>;
+
 /// A single simplex from explicit coordinates, with every simplex its own
 /// parent cell (the already-simplicial case).
 template <int M, int S>
-Mesh<M, S> one_simplex(const std::vector<std::array<double, S>>& pts) {
-  Mesh<M, S> m("t", pts.size(), 1, 1);
+TestMesh<M, S> one_simplex(const std::vector<std::array<double, S>>& pts) {
+  TestMesh<M, S> m("t", pts.size(), 1, 1);
   for (std::size_t i = 0; i < pts.size(); ++i) {
     for (int k = 0; k < S; ++k) m.points()(i, k) = pts[i][k];
   }
@@ -111,7 +124,7 @@ TEST(NativeMesh, ADegenerateSimplexHasZeroMeasureAndNotANaN) {
 }
 
 TEST(NativeMesh, APointCloudHasNoExtent) {
-  Mesh<0, 3> pc("pc", 2, 2, 2);
+  TestMesh<0, 3> pc("pc", 2, 2, 2);
   for (std::size_t i = 0; i < 2; ++i) {
     pc.points()(i, 0) = static_cast<double>(i);
     pc.points()(i, 1) = 0.0;
@@ -148,7 +161,7 @@ TEST(NativeMesh, ASurfaceNormalIsUnitAndPerpendicular) {
 // ---- connectivity and the parent map -----------------------------------
 
 TEST(NativeMesh, RefusesAVertexIndexOutOfRange) {
-  Mesh<2, 2> m("m", 3, 1, 1);
+  TestMesh<2, 2> m("m", 3, 1, 1);
   for (std::size_t i = 0; i < 3; ++i) { m.points()(i, 0) = 0.0; m.points()(i, 1) = 0.0; }
   m.cells()(0, 0) = 0;
   m.cells()(0, 1) = 1;
@@ -174,7 +187,7 @@ TEST(NativeMesh, ParentCellCountIsWhatConservationBalancesOver) {
   // One hexahedron's worth: six tetrahedra, one parent cell. A conservation
   // sum must balance over 1 cell, not 6 simplices -- confusing the two is the
   // defect the parent map exists to prevent.
-  Mesh<3, 3> hex("hex", 8, 6, 1);
+  TestMesh<3, 3> hex("hex", 8, 6, 1);
   const double c[8][3] = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0},
                           {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}};
   for (int i = 0; i < 8; ++i) {
