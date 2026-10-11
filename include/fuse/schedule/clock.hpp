@@ -42,7 +42,10 @@ inline constexpr std::int64_t kMaxPeriodTicks = 1'000'000;
   const detail::Int128 an = an_wide < 0 ? -an_wide : an_wide;
   const detail::Int128 bn = bn_wide < 0 ? -bn_wide : bn_wide;
   // an, bn <= 2^63, so an*bn <= 2^126 and the product cannot overflow Int128.
-  const detail::Int128 l = an / std::gcd(an, bn) * bn;
+  // detail::gcd128, not std::gcd: see rational.hpp's gcd128 comment -- nvcc's
+  // host pass does not consider __int128 integral, so std::gcd's own
+  // static_assert rejects it.
+  const detail::Int128 l = an / detail::gcd128(an, bn) * bn;
   if (!detail::fits_i64(l)) return std::nullopt;
   // gcd of two positive denominators is positive and no larger than either,
   // so this narrowing is always safe.
