@@ -284,10 +284,13 @@ not bitwise, because nvcc contracts `a*b+c` into FMA inside `RelaxFunctor`/
 `RemapMultiFunctor` (the same gap D36 closed for the deterministic reductions
 with `unfused_multiply_add`; those two kernels were left as-is because
 `build-evidence/mutations.toml` anchors their exact source lines). Full
-suite after the change: 280/280 on `ctest -j1` (279 in one run; the one
-failure, `abi.fortran_consumer_compiles`, was a nested-cmake reconfigure
-tripping over a not-yet-registered test source from unrelated in-flight
-work in the same tree, and passed on re-run with nothing else changed).
+suite after the change: 279/280 on one `ctest -j1` run; the one failure,
+`abi.fortran_consumer_compiles`, was a nested-cmake reconfigure tripping
+`test/CMakeLists.txt`'s "test source registered nowhere" guard over a
+not-yet-registered test source from in-flight Part B work in the same tree
+(`test/verification/sparse_solve_backend_test.cpp`), and passed once that
+file was registered. No single 280/280 run was observed; the Runner change
+itself touched nothing that test compiles.
 
 **Honest expectation, stated rather than hidden**: the device path is slower
 than the host path for these workloads, not faster — every device-dispatched

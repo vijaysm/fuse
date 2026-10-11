@@ -245,6 +245,86 @@ work above.
   report the new `gray_scott_reference` wall-clock honestly, whichever way
   it comes out).
 
+## Part B results (2026-10-11): built, measured, not a speed-up
+
+`FUSE_ENABLE_CUSPARSE` exists, `examples/common/sparse_solve_backend.hpp`
+holds both call sites, and the flag-on build was run against the same
+verification rows as the flag-off one, on the same GTX 1050 Ti, Debug build
+type both ways (`build-cusparse`, tier0 preset; `build-all`, all preset).
+
+| row | flag off (quiet full run) | flag on (cusolverRf) |
+|---|---|---|
+| `gray_scott_reference` | 462.9 s | 471.4 s |
+| `fsi_stokes_mms` | 55.1 s | 470.7 s |
+| `fsi_transient` | 57.3 s | 124.0 s (passes only with the refinement step below) |
+| `fsi_energy_diag` | pass | 59.5 s, pass after the guard fix below |
+| `gray_scott_mms` / `multirate`, `fsi_beam` / `coupled`, `example.gray_scott` (+omp) | pass | pass |
+| `example.fsi_channel` (+omp) | pass | DISABLED (KNOWN_ISSUES D34) |
+
+**No gain, and the reason is not the backend.** `gray_scott_reference` runs
+at `kN = 8`: a 128-unknown Jacobian. Its 460-odd seconds are not in the LU
+at all (Phase 1's `analyzePattern()` hoisting did not move it either); they
+are in the windowed Runner side of the comparison. A device factorisation
+of 128 unknowns is pure launch latency and PCIe copies, so the flag-on
+number is a few seconds *worse*. `fsi_stokes_mms` passes no LU cache by
+design (it varies grid/viscosity/BCs per call), so every `cn_step` re-seeds
+cusolverRf through a cusolverSp host LU plus a device setup: 8.5x slower.
+The device path would start paying off at problem sizes two orders of
+magnitude larger than anything the suite runs; that is a question about the
+examples' sizes, not about the dependency.
+
+**What the first flag-on run found, and what it turned out to be.** That
+run failed `fsi_transient`, `fsi_energy_diag` (the finite-difference energy
+budget) and `example.fsi_channel` — all accuracy stalls, no crashes. Three
+rounds of measurement, in order:
+
+1. A temporary residual diagnostic over 24,519 real Stokes solves showed
+   the device solve is *as backward-stable as Eigen's* (5.3e-16 both), so
+   "cusolverRf is inaccurate" was wrong. The device and host solutions
+   differ by up to 1.3e-8 relative — κ·ε, both correct to working precision
+   but not the *same* rounding. In that in-situ run ~4% of identical-input
+   repeat solves also differed bitwise.
+2. In isolation (unit tests on the real 196- and 900-unknown Stokes
+   matrices, 300 back-to-back repeats) raw `cusolverRfSolve` **is**
+   reproducible; the in-situ jitter did not reproduce and is not relied on
+   either way. The fix that works regardless is one step of iterative
+   refinement after every solve: the residual `Pb − B·y` is accumulated on
+   the host in `long double` (64-bit mantissa) and one more device solve
+   applies the correction. Measured against a `long double` Eigen reference,
+   the refined backend's forward error is 3.7e-17 (n=196) / 1.4e-16 (n=900)
+   against Eigen double's 2.7e-14 / 3.4e-14 — about 1000x *more* accurate
+   than the host path, and pinned to the exact solution rather than to any
+   one rounding of it. `fsi_transient` passes with it. Tests:
+   `RepeatedSolvesOfTheRealStokesSystemAgreeToWorkingPrecision`,
+   `RepeatedSolvesAgreeWhenOtherSolvesAreInterleaved`,
+   `ForwardErrorOnTheRealStokesSystemIsNoWorseThanEigens`,
+   `SolvesTheExampleSizedStokesSystemAccuratelyAndReproducibly`.
+3. The two remaining failures were not the backend's. `fsi_energy_diag`'s
+   no-energy guard scaled its floor with the *square* of the eigenvector
+   quality, so the better solve (quality 7.7e-11 → 1.07e-11) dropped the
+   floor under the mode's true E0 and the budget ran on noise; the floor
+   now has an absolute 1e-16·|x|² term (ledger Ruling B-4, measured
+   rationale in the test). `example.fsi_channel`'s IQN-ILS coupling is
+   marginally stable near the beam's first natural period: a ≤1.07e-12
+   change in the fluid solve diverges it, and the flag-*off* build diverges
+   too under `--accel none` or `aitken` at the same periods. That is
+   KNOWN_ISSUES **D34**, OPEN; the two example rows are `DISABLED` (visible
+   in `ctest -N`, not hidden) when the flag is ON. The `fsi_*` verification
+   rows still run under the flag.
+
+The lesson that outlives this branch: a fixed-point coupling iteration
+converges through *a* rounding floor, and anything that moves that floor by
+κ·ε — a different solver, a different pivot order, a different FMA
+contraction — can tip a marginal case. Any device sparse solver fuse adopts
+has to be checked against the D36 determinism contract and against the
+coupling tests first, not just against a residual; Kokkos Kernels' CUDA
+paths included (the user deferred that dependency on 2026-10-11 for this
+reason and the size argument above).
+
+`FUSE_ENABLE_CUSPARSE` stays OFF by default. It is correct, more accurate
+than the default, tested on the real systems, and documented as measured;
+it is not a recommendation at the suite's problem sizes.
+
 ## Resuming this work
 
 Check `git log --oneline -10` on `vijaysm/kokkos-device`: each stage above is
