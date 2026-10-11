@@ -515,6 +515,7 @@ add_library(fuse-coupler-runtime
   runtime/iteration.cpp
   runtime/checkpoint_support.cpp
   runtime/window_coupler.cpp
+  runtime/fixed_point_residual.cpp
 )
 add_library(fuse::runtime ALIAS fuse-coupler-runtime)
 target_compile_features(fuse-coupler-runtime PUBLIC cxx_std_20)
