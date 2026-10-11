@@ -1045,6 +1045,10 @@ endforeach()
 # flag-off build of the examples is unchanged by holding the wrapper.
 fuse_add_gtest(verification sparse_solve_backend NO_LAYER_LIB
                LIBS fuse::base Eigen3::Eigen fuse::examples_common)
+# stokes_solver.hpp: the reproducibility case assembles the real Stokes
+# saddle point through cn_step()'s debug_matrix_out hook.
+target_include_directories(fuse_verification_sparse_solve_backend_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/examples/fsi_channel)
 
 # Brusselator (Time windows track, "a code FUSE has never met"): weights
 # (an independent, integer-arithmetic oracle reimplementing the Toy's own
