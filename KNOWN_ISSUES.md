@@ -3998,3 +3998,60 @@ finalize check aborts the binary after its first case).
 in a build without PETSc with a test that fires it), dn_heat and the Brusselator by the PETSc path
 recorded beside the native results, and the `forcing.eta_min` gap (`docs/dev/newton-krylov.md` §10.4:
 SNES has no forcing floor, and the Brusselator window needed one on the native substrate).
+
+**Built 2026-10-11 (PetscSelect track, plan S7.2b phase 2) -- the per-region selector itself, NOT
+the `eta_min` gap, which stays open (§10.4/§11 both name it unchanged).** `NewtonConfig::substrate`
+(`fuse::NewtonSubstrate`, `Native`/`Petsc`, fuse/model/iteration.hpp) selects WHICH registered
+implementation a region's Newton solve dispatches to, through a small registry in `fuse::num`
+(`register_newton_substrate()`/`newton_substrate()`, fuse/num/newton_krylov.hpp -- `fuse::num` sits
+BELOW `fuse::runtime` in `tools/check-layering.py`'s own layer order, and `fuse::petsc` sits ABOVE
+`fuse::runtime`, so the registry is the only place the Runner can dispatch to a substrate it is
+layering-forbidden from naming directly). `Native` registers itself deterministically on first use
+(a function-local static, never a static initialiser that might not link); `fuse::petsc::install()`
+(new, fuse/petsc/solve.hpp) registers `Petsc`, never called by the library itself. `src/runtime/
+iteration.cpp` checks the registry TWICE per Newton-selected region: eagerly in `resolve_regions()`
+(so a graph naming an unavailable substrate refuses `E-NEWTON-PETSC-UNAVAILABLE` at
+`Runner::initialize()`, before the first period -- `NewtonRegion.ARegionSelectingAnUnregisteredSubstrateIs
+RefusedAtSetup`, test/runtime/newton_region_test.cpp, fires this TIER-0, WITHOUT PETSc), and again,
+defensively, at the actual dispatch inside `run_region_newton()`/`run_region_newton_window()`. The
+descriptor bumped to v13 (`test/golden/waist-v13.bin`, one more byte appended at the end of the v12
+NewtonConfig block, following v12's own append-only placement exactly); YAML gained `newton_config.
+substrate: native|petsc`. The communicator decision (docs/dev/newton-krylov.md §11.3): the registered
+PETSc substrate always solves on `MPI_COMM_SELF`, never the Runner's own `base_communicator`, because
+every Newton-selected region on EITHER substrate is already single-rank-only by `check_region_
+supports_newton()` (D31's own restriction) -- nothing to reduce across ranks inside the solve itself
+regardless of substrate; `SnesOptions::comm_f` stays available for a future multi-rank lift to revisit.
+
+`examples/dn_heat/main.cpp --newton-petsc` and `examples/brusselator/main.cpp --substrate petsc` run
+the IDENTICAL graphs the native rows do, by data (`NewtonConfig::substrate`) alone -- the default
+invocation of either binary is byte-identical whether or not `FUSE_ENABLE_PETSC` was configured,
+since both PETSc code paths are compiled in only under `FUSE_HAVE_PETSC` and run only when explicitly
+asked for. Both compare the PETSc result against the native one to a bound DERIVED from the two
+solvers' shared `rtol` and the problem's own structure (dn_heat's affine Jacobian; the Brusselator's
+own `kTol`) plus the §10.3-measured 3.9e-8 relative inter-solver difference -- never a number chosen
+to make the check pass; the exact derivation is in each file's own comment at the check. Registered
+as `example.dn_heat.newton_petsc` and `petsc.brusselator_newton`, both gated by
+`FUSE_ENABLE_PETSC`.
+
+**Verified, tier-0 WITHOUT PETSc:** clean build, 0 errors, 187/187 tests pass (unaffected count and
+pass rate -- this track added no new tier-0-unconditional ctest row), `/tmp/petscselect/b0`.
+**Verified, tier-0 WITH PETSc:** clean build, 0 errors, 193 tests registered (187 + `petsc.{init,
+token,derivative_gate,snes,brusselator_newton}` + `example.dn_heat.newton_petsc`); 187/193 PASS,
+exactly the 6 PETSc-dependent rows FAIL by the same `MPI_Init()` constraint §10's own measurements
+were taken around (SEGFAULT, not a logic failure) -- every pre-existing, PETSc-independent row,
+INCLUDING `verification.brusselator_runner` itself, is unaffected, `/tmp/petscselect/bpetsc`. (An
+earlier draft of the Brusselator PETSc-substrate case lived inside `test/verification/
+brusselator_runner_test.cpp` itself; measured directly that its own crash took the WHOLE shared
+binary down with it, failing every other case in that file too -- moved to its own dedicated binary,
+`test/petsc/brusselator_newton_test.cpp`/`petsc.brusselator_newton`, the same isolation convention
+every other `petsc.*` test already follows, and reconfirmed clean after the move.)
+**Measured on the host 2026-10-11 and closed as far as phase 2 goes:** the dn_heat and Brusselator
+PETSc-substrate tables (docs/user/dn-heat.md, brusselator.md) are filled from `build-all`; both
+examples agree with the native path (dn_heat to 2.7e-10 K against Picard, the Brusselator to every
+printed digit of the final means over 50 windows). The `forcing.eta_min` gap is **closed**: the
+Brusselator did stall on PETSc without a floor, and `fuse::petsc::solve()` now applies
+`NewtonConfig::eta_min` through a KSP convergence test (`docs/dev/newton-krylov.md` §10.4(1)), proved
+by the `petsc-forcing-floor-not-applied` mutation. **Still open under D32:** the PETSc substrate
+solves on `MPI_COMM_SELF` (correct while D31 restricts Newton regions to one participant; the
+communicator plumbing is D31's), and the agreement bounds in the two examples carry a 20× margin
+because the result structs expose a post-first-step residual rather than ‖F₀‖.

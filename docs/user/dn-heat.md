@@ -201,6 +201,41 @@ correctness gates would need to tolerate the SAME sign-flip/stall regime the
 unit test's own beta sweep found at larger nonlinearity (docs/dev/
 newton-krylov.md §8.4).
 
+## The PETSc substrate
+
+`NewtonConfig::substrate = NewtonSubstrate::Petsc` solves the IDENTICAL
+graphs the `newton`/`newton-nl` rows above do, through PETSc's own
+`SNESNEWTONLS` instead of the native JFNK coupler (`fuse::petsc::solve()`,
+[docs/dev/newton-krylov.md §10/§11](../dev/newton-krylov.md)) -- selected by
+data (`NewtonConfig::substrate`), never a code fork. `examples/dn_heat/
+main.cpp --newton-petsc` runs `newton-petsc`/`newton-nl-petsc`: a SEPARATE
+invocation (not folded into the default table), compiled in at all only
+under `FUSE_HAVE_PETSC`, calling `fuse::petsc::install()` first so the
+substrate registry actually resolves `NewtonSubstrate::Petsc`. Without
+either (a build without `FUSE_ENABLE_PETSC`, or a process that never calls
+`install()`), a graph naming the PETSc substrate refuses at
+`Runner::initialize()` with `E-NEWTON-PETSC-UNAVAILABLE` --
+`NewtonRegion.ARegionSelectingAnUnregisteredSubstrateIsRefusedAtSetup`
+(test/runtime/newton_region_test.cpp) fires this refusal tier-0, without
+PETSc, on every build.
+
+| row | substrate | Newton steps | final \|\|F\|\| (max over periods) | agrees with Picard | ctest row |
+|---|---|---|---|---|---|
+| newton | native | 4 (per period; 5.68e+01 → 4.31 → 1.77e-02 → 3.26e-09) | 4.159e-11 | 6.321e-11 K | `example.dn_heat` |
+| newton-petsc | PETSc | 4 | 1.649e-10 | 2.717e-10 K | `example.dn_heat.newton_petsc` (gated `FUSE_ENABLE_PETSC`) |
+| newton-nl | native | 4 (… → 1.45e-08); fitted order 2.13, 2.55 | — | — | informational (`example.dn_heat`) |
+| newton-nl-petsc | PETSc | informational, β = 0.1, rtol 1e-4 | — | — | informational, under `--newton-petsc` |
+
+Measured on the development host (2026-10-11, `/opt/petsc/download-moab`): the
+PETSc row converges in the same four steps per period and agrees with Picard to
+2.7e-10 K against the native path's 6.3e-11 K — the two differ in how closely
+their GMRES implementations reach the shared Eisenstat–Walker target, not in the
+test they apply. The agreement check `--newton-petsc` performs between the two
+substrates is a bound derived from the shared `NewtonConfig::rtol`, dn_heat's own
+affine Jacobian (`{{1, r_i}, {-1, 1}}` per station) and the measured 3.9e-8
+relative inter-solver difference of `docs/dev/newton-krylov.md` §10.3; the
+formula is in `main.cpp`'s comment at the check. It passes as `example.dn_heat.newton_petsc`.
+
 ## Measured against
 
 `ctest` row `example.dn_heat` runs the configuration matrix above and gates exit status on exactly

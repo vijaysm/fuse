@@ -1356,14 +1356,20 @@ binary after its first case.
 
 ### 10.4 Open questions for the lead
 
-1. **`forcing.eta_min` has no PETSc counterpart** (10.2's own table): the
-   Brusselator's own measured finding (§9.9.2) that the native solver
-   needed a nonzero `eta_min` floor to avoid stalling the LAST linear
-   solve near convergence has no mitigation on the PETSc substrate at
-   all -- `SNESKSPSetParametersEW()` has no floor parameter. Whether this
-   matters in practice can only be measured once `petsc.snes` actually
-   runs a problem that reaches that regime; flagged here rather than
-   silently assumed absent.
+1. ~~**`forcing.eta_min` has no PETSc counterpart**~~ — **resolved 2026-10-11, by
+   measurement.** The Brusselator window on the PETSc substrate did stall exactly
+   as the native one had before its floor (`DivergedLinearSolve after 3 Newton
+   iterations` on the first window of `--driver runner --accel newton --substrate
+   petsc`). `SNESKSPSetParametersEW()` has no floor, and SNES sets the KSP's
+   relative tolerance in a pre-solve hook, so the floor is applied in the one place
+   that sees EW's chosen value before GMRES judges a residual: a KSP convergence
+   test installed when `eta_min > 0` that, at iteration 0, reads the tolerance EW
+   set, raises it to `eta_min` if below, and then defers to `KSPConvergedDefault`.
+   EW's post-solve reads the clamped value back, as the native solver carries its
+   clamped η forward. With it, 50/50 windows converge and the final means match the
+   native path to every printed digit (§11.6); the mutation that removes the
+   installation fails exactly `example.brusselator.newton_petsc`
+   (`petsc-forcing-floor-not-applied`).
 2. **`MffdToken::set_base_point()`'s own interface shape** (the concrete
    type carries `set_base_point`/`set_block_preconditioner` beyond the
    base `fuse::LinearizationToken` interface, rather than the factory
@@ -1381,3 +1387,173 @@ binary after its first case.
    `KNOWN_ISSUES.md` D32 closes, since it depends on a host whose
    `/opt/mpich` (or an alternative MPI) can complete `MPI_Init()` --
    outside this track's own scope to arrange.
+
+## 11. Per-region substrate selection (S7.2b, PetscSelect track, 2026-10-11)
+
+§10 built a SECOND implementation of the Newton seam; this track makes it
+*selectable*, per region, through the SAME `NewtonConfig` every graph already
+carries -- a `fuse::NewtonSubstrate` (`fuse/model/iteration.hpp`: `Native`,
+`Petsc`), mirrored in `fuse::num` (`fuse/num/newton_krylov.hpp`) for the
+identical layering reason `LineSearchKind`/`EisenstatWalkerChoice` are
+mirrored rather than shared between the two layers (§7's own paragraph on
+this). `NewtonConfig::substrate` defaults to `Native`, so every graph written
+before this field existed keeps running the library's own JFNK coupler
+unchanged.
+
+### 11.1 The registry
+
+`fuse::num` (`newton_krylov.hpp`/`.cpp`) owns a small substrate registry:
+
+```cpp
+using NewtonSolveFn = std::function<Result<NewtonResult>(
+    const ResidualFn&, DistVector&, const PreconditionerApplyFn&,
+    const RefreshPreconditionerFn&, const NewtonKrylovOptions&)>;
+void register_newton_substrate(NewtonSubstrate kind, NewtonSolveFn fn);
+const NewtonSolveFn* newton_substrate(NewtonSubstrate kind);
+```
+
+`NewtonSubstrate::Native` is registered **deterministically on first use** --
+a function-local `static` inside `newton_substrate_registry()`
+(`src/num/newton_krylov.cpp`), seeded with a trivial lambda adapting
+`fuse::num::solve()` itself -- never by a static initialiser in a `.cpp` that
+might not be linked into a given binary at all. `NewtonSubstrate::Petsc` is
+registered only when `fuse::petsc::install()` (`fuse/petsc/solve.hpp`) has
+run, which registers a lambda wrapping `fuse::petsc::solve()`. `install()` is
+never called by the library itself; a binary that wants the PETSc substrate
+reachable calls it once, before `Runner::initialize()`.
+
+**Why `fuse::num`, not `fuse::runtime`.** `tools/check-layering.py`'s own
+`petsc` layer sits ABOVE `runtime` (§10's own header comment: it depends on
+`runtime` for `LinearizationToken` and on `num` for `BlockJacobiPreconditioner`,
+and nothing depends on it) -- the Runner (`fuse::runtime`) therefore cannot
+name `fuse::petsc` at all, in any form, including a registration call. `num`
+sits BELOW `runtime`, so the Runner already depends on it (every
+`run_region_newton()`/`run_region_newton_window()` call); putting the registry
+there is what lets the Runner dispatch through a function pointer it never
+has to know the PETSc-ness of, while `fuse::petsc::install()` -- which DOES
+know about both `num` and its own substrate -- is the only thing that ever
+populates the `Petsc` entry.
+
+### 11.2 The runtime dispatch, and the eager refusal
+
+`src/runtime/iteration.cpp` translates `fuse::NewtonSubstrate` to
+`fuse::num::NewtonSubstrate` at one function, `to_num_newton_substrate()`
+(the same translation-function pattern `to_num_line_search_kind()`/
+`to_num_ew_choice()` already set), and looks up the registry through
+`resolve_newton_substrate(region_name, substrate)`, which refuses
+`E-NEWTON-PETSC-UNAVAILABLE`, naming the region, when the registry has
+nothing for the requested substrate.
+
+This lookup runs TWICE for every Newton-selected region: **eagerly**, inside
+`resolve_regions()` (called from `Runner::initialize()`), right after
+`check_region_supports_newton()` and before `R.newton = true` -- so a graph
+naming an unavailable substrate is refused before the first period, the same
+timing every other Newton-region refusal in this file already has; and
+**again**, defensively, inside `run_region_newton()`/
+`run_region_newton_window()` themselves, immediately before dispatching
+through the returned function pointer -- mirroring `check_region_supports_
+newton()`'s own "checked anyway, not trusted" posture (its own comment).
+Both `run_region_newton()` and `run_region_newton_window()` dispatch through
+the SAME lookup and the SAME `NewtonSolveFn` call shape; the window path's
+own D31 single-rank restriction is unaffected (it is enforced by
+`check_region_supports_newton()`, not by anything substrate-specific).
+
+### 11.3 The communicator: `fuse::petsc::install()`'s own decision
+
+`fuse::num::NewtonSolveFn`'s own signature carries no communicator
+parameter -- a deliberate choice, not an omission. The registered PETSc
+entry point (`fuse::petsc::install()`, `src/petsc/solve.cpp`) always builds
+its own `SnesOptions` with `comm_f = comm_self_f()` (`MPI_COMM_SELF`), never
+one threaded in from the Runner's own `RunnerConfig::base_communicator`.
+This is sound today because every Newton-selected region, on EITHER
+substrate, is already restricted by `check_region_supports_newton()` to a
+single cross-rank participant (§4's own "Scope" paragraph; `KNOWN_ISSUES.md`
+D31's own single-rank restriction for the window path) -- there is no
+cross-rank reduction for a Newton SOLVE to perform regardless of which rank
+of the base communicator happens to own the region, so `MPI_COMM_SELF` is
+the honest communicator for a problem this seam already guarantees is
+rank-local, not a scope-reducing shortcut. **Open for a future multi-rank
+lift** (tied to `KNOWN_ISSUES.md` D31's own `ParticipantSetReducer`): at that
+point there IS a real cross-rank reduction inside a PETSc solve, and
+`MPI_COMM_SELF` would be the wrong choice; `SnesOptions::comm_f` already
+exists for that future caller, unused by `install()`'s own registration
+today.
+
+### 11.4 The descriptor: `kGraphVersion` 12 -> 13
+
+`NewtonConfig::substrate` crosses the binary descriptor the same way every
+other `NewtonConfig` field does: one more byte (an enum: `Native` = 0,
+`Petsc` = 1), appended at the very END of the per-region v12 block (after
+`use_block_jacobi_preconditioner`), written and read UNCONDITIONALLY, the
+same append-only placement every version bump since v7 uses. The block's own
+trailing length grows from 161 to 162 bytes (including the two capability
+bytes); every earlier `NewtonConfig` field keeps its wire offset exactly.
+`deserialize()`'s own bound check refuses `E-DESC-ENUM` for a substrate byte
+past `NewtonSubstrate::Petsc` (ordinal 1), the same `REVIEW.md` R-04 pattern
+every other enum on this wire already follows. `test/golden/waist-v13.bin`
+is the new frozen fixture (`freeze_fixture()`'s own "newton" region now also
+pins `substrate = NewtonSubstrate::Petsc`, a non-default value, alongside
+every other `NewtonConfig` member it already pinned); `waist-v12.bin` moves
+to the superseded, refused list.
+
+### 11.5 YAML
+
+`newton_config.substrate: Native|Petsc` (the enumerator name verbatim, as every
+other enum key on this page; the examples' `--substrate native|petsc` flag is a
+separate, lowercase spelling). An unrecognised
+name is refused `E-YAML-PARSE`, the identical shape `line_search_kind`'s own
+unknown-name refusal already uses.
+
+### 11.6 dn_heat and the Brusselator by the PETSc path
+
+`examples/dn_heat/main.cpp` gained `--newton-petsc`: a SEPARATE code path
+(not one more row in the default table), run ONLY when that flag is passed,
+and compiled in at all only under `FUSE_HAVE_PETSC` -- so the default
+invocation's output (every existing ctest row) is byte-identical whether or
+not the binary was built with `FUSE_ENABLE_PETSC`. It calls
+`fuse::petsc::install()`, then runs the SAME affine graph the native
+`newton` row does (`beta = 0.0`) with `NewtonConfig::substrate = Petsc`,
+plus the nonlinear `newton-nl-petsc` row (`beta = 0.1`, informational, like
+`newton-nl`), and checks the PETSc result against the native one to a bound
+derived from both solvers' shared `rtol` and dn_heat's own affine Jacobian
+structure (the per-station 2x2 `{{1, r_i}, {-1, 1}}`, `fixed_point_residual_
+test.cpp`'s own derivation) plus the §10.3-measured 3.9e-8 relative
+inter-solver difference -- see that file's own comment for the full
+derivation. Registered as `example.dn_heat.newton_petsc`
+(`examples/CMakeLists.txt`), gated by `FUSE_ENABLE_PETSC`.
+
+`examples/brusselator/main.cpp` gained `--substrate native|petsc` (default
+`native`, read only under `--accel newton`) and an unconditional, idempotent
+`fuse::petsc::install()` call early in `main()` (guarded by
+`FUSE_HAVE_PETSC`, a no-op for every `--substrate native` invocation).
+`test/petsc/brusselator_newton_test.cpp` (NEW, its own dedicated binary --
+NOT one more `TEST()` in `test/verification/brusselator_runner_test.cpp`,
+since a PETSc call that segfaults in this sandbox, §11.7 below, takes
+the whole PROCESS down, which would otherwise take every other,
+PETSc-independent case sharing that binary down with it, the SAME reason
+every `petsc.*` test is already its own binary) gained
+`BrusselatorNewtonPetsc.ConvergesAgreeingWithNative`, comparing the
+PETSc-substrate run against the native one (the SAME Rig/graph shape
+`NewtonConvergesInAPinnedIterationCountWithTheBlockJacobiPreconditioner`
+uses, duplicated rather than shared per that file's own "near-duplicate"
+convention) to a derived bound, WITHOUT asserting the two take the same
+number of outer Newton iterations (SNES's own GMRES/line-search
+implementation is not required to follow the identical path, §10.3's own
+measured step-1 difference). Registered as `petsc.brusselator_newton`
+(`test/CMakeLists.txt`), gated by `FUSE_ENABLE_PETSC`.
+
+### 11.7 Measured on the host (2026-10-11)
+
+All `petsc.*` rows and both example rows pass in `build-all` (PETSc on, MPI on)
+and the serial suite is 191/191 there. `example.dn_heat.newton_petsc`: the PETSc
+row converges in four steps per period like the native one and agrees with Picard
+to 2.717e-10 K (native 6.321e-11 K), max final ‖F‖ 1.649e-10 (native 4.159e-11).
+`example.brusselator.newton_petsc` (five windows, `--check`) and the 50-window run:
+50/50 converge on both substrates, final means 0.668994004315 / 2.8189403867 on
+both, balance errors 1.14e-13 / 4.69e-12 (PETSc) against 1.16e-13 / 4.66e-12
+(native); first-window residual history identical to six digits, SNES taking one
+more outer iteration by its convergence-test placement. The forcing floor of
+§10.4(1) was required for the Brusselator and is proved load-bearing by mutation;
+dn_heat does not reach the regime. The tier-0 refusal
+`E-NEWTON-PETSC-UNAVAILABLE` fires without PETSc
+(`NewtonRegion.ARegionSelectingAnUnregisteredSubstrateIsRefusedAtSetup`).

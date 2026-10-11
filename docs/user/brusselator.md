@@ -298,6 +298,55 @@ product through a `fuse::linalg::Reducer`, but the reducer Newton's
 window seam constructs today is unconditionally the serial one -- a real
 cross-rank `ParticipantSetReducer` is `KNOWN_ISSUES.md` D31, open.
 
+## The PETSc substrate
+
+`--substrate petsc` (read only under `--accel newton`; default `native`)
+selects `NewtonConfig::substrate = NewtonSubstrate::Petsc`: the IDENTICAL
+window-Newton graph above, solved by PETSc's own `SNESNEWTONLS`
+(`fuse::petsc::solve()`) instead of the native JFNK coupler --
+[docs/dev/newton-krylov.md §10/§11](../dev/newton-krylov.md) has the full
+design. `main.cpp` calls `fuse::petsc::install()` unconditionally and
+early (a no-op for `--substrate native`, every existing invocation), so
+`--substrate petsc` resolves rather than refusing with
+`E-NEWTON-PETSC-UNAVAILABLE` whenever the binary was built with
+`FUSE_ENABLE_PETSC`; without it (the default tier-0 configuration), the
+SAME flag refuses with that code, caught by every driver branch's own
+existing `!r.ok()` check on `Runner::initialize()`.
+
+| Quantity | native | PETSc |
+|---|---:|---:|
+| Windows converged, `--end 1.0`, Jacobi, block-Jacobi preconditioner | 50/50 | 50/50 |
+| Outer Newton iterations, first window | 4 | 5 |
+| final_mean_u / final_mean_v | 0.668994004315 / 2.8189403867 | 0.668994004315 / 2.8189403867 |
+| max window balance error / global | 1.158e-13 / 4.663e-12 | 1.144e-13 / 4.692e-12 |
+| Agreement with native (derived bound, `petsc.brusselator_newton`) | — | passes |
+
+Measured on the development host (2026-10-11). The first window's residual
+history is the same on both substrates to six digits (1.25e+02 → 1.40e+01 →
+1.34e-01 → 1.16e-05 → ~1e-09); SNES takes one more outer iteration because its
+convergence test is applied after the step that the native solver already judges
+converged. The final means agree to every printed digit. One mechanism had to be
+added for this to hold: SNES's Eisenstat–Walker forcing has no floor, and without
+one the first window's last linear solve chases an accuracy the finite-difference
+Jacobian action cannot deliver and GMRES exhausts its budget
+(`DivergedLinearSolve after 3 Newton iterations`, the first host run); the PETSc
+substrate now applies `NewtonConfig::eta_min` through a KSP convergence test that
+raises the forcing term EW chose to the floor before GMRES judges its first
+residual (`docs/dev/newton-krylov.md` §10.3). The rows `example.brusselator.newton`
+and `example.brusselator.newton_petsc` run five windows with `--check` on each
+substrate, and the mutation that removes the floor fails exactly the PETSc row.
+`petsc.brusselator_newton` (its own binary, since a PETSc abort would otherwise
+take the shared verification binary's unrelated cases down with it) asserts the
+one-window agreement between the substrates.
+
+The communicator decision (`docs/dev/newton-krylov.md` §11.3): the PETSc
+substrate always solves on `MPI_COMM_SELF`, never the Runner's own
+`base_communicator`, because `check_region_supports_newton()` already
+restricts every Newton-selected region -- on EITHER substrate -- to a
+single cross-rank participant (the SAME D31 restriction the paragraph
+above names); there is no cross-rank reduction for a single-rank Newton
+solve to need regardless of substrate.
+
 ## `--check`
 
 Exits non-zero unless: every window converged; the final U and V fields are `>= -1e-12` everywhere;
@@ -321,8 +370,9 @@ Outputs `u.csv`, `v.csv` (final fields, `time,x,y,value`, the Toy's own format) 
 `--out`. `--save-history` additionally writes `windows.csv` (`t0,t1,mean_u,mean_v,iterations` per
 window). `--accel none|aitken|iqn-ils|newton` selects `fuse::WindowCouplerConfig::acceleration` (the Toy is
 unrelaxed Picard, its only option); `newton` is `--driver runner`-only (see "Newton acceleration"
-above). `--iteration-mode jacobi|gauss-seidel` and `--no-block-jacobi` (the per-species
-block-Jacobi preconditioner, default ON) apply under any `--accel` value. `--driver window|runner`
+above). `--iteration-mode jacobi|gauss-seidel`, `--no-block-jacobi` (the per-species
+block-Jacobi preconditioner, default ON) and `--substrate native|petsc` (see "The PETSc
+substrate" above) apply under any `--accel` value, read only when `newton` is selected. `--driver window|runner`
 selects `fuse::WindowCoupler` (default) or `fuse::Runner` directly — both pass `--check`
 identically for every `--accel` value `--driver window` supports (see "Measured results"). `--no-forcing`,
 `--tolerance`, `--max-iterations`, `--alpha` mirror the Toy's own flags of the same name.
