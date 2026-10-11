@@ -1020,7 +1020,7 @@ target_include_directories(fuse_verification_nodal_remap_runner_serial_test PRIV
 # registration just below.
 foreach(t fsi_stokes_mms fsi_beam fsi_coupled fsi_transient fsi_energy_diag)
   fuse_add_gtest(verification ${t} NO_LAYER_LIB
-                 LIBS fuse::runtime fuse::backend Eigen3::Eigen)
+                 LIBS fuse::runtime fuse::backend Eigen3::Eigen fuse::examples_common)
   target_include_directories(fuse_verification_${t}_test PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/fsi_channel)
 endforeach()
@@ -1033,10 +1033,18 @@ endforeach()
 # Eigen::SparseLU and FUSE_LINALG_BACKEND=eigen is the default backend.
 foreach(t gray_scott_mms gray_scott_multirate gray_scott_reference)
   fuse_add_gtest(verification ${t} NO_LAYER_LIB
-                 LIBS fuse::runtime fuse::backend Eigen3::Eigen)
+                 LIBS fuse::runtime fuse::backend Eigen3::Eigen fuse::examples_common)
   target_include_directories(fuse_verification_${t}_test PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/gray_scott)
 endforeach()
+
+# The sparse direct solver both of the above hold (examples/common/
+# sparse_solve_backend.hpp): the Eigen::SparseLU contract it forwards, checked
+# on the two matrix shapes the examples build, plus bitwise agreement with a
+# bare Eigen::SparseLU when FUSE_ENABLE_CUSPARSE is off -- the proof that the
+# flag-off build of the examples is unchanged by holding the wrapper.
+fuse_add_gtest(verification sparse_solve_backend NO_LAYER_LIB
+               LIBS fuse::base Eigen3::Eigen fuse::examples_common)
 
 # Brusselator (Time windows track, "a code FUSE has never met"): weights
 # (an independent, integer-arithmetic oracle reimplementing the Toy's own
