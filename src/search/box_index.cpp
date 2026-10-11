@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <utility>
 
 #include <fmt/format.h>
 
@@ -88,7 +89,7 @@ Result<BoxIndex> BoxIndex::build(std::vector<Box> boxes) {
   if (n == 0) {
     out.dimension_ = 0;
     out.impl_->tree = Tree();  // BoundingVolumeHierarchy's own "build an empty tree" default
-    return out;
+    return std::move(out);
   }
 
   const int dim0 = classify_dim(boxes[0]);
@@ -111,7 +112,7 @@ Result<BoxIndex> BoxIndex::build(std::vector<Box> boxes) {
   out.impl_->tree =
       Tree(out.impl_->space, ArborX::Experimental::attach_indices<int>(arbor_boxes));
   out.dimension_ = dim0;
-  return out;
+  return std::move(out);
 }
 
 int BoxIndex::dimension() const noexcept { return dimension_; }

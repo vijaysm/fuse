@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <utility>
 
 #include "fuse/base/error.hpp"
 
@@ -489,7 +490,7 @@ Result<std::unique_ptr<NativeMeshView>> NativeMeshView::create_from_host(
     view->measure_[c] = sum;
   }
 
-  return view;
+  return std::move(view);
 }
 
 void NativeMeshView::check(int dim, std::size_t i, const char* what) const {
