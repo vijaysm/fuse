@@ -37,6 +37,18 @@
 # `cmp` byte-identical.
 
 [[mutation]]
+id = "petsc-forcing-floor-not-applied"
+area = "petsc"
+describes = "The Eisenstat-Walker floor is never installed on the KSP: SNES's own forcing has no floor, so on the Brusselator window the forcing term tightens past the finite-difference Jacobian's accuracy and GMRES exhausts its budget -- the example's first window reports DivergedLinearSolve, exactly what the host run showed before the floor existed (2026-10-11)."
+file = "src/petsc/solve.cpp"
+old = "    if (opt.newton.forcing.eta_min > 0.0) {"
+new = "    if (false) {"
+target = "fuse_example_brusselator"
+test = "example.brusselator.newton_petsc"
+requires = "petsc"
+result = "Hand-proved 2026-10-11 on the host (build-all, PETSc on): under the mutation example.brusselator.newton_petsc FAILS in its first window ('DivergedLinearSolve after 3 Newton iterations') while example.brusselator.newton (native) still passes; clean tree both pass. File restored byte-identically."
+
+[[mutation]]
 id = "petsc-init-does-not-refuse-after-mpi-finalize"
 area = "petsc"
 describes = "ensure_initialized() drops the MPI_Finalized check: a process whose MPI has been finalised (the tier-0 init binary's second case, after the first released the MPI PETSc started) goes on to PetscInitialize and MPICH aborts the process -- which is exactly what the first host run of that case did before the refusal existed."
