@@ -3920,7 +3920,7 @@ instance's final Newton iterate AND iteration/GMRES count against the single-pro
 identical graph — the SAME cross-rank-agreement property `window_runner_mpi_test.cpp` already proves for
 Picard, now for Newton's own reductions specifically.
 
-### D32. The PETSc solver plugin is the deferred second substrate behind the S7 seam — DEFERRED 2026-10-11, by decision
+### D32. The PETSc solver plugin is the second substrate behind the S7 seam — BUILT AND MEASURED 2026-10-11; communicator and bound margin remain
 
 S7 was built on the library's own linear algebra first, by the user's decision of 2026-10-10: a
 native Jacobian-free Newton-Krylov coupler (`fuse::num::solve()`, `docs/dev/newton-krylov.md`)

@@ -74,6 +74,16 @@ block-Jacobi preconditioner composed from each member's `fuse::LinearizationToke
 [](convergence.md) (the Newton section), [](coupling-windows.md), [](field-pipeline.md), and the
 developer page `dev/newton-krylov.md`. **Verified** (tier 0; the window form on one rank only, D31).
 
+## `fuse::petsc` — the PETSc substrate (optional)
+
+Built only under `FUSE_ENABLE_PETSC`. `fuse::petsc::install()` registers PETSc's
+`SNESNEWTONLS` as a Newton substrate (`fuse::petsc::solve()`, `petsc/solve.hpp`), selected
+per region by `NewtonConfig::substrate = NewtonSubstrate::Petsc`; without it a region naming
+that substrate refuses `E-NEWTON-PETSC-UNAVAILABLE` at `Runner::initialize()`. `MffdToken`
+and `make_assembled_token` (`petsc/token.hpp`) are `fuse::LinearizationToken`s whose Jacobian
+action is `MATMFFD`/`MATAIJ` and whose preconditioner is a `PC`; no PETSc type appears in any
+public header (`docs/dev/newton-krylov.md` §10–11).
+
 ## `fuse::backend` — meshes and remap
 
 `fuse::MeshView`/`fuse::MeshBackend` is the one interface every mesh backend implements:
