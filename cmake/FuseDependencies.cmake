@@ -521,6 +521,57 @@ macro(fuse_resolve_dependencies)
     Kokkos::LIBDL Kokkos::THREADS Kokkos::SERIAL Kokkos::OPENMP
     Kokkos::HWLOC Kokkos::LIBRT Kokkos::LIBQUADMATH Kokkos::CUDA)
 
+  # A CUDA-enabled Kokkos needs every TU that can see a Kokkos header compiled
+  # by nvcc, which here means routing CMAKE_CXX_COMPILER (mpicxx) through
+  # Kokkos' own nvcc_wrapper via OMPI_CXX -- there is no CMake native CUDA
+  # language source in this project, only CXX. KokkosTargets.cmake's own
+  # -extended-lambda/-Wext-lambda-captures-this/-expt-relaxed-constexpr are
+  # gated behind $<COMPILE_LANGUAGE:CUDA>, which never matches a file CMake
+  # sees as CXX, so a device lambda (first hit: ArborX's sort/tree kernels)
+  # fails with "annotation on lambda requires --extended-lambda nvcc flag".
+  # Re-added here, only when Kokkos::CUDA exists, gated on CXX rather than
+  # CUDA (nothing here is ever seen as the CUDA language) -- a consumer of
+  # Kokkos::kokkoscore can be Fortran too (the Brusselator participants'
+  # v_loop.f90), and gfortran rejects these nvcc-only flags outright.
+  if(TARGET Kokkos::CUDA)
+    target_compile_options(Kokkos::kokkoscore INTERFACE
+      $<$<COMPILE_LANGUAGE:CXX>:-extended-lambda -Wext-lambda-captures-this -expt-relaxed-constexpr>)
+    # Same gap, same reason, for the GPU architecture itself: a project using
+    # CMake's native CUDA language gets -arch=sm_NN from CMAKE_CUDA_ARCHITECTURES
+    # (which KokkosConfigCommon.cmake's own Kokkos_CUDA_ARCHITECTURES, set from
+    # the Kokkos_ARCH_* this Kokkos was built with, is meant to seed) -- this
+    # project has no such language, so nothing ever reads that variable, and
+    # nvcc_wrapper falls back to nvcc's own default target. On a Pascal 6.1
+    # card that produced a binary with no kernel image AT ALL for this device
+    # (cudaErrorNoKernelImageForDevice at every kernel launch, not a slow
+    # fallback): nvcc's default target is a different compute capability than
+    # Kokkos itself was built for. Passed straight to nvcc here instead.
+    #
+    # Kokkos_CUDA_ARCHITECTURES itself was set by KokkosConfigCommon.cmake
+    # during fuse_require(Kokkos ...)'s own find_package() call above -- but
+    # fuse_require is a FUNCTION, so that `set()` landed in ITS scope and
+    # vanished when it returned (the same class of bug this file's own
+    # comment on Kokkos_VERSION/Kokkos_DIR describes; fuse_require only
+    # forwards those two PARENT_SCOPE, never this one). The DEFINED check
+    # below therefore always read false and this flag was never actually
+    # added -- confirmed via compile_commands.json showing no -arch= on any
+    # TU, and num.space_kernels' Kokkos::Cuda cases still failing with
+    # cudaErrorNoKernelImageForDevice after the first version of this fix.
+    # Re-running find_package HERE, directly inside this macro (a macro, not
+    # a function, so it shares the caller's variable scope), repopulates
+    # Kokkos_CUDA_ARCHITECTURES where this if() can actually see it.
+    find_package(Kokkos CONFIG QUIET)
+    if(DEFINED Kokkos_CUDA_ARCHITECTURES)
+      target_compile_options(Kokkos::kokkoscore INTERFACE
+        $<$<COMPILE_LANGUAGE:CXX>:-arch=sm_${Kokkos_CUDA_ARCHITECTURES}>)
+    else()
+      message(WARNING "fuse: Kokkos::CUDA exists but Kokkos_CUDA_ARCHITECTURES "
+                      "is still not defined after find_package(Kokkos); CUDA "
+                      "kernels will use nvcc's default target architecture, "
+                      "which may not match the GPU (cudaErrorNoKernelImageForDevice).")
+    endif()
+  endif()
+
   # This machine has a second Kokkos in /opt/homebrew/include, and any target that
   # puts a homebrew prefix on the command line ahead of Kokkos's own include dir
   # picks up ITS Kokkos_Core.hpp -- which declares an OpenMP backend the chosen
