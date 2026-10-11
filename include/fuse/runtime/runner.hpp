@@ -105,6 +105,20 @@ struct RunnerConfig {
   /// silent no-op, not an error, so `CopyTransport` and every existing
   /// `RunnerConfig{}` user is unaffected.
   std::function<Result<void>(Transport&)> transport_setup;
+
+  /// A5. Which Kokkos execution space `Runner::Impl::execute()` dispatches
+  /// its elementwise `OpKind`s (Interpolate/Remap/Sample/Accumulate/
+  /// Extrapolate/Merge/Scale/Relax/Residual) on. `Host` (the default) is
+  /// byte-for-byte what every caller got before this field existed --
+  /// `Device` is new, opt-in, and only meaningful when fuse was built
+  /// against a Kokkos with a real device backend (CUDA/HIP/SYCL) compiled
+  /// in; asking for it otherwise is a configuration error (see
+  /// `Runner::Impl::setup()`), not a silent fall back to `Host`. Everything
+  /// else `execute()` does (Transport/Epoch/Sink/Accelerate/Constrain/
+  /// window refusals) is unconditionally host-only and ignores this field
+  /// entirely -- see docs/dev/runner-device-dispatch.md.
+  enum class RunnerExecutionSpace { Host, Device };
+  RunnerExecutionSpace execution_space = RunnerExecutionSpace::Host;
 };
 
 struct RunStats {

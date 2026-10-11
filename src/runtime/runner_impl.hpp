@@ -633,13 +633,30 @@ struct Runner::Impl {
   /// DEFAULT HOST execution space -- OpenMP if the build enabled it, Serial
   /// otherwise (`Kokkos::DefaultHostExecutionSpace`'s own definition) --
   /// instead of the hand-rolled serial loops `execute()` used to call
-  /// directly. Not templated on `Impl` itself: a device build (A5) is out
-  /// of scope for this closing, and every `SpanOf`/`ConstSpanOf` this file
-  /// wraps assumes host-accessible memory -- component-owned arrays,
+  /// directly. Every `SpanOf`/`ConstSpanOf` this file wraps over a raw
+  /// pointer assumes host-accessible memory -- component-owned arrays,
   /// coupler storage, `RemapWeights` triplets -- which is exactly what this
   /// alias's `memory_space` (`Kokkos::HostSpace`) is, for every space it can
   /// resolve to.
   using HostExecSpace = Kokkos::DefaultHostExecutionSpace;
+
+  /// A5: the device counterpart, selected only when `config.execution_space
+  /// == RunnerConfig::RunnerExecutionSpace::Device` (see `execute_on<Space>`
+  /// in runner.cpp and docs/dev/runner-device-dispatch.md). Falls back to
+  /// `HostExecSpace` when fuse was built with no device backend at all --
+  /// `setup()` refuses `Device` in that case rather than silently running it
+  /// on host, so this fallback is never actually exercised with `Device`
+  /// selected, only used to keep the alias well-formed on every build.
+#if defined(KOKKOS_ENABLE_CUDA)
+  using DeviceExecSpace = Kokkos::Cuda;
+#elif defined(KOKKOS_ENABLE_HIP)
+  using DeviceExecSpace = Kokkos::HIP;
+#elif defined(KOKKOS_ENABLE_SYCL)
+  using DeviceExecSpace = Kokkos::SYCL;
+#else
+  using DeviceExecSpace = HostExecSpace;
+#endif
+  using DeviceMemSpace = typename DeviceExecSpace::memory_space;
 
   bool initialized = false;
 
