@@ -164,21 +164,23 @@ class SparseLuBackend {
     }
     cuda_check(cudaMemcpy(y.data(), d_x_, sizeof(double) * n_, cudaMemcpyDeviceToHost),
                "cudaMemcpy(solution)");
-    // One step of iterative refinement: r = Pb - B y on the host in double,
-    // dy = B^{-1} r on the device, y += dy. One host SpMV and one more device
-    // solve. This is not about accuracy -- the raw cusolverRf solve is already
-    // backward-stable to ~5e-16 on the Stokes saddle points, same as Eigen --
-    // it is about REPRODUCIBILITY. cusolverRfSolve is not bitwise
-    // deterministic: measured on 24,519 real fsi_transient solves, ~4% of
-    // identical-input repeats differed, up to 186 of 196 entries, by about
-    // kappa*eps ~ 1e-8 relative. A fixed-point coupling iteration converges
-    // through a deterministic rounding floor but stalls on one that jitters
-    // (fsi_transient's fluid_force criterion stuck at 2.3e-9 vs 1e-9; the
-    // energy-diag finite-difference budget at 1e-3 vs 1e-6). After
-    // refinement the jitter enters only through the correction solve, whose
-    // input is the ~1e-16 residual, so it is scaled down by ~16 orders of
-    // magnitude: repeated solves agree to working precision and every
-    // coupling test that failed without this step passes with it.
+    // One step of iterative refinement: r = Pb - B y on the host in extended
+    // precision, dy = B^{-1} r on the device, y += dy. One host SpMV and one
+    // more device solve. Why: the raw cusolverRf solve is backward-stable to
+    // ~5e-16 on the Stokes saddle points, same as Eigen, but its FORWARD
+    // error is a different kappa*eps-sized number than Eigen's (the two
+    // solutions differed by up to 1e-8 relative over 24,519 real
+    // fsi_transient solves, and an in-situ check saw ~4% of same-rhs repeats
+    // differ when other solves ran in between -- not reproduced in isolation,
+    // where back-to-back repeats were bitwise equal). A fixed-point coupling
+    // iteration converges through a deterministic rounding floor and stalls
+    // on one that moves (fsi_transient's fluid_force criterion stuck at
+    // 2.3e-9 vs 1e-9). Refinement with an extended-precision residual pins
+    // the answer to the exact solution rather than to either solver's
+    // rounding: on the real 196- and 900-unknown systems the result is within
+    // 3.7e-17 / 1.4e-16 of a long-double reference (Eigen double: 2.7e-14 /
+    // 3.4e-14), repeats agree to working precision with or without other
+    // solves interleaved, and fsi_transient passes with the flag on.
     {
       // The residual in extended precision (x86 long double: 64-bit mantissa).
       // Computed in double it would itself carry rounding of order eps*|B||y|
