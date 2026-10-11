@@ -381,7 +381,9 @@ int g_fixed_iterations = 0;
 // InAPinnedIterationCountWithTheBlockJacobiPreconditioner` (below) is
 // sensitive to the per-sample solve this function's own preconditioner
 // wiring calls.
-[[nodiscard]] RunResult run_via_runner_newton(bool use_block_jacobi_preconditioner) {
+[[nodiscard]] RunResult run_via_runner_newton(
+    bool use_block_jacobi_preconditioner,
+    fuse::NewtonSubstrate substrate = fuse::NewtonSubstrate::Native) {
   RunResult out;
   auto rig_r = make_rig(/*with_window_metadata=*/true);
   if (!rig_r.ok()) { out.error = rig_r.error().message; return out; }
@@ -401,6 +403,9 @@ int g_fixed_iterations = 0;
   fuse::NewtonConfig newton_cfg;
   newton_cfg.use_block_jacobi_preconditioner = use_block_jacobi_preconditioner;
   newton_cfg.eta_min = 1e-4;  // examples/brusselator/main.cpp's own choice; see that file's comment
+  // S7.2b (PetscSelect track): Native by every existing call site's own
+  // default argument -- this parameter changes nothing for them.
+  newton_cfg.substrate = substrate;
   const brusselator::WindowGraphHandles handles = brusselator::add_window_coupling(
       graph, u_region, dt_u, dt_v, window, kTol, kMaxIterations, AccelKind::Newton,
       WaveformIteration::Jacobi, /*coupler_ranks=*/std::nullopt,

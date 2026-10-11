@@ -35,6 +35,23 @@
 //              step -- see the dedicated NOTE at its own print_row call) and is
 //              deliberately left out of the "took fewer sweeps" ladder gate 6
 //              compares the Picard-family rows on.
+//   newton-petsc / newton-nl-petsc (S7.2b, PetscSelect track): the SAME two
+//              graphs as newton/newton-nl, solved by the PETSc SNESNEWTONLS
+//              substrate (fuse::petsc::solve(), docs/dev/newton-krylov.md
+//              §10) instead of the native one -- selected by
+//              NewtonConfig::substrate, never a code fork. Run ONLY when
+//              invoked with --newton-petsc, and only compiled in at all
+//              under FUSE_HAVE_PETSC: calling fuse::petsc::install() (this
+//              file's own main(), guarded the same way) is what makes the
+//              registry resolve NewtonSubstrate::Petsc at all; without it
+//              (or without FUSE_ENABLE_PETSC), a graph naming it refuses at
+//              initialize() with E-NEWTON-PETSC-UNAVAILABLE -- the refusal
+//              this track's own tier-0 test
+//              (NewtonRegion.ARegionSelectingAnUnregisteredSubstrateIs
+//              RefusedAtSetup) fires WITHOUT PETSc. The default invocation
+//              (no flags) never touches either row, so every existing
+//              row's output stays byte-identical whether or not this
+//              binary was built with FUSE_ENABLE_PETSC.
 //   newton-nl  dn::DirichletSlab::beta = 0.1 (a real nonlinearity in the wall's
 //              own conductivity, docs/dev/newton-krylov.md §8.3), still solved
 //              by Newton: informational, like iqn+qr2, reporting the FITTED
@@ -87,10 +104,22 @@
 
 #include <Kokkos_Core.hpp>
 
+#include <fuse/base/config.hpp>
 #include <fuse/ir/dump.hpp>
 #include <fuse/ir/lowering.hpp>
 #include <fuse/backend/serial_backend.hpp>
 #include <fuse/runtime/runner.hpp>
+
+// S7.2b (PetscSelect track): fuse/petsc/solve.hpp names no PETSc type
+// (fuse/petsc/token.hpp's own layering comment) and compiles in every
+// build -- but fuse::petsc::install() is defined only in
+// fuse-coupler-petsc, which exists only under FUSE_ENABLE_PETSC
+// (examples/CMakeLists.txt links it to this target conditionally),
+// so the include AND every call are both guarded by the SAME macro to
+// keep a tier-0-without-PETSc link clean.
+#if FUSE_HAVE_PETSC
+#include <fuse/petsc/solve.hpp>
+#endif
 
 #include "dn_component.hpp"
 
@@ -559,8 +588,119 @@ int main(int argc, char** argv) {
   Kokkos::ScopeGuard kokkos_guard(argc, argv);
 
   bool dump = false;
+  bool newton_petsc_only = false;
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--dump") == 0) dump = true;
+    if (std::strcmp(argv[i], "--newton-petsc") == 0) newton_petsc_only = true;
+  }
+
+  // S7.2b (PetscSelect track): a SEPARATE code path, run to completion and
+  // returned from here, rather than one more row folded into the table
+  // below -- so the default invocation (every existing ctest row) never
+  // changes shape, compiled in or not, and this binary still LINKS clean
+  // in a build without FUSE_ENABLE_PETSC (the flag is simply refused at
+  // runtime there, never reaching undefined fuse::petsc symbols).
+  if (newton_petsc_only) {
+#if FUSE_HAVE_PETSC
+    fuse::petsc::install();
+
+    // The SAME graph, SAME options as the native "newton" row (this
+    // file's own run_case(NewtonConfig, ...) overload, beta = 0.0, the
+    // affine map) -- only NewtonConfig::substrate differs.
+    const fuse::NewtonConfig newton_cfg{};
+    const Outcome newton_native = run_case(
+        newton_cfg, kMaxIterations, kPeriods, dn::Wiring::Connected, true);
+    if (!newton_native.ok) {
+      std::fprintf(stderr, "FAIL: native newton (comparison baseline) did "
+                           "not run: %s\n", newton_native.error.c_str());
+      return 1;
+    }
+
+    fuse::NewtonConfig newton_petsc_cfg{};
+    newton_petsc_cfg.substrate = fuse::NewtonSubstrate::Petsc;
+    const Outcome newton_petsc = run_case(
+        newton_petsc_cfg, kMaxIterations, kPeriods, dn::Wiring::Connected, true);
+    if (!newton_petsc.ok) {
+      std::fprintf(stderr, "FAIL: newton-petsc did not run: %s\n",
+                   newton_petsc.error.c_str());
+      return 1;
+    }
+
+    fuse::NewtonConfig newton_nl_petsc_cfg{};
+    newton_nl_petsc_cfg.substrate = fuse::NewtonSubstrate::Petsc;
+    newton_nl_petsc_cfg.rtol = 1.0e-4;  // mirrors newton_nl_cfg above exactly
+    const Outcome newton_nl_petsc = run_case(
+        newton_nl_petsc_cfg, kMaxIterations, kPeriods, dn::Wiring::Connected,
+        false, /*dirichlet_beta=*/0.1);
+
+    print_row("newton", newton_native);
+    print_row("newton-petsc", newton_petsc);
+    if (newton_nl_petsc.ok) {
+      std::printf("  %-9s informational row, beta=0.1, rtol=1e-4 (see "
+                  "newton-nl's own row for the native comparison)\n",
+                  "newton-nl-petsc");
+    } else {
+      std::printf("NOTE: the informational newton-nl-petsc row did not "
+                  "complete: %s\n", newton_nl_petsc.error.c_str());
+    }
+
+    // The agreement bound: DERIVED, not chosen, from quantities this
+    // track actually has -- it is NOT re-measured on dn_heat here (the
+    // 3.9e-8 relative step-1 difference, docs/dev/newton-krylov.md
+    // §10.3, was measured on a synthetic quadratic/atan problem with a
+    // SciPy-free host, not dn_heat's own affine map), composed with
+    // dn_heat's own problem structure, which fixed_point_residual_test.
+    // cpp's own header comment proves exactly: F is affine with a
+    // per-station 2x2 Jacobian {{1, r_i}, {-1, 1}}, r_i in [0.5, 0.96]
+    // (dn_heat's own four conductivity strips). For an affine F = Jx + c,
+    // ||x - x*|| <= ||J^-1|| ||F(x)||; J^-1 = 1/(1+r) [[1, -r], [1, 1]],
+    // whose max-row-sum (infinity) norm is max(1, 2/(1+r)) <= 2/1.5 =
+    // 1.333 over r in [0.5, 0.96] -- rounded UP to 1.5 for a safety
+    // margin this derivation does not need numerically but keeps
+    // explicit. Both solvers converge to the SAME NewtonConfig::rtol
+    // (SNES's and the native solver's own default, 1e-8) on the
+    // IDENTICAL ||F_0|| (same graph, same seed), so each one's own final
+    // ||F|| is bounded by rtol * ||F_0||; by the triangle inequality the
+    // two solvers' own converged iterates can differ by at most
+    // 1.5 * (rtol * ||F_0||_native + rtol * ||F_0||_petsc) = 1.5 * 2 *
+    // rtol * ||F_0||.
+    //
+    // ||F_0|| ITSELF is not in Outcome (this track's own addition keeps
+    // Outcome's own shape unchanged, per the near-duplicate-overload
+    // convention this file already follows) -- `last_residuals.front()`
+    // is the closest available PROXY, but it is already the residual
+    // AFTER the first Newton step, which §8.2's own measurement shows
+    // can be 1-2 orders of magnitude SMALLER than ||F_0|| (765.78 ->
+    // 68.77 on that section's own affine case) -- using it unscaled
+    // would UNDERESTIMATE the bound, the wrong direction for a
+    // robustness-over-efficiency gate. A fixed 20x safety factor on
+    // this term (beyond the already-conservative 1.5x Jacobian-inverse
+    // bound) covers that gap without re-deriving ||F_0|| from the
+    // problem's own closed form here; tightening it to the TRUE ||F_0||
+    // (threading `nr.initial_residual_norm` through Outcome) is this
+    // check's own open question for the lead, not done here to keep
+    // Outcome's shape untouched by a one-off comparison.
+    //
+    // The measured 3.9e-8 relative inter-solver difference (§10.3) is
+    // added as a SEPARATE term, scaled by the native solution's own
+    // norm, to cover the two GMRES implementations' differing Arnoldi
+    // arithmetic along the way.
+    const double bound =
+        20.0 * 1.5 * 2.0 * newton_cfg.rtol * newton_native.last_residuals.front() +
+        3.9e-8 * dn::l2_norm(newton_native.u_final);
+    const double d = disagreement(newton_native, newton_petsc);
+    check(d <= bound,
+          "newton-petsc agrees with native newton to the derived bound ("
+          "disagreement " + std::to_string(d) + " K, bound " +
+          std::to_string(bound) + " K)");
+    check(newton_petsc.not_converged == 0, "newton-petsc converges every period");
+
+    return g_failures == 0 ? 0 : 1;
+#else
+    std::fprintf(stderr, "FAIL: --newton-petsc requires a build configured "
+                         "with -DFUSE_ENABLE_PETSC=ON\n");
+    return 1;
+#endif
   }
 
   const fuse::AccelConfig picard_cfg{.kind = fuse::AccelKind::None};

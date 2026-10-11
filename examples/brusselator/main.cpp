@@ -27,10 +27,20 @@
 
 #include <fuse/backend/native_backend.hpp>
 #include <fuse/backend/remap_plan.hpp>
+#include <fuse/base/config.hpp>
 #include <fuse/ir/lowering.hpp>
 #include <fuse/model/coupling_graph.hpp>
 #include <fuse/runtime/runner.hpp>
 #include <fuse/runtime/window_coupler.hpp>
+
+// S7.2b (PetscSelect track): see examples/dn_heat/main.cpp's own identical
+// comment on this pair -- fuse/petsc/solve.hpp names no PETSc type and
+// compiles either way, but fuse::petsc::install() is defined only in
+// fuse-coupler-petsc (FUSE_ENABLE_PETSC), so both the include and every
+// call are guarded by the same macro.
+#if FUSE_HAVE_PETSC
+#include <fuse/petsc/solve.hpp>
+#endif
 
 #include "brusselator_graph.hpp"
 #include "brusselator_physics.hpp"
@@ -82,6 +92,16 @@ struct Args {
   /// `--no-block-jacobi` reproduces the plain, unpreconditioned solve
   /// for comparison.
   bool block_jacobi = true;
+  /// S7.2b (PetscSelect track): "native" (default, unchanged -- every
+  /// existing invocation of this binary keeps running the library's own
+  /// JFNK coupler) or "petsc" (`NewtonConfig::substrate`, read only
+  /// when `--accel newton` is also selected -- the auto-trigger that
+  /// sets `requires_residual_capability` does not depend on this field
+  /// at all, so an invalid combination such as `--substrate petsc
+  /// --accel aitken` simply leaves the substrate choice unread, the
+  /// same "declared but unused until Newton is selected" convention
+  /// `NewtonConfig` itself already documents).
+  std::string substrate = "native";
 };
 
 [[nodiscard]] Args parse_args(int argc, char** argv) {
@@ -110,6 +130,7 @@ struct Args {
     else if (arg == "--driver") a.driver = next(i);
     else if (arg == "--iteration-mode") a.iteration_mode = next(i);
     else if (arg == "--no-block-jacobi") a.block_jacobi = false;
+    else if (arg == "--substrate") a.substrate = next(i);
     else if (arg == "--help") {
       std::cout << "Couple independent U/V native-mesh solvers with FUSE's conservative "
                    "supermesh remap and fuse::WindowCoupler.\n"
@@ -120,7 +141,9 @@ struct Args {
                    "--driver window|runner (default window; runner requires every "
                    "window the same length)\n"
                    "--iteration-mode jacobi|gauss-seidel (default jacobi)\n"
-                   "--no-block-jacobi (--accel newton's own default is ON)\n";
+                   "--no-block-jacobi (--accel newton's own default is ON)\n"
+                   "--substrate native|petsc (--accel newton only; default native; "
+                   "petsc needs a build configured with -DFUSE_ENABLE_PETSC=ON)\n";
       std::exit(0);
     } else {
       std::fprintf(stderr, "FAIL: unknown argument '%s'\n", arg.c_str());
@@ -151,6 +174,15 @@ struct Args {
     return fuse::WaveformIteration::GaussSeidel;
   }
   return fuse::WaveformIteration::Jacobi;
+}
+
+/// S7.2b (PetscSelect track): the `--substrate` flag's own parser, same
+/// "unrecognised value falls back to the default" convention as
+/// `parse_accel()`/`parse_iteration_mode()` above -- anything other
+/// than exactly "petsc" is `NewtonSubstrate::Native`.
+[[nodiscard]] fuse::NewtonSubstrate parse_substrate(const std::string& s) {
+  if (s == "petsc") return fuse::NewtonSubstrate::Petsc;
+  return fuse::NewtonSubstrate::Native;
 }
 
 /// Decimal -> exact Rational at a fixed denominator, exactly the
@@ -222,6 +254,17 @@ int main(int argc, char** argv) {
   // `Kokkos::ScopeGuard` at the same place this one has always had it.
   // Same pattern as test/support/fuse_test_main.cpp's.
   Kokkos::ScopeGuard kokkos_guard(argc, argv);
+
+  // S7.2b (PetscSelect track): registers NewtonSubstrate::Petsc against
+  // fuse::petsc::solve() -- a no-op for every `--substrate native`
+  // invocation (every existing ctest row), and what makes `--substrate
+  // petsc --accel newton` resolve instead of refusing with
+  // E-NEWTON-PETSC-UNAVAILABLE. Guarded by FUSE_HAVE_PETSC the same way
+  // dn_heat/main.cpp's own identical call is -- the symbol does not
+  // exist to link against otherwise.
+#if FUSE_HAVE_PETSC
+  fuse::petsc::install();
+#endif
 
   fuse::native::NativeMeshBackend backend(/*rank=*/0, /*num_ranks=*/1);
   auto u_grid_r = brusselator::NativeGrid::make(backend, "u", args.nx_u, args.ny_u);
@@ -297,6 +340,14 @@ int main(int argc, char** argv) {
   // as 2-6 iterations per step once the trajectory settles into its
   // oscillatory regime, `--end 1.0` measurement, 50/50 windows).
   newton_cfg.eta_min = 1e-4;
+  // S7.2b (PetscSelect track): read only when --accel newton is also
+  // selected (NewtonConfig's own "declared but unused until Newton is
+  // selected" convention) -- a region naming NewtonSubstrate::Petsc with
+  // nothing registered for it (no FUSE_ENABLE_PETSC, or this process
+  // never called fuse::petsc::install()) refuses at Runner::initialize()
+  // with E-NEWTON-PETSC-UNAVAILABLE, caught by the `!r.ok()` checks every
+  // driver branch below already has for every OTHER initialize() failure.
+  newton_cfg.substrate = parse_substrate(args.substrate);
   [[maybe_unused]] const brusselator::WindowGraphHandles window_graph =
       brusselator::add_window_coupling(graph, u_region, to_rational(args.dt_u),
                                        to_rational(args.dt_v), window, args.tolerance,

@@ -285,10 +285,24 @@ if(FUSE_ENABLE_PETSC)
   fuse_add_gtest(petsc token LIBS fuse::linalg)
   fuse_add_gtest(petsc derivative_gate LIBS fuse::linalg)
   fuse_add_gtest(petsc snes LIBS fuse::linalg)
+  # S7.2b (PetscSelect track): the Brusselator's own window-Newton region,
+  # solved by this substrate -- its own DEDICATED binary, not one more
+  # TEST() in test/verification/brusselator_runner_test.cpp, for the
+  # reason brusselator_newton_test.cpp's own header comment measures
+  # directly: a PETSc call that segfaults (this sandbox, KNOWN_ISSUES.md
+  # D32) takes the WHOLE PROCESS down, and sharing a process with
+  # otherwise-PETSc-independent coverage would take that coverage's own
+  # ctest row down with it. Needs the same LIBS brusselator_runner (just
+  # above) does, plus fuse::petsc.
+  fuse_add_gtest(petsc brusselator_newton NO_LAYER_LIB
+                 LIBS fuse::runtime fuse::backend fuse::model fuse::linalg
+                      fuse::petsc Eigen3::Eigen Kokkos::kokkos)
+  target_include_directories(fuse_petsc_brusselator_newton_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/brusselator)
 else()
   fuse_tests_gated_by(FUSE_ENABLE_PETSC
     petsc/init_test.cpp petsc/token_test.cpp petsc/derivative_gate_test.cpp
-    petsc/snes_test.cpp)
+    petsc/snes_test.cpp petsc/brusselator_newton_test.cpp)
 endif()
 
 # ---------------------------------------------------------------- field
@@ -901,6 +915,7 @@ foreach(t brusselator_weights brusselator_physics brusselator_runner brusselator
   target_include_directories(fuse_verification_${t}_test PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/brusselator)
 endforeach()
+
 # S6 phase 3 ("LowFive" track), Unit 3: brusselator_graph_tool.cpp's own
 # --transport lowfive wiring, reproduced directly against validate() --
 # see the test file's own header comment for why this is not redundant

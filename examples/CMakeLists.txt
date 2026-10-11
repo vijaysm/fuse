@@ -17,6 +17,17 @@ target_include_directories(fuse_example_mms_pair PRIVATE mms_pair)
 add_executable(fuse_example_dn_heat dn_heat/main.cpp)
 target_link_libraries(fuse_example_dn_heat PRIVATE fuse::runtime fuse::backend)
 target_include_directories(fuse_example_dn_heat PRIVATE dn_heat)
+# S7.2b (PetscSelect track): dn_heat/main.cpp's own --newton-petsc path
+# (guarded by #if FUSE_HAVE_PETSC, fuse/base/config.hpp) calls
+# fuse::petsc::install(), which is defined only in fuse-coupler-petsc.
+# Linking it unconditionally would be fine too (the symbol is simply
+# unused in a build without FUSE_ENABLE_PETSC), but the target does not
+# EXIST at all in that configuration (src/CMakeLists.txt's own
+# `if(FUSE_ENABLE_PETSC)` guard around `add_library(fuse-coupler-petsc
+# ...)`), so this link must be conditional too.
+if(FUSE_ENABLE_PETSC)
+  target_link_libraries(fuse_example_dn_heat PRIVATE fuse::petsc)
+endif()
 
 if(FUSE_ENABLE_TESTS)
   # Gated on the PHYSICS, not on "did not crash". mms_pair exits non-zero when
@@ -39,6 +50,18 @@ if(FUSE_ENABLE_TESTS)
     PASS_REGULAR_EXPRESSION "=== IR ===.*=== PLAN ===")
   set_tests_properties(example.mms_pair example.dn_heat
     example.mms_pair.dump example.dn_heat.dump PROPERTIES LABELS "example")
+
+  # S7.2b (PetscSelect track): the PETSc-substrate rows, gated the same
+  # way every other PETSc-dependent ctest row in this tree is -- the
+  # target does not exist, and --newton-petsc refuses at runtime with a
+  # clear message, in a build without FUSE_ENABLE_PETSC (dn_heat/main.
+  # cpp's own #if FUSE_HAVE_PETSC guard), so registering this row
+  # unconditionally would register a row that always fails there.
+  if(FUSE_ENABLE_PETSC)
+    add_test(NAME example.dn_heat.newton_petsc
+             COMMAND fuse_example_dn_heat --newton-petsc)
+    set_tests_properties(example.dn_heat.newton_petsc PROPERTIES LABELS "example;petsc")
+  endif()
 
   # Thread-count determinism of the two physics examples, bit for bit: each is
   # run at one OpenMP thread and at every core and the two outputs compared
@@ -125,6 +148,13 @@ add_executable(fuse_example_brusselator
 target_link_libraries(fuse_example_brusselator PRIVATE
   fuse::runtime fuse::backend Eigen3::Eigen Kokkos::kokkos)
 target_include_directories(fuse_example_brusselator PRIVATE brusselator)
+# S7.2b (PetscSelect track): main.cpp's own unconditional (guarded by #if
+# FUSE_HAVE_PETSC) fuse::petsc::install() call -- same reasoning as
+# fuse_example_dn_heat's own identical conditional link, just above in
+# this file.
+if(FUSE_ENABLE_PETSC)
+  target_link_libraries(fuse_example_brusselator PRIVATE fuse::petsc)
+endif()
 
 if(FUSE_ENABLE_TESTS)
   # Gated on the physics, same convention as the examples above: --check
@@ -153,6 +183,23 @@ if(FUSE_ENABLE_TESTS)
   add_test(NAME example.brusselator.runner
            COMMAND fuse_example_brusselator --driver runner --end 0.5 --check)
   set_tests_properties(example.brusselator.runner PROPERTIES LABELS "example")
+
+  # The coupling window by Newton on BOTH substrates, through the example
+  # itself rather than the one-window test rig (test/petsc/brusselator_
+  # newton_test.cpp): the Eisenstat-Walker floor the window needs
+  # (docs/dev/newton-krylov.md Sec. 9.9.2, 10.3) shows only on the
+  # example's own first window -- the rig's window passed without it on
+  # the host, the example's first window reported DivergedLinearSolve
+  # (2026-10-11). Five windows, --check on.
+  add_test(NAME example.brusselator.newton
+           COMMAND fuse_example_brusselator --driver runner --accel newton --end 0.1 --check)
+  set_tests_properties(example.brusselator.newton PROPERTIES LABELS "example")
+  if(FUSE_ENABLE_PETSC)
+    add_test(NAME example.brusselator.newton_petsc
+             COMMAND fuse_example_brusselator --driver runner --accel newton --substrate petsc
+                     --end 0.1 --check)
+    set_tests_properties(example.brusselator.newton_petsc PROPERTIES LABELS "example;petsc")
+  endif()
 
   # Thread-count determinism of the Kokkos reaction kernel, bit for bit --
   # the same convention mms_pair/dn_heat use (tools/compare-runs.cmake),

@@ -146,6 +146,19 @@ def main() -> int:
     # those, and they are assessed on a host with a working launcher.
     mpi_available = os.environ.get("FUSE_MUTATE_MPI", "") == "1"
 
+    # The SAME courtesy, for `requires = "petsc"`: the PetscToken/PetscSelect
+    # tracks' own test binaries (test/petsc/*_test.cpp) call
+    # fuse::petsc::ensure_initialized(), which calls PETSc's own
+    # PetscInitialize() -- and PetscInitialize() calls MPI_Init() when MPI is
+    # not already up (fuse/petsc/token.hpp's own ensure_initialized() comment).
+    # A sandbox that cannot complete a bare MPI_Init() at all (KNOWN_ISSUES.md
+    # D32's own finding, independent of PETSc) therefore cannot run ANY
+    # petsc.* test, in ANY build configuration -- unlike `mpi`/`no-mpi`, this
+    # is not a question of whether FUSE_ENABLE_MPI was turned on, so it is
+    # gated the same way "mpi" is (an explicit env var a host with a working
+    # MPI runtime sets), not by inspecting FUSE_ENABLE_PETSC in the cache.
+    petsc_available = os.environ.get("FUSE_MUTATE_PETSC", "") == "1"
+
     # The SAME argument, one step further: a test that is ALREADY FAILING on
     # the unmutated tree also exits non-zero whether or not the mutation had
     # any effect. Reporting that as KILLED is a false kill, and the gate did
@@ -176,6 +189,14 @@ def main() -> int:
                             "MPI build, which exits 0 either way; assess it against a "
                             "build configured with -DFUSE_ENABLE_MPI=OFF"))
             print(f"NOT-ASSESSED  {m['id']}  (needs a build with NO MPI)")
+            continue
+        if m.get("requires") == "petsc" and not petsc_available:
+            results.append((m, "NOT-ASSESSED",
+                            "needs a PETSc-enabled build whose MPI_Init() actually "
+                            "completes (ensure_initialized() calls PetscInitialize(), "
+                            "which calls MPI_Init()); run with FUSE_MUTATE_PETSC=1 on "
+                            "a host that has one"))
+            print(f"NOT-ASSESSED  {m['id']}  (needs PETSc)")
             continue
         if not baseline_ok(m["target"], m["test"]):
             results.append((m, "NO-BASELINE",
