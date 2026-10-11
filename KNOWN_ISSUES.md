@@ -3940,9 +3940,12 @@ tier 3, requires `FUSE_ENABLE_MOAB`) that locates PETSc through `pkg-config` and
 `include/` tests that macro, and no target links the imported library. Three PETSc installations are on the
 development host, none of them matching this build: `/opt/petsc/chi-tech` (3.19, 64-bit indices,
 HYPRE), `/opt/petsc/download-moab` (3.25, debug, MOAB, built against `/opt/mpich`), and
-`/opt/petsc/debug-bare` (3.17, debug). Which to build against — or whether to build a fresh
-PETSc with Kokkos, 64-bit indices and the host's MPICH — is the owner's decision; the plugin
-should not pick one by accident of what `find_package` sees first.
+`/opt/petsc/debug-bare` (3.17, debug). **Decided 2026-10-11 by the owner: `/opt/petsc/download-moab`,
+for PETSc AND MOAB** (the `all` preset's `MOAB_DIR` moved there from `/opt/moab/cmake-all`); the other
+installs are old. Its MOAB has no TempestRemap, so the high-order spherical remap method refuses at run
+time; measured that the registered row set is unchanged (299 rows either way, the only name differences
+the OpenMP thread-count suffix). No Kokkos and 32-bit indices in that PETSc are accepted for now; a
+Kokkos-enabled PETSc is a later rebuild on the owner's side, not a plugin concern.
 
 **What a plugin track owes when it is opened.** The derivative gate (`linalg.derivative_gate`,
 `docs/dev/derivative-gate.md`) on the PETSc-backed token: the adjoint identity on
