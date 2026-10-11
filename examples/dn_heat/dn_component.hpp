@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -199,16 +201,65 @@ enum class Wiring { Connected, Severed };
 
 /// Slab 1: the Dirichlet solver. Requires the interface temperature, provides
 /// the interface heat flux.
-class DirichletSlab final : public fuse::Component {
+/// S7.2 (the native Jacobian-free Newton-Krylov coupler): implementing
+/// `fuse::ImplicitComponent` is what lets a region naming this component
+/// select `AccelKind::Newton` at all -- `fuse::verify_newton_capability_
+/// support()` (S7.1) refuses a Newton-selected region with
+/// E-NEWTON-CAPABILITY otherwise. `evaluate_residual()` below is the SAME
+/// formula `advance()` computes into `q_[i]`, with every mutation
+/// (`++advance_count`, `history_ += 1.0`, `time_ = t`) removed: the two
+/// must compute the identical VALUE (this is the affine map's own
+/// defining equation), but `evaluate_residual()`'s own contract
+/// (component.hpp) forbids mutating anything `save_state()` would need to
+/// capture, which `advance()` -- an ordinary, checkpointed `Component`
+/// method -- is free to do.
+///
+/// NOT CURRENTLY CALLED by this track's own Newton runtime wiring
+/// (`Runner::Impl::evaluate_region_residual()`, src/runtime/
+/// fixed_point_residual.cpp): that function computes the region's F(x) =
+/// x - G(x) by calling the SAME `advance()` + checkpoint/restore bracket
+/// a Picard sweep uses, so Newton and Picard provably converge to the
+/// identical fixed point. This override exists to satisfy the capability
+/// gate HONESTLY (the formula really is pure and really could be
+/// evaluated this way) rather than to flip `kCapabilityResidual` on
+/// without the interface behind it meaning anything -- recorded as an
+/// open question in this track's own report: whether a later step should
+/// have `evaluate_region_residual()` prefer this cheaper, no-checkpoint
+/// path when a component offers it.
+class DirichletSlab final : public fuse::Component,
+                            public fuse::ImplicitComponent {
  public:
-  DirichletSlab(std::string name, std::size_t n, Wiring wiring)
+  /// `beta`/`t_ref` (S7.2): the nonlinear variant this track's own brief
+  /// asks for, a slab-1 conductivity that depends on the WALL temperature
+  /// being solved for -- `k1_eff(i, T) = k1_at(i, n) * (1 + beta * (T -
+  /// t_ref) / t_ref)`, T the local `u_in_[i]`. `beta = 0.0` (the default,
+  /// every existing call site's own value) makes `k1_eff` reduce to
+  /// `k1_at(i, n) * 1.0` EXACTLY -- IEEE 754 `x * 1.0 == x` -- so every
+  /// existing mode (Picard/Aitken/IQN-ILS/IQN+QR2/severed) stays bit-
+  /// identical to today; measured directly, see
+  /// `Dn.NonlinearAtBetaZeroIsBitIdenticalToTheAffineMap`
+  /// (test/runtime/newton_region_test.cpp).
+  DirichletSlab(std::string name, std::size_t n, Wiring wiring,
+               double beta = 0.0, double t_ref = 300.0)
       : name_(std::move(name)),
         wiring_(wiring),
         n_(n),
+        beta_(beta),
+        t_ref_(t_ref),
         q_(n, 0.0),
         u_in_(n, 0.0),
         decoy_(n, 0.0),
         saved_q_(n, 0.0) {}
+
+  /// The nonlinear conductivity. A pure function of (i, T) only -- no
+  /// hidden state -- so `advance()` and `evaluate_residual()` can both
+  /// call it and get the identical answer at the identical point, which
+  /// is the whole reason `evaluate_residual()` is allowed to duplicate
+  /// `advance()`'s formula instead of calling it (this class's own top
+  /// comment).
+  [[nodiscard]] double k1_eff(std::size_t i, double T) const {
+    return k1_at(i, n_) * (1.0 + beta_ * (T - t_ref_) / t_ref_);
+  }
 
   [[nodiscard]] std::string name() const override { return name_; }
 
@@ -245,7 +296,7 @@ class DirichletSlab final : public fuse::Component {
     const double t = ctx.t_end.to_double();
     const double T1 = T_outer_1(t);
     for (std::size_t i = 0; i < n_; ++i) {
-      q_[i] = k1_at(i, n_) * (T1 - u_in_[i]) / kL1;
+      q_[i] = k1_eff(i, u_in_[i]) * (T1 - u_in_[i]) / kL1;
     }
     time_ = t;
     return fuse::Result<void>::success();
@@ -277,8 +328,30 @@ class DirichletSlab final : public fuse::Component {
   /// rollback verification cannot see; save_state() is what carries it.
   [[nodiscard]] std::uint64_t capabilities() const override {
     return fuse::make_capabilities(/*rollback=*/true, fuse::DeterminismLevel::Bitwise,
-                                   /*hidden_state=*/true);
+                                   /*hidden_state=*/true) |
+           fuse::kCapabilityResidual;
   }
+
+  /// `fuse::ImplicitComponent::evaluate_residual()`. See the class's own
+  /// top comment for why this duplicates advance()'s formula rather than
+  /// being called by it, and for the scope of what this override is for.
+  fuse::Result<void> evaluate_residual(const fuse::StepContext& ctx,
+                                       std::span<const double> interface_in,
+                                       std::span<double> residual_out) override {
+    if (interface_in.size() != n_ || residual_out.size() != n_) {
+      return fuse::Failure{"E-EX-COMP",
+                          "DirichletSlab::evaluate_residual: expected " +
+                              std::to_string(n_) + " in/out, got " +
+                              std::to_string(interface_in.size()) + "/" +
+                              std::to_string(residual_out.size())};
+    }
+    const double T1 = T_outer_1(ctx.t_end.to_double());
+    for (std::size_t i = 0; i < n_; ++i) {
+      residual_out[i] = k1_eff(i, interface_in[i]) * (T1 - interface_in[i]) / kL1;
+    }
+    return fuse::Result<void>::success();
+  }
+  [[nodiscard]] fuse::ImplicitComponent* implicit() override { return this; }
 
   [[nodiscard]] const std::vector<double>& q() const { return q_; }
   [[nodiscard]] const std::vector<double>& u_in() const { return u_in_; }
@@ -302,6 +375,8 @@ class DirichletSlab final : public fuse::Component {
   std::string         name_;
   Wiring              wiring_;
   std::size_t         n_;
+  double              beta_ = 0.0;    // k1_eff's own nonlinearity strength
+  double              t_ref_ = 300.0; // k1_eff's own reference temperature [K]
   std::vector<double> q_;      // Provides: interface flux [W/m^2]
   std::vector<double> u_in_;   // Requires: interface temperature [K]
   std::vector<double> decoy_;  // where a severed input lands
@@ -314,9 +389,23 @@ class DirichletSlab final : public fuse::Component {
 
 /// Slab 2: the Neumann solver. Requires the interface heat flux, provides the
 /// interface temperature.
-class NeumannSlab final : public fuse::Component {
+///
+/// S7.2: implements `fuse::ImplicitComponent` for the SAME reason and in
+/// the SAME scope as `DirichletSlab`'s own top comment states -- this
+/// override is not currently called by this track's Newton runtime
+/// wiring, only by the capability gate it satisfies honestly.
+class NeumannSlab final : public fuse::Component,
+                          public fuse::ImplicitComponent {
  public:
-  NeumannSlab(std::string name, std::size_t n, Wiring wiring)
+  /// `initial_u` (S7.2): overrides the physically sensible first guess
+  /// below with a caller-chosen one -- NaN (the default, every existing
+  /// call site's own value) keeps today's `T_outer_2(0.0)`. The one use
+  /// this track makes of it: constructing a DELIBERATELY poor initial
+  /// guess for a line-search-engagement test, without needing a
+  /// nonphysical conductivity (DirichletSlab::beta_ large enough to make
+  /// k1_eff change sign) to get there.
+  NeumannSlab(std::string name, std::size_t n, Wiring wiring,
+             double initial_u = std::numeric_limits<double>::quiet_NaN())
       : name_(std::move(name)),
         wiring_(wiring),
         n_(n),
@@ -326,7 +415,8 @@ class NeumannSlab final : public fuse::Component {
         saved_u_(n, 0.0) {
     // A physically sensible first guess, and the value a severed run is stuck
     // with: the interface at the outer temperature of this slab.
-    std::fill(u_.begin(), u_.end(), T_outer_2(0.0));
+    std::fill(u_.begin(), u_.end(),
+             std::isnan(initial_u) ? T_outer_2(0.0) : initial_u);
   }
 
   [[nodiscard]] std::string name() const override { return name_; }
@@ -387,8 +477,30 @@ class NeumannSlab final : public fuse::Component {
   /// rollback verification cannot see; save_state() is what carries it.
   [[nodiscard]] std::uint64_t capabilities() const override {
     return fuse::make_capabilities(/*rollback=*/true, fuse::DeterminismLevel::Bitwise,
-                                   /*hidden_state=*/true);
+                                   /*hidden_state=*/true) |
+           fuse::kCapabilityResidual;
   }
+
+  /// `fuse::ImplicitComponent::evaluate_residual()`. See DirichletSlab's
+  /// own top comment for why this duplicates advance()'s formula rather
+  /// than being called by it.
+  fuse::Result<void> evaluate_residual(const fuse::StepContext& ctx,
+                                       std::span<const double> interface_in,
+                                       std::span<double> residual_out) override {
+    if (interface_in.size() != n_ || residual_out.size() != n_) {
+      return fuse::Failure{"E-EX-COMP",
+                          "NeumannSlab::evaluate_residual: expected " +
+                              std::to_string(n_) + " in/out, got " +
+                              std::to_string(interface_in.size()) + "/" +
+                              std::to_string(residual_out.size())};
+    }
+    const double T2 = T_outer_2(ctx.t_end.to_double());
+    for (std::size_t i = 0; i < n_; ++i) {
+      residual_out[i] = T2 + interface_in[i] * kL2 / kK2;
+    }
+    return fuse::Result<void>::success();
+  }
+  [[nodiscard]] fuse::ImplicitComponent* implicit() override { return this; }
 
   [[nodiscard]] const std::vector<double>& u() const { return u_; }
   [[nodiscard]] const std::vector<double>& q_in() const { return q_in_; }
