@@ -2815,6 +2815,32 @@ detail::Task<Result<void>> Runner::Impl::run_region(
         }
         window_converged = wc.converged;
       }
+
+      // KNOWN_ISSUES.md D33: `gathered_window_block_samples()` just above
+      // reaches only `R.participants` -- correctly, it has nothing to
+      // gather from anyone else -- but THIS region's own channels move
+      // over the run's single shared transport communicator, which a
+      // rank hosting some OTHER, uncoupled component outside R.
+      // participants (this function's own bystander) still shares, and
+      // such a rank keeps calling `move()` for these channels every
+      // sweep (mpi_transport.cpp's own "rank in neither rank set still
+      // enters MPI_Alltoallv with zero counts" convention) with no way to
+      // learn `window_converged` from the gather above, since it was
+      // never in `gathered` to begin with. Left uncorrected, a
+      // participant breaks this loop the sweep it converges while a
+      // bystander -- never having heard -- keeps calling `move()` on
+      // later sweeps nobody else joins, deadlocking the shared
+      // communicator (measured, `parallel.window_runner_mpi.3`, the
+      // uncoupled-third-rank case). Broadcasting here, unconditionally,
+      // every sweep, to EVERY rank sharing the communicator -- not just
+      // `R.participants` -- is what makes a bystander's own copy of this
+      // loop stop in lockstep with the participants it has no other
+      // relationship to.
+      bool agreed_converged = window_converged;
+      const Result<void> bc =
+          broadcast_window_convergence(R, window_converged, agreed_converged);
+      if (!bc.ok()) co_return bc.error();
+      window_converged = agreed_converged;
     } else if (R.participants.size() > 1) {
       const std::size_t nb = R.blocks.size();
       std::vector<double> payload(1 + 4 * nb);

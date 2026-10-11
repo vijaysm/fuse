@@ -3347,6 +3347,49 @@ and `FUSE_ENABLE_CONNECT_MPMD` are now measured, independently, so the `connect`
 participants` families register whichever modes this installation can actually carry, rather than
 registering-and-permanently-failing a row that can never pass here.
 
+### ~~D33. A rank outside a window-scoped region's participants never learned the window converged, and deadlocked the next sweep~~ — FIXED 2026-10-10
+
+**Measured 2026-10-10**, as `parallel.window_runner_mpi.3` (Timeout): `WindowRunnerMpi.
+ThreeRanksWithAnUncoupledThirdMatchTheReference` adds a third, genuinely uncoupled component `C` on
+rank 2 to `WindowRunnerMpi.TwoDisjointRanksMatchTheSingleProcessReference`'s own A-on-rank-0/B-on-rank-1
+window coupling — and that FIRST test, which only asks for `FUSE_REQUIRE_AT_LEAST_RANKS(2)`, also runs
+under the 3-rank row, with no `C` declared at all (`parallel.window_runner_mpi.3`'s own "empty third
+rank" shape per the test file's header comment). Both hung at `n=3`; both passed instantly at `n=2`.
+
+Root-caused (not an MPI quirk this time — a real Runner bug) by tracing `FUSE_TRANSPORT_DEBUG`
+(`src/transport/mpi_transport.cpp`) and a temporary residual trace in the window-convergence sweep
+(`src/runtime/iteration.cpp`) side by side: the sweep's channel exchange (`MpiTransport::move()`,
+one `MPI_Alltoallv` per channel per sweep) runs over the Runner's single shared transport communicator
+— the WHOLE communicator `RunnerConfig::base_communicator` named, duplicated once by `MpiTransport::
+set_communicator()`, not a sub-communicator scoped to the window's own two members — and by design
+(`mpi_transport.cpp`'s own header comment) a rank in neither of a channel's rank sets still calls
+`MPI_Alltoallv` with all-zero counts every sweep, rather than being excluded from the call. The window's
+own convergence decision, though, is only ever computed and delivered to `RegionRuntime::participants`
+(`gather_window_block_samples()`, `src/runtime/runner.cpp` — deliberately: a point-to-point exchange
+over just the channel endpoints' own ranks, not a collective the rest of the world would have to join).
+Rank 2 is never in `participants` for this region (it hosts no checkpointed component the region's
+channels touch), so its own copy of `window_converged` never leaves `false`, and it kept calling
+`move()` every sweep up to `max_iterations` (300) while ranks 0/1 — informed, and done in 3–30 sweeps —
+had already moved on. Rank 2's next `MPI_Alltoallv` on that communicator then had no matching call from
+anyone, ever, for the rest of the run: a deadlock, not a hang that eventually clears, and a correctness
+bug reachable by ANY window-scoped coupling sharing its base communicator with so much as one rank
+outside the window's own two sides, not something specific to this test's third component.
+
+**Fixed** at the root: a new `Runner::Impl::broadcast_window_convergence()` (`src/runtime/runner.cpp`,
+`src/runtime/runner_impl.hpp`) `MPI_Bcast`s the already-decided `window_converged` flag from
+`participants.front()` to literally every rank of `base_communicator` — not just `participants` —
+called unconditionally, once per sweep, by every rank that reaches the window-scoped branch in
+`src/runtime/iteration.cpp`'s `run_region()` (participant or bystander alike, since that branch runs
+identically on every rank regardless of this region's own membership). A no-op (returns the input
+`converged` value unchanged, no MPI call) when `participants.size() <= 1` — tier 0, or every
+checkpointed component on one rank, where no other rank exists to diverge from in the first place.
+Verified: both `parallel.window_runner_mpi.{2,3}` pass (`WindowRunnerMpi.
+ThreeRanksWithAnUncoupledThirdMatchTheReference` in well under a second, down from a 120s timeout).
+Peer-failure propagation to a window region's own bystanders (as opposed to convergence) was found to
+have the identical gap while investigating this — a local failure on a participant reaches only other
+participants, via the same `gather_window_block_samples()` — but is not exercised by any current test
+and is left for a future pass rather than bundled into this fix.
+
 ### D27. The native backend's remap halo has no `accumulate_remap_halo` counterpart
 
 **Closed for the forward direction, 2026-10-10 ("Halo" track):** `fuse::native::NativeMeshBackend`

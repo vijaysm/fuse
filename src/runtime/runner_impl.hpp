@@ -1644,6 +1644,30 @@ struct Runner::Impl {
       const std::vector<WindowBlockSample>& mine,
       std::vector<std::vector<WindowBlockSample>>& gathered_out,
       bool& all_ok_out);
+
+  /// KNOWN_ISSUES.md D33: `gather_window_block_samples()` deliberately
+  /// reaches only `r.participants` -- but the channels THIS region moves
+  /// are exchanged over the run's single shared transport communicator
+  /// (`config.base_communicator`, duplicated whole by `MpiTransport::
+  /// set_communicator()`), which can span MORE ranks than `r.
+  /// participants` names: a rank hosting some OTHER, uncoupled component
+  /// placed outside this region entirely still calls `move()` for this
+  /// region's channels every sweep (the "rank in neither rank set still
+  /// enters MPI_Alltoallv with zero counts" convention, mpi_transport.cpp's
+  /// own header comment) and so must stop sweeping in the SAME iteration
+  /// every participant does, or its next `move()` has no matching call
+  /// from anyone and the communicator deadlocks. `r.participants` alone
+  /// cannot tell such a rank when that is, since that rank is never IN
+  /// it. This broadcasts the already-decided `converged` flag from
+  /// `r.participants.front()` to literally every rank of `config.
+  /// base_communicator` -- participants redundantly re-receive their own
+  /// answer, everyone else learns it for the first time -- so every rank
+  /// that shares the communicator leaves the sweep on the same iteration.
+  /// A no-op, `converged` returned unchanged, when `r.participants.size()
+  /// <= 1` (tier 0, or every checkpointed component on one rank: no other
+  /// rank exists to diverge from in the first place).
+  Result<void> broadcast_window_convergence(const detail::RegionRuntime& r,
+                                            bool converged, bool& converged_out);
 };
 
 }  // namespace fuse
