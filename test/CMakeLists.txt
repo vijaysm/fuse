@@ -736,9 +736,12 @@ if(FUSE_ENABLE_MPI)
     foreach(_mode mpmd accept)
       # Registered only where this MPI can carry the mode -- examples/
       # CMakeLists.txt's own gate on the participant rows has the reasoning.
-      # FUSE_ENABLE_CONNECT_ACCEPT is measured at configure time and stays ON
-      # when it could not be measured.
+      # FUSE_ENABLE_CONNECT_ACCEPT/FUSE_ENABLE_CONNECT_MPMD are each measured
+      # at configure time and stay ON when they could not be measured.
       if(_mode STREQUAL "accept" AND NOT FUSE_ENABLE_CONNECT_ACCEPT)
+        continue()
+      endif()
+      if(_mode STREQUAL "mpmd" AND NOT FUSE_ENABLE_CONNECT_MPMD)
         continue()
       endif()
       set(_name parallel.connect.${_mode}.${_na}+${_nb})
@@ -750,8 +753,15 @@ if(FUSE_ENABLE_MPI)
                 $<TARGET_FILE:fuse_parallel_connect_a>
                 $<TARGET_FILE:fuse_parallel_connect_b>
                 ${_golden} ${_scratch} 60)
+      # Same OMPI alltoallv-algorithm workaround as fuse_add_mpi_test's own
+      # ENVIRONMENT line above: connect_mpmd() (connect.cpp) duplicates
+      # MPI_COMM_WORLD, and the Runner traffic that follows over it can hit
+      # this host's Open MPI (4.1.5) basic_linear-alltoallv hang exactly like
+      # MpiTransport's own duplicate does. run_pair.sh's mpiexec children
+      # inherit it from this test process's environment.
       set_tests_properties(${_name} PROPERTIES
-        LABELS "parallel;mpi;connect" TIMEOUT 120)
+        LABELS "parallel;mpi;connect" TIMEOUT 120
+        ENVIRONMENT "OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
     endforeach()
   endforeach()
 endif()

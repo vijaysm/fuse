@@ -675,6 +675,64 @@ macro(fuse_resolve_dependencies)
            ${_fuse_dyn_default})
     message(STATUS "fuse: accept/connect launch mode: "
                    "${FUSE_ENABLE_CONNECT_ACCEPT} (${_fuse_dyn_verdict})")
+
+    # ---- does this MPI give each MPMD segment its own MPI_APPNUM?
+    # check_mpmd_layout() (include/fuse/transport/connect.hpp) validates the
+    # "mpmd" launch mode by comparing each component's declared RankSet
+    # against the ranks that actually report its MPI_APPNUM -- which only
+    # works if MPI_APPNUM differs per segment of a colon-syntax launch. The
+    # standard requires it be SET when the launcher supplies one (MPI-3.1
+    # 11.9.2) but not that launchers differentiate it, and this host's Open
+    # MPI (4.1.5) measured to report appnum 0 for every rank of every segment
+    # (KNOWN_ISSUES.md D32). Same three-verdict shape as the probe above, for
+    # the same reason: "could not test" must leave the mode ON.
+    set(_fuse_appnum_script "${PROJECT_SOURCE_DIR}/tools/probe-mpi-appnum.sh")
+    set(_fuse_appnum_default ON)
+    set(_fuse_appnum_verdict "assumed (probe not run)")
+    if(NOT DEFINED FUSE_MPI_APPNUM_PROBED AND EXISTS "${_fuse_appnum_script}")
+      message(STATUS "fuse: probing whether this MPI reports a distinct MPI_APPNUM per MPMD segment ...")
+      execute_process(
+        COMMAND "${CMAKE_COMMAND}" -E env
+          "FUSE_PROBE_MPICC=${MPI_C_COMPILER}"
+          "FUSE_PROBE_MPIEXEC=${MPIEXEC_EXECUTABLE}"
+          "FUSE_PROBE_BUILD_DIR=${CMAKE_BINARY_DIR}/fuse-probe-mpi-appnum"
+          "${_fuse_appnum_script}"
+        RESULT_VARIABLE _fuse_appnum_result
+        OUTPUT_VARIABLE _fuse_appnum_output
+        ERROR_VARIABLE  _fuse_appnum_error)
+      if(_fuse_appnum_result EQUAL 0)
+        set(_fuse_appnum_default ON)
+        set(_fuse_appnum_verdict "measured working")
+        message(STATUS "fuse: MPI_APPNUM is distinct per MPMD segment on this MPI")
+      elseif(_fuse_appnum_result EQUAL 1)
+        set(_fuse_appnum_default OFF)
+        set(_fuse_appnum_verdict "measured broken")
+        message(STATUS
+          "fuse: this MPI does not report a distinct MPI_APPNUM per MPMD "
+          "segment, so the mpmd launch mode is DISABLED (KNOWN_ISSUES.md "
+          "D32). accept/connect is unaffected. Probe output:\n"
+          "${_fuse_appnum_output}${_fuse_appnum_error}")
+      else()
+        set(_fuse_appnum_default ON)
+        set(_fuse_appnum_verdict "not tested")
+        message(STATUS
+          "fuse: could not test MPMD appnum support here (the probe could "
+          "not build or launch), so the mode is left enabled and its rows "
+          "will report for themselves. Reason:\n${_fuse_appnum_error}")
+      endif()
+      set(FUSE_MPI_APPNUM_PROBED "${_fuse_appnum_verdict}" CACHE INTERNAL
+          "Verdict of tools/probe-mpi-appnum.sh")
+    elseif(DEFINED FUSE_MPI_APPNUM_PROBED)
+      set(_fuse_appnum_verdict "${FUSE_MPI_APPNUM_PROBED}")
+      if(_fuse_appnum_verdict STREQUAL "measured broken")
+        set(_fuse_appnum_default OFF)
+      endif()
+    endif()
+    option(FUSE_ENABLE_CONNECT_MPMD
+           "Multi-executable: the mpmd launch mode (needs an MPI that reports a distinct MPI_APPNUM per colon-syntax segment)"
+           ${_fuse_appnum_default})
+    message(STATUS "fuse: mpmd launch mode: "
+                   "${FUSE_ENABLE_CONNECT_MPMD} (${_fuse_appnum_verdict})")
   endif()
   if(FUSE_ENABLE_MOAB)
     # MOAB ships an OLD-STYLE config: it sets MOAB_INCLUDE_DIRS /

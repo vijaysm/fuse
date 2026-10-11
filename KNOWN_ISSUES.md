@@ -3315,6 +3315,38 @@ also carry `OMPI_MCA_rmaps_base_oversubscribe=1` (the environment-variable equiv
 a throughput benchmark, so running more ranks than physical cores is the point at `n=5`, not a
 mistake to refuse.
 
+### ~~D32. This host's Open MPI (4.1.5) reports `MPI_APPNUM` 0 for every rank of an MPMD launch, regardless of segment~~ — WORKED AROUND 2026-10-10
+
+**Measured 2026-10-10**, tracking down `E-CONNECT-APPNUM` failures in `parallel.connect.mpmd.{1+1,2+3,3+2}`
+and `verification.brusselator.participants.mpmd.{3,5}`. `fuse::transport::check_mpmd_layout()`
+(`include/fuse/transport/connect.hpp`) validates an "mpmd" launch by `MPI_Allgather`ing each rank's
+`MPI_APPNUM` and checking that the ranks reporting each value match the component's declared `RankSet`
+— which only works if a launcher actually differentiates `MPI_APPNUM` per segment of a colon-syntax
+(or `--app`-file) launch.
+
+Reproduced in isolation with zero fuse code (`tools/probe-mpi-appnum.c`): a two-segment colon-syntax
+launch, `mpiexec -n 1 ./probe 0 : -n 1 ./probe 1`, where each segment's single rank calls
+`MPI_Comm_get_attr(MPI_COMM_WORLD, MPI_APPNUM, ...)` and compares against the appnum it was told (via
+argv) to expect. On this host, **every** rank in **every** segment reports appnum 0 — confirmed with
+2-segment and 3-segment colon launches and with `--app` appfile syntax alike. This is not a fuse bug:
+`check_mpmd_layout()`'s own declared `RankSet`s (built by `test/parallel/connect/connect_common.hpp`'s
+`build_graph()`) are correct; the MPI runtime simply never sets the per-segment value the standard
+allows it to provide (MPI-3.1 §11.9.2 requires `MPI_APPNUM` be *set* when the launcher supplies one, not
+that launchers differentiate it across segments).
+
+**Worked around, not fixed** (this project does not own Open MPI), following the same measure-then-gate
+shape as [D23](#d23-acceptconnect-cannot-complete-on-mpichs-ch3nemesis-device-when-both-programs-share-a-node)'s
+`FUSE_ENABLE_CONNECT_ACCEPT`: `tools/probe-mpi-appnum.sh` builds and launches `tools/probe-mpi-appnum.c`
+as a real two-segment MPMD job at configure time (`cmake/FuseDependencies.cmake`, right after the
+accept/connect probe), with the same three verdicts (0 works, 1 measured broken, 2 could not test —
+left enabled). The verdict sets `FUSE_ENABLE_CONNECT_MPMD`, which gates the `mpmd` leg of the `_mode`
+loop in both `test/CMakeLists.txt`'s `parallel.connect.*` rows and `examples/CMakeLists.txt`'s
+`verification.brusselator.participants.*` rows — the same `continue()`-on-ungated-mode pattern those
+loops already used for `accept`/`FUSE_ENABLE_CONNECT_ACCEPT`. On this host both `FUSE_ENABLE_CONNECT_ACCEPT`
+and `FUSE_ENABLE_CONNECT_MPMD` are now measured, independently, so the `connect`/`verification.brusselator.
+participants` families register whichever modes this installation can actually carry, rather than
+registering-and-permanently-failing a row that can never pass here.
+
 ### D27. The native backend's remap halo has no `accumulate_remap_halo` counterpart
 
 **Closed for the forward direction, 2026-10-10 ("Halo" track):** `fuse::native::NativeMeshBackend`

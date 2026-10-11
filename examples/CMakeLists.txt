@@ -374,13 +374,17 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND TARGET brusselator_u_main AND TARGE
   set(_fuse_bp_world_5_c 1)
   foreach(_world 3 5)
     foreach(_mode mpmd accept)
-    # The accept rows exist only where the MPI can carry them. Skipping
+    # The accept/mpmd rows exist only where the MPI can carry them. Skipping
     # rather than registering-and-failing: a row that cannot pass on this
     # installation is not a measurement, and a permanently red row teaches a
     # reader to ignore the colour. cmake/FuseDependencies.cmake decides
-    # FUSE_ENABLE_CONNECT_ACCEPT by measurement, and leaves it ON when it
-    # could not test, so nothing is hidden on a machine that was never probed.
+    # FUSE_ENABLE_CONNECT_ACCEPT/FUSE_ENABLE_CONNECT_MPMD by measurement, and
+    # leaves each ON when it could not test, so nothing is hidden on a
+    # machine that was never probed.
     if(_mode STREQUAL "accept" AND NOT FUSE_ENABLE_CONNECT_ACCEPT)
+      continue()
+    endif()
+    if(_mode STREQUAL "mpmd" AND NOT FUSE_ENABLE_CONNECT_MPMD)
       continue()
     endif()
       set(_name verification.brusselator.participants.${_mode}.${_world})
@@ -395,8 +399,13 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND TARGET brusselator_u_main AND TARGE
                 $<TARGET_FILE:brusselator_coupler_main>
                 $<TARGET_FILE:brusselator_check>
                 ${_scratch} 2 60)
+      # Same OMPI alltoallv-algorithm workaround as test/CMakeLists.txt's own
+      # fuse_add_mpi_test ENVIRONMENT line -- see that comment for the full
+      # measured account. The Runner traffic driving this run goes over an
+      # MPI_Comm_dup'd communicator exactly like MpiTransport's own tests do.
       set_tests_properties(${_name} PROPERTIES
-        LABELS "parallel;mpi;verification;brusselator" TIMEOUT 120)
+        LABELS "parallel;mpi;verification;brusselator" TIMEOUT 120
+        ENVIRONMENT "OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
     endforeach()
   endforeach()
 endif()
@@ -427,8 +436,11 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND FUSE_ENABLE_LOWFIVE
    AND TARGET brusselator_u_main AND TARGET brusselator_v_main
    AND TARGET fuse-lowfive-vol)
   foreach(_mode mpmd accept)
-    # Same gate as the non-LowFive rows above.
+    # Same gates as the non-LowFive rows above.
     if(_mode STREQUAL "accept" AND NOT FUSE_ENABLE_CONNECT_ACCEPT)
+      continue()
+    endif()
+    if(_mode STREQUAL "mpmd" AND NOT FUSE_ENABLE_CONNECT_MPMD)
       continue()
     endif()
     set(_name verification.brusselator.participants.lowfive.${_mode}.3)
@@ -443,10 +455,11 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND FUSE_ENABLE_LOWFIVE
               $<TARGET_FILE:brusselator_coupler_main>
               $<TARGET_FILE:brusselator_check>
               ${_scratch} 2 60 lowfive)
+    # Same OMPI alltoallv-algorithm workaround as the non-LowFive rows above.
     set_tests_properties(${_name} PROPERTIES
       LABELS "parallel;mpi;lowfive;verification;brusselator"
       TIMEOUT 120
-      ENVIRONMENT "HDF5_VOL_CONNECTOR=lowfive;HDF5_PLUGIN_PATH=$<TARGET_FILE_DIR:fuse-lowfive-vol>;FUSE_LOWFIVE_BINDINGS=${_scratch}/graph.yaml")
+      ENVIRONMENT "HDF5_VOL_CONNECTOR=lowfive;HDF5_PLUGIN_PATH=$<TARGET_FILE_DIR:fuse-lowfive-vol>;FUSE_LOWFIVE_BINDINGS=${_scratch}/graph.yaml;OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
   endforeach()
 endif()
 # ---- S6 phase 3 Unit 3b host rows: end ---------------------------------
