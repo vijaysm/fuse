@@ -23,6 +23,7 @@ else()
   set(FUSE_LINALG_EIGEN 0)
 endif()
 set(FUSE_HAVE_PETSC  ${FUSE_ENABLE_PETSC})
+set(FUSE_HAVE_CUSPARSE ${FUSE_ENABLE_CUSPARSE})
 # See config.hpp.in's own comment on FUSE_TOOLCHAIN_ID for why TARGET
 # Kokkos::CUDA, not OMPI_CXX, is the bit that matters here.
 set(FUSE_TOOLCHAIN_ID "${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}")

@@ -19,6 +19,12 @@
 #cmakedefine01 FUSE_HAVE_TEMPEST
 #cmakedefine01 FUSE_HAVE_PETSC
 #cmakedefine01 FUSE_HAVE_LOWFIVE
+// Whether the examples' SparseLuBackend (examples/common/
+// sparse_solve_backend.hpp) is cusolverRf on the device (1) or a passthrough
+// to Eigen::SparseLU (0). Library code never reads this; it exists so the
+// examples and their verification tests can name which backend produced a
+// number.
+#cmakedefine01 FUSE_HAVE_CUSPARSE
 #cmakedefine01 FUSE_LINALG_EIGEN
 #cmakedefine01 FUSE_ENABLE_EXCEPTIONS
 #define FUSE_LINALG_BACKEND "@FUSE_LINALG_BACKEND@"
