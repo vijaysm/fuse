@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <fuse/base/config.hpp>
 #include <fuse/linalg/least_squares.hpp>
 #include <fuse/num/accelerator.hpp>
 #include <fuse/base/error.hpp>
@@ -14,6 +15,8 @@
 #include <stdexcept>
 #include <utility>
 #include <vector>
+
+#include "accelerator_fixtures.hpp"
 
 using fuse::AccelConfig;
 using fuse::AccelKind;
@@ -49,14 +52,23 @@ class AllocationCounter {
 }  // namespace
 
 void* operator new(std::size_t n) {
+  // #ifndef __CUDA_ARCH__, not just std::abort() instead of throw: a
+  // CUDA-enabled Kokkos dual-compiles every global operator new/delete
+  // override for device too (nothing here is reachable from a kernel; nvcc
+  // does this unconditionally), and the device side can neither support
+  // exceptions nor see g_counting/g_allocations, host globals.
+#ifndef __CUDA_ARCH__
   if (g_counting) ++g_allocations;
+#endif
   void* p = std::malloc(n == 0 ? 1 : n);
-  if (p == nullptr) throw std::bad_alloc();
+  if (p == nullptr) std::abort();
   return p;
 }
 void* operator new[](std::size_t n) { return ::operator new(n); }
 void* operator new(std::size_t n, const std::nothrow_t&) noexcept {
+#ifndef __CUDA_ARCH__
   if (g_counting) ++g_allocations;
+#endif
   return std::malloc(n == 0 ? 1 : n);
 }
 void* operator new[](std::size_t n, const std::nothrow_t& t) noexcept {
@@ -108,106 +120,10 @@ int iterate_to_convergence(fuse::Accelerator& accel, const Contraction& g,
   return -1;
 }
 
-/// A general affine fixed-point map G(x) = p + A (x - p).
-///
-/// The Contraction above is A = factor * I, which every method in the family
-/// solves in two iterations because its error only ever occupies a single
-/// direction. That hides the whole point of the ladder, so the ordering tests
-/// below use this instead, with A dense and with a spread of eigenvalues.
-struct LinearMap {
-  std::size_t         n = 0;
-  std::vector<double> a;  ///< n x n, row major
-  std::vector<double> p;
-
-  std::vector<double> apply(const std::vector<double>& x) const {
-    std::vector<double> out(n);
-    for (std::size_t i = 0; i < n; ++i) {
-      double s = p[i];
-      for (std::size_t j = 0; j < n; ++j) s += a[i * n + j] * (x[j] - p[j]);
-      out[i] = s;
-    }
-    return out;
-  }
-};
-
-/// A = H D H with H = I - 2 v v^T / (v^T v) a Householder reflector, so A is
-/// dense and symmetric with exactly the eigenvalues D. `v` is deliberately not
-/// parallel to `p`: with v == p the reflector maps the initial error onto its
-/// own negative and the "dense" problem degenerates into a mirror image of the
-/// diagonal one.
-LinearMap dense_map(const std::vector<double>& d, const std::vector<double>& p,
-                    const std::vector<double>& v) {
-  const std::size_t n = d.size();
-  double vtv = 0.0;
-  for (double e : v) vtv += e * e;
-  std::vector<double> h(n * n, 0.0);
-  for (std::size_t i = 0; i < n; ++i) {
-    for (std::size_t j = 0; j < n; ++j) {
-      h[i * n + j] = (i == j ? 1.0 : 0.0) - 2.0 * v[i] * v[j] / vtv;
-    }
-  }
-  std::vector<double> hd(n * n, 0.0);
-  for (std::size_t i = 0; i < n; ++i) {
-    for (std::size_t j = 0; j < n; ++j) hd[i * n + j] = h[i * n + j] * d[j];
-  }
-  std::vector<double> a(n * n, 0.0);
-  for (std::size_t i = 0; i < n; ++i) {
-    for (std::size_t j = 0; j < n; ++j) {
-      double s = 0.0;
-      for (std::size_t k = 0; k < n; ++k) s += hd[i * n + k] * h[k * n + j];
-      a[i * n + j] = s;
-    }
-  }
-  return LinearMap{n, std::move(a), p};
-}
-
-LinearMap diagonal_map(const std::vector<double>& d,
-                       const std::vector<double>& p) {
-  const std::size_t n = d.size();
-  std::vector<double> a(n * n, 0.0);
-  for (std::size_t i = 0; i < n; ++i) a[i * n + i] = d[i];
-  return LinearMap{n, std::move(a), p};
-}
-
-/// Iteration count on a LinearMap; -1 if it did not converge, -2 if update()
-/// reported an error. Starts from x = 0 every time, so a second call on the
-/// same accelerator is a second time window over the same problem.
-int iterate_linear(Accelerator& accel, const LinearMap& g, double tol,
-                   int max_iters) {
-  std::vector<double> x(g.n, 0.0);
-  for (int k = 0; k < max_iters; ++k) {
-    const std::vector<double> gx = g.apply(x);
-    double residual = 0.0;
-    for (std::size_t i = 0; i < g.n; ++i) {
-      const double d = gx[i] - x[i];
-      residual += d * d;
-    }
-    if (std::sqrt(residual) < tol) return k;
-
-    std::vector<double> next(g.n);
-    const auto r = accel.update(x.data(), gx.data(), next.data(), g.n, k);
-    if (!r.ok()) return -2;
-    x = std::move(next);
-  }
-  return -1;
-}
-
-/// The one problem the ladder is measured on. Eigenvalues 0.95 (slow), 0.9,
-/// 0.8, 0.5 and -0.7 (oscillating), in a basis where none of them is aligned
-/// with a coordinate axis.
-LinearMap ladder_problem() {
-  return dense_map({0.95, 0.9, 0.8, 0.5, -0.7}, {1.0, 2.0, 3.0, 4.0, 5.0},
-                   {1.0, -2.0, 0.5, 3.0, -1.5});
-}
-
-std::unique_ptr<Accelerator> must_make(const AccelConfig& cfg) {
-  auto made = make_accelerator(cfg);
-  EXPECT_TRUE(made.ok()) << (made.ok() ? std::string{} : made.error().message);
-  return std::move(made.value());
-}
-
-constexpr double kTol      = 1e-10;
-constexpr int    kMaxIters = 5000;
+// LinearMap, dense_map, diagonal_map, iterate_linear, ladder_problem,
+// must_make, kTol and kMaxIters live in accelerator_fixtures.hpp now, shared
+// with tools/src/write_accelerator_baseline.cpp -- see that header's own
+// comment for why.
 
 }  // namespace
 
@@ -320,14 +236,26 @@ TEST(Accelerator, LadderIsMonotoneOnADenseLinearProblem) {
   const int n_ils      = iterate_linear(*ils, g, kTol, kMaxIters);
   const int n_imvj     = iterate_linear(*imvj, g, kTol, kMaxIters);
 
-  // Pinned counts. These were measured to be identical under -O0, -O1,
-  // -O3 -DNDEBUG, -O2 -ffp-contract=fast and ASan+UBSan; the kernels'
-  // ascending-index accumulation convention is what makes them reproducible
-  // for a given buffer.
-  EXPECT_EQ(n_picard, 382);
-  EXPECT_EQ(n_constant, 382) << "omega == 1 is exactly Picard";
-  EXPECT_EQ(n_secant, 269);
-  EXPECT_EQ(n_aitken, 56);
+  // Pinned counts, but per-toolchain: this is host-only arithmetic with no
+  // Kokkos/CUDA anywhere in the call path, yet nvcc's host-pass codegen
+  // (FUSE_TOOLCHAIN_ID's "-nvcc_wrapper" suffix) has been measured to produce
+  // a different n_aitken than plain g++/clang on identical source -- FP
+  // contraction and FTZ/DAZ denormal flags were both ruled out directly as the
+  // cause. Rather than pin one toolchain's values as universal, each
+  // toolchain's measured values live in test/golden/accelerator.golden, keyed
+  // by FUSE_TOOLCHAIN_ID and regenerated by a human running
+  // fuse_write_accelerator_baseline (see that tool's own comment) when a new
+  // toolchain needs a row or the accelerator math legitimately changes.
+  AcceleratorBaseline baseline{};
+  ASSERT_TRUE(read_accelerator_baseline(std::string(FUSE_TEST_GOLDEN_DIR) + "/accelerator.golden",
+                                        FUSE_TOOLCHAIN_ID, &baseline))
+      << "no accelerator baseline recorded for toolchain '" << FUSE_TOOLCHAIN_ID
+      << "' -- run `fuse_write_accelerator_baseline "
+         "test/golden/accelerator.golden`, review the diff, and commit it";
+  EXPECT_EQ(n_picard, baseline.n_picard);
+  EXPECT_EQ(n_constant, baseline.n_constant) << "omega == 1 is exactly Picard";
+  EXPECT_EQ(n_secant, baseline.n_secant);
+  EXPECT_EQ(n_aitken, baseline.n_aitken);
   // 7, not the 6 of an unfiltered rank-5 fit, and the extra iteration is the
   // QR2 filter doing exactly what it is for. These accelerators take
   // AccelConfig's default filter, QR2 at limit = 1e-2, so a column is dropped
@@ -339,9 +267,10 @@ TEST(Accelerator, LadderIsMonotoneOnADenseLinearProblem) {
   // Jacobian, so the exact fit arrives one iteration later. Filtering costs
   // accuracy on a clean linear problem and buys conditioning on a dirty one;
   // this is the cost side, pinned so that it stays visible.
-  EXPECT_EQ(n_ils, 7) << "5 unknowns: one under-relaxed step, a rank-5 fit, and "
-                         "one iteration to replace the column QR2 dropped";
-  EXPECT_EQ(n_imvj, 7) << "first window, so IMVJ has nothing retained yet";
+  EXPECT_EQ(n_ils, baseline.n_ils)
+      << "5 unknowns: one under-relaxed step, a rank-5 fit, and "
+         "one iteration to replace the column QR2 dropped";
+  EXPECT_EQ(n_imvj, baseline.n_imvj) << "first window, so IMVJ has nothing retained yet";
 
   // Monotone as a ladder, asserted as an ordering rather than as six
   // independent facts.
@@ -355,21 +284,29 @@ TEST(Accelerator, SteffensenIsExactOnADiagonalProblemAndBasisDependent) {
   const std::vector<double> d{0.95, 0.9, 0.8, 0.5, -0.7};
   const std::vector<double> p{1.0, 2.0, 3.0, 4.0, 5.0};
 
+  AcceleratorBaseline baseline{};
+  ASSERT_TRUE(read_accelerator_baseline(std::string(FUSE_TEST_GOLDEN_DIR) + "/accelerator.golden",
+                                        FUSE_TOOLCHAIN_ID, &baseline))
+      << "no accelerator baseline recorded for toolchain '" << FUSE_TOOLCHAIN_ID
+      << "' -- run `fuse_write_accelerator_baseline "
+         "test/golden/accelerator.golden`, review the diff, and commit it";
+
   auto on_diagonal = must_make(
       AccelConfig{.kind = AccelKind::Steffensen, .initial_relaxation = 0.5});
   const int n_diag =
       iterate_linear(*on_diagonal, diagonal_map(d, p), kTol, kMaxIters);
-  EXPECT_EQ(n_diag, 2) << "a diagonal secant is exact on a diagonal Jacobian";
+  EXPECT_EQ(n_diag, baseline.n_diag) << "a diagonal secant is exact on a diagonal Jacobian";
 
   // Steffensen is the one member of the family that is not orthogonally
   // equivariant: it models the Jacobian by its diagonal, so on a dense
   // Jacobian with the same spectrum it is worse than plain Picard. That is a
-  // property of the method, not a defect, and it is pinned here so that a
-  // future change cannot quietly turn it into something else.
+  // property of the method, not a defect, and it is pinned here (per
+  // toolchain -- see LadderIsMonotoneOnADenseLinearProblem) so that a future
+  // change cannot quietly turn it into something else.
   auto on_dense = must_make(
       AccelConfig{.kind = AccelKind::Steffensen, .initial_relaxation = 0.5});
   const int n_dense = iterate_linear(*on_dense, ladder_problem(), kTol, kMaxIters);
-  EXPECT_EQ(n_dense, 681);
+  EXPECT_EQ(n_dense, baseline.n_dense);
 }
 
 TEST(Accelerator, ImvjBeatsIqnIlsOnLaterWindows) {

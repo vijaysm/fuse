@@ -79,6 +79,13 @@ if(FUSE_ENABLE_TESTS)
   # rewritten by the suite that checks it (tools/src/write_golden_descriptor.cpp).
   add_executable(fuse_write_golden_descriptor tools/src/write_golden_descriptor.cpp)
   target_link_libraries(fuse_write_golden_descriptor PRIVATE fuse::model)
+
+  # Same contract, for num.accelerator's per-toolchain pinned iteration counts
+  # (test/golden/accelerator.golden; see tools/src/write_accelerator_baseline.cpp
+  # and test/num/accelerator_fixtures.hpp for why those need a baseline file at
+  # all rather than one hardcoded set of literals).
+  add_executable(fuse_write_accelerator_baseline tools/src/write_accelerator_baseline.cpp)
+  target_link_libraries(fuse_write_accelerator_baseline PRIVATE fuse::num)
 endif()
 
 # AFTER enable_testing() and after test/, because the examples register ctest
