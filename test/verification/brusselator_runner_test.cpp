@@ -225,7 +225,7 @@ struct Rig {
   rig->comp_u = std::make_unique<brusselator::UComponent>(
       "U", rig->u_grid, cfg, v0_on_u, with_window_metadata ? dt_u : unset,
       with_window_metadata ? dt_v : unset, with_window_metadata ? window : unset);
-  return rig;
+  return std::move(rig);
 }
 
 // Diagnostic knob (Unit 1 debugging, temporary): when > 0, both paths use

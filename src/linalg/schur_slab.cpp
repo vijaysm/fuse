@@ -192,7 +192,7 @@ Result<SchurSlabSolver> SchurSlabSolver::factor(int nx, std::int64_t ny, std::in
     }
     SchurSlabSolver solver;
     solver.impl_ = std::move(impl);
-    return solver;
+    return std::move(solver);
   }
 
   // -------------------------------------------------------------------
@@ -411,7 +411,7 @@ Result<SchurSlabSolver> SchurSlabSolver::factor(int nx, std::int64_t ny, std::in
 
   SchurSlabSolver solver;
   solver.impl_ = std::move(impl);
-  return solver;
+  return std::move(solver);
 }
 
 Result<void> SchurSlabSolver::solve(const DistVector& rhs_owned, DistVector& x_owned) const {
