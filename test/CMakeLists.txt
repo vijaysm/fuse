@@ -492,7 +492,8 @@ fuse_tests_gated_by(FUSE_ENABLE_MPI
   parallel/nodal_field_test.cpp parallel/nodal_remap_distributed_test.cpp
   parallel/nodal_remap_runner_test.cpp parallel/window_runner_mpi_test.cpp
   parallel/linalg_mpi_test.cpp parallel/brusselator_grid_mpi_test.cpp
-  parallel/schur_slab_mpi_test.cpp parallel/krylov_mpi_test.cpp)
+  parallel/schur_slab_mpi_test.cpp parallel/krylov_mpi_test.cpp
+  parallel/derivative_gate_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
   foreach(t runner_transport comm_graph mpi_transport)
     fuse_add_mpi_test(parallel ${t} LIBS fuse::runtime)
@@ -515,6 +516,12 @@ if(FUSE_ENABLE_MPI)
   # RANKS 2 only, per the task: built here, never run here (MPI cannot
   # start in this sandbox), run on the host.
   fuse_add_mpi_test(parallel krylov_mpi LIBS fuse::linalg RANKS 2 LABELS linalg)
+  # "DerivativeGate" track (S7.3), tier 1: the adjoint dot-product identity
+  # over a real MPI_COMM_WORLD DistSparseMatrix/DistVector
+  # (include/fuse/linalg/derivative_gate.hpp, docs/dev/derivative-gate.md).
+  # RANKS 2 3, per the task: built here, never run here (MPI cannot start
+  # in this sandbox), run on the host.
+  fuse_add_mpi_test(parallel derivative_gate_mpi LIBS fuse::linalg RANKS 2 3 LABELS linalg)
   # "Nodal fields" track, step 2: SharedVertexLineMesh's lowest-rank
   # ownership, a plain nodal Transport's every-copy-matches-owner property,
   # and the standalone accumulate_shared_rows reduction (comm_graph.hpp).
@@ -668,6 +675,19 @@ fuse_add_gtest(linalg gmres THROWS LIBS Eigen3::Eigen)
 # a null Reducer and a moved-from solve() as caller mistakes.
 fuse_add_gtest(linalg schur_slab THROWS LIBS Eigen3::Eigen)
 target_include_directories(fuse_linalg_schur_slab_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/examples/brusselator)
+# S7.3 "DerivativeGate" track: the adjoint dot-product identity (derived
+# bound, not chosen), finite-difference derivative convergence with the
+# round-off plateau detected, and assembled-vs-matrix-free agreement --
+# include/fuse/linalg/derivative_gate.hpp. Runs every operator family the
+# project builds with an apply/apply_transpose (fuse::linalg's own
+# DistSparseMatrix/SchurSlabSolver, fuse::WeightsOperator/ComposedOperator
+# over real supermesh/consistent-interpolation/moving-least-squares weights),
+# so it needs fuse::backend and fuse::model on top of fuse::linalg, and
+# Eigen3::Eigen + the Brusselator physics headers for the diffusion-operator
+# cases (the same two the schur_slab row above already needs).
+fuse_add_gtest(linalg derivative_gate LIBS Eigen3::Eigen fuse::backend fuse::model)
+target_include_directories(fuse_linalg_derivative_gate_test PRIVATE
   ${CMAKE_SOURCE_DIR}/examples/brusselator)
 fuse_add_gtest(backend native_mesh THROWS)
 fuse_add_gtest(backend native_distributed_mesh THROWS)
