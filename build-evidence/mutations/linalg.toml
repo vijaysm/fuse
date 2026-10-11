@@ -335,3 +335,89 @@ test = "linalg.schur_slab"
 # other case, including the row-band-size regression above (a DIFFERENT
 # code path, never reached when local_rows >= 2 on every rank), is
 # unaffected. File restored and `cmp`-verified byte-identical.
+
+# "DerivativeGate" track: the adjoint dot-product gate, the finite-difference
+# derivative-convergence gate (round-off plateau detected, not fit through),
+# and assembled-vs-matrix-free agreement (include/fuse/linalg/
+# derivative_gate.hpp, docs/dev/derivative-gate.md). All three rows
+# HAND-PROVEN the same way every row above is (apply `old` -> `new` to the
+# real source tree, rebuild `fuse_linalg_derivative_gate_test`, run the WHOLE
+# binary unfiltered -- no `ctest -R`, no gtest filter -- record which cases
+# failed and how many passed, restore the original text, `cmp` the restored
+# file against a saved backup to confirm the restore is exact). None needs
+# `requires = "mpi"`: every one is killed at tier 0, never by
+# test/parallel/derivative_gate_mpi_test.cpp, which this sandbox cannot run
+# at all.
+
+[[mutation]]
+id = "derivative-gate-adjoint-transpose-swapped-for-apply"
+area = "linalg"
+describes = "adjoint_gate's own apply_transpose(y, aty) call replaced by apply(y, aty) -- the 'the adjoint check with apply_transpose swapped for apply' mutation row the task that produced this file names explicitly. A SYMMETRIC operator cannot distinguish this mutation at all (apply and apply_transpose compute the same thing), which is exactly why the random-nonsymmetric 50x50 DistSparseMatrix case in adjoint_cases() is load-bearing for this row specifically, not merely for the adjoint identity in general: its own apply_transpose is built from independently re-assembled, row/col-swapped triplets (transpose_of()), never derived from apply() by any relation the mutation could leave intact."
+file = "include/fuse/linalg/derivative_gate.hpp"
+old = """  if (Result<void> r = apply_transpose(y, aty); !r.ok()) return r.error();"""
+new = """  if (Result<void> r = apply(y, aty); !r.ok()) return r.error();"""
+target = "fuse_linalg_derivative_gate_test"
+test = "linalg.derivative_gate"
+# Hand-proved 2026-10-10 against a byte-identical restored copy: 9 cases in
+# the target before mutation (all pass). After mutation, applied by hand and
+# the WHOLE binary run unfiltered: 8 pass, 1 fails --
+# LinalgDerivativeGate.AdjointIdentityHoldsForEveryOperator, on the
+# random-nonsymmetric-50x50 case specifically (defect 3.10/2.76 against
+# bounds of order 1e-12/1e-13 at both seeds) and incidentally on the
+# hand-built-4x3 case too (a shape mismatch, E-OP-SHAPE-equivalent refusal,
+# since that operator is rectangular and apply()/apply_transpose() no longer
+# agree on which length is which) -- every symmetric and self-adjoint case
+# (the periodic-Laplacian DistSparseMatrix cases, the consistent-interp H
+# composed with itself's own transpose path is not exercised here, the
+# SchurSlabSolver cases) is unaffected, exactly as the `describes` field's
+# "a symmetric operator cannot distinguish this" argument predicts. File
+# restored and `cmp`-verified byte-identical to the pre-mutation copy.
+
+[[mutation]]
+id = "derivative-gate-plateau-detection-removed"
+area = "linalg"
+describes = "taylor_remainder_order's round-off plateau scan is short-circuited (the 'still not dropping' branch that records plateau_start is gated behind `false &&`, so it never fires and plateau_start stays n) -- the 'the plateau detection removed (fits through the floor, slope wrong)' mutation row the task names explicitly. With no plateau ever detected, the log-log slope is fit over EVERY swept h, including the ones at the round-off floor where the remainder has stopped meaning anything -- degrading the fitted order below the true value for any case whose h-sweep reaches the floor, and (for the purely affine case, where the remainder IS the floor at every h) fitting a spurious negative slope through pure noise instead of reporting at_floor_everywhere."
+file = "include/fuse/linalg/derivative_gate.hpp"
+old = """    const bool still_dropping = prev > 0.0 && cur <= plateau_drop * prev;
+    if (!still_dropping) {"""
+new = """    const bool still_dropping = prev > 0.0 && cur <= plateau_drop * prev;
+    if (false && !still_dropping) {"""
+target = "fuse_linalg_derivative_gate_test"
+test = "linalg.derivative_gate"
+# Hand-proved 2026-10-10 against a byte-identical restored copy: 9 pass
+# before. After mutation, applied by hand and the WHOLE binary run
+# unfiltered: 6 pass, 3 fail --
+# TaylorRemainderOrder.CubicMapWithAnalyticJacobianMeasuresOrderTwo (fitted
+# order 1.64, below the (1.8, 2.3) band), .BrusselatorSpeciesResidualMeasures
+# OrderTwo (fitted order 1.21), and
+# .BackwardEulerAffineResidualIsAtTheFloorForEveryH (at_floor_everywhere
+# false, fitted a spurious order of -0.018 through what should have been
+# reported as the floor) -- WrongJacobianMeasuresOrderOneNotTwo survives
+# (its own true order-1 trend dominates the fit even including the floor
+# points at this h-range, so this row is not its kill; the row below is).
+# File restored and `cmp`-verified byte-identical.
+
+[[mutation]]
+id = "derivative-gate-wrong-jacobian-expectation-inverted"
+area = "linalg"
+describes = "TaylorRemainderOrder.WrongJacobianMeasuresOrderOneNotTwo's own EXPECT_GT/EXPECT_LT bounds inverted to the (1.8, 2.3) band a CORRECT Jacobian would need, in place of the (0.7, 1.3) band a WRONG one actually produces -- the 'the wrong-Jacobian sanity case's expectation inverted' mutation row the task names explicitly. This is the meta-test: it proves the ORIGINAL test's assertion direction is load-bearing (the wrong Jacobian's own measured order, ~1.0, genuinely fails the inverted band) rather than a vacuous pass that would succeed under either set of bounds."
+file = "test/linalg/derivative_gate_test.cpp"
+old = """  EXPECT_GT(r.order, 0.7) << "observed order " << r.order;
+  EXPECT_LT(r.order, 1.3) << "observed order " << r.order
+                         << " -- a wrong Jacobian measured as order 2 would mean this check "
+                            "cannot tell a correct linearisation from an incorrect one";"""
+new = """  EXPECT_GT(r.order, 1.8) << "observed order " << r.order;
+  EXPECT_LT(r.order, 2.3) << "observed order " << r.order
+                         << " -- a wrong Jacobian measured as order 2 would mean this check "
+                            "cannot tell a correct linearisation from an incorrect one";"""
+target = "fuse_linalg_derivative_gate_test"
+test = "linalg.derivative_gate"
+# Hand-proved 2026-10-10 against a byte-identical restored copy: 9 pass
+# before. After mutation, applied by hand and the WHOLE binary run
+# unfiltered: 8 pass, 1 fails -- TaylorRemainderOrder.
+# WrongJacobianMeasuresOrderOneNotTwo itself, on its own first EXPECT_GT
+# (observed order 1.003 against the inverted lower bound of 1.8) -- every
+# other case, including the correct-Jacobian order-2 cases this inverted
+# band's own bounds would otherwise have matched, is unaffected (this
+# mutation touches only the one test's own literals). File restored and
+# `cmp`-verified byte-identical.

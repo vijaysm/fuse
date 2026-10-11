@@ -119,6 +119,16 @@ The `throws` label is **declared** on a test target, not detected: a parent trie
 refusal-asserting tests by grep, by helper name and by catch site, and both detectors were wrong in
 opposite directions.
 
+## The derivative gate
+
+A Newton step, a monolithic Jacobian block, or any other operator whose correctness depends on its
+own adjoint or its own linearisation is **Verified** (the state above) only once it has a case
+citing it in `linalg.derivative_gate` ([](derivative-gate.md)): the adjoint dot-product identity
+against a bound derived from the operator's own norm, finite-difference derivative convergence with
+the round-off plateau detected rather than fit through, and assembled-vs-matrix-free agreement. An
+operator with an `apply` and no such case is **Implemented, untested** for that property, however
+well-tested its forward `apply` alone is.
+
 ## Mutation evidence
 
 A ported or new kernel is accepted only when at least one **named** mutation per public kernel is
