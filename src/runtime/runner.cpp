@@ -2857,6 +2857,33 @@ Result<void> Runner::Impl::gather_window_block_samples(
   return Result<void>::success();
 }
 
+Result<void> Runner::Impl::broadcast_window_convergence(
+    const detail::RegionRuntime& r, bool converged, bool& converged_out) {
+  converged_out = converged;
+  if (r.participants.size() <= 1) return Result<void>::success();
+#if FUSE_HAVE_MPI
+  const MPI_Comm base =
+      MPI_Comm_f2c(static_cast<MPI_Fint>(*config.base_communicator));
+  if (base == MPI_COMM_NULL) {
+    return Failure{"E-RT-WINDOW-COMM",
+                   "RunnerConfig::base_communicator is MPI_COMM_NULL at "
+                   "iteration region '" + r.name +
+                       "'s window convergence broadcast"};
+  }
+  int conv = converged ? 1 : 0;
+  if (MPI_Bcast(&conv, 1, MPI_INT, r.participants.front(), base) !=
+      MPI_SUCCESS) {
+    return Failure{"E-RT-WINDOW-COMM",
+                 "MPI_Bcast failed while broadcasting iteration region '" +
+                     r.name + "'s window convergence decision"};
+  }
+  converged_out = conv != 0;
+#else
+  (void)converged;
+#endif
+  return Result<void>::success();
+}
+
 Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
   const auto in_ptr = [&](std::uint8_t k) -> const double* {
     return slots[ins.in[k].value()].data;
