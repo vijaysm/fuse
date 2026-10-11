@@ -63,6 +63,20 @@ LAYERS = [
     "transport",
     "runtime",
     "abi",
+    # `petsc` (fuse::petsc, the S7 Newton seam's second substrate,
+    # PetscToken track, 2026-10-11) sits at the TOP: it depends on
+    # `runtime` (fuse::LinearizationToken, fuse/runtime/component.hpp) and
+    # `num` (fuse::num::PreconditionerBlock/BlockJacobiPreconditioner,
+    # reused rather than reimplemented for the block-Jacobi PCSHELL
+    # composition) -- both already well below `abi` -- and nothing in the
+    # library depends on it (no existing layer, including `abi`, names
+    # `fuse/petsc/...`). Placing it after every existing layer, rather
+    # than splicing it in just above `runtime`, needs no argument about
+    # exactly where between `runtime` and `abi` it belongs (it depends on
+    # layers well below either), and guarantees by construction that nothing
+    # already-ranked could be made to depend on it by a future layer
+    # insertion between `petsc` and whatever used to be the topmost entry.
+    "petsc",
 ]
 
 # Third-party headers that may appear in a PUBLIC header, per layer. Anything
@@ -102,6 +116,12 @@ ALLOWED_PUBLIC_THIRD_PARTY = {
     # The C ABI is the one surface that must compile for a consumer with none
     # of our dependencies installed.
     "abi": set(),
+    # fuse/petsc/*.hpp name no PETSc type at all (FORBIDDEN_PUBLIC's own
+    # `petsc` pattern matches `#include <petsc...>`/`"petsc..."` at every
+    # layer, no exception for this one) -- every PETSc call lives in
+    # src/petsc/*.cpp, behind plain std::span/DistVector shapes. Nothing
+    # third-party is named in this layer's public surface at all.
+    "petsc": set(),
 }
 
 # Never in any public header, at any layer, outside its own backend directory.

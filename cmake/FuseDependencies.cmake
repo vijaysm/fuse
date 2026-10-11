@@ -152,9 +152,27 @@ endif()
 if(FUSE_ENABLE_MOAB AND NOT FUSE_ENABLE_MPI)
   message(FATAL_ERROR "FUSE_ENABLE_MOAB (tier 2) requires FUSE_ENABLE_MPI (tier 1)")
 endif()
-if(FUSE_ENABLE_PETSC AND NOT FUSE_ENABLE_MOAB)
-  message(FATAL_ERROR "FUSE_ENABLE_PETSC (tier 3) requires FUSE_ENABLE_MOAB (tier 2)")
-endif()
+# PetscToken track (S7.2b), 2026-10-11: FUSE_ENABLE_PETSC no longer requires
+# FUSE_ENABLE_MOAB. The tier-3 "PETSc AND MOAB" bundle this gate used to
+# enforce was built for a PETSc+MOAB PHYSICS KIT (a mesh-aware solver
+# integration, KNOWN_ISSUES.md D32's own "a later rebuild" framing) -- the
+# PETSc SOLVER PLUGIN behind S7's Newton seam (fuse-coupler-petsc,
+# src/petsc/) needs neither MOAB nor a mesh at all: it is a
+# fuse::LinearizationToken (MATMFFD) and a SNES driver over
+# Runner::region_fixed_point_residual()'s plain double arrays, found via
+# pkg-config alone (the `if(FUSE_ENABLE_PETSC)` block below, pkg_check_
+# modules(PETSc)). A tier-0 build (FUSE_ENABLE_MPI=OFF, hence FUSE_ENABLE_
+# MOAB=OFF too, since MOAB itself requires MPI two lines above) can
+# therefore carry PETSc alone. OBSERVED from /opt/petsc/download-moab's
+# own PETSc.pc: its Libs.private names -lmpi from /opt/mpich (PETSc
+# itself was configured with MPI), so a tier-0 fuse-coupler-petsc target
+# still links libmpi transitively through PkgConfig::PETSc even with
+# FUSE_HAVE_MPI=0. Whether PetscInitialize() then calls MPI_Init() itself
+# in that case is TO BE MEASURED by test/petsc/init_test.cpp -- see that
+# file and this track's own report for the transition actually observed.
+# A future MOAB-aware PETSc integration, if one is built, re-adds its OWN
+# FUSE_ENABLE_MOAB requirement at that point rather than this
+# unconditional one.
 
 # fmt — the ONLY output formatter in the library (docs/dev/conventions.md). No iostreams in
 # library code, no printf in host code; fmt::format_to with a caller-provided buffer
@@ -793,6 +811,19 @@ macro(fuse_resolve_dependencies)
   if(FUSE_ENABLE_PETSC)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(PETSc REQUIRED IMPORTED_TARGET PETSc)   # found, never fetched
+    # PkgConfig::PETSc's own Cflags (PETSc.pc) is `-I${includedir}` only --
+    # PETSc's OWN include dir, not MPI's. <petsc.h> unconditionally
+    # includes <mpi.h> (PETSc links MPI regardless of FUSE_ENABLE_MPI,
+    # measured from /opt/petsc/download-moab's own PETSc.pc Libs.private
+    # naming -lmpi), so a tier-0 build (FUSE_ENABLE_MPI=OFF, MPI::MPI_C
+    # not yet found by the FUSE_ENABLE_MPI branch above) still needs an
+    # MPI include path for fuse-coupler-petsc (src/petsc/*.cpp, the only
+    # translation units naming <petsc.h>/<mpi.h> in that library). Found
+    # here, independently of FUSE_ENABLE_MPI, guarded so a build that
+    # already found MPI (FUSE_ENABLE_MPI=ON) does not re-find it.
+    if(NOT TARGET MPI::MPI_C)
+      find_package(MPI REQUIRED COMPONENTS C)
+    endif()
   endif()
   if(FUSE_ENABLE_LOWFIVE)
     # ------------------------------------------------------------ LowFive

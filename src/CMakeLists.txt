@@ -534,6 +534,45 @@ set_target_properties(fuse-coupler-runtime PROPERTIES
   VISIBILITY_INLINES_HIDDEN ON
 )
 
+# ---------------------------------------------------------------- petsc
+# S7's Newton seam, second substrate (PetscToken track, 2026-10-11,
+# docs/dev/newton-krylov.md Sec. 10): a fuse::LinearizationToken backed by
+# PETSc's MATMFFD, and a SNES driver over the same ResidualFn shape the
+# native fuse::num::solve() (just below, in fuse::num) already takes. Built
+# ONLY under FUSE_ENABLE_PETSC -- a build without it registers this target
+# at all, so a consumer never sees a half-built fuse::petsc with no symbols;
+# tools/check-layering.py's own `petsc` layer entry is unconditional (the
+# PUBLIC headers are PETSc-type-free and compile either way), but the
+# LIBRARY exists only here, matching FUSE_ENABLE_LOWFIVE's own "the sources
+# always exist in the list above this comment, only the library differs"
+# pattern -- except, unlike LowFive's transport sources, nothing in
+# fuse-coupler-runtime or fuse-coupler-num names fuse/petsc/* at all, so
+# there is no shared target whose source list needs conditional members:
+# the whole library is additive.
+if(FUSE_ENABLE_PETSC)
+  add_library(fuse-coupler-petsc
+    petsc/init.cpp
+    petsc/token.cpp
+    petsc/solve.cpp
+  )
+  add_library(fuse::petsc ALIAS fuse-coupler-petsc)
+  target_compile_features(fuse-coupler-petsc PUBLIC cxx_std_20)
+  target_link_libraries(fuse-coupler-petsc PUBLIC fuse::runtime fuse::num)
+  # PRIVATE: <petsc.h> appears only in this library's own .cpp files
+  # (src/petsc/*.cpp), never in a public fuse/petsc/*.hpp
+  # (tools/check-layering.py's FORBIDDEN_PUBLIC), so nothing above this
+  # library needs PETSc's own include path or link line propagated to it.
+  # MPI::MPI_C: PkgConfig::PETSc's own Cflags carries only PETSc's include
+  # dir, never MPI's (cmake/FuseDependencies.cmake's own comment on the
+  # FUSE_ENABLE_PETSC block) -- <petsc.h> includes <mpi.h> unconditionally.
+  target_link_libraries(fuse-coupler-petsc PRIVATE PkgConfig::PETSc MPI::MPI_C)
+  set_target_properties(fuse-coupler-petsc PROPERTIES
+    EXPORT_NAME petsc
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+  )
+endif()
+
 # ---------------------------------------------------------------- abi
 # The participant C ABI (docs/dev/abi-design.md, docs/user/c-abi.md):
 # fuse_coupler_abi() and the fuse_participant_abi_v1 table behind it. Links
@@ -660,6 +699,9 @@ set(FUSE_INSTALL_TARGETS
   fuse-coupler-linalg fuse-coupler-num fuse-coupler-transport fuse-coupler-search
   fuse-coupler-backend fuse-coupler-partition fuse-coupler-runtime
 )
+if(FUSE_ENABLE_PETSC)
+  list(APPEND FUSE_INSTALL_TARGETS fuse-coupler-petsc)
+endif()
 
 install(TARGETS ${FUSE_INSTALL_TARGETS}
   EXPORT fuse-coupler-targets
