@@ -196,6 +196,13 @@ add_library(fuse-coupler-num
   num/accel_relaxation.cpp
   num/kernels_inst.cpp
   num/residual_norm.cpp
+  # S7.2: the native Jacobian-free Newton-Krylov coupler
+  # (docs/dev/newton-krylov.md). line_search.cpp is the pluggable BT/CP/Basic
+  # strategy newton_krylov.cpp's own line-search step dispatches to; neither
+  # needs fuse::runtime (the layering newton_krylov.hpp's own header comment
+  # states), only fuse::linalg, already a PRIVATE dependency of this library.
+  num/line_search.cpp
+  num/newton_krylov.cpp
 )
 add_library(fuse::num ALIAS fuse-coupler-num)
 target_compile_features(fuse-coupler-num PUBLIC cxx_std_20)

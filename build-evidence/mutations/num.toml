@@ -1,0 +1,152 @@
+# Mutation evidence for S7.2, the native Jacobian-free Newton-Krylov coupler
+# (fuse::num::solve(), fuse/num/newton_krylov.hpp + fuse/num/line_search.hpp).
+# Own file per the review-fix protocol (see linalg-least-squares.toml's own
+# header comment): do not edit build-evidence/mutations.toml directly while
+# other tracks hold it dirty. Discovered automatically by tools/mutate.py's
+# load_manifest() (every build-evidence/mutations/*.toml), no separate
+# registration needed.
+#
+# All seven rows were HAND-PROVEN, not run through tools/mutate.py itself:
+# this track's own working tree carries untracked new files throughout (the
+# standing rule against any state-changing git), and tools/mutate.py refuses
+# to start against a tree that is not git-clean (its own header comment).
+# The exact sequence tools/mutate.py would run was followed by hand instead:
+# a byte-for-byte backup of the file was taken BEFORE any row's `old`->`new`
+# text was applied; `cmake --build <dir> --target <target>` rebuilt the one
+# changed translation unit; the WHOLE target binary was run UNFILTERED (no
+# gtest filter, every row lists the before/after/after-restore pass counts
+# measured directly from that run); the file was restored from the backup and
+# `cmp`-verified byte-identical before the next row began. Seven iterations
+# ran (and were restored) in strict sequence against the SAME
+# backup-and-restore discipline every prior track's mutation rows in this
+# directory use -- the sixth and seventh rows both target the same
+# block-Jacobi coverage check's two halves (trailing vs. interior gap; the
+# first attempt at the trailing-gap row's own counterpart, grepping for a
+# DIFFERENT line, found the existing suite did not kill it, so a second test
+# and a second row were added rather than reporting a false kill).
+#
+# This is not the full coverage every refusal and branch in
+# newton_krylov.cpp/line_search.cpp could in principle carry -- seven rows
+# were chosen to cover each of the six mechanisms the task named at least
+# once (MFFD action, Eisenstat-Walker forcing, line search, the named
+# convergence/divergence tests, the block-Jacobi preconditioner's coverage
+# check twice over, and the preconditioner lag schedule), not every
+# individual branch inside each. Recorded as an open item in this track's
+# own report rather than left silent.
+
+[[mutation]]
+id = "newton-mffd-divided-difference-sign-flipped"
+area = "num"
+describes = "MffdJacobianAction::apply adds F(x) back into F(x+hv) instead of subtracting it before dividing by h, so the matrix-free Jacobian action reports (F(x+hv)+F(x))/h instead of (F(x+hv)-F(x))/h -- the 'MFFD sign flip' mutation row. This breaks the Jacobian action itself, so it is caught by nearly every test that drives a real Newton step (the MFFD-vs-analytic comparison, every convergence/divergence case that needs at least one successful linear solve, both preconditioner cases, and the two-partition rank-agreement case, which depends on the solve actually converging to compare iteration counts)."
+file = "src/num/newton_krylov.cpp"
+old = """  jv.axpy(-1.0, *fx_);"""
+new = """  jv.axpy(1.0, *fx_);"""
+target = "fuse_num_newton_krylov_test"
+test = "num.newton_krylov"
+# Hand-proved 2026-10-10 against a byte-identical backup: 25 cases in the
+# target before mutation (all pass); after mutation, applied by hand and the
+# WHOLE binary run unfiltered, 12 fail (Mffd.ActionAgreesWithAnalyticJacobianToOrderH,
+# NewtonKrylovLineSearch.BtEngagesAndRecoversOnAPoorInitialGuess, both
+# NewtonKrylovConvergence.AbsoluteFiresWhenAtolIsTheLooseTest and
+# RelativeFiresWhenAtolIsUnreachable and StepFiresOnAQuinticWhoseConvergenceIsLinearNotQuadratic,
+# four NewtonKrylovDivergence cases, both NewtonKrylovPreconditioner GMRES-
+# iteration-count cases, and NewtonKrylovRankAgreement) -- 13 pass. File
+# restored and `cmp`-verified byte-identical; rebuilt and reran to confirm all
+# 25 pass again.
+
+[[mutation]]
+id = "newton-eisenstat-walker-oversolving-safeguard-disabled"
+area = "num"
+describes = "eisenstat_walker_eta's over-solving safeguard (eta_k >= gamma*eta_prev^alpha whenever that exceeds safeguard_threshold, Eisenstat & Walker 1996) is replaced by a condition that is always false, so the safeguard never engages and a Newton step that reduced ||F|| a lot can starve the NEXT linear solve of the accuracy it still needs -- the 'EW safeguard disabled' mutation row."
+file = "src/num/newton_krylov.cpp"
+old = """  if (safeguard > opt.safeguard_threshold) {"""
+new = """  if (false) {"""
+target = "fuse_num_newton_krylov_test"
+test = "num.newton_krylov"
+# Hand-proved 2026-10-10: 25 pass before; after mutation, 1 fails
+# (EisenstatWalker.OverSolvingSafeguardEngages, which recomputes the floored
+# value directly and finds eta un-floored), 24 pass. File restored and
+# `cmp`-verified byte-identical; rebuilt and reran to confirm all 25 pass
+# again.
+
+[[mutation]]
+id = "newton-linesearch-bt-armijo-test-removed"
+area = "num"
+describes = "backtracking_line_search's first Armijo test (f(lambda) <= (1 - 2*alpha*lambda)*f0) is replaced by a test that accepts any step up to twice the current merit, so a full Newton step that genuinely overshoots is accepted without a single backtrack -- the 'BT Armijo removed' mutation row. Killed in BOTH binaries: directly in line_search_test.cpp (the standalone BT cases) and, independently, in newton_krylov_test.cpp (the end-to-end BT-engagement and DivergedLineSearch cases), since the two share the one mutated translation unit."
+file = "src/num/line_search.cpp"
+old = """  if (f_cur <= (1.0 - 2.0 * opt.armijo_alpha * lambda) * f0) {"""
+new = """  if (f_cur <= 2.0 * f0) {"""
+target = "fuse_num_line_search_test"
+test = "num.line_search"
+# Hand-proved 2026-10-10: fuse_num_line_search_test has 7 cases, all pass
+# before; after mutation, 2 fail (LineSearchBT.EngagesAndRecoversOnAPoorInitialGuess,
+# LineSearchBT.FailsWhenNoStepAboveLambdaMinIsAcceptable), 5 pass.
+# fuse_num_newton_krylov_test (25 cases, all pass before) independently loses
+# 2 (NewtonKrylovLineSearch.BtEngagesAndRecoversOnAPoorInitialGuess,
+# NewtonKrylovDivergence.LineSearchFiresWhenLambdaMinIsSetUnreachablyHigh), 23
+# pass. Both files restored and `cmp`-verified byte-identical; both targets
+# rebuilt and rerun to confirm 7/7 and 25/25 again.
+
+[[mutation]]
+id = "newton-relative-convergence-test-duplicates-absolute"
+area = "num"
+describes = "solve()'s relative-convergence test (||F|| <= rtol*||F0||) is replaced by a second copy of the absolute test (||F|| <= atol), so a region that never reaches atol is reported DivergedMaxIterations/etc. instead of ConvergedRelative even when it has genuinely reduced the residual by rtol -- the 'relative test duplicates absolute' mutation row, a silent-misreport class the task's own standing rule (never a silent outcome) is meant to prevent."
+file = "src/num/newton_krylov.cpp"
+old = """    if (norm_f_new <= opt.rtol * norm_f0) return finish(NewtonStatus::ConvergedRelative);"""
+new = """    if (norm_f_new <= opt.atol) return finish(NewtonStatus::ConvergedRelative);"""
+target = "fuse_num_newton_krylov_test"
+test = "num.newton_krylov"
+# Hand-proved 2026-10-10: 25 pass before; after mutation, 2 fail
+# (NewtonKrylovConvergence.RelativeFiresWhenAtolIsUnreachable, which sets
+# atol=0 specifically to prove the relative test is the one that must fire,
+# and NewtonKrylovPreconditioner.IdentityNeedsMoreGmresIterationsThanTheExactBlockInverse,
+# which happens to converge via the relative test on this mutation's altered
+# schedule), 23 pass. File restored and `cmp`-verified byte-identical;
+# rebuilt and reran to confirm all 25 pass again.
+
+[[mutation]]
+id = "newton-block-jacobi-trailing-coverage-check-disabled"
+area = "num"
+describes = "BlockJacobiPreconditioner::from_blocks's trailing-coverage check (the declared blocks must reach exactly n, checked once after the between-blocks loop) is replaced by a condition that is always false, so a block set that covers only a PREFIX of the stacked vector is silently accepted -- the un-covered suffix would be preconditioned with nothing at all rather than refused. A first attempt at this row mutated the BETWEEN-BLOCKS gap check instead (`lo != cursor`) and found the existing test suite did not kill it (the one coverage test used only a trailing gap, which this file's OTHER check alone was already catching) -- that gap in the test suite's own coverage is closed by the newton-block-jacobi-interior-coverage-check-disabled row below, added for exactly this reason, not left silent."
+file = "src/num/newton_krylov.cpp"
+old = """  if (cursor != n) {"""
+new = """  if (false) {"""
+target = "fuse_num_newton_krylov_test"
+test = "num.newton_krylov"
+# Hand-proved 2026-10-10, re-measured against the 26-test baseline after
+# NewtonKrylovPreconditioner.InteriorCoverageGapIsRefused was added: 26 pass
+# before; after mutation, 1 fails (NewtonKrylovPreconditioner.CoverageGapIsRefused,
+# the trailing-gap case), 25 pass. File restored and `cmp`-verified
+# byte-identical; rebuilt and reran to confirm all 26 pass again.
+
+[[mutation]]
+id = "newton-block-jacobi-interior-coverage-check-disabled"
+area = "num"
+describes = "The SAME file's between-blocks gap/overlap check (`lo != cursor`, inside the loop over sorted block spans) is disabled the same way -- catches an INTERIOR gap (declared blocks [0,2) and [3,5) over n=5, missing [2,3)) that the trailing check above cannot see at all, since cursor still reaches n through the LAST block even though an earlier one was skipped over."
+file = "src/num/newton_krylov.cpp"
+old = """    if (lo != cursor) {"""
+new = """    if (false) {"""
+target = "fuse_num_newton_krylov_test"
+test = "num.newton_krylov"
+# Hand-proved 2026-10-10 against the 26-test baseline (with
+# InteriorCoverageGapIsRefused already added): 26 pass before; after
+# mutation, 1 fails (NewtonKrylovPreconditioner.InteriorCoverageGapIsRefused),
+# 25 pass. File restored and `cmp`-verified byte-identical; rebuilt and
+# reran to confirm all 26 pass again.
+
+[[mutation]]
+id = "newton-preconditioner-lag-schedule-ignored"
+area = "num"
+describes = "solve()'s preconditioner-refresh condition (refresh at k==0 and every preconditioner_lag steps thereafter) is replaced by 'refresh whenever a refresh callback is given', so the lag option silently has no effect and the preconditioner is rebuilt every step regardless of what was asked for -- the 'lag schedule ignored' mutation row. A cost/staleness regression a convergence-only test could easily miss (refreshing MORE often than requested cannot make the iteration not converge), which is exactly why NewtonKrylovPreconditioner.LagScheduleRefreshesExactlyAtTheDeclaredInterval checks the refresh SCHEDULE directly (NewtonIterationRecord::preconditioner_refreshed at every iteration) rather than only the downstream iteration count."
+file = "src/num/newton_krylov.cpp"
+old = """    if (refresh_precond && (k == 0 || opt.preconditioner_lag <= 0 ||
+                            k % opt.preconditioner_lag == 0)) {"""
+new = """    if (refresh_precond) {"""
+target = "fuse_num_newton_krylov_test"
+test = "num.newton_krylov"
+# Hand-proved 2026-10-10 against the 27-test baseline (with
+# LagScheduleRefreshesExactlyAtTheDeclaredInterval already added): 27 pass
+# before; after mutation, 1 fails
+# (NewtonKrylovPreconditioner.LagScheduleRefreshesExactlyAtTheDeclaredInterval),
+# 26 pass. File restored and `cmp`-verified byte-identical; rebuilt and
+# reran to confirm all 27 pass again.
