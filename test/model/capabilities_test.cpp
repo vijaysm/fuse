@@ -25,6 +25,16 @@ TEST(Capabilities, HiddenStateIsBitThree) {
   EXPECT_EQ(fuse::kCapabilityHiddenState, std::uint64_t{1} << 3);
 }
 
+// S7.1's residual/linearisation seam (fuse/runtime/component.hpp): the two
+// bits it took from what was "bits 4-63 reserved" before this track.
+TEST(Capabilities, ResidualIsBitFour) {
+  EXPECT_EQ(fuse::kCapabilityResidual, std::uint64_t{1} << 4);
+}
+
+TEST(Capabilities, LinearizationIsBitFive) {
+  EXPECT_EQ(fuse::kCapabilityLinearization, std::uint64_t{1} << 5);
+}
+
 TEST(Capabilities, DeterminismMaskIsBitsOneAndTwo) {
   EXPECT_EQ(fuse::kCapabilityDeterminismMask, std::uint64_t{0b0110});
   EXPECT_EQ(fuse::kCapabilityDeterminismShift, std::uint64_t{1});
@@ -35,12 +45,21 @@ TEST(Capabilities, NamedBitsDoNotOverlap) {
   EXPECT_EQ(fuse::kCapabilityRollback & fuse::kCapabilityDeterminismMask, 0u);
   EXPECT_EQ(fuse::kCapabilityRollback & fuse::kCapabilityHiddenState, 0u);
   EXPECT_EQ(fuse::kCapabilityDeterminismMask & fuse::kCapabilityHiddenState, 0u);
+  EXPECT_EQ(fuse::kCapabilityResidual & fuse::kCapabilityRollback, 0u);
+  EXPECT_EQ(fuse::kCapabilityResidual & fuse::kCapabilityDeterminismMask, 0u);
+  EXPECT_EQ(fuse::kCapabilityResidual & fuse::kCapabilityHiddenState, 0u);
+  EXPECT_EQ(fuse::kCapabilityLinearization & fuse::kCapabilityResidual, 0u);
+  EXPECT_EQ(fuse::kCapabilityLinearization & fuse::kCapabilityRollback, 0u);
+  EXPECT_EQ(fuse::kCapabilityLinearization & fuse::kCapabilityDeterminismMask, 0u);
+  EXPECT_EQ(fuse::kCapabilityLinearization & fuse::kCapabilityHiddenState, 0u);
 }
 
 TEST(Capabilities, ReservedMaskIsEverythingElse) {
   const std::uint64_t named = fuse::kCapabilityRollback |
                               fuse::kCapabilityDeterminismMask |
-                              fuse::kCapabilityHiddenState;
+                              fuse::kCapabilityHiddenState |
+                              fuse::kCapabilityResidual |
+                              fuse::kCapabilityLinearization;
   EXPECT_EQ(fuse::kCapabilityReservedMask, ~named);
   EXPECT_EQ(fuse::kCapabilityReservedMask & named, 0u);
 }

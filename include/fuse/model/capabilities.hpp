@@ -59,7 +59,18 @@
 ///               an implementer to save such state anyway, FUSE simply
 ///               cannot check that they did (see the R16 caveat there). The
 ///               bit exists so that fact can be READ rather than assumed.
-///   bits 4-63   reserved. Must be zero; no current caller sets or checks
+///   bit 4       kCapabilityResidual     -- S7.1's residual/linearisation
+///               seam: `Component::implicit()` returns a non-null
+///               `fuse::ImplicitComponent` (fuse/runtime/component.hpp), so
+///               `evaluate_residual()` may be called. Checked, not trusted,
+///               the same way `kCapabilityRollback` is: see
+///               `fuse::verify_newton_capability_support()`.
+///   bit 5       kCapabilityLinearization -- the `LinearizationToken` the
+///               `ImplicitComponent` returns after an `evaluate_residual()`
+///               call is usable for this component's own block. Independent
+///               of bit 4: a component may answer the residual question
+///               without ever linearising it.
+///   bits 6-63   reserved. Must be zero; no current caller sets or checks
 ///               them. A future bit here is additive (an old binary reading
 ///               a newer one sees zero and treats it as absent), so no
 ///               version bump accompanies adding one -- the descriptor
@@ -106,10 +117,36 @@ inline constexpr std::uint64_t kCapabilityDeterminismMask =
 /// verification cannot see it (mirrors `SurrogateContract::carries_hidden_state`).
 inline constexpr std::uint64_t kCapabilityHiddenState = std::uint64_t{1} << 3;
 
-/// Bits 4-63: reserved, must be zero. Named so a future bit is added by
+/// S7.1's residual/linearisation seam. The component additionally
+/// implements `fuse::ImplicitComponent` (fuse/runtime/component.hpp):
+/// `Component::implicit()` returns non-null, and `evaluate_residual()` can
+/// be called to get this component's own contribution to the coupled
+/// residual at a frozen time level without advancing its state. A Newton-
+/// solved iteration region whose `IterationRegionDecl::requires_residual_
+/// capability` is set refuses a member that does not set this bit
+/// (E-NEWTON-CAPABILITY, `fuse::verify_newton_capability_support`,
+/// src/runtime/checkpoint_support.cpp) -- the same checked-not-trusted
+/// pattern `kCapabilityRollback` already follows for `supports_rollback()`.
+inline constexpr std::uint64_t kCapabilityResidual = std::uint64_t{1} << 4;
+
+/// S7.1's residual/linearisation seam. The `LinearizationToken` returned by
+/// `ImplicitComponent::linearization()` after an `evaluate_residual()` call
+/// is usable for this component's own block -- in particular its
+/// `apply_preconditioner()`, which a Newton region's block-Jacobi
+/// physics-based preconditioner (S7.2) composes from every member's own
+/// token. A region whose `IterationRegionDecl::requires_linearization_
+/// capability` is set refuses a member that does not set this bit
+/// (E-NEWTON-CAPABILITY). Independent of `kCapabilityResidual`: a component
+/// may evaluate its residual without ever linearising it, in which case
+/// the Newton coupler falls back to a purely matrix-free directional
+/// derivative for that component's own block.
+inline constexpr std::uint64_t kCapabilityLinearization = std::uint64_t{1} << 5;
+
+/// Bits 6-63: reserved, must be zero. Named so a future bit is added by
 /// narrowing this constant, not by grepping for a magic number.
 inline constexpr std::uint64_t kCapabilityReservedMask =
-    ~(kCapabilityRollback | kCapabilityDeterminismMask | kCapabilityHiddenState);
+    ~(kCapabilityRollback | kCapabilityDeterminismMask | kCapabilityHiddenState |
+      kCapabilityResidual | kCapabilityLinearization);
 
 /// Packs `level` into the 2-bit determinism field, zero elsewhere. The
 /// encoding is the enumerator's own raw value, left-shifted into place --

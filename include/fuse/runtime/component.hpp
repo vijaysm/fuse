@@ -5,6 +5,7 @@
 #include <optional>
 #include <iterator>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -56,6 +57,153 @@ struct StepContext {
     return t_begin <= t_end && step >= 0 && iteration >= 0;
   }
 };
+
+/// S7.1's residual/linearisation seam: a component's own approximate
+/// linearisation of its `ImplicitComponent::evaluate_residual()` about the
+/// point of its most recent call.
+///
+/// Acts on this component's OWN block of the region's stacked interface
+/// vector only -- `cols()`-long in, `rows()`-long out (and the reverse for
+/// the transpose) -- never the whole region's vector. The Newton coupler
+/// (S7.2) is responsible for scattering a global Krylov iterate into each
+/// member's own block before calling `apply_jacobian()`, and gathering the
+/// per-block outputs back, exactly the convention
+/// `fuse::linalg::MatrixFreeOperator` already uses for a single operator
+/// over the whole vector (fuse/linalg/operator.hpp): this token is that
+/// same duck-typed shape, one per region member.
+class LinearizationToken {
+ public:
+  virtual ~LinearizationToken() = default;
+
+  /// y = J x, J this component's own Jacobian of `evaluate_residual()` at
+  /// the point this token was returned for. `x.size() == cols()`,
+  /// `y.size() == rows()`.
+  virtual Result<void> apply_jacobian(std::span<const double> x,
+                                      std::span<double> y) = 0;
+
+  /// y = J^T x. `x.size() == rows()`, `y.size() == cols()`. Needed by a
+  /// normal-equations or adjoint formulation; a component whose block is
+  /// non-square or not meaningfully transposable may return an error
+  /// rather than approximate.
+  virtual Result<void> apply_jacobian_transpose(std::span<const double> x,
+                                                std::span<double> y) = 0;
+
+  /// z = M^-1 r, this component's own physics-based preconditioner for its
+  /// diagonal block: an approximate inverse cheaper than factorising
+  /// `apply_jacobian()` (a lagged operator, a multigrid V-cycle, a
+  /// lower-fidelity model). `r.size() == rows()`, `z.size() == cols()`. A
+  /// component with no better choice may implement this as the identity
+  /// (copy `r` into `z`) rather than refuse: the Newton coupler's
+  /// block-Jacobi preconditioner (S7.2) composes whatever every member
+  /// returns, and the identity is always a legal, if weak, one.
+  virtual Result<void> apply_preconditioner(std::span<const double> r,
+                                            std::span<double> z) = 0;
+
+  /// Output/input lengths of `apply_jacobian()`. A Newton region checks
+  /// these against the block sizes its own interface-vector assembly
+  /// derived for this component and refuses (E-NEWTON-SHAPE,
+  /// `fuse::verify_linearization_shape()` below) on a disagreement, rather
+  /// than running a Krylov iteration over a silently truncated or
+  /// out-of-bounds block.
+  [[nodiscard]] virtual std::size_t rows() const = 0;
+  [[nodiscard]] virtual std::size_t cols() const = 0;
+
+  /// Changes whenever the linearisation point moves (a new
+  /// `evaluate_residual()` call), so the Newton loop can tell a retained
+  /// token is stale without re-comparing the interface vector itself. No
+  /// ordering or uniqueness guarantee beyond "equal signature, same
+  /// point" -- a call counter, a hash of the input, or (for a component
+  /// that only ever linearises once) a fixed constant are all legal
+  /// implementations.
+  [[nodiscard]] virtual std::uint64_t signature() const = 0;
+};
+
+/// S7.1's residual/linearisation seam: an interface a `Component` may
+/// ADDITIONALLY implement, queried through `Component::implicit()` rather
+/// than through a second base class -- see that method's own comment for
+/// why.
+///
+/// A component implementing this must also set `kCapabilityResidual` (and,
+/// if `linearization()` can return non-null, `kCapabilityLinearization`)
+/// in `capabilities()` (fuse/model/capabilities.hpp): a Newton-solved
+/// iteration region checks the BIT, not this interface, at validation time
+/// (`fuse::verify_newton_capability_support()`), the same checked-not-
+/// trusted pattern `kCapabilityRollback` already follows for
+/// `supports_rollback()`.
+class ImplicitComponent {
+ public:
+  virtual ~ImplicitComponent() = default;
+
+  /// This component's own contribution to the coupled residual at time
+  /// level `ctx.t_end`, given the interface values it `Requires` inside
+  /// the region (already remapped and time-interpolated by FUSE, exactly
+  /// as `advance()` would see them at the SAME `ctx`) in `interface_in`,
+  /// in the stacking order `fuse::FixedPointResidual`
+  /// (fuse/runtime/fixed_point_residual.hpp) assembles a region's blocks
+  /// in.
+  ///
+  /// MUST NOT mutate any state `advance()` would mutate -- registered
+  /// field storage, private state, anything `save_state()` would need to
+  /// capture -- and must leave it bit-identical to what it was on entry: a
+  /// test (test/runtime/implicit_component_test.cpp) calls `save_state()`,
+  /// this, then `save_state()` again and compares the two checkpoints.
+  /// Called possibly many times at the SAME `ctx` and the SAME
+  /// `interface_in` (a Krylov iteration can revisit a point, and a
+  /// matrix-free Jacobian action perturbs around one), and must return the
+  /// same `residual_out`, bit for bit, every time: no RNG, no unordered
+  /// reduction, no hidden counter -- the same purity `advance()` itself
+  /// must have inside an iteration region (`Component::advance()`'s own
+  /// doc comment).
+  ///
+  /// `interface_in.size()` is this component's own slice of the region's
+  /// stacked interface vector: the sum of the lengths of every `Requires`
+  /// field this component reads inside the region. `residual_out.size()`
+  /// is the sum of the lengths of every `Provides` field it writes inside
+  /// the region. The two need not be equal.
+  ///
+  /// Returning an error aborts the Newton step the same way an error from
+  /// `advance()` aborts an explicit one; the coupler does not retry.
+  virtual Result<void> evaluate_residual(const StepContext& ctx,
+                                         std::span<const double> interface_in,
+                                         std::span<double> residual_out) = 0;
+
+  /// The linearisation of `evaluate_residual()` about the point of its
+  /// most recent call, or `nullptr` if this component cannot supply one --
+  /// the Newton loop then falls back to a purely matrix-free directional
+  /// derivative for this component's own block. Ownership: the returned
+  /// pointer is borrowed, valid until this component's next
+  /// `evaluate_residual()` or `advance()` call, whichever comes first; a
+  /// caller must not retain it across either.
+  [[nodiscard]] virtual LinearizationToken* linearization() { return nullptr; }
+};
+
+/// S7.1's E-NEWTON-SHAPE check: whether `token`'s own `rows()`/`cols()`
+/// agree with the block sizes a region's interface-vector assembly derived
+/// for the component that returned it. A pure function of already-known
+/// sizes, so it needs no graph, no `ComponentSet` and no running region --
+/// test/model/newton_capability_test.cpp calls it directly against a
+/// hand-built token of the wrong shape.
+[[nodiscard]] inline Diagnostics verify_linearization_shape(
+    const std::string& component_name, const LinearizationToken& token,
+    std::size_t expected_rows, std::size_t expected_cols) {
+  Diagnostics diags;
+  if (token.rows() != expected_rows || token.cols() != expected_cols) {
+    diags.add(
+        Severity::Error, "E-NEWTON-SHAPE",
+        "component '" + component_name +
+            "' returned a LinearizationToken with rows()=" +
+            std::to_string(token.rows()) + ", cols()=" +
+            std::to_string(token.cols()) +
+            ", but the region's own interface-vector assembly expects this "
+            "component's block to be " + std::to_string(expected_rows) +
+            " residual row(s) by " + std::to_string(expected_cols) +
+            " interface column(s). A Krylov iteration run over a token of "
+            "the wrong shape either runs past the end of the block or never "
+            "reads part of it, both silently",
+        "component '" + component_name + "'");
+  }
+  return diags;
+}
 
 /// A participating physics code, integrated in-process (spec §6 mode 1).
 ///
@@ -287,6 +435,33 @@ class Component {
   [[nodiscard]] virtual bool is_externally_driven() const noexcept {
     return false;
   }
+
+  /// S7.1's residual/linearisation seam: this component's own
+  /// `ImplicitComponent` interface, or `nullptr` if it does not implement
+  /// one.
+  ///
+  /// A SEPARATE QUERY, NOT A SECOND BASE CLASS -- the same choice
+  /// `is_externally_driven()` makes immediately above, and for the same
+  /// reason: most components never implement `ImplicitComponent`, and
+  /// multiply inheriting from it would force every one of them to either
+  /// override its two pure virtuals with do-nothing bodies or leave
+  /// `Component` itself unable to be instantiated. A nullable virtual
+  /// query costs one vtable slot and one branch -- exactly what
+  /// `is_externally_driven()` already costs -- and needs no RTTI
+  /// (`dynamic_cast`) to ask the question, which a second base would.
+  ///
+  /// Must agree with `capabilities()`: a component that sets
+  /// `kCapabilityResidual` but returns `nullptr` here, or vice versa, is
+  /// an authoring defect this method cannot itself catch (it is called
+  /// only where a real `ComponentSet` already exists; the capability bit
+  /// is what a Newton region's validation checks at `initialize()` time,
+  /// per `fuse::verify_newton_capability_support()`'s own comment on why
+  /// it reads the bit and not this pointer).
+  ///
+  /// Default `nullptr`: every `Component` this header's own tests
+  /// construct, and every component written before this seam existed,
+  /// does not implement `ImplicitComponent`.
+  [[nodiscard]] virtual ImplicitComponent* implicit() { return nullptr; }
 };
 
 namespace detail {
