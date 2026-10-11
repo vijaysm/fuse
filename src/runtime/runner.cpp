@@ -12,6 +12,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -2301,6 +2302,21 @@ Result<void> Runner::Impl::attach_comm_graphs() {
 
 Result<void> Runner::Impl::setup(ComponentSet& components,
                                  FieldRegistry& registry) {
+  // A5: `config.execution_space` and `DeviceExecSpace` are resolved purely
+  // from compile-time macros and this rank's own config struct, so every
+  // rank of a job built from the same binary reaches the same verdict here
+  // -- this check needs no collective agreement, unlike the resolution
+  // checkpoint below.
+  if (config.execution_space == RunnerConfig::RunnerExecutionSpace::Device &&
+      std::is_same_v<DeviceExecSpace, HostExecSpace>) {
+    return Failure{"E-RT-DEVICE",
+                 "RunnerConfig::execution_space requested Device, but this "
+                 "build's Kokkos has no CUDA/HIP/SYCL backend compiled in "
+                 "(DeviceExecSpace falls back to HostExecSpace); configure "
+                 "against a device-enabled Kokkos or leave execution_space "
+                 "at its Host default"};
+  }
+
   // NO EARLY RETURN BETWEEN HERE AND THE STATUS-AGREEMENT CHECKPOINT BELOW.
   // attach_comm_graphs() is collective over `config.base_communicator`, but
   // these two resolutions are not: they read THIS rank's own FieldRegistry and
