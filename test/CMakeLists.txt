@@ -191,7 +191,54 @@ function(fuse_add_mpi_test layer name)
   foreach(n IN LISTS ARG_RANKS)
     add_test(NAME ${layer}.${name}.${n}
              COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${n} $<TARGET_FILE:${target}>)
-    set_tests_properties(${layer}.${name}.${n} PROPERTIES TIMEOUT 120 LABELS "${_fuse_mpi_labels}")
+    # Every rank is a separate process, and Kokkos::OpenMP defaults each one's
+    # thread count to the WHOLE machine's core count with no awareness of the
+    # other ranks sharing it -- at n=5 on an 8-core box that is 40 threads for
+    # 8 cores, measured to turn a sub-second job into a 120s TIMEOUT (this
+    # function's own TIMEOUT 120 below) purely from scheduler thrashing, not
+    # from anything the test exercises. `fuse_add_omp_legs` above already caps
+    # itself to the host's core count for the same reason; capping each rank's
+    # share to max(1, cores / n) is that same discipline applied per rank.
+    math(EXPR _fuse_mpi_threads "${_fuse_host_cores} / ${n}")
+    if(_fuse_mpi_threads LESS 1)
+      set(_fuse_mpi_threads 1)
+    endif()
+    # OMPI_MCA_coll_tuned_alltoallv_algorithm=2 (pairwise) works around a real
+    # hang in this Open MPI (4.1.5)'s own default "basic_linear" alltoallv
+    # algorithm, but ONLY on a communicator other than MPI_COMM_WORLD itself
+    # (MPI_Comm_dup'd, MPI_Comm_split'd, or MPI_Comm_create_group'd -- every
+    # transport/partition/search communicator this project ever builds one
+    # on). Measured 2026-10-10: a bare MPI_Comm_dup followed by one
+    # MPI_Alltoallv on the duplicate hangs with rank 0 returning and every
+    # other rank stuck inside the collective -- reproduced with zero fuse or
+    # Kokkos code involved, independent of MPI_THREAD_MULTIPLE (still hangs
+    # under MPI_THREAD_FUNNELED and plain MPI_Init), independent of the BTL
+    # (vader, tcp) and PML (ob1) in use, and absent entirely on MPI_COMM_WORLD
+    # itself with the identical send/recv pattern. Forcing the "pairwise"
+    # algorithm (`ompi_info --param coll tuned --level 9`'s own
+    # coll_tuned_alltoallv_algorithm enum) made 30/30 of
+    # parallel.mpi_transport's and 28/28 of parallel.comm_graph's subtests
+    # pass where they previously hung; "basic_linear" (the default this
+    # build's decision function was choosing for every non-WORLD communicator
+    # at this rank count) could not be made to pass at all, however many
+    # times it was tried. Harmless on any other MPI: an OMPI_MCA_* variable an
+    # MPICH/other mpiexec does not recognise is simply unused environment, not
+    # an error. If a future Open MPI release fixes this, the fix becomes a
+    # no-op (pairwise is a correctness-preserving algorithm choice everywhere
+    # dynamic rules reach, just not always the fastest one at huge rank
+    # counts fuse does not target).
+    #
+    # OMPI_MCA_rmaps_base_oversubscribe=1 is unrelated: this host has 4
+    # PHYSICAL cores behind its 8 logical ones (Core(s) per socket: 4,
+    # `lscpu`), and Open MPI sizes its default "slot" count from physical
+    # cores, not `nproc`'s 8 -- so `n=5` and up refused outright with "not
+    # enough slots" even though the host plainly has 8 logical CPUs to run
+    # them on. The equivalent of passing `--oversubscribe` on the `mpiexec`
+    # command line; these are correctness tests at a handful of ranks, not a
+    # throughput benchmark, so running more ranks than physical cores is
+    # exactly the point at n=5.
+    set_tests_properties(${layer}.${name}.${n} PROPERTIES TIMEOUT 120 LABELS "${_fuse_mpi_labels}"
+      ENVIRONMENT "OMP_NUM_THREADS=${_fuse_mpi_threads};OMP_PROC_BIND=false;OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
   endforeach()
 endfunction()
 

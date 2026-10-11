@@ -1324,4 +1324,52 @@ TEST(MpiTransportPeers, DisagreeingHalvesAreRefusedBeforeTheRun) {
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
+// Regression guard for a real bug in this host's Open MPI (4.1.5), not in
+// fuse: its default "basic_linear" MPI_Alltoallv algorithm hangs -- rank 0
+// returns, every other rank sits inside the collective forever -- whenever
+// the communicator is anything other than MPI_COMM_WORLD itself (a plain
+// MPI_Comm_dup of it is enough), on this exact disjoint-halves pattern.
+// Measured 2026-10-10: reproduced with zero fuse or Kokkos code involved,
+// independent of MPI_THREAD_MULTIPLE (still hangs under MPI_THREAD_FUNNELED
+// and even plain MPI_Init), independent of BTL (vader, tcp) and PML (ob1),
+// and absent on MPI_COMM_WORLD with the identical send/recv pattern. An
+// MPI_Barrier on the duplicate right after MPI_Comm_dup -- the first fix
+// tried -- does NOT help; the hang is inside MPI_Alltoallv itself. The only
+// thing that worked: forcing the "pairwise" algorithm
+// (`ompi_info --param coll tuned --level 9`'s coll_tuned_alltoallv_algorithm
+// enum). test/CMakeLists.txt's fuse_add_mpi_test sets exactly that via
+// OMPI_MCA_coll_tuned_use_dynamic_rules=1 and
+// OMPI_MCA_coll_tuned_alltoallv_algorithm=2 on every MPI test's ENVIRONMENT,
+// which is what this test actually exercises: it fails the moment that
+// workaround is missing or broken, long before a real MpiTransport test
+// would time out trying to tell you why.
+TEST(MpiTransportDiag, RawAlltoallvDisjointHalvesOnADuplicatedCommAtFourRanks) {
+  FUSE_REQUIRE_RANKS(4);
+  const int rank = world_rank();
+
+  MPI_Comm dup = MPI_COMM_NULL;
+  ASSERT_EQ(MPI_Comm_dup(MPI_COMM_WORLD, &dup), MPI_SUCCESS);
+  ASSERT_EQ(MPI_Comm_set_errhandler(dup, MPI_ERRORS_RETURN), MPI_SUCCESS);
+
+  int sendcounts[4] = {0, 0, 0, 0}, sdispls[4] = {0, 0, 0, 0};
+  int recvcounts[4] = {0, 0, 0, 0}, rdispls[4] = {0, 0, 0, 0};
+  double sendbuf[8] = {0}, recvbuf[8] = {0};
+  if (rank == 0 || rank == 1) {
+    sendcounts[2] = 3;
+    sendcounts[3] = 3;
+    sdispls[3] = 3;
+    for (int i = 0; i < 6; ++i) sendbuf[i] = rank * 100 + i;
+  }
+  if (rank == 2 || rank == 3) {
+    recvcounts[0] = 3;
+    recvcounts[1] = 3;
+    rdispls[1] = 3;
+  }
+  const int rc = MPI_Alltoallv(sendbuf, sendcounts, sdispls, MPI_DOUBLE, recvbuf,
+                               recvcounts, rdispls, MPI_DOUBLE, dup);
+  ASSERT_EQ(rc, MPI_SUCCESS);
+  ASSERT_EQ(MPI_Barrier(dup), MPI_SUCCESS);
+  MPI_Comm_free(&dup);
+}
+
 #endif  // the guard whose body the removed main() sat inside
