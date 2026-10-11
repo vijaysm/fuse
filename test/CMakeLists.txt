@@ -627,6 +627,13 @@ fuse_add_gtest(runtime window_fixed_point_residual LIBS fuse::runtime fuse::back
 # rather than every leg agreeing by coincidence at a size too small to tell.
 fuse_add_gtest(runtime runner_determinism)
 fuse_add_omp_legs(runtime.runner_determinism fuse_runtime_runner_determinism_test)
+# KNOWN_ISSUES.md A5: the SAME Runner::Impl::execute() stream run once on
+# the host space and once on RunnerConfig::RunnerExecutionSpace::Device,
+# compared value for value, with RunStats::device_dispatches proving the
+# device path was actually taken. On a build with no device backend the
+# Device cases assert the E-RT-DEVICE refusal instead of skipping silently.
+# See docs/dev/runner-device-dispatch.md.
+fuse_add_gtest(runtime runner_device)
 
 # KNOWN_ISSUES.md B3: `bool supports_rollback() const override` no longer
 # names a virtual to override, once `Component::capabilities()` is the one
