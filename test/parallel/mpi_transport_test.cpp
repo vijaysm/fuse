@@ -81,14 +81,23 @@ class AllocationCounter {
 }  // namespace
 
 void* operator new(std::size_t n) {
+  // #ifndef __CUDA_ARCH__, not just std::abort() instead of throw: a
+  // CUDA-enabled Kokkos dual-compiles every global operator new/delete
+  // override for device too (nothing here is reachable from a kernel; nvcc
+  // does this unconditionally), and the device side can neither support
+  // exceptions nor see g_counting/g_allocations, host globals.
+#ifndef __CUDA_ARCH__
   if (g_counting) ++g_allocations;
+#endif
   void* p = std::malloc(n == 0 ? 1 : n);
-  if (p == nullptr) throw std::bad_alloc();
+  if (p == nullptr) std::abort();
   return p;
 }
 void* operator new[](std::size_t n) { return ::operator new(n); }
 void* operator new(std::size_t n, const std::nothrow_t&) noexcept {
+#ifndef __CUDA_ARCH__
   if (g_counting) ++g_allocations;
+#endif
   return std::malloc(n == 0 ? 1 : n);
 }
 void* operator new[](std::size_t n, const std::nothrow_t& t) noexcept {
