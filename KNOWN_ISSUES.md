@@ -3442,6 +3442,44 @@ have the identical gap while investigating this — a local failure on a partici
 participants, via the same `gather_window_block_samples()` — but is not exercised by any current test
 and is left for a future pass rather than bundled into this fix.
 
+### D34. `example.fsi_channel`'s IQN-ILS coupling is marginally stable near the beam's first natural period — a 1e-12 change in the fluid solve diverges it; OPEN, rows DISABLED under `FUSE_ENABLE_CUSPARSE`
+
+**Measured 2026-10-11**, found while verifying the examples' cusolverRf sparse-solve backend
+(`examples/common/sparse_solve_backend.hpp`, `docs/dev/runner-device-dispatch.md` Part B) on
+a GTX 1050 Ti. Default example parameters (`fluid 24x12, beam 16, mass ratio 1, dt 0.01`;
+the ctest rows use `16x8`, `nx-beam 12`, `t-end 0.1` and show the same thing):
+
+- Flag off (Eigen::SparseLU), `--accel iqn-ils`: converges every step; **step 7 (t = 0.08,
+  the beam's first natural period is 0.0888 s) takes 46 sweeps**, twice every other step's
+  21–24. Flag off with `--accel none`: non-finite after 14 periods. `--accel aitken`:
+  non-finite after 11 periods. Only IQN-ILS gets through, and only just.
+- Flag on (cusolverRf with extended-precision refinement): steps 0–6 reproduce the flag-off
+  deflections to every printed digit; **step 7 runs its full 200 sweeps and diverges to
+  2e80**; `none`/`aitken` fail at the same periods as flag-off. Every one of the 730 fluid
+  solves before the divergence has relative residual ~1e-16 and agrees with an Eigen solve
+  of the same system to ≤ 1.07e-12 (the backend is in fact closer to a long-double reference
+  than Eigen is: 1.4e-16 vs 3.4e-14 on this 900-unknown saddle point,
+  `verification.sparse_solve_backend`). A perturbation of the fluid response three orders
+  below any tolerance in play is enough to flip step 7 from "46 sweeps" to divergence.
+
+**What this is.** Not a solver defect — both solvers are correct to working precision, and
+the flag-off build diverges with two of the three accelerators on its own. It is the
+coupling at that step sitting at the edge of IQN-ILS's stability, which the fixed Eigen
+rounding happens to land on the convergent side of. The `fsi_*` verification rows
+(`fsi_stokes_mms`, `fsi_beam`, `fsi_coupled`, `fsi_transient`, `fsi_energy_diag`) pass with
+the flag on; it is the example alone that depends on which side of the edge it lands.
+
+**What was done.** `example.fsi_channel` and `example.fsi_channel.omp_identical` carry the
+ctest `DISABLED` property when `FUSE_ENABLE_CUSPARSE=ON` (reported as "Not Run (Disabled)",
+not hidden; `examples/CMakeLists.txt`). Flag off — the default — nothing changes.
+
+**What would close it.** Understanding why IQN-ILS needs 46 sweeps at step 7 in the first
+place (D17 records a related accelerator asymmetry on the Brusselator). Candidates, none
+measured: the IQN-ILS filter threshold on nearly dependent secant columns near a turning
+point of the beam; the window's convergence criterion on `fluid_force` (a derivative of the
+solution, so κ-amplified) sitting at 1e-9 relative. Until then the example is a stability
+probe, not a regression gate, for any alternative fluid solver.
+
 ### D27. The native backend's remap halo has no `accumulate_remap_halo` counterpart
 
 **Closed for the forward direction, 2026-10-10 ("Halo" track):** `fuse::native::NativeMeshBackend`

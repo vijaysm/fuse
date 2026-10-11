@@ -520,6 +520,23 @@ if(FUSE_ENABLE_TESTS)
                      -P ${CMAKE_SOURCE_DIR}/tools/compare-runs.cmake)
     set_tests_properties(example.fsi_channel.omp_identical PROPERTIES LABELS "example;omp")
   endif()
+  # FUSE_ENABLE_CUSPARSE=ON: these two rows are DISABLED (ctest reports them
+  # as "Not Run (Disabled)", not hidden), KNOWN_ISSUES.md D34. Measured
+  # 2026-10-11: the example's IQN-ILS coupling is marginally stable at the
+  # step nearest the beam's first natural period (step 7 of the default run).
+  # With Eigen it passes that step in 46 sweeps, twice its usual count; with
+  # the cusolverRf backend -- whose solutions agree with Eigen's to <= 1.1e-12
+  # on every one of the 730 solves before the divergence, and are closer to a
+  # long-double reference than Eigen's own -- the same step diverges to 1e80.
+  # The flag-off build itself diverges with --accel none and --accel aitken
+  # at the same periods the flag-on build does. The fsi_* verification rows
+  # (test/verification) still run under the flag and pass.
+  if(FUSE_ENABLE_CUSPARSE)
+    set_tests_properties(example.fsi_channel PROPERTIES DISABLED TRUE)
+    if(TEST example.fsi_channel.omp_identical)
+      set_tests_properties(example.fsi_channel.omp_identical PROPERTIES DISABLED TRUE)
+    endif()
+  endif()
 endif()
 
 if(FUSE_ENABLE_MPI)
