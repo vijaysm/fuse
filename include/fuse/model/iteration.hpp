@@ -317,6 +317,39 @@ enum class EisenstatWalkerChoice { Constant, Choice1, Choice2 };
   return "?";
 }
 
+/// S7.2b (PetscSelect track, 2026-10-11): which implementation of the
+/// Newton seam (docs/dev/newton-krylov.md Sec. 6/Sec. 10) a region's
+/// Newton solve actually runs on. Mirrors `fuse::num::NewtonSubstrate`
+/// (fuse/num/newton_krylov.hpp) for the SAME layering reason
+/// `LineSearchKind`/`EisenstatWalkerChoice` above are declared again here
+/// rather than reused from there: the model layer must not depend on the
+/// numerics layer. The runtime wiring (`src/runtime/iteration.cpp`)
+/// translates one into the other at the one call site that dispatches a
+/// region's Newton solve through `fuse::num`'s substrate registry.
+enum class NewtonSubstrate {
+  /// `fuse::num::solve()` -- the native Jacobian-free Newton-Krylov
+  /// coupler (docs/dev/newton-krylov.md Sec. 6-9). Always available: the
+  /// registry registers it unconditionally, in every build, regardless
+  /// of `FUSE_ENABLE_PETSC`.
+  Native,
+  /// `fuse::petsc::solve()` -- the PETSc `SNESNEWTONLS` substrate
+  /// (docs/dev/newton-krylov.md Sec. 10). Registered only when
+  /// `fuse::petsc::install()` has been called (requires
+  /// `FUSE_ENABLE_PETSC`); a region selecting this substrate in a build
+  /// or a process that never called `install()` refuses at
+  /// `Runner::initialize()` with `E-NEWTON-PETSC-UNAVAILABLE`, naming the
+  /// region.
+  Petsc,
+};
+
+[[nodiscard]] constexpr const char* to_cstring(NewtonSubstrate s) noexcept {
+  switch (s) {
+    case NewtonSubstrate::Native: return "Native";
+    case NewtonSubstrate::Petsc:  return "Petsc";
+  }
+  return "?";
+}
+
 /// S7.2: WHAT was asked of the Newton solver, named the same way
 /// `AccelConfig` already does for the quasi-Newton ladder -- every numeric
 /// default here is SNES's own default for the matching option
@@ -385,6 +418,17 @@ struct NewtonConfig {
   /// silent fallback to the identity rather than the physics-based
   /// preconditioner the author actually requested.
   bool use_block_jacobi_preconditioner = false;
+
+  /// S7.2b (PetscSelect track): which Newton substrate
+  /// (`fuse::num::newton_substrate()`'s registry) this region's solve
+  /// actually dispatches to -- `Native` by default, so every graph
+  /// written before this member existed keeps running the library's own
+  /// JFNK coupler unchanged. APPENDED LAST, the descriptor's own
+  /// append-only convention (descriptor.hpp's kGraphVersion history, v13):
+  /// a new field is added at the struct's own declared END, never
+  /// inserted between existing ones, so every earlier field keeps its
+  /// wire offset.
+  NewtonSubstrate substrate = NewtonSubstrate::Native;
 };
 
 /// Time windows track: how a component's own sub-stepping relates to a

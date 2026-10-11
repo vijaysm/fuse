@@ -181,6 +181,57 @@ PetscErrorCode snes_monitor(SNES snes, PetscInt its, PetscReal fnorm, void* raw_
 /// reused, and never reached by `SNESNEWTONLS` with no trust region, no
 /// user convergence/divergence test, and no inner solve, which is every
 /// configuration this driver builds.
+// ---- the Eisenstat-Walker floor SNES does not have -------------------------
+//
+// fuse::num clamps every forcing term to [eta_min, eta_max]
+// (src/num/newton_krylov.cpp, `std::clamp(eta, opt.eta_min, opt.eta_max)`).
+// SNESKSPSetParametersEW has rtol_0, rtol_max, gamma, alpha, alpha2 and the
+// safeguard threshold -- no floor. Without one the Brusselator window on
+// this substrate reports DivergedLinearSolve on its FIRST window (host,
+// 2026-10-11, --driver runner --accel newton --substrate petsc --end 1.0:
+// "DivergedLinearSolve after 3 Newton iteration(s), ||F|| = 0.000012"),
+// the same stall the native solver showed before eta_min = 1e-4 (docs/dev/
+// newton-krylov.md Sec. 9.9.2): the forcing term tightens past the accuracy
+// a finite-difference Jacobian action can deliver, and GMRES exhausts its
+// budget chasing it.
+//
+// SNES's EW sets the KSP's relative tolerance in a pre-solve hook, so the
+// one place the floor can be applied to the value EW chose is the KSP's own
+// convergence test, which GMRES calls first at iteration 0 before any
+// residual is judged: read the tolerance EW set, raise it to eta_min if it
+// is below, then hand over to KSPConvergedDefault unchanged. EW's post-solve
+// reads the (clamped) tolerance back as rtol_last, exactly as the native
+// solver carries the clamped eta forward.
+struct ForcingFloorContext {
+  PetscReal eta_min = 0.0;
+  void* default_context = nullptr;  // KSPConvergedDefaultCreate's
+};
+
+PetscErrorCode converged_with_forcing_floor(KSP ksp, PetscInt n, PetscReal rnorm,
+                                            KSPConvergedReason* reason, void* raw) {
+  auto* ctx = static_cast<ForcingFloorContext*>(raw);
+  if (n == 0) {
+    PetscReal rtol = 0, abstol = 0, dtol = 0;
+    PetscInt maxits = 0;
+    PetscCall(KSPGetTolerances(ksp, &rtol, &abstol, &dtol, &maxits));
+    if (rtol < ctx->eta_min) PetscCall(KSPSetTolerances(ksp, ctx->eta_min, abstol, dtol, maxits));
+  }
+  return KSPConvergedDefault(ksp, n, rnorm, reason, ctx->default_context);
+}
+
+// PetscCtxDestroyFn's argument is declared `void*` but is, by PETSc's own
+// documentation of PetscCtxRt (petscsys.h), the ADDRESS of the context
+// pointer -- "psychologically a void**" -- and the callee nulls it. The
+// default context is destroyed the same way.
+PetscErrorCode destroy_forcing_floor(void* raw) {
+  auto** slot = static_cast<ForcingFloorContext**>(raw);
+  ForcingFloorContext* ctx = *slot;
+  PetscErrorCode ierr = KSPConvergedDefaultDestroy(&ctx->default_context);
+  delete ctx;
+  *slot = nullptr;
+  return ierr;
+}
+
 fuse::num::NewtonStatus map_reason(SNESConvergedReason reason) {
   switch (reason) {
     case SNES_CONVERGED_FNORM_ABS:
@@ -356,6 +407,14 @@ Result<fuse::num::NewtonResult> solve(const fuse::num::ResidualFn& f, DistVector
                               static_cast<PetscInt>(opt.newton.gmres.max_iterations));
       if (auto r = check(ierr, "KSPSetTolerances(constant eta)"); !r.ok()) goto fail;
     }
+    if (opt.newton.forcing.eta_min > 0.0) {
+      auto* floor_ctx = new ForcingFloorContext{};
+      floor_ctx->eta_min = static_cast<PetscReal>(opt.newton.forcing.eta_min);
+      ierr = KSPConvergedDefaultCreate(&floor_ctx->default_context);
+      if (auto r = check(ierr, "KSPConvergedDefaultCreate"); !r.ok()) { delete floor_ctx; goto fail; }
+      ierr = KSPSetConvergenceTest(ksp, converged_with_forcing_floor, floor_ctx, destroy_forcing_floor);
+      if (auto r = check(ierr, "KSPSetConvergenceTest(forcing floor)"); !r.ok()) goto fail;
+    }
 
     PC pc = nullptr;
     ierr = KSPGetPC(ksp, &pc);
@@ -441,6 +500,29 @@ fail:
   VecDestroy(&X);
   VecDestroy(&F);
   return Failure{"E-PETSC-CALL", "fuse::petsc::solve failed, see PETSc error code above"};
+}
+
+// ===========================================================================
+// S7.2b (PetscSelect track): registering this substrate.
+// ===========================================================================
+
+void install() {
+  fuse::num::register_newton_substrate(
+      fuse::num::NewtonSubstrate::Petsc,
+      [](const fuse::num::ResidualFn& f, fuse::linalg::DistVector& x,
+         const fuse::num::PreconditionerApplyFn& precond_apply,
+         const fuse::num::RefreshPreconditionerFn& refresh_precond,
+         const fuse::num::NewtonKrylovOptions& opt) {
+        // fuse::petsc::solve.hpp's own header comment on install(): the
+        // communicator is always comm_self_f(), never threaded in from
+        // the registry's own signature (fuse::num::NewtonSolveFn has no
+        // communicator parameter at all -- every Newton region is
+        // already single-rank by construction).
+        SnesOptions snes_opt;
+        snes_opt.newton = opt;
+        snes_opt.comm_f = comm_self_f();
+        return solve(f, x, precond_apply, refresh_precond, snes_opt);
+      });
 }
 
 }  // namespace fuse::petsc

@@ -93,4 +93,51 @@ struct SnesOptions {
     const fuse::num::RefreshPreconditionerFn& refresh_precond,
     const SnesOptions& opt = {});
 
+// ===========================================================================
+// S7.2b (PetscSelect track): registering this substrate with fuse::num's
+// Newton registry.
+// ===========================================================================
+
+/// Registers `fuse::num::NewtonSubstrate::Petsc` (fuse/num/
+/// newton_krylov.hpp) against this file's own `solve()`, so a Newton-
+/// selected region whose graph names the PETSc substrate
+/// (`fuse::NewtonSubstrate::Petsc`, fuse/model/iteration.hpp) dispatches
+/// here through the registry rather than through a direct call this
+/// layer's own placement (`tools/check-layering.py`'s topmost `petsc`
+/// layer, ABOVE `fuse::runtime`) would make impossible for the Runner to
+/// make itself.
+///
+/// COMMUNICATOR. The registered entry point always solves on
+/// `comm_self_f()` (`MPI_COMM_SELF`), never on a communicator threaded
+/// in from the caller: `fuse::num::NewtonSolveFn`'s own signature
+/// (fuse/num/newton_krylov.hpp) carries no communicator parameter at
+/// all, by design -- every Newton-selected region, on EITHER substrate,
+/// is already restricted by `Runner::Impl::check_region_supports_newton()`
+/// to a single cross-rank participant (docs/dev/newton-krylov.md Sec. 4's
+/// "Scope" paragraph; `KNOWN_ISSUES.md` D31's own single-rank restriction
+/// for the window path), so there is no cross-rank reduction for a
+/// Newton SOLVE to perform regardless of which rank of the Runner's own
+/// `RunnerConfig::base_communicator` happens to own this region. Using
+/// `MPI_COMM_SELF` unconditionally is therefore not a scope-reducing
+/// shortcut -- it is the honest communicator for a problem this seam
+/// already guarantees is rank-local -- and it sidesteps a real ownership
+/// question `fuse::petsc::ensure_initialized()`'s own comment flags: a
+/// shared `MPI_Comm` reaching `PetscInitialize()` from several DIFFERENT
+/// regions' first calls would need those calls to agree on which one
+/// "owns" initialising PETSc on it, a coordination this single-process,
+/// single-call registration need not solve. A future multi-rank lift of
+/// Newton itself (`KNOWN_ISSUES.md` D31) would need to revisit this
+/// choice -- at that point there IS a real cross-rank reduction inside
+/// the solve, and `MPI_COMM_SELF` would be the wrong communicator for
+/// it; `SnesOptions::comm_f` already exists for exactly that future
+/// caller, unused by `install()`'s own registration today.
+///
+/// Idempotent: calling this more than once simply re-registers the same
+/// entry point (`fuse::num::register_newton_substrate()`'s own
+/// "registers OR REPLACES" contract). Never called by this library
+/// itself -- a binary that links `fuse-coupler-petsc` and wants the
+/// PETSc substrate reachable through the registry calls this once,
+/// typically at startup, before `Runner::initialize()`.
+void install();
+
 }  // namespace fuse::petsc

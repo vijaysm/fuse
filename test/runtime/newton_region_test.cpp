@@ -555,6 +555,26 @@ TEST(NewtonRegion, AnExternallyDrivenMemberIsRefusedAtSetup) {
   EXPECT_NE(s.init.error().message.find("externally"), std::string::npos) << s.init.error().message;
 }
 
+// S7.2b (PetscSelect track): a region naming a Newton substrate nothing
+// has registered in THIS process refuses at initialize(), by name, with
+// E-NEWTON-PETSC-UNAVAILABLE -- fired here tier-0, WITHOUT PETSc, by the
+// most common real case: a graph selecting NewtonSubstrate::Petsc in a
+// build/process that never called fuse::petsc::install() (this test
+// binary links no fuse::petsc at all). Mirrors AnExternallyDrivenMember
+// IsRefusedAtSetup's own shape -- both are resolve_regions()'s own eager
+// refusals for a Newton-selected region, caught before the first period.
+TEST(NewtonRegion, ARegionSelectingAnUnregisteredSubstrateIsRefusedAtSetup) {
+  fuse::NewtonConfig cfg;
+  cfg.substrate = fuse::NewtonSubstrate::Petsc;
+  NewtonDnHeatFixture s = make_newton_setup(/*max_iterations=*/30, cfg);
+  ASSERT_FALSE(s.init.ok());
+  EXPECT_EQ(s.init.error().code, "E-NEWTON-PETSC-UNAVAILABLE") << s.init.error().message;
+  EXPECT_NE(s.init.error().message.find("dirichlet_neumann"), std::string::npos)
+      << s.init.error().message;
+  EXPECT_NE(s.init.error().message.find("Petsc"), std::string::npos)
+      << s.init.error().message;
+}
+
 TEST(NewtonRegion, AWindowScopedRegionWithNoConfiguredWindowMembersIsANoOp) {
   NewtonDnHeatFixture s = make_newton_setup(
       /*max_iterations=*/30, /*cfg=*/{}, /*rcfg=*/{}, /*beta=*/0.0,

@@ -106,6 +106,59 @@ namespace {
   return Failure{fallback, d.to_string()};
 }
 
+/// S7.2b (PetscSelect track): `fuse::NewtonSubstrate` (fuse/model/
+/// iteration.hpp) to `fuse::num::NewtonSubstrate` (fuse/num/
+/// newton_krylov.hpp), the registry's own key type -- moved ahead of
+/// `resolve_regions()` below (which needs it, through `resolve_newton_
+/// substrate()` immediately below this), rather than left alongside
+/// `to_num_line_search_kind()`/`to_num_ew_choice()` further down this
+/// file (those two are read only from `newton_options_from_config()`,
+/// called only from `run_region_newton()`/`run_region_newton_window()`,
+/// both already past this point in the file).
+[[nodiscard]] num::NewtonSubstrate to_num_newton_substrate(NewtonSubstrate s) {
+  switch (s) {
+    case NewtonSubstrate::Native: return num::NewtonSubstrate::Native;
+    case NewtonSubstrate::Petsc:  return num::NewtonSubstrate::Petsc;
+  }
+  FUSE_ASSERT(false, "unknown fuse::NewtonSubstrate {}", static_cast<int>(s));
+  return num::NewtonSubstrate::Native;
+}
+
+/// S7.2b: looks up the registered solve entry point for `region_name`'s
+/// own `substrate`, or refuses `E-NEWTON-PETSC-UNAVAILABLE` naming the
+/// region when none is registered (the ONLY way this can happen for
+/// `NewtonSubstrate::Native`, which `fuse::num`'s own registry registers
+/// unconditionally on first use, is that nothing in this process has
+/// ever reached `fuse::num`'s registry at all -- unreachable once this
+/// very function has run once; the check still runs every call, not
+/// trusted from a prior one, the same "checked, not trusted" posture
+/// every other capability bit in this file is read with). Called from
+/// TWO places: `resolve_regions()`, eagerly, so a graph whose Newton
+/// substrate is unavailable in this build/process refuses at
+/// `initialize()`, before the first period, exactly like every other
+/// Newton-region refusal in this file; and again from `run_region_
+/// newton()`/`run_region_newton_window()` themselves, defensively,
+/// mirroring `check_region_supports_newton()`'s own double-check
+/// discipline (that function's comment: "checked anyway, not trusted").
+[[nodiscard]] Result<const num::NewtonSolveFn*> resolve_newton_substrate(
+    const std::string& region_name, NewtonSubstrate substrate) {
+  const num::NewtonSubstrate num_substrate = to_num_newton_substrate(substrate);
+  const num::NewtonSolveFn* fn = num::newton_substrate(num_substrate);
+  if (fn == nullptr) {
+    return Failure{
+        "E-NEWTON-PETSC-UNAVAILABLE",
+        "iteration region '" + region_name + "' selects the '" +
+            std::string(to_cstring(substrate)) +
+            "' Newton substrate, but no implementation is registered for "
+            "it in this build/process. For the PETSc substrate: configure "
+            "with -DFUSE_ENABLE_PETSC=ON, link fuse::petsc, and call "
+            "fuse::petsc::install() before Runner::initialize() (it is "
+            "never called automatically); or select newton_config.substrate: "
+            "native"};
+  }
+  return fn;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -1401,6 +1454,20 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
       const Result<void> supported =
           check_region_supports_newton(components, ri);
       if (!supported.ok()) return supported;
+
+      // S7.2b (PetscSelect track): the substrate this region names must
+      // actually be registered in THIS build/process, checked eagerly
+      // here (resolve_regions() runs from Runner::initialize()) so a
+      // graph selecting an unavailable substrate (most commonly: PETSc,
+      // in a build configured without FUSE_ENABLE_PETSC or a process
+      // that never called fuse::petsc::install()) is refused before the
+      // first period, not discovered only when run_region_newton()
+      // first tries to dispatch through the registry.
+      if (const Result<const num::NewtonSolveFn*> substrate_fn =
+              resolve_newton_substrate(R.name, decl.newton_config.substrate);
+          !substrate_fn.ok()) {
+        return substrate_fn.error();
+      }
       R.newton = true;
 
       // S7.2 WindowNewton (newton-krylov.md Sec. 9.1): the window-Newton
@@ -1780,8 +1847,17 @@ Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
   const num::PreconditionerApplyFn precond_apply = nullptr;
   const num::RefreshPreconditionerFn refresh_precond = nullptr;
 
+  // S7.2b (PetscSelect track): dispatch through the registered substrate
+  // rather than calling num::solve() directly -- resolve_regions() has
+  // already refused this region at initialize() if its substrate is
+  // unavailable, so this lookup is defensive, not trusted blindly
+  // (check_region_supports_newton()'s own "checked anyway" posture).
+  const Result<const num::NewtonSolveFn*> substrate_fn =
+      resolve_newton_substrate(R.name, decl.newton_config.substrate);
+  if (!substrate_fn.ok()) return substrate_fn.error();
+
   const Result<num::NewtonResult> solved =
-      num::solve(f, x, precond_apply, refresh_precond, opt);
+      (*substrate_fn.value())(f, x, precond_apply, refresh_precond, opt);
   if (!solved.ok()) return solved.error();
   const num::NewtonResult& nr = solved.value();
 
@@ -2217,8 +2293,17 @@ Result<void> Runner::Impl::run_region_newton_window(
   // `preconditioner_lag` rebuild would ever change.
   const num::RefreshPreconditionerFn refresh_precond = nullptr;
 
+  // S7.2b (PetscSelect track): the window path dispatches through the
+  // registry the identical way the ordinary (non-window) seam does --
+  // resolve_regions() already refused this region at initialize() if
+  // its substrate is unavailable (the SAME eager check, shared by both
+  // shapes, since it reads only decl.newton_config.substrate).
+  const Result<const num::NewtonSolveFn*> substrate_fn =
+      resolve_newton_substrate(R.name, decl.newton_config.substrate);
+  if (!substrate_fn.ok()) return substrate_fn.error();
+
   const Result<num::NewtonResult> solved =
-      num::solve(f, x, precond_apply, refresh_precond, opt);
+      (*substrate_fn.value())(f, x, precond_apply, refresh_precond, opt);
   if (!solved.ok()) return solved.error();
   const num::NewtonResult& nr = solved.value();
 

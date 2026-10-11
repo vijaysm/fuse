@@ -422,4 +422,66 @@ struct NewtonResult {
                                          const RefreshPreconditionerFn& refresh_precond,
                                          const NewtonKrylovOptions& opt = {});
 
+// ===========================================================================
+// S7.2b (PetscSelect track): the Newton substrate registry.
+// ===========================================================================
+
+/// Mirrors `fuse::NewtonSubstrate` (fuse/model/iteration.hpp) -- declared
+/// again here, not reused from there, for the SAME layering reason this
+/// header's own `LineSearchKind`/`EisenstatWalkerChoice` counterparts are
+/// mirrored in the opposite direction by that header: `fuse::model`
+/// sits BELOW `fuse::num` (tools/check-layering.py's own `LAYERS` list),
+/// so `fuse::num` may depend on `fuse::model` directly -- but a
+/// registry keyed on a model-layer type would make this header's own
+/// public interface name a model-layer type for no reason internal to
+/// what the registry does (dispatch on two possible solve functions),
+/// the same "this header's own public interface should not need to know
+/// about a layer it does not otherwise depend on" reasoning that keeps
+/// every other enum here duplicated instead of `#include`d. The runtime
+/// wiring (`src/runtime/iteration.cpp`, which DOES depend on both layers)
+/// translates one into the other at its one call site, exactly the
+/// pattern `to_num_line_search_kind()`/`to_num_ew_choice()` already set.
+enum class NewtonSubstrate { Native, Petsc };
+
+[[nodiscard]] constexpr const char* to_cstring(NewtonSubstrate s) noexcept {
+  switch (s) {
+    case NewtonSubstrate::Native: return "Native";
+    case NewtonSubstrate::Petsc:  return "Petsc";
+  }
+  return "?";
+}
+
+/// One substrate's own solve entry point, type-erased to the identical
+/// signature `fuse::num::solve()` above already has -- a caller that
+/// dispatches through the registry calls either substrate the same way,
+/// with no `if` on which one it got.
+using NewtonSolveFn = std::function<Result<NewtonResult>(
+    const ResidualFn&, DistVector&, const PreconditionerApplyFn&,
+    const RefreshPreconditionerFn&, const NewtonKrylovOptions&)>;
+
+/// Registers (or replaces) the solve entry point for `kind`. Called by
+/// `fuse::petsc::install()` (fuse/petsc/solve.hpp) to register
+/// `NewtonSubstrate::Petsc`; `NewtonSubstrate::Native` is registered by
+/// this library ITSELF (see `newton_substrate()`'s own comment) and
+/// needs no call here unless a caller deliberately wants to replace it
+/// (e.g. a test double).
+void register_newton_substrate(NewtonSubstrate kind, NewtonSolveFn fn);
+
+/// The registered solve entry point for `kind`, or `nullptr` if none is
+/// registered. `NewtonSubstrate::Native` is ALWAYS non-null: it is
+/// registered deterministically on first use, by a function-local
+/// static inside this function's own definition (src/num/
+/// newton_krylov.cpp) -- never by a static initialiser in a .cpp that
+/// might not be linked into a given binary at all (a build that never
+/// references anything else in that translation unit would then never
+/// run the initialiser, and `fuse::num::solve()` itself, the function
+/// every other caller in this file already depends on directly, is
+/// certainly linked wherever this header is used). `NewtonSubstrate::
+/// Petsc` is non-null only after `fuse::petsc::install()` has run
+/// (requires `FUSE_ENABLE_PETSC`); a caller that gets `nullptr` back for
+/// it is what lets `Runner::initialize()` (src/runtime/iteration.cpp)
+/// refuse `E-NEWTON-PETSC-UNAVAILABLE` naming the region, rather than
+/// dereferencing a missing function.
+[[nodiscard]] const NewtonSolveFn* newton_substrate(NewtonSubstrate kind);
+
 }  // namespace fuse::num

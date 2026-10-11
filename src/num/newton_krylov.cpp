@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
 
 #include <fmt/format.h>
 
@@ -417,6 +418,48 @@ Result<NewtonResult> solve(const ResidualFn& f, DistVector& x,
   }
 
   return finish(NewtonStatus::DivergedMaxIterations);
+}
+
+// ===========================================================================
+// S7.2b (PetscSelect track): the Newton substrate registry.
+// ===========================================================================
+
+namespace {
+
+/// The registry itself, and `NewtonSubstrate::Native`'s own registration --
+/// a FUNCTION-LOCAL static, constructed the first time ANY caller reaches
+/// this function (`register_newton_substrate()` or `newton_substrate()`
+/// below, both of which call this first), never a static initialiser in
+/// this translation unit that depends on link order. The lambda it seeds
+/// the map with is a trivial adapter onto `fuse::num::solve()` itself,
+/// already defined above in this same file -- Native therefore never
+/// needs an explicit `register_newton_substrate(NewtonSubstrate::Native,
+/// ...)` call from anywhere.
+std::unordered_map<NewtonSubstrate, NewtonSolveFn>& newton_substrate_registry() {
+  static std::unordered_map<NewtonSubstrate, NewtonSolveFn> registry = [] {
+    std::unordered_map<NewtonSubstrate, NewtonSolveFn> m;
+    m[NewtonSubstrate::Native] =
+        [](const ResidualFn& f, DistVector& x,
+           const PreconditionerApplyFn& precond_apply,
+           const RefreshPreconditionerFn& refresh_precond,
+           const NewtonKrylovOptions& opt) {
+          return solve(f, x, precond_apply, refresh_precond, opt);
+        };
+    return m;
+  }();
+  return registry;
+}
+
+}  // namespace
+
+void register_newton_substrate(NewtonSubstrate kind, NewtonSolveFn fn) {
+  newton_substrate_registry()[kind] = std::move(fn);
+}
+
+const NewtonSolveFn* newton_substrate(NewtonSubstrate kind) {
+  auto& registry = newton_substrate_registry();
+  const auto it = registry.find(kind);
+  return it == registry.end() ? nullptr : &it->second;
 }
 
 }  // namespace fuse::num
