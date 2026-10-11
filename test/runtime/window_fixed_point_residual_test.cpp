@@ -291,7 +291,7 @@ TEST(WindowFixedPointResidual, RepeatedEvaluationAtTheSamePointIsBitIdentical) {
 // sweep marker -- `E-RT-WINDOW-SWEEP` refuses that, correctly; it is
 // not what this test is after.
 TEST(WindowFixedPointResidual,
-    APicardWindowPassAfterOneFEvaluationIsBitIdenticalToAFreshOne) {
+    AWindowPassWithAnInterleavedProbeIsBitIdenticalToOneWithout) {
   auto run_one_pass = [](bool with_extra_probe) {
     Fixture s = make_fixture(AccelKind::Newton);
     EXPECT_TRUE(s.init.ok()) << s.init.error().message;

@@ -291,7 +291,7 @@ int main(int argc, char** argv) {
   // `1e-6` also converges every window (575/575 windows, `--end 11.5`,
   // confirmed without divergence over the first 222 before being cut
   // short for runtime) but spends 70-110 GMRES iterations on the last
-  // Newton step of EVERY window chasing a linear-solve accuracy the
+  // Newton step of every one of those 222 windows chasing a linear-solve accuracy the
   // outer nonlinear test does not need; `1e-4` converges the same windows
   // in the same 3-4 Newton steps at a fraction of the GMRES cost (as low
   // as 2-6 iterations per step once the trajectory settles into its

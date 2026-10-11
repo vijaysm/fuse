@@ -812,7 +812,7 @@ TRUE Jacobian, not to a rank-1 secant update's own history-dependent
 coefficient).
 
 **No Picard-diverges-or-crawls case was found within the CLI-exposed
-parameter space.** Swept this session: `--window` from 0.02 to 2.0 (12,
+parameter space.** Swept this session: `--window` from 0.02 to 1.0 (12,
 18 [0.08], 20 [0.16], 26 [0.32], 28 [0.5], 32 [1.0] sweeps -- sub-linear
 growth, no divergence); `--alpha` (diffusion) from 10 to 200 at the
 default window (NO measurable change in sweep count at all -- 12, 12, 9,
@@ -874,7 +874,7 @@ runtime/fixed_point_residual_test.cpp`'s own structure):
    -- two `F` evaluations at the identical `x` (`iteration = 1` both times)
    produce bit-identical `F(x)`, mirroring the ordinary seam's own test of
    the same name.
-2. `WindowFixedPointResidual.APicardWindowPassAfterOneFEvaluationIsBitIdenticalToAFreshOne`
+2. `WindowFixedPointResidual.AWindowPassWithAnInterleavedProbeIsBitIdenticalToOneWithout`
    -- evaluate `F` once (non-committing) at an
    arbitrary `x`, then run the SAME window instance through the Runner's
    own Picard path from its genuine starting point; the result must be
