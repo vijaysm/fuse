@@ -200,15 +200,40 @@ struct SpacetimeInfo {
 /// single-component `remap_apply`'s test fixture does, because the sort may
 /// have reordered it relative to the original array.
 ///
-/// All three views live in `Kokkos::HostSpace` explicitly, not the default
-/// execution space's memory space: `Runner::Impl::HostExecSpace` (below) is
-/// always host (Serial/OpenMP/Threads), whose `memory_space` IS
-/// `Kokkos::HostSpace`, so the two agree without a template parameter here.
-struct RemapCsr {
-  Kokkos::View<std::size_t*, Kokkos::HostSpace> row_begin;
-  Kokkos::View<std::size_t*, Kokkos::HostSpace> col;
-  Kokkos::View<double*,      Kokkos::HostSpace> val;
+/// `RemapCsr` (the alias below) lives in `Kokkos::HostSpace` explicitly, not
+/// the default execution space's memory space: `Runner::Impl::HostExecSpace`
+/// is always host (Serial/OpenMP/Threads), whose `memory_space` IS
+/// `Kokkos::HostSpace`. A5 adds the one other instantiation,
+/// `RemapCsrOf<Runner::Impl::DeviceMemSpace>` (`Impl::remap_csr_device`), a
+/// byte-for-byte `deep_copy` of the host one made by `mirror_remap_csr()` at
+/// the same point of `resolve_remap()` -- the sort and the prefix scan still
+/// run exactly once, on host.
+template <class MemSpace>
+struct RemapCsrOf {
+  Kokkos::View<std::size_t*, MemSpace> row_begin;
+  Kokkos::View<std::size_t*, MemSpace> col;
+  Kokkos::View<double*,      MemSpace> val;
 };
+using RemapCsr = RemapCsrOf<Kokkos::HostSpace>;
+
+template <class MemSpace>
+[[nodiscard]] RemapCsrOf<MemSpace> mirror_remap_csr(const RemapCsr& host) {
+  RemapCsrOf<MemSpace> d;
+  d.row_begin = Kokkos::View<std::size_t*, MemSpace>(
+      Kokkos::view_alloc("fuse::remap_csr_row_begin_dev",
+                        Kokkos::WithoutInitializing),
+      host.row_begin.extent(0));
+  d.col = Kokkos::View<std::size_t*, MemSpace>(
+      Kokkos::view_alloc("fuse::remap_csr_col_dev", Kokkos::WithoutInitializing),
+      host.col.extent(0));
+  d.val = Kokkos::View<double*, MemSpace>(
+      Kokkos::view_alloc("fuse::remap_csr_val_dev", Kokkos::WithoutInitializing),
+      host.val.extent(0));
+  Kokkos::deep_copy(d.row_begin, host.row_begin);
+  Kokkos::deep_copy(d.col, host.col);
+  Kokkos::deep_copy(d.val, host.val);
+  return d;
+}
 
 /// One `Transport` instruction's execution plan, resolved once at setup.
 ///
@@ -694,6 +719,10 @@ struct Runner::Impl {
   /// `detail::RemapCsr`'s own comment. `Resolved::remap` indexes both
   /// vectors together.
   std::vector<detail::RemapCsr>       remap_csr;
+  /// A5: `remap_csr`'s device-resident twin, same index, filled ONLY when
+  /// `config.execution_space == Device` (empty otherwise, never indexed by
+  /// the host instantiation of `execute_on`). See `detail::mirror_remap_csr`.
+  std::vector<detail::RemapCsrOf<DeviceMemSpace>> remap_csr_device;
   /// One entry per `OpKind::Remap` instruction targeting a distributed nodal
   /// region via `"consistent"`/`"consistent-transpose"` (detail::
   /// NodalDistRemap); `Resolved::nodal_dist` indexes it. Built once in
@@ -1030,6 +1059,29 @@ struct Runner::Impl {
   /// the sweep loop may allocate).
   Kokkos::View<double*, Kokkos::HostSpace> reduction_scratch;
 
+  /// A5: the device path's ONLY buffer, allocated once in `setup()` when
+  /// `config.execution_space == Device` (zero-extent otherwise). Every arc
+  /// buffer, `previous[]` iterate and space-time history row stays where it
+  /// is today -- host memory a component, a Transport, a checkpoint `memcmp`
+  /// and `advance_window()` all read directly -- and `execute_on<Space>`
+  /// stages each distinct host pointer an instruction touches into one of
+  /// `kDeviceStagingSlots` fixed lanes of `device_staging_stride` doubles
+  /// (`deep_copy` in before the kernel, back out after for the ones a kernel
+  /// wrote). `kDeviceStagingSlots` is the most distinct pointers one
+  /// `Instruction` can name: `Instruction::in` holds three plus `out`
+  /// (Merge), and Relax/Residual/Sample reach `previous[]`/`history` in
+  /// place of a second or third input. The stride is the largest
+  /// `Slot::total()` of the plan, which also bounds every `previous[]`
+  /// (sized `out_total`, resolve_instructions()) and every history row
+  /// (`SpacetimeInfo::width == out.total()`, resolve_spacetime()). Nothing
+  /// in the sweep loop allocates on this path either -- a deep_copy is a
+  /// memcpy, not a new buffer -- though Kokkos's own deep_copy fence labels
+  /// may heap-allocate a std::string, which no allocation-counted test
+  /// exercises in Device mode.
+  static constexpr std::size_t          kDeviceStagingSlots = 4;
+  Kokkos::View<double*, DeviceMemSpace> device_staging;
+  std::size_t                           device_staging_stride = 0;
+
   Impl(const CouplingGraph& g, const OperatorDAG& d, ExecutionPlan p,
        const MeshBackend& b)
       : graph(g), dag(d), plan(std::move(p)), backend(b) {}
@@ -1300,6 +1352,15 @@ struct Runner::Impl {
   /// cannot be named from outside it.
   [[nodiscard]] LinearizationToken* window_block_provider_token(
       ComponentSet& components, std::uint32_t feed_arc);
+
+  /// A5: `execute()`'s whole body, parameterised on the Kokkos execution
+  /// space its Space-generic cases launch on (`HostExecSpace` or
+  /// `DeviceExecSpace`; `execute()` is the one-line dispatcher that picks
+  /// from `config.execution_space`). Defined in runner.cpp, where its only
+  /// caller lives. See docs/dev/runner-device-dispatch.md for which cases
+  /// are Space-generic and which stay host-only whatever `Space` is.
+  template <class Space>
+  Result<void> execute_on(const Instruction& ins, const detail::Resolved& r);
 
   /// KNOWN_ISSUES.md D12. A coroutine (see src/runtime/resume.hpp):
   /// suspends via `co_await detail::ExternalSuspend{}`, reporting

@@ -4,6 +4,7 @@
 #include "fuse/runtime/runner.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <cstddef>
@@ -942,6 +943,10 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
   r.remap = static_cast<std::int32_t>(remap_weights.size());
   remap_weights.push_back(weights);
   remap_csr.push_back(csr.value());
+  if (config.execution_space == RunnerConfig::RunnerExecutionSpace::Device) {
+    remap_csr_device.push_back(
+        detail::mirror_remap_csr<DeviceMemSpace>(remap_csr.back()));
+  }
   return Result<void>::success();
 }
 
@@ -1542,6 +1547,8 @@ Result<void> Runner::Impl::resolve_instructions() {
   weights_by_region.clear();
   remap_weights.clear();
   remap_csr.clear();  // parallel to remap_weights; see build_remap_csr()
+  remap_csr_device.clear();
+  stats.device_dispatches = 0;
   // Both are APPENDED to by the OpKind::Transport case below, so they must be
   // reset here like every other setup-owned container. Runner::initialize() is
   // re-callable (it clears `initialized` at entry), and without these a second
@@ -2433,6 +2440,21 @@ Result<void> Runner::Impl::setup(ComponentSet& components,
         needed_chunks);
   }
 
+  // A5: the device staging lanes (`Impl::device_staging`'s own comment has
+  // the sizing argument), sized once here like `reduction_scratch` above and
+  // for the same reason. Grown, not shrunk, on a repeated initialize().
+  if (config.execution_space == RunnerConfig::RunnerExecutionSpace::Device) {
+    std::size_t stride = 0;
+    for (const Slot& s : slots) stride = std::max(stride, s.total());
+    device_staging_stride = stride;
+    const std::size_t needed = kDeviceStagingSlots * stride;
+    if (device_staging.extent(0) < needed) {
+      device_staging = Kokkos::View<double*, DeviceMemSpace>(
+          Kokkos::view_alloc("fuse::dev_staging", Kokkos::WithoutInitializing),
+          needed);
+    }
+  }
+
   initialized = true;
   return Result<void>::success();
 }
@@ -2901,6 +2923,18 @@ Result<void> Runner::Impl::broadcast_window_convergence(
 }
 
 Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
+  // A5: `config.execution_space` picks the instantiation; the body is
+  // `execute_on<Space>` below, identical for both except where a kernel
+  // launches and, on a non-host-accessible `Space`, how its operands get
+  // there (the staging helpers at the top of that body).
+  if (config.execution_space == RunnerConfig::RunnerExecutionSpace::Device) {
+    return execute_on<DeviceExecSpace>(ins, r);
+  }
+  return execute_on<HostExecSpace>(ins, r);
+}
+
+template <class Space>
+Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r) {
   const auto in_ptr = [&](std::uint8_t k) -> const double* {
     return slots[ins.in[k].value()].data;
   };
@@ -2910,19 +2944,92 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
   // KNOWN_ISSUES.md D11 (closing) / matrix cell A-SPACES-TRANSPORT: the
   // elementwise operators below wrap their existing raw pointers as
   // UNMANAGED views (fuse/num/space_kernels.hpp's SpanOf/ConstSpanOf are
-  // zero-cost for exactly this) and run on `HostExecSpace` -- OpenMP if the
-  // build enabled it, Serial otherwise -- instead of the hand-written
-  // serial loops this switch used to run directly. Each output element's
-  // write depends on no other, so the answer cannot depend on how many
-  // threads Kokkos happened to split the range across; see
-  // space_kernels.hpp's own header comment. Nothing here allocates: a
+  // zero-cost for exactly this) and run on `Space` -- `HostExecSpace`
+  // (OpenMP if the build enabled it, Serial otherwise) for every caller
+  // that leaves `RunnerConfig::execution_space` at its default -- instead
+  // of the hand-written serial loops this switch used to run directly.
+  // Each output element's write depends on no other, so the answer cannot
+  // depend on how many threads Kokkos happened to split the range across;
+  // see space_kernels.hpp's own header comment. Nothing here allocates: a
   // SpanOf/ConstSpanOf is a view CONSTRUCTOR over an existing pointer, not a
   // new buffer.
-  const auto span_c = [](const double* p, std::size_t len) {
-    return num::ConstSpanOf<HostExecSpace>(p, len);
+  //
+  // Only the cases that call `num::xxx<Space>(span_c(...), span_m(...))`
+  // below are Space-generic. Source/ExternalDelivery (no-ops), Sink/
+  // Accelerate/Epoch/Constrain/Diagnose (plain `num::copy(ptr, ptr, n)` plus
+  // host-side bookkeeping), Transport (MPI, host memory by contract --
+  // `mpi_is_gpu_aware()` is informational only) and the WindowAdvance/Map/
+  // Reduce/Closure refusals are host-only whatever `Space` is, and read
+  // their raw pointers directly.
+  //
+  // A5, the non-host-accessible `Space` (Kokkos::Cuda here): the same two
+  // helpers instead hand back views over `device_staging` lanes
+  // (`Impl::device_staging`'s own comment). `stage()` keys lanes by HOST
+  // pointer, so an in-place call such as Accumulate's
+  // `scale(inv, span_c(out, n), span_m(out, n))` aliases ONE lane exactly as
+  // the host instantiation aliases one buffer, and a buffer read by one
+  // kernel and written by the next in the same instruction (Relax's `prev`)
+  // is copied in once and back out once, after the switch. A pointer's lane
+  // is widened in place if a later call asks for more of it; the only
+  // faults -- more distinct pointers than lanes, or a longer run than the
+  // stride -- are impossible by setup()'s sizing and are reported as
+  // `E-RT-DEVICE` after the switch rather than silently clamped.
+  constexpr bool kHostAccessible = Kokkos::SpaceAccessibility<
+      Kokkos::HostSpace, typename Space::memory_space>::accessible;
+  struct Staged {
+    const double* host = nullptr;
+    double*       host_mut = nullptr;  // non-null once some kernel writes it
+    std::size_t   len = 0;
   };
-  const auto span_m = [](double* p, std::size_t len) {
-    return num::SpanOf<HostExecSpace>(p, len);
+  std::array<Staged, kDeviceStagingSlots> staged{};
+  std::size_t n_staged = 0;
+  bool        staging_fault = false;
+  const auto  stage = [&](const double* p, std::size_t len,
+                          double* writable) -> double* {
+    double* const base = device_staging.data();
+    for (std::size_t i = 0; i < n_staged; ++i) {
+      if (staged[i].host != p) continue;
+      double* const lane = base + i * device_staging_stride;
+      if (len > staged[i].len) {
+        if (len > device_staging_stride) {
+          staging_fault = true;
+          return base;
+        }
+        if (staged[i].host_mut != nullptr) {
+          Kokkos::deep_copy(
+              num::SpanOf<HostExecSpace>(staged[i].host_mut, staged[i].len),
+              num::ConstSpanOf<Space>(lane, staged[i].len));
+        }
+        Kokkos::deep_copy(num::SpanOf<Space>(lane, len),
+                          num::ConstSpanOf<HostExecSpace>(p, len));
+        staged[i].len = len;
+      }
+      if (writable != nullptr) staged[i].host_mut = writable;
+      return lane;
+    }
+    if (n_staged == kDeviceStagingSlots || len > device_staging_stride) {
+      staging_fault = true;
+      return base;
+    }
+    double* const lane = base + n_staged * device_staging_stride;
+    Kokkos::deep_copy(num::SpanOf<Space>(lane, len),
+                      num::ConstSpanOf<HostExecSpace>(p, len));
+    staged[n_staged++] = Staged{p, writable, len};
+    return lane;
+  };
+  const auto span_c = [&](const double* p, std::size_t len) {
+    if constexpr (kHostAccessible) {
+      return num::ConstSpanOf<Space>(p, len);
+    } else {
+      return num::ConstSpanOf<Space>(stage(p, len, nullptr), len);
+    }
+  };
+  const auto span_m = [&](double* p, std::size_t len) {
+    if constexpr (kHostAccessible) {
+      return num::SpanOf<Space>(p, len);
+    } else {
+      return num::SpanOf<Space>(stage(p, len, p), len);
+    }
   };
 
   switch (ins.kind) {
@@ -2954,7 +3061,7 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
       if (r.spacetime < 0) {
         // The `lag(k)` no-op of src/ir/rules_channel.cpp: it exists so the
         // TimeLevel shift has an arc to live on and moves no data.
-        num::copy<HostExecSpace>(span_c(in_ptr(0), n), span_m(out_ptr(), n));
+        num::copy<Space>(span_c(in_ptr(0), n), span_m(out_ptr(), n));
         break;
       }
 
@@ -3003,7 +3110,7 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
         // centroid at the same local index, so `dst[i] = src[i]` moves each
         // value to the cell it already belonged to. Any pair that failed that
         // check either carries real weights below or never got past setup.
-        num::copy<HostExecSpace>(span_c(in_ptr(0), n), span_m(out_ptr(), n));
+        num::copy<Space>(span_c(in_ptr(0), n), span_m(out_ptr(), n));
       } else {
         // Spec §5.4: `g = W f`, with `W` the conservative FV<->FV matrix
         // built from the supermesh at SETUP (src/remap/intx_weights.cpp).
@@ -3015,10 +3122,8 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
         // (fuse/num/space_kernels.hpp) reproduces `apply_weights`' own
         // per-row accumulation order exactly -- see detail::RemapCsr's own
         // comment for why the stable sort at plan time guarantees that.
-        const RemapWeights& w =
-            *remap_weights[static_cast<std::size_t>(r.remap)];
-        const detail::RemapCsr& csr =
-            remap_csr[static_cast<std::size_t>(r.remap)];
+        const auto ri = static_cast<std::size_t>(r.remap);
+        const RemapWeights& w = *remap_weights[ri];
         const int components = slots[ins.out.value()].components;
         if (components < 1) {
           return Failure{"E-REMAP-ARG",
@@ -3026,14 +3131,34 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
                            std::to_string(components)};
         }
         const std::size_t nc = static_cast<std::size_t>(components);
-        num::IndexSpanOf<HostExecSpace> row_begin(csr.row_begin.data(),
-                                                   csr.row_begin.extent(0));
-        num::IndexSpanOf<HostExecSpace> col(csr.col.data(),
-                                            csr.col.extent(0));
-        num::ConstSpanOf<HostExecSpace> val(csr.val.data(), csr.val.extent(0));
-        num::remap_apply<HostExecSpace>(row_begin, col, val,
-                                        span_c(in_ptr(0), w.n_cols * nc),
-                                        span_m(out_ptr(), w.n_rows * nc), nc);
+        // The CSR already lives in `Space`'s memory: `remap_csr` for the
+        // host, its `deep_copy` twin `remap_csr_device` otherwise (A5) --
+        // nothing about the matrix is staged per instruction.
+        num::IndexSpanOf<Space> row_begin;
+        num::IndexSpanOf<Space> col;
+        num::ConstSpanOf<Space> val;
+        if constexpr (kHostAccessible) {
+          const detail::RemapCsr& csr = remap_csr[ri];
+          row_begin = num::IndexSpanOf<Space>(csr.row_begin.data(),
+                                              csr.row_begin.extent(0));
+          col = num::IndexSpanOf<Space>(csr.col.data(), csr.col.extent(0));
+          val = num::ConstSpanOf<Space>(csr.val.data(), csr.val.extent(0));
+        } else {
+          if (ri >= remap_csr_device.size()) {
+            return Failure{"E-RT-DEVICE",
+                         "Remap instruction has no device-resident CSR; "
+                         "resolve_remap() must build one for every weights "
+                         "entry when execution_space is Device"};
+          }
+          const auto& csr = remap_csr_device[ri];
+          row_begin = num::IndexSpanOf<Space>(csr.row_begin.data(),
+                                              csr.row_begin.extent(0));
+          col = num::IndexSpanOf<Space>(csr.col.data(), csr.col.extent(0));
+          val = num::ConstSpanOf<Space>(csr.val.data(), csr.val.extent(0));
+        }
+        num::remap_apply<Space>(row_begin, col, val,
+                                span_c(in_ptr(0), w.n_cols * nc),
+                                span_m(out_ptr(), w.n_rows * nc), nc);
       }
       break;
     }
@@ -3046,17 +3171,16 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
         // defined and inspectable; the projection reads `history`.
         SpacetimeInfo& st = spacetimes[static_cast<std::size_t>(r.spacetime)];
         const auto j = static_cast<std::size_t>(ins.src_step);
-        num::copy<HostExecSpace>(span_c(in_ptr(0), st.width),
-                                 span_m(st.history.data() + j * st.width,
-                                        st.width));
-        num::copy<HostExecSpace>(span_c(in_ptr(0), n), span_m(out_ptr(), n));
+        num::copy<Space>(span_c(in_ptr(0), st.width),
+                         span_m(st.history.data() + j * st.width, st.width));
+        num::copy<Space>(span_c(in_ptr(0), n), span_m(out_ptr(), n));
         break;
       }
       const std::size_t idx = sample_count[ins.out.value()];
       // r.accum, not ins.attrs.accum: see resolve_instructions(). `first`
       // mirrors `num::accumulate_into`'s own `sample_index == 0` rule.
-      num::accumulate<HostExecSpace>(r.accum, span_c(in_ptr(0), n),
-                                     span_m(out_ptr(), n), idx == 0);
+      num::accumulate<Space>(r.accum, span_c(in_ptr(0), n),
+                             span_m(out_ptr(), n), idx == 0);
       sample_count[ins.out.value()] = idx + 1;
       break;
     }
@@ -3064,7 +3188,7 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
     case OpKind::Accumulate: {
       if (ins.n_in == 0 || !ins.out.valid()) break;
       double* out = out_ptr();
-      num::copy<HostExecSpace>(span_c(in_ptr(0), n), span_m(out, n));
+      num::copy<Space>(span_c(in_ptr(0), n), span_m(out, n));
       // The sample counter belongs to the accumulator arc this reduction
       // reads, not to the arc it writes. `num::accumulate_finalize`
       // (kernels.hpp) does nothing outside AccumOp::Mean with a nonzero
@@ -3072,7 +3196,7 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
       const std::size_t count = sample_count[ins.in[0].value()];
       if (ins.attrs.accum == AccumOp::Mean && count != 0) {
         const double inv = 1.0 / static_cast<double>(count);
-        num::scale<HostExecSpace>(inv, span_c(out, n), span_m(out, n));
+        num::scale<Space>(inv, span_c(out, n), span_m(out, n));
       }
       sample_count[ins.in[0].value()] = 0;  // reset for the next window
       break;
@@ -3084,7 +3208,7 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
       // exactly `copy` -- is the only behaviour `num::extrapolate` (still
       // used, and still the oracle for a future order > 0) ever actually
       // takes here.
-      num::copy<HostExecSpace>(span_c(in_ptr(0), n), span_m(out_ptr(), n));
+      num::copy<Space>(span_c(in_ptr(0), n), span_m(out_ptr(), n));
       break;
     }
 
@@ -3095,7 +3219,7 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
         case MergeOp::First:
           // The first contributing channel in declaration order wins; the
           // others are not read at all. An override, not a combination.
-          num::copy<HostExecSpace>(span_c(in_ptr(0), n), span_m(out, n));
+          num::copy<Space>(span_c(in_ptr(0), n), span_m(out, n));
           break;
         case MergeOp::Sum:
         case MergeOp::Mean: {
@@ -3108,15 +3232,15 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
           // hand-written loop it replaces did, just spelled as the kernel
           // Sample's own accumulation already uses.
           for (std::uint8_t k = 0; k < ins.n_in; ++k) {
-            num::accumulate<HostExecSpace>(AccumOp::Sum, span_c(in_ptr(k), n),
-                                           span_m(out, n), k == 0);
+            num::accumulate<Space>(AccumOp::Sum, span_c(in_ptr(k), n),
+                                   span_m(out, n), k == 0);
           }
           if (ins.attrs.merge == MergeOp::Mean) {
             // Unweighted, as declared: the model carries no coverage
             // information that could weight the contributions, and inventing
             // weights here would be inventing physics.
             const double inv = 1.0 / static_cast<double>(ins.n_in);
-            num::scale<HostExecSpace>(inv, span_c(out, n), span_m(out, n));
+            num::scale<Space>(inv, span_c(out, n), span_m(out, n));
           }
           break;
         }
@@ -3130,7 +3254,7 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
       // here, at the one point where it has to. Converting per element, or
       // carrying a double through the plan, would round it repeatedly.
       const double f = ins.attrs.scale.to_double();
-      num::scale<HostExecSpace>(f, span_c(in_ptr(0), n), span_m(out_ptr(), n));
+      num::scale<Space>(f, span_c(in_ptr(0), n), span_m(out_ptr(), n));
       break;
     }
 
@@ -3197,9 +3321,9 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
       if (ins.n_in == 0 || !ins.out.valid()) break;
       double* out = out_ptr();
       std::vector<double>& prev = previous[ins.out.value()];  // pre-sized
-      num::relax<HostExecSpace>(ins.attrs.omega, span_c(prev.data(), n),
-                                span_c(in_ptr(0), n), span_m(out, n));
-      num::copy<HostExecSpace>(span_c(out, n), span_m(prev.data(), n));
+      num::relax<Space>(ins.attrs.omega, span_c(prev.data(), n),
+                        span_c(in_ptr(0), n), span_m(out, n));
+      num::copy<Space>(span_c(out, n), span_m(prev.data(), n));
       break;
     }
 
@@ -3293,13 +3417,12 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
       const double* a = in_ptr(0);
       if (ins.n_in > 1) {
         const double* b = in_ptr(1);
-        num::residual<HostExecSpace>(span_c(a, n), span_c(b, n),
-                                     span_m(out, n));
+        num::residual<Space>(span_c(a, n), span_c(b, n), span_m(out, n));
       } else {
         std::vector<double>& prev = previous[ins.out.value()];  // pre-sized
-        num::residual<HostExecSpace>(span_c(a, n), span_c(prev.data(), n),
-                                     span_m(out, n));
-        num::copy<HostExecSpace>(span_c(a, n), span_m(prev.data(), n));
+        num::residual<Space>(span_c(a, n), span_c(prev.data(), n),
+                             span_m(out, n));
+        num::copy<Space>(span_c(a, n), span_m(prev.data(), n));
       }
       break;
     }
@@ -3407,6 +3530,30 @@ Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
       }
       break;
     }
+  }
+
+  // A5: every Space-generic case above ends in `break`, so this is the one
+  // place a device-staged output returns to its host buffer. The host-only
+  // cases that `return` early staged nothing and never reach here with
+  // `n_staged > 0`.
+  if constexpr (!kHostAccessible) {
+    if (staging_fault) {
+      return Failure{"E-RT-DEVICE",
+                   std::string{"instruction '"} + to_cstring(ins.kind) +
+                       "' needed more device staging than setup() "
+                       "provisioned (" +
+                       std::to_string(kDeviceStagingSlots) + " lanes of " +
+                       std::to_string(device_staging_stride) + " values)"};
+    }
+    for (std::size_t i = 0; i < n_staged; ++i) {
+      if (staged[i].host_mut == nullptr) continue;
+      Kokkos::deep_copy(
+          num::SpanOf<HostExecSpace>(staged[i].host_mut, staged[i].len),
+          num::ConstSpanOf<Space>(device_staging.data() +
+                                      i * device_staging_stride,
+                                  staged[i].len));
+    }
+    if (n_staged > 0) ++stats.device_dispatches;
   }
   return Result<void>::success();
 }
@@ -3664,6 +3811,10 @@ Runner::Runner(const CouplingGraph& graph, const OperatorDAG& dag,
                ExecutionPlan plan, const MeshBackend& backend)
     : impl_(std::make_unique<Impl>(graph, dag, std::move(plan), backend)) {}
 Runner::~Runner() = default;
+
+std::string_view Runner::device_execution_space_name() noexcept {
+  return Impl::DeviceExecSpace::name();
+}
 Runner::Runner(Runner&&) noexcept = default;
 Runner& Runner::operator=(Runner&&) noexcept = default;
 
