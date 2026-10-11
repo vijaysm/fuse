@@ -1647,7 +1647,21 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   // empty; the budget stays armed and runs in full whenever a mode with
   // energy of its own is dominant again, which is what a returning growth
   // mode would be (D9's carried E0 at the 1e-9 level for the same |x|).
-  const double energy_floor = 100.0 * eig_quality * eig_quality * xnorm * xnorm;
+  //
+  // The floor is a MAX of two scales, not eig_quality^2 alone. Measured
+  // 2026-10-11 with the examples' SparseLuBackend on cusolverRf
+  // (FUSE_ENABLE_CUSPARSE=ON, mixed-precision refinement): the same run gave
+  // eig_quality = 1.07e-11 -- seven times better than Eigen's 7.7e-11,
+  // because that backend's forward error is ~1e-17 against Eigen's ~1e-14 --
+  // while E0 stayed at 1.4e-20, the finite-difference construction's own
+  // noise energy (set by `c.tol` and the FD step, not by the solve). A floor
+  // of eig_quality^2 alone then fell BELOW E0 (1.1e-20 < 1.4e-20) and the
+  // budget ran on noise, failing at 3e-4 -- the exact case this guard exists
+  // to skip. 1e-16*|x|^2 is eleven orders below the energy a real growth
+  // mode carried (D9: E0 ~ 1e-9 at the same |x|) and four orders above the
+  // noise, so it cannot hide a returning mode.
+  const double energy_floor =
+      std::max(100.0 * eig_quality * eig_quality, 1e-16) * xnorm * xnorm;
   if (E0 < energy_floor) {
     std::printf("dominant mode carries no energy (E0 = %.3e < floor %.3e): the "
                 "Newmark acceleration passenger; budget not evaluated on noise\n",
