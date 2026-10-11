@@ -92,6 +92,24 @@ endif()
 # parallel/ targets.
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
+# Shared by the two examples whose cost is repeated sparse LU (Gray-Scott,
+# FSI channel) and by their verification tests: examples/common/
+# sparse_solve_backend.hpp, a SparseLuBackend that is Eigen::SparseLU by
+# default and cusolverRf on the device under FUSE_ENABLE_CUSPARSE. INTERFACE
+# only -- a header and, when the flag is on, the three CUDA libraries it
+# needs. test/CMakeLists.txt links it by its namespaced name; CMake resolves
+# that at generate time, so test/ being added before examples/ is fine.
+# ---------------------------------------------------------------------------
+add_library(fuse_examples_common INTERFACE)
+add_library(fuse::examples_common ALIAS fuse_examples_common)
+target_include_directories(fuse_examples_common INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/common)
+target_link_libraries(fuse_examples_common INTERFACE fuse::base Eigen3::Eigen)
+if(FUSE_ENABLE_CUSPARSE)
+  target_link_libraries(fuse_examples_common INTERFACE
+    CUDA::cusolver CUDA::cusparse CUDA::cudart)
+endif()
+
+# ---------------------------------------------------------------------------
 # Gray-Scott (Time windows track): U and V on one structured grid, coupled
 # implicitly at independent time steps through fuse::WindowCoupler. Needs
 # Eigen3::Eigen directly (its Newton solves use Eigen::SparseLU) -- available
@@ -99,7 +117,8 @@ endif()
 # ---------------------------------------------------------------------------
 add_executable(fuse_example_gray_scott
   gray_scott/main.cpp)
-target_link_libraries(fuse_example_gray_scott PRIVATE fuse::runtime fuse::backend Eigen3::Eigen)
+target_link_libraries(fuse_example_gray_scott PRIVATE
+  fuse::runtime fuse::backend Eigen3::Eigen fuse::examples_common)
 target_include_directories(fuse_example_gray_scott PRIVATE gray_scott)
 
 if(FUSE_ENABLE_TESTS)
@@ -474,7 +493,7 @@ endif()
 add_executable(fuse_example_fsi_channel
   fsi_channel/main.cpp)
 target_link_libraries(fuse_example_fsi_channel PRIVATE
-  fuse::runtime fuse::backend Eigen3::Eigen)
+  fuse::runtime fuse::backend Eigen3::Eigen fuse::examples_common)
 target_include_directories(fuse_example_fsi_channel PRIVATE fsi_channel)
 
 if(FUSE_ENABLE_TESTS)

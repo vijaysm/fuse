@@ -120,6 +120,10 @@ option(FUSE_ENABLE_MPI     "Tier 1: MPI transport, CommGraph, epochs across rank
 option(FUSE_ENABLE_MOAB    "Tier 2: MOAB mesh backend, Intx2Mesh, TempestRemap"    OFF)
 option(FUSE_ENABLE_PETSC   "Tier 3: PETSc solver plugin and physics-kit"           OFF)
 option(FUSE_ENABLE_LOWFIVE "HDF5-VOL interception transport"                        OFF)
+# Not a tier: touches only the two examples' sparse direct solves
+# (examples/common/sparse_solve_backend.hpp), never the library. Needs the
+# Kokkos CUDA backend (checked where Kokkos is resolved, below).
+option(FUSE_ENABLE_CUSPARSE "cuSOLVER/cuSPARSE device sparse LU for the FSI and Gray-Scott examples" OFF)
 option(FUSE_ENABLE_PYTHON  "pybind11 module"                                        OFF)
 option(FUSE_ENABLE_FORTRAN "Fortran participant shim"                               OFF)
 option(FUSE_ENABLE_TESTS   "Build the test suite"                                   ON)
@@ -570,6 +574,23 @@ macro(fuse_resolve_dependencies)
                       "kernels will use nvcc's default target architecture, "
                       "which may not match the GPU (cudaErrorNoKernelImageForDevice).")
     endif()
+  endif()
+
+  # cuSOLVER/cuSPARSE for the examples' SparseLuBackend. Same stance as the
+  # tier checks above: asking for it on a Kokkos without CUDA is a
+  # configuration error, not a silent fall back to Eigen -- the examples'
+  # timings would otherwise report a backend that never ran. The toolkit is
+  # the one Kokkos itself was built against (CUDAToolkit_ROOT is already in
+  # the cache from Kokkos' own find), so this resolves the same libraries.
+  if(FUSE_ENABLE_CUSPARSE)
+    if(NOT TARGET Kokkos::CUDA)
+      message(FATAL_ERROR
+        "FUSE_ENABLE_CUSPARSE requires a Kokkos built with the CUDA backend "
+        "(no Kokkos::CUDA target in the resolved Kokkos at ${Kokkos_DIR}). "
+        "Configure against a CUDA-enabled Kokkos or leave FUSE_ENABLE_CUSPARSE=OFF.")
+    endif()
+    find_package(CUDAToolkit REQUIRED)
+    message(STATUS "fuse: cuSOLVER/cuSPARSE ${CUDAToolkit_VERSION} from ${CUDAToolkit_LIBRARY_DIR} (examples' SparseLuBackend = cusolverRf)")
   endif()
 
   # This machine has a second Kokkos in /opt/homebrew/include, and any target that
