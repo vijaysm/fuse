@@ -410,6 +410,31 @@ Result<std::size_t> build_native_remap_halo(NativeMeshBackend& backend, MeshId s
                        "covering-set halo is a collective and cannot be built"};
     }
   }
+  // With MPI initialised (checked above), `ranks` is `backend.communicator_size()`, which is pure local
+  // bookkeeping (`communicator_ == kNullComm ? 1 : num_ranks_`) -- it says
+  // nothing about what `backend.communicator()` actually resolves to.
+  // `fuse_test_main.cpp` calls `MPI_Init` unconditionally in every build
+  // with FUSE_HAVE_MPI, even run as a single bare process with no
+  // `mpiexec`, so `MPI_Initialized` is true and `MPI_Comm_f2c` on a
+  // placeholder handle (every tier-0 test that sets one without a real
+  // multi-rank launch, documented at each call site as "never
+  // dereferenced") does not crash -- it silently resolves to whatever that
+  // handle happens to mean on a singleton MPI (commonly a 1-rank
+  // communicator). Proceeding into the real exchange below with a `ranks`
+  // the resolved communicator cannot back then failed deep inside
+  // `exchange_migration_buffers`'s own invariant check instead of here,
+  // cleanly. Comparing the two directly is the actual precondition for
+  // everything below.
+  const MPI_Comm resolved = resolve(backend.communicator());
+  int real_size = 1;
+  MPI_Comm_size(resolved, &real_size);
+  if (real_size != ranks) {
+    return Failure{"E-MESH-NO-MPI",
+                 "the native backend reports a communicator of " + std::to_string(ranks) +
+                     " ranks, but its actual MPI communicator has " +
+                     std::to_string(real_size) + "; this backend was not given a real "
+                     "multi-rank communicator to decompose over"};
+  }
   auto src_r = backend.native_view(source, placement);
   if (!src_r.ok()) return src_r.error();
   auto tgt_r = backend.native_view(target, placement);
