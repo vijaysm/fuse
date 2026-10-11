@@ -20,6 +20,30 @@ endif()
 set(FUSE_TEST_GOLDEN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/golden")
 set(FUSE_TEST_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data")
 
+# A handful of tests below (runtime/field .compile_ok/.compile_fail) drive a
+# NESTED `cmake --build ${CMAKE_BINARY_DIR} --target ...` at test-run time
+# rather than linking a normal gtest binary, specifically so the thing under
+# test is "does this translation unit compile," not "does it run." That
+# nested build re-invokes mpicxx, which is a shell wrapper that picks its
+# real host compiler from $OMPI_CXX at the moment IT runs -- not from
+# whatever was exported when this project was configured. If OMPI_CXX
+# (/opt/kokkos/bin/nvcc_wrapper on a Kokkos::CUDA build, set by every
+# CMakePresets.json tier) is missing from the shell that happens to invoke
+# ctest, mpicxx silently falls back to plain g++, which rejects the
+# nvcc-only flags (`-Wext-lambda-captures-this`, `-arch=sm_61`) this
+# project's own CMake unconditionally adds whenever Kokkos::CUDA exists --
+# breaking runtime.compile_ok.capabilities_override and
+# field.compile_ok.owning_chain outright, and silently turning their
+# WILL_FAIL siblings into false passes (a bad build fails for the wrong
+# reason instead of the one under test). Pinning OMPI_CXX to what THIS
+# configure actually used, the same way MOAB's LD_LIBRARY_PATH fixup above
+# does, makes the nested build's toolchain match this one regardless of the
+# invoking shell.
+set(_fuse_nested_build_env_mods "")
+if(DEFINED ENV{OMPI_CXX})
+  list(APPEND _fuse_nested_build_env_mods "OMPI_CXX=set:$ENV{OMPI_CXX}")
+endif()
+
 # `layer` names both the source directory and, by default, the library the test
 # links. NO_LAYER_LIB separates them: test/verification/ is not a library layer,
 # it exercises whatever the case needs (declared via LIBS).
@@ -623,12 +647,20 @@ add_test(NAME runtime.compile_fail.stale_rollback_override
 # one lock.
 set_tests_properties(runtime.compile_fail.stale_rollback_override PROPERTIES
   WILL_FAIL TRUE LABELS "compile_fail" RESOURCE_LOCK fuse_build_tree)
+if(_fuse_nested_build_env_mods)
+  set_tests_properties(runtime.compile_fail.stale_rollback_override PROPERTIES
+    ENVIRONMENT_MODIFICATION "${_fuse_nested_build_env_mods}")
+endif()
 
 add_test(NAME runtime.compile_ok.capabilities_override
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
           --target fuse_runtime_compile_ok_capabilities_override)
 set_tests_properties(runtime.compile_ok.capabilities_override PROPERTIES
   LABELS "compile_fail" RESOURCE_LOCK fuse_build_tree)
+if(_fuse_nested_build_env_mods)
+  set_tests_properties(runtime.compile_ok.capabilities_override PROPERTIES
+    ENVIRONMENT_MODIFICATION "${_fuse_nested_build_env_mods}")
+endif()
 
 # ---------------------------------------------------------------- parallel
 # Tier 1 only, and absent rather than skipped in Tier 0 for the reason above.
@@ -932,12 +964,20 @@ add_test(NAME field.compile_fail.dangling_span
 # sequencing among exactly these three and nothing else.
 set_tests_properties(field.compile_fail.dangling_span PROPERTIES
   WILL_FAIL TRUE LABELS "compile_fail" RESOURCE_LOCK fuse_build_tree)
+if(_fuse_nested_build_env_mods)
+  set_tests_properties(field.compile_fail.dangling_span PROPERTIES
+    ENVIRONMENT_MODIFICATION "${_fuse_nested_build_env_mods}")
+endif()
 
 add_test(NAME field.compile_ok.owning_chain
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
           --target fuse_field_compile_ok_owning_chain)
 set_tests_properties(field.compile_ok.owning_chain PROPERTIES
   LABELS "compile_fail" RESOURCE_LOCK fuse_build_tree)
+if(_fuse_nested_build_env_mods)
+  set_tests_properties(field.compile_ok.owning_chain PROPERTIES
+    ENVIRONMENT_MODIFICATION "${_fuse_nested_build_env_mods}")
+endif()
 
 # ---------------------------------------------------------------- verification
 # Convergence orders and iteration counts, against known-good values. These are
