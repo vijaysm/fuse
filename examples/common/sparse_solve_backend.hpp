@@ -317,11 +317,23 @@ class SparseLuBackend {
                  "cusolverSpDcsrluExtractHost");
 
     // Does the extracted L carry its unit diagonal explicitly? Decide from the
-    // data rather than from documentation: look for (0,0) in row 0.
-    bool l_diag_stored = false;
-    for (int k = rowL[0]; k < rowL[1]; ++k) {
-      if (colL[k] == 0) { l_diag_stored = true; break; }
+    // data rather than from documentation, and from every row rather than
+    // the first: cusolverRf takes ONE diagonal convention for the whole
+    // factor, so an L that stored its diagonal in some rows and not others
+    // could not be described to it at all and is refused here rather than
+    // silently misread as either convention.
+    int rows_with_diag = 0;
+    for (int i = 0; i < n; ++i) {
+      for (int k = rowL[i]; k < rowL[i + 1]; ++k) {
+        if (colL[k] == i) { ++rows_with_diag; break; }
+      }
     }
+    if (rows_with_diag != 0 && rows_with_diag != n) {
+      throw std::runtime_error("SparseLuBackend: cusolverSp's L factor stores its unit diagonal in " +
+                               std::to_string(rows_with_diag) + " of " + std::to_string(n) +
+                               " rows; cusolverRf needs one convention for the whole factor");
+    }
+    const bool l_diag_stored = rows_with_diag == n;
 
     solver_check(cusolverRfCreate(&rf_), "cusolverRfCreate");
     solver_check(cusolverRfSetMatrixFormat(rf_, CUSOLVERRF_MATRIX_FORMAT_CSR,
