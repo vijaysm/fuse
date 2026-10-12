@@ -1723,7 +1723,7 @@ struct Runner::Impl {
       std::vector<std::vector<WindowBlockSample>>& gathered_out,
       bool& all_ok_out);
 
-  /// KNOWN_ISSUES.md D33: `gather_window_block_samples()` deliberately
+  /// KNOWN_ISSUES.md D35: `gather_window_block_samples()` deliberately
   /// reaches only `r.participants` -- but the channels THIS region moves
   /// are exchanged over the run's single shared transport communicator
   /// (`config.base_communicator`, duplicated whole by `MpiTransport::

@@ -184,11 +184,11 @@ when the code contradicted the plan's assumption:
   `E-RT-DEVICE` failure, never silent truncation.
 - **Relax/Remap are not bit-identical to host.** nvcc contracts `a*b+c`
   into a fused multiply-add inside `RelaxFunctor`/`RemapMultiFunctor` — the
-  same gap D36 closed for the deterministic dot/norm reductions with
+  same gap D38 closed for the deterministic dot/norm reductions with
   `unfused_multiply_add`. Those two kernels were left untouched because
   `build-evidence/mutations.toml` anchors their exact source lines; the test
   asserts `<= 1e-14` relative for those two shapes and bitwise for the rest.
-  Closing the gap for real means applying D36's idiom to the two functors
+  Closing the gap for real means applying D38's idiom to the two functors
   and re-anchoring the mutation rows — a separate, small change if anyone
   wants bitwise there.
 
@@ -257,9 +257,9 @@ type both ways (`build-cusparse`, tier0 preset; `build-all`, all preset).
 | `gray_scott_reference` | 462.9 s | 471.4 s |
 | `fsi_stokes_mms` | 55.1 s | 470.7 s |
 | `fsi_transient` | 57.3 s | 124.0 s (passes only with the refinement step below) |
-| `fsi_energy_diag` | pass | 5 of 6 cases pass; `LongRunEnergyIsBounded` SKIPPED (KNOWN_ISSUES D35) |
+| `fsi_energy_diag` | pass | 5 of 6 cases pass; `LongRunEnergyIsBounded` SKIPPED (KNOWN_ISSUES D37) |
 | `gray_scott_mms` / `multirate`, `fsi_beam` / `coupled`, `example.gray_scott` (+omp) | pass | pass |
-| `example.fsi_channel` (+omp) | pass | DISABLED (KNOWN_ISSUES D34) |
+| `example.fsi_channel` (+omp) | pass | DISABLED (KNOWN_ISSUES D36) |
 
 **No gain, and the reason is not the backend.** `gray_scott_reference` runs
 at `kN = 8`: a 128-unknown Jacobian. Its 460-odd seconds are not in the LU
@@ -308,7 +308,7 @@ rounds of measurement, in order:
    marginally stable near the beam's first natural period: a ≤1.07e-12
    change in the fluid solve diverges it, and the flag-*off* build diverges
    too under `--accel none` or `aitken` at the same periods. That is
-   KNOWN_ISSUES **D34**, OPEN; the two example rows are `DISABLED` (visible
+   KNOWN_ISSUES **D36**, OPEN; the two example rows are `DISABLED` (visible
    in `ctest -N`, not hidden) when the flag is ON. The `fsi_*` verification
    rows still run under the flag.
 
@@ -322,7 +322,7 @@ rounds of measurement, in order:
    on the TU; the same source rebuilt fails 2 of 3). What remains is the
    device triangular solve, which refinement makes accurate but not bitwise.
    That case is `GTEST_SKIP`ped under the flag and recorded as KNOWN_ISSUES
-   **D35**, which also names the fix that would close it (host triangular
+   **D37**, which also names the fix that would close it (host triangular
    solves from the device-refactored factors).
 
 The lesson that outlives this branch: a fixed-point coupling iteration
@@ -330,7 +330,7 @@ converges through *a* rounding floor, and anything that moves that floor by
 κ·ε — a different solver, a different pivot order, a different FMA
 contraction, or a solve that is not bitwise reproducible from one call to
 the next — can tip a marginal case. Any device sparse solver fuse adopts
-has to be checked against the D36 determinism contract and against the
+has to be checked against the D38 determinism contract and against the
 coupling tests first, not just against a residual; Kokkos Kernels' CUDA
 paths included (the user deferred that dependency on 2026-10-11 for this
 reason and the size argument above).

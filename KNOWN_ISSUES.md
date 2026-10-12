@@ -281,7 +281,7 @@ and once on `Device` (`device_execution_space_name()` == `"Cuda"` on this
 machine, `device_dispatches > 0` on the device run). Accumulate/Scale/copy
 agree **bitwise**; `Relax` and weighted `Remap` agree to `1e-14` relative,
 not bitwise, because nvcc contracts `a*b+c` into FMA inside `RelaxFunctor`/
-`RemapMultiFunctor` (the same gap D36 closed for the deterministic reductions
+`RemapMultiFunctor` (the same gap D38 closed for the deterministic reductions
 with `unfused_multiply_add`; those two kernels were left as-is because
 `build-evidence/mutations.toml` anchors their exact source lines). Full
 suite after the change: 279/280 on one `ctest -j1` run; the one failure,
@@ -3316,7 +3316,7 @@ type. The robustness rule favours (a); the accuracy rule, read literally, favour
 owner decides, the Release configuration is **built and known to fail these three cases**, and no
 Release number is cited anywhere in the documentation.
 
-### ~~D31. This host's Open MPI (4.1.5) hangs in `MPI_Alltoallv` on any communicator but `MPI_COMM_WORLD`~~ — WORKED AROUND 2026-10-10
+### ~~D33. This host's Open MPI (4.1.5) hangs in `MPI_Alltoallv` on any communicator but `MPI_COMM_WORLD`~~ — WORKED AROUND 2026-10-10
 
 **Measured 2026-10-10**, tracking down a hang in `parallel.mpi_transport.{4,5}`, `parallel.comm_graph.{4,5}`
 and every other multi-rank test whose binary calls `MPI_Alltoallv` on a communicator `MpiTransport`,
@@ -3370,7 +3370,7 @@ also carry `OMPI_MCA_rmaps_base_oversubscribe=1` (the environment-variable equiv
 a throughput benchmark, so running more ranks than physical cores is the point at `n=5`, not a
 mistake to refuse.
 
-### ~~D32. This host's Open MPI (4.1.5) reports `MPI_APPNUM` 0 for every rank of an MPMD launch, regardless of segment~~ — WORKED AROUND 2026-10-10
+### ~~D34. This host's Open MPI (4.1.5) reports `MPI_APPNUM` 0 for every rank of an MPMD launch, regardless of segment~~ — WORKED AROUND 2026-10-10
 
 **Measured 2026-10-10**, tracking down `E-CONNECT-APPNUM` failures in `parallel.connect.mpmd.{1+1,2+3,3+2}`
 and `verification.brusselator.participants.mpmd.{3,5}`. `fuse::transport::check_mpmd_layout()`
@@ -3402,7 +3402,7 @@ and `FUSE_ENABLE_CONNECT_MPMD` are now measured, independently, so the `connect`
 participants` families register whichever modes this installation can actually carry, rather than
 registering-and-permanently-failing a row that can never pass here.
 
-### ~~D33. A rank outside a window-scoped region's participants never learned the window converged, and deadlocked the next sweep~~ — FIXED 2026-10-10
+### ~~D35. A rank outside a window-scoped region's participants never learned the window converged, and deadlocked the next sweep~~ — FIXED 2026-10-10
 
 **Measured 2026-10-10**, as `parallel.window_runner_mpi.3` (Timeout): `WindowRunnerMpi.
 ThreeRanksWithAnUncoupledThirdMatchTheReference` adds a third, genuinely uncoupled component `C` on
@@ -3445,7 +3445,7 @@ have the identical gap while investigating this — a local failure on a partici
 participants, via the same `gather_window_block_samples()` — but is not exercised by any current test
 and is left for a future pass rather than bundled into this fix.
 
-### D34. `example.fsi_channel`'s IQN-ILS coupling is marginally stable near the beam's first natural period — a 1e-12 change in the fluid solve diverges it; OPEN, rows DISABLED under `FUSE_ENABLE_CUSPARSE`
+### D36. `example.fsi_channel`'s IQN-ILS coupling is marginally stable near the beam's first natural period — a 1e-12 change in the fluid solve diverges it; OPEN, rows DISABLED under `FUSE_ENABLE_CUSPARSE`
 
 **Measured 2026-10-11**, found while verifying the examples' cusolverRf sparse-solve backend
 (`examples/common/sparse_solve_backend.hpp`, `docs/dev/runner-device-dispatch.md` Part B) on
@@ -3470,7 +3470,7 @@ the flag-off build diverges with two of the three accelerators on its own. It is
 coupling at that step sitting at the edge of IQN-ILS's stability, which the fixed Eigen
 rounding happens to land on the convergent side of. The `fsi_*` verification rows
 (`fsi_stokes_mms`, `fsi_beam`, `fsi_coupled`, `fsi_transient`) pass with the flag on;
-`fsi_energy_diag`'s 480-period coupled run sits on the same edge and is D35.
+`fsi_energy_diag`'s 480-period coupled run sits on the same edge and is D37.
 
 **What was done.** `example.fsi_channel` and `example.fsi_channel.omp_identical` carry the
 ctest `DISABLED` property when `FUSE_ENABLE_CUSPARSE=ON` (reported as "Not Run (Disabled)",
@@ -3483,7 +3483,7 @@ point of the beam; the window's convergence criterion on `fluid_force` (a deriva
 solution, so κ-amplified) sitting at 1e-9 relative. Until then the example is a stability
 probe, not a regression gate, for any alternative fluid solver.
 
-### D35. Under `FUSE_ENABLE_CUSPARSE` the cusolverRf fluid solve is not bitwise reproducible run to run in situ, and `fsi_energy_diag`'s 480-period coupled run usually fails to converge at period 140 because of it; OPEN, that one case SKIPPED under the flag
+### D37. Under `FUSE_ENABLE_CUSPARSE` the cusolverRf fluid solve is not bitwise reproducible run to run in situ, and `fsi_energy_diag`'s 480-period coupled run usually fails to converge at period 140 because of it; OPEN, that one case SKIPPED under the flag
 
 **Measured 2026-10-11** on the GTX 1050 Ti, `build-cusparse` (tier0, Debug, flag on) against
 `build-all` (all, Debug, flag off), with a temporary per-period total-energy trace
@@ -3512,10 +3512,10 @@ IQN-ILS tol 1e-9, 300 sweeps max, `abort_on_nonconvergence`):
   IQN-ILS fixed point is tolerance-limited at 1e-9, not solver-limited, so a 1e-16 solve
   difference becomes a 1e-10 state difference immediately and a 1e-12 trajectory fork later.
 
-**What this is.** D34 in the verification suite: a marginally stable IQN-ILS coupling that
+**What this is.** D36 in the verification suite: a marginally stable IQN-ILS coupling that
 the deterministic Eigen rounding lands on the convergent side of, and an ulp-level
 nondeterministic solve lands on either side of. It is not a defect in the backend's accuracy
-(D34's numbers) and not a leak, race or UB on the host (the three experiments above). Valgrind
+(D36's numbers) and not a leak, race or UB on the host (the three experiments above). Valgrind
 memcheck could not get past CUDA context creation in 25 minutes and was abandoned.
 
 **What was done.** `FsiEnergyDiag.LongRunEnergyIsBounded` calls `GTEST_SKIP()` when
@@ -3528,8 +3528,65 @@ exonerated by rebuilding the exact previously-passing source and watching it fai
 triangular solves have no determinism switch; the refactorisation could stay on the device
 and the two triangular solves move to the host from `cusolverRfExtractBundledFactorsHost`,
 deterministic by construction and, at these sizes, no slower than the launch-bound device
-solve) or the D34 coupling fix. The determinism contract D36 established for reductions
+solve) or the D36 coupling fix. The determinism contract D38 established for reductions
 applies to any device solver fuse adopts; this is the measured reason.
+
+### ~~D38. The deterministic dot and norm reductions differed from the host by one ulp on the Cuda leg~~ — CLOSED 2026-10-10
+
+**Measured 2026-10-10** as `num.space_kernels`'s `DeterministicReductionsMatchTheChunkedReferenceExactly`
+failing on the Cuda execution space only, and only for `deterministic_dot`/`deterministic_norm_squared`
+(never `deterministic_sum`, which has no multiply): `got_dot` and `want_dot` differed by exactly one ulp
+(`1.2895225459088599e+34` against `...601e+34` at n = 256).
+
+**Cause.** nvcc's device compiler contracts `s += a(i) * b(i)` into one fused multiply-add
+(`--fmad=true`, its default), rounding the product and the accumulate together; the host compiler
+(no `-ffast-math`/`-ffp-contract=fast` anywhere in this project) rounds them separately. Same
+summation order, different low-order bit — so the chunked, order-fixed reduction the determinism
+contract promises (`include/fuse/num/space_kernels.hpp`, `DeterministicDotFunctor`,
+`DeterministicNormSquaredDiffFunctor`) was deterministic per space but not across spaces.
+
+**Closed** by `unfused_multiply_add()` in the same header: on the device it is
+`__dadd_rn(s, __dmul_rn(x, y))`, CUDA's explicitly round-to-nearest, not-further-fusible primitives,
+so the device path double-rounds exactly as the host path does; on the host it is the plain
+expression. Both functors' inner accumulation goes through it. The host path is unchanged (it never
+fused). The same contraction still exists in `RelaxFunctor`/`RemapMultiFunctor`, which are anchored
+by `build-evidence/mutations.toml` and deliberately left as they are; `runtime.runner_device` asserts
+`<= 1e-14` relative for those two shapes and bitwise for the rest (A5).
+
+### ~~D39. `fuse-abi-shared`'s install RPATH named only yaml-cpp, so an installed consumer could not load Kokkos or the MOAB chain~~ — FIXED 2026-10-10; libMOAB.so's own rpath gap WORKED AROUND at test time
+
+**Measured 2026-10-10** on this host after an external MOAB rebuild: `backend.moab_mesh` and both
+`abi.install_consumer_*` tests failed with `libTempestRemap.so.0: cannot open shared object file`,
+and once that was covered, with `libkokkoscore.so.5.2: cannot open shared object file`. Two separate
+gaps:
+
+1. **This project's, fixed.** `src/CMakeLists.txt` set `INSTALL_RPATH` on `fuse-abi-shared` to
+   yaml-cpp's directory alone, on the premise that every other target in the tree is static. Kokkos
+   is always a found shared library, and `FUSE_ENABLE_MOAB` adds MOAB, TempestRemap, Zoltan, NetCDF
+   and PnetCDF, none on a default search path. `_fuse_abi_install_rpath` now carries
+   `$<TARGET_FILE_DIR:Kokkos::kokkoscore>` and, when MOAB is on, every directory in
+   `MOAB_LIBRARY_DIRS` (the per-package `<PKG>_DIR` fixup `cmake/FuseDependencies.cmake` already
+   builds for `target_link_directories`). An external consumer doing nothing but
+   `find_package(fuse-coupler)` needs this; nothing else can supply it.
+2. **MOAB's, worked around.** `libMOAB.so`'s own rpath lists only its MPI-stack paths, and gcc's
+   default `--as-needed` drops any dependency a test binary never calls directly from its `NEEDED`
+   list, so resolution of the MOAB chain falls on that incomplete rpath. `test/CMakeLists.txt`
+   prepends every `MOAB_LIBRARY_DIRS` entry to `LD_LIBRARY_PATH` through `ENVIRONMENT_MODIFICATION`
+   on every MOAB-linked test. That helps only this project's own `ctest`; it is not a fix and is
+   not this project's to make.
+
+### ~~D40. The nested-build `compile_ok`/`compile_fail` tests used whatever compiler the invoking shell's `OMPI_CXX` named~~ — WORKED AROUND 2026-10-10
+
+`runtime.compile_ok.capabilities_override` and `field.compile_ok.owning_chain` drive a nested
+`cmake --build ... --target ...` at test time; that build re-invokes `mpicxx`, which reads its real
+host compiler from `$OMPI_CXX` when *it* runs, not from the configure. A `ctest` run from a shell
+without `OMPI_CXX=/opt/kokkos/bin/nvcc_wrapper` fell back to `g++`, which rejects the nvcc-only flags
+this project adds whenever `Kokkos::CUDA` exists: both `compile_ok` rows failed, and their
+`WILL_FAIL` `compile_fail` siblings passed for the wrong reason. `test/CMakeLists.txt` captures
+`$ENV{OMPI_CXX}` at configure time into `_fuse_nested_build_env_mods` and pins it on all four rows
+through `ENVIRONMENT_MODIFICATION`. The build itself still needs the variable exported (the
+`_machine` preset sets it for configure only); that is a property of Open MPI's compiler wrapper,
+not of this project.
 
 ### D27. The native backend's remap halo has no `accumulate_remap_halo` counterpart
 

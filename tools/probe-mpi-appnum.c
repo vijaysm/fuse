@@ -9,7 +9,7 @@
  * SET when the launcher provides one (MPI-3.1 11.9.2), but does not require
  * launchers to differentiate it, and this host's Open MPI (4.1.5) measured to
  * report appnum 0 for every rank in every segment of both a colon-syntax and
- * an --app-file launch (KNOWN_ISSUES.md D32).
+ * an --app-file launch (KNOWN_ISSUES.md D34).
  *
  * This probe does the real thing: it is launched as two colon-syntax
  * segments, each told (via argv) which appnum it should see, and reports

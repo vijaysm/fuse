@@ -521,7 +521,7 @@ if(FUSE_ENABLE_TESTS)
     set_tests_properties(example.fsi_channel.omp_identical PROPERTIES LABELS "example;omp")
   endif()
   # FUSE_ENABLE_CUSPARSE=ON: these two rows are DISABLED (ctest reports them
-  # as "Not Run (Disabled)", not hidden), KNOWN_ISSUES.md D34. Measured
+  # as "Not Run (Disabled)", not hidden), KNOWN_ISSUES.md D36. Measured
   # 2026-10-11: the example's IQN-ILS coupling is marginally stable at the
   # step nearest the beam's first natural period (step 7 of the default run).
   # With Eigen it passes that step in 46 sweeps, twice its usual count; with

@@ -14,7 +14,7 @@
 // the same order, on both spaces) and to a few ulps for the relax and
 // weighted-remap arcs: nvcc contracts `a*b + c` into a single FMA inside
 // `RelaxFunctor`/`RemapMultiFunctor` (space_kernels.hpp), one rounding where
-// the host does two -- the same gap D36 closed for the deterministic dot
+// the host does two -- the same gap D38 closed for the deterministic dot
 // products with `unfused_multiply_add`, deliberately NOT applied to those two
 // functors here because build-evidence/mutations.toml anchors their exact
 // source lines ("relax-swaps-its-weights", "remap-apply-drops-each-row-first-

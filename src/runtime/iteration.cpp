@@ -2816,7 +2816,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
         window_converged = wc.converged;
       }
 
-      // KNOWN_ISSUES.md D33: `gathered_window_block_samples()` just above
+      // KNOWN_ISSUES.md D35: `gathered_window_block_samples()` just above
       // reaches only `R.participants` -- correctly, it has nothing to
       // gather from anyone else -- but THIS region's own channels move
       // over the run's single shared transport communicator, which a

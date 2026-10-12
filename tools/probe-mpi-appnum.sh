@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tools/probe-mpi-appnum.sh -- the acceptance test for the "mpmd" launch mode
-# (KNOWN_ISSUES.md D32, docs/user/multiple-executables.md).
+# (KNOWN_ISSUES.md D34, docs/user/multiple-executables.md).
 #
 # Builds tools/probe-mpi-appnum.c and launches it as a two-segment MPMD job
 # (colon syntax), one rank each, telling each segment via argv which

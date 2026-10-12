@@ -716,7 +716,7 @@ macro(fuse_resolve_dependencies)
     # standard requires it be SET when the launcher supplies one (MPI-3.1
     # 11.9.2) but not that launchers differentiate it, and this host's Open
     # MPI (4.1.5) measured to report appnum 0 for every rank of every segment
-    # (KNOWN_ISSUES.md D32). Same three-verdict shape as the probe above, for
+    # (KNOWN_ISSUES.md D34). Same three-verdict shape as the probe above, for
     # the same reason: "could not test" must leave the mode ON.
     set(_fuse_appnum_script "${PROJECT_SOURCE_DIR}/tools/probe-mpi-appnum.sh")
     set(_fuse_appnum_default ON)
@@ -742,7 +742,7 @@ macro(fuse_resolve_dependencies)
         message(STATUS
           "fuse: this MPI does not report a distinct MPI_APPNUM per MPMD "
           "segment, so the mpmd launch mode is DISABLED (KNOWN_ISSUES.md "
-          "D32). accept/connect is unaffected. Probe output:\n"
+          "D34). accept/connect is unaffected. Probe output:\n"
           "${_fuse_appnum_output}${_fuse_appnum_error}")
       else()
         set(_fuse_appnum_default ON)
