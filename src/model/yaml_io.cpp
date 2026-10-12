@@ -165,6 +165,12 @@ const char* const kEwChoiceNames[]   = {"Constant", "Choice1", "Choice2"};
 // examples' command-line flag `--substrate native|petsc` is a separate,
 // user-facing spelling and stays lowercase there.
 const char* const kNewtonSubstrateNames[] = {"Native", "Petsc"};
+// NewtonModel track (2026-10-12): fuse::NewtonNorm / fuse::
+// NewtonResidualPath (fuse/model/iteration.hpp), same positional-index
+// convention and the same C-enumerator-name-verbatim spelling rule as
+// every other enum table on this page.
+const char* const kNewtonNormNames[] = {"Plain", "MeasureWeighted"};
+const char* const kNewtonResidualPathNames[] = {"Advance", "Direct"};
 // Time windows track: must stay in DtPolicy's declaration order
 // (fuse/model/iteration.hpp), same reasoning as the three tables above.
 const char* const kDtPolicyNames[] = {"Fixed", "Adjustable"};
@@ -734,6 +740,10 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
         << nc.use_block_jacobi_preconditioner
         << YAML::Key << "substrate" << YAML::Value
         << enum_name(nc.substrate, kNewtonSubstrateNames)
+        << YAML::Key << "norm" << YAML::Value
+        << enum_name(nc.norm, kNewtonNormNames)
+        << YAML::Key << "residual_path" << YAML::Value
+        << enum_name(nc.residual_path, kNewtonResidualPathNames)
         << YAML::EndMap;
     }
     if (r.window_scope.has_value()) {
@@ -1241,7 +1251,8 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
                "armijo_alpha", "lambda_min", "max_backtracks", "secant_tol",
                "max_secant_steps", "damping", "gmres_restart",
                "gmres_max_iterations", "preconditioner_lag",
-               "use_block_jacobi_preconditioner", "substrate"},
+               "use_block_jacobi_preconditioner", "substrate", "norm",
+               "residual_path"},
               "newton_config block")) {
         return *e;
       }
@@ -1306,6 +1317,18 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
                        nc.substrate)) {
         return Failure{"E-YAML-PARSE", "unknown newton_config.substrate '" +
                                          nn["substrate"].as<std::string>() + "'"};
+      }
+      if (nn["norm"] &&
+          !lookup_enum(nn["norm"].as<std::string>(), kNewtonNormNames,
+                       nc.norm)) {
+        return Failure{"E-YAML-PARSE", "unknown newton_config.norm '" +
+                                         nn["norm"].as<std::string>() + "'"};
+      }
+      if (nn["residual_path"] &&
+          !lookup_enum(nn["residual_path"].as<std::string>(), kNewtonResidualPathNames,
+                       nc.residual_path)) {
+        return Failure{"E-YAML-PARSE", "unknown newton_config.residual_path '" +
+                                         nn["residual_path"].as<std::string>() + "'"};
       }
     }
     // The SAME auto-trigger `IterationBuilder::accelerate()`/`::newton()`

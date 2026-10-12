@@ -167,7 +167,11 @@ inline CouplingGraph freeze_fixture() {
   // bump, PetscSelect track) is this region's own non-default pin for
   // that field -- it is NEVER actually solved (freeze_fixture is never
   // run through a Runner, this file's own opening comment), only
-  // round-tripped through the descriptor.
+  // round-tripped through the descriptor. `.norm = NewtonNorm::
+  // MeasureWeighted` and `.residual_path = NewtonResidualPath::Direct`
+  // (descriptor v14's own reason for the version bump, NewtonModel
+  // track) are this region's own non-default pins for those two fields,
+  // for the identical reason.
   g.iterate({ch})
       .name("newton")
       .max_iterations(9)
@@ -197,7 +201,9 @@ inline CouplingGraph freeze_fixture() {
                            .gmres_max_iterations = 500,
                            .preconditioner_lag = 3,
                            .use_block_jacobi_preconditioner = true,
-                           .substrate = NewtonSubstrate::Petsc});
+                           .substrate = NewtonSubstrate::Petsc,
+                           .norm = NewtonNorm::MeasureWeighted,
+                           .residual_path = NewtonResidualPath::Direct});
   return g;
 }
 }  // namespace fuse::testing

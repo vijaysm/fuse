@@ -12,6 +12,25 @@
 namespace fuse {
 
 inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
+/// 14: the NewtonModel track (2026-10-12), measure-weighted Newton residual
+///     scaling and the direct residual-evaluation path. `NewtonConfig`
+///     (fuse/model/iteration.hpp) gains two more fields, `norm` (`fuse::
+///     NewtonNorm`, Plain or MeasureWeighted) and `residual_path`
+///     (`fuse::NewtonResidualPath`, Advance or Direct), each appended at
+///     the END of the v13 NewtonConfig block in that order -- two more
+///     enum bytes after `substrate`, following v13's own append-only
+///     placement exactly (every earlier NewtonConfig field keeps its wire
+///     offset; only the block's own trailing length grows, from 162 to
+///     164 bytes including the two capability bytes). Neither field
+///     changes `AccelKind` or widens its bound check -- both are
+///     independent of which accelerator is selected, read unconditionally
+///     for every region exactly like every other NewtonConfig field
+///     already is. A v13 reader handed a v14 buffer would read the FIRST
+///     region's `norm` byte as the start of whatever comes next (the next
+///     region's own name length, or the merge table) -- everything after
+///     it decodes as plausible garbage, the same class of silent misread
+///     every prior bump was made to prevent, so v13 is refused.
+///
 /// 13: S7.2b (PetscSelect track), the per-region Newton substrate
 ///     selector. `NewtonConfig` (fuse/model/iteration.hpp) gains one more
 ///     field, `substrate` (`fuse::NewtonSubstrate`, Native or Petsc),
@@ -131,7 +150,7 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 /// the iteration regions and never see the merge rules, so it would read a
 /// graph that says "one writer per field" from bytes that say otherwise -- and
 /// it would read it successfully. The version check turns that into a refusal.
-inline constexpr std::uint32_t kGraphVersion = 13u;
+inline constexpr std::uint32_t kGraphVersion = 14u;
 
 namespace detail {
 
@@ -389,6 +408,12 @@ class Reader {
       // kGraphVersion history), appended at the END of the block,
       // following v12's own append-only placement exactly.
       w.pod(static_cast<std::uint8_t>(nc.substrate));
+      // v14: the NewtonModel track's own `norm`/`residual_path`
+      // (descriptor.hpp's kGraphVersion history), appended in that order
+      // at the END of the block, following v13's own append-only
+      // placement exactly.
+      w.pod(static_cast<std::uint8_t>(nc.norm));
+      w.pod(static_cast<std::uint8_t>(nc.residual_path));
     }
   }
 
@@ -717,6 +742,21 @@ class Reader {
                        "unknown newton_config.substrate " + std::to_string(substrate_byte)};
       }
       nc.substrate = static_cast<NewtonSubstrate>(substrate_byte);
+      // v14: the NewtonModel track's own `norm`/`residual_path`
+      // (descriptor.hpp's kGraphVersion history). Mirrors the write
+      // side's own order: appended at the END of the block, read last.
+      const auto norm_byte = r.pod<std::uint8_t>();
+      if (norm_byte > static_cast<std::uint8_t>(NewtonNorm::MeasureWeighted)) {
+        return Failure{"E-DESC-ENUM",
+                       "unknown newton_config.norm " + std::to_string(norm_byte)};
+      }
+      nc.norm = static_cast<NewtonNorm>(norm_byte);
+      const auto residual_path_byte = r.pod<std::uint8_t>();
+      if (residual_path_byte > static_cast<std::uint8_t>(NewtonResidualPath::Direct)) {
+        return Failure{"E-DESC-ENUM",
+                       "unknown newton_config.residual_path " + std::to_string(residual_path_byte)};
+      }
+      nc.residual_path = static_cast<NewtonResidualPath>(residual_path_byte);
     }
     if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated newton_config"};
     g.add_iteration_region(std::move(d));

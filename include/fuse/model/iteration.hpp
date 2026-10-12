@@ -350,6 +350,85 @@ enum class NewtonSubstrate {
   return "?";
 }
 
+/// NewtonModel track (2026-10-12): which norm Newton's own residual norm,
+/// Eisenstat-Walker forcing, line-search merit and stopping test (atol/
+/// rtol/stol/divergence_tolerance, `NewtonConfig` below) are measured in,
+/// over the region's stacked interface vector -- a vector whose blocks, in
+/// general, have different units, different lengths and sit on entities of
+/// different measure (docs/user/convergence.md's own account of the
+/// defects a PLAIN Euclidean norm over such a vector has, written for
+/// Picard's own stopping test and unchanged by anything Newton does).
+/// Opt-in: the default is `Plain`, so every pinned Newton iteration count
+/// and every golden descriptor predating this field is unchanged.
+enum class NewtonNorm {
+  /// `sqrt(sum F_i^2)` over the stacked vector exactly as every Newton
+  /// region before this field existed already computed it -- dimensionless
+  /// by convention, carrying every defect docs/user/convergence.md
+  /// attributes to the plain norm (mesh-resolution dependence, cell-size-
+  /// variation dependence, unit confusion between blocks).
+  Plain,
+  /// Each entry of the stacked vector is scaled by a fixed diagonal weight
+  /// before Newton's own norm/forcing/line-search/stopping test ever see
+  /// it -- `src/runtime/iteration.cpp`'s own `run_region_newton()`/
+  /// `run_region_newton_window()` build this diagonal ONCE per solve and
+  /// pass the SUBSTRATE (native or PETSc) a residual function returning
+  /// `D * F(x)` rather than `F(x)` itself; the substrate itself needs no
+  /// change; it never learns the residual was scaled. See docs/dev/
+  /// newton-krylov.md's own new section for the weight formula and the
+  /// preconditioner composition this requires.
+  MeasureWeighted,
+};
+
+[[nodiscard]] constexpr const char* to_cstring(NewtonNorm n) noexcept {
+  switch (n) {
+    case NewtonNorm::Plain:           return "Plain";
+    case NewtonNorm::MeasureWeighted: return "MeasureWeighted";
+  }
+  return "?";
+}
+
+/// NewtonModel track (2026-10-12): how `F(x) = x - G(x)` itself is
+/// evaluated for an ordinary (non-window) Newton region. `fuse::
+/// ImplicitComponent::evaluate_residual()` (fuse/runtime/component.hpp) has
+/// been part of the capability seam since S7.1, but every Newton region
+/// built so far has honoured it only as a CAPABILITY bit
+/// (`kCapabilityResidual`) a member must declare -- `G(x)` itself has
+/// always been obtained the Picard way, by delivering `x`, calling
+/// `advance()` under a checkpoint/restore bracket, and reading back what
+/// the compiled dataflow produced (`Runner::Impl::evaluate_region_
+/// residual()`, src/runtime/fixed_point_residual.cpp). Opt-in: the default
+/// is `Advance`, so every Newton region predating this field keeps
+/// evaluating `G(x)` exactly as it always has.
+enum class NewtonResidualPath {
+  /// `G(x)` by one `advance()` call per checkpointed member, under
+  /// save_state()/restore_state() -- the only path that has ever existed.
+  Advance,
+  /// `G(x)` by calling `ImplicitComponent::evaluate_residual()` directly
+  /// on every member that provides a block of this region, in place of
+  /// `advance()`, with no checkpoint and no restore: `evaluate_residual()`'s
+  /// own contract already guarantees it leaves the component bit-identical
+  /// to how it found it, so there is nothing to roll back. The SAME
+  /// delivery chain (Transport/Remap/Constrain/Epoch) still runs, carrying
+  /// each provider's own `residual_out` downstream to the next block's
+  /// consumer, exactly as it carries `advance()`'s own output today.
+  /// Ordinary (non-window) regions only -- a window-scoped region
+  /// selecting this is refused at setup (`E-NEWTON-DIRECT-WINDOW`,
+  /// docs/dev/newton-krylov.md's own new section explains why a window
+  /// sweep's coroutine-resident state makes this unsound there). Requires
+  /// every member providing a block to carry `kCapabilityResidual`
+  /// (`E-NEWTON-CAPABILITY`, already enforced for every Newton region
+  /// regardless of this field).
+  Direct,
+};
+
+[[nodiscard]] constexpr const char* to_cstring(NewtonResidualPath p) noexcept {
+  switch (p) {
+    case NewtonResidualPath::Advance: return "Advance";
+    case NewtonResidualPath::Direct:  return "Direct";
+  }
+  return "?";
+}
+
 /// S7.2: WHAT was asked of the Newton solver, named the same way
 /// `AccelConfig` already does for the quasi-Newton ladder -- every numeric
 /// default here is SNES's own default for the matching option
@@ -429,6 +508,20 @@ struct NewtonConfig {
   /// inserted between existing ones, so every earlier field keeps its
   /// wire offset.
   NewtonSubstrate substrate = NewtonSubstrate::Native;
+
+  /// NewtonModel track (2026-10-12): which norm Newton's own residual
+  /// norm, forcing, line search and stopping test are measured in --
+  /// `Plain` by default, so every pinned iteration count and golden
+  /// descriptor predating this field is unchanged. APPENDED LAST, after
+  /// `substrate` (descriptor.hpp's kGraphVersion history, v14): the
+  /// struct's own declared END, never inserted between existing fields.
+  NewtonNorm norm = NewtonNorm::Plain;
+
+  /// NewtonModel track (2026-10-12): how `F(x) = x - G(x)` is evaluated
+  /// for an ordinary (non-window) region -- `Advance` by default, the
+  /// only path that existed before this field. APPENDED LAST (descriptor
+  /// v14), after `norm`.
+  NewtonResidualPath residual_path = NewtonResidualPath::Advance;
 };
 
 /// Time windows track: how a component's own sub-stepping relates to a
