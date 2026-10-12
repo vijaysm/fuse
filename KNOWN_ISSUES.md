@@ -3469,8 +3469,8 @@ the ctest rows use `16x8`, `nx-beam 12`, `t-end 0.1` and show the same thing):
 the flag-off build diverges with two of the three accelerators on its own. It is the
 coupling at that step sitting at the edge of IQN-ILS's stability, which the fixed Eigen
 rounding happens to land on the convergent side of. The `fsi_*` verification rows
-(`fsi_stokes_mms`, `fsi_beam`, `fsi_coupled`, `fsi_transient`, `fsi_energy_diag`) pass with
-the flag on; it is the example alone that depends on which side of the edge it lands.
+(`fsi_stokes_mms`, `fsi_beam`, `fsi_coupled`, `fsi_transient`) pass with the flag on;
+`fsi_energy_diag`'s 480-period coupled run sits on the same edge and is D35.
 
 **What was done.** `example.fsi_channel` and `example.fsi_channel.omp_identical` carry the
 ctest `DISABLED` property when `FUSE_ENABLE_CUSPARSE=ON` (reported as "Not Run (Disabled)",
@@ -3482,6 +3482,54 @@ measured: the IQN-ILS filter threshold on nearly dependent secant columns near a
 point of the beam; the window's convergence criterion on `fluid_force` (a derivative of the
 solution, so κ-amplified) sitting at 1e-9 relative. Until then the example is a stability
 probe, not a regression gate, for any alternative fluid solver.
+
+### D35. Under `FUSE_ENABLE_CUSPARSE` the cusolverRf fluid solve is not bitwise reproducible run to run in situ, and `fsi_energy_diag`'s 480-period coupled run usually fails to converge at period 140 because of it; OPEN, that one case SKIPPED under the flag
+
+**Measured 2026-10-11** on the GTX 1050 Ti, `build-cusparse` (tier0, Debug, flag on) against
+`build-all` (all, Debug, flag off), with a temporary per-period total-energy trace
+(`%.17e`) added to `FsiEnergyDiag.LongRunEnergyIsBounded` (12 beam periods, 40 steps each,
+IQN-ILS tol 1e-9, 300 sweeps max, `abort_on_nonconvergence`):
+
+- **Flag off: two runs of one binary are bitwise identical over all 480 periods** (every
+  energy and every cumulative sweep count), ratio 0.998067, pass. The host path is
+  deterministic, as `example.*.omp_identical` already asserts.
+- **Flag on: two runs of one binary agree bitwise through period 71 and diverge at period
+  72** by 1.4e-12 relative; four differently-built binaries of the same source (a no-op line
+  added or not; `-ftrivial-auto-var-init=zero` / `=pattern` on the test TU) each diverge from
+  the others at a different late period (72, 94, 103), all at the 1e-12 level. Of 15 flag-on
+  runs, 11 stopped at period 140 with the IQN-ILS region unconverged after 300 sweeps —
+  `beam_velocity[Relative] 1.3042612065887604` in every one of those 11 (the blow-up has one
+  shape), `fluid_force[Relative]` 8e-17–2e-16 (the fluid solve itself converged). The other 4
+  passed with ratio 0.998067. GCC's `-Wmaybe-uninitialized` at `-O1` on the TU reports nothing
+  in project code; forcing all automatic variables to zero or to a pattern changes the
+  trajectory *no more than* re-running does. So: not an uninitialised read, not code layout —
+  run-to-run nondeterminism in the flag-on path, which only the cusolverRf solve introduces
+  (`verification.sparse_solve_backend`'s 300-repeat tests are reproducible in isolation; the
+  earlier in-situ diagnostic over 24,519 `fsi_transient` solves saw ~4% of same-input repeats
+  differ bitwise when other solves ran in between). The extended-precision refinement step
+  pins the solution to within ~1e-16 of exact but not to one bit pattern.
+- Flag on vs flag off at period 1: energies differ by 3.6e-10 relative (19 vs 21 sweeps) — the
+  IQN-ILS fixed point is tolerance-limited at 1e-9, not solver-limited, so a 1e-16 solve
+  difference becomes a 1e-10 state difference immediately and a 1e-12 trajectory fork later.
+
+**What this is.** D34 in the verification suite: a marginally stable IQN-ILS coupling that
+the deterministic Eigen rounding lands on the convergent side of, and an ulp-level
+nondeterministic solve lands on either side of. It is not a defect in the backend's accuracy
+(D34's numbers) and not a leak, race or UB on the host (the three experiments above). Valgrind
+memcheck could not get past CUDA context creation in 25 minutes and was abandoned.
+
+**What was done.** `FsiEnergyDiag.LongRunEnergyIsBounded` calls `GTEST_SKIP()` when
+`FUSE_HAVE_CUSPARSE` is 1, naming this entry; the other five cases in that binary still run
+under the flag. Flag off — the default — nothing changes. The review-fix line this was first
+blamed on (`release_rf()` at the top of `SparseLuBackend::seed_from_host_lu()`) was
+exonerated by rebuilding the exact previously-passing source and watching it fail 2 of 3.
+
+**What would close it.** Either a bitwise-reproducible device solve (cusolverRf's
+triangular solves have no determinism switch; the refactorisation could stay on the device
+and the two triangular solves move to the host from `cusolverRfExtractBundledFactorsHost`,
+deterministic by construction and, at these sizes, no slower than the launch-bound device
+solve) or the D34 coupling fix. The determinism contract D36 established for reductions
+applies to any device solver fuse adopts; this is the measured reason.
 
 ### D27. The native backend's remap halo has no `accumulate_remap_halo` counterpart
 
