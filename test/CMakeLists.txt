@@ -848,6 +848,11 @@ fuse_add_gtest(backend transfer_map_io THROWS)
 # surface.
 target_include_directories(fuse_backend_supermesh_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
+# Soma-import port (docs/dev/soma-import.md, RemapApply.* rows): fuse::apply_weights()'s
+# own E-REMAP-ARG/E-REMAP-COO contract, exercised directly -- see the file's own header
+# comment for why this was not already covered by an existing test.
+fuse_add_gtest(backend remap_apply)
+
 # ---------------------------------------------------------------- field
 # THROWS: the extent refusals are the point of half these cases.
 # field/ is header-only (the pipeline is templates over Kokkos views), so there
@@ -1324,6 +1329,13 @@ target_compile_definitions(fuse_abi_entries_golden_test PRIVATE
   FUSE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 fuse_add_gtest(abi struct_size)
+
+# Soma-import port (docs/dev/soma-import.md, test/unit/capi_test.c row): the
+# defensive contract participant.h documents on create()/destroy()/last_error()
+# itself (non-NULL ctx rejected, a double destroy reported not crashed, the
+# thread-local error slot readable with ctx == NULL), exercised directly --
+# distinct from participant_test.cpp's scheduling-semantics suite.
+fuse_add_gtest(abi participant_robustness)
 
 fuse_add_gtest(abi negotiation)
 

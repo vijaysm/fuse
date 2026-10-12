@@ -986,3 +986,143 @@ TEST(Supermesh, WeightsAreBuiltOnThePlacementsOwnDecomposition) {
                               "placement was honoured -- choose a less symmetric pair";
 }
 
+
+// ---------------------------------------------------------------------------
+// Soma-import port (docs/dev/soma-import.md, RemapPartial.* rows). The
+// diagnostic FIELDS this backend reports under partial coverage are already
+// proved above (PartialOverlapIsReportedRatherThanHidden, ThinSliversAre-
+// ClippedAndTheirMassIsKept); what those do not reach is `build_weights`'s
+// own `RemapFlags::Conservative` REFUSAL (E-REMAP-COVERAGE, intx_weights.cpp)
+// -- every other test in this tree that sets `RemapFlags::Conservative` does
+// so on a fully-covering pair and never exercises the branch at all (grepped
+// across test/{backend,parallel,schedule,ir,model,abi,runtime} -- the flag is
+// set in a dozen places, the refusal it guards is asserted in none). Nor is
+// the numerical TRUNCATION behaviour apply_weights produces when the flag is
+// absent: build succeeds, but a source cell the target never reaches
+// contributes nothing to any target value, rather than being redistributed.
+
+namespace {
+
+/// Wraps a SerialMeshBackend and returns an `AffineView` of ONE named mesh
+/// instead of its raw view -- everything else (load, mesh_id, region_size)
+/// delegates unchanged. Lets a plain "generated:box:NxNxN" source (fixed to
+/// the unit cube by the generator grammar) stand in for a mesh on a
+/// different sub-domain, the same technique `PartialOverlapIsReported-
+/// RatherThanHidden` above uses through `build_supermesh_weights` directly --
+/// this one goes through `build_weights(plan, graph, backend)` instead, the
+/// entry point the Conservative refusal actually lives behind.
+class RescaledBackend final : public fuse::MeshBackend {
+ public:
+  RescaledBackend(fuse::SerialMeshBackend& inner, fuse::MeshId rescale_id,
+                   const double m[3][3], const double t[3])
+      : inner_(inner), rescale_id_(rescale_id) {
+    for (int r = 0; r < 3; ++r) {
+      for (int c = 0; c < 3; ++c) m_[r][c] = m[r][c];
+      t_[r] = t[r];
+    }
+  }
+  fuse::Result<void> load(const fuse::MeshDecl&) override {
+    return fuse::Failure{"E-TEST", "not loadable"};
+  }
+  [[nodiscard]] fuse::Result<fuse::MeshId> mesh_id(std::string_view n) const override {
+    return inner_.mesh_id(n);
+  }
+  [[nodiscard]] fuse::Result<const fuse::MeshView*> view(fuse::MeshId id) const override {
+    const auto v = inner_.view(id);
+    if (!v.ok()) return v.error();
+    if (id.value() != rescale_id_.value()) return v.value();
+    if (!rescaled_) rescaled_ = std::make_unique<AffineView>(*v.value(), m_, t_);
+    return rescaled_.get();
+  }
+  [[nodiscard]] fuse::Result<std::size_t> region_size(const fuse::Region& rg) const override {
+    return inner_.region_size(rg);
+  }
+  [[nodiscard]] std::string name() const override { return "rescaled"; }
+
+ private:
+  fuse::SerialMeshBackend&      inner_;
+  fuse::MeshId                  rescale_id_;
+  double                        m_[3][3]{};
+  double                        t_[3]{};
+  mutable std::unique_ptr<AffineView> rescaled_;
+};
+
+/// Source: a 4x4x4 unit-cube grid (cell width 0.25 in every dimension).
+/// Target: the SAME grid rescaled to occupy x in [0.25, 0.75] only -- exactly
+/// the middle two of the source's four x-slabs, with the generator's own
+/// cell boundaries (0, 0.25, 0.5, 0.75, 1) making the split exact rather than
+/// approximate. Source slabs 0 and 3 (x in [0,0.25] and [0.75,1]) then have
+/// NO target cell anywhere near them: half the source domain, by measure, is
+/// unreachable by this target.
+struct NarrowTargetFixture {
+  fuse::SerialMeshBackend inner;
+  fuse::CouplingGraph     graph;
+  fuse::MeshId            smid, tmid;
+  fuse::RegionId          srid, trid;
+  std::unique_ptr<RescaledBackend> backend;
+
+  NarrowTargetFixture() {
+    if (!inner.load({.name = "s", .source = "generated:box:4x4x4"}).ok()) return;
+    if (!inner.load({.name = "t", .source = "generated:box:4x4x4"}).ok()) return;
+    smid = graph.add_mesh({.name = "s", .source = "generated:box:4x4x4"});
+    tmid = graph.add_mesh({.name = "t", .source = "generated:box:4x4x4"});
+    srid = graph.add_region({.name = "s_all", .mesh = smid, .dimension = 3});
+    trid = graph.add_region({.name = "t_all", .mesh = tmid, .dimension = 3});
+    const double half_x[3][3] = {{0.5, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    const double shift[3]     = {0.25, 0.0, 0.0};
+    const auto   tid          = inner.mesh_id("t");
+    backend = std::make_unique<RescaledBackend>(inner, tid.value(), half_x, shift);
+  }
+
+  [[nodiscard]] fuse::RemapPlan plan(fuse::RemapFlags flags) const {
+    return fuse::RemapPlan{.src = srid, .tgt = trid, .flags = flags};
+  }
+};
+
+}  // namespace
+
+TEST(RemapPartial, SourceWiderThanTargetIsRefusedWhenConservativeIsAsked) {
+  NarrowTargetFixture fx;
+  const auto r = fuse::build_weights(fx.plan(fuse::RemapFlags::Conservative),
+                                      fx.graph, *fx.backend);
+  ASSERT_FALSE(r.ok()) << "half the source mass has no target cell to reach; "
+                           "RemapFlags::Conservative must refuse rather than "
+                           "silently drop it";
+  EXPECT_EQ(r.error().code, "E-REMAP-COVERAGE");
+}
+
+TEST(RemapPartial, SourceWiderThanTargetTruncatesWhenConservationIsNotAsked) {
+  NarrowTargetFixture fx;
+  const auto r = fuse::build_weights(fx.plan(fuse::RemapFlags::None), fx.graph,
+                                      *fx.backend);
+  ASSERT_TRUE(r.ok()) << r.error().code << ": " << r.error().message;
+  const fuse::RemapWeights& w = r.value();
+
+  // The target is entirely inside the source's domain (every target cell is
+  // fully covered); the source's outer two slabs are entirely outside the
+  // target's (zero coverage, not partial).
+  EXPECT_NEAR(w.min_tgt_coverage, 1.0, 1e-12);
+  EXPECT_NEAR(w.min_src_coverage, 0.0, 1e-12);
+
+  const std::vector<double> src(w.n_cols, 2.0);
+  std::vector<double> dst(w.n_rows, -1.0);
+  ASSERT_TRUE(fuse::apply_weights(w, src.data(), dst.data(), 1).ok());
+
+  // Every target value is exactly the source constant -- truncation drops
+  // unreached mass, it does not dilute what DOES arrive.
+  for (const double v : dst) EXPECT_NEAR(v, 2.0, 1e-12);
+
+  // Exactly the covered half of the source domain's integral arrives: the
+  // two reached slabs, not all four.
+  const auto sv = fx.backend->view(fx.smid);
+  const auto tv = fx.backend->view(fx.tmid);
+  ASSERT_TRUE(sv.ok());
+  ASSERT_TRUE(tv.ok());
+  double src_integral = 0.0;
+  for (std::size_t i = 0; i < w.n_cols; ++i) src_integral += src[i] * sv.value()->measure(3, i);
+  double tgt_integral = 0.0;
+  for (std::size_t j = 0; j < w.n_rows; ++j) tgt_integral += dst[j] * tv.value()->measure(3, j);
+  EXPECT_NEAR(tgt_integral, 0.5 * src_integral, 1e-12 * src_integral)
+      << "exactly half the source's constant-field integral should arrive; "
+         "the other half had no target cell to receive it";
+}
