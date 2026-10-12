@@ -33,6 +33,15 @@ IOSTREAM = re.compile(r"^\s*#\s*include\s*<(iostream|sstream|iomanip)>")
 # and a regex for /* */ that got it wrong could blank a real `#if`.
 COMMENT_LINE = re.compile(r"(^|[^:])(//[^\n]*)", re.M)
 
+# Only the macros config.hpp.in actually `#cmakedefine01`s belong here: this
+# alternation also decides which files must include "fuse/base/config.hpp"
+# before using the name (the check below), and FUSE_CONNECT_ACCEPT_ENABLED
+# (set directly by target_compile_definitions, not by config.hpp.in) does not
+# owe that header anything. Widening this one to a bare `ENABLE_[A-Z0-9_]+`
+# was tried and reverted: error messages such as "-DFUSE_ENABLE_MPI=ON" name
+# the CMake *option*, not a macro, in plain string literals, and a blanket
+# ENABLE_ alternation reads those strings as a macro use and demands the
+# config.hpp include that message has no reason to carry.
 FEATURE_MACRO = re.compile(
     r"\bFUSE_(HAVE_[A-Z0-9_]+|ENABLE_EXCEPTIONS|LINALG_EIGEN|FP_REPRODUCIBLE)\b")
 # Every feature macro is `#cmakedefine01`: ALWAYS defined, as 0 or 1. So a
@@ -40,9 +49,24 @@ FEATURE_MACRO = re.compile(
 # compiles the MOAB branch into a build without MOAB -- or, when config.hpp is
 # not included, compiles it OUT of every build. Both happened (REVIEW.md 2.3).
 # Only `#if FUSE_HAVE_X` / `#if !FUSE_HAVE_X` is a valid test.
+#
+# This alternation is deliberately wider than FEATURE_MACRO above: it also
+# covers FUSE_CONNECT_*_ENABLED (FUSE_CONNECT_ACCEPT_ENABLED today) and
+# FUSE_CONNECT_MPMD, which reach the translation unit as an always-defined
+# 0/1 the same way a `#cmakedefine01` macro does (here, via
+# target_compile_definitions(... PUBLIC NAME=$<BOOL:...>)) -- a presence test
+# on them is exactly as unconditionally-true-and-wrong. Checked against the
+# tree (2026-10-11): no other `FUSE_ENABLE_*`/`FUSE_HAVE_*` name is ever
+# tested with `#ifdef`/`#ifndef`/`defined()` outside the one exempted guard
+# below, so broadening this (ifdef-misuse) alternation to a bare
+# `ENABLE_[A-Z0-9_]+` carries none of FEATURE_MACRO's string-literal risk.
 FEATURE_PRESENCE_TEST = re.compile(
-    r"#\s*(ifdef|ifndef)\s+FUSE_(HAVE_[A-Z0-9_]+|ENABLE_EXCEPTIONS|LINALG_EIGEN|FP_REPRODUCIBLE)\b"
-    r"|\bdefined\s*\(?\s*FUSE_(HAVE_[A-Z0-9_]+|ENABLE_EXCEPTIONS|LINALG_EIGEN|FP_REPRODUCIBLE)\b")
+    r"#\s*(ifdef|ifndef)\s+FUSE_(HAVE_[A-Z0-9_]+|ENABLE_[A-Z0-9_]+|CONNECT_[A-Z0-9_]+_ENABLED|CONNECT_MPMD|LINALG_EIGEN|FP_REPRODUCIBLE)\b"
+    r"|\bdefined\s*\(?\s*FUSE_(HAVE_[A-Z0-9_]+|ENABLE_[A-Z0-9_]+|CONNECT_[A-Z0-9_]+_ENABLED|CONNECT_MPMD|LINALG_EIGEN|FP_REPRODUCIBLE)\b")
+# `#if defined(X) && X` already tests the value, not just presence -- the one
+# shape this gate must not flag, because it is not the bug the rule exists
+# for (connect.hpp's kConnectAcceptEnabled, both call sites of it).
+FEATURE_VALUE_GUARD = re.compile(r"#\s*if\s+defined\s*\(\s*(FUSE_\w+)\s*\)\s*&&\s*\1\b")
 # A macro from either parent. The layering gate forbids parent NAMESPACES and
 # includes; a parent MACRO read in an #if is just as live and was not caught
 # (SOMA_ENABLE_LOWFIVE compiled the LowFive transport out of every build).
@@ -89,7 +113,18 @@ def scan(root: Path) -> list[str]:
     # to a skip stub in every configuration and reads like a pass (REVIEW.md
     # R-06: 38 MOAB cases, never once executed). Found 2026-09-19 -- the same
     # scope gap the layering gate closed on 09-17, in the other tool.
-    for area in ("include", "src", "test", "examples"):
+    #
+    # `tools/src` joined this list 2026-10-12: its two generators link
+    # fuse::model/fuse::num and could misread a feature macro exactly as a
+    # test or example can, and nothing scanned them before. They are not
+    # `library_code`, on purpose and symmetrically with test/examples: they
+    # are one-shot golden/baseline writers invoked by hand or by a test
+    # fixture, not code a consumer links against, and their existing
+    # `std::fprintf`/`<iostream>` diagnostic output (usage messages, a
+    # written-file confirmation) is the same kind of harness-facing text
+    # test/examples are already exempt for -- rewriting it through fmt would
+    # buy this gate nothing it does not already enforce in library code.
+    for area in ("include", "src", "test", "examples", "tools/src"):
         library_code = area in ("include", "src")
         area_dir = root / area
         if not area_dir.is_dir():
@@ -109,6 +144,11 @@ def scan(root: Path) -> list[str]:
                 # macro). That is the only presence test with a purpose.
                 nxt = next((l for l in all_lines[lineno:lineno + 2] if l.strip()), "")
                 is_guard = bool(re.match(r"\s*#\s*ifndef\b", code_only)) and nxt.lstrip().startswith("#error")
+                # `#if defined(X) && X` reads as a presence test but is not
+                # one: the `&& X` already makes the branch depend on the
+                # VALUE, which is all this rule ever asks for (connect.hpp's
+                # kConnectAcceptEnabled, both call sites).
+                is_guard = is_guard or bool(FEATURE_VALUE_GUARD.search(code_only))
                 if library_code and VERDICT_RESET.match(code_only):
                     problems.append(
                         f"{rel}:{lineno}: clears a deferred outcome (I-VERDICT); "
