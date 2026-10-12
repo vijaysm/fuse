@@ -90,6 +90,13 @@ endif()
 # recorded that trap and it applies here unchanged.
 add_subdirectory(examples)
 
+# pfuse (docs/dev/python-surface.md). FUSE_ENABLE_PYTHON is declared OFF by default in
+# cmake/FuseDependencies.cmake; AFTER test/ and examples/ for the same ctest-registration
+# reason as the comment above.
+if(FUSE_ENABLE_PYTHON)
+  add_subdirectory(python)
+endif()
+
 # The banner used to name the stage and the layer list as literal strings and
 # drifted for four stages and eight layers (REVIEW.md R-37): read the layer
 # list back from src/CMakeLists.txt's own targets instead of restating it, so
