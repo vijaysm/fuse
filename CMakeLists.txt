@@ -14,7 +14,6 @@ project(fuse LANGUAGES C CXX VERSION 0.1.0)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-option(FUSE_BUILD_UPSTREAM_SOMA  "Build the imported coupler tree under upstream/soma"  ON)
 option(FUSE_BUILD_UPSTREAM_KARMA "Build the imported spine tree under upstream/karma"   OFF)
 
 # Declared here, BEFORE include(FuseDependencies) below, so this option()
@@ -54,9 +53,10 @@ endif()
 # Namespaced build directories and an EXCLUDE_FROM_ALL-free add_subdirectory so
 # their own ctest registrations land in this project's test list: the S0 exit
 # condition is those suites passing *here*, not passing somewhere else.
-if(FUSE_BUILD_UPSTREAM_SOMA)
-  add_subdirectory(upstream/soma upstream-soma)
-endif()
+# upstream/soma is no longer built here (soma-import track, 2026-10-12):
+# UPSTREAMS.lock's [soma].retired field records the detachment. The subtree
+# itself stays present and unmodified (I8) until the repository owner removes
+# it -- see docs/dev/soma-import.md for what from it fuse:: still needs.
 
 if(FUSE_BUILD_UPSTREAM_KARMA)
   # Needs tier 2+: MOAB and PETSc. Off by default so the fast path stays fast.
@@ -128,7 +128,6 @@ list(JOIN _fuse_layers ", " _fuse_layers_text)
 
 message(STATUS "")
 message(STATUS "fuse ${PROJECT_VERSION}")
-message(STATUS "  upstream/soma   : ${FUSE_BUILD_UPSTREAM_SOMA}")
 message(STATUS "  upstream/karma  : ${FUSE_BUILD_UPSTREAM_KARMA}")
 message(STATUS "  fuse:: layers   : ${_fuse_layers_text}")
 message(STATUS "  linalg backend  : ${FUSE_LINALG_BACKEND}")

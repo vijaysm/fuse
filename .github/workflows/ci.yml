@@ -29,19 +29,11 @@ jobs:
       # A warning in the docs is a defect in the docs.
       - run: sphinx-build -W --keep-going -b html docs docs/_build/html
 
-  upstream-soma:
-    name: imported coupler suite
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libgtest-dev libyaml-cpp-dev
-      # The dependency-free configuration: no MPI, no MOAB. This is the tier-0
-      # equivalent for the import and the S0 exit condition for this parent.
-      # fmt and Kokkos are not installed on the runner, so fuse_require() needs
-      # FUSE_ALLOW_FETCH=ON to build the pinned copies instead of hard-failing.
-      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DFUSE_ALLOW_FETCH=ON
-      - run: cmake --build build -j
-      - run: ctest --test-dir build --output-on-failure -j4
+  # The upstream-soma leg (imported coupler suite, standalone build) was
+  # removed 2026-10-12 (soma-import track): FUSE_BUILD_UPSTREAM_SOMA no longer
+  # exists (see CMakeLists.txt), so there is nothing for this leg to configure
+  # against. UPSTREAMS.lock's [soma].retired field and docs/dev/soma-import.md
+  # record the detachment and what fuse:: still needs from the subtree.
 
   # Remaining legs arrive with the first fuse:: source at S1: tier 0 across both
   # linear-algebra backends and both host execution spaces, tier 1 at 2/3/4/5
@@ -81,7 +73,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=${{ matrix.build }}
           -DFUSE_LINALG_BACKEND=${{ matrix.linalg }}
           -DFUSE_ALLOW_FETCH=ON
-          -DFUSE_BUILD_UPSTREAM_SOMA=OFF -DFUSE_BUILD_UPSTREAM_KARMA=OFF
+          -DFUSE_BUILD_UPSTREAM_KARMA=OFF
           -DKokkos_ENABLE_SERIAL=ON -DKokkos_ENABLE_OPENMP=ON
           -DCMAKE_DISABLE_FIND_PACKAGE_fmt=ON
           -DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON -DCMAKE_DISABLE_FIND_PACKAGE_Eigen3=ON
@@ -100,7 +92,7 @@ jobs:
       - run: >
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           -DFUSE_ENABLE_EXCEPTIONS=OFF -DFUSE_ALLOW_FETCH=ON
-          -DFUSE_BUILD_UPSTREAM_SOMA=OFF -DFUSE_BUILD_UPSTREAM_KARMA=OFF
+          -DFUSE_BUILD_UPSTREAM_KARMA=OFF
           -DKokkos_ENABLE_SERIAL=ON
           -DCMAKE_DISABLE_FIND_PACKAGE_fmt=ON -DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON
           -DCMAKE_DISABLE_FIND_PACKAGE_Eigen3=ON
