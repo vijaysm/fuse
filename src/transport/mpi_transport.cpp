@@ -999,29 +999,33 @@ Result<void> MpiTransport::build_plan_from_peers(
   // the difference between an error at setup and a field delivered to the
   // wrong rank for the whole run.
   //
-  // Skipped on a rank that has already failed, whose count arrays are not
-  // meaningful -- but the agreement below still runs, so nobody is left in a
-  // collective alone.
-  if (err == Err::None) {
+  // Issued on every rank, including one whose local Phase A already failed:
+  // `p->sendcounts` was zero-filled by the unconditional `assign(usize, 0)`
+  // above, so a failed rank truthfully reports "nothing to send" instead of
+  // leaving its peers waiting inside this Alltoall while it goes straight to
+  // the agreement below.
+  {
     std::vector<int> expected(usize, 0);
     mpi_rc = MPI_Alltoall(p->sendcounts.data(), 1, MPI_INT, expected.data(), 1,
                           MPI_INT, p->comm);
-    if (mpi_rc != MPI_SUCCESS) {
-      fail(Err::Mpi, "MPI_Alltoall failed while checking the peer plan: " +
-                         mpi_error_text(mpi_rc));
-    } else {
-      for (std::size_t r = 0; r < usize; ++r) {
-        if (expected[r] != p->recvcounts[r]) {
-          fail(Err::PeerMatch,
-               "rank " + std::to_string(r) + " intends to send " +
-                   std::to_string(expected[r]) +
-                   " doubles to this rank, which expects " +
-                   std::to_string(p->recvcounts[r]) +
-                   ". The two halves of the plan disagree: either "
-                   "set_communicator() was given a different communicator "
-                   "than the rank graph was built over, or the two sides came "
-                   "from different graphs");
-          break;
+    if (err == Err::None) {
+      if (mpi_rc != MPI_SUCCESS) {
+        fail(Err::Mpi, "MPI_Alltoall failed while checking the peer plan: " +
+                           mpi_error_text(mpi_rc));
+      } else {
+        for (std::size_t r = 0; r < usize; ++r) {
+          if (expected[r] != p->recvcounts[r]) {
+            fail(Err::PeerMatch,
+                 "rank " + std::to_string(r) + " intends to send " +
+                     std::to_string(expected[r]) +
+                     " doubles to this rank, which expects " +
+                     std::to_string(p->recvcounts[r]) +
+                     ". The two halves of the plan disagree: either "
+                     "set_communicator() was given a different communicator "
+                     "than the rank graph was built over, or the two sides "
+                     "came from different graphs");
+            break;
+          }
         }
       }
     }
