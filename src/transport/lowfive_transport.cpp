@@ -565,7 +565,7 @@ Result<void> LowFiveTransport::set_location(std::string file,
   // distributed mode too: the producer side still promises nothing reaches
   // this path, and "could not have written here anyway" would be worthless
   // evidence of that promise in either mode.
-  const std::string sentinel = file + ".soma-writable-probe";
+  const std::string sentinel = file + ".fuse-writable-probe";
   const int fd = ::open(sentinel.c_str(), O_CREAT | O_EXCL | O_WRONLY, 0600);
   if (fd < 0) {
     return Failure{"E-TRANSPORT-LF-LOCATION",
