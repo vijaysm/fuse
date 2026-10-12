@@ -2792,8 +2792,12 @@ Result<void> Runner::Impl::resolve_epoch_participants() {
     }
     void* ub = nullptr;
     int   found = 0;
+    // RT-9 (review 2026-10-11): the threshold comparison itself lives in
+    // epoch_schedule.hpp's tag_ub_too_low() now, MPI-free and unit-tested
+    // to fire -- this call site keeps only the MPI query.
     if (MPI_Comm_get_attr(base, MPI_TAG_UB, &ub, &found) == MPI_SUCCESS &&
-        found != 0 && ub != nullptr && *static_cast<int*>(ub) < tags::kMaxUsed) {
+        found != 0 && ub != nullptr &&
+        tag_ub_too_low(*static_cast<int*>(ub), tags::kMaxUsed)) {
       return Failure{"E-RT-EPOCH-TAG",
                      "this MPI allows tags only up to " +
                          std::to_string(*static_cast<int*>(ub)) +
@@ -2946,7 +2950,9 @@ Result<void> Runner::Impl::reconcile_epoch(const Instruction& ins) {
 }
 
 Result<void> Runner::Impl::reduce_region_residuals(
-    const detail::RegionRuntime& r, std::vector<double>& payload) {
+    const detail::RegionRuntime& r, std::vector<double>& payload,
+    bool& participant_out) {
+  participant_out = true;
 #if FUSE_HAVE_MPI
   if (r.participants.size() <= 1) return Result<void>::success();
   const MPI_Comm base =
