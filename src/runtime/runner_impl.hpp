@@ -48,6 +48,11 @@ struct Slot {
   int         components = 1;
   bool        owned_by_component = false;
   bool        persistent = false;
+  /// `data` points into `Impl::device_storage` (DeviceMemSpace), not host
+  /// memory: only Space-generic instructions may dereference it, through the
+  /// execute_on() span helpers. Set at the end of setup() for Device mode
+  /// (docs/dev/device-resident-arcs.md); always false under Host.
+  bool        device = false;
 
   [[nodiscard]] std::size_t total() const noexcept {
     return elements * static_cast<std::size_t>(components);
@@ -686,6 +691,10 @@ struct Runner::Impl {
   bool initialized = false;
 
   std::vector<std::vector<double>> storage;       // coupler-owned, one per arc
+  /// Device-resident twin of `storage` for Device mode: an arc lives in
+  /// exactly one of the two (the other entry is empty). Filled by
+  /// place_arcs_on_device() at the end of setup(); see Slot::device.
+  std::vector<Kokkos::View<double*, DeviceMemSpace>> device_storage;
   std::vector<detail::Slot>        slots;         // parallel to arcs
   std::vector<std::vector<double>> previous;      // previous iterate, for Relax
   std::vector<std::size_t>         sample_count;  // per arc, for Accumulate
@@ -1088,6 +1097,16 @@ struct Runner::Impl {
 
   Result<void> setup(ComponentSet& components, FieldRegistry& registry);
   Result<void> resolve_buffers(FieldRegistry& registry);
+  /// Device mode only: moves every eligible coupler-owned arc from
+  /// `storage` into `device_storage` and flags its Slot. Eligibility is
+  /// decided from the resolved plan -- every instruction reading or writing
+  /// the arc is one of execute_on()'s Space-generic cases (a Remap with a
+  /// distributed-nodal operator, or a Sample/Interpolate with a spacetime
+  /// projection, does not count),
+  /// and the arc is named by no region block, carried/verify list, window
+  /// member or Constrain -- so the host-only cases and iteration.cpp never
+  /// meet a device pointer. Called after resolve_regions(); allocates once.
+  void place_arcs_on_device();
   Result<void> resolve_instructions();
   /// Spec §6 mode 1. Splits one communicator per component out of
   /// `config.base_communicator` and builds one `CommGraph` per entry of
