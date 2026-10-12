@@ -41,8 +41,13 @@ no enforcement is a preference.
 
 `I9` **A port is accepted only with killed mutants.**
 : At least one named mutation per public kernel, killed by a test, logged under `build-evidence/`.
-  Green tests that cannot detect the defect they were written for are decoration. *Enforced by* the
-  mutation-evidence CI gate.
+  Green tests that cannot detect the defect they were written for are decoration. *Enforced by*
+  `tools/mutate.py` run against a configured build before a port is accepted, with the resulting log
+  committed under `build-evidence/`. The one piece of this that is a CI gate today is staleness, not
+  the kill itself: `tools/mutate.py --check-anchors` (static, no build) runs in the `gates` job and
+  fails when a logged mutation's anchor text no longer occurs exactly once in its file — the gap that
+  let three KILLED rows outlive the rename they were written against. Running the mutations and
+  confirming each is KILLED still has no CI leg (see `testing.md`'s CI-legs list).
 
 `I10` **A fact about an upstream repository is a dated observation.**
 : Cite `path:line` at the SHA in `UPSTREAMS.lock`; re-verify before depending on it. *Enforced by*
