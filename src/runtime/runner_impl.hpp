@@ -608,6 +608,71 @@ struct RegionRuntime {
   /// existing factory, and not built in this stage: see KNOWN_ISSUES.md
   /// D31 for the test that will verify it on the host once it exists.
   std::shared_ptr<const linalg::Reducer> newton_reducer;
+
+  /// NewtonModel track (2026-10-12): the diagonal `D` NewtonNorm::
+  /// MeasureWeighted scales the stacked residual by, built ONCE here in
+  /// resolve_regions() from each block's own entity measure and
+  /// consumer-field tolerance scale (docs/dev/newton-krylov.md's own new
+  /// section has the formula and the E-NEWTON-NORM-SCALE refusal this
+  /// building step can raise). Empty when `newton_config.norm` is
+  /// `Plain` -- the only state a Newton region predating this field is
+  /// left in. Length `n` for an ordinary region, `newton_n` for a
+  /// window-scoped one (both already final by the time this is built).
+  std::vector<double> newton_scale;
+
+  /// NewtonModel track (Round 2, GAP 1): `fuse::num::NewtonIterationRecord::
+  /// gmres_iterations` from the MOST RECENT Newton solve of this region,
+  /// one entry per outer Newton iteration, in order -- the one piece of
+  /// `fuse::num::NewtonResult::trace` neither `run_region_newton()` nor
+  /// `run_region_newton_window()` kept anywhere a caller could read
+  /// before this (both already extract `rec.norm_f` into `IterationStats::
+  /// residual_history`; this is the identical extraction for `rec.
+  /// gmres_iterations`, added so a composed-vs-bare-preconditioner GMRES
+  /// cost comparison does not need `FUSE_NEWTON_DEBUG=1` stderr-scraping
+  /// to measure it). Overwritten, not appended, by every Newton solve of
+  /// this region -- "most recent" the same way `IterationStats` itself
+  /// is overwritten each period/window instance.
+  std::vector<std::size_t> newton_gmres_iterations;
+
+  /// NewtonModel track: one entry per checkpointed member that PROVIDES
+  /// at least one block of this region, built ONCE here only when
+  /// `newton_config.residual_path == Direct` (never for a window-scoped
+  /// region, which refuses `Direct` at setup with `E-NEWTON-DIRECT-
+  /// WINDOW`) -- the per-component Requires/Provides arc lists `run_
+  /// region_newton()`'s own Direct evaluator (`Runner::Impl::evaluate_
+  /// region_residual_direct()`) needs to call `ImplicitComponent::
+  /// evaluate_residual()` in place of `advance()`.
+  struct NewtonDirectMember {
+    /// This member's own `ComponentSet` slot.
+    std::size_t component_slot = 0;
+    /// Index into `Runner::Impl::ticks` of this member's own (SINGLE)
+    /// tick inside this region, resolved once here. A member with more
+    /// than one tick inside the region (sub-cycling) is refused at setup
+    /// with `E-NEWTON-UNSUPPORTED-REGION` when `newton_config.
+    /// residual_path == Direct` is selected -- `ImplicitComponent::
+    /// evaluate_residual()`'s own contract is for ONE frozen time level,
+    /// which a member re-advanced several times across the region's own
+    /// interval does not have.
+    std::size_t tick_global_index = 0;
+    /// Indices into `RegionRuntime::blocks`, in that order, whose own
+    /// `feed_arc` is this member's Requires storage -- `interface_in`'s
+    /// own stacking order (`fuse::ImplicitComponent::evaluate_residual()`'s
+    /// own contract: "the stacking order fuse::FixedPointResidual
+    /// assembles a region's blocks in").
+    std::vector<std::size_t> requires_blocks;
+    /// Indices into `RegionRuntime::blocks`, in that order, whose own
+    /// channel this member provides -- `residual_out`'s own stacking
+    /// order, identical convention.
+    std::vector<std::size_t> provides_blocks;
+    /// The Source-node arc the Runner itself writes each entry of
+    /// `residual_out` into (same order, same length as `provides_
+    /// blocks`) -- the SAME registered storage `advance()` would have
+    /// written, found once here by name, so the region's existing body
+    /// instructions (Transport/Remap/Constrain/Sink) carry it downstream
+    /// exactly as they already carry `advance()`'s own output.
+    std::vector<std::uint32_t> provides_source_arcs;
+  };
+  std::vector<NewtonDirectMember> newton_direct_members;
 };
 
 }  // namespace detail
@@ -1168,6 +1233,69 @@ struct Runner::Impl {
                                         std::span<const double> x,
                                         std::span<double> f_out,
                                         bool commit = false);
+
+  /// NewtonModel track (2026-10-12): `NewtonResidualPath::Direct`'s own
+  /// `F(x) = x - G(x)` for an ORDINARY (non-window) region -- the same
+  /// save/restore contract and signature as `evaluate_region_residual()`
+  /// above, except `G(x)` is obtained by calling each providing member's
+  /// own `ImplicitComponent::evaluate_residual()` directly, in place of
+  /// `advance()`, with NO `save_state()`/`restore_state()` on any
+  /// component (that method's own contract already guarantees it leaves
+  /// the component bit-identical to how it found it, so there is nothing
+  /// to roll back) -- see src/runtime/fixed_point_residual.cpp for the
+  /// full account, including why each provider's own `residual_out` is
+  /// written into the registered Source-node storage `RegionRuntime::
+  /// NewtonDirectMember::provides_source_arcs` names (built once in
+  /// resolve_regions()) rather than into a scratch buffer, so the
+  /// region's existing body instructions (Transport/Remap/Constrain/
+  /// Sink) carry it downstream exactly as they already carry `advance()`'s
+  /// own output. Refuses `E-NEWTON-UNSUPPORTED-REGION` for a member with
+  /// more than one tick inside this region (sub-cycling): `evaluate_
+  /// residual()`'s own contract is for ONE frozen time level, which a
+  /// member re-advanced several times across the region's own interval
+  /// does not have. `commit` has the identical meaning as the Advance
+  /// seam's own parameter -- `run_region_newton()` never passes `true`
+  /// here, however: the verification sweep always commits through the
+  /// REAL `evaluate_region_residual()` (Advance), never through this
+  /// function, so the Runner's own persisted state is always reached by
+  /// at least one genuine `advance()` call, per period, as docs/dev/
+  /// newton-krylov.md's own new section states.
+  Result<void> evaluate_region_residual_direct(ComponentSet& components,
+                                               std::size_t region_index,
+                                               std::span<const double> x,
+                                               std::span<double> f_out,
+                                               bool commit = false);
+
+  /// NewtonModel track (2026-10-12): builds `RegionRuntime::newton_scale`
+  /// (`D`, the NewtonNorm::MeasureWeighted diagonal) from each block's own
+  /// entity measure (`weights_for()`) and consumer-field tolerance scale.
+  /// `vector_length` is `R.n` for an ordinary region, `R.newton_n` for a
+  /// window-scoped one; `window_scoped` selects which of `RegionBlock::
+  /// offset`/`::newton_offset` is this vector's own layout and whether a
+  /// block's own measure is expanded over `window_export_capacity`
+  /// samples (docs/dev/newton-krylov.md's own new section: uniform
+  /// across samples, equal time weight -- `decide_window_convergence()`
+  /// itself has no time weighting either). Refuses `E-NEWTON-NORM-SCALE`,
+  /// naming the region and block, when a block's own tolerance scale or
+  /// entity measure cannot be derived.
+  Result<std::vector<double>> build_newton_measure_weights(
+      const std::string& region_name, const ConvergenceCriterion& convergence,
+      const std::vector<detail::RegionBlock>& blocks, bool window_scoped,
+      std::size_t vector_length, const linalg::Reducer& reducer);
+
+  /// NewtonModel track: builds `RegionRuntime::newton_direct_members` for
+  /// an ORDINARY (non-window) Newton region selecting `NewtonResidualPath::
+  /// Direct` -- one entry per checkpointed member that provides at least
+  /// one block of this region, its own Requires/Provides block lists, the
+  /// Source arc each Provides field's own `residual_out` is written into,
+  /// and the single tick inside the region its own `StepContext` is built
+  /// from. Refuses `E-NEWTON-UNSUPPORTED-REGION` for a member with more
+  /// than one tick inside the region (sub-cycling -- `evaluate_residual()`'s
+  /// own contract is for ONE frozen time level).
+  Result<std::vector<detail::RegionRuntime::NewtonDirectMember>>
+  build_newton_direct_members(const std::string& region_name,
+                              ComponentSet& components,
+                              const detail::RegionRuntime& R);
 
   /// S7.2's own eager validation: the SAME three checks
   /// evaluate_region_residual() enforces lazily on its first call

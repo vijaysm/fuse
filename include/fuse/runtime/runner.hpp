@@ -471,6 +471,30 @@ class Runner {
   [[nodiscard]] Result<FixedPointResidual> region_fixed_point_residual(
       std::size_t region_index, ComponentSet& components);
 
+  /// NewtonModel track (2026-10-12): TEST/DIAGNOSTIC-ONLY, the
+  /// `NewtonResidualPath::Direct` sibling of `region_fixed_point_
+  /// residual()` immediately above -- same shape, same save/restore
+  /// contract, but `evaluate` calls `Runner::Impl::evaluate_region_
+  /// residual_direct()` (src/runtime/fixed_point_residual.cpp) instead,
+  /// so a caller can compare `F(x)` under both seams at the SAME `x`
+  /// without running a full Newton solve (the comparison this track's
+  /// own plan step 4 names). No production caller: `run_region_newton()`
+  /// reaches `evaluate_region_residual_direct()` directly when
+  /// `NewtonConfig::residual_path == Direct`. Refuses the same way
+  /// `region_fixed_point_residual()` does, PLUS `E-RT-REGION` when the
+  /// region's own `newton_config.residual_path` is not `Direct` --
+  /// `RegionRuntime::newton_direct_members` is resolved only for a
+  /// region actually configured for Direct (resolve_regions(), this
+  /// file's own sibling), so calling this diagnostic on an
+  /// Advance-configured region would otherwise silently answer with an
+  /// empty evaluate that computes nothing rather than F(x). (A region
+  /// whose `residual_path` IS `Direct` but is also window-scoped never
+  /// reaches this function in the first place: `initialize()` itself
+  /// already refused it with `E-NEWTON-DIRECT-WINDOW`, so no `Runner`
+  /// exists to call this on.)
+  [[nodiscard]] Result<FixedPointResidual> region_fixed_point_residual_direct(
+      std::size_t region_index, ComponentSet& components);
+
   /// S7.2 WindowNewton (newton-krylov.md Sec. 9.7's own test plan):
   /// TEST/DIAGNOSTIC-ONLY, the window-scoped sibling of `region_fixed_
   /// point_residual()` above -- see `WindowFixedPointResidual`'s own
@@ -495,6 +519,40 @@ class Runner {
   /// Refuses the same way `window_region_fixed_point_residual()` does.
   [[nodiscard]] Result<std::vector<WindowMemberDebugSnapshot>>
   debug_window_member_snapshots(std::size_t region_index) const;
+
+  /// NewtonModel track (2026-10-12): TEST/DIAGNOSTIC-ONLY, the same
+  /// convention as `debug_window_member_snapshots()` immediately
+  /// above -- a copy of `RegionRuntime::newton_scale`, the diagonal `D`
+  /// `NewtonNorm::MeasureWeighted` scales the Newton residual by (`D_i =
+  /// sqrt(w_i / sum_block_w) / s_b`, built once in resolve_regions() by
+  /// `build_newton_measure_weights()`), in `RegionBlock` order (`offset`
+  /// gives each block's own slice). Empty for `NewtonNorm::Plain`
+  /// (`run_region_newton()`/`run_region_newton_window()` read that
+  /// emptiness as "do not scale" -- the identical convention those two
+  /// functions themselves rely on). Lets a test compare the PRODUCTION
+  /// `D` this Runner actually solves with against the formula computed
+  /// independently, rather than re-deriving the formula in the test and
+  /// never exercising `build_newton_measure_weights()` at all -- the gap
+  /// `build-evidence/mutations/newton-model.toml`'s own "weights not
+  /// applied"/"a block's scale dropped" rows need a test that actually
+  /// reads this to close. Refuses the same way `region_fixed_point_
+  /// residual()` does for an out-of-range `region_index` or a `Runner`
+  /// not yet `initialize()`d.
+  [[nodiscard]] Result<std::vector<double>> debug_newton_scale(
+      std::size_t region_index) const;
+
+  /// NewtonModel track (Round 2, GAP 1): TEST/DIAGNOSTIC-ONLY, the same
+  /// convention as `debug_newton_scale()` immediately above -- a copy of
+  /// `RegionRuntime::newton_gmres_iterations` (one entry per outer
+  /// Newton iteration of the MOST RECENT solve of this region, in
+  /// order), the one piece of `fuse::num::NewtonResult::trace` neither
+  /// `run_region_newton()` nor `run_region_newton_window()` otherwise
+  /// exposes short of `FUSE_NEWTON_DEBUG=1` stderr tracing. Empty before
+  /// the first Newton solve of this region. Refuses the same way
+  /// `debug_newton_scale()` does for an out-of-range `region_index` or a
+  /// `Runner` not yet `initialize()`d.
+  [[nodiscard]] Result<std::vector<std::size_t>> debug_newton_gmres_iterations(
+      std::size_t region_index) const;
 
  private:
   struct Impl;

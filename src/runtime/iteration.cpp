@@ -159,7 +159,372 @@ namespace {
   return fn;
 }
 
+/// NewtonModel track (2026-10-12): which component provides, and which
+/// consumes, each of a Newton region's own `RegionBlock`s -- needed both
+/// by `NewtonResidualPath::Direct` (to call the right component's own
+/// `evaluate_residual()` for each block's own role) and by the ordinary
+/// seam's own block-Jacobi preconditioner wiring below (to find each
+/// block's own provider's `LinearizationToken`). Resolved once, from
+/// `decl.channels` matched by name against `RegionBlock::channel_name` --
+/// the SAME channel every block was itself built from (resolve_regions()'s
+/// own block-construction loop, above in this file) -- rather than
+/// assumed from any positional correspondence between `R.blocks` and
+/// `decl.channels`, which `fuse::IterationRegionDecl` does not guarantee.
+struct NewtonBlockEndpoints {
+  ComponentId provider;
+  ComponentId consumer;
+};
+
+[[nodiscard]] Result<std::vector<NewtonBlockEndpoints>>
+resolve_newton_block_endpoints(const CouplingGraph& graph,
+                               const IterationRegionDecl& decl,
+                               const std::string& region_name,
+                               const std::vector<detail::RegionBlock>& blocks) {
+  std::vector<NewtonBlockEndpoints> out(blocks.size());
+  for (std::size_t bi = 0; bi < blocks.size(); ++bi) {
+    const detail::RegionBlock& b = blocks[bi];
+    bool found = false;
+    for (const ChannelId cid : decl.channels) {
+      const Channel& ch = graph.channel_at(cid);
+      if (ch.name != b.channel_name) continue;
+      out[bi].provider = graph.owner_of(ch.source);
+      out[bi].consumer = graph.owner_of(ch.target);
+      found = true;
+      break;
+    }
+    if (!found) {
+      return Failure{"E-NEWTON-UNSUPPORTED-REGION",
+                   "iteration region '" + region_name + "': block '" +
+                       b.channel_name + "' does not match any channel this "
+                       "region declares, so its provider/consumer cannot be "
+                       "resolved"};
+    }
+  }
+  return out;
+}
+
+/// `ComponentSet` is keyed by name, not by the graph's own `ComponentId`
+/// ordinals (the resolution `window_member_config`'s own build loop, above
+/// in this file, already uses) -- this is the identical lookup, factored
+/// out for the two NEW call sites this track adds (block-Jacobi provider
+/// resolution and `NewtonResidualPath::Direct` member resolution), neither
+/// of which may assume slot == ComponentId::value().
+[[nodiscard]] std::optional<std::size_t> find_component_slot_by_name(
+    ComponentSet& components, const std::string& name) {
+  for (std::size_t j = 0; j < components.size(); ++j) {
+    if (components.at(j).name() == name) return j;
+  }
+  return std::nullopt;
+}
+
+/// NewtonModel track: the diagonal `D*J` needs for GMRES to stay
+/// well-conditioned is `(D*J)^-1 = J^-1 * D^-1`; a block-Jacobi
+/// preconditioner `inner` approximates `J^-1` already (`apply(r) ~=
+/// J^-1 r`), so the scaled solve's own preconditioner is `inner(D^-1 *
+/// r)`, not a bare `inner(r)` (docs/dev/newton-krylov.md's own new
+/// section has the derivation; the mutation this guards against --
+/// composing a bare `inner` with the scaled operator -- leaves the
+/// preconditioned operator at `~D` instead of `~I`,
+/// `build-evidence/mutations/newton-model.toml`'s own `newton-norm-
+/// precond-not-composed-with-inverse-diagonal` row reproduces it on
+/// demand). `inv_d[i]` is `1/D[i]` where `D[i] > 0`, `0.0` where it is
+/// not (an entry this rank does not own, `D[i] == 0` by construction --
+/// scaling it by anything leaves it zero, so the identity substitution
+/// is exact, never a NaN-avoiding approximation).
+///
+/// Scales `r` in place, calls `inner`, then restores `r`: `fuse::num::
+/// solve()`'s own GMRES never reads `r` again after a preconditioner
+/// `apply()` call before overwriting it on the next iteration (checked
+/// against `fuse::linalg::gmres()`'s own call site), but restoring it
+/// anyway is the cheap, defensive choice -- this function must not
+/// silently perturb a caller-owned buffer it was handed only to read.
+[[nodiscard]] num::PreconditionerApplyFn compose_measure_weighted_preconditioner(
+    num::PreconditionerApplyFn inner, std::shared_ptr<const std::vector<double>> inv_d) {
+  if (!inner) return nullptr;
+  return [inner, inv_d](linalg::DistVector& r, linalg::DistVector& z) -> Result<void> {
+    const std::size_t n = r.owned_size();
+    std::vector<double> saved(r.data(), r.data() + n);
+    for (std::size_t i = 0; i < n; ++i) r.data()[i] *= (*inv_d)[i];
+    const Result<void> result = inner(r, z);
+    num::copy(saved.data(), r.data(), n);
+    return result;
+  };
+}
+
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// NewtonModel track (2026-10-12): the setup-time builders resolve_regions()
+// below calls for a Newton region naming NewtonNorm::MeasureWeighted or
+// NewtonResidualPath::Direct.
+// ---------------------------------------------------------------------------
+
+Result<std::vector<double>> Runner::Impl::build_newton_measure_weights(
+    const std::string& region_name, const ConvergenceCriterion& convergence,
+    const std::vector<detail::RegionBlock>& blocks, bool window_scoped,
+    std::size_t vector_length, const linalg::Reducer& reducer) {
+  std::vector<double> d(vector_length, 0.0);
+  for (const detail::RegionBlock& b : blocks) {
+    const bool included =
+        !window_scoped || b.newton_offset != detail::RegionBlock::kNotInNewtonVector;
+    if (!included || b.length == 0) continue;
+
+    // s_b: the tolerance scale of this block's own consumer field, matched
+    // the IDENTICAL three ways match_convergence_measures() (src/ir/
+    // checkpoint.cpp) already accepts as covering this block for
+    // E-ITER-MEASURE -- the channel's own name, the provider's source
+    // field, or the consumer's target field -- rather than the consumer
+    // field name alone: in dn_heat's own convention (examples/dn_heat/
+    // main.cpp) and this project's own test fixtures, a convergence
+    // measure names the channel's PROVIDER-side export ("q_wall"), never
+    // its consumer-side import ("q_wall_in"), and requiring the narrower
+    // match would refuse every graph already written this way for no
+    // actual gain in safety -- E-ITER-MEASURE's own three-way rule
+    // already treats all three as equally valid names for "this block's
+    // own scale" when the whole region has exactly one measure per block,
+    // the overwhelmingly common case. What IS refused: two OR MORE
+    // measures matching the SAME block with DIFFERING tolerances (named
+    // via any mix of channel/source/target) -- a genuine ambiguity this
+    // function must not silently resolve by picking one -- and the
+    // (E-ITER-MEASURE-guaranteed-unreachable-via-the-builder, but
+    // defended anyway) case of no match at all.
+    double s_b = 0.0;
+    bool have_tolerance = false;
+    bool ambiguous = false;
+    double other_tolerance = 0.0;
+    for (const ConvergenceMeasure& m : convergence.measures()) {
+      if (m.field != b.channel_name && m.field != b.source_field &&
+          m.field != b.target_field) {
+        continue;
+      }
+      if (!have_tolerance) {
+        s_b = m.tolerance;
+        have_tolerance = true;
+      } else if (m.tolerance != s_b) {
+        ambiguous = true;
+        other_tolerance = m.tolerance;
+      }
+    }
+    if (!have_tolerance) {
+      return Failure{
+          "E-NEWTON-NORM-SCALE",
+          "iteration region '" + region_name + "': NewtonNorm::"
+          "MeasureWeighted needs a tolerance scale for block '" +
+              b.channel_name + "' (consumer field '" + b.target_field +
+              "'), but no convergence measure names its channel, its "
+              "provider's source field, or its consumer's target field --"
+              " add a measure on one of them, or select NewtonNorm::Plain"};
+    }
+    if (ambiguous) {
+      return Failure{
+          "E-NEWTON-NORM-SCALE",
+          "iteration region '" + region_name + "': block '" + b.channel_name +
+              "' is covered by more than one convergence measure with "
+              "DIFFERING tolerances (" + std::to_string(s_b) + " and " +
+              std::to_string(other_tolerance) + "); NewtonNorm::"
+              "MeasureWeighted needs exactly one tolerance scale per block "
+              "and will not guess which of two differing ones is right -- "
+              "name this block's channel, source field, or target field "
+              "with a single, consistent tolerance, or select NewtonNorm::"
+              "Plain"};
+    }
+
+    // w_i: the entity measure each entry of this block's own CONSUMER
+    // storage (feed_arc) lives on, one weight per (element, component) --
+    // weights_for()'s own convention (zero for an unowned/ghost entry;
+    // Conservation checks already route through this same function).
+    if (b.feed_arc >= dag.arc_count() || b.feed_arc >= slots.size()) {
+      return Failure{"E-NEWTON-NORM-SCALE",
+                   "iteration region '" + region_name + "': block '" +
+                       b.channel_name + "'s own feed arc is out of range"};
+    }
+    const ArcId feed{b.feed_arc};
+    const Result<std::uint32_t> widx =
+        weights_for(dag.arc(feed).type.region, dag.arc(feed).type.rank_set,
+                   slots[b.feed_arc].elements, slots[b.feed_arc].components);
+    if (!widx.ok()) {
+      return Failure{"E-NEWTON-NORM-SCALE",
+                   "iteration region '" + region_name + "': NewtonNorm::"
+                   "MeasureWeighted could not derive entity measures for "
+                   "block '" + b.channel_name + "' (" + widx.error().code +
+                       ": " + widx.error().message + ")"};
+    }
+    const std::vector<double>& w_base = weight_sets[widx.value()];
+
+    // A window block's own measure is repeated over every sample column,
+    // UNIFORM IN TIME: decide_window_convergence() (fuse/runtime/window_
+    // convergence.hpp) -- the Runner's own agreement rule for a window
+    // region's residual -- has no time weighting of its own either (a
+    // flat sum of squared per-block samples across owning ranks, never
+    // weighted by which substep a sample belongs to), so weighting
+    // samples unevenly here would measure something decide_window_
+    // convergence() itself does not, a discrepancy recorded in docs/dev/
+    // newton-krylov.md's own new section rather than resolved by
+    // inventing a time weight nothing else in the Runner uses.
+    const std::size_t capacity =
+        (window_scoped && b.window_export_capacity > 0) ? b.window_export_capacity : 1;
+
+    // GAP 1 (Round 2 review) fix: `weights_for()` is called just above
+    // with `elements = slots[b.feed_arc].elements` and `components =
+    // slots[b.feed_arc].components` -- for a window-scoped consumer arc
+    // those are the MESH's own entity count and `field_components *
+    // window_sample_capacity()` respectively (src/ir/window_lowering.cpp:
+    // "`spec.components` scalar/vector/tensor entries per element, TIMES
+    // `window_sample_capacity()`"), so `weights_for()` has ALREADY
+    // replicated each spatial element's own measure across every sample
+    // column (same value, since its own loop is `for c in components:
+    // w.push_back(m)`) -- `w_base.size() == b.length` already, the
+    // window dimension folded in once, not `b.length / capacity`.
+    // Treating `w_base` as purely spatial and re-expanding by `capacity`
+    // a SECOND time (this function's own earlier version) double-counted
+    // the window dimension: EVERY window-scoped NewtonNorm::
+    // MeasureWeighted region with a real multi-sample window (capacity >
+    // 1, i.e. every window this track's own synthetic single-sample test
+    // fixtures never exercised) refused with E-NEWTON-NORM-SCALE before
+    // this fix -- found here, against the real Brusselator example, by
+    // this gap's own verification test
+    // (test/verification/brusselator_newton_norm_test.cpp). An ordinary
+    // (non-window) block is unaffected: `capacity` is always 1 there, so
+    // `w_base.size() == spatial_len` exactly as before.
+    if (w_base.size() != b.length) {
+      return Failure{"E-NEWTON-NORM-SCALE",
+                   "iteration region '" + region_name + "': block '" +
+                       b.channel_name + "' has " + std::to_string(b.length) +
+                       " entries but its own entity measure (already "
+                       "window-sample-replicated when window-scoped) has " +
+                       std::to_string(w_base.size())};
+    }
+
+    // Defended, not just assumed: `weights_for()`'s own replication
+    // across `components` is what makes "uniform spatial weight per
+    // window sample" true today (this function no longer re-derives it
+    // by construction the way the removed manual expansion loop did) --
+    // a future change to that function's own loop order would silently
+    // break the uniformity this track's own formula and tests both rely
+    // on, so it is checked here rather than trusted.
+    if (window_scoped && capacity > 1) {
+      for (std::size_t e = 0; e * capacity < w_base.size(); ++e) {
+        const double w0 = w_base[e * capacity];
+        for (std::size_t s = 1; s < capacity; ++s) {
+          if (w_base[e * capacity + s] != w0) {
+            return Failure{"E-NEWTON-NORM-SCALE",
+                         "iteration region '" + region_name + "': block '" +
+                             b.channel_name + "' element " + std::to_string(e) +
+                             "'s own entity measure is not uniform across its " +
+                             std::to_string(capacity) + " window sample(s) (" +
+                             std::to_string(w0) + " vs " +
+                             std::to_string(w_base[e * capacity + s]) +
+                             "), so NewtonNorm::MeasureWeighted's own "
+                             "uniform-in-time assumption (matching "
+                             "decide_window_convergence()'s own lack of time "
+                             "weighting) does not hold here"};
+          }
+        }
+      }
+    }
+
+    double local_sum = 0.0;
+    for (const double wi : w_base) local_sum += wi;
+    const double sum_w = reducer.sum(local_sum);
+    if (!(sum_w > 0.0)) {
+      return Failure{"E-NEWTON-NORM-SCALE",
+                   "iteration region '" + region_name + "': block '" +
+                       b.channel_name + "' owns no entries of positive "
+                       "measure on this rank set, so NewtonNorm::"
+                       "MeasureWeighted has nothing to normalise its "
+                       "weights by"};
+    }
+
+    const std::size_t block_offset = window_scoped ? b.newton_offset : b.offset;
+    for (std::size_t i = 0; i < w_base.size(); ++i) {
+      d[block_offset + i] = std::sqrt(w_base[i] / sum_w) / s_b;
+    }
+  }
+  return d;
+}
+
+Result<std::vector<detail::RegionRuntime::NewtonDirectMember>>
+Runner::Impl::build_newton_direct_members(const std::string& region_name,
+                                          ComponentSet& components,
+                                          const detail::RegionRuntime& R) {
+  const IterationRegionDecl& decl =
+      graph.iteration_region(RegionIdx{static_cast<std::uint32_t>(R.index)});
+  const Result<std::vector<NewtonBlockEndpoints>> endpoints =
+      resolve_newton_block_endpoints(graph, decl, region_name, R.blocks);
+  if (!endpoints.ok()) return endpoints.error();
+
+  std::vector<detail::RegionRuntime::NewtonDirectMember> out;
+  for (const std::size_t slot : R.component_slots) {
+    const std::string member_name = components.at(slot).name();
+    const auto cid = graph.find_component(member_name);
+    if (!cid.has_value()) {
+      return Failure{"E-NEWTON-UNSUPPORTED-REGION",
+                   "iteration region '" + region_name + "': checkpointed "
+                       "member '" + member_name + "' is not a registered "
+                       "graph component"};
+    }
+
+    detail::RegionRuntime::NewtonDirectMember m;
+    m.component_slot = slot;
+    for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
+      if (endpoints.value()[bi].consumer.valid() &&
+          endpoints.value()[bi].consumer.value() == cid->value()) {
+        m.requires_blocks.push_back(bi);
+      }
+      if (endpoints.value()[bi].provider.valid() &&
+          endpoints.value()[bi].provider.value() == cid->value()) {
+        m.provides_blocks.push_back(bi);
+      }
+    }
+    if (m.requires_blocks.empty() && m.provides_blocks.empty()) continue;
+
+    // The single tick this member has inside the region -- evaluate_
+    // residual()'s own contract is for ONE frozen time level, which a
+    // sub-cycled member (more than one tick inside this region) does not
+    // have.
+    std::size_t tick_count = 0;
+    for (const std::size_t t : R.tick_indices) {
+      if (ticks[t].slot != slot) continue;
+      ++tick_count;
+      m.tick_global_index = t;
+    }
+    if (tick_count != 1) {
+      return Failure{
+          "E-NEWTON-UNSUPPORTED-REGION",
+          "iteration region '" + region_name + "': NewtonResidualPath::"
+          "Direct needs exactly one tick per member inside the region; "
+          "member '" + member_name + "' has " + std::to_string(tick_count) +
+              ". A sub-cycled member has no single frozen time level for "
+              "ImplicitComponent::evaluate_residual() to answer at; select "
+              "NewtonResidualPath::Advance for this region"};
+    }
+
+    // Each Provides block's own Source arc -- the SAME registered storage
+    // advance() would have written, found by the identical "component.
+    // field" label convention resolve_buffers() (src/runtime/runner.cpp)
+    // already parses Source/Sink node labels with.
+    for (const std::size_t bi : m.provides_blocks) {
+      const std::string label = member_name + "." + R.blocks[bi].source_field;
+      bool found = false;
+      for (std::uint32_t ni = 0; ni < dag.node_count(); ++ni) {
+        const Node& n = dag.node(NodeId{ni});
+        if (n.kind != OpKind::Source || !n.output.valid()) continue;
+        if (n.label != label) continue;
+        m.provides_source_arcs.push_back(n.output.value());
+        found = true;
+        break;
+      }
+      if (!found) {
+        return Failure{"E-NEWTON-UNSUPPORTED-REGION",
+                     "iteration region '" + region_name + "': "
+                         "NewtonResidualPath::Direct could not find a "
+                         "Source arc labelled '" + label + "'"};
+      }
+    }
+    out.push_back(std::move(m));
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // Setup
@@ -1506,6 +1871,53 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
       // reducer()`, which reduces over a whole communicator, not over
       // `R.participants` (a possible proper subset of it).
       R.newton_reducer = linalg::make_serial_reducer();
+
+      // NewtonModel track (2026-10-12): E-NEWTON-DIRECT-WINDOW. A window
+      // sweep's own coroutine-resident state (newton-krylov.md Sec. 9.2's
+      // table: window_member_state[node].clock/straddle_*, the pass-
+      // scoped window_pass_start_clock/window_start_value caches) is
+      // mutated by advance_window() regardless of how a member's own
+      // physics is evaluated -- NewtonResidualPath::Direct never calls
+      // advance_window() at all, so it has no hook to snapshot or restore
+      // any of it. Refused here, eagerly, rather than discovered only
+      // once run_region_newton_window() is reached.
+      if (R.window_scoped &&
+          decl.newton_config.residual_path == NewtonResidualPath::Direct) {
+        return Failure{
+            "E-NEWTON-DIRECT-WINDOW",
+            "iteration region '" + R.name + "' is window-scoped and "
+            "selects newton_config.residual_path: Direct; a window "
+            "sweep's own coroutine-resident state (the per-member clock, "
+            "the pending-straddle flags, the pass-scoped predictor cache "
+            "-- docs/dev/newton-krylov.md Sec. 9.2) is mutated by "
+            "advance_window() regardless of how a member's own physics is "
+            "evaluated, and Direct never calls that function at all. Use "
+            "newton_config.residual_path: Advance for a window-scoped "
+            "region"};
+      }
+
+      // NewtonModel track: NewtonNorm::MeasureWeighted's own diagonal D,
+      // built once here. R.newton_scale stays empty for NewtonNorm::
+      // Plain -- run_region_newton()/run_region_newton_window() read its
+      // own emptiness as "do not scale".
+      if (decl.newton_config.norm == NewtonNorm::MeasureWeighted) {
+        const std::size_t vector_length = R.window_scoped ? R.newton_n : R.n;
+        const Result<std::vector<double>> built = build_newton_measure_weights(
+            R.name, decl.convergence, R.blocks, R.window_scoped,
+            vector_length, *R.newton_reducer);
+        if (!built.ok()) return built.error();
+        R.newton_scale = built.value();
+      }
+
+      // NewtonModel track: NewtonResidualPath::Direct's own per-member
+      // Requires/Provides arc lists (ordinary regions only -- refused
+      // above for a window-scoped one).
+      if (decl.newton_config.residual_path == NewtonResidualPath::Direct) {
+        const Result<std::vector<detail::RegionRuntime::NewtonDirectMember>>
+            built = build_newton_direct_members(R.name, components, R);
+        if (!built.ok()) return built.error();
+        R.newton_direct_members = built.value();
+      }
     } else {
       Result<std::unique_ptr<Accelerator>> acc =
           make_accelerator(decl.acceleration);
@@ -1786,13 +2198,48 @@ Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
   // is the same evaluation with no extra indirection.
   const std::size_t region_index = R.index;
   ComponentSet* comps = &components;
-  const num::ResidualFn f = [this, region_index, comps](
-                                linalg::DistVector& in, linalg::DistVector& out) {
-    return evaluate_region_residual(
-        *comps, region_index,
-        std::span<const double>(in.data(), in.owned_size()),
-        std::span<double>(out.data(), out.owned_size()));
+  // NewtonModel track (2026-10-12): NewtonResidualPath selects which of
+  // the two side-effect-free F(x) = x - G(x) seams this solve's own
+  // (non-committing) evaluations drive -- Advance (evaluate_region_
+  // residual(), the only path before this track) or Direct (evaluate_
+  // region_residual_direct(), new). The COMMITTING evaluation below,
+  // at the converged iterate, is UNCHANGED: it always calls evaluate_
+  // region_residual() (Advance), never this selection, so the Runner's
+  // own persisted state is always reached by a genuine advance() call,
+  // once per period, regardless of which path the solve itself used.
+  const bool use_direct =
+      decl.newton_config.residual_path == NewtonResidualPath::Direct;
+  const num::ResidualFn f_raw = [this, region_index, comps, use_direct](
+                                    linalg::DistVector& in, linalg::DistVector& out) {
+    return use_direct
+               ? evaluate_region_residual_direct(
+                     *comps, region_index,
+                     std::span<const double>(in.data(), in.owned_size()),
+                     std::span<double>(out.data(), out.owned_size()))
+               : evaluate_region_residual(
+                     *comps, region_index,
+                     std::span<const double>(in.data(), in.owned_size()),
+                     std::span<double>(out.data(), out.owned_size()));
   };
+
+  // NewtonModel track: NewtonNorm::MeasureWeighted wraps F into F_D(x) =
+  // D * F(x) -- built here, once per solve, over R.newton_scale (itself
+  // built once at setup, resolve_regions()). The substrate (native or
+  // PETSc) never learns the residual was scaled: it still sees a plain
+  // num::ResidualFn. R.newton_scale is captured by reference (R outlives
+  // this call: it is a region owned by Impl, not a local), matching this
+  // function's own existing `comps`/`region_index` capture-by-value-of-a-
+  // pointer convention for everything that DOES outlive a single call.
+  num::ResidualFn f = f_raw;
+  if (decl.newton_config.norm == NewtonNorm::MeasureWeighted) {
+    f = [f_raw, &R](linalg::DistVector& in, linalg::DistVector& out) -> Result<void> {
+      const Result<void> r = f_raw(in, out);
+      if (!r.ok()) return r;
+      const std::size_t n = out.owned_size();
+      for (std::size_t i = 0; i < n; ++i) out.data()[i] *= R.newton_scale[i];
+      return Result<void>::success();
+    };
+  }
 
   const auto exchanger = linalg::make_serial_exchanger();
   const auto reducer = linalg::make_serial_reducer();
@@ -1837,14 +2284,82 @@ Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
   const num::NewtonKrylovOptions opt =
       newton_options_from_config(decl.newton_config);
 
-  // The block-Jacobi preconditioner hook (Step 1's own mechanism) is
-  // wired here only as far as a region whose blocks are laid out exactly
-  // one-per-component needs: `use_block_jacobi_preconditioner` defaults
-  // to false, and neither example this track measures sets it yet (open
-  // question in this track's own report) -- `precond_apply`/
-  // `refresh_precond` both stay `nullptr`, `fuse::num::solve()`'s own
-  // documented "no preconditioning at all" case.
-  const num::PreconditionerApplyFn precond_apply = nullptr;
+  // NewtonModel track (2026-10-12): the block-Jacobi preconditioner hook
+  // for an ORDINARY region -- the gap S7.2's own report left open
+  // ("neither dn_heat test in this track sets it"), filled here by the
+  // SAME construction run_region_newton_window() already uses (newton-
+  // krylov.md Sec. 9.5): one PreconditionerBlock per region block whose
+  // provider offers a usable LinearizationToken, composed by
+  // BlockJacobiPreconditioner::from_blocks(). `use_block_jacobi_
+  // preconditioner` defaults to false; when it is set, `verify_newton_
+  // capability_support()` already refused this region at setup if any
+  // checkpointed member lacked `kCapabilityLinearization`, so `tok ==
+  // nullptr` below is unreachable in practice -- checked anyway, not
+  // trusted, the posture every capability bit on this page is read with.
+  std::vector<num::PreconditionerBlock> precond_blocks;
+  bool precond_ok = decl.newton_config.use_block_jacobi_preconditioner;
+  if (precond_ok) {
+    const Result<std::vector<NewtonBlockEndpoints>> endpoints =
+        resolve_newton_block_endpoints(graph, decl, R.name, R.blocks);
+    if (!endpoints.ok()) return endpoints.error();
+    for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
+      const ComponentId provider = endpoints.value()[bi].provider;
+      LinearizationToken* tok = nullptr;
+      if (provider.valid()) {
+        const auto slot =
+            find_component_slot_by_name(components, graph.component(provider).name);
+        if (slot.has_value()) {
+          Component& pc = components.at(*slot);
+          if ((pc.capabilities() & kCapabilityLinearization) != 0) {
+            ImplicitComponent* ic = pc.implicit();
+            tok = ic == nullptr ? nullptr : ic->linearization();
+          }
+        }
+      }
+      if (tok == nullptr) { precond_ok = false; break; }
+      num::PreconditionerBlock pb;
+      pb.offset = R.blocks[bi].offset;
+      pb.length = R.blocks[bi].length;
+      pb.apply = [tok](std::span<const double> r, std::span<double> z) {
+        return tok->apply_preconditioner(r, z);
+      };
+      precond_blocks.push_back(std::move(pb));
+    }
+  }
+  std::optional<num::BlockJacobiPreconditioner> bjp;
+  if (precond_ok) {
+    Result<num::BlockJacobiPreconditioner> built =
+        num::BlockJacobiPreconditioner::from_blocks(std::move(precond_blocks), R.n);
+    if (!built.ok()) return built.error();
+    bjp.emplace(std::move(built.value()));
+  }
+  num::PreconditionerApplyFn precond_apply =
+      bjp.has_value()
+          ? num::PreconditionerApplyFn(
+                [&bjp](linalg::DistVector& r, linalg::DistVector& z) {
+                  return bjp->apply(r, z);
+                })
+          : nullptr;
+
+  // NewtonModel track: NewtonNorm::MeasureWeighted's own preconditioner
+  // composition -- "CRITICAL DETAIL" of this track's own plan. The
+  // block-Jacobi preconditioner above approximates J^-1; with the scaled
+  // operator D*J the right preconditioner approximates (D*J)^-1 = J^-1 *
+  // D^-1, so `precond_apply` is composed as `v -> precond_apply(D^-1 *
+  // v)` -- a bare (uncomposed) precond_apply would leave the
+  // preconditioned operator at ~D instead of ~I (docs/dev/newton-
+  // krylov.md's own new section; `build-evidence/mutations/newton-
+  // model.toml`'s own row reproduces this on demand). A null
+  // precond_apply (no block-Jacobi preconditioner requested) is left
+  // null: there is no M to compose with, and composing D^-1 onto the
+  // identity would not approximate (D*J)^-1 at all.
+  if (decl.newton_config.norm == NewtonNorm::MeasureWeighted && precond_apply) {
+    auto inv_d = std::make_shared<std::vector<double>>(R.n, 0.0);
+    for (std::size_t i = 0; i < R.n; ++i) {
+      (*inv_d)[i] = R.newton_scale[i] > 0.0 ? 1.0 / R.newton_scale[i] : 0.0;
+    }
+    precond_apply = compose_measure_weighted_preconditioner(precond_apply, inv_d);
+  }
   const num::RefreshPreconditionerFn refresh_precond = nullptr;
 
   // S7.2b (PetscSelect track): dispatch through the registered substrate
@@ -1863,8 +2378,12 @@ Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
 
   st.iterations = nr.iterations;
 
+  // NewtonModel track (Round 2, GAP 1): RegionRuntime::newton_gmres_
+  // iterations' own comment -- overwritten, not appended, each solve.
+  R.newton_gmres_iterations.clear();
   for (const num::NewtonIterationRecord& rec : nr.trace) {
     st.residual_history.push_back(rec.norm_f);
+    R.newton_gmres_iterations.push_back(rec.gmres_iterations);
   }
   st.residual_history.push_back(nr.final_residual_norm);
 
@@ -2209,14 +2728,32 @@ Result<void> Runner::Impl::run_region_newton_window(
 
   const std::size_t region_index = R.index;
   ComponentSet* comps = &components;
-  const num::ResidualFn f = [this, region_index, comps, enter, exit](
-                                linalg::DistVector& in, linalg::DistVector& out) {
+  const num::ResidualFn f_raw = [this, region_index, comps, enter, exit](
+                                    linalg::DistVector& in, linalg::DistVector& out) {
     return evaluate_window_region_residual(
         *comps, region_index, enter, exit, /*iteration=*/1,
         std::span<const double>(in.data(), in.owned_size()),
         std::span<double>(out.data(), out.owned_size()), std::span<double>(),
         /*commit=*/false);
   };
+
+  // NewtonModel track (2026-10-12): NewtonNorm::MeasureWeighted, over the
+  // window-Newton vector's own (element, sample)-major layout -- the
+  // SAME per-element weight repeated across every sample column of a
+  // block (R.newton_scale's own construction, resolve_regions()),
+  // because decide_window_convergence() itself has no time weighting
+  // either (docs/dev/newton-krylov.md's own new section records this
+  // choice and the discrepancy it is measured against).
+  num::ResidualFn f = f_raw;
+  if (decl.newton_config.norm == NewtonNorm::MeasureWeighted) {
+    f = [f_raw, &R](linalg::DistVector& in, linalg::DistVector& out) -> Result<void> {
+      const Result<void> r = f_raw(in, out);
+      if (!r.ok()) return r;
+      const std::size_t n = out.owned_size();
+      for (std::size_t i = 0; i < n; ++i) out.data()[i] *= R.newton_scale[i];
+      return Result<void>::success();
+    };
+  }
 
   // newton-krylov.md Sec. 9.3: the predictor-seeding call, EXACTLY once,
   // `iteration = 0`. `x_seed_unused` is never delivered (the function's
@@ -2280,13 +2817,24 @@ Result<void> Runner::Impl::run_region_newton_window(
     if (!built.ok()) return built.error();
     bjp.emplace(std::move(built.value()));
   }
-  const num::PreconditionerApplyFn precond_apply =
+  num::PreconditionerApplyFn precond_apply =
       bjp.has_value()
           ? num::PreconditionerApplyFn(
                 [&bjp](linalg::DistVector& r, linalg::DistVector& z) {
                   return bjp->apply(r, z);
                 })
           : nullptr;
+  // NewtonModel track: NewtonNorm::MeasureWeighted's own preconditioner
+  // composition -- see run_region_newton()'s identical comment for the
+  // (D*J)^-1 = J^-1 * D^-1 derivation. A null precond_apply (no block-
+  // Jacobi preconditioner requested) is left null.
+  if (decl.newton_config.norm == NewtonNorm::MeasureWeighted && precond_apply) {
+    auto inv_d = std::make_shared<std::vector<double>>(R.newton_n, 0.0);
+    for (std::size_t i = 0; i < R.newton_n; ++i) {
+      (*inv_d)[i] = R.newton_scale[i] > 0.0 ? 1.0 / R.newton_scale[i] : 0.0;
+    }
+    precond_apply = compose_measure_weighted_preconditioner(precond_apply, inv_d);
+  }
   // newton-krylov.md Sec. 9.5's own per-sample solve needs no refresh --
   // it is a FIXED operator (the species' own already-factored diffusion
   // system, independent of the Newton iterate), so there is nothing a
@@ -2323,8 +2871,12 @@ Result<void> Runner::Impl::run_region_newton_window(
   }
 
   st.iterations = nr.iterations;
+  // NewtonModel track (Round 2, GAP 1): RegionRuntime::newton_gmres_
+  // iterations' own comment -- overwritten, not appended, each solve.
+  R.newton_gmres_iterations.clear();
   for (const num::NewtonIterationRecord& rec : nr.trace) {
     st.residual_history.push_back(rec.norm_f);
+    R.newton_gmres_iterations.push_back(rec.gmres_iterations);
   }
   st.residual_history.push_back(nr.final_residual_norm);
 

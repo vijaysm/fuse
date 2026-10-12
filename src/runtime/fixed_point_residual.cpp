@@ -261,6 +261,217 @@ Result<void> Runner::Impl::evaluate_region_residual(
   return restore_err;
 }
 
+/// NewtonModel track (2026-10-12): `NewtonResidualPath::Direct`'s own
+/// `F(x) = x - G(x)` for an ordinary (non-window) region. Structurally a
+/// close twin of `evaluate_region_residual()` immediately above -- same
+/// save/restore bracket for the region's own loop-carried buffers and
+/// every block's own feed/value arc -- with two differences: (1) no
+/// `save_state()`/`restore_state()` call on any component at all (`Implicit
+/// Component::evaluate_residual()`'s own contract already guarantees it
+/// leaves the component bit-identical to how it found it, so there is
+/// nothing to roll back there), and (2) `G(x)` is obtained by calling
+/// each providing member's own `evaluate_residual()` directly, writing its
+/// `residual_out` into the registered Source-node storage `RegionRuntime::
+/// NewtonDirectMember::provides_source_arcs` names -- the SAME storage
+/// `advance()` would have written -- so the region's existing body
+/// instructions (R.enter..R.exit: Transport/Remap/Constrain/Sink) carry it
+/// downstream exactly as they already carry `advance()`'s own output.
+/// That write is the one EXTRA state this function must snapshot/restore
+/// that the Advance seam does not: Advance's own write there is undone by
+/// the component's own `restore_state()` instead.
+Result<void> Runner::Impl::evaluate_region_residual_direct(
+    ComponentSet& components, std::size_t region_index,
+    std::span<const double> x, std::span<double> f_out, bool commit) {
+  if (const Result<void> supported =
+          check_region_supports_newton(components, region_index);
+      !supported.ok()) {
+    return supported;
+  }
+  detail::RegionRuntime& R = regions[region_index];
+
+  if (R.window_scoped) {
+    return Failure{"E-NEWTON-UNSUPPORTED-REGION",
+                 "iteration region '" + R.name +
+                     "' is window-scoped; evaluate_region_residual_direct() "
+                     "is the ordinary (non-window) Direct seam"};
+  }
+  if (x.size() != R.n || f_out.size() != R.n) {
+    return Failure{"E-RT-REGION",
+                 "iteration region '" + R.name + "' has a stacked interface "
+                     "vector of length " + std::to_string(R.n) +
+                     "; got in.size()=" + std::to_string(x.size()) +
+                     ", out.size()=" + std::to_string(f_out.size())};
+  }
+
+  // --- save: the region's own loop-carried buffers, every block's own
+  // feed/value arc (IDENTICAL to evaluate_region_residual()'s own bracket),
+  // and every Direct member's own Provides-field Source storage, which
+  // THIS function pokes directly, standing in for what advance() would
+  // have written -----------------------------------------------------
+  std::vector<std::vector<double>> carried_snapshot(R.carried_arcs.size());
+  for (std::size_t i = 0; i < R.carried_arcs.size(); ++i) {
+    const detail::Slot& s = slots[R.carried_arcs[i]];
+    if (s.data != nullptr) {
+      carried_snapshot[i].assign(s.data, s.data + s.total());
+    }
+  }
+  std::vector<std::vector<double>> feed_snapshot(R.blocks.size());
+  std::vector<std::vector<double>> value_snapshot(R.blocks.size());
+  for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
+    const detail::RegionBlock& b = R.blocks[bi];
+    const double* feed = slots[b.feed_arc].data;
+    if (feed != nullptr) feed_snapshot[bi].assign(feed, feed + b.length);
+    const double* value = slots[b.value_arc].data;
+    if (value != nullptr) value_snapshot[bi].assign(value, value + b.length);
+  }
+  std::vector<std::vector<double>> provides_snapshot(R.newton_direct_members.size());
+  for (std::size_t mi = 0; mi < R.newton_direct_members.size(); ++mi) {
+    const detail::RegionRuntime::NewtonDirectMember& m = R.newton_direct_members[mi];
+    std::size_t total = 0;
+    for (const std::size_t bi : m.provides_blocks) total += R.blocks[bi].length;
+    provides_snapshot[mi].resize(total);
+    std::size_t off = 0;
+    for (std::size_t k = 0; k < m.provides_blocks.size(); ++k) {
+      const double* src = slots[m.provides_source_arcs[k]].data;
+      const std::size_t len = R.blocks[m.provides_blocks[k]].length;
+      if (src != nullptr) num::copy(src, provides_snapshot[mi].data() + off, len);
+      off += len;
+    }
+  }
+
+  // --- deliver x into every block's own feed arc (component Requires) ----
+  for (const detail::RegionBlock& b : R.blocks) {
+    num::copy(x.data() + b.offset, slots[b.feed_arc].data, b.length);
+  }
+
+  // --- G(x): evaluate_residual() on every Direct member, in place of
+  // advance() -- no save_state()/restore_state() anywhere in this loop ---
+  Result<void> eval_err = Result<void>::success();
+  for (const detail::RegionRuntime::NewtonDirectMember& m : R.newton_direct_members) {
+    ImplicitComponent* ic = components.at(m.component_slot).implicit();
+    if (ic == nullptr) {
+      eval_err = Failure{
+          "E-NEWTON-CAPABILITY",
+          "component '" + components.at(m.component_slot).name() +
+              "' has no ImplicitComponent despite being a "
+              "NewtonResidualPath::Direct member of iteration region '" +
+              R.name + "'"};
+      break;
+    }
+
+    std::size_t in_total = 0;
+    for (const std::size_t bi : m.requires_blocks) in_total += R.blocks[bi].length;
+    std::vector<double> interface_in(in_total, 0.0);
+    {
+      std::size_t off = 0;
+      for (const std::size_t bi : m.requires_blocks) {
+        const detail::RegionBlock& b = R.blocks[bi];
+        num::copy(slots[b.feed_arc].data, interface_in.data() + off, b.length);
+        off += b.length;
+      }
+    }
+
+    std::size_t out_total = 0;
+    for (const std::size_t bi : m.provides_blocks) out_total += R.blocks[bi].length;
+    std::vector<double> residual_out(out_total, 0.0);
+
+    // `ctx.iteration` fixed at 0 -- the identical reasoning evaluate_
+    // region_residual()'s own Advance loop states just above, and
+    // `tick_global_index` is resolved to the SINGLE tick this member has
+    // inside the region (resolve_regions()'s own build_newton_direct_
+    // members(), which refuses a sub-cycled member outright).
+    const detail::Tick& tick = ticks[m.tick_global_index];
+    StepContext ctx;
+    ctx.t_begin = Rational{period_index} * plan.period() + tick.time;
+    ctx.t_end = ctx.t_begin + tick.dt;
+    ctx.step = period_index * tick.per_period + tick.local_step;
+    ctx.iteration = 0;
+    if (!ctx.valid()) {
+      eval_err = Failure{"E-RT-STEP",
+                        "step context [" + ctx.t_begin.to_string() + ", " +
+                            ctx.t_end.to_string() + ") for component '" +
+                            components.at(m.component_slot).name() +
+                            "' is not valid"};
+      break;
+    }
+    eval_err = ic->evaluate_residual(
+        ctx, std::span<const double>(interface_in.data(), interface_in.size()),
+        std::span<double>(residual_out.data(), residual_out.size()));
+    if (!eval_err.ok()) break;
+
+    std::size_t off = 0;
+    for (std::size_t k = 0; k < m.provides_blocks.size(); ++k) {
+      double* dst = slots[m.provides_source_arcs[k]].data;
+      const std::size_t len = R.blocks[m.provides_blocks[k]].length;
+      if (dst != nullptr) num::copy(residual_out.data() + off, dst, len);
+      off += len;
+    }
+  }
+
+  // --- execute the region's own body to propagate the write into G(x) ----
+  Result<void> body_err = Result<void>::success();
+  if (eval_err.ok()) {
+    const std::vector<Instruction>& stream = plan.instructions();
+    for (std::size_t i = R.enter; i <= R.exit; ++i) {
+      body_err = execute(stream[i], resolved[i]);
+      if (!body_err.ok()) break;
+    }
+  }
+
+  // --- F(x) = x - G(x), read before any restore undoes it ----------------
+  if (eval_err.ok() && body_err.ok()) {
+    for (const detail::RegionBlock& b : R.blocks) {
+      const double* g = slots[b.value_arc].data;
+      for (std::size_t j = 0; j < b.length; ++j) {
+        f_out[b.offset + j] = x[b.offset + j] - g[j];
+      }
+    }
+  }
+
+  // --- restore: the carried buffers, every block's own feed/value arc,
+  // and every Direct member's own Provides-field Source storage -- never
+  // a component save_state()/restore_state() call, which Direct never
+  // makes in the first place. `commit`'s meaning mirrors evaluate_
+  // region_residual()'s own: skip the restore on the success path when
+  // true. `run_region_newton()` never passes `true` here -- see that
+  // function's own comment -- but the parameter is kept for signature
+  // symmetry and so a future/diagnostic caller can use it the same way.
+  const bool skip_restore = commit && eval_err.ok() && body_err.ok();
+  if (!skip_restore) {
+    for (std::size_t i = 0; i < R.carried_arcs.size(); ++i) {
+      detail::Slot& s = slots[R.carried_arcs[i]];
+      if (s.data != nullptr && !carried_snapshot[i].empty()) {
+        num::copy(carried_snapshot[i].data(), s.data, carried_snapshot[i].size());
+      }
+    }
+    for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
+      const detail::RegionBlock& b = R.blocks[bi];
+      if (!feed_snapshot[bi].empty()) {
+        num::copy(feed_snapshot[bi].data(), slots[b.feed_arc].data, b.length);
+      }
+      if (!value_snapshot[bi].empty()) {
+        num::copy(value_snapshot[bi].data(), slots[b.value_arc].data, b.length);
+      }
+    }
+    for (std::size_t mi = 0; mi < R.newton_direct_members.size(); ++mi) {
+      const detail::RegionRuntime::NewtonDirectMember& m = R.newton_direct_members[mi];
+      std::size_t off = 0;
+      for (std::size_t k = 0; k < m.provides_blocks.size(); ++k) {
+        double* dst = slots[m.provides_source_arcs[k]].data;
+        const std::size_t len = R.blocks[m.provides_blocks[k]].length;
+        if (dst != nullptr) {
+          num::copy(provides_snapshot[mi].data() + off, dst, len);
+        }
+        off += len;
+      }
+    }
+  }
+
+  if (!eval_err.ok()) return eval_err;
+  if (!body_err.ok()) return body_err;
+  return Result<void>::success();
+}
+
 Result<FixedPointResidual> Runner::region_fixed_point_residual(
     std::size_t region_index, ComponentSet& components) {
   if (!impl_->initialized) {
@@ -294,6 +505,102 @@ Result<FixedPointResidual> Runner::region_fixed_point_residual(
     return impl->evaluate_region_residual(*comps, region_index, in, f_out);
   };
   return out;
+}
+
+/// NewtonModel track (2026-10-12): TEST/DIAGNOSTIC-ONLY, the
+/// `NewtonResidualPath::Direct` sibling immediately above -- see this
+/// function's own declaration (fuse/runtime/runner.hpp) for what it is
+/// for. Structurally identical to `region_fixed_point_residual()`
+/// immediately above, with `evaluate` calling `evaluate_region_residual_
+/// direct()` in place of `evaluate_region_residual()`.
+Result<FixedPointResidual> Runner::region_fixed_point_residual_direct(
+    std::size_t region_index, ComponentSet& components) {
+  if (!impl_->initialized) {
+    return Failure{"E-RT-REGION",
+                 "region_fixed_point_residual_direct() called before a "
+                 "successful initialize()"};
+  }
+  if (region_index >= impl_->regions.size()) {
+    return Failure{"E-RT-REGION",
+                 "region index " + std::to_string(region_index) +
+                     " is out of range (" +
+                     std::to_string(impl_->regions.size()) + " region(s))"};
+  }
+  const detail::RegionRuntime& R = impl_->regions[region_index];
+
+  // `RegionRuntime::newton_direct_members` is built in resolve_regions()
+  // ONLY when `decl.newton_config.residual_path == Direct` (this file's
+  // own sibling, src/runtime/iteration.cpp -- no reason to resolve a
+  // Direct member list for a region that will never use it). Calling
+  // THIS diagnostic on a region configured for Advance would otherwise
+  // silently run evaluate_region_residual_direct() against an empty
+  // member list -- every Provides block's own Source arc left
+  // unwritten, reading back whatever stale value it held from the
+  // runner's own initial tick -- a wrong answer with no symptom, not a
+  // refusal. Checked here, by name, rather than left to whatever the
+  // empty list happens to produce.
+  const IterationRegionDecl& decl = impl_->graph.iteration_region(
+      RegionIdx{static_cast<std::uint32_t>(region_index)});
+  if (decl.newton_config.residual_path != NewtonResidualPath::Direct) {
+    return Failure{"E-RT-REGION",
+                 "region_fixed_point_residual_direct() called for iteration "
+                     "region '" + R.name + "', whose newton_config.residual_"
+                     "path is not Direct, so it has no Direct member list to "
+                     "evaluate against; region_fixed_point_residual() is the "
+                     "Advance-path diagnostic every Newton region supports"};
+  }
+
+  FixedPointResidual out;
+  out.n = R.n;
+  out.offsets.reserve(R.blocks.size());
+  out.lengths.reserve(R.blocks.size());
+  out.channel_names.reserve(R.blocks.size());
+  for (const detail::RegionBlock& b : R.blocks) {
+    out.offsets.push_back(b.offset);
+    out.lengths.push_back(b.length);
+    out.channel_names.push_back(b.channel_name);
+  }
+
+  Impl* impl = impl_.get();
+  ComponentSet* comps = &components;
+  out.evaluate = [impl, region_index, comps](std::span<const double> in,
+                                             std::span<double> f_out) {
+    return impl->evaluate_region_residual_direct(*comps, region_index, in, f_out);
+  };
+  return out;
+}
+
+/// NewtonModel track (2026-10-12): TEST/DIAGNOSTIC-ONLY -- see this
+/// function's own declaration (fuse/runtime/runner.hpp) for what it is
+/// for.
+Result<std::vector<double>> Runner::debug_newton_scale(std::size_t region_index) const {
+  if (!impl_->initialized) {
+    return Failure{"E-RT-REGION",
+                 "debug_newton_scale() called before a successful initialize()"};
+  }
+  if (region_index >= impl_->regions.size()) {
+    return Failure{"E-RT-REGION",
+                 "region index " + std::to_string(region_index) +
+                     " is out of range (" +
+                     std::to_string(impl_->regions.size()) + " region(s))"};
+  }
+  return impl_->regions[region_index].newton_scale;
+}
+
+Result<std::vector<std::size_t>> Runner::debug_newton_gmres_iterations(
+    std::size_t region_index) const {
+  if (!impl_->initialized) {
+    return Failure{"E-RT-REGION",
+                 "debug_newton_gmres_iterations() called before a successful "
+                 "initialize()"};
+  }
+  if (region_index >= impl_->regions.size()) {
+    return Failure{"E-RT-REGION",
+                 "region index " + std::to_string(region_index) +
+                     " is out of range (" +
+                     std::to_string(impl_->regions.size()) + " region(s))"};
+  }
+  return impl_->regions[region_index].newton_gmres_iterations;
 }
 
 }  // namespace fuse

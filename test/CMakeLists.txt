@@ -509,6 +509,17 @@ target_include_directories(fuse_runtime_fixed_point_residual_test PRIVATE
 fuse_add_gtest(runtime newton_region LIBS fuse::runtime fuse::backend)
 target_include_directories(fuse_runtime_newton_region_test PRIVATE
   ${CMAKE_SOURCE_DIR}/examples/dn_heat)
+# NewtonModel track (2026-10-12): NewtonNorm::MeasureWeighted's own scale-
+# invariance/unit-independence tests and NewtonResidualPath::Direct's own
+# bit-identity/cost tests. Same examples/dn_heat include-path pattern as
+# fuse_runtime_newton_region_test, just above (both reuse dn::DirichletSlab/
+# dn::NeumannSlab).
+fuse_add_gtest(runtime newton_norm LIBS fuse::runtime fuse::backend)
+target_include_directories(fuse_runtime_newton_norm_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/examples/dn_heat)
+fuse_add_gtest(runtime newton_direct LIBS fuse::runtime fuse::backend)
+target_include_directories(fuse_runtime_newton_direct_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/examples/dn_heat)
 # S7.2 WindowNewton (newton-krylov.md Sec. 9.7's own test plan): the
 # window-scoped seam's own re-enterability/seeding/snapshot/GaussSeidel-
 # exclusion properties, over a synthetic two-member linear-ODE window
@@ -909,7 +920,7 @@ endforeach()
 # Kokkos::kokkos (the reaction kernel) directly, same reasoning as
 # gray_scott's registration just above.
 foreach(t brusselator_weights brusselator_physics brusselator_runner brusselator_grid_decomposition
-          brusselator_species_core_decomposition)
+          brusselator_species_core_decomposition brusselator_newton_norm)
   fuse_add_gtest(verification ${t} NO_LAYER_LIB
                  LIBS fuse::runtime fuse::backend fuse::model fuse::linalg Eigen3::Eigen Kokkos::kokkos)
   target_include_directories(fuse_verification_${t}_test PRIVATE
