@@ -339,6 +339,63 @@ substrate, and the mutation that removes the floor fails exactly the PETSc row.
 take the shared verification binary's unrelated cases down with it) asserts the
 one-window agreement between the substrates.
 
+Unlike dn_heat's bound (a closed form from that problem's own affine
+Jacobian), the Brusselator's window-Newton coupling has a nonlinear residual
+spanning multiple window substeps, with no derived `||J⁻¹||`. The agreement
+bound (`brusselator_bound::agreement_bound()`, `examples/brusselator/
+agreement_bound.hpp`) is instead an A-POSTERIORI CALIBRATION, measured on the
+SAME configuration the check itself runs: `measure_native_reference_error()`
+(`test/petsc/brusselator_newton_test.cpp`) solves the identical window
+natively at the check's own `NewtonConfig::rtol`, and again at two
+successively tighter tolerances to obtain a reference solution, confirming
+the two tight solves agree with each other to far less than the difference
+either one has from the check-tolerance solve before treating that difference
+(`e_n`) as the native solver's own measured error. The bound is then
+
+```
+e_n · (1 + ‖F_final,PETSc‖ / ‖F_final,native‖)
+```
+
+The SCALING ASSUMPTION is that both solvers' own errors relate to their own
+TERMINAL residuals through the same operator, since both iterates sit near
+the same root (the dn_heat bound's own identity, applied here only
+approximately, since this residual is nonlinear) — a check failure under
+this bound means either a real disagreement between the two substrates or
+that this assumption itself has broken down, never grounds to loosen the
+bound. An earlier formula also added the §10.3-measured 3.9e-8 relative
+inter-Krylov term as a separate addend; that number is the first-Newton-step
+residual disagreement between the two solvers' own Krylov methods on a
+synthetic quadratic/arctan problem, not a bound on the distance between two
+CONVERGED Newton iterates on the Brusselator's own window, so it no longer
+appears in the asserted bound. `test/petsc/brusselator_newton_test.cpp`
+still computes and prints that earlier formula alongside the current one,
+labelled `[agreement-bound legacy]`
+(`brusselator_bound::legacy_agreement_bound()`), purely informationally — a
+host run reports both ratios side by side, but only the formula above is
+asserted.
+
+A round-off floor was examined and, unlike dn_heat's, found NOT defensibly
+derivable from the code: the state update spans up to 11 backward-Euler
+diffusion linear solves per window (`DiffusionSolver`, U's own
+`window_sample_capacity`, `docs/dev/newton-krylov.md` §9.1), each followed
+by remap interpolation, before the nonlinear reaction step. A rigorous
+backward-error bound on that chain would need the diffusion operator's own
+matrix norm and factorisation fill-in, neither derived from the committed
+code; a plausible-looking constant asserted without that derivation would be
+exactly the kind of unjustified margin this bound replaced. No round-off
+term was added — the host run's own ratios decide whether the identity
+above, alone, already holds with room to spare.
+
+On the test's own grid (`test/petsc/brusselator_newton_test.cpp`'s 5×5/7×7,
+the same grid the check itself uses — calibrating elsewhere would not
+describe what the check runs), the two reference solves agree exactly and
+measured `e_n = 2.442491e-15` (`check_iters=4`, `reference_iters=5`,
+`f_final_native=9.219417e-12`, `reference_final_residual=1.783547e-14`,
+`reference_cross_check_diff=0.0`) natively; the PETSc-side terminal
+residual, the asserted bound's own value, the legacy bound, and all three
+ratios are PENDING a host run (this sandbox cannot complete `MPI_Init()`,
+KNOWN_ISSUES.md D32).
+
 The communicator decision (`docs/dev/newton-krylov.md` §11.3): the PETSc
 substrate always solves on `MPI_COMM_SELF`, never the Runner's own
 `base_communicator`, because `check_region_supports_newton()` already

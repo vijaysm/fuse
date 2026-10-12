@@ -219,7 +219,7 @@ either (a build without `FUSE_ENABLE_PETSC`, or a process that never calls
 (test/runtime/newton_region_test.cpp) fires this refusal tier-0, without
 PETSc, on every build.
 
-| row | substrate | Newton steps | final \|\|F\|\| (max over periods) | agrees with Picard | ctest row |
+| row | substrate | Newton steps | final \|\|F\|\| (final period alone) | agrees with Picard | ctest row |
 |---|---|---|---|---|---|
 | newton | native | 4 (per period; 5.68e+01 → 4.31 → 1.77e-02 → 3.26e-09) | 4.159e-11 | 6.321e-11 K | `example.dn_heat` |
 | newton-petsc | PETSc | 4 | 1.649e-10 | 2.717e-10 K | `example.dn_heat.newton_petsc` (gated `FUSE_ENABLE_PETSC`) |
@@ -230,11 +230,90 @@ Measured on the development host (2026-10-11, `/opt/petsc/download-moab`): the
 PETSc row converges in the same four steps per period and agrees with Picard to
 2.7e-10 K against the native path's 6.3e-11 K — the two differ in how closely
 their GMRES implementations reach the shared Eisenstat–Walker target, not in the
-test they apply. The agreement check `--newton-petsc` performs between the two
-substrates is a bound derived from the shared `NewtonConfig::rtol`, dn_heat's own
-affine Jacobian (`{{1, r_i}, {-1, 1}}` per station) and the measured 3.9e-8
-relative inter-solver difference of `docs/dev/newton-krylov.md` §10.3; the
-formula is in `main.cpp`'s comment at the check. It passes as `example.dn_heat.newton_petsc`.
+test they apply. (These two numbers are each solver's own FINAL-PERIOD terminal
+residual, the "final period alone" column above — the run itself covers
+`kPeriods` = 20 periods, and the bound below now accounts for all of them, not
+only the last.)
+
+The agreement check `--newton-petsc` performs between the two substrates is an
+EXACT bound (`examples/dn_heat/agreement_bound.hpp`,
+`dn_heat::agreement_bound()`), not a margin on top of one: for dn_heat's affine
+per-station Jacobian (`{{1, r_i}, {-1, 1}}`, station ratios in [0.50, 0.96]),
+
+```
+||x_n - x_p||_∞ ≤ ||J⁻¹||_∞ · Σ_{k=1}^{kPeriods} (||F_k||₂,native + ||F_k||₂,PETSc)
+```
+
+summed over EVERY period `k`, with `||J⁻¹||_∞ = 4/3` exactly (the maximum over
+the four strips) and `||F_k||` each solver's own TERMINAL residual norm for
+period `k` alone (`Outcome::per_period_final_residual`), not the last period's
+alone and not the `rtol·||F₀||` stopping criterion.
+
+The sum over all periods, not just the last, is the correction this bound
+needed: a single period's own identity (`x - x* = J⁻¹F(x)`, exact for affine
+`F`, given identical inputs) only directly compares two solves that started
+from the IDENTICAL state, which is true of period 1 but not of periods 2
+through `kPeriods` — each later period's own Newton solve starts from
+whatever the PREVIOUS period committed, and native and PETSc commit slightly
+different values. Writing `e_k` for the max-norm disagreement after period
+`k` and `A` for the map carrying period `k-1`'s own committed state into
+period `k`'s own Newton starting point, `dn_component.hpp`'s own `advance()`
+formulas (`q_[i] = k1_eff(...)`, `u_[i] = T2 + q_in_[i]·kL2/kK2`, both plain
+assignments from the CURRENT period's own inputs, nothing else touching
+these arrays between periods) show `A` is the identity, so `||A||_∞ = 1`
+and the recursion `e_k ≤ ||A||_∞ e_{k-1} + ||J⁻¹||_∞(F_{n,k}+F_{p,k})`
+telescopes (`e_0 = 0`: both substrates start identically) to the sum above.
+`examples/dn_heat/agreement_bound.hpp`'s own "PER-PERIOD RECURSION" section
+has the full derivation, including why a tighter (zero-amplification) analysis
+is plausible but not what this bound asserts.
+
+Newton's own quadratic convergence means a solver's terminal residual
+routinely lands several orders of magnitude below the level that triggered
+its own stop (§8.2 of [docs/dev/newton-krylov.md](../dev/newton-krylov.md)
+measures a 765.78 → 68.77 → 0.288 → 2.6e-8 sequence on a related problem); a
+bound built from the stopping criterion rather than the achieved residual is
+looser than the identity above by that same margin, and would still pass a
+PETSc substrate wrong by many orders of magnitude. For the same reason, the
+check does not add the §10.3-measured 3.9e-8 relative inter-Krylov term: that
+number is the first-Newton-step residual disagreement between the two
+solvers' own Krylov methods on a synthetic quadratic/arctan problem, a
+property of a single linear solve, not a bound on the distance between two
+CONVERGED Newton iterates on dn_heat's own graph, and mixing it additively
+into a bound on converged states combined two unrelated quantities' units.
+`main.cpp` still computes and prints that earlier (now informational only)
+formula alongside the asserted one, labelled `[agreement-bound legacy]`, so a
+host run reports both ratios side by side; only the sum above is asserted.
+
+A separate round-off floor was examined and found negligible for a SINGLE
+period of this example: the state update that actually produces `u_` from a
+converged Newton residual (`NeumannSlab::advance`) is `u_[i] = T2 + q_in_[i] *
+kL2 / kK2`, and since `kL2 == kK2 == 1.0` exactly, the division and
+multiplication are IEEE-754 exact, leaving a single rounded addition. A
+standard backward-error bound on that one operation
+(`|fl(a+b) - (a+b)| ≤ u·(|a|+|b|)`, `u` the IEEE double unit round-off
+≈1.11e-16) gives a floor of at most `1.11e-16 · (|T2| + |q_in|) ≈ 1.11e-16 ·
+(295 + 730) ≈ 1.1e-13` K per period using this example's own temperature
+range — `1e-10 / 1.1e-13 ≈ 909`, roughly THREE orders of magnitude below a
+single period's own sharp-bound terms (order 1e-10 K above). It was NOT
+added to the formula: both substrates execute the identical `advance()` code,
+so a disagreement at this scale already originates in `x_native ≠ x_petsc`
+upstream of the rounding, a difference the sharp bound's own terms already
+cover, not a separate source of slack the bound needs to carry. The sum over
+`kPeriods` periods only widens this margin relative to the floor, never
+narrows it, since the sum is never smaller than any one period's own term.
+
+The check passes as `example.dn_heat.newton_petsc`; the observed
+disagreement, the sum-based sharp bound, the legacy bound, the per-period
+residual sums (`Σ F_k` for each substrate), and their ratios from that run
+are PENDING a host measurement (this exact binary cannot run
+`--newton-petsc` in the sandbox that derived the formula, KNOWN_ISSUES.md
+D32's own "cannot complete `MPI_Init()`" note). A failure of this check means
+either a real disagreement between the two substrates or a breakdown of the
+bound's own assumption (the per-station Jacobian stops being the operator
+either solver actually converged under — for instance if a future change
+makes the graph non-affine, or the state carried between periods stops being
+a plain, unscaled assignment); the bound itself must never be loosened to
+make a failing run pass.
 
 ## Measured against
 
