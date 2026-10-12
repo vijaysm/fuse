@@ -265,6 +265,12 @@ class SparseLuBackend {
   /// threshold 1.0), then hand L, U, P, Q to a fresh cusolverRf handle and
   /// upload the pattern. Returns false (with info_ set) on a zero pivot.
   bool seed_from_host_lu() {
+    // A previous seed may have thrown (an infrastructure failure past
+    // cusolverRfCreate or mid-way through the cudaMallocs) and left rf_ and
+    // some d_* non-null with rf_ok_ false. A caller that catches and retries
+    // on the same object would otherwise leak them; release first. On the
+    // normal path everything here is already null and this is a no-op.
+    release_rf();
     const int n = n_;
     const int nnz = static_cast<int>(csr_.nonZeros());
     if (sp_ == nullptr) solver_check(cusolverSpCreate(&sp_), "cusolverSpCreate");
