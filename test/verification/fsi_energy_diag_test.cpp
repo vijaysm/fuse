@@ -63,6 +63,7 @@
 #include <Eigen/Dense>
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -1540,6 +1541,52 @@ CoupledPeriodDiag run_one_coupled_period_with_budget(const CoupledCase& c,
   return diag;
 }
 
+/// Cheap, Runner-free energy functional: Q(x) = beam_KE(wd-block) +
+/// beam_PE(w-block) + fluid_KE(u,v-block) of a raw carried-state vector,
+/// evaluated by constructing fresh (unregistered) BeamComponent/
+/// FluidComponent objects and calling set_state() directly -- the SAME
+/// formulas CoupledPeriodDiag::beam_KE0/beam_PE0/fluid_KE0 (and the *1
+/// counterparts) use inside run_one_coupled_period_with_budget, confirmed
+/// identical to machine precision (MEASURED 2026-10-12, FpPolicy track,
+/// round 4: Q(x) computed this way vs. diag.beam_KE0+beam_PE0+fluid_KE0
+/// from a REAL production run on the same x, both before and after the
+/// period -- relative difference 0.000e+00 on both the chosen mode's real
+/// and imaginary parts). No dependence on wdd/p/vin, confirmed by
+/// inspection of kinetic_energy()/strain_energy(): nothing else enters.
+/// Used ONLY to rank the full D-dimensional eigenspectrum by energy content
+/// cheaply: D calls to this are instant, where D calls to the real
+/// run_one_coupled_period_with_budget (a full nonlinear IQN-ILS coupled
+/// solve each) would cost this test's entire ~2-minute budget D times over.
+double fsi_energy_of_state(const CoupledCase& c, const CoupledDims& d,
+                           const Eigen::VectorXd& x) {
+  fsi::BeamComponent beam("beam", fsi::BeamParams{.n = c.nx_beam, .L = c.L, .EI = c.EI,
+                                                  .rho_s = c.rho_s, .h_s = c.h_s});
+  std::vector<double> w(c.nx_beam + 1, 0.0), wd(c.nx_beam + 1, 0.0), wdd(c.nx_beam + 1, 0.0);
+  for (std::size_t i = 0; i < d.m_beam; ++i) {
+    w[i + 1] = x[static_cast<Eigen::Index>(d.off_w + i)];
+    wd[i + 1] = x[static_cast<Eigen::Index>(d.off_wd + i)];
+    wdd[i + 1] = x[static_cast<Eigen::Index>(d.off_wdd + i)];
+  }
+  beam.solver().set_state(w, wd, wdd);
+
+  const double H = c.H, Umax = c.Umax;
+  const auto inflow = [Umax, H](double y) { return 4.0 * Umax * y * (H - y) / (H * H); };
+  fsi::FluidComponent fluid("fluid",
+      fsi::ChannelParams{.nx = c.nx_fluid, .ny = c.ny_fluid, .L = c.L, .H = c.H,
+                        .mu = c.mu, .rho = c.rho_f}, inflow);
+  fsi::FlowState fs;
+  fs.u.assign(d.Nu, 0.0);
+  fs.v.assign(d.Nv, 0.0);
+  fs.p.assign(d.Np, 0.0);
+  for (std::size_t i = 0; i < d.Nu; ++i) fs.u[i] = x[static_cast<Eigen::Index>(d.off_u + i)];
+  for (std::size_t i = 0; i < d.Nv; ++i) fs.v[i] = x[static_cast<Eigen::Index>(d.off_v + i)];
+  for (std::size_t i = 0; i < d.Np; ++i) fs.p[i] = x[static_cast<Eigen::Index>(d.off_p + i)];
+  fluid.solver().set_state(fs);
+
+  return beam.solver().kinetic_energy() + beam.solver().strain_energy() +
+        fluid.solver().kinetic_energy();
+}
+
 TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   constexpr double L = 1.0, EI = 2.0, rho_s = 1.0, h_s = 0.5;
   const double omega1 = fsi::clamped_beam_first_frequency(L, EI, rho_s, h_s);
@@ -1570,96 +1617,287 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   // eigenvector residual WORSE (1.09e-6 vs 8.8e-8), the classic FD
   // trade-off between O(eps) truncation and O(c.tol/eps) cancellation --
   // evidence this construction is cancellation-limited by c.tol here, not
-  // truncation-limited, which is exactly why the tolerance below is tied
-  // to the MEASURED eigenvector residual rather than a fixed number.
+  // truncation-limited, which is exactly why the tolerances below are tied
+  // to MEASURED eigenvector residuals rather than a fixed number.
   const Eigen::MatrixXd M1 = coupled_map(c, 1.0e-4);
   const EigResult eig = eig_analysis(M1);
-  const double lambda_im = eig.solver.eigenvalues()[eig.dominant].imag();
-  ASSERT_LT(std::abs(lambda_im), 1e-6)
-      << "dominant eigenvalue has a nonzero imaginary part -- the "
-         "real-eigenvector, single-run protocol below does not apply";
-  const double lambda = eig.solver.eigenvalues()[eig.dominant].real();
-  std::printf("dominant eigenvalue lambda = %.9f (rho check: %.9f)\n", lambda,
-             eig.rho);
-  // Written for D9's real, POSITIVE growing eigenvalue (1.115466). With the
-  // traction sign fixed the dominant eigenvalue is -1 (Newmark's acceleration
-  // passenger), still real, so the single-run protocol below applies with
-  // |lambda| = rho; every identity it checks is quadratic in the state and
-  // indifferent to the sign.
-  ASSERT_NEAR(std::abs(lambda), eig.rho, 1e-9);
 
-  Eigen::VectorXd x(static_cast<Eigen::Index>(d.D));
-  double max_im = 0.0;
-  for (Eigen::Index i = 0; i < x.size(); ++i) {
-    x[i] = eig.solver.eigenvectors().col(eig.dominant)[i].real();
-    max_im = std::max(max_im, std::abs(eig.solver.eigenvectors().col(eig.dominant)[i].imag()));
+  // ---- The passenger mode: a retained sanity check, no closure ----------
+  // MEASURED 2026-10-12/13 (FpPolicy track, rounds 3-4): the dominant
+  // eigenvalue (real, lambda=-1) is Newmark's acceleration passenger and
+  // carries no energy of its own -- E0 = 6.755e-22 (default, contracted
+  // arithmetic) / 3.043e-20 (FUSE_FP_REPRODUCIBLE=ON) against a noise
+  // floor of 100*eig_quality^2*|x|^2 = 1.010e-19 / 5.646e-20 respectively
+  // (round 3's measurement, on the single real eigenvector this mode
+  // produces) -- E0 is within 1-2 orders of magnitude of its OWN noise
+  // floor in both policies, the signature of a mode whose "energy" is
+  // just the eigenvector's own finite-difference error, not a physical
+  // quantity. No energy-budget closure is evaluated on it any more (that
+  // used to compare noise with noise, see KNOWN_ISSUES.md D30's FpPolicy
+  // closing note); what is kept is the cheap, policy-independent growth-
+  // rate check this mode still usefully performs.
+  const double lambda_dominant_im = eig.solver.eigenvalues()[eig.dominant].imag();
+  ASSERT_LT(std::abs(lambda_dominant_im), 1e-6)
+      << "dominant eigenvalue has a nonzero imaginary part";
+  const double lambda_dominant = eig.solver.eigenvalues()[eig.dominant].real();
+  std::printf("dominant eigenvalue (passenger mode) lambda = %.9f (rho check: %.9f)\n",
+             lambda_dominant, eig.rho);
+  ASSERT_NEAR(std::abs(lambda_dominant), eig.rho, 1e-9);
+  EXPECT_LE(eig.rho, 1.0 + 1e-6)
+      << "the dominant mode's own growth rate exceeded 1 -- a new defect, "
+         "independent of whether this mode carries energy of its own";
+
+  // ---- Choose a mode that carries REAL energy: the beam's own -----------
+  // oscillatory mode, by a stated criterion -------------------------------
+  // The passenger mode above is energetically empty by construction (it is
+  // Newmark's own acceleration bookkeeping, not a physical state), so no
+  // energy-budget assertion can be evaluated on it without comparing noise
+  // with noise. KNOWN_ISSUES.md D30's FpPolicy closing note (user decision
+  // 2026-10-12): evaluate the budget instead on a mode that carries real
+  // energy -- the beam's own bending oscillation, which appears in this
+  // one-coupling-step map as a COMPLEX-CONJUGATE eigenvalue pair near
+  // exp(+-i*omega1*dt) (the phase a free oscillator at the beam's own
+  // fundamental frequency would advance in one coupling step).
+  //
+  // CRITERION (applied in code, not by eyeballing): among eigenvalues with
+  // a genuinely nonzero imaginary part (|Im(lambda)| > 1e-9) AND a
+  // non-negligible share of the full spectrum's total two-part energy
+  // (Q(Re v)+Q(Im v) > 1e-6 of the sum over all eigenvectors -- excluding
+  // numerical-noise pairs that could coincidentally have a nearby phase),
+  // pick the one whose argument is closest to omega1*dt.
+  //
+  // MEASURED 2026-10-12: omega1*dt = 9.0000 deg exactly (2*pi/40, dt being
+  // 1/40 of the beam's own closed-form period). The discrete 5-interior-
+  // node beam ALONE (no fluid) has its own fundamental frequency at 8.09
+  // deg/step (natural_frequencies(1), vs. the continuum closed-form 9.00
+  // deg/step -- an ~10% discretization gap expected for this coarse a
+  // grid). The criterion above selects a complex pair at 4.3931 deg/step,
+  // |lambda|=0.9951 -- roughly HALF the beam-alone estimate, consistent
+  // with fluid ADDED MASS lowering the coupled system's effective
+  // frequency (expected: the fluid's density is the same order as the
+  // beam's own areal density here, so a large added-mass shift is
+  // physically unsurprising, not a selection error). Its own energy
+  // breakdown (checked directly, not assumed) is dominated by beam PE/KE
+  // and fluid KE, NOT by its raw state mass (which is mostly pressure, an
+  // energetically-inert degree of freedom in this bookkeeping) -- exactly
+  // why the selection screens by ENERGY fraction, not mass fraction.
+  const double expected_phase = omega1 * c.dt;
+  const Eigen::Index n = static_cast<Eigen::Index>(d.D);
+  const auto& evals = eig.solver.eigenvalues();
+  const auto& evecs = eig.solver.eigenvectors();
+  std::vector<double> q_energy(static_cast<std::size_t>(n));
+  double q_total = 0.0;
+  for (Eigen::Index i = 0; i < n; ++i) {
+    Eigen::VectorXd re_i(n), im_i(n);
+    for (Eigen::Index k = 0; k < n; ++k) {
+      re_i[k] = evecs.col(i)[k].real();
+      im_i[k] = evecs.col(i)[k].imag();
+    }
+    const double qi = fsi_energy_of_state(c, d, re_i) + fsi_energy_of_state(c, d, im_i);
+    q_energy[static_cast<std::size_t>(i)] = qi;
+    q_total += qi;
   }
-  std::printf("eigenvector max |imag part| = %.3e (should be ~0)\n", max_im);
-  ASSERT_LT(max_im, 1e-6);
+  std::printf("\n==== FULL SPECTRUM (printed once; %lld eigenvalues) ====\n",
+             static_cast<long long>(n));
+  std::printf("%4s %14s %14s %10s %14s\n", "idx", "|lambda|", "arg(deg)", "complex?",
+             "energy_frac");
+  for (Eigen::Index i = 0; i < n; ++i) {
+    std::printf("%4lld %14.9f %14.4f %10s %14.6e\n", static_cast<long long>(i),
+               std::abs(evals[i]), std::arg(evals[i]) * 180.0 / M_PI,
+               std::abs(evals[i].imag()) > 1e-9 ? "yes" : "no",
+               q_energy[static_cast<std::size_t>(i)] / q_total);
+  }
+  Eigen::Index chosen = -1;
+  double best_dist = 1e300;
+  for (Eigen::Index i = 0; i < n; ++i) {
+    if (std::abs(evals[i].imag()) <= 1e-9) continue;
+    if (q_energy[static_cast<std::size_t>(i)] / q_total <= 1e-6) continue;
+    const double dist = std::abs(std::abs(std::arg(evals[i])) - expected_phase);
+    if (dist < best_dist) { best_dist = dist; chosen = i; }
+  }
+  ASSERT_GE(chosen, 0) << "no complex eigenvalue pair with non-negligible energy "
+                          "fraction was found -- the selection criterion needs "
+                          "revisiting, not a fallback to the old passenger mode";
+  const std::complex<double> lambda_osc = evals[chosen];
+  std::printf("SELECTED idx=%lld |lambda|=%.9f arg(deg)=%.4f energy_frac=%.6e "
+             "dist_to_expected_phase=%.6e rad\n",
+             static_cast<long long>(chosen), std::abs(lambda_osc),
+             std::arg(lambda_osc) * 180.0 / M_PI,
+             q_energy[static_cast<std::size_t>(chosen)] / q_total, best_dist);
+
+  const double a_osc = lambda_osc.real(), b_osc = lambda_osc.imag();
+  const double lambda_osc_mag2 = a_osc * a_osc + b_osc * b_osc;
+
+  // `x` (the real part) and `x_im` (the imaginary part) of the chosen
+  // eigenvector. `x` deliberately reuses the name the beam-side/fluid-side
+  // identity code below already expects (see that code's own comments,
+  // unchanged from before this round): it is fed exactly ONE real state
+  // vector and one real production run, same as it always was -- that
+  // state vector is now x_re of the chosen oscillatory mode rather than
+  // the old passenger mode's own (real) dominant eigenvector, but nothing
+  // in the identity derivations below assumed anything about WHICH real
+  // state vector `x` was pending this substitution.
+  Eigen::VectorXd x(n), x_im(n);
+  for (Eigen::Index i = 0; i < n; ++i) {
+    x[i] = evecs.col(chosen)[i].real();
+    x_im[i] = evecs.col(chosen)[i].imag();
+  }
 
   // Round 4's own homogeneous run: Umax=0 so b=0 exactly (only inflow
-  // forces this system; the beam has none of its own), letting a SINGLE
-  // real production coupling cycle on x reproduce lambda*x directly.
+  // forces this system; the beam has none of its own), letting TWO real
+  // production coupling cycles (one from x, one from x_im) stand in for
+  // the complex eigenvector's own one-step map.
   CoupledCase c0 = c;
   c0.Umax = 0.0;
   const CoupledPeriodDiag diag = run_one_coupled_period_with_budget(c0, d, x);
+  const CoupledPeriodDiag diag_im = run_one_coupled_period_with_budget(c0, d, x_im);
 
-  const double resid = (diag.y_final - lambda * x).norm();
+  // For a real matrix M with M v = lambda v (v = x + i*x_im, lambda =
+  // a_osc + i*b_osc): M x = a_osc*x - b_osc*x_im and M x_im = b_osc*x +
+  // a_osc*x_im (equate real/imaginary parts of M v = lambda v). These,
+  // not a_osc*x or lambda*x individually, are the correct one-step
+  // predictions to measure each part's eigenvector residual against.
+  const Eigen::VectorXd pred_re = a_osc * x - b_osc * x_im;
+  const Eigen::VectorXd pred_im = b_osc * x + a_osc * x_im;
+  const double resid = (diag.y_final - pred_re).norm();
   const double xnorm = x.norm();
   const double eig_quality = resid / xnorm;
-  std::printf("|y_final - lambda*x| / |x| = %.3e (validates x is a genuine "
-             "eigenvector under the ACTUAL nonlinear IQN-ILS run, not just "
-             "the finite-difference-linearized M)\n",
-             eig_quality);
+  const double resid_im = (diag_im.y_final - pred_im).norm();
+  const double xnorm_im = x_im.norm();
+  const double eig_quality_im = resid_im / xnorm_im;
+  std::printf("|y-pred| / |x| : re-part=%.3e im-part=%.3e (validates x/x_im as the "
+             "real/imaginary parts of a genuine eigenvector under the ACTUAL "
+             "nonlinear IQN-ILS run, not just the finite-difference-linearized M)\n",
+             eig_quality, eig_quality_im);
   ASSERT_LT(eig_quality, 1e-6);
-  // `eig_quality` becomes the basis for the two downstream closure
-  // tolerances below (dE_beam identity, mass-correction isolation): `x`
-  // itself carries this much relative error (from `coupled_map`'s
-  // finite-difference construction of M, cancellation-limited by
-  // `c.tol`, not eps -- measured directly: tightening eps 1e-4->1e-5
-  // made eig_quality WORSE, 8.8e-8->1.09e-6, the classic finite-
-  // difference cancellation trade-off), so no downstream identity built
-  // on `x` can close tighter than a small multiple of THIS number.
+  ASSERT_LT(eig_quality_im, 1e-6);
+  // `eig_quality` (re-part) becomes the basis for the two downstream
+  // closure tolerances below (dE_beam identity, mass-correction
+  // isolation), exactly as before this round: `x` itself carries this much
+  // relative error, so no downstream identity built on `x` alone (the
+  // beam-side/fluid-side sections, which only ever look at ONE real
+  // production run) can close tighter than a small multiple of THIS
+  // number. The TOP-LEVEL closure check further below uses BOTH parts'
+  // eig_quality together, since it combines both production runs.
 
-  // ---- Total energy bookkeeping ------------------------------------------
+  // ---- Total energy bookkeeping (re-part, feeds the retained beam-side/--
+  // fluid-side identity checks below UNCHANGED; the combined re+im total
+  // further below is what the redesigned closure assertion actually uses)
   const double E0 = diag.beam_KE0 + diag.beam_PE0 + diag.fluid_KE0;
   const double E1 = diag.beam_KE1 + diag.beam_PE1 + diag.fluid_KE1;
   const double dE_beam = (diag.beam_KE1 + diag.beam_PE1) - (diag.beam_KE0 + diag.beam_PE0);
   const double dE_fluid = diag.fluid_KE1 - diag.fluid_KE0;
-  const double predicted_E1 = lambda * lambda * E0;
-  std::printf("\n==== ENERGY BOOKKEEPING ====\n");
+  const double E0_im = diag_im.beam_KE0 + diag_im.beam_PE0 + diag_im.fluid_KE0;
+  const double E1_im = diag_im.beam_KE1 + diag_im.beam_PE1 + diag_im.fluid_KE1;
+  std::printf("\n==== ENERGY BOOKKEEPING (re-part) ====\n");
   std::printf("E0 = %.9e  (beam KE0=%.6e PE0=%.6e, fluid KE0=%.6e)\n", E0,
              diag.beam_KE0, diag.beam_PE0, diag.fluid_KE0);
   std::printf("E1 = %.9e  (beam KE1=%.6e PE1=%.6e, fluid KE1=%.6e)\n", E1,
              diag.beam_KE1, diag.beam_PE1, diag.fluid_KE1);
-  std::printf("lambda^2 * E0 = %.9e  (E1 should match this)\n", predicted_E1);
-  std::printf("relative mismatch (E1 vs lambda^2*E0) = %.3e\n",
-             std::abs(E1 - predicted_E1) / E0);
-  std::printf("dE_total = E1-E0 = %.9e ; (lambda^2-1)*E0 = %.9e\n", E1 - E0,
-             (lambda * lambda - 1.0) * E0);
   std::printf("dE_beam = %.9e ; dE_fluid = %.9e\n", dE_beam, dE_fluid);
-  // With D9 fixed the dominant mode is Newmark's acceleration passenger and
-  // carries NO energy: measured E0 = 6.3e-21 at |x| = 1 against
-  // eig_quality = 7.7e-11, i.e. E0 is eig_quality^2 -- the energy of the
-  // eigenvector's own error, nothing more. Every identity below divides by
-  // E0, so on this mode they would compare noise with noise. The assertion
-  // that fits the fixed scheme is that the dominant mode IS energetically
-  // empty; the budget stays armed and runs in full whenever a mode with
-  // energy of its own is dominant again, which is what a returning growth
-  // mode would be (D9's carried E0 at the 1e-9 level for the same |x|).
-  const double energy_floor = 100.0 * eig_quality * eig_quality * xnorm * xnorm;
-  if (E0 < energy_floor) {
-    std::printf("dominant mode carries no energy (E0 = %.3e < floor %.3e): the "
-                "Newmark acceleration passenger; budget not evaluated on noise\n",
-                E0, energy_floor);
-    EXPECT_LE(eig.rho, 1.0 + 1e-6)
-        << "an energetically empty dominant mode with rho > 1 would be a new defect";
-    return;
-  }
-  ASSERT_LT(std::abs(E1 - predicted_E1) / E0, 1e-6)
-      << "the run is not behaving as a clean eigenmode -- budget below "
-         "would not be trustworthy";
+  std::printf("\n==== ENERGY BOOKKEEPING (im-part) ====\n");
+  std::printf("E0_im = %.9e  E1_im = %.9e\n", E0_im, E1_im);
 
+  // ---- The redesigned closure: Re(v)/Im(v) combined, a quantity that --
+  // is INVARIANT to the eigenvector's own arbitrary phase -----------------
+  // For ANY quadratic form Q(z) = z^T A z (A symmetric; here A is the
+  // beam_KE+beam_PE+fluid_KE functional's own, PSD, matrix -- a sum of
+  // physical kinetic/potential energies, never negative) and a REAL
+  // matrix M with M v = lambda v, decomposing v = x + i*x_im gives
+  // EXACTLY (algebra in the derivation this round's report carries,
+  // verified numerically on this M1/mode to a relative difference of
+  // 7.3e-17, i.e. machine precision):
+  //   Q(M x) + Q(M x_im) = |lambda|^2 * (Q(x) + Q(x_im))
+  // with the cross term between the real and imaginary parts cancelling
+  // identically in the sum -- which is also why Q(x)+Q(x_im) (not either
+  // part alone) is the quantity to use: it does not depend on the
+  // arbitrary unit-phase convention Eigen's eigensolver picks for v
+  // (MEASURED: this sum agreed to 7 significant figures between the two
+  // contraction policies -- 3.871039808e-04 vs 3.871040e-04 -- even though
+  // the INDIVIDUAL re/im energies differed between policies, confirming
+  // this phase-independence directly, not just by derivation).
+  const double E0_total = E0 + E0_im;
+  const double E1_total = E1 + E1_im;
+  const double predicted_E1_total = lambda_osc_mag2 * E0_total;
+  const double mismatch_total = std::abs(E1_total - predicted_E1_total);
+  std::printf("\n==== COMBINED CLOSURE (re+im, phase-invariant) ====\n");
+  std::printf("E0_total = Q(x)+Q(x_im) = %.9e\n", E0_total);
+  std::printf("E1_total = Q(y_re)+Q(y_im) = %.9e\n", E1_total);
+  std::printf("|lambda|^2 * E0_total = %.9e\n", predicted_E1_total);
+  std::printf("mismatch = %.3e (relative: %.3e)\n", mismatch_total,
+             mismatch_total / E0_total);
+
+  // ---- Tolerance, DERIVED not chosen -------------------------------------
+  // With r = y - (the exact linear eigen-prediction) for each part,
+  // |r| <= eig_quality * |x| (measured the same way as above) for each
+  // part separately. Cauchy-Schwarz on the energy inner product
+  // <u,w>_A = u^T A w (A positive semi-definite, as it is here) gives, for
+  // the SAME M/lambda/Q combination as the identity above:
+  //   |Q(y) - |lambda|^2 Q(x)| <= 2|lambda| sqrt(Q(x)) sqrt(Q(r)) + Q(r)
+  // (full derivation in this round's own report; the cross terms between
+  // the "re" and "im" contributions cancel in the SUM the same way the
+  // exact identity's do, which is why this bound, too, is stated for the
+  // COMBINED Q(x)=Q(x_re)+Q(x_im), Q(r)=Q(r_re)+Q(r_im), not per-part).
+  // Q(r) <= q_max * |r|^2, with q_max the largest generalised ratio
+  // Q(z)/|z|^2 this test can bound. The energy matrix A itself is not
+  // directly accessible here (it is assembled inside BeamSolver/
+  // StokesSolver, not exposed), so q_max is a MEASURED PROXY, stated as
+  // such rather than passed off as a certified operator-norm bound:
+  // q_max = max(Q(x)/|x|^2, Q(x_im)/|x_im|^2), the largest energy density
+  // actually observed on the two vectors this computation already has in
+  // hand.
+  const double eig_quality_combined = std::max(eig_quality, eig_quality_im);
+  const double xnorm2_total = xnorm * xnorm + xnorm_im * xnorm_im;
+  const double q_max = std::max(E0 / (xnorm * xnorm), E0_im / (xnorm_im * xnorm_im));
+  const double Qr_bound = q_max * eig_quality_combined * eig_quality_combined * xnorm2_total;
+  const double closure_tol =
+      2.0 * std::sqrt(lambda_osc_mag2) * std::sqrt(E0_total) * std::sqrt(Qr_bound) + Qr_bound;
+  std::printf("eig_quality_combined=%.3e q_max(measured proxy)=%.3e Q(r) bound=%.3e\n",
+             eig_quality_combined, q_max, Qr_bound);
+  std::printf("DERIVED TOLERANCE = 2|lambda|*sqrt(E0_total)*sqrt(Q(r)) + Q(r) = %.3e\n",
+             closure_tol);
+  std::printf("mismatch / tolerance = %.3e (must be < 1)\n", mismatch_total / closure_tol);
+  ASSERT_LT(mismatch_total, closure_tol)
+      << "the energy budget does not close on the beam's own oscillatory "
+         "mode to within the tolerance its own eigenvector accuracy "
+         "permits -- this is the actual finding this test now reports, "
+         "not a pre-existing property to work around";
+
+  // ---- Non-vacuity: this mode must actually carry energy -----------------
+  // The point of this round: fail LOUDLY, not pass silently, if this test
+  // ever lands on an energetically-empty mode (like the old passenger
+  // mode) instead of a real one. MEASURED 2026-10-12/13: the passenger
+  // mode's own E0/(eig_quality^2*|x|^2) ratio was at most ~54 across both
+  // contraction policies and 48 perturbed runs (round 3); THIS mode
+  // measures ~1.0e12 to 4.5e12 (round 4, both policies) -- 10+ orders of
+  // magnitude higher. The factor below (1e6) sits comfortably between the
+  // two: 4-5 orders of magnitude above the passenger mode's worst measured
+  // value, and 6+ orders of magnitude below this mode's own measured
+  // value, so ordinary numerical noise in the eigendecomposition or the
+  // production run cannot plausibly trip this check by accident in either
+  // direction.
+  const double noise_floor_total = eig_quality_combined * eig_quality_combined * xnorm2_total;
+  const double energy_to_noise_ratio = E0_total / noise_floor_total;
+  constexpr double kNonVacuityFactor = 1.0e6;
+  std::printf("NON-VACUITY: E0_total/(eig_quality_combined^2*|x|^2) = %.3e "
+             "(must be > %.1e)\n",
+             energy_to_noise_ratio, kNonVacuityFactor);
+  ASSERT_GT(energy_to_noise_ratio, kNonVacuityFactor)
+      << "the chosen mode does not carry enough energy above its own "
+         "eigenvector-accuracy noise floor to trust the closure check "
+         "above -- this test has landed on an effectively empty mode and "
+         "needs a different selection, not a passing result";
+
+
+  // ---- From here on: UNCHANGED from before this round, except that
+  // `x`/`diag`/`eig_quality`/`E0` now refer to the chosen oscillatory
+  // mode's REAL PART specifically (one genuine real production run),
+  // not the old passenger mode's own dominant eigenvector -- nothing in
+  // the beam-side/fluid-side derivations below assumed anything about
+  // WHICH real state vector and production run they were given, only
+  // that there IS one. The imaginary-part run (`diag_im`) is not used
+  // again past this point; it already did its job in the combined
+  // closure check above.
   // ---- Beam-side exact Newmark energy identity ---------------------------
   // Derivation: step_midpoint_load solves M*wddot_avg + K*w_avg = q_mid
   // (mconst*wddot_avg_i + (K*w_avg)_i = q_mid_i per interior node i,
@@ -1751,6 +1989,71 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   // now understood rather than merely inconvenient. It is TIGHTER than the
   // 1e-7*|E0| and 5*eig_quality*|E0| values used while that was being worked
   // out.
+  //
+  // RE-EXAMINED 2026-10-12 (FpPolicy track, round 4 continued, KNOWN_ISSUES.md
+  // D30): on the beam's own oscillatory mode, factor 1.0 measures
+  // mismatch/tolerance = 1.029 under the default (contracted) policy --
+  // i.e. this assertion FAILS, narrowly -- and 0.380 under
+  // FUSE_FP_REPRODUCIBLE=ON. A first attempt raised the factor to 1.5 to
+  // cover this; that was WRONG (a tolerance widened after seeing a specific
+  // failing ratio is a widened tolerance, full stop, regardless of how the
+  // new number is framed) and has been reverted.
+  //
+  // MEASURED instead, by varying each candidate explanation independently
+  // (two sweeps, `nice`'d, on the cached Jacobian -- seconds per point, not
+  // the full ~2-minute test):
+  //   (a) CoupledCase::tol swept 1e-14 .. 1e-2 (9 points, x unperturbed):
+  //       for tol in [1e-14, 1e-8] the mismatch is PINNED at
+  //       1.051884e-12, bit-for-bit identical across 6 orders of magnitude
+  //       of the requested coupling tolerance -- it is NOT limited by
+  //       CoupledCase::tol in this regime. (At 1e-6/1e-4 the mismatch
+  //       actually DROPS, then at 1e-2 it jumps up 77x -- consistent with
+  //       the IQN-ILS iteration landing at a different, less-converged
+  //       point in its own trajectory once tol is loose enough to matter,
+  //       not with a clean tol-proportional floor; not pursued further
+  //       since the regime that matters for this assertion is the tight
+  //       one, where tol provably does nothing.)
+  //   (b) x's DIRECTION perturbed additively by a relative 1e-8 .. 1e-4 of
+  //       itself (added a multiple of a DIFFERENT eigenvector, which
+  //       changes direction, not just scale -- a uniform rescale of x
+  //       leaves a linear system's own relative eigenvector residual
+  //       unchanged, confirmed directly, so it is the wrong perturbation):
+  //       this moves `eig_quality` by a measured factor of 4919x (4.577e-09
+  //       to 2.251e-05) while the mismatch stays 1.051884e-12 to
+  //       1.051876e-12 -- identical to 6 significant figures. The mismatch
+  //       does NOT track eig_quality at all, over nearly 5 orders of
+  //       magnitude of eig_quality's own variation. The theoretical
+  //       argument above ("x is an eigenvector only to relative accuracy
+  //       eig_quality, so no identity... can close tighter than...") does
+  //       not actually apply to THIS identity: dE_beam and
+  //       dE_beam_predicted are both computed from ONE production run's
+  //       own data (load_in, wdot, KE, PE before/after), with no reference
+  //       to x being an eigenvector of anything -- it is a Newmark energy
+  //       identity, not an eigenvector-accuracy statement, and measuring
+  //       it this way shows it was never truly eig_quality-limited; the
+  //       historical numbers above happened not to expose this because
+  //       that mode's eig_quality was smaller than the floor being measured
+  //       here.
+  //   A third candidate, K's own condition number amplifying round-off
+  //   through the beam's stiffness solve, was checked and ruled out too:
+  //   measured cond(K) ~= 45.9 (natural_frequencies(5)'s own eigenvalue
+  //   range), nowhere near enough to turn machine round-off (~1e-16) into
+  //   the observed ~1e-12 (would need a factor of ~1e4, not ~46).
+  // mismatch/E0 is the one quantity that stayed stable across both sweeps'
+  // non-degenerate points (~4.7e-09, essentially constant) -- but no
+  // first-principles algebraic derivation of that specific constant from
+  // the identity's own arithmetic (the actual operation count and
+  // conditioning of the Newmark/Stokes solves this identity's two sides
+  // draw from) was attempted or achieved this round; stating a measured
+  // ratio as if it were a derived bound would repeat the exact mistake
+  // being corrected here, just with different numbers.
+  //
+  // Per the standing rule, a tolerance is not widened after the fact
+  // without a derivation from the algebra. None was found. Factor is
+  // RESTORED to 1.0, the historical, load-bearing value; this assertion is
+  // THEREFORE EXPECTED TO FAIL under the default (contracted) policy, by
+  // the measured ratio above (1.029) -- reported as an open finding for
+  // this mode, not patched over.
   const double beam_identity_tol = 1.0 * eig_quality * std::abs(E0);
   std::printf("beam identity tolerance = eig_quality*|E0| = %.3e "
              "(measured mismatch/that ratio = %.3f)\n",
@@ -1932,5 +2235,5 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
              c.ny_fluid);
 
   SUCCEED() << "diagnostic test: see stdout for the full term-by-term "
-               "energy budget on the coupled system's own unstable mode";
+               "energy budget on the beam's own oscillatory mode";
 }
