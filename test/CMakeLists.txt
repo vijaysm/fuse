@@ -102,6 +102,38 @@ endif()
 # not measured, until now.
 set(FUSE_KOKKOS_HAS_OPENMP ${FUSE_KOKKOS_HAS_OPENMP} PARENT_SCOPE)
 set(_fuse_host_cores ${_fuse_host_cores} PARENT_SCOPE)
+# Device twins (docs/dev/device-resident-arcs.md step 4). A build whose
+# Kokkos has a CUDA/HIP/SYCL backend registers every row passed to
+# fuse_add_device_twin() a second time, as `<row>.device`, with
+# FUSE_EXECUTION_SPACE=device in its environment: RunnerConfig's `Default`
+# execution space reads that variable (include/fuse/runtime/runner.hpp), so
+# the same binary runs its graphs under the device interpreter -- device-
+# resident arcs, mirrored or device-registered fields, kernels on the device
+# -- and must reproduce the host row's verdict. Labelled `device`; absent,
+# not skipped, when the build has no device backend.
+set(FUSE_KOKKOS_HAS_DEVICE OFF)
+if(Kokkos_ENABLE_CUDA OR Kokkos_ENABLE_HIP OR Kokkos_ENABLE_SYCL
+   OR "${Kokkos_DEVICES}" MATCHES "CUDA|HIP|SYCL")
+  set(FUSE_KOKKOS_HAS_DEVICE ON)
+endif()
+set(FUSE_KOKKOS_HAS_DEVICE ${FUSE_KOKKOS_HAS_DEVICE} PARENT_SCOPE)
+function(fuse_add_device_twin test_name target)
+  if(NOT FUSE_KOKKOS_HAS_DEVICE)
+    return()
+  endif()
+  cmake_parse_arguments(ARG "THROWS" "TIMEOUT" "ARGS;LABELS" ${ARGN})
+  set(labels "device" ${ARG_LABELS})
+  if(ARG_THROWS)
+    list(APPEND labels throws)
+  endif()
+  add_test(NAME ${test_name}.device COMMAND ${target} ${ARG_ARGS})
+  set_tests_properties(${test_name}.device PROPERTIES
+    LABELS "${labels}"
+    ENVIRONMENT "FUSE_EXECUTION_SPACE=device")
+  if(ARG_TIMEOUT)
+    set_tests_properties(${test_name}.device PROPERTIES TIMEOUT ${ARG_TIMEOUT})
+  endif()
+endfunction()
 function(fuse_add_omp_legs test_name target)
   if(NOT FUSE_KOKKOS_HAS_OPENMP)
     return()
@@ -993,6 +1025,7 @@ endif()
 foreach(t mms_transfer iteration)
   fuse_add_gtest(verification ${t} NO_LAYER_LIB
                  LIBS fuse::runtime fuse::backend fuse::transport)
+  fuse_add_device_twin(verification.${t} fuse_verification_${t}_test)
 endforeach()
 # THROWS: AnUnimplementedNodalOrderRefusesThroughTheRealSchedulingPath exercises
 # an E-EXTENT-DISC refusal (src/backend/serial_backend.cpp), which aborts rather
@@ -1000,6 +1033,7 @@ endforeach()
 # 36124149902, 2026-09-25).
 fuse_add_gtest(verification interface_transfer THROWS NO_LAYER_LIB
                LIBS fuse::runtime fuse::backend fuse::transport)
+fuse_add_device_twin(verification.interface_transfer fuse_verification_interface_transfer_test THROWS)
 
 # The one-rank case of parallel/nodal_remap_runner_test.cpp, WITHOUT MPI. It
 # shares that file's backend (support/partitioned_test_backend.hpp, which no
@@ -1010,6 +1044,7 @@ fuse_add_gtest(verification nodal_remap_runner_serial NO_LAYER_LIB
                LIBS fuse::runtime fuse::backend)
 target_include_directories(fuse_verification_nodal_remap_runner_serial_test PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/support)
+fuse_add_device_twin(verification.nodal_remap_runner_serial fuse_verification_nodal_remap_runner_serial_test)
 
 # FSI channel (FSI track): fsi_stokes_mms and fsi_beam exercise the two
 # standalone solvers (examples/fsi_channel/{stokes,beam}_solver.hpp) with no
@@ -1024,6 +1059,11 @@ foreach(t fsi_stokes_mms fsi_beam fsi_coupled fsi_transient fsi_energy_diag)
   target_include_directories(fuse_verification_${t}_test PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/fsi_channel)
 endforeach()
+# The three rows that drive a Runner graph (the two standalone-solver rows
+# run no coupler and would only repeat themselves).
+foreach(t fsi_coupled fsi_transient fsi_energy_diag)
+  fuse_add_device_twin(verification.${t} fuse_verification_${t}_test TIMEOUT 3600)
+endforeach()
 
 # Gray-Scott (Time windows track): the species solver's own MMS order, the
 # multirate windowed coupling, and the monolithic-reference comparison --
@@ -1036,6 +1076,9 @@ foreach(t gray_scott_mms gray_scott_multirate gray_scott_reference)
                  LIBS fuse::runtime fuse::backend Eigen3::Eigen fuse::examples_common)
   target_include_directories(fuse_verification_${t}_test PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/gray_scott)
+endforeach()
+foreach(t gray_scott_multirate gray_scott_reference)
+  fuse_add_device_twin(verification.${t} fuse_verification_${t}_test TIMEOUT 3600)
 endforeach()
 
 # The sparse direct solver both of the above hold (examples/common/
@@ -1065,6 +1108,7 @@ foreach(t brusselator_weights brusselator_physics brusselator_runner brusselator
   target_include_directories(fuse_verification_${t}_test PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/brusselator)
 endforeach()
+fuse_add_device_twin(verification.brusselator_runner fuse_verification_brusselator_runner_test TIMEOUT 3600)
 
 # S6 phase 3 ("LowFive" track), Unit 3: brusselator_graph_tool.cpp's own
 # --transport lowfive wiring, reproduced directly against validate() --

@@ -1,0 +1,31 @@
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD ae827a9] Recover from a host-side MOAB/PETSc install regression (D34)
+ 2 files changed, 63 insertions(+)
+Rebasing (18/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (19/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (20/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (21/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (22/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (23/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (24/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (25/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Auto-merging include/fuse/runtime/runner.hpp
+Auto-merging src/runtime/runner_impl.hpp
+CONFLICT (content): Merge conflict in src/runtime/runner_impl.hpp
+error: could not apply bd8ea83... Dispatch Runner::Impl::execute() on the configured execution space (A5, stages 2-3)
+hint: Resolve all conflicts manually, mark them as resolved with
+hint: "git add/rm <conflicted_files>", then run "git rebase --continue".
+hint: You can instead skip this commit: run "git rebase --skip".
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply bd8ea83... # Dispatch Runner::Impl::execute() on the configured execution space (A5, stages 2-3)

@@ -1,0 +1,38 @@
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 5a640df] Dispatch Runner::Impl::execute() on the configured execution space (A5, stages 2-3)
+ 3 files changed, 283 insertions(+), 54 deletions(-)
+Rebasing (26/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (27/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (28/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (29/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (30/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (31/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (32/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (33/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (34/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (35/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (36/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (37/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (38/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (39/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (40/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (41/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Successfully rebased and updated refs/heads/kokkos-device.

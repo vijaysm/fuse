@@ -1,0 +1,270 @@
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (1/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD d739112] Build everything PIC to fix a TLS relocation failure in fuse-abi-shared
+ Date: Sat Oct 10 21:21:05 2026 -0400
+ 1 file changed, 14 insertions(+)
+Rebasing (2/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD de6e830] Route builds through nvcc_wrapper and restore its CUDA compile flags
+ Date: Sat Oct 10 21:21:40 2026 -0400
+ 2 files changed, 54 insertions(+)
+Rebasing (3/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD edfa055] Replace std::gcd on __int128 with a hand-written gcd128 for nvcc's host pass
+ Date: Sat Oct 10 21:21:50 2026 -0400
+ 4 files changed, 27 insertions(+), 10 deletions(-)
+Rebasing (4/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 6c3b8ea] Avoid parenthesized aggregate init in MoabMeshBackend for nvcc's host pass
+ Date: Sat Oct 10 21:21:56 2026 -0400
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+Rebasing (5/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 726fc40] Add explicit std::move on returns where NRVO can't apply
+ Date: Sat Oct 10 21:22:04 2026 -0400
+ 6 files changed, 10 insertions(+), 8 deletions(-)
+Rebasing (6/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 7d0f171] Make kNullComm -1, not 0, since MPI_Comm_c2f can legitimately return 0
+ Date: Sat Oct 10 21:22:09 2026 -0400
+ 3 files changed, 22 insertions(+), 10 deletions(-)
+Rebasing (7/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 9120e0d] Guard test allocation counters against CUDA's dual host/device compilation
+ Date: Sat Oct 10 21:22:25 2026 -0400
+ 4 files changed, 40 insertions(+), 4 deletions(-)
+Rebasing (8/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD d7ff90d] Pin check_exports.cmake's CMake policy baseline so IN_LIST works
+ Date: Sat Oct 10 21:22:33 2026 -0400
+ 1 file changed, 8 insertions(+)
+Rebasing (9/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 85545f5] Support device spaces in deterministic reduction finalization (D11)
+ Date: Sat Oct 10 21:23:03 2026 -0400
+ 1 file changed, 32 insertions(+), 32 deletions(-)
+Rebasing (10/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD d17c898] Replace KOKKOS_LAMBDA closures with named functors in space_kernels.hpp
+ Date: Sat Oct 10 21:23:14 2026 -0400
+ 2 files changed, 191 insertions(+), 64 deletions(-)
+Rebasing (11/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD fc61dac] Pin NativeMesh tests to host memory space
+ Date: Sat Oct 10 21:23:20 2026 -0400
+ 1 file changed, 18 insertions(+), 5 deletions(-)
+Rebasing (12/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 5fc8f26] Add a per-toolchain baseline for num.accelerator's pinned iteration counts
+ Date: Sat Oct 10 21:23:41 2026 -0400
+ 7 files changed, 385 insertions(+), 116 deletions(-)
+ create mode 100644 test/golden/accelerator.golden
+ create mode 100644 test/num/accelerator_fixtures.hpp
+ create mode 100644 tools/src/write_accelerator_baseline.cpp
+Rebasing (13/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 450131a] Work around this host's OpenMPI alltoallv hang and slot undercount (D33)
+ Date: Sat Oct 10 21:24:33 2026 -0400
+ 4 files changed, 160 insertions(+), 2 deletions(-)
+Rebasing (14/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 98e3088] Gate MPMD connect/participants tests behind a measured APPNUM probe (D34)
+ Date: Sat Oct 10 21:25:08 2026 -0400
+ 6 files changed, 267 insertions(+), 9 deletions(-)
+ create mode 100644 tools/probe-mpi-appnum.c
+ create mode 100755 tools/probe-mpi-appnum.sh
+Rebasing (15/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 285beda] Broadcast window convergence to ranks outside a region's participants (D35)
+ Date: Sat Oct 10 21:25:24 2026 -0400
+ 4 files changed, 120 insertions(+)
+Rebasing (16/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD e9b43a5] Catch a backend's declared rank count disagreeing with its real MPI communicator
+ Date: Sat Oct 10 21:36:43 2026 -0400
+ 1 file changed, 25 insertions(+)
+Rebasing (17/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 83665ef] Recover from a host-side MOAB/PETSc install regression (D39)
+ Date: Sat Oct 10 22:17:54 2026 -0400
+ 2 files changed, 63 insertions(+)
+Rebasing (18/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 11671e2] Pin OMPI_CXX for the nested-build compile_ok/compile_fail tests (D40)
+ Date: Sat Oct 10 22:21:18 2026 -0400
+ 1 file changed, 40 insertions(+)
+Rebasing (19/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 2276425] Stop nvcc from FMA-fusing the deterministic dot/norm reductions (D38)
+ Date: Sat Oct 10 22:31:49 2026 -0400
+ 1 file changed, 19 insertions(+), 2 deletions(-)
+Rebasing (20/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 268627b] Give fuse-abi-shared an INSTALL_RPATH covering every shared dependency (D39)
+ Date: Sat Oct 10 23:24:28 2026 -0400
+ 1 file changed, 31 insertions(+), 14 deletions(-)
+Rebasing (21/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 42f6805] Cache StokesSolver's saddle-point LU factorization across cn_step calls
+ Date: Sun Oct 11 02:36:11 2026 -0400
+ 1 file changed, 92 insertions(+), 16 deletions(-)
+Rebasing (22/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 3fa0b5b] Hoist Jacobian analyzePattern() out of MonolithicGrayScott's Newton loop
+ Date: Sun Oct 11 02:36:19 2026 -0400
+ 1 file changed, 19 insertions(+), 5 deletions(-)
+Rebasing (23/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 254f934] Document the Runner device-dispatch + cuSPARSE plan as a persistent handoff
+ Date: Sun Oct 11 04:24:29 2026 -0400
+ 2 files changed, 197 insertions(+)
+ create mode 100644 docs/dev/runner-device-dispatch.md
+Rebasing (24/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 6bf0f06] Add RunnerConfig::execution_space and the DeviceExecSpace alias (A5, stage 1)
+ Date: Sun Oct 11 07:18:32 2026 -0400
+ 3 files changed, 50 insertions(+), 3 deletions(-)
+Rebasing (25/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 247df44] Dispatch Runner::Impl::execute() on the configured execution space (A5, stages 2-3)
+ Date: Sun Oct 11 07:19:13 2026 -0400
+ 3 files changed, 283 insertions(+), 54 deletions(-)
+Rebasing (26/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD f12fdf9] Test the Runner's device dispatch against its host path (A5, stage 4)
+ Date: Sun Oct 11 07:19:40 2026 -0400
+ 2 files changed, 348 insertions(+)
+ create mode 100644 test/runtime/runner_device_test.cpp
+Rebasing (27/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 99c806b] Add FUSE_ENABLE_CUSPARSE and the fuse::examples_common interface target
+ Date: Sun Oct 11 07:35:09 2026 -0400
+ 4 files changed, 49 insertions(+), 2 deletions(-)
+Rebasing (28/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 19d3913] Add SparseLuBackend: Eigen::SparseLU by default, cusolverRf under FUSE_ENABLE_CUSPARSE
+ Date: Sun Oct 11 07:35:09 2026 -0400
+ 3 files changed, 543 insertions(+), 2 deletions(-)
+ create mode 100644 examples/common/sparse_solve_backend.hpp
+ create mode 100644 test/verification/sparse_solve_backend_test.cpp
+Rebasing (29/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 6fb47ce] Hold StokesSolver's saddle-point LU in a SparseLuBackend
+ Date: Sun Oct 11 08:04:05 2026 -0400
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+Rebasing (30/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 1906372] Hold MonolithicGrayScott's Newton Jacobian LU in a SparseLuBackend
+ Date: Sun Oct 11 08:04:05 2026 -0400
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+Rebasing (31/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 260beb2] Close KNOWN_ISSUES A5 with the measured Runner device number (stage 5)
+ Date: Sun Oct 11 08:04:35 2026 -0400
+ 2 files changed, 139 insertions(+), 24 deletions(-)
+Rebasing (32/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (33/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (34/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (35/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 2922c01] Disable the example.fsi_channel rows under FUSE_ENABLE_CUSPARSE (D36)
+ Date: Sun Oct 11 16:21:37 2026 -0400
+ 2 files changed, 55 insertions(+)
+Rebasing (36/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (37/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (38/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (39/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (40/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (41/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 8ed9188] Skip fsi_energy_diag's 480-period run under FUSE_ENABLE_CUSPARSE; record it as D37
+ Date: Sun Oct 11 22:29:27 2026 -0400
+ 3 files changed, 75 insertions(+), 4 deletions(-)
+Rebasing (42/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (43/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (44/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (45/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (46/46)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Successfully rebased and updated refs/heads/kokkos-device.

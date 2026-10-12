@@ -32,15 +32,16 @@
 #include <gtest/gtest.h>
 
 #include "fuse_test_main.hpp"
+#include <fuse/backend/serial_backend.hpp>
 #include <fuse/ir/lowering.hpp>
 #include <fuse/model/iteration.hpp>
-#include <fuse/backend/serial_backend.hpp>
 #include <fuse/runtime/runner.hpp>
 
 #include <Kokkos_Core.hpp>
 
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -304,7 +305,10 @@ struct Outcome {
   bool                has_sample = false;
   bool                has_accumulate = false;
   bool                has_remap = false;
-  int                 transports = 0;  // Transport instructions per period
+  int                 transports = 0;   // Transport instructions per period
+  int                 diagnoses = 0;    // Diagnose instructions per period
+  int                 accumulates = 0;  // Accumulate instructions per period
+  int                 remaps = 0;       // Remap instructions per period
 };
 
 Outcome run(const Scenario& s, Space space, int periods) {
@@ -321,6 +325,9 @@ Outcome run(const Scenario& s, Space space, int periods) {
   o.has_accumulate = h->has(OpKind::Accumulate);
   o.has_remap = h->has(OpKind::Remap);
   o.transports = h->count(OpKind::Transport);
+  o.diagnoses = h->count(OpKind::Diagnose);
+  o.accumulates = h->count(OpKind::Accumulate);
+  o.remaps = h->count(OpKind::Remap);
   o.init = runner.initialize(h->components, h->registry, cfg);
   if (!o.init.ok()) return o;
   for (int k = 0; k < periods; ++k) {
@@ -335,7 +342,11 @@ Outcome run(const Scenario& s, Space space, int periods) {
 }  // namespace
 
 TEST(RunnerDevice, HostIsTheDefaultAndDispatchesNothingToTheDevice) {
-  EXPECT_EQ(RunnerConfig{}.execution_space, Space::Host);
+  EXPECT_EQ(RunnerConfig{}.execution_space, Space::Default);
+  ::unsetenv("FUSE_EXECUTION_SPACE");
+  const auto resolved = RunnerConfig{}.resolved_execution_space();
+  ASSERT_TRUE(resolved.ok());
+  EXPECT_EQ(resolved.value(), Space::Host);
   const Outcome host = run(mean_over_four_substeps(), Space::Host, 2);
   ASSERT_TRUE(host.init.ok()) << host.init.error().message;
   EXPECT_EQ(host.stats.device_dispatches, 0);
@@ -440,12 +451,16 @@ TEST(RunnerDevice, DeviceAndHostAgreeToRoundingOnRelaxAndWeightedRemap) {
 
 // docs/dev/device-resident-arcs.md step 2: fields registered in device
 // memory are aliased by the Runner directly, so a chain whose endpoints are
-// both device fields is mirrored nowhere and its Sink copies nothing across
-// the boundary. The one host stop left is the channel's Transport (a local
-// move on one rank, still host code until the GPU-aware transport step):
-// the Epoch before it copies onto the host and the Epoch after it copies
-// back, two crossings per Transport per period and no other.
-TEST(RunnerDevice, DeviceRegisteredFieldsCrossOnlyAtTheTransportAndAgreeWithHost) {
+// both device fields is mirrored nowhere. The host stops left in this plan
+// are its host-only instructions -- the channel's Transport (a local move
+// on one rank, host code until the GPU-aware transport step) and the
+// Diagnose after the Remap (a host reduction) -- each of which pins the arc
+// it reads and the arc it writes, so a space-aware copy next to one
+// (Epoch, Sink) may cross once on each side and nothing else crosses at
+// all. Measured on this plan (FUSE_DEVICE_DEBUG=1): Sample -> Accumulate
+// -> Transport -> Epoch -> Remap -> Diagnose -> Sink; the Epoch copies
+// host -> device and the Sink host -> device field: two per period.
+TEST(RunnerDevice, DeviceRegisteredFieldsCrossOnlyAtHostOnlyInstructionsAndAgreeWithHost) {
   if constexpr (!kHasDeviceBackend) GTEST_SKIP() << "no device backend";
   Scenario s = mean_over_four_substeps();
   const Outcome host = run(s, Space::Host, 3);
@@ -462,30 +477,102 @@ TEST(RunnerDevice, DeviceRegisteredFieldsCrossOnlyAtTheTransportAndAgreeWithHost
   EXPECT_GT(dev.stats.device_resident_arcs, 0);
   // RED on the step-1 tree: Sink copied device arc -> device field through
   // host memcpy (a crash or garbage), and device fields were refused.
-  ASSERT_GT(dev.transports, 0);
-  EXPECT_EQ(dev.stats.device_boundary_copies, 2 * dev.transports * 3)
+  const int host_only = dev.transports + dev.diagnoses;
+  ASSERT_GT(host_only, 0);
+  EXPECT_GT(dev.stats.device_boundary_copies, 0);
+  EXPECT_LE(dev.stats.device_boundary_copies, 2 * host_only * 3)
       << "a device-registered chain crossed the boundary somewhere other "
-         "than around its Transport";
+         "than next to a host-only instruction";
+  // The same count every period: nothing crosses at setup or only once.
+  const Outcome one = run(s, Space::Device, 1);
+  ASSERT_TRUE(one.init.ok()) << one.init.error().message;
+  EXPECT_EQ(dev.stats.device_boundary_copies, 3 * one.stats.device_boundary_copies);
+  // The two kernels whose output a host-only instruction reads (the
+  // Accumulate before the Transport, the Remap before the Diagnose) write
+  // through a staging lane: one copy in, one back, per instruction. No
+  // field and no other arc is staged.
+  ASSERT_GT(dev.accumulates + dev.remaps, 0);
+  EXPECT_EQ(dev.stats.device_staged_copies, 2 * (dev.accumulates + dev.remaps) * 3)
+      << "something other than a host-only instruction's input was staged";
+  EXPECT_EQ(host.stats.device_staged_copies, 0);
 }
 
 // The host-registered components in Device mode: the producer's field is
 // mirrored once per producer step (the Sample after each tick refreshes
-// it; Impl::component_epoch) and the Sink crosses back once per consumer
-// step, so the boundary copies are counted per component step, not per
-// instruction.
-TEST(RunnerDevice, HostRegisteredFieldsCrossTheBoundaryOncePerStepEachWay) {
+// it; Impl::component_epoch), never per instruction. The chain between the
+// two fields is the same plan as the device-registered run above, so the
+// difference between the two runs' crossing counts is exactly the mirror
+// refreshes (one per producer step) minus the Sinks that no longer cross
+// (the consumer's field is host memory here, like the Diagnose output the
+// Sink reads): producer_steps - consumer_steps.
+TEST(RunnerDevice, HostRegisteredFieldsAreMirroredOncePerProducerStep) {
   if constexpr (!kHasDeviceBackend) GTEST_SKIP() << "no device backend";
-  const Outcome dev = run(mean_over_four_substeps(), Space::Device, 2);
-  ASSERT_TRUE(dev.init.ok()) << dev.init.error().message;
-  // Two periods: the 1/4-step producer advances 8 times (one mirror refresh
-  // each), the consumer twice (one Sink copy each), plus the two crossings
-  // around each period's Transport (see the device-registered test above);
-  // a per-instruction staging design would cross at least once per kernel
-  // launch -- 8 Samples, 2 Accumulates and 2 Epochs more.
+  Scenario s = mean_over_four_substeps();
+  const Outcome host_fields = run(s, Space::Device, 2);
+  s.device_fields = true;
+  const Outcome device_fields = run(s, Space::Device, 2);
+  ASSERT_TRUE(host_fields.init.ok()) << host_fields.init.error().message;
+  ASSERT_TRUE(device_fields.init.ok()) << device_fields.init.error().message;
   const std::int64_t producer_steps = 2 * 4, consumer_steps = 2;
-  ASSERT_GT(dev.transports, 0);
-  EXPECT_EQ(dev.stats.device_boundary_copies,
-            producer_steps + consumer_steps + 2 * dev.transports * 2);
+  EXPECT_EQ(host_fields.stats.device_boundary_copies - device_fields.stats.device_boundary_copies,
+            producer_steps - consumer_steps)
+      << "the producer's field was mirrored other than once per producer step";
+  // A per-instruction staging design would also stage the 8 Sample reads;
+  // the mirror replaces them, so the staged copies are the same two
+  // host-only inputs as in the device-registered run.
+  EXPECT_EQ(host_fields.stats.device_staged_copies, device_fields.stats.device_staged_copies);
+}
+
+// docs/dev/device-resident-arcs.md step 4: a RunnerConfig that leaves
+// `execution_space` at `Default` takes the process environment's choice,
+// which is how the `.device` ctest twins run every verification binary
+// under the device interpreter without touching its source.
+namespace {
+struct ScopedEnv {
+  const char* key;
+  explicit ScopedEnv(const char* k, const char* value) : key(k) {
+    ::setenv(key, value, 1);
+  }
+  ~ScopedEnv() { ::unsetenv(key); }
+};
+}  // namespace
+
+TEST(RunnerDevice, DefaultFollowsFuseExecutionSpaceInTheEnvironment) {
+  ::unsetenv("FUSE_EXECUTION_SPACE");
+  const Outcome unset = run(mean_over_four_substeps(), Space::Default, 1);
+  ASSERT_TRUE(unset.init.ok()) << unset.init.error().message;
+  EXPECT_EQ(unset.stats.device_dispatches, 0);
+  {
+    const ScopedEnv env{"FUSE_EXECUTION_SPACE", "host"};
+    const Outcome host = run(mean_over_four_substeps(), Space::Default, 1);
+    ASSERT_TRUE(host.init.ok()) << host.init.error().message;
+    EXPECT_EQ(host.stats.device_dispatches, 0);
+  }
+  {
+    const ScopedEnv env{"FUSE_EXECUTION_SPACE", "Device"};
+    const Outcome dev = run(mean_over_four_substeps(), Space::Default, 1);
+    if constexpr (kHasDeviceBackend) {
+      ASSERT_TRUE(dev.init.ok()) << dev.init.error().message;
+      EXPECT_GT(dev.stats.device_dispatches, 0);
+      EXPECT_GT(dev.stats.device_resident_arcs, 0);
+    } else {
+      ASSERT_FALSE(dev.init.ok());
+      EXPECT_EQ(dev.init.error().code, "E-RT-DEVICE");
+    }
+  }
+  {
+    // An explicit choice is never overridden by the environment.
+    const ScopedEnv env{"FUSE_EXECUTION_SPACE", "device"};
+    const Outcome host = run(mean_over_four_substeps(), Space::Host, 1);
+    ASSERT_TRUE(host.init.ok()) << host.init.error().message;
+    EXPECT_EQ(host.stats.device_dispatches, 0);
+  }
+  {
+    const ScopedEnv env{"FUSE_EXECUTION_SPACE", "gpu"};
+    const Outcome bad = run(mean_over_four_substeps(), Space::Default, 1);
+    ASSERT_FALSE(bad.init.ok());
+    EXPECT_EQ(bad.init.error().code, "E-RT-SPACE");
+  }
 }
 
 // A device-registered field under the Host default is a configuration

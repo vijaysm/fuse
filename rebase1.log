@@ -1,0 +1,22 @@
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (1/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (2/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (3/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (4/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (5/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Auto-merging test/verification/brusselator_runner_test.cpp
+CONFLICT (content): Merge conflict in test/verification/brusselator_runner_test.cpp
+error: could not apply 0035b84... Add explicit std::move on returns where NRVO can't apply
+hint: Resolve all conflicts manually, mark them as resolved with
+hint: "git add/rm <conflicted_files>", then run "git rebase --continue".
+hint: You can instead skip this commit: run "git rebase --skip".
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply 0035b84... # Add explicit std::move on returns where NRVO can't apply

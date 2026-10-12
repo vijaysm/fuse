@@ -41,6 +41,13 @@ if(FUSE_ENABLE_TESTS)
   # same configuration differ.
   add_test(NAME example.mms_pair COMMAND fuse_example_mms_pair)
   add_test(NAME example.dn_heat  COMMAND fuse_example_dn_heat)
+  # `.device` twins (test/CMakeLists.txt's fuse_add_device_twin): the same
+  # command under FUSE_EXECUTION_SPACE=device, registered only when Kokkos
+  # has a device backend.
+  if(COMMAND fuse_add_device_twin)
+    fuse_add_device_twin(example.mms_pair fuse_example_mms_pair LABELS example)
+    fuse_add_device_twin(example.dn_heat fuse_example_dn_heat LABELS example)
+  endif()
 
   # The --dump path has its own failure mode: an empty dump still exits 0, so
   # these assert on the output rather than the status.
@@ -136,6 +143,10 @@ if(FUSE_ENABLE_TESTS)
   # measured AT THIS EXACT COMMAND LINE: diff 3.022e-08, bound 1.0e-6.
   add_test(NAME example.gray_scott COMMAND fuse_example_gray_scott --n 24 --ratio 2 --t-end 4 --dt 0.1 --check)
   set_tests_properties(example.gray_scott PROPERTIES LABELS "example")
+  if(COMMAND fuse_add_device_twin)
+    fuse_add_device_twin(example.gray_scott fuse_example_gray_scott LABELS example
+                         ARGS --n 24 --ratio 2 --t-end 4 --dt 0.1 --check)
+  endif()
   # Same command line, compared bit for bit at one thread and at every core;
   # the species components declare DeterminismLevel::Bitwise on this measurement.
   if(COMMAND fuse_add_omp_legs AND FUSE_KOKKOS_HAS_OPENMP)
@@ -202,6 +213,10 @@ if(FUSE_ENABLE_TESTS)
   add_test(NAME example.brusselator.runner
            COMMAND fuse_example_brusselator --driver runner --end 0.5 --check)
   set_tests_properties(example.brusselator.runner PROPERTIES LABELS "example")
+  if(COMMAND fuse_add_device_twin)
+    fuse_add_device_twin(example.brusselator.runner fuse_example_brusselator LABELS example
+                         ARGS --driver runner --end 0.5 --check)
+  endif()
 
   # The coupling window by Newton on BOTH substrates, through the example
   # itself rather than the one-window test rig (test/petsc/brusselator_

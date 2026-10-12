@@ -1,0 +1,36 @@
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+[detached HEAD 965216e] Add explicit std::move on returns where NRVO can't apply
+ 6 files changed, 10 insertions(+), 8 deletions(-)
+Rebasing (6/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (7/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (8/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (9/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (10/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (11/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (12/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (13/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (14/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (15/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Rebasing (16/41)warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+warning: unable to access '/Users/mahadevan/.config/git/ignore': Operation not permitted
+Auto-merging src/backend/native_halo.cpp
+CONFLICT (content): Merge conflict in src/backend/native_halo.cpp
+error: could not apply a2df439... Catch a backend's declared rank count disagreeing with its real MPI communicator
+hint: Resolve all conflicts manually, mark them as resolved with
+hint: "git add/rm <conflicted_files>", then run "git rebase --continue".
+hint: You can instead skip this commit: run "git rebase --skip".
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply a2df439... # Catch a backend's declared rank count disagreeing with its real MPI communicator

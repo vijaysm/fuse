@@ -118,8 +118,19 @@ struct RunnerConfig {
   /// else `execute()` does (Transport/Epoch/Sink/Accelerate/Constrain/
   /// window refusals) is unconditionally host-only and ignores this field
   /// entirely -- see docs/dev/runner-device-dispatch.md.
-  enum class RunnerExecutionSpace { Host, Device };
-  RunnerExecutionSpace execution_space = RunnerExecutionSpace::Host;
+  ///
+  /// `Default` (the default) is resolved by `Runner::initialize()` from the
+  /// process environment: `FUSE_EXECUTION_SPACE=device` selects `Device`,
+  /// `host`, empty or unset selects `Host`, anything else is `E-RT-SPACE`.
+  /// That is what lets a whole test binary or example run under the device
+  /// interpreter unchanged (the `.device` ctest twins,
+  /// docs/dev/device-resident-arcs.md step 4) while a caller that names
+  /// `Host` or `Device` explicitly is never overridden.
+  enum class RunnerExecutionSpace { Default, Host, Device };
+  RunnerExecutionSpace execution_space = RunnerExecutionSpace::Default;
+  /// `Default` resolved against the environment as described above; what
+  /// `initialize()` stores. `execution_space` itself is left as given.
+  [[nodiscard]] Result<RunnerExecutionSpace> resolved_execution_space() const;
 };
 
 struct RunStats {
@@ -191,6 +202,14 @@ struct RunStats {
   /// device-registered, the only crossings left are the two around each
   /// Transport, host code until the GPU-aware transport step.
   std::int64_t device_boundary_copies = 0;
+  /// Per-instruction staging copies in Device mode (`Impl::device_staging`):
+  /// one for each host-side operand a kernel had to be handed through a
+  /// staging lane (host arc pinned by a host-only instruction, `previous[]`,
+  /// history, a host-registered field a kernel WRITES) and one for each
+  /// lane written back. The number docs/dev/device-resident-arcs.md drives
+  /// to zero: a plan whose instructions are all Space-generic or space-aware
+  /// and whose fields are device-registered stages nothing. 0 under Host.
+  std::int64_t device_staged_copies = 0;
 };
 
 /// Per-region outcome of the most recent period (spec §5.3).
