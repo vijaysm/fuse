@@ -121,6 +121,7 @@
 #include <fuse/petsc/solve.hpp>
 #endif
 
+#include "agreement_bound.hpp"
 #include "dn_component.hpp"
 
 namespace {
@@ -318,6 +319,35 @@ struct Outcome {
   std::vector<double> u_final;
   std::vector<double> q_final;
   std::vector<double> last_residuals;
+  /// AgreementBounds track: the TRUE ||F_0|| of the region's own Newton
+  /// solve in its last period, populated ONLY by the `run_case(NewtonConfig,
+  /// ...)` overload below -- `last_residuals.front()`, which IS the
+  /// pre-first-step residual (agreement_bound.hpp's own header comment
+  /// cites the code proving this), named explicitly here rather than left
+  /// for every caller to re-derive from `last_residuals` by convention.
+  /// Stays at its own default (0.0) on an AccelConfig (Picard/Aitken/
+  /// IQN-ILS) row, where `last_residuals.front()` is a DIFFERENT quantity
+  /// (the first Picard sweep's own `||x_new - x_old||`, not a Newton
+  /// ||F_0||) and populating this field from it would be the wrong fix for
+  /// the very confusion this track exists to remove.
+  double              initial_residual_norm = 0.0;
+  /// AgreementBounds track, round 4 (KNOWN_ISSUES.md D32's own
+  /// correction to round 3): one entry per period, that period's own
+  /// TERMINAL Newton residual (its own `residual_history.back()`),
+  /// populated ONLY by the `run_case(NewtonConfig, ...)` overload below.
+  /// `last_residuals` above describes only the FINAL period
+  /// (`Runner::iteration_stats()`'s own contract,
+  /// include/fuse/runtime/runner.hpp: "describing the most recent
+  /// period") -- round 3's bound used that single number for all
+  /// `kPeriods` periods, which `agreement_bound.hpp`'s own "PER-PERIOD
+  /// RECURSION" section shows is not justified once a period's own
+  /// Newton solve starts from a PREVIOUS period's (possibly
+  /// substrate-disagreeing) committed state. Filled by calling
+  /// `Runner::run(components, 1)` once per period instead of once for
+  /// all of them -- `Runner::run()` is exactly that loop already
+  /// (src/runtime/runner.cpp), so this changes nothing about what gets
+  /// computed, only when this file can observe `iteration_stats()`.
+  std::vector<double> per_period_final_residual;
   std::string         checkpoints;
   bool                addresses_fixed = false;
 };
@@ -401,6 +431,14 @@ Outcome run_case(fuse::AccelConfig accel, int max_iterations,
   if (!runner.iteration_stats().empty()) {
     o.last_residuals = runner.iteration_stats().front().residual_history;
   }
+  // `initial_residual_norm` stays at its own default (0.0) on an
+  // AccelConfig (Picard/Aitken/IQN-ILS) row: `residual_history` here is
+  // the SWEEP residual `||x_new - x_old||` (run_region()'s own Picard
+  // loop, src/runtime/iteration.cpp), not a Newton ||F_0|| -- a DIFFERENT
+  // quantity under the same field name would be the wrong fix for the
+  // very confusion this track exists to remove. Only the NewtonConfig
+  // overload below (the one the `--newton-petsc` check actually reads)
+  // populates it.
 
   const double t = n->time();
   o.t_final = t;
@@ -490,9 +528,29 @@ Outcome run_case(fuse::NewtonConfig cfg, int max_iterations,
   if (!runner.checkpoint_explanations().empty()) {
     o.checkpoints = runner.checkpoint_explanations().front();
   }
-  if (const auto r = runner.run(components, periods); !r.ok()) {
-    o.error = "run: " + r.error().message;
-    return o;
+  // AgreementBounds track, round 4: one period at a time rather than one
+  // call for all of them -- `Runner::run(components, periods)` is
+  // ITSELF exactly this loop (`for (i = 0; i < periods; ++i)
+  // run_period(components)`, src/runtime/runner.cpp's own
+  // `Runner::run()`), so this changes nothing about what gets computed.
+  // It changes only when this file can OBSERVE `iteration_stats()`:
+  // that accessor describes only "the most recent period"
+  // (include/fuse/runtime/runner.hpp), so capturing every period's own
+  // terminal residual (`Outcome::per_period_final_residual`, needed by
+  // the bound's own per-period recursion, agreement_bound.hpp's own
+  // "PER-PERIOD RECURSION" section) requires asking after each one.
+  o.per_period_final_residual.reserve(static_cast<std::size_t>(
+      periods > 0 ? periods : 0));
+  for (std::int64_t p = 0; p < periods; ++p) {
+    if (const auto r = runner.run(components, 1); !r.ok()) {
+      o.error = "run: " + r.error().message;
+      return o;
+    }
+    if (!runner.iteration_stats().empty()) {
+      const std::vector<double>& h =
+          runner.iteration_stats().front().residual_history;
+      o.per_period_final_residual.push_back(h.empty() ? 0.0 : h.back());
+    }
   }
 
   o.addresses_fixed = (d_addr == d->registered_provides()) &&
@@ -506,6 +564,13 @@ Outcome run_case(fuse::NewtonConfig cfg, int max_iterations,
   if (!runner.iteration_stats().empty()) {
     o.last_residuals = runner.iteration_stats().front().residual_history;
   }
+  // AgreementBounds track: last_residuals.front() IS the true ||F_0||
+  // -- agreement_bound.hpp's own header comment cites the code proving
+  // it, rather than re-deriving it at every call site. Guarded the same
+  // way `checkpoints` above is: empty whenever iteration_stats() itself
+  // was (never observed for a row that converges, but not asserted).
+  o.initial_residual_norm =
+      o.last_residuals.empty() ? 0.0 : o.last_residuals.front();
 
   const double t = n->time();
   o.t_final = t;
@@ -644,56 +709,89 @@ int main(int argc, char** argv) {
                   "complete: %s\n", newton_nl_petsc.error.c_str());
     }
 
-    // The agreement bound: DERIVED, not chosen, from quantities this
-    // track actually has -- it is NOT re-measured on dn_heat here (the
-    // 3.9e-8 relative step-1 difference, docs/dev/newton-krylov.md
-    // §10.3, was measured on a synthetic quadratic/atan problem with a
-    // SciPy-free host, not dn_heat's own affine map), composed with
-    // dn_heat's own problem structure, which fixed_point_residual_test.
-    // cpp's own header comment proves exactly: F is affine with a
-    // per-station 2x2 Jacobian {{1, r_i}, {-1, 1}}, r_i in [0.5, 0.96]
-    // (dn_heat's own four conductivity strips). For an affine F = Jx + c,
-    // ||x - x*|| <= ||J^-1|| ||F(x)||; J^-1 = 1/(1+r) [[1, -r], [1, 1]],
-    // whose max-row-sum (infinity) norm is max(1, 2/(1+r)) <= 2/1.5 =
-    // 1.333 over r in [0.5, 0.96] -- rounded UP to 1.5 for a safety
-    // margin this derivation does not need numerically but keeps
-    // explicit. Both solvers converge to the SAME NewtonConfig::rtol
-    // (SNES's and the native solver's own default, 1e-8) on the
-    // IDENTICAL ||F_0|| (same graph, same seed), so each one's own final
-    // ||F|| is bounded by rtol * ||F_0||; by the triangle inequality the
-    // two solvers' own converged iterates can differ by at most
-    // 1.5 * (rtol * ||F_0||_native + rtol * ||F_0||_petsc) = 1.5 * 2 *
-    // rtol * ||F_0||.
+    // The agreement bound: SHARP (round 4 -- the owner's own correction
+    // to round 3). Round 3 used ONLY the LAST (20th) period's own
+    // terminal residual: `x - x* = J^-1 F(x)` is exact for affine F
+    // GIVEN IDENTICAL inputs, but with `kPeriods` periods, periods 2
+    // onward do NOT start from identical native/PETSc inputs -- each
+    // period's own Newton solve inherits whatever the PREVIOUS period
+    // left in `u_in_`/`q_in_` (nothing resets them between periods,
+    // dn_component.hpp's own `advance()`), so a bound built from period
+    // `kPeriods` alone said nothing about periods 1..`kPeriods - 1`.
     //
-    // ||F_0|| ITSELF is not in Outcome (this track's own addition keeps
-    // Outcome's own shape unchanged, per the near-duplicate-overload
-    // convention this file already follows) -- `last_residuals.front()`
-    // is the closest available PROXY, but it is already the residual
-    // AFTER the first Newton step, which §8.2's own measurement shows
-    // can be 1-2 orders of magnitude SMALLER than ||F_0|| (765.78 ->
-    // 68.77 on that section's own affine case) -- using it unscaled
-    // would UNDERESTIMATE the bound, the wrong direction for a
-    // robustness-over-efficiency gate. A fixed 20x safety factor on
-    // this term (beyond the already-conservative 1.5x Jacobian-inverse
-    // bound) covers that gap without re-deriving ||F_0|| from the
-    // problem's own closed form here; tightening it to the TRUE ||F_0||
-    // (threading `nr.initial_residual_norm` through Outcome) is this
-    // check's own open question for the lead, not done here to keep
-    // Outcome's shape untouched by a one-off comparison.
+    // THE PER-PERIOD RECURSION (agreement_bound.hpp's own "PER-PERIOD
+    // RECURSION" section has the full derivation): with e_k the
+    // max-norm disagreement after period k and A the map carrying
+    // period k-1's committed state into period k's own Newton starting
+    // point, e_k <= ||A||_inf e_{k-1} + ||J^-1||_inf (F_n,k + F_p,k).
+    // `dn_component.hpp`'s own `advance()` formulas assign (never
+    // accumulate) each registered field from THIS period's own inputs
+    // alone, and nothing else touches the carried state between
+    // periods, so A is the IDENTITY and ||A||_inf = 1 exactly. The
+    // recursion then telescopes (e_0 = 0: both substrates start from
+    // the IDENTICAL initial state) to
     //
-    // The measured 3.9e-8 relative inter-solver difference (§10.3) is
-    // added as a SEPARATE term, scaled by the native solution's own
-    // norm, to cover the two GMRES implementations' differing Arnoldi
-    // arithmetic along the way.
-    const double bound =
-        20.0 * 1.5 * 2.0 * newton_cfg.rtol * newton_native.last_residuals.front() +
-        3.9e-8 * dn::l2_norm(newton_native.u_final);
+    //   e_kPeriods <= ||J^-1||_inf * sum_{k=1}^{kPeriods} (F_n,k + F_p,k)
+    //
+    // using every period's own terminal residual
+    // (`Outcome::per_period_final_residual`), not the last period's
+    // alone.
+    const double bound = dn_heat::agreement_bound(
+        newton_native.per_period_final_residual,
+        newton_petsc.per_period_final_residual);
     const double d = disagreement(newton_native, newton_petsc);
+    double sum_native = 0.0;
+    for (const double f : newton_native.per_period_final_residual) sum_native += f;
+    double sum_petsc = 0.0;
+    for (const double f : newton_petsc.per_period_final_residual) sum_petsc += f;
+    std::printf("[agreement-bound] periods=%lld sum_F_native=%.6e "
+               "sum_F_petsc=%.6e disagreement=%.6e K sharp_bound=%.6e K "
+               "ratio=%.6e\n",
+               static_cast<long long>(newton_native.per_period_final_residual.size()),
+               sum_native, sum_petsc, d, bound, bound > 0.0 ? d / bound : 0.0);
+    // INFORMATIONAL ONLY, never asserted: the same bound from the LAST
+    // period's terminal residuals alone. It is the bound the sum above is
+    // never smaller than, and it is valid only if F_k does not depend on
+    // the state carried between periods (so that both substrates solve the
+    // identical affine map in every period and disagree only through that
+    // period's own residual). agreement_bound.hpp's "PER-PERIOD RECURSION"
+    // section records why that reading of `advance()` is plausible and why
+    // the asserted bound does not rely on it. Printed so the host run
+    // measures it: observed <= this bound supports the reading; observed
+    // above it, with observed below the sum, would be the carried state
+    // entering F_k.
+    const double last_period_bound = dn_heat::agreement_bound(
+        std::vector<double>{newton_native.per_period_final_residual.empty()
+                                ? 0.0 : newton_native.per_period_final_residual.back()},
+        std::vector<double>{newton_petsc.per_period_final_residual.empty()
+                                ? 0.0 : newton_petsc.per_period_final_residual.back()});
+    std::printf("[agreement-bound last-period] disagreement=%.6e K "
+                "last_period_bound=%.6e K ratio=%.6e\n",
+                d, last_period_bound,
+                last_period_bound > 0.0 ? d / last_period_bound : 0.0);
     check(d <= bound,
-          "newton-petsc agrees with native newton to the derived bound ("
-          "disagreement " + std::to_string(d) + " K, bound " +
+          "newton-petsc agrees with native newton to the derived bound (sharp, "
+          "sum over all " + std::to_string(newton_native.per_period_final_residual.size()) +
+          " periods, disagreement " + std::to_string(d) + " K, bound " +
           std::to_string(bound) + " K)");
     check(newton_petsc.not_converged == 0, "newton-petsc converges every period");
+
+    // INFORMATIONAL ONLY, never asserted: round 2's own (legacy) formula,
+    // printed alongside the round-4 sharp bound so a host run can report
+    // BOTH observed/sharp and observed/legacy -- agreement_bound.hpp's
+    // own "LEGACY" section. Still built from the LAST period's own
+    // ||F_0||/rtol (`initial_residual_norm`), unchanged from round 3: it
+    // is kept only for the informational print, not re-derived.
+    const double legacy_bound = dn_heat::legacy_agreement_bound(
+        newton_cfg.rtol, newton_native.initial_residual_norm,
+        newton_petsc_cfg.rtol, newton_petsc.initial_residual_norm,
+        dn::l2_norm(newton_native.u_final));
+    std::printf("[agreement-bound legacy] rtol_native=%.3e F0_native=%.3e "
+               "rtol_petsc=%.3e F0_petsc=%.3e native_norm=%.3e legacy_bound=%.6e K "
+               "(disagreement %.6e K, sharp bound %.6e K)\n",
+               newton_cfg.rtol, newton_native.initial_residual_norm,
+               newton_petsc_cfg.rtol, newton_petsc.initial_residual_norm,
+               dn::l2_norm(newton_native.u_final), legacy_bound, d, bound);
 
     return g_failures == 0 ? 0 : 1;
 #else

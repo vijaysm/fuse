@@ -860,6 +860,19 @@ set_tests_properties(field.compile_ok.owning_chain PROPERTIES
   LABELS "compile_fail" RESOURCE_LOCK fuse_build_tree)
 
 # ---------------------------------------------------------------- verification
+# AgreementBounds track: a tier-0 unit test of examples/dn_heat/
+# agreement_bound.hpp's own free function, with hand-built numbers (no
+# Runner, no PETSc, no FUSE library dependency at all -- plain doubles).
+fuse_add_gtest(verification dn_heat_agreement_bound NO_LAYER_LIB)
+target_include_directories(fuse_verification_dn_heat_agreement_bound_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/examples/dn_heat)
+
+# AgreementBounds track: the same, for examples/brusselator/
+# agreement_bound.hpp's own calibrated bound formula.
+fuse_add_gtest(verification brusselator_agreement_bound NO_LAYER_LIB)
+target_include_directories(fuse_verification_brusselator_agreement_bound_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/examples/brusselator)
+
 # Convergence orders and iteration counts, against known-good values. These are
 # the stage's exit criterion: they are what says the merged compiler and runtime
 # reproduce the parent's numbers and not merely something plausible.
