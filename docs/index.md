@@ -82,4 +82,12 @@ dev/coupler-placement
 dev/conformance
 dev/python-surface
 dev/roadmap
+dev/soma-import
+```
+
+```{toctree}
+:caption: History
+:maxdepth: 1
+
+history/soma/index
 ```
