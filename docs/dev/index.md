@@ -64,7 +64,10 @@ separately-placed coupler: the `ComponentKind` representation decision, the rule
 [](runner-device-dispatch.md) covers the in-progress effort to give `Runner::Impl::execute()` a
 real Kokkos device (Cuda) path and a cuSPARSE/cuSOLVER sparse-solve backend, including why the
 device-dispatch scope narrowed twice before settling on templating just `execute()`'s elementwise
-`OpKind` cases.
+`OpKind` cases. [](device-resident-arcs.md) is the approved follow-on design: arcs, `previous[]`,
+history and the reduction scratch resident in the execution space's memory, host memory touched only
+at named boundaries, the mesh/topology builders made Space-generic, and the GPU-aware transport path
+for multi-rank device runs.
 
 ## Holding an external path to the bar
 
