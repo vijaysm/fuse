@@ -1461,7 +1461,18 @@ struct Audit {
   auto* pc = static_cast<moab::ParallelComm*>(src.pcomm);
   const MPI_Comm comm = pc->comm();
   int nproc = 1;
-  MPI_Comm_size(comm, &nproc);
+  // REVIEW.md TF-8 (N-BACKEND-3 class): an unchecked MPI_Comm_size leaves
+  // `nproc` at its initialiser value of 1 on failure, which this function
+  // would then read as "no peers to reconcile with" and return success
+  // having skipped every Allreduce below -- exactly the silent fallback
+  // reconcile<T> and reconcile_halo already refuse rather than risk (both
+  // reject outright when they cannot size their own communicator).
+  if (MPI_Comm_size(comm, &nproc) != MPI_SUCCESS) {
+    return Failure{"E-REMAP-PARALLEL",
+                 "reduce_audit: could not size the communicator to reduce "
+                 "the per-rank audit; refusing rather than treating it as "
+                 "having no peers to reconcile with"};
+  }
   if (nproc <= 1) return Result<void>::success();
 
   double mins[3] = {audit.min_src_coverage, audit.min_tgt_coverage,

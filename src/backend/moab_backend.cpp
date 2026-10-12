@@ -2592,8 +2592,20 @@ Result<void> MoabMeshBackend::Impl::plan_halo_exchange(std::size_t mesh,
 
   const MPI_Comm comm = pcomm->comm();
   int nproc = 1, me = 0;
-  MPI_Comm_size(comm, &nproc);
-  MPI_Comm_rank(comm, &me);
+  // REVIEW.md TF-8 (N-BACKEND-3 class): unchecked, `nproc`/`me` silently
+  // keep their initialisers (1, 0) on failure -- sized and addressed as a
+  // one-rank communicator while the Allgather/Alltoall(v) below are issued
+  // against the REAL communicator, a size mismatch the collectives
+  // themselves would have to detect. `reconcile_halo` just below already
+  // refuses outright when it cannot size or rank ITS communicator (this
+  // same class, fixed there); this call gets the identical treatment.
+  if (MPI_Comm_size(comm, &nproc) != MPI_SUCCESS ||
+      MPI_Comm_rank(comm, &me) != MPI_SUCCESS) {
+    return Failure{"E-MESH-HALO",
+                 "plan_halo_exchange: could not size or rank the "
+                 "communicator; refusing rather than treating it as a "
+                 "one-rank communicator"};
+  }
   const auto np = static_cast<std::size_t>(nproc);
 
   const MoabMeshView& view = *meshes[mesh];
