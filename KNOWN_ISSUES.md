@@ -4370,3 +4370,45 @@ working. D23 stays open until the host's own `accept.*` rows are the ones to dec
 3 tasks, on the owner's own `build-lowfive` tree) should now pass `fuse_setup()`'s own layout check; whether it
 runs to completion and matches the non-LowFive reference is this entry's own second host-verification item,
 independent of D14 and of D23 alike.
+
+### D37. `pfuse` v1 (the pybind11 bindings) does not expose Newton, MPI, or either non-serial mesh backend to Python, and inherited one pre-existing naming bug in `dump_graphviz()` — OPEN, scope decision for v2
+
+**What this track built.** `python/` (gated by `FUSE_ENABLE_PYTHON`, default OFF) binds `fuse::CouplingGraph`,
+`fuse::Component`/`fuse::Runner` (via a `pfuse.Session` wrapper), `fuse::FieldRegistry`, the iteration/
+accelerator/Newton-configuration model types, and the `fuse::Id`/`Rational`/`Units`/`Diagnostics` base types,
+over `pybind11`. `docs/dev/python-surface.md` is the design; `docs/user/python.md` is the user-facing guide.
+
+**Newton: native-only, by the owner's own ruling (2026-10-12), not a gap found late.** A Python-authored
+`fuse::Component` subclass can be added to an ordinary (Picard/accelerated) iteration region and run through
+`pfuse.Session`/`fuse::Runner` like any native component. It cannot be added to a Newton-solved region:
+`fuse::Runner::initialize()`'s own `E-NEWTON-CAPABILITY` refusal (`src/runtime/checkpoint_support.cpp`) already
+covers a component whose `capabilities()` does not claim `kCapabilityResidual`/`kCapabilityLinearization`, and
+this track added no second refusal path for that case (`python/tests/test_newton.py`,
+`TestNewtonCapabilityGate`). A Python component that CLAIMS either capability bit without `fuse::
+ImplicitComponent`'s C++ hooks to back it (`residual()`/`jacobian_apply()`, neither exposed to Python) is
+refused immediately when it is added to the graph, not deferred to `initialize()`
+(`TestClaimingTheCapabilityIsRefusedImmediately`, same file) — `ForwardingComponent::compute_capabilities()`,
+`python/src/component_bindings.cpp`. The existing refusal's own message says "override `Component::implicit()`
+to return it," advice that is correct for a C++ author and impossible for a Python one, since pfuse does not
+expose `Component::implicit()` at all; `test_newton.py` records the exact message
+(`test_the_existing_refusal_message_names_cxx_overrides_a_python_reader_cannot_make`) for the owner to judge
+whether a Python-specific wording belongs in that C++ message, which this track did not edit.
+
+**MPI and the native/MOAB mesh backends are not reachable from Python at all in v1.** `python/CMakeLists.txt`
+links only `fuse::model fuse::runtime fuse::backend fuse::ir fuse::schedule`; `fuse::SerialMeshBackend` is the
+only backend `pfuse.CouplingGraph`'s mesh-loading path can resolve a `"generated:..."` source against, and
+`fuse::RunnerConfig`'s default ("copy" transport, no `base_communicator`) is the only configuration `pfuse.
+RunnerConfig` constructs. No MPI rank set beyond a single rank was run or is claimed to work.
+
+**A genuine naming bug, found and reported, not fixed (out of this track's src/include scope).**
+`include/fuse/ir/dump.hpp:126`, inside `dump_graphviz()`, still emits the literal header `"digraph soma_ir {"`
+— a leftover from the soma → fuse rename that `dump_text()` (line 73, same header)
+already carries correctly as `"# fuse-ir v1"`. `python/tests/test_graph.py` records this as an
+`xfail(strict=True)` test citing both line numbers, so the suite documents the finding without silently
+working around it and will fail loudly (an unexpected XPASS) the day someone fixes `dump_graphviz()` without
+updating that test.
+
+**Not pursued, no decision needed yet:** `ImplicitComponent` bindings (would lift the Newton restriction
+above); a Python-side MPI story (`mpi4py`, communicator passing into `RunnerConfig`); native/MOAB backend
+bindings. None of the three has a design in `docs/dev/python-surface.md` beyond the "what this does not
+expose" list — a v2 scope decision, not a defect in v1.
