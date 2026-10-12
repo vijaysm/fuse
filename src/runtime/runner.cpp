@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cctype>
 #include <cstdlib>
 #include <cstddef>
 #include <cstdint>
@@ -1657,6 +1658,7 @@ Result<void> Runner::Impl::resolve_instructions() {
   remap_csr.clear();  // parallel to remap_weights; see build_remap_csr()
   remap_csr_device.clear();
   stats.device_dispatches = 0;
+  stats.device_staged_copies = 0;
   stats.device_resident_arcs = 0;
   stats.device_boundary_copies = 0;
   // Both are APPENDED to by the OpKind::Transport case below, so they must be
@@ -3183,9 +3185,11 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
           Kokkos::deep_copy(
               num::SpanOf<HostExecSpace>(staged[i].host_mut, staged[i].len),
               num::ConstSpanOf<Space>(lane, staged[i].len));
+          ++stats.device_staged_copies;
         }
         Kokkos::deep_copy(num::SpanOf<Space>(lane, len),
                           num::ConstSpanOf<HostExecSpace>(p, len));
+        ++stats.device_staged_copies;
         staged[i].len = len;
       }
       if (writable != nullptr) staged[i].host_mut = writable;
@@ -3198,6 +3202,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
     double* const lane = base + n_staged * device_staging_stride;
     Kokkos::deep_copy(num::SpanOf<Space>(lane, len),
                       num::ConstSpanOf<HostExecSpace>(p, len));
+    ++stats.device_staged_copies;
     staged[n_staged++] = Staged{p, writable, len};
     return lane;
   };
@@ -3763,6 +3768,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
           num::ConstSpanOf<Space>(device_staging.data() +
                                       i * device_staging_stride,
                                   staged[i].len));
+      ++stats.device_staged_copies;
     }
     if (n_staged > 0 || used_device_arc) ++stats.device_dispatches;
   }
@@ -4125,11 +4131,34 @@ Result<void> Runner::Impl::check_transport_extents() const {
   return Result<void>::success();
 }
 
+Result<RunnerConfig::RunnerExecutionSpace>
+RunnerConfig::resolved_execution_space() const {
+  if (execution_space != RunnerExecutionSpace::Default) return execution_space;
+  const char* env = std::getenv("FUSE_EXECUTION_SPACE");
+  std::string v = env == nullptr ? std::string{} : std::string{env};
+  for (char& ch : v) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  if (v.empty() || v == "host") return RunnerExecutionSpace::Host;
+  if (v == "device") return RunnerExecutionSpace::Device;
+  return Failure{"E-RT-SPACE",
+               "FUSE_EXECUTION_SPACE='" + std::string{env} +
+                   "' is not a Runner execution space; use 'host' or 'device' "
+                   "(or unset it), or set RunnerConfig::execution_space"};
+}
+
 Result<void> Runner::initialize(ComponentSet& components,
                                 FieldRegistry& registry,
                                 const RunnerConfig& config) {
   impl_->initialized = false;
   impl_->config = config;
+  {
+    // RunnerConfig::execution_space's own comment: `Default` is the
+    // environment's choice, decided once here so every later test of
+    // `config.execution_space` sees Host or Device.
+    const Result<RunnerConfig::RunnerExecutionSpace> space =
+        config.resolved_execution_space();
+    if (!space.ok()) return space.error();
+    impl_->config.execution_space = space.value();
+  }
 
   // A function returning Result must never throw. Every allocation here, the
   // backend's measures, and Rational's overflow guards can; they become setup

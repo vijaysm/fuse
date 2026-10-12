@@ -1060,7 +1060,21 @@ TEST(Iteration, CheckRegionIsolationCatchesAHandBuiltPlanScheduleWouldRefuse) {
 // Nothing in the sweep loop allocates.
 // ---------------------------------------------------------------------------
 
+// Under FUSE_EXECUTION_SPACE=device (the `.device` twin of this row) the
+// sweep loop's device copies and kernel launches go through Kokkos::fence()
+// and Kokkos::parallel_for() with string labels, each a std::string Kokkos
+// builds per call; those allocations are Kokkos's, not the sweep loop's, so
+// the two allocation rows below measure nothing about FUSE there and skip.
+bool runner_executes_on_the_device() {
+  const auto space = RunnerConfig{}.resolved_execution_space();
+  return space.ok() &&
+         space.value() == RunnerConfig::RunnerExecutionSpace::Device;
+}
+
 TEST(Iteration, TheSweepLoopAllocatesNothing) {
+  if (runner_executes_on_the_device()) {
+    GTEST_SKIP() << "Kokkos fence/launch labels allocate under the device interpreter";
+  }
   // The components drift with time, so every coupling cycle has a new fixed point and
   // runs a full set of sweeps -- accelerate, roll back, verify, re-deliver,
   // re-advance -- rather than starting already converged and leaving the loop
@@ -1100,6 +1114,9 @@ TEST(Iteration, TheSweepLoopAllocatesNothing) {
 // The first coupling cycle, run above, is warm-up: a buffer has to be allocated once
 // before it can be reused, and "steady state" is the claim.
 TEST(Iteration, TheAcceleratorAllocatesNothingPerUpdate) {
+  if (runner_executes_on_the_device()) {
+    GTEST_SKIP() << "Kokkos fence/launch labels allocate under the device interpreter";
+  }
   auto f = build(AccelConfig{.kind = AccelKind::Aitken}, 100);
   ASSERT_TRUE(run(*f).ok());
   const std::int64_t before = f->runner->stats().total_iterations;
