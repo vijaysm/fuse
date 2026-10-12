@@ -48,6 +48,15 @@
       }
     },
     {
+      "name": "tier0-release-fast",
+      "inherits": "tier0-release",
+      "displayName": "Tier 0, Release, FMA contraction kept",
+      "description": "KNOWN_ISSUES.md D30: FUSE_FP_REPRODUCIBLE=OFF leaves the compiler's default floating-point contraction in place (fused multiply-add, one rounding instead of two). Faster at a measured per-operation cost (docs/dev/testing.md); the three tests D30 names then check a derived forward-error bound instead of bit-identity with Debug. tier0-release itself stays FUSE_FP_REPRODUCIBLE=ON (the option's own default), so a plain tier0-release build reproduces Debug's bits exactly.",
+      "cacheVariables": {
+        "FUSE_FP_REPRODUCIBLE": "OFF"
+      }
+    },
+    {
       "name": "tier1",
       "inherits": "tier0",
       "displayName": "Tier 1 - + MPI",
@@ -105,6 +114,11 @@
       "jobs": 12
     },
     {
+      "name": "tier0-release-fast",
+      "configurePreset": "tier0-release-fast",
+      "jobs": 12
+    },
+    {
       "name": "tier1",
       "configurePreset": "tier1",
       "jobs": 12
@@ -158,6 +172,16 @@
         "exclude": {
           "label": "throws"
         }
+      }
+    },
+    {
+      "name": "tier0-release-fast",
+      "configurePreset": "tier0-release-fast",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 8
       }
     },
     {

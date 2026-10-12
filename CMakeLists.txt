@@ -27,6 +27,14 @@ option(FUSE_BUILD_UPSTREAM_KARMA "Build the imported spine tree under upstream/k
 # with a message rather than a configure error, when no Fortran compiler is
 # found.
 option(FUSE_ENABLE_FORTRAN "Build the Fortran participant binding ffuse (needs a Fortran compiler)" ON)
+
+# FpPolicy track, KNOWN_ISSUES.md D30: included here, before FuseFortran,
+# for the identical ordering reason the comment above gives for
+# FUSE_ENABLE_FORTRAN -- FuseFortran.cmake calls
+# fuse_apply_fp_contract_policy_fortran() (cmake/FuseFpPolicy.cmake) right
+# after it enables the Fortran language, which needs the
+# FUSE_FP_REPRODUCIBLE option and both functions already defined.
+include(FuseFpPolicy)
 include(FuseSlowTests)
 include(FuseFortran)
 
@@ -58,6 +66,14 @@ endif()
 # --- the library ------------------------------------------------------------
 include(FuseDependencies)
 fuse_resolve_dependencies()
+
+# FpPolicy track, KNOWN_ISSUES.md D30: AFTER fuse_resolve_dependencies(),
+# once every FetchContent_MakeAvailable call it makes (r3d, yaml-cpp on a
+# machine with no installed copy) has already run, so the contraction
+# flag reaches fuse's own src/test/examples/tools targets below without
+# reaching into vendored third-party sources (cmake/FuseFpPolicy.cmake's
+# own comment explains why that exclusion is deliberate).
+fuse_apply_fp_contract_policy_c_cxx()
 add_subdirectory(src)
 if(FUSE_ENABLE_TESTS)
   add_subdirectory(test)

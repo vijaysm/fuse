@@ -18,6 +18,14 @@ if(FUSE_ENABLE_FORTRAN)
   check_language(Fortran)
   if(CMAKE_Fortran_COMPILER)
     enable_language(Fortran)
+    # FpPolicy track, KNOWN_ISSUES.md D30: CMAKE_Fortran_COMPILER_ID only
+    # exists after enable_language(Fortran) just above, so the Fortran
+    # half of the contraction policy (cmake/FuseFpPolicy.cmake) is set
+    # here rather than alongside the C/CXX half in CMakeLists.txt -- and
+    # BEFORE add_subdirectory(fortran) just below, so ffuse's own
+    # directory scope inherits it (a subdirectory added before a compile
+    # option is set in its parent scope never sees that option).
+    fuse_apply_fp_contract_policy_fortran()
     add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/fortran" "${CMAKE_CURRENT_BINARY_DIR}/fortran")
   else()
     message(STATUS "fuse: no Fortran compiler found; FUSE_ENABLE_FORTRAN was ON but ffuse "

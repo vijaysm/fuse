@@ -207,7 +207,7 @@ function(fuse_add_mpi_test layer name)
 endfunction()
 
 # ---------------------------------------------------------------- base
-foreach(t config time_level result ids version bytes)
+foreach(t config time_level result ids version bytes fp_policy)
   fuse_add_gtest(base ${t})
 endforeach()
 foreach(t rational units error)

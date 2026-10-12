@@ -25,21 +25,24 @@ IOSTREAM = re.compile(r"^\s*#\s*include\s*<(iostream|sstream|iomanip)>")
 # header is missing -- UNDEFINED, which the preprocessor reads as 0. The file
 # then compiles as though the feature were off, in a build where it is on, and
 # nothing warns. This has now happened twice: once to the exceptions option and
-# once to MpiTransport, which vanished from an MPI build.
+# once to MpiTransport, which vanished from an MPI build. FUSE_FP_REPRODUCIBLE
+# (cmake/FuseFpPolicy.cmake) is the same kind of macro: a test reading it without
+# the header would silently take the OFF branch in a build where it is ON.
 # `//` to end of line, capturing the prefix so it can be preserved. Block
 # comments are deliberately not handled: this project's prose is `///` lines,
 # and a regex for /* */ that got it wrong could blank a real `#if`.
 COMMENT_LINE = re.compile(r"(^|[^:])(//[^\n]*)", re.M)
 
-FEATURE_MACRO = re.compile(r"\bFUSE_(HAVE_[A-Z0-9_]+|ENABLE_EXCEPTIONS|LINALG_EIGEN)\b")
+FEATURE_MACRO = re.compile(
+    r"\bFUSE_(HAVE_[A-Z0-9_]+|ENABLE_EXCEPTIONS|LINALG_EIGEN|FP_REPRODUCIBLE)\b")
 # Every feature macro is `#cmakedefine01`: ALWAYS defined, as 0 or 1. So a
 # presence test on one is unconditionally true, and `#ifdef FUSE_HAVE_MOAB`
 # compiles the MOAB branch into a build without MOAB -- or, when config.hpp is
 # not included, compiles it OUT of every build. Both happened (REVIEW.md 2.3).
 # Only `#if FUSE_HAVE_X` / `#if !FUSE_HAVE_X` is a valid test.
 FEATURE_PRESENCE_TEST = re.compile(
-    r"#\s*(ifdef|ifndef)\s+FUSE_(HAVE_[A-Z0-9_]+|ENABLE_EXCEPTIONS|LINALG_EIGEN)\b"
-    r"|\bdefined\s*\(?\s*FUSE_(HAVE_[A-Z0-9_]+|ENABLE_EXCEPTIONS|LINALG_EIGEN)\b")
+    r"#\s*(ifdef|ifndef)\s+FUSE_(HAVE_[A-Z0-9_]+|ENABLE_EXCEPTIONS|LINALG_EIGEN|FP_REPRODUCIBLE)\b"
+    r"|\bdefined\s*\(?\s*FUSE_(HAVE_[A-Z0-9_]+|ENABLE_EXCEPTIONS|LINALG_EIGEN|FP_REPRODUCIBLE)\b")
 # A macro from either parent. The layering gate forbids parent NAMESPACES and
 # includes; a parent MACRO read in an #if is just as live and was not caught
 # (SOMA_ENABLE_LOWFIVE compiled the LowFive transport out of every build).

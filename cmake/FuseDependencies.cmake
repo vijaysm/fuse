@@ -127,6 +127,15 @@ option(FUSE_ENABLE_TESTS   "Build the test suite"                               
 # on-error policy has run; the types and call sites are unconditional either way.
 option(FUSE_ENABLE_EXCEPTIONS "Throw C++ exceptions on errors (OFF = report and abort)" ON)
 
+# FUSE_FP_REPRODUCIBLE (default ON; KNOWN_ISSUES.md D30) lives NEXT TO this
+# block in spirit but is declared in cmake/FuseFpPolicy.cmake and
+# include()'d from CMakeLists.txt BEFORE this file, for the same ordering
+# reason FUSE_ENABLE_FORTRAN is declared early there: FuseFpPolicy.cmake's
+# Fortran half must run before FuseFortran.cmake's add_subdirectory(fortran),
+# which itself runs before this file is included. Not redeclared here --
+# see cmake/FuseFpPolicy.cmake for the option, its two apply functions, and
+# the full rationale.
+
 # The linalg facade's dense least-squares backend. `builtin` is the coupler's own
 # column-pivoted Householder QR with rank truncation and needs nothing; `eigen`
 # is a second opinion from a widely used implementation. `builtin` is also the

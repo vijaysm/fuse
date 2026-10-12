@@ -133,6 +133,16 @@ def main() -> int:
         line.startswith("FUSE_ENABLE_MPI:") and line.rstrip().endswith("=ON")
         for line in cache.read_text(errors="replace").splitlines())
 
+    # FpPolicy track, KNOWN_ISSUES.md D30: a `requires = "release"` gate
+    # (read from CMAKE_BUILD_TYPE, the same courtesy "mpi"/"petsc" get) was
+    # added here for base.fp_policy's probe on the premise that Debug
+    # (-O0) never contracts a*b+c. That premise is false -- confirmed by
+    # disassembly (docs/dev/testing.md's "Floating-point contraction
+    # policy" section) that -ffp-contract defaults to `on` at every
+    # optimization level -- so the mutation is equally visible in Debug
+    # and Release (hand-proved both ways, build-evidence/mutations/
+    # fp-policy.toml), and the gate is removed rather than kept unused.
+
     if subprocess.run(["git", "status", "--porcelain", "include", "src"], cwd=ROOT,
                       capture_output=True, text=True).stdout.strip():
         print("error: include/ or src/ has uncommitted changes; the gate restores by copy-back")

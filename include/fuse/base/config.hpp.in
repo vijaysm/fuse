@@ -21,6 +21,18 @@
 #cmakedefine01 FUSE_HAVE_LOWFIVE
 #cmakedefine01 FUSE_LINALG_EIGEN
 #cmakedefine01 FUSE_ENABLE_EXCEPTIONS
+// Floating-point contraction policy (KNOWN_ISSUES.md D30; cmake/FuseFpPolicy.cmake).
+// 1: -ffp-contract=off was added for this build, in every build type --
+// a*b+c is rounded twice (multiply, then add) rather than fused, which
+// is the compiler's DEFAULT at every optimization level including -O0
+// (docs/dev/testing.md's "Floating-point contraction policy" has the
+// measured instruction counts; an earlier comment here wrongly claimed
+// -O0 never contracts). 0: the compiler's default contraction policy is
+// in effect (fused, single rounding, faster); test/linalg/
+// dist_vector_test.cpp and test/num/space_kernels_test.cpp read this
+// macro to choose between an exact comparison and a derived
+// forward-error bound.
+#cmakedefine01 FUSE_FP_REPRODUCIBLE
 #define FUSE_LINALG_BACKEND "@FUSE_LINALG_BACKEND@"
 #define FUSE_VERSION_STRING "@PROJECT_VERSION@"
 // The Kokkos version CMake resolved. A test compares this with the KOKKOS_VERSION
