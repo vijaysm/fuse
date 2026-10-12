@@ -153,7 +153,8 @@ class MpiTransport final : public Transport {
   /// block in a collective.
   ///
   /// Errors: `E-TRANSPORT-COMM`, `E-TRANSPORT-RANKS`, `E-TRANSPORT-SIZE`,
-  /// `E-TRANSPORT-MATCH`, `E-TRANSPORT-MPI`.
+  /// `E-TRANSPORT-MATCH`, `E-TRANSPORT-MPI`, `E-TRANSPORT-PEERMATCH` (R-30:
+  /// ranks disagreeing on `TransportSpec::components`), `E-TRANSPORT-ALLOC`.
   Result<void> build_plan(const TransportSpec& spec);
 
   /// COLLECTIVE, once, before the run. The same plan, built from a rank graph's
@@ -180,7 +181,8 @@ class MpiTransport final : public Transport {
   ///
   /// `elements` and `components` describe THIS rank's field extent, exactly as
   /// in `build_plan`. Errors: `E-TRANSPORT-COMM`, `E-TRANSPORT-RANKS`,
-  /// `E-TRANSPORT-SIZE`, `E-TRANSPORT-PEERMATCH`, `E-TRANSPORT-MPI`,
+  /// `E-TRANSPORT-SIZE`, `E-TRANSPORT-MATCH` (a peer list not in ascending
+  /// rank order), `E-TRANSPORT-PEERMATCH`, `E-TRANSPORT-MPI`,
   /// `E-TRANSPORT-ALLOC`.
   Result<void> build_plan_from_peers(const std::vector<CommGraphPeer>& send,
                                      const std::vector<CommGraphPeer>& recv,

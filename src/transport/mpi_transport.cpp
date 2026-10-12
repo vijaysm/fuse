@@ -903,6 +903,28 @@ Result<void> MpiTransport::build_plan_from_peers(
            "components must be positive, got " + std::to_string(components));
     }
 
+    // Review 2026-10-11 TR-14. The matched path (build_plan(), ~line 427)
+    // checks elements*components against kIntMax before anything derived
+    // from it is cast to an MPI int; this peer-wise path had no equivalent,
+    // and the per-peer casts a few lines below it (sendcounts/recvcounts)
+    // can wrap negative first. Same guard, same reasoning: size_t
+    // arithmetic wraps in silence, so the product is checked before it is
+    // formed, not after.
+    if (components > 0) {
+      const auto nc_check = static_cast<std::size_t>(components);
+      if (elements > kIntMax) {
+        fail(Err::Size, "this rank holds " + std::to_string(elements) +
+                            " elements, more than the INT_MAX an MPI count "
+                            "can express");
+      } else if (nc_check != 0 && elements > kIntMax / nc_check) {
+        fail(Err::Size,
+             "elements * components = " + std::to_string(elements) + " * " +
+                 std::to_string(nc_check) +
+                 " exceeds INT_MAX, which no MPI count or displacement can "
+                 "express; split the field into several transports");
+      }
+    }
+
     // Peers ascending and in range. Ascending is not cosmetic: the count
     // arrays are indexed by rank and both sides walk their index vectors in
     // that order, so an out-of-order peer list pairs a sender's block with the
@@ -936,6 +958,24 @@ Result<void> MpiTransport::build_plan_from_peers(
                      std::to_string(peer.base_rank) + " names local element " +
                      std::to_string(idx) + ", but this rank holds " +
                      std::to_string(elements));
+            return;
+          }
+        }
+        // TR-14 (continued): this peer's own block, per_peer*nc, is what the
+        // sendcounts/recvcounts population loop below casts to int; a peer
+        // with enough local_indices to overflow that cast would otherwise
+        // wrap into a negative Alltoallv count rather than refuse.
+        if (components > 0) {
+          const auto nc_check = static_cast<std::size_t>(components);
+          const std::size_t n = peer.local_indices.size();
+          if (nc_check != 0 && n > kIntMax / nc_check) {
+            fail(Err::Size,
+                 std::string{which} + " plan for rank " +
+                     std::to_string(peer.base_rank) + " names " +
+                     std::to_string(n) + " local indices * " +
+                     std::to_string(nc_check) +
+                     " components, which exceeds INT_MAX and cannot be cast "
+                     "to an MPI count");
             return;
           }
         }
