@@ -150,23 +150,23 @@ Result<void> Runner::Impl::evaluate_region_residual(
   std::vector<std::vector<double>> carried_snapshot(R.carried_arcs.size());
   for (std::size_t i = 0; i < R.carried_arcs.size(); ++i) {
     const detail::Slot& s = slots[R.carried_arcs[i]];
-    if (s.data != nullptr) {
-      carried_snapshot[i].assign(s.data, s.data + s.total());
-    }
+    if (s.data != nullptr) slot_to_vector(s, carried_snapshot[i], s.total());
   }
   std::vector<std::vector<double>> feed_snapshot(R.blocks.size());
   std::vector<std::vector<double>> value_snapshot(R.blocks.size());
   for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
     const detail::RegionBlock& b = R.blocks[bi];
-    const double* feed = slots[b.feed_arc].data;
-    if (feed != nullptr) feed_snapshot[bi].assign(feed, feed + b.length);
-    const double* value = slots[b.value_arc].data;
-    if (value != nullptr) value_snapshot[bi].assign(value, value + b.length);
+    if (slots[b.feed_arc].data != nullptr) {
+      slot_to_vector(slots[b.feed_arc], feed_snapshot[bi], b.length);
+    }
+    if (slots[b.value_arc].data != nullptr) {
+      slot_to_vector(slots[b.value_arc], value_snapshot[bi], b.length);
+    }
   }
 
   // --- deliver x into every block's own feed arc (component Requires) ----
   for (const detail::RegionBlock& b : R.blocks) {
-    num::copy(x.data() + b.offset, slots[b.feed_arc].data, b.length);
+    host_to_slot(x.data() + b.offset, slots[b.feed_arc], b.length);
   }
 
   // --- advance every checkpointed member over the SAME interval ----------
@@ -209,7 +209,7 @@ Result<void> Runner::Impl::evaluate_region_residual(
   // --- F(x) = x - G(x), read before any restore undoes it ----------------
   if (adv_err.ok() && body_err.ok()) {
     for (const detail::RegionBlock& b : R.blocks) {
-      const double* g = slots[b.value_arc].data;
+      const double* g = slot_host_read(slots[b.value_arc], b.length, block_host_scratch);
       for (std::size_t j = 0; j < b.length; ++j) {
         f_out[b.offset + j] = x[b.offset + j] - g[j];
       }
@@ -242,7 +242,7 @@ Result<void> Runner::Impl::evaluate_region_residual(
     for (std::size_t i = 0; i < R.carried_arcs.size(); ++i) {
       detail::Slot& s = slots[R.carried_arcs[i]];
       if (s.data != nullptr && !carried_snapshot[i].empty()) {
-        num::copy(carried_snapshot[i].data(), s.data, carried_snapshot[i].size());
+        host_to_slot(carried_snapshot[i].data(), s, carried_snapshot[i].size());
       }
     }
   }
@@ -250,10 +250,10 @@ Result<void> Runner::Impl::evaluate_region_residual(
     for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
       const detail::RegionBlock& b = R.blocks[bi];
       if (!feed_snapshot[bi].empty()) {
-        num::copy(feed_snapshot[bi].data(), slots[b.feed_arc].data, b.length);
+        host_to_slot(feed_snapshot[bi].data(), slots[b.feed_arc], b.length);
       }
       if (!value_snapshot[bi].empty()) {
-        num::copy(value_snapshot[bi].data(), slots[b.value_arc].data, b.length);
+        host_to_slot(value_snapshot[bi].data(), slots[b.value_arc], b.length);
       }
     }
   }

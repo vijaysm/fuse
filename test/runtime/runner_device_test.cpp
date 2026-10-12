@@ -33,6 +33,7 @@
 
 #include "fuse_test_main.hpp"
 #include <fuse/ir/lowering.hpp>
+#include <fuse/model/iteration.hpp>
 #include <fuse/backend/serial_backend.hpp>
 #include <fuse/runtime/runner.hpp>
 
@@ -43,6 +44,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 using fuse::ComponentSet;
@@ -495,4 +497,148 @@ TEST(RunnerDevice, DeviceRegisteredFieldIsRefusedUnderHostExecution) {
   const Outcome host = run(s, Space::Host, 1);
   ASSERT_FALSE(host.init.ok());
   EXPECT_EQ(host.init.error().code, "E-RT-SPACE");
+}
+
+// ---------------------------------------------------------------------------
+// docs/dev/device-resident-arcs.md step 3: an ordinary (non-window) iteration
+// region. Its block arcs are read and written by iteration.cpp's host-side
+// bookkeeping (accelerator gather/scatter, checkpoint snapshots, the verify
+// compare) only through the space-aware slot helpers, so in Device mode they
+// live on the device and the Picard sweep still converges to the same values
+// in the same number of sweeps as the host run.
+// ---------------------------------------------------------------------------
+namespace {
+
+// out = a + k * in on each cell, with rollback support: the fixed point of
+// the two-way coupling is reached by Picard iteration with |k_a k_b| < 1.
+class LinearBlock final : public fuse::Component {
+ public:
+  LinearBlock(std::string name, double a, double k, std::size_t n)
+      : name_(std::move(name)), a_(a), k_(k), out_(n, 0.0), in_(n, 0.0) {}
+  [[nodiscard]] std::string name() const override { return name_; }
+  fuse::Result<void> register_fields(FieldRegistry& reg,
+                                     const CouplingGraph& g) override {
+    const auto cid = g.find_component(name_);
+    for (const fuse::FieldId f : g.component(*cid).fields) {
+      const bool is_out = g.field(f).intent == fuse::Intent::Provides;
+      auto& buf = is_out ? out_ : in_;
+      auto r = reg.bind(f, fuse::FieldRef{buf.data(),
+                                          fuse::Layout{.stride = 1, .count = buf.size()},
+                                          fuse::MemorySpace::Host});
+      if (!r.ok()) return r;
+    }
+    return fuse::Result<void>::success();
+  }
+  fuse::Result<void> advance(const StepContext& ctx) override {
+    const double a = a_ + 0.25 * ctx.t_begin.to_double();
+    for (std::size_t i = 0; i < out_.size(); ++i) {
+      out_[i] = a + k_ * in_[i] + 0.01 * static_cast<double>(i);
+    }
+    return fuse::Result<void>::success();
+  }
+  fuse::Result<void> save_state() override { saved_out_ = out_; saved_in_ = in_; return fuse::Result<void>::success(); }
+  fuse::Result<void> restore_state() override { out_ = saved_out_; in_ = saved_in_; return fuse::Result<void>::success(); }
+  [[nodiscard]] std::uint64_t capabilities() const override {
+    return fuse::make_capabilities(true, fuse::DeterminismLevel::Bitwise, false);
+  }
+  [[nodiscard]] const std::vector<double>& in() const { return in_; }
+ private:
+  std::string name_;
+  double a_, k_;
+  std::vector<double> out_, in_, saved_out_, saved_in_;
+};
+
+struct RegionOutcome {
+  fuse::Result<void>  init = fuse::Result<void>::success();
+  std::vector<double> a_in, b_in;
+  fuse::RunStats      stats;
+  int                 iterations = -1;
+  bool                converged = false;
+};
+
+RegionOutcome run_region(Space space, int periods) {
+  CouplingGraph g;
+  const auto m = g.add_mesh(fuse::MeshDecl{.name = "m", .source = "generated:line:6"});
+  const auto r1 = g.add_region(fuse::Region{.name = "r1", .mesh = m, .dimension = 1});
+  const auto r2 = g.add_region(fuse::Region{.name = "r2", .mesh = m, .dimension = 1});
+  const auto ca = g.add_component(fuse::ComponentDecl{.name = "A", .ranks = {0, 1}, .interval = Rational{1}});
+  const auto cb = g.add_component(fuse::ComponentDecl{.name = "B", .ranks = {1, 1}, .interval = Rational{1}});
+  const auto a_out = g.add_field(ca, fuse::FieldSpec{.name = "a_out", .region = r1, .units = u::kKelvin, .intent = fuse::Intent::Provides});
+  const auto a_in  = g.add_field(ca, fuse::FieldSpec{.name = "a_in",  .region = r1, .units = u::kKelvin, .intent = fuse::Intent::Requires});
+  const auto b_in  = g.add_field(cb, fuse::FieldSpec{.name = "b_in",  .region = r2, .units = u::kKelvin, .intent = fuse::Intent::Requires});
+  const auto b_out = g.add_field(cb, fuse::FieldSpec{.name = "b_out", .region = r2, .units = u::kKelvin, .intent = fuse::Intent::Provides});
+  const auto fwd  = g.add_channel("a2b", a_out, b_in);
+  const auto back = g.add_channel("b2a", b_out, a_in);
+  g.channel(back).lag(1).allow_time_level_mismatch("iterated");
+  g.channel(fwd).relax(0.5);
+  g.channel(back).relax(0.5);
+  // Both transfers measured (iteration_test.cpp's both_channels(): a single
+  // measure on a two-channel implicit coupling group is E-ITER-MEASURE).
+  fuse::ConvergenceCriterion crit;
+  crit.add(fuse::Converged::Relative(1e-10, "a_out"));
+  crit.add(fuse::Converged::Relative(1e-10, "b_out"));
+  g.iterate({fwd, back}).until(std::move(crit)).max_iterations(100);
+
+  SerialMeshBackend backend;
+  EXPECT_TRUE(backend.load(g.mesh(m)).ok());
+  const auto lowered = lower(g);
+  EXPECT_TRUE(lowered.ok()) << lowered.diags.to_string();
+  const fuse::ClockSet clocks{g};
+  auto sched = schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+  EXPECT_TRUE(sched.ok()) << sched.diags.to_string();
+
+  ComponentSet components;
+  // |k_a k_b| = 0.12 under relax 0.5: the Picard error contracts by about
+  // 0.56 per sweep, 1e-10 in some 40 sweeps.
+  components.add(std::make_unique<LinearBlock>("A", 1.0, 0.3, 6));
+  components.add(std::make_unique<LinearBlock>("B", -2.0, 0.4, 6));
+  FieldRegistry registry;
+  for (auto& comp : components) EXPECT_TRUE(comp.register_fields(registry, g).ok());
+
+  Runner runner{g, lowered.dag, sched.plan, backend};
+  RunnerConfig cfg;
+  cfg.execution_space = space;
+  RegionOutcome o;
+  o.init = runner.initialize(components, registry, cfg);
+  if (!o.init.ok()) return o;
+  for (int k = 0; k < periods; ++k) {
+    const auto r = runner.run_period(components);
+    EXPECT_TRUE(r.ok()) << r.error().message;
+  }
+  o.a_in = dynamic_cast<const LinearBlock*>(components.find("A"))->in();
+  o.b_in = dynamic_cast<const LinearBlock*>(components.find("B"))->in();
+  o.stats = runner.stats();
+  if (!runner.iteration_stats().empty()) {
+    o.iterations = runner.iteration_stats()[0].iterations;
+    o.converged = runner.iteration_stats()[0].converged;
+  }
+  return o;
+}
+
+}  // namespace
+
+TEST(RunnerDevice, OrdinaryIterationRegionConvergesOnTheDeviceLikeTheHost) {
+  if constexpr (!kHasDeviceBackend) GTEST_SKIP() << "no device backend";
+  const RegionOutcome host = run_region(Space::Host, 2);
+  const RegionOutcome dev = run_region(Space::Device, 2);
+  ASSERT_TRUE(host.init.ok()) << host.init.error().message;
+  ASSERT_TRUE(dev.init.ok()) << dev.init.error().message;
+  ASSERT_TRUE(host.converged) << "host run: " << host.iterations << " sweeps";
+  EXPECT_TRUE(dev.converged) << "device run: " << dev.iterations << " sweeps";
+  EXPECT_EQ(host.iterations, dev.iterations);
+  ASSERT_EQ(host.a_in.size(), dev.a_in.size());
+  ASSERT_EQ(host.b_in.size(), dev.b_in.size());
+  // Relax runs on the device (1e-14 relative, D38's accepted contraction
+  // gap); everything else in the loop is a copy, so the converged state
+  // agrees to that precision, not just to the convergence tolerance.
+  for (std::size_t i = 0; i < host.a_in.size(); ++i) {
+    EXPECT_NEAR(host.a_in[i], dev.a_in[i], 1e-13 * std::max(1.0, std::abs(host.a_in[i]))) << "A cell " << i;
+    EXPECT_NEAR(host.b_in[i], dev.b_in[i], 1e-13 * std::max(1.0, std::abs(host.b_in[i]))) << "B cell " << i;
+  }
+  EXPECT_EQ(host.stats.device_resident_arcs, 0);
+  // RED on the step-2 tree: the region's block arcs were pinned to the host,
+  // so no arc of this plan was device-resident.
+  EXPECT_GT(dev.stats.device_resident_arcs, 0)
+      << "the ordinary region's block arcs stayed on the host";
+  EXPECT_GT(dev.stats.device_dispatches, 0);
 }

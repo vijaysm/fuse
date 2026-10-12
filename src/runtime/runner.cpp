@@ -414,10 +414,15 @@ void Runner::Impl::place_arcs_on_device() {
     for (std::uint8_t k = 0; k < ins.n_in; ++k) pin_arc(ins.in[k]);
     pin_arc(ins.out);
   }
-  // iteration.cpp reads a region's block, carried, verify and window arcs
-  // on the host (norms, accelerator gather/scatter, checkpoints, window
-  // priming); constrain reads its `before` arc on the host.
+  // An ordinary region's block, carried and verify arcs are reached from
+  // iteration.cpp / fixed_point_residual.cpp only through the space-aware
+  // slot_to_host()/host_to_slot()/slot_host_read() helpers (step 3), so
+  // they may live on the device. A WINDOW-scoped region's bookkeeping
+  // (advance_window(), priming, lagged imports, the t0 correction) still
+  // dereferences its arcs on the host, so every arc it names stays there;
+  // constrain reads its `before` arc on the host.
   for (const detail::RegionRuntime& R : regions) {
+    if (!R.window_scoped) continue;
     for (const detail::RegionBlock& b : R.blocks) {
       pin(b.value_arc); pin(b.residual_arc); pin(b.feed_arc);
     }
@@ -2559,6 +2564,7 @@ Result<void> Runner::Impl::setup(ComponentSet& components,
     std::size_t stride = 0;
     for (const Slot& s : slots) stride = std::max(stride, s.total());
     device_staging_stride = stride;
+    if (block_host_scratch.size() < stride) block_host_scratch.resize(stride);
     const std::size_t needed = kDeviceStagingSlots * stride;
     if (device_staging.extent(0) < needed) {
       device_staging = Kokkos::View<double*, DeviceMemSpace>(
