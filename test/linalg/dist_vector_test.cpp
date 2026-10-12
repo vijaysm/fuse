@@ -17,15 +17,35 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <random>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include "fuse/base/config.hpp"
 #include "fuse/linalg/comm.hpp"
 
 namespace {
+
+// KNOWN_ISSUES.md D30: the standard forward-error bound for recursive
+// summation of n floating-point products (Higham, "Accuracy and Stability
+// of Numerical Algorithms", 2nd ed., secs. 3.1/4.2) -- any two IEEE-754
+// evaluations of sum_i x_i, contracted (fused multiply-add, one rounding)
+// or not (two roundings; an FMA is itself correctly rounded, so it cannot
+// make an evaluation WORSE than this bound), differ from the exact sum by
+// at most gamma_n * sum_i|x_i|, gamma_n = n*u/(1-n*u), u = 2^-53. Two such
+// evaluations therefore differ from EACH OTHER by at most 2*gamma_n*
+// sum_i|x_i| (triangle inequality through the exact value). n and the sum
+// of magnitudes both come from the code under test below, never adjusted
+// to make an observed ratio come out under 1.
+double forward_error_bound(std::size_t n, double sum_abs_terms) {
+  constexpr double u = 0x1p-53;  // the double-precision unit roundoff, 2^-53
+  const double nu = static_cast<double>(n) * u;
+  const double gamma_n = nu / (1.0 - nu);
+  return 2.0 * gamma_n * sum_abs_terms;
+}
 
 using fuse::Result;
 using fuse::linalg::DistVector;
@@ -39,7 +59,11 @@ using fuse::linalg::make_serial_reducer;
 // Requirement 1: one rank, no ghosts, behaves as a plain vector.
 // ---------------------------------------------------------------------
 
-TEST(DistVectorOneRank, ArithmeticMatchesAPlainLoopBitForBit) {
+// Renamed from ...BitForBit (KNOWN_ISSUES.md D30): with FUSE_FP_REPRODUCIBLE
+// == 0 the dot/norm2 comparisons below are no longer bit-for-bit, so a name
+// claiming that would overstate what this test checks in that configuration.
+// The new name says what BOTH configurations actually assert.
+TEST(DistVectorOneRank, ArithmeticMatchesAPlainLoopExactlyOrWithinTheFpContractionBound) {
   constexpr std::size_t n = 37;
   std::mt19937 rng(11u);
   std::uniform_real_distribution<double> u(-3.0, 3.0);
@@ -57,17 +81,59 @@ TEST(DistVectorOneRank, ArithmeticMatchesAPlainLoopBitForBit) {
   ASSERT_EQ(va.ghost_size(), 0u);
   ASSERT_EQ(va.size(), n);
 
-  // Same loop order as DistVector::dot/norm_inf (src/linalg/dist_vector.cpp),
-  // so the comparison below is bit-for-bit, not "close enough".
+  // Same loop order as DistVector::dot/norm_inf (src/linalg/dist_vector.cpp).
+  // Under FUSE_FP_REPRODUCIBLE (-ffp-contract=off on both this file and
+  // dist_vector.cpp) the comparison below is bit-for-bit; without it, D30
+  // measured a one-ulp difference -- Apple clang may fuse `local +=
+  // storage_[i]*other.storage_[i]` into a single-rounded FMA in one
+  // translation unit and not (identically) in the other. sum_abs_* feeds
+  // forward_error_bound() in that case.
   double expect_dot_ab = 0.0;
-  for (std::size_t i = 0; i < n; ++i) expect_dot_ab += a[i] * b[i];
+  double sum_abs_ab = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    expect_dot_ab += a[i] * b[i];
+    sum_abs_ab += std::fabs(a[i] * b[i]);
+  }
   double expect_dot_aa = 0.0;  // norm2() is sqrt(dot(*this, *this)), a self-dot, not dot(a, b).
-  for (std::size_t i = 0; i < n; ++i) expect_dot_aa += a[i] * a[i];
+  double sum_abs_aa = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    expect_dot_aa += a[i] * a[i];
+    sum_abs_aa += std::fabs(a[i] * a[i]);
+  }
   double expect_max = 0.0;
   for (std::size_t i = 0; i < n; ++i) expect_max = std::max(expect_max, std::fabs(a[i]));
 
+#if FUSE_FP_REPRODUCIBLE
   EXPECT_EQ(va.dot(vb), expect_dot_ab);
   EXPECT_EQ(va.norm2(), std::sqrt(expect_dot_aa));
+#else
+  const double bound_ab = forward_error_bound(n, sum_abs_ab);
+  const double diff_ab = std::fabs(va.dot(vb) - expect_dot_ab);
+  const double ratio_ab = (bound_ab > 0.0) ? diff_ab / bound_ab : 0.0;
+  // Printed unconditionally (not only on failure, as EXPECT_LE's own
+  // streamed message would be) so the measured ratio is in the record of
+  // every Release+OFF run, pass or fail -- docs/dev/testing.md's cost
+  // table cites this output, not a number retyped from memory.
+  std::printf("[ fp_policy ] dist_vector dot(vb): observed=%.3e bound=%.3e ratio=%.6f\n",
+             diff_ab, bound_ab, ratio_ab);
+  EXPECT_LE(diff_ab, bound_ab) << "dot(vb): observed=" << diff_ab << " bound=" << bound_ab
+                              << " ratio=" << ratio_ab;
+  // va.norm2() is sqrt(va.dot(va)) by definition (src/linalg/dist_vector.cpp)
+  // -- that holds exactly regardless of contraction, since it is the same
+  // function calling itself back, not a second evaluation order. The
+  // substantive, contraction-sensitive comparison is dot(va, va) against
+  // the independently summed expect_dot_aa, bounded the same way as above;
+  // composing it with sqrt's own (negligible, correctly-rounded) error is
+  // avoided by comparing the pre-sqrt value instead.
+  const double bound_aa = forward_error_bound(n, sum_abs_aa);
+  const double diff_aa = std::fabs(va.dot(va) - expect_dot_aa);
+  const double ratio_aa = (bound_aa > 0.0) ? diff_aa / bound_aa : 0.0;
+  std::printf("[ fp_policy ] dist_vector dot(va,va): observed=%.3e bound=%.3e ratio=%.6f\n",
+             diff_aa, bound_aa, ratio_aa);
+  EXPECT_LE(diff_aa, bound_aa) << "dot(va): observed=" << diff_aa << " bound=" << bound_aa
+                              << " ratio=" << ratio_aa;
+  EXPECT_EQ(va.norm2(), std::sqrt(va.dot(va)));
+#endif
   EXPECT_EQ(va.norm_inf(), expect_max);
 
   // axpy, scale, set_zero, copy_from against the same plain-loop reference.

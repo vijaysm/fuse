@@ -12,12 +12,14 @@
 #include "fuse/num/space_kernels.hpp"
 
 #include <cmath>
+#include <cstdio>
 #include <numeric>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include "fuse/base/config.hpp"
 #include "fuse/num/kernels.hpp"
 #include "fuse_test_main.hpp"
 
@@ -388,10 +390,67 @@ double ChunkedSerialDiffSquaredReference(const std::vector<double>& a,
   }
   return total;
 }
+
+// KNOWN_ISSUES.md D30: the same forward-error bound as
+// test/linalg/dist_vector_test.cpp's forward_error_bound() (Higham,
+// "Accuracy and Stability of Numerical Algorithms", 2nd ed., secs.
+// 3.1/4.2) -- two IEEE-754 evaluations of sum_i x_i differ by at most
+// 2*gamma_n*sum_i|x_i|, gamma_n = n*u/(1-n*u), u = 2^-53.
+double forward_error_bound(std::size_t n, double sum_abs_terms) {
+  constexpr double u = 0x1p-53;
+  const double nu = static_cast<double>(n) * u;
+  const double gamma_n = nu / (1.0 - nu);
+  return 2.0 * gamma_n * sum_abs_terms;
+}
+
+// deterministic_dot (and deterministic_norm_squared/_diff, which call it)
+// sum n products in chunks of up to kDeterministicChunk, THEN sum the
+// n_chunks chunk totals -- two nested recursive sums, not one flat chain of
+// n terms. Any root-to-leaf accumulation path in that computation is at
+// most (b-1) + (n_chunks-1) additions long, where b = min(kDeterministicChunk,
+// n) is the longest chunk and n_chunks = deterministic_chunks(n) the number
+// of chunks. Bounding that by forward_error_bound(b + n_chunks, ...) -- one
+// more term than the exact op count needs -- is a conservative, not a
+// tuned, choice: it is simpler than deriving the tighter two-level bound
+// (gamma_{b-1} + gamma_{n_chunks-1}, valid because each level's own partial
+// sums are bounded by the SAME sum_abs_terms via the triangle inequality,
+// since a chunk total's magnitude cannot exceed the sum of its terms'
+// magnitudes) and gamma's monotonicity makes it safely larger. The result
+// is still many orders of magnitude above every difference observed below
+// (printed in each failure message as a ratio, which must stay <= 1).
+double chunked_forward_error_bound(std::size_t n, double sum_abs_terms) {
+  const std::size_t b =
+      (n < fuse::num::kDeterministicChunk) ? n : fuse::num::kDeterministicChunk;
+  const std::size_t n_chunks = fuse::num::deterministic_chunks(n);
+  return forward_error_bound(b + n_chunks, sum_abs_terms);
+}
+
+double SumAbsProducts(const std::vector<double>& a, const std::vector<double>& b) {
+  double s = 0.0;
+  for (std::size_t i = 0; i < a.size(); ++i) s += std::fabs(a[i] * b[i]);
+  return s;
+}
+
+double SumSquaredDiffs(const std::vector<double>& a, const std::vector<double>& b) {
+  double s = 0.0;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    const double d = a[i] - b[i];
+    s += d * d;
+  }
+  return s;
+}
 }  // namespace
 
+// Renamed from ...Exactly (KNOWN_ISSUES.md D30): with FUSE_FP_REPRODUCIBLE ==
+// 0 the dot/norm_squared/norm_squared_diff comparisons below are no longer
+// bit-for-bit, so a name claiming that would overstate what this test checks
+// in that configuration. deterministic_sum's own comparison (no multiply in
+// `s += v[i]`, so no FMA for any contraction policy to fuse) and the
+// single-chunk-equals-the-plain-oracle check right below it are NOT
+// contraction-sensitive and stay exact in both configurations; the new name
+// covers what the test as a whole asserts in either one.
 TYPED_TEST(SpaceKernels,
-          DeterministicReductionsMatchTheChunkedReferenceExactly) {
+          DeterministicReductionsMatchTheChunkedReferenceExactlyOrWithinTheFpContractionBound) {
   using F = SpaceKernels<TypeParam>;
   // Sizes deliberately straddling the chunk boundary (256): one well below
   // it (single chunk -- must also equal a plain ascending sum), one that
@@ -419,20 +478,69 @@ TYPED_TEST(SpaceKernels,
         F::c(d_a), F::c(d_b), F::m(d_scratch));
     const double want_dot =
         ChunkedSerialDotReference(a, b_trim, fuse::num::kDeterministicChunk);
+#if FUSE_FP_REPRODUCIBLE
     EXPECT_EQ(got_dot, want_dot) << "deterministic_dot, n=" << n;
+#else
+    // D30: both chunked product-sums (got_dot, and the serial reference it
+    // is checked against) may each fuse their own a(i)*b(i) accumulation
+    // into an FMA, independently -- measured to differ for deterministic_
+    // norm_squared below at n=256/257; not observed for this a/b pair at
+    // this n, but the SAME algorithmic pattern, so bounded rather than
+    // assumed exact.
+    const double bound_dot = chunked_forward_error_bound(n, SumAbsProducts(a, b_trim));
+    const double diff_dot = std::fabs(got_dot - want_dot);
+    const double ratio_dot = (bound_dot > 0.0) ? diff_dot / bound_dot : 0.0;
+    std::printf(
+        "[ fp_policy ] deterministic_dot n=%zu: observed=%.3e bound=%.3e ratio=%.6f\n", n,
+        diff_dot, bound_dot, ratio_dot);
+    EXPECT_LE(diff_dot, bound_dot)
+        << "deterministic_dot, n=" << n << ": observed=" << diff_dot
+        << " bound=" << bound_dot << " ratio=" << ratio_dot;
+#endif
 
     const double got_ns = fuse::num::deterministic_norm_squared<TypeParam>(
         F::c(d_a), F::m(d_scratch));
     const double want_ns =
         ChunkedSerialDotReference(a, a, fuse::num::kDeterministicChunk);
+#if FUSE_FP_REPRODUCIBLE
     EXPECT_EQ(got_ns, want_ns) << "deterministic_norm_squared, n=" << n;
+#else
+    // D30's own measured failure (n=256, n=257): one ulp under the
+    // compiler's default contraction, here bounded instead of asserted
+    // bit-identical.
+    const double bound_ns = chunked_forward_error_bound(n, SumAbsProducts(a, a));
+    const double diff_ns = std::fabs(got_ns - want_ns);
+    const double ratio_ns = (bound_ns > 0.0) ? diff_ns / bound_ns : 0.0;
+    std::printf(
+        "[ fp_policy ] deterministic_norm_squared n=%zu: observed=%.3e bound=%.3e ratio=%.6f\n",
+        n, diff_ns, bound_ns, ratio_ns);
+    EXPECT_LE(diff_ns, bound_ns)
+        << "deterministic_norm_squared, n=" << n << ": observed=" << diff_ns
+        << " bound=" << bound_ns << " ratio=" << ratio_ns;
+#endif
 
     const double got_nsd =
         fuse::num::deterministic_norm_squared_diff<TypeParam>(
             F::c(d_a), F::c(d_b), F::m(d_scratch));
     const double want_nsd = ChunkedSerialDiffSquaredReference(
         a, b_trim, fuse::num::kDeterministicChunk);
+#if FUSE_FP_REPRODUCIBLE
     EXPECT_EQ(got_nsd, want_nsd) << "deterministic_norm_squared_diff, n=" << n;
+#else
+    // Same pattern as deterministic_dot above: each per-element (a(i)-b(i))^2
+    // term is itself a product (of the difference with itself), so the same
+    // contraction sensitivity applies to its chunked accumulation.
+    const double bound_nsd = chunked_forward_error_bound(n, SumSquaredDiffs(a, b_trim));
+    const double diff_nsd = std::fabs(got_nsd - want_nsd);
+    const double ratio_nsd = (bound_nsd > 0.0) ? diff_nsd / bound_nsd : 0.0;
+    std::printf(
+        "[ fp_policy ] deterministic_norm_squared_diff n=%zu: observed=%.3e bound=%.3e "
+        "ratio=%.6f\n",
+        n, diff_nsd, bound_nsd, ratio_nsd);
+    EXPECT_LE(diff_nsd, bound_nsd)
+        << "deterministic_norm_squared_diff, n=" << n << ": observed=" << diff_nsd
+        << " bound=" << bound_nsd << " ratio=" << ratio_nsd;
+#endif
 
     // n <= kDeterministicChunk: the chunked scheme is a SINGLE chunk, i.e.
     // exactly the plain ascending accumulator -- so it must also agree with

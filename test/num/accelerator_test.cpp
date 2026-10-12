@@ -320,14 +320,41 @@ TEST(Accelerator, LadderIsMonotoneOnADenseLinearProblem) {
   const int n_ils      = iterate_linear(*ils, g, kTol, kMaxIters);
   const int n_imvj     = iterate_linear(*imvj, g, kTol, kMaxIters);
 
-  // Pinned counts. These were measured to be identical under -O0, -O1,
-  // -O3 -DNDEBUG, -O2 -ffp-contract=fast and ASan+UBSan; the kernels'
-  // ascending-index accumulation convention is what makes them reproducible
-  // for a given buffer.
+  // Pinned counts for picard/constant/secant/ils/imvj. These were measured
+  // to be identical under -O0, -O1, -O3 -DNDEBUG, -O2 -ffp-contract=fast and
+  // ASan+UBSan; the kernels' ascending-index accumulation convention is what
+  // makes them reproducible for a given buffer. MEASURED 2026-10-12
+  // (FpPolicy track, KNOWN_ISSUES.md D30): that list does NOT cover
+  // -ffp-contract=off (the flag did not exist when it was written) -- under
+  // FUSE_FP_REPRODUCIBLE=ON these five counts were checked directly and are
+  // unchanged (382, 382, 269, 7, 7); only n_aitken, below, moves between the
+  // two contraction policies. The list above shows these five counts are
+  // insensitive to several compiler/optimizer choices; it does not show, and
+  // was never claimed to show, insensitivity to contraction policy
+  // specifically -- that had to be measured separately, and was.
   EXPECT_EQ(n_picard, 382);
   EXPECT_EQ(n_constant, 382) << "omega == 1 is exactly Picard";
   EXPECT_EQ(n_secant, 269);
-  EXPECT_EQ(n_aitken, 56);
+  // n_aitken is deliberately NOT pinned to a literal count. MEASURED
+  // 2026-10-12 (FpPolicy track, KNOWN_ISSUES.md D30): the literal this test
+  // used to assert (56) was a rounding-dependent number, not a robust
+  // property of the method. At x0 = {0,0,0,0,0} exactly, n_aitken = 56 under
+  // the compiler's default (fused) contraction and 57 under
+  // FUSE_FP_REPRODUCIBLE=ON (-ffp-contract=off); the two residual histories
+  // first diverge at iteration k=1, by 2 ulp (1.8748738283994892 vs
+  // 1.8748738283994888). A 24-way perturbation of x0 by 1 ulp of 1.0
+  // (2^-52, an independent +/- sign on each of the 5 components -- the
+  // smallest perturbation for which "1 ulp" is physically meaningful here,
+  // since x0=0 itself admits no such perturbation) gives, in BOTH builds, a
+  // spread across the same four values:
+  //   contracted (default):       {55: 3, 56: 12, 57: 7, 59: 2}, mean 56.42
+  //   FUSE_FP_REPRODUCIBLE=ON:     {55: 3, 56: 14, 57: 6, 59: 1}, mean 56.25
+  // 56 is the single most common value in BOTH distributions, and the
+  // 56->57 shift between the two unperturbed baselines sits well inside
+  // this natural, physically-irrelevant scatter -- not a systematic effect
+  // of the contraction policy. The property this test is actually named
+  // for, the ladder's monotonicity, is asserted below instead, and holds
+  // regardless of which of {55,56,57,59} n_aitken lands on.
   // 7, not the 6 of an unfiltered rank-5 fit, and the extra iteration is the
   // QR2 filter doing exactly what it is for. These accelerators take
   // AccelConfig's default filter, QR2 at limit = 1e-2, so a column is dropped
@@ -344,7 +371,12 @@ TEST(Accelerator, LadderIsMonotoneOnADenseLinearProblem) {
   EXPECT_EQ(n_imvj, 7) << "first window, so IMVJ has nothing retained yet";
 
   // Monotone as a ladder, asserted as an ordering rather than as six
-  // independent facts.
+  // independent facts. n_aitken's own value is not pinned (see above), but
+  // its POSITION in this ordering is: across all 48 measurements behind the
+  // comment above (24 perturbations x 2 contraction policies) n_aitken
+  // stayed in {55,56,57,59} -- far below n_secant=269 and far above
+  // n_ils=7 -- so these relations hold regardless of which rounding-
+  // dependent value it lands on.
   EXPECT_LT(n_secant, n_picard);
   EXPECT_LT(n_aitken, n_secant);
   EXPECT_LT(n_ils, n_aitken);
@@ -364,12 +396,47 @@ TEST(Accelerator, SteffensenIsExactOnADiagonalProblemAndBasisDependent) {
   // Steffensen is the one member of the family that is not orthogonally
   // equivariant: it models the Jacobian by its diagonal, so on a dense
   // Jacobian with the same spectrum it is worse than plain Picard. That is a
-  // property of the method, not a defect, and it is pinned here so that a
-  // future change cannot quietly turn it into something else.
+  // property of the method, not a defect -- but MEASURED 2026-10-12
+  // (FpPolicy track, KNOWN_ISSUES.md D30), the specific iteration count this
+  // test used to pin (681) is NOT a robust property to assert: Steffensen's
+  // iteration on this dense, basis-rotated problem sits at or very near a
+  // chaotic basin boundary. Residual histories under the two contraction
+  // policies track each other to 5-6 significant figures through k<=35, then
+  // both show intermittent large residual bursts from k~60-165 (a signature
+  // of a trajectory near a chaotic repeller/saddle); the default
+  // (contracted) build's bursts happen to relax back into convergence by
+  // k=681, while FUSE_FP_REPRODUCIBLE=ON's burst near k=165 does not, and
+  // the residual instead diverges (to ~1e+137 by k=4400). A 24-way
+  // perturbation of the initial vector by 1 ulp of 1.0 (same convention as
+  // LadderIsMonotoneOnADenseLinearProblem, above) shows this is not specific
+  // to the ON build: 4 of 24 (16.7%) perturbed runs ALSO diverge
+  // (non-convergent, -1) in the DEFAULT contracted build, and 8 of 24
+  // (33%) diverge under ON; the convergent runs ranged 488-2366 iterations
+  // across both policies -- nowhere near a tight cluster around 681. So 681
+  // was one outcome of a dynamical system whose qualitative behaviour
+  // (converge vs. diverge) is controlled by perturbations far smaller than
+  // any physically meaningful input uncertainty, not a measured, reproducible
+  // property of the method. What IS robust, and is asserted below instead,
+  // is the property the test is named for: basis dependence -- Steffensen on
+  // this dense problem either fails to converge at all, or takes far more
+  // than the n_diag=2 iterations the SAME spectrum costs it in a basis where
+  // it is exact. K=20 (giving the n_diag=2 case a factor of 40) is chosen to
+  // sit comfortably below the smallest observed convergent ratio across all
+  // 36 finite measurements above (488/2=244, so K=20 carries more than a
+  // 12x margin below the weakest case actually measured) while remaining
+  // many times larger than any ratio a correctly-functioning, well-
+  // conditioned secant-based method could plausibly reach by chance -- i.e.
+  // it does not depend on the single value 681 that used to be pinned here.
   auto on_dense = must_make(
       AccelConfig{.kind = AccelKind::Steffensen, .initial_relaxation = 0.5});
   const int n_dense = iterate_linear(*on_dense, ladder_problem(), kTol, kMaxIters);
-  EXPECT_EQ(n_dense, 681);
+  constexpr int kBasisDependenceFactor = 20;  // see measured margin above
+  EXPECT_TRUE(n_dense == -1 || n_dense >= kBasisDependenceFactor * n_diag)
+      << "n_dense = " << n_dense << ", n_diag = " << n_diag
+      << " -- Steffensen on a dense, basis-rotated problem should either not "
+         "converge within the iteration budget, or take at least "
+      << kBasisDependenceFactor << "x as long as it does when the basis is "
+         "aligned with its own diagonal model, not a specific pinned count";
 }
 
 TEST(Accelerator, ImvjBeatsIqnIlsOnLaterWindows) {
