@@ -67,6 +67,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -1947,11 +1948,33 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   beam_wall_power *= 1.0;  // dt applied explicitly below, kept as a plain sum here
   const double dx_beam = c.L / static_cast<double>(c.nx_beam);
   const double dPE = diag.beam_PE1 - diag.beam_PE0;
-  const double dE_beam_naive = c.dt * beam_wall_power;
+  // CORRECTED 2026-10-12 (FpPolicy track, final round, KNOWN_ISSUES.md D34):
+  // build_fsi_graph() above does not hand the coupling graph c.dt itself --
+  // it quantizes it first, through this very file's rationalize_dt()
+  // (8-decimal-place rational; defined near build_fsi_graph(), ~60 lines
+  // above), and the production run this identity is evaluated against
+  // physically advanced on THAT quantized dt, not on the literal c.dt.
+  // Using the literal value here compared the identity's right-hand side
+  // against a dt the run never actually took. Measured (this file's own
+  // investigation, not assumed): mismatch = |c.dt - dt_delivered| *
+  // |beam_wall_power|, to 7-8 significant figures in both FP policies, and
+  // substituting dt_delivered for a FRESH, isolated beam step reproduces
+  // the production run's own w1/wd1 to exactly 0.0 in both policies.
+  // Ruled out directly, not assumed: this is NOT FUSE's core scheduler --
+  // `fuse::StepContext::dt()` and the coupling graph's own component
+  // interval already carry the quantized Rational; nothing downstream of
+  // rationalize_dt() ever sees the literal c.dt again. The defect was
+  // entirely in this test's own bookkeeping of which dt its two
+  // independently-computed sides should agree on.
+  const double dt_delivered = rationalize_dt(c.dt).to_double();
+  const double dE_beam_naive = dt_delivered * beam_wall_power;
   const double dE_beam_predicted = dE_beam_naive + (1.0 - dx_beam) * dPE;
   std::printf("\n==== BEAM-SIDE IDENTITY ====\n");
   std::printf("dx_beam = L/nx_beam = %.9f\n", dx_beam);
-  std::printf("beam-side wall power (dt*sum(load_in*wdot_avg))  = %.9e\n",
+  std::printf("c.dt (literal) = %.17e ; dt_delivered (rationalize_dt) = "
+             "%.17e ; diff = %.6e\n",
+             c.dt, dt_delivered, c.dt - dt_delivered);
+  std::printf("beam-side wall power (dt_delivered*sum(load_in*wdot_avg)) = %.9e\n",
              dE_beam_naive);
   std::printf("dPE (strain_energy() change, AS CODED, no dx)   = %.9e\n", dPE);
   std::printf("naive identity (dE_beam == wall power) mismatch  = %.3e "
@@ -1968,100 +1991,169 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
          "this test documents may not exist on this grid (dx_beam=1 "
          "coincidence?); re-examine before trusting the 'corrected' "
          "identity below";
-  // Tolerance DERIVED from eig_quality (measured above), not chosen: `x`
-  // is an eigenvector only to relative accuracy eig_quality, so no
-  // identity evaluated on it (energies computed from x's own w/wdot
-  // blocks) can close tighter than a modest multiple of eig_quality*E0.
-  // Measured (this run): mismatch/(eig_quality*E0) = 0.225 -- a safety
-  // factor of 5 gives >>20x headroom over the actual mismatch without
-  // being loosened past what the eigenvector's own quality can support.
-  // The floor, not a chosen slack. `x` is a finite-difference eigenvector
-  // accurate to `eig_quality` (measured 8.8e-8) in relative terms, so a
-  // quadratic identity evaluated on it cannot close below
-  // eig_quality*|E0| however right the algebra is. Factor 1.0: the measured
-  // mismatch is 2.118e-12 against a tolerance of 9.4e-12, i.e. 22% of it, so
-  // this assertion is load-bearing.
+  // ---- Tolerance: Higham recursive-summation/inner-product bound --------
+  // HISTORY (condensed; superseded below): this tolerance used to be
+  // `1.0 * eig_quality * std::abs(E0)`, on the theory that `x` is an
+  // eigenvector only to relative accuracy eig_quality so no identity
+  // evaluated on it can close tighter. RE-EXAMINED 2026-10-12 (round 4):
+  // on the beam's oscillatory mode that factor narrowly FAILED under the
+  // default (contracted) policy (mismatch/tolerance=1.029); two
+  // independent sweeps (CoupledCase::tol over 6 decades; x's direction
+  // perturbed to move eig_quality by 4919x) both showed the mismatch does
+  // NOT track eig_quality -- dE_beam/dE_beam_predicted are read off ONE
+  // production run's own data with no dependence on x being an
+  // eigenvector of anything, so eig_quality was never the right scale for
+  // this identity's own evaluation error. No derivation was found that
+  // round; the factor was left at 1.0 (expected to fail OFF) rather than
+  // be widened without one.
   //
-  // Stated plainly because it matters: this is LOOSER than the 1e-9*|E0|+1e-12
-  // bound this test carried before the identity was evaluated on an
-  // eigenvector at all. That bound was 1.1e-12, below the 2.1e-12 the
-  // eigenvector's own accuracy permits, so it was unachievable for a reason
-  // now understood rather than merely inconvenient. It is TIGHTER than the
-  // 1e-7*|E0| and 5*eig_quality*|E0| values used while that was being worked
-  // out.
+  // CORRECTED 2026-10-12 (final round, KNOWN_ISSUES.md D34): with the
+  // dt_delivered fix above, the mismatch itself dropped to round-off
+  // (measured ~1e-16-1e-17 relative to E0, both policies) -- the ~1e-12
+  // floor this history describes was entirely the dt-literal/dt-delivered
+  // bookkeeping defect, not a genuine eig_quality or conditioning limit.
+  // The tolerance below replaces eig_quality with the actual floating-
+  // point evaluation-error bound for the identity's own arithmetic, via
+  // Higham's recursive-summation/inner-product result ("Accuracy and
+  // Stability of Numerical Algorithms", 2nd ed., Sec. 3.1: for an n-term
+  // sum/inner product evaluated in the usual left-to-right order,
+  // |fl(sum x_i y_i) - sum x_i y_i| <= gamma_n * sum|x_i y_i|,
+  // gamma_n = n*u/(1-n*u), u = machine epsilon), plus the beam's Keff2
+  // solve's own backward-stable (direct sparse LU) forward error,
+  // bounded by kappa_2(Keff2)*u.
   //
-  // RE-EXAMINED 2026-10-12 (FpPolicy track, round 4 continued, KNOWN_ISSUES.md
-  // D30): on the beam's own oscillatory mode, factor 1.0 measures
-  // mismatch/tolerance = 1.029 under the default (contracted) policy --
-  // i.e. this assertion FAILS, narrowly -- and 0.380 under
-  // FUSE_FP_REPRODUCIBLE=ON. A first attempt raised the factor to 1.5 to
-  // cover this; that was WRONG (a tolerance widened after seeing a specific
-  // failing ratio is a widened tolerance, full stop, regardless of how the
-  // new number is framed) and has been reverted.
-  //
-  // MEASURED instead, by varying each candidate explanation independently
-  // (two sweeps, `nice`'d, on the cached Jacobian -- seconds per point, not
-  // the full ~2-minute test):
-  //   (a) CoupledCase::tol swept 1e-14 .. 1e-2 (9 points, x unperturbed):
-  //       for tol in [1e-14, 1e-8] the mismatch is PINNED at
-  //       1.051884e-12, bit-for-bit identical across 6 orders of magnitude
-  //       of the requested coupling tolerance -- it is NOT limited by
-  //       CoupledCase::tol in this regime. (At 1e-6/1e-4 the mismatch
-  //       actually DROPS, then at 1e-2 it jumps up 77x -- consistent with
-  //       the IQN-ILS iteration landing at a different, less-converged
-  //       point in its own trajectory once tol is loose enough to matter,
-  //       not with a clean tol-proportional floor; not pursued further
-  //       since the regime that matters for this assertion is the tight
-  //       one, where tol provably does nothing.)
-  //   (b) x's DIRECTION perturbed additively by a relative 1e-8 .. 1e-4 of
-  //       itself (added a multiple of a DIFFERENT eigenvector, which
-  //       changes direction, not just scale -- a uniform rescale of x
-  //       leaves a linear system's own relative eigenvector residual
-  //       unchanged, confirmed directly, so it is the wrong perturbation):
-  //       this moves `eig_quality` by a measured factor of 4919x (4.577e-09
-  //       to 2.251e-05) while the mismatch stays 1.051884e-12 to
-  //       1.051876e-12 -- identical to 6 significant figures. The mismatch
-  //       does NOT track eig_quality at all, over nearly 5 orders of
-  //       magnitude of eig_quality's own variation. The theoretical
-  //       argument above ("x is an eigenvector only to relative accuracy
-  //       eig_quality, so no identity... can close tighter than...") does
-  //       not actually apply to THIS identity: dE_beam and
-  //       dE_beam_predicted are both computed from ONE production run's
-  //       own data (load_in, wdot, KE, PE before/after), with no reference
-  //       to x being an eigenvector of anything -- it is a Newmark energy
-  //       identity, not an eigenvector-accuracy statement, and measuring
-  //       it this way shows it was never truly eig_quality-limited; the
-  //       historical numbers above happened not to expose this because
-  //       that mode's eig_quality was smaller than the floor being measured
-  //       here.
-  //   A third candidate, K's own condition number amplifying round-off
-  //   through the beam's stiffness solve, was checked and ruled out too:
-  //   measured cond(K) ~= 45.9 (natural_frequencies(5)'s own eigenvalue
-  //   range), nowhere near enough to turn machine round-off (~1e-16) into
-  //   the observed ~1e-12 (would need a factor of ~1e4, not ~46).
-  // mismatch/E0 is the one quantity that stayed stable across both sweeps'
-  // non-degenerate points (~4.7e-09, essentially constant) -- but no
-  // first-principles algebraic derivation of that specific constant from
-  // the identity's own arithmetic (the actual operation count and
-  // conditioning of the Newmark/Stokes solves this identity's two sides
-  // draw from) was attempted or achieved this round; stating a measured
-  // ratio as if it were a derived bound would repeat the exact mistake
-  // being corrected here, just with different numbers.
-  //
-  // Per the standing rule, a tolerance is not widened after the fact
-  // without a derivation from the algebra. None was found. Factor is
-  // RESTORED to 1.0, the historical, load-bearing value; this assertion is
-  // THEREFORE EXPECTED TO FAIL under the default (contracted) policy, by
-  // the measured ratio above (1.029) -- reported as an open finding for
-  // this mode, not patched over.
-  const double beam_identity_tol = 1.0 * eig_quality * std::abs(E0);
-  std::printf("beam identity tolerance = eig_quality*|E0| = %.3e "
-             "(measured mismatch/that ratio = %.3f)\n",
+  // The identity combines three terms: dt_delivered*beam_wall_power
+  // (beam_wall_power itself an m_beam=5-term dot product -- gamma_m
+  // applies directly), and (1-dx_beam)*dPE, dPE=PE1-PE0 with
+  // PE=0.5*w^T*K*w an nnz(K)-term quadratic form. K is the beam's
+  // pentadiagonal stiffness operator under mirror-reflection boundary
+  // conditions; this test has no access to the solver's private K_, so
+  // it rebuilds the SAME public, documented construction (EI/dx_beam^4
+  // times the 5-point stencil {1,-4,6,-4,1}) independently below --
+  // confirmed elsewhere (investigation scratch, not shipped) to match
+  // BeamSolver::K_ to 0.0 in the matrix norm for this exact
+  // (nx_beam, L, EI). The quadratic form's own sum of absolute products
+  // cancels substantially against its final (small) value -- measured
+  // ~44x for this mode in both policies -- so the Higham bound must
+  // scale with that uncancelled sum, not with |dPE| itself; using |dPE|
+  // there would understate the true rounding floor by that same factor.
+  // kappa_2(Keff2) is likewise computed directly below (JacobiSVD on the
+  // same replica), not cited as an external constant.
+  Eigen::MatrixXd K_beam_replica =
+      Eigen::MatrixXd::Zero(static_cast<int>(d.m_beam), static_cast<int>(d.m_beam));
+  {
+    const double factor = c.EI / (dx_beam * dx_beam * dx_beam * dx_beam);
+    const double stencil[5] = {1.0, -4.0, 6.0, -4.0, 1.0};
+    const auto n_ll = static_cast<long long>(c.nx_beam);
+    const auto reflect = [n_ll](long long j) -> long long {
+      if (j == -1) return 1;
+      if (j == n_ll + 1) return n_ll - 1;
+      return j;
+    };
+    for (std::size_t idx = 0; idx < d.m_beam; ++idx) {
+      const long long node = static_cast<long long>(idx) + 1;
+      for (int off = -2; off <= 2; ++off) {
+        const long long j = node + off;
+        if (j < -1 || j > n_ll + 1) continue;
+        const long long j_ref = reflect(j);
+        if (j_ref == 0 || j_ref == n_ll) continue;
+        const auto col = static_cast<std::size_t>(j_ref - 1);
+        K_beam_replica(static_cast<int>(idx), static_cast<int>(col)) +=
+            factor * stencil[off + 2];
+      }
+    }
+  }
+  std::size_t nnz_K_beam = 0;
+  for (int i = 0; i < K_beam_replica.rows(); ++i)
+    for (int j = 0; j < K_beam_replica.cols(); ++j)
+      if (K_beam_replica(i, j) != 0.0) ++nnz_K_beam;
+  const double mconst_beam = c.rho_s * c.h_s;
+  const Eigen::MatrixXd Keff2_beam_replica =
+      (dt_delivered / 4.0) * K_beam_replica +
+      (mconst_beam / dt_delivered) *
+          Eigen::MatrixXd::Identity(K_beam_replica.rows(), K_beam_replica.cols());
+  const Eigen::JacobiSVD<Eigen::MatrixXd> svd_beam(Keff2_beam_replica);
+  const auto& sv_beam = svd_beam.singularValues();
+  const double kappa_beam = sv_beam(0) / sv_beam(sv_beam.size() - 1);
+
+  Eigen::VectorXd w1_beam(static_cast<Eigen::Index>(d.m_beam)),
+      w0_beam(static_cast<Eigen::Index>(d.m_beam));
+  for (std::size_t i = 0; i < d.m_beam; ++i) {
+    w1_beam[static_cast<Eigen::Index>(i)] =
+        diag.y_final[static_cast<Eigen::Index>(d.off_w + i)];
+    w0_beam[static_cast<Eigen::Index>(i)] =
+        x[static_cast<Eigen::Index>(d.off_w + i)];
+  }
+  double sum_abs_load_wdot = 0.0, sum_wdot1_sq = 0.0, sum_wdot0_sq = 0.0;
+  for (std::size_t i = 0; i < d.m_beam; ++i) {
+    const double wdot_avg = 0.5 * (diag.wd0[i] + diag.wd1[i]);
+    sum_abs_load_wdot += std::abs(diag.load_in_interior[i] * wdot_avg);
+    sum_wdot1_sq += diag.wd1[i] * diag.wd1[i];
+    sum_wdot0_sq += diag.wd0[i] * diag.wd0[i];
+  }
+  double sum_abs_K_w1_w1 = 0.0, sum_abs_K_w0_w0 = 0.0;
+  for (int i = 0; i < K_beam_replica.rows(); ++i) {
+    for (int j = 0; j < K_beam_replica.cols(); ++j) {
+      if (K_beam_replica(i, j) == 0.0) continue;
+      sum_abs_K_w1_w1 += std::abs(K_beam_replica(i, j) * w1_beam[i] * w1_beam[j]);
+      sum_abs_K_w0_w0 += std::abs(K_beam_replica(i, j) * w0_beam[i] * w0_beam[j]);
+    }
+  }
+  const double u_mach = std::numeric_limits<double>::epsilon();
+  const auto gamma_n = [u_mach](double n_terms) {
+    return n_terms * u_mach / (1.0 - n_terms * u_mach);
+  };
+  const double gamma_m_beam = gamma_n(static_cast<double>(d.m_beam));
+  const double gamma_PE_beam = gamma_n(static_cast<double>(nnz_K_beam + d.m_beam));
+  // Absolute error bounds: gamma_n*(sum of absolute products) for the
+  // evaluation error, plus 2*kappa*u (quadratic sensitivity) for
+  // solve-derived quantities (w1/wd1), 0 for w0/wd0 (the exact
+  // eigenvector input, not a solve output).
+  const double delta_P_beam = gamma_m_beam * sum_abs_load_wdot +
+                              kappa_beam * u_mach * std::abs(beam_wall_power);
+  const double delta_KE1_beam = gamma_m_beam * sum_wdot1_sq * 0.5 * mconst_beam +
+                                2.0 * kappa_beam * u_mach * diag.beam_KE1;
+  const double delta_KE0_beam = gamma_m_beam * sum_wdot0_sq * 0.5 * mconst_beam;
+  const double delta_PE1_beam = gamma_PE_beam * sum_abs_K_w1_w1 * 0.5 +
+                                2.0 * kappa_beam * u_mach * diag.beam_PE1;
+  const double delta_PE0_beam = gamma_PE_beam * sum_abs_K_w0_w0 * 0.5;
+  const double delta_dE_beam =
+      delta_KE1_beam + delta_KE0_beam + delta_PE1_beam + delta_PE0_beam;
+  const double delta_dt_P_beam = dt_delivered * delta_P_beam;
+  const double delta_dPE_term_beam =
+      (1.0 - dx_beam) * (delta_PE1_beam + delta_PE0_beam);
+  // Convert each rigorous absolute bound into the form
+  // tol = c*u*(|dE_beam|+|dt*P|+|(1-dx_beam)*dPE|) by finding, for each of
+  // the three terms, the multiplier c_i = delta_i/(u*|term_i|); c=max(c_i)
+  // then guarantees c*u*(sum of magnitudes) >= sum of the three rigorous
+  // bounds, for any nonnegative weights. c is DERIVED and PRINTED below,
+  // never fitted.
+  const double c_dE_beam = delta_dE_beam / (u_mach * std::abs(dE_beam));
+  const double c_dt_P_beam = delta_dt_P_beam / (u_mach * std::abs(dE_beam_naive));
+  const double c_dPE_beam =
+      delta_dPE_term_beam / (u_mach * std::abs((1.0 - dx_beam) * dPE));
+  const double c_beam = std::max({c_dE_beam, c_dt_P_beam, c_dPE_beam});
+  std::printf("\n==== BEAM IDENTITY TOLERANCE (Higham, derived) ====\n");
+  std::printf("nnz(K)=%zu kappa_2(Keff2)=%.6f (both measured directly, not cited)\n",
+             nnz_K_beam, kappa_beam);
+  std::printf("sum|K_ij*w1_i*w1_j|=%.6e vs 2*|PE1|=%.6e (cancellation ratio=%.3f)\n",
+             sum_abs_K_w1_w1, 2.0 * diag.beam_PE1,
+             sum_abs_K_w1_w1 / (2.0 * diag.beam_PE1));
+  std::printf("c_dE=%.6e c_dt_P=%.6e c_dPE=%.6e c(overall,max,NOT tuned)=%.6e\n",
+             c_dE_beam, c_dt_P_beam, c_dPE_beam, c_beam);
+  const double beam_identity_tol =
+      c_beam * u_mach *
+      (std::abs(dE_beam) + std::abs(dE_beam_naive) + std::abs((1.0 - dx_beam) * dPE));
+  std::printf("beam identity tolerance = c*u*(|dE_beam|+|dt*P|+|(1-dx_beam)*dPE|) "
+             "= %.3e (measured mismatch/tolerance = %.3e, i.e. tolerance is "
+             "%.1fx the observed mismatch)\n",
              beam_identity_tol,
-             std::abs(dE_beam - dE_beam_predicted) / beam_identity_tol);
+             std::abs(dE_beam - dE_beam_predicted) / beam_identity_tol,
+             beam_identity_tol / std::abs(dE_beam - dE_beam_predicted));
   ASSERT_NEAR(dE_beam, dE_beam_predicted, beam_identity_tol)
       << "beam's own exact Newmark energy identity (CORRECTED for the "
-         "kinetic_energy()/strain_energy() quadrature mismatch) does not "
+         "kinetic_energy()/strain_energy() quadrature mismatch, and for "
+         "the dt_delivered/literal-c.dt bookkeeping above) does not "
          "close -- nothing past this point can be trusted until it does";
 
   // ---- Fluid-side: isolate the post-solve mass correction ----------------
