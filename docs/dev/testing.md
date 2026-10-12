@@ -365,38 +365,87 @@ three `TEST(...)` bodies (its only edit permission this round); `examples/` and 
   on the real part's own production period and are reachable/load-bearing again (see
   `build-evidence/mutations/fsi.toml`). Round 4 first recalibrated the beam-side identity's tolerance
   factor from `1.0` to `1.5` because factor `1.0` narrowly failed on this less-favourably-resolved
-  mode (`1.029` contracted). **That recalibration was reverted 2026-10-12** (round 5): a tolerance
-  widened specifically because one run failed is a widened tolerance regardless of how the new number
-  is framed, and the comment's own theoretical basis for factor `1.0` — that the identity cannot close
-  tighter than `eig_quality*|E0|` because `x` is only an approximate eigenvector — does not actually
-  hold for this identity, which is computed entirely from one production run's own data and never
-  references `x` being an eigenvector at all. Measured directly (sweeping `CoupledCase::tol` over six
-  orders of magnitude, and separately perturbing `x`'s direction to move `eig_quality` by a factor of
-  nearly `5000`, in both contraction policies): the beam-side mismatch (`~1.05e-12` to `~1.09e-12`) is
-  insensitive to both, refuting the mechanism the factor was tuned against. A third candidate, the
-  beam stiffness matrix's own condition number (measured `~45.9` via `natural_frequencies(5)`), is far
-  too small on its own to turn machine round-off into the observed floor. No first-principles
-  algebraic derivation of the floor's actual value was found this round, so per the standing rule the
-  factor is restored to `1.0` and the assertion is left to fail where it fails: Release+`OFF`
-  (mismatch/tolerance `1.029`). It passes under Release+`ON` and Debug+`ON` (`0.380`). This is reported
-  as an open, unresolved finding on this specific sub-assertion, not patched over — see the
-  `beam_identity_tol` comment in `fsi_energy_diag_test.cpp` for the full measurement table.
+  mode (`1.029` contracted); that recalibration was reverted round 5 (a tolerance widened specifically
+  because one run failed is a widened tolerance regardless of how the new number is framed), and
+  `eig_quality`/`CoupledCase::tol`/the beam stiffness matrix's condition number were each measured and
+  ruled out as the floor's mechanism, leaving a real `~1.05e-12` failure under Release+`OFF` as an open
+  finding.
 
-Full `ctest`, both targets, after round 5 (measured 2026-10-12):
+  **Root cause found and fixed 2026-10-12 (final FpPolicy round, `KNOWN_ISSUES.md` D34).** The floor
+  was neither `eig_quality` nor the solver's own conditioning: it was this test's own bookkeeping.
+  `build_fsi_graph()` does not hand the coupling graph `c.dt` itself — it quantizes it first, through
+  this file's own `rationalize_dt()` (an 8-decimal-place rational: `Rational{llround(dt*1e8), 1e8}`),
+  and the production run every downstream identity is evaluated against physically advanced on THAT
+  quantized value, not on the literal `c.dt`. (`FUSE`'s core scheduler was considered and ruled out
+  directly: `fuse::StepContext::dt()` and the coupling graph's own component interval already carry the
+  quantized `Rational` — nothing downstream of `rationalize_dt()` ever sees the literal `c.dt` again.)
+  The beam-side identity's `dE_beam_naive = c.dt * beam_wall_power` line used the literal value while
+  the run it was being compared against used the delivered one; measured directly, `mismatch = |c.dt -
+  dt_delivered| * |beam_wall_power|` to 7-8 significant figures in both policies (`c.dt - dt_delivered
+  = -1.613339e-09` on this mode), and substituting the delivered dt into a fresh, isolated beam step
+  reproduces the production run's own `w1`/`wd1` to exactly `0.0` in both policies. Fixed by computing
+  `dt_delivered = rationalize_dt(c.dt).to_double()` and using it in place of `c.dt` in
+  `dE_beam_naive`; the mismatch drops to round-off (`4.07e-20` ON, `6.78e-21` OFF; relative to `E0`:
+  `2.78e-16` ON, `3.03e-17` OFF). The fluid-side budget's `measure_full_energy_identity_general` call
+  has the same class of defect (passes the literal `c.dt` to an independently-built `cn_step`, compared
+  against a production state that advanced on `dt_delivered`) but was not fixed this round — only the
+  beam identity was in scope.
+
+  The tolerance was re-derived from scratch rather than loosened: it no longer uses `eig_quality` at
+  all (measured, this round, to be the wrong scale for an identity computed entirely from one
+  production run's own data). It now bounds the floating-point evaluation error of the identity's own
+  arithmetic directly, via Higham's recursive-summation/inner-product result (*Accuracy and Stability
+  of Numerical Algorithms*, 2nd ed., Sec. 3.1: an `n`-term sum/inner product's evaluation error is
+  bounded by `gamma_n * (sum of absolute products)`, `gamma_n = n*u/(1-n*u)`), plus the beam's
+  `Keff2=(dt/4)*K+(rho_s h_s/dt)*I` solve's own backward-stable (direct sparse LU) forward error
+  (`kappa_2(Keff2)*u`). The quadratic form `PE=0.5*w^T*K*w` behind the energy terms cancels
+  substantially against its own evaluation-error scale (measured ~44x: `sum|K_ij*w_i*w_j|` versus
+  `2*|PE|`), so the bound uses that larger, uncancelled sum rather than `|PE|` itself — using `|PE|`
+  there would understate the true floor by the same ~44x. Both `nnz(K)` (`19`) and `kappa_2(Keff2)`
+  (`1.222628`) are computed directly in the test from an independent replica of `BeamSolver`'s public,
+  documented stiffness construction (confirmed byte-identical, `||diff||=0.0`, to the real, private
+  `K_` for this configuration) — no private access, no cited external constant. The resulting overall
+  multiplier `c` (`max` of three per-term multipliers, never fitted) is `11402.13` (ON) / `23444.91`
+  (OFF); the derived tolerance is `1.031e-16` (ON) / `1.978e-16` (OFF), which is `2534.7x` / `29183.6x`
+  looser than the now-round-off-level observed mismatch — a loose bound, honestly reported as such,
+  not tightened to fit.
+
+  Both `build-evidence/mutations/fsi.toml` rows for this identity were re-proved on the fixed code: the
+  pre-existing `fsi-energy-diag-beam-identity-dx-beam-coefficient-dropped` row now kills the test in
+  BOTH policies (previously it could only be proved under `ON`, since the `OFF` baseline itself failed
+  before this round); a new row,
+  `fsi-energy-diag-beam-identity-dt-literal-not-delivered`, reverts the fix (`dE_beam_naive` back to
+  literal `c.dt`) and is killed in both policies by the new tolerance, with the mismatch exceeding it
+  by `1.058e+04x` (ON) / `5.319e+03x` (OFF).
+
+Full `ctest`, both targets, after the final round (measured 2026-10-12):
 
 | `CMAKE_BUILD_TYPE` | `FUSE_FP_REPRODUCIBLE` | `num.accelerator` | `verification.fsi_energy_diag` |
 |---|---|---|---|
-| Release | ON  | Passed (2/2 cases OK) | **Passed** (`FullBudgetOnTheDominantModeCloses` OK, closure mismatch/tolerance `2.38e-3`, non-vacuity `1.0e12`, beam-identity mismatch/tolerance `0.380`) |
-| Release | OFF | Passed (2/2 cases OK) | **FAILED** (closure mismatch/tolerance `1.36e-1`, non-vacuity `4.5e12` both pass; `FullBudgetOnTheDominantModeCloses` FAILS at the beam-side identity's `ASSERT_NEAR`, mismatch/tolerance `1.029` — see above) |
+| Release | ON  | Passed (2/2 cases OK) | **Passed** (`FullBudgetOnTheDominantModeCloses` OK, closure mismatch/tolerance `2.38e-3`, non-vacuity `1.0e12`, beam-identity mismatch/tolerance `3.95e-4`, margin `2534.7x`) |
+| Release | OFF | Passed (2/2 cases OK) | **Passed** (closure mismatch/tolerance `1.36e-1`, non-vacuity `4.5e12`; beam-identity mismatch/tolerance `3.43e-5`, margin `29183.6x` — previously FAILED here at `1.029`, see above) |
 | Debug   | ON  | Passed (2/2 cases OK) | **Passed** (identical numbers to Release+ON, as D30's own mechanism predicts) |
 
-The open question round 3 left — a real, continuing `ON`-default failure on the growth-rate-only
-passenger mode — is closed by round 4's redesign: the top-level closure now demonstrably closes, with
-a comfortable, derived margin, in all three required configurations, in both policies. What remains
-open is narrower and different in kind: one of the two pre-existing identity sub-assertions this test
-also carries fails under the DEFAULT (contracted) policy on this new mode, by a measured but
-not-yet-explained floor of about `1.05e-12`, with both of the mechanisms the original tolerance assumed
-(`eig_quality`, `CoupledCase::tol`) measured and ruled out.
+All three required configurations now pass, including the previously-failing Release+`OFF` case. The
+beam-side identity's floor is no longer open: it was this test's own dt-literal/dt-delivered
+bookkeeping, now fixed, with a Higham-derived (not fitted, not eig_quality-based) tolerance in its
+place. Two related, same-class findings are carried forward rather than fixed this round: the
+fluid-side budget's `measure_full_energy_identity_general` call (described above), and
+`examples/fsi_channel/main.cpp`'s own `rationalize_dt()` (a coarser, 6-decimal-place quantization of
+the same kind), whose literal, un-quantized `dt` is used in exactly two places after the graph is
+built: the step count `llround(t_end / dt)` (`main.cpp:259`) and the output CSV's `time` column,
+`(step + 1) * dt` (`main.cpp:279`). Neither enters a dynamics computation — the components take their
+step and time from the scheduler's `StepContext`, and the inflow is a function of `y` alone — so the
+consequence is that the simulated end time is `n_steps` times the quantized step rather than
+`t_end`, and the CSV's time axis carries the same relative error, accumulating linearly. The example
+computes no energy budget or identity of its own. Its magnitude is
+NOT the `~4.6e-7` figure this round's fix measured (that number is specific to this test's own
+`c.dt`/8-decimal-place grid): measured directly for `main.cpp`'s own 6-decimal-place grid, the
+quantization is EXACT (`0.0` relative error) for the tool's default `--dt 0.01`, since `0.01` lands
+exactly on a `1e-6` grid point; for a `--dt` that does not (e.g. `0.0035104283866610403`, this test's
+own value, used here only to exercise the grid, not as a claim about what `main.cpp` is run with), the
+relative error measures `~1.22e-4` — about 265x LARGER than this round's own figure, consistent with
+`main.cpp`'s grid being 100x coarser (`1e6` vs `1e8`).
 
 ## Golden files
 

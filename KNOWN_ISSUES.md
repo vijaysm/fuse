@@ -3273,10 +3273,11 @@ compiler, and it fails in both Debug and Release when the call that applies the 
 `num.accelerator` no longer pins rounding-dependent iteration counts (its two cases are restated as
 the properties they name), and `verification.fsi_energy_diag` now evaluates the energy budget on the
 beam's own oscillatory mode, because the old "dominant" eigenvalue is Newmark's acceleration
-passenger, λ = −1, whose energy is rounding noise. One sub-assertion of that test is not closed: D34.
+passenger, λ = −1, whose energy is rounding noise. One sub-assertion of that test failed under OFF until D34 was
+found and fixed (the test's own step rounding, not the contraction policy).
 
 Verified 2026-10-12 from a clean export: Debug (policy ON), 179 of 179 quick rows and 16 of 16 slow
-rows; Release ON, the 5 touched rows; Release OFF, 4 of 5 touched rows, the failure being D34's.
+rows; Release ON and OFF, the 5 touched rows (OFF passes after D34's fix).
 
 ### D27. The native backend's remap halo has no `accumulate_remap_halo` counterpart
 
@@ -4102,43 +4103,60 @@ gives the same 194 rows and `THREADS_HI=12`. Configure now also states when the 
 because the omp legs then compare one thread with one thread whatever the registration does.
 Not covered: Windows (the check is skipped; `ProcessorCount()` reads `NUMBER_OF_PROCESSORS` there).
 
-### D34. The FSI beam-side energy identity has an unexplained mismatch floor of about 1e-12, so it passes or fails with the contraction policy — OPEN 2026-10-12
+### D34. The FSI beam-side energy identity compared a quantity built with the literal step against a run that took the rounded one — CLOSED 2026-10-12
 
-**Where.** `FsiEnergyDiag.FullBudgetOnTheDominantModeCloses`
-(`test/verification/fsi_energy_diag_test.cpp`), the beam-side identity sub-assertion. Its tolerance is
-`eig_quality × |E0|`, the form it had before this cycle. A widening of the factor from 1.0 to 1.5,
-made after the assertion failed at a ratio of 1.029, was rejected and reverted: a constant chosen
-after a failure is a widened tolerance. The closure assertion the test was redesigned around passes
-in every configuration below.
+**Cause (measured).** `build_fsi_graph()` in `test/verification/fsi_energy_diag_test.cpp` does not hand
+the coupling graph `c.dt`: it first rounds it through the file's own `rationalize_dt()`,
+`Rational{llround(dt × 1e8), 1e8}`. For `c.dt = 3.51042838666104032e-03` that is 351043 / 1e8, so every
+production step ran on `3.51043000000000015e-03`, a difference of −1.613339e-09 (relative 4.6e-7). The
+beam-side identity then formed its predicted energy change as `c.dt × (wall power)`, with the literal
+`c.dt`, against `dE_beam` produced by steps of the rounded one. The mismatch is therefore
+`|c.dt − dt_delivered| × |beam_wall_power|`, which reproduces the observed floor to 7–8 significant
+figures in both policies (predicted/actual 1.000000037 ON, 1.000000006 OFF). The floor was the same
+absolute size on two different modes because that product is, not because anything scaled with the mode.
 
-**Measured 2026-10-12 in Release, same eigenvalue in both (|λ| = 0.995144, arg = 4.3931°):**
+**Fixed.** The identity uses `dt_delivered = rationalize_dt(c.dt).to_double()`. The mismatch is now
+4.065758e-20 (ON) and 6.776264e-21 (OFF), 2.8e-16 and 3.0e-17 of E0.
 
-| policy | mode index | E0 | eig_quality | mismatch | tolerance | ratio | closure ratio |
-|---|---|---|---|---|---|---|---|
-| ON (default) | 13 | 1.4605e-04 | 1.966e-08 | 1.091e-12 | 2.872e-12 | 0.380 | 2.382e-03 |
-| OFF (`tier0-release-fast`) | 8 | 2.2337e-04 | 4.5e-09 | 1.052e-12 | 1.022e-12 | **1.029, fails** | 1.364e-01 |
+**Tolerance, derived rather than fitted.** The `eig_quality × |E0|` tolerance, and the widening of its
+factor to 1.5 that was rejected after the assertion failed, are gone. The tolerance is
+`c · u · (|dE_beam| + |dt·P| + |(1 − dx_beam)·dPE|)` with `u` the machine epsilon and `c` the largest
+of three multipliers formed from each term's own bound (Higham, *Accuracy and Stability of Numerical
+Algorithms*, 2nd ed., sec. 3.1: `|fl(Σ xᵢyᵢ) − Σ xᵢyᵢ| ≤ γₙ Σ|xᵢyᵢ|`; the quadratic form's uncancelled
+sum, not its small value; and `2κu` for the outputs of the beam's direct solve, κ₂(Keff2) = 1.222628,
+measured in the test). `c` is printed: 1.140213e4 (ON), 2.344491e4 (OFF). The tolerance is 1.0305e-16 and
+1.9776e-16, so it is 2534.7 and 29183.6 times the observed mismatch. It is not tighter than the observed
+mismatch in either policy, so no term was missing. Limits: the `2κu` term is the first-order bound for a
+backward-stable solve and ignores the growth factor, and the nnz and κ come from a replica of the beam's
+stiffness matrix built in the test, whose agreement with the solver's private matrix was checked in
+scratch work that is not shipped.
 
-**Reading it.** The mismatch is the same in both policies. What differs is the tolerance, which
-follows the eigenvector's accuracy, and the eigenvector is less accurate under ON. So the ON pass is
-not evidence that the identity closes to that level; it passes because its tolerance is 2.8 times
-looser there. Debug with ON gives the same ratio as Release with ON, 0.380.
+**Verified 2026-10-12 from a clean export.** Debug with the default policy: 179 of 179 quick rows and
+16 of 16 slow rows. Release ON and OFF: the 5 touched rows, including `verification.fsi_energy_diag`,
+which failed under OFF before this fix (ratio 1.029). The mutation that restores the literal `c.dt`
+fails the test with the 4.6e-7 relative step error exceeding the tolerance by factors of 1.058e4 (ON) and
+5.319e3 (OFF); the `dx_beam`-coefficient
+mutation is killed in both policies. Both restore byte-identically.
 
-**Excluded by measurement.**
+**How it was found, and two wrong turns.** This entry was first written as open, with the floor unexplained and
+the test passing under ON only because its tolerance followed the eigenvector accuracy. Two hypotheses given during the search were wrong. The lead guessed the fluid
+step's conditioning at about 1e7; it is 3.53e5, and its measured forward error is 2.2e-15. The track's
+penultimate report then attributed the rounding to the core scheduler's tick resolution
+(`kMaxPeriodTicks`); that was wrong, since the scheduler delivered exactly the rational the test gave
+it, and the rounding is the test's own `rationalize_dt()`. Between those, a hidden-state leak across
+rejected sweeps and the cached factorization were tested directly and excluded (replay with the cache
+defeated reproduced production with a difference of 0.0; every member of the beam solver and component
+round-tripped bitwise through all 16 restores).
 
-- The coupling tolerance: the mismatch is bit-identical for tolerances from 1e-14 to 1e-8, in both
-  policies.
-- The eigenvector's quality: a perturbation that worsened it by up to about 5000 times left the
-  mismatch unchanged to six or seven digits. (A uniform rescaling leaves it exactly unchanged on this
-  nearly linear system, which is why an additive perturbation was needed.)
-- An iterative solver's tolerance: both `examples/fsi_channel` solvers are direct (`Eigen::SparseLU`).
-- The fluid step's conditioning: κ₂ of the 53 × 53 matrix is 3.53e5, and its forward error, measured
-  against an 80-digit arbitrary-precision solve (`long double` equals `double` on this machine, so it
-  could not serve as a reference), is 2.2e-15. The mismatch relative to E0 is 4.7e-9 (OFF); even the
-  worst-case κu = 7.8e-11 is below it.
-- The beam system: κ₂ of the effective Newmark matrix is 1.22, and 45.9 for the stiffness matrix alone.
+**Still open, same class.**
 
-**Not yet tried.** Whether the floor is absolute, since it is the same on two different modes and in
-both policies: sweep the mode's amplitude and the coupling step, and read what the mismatch scales with.
-
-**Decision (the user, 2026-10-12): commit with the default ON, record it, investigate next.** Under
-OFF this one sub-assertion fails. No tolerance was chosen after the failure.
+- The fluid-side budget calls `measure_full_energy_identity_general(fc, c.dt, ...)` with the literal
+  `c.dt` against a state that advanced on `dt_delivered`. The audit found it; it is not fixed, and the
+  tolerance it is compared against has not been examined for whether it silently absorbs the 4.6e-7.
+- The interface adjointness check (beam receives against fluid delivers) has a separate mismatch of
+  about 4.75e-6 in both policies, attributed so far to a non-adjoint remap with `nx_beam = 6` against
+  `nx_fluid = 5`. Not investigated.
+- `examples/fsi_channel/main.cpp` rounds `dt` at 1e-6 (`rationalize_dt`) and afterwards uses the literal
+  value for the step count and the CSV time column only. No dynamics computation sees it, so the effect is
+  that the simulated end time and the time axis carry the rounding error: zero for the default
+  `--dt 0.01`, about 1.22e-4 for a value that is not on the grid.
