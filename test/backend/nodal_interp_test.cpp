@@ -20,6 +20,7 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -302,6 +303,65 @@ TEST(GeneralInterp, NoCellVerticesRefuses) {
   auto tgt = ManualCellMesh::points(0, {{0.5, 0.5, 0.0}});
   const auto h = fuse::build_consistent_interp_weights(src, *tgt, 0);
   ASSERT_FALSE(h.ok());
+  EXPECT_EQ(h.error().code, "E-MESH-NO-CELL-VERTICES");
+}
+
+// ---------------------------------------------------------------------------
+// REVIEW.md TF-10: build_general_interp_weights re-queries cell_vertices()
+// for the WINNING cell a second time (general_interp.hpp, after the
+// two-tier selection), having already validated every cell's corners once
+// in the up-front loop. Before the fix the second call's Result went
+// unchecked straight into `.value()` -- latent under every existing test,
+// since a MeshView that answered once always answers the same way again,
+// but a std::bad_variant_access waiting to happen the moment it does not,
+// which is exactly what this wrapper manufactures.
+// ---------------------------------------------------------------------------
+namespace {
+class CellVerticesFailsOnSecondQuery final : public MeshView {
+ public:
+  explicit CellVerticesFailsOnSecondQuery(const MeshView& base) : base_(base) {}
+  int dimension() const override { return base_.dimension(); }
+  std::size_t entity_count(int dim) const override { return base_.entity_count(dim); }
+  std::size_t owned_count(int dim) const override { return base_.owned_count(dim); }
+  bool is_owned(int dim, std::size_t i) const override { return base_.is_owned(dim, i); }
+  Point centroid(int dim, std::size_t i) const override { return base_.centroid(dim, i); }
+  double measure(int dim, std::size_t i) const override { return base_.measure(dim, i); }
+  std::size_t global_id(int dim, std::size_t i) const override {
+    return base_.global_id(dim, i);
+  }
+  std::size_t simplex_count(int dim, std::size_t i) const override {
+    return base_.simplex_count(dim, i);
+  }
+  void simplex_points(int dim, std::size_t i, std::size_t s, Point* out) const override {
+    base_.simplex_points(dim, i, s, out);
+  }
+  Result<CellVertices> cell_vertices(int dim, std::size_t i) const override {
+    if (dim == base_.dimension() && ++calls_[i] >= 2) {
+      return fuse::Failure{"E-MESH-NO-CELL-VERTICES",
+                           "CellVerticesFailsOnSecondQuery: deliberately fails "
+                           "every query past the first for this cell"};
+    }
+    return base_.cell_vertices(dim, i);
+  }
+
+ private:
+  const MeshView& base_;
+  mutable std::unordered_map<std::size_t, int> calls_;
+};
+}  // namespace
+
+TEST(GeneralInterp, ReQueryingTheWinningCellsCornersIsCheckedNotAssumed) {
+  auto src_base = unit_cell(CellShape::Triangle);
+  CellVerticesFailsOnSecondQuery src(*src_base);
+  // A single target point inside the triangle: the up-front loop's ONE
+  // call to cell_vertices(2, 0) succeeds (first query), the two-tier
+  // selection picks cell 0 as the winner, and the re-query right after it
+  // (general_interp.hpp) is cell_vertices(2, 0)'s SECOND call -- the one
+  // this wrapper fails.
+  auto tgt = ManualCellMesh::points(0, {{0.2, 0.3, 0.0}});
+  const auto h = fuse::build_consistent_interp_weights(src, *tgt, 0);
+  ASSERT_FALSE(h.ok()) << "a re-query failure must be a Failure, not an "
+                          "escaped exception";
   EXPECT_EQ(h.error().code, "E-MESH-NO-CELL-VERTICES");
 }
 

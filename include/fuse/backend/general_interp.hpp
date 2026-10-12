@@ -845,7 +845,23 @@ inline constexpr double kRefEpsLoose = kSurfaceTol;
                       j, target.x, target.y, target.z)};
     }
 
+    // REVIEW.md TF-10: the up-front loop above already validated this exact
+    // call for every source cell, including `use_cell` -- but re-deriving
+    // the same corner list here rather than keeping the up-front one is
+    // the existing shape of this function, and `.value()` on an unchecked
+    // Result is exactly the "Rejects, never throws" contract this function
+    // documents forbidding. A latent re-query failure (this `MeshView`
+    // returning a different, failing answer for an index it already
+    // answered once) must still be a Failure, not a std::bad_variant_access
+    // escaping uncaught.
     const auto cv = src_nodes.cell_vertices(src_dim, use_cell);
+    if (!cv.ok()) {
+      return Failure{cv.error().code,
+                     fmt::format("build_general_interp_weights: re-querying "
+                                 "source cell {}'s corners (already validated "
+                                 "above) failed: {}",
+                                 use_cell, cv.error().message)};
+    }
     const std::array<double, 8> bw = basis_weights(cells[use_cell].shape, use_u);
     for (std::size_t k = 0; k < cells[use_cell].n; ++k) {
       const std::size_t col = cv.value().vertices[k];
