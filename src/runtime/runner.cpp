@@ -2968,6 +2968,11 @@ Result<void> Runner::Impl::reduce_region_residuals(
     // Not a participant of this region -- see RegionRuntime::participants.
     // Joining would make the real participants wait for a rank with nothing
     // to contribute, exactly as reconcile_epoch() reasons for an Epoch.
+    // RT-1 (review 2026-10-11): report that to the caller rather than
+    // leaving `payload` -- still all the zeros it was filled with before
+    // this call -- looking like an agreed answer; the caller must not run
+    // `payload`'s UNMEASURED/peer-failure checks against it.
+    participant_out = false;
     return Result<void>::success();
   }
   const auto n = static_cast<int>(part.size());
@@ -3189,6 +3194,72 @@ Result<void> Runner::Impl::broadcast_window_convergence(
   converged_out = conv != 0;
 #else
   (void)converged;
+#endif
+  return Result<void>::success();
+}
+
+// RT-1 (review 2026-10-11): the ordinary (non-window-scoped) sibling of
+// broadcast_window_convergence(), for the analogous gap in
+// reduce_region_residuals() -- see that function's own comment and
+// runner_impl.hpp's declaration of this one.
+Result<void> Runner::Impl::broadcast_region_convergence(
+    const detail::RegionRuntime& r, bool converged, bool& converged_out) {
+  converged_out = converged;
+  if (r.participants.size() <= 1) return Result<void>::success();
+#if FUSE_HAVE_MPI
+  const MPI_Comm base =
+      MPI_Comm_f2c(static_cast<MPI_Fint>(*config.base_communicator));
+  if (base == MPI_COMM_NULL) {
+    return Failure{"E-RT-REGION-COMM",
+                   "RunnerConfig::base_communicator is MPI_COMM_NULL at "
+                   "iteration region '" + r.name +
+                       "'s convergence broadcast"};
+  }
+  int conv = converged ? 1 : 0;
+  if (MPI_Bcast(&conv, 1, MPI_INT, r.participants.front(), base) !=
+      MPI_SUCCESS) {
+    return Failure{"E-RT-REGION-COMM",
+                 "MPI_Bcast failed while broadcasting iteration region '" +
+                     r.name + "'s convergence decision"};
+  }
+  converged_out = conv != 0;
+#else
+  (void)converged;
+#endif
+  return Result<void>::success();
+}
+
+// RT-2(e) (review 2026-10-11): see this function's own declaration,
+// runner_impl.hpp, and checkpoint_regions()'s own comment, iteration.cpp.
+Result<void> Runner::Impl::agree_checkpoint_status(bool local_ok,
+                                                   bool& agreed_ok_out) {
+  agreed_ok_out = local_ok;
+  if (!config.base_communicator.has_value()) return Result<void>::success();
+#if FUSE_HAVE_MPI
+  const MPI_Comm base =
+      MPI_Comm_f2c(static_cast<MPI_Fint>(*config.base_communicator));
+  if (base == MPI_COMM_NULL) {
+    return Failure{"E-RT-CHECKPOINT-COMM",
+                   "RunnerConfig::base_communicator is MPI_COMM_NULL at "
+                   "this period's top-of-period checkpoint agreement"};
+  }
+  int local = local_ok ? 1 : 0;
+  int agreed = 0;
+  // Allreduce, not the per-region reduce-then-broadcast tree reduce_
+  // region_residuals()/gather_window_block_samples() use: this agreement
+  // has no participant SUBSET to honour -- checkpoint_regions() runs
+  // unconditionally on every rank of this communicator before any
+  // region's own participant set matters, so every rank both
+  // contributes to and must read this agreement.
+  if (MPI_Allreduce(&local, &agreed, 1, MPI_INT, MPI_MIN, base) !=
+      MPI_SUCCESS) {
+    return Failure{"E-RT-CHECKPOINT-COMM",
+                 "MPI_Allreduce failed while agreeing this period's "
+                 "top-of-period checkpoint status"};
+  }
+  agreed_ok_out = agreed != 0;
+#else
+  (void)local_ok;
 #endif
   return Result<void>::success();
 }
