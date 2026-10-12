@@ -480,6 +480,32 @@ copy was empty)."""
 # look for it first.
 
 [[mutation]]
+id = "restore-state-failure-returns-instead-of-carrying-forward"
+area = "runtime"
+describes = "RT-2(c) (review 2026-10-11): run_region()'s mid-sweep restore_state() failure handling reverts from recording step_failure and falling through (so the deliver/re-advance code right below, already gated on step_failure via is_collective(), carries it to the next sweep's residual agreement) back to co_return-ing straight out of the function. A partner whose own restore_state() succeeds on the SAME sweep never learns of this rank's failure and proceeds into the next sweep's body Transport alone -- exactly the N-transport-runtime-2/RT-11 class REVIEW.md names (a rank-local verdict returned ahead of a collective its partner still reaches), here for restore_state() rather than the advance()-failure site R-09 already fixed."
+file = "src/runtime/iteration.cpp"
+old = "        if (!step_failure.has_value()) step_failure = rs.error();"
+new = "        co_return rs;  // MUTATED: bare early return undoes RT-2(c)'s carry-forward"
+target = "fuse_parallel_runner_transport_test"
+test = "parallel.runner_transport.2"
+requires = "mpi"
+# Expected kill: RunnerTransport.RestoreStateFailureIsCarriedToEveryRankNot-
+# ReturnedFrom (test/parallel/runner_transport_test.cpp, added alongside
+# this fix). Under the fix, B's rank reports E-RT-REGION-PEER, learned at
+# the next sweep's residual agreement; under the mutant, A's rank leaves
+# run_region() at the restore_state() failure itself (before that
+# agreement), so B's rank -- whose own restore succeeded -- enters the
+# NEXT sweep's body Transport with no partner there, which the test's own
+# 120s TIMEOUT ctest property turns into a correct kill rather than a
+# silent PASS. NOT-ASSESSED in this sandbox: MPI cannot initialise here
+# (KNOWN_ISSUES.md C1); traced by hand against the carry-forward mechanism
+# this same file's own "region-failure-abandons-the-rest-of-the-period"
+# row already documents for the analogous Epoch/advance-failure case, and
+# the anchor is confirmed present (`tools/mutate.py --check-anchors`). A
+# host run applying this mutation, rebuilding, and re-running the row at
+# 2 ranks is what would confirm TIMEOUT/kill directly.
+
+[[mutation]]
 id = "healthy-rank-leaves-at-the-epoch"
 area = "runtime"
 describes = "reconcile_epoch() returns E-RT-EPOCH-PEER on a rank that was fine, instead of recording it: that rank leaves the period at the agreement point while the failing rank walks on through the remaining collective operations, so the failing rank waits forever in the next Transport. The hang the host found on 2026-10-01 once each component is stepped only on its own processes."

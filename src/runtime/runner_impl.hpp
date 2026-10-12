@@ -1868,7 +1868,27 @@ struct Runner::Impl {
   /// `RegionRuntime::window_scoped`'s own comment for why that region's
   /// own checkpoint instead happens once per PASS, inside `run_region()`
   /// itself, not once per period here.
+  /// RT-2(e) (review 2026-10-11): the per-region/per-slot walk never
+  /// returns on the first local failure anymore -- it runs to completion
+  /// (or to the first failure, which stops the walk but does not leave
+  /// the function) and then agrees the result with every rank of
+  /// `config.base_communicator` through `agree_checkpoint_status()`
+  /// before returning, so step_period()'s caller sees the SAME verdict on
+  /// every rank and either every rank enters this period's instruction
+  /// stream or none does -- never some ranks entering it while a rank
+  /// whose own checkpoint failed returns before reaching any of it.
   Result<void> checkpoint_regions(ComponentSet& components);
+
+  /// RT-2(e): one MPI_Allreduce(MIN) of `local_ok` over the WHOLE
+  /// `config.base_communicator` -- unlike `reduce_region_residuals()`/
+  /// `gather_window_block_samples()`, there is no participant subset
+  /// here: checkpoint_regions() runs unconditionally, on every rank, at
+  /// the top of every period, before any region's own participant set
+  /// has anything to do with whether THIS rank enters the period's
+  /// instruction stream at all. A no-op (`agreed_ok_out = local_ok`,
+  /// no MPI call) when `config.base_communicator` is unset (tier 0, or a
+  /// single-process run with no communicator to agree over).
+  Result<void> agree_checkpoint_status(bool local_ok, bool& agreed_ok_out);
   /// One PASS of one region: sweep until converged, exhausted, or failed.
   /// `enter`/`exit` are THIS pass's own bounds in the instruction stream
   /// (one entry of `r.passes`) -- explicit, rather than read from
@@ -2037,8 +2057,21 @@ struct Runner::Impl {
   /// False once this period has a failure that `slot` is downstream of.
   [[nodiscard]] bool may_advance(std::size_t slot) const;
 
+  /// RT-1 (review 2026-10-11): `participant_out` reports whether this rank
+  /// is in `r.participants` at all -- `true` whenever `r.participants.size()
+  /// <= 1` (no reduction to perform; this rank's own local payload already
+  /// is the agreed value) or when this rank's own address is found in
+  /// `r.participants`; `false`, with `payload` left untouched, for a rank
+  /// sharing `config.base_communicator` that hosts no checkpointed
+  /// component this region's channels touch. The caller must not read
+  /// `payload` (or the UNMEASURED/peer-failure verdicts derived from it)
+  /// when `participant_out` is false -- it was never reduced for this
+  /// rank, so it is not the agreed value, mirroring `gather_window_block_
+  /// samples()`'s own `gathered_out.empty()` signal for the window-scoped
+  /// sibling.
   Result<void> reduce_region_residuals(const detail::RegionRuntime& r,
-                                       std::vector<double>& payload);
+                                       std::vector<double>& payload,
+                                       bool& participant_out);
 
   /// Unit 2b (D19), step (c): gathers every participant's own
   /// `WindowBlockSample` array (one per `r.blocks`) for a window-scoped
@@ -2101,6 +2134,18 @@ struct Runner::Impl {
   /// <= 1` (tier 0, or every checkpointed component on one rank: no other
   /// rank exists to diverge from in the first place).
   Result<void> broadcast_window_convergence(const detail::RegionRuntime& r,
+                                            bool converged, bool& converged_out);
+
+  /// RT-1 (review 2026-10-11): the ordinary (non-window-scoped) sibling of
+  /// `broadcast_window_convergence()`, for exactly the analogous gap --
+  /// `reduce_region_residuals()` reaches only `r.participants`, but a rank
+  /// hosting some OTHER, uncoupled component outside this region still
+  /// shares `config.base_communicator` and still calls `move()` for this
+  /// region's channels every sweep. Broadcasts the already-decided
+  /// `converged` flag from `r.participants.front()` to literally every
+  /// rank of `config.base_communicator`. A no-op, `converged` returned
+  /// unchanged, when `r.participants.size() <= 1`.
+  Result<void> broadcast_region_convergence(const detail::RegionRuntime& r,
                                             bool converged, bool& converged_out);
 };
 
