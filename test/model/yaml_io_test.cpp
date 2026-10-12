@@ -484,6 +484,10 @@ TEST(YamlIo, NewtonKindAndConfigSurviveTheTextRoundTrip) {
   // exercises reading the field back rather than reconfirming a default
   // both sides happen to agree on.
   cfg.substrate = fuse::NewtonSubstrate::Petsc;
+  // NewtonModel track (2026-10-12): same reasoning, for the two fields
+  // this track adds.
+  cfg.norm = fuse::NewtonNorm::MeasureWeighted;
+  cfg.residual_path = fuse::NewtonResidualPath::Direct;
 
   const CouplingGraph original = newton_graph(cfg);
   const auto text = to_yaml(original);
@@ -518,6 +522,40 @@ TEST(YamlIo, NewtonKindAndConfigSurviveTheTextRoundTrip) {
   EXPECT_DOUBLE_EQ(got.newton_config.eta_min, want.newton_config.eta_min);
   EXPECT_EQ(got.newton_config.substrate, want.newton_config.substrate);
   EXPECT_EQ(got.newton_config.substrate, fuse::NewtonSubstrate::Petsc);
+  EXPECT_EQ(got.newton_config.norm, want.newton_config.norm);
+  EXPECT_EQ(got.newton_config.norm, fuse::NewtonNorm::MeasureWeighted);
+  EXPECT_EQ(got.newton_config.residual_path, want.newton_config.residual_path);
+  EXPECT_EQ(got.newton_config.residual_path, fuse::NewtonResidualPath::Direct);
+}
+
+// An unrecognised newton_config.norm/residual_path value must be refused
+// the same way an unrecognised substrate already is (RejectsUnknown
+// NewtonConfigSubstrate, immediately above) -- never silently defaulted.
+TEST(YamlIo, RejectsUnknownNewtonConfigNorm) {
+  const CouplingGraph original = newton_graph(fuse::NewtonConfig{});
+  const auto text = to_yaml(original);
+  ASSERT_TRUE(text.ok()) << text.error().message;
+  std::string corrupted = text.value();
+  const auto pos = corrupted.find("norm: Plain");
+  ASSERT_NE(pos, std::string::npos);
+  corrupted.replace(pos, std::string("norm: Plain").size(), "norm: quantum");
+  const auto restored = from_yaml(corrupted);
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
+}
+
+TEST(YamlIo, RejectsUnknownNewtonConfigResidualPath) {
+  const CouplingGraph original = newton_graph(fuse::NewtonConfig{});
+  const auto text = to_yaml(original);
+  ASSERT_TRUE(text.ok()) << text.error().message;
+  std::string corrupted = text.value();
+  const auto pos = corrupted.find("residual_path: Advance");
+  ASSERT_NE(pos, std::string::npos);
+  corrupted.replace(pos, std::string("residual_path: Advance").size(),
+                    "residual_path: quantum");
+  const auto restored = from_yaml(corrupted);
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
 }
 
 // An unrecognised newton_config.substrate value must be refused the same
