@@ -1969,10 +1969,16 @@ constexpr double kHighOrderCoverageTol = 1e-6;
 // (4 partition sets, deliberately misaligned): the ORDINARY serial
 // intersection over the halo-extended source gives target coverage 1.0 to
 // 1e-16 at 1, 2 and 4 ranks, from the task report that measured this.
-// REVIEW.md R-11: no conservation test in this tree pins that number --
-// `test/unit/remap_parallel_test.cpp`, cited here previously, does not
-// exist under `test/backend/`. Implemented, untested (docs/dev/testing.md
-// state); see REVIEW.md B1/B2 for the MPI test that would verify it.
+// REVIEW.md TF-7: this used to say no test in the tree pins any of this --
+// half-stale since `test/parallel/remap_halo_mpi_test.cpp` ported
+// (host-verified per that file's own header): the halo's own forward/
+// reverse round trip is checked there by EXACT global id and bookkeeping
+// identity (not a tolerance), and E-REMAP-PARALLEL's rejection boundary
+// fires by name at every registered rank count. Only the specific 1.0-to-
+// 1e-16 coverage FIGURE quoted above remains diagnostic-only: that file
+// prints, but does not gate on, the corresponding number on its own real
+// spherical pair, since this exact cubed-sphere/partner pair's true
+// overlap has not been independently measured to gate against.
 // ===========================================================================
 
 Result<std::size_t> build_remap_halo(const RemapPlan& plan,
@@ -2343,10 +2349,13 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
   // ordinary MPI job whose mesh happens to be undivided; every cell is local
   // and the serial construction is exactly right. Rejecting it would take
   // remap away from every single-rank MPI run, and no serial test can see
-  // the difference. REVIEW.md R-11: `test/unit/remap_parallel_test.cpp`,
-  // cited here previously as running a one-rank leg to check exactly that,
-  // does not exist under `test/backend/`. Implemented, untested
-  // (docs/dev/testing.md state).
+  // the difference. REVIEW.md TF-7: this used to say no test runs the one-
+  // rank leg to check that -- stale since
+  // `test/parallel/remap_halo_mpi_test.cpp`'s
+  // `ERemapParallelRefusesAboveOneRankAndNotAtOne` ported (host-verified
+  // per that file's own header): `== 1` must succeed and `> 1` must refuse
+  // `E-REMAP-PARALLEL`, checked at every registered rank count 1..5, both
+  // sides of the boundary this paragraph names.
   // ==========================================================================
   if (a.backend != nullptr && a.backend->communicator_size() > 1 &&
       a.file_set != b.file_set &&

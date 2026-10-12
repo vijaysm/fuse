@@ -198,11 +198,13 @@ class MoabMeshBackend final : public MeshBackend {
   /// local, and the serial construction is exactly right. Rejecting it would
   /// take remap away from every MPI run and no serial test could see the
   /// difference. Guard on the property that breaks correctness -- the mesh
-  /// being DIVIDED -- not on "a communicator exists". REVIEW.md R-11: no
-  /// test in this tree exercises either side of this boundary --
-  /// `test/unit/remap_parallel_test.cpp`, cited here previously, does not
-  /// exist under `test/backend/`. Implemented, untested (docs/dev/testing.md
-  /// state), until an MPI test is ported (see B1/B2's "test to add").
+  /// being DIVIDED -- not on "a communicator exists". REVIEW.md TF-7: this
+  /// used to say no test in the tree exercises either side of this
+  /// boundary -- stale since `test/parallel/remap_halo_mpi_test.cpp`'s
+  /// `RemapHaloMpi.ERemapParallelRefusesAboveOneRankAndNotAtOne` ported
+  /// (checked, host-verified per that file's own header, at every
+  /// registered rank count 1..5): `== 1` must succeed, `> 1` must refuse
+  /// `E-REMAP-PARALLEL`, both sides of the boundary this paragraph names.
   ///
   /// 1 on a moved-from backend, which holds no meshes for anyone to remap.
   /// Never throws.
