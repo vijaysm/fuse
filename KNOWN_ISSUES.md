@@ -256,8 +256,9 @@ test on the device and every coupling workload on the host. The fix (branch
   `OpKind` cases that were already Kokkos-templated (`Interpolate` identity,
   `Remap` identity + weighted, `Sample` non-spacetime, `Accumulate`,
   `Extrapolate`, `Merge`, `Scale`, `Relax`, `Residual`) run on the requested
-  space; the host-only cases (`Transport`'s MPI `move()`, `Epoch`,
-  `Constrain`, `Sink`, ...) are untouched. Host mode is byte-identical to the
+  space; the host-only cases (`Transport`'s MPI `move()`, `Remap`'s
+  distributed-nodal branch (`apply_nodal_dist_remap()`, also an MPI
+  exchange), `Epoch`, `Constrain`, `Sink`, ...) are untouched. Host mode is byte-identical to the
   old code: the span helpers wrap the raw host pointer when the space is
   host-accessible, so the 279 pre-existing tests exercise the same
   instantiation they always did.

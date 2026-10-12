@@ -527,7 +527,7 @@ if(FUSE_ENABLE_TESTS)
   # With Eigen it passes that step in 46 sweeps, twice its usual count; with
   # the cusolverRf backend -- whose solutions agree with Eigen's to <= 1.1e-12
   # on every one of the 730 solves before the divergence, and are closer to a
-  # long-double reference than Eigen's own -- the same step diverges to 1e80.
+  # long-double reference than Eigen's own -- the same step diverges to 2e80.
   # The flag-off build itself diverges with --accel none and --accel aitken
   # at the same periods the flag-on build does. The fsi_* verification rows
   # (test/verification) still run under the flag and pass.

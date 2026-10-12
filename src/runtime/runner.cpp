@@ -2958,9 +2958,11 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
   // below are Space-generic. Source/ExternalDelivery (no-ops), Sink/
   // Accelerate/Epoch/Constrain/Diagnose (plain `num::copy(ptr, ptr, n)` plus
   // host-side bookkeeping), Transport (MPI, host memory by contract --
-  // `mpi_is_gpu_aware()` is informational only) and the WindowAdvance/Map/
-  // Reduce/Closure refusals are host-only whatever `Space` is, and read
-  // their raw pointers directly.
+  // `mpi_is_gpu_aware()` is informational only), Remap's distributed-nodal
+  // branch (`r.nodal_dist >= 0`, apply_nodal_dist_remap(): an MPI exchange
+  // over host buffers, like Transport) and the WindowAdvance/Map/Reduce/
+  // Closure refusals are host-only whatever `Space` is, and read their raw
+  // pointers directly.
   //
   // A5, the non-host-accessible `Space` (Kokkos::Cuda here): the same two
   // helpers instead hand back views over `device_staging` lanes
@@ -3105,7 +3107,10 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
         // its OWN operator (build_nodal_dist_remap() at setup); this is the
         // WHOLE answer, not a local Remap answer plus a correction, so it
         // takes over the case entirely -- `r.remap` is left at -1 for such
-        // an instruction (see Resolved::nodal_dist's own comment).
+        // an instruction (see Resolved::nodal_dist's own comment). Host-only
+        // whatever `Space` is: the operator is an MPI exchange over host
+        // buffers, so this branch never stages and never counts as a
+        // device dispatch (A5).
         const Result<void> nd = apply_nodal_dist_remap(ins, r);
         if (!nd.ok()) return nd;
         break;

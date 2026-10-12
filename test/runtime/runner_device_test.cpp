@@ -5,7 +5,11 @@
 // that for every enabled space). docs/dev/runner-device-dispatch.md has the
 // scope: only the Space-generic cases (Sample/Accumulate/Scale/Remap/Relax/
 // Residual/Merge/Extrapolate/Interpolate-identity) move; Transport/Epoch/
-// Sink/Constrain/Diagnose stay host-only unconditionally.
+// Sink/Constrain/Diagnose and Remap's distributed-nodal branch
+// (apply_nodal_dist_remap(), an MPI exchange) stay host-only
+// unconditionally. Neither scenario here builds a distributed-nodal Remap
+// (it needs a multi-rank placement), so that fallback is documented, not
+// exercised.
 //
 // WHAT IS ASSERTED, AND HOW STRONGLY. `RunStats::device_dispatches` is the
 // evidence the device path ran at all -- the delivered values are meant to

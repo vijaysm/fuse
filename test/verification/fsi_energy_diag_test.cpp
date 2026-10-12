@@ -1666,9 +1666,10 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   // noise energy (set by `c.tol` and the FD step, not by the solve). A floor
   // of eig_quality^2 alone then fell BELOW E0 (1.1e-20 < 1.4e-20) and the
   // budget ran on noise, failing at 3e-4 -- the exact case this guard exists
-  // to skip. 1e-16*|x|^2 is eleven orders below the energy a real growth
-  // mode carried (D9: E0 ~ 1e-9 at the same |x|) and four orders above the
-  // noise, so it cannot hide a returning mode.
+  // to skip. 1e-16*|x|^2 is seven orders below the energy a real growth
+  // mode carried (D9: E0 ~ 1e-9 at the same |x|; the old eig_quality^2 floor
+  // sat eleven orders below it) and four orders above the noise, so it
+  // cannot hide a returning mode.
   const double energy_floor =
       std::max(100.0 * eig_quality * eig_quality, 1e-16) * xnorm * xnorm;
   if (E0 < energy_floor) {
