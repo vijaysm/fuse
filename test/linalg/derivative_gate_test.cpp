@@ -207,14 +207,16 @@ std::shared_ptr<TwoPartitionMats> build_two_partition(const std::vector<Triplet>
   if (!m0.ok() || !m1.ok()) return nullptr;
   // DistSparseMatrix's default constructor is private (from_triplets is the
   // only public way to get one), so TwoPartitionMats -- an aggregate -- is
-  // built in ONE parenthesized-aggregate-init call (C++20, P0960) rather
-  // than default-constructed and assigned into.
+  // built in ONE braced aggregate-init call rather than default-constructed
+  // and assigned into. Braces, not make_shared's parentheses: nvcc's host
+  // pass does not implement parenthesized aggregate init (C++20 P0960), the
+  // same gap MoabMeshBackend's MeshLoader construction works around.
   DistSparseMatrix m0v = std::move(m0).value();
   DistSparseMatrix m1v = std::move(m1).value();
   auto exch0 = std::make_shared<FakePeerExchanger>(m0v.ghost_pattern());
   auto exch1 = std::make_shared<FakePeerExchanger>(m1v.ghost_pattern());
-  return std::make_shared<TwoPartitionMats>(std::move(m0v), std::move(m1v), exch0, exch1, split,
-                                            global_n);
+  return std::shared_ptr<TwoPartitionMats>(new TwoPartitionMats{
+      std::move(m0v), std::move(m1v), std::move(exch0), std::move(exch1), split, global_n});
 }
 
 HostApplyFn two_partition_apply(std::shared_ptr<TwoPartitionMats> tp) {
