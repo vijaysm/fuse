@@ -2,6 +2,7 @@
 
 #include <Kokkos_Core.hpp>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -42,6 +43,18 @@ struct RcbOptions {
   /// communicator size (rcb_moab's "--num-parts != comm_size" contract);
   /// this function only ever produces an ASSIGNMENT, so there is no
   /// migration step here that would need parts and ranks to correspond.
+  ///
+  /// PRECONDITION when `comm != kNullComm`: `num_parts` (as given here,
+  /// before the 0 -> comm-size resolution), `median_buckets` and
+  /// `median_refine_iters` below must be IDENTICAL on every rank of `comm`.
+  /// They decide the SHAPE of `detail::recursive_bisect`'s recursion --
+  /// how many levels, how many histogram Allreduces per level -- not just a
+  /// value every collective below reduces away; two ranks with
+  /// different-but-individually-valid options would otherwise execute a
+  /// different number or kind of collectives at the very first level.
+  /// `rcb_partition` agrees all three with an `MPI_Allreduce` (`MAX` and
+  /// `MIN`, so disagreement is detectable) before touching
+  /// `recursive_bisect` and refuses `E-PART-OPTS` on disagreement.
   int num_parts = 0;
 
   int median_buckets = kDefaultHistogramBuckets;
@@ -187,9 +200,17 @@ void recursive_bisect(
   }
 
   // Sort on-split entries by GID for deterministic placement (rcb_moab
-  // RCBPartitioner.cpp:297).
-  std::sort(on_split.begin(), on_split.end(),
-           [&](std::size_t a, std::size_t b) { return gids_host[a] < gids_host[b]; });
+  // RCBPartitioner.cpp:297). `rcb_partition` does not require unique
+  // global ids (docs/dev/partitioning.md "Ties"), so a comparator keyed on
+  // gid ALONE leaves the order among entries that share one gid
+  // unspecified -- `std::stable_sort`, not `std::sort`, makes that order
+  // TOTAL (gid, then this rank's own position before sorting) rather than
+  // whatever an unstable sort's internal algorithm happens to produce.
+  // This local order is read below as "this rank's k-th on-split entry
+  // occupies gathered position offset_gids + k", so an unspecified local
+  // order would make an unspecified GLOBAL order too.
+  std::stable_sort(on_split.begin(), on_split.end(),
+                   [&](std::size_t a, std::size_t b) { return gids_host[a] < gids_host[b]; });
 
   Weight local_tie_w = 0;
   for (auto i : on_split) local_tie_w += weights_host[i];
@@ -223,7 +244,13 @@ void recursive_bisect(
     const int total = static_cast<int>(all_gids.size());
     std::vector<int> order(static_cast<std::size_t>(total));
     for (int i = 0; i < total; ++i) order[static_cast<std::size_t>(i)] = i;
-    std::sort(order.begin(), order.end(), [&](int a, int b) {
+    // `std::stable_sort`: a total order (gid, then GATHERED position --
+    // `order`'s own initial value, preserved for ties by stability) rather
+    // than an `std::sort`-unstable one, so two entries that share a gid are
+    // assigned `goes_left` reproducibly instead of by an unspecified
+    // tie-break (see the local pre-sort's comment above, and
+    // docs/dev/partitioning.md "Ties").
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
       return all_gids[static_cast<std::size_t>(a)] < all_gids[static_cast<std::size_t>(b)];
     });
 
@@ -261,11 +288,22 @@ void recursive_bisect(
 }  // namespace detail
 
 /// Entry point. Rejects rather than guesses on a malformed call
-/// (E-PART-SIZE-MISMATCH, E-PART-NUM-PARTS, E-PART-NO-MPI); every other
-/// degenerate case named in the task -- all points identical, an empty
-/// local input, zero total weight, a single part -- is handled by the SAME
-/// code path as the general case, not a special branch (see
-/// docs/dev/partitioning.md).
+/// (E-PART-SIZE-MISMATCH, E-PART-NUM-PARTS, E-PART-NO-MPI, E-PART-WEIGHT,
+/// E-PART-OPTS); every other degenerate case named in the task -- all
+/// points identical, an empty local input, zero total weight, a single
+/// part -- is handled by the SAME code path as the general case, not a
+/// special branch (see docs/dev/partitioning.md).
+///
+/// RANK AGREEMENT. When `comm != kNullComm`, every one of the rejections
+/// above is a rank-local computation but NEVER a rank-local RETURN: this
+/// rank's own verdict (and, for E-PART-OPTS, the actual `num_parts`/
+/// `median_buckets`/`median_refine_iters` it was given) is agreed with
+/// every other rank in `comm` via `MPI_Allreduce` BEFORE
+/// `detail::recursive_bisect`'s first collective -- the same
+/// agree-before-collective recipe `fuse::native::migrate` and
+/// `centroids_of` use. A caller's precondition bug on one rank must never
+/// let that rank refuse alone while its peers enter a collective it
+/// skipped (docs/dev/rank-agreement.md).
 template <class ExecutionSpace>
 RcbResult<ExecutionSpace> rcb_partition(
     const RcbOptions& opts,
@@ -274,15 +312,7 @@ RcbResult<ExecutionSpace> rcb_partition(
     Kokkos::View<const std::int64_t*, typename ExecutionSpace::memory_space> gids) {
   using MemorySpace = typename ExecutionSpace::memory_space;
   const std::size_t n = centroids.extent(0);
-  if (weights.extent(0) != n || gids.extent(0) != n) {
-    FUSE_REFUSE("E-PART-SIZE-MISMATCH",
-               "centroids/weights/gids must have the same length; got {} / {} / {}", n,
-               weights.extent(0), gids.extent(0));
-  }
-  if (opts.num_parts < 0) {
-    FUSE_REFUSE("E-PART-NUM-PARTS",
-               "num_parts must be >= 0 (0 = use the communicator size); got {}", opts.num_parts);
-  }
+
 #if !FUSE_HAVE_MPI
   if (opts.comm != kNullComm) {
     FUSE_REFUSE("E-PART-NO-MPI",
@@ -290,6 +320,113 @@ RcbResult<ExecutionSpace> rcb_partition(
                "(FUSE_HAVE_MPI=0); rebuild with -DFUSE_ENABLE_MPI=ON");
   }
 #endif
+
+  // Every precondition below is a RANK-LOCAL computation, decided before
+  // any collective -- see the header comment on rank agreement. None of
+  // them is returned on its own when `comm != kNullComm`.
+  const bool locally_size_ok = (weights.extent(0) == n && gids.extent(0) == n);
+  const bool locally_num_parts_ok = (opts.num_parts >= 0);
+
+  // PS-10: negative weights are meaningless for load balance (they are not
+  // refused by weighted_median's own degenerate-total handling, which
+  // treats a non-positive SUM as "nothing to split" and sorts every
+  // element to the right by the sign of an arbitrary coordinate). Checked
+  // over the execution space the weights actually live in, not assumed to
+  // be host-resident.
+  int locally_weights_nonneg = 1;
+  if (weights.extent(0) > 0) {
+    // `Kokkos::parallel_reduce` with an EMPTY policy range writes the
+    // reducer's own IDENTITY into the result (for `Kokkos::Max<int>`, a
+    // large negative sentinel, not 0) regardless of what `any_negative`
+    // was initialized to -- an empty `weights` is vacuously all
+    // non-negative, so the reduce must not run at all in that case.
+    int any_negative = 0;
+    Kokkos::parallel_reduce(
+        "fuse::partition::check_weights_nonnegative",
+        Kokkos::RangePolicy<ExecutionSpace>(0, weights.extent(0)),
+        KOKKOS_LAMBDA(const std::size_t i, int& acc) {
+          // `acc` starts each thread's local accumulation at Kokkos::Max<int>'s
+          // IDENTITY value, not 0 -- an element that never sees a negative
+          // weight must still explicitly combine 0 into `acc`, or every
+          // non-negative-only run reduces to the identity (a large negative
+          // sentinel, != 0) and is misread as "found a negative weight".
+          const int bad = (weights(i) < Weight{0}) ? 1 : 0;
+          if (bad > acc) acc = bad;
+        },
+        Kokkos::Max<int>(any_negative));
+    locally_weights_nonneg = (any_negative == 0) ? 1 : 0;
+  }
+  const bool locally_ok = locally_size_ok && locally_num_parts_ok && (locally_weights_nonneg != 0);
+
+  if (opts.comm == kNullComm) {
+    // Exactly one process: nothing to agree with, so the local verdict IS
+    // the global one -- refuse directly, in the order the task named them.
+    if (!locally_size_ok) {
+      FUSE_REFUSE("E-PART-SIZE-MISMATCH",
+                 "centroids/weights/gids must have the same length; got {} / {} / {}", n,
+                 weights.extent(0), gids.extent(0));
+    }
+    if (!locally_num_parts_ok) {
+      FUSE_REFUSE("E-PART-NUM-PARTS",
+                 "num_parts must be >= 0 (0 = use the communicator size); got {}",
+                 opts.num_parts);
+    }
+    if (!locally_weights_nonneg) {
+      FUSE_REFUSE("E-PART-WEIGHT",
+                 "every element weight must be >= 0 (a negative weight is not a load-balance "
+                 "metric; weighted_median would place the split at an arbitrary coordinate)");
+    }
+  } else {
+    // PS-2/PS-3: agree this rank's own verdict, AND the recursion's own
+    // shape -- num_parts, median_buckets, median_refine_iters -- with
+    // every other rank in `comm` BEFORE `recursive_bisect`'s first
+    // collective. One Allreduce(MAX) and one Allreduce(MIN) over four
+    // int64s: index 0 is the combined local verdict (1 = this rank is
+    // happy to proceed), 1..3 are the three options a caller must supply
+    // identically.
+    std::array<std::int64_t, 4> local_vals = {
+        locally_ok ? std::int64_t{1} : std::int64_t{0}, static_cast<std::int64_t>(opts.num_parts),
+        static_cast<std::int64_t>(opts.median_buckets),
+        static_cast<std::int64_t>(opts.median_refine_iters)};
+    std::array<std::int64_t, 4> max_vals{}, min_vals{};
+    detail::allreduce_max_i64(local_vals.data(), max_vals.data(), 4, opts.comm);
+    detail::allreduce_min_i64(local_vals.data(), min_vals.data(), 4, opts.comm);
+
+    if (min_vals[0] == 0) {
+      // At least one rank's own verdict was 0. A rank whose OWN verdict
+      // was 0 names its own specific reason; every other rank refuses the
+      // generic E-PART-OPTS so none is left waiting on the collective it
+      // would otherwise have entered.
+      if (!locally_size_ok) {
+        FUSE_REFUSE("E-PART-SIZE-MISMATCH",
+                   "centroids/weights/gids must have the same length; got {} / {} / {}", n,
+                   weights.extent(0), gids.extent(0));
+      }
+      if (!locally_num_parts_ok) {
+        FUSE_REFUSE("E-PART-NUM-PARTS",
+                   "num_parts must be >= 0 (0 = use the communicator size); got {}",
+                   opts.num_parts);
+      }
+      if (!locally_weights_nonneg) {
+        FUSE_REFUSE("E-PART-WEIGHT",
+                   "every element weight must be >= 0 (a negative weight is not a "
+                   "load-balance metric; weighted_median would place the split at an "
+                   "arbitrary coordinate)");
+      }
+      FUSE_REFUSE("E-PART-OPTS",
+                 "rank {} is proceeding, but at least one other rank in this communicator "
+                 "refused its own precondition on entry to rcb_partition; every rank refuses "
+                 "together so none hangs waiting on recursive_bisect's first collective",
+                 detail::comm_rank(opts.comm));
+    }
+    if (max_vals[1] != min_vals[1] || max_vals[2] != min_vals[2] || max_vals[3] != min_vals[3]) {
+      FUSE_REFUSE("E-PART-OPTS",
+                 "ranks disagree about RcbOptions (num_parts {}..{}, median_buckets {}..{}, "
+                 "median_refine_iters {}..{} across the communicator); every rank's recursion "
+                 "must agree the exact collective sequence it will execute",
+                 min_vals[1], max_vals[1], min_vals[2], max_vals[2], min_vals[3], max_vals[3]);
+    }
+  }
 
   const int comm_size_val = detail::comm_size(opts.comm);
   const int num_parts = (opts.num_parts > 0) ? opts.num_parts : comm_size_val;

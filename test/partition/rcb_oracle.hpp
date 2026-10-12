@@ -331,14 +331,23 @@ inline void recursive_bisect_oracle_impl(
   }
 
   // rcb_moab sorts on_split by GID locally before building the per-rank
-  // Allgatherv payload; the subsequent GLOBAL sort by GID (below) makes this
-  // local pre-sort provably not affect the final `goes_left` decision (int64
-  // weight sums are associative), but it is kept for arithmetic fidelity.
+  // Allgatherv payload. PS-9 correction (2026-10-11 review): the comment
+  // this replaced claimed the subsequent GLOBAL sort by GID made this local
+  // pre-sort "provably not affect the final `goes_left` decision" -- true
+  // only when every gid is unique. `rcb_partition` does NOT require unique
+  // gids, and when two on-split entries share one, this rank's local order
+  // between them decides which "gathered position" each receives, which
+  // the global sort's weight walk can then split across the cutoff
+  // differently depending on that order. `std::stable_sort` (not
+  // `std::sort`) makes the order TOTAL -- gid, then this rank's own
+  // position before sorting -- matching rcb.hpp's identical fix exactly,
+  // which is what makes bit-parity against this oracle hold with duplicate
+  // gids present, not only in their absence.
   std::vector<OracleWeight> tie_w_per_rank(static_cast<std::size_t>(P), 0);
   for (int r = 0; r < P; ++r) {
-    std::sort(onsplit_per_rank[static_cast<std::size_t>(r)].begin(),
-              onsplit_per_rank[static_cast<std::size_t>(r)].end(),
-              [&](std::size_t a, std::size_t b) { return gids[a] < gids[b]; });
+    std::stable_sort(onsplit_per_rank[static_cast<std::size_t>(r)].begin(),
+                     onsplit_per_rank[static_cast<std::size_t>(r)].end(),
+                     [&](std::size_t a, std::size_t b) { return gids[a] < gids[b]; });
     for (auto i : onsplit_per_rank[static_cast<std::size_t>(r)]) {
       tie_w_per_rank[static_cast<std::size_t>(r)] += weights[i];
     }
@@ -363,7 +372,10 @@ inline void recursive_bisect_oracle_impl(
     const int total = static_cast<int>(all_gids.size());
     std::vector<int> order(static_cast<std::size_t>(total));
     for (int i = 0; i < total; ++i) order[static_cast<std::size_t>(i)] = i;
-    std::sort(order.begin(), order.end(), [&](int a, int b) {
+    // `std::stable_sort`: total order (gid, then gathered position --
+    // `order`'s own initial value) -- rcb.hpp's identical fix, for the
+    // identical reason.
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
       return all_gids[static_cast<std::size_t>(a)] < all_gids[static_cast<std::size_t>(b)];
     });
 
