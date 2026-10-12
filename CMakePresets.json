@@ -19,7 +19,9 @@
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "CMAKE_PREFIX_PATH": "/opt/kokkos;/opt/kokkos-kernels;/opt/homebrew;/opt/mpich;/opt/petsc/download-moab;/opt/hdf5",
-        "FUSE_BUILD_UPSTREAM_KARMA": "OFF"
+        "FUSE_BUILD_UPSTREAM_KARMA": "OFF",
+        "MOAB_DIR": "/opt/petsc/download-moab/lib/cmake/MOAB",
+        "FUSE_MOAB_MESHFILES": "/Users/mahadevan/Code/sigma/moab/MeshFiles/unittest"
       }
     },
     {
@@ -92,10 +94,6 @@
       "description": "Every tier in one build dir (build-all). PETSc AND MOAB come from /opt/petsc/download-moab (PETSc 3.25 with MOAB 5.6.0, HDF5; gcc 16.2.0) -- the user's designated prefix since 2026-10-11; the other PETSc and MOAB installs on this machine are older. That MOAB has no TempestRemap, so the high-order spherical remap method refuses at run time; measured 2026-10-11 that the registered row set is identical (299) to the /opt/moab-tempest configuration. Its config does not export its dependencies' headers, so FuseDependencies.cmake recovers <PKG>_DIR/include per MOAB_USE_<PKG>.",
       "environment": {
         "PKG_CONFIG_PATH": "/opt/petsc/download-moab/lib/pkgconfig"
-      },
-      "cacheVariables": {
-        "MOAB_DIR": "/opt/petsc/download-moab/lib/cmake/MOAB",
-        "FUSE_MOAB_MESHFILES": "/Users/mahadevan/Code/sigma/moab/MeshFiles/unittest"
       }
     }
   ],
@@ -137,7 +135,8 @@
     },
     {
       "name": "all",
-      "configurePreset": "all"
+      "configurePreset": "all",
+      "jobs": 12
     }
   ],
   "testPresets": [
