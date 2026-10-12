@@ -386,6 +386,9 @@ void Runner::Impl::place_arcs_on_device() {
   // operator and the spacetime projections run host code on their arcs.
   // Source/ExternalDelivery (alias or mirror), Sink/Accelerate/Epoch (a
   // space-aware copy) handle either space and pin nothing.
+  // FUSE_DEVICE_DEBUG: one line per instruction (its class) and per arc (where
+  // it ended up), the same convention as FUSE_NODAL_DEBUG above.
+  const bool trace = std::getenv("FUSE_DEVICE_DEBUG") != nullptr;
   const auto& instructions = plan.instructions();
   for (std::size_t i = 0; i < instructions.size(); ++i) {
     const Instruction& ins = instructions[i];
@@ -404,6 +407,16 @@ void Runner::Impl::place_arcs_on_device() {
         space_aware = true;
         break;
       default: break;
+    }
+    if (trace) {
+      std::string ins_arcs;
+      for (std::uint8_t k = 0; k < ins.n_in; ++k) {
+        ins_arcs += fmt::format(" %{}", ins.in[k].valid() ? static_cast<int>(ins.in[k].value()) : -1);
+      }
+      const char* cls = generic ? "generic" : space_aware ? "space-aware" : "PINS";
+      const int out_arc = ins.out.valid() ? static_cast<int>(ins.out.value()) : -1;
+      fmt::print(stderr, "[device-place] ins {:<3} {:<16} in:{} out:%{} {}\n", i,
+                 std::string_view{to_cstring(ins.kind)}, ins_arcs, out_arc, cls);
     }
     if (generic) {
       for (std::uint8_t k = 0; k < ins.n_in; ++k) {
@@ -463,6 +476,17 @@ void Runner::Impl::place_arcs_on_device() {
     s.data = device_storage[i].data();
     s.device = true;
     ++stats.device_resident_arcs;
+  }
+  if (trace) {
+    const std::vector<BufferDecl>& buffers = plan.buffers().buffers;
+    for (std::size_t i = 0; i < n_arcs; ++i) {
+      const Slot& s = slots[i];
+      const std::string label = i < buffers.size() ? buffers[i].label : std::string{};
+      const char* where = s.owned_by_component ? "component" : pinned[i] ? "pinned" : "coupler";
+      fmt::print(stderr, "[device-place] arc %{:<3} n={:<6} {:<10} {}{} {}\n", i, s.total(),
+                 where, s.device ? "device" : "host",
+                 device_mirror[i].extent(0) > 0 ? " mirrored" : "", label);
+    }
   }
 }
 
