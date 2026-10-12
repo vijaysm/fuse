@@ -87,12 +87,17 @@ directory a job script creates before either launches). The acceptor's rank 0 ca
 `connect()`'s call is otherwise identical to the MPMD case above — same `ConnectOptions`, same
 return type, same way of handing the result to `RunnerConfig`.
 
-**A partner that never launches is a timeout, not a hang.** `ConnectOptions::timeout_s` (default 30
-seconds) bounds how long the non-acceptor side polls for the port file before refusing with
-`E-CONNECT-TIMEOUT`. The one blocking window this does not cover is `MPI_Comm_connect` itself, once
-the port file is found: that call is a synchronous MPI handshake with the acceptor's own
-`MPI_Comm_accept`, and neither this library nor the MPI standard offers a way to bound it from one
-side alone.
+**A partner that never launches is a timeout, not a hang -- on the non-acceptor side only.**
+`ConnectOptions::timeout_s` (default 30 seconds) bounds how long the non-acceptor side polls for
+the port file before refusing with `E-CONNECT-TIMEOUT`; that side alone can give up and exit. The
+acceptor side has no analogous bound: once its own rank 0 has published the port name, every rank
+of its world calls `MPI_Comm_accept` and blocks there with no timeout at all, so a connector that
+times out and exits leaves the acceptor waiting forever for a connection that is never coming --
+job control (a wall-clock limit on the launching script or scheduler) is the only thing that ends
+that wait. The one further blocking window this does not cover either is `MPI_Comm_connect`
+itself, once the port file is found: that call is a synchronous MPI handshake with the acceptor's
+own `MPI_Comm_accept`, and neither this library nor the MPI standard offers a way to bound it from
+one side alone.
 
 ## What `connect()` checks, and what it refuses
 
