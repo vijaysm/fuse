@@ -1,0 +1,48 @@
+Demo A -- implicit Dirichlet-Neumann coupling of two heat conduction domains
+  interface stations : 32, in 4 conductivity strips, r = k1*L2/(k2*L1) = 0.50 0.75 0.90 0.96
+  coupling period    : H = 1/20, quasi-steady. Both participants evaluate their
+                       exact steady response in closed form, so they carry NO
+                       discretisation error and the whole error below is the
+                       coupler's, measured against the analytic two-layer wall
+                         u* = (T2 + r T1)/(1 + r),   q* = (T1 - T2)/(L1/k1 + L2/k2)
+  convergence        : Relative(1e-08) on BOTH channels, u_wall AND q_wall
+
+iteration region 'dirichlet_neumann': 0 coupler buffer(s) and 2 component(s) must survive a rejected iterate.
+  No coupler buffer is loop-carried: every value in the body is a pure function of values live-in to the region, so a re-swept iterate recomputes them. Nothing coupler-side is saved.
+  Components re-advanced over the same interval on every sweep, so their internal state must be restorable (save_state/restore_state):
+    dirichlet
+    neumann
+  Everything else in the body is recomputed, not saved. Where this analysis had a choice it saved more: too much costs a copy, too little is a fixed point of the wrong operator.
+             periods   sweeps  !conv    L2 err u/K  max err u/K    L2 err q     max q
+  explicit      20       20     20   1.193e+02  2.105e+02   7.751e+00  1.423e+01
+  picard        20    14918      0   7.910e-07  1.582e-06   1.089e-06  2.178e-06
+  aitken        20      938      0   4.184e-07  8.240e-07   2.852e-07  4.300e-07
+  iqn-ils       20      201      0   4.923e-14  5.684e-14   3.627e-14  4.974e-14
+  iqn+qr2       20     5716      2   1.443e-06  2.886e-06   1.443e-06  2.886e-06
+  severed       20       40      0   3.035e+01  3.412e+01   2.409e+02  2.923e+02
+  expl-long    200      200    200   2.312e+00  4.542e+00   4.963e+00  5.819e+00
+  iqn-long     200     2016      0   8.541e-07  1.708e-06   8.541e-07  1.708e-06
+  newton        20       20      0   8.660e-11  1.290e-10   1.260e-10  2.303e-10
+  NOTE: 'newton' row's own sweeps column (20) counts one per coupling period, not one per Newton step -- a Newton-selected region bypasses the Picard sweep loop entirely (docs/dev/newton-krylov.md §8.1) and so does not accumulate `total_iterations` the way the rows above do. The final period alone took 4 Newton step(s) (its own residual history below).
+
+residual history of the final period (2-norm of the concatenated residual)
+  picard     734 sweeps: 5.68e+01 5.64e+01 4.88e+01 4.86e+01 4.36e+01 4.34e+01 ... 1.10e-05
+  aitken      46 sweeps: 5.68e+01 3.94e+01 2.82e+01 1.91e+01 1.24e+01 8.60e+00 ... 4.14e-06
+  iqn-ils     10 sweeps: 5.68e+01 3.94e+01 4.04e+01 4.74e+00 2.44e+00 3.66e-01 ... 3.48e-13
+  severed      2 sweeps: 5.68e+01 0.00e+00
+  newton       4 sweeps: 5.68e+01 4.31e+00 1.77e-02 1.48e-09
+
+  newton-nl    4 sweeps: 5.68e+01 4.31e+00 1.78e-02 1.39e-08
+  newton-nl fitted order(s) from consecutive residual triples above the round-off floor: 2.13 2.56
+
+implicit vs explicit, cold      : 1.193e+02 K -> 7.910e-07 K, factor 1.51e+08
+implicit vs explicit, asymptotic: 2.312e+00 K -> 8.541e-07 K, factor 2.71e+06
+implicit vs SEVERED exchange    : 3.035e+01 K -> 7.910e-07 K, factor 3.84e+07
+sweeps: Picard 14918 | Aitken 938 (15.9x) | IQN-ILS 201 (74.2x) | IQN-ILS+QR2(1e-2) 5716 (2.6x)
+rollback verifications 29796; advances surviving rollback 20 of 14918 sweeps over 20 periods
+conservation checks 29836, violations 0, worst 0.000e+00
+accelerators agree to: Picard-Aitken 2.406e-06 K, Picard-IQN 1.582e-06 K
+
+reproducibility: bit-identical over 32 values, on a non-trivial state (||u||_2 = 300.415654 K, min 293.558 K, max 304.458 K)
+
+all gates passed
