@@ -25,10 +25,10 @@ old = """  if (!skip_restore) {
     for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
       const detail::RegionBlock& b = R.blocks[bi];
       if (!feed_snapshot[bi].empty()) {
-        num::copy(feed_snapshot[bi].data(), slots[b.feed_arc].data, b.length);
+        host_to_slot(feed_snapshot[bi].data(), slots[b.feed_arc], b.length);
       }
       if (!value_snapshot[bi].empty()) {
-        num::copy(value_snapshot[bi].data(), slots[b.value_arc].data, b.length);
+        host_to_slot(value_snapshot[bi].data(), slots[b.value_arc], b.length);
       }
     }
   }"""
@@ -36,10 +36,10 @@ new = """  if (false) {
     for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
       const detail::RegionBlock& b = R.blocks[bi];
       if (!feed_snapshot[bi].empty()) {
-        num::copy(feed_snapshot[bi].data(), slots[b.feed_arc].data, b.length);
+        host_to_slot(feed_snapshot[bi].data(), slots[b.feed_arc], b.length);
       }
       if (!value_snapshot[bi].empty()) {
-        num::copy(value_snapshot[bi].data(), slots[b.value_arc].data, b.length);
+        host_to_slot(value_snapshot[bi].data(), slots[b.value_arc], b.length);
       }
     }
   }"""
