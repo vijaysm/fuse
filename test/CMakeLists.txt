@@ -1231,6 +1231,21 @@ endif()
 # This is the actual thing conventions.md's "CMake package `fuse-coupler`"
 # claim needs to be true, not a proxy for it: before this, nothing in the
 # tree ran `cmake --install` at all.
+# The installed fuse-couplerConfig.cmake find_dependency()s Kokkos, fmt and
+# Eigen3. The consumer configure below sees CMAKE_PREFIX_PATH, but a package
+# this configure found through a prefix derived from the invoking shell's
+# PATH (fmt from a conda prefix, measured 2026-10-12) is not on it, so the
+# consumer resolved it only when ctest ran from a shell with the same PATH.
+# Forward where THIS configure found each one -- the same shape as the
+# OMPI_CXX pin above (D40) -- so the three install consumers test the
+# installed package, not the invoking shell.
+set(_fuse_consumer_dep_args "")
+foreach(_fuse_dep IN ITEMS Kokkos fmt Eigen3 yaml-cpp)
+  if(DEFINED ${_fuse_dep}_DIR AND NOT "${${_fuse_dep}_DIR}" MATCHES "NOTFOUND$")
+    list(APPEND _fuse_consumer_dep_args "-D${_fuse_dep}_DIR=${${_fuse_dep}_DIR}")
+  endif()
+endforeach()
+
 add_test(NAME install.consumer_find_package
   # -D arguments MUST precede -P: cmake only honours -D definitions that
   # appear before the script argument on its command line.
@@ -1242,6 +1257,7 @@ add_test(NAME install.consumer_find_package
           -DCMAKE_COMMAND=${CMAKE_COMMAND}
           -DCMAKE_GENERATOR=${CMAKE_GENERATOR}
           "-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
+          "-DFUSE_CONSUMER_DEP_ARGS=${_fuse_consumer_dep_args}"
           -P ${CMAKE_CURRENT_SOURCE_DIR}/install_consumer/run-smoke-test.cmake
 )
 set_tests_properties(install.consumer_find_package PROPERTIES
@@ -1357,6 +1373,7 @@ if(TARGET fuse-abi-fortran)
               -DCMAKE_COMMAND=${CMAKE_COMMAND}
               -DCMAKE_GENERATOR=${CMAKE_GENERATOR}
               "-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
+              "-DFUSE_CONSUMER_DEP_ARGS=${_fuse_consumer_dep_args}"
               -P ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/install_consumer/run-smoke-test.cmake
     )
     set_tests_properties(abi.install_consumer_fortran PROPERTIES
@@ -1438,6 +1455,7 @@ add_test(NAME abi.install_consumer_c
           -DCMAKE_COMMAND=${CMAKE_COMMAND}
           -DCMAKE_GENERATOR=${CMAKE_GENERATOR}
           "-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
+          "-DFUSE_CONSUMER_DEP_ARGS=${_fuse_consumer_dep_args}"
           -DFUSE_ABI_REFERENCE_EXE=$<TARGET_FILE:fuse_abi_reference>
           -P ${CMAKE_CURRENT_SOURCE_DIR}/abi/install_consumer/run-smoke-test.cmake
 )
