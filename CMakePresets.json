@@ -16,7 +16,6 @@
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "CMAKE_PREFIX_PATH": "/opt/kokkos;/opt/kokkos-kernels;/opt/homebrew;/opt/mpich;/opt/petsc/download-moab;/opt/hdf5",
-        "FUSE_BUILD_UPSTREAM_SOMA": "OFF",
         "FUSE_BUILD_UPSTREAM_KARMA": "OFF"
       }
     },
