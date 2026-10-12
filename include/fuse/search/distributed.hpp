@@ -63,10 +63,21 @@ struct DistributedQueryResult {
 /// caller of the distributed API should see.
 ///
 /// Errors, never throws:
-///   * `E-SEARCH-MIXED-DIM` -- this rank's `local_boxes` fail the same
-///     per-box dimension check `BoxIndex::build` applies (checked locally
-///     before any collective, so a badly-formed local input never reaches
-///     one).
+///   * `E-SEARCH-MIXED-DIM` -- either this rank's own `local_boxes` fail
+///     the same per-box dimension check `BoxIndex::build` applies, or this
+///     rank's `local_boxes` agree with themselves but disagree in
+///     dimension with another rank's `local_boxes`. Both are rank-local
+///     computations, but NEITHER is returned on its own: each is reduced
+///     with an `MPI_Allreduce` across the whole of `comm` (`MIN` of a
+///     locally-computed validity flag for the first, `MAX`/`MIN` of the
+///     agreed dimension for the second) BEFORE `ArborX::DistributedTree`
+///     is constructed -- the same agree-before-collective recipe
+///     `fuse::native::migrate` uses for its own per-rank rejections, so
+///     every rank in `comm` returns the same verdict and none is left
+///     waiting inside a collective a peer already refused to enter. A rank
+///     with zero local boxes casts no vote in the cross-rank comparison
+///     (it has nothing to disagree about), matching `BoxIndex`'s own
+///     empty-index convention (`dimension() == 0`).
 ///   * `E-SEARCH-NO-MPI` -- `comm != kNullComm` on a build with no MPI
 ///     (`FUSE_HAVE_MPI == 0`); mirrors `fuse::partition`'s `E-PART-NO-MPI`.
 ///   * `E-SEARCH-SPACE` -- `space == ExecutionSpace::Default` and
