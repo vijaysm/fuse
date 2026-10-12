@@ -413,8 +413,29 @@ endmacro()
 macro(fuse_resolve_arborx)
   find_package(ArborX ${FUSE_ARBORX_VERSION} QUIET CONFIG)
   if(ArborX_FOUND)
-    file(APPEND "${FUSE_RESOLUTION_FILE}" "ArborX=found ${ArborX_VERSION} ${ArborX_DIR}\n")
-    message(STATUS "fuse: ArborX ${ArborX_VERSION} found at ${ArborX_DIR}")
+    # An installed ArborX's ArborXSettings.cmake records how it was built;
+    # ARBORX_ENABLE_MPI is the one setting this project depends on, because
+    # src/search/distributed.cpp instantiates ArborX::DistributedTree whenever
+    # FUSE_ENABLE_MPI is ON and that header exists only in an MPI-enabled
+    # ArborX. The fetched copy below tracks FUSE_ENABLE_MPI by construction;
+    # an installed copy has to be checked, or the mismatch surfaces as a
+    # compile error in distributed.cpp fifteen minutes into the build
+    # (measured 2026-10-12 against a /opt/arborx built without MPI). A
+    # configuration error, not a silent fall-back: the find already created
+    # the imported target, so the pinned fetch cannot be added behind it.
+    if(FUSE_ENABLE_MPI AND NOT ARBORX_ENABLE_MPI)
+      message(FATAL_ERROR
+        "fuse: the installed ArborX ${ArborX_VERSION} at ${ArborX_DIR} was built "
+        "without MPI (ARBORX_ENABLE_MPI=OFF), but FUSE_ENABLE_MPI=ON needs "
+        "ArborX::DistributedTree from an MPI-enabled ArborX. Either reinstall "
+        "ArborX with -DARBORX_ENABLE_MPI=ON, or take that prefix off "
+        "CMAKE_PREFIX_PATH (and unset ArborX_DIR) so the pinned copy is built "
+        "with MPI instead.")
+    endif()
+    file(APPEND "${FUSE_RESOLUTION_FILE}"
+         "ArborX=found ${ArborX_VERSION} ${ArborX_DIR} mpi=${ARBORX_ENABLE_MPI}\n")
+    message(STATUS "fuse: ArborX ${ArborX_VERSION} found at ${ArborX_DIR} "
+                   "(ARBORX_ENABLE_MPI=${ARBORX_ENABLE_MPI})")
   else()
     # Always fetched when absent, like r3d and yaml-cpp above, and unlike the
     # FUSE_ALLOW_FETCH-gated Tier 0 dependencies: the user asked for ArborX to
