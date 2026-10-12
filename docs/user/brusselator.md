@@ -389,12 +389,22 @@ above, alone, already holds with room to spare.
 On the test's own grid (`test/petsc/brusselator_newton_test.cpp`'s 5×5/7×7,
 the same grid the check itself uses — calibrating elsewhere would not
 describe what the check runs), the two reference solves agree exactly and
-measured `e_n = 2.442491e-15` (`check_iters=4`, `reference_iters=5`,
-`f_final_native=9.219417e-12`, `reference_final_residual=1.783547e-14`,
-`reference_cross_check_diff=0.0`) natively; the PETSc-side terminal
-residual, the asserted bound's own value, the legacy bound, and all three
-ratios are PENDING a host run (this sandbox cannot complete `MPI_Init()`,
-KNOWN_ISSUES.md D32).
+measured, in the sandbox's native-only calibration, `e_n = 2.442491e-15`
+(`check_iters=4`, `reference_iters=5`, `f_final_native=9.219417e-12`,
+`reference_final_residual=1.783547e-14`, `reference_cross_check_diff=0.0`).
+**On the owner's machine, 2026-10-12 (`main` at 278fbef,
+`petsc.brusselator_newton`, one passing run of 1220.8 s)** the same
+calibration gave `e_n = 2.664535e-15` (`check_iters=4`, `reference_iters=5`,
+`f_final_native=8.142361e-12`, `reference_final_residual=2.341429e-14`,
+`reference_cross_check_diff=0.0`); the PETSc terminal residual was
+8.329282e-12, a ratio of 1.022957 to the native one; the asserted sharp bound
+was 5.390239e-15 and the legacy bound, never asserted, 3.159481e-07. The row
+passed, and its assertions are per element, so every element of the final U
+and V differs between the substrates by at most 5.390239e-15. That run
+printed no observed maximum, so no observed/bound ratio is recorded; the test
+now prints one (`[agreement-bound] observed max ...`) and the next host run
+will give it. The bound is recomputed from each run's own calibration, which
+is why `e_n` differs between the two machines.
 
 The communicator decision (`docs/dev/newton-krylov.md` §11.3): the PETSc
 substrate always solves on `MPI_COMM_SELF`, never the Runner's own

@@ -3937,7 +3937,7 @@ instance's final Newton iterate AND iteration/GMRES count against the single-pro
 identical graph — the SAME cross-rank-agreement property `window_runner_mpi_test.cpp` already proves for
 Picard, now for Newton's own reductions specifically.
 
-### D32. The PETSc solver plugin is the second substrate behind the S7 seam — BUILT AND MEASURED 2026-10-11; communicator and bound margin remain
+### D32. The PETSc solver plugin is the second substrate behind the S7 seam — BUILT AND MEASURED 2026-10-11; the communicator remains
 
 S7 was built on the library's own linear algebra first, by the user's decision of 2026-10-10: a
 native Jacobian-free Newton-Krylov coupler (`fuse::num::solve()`, `docs/dev/newton-krylov.md`)
@@ -4070,8 +4070,12 @@ Brusselator did stall on PETSc without a floor, and `fuse::petsc::solve()` now a
 `NewtonConfig::eta_min` through a KSP convergence test (`docs/dev/newton-krylov.md` §10.4(1)), proved
 by the `petsc-forcing-floor-not-applied` mutation. **Still open under D32:** the PETSc substrate
 solves on `MPI_COMM_SELF` (correct while D31 restricts Newton regions to one participant; the
-communicator plumbing is D31's), and the agreement bounds in the two examples carry a 20× margin
-because the result structs expose a post-first-step residual rather than ‖F₀‖.
+communicator plumbing is D31's). The 20× margin the agreement bounds once carried is gone: they are
+built from each substrate's own terminal residuals (dn_heat: an exact bound, ‖J⁻¹‖∞ = 4/3 times the
+sum over its 20 periods; the Brusselator: a calibrated reference error times one plus the residual
+ratio), and both held on the owner's machine on 2026-10-12 (dn_heat: observed 3.572609e-10 K against
+5.888415e-07 K, ratio 6.067e-04; the Brusselator: per element against 5.390239e-15, with the observed
+maximum not yet printed — the test now prints it).
 
 ### D33. The omp legs and the `omp_identical` rows were registered with one thread whenever configure ran under `OMP_NUM_THREADS=1` — CLOSED 2026-10-12
 

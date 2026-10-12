@@ -302,12 +302,17 @@ cover, not a separate source of slack the bound needs to carry. The sum over
 `kPeriods` periods only widens this margin relative to the floor, never
 narrows it, since the sum is never smaller than any one period's own term.
 
-The check passes as `example.dn_heat.newton_petsc`; the observed
-disagreement, the sum-based sharp bound, the legacy bound, the per-period
-residual sums (`Σ F_k` for each substrate), and their ratios from that run
-are PENDING a host measurement (this exact binary cannot run
-`--newton-petsc` in the sandbox that derived the formula, KNOWN_ISSUES.md
-D32's own "cannot complete `MPI_Init()`" note). A failure of this check means
+The check passes as `example.dn_heat.newton_petsc`. **Measured 2026-10-12 on
+the owner's machine (`main` at 278fbef, `--newton-petsc`, 20 periods):** Σ F_k
+is 2.208934e-07 for the native substrate and 2.207377e-07 for PETSc; the
+observed disagreement is 3.572609e-10 K against the asserted sharp bound of
+5.888415e-07 K, a ratio of 6.067e-04 (the bound holds with a margin of about
+1.6e3). The legacy bound, never asserted, is 1.323101e-05 K. The tighter
+reading printed as `[agreement-bound last-period]` — the same bound from the
+last period's terminal residuals alone, valid only if the carried state does
+not enter F_k — is 5.711298e-09 K against the same disagreement, a ratio of
+6.255e-02 (margin about 16), so on this run that reading also holds; it is
+informational and is not asserted. A failure of this check means
 either a real disagreement between the two substrates or a breakdown of the
 bound's own assumption (the per-station Jacobian stops being the operator
 either solver actually converged under — for instance if a future change
