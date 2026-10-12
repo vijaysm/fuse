@@ -88,8 +88,15 @@ position it is checkable without MPI, and `runtime.epoch_schedule` does check
 it — matched sends and receives, a hand-up chain that always terminates at
 participant 0, and a message count per participant that stays logarithmic.
 
-The tag is small and explicit (`0x5C13`, next to the crystal router's
-`0x5C12`). MPI only guarantees tags up to `MPI_TAG_UB`, whose standard minimum
+The tag is small and explicit (`kEpoch = 0x5C14`, next to the crystal
+router's `0x5C12`). RT-7/TR-12 (review 2026-10-11): this page previously said
+`0x5C13` — that is `kUnionCommCreate` (`fuse/transport/tags.hpp`'s own
+history comment: `kEpoch` was first chosen as `0x5C13`, landed on the crystal
+router's own collision, and was moved to `0x5C14`; `kUnionCommCreate` took
+the vacated `0x5C13`), not the epoch tag this section describes. Both values
+stay below `MPI_TAG_UB`'s floor either way, so the collision never reached
+`E-RT-EPOCH-TAG` itself — this was doc drift, not a code defect. MPI only
+guarantees tags up to `MPI_TAG_UB`, whose standard minimum
 is 32767; a first version packed `'EPOC'` into an int, which is 1162891075 and
 which every MPI rejects outright. Setup now reads `MPI_TAG_UB` and refuses
 with `E-RT-EPOCH-TAG` if it is ever below the tag in use — a refusal before the
@@ -124,6 +131,45 @@ A component that refuses its step carries forward the same way, both in the
 period loop and inside an iteration region — where it matters most, since the
 region body runs many times and a rank dropping out of the exchange
 desynchronises the remaining iterations rather than one step.
+
+### The checklist question
+
+Review 2026-10-11 (index.md §2.1) found this class fixed per-site and
+reintroduced per-subsystem seven separate times before that round, and five
+more sites inside the runtime layer alone (RT-1, RT-2, RT-4) — per-site fixes
+were not holding. Ask this question of **every** rank-local refusal or early
+return, not only ones that look collective-adjacent:
+
+> Does something later in this same call, on a path this refusal skips,
+> perform a real collective — or can one rank reach a later collective while
+> another, having taken this refusal, does not?
+
+If the answer is "yes, a peer can reach a collective this rank now skips",
+the refusal is a hang waiting on a trigger, whether or not the current test
+suite exercises the trigger. Two recipes answer it, and this project has not
+needed a third:
+
+1. **Agree before the first collective.** `Allreduce(MIN)` (or an equivalent
+   reduce-then-broadcast) of a local pass/fail verdict, reached by every rank
+   that would otherwise decide alone, before anything collective runs — so
+   either every rank enters the collectives that follow, or none does. Use
+   this when the refusal is checked once, up front (a setup-time validation,
+   a period-top checkpoint), rather than discovered partway through a body
+   that has already reached some of its own collectives.
+2. **Record and carry forward.** Record the failure (the project's own
+   `step_failure`/verdict-carrying convention) instead of returning, and keep
+   executing every remaining *collective* operation the rest of this call
+   still owes its partners (`is_collective`, above) while skipping only the
+   now-pointless local arithmetic — reaching the agreement point every
+   partner is already heading for, where the failure is reported to
+   everyone at once. Use this when the refusal is discovered mid-body, after
+   some of this call's own collectives have already run.
+
+Both recipes are already load-bearing elsewhere in this file: recipe 1 is
+`reconcile_epoch()`'s "before" half (a rank's own verdict reaches the
+reduction before the copy it guards); recipe 2 is "What a failed rank still
+executes", immediately above, generalized from the period loop to any call
+with its own remaining collectives.
 
 ## Partially shared placements
 
