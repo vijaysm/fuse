@@ -3574,6 +3574,12 @@ path they cover is unverified by measurement. Everything the accept path shares 
 MPMD -- the launch-spec round trip, the port file, `connect()`'s own refusals, the
 teardown of D20 and the intercommunicator disconnect -- is covered by rows that do pass.
 
+**Update 2026-10-12 — the MPI was reinstalled, the cause named above is gone, the rows have not run yet.** The
+host's MPICH is now 5.0.0a1 with device `ch4:ofi` (`mpichversion`), and `tools/probe-mpi-dynamic.sh` exits 0:
+accept/connect works between two same-node jobs. This entry stays open until `parallel.connect.accept.*` and
+`verification.brusselator.participants.accept.3` have run on that MPI; the configure step could not show it,
+because the verdict it had cached was stale (D35).
+
 ### ~~D22. A shared Kokkos aborts the process at exit~~ — CLOSED 2026-10-09
 
 **What it was.** `Kokkos::initialize()` registers its own exit hook, and that hook ran
@@ -4160,3 +4166,29 @@ round-tripped bitwise through all 16 restores).
   value for the step count and the CSV time column only. No dynamics computation sees it, so the effect is
   that the simulated end time and the time axis carry the rounding error: zero for the default
   `--dt 0.01`, about 1.22e-4 for a value that is not on the grid.
+
+### D35. The accept/connect probe's verdict was cached once and never measured again — CLOSED 2026-10-12
+
+`cmake/FuseDependencies.cmake` ran `tools/probe-mpi-dynamic.sh` only when `FUSE_MPI_DYNAMIC_PROBED` was not in
+the cache, and cached whatever it returned, including "not tested", which records that nothing was measured.
+Reinstalling the MPI therefore changed nothing: on the owner's machine, after the reinstall that replaced
+`ch3:nemesis` with `ch4:ofi`, a reconfigure printed `accept/connect launch mode: ON (not tested)` without
+probing, while running the probe by hand exited 0. A cached "measured broken" would have been worse:
+`FUSE_ENABLE_CONNECT_ACCEPT`, an option cached at the first configure, would have stayed OFF with it, with
+nothing left to measure again.
+
+**Fix.** `cmake/FuseMpiDynamic.cmake` holds three functions of plain values. `fuse_mpi_fingerprint()` is the
+content hash of the first MPI library `FindMPI` reports, of the launcher and of the compiler wrapper (a hash, so a
+reinstall over the same prefix changes it); `fuse_mpi_dynamic_should_probe()` reuses a verdict only if it is a
+measurement taken on the MPI configured now; `fuse_mpi_dynamic_option_value()` lets the option follow the probe
+unless it was set by hand (a value that differs from what the probe itself set last time is kept; a cache from
+before that record existed is read from its verdict). `tools/check-mpi-dynamic-cache.cmake`, registered as
+`build.mpi_dynamic_cache_decisions`, runs 8 re-probe rows, 9 option rows and the fingerprint cases with no MPI. Four
+mutation rows (`build-evidence/mutations/build-mpi-dynamic.toml`) are killed by it.
+
+**Measured in a tier-1 tree in the sandbox, whose launcher cannot start a job (so every probe reports "could not
+test"):** a second configure on the same MPI printed the re-probe line and probed again; a cached
+`measured broken` taken on another MPI was re-probed and the option moved from OFF to ON with a message; and an
+option set to OFF by hand while the probe default was ON stayed OFF through that configure and the next. Not
+measured here: a re-probe that returns "measured working" or "measured broken", because the sandbox cannot launch;
+the owner's reconfigure of `build-all` is where that shows.
