@@ -24,10 +24,20 @@ else()
 endif()
 set(FUSE_HAVE_PETSC  ${FUSE_ENABLE_PETSC})
 set(FUSE_HAVE_CUSPARSE ${FUSE_ENABLE_CUSPARSE})
-# See config.hpp.in's own comment on FUSE_TOOLCHAIN_ID for why TARGET
-# Kokkos::CUDA, not OMPI_CXX, is the bit that matters here.
+# See config.hpp.in's own comment on FUSE_TOOLCHAIN_ID. The suffix names the
+# compiler every translation unit actually went through, probed directly: a
+# TU compiled by nvcc (nvcc_wrapper compiles .cpp as CUDA) defines __NVCC__,
+# whatever CMAKE_CXX_COMPILER_ID says about the host compiler behind it. A
+# CUDA Kokkos makes nvcc_wrapper mandatory; a shell that still routes mpicxx
+# through it uses it even without one, and the measured host-pass differences
+# (test/num/accelerator_test.cpp) come from the compiler, not from the
+# presence of a device backend. The environment variable alone is not
+# evidence: MPICH's wrapper ignores OMPI_CXX.
+include(CheckCXXSourceCompiles)
+check_cxx_source_compiles("#ifndef __NVCC__\n#error not nvcc\n#endif\nint main() { return 0; }"
+                          FUSE_CXX_COMPILES_AS_NVCC)
 set(FUSE_TOOLCHAIN_ID "${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}")
-if(TARGET Kokkos::CUDA)
+if(TARGET Kokkos::CUDA OR FUSE_CXX_COMPILES_AS_NVCC)
   string(APPEND FUSE_TOOLCHAIN_ID "-nvcc_wrapper")
 endif()
 string(APPEND FUSE_TOOLCHAIN_ID "-${CMAKE_SYSTEM_PROCESSOR}")
