@@ -18,6 +18,7 @@
 # Extending the fetch machinery to them is a later decision, deliberately open.
 
 include(FetchContent)
+include(FuseMpiDynamic)
 set(FETCHCONTENT_QUIET OFF)
 option(FUSE_ALLOW_FETCH "Build a pinned copy of any Tier 0 dependency that is not installed" OFF)
 
@@ -590,7 +591,19 @@ macro(fuse_resolve_dependencies)
     set(_fuse_dyn_script "${PROJECT_SOURCE_DIR}/tools/probe-mpi-dynamic.sh")
     set(_fuse_dyn_default ON)
     set(_fuse_dyn_verdict "assumed (probe not run)")
-    if(NOT DEFINED FUSE_MPI_DYNAMIC_PROBED AND EXISTS "${_fuse_dyn_script}")
+    # A cached verdict is reused only if it is a measurement taken on THIS MPI
+    # (cmake/FuseMpiDynamic.cmake, KNOWN_ISSUES.md D35): "not tested" is not a
+    # measurement, and a reinstalled MPI is a different one.
+    fuse_mpi_fingerprint(_fuse_dyn_fingerprint)
+    set(_fuse_dyn_previous_verdict "${FUSE_MPI_DYNAMIC_PROBED}")
+    fuse_mpi_dynamic_should_probe("${FUSE_MPI_DYNAMIC_PROBED}"
+                                  "${FUSE_MPI_DYNAMIC_FINGERPRINT}"
+                                  "${_fuse_dyn_fingerprint}" _fuse_dyn_probe)
+    if(_fuse_dyn_probe AND EXISTS "${_fuse_dyn_script}")
+      if(NOT "${FUSE_MPI_DYNAMIC_PROBED}" STREQUAL "")
+        message(STATUS "fuse: re-probing accept/connect: the recorded verdict "
+                       "'${FUSE_MPI_DYNAMIC_PROBED}' is not a measurement of this MPI")
+      endif()
       message(STATUS "fuse: probing whether this MPI can connect two same-node jobs ...")
       execute_process(
         COMMAND "${CMAKE_COMMAND}" -E env
@@ -622,12 +635,33 @@ macro(fuse_resolve_dependencies)
       endif()
       set(FUSE_MPI_DYNAMIC_PROBED "${_fuse_dyn_verdict}" CACHE INTERNAL
           "Verdict of tools/probe-mpi-dynamic.sh")
+      set(FUSE_MPI_DYNAMIC_FINGERPRINT "${_fuse_dyn_fingerprint}" CACHE INTERNAL
+          "The MPI that verdict was measured on")
     elseif(DEFINED FUSE_MPI_DYNAMIC_PROBED)
       set(_fuse_dyn_verdict "${FUSE_MPI_DYNAMIC_PROBED}")
       if(_fuse_dyn_verdict STREQUAL "measured broken")
         set(_fuse_dyn_default OFF)
       endif()
     endif()
+    # The option is cached at the first configure, so on its own it would keep
+    # the value of a verdict the probe has since replaced. It follows the probe
+    # unless the owner set it (fuse_mpi_dynamic_option_value says how that is
+    # told apart).
+    fuse_mpi_dynamic_option_value("${FUSE_ENABLE_CONNECT_ACCEPT}"
+                                  "${FUSE_MPI_DYNAMIC_AUTO}"
+                                  "${_fuse_dyn_previous_verdict}"
+                                  ${_fuse_dyn_default} _fuse_dyn_value)
+    if(DEFINED CACHE{FUSE_ENABLE_CONNECT_ACCEPT}
+       AND NOT "${FUSE_ENABLE_CONNECT_ACCEPT}" STREQUAL "${_fuse_dyn_value}")
+      message(STATUS "fuse: FUSE_ENABLE_CONNECT_ACCEPT changes from "
+                     "${FUSE_ENABLE_CONNECT_ACCEPT} to ${_fuse_dyn_value}, following the "
+                     "probe (${_fuse_dyn_verdict}); it was not set by hand")
+      set(FUSE_ENABLE_CONNECT_ACCEPT ${_fuse_dyn_value} CACHE BOOL
+          "Multi-executable: the accept/connect launch mode (needs an MPI whose dynamic process management works between same-node jobs)"
+          FORCE)
+    endif()
+    set(FUSE_MPI_DYNAMIC_AUTO ${_fuse_dyn_default} CACHE INTERNAL
+        "What the probe, or its default, set FUSE_ENABLE_CONNECT_ACCEPT to")
     option(FUSE_ENABLE_CONNECT_ACCEPT
            "Multi-executable: the accept/connect launch mode (needs an MPI whose dynamic process management works between same-node jobs)"
            ${_fuse_dyn_default})

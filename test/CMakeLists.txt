@@ -90,6 +90,12 @@ add_test(NAME build.host_core_count_ignores_omp_threads
          COMMAND ${CMAKE_COMMAND} -DFUSE_CHECK_TMP=${CMAKE_CURRENT_BINARY_DIR}/host-cores-probe
                  -P ${CMAKE_SOURCE_DIR}/tools/check-host-cores.cmake)
 set_tests_properties(build.host_core_count_ignores_omp_threads PROPERTIES LABELS "build")
+# The accept/connect probe's cache rules (cmake/FuseMpiDynamic.cmake, D35): every
+# branch of the re-probe and option decisions, with no MPI needed.
+add_test(NAME build.mpi_dynamic_cache_decisions
+         COMMAND ${CMAKE_COMMAND} -DFUSE_CHECK_TMP=${CMAKE_CURRENT_BINARY_DIR}/mpi-dynamic-check
+                 -P ${CMAKE_SOURCE_DIR}/tools/check-mpi-dynamic-cache.cmake)
+set_tests_properties(build.mpi_dynamic_cache_decisions PROPERTIES LABELS "build")
 function(fuse_add_omp_legs test_name target)
   if(NOT FUSE_KOKKOS_HAS_OPENMP)
     return()
