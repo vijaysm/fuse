@@ -91,23 +91,31 @@ describes = "run_region_newton()'s own non-convergence check is short-circuited 
 file = "src/runtime/iteration.cpp"
 old = """  st.iterations = nr.iterations;
 
+  // NewtonModel track (Round 2, GAP 1): RegionRuntime::newton_gmres_
+  // iterations' own comment -- overwritten, not appended, each solve.
+  R.newton_gmres_iterations.clear();
   for (const num::NewtonIterationRecord& rec : nr.trace) {
     st.residual_history.push_back(rec.norm_f);
+    R.newton_gmres_iterations.push_back(rec.gmres_iterations);
   }
   st.residual_history.push_back(nr.final_residual_norm);
 
   if (!num::is_converged(nr.status)) {"""
 new = """  st.iterations = nr.iterations;
 
+  // NewtonModel track (Round 2, GAP 1): RegionRuntime::newton_gmres_
+  // iterations' own comment -- overwritten, not appended, each solve.
+  R.newton_gmres_iterations.clear();
   for (const num::NewtonIterationRecord& rec : nr.trace) {
     st.residual_history.push_back(rec.norm_f);
+    R.newton_gmres_iterations.push_back(rec.gmres_iterations);
   }
   st.residual_history.push_back(nr.final_residual_norm);
 
   if (false && !num::is_converged(nr.status)) {"""
 target = "fuse_runtime_newton_region_test"
 test = "runtime.newton_region"
-result = "Hand-proved 2026-10-10: 11 cases, all pass before; after mutation, 1 fails (NewtonRegion.ExhaustingTheNewtonIterationBudgetReportsNonConvergence -- run_period() returns success instead of E-RT-NOCONVERGE for a region whose NewtonConfig::max_nonlinear_iterations is 0), 10 pass. File restored and cmp-verified byte-identical; rebuilt and reran to confirm all 11 pass again."
+result = "REPAIRED and RE-PROVED 2026-10-12 (NewtonModel track's own GAP 1 widened this anchor's own reporting block with a gmres_iterations extraction, same semantic point unchanged -- the anchor went stale as a SIDE EFFECT of that change and is repaired here, by the same track, per the lead's own review). Control run (unmutated, current file): full unfiltered fuse_runtime_newton_region_test, 17/17 PASSED. Mutation applied, rebuilt, full unfiltered binary run: 16 PASSED / 1 FAILED -- NewtonRegion.ExhaustingTheNewtonIterationBudgetReportsNonConvergence (run_period() returns success instead of E-RT-NOCONVERGE for a region whose NewtonConfig::max_nonlinear_iterations is 0), the SAME test the original 2026-10-10 proof named. Restored; cmp against the pre-mutation file reported no difference (md5 c33cd2e0828fce1f0de1d44fc9a9826b both before and after -- this round's own baseline, see newton-model.toml's header for the hash's own history). Rebuilt and reran to confirm 17/17 returns."
 
 # The same reporting block exists on the WINDOW-scoped Newton path
 # (run_region_newton_window, added by the WindowNewton track after the row
@@ -119,22 +127,30 @@ area = "runtime"
 describes = "run_region_newton_window() ignores a non-converged NewtonStatus: the window is counted as converged and the run proceeds. Must be killed by a window Newton test that exhausts the iteration budget and requires it reported."
 file = "src/runtime/iteration.cpp"
 old = """  st.iterations = nr.iterations;
+  // NewtonModel track (Round 2, GAP 1): RegionRuntime::newton_gmres_
+  // iterations' own comment -- overwritten, not appended, each solve.
+  R.newton_gmres_iterations.clear();
   for (const num::NewtonIterationRecord& rec : nr.trace) {
     st.residual_history.push_back(rec.norm_f);
+    R.newton_gmres_iterations.push_back(rec.gmres_iterations);
   }
   st.residual_history.push_back(nr.final_residual_norm);
 
   if (!num::is_converged(nr.status)) {"""
 new = """  st.iterations = nr.iterations;
+  // NewtonModel track (Round 2, GAP 1): RegionRuntime::newton_gmres_
+  // iterations' own comment -- overwritten, not appended, each solve.
+  R.newton_gmres_iterations.clear();
   for (const num::NewtonIterationRecord& rec : nr.trace) {
     st.residual_history.push_back(rec.norm_f);
+    R.newton_gmres_iterations.push_back(rec.gmres_iterations);
   }
   st.residual_history.push_back(nr.final_residual_norm);
 
   if (false && !num::is_converged(nr.status)) {"""
 target = "fuse_runtime_window_fixed_point_residual_test"
 test = "runtime.window_fixed_point_residual"
-result = "UNPROVEN -- lead-added 2026-10-11 so the two sites stay distinct; no window test yet exhausts the Newton budget. Hand-proof and the test are owed before the next runtime mutation gate run."
+result = "REPAIRED and RE-PROVED 2026-10-12 (anchor widened for the SAME reason as the row above: NewtonModel track's own GAP 1 gmres_iterations extraction). No longer UNPROVEN: fuse_runtime_window_fixed_point_residual_test has since gained WindowFixedPointResidual.ExhaustingTheNewtonBudgetOnAWindowReportsNonConvergence and ...AWindowThatExhaustsTheNewtonBudgetIsCountedNotConverged (neither test existed, or at least neither was named, when this row was marked UNPROVEN on 2026-10-11 -- this repair is the first time anyone has actually run the mutation against the CURRENT binary). Control run (unmutated, current file): full unfiltered binary, 8/8 PASSED. Mutation applied, rebuilt, full unfiltered binary run: 6 PASSED / 2 FAILED -- both of the tests just named fail (the first on `r.ok()` being true instead of false; the second on `iteration_stats().front().converged` being true instead of false, and `stats().windows_not_converged` being 0 instead of 1). Restored; cmp against the pre-mutation file reported no difference (md5 c33cd2e0828fce1f0de1d44fc9a9826b both before and after). Rebuilt and reran to confirm 8/8 returns."
 
 # S7.2 WindowNewton (newton-krylov.md Sec. 9.1, 9.7's own test plan): the
 # window-Newton interface vector's own GaussSeidel exclusion rule
