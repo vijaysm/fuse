@@ -123,6 +123,21 @@ provider are wired in and checked bit-for-bit against the driver
 (`test/runtime/window_runner_straddle_test.cpp`). `DtPolicy::Adjustable`
 never straddles, so this does not apply to it.
 
+A `DtPolicy::Fixed` member whose own interval *exceeds* the window
+length — a single step that spans past the window end rather than
+merely failing to divide it — is also handled by this same replay, not
+rejected: `test/runtime/window_runner_test.cpp`'s
+`WindowRunner.FixedPolicyStraddleNowSucceeds` runs exactly that shape
+(interval 1 on a 1/2-length window) to convergence. `WindowCoupler::
+create()` refuses this configuration outright on the driver path
+(`E-RT-WINDOW-LONGSTEP`, KNOWN_ISSUES.md D7, "a Fixed step may not span
+a window end it cannot replay") because the driver does not have this
+path's replay available to it; this compiled path's own
+`resolve_regions()` (`src/runtime/iteration.cpp`) deliberately does not
+mirror that refusal (review 2026-10-11, RT-3) — the divergence from the
+driver is intentional, not an oversight, and is covered by the test
+above rather than a runner-side refusal.
+
 Three narrower combinations remain unsupported, all still rejected
 outright rather than silently wrong:
 
