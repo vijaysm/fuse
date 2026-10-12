@@ -86,7 +86,10 @@ that:
    logic alongside), `Transport` (MPI `move()`, which only ever operates on
    host memory regardless of `execution_space` — `mpi_is_gpu_aware()` is
    explicitly informational-only per `include/fuse/base/config.hpp.in`'s own
-   comment), `WindowAdvance`/`Map`/`Reduce`/`Closure` (refusals). Only about
+   comment), `Remap`'s distributed-nodal branch (`r.nodal_dist >= 0`,
+   `apply_nodal_dist_remap()` — an MPI exchange over host buffers, so it
+   stays host-only even though the other two `Remap` branches move),
+   `WindowAdvance`/`Map`/`Reduce`/`Closure` (refusals). Only about
    9 of ~15 `OpKind`s are templated on `HostExecSpace` today and need `Space`
    genericity: `Interpolate`'s identity-copy branch, `Remap`'s identity and
    weighted branches, `Sample`'s non-spacetime branch, `Accumulate`,
