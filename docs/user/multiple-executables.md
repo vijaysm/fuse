@@ -98,18 +98,31 @@ side alone.
 
 Both launch styles are checked by the same rule before any MPI call happens:
 **the launched components' `RankSet`s must be consecutive blocks, in the graph's own component
-order.** `MPI_Intercomm_merge` concatenates one side's ranks after the other's in whichever order
-the two sides agree to merge in, and launcher-style MPMD assigns rank 0..k-1 to the first `mpiexec`
-segment and so on in command-line order; both agree with the graph's own order only if that order
-is what the graph declares. A graph that declares an `Mpmd` or `Connect` component on an empty,
-strided, or out-of-sequence `RankSet` is refused with `E-CONNECT-SPEC` before any process even calls
-`MPI_Open_port` or reads `MPI_APPNUM`.
+order, with nothing but in-process/plugin ranks between them.** `MPI_Intercomm_merge` concatenates
+one side's ranks after the other's in whichever order the two sides agree to merge in, and
+launcher-style MPMD assigns rank 0..k-1 to the first `mpiexec` segment and so on in command-line
+order; both agree with the graph's own order only if that order is what the graph declares. A
+graph that declares an `Mpmd` or `Connect` component on an empty, strided, or out-of-sequence
+`RankSet` is refused with `E-CONNECT-SPEC` before any process even calls `MPI_Open_port` or reads
+`MPI_APPNUM`.
+
+**A gap between two launched blocks is legal exactly when an in-process component fills it exactly**
+(KNOWN_ISSUES.md D36) -- an `InProcess`/`Plugin` component whose own `RankSet` covers every rank of
+the gap and none outside it. This is accept mode's own bundled coupler: U's executable carries the
+coupler's ranks too (`connect_pairwise()` supports exactly two `Connect`-mode components, D18), but
+since D36 U's own declared `RankSet` is only its physics ranks, the coupler's is the ranks between
+U's declared block and V's, and that gap -- not a third block of U's own -- is what the coupler's
+declaration fills. The OLDER shape (U's own declared range spanning the coupler's bundled ranks too,
+with no gap at all) still validates unchanged: it never reaches the gap check, since nothing is
+missing between U's block and V's. An in-process component may also simply share ranks with one
+launched block (`RankSet`'s own documented "overlap is legal") -- what it may not do is straddle the
+boundary between a gap and a block, or between two gaps: its own ranks must sit entirely on one side.
 
 | Code | When |
 |---|---|
 | `E-LAUNCH-APPNUM` | (graph build) an `Mpmd` component has no `appnum` set |
 | `E-LAUNCH-CONNECT-TARGET` | (graph build) a `Connect` component has neither `port_file` nor `service_name` |
-| `E-CONNECT-SPEC` | the launched components' `RankSet`s are not consecutive blocks in graph order; two `Mpmd` components share one `appnum`; a non-`Mpmd`/`Connect` component was handed to `connect()`; or more than TWO components declare `Connect` (KNOWN_ISSUES.md D18 -- `Mpmd` has no such limit, only true separate-executable `Connect` launches) |
+| `E-CONNECT-SPEC` | the launched components' `RankSet`s are not consecutive blocks (with in-process-covered gaps, D36) in graph order; a gap between two launched blocks has a rank no in-process/plugin component covers, or one an in-process component's own ranks straddle the boundary of; two `Mpmd` components share one `appnum`; a non-`Mpmd`/`Connect` component was handed to `connect()`; or more than TWO components declare `Connect` (KNOWN_ISSUES.md D18 -- `Mpmd` has no such limit, only true separate-executable `Connect` launches) |
 | `E-CONNECT-APPNUM` | the real `MPI_APPNUM` layout at runtime disagrees with the graph (an undeclared appnum, or a declared one whose ranks do not match) |
 | `E-CONNECT-TIMEOUT` | the non-acceptor side waited longer than `timeout_s` for the port file |
 
@@ -149,7 +162,13 @@ plain C-ABI wrapper — [](../dev/abi-design.md) distinguishes this from the ABI
 foreign caller touching `fuse::` C++ directly). `--launch accept` bundles the coupler's own ranks
 into the acceptor executable's (`u_main.c`'s) own `MPI_COMM_WORLD` rather than giving it a third
 `Connect`-mode executable of its own — see `E-CONNECT-SPEC`'s row below and KNOWN_ISSUES.md D18 for
-why. `brusselator_check` (same directory) reads both executables' own printed per-window logs and
+why. U's own declared `RankSet` is exactly its physics ranks, not the whole of that bundled
+executable (KNOWN_ISSUES.md D36 — a component's `RankSet` must be the ranks that HOST it, which
+`NativeMeshBackend`'s own per-placement decomposition, D24, decomposes a mesh field over); the
+coupler's own declared `RankSet` is the gap this leaves between U's declared block and V's, which
+the gap rule above accepts.
+
+`brusselator_check` (same directory) reads both executables' own printed per-window logs and
 reproduces `examples/brusselator/main.cpp`'s own `--check` verdict from them.
 `test/parallel/brusselator_participants/run_participants.sh` is the host driver
 (`verification.brusselator.participants.{mpmd,accept}.{3,5}`). MPI cannot start in this sandbox

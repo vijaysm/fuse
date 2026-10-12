@@ -4241,3 +4241,132 @@ test"):** a second configure on the same MPI printed the re-probe line and probe
 option set to OFF by hand while the probe default was ON stayed OFF through that configure and the next. Not
 measured here: a re-probe that returns "measured working" or "measured broken", because the sandbox cannot launch;
 the owner's reconfigure of `build-all` is where that shows.
+
+### D36. Accept mode's bundled coupler rank was declared as part of U's own RankSet, so D24's fix mis-sized U's field
+
+**Status: FIXED at the library and example levels; `verification.brusselator.participants.accept.3` (and
+`.accept.5`, built but never run per D18's own ruling) are the host's rows to confirm.**
+
+**What it was.** `examples/brusselator/participants/brusselator_graph_tool.cpp`'s accept branch declared U's
+`RankSet` as its FULL local executable world -- its own physics rank(s) plus the coupler's bundled ones riding
+along inside the same acceptor `MPI_COMM_WORLD` (D18's own routing around `connect_pairwise()`'s two-component
+limit) -- with the coupler's own `RankSet` the trailing, legally overlapping subset of that range. Before D24,
+every placement's decomposition came from `(rank_, num_ranks_)`, this process's position in the WHOLE run, so the
+declared RankSet's own size was never consulted and the mismatch below could not arise. D24 fixed that: a
+placement is now decomposed over its component's own declared `RankSet`, indexed by this process's position
+within it -- correct for a component whose declaration already matches the ranks it actually runs on, and silently
+wrong for one whose declaration includes ranks it does not (U's own bundled-coupler rank, after D18).
+
+**How it surfaced.** Measured on the owner's host 2026-10-12, the first run where `parallel.connect.accept.*`
+passed the accept handshake itself (MPICH 5.0.0a1, device `ch4:ofi`, after the reinstall D23's own update
+records): `verification.brusselator.participants.accept.3` timed out at 120s.
+`build-all/examples/brusselator-participants-scratch/accept-3/u_stdout.log` printed `FAIL(u_main): initialize:
+status=-4 iteration region 'brusselator_window': window member 'U' registered 256 values for its export, but the
+plan sizes that field at 128 on this rank` (`E-RT-SIZE`, `src/runtime/iteration.cpp`'s own window-member check,
+`Runner::Impl::resolve_regions()`). `graph.yaml` for that row declared U's `RankSet` as `{first: 0, count: 2}` --
+its own one physics rank (`--ranks-u 1`) plus the coupler's one bundled rank (`--ranks-coupler 1`) -- so D24's fix
+decomposed U's 16x16=256-cell field over 2 ranks, giving 128 per rank, while `u_main.c` decomposes its physics
+over `--ranks-u` (1 rank) alone and registers the whole 256. The 5-rank accept row (`--ranks-u 2 --ranks-coupler
+1`) has the identical shape and would fail the same way; it needs 5 tasks and is the owner's to run, per D18's own
+"build it but never run it" ruling, so it was never a candidate for this measurement.
+
+**Fix.** A component's declared `RankSet` must be exactly the ranks that HOST it -- not every rank that happens to
+share its executable. `brusselator_graph_tool.cpp`'s accept branch now declares U's own `RankSet` as `{0,
+ranks_u}` (its own physics ranks only), the coupler's as `{ranks_u, ranks_coupler}` (the ranks U's own declaration
+used to also claim), and V's as `{ranks_u + ranks_coupler, ranks_v}` (unchanged). This leaves a GAP -- the
+coupler's own ranks -- between U's declared block and V's, where before D36 there was none (U's block ran all the
+way to where V's began). `fuse::transport::validate_launch_layout()` (`include/fuse/transport/connect.hpp`,
+`src/transport/connect.cpp`) is the function this gap would have been refused by (it requires every Connect/Mpmd
+component's `RankSet` to be a consecutive block in graph order, with nothing said about what -- if anything --
+may occupy the space between two of them), so it gained the other half of this fix: a gap between two consecutive
+Connect/Mpmd blocks is now accepted exactly when it is covered, rank for rank, by in-process/plugin components
+whose OWN ranks lie entirely inside that one gap (`check_gap_filled_by_in_process_components()`, same file).  Two
+new refusals, both named with the ranks at fault: an UNCOVERED gap rank that no in-process component's `RankSet`
+names, and a STRADDLING in-process component whose ranks reach across the boundary between a gap and a launched
+block (or between two gaps) rather than sitting entirely inside one. The pre-D36 declaration (U's own range
+spanning the coupler's, no gap at all) still validates unchanged -- it never reaches the new check, since there is
+no gap to check.
+
+**Not the whole of multi-executable yet.** `connect_pairwise()`'s own merge numbering (`MPI_Intercomm_merge`'s
+high/low fixed by `connect_mode_components()`'s graph order, not by acceptor/connector role) is unaffected by this
+fix: it depends on which components declare `LaunchMode::Connect` and their order in the graph, never on a
+RankSet's own COUNT. Audited for the same class of mistake (deriving a world extent from a component's declared
+RankSet count rather than its actual membership): `src/runtime/runner.cpp`'s MLS-remap seriality check
+(`graph.component(owner).ranks.size() > 1U`, around line 638) reads a component's own RankSet size to decide
+whether its placement is parallel -- unaffected by D36 in the sense that it is not wrong, and is in fact MORE
+correct after this fix, since U's own RankSet size now correctly reflects how many ranks U itself is placed on,
+rather than including a bundled rank that was never part of U's own placement; `src/model/yaml_io.cpp`'s
+`{first, count}` writer (lines 443, 517) emits whatever `RankSet` it is given byte-faithfully and asserts nothing
+about what the count means, so it is unaffected either way; `src/abi/participant.cpp` and `src/model/validate.hpp`
+were grepped and found to derive nothing from a RankSet's own count (only emptiness, `E-PLACEMENT-EMPTY`, and this
+process's own `(rank, num_ranks)` from the real communicator).
+
+**A second defect, found by the same host run, in the same function, folded into this fix rather than left for
+later: the `LowFive` skip-list gap.** First flagged here as unmeasured (this session's own first pass over
+`validate_launch_layout()`), then MEASURED the same day on the owner's machine in a LowFive-enabled tree
+(`build-lowfive`, independent of the sandbox's own `FUSE_HAVE_LOWFIVE`-less build): `verification.brusselator.
+participants.lowfive.mpmd.3` failed in 1.7s. `coupler_stdout.2.log` printed `FAIL(coupler_main): setup: status=-4
+component 'lowfive' starts at rank 0, but the launched components before it in the graph's own order occupy ranks
+[0, 3); the launched components' rank sets must be consecutive blocks ...` against a `graph.yaml` declaring U
+`{0,1}` mpmd appnum 0, V `{1,1}` mpmd appnum 1, coupler `{2,1}` mpmd appnum 2, and a fourth, fieldless `lowfive`
+component (S6 phase 3, "LowFive" track, Unit 3's own marker, `brusselator_graph_tool.cpp`'s `--transport lowfive`
+branch) with `ranks: {first: 0, count: 3}` and `launch: {mode: lowfive}`.
+
+**Cause.** `validate_launch_layout()`'s skip-list for components needing no rank block of their own named
+`InProcess` and `Plugin` only -- every OTHER mode, including `LowFive`, fell into the "launched, needs a
+consecutive block" branch. Checked against the two other places that describe what a LowFive-launched component's
+ranks mean: `connect()`'s own `case LaunchMode::LowFive` (`src/transport/connect.cpp`) gives it the IDENTICAL
+refusal `connect()` gives `InProcess`/`Plugin` ("there is nothing to connect, and `my_world_comm_f` already is the
+base communicator"), with an explicit comment that this is "the same refusal shape as InProcess/Plugin above";
+`fuse::LaunchMode`'s own doc (`include/fuse/model/launch.hpp`) says of `LowFive` that "where do my ranks come
+from" is unaffected by it -- "today, always in-process". The two agree with each other and disagree with
+`validate_launch_layout()`'s own skip-list, which is the bug: nothing in either doc source supports treating a
+LowFive marker as a block that needs consecutive placement, and no test caught it because none exercised
+`validate_launch_layout()` against a LowFive-mode component at all (`test/verification/brusselator_graph_tool_
+lowfive_test.cpp` checks `validate()`, a different function).
+
+**Fix.** `LaunchMode::LowFive` joins the skip-list, with its OWN `continue` (not folded into the InProcess/Plugin
+one) for a reason specific to it: unlike a real in-process coupler, a LowFive marker's `RankSet` is a cross-cutting
+annotation over however many ranks the run actually has (today, the WHOLE run) rather than a placement confined to
+one gap between two launched blocks, so it is deliberately NOT added to D36's own `fillers` list either -- doing
+so would make every accept-mode row with a LowFive marker refuse as a STRADDLE (the marker's ranks touch the gap
+AND both launched blocks on either side of it).
+
+**Pinned by** three new `ValidateLaunchLayout` cases in `test/transport/connect_test.cpp`: the exact mpmd+lowfive
+shape from the host's own `graph.yaml` now validates; the SAME marker alongside D36's own accept-mode gap (U's
+block, the coupler's gap, V's block) also validates, confirming the marker is not treated as a straddling filler;
+and a lowfive-only graph (no launched component at all) still gets the pre-existing "no component declares an
+mpmd or connect launch" refusal, unchanged. A fourth mutation (`build-evidence/mutations/accept-layout.toml`'s
+`accept-layout-lowfive-counted-as-launched`) restores the old, unskipped behaviour and is killed by all three.
+This entry does not close D14: D14 is about the two-HDF5-image hazard and LowFive's own configure-time probe, which
+this defect is independent of -- the lowfive ROW this fixes was never blocked by D14 on the owner's own
+`build-lowfive` tree (that tree already has the fmt-12 rebuild D14's own Unit 3b account names), only by this
+separate layout bug.
+
+**Pinned by** `test/transport/connect_test.cpp`'s eleven new `ValidateLaunchLayout` cases (the D36 shape, the
+pre-D36 shape unchanged, a Plugin-mode gap filler, a two-component split gap, an uncovered gap, a partly-covered
+gap, the two straddle directions, and the three LowFive cases above), `test/verification/
+brusselator_accept_layout_test.cpp`'s six new cases (U's and V's own planned placement sizes on every rank of the
+3-rank accept-3 world, the graph tool's own output invariants, and that the real graph validates), and three new
+committed references, `examples/brusselator/participants/reference_accept_{3,5}.yaml` plus
+`reference_accept_3_lowfive.yaml` (the exact `--transport lowfive --launch accept` combination the LowFive
+skip-list defect below was measured against), with their own
+`verification.brusselator.graph_tool.reproduces_reference_accept_{3,5,3_lowfive}` byte-for-byte rows (accept mode
+had no committed reference of any kind before this fix). Five mutations
+(`build-evidence/mutations/accept-layout.toml`); a sixth, pre-existing mutation
+(`build-evidence/mutations/transport-connect.toml`'s `connect-merge-order-not-enforced`) had its own anchor
+updated to this fix's restructured loop and was re-verified against it.
+
+**What the host must verify.** `verification.brusselator.participants.accept.3` (3 tasks across two `mpiexec`
+invocations: U's executable at 2 ranks, V's at 1) should now reach past `fuse_initialize()` and run to completion
+within the 120s timeout, printing matching `mean_u`/`mean_v` values to `examples/brusselator`'s own single-process
+reference the way `mpmd.3` already does (D25's own measurement). `verification.brusselator.participants.accept.5`
+(5 tasks, U's executable at 3 ranks, V's at 2) is built and this fix applies to it identically, but D18's own
+ruling keeps it unrun without the owner's explicit say-so. This entry does not close D23: D23 is about whether
+accept/connect can complete a handshake on this MPI at all, which the owner's own 2026-10-12 update already found
+cleared, and the layout bug this entry fixes is downstream of that, found only once the handshake started
+working. D23 stays open until the host's own `accept.*` rows are the ones to decide it, not this fix.
+`verification.brusselator.participants.lowfive.mpmd.3` (the row that measured the LowFive skip-list defect,
+3 tasks, on the owner's own `build-lowfive` tree) should now pass `fuse_setup()`'s own layout check; whether it
+runs to completion and matches the non-LowFive reference is this entry's own second host-verification item,
+independent of D14 and of D23 alike.

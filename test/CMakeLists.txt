@@ -981,7 +981,7 @@ endforeach()
 # Kokkos::kokkos (the reaction kernel) directly, same reasoning as
 # gray_scott's registration just above.
 foreach(t brusselator_weights brusselator_physics brusselator_runner brusselator_grid_decomposition
-          brusselator_species_core_decomposition brusselator_newton_norm)
+          brusselator_species_core_decomposition brusselator_newton_norm brusselator_accept_layout)
   fuse_add_gtest(verification ${t} NO_LAYER_LIB
                  LIBS fuse::runtime fuse::backend fuse::model fuse::linalg Eigen3::Eigen Kokkos::kokkos)
   target_include_directories(fuse_verification_${t}_test PRIVATE

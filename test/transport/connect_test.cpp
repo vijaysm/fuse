@@ -142,6 +142,257 @@ TEST(ValidateLaunchLayout, PluginComponentsAreIgnored) {
   EXPECT_TRUE(r.ok()) << (r.ok() ? "" : r.error().message);
 }
 
+// ---- validate_launch_layout: D36's gap rule --------------------------
+//
+// Accept mode's fix (KNOWN_ISSUES.md D36): a component's declared RankSet
+// must be exactly the ranks that host it, so U's own block no longer
+// spans the coupler's bundled ranks too -- it stops one rank short of
+// V's own block, with the coupler's own in-process RankSet filling the
+// gap between them. These pin validate_launch_layout()'s own half of
+// that fix: the new shape validates, each of the two new refusals fires
+// on exactly the row that should trip it, and the OLD shape (U's own
+// declared range already including the coupler's) still validates
+// unchanged -- nothing that passed before this fix stops passing.
+
+// The pre-D36 shape: U declares the FULL local executable world (its own
+// physics rank plus the coupler's bundled one), the coupler a trailing,
+// overlapping subset of it, no gap between U's and V's own blocks at
+// all. Never reaches check_gap_filled_by_in_process_components() --
+// this is the row that row's own doc comment calls out as continuing to
+// validate unchanged.
+TEST(ValidateLaunchLayout, ThePreD36OverlappingDeclarationStillValidates) {
+  CouplingGraph g;
+  g.add_component({.name = "U",
+                   .ranks = RankSet{0, 2},  // U's own physics rank 0 + coupler's bundled rank 1
+                   .launch = LaunchSpec{.mode = LaunchMode::Connect,
+                                        .is_acceptor = true,
+                                        .port_file = "/tmp/x"}});
+  g.add_component({.name = "coupler", .ranks = RankSet{1, 1}});  // InProcess default
+  g.add_component({.name = "V",
+                   .ranks = RankSet{2, 1},
+                   .launch = LaunchSpec{.mode = LaunchMode::Connect, .port_file = "/tmp/x"}});
+  const auto r = validate_launch_layout(g);
+  EXPECT_TRUE(r.ok()) << (r.ok() ? "" : r.error().message);
+}
+
+// The D36 shape itself: U declares only its own physics rank, the
+// coupler's own in-process RankSet exactly fills the gap between U's
+// block and V's, V starts right after the gap.
+TEST(ValidateLaunchLayout, AGapExactlyCoveredByAnInProcessComponentValidates) {
+  CouplingGraph g;
+  g.add_component({.name = "U",
+                   .ranks = RankSet{0, 1},
+                   .launch = LaunchSpec{.mode = LaunchMode::Connect,
+                                        .is_acceptor = true,
+                                        .port_file = "/tmp/x"}});
+  g.add_component({.name = "coupler", .ranks = RankSet{1, 1}});  // fills the gap [1, 2)
+  g.add_component({.name = "V",
+                   .ranks = RankSet{2, 1},
+                   .launch = LaunchSpec{.mode = LaunchMode::Connect, .port_file = "/tmp/x"}});
+  const auto r = validate_launch_layout(g);
+  EXPECT_TRUE(r.ok()) << (r.ok() ? "" : r.error().message);
+}
+
+// A Plugin-mode component fills a gap exactly the same way an InProcess
+// one does (both share the host process's own communicator, launch.hpp's
+// own doc on LaunchMode::Plugin) -- the generalisation
+// PluginComponentsAreIgnored already pins for the no-gap case.
+TEST(ValidateLaunchLayout, AGapExactlyCoveredByAPluginComponentValidates) {
+  CouplingGraph g;
+  g.add_component({.name = "U",
+                   .ranks = RankSet{0, 1},
+                   .launch = LaunchSpec{.mode = LaunchMode::Connect,
+                                        .is_acceptor = true,
+                                        .port_file = "/tmp/x"}});
+  g.add_component({.name = "ideal-gas",
+                   .ranks = RankSet{1, 1},
+                   .launch = LaunchSpec{.mode = LaunchMode::Plugin,
+                                        .plugin_path = "/opt/fuse-plugins/ideal-gas.so"}});
+  g.add_component({.name = "V",
+                   .ranks = RankSet{2, 1},
+                   .launch = LaunchSpec{.mode = LaunchMode::Connect, .port_file = "/tmp/x"}});
+  const auto r = validate_launch_layout(g);
+  EXPECT_TRUE(r.ok()) << (r.ok() ? "" : r.error().message);
+}
+
+// A wider gap, split exactly between two in-process components -- the
+// rule is "covered", not "covered by exactly one component".
+TEST(ValidateLaunchLayout, AGapCoveredByTwoInProcessComponentsTogetherValidates) {
+  CouplingGraph g;
+  g.add_component({.name = "U",
+                   .ranks = RankSet{0, 1},
+                   .launch = LaunchSpec{.mode = LaunchMode::Connect,
+                                        .is_acceptor = true,
+                                        .port_file = "/tmp/x"}});
+  g.add_component({.name = "coupler-a", .ranks = RankSet{1, 1}});  // gap rank 1
+  g.add_component({.name = "coupler-b", .ranks = RankSet{2, 1}});  // gap rank 2
+  g.add_component({.name = "V",
+                   .ranks = RankSet{3, 1},
+                   .launch = LaunchSpec{.mode = LaunchMode::Connect, .port_file = "/tmp/x"}});
+  const auto r = validate_launch_layout(g);
+  EXPECT_TRUE(r.ok()) << (r.ok() ? "" : r.error().message);
+}
+
+// Refusal 1: a gap rank no component -- launched or in-process -- hosts
+// at all. Mirrors RefusesRanksNotStartingWhereThePreviousComponentEnded's
+// own two-component gap, but names the new UNCOVERED code path rather
+// than the old unconditional one (this graph has no in-process component
+// whatsoever, so check_gap_filled_by_in_process_components() refuses with
+// an empty `fillers` list).
+TEST(ValidateLaunchLayout, RefusesAGapNoComponentHosts) {
+  CouplingGraph g;
+  g.add_component({.name = "U",
+                   .ranks = RankSet{0, 1},
+                   .launch = LaunchSpec{.mode = LaunchMode::Connect,
+                                        .is_acceptor = true,
+                                        .port_file = "/tmp/x"}});
+  g.add_component({.name = "V",
+                   .ranks = RankSet{2, 1},  // rank 1 is uncovered: no coupler declares it
+                   .launch = LaunchSpec{.mode = LaunchMode::Connect, .port_file = "/tmp/x"}});
+  const auto r = validate_launch_layout(g);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-CONNECT-SPEC");
+  EXPECT_NE(r.error().message.find("rank(s) 1"), std::string::npos) << r.error().message;
+}
+
+// Refusal 1b: the gap is PARTLY covered -- one of two gap ranks has no
+// host. Distinguishes "covered exactly" from "covered by at least one
+// component somewhere in the gap".
+TEST(ValidateLaunchLayout, RefusesAPartlyCoveredGap) {
+  CouplingGraph g;
+  g.add_component({.name = "U",
+                   .ranks = RankSet{0, 1},
+                   .launch = LaunchSpec{.mode = LaunchMode::Connect,
+                                        .is_acceptor = true,
+                                        .port_file = "/tmp/x"}});
+  g.add_component({.name = "coupler", .ranks = RankSet{1, 1}});  // covers rank 1 only
+  g.add_component({.name = "V",
+                   .ranks = RankSet{3, 1},  // gap is [1, 3): rank 2 is uncovered
+                   .launch = LaunchSpec{.mode = LaunchMode::Connect, .port_file = "/tmp/x"}});
+  const auto r = validate_launch_layout(g);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-CONNECT-SPEC");
+  EXPECT_NE(r.error().message.find("rank(s) 2"), std::string::npos) << r.error().message;
+}
+
+// Refusal 2: an in-process component straddles the boundary between a
+// launched block and the gap after it -- part of its own RankSet sits on
+// U's own declared rank, part in the gap. check_gap_filled_by_in_process_
+// components() cannot then say which side of the boundary the
+// component's ranks actually belong to, so this is refused rather than
+// treated as "partial coverage, the rest is someone else's problem".
+TEST(ValidateLaunchLayout, RefusesAnInProcessComponentStraddlingIntoTheGap) {
+  CouplingGraph g;
+  g.add_component({.name = "U",
+                   .ranks = RankSet{0, 1},
+                   .launch = LaunchSpec{.mode = LaunchMode::Connect,
+                                        .is_acceptor = true,
+                                        .port_file = "/tmp/x"}});
+  // Straddles: rank 0 is inside U's own block, rank 1 is in the gap [1, 2).
+  g.add_component({.name = "straddler", .ranks = RankSet{std::vector<int>{0, 1}}});
+  g.add_component({.name = "V",
+                   .ranks = RankSet{2, 1},
+                   .launch = LaunchSpec{.mode = LaunchMode::Connect, .port_file = "/tmp/x"}});
+  const auto r = validate_launch_layout(g);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-CONNECT-SPEC");
+  EXPECT_NE(r.error().message.find("straddle"), std::string::npos) << r.error().message;
+}
+
+// Refusal 2b: the mirror straddle, into V's own block on the far side of
+// the gap rather than back into U's.
+TEST(ValidateLaunchLayout, RefusesAnInProcessComponentStraddlingOutOfTheGap) {
+  CouplingGraph g;
+  g.add_component({.name = "U",
+                   .ranks = RankSet{0, 1},
+                   .launch = LaunchSpec{.mode = LaunchMode::Connect,
+                                        .is_acceptor = true,
+                                        .port_file = "/tmp/x"}});
+  // Straddles: rank 1 is in the gap [1, 2), rank 2 is inside V's own block.
+  g.add_component({.name = "straddler", .ranks = RankSet{std::vector<int>{1, 2}}});
+  g.add_component({.name = "V",
+                   .ranks = RankSet{2, 1},
+                   .launch = LaunchSpec{.mode = LaunchMode::Connect, .port_file = "/tmp/x"}});
+  const auto r = validate_launch_layout(g);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-CONNECT-SPEC");
+  EXPECT_NE(r.error().message.find("straddle"), std::string::npos) << r.error().message;
+}
+
+// ---- validate_launch_layout: the LowFive marker (D36's second defect) -----
+//
+// Measured on the owner's host, 2026-10-12 (a LowFive-enabled tree):
+// verification.brusselator.participants.lowfive.mpmd.3 refused E-CONNECT-SPEC
+// at fuse_setup() -- "component 'lowfive' starts at rank 0, but the launched
+// components before it in the graph's own order occupy ranks [0, 3)" -- on a
+// graph that validate() itself accepts cleanly
+// (BrusselatorGraphToolLowFive.TheGeneratedGraphValidatesClean). The skip
+// list validate_launch_layout() uses for components needing no rank block of
+// their own (InProcess, Plugin) omitted LaunchMode::LowFive, even though
+// connect()'s own `case LaunchMode::LowFive` (src/transport/connect.cpp) and
+// launch.hpp's own doc on that value both say a LowFive-launched component's
+// ranks "come from whatever OTHER launch story this run uses" -- the
+// identical behaviour InProcess/Plugin already get here. These pin the fix
+// against the REAL shape that graph came from (mirrored here, not built
+// through brusselator_graph_tool.cpp: that tool links fuse::model only, and
+// test/verification/brusselator_graph_tool_lowfive_test.cpp's own
+// build_lowfive_graph() already is this mirror for the mpmd case -- these
+// cases reuse its exact component/rank shape rather than a third copy, and
+// add the accept-mode one that tool's own --transport lowfive --launch
+// accept combination would produce once this track's own D36 fix applies).
+
+TEST(ValidateLaunchLayout, ALowFiveMarkerAlongsideConsecutiveMpmdBlocksValidates) {
+  CouplingGraph g;
+  g.add_component({.name = "U", .ranks = RankSet{0, 1},
+                   .launch = LaunchSpec{.mode = LaunchMode::Mpmd, .appnum = 0}});
+  g.add_component({.name = "V", .ranks = RankSet{1, 1},
+                   .launch = LaunchSpec{.mode = LaunchMode::Mpmd, .appnum = 1}});
+  g.add_component({.name = "coupler", .ranks = RankSet{2, 1},
+                   .launch = LaunchSpec{.mode = LaunchMode::Mpmd, .appnum = 2}});
+  // The fieldless lowfive marker: ranks span the WHOLE run, unrelated to the
+  // three launched blocks' own consecutive partition of it.
+  g.add_component({.name = "lowfive", .ranks = RankSet{0, 3},
+                   .launch = LaunchSpec{.mode = LaunchMode::LowFive}});
+  const auto r = validate_launch_layout(g);
+  EXPECT_TRUE(r.ok()) << (r.ok() ? "" : r.error().message);
+}
+
+TEST(ValidateLaunchLayout, ALowFiveMarkerAlongsideTheAcceptLayoutsGapValidates) {
+  // The D36 accept-mode shape (U={0,ranks_u}, coupler fills the gap, V
+  // after it) plus the SAME whole-run lowfive marker. The marker's own
+  // ranks touch the gap AND both launched blocks on either side of it --
+  // confirming it is not treated as a gap-filling candidate at all (which
+  // would refuse this as a STRADDLE), the way an actual in-process filler
+  // confined to the gap itself is.
+  CouplingGraph g;
+  g.add_component({.name = "U", .ranks = RankSet{0, 1},
+                   .launch = LaunchSpec{.mode = LaunchMode::Connect,
+                                        .is_acceptor = true, .port_file = "/tmp/x"}});
+  g.add_component({.name = "coupler", .ranks = RankSet{1, 1}});  // fills the gap [1, 2)
+  g.add_component({.name = "V", .ranks = RankSet{2, 1},
+                   .launch = LaunchSpec{.mode = LaunchMode::Connect, .port_file = "/tmp/x"}});
+  g.add_component({.name = "lowfive", .ranks = RankSet{0, 3},
+                   .launch = LaunchSpec{.mode = LaunchMode::LowFive}});
+  const auto r = validate_launch_layout(g);
+  EXPECT_TRUE(r.ok()) << (r.ok() ? "" : r.error().message);
+}
+
+TEST(ValidateLaunchLayout, ALowFiveMarkerWithNoLaunchedComponentStillRefusesNoLaunch) {
+  // A lowfive component alone, with no Mpmd/Connect component at all, must
+  // still trip the EXISTING "nothing for connect() to do" refusal -- the
+  // fix does not make a lowfive-only graph look like it has a launched
+  // component when it has none.
+  CouplingGraph g;
+  g.add_component({.name = "lowfive", .ranks = RankSet{0, 3},
+                   .launch = LaunchSpec{.mode = LaunchMode::LowFive}});
+  const auto r = validate_launch_layout(g);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-CONNECT-SPEC");
+  EXPECT_NE(r.error().message.find("no component in the graph declares an mpmd or connect launch"),
+           std::string::npos)
+      << r.error().message;
+}
+
 // ---- check_mpmd_layout ------------------------------------------------
 
 TEST(CheckMpmdLayout, AcceptsAMatchingLayout) {

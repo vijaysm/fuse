@@ -18,23 +18,29 @@ id = "connect-merge-order-not-enforced"
 area = "transport"
 describes = "validate_launch_layout()'s requirement that a launched component start exactly where the previous one (in the graph's own declaration order) ended is removed, so two components whose RankSets are disjoint and cover the world but are NOT consecutive blocks in that order -- the layout MPI_Intercomm_merge's high/low argument and MPMD's own appnum partitioning actually produce when fixed by component order -- are accepted instead of refused. This is the row the task names 'merge order swapped': a graph that declared its two connect-mode components in one order but whose real launch merged them in the other would silently get a base communicator numbered backwards relative to what the graph says, with nothing to catch it."
 file = "include/fuse/transport/connect.hpp"
-old = """    if (c.ranks.min_rank() != expected_start) {
+old = """    if (b.start < expected_start) {
       return Failure{
           "E-CONNECT-SPEC",
-          "component '" + c.name + "' starts at rank " +
-              std::to_string(c.ranks.min_rank()) +
+          "component '" + b.decl->name + "' starts at rank " +
+              std::to_string(b.start) +
               ", but the launched components before it in the graph's own "
               "order occupy ranks [0, " + std::to_string(expected_start) +
               "); the launched components' rank sets must be consecutive "
-              "blocks in the graph's component order, because that order is "
-              "what fixes MPI_Intercomm_merge's and MPMD's own rank "
-              "numbering"};
+              "blocks, with only in-process/plugin ranks between them, in "
+              "the graph's component order, because that order is what "
+              "fixes MPI_Intercomm_merge's and MPMD's own rank numbering"};
     }
-    expected_start = c.ranks.max_rank() + 1;"""
-new = """    expected_start = c.ranks.max_rank() + 1;"""
+    if (b.start > expected_start) {
+      if (auto r = check_gap_filled_by_in_process_components(expected_start, b.start, fillers);
+          !r.ok()) {
+        return r.error();
+      }
+    }
+    expected_start = b.end;"""
+new = """    expected_start = b.end;"""
 target = "fuse_transport_connect_test"
 test = "transport.connect"
-result = "CONFIRMED 2026-10-02: ValidateLaunchLayout.RefusesRanksNotStartingWhereThePreviousComponentEnded failed exactly as predicted (a declared gap between two launched components' RankSets was accepted instead of refused with E-CONNECT-SPEC); ValidateLaunchLayout.RefusesOverlappingRankSets also failed, since it depends on the same check from the other direction (an overlap instead of a gap). Every other case in the binary (12 of 14) was unaffected. Restored; cmp against the pre-mutation file reported no difference."
+result = "CONFIRMED 2026-10-02: ValidateLaunchLayout.RefusesRanksNotStartingWhereThePreviousComponentEnded failed exactly as predicted (a declared gap between two launched components' RankSets was accepted instead of refused with E-CONNECT-SPEC); ValidateLaunchLayout.RefusesOverlappingRankSets also failed, since it depends on the same check from the other direction (an overlap instead of a gap). Every other case in the binary (12 of 14) was unaffected. Restored; cmp against the pre-mutation file reported no difference. RE-VERIFIED 2026-10-12 (KNOWN_ISSUES.md D36's own restructuring of this loop into separate overlap/gap branches, build-evidence/mutations/accept-layout.toml): anchor updated to the new loop body (both the overlap-refusal AND the new check_gap_filled_by_in_process_components() call removed, same intent -- no consecutiveness enforcement at all). CONFIRMED again: 6 of 26 cases in the now-larger suite failed -- the original two (RefusesRanksNotStartingWhereThePreviousComponentEnded, RefusesOverlappingRankSets) plus four of D36's own new refusal cases (RefusesAGapNoComponentHosts, RefusesAPartlyCoveredGap, RefusesAnInProcessComponentStraddlingIntoTheGap, RefusesAnInProcessComponentStraddlingOutOfTheGap). D36's own three POSITIVE gap cases (AGapExactlyCoveredByAnInProcessComponentValidates and its Plugin/two-component variants) do NOT fail under this mutation: with no check left to run at all, the gap is accepted either way, which is the same answer those three already expect, so they cannot tell this mutation apart from the unmutated code -- a real, named gap in what this ONE row can detect, not a miscount; accept-layout.toml's own three gap-focused rows are what actually exercise check_gap_filled_by_in_process_components() for its own sake. The other 20 of 26 were unaffected. Restored; cmp against the pre-mutation file reported no difference; rebuilt clean, 26 of 26 passed."
 
 [[mutation]]
 id = "connect-appnum-not-checked"

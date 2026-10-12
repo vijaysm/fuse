@@ -267,6 +267,50 @@ if(FUSE_ENABLE_TESTS)
                    -P ${CMAKE_SOURCE_DIR}/tools/verify-graph-tool-reference.cmake)
   set_tests_properties(verification.brusselator.graph_tool.reproduces_reference_lowfive
                        PROPERTIES LABELS "verification")
+
+  # KNOWN_ISSUES.md D36: the accept-mode layout had NO committed reference
+  # at all before this fix (confirmed by listing this directory -- only
+  # the two mpmd rows above ever had one), so nothing caught a regression
+  # in brusselator_graph_tool.cpp's own accept branch the way the mpmd
+  # rows above do for theirs. Added now, alongside the fix, at both world
+  # sizes the tool already supports: --ranks-u 1 --ranks-v 1
+  # --ranks-coupler 1 (world 3, the row that timed out on the host) and
+  # --ranks-u 2 --ranks-v 2 --ranks-coupler 1 (world 5, never run --
+  # KNOWN_ISSUES.md D18's own "build it but never run it" ruling for the
+  # 5-rank accept row, unchanged by this track).
+  add_test(NAME verification.brusselator.graph_tool.reproduces_reference_accept_3
+           COMMAND ${CMAKE_COMMAND}
+                   -DBIN=$<TARGET_FILE:brusselator_graph_tool>
+                   "-DARGS=--ranks-u;1;--ranks-v;1;--ranks-coupler;1;--launch;accept"
+                   -DOUT=${CMAKE_CURRENT_BINARY_DIR}/graph_tool_reproduced_accept_3.yaml
+                   -DREFERENCE=${CMAKE_SOURCE_DIR}/examples/brusselator/participants/reference_accept_3.yaml
+                   -P ${CMAKE_SOURCE_DIR}/tools/verify-graph-tool-reference.cmake)
+  set_tests_properties(verification.brusselator.graph_tool.reproduces_reference_accept_3
+                       PROPERTIES LABELS "verification")
+
+  add_test(NAME verification.brusselator.graph_tool.reproduces_reference_accept_5
+           COMMAND ${CMAKE_COMMAND}
+                   -DBIN=$<TARGET_FILE:brusselator_graph_tool>
+                   "-DARGS=--ranks-u;2;--ranks-v;2;--ranks-coupler;1;--launch;accept"
+                   -DOUT=${CMAKE_CURRENT_BINARY_DIR}/graph_tool_reproduced_accept_5.yaml
+                   -DREFERENCE=${CMAKE_SOURCE_DIR}/examples/brusselator/participants/reference_accept_5.yaml
+                   -P ${CMAKE_SOURCE_DIR}/tools/verify-graph-tool-reference.cmake)
+  set_tests_properties(verification.brusselator.graph_tool.reproduces_reference_accept_5
+                       PROPERTIES LABELS "verification")
+
+  # The SAME {3}-rank accept layout, plus --transport lowfive -- exactly the
+  # combination KNOWN_ISSUES.md D36's own second defect (the LowFive
+  # skip-list gap) was measured against, mirrored here the way
+  # reproduces_reference_lowfive mirrors reproduces_reference for mpmd.
+  add_test(NAME verification.brusselator.graph_tool.reproduces_reference_accept_3_lowfive
+           COMMAND ${CMAKE_COMMAND}
+                   -DBIN=$<TARGET_FILE:brusselator_graph_tool>
+                   "-DARGS=--ranks-u;1;--ranks-v;1;--ranks-coupler;1;--launch;accept;--transport;lowfive"
+                   -DOUT=${CMAKE_CURRENT_BINARY_DIR}/graph_tool_reproduced_accept_3_lowfive.yaml
+                   -DREFERENCE=${CMAKE_SOURCE_DIR}/examples/brusselator/participants/reference_accept_3_lowfive.yaml
+                   -P ${CMAKE_SOURCE_DIR}/tools/verify-graph-tool-reference.cmake)
+  set_tests_properties(verification.brusselator.graph_tool.reproduces_reference_accept_3_lowfive
+                       PROPERTIES LABELS "verification")
 endif()
 
 # Conformance, Unit 2 (Q3): the --check assembler, run against u_main.c's

@@ -25,32 +25,45 @@
 // is ranks, not executables, and connect_pairwise() supports exactly
 // two Connect-mode components, so the coupler cannot be its own third
 // Connect-mode participant here. Its ranks instead live INSIDE the
-// acceptor's (U's) own MPI_COMM_WORLD: U's declared RankSet spans its
-// FULL local executable world (its own physics ranks plus the bundled
-// coupler ranks), and the coupler's declared RankSet is the TRAILING
-// OVERLAPPING SUBSET of U's own range that those bundled ranks occupy
-// (fuse::RankSet's own documented "overlap is legal" -- two components
-// sharing ranks is how a job fits both in the same executable when
-// neither needs the whole partition to itself). This is what makes
-// U's declared range, not U's-ranks-alone, the thing that must end
-// where V's Connect-mode range begins: validate_launch_layout() skips
+// acceptor's (U's) own MPI_COMM_WORLD, exactly as before; what changed
+// (KNOWN_ISSUES.md D36) is which ranks each of the three DECLARES.
+// Through 2026-10-09, U's declared RankSet spanned its FULL local
+// executable world (its own physics ranks plus the bundled coupler
+// ranks), with the coupler's own RankSet the trailing, overlapping
+// subset of it (`fuse::RankSet`'s own documented "overlap is legal").
+// `validate_launch_layout()` accepted that because it skipped
 // InProcess components (the coupler) entirely when checking that
-// Connect/Mpmd components occupy consecutive blocks, so U's own range
-// has to already include every rank the merge will actually place
-// before V's, or the two checks disagree with where MPI_Intercomm_
-// merge() actually puts V. u_main.c itself (not this tool) is what
-// decides, per rank, whether it is one of U's own physics ranks or one
-// of the coupler's bundled placeholder ranks within that range (its own
-// --ranks-u argument) -- this tool only writes the graph both sides
-// agree on.
+// Connect/Mpmd blocks were consecutive -- but D24's fix (a placement is
+// decomposed over its OWN declared RankSet, not the whole run) then
+// reads that same declared count back on the next host run: U's own
+// field was planned at 1/2 its real size on the host that first ran
+// with ranks-coupler > 0, because U's declared RankSet said "2 ranks"
+// while `u_main.c` decomposes its physics over `--ranks-u` (1 rank)
+// alone. A component's RankSet must be exactly the ranks that HOST it,
+// which for U no longer includes the coupler's bundled rank.
 //
-// NOT YET CONFIRMED BY A HOST RUN (MPI cannot start in this sandbox --
-// KNOWN_ISSUES.md C1): whether a rank inside U's declared RankSet that
-// registers none of U's fields (a bundled coupler placeholder rank)
-// is tolerated by the rest of the participant ABI/Runner the way a
-// component's own sparsely-populated RankSet already is elsewhere in
-// the suite (examples/layout_driver's own uneven splits). Flagged in
-// the Unit 2 report as the one open mechanical question beyond Q1-Q3.
+// So, since D36: U's declared RankSet is `{0, ranks_u}` -- its own
+// physics ranks only; the coupler's is `{ranks_u, ranks_coupler}` --
+// the GAP this leaves between U's own block and V's; V's is
+// `{ranks_u + ranks_coupler, ranks_v}`, unchanged. `validate_launch_
+// layout()`'s own D36 fix is the other half of this: a gap between two
+// Connect/Mpmd blocks is now legal exactly when an in-process
+// component's own RankSet covers it exactly, which is precisely what
+// the coupler's new declaration does. `u_main.c` itself (not this
+// tool) still decides, per rank, whether it is one of U's own physics
+// ranks or one of the coupler's bundled placeholder ranks (its own
+// --ranks-u argument) -- only the GRAPH's own account of which ranks
+// belong to which declared component changed, not which physical ranks
+// anything runs on.
+//
+// NOT YET CONFIRMED BY A HOST RUN beyond D36's own fix (MPI cannot
+// start in this sandbox -- KNOWN_ISSUES.md C1): whether a rank inside
+// the coupler's declared RankSet that registers none of U's fields (a
+// bundled coupler placeholder rank) is tolerated by the rest of the
+// participant ABI/Runner the way a component's own sparsely-populated
+// RankSet already is elsewhere in the suite (examples/layout_driver's
+// own uneven splits). Flagged in the Unit 2 report as the one open
+// mechanical question beyond Q1-Q3, unchanged by D36.
 
 #include <cstdio>
 #include <cstdlib>
@@ -208,14 +221,19 @@ int main(int argc, char** argv) {
       coupler_launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::Mpmd, .appnum = 2};
     }
   } else {  // accept
-    // U's declared range spans its FULL local executable world (its
-    // own physics ranks plus any bundled coupler ranks); the coupler's
-    // range is the trailing, legally overlapping subset of it; V is a
-    // separate executable, its own Connect-mode range starting exactly
-    // where U's declared range ends -- this file's own header comment
-    // has the full account of why.
+    // KNOWN_ISSUES.md D36: U's declared range is exactly its own
+    // physics ranks -- the ranks it actually hosts, which is what
+    // NativeMeshBackend::register_default_placements() (D24) decomposes
+    // a placement over. The coupler's bundled ranks still ride along
+    // inside the acceptor's (U's) own local MPI_COMM_WORLD, physically
+    // unchanged, but the GRAPH now declares them as the coupler's own
+    // RankSet -- the gap this leaves between U's block and V's, which
+    // validate_launch_layout()'s own D36 fix accepts because an
+    // in-process component's RankSet covers it exactly. V's range is
+    // unchanged: it still starts right after every rank U's executable
+    // carries, physics and bundled coupler alike.
+    u_ranks = fuse::RankSet{0, args.ranks_u};
     const int u_local_world = args.ranks_u + args.ranks_coupler;
-    u_ranks = fuse::RankSet{0, u_local_world};
     v_ranks = fuse::RankSet{u_local_world, args.ranks_v};
     u_launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::Connect,
                                .is_acceptor = true,
@@ -227,7 +245,10 @@ int main(int argc, char** argv) {
       coupler_ranks = fuse::RankSet{args.ranks_u, args.ranks_coupler};
       // coupler_launch left at its default (LaunchMode::InProcess):
       // its ranks ride along inside U's own local world; connect() is
-      // never called on its behalf (KNOWN_ISSUES.md D18).
+      // never called on its behalf (KNOWN_ISSUES.md D18). Its declared
+      // RankSet is unchanged by D36 -- it already named exactly the
+      // bundled ranks; only U's own declaration (above) shrank to stop
+      // including them.
     }
   }
 
