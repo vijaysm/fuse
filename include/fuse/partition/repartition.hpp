@@ -17,7 +17,10 @@
 
 #include <Kokkos_Core.hpp>
 
+#include <fmt/format.h>
+
 #include "fuse/backend/native_migration.hpp"
+#include "fuse/partition/detail/collectives.hpp"
 #include "fuse/partition/mesh_adapter.hpp"
 #include "fuse/partition/rcb.hpp"
 
@@ -42,21 +45,47 @@ struct RepartitionOptions {
 ///
 /// CONSTRAINT: `options.rcb.num_parts`, if set explicitly rather than left
 /// at its default (0, meaning "the communicator's size"), must equal the
-/// communicator's size -- `migrate` rejects `E-MESH-MIGRATE-RANGE` the
-/// moment a part id lands outside `[0, num_ranks)`, which is exactly what
-/// a mismatched `num_parts` produces. `rcb_partition` and `migrate` have
-/// no other coupling: this is the one thing this wrapper's default
-/// (leaving `num_parts` at 0) exists to avoid a caller getting wrong.
+/// communicator's size -- `repartition` always migrates onto one part per
+/// rank. Found 2026-10-11 (PS-6): this was previously enforced only in the
+/// `num_parts > comm_size` direction, where `migrate` rejects
+/// `E-MESH-MIGRATE-RANGE` the moment a part id lands outside
+/// `[0, num_ranks)`; for `num_parts < comm_size` every part id IS inside
+/// that range, so `migrate` accepted it, and the surplus ranks silently
+/// ended up with an empty mesh -- no rejection at all. `repartition` now
+/// pre-refuses `E-PART-REPARTITION-NUM-PARTS` for BOTH directions before
+/// calling `centroids_of`/`rcb_partition`: `num_parts` (when explicitly
+/// set) and the communicator's size are both rank-identical inputs by
+/// this function's own contract, so the check needs no collective to stay
+/// safe across ranks -- every rank computes the same comparison from
+/// values that must already agree.
 ///
-/// Errors: anything `centroids_of` or `migrate` themselves reject
+/// Errors: `E-PART-REPARTITION-NUM-PARTS` from the constraint above, or
+/// anything `centroids_of` or `migrate` themselves reject
 /// (`E-PART-MIXED-DIM`, `E-PART-NO-ENTITIES`, `E-MESH-MIGRATE-INCOMPLETE`
-/// cannot occur here since `dest` is always sized to the owned count,
-/// `E-MESH-MIGRATE-RANGE` from the constraint above).
+/// cannot occur here since `dest` is always sized to the owned count).
 template <class ExecutionSpace = Kokkos::DefaultHostExecutionSpace>
 [[nodiscard]] Result<std::unique_ptr<native::NativeMeshView>> repartition(
     const native::NativeMeshView& mesh, RepartitionOptions options) {
   using MemorySpace = typename ExecutionSpace::memory_space;
   options.rcb.comm = options.comm;
+
+  // PS-6: pre-refuse BOTH directions of num_parts/comm_size mismatch, not
+  // only the `>` direction `migrate` itself catches -- see the header
+  // comment above. `num_parts` (when explicitly set) and `comm_size` are
+  // both rank-identical inputs by this function's own contract, so this
+  // comparison is safe without a collective: every rank computes it from
+  // values required to already agree.
+  if (options.rcb.num_parts != 0) {
+    const int comm_size_val = detail::comm_size(options.comm);
+    if (options.rcb.num_parts != comm_size_val) {
+      return Failure{"E-PART-REPARTITION-NUM-PARTS",
+                     fmt::format("repartition's RcbOptions::num_parts ({}) must equal the "
+                                 "communicator's size ({}) -- repartition always migrates onto "
+                                 "one part per rank; leave num_parts at its default (0) to use "
+                                 "the communicator's size automatically",
+                                 options.rcb.num_parts, comm_size_val)};
+    }
+  }
 
   auto cd = centroids_of(mesh, options.comm);
   if (!cd.ok()) return cd.error();
