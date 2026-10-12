@@ -442,7 +442,11 @@ std::unordered_map<NewtonSubstrate, NewtonSolveFn>& newton_substrate_registry() 
         [](const ResidualFn& f, DistVector& x,
            const PreconditionerApplyFn& precond_apply,
            const RefreshPreconditionerFn& refresh_precond,
-           const NewtonKrylovOptions& opt) {
+           const NewtonKrylovOptions& opt, int /*comm_f*/) {
+          // `comm_f` unused: see `NewtonSolveFn`'s own header comment
+          // (newton_krylov.hpp) for why the Native substrate has no use
+          // for it -- its own reduction already goes through `x`'s own
+          // `Reducer`.
           return solve(f, x, precond_apply, refresh_precond, opt);
         };
     return m;

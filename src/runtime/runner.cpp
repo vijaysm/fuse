@@ -2857,6 +2857,36 @@ Result<void> Runner::Impl::gather_window_block_samples(
   return Result<void>::success();
 }
 
+Result<bool> Runner::Impl::region_is_local_participant(const detail::RegionRuntime& r) const {
+  if (r.participants.size() <= 1) return true;
+#if FUSE_HAVE_MPI
+  if (!config.base_communicator.has_value()) {
+    return Failure{"E-RT-REGION-COMM",
+                   "iteration region '" + r.name + "' has more than one "
+                       "participant but RunnerConfig::base_communicator is "
+                       "unset"};
+  }
+  const MPI_Comm base = MPI_Comm_f2c(static_cast<MPI_Fint>(*config.base_communicator));
+  if (base == MPI_COMM_NULL) {
+    return Failure{"E-RT-REGION-COMM",
+                   "RunnerConfig::base_communicator is MPI_COMM_NULL at "
+                       "iteration region '" + r.name + "'s participant check"};
+  }
+  int me = 0;
+  if (MPI_Comm_rank(base, &me) != MPI_SUCCESS) {
+    return Failure{"E-RT-REGION-COMM",
+                   "MPI_Comm_rank failed at iteration region '" + r.name +
+                       "'s participant check"};
+  }
+  return std::find(r.participants.begin(), r.participants.end(), me) !=
+         r.participants.end();
+#else
+  return Failure{"E-RT-TRANSPORT-NOMPI",
+                 "iteration region '" + r.name + "' has more than one "
+                     "participant in a build without MPI"};
+#endif
+}
+
 Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
   const auto in_ptr = [&](std::uint8_t k) -> const double* {
     return slots[ins.in[k].value()].data;
