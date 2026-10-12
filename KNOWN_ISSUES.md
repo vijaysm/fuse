@@ -3541,16 +3541,19 @@ failing on the Cuda execution space only, and only for `deterministic_dot`/`dete
 
 **Cause.** nvcc's device compiler contracts `s += a(i) * b(i)` into one fused multiply-add
 (`--fmad=true`, its default), rounding the product and the accumulate together; the host compiler
-(no `-ffast-math`/`-ffp-contract=fast` anywhere in this project) rounds them separately. Same
-summation order, different low-order bit — so the chunked, order-fixed reduction the determinism
-contract promises (`include/fuse/num/space_kernels.hpp`, `DeterministicDotFunctor`,
+on this toolchain (g++ for the x86-64 baseline, which has no FMA instruction; nothing in this
+project sets a contraction policy) rounds them separately. Same summation order, different
+low-order bit — so the chunked, order-fixed reduction the determinism contract promises
+(`include/fuse/num/space_kernels.hpp`, `DeterministicDotFunctor`,
 `DeterministicNormSquaredDiffFunctor`) was deterministic per space but not across spaces.
 
 **Closed** by `unfused_multiply_add()` in the same header: on the device it is
 `__dadd_rn(s, __dmul_rn(x, y))`, CUDA's explicitly round-to-nearest, not-further-fusible primitives,
-so the device path double-rounds exactly as the host path does; on the host it is the plain
+so the device path double-rounds exactly as this host path does; on the host it is the plain
 expression. Both functors' inner accumulation goes through it. The host path is unchanged (it never
-fused). The same contraction still exists in `RelaxFunctor`/`RemapMultiFunctor`, which are anchored
+fused here). A host compiler that contracts by default on FMA hardware (Apple clang at `-O2`, D30)
+fuses that plain expression too; the two spaces then still agree with each other, but not with a
+build that does not contract. That is D30's open, project-wide decision, not closed by this entry. The same contraction still exists in `RelaxFunctor`/`RemapMultiFunctor`, which are anchored
 by `build-evidence/mutations.toml` and deliberately left as they are; `runtime.runner_device` asserts
 `<= 1e-14` relative for those two shapes and bitwise for the rest (A5).
 

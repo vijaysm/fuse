@@ -465,15 +465,20 @@ template <class Space>
 
 // nvcc's device compiler contracts `s += x * y` into a single FMA
 // instruction (`--fmad=true`, its default), which rounds the product and
-// the accumulate together in one step; the host compiler (no
-// -ffast-math/-ffp-contract=fast anywhere in this project) rounds them
+// the accumulate together in one step; the host compiler on the toolchain
+// this was measured on (g++, x86-64 baseline: no FMA instruction to emit,
+// and nothing in this project sets a contraction policy) rounds them
 // separately, two steps. Same mathematical order, different low-order bit
 // -- exactly the gap space_kernels_test.cpp's
 // DeterministicReductionsMatchTheChunkedReferenceExactly caught on the
 // Cuda leg (dot/norm_squared only; deterministic_sum has no multiply to
 // fuse). `__dmul_rn`/`__dadd_rn` are CUDA's explicitly round-to-nearest,
 // not-further-fusible primitives, so the device path double-rounds exactly
-// like the host path already does.
+// like that host path does. The host branch below is the plain expression:
+// a host compiler that contracts by default on FMA hardware (Apple clang at
+// -O2, KNOWN_ISSUES.md D30) fuses it too, and then both spaces agree with
+// each other but not with an unfused build -- D30's open decision on a
+// project-wide contraction policy, not something this helper settles.
 KOKKOS_INLINE_FUNCTION double unfused_multiply_add(double s, double x, double y) {
   double result = s + x * y;
   KOKKOS_IF_ON_DEVICE((result = __dadd_rn(s, __dmul_rn(x, y));))
