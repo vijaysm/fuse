@@ -9,7 +9,7 @@ so you pay for what you use and the minimum build stays small enough to compile 
 | **`tier0`** (default) | C++20 compiler, Kokkos, and one of `builtin` (no dependency) or Eigen3 | The whole compiler and scheduler, a complete single-process coupled run, copy transport, serial mesh, YAML input |
 | **`tier1`** | MPI | Distributed transport, rendezvous matching, synchronisation points across ranks, MPMD |
 | **`tier2`** | MOAB (with TempestRemap) | Unstructured mesh backend and conservative non-matching remap |
-| **`tier3`** | PETSc | The implicit/monolithic solver plugin and the optional `physics-kit` component |
+| **`tier3`** | PETSc | Configures today; the implicit/monolithic solver plugin and the optional `physics-kit` component are not yet written (S7/S8) |
 
 Orthogonal options, each independent of the build configuration: LowFive/HDF5 (transport by HDF5
 interception), pybind11 (Python module), a Fortran compiler, a GPU backend for Kokkos, and the
