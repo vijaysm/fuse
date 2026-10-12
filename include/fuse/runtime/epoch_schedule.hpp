@@ -52,10 +52,28 @@ struct EpochSchedule {
 /// maps positions to ranks. Out-of-range input yields an empty schedule rather
 /// than an assertion, since a rank that does not take part simply does nothing.
 ///
+/// RT-8 (review 2026-10-11): also empty for `participants` at or past
+/// `kMaxStrideParticipants` (2^30) -- the stride walk below doubles `stride`
+/// (and computes `2 * stride`) as a plain `int`; past this bound the next
+/// doubling would be signed-integer-overflow UB, latent at any MPI job size
+/// this library could plausibly be run at (this file's own "31 bounds any
+/// participant count an int can express" comment already notes the
+/// practical ceiling), but UB is UB whether or not a real run ever reaches
+/// it. Clamping the DOMAIN here, rather than widening the stride walk's own
+/// arithmetic to `unsigned`, keeps every line of that walk -- and the
+/// mutations that anchor to them -- unchanged; a participant count this
+/// large has no other meaning here anyway ("out of range" already returns
+/// empty for `index`, by the same convention).
+///
 /// No allocation, so it is safe to call inside a running plan.
+inline constexpr int kMaxStrideParticipants = 1 << 30;
+
 [[nodiscard]] inline EpochSchedule epoch_schedule(int participants, int index) {
   EpochSchedule s;
-  if (participants <= 1 || index < 0 || index >= participants) return s;
+  if (participants <= 1 || index < 0 || index >= participants ||
+      participants >= kMaxStrideParticipants) {
+    return s;
+  }
 
   for (int stride = 1; stride < participants; stride *= 2) {
     if ((index % (2 * stride)) == 0) {

@@ -123,6 +123,37 @@ TEST(EpochSchedule, ANonParticipantDoesNothing) {
   }
 }
 
+// RT-8 (review 2026-10-11): a participant count at or past
+// kMaxStrideParticipants (2^30) is clamped to the SAME empty schedule an
+// out-of-range `index` already returns, rather than entering the stride
+// walk at all -- the walk's own `stride *= 2`/`2 * stride` arithmetic is
+// `int`, and doubling past this bound is undefined behaviour regardless
+// of whether any real MPI job ever reaches it. No real job does (this
+// file's own 31-bound comment); this test pins the clamp itself, not a
+// reachable scenario.
+TEST(EpochSchedule, HugeParticipantCountIsClampedNotWalked) {
+  const auto at_bound = epoch_schedule(fuse::kMaxStrideParticipants, 0);
+  EXPECT_EQ(at_bound.reduce_recv_count, 0);
+  EXPECT_EQ(at_bound.reduce_send_to, -1);
+  EXPECT_EQ(at_bound.result_recv_from, -1);
+  EXPECT_EQ(at_bound.result_send_count, 0);
+
+  const auto past_bound =
+      epoch_schedule(fuse::kMaxStrideParticipants + 1000, 0);
+  EXPECT_EQ(past_bound.reduce_recv_count, 0);
+  EXPECT_EQ(past_bound.reduce_send_to, -1);
+  EXPECT_EQ(past_bound.result_recv_from, -1);
+  EXPECT_EQ(past_bound.result_send_count, 0);
+
+  // One below the bound still walks normally -- the clamp is exact, not
+  // a blanket refusal near the boundary.
+  const auto just_under =
+      epoch_schedule(fuse::kMaxStrideParticipants - 1, 0);
+  EXPECT_GT(just_under.result_send_count, 0)
+      << "participant 0, one below the clamp, must still compute an "
+         "ordinary schedule";
+}
+
 TEST(EpochSchedule, IsAllocationFree) {
   // The runtime's standing property is that a running plan touches no
   // allocator, and this is built once per agreement point per step. A first
