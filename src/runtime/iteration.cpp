@@ -1303,6 +1303,20 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
       // graph-level property of policy+interval+window_length, not
       // something that depends on any particular window instance ever
       // running.
+      // RT-3 (review 2026-10-11): WindowCoupler::create()'s OTHER D7
+      // refusal -- a Fixed member whose own interval exceeds the window
+      // (E-RT-WINDOW-LONGSTEP) -- was considered for mirroring here, but
+      // is deliberately NOT mirrored: this compiled path's own replay
+      // (detail::advance_straddle_split(), exercised below) already
+      // handles exactly that configuration, and
+      // test/runtime/window_runner_test.cpp's
+      // WindowRunner.FixedPolicyStraddleNowSucceeds is a pre-existing,
+      // passing test of it (A Adjustable, B Fixed with interval 1 on a
+      // 1/2 window, i.e. interval > window_length). Mirroring the
+      // driver's refusal here would reject a configuration this path
+      // both supports and already tests; the divergence from
+      // WindowCoupler::create() is intentional, not an oversight --
+      // recorded in docs/user/coupling-windows.md.
       bool have_straddler = false;
       for (const NodeId node : R.window_member_nodes) {
         const WindowMemberConfig& cfg = window_member_config.at(node.value());

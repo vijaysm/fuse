@@ -855,4 +855,20 @@ TEST(WindowRunnerStraddle, BothMembersFixedAndStraddlingTogetherIsRejected) {
   EXPECT_EQ(init.error().code, "E-RT-WINDOW-STRADDLE") << init.error().message;
 }
 
+// RT-3 (review 2026-10-11), decision record: WindowCoupler::create()'s
+// OTHER D7 refusal -- a Fixed member whose own interval exceeds the
+// window (E-RT-WINDOW-LONGSTEP) -- is NOT mirrored into resolve_regions()
+// above. It was investigated; mirroring it would reject a configuration
+// this compiled path already supports and already tests:
+// test/runtime/window_runner_test.cpp's
+// WindowRunner.FixedPolicyStraddleNowSucceeds runs A Adjustable, B Fixed
+// with interval 1 on a 1/2-length window (interval > window_length) to
+// completion and asserts convergence. This path's own replay
+// (detail::advance_straddle_split()) handles a single step that spans
+// past the window end the same way it handles one that merely does not
+// divide the window evenly; WindowCoupler::create()'s stricter driver-
+// level refusal does not have that replay available to it. The
+// divergence from the driver is intentional and is recorded in
+// docs/user/coupling-windows.md, not fixed by mirroring the refusal here.
+
 
