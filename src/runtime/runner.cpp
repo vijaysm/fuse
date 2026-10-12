@@ -255,6 +255,7 @@ Result<void> Runner::Impl::resolve_buffers(FieldRegistry& registry) {
   const std::vector<BufferDecl>& buffers = plan.buffers().buffers;
 
   storage.assign(buffers.size(), {});
+  device_storage.assign(buffers.size(), {});
   slots.assign(buffers.size(), Slot{});
   previous.assign(buffers.size(), {});
   sample_count.assign(buffers.size(), 0);
@@ -355,6 +356,72 @@ Result<void> Runner::Impl::resolve_buffers(FieldRegistry& registry) {
     s.owned_by_component = true;
   }
   return Result<void>::success();
+}
+
+void Runner::Impl::place_arcs_on_device() {
+  const std::size_t n_arcs = slots.size();
+  // 1 = some host-side reader exists; the arc stays in `storage`.
+  std::vector<unsigned char> pinned(n_arcs, 0);
+  const auto pin = [&](std::uint32_t a) {
+    if (a < n_arcs) pinned[a] = 1;
+  };
+  const auto pin_arc = [&](ArcId a) {
+    if (a.valid()) pin(a.value());
+  };
+
+  // Instructions: only execute_on()'s Space-generic cases may see a device
+  // pointer, and only through span_c()/span_m(). Remap's distributed-nodal
+  // operator and Sample's spacetime projection run host code on their arcs.
+  const auto& instructions = plan.instructions();
+  for (std::size_t i = 0; i < instructions.size(); ++i) {
+    const Instruction& ins = instructions[i];
+    const Resolved&    r   = resolved[i];
+    bool generic = false;
+    switch (ins.kind) {
+      case OpKind::Accumulate: case OpKind::Extrapolate: case OpKind::Merge:
+      case OpKind::Scale: case OpKind::Relax: case OpKind::Residual:
+        generic = true;
+        break;
+      case OpKind::Remap:       generic = r.nodal_dist < 0; break;
+      case OpKind::Sample:      generic = r.spacetime < 0; break;   // history branch is host
+      case OpKind::Interpolate: generic = r.spacetime < 0; break;   // apply_spacetime is host
+      default: break;
+    }
+    if (generic) continue;
+    for (std::uint8_t k = 0; k < ins.n_in; ++k) pin_arc(ins.in[k]);
+    pin_arc(ins.out);
+  }
+  // iteration.cpp reads a region's block, carried, verify and window arcs
+  // on the host (norms, accelerator gather/scatter, checkpoints, window
+  // priming); constrain reads its `before` arc on the host.
+  for (const detail::RegionRuntime& R : regions) {
+    for (const detail::RegionBlock& b : R.blocks) {
+      pin(b.value_arc); pin(b.residual_arc); pin(b.feed_arc);
+    }
+    for (const std::uint32_t a : R.carried_arcs) pin(a);
+    for (const std::uint32_t a : R.verify_arcs) pin(a);
+    for (const ArcId a : R.window_lagged_import_arcs) pin_arc(a);
+  }
+  for (const auto& [node, cfg] : window_member_config) {
+    pin_arc(cfg.window_import);
+    pin_arc(cfg.window_import_delivery_arc);
+  }
+  for (const auto& [field, arc] : window_export_field_arc) pin_arc(arc);
+  for (const auto& [field, arc] : window_import_field_arc) pin_arc(arc);
+  for (const detail::ConstrainInfo& ci : constrains) pin(ci.before_arc);
+
+  for (std::size_t i = 0; i < n_arcs; ++i) {
+    Slot& s = slots[i];
+    if (s.owned_by_component || pinned[i] || s.total() == 0) continue;
+    if (device_storage[i].extent(0) < s.total()) {
+      device_storage[i] = Kokkos::View<double*, DeviceMemSpace>(
+          Kokkos::view_alloc("fuse::dev_arc"), s.total());  // zero-filled, like storage
+    }
+    std::vector<double>().swap(storage[i]);  // the host copy is gone for good
+    s.data = device_storage[i].data();
+    s.device = true;
+    ++stats.device_resident_arcs;
+  }
 }
 
 Result<std::uint32_t> Runner::Impl::weights_for(RegionId region,
@@ -1549,6 +1616,7 @@ Result<void> Runner::Impl::resolve_instructions() {
   remap_csr.clear();  // parallel to remap_weights; see build_remap_csr()
   remap_csr_device.clear();
   stats.device_dispatches = 0;
+  stats.device_resident_arcs = 0;
   // Both are APPENDED to by the OpKind::Transport case below, so they must be
   // reset here like every other setup-owned container. Runner::initialize() is
   // re-callable (it clears `initialized` at entry), and without these a second
@@ -2417,6 +2485,13 @@ Result<void> Runner::Impl::setup(ComponentSet& components,
   r = resolve_regions(components, registry);
   if (!r.ok()) return r;
 
+  // docs/dev/device-resident-arcs.md, step 1: with every consumer of every
+  // arc now known (instructions, regions, windows, constrains), move the
+  // arcs that only Space-generic kernels touch into device memory.
+  if (config.execution_space == RunnerConfig::RunnerExecutionSpace::Device) {
+    place_arcs_on_device();
+  }
+
   // KNOWN_ISSUES.md D11 (closing): scratch for the fixed-chunk deterministic
   // reductions run_region() uses (fuse/num/space_kernels.hpp's
   // `deterministic_norm_squared`/`deterministic_norm_squared_diff`), sized
@@ -2986,6 +3061,21 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
   std::array<Staged, kDeviceStagingSlots> staged{};
   std::size_t n_staged = 0;
   bool        staging_fault = false;
+  // Device-resident arcs (docs/dev/device-resident-arcs.md): a pointer that
+  // IS this instruction's input or output slot and is flagged `device` is
+  // wrapped directly, no lane. Identity, not range lookup: every call site
+  // below passes in_ptr(k)/out_ptr() (or `out`, the same pointer) for arcs,
+  // and `previous[]`/`history` host buffers otherwise.
+  [[maybe_unused]] bool       used_device_arc = false;
+  [[maybe_unused]] const auto is_device_arc = [&](const double* p) -> bool {
+    if (ins.out.valid() && p == slots[ins.out.value()].data) {
+      return slots[ins.out.value()].device;
+    }
+    for (std::uint8_t k = 0; k < ins.n_in; ++k) {
+      if (p == slots[ins.in[k].value()].data) return slots[ins.in[k].value()].device;
+    }
+    return false;
+  };
   const auto  stage = [&](const double* p, std::size_t len,
                           double* writable) -> double* {
     double* const base = device_staging.data();
@@ -3028,6 +3118,10 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
     if constexpr (kHostAccessible) {
       return num::ConstSpanOf<Space>(p, len);
     } else {
+      if (is_device_arc(p)) {
+        used_device_arc = true;
+        return num::ConstSpanOf<Space>(p, len);
+      }
       double* const lane = stage(p, len, nullptr);
       return num::ConstSpanOf<Space>(lane, staging_fault ? 0 : len);
     }
@@ -3036,6 +3130,10 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
     if constexpr (kHostAccessible) {
       return num::SpanOf<Space>(p, len);
     } else {
+      if (is_device_arc(p)) {
+        used_device_arc = true;
+        return num::SpanOf<Space>(p, len);
+      }
       double* const lane = stage(p, len, p);
       return num::SpanOf<Space>(lane, staging_fault ? 0 : len);
     }
@@ -3568,7 +3666,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
                                       i * device_staging_stride,
                                   staged[i].len));
     }
-    if (n_staged > 0) ++stats.device_dispatches;
+    if (n_staged > 0 || used_device_arc) ++stats.device_dispatches;
   }
   return Result<void>::success();
 }
@@ -4297,6 +4395,13 @@ std::optional<bool> Runner::test_only_window_block_hosted(
 Result<const double*> Runner::buffer(ArcId arc) const {
   if (!arc.valid() || arc.value() >= impl_->slots.size()) {
     return Failure{"E-RT-ARC", "no buffer for arc " + std::to_string(arc.value())};
+  }
+  if (impl_->slots[arc.value()].device) {
+    return Failure{"E-RT-SPACE",
+                 "arc " + std::to_string(arc.value()) +
+                     " is resident in device memory (RunnerConfig::execution_space "
+                     "== Device); its values reach the host only through the "
+                     "component field a Sink delivers to"};
   }
   return static_cast<const double*>(impl_->slots[arc.value()].data);
 }

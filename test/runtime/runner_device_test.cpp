@@ -296,6 +296,13 @@ TEST(RunnerDevice, DeviceModeRunsTheElementwiseKernelsOnTheDevice) {
   EXPECT_GT(dev.stats.device_dispatches, 0)
       << "execution_space = Device was configured, but no instruction's "
          "kernel ran on " << Runner::device_execution_space_name();
+  // docs/dev/device-resident-arcs.md step 1: the intermediates between the
+  // Space-generic instructions live in device memory; only the component-
+  // owned endpoints and the arcs a host-only case touches stay on the host.
+  // The RED for this assertion is the staging-only tree, where every arc is
+  // host memory and the counter stays 0.
+  EXPECT_GT(dev.stats.device_resident_arcs, 0)
+      << "Device mode placed no arc in device memory";
   EXPECT_EQ(dev.stats.periods, 2);
 }
 
@@ -316,7 +323,9 @@ TEST(RunnerDevice, DeviceAndHostAgreeBitwiseOnAccumulateScaleAndCopy) {
   // Not the initial zeros: the producer wrote a ramp, the mean is non-trivial.
   EXPECT_NE(host.consumer.front(), 0.0);
   EXPECT_EQ(host.stats.device_dispatches, 0);
+  EXPECT_EQ(host.stats.device_resident_arcs, 0);
   EXPECT_GT(dev.stats.device_dispatches, 0);
+  EXPECT_GT(dev.stats.device_resident_arcs, 0);
 }
 
 TEST(RunnerDevice, DeviceAndHostAgreeToRoundingOnRelaxAndWeightedRemap) {

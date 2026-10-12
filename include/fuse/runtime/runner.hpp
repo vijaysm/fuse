@@ -176,6 +176,13 @@ struct RunStats {
   /// and a test that wants to assert the device path was actually exercised
   /// asserts on this.
   std::int64_t device_dispatches = 0;
+  /// Coupler-owned arcs whose storage lives in the device memory space
+  /// (docs/dev/device-resident-arcs.md): allocated once in setup() when
+  /// `execution_space == Device` for every arc that only Space-generic
+  /// instructions touch and no region, window or spacetime bookkeeping
+  /// reads on the host. Exactly 0 under `Host`. Counts arcs, not bytes, so
+  /// a test can assert the device path held data without staging.
+  std::int64_t device_resident_arcs = 0;
 };
 
 /// Per-region outcome of the most recent period (spec §5.3).
