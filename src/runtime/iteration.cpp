@@ -4473,11 +4473,15 @@ Result<void> Runner::Impl::resolve_pending_window_straddles(
 // straddles()` (this file, called from `run_region()`, BEFORE this
 // function ever runs for that next instance) then REPLAYS it with that
 // window's own now-final data, following the SAME choreography
-// `WindowCoupler::resolve_pending_straddles()` uses -- NOT YET VERIFIED
-// bit-exact against it (test/runtime/window_runner_straddle_test.cpp's
-// own *FixedBCrossing tests still disagree at this writing; see that
-// file's own comment on the open gap). An IMPORT PROVIDER's straddle is
-// handled by
+// `WindowCoupler::resolve_pending_straddles()` uses -- RT-6 (review
+// 2026-10-11): the *FixedBCrossing tests this comment used to call "not
+// yet verified" now exist, run, and are currently passing, with
+// GaussSeidel matching the driver bitwise; they run at kFixedSweeps=1,
+// not the N~25-30 regime a separate bisection measured a ~4.5e-14
+// relative Jacobi floor at -- see test/runtime/window_runner_straddle_
+// test.cpp's own comment next to `kFixedSweeps` for the current state
+// and the open question of which regime this check is meant to pin. An
+// IMPORT PROVIDER's straddle is handled by
 // `window_sample_times()`/`window_sample_shift()` (fuse/model/coupling_
 // graph.hpp) reconstructing the provider's own grid and buffer-index
 // correspondence from the graph alone -- verified against the compiled
@@ -4585,11 +4589,14 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
     // resolve_pending_window_straddles() temporarily and comparing the
     // printed T0/T1/clock sequence against the hand-derived (13,7)
     // schedule (instrumentation since removed). This
-    // fixes THAT bug specifically; it does not, by itself, make the
-    // wider `*FixedBCrossing` comparisons in test/runtime/window_
-    // runner_straddle_test.cpp bit-exact against the driver -- they
-    // still disagree at this writing; see that file's own comment on
-    // the open gap. Cached in `window_pass_start_clock`
+    // fixes THAT bug specifically; RT-6 (review 2026-10-11): the wider
+    // `*FixedBCrossing` comparisons in test/runtime/window_runner_
+    // straddle_test.cpp now exist, run, and currently pass, at
+    // kFixedSweeps=1 -- that file's own comment next to `kFixedSweeps`
+    // has the current account, including the open question of whether
+    // N=1 is the regime this check is meant to pin, versus the N~25-30
+    // regime a separate bisection measured a floor at. Cached in
+    // `window_pass_start_clock`
     // (its own comment, runner_impl.hpp) so EVERY sweep of this pass
     // plans from the SAME clock, not from wherever the PREVIOUS
     // sweep's own advance left `st.clock`.

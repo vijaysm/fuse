@@ -717,6 +717,19 @@ TEST(WindowRunnerStraddle, WindowSampleShiftMatchesProviderBufferTimesOverTheWho
 // separate overwrite bug (cause 2) exists. Left as EXPECT_EQ (bit-exact)
 // rather than loosened to a tolerance pending the user's ruling on
 // cause (1) -- see this file's own report to the lead.
+//
+// RT-6 (review 2026-10-11), plain record of the current state: this
+// comparison runs EXACTLY ONE sweep per window (kFixedSweeps = 1 below),
+// currently passing (EXPECT_EQ, bit-exact) at that count. The paragraph
+// above is the bisection's own account of how the runner/driver gap
+// varies with the sweep count, from N=1 up to the N~25-30 regime its own
+// ~4.5e-14 relative floor was measured at -- left exactly as that
+// session wrote it rather than re-paraphrased here, since which of the
+// two regimes N=1 actually sits at on that curve is precisely the
+// question this round is recording, not resolving (see this round's
+// disposition record_text). `kFixedSweeps` is left at 1 here -- raising
+// it is the user's call (the open "pending the user's ruling on cause
+// (1)" above), not this pass's.
 constexpr int kFixedSweeps = 1;
 
 void ExpectFixedIterationMatch(WaveformIteration mode,
