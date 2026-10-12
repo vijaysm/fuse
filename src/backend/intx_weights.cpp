@@ -815,6 +815,16 @@ struct BoxTry {
   bool failed = false;
 };
 
+/// `BoxTry::failed` is `try_boxes`' own Result-shaped outcome (its OTHER
+/// field, `ok`, is a classification verdict -- "this mesh is not boxes" --
+/// not a failure); reconstituting it as a `Result<BoxTry>` is what lets
+/// `reconcile<T>` reach it below, the same mechanism `build_remap_halo`
+/// already applies to `fit_surface`'s own Result.
+[[nodiscard]] Result<BoxTry> to_result(BoxTry bt) {
+  if (bt.failed) return bt.error;
+  return bt;
+}
+
 [[nodiscard]] BoxTry try_boxes(const Side& s) {
   BoxTry out;
   BoxMesh& m = out.mesh;
@@ -1250,10 +1260,18 @@ void discard_supermesh(moab::Interface& mb, moab::EntityHandle set) {
   }
 
   // --- orientation -----------------------------------------------------------
+  //
+  // REVIEW.md TF-2: `orient()` reorients THIS rank's own local cells only
+  // (the exact R-01 hazard `build_remap_halo`'s own orient calls already
+  // reconcile), and `intersect_surfaces` is reached from `build_weights`'
+  // first-order path, ahead of `assemble()`'s collectives below in that
+  // caller -- so a per-cell connectivity read/write failure here must be
+  // agreed across the communicator before any rank proceeds, not returned
+  // straight from this rank alone.
   {
-    const auto o1 = orient(src, fs);
+    const auto o1 = reconcile(src.pcomm, orient(src, fs));
     if (!o1.ok()) return o1.error();
-    const auto o2 = orient(tgt, ft);
+    const auto o2 = reconcile(tgt.pcomm, orient(tgt, ft));
     if (!o2.ok()) return o2.error();
   }
 
@@ -2475,11 +2493,30 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
 
   // =========================================================================
   // The first-order supermesh builder, unchanged from Task 5.2.
+  //
+  // REVIEW.md TF-2: `try_boxes`, `intersect_boxes`, `fit_surface` and the
+  // kind/radius/plane-z match below each run a computation (reading this
+  // rank's own local cell corners, tagging GIDs) that can FAIL outright on
+  // one rank -- a MOAB connectivity read error, an out-of-range tag --
+  // while a peer's identical call succeeds, ahead of `assemble()`'s own
+  // collectives (`accumulate_remap_halo`, `reduce_audit`'s
+  // `MPI_Allreduce`). `reconcile<T>` is exactly `resolve()`'s and
+  // `build_remap_halo`'s own fit_surface/orient fix (R-01): it agrees
+  // whether every rank's call SUCCEEDED, so a one-rank error returns the
+  // SAME Failure everywhere instead of that rank returning alone while its
+  // peers walk into those collectives and hang. It does NOT, and cannot,
+  // agree whether ranks that all succeeded classified their OWN local
+  // partition into the SAME box/surface verdict (`BoxTry::ok`,
+  // `SurfaceFit::kind`) -- that is a different, value-level hazard
+  // `reconcile_dim` exists for elsewhere (Side::dim) and TF-2 does not
+  // claim to close it here.
   // =========================================================================
-  const BoxTry ba = try_boxes(a);
-  if (ba.failed) return ba.error;
-  const BoxTry bb = try_boxes(b);
-  if (bb.failed) return bb.error;
+  auto ba_r = reconcile(a.pcomm, to_result(try_boxes(a)));
+  if (!ba_r.ok()) return ba_r.error();
+  const BoxTry ba = ba_r.value();
+  auto bb_r = reconcile(b.pcomm, to_result(try_boxes(b)));
+  if (!bb_r.ok()) return bb_r.error();
+  const BoxTry bb = bb_r.value();
 
   // `RemapFlags::Monotone` on this builder is a CHECK, not a different
   // construction: the map it makes is a convex combination whenever the two
@@ -2493,15 +2530,15 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
   };
 
   if (ba.ok && bb.ok) {
-    auto sm = intersect_boxes(a, b, ba.mesh, bb.mesh);
+    auto sm = reconcile(a.pcomm, intersect_boxes(a, b, ba.mesh, bb.mesh));
     if (!sm.ok()) return sm.error();
     return finish(assemble(a, b, std::move(sm.value()), conservative));
   }
 
   if (a.dim == 2) {
-    auto fa = fit_surface(a);
+    auto fa = reconcile(a.pcomm, fit_surface(a));
     if (!fa.ok()) return fa.error();
-    auto fb = fit_surface(b);
+    auto fb = reconcile(b.pcomm, fit_surface(b));
     if (!fb.ok()) return fb.error();
     if (fa.value().ok && fb.value().ok && fa.value().kind == fb.value().kind) {
       if (fa.value().kind == Surface::Sphere) {
@@ -2523,7 +2560,7 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
                          std::to_string(fa.value().z) + " and " +
                          std::to_string(fb.value().z) + ")"};
       }
-      auto sm = intersect_surfaces(a, b, fa.value(), fb.value());
+      auto sm = reconcile(a.pcomm, intersect_surfaces(a, b, fa.value(), fb.value()));
       if (!sm.ok()) return sm.error();
       return finish(assemble(a, b, std::move(sm.value()), conservative));
     }
