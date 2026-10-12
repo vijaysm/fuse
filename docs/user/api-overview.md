@@ -165,3 +165,16 @@ same list so none of the three can disagree. Covered in full by [](c-abi.md), []
 [](providers.md). **Verified**: both tables are conformance-tested against a native in-process
 reference, and the Brusselator example drives a real multi-executable coupling through them
 (`u_main.c`/`v_main.f90`/`coupler_main.c`).
+
+## `pfuse` — the Python binding
+
+A `pybind11` module over `fuse::CouplingGraph`/`fuse::Component`/`fuse::Runner` directly, **not**
+the ABI above — a Python physics component is an in-process peer, authored and run the same way
+a native one is, not driven externally through `fuse_coupler_abi()`. Binds the model layer's
+graph-authoring API, the iteration/accelerator/Newton-configuration vocabulary, `FieldRegistry`
+(numpy-backed, with the same buffer-contract and lifetime rules a C++ caller gets from
+`fuse::FieldRef`), and a `Session` wrapper over `fuse::Runner`. Covered in full by [](python.md)
+and [](../dev/python-surface.md). **Verified**: 91 of the Python test suite's 93 cases pass
+against the built extension (1 skipped on this platform, 1 `xfail` recording a pre-existing
+naming bug — see `KNOWN_ISSUES.md` D37), including a byte-for-byte reproduction of every
+non-Newton row of the `dn_heat` example driven from a Python-authored graph.

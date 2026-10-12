@@ -47,6 +47,7 @@ user/layout-driver
 user/demo-b
 user/c-abi
 user/fortran
+user/python
 user/providers
 user/lowfive
 user/multiple-executables
@@ -79,5 +80,6 @@ dev/coupling-windows
 dev/nodal-fields
 dev/coupler-placement
 dev/conformance
+dev/python-surface
 dev/roadmap
 ```
