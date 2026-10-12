@@ -625,3 +625,6 @@ else()
                  "LowFive install shipping liblowfive-dist; not built")
 endif()
 # ---- S6 phase 3, "LowFive" track: end -------------------------------------
+
+# Last: the label applies to rows registered above, in this directory.
+fuse_label_slow_tests()

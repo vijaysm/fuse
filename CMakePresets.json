@@ -199,6 +199,38 @@
       "execution": {
         "jobs": 4
       }
+    },
+    {
+      "name": "tier0-quick",
+      "description": "Everything except the rows labelled `slow` (cmake/FuseSlowTests.cmake), two at a time: the routine pre-commit run. Prefix with `nice -n 19` on a laptop.",
+      "configurePreset": "tier0",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 2
+      },
+      "filter": {
+        "exclude": {
+          "label": "slow"
+        }
+      }
+    },
+    {
+      "name": "all-quick",
+      "description": "As tier0-quick, for the all-tiers build.",
+      "configurePreset": "all",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 2
+      },
+      "filter": {
+        "exclude": {
+          "label": "slow"
+        }
+      }
     }
   ],
   "workflowPresets": [

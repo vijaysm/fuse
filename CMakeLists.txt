@@ -27,6 +27,7 @@ option(FUSE_BUILD_UPSTREAM_KARMA "Build the imported spine tree under upstream/k
 # with a message rather than a configure error, when no Fortran compiler is
 # found.
 option(FUSE_ENABLE_FORTRAN "Build the Fortran participant binding ffuse (needs a Fortran compiler)" ON)
+include(FuseSlowTests)
 include(FuseFortran)
 
 include(CTest)

@@ -1398,3 +1398,6 @@ endif()
 list(LENGTH _fuse_test_files _n_files)
 list(LENGTH _fuse_registered _n_reg)
 message(STATUS "fuse: tests  ${_n_reg} registered of ${_n_files} on disk (rest gated by a tier option that is OFF)")
+
+# Last: the label applies to rows registered above, in this directory.
+fuse_label_slow_tests()
