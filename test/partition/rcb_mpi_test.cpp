@@ -33,6 +33,7 @@
 
 #include "fixtures.hpp"
 #include "fuse/backend/serial_backend.hpp"
+#include "fuse/base/error.hpp"
 #include "fuse_test_main.hpp"
 #include "rcb_oracle.hpp"
 
@@ -115,6 +116,155 @@ TEST(RcbPartitionMpi, MatchesOracleRecomputedOnTheGatheredInput) {
       EXPECT_EQ(got_by_gid[i], want[i]) << "num_parts=" << num_parts << " gid=" << i;
     }
   }
+}
+
+// PS-2: rank 0 alone passes a too-short weights array; every other rank's
+// own arrays are well-formed. Before the fix rank 0 threw
+// E-PART-SIZE-MISMATCH directly and returned while its peers entered
+// recursive_bisect's first Allreduce -- a hang, not a refusal. This test
+// only observes a result at all once every rank refuses together.
+TEST(RcbPartitionMpi, RefusesWhenOnlyOneRankHasAMismatchedWeightsArray) {
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
+  int rank = 0;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+  const std::size_t n = 10;
+  Kokkos::View<double* [3], Space::memory_space> c("c", n);
+  Kokkos::deep_copy(c, 0.0);
+  const std::size_t n_weights = (rank == 0) ? n - 1 : n;  // rank 0 alone is short
+  Kokkos::View<Weight*, Space::memory_space> w("w", n_weights);
+  Kokkos::deep_copy(w, Weight{1});
+  Kokkos::View<std::int64_t*, Space::memory_space> g("g", n);
+  Kokkos::deep_copy(g, std::int64_t{0});
+
+  RcbOptions opts;
+  opts.num_parts = 2;
+  opts.comm = MPI_Comm_c2f(MPI_COMM_WORLD);
+  EXPECT_THROW((void)(rcb_partition<Space>(opts, c, w, g)), fuse::Refusal)
+      << "every rank must refuse together, including ranks whose own arrays were fine, rank "
+      << rank;
+}
+
+// PS-3: every rank's own RcbOptions are individually valid, but rank 0
+// asks for a different num_parts than everyone else -- the recursion's
+// own shape, never reduced before this fix. Before the fix this either
+// hung (a differing number of histogram Allreduce levels) or silently
+// produced two different, each internally-consistent, partitions.
+TEST(RcbPartitionMpi, RefusesWhenRanksDisagreeAboutNumParts) {
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
+  int rank = 0, size = 1;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+  const std::size_t n = 10;
+  Kokkos::View<double* [3], Space::memory_space> c("c", n);
+  Kokkos::deep_copy(c, 0.0);
+  Kokkos::View<Weight*, Space::memory_space> w("w", n);
+  Kokkos::deep_copy(w, Weight{1});
+  Kokkos::View<std::int64_t*, Space::memory_space> g("g", n);
+  Kokkos::deep_copy(g, std::int64_t{0});
+
+  RcbOptions opts;
+  opts.num_parts = (rank == 0) ? 1 : size;  // both individually valid, but they disagree
+  opts.comm = MPI_Comm_c2f(MPI_COMM_WORLD);
+  EXPECT_THROW((void)(rcb_partition<Space>(opts, c, w, g)), fuse::Refusal) << "rank " << rank;
+}
+
+// PS-9: a fully degenerate, fully-duplicated-gid fixture -- every centroid
+// at the origin (so every element becomes a tie at every level) and every
+// gid equal to 0 (so the ENTIRE tie order is decided by the secondary key
+// alone). `rcb_partition` does not require unique gids
+// (docs/dev/partitioning.md "Ties"), and this is the case where an
+// unstable sort's tie resolution is observable in the final assignment,
+// not just an implementation detail. The fix (`std::stable_sort`, both in
+// rcb.hpp and mirrored in rcb_oracle.hpp) is what makes this a GENUINE
+// parity check rather than two independently-unstable sorts that might
+// happen to agree: the library (real ranks) and the oracle (the SAME P,
+// emulated) are expected to assign every element identically because both
+// now resolve the all-ties case by the one well-defined rule the doc
+// names -- gid, then gathered position -- not by whatever an unstable
+// sort's internal algorithm does on each side.
+TEST(RcbPartitionMpi, DuplicateGidTiesMatchOracleAtTheSameRankCount) {
+  int rank = 0, size = 1;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+  const std::size_t n = 2 * static_cast<std::size_t>(size);
+  const auto owner = fuse::partition::testing::owner_by_contiguous_blocks(n, size);
+
+  std::vector<std::size_t> local_indices;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (owner[i] == rank) local_indices.push_back(i);
+  }
+  const std::size_t n_local = local_indices.size();
+
+  Kokkos::View<double* [3], Space::memory_space> c("c", n_local);
+  Kokkos::View<Weight*, Space::memory_space> wv("w", n_local);
+  Kokkos::View<std::int64_t*, Space::memory_space> g("g", n_local);
+  Kokkos::deep_copy(c, 0.0);   // every centroid at the origin -- fully degenerate
+  Kokkos::deep_copy(wv, Weight{1});
+  Kokkos::deep_copy(g, std::int64_t{0});  // every gid identical -- fully duplicated
+
+  RcbOptions opts;
+  opts.num_parts = 2;
+  opts.comm = MPI_Comm_c2f(MPI_COMM_WORLD);
+  const auto result = rcb_partition<Space>(opts, c, wv, g);
+  ASSERT_EQ(result.part_id.extent(0), n_local);
+
+  std::vector<std::int64_t> local_parts(n_local);
+  for (std::size_t k = 0; k < n_local; ++k) local_parts[k] = result.part_id(k);
+  int local_count = static_cast<int>(n_local);
+  std::vector<int> counts(static_cast<std::size_t>(size), 0);
+  MPI_Allgather(&local_count, 1, MPI_INT, counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+  std::vector<int> displs(static_cast<std::size_t>(size), 0);
+  int total = 0;
+  for (int r = 0; r < size; ++r) {
+    displs[static_cast<std::size_t>(r)] = total;
+    total += counts[static_cast<std::size_t>(r)];
+  }
+  std::vector<std::int64_t> all_parts(static_cast<std::size_t>(total));
+  MPI_Allgatherv(local_parts.data(), local_count, MPI_INT64_T, all_parts.data(), counts.data(),
+                displs.data(), MPI_INT64_T, MPI_COMM_WORLD);
+
+  std::vector<fuse::partition::testing::OraclePoint3> oc(n, {0.0, 0.0, 0.0});
+  std::vector<fuse::partition::testing::OracleWeight> ow(n, 1);
+  std::vector<std::int64_t> og(n, 0);
+  const auto want =
+      fuse::partition::testing::recursive_bisect_oracle(oc, ow, og, owner, opts.num_parts);
+  for (std::size_t i = 0; i < n; ++i) {
+    EXPECT_EQ(all_parts[i], want[i]) << "global index " << i;
+  }
+}
+
+// PS-10: rank 0 alone holds one negative weight; every other rank's own
+// weights are non-negative. Folded into the SAME agreement Allreduce as
+// PS-2/PS-3, so a rank whose own weights are fine must not proceed while
+// rank 0 refuses alone.
+TEST(RcbPartitionMpi, RefusesWhenOnlyOneRankHasANegativeWeight) {
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
+  int rank = 0;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+  const std::size_t n = 10;
+  Kokkos::View<double* [3], Space::memory_space> c("c", n);
+  Kokkos::deep_copy(c, 0.0);
+  Kokkos::View<Weight*, Space::memory_space> w("w", n);
+  Kokkos::deep_copy(w, Weight{1});
+  if (rank == 0) {
+    auto w_host = Kokkos::create_mirror_view(w);
+    Kokkos::deep_copy(w_host, w);
+    w_host(3) = Weight{-1};
+    Kokkos::deep_copy(w, w_host);
+  }
+  Kokkos::View<std::int64_t*, Space::memory_space> g("g", n);
+  Kokkos::deep_copy(g, std::int64_t{0});
+
+  RcbOptions opts;
+  opts.num_parts = 2;
+  opts.comm = MPI_Comm_c2f(MPI_COMM_WORLD);
+  EXPECT_THROW((void)(rcb_partition<Space>(opts, c, w, g)), fuse::Refusal)
+      << "every rank must refuse together, including ranks whose own weights were fine, rank "
+      << rank;
 }
 
 TEST(MeshAdapterMpi, RefusesWhenRanksDisagreeAboutMeshDimension) {
