@@ -87,8 +87,25 @@ def check_manifest() -> int:
 
 
 def check_parents() -> int:
+    # KNOWN GAP (found 2026-10-12, soma-import track): this function diffs
+    # byte-for-byte against the live parent and does not consult `diverged`
+    # at all. karma's own `.gitignore` is a documented, intentional divergence
+    # (UPSTREAMS.lock's [karma].diverged) and is reported here as an I8
+    # violation every time the real karma parent repository is reachable --
+    # a known false positive, not a new one. Fixing it (skip any path listed
+    # in `diverged`) is a real but separate change, out of this track's scope.
     problems, checked = [], 0
     for name, info in read_lock().items():
+        retired = str(info.get("retired", ""))
+        if retired:
+            # The byte-identity check this function exists for (check_manifest(),
+            # above) still runs unconditionally against a retired subtree -- I8
+            # holds until the directory is actually removed. Re-deriving from the
+            # LIVE parent repository is a different question (has upstream moved
+            # since the import?) that a subtree frozen for deletion has no more
+            # need to ask.
+            print(f"verify-import[parents]: {name}: retired ({retired}), skipped")
+            continue
         src = Path(info.get("path", ""))
         tag = info.get("tag", "")
         dest = UPSTREAM / name

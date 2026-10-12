@@ -66,6 +66,14 @@ def main() -> int:
         path = str(info.get("path", ""))
         tag = str(info.get("tag", ""))
         sha = str(info.get("sha", ""))
+        retired = str(info.get("retired", ""))
+        if retired:
+            # A retired parent is frozen for deletion, not for further sync: there
+            # is no backport to classify for a subtree the owner is about to
+            # remove, and treating an unreachable parent path as a warning (the
+            # branch below) would be noise for every retired entry from here on.
+            print(f"{name}: retired ({retired}); sync skipped")
+            continue
         if not (Path(path) / ".git").exists():
             unreachable.append(f"{name}: parent not reachable at {path}")
             continue

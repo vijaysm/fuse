@@ -3008,6 +3008,18 @@ this ordering at all).
   MOAB-dependent test now (`backend.moab_mesh`, 38 cases, registered whenever
   `FUSE_ENABLE_MOAB` is on) — what it lacks is a host run, per C1. Do not read
   those four parent skips as FUSE coverage either way.
+- **`sphinx -b html -W` logs one `misc.highlighting_failure` warning in
+  `docs/history/soma/plans/soma-phase-5.md`.** A verbatim plan-document CMake
+  snippet (Step 5) uses a literal `...` as an elision placeholder, which is not
+  valid CMake and trips Pygments' lexer (it recovers in relaxed mode; the HTML
+  still renders). Fixing it means editing the historical text, which
+  `docs/history/soma/` moved VERBATIM and which the repository owner directed
+  (2026-10-12, soma-import track) be left untouched rather than edited to quiet
+  the lexer. `python3 -m sphinx ... -W --keep-going` on this tree therefore
+  exits 1 on this one warning alone; every other warning this track's docs
+  move could have introduced (4 dead links in `BUILDING.md`, 1 in `HANDOFF.md`,
+  1 broken anchor in `comm-graph-design.md`) was fixed by a minimal, disclosed
+  markup-only touch instead of a suppression.
 - **The serial loops in `fuse/num/kernels.hpp` are not dead code** now that
   `space_kernels.hpp` exists. They are the oracle the parallel kernels are
   tested against, and they are what runs where no execution space has been

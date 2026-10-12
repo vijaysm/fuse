@@ -24,6 +24,7 @@ Consequences, all deliberate:
 - The layering and invariant gates do not scan `upstream/`. These trees do not follow this
   repository's conventions and are not expected to.
 - Each tree keeps its own `CMakeLists.txt` and is configured as a subproject.
+  **Exception: `soma/`, since 2026-10-12 (`UPSTREAMS.lock`'s `[soma].retired` field).** The top-level `CMakeLists.txt` no longer `add_subdirectory()`s it -- the build/tooling detachment the soma-import track did ahead of deletion -- but the directory itself is still here, still unbuilt by anything, and still checked by `verify-import.py` below. `karma/` is unaffected.
 
 ## Verifying
 

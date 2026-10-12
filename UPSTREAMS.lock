@@ -49,7 +49,7 @@ superseded = [
   #   remap_parallel and its four siblings that backend comments still cite -- REVIEW.md BK-M1)
 ]
 retire_at = "S6"                     # subtree deleted whole when every path is superseded
-retired   = ""                       # "<date> @ <fuse sha>" once done
+retired   = "2026-10-12 @ f3cbc00: build/tooling detachment complete (FUSE_BUILD_UPSTREAM_SOMA removed, soma-import track). NOT the S6 bar above (\"every path superseded\"): 86/181 paths remain ported, missing, or moved to docs/history -- see docs/dev/soma-import.md for the full per-file/per-case record. Do not delete this subtree on the strength of this field alone."
 open      = ["X2 rules_channel.cpp overlaps()", "X5 validate.hpp abs(lag)", "X7 soma_c.h int32_t comm",
              "R31 overlapping rank sets refused (untested)",
              "untested refusals: E-RT-TRANSPORT-{NOMPI,COMM,XREGION,OVERLAP}, E-RT-REMAP-HALO, E-MESH-HALO-GEOMETRY"]
