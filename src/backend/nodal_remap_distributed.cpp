@@ -169,7 +169,25 @@ enum class FailCode : int {
   kDegenerate = 3,
   kOwnerMissing = 4,  // apply_distributed_H's own E-RT-NODAL-DIST-OWNER
   kOther = 5,
+  kNoCellVertices = 6,  // gather_global_source: MeshView::cell_vertices rejected
+  kShape = 7,           // gather_global_source: unsupported shape or wrong corner count
+  kGidAccess = 8,       // gather_global_source: global_id/centroid threw rank-locally
+  kGidTooLarge = 9,     // REVIEW.md TF-11: a global id exceeds a double's 53-bit mantissa
 };
+
+/// REVIEW.md TF-11: every global id in this file travels as a `double`
+/// (`allgatherv_records`' own wire format, stride doubles per record) --
+/// unreachable through `MoabMeshView` (GLOBAL_ID is a 32-bit int) but
+/// `MeshView` is the contract, not MOAB specifically, and nothing here
+/// stops a different backend from handing back a `std::size_t` above
+/// 2^53, where it would silently lose precision in the Allgatherv record
+/// and produce WRONG vertex matching with no diagnostic at all. Checked at
+/// every point a gid enters a wire buffer, named by this one predicate so
+/// the bound is asserted once rather than copy-pasted at each call site.
+constexpr std::size_t kMaxExactDoubleGid = std::size_t{1} << 53;
+[[nodiscard]] bool gid_fits_double(std::size_t gid) noexcept {
+  return gid <= kMaxExactDoubleGid;
+}
 
 [[nodiscard]] const char* fail_code_str(int id) {
   switch (static_cast<FailCode>(id)) {
@@ -177,6 +195,10 @@ enum class FailCode : int {
     case FailCode::kNewton: return "E-INTERP-NEWTON";
     case FailCode::kDegenerate: return "E-INTERP-DEGENERATE";
     case FailCode::kOwnerMissing: return "E-RT-NODAL-DIST-OWNER";
+    case FailCode::kNoCellVertices: return "E-MESH-NO-CELL-VERTICES";
+    case FailCode::kShape: return "E-INTERP-SHAPE";
+    case FailCode::kGidAccess: return "E-RT-NODAL-DIST-GID";
+    case FailCode::kGidTooLarge: return "E-RT-NODAL-DIST-GID-RANGE";
     case FailCode::kOther: default: return "E-INTERP-DISTRIBUTED-ROW";
   }
 }
@@ -239,49 +261,121 @@ struct AssembledMesh {
   const int dim = src.dimension();
 
   // ---- vertices: (gid, x, y, z), stride 4, OWNED only ----------------------
+  //
+  // Round-4 D8 fixed every POST-collective early return this file's loops
+  // could reach; it did not cover these two buffer-building loops, which run
+  // BEFORE their own `allgatherv_records` call and can fail -- or, worse,
+  // THROW -- rank-locally: `MeshView::centroid`/`global_id` throw
+  // `std::out_of_range` by their own documented contract, and
+  // `MoabMeshView::global_id` additionally throws `InvariantViolation` when
+  // `gid_error` is set, which a partitioned MOAB read with unnumbered
+  // vertices routinely produces on exactly one rank. Any of those outcomes
+  // on one rank, while its peers proceed to `allgatherv_records`, is a hang
+  // (an uncaught exception) or an undetected divergence (an early `return
+  // Failure` here while other ranks continue). Both loops below instead
+  // RECORD the first local failure (catching anything the accessors throw)
+  // and stop adding to the buffer -- the SAME "record-and-stop" idiom
+  // `build_distributed_interp_rows`'s own eval loop already uses just below
+  // -- and `agree_on_local_failure` runs, unconditionally on every rank,
+  // immediately after each loop and BEFORE that loop's own
+  // `allgatherv_records`, so a rank-local failure never lets this rank skip
+  // a collective its peers enter.
   std::vector<double> vbuf;
+  bool v_failed = false;
+  int v_fail_code = 0;
+  std::size_t v_fail_gid = 0;
   const std::size_t nv = src.entity_count(0);
-  for (std::size_t i = 0; i < nv; ++i) {
+  for (std::size_t i = 0; i < nv && !v_failed; ++i) {
     if (!src.is_owned(0, i)) continue;
-    const Point p = src.centroid(0, i);
-    vbuf.push_back(static_cast<double>(src.global_id(0, i)));
-    vbuf.push_back(p.x);
-    vbuf.push_back(p.y);
-    vbuf.push_back(p.z);
+    try {
+      const Point p = src.centroid(0, i);
+      const std::size_t gid = src.global_id(0, i);
+      if (!gid_fits_double(gid)) {
+        v_failed = true;
+        v_fail_code = static_cast<int>(FailCode::kGidTooLarge);
+        v_fail_gid = gid;
+        break;
+      }
+      vbuf.push_back(static_cast<double>(gid));
+      vbuf.push_back(p.x);
+      vbuf.push_back(p.y);
+      vbuf.push_back(p.z);
+    } catch (const std::exception&) {
+      v_failed = true;
+      v_fail_code = static_cast<int>(FailCode::kGidAccess);
+      v_fail_gid = 0;  // the vertex that threw has no readable global id by definition
+    }
+  }
+  {
+    const auto agreed = agree_on_local_failure(comm_handle, v_failed, v_fail_code, v_fail_gid,
+                                                "gather_global_source (vertices)");
+    if (!agreed.ok()) return agreed.error();
   }
   auto vg = allgatherv_records(comm_handle, vbuf, 4);
   if (!vg.ok()) return vg.error();
 
   // ---- cells: (gid, shape, n, corner_gid x 8), stride 11, OWNED only ------
   std::vector<double> cbuf;
+  bool c_failed = false;
+  int c_fail_code = 0;
+  std::size_t c_fail_gid = 0;
   const std::size_t nc = src.entity_count(dim);
-  for (std::size_t i = 0; i < nc; ++i) {
+  for (std::size_t i = 0; i < nc && !c_failed; ++i) {
     if (!src.is_owned(dim, i)) continue;
-    const auto cv = src.cell_vertices(dim, i);
-    if (!cv.ok()) {
-      return Failure{cv.error().code, "gather_global_source: cell " + std::to_string(i) +
-                                          ": " + cv.error().message};
+    try {
+      const auto cv = src.cell_vertices(dim, i);
+      if (!cv.ok()) {
+        c_failed = true;
+        c_fail_code = static_cast<int>(FailCode::kNoCellVertices);
+        continue;
+      }
+      if (!shape_supported(cv.value().shape) ||
+          cv.value().vertices.size() != shape_corner_count(cv.value().shape) ||
+          cv.value().vertices.size() > 8) {
+        c_failed = true;
+        c_fail_code = static_cast<int>(FailCode::kShape);
+        continue;
+      }
+      const std::size_t cell_gid = src.global_id(dim, i);
+      if (!gid_fits_double(cell_gid)) {
+        c_failed = true;
+        c_fail_code = static_cast<int>(FailCode::kGidTooLarge);
+        c_fail_gid = cell_gid;
+        continue;
+      }
+      bool corner_gid_too_large = false;
+      std::size_t bad_corner_gid = 0;
+      for (std::size_t k = 0; k < cv.value().vertices.size() && !corner_gid_too_large; ++k) {
+        const std::size_t corner_gid = src.global_id(0, cv.value().vertices[k]);
+        if (!gid_fits_double(corner_gid)) {
+          corner_gid_too_large = true;
+          bad_corner_gid = corner_gid;
+        }
+      }
+      if (corner_gid_too_large) {
+        c_failed = true;
+        c_fail_code = static_cast<int>(FailCode::kGidTooLarge);
+        c_fail_gid = bad_corner_gid;
+        continue;
+      }
+      cbuf.push_back(static_cast<double>(cell_gid));
+      cbuf.push_back(static_cast<double>(static_cast<int>(cv.value().shape)));
+      cbuf.push_back(static_cast<double>(cv.value().vertices.size()));
+      for (std::size_t k = 0; k < 8; ++k) {
+        cbuf.push_back(k < cv.value().vertices.size()
+                           ? static_cast<double>(src.global_id(0, cv.value().vertices[k]))
+                           : -1.0);
+      }
+    } catch (const std::exception&) {
+      c_failed = true;
+      c_fail_code = static_cast<int>(FailCode::kGidAccess);
+      c_fail_gid = 0;
     }
-    if (!shape_supported(cv.value().shape)) {
-      return Failure{"E-INTERP-SHAPE",
-                     fmt::format("gather_global_source: source cell {} has no standard "
-                                 "nodal basis implemented (see general_interp.hpp)",
-                                 i)};
-    }
-    if (cv.value().vertices.size() != shape_corner_count(cv.value().shape) ||
-        cv.value().vertices.size() > 8) {
-      return Failure{"E-INTERP-SHAPE",
-                     "gather_global_source: cell " + std::to_string(i) +
-                         " reports the wrong corner count for its shape"};
-    }
-    cbuf.push_back(static_cast<double>(src.global_id(dim, i)));
-    cbuf.push_back(static_cast<double>(static_cast<int>(cv.value().shape)));
-    cbuf.push_back(static_cast<double>(cv.value().vertices.size()));
-    for (std::size_t k = 0; k < 8; ++k) {
-      cbuf.push_back(k < cv.value().vertices.size()
-                         ? static_cast<double>(src.global_id(0, cv.value().vertices[k]))
-                         : -1.0);
-    }
+  }
+  {
+    const auto agreed = agree_on_local_failure(comm_handle, c_failed, c_fail_code, c_fail_gid,
+                                                "gather_global_source (cells)");
+    if (!agreed.ok()) return agreed.error();
   }
   auto cg = allgatherv_records(comm_handle, cbuf, 11);
   if (!cg.ok()) return cg.error();
@@ -420,6 +514,7 @@ Result<DistributedInterpRows> build_distributed_interp_rows(const MeshView& src_
 
     bool have_fallback = false;
     std::size_t fallback_c = 0;
+    std::size_t fallback_gid = 0;  // REVIEW.md TF-13: the tie-break key, not just a diagnostic
     double fallback_score = std::numeric_limits<double>::max();
     std::array<double, 3> fallback_u{};
     bool fallback_passes_loose = false;
@@ -458,9 +553,21 @@ Result<DistributedInterpRows> build_distributed_interp_rows(const MeshView& src_
       const double score = lateral + normal_gap * normal_gap;
       const bool passes_loose =
           surf_ok && in_reference_domain(cells[c].shape, inv.value().u, kRefEpsLoose);
-      if (!have_fallback || score < fallback_score) {
+      // REVIEW.md TF-13: a STRICT `score <` leaves an exact tie decided by
+      // iteration order, which here is `cells`' own order -- the
+      // Allgatherv's rank-concatenation order (gather_global_source),
+      // which depends on how many ranks ran and which rank owned which
+      // cell. The header's bit-identical-across-rank-counts claim then
+      // fails in the tied, no-tight-match case. Tie-broken by lowest
+      // global id -- a property of the cell, not of the gather -- the
+      // SAME rule tier (a) already uses above, and the one the serial
+      // twin (general_interp.hpp's deterministic box-index order) achieves
+      // by a different, equally rank-count-independent route.
+      if (!have_fallback || score < fallback_score ||
+          (score == fallback_score && gid < fallback_gid)) {
         have_fallback = true;
         fallback_c = c;
+        fallback_gid = gid;
         fallback_score = score;
         fallback_u = inv.value().u;
         fallback_passes_loose = passes_loose;
@@ -526,19 +633,53 @@ Result<void> apply_distributed_H(const DistributedInterpRows& rows, const MeshVi
 
   const int stride = 1 + static_cast<int>(components);
   std::vector<double> buf;
-  for (std::size_t i = 0; i < nv; ++i) {
+  // REVIEW.md TF-11: this rank's own vertex gids enter the SAME double-
+  // valued wire format gather_global_source's loops do; a gid above
+  // kMaxExactDoubleGid would silently lose precision there too. Record-
+  // and-stop, then agree, before allgatherv_records -- the TF-1 shape --
+  // rather than returning straight from the loop.
+  bool gid_range_failed = false;
+  std::size_t gid_range_fail_gid = 0;
+  for (std::size_t i = 0; i < nv && !gid_range_failed; ++i) {
     if (!src_nodal.is_owned(0, i)) continue;
-    buf.push_back(static_cast<double>(src_nodal.global_id(0, i)));
+    const std::size_t gid = src_nodal.global_id(0, i);
+    if (!gid_fits_double(gid)) {
+      gid_range_failed = true;
+      gid_range_fail_gid = gid;
+      continue;
+    }
+    buf.push_back(static_cast<double>(gid));
     for (std::size_t c = 0; c < components; ++c) buf.push_back(local_src_values[i * components + c]);
+  }
+  {
+    const auto agreed = agree_on_local_failure(comm_handle, gid_range_failed,
+                                                static_cast<int>(FailCode::kGidTooLarge),
+                                                gid_range_fail_gid, "apply_distributed_H");
+    if (!agreed.ok()) return agreed.error();
   }
   const auto g = allgatherv_records(comm_handle, buf, stride);
   if (!g.ok()) return g.error();
 
+  // REVIEW.md TF-12: `gather_global_source` rejects a duplicated OWNED gid
+  // by name (`E-RT-NODAL-DIST-OWNER`, the ownership contract
+  // `MeshView::is_owned` must agree with itself about) -- this loop used
+  // to silently keep whichever record happened to overwrite `value_of`
+  // last for the same hazard. Safe to detect and return directly HERE,
+  // unlike a pre-collective check: `g.value()` is the Allgatherv's own
+  // output, already identical on every rank, so this either rejects on
+  // every rank or on none, with no reconciliation needed.
   std::unordered_map<std::size_t, const double*> value_of;
   value_of.reserve(g.value().records);
   for (std::size_t k = 0; k < g.value().records; ++k) {
     const double* rec = &g.value().data[k * static_cast<std::size_t>(stride)];
-    value_of[static_cast<std::size_t>(rec[0])] = rec + 1;
+    const auto gid = static_cast<std::size_t>(rec[0]);
+    const auto [it, inserted] = value_of.emplace(gid, rec + 1);
+    if (!inserted) {
+      return Failure{"E-RT-NODAL-DIST-OWNER",
+                     fmt::format("apply_distributed_H: source vertex global id {} was "
+                                 "reported OWNED by two ranks", gid)};
+    }
+    (void)it;
   }
 
   // Round 4 (KNOWN_ISSUES.md D8): same hazard class as

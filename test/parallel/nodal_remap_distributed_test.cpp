@@ -28,6 +28,8 @@
 #include <gtest/gtest.h>
 #include <mpi.h>
 
+#include "fuse/base/error.hpp"
+
 #include "fuse_test_main.hpp"
 
 #include "../support/partitioned_test_backend.hpp"
@@ -125,7 +127,127 @@ void check_affine_exact_and_conservative(std::size_t n_src, fuse::RankSet src_ra
       << "H^T must conserve the total load globally";
 }
 
+/// Review 2026-10-11 TF-1: `gather_global_source`'s per-rank vertex/cell
+/// buffer-building loops (inside `build_distributed_interp_rows`, the only
+/// entry point that reaches it) can fail -- or throw -- rank-locally BEFORE
+/// their own `MPI_Allgatherv`, which is a hang (or an uncaught exception) at
+/// every OTHER rank waiting inside that same collective. This wrapper
+/// injects exactly one of the two triggering defects, on exactly one rank,
+/// at one local entity index that rank owns: an unsupported source cell
+/// shape (the serial builder's own `E-INTERP-SHAPE` case, legal mesh content
+/// `gather_global_source` must still reject without hanging its peers), or a
+/// `global_id` that throws (standing in for `MoabMeshView::global_id`'s own
+/// `InvariantViolation` on a partitioned read with unnumbered vertices,
+/// moab_backend.cpp's `gid_error`). All other ranks, and every other entity
+/// on the faulty rank, see `GeometricLineMesh`'s ordinary answers.
+enum class SourceFault { kNone, kUnsupportedShape, kVertexGidThrows };
+
+class FaultInjectingSourceMesh final : public fuse::MeshView {
+ public:
+  FaultInjectingSourceMesh(GeometricLineMesh base, SourceFault fault_here)
+      : base_(std::move(base)), fault_(fault_here) {}
+
+  [[nodiscard]] int dimension() const override { return base_.dimension(); }
+  [[nodiscard]] std::size_t entity_count(int dim) const override {
+    return base_.entity_count(dim);
+  }
+  [[nodiscard]] std::size_t owned_count(int dim) const override { return base_.owned_count(dim); }
+  [[nodiscard]] bool is_owned(int dim, std::size_t i) const override {
+    return base_.is_owned(dim, i);
+  }
+  [[nodiscard]] fuse::Point centroid(int dim, std::size_t i) const override {
+    return base_.centroid(dim, i);
+  }
+  [[nodiscard]] double measure(int dim, std::size_t i) const override {
+    return base_.measure(dim, i);
+  }
+  [[nodiscard]] std::size_t simplex_count(int dim, std::size_t i) const override {
+    return base_.simplex_count(dim, i);
+  }
+  void simplex_points(int dim, std::size_t i, std::size_t s, fuse::Point* out) const override {
+    base_.simplex_points(dim, i, s, out);
+  }
+
+  // Local vertex index 1 is always this rank's OWN (never the shared,
+  // previous-rank-owned boundary vertex at local index 0 -- see
+  // GeometricLineMesh::is_owned above), so it is a safe, deterministic
+  // target for the thrown-global-id fault regardless of rank count.
+  static constexpr std::size_t kFaultVertexLocalIndex = 1;
+  static constexpr std::size_t kFaultCellLocalIndex = 0;
+
+  [[nodiscard]] std::size_t global_id(int dim, std::size_t i) const override {
+    if (fault_ == SourceFault::kVertexGidThrows && dim == 0 && i == kFaultVertexLocalIndex) {
+      FUSE_THROW(fuse::InvariantViolation,
+                "FaultInjectingSourceMesh: simulated unnumbered vertex, standing in for "
+                "MoabMeshView::global_id's own gid_error throw on a partitioned MOAB read");
+    }
+    return base_.global_id(dim, i);
+  }
+
+  [[nodiscard]] fuse::Result<CellVertices> cell_vertices(int dim, std::size_t i) const override {
+    auto cv = base_.cell_vertices(dim, i);
+    if (fault_ == SourceFault::kUnsupportedShape && dim == 1 && i == kFaultCellLocalIndex &&
+        cv.ok()) {
+      CellVertices bad = cv.value();
+      bad.shape = fuse::CellShape::Pyramid;  // shape_supported() == false
+      return bad;
+    }
+    return cv;
+  }
+
+ private:
+  GeometricLineMesh base_;
+  SourceFault fault_;
+};
+
+/// Builds a source line mesh of `n_src` cells over every rank of
+/// `MPI_COMM_WORLD`, injecting `fault` on local rank `fault_rank` only, and
+/// a trivial target line mesh over the same communicator; calls
+/// `build_distributed_interp_rows` and asserts EVERY rank returns the SAME
+/// `Failure` -- the agreement `agree_on_local_failure` makes, not a
+/// rank-divergent return or a hang. `fault_rank` is relative to
+/// `MPI_COMM_WORLD` (identical to the rank's position in `all`, since the
+/// source RankSet here is the whole communicator).
+void check_one_rank_bad_source_agrees(std::size_t n_src, SourceFault fault, int fault_rank) {
+  const int me = world_rank();
+  const int n = world_size();
+  GeometricLineMesh base(n_src, n, me, /*x_lo=*/0.0, /*x_hi=*/1.0);
+  FaultInjectingSourceMesh src_view(std::move(base), me == fault_rank ? fault : SourceFault::kNone);
+  // A target identical to (an unfaulted copy of) the source topology is
+  // enough: gather_global_source runs, and must agree-and-refuse, before
+  // build_distributed_interp_rows ever reaches the target evaluation loop.
+  GeometricLineMesh tgt_view(n_src, n, me, /*x_lo=*/0.0, /*x_hi=*/1.0);
+
+  const int comm_handle = MPI_Comm_c2f(MPI_COMM_WORLD);
+  const auto rows_r =
+      fuse::build_distributed_interp_rows(src_view, tgt_view, /*eval_dim=*/0, comm_handle);
+  ASSERT_FALSE(rows_r.ok()) << "rank " << me << " expected every rank to refuse together";
+  if (fault == SourceFault::kUnsupportedShape) {
+    EXPECT_EQ(rows_r.error().code, "E-INTERP-SHAPE");
+  } else {
+    EXPECT_EQ(rows_r.error().code, "E-RT-NODAL-DIST-GID");
+  }
+}
+
 }  // namespace
+
+// Review 2026-10-11 TF-1. Pre-fix signature: the faulty rank either throws
+// uncaught (the `kVertexGidThrows` case) or returns `Failure` directly from
+// inside `gather_global_source`'s loop (the `kUnsupportedShape` case) BEFORE
+// that loop's own `MPI_Allgatherv` -- in either case every OTHER rank blocks
+// forever inside the collective it entered on schedule. Post-fix: every rank
+// returns the identical `Failure` within the test's own TIMEOUT.
+TEST(NodalRemapDistributed, UnsupportedShapeSourceCellAgreesAcrossRanks) {
+  if (world_size() < 3) GTEST_SKIP() << "needs >= 3 ranks for a one-rank-bad row";
+  check_one_rank_bad_source_agrees(/*n_src=*/5 * static_cast<std::size_t>(world_size()),
+                                   SourceFault::kUnsupportedShape, /*fault_rank=*/world_size() - 1);
+}
+
+TEST(NodalRemapDistributed, UnnumberedSourceVertexAgreesAcrossRanks) {
+  if (world_size() < 3) GTEST_SKIP() << "needs >= 3 ranks for a one-rank-bad row";
+  check_one_rank_bad_source_agrees(/*n_src=*/5 * static_cast<std::size_t>(world_size()),
+                                   SourceFault::kVertexGidThrows, /*fault_rank=*/world_size() - 1);
+}
 
 TEST(NodalRemapDistributed, DisjointRankSets) {
   if (world_size() < 2) GTEST_SKIP() << "needs at least 2 ranks to be disjoint";

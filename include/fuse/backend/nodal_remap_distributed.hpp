@@ -62,15 +62,23 @@
 /// as `resolve_side`/`build_consistent_weights_for_plan` do for the serial
 /// path, and does not itself call `backend.view()`/`backend.placed_view()`.
 ///
-/// NOT YET WIRED INTO Runner::Impl::resolve_remap AS OF THIS COMMIT (KNOWN_ISSUES.md
-/// D8, round 2, in progress): this file's round-2 change is the null-comm
-/// (base build configuration) code path below, which is a PRECONDITION for that wiring (the
-/// intended design is `Runner` building one `DistributedInterpRows` per
-/// nodal Remap instruction at `initialize()`, applying it allocation-free
-/// per coupling cycle), not the wiring itself. Until that lands, `resolve_remap`
-/// still rejects with `E-RT-REMAP-NODAL-PARALLEL` exactly as it did before
-/// this file existed; do not read this comment as a statement that the
-/// rejection has been replaced.
+/// WIRED INTO Runner::Impl::resolve_remap since KNOWN_ISSUES.md D8 round 4
+/// (REVIEW.md TF-6: this paragraph previously said "not yet," which the
+/// 2026-09-25 wiring made false): `Runner` builds one `DistributedInterpRows`
+/// per matching nodal Remap instruction at `initialize()` (`runner.cpp`'s
+/// `build_nodal_dist_remap`) and applies it allocation-free per coupling
+/// cycle, exactly the design this file originally described as pending.
+/// The wiring covers the two consistent-interpolation methods this track's
+/// scope names -- "consistent" with a nodal SOURCE, "consistent-transpose"
+/// with a nodal TARGET -- and only when the orientation matches the method;
+/// `resolve_remap` still refuses `E-RT-REMAP-NODAL-PARALLEL` for a
+/// nodal-to-nodal channel on more than one rank (neither orientation
+/// implemented), for an orientation/method mismatch, and for any other
+/// method against a partitioned nodal side (the supermesh conservative
+/// methods build FV<->FV weights only; per-placement supermesh weights for
+/// a nodal side remain unimplemented, KNOWN_ISSUES D5 item 3) -- each a
+/// deliberate, named remaining limitation, not evidence the wiring itself
+/// is missing.
 ///
 /// NO BLANKET `#if FUSE_HAVE_MPI` GATE (round 2 change from the first
 /// submission): the declarations below are ALWAYS visible, mirroring
@@ -132,9 +140,14 @@ struct DistributedInterpRows {
 /// `E-MESH-NO-CELL-VERTICES`, `E-INTERP-SHAPE`, `E-INTERP-DEGENERATE`,
 /// `E-INTERP-NEWTON`, `E-INTERP-DOMAIN` under the default `Refuse` policy --
 /// `ClampToBoundary` is not supported here, see the file header), plus
-/// `E-RT-NODAL-DIST-MPI` for an MPI call that itself failed and
+/// `E-RT-NODAL-DIST-MPI` for an MPI call that itself failed,
 /// `E-RT-NODAL-DIST-NOMPI` when `comm_handle` names a real communicator but
-/// this build of FUSE has no MPI at all.
+/// this build of FUSE has no MPI at all, and `E-RT-NODAL-DIST-GID` when a
+/// `MeshView` accessor (`global_id`/`centroid`) throws rank-locally while
+/// assembling the replicated source mesh -- e.g. `MoabMeshView::global_id`
+/// on a partitioned read with unnumbered vertices -- which is caught and
+/// turned into this rank-agreed refusal rather than left to escape
+/// uncaught on one rank while its peers enter the next collective.
 [[nodiscard]] Result<DistributedInterpRows> build_distributed_interp_rows(
     const MeshView& src_nodal, const MeshView& eval_points, int eval_dim,
     search::CommHandle comm_handle);
