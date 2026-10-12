@@ -33,7 +33,14 @@ std::size_t WeightsOperator::cols() const noexcept { return w_->n_cols; }
 OperatorClaims WeightsOperator::claims() const noexcept {
   return OperatorClaims{
       .preserves_constants = w_->max_row_defect <= kClaimTolerance,
-      .conservative = w_->max_col_defect <= kClaimTolerance,
+      // REVIEW.md TF-16: `max_col_defect` alone is not enough -- it is only
+      // a conservation residual, the property this flag promises, when the
+      // builder that produced it says so (RemapWeights::
+      // col_defect_is_measure_weighted; false for the consistent-
+      // interpolation (H) builders, whose column sum has no measure behind
+      // it and can coincidentally read near 1 without being conservative).
+      .conservative = w_->col_defect_is_measure_weighted &&
+                      w_->max_col_defect <= kClaimTolerance,
       .monotone = w_->monotone,
       // A weights matrix is expressed in local indices on one rank and touches
       // nothing remote; the halo exchange that may precede it is a separate

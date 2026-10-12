@@ -881,6 +881,10 @@ inline constexpr double kRefEpsLoose = kSurfaceTol;
   // not what makes `OperatorClaims::conservative` true (a vertex has no
   // measure to weight a "conservative" column sum by).
   for (const double s : col_sum) w.max_col_defect = std::max(w.max_col_defect, std::abs(s - 1.0));
+  // REVIEW.md TF-16: the comment above was never enforced structurally --
+  // `WeightsOperator::claims()` read `max_col_defect` directly regardless
+  // of which builder produced it. Say so on the matrix itself now.
+  w.col_defect_is_measure_weighted = false;
   w.min_weight = min_weight;
   w.monotone = (w.min_weight >= -1e-12) && (w.max_row_defect <= 1e-8);
   w.src_measure_total = 0.0;

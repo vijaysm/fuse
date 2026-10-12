@@ -190,6 +190,23 @@ struct RemapWeights {
   /// is why orders 3 and 4 exist here at all.
   double max_col_defect_native = 0.0;
 
+  /// Whether `max_col_defect` above is a conservation residual in
+  /// `MeshView::measure` AT ALL. True for every conservative FV builder
+  /// (the supermesh path, the MOAB intx path, TempestRemap): their
+  /// `max_col_defect` is exactly the quantity `WeightsOperator::claims()`'s
+  /// `conservative` flag promises. FALSE for the consistent-interpolation
+  /// (H) builders (`consistent_interp.hpp`, `general_interp.hpp`): a nodal
+  /// degree of freedom has no measure to weight a column sum by, so their
+  /// `max_col_defect` is the plain, UNWEIGHTED column-sum residual --
+  /// informative as a diagnostic (and left populated for that reason), but
+  /// not the property `conservative` names. REVIEW.md TF-16: before this
+  /// field existed, `claims()` read `max_col_defect` directly regardless
+  /// of which builder produced it, so a coincident node-to-node H pair
+  /// (column sum exactly 1 by accident of geometry, not by the property H
+  /// actually has) would certify `conservative` -- exactly the claim both
+  /// H headers say H never makes.
+  bool col_defect_is_measure_weighted = true;
+
   [[nodiscard]] std::size_t nnz() const noexcept { return val.size(); }
 };
 

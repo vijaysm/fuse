@@ -318,6 +318,39 @@ TEST(OperatorConformance, AnUnsatisfiedClaimFails) {
   EXPECT_TRUE(any_off) << "the fixture's conservation check cannot fail";
 }
 
+TEST(OperatorConformance, AnHStyleColumnSumIsNotClaimedConservative) {
+  // REVIEW.md TF-16: the consistent-interpolation (H) builders'
+  // `max_col_defect` is an UNWEIGHTED column-sum residual (a nodal degree
+  // of freedom has no measure to weight it by), not a conservation
+  // residual -- their own headers say H never claims to be conservative in
+  // that sense. Before `RemapWeights::col_defect_is_measure_weighted`
+  // existed, `claims()` could not tell this matrix apart from a genuinely
+  // conservative one: a coincident node-to-node H pair's column sum is
+  // exactly 1 by accident of geometry (every source vertex is also a
+  // target vertex, weight exactly 1, nothing else contributes), and that
+  // alone used to be enough to certify `conservative`.
+  RemapWeights w = rectangular();
+  // An exact identity-style column sum (every column sums to exactly 1) --
+  // what AnUnsatisfiedClaimFails above calls "a false audit" when it is
+  // NOT backed by col_defect_is_measure_weighted, but is exactly what an
+  // H builder's own max_col_defect legitimately reads on a coincident
+  // pair: a real, not fabricated, zero defect.
+  w.max_col_defect = 0.0;
+  w.col_defect_is_measure_weighted = false;  // what consistent_interp.hpp/general_interp.hpp now set
+  const fuse::WeightsOperator h(w);
+  EXPECT_FALSE(h.claims().conservative)
+      << "H must never certify conservative through its own column-sum "
+         "diagnostic, however close to 1 that sum happens to be";
+
+  // The control: the SAME zero defect, but from a builder that DOES mean
+  // it (col_defect_is_measure_weighted left at its default true) -- must
+  // still claim conservative. Confirms the flag, not the defect value
+  // alone, is what changed.
+  w.col_defect_is_measure_weighted = true;
+  const fuse::WeightsOperator fv(w);
+  EXPECT_TRUE(fv.claims().conservative);
+}
+
 // ---- composition ---------------------------------------------------------
 
 TEST(OperatorConformance, ComposedApplyEqualsApplyingEachInTurn) {

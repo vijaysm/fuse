@@ -346,6 +346,12 @@ namespace fuse {
   for (const double s : col_sum) {
     w.max_col_defect = std::max(w.max_col_defect, std::abs(s - 1.0));
   }
+  // REVIEW.md TF-16: say so structurally, not just in the comment above --
+  // `max_col_defect` here is the unweighted column-sum residual, not a
+  // conservation residual, so `WeightsOperator::claims()` must not read it
+  // as one (a coincident node-to-node pair's column sum is exactly 1 by
+  // accident of geometry, which would otherwise certify `conservative`).
+  w.col_defect_is_measure_weighted = false;
   w.min_weight = min_weight;
   // Bound preserving: every weight in [0, 1] (by construction: a convex
   // combination of two bracketing nodes, or a single weight of exactly 1) and
