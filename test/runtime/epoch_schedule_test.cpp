@@ -166,3 +166,26 @@ TEST(EpochSchedule, IsAllocationFree) {
                 "EpochSchedule grew; it is built per agreement point per step");
   SUCCEED();
 }
+
+// RT-9 (review 2026-10-11): the threshold comparison behind E-RT-EPOCH-TAG
+// (resolve_epoch_participants(), src/runtime/runner.cpp), factored into
+// tag_ub_too_low() so it is unit-testable without MPI -- rank-agreement.md
+// documents the refusal as a deliberate "fail before the run, not inside a
+// reduction", but no test made the comparison actually FIRE (a regression
+// deleting or inverting it would have passed the whole suite silently).
+TEST(EpochSchedule, TagUbTooLowFires) {
+  using fuse::tag_ub_too_low;
+  // tags::kMaxUsed is 0x5C16 (kWindowConvergence, tags.hpp) at HEAD; this
+  // test is independent of that exact value by construction -- it only
+  // ever compares a `reported_tag_ub` against a `max_used_tag` it supplies
+  // itself, never against the real constant.
+  EXPECT_TRUE(tag_ub_too_low(/*reported_tag_ub=*/100, /*max_used_tag=*/200))
+      << "an MPI whose own MPI_TAG_UB (100) is below the highest tag this "
+         "library uses (200) must be reported as too low";
+  EXPECT_FALSE(tag_ub_too_low(/*reported_tag_ub=*/200, /*max_used_tag=*/200))
+      << "exactly enough headroom (reported == max_used) is enough -- every "
+         "tag up to and including max_used is then a valid MPI tag";
+  EXPECT_FALSE(tag_ub_too_low(/*reported_tag_ub=*/32767, /*max_used_tag=*/0x5C16))
+      << "the standard MPI_TAG_UB floor (32767) comfortably covers this "
+         "library's own highest tag, which is the ordinary case";
+}

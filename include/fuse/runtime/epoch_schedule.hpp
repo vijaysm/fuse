@@ -97,4 +97,21 @@ inline constexpr int kMaxStrideParticipants = 1 << 30;
   return s;
 }
 
+/// RT-9 (review 2026-10-11): the pure comparison behind `E-RT-EPOCH-TAG`
+/// (`resolve_epoch_participants()`, `src/runtime/runner.cpp`), factored
+/// out so it is unit-testable without MPI at all -- rank-agreement.md's
+/// own point about this refusal ("a refusal before the run is a better
+/// failure than 'Invalid tag' raised inside a reduction") had no test
+/// that made the comparison fire, so a regression that deleted or
+/// inverted it would have passed the whole suite silently. `reported_
+/// tag_ub` is whatever `MPI_Comm_get_attr(..., MPI_TAG_UB, ...)`
+/// returned for the communicator in use; `max_used_tag` is `fuse::tags::
+/// kMaxUsed` -- passed in rather than referenced here so this header
+/// (already dependency-free apart from `<array>`/`<cstddef>`) gains no
+/// include on `fuse/transport/tags.hpp`.
+[[nodiscard]] inline bool tag_ub_too_low(int reported_tag_ub,
+                                         int max_used_tag) {
+  return reported_tag_ub < max_used_tag;
+}
+
 }  // namespace fuse
