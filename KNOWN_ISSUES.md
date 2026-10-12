@@ -3907,7 +3907,7 @@ this sandbox cannot start it (C1) — so the fix is unconfirmed until a host exe
 - `parallel.window_runner_mpi.2` (step (e), new)
 - `parallel.window_runner_mpi.3` (step (e), new)
 
-### D31. Newton over a coupling window (S7.2 WindowNewton, `newton-krylov.md` Sec. 9) is single-rank only; the multi-rank `ParticipantSetReducer` is a comment, not code — DEFERRED 2026-10-11, host confirmation needed
+### D31. Newton over a coupling window (S7.2 WindowNewton, `newton-krylov.md` Sec. 9) was single-rank only; the multi-rank `ParticipantSetReducer` is now built — BUILT 2026-10-12, host MPI run still required to close
 
 `Runner::Impl::run_region_newton_window()`/`evaluate_window_region_residual()` (src/runtime/iteration.cpp)
 implement Newton-Krylov over a WINDOW-scoped coupling region, reusing `check_region_supports_newton()`'s
@@ -3943,6 +3943,55 @@ test, `parallel.window_newton_mpi.{2,3}` (mirroring `parallel.window_runner_mpi.
 instance's final Newton iterate AND iteration/GMRES count against the single-process `Runner` on the
 identical graph — the SAME cross-rank-agreement property `window_runner_mpi_test.cpp` already proves for
 Picard, now for Newton's own reductions specifically.
+
+**Built 2026-10-12 (Newton track), BUILD-VERIFIED ONLY — the sandbox this track built in cannot
+complete a bare `MPI_Init()` (the same constraint this entry's own deferral named), so nothing below has
+been RUN anywhere; the host must verify it.** `fuse::linalg::ParticipantSetReducer`
+(`src/linalg/comm_mpi.cpp`, `include/fuse/linalg/comm.hpp`) is real: an `MPI_Comm_split` over exactly a
+region's own `RegionRuntime::participants`, collective over the Runner's base communicator and called in
+the same ascending-region-index order on every rank (mirroring `attach_comm_graphs()`'s own "every rank
+calls every split" discipline); a rank outside the participant set gets `MPI_UNDEFINED` and no `Reducer`
+object at all. The split is held, not point-to-point-addressed like `reduce_region_residuals()`/
+`gather_window_block_samples()` — the task's own explicit choice, reasoned through in the factory's own
+header comment — with its lifetime handled the way `MoabMeshBackend`'s own `OwnedComm` already handles an
+identical one (freed in the Reducer's own destructor, guarded by `MPI_Finalized()`, never copyable).
+`check_region_supports_newton()`'s blanket "more than one participant is refused" rule is gone, and
+nothing narrower replaces it: `RegionRuntime::participants` is populated with more than the empty set
+only when `RunnerConfig::base_communicator` has a value in the first place, so "more than one
+participant" already implies a real communicator exists to build the Reducer from. The earlier
+`E-RT-REGION-MPI` refusal (the one that blocks a dynamic accelerator on a multi-rank region) now also
+exempts `AccelKind::Newton` alongside `None`/`Constant`. `RegionBlock::newton_offset`'s own window-Newton
+vector-layout computation now excludes a block this rank does not host (`!b.window_hosted`) from the
+SAME mechanism the GaussSeidel exclusion already used, making `RegionRuntime::newton_n` a per-rank LOCAL
+total with zero ghosts (every cross-rank dependency the window's own body needs is already carried by its
+compiled Transport instructions, proven correct for Picard's own multi-rank case). `run_region_newton()`/
+`run_region_newton_window()` gained the identical "not a participant, nothing to do" early return
+`reduce_region_residuals()` already has (`Runner::Impl::region_is_local_participant()`, new, kept in
+`runner.cpp` so `iteration.cpp` still names no MPI type); `run_region_newton()`'s own ordinary (non-
+window) seam now also reads `RegionRuntime::newton_reducer` instead of constructing a fresh serial reducer
+every call, closing the one place that convention from Sec. 9.4 had not yet reached even in the
+single-rank era. Full account: `docs/dev/newton-krylov.md` §9.10.
+
+**Measured by hand (tier 0, no MPI, this sandbox):** mutating the `!b.window_hosted` exclusion to never
+fire (`build-evidence/mutations/newton-parallel.toml`, row `window-newton-offset-not-gated-by-hosted`)
+kills exactly the two new `window_newton_hosting_test.cpp` cases that name a genuine cross-rank exclusion
+(2 FAILED of 3), leaves the no-`this_process`/no-communicator case passing (window_hosted already
+defaults true there), and restores clean. `parallel.window_runner_mpi.{2,3}`, `verification.
+brusselator_runner` and every other pre-existing tier-0 row this track touched were re-run after each
+change and are unaffected (`newton_region_test`: 17/17; `window_fixed_point_residual_test`: 8/8;
+`window_hosting_test`: 4/4; `brusselator_runner_test`'s own `NewtonConvergesInAPinnedIterationCount...`:
+1/1).
+
+**What a host run must still verify before this closes:** `parallel.window_newton_mpi.{2,3}`
+(`test/parallel/window_newton_mpi_test.cpp`, built, never run) and `parallel.participant_reducer_mpi.
+{2,3}` (`test/parallel/participant_reducer_mpi_test.cpp`, built, never run) — the real `MPI_Comm_split`/
+`MPI_Allreduce`/`MPI_Allgather` correctness this sandbox cannot exercise at all. Every one of
+`ParticipantSetReducer`'s own `sum`/`max`/`allgather` methods; whether a 2- or 3-rank window-Newton solve
+over the Brusselator-shaped and the synthetic LinearOde-shaped fixtures actually reaches the SAME
+outer-Newton and GMRES iteration counts the single-process `Runner` does, and whether the final member
+states fall inside the Higham round-off bound the test derives and prints rather than asserting bitwise.
+D32's own PETSc substrate lift (below) shares this same host-pending status under
+`petsc.window_newton_mpi.{2,3}`.
 
 ### D32. The PETSc solver plugin is the second substrate behind the S7 seam — BUILT AND MEASURED 2026-10-11; the communicator remains
 

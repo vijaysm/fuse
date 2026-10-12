@@ -987,10 +987,13 @@ brusselator.md` (Newton results).
 decision actually produced:**
 1. ACCEPTED as proposed: `x_0` seeds from `advance_window(iteration=0)`'s
    own predictor output.
-2. DEFERRED: Stage B is single-rank only (`R.participants.size() <= 1`,
-   unchanged); the Reducer SEAM is built (`RegionRuntime::newton_reducer`)
-   so a later multi-rank step is a Reducer swap, not a re-plumb -- the
-   reducer's own cross-rank body is `KNOWN_ISSUES.md` D31, new.
+2. DEFERRED at Stage B time: single-rank only (`R.participants.size() <=
+   1`); the Reducer SEAM was built (`RegionRuntime::newton_reducer`) so a
+   later multi-rank step would be a Reducer swap, not a re-plumb.
+   **Built, Sec. 9.10 (2026-10-12):** the reducer's own cross-rank body
+   (`fuse::linalg::ParticipantSetReducer`) -- exactly the swap Stage B's
+   own seam was designed for, confirmed by how little of `run_region_
+   newton_window()` itself needed to change.
 3. `species_component.hpp` builds its own `fuse::LinearizationToken`
    directly on `UComponent`/`VComponent` (the library-wide `fuse::
    LinearizationToken`, not a narrower example-local shape) -- NOT an
@@ -1133,21 +1136,152 @@ Full tier-0 suite: 187/187 (186 + this track's own one new ctest entry),
 LowFive/omp_identical case.
 
 **9.9.6 What Stage B did NOT verify.** Multi-rank (`KNOWN_ISSUES.md` D31,
-new) -- the `ParticipantSetReducer` is a comment, not code, and no test
-exercises more than one rank. The window_member_state `clock`/
-`straddle_*` restore (Sec. 9.2's table): mutating the `clock` restore
-specifically was tried against both the synthetic fixture and the real
-(straddling) Brusselator and did NOT change either's observed output --
-consistent with the table's own note that `clock` is "within THIS pass,
-discarded in favour of the cached `window_pass_start_clock`" for every
-sweep's own restart point, so a leaked trial value is overwritten by the
-next sweep's own fresh computation regardless; the restore is still
-correct defensive practice for the ONE place that DOES read it directly
-(`resolve_pending_window_straddles()`, the NEXT window instance), but
-proving that specific path needs a two-window-instance, Fixed-policy
-(genuinely straddling), post-commit-probe fixture this track did not
-build. Reported here rather than claimed via a fabricated mutation
-`result`.
+new at Stage B time) -- the `ParticipantSetReducer` was a comment, not
+code, and no test exercised more than one rank. The window_member_state
+`clock`/`straddle_*` restore (Sec. 9.2's table): mutating the `clock`
+restore specifically was tried against both the synthetic fixture and
+the real (straddling) Brusselator and did NOT change either's observed
+output -- consistent with the table's own note that `clock` is "within
+THIS pass, discarded in favour of the cached `window_pass_start_clock`"
+for every sweep's own restart point, so a leaked trial value is
+overwritten by the next sweep's own fresh computation regardless; the
+restore is still correct defensive practice for the ONE place that DOES
+read it directly (`resolve_pending_window_straddles()`, the NEXT window
+instance), but proving that specific path needs a two-window-instance,
+Fixed-policy (genuinely straddling), post-commit-probe fixture this
+track did not build. Reported here rather than claimed via a fabricated
+mutation `result`. **Superseded by Sec. 9.10's own multi-rank lift,
+below** for the `ParticipantSetReducer` item specifically; the
+window_member_state restore gap is unchanged and still open.
+
+### 9.10 Stage C (2026-10-12): lifted to multi-rank (KNOWN_ISSUES.md D31)
+
+**What was built.** `fuse::linalg::ParticipantSetReducer`
+(`src/linalg/comm_mpi.cpp`, declared `include/fuse/linalg/comm.hpp`) --
+the class Sec. 9.4 named and deferred. Built via a real `MPI_Comm_split`
+over exactly `RegionRuntime::participants`, collective over the Runner's
+own `base_communicator` and called in the SAME ascending-region-index
+order on every rank (`resolve_regions()`'s own loop, mirroring
+`Runner::Impl::attach_comm_graphs()`'s "EVERY RANK CALLS EVERY SPLIT, in
+component-id order" discipline) -- a rank outside `participants` gets
+`MPI_UNDEFINED` as its own colour and no `Reducer` object at all
+(`make_participant_set_reducer()` returns `reducer == nullptr` for it),
+so "a rank outside the participant set must not enter a reduction"
+holds by construction, not by a runtime guard. The split's own lifetime
+is NOT point-to-point addressing over the base communicator the way
+`reduce_region_residuals()`/`gather_window_block_samples()` use (Sec.
+9.4's own original recommendation) -- the task's own explicit choice
+for this reducer, reasoned through in `comm.hpp`'s header comment on the
+factory and `runner_impl.hpp`'s comment on `RegionRuntime::
+newton_reducer`: a Newton solve's `Reducer` is reused across many
+GMRES iterations and line-search trials within one window instance,
+where a true `MPI_Allreduce`/`MPI_Allgather` is simpler to reason about
+than a fresh point-to-point exchange proved correct per call. The held
+communicator's own lifetime hazard (`runner.cpp`'s own "WHY NOT A SUB-
+COMMUNICATOR" comment on `reconcile_epoch()`) is handled the way
+`src/backend/moab_backend.cpp`'s own `OwnedComm` already handles an
+identical one for `MoabMeshBackend`'s per-placement sub-communicators:
+freed in the Reducer's own destructor, guarded by `MPI_Finalized()`,
+never copyable -- tied to `resolve_regions()`'s own `regions.clear()`
+(destroying the OLD `RegionRuntime` vector, and therefore every OLD
+`newton_reducer`, before building new ones on a re-`initialize()`),
+which runs identically, in the SAME order, on every rank.
+
+`check_region_supports_newton()`'s blanket `R.participants.size() > 1`
+refusal is GONE (`fixed_point_residual.cpp`) -- and nothing narrower
+replaces it, because `R.participants` is populated with more than the
+empty set ONLY when `RunnerConfig::base_communicator` has a value in
+the first place (`resolve_regions()`'s own invariant on that
+construction), so "more than one participant" already implies a real
+communicator is configured, which is exactly what building a real
+`ParticipantSetReducer` needs. The EARLIER `E-RT-REGION-MPI` refusal
+(the one that blocks a dynamic accelerator on a multi-rank region,
+`resolve_regions()`, same file as the `R.participants` construction)
+now also exempts `AccelKind::Newton` alongside `None`/`Constant`, for
+the identical reason that refusal names for those two: Newton's own
+cross-rank agreement is already routed through a `Reducer` the region
+owns, not a local-history inner product with no hook to add one.
+
+`RegionBlock::newton_offset`'s own window-Newton vector-layout
+computation (`resolve_regions()`) now excludes a block THIS rank does
+not host (`!b.window_hosted`) from the SAME exclusion mechanism the
+GaussSeidel-unlagged exclusion already used -- `R.newton_n` becomes the
+LOCAL, per-rank owned total (the exact `owned_n` `linalg::DistVector`
+already expects), with ZERO ghost region: Sec. 9.1's own layout
+analysis, re-examined for this lift, shows no block's own F computation
+or x-delivery ever needs another rank's OWNED entry directly -- the
+compiled Transport instructions inside the window's own body (already
+proven correct for Picard's multi-rank case, `window_runner_mpi_test.
+cpp`) carry every cross-rank dependency, so `make_serial_exchanger()`'s
+zero ghosts, paired with the REAL `ParticipantSetReducer`, is the
+correct pairing (`comm.hpp`'s own `DistVector` constructor takes the
+exchanger and reducer as independent arguments). GATING WAS MEASURED,
+NOT ASSUMED, TO NEED `!b.window_hosted` ALONE: a first version also
+required `R.participants.size() > 1` before excluding anything
+(mirroring `run_region()`'s own Picard-path `gate_by_hosted`), and every
+`EXPECT_EQ`/`EXPECT_FALSE` in `test/runtime/window_newton_hosting_test.
+cpp` failed against the real binary until that extra condition was
+dropped -- `R.participants` stays EMPTY under `force_this_process`
+alone (no communicator), so gating on its size silently disabled the
+exclusion for the exact tier-0 shape meant to exercise it; `window_
+hosted` itself already defaults to `true` whenever `this_process` has
+no value at all, which is why dropping the extra gate does not change
+the single-process/no-`this_process` case at all.
+
+`run_region_newton()`/`run_region_newton_window()` (`iteration.cpp`)
+gained the identical early return `reduce_region_residuals()` already
+has: a rank not in `R.participants` returns success immediately, before
+touching `R.newton_reducer` or building a `DistVector` at all
+(`Runner::Impl::region_is_local_participant()`, new, `runner.cpp` --
+kept out of `iteration.cpp` so that file still names no MPI type of its
+own). `run_region_newton()`'s own ordinary (non-window) seam ALSO now
+reads `R.newton_reducer` instead of constructing a fresh serial reducer
+every call -- the one place this track found that had not yet been
+lifted to the Sec. 9.4-established "the region owns the Reducer"
+convention even in the single-rank era.
+
+**fuse::petsc::solve() (D32), lifted alongside.** `fuse::num::
+NewtonSolveFn`'s signature gained a trailing `int comm_f` (Native
+ignores it; PETSc's own registered entry point uses it, falling back to
+`comm_self_f()` when `0` -- the unchanged single-rank behaviour, never a
+silent substitute for a real communicator a multi-rank region actually
+has). `RegionRuntime::newton_comm_f`, new, carries the SAME split's own
+raw handle alongside the `Reducer` object (`ParticipantSetReducerResult`
+bundles both from ONE `MPI_Comm_split`, not two). `solve()` itself:
+`VecCreate`+`VecSetSizes(x.owned_size(), PETSC_DETERMINE)`+
+`VecSetType(VECSTANDARD)`, never `VecCreateSeq` (which ignored `comm`'s
+own size entirely -- every rank would have built its OWN disconnected
+vector, each running an independent single-rank solve with no real
+Krylov coupling, a silently wrong answer rather than a refusal, for any
+communicator with more than one rank); `VECSTANDARD` resolves to
+`VECSEQ` on a one-rank communicator (the UNCHANGED prior behaviour) and
+`VECMPI` otherwise, with no command-line option parsing either way. A
+rank owning zero unknowns is legal (refused, `E-PETSC-SOLVE-SHAPE`, only
+when the WHOLE communicator is empty); a named refusal,
+`E-PETSC-SOLVE-NOCOMM`, fires when `comm_f` resolves to
+`MPI_COMM_NULL`. §11.3's own "Open for a future multi-rank lift" is this
+section.
+
+**What this stage did NOT verify, stated rather than left implicit.**
+Every one of the above is BUILD-VERIFIED only (tier-0, tier-1 MPI+
+Fortran, and a PETSc-enabled tier-1 tree, 0 compiler errors in each) --
+the sandbox this stage worked in cannot complete a bare `MPI_Init()`
+(the SAME constraint D31's own Stage B entry and D32's own PetscToken
+entry both name), so none of `ParticipantSetReducer`'s own `sum`/`max`/
+`allgather` correctness, the PETSc substrate's own distributed `Vec`/
+`SNES` behaviour, or the two new host-only tests
+(`parallel.window_newton_mpi.{2,3}`, `parallel.participant_reducer_mpi.
+{2,3}`, plus `petsc.window_newton_mpi.{2,3}` in its own dedicated
+binary) have been RUN anywhere. Sec. 9.9.6's own window_member_state
+restore gap is unchanged by this stage. The per-window-instance measure
+loop in `run_region_newton_window()` (`R.residual_norms`/`R.
+reference_norms`, read by `Runner::region_residual_norms()`-style
+callers) sums a measure's own block ONLY on the rank that hosts it,
+REDUCED across `R.newton_reducer` the same way the block-total itself
+now needs to be, for the diagnostic to read correctly on every
+participant, not only the hosting one -- built, not independently
+mutation-proved beyond the one tier-0 row this stage's own
+`build-evidence/mutations/newton-parallel.toml` records.
 
 ## 10. The PETSc substrate (PetscToken track, S7.2b, 2026-10-11)
 
@@ -1454,30 +1588,49 @@ timing every other Newton-region refusal in this file already has; and
 through the returned function pointer -- mirroring `check_region_supports_
 newton()`'s own "checked anyway, not trusted" posture (its own comment).
 Both `run_region_newton()` and `run_region_newton_window()` dispatch through
-the SAME lookup and the SAME `NewtonSolveFn` call shape; the window path's
-own D31 single-rank restriction is unaffected (it is enforced by
-`check_region_supports_newton()`, not by anything substrate-specific).
+the SAME lookup and the SAME `NewtonSolveFn` call shape; a region's own
+participant count plays no part in which substrate gets looked up, before
+or after Sec. 9.10's lift. **Lifted, Sec. 9.10.** `check_region_supports_
+newton()`'s own former single-rank restriction (the sentence this paragraph
+used to end on) is gone, not narrowed: `RegionRuntime::participants` holds
+more than one rank only when a real communicator built it in the first
+place (Sec. 9.10's own invariant), so the restriction had nothing left to
+guard against once `ParticipantSetReducer` existed to reduce over that
+set. Removing it changes neither this lookup nor its two call sites --
+substrate selection and rank count are independent decisions on EITHER
+substrate, both before and after.
 
 ### 11.3 The communicator: `fuse::petsc::install()`'s own decision
 
-`fuse::num::NewtonSolveFn`'s own signature carries no communicator
-parameter -- a deliberate choice, not an omission. The registered PETSc
-entry point (`fuse::petsc::install()`, `src/petsc/solve.cpp`) always builds
-its own `SnesOptions` with `comm_f = comm_self_f()` (`MPI_COMM_SELF`), never
-one threaded in from the Runner's own `RunnerConfig::base_communicator`.
-This is sound today because every Newton-selected region, on EITHER
-substrate, is already restricted by `check_region_supports_newton()` to a
-single cross-rank participant (§4's own "Scope" paragraph; `KNOWN_ISSUES.md`
-D31's own single-rank restriction for the window path) -- there is no
-cross-rank reduction for a Newton SOLVE to perform regardless of which rank
-of the base communicator happens to own the region, so `MPI_COMM_SELF` is
-the honest communicator for a problem this seam already guarantees is
-rank-local, not a scope-reducing shortcut. **Open for a future multi-rank
-lift** (tied to `KNOWN_ISSUES.md` D31's own `ParticipantSetReducer`): at that
-point there IS a real cross-rank reduction inside a PETSc solve, and
-`MPI_COMM_SELF` would be the wrong choice; `SnesOptions::comm_f` already
-exists for that future caller, unused by `install()`'s own registration
-today.
+**Lifted, Sec. 9.10 (KNOWN_ISSUES.md D31/D32, 2026-10-12).** `fuse::num::
+NewtonSolveFn`'s own signature gained a trailing `int comm_f` carrying the
+region's own participant communicator (`0` when there is none); the
+registered PETSc entry point (`fuse::petsc::install()`, `src/petsc/
+solve.cpp`) reads it and falls back to `comm_self_f()` (`MPI_COMM_SELF`)
+only when it is `0` -- the UNCHANGED single-rank behaviour described
+below, which this paragraph used to describe as the UNCONDITIONAL one.
+`fuse::petsc::solve()` itself now builds its `Vec`/`Mat`/`SNES` on
+whichever communicator it is handed (`VecCreate`+`VecSetSizes`+
+`VecSetType(VECSTANDARD)`, not `VecCreateSeq`), so a multi-rank region's
+own PETSc solve reduces for real across its own participants, not just
+the native substrate's. See Sec. 9.10 for the full account, including
+what remains build-verified only (no host MPI run yet) -- this section's
+own history, unchanged below, explains WHY `MPI_COMM_SELF` was the
+correct and complete answer before that lift, not merely the easy one.
+
+`fuse::num::NewtonSolveFn`'s own signature carried no communicator
+parameter at Stage B/PetscSelect time -- a deliberate choice then, not an
+omission. The registered PETSc entry point always built its own
+`SnesOptions` with `comm_f = comm_self_f()` (`MPI_COMM_SELF`), never one
+threaded in from the Runner's own `RunnerConfig::base_communicator`. That
+was sound at the time because every Newton-selected region, on EITHER
+substrate, was restricted by `check_region_supports_newton()` to a single
+cross-rank participant (§4's own "Scope" paragraph; `KNOWN_ISSUES.md`
+D31's own single-rank restriction for the window path, before Sec. 9.10's
+own lift) -- there was no cross-rank reduction for a Newton SOLVE to
+perform regardless of which rank of the base communicator happened to own
+the region, so `MPI_COMM_SELF` was the honest communicator for a problem
+this seam guaranteed was rank-local, not a scope-reducing shortcut.
 
 ### 11.4 The descriptor: `kGraphVersion` 12 -> 13
 

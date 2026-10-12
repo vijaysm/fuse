@@ -1,3 +1,5 @@
+#include "fuse/base/config.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -1398,8 +1400,26 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         // every rank because AccelConfig comes from the graph) need
         // nothing beyond the residual reduction below and are genuinely
         // supported.
+        //
+        // KNOWN_ISSUES.md D31: `AccelKind::Newton` is ALSO genuinely
+        // supported on a multi-rank region, for the opposite reason
+        // `None`/`Constant` are -- not because it has no dynamic
+        // coefficient of its own, but because every one of `fuse::num::
+        // solve()`'s own control decisions (the outer convergence test,
+        // GMRES's own inner products, the line search's own step-length
+        // agreement, the forcing term) is ALREADY routed through
+        // `RegionRuntime::newton_reducer` (`dist_vector.hpp`'s own `dot()`/
+        // `norm2()`/`norm_inf()` read through whichever `Reducer` the
+        // vector was built with), which this same loop builds as a real
+        // `ParticipantSetReducer` over `region_ranks` a few lines below --
+        // Newton is not an `Accelerator` at all
+        // (`Accelerator::update()`'s own "no hook" limitation this refusal
+        // exists to catch does not apply to it), so there is no local-
+        // history inner product anywhere in its own path for two ranks to
+        // disagree about.
         if (decl.acceleration.kind != AccelKind::None &&
-            decl.acceleration.kind != AccelKind::Constant) {
+            decl.acceleration.kind != AccelKind::Constant &&
+            decl.acceleration.kind != AccelKind::Newton) {
           return Failure{
               "E-RT-REGION-MPI",
               "iteration region '" + R.name + "' checkpoints components "
@@ -1409,9 +1429,9 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
               "', whose dynamic coefficient is computed from this rank's "
               "own local iterate history with no cross-rank agreement "
               "(REVIEW.md R-10) and no hook to add one from here. Use "
-              "AccelKind::None or AccelKind::Constant for a region spanning "
-              "more than one rank, or place every component this region "
-              "checkpoints on the same rank"};
+              "AccelKind::None, AccelKind::Constant or AccelKind::Newton "
+              "for a region spanning more than one rank, or place every "
+              "component this region checkpoints on the same rank"};
         }
         R.participants = std::move(region_ranks);
       }
@@ -1846,6 +1866,47 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
       // (every block's own `newton_offset == RegionBlock::
       // kNotInNewtonVector`, `R.newton_n == 0`) otherwise.
       if (R.window_scoped) {
+        // KNOWN_ISSUES.md D31: a multi-rank window-Newton region's own
+        // interface vector is DISTRIBUTED, one disjoint slice per
+        // participant -- `b.window_hosted` (the CONSUMER-side ownership
+        // rule `WindowMemberConfig::export_consumer_hosted` already
+        // established for Picard's own per-block residual gating)
+        // decides which blocks belong to THIS rank's own `x`; a block
+        // some OTHER rank hosts gets `kNotInNewtonVector` here,
+        // identically to the GaussSeidel-unlagged exclusion already
+        // computed below it -- the SAME field, the SAME downstream
+        // "newton_offset == kNotInNewtonVector means skip" check every
+        // other reader of `RegionBlock` already has (`evaluate_window_
+        // region_residual()`'s own delivery and F-computation loops,
+        // `run_region_newton_window()`'s own measure loop), so lifting
+        // ownership needs no change to any of them -- `R.newton_n`
+        // becomes THIS rank's own local total, the exact shape `linalg::
+        // DistVector(R.newton_n, exchanger, R.newton_reducer)`'s own
+        // `owned_n` argument (`run_region_newton_window()`) already
+        // expects.
+        //
+        // UNCONDITIONAL on `R.participants.size()` -- unlike `run_
+        // region()`'s own Picard-path `gate_by_hosted`, which exists
+        // because `R.participants` there gates a REAL cross-rank
+        // reduction that must not run with nobody on the other end.
+        // Here there is no such reduction to protect: `b.window_hosted`
+        // itself already defaults to `true` whenever `this_process` has
+        // no value (resolve_regions()'s own construction of the field,
+        // a few hundred lines above -- `!this_process.has_value() ||
+        // consumer.ranks.contains(*this_process)`), so a plain run with
+        // nothing configured excludes nothing, exactly as before this
+        // lift; `this_process` IS set (`force_this_process` or a real
+        // communicator) is the only shape in which `window_hosted` can
+        // ever be false, and that is exactly the shape in which a block
+        // some OTHER rank hosts must be excluded from THIS rank's own
+        // vector -- `R.participants` plays no part in that decision at
+        // all. (`R.participants` itself is further gated on `config.
+        // base_communicator.has_value()`, iteration.cpp's own comment
+        // on its construction -- it stays empty under `force_this_
+        // process` alone, which is exactly the tier-0 shape `test/
+        // runtime/window_newton_hosting_test.cpp` exercises, so gating
+        // on its size here would have silently disabled this exclusion
+        // for every test that shape can reach.)
         std::size_t running = 0;
         for (detail::RegionBlock& b : R.blocks) {
           const bool lagged =
@@ -1853,24 +1914,69 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
                        R.window_lagged_import_arcs.end(),
                        ArcId{b.feed_arc}) != R.window_lagged_import_arcs.end();
           if (!lagged) continue;  // GaussSeidel's own unlagged transfer
+          if (!b.window_hosted) continue;  // some other rank's own block
           b.newton_offset = running;
           running += b.length;
         }
         R.newton_n = running;
       }
 
-      // S7.2 WindowNewton (newton-krylov.md Sec. 9.4): held by the
-      // region so every norm/inner product `run_region_newton_window()`'s
+      // S7.2 WindowNewton (newton-krylov.md Sec. 9.4), lifted to multi-
+      // rank (KNOWN_ISSUES.md D31): held by the region so every norm/
+      // inner product `run_region_newton_window()`/`run_region_newton()`'s
       // own `fuse::num::solve()` call computes goes through ONE place --
       // `RegionRuntime::newton_reducer`'s own comment (runner_impl.hpp)
-      // has the full account of why this, rather than a reducer
-      // constructed fresh inside that function, is what makes a future
-      // multi-rank lift a reducer swap. `check_region_supports_newton()`
-      // above already refused `R.participants.size() > 1`, so this is
-      // unconditionally the serial reducer today -- never `make_mpi_
-      // reducer()`, which reduces over a whole communicator, not over
-      // `R.participants` (a possible proper subset of it).
-      R.newton_reducer = linalg::make_serial_reducer();
+      // has the full account. `check_region_supports_newton()` above
+      // already proved `R.participants.size() <= 1`, a real
+      // communicator, or `force_this_process` -- this condition reads
+      // `config.base_communicator` directly, rather than trusting that
+      // check alone, so this branch can never dereference a value-less
+      // `std::optional` even if the two checks were ever to drift: a
+      // `force_this_process`-only shape (no real communicator --
+      // `test/runtime/window_hosting_test.cpp`'s own convention,
+      // `check_region_supports_newton()`'s comment has the full
+      // account) takes the serial-reducer branch exactly like the
+      // `R.participants.size() <= 1` case, which is correct for a
+      // single real process regardless of how many participants the
+      // graph declares.
+      if (R.participants.size() <= 1 || !config.base_communicator.has_value()) {
+        R.newton_reducer = linalg::make_serial_reducer();
+      } else {
+#if FUSE_HAVE_MPI
+        // `make_mpi_reducer()` reduces over a WHOLE communicator, never
+        // over `R.participants` (a possible proper subset of it) -- the
+        // identical reason `reduce_region_residuals()`/`gather_window_
+        // block_samples()` do not call it either. `*config.
+        // base_communicator` is already an `MPI_Comm_c2f` handle
+        // (`RunnerConfig::base_communicator`'s own `std::optional<int>`
+        // type), the exact argument `make_participant_set_reducer()`
+        // wants. COLLECTIVE over the base communicator: every rank of it
+        // reaches this exact call, for this exact region, in the SAME
+        // ascending-`ri` order this whole loop already iterates in --
+        // `attach_comm_graphs()`'s own "EVERY RANK CALLS EVERY SPLIT, in
+        // component-id order" discipline, applied here to region index
+        // instead of component id. ONE call builds both the `Reducer`
+        // and (`runner_impl.hpp`'s own `RegionRuntime::newton_comm_f`
+        // comment) the raw communicator handle `fuse::petsc::solve()`
+        // needs (D32) -- `make_participant_set_reducer()`'s own
+        // `ParticipantSetReducerResult` bundles them so this is exactly
+        // one `MPI_Comm_split`, not two.
+        const Result<linalg::ParticipantSetReducerResult> built =
+            linalg::make_participant_set_reducer(*config.base_communicator,
+                                                 R.participants);
+        if (!built.ok()) return built.error();
+        R.newton_reducer = built.value().reducer;
+        R.newton_comm_f = built.value().comm_f;
+#else
+        // Unreachable in practice: `check_region_supports_newton()`
+        // above already refuses `R.participants.size() > 1` whenever
+        // `config.base_communicator` has no value, and a build with
+        // `FUSE_HAVE_MPI` off can never give it one (`attach_comm_
+        // graphs()`'s own `E-RT-TRANSPORT-NOMPI` refusal). Kept so this
+        // translation unit still compiles in that configuration.
+        R.newton_reducer = linalg::make_serial_reducer();
+#endif
+      }
 
       // NewtonModel track (2026-10-12): E-NEWTON-DIRECT-WINDOW. A window
       // sweep's own coroutine-resident state (newton-krylov.md Sec. 9.2's
@@ -2183,6 +2289,29 @@ namespace {
 /// section.
 Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
                                              detail::RegionRuntime& R) {
+  // KNOWN_ISSUES.md D31: a rank that is not one of `R.participants` has
+  // nothing to contribute to this region's Newton solve and nothing to
+  // wait for from it -- mirrors `reduce_region_residuals()`'s own early
+  // return for the identical reason, extended to the WHOLE solve (every
+  // control decision Newton makes -- the outer convergence test, GMRES's
+  // own inner products, the line search's own step length -- is agreed
+  // across `R.participants` through `R.newton_reducer`; a non-
+  // participant has none of the local data any of those decisions reads,
+  // so there is nothing partial to compute here either). AGREED, not
+  // locally decided: `R.participants` is the SAME deterministic, graph-
+  // derived list on every rank of the base communicator
+  // (`resolve_regions()`'s own R-10 derivation), so this check reaches
+  // the identical verdict everywhere it runs -- it is not a rank
+  // branching on a locally-computed condition ahead of a collective, it
+  // is every rank agreeing (by construction) on who the collective's own
+  // members are before any of them enters it.
+  if (const Result<bool> participating = region_is_local_participant(R);
+      !participating.ok()) {
+    return participating.error();
+  } else if (!participating.value()) {
+    return Result<void>::success();
+  }
+
   IterationStats& st = region_stats[R.index];
   st.iterations = 0;
   st.converged = false;
@@ -2241,9 +2370,20 @@ Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
     };
   }
 
+  // KNOWN_ISSUES.md D31: `R.newton_reducer`, built once in
+  // `resolve_regions()` (`RegionRuntime::newton_reducer`'s own comment,
+  // runner_impl.hpp, has the full account), not a fresh `make_serial_
+  // reducer()` -- this is the ONE place this function's own rank
+  // agreement was still hardcoded to single-rank after the window seam
+  // (`run_region_newton_window()`) was already lifted to read this
+  // field instead of constructing its own. A zero-ghost exchanger is
+  // still correct for a multi-rank ordinary region: Sec. 9's own
+  // analysis (ownership by `b.length > 0`, not a window's replicated
+  // storage) means a block this rank does not own already contributes
+  // `length == 0` to `R.n`, so there is nothing for a peer rank to own
+  // that this rank's own `x` needs a ghost copy of.
   const auto exchanger = linalg::make_serial_exchanger();
-  const auto reducer = linalg::make_serial_reducer();
-  linalg::DistVector x(R.n, exchanger, reducer);
+  linalg::DistVector x(R.n, exchanger, R.newton_reducer);
   // Seed x with y_0: what the components were ACTUALLY advanced with --
   // run_region()'s own top-of-function comment, read here from the SAME
   // feed arcs rather than re-derived, so a Newton-selected region starts
@@ -2372,7 +2512,8 @@ Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
   if (!substrate_fn.ok()) return substrate_fn.error();
 
   const Result<num::NewtonResult> solved =
-      (*substrate_fn.value())(f, x, precond_apply, refresh_precond, opt);
+      (*substrate_fn.value())(f, x, precond_apply, refresh_precond, opt,
+                               R.newton_comm_f);
   if (!solved.ok()) return solved.error();
   const num::NewtonResult& nr = solved.value();
 
@@ -2706,6 +2847,18 @@ LinearizationToken* Runner::Impl::window_block_provider_token(
 Result<void> Runner::Impl::run_region_newton_window(
     ComponentSet& components, detail::RegionRuntime& R, std::size_t enter,
     std::size_t exit) {
+  // KNOWN_ISSUES.md D31: see `run_region_newton()`'s own identical check,
+  // this file's sibling, for the full account -- the window-scoped
+  // Newton seam needs the SAME early return, for the SAME reason (a
+  // rank outside `R.participants` has none of the local state any of
+  // `evaluate_window_region_residual()`'s own per-block work reads).
+  if (const Result<bool> participating = region_is_local_participant(R);
+      !participating.ok()) {
+    return participating.error();
+  } else if (!participating.value()) {
+    return Result<void>::success();
+  }
+
   IterationStats& st = region_stats[R.index];
   st.iterations = 0;
   st.converged = false;
@@ -2851,7 +3004,8 @@ Result<void> Runner::Impl::run_region_newton_window(
   if (!substrate_fn.ok()) return substrate_fn.error();
 
   const Result<num::NewtonResult> solved =
-      (*substrate_fn.value())(f, x, precond_apply, refresh_precond, opt);
+      (*substrate_fn.value())(f, x, precond_apply, refresh_precond, opt,
+                               R.newton_comm_f);
   if (!solved.ok()) return solved.error();
   const num::NewtonResult& nr = solved.value();
 
@@ -2915,26 +3069,33 @@ Result<void> Runner::Impl::run_region_newton_window(
   for (std::size_t mi = 0; mi < R.measure_block.size(); ++mi) {
     const std::size_t bi = R.measure_block[mi];
     const detail::RegionBlock& b = R.blocks[bi];
-    if (b.newton_offset == detail::RegionBlock::kNotInNewtonVector) {
-      // A convergence measure naming a GaussSeidel-excluded (unlagged)
-      // channel has no residual of its own to report by construction --
-      // its value is resolved exactly, within the sweep, every time
-      // (this file's own E-RT-WINDOW-ACCEL comment). Defensive, not
-      // reached by any graph this track's own tests build.
-      R.residual_norms[mi] = 0.0;
-      R.reference_norms[mi] = 0.0;
-      continue;
-    }
+    // KNOWN_ISSUES.md D31: `newton_offset == kNotInNewtonVector` now
+    // fires for TWO reasons -- the pre-existing GaussSeidel-unlagged
+    // exclusion (defensive, not reached by any graph this track's own
+    // tests build) AND, new, a block some OTHER rank hosts on a multi-
+    // rank region. Both leave `block_total`/`value_total` at 0.0 on
+    // THIS rank; `R.newton_reducer->sum()` below (the identity when
+    // `R.participants.size() <= 1`, a real cross-rank sum otherwise)
+    // combines it with whichever OTHER rank's own nonzero contribution
+    // exists, so every participant reports the SAME, complete diagnostic
+    // -- not just the rank that happens to host this particular measure's
+    // own block. Reduced unconditionally, not gated on which case this
+    // is: a GaussSeidel exclusion contributes 0.0 from every rank, so
+    // reducing it changes nothing there.
     double block_total = 0.0;
-    for (std::size_t j = 0; j < b.length; ++j) {
-      block_total += f_commit[b.newton_offset + j] * f_commit[b.newton_offset + j];
-    }
-    R.residual_norms[mi] = std::sqrt(block_total);
     double value_total = 0.0;
-    for (std::size_t j = 0; j < b.length; ++j) {
-      const double v = x.data()[b.newton_offset + j];
-      value_total += v * v;
+    if (b.newton_offset != detail::RegionBlock::kNotInNewtonVector) {
+      for (std::size_t j = 0; j < b.length; ++j) {
+        block_total += f_commit[b.newton_offset + j] * f_commit[b.newton_offset + j];
+      }
+      for (std::size_t j = 0; j < b.length; ++j) {
+        const double v = x.data()[b.newton_offset + j];
+        value_total += v * v;
+      }
     }
+    block_total = R.newton_reducer->sum(block_total);
+    value_total = R.newton_reducer->sum(value_total);
+    R.residual_norms[mi] = std::sqrt(block_total);
     R.reference_norms[mi] =
         decl.convergence.measures()[mi].kind == MeasureKind::ResidualRelative
             ? nr.initial_residual_norm

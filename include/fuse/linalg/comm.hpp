@@ -140,6 +140,76 @@ class GhostExchanger {
 /// is the one translation unit that resolves it back with `MPI_Comm_f2c`.
 [[nodiscard]] std::shared_ptr<const Reducer> make_mpi_reducer(int comm_f);
 
+/// A `Reducer` over EXACTLY one iteration region's own participant set --
+/// `KNOWN_ISSUES.md` D31, `docs/dev/newton-krylov.md` Sec. 9.4's own
+/// `ParticipantSetReducer` name. `make_mpi_reducer()` above reduces over
+/// EVERY rank of the communicator it is handed; this factory is for the
+/// case `RegionRuntime::participants` names -- a region's own rank set is
+/// in general a PROPER SUBSET of `base_comm_f`'s ranks, and reducing over
+/// the whole base communicator there would silently fold in ranks that
+/// host no part of this region's own Newton vector at all.
+///
+/// COLLECTIVE OVER `base_comm_f`, called by EVERY rank of that
+/// communicator, in the SAME fixed order as every other rank -- this is
+/// an `MPI_Comm_split` underneath (see `src/linalg/comm_mpi.cpp`'s own
+/// header comment for why a split, not the point-to-point addressing
+/// `reduce_region_residuals()`/`gather_window_block_samples()` use, is
+/// this factory's own contract), and `MPI_Comm_split` is collective over
+/// `base_comm_f` regardless of which ranks end up IN the split -- a rank
+/// outside `participants` still calls this function (with `MPI_UNDEFINED`
+/// as its own colour underneath) so the other ranks' own split does not
+/// wait on it forever.
+///
+/// `participants` must be the IDENTICAL list, in the IDENTICAL order, on
+/// every rank of `base_comm_f` -- it is not re-validated for agreement
+/// here (the same trust `resolve_regions()`'s own deterministic,
+/// graph-derived construction of `RegionRuntime::participants` already
+/// requires of every other collective built from it, `attach_comm_graphs()`
+/// included). The SUB-communicator's own rank order follows `participants`'
+/// own order (participant `i` becomes sub-rank `i`), the SAME order
+/// `decide_window_convergence()`'s existing cross-rank reduction for
+/// Picard already uses -- `ParticipantSetReducer::rank()` therefore reads
+/// as "this rank's own position in `participants`", not its base rank
+/// number.
+///
+/// Returns `nullptr` (success) for a rank NOT named in `participants` --
+/// "a rank outside the participant set must not enter a reduction" is
+/// enforced by giving such a rank no `Reducer` object to call at all,
+/// rather than one whose `sum()`/`max()`/`allgather()` would need a
+/// runtime guard against being invoked. A caller that already knows it
+/// is not a participant (the SAME `std::find(part.begin(), part.end(),
+/// me)` test `reduce_region_residuals()` uses) should not need the
+/// returned pointer at all; one is still returned (as `nullptr`) rather
+/// than this function being skippable, because the `MPI_Comm_split`
+/// itself is NOT skippable.
+///
+/// Failure (`E-LINALG-PARTICIPANT-SPLIT`) means the split itself could
+/// not be built (an out-of-range rank in `participants`, or
+/// `MPI_Comm_split` itself returning an error code) -- this is the SAME
+/// failure shape `MoabMeshBackend::set_placements()`'s own
+/// `MPI_Comm_split` loop reports, reached identically on every rank of
+/// `base_comm_f` so a caller can propagate it without any rank having
+/// already returned early.
+struct ParticipantSetReducerResult {
+  /// `nullptr` on a rank not named in `participants` -- see the factory's
+  /// own "a rank outside the participant set must not enter a reduction"
+  /// paragraph above.
+  std::shared_ptr<const Reducer> reducer;
+  /// The split's own `MPI_Comm_c2f` handle, for a caller (`fuse::petsc::
+  /// solve()`, D32) that needs the raw communicator itself rather than
+  /// this comm-free `Reducer` facade -- bundled with `reducer` so the
+  /// split is performed EXACTLY ONCE per call, rather than once for the
+  /// `Reducer` and again for the handle (`MPI_Comm_split` builds a NEW
+  /// communicator every call, even given identical colour/key, so a
+  /// second call would not recover the first one's own handle at all).
+  /// `0` (never a real handle) on a rank not named in `participants`,
+  /// paired with `reducer == nullptr`.
+  int comm_f = 0;
+};
+
+[[nodiscard]] Result<ParticipantSetReducerResult> make_participant_set_reducer(
+    int base_comm_f, const std::vector<int>& participants);
+
 /// Builds the exchange pattern ONCE: a preliminary exchange of request
 /// counts and indices (so every participant learns which of its OWNED
 /// entries the others want, and in what order), from which the counts,

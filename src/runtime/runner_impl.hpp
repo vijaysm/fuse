@@ -565,49 +565,76 @@ struct RegionRuntime {
   /// directly (`run_region_newton()`'s own seed loop, unchanged).
   std::size_t newton_n = 0;
 
-  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.4): the `fuse::linalg::
-  /// Reducer` every norm and inner product `run_region_newton_window()`'s
+  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.4), lifted to multi-rank
+  /// (KNOWN_ISSUES.md D31): the `fuse::linalg::Reducer` every norm and
+  /// inner product `run_region_newton_window()`/`run_region_newton()`'s
   /// own `fuse::num::solve()` call computes goes through -- held HERE,
-  /// by the region, built ONCE in `resolve_regions()`, rather than
-  /// constructed fresh inside `run_region_newton_window()` the way
-  /// `run_region_newton()` (the ordinary seam) still does: the lead's
-  /// own ruling on this track's ONE open rank-agreement question is that
-  /// the single-rank code must already route every reduction through a
-  /// `Reducer` object the region owns, so that lifting rank agreement to
-  /// a real multi-rank region later is a REDUCER SWAP at this one
-  /// assignment, not a search for every call site that reduces a scalar
-  /// directly (`fuse::linalg::DistVector::dot()`/`norm2()` already read
-  /// through whichever `Reducer` the vector was constructed with --
-  /// `dist_vector.hpp` -- so nothing downstream of this field needs to
-  /// change at all).
+  /// by the region, built ONCE in `resolve_regions()`, never constructed
+  /// fresh per solve: the single-rank code already routed every
+  /// reduction through a `Reducer` object the region owns (Stage B's own
+  /// ruling), so lifting rank agreement to a real multi-rank region is a
+  /// REDUCER SWAP at this one assignment, not a search for every call
+  /// site that reduces a scalar directly (`fuse::linalg::DistVector::
+  /// dot()`/`norm2()` already read through whichever `Reducer` the
+  /// vector was constructed with -- `dist_vector.hpp` -- so nothing
+  /// downstream of this field changed at all to make this lift).
   ///
-  /// `fuse::linalg::make_serial_reducer()` today, UNCONDITIONALLY: Stage
-  /// B of this track is single-rank only (`check_region_supports_newton()`
-  /// still refuses `R.participants.size() > 1`, identically to the
-  /// ordinary Newton seam), so there is nothing to reduce across ranks
-  /// yet. THE CONTRACT THE FUTURE MULTI-RANK REDUCER MUST MEET, recorded
-  /// here rather than built (KNOWN_ISSUES.md D31 is the tracking item):
-  /// a `ParticipantSetReducer` constructed over `RegionRuntime::
-  /// participants` (NOT a real `MPI_Comm` -- `fuse::linalg::
-  /// make_mpi_reducer()`'s own contract reduces over an ENTIRE
-  /// communicator, and `participants` is in general a PROPER SUBSET of
-  /// the base communicator's own ranks, exactly the reason
-  /// `reduce_region_residuals()`/`gather_window_block_samples()`
-  /// (runner.cpp) address peers by POINT-TO-POINT send/recv over
-  /// `epoch_schedule()`'s own fixed schedule rather than call a true
-  /// `MPI_Allgather`/`MPI_Reduce` on a freshly-built sub-communicator --
-  /// `runner.cpp`'s own "WHY NOT A SUB-COMMUNICATOR" comment on
-  /// `reconcile_epoch()` gives the lifetime reason: `MPI_Comm_free` is
-  /// collective and ties a communicator's lifetime to the Runner's own,
-  /// which a per-region Reducer built fresh at `resolve_regions()` time
-  /// would inherit with no good place to release it). `sum()`/`max()`/
-  /// `allgather()` would therefore each be ONE non-blocking point-to-
-  /// point exchange over `participants`, in ascending rank-index order,
-  /// built on the SAME `fuse::tags`/`EpochSchedule` machinery those two
-  /// functions already prove correct -- a NEW class, not a call to an
-  /// existing factory, and not built in this stage: see KNOWN_ISSUES.md
-  /// D31 for the test that will verify it on the host once it exists.
+  /// `fuse::linalg::make_serial_reducer()` when `R.participants.size() <=
+  /// 1` (no communicator configured, or every checkpointed component on
+  /// one rank -- `reduce_region_residuals()`'s own identical skip
+  /// condition) -- nothing to reduce across ranks there, and building a
+  /// one-rank `ParticipantSetReducer` split would be a real
+  /// `MPI_Comm_split` call spent proving what `rank() == 0, size() == 1`
+  /// already gives for free. Otherwise `fuse::linalg::
+  /// make_participant_set_reducer()` (`src/linalg/comm_mpi.cpp`) over
+  /// `RegionRuntime::participants` -- a `ParticipantSetReducer`, NOT
+  /// `fuse::linalg::make_mpi_reducer()` (that factory's own contract
+  /// reduces over an ENTIRE communicator, and `participants` is in
+  /// general a PROPER SUBSET of the base communicator's own ranks).
+  /// UNLIKE `reduce_region_residuals()`/`gather_window_block_samples()`
+  /// (runner.cpp), which address peers by POINT-TO-POINT send/recv over
+  /// `epoch_schedule()`'s own fixed schedule specifically to avoid a
+  /// communicator whose lifetime would outlive the function that split
+  /// it (`runner.cpp`'s own "WHY NOT A SUB-COMMUNICATOR" comment on
+  /// `reconcile_epoch()`), `ParticipantSetReducer` IS a held split --
+  /// the task's own explicit choice for this reducer specifically,
+  /// because a Newton solve's own `Reducer` is reused across every
+  /// evaluation of a window instance's solve (many GMRES iterations,
+  /// many line-search trials) where a fresh point-to-point exchange per
+  /// reduction would be one more schedule to prove correct for no
+  /// benefit over a true `MPI_Allreduce`/`MPI_Allgather`. The lifetime
+  /// hazard that comment warns about is handled the way `src/backend/
+  /// moab_backend.cpp`'s own `OwnedComm` already handles an identical
+  /// one for `MoabMeshBackend`'s per-placement sub-communicators: the
+  /// split is freed in `ParticipantSetReducer`'s own destructor, guarded
+  /// by `MPI_Finalized()`, never copyable -- see that class's own
+  /// comment (`src/linalg/comm_mpi.cpp`) for why this `shared_ptr`'s own
+  /// destruction order (tied to `resolve_regions()`'s own
+  /// `regions.clear()`, identical on every rank) is collectively safe.
+  /// `nullptr` on a rank NOT in `R.participants` -- such a rank never
+  /// reaches a Newton solve for this region at all (`run_region_newton()`/
+  /// `run_region_newton_window()`'s own early return, mirroring
+  /// `reduce_region_residuals()`'s "not a participant" return), so this
+  /// field is never dereferenced there; a stray dereference crashes
+  /// loudly instead of silently reducing over the wrong set.
   std::shared_ptr<const linalg::Reducer> newton_reducer;
+
+  /// S7.2b (PetscSelect track) communicator plumbing, lifted to multi-rank
+  /// (KNOWN_ISSUES.md D31/D32): the `MPI_Comm_c2f` handle of the SAME
+  /// split `ParticipantSetReducer` above reduces over, for the ONE
+  /// substrate that cannot reach a real collective through
+  /// `fuse::linalg::Reducer` alone -- `fuse::petsc::solve()`'s own `Vec`/
+  /// `Mat`/`SNES` are built directly on an `MPI_Comm`, not on this
+  /// library's comm-free abstraction (`comm.hpp`'s own header comment:
+  /// "linalg includes only base, so this header never names mpi.h").
+  /// `0` when `newton_reducer` is the serial reducer (`R.participants.
+  /// size() <= 1`) -- `fuse::petsc::install()`'s own registered entry
+  /// point reads `0` as "fall back to `comm_self_f()`", the UNCHANGED
+  /// single-rank behaviour `docs/dev/newton-krylov.md` Sec. 11.3 already
+  /// recorded, never a silent default standing in for a real
+  /// communicator a multi-rank region actually has. Meaningless (left at
+  /// its default) for a non-Newton region, exactly like `newton_reducer`.
+  int newton_comm_f = 0;
 
   /// NewtonModel track (2026-10-12): the diagonal `D` NewtonNorm::
   /// MeasureWeighted scales the stacked residual by, built ONCE here in
@@ -1772,6 +1799,24 @@ struct Runner::Impl {
       const std::vector<WindowBlockSample>& mine,
       std::vector<std::vector<WindowBlockSample>>& gathered_out,
       bool& all_ok_out);
+
+  /// KNOWN_ISSUES.md D31: whether THIS rank is one of `r.participants`,
+  /// the SAME test `reduce_region_residuals()`/`gather_window_block_
+  /// samples()` already make before joining either of those two
+  /// collectives -- extracted here so `run_region_newton()`/
+  /// `run_region_newton_window()` (src/runtime/iteration.cpp, which does
+  /// not otherwise name any MPI type at all) can make the identical
+  /// decision without this header growing an `mpi.h` dependency of its
+  /// own; the MPI call itself stays in runner.cpp, alongside every other
+  /// one. `true` unconditionally when `r.participants.size() <= 1` (no
+  /// communicator configured, or every checkpointed component on one
+  /// rank) -- the single-process shape, where every rank IS the one
+  /// participant by definition. A rank for which this returns `false`
+  /// must not build a `DistVector` over `r.newton_reducer`, call `fuse::
+  /// num::solve()`, or touch anything else this region's Newton solve
+  /// owns for this call -- `run_region_newton()`/`run_region_newton_
+  /// window()`'s own early return reads this BEFORE any of that.
+  Result<bool> region_is_local_participant(const detail::RegionRuntime& r) const;
 };
 
 }  // namespace fuse

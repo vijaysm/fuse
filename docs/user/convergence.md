@@ -153,3 +153,21 @@ is substrate-independent by construction -- the two can differ only in HOW
 closely each one's own GMRES/line-search implementation reaches the shared
 target (docs/dev/newton-krylov.md §10.3's own measured step-1 difference),
 never in what counts as converged.
+
+## Across more than one rank (KNOWN_ISSUES.md D31/D32)
+
+A Newton-selected region -- window-scoped or ordinary -- whose own
+checkpointed components span more than one rank tests `atol`/`rtol`/
+`stol` against a norm AGREED across exactly that region's own
+participant ranks, never a locally computed one: the outer convergence
+test above, every GMRES inner product that decides the forcing-term-
+selected iteration count, and the line search's own step-length test
+all read through `RegionRuntime::newton_reducer`, a real `fuse::linalg::
+ParticipantSetReducer` built once at setup over the region's own
+participant set (`docs/dev/newton-krylov.md` §9.10). A rank outside
+that participant set takes no part in the test at all and reports no
+local iterate for the region. The SAME `NewtonConfig` fields this
+section already describes apply unchanged on either substrate (`Native`
+or `Petsc`) regardless of rank count -- what changes with rank count is
+only WHO contributes to the norm being tested, never which norm or
+which tolerance.

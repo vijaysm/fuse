@@ -69,13 +69,24 @@ Result<void> Runner::Impl::check_region_supports_newton(
   // indices` are populated the identical way an ordinary region's are
   // (`resolve_regions()`'s own single derivation, shared by both shapes),
   // so the two checks below need no window-specific branch of their own.
-  if (R.participants.size() > 1) {
-    return Failure{"E-NEWTON-UNSUPPORTED-REGION",
-                 "iteration region '" + R.name +
-                     "' has more than one cross-rank participant; S7.1's "
-                     "fixed-point residual seam covers only a single-"
-                     "participant region"};
-  }
+  //
+  // KNOWN_ISSUES.md D31: the blanket "more than one participant is
+  // refused" rule is GONE, and nothing replaces it with a narrower
+  // refusal -- `R.participants` (resolve_regions(), iteration.cpp) is
+  // populated with more than the empty set ONLY when `config.
+  // base_communicator` has a value in the first place (that
+  // construction's own comment has the invariant: with no communicator
+  // configured, a region's components on different nominal ranks are
+  // run "purely local," on the one process that exists, and `R.
+  // participants` stays empty). `R.participants.size() > 1` THEREFORE
+  // ALREADY IMPLIES a real communicator is configured -- exactly what
+  // `resolve_regions()` needs to build a real `ParticipantSetReducer`
+  // (`RegionRuntime::newton_reducer`'s own comment, runner_impl.hpp, has
+  // the full account) -- so there is no reachable "more than one
+  // participant, no communicator to agree across them" case left for
+  // this function to catch: the Reducer a multi-rank Newton region needs
+  // is unconditionally buildable whenever this function would otherwise
+  // have refused for that reason alone.
   for (const std::size_t t : R.tick_indices) {
     if (components.at(ticks[t].slot).is_externally_driven()) {
       return Failure{"E-NEWTON-UNSUPPORTED-REGION",

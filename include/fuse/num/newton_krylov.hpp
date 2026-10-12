@@ -455,9 +455,26 @@ enum class NewtonSubstrate { Native, Petsc };
 /// signature `fuse::num::solve()` above already has -- a caller that
 /// dispatches through the registry calls either substrate the same way,
 /// with no `if` on which one it got.
+///
+/// `comm_f` (KNOWN_ISSUES.md D31/D32): an `MPI_Comm_c2f` handle for the
+/// region's own participant communicator, `0` when there is none (a
+/// single-rank region, or no communicator configured at all) -- the ONE
+/// thing `fuse::num`'s own comm-free abstraction (`fuse::linalg::
+/// Reducer`/`DistVector`, which `x` already carries a working reduction
+/// through) cannot hand a substrate that needs a REAL `MPI_Comm` for its
+/// own objects, which is exactly `fuse::petsc::solve()`'s situation --
+/// `SNES`/`Vec`/`Mat` are PETSc's own types, built directly on a
+/// communicator, never on this library's `Reducer` facade. The Native
+/// substrate (`fuse::num::solve()` itself, registered below) ignores
+/// this parameter entirely: every reduction its own GMRES/line-search/
+/// forcing-term machinery needs already goes through `x`'s own `Reducer`
+/// (`dist_vector.hpp`'s own `dot()`/`norm2()`/`norm_inf()`), so adding
+/// this parameter changed NO behaviour on that substrate -- only its own
+/// call signature, to keep one registry entry type both substrates
+/// implement.
 using NewtonSolveFn = std::function<Result<NewtonResult>(
     const ResidualFn&, DistVector&, const PreconditionerApplyFn&,
-    const RefreshPreconditionerFn&, const NewtonKrylovOptions&)>;
+    const RefreshPreconditionerFn&, const NewtonKrylovOptions&, int comm_f)>;
 
 /// Registers (or replaces) the solve entry point for `kind`. Called by
 /// `fuse::petsc::install()` (fuse/petsc/solve.hpp) to register

@@ -47,6 +47,7 @@
 #include "fuse/base/error.hpp"
 
 #if FUSE_HAVE_MPI
+#include <algorithm>
 #include <mpi.h>
 #endif
 
@@ -159,10 +160,158 @@ class MpiExchanger : public GhostExchanger {
   std::vector<std::int64_t> ans_index_;  // size == ans_displs_.back(); local owned indices to send
 };
 
+/// `src/backend/moab_backend.cpp`'s own `OwnedComm` pattern (its header
+/// comment: "Our own duplicate of the caller's communicator... Freed in
+/// the destructor unless MPI has already been finalised, exactly as the
+/// MPI transport does"), reused here for the SAME reason: a
+/// `ParticipantSetReducer` is held by `RegionRuntime::newton_reducer`
+/// for the Runner's own lifetime (every Newton evaluation of a window or
+/// ordinary region re-uses it; see `comm.hpp`'s own header comment on
+/// why this is a per-region, built-once object rather than one
+/// constructed fresh per solve), so its split communicator cannot be
+/// freed at the end of the function that created it the way
+/// `Runner::Impl::attach_comm_graphs()`'s own per-component splits are
+/// (that function's own "nothing outlives this function" comment does
+/// NOT apply here) -- `MPI_Comm_free` is collective, so the free is tied
+/// to this object's own destruction, which happens when
+/// `RegionRuntime::newton_reducer`'s `shared_ptr` drops its last
+/// reference. `resolve_regions()` destroys the OLD `regions` vector (and
+/// therefore every OLD `newton_reducer`) at the TOP of every call,
+/// before building new ones (`regions.clear()`) -- identically, in the
+/// SAME region-index order, on every rank, since `resolve_regions()`
+/// itself runs identically everywhere; a re-`initialize()` therefore
+/// frees every OLD split in the same collectively-safe order it was
+/// built in, the same guarantee `MoabMeshBackend`'s own placement
+/// contexts rely on.
+class ParticipantSetReducer : public Reducer {
+ public:
+  ParticipantSetReducer(MPI_Comm sub, int rank, int size)
+      : comm_(sub), rank_(rank), size_(size) {}
+
+  ~ParticipantSetReducer() override {
+    if (comm_ == MPI_COMM_NULL) return;
+    int finalized = 0;
+    if (MPI_Finalized(&finalized) == MPI_SUCCESS && finalized == 0) {
+      MPI_Comm_free(&comm_);
+    }
+    comm_ = MPI_COMM_NULL;
+  }
+
+  // Non-copyable, non-movable: this object's one `MPI_Comm` member must
+  // never have two live owners that could both try to free it (the SAME
+  // reason `MoabMeshBackend::Impl::PlacementContext` is heap-allocated
+  // behind a `unique_ptr` rather than stored by value in a growing
+  // vector). Held exclusively by one `shared_ptr<const Reducer>`
+  // (`RegionRuntime::newton_reducer`), which is all the sharing this
+  // object ever needs.
+  ParticipantSetReducer(const ParticipantSetReducer&) = delete;
+  ParticipantSetReducer& operator=(const ParticipantSetReducer&) = delete;
+
+  [[nodiscard]] double sum(double local) const override {
+    double global = 0.0;
+    MPI_Allreduce(&local, &global, 1, MPI_DOUBLE, MPI_SUM, comm_);
+    return global;
+  }
+
+  void sum(double* inout, std::size_t n) const override {
+    if (n == 0) return;
+    MPI_Allreduce(MPI_IN_PLACE, inout, static_cast<int>(n), MPI_DOUBLE, MPI_SUM, comm_);
+  }
+
+  [[nodiscard]] double max(double local) const override {
+    double global = local;
+    MPI_Allreduce(&local, &global, 1, MPI_DOUBLE, MPI_MAX, comm_);
+    return global;
+  }
+
+  [[nodiscard]] int rank() const override { return rank_; }
+  [[nodiscard]] int size() const override { return size_; }
+
+  void allgather(const double* send, std::size_t n_each, double* recv) const override {
+    MPI_Allgather(send, static_cast<int>(n_each), MPI_DOUBLE, recv, static_cast<int>(n_each),
+                 MPI_DOUBLE, comm_);
+  }
+
+ private:
+  MPI_Comm comm_;
+  int rank_;
+  int size_;
+};
+
 }  // namespace
 
 std::shared_ptr<const Reducer> make_mpi_reducer(int comm_f) {
   return std::make_shared<const MpiReducer>(resolve(comm_f));
+}
+
+Result<ParticipantSetReducerResult> make_participant_set_reducer(
+    int base_comm_f, const std::vector<int>& participants) {
+  const MPI_Comm base = resolve(base_comm_f);
+  int base_size = 1;
+  int base_rank = 0;
+  if (MPI_Comm_size(base, &base_size) != MPI_SUCCESS ||
+     MPI_Comm_rank(base, &base_rank) != MPI_SUCCESS) {
+    return Failure{"E-LINALG-PARTICIPANT-SPLIT",
+                   "could not size or rank the base communicator to build a "
+                   "ParticipantSetReducer"};
+  }
+  // `participants` is built once, deterministically, from the SAME graph
+  // on every rank (`resolve_regions()`'s own R-10 derivation,
+  // runner_impl.hpp's `RegionRuntime::participants` comment) -- not
+  // re-agreed here, the SAME trust `attach_comm_graphs()`'s own
+  // `MPI_Comm_split` loop places in `graph.component(cid).ranks`. Range-
+  // checked defensively (an out-of-range entry is a caller bug this
+  // function can catch cheaply before handing a bogus colour/key to
+  // `MPI_Comm_split`), not re-sorted or re-deduplicated: `resolve_regions()`
+  // already sorts and de-duplicates `region_ranks` before assigning it to
+  // `RegionRuntime::participants` (src/runtime/iteration.cpp).
+  for (const int p : participants) {
+    if (p < 0 || p >= base_size) {
+      return Failure{"E-LINALG-PARTICIPANT-SPLIT",
+                     "participant rank " + std::to_string(p) +
+                         " is outside the base communicator's [0, " +
+                         std::to_string(base_size) + ")"};
+    }
+  }
+
+  const auto self = std::find(participants.begin(), participants.end(), base_rank);
+  const bool participating = self != participants.end();
+  const int colour = participating ? 0 : MPI_UNDEFINED;
+  // Position WITHIN `participants`, not the base rank number -- so the
+  // split's own rank i is exactly participants[i], matching
+  // `decide_window_convergence()`'s existing cross-rank reduction order
+  // for Picard and `docs/user/placement.md`'s "indexing per-rank data --
+  // by position in the processor set" convention
+  // `MoabMeshBackend::set_placements()` already follows for the
+  // identical reason.
+  const int key =
+      participating ? static_cast<int>(std::distance(participants.begin(), self)) : 0;
+
+  MPI_Comm sub = MPI_COMM_NULL;
+  const int rc = MPI_Comm_split(base, colour, key, &sub);
+  if (rc != MPI_SUCCESS) {
+    return Failure{"E-LINALG-PARTICIPANT-SPLIT",
+                   "MPI_Comm_split failed with code " + std::to_string(rc) +
+                       " while building a ParticipantSetReducer"};
+  }
+  if (sub == MPI_COMM_NULL) {
+    // Not a participant: no Reducer to return, and nothing further to
+    // build -- "a rank outside the participant set must not enter a
+    // reduction" holds by construction, since this rank now holds no
+    // Reducer object at all for this region.
+    return ParticipantSetReducerResult{};
+  }
+  int sub_rank = 0, sub_size = 1;
+  if (MPI_Comm_rank(sub, &sub_rank) != MPI_SUCCESS ||
+     MPI_Comm_size(sub, &sub_size) != MPI_SUCCESS) {
+    MPI_Comm_free(&sub);
+    return Failure{"E-LINALG-PARTICIPANT-SPLIT",
+                   "could not size or rank the split participant communicator"};
+  }
+  ParticipantSetReducerResult out;
+  out.comm_f = MPI_Comm_c2f(sub);
+  out.reducer = std::make_shared<ParticipantSetReducer>(sub, sub_rank, sub_size);
+  return out;
 }
 
 std::shared_ptr<const GhostExchanger> make_mpi_exchanger(int comm_f, const GhostPattern& pattern,

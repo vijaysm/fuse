@@ -278,17 +278,47 @@ Result<fuse::num::NewtonResult> solve(const fuse::num::ResidualFn& f, DistVector
                                       const fuse::num::PreconditionerApplyFn& precond_apply,
                                       const fuse::num::RefreshPreconditionerFn& refresh_precond,
                                       const SnesOptions& opt) {
+  // KNOWN_ISSUES.md D31/D32: this refusal is about a NONZERO GHOST
+  // region, never about rank count -- a window- or ordinary-Newton `x`
+  // built by `run_region_newton_window()`/`run_region_newton()` always
+  // carries `ghost_size() == 0` regardless of how many ranks it is
+  // split across (Sec. 9.4/9.5's own analysis: every cross-rank
+  // dependency this seam's F needs is already resolved by the compiled
+  // Transport instructions the Runner's own body executes, never by a
+  // ghost copy of a PEER's owned entries sitting in `x` itself) -- a
+  // caller handing this driver a vector with real ghosts would need this
+  // driver to synchronize them through PETSc's own `VecGhost` mechanism,
+  // which it does not implement.
   if (x.owned_size() != x.size()) {
-    return Failure{"E-PETSC-SOLVE-MULTIRANK",
+    return Failure{"E-PETSC-SOLVE-GHOSTED",
                    "fuse::petsc::solve: x carries a nonzero ghost region (owned " +
                        std::to_string(x.owned_size()) + ", total " + std::to_string(x.size()) +
-                       "); this driver is single-rank only (fuse/petsc/solve.hpp's own scope)"};
+                       "); this driver has no VecGhost synchronisation for one"};
   }
   const std::size_t n = x.owned_size();
-  if (n == 0) return Failure{"E-PETSC-SOLVE-SHAPE", "fuse::petsc::solve: x is empty"};
 
   if (auto r = ensure_initialized(opt.comm_f); !r.ok()) return r.error();
   MPI_Comm comm = MPI_Comm_f2c(opt.comm_f);
+  if (comm == MPI_COMM_NULL) {
+    return Failure{"E-PETSC-SOLVE-NOCOMM",
+                   "fuse::petsc::solve: SnesOptions::comm_f resolves to "
+                       "MPI_COMM_NULL -- the caller must supply a real "
+                       "communicator (fuse::petsc::comm_self_f() for a "
+                       "single-rank region, or the region's own "
+                       "participant communicator for a multi-rank one, "
+                       "KNOWN_ISSUES.md D31/D32)"};
+  }
+  int comm_size = 1;
+  if (auto r = check(MPI_Comm_size(comm, &comm_size), "MPI_Comm_size"); !r.ok()) return r.error();
+  // D31's own "a rank owning zero unknowns is legal": refused only when
+  // the WHOLE communicator has nothing (comm_size == 1, the single-rank
+  // shape this check already covered before the multi-rank lift) --
+  // never refused here just because THIS rank's own local share happens
+  // to be zero while a peer rank's is not; `VecCreate`/`VecSetSizes`
+  // below accept a zero local size on an MPI Vec by PETSc's own design.
+  if (n == 0 && comm_size <= 1) {
+    return Failure{"E-PETSC-SOLVE-SHAPE", "fuse::petsc::solve: x is empty"};
+  }
 
   auto exchanger = fuse::linalg::make_serial_exchanger();
   auto reducer = fuse::linalg::make_serial_reducer();
@@ -296,7 +326,16 @@ Result<fuse::num::NewtonResult> solve(const fuse::num::ResidualFn& f, DistVector
   fuse::linalg::DistVector fx_scratch(n, exchanger, reducer);
   fuse::linalg::DistVector pc_r_scratch(n, exchanger, reducer);
   fuse::linalg::DistVector pc_z_scratch(n, exchanger, reducer);
-
+  // `x_scratch`/`fx_scratch`/`pc_r_scratch`/`pc_z_scratch` stay built on
+  // the SERIAL reducer/exchanger regardless of `comm`'s own rank count:
+  // they are purely local adapters between PETSc's own raw `Vec` arrays
+  // (`VecGetArray`) and `f`/`precond_apply`'s `DistVector&` call shape
+  // (`snes_function`/`snes_pc_apply` below) -- neither callback ever
+  // calls `.dot()`/`.norm2()`/`.sum()` on them, so their own Reducer is
+  // never invoked; every REAL cross-rank reduction GMRES/SNES need goes
+  // through `comm` itself, via the properly-distributed `Vec X`/`Vec F`
+  // built below, not through this library's `fuse::linalg::Reducer`
+  // abstraction at all.
   SnesFnContext fn_ctx{&f, &x_scratch, &fx_scratch, n, false};
   PrecondContext pc_ctx{&precond_apply, &pc_r_scratch, &pc_z_scratch, n};
   // Declared here, before any `goto fail` below, so every jump to `fail`
@@ -305,15 +344,38 @@ Result<fuse::num::NewtonResult> solve(const fuse::num::ResidualFn& f, DistVector
   // non-trivial variable's initializer still in scope at the label.
   fuse::num::NewtonResult result;
 
+  // KNOWN_ISSUES.md D31/D32: `VecCreate`+`VecSetSizes`+`VecSetType(...,
+  // VECSTANDARD)`, not `VecCreateSeq` -- `VecCreateSeq` ignores `comm`'s
+  // own size entirely (every rank would build its OWN disconnected
+  // n-length vector, with VecDot/VecNorm reducing only LOCALLY, so SNES/
+  // GMRES would run `comm_size` independent single-rank solves with no
+  // real cross-rank Krylov coupling at all -- a silently wrong answer
+  // for any communicator with more than one rank, not a refusal).
+  // `VECSTANDARD` resolves to `VECSEQ` on a one-rank communicator and
+  // `VECMPI` otherwise, automatically, with NO command-line option
+  // parsing (`VecSetFromOptions()` would also read `-vec_type` and
+  // similar, which this driver's own header comment already forbids for
+  // `SNESSetFromOptions()`, for the identical reason: every choice here
+  // comes from `SnesOptions`, never the process's command line) --
+  // this is the single-rank case's own UNCHANGED behaviour (`VECSEQ`
+  // is what `VecCreateSeq` would have built) plus the real multi-rank
+  // one, from the SAME two calls. `PETSC_DETERMINE` for the global size:
+  // PETSc sums every rank's own local `n` via its own collective, the
+  // SAME total `RegionRuntime::newton_n`/`R.n` would give summed across
+  // `R.participants` -- never computed redundantly here.
   Vec X = nullptr, F = nullptr;
-  PetscErrorCode ierr = VecCreateSeq(comm, static_cast<PetscInt>(n), &X);
-  if (auto r = check(ierr, "VecCreateSeq(X)"); !r.ok()) return r.error();
+  PetscErrorCode ierr = VecCreate(comm, &X);
+  if (auto r = check(ierr, "VecCreate(X)"); !r.ok()) return r.error();
+  ierr = VecSetSizes(X, static_cast<PetscInt>(n), PETSC_DETERMINE);
+  if (auto r = check(ierr, "VecSetSizes(X)"); !r.ok()) { VecDestroy(&X); return r.error(); }
+  ierr = VecSetType(X, VECSTANDARD);
+  if (auto r = check(ierr, "VecSetType(X)"); !r.ok()) { VecDestroy(&X); return r.error(); }
   ierr = VecDuplicate(X, &F);
   if (auto r = check(ierr, "VecDuplicate(F)"); !r.ok()) {
     VecDestroy(&X);
     return r.error();
   }
-  {
+  if (n > 0) {
     PetscScalar* arr = nullptr;
     VecGetArray(X, &arr);
     std::copy(x.data(), x.data() + n, arr);
@@ -512,15 +574,27 @@ void install() {
       [](const fuse::num::ResidualFn& f, fuse::linalg::DistVector& x,
          const fuse::num::PreconditionerApplyFn& precond_apply,
          const fuse::num::RefreshPreconditionerFn& refresh_precond,
-         const fuse::num::NewtonKrylovOptions& opt) {
-        // fuse::petsc::solve.hpp's own header comment on install(): the
-        // communicator is always comm_self_f(), never threaded in from
-        // the registry's own signature (fuse::num::NewtonSolveFn has no
-        // communicator parameter at all -- every Newton region is
-        // already single-rank by construction).
+         const fuse::num::NewtonKrylovOptions& opt, int comm_f) {
+        // KNOWN_ISSUES.md D31/D32: `comm_f` is the caller's own region
+        // communicator (`RegionRuntime::newton_comm_f`, runner_impl.hpp
+        // -- the SAME split `R.newton_reducer` reduces over) when the
+        // registry's own call passed one; `0` (a single-rank region, or
+        // no communicator configured at all -- `NewtonSolveFn`'s own
+        // header comment, newton_krylov.hpp) falls back to
+        // `comm_self_f()`, the UNCHANGED single-rank behaviour this
+        // entry point always had before D31/D32 opened. Never a SILENT
+        // substitute for a real communicator a multi-rank region
+        // actually has: `resolve_regions()` is the ONLY writer of
+        // `newton_comm_f`, and it writes a real split's own handle on
+        // every rank for which `R.newton_reducer` is non-null -- the
+        // only shape in which this lambda is ever called with `comm_f
+        // == 0` for a GENUINELY multi-rank region is a rank this
+        // region's own early return (`run_region_newton()`/
+        // `run_region_newton_window()`) already kept from reaching here
+        // at all.
         SnesOptions snes_opt;
         snes_opt.newton = opt;
-        snes_opt.comm_f = comm_self_f();
+        snes_opt.comm_f = comm_f != 0 ? comm_f : comm_self_f();
         return solve(f, x, precond_apply, refresh_precond, snes_opt);
       });
 }

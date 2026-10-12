@@ -1,0 +1,42 @@
+# Mutations for KNOWN_ISSUES.md D31 (Newton over a coupling window, and
+# over an ordinary region, run in parallel across the region's
+# participant ranks). Own file per the review-fix protocol: do not edit
+# build-evidence/mutations.toml directly while other tracks hold it dirty.
+#
+# WHAT IS AND IS NOT IN THIS FILE. The row below was applied by hand,
+# rebuilt (`cmake --build /tmp/newton/b0 --target
+# fuse_runtime_window_newton_hosting_test`), run UNFILTERED, and
+# confirmed to produce the result recorded in `result` before being
+# restored byte-for-byte (`cmp` against the pre-mutation file showed no
+# difference), then rebuilt clean and reconfirmed passing. Build
+# directory: /tmp/newton/b0 (tier 0, this track's own scratch build).
+#
+# This track's OTHER new agreement paths -- `fuse::linalg::
+# ParticipantSetReducer`'s own `MPI_Comm_split`/`sum`/`max`/`allgather`
+# (src/linalg/comm_mpi.cpp), and `Runner::Impl::run_region_newton()`/
+# `run_region_newton_window()`'s own new "not a participant, nothing to
+# do" early return (`region_is_local_participant()`, runner.cpp) -- are
+# NOT mutation-proved here, and this is stated rather than papered over:
+# both are reachable ONLY when `RunnerConfig::base_communicator` has a
+# value (iteration.cpp's own invariant on `RegionRuntime::participants`:
+# it stays empty without one), and a build with no MPI compiled in
+# refuses any communicator at all (`E-RT-TRANSPORT-NOMPI`,
+# `attach_comm_graphs()`) -- there is no tier-0 shape, including
+# `force_this_process`, that reaches either path. Their own proof is the
+# host-only `parallel.window_newton_mpi.{2,3}` and
+# `parallel.participant_reducer_mpi.{2,3}` rows (test/parallel/
+# window_newton_mpi_test.cpp, test/parallel/
+# participant_reducer_mpi_test.cpp) -- the SAME category KNOWN_ISSUES.md
+# D31's own prior entry already named for the serial-reducer era
+# ("this sandbox cannot run mpiexec").
+
+[[mutation]]
+id = "window-newton-offset-not-gated-by-hosted"
+area = "runtime"
+describes = "KNOWN_ISSUES.md D31: resolve_regions()'s own window-Newton newton_offset computation (src/runtime/iteration.cpp) assigns every LAGGED block a valid offset regardless of RegionBlock::window_hosted, exactly reproducing the pre-this-track behaviour where a window-Newton region's interface vector was always the FULL concatenation on every rank. On a genuinely multi-rank region this means every rank would build a DistVector claiming to own blocks it does not host (the consumer's chain never wrote their value_arc on this rank at all), silently folding stale or uninitialized data into the Newton solve rather than excluding it -- the exact hazard RegionBlock::window_hosted's own comment (runner_impl.hpp) already names for Picard's identical gather_window_block_samples() path, now reproduced in the Newton seam specifically."
+file = "src/runtime/iteration.cpp"
+old = """          if (!b.window_hosted) continue;  // some other rank's own block"""
+new = """          if (false) continue;  // some other rank's own block [MUTATED]"""
+target = "fuse_runtime_window_newton_hosting_test"
+test = "runtime.window_newton_hosting"
+result = "KILLED (2026-10-12): WindowNewtonHosting.LocalNewtonVectorKeepsOnlyTheBlockThisRankHostsOnAsRank FAILED (included.size() == 2, expected 1 -- both blocks included, the a2b block B's rank alone should have excluded now wrongly present on A's own rank); WindowNewtonHosting.LocalNewtonVectorKeepsOnlyTheBlockThisRankHostsOnBsRank FAILED identically (included.size() == 2, expected 1, mirror on B's own rank); WindowNewtonHosting.NoCommunicatorAndNoForcedRankRunsPurelyLocalWithNothingExcluded still PASSED (no this_process at all, window_hosted already defaults true everywhere, so this mutation changes nothing there -- 1 PASSED, 2 FAILED of 3 total). Restored; cmp against the pre-mutation file reported no difference; rebuilt clean and reconfirmed 3/3 PASSED."

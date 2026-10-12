@@ -316,10 +316,28 @@ if(FUSE_ENABLE_PETSC)
                       fuse::petsc Eigen3::Eigen Kokkos::kokkos)
   target_include_directories(fuse_petsc_brusselator_newton_test PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/brusselator)
+  # KNOWN_ISSUES.md D31/D32: window Newton over the region's real
+  # participant ranks, PETSc substrate -- its own dedicated binary and
+  # mpiexec-launched row, the SAME isolation this block's own comment
+  # gives for brusselator_newton (a PETSc abort takes the whole process
+  # down). RANKS 2 3, mirroring parallel.window_newton_mpi.
+  if(FUSE_ENABLE_MPI)
+    fuse_add_mpi_test(petsc window_newton_mpi
+                      LIBS fuse::runtime fuse::backend fuse::model
+                           fuse::linalg fuse::petsc MPI::MPI_CXX
+                      RANKS 2 3)
+  else()
+    # PETSc without MPI is a supported configuration (the other PETSc rows
+    # run serially in it); this one is an mpiexec row, so without MPI it is
+    # absent, and the audit below must be told so or it would refuse to
+    # configure.
+    fuse_tests_gated_by(FUSE_ENABLE_MPI petsc/window_newton_mpi_test.cpp)
+  endif()
 else()
   fuse_tests_gated_by(FUSE_ENABLE_PETSC
     petsc/init_test.cpp petsc/token_test.cpp petsc/derivative_gate_test.cpp
-    petsc/snes_test.cpp petsc/brusselator_newton_test.cpp)
+    petsc/snes_test.cpp petsc/brusselator_newton_test.cpp
+    petsc/window_newton_mpi_test.cpp)
 endif()
 
 # ---------------------------------------------------------------- field
@@ -499,7 +517,7 @@ endif()
 # ---------------------------------------------------------------- runtime
 foreach(t runner checkpoint epoch_schedule window_convergence window_coupler
          window_runner window_runner_multirate window_runner_straddle
-         window_runner_mismatched_length window_hosting)
+         window_runner_mismatched_length window_hosting window_newton_hosting)
   fuse_add_gtest(runtime ${t})
 endforeach()
 fuse_add_gtest(runtime component_iface THROWS)
@@ -584,9 +602,10 @@ fuse_tests_gated_by(FUSE_ENABLE_MPI
   parallel/mpi_transport_test.cpp parallel/epoch_reconcile_test.cpp
   parallel/nodal_field_test.cpp parallel/nodal_remap_distributed_test.cpp
   parallel/nodal_remap_runner_test.cpp parallel/window_runner_mpi_test.cpp
+  parallel/window_newton_mpi_test.cpp
   parallel/linalg_mpi_test.cpp parallel/brusselator_grid_mpi_test.cpp
   parallel/schur_slab_mpi_test.cpp parallel/krylov_mpi_test.cpp
-  parallel/derivative_gate_mpi_test.cpp)
+  parallel/derivative_gate_mpi_test.cpp parallel/participant_reducer_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
   foreach(t runner_transport comm_graph mpi_transport)
     fuse_add_mpi_test(parallel ${t} LIBS fuse::runtime)
@@ -595,6 +614,14 @@ if(FUSE_ENABLE_MPI)
   # DistVector/DistSparseMatrix operations built on them, over a real
   # MPI_COMM_WORLD. RANKS 2 only, per the task: built here, run on the host.
   fuse_add_mpi_test(parallel linalg_mpi LIBS fuse::linalg RANKS 2 LABELS linalg)
+  # KNOWN_ISSUES.md D31: fuse::linalg::make_participant_set_reducer(),
+  # over a REAL MPI_COMM_WORLD -- the Reducer window-/ordinary-Newton
+  # regions build when RegionRuntime::participants is a proper subset of
+  # the base communicator. RANKS 2 3: the 3-rank leg is this file's own
+  # non-contiguous-subset case ({0, 2}, excluding 1), the one shape
+  # linalg_mpi_test.cpp's own make_mpi_reducer() tests cannot exercise
+  # at all (that factory reduces over the WHOLE communicator).
+  fuse_add_mpi_test(parallel participant_reducer_mpi LIBS fuse::linalg RANKS 2 3 LABELS linalg)
   # "Schur-slab" track, tier 1: SchurSlabSolver and Reducer::allgather's own
   # MPI implementation, over a real MPI_COMM_WORLD. RANKS 2 3, per the task:
   # built here, run on the host.
@@ -653,6 +680,10 @@ if(FUSE_ENABLE_MPI)
   # disjoint, at 3 a genuinely uncoupled third component (C) is added so
   # its presence is proven not to perturb the window's agreed answer.
   fuse_add_mpi_test(parallel window_runner_mpi LIBS fuse::runtime RANKS 2 3)
+  # KNOWN_ISSUES.md D31: the window-Newton seam's own first actual MPI
+  # test, mirroring window_runner_mpi's own two/three-rank placements
+  # (test/parallel/window_newton_mpi_test.cpp's own header comment).
+  fuse_add_mpi_test(parallel window_newton_mpi LIBS fuse::runtime RANKS 2 3)
   # Grid track: test/verification/brusselator_grid_decomposition_test.cpp's
   # requirements 2-4 repeated on 2 real ranks. RANKS 2 only, per the task
   # ("the tier-1 test repeats 2-4 on 2 real ranks"); the test-local MPI

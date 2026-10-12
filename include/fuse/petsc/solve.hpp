@@ -77,13 +77,30 @@ struct SnesOptions {
 /// lambda), rather than inventing a second residual-function shape for
 /// this driver alone.
 ///
-/// Single-rank ONLY (`x.owned_size() == x.size()`, no ghost region) --
-/// this track's own scope, matching `fuse::num::solve()`'s own
-/// `Runner::region_fixed_point_residual()` restriction and
-/// `check_region_supports_newton()`'s single-participant gate
-/// (`docs/dev/newton-krylov.md` Sec. 4's own "Scope" paragraph); refuses
-/// `E-PETSC-SOLVE-MULTIRANK` otherwise rather than silently dropping the
-/// ghost region.
+/// MULTI-RANK over `SnesOptions::comm_f` (KNOWN_ISSUES.md D31/D32,
+/// lifted from this driver's own original single-rank-only scope): `X`/
+/// `F` are built `VecCreate`+`VecSetSizes(x.owned_size(), PETSC_
+/// DETERMINE)`+`VecSetType(VECSTANDARD)` on `comm_f`, so PETSc's own
+/// `VecDot`/`VecNorm` (and therefore every GMRES inner product and the
+/// outer convergence test SNES itself runs) reduce across EVERY rank of
+/// `comm_f`, not just this one -- a rank owning zero unknowns
+/// (`x.owned_size() == 0`) is legal as long as `comm_f` has more than
+/// one rank (refused, `E-PETSC-SOLVE-SHAPE`, only when the WHOLE
+/// communicator is empty). STILL refuses `x` carrying a nonzero GHOST
+/// region (`E-PETSC-SOLVE-GHOSTED`) -- that is a property of the vector
+/// shape, orthogonal to rank count: every window- or ordinary-Newton `x`
+/// this library builds (`run_region_newton_window()`/`run_region_
+/// newton()`) carries zero ghosts regardless of how many ranks it is
+/// split across (`docs/dev/newton-krylov.md` Sec. 9.4's own analysis of
+/// why), so this refusal is not expected to fire for any caller inside
+/// this library; a caller with a genuinely ghosted vector would need
+/// this driver to synchronise it through PETSc's own `VecGhost`
+/// mechanism, which it does not implement. Refuses `E-PETSC-SOLVE-
+/// NOCOMM` when `comm_f` resolves to `MPI_COMM_NULL` -- a caller must
+/// always supply a real communicator (`fuse::petsc::comm_self_f()` for
+/// a single-rank region, the region's own participant communicator
+/// otherwise), never leave `comm_f` at its zero default and expect a
+/// silent fallback.
 ///
 /// `precond_apply`/`refresh_precond` may both be `nullptr`, identically
 /// to `fuse::num::solve()`'s own meaning (no preconditioning, `PCNONE`).
@@ -107,30 +124,29 @@ struct SnesOptions {
 /// layer, ABOVE `fuse::runtime`) would make impossible for the Runner to
 /// make itself.
 ///
-/// COMMUNICATOR. The registered entry point always solves on
-/// `comm_self_f()` (`MPI_COMM_SELF`), never on a communicator threaded
-/// in from the caller: `fuse::num::NewtonSolveFn`'s own signature
-/// (fuse/num/newton_krylov.hpp) carries no communicator parameter at
-/// all, by design -- every Newton-selected region, on EITHER substrate,
-/// is already restricted by `Runner::Impl::check_region_supports_newton()`
-/// to a single cross-rank participant (docs/dev/newton-krylov.md Sec. 4's
-/// "Scope" paragraph; `KNOWN_ISSUES.md` D31's own single-rank restriction
-/// for the window path), so there is no cross-rank reduction for a
-/// Newton SOLVE to perform regardless of which rank of the Runner's own
-/// `RunnerConfig::base_communicator` happens to own this region. Using
-/// `MPI_COMM_SELF` unconditionally is therefore not a scope-reducing
-/// shortcut -- it is the honest communicator for a problem this seam
-/// already guarantees is rank-local -- and it sidesteps a real ownership
-/// question `fuse::petsc::ensure_initialized()`'s own comment flags: a
-/// shared `MPI_Comm` reaching `PetscInitialize()` from several DIFFERENT
-/// regions' first calls would need those calls to agree on which one
-/// "owns" initialising PETSc on it, a coordination this single-process,
-/// single-call registration need not solve. A future multi-rank lift of
-/// Newton itself (`KNOWN_ISSUES.md` D31) would need to revisit this
-/// choice -- at that point there IS a real cross-rank reduction inside
-/// the solve, and `MPI_COMM_SELF` would be the wrong communicator for
-/// it; `SnesOptions::comm_f` already exists for exactly that future
-/// caller, unused by `install()`'s own registration today.
+/// COMMUNICATOR (KNOWN_ISSUES.md D31/D32, lifted). The registered entry
+/// point now reads the communicator `fuse::num::NewtonSolveFn`'s own
+/// `comm_f` parameter carries (`newton_krylov.hpp`'s own header comment
+/// on that parameter) -- the SAME split `RegionRuntime::newton_reducer`
+/// reduces over, built once in `resolve_regions()` and threaded through
+/// `run_region_newton()`/`run_region_newton_window()`'s own dispatch
+/// call. `comm_f == 0` (a single-rank region, or no communicator
+/// configured -- `check_region_supports_newton()` already refuses the
+/// opposite case, more than one participant with none) falls back to
+/// `comm_self_f()` (`MPI_COMM_SELF`), the UNCHANGED behaviour this
+/// registration always had before this lift: that remains the honest
+/// communicator for a problem this seam already guarantees is rank-
+/// local in that shape, and it still sidesteps the real ownership
+/// question `fuse::petsc::ensure_initialized()`'s own comment flags for
+/// `MPI_COMM_SELF` specifically (several different single-rank regions'
+/// first calls sharing one communicator need not agree on which one
+/// initialises PETSc on it, since each is really MPI_COMM_SELF
+/// regardless of which region's call reaches `ensure_initialized()`
+/// first). A MULTI-RANK region's own `comm_f` is a REAL, per-region
+/// split, never shared across two different regions' own participant
+/// sets, so the identical coordination question does not arise for it
+/// either -- `ensure_initialized()`'s own first-caller-wins contract is
+/// unaffected either way.
 ///
 /// Idempotent: calling this more than once simply re-registers the same
 /// entry point (`fuse::num::register_newton_substrate()`'s own
