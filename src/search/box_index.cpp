@@ -1,6 +1,9 @@
-// src/search/box_index.cpp -- the only translation unit in fuse::search that
-// names an ArborX type (types.hpp's header comment: this layer is a facade
-// over it, the same posture fuse::linalg takes over its dense solver).
+// src/search/box_index.cpp -- one of the two translation units in
+// fuse::search that name an ArborX type (the other is distributed.cpp,
+// added after this comment was first written); search.md:5's "nothing
+// outside src/search/*.cpp names an ArborX type" is the accurate claim
+// (types.hpp's header comment: this layer is a facade over it, the same
+// posture fuse::linalg takes over its dense solver).
 //
 // EXECUTION SPACE. BoxIndex builds and queries on either
 // Kokkos::DefaultHostExecutionSpace/Kokkos::HostSpace (the facade's
@@ -358,6 +361,13 @@ Result<QueryResult> BoxIndex::query_nearest(const std::vector<Point>& points, in
   empty_result.offsets.assign(points.size() + 1, 0);
   if (empty() || points.empty()) return empty_result;
 
+  // PS-7: cap explicitly rather than relying on ArborX::nearest's own
+  // internal clamp -- box_index.hpp's doc promises "k capped to size()" as
+  // THIS facade's contract, not a property borrowed from whatever ArborX
+  // version happens to be linked. Applies to both the device and host
+  // query_nearest paths below.
+  const int k_capped = std::min(k, static_cast<int>(size()));
+
   if (device_) {
     Kokkos::View<ArborPoint*, HostMemorySpace> host_pts(
         Kokkos::view_alloc(Kokkos::WithoutInitializing, "fuse::search::nearest_pts_host"),
@@ -374,7 +384,7 @@ Result<QueryResult> BoxIndex::query_nearest(const std::vector<Point>& points, in
     Kokkos::parallel_for(
         "fuse::search::build_nearest_preds",
         Kokkos::RangePolicy<DeviceExecutionSpace>(0, static_cast<std::int64_t>(points.size())),
-        KOKKOS_LAMBDA(std::int64_t i) { preds(i) = ArborX::nearest(device_pts(i), k); });
+        KOKKOS_LAMBDA(std::int64_t i) { preds(i) = ArborX::nearest(device_pts(i), k_capped); });
 
     Kokkos::View<std::size_t*, DeviceMemorySpace> indices("fuse::search::nearest_indices_device",
                                                           0);
@@ -396,7 +406,7 @@ Result<QueryResult> BoxIndex::query_nearest(const std::vector<Point>& points, in
       Kokkos::view_alloc(Kokkos::WithoutInitializing, "fuse::search::nearest_preds"),
       points.size());
   for (std::size_t i = 0; i < points.size(); ++i) {
-    preds(i) = ArborX::nearest(to_arbor(points[i]), k);
+    preds(i) = ArborX::nearest(to_arbor(points[i]), k_capped);
   }
 
   Kokkos::View<std::size_t*, HostMemorySpace> indices("fuse::search::nearest_indices", 0);
