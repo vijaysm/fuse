@@ -219,12 +219,16 @@ constexpr double kCoverageTol = 1e-9;
   auto built = build_supermesh_weights(*s.value().view, *d.value().view,
                                        s.value().dim);
   if (!built.ok()) return built.error();
-  // Soma-import finding (docs/dev/soma-import.md, RemapPartial.* rows): this
-  // path computed min_src_coverage all along (build_supermesh_weights's own
-  // audit) but never read it against RemapFlags::Conservative -- only the
-  // FUSE_HAVE_MOAB half of this file enforced the refusal, so a tier-0
-  // (no-MOAB) build silently dropped uncovered source mass on a channel
-  // explicitly marked Conservative. Same check, same tolerance, same error
+  // Soma-import finding (docs/dev/soma-import.md, RemapPartial.* rows), same
+  // defect as REVIEW.md TF-5: this path computed min_src_coverage all along
+  // (build_supermesh_weights's own audit) but never read it against
+  // RemapFlags::Conservative -- only the FUSE_HAVE_MOAB half of this file
+  // enforced the refusal, so a tier-0 (no-MOAB) build silently dropped
+  // uncovered source mass on a channel explicitly marked Conservative, and a
+  // MOAB-capable build whose backend happens not to be MoabMeshBackend
+  // (N-BACKEND-4's own dispatch just above routes here) silently accepted
+  // the flag and then ignored it: the exact I4 shape (a documented
+  // guarantee quietly not enforced). Same check, same tolerance, same error
   // code as the MOAB path below, so a plan rejected there is rejected here
   // for the identical reason.
   if (has(plan.flags, RemapFlags::Conservative) &&
@@ -238,7 +242,9 @@ constexpr double kCoverageTol = 1e-9;
             std::to_string(built.value().n_cols) +
             "). The mass in the uncovered part would be dropped, not "
             "transferred, so the map would not be conservative. Make the "
-            "two regions cover the same domain."};
+            "two regions cover the same domain, or clear the Conservative "
+            "flag to accept a truncating map -- the shortfall is then "
+            "reported in RemapWeights::min_src_coverage."};
   }
   return built;
 }

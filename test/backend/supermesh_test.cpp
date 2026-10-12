@@ -9,6 +9,7 @@
 #include <array>
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <cmath>
 #include <numeric>
@@ -170,6 +171,107 @@ TEST(Supermesh, RemappingOntoTheSameMeshIsTheIdentity) {
     EXPECT_EQ(w.row[k], w.col[k]) << "entry " << k << " is off-diagonal";
     EXPECT_NEAR(w.val[k], 1.0, 1e-13);
   }
+}
+
+// ---- 1D, axis orientation (REVIEW.md TF-4) -------------------------------
+//
+// Every 1D test above uses `generated:line`, which SerialMeshBackend lays
+// out along x only -- so a kernel that silently hard-coded `.x` would pass
+// every one of them. This section is the two cases that would have caught
+// it: a line genuinely laid out along y (the kernel must still measure it,
+// not return an empty matrix), and a line laid out diagonally (the kernel
+// must refuse rather than measure its x-shadow).
+
+namespace {
+
+/// `n_cells` cells of equal length along the straight segment from `p0` to
+/// `p1` -- `p0`/`p1` need not be axis-aligned, which is the point: unlike
+/// `generated:line` (x only), this can place a 1D mesh along any direction.
+class ParametricLineMesh final : public fuse::MeshView {
+ public:
+  ParametricLineMesh(std::size_t n_cells, fuse::Point p0, fuse::Point p1)
+      : n_cells_(n_cells), p0_(p0), p1_(p1) {}
+
+  [[nodiscard]] int dimension() const override { return 1; }
+  [[nodiscard]] std::size_t entity_count(int dim) const override {
+    if (dim == 0) return n_cells_ + 1;
+    if (dim == 1) return n_cells_;
+    return 0;
+  }
+  [[nodiscard]] std::size_t owned_count(int dim) const override {
+    return entity_count(dim);
+  }
+  [[nodiscard]] bool is_owned(int, std::size_t) const override { return true; }
+  [[nodiscard]] std::size_t global_id(int, std::size_t i) const override { return i; }
+  [[nodiscard]] fuse::Point centroid(int dim, std::size_t i) const override {
+    const double n = static_cast<double>(n_cells_);
+    return at(dim == 0 ? static_cast<double>(i) / n
+                        : (static_cast<double>(i) + 0.5) / n);
+  }
+  [[nodiscard]] double measure(int dim, std::size_t) const override {
+    if (dim != 1) throw std::domain_error("ParametricLineMesh: no measure at dimension 0");
+    const double dx = p1_.x - p0_.x, dy = p1_.y - p0_.y, dz = p1_.z - p0_.z;
+    return std::sqrt(dx * dx + dy * dy + dz * dz) / static_cast<double>(n_cells_);
+  }
+  [[nodiscard]] std::size_t simplex_count(int dim, std::size_t) const override {
+    return dim == 1 ? 1 : 0;
+  }
+  void simplex_points(int dim, std::size_t i, std::size_t,
+                      fuse::Point* out) const override {
+    out[0] = centroid(0, i);
+    out[1] = centroid(0, i + 1);
+  }
+
+ private:
+  [[nodiscard]] fuse::Point at(double t) const {
+    return fuse::Point{p0_.x + t * (p1_.x - p0_.x), p0_.y + t * (p1_.y - p0_.y),
+                       p0_.z + t * (p1_.z - p0_.z)};
+  }
+  std::size_t n_cells_;
+  fuse::Point p0_, p1_;
+};
+
+}  // namespace
+
+TEST(Supermesh, OneDimensionalYAlignedIsExactlyConservative) {
+  // The exact mirror of OneDimensionalNonMatchingIsExactlyConservative
+  // (generated:line:8 onto generated:line:5), laid out along y instead of
+  // x. Pre-fix signature: every pair's x coordinate is identically 0, so
+  // `intersect`'s dim==1 branch computes every overlap as exactly 0 -- an
+  // EMPTY matrix returned as SUCCESS, not a refusal, indistinguishable
+  // from a target field correctly left at zero.
+  ParametricLineMesh src(8, fuse::Point{0, 0, 0}, fuse::Point{0, 1, 0});
+  ParametricLineMesh tgt(5, fuse::Point{0, 0, 0}, fuse::Point{0, 1, 0});
+  const auto r = fuse::build_supermesh_weights(src, tgt, 1);
+  ASSERT_TRUE(r.ok()) << r.error().code << ": " << r.error().message;
+  const fuse::RemapWeights& w = r.value();
+
+  EXPECT_EQ(w.n_rows, 5u);
+  EXPECT_EQ(w.n_cols, 8u);
+  EXPECT_GT(w.nnz(), 5u) << "a non-matching pair must have split cells -- "
+                            "an empty matrix is the pre-fix failure "
+                            "signature, not a passing one";
+  EXPECT_NEAR(w.min_src_coverage, 1.0, 1e-14);
+  EXPECT_NEAR(w.min_tgt_coverage, 1.0, 1e-14);
+  EXPECT_LT(w.max_row_defect, 1e-14) << "constants are not preserved";
+  EXPECT_LT(w.max_col_defect, 1e-14) << "mass is not conserved";
+  EXPECT_NEAR(w.src_measure_total, 1.0, 1e-14);
+  EXPECT_NEAR(w.tgt_measure_total, 1.0, 1e-14);
+  EXPECT_TRUE(w.monotone);
+}
+
+TEST(Supermesh, OneDimensionalDiagonalPairRefusesRatherThanProjecting) {
+  // A line running diagonally in the xy-plane is aligned with NEITHER axis:
+  // projecting onto either would measure its SHADOW, not its own length --
+  // a plausible but wrong number, the exact reason
+  // RefusesASurfacePairRatherThanProjectingIt refuses the 2D analogue
+  // instead of guessing.
+  ParametricLineMesh src(8, fuse::Point{0, 0, 0}, fuse::Point{1, 1, 0});
+  ParametricLineMesh tgt(5, fuse::Point{0, 0, 0}, fuse::Point{1, 1, 0});
+  const auto r = fuse::build_supermesh_weights(src, tgt, 1);
+  ASSERT_FALSE(r.ok()) << "a diagonal 1D pair would have its shadow "
+                          "measured, which looks like a legitimate answer";
+  EXPECT_EQ(r.error().code, "E-REMAP-NONPLANAR");
 }
 
 // ---- rejections ----------------------------------------------------------
@@ -717,6 +819,150 @@ TEST(Supermesh, ThinSliversAreClippedAndTheirMassIsKept) {
       << "mass lost beyond the 1e-10 strip that genuinely left the domain";
   std::printf("[ slivers  ] nnz=%zu  smallest weight %.3e  col defect %.3e\n",
               w.nnz(), smallest, w.max_col_defect);
+}
+
+TEST(Supermesh, MinWeightIsZeroWhenEveryAccumulatedEntryIsDroppedAsNegligible) {
+  // REVIEW.md TF-15. Shifting the target by a FULL unit domain (not a
+  // fraction, as PartialOverlapIsReportedRatherThanHidden's 0.5 or
+  // ThinSliversAreClippedAndTheirMassIsKept's 1e-10) makes it adjacent to,
+  // not overlapping, the source: an interior target cell's box never
+  // touches the source's at all (zero overlap, never added to the
+  // accumulator), and only the cells sharing the x=1 boundary face produce
+  // the clipper's own documented rounding-level spurious positive (this
+  // file's kNegligible comment: "measured at up to 1.1e-16 of a cell").
+  // `acc` therefore ends up NON-EMPTY (the touching-face entries) while
+  // EVERY one of them is dropped by the kNegligible floor, leaving `w.val`
+  // EMPTY -- the case the pre-fix min_w initialisation (keyed on
+  // `acc.empty()`, not on `w.val.empty()`) got wrong.
+  auto p = pair_of("generated:box:4x4x4", "generated:box:4x4x4");
+  ASSERT_TRUE(p != nullptr);
+  const double id[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+  const double shift[3] = {1.0, 0.0, 0.0};  // a full domain: adjacent, not overlapping
+  const AffineView moved_tgt(*p->tgt, id, shift);
+
+  const auto r = fuse::build_supermesh_weights(*p->src, moved_tgt, 3);
+  ASSERT_TRUE(r.ok()) << r.error().code << ": " << r.error().message;
+  const fuse::RemapWeights& w = r.value();
+
+  ASSERT_TRUE(w.val.empty())
+      << "nnz=" << w.nnz() << ": this fixture must have no GENUINE overlap, "
+         "only boundary-touching slivers the kNegligible floor drops -- "
+         "otherwise it is not exercising the case this test names";
+  EXPECT_EQ(w.min_weight, 0.0)
+      << "RemapWeights::min_weight documents zero for an empty matrix";
+}
+
+// ---- RemapFlags::Conservative vs. partial coverage (REVIEW.md TF-5) ----
+//
+// I4's own enforcement clause: "a refusal no test fires does not count as
+// implemented." E-REMAP-COVERAGE -- the refusal that guards a conservative
+// remap against exactly the partial-overlap truncation
+// PartialOverlapIsReportedRatherThanHidden above exercises -- was fired by
+// no test anywhere in the tree (the MOAB path's own assemble() has it;
+// build_weights_via_supermesh, this backend-agnostic path's own entry
+// point, never checked plan.flags at all, so RemapFlags::Conservative was
+// silently ignored for every non-MOAB backend -- fixed alongside this
+// test, not just tested).
+
+namespace {
+
+/// Wraps an inner SerialMeshBackend, substituting an AffineView-shifted
+/// copy of ONE named mesh (by MeshId) for `placed_view` -- the SAME hook
+/// `PerPlacementBackend` above uses, but shifting geometry rather than
+/// renumbering it. This is what lets PartialOverlapIsReportedRatherThanHidden's
+/// own shift-by-half-a-domain fixture be driven through `fuse::build_weights`
+/// (the public entry point RemapFlags lives on) instead of
+/// `build_supermesh_weights` directly (which takes raw MeshViews and never
+/// sees a RemapPlan at all).
+class ShiftedMeshBackend final : public fuse::MeshBackend {
+ public:
+  ShiftedMeshBackend(const fuse::SerialMeshBackend& inner, fuse::MeshId shifted,
+                     double shift_x)
+      : inner_(inner), shifted_id_(shifted) {
+    for (int r = 0; r < 3; ++r) {
+      for (int c = 0; c < 3; ++c) m_[r][c] = (r == c) ? 1.0 : 0.0;
+    }
+    t_[0] = shift_x;
+    t_[1] = 0.0;
+    t_[2] = 0.0;
+  }
+  fuse::Result<void> load(const fuse::MeshDecl&) override {
+    return fuse::Failure{"E-TEST", "not loadable"};
+  }
+  [[nodiscard]] fuse::Result<fuse::MeshId> mesh_id(std::string_view n) const override {
+    return inner_.mesh_id(n);
+  }
+  [[nodiscard]] fuse::Result<const fuse::MeshView*> view(fuse::MeshId id) const override {
+    return inner_.view(id);
+  }
+  [[nodiscard]] fuse::Result<std::size_t> region_size(const fuse::Region& r) const override {
+    return inner_.region_size(r);
+  }
+  [[nodiscard]] fuse::Result<const fuse::MeshView*> placed_view(
+      fuse::MeshId id, fuse::ComponentId) const override {
+    if (id.value() != shifted_id_.value()) return inner_.view(id);
+    if (!shifted_view_) {
+      const auto v = inner_.view(id);
+      if (!v.ok()) return v.error();
+      shifted_view_ = std::make_unique<AffineView>(*v.value(), m_, t_);
+    }
+    return shifted_view_.get();
+  }
+  [[nodiscard]] std::string name() const override { return "shifted-serial"; }
+
+ private:
+  const fuse::SerialMeshBackend& inner_;
+  fuse::MeshId shifted_id_;
+  double m_[3][3]{};
+  double t_[3]{};
+  mutable std::unique_ptr<AffineView> shifted_view_;
+};
+
+}  // namespace
+
+TEST(Supermesh, BuildWeightsRefusesPartialCoverageUnderConservativeFlag) {
+  fuse::SerialMeshBackend inner;
+  ASSERT_TRUE(inner.load({.name = "s", .source = "generated:box:4x4x4"}).ok());
+  ASSERT_TRUE(inner.load({.name = "t", .source = "generated:box:4x4x4"}).ok());
+  const auto tmid = inner.mesh_id("t");
+  ASSERT_TRUE(tmid.ok());
+  // Half a domain to the right, exactly PartialOverlapIsReportedRatherThanHidden's
+  // own shift: half of every straddling target cell has no source.
+  ShiftedMeshBackend backend(inner, tmid.value(), /*shift_x=*/0.5);
+
+  fuse::CouplingGraph graph;
+  const auto smid = graph.add_mesh({.name = "s", .source = "generated:box:4x4x4"});
+  const auto gtmid = graph.add_mesh({.name = "t", .source = "generated:box:4x4x4"});
+  const auto srid = graph.add_region({.name = "s_all", .mesh = smid, .dimension = 3});
+  const auto trid = graph.add_region({.name = "t_all", .mesh = gtmid, .dimension = 3});
+
+  fuse::RemapPlan plan;
+  plan.src = srid;
+  plan.tgt = trid;
+
+  // Pre-fix signature: RemapFlags::Conservative is silently ignored by
+  // build_weights_via_supermesh, so this call SUCCEEDS with a truncated,
+  // non-conservative map instead of refusing.
+  plan.flags = fuse::RemapFlags::Conservative;
+  const auto refused = fuse::build_weights(plan, graph, backend);
+  ASSERT_FALSE(refused.ok()) << "RemapFlags::Conservative must refuse a "
+                                "partial-overlap pair, not silently "
+                                "truncate it";
+  EXPECT_EQ(refused.error().code, "E-REMAP-COVERAGE");
+  EXPECT_NE(refused.error().message.find("Conservative flag to accept a truncating map"),
+           std::string::npos)
+      << "the refusal must carry advice on what to do, not just its own "
+         "name: \"" << refused.error().message << "\"";
+
+  // Without the flag, the IDENTICAL pair must still succeed (truncating,
+  // not refusing) -- the flag, not the geometry, is what decides.
+  plan.flags = fuse::RemapFlags::None;
+  const auto truncated = fuse::build_weights(plan, graph, backend);
+  ASSERT_TRUE(truncated.ok()) << truncated.error().code << ": "
+                              << truncated.error().message;
+  EXPECT_LT(truncated.value().min_src_coverage, 0.6)
+      << "the shifted pair must genuinely be a partial overlap, or this "
+         "test is not exercising the boundary it claims to";
 }
 
 // ---- inward_plane whitebox regression (REVIEW.md R-12/BK-M2) -----------
