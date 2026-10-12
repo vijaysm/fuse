@@ -192,6 +192,7 @@ Result<void> Runner::Impl::evaluate_region_residual(
       break;
     }
     adv_err = components.at(tick.slot).advance(ctx);
+    note_component_ran();
     if (!adv_err.ok()) break;
   }
 
@@ -235,6 +236,7 @@ Result<void> Runner::Impl::evaluate_region_residual(
   if (!skip_restore) {
     for (const std::size_t slot : R.component_slots) {
       const Result<void> rs = components.at(slot).restore_state();
+      note_component_ran();
       if (!rs.ok() && restore_err.ok()) restore_err = rs;
     }
     for (std::size_t i = 0; i < R.carried_arcs.size(); ++i) {

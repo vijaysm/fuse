@@ -183,6 +183,14 @@ struct RunStats {
   /// reads on the host. Exactly 0 under `Host`. Counts arcs, not bytes, so
   /// a test can assert the device path held data without staging.
   std::int64_t device_resident_arcs = 0;
+  /// Copies across the host/device boundary in Device mode: a host-
+  /// registered Provides field's device mirror refreshed before a kernel
+  /// reads it (once per component step it is read after), and a Sink/Epoch/
+  /// Accelerate copy whose two arcs live in different spaces. A same-space
+  /// copy does not count. 0 under Host. In Device mode with every field
+  /// device-registered, the only crossings left are the two around each
+  /// Transport, host code until the GPU-aware transport step.
+  std::int64_t device_boundary_copies = 0;
 };
 
 /// Per-region outcome of the most recent period (spec §5.3).

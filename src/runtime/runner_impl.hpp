@@ -695,6 +695,23 @@ struct Runner::Impl {
   /// exactly one of the two (the other entry is empty). Filled by
   /// place_arcs_on_device() at the end of setup(); see Slot::device.
   std::vector<Kokkos::View<double*, DeviceMemSpace>> device_storage;
+  /// Device mirror of a component-owned HOST field that a Space-generic
+  /// instruction reads (Device mode only; empty otherwise). Refreshed from
+  /// the host field the first time a kernel reads it after component code
+  /// ran (`component_epoch` below), read in place of a staging lane by
+  /// span_c(); never written by a kernel (span_m() still stages such a
+  /// slot, so a write reaches the host field).
+  std::vector<Kokkos::View<double*, DeviceMemSpace>> device_mirror;
+  /// A host field changes only inside component code (advance(),
+  /// restore_state()) or when the application fills an ExternalDelivery
+  /// buffer. `component_epoch` counts those events; `device_mirror_epoch[a]`
+  /// is the epoch mirror `a` was last copied at, so a mirror read between
+  /// two such events is copied once, and a field nobody reads is never
+  /// copied. Every call site that hands control to a component bumps it
+  /// through note_component_ran().
+  std::uint64_t              component_epoch = 1;
+  std::vector<std::uint64_t> device_mirror_epoch;
+  void note_component_ran() noexcept { ++component_epoch; }
   std::vector<detail::Slot>        slots;         // parallel to arcs
   std::vector<std::vector<double>> previous;      // previous iterate, for Relax
   std::vector<std::size_t>         sample_count;  // per arc, for Accumulate
