@@ -340,7 +340,10 @@ kind = "typed"
 test = [
   "SpaceKernels.CopyScaleAndResidualMatchThePlainArithmetic",
   "SpaceKernels.RemapApplyMultiComponentMatchesApplyWeightsOrder",
-  "SpaceKernels.DeterministicReductionsMatchTheChunkedReferenceExactly",
+  # Renamed by the FpPolicy track (KNOWN_ISSUES.md D30): the test also
+  # checks a derived forward-error bound when FUSE_FP_REPRODUCIBLE=OFF, so
+  # "...Exactly" alone overstated it in that configuration.
+  "SpaceKernels.DeterministicReductionsMatchTheChunkedReferenceExactlyOrWithinTheFpContractionBound",
   "RunnerDeterminism.LargeIterationRegionIsBitIdenticalAcrossThreadCounts",
 ]
 

@@ -3232,7 +3232,7 @@ like the examples do.
 examples gated by `if(FUSE_LINALG_BACKEND STREQUAL "eigen")`, with a configure-time
 message listing what is skipped) or the option is retired. Not decided here.
 
-### D30. Two bit-for-bit tests fail by one ulp in a Release build — a decision on floating-point contraction
+### D30. Two bit-for-bit tests fail by one ulp in a Release build — a decision on floating-point contraction — DECIDED AND CLOSED 2026-10-12
 
 **Measured 2026-10-10 on a clean export of `cd26801`, `-DCMAKE_BUILD_TYPE=Release`, otherwise the
 tier-0 configuration** (found by the example-documentation pass, which built the `tier0-release`
@@ -3244,22 +3244,39 @@ preset; reproduced by the lead):
   (`num.space_kernels`): `1.2895225459088601e+34` vs `1.2895225459088599e+34` and
   `1.3007153382180115e+34` vs `1.3007153382180113e+34` — one ulp each.
 
-Every one of the 179 tier-0 rows passes in Debug, which is the configuration every commit this
-cycle was verified in, and nothing in the build sets a contraction policy (`-ffp-contract`,
-`-ffast-math` and `-fp-model` appear nowhere in `CMakeLists.txt`, `cmake/` or `src/CMakeLists.txt`
-— grepped). Apple clang contracts `a*b + c` into a fused multiply-add at `-O2` and not at `-O0`,
-so a kernel and the plain loop it is compared against round differently once either is
-contracted and the other is not. The tests are not wrong about what they measure; they measure a
-property — bit-identity between two evaluation orders — that holds only without contraction.
+Every one of the 179 tier-0 rows passed in Debug, the configuration every commit that cycle was
+verified in, and nothing in the build set a contraction policy (`-ffp-contract`, `-ffast-math` and
+`-fp-model` appeared nowhere in `CMakeLists.txt`, `cmake/` or `src/CMakeLists.txt` — grepped).
 
-**Not fixed, because it is a decision rather than a defect.** Two defensible answers, and they
-pull in different directions: (a) set `-ffp-contract=off` for every target, which makes a Release
-build reproduce a Debug build's bits (the goldens and the bit-for-bit comparisons then hold in both)
-at the cost of the slightly more accurate fused results; or (b) keep contraction and restate the
-three assertions as a measured one-ulp bound in Release, with the goldens re-pinned per build
-type. The robustness rule favours (a); the accuracy rule, read literally, favours (b). Until the
-owner decides, the Release configuration is **built and known to fail these three cases**, and no
-Release number is cited anywhere in the documentation.
+**Correction of this entry's first account (2026-10-12).** It said that Apple clang contracts
+`a*b + c` into a fused multiply-add at `-O2` and not at `-O0`. That is false. The compiler's default
+is contraction *on* at every optimisation level, and `docs/dev/testing.md` ("Floating-point
+contraction policy") has the disassembly. Debug agreed with the plain loop because at `-O0` neither
+the library's loop nor the test's reference loop is vectorised or unrolled, so both are the same
+sequence of fused instructions. At `-O2` the vectoriser splits the library's runtime-length
+reduction into an always-unfused vector body plus a remainder that is fused by default, while the
+test's reference loop, whose length is a compile-time constant, is fully unrolled and fused. One
+limit is recorded there too: a minimal standalone reproduction of the same source did not show the
+split, so the account comes from the real objects, not from an isolated case.
+
+**Decision (the owner's, 2026-10-12): offer both, chosen per use.** `FUSE_FP_REPRODUCIBLE`
+(`cmake/FuseFpPolicy.cmake`, default **ON**) applies `-ffp-contract=off` to every C, C++ and Fortran
+target of this repository and to none of the vendored sources; **OFF** keeps the compiler's default
+and is the `tier0-release-fast` preset. ON changes Debug's numbers as well as Release's, because the
+flag reaches `-O0` too. Under OFF the three bit-identity assertions become the forward-error bound for
+recursive summation, `2 γₙ Σ|xᵢ|` (Higham, *Accuracy and Stability of Numerical Algorithms*, 2nd ed.,
+secs. 3.1 and 4.2), with a worst observed ratio of 0.0060 (`DistVector::dot`, n = 37) and 0.0031
+(`deterministic_norm_squared`, n = 256). A probe test, `base.fp_policy`, shows that the flag reached the
+compiler, and it fails in both Debug and Release when the call that applies the flag is removed.
+
+**What turning it ON moved.** Two tests outside the three named cases changed under ON:
+`num.accelerator` no longer pins rounding-dependent iteration counts (its two cases are restated as
+the properties they name), and `verification.fsi_energy_diag` now evaluates the energy budget on the
+beam's own oscillatory mode, because the old "dominant" eigenvalue is Newmark's acceleration
+passenger, λ = −1, whose energy is rounding noise. One sub-assertion of that test is not closed: D34.
+
+Verified 2026-10-12 from a clean export: Debug (policy ON), 179 of 179 quick rows and 16 of 16 slow
+rows; Release ON, the 5 touched rows; Release OFF, 4 of 5 touched rows, the failure being D34's.
 
 ### D27. The native backend's remap halo has no `accumulate_remap_halo` counterpart
 
@@ -4080,3 +4097,44 @@ every machine; it passes on the fix and fails on both the removed line and the o
 gives the same 194 rows and `THREADS_HI=12`. Configure now also states when the host has one core,
 because the omp legs then compare one thread with one thread whatever the registration does.
 Not covered: Windows (the check is skipped; `ProcessorCount()` reads `NUMBER_OF_PROCESSORS` there).
+
+### D34. The FSI beam-side energy identity has an unexplained mismatch floor of about 1e-12, so it passes or fails with the contraction policy — OPEN 2026-10-12
+
+**Where.** `FsiEnergyDiag.FullBudgetOnTheDominantModeCloses`
+(`test/verification/fsi_energy_diag_test.cpp`), the beam-side identity sub-assertion. Its tolerance is
+`eig_quality × |E0|`, the form it had before this cycle. A widening of the factor from 1.0 to 1.5,
+made after the assertion failed at a ratio of 1.029, was rejected and reverted: a constant chosen
+after a failure is a widened tolerance. The closure assertion the test was redesigned around passes
+in every configuration below.
+
+**Measured 2026-10-12 in Release, same eigenvalue in both (|λ| = 0.995144, arg = 4.3931°):**
+
+| policy | mode index | E0 | eig_quality | mismatch | tolerance | ratio | closure ratio |
+|---|---|---|---|---|---|---|---|
+| ON (default) | 13 | 1.4605e-04 | 1.966e-08 | 1.091e-12 | 2.872e-12 | 0.380 | 2.382e-03 |
+| OFF (`tier0-release-fast`) | 8 | 2.2337e-04 | 4.5e-09 | 1.052e-12 | 1.022e-12 | **1.029, fails** | 1.364e-01 |
+
+**Reading it.** The mismatch is the same in both policies. What differs is the tolerance, which
+follows the eigenvector's accuracy, and the eigenvector is less accurate under ON. So the ON pass is
+not evidence that the identity closes to that level; it passes because its tolerance is 2.8 times
+looser there. Debug with ON gives the same ratio as Release with ON, 0.380.
+
+**Excluded by measurement.**
+
+- The coupling tolerance: the mismatch is bit-identical for tolerances from 1e-14 to 1e-8, in both
+  policies.
+- The eigenvector's quality: a perturbation that worsened it by up to about 5000 times left the
+  mismatch unchanged to six or seven digits. (A uniform rescaling leaves it exactly unchanged on this
+  nearly linear system, which is why an additive perturbation was needed.)
+- An iterative solver's tolerance: both `examples/fsi_channel` solvers are direct (`Eigen::SparseLU`).
+- The fluid step's conditioning: κ₂ of the 53 × 53 matrix is 3.53e5, and its forward error, measured
+  against an 80-digit arbitrary-precision solve (`long double` equals `double` on this machine, so it
+  could not serve as a reference), is 2.2e-15. The mismatch relative to E0 is 4.7e-9 (OFF); even the
+  worst-case κu = 7.8e-11 is below it.
+- The beam system: κ₂ of the effective Newmark matrix is 1.22, and 45.9 for the stiffness matrix alone.
+
+**Not yet tried.** Whether the floor is absolute, since it is the same on two different modes and in
+both policies: sweep the mode's amplitude and the coupling step, and read what the mismatch scales with.
+
+**Decision (the user, 2026-10-12): commit with the default ON, record it, investigate next.** Under
+OFF this one sub-assertion fails. No tolerance was chosen after the failure.

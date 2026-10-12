@@ -12,7 +12,8 @@ so you pay for what you use and the minimum build stays small enough to compile 
 | **`tier3`** | PETSc | The implicit/monolithic solver plugin and the optional `physics-kit` component |
 
 Orthogonal options, each independent of the build configuration: LowFive/HDF5 (transport by HDF5
-interception), pybind11 (Python module), a Fortran compiler, and a GPU backend for Kokkos.
+interception), pybind11 (Python module), a Fortran compiler, a GPU backend for Kokkos, and the
+floating-point contraction policy ([below](#floating-point-reproducibility-vs-speed)).
 
 A build configuration is a **prefix**: enabling a higher one without its predecessors is a
 configuration error, not a silent downgrade.
@@ -50,6 +51,54 @@ factorisations and has no `builtin` implementation — `factor()` refuses with
 at configure time on those targets rather than silently dropping them (KNOWN_ISSUES.md D26).
 Building `fuse::linalg` or `fuse::base`/`fuse::model`/`fuse::ir`/`fuse::schedule` on their own under
 `builtin` is unaffected.
+
+## Floating-point reproducibility vs. speed
+
+`a*b + c` can be rounded once, as a single fused multiply-add instruction, or twice — multiply,
+round, then add. Compilers choose the once-rounded (contracted) form **by default at every
+optimization level** (confirmed on this project's reference compiler, Apple clang: contraction is
+the default at `-O0` just as much as at `-O2`/`-O3` — it is not an optimization). What actually
+differs between a Debug and a Release build of the same reduction loop is code SHAPE, not rounding
+policy as such: an optimizing build's auto-vectorizer commonly splits a runtime-sized loop into a
+vectorized main body (whose multiply and add are always separate instructions, regardless of the
+contraction flag) plus a short scalar remainder (whose rounding DOES follow the flag), while an
+unoptimized build and a compile-time-sized reference loop are not vectorized or are fully unrolled,
+respectively — so a Release build can fail a test that a Debug build of the same code passes, not
+because Release "turned contraction on," but because the two build types take structurally different
+paths through the same arithmetic ([](../dev/testing.md#floating-point-contraction-policy) has the
+measured instruction counts). `FUSE_FP_REPRODUCIBLE` (default **ON**) resolves this with a
+build-wide choice instead of leaving it to the compiler and its optimizer:
+
+`ON` (default)
+: `-ffp-contract=off` for every C, C++ and Fortran target, in every build type — including Debug,
+  whose own arithmetic is contracted by default too, so this is a genuinely new numerical
+  configuration there as well, not a return to Debug's historical bit pattern. The cost is twofold:
+  somewhat slower per-operation arithmetic (a separately-rounded multiply-then-add instead of one
+  fused instruction), and — measured, not assumed — individual operations become a correctly-rounded
+  single-rounding operation's worth *less* accurate, which can, for an ill-conditioned iterative
+  method, shift an iteration count by one step or push a convergence check past its tolerance (see
+  [](../dev/testing.md#a-measured-cost-beyond-speed-iteration-sensitive-tests-restated-as-what-they-actually-show)
+  for the two tests this was measured to affect, in both build types).
+
+`OFF`
+: The compiler's own default contraction policy, which an optimized build will generally choose for
+  speed. Bit-for-bit comparisons that assumed no contraction are then checked against a derived
+  forward-error bound instead (the same tests as above); every pre-existing numerical regression
+  test keeps its original tolerance.
+
+Which matters more — reproducing a reference build's exact bits, or the small per-operation accuracy
+and speed difference — depends on the problem and what the result is being used for; neither choice
+is correct for every use case. The `tier0-release` preset keeps the default (`ON`); a matching
+`tier0-release-fast` preset sets `FUSE_FP_REPRODUCIBLE=OFF`:
+
+```bash
+cmake --preset tier0-release        # FUSE_FP_REPRODUCIBLE=ON  (default)
+cmake --preset tier0-release-fast   # FUSE_FP_REPRODUCIBLE=OFF
+```
+
+A CUDA device build has the equivalent choice under a different flag (`nvcc`'s `-fmad=false` for the
+reproducible policy, matching `-ffp-contract=off`) — not wired up by this option, since it governs
+only the host-side C/C++/Fortran compilers; left as a note for whichever build adds device support.
 
 ## Dependency versions
 

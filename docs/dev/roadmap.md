@@ -32,9 +32,13 @@ titles are closed) by which stage above they qualify, so a reader does not have 
 file to see what is left in each.
 
 **S0 / build infrastructure** — D26 (`FUSE_LINALG_BACKEND=builtin` fails to configure since the
-examples link Eigen directly; the option's own fate, real configuration or retired, is undecided); D30 (a Release build fails three bit-for-bit cases by one ulp through
-floating-point contraction; whether to set `-ffp-contract=off` everywhere or restate the assertions
-per build type is the owner's decision).
+examples link Eigen directly; the option's own fate, real configuration or retired, is undecided);
+~~D30~~ (closed: `FUSE_FP_REPRODUCIBLE`, default ON, offers both — `-ffp-contract=off` everywhere
+(bit-for-bit reproducible, the default) or the compiler's own contraction with the three affected
+assertions restated as a derived forward-error bound; [](testing.md#floating-point-contraction-policy)
+has the measured cost and a found-in-closing regression: two pre-existing, unrelated tests
+(`num.accelerator`, `verification.fsi_energy_diag`) fail under the reproducible default because
+removing contraction measurably changes an ill-conditioned iteration's own convergence).
 
 **S5 / backends** — D27 (the native backend's remap halo has a forward fill,
 `remap_halo_pattern`/`make_mpi_exchanger`, but no `accumulate_remap_halo` — the reverse exchange a

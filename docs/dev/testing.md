@@ -94,8 +94,10 @@ each output element's write touches no other; the per-sweep block value/residual
 (`iteration.cpp`) are the one place that argument does not apply, since a plain
 `Kokkos::parallel_reduce`'s summation order is the threads' — they use a fixed-chunk scheme instead
 (`space_kernels.hpp`'s `deterministic_dot`/`deterministic_norm_squared`(`_diff`)), verified against
-a plain-host reference with `EXPECT_EQ` (`SpaceKernels.
-DeterministicReductionsMatchTheChunkedReferenceExactly`) and, at the Runner level, by a real
+a plain-host reference with `EXPECT_EQ` under `FUSE_FP_REPRODUCIBLE` and against a derived bound
+otherwise (`SpaceKernels.
+DeterministicReductionsMatchTheChunkedReferenceExactlyOrWithinTheFpContractionBound` — renamed from
+`...Exactly`, see "Floating-point contraction policy" below) and, at the Runner level, by a real
 2048-element iteration region pinned to measured literals across every `OMP_NUM_THREADS`
 (`runtime.runner_determinism`, `fuse_add_omp_legs`). See `KNOWN_ISSUES.md` D11's closing entry for
 the full account, including the one label-length allocation trap this closing found and fixed, and
@@ -143,6 +145,258 @@ convergence**, not just a tolerance: a transfer that is accidentally first-order
 tolerance and fails an order gate. Conservation properties assert the integral to round-off. Iteration
 counts for accelerated coupling are regression-tested exactly, because a silent change in count is how
 an acceleration bug presents.
+
+## Floating-point contraction policy
+
+`FUSE_FP_REPRODUCIBLE` (`cmake/FuseFpPolicy.cmake`, default **ON**) decides whether `a*b + c` is
+rounded once (a fused multiply-add) or twice (multiply, round, then add — `-ffp-contract=off`,
+applied to every C, C++ and Fortran target). **Measured 2026-10-12**, reproducing `KNOWN_ISSUES.md`
+D30 at the stock compiler default (no flag at all, `tier0-release`, Apple clang 21.0.0): exactly
+three named cases fail by one ulp and nothing else does —
+`DistVectorOneRank.ArithmeticMatchesAPlainLoopBitForBit` (`linalg.dist_vector`) and
+`SpaceKernels/{0,1}.DeterministicReductionsMatchTheChunkedReferenceExactly`
+(`num.space_kernels{,.omp1,.omp8}`) — 184 of 188 tier-0 rows passing. Both are renamed below
+(`...ExactlyOrWithinTheFpContractionBound`) because under `FUSE_FP_REPRODUCIBLE=OFF` they no longer
+claim bit-identity.
+
+**D30's own account of *why* this happens was wrong, and the record is corrected here rather than
+quietly fixed.** D30 said "Apple clang contracts `a*b + c` into a fused multiply-add at `-O2` and
+not at `-O0`." That is false, confirmed directly: `double f(double a,double b,double c){return
+a*b+c;}` compiled `-S` emits one `fmadd` (the fused form) at `-O0` with the compiler's **default**
+flags, zero `fmadd` at `-O0 -ffp-contract=off`, and the SAME one `fmadd` at `-O2` with default flags
+— `-ffp-contract`'s default is `on` at every optimization level this compiler has; it is not toggled
+by `-O0` vs `-O2`. The true mechanism, found by disassembling the actual built objects (not assumed):
+`DistVector::dot()`'s and `deterministic_dot()`'s reduction loops have a **runtime** trip count, so
+LLVM's auto-vectorizer at `-O2`/`-O3` splits each into a NEON-vectorized main body — computing every
+product with a plain, always-unfused `fmul.2d` and summing the results with a chain of scalar `fadd`
+— plus a short scalar **remainder** loop (the elements left over after the vector width) that uses one
+fused `fmadd` by default, or the same unfused `fmul`+`fadd` under `-ffp-contract=off`; confirmed
+identical vectorized-body instructions, flag or no flag, in both `DistVector::dot` and
+`deterministic_dot<Serial>`, with the remainder tail the ONLY place that differs. `dist_vector_test.cpp`'s
+own reference loop, whose trip count (`n=37`) IS a compile-time constant, is instead FULLY UNROLLED
+by LLVM into 37 individual scalar instructions — fused by default, unfused under the flag — never
+vectorized at all. At `-O0` (Debug), nothing is vectorized or unrolled by either side: the library's
+loop and the test's reference loop both compile to the textually literal sequence of fused `fmadd`
+instructions, in the same ascending order, and so necessarily agree bit for bit — which is why Debug
+always passed, not because `-O0` fails to contract. At `-O2`/`-O3` without the flag, the library's
+loop is *partly* unfused (its vectorized main body, unconditionally) while the test's loop is
+*entirely* fused (unrolled, default contraction) — a genuine disagreement over the vectorized
+elements, which is the real source of the one-ulp mismatch. Adding `-ffp-contract=off` project-wide
+does not "restore Debug's bits" in Release: it makes the library's already-partly-unfused loop and
+the test's now-also-unfused unrolled loop agree with EACH OTHER (all unfused, ascending order) — a
+DIFFERENT, equally valid rounding from Debug's own historical (all-fused) one, which happens to
+satisfy the test's equality assertion because both sides of the comparison now take the same path,
+not because either value matches a prior baseline. This is also why `FUSE_FP_REPRODUCIBLE=ON`
+changes Debug's OWN numbers, not just Release's: the flag reaches `-O0` too, turning Debug's
+previously-always-fused arithmetic into always-unfused arithmetic — a genuinely NEW numerical
+configuration in both build types, which is the reason the two regressions below
+(`num.accelerator`, `verification.fsi_energy_diag`) appear under `ON` in Debug as well as Release.
+`deterministic_dot`'s inner chunk loop (`space_kernels.hpp`) and the test's own
+`ChunkedSerialDotReference` showed the identical vectorized-main/fused-remainder split on direct
+disassembly of the same compiled object, flag on vs off; the exact size of that remainder tail for a
+given chunk was not re-derived from the generic trip-count arithmetic the vectorizer emits (that
+depends on register-allocation and cost-model choices specific to each call site, which a minimal
+standalone reproduction of the same source did not reproduce — stated rather than guessed at).
+
+### The forward-error bound (OFF)
+
+With the flag off, the three comparisons above are checked against the standard forward-error bound
+for recursive summation (Higham, *Accuracy and Stability of Numerical Algorithms*, 2nd ed., secs.
+3.1/4.2): two IEEE 754 evaluations of `sum_i x_i` — contracted or not, since a fused multiply-add is
+itself correctly rounded and so cannot make an evaluation *worse* than this bound — differ by at most
+
+```
+2 * gamma_n * sum_i |x_i|,   gamma_n = n*u / (1 - n*u),   u = 2^-53
+```
+
+`test/linalg/dist_vector_test.cpp`'s `forward_error_bound()` uses `n` = the vector length (37) for
+the flat `DistVector::dot`/self-dot reduction. `test/num/space_kernels_test.cpp`'s
+`chunked_forward_error_bound()` generalises `n` for `deterministic_dot`/`_norm_squared`(`_diff`)'s
+two-level chunked scheme (chunks of up to `kDeterministicChunk` = 256, then a sum of chunk totals):
+it uses `n_eff = b + n_chunks`, where `b = min(256, n)` is the longest chunk and `n_chunks =
+deterministic_chunks(n)` the number of chunks — one term more than the exact root-to-leaf operation
+count (`(b-1) + (n_chunks-1)`) needs, and strictly larger than the tighter two-level bound
+(`gamma_{b-1} + gamma_{n_chunks-1}`, valid by the triangle inequality since each level's own partial
+sums are bounded by the same `sum_i|x_i|`) by `gamma`'s monotonicity — a conservative, not a tuned,
+choice (the test file's own comment has the full derivation). `deterministic_sum`'s own comparison,
+and the single-chunk-equals-the-plain-oracle check in the same test, stay exact in both
+configurations: `s += v[i]` contains no multiply, so no contraction policy can change its rounding.
+
+**Worst observed ratio of (measured difference) / (bound), Release + `FUSE_FP_REPRODUCIBLE=OFF`,
+printed by every run of these two tests (not only on failure):** 0.0060 (`DistVector::dot`, n=37);
+0.0031 (`deterministic_norm_squared`, n=256) — three orders of magnitude of margin, consistent with a
+bound that was derived, not tuned to the data.
+
+### The probe test (`base.fp_policy`)
+
+`test/base/fp_policy_test.cpp` checks that the flag actually reached the compiler, with a
+hand-picked triple (`kA`/`kB`/`kC`, recorded as exact hexadecimal literals) for which `std::fma` and
+a volatile-forced two-step evaluation are proven, by the test's own `ASSERT_NE` precondition, to
+differ on this compiler — then asserts `a*b+c ==` the two-step value under `FUSE_FP_REPRODUCIBLE==1`
+and only prints the observed difference, asserting nothing, under `==0`. Because the flag's default
+(`on`, fused) applies at **every** optimization level, not only `-O2`/`-O3` (the corrected premise
+above), this single, unvectorized expression is sensitive to the flag in Debug exactly as it is in
+Release — **hand-proved 2026-10-12** in both: deleting the call that applies the C/CXX half of the
+policy (`fuse_apply_fp_contract_policy_c_cxx()`, `CMakeLists.txt`) fails
+`FpPolicy.ContractionIsOffWhenReproducible` in a Release tree (`-4.0672332501391795` vs
+`-4.0672332501391804`) AND in a Debug tree (same two values), while the precondition test still
+passes in both; `CMakeLists.txt` was restored byte-identically after each. `tools/mutate.py`'s
+`requires = "release"` gate, added under the original (wrong) premise that only a Release tree could
+see this mutation, is therefore DROPPED (`build-evidence/mutations/fp-policy.toml`'s row carries no
+`requires` key) — the row is now proved and KILLED in whichever build type `mutate.py` happens to run
+against, with no configuration-dependent exemption.
+
+### Applying the flag without reaching third-party sources
+
+The C/CXX half is applied in `CMakeLists.txt` right after `fuse_resolve_dependencies()` — once every
+`FetchContent_MakeAvailable` call that function makes (r3d, yaml-cpp, on a machine with neither
+installed) has already run — so it reaches `src/`, `test/`, `examples/` and the golden-descriptor
+tool, never the vendored third-party sources or `upstream/soma`/`upstream/karma` (invariant I8: an
+import that had to be patched to build is not an import, and injecting a new compiler flag into a
+vendored build is the same category of change even without editing its own `CMakeLists.txt`). The
+Fortran half is a separate function (`fuse_apply_fp_contract_policy_fortran()`), called from
+`cmake/FuseFortran.cmake` right after `enable_language(Fortran)` and before `add_subdirectory(fortran)`
+— `CMAKE_Fortran_COMPILER_ID` does not exist before that call, and a directory added before a compile
+option is set in its parent's scope never inherits it, the same ordering hazard `FUSE_ENABLE_FORTRAN`
+is already declared early to avoid. Verified in `compile_commands.json`, not assumed: every Kokkos-
+kernel-instantiating TU checked (`src/linalg/dist_vector.cpp`, `dist_vector_test.cpp`,
+`space_kernels_test.cpp`, `brusselator_physics_test.cpp`, `fp_policy_test.cpp`) carries
+`-ffp-contract=off` under `FUSE_FP_REPRODUCIBLE=ON`, and the Fortran provider's and `ffuse`'s own
+`flags.make` carry it too.
+
+**Compiler coverage.** GNU, Clang and AppleClang accept `-ffp-contract=off` identically (confirmed on
+this machine: Apple clang 21.0.0 and Homebrew GNU Fortran 16.2.0). Any other C/C++ compiler gets a
+CMake `WARNING` instead of a silently-assumed flag (MSVC's `/fp:precise` and Intel's `-fp-model=
+precise` are different flags, untested here, not added). **Not covered, by design:** a CUDA device
+build's own contraction (`nvcc`'s `-fmad`, default `ON`) needs the matching `-fmad=false` — documented
+here as follow-up for the device branch (A5), not added, since this machine has no CUDA toolchain to
+test it against.
+
+### Measured run-time cost
+
+**NOISY — see caveat below.** `OMP_NUM_THREADS=1`, 11 repetitions per cell (median \[min, max\]),
+compiled with each build's own flags, `-O3 -DNDEBUG -mcpu=native`:
+
+| Kernel | n | ON (reproducible) | OFF (fast) |
+|---|---|---|---|
+| `DistVector::dot` | 5,000,000 | 4.693 \[4.511, 4.869\] ms | 4.688 \[4.443, 5.076\] ms |
+| `DistVector::axpy` | 5,000,000 | 1.972 \[1.432, 3.869\] ms | 1.765 \[1.315, 2.374\] ms |
+| `deterministic_dot<Serial>` | 5,000,000 | 2.702 \[2.591, 2.943\] ms | 3.514 \[3.062, 4.665\] ms |
+| `deterministic_sum<Serial>` | 5,000,000 | 2.518 \[2.436, 2.854\] ms | 2.875 \[2.542, 4.466\] ms |
+| `brusselator::reaction_kokkos_span` | 2,000,000 | 0.530 \[0.514, 1.143\] ms | 0.581 \[0.530, 1.529\] ms |
+| `fuse_example_brusselator --driver runner --end 1.0` (end to end) | — | 1008.3 \[974.2, 1111.5\] ms | 994.7 \[990.1, 1064.9\] ms |
+
+**Caveat, stated rather than hidden: this machine could not be made quiet.** The methodology called
+for `load1 < 3` before each batch, retried up to 10 times at 60 s intervals; two other tracks were
+building concurrently throughout and `load1` never dropped below 6 in ten attempts (range 6.0–13.8
+across all batches). Every row above is labelled **NOISY**. `deterministic_sum` contains no multiply
+at all (`s += v[i]`) and therefore cannot be affected by a contraction policy either way, yet shows a
+"cost" of the same order as the kernels that do — direct evidence the differences above are
+contention noise, not a measured cost attributable to `-ffp-contract`. **The lead repeats this
+measurement on a quiet machine**; until then, no speedup or slowdown number from this table should be
+cited as a property of the flag.
+
+### A measured cost beyond speed: iteration-sensitive tests, restated as what they actually show
+
+Round 2 of this track found that `FUSE_FP_REPRODUCIBLE=ON` (the chosen default) regressed three
+pre-existing, unowned tests because each asserted a *specific* iteration count or energy-closure
+value that turned out to be a measurement of the compiler's default (contracted) arithmetic, not a
+robust property of the method. **Round 3, measured 2026-10-12 (user decision 2026-10-12: restate
+each test as the property it is actually named for; default stays `ON`)**, restated two of the
+three and made the third's own exemption visible rather than silent — this track edited only these
+three `TEST(...)` bodies (its only edit permission this round); `examples/` and `src/` were untouched:
+
+- **`Accelerator.LadderIsMonotoneOnADenseLinearProblem`** (`test/num/accelerator_test.cpp`) no
+  longer pins `n_aitken == 56`. A 24-way perturbation of the problem's initial vector by 1 ulp of
+  1.0 showed `n_aitken` spans `{55, 56, 57, 59}` under BOTH contraction policies (contracted:
+  `{55:3, 56:12, 57:7, 59:2}`, mean 56.42; `ON`: `{55:3, 56:14, 57:6, 59:1}`, mean 56.25) — 56 is
+  the single most common value in both, and the `56->57` shift between the two unperturbed
+  baselines sits well inside this natural scatter, confirming the literal was a rounding-dependent
+  number. The test's *own name* — "monotone" — is what is actually asserted now: the pre-existing
+  ordering relations (`n_secant < n_picard`, `n_aitken < n_secant`, `n_ils < n_aitken`,
+  `n_imvj <= n_ils`) hold for every one of the 48 measured values of `n_aitken`, under both
+  policies, so this test now PASSES under `ON`.
+- **`Accelerator.SteffensenIsExactOnADiagonalProblemAndBasisDependent`** (same file) no longer pins
+  `n_dense == 681`. Residual histories under the two policies track each other to 5-6 significant
+  figures through iteration 35, then both enter an intermittent-burst regime (k~60-165) consistent
+  with a trajectory near a chaotic basin boundary; the contracted build's bursts happen to relax
+  back into convergence by k=681, `ON`'s does not and diverges instead. The same 24-way, 1-ulp
+  perturbation showed this is not specific to `ON`: 4 of 24 (16.7%) perturbed runs also diverge
+  (non-convergent, `-1`) under the DEFAULT contracted policy, and 8 of 24 (33%) under `ON`; the
+  convergent runs ranged 488-2366 iterations in both policies. 681 was one outcome of a dynamical
+  system whose qualitative behaviour is controlled by perturbations far smaller than any physically
+  meaningful input, not a reproducible property — so the test now asserts what it is actually named
+  for, basis dependence: `n_dense == -1` or `n_dense >= 20 * n_diag` (with `n_diag` itself exact at
+  `2` in all 48 measured runs). `K = 20` carries more than a 12x margin below the weakest ratio
+  actually measured (488/2 = 244) while remaining far larger than any ratio a well-conditioned
+  method could reach by chance; this test now also PASSES under `ON`.
+- **`FsiEnergyDiag.FullBudgetOnTheDominantModeCloses`** (`test/verification/fsi_energy_diag_test.cpp`).
+  Round 3's `GTEST_SKIP()` treatment (above) was itself superseded 2026-10-12 (user decision: redesign
+  the check around a mode with real energy, rather than make the old mode's exemption more visible).
+  The dominant eigenvalue (`lambda = -1`, Newmark's acceleration passenger) is *retained* only as a
+  cheap growth-rate sanity check (`EXPECT_LE(eig.rho, 1.0 + 1e-6)`) with no energy-budget assertion —
+  it carries no energy of its own in either policy (measured in round 3: `E0` is within 1-2 orders of
+  magnitude of its own eigenvector-accuracy noise floor), so no closure check on it could ever be
+  trustworthy. The budget is instead evaluated on **the beam's own oscillatory mode**: among the full
+  spectrum's complex-conjugate eigenvalue pairs (printed once per run), the one whose argument is
+  closest to `omega1*dt` (the phase a free oscillator at the beam's own fundamental frequency would
+  advance in one coupling step) and whose two-part energy `Q(Re v)+Q(Im v)` exceeds `1e-6` of the full
+  spectrum's total — a criterion applied in code, not chosen by trial. (Measured: `omega1*dt` = 9.00
+  deg/step; the discrete beam-alone estimate is 8.09 deg/step; the selected coupled-system mode sits
+  at 4.39 deg/step, roughly half of either — consistent with fluid ADDED MASS lowering the coupled
+  system's effective frequency, not a selection error.) Since a real coupling period cannot start
+  from a complex state, the check runs `run_one_coupled_period_with_budget` on the eigenvector's real
+  and imaginary parts SEPARATELY (`x`, `x_im`) and combines them: for a real matrix `M` with
+  `M v = lambda v` and ANY quadratic form `Q`, `Q(M x) + Q(M x_im) = |lambda|^2 * (Q(x) + Q(x_im))`
+  exactly (the cross term between the two parts cancels in the sum) — verified numerically on this
+  `M1`/mode to a relative difference of `7.3e-17` (machine precision), and confirmed to be the
+  phase-independent quantity to use: `Q(x)+Q(x_im)` agreed to 7 significant figures between the two
+  contraction policies (`3.871039808e-04` vs `3.871040e-04`) even though the individual real/imaginary
+  energies differed between them. The tolerance is DERIVED (Cauchy-Schwarz on the energy inner
+  product, full derivation in the code comment) from each part's own measured `eig_quality` (residual
+  against the correct two-part eigen-prediction, not simply `lambda*x`) and a measured energy-density
+  proxy, not chosen: `2|lambda| sqrt(E0) sqrt(Q(r)) + Q(r)`. A non-vacuity assertion
+  (`E0/(eig_quality^2 |x|^2) > 1e6`) fails loudly, rather than passing silently, if this test ever
+  lands on an energetically-empty mode again — the passenger mode's own worst measured ratio was
+  `~54`; this mode measures `~1e12`, ten-plus orders of magnitude higher, so the `1e6` bar has wide
+  margin on both sides.
+
+  The pre-existing beam-side/fluid-side identity checks further down the same test function now run
+  on the real part's own production period and are reachable/load-bearing again (see
+  `build-evidence/mutations/fsi.toml`). Round 4 first recalibrated the beam-side identity's tolerance
+  factor from `1.0` to `1.5` because factor `1.0` narrowly failed on this less-favourably-resolved
+  mode (`1.029` contracted). **That recalibration was reverted 2026-10-12** (round 5): a tolerance
+  widened specifically because one run failed is a widened tolerance regardless of how the new number
+  is framed, and the comment's own theoretical basis for factor `1.0` — that the identity cannot close
+  tighter than `eig_quality*|E0|` because `x` is only an approximate eigenvector — does not actually
+  hold for this identity, which is computed entirely from one production run's own data and never
+  references `x` being an eigenvector at all. Measured directly (sweeping `CoupledCase::tol` over six
+  orders of magnitude, and separately perturbing `x`'s direction to move `eig_quality` by a factor of
+  nearly `5000`, in both contraction policies): the beam-side mismatch (`~1.05e-12` to `~1.09e-12`) is
+  insensitive to both, refuting the mechanism the factor was tuned against. A third candidate, the
+  beam stiffness matrix's own condition number (measured `~45.9` via `natural_frequencies(5)`), is far
+  too small on its own to turn machine round-off into the observed floor. No first-principles
+  algebraic derivation of the floor's actual value was found this round, so per the standing rule the
+  factor is restored to `1.0` and the assertion is left to fail where it fails: Release+`OFF`
+  (mismatch/tolerance `1.029`). It passes under Release+`ON` and Debug+`ON` (`0.380`). This is reported
+  as an open, unresolved finding on this specific sub-assertion, not patched over — see the
+  `beam_identity_tol` comment in `fsi_energy_diag_test.cpp` for the full measurement table.
+
+Full `ctest`, both targets, after round 5 (measured 2026-10-12):
+
+| `CMAKE_BUILD_TYPE` | `FUSE_FP_REPRODUCIBLE` | `num.accelerator` | `verification.fsi_energy_diag` |
+|---|---|---|---|
+| Release | ON  | Passed (2/2 cases OK) | **Passed** (`FullBudgetOnTheDominantModeCloses` OK, closure mismatch/tolerance `2.38e-3`, non-vacuity `1.0e12`, beam-identity mismatch/tolerance `0.380`) |
+| Release | OFF | Passed (2/2 cases OK) | **FAILED** (closure mismatch/tolerance `1.36e-1`, non-vacuity `4.5e12` both pass; `FullBudgetOnTheDominantModeCloses` FAILS at the beam-side identity's `ASSERT_NEAR`, mismatch/tolerance `1.029` — see above) |
+| Debug   | ON  | Passed (2/2 cases OK) | **Passed** (identical numbers to Release+ON, as D30's own mechanism predicts) |
+
+The open question round 3 left — a real, continuing `ON`-default failure on the growth-rate-only
+passenger mode — is closed by round 4's redesign: the top-level closure now demonstrably closes, with
+a comfortable, derived margin, in all three required configurations, in both policies. What remains
+open is narrower and different in kind: one of the two pre-existing identity sub-assertions this test
+also carries fails under the DEFAULT (contracted) policy on this new mode, by a measured but
+not-yet-explained floor of about `1.05e-12`, with both of the mechanisms the original tolerance assumed
+(`eig_quality`, `CoupledCase::tol`) measured and ruled out.
 
 ## Golden files
 
