@@ -3017,18 +3017,25 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
     staged[n_staged++] = Staged{p, writable, len};
     return lane;
   };
+  // After a staging fault the lane handed back is lane 0 and `len` may exceed
+  // the stride (or the whole buffer), so every view built after the fault is
+  // zero-length: the kernels between here and the post-switch `E-RT-DEVICE`
+  // report become no-ops instead of writing past the lane. Nothing is
+  // written back after a fault, so a no-op kernel costs nothing observable.
   const auto span_c = [&](const double* p, std::size_t len) {
     if constexpr (kHostAccessible) {
       return num::ConstSpanOf<Space>(p, len);
     } else {
-      return num::ConstSpanOf<Space>(stage(p, len, nullptr), len);
+      double* const lane = stage(p, len, nullptr);
+      return num::ConstSpanOf<Space>(lane, staging_fault ? 0 : len);
     }
   };
   const auto span_m = [&](double* p, std::size_t len) {
     if constexpr (kHostAccessible) {
       return num::SpanOf<Space>(p, len);
     } else {
-      return num::SpanOf<Space>(stage(p, len, p), len);
+      double* const lane = stage(p, len, p);
+      return num::SpanOf<Space>(lane, staging_fault ? 0 : len);
     }
   };
 
