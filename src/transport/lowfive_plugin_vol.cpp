@@ -66,6 +66,7 @@
 #endif
 
 #include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <vector>
 
@@ -94,43 +95,95 @@ void ConfigureOnce() {
     std::atexit(+[] { H5close(); });
 
     fuse::lowfive_plugin_internal::Config cfg;
-    // A failed LoadConfig() (missing FUSE_LOWFIVE_BINDINGS, a bad graph
-    // path) leaves cfg at its default -- empty bindings, not
-    // distributed -- so this process's HDF5 traffic reaches a real file
-    // rather than crashing; fuse::lowfive_plugin_internal::LoadConfig's
-    // own stderr (lowfive_plugin_graph.cpp) already named why.
-    (void)fuse::lowfive_plugin_internal::LoadConfig(&cfg);
+    const bool config_loaded = fuse::lowfive_plugin_internal::LoadConfig(&cfg);
 
     bool distributed_configured = false;
 #if defined(FUSE_LOWFIVE_DIST_LIB_FOUND) && FUSE_HAVE_MPI
-    if (cfg.distributed) {
+    // Review 2026-10-11 TR-2. MPI_Comm_split and MPI_Intercomm_create are
+    // each collective over MPI_COMM_WORLD (the split) or the union of the
+    // two local groups it produces (the intercomm rendezvous), but the
+    // call used to sit inside `if (cfg.distributed)` -- a rank the LowFive
+    // channel does not name never took `cfg.distributed`, so it never
+    // called either, while a rank that did took the opposite branch and
+    // blocked in them forever. The split below is issued on every rank
+    // that reaches this line, participant or not: a non-participant
+    // passes MPI_UNDEFINED, which MPI defines to hand it MPI_COMM_NULL and
+    // exclude it from the result without excluding it from the
+    // collective. Only a participant's `local` is non-null, so only a
+    // participant goes on to the leader-to-leader rendezvous.
+    //
+    // This closes the finding's first hazard (participant-only calls); it
+    // does not close the second one the same finding names -- the split
+    // still runs only on a rank whose OWN first H5P_DEFAULT call triggers
+    // this lazily-loaded plugin at all, and a rank that never makes one
+    // (a pure orchestrator touching no HDF5 file) still never reaches this
+    // line. Moving the rendezvous into an explicit step every participant
+    // calls regardless of its own HDF5 usage (connect()'s own MPMD
+    // choreography is the natural site, since every FUSE-aware process in
+    // the launch already calls it) is the larger fix that closes that
+    // half; left to the lead, and recorded unmeasured either way (D14):
+    // this plugin has not run on a host yet.
+    {
+      int split_color = MPI_UNDEFINED;
+      int split_key   = 0;
+      if (config_loaded && cfg.distributed) {
+        split_color = cfg.rendezvous.split_color;
+        split_key   = cfg.rendezvous.split_key;
+      }
       MPI_Comm local = MPI_COMM_NULL;
-      MPI_Comm_split(MPI_COMM_WORLD, cfg.rendezvous.split_color, cfg.rendezvous.split_key,
-                    &local);
-      MPI_Comm intercomm = MPI_COMM_NULL;
-      MPI_Intercomm_create(local, cfg.rendezvous.local_leader, MPI_COMM_WORLD,
-                           cfg.rendezvous.remote_leader, cfg.rendezvous.tag, &intercomm);
-      LowFive::DistMetadataVOL& vol =
-          LowFive::DistMetadataVOL::create_DistMetadataVOL(local, intercomm);
-      ApplyBindings(vol, cfg.bindings);
-      distributed_configured = true;
+      MPI_Comm_split(MPI_COMM_WORLD, split_color, split_key, &local);
+      if (config_loaded && cfg.distributed) {
+        MPI_Comm intercomm = MPI_COMM_NULL;
+        MPI_Intercomm_create(local, cfg.rendezvous.local_leader, MPI_COMM_WORLD,
+                             cfg.rendezvous.remote_leader, cfg.rendezvous.tag, &intercomm);
+        LowFive::DistMetadataVOL& vol =
+            LowFive::DistMetadataVOL::create_DistMetadataVOL(local, intercomm);
+        ApplyBindings(vol, cfg.bindings);
+        distributed_configured = true;
+      }
     }
 #endif
-    if (!distributed_configured) {
-      if (cfg.distributed) {
+
+    // Review 2026-10-11 TR-4. A failed LoadConfig() (missing
+    // FUSE_LOWFIVE_BINDINGS, a bad graph path) or a distributed config
+    // this build cannot honour (no DistMetadataVOL) used to attach
+    // MetadataVOL with zero bindings -- every later HDF5 call then
+    // silently reached a real file instead of refusing, which is exactly
+    // the substitution transport.hpp's own contract and docs/user/
+    // lowfive.md both rule out ("it never silently degrades to file
+    // I/O"). Both cases now abort the job with the diagnostic
+    // LoadConfig() or this block already printed, instead of constructing
+    // a connector that cannot do the job it was loaded to do.
+    if (!config_loaded || (cfg.distributed && !distributed_configured)) {
+      if (cfg.distributed && !distributed_configured) {
         // fputs, not fmt::print: this file's whole reason for existing is
         // to never include a header that pulls fmt in either of its two
         // conflicting forms (lowfive_plugin_internal.hpp's own comment) --
         // raw stdio is the only formatter available here at all.
         std::fputs(  // NOLINT(fuse-raw-io)
             "fuse-lowfive-vol: a distributed rendezvous was computed but this plugin "
-            "was built without DistMetadataVOL support -- falling back to the "
-            "single-process connector, which will NOT cross processes\n",
+            "was built without DistMetadataVOL support -- refusing rather than silently "
+            "falling back to a connector that will NOT cross processes\n",
             stderr);
       }
-      // Single-process fallback -- identical to VolSingleton's own
+      std::fflush(stderr);
+#if FUSE_HAVE_MPI
+      int mpi_initialized = 0;
+      MPI_Initialized(&mpi_initialized);
+      if (mpi_initialized) {
+        MPI_Abort(MPI_COMM_WORLD, 71);
+      }
+#endif
+      std::abort();
+    }
+
+    if (!distributed_configured) {
+      // Single-process connector -- identical to VolSingleton's own
       // construction (lowfive_transport.cpp), but with this plugin's
       // own, graph-specific bindings instead of one wildcard pattern.
+      // Reached only when LoadConfig() succeeded and the config is
+      // honestly single-process (cfg.distributed is false), never as a
+      // degraded substitute for a distributed request that failed.
       LowFive::MetadataVOL& vol = LowFive::MetadataVOL::create_MetadataVOL();
       ApplyBindings(vol, cfg.bindings);
     }
