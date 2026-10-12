@@ -100,6 +100,18 @@ struct SupermeshSide {
   MeshId mid;
 };
 
+/// How far a cell's supermesh coverage may sit from 1 before the overlap is
+/// treated as partial rather than as arithmetic -- a property of the
+/// backend-agnostic coverage audit (`audit_coverage`, used by both the MOAB
+/// and the dependency-free path, since the clipping it measures comes from
+/// `MeshView`, not from MOAB itself; shared here so the two paths cannot
+/// drift onto two different numbers for the same check). The worst per-cell
+/// coverage defect measured on the hardest supported case -- MOAB's
+/// 3456-cell cubed sphere against an equiangular 1536-cell partner, 7374
+/// intersection polygons including slivers -- is 7.7e-14, five decades below
+/// this.
+constexpr double kCoverageTol = 1e-9;
+
 [[nodiscard]] Result<SupermeshSide> supermesh_side(const CouplingGraph& graph,
                                                     const MeshBackend& backend,
                                                     RegionId id, ComponentId placement,
@@ -204,8 +216,31 @@ struct SupermeshSide {
               "communicator and remap redundantly on every rank."};
     }
   }
-  return build_supermesh_weights(*s.value().view, *d.value().view,
-                                 s.value().dim);
+  auto built = build_supermesh_weights(*s.value().view, *d.value().view,
+                                       s.value().dim);
+  if (!built.ok()) return built.error();
+  // Soma-import finding (docs/dev/soma-import.md, RemapPartial.* rows): this
+  // path computed min_src_coverage all along (build_supermesh_weights's own
+  // audit) but never read it against RemapFlags::Conservative -- only the
+  // FUSE_HAVE_MOAB half of this file enforced the refusal, so a tier-0
+  // (no-MOAB) build silently dropped uncovered source mass on a channel
+  // explicitly marked Conservative. Same check, same tolerance, same error
+  // code as the MOAB path below, so a plan rejected there is rejected here
+  // for the identical reason.
+  if (has(plan.flags, RemapFlags::Conservative) &&
+      built.value().min_src_coverage < 1.0 - kCoverageTol) {
+    return Failure{
+        "E-REMAP-COVERAGE",
+        "RemapFlags::Conservative was requested, but the target domain "
+        "covers only " +
+            std::to_string(built.value().min_src_coverage * 100.0) +
+            "% of the worst source cell (of " +
+            std::to_string(built.value().n_cols) +
+            "). The mass in the uncovered part would be dropped, not "
+            "transferred, so the map would not be conservative. Make the "
+            "two regions cover the same domain."};
+  }
+  return built;
 }
 
 }  // namespace
@@ -309,13 +344,6 @@ using V3 = std::array<double, 3>;
 // as reproducing that measurement, does not exist under `test/backend/`.
 // Implemented, untested (docs/dev/testing.md state).
 // ---------------------------------------------------------------------------
-
-/// How far a cell's supermesh coverage may sit from 1 before the overlap is
-/// treated as partial rather than as arithmetic. The worst per-cell coverage
-/// defect measured on the hardest supported case -- MOAB's 3456-cell cubed
-/// sphere against an equiangular 1536-cell partner, 7374 intersection polygons
-/// including slivers -- is 7.7e-14, five decades below this.
-constexpr double kCoverageTol = 1e-9;
 
 /// Relative slack when deciding that a coordinate sits on a cell's bounding
 /// box, that a vertex sits on a sphere, or that a mesh is planar.

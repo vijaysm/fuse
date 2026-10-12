@@ -1,0 +1,34 @@
+# Mutations for the soma-import track (docs/dev/soma-import.md). Own file per
+# the review-fix protocol (build-evidence/mutations/backend-supermesh.toml's
+# own header comment): do not edit build-evidence/mutations.toml directly
+# while other tracks hold it dirty.
+
+[[mutation]]
+id = "remap-apply-zero-components-not-rejected"
+area = "backend"
+describes = "fuse::apply_weights()'s own E-REMAP-ARG contract (RemapApply.RejectsBadArguments, ported from upstream/soma/test/unit/remap_test.cpp): components == 0 must be refused before the unsigned arithmetic below it runs with components == 0 (a vacuous, not a rejected, call)."
+file = "include/fuse/backend/remap_plan.hpp"
+old = "  if (components < 1) {\n    return Failure{\"E-REMAP-ARG\", \"apply_weights: components must be >= 1, not \""
+new = "  if (components < -1) {\n    return Failure{\"E-REMAP-ARG\", \"apply_weights: components must be >= 1, not \""
+target = "fuse_backend_remap_apply_test"
+test = "backend.remap_apply"
+
+[[mutation]]
+id = "supermesh-conservative-coverage-not-enforced"
+area = "backend"
+describes = "Soma-import finding (docs/dev/soma-import.md, RemapPartial.SourceWiderThanTargetIsRefusedWhenConservativeIsAsked): on a tier-0 (no-MOAB) build, build_weights()'s dependency-free supermesh path must refuse E-REMAP-COVERAGE when RemapFlags::Conservative is set and min_src_coverage is below the audited tolerance -- the fix this port landed alongside the test (previously this path ignored the flag entirely; only the FUSE_HAVE_MOAB half of this file enforced it)."
+file = "src/backend/intx_weights.cpp"
+old = "  if (has(plan.flags, RemapFlags::Conservative) &&\n      built.value().min_src_coverage < 1.0 - kCoverageTol) {"
+new = "  if (false && has(plan.flags, RemapFlags::Conservative) &&\n      built.value().min_src_coverage < 1.0 - kCoverageTol) {"
+target = "fuse_backend_supermesh_test"
+test = "backend.supermesh"
+
+[[mutation]]
+id = "abi-double-destroy-not-reported"
+area = "abi"
+describes = "participant.h's own documented contract ('a double destroy is FUSE_ERR_INVALID, not a crash'), ported from upstream/soma/test/unit/capi_test.c's test_double_destroy_and_stale_handles: with_ctx()'s stale-handle branch must return FUSE_ERR_INVALID, not FUSE_OK, so a second destroy() on an already-destroyed handle is reported rather than silently accepted (the branch that skips re-entering the real teardown code is left untouched by this mutation -- only the status it returns is wrong, so no double-free is exercised by the mutant itself)."
+file = "src/abi/participant.cpp"
+old = "  if (!live) {\n    return fail(nullptr, FUSE_ERR_INVALID, \"E-ABI-HANDLE\",\n               \"fuse: invalid, null, or already-destroyed fuse_ctx handle\");\n  }"
+new = "  if (!live) {\n    return fail(nullptr, FUSE_OK, \"E-ABI-HANDLE\",\n               \"fuse: invalid, null, or already-destroyed fuse_ctx handle\");\n  }"
+target = "fuse_abi_participant_robustness_test"
+test = "abi.participant_robustness"
