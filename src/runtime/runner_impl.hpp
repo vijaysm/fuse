@@ -688,6 +688,38 @@ struct Runner::Impl {
 #endif
   using DeviceMemSpace = typename DeviceExecSpace::memory_space;
 
+  /// Space-aware moves between a Slot and host memory, for the host-side
+  /// bookkeeping of iteration.cpp / fixed_point_residual.cpp (gather and
+  /// scatter of the accelerator vector, checkpoint and verify snapshots, the
+  /// Newton seam's save/restore). For a host slot each is byte for byte the
+  /// num::copy / assign it replaced; for a device slot it is one deep_copy.
+  /// docs/dev/device-resident-arcs.md, step 3.
+  static void slot_to_host(const detail::Slot& s, double* dst, std::size_t n) {
+    if (!s.device) { num::copy(s.data, dst, n); return; }
+    Kokkos::deep_copy(num::SpanOf<HostExecSpace>(dst, n),
+                      num::ConstSpanOf<DeviceExecSpace>(s.data, n));
+  }
+  static void host_to_slot(const double* src, const detail::Slot& s, std::size_t n) {
+    if (!s.device) { num::copy(src, s.data, n); return; }
+    Kokkos::deep_copy(num::SpanOf<DeviceExecSpace>(s.data, n),
+                      num::ConstSpanOf<HostExecSpace>(src, n));
+  }
+  static void slot_to_vector(const detail::Slot& s, std::vector<double>& v, std::size_t n) {
+    if (!s.device) { v.assign(s.data, s.data + n); return; }
+    v.resize(n);
+    slot_to_host(s, v.data(), n);
+  }
+  /// A host pointer to `n` values of the slot: the slot itself when it is
+  /// host memory, otherwise `scratch` after one copy (sized here; callers
+  /// in the sweep loop pass a vector sized once at setup).
+  static const double* slot_host_read(const detail::Slot& s, std::size_t n,
+                                      std::vector<double>& scratch) {
+    if (!s.device) return s.data;
+    if (scratch.size() < n) scratch.resize(n);
+    slot_to_host(s, scratch.data(), n);
+    return scratch.data();
+  }
+
   bool initialized = false;
 
   std::vector<std::vector<double>> storage;       // coupler-owned, one per arc
@@ -1084,6 +1116,10 @@ struct Runner::Impl {
   /// per sweep, per iteration.cpp's own header comment (point 4: nothing in
   /// the sweep loop may allocate).
   Kokkos::View<double*, Kokkos::HostSpace> reduction_scratch;
+  /// Host landing buffer for slot_host_read() in the sweep loop, sized once
+  /// in setup() to the longest region block (Device mode only; empty under
+  /// Host, where slot_host_read() never copies).
+  std::vector<double> block_host_scratch;
 
   /// A5: the device path's ONLY buffer, allocated once in `setup()` when
   /// `config.execution_space == Device` (zero-extent otherwise). Every arc
