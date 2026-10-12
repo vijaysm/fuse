@@ -31,9 +31,12 @@ sphinx-build -W -b html docs docs/_build/html
 
 ## Status
 
-**S0 through S6 are complete** (S6's conformance case closed 2026-10-07; of its planned legs only the
+**S0 through S6: the conformance case is closed** (2026-10-07; of its planned legs only the
 Python front end and Python provider kind are absent — `FUSE_ENABLE_PYTHON` exists as an option with
-nothing behind it). `fuse::` now spans all thirteen
+nothing behind it). S6's own exit condition also names retiring `upstream/soma` whole once every
+path is superseded (`UPSTREAMS.lock`'s `retire_at = "S6"`); that is still outstanding — a handful
+of parallel-test and order-study paths are not yet superseded, so `retired` there is still `""` —
+and is tracked separately from the conformance case. `fuse::` now spans all thirteen
 of its public namespaces — `base`, `model`, `ir`, `schedule`, `runtime`, `num`, `backend` (the
 serial mesh, MOAB, and a native distributed unstructured mesh with its own halo exchange and
 repartition/migration), `linalg` (a row-distributed vector and sparse matrix, preconditioned PCG
