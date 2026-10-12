@@ -2,8 +2,8 @@
 #
 # A row is listed here when its measured average wall time is at least
 # 10 s (CTestCostData.txt from the development host's `all` build, 313 rows,
-# summed 1322 s; these 16 rows are 92% of that sum, the other
-# 297 rows total 103 s). They get the ctest label `slow`, so
+# summed 1566 s; these 17 rows are 93% of that sum, the other
+# 296 rows total 103 s). They get the ctest label `slow`, so
 #
 #     ctest -LE slow          or          ctest --preset tier0-quick
 #
@@ -19,6 +19,7 @@
 # two outputs exactly (tools/compare-runs.cmake).
 set(FUSE_SLOW_TESTS
   example.brusselator.omp_identical                    #  313.2 s
+  petsc.brusselator_newton                             #  244.2 s average of 5 runs; a passing run took 1220.8 s (the other four were aborted early)
   verification.gray_scott_reference                    #  238.2 s
   verification.fsi_transient                           #  198.3 s
   verification.fsi_energy_diag                         #  123.9 s
