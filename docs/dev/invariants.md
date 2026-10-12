@@ -104,7 +104,11 @@ descriptor's bytes are reproducible). Three rules follow, each with a test:
 - **Multiplying or dividing an affine unit is refused** (`E-BASE-UNITS-AFFINE`). Degrees Celsius
   squared is not a quantity, and dropping the offset would be a silent error no dimensional check
   can see.
-- **A scale-only mismatch on a channel is its own verdict** (`E-UNITS-SCALE`), not an `E-UNITS`
-  incompatibility and not silence. It is a conversion the compiler will insert once transform
-  inference lands (S2.4); until then it is refused, because applying the wrong factor every step is
-  worse than a configure-time error.
+- **A scale-only mismatch on a channel is its own verdict**, not an `E-UNITS` incompatibility and
+  not silence. Transform inference (S2.4) has landed: under `ConnectPolicy::allow_automatic_unit_scale`
+  (the default), an exact, zero-offset scale is inferred as a `UnitScale` operator and *reported*,
+  not silent — `validate()` emits `I-UNIT-SCALE-INSERTED` naming the factor, because the user should
+  see an operator they did not write. `E-UNITS-SCALE` is the verdict only when insertion is not
+  permitted (the policy forbids it) or not possible (an offset change, which moves the zero of the
+  scale and is never inserted on the caller's behalf) — applying the wrong factor, or silently
+  moving a zero, every step is worse than a reported insertion or a refusal.
