@@ -45,7 +45,7 @@ class AllocationCounter {
 }  // namespace
 
 void* operator new(std::size_t n) {
-  // #ifndef __CUDA_ARCH__, not just std::abort() instead of throw: a
+  // #ifndef/#ifdef __CUDA_ARCH__ around the counting AND the failure path: a
   // CUDA-enabled Kokkos dual-compiles every global operator new/delete
   // override for device too (nothing here is reachable from a kernel; nvcc
   // does this unconditionally), and the device side can neither support
@@ -54,7 +54,11 @@ void* operator new(std::size_t n) {
   if (g_counting) ++g_allocations;
 #endif
   void* p = std::malloc(n == 0 ? 1 : n);
-  if (p == nullptr) std::abort();
+#ifdef __CUDA_ARCH__
+  if (p == nullptr) __trap();  // the device pass cannot throw (and never runs this)
+#else
+  if (p == nullptr) throw std::bad_alloc();  // the standard contract, on the host
+#endif
   return p;
 }
 void* operator new[](std::size_t n) { return ::operator new(n); }
