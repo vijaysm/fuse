@@ -127,15 +127,19 @@ instruction and per arc) and is the first thing to read when a twin fails.
 
 The rule is one leg per rung of the ladder, so no configuration can rot unnoticed.
 
-**Running today** (`.github/workflows/ci.yml`): the layering, invariant and import-identity gates; a
-documentation build with warnings as errors; **tier 0 as four legs** — Debug and Release across both
-linear-algebra backends, with dependencies resolved from the runner's prefixes (`FUSE_ALLOW_FETCH=ON`
-there, since a CI runner has no tuned install) — and a **no-exceptions leg** that
-builds with `FUSE_ENABLE_EXCEPTIONS=OFF` and runs every test not labelled `throws`.
+**Running today** (`.github/workflows/ci.yml`): the layering, invariant and import-identity gates;
+the mutation-anchor staleness check (`tools/mutate.py --check-anchors` — static, no build, no git
+requirement: it only confirms every logged mutation's anchor text still occurs exactly once in its
+file); a documentation build with warnings as errors; **tier 0 as four legs** — Debug and Release
+across both linear-algebra backends, with dependencies resolved from the runner's prefixes
+(`FUSE_ALLOW_FETCH=ON` there, since a CI runner has no tuned install) — and a **no-exceptions leg**
+that builds with `FUSE_ENABLE_EXCEPTIONS=OFF` and runs every test not labelled `throws`.
 
 **Planned**: tier 1 at 2/3/4/5 ranks (S4), tier 2 and tier 3 (S5, S7), an ASan+UBSan leg (S1 exit),
-LowFive (S6), and the mutation gate as a CI leg once its runtime is acceptable — today it is run before
-a port is accepted and its log committed under `build-evidence/`.
+LowFive (S6), and *running the mutations themselves* as a CI leg once its runtime is acceptable —
+today that step (apply each mutation, build, confirm the target fails) is run before a port is
+accepted, on the owner's machine, with its log committed under `build-evidence/`; only the
+staleness check above has moved into CI.
 
 The `throws` label is **declared** on a test target, not detected: a parent tried to find
 refusal-asserting tests by grep, by helper name and by catch site, and both detectors were wrong in

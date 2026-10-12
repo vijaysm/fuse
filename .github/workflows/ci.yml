@@ -17,6 +17,13 @@ jobs:
       # Byte-identity of upstream/ against the manifest (invariant I8). The
       # stronger --parents form needs the parent repositories and runs locally.
       - run: python3 tools/verify-import.py
+      # I9's mutation-evidence record: static, sub-second, no build and no
+      # git-clean requirement (--check-anchors only reads build-evidence/*.toml
+      # against the source tree). Does not run the mutations themselves --
+      # that needs a configured build and runs on the owner's machine (see
+      # docs/dev/testing.md) -- but an anchor that drifted out from under its
+      # KILLED evidence is now caught here instead of nowhere.
+      - run: python3 tools/mutate.py --check-anchors
 
   docs:
     name: docs
