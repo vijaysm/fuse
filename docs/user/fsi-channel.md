@@ -211,8 +211,19 @@ discretisation error (fixed by also seeding the beam at its own analytic static 
 
 ## State
 
-**Verified.** `example.fsi_channel` and `example.fsi_channel.omp_identical` pass at tier 0 on this
-build; every verification suite in the table above passes both in this sandbox and on the host
-(2026-09-25 run). No multi-rank or MOAB-dependent path exists for this example — both the fluid and
-beam solvers are single-rank Eigen `SparseLU` factorisations, and the non-matching 1D interface
-remap uses FUSE's consistent/conservative-transpose builders on the serial backend.
+**Verified**, with two `FUSE_ENABLE_CUSPARSE` caveats. `example.fsi_channel` and
+`example.fsi_channel.omp_identical` pass at tier 0 on this build; every verification suite in the
+table above passes both in this sandbox and on the host (2026-09-25 run). No multi-rank or
+MOAB-dependent path exists for this example — both the fluid and beam solvers are single-rank: the
+beam is always plain Eigen `SparseLU`, and the fluid solve goes through `SparseLuBackend`, Eigen
+`SparseLU` by default; the non-matching 1D interface remap uses FUSE's
+consistent/conservative-transpose builders on the serial backend.
+
+Under `FUSE_ENABLE_CUSPARSE`, the fluid solve's `SparseLuBackend` is cusolverRf instead: both `example.fsi_channel`
+rows above are then `DISABLED` (reported as "Not Run (Disabled)") rather than failing, because the
+coupling is marginally stable at the step nearest the beam's first natural period and a ~1e-12
+change in the fluid solve is enough to tip it — true on the flag-off build too under weaker
+accelerators (`KNOWN_ISSUES.md` D36). Separately, `fsi_energy_diag_test.cpp`'s one 480-period case
+is `GTEST_SKIP`ped under the flag: cusolverRf's solve is not bitwise reproducible run to run in situ
+on this host, and that case usually fails to converge at period 140 because of it; the other five
+cases in the binary still run (D37).
