@@ -4055,3 +4055,28 @@ by the `petsc-forcing-floor-not-applied` mutation. **Still open under D32:** the
 solves on `MPI_COMM_SELF` (correct while D31 restricts Newton regions to one participant; the
 communicator plumbing is D31's), and the agreement bounds in the two examples carry a 20× margin
 because the result structs expose a post-first-step residual rather than ‖F₀‖.
+
+### D33. The omp legs and the `omp_identical` rows were registered with one thread whenever configure ran under `OMP_NUM_THREADS=1` — CLOSED 2026-10-12
+
+`test/CMakeLists.txt` took the host core count from CMake's `ProcessorCount()`, and registered each
+`*.omp<N>` leg and each `example.*.omp_identical` row with it. `ProcessorCount()` asks `sysctl -n
+hw.ncpu` first and then `nproc`, and GNU `nproc` returns the value of `OMP_NUM_THREADS` when it is
+set. Where `sysctl` answers (macOS), the variable has no effect. Where it does not, the count follows
+the variable. Measured 2026-10-12 on this development sandbox, where `sysctl` fails with "Operation
+not permitted" and the Homebrew `nproc` answers: configuring the committed head under
+`OMP_NUM_THREADS=1` registered 13 omp legs and gave all five `omp_identical` rows `THREADS_HI=1`; with
+the variable unset the same tree registers 26 legs and `THREADS_HI=12`. The five rows are the slowest
+in the suite, and with `THREADS_HI=1` each compares one thread with one thread, passes, and can no
+longer detect an order-dependent sum. The build tree on the owner's machine (`build-all`) was not
+affected: it reads `THREADS_HI=12` in all five rows and has 26 legs. Any Linux host with GNU `nproc`
+would be.
+
+Fixed by `fuse_host_core_count()` in `cmake/FuseHostCores.cmake`, which removes the variable from the
+environment for the duration of the call and restores it, and by a ctest row,
+`build.host_core_count_ignores_omp_threads`, that runs `tools/check-host-cores.cmake`. The row puts a
+failing `sysctl` and a GNU-style `nproc` first on `PATH`, so it reaches the variable-reading branch on
+every machine; it passes on the fix and fails on both the removed line and the original bare
+`ProcessorCount()`. With the fix, configuring under `OMP_NUM_THREADS=1` and with the variable unset
+gives the same 194 rows and `THREADS_HI=12`. Configure now also states when the host has one core,
+because the omp legs then compare one thread with one thread whatever the registration does.
+Not covered: Windows (the check is skipped; `ProcessorCount()` reads `NUMBER_OF_PROCESSORS` there).

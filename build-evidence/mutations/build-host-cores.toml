@@ -1,0 +1,19 @@
+# Mutations for cmake/FuseHostCores.cmake: the host core count that registers
+# the omp legs and the example.*.omp_identical rows must not depend on
+# OMP_NUM_THREADS. The test is a ctest row (build.host_core_count_ignores_omp_threads)
+# that runs tools/check-host-cores.cmake with a failing sysctl and a GNU-style
+# nproc first on PATH, so it reaches the environment-reading branch on every
+# machine -- see that file for why a plain call would pass on a Mac whose
+# sysctl works. The target is any buildable target: the mutated module is
+# included by test/CMakeLists.txt, so building it re-runs the configure.
+
+[[mutation]]
+id = "host-core-count-reads-omp-num-threads"
+area = "build_host_cores"
+describes = "fuse_host_core_count() removes OMP_NUM_THREADS from the environment before calling ProcessorCount(), because GNU nproc (reached when sysctl is blocked or absent, and on every Linux host) returns that variable's value. Dropping the removal restores the defect: under OMP_NUM_THREADS=1 the omp legs shrink from 26 to 13 and every omp_identical row compares one thread with one thread."
+file = "cmake/FuseHostCores.cmake"
+old = "    unset(ENV{OMP_NUM_THREADS})\n"
+new = "    # [mutated] OMP_NUM_THREADS left in the environment\n"
+target = "fuse-coupler-base"
+test = "build.host_core_count_ignores_omp_threads"
+result = "KILLED by tools/mutate.py --area build_host_cores on a tier-0 tree configured from the commit's own files (194 rows, 178 quick, the quick tier 100% green): 1 killed, 0 not killed, of 1. The module was restored byte-identically (cmp against the checkout's copy). Also run by hand on a scratch copy, both ways: with the unset line removed, and with the helper replaced by a bare ProcessorCount() (the pre-fix code), tools/check-host-cores.cmake exits 1 with the counts unset=7, OMP_NUM_THREADS=1 -> 1, OMP_NUM_THREADS=3 -> 3; on the unmutated helper it exits 0 with 7, 7, 7. An earlier version of the check, which called the helper without fake tools, exited 0 on the copy with the line removed: on this machine ProcessorCount() answers from sysctl there, so the check could not see the defect."

@@ -51,10 +51,16 @@ set_property(GLOBAL PROPERTY FUSE_GATED_TEST_SOURCES "")
 # and the space kernels in num/space_kernels.hpp are verified but uncalled.
 # Running the runner tests at two thread counts would compare a serial loop
 # with itself. That is a capability gap (KNOWN_ISSUES.md D11), not a test gap.
-include(ProcessorCount)
-ProcessorCount(_fuse_host_cores)
+# cmake/FuseHostCores.cmake: the count ignores OMP_NUM_THREADS, which
+# ProcessorCount() would honour (a configure under OMP_NUM_THREADS=1 then drops
+# the all-cores legs and turns every omp_identical row into a 1-vs-1 comparison).
+include(FuseHostCores)
+fuse_host_core_count(_fuse_host_cores)
 if(_fuse_host_cores EQUAL 0)
   set(_fuse_host_cores 4)
+endif()
+if(_fuse_host_cores LESS 2)
+  message(STATUS "fuse: ONE host core -- the omp legs and example.*.omp_identical compare one thread with one thread and cannot detect a thread-count dependence")
 endif()
 if(TARGET Kokkos::kokkos)
   get_target_property(_fuse_kokkos_devices Kokkos::kokkos INTERFACE_COMPILE_DEFINITIONS)
@@ -78,6 +84,12 @@ endif()
 # not measured, until now.
 set(FUSE_KOKKOS_HAS_OPENMP ${FUSE_KOKKOS_HAS_OPENMP} PARENT_SCOPE)
 set(_fuse_host_cores ${_fuse_host_cores} PARENT_SCOPE)
+# The registration above is only as good as the count: this fails if a change
+# makes it depend on OMP_NUM_THREADS again (see cmake/FuseHostCores.cmake).
+add_test(NAME build.host_core_count_ignores_omp_threads
+         COMMAND ${CMAKE_COMMAND} -DFUSE_CHECK_TMP=${CMAKE_CURRENT_BINARY_DIR}/host-cores-probe
+                 -P ${CMAKE_SOURCE_DIR}/tools/check-host-cores.cmake)
+set_tests_properties(build.host_core_count_ignores_omp_threads PROPERTIES LABELS "build")
 function(fuse_add_omp_legs test_name target)
   if(NOT FUSE_KOKKOS_HAS_OPENMP)
     return()
@@ -91,9 +103,8 @@ function(fuse_add_omp_legs test_name target)
   if(ARG_THROWS)
     list(APPEND labels throws)
   endif()
-  # One core (or ProcessorCount reading an OMP_NUM_THREADS=1 environment)
-  # makes the list `1 1`, and a second add_test of the same name is a
-  # configure error, so the duplicate is removed.
+  # One core makes the list `1 1`, and a second add_test of the same name is
+  # a configure error, so the duplicate is removed.
   set(_counts 1 ${_fuse_host_cores})
   list(REMOVE_DUPLICATES _counts)
   foreach(n IN LISTS _counts)
