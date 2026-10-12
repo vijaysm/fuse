@@ -3557,6 +3557,15 @@ build that does not contract. That is D30's open, project-wide decision, not clo
 by `build-evidence/mutations.toml` and deliberately left as they are; `runtime.runner_device` asserts
 `<= 1e-14` relative for those two shapes and bitwise for the rest (A5).
 
+**Accepted 2026-10-12 (owner's decision), TODO kept here.** Working-precision agreement between the
+device and host paths for `Relax` and weighted `Remap` is acceptable; closing the gap is not
+scheduled. If it is ever wanted: route `RelaxFunctor`'s `omega * current(i) + one_minus * previous(i)`
+and `RemapMultiFunctor`'s weighted accumulation through `unfused_multiply_add()` (the same idiom as the
+reductions), re-anchor the two rows in `build-evidence/mutations.toml`, and tighten the
+`runtime.runner_device` assertion from `1e-14` to bitwise. Any new device kernel added under
+`docs/dev/device-resident-arcs.md` follows the same contract: bitwise where the host side is a
+reduction the determinism contract covers, working precision elsewhere, stated by its test.
+
 ### ~~D39. `fuse-abi-shared`'s install RPATH named only yaml-cpp, so an installed consumer could not load Kokkos or the MOAB chain~~ — FIXED 2026-10-10; libMOAB.so's own rpath gap WORKED AROUND at test time
 
 **Measured 2026-10-10** on this host after an external MOAB rebuild: `backend.moab_mesh` and both
