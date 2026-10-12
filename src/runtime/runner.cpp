@@ -256,6 +256,8 @@ Result<void> Runner::Impl::resolve_buffers(FieldRegistry& registry) {
 
   storage.assign(buffers.size(), {});
   device_storage.assign(buffers.size(), {});
+  device_mirror.assign(buffers.size(), {});
+  device_mirror_epoch.assign(buffers.size(), 0);
   slots.assign(buffers.size(), Slot{});
   previous.assign(buffers.size(), {});
   sample_count.assign(buffers.size(), 0);
@@ -321,12 +323,17 @@ Result<void> Runner::Impl::resolve_buffers(FieldRegistry& registry) {
                        "register_fields?"};
     }
     FieldRef view = ref.value();  // by value: FieldRegistry hands back a copy
-    if (view.space() != MemorySpace::Host) {
+    if (view.space() != MemorySpace::Host &&
+        config.execution_space != RunnerConfig::RunnerExecutionSpace::Device) {
+      // docs/dev/device-resident-arcs.md: a device-registered field is only
+      // reachable by the Space-generic kernels and the space-aware boundary
+      // copies, both of which exist in Device mode alone; the host
+      // interpreter dereferences slot pointers directly.
       return Failure{"E-RT-SPACE",
                    "field '" + b.label + "' is registered in " +
                        to_cstring(view.space()) +
-                       " memory; the Phase 4 interpreter dereferences host "
-                       "pointers directly"};
+                       " memory, but RunnerConfig::execution_space is Host; "
+                       "select Device, or register the field in host memory"};
     }
     if (!is_flat_contiguous(view.layout())) {
       return Failure{"E-RT-LAYOUT",
@@ -354,6 +361,7 @@ Result<void> Runner::Impl::resolve_buffers(FieldRegistry& registry) {
     }
     s.data = view.data();
     s.owned_by_component = true;
+    s.device = view.space() == MemorySpace::Device;
   }
   return Result<void>::success();
 }
@@ -362,6 +370,9 @@ void Runner::Impl::place_arcs_on_device() {
   const std::size_t n_arcs = slots.size();
   // 1 = some host-side reader exists; the arc stays in `storage`.
   std::vector<unsigned char> pinned(n_arcs, 0);
+  // 1 = a Space-generic instruction reads it: a component-owned host field
+  // with this set gets a device mirror (see Impl::device_mirror).
+  std::vector<unsigned char> read_by_kernel(n_arcs, 0);
   const auto pin = [&](std::uint32_t a) {
     if (a < n_arcs) pinned[a] = 1;
   };
@@ -371,12 +382,14 @@ void Runner::Impl::place_arcs_on_device() {
 
   // Instructions: only execute_on()'s Space-generic cases may see a device
   // pointer, and only through span_c()/span_m(). Remap's distributed-nodal
-  // operator and Sample's spacetime projection run host code on their arcs.
+  // operator and the spacetime projections run host code on their arcs.
+  // Source/ExternalDelivery (alias or mirror), Sink/Accelerate/Epoch (a
+  // space-aware copy) handle either space and pin nothing.
   const auto& instructions = plan.instructions();
   for (std::size_t i = 0; i < instructions.size(); ++i) {
     const Instruction& ins = instructions[i];
     const Resolved&    r   = resolved[i];
-    bool generic = false;
+    bool generic = false, space_aware = false;
     switch (ins.kind) {
       case OpKind::Accumulate: case OpKind::Extrapolate: case OpKind::Merge:
       case OpKind::Scale: case OpKind::Relax: case OpKind::Residual:
@@ -385,9 +398,19 @@ void Runner::Impl::place_arcs_on_device() {
       case OpKind::Remap:       generic = r.nodal_dist < 0; break;
       case OpKind::Sample:      generic = r.spacetime < 0; break;   // history branch is host
       case OpKind::Interpolate: generic = r.spacetime < 0; break;   // apply_spacetime is host
+      case OpKind::Source: case OpKind::ExternalDelivery: case OpKind::Sink:
+      case OpKind::Accelerate: case OpKind::Epoch:
+        space_aware = true;
+        break;
       default: break;
     }
-    if (generic) continue;
+    if (generic) {
+      for (std::uint8_t k = 0; k < ins.n_in; ++k) {
+        if (ins.in[k].valid()) read_by_kernel[ins.in[k].value()] = 1;
+      }
+      continue;
+    }
+    if (space_aware) continue;
     for (std::uint8_t k = 0; k < ins.n_in; ++k) pin_arc(ins.in[k]);
     pin_arc(ins.out);
   }
@@ -412,7 +435,20 @@ void Runner::Impl::place_arcs_on_device() {
 
   for (std::size_t i = 0; i < n_arcs; ++i) {
     Slot& s = slots[i];
-    if (s.owned_by_component || pinned[i] || s.total() == 0) continue;
+    if (s.total() == 0) continue;
+    if (s.owned_by_component) {
+      // A host-registered field a kernel reads: a persistent mirror,
+      // refreshed when a kernel reads it after component code ran, instead
+      // of a staging lane at every consumer. A device-registered field is
+      // already where the kernels run.
+      if (!s.device && read_by_kernel[i] && device_mirror[i].extent(0) < s.total()) {
+        device_mirror[i] = Kokkos::View<double*, DeviceMemSpace>(
+            Kokkos::view_alloc("fuse::dev_mirror", Kokkos::WithoutInitializing),
+            s.total());
+      }
+      continue;
+    }
+    if (pinned[i]) continue;
     if (device_storage[i].extent(0) < s.total()) {
       device_storage[i] = Kokkos::View<double*, DeviceMemSpace>(
           Kokkos::view_alloc("fuse::dev_arc"), s.total());  // zero-filled, like storage
@@ -1617,6 +1653,7 @@ Result<void> Runner::Impl::resolve_instructions() {
   remap_csr_device.clear();
   stats.device_dispatches = 0;
   stats.device_resident_arcs = 0;
+  stats.device_boundary_copies = 0;
   // Both are APPENDED to by the OpKind::Transport case below, so they must be
   // reset here like every other setup-owned container. Runner::initialize() is
   // re-callable (it clears `initialized` at entry), and without these a second
@@ -3067,14 +3104,63 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
   // below passes in_ptr(k)/out_ptr() (or `out`, the same pointer) for arcs,
   // and `previous[]`/`history` host buffers otherwise.
   [[maybe_unused]] bool       used_device_arc = false;
-  [[maybe_unused]] const auto is_device_arc = [&](const double* p) -> bool {
-    if (ins.out.valid() && p == slots[ins.out.value()].data) {
-      return slots[ins.out.value()].device;
-    }
+  // The slot a pointer belongs to, if it is one of this instruction's arcs.
+  [[maybe_unused]] const auto slot_of = [&](const double* p) -> const Slot* {
+    if (ins.out.valid() && p == slots[ins.out.value()].data) return &slots[ins.out.value()];
     for (std::uint8_t k = 0; k < ins.n_in; ++k) {
-      if (p == slots[ins.in[k].value()].data) return slots[ins.in[k].value()].device;
+      if (ins.in[k].valid() && p == slots[ins.in[k].value()].data) {
+        return &slots[ins.in[k].value()];
+      }
     }
-    return false;
+    return nullptr;
+  };
+  // Where a kernel READS an arc: its own device storage, or the device
+  // mirror of a host-registered field (refreshed here if component code
+  // ran since its last copy -- Impl::component_epoch), or nullptr when it
+  // has to be staged (a host arc, `previous[]`, history).
+  [[maybe_unused]] const auto device_read_ptr = [&](const double* p) -> const double* {
+    const Slot* s = slot_of(p);
+    if (s == nullptr) return nullptr;
+    if (s->device) return p;
+    const std::size_t idx = static_cast<std::size_t>(s - slots.data());
+    if (device_mirror[idx].extent(0) < s->total()) return nullptr;
+    if constexpr (!kHostAccessible) {
+      if (device_mirror_epoch[idx] != component_epoch) {
+        Kokkos::deep_copy(num::SpanOf<Space>(device_mirror[idx].data(), s->total()),
+                          num::ConstSpanOf<HostExecSpace>(s->data, s->total()));
+        device_mirror_epoch[idx] = component_epoch;
+        ++stats.device_boundary_copies;
+      }
+    }
+    return device_mirror[idx].data();
+  };
+  [[maybe_unused]] const auto is_device_arc = [&](const double* p) -> bool {
+    const Slot* s = slot_of(p);
+    return s != nullptr && s->device;
+  };
+  // A copy between two arcs of any spaces: the host-only cases that move a
+  // value on (Sink, Accelerate, Epoch) stay correct whichever side a field
+  // or arc lives on. Same-space copies are what they always were.
+  [[maybe_unused]] const auto copy_arc = [&](const double* src, double* dst,
+                                             std::size_t len) {
+    if constexpr (kHostAccessible) {
+      num::copy(src, dst, len);
+    } else {
+      const bool sd = is_device_arc(src), dd = is_device_arc(dst);
+      if (!sd && !dd) { num::copy(src, dst, len); return; }
+      if (sd && dd) {
+        num::copy<Space>(num::ConstSpanOf<Space>(src, len), num::SpanOf<Space>(dst, len));
+        return;
+      }
+      ++stats.device_boundary_copies;
+      if (sd) {
+        Kokkos::deep_copy(num::SpanOf<HostExecSpace>(dst, len),
+                          num::ConstSpanOf<Space>(src, len));
+      } else {
+        Kokkos::deep_copy(num::SpanOf<Space>(dst, len),
+                          num::ConstSpanOf<HostExecSpace>(src, len));
+      }
+    }
   };
   const auto  stage = [&](const double* p, std::size_t len,
                           double* writable) -> double* {
@@ -3118,9 +3204,9 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
     if constexpr (kHostAccessible) {
       return num::ConstSpanOf<Space>(p, len);
     } else {
-      if (is_device_arc(p)) {
+      if (const double* d = device_read_ptr(p); d != nullptr) {
         used_device_arc = true;
-        return num::ConstSpanOf<Space>(p, len);
+        return num::ConstSpanOf<Space>(d, len);
       }
       double* const lane = stage(p, len, nullptr);
       return num::ConstSpanOf<Space>(lane, staging_fault ? 0 : len);
@@ -3141,7 +3227,11 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
 
   switch (ins.kind) {
     case OpKind::Source:
-      // The arc already aliases component storage; nothing to do.
+      // The arc already aliases component storage; nothing to do. In Device
+      // mode a host-registered field that a kernel reads has a device mirror
+      // (Impl::device_mirror) that the READ refreshes -- not this
+      // instruction: Source is stamped BeforeTicks, and the `Sample` that
+      // reads the field runs AfterTicks, after the producer advanced again.
       break;
 
     case OpKind::ExternalDelivery:
@@ -3153,13 +3243,15 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
       // same ordering constraint `Transport`'s own input gives it for an
       // ordinary channel -- deliberately never read here. See
       // OpKind::ExternalDelivery (include/fuse/ir/op.hpp) and
-      // docs/user/lowfive.md, Unit 3.
+      // docs/user/lowfive.md, Unit 3. The application wrote the buffer, so
+      // a device mirror of it is stale (Impl::component_epoch).
+      note_component_ran();
       break;
 
     case OpKind::Sink:
     case OpKind::Accelerate: {  // Phase 7 replaces this with a real accelerator.
       if (ins.n_in == 0 || !ins.out.valid()) break;
-      num::copy(in_ptr(0), out_ptr(), n);
+      copy_arc(in_ptr(0), out_ptr(), n);
       break;
     }
 
@@ -3381,7 +3473,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
       const Result<void> agreed = reconcile_epoch(ins);
       if (!agreed.ok()) return agreed;
       if (ins.n_in == 0 || !ins.out.valid()) break;
-      num::copy(in_ptr(0), out_ptr(), n);
+      copy_arc(in_ptr(0), out_ptr(), n);
       break;
     }
 
@@ -3739,7 +3831,9 @@ detail::Task<Result<void>> Runner::Impl::advance(ComponentSet& components,
     pending_external_request = std::move(req);
     co_await detail::ExternalSuspend{&active_handle};
   }
-  co_return comp.advance(ctx);
+  const Result<void> adv = comp.advance(ctx);
+  note_component_ran();
+  co_return adv;
 }
 
 detail::Task<Result<void>> Runner::Impl::step_period(ComponentSet& components) {

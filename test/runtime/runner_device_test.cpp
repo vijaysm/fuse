@@ -130,7 +130,81 @@ class Consumer final : public fuse::Component {
   std::vector<double> data_;
 };
 
+// The same two components with their fields in the default execution
+// space's memory (CudaSpace on a CUDA build), registered as
+// fuse::MemorySpace::Device: docs/dev/device-resident-arcs.md step 2. The
+// producer computes on the host and copies in once per advance(), which is
+// what a host-side physics code handing device memory to the coupler does;
+// the consumer's values() copies out once, for the assertions only.
+using DeviceMem = Kokkos::DefaultExecutionSpace::memory_space;
+using DeviceVec = Kokkos::View<double*, DeviceMem>;
+
+class DeviceProducer final : public fuse::Component {
+ public:
+  DeviceProducer(std::size_t cells, double value)
+      : data_("producer.out", cells), host_(cells, 0.0), value_(value) {}
+  [[nodiscard]] std::string name() const override { return "producer"; }
+  fuse::Result<void> register_fields(FieldRegistry& reg,
+                                     const CouplingGraph& g) override {
+    const auto cid = g.find_component("producer");
+    for (const fuse::FieldId f : g.component(*cid).fields) {
+      auto r = reg.bind(f, fuse::FieldRef{data_.data(),
+                                          fuse::Layout{.stride = 1,
+                                                       .count = data_.extent(0)},
+                                          fuse::MemorySpace::Device});
+      if (!r.ok()) return r;
+    }
+    return fuse::Result<void>::success();
+  }
+  fuse::Result<void> advance(const StepContext&) override {
+    ++steps_;
+    for (std::size_t i = 0; i < host_.size(); ++i) {
+      host_[i] = value_ * static_cast<double>(steps_) + 0.125 * static_cast<double>(i);
+    }
+    Kokkos::deep_copy(data_, Kokkos::View<const double*, Kokkos::HostSpace,
+                                          Kokkos::MemoryTraits<Kokkos::Unmanaged>>(
+                                 host_.data(), host_.size()));
+    return fuse::Result<void>::success();
+  }
+ private:
+  DeviceVec           data_;
+  std::vector<double> host_;
+  double              value_;
+  int                 steps_ = 0;
+};
+
+class DeviceConsumer final : public fuse::Component {
+ public:
+  explicit DeviceConsumer(std::size_t cells) : data_("consumer.in", cells) {}
+  [[nodiscard]] std::string name() const override { return "consumer"; }
+  fuse::Result<void> register_fields(FieldRegistry& reg,
+                                     const CouplingGraph& g) override {
+    const auto cid = g.find_component("consumer");
+    for (const fuse::FieldId f : g.component(*cid).fields) {
+      auto r = reg.bind(f, fuse::FieldRef{data_.data(),
+                                          fuse::Layout{.stride = 1,
+                                                       .count = data_.extent(0)},
+                                          fuse::MemorySpace::Device});
+      if (!r.ok()) return r;
+    }
+    return fuse::Result<void>::success();
+  }
+  fuse::Result<void> advance(const StepContext&) override {
+    return fuse::Result<void>::success();
+  }
+  [[nodiscard]] std::vector<double> values() const {
+    std::vector<double> out(data_.extent(0), 0.0);
+    Kokkos::deep_copy(Kokkos::View<double*, Kokkos::HostSpace,
+                                   Kokkos::MemoryTraits<Kokkos::Unmanaged>>(out.data(), out.size()),
+                      data_);
+    return out;
+  }
+ private:
+  DeviceVec data_;
+};
+
 struct Scenario {
+  bool          device_fields = false;  // register the fields in device memory
   fuse::AccumOp accum = fuse::AccumOp::Instant;
   Rational      src_dt{1};
   Rational      dst_dt{1};
@@ -162,16 +236,18 @@ struct Harness {
   ComponentSet        components;
   FieldRegistry       registry;
 
-  [[nodiscard]] const Consumer* consumer() const {
-    return dynamic_cast<const Consumer*>(
-        const_cast<ComponentSet&>(components).find("consumer"));
+  [[nodiscard]] std::vector<double> consumer_values() const {
+    const fuse::Component* c = components.find("consumer");
+    if (const auto* h = dynamic_cast<const Consumer*>(c)) return h->data();
+    if (const auto* d = dynamic_cast<const DeviceConsumer*>(c)) return d->values();
+    return {};
   }
-  [[nodiscard]] bool has(OpKind kind) const {
-    for (const fuse::Instruction& ins : plan.instructions()) {
-      if (ins.kind == kind) return true;
-    }
-    return false;
+  [[nodiscard]] int count(OpKind kind) const {
+    int n = 0;
+    for (const fuse::Instruction& ins : plan.instructions()) n += ins.kind == kind;
+    return n;
   }
+  [[nodiscard]] bool has(OpKind kind) const { return count(kind) > 0; }
 };
 
 std::unique_ptr<Harness> build(const Scenario& s) {
@@ -208,8 +284,13 @@ std::unique_ptr<Harness> build(const Scenario& s) {
   EXPECT_TRUE(sched.ok()) << sched.diags.to_string();
   h->plan = sched.plan;
 
-  h->components.add(std::make_unique<Producer>(s.src_cells, 2.0));
-  h->components.add(std::make_unique<Consumer>(s.dst_cells));
+  if (s.device_fields) {
+    h->components.add(std::make_unique<DeviceProducer>(s.src_cells, 2.0));
+    h->components.add(std::make_unique<DeviceConsumer>(s.dst_cells));
+  } else {
+    h->components.add(std::make_unique<Producer>(s.src_cells, 2.0));
+    h->components.add(std::make_unique<Consumer>(s.dst_cells));
+  }
   return h;
 }
 
@@ -221,6 +302,7 @@ struct Outcome {
   bool                has_sample = false;
   bool                has_accumulate = false;
   bool                has_remap = false;
+  int                 transports = 0;  // Transport instructions per period
 };
 
 Outcome run(const Scenario& s, Space space, int periods) {
@@ -236,13 +318,14 @@ Outcome run(const Scenario& s, Space space, int periods) {
   o.has_sample = h->has(OpKind::Sample);
   o.has_accumulate = h->has(OpKind::Accumulate);
   o.has_remap = h->has(OpKind::Remap);
+  o.transports = h->count(OpKind::Transport);
   o.init = runner.initialize(h->components, h->registry, cfg);
   if (!o.init.ok()) return o;
   for (int k = 0; k < periods; ++k) {
     const auto r = runner.run_period(h->components);
     EXPECT_TRUE(r.ok()) << r.error().message;
   }
-  o.consumer = h->consumer()->data();
+  o.consumer = h->consumer_values();
   o.stats = runner.stats();
   return o;
 }
@@ -351,4 +434,65 @@ TEST(RunnerDevice, DeviceAndHostAgreeToRoundingOnRelaxAndWeightedRemap) {
         << "cell " << i;
   }
   EXPECT_NE(host.consumer.front(), 0.0);
+}
+
+// docs/dev/device-resident-arcs.md step 2: fields registered in device
+// memory are aliased by the Runner directly, so a chain whose endpoints are
+// both device fields is mirrored nowhere and its Sink copies nothing across
+// the boundary. The one host stop left is the channel's Transport (a local
+// move on one rank, still host code until the GPU-aware transport step):
+// the Epoch before it copies onto the host and the Epoch after it copies
+// back, two crossings per Transport per period and no other.
+TEST(RunnerDevice, DeviceRegisteredFieldsCrossOnlyAtTheTransportAndAgreeWithHost) {
+  if constexpr (!kHasDeviceBackend) GTEST_SKIP() << "no device backend";
+  Scenario s = mean_over_four_substeps();
+  const Outcome host = run(s, Space::Host, 3);
+  s.device_fields = true;
+  const Outcome dev = run(s, Space::Device, 3);
+  ASSERT_TRUE(host.init.ok()) << host.init.error().message;
+  ASSERT_TRUE(dev.init.ok()) << dev.init.error().message;
+  ASSERT_EQ(host.consumer.size(), dev.consumer.size());
+  ASSERT_FALSE(host.consumer.empty());
+  for (std::size_t i = 0; i < host.consumer.size(); ++i) {
+    EXPECT_EQ(host.consumer[i], dev.consumer[i]) << "cell " << i;
+  }
+  EXPECT_GT(dev.stats.device_dispatches, 0);
+  EXPECT_GT(dev.stats.device_resident_arcs, 0);
+  // RED on the step-1 tree: Sink copied device arc -> device field through
+  // host memcpy (a crash or garbage), and device fields were refused.
+  ASSERT_GT(dev.transports, 0);
+  EXPECT_EQ(dev.stats.device_boundary_copies, 2 * dev.transports * 3)
+      << "a device-registered chain crossed the boundary somewhere other "
+         "than around its Transport";
+}
+
+// The host-registered components in Device mode: the producer's field is
+// mirrored once per producer step (the Sample after each tick refreshes
+// it; Impl::component_epoch) and the Sink crosses back once per consumer
+// step, so the boundary copies are counted per component step, not per
+// instruction.
+TEST(RunnerDevice, HostRegisteredFieldsCrossTheBoundaryOncePerStepEachWay) {
+  if constexpr (!kHasDeviceBackend) GTEST_SKIP() << "no device backend";
+  const Outcome dev = run(mean_over_four_substeps(), Space::Device, 2);
+  ASSERT_TRUE(dev.init.ok()) << dev.init.error().message;
+  // Two periods: the 1/4-step producer advances 8 times (one mirror refresh
+  // each), the consumer twice (one Sink copy each), plus the two crossings
+  // around each period's Transport (see the device-registered test above);
+  // a per-instruction staging design would cross at least once per kernel
+  // launch -- 8 Samples, 2 Accumulates and 2 Epochs more.
+  const std::int64_t producer_steps = 2 * 4, consumer_steps = 2;
+  ASSERT_GT(dev.transports, 0);
+  EXPECT_EQ(dev.stats.device_boundary_copies,
+            producer_steps + consumer_steps + 2 * dev.transports * 2);
+}
+
+// A device-registered field under the Host default is a configuration
+// error, not a silent host dereference of device memory.
+TEST(RunnerDevice, DeviceRegisteredFieldIsRefusedUnderHostExecution) {
+  if constexpr (!kHasDeviceBackend) GTEST_SKIP() << "no device backend";
+  Scenario s = mean_over_four_substeps();
+  s.device_fields = true;
+  const Outcome host = run(s, Space::Host, 1);
+  ASSERT_FALSE(host.init.ok());
+  EXPECT_EQ(host.init.error().code, "E-RT-SPACE");
 }

@@ -21,7 +21,7 @@ multi-rank device runs in place before a multi-GPU machine is available.
 | buffer | today | Device mode after this work |
 |---|---|---|
 | `Impl::storage[i]` (coupler-owned arcs), `Slot::data` | `std::vector<double>`, raw host pointer | `Kokkos::View<double*, ArcMemSpace>` per arc; `Slot` carries the space; `ArcMemSpace = DeviceMemSpace` iff `execution_space == Device` |
-| component fields aliased as arcs (`owned_by_component`) | host `FieldRef` only; `MemorySpace::Device` refused `E-RT-SPACE` | a `MemorySpace::Device` `FieldRef` aliases directly; a host `FieldRef` gets one device mirror, copied in at its `Source`/`ExternalDelivery` and out at its `Sink`, once per sweep |
+| component fields aliased as arcs (`owned_by_component`) | host `FieldRef` only; `MemorySpace::Device` refused `E-RT-SPACE` | a `MemorySpace::Device` `FieldRef` aliases directly; a host `FieldRef` gets one device mirror, refreshed the first time a kernel reads it after component code ran (`Impl::component_epoch`), and copied out at its `Sink` |
 | `previous[]` (Relax/Residual, read one sweep late by `advance_window()`) | host vectors | `ArcMemSpace` views; `advance_window()` reads through a kernel or an explicit host mirror refreshed at the window boundary |
 | `SpacetimeInfo::history` | host vector | `ArcMemSpace` view (Sample's spacetime branch is already Space-generic) |
 | `reduction_scratch` | `HostSpace` view, norms in `iteration.cpp` on `HostExecSpace` | `ArcMemSpace` companion; the deterministic norms dispatch on the arc space (kernels already Space-generic, D11) |
@@ -36,8 +36,11 @@ multi-rank device runs in place before a multi-GPU machine is available.
 
 Host memory is touched in Device mode only at:
 
-1. `Source` / `ExternalDelivery` / `Sink` of a host-registered component field
-   (one mirror copy per field per sweep);
+1. a host-registered component field: one mirror refresh per component step
+   that a kernel reads it after (a `Source` is stamped `BeforeTicks`, the
+   `Sample` that reads the field `AfterTicks`, so a refresh AT the `Source`
+   is one tick stale -- the mirror is refreshed at the read instead), and
+   one copy out at its `Sink`;
 2. `Transport` when MPI is not GPU-aware (pack kernel to a host buffer), and
    `apply_nodal_dist_remap()`;
 3. `Epoch` (status reconciliation is MPI on scalars; the value copy itself runs
@@ -55,14 +58,15 @@ them moves data elementwise except through `num::copy`, which becomes
 
 ## Staging after this work
 
-`device_staging` is retained for one purpose only: a host-registered
-component field that is both read and written within one sweep by
-instructions on the device, where the per-sweep mirror would otherwise be
-stale between instructions. If the per-sweep mirror design covers every
-scenario in the verification rows, `device_staging` and its fault path
-(`E-RT-DEVICE`, ruling F-1) are removed; the `RunStats::device_dispatches`
-counter stays, and a new `RunStats::host_mirror_copies` counts the boundary
-copies so the tests can assert the no-round-trip property directly.
+`device_staging` is retained for a host-registered component field that a
+kernel WRITES (a mirror is read-only; the write has to reach the host
+array), for `previous[]` and history until step 3's follow-up moves them,
+and for a host arc pinned by a host-only instruction. If the mirror design
+covers every scenario in the verification rows, `device_staging` and its
+fault path (`E-RT-DEVICE`, ruling F-1) are removed; the
+`RunStats::device_dispatches` counter stays, and
+`RunStats::device_boundary_copies` counts the boundary copies so the tests
+can assert the no-round-trip property directly.
 
 ## Mesh and topology (Phase 2)
 
@@ -110,12 +114,12 @@ the next step starts. Host mode byte-identity is the standing invariant.
 
 1. Arcs in `ArcMemSpace`; `span_c`/`span_m` direct; staging only for
    component-owned host fields.
-2. `MemorySpace::Device` `FieldRef`s accepted; per-sweep mirrors for host
-   fields; the Kokkos-based example components register device fields.
+2. `MemorySpace::Device` `FieldRef`s accepted; read-refreshed mirrors for
+   host fields; the Kokkos-based example components register device fields.
 3. `reduction_scratch`, `previous[]`, history, accelerator gather/scatter,
    Epoch/Diagnose/Constrain, checkpoint and Newton seam moved to the rule
    above.
 4. Device-mode test rows (the verification and example rows as `device`-
-   labelled twins) and `host_mirror_copies` assertions.
+   labelled twins) and `device_boundary_copies` assertions.
 5. Phase 2 mesh/search/builders; Phase 3 transport/binding/MPI twins.
 6. Measurement against the quiet Host baseline recorded in the same session.

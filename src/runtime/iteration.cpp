@@ -1831,6 +1831,7 @@ Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
   // behalf.
   for (const std::size_t slot : R.component_slots) {
     const Result<void> r = components.at(slot).restore_state();
+    note_component_ran();
     if (!r.ok()) return r;
   }
 
@@ -2115,6 +2116,7 @@ Result<void> Runner::Impl::evaluate_window_region_residual(
   } else {
     for (const std::size_t slot : R.component_slots) {
       const Result<void> rs = components.at(slot).restore_state();
+      note_component_ran();
       if (!rs.ok() && restore_err.ok()) restore_err = rs;
     }
     for (std::size_t i = 0; i < R.carried_arcs.size(); ++i) {
@@ -2987,6 +2989,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
     // before it would be undone.
     for (const std::size_t slot : R.component_slots) {
       const Result<void> rs = components.at(slot).restore_state();
+      note_component_ran();
       if (!rs.ok()) co_return rs;
       // KNOWN_ISSUES.md D12: the re-advance below (R.tick_indices) is
       // this slot's first advance() after THIS restore_state(), so it is
@@ -3353,6 +3356,7 @@ Result<void> Runner::Impl::resolve_pending_window_straddles(
     const Rational target_clock = st.clock;
 
     const Result<void> r0 = comp.restore_state();
+    note_component_ran();
     if (!r0.ok()) return r0;
 
     // This member's own import over the window that just finished,
@@ -3452,6 +3456,7 @@ Result<void> Runner::Impl::resolve_pending_window_straddles(
         ctx.step = 0;
         ctx.iteration = 0;
         const Result<void> ar = comp.advance(ctx);
+        note_component_ran();
         if (!ar.ok()) return ar;
       }
       clock = end;
@@ -4099,6 +4104,7 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
       co_await detail::ExternalSuspend{&active_handle};
     }
     const Result<void> ar = comp.advance(ctx);
+    note_component_ran();
     if (!ar.ok()) co_return ar;
     if (out != nullptr) {
       for (std::size_t e = 0; e < cfg.length; ++e) {
