@@ -1,0 +1,50 @@
+# Mutations for cmake/FuseMpiDynamic.cmake: the accept/connect probe's cache rules
+# (KNOWN_ISSUES.md D35). The test is the ctest row build.mpi_dynamic_cache_decisions,
+# which runs tools/check-mpi-dynamic-cache.cmake over plain values. The target is any
+# buildable target: the mutated module is included by FuseDependencies.cmake, so
+# building it re-runs the configure (the same arrangement as build-host-cores.toml).
+
+[[mutation]]
+id = "mpi-dynamic-untested-verdict-is-cached"
+area = "build_mpi_dynamic"
+describes = "A verdict of 'not tested' records that NO measurement happened. Treating it as cacheable means a reconfigure on a machine whose launcher has since become usable still does not measure -- the state the owner's build tree was in after the MPI reinstall."
+file = "cmake/FuseMpiDynamic.cmake"
+old = "     AND NOT \"${cached_verdict}\" STREQUAL \"not tested\"\n"
+new = ""
+target = "fuse-coupler-base"
+test = "build.mpi_dynamic_cache_decisions"
+result = "KILLED by tools/mutate.py --area build_mpi_dynamic on a tier-0 tree configured from the commit's own files: 4 killed, 0 declared equivalent, 0 not assessed, 0 without a baseline, 0 not killed, of 4. The module was restored byte-identically (cmp against the checkout's copy). Each mutation was also applied by hand to a scratch copy: the check exits 1 and names the failing rows (untested-cached: 1 row; fingerprint ignored: 3 rows; option never follows: 3 rows; fingerprint hashes nothing: the content-change case), and exits 0 on the unmutated and the restored copy."
+
+[[mutation]]
+id = "mpi-dynamic-fingerprint-ignored"
+area = "build_mpi_dynamic"
+describes = "A cached verdict is reused whatever MPI is configured now. A 'measured broken' then outlives the reinstall that fixed it (D23's ch3:nemesis -> ch4:ofi), and nothing ever re-measures."
+file = "cmake/FuseMpiDynamic.cmake"
+old = "     AND \"${cached_fingerprint}\" STREQUAL \"${fingerprint}\")"
+new = ")"
+target = "fuse-coupler-base"
+test = "build.mpi_dynamic_cache_decisions"
+result = "KILLED by tools/mutate.py --area build_mpi_dynamic on a tier-0 tree configured from the commit's own files: 4 killed, 0 declared equivalent, 0 not assessed, 0 without a baseline, 0 not killed, of 4. The module was restored byte-identically (cmp against the checkout's copy). Each mutation was also applied by hand to a scratch copy: the check exits 1 and names the failing rows (untested-cached: 1 row; fingerprint ignored: 3 rows; option never follows: 3 rows; fingerprint hashes nothing: the content-change case), and exits 0 on the unmutated and the restored copy."
+
+[[mutation]]
+id = "mpi-dynamic-option-never-follows-the-probe"
+area = "build_mpi_dynamic"
+describes = "FUSE_ENABLE_CONNECT_ACCEPT keeps whatever value it was cached with: after a re-probe flips the verdict, the option stays at the old probe's value, so a working MPI keeps the mode disabled."
+file = "cmake/FuseMpiDynamic.cmake"
+old = "  if(\"${previous_value}\" STREQUAL \"${_set_by_probe}\")\n    set(${out} ${new_default} PARENT_SCOPE)\n  else()"
+new = "  if(FALSE)\n    set(${out} ${new_default} PARENT_SCOPE)\n  else()"
+target = "fuse-coupler-base"
+test = "build.mpi_dynamic_cache_decisions"
+result = "KILLED by tools/mutate.py --area build_mpi_dynamic on a tier-0 tree configured from the commit's own files: 4 killed, 0 declared equivalent, 0 not assessed, 0 without a baseline, 0 not killed, of 4. The module was restored byte-identically (cmp against the checkout's copy). Each mutation was also applied by hand to a scratch copy: the check exits 1 and names the failing rows (untested-cached: 1 row; fingerprint ignored: 3 rows; option never follows: 3 rows; fingerprint hashes nothing: the content-change case), and exits 0 on the unmutated and the restored copy."
+
+[[mutation]]
+id = "mpi-dynamic-fingerprint-is-the-path-not-the-content"
+area = "build_mpi_dynamic"
+describes = "The fingerprint hashes nothing: a reinstall over the same prefix, which is exactly what changed the device, yields an identical fingerprint and the stale verdict is reused."
+file = "cmake/FuseMpiDynamic.cmake"
+old = "      file(SHA256 \"${_real}\" _hash)"
+new = "      set(_hash \"x\")"
+target = "fuse-coupler-base"
+test = "build.mpi_dynamic_cache_decisions"
+result = "KILLED by tools/mutate.py --area build_mpi_dynamic on a tier-0 tree configured from the commit's own files: 4 killed, 0 declared equivalent, 0 not assessed, 0 without a baseline, 0 not killed, of 4. The module was restored byte-identically (cmp against the checkout's copy). Each mutation was also applied by hand to a scratch copy: the check exits 1 and names the failing rows (untested-cached: 1 row; fingerprint ignored: 3 rows; option never follows: 3 rows; fingerprint hashes nothing: the content-change case), and exits 0 on the unmutated and the restored copy."
+
