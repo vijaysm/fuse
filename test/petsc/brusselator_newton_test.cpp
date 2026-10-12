@@ -28,6 +28,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -435,10 +436,28 @@ TEST(BrusselatorNewtonPetsc, ConvergesAgreeingWithNative) {
       calib.e_n, calib.f_final_native, f_final_petsc, native.u_final.norm());
   std::fprintf(stderr,
                "[agreement-bound legacy] e_n=%.6e f_final_native=%.6e "
-               "f_final_petsc=%.6e native_norm=%.6e legacy_bound=%.6e (disagreement "
-               "TBD per-element below, sharp bound %.6e)\n",
+               "f_final_petsc=%.6e native_norm=%.6e legacy_bound=%.6e (sharp bound "
+               "%.6e; the observed disagreement is the next line)\n",
                calib.e_n, calib.f_final_native, f_final_petsc, native.u_final.norm(),
                legacy_bound, bound);
+
+  // The largest element-wise disagreement over both species, printed before the
+  // assertions below so a host run records observed/sharp. The assertions
+  // themselves are per element, and a pass says only that this maximum is at
+  // most `bound`: until this line existed the run reported no observed value
+  // (the 2026-10-12 host run, 1220.8 s, passed without one).
+  double max_disagreement = 0.0;
+  for (Eigen::Index i = 0; i < native.u_final.size(); ++i) {
+    max_disagreement = std::max(max_disagreement, std::abs(native.u_final[i] - petsc.u_final[i]));
+  }
+  for (Eigen::Index i = 0; i < native.v_final.size(); ++i) {
+    max_disagreement = std::max(max_disagreement, std::abs(native.v_final[i] - petsc.v_final[i]));
+  }
+  std::fprintf(stderr,
+               "[agreement-bound] observed max |native - petsc| over u_final and v_final = "
+               "%.6e  sharp_bound=%.6e  ratio=%.6e  legacy_ratio=%.6e\n",
+               max_disagreement, bound, bound > 0.0 ? max_disagreement / bound : 0.0,
+               legacy_bound > 0.0 ? max_disagreement / legacy_bound : 0.0);
   for (Eigen::Index i = 0; i < native.u_final.size(); ++i) {
     EXPECT_NEAR(native.u_final[i], petsc.u_final[i], bound) << "u_final[" << i << "]";
   }
