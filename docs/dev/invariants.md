@@ -28,7 +28,10 @@ no enforcement is a preference.
 
 `I6` **Invariants throw or return a status; `assert` is never an invariant.**
 : Release and sanitizer legs are mandatory, because three defects in the parent code bases escaped
-  Debug-only suites. *Enforced by* `tools/check-invariants.py` and by the CI legs themselves.
+  Debug-only suites. The no-`assert` rule itself is *enforced by* `tools/check-invariants.py`. Of
+  the two mandatory legs, only Release exists today (`tier0`'s Debug/Release matrix,
+  `.github/workflows/ci.yml`); the ASan+UBSan leg this rule also demands has no CI leg yet —
+  `testing.md`'s CI-legs list carries it under Planned, for S1's exit.
 
 `I7` **Third-party types stay out of public headers.**
 : No Eigen, KokkosKernels, MOAB, PETSc, MPI or HDF5 type in a public header outside its own backend
