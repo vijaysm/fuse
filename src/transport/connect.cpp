@@ -42,21 +42,6 @@ namespace {
   std::abort();
 }
 
-/// Every `Connect`-mode component, in the graph's own component order. That
-/// order, not acceptor/connector role, is what `connect()` fixes
-/// `MPI_Intercomm_merge`'s high/low argument by, so the merged numbering is
-/// the same thing on both sides regardless of which side happens to
-/// publish the port.
-[[nodiscard]] std::vector<ComponentId> connect_mode_components(const CouplingGraph& g) {
-  std::vector<ComponentId> out;
-  for (std::uint32_t i = 0; i < g.component_count(); ++i) {
-    if (g.component(ComponentId{i}).launch.mode == LaunchMode::Connect) {
-      out.push_back(ComponentId{i});
-    }
-  }
-  return out;
-}
-
 /// Writes `port_name` to `path` so a concurrent reader (another process's
 /// `wait_for_port_file`) never observes a partially written file: write to
 /// a sibling temporary name on the same directory, then atomically rename
@@ -137,13 +122,11 @@ namespace {
                                                       ComponentId my_id,
                                                       MPI_Comm world,
                                                       const ConnectOptions& opts) {
-  const std::vector<ComponentId> order = connect_mode_components(g);
-  if (order.size() != 2) {
-    return Failure{"E-CONNECT-SPEC",
-                   "pairwise connect() supports exactly two connect-mode "
-                   "components; the graph declares " +
-                       std::to_string(order.size())};
-  }
+  // TR-17: the two-component rule itself now lives in connect.hpp, pure
+  // and MPI-free, so a tier-0 test can fire its refusal directly.
+  const auto order_result = ::fuse::transport::connect_mode_components(g);
+  if (!order_result.ok()) return order_result.error();
+  const std::vector<ComponentId>& order = order_result.value();
   const bool i_am_first = (order[0] == my_id);
   const ComponentId partner_id = i_am_first ? order[1] : order[0];
   const ComponentDecl& mine = g.component(my_id);

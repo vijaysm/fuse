@@ -497,6 +497,57 @@ TEST(WaitForPortFile, RefusesWhenTheFileExistsButIsEmpty) {
   EXPECT_EQ(r.error().code, "E-CONNECT-TIMEOUT");
 }
 
+// ---- the two-connect-mode-component rule (D18, review 2026-10-11 TR-17) --
+//
+// D18's own limit on connect_pairwise(): exactly two `Connect`-mode
+// components. Before this, the rule lived inside connect_pairwise() itself,
+// behind `#if FUSE_HAVE_MPI` and `MPI_Initialized()` -- a real, reachable
+// refusal with no test anywhere in the tree, because its only caller needed
+// a live MPI world to reach at all (test/transport/transport.md's own
+// finding). Pulled out to connect.hpp as a pure function so it fires here.
+
+TEST(ConnectModeComponents, RefusesAThirdConnectModeComponent) {
+  CouplingGraph g;
+  const LaunchSpec connect_a{
+      .mode = LaunchMode::Connect, .is_acceptor = true, .port_file = "/tmp/x"};
+  const LaunchSpec connect_b{.mode = LaunchMode::Connect, .port_file = "/tmp/x"};
+  const LaunchSpec connect_c{.mode = LaunchMode::Connect, .port_file = "/tmp/y"};
+  g.add_component({.name = "a", .ranks = {0, 1}, .launch = connect_a});
+  g.add_component({.name = "b", .ranks = {1, 1}, .launch = connect_b});
+  g.add_component({.name = "c", .ranks = {2, 1}, .launch = connect_c});
+
+  const auto r = fuse::transport::connect_mode_components(g);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-CONNECT-SPEC");
+  EXPECT_NE(r.error().message.find("3"), std::string::npos) << r.error().message;
+}
+
+TEST(ConnectModeComponents, RefusesJustOneConnectModeComponent) {
+  CouplingGraph g;
+  g.add_component({.name = "a",
+                   .ranks = {0, 1},
+                   .launch = {.mode = LaunchMode::Connect,
+                              .is_acceptor = true,
+                              .port_file = "/tmp/x"}});
+  g.add_component({.name = "serial", .ranks = {1, 1}});  // InProcess default
+
+  const auto r = fuse::transport::connect_mode_components(g);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-CONNECT-SPEC");
+}
+
+TEST(ConnectModeComponents, AcceptsExactlyTwoInGraphOrder) {
+  const CouplingGraph g = two_component_graph(
+      LaunchSpec{.mode = LaunchMode::Connect, .is_acceptor = true, .port_file = "/tmp/x"},
+      LaunchSpec{.mode = LaunchMode::Connect, .port_file = "/tmp/x"}, {0, 1}, {1, 1});
+
+  const auto r = fuse::transport::connect_mode_components(g);
+  ASSERT_TRUE(r.ok()) << r.error().message;
+  EXPECT_EQ(r.value().size(), 2u);
+  EXPECT_EQ(r.value()[0], ComponentId{0});
+  EXPECT_EQ(r.value()[1], ComponentId{1});
+}
+
 // ---- the accept/connect capability gate (KNOWN_ISSUES D23) ---------------
 
 // The verdict itself is settled at configure time, so the refusal is reached
