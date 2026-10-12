@@ -1557,3 +1557,429 @@ more outer iteration by its convergence-test placement. The forcing floor of
 dn_heat does not reach the regime. The tier-0 refusal
 `E-NEWTON-PETSC-UNAVAILABLE` fires without PETSc
 (`NewtonRegion.ARegionSelectingAnUnregisteredSubstrateIsRefusedAtSetup`).
+
+## 12. NewtonNorm and NewtonResidualPath (NewtonModel track, 2026-10-12)
+
+Two independent, opt-in `NewtonConfig` fields, both appended at the
+struct's own declared end (the append-only convention §7's own
+`kGraphVersion` history follows): `norm` (`Plain` default, `Measure
+Weighted`) scales the stacked residual before every Newton stopping test
+in §6/§9/§10 reads it; `residual_path` (`Advance` default, `Direct`)
+changes HOW `G(x)` is obtained for those same tests, never what they
+compute once obtained. Both default to their pre-existing behaviour, so
+every region declared before this section existed keeps running
+unchanged -- confirmed by the full pre-existing suite (descriptor,
+yaml_io, newton_region) passing unmodified against every new byte
+`kGraphVersion` 14 appends.
+
+### 12.1 `NewtonNorm::MeasureWeighted`: the diagonal `D`
+
+Built once per region, at `resolve_regions()` (same point §7's own
+descriptor-driven setup runs), never per Newton step: `D_i = sqrt(w_i /
+sum_block_w) / s_b`, where `w_i` is the entity measure (length, area or
+volume) entry `i` lives on -- the IDENTICAL per-entity weight
+`Runner::Impl::weights_for()` already derives for the Constrain/
+conservation machinery, zero for an unowned or ghost entry -- `sum_block_w`
+the SAME weights reduced over the block's own owned entries through the
+region's own `Reducer` (today always `make_serial_reducer()`: §9.4's own
+single-participant restriction applies here too, so a cross-rank sum is
+this track's own open question, §12.5 below), and `s_b` the tolerance
+scale `fuse::ConvergenceCriterion`'s own measures declare for that block.
+
+**Which measure names a block's own scale.** `E-ITER-MEASURE`
+(`match_convergence_measures()`, `src/ir/checkpoint.cpp`) already accepts
+THREE equally valid names for one block: its channel's own name, its
+provider's source field, or its consumer's target field -- because
+dn_heat's own convention (and every test fixture in this repository)
+names a convergence measure after a channel's PROVIDER-side export (for
+example `"q_wall"`), never its consumer-side import (`"q_wall_in"`).
+`NewtonNorm::MeasureWeighted`'s own tolerance-scale lookup matches the
+IDENTICAL three names, for the identical reason: a narrower match (the
+consumer field name alone) would refuse every graph already written this
+way for no actual gain in safety. What it does refuse, eagerly, with the
+new `E-NEWTON-NORM-SCALE`: no match at all (defensive -- `E-ITER-MEASURE`
+already guarantees at least one via the builder, so this is unreachable
+except through a hand-built `IterationRegionDecl`), or two-or-more
+matches with DIFFERING tolerances, a genuine ambiguity this option will
+not silently resolve by picking one (`NewtonNorm.AmbiguousTolerance
+ScaleRefusesAtSetup`, `test/runtime/newton_norm_test.cpp`, fires it on a
+block covered twice, once by its channel name and once by its consumer's
+target field, with two different tolerances).
+
+**The preconditioner's own composition.** A region ALSO requesting
+`NewtonConfig::use_block_jacobi_preconditioner` builds a block-Jacobi `M`
+approximating `J^-1` (§9.5's own construction, reused here for an
+ordinary, non-window region -- this track's own extension; §9.5's region
+was the only caller before this). With the scaled operator `D*J`, the
+right preconditioner the Krylov solve actually needs is `(D*J)^-1 = J^-1
+* D^-1`, not a bare `M`: composing `precond_apply` as `v -> M(D^-1 * v)`
+is the fix (`compose_measure_weighted_preconditioner()`,
+`src/runtime/iteration.cpp`); leaving it bare makes the preconditioned
+operator `~D` instead of `~I`, degrading the Krylov solve by `D`'s own
+spread rather than removing it.
+
+MEASURED (`NewtonNorm.BlockJacobiPreconditionerWithExactTokensConverges
+UnderMeasureWeighted`, two synthetic components whose own
+`LinearizationToken` is EXACT for their own affine map, so any
+degradation observed is the composition's own, not an approximate
+token's error): correctly composed, the solve reaches its fixed point in
+ONE Newton step, residual history `[1000000.005, 0.02969315636]`.
+Removing the composition (`build-evidence/mutations/newton-model.toml`'s
+own `newton-norm-precond-not-composed-with-inverse-diagonal` row) changes
+this to TWO steps, `[1000000.005, 126.4799515, 0.01571608272]` -- both
+runs still converge (this problem's own exactly linear Jacobian reaches
+the fixed point via GMRES breakdown either way), the mutation changes the
+PATH, matching §9.6's own point about a real preconditioner changing the
+path to convergence rather than whether convergence happens, never
+asserted of this specific case before being measured.
+
+### 12.2 Scale invariance and unit independence, measured
+
+**(i) Tight-forcing agreement (informational only, Round 2: see (vi)
+below for the test that replaced this one's own assertion).** Solving
+the SAME affine dn_heat problem twice, once `Plain` once
+`MeasureWeighted`, both under a near-exact constant Eisenstat-Walker
+forcing term, should give a CLOSE Newton step up to the forcing term's
+own achieved GMRES accuracy: `(D*J) dx = -(D*F)` is `J dx = -F`
+left-multiplied by the invertible `D`, the SAME equation, so an EXACT
+linear solve gives the identical `dx` regardless of `D` -- but GMRES at a
+finite, nonzero forcing tolerance does not solve exactly, and no
+closed-form bound on the resulting `dx` difference as a function of that
+forcing tolerance alone was ever derived (the Round 2 review's own
+finding: an earlier version of this test asserted `max diff < 1e-2`
+against the measured `6.78e-4` below with no derivation connecting the
+two numbers). Kept as `NewtonNorm.
+WeightedIteratesAgreeWithPlainUnderTightForcingInformationalOnly` --
+printed, not asserted on. MEASURED (`forcing_eta_constant = 1e-3`, two
+orders of magnitude above the forcing floor this problem's own
+unpreconditioned, matrix-free GMRES solve can actually verify -- `1e-10`
+and even `1e-6` both made the FIRST linear solve fail outright,
+`DivergedLinearSolve`, `iterations = 0`, the Krylov solver unable to
+VERIFY the requested relative accuracy within its own
+1000-iteration/restart-30 budget on this unpreconditioned problem, a
+tighter floor than the naive `sqrt(eps_mach) ~= 1.49e-8` MFFD estimate
+predicts, for the same class of reason §9.9.2 documents on a different
+problem): `max |q_plain - q_weighted|` over both fields, `0.00067754`.
+
+**(ii) Unit independence of the stopping norm.** Rescaling one field's
+own units by `1e4` (a pure unit conversion: the TRUE fixed point is
+unchanged, only the NUMBERS representing that field's value and
+tolerance are `1e4` bigger) changes the PLAIN norm's own `||F(x=0)||` by
+roughly the rescale factor (MEASURED: `2.82843` at scale 1, `20000` at
+scale `1e4` -- order `1e4`, not exactly it, because the OTHER field's own
+fixed contribution stops being negligible only once the rescaled one
+dominates) but leaves the WEIGHTED norm UNCHANGED to round-off
+(`1.41421e+06` at both scales) -- each block is divided by its own
+tolerance, scaled by the SAME factor as the field it measures, before
+being combined with the other, so the SAME physical accuracy in
+different units reads the same combined number
+(`NewtonNorm.InitialResidualNormIsUnitIndependentOnlyUnderMeasureWeighted`).
+An end-to-end comparison of Newton's own ITERATION COUNT under this
+rescaling (rather than the stopping norm directly) was tried first and
+found NOT to isolate this effect on dn_heat's own affine map: this
+problem's per-entry affine structure is close enough to an exactly linear
+Jacobian that a handful of Eisenstat-Walker-forced steps closes most of
+the remaining error regardless of scale up to `1e4`, and pushing the
+scale to `1e6` to force a difference instead hits the SAME matrix-free
+precision floor on both norms, a different effect than the one under
+test -- recorded here as the reason this measurement targets the
+stopping norm directly rather than the iteration count it drives.
+
+**(iii) The scaled norm equals the criterion's own measure-weighted RMS
+divided by its tolerance.** `D_i * F_i = sqrt(w_i) * F_i / s_b`,
+confirmed to agree with `fuse::num::field_norm(MeasureWeightedRms,
+F).value / s_b` to `1e-15` relative
+(`NewtonNorm.ScaledResidualNormMatchesFieldNormDividedByTolerance`) -- the
+SAME root-mean-square error §4 of this doc already defines, just divided
+by a declared tolerance rather than left in the field's own physical
+units.
+
+**(iv) Mesh refinement.** Refining the interface mesh `4x` (uniform
+`generated:line:N`, confirmed `1/N` per entry, `src/backend/
+serial_backend.cpp`) MEASURED: the plain norm's own `||F(0)||` scales by
+`sqrt(4) = 2` (within 5%), the weighted one stays within 5% of
+UNCHANGED (`NewtonNorm.MeshRefinement4xLeavesWeightedResidualStable`) --
+the same resolution-independence §2/§3 of this doc already establish for
+`field_norm()`, carried through to Newton's own stopping test.
+
+**(v) Closing a gap the above tests leave open.** Tests (iii) and (iv)
+both recompute this track's own `D` formula INDEPENDENTLY of
+`build_newton_measure_weights()`, by design, as a cross-check of the
+MATH -- neither one calls it, so neither exercises the PRODUCTION array a
+real Newton solve actually scales `F` by, and a mutation to that function
+would reproduce itself in the test's own hand-derived comparison and go
+uncaught (measured directly: `build-evidence/mutations/newton-model.
+toml`'s own `newton-norm-weights-not-applied` and `newton-norm-block-
+scale-dropped` rows do not fail (i)/(iii)/(iv) at all). `Runner::debug_
+newton_scale()` (new, TEST/DIAGNOSTIC-ONLY, the same convention `debug_
+window_member_snapshots()` already established, `fuse/runtime/
+runner.hpp`) reads `RegionRuntime::newton_scale` directly;
+`NewtonNorm.ProductionDiagonalMatchesTheFormulaEntryForEntry` compares it
+against the formula entry for entry and is what those two mutation rows
+actually fail against.
+
+**(vi) Round 2 (GAP 3): a derivable bound, replacing (i)'s own
+unjustified one.** The Round 2 review found (i)'s original `max diff <
+1e-2` bound, set above the `6.78e-4` it was actually measured against
+with no derivation connecting the two, unacceptable. `NewtonNorm.
+ExactDenseSolveAgreesToRoundoffTimesConditionNumber` (new) replaces it
+with a bound that IS derivable: the exact `n=8` Jacobian of the affine
+`DiagonalFixture` pair, assembled through `DiagonalComponent::
+ExactToken::apply_jacobian()` (production `LinearizationToken`
+machinery, not a hand-written shortcut) rather than approximated by
+GMRES/MFFD, solved independently for `J dx = -F` and `(D*J) dx = -(D*F)`
+via a hand-written dense Gaussian-elimination solver
+(`dense_solve()`, this test file's own anonymous namespace) -- an EXACT
+linear solve, so the two `dx` must agree to round-off times the
+operator's own condition number: `max|dx_plain - dx_weighted| <=
+safety_factor * eps_mach * cond_inf(J) * max(||dx||, 1)`, `cond_inf`
+computed by self-inverting `J` through the same solver, `safety_factor =
+100` chosen BEFORE running the test (not tuned to the observed result).
+MEASURED: `max|dx_plain - dx_weighted| = 2.84217e-14`, `cond_inf(J) =
+1724.8`, bound `= 6.28091e-09` -- satisfied with roughly 4.5 orders of
+magnitude of margin (the measured difference is ~4.5e-6 of the bound,
+not a near miss).
+
+**(vii) Round 2 (GAP 2): Plain's own masking failure, shown end-to-end
+against an analytically known root.** §12.1's own derivation motivates
+`MeasureWeighted`; this closes the gap between that motivation and an
+actual demonstration that Plain's OWN stopping test is satisfied while
+a badly-scaled field is still far from converged -- not just that the
+INITIAL residual looks unit-dependent (test (ii) above), but that the
+SOLVE ITSELF stops too early. A synthetic two-field region,
+`MixedScaleFixture` (`test/runtime/newton_norm_test.cpp`, new): field
+"a" linear (`DiagonalComponent`, re-used), field "b" GENUINELY nonlinear
+(`QuadraticComponent`, new: `B_out = coeff*A_in^2 + offset`), "a"'s own
+units `1e4` times "b"'s (`tol_a = 1.0`, `tol_b = 1e-4`), coupled into a
+fixed point whose exact root is known analytically (the smaller root of
+the quadratic the two update rules substitute into one another into).
+`NewtonNorm.PlainNormMisjudgesConvergenceOnTheNonlinearTwoFieldRegion`
+(new): with `NewtonConfig::atol = 1.0` applied to each norm's own
+combined residual, MEASURED -- Plain stops at Newton iteration 1 (its
+own huge, A-dominated residual already satisfies `atol` there) with "b"
+still `320.037` times its OWN declared tolerance away from the true
+root; MeasureWeighted continues to iteration 3, where "b" is
+`0.000126888` times its own tolerance away -- actually converged, not
+merely reported as such. (A first attempt at this fixture undercounted
+`DiagonalComponent::coeff_at(i)`'s own `(0.5 + i/n)` per-entry multiplier
+-- a fixed `0.5` at this fixture's `n=1` -- in the hand-derived exact
+root; found by re-reading that class's own source after the fixture's
+two norms converged to a value neither matched the (wrongly-derived)
+root, fixed by doubling the constructor argument passed to it, not by
+loosening the test.)
+
+### 12.3 `NewtonResidualPath::Direct`
+
+`Advance` (default, unchanged): `G(x)` is obtained the way every region
+before this option existed obtains it -- deliver `x`, re-advance every
+checkpointed member under `save_state()`/`restore_state()`, run the
+region's own body. `Direct` instead calls each providing member's own
+`ImplicitComponent::evaluate_residual()` in place of `advance()`, with NO
+`save_state()`/`restore_state()` anywhere in the call (that method's own
+contract already guarantees it leaves the component bit-identical to how
+it found it, so there is nothing to roll back) --
+`Runner::Impl::evaluate_region_residual_direct()`
+(`src/runtime/fixed_point_residual.cpp`), a close structural twin of
+`evaluate_region_residual()` (§4), writing each provider's own
+`residual_out` into the registered Source-node storage `advance()` would
+otherwise have written, so the region's existing body instructions carry
+it downstream exactly as they already carry `advance()`'s own output.
+Ordinary (non-window) regions only: a window-scoped region's own sweep
+has coroutine-resident per-member state (§9.2's own table: clock,
+straddle flags, the pass-scoped predictor cache) that `advance_window()`
+mutates regardless of how a member's own physics is evaluated, and
+`Direct` never calls that function at all, so it is refused eagerly, at
+setup, with `E-NEWTON-DIRECT-WINDOW`
+(`NewtonDirect.AWindowScopedRegionSelectingDirectIsRefusedAtSetup`). The
+committing verification sweep at the converged iterate ALWAYS advances
+real state through the REAL `evaluate_region_residual()` (Advance),
+regardless of which path the solve itself used -- the Runner's own
+persisted state is always reached by at least one genuine `advance()`
+call, per period.
+
+**Bit-identity, measured.** `Runner::region_fixed_point_residual_direct()`
+(new, TEST/DIAGNOSTIC-ONLY, the `Direct` sibling of `region_fixed_point_
+residual()` -- §4 -- built for exactly this comparison) against the
+Advance seam, at several `x` (all-ones, a per-entry ramp, a negative
+vector), on both the affine map and the nonlinear `k(T)` variant
+(`beta = 0.1`): `F(x)` agrees to the bit, `EXPECT_EQ`, not a tolerance
+(`NewtonDirect.FMatchesAdvanceBitIdenticallyOnTheAffineMap`,
+`...OnTheNonlinearConductivity`). The full Newton trajectory (iterations,
+residual history) run through `run_period()` under each path separately
+also agrees to the bit
+(`NewtonDirect.FullNewtonTrajectoryIsIdenticalBetweenAdvanceAndDirect`),
+as does the persisted state (`q`/`u`) the committing sweep leaves behind.
+
+**The rollback question, measured rather than assumed.** This track's own
+plan asked whether a member WITHOUT rollback could run Newton on `Direct`
+specifically, since `Direct` itself never calls `save_state()`/
+`restore_state()` on anything. MEASURED: no -- `verify_rollback_support()`
+(`src/runtime/checkpoint_support.cpp`) unconditionally refuses `E-ITER-
+NOROLLBACK` for EVERY checkpointed member of ANY iteration region, at the
+single call site inside `resolve_regions()`, BEFORE any Newton-specific
+code (Advance's own setup, `Direct`'s own `build_newton_direct_members()`)
+is ever reached -- because `step_period()`'s own generic first tick
+(§4's own top comment: "By the time control reaches the region the
+participants have already advanced once") needs that SAME rollback to
+undo itself regardless of which residual path the region's own Newton
+solve will use. A synthetic component with `kCapabilityResidual` set and
+`capabilities()`'s own rollback bit CLEARED fires `E-ITER-NOROLLBACK` for
+BOTH `residual_path: Direct` AND `residual_path: Advance`, identically
+(`NewtonDirect.AMemberWithoutRollbackRefusesNewtonOnDirect`,
+`...TheSameRefusalFiresForAdvanceTooProvingItIsPathIndependent`) --
+proving this is `verify_rollback_support()`'s own pre-existing,
+path-independent rule, not a limitation `Direct` introduces, and NOT a
+benefit `Direct` grants either. Lifting this restriction, if ever wanted,
+is a change to the generic first-tick's own rollback requirement, not to
+`NewtonResidualPath` -- out of this track's own scope, recorded as an
+open question (§12.5) rather than attempted.
+
+**Cost, measured.** One `F` evaluation, Advance vs Direct, median of 11
+repetitions after a warm-up call, `n = 8` (dn_heat's own affine map):
+`advance = 212000.0 ns`, `direct = 210375.0 ns`, ratio (direct/advance)
+`0.9923`, `load1 = 6.72` at the time of this run (this host's own
+12-core machine, with two other tracks building concurrently -- the
+task's own standing condition). An earlier run under heavier concurrent
+load (`load1 = 8.41`) measured a DIFFERENT ratio, `1.1485`, flagged
+`NOISY` by this same test's own `load1 > 8.0` threshold -- recorded
+honestly rather than discarded: on this shared, concurrently-building
+host, the measured ratio moves with system load, and the two numbers
+above do not by themselves establish that Direct is reliably faster or
+slower than Advance; both evaluations do the SAME work (deliver `x`, run
+one component call, run the region's own body) minus or plus a
+save/restore bracket over a handful of doubles, so a difference much
+larger than measured here, in either direction, would be the surprising
+result.
+
+### 12.4 Descriptor v14
+
+Both fields appended at `NewtonConfig`'s own declared end, after
+`substrate` (v13's own last field) -- `kGraphVersion` 13 -> 14, following
+v12's and v13's own append-only pattern exactly: `write()`/`read()` add
+two bytes (`norm`, `residual_path`), each bound-checked against its own
+enum's cardinality with `E-DESC-ENUM`; every earlier version's own byte
+layout is untouched. `test/golden/waist-v14.bin` (new, generated via
+`fuse_write_golden_descriptor`) replaces `waist-v13.bin` as the frozen
+byte comparison (`Descriptor.MatchesTheFrozenWaistBytes`); `waist-v13.bin`
+moves to the superseded list alongside v12/v11/..., still decodable, per
+the SAME backward-compatibility guarantee v13 itself established over
+v12. `freeze_fixture.hpp`'s own second Newton region (the one exercising
+every non-default `NewtonConfig` field, per v13's own convention) selects
+`norm: MeasureWeighted, residual_path: Direct` -- the two non-default
+values this version adds, proving they round-trip through the descriptor
+alongside every earlier non-default field. YAML: `norm`/`residual_path`
+keys, enumerators spelled verbatim (`Plain`/`MeasureWeighted`,
+`Advance`/`Direct`), an unknown name refused `E-YAML-PARSE`
+(`YamlIo.RejectsUnknownNewtonConfigNorm`, `...ResidualPath`).
+
+### 12.5 Open questions for the lead
+
+**Window-scoped `MeasureWeighted`, Round 2 GAP 1: verified against the
+real Brusselator, and a real bug found and fixed in the process.**
+`decide_window_convergence()` (`fuse/runtime/window_convergence.hpp`)
+is, read directly rather than assumed, an UNWEIGHTED flat sum of squared
+per-block samples across owning ranks -- no spatial measure weighting of
+its own, and no weighting by which substep within the window a sample
+belongs to; this still directly contradicts this track's own ORIGINAL
+plan, which assumed window regions already use "the weights it already
+uses" -- they do not use any, and `build_newton_measure_weights()`'s own
+`window_scoped` branch repeats each element's own spatial measure
+UNIFORMLY across every sample for exactly that reason, unchanged from
+the Stage A framing above.
+
+What Round 1 could not verify, Round 2 did, with a new file
+(`test/verification/brusselator_newton_norm_test.cpp`), built from the
+same Rig/NewtonConfig conventions as `brusselator_runner_test.cpp`'s own
+`NewtonConvergesInAPinnedIterationCountWithTheBlockJacobiPreconditioner`,
+against two grid sizes: that file's own small 5x5/7x7 one (fast, for the
+convergence and GMRES-count checks) and the EXAMPLE's own real defaults,
+16x16/24x24 (the one configuration §9.1's own `n=4864` is about).
+Running `NewtonNorm::MeasureWeighted` against that real grid for the
+FIRST time (not the ordinary-region-only tests §12.2 ran) immediately
+refused every window with `E-NEWTON-NORM-SCALE`: `weights_for()` is
+called with `elements = slots[b.feed_arc].elements` (the mesh's own
+entity count) and `components = slots[...].components`, and for a
+window-scoped consumer arc `src/ir/window_lowering.cpp` sets
+`components = field_components * window_sample_capacity()` -- so
+`weights_for()` had ALREADY replicated each element's own measure across
+every sample column (`w_base.size() == b.length`, not `b.length /
+capacity`) before `build_newton_measure_weights()` ever saw it; the
+Round 1 code treated `w_base` as purely spatial and re-expanded it by
+`capacity` a SECOND time, double-counting the window dimension in both
+the per-entry normalisation (`local_sum *= capacity`, now removed) and
+the length check it failed. The fixture Round 1 verified against
+(`NewtonDnHeatFixture`'s own window-scoped test, where this doc's prior
+revision said "only the ordinary-region tests... ran") evidently never
+exercised a window with `capacity > 1` for this norm -- EVERY real
+multi-sample window (which is to say, every window this feature would
+ever actually be used on) was broken from the day it was written, until
+this gap's own verification run caught it. Fixed in
+`build_newton_measure_weights()` (`src/runtime/iteration.cpp`): `w_base`
+is now read as already including the window-sample dimension when
+`window_scoped`, with a defended (not merely assumed) check that it really
+is uniform across each element's own sample run, refusing
+`E-NEWTON-NORM-SCALE` rather than silently misweighting if a future
+change to `weights_for()`'s own replication order ever breaks that.
+
+MEASURED, after the fix, at the real grid (`n_u = 256`, `cap_u = 11`,
+`cap_v = 8`, `newton_n = 4864` -- §9.1's own hand-derived total,
+confirmed exactly):
+- **(a) Convergence and agreement.** Plain and MeasureWeighted both
+  converge every window (small grid: 4 Newton iterations each);
+  `max|u_plain - u_weighted| = 1.332268e-15`, `max|v_plain - v_weighted|
+  = 2.220446e-15` -- round-off, not a derived bound (none was attempted
+  for this nonlinear reaction-diffusion problem; a sanity bound of
+  `1e-6` is asserted instead, three orders looser than
+  `brusselator_runner_test.cpp`'s own `1e-9` pin for its different
+  (preconditioner-choice) comparison).
+- **(b) The production `D`, entry for entry, at `n=4864`.** Checked
+  against a closed form derived from the SAME uniform-mesh exploit
+  `NewtonNorm.ProductionDiagonalMatchesTheFormulaEntryForEntry` uses for
+  dn_heat (`NativeGrid`'s own unit-square grid makes every cell's
+  measure identical, cancelling out of `D_i = sqrt(w_i/sum_w)/s_b`
+  regardless of that measure's own value): `D_i = sqrt(1/(capacity *
+  n_u))/s_b` for every entry, uniform across every sample at a fixed
+  element -- PASSED, entry for entry, both blocks ("u2v", "v2u").
+- **(c) GMRES cost, composed vs. no preconditioner at all.** MEASURED,
+  not assumed: block-Jacobi WITH the correct `D^-1` composition costs
+  MORE total GMRES work here (42) than no preconditioner at all (8), and
+  needs one more outer Newton iteration (4 vs. 3) -- the SAME direction
+  `brusselator_runner_test.cpp`'s own header already measured at the
+  full-size grid ("fewer outer iterations... (3, not 4)... without" the
+  preconditioner); an initial assertion written the OTHER way (composed
+  cannot cost more) was wrong and was corrected to a regression pin
+  reporting both numbers as measured, before the mutation row below was
+  proved.
+- **The window path's own `D^-1` composition, mutation-proved.** A NEW
+  row, `newton-norm-window-precond-not-composed-with-inverse-diagonal`
+  (`build-evidence/mutations/newton-model.toml`), at `run_region_newton_
+  window()`'s own call site (distinct from `run_region_newton()`'s,
+  proved in §12.2(v)): dropping the composition moves the composed
+  case's own pinned numbers (4 Newton iterations / 42 GMRES -> 3 / 24),
+  confirming this call site is live and this composition matters to it
+  on a REAL window, not only on the ordinary-region synthetic fixture
+  §12.2(v) proved it against.
+
+No further open question remains for this gap: the window D was wrong,
+it is now fixed, and the fix is verified against the real example and
+mutation-proved on the window path specifically, not merely inferred
+from the ordinary-region proof.
+
+**Cross-rank reduction of `sum_block_w`.** §9.4's own single-participant
+restriction (`check_region_supports_newton()`) means `build_newton_
+measure_weights()`'s own `reducer.sum()` call is, today, unconditionally
+`make_serial_reducer()` -- never a reduction over more than one rank's own
+contribution. Lifting §9.4's own restriction (this doc's own long-stated
+next step for the window track) would need `R.newton_reducer` to become a
+real cross-rank reducer for `MeasureWeighted` to keep computing `D`
+correctly over a genuinely multi-participant region; this track did not
+need to make that change and did not.
+
+**The rollback restriction's own scope.** §12.3's own measured finding
+(`E-ITER-NOROLLBACK` fires identically for Advance and Direct) is a
+property of `step_period()`'s own generic first tick, not of either
+residual path -- lifting it, if ever wanted, means teaching that generic
+tick itself to skip the rollback bracket for a region whose OWN residual
+path never needs to undo it (`Direct` specifically), which is a change to
+shared scheduling code well outside this track's own owned files, and is
+recorded here rather than attempted.
