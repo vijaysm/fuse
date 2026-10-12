@@ -341,11 +341,15 @@ class CommGraph {
 /// exactly what a target vertex at an interior source-partition boundary
 /// has.
 ///
-/// Called from `Runner::Impl::reduce_nodal_remap_target` (src/runtime/
-/// runner.cpp) for a distributed nodal Extensive Remap target -- the lead's
-/// ruling of 2026-09-24 (docs/dev/nodal-fields.md): this is not gated by
-/// `RunnerConfig::check_conservation`, which controls a CHECK, not the
-/// physics, so it always runs when the target is Extensive and distributed.
+/// Review 2026-10-11 TR-11: `Runner::Impl::reduce_nodal_remap_target`, named
+/// below until this note, was deleted (runner_impl.hpp's own comment on the
+/// NodalReduceInfo/NodalReduceMode redesign records it); this primitive's
+/// only callers today are `test/parallel/nodal_field_test.cpp`'s own direct
+/// exercises. The lead's ruling of 2026-09-24 (docs/dev/nodal-fields.md)
+/// that this is not gated by `RunnerConfig::check_conservation` -- which
+/// controls a CHECK, not the physics, so a distributed Extensive Remap
+/// target's reduction always runs -- stands for whatever runtime consumer
+/// eventually replaces the deleted one.
 [[nodiscard]] Result<void> accumulate_shared_rows(const MeshView& view, int dim,
                                                   std::size_t components,
                                                   std::vector<double>& local_values,
