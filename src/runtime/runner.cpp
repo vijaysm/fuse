@@ -3193,7 +3193,10 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
       // mirrors `num::accumulate_into`'s own `sample_index == 0` rule.
       num::accumulate<Space>(r.accum, span_c(in_ptr(0), n),
                              span_m(out_ptr(), n), idx == 0);
-      sample_count[ins.out.value()] = idx + 1;
+      // After a staging fault the kernel above was a no-op and the
+      // instruction fails after the switch; do not record a sample that was
+      // never accumulated. Always false in the host instantiation.
+      if (!staging_fault) sample_count[ins.out.value()] = idx + 1;
       break;
     }
 
