@@ -10,6 +10,20 @@
 # for this directory and the examples build but are never run. The parent
 # recorded that trap and it applies unchanged.
 
+# review-2026-10-11 BC-1: FUSE_LINALG_BACKEND=builtin configures the library
+# with no Eigen3::Eigen target at all (cmake/FuseDependencies.cmake creates
+# it only when the backend is eigen). Several example executables below link
+# Eigen3::Eigen directly (Gray-Scott, Brusselator, FSI channel -- all via
+# Eigen::SparseLU/SimplicialLDLT) or through fuse::examples_common's own
+# INTERFACE link, further down in this file; this one ON/OFF variable,
+# set once, is what every gate below reads.
+if(FUSE_LINALG_BACKEND STREQUAL "eigen")
+  set(FUSE_LINALG_BACKEND_IS_EIGEN ON)
+else()
+  set(FUSE_LINALG_BACKEND_IS_EIGEN OFF)
+endif()
+set(_fuse_eigen_gated_examples "")
+
 add_executable(fuse_example_mms_pair mms_pair/main.cpp)
 target_link_libraries(fuse_example_mms_pair PRIVATE fuse::runtime fuse::backend)
 target_include_directories(fuse_example_mms_pair PRIVATE mms_pair)
@@ -110,145 +124,169 @@ endif()
 add_library(fuse_examples_common INTERFACE)
 add_library(fuse::examples_common ALIAS fuse_examples_common)
 target_include_directories(fuse_examples_common INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/common)
-target_link_libraries(fuse_examples_common INTERFACE fuse::base Eigen3::Eigen)
+target_link_libraries(fuse_examples_common INTERFACE fuse::base)
+# review-2026-10-11 BC-1: fuse::examples_common is an INTERFACE target, so
+# this one unguarded Eigen3::Eigen link used to fail every consumer's
+# configure at once under FUSE_LINALG_BACKEND=builtin (test/CMakeLists.txt's
+# own comment on this target makes the same observation about its reach).
+if(FUSE_LINALG_BACKEND_IS_EIGEN)
+  target_link_libraries(fuse_examples_common INTERFACE Eigen3::Eigen)
+endif()
 if(FUSE_ENABLE_CUSPARSE)
   target_link_libraries(fuse_examples_common INTERFACE
     CUDA::cusolver CUDA::cusparse CUDA::cudart)
 endif()
 
 # ---------------------------------------------------------------------------
-# Gray-Scott (Time windows track): U and V on one structured grid, coupled
-# implicitly at independent time steps through fuse::WindowCoupler. Needs
-# Eigen3::Eigen directly (its Newton solves use Eigen::SparseLU) -- available
-# because FUSE_LINALG_BACKEND=eigen is the default (cmake/FuseDependencies.cmake).
-# ---------------------------------------------------------------------------
-add_executable(fuse_example_gray_scott
-  gray_scott/main.cpp)
-target_link_libraries(fuse_example_gray_scott PRIVATE
-  fuse::runtime fuse::backend Eigen3::Eigen fuse::examples_common)
-target_include_directories(fuse_example_gray_scott PRIVATE gray_scott)
+# review-2026-10-11 BC-1: gated on the eigen backend -- this example's
+# Newton solves use Eigen::SparseLU and have no builtin-backend substitute.
+if(FUSE_LINALG_BACKEND_IS_EIGEN)
+  # Gray-Scott (Time windows track): U and V on one structured grid, coupled
+  # implicitly at independent time steps through fuse::WindowCoupler. Needs
+  # Eigen3::Eigen directly (its Newton solves use Eigen::SparseLU) -- available
+  # because FUSE_LINALG_BACKEND=eigen is the default (cmake/FuseDependencies.cmake).
+  # ---------------------------------------------------------------------------
+  add_executable(fuse_example_gray_scott
+    gray_scott/main.cpp)
+  target_link_libraries(fuse_example_gray_scott PRIVATE
+    fuse::runtime fuse::backend Eigen3::Eigen fuse::examples_common)
+  target_include_directories(fuse_example_gray_scott PRIVATE gray_scott)
 
-if(FUSE_ENABLE_TESTS)
-  # Gated on the physics, same convention as mms_pair/dn_heat above:
-  # --check exits non-zero if the m=1 windowed result misses the monolithic
-  # reference (to a TIGHT, iteration-tolerance-level bound -- see the
-  # comment at that check in main.cpp) or a concentration goes negative.
-  # --dt 0.1 is not incidental: the m=1 windowed/monolithic mismatch is a
-  # genuine order-2-in-dt effect (gray_scott_reference_test.cpp measures it
-  # exactly), not merely the iteration residual, so it is checked at a dt
-  # small enough for that order-2 term to already be below the tight bound,
-  # rather than by loosening the bound. The --check block's own m=1
-  # sub-run is internally fixed at 5 windows of --dt regardless of --ratio/
-  # --t-end (main.cpp), so --dt is what this bound actually depends on;
-  # measured AT THIS EXACT COMMAND LINE: diff 3.022e-08, bound 1.0e-6.
-  add_test(NAME example.gray_scott COMMAND fuse_example_gray_scott --n 24 --ratio 2 --t-end 4 --dt 0.1 --check)
-  set_tests_properties(example.gray_scott PROPERTIES LABELS "example")
-  if(COMMAND fuse_add_device_twin)
-    fuse_add_device_twin(example.gray_scott fuse_example_gray_scott LABELS example
-                         ARGS --n 24 --ratio 2 --t-end 4 --dt 0.1 --check)
+  if(FUSE_ENABLE_TESTS)
+    # Gated on the physics, same convention as mms_pair/dn_heat above:
+    # --check exits non-zero if the m=1 windowed result misses the monolithic
+    # reference (to a TIGHT, iteration-tolerance-level bound -- see the
+    # comment at that check in main.cpp) or a concentration goes negative.
+    # --dt 0.1 is not incidental: the m=1 windowed/monolithic mismatch is a
+    # genuine order-2-in-dt effect (gray_scott_reference_test.cpp measures it
+    # exactly), not merely the iteration residual, so it is checked at a dt
+    # small enough for that order-2 term to already be below the tight bound,
+    # rather than by loosening the bound. The --check block's own m=1
+    # sub-run is internally fixed at 5 windows of --dt regardless of --ratio/
+    # --t-end (main.cpp), so --dt is what this bound actually depends on;
+    # measured AT THIS EXACT COMMAND LINE: diff 3.022e-08, bound 1.0e-6.
+    add_test(NAME example.gray_scott COMMAND fuse_example_gray_scott --n 24 --ratio 2 --t-end 4 --dt 0.1 --check)
+    set_tests_properties(example.gray_scott PROPERTIES LABELS "example")
+    if(COMMAND fuse_add_device_twin)
+      fuse_add_device_twin(example.gray_scott fuse_example_gray_scott LABELS example
+                           ARGS --n 24 --ratio 2 --t-end 4 --dt 0.1 --check)
+    endif()
+    # Same command line, compared bit for bit at one thread and at every core;
+    # the species components declare DeterminismLevel::Bitwise on this measurement.
+    if(COMMAND fuse_add_omp_legs AND FUSE_KOKKOS_HAS_OPENMP)
+      add_test(NAME example.gray_scott.omp_identical
+               COMMAND ${CMAKE_COMMAND}
+                       -DBIN=$<TARGET_FILE:fuse_example_gray_scott>
+                       "-DARGS=--n;24;--ratio;2;--t-end;4;--dt;0.1;--check"
+                       -DTHREADS_HI=${_fuse_host_cores}
+                       -DOUT=${CMAKE_CURRENT_BINARY_DIR}/omp_gray_scott
+                       -P ${CMAKE_SOURCE_DIR}/tools/compare-runs.cmake)
+      set_tests_properties(example.gray_scott.omp_identical PROPERTIES LABELS "example;omp")
+    endif()
   endif()
-  # Same command line, compared bit for bit at one thread and at every core;
-  # the species components declare DeterminismLevel::Bitwise on this measurement.
-  if(COMMAND fuse_add_omp_legs AND FUSE_KOKKOS_HAS_OPENMP)
-    add_test(NAME example.gray_scott.omp_identical
-             COMMAND ${CMAKE_COMMAND}
-                     -DBIN=$<TARGET_FILE:fuse_example_gray_scott>
-                     "-DARGS=--n;24;--ratio;2;--t-end;4;--dt;0.1;--check"
-                     -DTHREADS_HI=${_fuse_host_cores}
-                     -DOUT=${CMAKE_CURRENT_BINARY_DIR}/omp_gray_scott
-                     -P ${CMAKE_SOURCE_DIR}/tools/compare-runs.cmake)
-    set_tests_properties(example.gray_scott.omp_identical PROPERTIES LABELS "example;omp")
-  endif()
+else()
+  message(STATUS "fuse: fuse_example_gray_scott not built under "
+                 "FUSE_LINALG_BACKEND=builtin (needs Eigen::SparseLU)")
+  list(APPEND _fuse_eigen_gated_examples fuse_example_gray_scott)
 endif()
 
 # ---------------------------------------------------------------------------
-# Brusselator (Time windows track, "a code FUSE has never met"): U and V on
-# two INDEPENDENT, non-nested native meshes ("generated:quad:NxM"), coupled
-# at independent time steps through fuse::WindowCoupler and exchanged
-# through FUSE's conservative supermesh remap (fuse::build_weights /
-# fuse::apply_weights) -- ported from the user's own independently-written
-# multirate Brusselator (/Users/mahadevan/Code/AI/Toy). Needs Eigen3::Eigen
-# directly (periodic-diffusion backward-Euler solves, Eigen::SimplicialLDLT)
-# and Kokkos::kokkos directly (the reaction kernel, brusselator_physics.hpp
-# `reaction_kokkos`) -- both available unconditionally, same reasoning as
-# fuse_example_gray_scott just above.
-# ---------------------------------------------------------------------------
-add_executable(fuse_example_brusselator
-  brusselator/main.cpp)
-target_link_libraries(fuse_example_brusselator PRIVATE
-  fuse::runtime fuse::backend Eigen3::Eigen Kokkos::kokkos)
-target_include_directories(fuse_example_brusselator PRIVATE brusselator)
-# S7.2b (PetscSelect track): main.cpp's own unconditional (guarded by #if
-# FUSE_HAVE_PETSC) fuse::petsc::install() call -- same reasoning as
-# fuse_example_dn_heat's own identical conditional link, just above in
-# this file.
-if(FUSE_ENABLE_PETSC)
-  target_link_libraries(fuse_example_brusselator PRIVATE fuse::petsc)
-endif()
-
-if(FUSE_ENABLE_TESTS)
-  # Gated on the physics, same convention as the examples above: --check
-  # exits non-zero unless every window converged, both species stayed
-  # non-negative, the discrete mass budget (NUMERICS.md "Discrete budget")
-  # held per-window and globally, and the U<->V exchange stayed conservative
-  # -- see main.cpp's --check block and docs/user/brusselator.md for the
-  # measured thresholds. A short run (--end 0.5) so the example itself
-  # stays fast; the deep verification (weights-vs-Toy-oracle, invariants,
-  # cross-code agreement, convergence order) lives in
-  # test/verification/brusselator_*_test.cpp.
-  add_test(NAME example.brusselator COMMAND fuse_example_brusselator --end 0.5 --check)
-  set_tests_properties(example.brusselator PROPERTIES LABELS "example")
-
-  # Time windows track (Conformance, Unit 1): `--driver runner` (main.cpp)
-  # runs the SAME graph through fuse::Runner instead of fuse::WindowCoupler
-  # (docs/user/coupling-windows.md "Through schedule() and the Runner"), at
-  # this example's own default parameters (--window 0.02, --dt-u 0.002,
-  # --dt-v 0.003) -- the same span example.brusselator above covers, so a
-  # --check failure here means the Runner and the driver disagree on THIS
-  # example, not a special-cased schedule. Four `fuse::Runner` defects
-  # (test/verification/brusselator_runner_test.cpp's own header) stood
-  # between this row and passing; all four are fixed as of this row's own
-  # registration, each regression-tested there against the full existing
-  # window_runner_* suite.
-  add_test(NAME example.brusselator.runner
-           COMMAND fuse_example_brusselator --driver runner --end 0.5 --check)
-  set_tests_properties(example.brusselator.runner PROPERTIES LABELS "example")
-  if(COMMAND fuse_add_device_twin)
-    fuse_add_device_twin(example.brusselator.runner fuse_example_brusselator LABELS example
-                         ARGS --driver runner --end 0.5 --check)
-  endif()
-
-  # The coupling window by Newton on BOTH substrates, through the example
-  # itself rather than the one-window test rig (test/petsc/brusselator_
-  # newton_test.cpp): the Eisenstat-Walker floor the window needs
-  # (docs/dev/newton-krylov.md Sec. 9.9.2, 10.3) shows only on the
-  # example's own first window -- the rig's window passed without it on
-  # the host, the example's first window reported DivergedLinearSolve
-  # (2026-10-11). Five windows, --check on.
-  add_test(NAME example.brusselator.newton
-           COMMAND fuse_example_brusselator --driver runner --accel newton --end 0.1 --check)
-  set_tests_properties(example.brusselator.newton PROPERTIES LABELS "example")
+# review-2026-10-11 BC-1: gated on the eigen backend -- this example's
+# periodic-diffusion backward-Euler solve uses Eigen::SimplicialLDLT and
+# has no builtin-backend substitute.
+if(FUSE_LINALG_BACKEND_IS_EIGEN)
+  # Brusselator (Time windows track, "a code FUSE has never met"): U and V on
+  # two INDEPENDENT, non-nested native meshes ("generated:quad:NxM"), coupled
+  # at independent time steps through fuse::WindowCoupler and exchanged
+  # through FUSE's conservative supermesh remap (fuse::build_weights /
+  # fuse::apply_weights) -- ported from the user's own independently-written
+  # multirate Brusselator (/Users/mahadevan/Code/AI/Toy). Needs Eigen3::Eigen
+  # directly (periodic-diffusion backward-Euler solves, Eigen::SimplicialLDLT)
+  # and Kokkos::kokkos directly (the reaction kernel, brusselator_physics.hpp
+  # `reaction_kokkos`) -- both available unconditionally, same reasoning as
+  # fuse_example_gray_scott just above.
+  # ---------------------------------------------------------------------------
+  add_executable(fuse_example_brusselator
+    brusselator/main.cpp)
+  target_link_libraries(fuse_example_brusselator PRIVATE
+    fuse::runtime fuse::backend Eigen3::Eigen Kokkos::kokkos)
+  target_include_directories(fuse_example_brusselator PRIVATE brusselator)
+  # S7.2b (PetscSelect track): main.cpp's own unconditional (guarded by #if
+  # FUSE_HAVE_PETSC) fuse::petsc::install() call -- same reasoning as
+  # fuse_example_dn_heat's own identical conditional link, just above in
+  # this file.
   if(FUSE_ENABLE_PETSC)
-    add_test(NAME example.brusselator.newton_petsc
-             COMMAND fuse_example_brusselator --driver runner --accel newton --substrate petsc
-                     --end 0.1 --check)
-    set_tests_properties(example.brusselator.newton_petsc PROPERTIES LABELS "example;petsc")
+    target_link_libraries(fuse_example_brusselator PRIVATE fuse::petsc)
   endif()
 
-  # Thread-count determinism of the Kokkos reaction kernel, bit for bit --
-  # the same convention mms_pair/dn_heat use (tools/compare-runs.cmake),
-  # and, since D11 closed, load-bearing for every example: `reaction_kokkos`
-  # is a genuine Kokkos::parallel_for over the OpenMP execution space on top
-  # of the Runner's own kernels.
-  if(COMMAND fuse_add_omp_legs AND FUSE_KOKKOS_HAS_OPENMP)
-    add_test(NAME example.brusselator.omp_identical
-             COMMAND ${CMAKE_COMMAND}
-                     -DBIN=$<TARGET_FILE:fuse_example_brusselator>
-                     -DTHREADS_HI=${_fuse_host_cores}
-                     -DOUT=${CMAKE_CURRENT_BINARY_DIR}/omp_brusselator
-                     -P ${CMAKE_SOURCE_DIR}/tools/compare-runs.cmake)
-    set_tests_properties(example.brusselator.omp_identical PROPERTIES LABELS "example;omp")
+  if(FUSE_ENABLE_TESTS)
+    # Gated on the physics, same convention as the examples above: --check
+    # exits non-zero unless every window converged, both species stayed
+    # non-negative, the discrete mass budget (NUMERICS.md "Discrete budget")
+    # held per-window and globally, and the U<->V exchange stayed conservative
+    # -- see main.cpp's --check block and docs/user/brusselator.md for the
+    # measured thresholds. A short run (--end 0.5) so the example itself
+    # stays fast; the deep verification (weights-vs-Toy-oracle, invariants,
+    # cross-code agreement, convergence order) lives in
+    # test/verification/brusselator_*_test.cpp.
+    add_test(NAME example.brusselator COMMAND fuse_example_brusselator --end 0.5 --check)
+    set_tests_properties(example.brusselator PROPERTIES LABELS "example")
+
+    # Time windows track (Conformance, Unit 1): `--driver runner` (main.cpp)
+    # runs the SAME graph through fuse::Runner instead of fuse::WindowCoupler
+    # (docs/user/coupling-windows.md "Through schedule() and the Runner"), at
+    # this example's own default parameters (--window 0.02, --dt-u 0.002,
+    # --dt-v 0.003) -- the same span example.brusselator above covers, so a
+    # --check failure here means the Runner and the driver disagree on THIS
+    # example, not a special-cased schedule. Four `fuse::Runner` defects
+    # (test/verification/brusselator_runner_test.cpp's own header) stood
+    # between this row and passing; all four are fixed as of this row's own
+    # registration, each regression-tested there against the full existing
+    # window_runner_* suite.
+    add_test(NAME example.brusselator.runner
+             COMMAND fuse_example_brusselator --driver runner --end 0.5 --check)
+    set_tests_properties(example.brusselator.runner PROPERTIES LABELS "example")
+    if(COMMAND fuse_add_device_twin)
+      fuse_add_device_twin(example.brusselator.runner fuse_example_brusselator LABELS example
+                           ARGS --driver runner --end 0.5 --check)
+    endif()
+
+    # The coupling window by Newton on BOTH substrates, through the example
+    # itself rather than the one-window test rig (test/petsc/brusselator_
+    # newton_test.cpp): the Eisenstat-Walker floor the window needs
+    # (docs/dev/newton-krylov.md Sec. 9.9.2, 10.3) shows only on the
+    # example's own first window -- the rig's window passed without it on
+    # the host, the example's first window reported DivergedLinearSolve
+    # (2026-10-11). Five windows, --check on.
+    add_test(NAME example.brusselator.newton
+             COMMAND fuse_example_brusselator --driver runner --accel newton --end 0.1 --check)
+    set_tests_properties(example.brusselator.newton PROPERTIES LABELS "example")
+    if(FUSE_ENABLE_PETSC)
+      add_test(NAME example.brusselator.newton_petsc
+               COMMAND fuse_example_brusselator --driver runner --accel newton --substrate petsc
+                       --end 0.1 --check)
+      set_tests_properties(example.brusselator.newton_petsc PROPERTIES LABELS "example;petsc")
+    endif()
+
+    # Thread-count determinism of the Kokkos reaction kernel, bit for bit --
+    # the same convention mms_pair/dn_heat use (tools/compare-runs.cmake),
+    # and, since D11 closed, load-bearing for every example: `reaction_kokkos`
+    # is a genuine Kokkos::parallel_for over the OpenMP execution space on top
+    # of the Runner's own kernels.
+    if(COMMAND fuse_add_omp_legs AND FUSE_KOKKOS_HAS_OPENMP)
+      add_test(NAME example.brusselator.omp_identical
+               COMMAND ${CMAKE_COMMAND}
+                       -DBIN=$<TARGET_FILE:fuse_example_brusselator>
+                       -DTHREADS_HI=${_fuse_host_cores}
+                       -DOUT=${CMAKE_CURRENT_BINARY_DIR}/omp_brusselator
+                       -P ${CMAKE_SOURCE_DIR}/tools/compare-runs.cmake)
+      set_tests_properties(example.brusselator.omp_identical PROPERTIES LABELS "example;omp")
+    endif()
   endif()
+else()
+  message(STATUS "fuse: fuse_example_brusselator not built under "
+                 "FUSE_LINALG_BACKEND=builtin (needs Eigen::SimplicialLDLT)")
+  list(APPEND _fuse_eigen_gated_examples fuse_example_brusselator)
 endif()
 
 # Conformance, Unit 2 ("Brusselator as separately built participants"):
@@ -375,85 +413,98 @@ if(FUSE_ENABLE_MPI)
     brusselator/participants/coupler_main.c)
   target_link_libraries(brusselator_coupler_main PRIVATE fuse::abi MPI::MPI_C)
 
-  add_executable(brusselator_u_main
-    brusselator/participants/u_main.c
-    brusselator/participants/u_loop.c
-    brusselator/participants/shim.cpp)
-  target_link_libraries(brusselator_u_main PRIVATE
-    fuse::abi MPI::MPI_C Eigen3::Eigen Kokkos::kokkos)
-  target_include_directories(brusselator_u_main PRIVATE brusselator)
-
-  # S6 phase 3 (Conformance, "LowFive" track), Unit 3b: shim.cpp's own
-  # bruss_lowfive_write/read (behind FUSE_HAVE_LOWFIVE) call the real
-  # HDF5 C API -- fuse::lowfive (cmake/FuseDependencies.cmake, which this
-  # directory's own fuse_resolve_dependencies() call already ran before
-  # add_subdirectory(examples) reached here, CMakeLists.txt) carries
-  # HDF5 plus the LowFive libraries themselves. The connector attachment
-  # this track chose (the HDF5_VOL_CONNECTOR/HDF5_PLUGIN_PATH env-var
-  # mechanism, docs/user/lowfive.md) needs no LowFive SYMBOL in THIS
-  # executable at all -- only ordinary HDF5 calls -- but linking the one
-  # `fuse::lowfive` target already resolved is simpler than teasing the
-  # raw HDF5-only half back out, and costs nothing an ordinary HDF5
-  # dependency does not already cost.
-  # fuse_link_lowfive_with_fmt_fix (cmake/FuseDependencies.cmake): plain
-  # target_link_libraries(... fuse::lowfive ...) here is not enough --
-  # shim.cpp also includes fuse/base/rational.hpp (-> result.hpp -> fmt
-  # 12), in the SAME translation unit as <hdf5.h>, and fuse::lowfive's
-  # own include directory carries a bundled, incompatible fmt. See that
-  # function's own comment and KNOWN_ISSUES.md D14's Unit 3b account for
-  # the full measured record (an earlier, single-link-order version of
-  # this fix broke under a different CMAKE_PREFIX_PATH ordering).
-  if(TARGET fuse::lowfive)
-    fuse_link_lowfive_with_fmt_fix(brusselator_u_main)
-  endif()
-
-  # ---- S6 phase 3 (Conformance, "LowFive attach" track): begin --------
-  # lowfive_attach.cpp (examples/brusselator/participants) constructs the
-  # VOL connector PROGRAMMATICALLY instead of through the HDF5_VOL_
-  # CONNECTOR/HDF5_PLUGIN_PATH env-var route -- see that file's own
-  # header comment and KNOWN_ISSUES.md D39 for why. Always added to this
-  # executable's own sources (like shim.cpp, it compiles to a trivial
-  # "not built with LowFive" stub when FUSE_HAVE_LOWFIVE is 0), needing
-  # fuse::model (fuse/model/yaml_io.hpp, CouplingGraph) in addition to
-  # shim.cpp's own fuse::lowfive -- a dependency this executable did not
-  # need before this track, since shim.cpp's own bruss_lowfive_write/
-  # read never parsed the graph themselves.
-  target_sources(brusselator_u_main PRIVATE brusselator/participants/lowfive_attach.cpp)
-  target_link_libraries(brusselator_u_main PRIVATE fuse::model)
-  # FUSE_LOWFIVE_DIST_LIB_FOUND: this executable's own copy of the SAME
-  # compile definition src/CMakeLists.txt's fuse-lowfive-vol-graph/-impl
-  # OBJECT libraries already receive -- PRIVATE compile definitions do
-  # not propagate from a linked library to a consumer, so lowfive_
-  # attach.cpp needs its own.
-  if(LOWFIVE_HAVE_DIST)
-    target_compile_definitions(brusselator_u_main PRIVATE FUSE_LOWFIVE_DIST_LIB_FOUND=1)
-  endif()
-  # ---- "LowFive attach" track: end (brusselator_u_main half) ----------
-
-  if(TARGET fuse-abi-fortran)
-    add_executable(brusselator_v_main
-      brusselator/participants/v_main.f90
-      brusselator/participants/v_loop.f90
+  # review-2026-10-11 BC-1: brusselator_u_main/brusselator_v_main link
+  # Eigen3::Eigen directly (shim.cpp's physics), so both -- and the two
+  # host rows below that are already conditioned on
+  # "TARGET brusselator_u_main AND TARGET brusselator_v_main" -- are gated
+  # on the eigen backend. brusselator_coupler_main above needs no linalg
+  # backend and stays unconditional.
+  if(FUSE_LINALG_BACKEND_IS_EIGEN)
+    add_executable(brusselator_u_main
+      brusselator/participants/u_main.c
+      brusselator/participants/u_loop.c
       brusselator/participants/shim.cpp)
-    target_link_libraries(brusselator_v_main PRIVATE
-      fuse::abi fuse::abi-fortran MPI::MPI_Fortran MPI::MPI_C Eigen3::Eigen Kokkos::kokkos)
-    target_include_directories(brusselator_v_main PRIVATE brusselator)
+    target_link_libraries(brusselator_u_main PRIVATE
+      fuse::abi MPI::MPI_C Eigen3::Eigen Kokkos::kokkos)
+    target_include_directories(brusselator_u_main PRIVATE brusselator)
+
+    # S6 phase 3 (Conformance, "LowFive" track), Unit 3b: shim.cpp's own
+    # bruss_lowfive_write/read (behind FUSE_HAVE_LOWFIVE) call the real
+    # HDF5 C API -- fuse::lowfive (cmake/FuseDependencies.cmake, which this
+    # directory's own fuse_resolve_dependencies() call already ran before
+    # add_subdirectory(examples) reached here, CMakeLists.txt) carries
+    # HDF5 plus the LowFive libraries themselves. The connector attachment
+    # this track chose (the HDF5_VOL_CONNECTOR/HDF5_PLUGIN_PATH env-var
+    # mechanism, docs/user/lowfive.md) needs no LowFive SYMBOL in THIS
+    # executable at all -- only ordinary HDF5 calls -- but linking the one
+    # `fuse::lowfive` target already resolved is simpler than teasing the
+    # raw HDF5-only half back out, and costs nothing an ordinary HDF5
+    # dependency does not already cost.
+    # fuse_link_lowfive_with_fmt_fix (cmake/FuseDependencies.cmake): plain
+    # target_link_libraries(... fuse::lowfive ...) here is not enough --
+    # shim.cpp also includes fuse/base/rational.hpp (-> result.hpp -> fmt
+    # 12), in the SAME translation unit as <hdf5.h>, and fuse::lowfive's
+    # own include directory carries a bundled, incompatible fmt. See that
+    # function's own comment and KNOWN_ISSUES.md D14's Unit 3b account for
+    # the full measured record (an earlier, single-link-order version of
+    # this fix broke under a different CMAKE_PREFIX_PATH ordering).
     if(TARGET fuse::lowfive)
-      fuse_link_lowfive_with_fmt_fix(brusselator_v_main)
+      fuse_link_lowfive_with_fmt_fix(brusselator_u_main)
     endif()
-    # ---- "LowFive attach" track: begin (brusselator_v_main half) ------
-    # Mirrors brusselator_u_main's own additive hunk just above exactly.
-    target_sources(brusselator_v_main PRIVATE brusselator/participants/lowfive_attach.cpp)
-    target_link_libraries(brusselator_v_main PRIVATE fuse::model)
+
+    # ---- S6 phase 3 (Conformance, "LowFive attach" track): begin --------
+    # lowfive_attach.cpp (examples/brusselator/participants) constructs the
+    # VOL connector PROGRAMMATICALLY instead of through the HDF5_VOL_
+    # CONNECTOR/HDF5_PLUGIN_PATH env-var route -- see that file's own
+    # header comment and KNOWN_ISSUES.md D39 for why. Always added to this
+    # executable's own sources (like shim.cpp, it compiles to a trivial
+    # "not built with LowFive" stub when FUSE_HAVE_LOWFIVE is 0), needing
+    # fuse::model (fuse/model/yaml_io.hpp, CouplingGraph) in addition to
+    # shim.cpp's own fuse::lowfive -- a dependency this executable did not
+    # need before this track, since shim.cpp's own bruss_lowfive_write/
+    # read never parsed the graph themselves.
+    target_sources(brusselator_u_main PRIVATE brusselator/participants/lowfive_attach.cpp)
+    target_link_libraries(brusselator_u_main PRIVATE fuse::model)
+    # FUSE_LOWFIVE_DIST_LIB_FOUND: this executable's own copy of the SAME
+    # compile definition src/CMakeLists.txt's fuse-lowfive-vol-graph/-impl
+    # OBJECT libraries already receive -- PRIVATE compile definitions do
+    # not propagate from a linked library to a consumer, so lowfive_
+    # attach.cpp needs its own.
     if(LOWFIVE_HAVE_DIST)
-      target_compile_definitions(brusselator_v_main PRIVATE FUSE_LOWFIVE_DIST_LIB_FOUND=1)
+      target_compile_definitions(brusselator_u_main PRIVATE FUSE_LOWFIVE_DIST_LIB_FOUND=1)
     endif()
-    # ---- "LowFive attach" track: end -----------------------------------
+    # ---- "LowFive attach" track: end (brusselator_u_main half) ----------
+
+    if(TARGET fuse-abi-fortran)
+      add_executable(brusselator_v_main
+        brusselator/participants/v_main.f90
+        brusselator/participants/v_loop.f90
+        brusselator/participants/shim.cpp)
+      target_link_libraries(brusselator_v_main PRIVATE
+        fuse::abi fuse::abi-fortran MPI::MPI_Fortran MPI::MPI_C Eigen3::Eigen Kokkos::kokkos)
+      target_include_directories(brusselator_v_main PRIVATE brusselator)
+      if(TARGET fuse::lowfive)
+        fuse_link_lowfive_with_fmt_fix(brusselator_v_main)
+      endif()
+      # ---- "LowFive attach" track: begin (brusselator_v_main half) ------
+      # Mirrors brusselator_u_main's own additive hunk just above exactly.
+      target_sources(brusselator_v_main PRIVATE brusselator/participants/lowfive_attach.cpp)
+      target_link_libraries(brusselator_v_main PRIVATE fuse::model)
+      if(LOWFIVE_HAVE_DIST)
+        target_compile_definitions(brusselator_v_main PRIVATE FUSE_LOWFIVE_DIST_LIB_FOUND=1)
+      endif()
+      # ---- "LowFive attach" track: end -----------------------------------
+    else()
+      message(STATUS "fuse: FUSE_ENABLE_MPI is ON but no Fortran compiler was found; "
+                     "brusselator_v_main (Conformance Unit 2) will not be built")
+    endif()
   else()
-    message(STATUS "fuse: FUSE_ENABLE_MPI is ON but no Fortran compiler was found; "
-                   "brusselator_v_main (Conformance Unit 2) will not be built")
+    message(STATUS "fuse: brusselator_u_main/brusselator_v_main (Conformance Unit 2) not "
+                   "built under FUSE_LINALG_BACKEND=builtin (shim.cpp needs Eigen3::Eigen)")
+    list(APPEND _fuse_eigen_gated_examples brusselator_u_main brusselator_v_main)
   endif()
 endif()
+
 
 # ---- Conformance Unit 2, "Brusselator as separately built participants":
 # host rows begin -----------------------------------------------------------
@@ -591,60 +642,71 @@ endif()
 # THESE two rows specifically may remove the three variables here.
 # ---- "LowFive attach" track note: end ----------------------------------
 
-# ---------------------------------------------------------------------------
-# FSI channel (FSI track): a 2D unsteady-Stokes channel with an Euler-
-# Bernoulli wall beam, strongly coupled on a non-matching 1D interface
-# (consistent H, conservative H^T -- fuse/backend/consistent_interp.hpp).
-# Needs Eigen3::Eigen directly for both solvers' SparseLU factorisations,
-# same reasoning as fuse_example_gray_scott just above.
-# ---------------------------------------------------------------------------
-add_executable(fuse_example_fsi_channel
-  fsi_channel/main.cpp)
-target_link_libraries(fuse_example_fsi_channel PRIVATE
-  fuse::runtime fuse::backend Eigen3::Eigen fuse::examples_common)
-target_include_directories(fuse_example_fsi_channel PRIVATE fsi_channel)
+# review-2026-10-11 BC-1: gated on the eigen backend -- both FSI channel
+# solvers factor through Eigen::SparseLU with no builtin-backend substitute.
+if(FUSE_LINALG_BACKEND_IS_EIGEN)
+  # ---------------------------------------------------------------------------
+  # FSI channel (FSI track): a 2D unsteady-Stokes channel with an Euler-
+  # Bernoulli wall beam, strongly coupled on a non-matching 1D interface
+  # (consistent H, conservative H^T -- fuse/backend/consistent_interp.hpp).
+  # Needs Eigen3::Eigen directly for both solvers' SparseLU factorisations,
+  # same reasoning as fuse_example_gray_scott just above.
+  # ---------------------------------------------------------------------------
+  add_executable(fuse_example_fsi_channel
+    fsi_channel/main.cpp)
+  target_link_libraries(fuse_example_fsi_channel PRIVATE
+    fuse::runtime fuse::backend Eigen3::Eigen fuse::examples_common)
+  target_include_directories(fuse_example_fsi_channel PRIVATE fsi_channel)
 
-if(FUSE_ENABLE_TESTS)
-  # Small grids and few steps so the example itself stays fast; the
-  # convergence-order and physics gates live in test/verification/fsi_*_test.
-  # --check exits non-zero if a window fails to converge under acceleration,
-  # if the beam displacement is ever non-finite, or if the beam never moved
-  # (the coupling did nothing measurable).
-  add_test(NAME example.fsi_channel
-           COMMAND fuse_example_fsi_channel --nx-fluid 16 --ny-fluid 8
-                   --nx-beam 12 --mass-ratio 1.0 --accel iqn-ils --dt 0.01
-                   --t-end 0.1 --check)
-  set_tests_properties(example.fsi_channel PROPERTIES LABELS "example")
-  # Same command line at one thread and at every core, bit for bit. IQN-ILS
-  # goes through the Runner's reductions, so this is the example most exposed
-  # to a non-deterministic sum; both FSI components declare Bitwise on it.
-  if(COMMAND fuse_add_omp_legs AND FUSE_KOKKOS_HAS_OPENMP)
-    add_test(NAME example.fsi_channel.omp_identical
-             COMMAND ${CMAKE_COMMAND}
-                     -DBIN=$<TARGET_FILE:fuse_example_fsi_channel>
-                     "-DARGS=--nx-fluid;16;--ny-fluid;8;--nx-beam;12;--mass-ratio;1.0;--accel;iqn-ils;--dt;0.01;--t-end;0.1;--check"
-                     -DTHREADS_HI=${_fuse_host_cores}
-                     -DOUT=${CMAKE_CURRENT_BINARY_DIR}/omp_fsi_channel
-                     -P ${CMAKE_SOURCE_DIR}/tools/compare-runs.cmake)
-    set_tests_properties(example.fsi_channel.omp_identical PROPERTIES LABELS "example;omp")
-  endif()
-  # FUSE_ENABLE_CUSPARSE=ON: these two rows are DISABLED (ctest reports them
-  # as "Not Run (Disabled)", not hidden), KNOWN_ISSUES.md D43. Measured
-  # 2026-10-11: the example's IQN-ILS coupling is marginally stable at the
-  # step nearest the beam's first natural period (step 7 of the default run).
-  # With Eigen it passes that step in 46 sweeps, twice its usual count; with
-  # the cusolverRf backend -- whose solutions agree with Eigen's to <= 1.1e-12
-  # on every one of the 730 solves before the divergence, and are closer to a
-  # long-double reference than Eigen's own -- the same step diverges to 2e80.
-  # The flag-off build itself diverges with --accel none and --accel aitken
-  # at the same periods the flag-on build does. The fsi_* verification rows
-  # (test/verification) still run under the flag and pass.
-  if(FUSE_ENABLE_CUSPARSE)
-    set_tests_properties(example.fsi_channel PROPERTIES DISABLED TRUE)
-    if(TEST example.fsi_channel.omp_identical)
-      set_tests_properties(example.fsi_channel.omp_identical PROPERTIES DISABLED TRUE)
+  if(FUSE_ENABLE_TESTS)
+    # Small grids and few steps so the example itself stays fast; the
+    # convergence-order and physics gates live in test/verification/fsi_*_test.
+    # --check exits non-zero if a window fails to converge under acceleration,
+    # if the beam displacement is ever non-finite, or if the beam never moved
+    # (the coupling did nothing measurable).
+    add_test(NAME example.fsi_channel
+             COMMAND fuse_example_fsi_channel --nx-fluid 16 --ny-fluid 8
+                     --nx-beam 12 --mass-ratio 1.0 --accel iqn-ils --dt 0.01
+                     --t-end 0.1 --check)
+    set_tests_properties(example.fsi_channel PROPERTIES LABELS "example")
+    # Same command line at one thread and at every core, bit for bit. IQN-ILS
+    # goes through the Runner's reductions, so this is the example most exposed
+    # to a non-deterministic sum; both FSI components declare Bitwise on it.
+    if(COMMAND fuse_add_omp_legs AND FUSE_KOKKOS_HAS_OPENMP)
+      add_test(NAME example.fsi_channel.omp_identical
+               COMMAND ${CMAKE_COMMAND}
+                       -DBIN=$<TARGET_FILE:fuse_example_fsi_channel>
+                       "-DARGS=--nx-fluid;16;--ny-fluid;8;--nx-beam;12;--mass-ratio;1.0;--accel;iqn-ils;--dt;0.01;--t-end;0.1;--check"
+                       -DTHREADS_HI=${_fuse_host_cores}
+                       -DOUT=${CMAKE_CURRENT_BINARY_DIR}/omp_fsi_channel
+                       -P ${CMAKE_SOURCE_DIR}/tools/compare-runs.cmake)
+      set_tests_properties(example.fsi_channel.omp_identical PROPERTIES LABELS "example;omp")
+    endif()
+    # FUSE_ENABLE_CUSPARSE=ON: these two rows are DISABLED (ctest reports them
+    # as "Not Run (Disabled)", not hidden), KNOWN_ISSUES.md D43 (review
+    # 2026-10-11 used the pre-rebase number D36 for this finding; D36 in the
+    # current KNOWN_ISSUES.md is the unrelated accept-mode RankSet fix).
+    # Measured 2026-10-11: the example's IQN-ILS coupling is marginally stable
+    # at the step nearest the beam's first natural period (step 7 of the
+    # default run). With Eigen it passes that step in 46 sweeps, twice its
+    # usual count; with the cusolverRf backend -- whose solutions agree with
+    # Eigen's to <= 1.1e-12 on every one of the 730 solves before the
+    # divergence, and are closer to a long-double reference than Eigen's own
+    # -- the same step diverges to 2e80. The flag-off build itself diverges
+    # with --accel none and --accel aitken at the same periods the flag-on
+    # build does. The fsi_* verification rows (test/verification) still run
+    # under the flag and pass.
+    if(FUSE_ENABLE_CUSPARSE)
+      set_tests_properties(example.fsi_channel PROPERTIES DISABLED TRUE)
+      if(TEST example.fsi_channel.omp_identical)
+        set_tests_properties(example.fsi_channel.omp_identical PROPERTIES DISABLED TRUE)
+      endif()
     endif()
   endif()
+else()
+  message(STATUS "fuse: fuse_example_fsi_channel not built under "
+                 "FUSE_LINALG_BACKEND=builtin (needs Eigen::SparseLU)")
+  list(APPEND _fuse_eigen_gated_examples fuse_example_fsi_channel)
 endif()
 
 if(FUSE_ENABLE_MPI)
@@ -801,6 +863,17 @@ else()
                  "LowFive install shipping liblowfive-dist; not built")
 endif()
 # ---- S6 phase 3, "LowFive" track: end -------------------------------------
+
+# review-2026-10-11 BC-1: one line naming every example this configure
+# skipped because FUSE_LINALG_BACKEND is not eigen, same convention as
+# test/CMakeLists.txt's own skip summary at the bottom of its audit section.
+if(NOT FUSE_LINALG_BACKEND_IS_EIGEN)
+  list(LENGTH _fuse_eigen_gated_examples _n_eigen_gated_examples)
+  list(JOIN _fuse_eigen_gated_examples ", " _fuse_eigen_gated_examples_text)
+  message(STATUS "fuse: ${_n_eigen_gated_examples} example target(s) skipped under "
+                 "FUSE_LINALG_BACKEND=builtin (no Eigen3::Eigen target): "
+                 "${_fuse_eigen_gated_examples_text}")
+endif()
 
 # Last: the label applies to rows registered above, in this directory.
 fuse_label_slow_tests()

@@ -55,6 +55,34 @@ endif()
 set_property(GLOBAL PROPERTY FUSE_REGISTERED_TEST_SOURCES "")
 set_property(GLOBAL PROPERTY FUSE_GATED_TEST_SOURCES "")
 
+# review-2026-10-11 BC-1: FUSE_LINALG_BACKEND=builtin configures the library
+# with no Eigen3::Eigen target at all (cmake/FuseDependencies.cmake creates
+# it only when the backend is eigen); 17 call sites below link Eigen3::Eigen
+# directly (the PCG/GMRES/Schur-slab reference comparisons, the FSI/
+# Gray-Scott/Brusselator diffusion-operator and Newton solves, all keyed on
+# Eigen::SparseLU or Eigen::SimplicialLDLT) -- 23 test targets once the
+# foreach loops that share several of those call sites are expanded -- and
+# would fail to configure under builtin with no guard. One ON/OFF variable,
+# set once, so every gate below reads the same condition rather than
+# repeating the STREQUAL comparison at each site.
+if(FUSE_LINALG_BACKEND STREQUAL "eigen")
+  set(FUSE_LINALG_BACKEND_IS_EIGEN ON)
+else()
+  set(FUSE_LINALG_BACKEND_IS_EIGEN OFF)
+endif()
+# NL-5's row (linalg/schur_slab_unavailable_test.cpp) is gated the opposite
+# way: it exercises src/linalg/schur_slab_unavailable.cpp, which this
+# library compiles only when the backend is NOT eigen. fuse_tests_gated_by
+# always tests "if(NOT ${option})", so declaring that row gated in the
+# eigen configuration needs this negated variable, not NOT-FUSE_LINALG_
+# BACKEND_IS_EIGEN spelled out at the call site.
+if(FUSE_LINALG_BACKEND_IS_EIGEN)
+  set(FUSE_LINALG_BACKEND_IS_BUILTIN OFF)
+else()
+  set(FUSE_LINALG_BACKEND_IS_BUILTIN ON)
+endif()
+set(_fuse_eigen_gated_tests "")
+
 # ---- the OpenMP thread-count leg -------------------------------------------
 # A Kokkos built with OpenMP runs every test on OpenMP already, at whatever
 # thread count the machine and environment happen to give. That is one point
@@ -448,16 +476,25 @@ if(FUSE_ENABLE_PETSC)
   # otherwise-PETSc-independent coverage would take that coverage's own
   # ctest row down with it. Needs the same LIBS brusselator_runner (just
   # above) does, plus fuse::petsc.
-  fuse_add_gtest(petsc brusselator_newton NO_LAYER_LIB
-                 LIBS fuse::runtime fuse::backend fuse::model fuse::linalg
-                      fuse::petsc Eigen3::Eigen Kokkos::kokkos)
-  target_include_directories(fuse_petsc_brusselator_newton_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/examples/brusselator)
+  # review-2026-10-11 BC-1: links Eigen3::Eigen directly (the Brusselator
+  # diffusion operator), so it is further gated on the eigen backend.
+  if(FUSE_LINALG_BACKEND_IS_EIGEN)
+    fuse_add_gtest(petsc brusselator_newton NO_LAYER_LIB
+                   LIBS fuse::runtime fuse::backend fuse::model fuse::linalg
+                        fuse::petsc Eigen3::Eigen Kokkos::kokkos)
+    target_include_directories(fuse_petsc_brusselator_newton_test PRIVATE
+      ${CMAKE_SOURCE_DIR}/examples/brusselator)
+  else()
+    fuse_tests_gated_by(FUSE_LINALG_BACKEND_IS_EIGEN petsc/brusselator_newton_test.cpp)
+    list(APPEND _fuse_eigen_gated_tests petsc.brusselator_newton)
+  endif()
   # KNOWN_ISSUES.md D31/D32: window Newton over the region's real
   # participant ranks, PETSc substrate -- its own dedicated binary and
   # mpiexec-launched row, the SAME isolation this block's own comment
   # gives for brusselator_newton (a PETSc abort takes the whole process
-  # down). RANKS 2 3, mirroring parallel.window_newton_mpi.
+  # down). RANKS 2 3, mirroring parallel.window_newton_mpi. Uses no
+  # Eigen3::Eigen directly (fuse::linalg's own solver path), so it is NOT
+  # gated on the eigen backend.
   if(FUSE_ENABLE_MPI)
     fuse_add_mpi_test(petsc window_newton_mpi
                       LIBS fuse::runtime fuse::backend fuse::model
@@ -827,9 +864,18 @@ if(FUSE_ENABLE_MPI)
   # "Schur-slab" track, tier 1: SchurSlabSolver and Reducer::allgather's own
   # MPI implementation, over a real MPI_COMM_WORLD. RANKS 2 3, per the task:
   # built here, run on the host.
-  fuse_add_mpi_test(parallel schur_slab_mpi LIBS fuse::linalg Eigen3::Eigen RANKS 2 3 LABELS linalg)
-  target_include_directories(fuse_parallel_schur_slab_mpi_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/examples/brusselator)
+  # review-2026-10-11 BC-1: links Eigen3::Eigen directly (the whole-grid
+  # SparseCholesky oracle), so it is further gated on the eigen backend --
+  # fuse_tests_gated_by(FUSE_ENABLE_MPI ...) above already covers the
+  # MPI-off case; this covers MPI-on-but-builtin.
+  if(FUSE_LINALG_BACKEND_IS_EIGEN)
+    fuse_add_mpi_test(parallel schur_slab_mpi LIBS fuse::linalg Eigen3::Eigen RANKS 2 3 LABELS linalg)
+    target_include_directories(fuse_parallel_schur_slab_mpi_test PRIVATE
+      ${CMAKE_SOURCE_DIR}/examples/brusselator)
+  else()
+    fuse_tests_gated_by(FUSE_LINALG_BACKEND_IS_EIGEN parallel/schur_slab_mpi_test.cpp)
+    list(APPEND _fuse_eigen_gated_tests parallel.schur_slab_mpi)
+  endif()
   # "Krylov" track, tier 1: pcg/gmres (both header-only templates, so there
   # is no fuse::linalg symbol of their own to exercise -- this target
   # proves they compile and link against a real MPI_COMM_WORLD reducer/
@@ -890,11 +936,18 @@ if(FUSE_ENABLE_MPI)
   # requirements 2-4 repeated on 2 real ranks. RANKS 2 only, per the task
   # ("the tier-1 test repeats 2-4 on 2 real ranks"); the test-local MPI
   # reducer/exchanger it defines are specific to that rank count.
-  fuse_add_mpi_test(parallel brusselator_grid_mpi
-                     LIBS fuse::runtime fuse::backend fuse::model Eigen3::Eigen Kokkos::kokkos
-                     RANKS 2)
-  target_include_directories(fuse_parallel_brusselator_grid_mpi_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/examples/brusselator)
+  # review-2026-10-11 BC-1: links Eigen3::Eigen directly (the Brusselator
+  # diffusion operator), so it is further gated on the eigen backend.
+  if(FUSE_LINALG_BACKEND_IS_EIGEN)
+    fuse_add_mpi_test(parallel brusselator_grid_mpi
+                       LIBS fuse::runtime fuse::backend fuse::model Eigen3::Eigen Kokkos::kokkos
+                       RANKS 2)
+    target_include_directories(fuse_parallel_brusselator_grid_mpi_test PRIVATE
+      ${CMAKE_SOURCE_DIR}/examples/brusselator)
+  else()
+    fuse_tests_gated_by(FUSE_LINALG_BACKEND_IS_EIGEN parallel/brusselator_grid_mpi_test.cpp)
+    list(APPEND _fuse_eigen_gated_tests parallel.brusselator_grid_mpi)
+  endif()
   # comm_graph_test exercises CrystalRouter directly, which is a private
   # implementation header under src/transport/ -- the transport layer's public
   # surface is CommGraph. The parent gave this one test src/ on its include
@@ -1000,31 +1053,57 @@ fuse_add_gtest(linalg dist_sparse_matrix THROWS)
 # THROWS: JacobiPreconditioner::apply asserts a shape mismatch against the
 # diagonal it was built from, the same caller-mistake split DistVector's
 # own axpy/dot already draw.
-fuse_add_gtest(linalg pcg THROWS LIBS Eigen3::Eigen)
-fuse_add_gtest(linalg gmres THROWS LIBS Eigen3::Eigen)
-# "Schur-slab" track: the exact distributed direct solver for the
-# backward-Euler periodic Laplacian on row bands (docs/dev/
-# schur-slab-solver.md) -- a one-rank bit-identical check against the Toy's
-# own whole-grid SparseCholesky reference (Eigen3::Eigen, brusselator's own
-# periodic_laplacian), 2- and 3-way in-process fake-partition correctness,
-# the periodic-wrap case, and the <2-row refusal. THROWS: FUSE_ASSERT guards
-# a null Reducer and a moved-from solve() as caller mistakes.
-fuse_add_gtest(linalg schur_slab THROWS LIBS Eigen3::Eigen)
-target_include_directories(fuse_linalg_schur_slab_test PRIVATE
-  ${CMAKE_SOURCE_DIR}/examples/brusselator)
-# S7.3 "DerivativeGate" track: the adjoint dot-product identity (derived
-# bound, not chosen), finite-difference derivative convergence with the
-# round-off plateau detected, and assembled-vs-matrix-free agreement --
-# include/fuse/linalg/derivative_gate.hpp. Runs every operator family the
-# project builds with an apply/apply_transpose (fuse::linalg's own
-# DistSparseMatrix/SchurSlabSolver, fuse::WeightsOperator/ComposedOperator
-# over real supermesh/consistent-interpolation/moving-least-squares weights),
-# so it needs fuse::backend and fuse::model on top of fuse::linalg, and
-# Eigen3::Eigen + the Brusselator physics headers for the diffusion-operator
-# cases (the same two the schur_slab row above already needs).
-fuse_add_gtest(linalg derivative_gate LIBS Eigen3::Eigen fuse::backend fuse::model)
-target_include_directories(fuse_linalg_derivative_gate_test PRIVATE
-  ${CMAKE_SOURCE_DIR}/examples/brusselator)
+# review-2026-10-11 BC-1: all four rows below link Eigen3::Eigen directly
+# (the PCG/GMRES reference comparisons, the whole-grid SparseCholesky
+# Schur-slab oracle, the diffusion-operator cases of DerivativeGate), so
+# the whole group is gated on the eigen backend; NL-5 (schur_slab_
+# unavailable_test.cpp, just below the registration audit at the bottom of
+# this file) is the builtin-side counterpart that exercises the refusal
+# this configuration compiles instead of schur_slab.cpp.
+if(FUSE_LINALG_BACKEND_IS_EIGEN)
+  fuse_add_gtest(linalg pcg THROWS LIBS Eigen3::Eigen)
+  fuse_add_gtest(linalg gmres THROWS LIBS Eigen3::Eigen)
+  # "Schur-slab" track: the exact distributed direct solver for the
+  # backward-Euler periodic Laplacian on row bands (docs/dev/
+  # schur-slab-solver.md) -- a one-rank bit-identical check against the Toy's
+  # own whole-grid SparseCholesky reference (Eigen3::Eigen, brusselator's own
+  # periodic_laplacian), 2- and 3-way in-process fake-partition correctness,
+  # the periodic-wrap case, and the <2-row refusal. THROWS: FUSE_ASSERT guards
+  # a null Reducer and a moved-from solve() as caller mistakes.
+  fuse_add_gtest(linalg schur_slab THROWS LIBS Eigen3::Eigen)
+  target_include_directories(fuse_linalg_schur_slab_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/brusselator)
+  # S7.3 "DerivativeGate" track: the adjoint dot-product identity (derived
+  # bound, not chosen), finite-difference derivative convergence with the
+  # round-off plateau detected, and assembled-vs-matrix-free agreement --
+  # include/fuse/linalg/derivative_gate.hpp. Runs every operator family the
+  # project builds with an apply/apply_transpose (fuse::linalg's own
+  # DistSparseMatrix/SchurSlabSolver, fuse::WeightsOperator/ComposedOperator
+  # over real supermesh/consistent-interpolation/moving-least-squares weights),
+  # so it needs fuse::backend and fuse::model on top of fuse::linalg, and
+  # Eigen3::Eigen + the Brusselator physics headers for the diffusion-operator
+  # cases (the same two the schur_slab row above already needs).
+  fuse_add_gtest(linalg derivative_gate LIBS Eigen3::Eigen fuse::backend fuse::model)
+  target_include_directories(fuse_linalg_derivative_gate_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/brusselator)
+else()
+  fuse_tests_gated_by(FUSE_LINALG_BACKEND_IS_EIGEN
+    linalg/pcg_test.cpp linalg/gmres_test.cpp linalg/schur_slab_test.cpp
+    linalg/derivative_gate_test.cpp)
+  list(APPEND _fuse_eigen_gated_tests
+    linalg.pcg linalg.gmres linalg.schur_slab linalg.derivative_gate)
+endif()
+# review-2026-10-11 NL-5: schur_slab_unavailable_test.cpp is the mirror
+# image of the gate just above -- registered only when this library
+# compiles src/linalg/schur_slab_unavailable.cpp (FUSE_LINALG_BACKEND !=
+# eigen), so E-LINALG-SCHUR-BACKEND is fired by a test in the exact
+# configuration that produces it, and declared gated (not silently
+# unregistered) in the eigen configuration where it does not apply.
+if(FUSE_LINALG_BACKEND_IS_BUILTIN)
+  fuse_add_gtest(linalg schur_slab_unavailable)
+else()
+  fuse_tests_gated_by(FUSE_LINALG_BACKEND_IS_BUILTIN linalg/schur_slab_unavailable_test.cpp)
+endif()
 fuse_add_gtest(backend native_mesh THROWS)
 fuse_add_gtest(backend native_distributed_mesh THROWS)
 fuse_add_gtest(backend native_generators THROWS)
@@ -1208,97 +1287,136 @@ target_include_directories(fuse_verification_nodal_remap_runner_serial_test PRIV
   ${CMAKE_CURRENT_SOURCE_DIR}/support)
 fuse_add_device_twin(verification.nodal_remap_runner_serial fuse_verification_nodal_remap_runner_serial_test)
 
-# FSI channel (FSI track): fsi_stokes_mms and fsi_beam exercise the two
-# standalone solvers (examples/fsi_channel/{stokes,beam}_solver.hpp) with no
-# FUSE graph involved; fsi_coupled and fsi_transient drive the real two-
-# component Runner graph (consistent H / conservative H^T). All four need
-# examples/fsi_channel/ on the include path and Eigen3::Eigen directly for
-# the two solvers' SparseLU factorisations, same reasoning as gray_scott's
-# registration just below.
-foreach(t fsi_stokes_mms fsi_beam fsi_coupled fsi_transient fsi_energy_diag)
-  fuse_add_gtest(verification ${t} NO_LAYER_LIB
-                 LIBS fuse::runtime fuse::backend Eigen3::Eigen fuse::examples_common)
-  target_include_directories(fuse_verification_${t}_test PRIVATE
+# review-2026-10-11 BC-1: every row in this section links Eigen3::Eigen
+# directly (FSI/Gray-Scott/Brusselator Newton and diffusion-operator solves,
+# all Eigen::SparseLU or Eigen::SimplicialLDLT) or links fuse::examples_common,
+# whose own INTERFACE link carries Eigen3::Eigen (examples/CMakeLists.txt) --
+# the whole section is gated on the eigen backend as one block.
+if(FUSE_LINALG_BACKEND_IS_EIGEN)
+  # FSI channel (FSI track): fsi_stokes_mms and fsi_beam exercise the two
+  # standalone solvers (examples/fsi_channel/{stokes,beam}_solver.hpp) with no
+  # FUSE graph involved; fsi_coupled and fsi_transient drive the real two-
+  # component Runner graph (consistent H / conservative H^T). All four need
+  # examples/fsi_channel/ on the include path and Eigen3::Eigen directly for
+  # the two solvers' SparseLU factorisations, same reasoning as gray_scott's
+  # registration just below.
+  foreach(t fsi_stokes_mms fsi_beam fsi_coupled fsi_transient fsi_energy_diag)
+    fuse_add_gtest(verification ${t} NO_LAYER_LIB
+                   LIBS fuse::runtime fuse::backend Eigen3::Eigen fuse::examples_common)
+    target_include_directories(fuse_verification_${t}_test PRIVATE
+      ${CMAKE_SOURCE_DIR}/examples/fsi_channel)
+  endforeach()
+  # The three rows that drive a Runner graph (the two standalone-solver rows
+  # run no coupler and would only repeat themselves).
+  foreach(t fsi_coupled fsi_transient fsi_energy_diag)
+    fuse_add_device_twin(verification.${t} fuse_verification_${t}_test TIMEOUT 3600)
+  endforeach()
+
+  # Gray-Scott (Time windows track): the species solver's own MMS order, the
+  # multirate windowed coupling, and the monolithic-reference comparison --
+  # each in its own binary so a Newton-solve regression in one does not hide
+  # behind a pass in another. Eigen3::Eigen directly, same reasoning as
+  # examples/CMakeLists.txt's fuse_example_gray_scott: the Newton solves use
+  # Eigen::SparseLU and FUSE_LINALG_BACKEND=eigen is the default backend.
+  foreach(t gray_scott_mms gray_scott_multirate gray_scott_reference)
+    fuse_add_gtest(verification ${t} NO_LAYER_LIB
+                   LIBS fuse::runtime fuse::backend Eigen3::Eigen fuse::examples_common)
+    target_include_directories(fuse_verification_${t}_test PRIVATE
+      ${CMAKE_SOURCE_DIR}/examples/gray_scott)
+  endforeach()
+  foreach(t gray_scott_multirate gray_scott_reference)
+    fuse_add_device_twin(verification.${t} fuse_verification_${t}_test TIMEOUT 3600)
+  endforeach()
+
+  # The sparse direct solver both of the above hold (examples/common/
+  # sparse_solve_backend.hpp): the Eigen::SparseLU contract it forwards, checked
+  # on the two matrix shapes the examples build, plus bitwise agreement with a
+  # bare Eigen::SparseLU when FUSE_ENABLE_CUSPARSE is off -- the proof that the
+  # flag-off build of the examples is unchanged by holding the wrapper.
+  fuse_add_gtest(verification sparse_solve_backend NO_LAYER_LIB
+                 LIBS fuse::base Eigen3::Eigen fuse::examples_common)
+  # stokes_solver.hpp: the reproducibility case assembles the real Stokes
+  # saddle point through cn_step()'s debug_matrix_out hook.
+  target_include_directories(fuse_verification_sparse_solve_backend_test PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/fsi_channel)
-endforeach()
-# The three rows that drive a Runner graph (the two standalone-solver rows
-# run no coupler and would only repeat themselves).
-foreach(t fsi_coupled fsi_transient fsi_energy_diag)
-  fuse_add_device_twin(verification.${t} fuse_verification_${t}_test TIMEOUT 3600)
-endforeach()
 
-# Gray-Scott (Time windows track): the species solver's own MMS order, the
-# multirate windowed coupling, and the monolithic-reference comparison --
-# each in its own binary so a Newton-solve regression in one does not hide
-# behind a pass in another. Eigen3::Eigen directly, same reasoning as
-# examples/CMakeLists.txt's fuse_example_gray_scott: the Newton solves use
-# Eigen::SparseLU and FUSE_LINALG_BACKEND=eigen is the default backend.
-foreach(t gray_scott_mms gray_scott_multirate gray_scott_reference)
-  fuse_add_gtest(verification ${t} NO_LAYER_LIB
-                 LIBS fuse::runtime fuse::backend Eigen3::Eigen fuse::examples_common)
-  target_include_directories(fuse_verification_${t}_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/examples/gray_scott)
-endforeach()
-foreach(t gray_scott_multirate gray_scott_reference)
-  fuse_add_device_twin(verification.${t} fuse_verification_${t}_test TIMEOUT 3600)
-endforeach()
+  # Brusselator (Time windows track, "a code FUSE has never met"): weights
+  # (an independent, integer-arithmetic oracle reimplementing the Toy's own
+  # separable overlap construction, compared entry-by-entry against FUSE's
+  # native-mesh-backed supermesh weights) and physics (closed-form Toy
+  # invariants ported onto this example's own physics header). Needs
+  # Eigen3::Eigen (periodic-diffusion backward-Euler, SimplicialLDLT) and
+  # Kokkos::kokkos (the reaction kernel) directly, same reasoning as
+  # gray_scott's registration just above.
+  foreach(t brusselator_weights brusselator_physics brusselator_runner brusselator_grid_decomposition
+            brusselator_species_core_decomposition brusselator_newton_norm brusselator_accept_layout
+            brusselator_external_delivery_size)
+    fuse_add_gtest(verification ${t} NO_LAYER_LIB
+                   LIBS fuse::runtime fuse::backend fuse::model fuse::linalg Eigen3::Eigen Kokkos::kokkos)
+    target_include_directories(fuse_verification_${t}_test PRIVATE
+      ${CMAKE_SOURCE_DIR}/examples/brusselator)
+  endforeach()
+  # Measured on higgs (Debug, device interpreter, machine loaded by three
+  # concurrent builds): the first two cases alone took 57 min, so the twin's
+  # timeout is three hours; the window-scoped region still stages every arc per
+  # instruction (docs/dev/device-resident-arcs.md, step 3), which is what makes
+  # this row the slow one.
+  fuse_add_device_twin(verification.brusselator_runner fuse_verification_brusselator_runner_test TIMEOUT 10800)
 
-# The sparse direct solver both of the above hold (examples/common/
-# sparse_solve_backend.hpp): the Eigen::SparseLU contract it forwards, checked
-# on the two matrix shapes the examples build, plus bitwise agreement with a
-# bare Eigen::SparseLU when FUSE_ENABLE_CUSPARSE is off -- the proof that the
-# flag-off build of the examples is unchanged by holding the wrapper.
-fuse_add_gtest(verification sparse_solve_backend NO_LAYER_LIB
-               LIBS fuse::base Eigen3::Eigen fuse::examples_common)
-# stokes_solver.hpp: the reproducibility case assembles the real Stokes
-# saddle point through cn_step()'s debug_matrix_out hook.
-target_include_directories(fuse_verification_sparse_solve_backend_test PRIVATE
-  ${CMAKE_SOURCE_DIR}/examples/fsi_channel)
-
-# Brusselator (Time windows track, "a code FUSE has never met"): weights
-# (an independent, integer-arithmetic oracle reimplementing the Toy's own
-# separable overlap construction, compared entry-by-entry against FUSE's
-# native-mesh-backed supermesh weights) and physics (closed-form Toy
-# invariants ported onto this example's own physics header). Needs
-# Eigen3::Eigen (periodic-diffusion backward-Euler, SimplicialLDLT) and
-# Kokkos::kokkos (the reaction kernel) directly, same reasoning as
-# gray_scott's registration just above.
-foreach(t brusselator_weights brusselator_physics brusselator_runner brusselator_grid_decomposition
-          brusselator_species_core_decomposition brusselator_newton_norm brusselator_accept_layout
-          brusselator_external_delivery_size)
-  fuse_add_gtest(verification ${t} NO_LAYER_LIB
+  # review-2026-10-11 numerics
+  # NL-1: all three DiffusionSolver kinds (species_core.hpp) keyed their
+  # factor() cache on (dt, extra_diagonal) alone, dropping the per-call
+  # diffusion argument -- BrusselatorDiffusionSolverCache pins that a solve
+  # at a changed diffusion, same dt/extra_diagonal, refactors instead of
+  # reusing a stale matrix. Single-rank NativeGrid, same deps as the
+  # foreach block just above.
+  fuse_add_gtest(verification brusselator_diffusion_solver_cache NO_LAYER_LIB
                  LIBS fuse::runtime fuse::backend fuse::model fuse::linalg Eigen3::Eigen Kokkos::kokkos)
-  target_include_directories(fuse_verification_${t}_test PRIVATE
+  target_include_directories(fuse_verification_brusselator_diffusion_solver_cache_test PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/brusselator)
-endforeach()
-# Measured on higgs (Debug, device interpreter, machine loaded by three
-# concurrent builds): the first two cases alone took 57 min, so the twin's
-# timeout is three hours; the window-scoped region still stages every arc per
-# instruction (docs/dev/device-resident-arcs.md, step 3), which is what makes
-# this row the slow one.
-fuse_add_device_twin(verification.brusselator_runner fuse_verification_brusselator_runner_test TIMEOUT 10800)
-
-# review-2026-10-11 numerics
-# NL-1: all three DiffusionSolver kinds (species_core.hpp) keyed their
-# factor() cache on (dt, extra_diagonal) alone, dropping the per-call
-# diffusion argument -- BrusselatorDiffusionSolverCache pins that a solve
-# at a changed diffusion, same dt/extra_diagonal, refactors instead of
-# reusing a stale matrix. Single-rank NativeGrid, same deps as the
-# foreach block just above.
-fuse_add_gtest(verification brusselator_diffusion_solver_cache NO_LAYER_LIB
-               LIBS fuse::runtime fuse::backend fuse::model fuse::linalg Eigen3::Eigen Kokkos::kokkos)
-target_include_directories(fuse_verification_brusselator_diffusion_solver_cache_test PRIVATE
-  ${CMAKE_SOURCE_DIR}/examples/brusselator)
-# TD-1: docs/user/brusselator.md claimed E-BRUSS-MESH-INDEX and
-# E-BRUSS-U-REACTION were both tested; BrusselatorRefusalCoverage fires
-# the reachable one (U's reaction fixed point past its 50-solve cap) and
-# the file's own trailing comment records why E-BRUSS-MESH-INDEX is not
-# (the doc is corrected to match). Same deps as brusselator_diffusion_
-# solver_cache just above.
-fuse_add_gtest(verification brusselator_refusal_coverage NO_LAYER_LIB
-               LIBS fuse::runtime fuse::backend fuse::model fuse::linalg Eigen3::Eigen Kokkos::kokkos)
-target_include_directories(fuse_verification_brusselator_refusal_coverage_test PRIVATE
-  ${CMAKE_SOURCE_DIR}/examples/brusselator)
+  # TD-1: docs/user/brusselator.md claimed E-BRUSS-MESH-INDEX and
+  # E-BRUSS-U-REACTION were both tested; BrusselatorRefusalCoverage fires
+  # the reachable one (U's reaction fixed point past its 50-solve cap) and
+  # the file's own trailing comment records why E-BRUSS-MESH-INDEX is not
+  # (the doc is corrected to match). Same deps as brusselator_diffusion_
+  # solver_cache just above.
+  fuse_add_gtest(verification brusselator_refusal_coverage NO_LAYER_LIB
+                 LIBS fuse::runtime fuse::backend fuse::model fuse::linalg Eigen3::Eigen Kokkos::kokkos)
+  target_include_directories(fuse_verification_brusselator_refusal_coverage_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/brusselator)
+else()
+  # review-2026-10-11 BC-1: brusselator_newton_norm/brusselator_accept_layout/
+  # brusselator_external_delivery_size (device-track additions, same LIBS as
+  # the foreach above) and brusselator_diffusion_solver_cache/brusselator_
+  # refusal_coverage (NL-1/TD-1, same LIBS) all link Eigen3::Eigen directly,
+  # so the audit below must name them too.
+  fuse_tests_gated_by(FUSE_LINALG_BACKEND_IS_EIGEN
+    verification/fsi_stokes_mms_test.cpp verification/fsi_beam_test.cpp
+    verification/fsi_coupled_test.cpp verification/fsi_transient_test.cpp
+    verification/fsi_energy_diag_test.cpp verification/gray_scott_mms_test.cpp
+    verification/gray_scott_multirate_test.cpp verification/gray_scott_reference_test.cpp
+    verification/sparse_solve_backend_test.cpp verification/brusselator_weights_test.cpp
+    verification/brusselator_physics_test.cpp verification/brusselator_runner_test.cpp
+    verification/brusselator_grid_decomposition_test.cpp
+    verification/brusselator_species_core_decomposition_test.cpp
+    verification/brusselator_newton_norm_test.cpp
+    verification/brusselator_accept_layout_test.cpp
+    verification/brusselator_external_delivery_size_test.cpp
+    verification/brusselator_diffusion_solver_cache_test.cpp
+    verification/brusselator_refusal_coverage_test.cpp)
+  list(APPEND _fuse_eigen_gated_tests
+    verification.fsi_stokes_mms verification.fsi_beam verification.fsi_coupled
+    verification.fsi_transient verification.fsi_energy_diag
+    verification.gray_scott_mms verification.gray_scott_multirate
+    verification.gray_scott_reference verification.sparse_solve_backend
+    verification.brusselator_weights verification.brusselator_physics
+    verification.brusselator_runner verification.brusselator_grid_decomposition
+    verification.brusselator_species_core_decomposition
+    verification.brusselator_newton_norm verification.brusselator_accept_layout
+    verification.brusselator_external_delivery_size
+    verification.brusselator_diffusion_solver_cache
+    verification.brusselator_refusal_coverage)
+endif()
 
 # S6 phase 3 ("LowFive" track), Unit 3: brusselator_graph_tool.cpp's own
 # --transport lowfive wiring, reproduced directly against validate() --
@@ -1328,7 +1446,11 @@ target_include_directories(fuse_verification_brusselator_lowfive_attach_test PRI
 # The weights oracle is pure host arithmetic (no Kokkos kernel of its own);
 # the physics suite's ReactionKokkosMatchesTheClosedForm IS one, so its omp
 # legs are the ones that are load-bearing here.
-fuse_add_omp_legs(verification.brusselator_physics fuse_verification_brusselator_physics_test)
+# review-2026-10-11 BC-1: the target above exists only under the eigen
+# backend (gated with the rest of the Brusselator verification rows above).
+if(FUSE_LINALG_BACKEND_IS_EIGEN)
+  fuse_add_omp_legs(verification.brusselator_physics fuse_verification_brusselator_physics_test)
+endif()
 
 # Brusselator as separately built participants (Conformance, Unit 2): the
 # tier-0 harness -- drives the SAME u_loop_step() (u_loop.c, PURE C) and
@@ -1369,7 +1491,17 @@ fuse_tests_gated_by(FUSE_ENABLE_FORTRAN
   verification/brusselator_check_test.cpp
   verification/brusselator_lowfive_harness_test.cpp
   verification/brusselator_asymmetric_dt_isolation_test.cpp)
-if(TARGET fuse-abi-fortran)
+# review-2026-10-11 BC-1: all four targets below link Eigen3::Eigen directly
+# (the same Brusselator diffusion operator the non-Fortran rows above need),
+# so this section is gated on the eigen backend too, independently of
+# FUSE_ENABLE_FORTRAN -- the gated_by call just above already covers
+# "no Fortran compiler"; this one covers "Fortran present, backend builtin".
+fuse_tests_gated_by(FUSE_LINALG_BACKEND_IS_EIGEN
+  verification/brusselator_participants_test.cpp
+  verification/brusselator_check_test.cpp
+  verification/brusselator_lowfive_harness_test.cpp
+  verification/brusselator_asymmetric_dt_isolation_test.cpp)
+if(TARGET fuse-abi-fortran AND FUSE_LINALG_BACKEND_IS_EIGEN)
   fuse_add_gtest(verification brusselator_participants NO_LAYER_LIB
                  LIBS fuse::runtime fuse::backend fuse::abi fuse::abi-fortran Eigen3::Eigen Kokkos::kokkos)
   target_include_directories(fuse_verification_brusselator_participants_test PRIVATE
@@ -1948,6 +2080,17 @@ endif()
 list(LENGTH _fuse_test_files _n_files)
 list(LENGTH _fuse_registered _n_reg)
 message(STATUS "fuse: tests  ${_n_reg} registered of ${_n_files} on disk (rest gated by a tier option that is OFF)")
+
+# review-2026-10-11 BC-1: one line naming every row this configure skipped
+# because FUSE_LINALG_BACKEND is not eigen, so a builtin configure log says
+# what is missing instead of a reader having to diff two configure logs.
+if(NOT FUSE_LINALG_BACKEND_IS_EIGEN)
+  list(LENGTH _fuse_eigen_gated_tests _n_eigen_gated)
+  list(JOIN _fuse_eigen_gated_tests ", " _fuse_eigen_gated_text)
+  message(STATUS "fuse: ${_n_eigen_gated} test row(s) skipped under "
+                 "FUSE_LINALG_BACKEND=builtin (no Eigen3::Eigen target): "
+                 "${_fuse_eigen_gated_text}")
+endif()
 
 # Last: the label applies to rows registered above, in this directory.
 fuse_label_slow_tests()

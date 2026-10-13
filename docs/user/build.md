@@ -42,15 +42,19 @@ Neither backend's types appear in any FUSE public header, so your code never inh
 device-capable (KokkosKernels) backend was designed but is not implemented — `FUSE_LINALG_BACKEND`
 accepts only `builtin` or `eigen` today (REVIEW.md R-24; the default is `eigen`).
 
-**`builtin` does not currently configure a full build.** `fuse::linalg` itself — including the
-distributed Krylov solvers ([](../dev/linalg-distributed.md), [](../dev/linalg-krylov.md)) — builds
-clean under `builtin`, but several tests and examples link `Eigen3::Eigen` directly regardless of
-the chosen backend (every caller of `SchurSlabSolver`, which needs Eigen's sparse and dense direct
-factorisations and has no `builtin` implementation — `factor()` refuses with
-`E-LINALG-SCHUR-BACKEND` there instead), so configuring `-DFUSE_LINALG_BACKEND=builtin` today fails
-at configure time on those targets rather than silently dropping them (KNOWN_ISSUES.md D26).
-Building `fuse::linalg` or `fuse::base`/`fuse::model`/`fuse::ir`/`fuse::schedule` on their own under
-`builtin` is unaffected.
+**`builtin` now configures a full build (review-2026-10-11 BC-1 closed D26).**
+`fuse::linalg` itself — including the distributed Krylov solvers
+([](../dev/linalg-distributed.md), [](../dev/linalg-krylov.md)) — builds clean under `builtin`,
+as it always did. The tests and examples that need Eigen's sparse and dense direct
+factorisations directly (every caller of `SchurSlabSolver`, plus the FSI/Gray-Scott/Brusselator
+examples and their verification rows, all `Eigen::SparseLU` or `Eigen::SimplicialLDLT` and with no
+`builtin` implementation) are gated behind `FUSE_LINALG_BACKEND STREQUAL "eigen"`
+(`test/CMakeLists.txt`, `examples/CMakeLists.txt`) instead of linking `Eigen3::Eigen`
+unconditionally, so `-DFUSE_LINALG_BACKEND=builtin` configures and builds the rest of the suite;
+a configure-time status message lists exactly which rows it skipped. `SchurSlabSolver::factor()`
+itself still refuses with `E-LINALG-SCHUR-BACKEND` under `builtin` (there is no built-in direct
+factorisation to substitute) — `test/linalg/schur_slab_unavailable_test.cpp` fires that refusal
+in exactly this configuration (KNOWN_ISSUES.md D26).
 
 ## Floating-point reproducibility vs. speed
 
