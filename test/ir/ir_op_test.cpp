@@ -28,6 +28,15 @@ TEST(OpKind, EveryKindHasAName) {
   EXPECT_STREQ(to_cstring(OpKind::Source), "Source");
   EXPECT_STREQ(to_cstring(OpKind::Sink), "Sink");
   EXPECT_STREQ(to_cstring(OpKind::WindowAdvance), "WindowAdvance");
+  // Review 2026-10-11 IS-8: Scale, Epoch, Map, Reduce, Closure and
+  // ExternalDelivery were all declared after this test was last extended and
+  // none of the six was ever added here.
+  EXPECT_STREQ(to_cstring(OpKind::Scale), "Scale");
+  EXPECT_STREQ(to_cstring(OpKind::Epoch), "Epoch");
+  EXPECT_STREQ(to_cstring(OpKind::Map), "Map");
+  EXPECT_STREQ(to_cstring(OpKind::Reduce), "Reduce");
+  EXPECT_STREQ(to_cstring(OpKind::Closure), "Closure");
+  EXPECT_STREQ(to_cstring(OpKind::ExternalDelivery), "ExternalDelivery");
 }
 
 TEST(ValueType, DefaultsToInstantScalarDimensionless) {
@@ -120,13 +129,16 @@ TEST(OpKind, CollectiveClassificationIsDeliberate) {
   // Subcycling (WindowAdvance) is here too: it runs on the member's own
   // ranks only (docs/dev/coupling-windows.md; the exchange that delivers a
   // partner's waveform to it is the ordinary field-transfer chain, each
-  // classified on its own merits).
+  // classified on its own merits). Review 2026-10-11 IS-8: ExternalDelivery
+  // is the same shape -- the application-performed transfer that fills it
+  // happens entirely outside this instruction stream, so it involves no
+  // other rank set of THIS graph's own exchange -- and was never added here.
   for (const OpKind k : {OpKind::Source, OpKind::Sink, OpKind::Sample,
                          OpKind::Accumulate, OpKind::Interpolate,
                          OpKind::Extrapolate, OpKind::Remap, OpKind::Merge,
                          OpKind::Relax, OpKind::Residual, OpKind::Accelerate,
                          OpKind::Diagnose, OpKind::Scale,
-                         OpKind::WindowAdvance}) {
+                         OpKind::WindowAdvance, OpKind::ExternalDelivery}) {
     EXPECT_FALSE(is_collective(k)) << fuse::to_cstring(k);
   }
 
@@ -137,8 +149,13 @@ TEST(OpKind, CollectiveClassificationIsDeliberate) {
     EXPECT_TRUE(is_collective(k)) << fuse::to_cstring(k);
   }
 
-  // Exhaustive: every enumerator above, counted. A new operator makes this
-  // fail until it is added to one of the lists.
-  EXPECT_EQ(static_cast<int>(OpKind::WindowAdvance) + 1, 20)  // 2 + 15 + 3 above
+  // Exhaustive: every enumerator, counted directly rather than as an offset
+  // from the second-to-last one (review 2026-10-11 IS-8: `WindowAdvance + 1
+  // == 20` silently stopped counting the enumerator declared right after
+  // WindowAdvance -- ExternalDelivery, the 21st -- so a NEW, 22nd operator
+  // would again escape this gate undetected, the exact "gate silently
+  // stopped gating" class R-06/R-51 were fixed for). A new operator makes
+  // this fail until it is added to one of the lists above.
+  EXPECT_EQ(static_cast<int>(OpKind::ExternalDelivery) + 1, 21)  // 3+15+3
       << "OpKind gained or lost an operator; classify it above";
 }
