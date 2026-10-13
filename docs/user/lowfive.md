@@ -928,6 +928,49 @@ index, policy/reason string, order-check verdict) on both ranks, and
 for each plausible next failure what the trace would look like and
 which of this round's own claims it would contradict.
 
+**Round 9 -- the order check and policy both hold on the host; a separate, measured exit-time crash is fixed for
+all three processes; a naming correction.** The host confirms round 8's own fix directly:
+`order-check-verdict=accepted` on both ranks, zero `E-LOWFIVE-ATTACH-ORDER-DEVIATION` refusals across 364 (U) and 365 (V)
+per-rank order-check calls, and both coupling windows complete through LowFive (122 U writes/121 reads, 121 V
+writes/122 reads, every `H5Dread rc=0`). The row still times out, but on a DIFFERENT track's own collective (the
+coupler's own base-communicator `MPI_Allreduce`, never joined by U/V after the last delivery) -- not a defect in
+anything this track owns.
+
+**The coupler exit crash.** `brusselator_coupler_main` aborts at process exit, AFTER `MPI_Finalize`, with
+`libc++abi: terminating due to uncaught exception of type std::__1::system_error: mutex lock failed: Invalid
+argument`. Root cause: `examples/CMakeLists.txt`'s own ctest `ENVIRONMENT` property sets `HDF5_VOL_CONNECTOR`/
+`HDF5_PLUGIN_PATH` process-wide for the WHOLE MPMD launch (all three `':'`-separated app segments share one
+environment); the coupler never calls `bruss_lowfive_attach()`, but HDF5's own env-route default-VOL resolution
+registers the "lowfive" connector class there anyway, and HDF5's own exit-time teardown (`H5_term_library`) later
+calls into the connector's own `_term()` callback, which logs through a spdlog registry already torn down by
+static-destruction order. Fix: the coupler calls `unsetenv()` on the three env-route variables before `MPI_Init`
+(preventing the connector from ever registering there at all); U and V call an explicit, synchronous `H5close()`
+in `bruss_lowfive_finalize()`, before their own `MPI_Finalize()`, while the process is still in ordinary
+execution (so spdlog's own registry cannot have been torn down yet, regardless of atexit() ordering) --
+KNOWN_ISSUES.md D39's own "Round 9" account has the full crash trace and the ranked alternatives this was chosen
+over.
+
+**Naming correction (no logic change).** The `period=N` trace field and two pure-function names (`ExpectedOrder
+ForPeriod`, `OrderTracker::period_index`) were a misnomer: the unit they track is one write-then-read exchange,
+not a coupling window -- the host measured 61 exchanges per window (122 U writes for a `--periods 2` run), not
+one. Renamed to `exchange=`/`ExpectedOrderForExchange`/`exchange_index` throughout this track's own code, tests,
+and docs; "period" is reserved for the Brusselator's own `--periods` CLI flag and the outer coupling-window loop.
+This also closes round 8's own open question: `ExternalDelivery` fires once per Jacobi sweep, not once per
+window (~61 deliveries per window, MEASURED, not derived -- the exact relationship to this row's own
+`max_iterations = 60` is the Collectives track's own question).
+
+**Host command, unchanged in form, now testing the exit-hygiene fix (never previously reached, since no process
+in this row had ever gotten far enough to call its own exit() cleanly before):**
+
+```
+FUSE_LOWFIVE_ATTACH_TRACE=1 FUSE_LOWFIVE_LOG=info \
+    ctest -R 'participants\.lowfive\.mpmd\.3' --output-on-failure
+```
+
+KNOWN_ISSUES.md D39's own "Round 9" account has the full host_pending paragraph: what each of the three
+processes must print and do at exit, and for each plausible next failure what it would look like and which of
+this round's own claims it would contradict.
+
 **IR/runtime half, implemented and measured (no LowFive/HDF5 needed) —
 2026-10-04.** `lower_channel()` (`src/ir/rules_channel.cpp`) emits a new
 `OpKind::ExternalDelivery` node (`include/fuse/ir/op.hpp`) in place of

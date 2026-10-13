@@ -5669,3 +5669,141 @@ revisiting even though this round's own tier-0 evidence cannot distinguish the t
 Demo B's own distributed path is compiled and never run, and D14's own open accept-mode intercommunicator
 question (item 3 of its "what remains" list) is untouched by a fix that concerns serve/read ORDER, never accept
 mode's own unexposed intercommunicator.
+
+**Round 9 (2026-10-13) -- the order check and policy both HOLD on the host; the row now times out on a**
+**DIFFERENT track's own collective, not this one's; a separate, measured exit-time crash is fixed for all**
+**three processes.** The host confirms round 8's own fix: `order-check-verdict=accepted` printed on both ranks,
+no `E-LOWFIVE-ATTACH-ORDER-DEVIATION` fired in 364 (U) and 365 (V) order-check calls (122 writes + 121 reads x 2 events, and 121 writes + 122 reads x 2), and BOTH coupling windows now
+complete through LowFive -- U made 122 writes/121 reads, V 121 writes/122 reads, every `H5Dread rc=0`, correct
+extents (2816/2048), `files_in_memory` back to 0 after each close, values varying as a waveform should. The row
+still times out at 120 s, but for a reason OUTSIDE this track's own scope: after the last delivery, U and V wait
+in a base-communicator `MPI_Allreduce` the coupler never joins -- the "Collectives" track's own defect, not a
+regression in anything this track owns.
+
+**Task 1 -- the coupler exit crash, measured separately from the row's own timeout.** Symbolised macOS crash
+report of `brusselator_coupler_main`: SIGABRT at process exit, AFTER `MPI_Finalize`, `libc++abi: terminating due
+to uncaught exception of type std::__1::system_error: mutex lock failed: Invalid argument`. Trace (innermost
+first): `__pthread_kill` <- `abort` <- `__abort_message` <- `std::terminate` <- `__cxa_throw` <- `std::__throw_
+system_error` <- `std::mutex::lock` <- `std::lock_guard<std::mutex>` (in `liblowfive.dylib`) <- `spdlog::
+details::registry::get` <- `spdlog::get` <- `LowFive::get_logger()` (`log-private.hpp:53`) <- `LowFive::VOLBase::
+_term()` (`base.cpp:210`) <- `H5VL__free_cls` <- `H5I__dec_ref` <- `H5I_dec_ref` <- `H5VL_conn_free` <- `H5VL_
+term_package` <- `H5_term_library` <- `__cxa_finalize_ranges` <- `exit` <- dyld start. Since the coupler is the
+ONLY process that currently reaches `exit()` in this row (U and V still wait on the OTHER track's own
+Allreduce), U and V would hit the identical crash once that is fixed -- this round's own fix is designed to hold
+for all three, not patched onto the coupler alone.
+
+**(a) Why the coupler has a LowFive VOL class registered at all.** `examples/CMakeLists.txt`'s own `verification.
+brusselator.participants.lowfive.{mpmd,accept}.3` row sets `ENVIRONMENT "HDF5_VOL_CONNECTOR=lowfive;HDF5_
+PLUGIN_PATH=...;FUSE_LOWFIVE_BINDINGS=..."` on the ONE ctest `COMMAND` (`run_participants.sh`), which launches
+ALL THREE MPMD app segments (U, V, coupler) from a SINGLE `mpiexec` invocation sharing ONE environment
+(`run_participants.sh`'s own `':'`-separated segments). The SAME file's own "LowFive attach track note" comment
+confirms only that U's and V's own `H5Fcreate`/`H5Fopen` calls bypass this env-route resolution (they pass an
+explicit `fapl_id`); it says nothing about the coupler, which never calls `bruss_lowfive_attach()` at all
+(`lowfive_attach.cpp` is not one of `brusselator_coupler_main`'s own sources). The env var is therefore still
+live in the coupler's own process, and HDF5's own env-route default-VOL resolution (triggered at the coupler's
+own first native HDF5 call -- this track's own linked library stack pulls in HDF5 transitively whether or not
+the coupler calls an H5 function directly) registers the "lowfive" connector class there too. The two-HDF5-image
+hazard (D14) is a DIFFERENT, already-measured-PASS condition on this host and is NOT this crash's cause: D14's
+own symptom is a silent `H5Pset_vol(): "not a file VOL ID"` failure from a split id table, not a correctly-
+registered connector's own exit-time teardown -- this crash's trace shows a single, correctly-resolving
+`H5VL__free_cls` call chain, consistent with one image, not two.
+
+**(b) Ranked fixes.** NOT registering the connector in a process that never attaches -- ADOPTED for the coupler:
+`unsetenv()` on the three env-route variables, before `MPI_Init`, before any native HDF5 call. Sound because the
+coupler never calls `bruss_lowfive_attach()` and has no legitimate use for the connector; minimal because it
+removes the hazard at its source (no connector ever registered, so `VOLBase::_term()` is never reached) rather
+than racing its teardown against spdlog's own static destruction. A deterministic teardown in `bruss_lowfive_
+finalize()` -- ADOPTED for U and V, which DO deliberately attach: an explicit, SYNCHRONOUS `H5close()` call,
+after `serve_state_step(kFinalize)`'s own unflushed-serve check succeeds and BEFORE the caller's own `MPI_
+Finalize()` (both u_main.c and v_main.f90 already call `bruss_lowfive_finalize()` strictly before `MPI_
+Finalize()`, confirmed by reading both call sites, unchanged by this round). Sound because it runs the SAME
+`VOLBase::_term()` -> `get_logger()` chain while the process is still in ORDINARY execution -- no exit()-time
+static-destruction unwind has begun, so spdlog's own registry cannot have been torn down yet, regardless of
+atexit() registration order. STRICTER than relying solely on the pre-existing `std::atexit(+[]{H5close();});`
+already registered in `bruss_lowfive_attach()` (the SAME mechanism `VolSingleton`'s own constructor uses, per
+docs/user/lowfive.md's "HDF5_VOL_CONNECTOR abort" section) -- that registration is KEPT, not removed, as a
+backstop for an abrupt-exit path that skips `bruss_lowfive_finalize()` (`H5close()` is documented idempotent).
+An explicit `spdlog::shutdown()` ordering was considered and NOT adopted: it only moves WHICH line crashes if
+`_term()` is still reachable afterward, and orders a DIFFERENT library's own static object from FUSE's side, no
+more reliable than the atexit race it replaces. Making LowFive's logger a `shared_ptr` the VOL object itself
+holds was NOT adopted and NOT implemented: a change to LowFive's own source (`log-private.hpp`/`vol-base.hpp`),
+out of scope ("do NOT patch LowFive, only report"). NOT established from source alone, no host run to confirm:
+whether the coupler's own first native HDF5 call happens through MOAB's own mesh I/O, FUSE's backend layer, or
+HDF5's own env-route resolution being triggered by library load -- the fix holds regardless of which it is, so
+this round did not chase the exact call site further; a limitation, not a settled claim.
+
+**Implementation.** `LowFiveProcessRole{kAttachingParticipant, kNonAttachingCoordinator}`, `EnvRouteVolVariable
+Names()` (the three literal names), `ExitHygienePlan`, `decide_exit_hygiene_plan(role)` -- a PURE function of
+role (`lowfive_attach_decision.hpp`). `coupler_main.c` calls `unsetenv()` on all three names before `MPI_Init`,
+with a trace line gated by the same `FUSE_LOWFIVE_ATTACH_TRACE=1` convention (duplicated inline rather than
+sharing `lowfive_attach.cpp`'s own `TraceEnabledCached()`, since this file is plain C with no dependency on that
+C++ header and is not one of `lowfive_attach.cpp`'s own targets). `bruss_lowfive_finalize()` calls `H5close()`
+(with a trace line) immediately after its own existing unflushed-serve check succeeds, driven by `decide_exit_
+hygiene_plan(kAttachingParticipant)`.
+
+**Task 2 -- the trace field and two pure-function names were a misnomer.** The `period=N` field in round 8's own
+trace lines is the exchange-pair index (three `ServeEvent`s per pair: write-closed, import-about-to-open,
+import-closed), not a coupling window -- the host measured 61 deliveries per window for a `--periods 2` run (122
+U writes total), not one. Renamed throughout: the trace field (`period=` -> `exchange=`); `ExpectedOrderForPeriod`
+-> `ExpectedOrderForExchange`; `OrderTracker::period_index` -> `exchange_index`; the model check's own `n_periods`
+parameters -> `n_exchanges`; every doc comment and test name using "period" for this unit. "period" is now
+reserved, in this file and in docs/user/lowfive.md, for the Brusselator's own `--periods` CLI flag and the outer
+coupling-window loop -- never for the write/read-pair unit tracked here. NAME correction only: no ORDER-CHECK or
+POLICY logic changed (the semantics held for all 364 (U) and 365 (V) events the host measured with the OLD name in
+place).
+
+**Task 3 -- closes round 8's own open question with the host's own measurement.** Round 8 left unsettled
+whether `ExternalDelivery` fires once per coupling window or once per Jacobi sweep. ANSWERED by the host: ~61
+deliveries per window (122 U writes / 2 windows), i.e. once per sweep (not once per window) -- a MEASURED figure,
+not a derived one (the Collectives track owns the Runner's own sweep-count/convergence machinery this would
+need to derive from first principles; the exact relationship between 61 and this row's own `max_iterations = 60`
+is that track's own question, not restated here). The model check's own N=60 scenario (a pre-round-9 stress
+value, this row's own `kMaxIterations` reused as an exchange count) is now explicitly documented as such, not a
+claim it equals a Jacobi sweep count. Added N=122 to the existing `{1, 2, 60}` scenario (`Round8MeasuredOrder
+CompletesFor1And2And60And122Exchanges`) -- the host's own measured exchange count for a `--periods 2` run --
+confirming the existing, generic machinery already covers it (shown, not merely asserted): completes, state
+count scaling consistent with round 8's own finding that it does not explode combinatorially.
+
+**Pinned by (Round 9, additive to round 8's own inventory, 95 tests total in the binary now).** 3 new tests
+(`EnvRouteVolVariableNames.ListsExactlyTheThreeEnvRouteVariables`, `DecideExitHygienePlan.NonAttachingCoordinator
+UnregistersAndSkipsExplicitH5close`, `DecideExitHygienePlan.AttachingParticipantCallsExplicitH5closeAndDoesNot
+Unregister`); the 60-exchange scenario test and 5 other test names renamed for task 2 (no assertions changed,
+confirmed by the unchanged PASS count before and after the rename pass); one existing scenario-i test extended
+with N=122 (task 3). One new mutation row (`decide-exit-hygiene-plan-roles-swapped`), killed decisively, file
+restored byte-identical (`md5` checked) -- 15 mutation rows total, all killed. `python3 tools/mutate.py
+--check-anchors` reports 347 valid, 0 stale, of 347. Full tier-0 build and ctest (205/205, unchanged -- no new
+tier-0 ctest TARGETS added this round) and all 5 repo-health gates clean. The full tier-1 (MPI+Fortran+LowFive+
+MOAB) build is ALSO clean, including `brusselator_coupler_main`'s own new `unsetenv()` calls and `bruss_lowfive_
+finalize()`'s own new `H5close()` call, both confirmed directly in this round's own build log against the real
+`LowFive::DistMetadataVOL`/HDF5 headers.
+
+**What the host must verify (Round 9) -- the exit-hygiene fix has never been run on a host; a prior run never**
+**reached ANY process's own exit() cleanly (the coupler's crash was the first time this row got far enough to
+exercise ANY exit path at all).** In `build-lowfive`: rebuild (`cmake --build .`, every target), then
+
+```
+FUSE_LOWFIVE_ATTACH_TRACE=1 FUSE_LOWFIVE_LOG=info ctest -R 'participants\.lowfive\.mpmd\.3' --output-on-failure
+```
+
+On success, all three processes should print `TRACE(coupler_main): unregistered env-route VOL vars...` (coupler,
+once, before `MPI_Init`) and `TRACE(bruss_lowfive_finalize): calling H5close() before MPI_Finalize...` (U and V,
+once each, after their own last delivery and before `MPI_Finalize`); all three should exit 0, with NO SIGABRT
+and no `libc++abi: terminating due to uncaught exception` on any rank. The row's own OTHER, already-known
+failure (the Collectives track's own Allreduce hang) may still cause a 120 s timeout even if this round's own
+fix is completely correct -- that outcome does NOT contradict this round's own claims; the absence of a SIGABRT
+on EVENTUAL exit (once the Collectives track's own fix lands) is the actual thing being verified here, not the
+row's own overall pass/fail. Plausible next failures, and which of this round's own claims each would contradict:
+the coupler STILL aborts despite the `unsetenv()` calls -- would mean this process's own first native HDF5 call
+happens BEFORE `main()` even starts (a static constructor eagerly calling `H5open()`), which this round's own
+reading could not rule out from source alone; U or V aborts despite the new `H5close()` call in `bruss_lowfive_
+finalize()` -- would mean the ordering argument in task 1(b) above has a gap this round's own reasoning did not
+find (e.g. a SEPARATE, EARLIER native HDF5 call in u_main.c/v_main.f90 that registers things before `bruss_
+lowfive_attach()` ever runs); an `E-LOWFIVE-ATTACH-ORDER-DEVIATION` fires where round 8's own host run reported
+none -- would mean this round's own RENAME (task 2) accidentally changed behavior, not just names, a regression
+this round's own unchanged-PASS-count check argues against but a host run has never independently confirmed on
+this specific binary.
+
+**Still does not close D14.** Unchanged by this round -- the two-HDF5-image hazard is closed (host action only),
+Demo B's own distributed path is compiled and never run, and D14's own open accept-mode intercommunicator
+question (item 3 of its "what remains" list) is untouched by a fix that concerns exit-time VOL-class teardown and
+trace-field naming, never accept mode's own unexposed intercommunicator.
