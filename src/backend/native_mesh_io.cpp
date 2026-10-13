@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <fstream>
+#include <iomanip>
 #include <locale>
 #include <sstream>
 
@@ -12,6 +13,14 @@
 namespace fuse::native {
 
 namespace {
+
+/// The header's own contract: ids ride as `double`, exact for every
+/// integer up to 2^53. A gid at or beyond that bound would be silently
+/// rounded by the very representation this format relies on, so the
+/// writer asserts the bound (an invariant on this backend's own id
+/// assignment, never a data-dependent refusal a caller can trigger) and
+/// never emits a value the reader could not reconstruct.
+constexpr std::int64_t kMaxExactIdAsDouble = std::int64_t{1} << 53;
 
 /// VTK legacy cell-type codes, per the standard (VTK_VERTEX=1, LINE=3,
 /// TRIANGLE=5, POLYGON=7, QUAD=9, TETRA=10, HEXAHEDRON=12, WEDGE=13,
@@ -61,6 +70,14 @@ Result<void> write_native_mesh_file(const std::string& path, const NativeMeshVie
   // the bytes this writes do not depend on the host's grouping/decimal
   // separator.
   f.imbue(std::locale::classic());
+  // The default stream precision (6 significant digits) is for on-screen
+  // display, not for bytes a reader must reconstruct exactly: a gid at or
+  // past 1e6, or a coordinate with more than 6 significant digits, was
+  // silently rounded on write (measured: 1234567 -> "1.23457e+06" -> read
+  // back as 1234570, colliding with a different real vertex since gids
+  // are dense in the generators). `max_digits10` for `double` is 17, the
+  // number of decimal digits that round-trips every double exactly.
+  f << std::setprecision(17);
 
   const std::size_t nv = mesh.vertex_count();
   const std::size_t nc = mesh.cell_count();
@@ -112,7 +129,14 @@ Result<void> write_native_mesh_file(const std::string& path, const NativeMeshVie
 
   f << "POINT_DATA " << nv << "\n";
   f << "SCALARS GlobalPointID double 1\nLOOKUP_TABLE default\n";
-  for (std::size_t v = 0; v < nv; ++v) f << static_cast<double>(mesh.vertex_gid_of(v)) << "\n";
+  for (std::size_t v = 0; v < nv; ++v) {
+    const std::int64_t gid = mesh.vertex_gid_of(v);
+    FUSE_ASSERT(gid < kMaxExactIdAsDouble,
+               "vertex {} has gid {}, at or beyond 2^53: this format's double "
+               "representation would not round-trip it exactly",
+               v, gid);
+    f << static_cast<double>(gid) << "\n";
+  }
   f << "SCALARS PointOwner int 1\nLOOKUP_TABLE default\n";
   for (std::size_t v = 0; v < nv; ++v) f << mesh.vertex_owner_of(v) << "\n";
   f << "SCALARS PointIsOwned int 1\nLOOKUP_TABLE default\n";
@@ -121,7 +145,12 @@ Result<void> write_native_mesh_file(const std::string& path, const NativeMeshVie
   f << "CELL_DATA " << nc << "\n";
   f << "SCALARS GlobalCellID double 1\nLOOKUP_TABLE default\n";
   for (std::size_t c = 0; c < nc; ++c) {
-    f << static_cast<double>(mesh.global_id(mesh.dimension(), c)) << "\n";
+    const std::int64_t gid = mesh.global_id(mesh.dimension(), c);
+    FUSE_ASSERT(gid < kMaxExactIdAsDouble,
+               "cell {} has gid {}, at or beyond 2^53: this format's double "
+               "representation would not round-trip it exactly",
+               c, gid);
+    f << static_cast<double>(gid) << "\n";
   }
   f << "SCALARS CellOwner int 1\nLOOKUP_TABLE default\n";
   for (std::size_t c = 0; c < nc; ++c) f << mesh.cell_owner_of(c) << "\n";
