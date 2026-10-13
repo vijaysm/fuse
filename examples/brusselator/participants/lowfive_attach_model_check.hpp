@@ -135,12 +135,32 @@ enum class PolicyKind {
 struct ProcessPolicy {
   PolicyKind kind;
   ServeRole role;  // meaningful for kShipped and kRejectedPreOpenFlush only
+  // ROUND 4, DEFECT B's own named case (not a rejected design -- a
+  // measured LowFive mechanic this attach's own fix must not silently
+  // rely on serve_state_step() alone to prevent): when true, a
+  // kEnterBlocking action never actually serves anything, modelling
+  // `DistMetadataVOL::serve_all()` returning WITHOUT calling `index.
+  // serve()` because `index.indexed_datasets == 0` (lowfive_attach_
+  // decision.hpp's own "DEFECT B" comment has the full citations: an
+  // unslashed `set_memory()` pattern means `dataset_create()`'s own
+  // `is_memory` check is false for every dataset, so none is ever
+  // attached to the file's own in-memory tree, and `Index`'s own
+  // `find_datasets()` traversal finds nothing to index). Default false
+  // (the shipped protocol's own tests, which assert completion, must
+  // not accidentally rely on this).
+  bool nothing_indexed = false;
 };
 
 struct DecideResult {
   MicroAction action;
   bool new_pending;
   int new_pending_k;
+  // Meaningful only when action == kEnterBlocking: whether this call
+  // actually enters a blocking serve the peer's own open-and-close can
+  // release (true), or completes as a no-op that never serves anything
+  // at all (false, DEFECT B's own case) -- see ProcessPolicy::
+  // nothing_indexed above. Always true for every other action.
+  bool actually_serves = true;
 };
 
 /// PURE: the action this process takes at `kind`/`k`, given its own
@@ -206,18 +226,21 @@ inline DecideResult Decide(const ProcessPolicy& policy, StepKind kind, int k, bo
     }
     switch (result.value()) {
       case ServeAction::kServeNow:
-        return {MicroAction::kEnterBlocking, state.deferred_pending, pending_k};
+        return {MicroAction::kEnterBlocking, state.deferred_pending, pending_k,
+               !policy.nothing_indexed};
       case ServeAction::kDeferServe:
-        return {MicroAction::kPassThrough, state.deferred_pending, k};
+        return {MicroAction::kPassThrough, state.deferred_pending, k, true};
       case ServeAction::kReceiveOnly:
       case ServeAction::kNoopAfterImport:
-        return {MicroAction::kPassThrough, state.deferred_pending, pending_k};
+        return {MicroAction::kPassThrough, state.deferred_pending, pending_k, true};
       case ServeAction::kFlushDeferred:
-        return {MicroAction::kEnterBlocking, state.deferred_pending, pending_k};
+        return {MicroAction::kEnterBlocking, state.deferred_pending, pending_k,
+               !policy.nothing_indexed};
       case ServeAction::kNoopFinalizeClean:
-        return {MicroAction::kPassThrough, state.deferred_pending, pending_k};  // not reached mid-script
+        return {MicroAction::kPassThrough, state.deferred_pending, pending_k,
+               true};  // not reached mid-script
     }
-    return {MicroAction::kPassThrough, pending, pending_k};
+    return {MicroAction::kPassThrough, pending, pending_k, true};
   }
 
   // kOriginalNatural / kBothDefer: symmetric, hand-rolled, no
@@ -317,6 +340,22 @@ inline std::optional<StepOutcome> TryStep(const std::vector<MicroStep>& script, 
   // own "PURITY" paragraph).
   const DecideResult d = Decide(policy, step.kind, step.k, pos.pending, pos.pending_k);
 
+  if (d.action == MicroAction::kEnterBlocking && !d.actually_serves) {
+    // ROUND 4, DEFECT B's own named case (ProcessPolicy::nothing_indexed):
+    // `serve_all()` returns WITHOUT ever calling `index.serve()` when
+    // nothing is indexed -- a complete no-op from BOTH sides' own point
+    // of view. This process does NOT block (advances immediately,
+    // `entering` never becomes true) and does NOT tell the peer anything
+    // is being served (no peer_serving_update at all) -- so the peer's
+    // own NEXT OPEN_CLOSE attempt for this exact file will find
+    // `peer_own_serving` false forever and simply never become enabled:
+    // a genuine stuck state, not a silent pass, exactly as asked.
+    ProcPos next = pos;
+    next.pc += 1;
+    next.pending = d.new_pending;
+    next.pending_k = d.new_pending_k;
+    return StepOutcome{next, std::nullopt, std::nullopt};
+  }
   if (d.action == MicroAction::kEnterBlocking) {
     // Sets THIS process's OWN serving flag only (captured in `next`,
     // which becomes this process's own entry in the global state) --
