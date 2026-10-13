@@ -304,6 +304,18 @@ struct OpAttrs {
   /// carries the same text it always did, for readability only).
   bool          window_import_sink = false;
 
+  /// Review 2026-10-11 IS-9: the channel `type_check()` (src/ir/
+  /// lowering.cpp) authorizes a Sink's time-level mismatch against. Set by
+  /// `emit_field_sink()` to the channel whose contribution the merge
+  /// adopted as newest for a merged field (which need not be `Node::origin`
+  /// -- see that function's own comment on why the two must stay
+  /// independent), or to `origin` itself for every other Sink, so a reader
+  /// of `type_check()` need not special-case "is this field merged" to know
+  /// which channel its authorization question is about. Not printed by
+  /// `attrs_string()` below, like `window_import_sink` above: it changes no
+  /// existing dump.
+  ChannelId     merge_auth_channel{};
+
   friend bool operator==(const OpAttrs&, const OpAttrs&) = default;
 };
 
