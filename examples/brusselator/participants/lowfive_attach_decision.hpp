@@ -41,6 +41,7 @@
 // communicator" tier-0 discipline KNOWN_ISSUES.md C1 already documents
 // for this codebase's other MPI-shaped pure functions).
 
+#include <array>
 #include <cstddef>
 #include <string>
 #include <utility>
@@ -371,7 +372,317 @@ enum class ServeAction {
 struct ServeState {
   ServeRole role = ServeRole::kFirstServer;
   bool deferred_pending = false;
+  // ROUND 8: has this process completed (reached kImportClosed for) ANY
+  // read yet -- decide_serve_action()'s own "history" input. False
+  // only before this process's own very first completed read (the cold
+  // start, on either role); true forever after, on either role (a
+  // first-server's own decision never consults it, but it is still
+  // maintained uniformly, never role-gated at the point it is SET).
+  bool completed_any_read = false;
 };
+
+// ---------------------------------------------------------------------
+// ROUND 8 -- a protocol assumption the host falsified. Round 2/3's own
+// model (the comment above, and the ORIGINAL `serve_state_step()`
+// before this round) assumed EVERY export a first-reader ever writes is
+// deferred, flushed only at its own NEXT import's close -- true only at
+// the COLD START, where it happens to coincide with "this process has
+// not read anything yet." The host's own measured steady-state event
+// sequences (KNOWN_ISSUES.md D39's own "Round 8" account has them
+// verbatim) show the two components running DIFFERENT per-period
+// orders once past the cold start: U (first-server) = write, read,
+// sync, every period, unchanged; V (first-reader) = write, read ONLY
+// at the cold start (period 0) -- then READ, WRITE, sync from period 1
+// onward, the READ now coming FIRST. Deferring V's OWN later writes
+// under the OLD rule (which only ever looks at `role`, never at
+// anything that happens in between) stacks two never-flushed defers
+// against V's own read-then-write steady state and the mutual-serve
+// cycle the lead's own brief above describes exactly; the host's own
+// 120 s timeout is that cycle, not a NEW defect in anything round 6/7
+// already fixed.
+//
+// WHY THE STEADY-STATE ORDER DIFFERS BETWEEN THE TWO COMPONENTS, read
+// from source, not inferred from the measured sequences (the lead's own
+// task 1 instruction): `fuse::CouplingGraph::add_channel()` (include/
+// fuse/model/coupling_graph.hpp) assigns `ChannelId` values strictly in
+// call order (`channels_.push_back(...); return ChannelId{channels_.
+// size() - 1};`); `brusselator::add_window_coupling()` (examples/
+// brusselator/brusselator_graph.hpp) calls `g.add_channel("u2v", u_out,
+// v_in)` BEFORE `g.add_channel("v2u", v_out, u_in)` -- channel u2v is
+// ChannelId{0}, v2u is ChannelId{1}, and `decl.channels = {ch_u2v,
+// ch_v2u}` lists them in that SAME order. `Runner::Impl::deliver_
+// external()` (src/runtime/iteration.cpp) suspends the EXPORTER of a
+// channel's own delivery BEFORE the IMPORTER, for that ONE channel
+// ("Suspended FIRST, matching the real time order ('export done')
+// precedes 'import due')"); the TWO channels' own ExternalDelivery
+// instructions are placed in the lowered DAG by `lower_channel()` (src/
+// ir/rules_channel.cpp) with an ordering edge carrying `source_
+// producer` as input specifically so the scheduler places each one
+// "after the exporting member's own last substep... before the
+// importer's own advance" -- the SAME slot `Transport` would occupy for
+// an ordinary channel (`OpKind::ExternalDelivery`'s own doc comment,
+// include/fuse/ir/op.hpp). Combined: whichever channel is scheduled
+// FIRST (u2v, by declaration order) is the one whose EXPORTER sees its
+// own suspension first in ITS OWN stream (U: write u_out, i.e. this
+// channel's export, comes first) and whose IMPORTER ALSO sees that SAME
+// channel's suspension first in ITS OWN stream (V: read u_out, i.e.
+// this channel's import, comes first) -- U's own per-period order is
+// therefore [write(u_out), read(v_out)] and V's is [read(u_out),
+// write(v_out)], matching the measured sequences exactly. COMPONENT
+// ORDER and RANK SETS do not independently enter this: `decl.channels`
+// is listed BY THE CALLER, not derived from component declaration
+// order (the two happen to agree in this graph, but are logically
+// separate knobs); rank sets decide which process hosts which half of
+// a suspension pair (already covered by `exporter_hosted`/`importer_
+// hosted` in `deliver_external()`), not the RELATIVE order of the two
+// channels' own suspensions. ITERATION KIND (Jacobi) and ACCELERATION
+// KIND do not change this mechanism either -- the ordering-edge
+// placement in `lower_channel()` is applied identically regardless of
+// `WaveformIteration` kind, per the same cited comment. NOT FULLY
+// SETTLED by this round's own reading: whether `ExternalDelivery`
+// fires once per WINDOW or once per Jacobi SWEEP within a window
+// (`max_iterations = 60` on this row's own graph) -- `deliver_
+// external()`'s own citation above places it in the SAME slot
+// `Transport` would occupy WITHIN one sweep, which in principle could
+// mean once per sweep; the host's own measured counts (exactly two
+// write-serve-read cycles across two periods before the hang, not
+// dozens) are the empirical evidence available and are consistent with
+// once-per-period, but this round did not trace `run_region()`'s own
+// sweep-count/convergence machinery far enough to prove analytically
+// that this row's own graph (channel v2u has its own `.lag(1)
+// .allow_time_level_mismatch(...)`, consistent with an explicit,
+// non-iterated exchange) never re-delivers mid-window. Declared here as
+// a limitation of this round's own source investigation, not a settled
+// claim; the model below uses PERIOD as its own unit, matching the
+// host's own measured granularity, and does not claim it is identical
+// to "per Jacobi sweep."
+//
+// Cold start is a SEPARATE, PRE-LOOP priming call on BOTH mains
+// (u_main.c lines ~505-516, v_main.f90's own mirror), not period 0 of
+// either component's own `fuse_begin_step()`/`fuse_end_step()` loop --
+// it calls `u_lowfive_write_export()`/`u_lowfive_read_import()`
+// directly, with no step request/report and no coupler sync of any
+// kind. Both mains' own cold-start call order is write-then-read,
+// unconditionally, by construction (hardcoded call order in the C/
+// Fortran source, not derived from the IR schedule at all) -- this is
+// WHY the cold start shows write-then-read for BOTH components even
+// though V's own STEADY-STATE order (inside the loop, IR-schedule-
+// derived) is read-then-write: two independent mechanisms that happen
+// to produce the identical write-then-read SHAPE at the cold start for
+// unrelated reasons (U's: the IR schedule, same as every later period;
+// V's: the priming call's own hardcoded order, true ONLY at the cold
+// start). This round's own model (below, and ExpectedOrderForPeriod()'s
+// own period_index == 0 special case) treats the cold start as "period
+// 0" for bookkeeping, matching the lead's own framing, while
+// documenting here that it is mechanically a different code path.
+enum class ServeNowOrDefer { kServeNow, kDefer };
+
+/// PURE POLICY (task 2): a write is deferred ONLY if this process is
+/// the first-reader and has not yet completed ANY read (the cold
+/// start); every other write -- first-server, always, and first-reader
+/// once past its own cold start -- serves immediately. Replaces round
+/// 2/3's own "first-reader always defers," falsified by the host's own
+/// measured steady-state order (this header's own "ROUND 8" comment
+/// above).
+[[nodiscard]] inline ServeNowOrDefer decide_serve_action(ServeRole role, bool completed_any_read) {
+  if (role == ServeRole::kFirstReader && !completed_any_read) return ServeNowOrDefer::kDefer;
+  return ServeNowOrDefer::kServeNow;
+}
+
+/// One top-level event kind in a process's own per-period order (task 3b,
+/// task 4) -- distinct from `ServeEvent`, which is LowFive-hook-shaped
+/// (an import is TWO ServeEvents, kImportAboutToOpen then kImportClosed);
+/// this is the coarser, order-table-shaped kind each hook's own event
+/// maps onto for the purpose of checking against the measured order.
+enum class ExpectedEventKind { kWrite, kRead };
+
+/// PURE (task 1's own derived table): this role's own two per-period
+/// slots, for the ONE measured, validated configuration -- cold start
+/// (`period_index == 0`, EITHER role) and first-server (every period)
+/// are [write, read]; first-reader's own STEADY state (`period_index
+/// >= 1`) is [read, write]. See this header's own "ROUND 8" comment
+/// above for the full derivation and citations.
+[[nodiscard]] inline std::array<ExpectedEventKind, 2> ExpectedOrderForPeriod(ServeRole role,
+                                                                             int period_index) {
+  if (period_index == 0 || role == ServeRole::kFirstServer) {
+    return {ExpectedEventKind::kWrite, ExpectedEventKind::kRead};
+  }
+  return {ExpectedEventKind::kRead, ExpectedEventKind::kWrite};
+}
+
+/// Per-process position within `ExpectedOrderForPeriod()`'s own table --
+/// `slot` is 0 or 1 within the CURRENT `period_index`; a period
+/// completes (period_index increments, slot resets to 0) once slot 1's
+/// own event has been observed, whichever top-level kind (write or
+/// read) that happens to be for this role/period.
+struct OrderTracker {
+  int period_index = 0;
+  int slot = 0;
+};
+
+/// PURE (task 3b): checks `event` against `ExpectedOrderForPeriod(role,
+/// tracker.period_index)[tracker.slot]` and, if it matches, returns the
+/// ADVANCED tracker (never mutates its argument -- this header's own
+/// "PURITY" convention elsewhere); refuses
+/// (`E-LOWFIVE-ATTACH-ORDER-DEVIATION`), naming the expected event, the
+/// observed one, and the period index, on a mismatch. `kImportAboutToOpen`
+/// and `kImportClosed` both check against the SAME `kRead` slot (a read
+/// is one logical event spanning two ServeEvents) but only
+/// `kImportClosed` (and `kExportWrittenAndClosed`) ADVANCE the tracker --
+/// `kImportAboutToOpen` only checks, since advancing early would let a
+/// SECOND write slip in without its own read ever completing.
+/// `kFinalize` is not a per-period slot at all and always leaves the
+/// tracker unchanged. Called BEFORE `serve_state_step()` at every real
+/// call site (lowfive_attach.cpp), so a deviation is caught before the
+/// blocking call `serve_state_step()`'s own answer might otherwise
+/// enter -- never after.
+[[nodiscard]] inline fuse::Result<OrderTracker> CheckAndAdvanceOrder(ServeRole role,
+                                                                     OrderTracker tracker,
+                                                                     ServeEvent event) {
+  const std::array<ExpectedEventKind, 2> expected =
+      ExpectedOrderForPeriod(role, tracker.period_index);
+  auto refuse = [&](ExpectedEventKind want, ExpectedEventKind got) -> fuse::Failure {
+    auto name = [](ExpectedEventKind k) { return k == ExpectedEventKind::kWrite ? "write" : "read"; };
+    return fuse::Failure{
+        "E-LOWFIVE-ATTACH-ORDER-DEVIATION",
+        "period " + std::to_string(tracker.period_index) + ", slot " +
+            std::to_string(tracker.slot) + ": expected " + std::string(name(want)) +
+            ", observed " + std::string(name(got)) +
+            " -- the serve policy has only been validated against the measured order "
+            "(KNOWN_ISSUES.md D39)"};
+  };
+
+  switch (event) {
+    case ServeEvent::kExportWrittenAndClosed: {
+      if (expected[tracker.slot] != ExpectedEventKind::kWrite) {
+        return refuse(expected[tracker.slot], ExpectedEventKind::kWrite);
+      }
+      OrderTracker next = tracker;
+      if (next.slot == 1) {
+        next.period_index += 1;
+        next.slot = 0;
+      } else {
+        next.slot = 1;
+      }
+      return next;
+    }
+    case ServeEvent::kImportAboutToOpen: {
+      if (expected[tracker.slot] != ExpectedEventKind::kRead) {
+        return refuse(expected[tracker.slot], ExpectedEventKind::kRead);
+      }
+      return tracker;  // checked, not advanced -- see doc comment above
+    }
+    case ServeEvent::kImportClosed: {
+      if (expected[tracker.slot] != ExpectedEventKind::kRead) {
+        return refuse(expected[tracker.slot], ExpectedEventKind::kRead);
+      }
+      OrderTracker next = tracker;
+      if (next.slot == 1) {
+        next.period_index += 1;
+        next.slot = 0;
+      } else {
+        next.slot = 1;
+      }
+      return next;
+    }
+    case ServeEvent::kFinalize:
+      return tracker;
+  }
+  return fuse::Failure{"E-LOWFIVE-ATTACH-ORDER-DEVIATION", "unrecognised ServeEvent"};
+}
+
+/// One LowFive-bound channel's own contribution to the static order
+/// signature (task 3a) -- writer/reader COMPONENT names (not field
+/// names: `ChannelRoles::writer_name`/`reader_name` above, already
+/// populated by lowfive_attach.cpp's own graph walk, in `ChannelId`
+/// order) plus each side's own rank COUNT (not which ranks -- a
+/// multi-rank-per-component layout was never measured, kept
+/// defensively, not because this round found it changes the ORDER
+/// mechanism itself).
+struct ChannelOrderSignature {
+  std::string writer_name;
+  std::string reader_name;
+  std::size_t writer_rank_count = 0;
+  std::size_t reader_rank_count = 0;
+};
+
+[[nodiscard]] inline bool operator==(const ChannelOrderSignature& a,
+                                      const ChannelOrderSignature& b) {
+  return a.writer_name == b.writer_name && a.reader_name == b.reader_name &&
+         a.writer_rank_count == b.writer_rank_count && a.reader_rank_count == b.reader_rank_count;
+}
+
+/// PURE: this graph's own order signature, in `ChannelId` order --
+/// `channels` must be the SAME, already-filtered vector
+/// `decide_attach_mode()` takes (lowfive_attach.cpp's own job to build
+/// it in that order, unchanged by this round).
+[[nodiscard]] inline std::vector<ChannelOrderSignature> ComputeGraphOrderSignature(
+    const std::vector<ChannelRoles>& channels) {
+  std::vector<ChannelOrderSignature> out;
+  out.reserve(channels.size());
+  for (const ChannelRoles& ch : channels) {
+    out.push_back(ChannelOrderSignature{ch.writer_name, ch.reader_name, ch.writer_ranks.size(),
+                                        ch.reader_ranks.size()});
+  }
+  return out;
+}
+
+/// The ONE configuration this round's own policy/order-check pair has
+/// been validated against: the measured verification.brusselator.
+/// participants.lowfive.mpmd.3 row -- channel u2v (U writes, V reads)
+/// THEN channel v2u (V writes, U reads), one rank per component. Any
+/// OTHER graph -- a third channel, a swapped channel order, a
+/// multi-rank component -- is refused by `CheckGraphOrderValidated()`
+/// below, by name, rather than silently assumed to behave the same way.
+[[nodiscard]] inline std::vector<ChannelOrderSignature> ValidatedGraphOrderSignatures() {
+  return {ChannelOrderSignature{"U", "V", 1, 1}, ChannelOrderSignature{"V", "U", 1, 1}};
+}
+
+/// PURE (task 3a): refuses (`E-LOWFIVE-ATTACH-ORDER-UNVALIDATED`),
+/// naming the first differing property, unless `signature` is EXACTLY
+/// `ValidatedGraphOrderSignatures()` -- this makes the LowFive
+/// participants usable only for the one validated configuration until a
+/// thread route (lowfive_attach.h's own NOT-NOW) or a plan-derived
+/// order (open_questions) exists. Collective-safe: every rank of both
+/// components computes `signature` from the SAME loaded graph, the
+/// identical data `decide_attach_mode()`'s own INCONSISTENT check
+/// already relies on being rank-independent.
+[[nodiscard]] inline fuse::Result<void> CheckGraphOrderValidated(
+    const std::vector<ChannelOrderSignature>& signature) {
+  const std::vector<ChannelOrderSignature> validated = ValidatedGraphOrderSignatures();
+  if (signature.size() != validated.size()) {
+    return fuse::Failure{
+        "E-LOWFIVE-ATTACH-ORDER-UNVALIDATED",
+        "this graph has " + std::to_string(signature.size()) +
+            " LowFive-bound channel(s); the serve policy has only been validated against " +
+            std::to_string(validated.size()) + " (KNOWN_ISSUES.md D39)"};
+  }
+  for (std::size_t i = 0; i < signature.size(); ++i) {
+    if (signature[i] == validated[i]) continue;
+    std::string what;
+    if (signature[i].writer_name != validated[i].writer_name) {
+      what = "channel " + std::to_string(i) + "'s writer is '" + signature[i].writer_name +
+             "', validated only for '" + validated[i].writer_name + "'";
+    } else if (signature[i].reader_name != validated[i].reader_name) {
+      what = "channel " + std::to_string(i) + "'s reader is '" + signature[i].reader_name +
+             "', validated only for '" + validated[i].reader_name + "'";
+    } else if (signature[i].writer_rank_count != validated[i].writer_rank_count) {
+      what = "channel " + std::to_string(i) + "'s writer has " +
+             std::to_string(signature[i].writer_rank_count) + " rank(s), validated only for " +
+             std::to_string(validated[i].writer_rank_count);
+    } else {
+      what = "channel " + std::to_string(i) + "'s reader has " +
+             std::to_string(signature[i].reader_rank_count) + " rank(s), validated only for " +
+             std::to_string(validated[i].reader_rank_count);
+    }
+    return fuse::Failure{
+        "E-LOWFIVE-ATTACH-ORDER-UNVALIDATED",
+        "graph order signature does not match the measured configuration: " + what +
+            " (KNOWN_ISSUES.md D39); the serve policy has only been validated against the "
+            "measured order"};
+  }
+  return fuse::Result<void>::success();
+}
 
 /// The protocol, event by event (see this header's own "ROUND 2 REVIEW"
 /// comment above for the deadlock the FIRST round-2 attempt had, and the
@@ -454,8 +765,15 @@ struct ServeState {
 [[nodiscard]] inline fuse::Result<ServeAction> serve_state_step(ServeState* state,
                                                                  ServeEvent event) {
   switch (event) {
-    case ServeEvent::kExportWrittenAndClosed:
-      if (state->role == ServeRole::kFirstServer) return ServeAction::kServeNow;
+    case ServeEvent::kExportWrittenAndClosed: {
+      // ROUND 8: the policy decision is now decide_serve_action()'s own
+      // job, not a hardcoded "first-reader always defers" -- see this
+      // header's own "ROUND 8" comment below for the host-falsified
+      // assumption this replaces and the citations behind the new rule.
+      if (decide_serve_action(state->role, state->completed_any_read) ==
+          ServeNowOrDefer::kServeNow) {
+        return ServeAction::kServeNow;
+      }
       if (state->deferred_pending) {
         return fuse::Failure{
             "E-LOWFIVE-ATTACH-SERVE-DOUBLE-DEFER",
@@ -465,6 +783,7 @@ struct ServeState {
       }
       state->deferred_pending = true;
       return ServeAction::kDeferServe;
+    }
     case ServeEvent::kImportAboutToOpen:
       // Unconditional, any role or state: this header's own "ROUND 2
       // REVIEW" comment has the full account of why NOTHING is flushed
@@ -472,6 +791,12 @@ struct ServeState {
       // attempt's own mistake.
       return ServeAction::kReceiveOnly;
     case ServeEvent::kImportClosed:
+      // ROUND 8: every completed read counts, on EITHER role -- this is
+      // decide_serve_action()'s own "history" input, and it must be set
+      // unconditionally here (before the role branch below), not only
+      // for a first-reader, so a role that later changes behaviour
+      // based on it is never fed a stale value.
+      state->completed_any_read = true;
       if (state->role == ServeRole::kFirstServer) return ServeAction::kNoopAfterImport;
       if (state->deferred_pending) {
         state->deferred_pending = false;

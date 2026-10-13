@@ -199,6 +199,18 @@ struct AttachState {
   // own two call sites below) -- never the peer's own file, which this
   // rank never owns the lifetime of.
   std::vector<std::string> own_exported_files;
+  // ROUND 8: the per-process LOCAL order assertion's own tracker
+  // (lowfive_attach_decision.hpp's own CheckAndAdvanceOrder()) --
+  // checked, and advanced, before EVERY serve_state_step() call below,
+  // never after (task 3b's own "before the next blocking call").
+  fuse_examples::lowfive_attach::OrderTracker order_tracker;
+  // ROUND 8, task 6: a monotonically increasing per-process event
+  // index (every real hook call below increments it once, in trace
+  // order) -- distinct from order_tracker's own period_index/slot
+  // (which resets every period); this one never resets, so two trace
+  // lines can be compared for "did anything happen in between" even
+  // across periods.
+  long long event_index = 0;
 #endif
 };
 
@@ -452,6 +464,31 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
     roles.writer_name = writer_c.name;
     roles.reader_name = reader_c.name;
     channels.push_back(std::move(roles));
+  }
+
+  // ROUND 8, task 3a: the STATIC order check, at attach time, before
+  // decide_attach_mode() or anything else that could block -- refuses
+  // by name (E-LOWFIVE-ATTACH-ORDER-UNVALIDATED) unless this graph's
+  // own channel order/component names/rank counts EXACTLY match the
+  // one measured, validated configuration. Collective-safe: `channels`
+  // is already the SAME, rank-independent data decide_attach_mode()'s
+  // own INCONSISTENT check below relies on (every rank of both
+  // components loads the identical graph file and runs the identical
+  // loop above), so every rank reaches the identical verdict.
+  {
+    const auto signature = fuse_examples::lowfive_attach::ComputeGraphOrderSignature(channels);
+    auto order_ok = fuse_examples::lowfive_attach::CheckGraphOrderValidated(signature);
+    if (TraceEnabledCached()) {
+      const std::string verdict =
+          order_ok.ok() ? std::string("accepted") : ("refused: " + order_ok.error().code);
+      std::fprintf(stderr, "TRACE(bruss_lowfive_attach): order-check-verdict=%s\n",
+                   verdict.c_str());
+    }
+    if (!order_ok.ok()) {
+      CopyErrorMessage("[" + order_ok.error().code + "] " + order_ok.error().message, errbuf,
+                       errbuf_len);
+      return 1;
+    }
   }
 
   auto decision = fuse_examples::lowfive_attach::decide_attach_mode(channels, world_rank);
@@ -744,6 +781,35 @@ int bruss_lowfive_serve_after_write(char* errbuf, long long errbuf_len) {
                      errbuf, errbuf_len);
     return 1;
   }
+  // ROUND 8, task 3b: the LOCAL per-event order assertion, checked and
+  // advanced BEFORE serve_state_step() -- a deviation is refused here,
+  // before the kServeNow branch below's own blocking serve_all() call
+  // ever runs, never after.
+  {
+    auto order_check = fuse_examples::lowfive_attach::CheckAndAdvanceOrder(
+        s.serve_state.role, s.order_tracker,
+        fuse_examples::lowfive_attach::ServeEvent::kExportWrittenAndClosed);
+    if (!order_check.ok()) {
+      CopyErrorMessage("[" + order_check.error().code + "] " + order_check.error().message,
+                       errbuf, errbuf_len);
+      return 1;
+    }
+    s.order_tracker = order_check.value();
+  }
+  // ROUND 8, task 6: the policy decision and its own reason, BEFORE
+  // calling serve_state_step() (which mutates serve_state.deferred_
+  // pending but not completed_any_read for THIS event) -- decide_
+  // serve_action()'s own condition, read directly, not re-derived.
+  const bool cold_start_first_reader =
+      s.serve_state.role == fuse_examples::lowfive_attach::ServeRole::kFirstReader &&
+      !s.serve_state.completed_any_read;
+  const long long this_event_index = s.event_index++;
+  if (TraceEnabledCached()) {
+    std::fprintf(stderr,
+                 "TRACE(bruss_lowfive_serve_after_write): event_index=%lld period=%d policy=%s\n",
+                 this_event_index, s.order_tracker.period_index,
+                 cold_start_first_reader ? "cold-start-first-reader" : "steady-state");
+  }
   // Unchanged by the round-2 review: the WRITE side's own event/action
   // pair (kExportWrittenAndClosed -> kServeNow/kDeferServe) was never
   // the part that was wrong -- only the READ side's own flush placement
@@ -835,6 +901,29 @@ int bruss_lowfive_receive_before_read(char* errbuf, long long errbuf_len) {
   // mutation that makes kImportAboutToOpen return anything other than
   // kReceiveOnly is caught by this switch's own `default` case, and by
   // lowfive_attach_model_check.hpp's own search).
+  //
+  // ROUND 8, task 3b: checked (NOT advanced -- CheckAndAdvanceOrder()'s
+  // own doc comment on why kImportAboutToOpen only checks) BEFORE this
+  // process's own H5Fopen, which runs right after this call returns --
+  // "before the next blocking call" for the READ side specifically.
+  {
+    auto order_check = fuse_examples::lowfive_attach::CheckAndAdvanceOrder(
+        s.serve_state.role, s.order_tracker,
+        fuse_examples::lowfive_attach::ServeEvent::kImportAboutToOpen);
+    if (!order_check.ok()) {
+      CopyErrorMessage("[" + order_check.error().code + "] " + order_check.error().message,
+                       errbuf, errbuf_len);
+      return 1;
+    }
+    s.order_tracker = order_check.value();
+  }
+  const long long this_event_index = s.event_index++;
+  if (TraceEnabledCached()) {
+    std::fprintf(stderr,
+                 "TRACE(bruss_lowfive_receive_before_read): event_index=%lld period=%d "
+                 "policy=receive-only\n",
+                 this_event_index, s.order_tracker.period_index);
+  }
   auto action = fuse_examples::lowfive_attach::serve_state_step(
       &s.serve_state, fuse_examples::lowfive_attach::ServeEvent::kImportAboutToOpen);
   if (!action.ok()) {
@@ -892,6 +981,29 @@ int bruss_lowfive_after_read_close(char* errbuf, long long errbuf_len) {
   // source (lowfive_attach_decision.hpp's own "ROUND 2 REVIEW" comment)
   // -- is exactly the event that would release a PEER's own pending
   // serve_all(); only now is it safe for a first-reader to enter its own.
+  //
+  // ROUND 8, task 3b: checked and advanced BEFORE serve_state_step(),
+  // same discipline as the write side above -- a deviation is refused
+  // before the kFlushDeferred branch's own blocking serve_all() call.
+  {
+    auto order_check = fuse_examples::lowfive_attach::CheckAndAdvanceOrder(
+        s.serve_state.role, s.order_tracker,
+        fuse_examples::lowfive_attach::ServeEvent::kImportClosed);
+    if (!order_check.ok()) {
+      CopyErrorMessage("[" + order_check.error().code + "] " + order_check.error().message,
+                       errbuf, errbuf_len);
+      return 1;
+    }
+    s.order_tracker = order_check.value();
+  }
+  const long long this_event_index = s.event_index++;
+  if (TraceEnabledCached()) {
+    std::fprintf(stderr,
+                 "TRACE(bruss_lowfive_after_read_close): event_index=%lld period=%d "
+                 "policy=%s\n",
+                 this_event_index, s.order_tracker.period_index,
+                 s.serve_state.deferred_pending ? "flush-deferred" : "noop-after-import");
+  }
   auto action = fuse_examples::lowfive_attach::serve_state_step(
       &s.serve_state, fuse_examples::lowfive_attach::ServeEvent::kImportClosed);
   if (!action.ok()) {
