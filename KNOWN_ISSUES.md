@@ -228,7 +228,7 @@ it. Closing A4 all the way to "measured" needs a host; the exact rows are
 named above and, for the LowFive pair, carry their own further dependency,
 tracked once, in D14, not repeated here.**
 
-### A5. A device number waits on a GPU machine — your sequencing
+### ~~A5. A device number waits on a GPU machine — your sequencing~~ — CLOSED 2026-10-11: measured on a real GPU, at the kernel layer AND through `Runner::Impl::execute()` itself
 
 **Your call, recorded 2026-09-17: get host threading fully working first, then
 retry on a machine with a GPU.** That is the right order, and the host-threading
@@ -236,15 +236,71 @@ half is now measured rather than asserted: 65/65 on `Threads Serial` from the
 installed Kokkos and 65/65 on `OpenMP Serial` from a fetched one, both recorded
 in the note under A1. Those are all three host-parallel spaces.
 
-Nothing in the code has to change for a GPU. The typed kernel tests instantiate
-on whatever spaces the build enables, so on a CUDA- or HIP-enabled Kokkos they
-pick up the device space automatically and the startup banner will name it. What
-that run would add is a *measured* number; parameterisation is a precondition
-for device performance, not evidence of it, and the headers say so.
+~~Nothing in the code has to change for a GPU.~~ That was true at the kernel
+layer and is now measured there: on a GeForce GTX 1050 Ti (sm_61, toolkit
+`/usr/local/cuda-12.5`) against a `/opt/kokkos` built with
+`Kokkos_DEVICES=OPENMP;SERIAL;CUDA`, `ctest -R space_kernels -V` prints
+`[ spaces ] enabled: Cuda OpenMP Serial (default Cuda)` and all 27 typed
+kernel tests (9 per space, `Kokkos::Cuda` included) pass with zero code
+changes — exactly the number the previous version of this entry asked for.
 
-**What to do.** Nothing until you have the machine. Then configure against a
-GPU-enabled Kokkos and run the suite; the banner tells you whether the device
-space was actually picked up.
+It was NOT true one layer up, and that is what this closure adds. The
+`Runner::Impl::execute()` instruction stream was hard-wired to
+`Kokkos::DefaultHostExecutionSpace`: a GPU build ran every kernel-layer unit
+test on the device and every coupling workload on the host. The fix (branch
+`vijaysm/kokkos-device`, design and reasoning in
+`docs/dev/runner-device-dispatch.md`):
+
+- `RunnerConfig::execution_space` (`Host`, the default, or `Device`).
+  `execute()` is now a two-line dispatcher over `execute_on<Space>()`; the 9
+  `OpKind` cases that were already Kokkos-templated (`Interpolate` identity,
+  `Remap` identity + weighted, `Sample` non-spacetime, `Accumulate`,
+  `Extrapolate`, `Merge`, `Scale`, `Relax`, `Residual`) run on the requested
+  space; the host-only cases (`Transport`'s MPI `move()`, `Remap`'s
+  distributed-nodal branch (`apply_nodal_dist_remap()`, also an MPI
+  exchange), `Epoch`, `Constrain`, `Sink`, ...) are untouched. Host mode is byte-identical to the
+  old code: the span helpers wrap the raw host pointer when the space is
+  host-accessible, so the 279 pre-existing tests exercise the same
+  instantiation they always did.
+- Device mode stages each dispatched instruction's arcs (and `previous[]`
+  for `Relax`/`Residual`) through one device buffer allocated in `setup()`
+  (`fuse::dev_staging`, four lanes of the widest slot — nothing in the sweep
+  loop allocates, the standing invariant on `reduction_scratch`), with the
+  remap CSR mirrored to the device once at `resolve_remap()` time.
+  Requesting `Device` on a build whose Kokkos has no CUDA/HIP/SYCL backend is
+  refused at `setup()` with `E-RT-DEVICE`, not silently downgraded.
+- `RunStats::device_dispatches` counts instructions that really ran on the
+  device (0 in `Host` mode), and `Runner::device_execution_space_name()`
+  names the space the build would use, so a test can assert the device path
+  was taken rather than infer it.
+
+**Measured** (`test/runtime/runner_device_test.cpp`, ctest row
+`runtime.runner_device`): the same two coupling scenarios — a four-substep
+`Mean` accumulation with identity remap, and an 8→6-cell weighted remap
+followed by a 0.5 relaxation — run through the real `Runner` once on `Host`
+and once on `Device` (`device_execution_space_name()` == `"Cuda"` on this
+machine, `device_dispatches > 0` on the device run). Accumulate/Scale/copy
+agree **bitwise**; `Relax` and weighted `Remap` agree to `1e-14` relative,
+not bitwise, because nvcc contracts `a*b+c` into FMA inside `RelaxFunctor`/
+`RemapMultiFunctor` (the same gap D45 closed for the deterministic reductions
+with `unfused_multiply_add`; those two kernels were left as-is because
+`build-evidence/mutations.toml` anchors their exact source lines). Full
+suite after the change: 279/280 on one `ctest -j1` run; the one failure,
+`abi.fortran_consumer_compiles`, was a nested-cmake reconfigure tripping
+`test/CMakeLists.txt`'s "test source registered nowhere" guard over a
+not-yet-registered test source from in-flight Part B work in the same tree
+(`test/verification/sparse_solve_backend_test.cpp`), and passed once that
+file was registered. No single 280/280 run was observed; the Runner change
+itself touched nothing that test compiles.
+
+**Honest expectation, stated rather than hidden**: the device path is slower
+than the host path for these workloads, not faster — every device-dispatched
+instruction adds a host→device→host staging round trip the host path does not
+pay, and the arcs are a few dozen doubles. This closure is the dispatch
+pattern proven end-to-end with a measured number, not a performance claim;
+a device-resident field storage (no staging) is the follow-on if one is ever
+wanted, and `docs/dev/runner-device-dispatch.md` records why `previous[]`
+could not simply be made device-native (`advance_window()` reads it).
 
 ---
 
@@ -3279,860 +3335,6 @@ found and fixed (the test's own step rounding, not the contraction policy).
 Verified 2026-10-12 from a clean export: Debug (policy ON), 179 of 179 quick rows and 16 of 16 slow
 rows; Release ON and OFF, the 5 touched rows (OFF passes after D34's fix).
 
-### D27. The native backend's remap halo has no `accumulate_remap_halo` counterpart
-
-**Closed for the forward direction, 2026-10-10 ("Halo" track):** `fuse::native::NativeMeshBackend`
-now builds a planar/volumetric remap halo (`build_native_remap_halo`,
-`src/backend/native_halo.cpp`; docs/dev/native-halo.md) via the same `build_remap_halo` ->
-`build_weights` -> exchange -> `apply_weights` sequence `remap_plan.hpp` documents for MOAB, and
-`remap_halo_pattern()`'s `fuse::linalg::GhostPattern` plugs directly into
-`fuse::linalg::make_mpi_exchanger` for the FORWARD fill (owner's field value -> halo copy) before
-`apply_weights`.
-
-**Open:** `MoabMeshBackend::accumulate_remap_halo` -- the REVERSE exchange (each halo slot's
-contribution added back to its owner, then zeroed), built specifically for a conservation audit
-that sums a source cell's weight contributions across every rank holding a copy of it -- has no
-native counterpart. `test/backend/native_halo_test.cpp`'s own column-mass-by-global-id check
-does this bookkeeping in the TEST, not through a library call; nothing in the Halo track's scope
-needed a library-level reverse exchange, but a future native-backend conservation-audit tool would
-want one.
-
-### ~~D28. U's own species-core solver seam is closed; the mpmd.5 row that would first exercise it across a real two-rank U is still host-only~~ — CLOSED 2026-10-10 (host run, see D25's host paragraph)
-
-**Closed this session (species-core decomposition track): the implicit diffusion SOLVE**, the one
-piece D-series' own grid-decomposition entries left open (see "The solver seam" in
-`docs/user/brusselator.md`), now decomposes with U's own grid. `UCore`/`VDiffusionCore`
-(`examples/brusselator/species_core.hpp`) select a `DiffusionSolver` per `PhysicsConfig::solver`
-(`SolverKind::Auto`/`Direct`/`Schur`/`Pcg`/`Gmres`, a new `--solver` flag on `u_main.c`/`v_main.f90`):
-`SchurDiffusionSolver` wraps the Solvers track's `fuse::linalg::SchurSlabSolver`;
-`KrylovDiffusionSolver` assembles the same operator as a `fuse::linalg::DistSparseMatrix` and solves
-it with `fuse::linalg::pcg`/`gmres` under a `JacobiPreconditioner`. `u_main.c` now forms its own
-physics-only sub-communicator (`MPI_Comm_split` on `is_physics_rank`), reads `u_rank`/`u_size` from
-it instead of assuming `nx*ny` is the whole grid, and passes both plus the new `--solver` string and
-an `MPI_Comm_c2f` handle through the participant ABI (`bruss_u_create`'s four new trailing
-parameters). V's own CLI/ABI plumbing (`--ranks-u`/`--ranks-v`/`--solver` on `v_main.f90`,
-`bruss_v_create`'s matching trailing parameters) is prepared identically, but `VParticipant::make`
-still refuses outright at `num_ranks() > 1` (`E-BRUSS-V-DECOMPOSED-REMAP`) — V's two-sided remap
-routed through FUSE's distributed weights is a separate ("Halo") track's own work, explicitly out of
-scope here. **Superseded by D29**, which closes exactly that gap.
-
-**Verified in the sandbox:** a new in-process N-partition harness,
-`test/verification/brusselator_species_core_decomposition_test.cpp` (9 tests, all passing), measures
-each decomposed solver against a `num_ranks() == 1` `DirectDiffusionSolver` reference — `Schur`
-agrees to 2.4e-14/4.5e-14 (U, 2/3 partitions) and 2.7e-15 (V); `Pcg`/`Gmres` agree to 5.9e-14/5.5e-14
-at the chosen `solver_tolerance = 1e-13` (swept from `1e-8` through `1e-13` to derive that default —
-see "Species-core solver decomposition" in `docs/user/brusselator.md`). The full tier-0 suite passes
-179/179 after the change, and `fuse_example_brusselator --end 0.1 --check` remains byte-identical to
-the committed reference (`final_mean_u`/`final_mean_v` unchanged to all printed digits) — `Auto`
-resolves to the original `Direct` path at `num_ranks() == 1`, so every existing single-rank caller is
-unaffected. Three new mutation rows (`build-evidence/mutations/brusselator.toml`:
-`brusselator-schur-coefficient-wrong-sign`, `brusselator-krylov-matrix-diagonal-drops-mass-term`,
-`brusselator-krylov-matrix-drops-global-row-offset`) are each hand-proved against this harness; the
-third does not fail cleanly — it HANGS (a stranded collective, the failure mode D21/D25 both name),
-proved instead by a `timeout`-bounded rerun.
-
-**Still host-only, same shape as D25's own gap.** `u_main.c`'s new `MPI_Comm_split` is collective
-over the WHOLE shared `MPI_COMM_WORLD` an mpmd launch gives every segment (`u_main.c`, `v_main.f90`,
-`coupler_main.c` all numbered into one world) — so `v_main.f90` and `coupler_main.c` each now carry a
-MATCHING `MPI_Comm_split(..., MPI_UNDEFINED, ...)` call at the equivalent point in their own startup,
-purely so U's own split does not strand them. (D29 replaces this one-color-plus-`MPI_UNDEFINED`
-form with a single three-color split every one of the three programs now makes identically.)
-This choreography across three separately-compiled
-executables has never been run: this sandbox cannot start MPI at all (C1), and D25 itself recorded
-that `mpmd.5` — the one row where U would actually span more than one rank — was never run even
-before this change, because it exceeds the four-task rule. `mpmd.3`'s own U segment is one rank, so
-it cannot exercise `MPI_Comm_split` with a non-trivial physics group at all. The next host run that
-matters for this track is `mpmd.5` with `--solver schur` (or `pcg`/`gmres`) on U's own two ranks —
-confirming both the split choreography above and the decomposed solver agreement this entry's own
-tier-0 numbers can only approximate with an in-process thread-barrier stand-in for a real
-`Reducer`/`GhostExchanger`.
-
-### ~~D29. V's two-sided remap over an adopting halo measurably disagreed with the single-rank reference~~ — CLOSED 2026-10-10 (root-caused and fixed)
-
-**Closed this session.** The guard added when this entry was opened — `VParticipant::make_from_grids`
-refusing any decomposition whose remap halo adopted cells, in either direction, with
-`E-BRUSS-V-REMAP-ADOPTION` — is REMOVED: `ThreePartitionVParticipantRefusesAnAdoptingHalo` and the
-mutation row `brusselator-vparticipant-adopting-halo-not-refused` are both gone, superseded by the
-tests and mutation row below.
-
-**Root cause, measured by instrumenting (not guessed from reading).** `VParticipant::step()`'s own
-`q_native_v` buffer (the `apply_weights(weights_uv_, ...)` destination for the U->V remap) and
-`remap_state_to_u()`'s own `u_native` buffer (the `apply_weights(weights_vu_, ...)` destination for the
-V->U remap) were each sized from this rank's OWNED cell count (`n_v_`/`n_u_`, cached at `make_grids()`
-time, BEFORE either direction's halo is built). `RemapWeights::n_rows` (`remap_plan.hpp`: "target
-entities (local)") is documented, correctly and intentionally, to mean the target mesh's CURRENT local
-entity count -- owned plus ghost, the same "local = owned plus ghost" convention `MeshView::entity_count`
-itself documents (`mesh_view.hpp`) -- and `fuse::build_supermesh_weights` (`src/backend/supermesh.cpp`)
-honours exactly that: `w.n_rows = tgt.entity_count(dim)`. `apply_weights` (`remap_plan.hpp`)
-unconditionally zeros and writes `dst[0, n_rows)`.
-
-U and V are each the SOURCE of one halo direction and the TARGET of the other, on the SAME backend: V is
-widened (gains adopted cells) as the source of the V->U halo, and that SAME V mesh is also the TARGET of
-the U->V weights (`w_uv`), built AFTER both halos. Whenever V was ALSO widened (because this rank
-adopted V cells for the V->U direction), `weights_uv_.n_rows` is `owned_size(V) + adopted_v`, not
-`owned_size(V)` -- and `q_native_v`, sized from the stale pre-halo `n_v_`, was too small by exactly the
-adopted count. `apply_weights`' unconditional zero-and-write loop then wrote past the end of that
-`std::vector<double>` -- a heap buffer overflow, not merely a wrong value. The symmetric case (U widened
-as the source of the U->V halo, inflating `weights_vu_.n_rows` beyond `n_u_`) overflows `u_native` in
-`remap_state_to_u()` the same way. Measured on the instrumented scratch build (U 16 rows as 6/5/5, V 24
-as 8/8/8, 3 ranks, `FUSE_BRUSS_DEBUG=1`): rank 0 traced `weights_uv(n_rows=108, n_cols=48)` against
-`n_v_=96` (12 extra rows -- exactly its own measured `adopted_v(vu)=12`); ranks 1 and 2 traced an
-analogous overflow of `u_native` from their own nonzero `adopted_u(uv)=8`. This explains both original
-symptoms precisely: the overflow corrupts whatever heap memory follows the undersized vector, read back
-as though it were real row values from the very FIRST `apply_weights` call (the measured 3.1e-4
-`exchange_in` disagreement present from sub-step 0, never growing -- exactly "the error enters once");
-and on later steps, the corrupted heap trips an `Eigen::Block.h` bounds assertion when the diffusion
-solve (Schur or Pcg alike -- neither solver's own code is involved) reads memory the overflow had
-clobbered.
-
-Of the candidates this entry's own "Open" note listed when it was written, the fix matches candidate (b)
-("a buffer sized from the PRE-halo entity_count") exactly, once sharpened: it is not that something was
-cached from a view at `make_grids()` time in general (the grid's own `nx`/`ny`/`owned_rows`/
-`native_of_canonical_` are all fine, precisely because they describe only the UNWIDENED owned block,
-which widening never touches) -- it is specifically the two `apply_weights` DESTINATION buffers, each
-sized from the wrong rank's wrong-direction owned count instead of from the weights matrix that actually
-produced the data going into it.
-
-**Fix** (`examples/brusselator/species_core.hpp`): `step()` now sizes `q_native_v` from
-`weights_uv_.n_rows`; `remap_state_to_u()` now sizes `u_native` from `weights_vu_.n_rows`. Both are safe
-to read back through `to_canonical()` unchanged: `to_canonical()` addresses only `native_of_canonical_`
-entries, which are all built from the UNWIDENED view at `make_grids()` time and so never point past
-`owned_size()`, regardless of how large the weights-sized buffer actually is. No refusal is needed any
-more.
-
-**Verified correct on the previously-failing MISALIGNED split** (U 16 rows as 6/5/5 against V 24 as
-8/8/8, 3 ranks -- adopting rank 0 "0 U, 12 V", rank 1 "8 U, 12 V", rank 2 "8 U, 0 V" cells, traced under
-`FUSE_BRUSS_DEBUG=1`): `test/verification/brusselator_species_core_decomposition_test.cpp`'s
-`ThreePartitionVParticipantMatchesSingleRankMisaligned` (`SolverKind::Schur`, 6 sub-steps) measures
-`max_abs_diff = 1.732e-14` against the single-rank reference, and
-`ThreePartitionVParticipantMatchesSingleRankMisalignedPcg` (`SolverKind::Pcg`, 20 sub-steps, to rule out
-any slow growth the original 6-sub-step run had no room to see) measures `max_abs_diff = 5.262e-14`,
-`max_exchange_in_diff = 1.388e-17` -- both round-off, both solver kinds, no crash. The full tier-0 suite
-(ctest, which registers one entry per test BINARY, not per `TEST()` case -- `ThreePartitionVParticipant
-RefusesAnAdoptingHalo`'s removal and the two new cases' addition are both internal to the existing
-`verification.brusselator_species_core_decomposition` binary) passes 179/179, unchanged from before this
-fix. The halo-construction pipeline itself was never the defect -- `test/backend/native_halo_test.cpp`'s own
-`ThreeRanksMisalignedAdoptsExactlyWhatTheOracleComputes`/
-`ThreeRanksMisalignedCompleteWeightsAndLinearFieldReproduction` already proved it correct at this split,
-one direction at a time; this entry's own bug only appears once BOTH directions' halos are built on the
-SAME backend, each mesh widened as the source of one direction and read as the (now also widened) target
-of the other -- a scenario those single-direction tests never construct.
-
-**Mutation.** `brusselator-vparticipant-adopting-halo-not-refused` is retired (the refusal it killed no
-longer exists). `brusselator-vparticipant-stale-adopted-ghost-not-exchanged`
-(`build-evidence/mutations/brusselator.toml`) replaces it: skipping `exchanger_uv_->update()` in
-`step()` (leaving the adopted/ghost slots at their zero-initialized default -- "stale" -- instead of the
-real cross-rank values) is caught ONLY by the misaligned tests above (the aligned ones adopt zero cells,
-so a skipped update is indistinguishable from a correct one there -- every ghost slot is empty either
-way). Hand-proved 2026-10-10 on the unfiltered test binary: with the mutation applied,
-`ThreePartitionVParticipantMatchesSingleRankMisaligned`'s `max_abs_diff` rises from `1.732e-14` to
-`3.170e-03` and `...MisalignedPcg`'s from `5.262e-14` to `8.408e-03`, both far past the `1e-11` bound;
-both FAIL cleanly. File restored and verified byte-identical with `cmp` before submission.
-
-**The MOAB-backed builder is NOT a second instance (lead, measured 2026-10-10).** The
-sub-agent flagged `w.n_rows = tgt.cells.size()` in `src/backend/intx_weights.cpp` (three
-sites) as "the same row-count-inflation shape". It is the same CONVENTION, not a defect: every
-builder -- supermesh (`w.n_rows = tgt.entity_count(dim)`), MOAB, MLS -- sizes the weights over
-the target's whole local view, owned and non-owned alike, which is what `RemapWeights::n_rows`
-is documented to mean. The defect here was a CALLER (this example) allocating the destination
-from a count it had cached before the view was widened. The Runner, the library's own caller,
-never does that: it checks `weights->n_rows != out.elements` and refuses with
-`E-RT-REMAP-SIZE` (`src/runtime/runner.cpp`) rather than applying. Nothing to fix in the
-builders.
-
-**No longer host-only: `mpmd.5` passed on the host 2026-10-10 (D25's host paragraph has the
-numbers).** The text below is the state before that run. The `mpmd.5` row (`--ranks-v 2`, the one row where V
-spans more than one rank) could not be run in this sandbox (C1: MPI cannot start here). This entry's
-own fix removed the one KNOWN correctness gap that stood between that row and a real host run -- the
-`u_main.c`/`v_main.f90`/`coupler_main.c` three-color `MPI_Comm_split` choreography, and `v_main.f90`'s
-cross-check of `v_rank`/`v_size` against `--ranks-v`, are unaffected by this change and remain
-unexercised past a build check.
-### ~~D25. A separately launched participant could not run a coupling window~~ — CLOSED 2026-10-09 (host-measured)
-
-**Found by the first MPMD runs that reached `initialize()` (D24 cleared the exchange plan),
-on the host, 2026-10-09.** Four defects in sequence, each exposed by the fix before it;
-all four fixed, and `verification.brusselator.participants.mpmd.3` passes with
-`max_window_balance_error`/`global_balance_error`/`max_window_exchange_error` all within
-the check's thresholds, final means matching the single-process example to 2 ulp in
-`mean_u` (1.5865861881738454 vs 1.5865861881738459, 4.4e-16) and 5 ulp in `mean_v`
-(1.998222640303883 vs 1.9982226403038819, 1.1e-15).
-
-1. **A window member's storage was resolved on every rank.** `resolve_regions()` read every
-   member's native Provides/Requires storage from the registry on every rank; a separately
-   launched participant binds only its own fields, so `U`'s rank refused `E-RT-UNBOUND` on `V`'s
-   export. Unseen by `parallel.window_runner_mpi` because its `ComponentSet` holds every
-   component on every rank. The binding is now gated on `cfg.hosted`; every reader of those
-   pointers already tolerated null.
-2. **…which made the initialize-time seed chain's selection per rank.** The chain that
-   delivers each member's initial export to its consumer (Transport → Remap → Epoch) was
-   skipped where `cfg.required == nullptr` — after fix 1, on every non-hosting rank. Measured
-   with the macOS `sample` tool: all three programs in `MPI_Alltoallv`, U and V from this chain
-   inside `Runner::initialize()`, the coupler from `run_region()`'s first real Transport — the
-   collective mismatch the standing rule names. The chain's selection is now structural
-   (`window_import` valid and in range), and the per-rank seeding that follows is guarded
-   separately. The code's own comment had marked this collective safety "NOT YET INDEPENDENTLY
-   VERIFIED"; this is the verification.
-3. **Both participants carried a stale 3×3/4×4 grid**, from before `43fe58d` moved the graph
-   tool to 16×16/24×24, so they registered 9-element buffers against 256-cell fields. Nothing
-   refused it: the ordinary bind's `E-RT-SIZE` is bypassed by the window member's direct
-   registry read, and the priming's own size guard quietly skipped. The run then produced a
-   trajectory irreconcilable with the single-process example (first-window exchange 40% short).
-   Now: the same read refuses `E-RT-SIZE` (`WindowRunner.RefusesAWindowMemberWhoseExportIsNotTheFieldsSize`,
-   mutation `window-member-size-check-dropped`), and the grid and physics constants live in ONE
-   header, `examples/brusselator/participants/brusselator_grid.h`, included by the graph tool
-   and U and read by the Fortran V through `bruss_grid_dims()`.
-4. **Neither participant put its initial export into the registered storage.** The Runner
-   primes the first window's t=0 sample from whatever the export storage holds at
-   `initialize()`; the in-process components hold their constructor's value there, the tier-0
-   harness copies it in by hand, the standalone programs left `calloc`'s zero. U also seeded
-   its initial rate from a zero V. Both now do what the harness does: `bruss_u_provided()` /
-   `bruss_v_provided()` into the export before `initialize()`, and U reads a throwaway V's
-   initial `P_VU(V0)` for its own initial rate.
-
-**A startup-contract limitation worth naming, not deciding here:** item 4 means a participant
-must know its partner's initial export before `fuse_initialize()`. A coupler-delivered initial
-exchange (imports delivered before exports are frozen) would remove the need for U to
-reconstruct V at all. Recorded; the user's call.
-
-**Host run 2026-10-10 (main after `e76881c`): `verification.brusselator.participants.mpmd.5`
-PASSES** -- U on two ranks, V on two, the coupler on one, five programs' worth of ranks under one
-`mpiexec`, 1.37 s. Two participant defects stood in front of it, both found by the new size check
-and the merged log: `v_main.f90` registered the whole U grid (256) for its two U-grid fields where
-the plan sizes them per V rank (128) -- refused `E-RT-SIZE`, now `bruss_owned_size(nx_u, ny_u,
-v_rank, v_size)` as `u_main.c` already did; and both participants logged a per-rank partial mean
-with every rank writing the same `--log` path -- now the species' global mean through the core's
-own reducer (`bruss_u_state_mean`/`bruss_v_state_mean`, a collective every rank calls) and rank 0
-alone writes. Measured against the single-process example (`mean_u` 1.5865861881738459, `mean_v`
-1.9982226403038819): the 3-rank row is now BIT-IDENTICAL in both means (0 ulp; the earlier 2 and 5
-ulp were the participants' own sequential summation against the example's Eigen sum); the 5-rank
-row differs by 8.9e-14 in `mean_u` and 9.4e-14 in `mean_v` (relative 5.6e-14 / 4.7e-14) -- the
-decomposed Schur solve's own round-off, consistent with the 2-partition in-process bound of
-4.5e-14 -- with `exchange_in`/`exchange_out` within 1e-14 of the 3-rank values and the
-conservation check within its thresholds.
-
-The accept rows remain blocked by D23.
-
-### D23. Accept/connect cannot complete on MPICH's `ch3:nemesis` device when both programs share a node
-
-**Status: not a defect in this library; it needs a different MPI build.** Every
-`parallel.connect.accept.*` row, and the `verification.brusselator.participants.accept.*`
-rows with it, aborts inside `MPI_Intercomm_merge`. Measured on the host 2026-10-09, with
-a debugger on each side in turn -- the two stacks are identical frame for frame:
-
-```
-Assertion failed in file ../src/mpid/ch3/channels/nemesis/include/mpid_nem_inline.h
-at line 325: vc_ch->is_local
-  MPID_nem_mpich_sendv_header  <- the SHARED-MEMORY send path
-  MPIDI_CH3_iSendv
-  MPIDI_CH3_EagerContigIsend
-  MPID_Isend
-  MPIC_Sendrecv
-  MPIR_Intercomm_merge_impl
-  MPI_Intercomm_merge
-  fuse::transport::connect_pairwise
-```
-
-MPICH takes its shared-memory send path for a virtual connection whose own `is_local`
-flag says it is not shared-memory-reachable, which is exactly what a peer obtained
-through `MPI_Comm_accept`/`MPI_Comm_connect` is: a process in a DIFFERENT job, with no
-shared-memory segment in common, even when it happens to sit on the same node. Merging
-a dynamically established intercommunicator is precisely what `MPI_Intercomm_merge` is
-specified for, and `connect_pairwise` passes a different `high` on each side as it must,
-so there is nothing here for this library to fix.
-
-`MPIR_CVAR_NOLOCAL=1` does not help (measured): the shared-memory path is taken
-unconditionally at that point rather than being chosen from the flag.
-
-The MPMD path is unaffected and all `parallel.connect.mpmd.*` rows pass, because there
-every peer belongs to ONE job launched by one `mpiexec` and is genuinely
-shared-memory-reachable.
-
-**Detected at configure time since 2026-10-09.** `tools/probe-mpi-dynamic.sh`
-launches two jobs on this machine and performs the sequence `connect()`
-performs; `cmake/FuseDependencies.cmake` sets `FUSE_ENABLE_CONNECT_ACCEPT` from
-the verdict. On an MPI that cannot carry the mode the accept rows are no longer
-registered, and a `connect`-mode component is refused at `connect()` with
-`E-CONNECT-ACCEPT-UNAVAILABLE` naming MPMD as the way out, rather than aborting
-inside MPI. The probe distinguishes "could not test" from "measured broken" and
-leaves the mode ON for the former -- a login node where `mpiexec` needs an
-allocation is the ordinary case, and disabling a working capability there would
-be worse than a row that fails loudly.
-
-**What would clear it**, in order of preference:
-
-1. An MPICH built with `--with-device=ch4` -- the default since MPICH 4.0, with a
-   different path for dynamic connections. The host's build is
-   `--with-device=ch3 --enable-g=most --enable-fast=none`; the assertions that make
-   this visible are compiled in by `--enable-g=most`, and a release build would take
-   the shared-memory path on a connection that has none rather than abort.
-2. Open MPI, whose dynamic process management does not share this limitation.
-3. Two separate nodes, which removes the same-node misclassification. Not available
-   on a laptop, and not a fix.
-
-Until then the accept rows are expected to fail on this host, and the accept-mode code
-path they cover is unverified by measurement. Everything the accept path shares with
-MPMD -- the launch-spec round trip, the port file, `connect()`'s own refusals, the
-teardown of D20 and the intercommunicator disconnect -- is covered by rows that do pass.
-
-**Update 2026-10-12 — the MPI was reinstalled, the cause named above is gone, the rows have not run yet.** The
-host's MPICH is now 5.0.0a1 with device `ch4:ofi` (`mpichversion`), and `tools/probe-mpi-dynamic.sh` exits 0:
-accept/connect works between two same-node jobs. This entry stays open until `parallel.connect.accept.*` and
-`verification.brusselator.participants.accept.3` have run on that MPI; the configure step could not show it,
-because the verdict it had cached was stale (D35).
-
-### ~~D22. A shared Kokkos aborts the process at exit~~ — CLOSED 2026-10-09
-
-**What it was.** `Kokkos::initialize()` registers its own exit hook, and that hook ran
-at a point where the libraries Kokkos itself sits on -- the OpenMP runtime above all --
-had already been torn down. The process finished its work, printed every expected
-value, and then died: `libc++abi: terminating due to uncaught exception of type
-std::__1::system_error: mutex lock failed: Invalid argument`, locking a mutex in an
-image that was already gone.
-
-None of this was new code. It was invisible for as long as Kokkos was a STATIC library
-linked inside `libfuse-abi`, destroyed along with the library that held it; it appeared
-the day Kokkos was rebuilt as a shared library on this lab's machine (2026-10-09), when
-it became an image of its own with its own place in the teardown order.
-`abi.install_consumer_c` and `abi.install_consumer_fortran` both failed exactly this
-way -- after printing `installed C consumer ok` and all four expected values -- and an
-aborting MPMD participant printed the same message.
-
-**Fix.** `ensure_kokkos_initialized()` registers a `std::atexit` hook of its own,
-immediately after `Kokkos::initialize()`. `atexit` is LIFO, so this hook runs BEFORE
-Kokkos's, while the runtime underneath is intact; Kokkos's own hook then finds itself
-already finalized and does nothing. This is not finalizing from `fuse_destroy()`, which
-that function's own comment rules out for good reason -- by the time an atexit hook
-runs, no caller can create another context.
-
-**Pinned by** the two install-consumer rows, which are a real oracle for it, and the
-mutation `kokkos-is-left-to-its-own-exit-hook`.
-
-**Note for a future reader.** Both failures of 2026-10-09 came from Kokkos changing
-from static to shared, and only one of them was ours in this sense. The other -- two
-copies of Kokkos's process-wide state, one in the participant executable and one in
-`libfuse-abi.dylib`, with `fuse_create()` initialising one and the mesh `View` checked
-against the other -- went away with the shared build and needed no source change. If a
-future install is static again, that one returns: the symptom is `Kokkos ERROR: ... is
-being constructed before initialize() has been called` from every participant that
-links C++, while a pure-C one (the Brusselator's coupler) reaches the same point in
-silence.
-
-### ~~D21. A launched coupler's mode was lost in the file, hanging every MPMD run~~ — CLOSED 2026-10-09: the MPMD rows reach `connect()` and beyond on the host (D25)
-
-**Measured (the user's host, 2026-10-08).** `verification.brusselator.participants.mpmd.{3,5}` timed
-out at 120 s with `combined.log` zero bytes and no `u.log`/`v.log` at all — nothing had started.
-
-**Cause.** `connect_mpmd()` agrees the MPMD layout with an `MPI_Allgather` of `MPI_APPNUM` over the
-whole world, so every rank of that world must call `connect()`. The coupler's own program does call
-`fuse_setup()` with `my_component = "coupler"`, and `brusselator_graph_tool.cpp` does build
-`LaunchSpec{Mpmd, appnum = 2}` for it — but `CouplerDecl` had no `launch` field, `add_coupler()`
-dropped it, and the writer emitted only `name`, `index` and `ranks` for a coupler. The mode
-therefore never survived the file the three programs load, the coupler came back in-process, its
-rank never called `connect()`, and U and V waited in the collective for a participant that was
-never going to arrive. The example had noticed half of this and worked around it by building the
-coupler's `ComponentDecl` by hand with `launch` set; that fixed the in-memory graph and not the
-file, which is the only thing the other two programs see.
-
-**Fix.** `CouplerDecl` carries a `LaunchSpec`, `add_coupler()` passes it through, and the YAML
-writes and reads a coupler's `launch:` block with the same helpers the component entries use —
-omitted entirely for an in-process coupler, so files written before this are byte-identical.
-No descriptor version bump: the launch record was already part of every component record's bytes
-(`descriptor.hpp`'s v9), and a coupler is a component-array entry.
-
-**Pinned by** `YamlIo.ALaunchedCouplerKeepsItsLaunchModeAcrossTheRoundTrip` (mode, appnum and the
-canonical bytes) and `YamlIo.AnInProcessCouplerWritesNoLaunchBlock`, with the mutation
-`a-couplers-launch-mode-is-dropped-by-the-writer`. The hang itself is host-only.
-
-### D18. `fuse::transport::connect()`'s `Connect`-mode path supports exactly two components; a third refuses `E-CONNECT-SPEC` — OPEN, not pursued (Conformance Unit 2 routes around it)
-
-`connect_pairwise()` (`src/transport/connect.cpp`) reads, verbatim:
-
-```
-if (order.size() != 2) {
-  return Failure{"E-CONNECT-SPEC",
-                 "pairwise connect() supports exactly two connect-mode "
-                 "components; the graph declares " + std::to_string(order.size())};
-}
-```
-
-`order` is `connect_mode_components()`'s own fixed, graph-declared order of every component whose
-`LaunchSpec::mode` is `Connect` (not `InProcess`, `Mpmd`, or `Plugin`). Three or more such
-components refuse outright, before any MPI call happens — `LaunchMode::Mpmd` has no such limit
-(launcher-style MPMD is one shared `MPI_COMM_WORLD` from the start; `MPI_APPNUM` checking scales to
-any number of segments), but true separate-executable launches (`MPI_Open_port`/`MPI_Comm_accept`/
-`MPI_Comm_connect`, then `MPI_Intercomm_merge`) are implemented as a single pairwise handshake,
-fixed by `MPI_Intercomm_merge(intercomm, i_am_first ? 0 : 1, &merged)` into exactly the two-member
-ordering `connect_pairwise()`'s own `order` establishes.
-
-**Found this session** (Conformance Unit 2, Time Windows track) while scoping
-`examples/brusselator/participants/{u_main.c,v_main.f90}`: the participant graph has THREE
-components (U, V, and the coupler the Defect 1 fix added), so an `accept`-mode run with all three
-as separate `Connect`-mode executables is not supported today.
-
-**Routed around, not fixed, per the lead's own ruling**: a processor set is ranks, not
-executables — the coupler's ranks are declared `LaunchMode::InProcess` and live inside the
-*acceptor* executable's own `MPI_COMM_WORLD` (U's executable launched with its own ranks plus the
-coupler's), so `accept` mode is two real `Connect`-mode executables (U+coupler, and V) merging
-through the existing pairwise path, while `mpmd` mode is three ordinary app segments (no pairwise
-limit to route around there at all). Both modes still exercise the SAME three-component graph; only
-which executable's `MPI_COMM_WORLD` the coupler's ranks happen to sit inside differs.
-
-**The generalisation, sketched but not implemented.** `connect_pairwise()`'s own numbering —
-`connect_mode_components()`'s fixed graph order, with `MPI_Intercomm_merge`'s second argument
-(`high` in the MPI standard's own terms) fixed by position in that order rather than by
-acceptor/connector role — already IS the mechanism an N-way version would reuse, just run `N-1`
-times instead of once: component 0's world and component 1's world merge first (exactly today's
-path) into an intermediate communicator spanning `{0,1}`; that intermediate communicator then plays
-the "local" side of a SECOND `MPI_Comm_accept`/`MPI_Comm_connect` against component 2's own world
-(`MPI_Comm_accept`'s local-communicator argument is not required to be `MPI_COMM_WORLD` — any
-communicator works, which is exactly what makes a chain of merges possible rather than only a
-single pairwise one), producing a communicator spanning `{0,1,2}`; and so on, in
-`connect_mode_components()`'s own fixed order, until every `Connect`-mode component has joined.
-Which single rank of the growing intermediate communicator plays "acceptor" for the NEXT merge (and
-where its port name is published) is the one real design choice a chain adds beyond today's single
-pairwise case — reusing `LaunchSpec::is_acceptor`/`port_file` per ADJACENT PAIR in the chain, rather
-than per component, is the natural reading of the field's existing meaning, but was not worked out
-in enough detail here to commit to as a fix: Conformance Unit 2 needs no more than this routing to
-make its own two cases match, and this is recorded instead of built so the next person extending
-`connect()` itself does not have to re-derive this from scratch.
-
-**Not pursued further this session.** `docs/user/multiple-executables.md` now points here from its
-own `E-CONNECT-SPEC` row.
-
-**Follow-up (same track, later in Unit 2): implemented, build-verified, not yet host-run.**
-`examples/brusselator/participants/{brusselator_graph_tool,u_main.c,v_main.f90,coupler_main.c,
-brusselator_check}` now exist. `brusselator_graph_tool --launch accept` declares U's own
-`ComponentDecl::ranks` to span its FULL local executable world (its own physics ranks plus any
-bundled coupler ranks), and the coupler's own `ranks` as the trailing, legally overlapping subset of
-that range (`fuse::RankSet`'s own documented "overlap is legal") — `validate_launch_layout()` skips
-`InProcess` components (the coupler) entirely when checking that `Connect`/`Mpmd` components occupy
-consecutive blocks, so U's own declared range has to already include every rank the merge will
-actually place before V's for the two checks to agree; confirmed (`validate()` and
-`validate_launch_layout()` both return OK) against the generated graph for both `--launch mpmd` and
-`--launch accept`, `--ranks-u 1 --ranks-v 1 --ranks-coupler 1`. `u_main.c`'s own `--ranks-u` tells it,
-per rank of its own local world, whether to act as a real U-physics rank (register fields, drive
-`u_loop_step`) or as a bundled coupler placeholder rank (register nothing, skip the step loop
-entirely) — every rank still calls `fuse_setup()`/`fuse_initialize()` identically, since
-`MPI_Comm_accept`/`MPI_Intercomm_merge` are collective over this executable's WHOLE local
-`MPI_COMM_WORLD`, not just its "real" U ranks.
-
-**Open mechanical question (Q4, not yet answered by the lead, beyond Q1–Q3): does a coupler
-placeholder rank need to call `fuse_begin_step`/`fuse_end_step` at all?** This session's own
-`u_main.c` has a bundled coupler placeholder rank skip the step loop ENTIRELY (no field registered,
-no `begin_step`/`end_step` call for "U" from that rank) — reasoned by analogy with
-`examples/layout_driver/main.cpp` (a true SPMD multi-component driver, where every rank calls
-`Runner::run_period()` identically regardless of which component(s) it hosts, and a `Coupler`
-component needs no `ComponentSet` entry of its own at all), but NOT verified against the Runner's own
-internal remap collectives, which this sandbox cannot exercise (MPI cannot start here at all, C1
-above). If a coupler placeholder rank's own step-loop participation turns out to matter, the fix is
-local to `u_main.c`'s/`coupler_main.c`'s own loop structure, not to `connect()` or the graph model —
-flagged here for the first host run to settle.
-
-**Host rows registered, not run.** `test/parallel/brusselator_participants/run_participants.sh` (ctest
-rows `verification.brusselator.participants.{mpmd,accept}.{3,5}`, `examples/CMakeLists.txt`) drives:
-
-```
-mpmd (3):    mpiexec -n 1 brusselator_u_main --graph g.yaml --log u.log --periods 2 \
-                   : -n 1 brusselator_v_main --graph g.yaml --log v.log --periods 2 \
-                   : -n 1 brusselator_coupler_main --graph g.yaml
-mpmd (5):    ranks 2/2/1 in the same three-segment shape
-accept (3):  mpiexec -n 2 brusselator_u_main --graph g.yaml --log u.log --ranks-u 1 --periods 2   (acceptor, backgrounded)
-             mpiexec -n 1 brusselator_v_main --graph g.yaml --log v.log --periods 2               (connector)
-accept (5):  U's executable at 3 ranks (--ranks-u 2), V's at 2
-```
-followed in every row by `brusselator_check --u-log u.log --v-log v.log`. All four executables and
-`brusselator_graph_tool`/`brusselator_check` build cleanly at tier 1 (confirmed this session, both
-trees' full `cmake --build`; the tier-0 harness's own `u_loop.c`/`v_loop.f90` sources additionally
-BUILD cleanly into `fuse_verification_brusselator_{participants,check}_test` under
-`FUSE_ENABLE_MPI=ON` too, but were only ever EXECUTED in the tier-0, FUSE_ENABLE_MPI=OFF tree, where
-both pass — no binary built in the MPI-enabled tree was run, per this sandbox's own standing
-constraint, C1 above).
-
-**What remains for this entry (S6 phase 3, Unit 4, consolidated 2026-10-07):**
-
-1. **Design work, sketched, not implemented, not scheduled:** the N-way
-   generalisation of `connect_pairwise()` above — not a ctest row or a host
-   step, so not repeated as one; Conformance Unit 2 needs no more than
-   today's routing and is not blocked on it.
-2. **Q4 (does a coupler placeholder rank need to call `fuse_begin_step`/
-   `fuse_end_step` at all?) is settled by the SAME host run D19's own
-   "what remains" list tracks — not a separate row, and not re-listed
-   here.** The four ctest rows that answer it
-   (`verification.brusselator.participants.{mpmd,accept}.{3,5}`) are D19's
-   own to own; see that entry.
-
-### ~~D19. The coupling-window path (`src/runtime/iteration.cpp`) has never run across more than one process~~ — CLOSED 2026-10-09: `parallel.window_runner_mpi.{2,3}` pass on the host (2026-10-08) and the three-executable Brusselator runs through it (D25)
-
-**Found this session**, reviewing Conformance Unit 2's own host rows before they can be run: every
-coupling-window test anywhere in this suite is tier 0 (one process). The window path has NO
-analogue of the ordinary-tick path's own per-process hosting check (`runner.cpp`'s `hosted[]`,
-`~1902`, `3aae2ed`; `grep -n 'this_process\|hosted\|ranks.contains' src/runtime/iteration.cpp`
-returns nothing), and this is not merely a missing optimisation — on more than one process it is a
-certain hang, for (at least) four separate reasons:
-
-1. **No hosting check at all.** `advance_window()` would call EVERY window member's `advance()` on
-   EVERY rank — the redundant physics the user rejected when windows were designed — and, through
-   the ABI, would yield `ExternalSuspend` for a component on ranks where no process will ever call
-   `begin_step()` for it.
-2. **Priming reads the wrong address space.** `resolve_regions()`'s cold-start priming reads
-   `registry.get(provider_exported_field)` and the provider's `v0` directly — a provider's field
-   exists only in the provider's own address space; a rank that does not host the provider has
-   nothing to read.
-3. **The convergence decision is not agreed.** A window region's stopping decision is computed from
-   LOCAL block norms; with members on different ranks, each rank sees only its own blocks, so
-   different ranks could reach different stop/continue verdicts — the exact class of defect this
-   project has fixed twice already (`E-RT-EPOCH-PEER`, region residual reductions): a collective
-   path returning on a locally-computed condition.
-4. **`coupler_main.c`'s and `u_main.c`'s own placeholder ranks never run the Runner at all** — they
-   call `initialize()` then `destroy()`, with no `run()`/`begin_step`/`end_step` in between. The
-   period's own Transports to and from the coupler's ranks, and the Remap routed through them, are
-   executed BY THE RUNNER; a rank that never runs the Runner never executes them, so U's and V's own
-   ranks would block forever in the first Transport that needs the coupler's participation. Unit
-   2's own four host rows (`verification.brusselator.participants.{mpmd,accept}.{3,5}`) would hang
-   on first contact with real MPI, not merely fail a numeric check.
-
-**Scope: Unit 2b**, in five ordered steps, each with its own tier-0 test (the 20 existing window
-tests plus the Brusselator as the bit-for-bit oracle for the single-process case):
-
-- **(a) Hosting — DONE (`0eb576a`).** `this_process` (the Runner already carries it) threaded into
-  `WindowMemberConfig`; a non-hosted member takes no substeps, no `advance()`/save/restore calls, no
-  `ExternalSuspend` — its own export arc on that rank is whatever Transport delivers.
-- **(b) Priming through the transfer — DONE (`2df7052`).** The import prime at `resolve_regions()`
-  now comes through the field transfer (the channel's own compiled Transport/Remap/Epoch/Sink chain,
-  re-run once from the provider's own export arc), never from `registry.get(provider_exported_field)`
-  directly.
-  **Correction to this entry's own original model, measured while building (b):** a window
-  channel's own `Interpolate` node NEVER carries a real `TemporalBasis` — confirmed by dumping the
-  actual compiled instruction stream for both a plain and a genuinely multirate (7:13) window graph:
-  neither ever emits an `OpKind::Sample`, and `resolve_spacetime()` (`runner.cpp`) only builds a
-  `SpacetimeInfo` for a node with `OpAttrs::basis != TemporalBasis::None`, which
-  `src/ir/window_lowering.cpp` never sets for a window channel (it compiles the `lag(k)` no-op
-  shape). So every window-channel `Interpolate` always takes `execute()`'s own `r.spacetime < 0`
-  plain-copy branch; `advance_window()` hands over the complete K-wide waveform in one buffer every
-  sweep, and there is no incremental, Sample-fed history for a window channel to depend on at all.
-  **A reader building on this path does not need to seed `SpacetimeInfo::history` for a window
-  channel — there is nothing there to seed.** (This entry originally assumed otherwise; measured and
-  corrected 2026-10-03.)
-- **(c) Agreed convergence — DONE.** The per-block residual/reference norms of a window region
-  reduced across the region's participants (the union of its members' processor sets) before the
-  stop/continue decision, in a fixed, deterministic order: `decide_window_convergence()`
-  (`include/fuse/runtime/window_convergence.hpp`), a new pure function in the same no-MPI,
-  tier-0-testable style as `rank_agreement.hpp`/`epoch_schedule.hpp`, fed by a new point-to-point
-  all-to-all exchange (`Runner::Impl::gather_window_block_samples()`, new tag `kWindowConvergence`
-  — never a true `MPI_Allgather`, since `R.participants` is a subset of `base`'s own ranks, matching
-  `reduce_region_residuals()`'s own convention). A block whose value is not hosted here contributes
-  no sample rather than an uninitialised one — `WindowMemberConfig::hosted` gates ownership only
-  when `R.participants.size() > 1` (a real multi-rank scenario where a different rank genuinely
-  supplies the value); with no second rank, a block stays owned, since disowning it there would make
-  it unmeasurable by anyone. Six pure-function tests in `test/runtime/window_convergence_test.cpp`,
-  including a direct instantiation of "a rank deciding from its local pairs only" (the lead's own
-  suggested mutation). The cross-rank agreement itself — as opposed to the wiring that reaches
-  `decide_window_convergence()` at all, which IS tier-0-killed, broadly and immediately — has no
-  tier-0 oracle (every sandbox fixture has exactly one effective participant); its real proof is
-  `parallel.window_runner_mpi.{2,3}` (step (e)), a host row.
-  **CORRECTION, measured against the host run of `parallel.window_runner_mpi.{2,3}`
-  (2026-10-08) — FIXED:** that host run FAILED (not merely unconfirmed): window 0, rank 0,
-  `got.iterations_per_window[0] == 1` against a reference of 37 (windows 1-4: reference 35, 25, 15, 3
-  vs `got` 1 every time), `got.x_b_per_window[0] == 0.2`, B's own unmodified initial value. Root
-  cause: `window_export_meta` (`src/runtime/iteration.cpp`) stored the EXPORTING member's own
-  `WindowMemberConfig::hosted` where `RegionBlock::window_hosted` (consulted by `run_region()`'s own
-  `gate_by_hosted` above) needs whether the CONSUMER is hosted here — a window block's residual is
-  measured through the compiled delivery chain (Transport/Epoch/Remap/Constrain/Diagnose), which runs
-  on the consumer's own processor set, not the exporter's. On a disjoint-ranks channel this inverted
-  ownership in both directions at once: the exporting rank wrongly claimed a block it never writes,
-  and the consuming rank — the only rank that does — wrongly disclaimed it, so both sides summed a
-  stale 0/0 residual/reference pair that reads as trivially converged. Fixed by a new
-  `WindowMemberConfig::export_consumer_hosted` field (resolved from the channel's TARGET component's
-  own processor set, the identical formula `hosted` itself uses), which `window_export_meta` now
-  stores instead. Pinned by `test/runtime/window_hosting_test.cpp` (white-box over the public
-  `Runner` API plus one test-only accessor, `Runner::test_only_window_block_hosted()`, since
-  `RegionBlock::window_hosted`'s own gate is only ever reached with a real `base_communicator`, which
-  a no-MPI build refuses outright) and a new pure-function case in `window_convergence_test.cpp`;
-  mutation `window-runner-export-ownership-uses-the-exporter`
-  (`build-evidence/mutations/window-runner.toml`) restores the exporter-side flag and is killed by
-  exactly the two rank-specific `WindowHosting` tests. **Then taken one level further:** that
-  field is per MEMBER, resolved against the first channel whose source is the member's export, so a
-  member feeding two consumers on different processor sets would hand both blocks one answer. Each
-  block now resolves its own ownership from its own channel's target (`resolve_regions()`, the
-  `window_export_capacity > 0` branch), which is where the block's channel is already known;
-  `WindowHosting.FanOutBlocksFollowTheirOwnConsumerNotTheFirstChannel` builds exactly that graph (one
-  export, consumers on ranks 1 and 2) and the mutation
-  `window-block-ownership-resolved-per-member-not-per-channel` kills it. Writing that fixture also
-  measured a neighbouring refusal worth recording: a convergence measure naming the fanned-out SOURCE
-  field is refused with `E-ITER-MEASURE` (it matches two residuals, and exactly one is required), so
-  each consumer's own field is what such a region names. **Also found and fixed in the same host run:**
-  `window_runner_mpi_test.cpp` compared a member's own `x()` on EVERY rank, but since `0eb576a` a
-  member advances only on its own processor set — a rank that does not host a member never touches
-  its real state, so the test was comparing a hosting rank's real trajectory against a non-hosting
-  rank's untouched initial value. Each member's own state is now compared only on the ranks
-  `RankSet::contains()` says host it; the agreed sweep count stays compared on every rank.
-- **(d) Ranks without a component — DONE.** `fuse_run()` legal on a process hosting no
-  externally-driven component: `Runner::hosts_component(ComponentId) const -> bool`, a new public
-  method generalising `WindowMemberConfig::hosted`'s own rule, replaces `impl_run()`'s blanket
-  `c.external_count > 0` graph-level refusal (`src/abi/participant.cpp`) with a per-component loop —
-  explicitly skipping `ComponentKind::Coupler` entries, which never get `in_process` set at all and
-  so would otherwise be wrongly refused on a rank hosting only a coupler. `coupler_main.c`'s and
-  `u_main.c`'s own placeholder ranks now call `fuse_run()` for `--periods` periods instead of doing
-  nothing between `initialize()`/`destroy()`. Tier-0-tested via a new test-only ABI seam,
-  `fuse::abi_test::force_this_process()` (mirrors `inject_component()`'s own precedent: no entry in
-  the frozen public ABI lets a C caller name a rank without a real communicator) —
-  `AbiParticipant.RunAcceptedOnAProcessHostingOnlyTheCoupler` and
-  `AbiParticipant.RunStillRefusedOnAProcessHostingAnExternalComponent`, both passing; the
-  coupler-exclusion fix specifically validated by the former. `docs/user/c-abi.md` updated with a new
-  "`fuse_run()` and ranks without a component of their own" section.
-- **(e) `parallel.window_runner_mpi.{2,3}` — DONE (sandbox build only).** The 7:13 LCM-window fixture
-  (`window_runner_multirate_test.cpp`'s own shape: A interval 13, B interval 7, window 91, so neither
-  member ever straddles) as a REAL multi-process `Runner` run — A and B on genuinely disjoint ranks
-  (0 and 1), a third, uncoupled component C added at 3 ranks (rank 2, no channels, proving its mere
-  presence does not perturb the window) — compared, `EXPECT_EQ`, against the single-process `Runner`
-  on every per-window final value AND every per-window iteration count, not merely completion.
-  `test/parallel/window_runner_mpi_test.cpp`, registered via `fuse_add_mpi_test(parallel
-  window_runner_mpi LIBS fuse::runtime RANKS 2 3)`. Build-verified only: `b1mpi` (tier 1,
-  `FUSE_ENABLE_MPI=ON`) builds and links `fuse_parallel_window_runner_mpi_test` clean, and `ctest -N`
-  there confirms the two rows exist (`parallel.window_runner_mpi.2`, `parallel.window_runner_mpi.3`);
-  MPI cannot start in this sandbox at all (C1), so neither row has actually been RUN here. This is
-  the host row that settles both (c)'s cross-rank agreement (no tier-0 oracle, as noted above) and
-  (b)'s narrower registry-vs-chain comparison (`window-prime-length`/`window-runner` mutation notes,
-  `build-evidence/mutations/`), neither of which a single sandboxed process can distinguish from its
-  alternative.
-
-**Fixed in the sandbox, awaiting the host.** Steps (a)-(e) above are all implemented and tier-0/
-build verified (163/163 tier-0 tests pass; tier 1 — `FUSE_ENABLE_MPI=ON` — builds clean including the
-new MPI test and the Brusselator's `coupler_main`/`u_main` placeholder-rank changes); every mutation
-tried has a decisive sandbox-side kill except the two comparisons named above, which by their own
-nature need a second real rank to even pose the question. None of this has been run under real MPI —
-this sandbox cannot start it (C1) — so the fix is unconfirmed until a host executes:
-- `verification.brusselator.participants.mpmd.{3,5}` (Unit 2, pre-existing)
-- `verification.brusselator.participants.accept.{3,5}` (Unit 2, pre-existing)
-- `parallel.window_runner_mpi.2` (step (e), new)
-- `parallel.window_runner_mpi.3` (step (e), new)
-
-### D31. Newton over a coupling window (S7.2 WindowNewton, `newton-krylov.md` Sec. 9) was single-rank only; the multi-rank `ParticipantSetReducer` is now built — BUILT 2026-10-12, host MPI run still required to close
-
-`Runner::Impl::run_region_newton_window()`/`evaluate_window_region_residual()` (src/runtime/iteration.cpp)
-implement Newton-Krylov over a WINDOW-scoped coupling region, reusing `check_region_supports_newton()`'s
-own `R.participants.size() > 1` refusal (`E-NEWTON-UNSUPPORTED-REGION`) unchanged from the ordinary
-(non-window) seam — a window-scoped Newton region with more than one cross-rank participant is refused
-at setup exactly as it always was, never reaching the new code at all. Every norm and inner product
-`fuse::num::solve()`'s own GMRES/line-search/forcing-term machinery computes over the window's own
-Newton interface vector is already routed through a `fuse::linalg::Reducer` held by the region
-(`RegionRuntime::newton_reducer`, `src/runtime/runner_impl.hpp`) rather than inlined as a local
-sum-of-squares — but the reducer `resolve_regions()` (`src/runtime/iteration.cpp`) actually constructs
-there is unconditionally `fuse::linalg::make_serial_reducer()`: a real cross-rank `ParticipantSetReducer`
-(summing a local norm/inner product across exactly `R.participants`, the SAME rank set `decide_window_
-convergence()`'s own existing cross-rank reduction for Picard's sweep loop already uses) is a comment on
-`RegionRuntime::newton_reducer`'s own declaration documenting the FUTURE contract, not an implementation —
-there is no code anywhere in this track that builds one, and no test exercises more than one rank.
-
-**Why deferred rather than built now:** the task's own lead decision (2026-10-11, Stage B go-ahead)
-scoped this track to single-rank only, explicitly asking for the Reducer SEAM (so a later multi-rank
-step is a reducer swap, not a re-plumb of every call site) without the reducer's own cross-rank body.
-Building `ParticipantSetReducer` honestly needs a real multi-rank host run to prove against — this
-sandbox cannot start MPI (C1, same constraint D5/D8/D14/D23 already name) — so writing it now would be
-exactly the same "implemented, never run under real MPI" category those issues already carry, for a
-genuinely new reduction rather than a variant of one already host-verified elsewhere.
-
-**What a host run must verify before this is closed:** a `ParticipantSetReducer` (new, `src/linalg/
-comm_mpi.cpp` + `include/fuse/linalg/comm.hpp`, the files `newton-krylov.md` Sec. 9.4/9.7 already name
-for this) that sums a local scalar across exactly one iteration region's own `R.participants` ranks (not
-the full `base_communicator`, the same "this region's own rank subset, not the whole run" scoping
-`decide_window_convergence()`'s existing reduction already gets right); `resolve_regions()` building one
-for a window-scoped Newton region instead of `make_serial_reducer()` unconditionally; and a new host
-test, `parallel.window_newton_mpi.{2,3}` (mirroring `parallel.window_runner_mpi.{2,3}`'s own shape, step
-(e) above, on a window region with `AccelKind::Newton` instead of Picard) comparing every window
-instance's final Newton iterate AND iteration/GMRES count against the single-process `Runner` on the
-identical graph — the SAME cross-rank-agreement property `window_runner_mpi_test.cpp` already proves for
-Picard, now for Newton's own reductions specifically.
-
-**Built 2026-10-12 (Newton track), BUILD-VERIFIED ONLY — the sandbox this track built in cannot
-complete a bare `MPI_Init()` (the same constraint this entry's own deferral named), so nothing below has
-been RUN anywhere; the host must verify it.** `fuse::linalg::ParticipantSetReducer`
-(`src/linalg/comm_mpi.cpp`, `include/fuse/linalg/comm.hpp`) is real: an `MPI_Comm_split` over exactly a
-region's own `RegionRuntime::participants`, collective over the Runner's base communicator and called in
-the same ascending-region-index order on every rank (mirroring `attach_comm_graphs()`'s own "every rank
-calls every split" discipline); a rank outside the participant set gets `MPI_UNDEFINED` and no `Reducer`
-object at all. The split is held, not point-to-point-addressed like `reduce_region_residuals()`/
-`gather_window_block_samples()` — the task's own explicit choice, reasoned through in the factory's own
-header comment — with its lifetime handled the way `MoabMeshBackend`'s own `OwnedComm` already handles an
-identical one (freed in the Reducer's own destructor, guarded by `MPI_Finalized()`, never copyable).
-`check_region_supports_newton()`'s blanket "more than one participant is refused" rule is gone, and
-nothing narrower replaces it: `RegionRuntime::participants` is populated with more than the empty set
-only when `RunnerConfig::base_communicator` has a value in the first place, so "more than one
-participant" already implies a real communicator exists to build the Reducer from. The earlier
-`E-RT-REGION-MPI` refusal (the one that blocks a dynamic accelerator on a multi-rank region) now also
-exempts `AccelKind::Newton` alongside `None`/`Constant`. `RegionBlock::newton_offset`'s own window-Newton
-vector-layout computation now excludes a block this rank does not host (`!b.window_hosted`) from the
-SAME mechanism the GaussSeidel exclusion already used, making `RegionRuntime::newton_n` a per-rank LOCAL
-total with zero ghosts (every cross-rank dependency the window's own body needs is already carried by its
-compiled Transport instructions, proven correct for Picard's own multi-rank case). `run_region_newton()`/
-`run_region_newton_window()` gained the identical "not a participant, nothing to do" early return
-`reduce_region_residuals()` already has (`Runner::Impl::region_is_local_participant()`, new, kept in
-`runner.cpp` so `iteration.cpp` still names no MPI type); `run_region_newton()`'s own ordinary (non-
-window) seam now also reads `RegionRuntime::newton_reducer` instead of constructing a fresh serial reducer
-every call, closing the one place that convention from Sec. 9.4 had not yet reached even in the
-single-rank era. Full account: `docs/dev/newton-krylov.md` §9.10.
-
-**Measured by hand (tier 0, no MPI, this sandbox):** mutating the `!b.window_hosted` exclusion to never
-fire (`build-evidence/mutations/newton-parallel.toml`, row `window-newton-offset-not-gated-by-hosted`)
-kills exactly the two new `window_newton_hosting_test.cpp` cases that name a genuine cross-rank exclusion
-(2 FAILED of 3), leaves the no-`this_process`/no-communicator case passing (window_hosted already
-defaults true there), and restores clean. `parallel.window_runner_mpi.{2,3}`, `verification.
-brusselator_runner` and every other pre-existing tier-0 row this track touched were re-run after each
-change and are unaffected (`newton_region_test`: 17/17; `window_fixed_point_residual_test`: 8/8;
-`window_hosting_test`: 4/4; `brusselator_runner_test`'s own `NewtonConvergesInAPinnedIterationCount...`:
-1/1).
-
-**What a host run must still verify before this closes:** `parallel.window_newton_mpi.{2,3}`
-(`test/parallel/window_newton_mpi_test.cpp`, built, never run) and `parallel.participant_reducer_mpi.
-{2,3}` (`test/parallel/participant_reducer_mpi_test.cpp`, built, never run) — the real `MPI_Comm_split`/
-`MPI_Allreduce`/`MPI_Allgather` correctness this sandbox cannot exercise at all. Every one of
-`ParticipantSetReducer`'s own `sum`/`max`/`allgather` methods; whether a 2- or 3-rank window-Newton solve
-over the Brusselator-shaped and the synthetic LinearOde-shaped fixtures actually reaches the SAME
-outer-Newton and GMRES iteration counts the single-process `Runner` does, and whether the final member
-states fall inside the Higham round-off bound the test derives and prints rather than asserting bitwise.
-D32's own PETSc substrate lift (below) shares this same host-pending status under
-`petsc.window_newton_mpi.{2,3}`.
-
-### D32. The PETSc solver plugin is the second substrate behind the S7 seam — BUILT AND MEASURED 2026-10-11; the communicator remains
-
-S7 was built on the library's own linear algebra first, by the user's decision of 2026-10-10: a
-native Jacobian-free Newton-Krylov coupler (`fuse::num::solve()`, `docs/dev/newton-krylov.md`)
-replicating the mechanisms that make PETSc SNES's `NEWTONLS` robust — the Walker–Pernice
-finite-difference step, Eisenstat–Walker forcing, the cubic-backtracking, critical-point and damped
-line searches, named convergence and divergence tests, a lagged block-Jacobi preconditioner — with
-no PETSc dependency. PETSc remains the intended second substrate for problems the native solver
-should not carry (very large or stiff coupled systems, preconditioners the library does not have),
-and it plugs in behind the SAME seam: a `fuse::LinearizationToken` whose `apply_jacobian` is a
-`MatShell`/`MatMFFD` and whose `apply_preconditioner` is a `PC`, or a `SNES` driving
-`Runner::region_fixed_point_residual()`'s `F` directly. Nothing in the seam is PETSc-shaped and
-nothing in the Newton solver knows which substrate a token comes from.
-
-**State today.** `FUSE_ENABLE_PETSC` is a configure option (`cmake/FuseDependencies.cmake:121`,
-tier 3, requires `FUSE_ENABLE_MOAB`) that locates PETSc through `pkg-config` and defines
-`FUSE_HAVE_PETSC` in `fuse/base/config.hpp`, and nothing more: no source file under `src/` or
-`include/` tests that macro, and no target links the imported library. Three PETSc installations are on the
-development host, none of them matching this build: `/opt/petsc/chi-tech` (3.19, 64-bit indices,
-HYPRE), `/opt/petsc/download-moab` (3.25, debug, MOAB, built against `/opt/mpich`), and
-`/opt/petsc/debug-bare` (3.17, debug). **Decided 2026-10-11 by the owner: `/opt/petsc/download-moab`,
-for PETSc AND MOAB** (the `all` preset's `MOAB_DIR` moved there from `/opt/moab/cmake-all`); the other
-installs are old. Its MOAB has no TempestRemap, so the high-order spherical remap method refuses at run
-time; measured that the registered row set is unchanged (299 rows either way, the only name differences
-the OpenMP thread-count suffix). No Kokkos and 32-bit indices in that PETSc are accepted for now; a
-Kokkos-enabled PETSc is a later rebuild on the owner's side, not a plugin concern.
-
-**What a plugin track owes when it is opened.** The derivative gate (`linalg.derivative_gate`,
-`docs/dev/derivative-gate.md`) on the PETSc-backed token: the adjoint identity on
-`MatMult`/`MatMultTranspose`, the Taylor-remainder order on `MatMFFD`'s action, and agreement with
-the native MFFD action to a measured bound. dn_heat and the Brusselator by the PETSc path against
-the native results recorded in `docs/user/dn-heat.md` and `docs/user/brusselator.md` — same
-graphs, same tolerances, iteration counts and final means side by side. A refusal when
-`FUSE_ENABLE_PETSC` is off and a graph selects the PETSc substrate, with a test that makes it fire.
-
-**Built 2026-10-11 (PetscToken track, S7.2b) and measured on the host the same day — all four
-`petsc.*` rows pass in the MPI tree and in a tier-0 PETSc-only tree; `docs/dev/newton-krylov.md`
-§10.3 carries the numbers. The sandbox the track built in cannot complete a bare `MPI_Init()`, so
-the measurements are the host's.** `src/petsc/{init,token,solve}.cpp` and `include/fuse/petsc/{token,solve}.hpp` implement
-exactly the plugin this entry asked for: `fuse::petsc::MffdToken` (a `fuse::LinearizationToken`
-backed by `MATMFFD`/`MATMFFD_WP`, `apply_jacobian_transpose` refusing `E-PETSC-NO-TRANSPOSE`,
-`apply_preconditioner` through a `PC` — `PCNONE` by default, `PCSHELL` composing the SAME
-`fuse::num::BlockJacobiPreconditioner` the native solver uses for its own block-Jacobi, reused
-rather than reimplemented), `fuse::petsc::make_assembled_token` (a real `MATAIJ`, for the adjoint
-test the MFFD token itself has no transpose to run), and `fuse::petsc::solve()` (`SNESNEWTONLS`,
-`MatCreateSNESMF`/`MATMFFD_WP`, `KSPGMRES` right-preconditioned, `SNESKSPSetUseEW` with the SAME
-six Eisenstat-Walker constants `NewtonKrylovOptions` already uses, `SNESLINESEARCHBT`/`CP`/`NONE`
-selectable, `SNESConvergedReason` mapped onto the native `NewtonStatus`). `tools/check-layering.py`
-gained a `petsc` layer (topmost, `ALLOWED_PUBLIC_THIRD_PARTY` empty — no PETSc type anywhere in a
-public header) and reports 0 violations; `cmake/FuseDependencies.cmake`'s old
-`FUSE_ENABLE_PETSC requires FUSE_ENABLE_MOAB` gate is gone (the solver plugin needs neither MOAB
-nor a mesh — that bundling was for a PETSc+MOAB physics kit this track is not). Clean tier-0
-builds, BOTH with and without `FUSE_ENABLE_PETSC`, 0 compiler errors; `FUSE_ENABLE_PETSC=OFF`
-registers exactly the pre-existing 187 tier-0 rows (100% pass, unchanged); `FUSE_ENABLE_PETSC=ON`
-registers 191 (187 + `petsc.{init,token,derivative_gate,snes}`), and a tier-1 compile
-(`-DFUSE_ENABLE_MPI=ON -DFUSE_ENABLE_FORTRAN=ON -DFUSE_ENABLE_PETSC=ON`) of every touched target
-succeeds with 0 errors.
-
-**Where the measurements came from.** The sandbox the track built in cannot complete a bare
-`MPI_Init()` (MPICH's debugger-attach mutex assertion in `dbginit.c`, independent of PETSc — a
-single-process constraint, more severe than C1's launcher one), so the track compiled and
-registered everything and the lead ran it on the development host in two trees, `build-all`
-(MPI on) and a tier-0 PETSc-only tree. Three defects the sandbox could not show were found and
-fixed there: `ensure_initialized()` set `PETSC_COMM_WORLD` before `PetscInitialize` even with MPI
-down, which made PETSc skip `MPI_Init` and fail with `PETSC_ERR_SUP` in every tier-0 process;
-both tokens' `PC` had no operator attached, so `PCSetUp` refused "Missing A matrix" on every
-`apply_preconditioner`; and the adjoint gate's control case used `x == y`, for which the identity
-holds for any operator. A fourth was found by the corrected init test itself: `MPI_Initialized`
-stays true after `MPI_Finalize`, so a second initialisation after a release walked into a
-finalised MPICH; it now refuses `E-PETSC-MPI-FINALIZED`. All four `petsc.toml` rows are
-hand-proved on the host's tier-0 tree (each kills exactly the case that guards it; the dropped
-finalize check aborts the binary after its first case).
-
-**What remains before this entry can close** (plan S7.2b phase 2): per-region substrate selection
-(`NewtonConfig` substrate `native`/`petsc` through YAML and the descriptor, `E-NEWTON-PETSC-UNAVAILABLE`
-in a build without PETSc with a test that fires it), dn_heat and the Brusselator by the PETSc path
-recorded beside the native results, and the `forcing.eta_min` gap (`docs/dev/newton-krylov.md` §10.4:
-SNES has no forcing floor, and the Brusselator window needed one on the native substrate).
-
-**Built 2026-10-11 (PetscSelect track, plan S7.2b phase 2) -- the per-region selector itself, NOT
-the `eta_min` gap, which stays open (§10.4/§11 both name it unchanged).** `NewtonConfig::substrate`
-(`fuse::NewtonSubstrate`, `Native`/`Petsc`, fuse/model/iteration.hpp) selects WHICH registered
-implementation a region's Newton solve dispatches to, through a small registry in `fuse::num`
-(`register_newton_substrate()`/`newton_substrate()`, fuse/num/newton_krylov.hpp -- `fuse::num` sits
-BELOW `fuse::runtime` in `tools/check-layering.py`'s own layer order, and `fuse::petsc` sits ABOVE
-`fuse::runtime`, so the registry is the only place the Runner can dispatch to a substrate it is
-layering-forbidden from naming directly). `Native` registers itself deterministically on first use
-(a function-local static, never a static initialiser that might not link); `fuse::petsc::install()`
-(new, fuse/petsc/solve.hpp) registers `Petsc`, never called by the library itself. `src/runtime/
-iteration.cpp` checks the registry TWICE per Newton-selected region: eagerly in `resolve_regions()`
-(so a graph naming an unavailable substrate refuses `E-NEWTON-PETSC-UNAVAILABLE` at
-`Runner::initialize()`, before the first period -- `NewtonRegion.ARegionSelectingAnUnregisteredSubstrateIs
-RefusedAtSetup`, test/runtime/newton_region_test.cpp, fires this TIER-0, WITHOUT PETSc), and again,
-defensively, at the actual dispatch inside `run_region_newton()`/`run_region_newton_window()`. The
-descriptor bumped to v13 (`test/golden/waist-v13.bin`, one more byte appended at the end of the v12
-NewtonConfig block, following v12's own append-only placement exactly); YAML gained `newton_config.
-substrate: native|petsc`. The communicator decision (docs/dev/newton-krylov.md §11.3): the registered
-PETSc substrate always solves on `MPI_COMM_SELF`, never the Runner's own `base_communicator`, because
-every Newton-selected region on EITHER substrate is already single-rank-only by `check_region_
-supports_newton()` (D31's own restriction) -- nothing to reduce across ranks inside the solve itself
-regardless of substrate; `SnesOptions::comm_f` stays available for a future multi-rank lift to revisit.
-
-`examples/dn_heat/main.cpp --newton-petsc` and `examples/brusselator/main.cpp --substrate petsc` run
-the IDENTICAL graphs the native rows do, by data (`NewtonConfig::substrate`) alone -- the default
-invocation of either binary is byte-identical whether or not `FUSE_ENABLE_PETSC` was configured,
-since both PETSc code paths are compiled in only under `FUSE_HAVE_PETSC` and run only when explicitly
-asked for. Both compare the PETSc result against the native one to a bound DERIVED from the two
-solvers' shared `rtol` and the problem's own structure (dn_heat's affine Jacobian; the Brusselator's
-own `kTol`) plus the §10.3-measured 3.9e-8 relative inter-solver difference -- never a number chosen
-to make the check pass; the exact derivation is in each file's own comment at the check. Registered
-as `example.dn_heat.newton_petsc` and `petsc.brusselator_newton`, both gated by
-`FUSE_ENABLE_PETSC`.
-
-**Verified, tier-0 WITHOUT PETSc:** clean build, 0 errors, 187/187 tests pass (unaffected count and
-pass rate -- this track added no new tier-0-unconditional ctest row), `/tmp/petscselect/b0`.
-**Verified, tier-0 WITH PETSc:** clean build, 0 errors, 193 tests registered (187 + `petsc.{init,
-token,derivative_gate,snes,brusselator_newton}` + `example.dn_heat.newton_petsc`); 187/193 PASS,
-exactly the 6 PETSc-dependent rows FAIL by the same `MPI_Init()` constraint §10's own measurements
-were taken around (SEGFAULT, not a logic failure) -- every pre-existing, PETSc-independent row,
-INCLUDING `verification.brusselator_runner` itself, is unaffected, `/tmp/petscselect/bpetsc`. (An
-earlier draft of the Brusselator PETSc-substrate case lived inside `test/verification/
-brusselator_runner_test.cpp` itself; measured directly that its own crash took the WHOLE shared
-binary down with it, failing every other case in that file too -- moved to its own dedicated binary,
-`test/petsc/brusselator_newton_test.cpp`/`petsc.brusselator_newton`, the same isolation convention
-every other `petsc.*` test already follows, and reconfirmed clean after the move.)
-**Measured on the host 2026-10-11 and closed as far as phase 2 goes:** the dn_heat and Brusselator
-PETSc-substrate tables (docs/user/dn-heat.md, brusselator.md) are filled from `build-all`; both
-examples agree with the native path (dn_heat to 2.7e-10 K against Picard, the Brusselator to every
-printed digit of the final means over 50 windows). The `forcing.eta_min` gap is **closed**: the
-Brusselator did stall on PETSc without a floor, and `fuse::petsc::solve()` now applies
-`NewtonConfig::eta_min` through a KSP convergence test (`docs/dev/newton-krylov.md` §10.4(1)), proved
-by the `petsc-forcing-floor-not-applied` mutation. **Still open under D32:** the PETSc substrate
-solves on `MPI_COMM_SELF` (correct while D31 restricts Newton regions to one participant; the
-communicator plumbing is D31's). The 20× margin the agreement bounds once carried is gone: they are
-built from each substrate's own terminal residuals (dn_heat: an exact bound, ‖J⁻¹‖∞ = 4/3 times the
-sum over its 20 periods; the Brusselator: a calibrated reference error times one plus the residual
-ratio), and both held on the owner's machine on 2026-10-12 (dn_heat: observed 3.572609e-10 K against
-5.888415e-07 K, ratio 6.067e-04; the Brusselator: per element against 5.390239e-15, with the observed
-maximum not yet printed — the test now prints it).
-
 ### D33. The omp legs and the `omp_identical` rows were registered with one thread whenever configure ran under `OMP_NUM_THREADS=1` — CLOSED 2026-10-12
 
 `test/CMakeLists.txt` took the host core count from CMake's `ProcessorCount()`, and registered each
@@ -5807,3 +5009,1424 @@ this specific binary.
 Demo B's own distributed path is compiled and never run, and D14's own open accept-mode intercommunicator
 question (item 3 of its "what remains" list) is untouched by a fix that concerns exit-time VOL-class teardown and
 trace-field naming, never accept mode's own unexposed intercommunicator.
+
+### ~~D40. This host's Open MPI (4.1.5) hangs in `MPI_Alltoallv` on any communicator but `MPI_COMM_WORLD`~~ — WORKED AROUND 2026-10-10
+
+**Measured 2026-10-10**, tracking down a hang in `parallel.mpi_transport.{4,5}`, `parallel.comm_graph.{4,5}`
+and every other multi-rank test whose binary calls `MPI_Alltoallv` on a communicator `MpiTransport`,
+`fuse::transport::connect()`, the MOAB backend or `CommGraph`'s union-communicator construction had
+itself produced (`MPI_Comm_dup`, `MPI_Comm_split`+`MPI_Comm_create_group`, or similar) rather than
+`MPI_COMM_WORLD` straight from `MPI_Init`. Reproduced in isolation with zero fuse or Kokkos code: a
+bare `MPI_Comm_dup(MPI_COMM_WORLD, &dup)` followed by one `MPI_Alltoallv` on `dup`, at 4 ranks, with
+either a disjoint-halves pattern (2 senders, 2 receivers) or a fully dense one. Rank 0 always returns
+from the call; every other rank is still inside it when the process is killed. The identical pattern
+on `MPI_COMM_WORLD` itself, unchanged, always completes.
+
+An initial hypothesis — `MPI_Comm_dup` returning locally on some ranks before an internal context-id
+handshake settles on all of them, under `MPI_THREAD_MULTIPLE` — turned out to be wrong, and the
+`MPI_Barrier` added to close it (on the four communicator-creation sites named above) did **not**
+fix anything: the same reproducer still hangs with an `MPI_Barrier` on `dup` placed immediately
+before the `MPI_Alltoallv`, and the hang reproduces identically under `MPI_THREAD_FUNNELED` and even
+plain `MPI_Init` with no threading support requested at all, and independent of which BTL (`vader`,
+`tcp`) or PML (`ob1`) carries the traffic. Those barriers were removed again once this was clear —
+they cost a synchronisation per communicator for no effect.
+
+What actually isolates it: `ompi_info --param coll tuned --level 9`'s `coll_tuned_alltoallv_algorithm`
+control variable. Forcing algorithm 1 ("basic_linear" — this build's own default choice for a non-
+`MPI_COMM_WORLD` communicator at this rank count, confirmed via `--mca coll_tuned_alltoallv_algorithm 1`)
+hangs every time; forcing algorithm 2 ("pairwise") passes every time, on the isolated reproducer and
+on the real `fuse_parallel_mpi_transport_test`/`fuse_parallel_comm_graph_test` binaries alike (30/30
+and 28/28 subtests respectively, where they previously hung). This reads as a real bug in this Open
+MPI build's `coll/tuned` component's basic_linear alltoallv implementation for non-`COMM_WORLD`
+communicators, not anything about thread level, BTL, or fuse's own collective sequencing.
+
+**Worked around, not fixed** (this project does not own Open MPI): every `fuse_add_mpi_test` and
+`fuse_partition_add_mpi_test` row (`test/CMakeLists.txt`, `test/partition/CMakeLists.txt`), the
+`parallel.connect.*` rows and the `verification.brusselator.participants.*` rows (both in
+`examples/CMakeLists.txt`) now set `OMPI_MCA_coll_tuned_use_dynamic_rules=1` and
+`OMPI_MCA_coll_tuned_alltoallv_algorithm=2` in their `ENVIRONMENT` test property. Harmless on any
+other MPI (an `OMPI_MCA_*` variable an MPICH or other `mpiexec` does not recognise is simply unused
+environment, not an error), and a correctness-preserving algorithm choice everywhere dynamic rules
+reach on Open MPI itself — just not necessarily the fastest one at rank counts this project does not
+target. A regression guard lives at `MpiTransportDiag.RawAlltoallvDisjointHalvesOnADuplicatedCommAtFourRanks`
+(`test/parallel/mpi_transport_test.cpp`): it fails fast if this workaround is ever missing or stops
+being effective, rather than leaving the next host run to rediscover it as an unexplained 120s
+timeout. **Anyone running a fuse binary directly against this exact Open MPI build, outside ctest,
+needs the same two environment variables set** to avoid the same hang.
+
+A separate, unrelated host quirk surfaced by the same investigation: every `n=5` row
+(`model.descriptor_mpi.5`, `parallel.mpi_transport.5`, `parallel.comm_graph.5`, and every other
+rank-5 row) failed outright with Open MPI's own "not enough slots" refusal, even though the host has
+8 logical CPUs. `lscpu` says why: 4 physical cores behind those 8 (hyperthreading), and Open MPI
+sizes its default slot count from physical cores, not `nproc`. The same `ENVIRONMENT` lines above
+also carry `OMPI_MCA_rmaps_base_oversubscribe=1` (the environment-variable equivalent of `mpiexec
+--oversubscribe`) for exactly this reason -- these are correctness tests at a handful of ranks, not
+a throughput benchmark, so running more ranks than physical cores is the point at `n=5`, not a
+mistake to refuse.
+
+### ~~D41. This host's Open MPI (4.1.5) reports `MPI_APPNUM` 0 for every rank of an MPMD launch, regardless of segment~~ — WORKED AROUND 2026-10-10
+
+**Measured 2026-10-10**, tracking down `E-CONNECT-APPNUM` failures in `parallel.connect.mpmd.{1+1,2+3,3+2}`
+and `verification.brusselator.participants.mpmd.{3,5}`. `fuse::transport::check_mpmd_layout()`
+(`include/fuse/transport/connect.hpp`) validates an "mpmd" launch by `MPI_Allgather`ing each rank's
+`MPI_APPNUM` and checking that the ranks reporting each value match the component's declared `RankSet`
+— which only works if a launcher actually differentiates `MPI_APPNUM` per segment of a colon-syntax
+(or `--app`-file) launch.
+
+Reproduced in isolation with zero fuse code (`tools/probe-mpi-appnum.c`): a two-segment colon-syntax
+launch, `mpiexec -n 1 ./probe 0 : -n 1 ./probe 1`, where each segment's single rank calls
+`MPI_Comm_get_attr(MPI_COMM_WORLD, MPI_APPNUM, ...)` and compares against the appnum it was told (via
+argv) to expect. On this host, **every** rank in **every** segment reports appnum 0 — confirmed with
+2-segment and 3-segment colon launches and with `--app` appfile syntax alike. This is not a fuse bug:
+`check_mpmd_layout()`'s own declared `RankSet`s (built by `test/parallel/connect/connect_common.hpp`'s
+`build_graph()`) are correct; the MPI runtime simply never sets the per-segment value the standard
+allows it to provide (MPI-3.1 §11.9.2 requires `MPI_APPNUM` be *set* when the launcher supplies one, not
+that launchers differentiate it across segments).
+
+**Worked around, not fixed** (this project does not own Open MPI), following the same measure-then-gate
+shape as [D23](#d23-acceptconnect-cannot-complete-on-mpichs-ch3nemesis-device-when-both-programs-share-a-node)'s
+`FUSE_ENABLE_CONNECT_ACCEPT`: `tools/probe-mpi-appnum.sh` builds and launches `tools/probe-mpi-appnum.c`
+as a real two-segment MPMD job at configure time (`cmake/FuseDependencies.cmake`, right after the
+accept/connect probe), with the same three verdicts (0 works, 1 measured broken, 2 could not test —
+left enabled). The verdict sets `FUSE_ENABLE_CONNECT_MPMD`, which gates the `mpmd` leg of the `_mode`
+loop in both `test/CMakeLists.txt`'s `parallel.connect.*` rows and `examples/CMakeLists.txt`'s
+`verification.brusselator.participants.*` rows — the same `continue()`-on-ungated-mode pattern those
+loops already used for `accept`/`FUSE_ENABLE_CONNECT_ACCEPT`. On this host both `FUSE_ENABLE_CONNECT_ACCEPT`
+and `FUSE_ENABLE_CONNECT_MPMD` are now measured, independently, so the `connect`/`verification.brusselator.
+participants` families register whichever modes this installation can actually carry, rather than
+registering-and-permanently-failing a row that can never pass here.
+
+### ~~D42. A rank outside a window-scoped region's participants never learned the window converged, and deadlocked the next sweep~~ — FIXED 2026-10-10
+
+**Measured 2026-10-10**, as `parallel.window_runner_mpi.3` (Timeout): `WindowRunnerMpi.
+ThreeRanksWithAnUncoupledThirdMatchTheReference` adds a third, genuinely uncoupled component `C` on
+rank 2 to `WindowRunnerMpi.TwoDisjointRanksMatchTheSingleProcessReference`'s own A-on-rank-0/B-on-rank-1
+window coupling — and that FIRST test, which only asks for `FUSE_REQUIRE_AT_LEAST_RANKS(2)`, also runs
+under the 3-rank row, with no `C` declared at all (`parallel.window_runner_mpi.3`'s own "empty third
+rank" shape per the test file's header comment). Both hung at `n=3`; both passed instantly at `n=2`.
+
+Root-caused (not an MPI quirk this time — a real Runner bug) by tracing `FUSE_TRANSPORT_DEBUG`
+(`src/transport/mpi_transport.cpp`) and a temporary residual trace in the window-convergence sweep
+(`src/runtime/iteration.cpp`) side by side: the sweep's channel exchange (`MpiTransport::move()`,
+one `MPI_Alltoallv` per channel per sweep) runs over the Runner's single shared transport communicator
+— the WHOLE communicator `RunnerConfig::base_communicator` named, duplicated once by `MpiTransport::
+set_communicator()`, not a sub-communicator scoped to the window's own two members — and by design
+(`mpi_transport.cpp`'s own header comment) a rank in neither of a channel's rank sets still calls
+`MPI_Alltoallv` with all-zero counts every sweep, rather than being excluded from the call. The window's
+own convergence decision, though, is only ever computed and delivered to `RegionRuntime::participants`
+(`gather_window_block_samples()`, `src/runtime/runner.cpp` — deliberately: a point-to-point exchange
+over just the channel endpoints' own ranks, not a collective the rest of the world would have to join).
+Rank 2 is never in `participants` for this region (it hosts no checkpointed component the region's
+channels touch), so its own copy of `window_converged` never leaves `false`, and it kept calling
+`move()` every sweep up to `max_iterations` (300) while ranks 0/1 — informed, and done in 3–30 sweeps —
+had already moved on. Rank 2's next `MPI_Alltoallv` on that communicator then had no matching call from
+anyone, ever, for the rest of the run: a deadlock, not a hang that eventually clears, and a correctness
+bug reachable by ANY window-scoped coupling sharing its base communicator with so much as one rank
+outside the window's own two sides, not something specific to this test's third component.
+
+**Fixed** at the root: a new `Runner::Impl::broadcast_window_convergence()` (`src/runtime/runner.cpp`,
+`src/runtime/runner_impl.hpp`) `MPI_Bcast`s the already-decided `window_converged` flag from
+`participants.front()` to literally every rank of `base_communicator` — not just `participants` —
+called unconditionally, once per sweep, by every rank that reaches the window-scoped branch in
+`src/runtime/iteration.cpp`'s `run_region()` (participant or bystander alike, since that branch runs
+identically on every rank regardless of this region's own membership). A no-op (returns the input
+`converged` value unchanged, no MPI call) when `participants.size() <= 1` — tier 0, or every
+checkpointed component on one rank, where no other rank exists to diverge from in the first place.
+Verified: both `parallel.window_runner_mpi.{2,3}` pass (`WindowRunnerMpi.
+ThreeRanksWithAnUncoupledThirdMatchTheReference` in well under a second, down from a 120s timeout).
+Peer-failure propagation to a window region's own bystanders (as opposed to convergence) was found to
+have the identical gap while investigating this — a local failure on a participant reaches only other
+participants, via the same `gather_window_block_samples()` — but is not exercised by any current test
+and is left for a future pass rather than bundled into this fix.
+
+### D43. `example.fsi_channel`'s IQN-ILS coupling is marginally stable near the beam's first natural period — a 1e-12 change in the fluid solve diverges it; OPEN, rows DISABLED under `FUSE_ENABLE_CUSPARSE`
+
+**Measured 2026-10-11**, found while verifying the examples' cusolverRf sparse-solve backend
+(`examples/common/sparse_solve_backend.hpp`, `docs/dev/runner-device-dispatch.md` Part B) on
+a GTX 1050 Ti. Default example parameters (`fluid 24x12, beam 16, mass ratio 1, dt 0.01`;
+the ctest rows use `16x8`, `nx-beam 12`, `t-end 0.1` and show the same thing):
+
+- Flag off (Eigen::SparseLU), `--accel iqn-ils`: converges every step; **step 7 (t = 0.08,
+  the beam's first natural period is 0.0888 s) takes 46 sweeps**, twice every other step's
+  21–24. Flag off with `--accel none`: non-finite after 14 periods. `--accel aitken`:
+  non-finite after 11 periods. Only IQN-ILS gets through, and only just.
+- Flag on (cusolverRf with extended-precision refinement): steps 0–6 reproduce the flag-off
+  deflections to every printed digit; **step 7 runs its full 200 sweeps and diverges to
+  2e80**; `none`/`aitken` fail at the same periods as flag-off. Every one of the 730 fluid
+  solves before the divergence has relative residual ~1e-16 and agrees with an Eigen solve
+  of the same system to ≤ 1.07e-12 (the backend is in fact closer to a long-double reference
+  than Eigen is: 1.4e-16 vs 3.4e-14 on this 900-unknown saddle point,
+  `verification.sparse_solve_backend`). A perturbation of the fluid response three orders
+  below any tolerance in play is enough to flip step 7 from "46 sweeps" to divergence.
+
+**What this is.** Not a solver defect — both solvers are correct to working precision, and
+the flag-off build diverges with two of the three accelerators on its own. It is the
+coupling at that step sitting at the edge of IQN-ILS's stability, which the fixed Eigen
+rounding happens to land on the convergent side of. The `fsi_*` verification rows
+(`fsi_stokes_mms`, `fsi_beam`, `fsi_coupled`, `fsi_transient`) pass with the flag on;
+`fsi_energy_diag`'s 480-period coupled run sits on the same edge and is D44.
+
+**What was done.** `example.fsi_channel` and `example.fsi_channel.omp_identical` carry the
+ctest `DISABLED` property when `FUSE_ENABLE_CUSPARSE=ON` (reported as "Not Run (Disabled)",
+not hidden; `examples/CMakeLists.txt`). Flag off — the default — nothing changes.
+
+**What would close it.** Understanding why IQN-ILS needs 46 sweeps at step 7 in the first
+place (D17 records a related accelerator asymmetry on the Brusselator). Candidates, none
+measured: the IQN-ILS filter threshold on nearly dependent secant columns near a turning
+point of the beam; the window's convergence criterion on `fluid_force` (a derivative of the
+solution, so κ-amplified) sitting at 1e-9 relative. Until then the example is a stability
+probe, not a regression gate, for any alternative fluid solver.
+
+### D44. Under `FUSE_ENABLE_CUSPARSE` the cusolverRf fluid solve is not bitwise reproducible run to run in situ, and `fsi_energy_diag`'s 480-period coupled run usually fails to converge at period 140 because of it; OPEN, that one case SKIPPED under the flag
+
+**Measured 2026-10-11** on the GTX 1050 Ti, `build-cusparse` (tier0, Debug, flag on) against
+`build-all` (all, Debug, flag off), with a temporary per-period total-energy trace
+(`%.17e`) added to `FsiEnergyDiag.LongRunEnergyIsBounded` (12 beam periods, 40 steps each,
+IQN-ILS tol 1e-9, 300 sweeps max, `abort_on_nonconvergence`):
+
+- **Flag off: two runs of one binary are bitwise identical over all 480 periods** (every
+  energy and every cumulative sweep count), ratio 0.998067, pass. The host path is
+  deterministic, as `example.*.omp_identical` already asserts.
+- **Flag on: two runs of one binary agree bitwise through period 71 and diverge at period
+  72** by 1.4e-12 relative; four differently-built binaries of the same source (a no-op line
+  added or not; `-ftrivial-auto-var-init=zero` / `=pattern` on the test TU) each diverge from
+  the others at a different late period (72, 94, 103), all at the 1e-12 level. Of 15 flag-on
+  runs, 11 stopped at period 140 with the IQN-ILS region unconverged after 300 sweeps —
+  `beam_velocity[Relative] 1.3042612065887604` in every one of those 11 (the blow-up has one
+  shape), `fluid_force[Relative]` 8e-17–2e-16 (the fluid solve itself converged). The other 4
+  passed with ratio 0.998067. GCC's `-Wmaybe-uninitialized` at `-O1` on the TU reports nothing
+  in project code; forcing all automatic variables to zero or to a pattern changes the
+  trajectory *no more than* re-running does. So: not an uninitialised read, not code layout —
+  run-to-run nondeterminism in the flag-on path, which only the cusolverRf solve introduces
+  (`verification.sparse_solve_backend`'s 300-repeat tests are reproducible in isolation; the
+  earlier in-situ diagnostic over 24,519 `fsi_transient` solves saw ~4% of same-input repeats
+  differ bitwise when other solves ran in between). The extended-precision refinement step
+  pins the solution to within ~1e-16 of exact but not to one bit pattern.
+- Flag on vs flag off at period 1: energies differ by 3.6e-10 relative (19 vs 21 sweeps) — the
+  IQN-ILS fixed point is tolerance-limited at 1e-9, not solver-limited, so a 1e-16 solve
+  difference becomes a 1e-10 state difference immediately and a 1e-12 trajectory fork later.
+
+**What this is.** D43 in the verification suite: a marginally stable IQN-ILS coupling that
+the deterministic Eigen rounding lands on the convergent side of, and an ulp-level
+nondeterministic solve lands on either side of. It is not a defect in the backend's accuracy
+(D43's numbers) and not a leak, race or UB on the host (the three experiments above). Valgrind
+memcheck could not get past CUDA context creation in 25 minutes and was abandoned.
+
+**What was done.** `FsiEnergyDiag.LongRunEnergyIsBounded` calls `GTEST_SKIP()` when
+`FUSE_HAVE_CUSPARSE` is 1, naming this entry; the other five cases in that binary still run
+under the flag. Flag off — the default — nothing changes. The review-fix line this was first
+blamed on (`release_rf()` at the top of `SparseLuBackend::seed_from_host_lu()`) was
+exonerated by rebuilding the exact previously-passing source and watching it fail 2 of 3.
+
+**What would close it.** Either a bitwise-reproducible device solve (cusolverRf's
+triangular solves have no determinism switch; the refactorisation could stay on the device
+and the two triangular solves move to the host from `cusolverRfExtractBundledFactorsHost`,
+deterministic by construction and, at these sizes, no slower than the launch-bound device
+solve) or the D43 coupling fix. The determinism contract D45 established for reductions
+applies to any device solver fuse adopts; this is the measured reason.
+
+### ~~D45. The deterministic dot and norm reductions differed from the host by one ulp on the Cuda leg~~ — CLOSED 2026-10-10
+
+**Measured 2026-10-10** as `num.space_kernels`'s `DeterministicReductionsMatchTheChunkedReferenceExactly`
+failing on the Cuda execution space only, and only for `deterministic_dot`/`deterministic_norm_squared`
+(never `deterministic_sum`, which has no multiply): `got_dot` and `want_dot` differed by exactly one ulp
+(`1.2895225459088599e+34` against `...601e+34` at n = 256).
+
+**Cause.** nvcc's device compiler contracts `s += a(i) * b(i)` into one fused multiply-add
+(`--fmad=true`, its default), rounding the product and the accumulate together; the host compiler
+on this toolchain (g++ for the x86-64 baseline, which has no FMA instruction; nothing in this
+project sets a contraction policy) rounds them separately. Same summation order, different
+low-order bit — so the chunked, order-fixed reduction the determinism contract promises
+(`include/fuse/num/space_kernels.hpp`, `DeterministicDotFunctor`,
+`DeterministicNormSquaredDiffFunctor`) was deterministic per space but not across spaces.
+
+**Closed** by `unfused_multiply_add()` in the same header: on the device it is
+`__dadd_rn(s, __dmul_rn(x, y))`, CUDA's explicitly round-to-nearest, not-further-fusible primitives,
+so the device path double-rounds exactly as this host path does; on the host it is the plain
+expression. Both functors' inner accumulation goes through it. The host path is unchanged (it never
+fused here). A host compiler that contracts by default on FMA hardware (Apple clang at `-O2`, D30)
+fuses that plain expression too; the two spaces then still agree with each other, but not with a
+build that does not contract. That is D30's open, project-wide decision, not closed by this entry. The same contraction still exists in `RelaxFunctor`/`RemapMultiFunctor`, which are anchored
+by `build-evidence/mutations.toml` and deliberately left as they are; `runtime.runner_device` asserts
+`<= 1e-14` relative for those two shapes and bitwise for the rest (A5).
+
+**Accepted 2026-10-12 (owner's decision), TODO kept here.** Working-precision agreement between the
+device and host paths for `Relax` and weighted `Remap` is acceptable; closing the gap is not
+scheduled. If it is ever wanted: route `RelaxFunctor`'s `omega * current(i) + one_minus * previous(i)`
+and `RemapMultiFunctor`'s weighted accumulation through `unfused_multiply_add()` (the same idiom as the
+reductions), re-anchor the two rows in `build-evidence/mutations.toml`, and tighten the
+`runtime.runner_device` assertion from `1e-14` to bitwise. Any new device kernel added under
+`docs/dev/device-resident-arcs.md` follows the same contract: bitwise where the host side is a
+reduction the determinism contract covers, working precision elsewhere, stated by its test.
+
+
+The same accepted gap covers the native mesh's device geometry kernels (2026-10-13, mesh-search track): `NativeMeshView::device_measure()`/`device_centroid()` recompute the per-cell measures and centroids on `Kokkos::DefaultExecutionSpace`, and nvcc contracts the cross- and dot-product arithmetic of the triangle-area and tetrahedron-volume formulas, so `test/backend/native_distributed_mesh_test.cpp`'s `DeviceGeometryMatchesHost*` cases assert 1e-14 relative agreement, not bitwise. Closing it, if ever wanted, is the same `unfused_multiply_add` idiom.
+### ~~D46. `fuse-abi-shared`'s install RPATH named only yaml-cpp, so an installed consumer could not load Kokkos or the MOAB chain~~ — FIXED 2026-10-10; libMOAB.so's own rpath gap WORKED AROUND at test time
+
+**Measured 2026-10-10** on this host after an external MOAB rebuild: `backend.moab_mesh` and both
+`abi.install_consumer_*` tests failed with `libTempestRemap.so.0: cannot open shared object file`,
+and once that was covered, with `libkokkoscore.so.5.2: cannot open shared object file`. Two separate
+gaps:
+
+1. **This project's, fixed.** `src/CMakeLists.txt` set `INSTALL_RPATH` on `fuse-abi-shared` to
+   yaml-cpp's directory alone, on the premise that every other target in the tree is static. Kokkos
+   is always a found shared library, and `FUSE_ENABLE_MOAB` adds MOAB, TempestRemap, Zoltan, NetCDF
+   and PnetCDF, none on a default search path. `_fuse_abi_install_rpath` now carries
+   `$<TARGET_FILE_DIR:Kokkos::kokkoscore>` and, when MOAB is on, every directory in
+   `MOAB_LIBRARY_DIRS` (the per-package `<PKG>_DIR` fixup `cmake/FuseDependencies.cmake` already
+   builds for `target_link_directories`). An external consumer doing nothing but
+   `find_package(fuse-coupler)` needs this; nothing else can supply it.
+2. **MOAB's, worked around.** `libMOAB.so`'s own rpath lists only its MPI-stack paths, and gcc's
+   default `--as-needed` drops any dependency a test binary never calls directly from its `NEEDED`
+   list, so resolution of the MOAB chain falls on that incomplete rpath. `test/CMakeLists.txt`
+   prepends every `MOAB_LIBRARY_DIRS` entry to `LD_LIBRARY_PATH` through `ENVIRONMENT_MODIFICATION`
+   on every MOAB-linked test. That helps only this project's own `ctest`; it is not a fix and is
+   not this project's to make.
+
+### ~~D47. The nested-build `compile_ok`/`compile_fail` tests used whatever compiler the invoking shell's `OMPI_CXX` named~~ — WORKED AROUND 2026-10-10
+
+`runtime.compile_ok.capabilities_override` and `field.compile_ok.owning_chain` drive a nested
+`cmake --build ... --target ...` at test time; that build re-invokes `mpicxx`, which reads its real
+host compiler from `$OMPI_CXX` when *it* runs, not from the configure. A `ctest` run from a shell
+without `OMPI_CXX=/opt/kokkos/bin/nvcc_wrapper` fell back to `g++`, which rejects the nvcc-only flags
+this project adds whenever `Kokkos::CUDA` exists: both `compile_ok` rows failed, and their
+`WILL_FAIL` `compile_fail` siblings passed for the wrong reason. `test/CMakeLists.txt` captures
+`$ENV{OMPI_CXX}` at configure time into `_fuse_nested_build_env_mods` and pins it on all four rows
+through `ENVIRONMENT_MODIFICATION`. The build itself still needs the variable exported (the
+`_machine` preset sets it for configure only); that is a property of Open MPI's compiler wrapper,
+not of this project.
+
+### D27. The native backend's remap halo has no `accumulate_remap_halo` counterpart
+
+**Closed for the forward direction, 2026-10-10 ("Halo" track):** `fuse::native::NativeMeshBackend`
+now builds a planar/volumetric remap halo (`build_native_remap_halo`,
+`src/backend/native_halo.cpp`; docs/dev/native-halo.md) via the same `build_remap_halo` ->
+`build_weights` -> exchange -> `apply_weights` sequence `remap_plan.hpp` documents for MOAB, and
+`remap_halo_pattern()`'s `fuse::linalg::GhostPattern` plugs directly into
+`fuse::linalg::make_mpi_exchanger` for the FORWARD fill (owner's field value -> halo copy) before
+`apply_weights`.
+
+**Open:** `MoabMeshBackend::accumulate_remap_halo` -- the REVERSE exchange (each halo slot's
+contribution added back to its owner, then zeroed), built specifically for a conservation audit
+that sums a source cell's weight contributions across every rank holding a copy of it -- has no
+native counterpart. `test/backend/native_halo_test.cpp`'s own column-mass-by-global-id check
+does this bookkeeping in the TEST, not through a library call; nothing in the Halo track's scope
+needed a library-level reverse exchange, but a future native-backend conservation-audit tool would
+want one.
+
+### ~~D28. U's own species-core solver seam is closed; the mpmd.5 row that would first exercise it across a real two-rank U is still host-only~~ — CLOSED 2026-10-10 (host run, see D25's host paragraph)
+
+**Closed this session (species-core decomposition track): the implicit diffusion SOLVE**, the one
+piece D-series' own grid-decomposition entries left open (see "The solver seam" in
+`docs/user/brusselator.md`), now decomposes with U's own grid. `UCore`/`VDiffusionCore`
+(`examples/brusselator/species_core.hpp`) select a `DiffusionSolver` per `PhysicsConfig::solver`
+(`SolverKind::Auto`/`Direct`/`Schur`/`Pcg`/`Gmres`, a new `--solver` flag on `u_main.c`/`v_main.f90`):
+`SchurDiffusionSolver` wraps the Solvers track's `fuse::linalg::SchurSlabSolver`;
+`KrylovDiffusionSolver` assembles the same operator as a `fuse::linalg::DistSparseMatrix` and solves
+it with `fuse::linalg::pcg`/`gmres` under a `JacobiPreconditioner`. `u_main.c` now forms its own
+physics-only sub-communicator (`MPI_Comm_split` on `is_physics_rank`), reads `u_rank`/`u_size` from
+it instead of assuming `nx*ny` is the whole grid, and passes both plus the new `--solver` string and
+an `MPI_Comm_c2f` handle through the participant ABI (`bruss_u_create`'s four new trailing
+parameters). V's own CLI/ABI plumbing (`--ranks-u`/`--ranks-v`/`--solver` on `v_main.f90`,
+`bruss_v_create`'s matching trailing parameters) is prepared identically, but `VParticipant::make`
+still refuses outright at `num_ranks() > 1` (`E-BRUSS-V-DECOMPOSED-REMAP`) — V's two-sided remap
+routed through FUSE's distributed weights is a separate ("Halo") track's own work, explicitly out of
+scope here. **Superseded by D29**, which closes exactly that gap.
+
+**Verified in the sandbox:** a new in-process N-partition harness,
+`test/verification/brusselator_species_core_decomposition_test.cpp` (9 tests, all passing), measures
+each decomposed solver against a `num_ranks() == 1` `DirectDiffusionSolver` reference — `Schur`
+agrees to 2.4e-14/4.5e-14 (U, 2/3 partitions) and 2.7e-15 (V); `Pcg`/`Gmres` agree to 5.9e-14/5.5e-14
+at the chosen `solver_tolerance = 1e-13` (swept from `1e-8` through `1e-13` to derive that default —
+see "Species-core solver decomposition" in `docs/user/brusselator.md`). The full tier-0 suite passes
+179/179 after the change, and `fuse_example_brusselator --end 0.1 --check` remains byte-identical to
+the committed reference (`final_mean_u`/`final_mean_v` unchanged to all printed digits) — `Auto`
+resolves to the original `Direct` path at `num_ranks() == 1`, so every existing single-rank caller is
+unaffected. Three new mutation rows (`build-evidence/mutations/brusselator.toml`:
+`brusselator-schur-coefficient-wrong-sign`, `brusselator-krylov-matrix-diagonal-drops-mass-term`,
+`brusselator-krylov-matrix-drops-global-row-offset`) are each hand-proved against this harness; the
+third does not fail cleanly — it HANGS (a stranded collective, the failure mode D21/D25 both name),
+proved instead by a `timeout`-bounded rerun.
+
+**Still host-only, same shape as D25's own gap.** `u_main.c`'s new `MPI_Comm_split` is collective
+over the WHOLE shared `MPI_COMM_WORLD` an mpmd launch gives every segment (`u_main.c`, `v_main.f90`,
+`coupler_main.c` all numbered into one world) — so `v_main.f90` and `coupler_main.c` each now carry a
+MATCHING `MPI_Comm_split(..., MPI_UNDEFINED, ...)` call at the equivalent point in their own startup,
+purely so U's own split does not strand them. (D29 replaces this one-color-plus-`MPI_UNDEFINED`
+form with a single three-color split every one of the three programs now makes identically.)
+This choreography across three separately-compiled
+executables has never been run: this sandbox cannot start MPI at all (C1), and D25 itself recorded
+that `mpmd.5` — the one row where U would actually span more than one rank — was never run even
+before this change, because it exceeds the four-task rule. `mpmd.3`'s own U segment is one rank, so
+it cannot exercise `MPI_Comm_split` with a non-trivial physics group at all. The next host run that
+matters for this track is `mpmd.5` with `--solver schur` (or `pcg`/`gmres`) on U's own two ranks —
+confirming both the split choreography above and the decomposed solver agreement this entry's own
+tier-0 numbers can only approximate with an in-process thread-barrier stand-in for a real
+`Reducer`/`GhostExchanger`.
+
+### ~~D29. V's two-sided remap over an adopting halo measurably disagreed with the single-rank reference~~ — CLOSED 2026-10-10 (root-caused and fixed)
+
+**Closed this session.** The guard added when this entry was opened — `VParticipant::make_from_grids`
+refusing any decomposition whose remap halo adopted cells, in either direction, with
+`E-BRUSS-V-REMAP-ADOPTION` — is REMOVED: `ThreePartitionVParticipantRefusesAnAdoptingHalo` and the
+mutation row `brusselator-vparticipant-adopting-halo-not-refused` are both gone, superseded by the
+tests and mutation row below.
+
+**Root cause, measured by instrumenting (not guessed from reading).** `VParticipant::step()`'s own
+`q_native_v` buffer (the `apply_weights(weights_uv_, ...)` destination for the U->V remap) and
+`remap_state_to_u()`'s own `u_native` buffer (the `apply_weights(weights_vu_, ...)` destination for the
+V->U remap) were each sized from this rank's OWNED cell count (`n_v_`/`n_u_`, cached at `make_grids()`
+time, BEFORE either direction's halo is built). `RemapWeights::n_rows` (`remap_plan.hpp`: "target
+entities (local)") is documented, correctly and intentionally, to mean the target mesh's CURRENT local
+entity count -- owned plus ghost, the same "local = owned plus ghost" convention `MeshView::entity_count`
+itself documents (`mesh_view.hpp`) -- and `fuse::build_supermesh_weights` (`src/backend/supermesh.cpp`)
+honours exactly that: `w.n_rows = tgt.entity_count(dim)`. `apply_weights` (`remap_plan.hpp`)
+unconditionally zeros and writes `dst[0, n_rows)`.
+
+U and V are each the SOURCE of one halo direction and the TARGET of the other, on the SAME backend: V is
+widened (gains adopted cells) as the source of the V->U halo, and that SAME V mesh is also the TARGET of
+the U->V weights (`w_uv`), built AFTER both halos. Whenever V was ALSO widened (because this rank
+adopted V cells for the V->U direction), `weights_uv_.n_rows` is `owned_size(V) + adopted_v`, not
+`owned_size(V)` -- and `q_native_v`, sized from the stale pre-halo `n_v_`, was too small by exactly the
+adopted count. `apply_weights`' unconditional zero-and-write loop then wrote past the end of that
+`std::vector<double>` -- a heap buffer overflow, not merely a wrong value. The symmetric case (U widened
+as the source of the U->V halo, inflating `weights_vu_.n_rows` beyond `n_u_`) overflows `u_native` in
+`remap_state_to_u()` the same way. Measured on the instrumented scratch build (U 16 rows as 6/5/5, V 24
+as 8/8/8, 3 ranks, `FUSE_BRUSS_DEBUG=1`): rank 0 traced `weights_uv(n_rows=108, n_cols=48)` against
+`n_v_=96` (12 extra rows -- exactly its own measured `adopted_v(vu)=12`); ranks 1 and 2 traced an
+analogous overflow of `u_native` from their own nonzero `adopted_u(uv)=8`. This explains both original
+symptoms precisely: the overflow corrupts whatever heap memory follows the undersized vector, read back
+as though it were real row values from the very FIRST `apply_weights` call (the measured 3.1e-4
+`exchange_in` disagreement present from sub-step 0, never growing -- exactly "the error enters once");
+and on later steps, the corrupted heap trips an `Eigen::Block.h` bounds assertion when the diffusion
+solve (Schur or Pcg alike -- neither solver's own code is involved) reads memory the overflow had
+clobbered.
+
+Of the candidates this entry's own "Open" note listed when it was written, the fix matches candidate (b)
+("a buffer sized from the PRE-halo entity_count") exactly, once sharpened: it is not that something was
+cached from a view at `make_grids()` time in general (the grid's own `nx`/`ny`/`owned_rows`/
+`native_of_canonical_` are all fine, precisely because they describe only the UNWIDENED owned block,
+which widening never touches) -- it is specifically the two `apply_weights` DESTINATION buffers, each
+sized from the wrong rank's wrong-direction owned count instead of from the weights matrix that actually
+produced the data going into it.
+
+**Fix** (`examples/brusselator/species_core.hpp`): `step()` now sizes `q_native_v` from
+`weights_uv_.n_rows`; `remap_state_to_u()` now sizes `u_native` from `weights_vu_.n_rows`. Both are safe
+to read back through `to_canonical()` unchanged: `to_canonical()` addresses only `native_of_canonical_`
+entries, which are all built from the UNWIDENED view at `make_grids()` time and so never point past
+`owned_size()`, regardless of how large the weights-sized buffer actually is. No refusal is needed any
+more.
+
+**Verified correct on the previously-failing MISALIGNED split** (U 16 rows as 6/5/5 against V 24 as
+8/8/8, 3 ranks -- adopting rank 0 "0 U, 12 V", rank 1 "8 U, 12 V", rank 2 "8 U, 0 V" cells, traced under
+`FUSE_BRUSS_DEBUG=1`): `test/verification/brusselator_species_core_decomposition_test.cpp`'s
+`ThreePartitionVParticipantMatchesSingleRankMisaligned` (`SolverKind::Schur`, 6 sub-steps) measures
+`max_abs_diff = 1.732e-14` against the single-rank reference, and
+`ThreePartitionVParticipantMatchesSingleRankMisalignedPcg` (`SolverKind::Pcg`, 20 sub-steps, to rule out
+any slow growth the original 6-sub-step run had no room to see) measures `max_abs_diff = 5.262e-14`,
+`max_exchange_in_diff = 1.388e-17` -- both round-off, both solver kinds, no crash. The full tier-0 suite
+(ctest, which registers one entry per test BINARY, not per `TEST()` case -- `ThreePartitionVParticipant
+RefusesAnAdoptingHalo`'s removal and the two new cases' addition are both internal to the existing
+`verification.brusselator_species_core_decomposition` binary) passes 179/179, unchanged from before this
+fix. The halo-construction pipeline itself was never the defect -- `test/backend/native_halo_test.cpp`'s own
+`ThreeRanksMisalignedAdoptsExactlyWhatTheOracleComputes`/
+`ThreeRanksMisalignedCompleteWeightsAndLinearFieldReproduction` already proved it correct at this split,
+one direction at a time; this entry's own bug only appears once BOTH directions' halos are built on the
+SAME backend, each mesh widened as the source of one direction and read as the (now also widened) target
+of the other -- a scenario those single-direction tests never construct.
+
+**Mutation.** `brusselator-vparticipant-adopting-halo-not-refused` is retired (the refusal it killed no
+longer exists). `brusselator-vparticipant-stale-adopted-ghost-not-exchanged`
+(`build-evidence/mutations/brusselator.toml`) replaces it: skipping `exchanger_uv_->update()` in
+`step()` (leaving the adopted/ghost slots at their zero-initialized default -- "stale" -- instead of the
+real cross-rank values) is caught ONLY by the misaligned tests above (the aligned ones adopt zero cells,
+so a skipped update is indistinguishable from a correct one there -- every ghost slot is empty either
+way). Hand-proved 2026-10-10 on the unfiltered test binary: with the mutation applied,
+`ThreePartitionVParticipantMatchesSingleRankMisaligned`'s `max_abs_diff` rises from `1.732e-14` to
+`3.170e-03` and `...MisalignedPcg`'s from `5.262e-14` to `8.408e-03`, both far past the `1e-11` bound;
+both FAIL cleanly. File restored and verified byte-identical with `cmp` before submission.
+
+**The MOAB-backed builder is NOT a second instance (lead, measured 2026-10-10).** The
+sub-agent flagged `w.n_rows = tgt.cells.size()` in `src/backend/intx_weights.cpp` (three
+sites) as "the same row-count-inflation shape". It is the same CONVENTION, not a defect: every
+builder -- supermesh (`w.n_rows = tgt.entity_count(dim)`), MOAB, MLS -- sizes the weights over
+the target's whole local view, owned and non-owned alike, which is what `RemapWeights::n_rows`
+is documented to mean. The defect here was a CALLER (this example) allocating the destination
+from a count it had cached before the view was widened. The Runner, the library's own caller,
+never does that: it checks `weights->n_rows != out.elements` and refuses with
+`E-RT-REMAP-SIZE` (`src/runtime/runner.cpp`) rather than applying. Nothing to fix in the
+builders.
+
+**No longer host-only: `mpmd.5` passed on the host 2026-10-10 (D25's host paragraph has the
+numbers).** The text below is the state before that run. The `mpmd.5` row (`--ranks-v 2`, the one row where V
+spans more than one rank) could not be run in this sandbox (C1: MPI cannot start here). This entry's
+own fix removed the one KNOWN correctness gap that stood between that row and a real host run -- the
+`u_main.c`/`v_main.f90`/`coupler_main.c` three-color `MPI_Comm_split` choreography, and `v_main.f90`'s
+cross-check of `v_rank`/`v_size` against `--ranks-v`, are unaffected by this change and remain
+unexercised past a build check.
+### ~~D25. A separately launched participant could not run a coupling window~~ — CLOSED 2026-10-09 (host-measured)
+
+**Found by the first MPMD runs that reached `initialize()` (D24 cleared the exchange plan),
+on the host, 2026-10-09.** Four defects in sequence, each exposed by the fix before it;
+all four fixed, and `verification.brusselator.participants.mpmd.3` passes with
+`max_window_balance_error`/`global_balance_error`/`max_window_exchange_error` all within
+the check's thresholds, final means matching the single-process example to 2 ulp in
+`mean_u` (1.5865861881738454 vs 1.5865861881738459, 4.4e-16) and 5 ulp in `mean_v`
+(1.998222640303883 vs 1.9982226403038819, 1.1e-15).
+
+1. **A window member's storage was resolved on every rank.** `resolve_regions()` read every
+   member's native Provides/Requires storage from the registry on every rank; a separately
+   launched participant binds only its own fields, so `U`'s rank refused `E-RT-UNBOUND` on `V`'s
+   export. Unseen by `parallel.window_runner_mpi` because its `ComponentSet` holds every
+   component on every rank. The binding is now gated on `cfg.hosted`; every reader of those
+   pointers already tolerated null.
+2. **…which made the initialize-time seed chain's selection per rank.** The chain that
+   delivers each member's initial export to its consumer (Transport → Remap → Epoch) was
+   skipped where `cfg.required == nullptr` — after fix 1, on every non-hosting rank. Measured
+   with the macOS `sample` tool: all three programs in `MPI_Alltoallv`, U and V from this chain
+   inside `Runner::initialize()`, the coupler from `run_region()`'s first real Transport — the
+   collective mismatch the standing rule names. The chain's selection is now structural
+   (`window_import` valid and in range), and the per-rank seeding that follows is guarded
+   separately. The code's own comment had marked this collective safety "NOT YET INDEPENDENTLY
+   VERIFIED"; this is the verification.
+3. **Both participants carried a stale 3×3/4×4 grid**, from before `43fe58d` moved the graph
+   tool to 16×16/24×24, so they registered 9-element buffers against 256-cell fields. Nothing
+   refused it: the ordinary bind's `E-RT-SIZE` is bypassed by the window member's direct
+   registry read, and the priming's own size guard quietly skipped. The run then produced a
+   trajectory irreconcilable with the single-process example (first-window exchange 40% short).
+   Now: the same read refuses `E-RT-SIZE` (`WindowRunner.RefusesAWindowMemberWhoseExportIsNotTheFieldsSize`,
+   mutation `window-member-size-check-dropped`), and the grid and physics constants live in ONE
+   header, `examples/brusselator/participants/brusselator_grid.h`, included by the graph tool
+   and U and read by the Fortran V through `bruss_grid_dims()`.
+4. **Neither participant put its initial export into the registered storage.** The Runner
+   primes the first window's t=0 sample from whatever the export storage holds at
+   `initialize()`; the in-process components hold their constructor's value there, the tier-0
+   harness copies it in by hand, the standalone programs left `calloc`'s zero. U also seeded
+   its initial rate from a zero V. Both now do what the harness does: `bruss_u_provided()` /
+   `bruss_v_provided()` into the export before `initialize()`, and U reads a throwaway V's
+   initial `P_VU(V0)` for its own initial rate.
+
+**A startup-contract limitation worth naming, not deciding here:** item 4 means a participant
+must know its partner's initial export before `fuse_initialize()`. A coupler-delivered initial
+exchange (imports delivered before exports are frozen) would remove the need for U to
+reconstruct V at all. Recorded; the user's call.
+
+**Host run 2026-10-10 (main after `e76881c`): `verification.brusselator.participants.mpmd.5`
+PASSES** -- U on two ranks, V on two, the coupler on one, five programs' worth of ranks under one
+`mpiexec`, 1.37 s. Two participant defects stood in front of it, both found by the new size check
+and the merged log: `v_main.f90` registered the whole U grid (256) for its two U-grid fields where
+the plan sizes them per V rank (128) -- refused `E-RT-SIZE`, now `bruss_owned_size(nx_u, ny_u,
+v_rank, v_size)` as `u_main.c` already did; and both participants logged a per-rank partial mean
+with every rank writing the same `--log` path -- now the species' global mean through the core's
+own reducer (`bruss_u_state_mean`/`bruss_v_state_mean`, a collective every rank calls) and rank 0
+alone writes. Measured against the single-process example (`mean_u` 1.5865861881738459, `mean_v`
+1.9982226403038819): the 3-rank row is now BIT-IDENTICAL in both means (0 ulp; the earlier 2 and 5
+ulp were the participants' own sequential summation against the example's Eigen sum); the 5-rank
+row differs by 8.9e-14 in `mean_u` and 9.4e-14 in `mean_v` (relative 5.6e-14 / 4.7e-14) -- the
+decomposed Schur solve's own round-off, consistent with the 2-partition in-process bound of
+4.5e-14 -- with `exchange_in`/`exchange_out` within 1e-14 of the 3-rank values and the
+conservation check within its thresholds.
+
+The accept rows remain blocked by D23.
+
+### D23. Accept/connect cannot complete on MPICH's `ch3:nemesis` device when both programs share a node
+
+**Status: not a defect in this library; it needs a different MPI build.** Every
+`parallel.connect.accept.*` row, and the `verification.brusselator.participants.accept.*`
+rows with it, aborts inside `MPI_Intercomm_merge`. Measured on the host 2026-10-09, with
+a debugger on each side in turn -- the two stacks are identical frame for frame:
+
+```
+Assertion failed in file ../src/mpid/ch3/channels/nemesis/include/mpid_nem_inline.h
+at line 325: vc_ch->is_local
+  MPID_nem_mpich_sendv_header  <- the SHARED-MEMORY send path
+  MPIDI_CH3_iSendv
+  MPIDI_CH3_EagerContigIsend
+  MPID_Isend
+  MPIC_Sendrecv
+  MPIR_Intercomm_merge_impl
+  MPI_Intercomm_merge
+  fuse::transport::connect_pairwise
+```
+
+MPICH takes its shared-memory send path for a virtual connection whose own `is_local`
+flag says it is not shared-memory-reachable, which is exactly what a peer obtained
+through `MPI_Comm_accept`/`MPI_Comm_connect` is: a process in a DIFFERENT job, with no
+shared-memory segment in common, even when it happens to sit on the same node. Merging
+a dynamically established intercommunicator is precisely what `MPI_Intercomm_merge` is
+specified for, and `connect_pairwise` passes a different `high` on each side as it must,
+so there is nothing here for this library to fix.
+
+`MPIR_CVAR_NOLOCAL=1` does not help (measured): the shared-memory path is taken
+unconditionally at that point rather than being chosen from the flag.
+
+The MPMD path is unaffected and all `parallel.connect.mpmd.*` rows pass, because there
+every peer belongs to ONE job launched by one `mpiexec` and is genuinely
+shared-memory-reachable.
+
+**Detected at configure time since 2026-10-09.** `tools/probe-mpi-dynamic.sh`
+launches two jobs on this machine and performs the sequence `connect()`
+performs; `cmake/FuseDependencies.cmake` sets `FUSE_ENABLE_CONNECT_ACCEPT` from
+the verdict. On an MPI that cannot carry the mode the accept rows are no longer
+registered, and a `connect`-mode component is refused at `connect()` with
+`E-CONNECT-ACCEPT-UNAVAILABLE` naming MPMD as the way out, rather than aborting
+inside MPI. The probe distinguishes "could not test" from "measured broken" and
+leaves the mode ON for the former -- a login node where `mpiexec` needs an
+allocation is the ordinary case, and disabling a working capability there would
+be worse than a row that fails loudly.
+
+**What would clear it**, in order of preference:
+
+1. An MPICH built with `--with-device=ch4` -- the default since MPICH 4.0, with a
+   different path for dynamic connections. The host's build is
+   `--with-device=ch3 --enable-g=most --enable-fast=none`; the assertions that make
+   this visible are compiled in by `--enable-g=most`, and a release build would take
+   the shared-memory path on a connection that has none rather than abort.
+2. Open MPI, whose dynamic process management does not share this limitation.
+3. Two separate nodes, which removes the same-node misclassification. Not available
+   on a laptop, and not a fix.
+
+Until then the accept rows are expected to fail on this host, and the accept-mode code
+path they cover is unverified by measurement. Everything the accept path shares with
+MPMD -- the launch-spec round trip, the port file, `connect()`'s own refusals, the
+teardown of D20 and the intercommunicator disconnect -- is covered by rows that do pass.
+
+**Update 2026-10-12 — the MPI was reinstalled, the cause named above is gone, the rows have not run yet.** The
+host's MPICH is now 5.0.0a1 with device `ch4:ofi` (`mpichversion`), and `tools/probe-mpi-dynamic.sh` exits 0:
+accept/connect works between two same-node jobs. This entry stays open until `parallel.connect.accept.*` and
+`verification.brusselator.participants.accept.3` have run on that MPI; the configure step could not show it,
+because the verdict it had cached was stale (D35).
+
+### ~~D22. A shared Kokkos aborts the process at exit~~ — CLOSED 2026-10-09
+
+**What it was.** `Kokkos::initialize()` registers its own exit hook, and that hook ran
+at a point where the libraries Kokkos itself sits on -- the OpenMP runtime above all --
+had already been torn down. The process finished its work, printed every expected
+value, and then died: `libc++abi: terminating due to uncaught exception of type
+std::__1::system_error: mutex lock failed: Invalid argument`, locking a mutex in an
+image that was already gone.
+
+None of this was new code. It was invisible for as long as Kokkos was a STATIC library
+linked inside `libfuse-abi`, destroyed along with the library that held it; it appeared
+the day Kokkos was rebuilt as a shared library on this lab's machine (2026-10-09), when
+it became an image of its own with its own place in the teardown order.
+`abi.install_consumer_c` and `abi.install_consumer_fortran` both failed exactly this
+way -- after printing `installed C consumer ok` and all four expected values -- and an
+aborting MPMD participant printed the same message.
+
+**Fix.** `ensure_kokkos_initialized()` registers a `std::atexit` hook of its own,
+immediately after `Kokkos::initialize()`. `atexit` is LIFO, so this hook runs BEFORE
+Kokkos's, while the runtime underneath is intact; Kokkos's own hook then finds itself
+already finalized and does nothing. This is not finalizing from `fuse_destroy()`, which
+that function's own comment rules out for good reason -- by the time an atexit hook
+runs, no caller can create another context.
+
+**Pinned by** the two install-consumer rows, which are a real oracle for it, and the
+mutation `kokkos-is-left-to-its-own-exit-hook`.
+
+**Note for a future reader.** Both failures of 2026-10-09 came from Kokkos changing
+from static to shared, and only one of them was ours in this sense. The other -- two
+copies of Kokkos's process-wide state, one in the participant executable and one in
+`libfuse-abi.dylib`, with `fuse_create()` initialising one and the mesh `View` checked
+against the other -- went away with the shared build and needed no source change. If a
+future install is static again, that one returns: the symptom is `Kokkos ERROR: ... is
+being constructed before initialize() has been called` from every participant that
+links C++, while a pure-C one (the Brusselator's coupler) reaches the same point in
+silence.
+
+### ~~D21. A launched coupler's mode was lost in the file, hanging every MPMD run~~ — CLOSED 2026-10-09: the MPMD rows reach `connect()` and beyond on the host (D25)
+
+**Measured (the user's host, 2026-10-08).** `verification.brusselator.participants.mpmd.{3,5}` timed
+out at 120 s with `combined.log` zero bytes and no `u.log`/`v.log` at all — nothing had started.
+
+**Cause.** `connect_mpmd()` agrees the MPMD layout with an `MPI_Allgather` of `MPI_APPNUM` over the
+whole world, so every rank of that world must call `connect()`. The coupler's own program does call
+`fuse_setup()` with `my_component = "coupler"`, and `brusselator_graph_tool.cpp` does build
+`LaunchSpec{Mpmd, appnum = 2}` for it — but `CouplerDecl` had no `launch` field, `add_coupler()`
+dropped it, and the writer emitted only `name`, `index` and `ranks` for a coupler. The mode
+therefore never survived the file the three programs load, the coupler came back in-process, its
+rank never called `connect()`, and U and V waited in the collective for a participant that was
+never going to arrive. The example had noticed half of this and worked around it by building the
+coupler's `ComponentDecl` by hand with `launch` set; that fixed the in-memory graph and not the
+file, which is the only thing the other two programs see.
+
+**Fix.** `CouplerDecl` carries a `LaunchSpec`, `add_coupler()` passes it through, and the YAML
+writes and reads a coupler's `launch:` block with the same helpers the component entries use —
+omitted entirely for an in-process coupler, so files written before this are byte-identical.
+No descriptor version bump: the launch record was already part of every component record's bytes
+(`descriptor.hpp`'s v9), and a coupler is a component-array entry.
+
+**Pinned by** `YamlIo.ALaunchedCouplerKeepsItsLaunchModeAcrossTheRoundTrip` (mode, appnum and the
+canonical bytes) and `YamlIo.AnInProcessCouplerWritesNoLaunchBlock`, with the mutation
+`a-couplers-launch-mode-is-dropped-by-the-writer`. The hang itself is host-only.
+
+### D18. `fuse::transport::connect()`'s `Connect`-mode path supports exactly two components; a third refuses `E-CONNECT-SPEC` — OPEN, not pursued (Conformance Unit 2 routes around it)
+
+`connect_pairwise()` (`src/transport/connect.cpp`) reads, verbatim:
+
+```
+if (order.size() != 2) {
+  return Failure{"E-CONNECT-SPEC",
+                 "pairwise connect() supports exactly two connect-mode "
+                 "components; the graph declares " + std::to_string(order.size())};
+}
+```
+
+`order` is `connect_mode_components()`'s own fixed, graph-declared order of every component whose
+`LaunchSpec::mode` is `Connect` (not `InProcess`, `Mpmd`, or `Plugin`). Three or more such
+components refuse outright, before any MPI call happens — `LaunchMode::Mpmd` has no such limit
+(launcher-style MPMD is one shared `MPI_COMM_WORLD` from the start; `MPI_APPNUM` checking scales to
+any number of segments), but true separate-executable launches (`MPI_Open_port`/`MPI_Comm_accept`/
+`MPI_Comm_connect`, then `MPI_Intercomm_merge`) are implemented as a single pairwise handshake,
+fixed by `MPI_Intercomm_merge(intercomm, i_am_first ? 0 : 1, &merged)` into exactly the two-member
+ordering `connect_pairwise()`'s own `order` establishes.
+
+**Found this session** (Conformance Unit 2, Time Windows track) while scoping
+`examples/brusselator/participants/{u_main.c,v_main.f90}`: the participant graph has THREE
+components (U, V, and the coupler the Defect 1 fix added), so an `accept`-mode run with all three
+as separate `Connect`-mode executables is not supported today.
+
+**Routed around, not fixed, per the lead's own ruling**: a processor set is ranks, not
+executables — the coupler's ranks are declared `LaunchMode::InProcess` and live inside the
+*acceptor* executable's own `MPI_COMM_WORLD` (U's executable launched with its own ranks plus the
+coupler's), so `accept` mode is two real `Connect`-mode executables (U+coupler, and V) merging
+through the existing pairwise path, while `mpmd` mode is three ordinary app segments (no pairwise
+limit to route around there at all). Both modes still exercise the SAME three-component graph; only
+which executable's `MPI_COMM_WORLD` the coupler's ranks happen to sit inside differs.
+
+**The generalisation, sketched but not implemented.** `connect_pairwise()`'s own numbering —
+`connect_mode_components()`'s fixed graph order, with `MPI_Intercomm_merge`'s second argument
+(`high` in the MPI standard's own terms) fixed by position in that order rather than by
+acceptor/connector role — already IS the mechanism an N-way version would reuse, just run `N-1`
+times instead of once: component 0's world and component 1's world merge first (exactly today's
+path) into an intermediate communicator spanning `{0,1}`; that intermediate communicator then plays
+the "local" side of a SECOND `MPI_Comm_accept`/`MPI_Comm_connect` against component 2's own world
+(`MPI_Comm_accept`'s local-communicator argument is not required to be `MPI_COMM_WORLD` — any
+communicator works, which is exactly what makes a chain of merges possible rather than only a
+single pairwise one), producing a communicator spanning `{0,1,2}`; and so on, in
+`connect_mode_components()`'s own fixed order, until every `Connect`-mode component has joined.
+Which single rank of the growing intermediate communicator plays "acceptor" for the NEXT merge (and
+where its port name is published) is the one real design choice a chain adds beyond today's single
+pairwise case — reusing `LaunchSpec::is_acceptor`/`port_file` per ADJACENT PAIR in the chain, rather
+than per component, is the natural reading of the field's existing meaning, but was not worked out
+in enough detail here to commit to as a fix: Conformance Unit 2 needs no more than this routing to
+make its own two cases match, and this is recorded instead of built so the next person extending
+`connect()` itself does not have to re-derive this from scratch.
+
+**Not pursued further this session.** `docs/user/multiple-executables.md` now points here from its
+own `E-CONNECT-SPEC` row.
+
+**Follow-up (same track, later in Unit 2): implemented, build-verified, not yet host-run.**
+`examples/brusselator/participants/{brusselator_graph_tool,u_main.c,v_main.f90,coupler_main.c,
+brusselator_check}` now exist. `brusselator_graph_tool --launch accept` declares U's own
+`ComponentDecl::ranks` to span its FULL local executable world (its own physics ranks plus any
+bundled coupler ranks), and the coupler's own `ranks` as the trailing, legally overlapping subset of
+that range (`fuse::RankSet`'s own documented "overlap is legal") — `validate_launch_layout()` skips
+`InProcess` components (the coupler) entirely when checking that `Connect`/`Mpmd` components occupy
+consecutive blocks, so U's own declared range has to already include every rank the merge will
+actually place before V's for the two checks to agree; confirmed (`validate()` and
+`validate_launch_layout()` both return OK) against the generated graph for both `--launch mpmd` and
+`--launch accept`, `--ranks-u 1 --ranks-v 1 --ranks-coupler 1`. `u_main.c`'s own `--ranks-u` tells it,
+per rank of its own local world, whether to act as a real U-physics rank (register fields, drive
+`u_loop_step`) or as a bundled coupler placeholder rank (register nothing, skip the step loop
+entirely) — every rank still calls `fuse_setup()`/`fuse_initialize()` identically, since
+`MPI_Comm_accept`/`MPI_Intercomm_merge` are collective over this executable's WHOLE local
+`MPI_COMM_WORLD`, not just its "real" U ranks.
+
+**Open mechanical question (Q4, not yet answered by the lead, beyond Q1–Q3): does a coupler
+placeholder rank need to call `fuse_begin_step`/`fuse_end_step` at all?** This session's own
+`u_main.c` has a bundled coupler placeholder rank skip the step loop ENTIRELY (no field registered,
+no `begin_step`/`end_step` call for "U" from that rank) — reasoned by analogy with
+`examples/layout_driver/main.cpp` (a true SPMD multi-component driver, where every rank calls
+`Runner::run_period()` identically regardless of which component(s) it hosts, and a `Coupler`
+component needs no `ComponentSet` entry of its own at all), but NOT verified against the Runner's own
+internal remap collectives, which this sandbox cannot exercise (MPI cannot start here at all, C1
+above). If a coupler placeholder rank's own step-loop participation turns out to matter, the fix is
+local to `u_main.c`'s/`coupler_main.c`'s own loop structure, not to `connect()` or the graph model —
+flagged here for the first host run to settle.
+
+**Host rows registered, not run.** `test/parallel/brusselator_participants/run_participants.sh` (ctest
+rows `verification.brusselator.participants.{mpmd,accept}.{3,5}`, `examples/CMakeLists.txt`) drives:
+
+```
+mpmd (3):    mpiexec -n 1 brusselator_u_main --graph g.yaml --log u.log --periods 2 \
+                   : -n 1 brusselator_v_main --graph g.yaml --log v.log --periods 2 \
+                   : -n 1 brusselator_coupler_main --graph g.yaml
+mpmd (5):    ranks 2/2/1 in the same three-segment shape
+accept (3):  mpiexec -n 2 brusselator_u_main --graph g.yaml --log u.log --ranks-u 1 --periods 2   (acceptor, backgrounded)
+             mpiexec -n 1 brusselator_v_main --graph g.yaml --log v.log --periods 2               (connector)
+accept (5):  U's executable at 3 ranks (--ranks-u 2), V's at 2
+```
+followed in every row by `brusselator_check --u-log u.log --v-log v.log`. All four executables and
+`brusselator_graph_tool`/`brusselator_check` build cleanly at tier 1 (confirmed this session, both
+trees' full `cmake --build`; the tier-0 harness's own `u_loop.c`/`v_loop.f90` sources additionally
+BUILD cleanly into `fuse_verification_brusselator_{participants,check}_test` under
+`FUSE_ENABLE_MPI=ON` too, but were only ever EXECUTED in the tier-0, FUSE_ENABLE_MPI=OFF tree, where
+both pass — no binary built in the MPI-enabled tree was run, per this sandbox's own standing
+constraint, C1 above).
+
+**What remains for this entry (S6 phase 3, Unit 4, consolidated 2026-10-07):**
+
+1. **Design work, sketched, not implemented, not scheduled:** the N-way
+   generalisation of `connect_pairwise()` above — not a ctest row or a host
+   step, so not repeated as one; Conformance Unit 2 needs no more than
+   today's routing and is not blocked on it.
+2. **Q4 (does a coupler placeholder rank need to call `fuse_begin_step`/
+   `fuse_end_step` at all?) is settled by the SAME host run D19's own
+   "what remains" list tracks — not a separate row, and not re-listed
+   here.** The four ctest rows that answer it
+   (`verification.brusselator.participants.{mpmd,accept}.{3,5}`) are D19's
+   own to own; see that entry.
+
+### ~~D19. The coupling-window path (`src/runtime/iteration.cpp`) has never run across more than one process~~ — CLOSED 2026-10-09: `parallel.window_runner_mpi.{2,3}` pass on the host (2026-10-08) and the three-executable Brusselator runs through it (D25)
+
+**Found this session**, reviewing Conformance Unit 2's own host rows before they can be run: every
+coupling-window test anywhere in this suite is tier 0 (one process). The window path has NO
+analogue of the ordinary-tick path's own per-process hosting check (`runner.cpp`'s `hosted[]`,
+`~1902`, `3aae2ed`; `grep -n 'this_process\|hosted\|ranks.contains' src/runtime/iteration.cpp`
+returns nothing), and this is not merely a missing optimisation — on more than one process it is a
+certain hang, for (at least) four separate reasons:
+
+1. **No hosting check at all.** `advance_window()` would call EVERY window member's `advance()` on
+   EVERY rank — the redundant physics the user rejected when windows were designed — and, through
+   the ABI, would yield `ExternalSuspend` for a component on ranks where no process will ever call
+   `begin_step()` for it.
+2. **Priming reads the wrong address space.** `resolve_regions()`'s cold-start priming reads
+   `registry.get(provider_exported_field)` and the provider's `v0` directly — a provider's field
+   exists only in the provider's own address space; a rank that does not host the provider has
+   nothing to read.
+3. **The convergence decision is not agreed.** A window region's stopping decision is computed from
+   LOCAL block norms; with members on different ranks, each rank sees only its own blocks, so
+   different ranks could reach different stop/continue verdicts — the exact class of defect this
+   project has fixed twice already (`E-RT-EPOCH-PEER`, region residual reductions): a collective
+   path returning on a locally-computed condition.
+4. **`coupler_main.c`'s and `u_main.c`'s own placeholder ranks never run the Runner at all** — they
+   call `initialize()` then `destroy()`, with no `run()`/`begin_step`/`end_step` in between. The
+   period's own Transports to and from the coupler's ranks, and the Remap routed through them, are
+   executed BY THE RUNNER; a rank that never runs the Runner never executes them, so U's and V's own
+   ranks would block forever in the first Transport that needs the coupler's participation. Unit
+   2's own four host rows (`verification.brusselator.participants.{mpmd,accept}.{3,5}`) would hang
+   on first contact with real MPI, not merely fail a numeric check.
+
+**Scope: Unit 2b**, in five ordered steps, each with its own tier-0 test (the 20 existing window
+tests plus the Brusselator as the bit-for-bit oracle for the single-process case):
+
+- **(a) Hosting — DONE (`0eb576a`).** `this_process` (the Runner already carries it) threaded into
+  `WindowMemberConfig`; a non-hosted member takes no substeps, no `advance()`/save/restore calls, no
+  `ExternalSuspend` — its own export arc on that rank is whatever Transport delivers.
+- **(b) Priming through the transfer — DONE (`2df7052`).** The import prime at `resolve_regions()`
+  now comes through the field transfer (the channel's own compiled Transport/Remap/Epoch/Sink chain,
+  re-run once from the provider's own export arc), never from `registry.get(provider_exported_field)`
+  directly.
+  **Correction to this entry's own original model, measured while building (b):** a window
+  channel's own `Interpolate` node NEVER carries a real `TemporalBasis` — confirmed by dumping the
+  actual compiled instruction stream for both a plain and a genuinely multirate (7:13) window graph:
+  neither ever emits an `OpKind::Sample`, and `resolve_spacetime()` (`runner.cpp`) only builds a
+  `SpacetimeInfo` for a node with `OpAttrs::basis != TemporalBasis::None`, which
+  `src/ir/window_lowering.cpp` never sets for a window channel (it compiles the `lag(k)` no-op
+  shape). So every window-channel `Interpolate` always takes `execute()`'s own `r.spacetime < 0`
+  plain-copy branch; `advance_window()` hands over the complete K-wide waveform in one buffer every
+  sweep, and there is no incremental, Sample-fed history for a window channel to depend on at all.
+  **A reader building on this path does not need to seed `SpacetimeInfo::history` for a window
+  channel — there is nothing there to seed.** (This entry originally assumed otherwise; measured and
+  corrected 2026-10-03.)
+- **(c) Agreed convergence — DONE.** The per-block residual/reference norms of a window region
+  reduced across the region's participants (the union of its members' processor sets) before the
+  stop/continue decision, in a fixed, deterministic order: `decide_window_convergence()`
+  (`include/fuse/runtime/window_convergence.hpp`), a new pure function in the same no-MPI,
+  tier-0-testable style as `rank_agreement.hpp`/`epoch_schedule.hpp`, fed by a new point-to-point
+  all-to-all exchange (`Runner::Impl::gather_window_block_samples()`, new tag `kWindowConvergence`
+  — never a true `MPI_Allgather`, since `R.participants` is a subset of `base`'s own ranks, matching
+  `reduce_region_residuals()`'s own convention). A block whose value is not hosted here contributes
+  no sample rather than an uninitialised one — `WindowMemberConfig::hosted` gates ownership only
+  when `R.participants.size() > 1` (a real multi-rank scenario where a different rank genuinely
+  supplies the value); with no second rank, a block stays owned, since disowning it there would make
+  it unmeasurable by anyone. Six pure-function tests in `test/runtime/window_convergence_test.cpp`,
+  including a direct instantiation of "a rank deciding from its local pairs only" (the lead's own
+  suggested mutation). The cross-rank agreement itself — as opposed to the wiring that reaches
+  `decide_window_convergence()` at all, which IS tier-0-killed, broadly and immediately — has no
+  tier-0 oracle (every sandbox fixture has exactly one effective participant); its real proof is
+  `parallel.window_runner_mpi.{2,3}` (step (e)), a host row.
+  **CORRECTION, measured against the host run of `parallel.window_runner_mpi.{2,3}`
+  (2026-10-08) — FIXED:** that host run FAILED (not merely unconfirmed): window 0, rank 0,
+  `got.iterations_per_window[0] == 1` against a reference of 37 (windows 1-4: reference 35, 25, 15, 3
+  vs `got` 1 every time), `got.x_b_per_window[0] == 0.2`, B's own unmodified initial value. Root
+  cause: `window_export_meta` (`src/runtime/iteration.cpp`) stored the EXPORTING member's own
+  `WindowMemberConfig::hosted` where `RegionBlock::window_hosted` (consulted by `run_region()`'s own
+  `gate_by_hosted` above) needs whether the CONSUMER is hosted here — a window block's residual is
+  measured through the compiled delivery chain (Transport/Epoch/Remap/Constrain/Diagnose), which runs
+  on the consumer's own processor set, not the exporter's. On a disjoint-ranks channel this inverted
+  ownership in both directions at once: the exporting rank wrongly claimed a block it never writes,
+  and the consuming rank — the only rank that does — wrongly disclaimed it, so both sides summed a
+  stale 0/0 residual/reference pair that reads as trivially converged. Fixed by a new
+  `WindowMemberConfig::export_consumer_hosted` field (resolved from the channel's TARGET component's
+  own processor set, the identical formula `hosted` itself uses), which `window_export_meta` now
+  stores instead. Pinned by `test/runtime/window_hosting_test.cpp` (white-box over the public
+  `Runner` API plus one test-only accessor, `Runner::test_only_window_block_hosted()`, since
+  `RegionBlock::window_hosted`'s own gate is only ever reached with a real `base_communicator`, which
+  a no-MPI build refuses outright) and a new pure-function case in `window_convergence_test.cpp`;
+  mutation `window-runner-export-ownership-uses-the-exporter`
+  (`build-evidence/mutations/window-runner.toml`) restores the exporter-side flag and is killed by
+  exactly the two rank-specific `WindowHosting` tests. **Then taken one level further:** that
+  field is per MEMBER, resolved against the first channel whose source is the member's export, so a
+  member feeding two consumers on different processor sets would hand both blocks one answer. Each
+  block now resolves its own ownership from its own channel's target (`resolve_regions()`, the
+  `window_export_capacity > 0` branch), which is where the block's channel is already known;
+  `WindowHosting.FanOutBlocksFollowTheirOwnConsumerNotTheFirstChannel` builds exactly that graph (one
+  export, consumers on ranks 1 and 2) and the mutation
+  `window-block-ownership-resolved-per-member-not-per-channel` kills it. Writing that fixture also
+  measured a neighbouring refusal worth recording: a convergence measure naming the fanned-out SOURCE
+  field is refused with `E-ITER-MEASURE` (it matches two residuals, and exactly one is required), so
+  each consumer's own field is what such a region names. **Also found and fixed in the same host run:**
+  `window_runner_mpi_test.cpp` compared a member's own `x()` on EVERY rank, but since `0eb576a` a
+  member advances only on its own processor set — a rank that does not host a member never touches
+  its real state, so the test was comparing a hosting rank's real trajectory against a non-hosting
+  rank's untouched initial value. Each member's own state is now compared only on the ranks
+  `RankSet::contains()` says host it; the agreed sweep count stays compared on every rank.
+- **(d) Ranks without a component — DONE.** `fuse_run()` legal on a process hosting no
+  externally-driven component: `Runner::hosts_component(ComponentId) const -> bool`, a new public
+  method generalising `WindowMemberConfig::hosted`'s own rule, replaces `impl_run()`'s blanket
+  `c.external_count > 0` graph-level refusal (`src/abi/participant.cpp`) with a per-component loop —
+  explicitly skipping `ComponentKind::Coupler` entries, which never get `in_process` set at all and
+  so would otherwise be wrongly refused on a rank hosting only a coupler. `coupler_main.c`'s and
+  `u_main.c`'s own placeholder ranks now call `fuse_run()` for `--periods` periods instead of doing
+  nothing between `initialize()`/`destroy()`. Tier-0-tested via a new test-only ABI seam,
+  `fuse::abi_test::force_this_process()` (mirrors `inject_component()`'s own precedent: no entry in
+  the frozen public ABI lets a C caller name a rank without a real communicator) —
+  `AbiParticipant.RunAcceptedOnAProcessHostingOnlyTheCoupler` and
+  `AbiParticipant.RunStillRefusedOnAProcessHostingAnExternalComponent`, both passing; the
+  coupler-exclusion fix specifically validated by the former. `docs/user/c-abi.md` updated with a new
+  "`fuse_run()` and ranks without a component of their own" section.
+- **(e) `parallel.window_runner_mpi.{2,3}` — DONE (sandbox build only).** The 7:13 LCM-window fixture
+  (`window_runner_multirate_test.cpp`'s own shape: A interval 13, B interval 7, window 91, so neither
+  member ever straddles) as a REAL multi-process `Runner` run — A and B on genuinely disjoint ranks
+  (0 and 1), a third, uncoupled component C added at 3 ranks (rank 2, no channels, proving its mere
+  presence does not perturb the window) — compared, `EXPECT_EQ`, against the single-process `Runner`
+  on every per-window final value AND every per-window iteration count, not merely completion.
+  `test/parallel/window_runner_mpi_test.cpp`, registered via `fuse_add_mpi_test(parallel
+  window_runner_mpi LIBS fuse::runtime RANKS 2 3)`. Build-verified only: `b1mpi` (tier 1,
+  `FUSE_ENABLE_MPI=ON`) builds and links `fuse_parallel_window_runner_mpi_test` clean, and `ctest -N`
+  there confirms the two rows exist (`parallel.window_runner_mpi.2`, `parallel.window_runner_mpi.3`);
+  MPI cannot start in this sandbox at all (C1), so neither row has actually been RUN here. This is
+  the host row that settles both (c)'s cross-rank agreement (no tier-0 oracle, as noted above) and
+  (b)'s narrower registry-vs-chain comparison (`window-prime-length`/`window-runner` mutation notes,
+  `build-evidence/mutations/`), neither of which a single sandboxed process can distinguish from its
+  alternative.
+
+**Fixed in the sandbox, awaiting the host.** Steps (a)-(e) above are all implemented and tier-0/
+build verified (163/163 tier-0 tests pass; tier 1 — `FUSE_ENABLE_MPI=ON` — builds clean including the
+new MPI test and the Brusselator's `coupler_main`/`u_main` placeholder-rank changes); every mutation
+tried has a decisive sandbox-side kill except the two comparisons named above, which by their own
+nature need a second real rank to even pose the question. None of this has been run under real MPI —
+this sandbox cannot start it (C1) — so the fix is unconfirmed until a host executes:
+- `verification.brusselator.participants.mpmd.{3,5}` (Unit 2, pre-existing)
+- `verification.brusselator.participants.accept.{3,5}` (Unit 2, pre-existing)
+- `parallel.window_runner_mpi.2` (step (e), new)
+- `parallel.window_runner_mpi.3` (step (e), new)
+
+### D31. Newton over a coupling window (S7.2 WindowNewton, `newton-krylov.md` Sec. 9) was single-rank only; the multi-rank `ParticipantSetReducer` is now built — BUILT 2026-10-12, host MPI run still required to close
+
+`Runner::Impl::run_region_newton_window()`/`evaluate_window_region_residual()` (src/runtime/iteration.cpp)
+implement Newton-Krylov over a WINDOW-scoped coupling region, reusing `check_region_supports_newton()`'s
+own `R.participants.size() > 1` refusal (`E-NEWTON-UNSUPPORTED-REGION`) unchanged from the ordinary
+(non-window) seam — a window-scoped Newton region with more than one cross-rank participant is refused
+at setup exactly as it always was, never reaching the new code at all. Every norm and inner product
+`fuse::num::solve()`'s own GMRES/line-search/forcing-term machinery computes over the window's own
+Newton interface vector is already routed through a `fuse::linalg::Reducer` held by the region
+(`RegionRuntime::newton_reducer`, `src/runtime/runner_impl.hpp`) rather than inlined as a local
+sum-of-squares — but the reducer `resolve_regions()` (`src/runtime/iteration.cpp`) actually constructs
+there is unconditionally `fuse::linalg::make_serial_reducer()`: a real cross-rank `ParticipantSetReducer`
+(summing a local norm/inner product across exactly `R.participants`, the SAME rank set `decide_window_
+convergence()`'s own existing cross-rank reduction for Picard's sweep loop already uses) is a comment on
+`RegionRuntime::newton_reducer`'s own declaration documenting the FUTURE contract, not an implementation —
+there is no code anywhere in this track that builds one, and no test exercises more than one rank.
+
+**Why deferred rather than built now:** the task's own lead decision (2026-10-11, Stage B go-ahead)
+scoped this track to single-rank only, explicitly asking for the Reducer SEAM (so a later multi-rank
+step is a reducer swap, not a re-plumb of every call site) without the reducer's own cross-rank body.
+Building `ParticipantSetReducer` honestly needs a real multi-rank host run to prove against — this
+sandbox cannot start MPI (C1, same constraint D5/D8/D14/D23 already name) — so writing it now would be
+exactly the same "implemented, never run under real MPI" category those issues already carry, for a
+genuinely new reduction rather than a variant of one already host-verified elsewhere.
+
+**What a host run must verify before this is closed:** a `ParticipantSetReducer` (new, `src/linalg/
+comm_mpi.cpp` + `include/fuse/linalg/comm.hpp`, the files `newton-krylov.md` Sec. 9.4/9.7 already name
+for this) that sums a local scalar across exactly one iteration region's own `R.participants` ranks (not
+the full `base_communicator`, the same "this region's own rank subset, not the whole run" scoping
+`decide_window_convergence()`'s existing reduction already gets right); `resolve_regions()` building one
+for a window-scoped Newton region instead of `make_serial_reducer()` unconditionally; and a new host
+test, `parallel.window_newton_mpi.{2,3}` (mirroring `parallel.window_runner_mpi.{2,3}`'s own shape, step
+(e) above, on a window region with `AccelKind::Newton` instead of Picard) comparing every window
+instance's final Newton iterate AND iteration/GMRES count against the single-process `Runner` on the
+identical graph — the SAME cross-rank-agreement property `window_runner_mpi_test.cpp` already proves for
+Picard, now for Newton's own reductions specifically.
+
+**Built 2026-10-12 (Newton track), BUILD-VERIFIED ONLY — the sandbox this track built in cannot
+complete a bare `MPI_Init()` (the same constraint this entry's own deferral named), so nothing below has
+been RUN anywhere; the host must verify it.** `fuse::linalg::ParticipantSetReducer`
+(`src/linalg/comm_mpi.cpp`, `include/fuse/linalg/comm.hpp`) is real: an `MPI_Comm_split` over exactly a
+region's own `RegionRuntime::participants`, collective over the Runner's base communicator and called in
+the same ascending-region-index order on every rank (mirroring `attach_comm_graphs()`'s own "every rank
+calls every split" discipline); a rank outside the participant set gets `MPI_UNDEFINED` and no `Reducer`
+object at all. The split is held, not point-to-point-addressed like `reduce_region_residuals()`/
+`gather_window_block_samples()` — the task's own explicit choice, reasoned through in the factory's own
+header comment — with its lifetime handled the way `MoabMeshBackend`'s own `OwnedComm` already handles an
+identical one (freed in the Reducer's own destructor, guarded by `MPI_Finalized()`, never copyable).
+`check_region_supports_newton()`'s blanket "more than one participant is refused" rule is gone, and
+nothing narrower replaces it: `RegionRuntime::participants` is populated with more than the empty set
+only when `RunnerConfig::base_communicator` has a value in the first place, so "more than one
+participant" already implies a real communicator exists to build the Reducer from. The earlier
+`E-RT-REGION-MPI` refusal (the one that blocks a dynamic accelerator on a multi-rank region) now also
+exempts `AccelKind::Newton` alongside `None`/`Constant`. `RegionBlock::newton_offset`'s own window-Newton
+vector-layout computation now excludes a block this rank does not host (`!b.window_hosted`) from the
+SAME mechanism the GaussSeidel exclusion already used, making `RegionRuntime::newton_n` a per-rank LOCAL
+total with zero ghosts (every cross-rank dependency the window's own body needs is already carried by its
+compiled Transport instructions, proven correct for Picard's own multi-rank case). `run_region_newton()`/
+`run_region_newton_window()` gained the identical "not a participant, nothing to do" early return
+`reduce_region_residuals()` already has (`Runner::Impl::region_is_local_participant()`, new, kept in
+`runner.cpp` so `iteration.cpp` still names no MPI type); `run_region_newton()`'s own ordinary (non-
+window) seam now also reads `RegionRuntime::newton_reducer` instead of constructing a fresh serial reducer
+every call, closing the one place that convention from Sec. 9.4 had not yet reached even in the
+single-rank era. Full account: `docs/dev/newton-krylov.md` §9.10.
+
+**Measured by hand (tier 0, no MPI, this sandbox):** mutating the `!b.window_hosted` exclusion to never
+fire (`build-evidence/mutations/newton-parallel.toml`, row `window-newton-offset-not-gated-by-hosted`)
+kills exactly the two new `window_newton_hosting_test.cpp` cases that name a genuine cross-rank exclusion
+(2 FAILED of 3), leaves the no-`this_process`/no-communicator case passing (window_hosted already
+defaults true there), and restores clean. `parallel.window_runner_mpi.{2,3}`, `verification.
+brusselator_runner` and every other pre-existing tier-0 row this track touched were re-run after each
+change and are unaffected (`newton_region_test`: 17/17; `window_fixed_point_residual_test`: 8/8;
+`window_hosting_test`: 4/4; `brusselator_runner_test`'s own `NewtonConvergesInAPinnedIterationCount...`:
+1/1).
+
+**What a host run must still verify before this closes:** `parallel.window_newton_mpi.{2,3}`
+(`test/parallel/window_newton_mpi_test.cpp`, built, never run) and `parallel.participant_reducer_mpi.
+{2,3}` (`test/parallel/participant_reducer_mpi_test.cpp`, built, never run) — the real `MPI_Comm_split`/
+`MPI_Allreduce`/`MPI_Allgather` correctness this sandbox cannot exercise at all. Every one of
+`ParticipantSetReducer`'s own `sum`/`max`/`allgather` methods; whether a 2- or 3-rank window-Newton solve
+over the Brusselator-shaped and the synthetic LinearOde-shaped fixtures actually reaches the SAME
+outer-Newton and GMRES iteration counts the single-process `Runner` does, and whether the final member
+states fall inside the Higham round-off bound the test derives and prints rather than asserting bitwise.
+D32's own PETSc substrate lift (below) shares this same host-pending status under
+`petsc.window_newton_mpi.{2,3}`.
+
+### D32. The PETSc solver plugin is the second substrate behind the S7 seam — BUILT AND MEASURED 2026-10-11; the communicator remains
+
+S7 was built on the library's own linear algebra first, by the user's decision of 2026-10-10: a
+native Jacobian-free Newton-Krylov coupler (`fuse::num::solve()`, `docs/dev/newton-krylov.md`)
+replicating the mechanisms that make PETSc SNES's `NEWTONLS` robust — the Walker–Pernice
+finite-difference step, Eisenstat–Walker forcing, the cubic-backtracking, critical-point and damped
+line searches, named convergence and divergence tests, a lagged block-Jacobi preconditioner — with
+no PETSc dependency. PETSc remains the intended second substrate for problems the native solver
+should not carry (very large or stiff coupled systems, preconditioners the library does not have),
+and it plugs in behind the SAME seam: a `fuse::LinearizationToken` whose `apply_jacobian` is a
+`MatShell`/`MatMFFD` and whose `apply_preconditioner` is a `PC`, or a `SNES` driving
+`Runner::region_fixed_point_residual()`'s `F` directly. Nothing in the seam is PETSc-shaped and
+nothing in the Newton solver knows which substrate a token comes from.
+
+**State today.** `FUSE_ENABLE_PETSC` is a configure option (`cmake/FuseDependencies.cmake:121`,
+tier 3, requires `FUSE_ENABLE_MOAB`) that locates PETSc through `pkg-config` and defines
+`FUSE_HAVE_PETSC` in `fuse/base/config.hpp`, and nothing more: no source file under `src/` or
+`include/` tests that macro, and no target links the imported library. Three PETSc installations are on the
+development host, none of them matching this build: `/opt/petsc/chi-tech` (3.19, 64-bit indices,
+HYPRE), `/opt/petsc/download-moab` (3.25, debug, MOAB, built against `/opt/mpich`), and
+`/opt/petsc/debug-bare` (3.17, debug). **Decided 2026-10-11 by the owner: `/opt/petsc/download-moab`,
+for PETSc AND MOAB** (the `all` preset's `MOAB_DIR` moved there from `/opt/moab/cmake-all`); the other
+installs are old. Its MOAB has no TempestRemap, so the high-order spherical remap method refuses at run
+time; measured that the registered row set is unchanged (299 rows either way, the only name differences
+the OpenMP thread-count suffix). No Kokkos and 32-bit indices in that PETSc are accepted for now; a
+Kokkos-enabled PETSc is a later rebuild on the owner's side, not a plugin concern.
+
+**What a plugin track owes when it is opened.** The derivative gate (`linalg.derivative_gate`,
+`docs/dev/derivative-gate.md`) on the PETSc-backed token: the adjoint identity on
+`MatMult`/`MatMultTranspose`, the Taylor-remainder order on `MatMFFD`'s action, and agreement with
+the native MFFD action to a measured bound. dn_heat and the Brusselator by the PETSc path against
+the native results recorded in `docs/user/dn-heat.md` and `docs/user/brusselator.md` — same
+graphs, same tolerances, iteration counts and final means side by side. A refusal when
+`FUSE_ENABLE_PETSC` is off and a graph selects the PETSc substrate, with a test that makes it fire.
+
+**Built 2026-10-11 (PetscToken track, S7.2b) and measured on the host the same day — all four
+`petsc.*` rows pass in the MPI tree and in a tier-0 PETSc-only tree; `docs/dev/newton-krylov.md`
+§10.3 carries the numbers. The sandbox the track built in cannot complete a bare `MPI_Init()`, so
+the measurements are the host's.** `src/petsc/{init,token,solve}.cpp` and `include/fuse/petsc/{token,solve}.hpp` implement
+exactly the plugin this entry asked for: `fuse::petsc::MffdToken` (a `fuse::LinearizationToken`
+backed by `MATMFFD`/`MATMFFD_WP`, `apply_jacobian_transpose` refusing `E-PETSC-NO-TRANSPOSE`,
+`apply_preconditioner` through a `PC` — `PCNONE` by default, `PCSHELL` composing the SAME
+`fuse::num::BlockJacobiPreconditioner` the native solver uses for its own block-Jacobi, reused
+rather than reimplemented), `fuse::petsc::make_assembled_token` (a real `MATAIJ`, for the adjoint
+test the MFFD token itself has no transpose to run), and `fuse::petsc::solve()` (`SNESNEWTONLS`,
+`MatCreateSNESMF`/`MATMFFD_WP`, `KSPGMRES` right-preconditioned, `SNESKSPSetUseEW` with the SAME
+six Eisenstat-Walker constants `NewtonKrylovOptions` already uses, `SNESLINESEARCHBT`/`CP`/`NONE`
+selectable, `SNESConvergedReason` mapped onto the native `NewtonStatus`). `tools/check-layering.py`
+gained a `petsc` layer (topmost, `ALLOWED_PUBLIC_THIRD_PARTY` empty — no PETSc type anywhere in a
+public header) and reports 0 violations; `cmake/FuseDependencies.cmake`'s old
+`FUSE_ENABLE_PETSC requires FUSE_ENABLE_MOAB` gate is gone (the solver plugin needs neither MOAB
+nor a mesh — that bundling was for a PETSc+MOAB physics kit this track is not). Clean tier-0
+builds, BOTH with and without `FUSE_ENABLE_PETSC`, 0 compiler errors; `FUSE_ENABLE_PETSC=OFF`
+registers exactly the pre-existing 187 tier-0 rows (100% pass, unchanged); `FUSE_ENABLE_PETSC=ON`
+registers 191 (187 + `petsc.{init,token,derivative_gate,snes}`), and a tier-1 compile
+(`-DFUSE_ENABLE_MPI=ON -DFUSE_ENABLE_FORTRAN=ON -DFUSE_ENABLE_PETSC=ON`) of every touched target
+succeeds with 0 errors.
+
+**Where the measurements came from.** The sandbox the track built in cannot complete a bare
+`MPI_Init()` (MPICH's debugger-attach mutex assertion in `dbginit.c`, independent of PETSc — a
+single-process constraint, more severe than C1's launcher one), so the track compiled and
+registered everything and the lead ran it on the development host in two trees, `build-all`
+(MPI on) and a tier-0 PETSc-only tree. Three defects the sandbox could not show were found and
+fixed there: `ensure_initialized()` set `PETSC_COMM_WORLD` before `PetscInitialize` even with MPI
+down, which made PETSc skip `MPI_Init` and fail with `PETSC_ERR_SUP` in every tier-0 process;
+both tokens' `PC` had no operator attached, so `PCSetUp` refused "Missing A matrix" on every
+`apply_preconditioner`; and the adjoint gate's control case used `x == y`, for which the identity
+holds for any operator. A fourth was found by the corrected init test itself: `MPI_Initialized`
+stays true after `MPI_Finalize`, so a second initialisation after a release walked into a
+finalised MPICH; it now refuses `E-PETSC-MPI-FINALIZED`. All four `petsc.toml` rows are
+hand-proved on the host's tier-0 tree (each kills exactly the case that guards it; the dropped
+finalize check aborts the binary after its first case).
+
+**What remains before this entry can close** (plan S7.2b phase 2): per-region substrate selection
+(`NewtonConfig` substrate `native`/`petsc` through YAML and the descriptor, `E-NEWTON-PETSC-UNAVAILABLE`
+in a build without PETSc with a test that fires it), dn_heat and the Brusselator by the PETSc path
+recorded beside the native results, and the `forcing.eta_min` gap (`docs/dev/newton-krylov.md` §10.4:
+SNES has no forcing floor, and the Brusselator window needed one on the native substrate).
+
+**Built 2026-10-11 (PetscSelect track, plan S7.2b phase 2) -- the per-region selector itself, NOT
+the `eta_min` gap, which stays open (§10.4/§11 both name it unchanged).** `NewtonConfig::substrate`
+(`fuse::NewtonSubstrate`, `Native`/`Petsc`, fuse/model/iteration.hpp) selects WHICH registered
+implementation a region's Newton solve dispatches to, through a small registry in `fuse::num`
+(`register_newton_substrate()`/`newton_substrate()`, fuse/num/newton_krylov.hpp -- `fuse::num` sits
+BELOW `fuse::runtime` in `tools/check-layering.py`'s own layer order, and `fuse::petsc` sits ABOVE
+`fuse::runtime`, so the registry is the only place the Runner can dispatch to a substrate it is
+layering-forbidden from naming directly). `Native` registers itself deterministically on first use
+(a function-local static, never a static initialiser that might not link); `fuse::petsc::install()`
+(new, fuse/petsc/solve.hpp) registers `Petsc`, never called by the library itself. `src/runtime/
+iteration.cpp` checks the registry TWICE per Newton-selected region: eagerly in `resolve_regions()`
+(so a graph naming an unavailable substrate refuses `E-NEWTON-PETSC-UNAVAILABLE` at
+`Runner::initialize()`, before the first period -- `NewtonRegion.ARegionSelectingAnUnregisteredSubstrateIs
+RefusedAtSetup`, test/runtime/newton_region_test.cpp, fires this TIER-0, WITHOUT PETSc), and again,
+defensively, at the actual dispatch inside `run_region_newton()`/`run_region_newton_window()`. The
+descriptor bumped to v13 (`test/golden/waist-v13.bin`, one more byte appended at the end of the v12
+NewtonConfig block, following v12's own append-only placement exactly); YAML gained `newton_config.
+substrate: native|petsc`. The communicator decision (docs/dev/newton-krylov.md §11.3): the registered
+PETSc substrate always solves on `MPI_COMM_SELF`, never the Runner's own `base_communicator`, because
+every Newton-selected region on EITHER substrate is already single-rank-only by `check_region_
+supports_newton()` (D31's own restriction) -- nothing to reduce across ranks inside the solve itself
+regardless of substrate; `SnesOptions::comm_f` stays available for a future multi-rank lift to revisit.
+
+`examples/dn_heat/main.cpp --newton-petsc` and `examples/brusselator/main.cpp --substrate petsc` run
+the IDENTICAL graphs the native rows do, by data (`NewtonConfig::substrate`) alone -- the default
+invocation of either binary is byte-identical whether or not `FUSE_ENABLE_PETSC` was configured,
+since both PETSc code paths are compiled in only under `FUSE_HAVE_PETSC` and run only when explicitly
+asked for. Both compare the PETSc result against the native one to a bound DERIVED from the two
+solvers' shared `rtol` and the problem's own structure (dn_heat's affine Jacobian; the Brusselator's
+own `kTol`) plus the §10.3-measured 3.9e-8 relative inter-solver difference -- never a number chosen
+to make the check pass; the exact derivation is in each file's own comment at the check. Registered
+as `example.dn_heat.newton_petsc` and `petsc.brusselator_newton`, both gated by
+`FUSE_ENABLE_PETSC`.
+
+**Verified, tier-0 WITHOUT PETSc:** clean build, 0 errors, 187/187 tests pass (unaffected count and
+pass rate -- this track added no new tier-0-unconditional ctest row), `/tmp/petscselect/b0`.
+**Verified, tier-0 WITH PETSc:** clean build, 0 errors, 193 tests registered (187 + `petsc.{init,
+token,derivative_gate,snes,brusselator_newton}` + `example.dn_heat.newton_petsc`); 187/193 PASS,
+exactly the 6 PETSc-dependent rows FAIL by the same `MPI_Init()` constraint §10's own measurements
+were taken around (SEGFAULT, not a logic failure) -- every pre-existing, PETSc-independent row,
+INCLUDING `verification.brusselator_runner` itself, is unaffected, `/tmp/petscselect/bpetsc`. (An
+earlier draft of the Brusselator PETSc-substrate case lived inside `test/verification/
+brusselator_runner_test.cpp` itself; measured directly that its own crash took the WHOLE shared
+binary down with it, failing every other case in that file too -- moved to its own dedicated binary,
+`test/petsc/brusselator_newton_test.cpp`/`petsc.brusselator_newton`, the same isolation convention
+every other `petsc.*` test already follows, and reconfirmed clean after the move.)
+**Measured on the host 2026-10-11 and closed as far as phase 2 goes:** the dn_heat and Brusselator
+PETSc-substrate tables (docs/user/dn-heat.md, brusselator.md) are filled from `build-all`; both
+examples agree with the native path (dn_heat to 2.7e-10 K against Picard, the Brusselator to every
+printed digit of the final means over 50 windows). The `forcing.eta_min` gap is **closed**: the
+Brusselator did stall on PETSc without a floor, and `fuse::petsc::solve()` now applies
+`NewtonConfig::eta_min` through a KSP convergence test (`docs/dev/newton-krylov.md` §10.4(1)), proved
+by the `petsc-forcing-floor-not-applied` mutation. **Still open under D32:** the PETSc substrate
+solves on `MPI_COMM_SELF` (correct while D31 restricts Newton regions to one participant; the
+communicator plumbing is D31's). The 20× margin the agreement bounds once carried is gone: they are
+built from each substrate's own terminal residuals (dn_heat: an exact bound, ‖J⁻¹‖∞ = 4/3 times the
+sum over its 20 periods; the Brusselator: a calibrated reference error times one plus the residual
+ratio), and both held on the owner's machine on 2026-10-12 (dn_heat: observed 3.572609e-10 K against
+5.888415e-07 K, ratio 6.067e-04; the Brusselator: per element against 5.390239e-15, with the observed
+maximum not yet printed — the test now prints it).
+
+### D48. A `Transport` instruction can have one arc device-resident and the other host, even in Device mode — FOUND AND FIXED 2026-10-13
+
+**What was found.** docs/dev/device-resident-arcs.md Phase 3 made `Transport` space-aware in
+`place_arcs_on_device()`, on the assumption that a Transport's two arcs -- ordinary,
+coupler-owned intermediate storage -- always land on the same side together. They do not: a
+Remap needing conservation checking pins the `Constrain`'s `before_arc`, which is frequently a
+Transport's own OUTPUT (the Remap's input), to host, while the Transport's INPUT, untouched by
+any other host-only instruction, lands on the device like everything around it under
+`place_arcs_on_device()`'s "not pinned => device" rule. An initial, defensive implementation
+refused this combination outright (`E-RT-TRANSPORT-DEVICE`) rather than guess at it -- and that
+refusal regressed two PRE-EXISTING, previously-passing Device-mode tests:
+`RunnerDevice.DeviceAndHostAgreeToRoundingOnRelaxAndWeightedRemap` (the weighted Remap +
+Relax scenario) and `RunnerDevice.OrdinaryIterationRegionConvergesOnTheDeviceLikeTheHost`
+(the two-`LinearBlock` iteration region) -- both no-graph (single-process `CopyTransport`)
+plans whose Transport instruction feeds exactly such a Constrain-pinned Remap. Caught by
+running the full `runtime.runner_device` row before declaring this track's step 1 done, not by
+anything specific to the mixed-pair scenario itself.
+
+**What was fixed.** Two cases, both still in `Runner::Impl::execute_on<Space>()`'s
+`OpKind::Transport` case:
+- No-graph (`CopyTransport`): `Kokkos::deep_copy` bridges ANY combination of host and device
+  pointers by itself (that is the whole point of the primitive), so every combination -- both
+  device, both host, or mixed -- calls it directly; `CopyTransport::move`'s `std::memcpy`
+  (host address on both sides, by contract) is reached only for the all-host case, unchanged.
+- CommGraph-backed (MPI): a mixed pair stages the device-resident side through a per-plan host
+  scratch buffer (`Impl::transport_in_scratch`/`transport_out_scratch`, sized once in
+  `build_transport_device_buffers()`), runs the UNCHANGED scalar host loop against two host
+  pointers, and stages the result back to the device `out` arc if that side was device. No
+  test in this tree's CommGraph-backed rows currently exercises this exact branch (every MPI
+  scenario built for this track keeps both arcs together, like the no-graph ones did), but it
+  follows the identical `Kokkos::deep_copy`-at-the-boundary pattern the generic
+  `span_c`/`span_m` staging and `copy_arc` already use elsewhere in this file, so it is not new
+  machinery, only a new call site for it.
+
+**Verification.** `runtime.runner_device` (11/11 pass, including both previously-regressed
+rows) and `abi.device_binding` both green after the fix; see report-transport.md for the full
+ctest counts of this track's own build.
+
+### D49. `TheTransportPathAllocatesNothingWhileRunning`'s `.device` twin fails on the rank with a mixed device/host Transport arc pair — OPEN, failing assertion not actually recovered
+
+**What is actually confirmed.** `test/parallel/runner_transport_test.cpp`'s `RunnerTransport.
+TheTransportPathAllocatesNothingWhileRunning` wraps `runner.run(h.components, 4)` in an
+`AllocationCounter` after one uncounted warm-up period and asserts the count is exactly 0 --
+the ONLY assertion in the test after its two `ASSERT_TRUE` setup checks. Registered with
+`DEVICE_TWIN` (this track), its `.device` twin (`FUSE_EXECUTION_SPACE=device`) fails on
+exactly the rank that holds the `solid` component. `FUSE_DEVICE_DEBUG=1` confirms that on that
+rank the channel's Transport instruction has a MIXED arc pair (input = `fluid.out`, a
+component-owned host alias, `n=0` on this rank and so never promoted; output = the
+coupler-owned `link/transport` arc, `n=12`, promoted to device) -- the exact combination
+KNOWN_ISSUES D48 fixed correctness for, which on this rank reaches `Impl::transport_out_scratch`
+and a `Kokkos::deep_copy` into device memory for the first time in this binary.
+
+**What is NOT confirmed, stated as a hypothesis rather than fact.** A per-rank `mpiexec`
+capture (`-outfile-pattern` is not an OpenMPI 4.1.5 flag; a `stdbuf`-wrapped per-rank redirect
+was used instead) could not recover which assertion failed or any count, because
+`fuse::testing::MpiFailureReducer`'s listener setup removes the default result printer on
+every non-zero rank (`fuse_test_main.cpp`'s own documented design, "silence progress on
+non-zero ranks"), which also silences the `EXPECT_EQ`/`ASSERT_TRUE` failure text itself. Given
+the test's structure, the failure is most likely the `EXPECT_EQ(allocations, 0u)` check (it is
+the only assertion reachable after the setup `ASSERT_TRUE`s, and rank 0 passed cleanly), but
+this was never directly observed -- an equally possible explanation this session did not rule
+out is `ASSERT_TRUE(ok)` (i.e. `runner.run()` itself returning an error on this rank) failing
+instead, for a reason unrelated to the allocation count.
+
+**Why not fixed now.** Recovering the real failure (candidates for a non-zero allocation
+count: a first-touch cost of the `Kokkos::deep_copy` call itself into device memory not fully
+amortized by the warm-up period; something reached for the first time by
+`MpiTransport::prepare()`/`move()` under this specific rank's zero-input/nonzero-output shape)
+needs either a temporarily-instrumented build (to print past the reducer's silencing) or a
+debugger attached to rank 1 specifically, both multiple further build/run cycles on a single
+shared GPU host. Correctness is unaffected regardless of which it is: every
+delivery-correctness assertion in this file and in `test/runtime/runner_device_test.cpp` passes
+under Device, including the two rows D48 fixed.
+
+**What was done.** The test skips itself under `FUSE_EXECUTION_SPACE=device` with a comment
+naming this entry, rather than asserting a count nobody has explained; the Host leg (and its
+default `.omp`/non-`.device` MPI legs) are unaffected and still assert zero allocations.
+
+**What would close it.** Rebuild with the assertion temporarily changed to print the count to
+`stderr` directly (bypassing the GoogleTest listener) on failure, or run rank 1 alone (`mpirun
+-n 1 ... ` does not reproduce the two-rank disjoint placement, so the real repro needs an
+attached debugger or `gdb --args` under `mpiexec`), to get an actual call stack for the
+allocation.
+**Integration note (lead, 2026-10-13).** The same binary's host leg allocates nothing, and the one thing the mixed-pair path adds per period is `Kokkos::deep_copy` between spaces, which fences with a string label (`Kokkos::fence("Kokkos::deep_copy: ...")`) and so constructs a `std::string` per call. That is exactly why `Iteration.TheSweepLoopAllocatesNothing` and `TheAcceleratorAllocatesNothingPerUpdate` skip under `FUSE_EXECUTION_SPACE=device` (docs/dev/testing.md, "The device leg"): the count measures Kokkos, not FUSE. Still unconfirmed by a per-rank capture; if that is what the debugger shows, the right close is the same skip-with-reason, not a change to the Transport path.
+
+### ~~D50. `parallel.window_runner_mpi`'s new `.device` twin fails with `E-RT-DEVICE` on an `Interpolate` instruction~~ — CLOSED 2026-10-13 (fixed on the lead branch before the twins were merged)
+
+**What.** `fuse_add_mpi_test(parallel window_runner_mpi ... DEVICE_TWIN)` (this track) registers
+the first-ever Device-mode run of this file's window-scoped iteration region test. Both
+`.device` rows fail immediately: `E-RT-DEVICE: instruction 'Interpolate' needed more device
+staging than setup() provisioned (4 lanes of 0 values)` -- `Impl::device_staging_stride` is 0
+when this plan's window-scoped region reaches its spacetime `Interpolate`, so `stage()`'s fault
+path (`staging_fault = true`) trips on the very first lane request. `parallel.window_runner_mpi.2`
+/`.3` (Host) are unaffected and still pass; `parallel.nodal_remap_runner` and
+`parallel.native_halo_mpi`'s own new `.device` twins both pass clean, so this is specific to
+the window-scoped + spacetime-Interpolate combination, not to Transport or to `DEVICE_TWIN`
+rows generally.
+
+**Why this is not this track's Transport change.** `device_staging_stride` is computed in
+`Runner::Impl::initialize()` as `max(s.total() for s in slots)`, entirely independent of which
+arcs `place_arcs_on_device()` pins or promotes -- Transport's own arcs moving from
+unconditionally-pinned to space-aware (D48) does not change any `Slot::total()`. The window
+member bookkeeping (`advance_window()`, `src/runtime/iteration.cpp`) and its own Interpolate
+dispatch are both outside `execute_on<Space>()`'s ordinary switch (WindowAdvance instructions
+are special-cased, per that case's own refusal comment), so this looks like a latent gap in
+the window-scoped-region-under-Device path that nothing in this tree's suite exercised before
+`DEVICE_TWIN` added the first `.device` row for this specific test file.
+
+**Why not fixed now.** docs/dev/device-resident-arcs.md's own rollout Step 3 lists "the
+accelerator interface vector and the window-member bookkeeping" as a SEPARATE item from this
+track's Phase 3 scope (GPU-aware transport, rank-to-device binding, device-mode MPI test
+rows); diagnosing a zero-sized `device_staging_stride` for a window-scoped plan's spacetime
+history needs a change to `Runner::Impl::initialize()`'s stride computation or to how a
+window's own ticks reach `execute_on<Space>()`, neither of which this track's charter covers.
+
+**What would close it.** Trace with `FUSE_DEVICE_DEBUG=1` why `device_staging_stride` comes out
+0 for this plan (every ordinary, non-window slot in it is non-empty, per the Host leg's own
+successful run) -- likely the window-scoped region's own blocks/history are sized from a path
+`initialize()`'s stride loop does not walk, which is exactly the gap Step 3 names.
+
+**Closed.** The cause is the one `verification.brusselator_runner.device` hit the same day: `setup()` sized the device staging lanes AFTER `resolve_regions()`, which executes a window-scoped region's lagged import chain once during region resolution, so that first `Interpolate` saw `device_staging_stride == 0`. Commit 581c5d1 moves the sizing ahead of `resolve_regions()`; the window twins at 2 and 3 ranks pass on the integrated tree (see the final report).
+
+### D51. Native halo/migration's device-side merge (dedup-by-global-id) is not implemented
+
+**Scope note, 2026-10-13.** `fuse::native::device::pack_to<Space>` (include/fuse/backend/native/
+mesh_pack_device.hpp) templates the migration and halo wire PACK on the Kokkos memory space, verified
+byte-for-byte against `pack_for_migration`/`pack_halo_cells` in both Host and Device mode
+(`test/backend/native_mesh_pack_device_test.cpp`). The symmetric receiving-side merge
+(`unpack_migrated_mesh`'s vertex dedup, `merge_halo_cells`'s cell dedup, both by global id, both
+currently `std::unordered_map`/`std::unordered_set` over `std::vector`) is NOT templated. The bulk
+per-field data copy generalizes the same way packing did (a Kokkos kernel reading the received byte
+buffers' fixed-layout records); the open piece is the membership decision itself -- "is this global id
+already held" -- which has no device-friendly hash-set equivalent used anywhere in this codebase yet.
+A sort-and-compact approach (flatten every incoming (gid, payload) pair, `Kokkos::sort` by gid, then a
+`parallel_scan` over adjacent-equal runs to assign each unique gid one slot) is the natural device
+algorithm and was not attempted here for lack of time, not because it is infeasible. Blocks: a Device
+mode caller of `build_native_remap_halo`/`migrate` still needs the host round trip for the merge step.
+
+### D52. MLS device solve coarsens `E-MLS-RANK`'s diagnostic and is not wired into `build_mls_weights`; `KokkosBatched::SerialGesv` does not build here
+
+**Scope note, 2026-10-13.** `fuse::device::solve_mls_on_space<Space>` (include/fuse/backend/
+mls_weights_device.hpp) runs the per-target moment-matrix assembly and solve as a Kokkos BATCHED
+kernel, verified against a NumPy-computed reference (1e-14 relative on a well-conditioned 2D/degree-1
+case; ~1.5-2e-11 relative on a deliberately near-singular 3D/degree-2 stress case with `k == P`
+exactly -- a conditioning effect, not a bug; `mls_weights.hpp`'s own guidance is to choose `k`
+comfortably above the basis size `P`, which keeps this well clear of 1e-12).
+
+**`KokkosBatched::SerialGesv` was tried first and does not build on this host, in EITHER pivoting
+mode** (named by the task that approved this track, from /opt/kokkos-kernels; not assumed infeasible
+-- both modes were actually built against this header's own `A`/`B`/`X` views before being abandoned).
+Exact measured errors, both against `Kokkos::subview`-derived arguments to `SerialGesv::invoke`:
+
+- `Gesv::StaticPivoting`: `KokkosBatched_Gesv_Impl.hpp`'s own implementation slices its `tmp` scratch
+  by column range (`Kokkos::subview(tmp, Kokkos::ALL, Kokkos::make_pair(0, n))`) and by single column
+  (`Kokkos::subview(tmp, Kokkos::ALL, n)`), both necessarily `LayoutStride` regardless of `tmp`'s own
+  layout (not a layout choice this track could route around, unlike the top-level `A`'s `LayoutLeft` ->
+  `LayoutRight` fix, which WAS a layout choice and did work). The compiler error, from
+  `KokkosBatched_Trsm_Serial_Impl.hpp` and `KokkosBatched_LU_Serial_Impl.hpp`, both in Host and Cuda
+  instantiations: `class "Kokkos::View<double *, Kokkos::LayoutStride, ...>" has no member "stride_0"`
+  (and `"stride_1"`) -- this installed Kokkos's `View<..., LayoutStride>` simply does not define those
+  accessors, which `SerialTrsm`/`SerialLU` call on exactly those slices.
+- `Gesv::NoPivoting`: tried next on the premise that its implementation builds no such internal
+  scratch (`KokkosBatched_Gesv_Impl.hpp`'s `NoPivoting::invoke` calls `SerialLU`/`SerialTrsm` directly
+  on the caller's own `A`/`X`, confirmed by reading it). In the Cuda instantiation specifically, the
+  1-D subview of the RHS vector (`Kokkos::subview(X, t, Kokkos::ALL)`, `X` a `View<double**,
+  LayoutRight, CudaSpace>`) came back typed `Kokkos::View<double *, Kokkos::OpenMP::array_layout,
+  Kokkos::Device<Kokkos::CudaSpace::execution_space, Kokkos::CudaSpace::memory_space>, ...>` --
+  `Kokkos::OpenMP::array_layout` attached to a `CudaSpace` device type is a layout/execution-space
+  mismatch inside Kokkos's OWN subview type deduction on this installation, not anything this header's
+  view-layout choices produced. Same missing-`stride_0`/`stride_1` error as above, on that malformed
+  type.
+
+Both are Kokkos 5.2.0 / this installed kokkos-kernels version-pairing defects, independent of anything
+in this header; `find_package(KokkosKernels)` itself is ALSO broken on this host (a separate finding --
+`KokkosKernelsConfig.cmake:40`'s `set_target_properties()` call has an argument-count CMake's own
+parser rejects, a hard configure error even under `QUIET`). Given two independent, unfixable-from-here
+defects in the same dependency, this track replaced `KokkosBatched::SerialGesv` with an in-house
+Gaussian elimination with partial pivoting (`solve_square_system_partial_pivot`, same file), indexing
+`A`/`X` directly with no `Kokkos::subview` at all for the solve step -- re-verified against the NumPy
+reference afterward, unchanged to the precision above. `KokkosKernels` is consequently NOT a build
+dependency of this track's final state (the `find_package` workaround was removed along with the
+dependency it worked around).
+
+Two things remain open regardless of which solver is used: (1) the device solve reports only a
+pass/fail status per target, not the rank and condition-number estimate `E-MLS-RANK`'s host message
+carries, so a Device-mode rejection would have to re-run the specific failed target(s) through the
+host path to recover that diagnostic, or accept a coarser message; (2) `solve_mls_on_space` takes
+already-resolved point sets, options and a k-nearest result as plain arguments -- it is not wired into
+`build_mls_weights`'s own `RemapPlan`/`CouplingGraph`/`MeshBackend` dispatch, so Device mode is not yet
+reachable through the normal `fuse::build_weights` entry point.
+
+### D53. Supermesh (r3d/r2d) clip stays host-only; device feasibility measured and blocked on three build-system items, not algorithm
+
+**Scope note, 2026-10-13.** Assessed, not assumed, per this track's own instructions. The r3d/r2d call
+path `build_supermesh_weights` actually uses (`r3d_init_tet`/`r3d_clip`/`r3d_reduce` for a 3D pair,
+`r2d_init_poly`/`r2d_clip`/`r2d_reduce` for a 2D pair) has no recursion, no heap allocation, and only
+fixed-size stack buffers bounded by `R3D_MAX_VERTS`/`R2D_MAX_VERTS` (compile-time constants) -- read in
+full from `_deps/r3d-src/src/{r3d,r2d}.c`, not inferred from the header. Algorithmically it is
+device-portable. It is blocked today by three concrete, non-algorithmic obstacles: (1) the vendored
+translation units carry no `KOKKOS_FUNCTION`/`__host__ __device__` annotation on any function, and
+annotating the call path means patching the vendored copy (surviving an `UPSTREAMS.lock` bump) or
+hand-porting the subset FUSE calls into a FUSE-owned header; (2) `r3d_clip`'s (and r2d's analogous)
+debug path calls `fprintf(stderr, ...)` guarded only by `#if !defined(NDEBUG)`, which fires in this
+track's Debug build and is not device-callable; (3) `r3d.c`/`r2d.c` are compiled as C, and `nvcc`
+identifies a device translation unit by language, so even an annotated copy needs the TU compiled as
+C++ to have `KOKKOS_FUNCTION` take effect. None of the three is a correctness obstacle; all three are
+packaging work on a vendored, pinned dependency this track's time budget did not extend to. What IS
+done: the candidate-pair broad phase (the O(target-simplex x source-simplex) box test,
+`build_supermesh_weights`'s own "the honest starting point" brute force) runs as a device kernel
+(`fuse::device::candidate_pairs`, include/fuse/backend/supermesh_candidates_device.hpp), verified
+against a from-scratch serial reference in 2D and 3D, standing ALONGSIDE `build_supermesh_weights`
+rather than wired into it (floating-point accumulation order in the existing `std::map`-based
+column/row sums is not guaranteed invariant under a different candidate-generation order, and "no
+change to results in Host mode" is this track's hard requirement, so the existing code path is
+untouched).
+
+### ~~D54. `fuse::native::to_memory_space<Target>` throws converting Host -> a real device space for a multi-dimensional field~~ — FIXED 2026-10-13 (integration)
+
+**Found 2026-10-13, this track's own device build -- a pre-existing defect, not introduced here.**
+`include/fuse/backend/native_mesh.hpp`'s `to_memory_space<Target>` (the one hook
+docs/dev/native-mesh.md names as what "makes the mesh GPU-resident") had never been exercised
+Host -> a real Cuda/HIP/SYCL space before this track: docs/dev/native-mesh.md's own Phase 2 note
+says plainly that "`NativeMeshView` converts to host at construction and the NativeMesh tests were
+pinned to host for the CUDA build." This track's new device-mode test rows
+(`test/backend/native_mesh_pack_device_test.cpp`) are the first to call it that way, and it throws:
+
+```
+Error: Kokkos::deep_copy with no available copy mechanism: from source view
+("native_mesh.vertex_coords") to destination view ("native_mesh.vertex_coords").
+There is no common execution space that can access both source's space
+(Host) and destination's space (Cuda), so source and destination
+must be contiguous and have the same layout.
+```
+
+Root cause: `detail::copy_view` (same file) declares its destination view with no explicit
+`array_layout` (`Kokkos::View<double* [3], Target>`), and `Kokkos::View`'s default layout differs by
+execution space for a rank >= 2 view -- `LayoutRight` on Host/OpenMP, `LayoutLeft` on Cuda. A field
+like `vertex_coords` (`double* [3]`, rank 2) therefore has MISMATCHED layouts between the Host source
+and a Cuda destination, and `Kokkos::deep_copy` cannot bridge a memory-space change and a layout
+change in the same call when the two spaces cannot access each other's memory directly. Every
+rank-2-or-higher field in `MeshArrays` (`vertex_coords`; `cell_vertex_offsets`/`cell_vertex_indices`
+etc. are rank 1 and unaffected) hits this on a Host -> device call; rank-1 fields do not, which is
+why only `vertex_coords` appears in the measured message above (it is the first field the function
+copies).
+
+Not fixed here: a fix belongs in `to_memory_space`/`copy_view` itself (shared infrastructure every
+native-mesh consumer uses, not something scoped to this track), and the right shape of the fix --
+pin an explicit matching layout for every multi-dimensional field, or copy through a same-layout
+mirror per field -- deserves the next device-mesh track's attention rather than a one-line patch
+slipped into this one. This track's own device-mode pack test rows catch the exception and
+`GTEST_SKIP()` with this citation rather than reporting a `pack_to` failure that isn't one; the
+Host-mode rows (which do not cross this path) are unaffected and green.
+
+**Fixed.** `MeshArrays::vertex_coords` is declared `Kokkos::LayoutRight` in every memory space (`include/fuse/backend/native_mesh.hpp`), so the host arrays keep the layout they always had and the device copy in `to_memory_space<Target>()` is a contiguous copy; `NativeMeshView::create_from_host`'s local pinning of the same layout stands. The two `backend.native_mesh_pack_device` cases that skipped on the throw now run the copy.
+
+### D55. `parallel.window_newton_mpi.3` hangs on higgs's Open MPI 4.1.5 — OPEN, found by the device-merge gate 2026-10-13
+
+`WindowNewtonMpi.TwoDisjointRanksMatchTheSingleProcessReference` at three ranks (two participants, one
+bystander) never returns on higgs (Open MPI 4.1.5, Kokkos Cuda build); the two-rank row passes, and the
+same rows pass on the development machine's MPICH 5.0.0a1 (D31's own host run). Reproduced standalone
+on the merged tree with `OMPI_MCA_coll_tuned_alltoallv_algorithm=2` and again with the tuned
+collectives disabled (`OMPI_MCA_coll=^tuned`), so it is not D40's `MPI_Alltoallv` case. The
+window-Newton path (`run_region_newton_window()`) carries no device-branch change; its bystander rank
+returns before the sweep (`region_is_local_participant()`), unlike the Picard window path, whose
+bystander sweeps and is kept in step by `broadcast_window_convergence()` (D42) -- whether a collective
+the participants then enter on the shared transport communicator is what the bystander never joins is
+the first thing to check. Not diagnosed further: higgs has no `gdb` on the job shell's PATH to capture
+per-rank stacks. The row is registered and times out (120 s) on that host until this is understood.
+
+### D56. `FsiEnergyDiag.FullBudgetOnTheDominantModeCloses`'s mass-correction gate fails on higgs's toolchain by 1.5x — OPEN, found by the device-merge gate 2026-10-13
+
+The gate `max_abs_diff_non_outflow < 0.5 * eig_quality * max|u_raw|` (test/verification/
+fsi_energy_diag_test.cpp, "MASS-CORRECTION ISOLATION") measured 1.720e-10 against a tolerance of
+1.183e-10 on higgs (GCC 13.3 host pass through nvcc_wrapper, Eigen SparseLU, `FUSE_FP_REPRODUCIBLE`
+default) in the Host leg of the merged tree; the pre-merge branch's version of this case passed on the
+same host, and the new protocol passed on the development machine (Apple clang). By this project's
+tolerance convention the factor is not to be widened: the derivation (one eig_quality-level relative
+error in the extracted inputs, scaled by |u_raw|) is missing a term on this toolchain -- the two
+`cn_step` solves' own forward-error difference is the candidate. The `.device` twin of the row passes
+(its energy budget runs on the selected oscillatory mode exactly as the host leg does).

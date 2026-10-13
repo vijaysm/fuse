@@ -19,6 +19,12 @@
 #cmakedefine01 FUSE_HAVE_TEMPEST
 #cmakedefine01 FUSE_HAVE_PETSC
 #cmakedefine01 FUSE_HAVE_LOWFIVE
+// Whether the examples' SparseLuBackend (examples/common/
+// sparse_solve_backend.hpp) is cusolverRf on the device (1) or a passthrough
+// to Eigen::SparseLU (0). Library code never reads this; it exists so the
+// examples and their verification tests can name which backend produced a
+// number.
+#cmakedefine01 FUSE_HAVE_CUSPARSE
 #cmakedefine01 FUSE_LINALG_EIGEN
 #cmakedefine01 FUSE_ENABLE_EXCEPTIONS
 // Floating-point contraction policy (KNOWN_ISSUES.md D30; cmake/FuseFpPolicy.cmake).
@@ -39,3 +45,13 @@
 // macro the headers actually define: with several Kokkos installs on one machine
 // the include path can pick one and the linker another.
 #define FUSE_KOKKOS_VERSION_EXPECTED "@Kokkos_VERSION@"
+// Compiler id/version, whether this configure routed every translation unit
+// through nvcc_wrapper (because Kokkos::CUDA exists, or because the configured
+// compiler was probed to define __NVCC__ -- nvcc's host pass is not a
+// transparent passthrough, see below, so the id follows the compiler that
+// ran, not the presence of a device backend), and the target architecture. Host-only floating-point code can measure different
+// results under nvcc's host pass than under the host compiler directly, even
+// with no device code anywhere in the translation unit; this id is how a
+// per-toolchain pinned-value baseline (e.g. test/golden/accelerator.golden)
+// picks the row that applies to THIS build.
+#define FUSE_TOOLCHAIN_ID "@FUSE_TOOLCHAIN_ID@"

@@ -6,6 +6,7 @@
 #include "fuse/search/distributed.hpp"
 
 #include <algorithm>
+#include <type_traits>
 
 #include <fmt/format.h>
 
@@ -51,15 +52,21 @@ namespace {
 using Coordinate = double;
 using ArborBox = ArborX::Box<3, Coordinate>;
 using ArborPoint = ArborX::Point<3, Coordinate>;
-using MemorySpace = Kokkos::HostSpace;
-using ExecutionSpace = Kokkos::DefaultHostExecutionSpace;
+using HostExecutionSpace = Kokkos::DefaultHostExecutionSpace;
+using DeviceExecutionSpace = Kokkos::DefaultExecutionSpace;
 using Value = ArborX::PairValueIndex<ArborBox, int>;
+
+/// True only when this build's default execution space is a real device --
+/// see box_index.cpp's identical constant.
+inline constexpr bool kHasDeviceBackend =
+    !std::is_same_v<DeviceExecutionSpace, HostExecutionSpace>;
 
 /// Runs on the rank that OWNS the matched box (ArborX::DistributedTree
 /// invokes the callback locally, where the data lives, then ships the
 /// result back to the querying rank) -- exactly the
 /// examples/distributed_tree/distributed_knn.cpp pattern this mirrors, with
-/// intersects predicates in place of that example's nearest ones.
+/// intersects predicates in place of that example's nearest ones. `Value`
+/// names no space, so the same callback serves a host or a device tree.
 struct TagWithRank {
   int rank;
   template <typename Predicate, typename OutputFunctor>
@@ -69,62 +76,63 @@ struct TagWithRank {
   }
 };
 
-}  // namespace
+/// The whole distributed query, templated on the execution space it runs
+/// on: `HostExecutionSpace` is byte-identical to this function's behaviour
+/// before `fuse::search::ExecutionSpace` existed; `DeviceExecutionSpace`
+/// stages `local_boxes`/`points` to `Space::memory_space` first (the same
+/// "existing std::vector overload, copying to/from the device inside"
+/// contract `BoxIndex::build` honours) and copies the result back to host
+/// memory to assemble the `std::vector`-based `DistributedQueryResult`.
+template <class Space>
+DistributedQueryResult run_distributed_query(MPI_Comm mpi_comm, int my_rank,
+                                             const std::vector<Box>& local_boxes,
+                                             const std::vector<Point>& points) {
+  using MemorySpace = typename Space::memory_space;
+  using Tree = ArborX::DistributedTree<MemorySpace, Value>;
 
-Result<DistributedQueryResult> query_points_distributed(CommHandle comm,
-                                                        std::vector<Box> local_boxes,
-                                                        const std::vector<Point>& points) {
-  auto dim = classify_local(local_boxes);
-  if (!dim.ok()) return dim.error();
+  Space space{};
 
-  DistributedQueryResult empty_result;
-  empty_result.offsets.assign(points.size() + 1, 0);
-
-  if (comm == kNullComm) {
-    // One participant: answered locally, no MPI symbol touched, every hit
-    // tagged rank 0 -- what a single-rank caller of the distributed API
-    // should see (fuse::partition's own kNullComm convention).
-    auto local = BoxIndex::build(std::move(local_boxes));
-    if (!local.ok()) return local.error();
-    auto local_result = local.value().query_points(points);
-    if (!local_result.ok()) return local_result.error();
-    DistributedQueryResult out;
-    out.offsets = local_result.value().offsets;
-    out.hits.reserve(local_result.value().indices.size());
-    for (std::size_t idx : local_result.value().indices) out.hits.push_back(PointHit{0, idx});
-    return out;
-  }
-
-  ExecutionSpace space{};
-  MPI_Comm mpi_comm = MPI_Comm_f2c(comm);
-  int my_rank = 0;
-  MPI_Comm_rank(mpi_comm, &my_rank);
-
-  Kokkos::View<ArborBox*, MemorySpace> arbor_boxes(
-      Kokkos::view_alloc(Kokkos::WithoutInitializing, "fuse::search::dist_boxes"),
+  Kokkos::View<ArborBox*, Kokkos::HostSpace> host_boxes(
+      Kokkos::view_alloc(Kokkos::WithoutInitializing, "fuse::search::dist_boxes_host"),
       local_boxes.size());
   for (std::size_t i = 0; i < local_boxes.size(); ++i) {
     const Box& b = local_boxes[i];
-    arbor_boxes(i) = ArborBox{ArborPoint{b.lo.x, b.lo.y, b.lo.z}, ArborPoint{b.hi.x, b.hi.y, b.hi.z}};
+    host_boxes(i) = ArborBox{ArborPoint{b.lo.x, b.lo.y, b.lo.z}, ArborPoint{b.hi.x, b.hi.y, b.hi.z}};
   }
+  Kokkos::View<ArborBox*, MemorySpace> arbor_boxes(
+      Kokkos::view_alloc(Kokkos::WithoutInitializing, "fuse::search::dist_boxes"),
+      local_boxes.size());
+  Kokkos::deep_copy(arbor_boxes, host_boxes);
 
-  ArborX::DistributedTree<MemorySpace, Value> tree(
-      mpi_comm, space, ArborX::Experimental::attach_indices<int>(arbor_boxes));
-
-  Kokkos::View<decltype(ArborX::intersects(ArborPoint{}))*, MemorySpace> preds(
-      Kokkos::view_alloc(Kokkos::WithoutInitializing, "fuse::search::dist_preds"), points.size());
+  Kokkos::View<decltype(ArborX::intersects(ArborPoint{}))*, Kokkos::HostSpace> host_preds(
+      Kokkos::view_alloc(Kokkos::WithoutInitializing, "fuse::search::dist_preds_host"),
+      points.size());
   for (std::size_t i = 0; i < points.size(); ++i) {
     const Point& p = points[i];
-    preds(i) = ArborX::intersects(ArborPoint{p.x, p.y, p.z});
+    host_preds(i) = ArborX::intersects(ArborPoint{p.x, p.y, p.z});
   }
+  Kokkos::View<decltype(ArborX::intersects(ArborPoint{}))*, MemorySpace> preds(
+      Kokkos::view_alloc(Kokkos::WithoutInitializing, "fuse::search::dist_preds"), points.size());
+  Kokkos::deep_copy(preds, host_preds);
+
+  Tree tree(mpi_comm, space, ArborX::Experimental::attach_indices<int>(arbor_boxes));
 
   Kokkos::View<PointHit*, MemorySpace> values("fuse::search::dist_values", 0);
   Kokkos::View<int*, MemorySpace> offsets("fuse::search::dist_offsets", 0);
   tree.query(space, preds, TagWithRank{my_rank}, values, offsets);
 
+  Kokkos::View<PointHit*, Kokkos::HostSpace> host_values(
+      Kokkos::view_alloc(Kokkos::WithoutInitializing, "fuse::search::dist_values_host"),
+      values.extent(0));
+  Kokkos::View<int*, Kokkos::HostSpace> host_offsets(
+      Kokkos::view_alloc(Kokkos::WithoutInitializing, "fuse::search::dist_offsets_host"),
+      offsets.extent(0));
+  Kokkos::deep_copy(host_values, values);
+  Kokkos::deep_copy(host_offsets, offsets);
+
   DistributedQueryResult out;
-  out.offsets.assign(offsets.data(), offsets.data() + offsets.extent(0));
-  out.hits.assign(values.data(), values.data() + values.extent(0));
+  out.offsets.assign(host_offsets.data(), host_offsets.data() + host_offsets.extent(0));
+  out.hits.assign(host_values.data(), host_values.data() + host_values.extent(0));
   for (std::size_t q = 0; q + 1 < out.offsets.size(); ++q) {
     std::sort(out.hits.begin() + static_cast<std::ptrdiff_t>(out.offsets[q]),
               out.hits.begin() + static_cast<std::ptrdiff_t>(out.offsets[q + 1]),
@@ -135,11 +143,53 @@ Result<DistributedQueryResult> query_points_distributed(CommHandle comm,
   return out;
 }
 
+}  // namespace
+
+Result<DistributedQueryResult> query_points_distributed(CommHandle comm,
+                                                        std::vector<Box> local_boxes,
+                                                        const std::vector<Point>& points,
+                                                        ExecutionSpace space) {
+  auto dim = classify_local(local_boxes);
+  if (!dim.ok()) return dim.error();
+  const Result<ExecutionSpace> resolved = resolve_execution_space(space);
+  if (!resolved.ok()) return resolved.error();
+  const bool use_device = resolved.value() == ExecutionSpace::Device && kHasDeviceBackend;
+
+  DistributedQueryResult empty_result;
+  empty_result.offsets.assign(points.size() + 1, 0);
+
+  if (comm == kNullComm) {
+    // One participant: answered locally, no MPI symbol touched, every hit
+    // tagged rank 0 -- what a single-rank caller of the distributed API
+    // should see (fuse::partition's own kNullComm convention). The local
+    // BoxIndex honours the same resolved execution space.
+    auto local = BoxIndex::build(std::move(local_boxes), resolved.value());
+    if (!local.ok()) return local.error();
+    auto local_result = local.value().query_points(points);
+    if (!local_result.ok()) return local_result.error();
+    DistributedQueryResult out;
+    out.offsets = local_result.value().offsets;
+    out.hits.reserve(local_result.value().indices.size());
+    for (std::size_t idx : local_result.value().indices) out.hits.push_back(PointHit{0, idx});
+    return out;
+  }
+
+  MPI_Comm mpi_comm = MPI_Comm_f2c(comm);
+  int my_rank = 0;
+  MPI_Comm_rank(mpi_comm, &my_rank);
+
+  if (use_device) {
+    return run_distributed_query<DeviceExecutionSpace>(mpi_comm, my_rank, local_boxes, points);
+  }
+  return run_distributed_query<HostExecutionSpace>(mpi_comm, my_rank, local_boxes, points);
+}
+
 #else  // !FUSE_HAVE_MPI
 
 Result<DistributedQueryResult> query_points_distributed(CommHandle comm,
                                                         std::vector<Box> local_boxes,
-                                                        const std::vector<Point>& points) {
+                                                        const std::vector<Point>& points,
+                                                        ExecutionSpace space) {
   auto dim = classify_local(local_boxes);
   if (!dim.ok()) return dim.error();
 
@@ -149,7 +199,7 @@ Result<DistributedQueryResult> query_points_distributed(CommHandle comm,
                    "(FUSE_HAVE_MPI=0); rebuild with -DFUSE_ENABLE_MPI=ON"};
   }
 
-  auto local = BoxIndex::build(std::move(local_boxes));
+  auto local = BoxIndex::build(std::move(local_boxes), space);
   if (!local.ok()) return local.error();
   auto local_result = local.value().query_points(points);
   if (!local_result.ok()) return local_result.error();

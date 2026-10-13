@@ -5,7 +5,11 @@
 
 #include <gtest/gtest.h>
 
+#include <Kokkos_Core.hpp>
+
 #include <algorithm>
+#include <cstdlib>
+#include <type_traits>
 #include <vector>
 
 #include "fixtures.hpp"
@@ -216,6 +220,113 @@ TEST(BoxIndex, ResultsAreSortedAscendingByIndex) {
     for (std::size_t j = qr.value().offsets[q]; j + 1 < qr.value().offsets[q + 1]; ++j) {
       EXPECT_LT(qr.value().indices[j], qr.value().indices[j + 1]);
     }
+  }
+}
+
+// ---------------------------------------------------------------- execution space
+// docs/dev/search.md's "Execution space" section: BoxIndex::build/query on
+// Kokkos::DefaultExecutionSpace when fuse::search::ExecutionSpace resolves
+// to Device, Host (the pre-existing behaviour) otherwise.
+
+TEST(BoxIndex, HostIndexReportsHostSpace) {
+  auto idx = BoxIndex::build(random_boxes(2, 10), ExecutionSpace::Host);
+  ASSERT_TRUE(idx.ok()) << idx.error().message;
+  EXPECT_FALSE(idx.value().executes_on_device());
+  EXPECT_STREQ(idx.value().space_name(), Kokkos::DefaultHostExecutionSpace::name());
+}
+
+TEST(BoxIndex, DeviceRequestExecutesOnDeviceWhenABackendExists) {
+  // On a build with no CUDA/HIP/SYCL backend, Kokkos::DefaultExecutionSpace
+  // IS Kokkos::DefaultHostExecutionSpace, so `Device` degrades to `Host`
+  // (box_index.cpp's `kHasDeviceBackend`) rather than failing -- both
+  // branches below are therefore correct, not alternatives picked by luck.
+  auto idx = BoxIndex::build(random_boxes(2, 10), ExecutionSpace::Device);
+  ASSERT_TRUE(idx.ok()) << idx.error().message;
+  if constexpr (!std::is_same_v<Kokkos::DefaultExecutionSpace,
+                               Kokkos::DefaultHostExecutionSpace>) {
+    EXPECT_TRUE(idx.value().executes_on_device());
+    EXPECT_STREQ(idx.value().space_name(), Kokkos::DefaultExecutionSpace::name());
+  } else {
+    EXPECT_FALSE(idx.value().executes_on_device());
+  }
+}
+
+TEST(BoxIndex, DeviceBuildMatchesHostBuildForPointAndNearestQueries) {
+  auto boxes = random_boxes(3, 200);
+  auto pts = random_points(3, 100);
+
+  auto host_idx = BoxIndex::build(boxes, ExecutionSpace::Host);
+  ASSERT_TRUE(host_idx.ok()) << host_idx.error().message;
+  auto device_idx = BoxIndex::build(boxes, ExecutionSpace::Device);
+  ASSERT_TRUE(device_idx.ok()) << device_idx.error().message;
+
+  auto host_qr = host_idx.value().query_points(pts);
+  auto device_qr = device_idx.value().query_points(pts);
+  ASSERT_TRUE(host_qr.ok());
+  ASSERT_TRUE(device_qr.ok());
+  EXPECT_EQ(host_qr.value().offsets, device_qr.value().offsets);
+  EXPECT_EQ(host_qr.value().indices, device_qr.value().indices);
+
+  constexpr int k = 5;
+  auto host_kr = host_idx.value().query_nearest(pts, k);
+  auto device_kr = device_idx.value().query_nearest(pts, k);
+  ASSERT_TRUE(host_kr.ok());
+  ASSERT_TRUE(device_kr.ok());
+  EXPECT_EQ(host_kr.value().offsets, device_kr.value().offsets);
+  EXPECT_EQ(host_kr.value().indices, device_kr.value().indices);
+}
+
+TEST(BoxIndex, EnvironmentVariableSelectsDeviceLikeRunnerConfig) {
+  // FUSE_EXECUTION_SPACE mirrors RunnerConfig::resolved_execution_space()'s
+  // own convention (runner.hpp). Set/unset directly here (rather than only
+  // through a fuse_add_device_twin ctest row, test/CMakeLists.txt) so the
+  // reading side is proven within this one binary too.
+  ::setenv("FUSE_EXECUTION_SPACE", "device", 1);
+  auto idx = BoxIndex::build(random_boxes(1, 5));
+  ::unsetenv("FUSE_EXECUTION_SPACE");
+  ASSERT_TRUE(idx.ok()) << idx.error().message;
+  constexpr bool kHasDeviceBackend =
+      !std::is_same_v<Kokkos::DefaultExecutionSpace, Kokkos::DefaultHostExecutionSpace>;
+  EXPECT_EQ(idx.value().executes_on_device(), kHasDeviceBackend);
+}
+
+TEST(BoxIndex, ViewBasedBuildAndQueryMatchVectorBasedOnTheSameIndex) {
+  using MemSpace = Kokkos::DefaultExecutionSpace::memory_space;
+  auto boxes = random_boxes(2, 50);
+  auto pts = random_points(2, 30);
+
+  Kokkos::View<Box*, MemSpace> boxes_view("test_boxes_device", boxes.size());
+  auto boxes_mirror = Kokkos::create_mirror_view(boxes_view);
+  for (std::size_t i = 0; i < boxes.size(); ++i) boxes_mirror(i) = boxes[i];
+  Kokkos::deep_copy(boxes_view, boxes_mirror);
+
+  auto idx = BoxIndex::build_device_resident(Kokkos::View<const Box*, MemSpace>(boxes_view));
+  ASSERT_TRUE(idx.ok()) << idx.error().message;
+  constexpr bool kHasDeviceBackend =
+      !std::is_same_v<Kokkos::DefaultExecutionSpace, Kokkos::DefaultHostExecutionSpace>;
+  EXPECT_EQ(idx.value().executes_on_device(), kHasDeviceBackend);
+
+  Kokkos::View<Point*, MemSpace> pts_view("test_pts_device", pts.size());
+  auto pts_mirror = Kokkos::create_mirror_view(pts_view);
+  for (std::size_t i = 0; i < pts.size(); ++i) pts_mirror(i) = pts[i];
+  Kokkos::deep_copy(pts_view, pts_mirror);
+
+  auto qrv = idx.value().query_points_device_resident(Kokkos::View<const Point*, MemSpace>(pts_view));
+  ASSERT_TRUE(qrv.ok()) << qrv.error().message;
+  auto offsets_mirror = Kokkos::create_mirror_view(qrv.value().offsets);
+  Kokkos::deep_copy(offsets_mirror, qrv.value().offsets);
+  auto indices_mirror = Kokkos::create_mirror_view(qrv.value().indices);
+  Kokkos::deep_copy(indices_mirror, qrv.value().indices);
+
+  auto vector_qr = idx.value().query_points(pts);
+  ASSERT_TRUE(vector_qr.ok());
+  ASSERT_EQ(offsets_mirror.extent(0), vector_qr.value().offsets.size());
+  for (std::size_t i = 0; i < offsets_mirror.extent(0); ++i) {
+    EXPECT_EQ(offsets_mirror(i), vector_qr.value().offsets[i]);
+  }
+  ASSERT_EQ(indices_mirror.extent(0), vector_qr.value().indices.size());
+  for (std::size_t i = 0; i < indices_mirror.extent(0); ++i) {
+    EXPECT_EQ(indices_mirror(i), vector_qr.value().indices[i]);
   }
 }
 

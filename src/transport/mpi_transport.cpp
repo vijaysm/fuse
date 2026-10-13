@@ -34,6 +34,7 @@
 //    single allocation, and it is handled by MPI_Abort with a message --
 //    a job that dies loudly, not one that hangs.
 
+#include "fuse/base/config.hpp"  // FUSE_MPI_GPU_AWARE
 #include "fuse/transport/transport.hpp"
 #include "fuse/transport/comm_graph.hpp"
 #include "fuse/transport/rank_agreement.hpp"
@@ -41,6 +42,12 @@
 #include <fmt/format.h>
 
 #include <mpi.h>
+// Declares MPIX_Query_cuda_support()/MPIX_CUDA_AWARE_SUPPORT when this
+// OpenMPI was built with CUDA-aware support -- the same header
+// cmake/FuseMpiGpuAware.cmake's configure-time probe compiles against.
+// Always present on OpenMPI (the extension macro inside it is what's
+// conditional); #if defined(...) below, never an unconditional call.
+#include <mpi-ext.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -59,6 +66,35 @@
 
 namespace fuse {
 namespace {
+
+/// A run-time probe, duplicated rather than shared with
+/// `fuse::native::mpi_is_gpu_aware()` (src/backend/native_migration.cpp):
+/// `transport` does not link `backend` (the two layers are related only by
+/// the header-include direction tools/check-layering.py enforces, not by
+/// the CMake library graph), and the same duplicate-rather-than-couple
+/// choice `fuse::native::CommHandle` already makes for `fuse::partition`'s
+/// own communicator type is the precedent (native_migration.hpp's own
+/// comment). `MPIX_Query_cuda_support()` (OpenMPI's extension, declared by
+/// <mpi-ext.h> exactly when `FUSE_MPI_GPU_AWARE`'s own configure-time
+/// check -- cmake/FuseMpiGpuAware.cmake -- found the macro) reports whether
+/// CUDA-aware buffers are actually enabled for THIS process; where the
+/// extension is not declared at all, `FUSE_MPI_GPU_AWARE` is the only
+/// signal there is. `FUSE_TRANSPORT_HOST_STAGING=1` forces this to false
+/// regardless of either probe -- the one lever that lets the host-staged
+/// fallback (this file's `MpiTransport::move`, the Runner's own
+/// `OpKind::Transport` case) be exercised by a test even on a machine
+/// whose MPI genuinely is GPU-aware.
+bool transport_mpi_is_gpu_aware() {
+  if (const char* force = std::getenv("FUSE_TRANSPORT_HOST_STAGING");
+      force != nullptr && force[0] != '\0' && force[0] != '0') {
+    return false;
+  }
+#if defined(MPIX_CUDA_AWARE_SUPPORT)
+  return MPIX_Query_cuda_support() != 0;
+#else
+  return FUSE_MPI_GPU_AWARE != 0;
+#endif
+}
 
 constexpr std::size_t kIntMax =
     static_cast<std::size_t>(std::numeric_limits<int>::max());
@@ -153,6 +189,12 @@ struct MpiTransport::Impl {
   // compare against.
   bool p_from_peers = false;
 
+  // transport_mpi_is_gpu_aware(), read once at construction so
+  // is_gpu_aware() -- called from the Runner's hot loop, once per
+  // Transport instruction per period -- is a field read, not a repeated
+  // getenv()/extension call (docs/dev/device-resident-arcs.md Phase 3).
+  const bool gpu_aware = transport_mpi_is_gpu_aware();
+
   ~Impl() {
     if (comm == MPI_COMM_NULL) return;
     int finalized = 0;
@@ -203,6 +245,10 @@ std::size_t MpiTransport::recv_volume() const noexcept {
   return impl_ ? impl_->recv_index.size() *
                      static_cast<std::size_t>(impl_->p_components)
                : 0;
+}
+
+bool MpiTransport::is_gpu_aware() const noexcept {
+  return impl_ != nullptr && impl_->gpu_aware;
 }
 
 // ---------------------------------------------------------------------------

@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <numeric>
 #include <string>
 #include <vector>
 
@@ -38,7 +37,7 @@ using detail::Int128;
                                            const Rational& interval) {
   const Int128 n = static_cast<Int128>(i) * interval.num();
   const Int128 d = interval.den();
-  const Int128 g = std::gcd(abs128(n), d);
+  const Int128 g = detail::gcd128(abs128(n), d);
   const Int128 rn = n / g;
   if (!detail::fits_i64(rn)) {
     return Failure{"E-SCHED-PERIOD",

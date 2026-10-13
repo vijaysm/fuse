@@ -3,12 +3,21 @@
 # OpenMPI/MPICH `MPIX_CUDA_AWARE_SUPPORT` / `MPIX_ROCM_AWARE_SUPPORT`
 # extension macros, from <mpi-ext.h>), else 0. Never fails the configure --
 # an MPI without the extension (MPICH without it built in, or no MPI at
-# all) simply probes to 0. See docs/dev/native-mesh.md: this result is
-# recorded (fuse::native::mpi_is_gpu_aware()) but not yet ACTED on --
-# fuse::native's migration exchange always stages through host memory,
-# regardless of what this probe finds, per the standing priority
-# (robustness before efficiency; a device-resident exchange path is
-# future work).
+# all) simply probes to 0. This is the FALLBACK value only:
+# fuse::native::mpi_is_gpu_aware() (src/backend/native_migration.cpp)
+# prefers a run-time `MPIX_Query_cuda_support()` call where the extension
+# declares it, and uses FUSE_MPI_GPU_AWARE (this macro's result) only
+# where it does not; fuse::native's own migration exchange does not
+# consult it at all and always stages through host memory, per the
+# standing priority (robustness before efficiency) -- a device-resident
+# native-mesh migration path is still future work.
+# fuse::transport::MpiTransport::is_gpu_aware() (src/transport/
+# mpi_transport.cpp, docs/dev/device-resident-arcs.md Phase 3) decides
+# whether a channel Transport exchange may hand device pointers straight
+# to MPI from the IDENTICAL run-time probe, duplicated rather than
+# shared: transport's library does not link backend's, so a call from
+# there into fuse::native would need a link edge tools/check-layering.py's
+# header-only check cannot see and the CMake target graph does not grant.
 function(fuse_probe_mpi_gpu_aware out_var)
   set(_result 0)
   if(TARGET MPI::MPI_CXX)
