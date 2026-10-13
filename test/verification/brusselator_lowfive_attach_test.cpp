@@ -38,7 +38,25 @@ using fuse_examples::lowfive_attach::VolSettings;
 using fuse_examples::lowfive_attach::VolSettingsSatisfyInvariant;
 using fuse_examples::lowfive_attach::DatasetGroupSplit;
 using fuse_examples::lowfive_attach::SplitDatasetGroupPath;
+using fuse_examples::lowfive_attach::ServeNowOrDefer;
+using fuse_examples::lowfive_attach::decide_serve_action;
+using fuse_examples::lowfive_attach::ExpectedEventKind;
+using fuse_examples::lowfive_attach::ExpectedOrderForPeriod;
+using fuse_examples::lowfive_attach::OrderTracker;
+using fuse_examples::lowfive_attach::CheckAndAdvanceOrder;
+using fuse_examples::lowfive_attach::ChannelOrderSignature;
+using fuse_examples::lowfive_attach::ComputeGraphOrderSignature;
+using fuse_examples::lowfive_attach::ValidatedGraphOrderSignatures;
+using fuse_examples::lowfive_attach::CheckGraphOrderValidated;
 using fuse_examples::lowfive_attach_model::WouldReuseStaleFileOnRecreate;
+using fuse_examples::lowfive_attach_model::EventKind;
+using fuse_examples::lowfive_attach_model::Round8Order;
+using fuse_examples::lowfive_attach_model::BuildEventSequence;
+using fuse_examples::lowfive_attach_model::RunSimulationRound8;
+using fuse_examples::lowfive_attach_model::static_check_accepts;
+using fuse_examples::lowfive_attach_model::model_completes;
+using fuse_examples::lowfive_attach_model::ProcessPolicy;
+using fuse_examples::lowfive_attach_model::PolicyKind;
 
 namespace {
 
@@ -223,27 +241,43 @@ TEST(ServeStateStep, FirstServerServesThenReceivesThenFinalizesCleanRepeatedly) 
   EXPECT_EQ(fin.value(), ServeAction::kNoopFinalizeClean);
 }
 
-// Replaces the test of the same name from the first round-2 attempt,
-// which asserted kImportAboutToOpen -> kReceiveThenFlushDeferred (the
-// bug this review caught: flushing before this process's own open-and-
-// close of the peer's file, not after). The corrected cycle: defer at
-// write, plain receive at the pre-open hook (NOT a flush), flush only
-// at the new post-close hook.
-TEST(ServeStateStep, FirstReaderDefersThenReceivesAndFlushesRepeatedly) {
+// REPLACES the test of the same name, which asserted EVERY iteration's
+// own write defers -- round 2/3's own FALSIFIED model (lowfive_attach_
+// decision.hpp's own "ROUND 8" comment): the host's own measured
+// steady-state order shows a first-reader deferring ONLY at the cold
+// start, serving immediately every write after. The corrected cycle,
+// repeated: iteration 0 defers (cold start, nothing completed yet) and
+// flushes at its own kImportClosed, exactly as before; iterations 1+
+// serve immediately at write (decide_serve_action()'s own policy,
+// since a read has already completed) and have nothing left to flush.
+TEST(ServeStateStep, FirstReaderDefersOnlyTheColdStartThenServesImmediatelyEveryLaterWrite) {
   ServeState st;
   st.role = ServeRole::kFirstReader;
-  for (int iter = 0; iter < 3; ++iter) {
-    const auto a1 = serve_state_step(&st, ServeEvent::kExportWrittenAndClosed);
-    ASSERT_TRUE(a1.ok()) << a1.error().code;
-    EXPECT_EQ(a1.value(), ServeAction::kDeferServe);
 
-    const auto a2 = serve_state_step(&st, ServeEvent::kImportAboutToOpen);
-    ASSERT_TRUE(a2.ok()) << a2.error().code;
-    EXPECT_EQ(a2.value(), ServeAction::kReceiveOnly);  // NOT a flush -- see comment above
+  const auto cold_write = serve_state_step(&st, ServeEvent::kExportWrittenAndClosed);
+  ASSERT_TRUE(cold_write.ok()) << cold_write.error().code;
+  EXPECT_EQ(cold_write.value(), ServeAction::kDeferServe);
 
-    const auto a3 = serve_state_step(&st, ServeEvent::kImportClosed);
-    ASSERT_TRUE(a3.ok()) << a3.error().code;
-    EXPECT_EQ(a3.value(), ServeAction::kFlushDeferred);  // flushed HERE instead
+  const auto cold_about = serve_state_step(&st, ServeEvent::kImportAboutToOpen);
+  ASSERT_TRUE(cold_about.ok()) << cold_about.error().code;
+  EXPECT_EQ(cold_about.value(), ServeAction::kReceiveOnly);
+
+  const auto cold_closed = serve_state_step(&st, ServeEvent::kImportClosed);
+  ASSERT_TRUE(cold_closed.ok()) << cold_closed.error().code;
+  EXPECT_EQ(cold_closed.value(), ServeAction::kFlushDeferred);  // the cold start's own flush
+
+  for (int period = 0; period < 3; ++period) {
+    const auto w = serve_state_step(&st, ServeEvent::kExportWrittenAndClosed);
+    ASSERT_TRUE(w.ok()) << w.error().code;
+    EXPECT_EQ(w.value(), ServeAction::kServeNow) << "period " << period;  // no longer deferred
+
+    const auto about = serve_state_step(&st, ServeEvent::kImportAboutToOpen);
+    ASSERT_TRUE(about.ok()) << about.error().code;
+    EXPECT_EQ(about.value(), ServeAction::kReceiveOnly);
+
+    const auto closed = serve_state_step(&st, ServeEvent::kImportClosed);
+    ASSERT_TRUE(closed.ok()) << closed.error().code;
+    EXPECT_EQ(closed.value(), ServeAction::kNoopAfterImport) << "period " << period;  // nothing to flush
   }
   const auto fin = serve_state_step(&st, ServeEvent::kFinalize);
   ASSERT_TRUE(fin.ok()) << fin.error().code;
@@ -366,27 +400,51 @@ TEST(ModelCheck, ShippedProtocolCompletesFor1Iteration) {
   EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
 }
 
-TEST(ModelCheck, ShippedProtocolCompletesFor2Iterations) {
+// REPLACES ShippedProtocolCompletesFor2Iterations/For60Iterations/
+// RegardlessOfWhichPositionIsFirstServer (RunSimulation()'s own
+// N-period BuildScript() put BOTH roles through write-then-read every
+// period -- a shape round 8's own task 1 found no real graph can ever
+// produce for N>=2 periods: the two components' own steady-state
+// orders are COMPLEMENTARY (lowfive_attach_decision.hpp's own "ROUND
+// 8" comment), never identical. That shape was round 2/3's own
+// FALSIFIED assumption applied to the MODEL too, not only to
+// serve_state_step() -- it happened to complete under the OLD,
+// defer-every-write policy (nothing ever blocked on a write it could
+// not immediately resolve), but round 8's own corrected
+// decide_serve_action() now (CORRECTLY) reports it stuck for N>=2 --
+// see ModelCheck.Round8BothSidesWriteReadSteadyGetsStuck below, the
+// DIRECT test for exactly this shape, now named for what it is instead
+// of asserting it completes. The replacement below uses `RunSimulationRound8()`
+// with the MEASURED order (lowfive_attach_model::Round8Order::
+// kMeasured) -- the one shape task 1 confirms the real graph produces --
+// for the SAME N values and the SAME position-independence check.
+TEST(ModelCheck, Round8MeasuredOrderCompletesFor2Periods) {
   using namespace fuse_examples::lowfive_attach_model;
-  const auto r = RunSimulation(2, ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
-                                ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader});
+  const auto r = RunSimulationRound8(Round8Order::kMeasured, 2,
+                                     ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
+                                     ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader});
   EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
 }
 
-// 60: this row's own kMaxIterations (brusselator_graph_tool.cpp).
-TEST(ModelCheck, ShippedProtocolCompletesFor60Iterations) {
+// 60: this row's own kMaxIterations (brusselator_graph_tool.cpp) --
+// reused here as a period count, not a claim that each one is a Jacobi
+// sweep (lowfive_attach_decision.hpp's own "ROUND 8" comment declares
+// that question unsettled).
+TEST(ModelCheck, Round8MeasuredOrderCompletesFor60Periods) {
   using namespace fuse_examples::lowfive_attach_model;
-  const auto r = RunSimulation(60, ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
-                                ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader});
+  const auto r = RunSimulationRound8(Round8Order::kMeasured, 60,
+                                     ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
+                                     ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader});
   EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
 }
 
 // Which SEARCH POSITION (A or B) carries the first-server role must not
 // matter -- the search itself has no preferred side.
-TEST(ModelCheck, ShippedProtocolCompletesRegardlessOfWhichPositionIsFirstServer) {
+TEST(ModelCheck, Round8MeasuredOrderCompletesRegardlessOfWhichPositionIsFirstServer) {
   using namespace fuse_examples::lowfive_attach_model;
-  const auto r = RunSimulation(3, ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader},
-                                ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer});
+  const auto r = RunSimulationRound8(Round8Order::kMeasured, 3,
+                                     ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader},
+                                     ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer});
   EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
 }
 
@@ -596,23 +654,29 @@ TEST(ModelCheck, ShippedConfigurationCompletesFor1Iteration) {
   EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
 }
 
-TEST(ModelCheck, ShippedConfigurationCompletesFor2And60Iterations) {
+// REPLACES ShippedConfigurationCompletesFor2And60Iterations/
+// RegardlessOfWhichPositionIsFirstServer -- same reason as the three
+// Round8MeasuredOrder* replacements above (RunSimulation()'s own
+// BuildScript() shape is unrealistic for N>=2); still driven from
+// decide_vol_settings() (round 6's own standing instruction), now via
+// RunSimulationRound8() and the measured order.
+TEST(ModelCheck, Round8MeasuredOrderWithDecideVolSettingsCompletesFor2And60Periods) {
   using namespace fuse_examples::lowfive_attach_model;
   const auto settings = fuse_examples::lowfive_attach::decide_vol_settings(/*distributed=*/true);
   ProcessPolicy server{PolicyKind::kShipped, ServeRole::kFirstServer, !settings.keep};
   ProcessPolicy reader{PolicyKind::kShipped, ServeRole::kFirstReader, !settings.keep};
   for (int n : {2, 60}) {
-    const auto r = RunSimulation(n, server, reader);
+    const auto r = RunSimulationRound8(Round8Order::kMeasured, n, server, reader);
     EXPECT_TRUE(r.completed) << "n=" << n << " " << (r.stuck_example ? *r.stuck_example : "");
   }
 }
 
-TEST(ModelCheck, ShippedConfigurationCompletesRegardlessOfWhichPositionIsFirstServer) {
+TEST(ModelCheck, Round8MeasuredOrderWithDecideVolSettingsCompletesRegardlessOfWhichPositionIsFirstServer) {
   using namespace fuse_examples::lowfive_attach_model;
   const auto settings = fuse_examples::lowfive_attach::decide_vol_settings(/*distributed=*/true);
   ProcessPolicy a{PolicyKind::kShipped, ServeRole::kFirstReader, !settings.keep};
   ProcessPolicy b{PolicyKind::kShipped, ServeRole::kFirstServer, !settings.keep};
-  const auto r = RunSimulation(2, a, b);
+  const auto r = RunSimulationRound8(Round8Order::kMeasured, 2, a, b);
   EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
 }
 
@@ -635,7 +699,9 @@ TEST(ModelCheck, FileDeletedAtCloseConfigurationGetsStuck) {
 // Sanity check on the flag itself: leaving it at its own default (false)
 // must reproduce the ordinary, already-passing shipped-protocol result
 // -- i.e. this field cannot have silently changed the nominal case.
-TEST(ModelCheck, ShippedProtocolDefaultsToKeptAndStillCompletes) {
+// REPLACES the RunSimulation()-based version of this test (same reason
+// as the Round8MeasuredOrder* replacements above).
+TEST(ModelCheck, Round8ShippedProtocolDefaultsToKeptAndStillCompletes) {
   using namespace fuse_examples::lowfive_attach_model;
   ProcessPolicy server{PolicyKind::kShipped, ServeRole::kFirstServer};
   ProcessPolicy reader{PolicyKind::kShipped, ServeRole::kFirstReader};
@@ -643,7 +709,7 @@ TEST(ModelCheck, ShippedProtocolDefaultsToKeptAndStillCompletes) {
   EXPECT_FALSE(reader.file_deleted_at_close);
   EXPECT_TRUE(server.drop_after_serve);
   EXPECT_TRUE(reader.drop_after_serve);
-  const auto r = RunSimulation(2, server, reader);
+  const auto r = RunSimulationRound8(Round8Order::kMeasured, 2, server, reader);
   EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
 }
 
@@ -789,4 +855,296 @@ TEST(SplitDatasetGroupPath, MultiSegmentPathKeepsWholeGroupPrefix) {
   DatasetGroupSplit s = SplitDatasetGroupPath("/a/b/c");
   EXPECT_EQ(s.group_path, "/a/b");
   EXPECT_EQ(s.leaf_name, "c");
+}
+
+// ---------------------------------------------------------------------
+// ROUND 8 (task 5): decide_serve_action() -- the policy itself.
+
+TEST(DecideServeAction, FirstServerAlwaysServesNowRegardlessOfHistory) {
+  EXPECT_EQ(decide_serve_action(ServeRole::kFirstServer, /*completed_any_read=*/false),
+           ServeNowOrDefer::kServeNow);
+  EXPECT_EQ(decide_serve_action(ServeRole::kFirstServer, /*completed_any_read=*/true),
+           ServeNowOrDefer::kServeNow);
+}
+
+TEST(DecideServeAction, FirstReaderDefersOnlyBeforeAnyCompletedRead) {
+  EXPECT_EQ(decide_serve_action(ServeRole::kFirstReader, /*completed_any_read=*/false),
+           ServeNowOrDefer::kDefer);
+  EXPECT_EQ(decide_serve_action(ServeRole::kFirstReader, /*completed_any_read=*/true),
+           ServeNowOrDefer::kServeNow);
+}
+
+// ---------------------------------------------------------------------
+// ROUND 8 (task 3b): ExpectedOrderForPeriod() / CheckAndAdvanceOrder() --
+// the LOCAL per-event assertion.
+
+TEST(ExpectedOrderForPeriod, ColdStartIsWriteReadOnBothRoles) {
+  EXPECT_EQ(ExpectedOrderForPeriod(ServeRole::kFirstServer, 0)[0], ExpectedEventKind::kWrite);
+  EXPECT_EQ(ExpectedOrderForPeriod(ServeRole::kFirstServer, 0)[1], ExpectedEventKind::kRead);
+  EXPECT_EQ(ExpectedOrderForPeriod(ServeRole::kFirstReader, 0)[0], ExpectedEventKind::kWrite);
+  EXPECT_EQ(ExpectedOrderForPeriod(ServeRole::kFirstReader, 0)[1], ExpectedEventKind::kRead);
+}
+
+TEST(ExpectedOrderForPeriod, SteadyStateIsWriteReadForFirstServer) {
+  EXPECT_EQ(ExpectedOrderForPeriod(ServeRole::kFirstServer, 1)[0], ExpectedEventKind::kWrite);
+  EXPECT_EQ(ExpectedOrderForPeriod(ServeRole::kFirstServer, 1)[1], ExpectedEventKind::kRead);
+  EXPECT_EQ(ExpectedOrderForPeriod(ServeRole::kFirstServer, 60)[0], ExpectedEventKind::kWrite);
+}
+
+TEST(ExpectedOrderForPeriod, SteadyStateIsReadWriteForFirstReader) {
+  EXPECT_EQ(ExpectedOrderForPeriod(ServeRole::kFirstReader, 1)[0], ExpectedEventKind::kRead);
+  EXPECT_EQ(ExpectedOrderForPeriod(ServeRole::kFirstReader, 1)[1], ExpectedEventKind::kWrite);
+  EXPECT_EQ(ExpectedOrderForPeriod(ServeRole::kFirstReader, 60)[0], ExpectedEventKind::kRead);
+}
+
+TEST(CheckAndAdvanceOrder, FirstServerMeasuredSequenceAcceptedAcrossPeriods) {
+  OrderTracker t;
+  for (int period = 0; period < 3; ++period) {
+    auto w = CheckAndAdvanceOrder(ServeRole::kFirstServer, t, ServeEvent::kExportWrittenAndClosed);
+    ASSERT_TRUE(w.ok()) << w.error().code;
+    t = w.value();
+    auto about = CheckAndAdvanceOrder(ServeRole::kFirstServer, t, ServeEvent::kImportAboutToOpen);
+    ASSERT_TRUE(about.ok()) << about.error().code;
+    t = about.value();
+    auto closed = CheckAndAdvanceOrder(ServeRole::kFirstServer, t, ServeEvent::kImportClosed);
+    ASSERT_TRUE(closed.ok()) << closed.error().code;
+    t = closed.value();
+    EXPECT_EQ(t.period_index, period + 1);
+    EXPECT_EQ(t.slot, 0);
+  }
+}
+
+TEST(CheckAndAdvanceOrder, FirstReaderColdStartThenSteadyAcceptedAcrossPeriods) {
+  OrderTracker t;  // period 0: write, read (cold start -- same as first-server)
+  auto w0 = CheckAndAdvanceOrder(ServeRole::kFirstReader, t, ServeEvent::kExportWrittenAndClosed);
+  ASSERT_TRUE(w0.ok()) << w0.error().code;
+  t = w0.value();
+  auto r0 = CheckAndAdvanceOrder(ServeRole::kFirstReader, t, ServeEvent::kImportClosed);
+  ASSERT_TRUE(r0.ok()) << r0.error().code;
+  t = r0.value();
+  EXPECT_EQ(t.period_index, 1);
+
+  // period 1+: read, write (steady state).
+  for (int period = 1; period < 4; ++period) {
+    auto r = CheckAndAdvanceOrder(ServeRole::kFirstReader, t, ServeEvent::kImportAboutToOpen);
+    ASSERT_TRUE(r.ok()) << r.error().code;
+    t = r.value();
+    auto rc = CheckAndAdvanceOrder(ServeRole::kFirstReader, t, ServeEvent::kImportClosed);
+    ASSERT_TRUE(rc.ok()) << rc.error().code;
+    t = rc.value();
+    auto w = CheckAndAdvanceOrder(ServeRole::kFirstReader, t, ServeEvent::kExportWrittenAndClosed);
+    ASSERT_TRUE(w.ok()) << w.error().code;
+    t = w.value();
+    EXPECT_EQ(t.period_index, period + 1);
+  }
+}
+
+TEST(CheckAndAdvanceOrder, FirstReaderWritingTwiceInSteadyStateIsRefused) {
+  // period 0 (write,read) done; period 1 steady state expects read
+  // first -- writing again here is the exact regression this check
+  // exists to catch (the measured host hang's own cause, one layer up
+  // from decide_serve_action() itself).
+  OrderTracker t;
+  auto w0 = CheckAndAdvanceOrder(ServeRole::kFirstReader, t, ServeEvent::kExportWrittenAndClosed);
+  ASSERT_TRUE(w0.ok());
+  t = w0.value();
+  auto r0 = CheckAndAdvanceOrder(ServeRole::kFirstReader, t, ServeEvent::kImportClosed);
+  ASSERT_TRUE(r0.ok());
+  t = r0.value();
+
+  const auto bad = CheckAndAdvanceOrder(ServeRole::kFirstReader, t, ServeEvent::kExportWrittenAndClosed);
+  ASSERT_FALSE(bad.ok());
+  EXPECT_EQ(bad.error().code, "E-LOWFIVE-ATTACH-ORDER-DEVIATION");
+}
+
+TEST(CheckAndAdvanceOrder, FirstServerReadingBeforeWritingInSteadyStateIsRefused) {
+  OrderTracker t{/*period_index=*/1, /*slot=*/0};  // steady state, expects write first
+  const auto bad = CheckAndAdvanceOrder(ServeRole::kFirstServer, t, ServeEvent::kImportAboutToOpen);
+  ASSERT_FALSE(bad.ok());
+  EXPECT_EQ(bad.error().code, "E-LOWFIVE-ATTACH-ORDER-DEVIATION");
+}
+
+TEST(CheckAndAdvanceOrder, FinalizeNeverChangesTheTracker) {
+  OrderTracker t{2, 1};
+  const auto r = CheckAndAdvanceOrder(ServeRole::kFirstServer, t, ServeEvent::kFinalize);
+  ASSERT_TRUE(r.ok());
+  EXPECT_EQ(r.value().period_index, 2);
+  EXPECT_EQ(r.value().slot, 1);
+}
+
+// ---------------------------------------------------------------------
+// ROUND 8 (task 3a): ComputeGraphOrderSignature() / CheckGraphOrderValidated() --
+// the STATIC check, one refusal test per property task 1 found (channel
+// writer/reader name, channel count, rank count).
+
+namespace {
+std::vector<ChannelRoles> MeasuredChannels() {
+  ChannelRoles u2v;
+  u2v.field_name = "U.u_out";
+  u2v.writer_ranks = RankSet{0, 1};
+  u2v.reader_ranks = RankSet{1, 1};
+  u2v.writer_name = "U";
+  u2v.reader_name = "V";
+  ChannelRoles v2u;
+  v2u.field_name = "V.v_out";
+  v2u.writer_ranks = RankSet{1, 1};
+  v2u.reader_ranks = RankSet{0, 1};
+  v2u.writer_name = "V";
+  v2u.reader_name = "U";
+  return {u2v, v2u};
+}
+}  // namespace
+
+TEST(ComputeGraphOrderSignature, MeasuredChannelsProduceTheValidatedSignature) {
+  const auto sig = ComputeGraphOrderSignature(MeasuredChannels());
+  EXPECT_TRUE(CheckGraphOrderValidated(sig).ok());
+}
+
+TEST(CheckGraphOrderValidated, SwappedChannelOrderIsRefused) {
+  auto channels = MeasuredChannels();
+  std::swap(channels[0], channels[1]);  // v2u first, u2v second
+  const auto sig = ComputeGraphOrderSignature(channels);
+  const auto r = CheckGraphOrderValidated(sig);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-LOWFIVE-ATTACH-ORDER-UNVALIDATED");
+}
+
+TEST(CheckGraphOrderValidated, DifferentComponentNamesAreRefused) {
+  auto channels = MeasuredChannels();
+  channels[0].writer_name = "X";
+  const auto sig = ComputeGraphOrderSignature(channels);
+  const auto r = CheckGraphOrderValidated(sig);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-LOWFIVE-ATTACH-ORDER-UNVALIDATED");
+}
+
+TEST(CheckGraphOrderValidated, ThirdChannelIsRefused) {
+  auto channels = MeasuredChannels();
+  channels.push_back(channels[0]);  // same pair again: 3 channels total, mismatched count
+  const auto sig = ComputeGraphOrderSignature(channels);
+  const auto r = CheckGraphOrderValidated(sig);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-LOWFIVE-ATTACH-ORDER-UNVALIDATED");
+}
+
+TEST(CheckGraphOrderValidated, MultiRankComponentIsRefused) {
+  auto channels = MeasuredChannels();
+  channels[0].writer_ranks = RankSet{0, 2};  // U now has 2 ranks, never measured
+  const auto sig = ComputeGraphOrderSignature(channels);
+  const auto r = CheckGraphOrderValidated(sig);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-LOWFIVE-ATTACH-ORDER-UNVALIDATED");
+}
+
+// ---------------------------------------------------------------------
+// ROUND 8 (task 4): the event-sequence-driven model check. Scenarios
+// (i)-(iv), each with its own assertion, plus the soundness link
+// (static_check_accepts(order) implies model_completes(order)).
+
+TEST(ModelCheck, Round8MeasuredOrderCompletesFor1And2And60Periods) {
+  // Scenario (i).
+  for (int n : {1, 2, 60}) {
+    const auto r = RunSimulationRound8(Round8Order::kMeasured, n,
+                                       ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
+                                       ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader});
+    EXPECT_TRUE(r.completed) << "n=" << n << " " << (r.stuck_example ? *r.stuck_example : "");
+  }
+}
+
+TEST(ModelCheck, Round8MeasuredOrderUnderRegressedPolicyReproducesTheMeasuredHang) {
+  // Scenario (ii) -- the DIRECT regression test for the host's own
+  // measured 120 s timeout: the SAME order the real graph produces,
+  // but round 2/3's own falsified "always defer" policy instead of
+  // decide_serve_action(). Must get stuck, and the stuck position
+  // must be U in read(v#1) (first-server's own kOpenClose at period 1)
+  // with the first-reader parked at its own period-1 sync -- exactly
+  // what the lead's own brief names as the measured cycle.
+  const auto r = RunSimulationRound8(
+      Round8Order::kMeasured, 2,
+      ProcessPolicy{PolicyKind::kRegressedAlwaysDeferFirstReader, ServeRole::kFirstServer},
+      ProcessPolicy{PolicyKind::kRegressedAlwaysDeferFirstReader, ServeRole::kFirstReader});
+  EXPECT_FALSE(r.completed);
+  ASSERT_TRUE(r.stuck_example.has_value());
+}
+
+TEST(ModelCheck, Round8BothSidesWriteReadSteadyGetsStuck) {
+  // Scenario (iii): both components happen to write-then-read in
+  // steady state (a shape no real graph under the current channel-
+  // order mechanism can produce, task 1's own finding) -- the shipped
+  // policy, applied to this hypothetical shape, reports the
+  // mutual-serve stuck state: both block on their OWN write's serve
+  // at the SAME period, neither has reached the read that would
+  // release the other.
+  const auto r = RunSimulationRound8(Round8Order::kBothWriteReadSteady, 3,
+                                     ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
+                                     ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader});
+  EXPECT_FALSE(r.completed);
+  ASSERT_TRUE(r.stuck_example.has_value());
+}
+
+TEST(ModelCheck, Round8BothSidesReadWriteSteadyGetsStuck) {
+  // Scenario (iv): nobody writes first in steady state -- also a
+  // shape no real graph produces; reported stuck (neither side's read
+  // can find anything served yet).
+  const auto r = RunSimulationRound8(Round8Order::kBothReadWriteSteady, 3,
+                                     ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
+                                     ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader});
+  EXPECT_FALSE(r.completed);
+  ASSERT_TRUE(r.stuck_example.has_value());
+}
+
+TEST(ModelCheck, Round8StaticCheckAcceptsImpliesModelCompletesForEveryCatalogueEntry) {
+  // The soundness link (task 4): the static check must never validate
+  // an order the model shows stuck. Checked against EVERY catalogue
+  // entry, not only the one real graph -- static_check_accepts() is
+  // false for the two strawman shapes, so the implication holds there
+  // vacuously; it is TRUE (and must be matched by completion) only for
+  // kMeasured.
+  for (Round8Order order :
+       {Round8Order::kMeasured, Round8Order::kBothWriteReadSteady, Round8Order::kBothReadWriteSteady}) {
+    const bool accepts = static_check_accepts(order);
+    const bool completes = model_completes(order, 3);
+    EXPECT_TRUE(!accepts || completes)
+        << "order=" << static_cast<int>(order) << " accepts=" << accepts
+        << " completes=" << completes;
+  }
+}
+
+TEST(ModelCheck, Round8MeasuredOrderIsTheOnlyAcceptedCatalogueEntry) {
+  EXPECT_TRUE(static_check_accepts(Round8Order::kMeasured));
+  EXPECT_FALSE(static_check_accepts(Round8Order::kBothWriteReadSteady));
+  EXPECT_FALSE(static_check_accepts(Round8Order::kBothReadWriteSteady));
+}
+
+// ---------------------------------------------------------------------
+// ROUND 8: BuildEventSequence() itself -- the per-component event
+// sequences are DATA now (task 4's own "a list of events"), pinned
+// directly.
+
+TEST(BuildEventSequence, FirstServerIsWriteReadEveryPeriodIncludingColdStart) {
+  const auto seq = BuildEventSequence(Round8Order::kMeasured, ServeRole::kFirstServer, 3);
+  const std::vector<EventKind> expected{
+      EventKind::kWrite, EventKind::kRead,                                // period 0 (cold start)
+      EventKind::kWrite, EventKind::kRead, EventKind::kSync,              // period 1
+      EventKind::kWrite, EventKind::kRead, EventKind::kSync};             // period 2
+  EXPECT_EQ(seq.size(), expected.size());
+  for (std::size_t i = 0; i < expected.size() && i < seq.size(); ++i) {
+    EXPECT_EQ(seq[i], expected[i]) << "index " << i;
+  }
+}
+
+TEST(BuildEventSequence, FirstReaderIsWriteReadAtColdStartThenReadWriteSteady) {
+  const auto seq = BuildEventSequence(Round8Order::kMeasured, ServeRole::kFirstReader, 3);
+  const std::vector<EventKind> expected{
+      EventKind::kWrite, EventKind::kRead,                                // period 0 (cold start)
+      EventKind::kRead, EventKind::kWrite, EventKind::kSync,              // period 1 (steady)
+      EventKind::kRead, EventKind::kWrite, EventKind::kSync};             // period 2
+  EXPECT_EQ(seq.size(), expected.size());
+  for (std::size_t i = 0; i < expected.size() && i < seq.size(); ++i) {
+    EXPECT_EQ(seq[i], expected[i]) << "index " << i;
+  }
+}
+
+TEST(BuildEventSequence, ZeroPeriodsIsEmpty) {
+  EXPECT_TRUE(BuildEventSequence(Round8Order::kMeasured, ServeRole::kFirstServer, 0).empty());
 }
