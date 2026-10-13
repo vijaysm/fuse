@@ -1740,6 +1740,11 @@ fuse_add_gtest(abi negotiation)
 fuse_add_gtest(abi participant LIBS fuse_abi_test_support)
 target_include_directories(fuse_abi_participant_test PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
 
+# review-2026-10-11 abi: AB-9's table-driven negative-test sweep over the
+# participant-ABI refusal codes no test fired.
+fuse_add_gtest(abi refusal_sweep LIBS fuse_abi_test_support)
+target_include_directories(fuse_abi_refusal_sweep_test PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
+
 # ABI-GOLDEN-SYMBOLS: the built shared library's exported symbol set, via
 # `nm` (test/abi/check_exported_symbols.cmake; see that file for the
 # platform-nm reasoning, ported from upstream/karma's identical check).
