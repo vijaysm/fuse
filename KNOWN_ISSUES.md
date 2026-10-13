@@ -6268,3 +6268,29 @@ slipped into this one. This track's own device-mode pack test rows catch the exc
 Host-mode rows (which do not cross this path) are unaffected and green.
 
 **Fixed.** `MeshArrays::vertex_coords` is declared `Kokkos::LayoutRight` in every memory space (`include/fuse/backend/native_mesh.hpp`), so the host arrays keep the layout they always had and the device copy in `to_memory_space<Target>()` is a contiguous copy; `NativeMeshView::create_from_host`'s local pinning of the same layout stands. The two `backend.native_mesh_pack_device` cases that skipped on the throw now run the copy.
+
+### D55. `parallel.window_newton_mpi.3` hangs on higgs's Open MPI 4.1.5 — OPEN, found by the device-merge gate 2026-10-13
+
+`WindowNewtonMpi.TwoDisjointRanksMatchTheSingleProcessReference` at three ranks (two participants, one
+bystander) never returns on higgs (Open MPI 4.1.5, Kokkos Cuda build); the two-rank row passes, and the
+same rows pass on the development machine's MPICH 5.0.0a1 (D31's own host run). Reproduced standalone
+on the merged tree with `OMPI_MCA_coll_tuned_alltoallv_algorithm=2` and again with the tuned
+collectives disabled (`OMPI_MCA_coll=^tuned`), so it is not D40's `MPI_Alltoallv` case. The
+window-Newton path (`run_region_newton_window()`) carries no device-branch change; its bystander rank
+returns before the sweep (`region_is_local_participant()`), unlike the Picard window path, whose
+bystander sweeps and is kept in step by `broadcast_window_convergence()` (D42) -- whether a collective
+the participants then enter on the shared transport communicator is what the bystander never joins is
+the first thing to check. Not diagnosed further: higgs has no `gdb` on the job shell's PATH to capture
+per-rank stacks. The row is registered and times out (120 s) on that host until this is understood.
+
+### D56. `FsiEnergyDiag.FullBudgetOnTheDominantModeCloses`'s mass-correction gate fails on higgs's toolchain by 1.5x — OPEN, found by the device-merge gate 2026-10-13
+
+The gate `max_abs_diff_non_outflow < 0.5 * eig_quality * max|u_raw|` (test/verification/
+fsi_energy_diag_test.cpp, "MASS-CORRECTION ISOLATION") measured 1.720e-10 against a tolerance of
+1.183e-10 on higgs (GCC 13.3 host pass through nvcc_wrapper, Eigen SparseLU, `FUSE_FP_REPRODUCIBLE`
+default) in the Host leg of the merged tree; the pre-merge branch's version of this case passed on the
+same host, and the new protocol passed on the development machine (Apple clang). By this project's
+tolerance convention the factor is not to be widened: the derivation (one eig_quality-level relative
+error in the extracted inputs, scaled by |u_raw|) is missing a term on this toolchain -- the two
+`cn_step` solves' own forward-error difference is the candidate. The `.device` twin of the row passes
+(its energy budget runs on the selected oscillatory mode exactly as the host leg does).
