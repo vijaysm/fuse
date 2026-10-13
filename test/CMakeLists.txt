@@ -1204,6 +1204,16 @@ if(TARGET fuse-abi-fortran)
   if(TARGET fuse::lowfive)
     fuse_link_lowfive_with_fmt_fix(fuse_verification_brusselator_asymmetric_dt_isolation_test)
   endif()
+  # Same build-only addition as the three targets above: shim.cpp references
+  # bruss_lowfive_serve_after_write()/bruss_lowfive_receive_before_read()
+  # under FUSE_HAVE_LOWFIVE, so this target links lowfive_attach.cpp too.
+  # It never calls bruss_lowfive_attach() itself.
+  target_sources(fuse_verification_brusselator_asymmetric_dt_isolation_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/lowfive_attach.cpp)
+  target_link_libraries(fuse_verification_brusselator_asymmetric_dt_isolation_test PRIVATE fuse::model)
+  if(LOWFIVE_HAVE_DIST)
+    target_compile_definitions(fuse_verification_brusselator_asymmetric_dt_isolation_test PRIVATE FUSE_LOWFIVE_DIST_LIB_FOUND=1)
+  endif()
   set_target_properties(fuse_verification_brusselator_asymmetric_dt_isolation_test PROPERTIES
     Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/brusselator_asymmetric_dt_isolation_fortran_modules)
 endif()
