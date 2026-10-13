@@ -326,3 +326,58 @@ print what the library THINKS it is doing, `sample` shows what every rank is
 actually doing RIGHT NOW — the two are complementary, and a stranded
 collective is squarely `sample`'s case: the library-side trace has nothing
 to print because nothing failed, every rank is just waiting.
+
+
+## Agreement on a schedule is not agreement on how many times to run it
+
+Everything above proves a property of the *compiled plan*: the ranks that
+take part in one agreement point are exactly the ranks the move it guards
+covers, checked once at `schedule()` time (`E-SCHED-EPOCH-MISSING`,
+`E-SCHED-EPOCH-PARTIAL`). It says nothing about whether two ranks agree on
+how many times to execute that plan, and `KNOWN_ISSUES.md` D57 is a hang
+that lives entirely in that gap.
+
+`Constrain`'s own conservation reduction (`src/runtime/runner.cpp`,
+`OpKind::Constrain`) is a real `MPI_Allreduce` over the base communicator,
+not the point-to-point agreement this page otherwise describes, and its
+own gate is coarser than `Epoch`'s: `ci.reduce` is
+`config.base_communicator.has_value()` (`resolve_constrain()`, same file)
+— true for every rank with a base communicator configured at all,
+regardless of which ranks the channel's own source and target sets name.
+`Epoch`'s own rank-set-scoped checks above do not apply to it, and
+`schedule()` builds no equivalent proof for `Constrain` at all: there is
+no `E-SCHED-CONSTRAIN-MISSING`. For an `ExternalDelivery` channel (a
+LowFive-bound transfer, `FieldSpec::hdf5_path` set) this matters because
+`src/ir/rules_channel.cpp` forces `ranks_differ` to `false` for exactly
+that channel (`lower_channel()`, "FUSE performs no data move of its own
+on this channel, so neither hop ... may fire"), which suppresses both the
+`Transport` instruction and the `Epoch` point that would otherwise guard
+it — but does **not** suppress `Constrain`, whose own emission is gated
+on `ch.remap.flags != RemapFlags::None` alone. A conservative,
+coupler-routed `ExternalDelivery` channel therefore compiles a
+`Constrain` instruction with no `Epoch` anywhere near it, on every rank
+of the base communicator, coupler included.
+
+That alone is not a bug — every rank's own compiled plan is identical
+(the premise this whole page relies on: "the graph is identical on every
+rank, so every participant derives the same list without communicating
+to establish it"), so the Nth `Constrain` instruction in the stream is
+the same instruction, with the same `ci.reduce`, on every rank that
+walks that stream. D57's hang is not a disagreement about the plan; it
+is a disagreement about how many PERIODS of it to walk. `Runner::run()`
+(the coupler's own driver, `coupler_main.c`) executes exactly the
+requested period count. The ABI's own `prime_next_request()`
+(`src/abi/participant.cpp`, called from `fuse_begin_step()`) used to have
+no equivalent bound when the caller never declares
+`fuse_setup_options::has_end_time` — true of both `u_main.c` and
+`v_main.f90` — so it would silently start and run an extra period's own
+first suspend point inside the SAME call that was supposed to report the
+requested run as finished, and that extra period's own `Constrain`
+instruction is an `MPI_Allreduce` the coupler — already past its own
+exact-N-periods loop and returned from `main()` — never reaches. No
+static check catches this because there is nothing to check statically:
+`plan`+`graph` determine what one period executes, identically on every
+rank, and say nothing about how many periods a given rank's own driver
+will ask for. That is a property of the driver (`has_end_time`, and
+which of `fuse_begin_step()`'s two internal paths discovers a period
+boundary), not of the plan.

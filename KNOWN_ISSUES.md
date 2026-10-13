@@ -6430,3 +6430,213 @@ tolerance convention the factor is not to be widened: the derivation (one eig_qu
 error in the extracted inputs, scaled by |u_raw|) is missing a term on this toolchain -- the two
 `cn_step` solves' own forward-error difference is the candidate. The `.device` twin of the row passes
 (its energy budget runs on the selected oscillatory mode exactly as the host leg does).
+
+### D57. The ABI's own period-rollover eagerly started an extra period `Runner::run()` never requests, and both sides hit a base-communicator collective the other side had already left
+
+**What it was.** `src/abi/participant.cpp`'s `prime_next_request()` (called from `impl_begin_step()`/
+`fuse_begin_step()`) resolves the next coupling request for a caller driving the Runner through the public ABI.
+When its own first `Runner::Impl::resume_period()` call (`runner.cpp:3871`/`Impl::resume_period` at `4095`) finds
+the current period already drained, it increments `c.periods_completed`, sets `*rolled_over = true`, and then --
+gated ONLY on `c.has_end_time` -- either stops cleanly (`c.next_request.reset(); return true;`, when `has_end_time`
+is true and the declared bound is exceeded) or, when `has_end_time` is false, calls `resume_period()` a SECOND
+time, UNCONDITIONALLY, inside the SAME `fuse_begin_step()` call. That second call starts a FRESH period's own
+coroutine and runs it to its first suspend point then and there, caching that request. `fuse_end_step()`'s own
+direct `resume_period()` call has no such second call and reports the drained state immediately (`next_component ==
+-1`) -- the asymmetry is this function's alone.
+
+`examples/brusselator/participants/u_main.c` and `v_main.f90` both `memset()`/zero-initialize their
+`fuse_setup_options` and set only `communicator`/`my_component` -- neither ever sets `has_end_time`. The coupler
+(`coupler_main.c`) drives through `fuse_run(periods)` -> `Runner::run(components, periods)`, a plain
+`for (i = 0; i < periods; ++i) run_period();` loop with no look-ahead and no equivalent rollover -- it executes
+EXACTLY `periods` periods and returns. So on this row, U's and V's own ABI driver has no bound on how many further
+periods `prime_next_request()`'s rollover may silently start, while the coupler's own driver stops at exactly the
+requested count. `test/verification/brusselator_lowfive_harness_test.cpp`'s own `RunExternalDeliveryMatchesIn
+ProcessRunner()` (a passing, pre-existing test) already works around exactly this: it sets `fuse_setup_options::
+has_end_time = 1` with a real `end_time`, with its own comment that without declaring it "there is nothing for
+either [prime_next_request's rollover or fuse_is_coupling_ongoing] to check against, and this graph's own
+window-per-period shape... would let the Runner roll forward forever once state reaches a fixed point" -- direct,
+pre-existing documentation of this entry's own defect, for a harness that sidesteps it rather than a participant
+row that cannot.
+
+The collective U and V then hang in is `OpKind::Constrain`'s conservation reduction (`runner.cpp:3362`, inside
+`execute()`'s `Constrain` case): a real `MPI_Allreduce` of three doubles (before, after, a step-failure flag) over
+`config.base_communicator`, issued whenever `ConstrainInfo::reduce` is set -- `resolve_constrain()`
+(`runner.cpp:508`) sets it UNCONDITIONALLY to `config.base_communicator.has_value()`, not gated by any rank-set
+membership the way `Epoch`'s own agreement point is (`rank_participates()`, `src/schedule/scheduler.cpp`). The
+`u2v`/`v2u` channels on this row are `ExternalDelivery` (LowFive-bound, `FieldSpec::hdf5_path` set): `src/ir/
+rules_channel.cpp`'s `lower_channel()` forces `ranks_differ = false` for exactly this reason ("FUSE performs no
+data move of its own on this channel, so neither hop... may fire", line 317), which suppresses `Transport` and the
+`Epoch` that would otherwise guard it -- but does NOT suppress `Constrain`, whose own emission (`src/ir/
+rules_derived.cpp:89`) is gated only on `ch.remap.flags != RemapFlags::None`, which `add_window_coupling()`'s own
+`.remap(RemapFlags::Conservative).remap_on(coupler)` sets regardless of transport. So this row's compiled plan
+carries a `Constrain` instruction with no `Transport`/`Epoch` anywhere near it, on every rank of the base
+communicator, coupler included -- and `fuse::constrain_sequence()` (new this entry, see "Fix" below) confirms by
+direct measurement that this part is NOT the defect: all three real rank placements compile the IDENTICAL
+`Constrain` sequence. The defect is a disagreement about how many PERIODS to walk that identical sequence, not
+about what is in it.
+
+**How it surfaced.** MEASURED ON THE OWNER'S MACHINE (2026-10-13, HEAD 7aec9c8). Row `verification.brusselator.
+participants.lowfive.mpmd.3` (`run_participants.sh mpmd`, `--periods 2`; graph.yaml: U 1 rank, V 1 rank, coupler 1
+rank, region `brusselator_window`, channels `[u2v, v2u]`, `max_iterations 60`, convergence `Relative 1e-11` on
+`u_out`/`v_out`, `acceleration None`, `window_scope explicit_interval 1/50 order 2`, iteration `Jacobi`). The
+transport-only twin `verification.brusselator.participants.mpmd.3` (same graph, `Transport` instead of the
+LowFive delivery) PASSES. In the LowFive row, U and V run their `ExternalDelivery` stops all the way through both
+requested periods -- U made 122 writes and 121 reads, V made 121 writes and 122 reads (61 deliveries per period;
+the lead's trace counters mislabel these as `period=121`); U's last event is a write, V's last is a read. Then
+BOTH U and V sit forever in `fuse_begin_step`. Sampled stacks (macOS `sample`, 905 and 907 samples, 40 s after
+launch, both in the main thread): U -- `main (u_main.c:549)` -> `u_loop_step` -> `impl_begin_step`
+(`participant.cpp:1250`) -> `prime_next_request` -> `Runner::resume_period` (`runner.cpp:3871`) -> `Impl::
+resume_period` (`4095`) -> coroutine resume -> `Runner::Impl::run_region` (`.resume`) -> `Runner::Impl::execute`
+(`runner.cpp:336` as sampled; coroutine-frame line numbers are not reliable) -> `MPI_Allreduce` -> `MPIR_Allreduce`
+-> `MPIDI_POSIX_mpi_allreduce_release_gather` -> `MPIDI_NM_progress`. V: the same stack, `v_main.f90:477`
+`bruss_v_loop_step` -> `ffuse_begin_step`. The coupler is NOT in the picture: it had already returned from its own
+`main()` (`MPI_Finalize` ran; its stderr shows MPICH's own leak report, which also appears in the passing twin,
+then a separate static-destruction abort another track owns, unrelated to this hang) -- exactly the signature a
+driver that stops at exactly 2 periods produces against partners whose own driver has started a 3rd.
+
+**Fix.** `prime_next_request()` gained an `else if (c.communicator_set)` branch paired with the existing
+`if (c.has_end_time) {...}` block, firing when `!c.has_end_time && c.communicator_set`: `c.next_request.reset();
+return true;` -- treating "the current period just drained, no end time was declared, and a base communicator IS
+configured" exactly like the exceeded-end_time case: stop cleanly and defer starting the next period to a LATER,
+separate `fuse_begin_step()` call, instead of eagerly resuming it inside this one. The `has_end_time == true` path
+is untouched (zero behavior change for any caller that declares one, including the LowFive harness test above),
+and `fuse_end_step()`'s own direct `resume_period()` call -- already lazy -- is untouched.
+
+The `c.communicator_set` half of the gate is not incidental: a FIRST draft of this fix stopped eagerly whenever
+`!c.has_end_time`, with no further condition, and the full, unfiltered tier-0 `ctest` run this entry's own task
+required at the end (not a filtered re-run) caught it regressing a pre-existing, deliberately designed conformance
+guarantee -- `AbiParticipant.MismatchedRolloverNamesTheRealPeriodStartComponent` (`test/abi/participant_test.cpp`,
+"Case (ii) of the lead's own ruling") -- which never configures a communicator and relies on EXACTLY the eager
+continuation the first draft removed unconditionally, to resolve a still-converging window's real next-period
+owner ahead of the caller asking for it. With no communicator at all there is no partner rank to disagree with, so
+the eager continuation there is harmless; the hazard this entry fixes exists only when a base communicator is
+configured, making `c.communicator_set` -- set once, identically on every rank sharing it, from
+`fuse_setup_options::communicator` at setup time, never from rank-local runtime state -- the precise condition,
+not `!c.has_end_time` alone. `fuse::abi_test::force_communicator_set()` (new this entry, `src/abi/test_support.
+{hpp,cpp}`) lets `brusselator_period_rollover_test.cpp` exercise this exact gate at tier 0 with no MPI runtime:
+set AFTER a successful `fuse_initialize()` (setting it before fails initialize() itself outright at tier 0, since
+`impl_initialize()` also picks the "mpi" transport whenever `communicator_set` is true, and tier 0 registers no
+such backend), it reaches `prime_next_request()`'s own read of a plain context field with no other run-time
+consumer, changing nothing about the already-initialized Runner's own transport or conservation-check wiring.
+
+Also added, as the task's own fallback for task item 3-4: `fuse::constrain_sequence(plan, graph, rank)`
+(`include/fuse/schedule/plan.hpp`, `src/schedule/scheduler.cpp`), `epoch_sequence()`'s own sibling for the
+Constrain collective, reusing the same `rank_participates()` helper; `test/schedule/constrain_sequence_test.cpp`
+ties it to the REAL three-rank Brusselator participants layout (built through `fuse::lower()`/`fuse::schedule()`
+alone, which need no MPI and reach past the `E-RT-REGION` ceiling that blocks `Runner::initialize()` on this
+layout at tier 0) and measures all three rank placements' sequences identical -- proving there is no static
+schedule divergence to find, which is exactly why a purely static, `(plan, graph, rank)` function cannot by
+itself expose this entry's own defect: the divergence is in how many times a rank's own ABI driver re-enters an
+agreed-upon, identical schedule, a property of `fuse_setup_options::has_end_time` and which of
+`fuse_begin_step()`'s two internal paths discovers a period boundary, neither of which `plan`/`graph` carry. A
+parallel model of "how many periods will this rank's driver run" was deliberately NOT written for the same reason:
+it would have to re-encode `prime_next_request()`'s own control flow to answer the question, which is the exact
+kind of duplicated-and-drifting logic the task's own item 3 warns against. Instead, an off-by-default, env-gated
+per-rank trace was added at the one place that is both reachable without re-implementing the Runner and precise
+enough to show the real divergence on a host: `FUSE_COLLECTIVE_TRACE=1` prints one line per collective instruction
+a rank's own `run_region()` (`src/runtime/iteration.cpp`) reaches -- rank, region, period, sweep, instruction id
+and kind, communicator tag, and a per-rank monotonically increasing ordinal (`Runner::Impl::collective_trace_
+ordinal`, `src/runtime/runner_impl.hpp`) -- backed by a pure formatter (`fuse::format_collective_trace_line()`,
+`include/fuse/runtime/collective_trace.hpp`) pinned by three tier-0 cases in `test/runtime/collective_trace_test.
+cpp` with no coroutine, no communicator and no graph at all.
+
+**Pinned by** `test/verification/brusselator_period_rollover_test.cpp`
+(`BrusselatorPeriodRollover.StopsAtTheRequestedPeriodCountWithNoEndTime`). Reproducing the literal three-rank
+MPMD graph at tier 0 is not possible (`test/verification/brusselator_external_delivery_size_test.cpp`'s own
+`ReachesPastExternalDeliveryOnBothRanks` already measured that `Runner::initialize()` on this layout cannot get
+past `resolve_regions()`'s own `E-RT-REGION` refusal with no real communicator); this test instead drives the
+SAME multirate Brusselator window shape (`brusselator::add_window_coupling()`, `brusselator_graph_tool.cpp`'s own
+`kDtU`/`kDtV`/`kWindow`/`kTolerance`/`kMaxIterations`, both transfer fields `hdf5_path`-bound) single-process,
+through the REAL public ABI (`fuse_begin_step`/`fuse_end_step`, never a reimplementation of `prime_next_request()`
+'s own logic), with `fuse_setup_options::has_end_time` deliberately never set -- `u_main.c`'s/`v_main.f90`'s own
+choice, reproduced on purpose. The decisive assertion: at the call where the loop's own tracked period count first
+reaches the requested count (2), `fuse_step_report::next_component` must equal -1 -- the ONLY value
+`impl_begin_step()` reports when `c.next_request` genuinely holds nothing (any other value, even with
+`step_opened == 0`, means a request for an unrequested THIRD period was already resolved and cached). Measured:
+with the fix applied (and, as of this test's own final revision, `fuse::abi_test::force_communicator_set()`
+called after `fuse_initialize()` to put this single-process graph into the `communicator_set == true` state the
+real row is actually in), `next_component == -1` there and the test PASSES; with `participant.cpp` reverted to the
+HEAD version (`git show HEAD:src/abi/participant.cpp`), `next_component == 0` there and the `EXPECT_EQ` FAILS; with
+the fix restored, PASSES again. One mutation row reverting the fix (see below) reproduces the same failure through
+the WHOLE unfiltered test binary. The full, unfiltered tier-0 `ctest` run this entry's own task required (`99%
+tests passed, 1 tests failed out of 208`, the ONE failure named by path, not inferred) is what caught the first
+draft's own regression of `AbiParticipant.MismatchedRolloverNamesTheRealPeriodStartComponent` (see "Fix" above);
+after the `communicator_set` gate was added, the SAME full suite's own `abi.participant` binary (17 tests, run
+whole and unfiltered again, not merely the one case) passed completely, and `brusselator_period_rollover_test`'s
+own case above still passes with the gate in place. The pre-existing `fuse_verification_brusselator_lowfive_
+harness_test` (which DOES declare `has_end_time`) was rebuilt with the fix applied and its `*Jacobi*` case still
+PASSES (75391 ms,
+values matching the reference run across all 150 windows as before) -- the fix changes nothing on the path every
+caller that declares an end time already takes.
+
+**Does not close.** Three adjacent findings, deliberately NOT fixed here because each is either out of this
+entry's own scope or changes what a check verifies rather than who participates in it (task item 5's own stop
+condition):
+
+- `src/runtime/iteration.cpp`'s `resolve_regions()` seeds a window region's own `R.participants` from the window
+  members' ranks and extends it only by scanning the region body for `Transport`/`Epoch` instructions
+  (`iteration.cpp:1326-1437`). For a fully `ExternalDelivery`-bound region (no `Transport`/`Epoch` at all, this
+  entry's own "What it was") the coupler's rank is never added to `R.participants`. This does NOT gate whether the
+  coupler's own rank enters the region or reaches `Constrain` (`run_region()`'s own generic, non-Newton path has no
+  `region_is_local_participant()` early return the way `run_region_newton()`/`run_region_newton_window()` do,
+  confirmed by the coupler completing both requested periods' own deliveries cleanly before this entry's hang) --
+  `R.participants` is read only by specific cross-rank reductions (residual/Newton/window-convergence gather)
+  inside the region, which this row's own `acceleration None`/Jacobi path does not reach the window-convergence
+  form of either. Left as an open question because fixing it would mean deciding what `R.participants` is FOR on a
+  row with no coupler-routed data move at all, which is a question about what the window-convergence reduction
+  verifies, not who currently participates in it.
+- `examples/brusselator/participants/u_loop.c`'s `u_loop_step()` wrapper zeroes `*out_rep` entirely whenever
+  `!out_begin_rep->step_opened`, which can mask the real signal `u_main.c`'s own check reads
+  (`rep.next_component == -1`) in circumstances this entry did not fully enumerate. `u_loop.c` is on the "files you
+  must NOT touch" list (the LowFive attach track owns it); flagged, not fixed.
+- The exact "61 = 60 + 1" per-period delivery count (task item 2) is a RUNTIME sweep-count quantity, not a
+  compiled one: `fuse::schedule()`'s own output for this row's region body carries exactly ONE `ExternalDelivery`/
+  `Constrain` pair per channel (measured directly, a throwaway diagnostic built against this tree's own
+  `fuse::lower()`/`fuse::schedule()`, not part of this entry's files), and `run_region()`'s own sweep loop (`for (k
+  = 0; k < R.max_iterations; ++k)`) is what re-executes it up to `kMaxIterations` (60) times per period -- the
+  asymmetry between U's 122 writes/121 reads is consistent with a cold-start read this row's own first period does
+  not need (the first sweep of period 0 has no prior period's `v_in` to read yet) plus one write every sweep
+  including a final one neither side's own read mirrors, but this entry did not run the real species physics to
+  confirm 61 is exactly `kMaxIterations + 1` rather than a tolerance-dependent sweep count that happens to land
+  there on the owner's own machine. `D39`'s own Round 8 section independently flagged the same open question ("the
+  Jacobi-sweep-frequency question... would mean ExternalDelivery fires more than once per period for
+  max_iterations > 1") from the attach-order side; this entry confirms the mechanism (one compiled instance,
+  runtime-repeated) without pinning the exact count.
+
+**What the host must verify.** Rebuild `build-all` and `build-lowfive` (`cmake --build .`, every target, this
+entry's own files are `src/abi/participant.cpp`, `src/abi/test_support.{hpp,cpp}`, `src/runtime/iteration.cpp`,
+`src/runtime/runner_impl.hpp`, `src/schedule/scheduler.cpp`, plus new files -- see this round's own report for the
+full list), then:
+
+(a) the regression guard: `ctest -R 'verification\.brusselator\.participants\.(mpmd|accept)\.3'` in `build-all` --
+the transport-only twins must still PASS (unaffected by anything in this entry: neither row's own channels are
+LowFive-bound, so `prime_next_request()`'s rollover is never reached the way it is here, and the fix's own new
+`else` branch only changes behavior for a caller with `has_end_time == false`, which neither twin's own harness
+sets either way without re-measuring -- if either now FAILS, this entry's claim that the fix is a no-op outside
+the `!has_end_time`, drained-period path is WRONG).
+
+(b) the row itself, in `build-lowfive`: `FUSE_LOWFIVE_ATTACH_TRACE=1 FUSE_LOWFIVE_LOG=info ctest -R
+'participants\.lowfive\.mpmd\.3' --output-on-failure`. A pass looks like `brusselator_check_core.hpp`'s own
+`print_summary()`: both periods' own delivered values matching the in-process reference within the configured
+tolerance, and the run exiting through `MPI_Finalize` on all three ranks rather than hanging. Foreseeable
+failures and what each would contradict: the row still hangs in the SAME `MPI_Allreduce` stack -- would mean this
+entry's own root cause is incomplete (something else also starts an unrequested period, or the fix did not reach
+the binary the host built); the row now exits promptly but `brusselator_check` reports a VALUE mismatch -- would
+mean the fix is structurally right (no more hang) but this entry's claim that it changes no caller's reported
+values is wrong, or a genuinely separate data defect (D39's own attach/order track, or the open
+`R.participants`/cold-start questions above) is now visible with the hang out of the way; the row hangs in a
+DIFFERENT collective or a different stack -- would mean a second, independent instance of this defect class exists
+(task item 1's own per-instruction table in this round's report names every other reachable collective site to
+check first); U/V now stop one period EARLY relative to the coupler -- would mean the new `else` branch itself
+has an off-by-one this entry's own tier-0 test did not catch (it only exercises `kRequestedPeriods = 2` with a
+window that converges on sweep 0 every period, not every `(periods, convergence-sweep-count)` combination a host
+run could exhibit).
+
+**Reconciliation with D42, added 2026-10-13 when `vijaysm/kokkos-device` was merged into `main` (not part of the track's own report).**
+The open item above about `resolve_regions()` seeding `R.participants` without the coupler's rank concerns the same set
+that D42 ("A rank outside a window-scoped region's participants never learned the window converged", fixed 2026-10-10 on
+the device branch, commit 285beda) addresses by broadcasting the window's convergence verdict to ranks outside the
+participants. This entry was written and verified against `7aec9c8`, which did not contain that change; the claim above that
+the coupler's absence from `R.participants` does not gate this entry's hang has NOT been re-measured on the merged tree.
+Whether the broadcast also covers what the window-convergence and Newton reductions verify for a row with no
+coupler-routed data move is open and needs a decision on what `R.participants` is for, as stated above.
