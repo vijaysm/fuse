@@ -76,3 +76,36 @@ new = """    case ServeEvent::kImportAboutToOpen:
       return ServeAction::kReceiveOnly;"""
 target = "fuse_verification_brusselator_lowfive_attach_test"
 test = "verification.brusselator_lowfive_attach"
+
+# Round 4: two more mutations for the pure functions that fix the two
+# defects the host measured in verification.brusselator.participants.
+# lowfive.mpmd.3 after round 3's own fix (the row no longer hangs, but
+# both programs die at their own first remote H5Fopen with a named
+# LowFive exception -- lowfive_attach_decision.hpp's own "ROUND 4"
+# comment has the full citations for both).
+
+[[mutation]]
+id = "normalize-dataset-pattern-slash-removed"
+area = "examples"
+describes = "NormalizeDatasetPattern() no longer adds the leading slash an unslashed dataset pattern needs -- reproducing DEFECT B exactly: LowFive::Object::fullname() always produces a slashed path, so MetadataVOL::dataset_create()'s own is_memory check (match_any against the unslashed pattern this attach would then register) would be false for every Brusselator dataset, and the dataset is never attached as in-memory at all"
+file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
+old = """  if (pattern.front() == '/') return pattern;
+  return "/" + pattern;"""
+new = """  if (pattern.front() == '/') return pattern;
+  return pattern;"""
+target = "fuse_verification_brusselator_lowfive_attach_test"
+test = "verification.brusselator_lowfive_attach"
+
+[[mutation]]
+id = "build-intercomm-registrations-empty"
+area = "examples"
+describes = "BuildIntercommRegistrations() returns an empty list regardless of the binding table it is given -- reproducing DEFECT A exactly: bruss_lowfive_attach() would then call LowFive::DistMetadataVOL::set_intercomm() zero times, so a consumer's first remote H5Fopen would throw file_open(): no intercomm found, the exact exception the host measured on both sides"
+file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
+old = """    out.push_back(IntercommRegistration{split.value().first, normalized.value(), intercomm_index});
+  }
+  return out;"""
+new = """    (void)intercomm_index;
+  }
+  return out;"""
+target = "fuse_verification_brusselator_lowfive_attach_test"
+test = "verification.brusselator_lowfive_attach"

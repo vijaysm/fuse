@@ -22,6 +22,9 @@ using fuse_examples::lowfive_attach::AttachMode;
 using fuse_examples::lowfive_attach::ChannelRoles;
 using fuse_examples::lowfive_attach::decide_attach_mode;
 using fuse_examples::lowfive_attach::decide_serve_roles;
+using fuse_examples::lowfive_attach::BuildIntercommRegistrations;
+using fuse_examples::lowfive_attach::IntercommRegistration;
+using fuse_examples::lowfive_attach::NormalizeDatasetPattern;
 using fuse_examples::lowfive_attach::ServeAction;
 using fuse_examples::lowfive_attach::ServeEvent;
 using fuse_examples::lowfive_attach::ServeRole;
@@ -413,4 +416,102 @@ TEST(ModelCheck, BothSidesDeferDeadlocks) {
                                 ProcessPolicy{PolicyKind::kBothDefer, ServeRole::kFirstServer});
   EXPECT_FALSE(r.completed);
   ASSERT_TRUE(r.stuck_example.has_value());
+}
+
+// ---------------------------------------------------------------------
+// Round 4: DEFECT A (missing LowFive::DistMetadataVOL::set_intercomm()
+// registration) and DEFECT B (fuse::split_hdf5_path()'s own unslashed
+// dataset component never matching LowFive::Object::fullname()'s own
+// slashed form) -- lowfive_attach_decision.hpp's own "ROUND 4" comment
+// has the full citations for both, confirmed by reading LowFive's
+// source before writing either fix.
+
+TEST(NormalizeDatasetPattern, UnslashedGetsALeadingSlash) {
+  const auto r = NormalizeDatasetPattern("grid/u_out");
+  ASSERT_TRUE(r.ok()) << r.error().code;
+  EXPECT_EQ(r.value(), "/grid/u_out");
+}
+
+TEST(NormalizeDatasetPattern, AlreadySlashedIsUnchanged) {
+  const auto r = NormalizeDatasetPattern("/grid/u_out");
+  ASSERT_TRUE(r.ok()) << r.error().code;
+  EXPECT_EQ(r.value(), "/grid/u_out");
+}
+
+TEST(NormalizeDatasetPattern, EmptyIsRefused) {
+  const auto r = NormalizeDatasetPattern("");
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-LOWFIVE-ATTACH-DATASET-EMPTY-PATTERN");
+}
+
+namespace {
+// The Brusselator's own two-binding shape (u_out: U writes it, v_out: V
+// writes it) -- the SAME field_name/hdf5_path convention lowfive_attach.
+// cpp's own ApplyBindings() sees via fuse::build_lowfive_bindings().
+fuse::LowFiveFieldBindingTable MakeBrusselatorBindingTable() {
+  fuse::LowFiveFieldBindingTable table;
+  auto a = table.add({"U.u_out", "brusselator_u.h5/grid/u_out"});
+  auto b = table.add({"V.v_out", "brusselator_v.h5/grid/v_out"});
+  // add()'s own contract (fuse/transport/lowfive.hpp) already tier-0
+  // tests these exact ports succeeding; a failure here would mean that
+  // contract broke, not a new input to this file.
+  if (!a.ok() || !b.ok()) throw std::runtime_error("MakeBrusselatorBindingTable: unexpected add() failure");
+  return table;
+}
+}  // namespace
+
+TEST(BuildIntercommRegistrations, OneEntryPerBindingWithTheGivenIndexAndLeadingSlash) {
+  const auto table = MakeBrusselatorBindingTable();
+  const auto r = BuildIntercommRegistrations(table, /*intercomm_index=*/0);
+  ASSERT_TRUE(r.ok()) << r.error().code;
+  ASSERT_EQ(r.value().size(), 2u);
+  for (const IntercommRegistration& reg : r.value()) {
+    EXPECT_EQ(reg.intercomm_index, 0);
+    EXPECT_EQ(reg.dataset_pattern.front(), '/') << reg.dataset_pattern;
+  }
+  EXPECT_EQ(r.value()[0].file, "brusselator_u.h5");
+  EXPECT_EQ(r.value()[0].dataset_pattern, "/grid/u_out");
+  EXPECT_EQ(r.value()[1].file, "brusselator_v.h5");
+  EXPECT_EQ(r.value()[1].dataset_pattern, "/grid/v_out");
+}
+
+TEST(BuildIntercommRegistrations, IndexIsWhateverTheCallerPasses) {
+  const auto table = MakeBrusselatorBindingTable();
+  const auto r = BuildIntercommRegistrations(table, /*intercomm_index=*/7);
+  ASSERT_TRUE(r.ok()) << r.error().code;
+  for (const IntercommRegistration& reg : r.value()) EXPECT_EQ(reg.intercomm_index, 7);
+}
+
+TEST(BuildIntercommRegistrations, EmptyTableIsEmptyResultNotARefusal) {
+  const fuse::LowFiveFieldBindingTable table;
+  const auto r = BuildIntercommRegistrations(table, 0);
+  ASSERT_TRUE(r.ok()) << r.error().code;
+  EXPECT_TRUE(r.value().empty());
+}
+
+// ---------------------------------------------------------------------
+// Round 4: the model check's own DEFECT B case (ProcessPolicy::
+// nothing_indexed) -- "a protocol that relies on a serve that never
+// serves is a stuck/diverging state, not a silent pass."
+
+TEST(ModelCheck, ShippedProtocolWithNothingIndexedGetsStuck) {
+  using namespace fuse_examples::lowfive_attach_model;
+  ProcessPolicy server{PolicyKind::kShipped, ServeRole::kFirstServer, /*nothing_indexed=*/true};
+  ProcessPolicy reader{PolicyKind::kShipped, ServeRole::kFirstReader, /*nothing_indexed=*/true};
+  const auto r = RunSimulation(1, server, reader);
+  EXPECT_FALSE(r.completed);
+  ASSERT_TRUE(r.stuck_example.has_value());
+}
+
+// Sanity check on the flag itself: leaving it at its own default (false)
+// must reproduce the ordinary, already-passing shipped-protocol result
+// -- i.e. this new field cannot have silently changed the nominal case.
+TEST(ModelCheck, ShippedProtocolDefaultsToIndexedAndStillCompletes) {
+  using namespace fuse_examples::lowfive_attach_model;
+  ProcessPolicy server{PolicyKind::kShipped, ServeRole::kFirstServer};
+  ProcessPolicy reader{PolicyKind::kShipped, ServeRole::kFirstReader};
+  EXPECT_FALSE(server.nothing_indexed);
+  EXPECT_FALSE(reader.nothing_indexed);
+  const auto r = RunSimulation(2, server, reader);
+  EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
 }
