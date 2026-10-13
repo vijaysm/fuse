@@ -281,6 +281,24 @@ is how that rank executes its own period, with the same `periods` argument every
 — drive it exactly as a fully in-process caller would, from `fuse_initialize()` straight through to
 `fuse_destroy()`, registering no field at all.
 
+## Every rank of a component must make the same calls, in the same order
+
+For a component whose `RankSet` spans more than one MPI rank, every rank of that component must
+call `fuse_begin_step()`/`fuse_end_step()`/`fuse_run()`/`fuse_setup()`/`fuse_initialize()` in the
+same order its peers do. A refusal one of these entries returns — `E-ABI-STEP-ORDER`,
+`E-ABI-STEP-ALREADY-OPEN`, a version or struct-size mismatch, or any other code this page lists —
+is decided from **this process's own local state only**; it is never reconciled against what the
+component's other ranks decided, the way `fuse::Runner`'s own C++ terminals reconcile a step
+failure through `Epoch` before any later collective (rank-agreement.md). If one rank of a
+multi-rank component calls an entry out of turn (or omits a call its peers make) and is refused
+while its peers proceed into that same call, which performs a real collective underneath
+(`resume_period()`'s own Transport/Epoch machinery), the refused rank returns promptly but its
+peers block in the collective it never joins — the same stranded-collective class
+`docs/dev/rank-agreement.md` names, now unreconciled at this ABI boundary rather than fixed. A
+caller driving a multi-rank component through this ABI is responsible for keeping every rank's
+own call sequence identical; this library does not detect or correct a divergence for you. (Review
+2026-10-11 AB-10; not yet covered by a host-run multi-rank test — see KNOWN_ISSUES.md.)
+
 ## Time is exact across the boundary too
 
 ```c
