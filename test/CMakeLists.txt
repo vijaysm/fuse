@@ -1278,6 +1278,18 @@ endforeach()
 # this row the slow one.
 fuse_add_device_twin(verification.brusselator_runner fuse_verification_brusselator_runner_test TIMEOUT 10800)
 
+# review-2026-10-11 numerics
+# NL-1: all three DiffusionSolver kinds (species_core.hpp) keyed their
+# factor() cache on (dt, extra_diagonal) alone, dropping the per-call
+# diffusion argument -- BrusselatorDiffusionSolverCache pins that a solve
+# at a changed diffusion, same dt/extra_diagonal, refactors instead of
+# reusing a stale matrix. Single-rank NativeGrid, same deps as the
+# foreach block just above.
+fuse_add_gtest(verification brusselator_diffusion_solver_cache NO_LAYER_LIB
+               LIBS fuse::runtime fuse::backend fuse::model fuse::linalg Eigen3::Eigen Kokkos::kokkos)
+target_include_directories(fuse_verification_brusselator_diffusion_solver_cache_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/examples/brusselator)
+
 # S6 phase 3 ("LowFive" track), Unit 3: brusselator_graph_tool.cpp's own
 # --transport lowfive wiring, reproduced directly against validate() --
 # see the test file's own header comment for why this is not redundant
