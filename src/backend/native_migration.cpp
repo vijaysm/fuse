@@ -16,9 +16,14 @@
 // Declares MPIX_Query_cuda_support()/MPIX_CUDA_AWARE_SUPPORT when this
 // OpenMPI was built with CUDA-aware support -- the same header
 // cmake/FuseMpiGpuAware.cmake's configure-time probe compiles against.
-// Absent on an MPI with no such extension; #if defined(...) below, never
-// an unconditional call.
+// Absent on an MPI with no such extension (the MPICH 5.0.0a1 at /opt/mpich
+// has no mpi-ext.h), so the include is conditional; #if defined(...) below,
+// never an unconditional call.
+#if defined(__has_include)
+#if __has_include(<mpi-ext.h>)
 #include <mpi-ext.h>
+#endif
+#endif
 #endif
 
 namespace fuse::native {
