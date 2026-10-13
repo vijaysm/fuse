@@ -4481,6 +4481,8 @@ default `.omp`/non-`.device` MPI legs) are unaffected and still assert zero allo
 -n 1 ... ` does not reproduce the two-rank disjoint placement, so the real repro needs an
 attached debugger or `gdb --args` under `mpiexec`), to get an actual call stack for the
 allocation.
+**Integration note (lead, 2026-10-13).** The same binary's host leg allocates nothing, and the one thing the mixed-pair path adds per period is `Kokkos::deep_copy` between spaces, which fences with a string label (`Kokkos::fence("Kokkos::deep_copy: ...")`) and so constructs a `std::string` per call. That is exactly why `Iteration.TheSweepLoopAllocatesNothing` and `TheAcceleratorAllocatesNothingPerUpdate` skip under `FUSE_EXECUTION_SPACE=device` (docs/dev/testing.md, "The device leg"): the count measures Kokkos, not FUSE. Still unconfirmed by a per-rank capture; if that is what the debugger shows, the right close is the same skip-with-reason, not a change to the Transport path.
+
 ### ~~D43. `parallel.window_runner_mpi`'s new `.device` twin fails with `E-RT-DEVICE` on an `Interpolate` instruction~~ — CLOSED 2026-10-13 (fixed on the lead branch before the twins were merged)
 
 **What.** `fuse_add_mpi_test(parallel window_runner_mpi ... DEVICE_TWIN)` (this track) registers
