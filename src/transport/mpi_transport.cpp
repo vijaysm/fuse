@@ -45,9 +45,14 @@
 // Declares MPIX_Query_cuda_support()/MPIX_CUDA_AWARE_SUPPORT when this
 // OpenMPI was built with CUDA-aware support -- the same header
 // cmake/FuseMpiGpuAware.cmake's configure-time probe compiles against.
-// Always present on OpenMPI (the extension macro inside it is what's
-// conditional); #if defined(...) below, never an unconditional call.
+// Present on OpenMPI; absent from the MPICH 5.0.0a1 installed at /opt/mpich
+// (measured: no mpi-ext.h under its include directory), so the include is
+// conditional and every use below is #if defined(...), never unconditional.
+#if defined(__has_include)
+#if __has_include(<mpi-ext.h>)
 #include <mpi-ext.h>
+#endif
+#endif
 
 #include <algorithm>
 #include <cstddef>
