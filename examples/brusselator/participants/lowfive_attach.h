@@ -176,6 +176,58 @@ int bruss_lowfive_after_read_close(char* errbuf, long long errbuf_len);
  * process, always returns 0: there is nothing to have deferred. */
 int bruss_lowfive_finalize(char* errbuf, long long errbuf_len);
 
+/* ROUND 5 (diagnostic trace track): 1 iff FUSE_LOWFIVE_ATTACH_TRACE is
+ * set to exactly "1" in this process's own environment, read ONCE
+ * (cached in a function-local static the first time this is called)
+ * -- so shim.cpp, u_main.c, and v_main.f90 (via a bind(C) wrapper, see
+ * bruss_lowfive_trace_skip() below) all agree on the SAME decision
+ * without each doing its own getenv() call. 0 when unset, empty, "0",
+ * or any other value -- lowfive_attach_decision.hpp's own
+ * ParseTraceEnabledEnv() is the pure half this wraps; see its own doc
+ * comment for the exact grammar. When 0, every trace call site below
+ * is a single cheap branch -- no fprintf, no formatting -- so the
+ * trace adds no cost on a normal (untraced) run. The lead's own brief,
+ * item 1-4: "Keep the trace code out of the hot path when disabled
+ * (one cached bool)". */
+int bruss_lowfive_trace_enabled(void);
+
+/* ROUND 5 (diagnostic trace track), item 3 of the brief: called from
+ * u_main.c's/v_main.f90's own write/read guard's ELSE branch (i.e.
+ * `window_samples > 0 && data` was FALSE, so the actual H5Fcreate/
+ * H5Fopen was SKIPPED) -- settles H1 (did the cold-start export/
+ * import's own window view guard actually pass, or was the write/read
+ * silently skipped because the window wasn't primed yet). `which` is a
+ * short caller-chosen label ("u_lowfive_write_export",
+ * "v_lowfive_read_import", etc.); `window_samples`/`count`/
+ * `components` are the view's own fields at the point the guard was
+ * evaluated. A no-op (no stderr output) unless bruss_lowfive_trace_
+ * enabled() is true. v_main.f90 is pure Fortran with no printf-
+ * equivalent that reaches stderr with this exact shape, hence a
+ * bind(C) wrapper here rather than Fortran WRITE statements at each of
+ * its own two call sites -- u_main.c could use fprintf() directly but
+ * calls this too, so there is exactly one place that owns the trace
+ * line's own format. */
+void bruss_lowfive_trace_skip(const char* which, long long window_samples,
+                              long long count, long long components);
+
+/* ROUND 5 (diagnostic trace track), item 2 of the brief's own "best
+ * available proxy" instruction: returns how many files this process's
+ * own LowFive VOL currently holds in its in-memory metadata (`LowFive
+ * ::MetadataVOL::files.size()`, a PUBLIC member -- confirmed from the
+ * installed /opt/lowfive/include/lowfive/vol-metadata.hpp, the struct
+ * defaults every member public and `files` is declared before any
+ * access-specifier label), or -1 if bruss_lowfive_attach() was never
+ * called successfully in this process. Nothing public exposes whether
+ * a SPECIFIC dataset was attached as in-memory (`Dataset::is_memory` is
+ * a private/internal field, not reachable from this translation unit's
+ * own public LowFive headers) -- this file count is the best available
+ * proxy the brief itself names; shim.cpp's own trace additionally
+ * tries H5Lexists() on the dataset path BEFORE H5Fclose, from the
+ * SAME process, as a second, independent proxy for "was the dataset
+ * actually created at all". Diagnostic only -- never consulted by any
+ * non-diagnostic code path. */
+long long bruss_lowfive_attach_file_count(void);
+
 #ifdef __cplusplus
 }
 #endif

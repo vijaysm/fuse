@@ -349,6 +349,15 @@ int bruss_lowfive_write(const char* file, const char* dataset,
                         const double* data, long long n,
                         long long fapl_id,
                         char* errbuf, long long errbuf_len) {
+  // ROUND 5 (diagnostic trace track), item 2 of the brief: one line
+  // before and after this whole call, off by default (bruss_lowfive_
+  // trace_enabled() is the single cached getenv() every trace call
+  // site in this file and lowfive_attach.cpp shares).
+  const int traced = bruss_lowfive_trace_enabled();
+  if (traced) {
+    std::fprintf(stderr, "TRACE(bruss_lowfive_write): file=%s dataset=%s nvals=%lld enter\n",
+                 file, dataset, n);
+  }
   // `fapl_id`, not H5P_DEFAULT, per shim.h's own updated comment ("LowFive
   // attach" track): the VOL that makes this interception rather than a
   // real file on disk is attached PROGRAMMATICALLY, by bruss_lowfive_
@@ -363,12 +372,15 @@ int bruss_lowfive_write(const char* file, const char* dataset,
             "'): fapl_id < 0; call bruss_lowfive_attach() successfully "
             "first",
         errbuf, errbuf_len);
+    if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_write): exit rc=1 (fapl_id<0)\n");
     return 1;
   }
   const hid_t fapl = static_cast<hid_t>(fapl_id);
   const hid_t fid = H5Fcreate(file, H5F_ACC_TRUNC, H5P_DEFAULT, fapl);
+  if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_write): H5Fcreate_ok=%d\n", fid >= 0 ? 1 : 0);
   if (fid < 0) {
     CopyErrorMessage(Hdf5CallFailed("H5Fcreate", file, dataset), errbuf, errbuf_len);
+    if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_write): exit rc=1 (H5Fcreate failed)\n");
     return 1;
   }
   const hsize_t dims[1] = {static_cast<hsize_t>(n)};
@@ -376,6 +388,7 @@ int bruss_lowfive_write(const char* file, const char* dataset,
   if (space < 0) {
     H5Fclose(fid);
     CopyErrorMessage(Hdf5CallFailed("H5Screate_simple", file, dataset), errbuf, errbuf_len);
+    if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_write): exit rc=1 (H5Screate_simple failed)\n");
     return 1;
   }
   const hid_t did = H5Dcreate2(fid, dataset, H5T_NATIVE_DOUBLE, space, H5P_DEFAULT,
@@ -384,15 +397,36 @@ int bruss_lowfive_write(const char* file, const char* dataset,
     H5Sclose(space);
     H5Fclose(fid);
     CopyErrorMessage(Hdf5CallFailed("H5Dcreate2", file, dataset), errbuf, errbuf_len);
+    if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_write): exit rc=1 (H5Dcreate2 failed)\n");
     return 1;
   }
   const herr_t wrc =
       H5Dwrite(did, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
+  // ROUND 5, item 2's own "best available proxy" instruction: nothing
+  // public exposes whether THIS dataset was attached as in-memory
+  // (lowfive_attach.h's own bruss_lowfive_attach_file_count() doc has
+  // the full account of why) -- H5Lexists(), called here while `fid`
+  // is still open, BEFORE H5Dclose/H5Fclose, is an ordinary VOL
+  // dispatch LowFive answers from its own in-memory metadata tree
+  // regardless of is_memory/is_passthru, so a 0 or negative result
+  // here (as distinct from the file-count check after close, below)
+  // would mean dataset_create() itself was never reached for this
+  // dataset at all -- a DIFFERENT failure from anything H2/H4 name.
+  if (traced) {
+    const htri_t exists = H5Lexists(fid, dataset, H5P_DEFAULT);
+    std::fprintf(stderr, "TRACE(bruss_lowfive_write): dataset_exists_before_close=%d\n",
+                 exists > 0 ? 1 : 0);
+  }
   H5Dclose(did);
   H5Sclose(space);
   H5Fclose(fid);
+  if (traced) {
+    std::fprintf(stderr, "TRACE(bruss_lowfive_write): after_close files_in_memory=%lld\n",
+                 bruss_lowfive_attach_file_count());
+  }
   if (wrc < 0) {
     CopyErrorMessage(Hdf5CallFailed("H5Dwrite", file, dataset), errbuf, errbuf_len);
+    if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_write): exit rc=1 (H5Dwrite failed)\n");
     return 1;
   }
   // "called by the producer side after it has written ... and called
@@ -400,8 +434,10 @@ int bruss_lowfive_write(const char* file, const char* dataset,
   // serve_as_producer()'s own placement (fuse/transport/transport.hpp),
   // mirrored here; a no-op when the live attach is single-process.
   if (bruss_lowfive_serve_after_write(errbuf, errbuf_len) != 0) {
+    if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_write): exit rc=1 (serve_after_write failed)\n");
     return 1;
   }
+  if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_write): exit rc=0\n");
   return 0;
 }
 
@@ -447,12 +483,20 @@ int bruss_lowfive_read(const char* file, const char* dataset,
                        double* data, long long n,
                        long long fapl_id,
                        char* errbuf, long long errbuf_len) {
+  // ROUND 5 (diagnostic trace track), item 2 of the brief: same shape
+  // as bruss_lowfive_write()'s own trace above.
+  const int traced = bruss_lowfive_trace_enabled();
+  if (traced) {
+    std::fprintf(stderr, "TRACE(bruss_lowfive_read): file=%s dataset=%s nvals=%lld enter\n",
+                 file, dataset, n);
+  }
   if (fapl_id < 0) {
     CopyErrorMessage(
         "bruss_lowfive_read('" + std::string(file) +
             "'): fapl_id < 0; call bruss_lowfive_attach() successfully "
             "first",
         errbuf, errbuf_len);
+    if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_read): exit rc=1 (fapl_id<0)\n");
     return 1;
   }
   // "called by the CONSUMER side BEFORE its own, unmodified H5Fopen" --
@@ -463,10 +507,20 @@ int bruss_lowfive_read(const char* file, const char* dataset,
   // does, automatically; see lowfive_attach.h's own updated doc on this
   // function's own counterpart.
   if (bruss_lowfive_receive_before_read(errbuf, errbuf_len) != 0) {
+    if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_read): exit rc=1 (receive_before_read failed)\n");
     return 1;
   }
   const hid_t fapl = static_cast<hid_t>(fapl_id);
+  // ROUND 5: this H5Fopen is the single call this round's own report
+  // settles is where the host measured both U and V block (item 2's
+  // own "before/after" wording covers the WHOLE call including this
+  // one, which is the one that actually hangs -- a trace line printed
+  // BEFORE this call and never followed by its own "H5Fopen_ok=" line
+  // IS the hang signature, no timer needed to see it in u_stdout.*.log/
+  // v_stdout.*.log).
+  if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_read): H5Fopen about to call\n");
   const hid_t fid = H5Fopen(file, H5F_ACC_RDONLY, fapl);
+  if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_read): H5Fopen_ok=%d\n", fid >= 0 ? 1 : 0);
   if (fid < 0) {
     // No H5Fclose to call (nothing was opened), so no AfterReadClose
     // call either -- nothing was sent to a peer that could be owed a
@@ -474,12 +528,14 @@ int bruss_lowfive_read(const char* file, const char* dataset,
     // "ROUND 2 REVIEW" comment: the receive IS H5Fopen; if it failed,
     // nothing was received).
     CopyErrorMessage(Hdf5CallFailed("H5Fopen", file, dataset), errbuf, errbuf_len);
+    if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_read): exit rc=1 (H5Fopen failed)\n");
     return 1;
   }
   const hid_t did = H5Dopen2(fid, dataset, H5P_DEFAULT);
   if (did < 0) {
     H5Fclose(fid);
     CopyErrorMessage(Hdf5CallFailed("H5Dopen2", file, dataset), errbuf, errbuf_len);
+    if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_read): exit rc=1 (H5Dopen2 failed)\n");
     return AfterReadClose(1, errbuf, errbuf_len);
   }
   // `n` is the caller's own buffer length, checked against the dataset's
@@ -497,6 +553,7 @@ int bruss_lowfive_read(const char* file, const char* dataset,
     CopyErrorMessage(
         Hdf5CallFailed("H5Dget_space/extent-mismatch", file, dataset), errbuf,
         errbuf_len);
+    if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_read): exit rc=1 (extent mismatch)\n");
     return AfterReadClose(1, errbuf, errbuf_len);
   }
   H5Sclose(space);
@@ -504,10 +561,16 @@ int bruss_lowfive_read(const char* file, const char* dataset,
       H5Dread(did, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
   H5Dclose(did);
   H5Fclose(fid);
+  if (traced) {
+    std::fprintf(stderr, "TRACE(bruss_lowfive_read): after_close files_in_memory=%lld\n",
+                 bruss_lowfive_attach_file_count());
+  }
   if (rrc < 0) {
     CopyErrorMessage(Hdf5CallFailed("H5Dread", file, dataset), errbuf, errbuf_len);
+    if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_read): exit rc=1 (H5Dread failed)\n");
     return AfterReadClose(1, errbuf, errbuf_len);
   }
+  if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_read): exit rc=0\n");
   return AfterReadClose(0, errbuf, errbuf_len);
 }
 

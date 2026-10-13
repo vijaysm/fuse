@@ -23,8 +23,11 @@ using fuse_examples::lowfive_attach::ChannelRoles;
 using fuse_examples::lowfive_attach::decide_attach_mode;
 using fuse_examples::lowfive_attach::decide_serve_roles;
 using fuse_examples::lowfive_attach::BuildIntercommRegistrations;
+using fuse_examples::lowfive_attach::FormatMemoryPatternsForTrace;
+using fuse_examples::lowfive_attach::FormatRegistrationsForTrace;
 using fuse_examples::lowfive_attach::IntercommRegistration;
 using fuse_examples::lowfive_attach::NormalizeDatasetPattern;
+using fuse_examples::lowfive_attach::ParseTraceEnabledEnv;
 using fuse_examples::lowfive_attach::ServeAction;
 using fuse_examples::lowfive_attach::ServeEvent;
 using fuse_examples::lowfive_attach::ServeRole;
@@ -514,4 +517,69 @@ TEST(ModelCheck, ShippedProtocolDefaultsToIndexedAndStillCompletes) {
   EXPECT_FALSE(reader.nothing_indexed);
   const auto r = RunSimulation(2, server, reader);
   EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
+}
+
+
+// ---------------------------------------------------------------------
+// Round 5 (diagnostic trace track): the three PURE functions the real
+// trace call sites (lowfive_attach.cpp/shim.cpp's own getenv()/
+// fprintf() calls, not testable here -- see this round's own report
+// for what is only measurable on a host) go through.
+
+TEST(ParseTraceEnabledEnv, ExactlyOneCharOneIsEnabled) {
+  EXPECT_TRUE(ParseTraceEnabledEnv("1"));
+}
+
+TEST(ParseTraceEnabledEnv, UnsetIsDisabled) {
+  EXPECT_FALSE(ParseTraceEnabledEnv(nullptr));
+}
+
+TEST(ParseTraceEnabledEnv, EmptyIsDisabled) {
+  EXPECT_FALSE(ParseTraceEnabledEnv(""));
+}
+
+TEST(ParseTraceEnabledEnv, ZeroIsDisabled) {
+  EXPECT_FALSE(ParseTraceEnabledEnv("0"));
+}
+
+TEST(ParseTraceEnabledEnv, WordFormsAreDisabled) {
+  // The brief's own literal spec is "FUSE_LOWFIVE_ATTACH_TRACE=1" --
+  // deliberately NOT a permissive grammar; "true"/"TRUE"/"yes"/"10"
+  // must all be treated the same as unset, not guessed at.
+  EXPECT_FALSE(ParseTraceEnabledEnv("true"));
+  EXPECT_FALSE(ParseTraceEnabledEnv("TRUE"));
+  EXPECT_FALSE(ParseTraceEnabledEnv("yes"));
+  EXPECT_FALSE(ParseTraceEnabledEnv("10"));
+}
+
+TEST(FormatRegistrationsForTrace, EmptyListIsEmptyBrackets) {
+  EXPECT_EQ(FormatRegistrationsForTrace({}), "[]");
+}
+
+TEST(FormatRegistrationsForTrace, OneEntryExactFormat) {
+  std::vector<IntercommRegistration> regs{{"brusselator_u.h5", "/grid/u_out", 0}};
+  EXPECT_EQ(FormatRegistrationsForTrace(regs), "[(brusselator_u.h5, /grid/u_out, 0)]");
+}
+
+TEST(FormatRegistrationsForTrace, TwoEntriesCommaSeparated) {
+  std::vector<IntercommRegistration> regs{{"brusselator_u.h5", "/grid/u_out", 0},
+                                          {"brusselator_v.h5", "/grid/v_out", 0}};
+  EXPECT_EQ(FormatRegistrationsForTrace(regs),
+           "[(brusselator_u.h5, /grid/u_out, 0), (brusselator_v.h5, /grid/v_out, 0)]");
+}
+
+TEST(FormatMemoryPatternsForTrace, EmptyListIsEmptyBrackets) {
+  EXPECT_EQ(FormatMemoryPatternsForTrace({}), "[]");
+}
+
+TEST(FormatMemoryPatternsForTrace, OneEntryExactFormat) {
+  std::vector<std::pair<std::string, std::string>> patterns{{"brusselator_u.h5", "/grid/u_out"}};
+  EXPECT_EQ(FormatMemoryPatternsForTrace(patterns), "[(brusselator_u.h5, /grid/u_out)]");
+}
+
+TEST(FormatMemoryPatternsForTrace, TwoEntriesCommaSeparated) {
+  std::vector<std::pair<std::string, std::string>> patterns{{"brusselator_u.h5", "/grid/u_out"},
+                                                             {"brusselator_v.h5", "/grid/v_out"}};
+  EXPECT_EQ(FormatMemoryPatternsForTrace(patterns),
+           "[(brusselator_u.h5, /grid/u_out), (brusselator_v.h5, /grid/v_out)]");
 }

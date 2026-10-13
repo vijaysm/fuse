@@ -43,6 +43,7 @@
 
 #include <cstddef>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "fuse/base/result.hpp"
@@ -662,6 +663,87 @@ struct IntercommRegistration {
     }
     out.push_back(IntercommRegistration{split.value().first, normalized.value(), intercomm_index});
   }
+  return out;
+}
+
+
+// ROUND 5 (diagnostic trace track): the host measured lowfive.mpmd.3
+// getting PAST its first remote H5Fopen (round 4's set_intercomm/
+// NormalizeDatasetPattern fix held) and then hanging 120s with BOTH
+// U and V inside file_open()'s own "get_file_hierarchy" RPC, neither
+// in serve_all() -- so U (first-server) must have had its own
+// serve_after_write() -> serve_all() call return WITHOUT BLOCKING, or
+// never run at all. The lead's own brief named four hypotheses (H1:
+// the cold-start write's own view guard was false, so no H5Fcreate
+// ever happened; H2: serve_all() returned at once because
+// indexed_datasets==0; H3: the hook returned an action other than
+// kServeNow, or never ran; H4: serve_all() served the wrong intercomm
+// index, or serve_indices/intercomms ended up empty) and asked for
+// INSTRUMENTATION, not a speculative fix -- the functions below are
+// the PURE, testable seam that instrumentation's own trace-line
+// formatting and env-parsing go through; the actual getenv()/fprintf()
+// calls (not pure, not unit-testable) live in lowfive_attach.cpp/
+// shim.cpp and call these.
+//
+// Source analysis for H1-H4 (cites, not speculation presented as
+// fact) is this round's own report's own "design_notes"/
+// "measured_results" section, not repeated here; this comment covers
+// only what these THREE functions below do and why they are shaped
+// this way.
+
+/// Pure env-value parser for `FUSE_LOWFIVE_ATTACH_TRACE`: enabled iff
+/// the raw value is the single character `"1"` -- unset (`raw ==
+/// nullptr`), empty, `"0"`, or anything else (`"true"`, `"TRUE"`,
+/// `"yes"`) is disabled, matching the brief's own literal spec
+/// ("enabled by env FUSE_LOWFIVE_ATTACH_TRACE=1") rather than
+/// inventing a more permissive grammar this brief never asked for.
+/// The CALLER (lowfive_attach.cpp's own `bruss_lowfive_trace_enabled()`)
+/// reads `getenv()` exactly once per process and caches the result in
+/// a function-local static -- that caching is not reachable from a
+/// pure function and is not tested here; this function is the pure
+/// half, tested directly against literal strings.
+[[nodiscard]] inline bool ParseTraceEnabledEnv(const char* raw) {
+  return raw != nullptr && raw[0] == '1' && raw[1] == '\0';
+}
+
+/// Pure formatter for the attach-time trace line's own registration
+/// list (one line summarizing every `(file, dataset_pattern,
+/// intercomm_index)` this process registered via `LowFive::
+/// DistMetadataVOL::set_intercomm()` -- settles whether H4's "wrong
+/// intercomm index" is even possible for THIS row's own single-
+/// intercomm architecture, and whether the registration list is empty
+/// (which would mean `BuildIntercommRegistrations()`'s own table
+/// argument was empty, a DIFFERENT failure from H4's). Deterministic,
+/// pure string building -- no I/O, no env access -- so a unit test can
+/// assert the exact output for a known input vector.
+[[nodiscard]] inline std::string FormatRegistrationsForTrace(
+    const std::vector<IntercommRegistration>& regs) {
+  std::string out = "[";
+  for (std::size_t i = 0; i < regs.size(); ++i) {
+    if (i > 0) out += ", ";
+    out += "(" + regs[i].file + ", " + regs[i].dataset_pattern + ", " +
+           std::to_string(regs[i].intercomm_index) + ")";
+  }
+  out += "]";
+  return out;
+}
+
+/// Pure formatter for the attach-time trace line's own memory-pattern
+/// list (one line summarizing every `(file, dataset)` pattern this
+/// process registered via `LowFive::MetadataVOL::set_memory()`, i.e.
+/// `ApplyBindings()`'s own loop AFTER `NormalizeDatasetPattern()` --
+/// the EXACT pair `MetadataVOL::dataset_create()`'s own `is_memory =
+/// match_any(filepath, memory)` check (H2's own citation) compares a
+/// real dataset's `fullname()` against. Same determinism/testability
+/// rationale as `FormatRegistrationsForTrace()` above.
+[[nodiscard]] inline std::string FormatMemoryPatternsForTrace(
+    const std::vector<std::pair<std::string, std::string>>& patterns) {
+  std::string out = "[";
+  for (std::size_t i = 0; i < patterns.size(); ++i) {
+    if (i > 0) out += ", ";
+    out += "(" + patterns[i].first + ", " + patterns[i].second + ")";
+  }
+  out += "]";
   return out;
 }
 

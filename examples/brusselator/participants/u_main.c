@@ -124,6 +124,15 @@ static void u_lowfive_write_export(const fuse_participant_abi_v1* t, fuse_ctx* c
                             (const double*)out_view.data, nvals, g_lowfive_fapl_id,
                             errbuf, (long long)sizeof(errbuf));
     if (io_rc != 0) u_lowfive_fail_io("bruss_lowfive_write(u_out)", io_rc, errbuf);
+  } else {
+    /* ROUND 5 (diagnostic trace track), item 3 of the brief: settles
+     * H1 directly for the WRITE side -- if this branch ever fires at
+     * the cold-start call site (u_main.c's own comment on that call
+     * has the "unconditionally, once, before the loop" account),
+     * bruss_lowfive_write() above was never reached at all, and
+     * nothing was ever written for the peer to read. */
+    bruss_lowfive_trace_skip("u_lowfive_write_export", (long long)out_view.window_samples,
+                             (long long)out_view.count, (long long)out_view.components);
   }
 }
 
@@ -145,6 +154,16 @@ static void u_lowfive_read_import(const fuse_participant_abi_v1* t, fuse_ctx* ct
                            (double*)in_view.data, nvals, g_lowfive_fapl_id,
                            errbuf, (long long)sizeof(errbuf));
     if (io_rc != 0) u_lowfive_fail_io("bruss_lowfive_read(u_in)", io_rc, errbuf);
+  } else {
+    /* ROUND 5 (diagnostic trace track), item 3: the READ side's own
+     * counterpart -- settles H1 for the import guard too (u_main.c's
+     * own host trace showed this call's OWN bruss_lowfive_read()
+     * reaching H5Fopen, so this branch is not expected to fire for
+     * THIS row's own cold-start import at the point the host measured
+     * -- but the general guard applies to every later steady-state
+     * call site too, not just the cold start). */
+    bruss_lowfive_trace_skip("u_lowfive_read_import", (long long)in_view.window_samples,
+                             (long long)in_view.count, (long long)in_view.components);
   }
 }
 
