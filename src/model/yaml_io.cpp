@@ -251,19 +251,30 @@ std::optional<Failure> emit_window(YAML::Emitter& e, const CouplingGraph& g,
         << YAML::Key << "component" << YAML::Value
         << g.component(w.component).name
         << YAML::EndMap;
-      break;
+      return std::nullopt;
     case Window::Kind::Explicit:
       e << YAML::Flow << YAML::BeginMap
         << YAML::Key << "kind" << YAML::Value << "explicit"
         << YAML::Key << "length" << YAML::Value << w.length.to_string()
         << YAML::EndMap;
-      break;
+      return std::nullopt;
     case Window::Kind::CouplingPeriod:
-    default:
       e << "coupling_period";
-      break;
+      return std::nullopt;
   }
-  return std::nullopt;
+  // BM-3: there used to be a `default:` here that folded an out-of-range
+  // `Window::Kind` into the `CouplingPeriod` case above -- the exact
+  // silent-reinterpretation shape R-04 was fixed for, except this was the
+  // one enum R-04's own sweep missed. `deserialize()` now range-checks
+  // the byte a `Window::Kind` is built from (fuse/model/descriptor.hpp),
+  // so every graph reaching this emitter has one of the three
+  // enumerators above; reaching here means a `Window` was constructed
+  // directly with a `static_cast` outside both the deserializer and the
+  // builder factories, a programmer error FUSE_ASSERT is the project's
+  // own spelling for.
+  FUSE_ASSERT(false, "emit_window: Window::Kind {} is out of range",
+             static_cast<int>(w.kind));
+  return Failure{"E-YAML-PARSE", "unreachable"};
 }
 
 Result<Window> parse_window(const YAML::Node& wn,

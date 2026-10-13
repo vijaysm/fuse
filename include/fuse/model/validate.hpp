@@ -7,6 +7,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "fuse/base/error.hpp"
 #include "fuse/base/result.hpp"
 #include "fuse/model/connect.hpp"
 #include "fuse/model/coupling_graph.hpp"
@@ -71,8 +72,7 @@ inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
     case Window::Kind::FromComponent:
       return window_component_ok(g, w) ? g.component(w.component).interval
                                        : Rational{1};
-    case Window::Kind::CouplingPeriod:
-    default: {
+    case Window::Kind::CouplingPeriod: {
       // The target's interval defines the period the value must survive.
       // Reached only for a channel OUTSIDE any window-scoped region --
       // the loop above already returned for one inside.
@@ -80,6 +80,21 @@ inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
       return g.component(tgt).interval;
     }
   }
+  // BM-3: there used to be a `default:` here that folded an out-of-range
+  // `Window::Kind` into the `CouplingPeriod` case above, silently
+  // reinterpreting a corrupted value rather than refusing it --
+  // `deserialize()` (fuse/model/descriptor.hpp) now range-checks every
+  // byte a `Window::Kind` can be built from, so every graph this
+  // function can see has one of the three enumerators above. Reaching
+  // here means a `Window` was constructed directly with a `static_cast`
+  // outside both the deserializer and the builder factories
+  // (`Window::coupling_period()`/`from()`/`explicit_length()`) -- a
+  // programmer error, not a trust-boundary input, and `FUSE_ASSERT` is
+  // the project's own spelling for "this cannot happen" (fuse/base/
+  // error.hpp).
+  FUSE_ASSERT(false, "channel_window: Window::Kind {} is out of range",
+             static_cast<int>(w.kind));
+  return Rational{1};
 }
 
 }  // namespace detail

@@ -209,11 +209,29 @@ class Reader {
     pos_ += n;
     return s;
   }
+  /// BM-7: the wire contract for an exact-time record is "reduced, with a
+  /// positive denominator" -- `Rational::from_record` enforces exactly
+  /// that, with `E-BASE-TIME-DENOMINATOR`/`E-BASE-TIME-UNREDUCED`, for the
+  /// SAME ABI record (`fuse::ExactTimeRecord`) crossing the SAME trust
+  /// boundary through a different entry point. This reader used to accept
+  /// and silently renormalize a non-positive denominator or an unreduced
+  /// pair instead of refusing -- hiding, on one of the descriptor's own
+  /// entry points, exactly the producer bug `from_record` exists to catch
+  /// on the other. `ok_` is this class's one failure signal, the same one
+  /// the truncation check already below used (now also covering a
+  /// negative denominator, not only zero); every caller already checks
+  /// `r.ok()` once after the record this value belongs to. No descriptor
+  /// legitimately produced by this library's own `Rational` can trip this
+  /// -- `Rational` maintains "reduced, positive denominator" as a class
+  /// invariant -- so this only ever refuses a hand-patched or corrupted
+  /// buffer, never the three-leg round trip's own golden bytes.
   Rational rational() {
     const auto n = pod<std::int64_t>();
     const auto d = pod<std::int64_t>();
-    if (!ok_ || d == 0) { ok_ = false; return Rational{}; }
-    return Rational{n, d};
+    if (!ok_ || d <= 0) { ok_ = false; return Rational{}; }
+    const Rational reduced{n, d};
+    if (reduced.num() != n || reduced.den() != d) { ok_ = false; return Rational{}; }
+    return reduced;
   }
   Units units() {
     Units u;
@@ -224,14 +242,37 @@ class Reader {
     u.scale = rational(); u.offset = rational();
     return u;
   }
-  Window window() {
+  /// BM-3: `kind` is read and range-checked by the caller (the same
+  /// convention every other enumerator byte in `deserialize()` follows --
+  /// `AccelKind`/`FilterKind`/`MeasureKind`/`ComponentKind`/`LaunchMode`
+  /// are each checked at the call site, not inside a shared helper), so a
+  /// corrupted byte is refused with `E-DESC-ENUM` before this ever
+  /// constructs a `Window` with it. Before this change `Window::Kind` was
+  /// the one enum this file's own R-04 sweep never reached: it read
+  /// straight off the wire here with no check at all, and BOTH consumers
+  /// (`validate.hpp`'s `channel_window()`, `yaml_io.cpp`'s `emit_window()`)
+  /// silently folded an out-of-range value into `CouplingPeriod` -- fixed
+  /// alongside this by removing those folds.
+  Window window(Window::Kind kind) {
     Window w;
-    w.kind = static_cast<Window::Kind>(pod<std::uint8_t>());
+    w.kind = kind;
     w.component = ComponentId{pod<std::uint32_t>()};
     w.length = rational();
     return w;
   }
   [[nodiscard]] bool exhausted() const noexcept { return pos_ == buf_.size(); }
+
+  /// BM-18: how many bytes are left to read. A count read off the wire
+  /// (a ranks count, a channel-id count, a policy count) must be checked
+  /// against this -- `count * min_record_size <= remaining()` -- BEFORE
+  /// `reserve()`ing it: `std::vector::reserve` on an attacker-controlled
+  /// `std::uint32_t` can ask for gigabytes (or throw `std::length_error`/
+  /// `std::bad_alloc`, a non-`Result` escape from the one function whose
+  /// whole contract is corrupted-input safety) long before the truncation
+  /// that count implies would otherwise be noticed.
+  [[nodiscard]] std::size_t remaining() const noexcept {
+    return buf_.size() - pos_;
+  }
 
  private:
   std::span<const std::byte> buf_;
@@ -473,6 +514,16 @@ class Reader {
     {
       const auto n_ranks = r.pod<std::uint32_t>();
       if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated component ranks"};
+      // BM-18: each rank is a 4-byte std::int32_t on the wire; a count
+      // claiming more ranks than the remaining buffer could possibly hold
+      // is truncated, not merely large, and must be refused before
+      // `reserve()` acts on it.
+      if (static_cast<std::uint64_t>(n_ranks) * sizeof(std::int32_t) > r.remaining()) {
+        return Failure{"E-DESC-TRUNC",
+                       "component '" + c.name + "' declares " +
+                           std::to_string(n_ranks) +
+                           " ranks, more than the remaining buffer can hold"};
+      }
       std::vector<int> ranks;
       ranks.reserve(n_ranks);
       for (std::uint32_t k = 0; k < n_ranks; ++k) {
@@ -533,12 +584,34 @@ class Reader {
     f.name = r.str();
     const ComponentId owner{r.pod<std::uint32_t>()};
     f.region = RegionId{r.pod<std::uint32_t>()};
-    f.disc = static_cast<Discretization>(r.pod<std::uint8_t>());
+    // BM-3: the six enum bytes named in the review's own table (Window::
+    // Kind, AccumOp, TemporalBasis, Discretization, Conservation, Intent)
+    // were the ones R-04's "validate every enumerator read from bytes
+    // against its range" rule never reached. Discretization, Conservation
+    // and Intent read straight off the wire here with no check at all --
+    // the same class MeasureKind/AccelKind/FilterKind/ComponentKind/
+    // LaunchMode already guard a few lines above and below this function.
+    const auto disc_byte = r.pod<std::uint8_t>();
+    if (disc_byte > static_cast<std::uint8_t>(Discretization::PointCloud)) {
+      return Failure{"E-DESC-ENUM",
+                     "unknown discretization " + std::to_string(disc_byte)};
+    }
+    f.disc = static_cast<Discretization>(disc_byte);
     f.order = r.pod<std::int32_t>();
     f.components = r.pod<std::int32_t>();
     f.units = r.units();
-    f.conservation = static_cast<Conservation>(r.pod<std::uint8_t>());
-    f.intent = static_cast<Intent>(r.pod<std::uint8_t>());
+    const auto conservation_byte = r.pod<std::uint8_t>();
+    if (conservation_byte > static_cast<std::uint8_t>(Conservation::Intensive)) {
+      return Failure{"E-DESC-ENUM",
+                     "unknown conservation class " + std::to_string(conservation_byte)};
+    }
+    f.conservation = static_cast<Conservation>(conservation_byte);
+    const auto intent_byte = r.pod<std::uint8_t>();
+    if (intent_byte > static_cast<std::uint8_t>(Intent::Bidirectional)) {
+      return Failure{"E-DESC-ENUM",
+                     "unknown intent " + std::to_string(intent_byte)};
+    }
+    f.intent = static_cast<Intent>(intent_byte);
     // v11: the "LowFive" track, Unit 3 (descriptor.hpp's kGraphVersion
     // history).
     if (r.pod<std::uint8_t>() != 0) f.hdf5_path = r.str();
@@ -567,15 +640,39 @@ class Reader {
     if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated channel table"};
     const ChannelId cid = g.add_channel(name, src, tgt);
     auto b = g.channel(cid);
-    const auto op = static_cast<AccumOp>(r.pod<std::uint8_t>());
-    const Window aw = r.window();
+    // BM-3: AccumOp was another of the six unguarded enum bytes; refused
+    // here with the same E-DESC-ENUM convention as every neighbouring
+    // enumerator check in this function.
+    const auto accum_op_byte = r.pod<std::uint8_t>();
+    if (accum_op_byte > static_cast<std::uint8_t>(AccumOp::Integral)) {
+      return Failure{"E-DESC-ENUM",
+                     "unknown accumulate op " + std::to_string(accum_op_byte)};
+    }
+    const auto op = static_cast<AccumOp>(accum_op_byte);
+    const auto accum_window_kind_byte = r.pod<std::uint8_t>();
+    if (accum_window_kind_byte > static_cast<std::uint8_t>(Window::Kind::Explicit)) {
+      return Failure{"E-DESC-ENUM",
+                     "unknown window kind " + std::to_string(accum_window_kind_byte)};
+    }
+    const Window aw = r.window(static_cast<Window::Kind>(accum_window_kind_byte));
     b.accumulate(op, aw);
     b.remap(static_cast<RemapFlags>(r.pod<std::uint32_t>()));
     b.remap_method(r.str());
     b.remap_on(ComponentId{r.pod<std::uint32_t>()});
-    const auto basis = static_cast<TemporalBasis>(r.pod<std::uint8_t>());
+    // BM-3: TemporalBasis, the fourth of the six.
+    const auto basis_byte = r.pod<std::uint8_t>();
+    if (basis_byte > static_cast<std::uint8_t>(TemporalBasis::Spline)) {
+      return Failure{"E-DESC-ENUM",
+                     "unknown temporal basis " + std::to_string(basis_byte)};
+    }
+    const auto basis = static_cast<TemporalBasis>(basis_byte);
     const auto degree = r.pod<std::int32_t>();
-    const Window sw = r.window();
+    const auto spacetime_window_kind_byte = r.pod<std::uint8_t>();
+    if (spacetime_window_kind_byte > static_cast<std::uint8_t>(Window::Kind::Explicit)) {
+      return Failure{"E-DESC-ENUM",
+                     "unknown window kind " + std::to_string(spacetime_window_kind_byte)};
+    }
+    const Window sw = r.window(static_cast<Window::Kind>(spacetime_window_kind_byte));
     b.spacetime(basis, degree, sw);
     const bool relax_on = r.pod<std::uint8_t>() != 0;
     const double omega = r.pod<double>();
@@ -592,9 +689,36 @@ class Reader {
     d.name = r.str();
     const auto n = r.pod<std::uint32_t>();
     if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated iteration region"};
+    // BM-18: each channel id is a 4-byte std::uint32_t on the wire.
+    if (static_cast<std::uint64_t>(n) * sizeof(std::uint32_t) > r.remaining()) {
+      return Failure{"E-DESC-TRUNC",
+                     "iteration region '" + d.name + "' declares " +
+                         std::to_string(n) +
+                         " channels, more than the remaining buffer can hold"};
+    }
     d.channels.reserve(n);
     for (std::uint32_t k = 0; k < n; ++k) {
-      d.channels.push_back(ChannelId{r.pod<std::uint32_t>()});
+      // BM-4: unlike the merge table's field ids (E-DESC-MERGE, below),
+      // an iteration-region channel id was accepted here with no bounds
+      // check at all; the first dereference is a raw `std::vector::at`
+      // inside `build_iteration_regions()`/`has_unbroken_cycle()`
+      // (src/ir/regions.cpp, src/schedule/window.cpp), so a corrupted
+      // descriptor turned into an uncaught `std::out_of_range` -- a
+      // per-rank throw ahead of later collectives, the I2 hang pattern.
+      // `to_yaml()`'s emit path already guards the identical id
+      // (`E-YAML-REF`, src/model/yaml_io.cpp); the read path now mirrors
+      // it at the waist, with its own code.
+      const auto channel_value = r.pod<std::uint32_t>();
+      if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated iteration region"};
+      if (channel_value >= g.channel_count()) {
+        return Failure{"E-DESC-CHANNEL",
+                       "iteration region '" + d.name +
+                           "' references channel id " +
+                           std::to_string(channel_value) + ", but the "
+                           "descriptor carries " +
+                           std::to_string(g.channel_count()) + " channels"};
+      }
+      d.channels.push_back(ChannelId{channel_value});
     }
     d.max_iterations = r.pod<std::int32_t>();
     const auto n_measure = r.pod<std::uint32_t>();
@@ -659,6 +783,14 @@ class Reader {
       scope.order = r.pod<std::int32_t>();
       const auto n_policies = r.pod<std::uint32_t>();
       if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated window scope"};
+      // BM-18: each policy record is at minimum a 4-byte empty-string
+      // length prefix plus a 1-byte policy enum.
+      if (static_cast<std::uint64_t>(n_policies) * 5 > r.remaining()) {
+        return Failure{"E-DESC-TRUNC",
+                       "window scope declares " + std::to_string(n_policies) +
+                           " policies, more than the remaining buffer can "
+                           "hold"};
+      }
       scope.policies.reserve(n_policies);
       for (std::uint32_t k = 0; k < n_policies; ++k) {
         WindowMemberPolicy p;
