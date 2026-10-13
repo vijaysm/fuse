@@ -26,6 +26,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -107,15 +108,29 @@ TEST(LinalgMpi, DotNorm2AndNormInfMatchTheWholeDomainClosedFormReference) {
     v.data()[i] = g(row_lo + static_cast<std::int64_t>(i));
   }
 
-  double expect_dot = 0.0, expect_max = 0.0;
+  double expect_dot = 0.0, expect_max = 0.0, sum_abs_terms = 0.0;
   for (std::int64_t i = 0; i < global_n; ++i) {
     expect_dot += g(i) * g(i);
+    sum_abs_terms += g(i) * g(i);  // every term is non-negative, so this equals expect_dot
     expect_max = std::max(expect_max, std::fabs(g(i)));
   }
 
-  EXPECT_DOUBLE_EQ(v.dot(v), expect_dot);
-  EXPECT_DOUBLE_EQ(v.norm2(), std::sqrt(expect_dot));
-  EXPECT_DOUBLE_EQ(v.norm_inf(), expect_max);
+  // Review 2026-10-11 NL-10: v.dot(v) sums a 5-term rank-0 partial and a
+  // 5-term rank-1 partial via MPI_Allreduce; `expect_dot` above sums all
+  // 10 terms in a single ascending-index loop. Floating-point addition is
+  // not associative, so the two groupings can disagree in the last bit
+  // even though both are "the same sum" mathematically -- a bit-tight
+  // `EXPECT_DOUBLE_EQ` would pass today by luck of magnitude, not by
+  // construction (the same fragility class KNOWN_ISSUES.md's D30
+  // already records for contraction, not reassociation). Bounded by a
+  // measured, term-count-scaled tolerance instead, as
+  // dist_sparse_matrix_test.cpp's own `check_two_partition_apply` already
+  // does for the analogous apply() split.
+  const double tol = static_cast<double>(global_n) * std::numeric_limits<double>::epsilon() *
+                     sum_abs_terms;
+  EXPECT_NEAR(v.dot(v), expect_dot, tol);
+  EXPECT_NEAR(v.norm2(), std::sqrt(expect_dot), tol);
+  EXPECT_DOUBLE_EQ(v.norm_inf(), expect_max);  // max is exact under any grouping, no reassociation
 }
 
 TEST(LinalgMpi, ApplyMatchesTheWholeDomainClosedFormStencilReference) {
