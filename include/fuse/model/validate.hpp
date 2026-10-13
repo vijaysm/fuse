@@ -455,14 +455,33 @@ inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
 
     // Spec §4.3: OASIS documents lag beyond the coupling period as a
     // restartability and deadlock hazard.
+    //
+    // BM-8: `ch.lag` is a raw `int32_t` read off the wire with no range
+    // check (descriptor.hpp), so `std::abs(ch.lag)` here was UB for
+    // `ch.lag == INT_MIN` -- widened to `int64_t` before negating, never
+    // UB whatever the corrupted value. The multiply used to be the
+    // throwing `*` operator, which can `FUSE_REFUSE` on overflow and
+    // escape `validate()`, whose whole contract is "every problem is
+    // reported together", never a throw; `try_mul` reports an
+    // unrepresentable span as a diagnostic instead.
     if (ch.lag != 0 && accum_window_ok) {
-      const Rational span =
-          Rational{std::abs(ch.lag)} * g.component(g.owner_of(ch.source)).interval;
-      const Rational window = detail::channel_window(g, cid, ch);
-      if (span > window) {
+      const std::int64_t lag_magnitude =
+          std::abs(static_cast<std::int64_t>(ch.lag));
+      const auto span = Rational::try_mul(
+          Rational{lag_magnitude}, g.component(g.owner_of(ch.source)).interval);
+      if (!span) {
         d.add(Severity::Error, "E-LAG",
-              "lag spans " + span.to_string() + " but the coupling window is " +
-                  window.to_string(), ctx);
+              "channel's lag (" + std::to_string(ch.lag) + ") times the "
+                  "source component's interval is not representable as an "
+                  "exact rational",
+              ctx);
+      } else {
+        const Rational window = detail::channel_window(g, cid, ch);
+        if (*span > window) {
+          d.add(Severity::Error, "E-LAG",
+                "lag spans " + span->to_string() + " but the coupling window is " +
+                    window.to_string(), ctx);
+        }
       }
     }
 
