@@ -226,3 +226,35 @@ TEST(NativeHaloMpi, BuildRemapHaloIsIdempotentUnderARealCommunicator) {
                                 << ": every cell the pair needs was already adopted by the "
                                    "first call";
 }
+
+// ---------------------------------------------------------------------------
+// NM-2/NM-5: `build_native_remap_halo`'s pre-exchange rejections (resolving
+// either view, the dimension check) are rank-LOCAL -- before this fix,
+// returned directly with no reconciliation, so a rank that fails locally
+// while its peers do not would return while those peers block forever on
+// `allgather_boxes`'s collective. Only RANK 0 is given the wrong
+// dimension here (every other rank asks for the dimension U/V actually
+// are), a data-dependent mismatch no earlier check sees coming -- exactly
+// the shape `migrate()`'s own `E-MESH-MIGRATE-PEER-REFUSED` test exercises
+// for the sibling migration path. Pre-fix: rank 0 returns immediately
+// while ranks 1.. hang in the box allgather, so this ROW (registered with
+// a `--timeout`, docs/dev/testing.md) reports Timeout rather than a test
+// failure. Post-fix: every rank returns within the timeout, rank 0 with
+// its own E-REMAP-DIM and every other rank with E-MESH-HALO-PEER-REFUSED.
+// ---------------------------------------------------------------------------
+TEST(NativeHaloMpi, ADisagreeingDimensionRefusesOnEveryRankInsteadOfHanging) {
+  int rank = 0, size = 1;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  ASSERT_GE(size, 2) << "this row is only meaningful with more than one rank";
+  Fixture f(rank, size);
+
+  const int dim = (rank == 0) ? 1 : 2;
+  const auto r = build_native_remap_halo(f.backend, f.u_mid, f.v_mid, dim, ComponentId{});
+  ASSERT_FALSE(r.ok()) << "rank " << rank << " unexpectedly succeeded";
+  if (rank == 0) {
+    EXPECT_EQ(r.error().code, "E-REMAP-DIM") << "rank " << rank;
+  } else {
+    EXPECT_EQ(r.error().code, "E-MESH-HALO-PEER-REFUSED") << "rank " << rank;
+  }
+}

@@ -706,6 +706,23 @@ TEST(NativeHaloBuildNativeRemapHalo, NoCommunicatorIsASuccessfulNoOpEvenAtManyRa
   EXPECT_EQ(r.value(), 0u);
 }
 
+// ---------------------------------------------------------------------------
+// E-MESH-HALO: `remap_halo_pattern`'s own documented refusal for a triple
+// no halo was ever built for -- unfired by any test in the tree before
+// this one (index.md's own test-coverage-gap list: "no test fires
+// E-MESH-HALO"), and per I4 an unfired refusal does not count as
+// implemented.
+// ---------------------------------------------------------------------------
+TEST(NativeHaloBuildNativeRemapHalo, RemapHaloPatternRefusesBeforeAHaloIsBuilt) {
+  NativeMeshBackend backend(0, 1);
+  ASSERT_TRUE(backend.load(MeshDecl{.name = "U", .source = kUSource}).ok());
+  ASSERT_TRUE(backend.load(MeshDecl{.name = "V", .source = kVSource}).ok());
+  EXPECT_FALSE(backend.has_remap_halo(MeshId{0}, MeshId{1}, 2));
+  const auto r = backend.remap_halo_pattern(MeshId{0}, MeshId{1}, 2);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-MESH-HALO");
+}
+
 TEST(NativeHaloBuildNativeRemapHalo, IdentitySourceEqualsTargetIsASuccessfulNoOp) {
   // Same mesh id on both sides (dispatched through `fuse::build_remap_halo`
   // itself, exercising the dynamic_cast dispatch in intx_weights.cpp): the
