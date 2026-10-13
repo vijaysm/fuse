@@ -1442,13 +1442,18 @@ fuse_status impl_begin_step(fuse_ctx* ctx, const fuse_step_request* in,
                      c.graph.component(*c.open_component).name +
                      "' still has one open; call its fuse_end_step() first");
     }
-    bool rolled_over = false;
+    // Review 2026-10-11 AB-12: `rolled_over` was declared `false` and
+    // then OR'd with `this_call_rolled_over` immediately below with
+    // nothing in between able to set it -- a no-op vestige of an
+    // earlier loop (this is the only prime_next_request() call in this
+    // function). `this_call_rolled_over` carries the real value from
+    // here on; no behaviour change.
     bool this_call_rolled_over = false;
     if (!prime_next_request(c, "fuse_begin_step", &this_call_rolled_over,
                             &err_code, &err_message)) {
       return fail(&c, FUSE_ERR_RUNTIME, err_code, err_message);
     }
-    rolled_over = rolled_over || this_call_rolled_over;
+    const bool rolled_over = this_call_rolled_over;
     // S6 phase 3 (Conformance, Unit 3b), item 2 of this round,
     // SUPERSEDING the lead's own earlier (2026-10-04) ruling that this
     // call "consumes EVERY pending delivery proxy it encounters while
