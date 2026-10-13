@@ -511,6 +511,15 @@ namespace detail {
 /// actually refuses that case; this function never fails, matching
 /// `effective_channel_lag()`'s own "never fails, refusal is someone
 /// else's job" shape.
+///
+/// BM-19 (review 2026-10-11): the division used to be the throwing `/`
+/// operator, which can `FUSE_REFUSE` on an unrepresentable ratio --
+/// escaping as a thrown `Refusal` the signature never promised, and
+/// `abort_no_exceptions()` in a `FUSE_ENABLE_EXCEPTIONS=OFF` build, where
+/// this "never fails" function would abort instead. `try_div` makes the
+/// promise true: an unrepresentable ratio is treated the same as the
+/// already-documented non-positive-`interval` case above, a harmless
+/// minimum the caller's own gate is responsible for refusing instead.
 [[nodiscard]] inline std::size_t window_sample_capacity(
     Rational window_length, Rational interval, DtPolicy policy) {
   if (!(interval > Rational{0})) return 1;
@@ -588,14 +597,51 @@ namespace detail {
 /// update comment) -- but it must be read from there, never
 /// reconstructed from this member's own compiled buffer, whichever
 /// window instance is being read.
+/// BM-19 (review 2026-10-11): every Rational operation below used to use
+/// the throwing spellings (`+`, `-`, `*`, `/`), any of which can
+/// `FUSE_REFUSE` on an unrepresentable intermediate -- an uncaught
+/// `Refusal` escaping a function with no `Result` in its signature to
+/// report that through, or an abort in a `FUSE_ENABLE_EXCEPTIONS=OFF`
+/// build. `try_*` is used throughout instead; the four lambdas below set
+/// `ok` on the first unrepresentable step and every later computation and
+/// loop is gated on it, so the function always returns a well-formed (if,
+/// on that one unrepresentable path, truncated after `T0`) list ending in
+/// `T1` rather than throwing. No legitimate window -- every caller passes
+/// a `window_length`/`interval` that already fits comfortably once
+/// reduced -- can reach this path; it exists for the same reason
+/// `window_sample_capacity()` just above now also uses `try_div`: a
+/// corrupted or adversarially constructed graph must not be able to
+/// crash this function.
 [[nodiscard]] inline std::vector<Rational> window_sample_times(
     Rational interval, DtPolicy policy, Rational member_start,
     Rational window_length, std::int64_t window_index) {
-  const Rational T0 = member_start + Rational(window_index) * window_length;
-  const Rational T1 = T0 + window_length;
+  bool ok = true;
+  const auto add = [&](Rational a, Rational b) {
+    const auto r = Rational::try_add(a, b);
+    if (!r) { ok = false; return a; }
+    return *r;
+  };
+  const auto sub = [&](Rational a, Rational b) {
+    const auto r = Rational::try_sub(a, b);
+    if (!r) { ok = false; return a; }
+    return *r;
+  };
+  const auto mul = [&](Rational a, Rational b) {
+    const auto r = Rational::try_mul(a, b);
+    if (!r) { ok = false; return a; }
+    return *r;
+  };
+  const auto div = [&](Rational a, Rational b) {
+    const auto r = Rational::try_div(a, b);
+    if (!r) { ok = false; return a; }
+    return *r;
+  };
+
+  const Rational T0 = add(member_start, mul(Rational(window_index), window_length));
+  const Rational T1 = ok ? add(T0, window_length) : T0;
   std::vector<Rational> times;
   times.push_back(T0);
-  if (interval > Rational{0}) {
+  if (ok && interval > Rational{0}) {
     if (policy == DtPolicy::Fixed) {
       // The member's own GLOBAL grid, anchored at `member_start`,
       // independent of `window_index`: the first grid point strictly
@@ -603,25 +649,27 @@ namespace detail {
       // `double`) rather than by stepping from `member_start` one
       // `interval` at a time -- the same number either way, but O(1)
       // instead of O(window_index).
-      const Rational offset = (T0 - member_start) / interval;
-      std::int64_t k = offset.num() / offset.den();  // floor: offset >= 0
-                                                     // always (window_index
-                                                     // >= 0), so truncating
-                                                     // integer division IS
-                                                     // floor division here.
-      Rational t = member_start + Rational(k) * interval;
-      while (!(t > T0)) t = t + interval;
-      while (t < T1) {
-        times.push_back(t);
-        t = t + interval;
+      const Rational offset = div(sub(T0, member_start), interval);
+      if (ok) {
+        std::int64_t k = offset.num() / offset.den();  // floor: offset >= 0
+                                                       // always (window_index
+                                                       // >= 0), so truncating
+                                                       // integer division IS
+                                                       // floor division here.
+        Rational t = add(member_start, mul(Rational(k), interval));
+        while (ok && !(t > T0)) t = add(t, interval);
+        while (ok && t < T1) {
+          times.push_back(t);
+          t = add(t, interval);
+        }
       }
     } else {
       // Adjustable: the grid restarts at T0 every window
       // (`fuse::detail::plan_substeps()`'s own contract).
-      Rational t = T0 + interval;
-      while (t < T1) {
+      Rational t = add(T0, interval);
+      while (ok && t < T1) {
         times.push_back(t);
-        t = t + interval;
+        t = add(t, interval);
       }
     }
   }
