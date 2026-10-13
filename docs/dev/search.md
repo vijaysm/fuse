@@ -126,6 +126,56 @@ that needs, e.g., true barycentric or natural-coordinate containment for a curve
 element makes that decision itself, using `BoxIndex`'s candidates as the set worth checking rather
 than trusting the box test as ground truth.
 
+## Execution space
+
+`BoxIndex`/`query_points_distributed` build and query on
+`Kokkos::DefaultHostExecutionSpace`/`Kokkos::HostSpace` by default -- byte-identical to this
+facade's behaviour before this section existed -- or on `Kokkos::DefaultExecutionSpace` and its
+`memory_space` when `fuse::search::resolve_execution_space()` (`types.hpp`) resolves to `Device`.
+That resolution mirrors `RunnerConfig::resolved_execution_space()`'s own convention exactly --
+`FUSE_EXECUTION_SPACE=device` in the process environment, or an explicit
+`fuse::search::ExecutionSpace::Device` argument on `BoxIndex::build`/`query_points_distributed` --
+without `fuse::search` depending on `fuse::runtime`: this layer sits below `backend`, which sits
+below `runtime` (`docs/dev/layering.md`), so the enum and the reader live here, not as an include
+of `runner.hpp`. `Device` requested on a build with no CUDA/HIP/SYCL backend degrades silently to
+`Host` (`Kokkos::DefaultExecutionSpace` IS `Kokkos::DefaultHostExecutionSpace` there) -- never a
+refusal; `BoxIndex::executes_on_device()`/`space_name()` report what the index actually built on,
+not what was asked for.
+
+**`Value` (`ArborX::PairValueIndex<ArborBox, int>`) names no space**, so one callback
+(`ExtractIndex`) and one `Value` type index a `HostSpace` tree or a `Kokkos::DefaultExecutionSpace`-
+memory tree identically; only the `ArborX::BoundingVolumeHierarchy<MemorySpace, Value>`/
+`ArborX::DistributedTree<MemorySpace, Value>` template argument differs. `BoxIndex::Impl` carries a
+tree of each kind; which one is live is `BoxIndex::device_`.
+
+**Inputs and outputs.** The pre-existing `std::vector<Box>`/`std::vector<Point>` overloads of
+`build`/`query_points`/`query_nearest` keep working unchanged, copying to the device internally
+when `Device` is resolved, and copying the result back to a `std::vector`-based `QueryResult`
+(sorted on the host, where `std::sort`'s O(k log k) applies). A device-resident caller that wants to
+skip that round trip calls `build_device_resident`/`query_points_device_resident`/
+`query_nearest_device_resident` instead -- DISTINCT NAMES, not overloads of `build`/`query_points`/
+`query_nearest`: `BoxIndex::build({})` (an empty braced-init-list, no other argument to break the
+tie) is equally valid as an empty `std::vector<Box>` or a default-constructed `Kokkos::View`, so
+overloading on parameter type alone would make that pre-existing call -- `box_index_test.cpp`'s
+`EmptyIndexIsValidNotARefusal`, unchanged since before this section existed -- ambiguous and a
+compile error; a `std::vector<Box>` ALREADY IN HAND is never itself ambiguous against a
+`Kokkos::View` parameter (no converting constructor exists either way), so this is purely the bare
+`{}` literal's hazard, and a distinct name sidesteps it entirely. `build_device_resident` takes a
+`Kokkos::View<const Box*, Kokkos::DefaultExecutionSpace::memory_space>` and converts `Box` to
+`ArborX::Box` directly on the device (no host copy at all); `query_points_device_resident`/
+`query_nearest_device_resident` take a `Kokkos::View<const Point*, ...>` and return a
+`QueryResultView` whose `offsets`/`indices` stay in `Kokkos::DefaultExecutionSpace::memory_space`
+throughout, including the per-query determinism sort -- an in-place insertion sort run as one Kokkos
+thread per query directly on device memory (`sort_segments_on_device`, box_index.cpp), accepted as
+O(k^2) per (typically short) hit segment in exchange for never touching the host.
+
+`query_points_distributed` threads the same `ExecutionSpace` through to its local `BoxIndex`
+(`comm == kNullComm`) and to the `ArborX::DistributedTree` it builds directly otherwise
+(`run_distributed_query<Space>`, distributed.cpp), copying `local_boxes`/`points` to the resolved
+space's memory the same way the local facade does, and copying the ranked `(rank, index)` hits back
+to host memory to assemble the `std::vector`-based `DistributedQueryResult` (no device-resident
+overload for the distributed path -- out of this track's scope).
+
 ## Determinism
 
 Every `QueryResult`/`DistributedQueryResult` group is sorted ascending by index (`(rank, index)` for
@@ -156,11 +206,25 @@ checks.
   initialise MPI at all (confirmed identically for `fuse::partition`'s own pre-existing Tier 1
   tests, not a regression introduced here), so no MPI test in this repository has ever produced a
   pass/fail verdict from inside it. Its verdict comes from a host run.
+* **Compiled and run here (Tier 0, device)**: `BoxIndex::build`/`query_points`/`query_nearest` on
+  `Kokkos::DefaultExecutionSpace` (Cuda on higgs's build), compared value-for-value against the Host
+  build in the same process (`box_index_test.cpp`'s `DeviceBuildMatchesHostBuildForPointAndNearestQueries`),
+  plus the `Kokkos::View`-based build/query overloads end to end against the `std::vector`-based
+  result on the same index (`ViewBasedBuildAndQueryMatchVectorBasedOnTheSameIndex`). Every existing
+  Tier-0 property test above also re-runs under `FUSE_EXECUTION_SPACE=device`
+  (`fuse_add_device_twin`, test/CMakeLists.txt's `search.{box_index,refusals,mesh_adapter}.device`).
+* **Compiled here, UNRUN (Tier 1, `FUSE_ENABLE_MPI=ON`, device)**: `run_distributed_query<DeviceExecutionSpace>`
+  (distributed.cpp) -- this sandbox cannot initialise MPI at all regardless of execution space (the
+  same pre-existing Tier 1 constraint the Host path already carries, above), so the device-mode
+  `ArborX::DistributedTree` path has never produced a pass/fail verdict from inside this sandbox
+  either.
 * **NOT covered by this track**: anything the nodal-remap track builds on top of `BoxIndex`'s API
   (see `api_for_next_phase` in this track's report) -- true geometric (natural-coordinate)
-  containment, and any device (GPU) execution space. `BoxIndex` and `element_boxes` are host-only by
-  construction (`Kokkos::DefaultHostExecutionSpace`), matching `fuse::partition::centroids_of`'s own
-  scoping.
+  containment. `element_boxes` (the mesh adapter) stays host-only by construction
+  (`Kokkos::DefaultHostExecutionSpace`), matching `fuse::partition::centroids_of`'s own scoping: it
+  reads a `fuse::MeshView`'s `simplex_points`, which is itself a host-only accessor (see
+  docs/dev/native-mesh.md's own "Execution space" section for what moved on the mesh side and what
+  did not).
 
 ## Files
 
