@@ -16,3 +16,63 @@ new = """  for (const ChannelRoles& ch : channels) {
         ch.reader_launch == fuse::LaunchMode::Connect)) {"""
 target = "fuse_verification_brusselator_lowfive_attach_test"
 test = "verification.brusselator_lowfive_attach"
+
+# Round 2 ("role-ordered serve"): two more mutations for the pure
+# functions that fix the measured deadlock (lowfive_attach_decision.hpp's
+# own "Round 2" comment has the full account). `serve_on_close` itself --
+# left true, this would reproduce the measured hang -- is NOT tier-0
+# testable (no MPI, no LowFive, in this sandbox) and is recorded as such
+# in KNOWN_ISSUES.md D39 rather than claimed here with no evidence.
+
+[[mutation]]
+id = "decide-serve-roles-first-server-comparison-swapped"
+area = "examples"
+describes = "decide_serve_roles() picks the HIGHER min_rank() component as first-server instead of the lower one -- every rank of both components would still agree (the comparison is still a pure function of the same two RankSets), so this is not caught by any collective-safety check, only by asserting which NAME actually won"
+file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
+old = "  if (a_ranks.min_rank() < b_ranks.min_rank()) {"
+new = "  if (a_ranks.min_rank() > b_ranks.min_rank()) {"
+target = "fuse_verification_brusselator_lowfive_attach_test"
+test = "verification.brusselator_lowfive_attach"
+
+[[mutation]]
+id = "serve-state-step-finalize-unflushed-check-disabled"
+area = "examples"
+describes = "serve_state_step()'s own kFinalize case no longer refuses a first-reader's own deferred serve left unflushed -- exactly the silent-data-drop/silent-hang-elsewhere outcome this track's own instructions named as the one failure mode role-ordering must not hide"
+file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
+old = "      if (state->role == ServeRole::kFirstReader && state->deferred_pending) {"
+new = "      if (false && state->role == ServeRole::kFirstReader && state->deferred_pending) {"
+target = "fuse_verification_brusselator_lowfive_attach_test"
+test = "verification.brusselator_lowfive_attach"
+
+# Round 2 REVIEW: the first round-2 attempt's own exact mistake,
+# reintroduced as a mutation -- a first-reader flushing its own
+# deferred serve at kImportAboutToOpen (before this process's own
+# open-and-close of the peer's file) instead of at kImportClosed
+# (after it). Caught TWICE, deliberately: directly, by ServeStateStep's
+# own FirstReaderImportAboutToOpenNeverFlushesEvenWithDeferredPending
+# unit test (asserts kReceiveOnly and deferred_pending left untouched);
+# and indirectly, by every ModelCheck.ShippedProtocolCompletes* test
+# (the mutated function makes the simulated protocol deadlock, exactly
+# reproducing the circular wait this review's own account describes) --
+# this file's own "WHAT THIS DOES AND DOES NOT ESTABLISH" comment on the
+# model check is what this second kill demonstrates isn't just rhetoric.
+
+[[mutation]]
+id = "serve-state-step-flush-moved-back-to-pre-open"
+area = "examples"
+describes = "serve_state_step()'s own kImportAboutToOpen case flushes a first-reader's own deferred serve immediately (serve_all(), blocking, BEFORE this process's own H5Fopen/H5Fclose of the peer's file) instead of unconditionally returning kReceiveOnly -- reproducing, exactly, the circular wait the FIRST round-2 attempt had: this process enters its own blocking serve before doing anything that could release the PEER's own pending one, and vice versa"
+file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
+old = """    case ServeEvent::kImportAboutToOpen:
+      // Unconditional, any role or state: this header's own "ROUND 2
+      // REVIEW" comment has the full account of why NOTHING is flushed
+      // here, no matter what -- that is precisely the first round-2
+      // attempt's own mistake.
+      return ServeAction::kReceiveOnly;"""
+new = """    case ServeEvent::kImportAboutToOpen:
+      if (state->role == ServeRole::kFirstReader && state->deferred_pending) {
+        state->deferred_pending = false;
+        return ServeAction::kFlushDeferred;
+      }
+      return ServeAction::kReceiveOnly;"""
+target = "fuse_verification_brusselator_lowfive_attach_test"
+test = "verification.brusselator_lowfive_attach"
