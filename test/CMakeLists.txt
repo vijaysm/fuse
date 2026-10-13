@@ -1108,7 +1108,12 @@ foreach(t brusselator_weights brusselator_physics brusselator_runner brusselator
   target_include_directories(fuse_verification_${t}_test PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/brusselator)
 endforeach()
-fuse_add_device_twin(verification.brusselator_runner fuse_verification_brusselator_runner_test TIMEOUT 3600)
+# Measured on higgs (Debug, device interpreter, machine loaded by three
+# concurrent builds): the first two cases alone took 57 min, so the twin's
+# timeout is three hours; the window-scoped region still stages every arc per
+# instruction (docs/dev/device-resident-arcs.md, step 3), which is what makes
+# this row the slow one.
+fuse_add_device_twin(verification.brusselator_runner fuse_verification_brusselator_runner_test TIMEOUT 10800)
 
 # S6 phase 3 ("LowFive" track), Unit 3: brusselator_graph_tool.cpp's own
 # --transport lowfive wiring, reproduced directly against validate() --
