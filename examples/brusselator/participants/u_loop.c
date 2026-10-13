@@ -29,6 +29,31 @@ fuse_status u_loop_step(fuse_ctx* ctx, bruss_u_handle* uh, fuse_step_request* re
   if (!out_begin_rep->step_opened) {
     memset(out_rep, 0, sizeof(*out_rep));
     out_rep->struct_size = sizeof(*out_rep);
+    /* KNOWN_ISSUES.md D57, Round 2. u_main.c's own loop (its header
+     * comment's own account) has exactly one way to notice a period has
+     * closed: `if (rep.next_component == -1) break;` -- *out_rep*, never
+     * *out_begin_rep*, which this function's own doc comment above
+     * already says is what names who IS due instead. Leaving next_
+     * component at its zeroed default (0) here was wrong: 0 is also a
+     * valid ComponentId, so u_main.c's own check can never distinguish
+     * "nothing is due, the run just ended" from "component 0 is due" --
+     * and in particular can never see the one case that matters most,
+     * fuse_begin_step()'s own correctly-reported next_component == -1 at
+     * a genuine, no-end-time-declared period boundary (KNOWN_ISSUES.md
+     * D57's own fix, src/abi/participant.cpp's prime_next_request()):
+     * with that signal silently zeroed to 0 here, u_main.c's loop never
+     * breaks, calls fuse_begin_step() again, and that FRESH call's own
+     * ordinary (never-bounded-when-!has_end_time) first resume_period()
+     * call starts a period the caller's own loop never asked for --
+     * measured on the host as U/V hanging in that unrequested period's
+     * own base-communicator Constrain reduction while the coupler's own
+     * bounded Runner::run(periods) had already exited. Copying this one
+     * field across is enough: every OTHER case this branch also covers
+     * (a delivery-pending stop, an ordinary rollover naming a real
+     * component) already has out_begin_rep->next_component set to that
+     * real, non -1 component id, so u_main.c's own check correctly keeps
+     * looping for those, exactly as it already did. */
+    out_rep->next_component = out_begin_rep->next_component;
     return FUSE_OK;
   }
 

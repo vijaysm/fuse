@@ -195,6 +195,23 @@ contains
     if (out_begin_rep%step_opened == 0) then
       out_rep = fuse_step_report()
       out_rep%struct_size = int(c_sizeof(out_rep), c_int32_t)
+      ! KNOWN_ISSUES.md D57, Round 2. v_main.f90's own loop has exactly
+      ! one way to notice a period has closed: `if (rep%next_component
+      ! == -1) exit` -- out_rep, never out_begin_rep, which this
+      ! function's own doc comment above already says is what names who
+      ! IS due instead. Leaving next_component at its default-
+      ! constructed zero here was wrong, for the identical reason
+      ! u_loop_step()'s own sibling fix (u_loop.c) states in full: 0 is
+      ! also a valid ComponentId, so v_main.f90's own check can never
+      ! tell "nothing is due, the run just ended" from "component 0 is
+      ! due" -- in particular never seeing fuse_begin_step()'s own
+      ! correctly-reported next_component == -1 at a genuine period
+      ! boundary with no end_time declared (src/abi/participant.cpp's
+      ! prime_next_request(), KNOWN_ISSUES.md D57's own fix), so the
+      ! loop never exits, calls fuse_begin_step() again, and that FRESH
+      ! call's own ordinary (unbounded when !has_end_time) first
+      ! resume_period() call starts a period the caller never requested.
+      out_rep%next_component = out_begin_rep%next_component
       status = FUSE_OK
       return
     end if
