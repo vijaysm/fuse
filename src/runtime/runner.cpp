@@ -385,7 +385,11 @@ void Runner::Impl::place_arcs_on_device() {
   // pointer, and only through span_c()/span_m(). Remap's distributed-nodal
   // operator and the spacetime projections run host code on their arcs.
   // Source/ExternalDelivery (alias or mirror), Sink/Accelerate/Epoch (a
-  // space-aware copy) handle either space and pin nothing.
+  // space-aware copy) and Transport (docs/dev/device-resident-arcs.md
+  // Phase 3: a device-resident gather/scatter when the backend is
+  // GPU-aware, a host-staged pack/unpack otherwise -- either way its own
+  // code decides the space, not this function) handle either space and pin
+  // nothing.
   // FUSE_DEVICE_DEBUG: one line per instruction (its class) and per arc (where
   // it ended up), the same convention as FUSE_NODAL_DEBUG above.
   const bool trace = std::getenv("FUSE_DEVICE_DEBUG") != nullptr;
@@ -403,7 +407,7 @@ void Runner::Impl::place_arcs_on_device() {
       case OpKind::Sample:      generic = r.spacetime < 0; break;   // history branch is host
       case OpKind::Interpolate: generic = r.spacetime < 0; break;   // apply_spacetime is host
       case OpKind::Source: case OpKind::ExternalDelivery: case OpKind::Sink:
-      case OpKind::Accelerate: case OpKind::Epoch:
+      case OpKind::Accelerate: case OpKind::Epoch: case OpKind::Transport:
         space_aware = true;
         break;
       default: break;
@@ -486,6 +490,55 @@ void Runner::Impl::place_arcs_on_device() {
       fmt::print(stderr, "[device-place] arc %{:<3} n={:<6} {:<10} {}{} {}\n", i, s.total(),
                  where, s.device ? "device" : "host",
                  device_mirror[i].extent(0) > 0 ? " mirrored" : "", label);
+    }
+  }
+}
+
+void Runner::Impl::build_transport_device_buffers() {
+  const bool trace = std::getenv("FUSE_DEVICE_DEBUG") != nullptr;
+  transport_device.clear();
+  transport_device.resize(transport_plans.size());
+  transport_in_scratch.clear();
+  transport_in_scratch.resize(transport_plans.size());
+  transport_out_scratch.clear();
+  transport_out_scratch.resize(transport_plans.size());
+  for (std::size_t pi = 0; pi < transport_plans.size(); ++pi) {
+    const Instruction& ins = plan.instructions()[transport_instruction[pi]];
+    const Slot& in_slot  = slots[ins.in[0].value()];
+    const Slot& out_slot = slots[ins.out.value()];
+    // A mixed pair (one arc device, one host) gets no mirror: the
+    // OpKind::Transport case's own CommGraph-backed branch in execute_on()
+    // cannot run a Kokkos gather/scatter kernel against one host and one
+    // device pointer, so it stages whichever side is device through the
+    // scratch buffer sized here, runs the ordinary scalar host loop, and
+    // (for a device `out`) stages the result back. An all-host pair (the
+    // common case, and every plan under Host) needs no scratch at all --
+    // both vectors stay default-constructed (empty), which `.data()` on an
+    // empty vector would make a null pointer the hot loop never reaches
+    // because `in_slot.device`/`out_slot.device` are false.
+    if (in_slot.device && out_slot.device) {
+      transport_device[pi] =
+          detail::mirror_transport_plan<DeviceMemSpace>(transport_plans[pi]);
+      if (trace) {
+        fmt::print(stderr,
+                   "[device-place] transport plan {:<3} mirrored to device "
+                   "(gpu_aware={})\n",
+                   pi,
+                   (!transport_plans[pi].has_graph ||
+                    graph_transports[pi] == nullptr)
+                       ? false
+                       : graph_transports[pi]->is_gpu_aware());
+      }
+      continue;
+    }
+    if (in_slot.device) transport_in_scratch[pi].assign(in_slot.total(), 0.0);
+    if (out_slot.device) transport_out_scratch[pi].assign(out_slot.total(), 0.0);
+    if (trace && (in_slot.device || out_slot.device)) {
+      fmt::print(stderr,
+                 "[device-place] transport plan {:<3} MIXED arcs (in {} out "
+                 "{}), host-staged per side\n",
+                 pi, in_slot.device ? "device" : "host",
+                 out_slot.device ? "device" : "host");
     }
   }
 }
@@ -1685,6 +1738,7 @@ Result<void> Runner::Impl::resolve_instructions() {
   stats.device_staged_copies = 0;
   stats.device_resident_arcs = 0;
   stats.device_boundary_copies = 0;
+  stats.device_transport_moves = 0;
   // Both are APPENDED to by the OpKind::Transport case below, so they must be
   // reset here like every other setup-owned container. Runner::initialize() is
   // re-callable (it clears `initialized` at entry), and without these a second
@@ -2579,6 +2633,9 @@ Result<void> Runner::Impl::setup(ComponentSet& components,
   // arcs that only Space-generic kernels touch into device memory.
   if (config.execution_space == RunnerConfig::RunnerExecutionSpace::Device) {
     place_arcs_on_device();
+    // Phase 3: now that every Transport instruction's arcs have their
+    // final placement, mirror the ones that landed fully on the device.
+    build_transport_device_buffers();
   }
 
   // KNOWN_ISSUES.md D11 (closing): scratch for the fixed-chunk deterministic
@@ -3106,12 +3163,19 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
   // Only the cases that call `num::xxx<Space>(span_c(...), span_m(...))`
   // below are Space-generic. Source/ExternalDelivery (no-ops), Sink/
   // Accelerate/Epoch/Constrain/Diagnose (plain `num::copy(ptr, ptr, n)` plus
-  // host-side bookkeeping), Transport (MPI, host memory by contract --
-  // `mpi_is_gpu_aware()` is informational only), Remap's distributed-nodal
-  // branch (`r.nodal_dist >= 0`, apply_nodal_dist_remap(): an MPI exchange
-  // over host buffers, like Transport) and the WindowAdvance/Map/Reduce/
-  // Closure refusals are host-only whatever `Space` is, and read their raw
-  // pointers directly.
+  // host-side bookkeeping) and the WindowAdvance/Map/Reduce/Closure
+  // refusals are host-only whatever `Space` is, and read their raw
+  // pointers directly. `Transport` is NOT in that list as of
+  // docs/dev/device-resident-arcs.md Phase 3: its own case below reads
+  // `Impl::transport_device` and `Transport::is_gpu_aware()` to decide,
+  // per instruction, whether to pack/unpack on the device (handing MPI a
+  // device pointer when the backend is GPU-aware, staging through host
+  // memory when it is not) or to fall back to this same host pointer
+  // arithmetic unchanged -- it is the one case here that is space-AWARE
+  // rather than either generic or unconditionally host-only. Remap's
+  // distributed-nodal branch (`r.nodal_dist >= 0`,
+  // apply_nodal_dist_remap(): an MPI exchange over host buffers) remains
+  // unconditionally host-only; it is a different track's scope.
   //
   // A5, the non-host-accessible `Space` (Kokkos::Cuda here): the same two
   // helpers instead hand back views over `device_staging` lanes
@@ -3578,10 +3642,49 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
         return Failure{"E-RT-TRANSPORT",
                      "Transport instruction resolved to no plan"};
       }
-      detail::TransportPlan& p =
-          transport_plans[static_cast<std::size_t>(r.transport)];
+      const std::size_t plan_idx = static_cast<std::size_t>(r.transport);
+      detail::TransportPlan& p = transport_plans[plan_idx];
+      const Slot& in_slot  = slots[ins.in[0].value()];
+      const Slot& out_slot = slots[ins.out.value()];
+      // docs/dev/device-resident-arcs.md Phase 3: build_transport_device_buffers()
+      // mirrors a plan only when BOTH its arcs landed on the device; a
+      // mixed or all-host pair leaves this entry empty and the code below
+      // falls back to per-arc host staging (mixed) or the unchanged host
+      // pointer arithmetic (all-host), exactly as every Transport
+      // instruction ran before this track.
+      detail::TransportDeviceOf<DeviceMemSpace>* d =
+          (plan_idx < transport_device.size() &&
+           transport_device[plan_idx].send.extent(0) > 0)
+              ? &transport_device[plan_idx]
+              : nullptr;
 
       if (!p.has_graph) {
+        // Same-process move (the "copy" backend: no CommGraph was ever
+        // attached -- attach_comm_graphs() builds one only for an MPI
+        // exchange). A device-resident arc here is both ends of the SAME
+        // process's memory, never a network exchange, so the move is one
+        // Kokkos::deep_copy -- which bridges any combination of host and
+        // device pointers by itself, unlike CopyTransport::move's
+        // std::memcpy (host address on both sides, by contract), so EVERY
+        // combination below calls it directly rather than only the
+        // both-device one.
+        if (in_slot.device && out_slot.device) {
+          ++stats.device_transport_moves;
+          Kokkos::deep_copy(num::SpanOf<Space>(out_ptr(), n),
+                            num::ConstSpanOf<Space>(in_ptr(0), n));
+          return Result<void>::success();
+        }
+        if (in_slot.device || out_slot.device) {
+          ++stats.device_boundary_copies;
+          if (in_slot.device) {
+            Kokkos::deep_copy(num::SpanOf<HostExecSpace>(out_ptr(), n),
+                              num::ConstSpanOf<Space>(in_ptr(0), n));
+          } else {
+            Kokkos::deep_copy(num::SpanOf<Space>(out_ptr(), n),
+                              num::ConstSpanOf<HostExecSpace>(in_ptr(0), n));
+          }
+          return Result<void>::success();
+        }
         const Result<void> prep = transport->prepare(p.spec);
         if (!prep.ok()) return prep;
         return transport->move(in_ptr(0), out_ptr(), n);
@@ -3589,7 +3692,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
 
       // This plan's own instance, not the shared one: see
       // Impl::graph_transports.
-      Transport* tp = graph_transports[static_cast<std::size_t>(r.transport)].get();
+      Transport* tp = graph_transports[plan_idx].get();
       if (tp == nullptr) {
         return Failure{"E-RT-TRANSPORT",
                      "the CommGraph-backed plan for this Transport "
@@ -3597,11 +3700,156 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
                      "must have failed and been ignored"};
       }
 
-      const double*     in  = in_ptr(0);
-      double*           out = out_ptr();
       const std::size_t nc =
           static_cast<std::size_t>(p.spec.components < 1 ? 1 : p.spec.components);
 
+      if (d != nullptr) {
+        // Both arcs are device-resident: pack and unpack with Kokkos
+        // kernels on `Space` (fuse::num::gather/scatter -- the same
+        // primitives the elementwise operators and the remap matvec
+        // already use), and hand MPI a device pointer when the backend is
+        // GPU-aware right now (`Transport::is_gpu_aware()`, a run-time
+        // probe -- not a configure-time constant); otherwise deep_copy the
+        // packed buffer to the plan's existing host `send`/`recv` and
+        // exchange through those, exactly as the host path always has,
+        // then deep_copy the result back before unpacking on the device.
+        // `FUSE_TRANSPORT_HOST_STAGING=1` forces this second branch even
+        // on a GPU-aware MPI, so the fallback has a test on every machine.
+        const double* in  = in_ptr(0);
+        double*       out = out_ptr();
+        const bool gpu_aware = tp->is_gpu_aware();
+
+        if (p.from_peers) {
+          // A peer plan indexes both buffers by local entity index and
+          // performs the same-rank copies itself (MpiTransport::move,
+          // local_copy), so the matched path's gather/scatter -- empty
+          // here -- must not run. Stage the whole source block, on the
+          // device.
+          if (p.peer_src_total > 0) {
+            Kokkos::deep_copy(num::SpanOf<Space>(d->send.data(), p.peer_src_total),
+                              num::ConstSpanOf<Space>(in, p.peer_src_total));
+          }
+          const Result<void> prep = tp->prepare(p.spec);
+          if (!prep.ok()) return prep;
+          Result<void> mv = Result<void>::success();
+          if (gpu_aware) {
+            ++stats.device_transport_moves;
+            mv = tp->move(d->send.data(), d->recv.data(), p.total());
+          } else {
+            Kokkos::deep_copy(num::SpanOf<HostExecSpace>(p.send.data(), p.total()),
+                              num::ConstSpanOf<Space>(d->send.data(), p.total()));
+            ++stats.device_boundary_copies;
+            mv = tp->move(p.send.data(), p.recv.data(), p.total());
+            Kokkos::deep_copy(num::SpanOf<Space>(d->recv.data(), p.total()),
+                              num::ConstSpanOf<HostExecSpace>(p.recv.data(), p.total()));
+            ++stats.device_boundary_copies;
+          }
+          if (!mv.ok()) return mv;
+          // Only what the plan wrote: an entry it did not write holds the
+          // staging zero, not a value, and must not overwrite the field.
+          // Expressed as gather-then-scatter at the SAME positions (a
+          // masked copy) rather than a third bespoke kernel.
+          if (d->peer_written.extent(0) > 0) {
+            num::gather<Space>(
+                num::ConstSpanOf<Space>(d->recv.data(), d->recv.extent(0)),
+                num::IndexSpanOf<Space>(d->peer_written.data(), d->peer_written.extent(0)),
+                num::SpanOf<Space>(d->peer_scratch.data(), d->peer_scratch.extent(0)));
+            num::scatter<Space>(
+                num::ConstSpanOf<Space>(d->peer_scratch.data(), d->peer_scratch.extent(0)),
+                num::IndexSpanOf<Space>(d->peer_written.data(), d->peer_written.extent(0)),
+                num::SpanOf<Space>(out, out_slot.total()));
+          }
+          return Result<void>::success();
+        }
+
+        // Matches whose two ends are on this rank never reach MPI at all
+        // (comm_graph.hpp:75-86): gather FROM `in` at `local_src` into a
+        // scratch buffer, then scatter the scratch INTO `out` at
+        // `local_dst` -- two kernels standing in for the one permutation
+        // neither `gather` nor `scatter` alone can express (each varies
+        // only one of its two indices per call).
+        if (d->local_src.extent(0) > 0) {
+          num::gather<Space>(
+              num::ConstSpanOf<Space>(in, in_slot.total()),
+              num::IndexSpanOf<Space>(d->local_src.data(), d->local_src.extent(0)),
+              num::SpanOf<Space>(d->local_scratch.data(), d->local_scratch.extent(0)));
+          num::scatter<Space>(
+              num::ConstSpanOf<Space>(d->local_scratch.data(), d->local_scratch.extent(0)),
+              num::IndexSpanOf<Space>(d->local_dst.data(), d->local_dst.extent(0)),
+              num::SpanOf<Space>(out, out_slot.total()));
+        }
+
+        // Gather. `global_ids` is a SUBSET of this rank's entities, so it
+        // does not index the field buffer; `d->gather` (built from
+        // `CommGraph::source_indices()`) is the map that does.
+        if (d->gather.extent(0) > 0) {
+          num::gather<Space>(
+              num::ConstSpanOf<Space>(in, in_slot.total()),
+              num::IndexSpanOf<Space>(d->gather.data(), d->gather.extent(0)),
+              num::SpanOf<Space>(d->send.data(), d->gather.extent(0)));
+        }
+
+        const Result<void> prep = tp->prepare(p.spec);
+        if (!prep.ok()) return prep;
+        Result<void> mv = Result<void>::success();
+        // p.total(), NOT the arc's n: move() requires exactly elements *
+        // components OF THE PLANNED SPEC, and the planned spec is the
+        // subset this rank actually exchanges.
+        if (gpu_aware) {
+          ++stats.device_transport_moves;
+          mv = tp->move(d->send.data(), d->recv.data(), p.total());
+        } else {
+          Kokkos::deep_copy(num::SpanOf<HostExecSpace>(p.send.data(), p.total()),
+                            num::ConstSpanOf<Space>(d->send.data(), p.total()));
+          ++stats.device_boundary_copies;
+          mv = tp->move(p.send.data(), p.recv.data(), p.total());
+          Kokkos::deep_copy(num::SpanOf<Space>(d->recv.data(), p.total()),
+                            num::ConstSpanOf<HostExecSpace>(p.recv.data(), p.total()));
+          ++stats.device_boundary_copies;
+        }
+        if (!mv.ok()) return mv;
+
+        if (d->scatter.extent(0) > 0) {
+          num::scatter<Space>(
+              num::ConstSpanOf<Space>(d->recv.data(), d->scatter.extent(0)),
+              num::IndexSpanOf<Space>(d->scatter.data(), d->scatter.extent(0)),
+              num::SpanOf<Space>(out, out_slot.total()));
+        }
+        return Result<void>::success();
+      }
+
+      // Host path: byte-for-byte what every Transport instruction ran
+      // before this track, EXCEPT that `in`/`out` are staged through a
+      // per-plan host scratch buffer first when the arc they name is
+      // device-resident -- a MIXED pair, which build_transport_device_
+      // buffers() leaves with no `transport_device` entry precisely so
+      // this staging runs (a Remap needing conservation checking pins the
+      // Constrain's before_arc, frequently this Transport's own output,
+      // while the OTHER arc, untouched by any other host-only
+      // instruction, landed on the device like everything around it --
+      // RunnerDevice.DeviceAndHostAgreeToRoundingOnRelaxAndWeightedRemap
+      // and .OrdinaryIterationRegionConvergesOnTheDeviceLikeTheHost are
+      // both no-graph examples of exactly this; a CommGraph-backed one
+      // reaches here the same way). Reached under Host unconditionally
+      // (every slot's `device` flag is false there, so both stagings
+      // below are no-ops and `in`/`out` are the arcs' own pointers,
+      // unchanged).
+      const double* in = in_ptr(0);
+      double* out = out_ptr();
+      if (in_slot.device) {
+        std::vector<double>& scratch = transport_in_scratch[plan_idx];
+        Kokkos::deep_copy(num::SpanOf<HostExecSpace>(scratch.data(), in_slot.total()),
+                          num::ConstSpanOf<Space>(in, in_slot.total()));
+        in = scratch.data();
+        ++stats.device_boundary_copies;
+      }
+      double* out_device_ptr = nullptr;
+      if (out_slot.device) {
+        out_device_ptr = out;
+        out = transport_out_scratch[plan_idx].data();
+      }
+
+      Result<void> result = Result<void>::success();
       if (p.from_peers) {
         // A peer plan indexes both buffers by local entity index and performs
         // the same-rank copies itself (MpiTransport::move, local_copy), so the
@@ -3609,53 +3857,59 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
         // the whole source block; `send` is at least that large because the
         // plan's extent is the larger of the two blocks.
         for (std::size_t k = 0; k < p.peer_src_total; ++k) p.send[k] = in[k];
-        const Result<void> prep = tp->prepare(p.spec);
-        if (!prep.ok()) return prep;
-        const Result<void> mv =
-            tp->move(p.send.data(), p.recv.data(), p.total());
-        if (!mv.ok()) return mv;
-        // Only what the plan wrote: an entry it did not write holds the
-        // staging zero, not a value, and must not overwrite the field.
-        for (const std::size_t d : p.peer_written) {
-          for (std::size_t c = 0; c < nc; ++c) {
-            out[d * nc + c] = p.recv[d * nc + c];
+        result = tp->prepare(p.spec);
+        if (result.ok()) {
+          result = tp->move(p.send.data(), p.recv.data(), p.total());
+        }
+        if (result.ok()) {
+          // Only what the plan wrote: an entry it did not write holds the
+          // staging zero, not a value, and must not overwrite the field.
+          for (const std::size_t d2 : p.peer_written) {
+            for (std::size_t c = 0; c < nc; ++c) {
+              out[d2 * nc + c] = p.recv[d2 * nc + c];
+            }
           }
         }
-        return Result<void>::success();
+      } else {
+        // Matches whose two ends are on this rank never reach the Transport at
+        // all -- comm_graph.hpp:75-86. One global_ids list cannot describe a
+        // rank that is both source and destination, so splitting these out is
+        // what makes the exchange expressible, not an optimization.
+        for (std::size_t k = 0; k < p.local_src.size(); ++k) {
+          const std::size_t s = p.local_src[k] * nc;
+          const std::size_t d2 = p.local_dst[k] * nc;
+          for (std::size_t c = 0; c < nc; ++c) out[d2 + c] = in[s + c];
+        }
+
+        // Gather. `global_ids` is a SUBSET of this rank's entities, so it does
+        // not index the field buffer; source_indices() is the map that does.
+        for (std::size_t k = 0; k < p.gather.size(); ++k) {
+          const std::size_t s = p.gather[k] * nc;
+          for (std::size_t c = 0; c < nc; ++c) p.send[k * nc + c] = in[s + c];
+        }
+
+        result = tp->prepare(p.spec);
+        if (result.ok()) {
+          // p.total(), NOT the arc's n: move() requires exactly elements *
+          // components OF THE PLANNED SPEC, and the planned spec is the
+          // subset this rank actually exchanges.
+          result = tp->move(p.send.data(), p.recv.data(), p.total());
+        }
+        if (result.ok()) {
+          for (std::size_t k = 0; k < p.scatter.size(); ++k) {
+            const std::size_t d2 = p.scatter[k] * nc;
+            for (std::size_t c = 0; c < nc; ++c) out[d2 + c] = p.recv[k * nc + c];
+          }
+        }
       }
 
-      // Matches whose two ends are on this rank never reach the Transport at
-      // all -- comm_graph.hpp:75-86. One global_ids list cannot describe a
-      // rank that is both source and destination, so splitting these out is
-      // what makes the exchange expressible, not an optimization.
-      for (std::size_t k = 0; k < p.local_src.size(); ++k) {
-        const std::size_t s = p.local_src[k] * nc;
-        const std::size_t d = p.local_dst[k] * nc;
-        for (std::size_t c = 0; c < nc; ++c) out[d + c] = in[s + c];
+      if (result.ok() && out_device_ptr != nullptr) {
+        Kokkos::deep_copy(num::SpanOf<Space>(out_device_ptr, out_slot.total()),
+                          num::ConstSpanOf<HostExecSpace>(out, out_slot.total()));
+        ++stats.device_boundary_copies;
       }
-
-      // Gather. `global_ids` is a SUBSET of this rank's entities, so it does
-      // not index the field buffer; source_indices() is the map that does.
-      for (std::size_t k = 0; k < p.gather.size(); ++k) {
-        const std::size_t s = p.gather[k] * nc;
-        for (std::size_t c = 0; c < nc; ++c) p.send[k * nc + c] = in[s + c];
-      }
-
-      const Result<void> prep = tp->prepare(p.spec);
-      if (!prep.ok()) return prep;
-      // p.total(), NOT the arc's n: move() requires exactly elements *
-      // components OF THE PLANNED SPEC, and the planned spec is the subset
-      // this rank actually exchanges.
-      const Result<void> mv = tp->move(p.send.data(), p.recv.data(), p.total());
-      if (!mv.ok()) return mv;
-
-      for (std::size_t k = 0; k < p.scatter.size(); ++k) {
-        const std::size_t d = p.scatter[k] * nc;
-        for (std::size_t c = 0; c < nc; ++c) out[d + c] = p.recv[k * nc + c];
-      }
-      return Result<void>::success();
+      return result;
     }
-
     case OpKind::Residual: {
       if (ins.n_in < 1 || !ins.out.valid()) break;
       double* out = out_ptr();

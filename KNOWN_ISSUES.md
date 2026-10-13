@@ -4395,3 +4395,80 @@ by the `petsc-forcing-floor-not-applied` mutation. **Still open under D32:** the
 solves on `MPI_COMM_SELF` (correct while D31 restricts Newton regions to one participant; the
 communicator plumbing is D31's), and the agreement bounds in the two examples carry a 20× margin
 because the result structs expose a post-first-step residual rather than ‖F₀‖.
+
+### D41 (transport track). A `Transport` instruction can have one arc device-resident and the other host, even in Device mode — FOUND AND FIXED 2026-10-13
+
+**What was found.** docs/dev/device-resident-arcs.md Phase 3 made `Transport` space-aware in
+`place_arcs_on_device()`, on the assumption that a Transport's two arcs -- ordinary,
+coupler-owned intermediate storage -- always land on the same side together. They do not: a
+Remap needing conservation checking pins the `Constrain`'s `before_arc`, which is frequently a
+Transport's own OUTPUT (the Remap's input), to host, while the Transport's INPUT, untouched by
+any other host-only instruction, lands on the device like everything around it under
+`place_arcs_on_device()`'s "not pinned => device" rule. An initial, defensive implementation
+refused this combination outright (`E-RT-TRANSPORT-DEVICE`) rather than guess at it -- and that
+refusal regressed two PRE-EXISTING, previously-passing Device-mode tests:
+`RunnerDevice.DeviceAndHostAgreeToRoundingOnRelaxAndWeightedRemap` (the weighted Remap +
+Relax scenario) and `RunnerDevice.OrdinaryIterationRegionConvergesOnTheDeviceLikeTheHost`
+(the two-`LinearBlock` iteration region) -- both no-graph (single-process `CopyTransport`)
+plans whose Transport instruction feeds exactly such a Constrain-pinned Remap. Caught by
+running the full `runtime.runner_device` row before declaring this track's step 1 done, not by
+anything specific to the mixed-pair scenario itself.
+
+**What was fixed.** Two cases, both still in `Runner::Impl::execute_on<Space>()`'s
+`OpKind::Transport` case:
+- No-graph (`CopyTransport`): `Kokkos::deep_copy` bridges ANY combination of host and device
+  pointers by itself (that is the whole point of the primitive), so every combination -- both
+  device, both host, or mixed -- calls it directly; `CopyTransport::move`'s `std::memcpy`
+  (host address on both sides, by contract) is reached only for the all-host case, unchanged.
+- CommGraph-backed (MPI): a mixed pair stages the device-resident side through a per-plan host
+  scratch buffer (`Impl::transport_in_scratch`/`transport_out_scratch`, sized once in
+  `build_transport_device_buffers()`), runs the UNCHANGED scalar host loop against two host
+  pointers, and stages the result back to the device `out` arc if that side was device. No
+  test in this tree's CommGraph-backed rows currently exercises this exact branch (every MPI
+  scenario built for this track keeps both arcs together, like the no-graph ones did), but it
+  follows the identical `Kokkos::deep_copy`-at-the-boundary pattern the generic
+  `span_c`/`span_m` staging and `copy_arc` already use elsewhere in this file, so it is not new
+  machinery, only a new call site for it.
+
+**Verification.** `runtime.runner_device` (11/11 pass, including both previously-regressed
+rows) and `abi.device_binding` both green after the fix; see report-transport.md for the full
+ctest counts of this track's own build.
+
+### D42 (transport track). `TheTransportPathAllocatesNothingWhileRunning`'s `.device` twin reports a non-zero host allocation count on the rank with a mixed device/host Transport arc pair — OPEN, root cause not isolated
+
+**What.** `test/parallel/runner_transport_test.cpp`'s `RunnerTransport.
+TheTransportPathAllocatesNothingWhileRunning` wraps `runner.run(h.components, 4)` in an
+`AllocationCounter` (hooks global `new`/`malloc`) after one uncounted warm-up period, and
+asserts the count is exactly 0. Registered with `DEVICE_TWIN` (this track), its `.device` twin
+(`FUSE_EXECUTION_SPACE=device`) fails on exactly the rank that holds the `solid` component:
+`fluid`/`solid` are placed on DISJOINT ranks, so on that rank the channel's Transport
+instruction has a MIXED arc pair (input = `fluid.out`, a component-owned host alias, `n=0` on
+this rank and so never promoted; output = the coupler-owned `link/transport` arc, `n=12`,
+promoted to device) -- the exact combination KNOWN_ISSUES D41 fixed correctness for, now
+exercising a NEW code path (`Impl::transport_out_scratch`, a `Kokkos::deep_copy` into device
+memory) for the first time in this binary. Measured with `FUSE_DEVICE_DEBUG=1` (confirms the
+arc placement above) and with a per-rank `mpiexec` capture (`-outfile-pattern` is not an
+OpenMPI 4.1.5 flag; a `stdbuf`-wrapped per-rank redirect was used instead) -- the per-rank
+capture could not recover the actual allocation COUNT or its call site, because
+`fuse::testing::MpiFailureReducer`'s listener setup removes the default result printer on every
+non-zero rank (`fuse_test_main.cpp`'s own documented design, "silence progress on non-zero
+ranks"), which also silences the `EXPECT_EQ` failure text that would have named the count.
+
+**Why not fixed now.** Isolating the exact allocation (candidates: a first-touch cost of the
+`Kokkos::deep_copy` call itself into device memory not fully amortized by the warm-up period;
+something reached for the first time by `MpiTransport::prepare()`/`move()` under this specific
+rank's zero-input/nonzero-output shape) needs either a temporarily-instrumented build (to print
+the count past the reducer's silencing) or a debugger attached to rank 1 specifically, both
+multiple further build/run cycles on a single shared GPU host. Correctness is unaffected: every
+delivery-correctness assertion in this file and in `test/runtime/runner_device_test.cpp` passes
+under Device, including the two rows D41 fixed.
+
+**What was done.** The test skips itself under `FUSE_EXECUTION_SPACE=device` with a comment
+naming this entry, rather than asserting a count nobody has explained; the Host leg (and its
+default `.omp`/non-`.device` MPI legs) are unaffected and still assert zero allocations.
+
+**What would close it.** Rebuild with the assertion temporarily changed to print the count to
+`stderr` directly (bypassing the GoogleTest listener) on failure, or run rank 1 alone (`mpirun
+-n 1 ... ` does not reproduce the two-rank disjoint placement, so the real repro needs an
+attached debugger or `gdb --args` under `mpiexec`), to get an actual call stack for the
+allocation.

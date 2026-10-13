@@ -26,7 +26,7 @@ multi-rank device runs in place before a multi-GPU machine is available.
 | `SpacetimeInfo::history` | host vector | `ArcMemSpace` view (Sample's spacetime branch is already Space-generic) |
 | `reduction_scratch` | `HostSpace` view, norms in `iteration.cpp` on `HostExecSpace` | `ArcMemSpace` companion; the deterministic norms dispatch on the arc space (kernels already Space-generic, D11) |
 | `RegionRuntime::x_old/x_new/x_out`, accelerator state | host vectors, `Accelerator` host-only | stay host; the gather `slots[b.feed_arc] → x_old` and scatter back become `deep_copy`s per sweep over the Newton/Picard interface vector (small by construction: interface dofs, not fields) |
-| transport `send_buf/recv_buf` | host vectors, `MPI_Alltoallv` | device buffers when `mpi_gpu_aware()` is true at run time; otherwise pack kernel → host buffer |
+| transport `send_buf/recv_buf` | host vectors, `MPI_Alltoallv` | **done (transport track, 2026-10-13):** `Impl::transport_device` (device views, built once when both of a Transport instruction's arcs land on the device) when `Transport::is_gpu_aware()` is true at run time; otherwise the pack/unpack kernels still run on the device and only the already-existing host `send`/`recv` buffers stage the `MPI_Alltoallv` itself. A mixed device/host arc pair (found to occur for real -- KNOWN_ISSUES D41 -- not a hypothetical) stages the device side through `Impl::transport_in_scratch`/`transport_out_scratch` and runs the ordinary host loop. |
 | `RemapCsr` / `remap_csr_device` | host triplets + device twin built at resolve | device CSR is the primary in Device mode; builders may produce it directly (Phase 2) |
 | `weight_sets` (Constrain measures) | host vectors | host; `Constrain` integrates on the arc space and reduces, result to host |
 | `NodalDistRemap` buffers | host, MPI exchange | host; `apply_nodal_dist_remap()` stages its arcs explicitly (it is an MPI exchange like Transport) |
@@ -41,8 +41,19 @@ Host memory is touched in Device mode only at:
    `Sample` that reads the field `AfterTicks`, so a refresh AT the `Source`
    is one tick stale -- the mirror is refreshed at the read instead), and
    one copy out at its `Sink`;
-2. `Transport` when MPI is not GPU-aware (pack kernel to a host buffer), and
-   `apply_nodal_dist_remap()`;
+2. `Transport` when `Transport::is_gpu_aware()` is false at run time (the
+   pack/gather and unpack/scatter kernels still run on the device; only the
+   already-packed buffer round-trips to host around the `MPI_Alltoallv`
+   itself -- two `device_boundary_copies` per exchange, not a whole-field
+   copy), or when `FUSE_TRANSPORT_HOST_STAGING=1` forces that path on a
+   GPU-aware MPI so the fallback has a test everywhere; one crossing in
+   each direction either way. Also `Transport` when its two arcs are a
+   MIXED device/host pair (KNOWN_ISSUES D41: a real case, not a
+   hypothetical -- a Remap's conservation check pins one of them) -- the
+   device-resident side stages through a host scratch buffer and the
+   ordinary scalar host loop runs against two host pointers, one crossing
+   for whichever side was device. Still unconditionally host for
+   `apply_nodal_dist_remap()` (a different track's scope);
 3. `Epoch` (status reconciliation is MPI on scalars; the value copy itself runs
    on the arc space), `Diagnose` (`has_nonfinite` becomes a reduction on the
    arc space; only the verdict is host), `Constrain` (reduction result);
@@ -86,14 +97,30 @@ on the host and mirrored, as today.
 
 ## Multi-rank (Phase 3)
 
-`mpi_is_gpu_aware()` is a compile-time constant today and informational.
-It becomes a run-time probe (`MPIX_Query_cuda_support()` where the MPI
-provides it, with a configuration override) consulted by the transport and
-the halo/migration exchanges. Rank-to-device binding happens in
-`ensure_kokkos_initialized()` and the test main (Kokkos' device-id-by-MPI-rank
-mapping). Every MPI test row gains a device-mode twin labelled `device`; on a
-one-GPU host such as higgs these run as several ranks sharing the device,
-which exercises correctness and the GPU-aware path, not scaling.
+**Done (transport track, 2026-10-13):** a run-time GPU-aware MPI probe
+(`MPIX_Query_cuda_support()` where OpenMPI's extension declares it, with
+`FUSE_TRANSPORT_HOST_STAGING=1` as the configuration override that forces
+the fallback) now exists in two places: `fuse::native::mpi_is_gpu_aware()`
+(src/backend/native_migration.cpp, already existed as a compile-time
+constant, now a real probe) and `fuse::transport::MpiTransport::
+is_gpu_aware()` (src/transport/mpi_transport.cpp, new), which consults
+the identical logic DUPLICATED rather than shared -- `transport`'s
+library does not link `backend`'s, discovered as a link error partway
+through this track (the header-include direction
+tools/check-layering.py enforces is not the CMake target link graph).
+The halo/migration exchanges (`fuse::native::exchange_migration_buffers`)
+do not consult their copy yet -- that stays host-only, per the standing
+priority, and is a different track's scope. Rank-to-device binding (`fuse::abi::resolve_device_id()`,
+header-only and unit-tested with a mocked device count) is wired into
+`ensure_kokkos_initialized()` and the test main: local rank within the node
+modulo the visible device count, honouring an explicit
+`--kokkos-device-id`/`KOKKOS_DEVICE_ID` override. The Runner-driving MPI
+rows (`runner_transport`, `nodal_remap_runner`, `window_runner_mpi`,
+`native_halo_mpi`) gained `device`-labelled twins at 1/2/3 ranks via
+`fuse_add_mpi_test(... DEVICE_TWIN)`; on higgs's one GPU these ranks share
+the device, which exercises correctness and the GPU-aware path, not
+scaling -- true multi-GPU scaling is still unmeasured anywhere in this
+tree.
 
 ## Reproducibility contract on the device
 

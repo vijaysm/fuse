@@ -206,8 +206,20 @@ id = "peer-plan-staged-through-the-matched-path"
 area = "runtime"
 describes = "The latent defect D5's harness exposed: the hot loop ran the matched path's gather and scatter on a peer plan, where both are empty, so the exchange sent zeros and delivered nothing. Removing the peer branch restores it."
 file = "src/runtime/runner.cpp"
-old = "      if (p.from_peers) {"
-new = "      if (false) {"
+old = """      if (p.from_peers) {
+        // A peer plan indexes both buffers by local entity index and performs
+        // the same-rank copies itself (MpiTransport::move, local_copy), so the
+        // matched path's gather/scatter -- empty here -- must not run. Stage
+        // the whole source block; `send` is at least that large because the
+        // plan's extent is the larger of the two blocks.
+        for (std::size_t k = 0; k < p.peer_src_total; ++k) p.send[k] = in[k];"""
+new = """      if (false) {
+        // A peer plan indexes both buffers by local entity index and performs
+        // the same-rank copies itself (MpiTransport::move, local_copy), so the
+        // matched path's gather/scatter -- empty here -- must not run. Stage
+        // the whole source block; `send` is at least that large because the
+        // plan's extent is the larger of the two blocks.
+        for (std::size_t k = 0; k < p.peer_src_total; ++k) p.send[k] = in[k];"""
 target = "fuse_parallel_runner_transport_test"
 test = "parallel.runner_transport.3"
 requires = "mpi"

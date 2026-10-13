@@ -316,6 +316,87 @@ struct TransportPlan {
   }
 };
 
+/// Device-resident twin of one `TransportPlan`'s matching data, built once
+/// in Device mode alongside the host plan (docs/dev/device-resident-arcs.md
+/// Phase 3: the GPU-aware transport step). Every index array below is
+/// pre-expanded to DOUBLE granularity -- `index[k*components+c] =
+/// entity_index[k]*components+c` -- so the hot loop's pack/unpack reduces
+/// to `fuse::num::gather`/`scatter`, the same kernels the elementwise
+/// operators and the remap matvec already use on the device, rather than a
+/// bespoke indexed kernel per Transport matching pattern. Mirrors the
+/// `RemapCsrOf`/`mirror_remap_csr` pair above: the expansion runs once, on
+/// host, at setup; the hot loop never allocates or recomputes it.
+template <class MemSpace>
+struct TransportDeviceOf {
+  Kokkos::View<double*, MemSpace>      send, recv;
+  Kokkos::View<std::size_t*, MemSpace> gather, scatter;
+  Kokkos::View<std::size_t*, MemSpace> local_src, local_dst;
+  Kokkos::View<std::size_t*, MemSpace> peer_written;
+  /// Scratch for the same-rank permutation (`local_src` -> `local_dst`):
+  /// `fuse::num::gather` writes it FROM `local_src`, then
+  /// `fuse::num::scatter` writes `out` FROM it at `local_dst` -- two
+  /// kernels, because neither primitive varies both its source and its
+  /// destination index in one call. Sized once to `local_src`'s own
+  /// extent (already double-granular).
+  Kokkos::View<double*, MemSpace>      local_scratch;
+  /// Scratch for the peer path's masked copy (`out[d] <- recv[d]`, `d`
+  /// ranging over `peer_written`): gather the selected positions out of
+  /// `recv` into this, then scatter them back into `out` at the SAME
+  /// positions -- the masked copy expressed as the two shared primitives
+  /// instead of a third bespoke kernel. Sized once to `peer_written`'s own
+  /// extent.
+  Kokkos::View<double*, MemSpace>      peer_scratch;
+};
+
+/// Builds `TransportDeviceOf<MemSpace>` from one host `TransportPlan`,
+/// expanding every entity index to double granularity by `spec.components`
+/// and `deep_copy`-ing each array once (host vector -> unmanaged host view
+/// -> device view, the same two-step `mirror_remap_csr` above uses).
+template <class MemSpace>
+[[nodiscard]] TransportDeviceOf<MemSpace> mirror_transport_plan(
+    const TransportPlan& p) {
+  const std::size_t nc =
+      static_cast<std::size_t>(std::max(p.spec.components, 1));
+  const auto expand = [nc](const std::vector<std::size_t>& entity) {
+    std::vector<std::size_t> out(entity.size() * nc);
+    for (std::size_t k = 0; k < entity.size(); ++k) {
+      for (std::size_t c = 0; c < nc; ++c) out[k * nc + c] = entity[k] * nc + c;
+    }
+    return out;
+  };
+  const auto to_device_idx = [](const std::vector<std::size_t>& host_idx) {
+    Kokkos::View<std::size_t*, MemSpace> d(
+        Kokkos::view_alloc("fuse::transport_idx_dev", Kokkos::WithoutInitializing),
+        host_idx.size());
+    Kokkos::View<const std::size_t*, Kokkos::HostSpace,
+                Kokkos::MemoryTraits<Kokkos::Unmanaged>>
+        h(host_idx.data(), host_idx.size());
+    Kokkos::deep_copy(d, h);
+    return d;
+  };
+  TransportDeviceOf<MemSpace> d;
+  d.gather       = to_device_idx(expand(p.gather));
+  d.scatter      = to_device_idx(expand(p.scatter));
+  d.local_src    = to_device_idx(expand(p.local_src));
+  d.local_dst    = to_device_idx(expand(p.local_dst));
+  d.peer_written = to_device_idx(expand(p.peer_written));
+  d.send = Kokkos::View<double*, MemSpace>(
+      Kokkos::view_alloc("fuse::transport_send_dev", Kokkos::WithoutInitializing),
+      p.total());
+  d.recv = Kokkos::View<double*, MemSpace>(
+      Kokkos::view_alloc("fuse::transport_recv_dev", Kokkos::WithoutInitializing),
+      p.total());
+  d.local_scratch = Kokkos::View<double*, MemSpace>(
+      Kokkos::view_alloc("fuse::transport_local_scratch_dev",
+                         Kokkos::WithoutInitializing),
+      p.local_src.size() * nc);
+  d.peer_scratch = Kokkos::View<double*, MemSpace>(
+      Kokkos::view_alloc("fuse::transport_peer_scratch_dev",
+                         Kokkos::WithoutInitializing),
+      p.peer_written.size() * nc);
+  return d;
+}
+
 /// Everything an instruction needs that can be worked out at setup, so the
 /// hot loop performs no lookup, no arithmetic on ids, and no allocation.
 struct Resolved {
@@ -846,6 +927,28 @@ struct Runner::Impl {
   /// parallel to `transport_plans`. attach_comm_graphs() needs the instruction
   /// to read its input and output arcs; `Resolved` does not carry them.
   std::vector<std::size_t>           transport_instruction;
+  /// Device-resident twin of `transport_plans`, same index, built once in
+  /// `build_transport_device_buffers()` right after `place_arcs_on_device()`
+  /// (docs/dev/device-resident-arcs.md Phase 3). Empty under Host, and
+  /// empty under Device for a plan whose arcs did not both land on the
+  /// device (`execute_on<Space>`'s `OpKind::Transport` case falls back to
+  /// the per-arc host-staging path below for that plan and never indexes
+  /// this).
+  std::vector<detail::TransportDeviceOf<DeviceMemSpace>> transport_device;
+  /// Per-plan host scratch for the arc that landed on the device when its
+  /// PARTNER did not -- a Remap needing conservation checking pins the
+  /// Constrain's `before_arc` (frequently a Transport's own output) to
+  /// host while the other arc, untouched by any other host-only
+  /// instruction, lands on the device like everything around it
+  /// (measured: `RunnerDevice.DeviceAndHostAgreeToRoundingOnRelaxAndWeighted
+  /// Remap`, `RunnerDevice.OrdinaryIterationRegionConvergesOnTheDeviceLikeThe
+  /// Host`, both no-graph plans whose output feeds exactly such a pin).
+  /// Sized in `build_transport_device_buffers()` to that side's own
+  /// `Slot::total()` whenever it is device-resident and `transport_device`
+  /// got no entry for the plan; empty (0-sized, a no-op to stage) on the
+  /// side that is already host, and on every plan Device mode mirrored in
+  /// full.
+  std::vector<std::vector<double>> transport_in_scratch, transport_out_scratch;
   RunStats                         stats;
   std::int64_t                     period_index = 0;
 
@@ -1160,6 +1263,14 @@ struct Runner::Impl {
   /// member or Constrain -- so the host-only cases and iteration.cpp never
   /// meet a device pointer. Called after resolve_regions(); allocates once.
   void place_arcs_on_device();
+  /// Device mode only, called right after `place_arcs_on_device()`: for
+  /// every plan of `transport_plans` whose Transport instruction's input
+  /// AND output arc both ended up device-resident, builds the matching
+  /// `transport_device` entry (`detail::mirror_transport_plan()`). A plan
+  /// with a mixed or all-host pair of arcs gets an empty entry and the
+  /// `OpKind::Transport` case falls back to the host-staged path for it,
+  /// exactly as under Host. Allocates once, never in the hot loop.
+  void build_transport_device_buffers();
   Result<void> resolve_instructions();
   /// Spec §6 mode 1. Splits one communicator per component out of
   /// `config.base_communicator` and builds one `CommGraph` per entry of

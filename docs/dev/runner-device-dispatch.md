@@ -83,10 +83,17 @@ that:
    `num::copy(ptr, ptr, n)` — no `Space`, no `SpanOf` — a deliberate choice by
    whoever wrote this: `Source`/`ExternalDelivery` (no-ops), `Sink`/
    `Accelerate`/`Epoch`/`Constrain` (plain copy, some with MPI/reduction
-   logic alongside), `Transport` (MPI `move()`, which only ever operates on
-   host memory regardless of `execution_space` — `mpi_is_gpu_aware()` is
-   explicitly informational-only per `include/fuse/base/config.hpp.in`'s own
-   comment), `Remap`'s distributed-nodal branch (`r.nodal_dist >= 0`,
+   logic alongside), `Transport` (MPI `move()`, which at the time this
+   paragraph was written only ever operated on host memory regardless of
+   `execution_space` — `mpi_is_gpu_aware()` was explicitly informational-only.
+   **Update, transport track (docs/dev/device-resident-arcs.md Phase 3):**
+   no longer true. `mpi_is_gpu_aware()` is now a run-time probe, and
+   `Transport`'s own `OpKind` case in `execute_on<Space>()` packs/unpacks on
+   the device and hands MPI a device pointer when the backend answers
+   GPU-aware, staging through host memory otherwise — it moved from this
+   paragraph's "host-only, read raw pointers directly" group into a new
+   third group, space-AWARE, alongside none of the others here), `Remap`'s
+   distributed-nodal branch (`r.nodal_dist >= 0`,
    `apply_nodal_dist_remap()` — an MPI exchange over host buffers, so it
    stays host-only even though the other two `Remap` branches move),
    `WindowAdvance`/`Map`/`Reduce`/`Closure` (refusals). Only about
