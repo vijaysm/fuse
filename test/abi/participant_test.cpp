@@ -359,6 +359,37 @@ TEST(AbiParticipant, LastErrorCopiesThePrefixThatFitsWhenTruncated) {
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
 
+// types.h documents fuse_error::status as "out: the fuse_status of the
+// failed call"; Review 2026-10-11 AB-1 found impl_last_error() wrote
+// FUSE_OK unconditionally instead. A fresh context (nothing has failed
+// yet) must report FUSE_OK, and the context's own failing call's status
+// -- not a fixed constant -- after a failure.
+TEST(AbiParticipant, LastErrorReportsTheFailingCallsStatus) {
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  const auto bytes = fuse::abi_test::build_two_component_lag1_bytes();
+  fuse_ctx* ctx = CreateAndLoad(t, bytes);
+
+  fuse_error before{.struct_size = sizeof(before)};
+  ASSERT_EQ(t->last_error(ctx, nullptr, &before), FUSE_OK);
+  EXPECT_EQ(before.status, FUSE_OK)
+      << "nothing has failed on this context yet";
+
+  ASSERT_TRUE(fuse::abi_test::inject_component(
+      ctx, "upstream", std::make_unique<ThrowingComponent>("upstream")));
+  ASSERT_TRUE(fuse::abi_test::inject_component(
+      ctx, "downstream", std::make_unique<TrivialComponent>("downstream")));
+  ASSERT_EQ(t->initialize(ctx, nullptr, nullptr), FUSE_ERR_RUNTIME);
+
+  fuse_error after{.struct_size = sizeof(after)};
+  ASSERT_EQ(t->last_error(ctx, nullptr, &after), FUSE_OK);
+  EXPECT_EQ(after.status, FUSE_ERR_RUNTIME)
+      << "must report the failing initialize() call's own status, not "
+         "FUSE_OK";
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
 // End-to-end: the exported value really crosses the boundary, not just the
 // status codes that say it should have.
 TEST(AbiParticipant, LifecycleEndToEndTransfersEachPeriodsValue) {

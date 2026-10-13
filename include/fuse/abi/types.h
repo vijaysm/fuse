@@ -112,7 +112,7 @@ typedef struct fuse_error {
   uint64_t    length;  /* out: full message length in bytes, excluding the NUL */
   char*       buffer;  /* in: caller's buffer, or NULL to query length only */
   uint64_t    capacity;  /* in: bytes available in buffer */
-  const char* code;  /* out: the E-... code, static storage, valid until the next failing call */
+  const char* code;  /* out: the E-... code; valid until the next failing call on this context (or thread, when ctx is NULL) -- NOT static storage (it points into the context's own last_error_code, or the thread-local twin when ctx is NULL), and not valid after fuse_destroy() on this context (Review 2026-10-11 AB-8: the doc text previously claimed static storage, which this never was) */
 } fuse_error;
 
 /* where a coupling graph comes from; exactly one of yaml_path and bytes is set */
