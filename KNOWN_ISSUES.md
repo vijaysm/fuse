@@ -6640,3 +6640,142 @@ participants. This entry was written and verified against `7aec9c8`, which did n
 the coupler's absence from `R.participants` does not gate this entry's hang has NOT been re-measured on the merged tree.
 Whether the broadcast also covers what the window-convergence and Newton reductions verify for a row with no
 coupler-routed data move is open and needs a decision on what `R.participants` is for, as stated above.
+
+**Round 2 (2026-10-13) -- the fix above did NOT close the real row; the actual defect was the second bullet of**
+**"Does not close" above (`u_loop.c`'s/`v_loop.f90`'s own zeroing), now fixed; the tier-0 reproduction above**
+**passed for the wrong reason.** The owner reports `verification.brusselator.participants.lowfive.mpmd.3` still
+hangs on the real host after Round 1's fix landed: U and V both start an unrequested THIRD period and block in
+its base-communicator `Constrain` `MPI_Allreduce`, the coupler exiting cleanly after exactly 2 periods -- the
+IDENTICAL symptom this entry's own "How it surfaced" section describes, unchanged by the `communicator_set` gate.
+
+**What actually starts period 2 on the merged HEAD.** NOT `prime_next_request()`'s own eager-continuation branch
+this entry's own "Fix" above addresses -- that gate is confirmed intact and firing correctly (`else if
+(c.communicator_set) { c.next_request.reset(); return true; }`, `src/abi/participant.cpp`), and
+`impl_begin_step()`'s own `!c.next_request.has_value()` branch correctly reports `next_component == -1,
+step_opened == 0` exactly when it fires. The real defect is the SECOND bullet this entry's own "Does not close"
+section already named and deliberately left unfixed as out of scope: `examples/brusselator/participants/
+u_loop.c`'s `u_loop_step()` (mirrored in Fortran by `v_loop.f90`'s `v_loop_step()`) wraps `fuse_begin_step()`/
+`fuse_end_step()` for `u_main.c`'s/`v_main.f90`'s own time loop. Whenever `fuse_begin_step()` reports
+`step_opened == 0` (nothing to do this call -- a delivery-pending suspend, OR the genuine, correctly-reported
+period-boundary close this entry's own fix produces), `u_loop_step()` does `memset(out_rep, 0,
+sizeof(*out_rep)); out_rep->struct_size = sizeof(*out_rep); return FUSE_OK;` -- WITHOUT copying
+`out_begin_rep->next_component` into `out_rep->next_component`. `u_main.c`'s own loop (`for (p = 0; p < periods;
+++p) { for (;;) { rc = u_loop_step(...); if (rep.next_component == -1) break; } }`, `v_main.f90`'s own mirror)
+checks ONLY `rep.next_component` (`out_rep`, never `begin_rep`/`out_begin_rep`) to decide a period has closed.
+Since `out_rep->next_component` is therefore always 0 (a valid `ComponentId`, not `-1`) on every `step_opened ==
+0` report, including the one this entry's own fix correctly resolves to `-1` in `begin_rep`, the inner `for (;;)`
+loop never breaks: it calls `fuse_begin_step()` again, `prime_next_request()` finds `c.next_request` still empty
+(left that way by this entry's own fix) and makes its FIRST, ORDINARY `resume_period()` call -- the one call site
+`prime_next_request()` has NO bound on at all when `!c.has_end_time` -- which starts period index
+`kRequestedPeriods` (2), the one `Runner::run(components, 2)` (the coupler's own driver) never requests. This
+matches the owner's own stack trace exactly (`u_loop_step` -> `impl_begin_step` -> `prime_next_request`, i.e.
+`fuse_begin_step()`'s OWN call into `prime_next_request()`, not `fuse_end_step()`'s rollover) and explains why the
+tier-0 reproduction this entry pinned PASSED despite the real row still hanging: that test's own `drive_one_step()`
+helper read `begin_rep.next_component` directly (Round 1's own choice, this entry's "Pinned by" section above),
+which `impl_begin_step()` DOES report correctly -- the exact field the real callers never read.
+
+**Why this was deferred, not missed, in Round 1.** This entry's own "Does not close" section (second bullet,
+above) already named `u_loop.c`'s zeroing as a mechanism that "can mask the real signal... in circumstances this
+entry did not fully enumerate," and declined to fix it because `u_loop.c` was then on the "files you must NOT
+touch" list (owned by the LowFive attach track). This round's own task explicitly reassigns `u_loop.c`/
+`v_loop.f90` to this track for the fix (D39/`docs/user/lowfive.md`/`lowfive_attach_decision.hpp` remain owned by
+the LowFive attach track and are untouched here -- see "Open items for the LowFive attach track" below).
+
+**Fix (Round 2).** `u_loop_step()` (`u_loop.c`) and `v_loop_step()` (`v_loop.f90`) each gained one line in their
+own `step_opened == 0` branch, immediately before returning `FUSE_OK`: `out_rep->next_component =
+out_begin_rep->next_component;` (C) / `out_rep%next_component = out_begin_rep%next_component` (Fortran) --
+propagating the one field either real caller loop's "has a period closed" check reads. Safe for every OTHER
+`step_opened == 0` case too (delivery-pending suspends and ordinary/matched rollovers): `impl_begin_step()`
+already resolves `out->next_component` to a REAL, non-`-1` component id or `-2` (async-pending) in those cases
+(confirmed by reading the delivery-due branch and the `treat_as_mismatch` branch, `participant.cpp`), so
+propagating this field changes behavior ONLY for the genuine "nothing cached, run over" case -- `0 -> -1` -- which
+is exactly what was wrong.
+
+**Pinned by (Round 2).** `test/verification/brusselator_period_rollover_test.cpp` rewritten (test renamed
+`CallerLoopNeverSeesThePeriodBoundaryThroughTheZeroedReport`): its own `drive_one_step()` helper now mirrors
+`u_loop_step()`'s fixed propagation VERBATIM (Round 1's own version did not, which is exactly the gap this
+round's own host measurement traced back to the real files), and the driving loop now uses ONE shared
+`global_periods_done` counter (not independent per-component counts -- `c.periods_completed`, `src/abi/
+context.hpp`, is one counter PER `fuse_ctx`, which on the real three-rank row is one counter per RANK; this
+single-process reproduction drives both "U" and "V" through ONE `fuse_ctx`, so there is genuinely only one such
+counter here too), checking `begin_rep.step_opened && begin_rep.period >= kRequestedPeriods` as the decisive,
+airtight signal (a REAL step of an unrequested period actually running), never `begin_rep.next_component` for
+that decision (diagnostic only). NEW: `test/verification/brusselator_u_loop_step_fix_test.cpp`
+(`fuse_verification_brusselator_u_loop_step_fix_test`, ctest row `verification.brusselator_u_loop_step_fix`) drives
+the REAL `u_loop_step()`/`bruss_v_loop_step()` functions (not a mirror) through real `bruss_u_handle`/
+`bruss_v_handle` physics, at a 1x1 grid, with `fuse::abi_test::force_communicator_set()` and no end time, exactly
+like the mirror-based test but exercising the production files directly -- two `TEST`s: one drives the graph's
+two members in their natural U/V role; the other drives graph component 0 ("U") through the REAL
+`bruss_v_loop_step()` and component 1 ("V") through the REAL `u_loop_step()`, CROSSED, because tracing confirmed
+(`is_u`/`begin_rep.next_component`/`begin_rep.period` printed at every `step_opened == 0` call, both
+`WaveformIteration::Jacobi` and `::GaussSeidel`, and with `kDtU`/`kDtV` swapped) that this single-ctx simulation's
+shared `c.next_request` cache ALWAYS routes the genuine period-close observation through graph component 0, never
+component 1 -- an artifact of simulating two ranks' independent `prime_next_request()` sequences as one
+interleaved sequence sharing one cache (the real row has no such tie: each rank runs its own, independent
+`fuse_ctx`). The crossed test isolates `v_loop.f90`'s own fix at the one schedule slot that is structurally
+terminal here. Two mutation rows (`build-evidence/mutations/brusselator.toml`:
+`brusselator-u-loop-step-drops-next-component-at-period-close`, `brusselator-v-loop-step-drops-next-component-at-
+period-close`) each CONFIRMED by hand: reverting either file's own one-line fix made its own isolating `TEST` FAIL
+(a real step of period 2 observed; the OTHER test, which never calls the mutated function for the component that
+matters, PASSED unchanged, confirming isolation both directions), file restored and verified byte-identical via
+`cmp` (`md5`: `u_loop.c` = `a034a5bddf203694ea8ff3b522bd2d4d`, `v_loop.f90` =
+`5266fee6a7d5e06dbe75d93ff0a18f3a`), clean rebuild passed again. `python3 tools/mutate.py --check-anchors`: 350
+valid, 0 stale, of 350.
+
+**The "61 = 60 + 1" question (this entry's own "Does not close" section, third bullet, above) -- the hypothesis is**
+**refuted; where 61 came from is NOT established.** This round ran the REAL species physics this entry's own third
+bullet said it had not (`test/verification/brusselator_participants_test.cpp`'s own in-process `fuse::Runner`
+reference, the REAL grid `--nx-u 16 --ny-u 16 --nx-v 24 --ny-v 24`, `dt_u = 2/1000`, `dt_v = 3/1000`, `window =
+2/100`, `Relative 1e-11`, `max_iterations = 60`, Jacobi): `ref_iterations[0] = 12`, `ref_iterations[1] = 12`. That
+matches the owner's measurement on the merged HEAD (12 sweeps per period, identical on all three ranks), and it
+refutes this entry's own tentative "61 is exactly `kMaxIterations + 1`" hypothesis: a converged, tolerance-driven
+window of 12 sweeps cannot itself produce 61 deliveries.
+
+What IS established: (i) the figure 61 was recorded in commit `60b6207`, which is an ancestor of `23329ac` (this
+entry's Round 1 fix) and a parent of the device-branch merge `4635f0f`, so it was measured on `7aec9c8`, before
+both; (ii) on `b98777d` the three ranks' collective traces agree on 12 sweeps per period; (iii) the earlier
+host figure was 122 U writes in total, which the lead's reading divided by the two requested windows. What is NOT established is
+why the earlier run delivered 122 times. Arithmetic only, not a finding: 122 = 1 + 10 x 12 + 1, so 122 deliveries are
+also consistent with 12 sweeps per period over TEN periods, and 61 per window would then have been an artefact of
+assuming two windows. Other candidates, none measured: redundant `resume_period()` calls inside one
+`fuse_begin_step()` under the old eager continuation, or a change that arrived with the device-branch merge (D42
+changed how a window's convergence verdict reaches ranks outside `R.participants`). Re-running the row at `7aec9c8`
+on the host (build-lowfive, before this entry's fixes) and reading its collective trace would decide between them.
+
+**Open items for the LowFive attach track (relayed, not edited -- `KNOWN_ISSUES.md`'s own D39 section,
+`docs/user/lowfive.md`, and `examples/brusselator/participants/lowfive_attach_decision.hpp` are that track's own
+files).** The following lines repeat the pre-fix "61 deliveries/exchanges per window" figure as a presumed-stable
+measurement; now that this round traced it to a pre-Round-1-fix commit, that track may want to annotate or
+re-measure them: `KNOWN_ISSUES.md:4948` ("the host measured 61 deliveries per window for a `--periods 2` run
+(122 U writes total)"), `KNOWN_ISSUES.md:4958` ("ANSWERED by the host: ~61 deliveries per window... i.e. once per
+sweep"), `KNOWN_ISSUES.md:4961` ("the exact relationship between 61 and this row's own `max_iterations = 60` is
+that track's own question"), `docs/user/lowfive.md:955`, `docs/user/lowfive.md:959`, `examples/brusselator/
+participants/lowfive_attach_decision.hpp:448`, `:459`, `:463`. None of these are edited by this round.
+
+**Still OPEN.** Round 2's own fix has never been run on the host. See "What the host must verify (Round 2)"
+below for the exact commands and the expected trace shape.
+
+**What the host must verify (Round 2).** Rebuild `build-lowfive` (`cmake --build .`, every target -- this
+round's own files are `examples/brusselator/participants/u_loop.c`, `examples/brusselator/participants/
+v_loop.f90`, plus the new/changed tests above), then:
+
+```
+FUSE_COLLECTIVE_TRACE=1 FUSE_LOWFIVE_ATTACH_TRACE=1 FUSE_LOWFIVE_LOG=info ctest -R 'participants\.lowfive\.mpmd\.3' --output-on-failure
+```
+
+On success: all three ranks exit 0 through `MPI_Finalize`, no hang, no timeout. `FUSE_COLLECTIVE_TRACE`'s own
+per-rank line count should now be IDENTICAL and bounded on all three ranks -- this entry's own Round 1 measurement
+was 49/49/48 lines (U/V/coupler) before this round's own fix (U and V one `Constrain` into their own unrequested
+third period before the host's 120 s timeout cut them off); with 12 sweeps/period x 2 Constrains/sweep x 2
+requested periods = 48 `FUSE_COLLECTIVE_TRACE` lines per rank, all three ranks should now match exactly (48 = 48
+= 48), not 49/49/48. Foreseeable failures and what each would contradict: the row still hangs in the SAME
+`MPI_Allreduce` stack with U/V one step into period 2 -- would mean this round's own fix did not reach the binary
+the host built, or a second, independent source of the same "zeroed report" pattern exists elsewhere this round
+did not find; the trace line counts are NOT 48/48/48 but some OTHER matching triple -- would mean this round's
+own `ref_iterations` measurement (12 sweeps/period for periods 0-1) does not hold on the real multi-rank row
+(e.g. a remap/placement difference this round's single-process reproduction cannot see); the three ranks' own
+trace counts still DISAGREE (not just 49/49/48) -- would mean a THIRD, independent mechanism also disagrees about
+period count, beyond both this entry's Round 1 fix and this round's own Round 2 fix; `brusselator_check` now
+reports a VALUE mismatch with the hang gone -- would mean a genuinely separate data defect (D39's own attach/
+order track, or the open `R.participants`/cold-start questions in this entry's own "Does not close" section
+above) is now visible with the hang out of the way, not a regression from either round's own fix.
