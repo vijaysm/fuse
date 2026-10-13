@@ -1,4 +1,6 @@
 #include <algorithm>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -565,4 +567,212 @@ TEST(Descriptor, MatchesTheFrozenWaistBytes) {
       << "the canonical descriptor changed. That is an ABI change: bump kGraphVersion, "
          "regenerate the golden file under the new version's name with "
          "fuse_write_golden_descriptor, and keep the old one.";
+}
+
+namespace {
+// A graph small enough that a channel record's offset from the END of the
+// buffer is computable by hand (no meshes, no regions, no iteration
+// regions, no merges -- so the one channel is the LAST thing
+// serialize() writes), mirroring RejectsCorruptedIterationRegionEnums's
+// own technique.
+CouplingGraph minimal_channel_graph() {
+  CouplingGraph g;
+  const auto c = g.add_component(
+      {.name = "c", .ranks = {0, 1}, .interval = fuse::Rational{1}});
+  const auto q = g.add_field(c, {.name = "q"});
+  (void)g.add_channel("c", q, q);
+  return g;
+}
+}  // namespace
+
+// BM-3 (review 2026-10-11): four of the six previously-unguarded enum
+// bytes live in a channel record -- AccumOp, and Window::Kind twice
+// (once per accumulate/spacetime window). Offsets computed by hand from
+// `minimal_channel_graph()`'s own field sizes (name "c" => a 1-byte
+// string, empty remap_method and time_level_mismatch_reason): name(5) +
+// source(4) + target(4) + accum_op(1) + accum_window(21) +
+// remap_flags(4) + remap_method(4) + remap_on(4) + spacetime_basis(1) +
+// spacetime_degree(4) + spacetime_window(21) + relax_enabled(1) +
+// relax_omega(8) + extrap_enabled(1) + extrap_order(4) + lag(4) +
+// reason(4) = 95 bytes total, so accum_op sits 95-13=82 bytes before the
+// end, accum_window's own kind byte 95-14=81, spacetime_basis 95-47=48,
+// spacetime_window's own kind byte 95-52=43.
+TEST(Descriptor, RejectsCorruptedChannelEnums) {
+  const auto bytes = serialize(minimal_channel_graph());
+  ASSERT_TRUE(deserialize(bytes).ok()) << "the unpatched buffer must read back cleanly, "
+                                          "or the hand-computed offsets below are wrong";
+
+  auto accum_op = bytes;
+  accum_op[bytes.size() - 82] = std::byte{200};
+  EXPECT_EQ(deserialize(accum_op).error().code, "E-DESC-ENUM")
+      << "corrupted accumulate op byte was not refused";
+
+  auto accum_window_kind = bytes;
+  accum_window_kind[bytes.size() - 81] = std::byte{200};
+  EXPECT_EQ(deserialize(accum_window_kind).error().code, "E-DESC-ENUM")
+      << "corrupted accumulate window kind byte was not refused";
+
+  auto spacetime_basis = bytes;
+  spacetime_basis[bytes.size() - 48] = std::byte{200};
+  EXPECT_EQ(deserialize(spacetime_basis).error().code, "E-DESC-ENUM")
+      << "corrupted spacetime basis byte was not refused";
+
+  auto spacetime_window_kind = bytes;
+  spacetime_window_kind[bytes.size() - 43] = std::byte{200};
+  EXPECT_EQ(deserialize(spacetime_window_kind).error().code, "E-DESC-ENUM")
+      << "corrupted spacetime window kind byte was not refused";
+}
+
+// BM-3: the remaining two of the six, Discretization and Conservation,
+// plus Intent (named alongside them in the same review finding), all
+// live in the field record, which in `minimal_channel_graph()` is
+// immediately followed by the 95-byte channel record above (also the
+// end of the buffer): field name "q" (len 1) => name(5) + owner(4) +
+// region(4) + disc(1) + order(4) + components(4) + units(39) +
+// conservation(1) + intent(1) + hdf5_presence(1) = 64 bytes, so disc
+// sits 64+95-13=146 bytes before the end, conservation 64+95-61=98,
+// intent 64+95-62=97.
+TEST(Descriptor, RejectsCorruptedFieldEnums) {
+  const auto bytes = serialize(minimal_channel_graph());
+
+  auto disc = bytes;
+  disc[bytes.size() - 146] = std::byte{200};
+  EXPECT_EQ(deserialize(disc).error().code, "E-DESC-ENUM")
+      << "corrupted discretization byte was not refused";
+
+  auto conservation = bytes;
+  conservation[bytes.size() - 98] = std::byte{200};
+  EXPECT_EQ(deserialize(conservation).error().code, "E-DESC-ENUM")
+      << "corrupted conservation byte was not refused";
+
+  auto intent = bytes;
+  intent[bytes.size() - 97] = std::byte{200};
+  EXPECT_EQ(deserialize(intent).error().code, "E-DESC-ENUM")
+      << "corrupted intent byte was not refused";
+}
+
+// BM-4 (review 2026-10-11): an iteration-region channel id was accepted
+// off the wire with no bounds check, unlike the merge table's field ids
+// a few lines below it in deserialize() (E-DESC-MERGE); the first
+// dereference was a raw std::vector::at() in build_iteration_regions()/
+// has_unbroken_cycle(), a per-rank throw ahead of later collectives.
+// Built directly through the raw API (add_iteration_region() has no
+// bounds check of its own either -- that is this finding's whole point)
+// rather than through a byte patch, since the defect is in what
+// deserialize() ACCEPTS, not in corrupting an otherwise-valid buffer.
+TEST(Descriptor, RejectsOutOfRangeIterationRegionChannelId) {
+  CouplingGraph g;
+  const auto c = g.add_component(
+      {.name = "c", .ranks = {0, 1}, .interval = fuse::Rational{1}});
+  const auto q = g.add_field(c, {.name = "q"});
+  (void)g.add_channel("ch", q, q);  // one channel: id 0 is the only valid one
+  fuse::IterationRegionDecl d;
+  d.name = "outer";
+  d.channels.push_back(fuse::ChannelId{99});
+  g.add_iteration_region(std::move(d));
+
+  const auto r = deserialize(serialize(g));
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-DESC-CHANNEL");
+}
+
+// BM-18 (review 2026-10-11): deserialize() used to reserve() an
+// attacker-controlled count before reading any of the data it describes
+// -- a truncated buffer claiming a huge count either failed cleanly with
+// E-DESC-TRUNC (if the allocator happened to refuse) or threw a raw
+// std::bad_alloc/std::length_error out of a Result-returning function.
+// Patches the wire count in place (via memcpy, so this is endianness-
+// agnostic regardless of the host's byte order) rather than hand-
+// computing every preceding byte's value.
+TEST(Descriptor, RejectsImpossiblyLargeComponentRankCount) {
+  CouplingGraph g;
+  (void)g.add_component(
+      {.name = "c", .ranks = {0, 1}, .interval = fuse::Rational{1}});
+  auto bytes = serialize(g);
+  ASSERT_TRUE(deserialize(bytes).ok());
+
+  // Component record (name "c" len 1, 1 rank, no launch strings): name(5)
+  // + n_ranks(4) + rank(4) + interval(16) + kind(1) + launch_mode(1) +
+  // appnum(4) + is_acceptor(1) + port_file(4) + service_name(4) +
+  // plugin_path(4) = 48 bytes, the whole trailing buffer (0 fields, 0
+  // channels, 0 iteration regions, 0 merges). n_ranks sits at offset 5
+  // within that record, i.e. 48-5=43 bytes before the end.
+  const std::uint32_t huge = 0xFFFFFFF0u;
+  std::memcpy(bytes.data() + (bytes.size() - 43), &huge, sizeof(huge));
+
+  const auto r = deserialize(bytes);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-DESC-TRUNC");
+}
+
+// BM-7 (review 2026-10-11): Reader::rational() used to accept and
+// silently renormalize a negative-denominator or unreduced wire pair,
+// the same trust boundary Rational::from_record() refuses the identical
+// shape on (E-BASE-TIME-DENOMINATOR/E-BASE-TIME-UNREDUCED). Patches a
+// component's interval (the first Rational written after the header and
+// the ranks table) to an unreduced pair (2/4) and to a negative
+// denominator, checking both are now refused rather than silently
+// normalized to 1/2 and -2/-4 => 1/2 respectively.
+TEST(Descriptor, RejectsNonCanonicalWireRational) {
+  CouplingGraph g;
+  (void)g.add_component(
+      {.name = "c", .ranks = {0, 1}, .interval = fuse::Rational{1}});
+  const auto bytes = serialize(g);
+  ASSERT_TRUE(deserialize(bytes).ok());
+
+  // interval sits right after name(5) + n_ranks(4) + rank(4) = 13 bytes
+  // in, as two int64_t (num then den), 16 bytes total -- the whole
+  // record is 48 bytes (see RejectsImpossiblyLargeComponentRankCount
+  // above), so interval starts at offset 48-16-... : num at
+  // 48-(13+16)=19 bytes from the end's start, i.e. bytes.size()-35 for
+  // num and bytes.size()-27 for den.
+  const auto patch_rational = [&](std::int64_t num, std::int64_t den) {
+    auto patched = bytes;
+    std::memcpy(patched.data() + (patched.size() - 35), &num, sizeof(num));
+    std::memcpy(patched.data() + (patched.size() - 27), &den, sizeof(den));
+    return patched;
+  };
+
+  {
+    const auto unreduced = patch_rational(2, 4);
+    const auto r = deserialize(unreduced);
+    ASSERT_FALSE(r.ok()) << "an unreduced wire rational (2/4) was silently normalized";
+    EXPECT_EQ(r.error().code, "E-DESC-TRUNC");
+  }
+  {
+    const auto negative_denominator = patch_rational(-1, -2);
+    const auto r = deserialize(negative_denominator);
+    ASSERT_FALSE(r.ok()) << "a negative-denominator wire rational was silently normalized";
+    EXPECT_EQ(r.error().code, "E-DESC-TRUNC");
+  }
+}
+
+// BM-18: the same unchecked-reserve shape as
+// RejectsImpossiblyLargeComponentRankCount above, for the iteration
+// region's own channel-id count. The region's "outer" name (len 5) and
+// an empty channel list are the only fields patched around: header(36)
+// + the component record(48) + the field record(64) + the channel
+// record(95, all three sized exactly as in the tests above) + the
+// region name string (4+5=9) = 252 bytes precede the 4-byte channel
+// count this patches.
+TEST(Descriptor, RejectsImpossiblyLargeIterationRegionChannelCount) {
+  CouplingGraph g;
+  const auto c = g.add_component(
+      {.name = "c", .ranks = {0, 1}, .interval = fuse::Rational{1}});
+  const auto q = g.add_field(c, {.name = "q"});
+  (void)g.add_channel("c", q, q);
+  fuse::IterationRegionDecl d;
+  d.name = "outer";
+  g.add_iteration_region(std::move(d));
+
+  auto bytes = serialize(g);
+  ASSERT_TRUE(deserialize(bytes).ok());
+  ASSERT_GE(bytes.size(), 256u);
+
+  const std::uint32_t huge = 0xFFFFFFF0u;
+  std::memcpy(bytes.data() + 252, &huge, sizeof(huge));
+
+  const auto r = deserialize(bytes);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-DESC-TRUNC");
 }
