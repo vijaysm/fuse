@@ -21,6 +21,14 @@
 # Required -D arguments: NM, AR, LIBRARY, MEMBER (the archive member to
 # extract, e.g. fuse_fortran_shim.c.o), ENTRY_NAMES (semicolon-separated
 # entry names from entries.def, e.g. "version;capabilities;...").
+
+# `cmake -P` script mode has no project()/cmake_minimum_required() of its
+# own, so every policy defaults to OLD regardless of the CMake version
+# actually running this -- CMP0057 (IN_LIST as a genuine if() operator,
+# used below) stays off without this, matching the root CMakeLists.txt's
+# own minimum.
+cmake_minimum_required(VERSION 3.24)
+
 foreach(_fuse_required NM AR LIBRARY MEMBER ENTRY_NAMES)
   if(NOT DEFINED ${_fuse_required})
     message(FATAL_ERROR "check_exports.cmake: -D${_fuse_required}=... is required")

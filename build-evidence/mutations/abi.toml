@@ -271,12 +271,12 @@ id = "kokkos-is-left-to-its-own-exit-hook"
 area = "abi/participant (ensure_kokkos_initialized)"
 describes = "Kokkos must be finalized from a hook this library registers AFTER Kokkos::initialize(), so that LIFO atexit ordering runs it BEFORE Kokkos's own hook -- while the runtime Kokkos sits on (OpenMP above all) is still intact. Leaving it to Kokkos's hook aborts the process at exit, after its work is complete and correct, with \"mutex lock failed: Invalid argument\". Invisible while Kokkos was a static library inside this one; measured the day it was rebuilt shared."
 file = "src/abi/participant.cpp"
-old = """      Kokkos::initialize();
+old = """      Kokkos::initialize(settings);
       std::atexit([] {
         if (Kokkos::is_initialized() && !Kokkos::is_finalized()) {
           Kokkos::finalize();
         }
       });"""
-new = "      Kokkos::initialize();"
+new = "      Kokkos::initialize(settings);"
 target = "fuse_abi_consumer"
 test = "abi.install_consumer_c"

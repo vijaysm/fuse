@@ -2542,7 +2542,14 @@ Result<void> MoabMeshBackend::set_placements(std::vector<RankSet> placements) {
         ctx->comm.comm = sub;
         ctx->core = std::make_unique<moab::Core>();
         ctx->pcomm = std::make_unique<moab::ParallelComm>(ctx->core.get(), sub);
-        ctx->loader = std::make_unique<MeshLoader>(*ctx->core, ctx->pcomm.get());
+        // Not std::make_unique<MeshLoader>(...): MeshLoader is an aggregate,
+        // and that call's parenthesized new _Tp(args...) only compiles via
+        // C++20's parenthesized aggregate init (P0960), which nvcc's host
+        // pass does not implement even in -std=c++20 mode (GCC does). Brace
+        // init sidesteps P0960 entirely and has worked for aggregates since
+        // before C++11.
+        ctx->loader =
+            std::unique_ptr<MeshLoader>(new MeshLoader{*ctx->core, ctx->pcomm.get()});
       }
       impl_->placement_ctx.push_back(std::move(ctx));
     }

@@ -45,14 +45,27 @@ class AllocationCounter {
 }  // namespace
 
 void* operator new(std::size_t n) {
+  // #ifndef/#ifdef __CUDA_ARCH__ around the counting AND the failure path: a
+  // CUDA-enabled Kokkos dual-compiles every global operator new/delete
+  // override for device too (nothing here is reachable from a kernel; nvcc
+  // does this unconditionally), and the device side can neither support
+  // exceptions nor see g_counting/g_allocations, host globals.
+#ifndef __CUDA_ARCH__
   if (g_counting) ++g_allocations;
+#endif
   void* p = std::malloc(n == 0 ? 1 : n);
-  if (p == nullptr) throw std::bad_alloc();
+#ifdef __CUDA_ARCH__
+  if (p == nullptr) __trap();  // the device pass cannot throw (and never runs this)
+#else
+  if (p == nullptr) throw std::bad_alloc();  // the standard contract, on the host
+#endif
   return p;
 }
 void* operator new[](std::size_t n) { return ::operator new(n); }
 void* operator new(std::size_t n, const std::nothrow_t&) noexcept {
+#ifndef __CUDA_ARCH__
   if (g_counting) ++g_allocations;
+#endif
   return std::malloc(n == 0 ? 1 : n);
 }
 void* operator new[](std::size_t n, const std::nothrow_t& t) noexcept {
@@ -1047,7 +1060,21 @@ TEST(Iteration, CheckRegionIsolationCatchesAHandBuiltPlanScheduleWouldRefuse) {
 // Nothing in the sweep loop allocates.
 // ---------------------------------------------------------------------------
 
+// Under FUSE_EXECUTION_SPACE=device (the `.device` twin of this row) the
+// sweep loop's device copies and kernel launches go through Kokkos::fence()
+// and Kokkos::parallel_for() with string labels, each a std::string Kokkos
+// builds per call; those allocations are Kokkos's, not the sweep loop's, so
+// the two allocation rows below measure nothing about FUSE there and skip.
+bool runner_executes_on_the_device() {
+  const auto space = RunnerConfig{}.resolved_execution_space();
+  return space.ok() &&
+         space.value() == RunnerConfig::RunnerExecutionSpace::Device;
+}
+
 TEST(Iteration, TheSweepLoopAllocatesNothing) {
+  if (runner_executes_on_the_device()) {
+    GTEST_SKIP() << "Kokkos fence/launch labels allocate under the device interpreter";
+  }
   // The components drift with time, so every coupling cycle has a new fixed point and
   // runs a full set of sweeps -- accelerate, roll back, verify, re-deliver,
   // re-advance -- rather than starting already converged and leaving the loop
@@ -1087,6 +1114,9 @@ TEST(Iteration, TheSweepLoopAllocatesNothing) {
 // The first coupling cycle, run above, is warm-up: a buffer has to be allocated once
 // before it can be reused, and "steady state" is the claim.
 TEST(Iteration, TheAcceleratorAllocatesNothingPerUpdate) {
+  if (runner_executes_on_the_device()) {
+    GTEST_SKIP() << "Kokkos fence/launch labels allocate under the device interpreter";
+  }
   auto f = build(AccelConfig{.kind = AccelKind::Aitken}, 100);
   ASSERT_TRUE(run(*f).ok());
   const std::int64_t before = f->runner->stats().total_iterations;

@@ -56,6 +56,20 @@ class Transport {
   virtual Result<void> move(const double* src, double* dst, std::size_t n) = 0;
   [[nodiscard]] virtual std::string name() const = 0;
   [[nodiscard]] virtual bool is_local() const = 0;
+
+  /// True iff `move()` may be handed device pointers directly for THIS
+  /// backend, right now, in this process (docs/dev/device-resident-arcs.md
+  /// Phase 3). Not pure: `false` is the correct answer for every backend
+  /// that never crosses a process boundary (`CopyTransport` -- the
+  /// Runner's own `OpKind::Transport` case does a `Kokkos::deep_copy`
+  /// there directly and never asks) or that always stages through host
+  /// buffers today (`LowFiveTransport`). `MpiTransport` is the one
+  /// override that can answer true, and does so at run time (a
+  /// `MPIX_Query_cuda_support()` probe, not a configure-time constant),
+  /// not by calling `fuse::native::mpi_is_gpu_aware()` -- the identical
+  /// probe, duplicated rather than shared: `transport`'s library does not
+  /// link `backend`'s.
+  [[nodiscard]] virtual bool is_gpu_aware() const noexcept { return false; }
 };
 
 /// In-process copy. Phase 5 adds "mpi"; Phase 8 adds "lowfive".
@@ -188,6 +202,12 @@ class MpiTransport final : public Transport {
 
   [[nodiscard]] std::string name() const override { return "mpi"; }
   [[nodiscard]] bool is_local() const override { return false; }
+
+  /// `fuse::native::mpi_is_gpu_aware()`, cached once (the probe is a
+  /// syscall-free library query, but `prepare()`'s hot-loop contract bars
+  /// even that from `move()`, so this reads the cached value, never the
+  /// probe itself).
+  [[nodiscard]] bool is_gpu_aware() const noexcept override;
 
   /// Doubles this rank sends / receives per `move`. Diagnostic; zero before
   /// `build_plan`.
