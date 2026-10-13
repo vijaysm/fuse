@@ -79,6 +79,8 @@ dev/newton-krylov
 dev/coupling-windows
 dev/nodal-fields
 dev/coupler-placement
+dev/runner-device-dispatch
+dev/device-resident-arcs
 dev/conformance
 dev/python-surface
 dev/roadmap
