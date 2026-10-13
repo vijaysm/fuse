@@ -377,11 +377,31 @@ void check_capabilities(const ConnectionRequest& request, Evaluation& evaluation
 
 void check_constraints(Evaluation& evaluation)
 {
-    if (!evaluation.requested(OperatorKind::Clip)) return;
-    OperatorStep step;
-    step.kind = OperatorKind::Clip;
-    step.explicitly_requested = true;
-    evaluation.emit(std::move(step));
+    // BM-13: `Clip` used to be the only requested constraint this
+    // function honored; an explicit `operator_request_bit(OperatorKind::
+    // ConservationEnforcement)` -- bit 41, a VALID request -- was
+    // silently ignored, no step emitted and no diagnostic raised, the I4
+    // shape (a caller's explicit request that silently does nothing).
+    // Both operators are unimplemented in the IR today (`ir_can_emit()`,
+    // src/ir/lowering.cpp, returns `false` for each), so emitting the
+    // step -- exactly as `Clip` already does -- reaches the SAME
+    // `E-IR-UNLOWERABLE` refusal `rules_channel.cpp` already raises for
+    // `Clip`, rather than inventing a second way to say "not yet
+    // implemented".
+    if (evaluation.requested(OperatorKind::Clip))
+    {
+        OperatorStep step;
+        step.kind = OperatorKind::Clip;
+        step.explicitly_requested = true;
+        evaluation.emit(std::move(step));
+    }
+    if (evaluation.requested(OperatorKind::ConservationEnforcement))
+    {
+        OperatorStep step;
+        step.kind = OperatorKind::ConservationEnforcement;
+        step.explicitly_requested = true;
+        evaluation.emit(std::move(step));
+    }
 }
 }
 
