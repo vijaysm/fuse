@@ -228,6 +228,31 @@ void bruss_lowfive_trace_skip(const char* which, long long window_samples,
  * non-diagnostic code path. */
 long long bruss_lowfive_attach_file_count(void);
 
+/* ROUND 6 (the diagnostic trace track's own item 6): REPLACES the
+ * round-5 trace's H5Lexists()-based `dataset_exists_before_close`
+ * check, confirmed UNRELIABLE this round -- H5Lexists() walks a path
+ * SEGMENT BY SEGMENT (LowFive::MetadataVOL::link_specific()'s own
+ * H5VL_LINK_EXISTS case calls Object::locate() -> search(), which
+ * expects each slash-separated segment to be a SEPARATE child object),
+ * but dataset_create() (called with no prior H5Gcreate for an
+ * intermediate group, exactly what this shim does) attaches the new
+ * Dataset as ONE FLAT child literally named "grid/u_out" -- search()
+ * looks for a child named "grid" first, finds none, and reports
+ * not-found, even though the dataset genuinely exists (dataset_
+ * create()'s own is_memory check, which compares the WHOLE string via
+ * Object::fullname() rather than walking it segment by segment, is
+ * unaffected -- confirmed by round 4's own fix actually working). This
+ * accessor returns 1/0 for whether `file` (not the dataset within it)
+ * is tracked as a REAL file (not a DummyFile) via `LowFive::
+ * MetadataVOL::has_real_file()`, a PUBLIC, FILE-level, reliable
+ * alternative -- or -1 if bruss_lowfive_attach() was never called
+ * successfully in this process. Deliberately FILE-level, not dataset-
+ * level: nothing public exposes a per-dataset existence check at all
+ * (Object/Dataset are forward-declared/opaque in the installed public
+ * headers) -- this is the best available proxy, same limitation
+ * bruss_lowfive_attach_file_count() above already has, not a new one. */
+int bruss_lowfive_attach_has_real_file(const char* file);
+
 #ifdef __cplusplus
 }
 #endif
