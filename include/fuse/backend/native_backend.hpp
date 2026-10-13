@@ -159,11 +159,18 @@ class NativeMeshBackend final : public MeshBackend {
   [[nodiscard]] int communicator_size() const noexcept;
 
   /// Whether `build_remap_halo(source, target, dim)` (remap_plan.hpp, via
-  /// `fuse::native::build_native_remap_halo`) has run for this triple.
-  /// Zero cells adopted is a legitimate, already-built answer -- this is
-  /// "was it asked for", not "did it find anything" -- matching
-  /// `MoabMeshBackend::has_remap_halo`'s own contract exactly.
-  [[nodiscard]] bool has_remap_halo(MeshId source, MeshId target, int dim) const noexcept;
+  /// `fuse::native::build_native_remap_halo`) has run for this triple AT
+  /// this `placement` (default: the unplaced decomposition, matching
+  /// every caller that does not pass one today). Zero cells adopted is a
+  /// legitimate, already-built answer -- this is "was it asked for", not
+  /// "did it find anything" -- matching `MoabMeshBackend::has_remap_halo`'s
+  /// own contract exactly. NM-4: `placement` is part of the bookkeeping
+  /// key precisely because `build_native_remap_halo` can run once per
+  /// placement on the SAME (source, target, dim) triple (a component's own
+  /// decomposition is its own halo); omitting it would make two placements
+  /// clobber each other's recorded pattern.
+  [[nodiscard]] bool has_remap_halo(MeshId source, MeshId target, int dim,
+                                    ComponentId placement = ComponentId{}) const noexcept;
 
   /// Where each of `source`'s adopted (non-owned) cells at dimension `dim`
   /// came from, in the order they were appended to the mesh (after every
@@ -174,14 +181,32 @@ class NativeMeshBackend final : public MeshBackend {
   /// block" position `fuse::linalg::DistVector`/`GhostExchanger` already use
   /// (comm.hpp), so this pattern plugs directly into
   /// `fuse::linalg::make_mpi_exchanger` to fill the adopted cells' field
-  /// values before `apply_weights`.
+  /// values before `apply_weights`. UNCHANGED return type (deliberately:
+  /// `examples/brusselator/species_core.hpp`'s `GhostExchangerFactory`
+  /// takes exactly `const fuse::linalg::GhostPattern&`, outside this
+  /// lane's owned paths) -- see `remap_halo_ghost_offset` below for the
+  /// piece this type has no room for.
   ///
-  /// `E-MESH-HALO` if no halo was built for this triple at all (distinct
-  /// from the legitimate zero-cells answer, which returns an empty pattern
-  /// successfully).
-  [[nodiscard]] Result<fuse::linalg::GhostPattern> remap_halo_pattern(MeshId source,
-                                                                      MeshId target,
-                                                                      int dim) const;
+  /// `E-MESH-HALO` if no halo was built for this triple (at this
+  /// `placement`) at all (distinct from the legitimate zero-cells answer,
+  /// which returns an empty pattern successfully).
+  [[nodiscard]] Result<fuse::linalg::GhostPattern> remap_halo_pattern(
+      MeshId source, MeshId target, int dim, ComponentId placement = ComponentId{}) const;
+
+  /// NM-3: where THIS triple's own ghost block (the `remap_halo_pattern`
+  /// above) begins within `source`'s ghost region, i.e. in `source`'s
+  /// local cell numbering, `remap_halo_pattern(...).owner_rank[g]`'s
+  /// value lives at local cell index `owned_n + remap_halo_ghost_offset(...)
+  /// + g`, NOT `owned_n + g`. `merge_halo_cells` appends each call's newly
+  /// adopted cells STRICTLY AFTER every cell `source` already held
+  /// (`native_halo.cpp`'s own comment), so a SECOND halo built on the same
+  /// `source` for a DIFFERENT target starts its own ghosts after whatever
+  /// an EARLIER call already appended -- `0` for the first halo ever built
+  /// on a given `source` (every consumer in this tree today builds only
+  /// one), and for the identical reason `remap_halo_pattern` is, `E-MESH-
+  /// HALO` if no halo was built for this triple at all.
+  [[nodiscard]] Result<std::size_t> remap_halo_ghost_offset(
+      MeshId source, MeshId target, int dim, ComponentId placement = ComponentId{}) const;
 
   /// INTERNAL SEAM for `native_halo.cpp`'s covering-set construction, which
   /// needs `NativeMeshView`'s own extended accessors (`cell_vertices`,
