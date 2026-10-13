@@ -138,9 +138,16 @@ TEST(NativeHaloMpi, BuildRemapHaloThenBuildWeightsThenExchangeReproducesALinearF
   // make_mpi_exchanger needs a GhostPattern and the OWNED count, exactly
   // as fuse::linalg::DistVector's own constructor contract states
   // (comm.hpp) -- native_backend.hpp's own remap_halo_pattern() returns
-  // precisely that pattern.
+  // precisely that pattern, unchanged (NM-3: the ghost offset a SECOND
+  // halo on the same source would need rides a separate accessor,
+  // remap_halo_ghost_offset, precisely so this type stays source-
+  // compatible with examples/brusselator's own consumer; 0 here since
+  // this fixture builds only ONE halo on `u_mid`).
   const auto pattern_r = f.backend.remap_halo_pattern(f.u_mid, f.v_mid, 2);
   ASSERT_TRUE(pattern_r.ok()) << pattern_r.error().message;
+  const auto offset_r = f.backend.remap_halo_ghost_offset(f.u_mid, f.v_mid, 2);
+  ASSERT_TRUE(offset_r.ok()) << offset_r.error().message;
+  ASSERT_EQ(offset_r.value(), 0u);
   const std::size_t owned_n = u.owned_count(2);
   auto exchanger = fuse::linalg::make_mpi_exchanger(world_handle(), pattern_r.value(), owned_n);
   ASSERT_NE(exchanger, nullptr);
