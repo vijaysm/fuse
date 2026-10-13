@@ -112,14 +112,57 @@ flag-off suite in `build-all` and the `fsi|gray_scott|sparse_solve_backend|
 runner_device|space_kernels` regex in `build-cusparse`, both on higgs, before
 the next step starts. Host mode byte-identity is the standing invariant.
 
-1. Arcs in `ArcMemSpace`; `span_c`/`span_m` direct; staging only for
-   component-owned host fields.
-2. `MemorySpace::Device` `FieldRef`s accepted; read-refreshed mirrors for
-   host fields; the Kokkos-based example components register device fields.
-3. `reduction_scratch`, `previous[]`, history, accelerator gather/scatter,
-   Epoch/Diagnose/Constrain, checkpoint and Newton seam moved to the rule
-   above.
-4. Device-mode test rows (the verification and example rows as `device`-
-   labelled twins) and `device_boundary_copies` assertions.
-5. Phase 2 mesh/search/builders; Phase 3 transport/binding/MPI twins.
+1. DONE (9ac976c). Arcs that only Space-generic or space-aware
+   instructions touch live in `DeviceMemSpace` (`Slot::device`,
+   `Impl::device_storage`); `span_c`/`span_m` hand their pointers to the
+   kernels directly; `RunStats::device_resident_arcs` counts them.
+2. DONE (03c1ed7). `MemorySpace::Device` `FieldRef`s aliased in Device mode
+   (refused under Host, `E-RT-SPACE`); a host field a kernel reads has a
+   device mirror refreshed at the first read after component code ran
+   (`Impl::component_epoch`, `note_component_ran()` at every call into a
+   component) -- not at its `Source`, which is stamped `BeforeTicks` while
+   the `Sample` that reads it runs `AfterTicks`; Sink/Epoch/Accelerate copy
+   across spaces; `RunStats::device_boundary_copies` counts the crossings.
+   Deviation: the example components (brusselator, gray_scott, fsi_channel)
+   keep registering host fields -- their physics is Eigen on host arrays, so
+   a device registration would only move the copy into the component.
+   Device registration is exercised by `runtime.runner_device`'s
+   `DeviceProducer`/`DeviceConsumer`.
+3. DONE for ordinary iteration regions (6510f5e). `iteration.cpp` and
+   `fixed_point_residual.cpp` reach block, carried and verify arcs only
+   through `slot_to_host()`/`host_to_slot()`/`slot_host_read()`
+   (`runner_impl.hpp`), so `place_arcs_on_device()` pins only the arcs a
+   WINDOW-scoped region names (its bookkeeping still dereferences them on
+   the host), a Constrain's `before` arc, and the arcs of host-only
+   instructions (Transport, Diagnose, Constrain, nodal Remap, the
+   space-time branches). Still host, by this rule: `previous[]` and the
+   space-time history (staged per instruction), `reduction_scratch`,
+   Diagnose/Constrain reductions.
+4. DONE (4610b22, 581c5d1, 7b369f4). `FUSE_EXECUTION_SPACE` resolves
+   `RunnerConfig::RunnerExecutionSpace::Default`; `fuse_add_device_twin()`
+   registers the 14 `.device` rows (docs/dev/testing.md, "The device
+   leg"); `RunStats::device_staged_copies` counts per-instruction staging.
+   The twins found two defects on their first run: the staging lanes were
+   sized after `resolve_regions()` had already executed a window's import
+   chain (Interpolate faulted `E-RT-DEVICE` with zero-length lanes), and
+   the FSI dominant-mode budget assumed a real eigenvector for the repeated
+   eigenvalue -1 (the device run's rounding gave a complex basis vector; the
+   test now takes its real part, which is an eigenvector of a real matrix
+   at a real eigenvalue, and still validates it against the coupled run).
+5. Phase 2 mesh/search/builders; Phase 3 transport/binding/MPI twins (in
+   progress on their own worktrees; see the reports linked from the final
+   review report).
 6. Measurement against the quiet Host baseline recorded in the same session.
+
+## What the placement trace shows today
+
+`FUSE_DEVICE_DEBUG=1 ./fuse_runtime_runner_device_test` on the mean-over-four-
+substeps chain prints `Sample -> Accumulate -> Transport -> Epoch -> Remap ->
+Diagnose -> Sink`: the Transport pins `%accumulate`/`%transport`, the Diagnose
+pins `%remap`/`%diagnose`, the Sample output and the Epoch output are device
+arcs, the producer's field is mirrored. The two host-only instructions are
+what Phase 3 (Transport) and the deferred Diagnose reduction remove; until
+then a fully device-registered chain crosses the boundary twice per period
+(Epoch host -> device, Sink host -> device field) and stages the two kernel
+outputs those instructions read (`DeviceRegisteredFieldsCrossOnlyAtHostOnly
+InstructionsAndAgreeWithHost` pins both counts).

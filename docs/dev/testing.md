@@ -101,6 +101,26 @@ DeterministicReductionsMatchTheChunkedReferenceExactly`) and, at the Runner leve
 the full account, including the one label-length allocation trap this closing found and fixed, and
 what remains open for a device execution space under A5.
 
+### The device leg (`ctest -L device`)
+
+A Kokkos built with a CUDA/HIP/SYCL backend registers every Runner-driving verification and
+example row a second time as `<row>.device` (`fuse_add_device_twin()` in `test/CMakeLists.txt`,
+label `device`; absent, not skipped, on a build without a device backend). The twin is the same
+binary with `FUSE_EXECUTION_SPACE=device` in its environment: `RunnerConfig::execution_space`
+defaults to `Default`, which `Runner::initialize()` resolves from that variable (`device`, `host`,
+unset; anything else is `E-RT-SPACE`), so the graphs run under the device interpreter --
+coupler arcs in device memory, host-registered fields mirrored once per component step,
+Space-generic kernels on `Kokkos::DefaultExecutionSpace` -- and must reproduce the host row's
+verdict (docs/dev/device-resident-arcs.md). A caller that names `Host` or `Device` explicitly is
+never overridden, which is how `runtime.runner_device` compares the two spaces in one process.
+
+Two rows skip themselves under the device leg: `Iteration.TheSweepLoopAllocatesNothing` and
+`Iteration.TheAcceleratorAllocatesNothingPerUpdate`. Kokkos's `deep_copy` and `parallel_for`
+construct a `std::string` from their fence/launch labels on every call, so under the device
+interpreter the sweep loop allocates in Kokkos, not in FUSE; the rows say so and skip rather than
+measure the wrong thing. `FUSE_DEVICE_DEBUG=1` prints the Runner's placement (one line per
+instruction and per arc) and is the first thing to read when a twin fails.
+
 ## CI legs
 
 The rule is one leg per rung of the ladder, so no configuration can rot unnoticed.
