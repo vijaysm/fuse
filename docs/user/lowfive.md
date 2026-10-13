@@ -267,64 +267,123 @@ neither side's H5Dwrite/H5Dread ever reaches a real disk. Everything else —
 the actual bytes — is the two applications' own, ordinary HDF5 calls, exactly
 as spec §6 mode 4 promises.
 
-**How the VOL gets onto the application's own `H5Fcreate`/`H5Fopen` call,
-with literal `H5P_DEFAULT`: HDF5's own default-VOL mechanism, THE design,
-unmeasured until the host unblocks.** `LowFive::H5VOLProperty::apply(hid_t
-list)` (`lowfive/H5VOLProperty.hpp`) is the only attachment primitive
-LowFive's own header exposes, and it takes an EXPLICIT property list — an
-application calling it itself would be a FUSE-specific call, contradicting
-spec §6 mode 4's contract. The mechanism that keeps the contract literal is
-HDF5's own: HDF5 reads the `HDF5_VOL_CONNECTOR` and `HDF5_PLUGIN_PATH`
-environment variables at library initialisation and makes the named
-connector the default for every `H5P_DEFAULT` file access thereafter — no
-caller-side property-list call of any kind. LowFive ships no loadable plugin
-of its own (`vol-metadata.hpp` exposes only the programmatic
-`H5VOLProperty`/`MetadataVOL` path this page's single-process section
-already uses), so **FUSE ships one**: a small shared library
-(`src/transport/lowfive_plugin.cpp`, target `fuse-lowfive-vol`) exporting
-the two symbols HDF5's plugin loader looks for,
-`H5PLget_plugin_type`/`H5PLget_plugin_info`, which on load constructs
-LowFive's `MetadataVOL` singleton with `set_memory`/`set_keep` (identical to
-`VolSingleton`'s own constructor, `lowfive_transport.cpp:133-143`, including
-its `std::atexit(+[]{ H5close(); })` teardown-ordering fix — the SAME
-mutex-destruction-order hazard "The `HDF5_VOL_CONNECTOR` abort" section
-below records applies here too, and the fix is the same one, just carried
-by this new plugin's own constructor instead of `VolSingleton`'s) and the
-field bindings, read from an environment variable `FUSE_LOWFIVE_BINDINGS`
-naming the graph's own YAML path, through `fuse::build_lowfive_bindings()`.
-The launcher — the ctest row, or a user's own job script — sets the two
-HDF5 variables (and `FUSE_LOWFIVE_BINDINGS`); on the application side, this
-is the Brusselator's own `u_main.c`/`v_main.f90` (not a separate
+**How the VOL gets onto the application's own `H5Fcreate`/`H5Fopen` call --
+TWO mechanisms now exist, and the participants use the programmatic one.**
+`LowFive::H5VOLProperty::apply(hid_t list)` (`lowfive/H5VOLProperty.hpp`) is
+the only attachment primitive LowFive's own header exposes, and it takes an
+EXPLICIT property list — an application calling it itself would be a
+FUSE-specific call, contradicting spec §6 mode 4's contract. The mechanism
+that keeps the contract literal is HDF5's own: HDF5 reads the
+`HDF5_VOL_CONNECTOR` and `HDF5_PLUGIN_PATH` environment variables at
+library initialisation and makes the named connector the default for every
+`H5P_DEFAULT` file access thereafter — no caller-side property-list call of
+any kind. LowFive ships no loadable plugin of its own (`vol-metadata.hpp`
+exposes only the programmatic `H5VOLProperty`/`MetadataVOL` path this
+page's single-process section already uses), so **FUSE ships one**: a small
+shared library (`src/transport/lowfive_plugin_vol.cpp` +
+`lowfive_plugin_graph.cpp`, target `fuse-lowfive-vol`) exporting the two
+symbols HDF5's plugin loader looks for,
+`H5PLget_plugin_type`/`H5PLget_plugin_info`. This plugin is UNCHANGED by the
+"LowFive attach" track below and stays in the tree for a later track (it is
+exercised by nothing in this build, now that the participants no longer use
+it — see KNOWN_ISSUES.md D39).
+
+**MEASURED, 2026-10-12 (`build-lowfive`, main `4fd400d`): the env-var route
+is what the participants' own FIRST `H5Fcreate` null-dereferenced in.** With
+KNOWN_ISSUES.md D38's own fix in place (the `ExternalDelivery` size
+exemption), `verification.brusselator.participants.lowfive.{mpmd,accept}.3`
+got past `fuse_initialize()` and both `brusselator_u_main`/
+`brusselator_v_main` then crashed inside `LowFive::VOLBase::_file_create` on
+their own first `bruss_lowfive_write()` call — `info_t::vol` (a
+CLASS-STATIC member `create_MetadataVOL()`/`create_DistMetadataVOL()` set)
+was still null at the point the env-string connector-name parser
+(`str_to_info`) handed back a fresh `info_t`, for a reason KNOWN_ISSUES.md
+D39 states but does not chase (whether `fuse-lowfive-vol`'s own
+`ConfigureOnce()` ran before this call at all, or was cleared by
+`VOLBase::_term` first). **The "LowFive attach" track's own fix sidesteps
+this question rather than answering it**: `examples/brusselator/
+participants/lowfive_attach.{h,cpp}` builds the SAME programmatic
+`H5VOLProperty`/`MetadataVOL`-or-`DistMetadataVOL` construction
+`VolSingleton`/`DistVolSingleton` already use in the measured single-process
+path (`lowfive_transport.cpp`), and `bruss_lowfive_write`/`bruss_lowfive_
+read` (`shim.{h,cpp}`) now take the resulting file-access property list as
+an explicit `fapl_id` argument, passed to every `H5Fcreate`/`H5Fopen`
+literally, in place of `H5P_DEFAULT` — never reaching HDF5's own
+default-VOL resolution (the env-var route above) at all. `bruss_lowfive_
+attach()` is called exactly once per process, right after `MPI_Init()`,
+reading field bindings and writer/reader `RankSet`s from the SAME `--graph`
+path the program's own command line already names (`fuse::
+build_lowfive_bindings()`, the identical function `lowfive_plugin_graph.cpp`
+calls) — no separate `FUSE_LOWFIVE_BINDINGS` environment variable for this
+path. For the genuinely cross-process MPMD case (U and V are different
+executables sharing one `MPI_COMM_WORLD`), the attach forms a
+`LowFive::DistMetadataVOL` over an intercommunicator built with
+`MPI_Intercomm_create()` from the caller's own ALREADY-FORMED physics-only
+communicator (`u_main.c`'s own `u_comm` / `v_main.f90`'s own `v_comm`,
+passed to `bruss_lowfive_attach()` as a new `physics_comm_f` argument) —
+NOT a fresh `MPI_Comm_split(MPI_COMM_WORLD, ...)` of the attach's own, which
+an earlier version of this track used and which KNOWN_ISSUES.md D39's own
+"found while implementing" paragraph explains would hang (that split is
+collective over the WHOLE of `MPI_COMM_WORLD`, including the coupler's own
+rank, and the coupler never calls `bruss_lowfive_attach()` at all). The
+rendezvous arithmetic itself (`fuse::plan_lowfive_rendezvous()`) is the SAME
+the plugin's own `ConfigureDistributed()` already computes — hardened with a check that
+comment names as missing (every HDF5-bound channel a rank takes part in
+must agree on the SAME two-group partition; see KNOWN_ISSUES.md D39's own
+account and `examples/brusselator/participants/lowfive_attach_decision.hpp`
+for the full reasoning, tier-0 tested in `test/verification/
+brusselator_lowfive_attach_test.cpp`). Accept mode refuses cleanly at
+attach time (`E-LOWFIVE-ATTACH-ACCEPT`) rather than forming a
+half-configured VOL — D14's own accept-mode intercommunicator question is
+still open, and `verification.brusselator.participants.lowfive.accept.3`
+stays red on purpose until it is decided.
+
+The Brusselator's own `u_main.c`/`v_main.f90` (not a separate
 LowFive-specific main, as an earlier plan for this section assumed before
 Unit 3b was actually built — `examples/brusselator/participants/
 {u_main.c,v_main.f90}` gained a `--transport lowfive` flag instead,
-KNOWN_ISSUES.md D14's own Unit 3b account), calling `H5Fcreate`/`H5Dwrite`/
+KNOWN_ISSUES.md D14's own Unit 3b account) call `H5Fcreate`/`H5Dwrite`/
 `H5Fopen`/`H5Dread` through a small shim (`examples/brusselator/
 participants/shim.{h,cpp}`'s own `bruss_lowfive_write`/`bruss_lowfive_read`
-— plain HDF5, `H5P_DEFAULT`, needed only because this host's own HDF5 ships
-no Fortran module for `v_main.f90` to call directly) gated on
+— plain HDF5, needed only because this host's own HDF5 ships no Fortran
+module for `v_main.f90` to call directly) gated on
 `fuse_step_report::delivery_pending`/`delivery_field` (`docs/user/
-c-abi.md`'s own protocol), never on every substep.
+c-abi.md`'s own protocol), never on every substep. Internally, `shim.cpp`
+also brackets each write's own `H5Fclose` with `bruss_lowfive_serve_
+after_write()` and each read's own `H5Fopen` with `bruss_lowfive_receive_
+before_read()` (no-ops in single-process mode) — mirroring Demo B's own
+producer/consumer call order (below) for the Brusselator's bidirectional
+exchange; whether that ordering is free of a mutual-wait deadlock between
+the two processes is UNVERIFIED (no MPI in the sandbox either track was
+written in) and is this track's own open item, not this page's.
 
 **Host command lines, exactly as `ctest` runs them**
 (`verification.brusselator.participants.lowfive.{mpmd,accept}.3`,
-`examples/CMakeLists.txt`) — world size 3 only (1+1+1), the two environment
-variables above set in the test's own `ENVIRONMENT`, not inside the driver
-script, so `ctest --show-only` shows a host operator exactly what each row
-depends on:
+`examples/CMakeLists.txt`) -- world size 3 only (1+1+1). The three
+environment variables below are still set in the test's own `ENVIRONMENT`
+(an additive-only constraint on that shared file left them in place), but
+are VESTIGIAL for both rows as of the "LowFive attach" track: every
+`bruss_lowfive_write()`/`bruss_lowfive_read()` call now carries an explicit
+`fapl_id` and refuses outright on a negative one, so neither row's own
+`H5Fcreate`/`H5Fopen` ever reaches `HDF5_VOL_CONNECTOR`'s own default-VOL
+resolution:
 
 ```
-# both rows, same two variables (plus FUSE_LOWFIVE_BINDINGS, computed per
-# row from its own scratch directory -- see run_participants.sh)
+# vestigial for both rows now -- kept set, not load-bearing (see above)
 export HDF5_VOL_CONNECTOR=lowfive
 export HDF5_PLUGIN_PATH=<directory containing fuse-lowfive-vol>
+export FUSE_LOWFIVE_BINDINGS=<scratch>/graph.yaml
 
-# lowfive.mpmd.3
+# lowfive.mpmd.3 -- each program's own bruss_lowfive_attach() call (right
+# after MPI_Init) reads graph.yaml from --graph below, not from the
+# FUSE_LOWFIVE_BINDINGS variable above
 mpiexec -n 1 brusselator_u_main --graph graph.yaml --log u.log --periods 2 --transport lowfive \
     : -n 1 brusselator_v_main --graph graph.yaml --log v.log --periods 2 --transport lowfive \
     : -n 1 brusselator_coupler_main --graph graph.yaml
 
-# lowfive.accept.3
+# lowfive.accept.3 -- bruss_lowfive_attach() refuses cleanly on both U and V
+# (E-LOWFIVE-ATTACH-ACCEPT) the moment it reads the graph's own
+# LaunchMode::Connect; stays red on purpose, KNOWN_ISSUES.md D39
 mpiexec -n 2 brusselator_u_main --graph graph.yaml --log u.log --ranks-u 1 --periods 2 --transport lowfive &
 mpiexec -n 1 brusselator_v_main --graph graph.yaml --log v.log --periods 2 --transport lowfive &
 wait
@@ -332,10 +391,16 @@ wait
 brusselator_check --u-log u.log --v-log v.log
 ```
 
-**Unmeasured until the host's LowFive loads at all** (the libfmt.8 blocker
-above, KNOWN_ISSUES.md D14's own consolidated "what remains" list) — the
-tier-1+LowFive build is confirmed clean; the two rows above have not been
-run.
+**Unmeasured until the host's LowFive loads at all and runs these two rows**
+(the libfmt.8 blocker above, KNOWN_ISSUES.md D14's own consolidated "what
+remains" list, closed by a host action per D14/D38's own later
+measurements) -- the tier-1+LowFive build is confirmed clean including the
+"LowFive attach" track's own additions (this page's account above); whether
+`lowfive.mpmd.3` now passes, and whether its own bidirectional serve/receive
+choreography is free of the mutual-wait risk this page's account above
+names, are the two questions the host run answers that this sandbox
+cannot -- see KNOWN_ISSUES.md D39's own "what the host must verify"
+paragraph for the exact command and what each outcome looks like.
 
 **IR/runtime half, implemented and measured (no LowFive/HDF5 needed) —
 2026-10-04.** `lower_channel()` (`src/ir/rules_channel.cpp`) emits a new

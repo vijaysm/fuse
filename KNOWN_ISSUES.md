@@ -4505,3 +4505,125 @@ LowFive row this fixes was never blocked by D14 on the owner's own `build-lowfiv
 whether the VOL plugin's own accept-mode intercommunicator (D14) lets `...lowfive.accept.3` complete the
 handshake at all, are separate, unmeasured questions this entry makes no claim about — see this round's own
 report for what the sources show and do not show about them.
+### D39. The participants' own `lowfive.mpmd.3` row now attaches LowFive programmatically, sidestepping the env route's own null dereference rather than explaining it
+
+**Status: FIXED at the library/example level for the MPMD row's own attach step; the distributed serve/receive
+choreography and the row itself are UNEXECUTED (no MPI in this sandbox); accept mode is refused by design, not
+fixed.** "LowFive attach" track, following D38's own fix.
+
+**What it was.** D38 closed the `ExternalDelivery` size-reconciliation defect that blocked
+`verification.brusselator.participants.lowfive.mpmd.3`/`...lowfive.accept.3` from ever reaching
+`fuse_initialize()`. Measured on the host the same day (2026-10-12, `build-lowfive`, main `4fd400d`), with D38 in
+place, both rows get PAST `fuse_initialize()` and both `brusselator_u_main` and `brusselator_v_main` then die with
+a null dereference inside `LowFive::VOLBase::_file_create` on their own FIRST `H5Fcreate` (`examples/brusselator/
+participants/shim.cpp`'s `bruss_lowfive_write`, called from `u_lowfive_write_export`/`v_lowfive_write_export`),
+reached through the `HDF5_VOL_CONNECTOR=lowfive`/`HDF5_PLUGIN_PATH` env-var route `fuse-lowfive-vol`
+(`src/transport/lowfive_plugin_vol.cpp`) serves. From LowFive's own installed headers and its source on the host
+(`/Users/mahadevan/Code/hdf5/LowFive` rev `7f3a58b`, not reachable from this sandbox): `VOLBase::_file_create`
+(`src/vol-base/file.cpp`) calls `H5Pget_vol_info(fapl_id, &info)` and dereferences `info->under_vol_id` (line 40)
+and `info->vol` (line 43); `info_t::vol` is a CLASS-STATIC member `create_MetadataVOL()`/`create_DistMetadataVOL()`
+set, and LowFive's own `str_to_info` (the env-string connector-name parser) replaces the class-static `info` with a
+FRESH `info_t`. With `HDF5_VOL_CONNECTOR=lowfive` and no info string, the fapl carries no info at all (line 40
+faults); with the string `lowfive under_vol=0;under_info={};`, the fault moves to line 43 because `info_t::vol` is
+still null at that point -- WHY (whether `fuse-lowfive-vol`'s own `ConfigureOnce()` never ran before this call, or
+`VOLBase::_term` cleared it first) is not established and this entry does not chase it.
+
+**Fix.** The participants (`examples/brusselator/participants/u_main.c`, `v_main.f90`, `shim.{h,cpp}`) no longer
+rely on the env route at all for `--transport lowfive`: a new module, `lowfive_attach.{h,cpp}`, builds the VOL
+connector PROGRAMMATICALLY -- a file-access property list carrying it
+(`LowFive::H5VOLProperty::apply`/`H5Pset_vol`/`H5Pget_vol_id` read-back-and-compare, the identical construction
+`src/transport/lowfive_transport.cpp`'s own `VolSingleton`/`DistVolSingleton` already use and this codebase has
+MEASURED end to end in the single-process case) -- and `bruss_lowfive_write`/`bruss_lowfive_read` now take that
+FAPL as an explicit `fapl_id` argument, passed to every `H5Fcreate`/`H5Fopen` instead of `H5P_DEFAULT`, refusing
+outright (never silently falling back to `H5P_DEFAULT`) if attach was never called or failed. `bruss_lowfive_
+attach()` is called exactly once per process, right after `MPI_Init()`, from the SAME `--graph` path the program's
+own command line already names (no separate `FUSE_LOWFIVE_BINDINGS` environment variable, unlike the env-route
+plugin's own convention). `fuse-lowfive-vol`/`src/transport/lowfive_plugin_vol.cpp` (the env route) are UNCHANGED
+-- this track's own instruction -- and stay in the tree for a later track; the three ctest-row environment
+variables (`HDF5_VOL_CONNECTOR`/`HDF5_PLUGIN_PATH`/`FUSE_LOWFIVE_BINDINGS`) are vestigial for the participants now
+but left set (additive-only constraint on `examples/CMakeLists.txt`, a shared file).
+
+**One translation unit, not the env-route plugin's own two-OBJECT-library split.** `lowfive_attach.cpp` names
+both a FUSE header that pulls fmt 12 (`fuse/model/yaml_io.hpp`) and LowFive's own headers (bundled fmt 8.1.1's
+include directory) in one file -- the exact shape `src/transport/lowfive_plugin_graph.cpp`/`lowfive_plugin_vol.cpp`
+were split in two OBJECT libraries to avoid (this file's own D14 account). That split is no longer necessary:
+`fuse_require(fmt VERSION 9 ...)` (`cmake/FuseDependencies.cmake`, commit `f59b446`) fixed the ACTUAL root cause
+project-wide (`find_package(fmt)` resolving LowFive's own bundled 8.1.1 when `/opt/lowfive` led `CMAKE_PREFIX_
+PATH`), measured end to end in EITHER prefix ordering, including `lowfive_transport.cpp` itself -- a file that
+has ALWAYS named both header families in one TU. `lowfive_attach.cpp` relies on that same floor and reuses the
+env-route plugin's own graph-side building blocks (`fuse::build_lowfive_bindings()`, `fuse::
+plan_lowfive_rendezvous()`) directly, rather than re-deriving `lowfive_plugin_internal.hpp`'s own plain-data
+`Config` indirection, which existed only to cross a translation-unit boundary this file does not need.
+
+**The bidirectional-exchange gap the env-route plugin's own comment names, closed for the participants' own
+attach.** `lowfive_plugin_graph.cpp`'s `ConfigureDistributed()` picks "the first LowFive-bound channel found" to
+decide a rank's own writer/reader role and MPI_Comm_split color, with an explicit comment that "a graph with more
+than one [channel] would need this loop to confirm every ... channel agrees on the SAME writer/reader pair this
+process belongs to, which is not yet checked here." The Brusselator's own bidirectional exchange (`u_out`: U
+writes, V reads; `v_out`: V writes, U reads) is exactly that case -- the writer/reader LABELS swap between the two
+channels, though both partition `MPI_COMM_WORLD` into the SAME two groups. `lowfive_attach_decision.hpp`'s
+`decide_attach_mode()` (the pure, MPI-free and HDF5-free half of the attach, tier-0 tested against 9 cases in
+`test/verification/brusselator_lowfive_attach_test.cpp`, `fuse_verification_brusselator_lowfive_attach_test`) is
+the check that comment asked for: every qualifying channel's own writer/reader `RankSet` pair must be identical to
+or the exact swap of the canonical (first) channel's, or the attach refuses (`E-LOWFIVE-ATTACH-INCONSISTENT`)
+rather than forming an intercommunicator against an unexamined assumption.
+
+**Found while implementing, not before: the attach's own first version formed a NEW collective the coupler
+process never joins.** `bruss_lowfive_attach()`'s first version formed the distributed rendezvous's own "local"
+communicator with a fresh `MPI_Comm_split(MPI_COMM_WORLD, ...)`, mirroring `src/transport/lowfive_plugin_vol.cpp`'s
+own `ConfigureOnce()` exactly. `MPI_Comm_split` on `MPI_COMM_WORLD` is collective over EVERY rank of that
+communicator, including the coupler's -- and `bruss_lowfive_attach()` is called only from `u_main.c`/`v_main.f90`,
+never from `coupler_main.c`, so U and V would enter that split while the coupler never does: a hang, not a crash,
+and the mirror image of this track's own standing audit ("a collective path must never return on a locally
+computed condition") -- here the hazard is a collective ENTERED without every rank's own participation, caught
+before any host ever had to find it with a timeout. **Fix**: `bruss_lowfive_attach()` takes a new parameter,
+`physics_comm_f`, the caller's own ALREADY-FORMED physics-only communicator (`u_main.c`'s own `u_comm`,
+`v_main.f90`'s own `v_comm` -- the SAME communicator `bruss_u_create()`/`bruss_v_create()`'s own `comm_f` argument
+already takes), and forms the intercommunicator directly from it. No new collective over `MPI_COMM_WORLD` is
+needed at all: `MPI_Intercomm_create`'s own `local_comm` argument is collective only over the union of the two
+SIDES' own groups (U's physics ranks, V's physics ranks), which the coupler was never part of, and `u_comm`/
+`v_comm` are already safely formed, with the coupler's own matching `MPI_Comm_split` call (u_main.c's own header
+comment on that split has the full account) already satisfied before `bruss_lowfive_attach()` is ever reached.
+`bruss_lowfive_attach()` additionally verifies `physics_comm_f`'s own size and this rank's own position within it
+against what the graph's declared `RankSet` expects, refusing (not trusting) a mismatch.
+
+**Accept mode refuses by design, not by omission.** `decide_attach_mode()` refuses
+(`E-LOWFIVE-ATTACH-ACCEPT`) the moment an HDF5-bound channel's writer or reader component declares
+`LaunchMode::Connect` -- accept mode's own merged base communicator is never exposed back to a caller through any
+ABI query (this entry's own open item 3, repeated from D14's own "what remains" list, UNCHANGED: still open), so
+there is no intercommunicator this attach could form for it. `verification.brusselator.participants.lowfive.
+accept.3` stays red ON PURPOSE until D14's own accept-mode question is decided by the lead -- a clean, named
+refusal at attach time (`bruss_lowfive_attach()` returns nonzero with the code and message above in `errbuf`),
+never a half-configured VOL or a hang.
+
+**UNEXECUTED, like the rest of this codebase's own distributed LowFive path (D14's own Demo B account): the
+MPMD row's own distributed serve/receive choreography.** `bruss_lowfive_serve_after_write()`/`bruss_lowfive_
+receive_before_read()` (`lowfive_attach.h`) bracket the shim's own `H5Fclose`/`H5Fopen` with `LowFive::
+DistMetadataVOL::serve_all()`/`broadcast_files()`, placed at the natural points -- mirroring `examples/demo_b`'s
+own one-directional producer/consumer call order exactly (the owner's own ruling on this track, 2026-10-12: the
+natural placement, not an invented reordering). Whether `serve_all()`/`broadcast_files()` can mutually block if
+both ranks' own schedules reach "serve mine" before "receive peer's" at the same window is UNVERIFIED: no MPI in
+this sandbox, and LowFive's own source is not reachable from it either. This is a NEW risk the single-process path
+(D14's own Unit 3a, measured bit-exact) and Demo B (one producer, one consumer, never both) do not share.
+
+**Pinned by** `test/verification/brusselator_lowfive_attach_test.cpp`'s nine `DecideAttachMode` cases (writer-side
+and reader-side rendezvous, the bidirectional swap agreeing, no-channels refused, accept-mode refused on either
+end, an inconsistent third-group channel refused, and `plan_lowfive_rendezvous()`'s own unplaced/overlap refusals
+propagated verbatim) and one hand-proved mutation row,
+`build-evidence/mutations/lowfive-attach.toml`'s `decide-attach-mode-skips-the-accept-refusal` (full tier-0,
+166 -> this track's own count, killed decisively). Full tier-0 and all 5 repo-health gates clean (this round's
+own report has the exact numbers).
+
+**What the host must verify.** In `build-lowfive`: rebuild, then `ctest -R 'participants\.lowfive\.mpmd\.3'`
+(3 tasks). A clean pass means every rank's own `u.log`/`v.log`/coupler log shows the SAME period-by-period
+convergence Unit 3a's own single-process harness already measured bit-exact; a hang (ctest's own 120s `TIMEOUT`
+firing) means the serve/receive mutual-wait risk above is real and the owner's own ruling (natural placement, no
+artificial reordering) needs revisiting; a clean, NAMED refusal (not a null dereference, not a hang) on any rank
+means this entry's own design has a gap this round's report did not find -- see that report's `host_pending` for
+the exact commands and what each rank's log should print in every one of these three outcomes.
+
+**Does not close D14.** D14 is about the two-HDF5-image hazard (closed, host action only), the Demo B distributed
+path (compiled, never run), and Unit 3's own single-process measurement (done). This entry is independent of all
+three: the env-route plugin this entry stops depending on for the participants is UNCHANGED, and D14's own open
+accept-mode intercommunicator question (item 3 of its "what remains" list) is the SAME question this entry's own
+accept-mode refusal defers to, not a new one.
