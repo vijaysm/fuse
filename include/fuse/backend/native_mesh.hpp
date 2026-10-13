@@ -236,6 +236,12 @@ class NativeMeshView final : public MeshView {
   }
 
   /// The host-only worker every `create<MemorySpace>` delegates to.
+  /// Validates, never throws: `E-MESH-DIM` if `arrays.dim` is outside
+  /// `[0, 3]`, `E-MESH-CONNECTIVITY` if a fixed-shape cell's corner count
+  /// disagrees with its type or a corner names a vertex index out of
+  /// range (NM-8: every in-tree producer already goes through
+  /// `NativeMeshBuilder::build()`, which checks the same two things, so
+  /// these guard only a caller that reaches this factory directly).
   [[nodiscard]] static Result<std::unique_ptr<NativeMeshView>> create_from_host(
       const MeshArrays<Kokkos::HostSpace>& arrays, int my_rank);
 

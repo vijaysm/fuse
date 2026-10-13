@@ -384,6 +384,51 @@ TEST(NativeDistributedMesh, RefusesAFixedShapeGivenTheWrongCornerCount) {
   EXPECT_EQ(arrays_r.error().code, "E-MESH-CONNECTIVITY");
 }
 
+// ---------------------------------------------------------------------------
+// NM-8: the three tests above exercise NativeMeshBuilder::build()'s OWN
+// checks; every in-tree producer routes through it, so a direct caller of
+// NativeMeshView::create_from_host (the class's own doc: "validates
+// connectivity") was the only way to reach either gap below. Not latent
+// via any producer in this tree, but the header's claim was false for a
+// caller that bypasses the builder, and the unguarded reads this closes
+// are both UB (an out-of-range dim fell through to no matching branch in
+// the dimension dispatch; a wrong corner count read past a cell's own
+// vertex slice).
+// ---------------------------------------------------------------------------
+TEST(NativeDistributedMesh, CreateFromHostRefusesAMeshWithDimensionOutsideZeroToThree) {
+  NativeMeshBuilder b(5);  // no vertices or cells added: build()'s own
+                           // per-cell dimension check never runs on an
+                           // empty mesh, so dim=5 reaches create_from_host
+                           // unchecked without this fix.
+  auto arrays_r = b.build();
+  ASSERT_TRUE(arrays_r.ok()) << arrays_r.error().message;
+  auto view_r = NativeMeshView::create_from_host(arrays_r.value(), 0);
+  ASSERT_FALSE(view_r.ok());
+  EXPECT_EQ(view_r.error().code, "E-MESH-DIM");
+}
+
+TEST(NativeDistributedMesh, CreateFromHostRefusesAFixedShapeGivenTheWrongCornerCount) {
+  // A VALID triangle, built and validated by NativeMeshBuilder::build()
+  // -- then its own CSR is hand-corrupted (shrinking the one cell's own
+  // corner count from 3 to 2) to reach create_from_host with data the
+  // builder itself would have refused, the same way a caller bypassing
+  // the builder entirely could.
+  NativeMeshBuilder b(2);
+  const int v0 = b.add_vertex(0, 0.0, 0.0, 0.0, 0, true);
+  const int v1 = b.add_vertex(1, 1.0, 0.0, 0.0, 0, true);
+  const int v2 = b.add_vertex(2, 1.0, 1.0, 0.0, 0, true);
+  b.add_cell(CellType::Triangle, {v0, v1, v2}, 0, 0, true);
+  auto arrays_r = b.build();
+  ASSERT_TRUE(arrays_r.ok()) << arrays_r.error().message;
+  auto& arrays = arrays_r.value();
+  ASSERT_EQ(arrays.cell_vertex_offsets(1) - arrays.cell_vertex_offsets(0), 3);
+  arrays.cell_vertex_offsets(1) = arrays.cell_vertex_offsets(0) + 2;  // now "2 corners"
+
+  auto view_r = NativeMeshView::create_from_host(arrays, 0);
+  ASSERT_FALSE(view_r.ok());
+  EXPECT_EQ(view_r.error().code, "E-MESH-CONNECTIVITY");
+}
+
 // ---- vertices are never owned-measured, and owned/ghost accounting ------
 
 TEST(NativeDistributedMesh, OwnedCountExcludesGhosts) {
