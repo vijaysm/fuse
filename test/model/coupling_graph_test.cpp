@@ -1,3 +1,6 @@
+#include <cstdint>
+#include <limits>
+
 #include <gtest/gtest.h>
 #include <fuse/model/coupling_graph.hpp>
 
@@ -262,4 +265,44 @@ TEST(CouplingGraph, WindowSampleTimesAgreesWithTheRealCarriedForwardGrid) {
 
     clock = new_clock;
   }
+}
+
+// ---- BM-19 (review 2026-10-11): the no-exceptions contract ------------
+//
+// Both functions used to compute with the throwing Rational operators
+// (+, -, *, /), any of which can FUSE_REFUSE on an unrepresentable
+// intermediate -- an uncaught Refusal, or an abort in a
+// FUSE_ENABLE_EXCEPTIONS=OFF build, from functions with no Result in
+// their signature to report that through. Neither of these inputs is
+// anything a legitimate graph would ever produce (every real
+// window_length/interval pair already fits comfortably once reduced);
+// they exist to confirm the fallback path added for BM-19 holds under
+// genuinely adversarial input.
+
+TEST(CouplingGraph, WindowSampleCapacityNeverThrowsOnAnUnrepresentableRatio) {
+  using fuse::DtPolicy;
+  using fuse::window_sample_capacity;
+  constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+  const Rational window_length{kMax};
+  const Rational interval{1, kMax};
+  std::size_t result = 0;
+  EXPECT_NO_THROW(
+      result = window_sample_capacity(window_length, interval, DtPolicy::Fixed));
+  // An unrepresentable ratio reports the capacity as unrepresentably large,
+  // so the caller's E-SCHED-WINDOW-CAPACITY gate refuses it (IS-6 and BM-19
+  // agree on the no-throw contract; the sentinel is the schedule gate's).
+  EXPECT_EQ(result, std::numeric_limits<std::size_t>::max());
+}
+
+TEST(CouplingGraph, WindowSampleTimesNeverThrowsOnAnUnrepresentableProduct) {
+  using fuse::DtPolicy;
+  using fuse::window_sample_times;
+  constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+  std::vector<Rational> result;
+  EXPECT_NO_THROW(result = window_sample_times(Rational{1}, DtPolicy::Fixed,
+                                               Rational{0}, Rational{kMax}, kMax));
+  EXPECT_GE(result.size(), 2u)
+      << "even when window_index * window_length overflows, the function "
+         "must return a well-formed (if degraded) list ending in T1, not "
+         "throw";
 }
