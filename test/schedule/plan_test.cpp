@@ -285,6 +285,118 @@ TEST(ExecutionPlan, RejectsCyclicSchedules) {
   EXPECT_EQ(r.plan.region_count(), 0u);
 }
 
+// Review 2026-10-11 IS-2: a window member's own export is produced by
+// OpKind::WindowAdvance -- an SSA root with empty inputs, exactly like
+// Source, finish_window_regions() in src/ir/window_lowering.cpp -- not by
+// Source itself. The acyclicity prover's black-box component-edge rule
+// (src/schedule/acyclicity.cpp) built that edge only from Source/Sink
+// endpoints, so no component edge was ever formed for a window member's
+// step. An unlagged loop through the member via ORDINARY channels declared
+// OUTSIDE the window-scoped region -- which neither the window gate's own
+// `has_unbroken_cycle()` (src/schedule/window.cpp, scans only
+// `region.channels`) nor the prover's endpoint scan could see -- was
+// wrongly certified acyclic. `a` is the window member; `a2c`/`c2a` are
+// ordinary, unlagged, and not in the region's channel list.
+TEST(ExecutionPlan, WindowMemberGatesAnOrdinaryCycleOutsideTheRegion) {
+  CouplingGraph g;
+  const auto ma = g.add_mesh(fuse::MeshDecl{.name = "ma"});
+  const auto mb = g.add_mesh(fuse::MeshDecl{.name = "mb"});
+  const auto mc = g.add_mesh(fuse::MeshDecl{.name = "mc"});
+  const auto ra = g.add_region(fuse::Region{.name = "ra", .mesh = ma});
+  const auto rb = g.add_region(fuse::Region{.name = "rb", .mesh = mb});
+  const auto rc = g.add_region(fuse::Region{.name = "rc", .mesh = mc});
+
+  const auto a = g.add_component(ComponentDecl{
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1, 4}});
+  const auto b = g.add_component(ComponentDecl{
+      .name = "b", .ranks = fuse::RankSet{1, 1}, .interval = Rational{1, 4}});
+  const auto c = g.add_component(ComponentDecl{
+      .name = "c", .ranks = fuse::RankSet{2, 1}, .interval = Rational{1, 4}});
+
+  // The window-scoped pair, `a` <-> `b` -- mirrors
+  // window_region_golden_test.cpp's two_member_window_graph(): one unlagged
+  // direction (checked by check_window_causality()'s strict rule) and one
+  // lagged (its relaxed rule), which is what makes the region itself
+  // schedulable.
+  const auto a_out = g.add_field(a, fuse::FieldSpec{
+      .name = "a_out", .region = ra, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Provides});
+  const auto b_in = g.add_field(b, fuse::FieldSpec{
+      .name = "b_in", .region = rb, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Requires});
+  const auto b_out = g.add_field(b, fuse::FieldSpec{
+      .name = "b_out", .region = rb, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Provides});
+  const auto a_in = g.add_field(a, fuse::FieldSpec{
+      .name = "a_in", .region = ra, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Requires});
+  const auto fwd = g.add_channel("a2b", a_out, b_in);
+  const auto back = g.add_channel("b2a", b_out, a_in);
+  g.channel(back).lag(1).allow_time_level_mismatch(
+      "resolved by the a-b coupling window's own sweep, not a real-time lag");
+
+  fuse::CouplingWindowScope scope;
+  scope.window_component = "a";
+  scope.order = 2;
+  scope.policies = {{"a", fuse::DtPolicy::Adjustable},
+                    {"b", fuse::DtPolicy::Adjustable}};
+  scope.iteration = fuse::WaveformIteration::GaussSeidel;
+  g.add_iteration_region(fuse::IterationRegionDecl{
+      .name = "window", .channels = {fwd, back}, .max_iterations = 20,
+      .window_scope = scope});
+
+  // The ordinary, unlagged cycle runs a -> b -> c -> a, closing back on `a`
+  // through `a_out` -- the window member's own export, never a second
+  // Provides field declared directly on `a`. `a` must have NO ordinary
+  // `Source` node of its own: finish_window_regions() (src/ir/
+  // window_lowering.cpp) replaces a window member's export with a
+  // `WindowAdvance` node, which is the entire point under test. Giving `a`
+  // an unrelated ordinary Provides field here would let prove_acyclic's
+  // pre-existing Source/Sink rule close the loop on its own, exercising
+  // nothing about the gap this fix closes (measured: with a second Provides
+  // field on `a`, this test passed even with the fix reverted). Nor can the
+  // cycle's outgoing leg read `a_out` through a SECOND, non-window channel
+  // directly: the window member's export is sized for the window's own
+  // waveform, so an ordinary reader outside the region fails type-checking
+  // before acyclicity is ever reached (measured: E-IR-TYPE on `c.c_in`).
+  // Routing the outgoing leg through `b` -- already the window's OTHER,
+  // ordinary consumer of `a_out` via `fwd` -- sidesteps both problems: `b`'s
+  // own, unrelated Provides field closes the loop into `c`, and `c`'s own
+  // Provides field closes it back onto `a_in2`, which is unlagged and
+  // genuinely depends on `a_out` only through the missing WindowAdvance
+  // component edge this fix adds.
+  const auto b_out2 = g.add_field(b, fuse::FieldSpec{
+      .name = "b_out2", .region = rb, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Provides});
+  const auto c_in = g.add_field(c, fuse::FieldSpec{
+      .name = "c_in", .region = rc, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Requires});
+  const auto c_out = g.add_field(c, fuse::FieldSpec{
+      .name = "c_out", .region = rc, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Provides});
+  const auto a_in2 = g.add_field(a, fuse::FieldSpec{
+      .name = "a_in2", .region = ra, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Requires});
+  g.add_channel("b2c", b_out2, c_in);
+  g.add_channel("c2a", c_out, a_in2);
+
+  const auto r = build(g);
+  EXPECT_FALSE(r.ok());  // wrongly accepted before the fix
+  bool saw_cycle_code = false;
+  for (const auto& d : r.diags.items()) {
+    if (d.code == "E-SCHED-CYCLE") saw_cycle_code = true;
+  }
+  EXPECT_TRUE(saw_cycle_code) << r.diags.to_string();
+}
+
 TEST(ExecutionPlan, DumpMentionsEveryOpKindPresent) {
   const auto r = build(pair(Rational{1}, Rational{1}));
   ASSERT_TRUE(r.ok());
