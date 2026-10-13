@@ -877,3 +877,49 @@ TEST(YamlIo, NonPositiveConvergenceToleranceIsRefused) {
   ASSERT_FALSE(restored.ok());
   EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
 }
+TEST(YamlIo, OutOfRangeUnitExponentIsRefused) {
+  std::string text = kMinimalYaml;
+  const std::size_t pos = text.find("name: f");
+  text.insert(pos + std::string("name: f\n").size(),
+             "        units: {length: 300}\n");
+  const auto restored = from_yaml(text);
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-UNITS");
+}
+
+// BM-16: two meshes/regions/channels with the same name must be refused
+// at parse time, not silently resolved to whichever was declared last.
+TEST(YamlIo, PreviouslyUnsupportedUnitSymbolsNowParse) {
+  std::string text = kMinimalYaml;
+  const std::size_t pos = text.find("name: f");
+  text.insert(pos + std::string("name: f\n").size(), "        units: Hz\n");
+  const auto restored = from_yaml(text);
+  ASSERT_TRUE(restored.ok()) << restored.error().message;
+  const auto& field = restored.value().field(fuse::FieldId{0});
+  EXPECT_EQ(field.units.time, -1) << "Hz = s^-1";
+}
+
+TEST(YamlIo, CompoundUnitExpressionParses) {
+  std::string text = kMinimalYaml;
+  const std::size_t pos = text.find("name: f");
+  text.insert(pos + std::string("name: f\n").size(), "        units: m/s\n");
+  const auto restored = from_yaml(text);
+  ASSERT_TRUE(restored.ok()) << restored.error().message;
+  const auto& field = restored.value().field(fuse::FieldId{0});
+  EXPECT_EQ(field.units.length, 1);
+  EXPECT_EQ(field.units.time, -1);
+}
+
+// The 10 symbols the old table DID have must still parse identically
+// (same Units value) through the real parser -- the round trip this
+// routing change must not disturb.
+TEST(YamlIo, PreviouslySupportedUnitSymbolsStillParseTheSameWay) {
+  std::string text = kMinimalYaml;
+  const std::size_t pos = text.find("name: f");
+  text.insert(pos + std::string("name: f\n").size(), "        units: Pa\n");
+  const auto restored = from_yaml(text);
+  ASSERT_TRUE(restored.ok()) << restored.error().message;
+  const auto& field = restored.value().field(fuse::FieldId{0});
+  EXPECT_EQ(field.units, u::kPascal);
+}
+

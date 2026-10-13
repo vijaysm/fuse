@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "fuse/model/descriptor.hpp"
+#include "fuse/model/semantics.hpp"
 #include "fuse/model/validate.hpp"
 
 namespace fuse {
@@ -31,13 +32,6 @@ const UnitEntry kUnitTable[] = {
     {"J", units::kJoule},         {"W", units::kWatt},
     {"Pa", units::kPascal},       {"W/m^2", units::kHeatFluxDensity},
 };
-
-bool lookup_units(const std::string& sym, Units& out) {
-  for (const auto& e : kUnitTable) {
-    if (sym == e.symbol) { out = e.value; return true; }
-  }
-  return false;
-}
 
 bool parse_rational(const std::string& s, Rational& out) {
   const auto slash = s.find('/');
@@ -85,13 +79,46 @@ YAML::Node units_node(const Units& u) {
   return n;
 }
 
-/// Reads either form: a table symbol, or the structural map `units_node` emits.
+/// Reads either form: a unit expression, or the structural map `units_node`
+/// emits.
+///
+/// BM-12 (review 2026-10-11): the scalar branch used to look symbols up in
+/// `kUnitTable` above -- a 10-entry table private to this file -- while
+/// semantics.hpp documents `parse_unit_expression()` as "how a YAML or
+/// C-ABI caller states units at all". The two vocabularies disagreed:
+/// `"m/s"`, `"kg/m^3"`, `"Hz"` and eight more of the parser's 21 symbols
+/// parsed everywhere else in the library and were refused here with
+/// `E-YAML-UNITS`. Routing through the real parser closes the gap for
+/// every symbol it supports (a strict superset of `kUnitTable`'s ten,
+/// checked by hand against `unit_symbols`, src/model/semantics.cpp);
+/// `units_node()`'s own emission table above is unchanged, so the round
+/// trip for every symbol it ever writes stays byte-identical.
+///
+/// BM-15 (review 2026-10-11): an exponent read here used to narrow with a
+/// bare `static_cast<std::int8_t>`, which wraps silently (`length: 300`
+/// read back as 44) instead of refusing -- the in-process path refuses the
+/// identical case (`detail::narrow_exponent`, fuse/base/units.hpp,
+/// `E-BASE-UNITS-EXPONENT`), so a hand-written YAML document should not be
+/// able to declare a different physical quantity than the one it wrote.
+/// `exponent_in_range` is threaded through rather than thrown: this
+/// function's whole contract is "fail by returning false", and the two
+/// scale/offset checks below already follow that shape.
 bool parse_units(const YAML::Node& n, Units& out) {
-  if (n.IsScalar()) return lookup_units(n.as<std::string>(), out);
+  if (n.IsScalar()) {
+    if (const auto parsed = parse_unit_expression(n.as<std::string>())) {
+      out = *parsed;
+      return true;
+    }
+    return false;
+  }
   if (!n.IsMap()) return false;
   Units u{};
-  const auto get = [&n](const char* key, std::int8_t& into) {
-    if (n[key]) into = static_cast<std::int8_t>(n[key].as<int>());
+  bool exponent_in_range = true;
+  const auto get = [&n, &exponent_in_range](const char* key, std::int8_t& into) {
+    if (!n[key]) return;
+    const int value = n[key].as<int>();
+    if (value < -128 || value > 127) { exponent_in_range = false; return; }
+    into = static_cast<std::int8_t>(value);
   };
   get("length", u.length);
   get("mass", u.mass);
@@ -100,6 +127,7 @@ bool parse_units(const YAML::Node& n, Units& out) {
   get("temperature", u.temperature);
   get("amount", u.amount);
   get("luminosity", u.luminosity);
+  if (!exponent_in_range) return false;
   if (n["scale"] && !parse_rational(n["scale"].as<std::string>(), u.scale)) return false;
   if (n["offset"] && !parse_rational(n["offset"].as<std::string>(), u.offset)) return false;
   out = u;
@@ -1031,8 +1059,17 @@ Result<CouplingGraph> from_yaml_body(const YAML::Node& root) {
       if (fn["components"]) f.components = fn["components"].as<int>();
       if (fn["units"]) {
         if (!parse_units(fn["units"], f.units)) {
-          return Failure{"E-YAML-UNITS",
-                       "unknown unit symbol '" + fn["units"].as<std::string>() + "'"};
+          // BM-15: `parse_units()` fails for two different node shapes --
+          // an unrecognised SCALAR symbol, and a structural MAP with an
+          // out-of-range exponent (this function's own new check) -- and
+          // only the first is safely describable with `.as<std::string>()`;
+          // calling that on the second (a map) throws, which used to turn
+          // this E-YAML-UNITS failure into an unrelated E-YAML-PARSE one
+          // via from_yaml()'s outer catch.
+          const std::string detail = fn["units"].IsScalar()
+              ? "unknown unit symbol '" + fn["units"].as<std::string>() + "'"
+              : "unparseable unit specification for field '" + f.name + "'";
+          return Failure{"E-YAML-UNITS", detail};
         }
         // N-base-model-2: R-19 gated a non-positive Units::scale at the
         // binary descriptor boundary (descriptor.hpp) and at
