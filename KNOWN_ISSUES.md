@@ -4434,32 +4434,39 @@ anything specific to the mixed-pair scenario itself.
 rows) and `abi.device_binding` both green after the fix; see report-transport.md for the full
 ctest counts of this track's own build.
 
-### D42 (transport track). `TheTransportPathAllocatesNothingWhileRunning`'s `.device` twin reports a non-zero host allocation count on the rank with a mixed device/host Transport arc pair — OPEN, root cause not isolated
+### D42 (transport track). `TheTransportPathAllocatesNothingWhileRunning`'s `.device` twin fails on the rank with a mixed device/host Transport arc pair — OPEN, failing assertion not actually recovered
 
-**What.** `test/parallel/runner_transport_test.cpp`'s `RunnerTransport.
+**What is actually confirmed.** `test/parallel/runner_transport_test.cpp`'s `RunnerTransport.
 TheTransportPathAllocatesNothingWhileRunning` wraps `runner.run(h.components, 4)` in an
-`AllocationCounter` (hooks global `new`/`malloc`) after one uncounted warm-up period, and
-asserts the count is exactly 0. Registered with `DEVICE_TWIN` (this track), its `.device` twin
-(`FUSE_EXECUTION_SPACE=device`) fails on exactly the rank that holds the `solid` component:
-`fluid`/`solid` are placed on DISJOINT ranks, so on that rank the channel's Transport
-instruction has a MIXED arc pair (input = `fluid.out`, a component-owned host alias, `n=0` on
-this rank and so never promoted; output = the coupler-owned `link/transport` arc, `n=12`,
-promoted to device) -- the exact combination KNOWN_ISSUES D41 fixed correctness for, now
-exercising a NEW code path (`Impl::transport_out_scratch`, a `Kokkos::deep_copy` into device
-memory) for the first time in this binary. Measured with `FUSE_DEVICE_DEBUG=1` (confirms the
-arc placement above) and with a per-rank `mpiexec` capture (`-outfile-pattern` is not an
-OpenMPI 4.1.5 flag; a `stdbuf`-wrapped per-rank redirect was used instead) -- the per-rank
-capture could not recover the actual allocation COUNT or its call site, because
-`fuse::testing::MpiFailureReducer`'s listener setup removes the default result printer on every
-non-zero rank (`fuse_test_main.cpp`'s own documented design, "silence progress on non-zero
-ranks"), which also silences the `EXPECT_EQ` failure text that would have named the count.
+`AllocationCounter` after one uncounted warm-up period and asserts the count is exactly 0 --
+the ONLY assertion in the test after its two `ASSERT_TRUE` setup checks. Registered with
+`DEVICE_TWIN` (this track), its `.device` twin (`FUSE_EXECUTION_SPACE=device`) fails on
+exactly the rank that holds the `solid` component. `FUSE_DEVICE_DEBUG=1` confirms that on that
+rank the channel's Transport instruction has a MIXED arc pair (input = `fluid.out`, a
+component-owned host alias, `n=0` on this rank and so never promoted; output = the
+coupler-owned `link/transport` arc, `n=12`, promoted to device) -- the exact combination
+KNOWN_ISSUES D41 fixed correctness for, which on this rank reaches `Impl::transport_out_scratch`
+and a `Kokkos::deep_copy` into device memory for the first time in this binary.
 
-**Why not fixed now.** Isolating the exact allocation (candidates: a first-touch cost of the
-`Kokkos::deep_copy` call itself into device memory not fully amortized by the warm-up period;
-something reached for the first time by `MpiTransport::prepare()`/`move()` under this specific
-rank's zero-input/nonzero-output shape) needs either a temporarily-instrumented build (to print
-the count past the reducer's silencing) or a debugger attached to rank 1 specifically, both
-multiple further build/run cycles on a single shared GPU host. Correctness is unaffected: every
+**What is NOT confirmed, stated as a hypothesis rather than fact.** A per-rank `mpiexec`
+capture (`-outfile-pattern` is not an OpenMPI 4.1.5 flag; a `stdbuf`-wrapped per-rank redirect
+was used instead) could not recover which assertion failed or any count, because
+`fuse::testing::MpiFailureReducer`'s listener setup removes the default result printer on
+every non-zero rank (`fuse_test_main.cpp`'s own documented design, "silence progress on
+non-zero ranks"), which also silences the `EXPECT_EQ`/`ASSERT_TRUE` failure text itself. Given
+the test's structure, the failure is most likely the `EXPECT_EQ(allocations, 0u)` check (it is
+the only assertion reachable after the setup `ASSERT_TRUE`s, and rank 0 passed cleanly), but
+this was never directly observed -- an equally possible explanation this session did not rule
+out is `ASSERT_TRUE(ok)` (i.e. `runner.run()` itself returning an error on this rank) failing
+instead, for a reason unrelated to the allocation count.
+
+**Why not fixed now.** Recovering the real failure (candidates for a non-zero allocation
+count: a first-touch cost of the `Kokkos::deep_copy` call itself into device memory not fully
+amortized by the warm-up period; something reached for the first time by
+`MpiTransport::prepare()`/`move()` under this specific rank's zero-input/nonzero-output shape)
+needs either a temporarily-instrumented build (to print past the reducer's silencing) or a
+debugger attached to rank 1 specifically, both multiple further build/run cycles on a single
+shared GPU host. Correctness is unaffected regardless of which it is: every
 delivery-correctness assertion in this file and in `test/runtime/runner_device_test.cpp` passes
 under Device, including the two rows D41 fixed.
 
