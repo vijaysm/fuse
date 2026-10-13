@@ -72,6 +72,31 @@ int NativeMeshBuilder::find_or_add_face(const std::vector<int>& local_vertices_o
           if (ok) reverse_match = true;
         }
       }
+      if (!forward_match && !reverse_match) {
+        // The same vertex SET (sorted_key matched above), but an order
+        // that is neither a cyclic match nor a cyclic reversal of the
+        // already-stored face -- duplicate corners, or the same set
+        // presented at a different length, are the two ways this
+        // happens. Per I4 this is refused rather than silently reused
+        // under an arbitrary orientation: record the refusal (build() is
+        // the only Result-returning path back to the caller) and leave
+        // the stored face untouched.
+        if (!face_mismatch_error_) {
+          std::string gids;
+          for (std::size_t k = 0; k < sorted_key.size(); ++k) {
+            if (k != 0) gids += ",";
+            gids += fmt::format("{}", sorted_key[k]);
+          }
+          face_mismatch_error_ = {
+              "E-MESH-POLYGON-FACE-MISMATCH",
+              fmt::format("a polyhedron face shares vertex set [{}] with an already-recorded "
+                         "face, but its corner order is neither a cyclic match nor a cyclic "
+                         "reversal of the stored one",
+                         gids)};
+        }
+        *flip = false;
+        return idx;
+      }
       *flip = !forward_match && reverse_match;
       return idx;
     }
@@ -115,6 +140,10 @@ int NativeMeshBuilder::add_polyhedron_cell(const std::vector<std::vector<int>>& 
 }
 
 Result<MeshArrays<Kokkos::HostSpace>> NativeMeshBuilder::build() const {
+  if (face_mismatch_error_) {
+    return Failure{face_mismatch_error_->first, face_mismatch_error_->second};
+  }
+
   MeshArrays<Kokkos::HostSpace> out;
   out.dim = dim_;
 

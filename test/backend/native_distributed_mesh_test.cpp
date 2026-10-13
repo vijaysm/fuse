@@ -540,3 +540,32 @@ TEST(NativeDistributedMesh, DeviceGeometryMatchesHostForTwoDimensionalShapes) {
   ASSERT_TRUE(view_r.ok()) << view_r.error().message;
   ExpectDeviceGeometryMatchesHost(*view_r.value());
 }
+
+// ---------------------------------------------------------------------------
+// NM-10: a face vertex set `find_or_add_face` cannot reconcile with the one
+// it already recorded (same vertex SET, but an order that is neither a
+// cyclic match nor its reversal) must be refused, not silently reused under
+// whichever orientation the comparison happens to settle on.
+// ---------------------------------------------------------------------------
+TEST(NativeDistributedMesh, FaceWithSameVertexSetInANonCyclicOrderIsRefused) {
+  // A square base {v0,v1,v2,v3} (any cyclic rotation, or its reversal, is
+  // the same quad face); a second cell names the identical vertex SET for
+  // one of its own faces but in the order {v0,v2,v1,v3} -- a transposition
+  // of the middle two entries, neither a rotation of {v0,v1,v2,v3} nor of
+  // its reversal {v3,v2,v1,v0}.
+  NativeMeshBuilder b(3);
+  const int v0 = b.add_vertex(0, 0.0, 0.0, 0.0, 0, true);
+  const int v1 = b.add_vertex(1, 1.0, 0.0, 0.0, 0, true);
+  const int v2 = b.add_vertex(2, 1.0, 1.0, 0.0, 0, true);
+  const int v3 = b.add_vertex(3, 0.0, 1.0, 0.0, 0, true);
+  const int v4 = b.add_vertex(4, 0.0, 0.0, 1.0, 0, true);
+
+  b.add_polyhedron_cell({{v0, v1, v2, v3}, {v0, v1, v4}, {v1, v2, v4}, {v2, v3, v4}, {v3, v0, v4}},
+                        0, 0, true);
+  b.add_polyhedron_cell({{v0, v2, v1, v3}, {v0, v2, v4}, {v2, v1, v4}, {v1, v3, v4}, {v3, v0, v4}},
+                        1, 0, true);
+
+  auto arrays_r = b.build();
+  ASSERT_FALSE(arrays_r.ok());
+  EXPECT_EQ(arrays_r.error().code, "E-MESH-POLYGON-FACE-MISMATCH");
+}
