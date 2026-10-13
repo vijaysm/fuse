@@ -154,6 +154,12 @@ inline constexpr std::uint32_t kGraphVersion = 14u;
 
 namespace detail {
 
+// BM-5 (review 2026-10-11): `pod()` below writes a value's native
+// in-memory representation -- host-endian, NOT the little-endian rule
+// fuse/base/bytes.hpp states for every other canonical encoding in this
+// library. See bytes.hpp's own note and docs/dev/abi-design.md's "The
+// graph descriptor's byte order" section for why this is recorded rather
+// than changed immediately.
 class Writer {
  public:
   template <class T>
