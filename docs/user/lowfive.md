@@ -351,11 +351,63 @@ module for `v_main.f90` to call directly) gated on
 c-abi.md`'s own protocol), never on every substep. Internally, `shim.cpp`
 also brackets each write's own `H5Fclose` with `bruss_lowfive_serve_
 after_write()` and each read's own `H5Fopen` with `bruss_lowfive_receive_
-before_read()` (no-ops in single-process mode) — mirroring Demo B's own
-producer/consumer call order (below) for the Brusselator's bidirectional
-exchange; whether that ordering is free of a mutual-wait deadlock between
-the two processes is UNVERIFIED (no MPI in the sandbox either track was
-written in) and is this track's own open item, not this page's.
+before_read()` (no-ops in single-process mode).
+
+**Round 2 correction**, replacing what this paragraph said before (serve
+right after `H5Fclose`, receive right before `H5Fopen`, mirroring Demo
+B's own one-directional call order, with the mutual-wait risk left
+"UNVERIFIED... this track's own open item"): the host MEASURED that risk
+on 2026-10-13 — `verification.brusselator.participants.lowfive.mpmd.3`
+hung the full 120 s, with both `brusselator_u_main` and `brusselator_v_
+main` caught (macOS `sample`) inside `H5Fclose -> ... -> DistMetadataVOL::
+file_close -> DistMetadataVOL::serve_all -> Index::serve`'s own
+`MPI_Iprobe` loop, neither having read the other first. Reading LowFive's
+own source (`/Users/mahadevan/Code/hdf5/LowFive`, rev `7f3a58b`) explains
+why the "mirrors Demo B" framing above was already wrong the moment it
+was written: `DistMetadataVOL::serve_on_close` defaults `true`, so
+`file_close()` calls `serve_all()` itself, INSIDE `H5Fclose` — before
+`bruss_lowfive_serve_after_write()`'s own round-1 body, placed AFTER
+`H5Fclose` returns, ever ran a line.
+
+**Round 2, SECOND correction** — the first fix this page described
+right here (receive the peer's file FIRST, then flush a deferred serve,
+BOTH inside the pre-open hook, before `H5Fopen`) was itself reviewed
+against LowFive's own source and REJECTED before any host run: a
+process blocked inside `serve_all()` for a file is released only when
+the PEER completes its own open-AND-close of that file (`DistMetadataVOL
+::file_close()`'s own `RemoteFile` branch calling `finish(0)`) — not by
+the peer merely reaching a pre-open hook. Flushing there ran a first-
+reader's own blocking serve before it had done anything that could
+release the first-server's own pending one: the same circular wait one
+write/read cycle later. The actual fix (`examples/brusselator/
+participants/lowfive_attach.cpp`, KNOWN_ISSUES.md D39's own "Round 2
+REVIEW" account has the full citations and the deadlock-freedom
+argument, re-derived in terms of what the PEER observes): `bruss_
+lowfive_attach()` still sets `serve_on_close = false`, and the pure,
+role-ordered state machine (`lowfive_attach_decision.hpp`'s own
+`ServeState`/`serve_state_step()`) now flushes a first-reader's own
+deferred serve at a NEW event, fired AFTER this process's own `H5Fclose`
+of the peer's file (`bruss_lowfive_after_read_close()`, called from
+`shim.cpp`'s own `bruss_lowfive_read()`) — never before `H5Fopen`. The
+pre-open hook (`bruss_lowfive_receive_before_read()`) does nothing
+LowFive-level at all now: the real receive is `H5Fopen` itself, and
+`LowFive::DistMetadataVOL::broadcast_files()` (which the first fix also
+called there) turns out to operate entirely over the LOCAL communicator,
+propagating an already-known file registry to a multi-rank component's
+own sibling ranks, never to the peer — not reachable from any code path
+inside `file_open()`/`file_close()` themselves, and removed. A fourth
+hook, `bruss_lowfive_finalize()`, runs once at process exit and refuses
+loudly if a deferred serve was ever left unflushed. This still
+serializes the two transfers (never both sides serving in the same
+window); the helper-thread follow-up that would let them overlap again
+stays NOT started, for the same reason as before (`Index::serve()`'s own
+barrier/ibarrier path and `Query::get_filenames()`'s own broadcast share
+the SAME `local` communicator, and this build's own HDF5 is configured
+`Threadsafety: no` with a plain `MPI_Init`). This version is checked
+against an explicit-state simulation of the blocking semantics above
+(`examples/brusselator/participants/lowfive_attach_model_check.hpp`),
+not only against a written argument — that header's own top comment
+states plainly what the simulation does and does not establish.
 
 **Host command lines, exactly as `ctest` runs them**
 (`verification.brusselator.participants.lowfive.{mpmd,accept}.3`,
@@ -391,16 +443,26 @@ wait
 brusselator_check --u-log u.log --v-log v.log
 ```
 
-**Unmeasured until the host's LowFive loads at all and runs these two rows**
-(the libfmt.8 blocker above, KNOWN_ISSUES.md D14's own consolidated "what
-remains" list, closed by a host action per D14/D38's own later
-measurements) -- the tier-1+LowFive build is confirmed clean including the
-"LowFive attach" track's own additions (this page's account above); whether
-`lowfive.mpmd.3` now passes, and whether its own bidirectional serve/receive
-choreography is free of the mutual-wait risk this page's account above
-names, are the two questions the host run answers that this sandbox
-cannot -- see KNOWN_ISSUES.md D39's own "what the host must verify"
-paragraph for the exact command and what each outcome looks like.
+**Unmeasured on THIS round's sandbox (no MPI); PARTIALLY measured on the
+host already.** The host ran `lowfive.mpmd.3` after round 1's own fix
+(libfmt.8 blocker closed, D14/D38) and measured the mutual-wait risk this
+page's account above once called "UNVERIFIED" directly: a 120 s hang,
+both participants caught inside `DistMetadataVOL::serve_all`'s own
+`Index::serve` probe loop. The FIRST round-2 fix (role-ordered serve,
+flushing at the pre-open hook) never reached a host run at all -- caught
+by review against LowFive's own source first and rejected (this page's
+own "Round 2, SECOND correction" paragraph above has the account). The
+SECOND fix (flush moved to a new post-close hook) is believed to close
+the measured hang by construction (the deadlock-freedom argument in
+KNOWN_ISSUES.md D39's own "Round 2 REVIEW" account, now also checked
+against an explicit-state simulation of the blocking semantics --
+`lowfive_attach_model_check.hpp`), but is itself UNEXECUTED on any
+sandbox with a working MPI launcher -- whether `lowfive.mpmd.3` now
+passes end to end, and whether `bruss_lowfive_finalize()` ever actually
+fires its own unflushed-serve refusal on this row's own graph (it should
+not, if I1/I2 hold as argued), are what the next host run answers -- see
+KNOWN_ISSUES.md D39's own "what the host must verify" paragraph for the
+exact command and what each outcome looks like.
 
 **IR/runtime half, implemented and measured (no LowFive/HDF5 needed) —
 2026-10-04.** `lower_channel()` (`src/ir/rules_channel.cpp`) emits a new

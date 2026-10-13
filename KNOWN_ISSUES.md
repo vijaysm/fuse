@@ -4628,3 +4628,225 @@ path (compiled, never run), and Unit 3's own single-process measurement (done). 
 three: the env-route plugin this entry stops depending on for the participants is UNCHANGED, and D14's own open
 accept-mode intercommunicator question (item 3 of its "what remains" list) is the SAME question this entry's own
 accept-mode refusal defers to, not a new one.
+
+**Round 2 update (2026-10-13), superseding this entry's own "UNEXECUTED... distributed serve/receive
+choreography" paragraph above.** The host ran `lowfive.mpmd.3` after round 1's own fix (the row now gets past
+attach and into `build-lowfive`'s own participants) and MEASURED the exact mutual-wait risk the paragraph above
+called unverified: the row hung the full 120 s `TIMEOUT`. A macOS `sample` of the hung job found BOTH
+`brusselator_u_main` and `brusselator_v_main` inside `H5Fclose -> LowFive::VOLBase::_file_close ->
+DistMetadataVOL::file_close` (`src/vol-dist-metadata.cpp:320-364` in this host's own LowFive checkout,
+`/Users/mahadevan/Code/hdf5/LowFive` rev `7f3a58b`, readable from this sandbox as of this round) ->
+`DistMetadataVOL::serve_all` (`:38-72`) -> `Index::serve` (`src/vol-dist/index.cpp:105-167`), opening with a
+`local.barrier()` (`:110`) and then polling each intercomm's own RPC server (`s.probe()`/`s.process()`, `:145-161`)
+until queried by the peer -- which never happens, because the peer is doing the identical thing at the identical
+moment. `brusselator_coupler_main` was waiting in `MPI_Allreduce` for both. Reading the ACTUAL root cause in
+LowFive's own source (not available to round 1, which called the risk "UNVERIFIED... no MPI... LowFive's own
+source is not available to read either" -- both now false on this sandbox): `DistMetadataVOL::serve_on_close` is a
+PUBLIC bool member, DEFAULT TRUE (`include/lowfive/vol-dist-metadata.hpp:33`), and `file_close()` calls
+`serve_all()` itself whenever it is (`:355`, `serve_on_close && match_any(...)`) -- INSIDE `H5Fclose`, before round
+1's own `bruss_lowfive_serve_after_write()` (placed AFTER `H5Fclose` returns, mirroring Demo B's own one-
+directional call order) ever ran a single line. That round-1 call was therefore a NO-OP in every run: the serve
+had already happened, unconditionally, with neither side having read the other first, on a graph (`iteration:
+Jacobi`, `max_iterations 60`, `acceleration None`, `brusselator_graph_tool.cpp`'s own constants) where both
+components write, THEN both read, every iteration -- so both sides reliably raced into `serve_all()` together.
+This is exactly the "natural placement, not an invented reordering" ruling this entry's own prior paragraph
+recorded, now measured wrong; that paragraph is left as written above for the record of what was decided and why,
+not corrected in place.
+
+**Fix: role-ordered serve, an explicit decision instead of `H5Fclose`'s own implicit one.** *[Superseded by "Round 2 REVIEW" below: the flush this paragraph places in the pre-open hook was rejected on review against LowFive's source, and the corrected argument is the one given there.]*
+`bruss_lowfive_attach()` (`examples/brusselator/participants/lowfive_attach.cpp`) now sets `vol.serve_on_close =
+false` on the constructed `DistMetadataVOL`, so `H5Fclose` never serves on its own. Two new PURE functions in
+`lowfive_attach_decision.hpp` (MPI-free, HDF5-free, tier-0 tested) make the decision instead: `decide_serve_roles()`
+assigns, from the two components' own `RankSet`s alone (identical on every rank of either component, the
+collective-safety requirement `serve_all()`'s own `local.barrier()` places on this decision), one of two roles --
+the component with the lower `RankSet::min_rank()` is "first-server" (serves immediately at every write, receives
+normally at every read); the other is "first-reader" (defers its own serve at every write, and at its own next
+read receives the peer's file FIRST, only THEN flushing the deferred serve). `serve_state_step()` is the per-
+process state machine `bruss_lowfive_serve_after_write()`/`bruss_lowfive_receive_before_read()` now consult on
+every write/read event, plus a new third hook, `bruss_lowfive_finalize()` (called once at process exit from
+`u_main.c`/`v_main.f90`, after this process's own last write/read and before `MPI_Finalize`), which refuses
+loudly (`E-LOWFIVE-ATTACH-SERVE-UNFLUSHED`) if a first-reader's own deferred serve was never flushed -- the one
+failure mode role-ordering could otherwise hide as a silent data drop. A second export before its own deferred
+serve is flushed is also refused (`E-LOWFIVE-ATTACH-SERVE-DOUBLE-DEFER`), the check that would catch a graph where
+the write/read alternation this protocol depends on stops holding.
+
+**Deadlock-freedom argument (I1 progress + I2 role exclusivity).** *[Superseded by "Round 2 REVIEW" below: the flush this paragraph places in the pre-open hook was rejected on review against LowFive's source, and the corrected argument is the one given there.]* I1, established from the host's own measured
+stack and from `u_main.c`'s/`v_main.f90`'s own single-branch delivery dispatch (never both a write and a read in
+the same `u_loop_step()`/loop-body call): on one process, an export event is always eventually followed by an
+import event before that SAME process's own next export. I2 is this state machine's own contract: the first-server
+serves at every export and never defers; the first-reader defers at every export and flushes only at its own next
+import. Together: whenever the first-server blocks inside its own immediate serve, I1 guarantees the first-
+reader's own NEXT local event is an import, and I2 makes that import a RECEIVE first -- exactly what satisfies
+the first-server's pending serve. Symmetrically, once the first-reader's own import flushes its deferred serve
+(now blocking in turn), I1+I2 guarantee the first-server's own next local event is ITS import, an ordinary receive
+that satisfies the just-flushed serve. Each side's own single blocking serve call is always matched by the OTHER
+side's very next import, never left unconsumed except at `bruss_lowfive_finalize()`'s own check. This DEPENDS on
+I1 holding for BOTH components every iteration -- a graph where it stops holding is outside what this protocol was
+designed for, and the double-defer refusal above is exactly the check that catches the violation instead of
+hanging silently.
+
+**NOT started this round, by the owner's own ruling: a helper thread to let the two transfers overlap again.**
+Role-ordered serve necessarily SERIALIZES the exchange (never both sides serving in the same window, unlike
+round 1's own, now-measured-wrong, assumption). Moving the receiving side's own `broadcast_files()` onto a helper
+thread so it can run concurrently with the other side's `serve_all()` was considered and ruled unsound without
+patching LowFive itself: `Index::serve()`'s own barrier/ibarrier path (`vol-dist/index.cpp:105-167`) and
+`Query::get_filenames()`'s own LOCAL broadcast (`vol-dist/query.cpp:106-139`, broadcast at `:125`) both run over
+the SAME `local` communicator LowFive hands `DistMetadataVOL::create_DistMetadataVOL()`, and this build's own
+HDF5 is configured `Threadsafety: no` with a plain `MPI_Init` (not `MPI_Init_thread(..., MPI_THREAD_MULTIPLE,
+...)`) -- a second thread issuing MPI calls on that same communicator while the first is mid-probe is not a
+documented-safe configuration for either library. Recorded here as a documented, NOT-STARTED follow-up, not
+attempted and not claimed done.
+
+**`serve_on_close` itself is NOT tier-0 testable.** Nothing in this sandbox can construct a real
+`LowFive::DistMetadataVOL`, call `H5Fclose`, and observe whether `serve_all()` ran inside it or not -- that
+requires live MPI and live HDF5/LowFive, neither available here. The only evidence that the flag is doing its job
+is the ABSENCE of the round-1 hang on a future host run (or, if `serve_on_close` were ever reverted to `true` by
+mistake, its REAPPEARANCE: the same `sample` signature as this round's own paragraph above, both participants
+inside `DistMetadataVOL::file_close -> serve_all -> Index::serve`'s probe loop, at the same moment the row would
+otherwise have made its first `H5Fclose` call).
+
+**Pinned by (round 2, additive to the nine `DecideAttachMode` cases above).** Nine new tier-0 cases in
+`test/verification/brusselator_lowfive_attach_test.cpp` (now 18 total in that binary): three for
+`decide_serve_roles()` (lower-`min_rank()` wins regardless of which side is passed first, overlapping RankSets
+refused, an empty RankSet refused) and six for `serve_state_step()` (first-server's own repeated serve/receive/
+clean-finalize cycle; first-reader's own repeated defer/receive-then-flush cycle; a first-reader's own import with
+nothing deferred is an ordinary receive, not an error; a first-reader's own second export before its first
+deferred serve is flushed is refused; a first-reader's own finalize with a deferred serve still pending is
+refused; a first-server's own finalize reached mid-cycle, with no intervening import, is still clean since that
+role never defers). Two new hand-proved mutation rows in `build-evidence/mutations/lowfive-attach.toml`
+(`decide-serve-roles-first-server-comparison-swapped`, `serve-state-step-finalize-unflushed-check-disabled`), each
+killed decisively (17 PASS / 1 FAIL, the SAME single predicted test failing each time) and the file restored
+byte-identical (`md5` checked) before the next step. Full tier-0 and all 5 repo-health gates clean (this round's
+own report has the exact numbers).
+
+**What the host must verify (round 2).** In `build-lowfive`: rebuild (`cmake --build .`, every target, not a
+named subset), then `ctest -R 'participants\.lowfive\.mpmd\.3'` (3 tasks). A clean pass means every rank's own
+`u.log`/`v.log`/coupler log shows the SAME period-by-period convergence Unit 3a's own single-process harness
+already measured bit-exact, AND neither `bruss_lowfive_finalize()` call printed a `FAIL(u_main)`/`FAIL(v_main)`
+unflushed-serve message (it should not, if I1/I2 above hold for this row's own graph, which this round's own
+report argues from the measured write/write-then-read/read pattern, not merely assumed). A hang again (ctest's own
+120 s `TIMEOUT` firing), with a `sample` showing the SAME `file_close -> serve_all -> Index::serve` stack as this
+round's own paragraph above, would mean `serve_on_close` reverted to `true` somewhere, or a build picked up a
+stale LowFive without the flag at all -- not a flaw in the role-ordering argument itself, which this entry's own
+I1/I2 account rules out for THIS specific race. A hang with EITHER rank instead caught inside `Index::serve`'s own
+probe loop while the OTHER rank is still computing (not yet at its own next write or read at all) would mean I1
+itself does not hold for this row's own graph after all -- a schedule where one side's own export/import pairing
+is not strict alternation -- which this entry's own design was not built to handle and which this round's report
+did not find evidence of. A `FAIL(u_main)`/`FAIL(v_main): bruss_lowfive_finalize: ... E-LOWFIVE-ATTACH-SERVE-
+UNFLUSHED` message on an otherwise-clean run would mean the LAST iteration's own first-reader write was never
+followed by a matching read before the process exited -- an off-by-one in the period/window loop's own tail, not
+a protocol defect, and worth a fresh look at exactly which call is the row's own last one before `MPI_Finalize`.
+
+**Still does not close D14.** Unchanged by this round: D14 is about the two-HDF5-image hazard (closed, host action
+only), the Demo B distributed path (compiled, never run), and Unit 3's own single-process measurement (done).
+D14's own open accept-mode intercommunicator question (item 3 of its "what remains" list) is UNCHANGED by this
+round's own role-ordered-serve fix, which only concerns the MPMD row's own already-formed intercommunicator, never
+accept mode's unexposed one.
+
+**Round 2 REVIEW (2026-10-13), the first round-2 fix above was reviewed against LowFive's own source and REJECTED
+before any host run -- superseding the "Round 2 update" section's own fix, not its own measured-deadlock account,
+which stands.** The first round-2 attempt set `serve_on_close = false` and moved a first-reader's own deferred
+serve into the PRE-open hook (`bruss_lowfive_receive_before_read()`, called before `H5Fopen`), arguing (in this
+entry's own paragraph above) that "receive the peer's file FIRST... THEN serve this side's own deferred write" was
+"the one order that cannot leave both sides waiting on each other." That argument was wrong. Two more facts, read
+from `/Users/mahadevan/Code/hdf5/LowFive/src/vol-dist-metadata.cpp` (rev `7f3a58b`), that the first attempt missed:
+
+- The CONSUMER's `H5Fopen` of a remote in-memory file IS the receive. `DistMetadataVOL::file_open()` (line 230 on)
+  builds a `Query` and calls the producer's `"get_file_hierarchy"` RPC (line 278); its own comment says plainly
+  "force the producer to enter serve_all to get file hierarchy" (lines 255-257) -- `H5Fopen` performs this
+  automatically, as an ordinary VOL callback dispatch; nothing in a hook that runs BEFORE it can substitute.
+- The consumer's `H5Fclose` of that remote file is what ENDS the producer's serve. `DistMetadataVOL::file_close()`'s
+  `RemoteFile` branch (line ~333 on) calls `f->obj.call<void>("file_close")` (line 337), `MPI_Barrier(local)`
+  (line 339), then root calls `f->obj.self_->finish(0)` (line 342) -- `finish(0)` is exactly what lets
+  `Index::serve()`'s own probe/process loop (`vol-dist/index.cpp:145-161`) exit for that client. The producer's own
+  `serve_all()` call therefore blocks until the CONSUMER has done BOTH its own open AND its own close of that
+  specific file -- not until the consumer has merely attempted to open it, and certainly not until the consumer has
+  merely reached a hook named "before read".
+
+The first attempt's own pre-open flush ran a first-reader's own second, explicit `serve_all()` call BEFORE this
+process's own `H5Fopen` of the peer's file -- before this process had done anything the peer's own pending
+`serve_all()` could possibly be released by. Both sides then block: the first-server is still stuck in its
+original `kServeNow` from its first write, waiting for the first-reader's own open-and-close; the first-reader is
+stuck in the premature flush the pre-open hook just entered, waiting for the first-SERVER's own open-and-close of
+the newly-served file -- which the first-server cannot perform, because it is still blocked in its own first
+`kServeNow`. Circular wait: the SAME two LowFive-level stacks (both inside `Index::serve`'s probe loop) the host
+measured for round 1, one write/read cycle later. This entry's own tier-0 tests for the first attempt passed
+because they drove the state machine only against its OWN event model (hook call order), never against what the
+PEER actually observes (released by MY open AND close, not by MY merely calling a hook).
+
+**The fix, this version.** The flush moves to a NEW event, fired AFTER this process's own `H5Fclose` of the peer's
+file -- `kImportClosed`, a new hook (`bruss_lowfive_after_read_close()`) called from `shim.cpp`'s own
+`bruss_lowfive_read()` on EVERY path that reached a successful `H5Fopen` (success or a later dataset-level
+failure alike -- a dataset-level error must not leave this process's own bookkeeping silently behind, even though
+the read itself is about to fail regardless). `kImportAboutToOpen` (the pre-open hook) becomes an unconditional
+`kReceiveOnly` for every role and state: it does nothing LowFive-level at all now, kept only as a validated event
+for symmetry with the real call sites and so a future mutation that reintroduces a flush there is caught (it is --
+see "Pinned by" below). `LowFive::DistMetadataVOL::broadcast_files()`, which the first attempt also called from
+the pre-open hook, is removed entirely: read from source (`src/vol-dist-metadata.cpp:75-103`), it operates
+ENTIRELY over `local` (never an intercomm), propagating an already-known file registry from one local rank to the
+OTHER ranks of a MULTI-RANK component -- not communicating with the peer component at all. A `grep -rn
+broadcast_files` across the LowFive checkout's own `src/`/`include/` finds zero internal callers; its only caller
+anywhere in that repository is the Python binding (`bindings/python/lowfive.cpp:126`). This row places exactly one
+rank per component (U{1}, V{1}), so even a harmless call would have had nothing to propagate to.
+
+**Re-derived invariant, in terms of what the PEER observes, not hook-call order.** I1 (progress) is unchanged --
+the same three pieces of evidence as the "Round 2 update" section above. I2 (role exclusivity) is unchanged. The
+RELEASE CONDITION, corrected: a process blocked inside `serve_all()` for file K is released exactly when the PEER
+completes ITS OWN open-and-close of file K -- not by the peer merely reaching an import. Whenever the first-server
+blocks inside its own `kServeNow` for file K (entered at its own export), I1 guarantees the first-reader's own
+NEXT local event is an import, whose open-and-close (non-blocking from the first-reader's own point of view, since
+`kImportAboutToOpen` does nothing to delay it) is exactly the release condition. The first-reader's own
+`kImportClosed` for that SAME import is what THEN flushes its own deferred serve -- entered only now, after its
+own open-and-close is already done -- and I1 guarantees the first-server's own next local event is ITS import,
+whose open-and-close is exactly the release condition for the first-reader's newly-entered serve. Each side's own
+single blocking serve call is matched by the OTHER side's very next open-and-close, in that order -- never by the
+hook that merely precedes it.
+
+**Checked against an explicit-state simulation, not only a written argument.** A new, pure, MPI-free and
+HDF5-free header, `examples/brusselator/participants/lowfive_attach_model_check.hpp`, explores every interleaving
+of two processes running the Jacobi row's own fixed write/read script (for N = 1, 2, and 60 -- this row's own
+`kMaxIterations`) against the blocking semantics read from LowFive's source above (a process blocked in a serve
+for file K is released only by the peer's own open-AND-close of file K; an open of a file the peer is not yet
+serving blocks). The SHIPPED protocol's own tests drive the REAL `decide_serve_roles()`/`serve_state_step()`
+directly (so a mutation to either is caught by the search failing to complete, not only by a narrower unit test);
+three REJECTED designs -- this round's own first attempt (flush at the pre-open hook), round 1's own "natural
+placement" (serve at every write, both sides), and a "both sides defer" strawman -- are expressed as separate,
+hand-rolled policies and confirmed to deadlock, illustrating the search is discriminating rather than permissive.
+That header's own top comment states plainly what this does and does not establish: it checks the PROTOCOL against
+the blocking semantics AS READ from LowFive's source, not a measurement of LowFive itself -- only a host run
+measures that.
+
+**Pinned by (Round 2 REVIEW, additive to the round-2-update section's own inventory above).** Two tests in
+`test/verification/brusselator_lowfive_attach_test.cpp`'s own `ServeStateStep` suite were REPLACED, not deleted
+outright, because they encoded the first attempt's own (wrong) event model: `FirstReaderDefersThenReceivesAndFlushesRepeatedly`
+now asserts the corrected cycle (plain receive at the pre-open hook, flush at the new post-close one); a new test,
+`FirstReaderImportAboutToOpenNeverFlushesEvenWithDeferredPending`, is the direct regression test for the exact bug.
+Two more tests were added for completeness (`FirstReaderImportWithNothingDeferredIsOrdinaryAtBothEvents`,
+`FirstReaderSecondExportAfterOnlyAboutToOpenStillRefused`) and one existing test
+(`FirstServerServesThenReceivesThenFinalizesCleanRepeatedly`) was extended to exercise both read-side events. Seven
+new `ModelCheck` tests exercise the simulation above. One new hand-proved mutation row,
+`serve-state-step-flush-moved-back-to-pre-open` (`build-evidence/mutations/lowfive-attach.toml`), reintroduces the
+first attempt's own exact mistake and is killed TWICE -- directly, by the regression test above, and indirectly, by
+all four `ModelCheck.ShippedProtocolCompletes*` tests failing to complete the simulated protocol (20 PASS / 7 FAIL
+of the whole binary, file restored byte-identical, `md5` checked, before the next step). The two round-2-update
+section's own mutation rows (`decide-serve-roles-first-server-comparison-swapped`,
+`serve-state-step-finalize-unflushed-check-disabled`) are unaffected by this round's own changes and were
+re-verified against the updated test binary (spot-checked: the finalize row still kills exactly the one test it
+always did). Full tier-0 and all 5 repo-health gates clean (this round's own report has the exact numbers).
+
+**What the host must verify, superseding the round-2-update section's own paragraph (the fix it describes was
+never run on a host at all).** In `build-lowfive`: rebuild (`cmake --build .`, every target), then `ctest -R
+'participants\.lowfive\.mpmd\.3'` (3 tasks). The same four distinguishable outcomes that paragraph named still
+apply verbatim to THIS version's own fix (clean pass; a hang with the identical `file_close -> serve_all ->
+Index::serve` stack, meaning `serve_on_close` reverted somewhere; a hang with one rank still computing while the
+other waits, meaning I1 itself does not hold for this row; an `E-LOWFIVE-ATTACH-SERVE-UNFLUSHED` refusal at
+process exit, meaning the last iteration's own write/read pairing has an off-by-one) -- this round's own report
+has the full paragraph. NEW this round: a hang where BOTH ranks are caught one step LATER than the signature
+above -- specifically, both inside `Index::serve`'s probe loop but with the STACK showing `bruss_lowfive_
+after_read_close` (or the now-removed `broadcast_files()` call, if a stale binary is somehow still running the
+first attempt's own code) rather than `DistMetadataVOL::file_close` directly beneath `H5Fclose` -- would mean this
+round's own fix, not round 1's, failed to close the gap; the LowFive-source citations above are the first place to
+re-check, starting with whether `file_open()`'s own RPC dance is really as unconditional as read here.
+
+**Still does not close D14.** Unchanged by this round's own review, for the same reasons the round-2-update
+section already gave.
