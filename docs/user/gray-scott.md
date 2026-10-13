@@ -42,7 +42,12 @@ scheme against: it solves both species' `2N^2` unknowns in one Newton
 system, needing the reaction term's cross derivatives
 (`d(react_u)/dv`, `d(react_v)/du`) that the partitioned components never
 need (each only differentiates its own reaction term against its own
-unknown, treating the partner as fixed for that Newton solve).
+unknown, treating the partner as fixed for that Newton solve). Its own
+Jacobian solve goes through one more indirection than the species
+components' bare `Eigen::SparseLU` above: `fuse_examples::SparseLuBackend`
+(held in `MonolithicGrayScott` as `jac_solver_`) -- `Eigen::SparseLU`
+itself, bit-for-bit, with `FUSE_ENABLE_CUSPARSE` off (pinned by
+`verification.sparse_solve_backend`), `cusolverRf` with it on.
 
 ## Coupling
 
@@ -69,7 +74,10 @@ cmake --preset tier0-release && cmake --build --preset tier0-release
     --t-end 50 --check --output snapshot.csv
 ```
 
-`--ratio 2` means V steps at `dt/2`; `--ratio 7:13` means the window is 13
+`--ratio m` makes the window (U's own interval) `m*dt` and V steps at
+`dt` itself — V is m times finer than the window, not m times finer than
+some other, smaller step (`--ratio 2 --dt 0.5` means the window is `1.0`
+and V steps at `0.5`, not `0.25`). `--ratio 7:13` means the window is 13
 parts and V is 7 (incommensurate). `--check` runs a short internal
 self-consistency probe (see "Chosen tolerances" below) and exits non-zero
 on failure. `--output` writes a CSV snapshot (`i,j,x,y,u,v`) of the final
