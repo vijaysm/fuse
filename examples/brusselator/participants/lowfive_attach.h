@@ -95,26 +95,86 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
  * bruss_lowfive_write(), right after its own H5Fclose(), never directly
  * by u_main.c/v_main.f90. No-op success (0) when the last successful
  * bruss_lowfive_attach() chose the single-process connector (nothing to
- * serve across an intercommunicator that was never formed); in
- * distributed mode, pushes the just-closed file across the
- * intercommunicator (`LowFive::DistMetadataVOL::serve_all()`), mirroring
- * `fuse::LowFiveTransport::serve_as_producer()`'s own placement (called
- * "by the producer side after it has written ... and called its own,
- * unmodified H5Fclose", fuse/transport/transport.hpp). Refused
- * (nonzero, errbuf set) if bruss_lowfive_attach() was never called
- * successfully in this process. */
+ * serve across an intercommunicator that was never formed).
+ *
+ * In distributed mode, consults the pure state machine in lowfive_
+ * attach_decision.hpp (serve_state_step()) and either serves now
+ * (`LowFive::DistMetadataVOL::serve_all()`) or defers -- UNCHANGED by
+ * the round-2 review below: this WRITE-side event/action pair was never
+ * the part that was wrong. See lowfive_attach_decision.hpp's own
+ * "ROUND 2 REVIEW" comment and KNOWN_ISSUES.md D39 for the measured
+ * stack that led here and the two rejected designs along the way.
+ * Refused (nonzero, errbuf set) if bruss_lowfive_attach() was never
+ * called successfully in this process, or if the state machine itself
+ * refuses (a second deferred serve before the first was flushed -- see
+ * serve_state_step()'s own doc). */
 int bruss_lowfive_serve_after_write(char* errbuf, long long errbuf_len);
 
 /* INTERNAL to the shim -- called only from shim.cpp's own
  * bruss_lowfive_read(), right before its own H5Fopen(), never directly
- * by u_main.c/v_main.f90. No-op success (0) in single-process mode; in
- * distributed mode, receives the peer's file index across the
- * intercommunicator (`LowFive::DistMetadataVOL::broadcast_files()`),
- * mirroring `fuse::LowFiveTransport::receive_as_consumer()`'s own
- * placement ("called by the CONSUMER side BEFORE its own, unmodified
- * H5Fopen"). Refused (nonzero, errbuf set) if bruss_lowfive_attach() was
- * never called successfully in this process. */
+ * by u_main.c/v_main.f90. No-op success (0) in single-process mode.
+ *
+ * In distributed mode, does NOTHING LowFive-level at all, regardless of
+ * role or pending state -- this is a CORRECTION this round, not the
+ * original design: a first round-2 attempt flushed a first-reader's own
+ * deferred serve HERE, before H5Fopen, and was reviewed against
+ * LowFive's own source and rejected before any host run (lowfive_
+ * attach_decision.hpp's own "ROUND 2 REVIEW" comment has the full
+ * citations and the circular-wait it would have reproduced). The real
+ * receive is `H5Fopen` itself, about to run right after this call
+ * returns, as an ordinary VOL callback dispatch -- nothing here needs to
+ * assist it, and nothing here calls `LowFive::DistMetadataVOL::
+ * broadcast_files()` either (same comment: that call propagates an
+ * already-known file registry to a MULTI-RANK component's own sibling
+ * local ranks, never to the peer component, and this row places exactly
+ * one rank per component). `serve_state_step()` is still called purely
+ * to keep the event sequence validated. Refused (nonzero, errbuf set)
+ * if bruss_lowfive_attach() was never called successfully in this
+ * process. */
 int bruss_lowfive_receive_before_read(char* errbuf, long long errbuf_len);
+
+/* INTERNAL to the shim -- called only from shim.cpp's own
+ * bruss_lowfive_read(), right after its own H5Fclose(), on EVERY path
+ * that reached a successful H5Fopen (success or a later dataset-level
+ * failure -- shim.cpp's own comment on this has the full account of
+ * why every such path, not only the success path), never directly by
+ * u_main.c/v_main.f90. No-op success (0) in single-process mode.
+ *
+ * NEW this round, replacing the pre-open flush bruss_lowfive_receive_
+ * before_read() used to perform: THIS is the event a first-reader's own
+ * deferred serve is flushed at. Read from LowFive's own source (lowfive_
+ * attach_decision.hpp's own "ROUND 2 REVIEW" comment): a process's own
+ * H5Fclose of a REMOTE file it opened is exactly what releases the
+ * PEER's own pending `serve_all()` -- so only once THIS process has
+ * itself completed that open-and-close is it safe to enter its own
+ * blocking serve, which the peer's own next, symmetric open-and-close
+ * will then release in turn. In distributed mode, consults serve_state_
+ * step() (`kImportClosed`) and either flushes (`serve_all()`) or does
+ * nothing (first-server, or a first-reader with nothing pending -- not
+ * an error). Refused (nonzero, errbuf set) if bruss_lowfive_attach() was
+ * never called successfully in this process. */
+int bruss_lowfive_after_read_close(char* errbuf, long long errbuf_len);
+
+/* Call EXACTLY ONCE per process, at the very end of main() -- after
+ * this process's own last bruss_lowfive_write/read call, before
+ * MPI_Comm_free/MPI_Finalize -- regardless of whether bruss_lowfive_
+ * attach() was ever called (a plain --transport fuse run is a harmless
+ * no-op here, unlike serve_after_write/receive_before_read/after_read_
+ * close's own "never attached" refusal: this is a hygiene check at
+ * process exit, not a per-delivery operation).
+ *
+ * Purpose: catch, loudly, the one failure mode the role-ordered design
+ * cannot detect any other way -- a first-reader role (see
+ * decide_serve_roles()) that deferred a serve at its own last write and
+ * then never got another kImportClosed to flush it against (an
+ * asymmetric write/read count between the two sides, which would
+ * violate this design's own progress invariant I1; see lowfive_attach_
+ * decision.hpp). Refused (nonzero, errbuf set) in exactly that case; a
+ * clean finalize (serve already flushed, or this side is the
+ * first-server and never defers) returns 0. Without
+ * -DFUSE_ENABLE_LOWFIVE=ON, or when LowFive was never attached in this
+ * process, always returns 0: there is nothing to have deferred. */
+int bruss_lowfive_finalize(char* errbuf, long long errbuf_len);
 
 #ifdef __cplusplus
 }

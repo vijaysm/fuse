@@ -61,19 +61,60 @@
 // this file's own first version, found wrong while implementing (lowfive_
 // attach.h's own header comment has the full account).
 //
-// DEADLOCK-AVOIDANCE DECISION (owner's own ruling, this track): the
-// serve_after_write()/receive_before_read() hooks below are placed at
-// the natural points -- serve right after THIS process's own H5Fclose,
-// receive right before THIS process's own H5Fopen -- exactly mirroring
-// Demo B's one-directional producer/consumer call order (examples/
-// demo_b/producer_main.cpp, consumer_main.cpp). Whether LowFive's own
-// `DistMetadataVOL::serve_all()`/`broadcast_files()` can mutually block
-// if both ranks' own schedules reach "serve mine" before "receive
-// peer's" at the same window is UNVERIFIED here: no MPI in this sandbox,
-// and LowFive's own source is not available to read either. No
-// artificial reordering is introduced to work around a risk that cannot
-// be measured in this sandbox either way -- host_pending names the exact
-// row and what a hang versus a clean pass/fail looks like.
+// DEADLOCK-AVOIDANCE DECISION -- ROUND 2, SECOND ATTEMPT, supersedes
+// both round 1's own ruling AND this round's own FIRST attempt (both
+// quoted in full in KNOWN_ISSUES.md D39 for the record -- including the
+// first attempt's own claim, right here, that role-ordered serving was
+// "the one order that cannot leave both sides waiting on each other".
+// That claim was WRONG and is not repeated below).
+//
+// Round 1 placed serve_after_write()/receive_before_read() at the
+// "natural" points -- serve right after H5Fclose, receive right before
+// H5Fopen -- and the host measured a 120s hang: `serve_on_close`
+// (include/lowfive/vol-dist-metadata.hpp:33) defaults true, so `file_
+// close()` (src/vol-dist-metadata.cpp:320-364) already calls `serve_
+// all()` INSIDE H5Fclose, before round 1's own hook call (placed AFTER
+// H5Fclose) ever ran -- both sides raced into `serve_all()` together,
+// neither having received first.
+//
+// This round's FIRST attempt set `serve_on_close = false` and moved the
+// first-reader's own flush into the PRE-open hook (`receive_before_
+// read()`, called right before H5Fopen) -- and was reviewed against
+// LowFive's own source and rejected before any host run: a process
+// blocked inside `serve_all()` for file K is released only when the PEER
+// completes its own OPEN-AND-CLOSE of file K (`DistMetadataVOL::
+// file_close()`'s own `RemoteFile` branch calling `finish(0)`, src/
+// vol-dist-metadata.cpp line ~342) -- not by the peer merely reaching a
+// pre-open hook. Flushing there ran the first-reader's own blocking
+// serve BEFORE it had done anything that could release the first-
+// server's own pending one, and vice versa: circular wait, one write/
+// read cycle later than round 1's, same two LowFive-level stacks.
+// lowfive_attach_decision.hpp's own "ROUND 2 REVIEW" comment has the
+// full citations and the corrected argument.
+//
+// THE FIX, this version: `serve_on_close = false` is kept (below); the
+// flush moves again, this time to a NEW event fired AFTER this
+// process's own H5Fclose of the peer's file (`kImportClosed`, a new
+// hook called from shim.cpp's own bruss_lowfive_read(), right after
+// EVERY H5Fclose on a path where H5Fopen already succeeded -- see
+// shim.cpp's own comment for why every such path, not only the success
+// path) -- the event LowFive's own source actually ties the release to.
+// `receive_before_read()` (the pre-open hook) no longer flushes
+// anything and no longer calls `broadcast_files()` either (lowfive_
+// attach_decision.hpp's own comment has the citation for why that call
+// was never justified for this row's own one-rank-per-component
+// layout). This necessarily serializes the two transfers (never both
+// sides serving in the same window); the helper-thread follow-up that
+// would let them overlap again stays NOT started this round, for the
+// same reason recorded before (Index::serve()'s own barrier/ibarrier
+// path and Query::get_filenames()'s own broadcast share one `local`
+// communicator, and this build's HDF5 is Threadsafety:no with a plain
+// MPI_Init) -- KNOWN_ISSUES.md D39 records it.
+//
+// Checked, this time, against an explicit-state simulation of the
+// blocking semantics above (lowfive_attach_model_check.hpp), not only
+// against a word-of-mouth argument -- see that header's own top comment
+// for exactly what it does and does not establish.
 #include "lowfive_attach.h"
 
 #include "fuse/base/config.hpp"
@@ -132,6 +173,12 @@ struct AttachState {
   bool distributed = false;
 #if FUSE_EXAMPLES_LOWFIVE_ATTACH_HAVE_DIST
   LowFive::DistMetadataVOL* dist_vol = nullptr;  // never owned/deleted; see VolSingleton's own note
+  // Round 2 ("role-ordered serve"): the pure state machine this
+  // process's own write/read events drive -- meaningful only when
+  // `distributed` is true (single-process mode never defers anything,
+  // since LowFive::MetadataVOL has no serve_on_close/serve_all() of
+  // this kind at all).
+  fuse_examples::lowfive_attach::ServeState serve_state;
 #endif
 };
 
@@ -279,6 +326,8 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
     roles.reader_ranks = reader_c.ranks;
     roles.writer_launch = writer_c.launch.mode;
     roles.reader_launch = reader_c.launch.mode;
+    roles.writer_name = writer_c.name;
+    roles.reader_name = reader_c.name;
     channels.push_back(std::move(roles));
   }
 
@@ -361,6 +410,19 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
       return 1;
     }
     LowFive::DistMetadataVOL& vol = LowFive::DistMetadataVOL::create_DistMetadataVOL(local, intercomm);
+    // ROUND 2 ("role-ordered serve"), the measured fix: `serve_on_close`
+    // is a PUBLIC bool member, default true (lowfive/vol-dist-
+    // metadata.hpp:33 on this host's own /Users/mahadevan/Code/hdf5/
+    // LowFive, rev 7f3a58b), and `DistMetadataVOL::file_close()` calls
+    // `serve_all()` for every local in-memory file whenever it is true
+    // (vol-dist-metadata.cpp:355-358) -- BEFORE this process's own code
+    // ever runs a line, which made round 1's own bruss_lowfive_serve_
+    // after_write() (placed AFTER H5Fclose) a no-op and is the measured
+    // cause of the host's own 120s hang (lowfive_attach_decision.hpp's
+    // own "Round 2" comment has the full stack). Setting it false here
+    // makes serving an explicit decision this file's own serve_state_
+    // step() calls make, never H5Fclose's.
+    vol.serve_on_close = false;
     bool ok = false;
     ApplyBindings(vol, table.value(), &ok, &build_error);
     if (!ok) {
@@ -371,6 +433,28 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
       CopyErrorMessage(build_error, errbuf, errbuf_len);
       return 1;
     }
+    // Role-ordered serve (round 2): which of this channel's own two
+    // COMPONENTS serves immediately at write and which defers -- from
+    // their own RankSets alone, identical on every rank of either
+    // component (the collective-safety requirement serve_all()'s own
+    // local.barrier() places on this decision). `this_name` is simply
+    // whichever side (writer/reader) `plan.is_writer` already says this
+    // rank is on -- the SAME canonical channel decide_attach_mode()
+    // already validated every other qualifying channel against.
+    const std::string& this_name =
+        plan.is_writer ? channels.front().writer_name : channels.front().reader_name;
+    auto roles = fuse_examples::lowfive_attach::decide_serve_roles(
+        channels.front().writer_name, channels.front().writer_ranks,
+        channels.front().reader_name, channels.front().reader_ranks);
+    if (!roles.ok()) {
+      CopyErrorMessage("[" + roles.error().code + "] " + roles.error().message, errbuf,
+                       errbuf_len);
+      return 1;
+    }
+    s.serve_state.role = (this_name == roles.value().first_server_name)
+                             ? fuse_examples::lowfive_attach::ServeRole::kFirstServer
+                             : fuse_examples::lowfive_attach::ServeRole::kFirstReader;
+    s.serve_state.deferred_pending = false;
     s.dist_vol = &vol;
     distributed_now = true;
 #else
@@ -426,8 +510,29 @@ int bruss_lowfive_serve_after_write(char* errbuf, long long errbuf_len) {
                      errbuf, errbuf_len);
     return 1;
   }
-  s.dist_vol->serve_all();
-  return 0;
+  // Unchanged by the round-2 review: the WRITE side's own event/action
+  // pair (kExportWrittenAndClosed -> kServeNow/kDeferServe) was never
+  // the part that was wrong -- only the READ side's own flush placement
+  // was. See lowfive_attach_decision.hpp's own "ROUND 2 REVIEW" comment.
+  auto action = fuse_examples::lowfive_attach::serve_state_step(
+      &s.serve_state, fuse_examples::lowfive_attach::ServeEvent::kExportWrittenAndClosed);
+  if (!action.ok()) {
+    CopyErrorMessage("[" + action.error().code + "] " + action.error().message, errbuf,
+                     errbuf_len);
+    return 1;
+  }
+  switch (action.value()) {
+    case fuse_examples::lowfive_attach::ServeAction::kServeNow:
+      s.dist_vol->serve_all();
+      return 0;
+    case fuse_examples::lowfive_attach::ServeAction::kDeferServe:
+      return 0;  // nothing to do now; flushed at this side's own next kImportClosed
+    default:
+      CopyErrorMessage(
+          "internal: serve_state_step() returned an action not valid for an export event",
+          errbuf, errbuf_len);
+      return 1;
+  }
 #else
   CopyErrorMessage("internal: distributed attach state with no DistMetadataVOL support built",
                    errbuf, errbuf_len);
@@ -451,12 +556,117 @@ int bruss_lowfive_receive_before_read(char* errbuf, long long errbuf_len) {
                      errbuf, errbuf_len);
     return 1;
   }
-  s.dist_vol->broadcast_files();
-  return 0;
+  // ROUND 2 REVIEW: this hook no longer flushes anything, and no longer
+  // calls broadcast_files() either -- lowfive_attach_decision.hpp's own
+  // "ROUND 2 REVIEW" comment has the full account, with LowFive-source
+  // citations, of why: the real receive is H5Fopen itself (about to run,
+  // right after this call returns), and broadcast_files() propagates an
+  // already-known file registry to a multi-rank component's OWN sibling
+  // ranks over `local`, never to the peer component over the intercomm
+  // -- not needed for this row's own one-rank-per-component layout, and
+  // not reachable from any code path inside DistMetadataVOL::file_open()/
+  // file_close() themselves (grep confirms zero internal callers in the
+  // LowFive checkout this cites). `serve_state_step()` is still called,
+  // purely so the event sequence stays validated end to end (a future
+  // mutation that makes kImportAboutToOpen return anything other than
+  // kReceiveOnly is caught by this switch's own `default` case, and by
+  // lowfive_attach_model_check.hpp's own search).
+  auto action = fuse_examples::lowfive_attach::serve_state_step(
+      &s.serve_state, fuse_examples::lowfive_attach::ServeEvent::kImportAboutToOpen);
+  if (!action.ok()) {
+    CopyErrorMessage("[" + action.error().code + "] " + action.error().message, errbuf,
+                     errbuf_len);
+    return 1;
+  }
+  switch (action.value()) {
+    case fuse_examples::lowfive_attach::ServeAction::kReceiveOnly:
+      return 0;  // nothing LowFive-level to do; H5Fopen performs the real receive
+    default:
+      CopyErrorMessage(
+          "internal: serve_state_step() returned an action not valid for kImportAboutToOpen "
+          "(expected kReceiveOnly always; see lowfive_attach_decision.hpp's own ROUND 2 "
+          "REVIEW comment)",
+          errbuf, errbuf_len);
+      return 1;
+  }
 #else
   CopyErrorMessage("internal: distributed attach state with no DistMetadataVOL support built",
                    errbuf, errbuf_len);
   return 1;
+#endif
+}
+
+int bruss_lowfive_after_read_close(char* errbuf, long long errbuf_len) {
+  AttachState& s = State();
+  if (!s.attached) {
+    CopyErrorMessage(
+        "bruss_lowfive_after_read_close(): bruss_lowfive_attach() was "
+        "never called successfully in this process",
+        errbuf, errbuf_len);
+    return 1;
+  }
+  if (!s.distributed) return 0;  // single-process: nothing to flush
+#if FUSE_EXAMPLES_LOWFIVE_ATTACH_HAVE_DIST
+  if (!s.dist_vol) {
+    CopyErrorMessage("internal: distributed attach state with no DistMetadataVOL pointer",
+                     errbuf, errbuf_len);
+    return 1;
+  }
+  // NEW this round, replacing the flush the FIRST round-2 attempt placed
+  // in the pre-open hook above: this process has now completed its OWN
+  // open-and-close of the peer's file, which -- read from LowFive's own
+  // source (lowfive_attach_decision.hpp's own "ROUND 2 REVIEW" comment)
+  // -- is exactly the event that would release a PEER's own pending
+  // serve_all(); only now is it safe for a first-reader to enter its own.
+  auto action = fuse_examples::lowfive_attach::serve_state_step(
+      &s.serve_state, fuse_examples::lowfive_attach::ServeEvent::kImportClosed);
+  if (!action.ok()) {
+    CopyErrorMessage("[" + action.error().code + "] " + action.error().message, errbuf,
+                     errbuf_len);
+    return 1;
+  }
+  switch (action.value()) {
+    case fuse_examples::lowfive_attach::ServeAction::kFlushDeferred:
+      s.dist_vol->serve_all();
+      return 0;
+    case fuse_examples::lowfive_attach::ServeAction::kNoopAfterImport:
+      return 0;
+    default:
+      CopyErrorMessage(
+          "internal: serve_state_step() returned an action not valid for kImportClosed",
+          errbuf, errbuf_len);
+      return 1;
+  }
+#else
+  CopyErrorMessage("internal: distributed attach state with no DistMetadataVOL support built",
+                   errbuf, errbuf_len);
+  return 1;
+#endif
+}
+
+int bruss_lowfive_finalize(char* errbuf, long long errbuf_len) {
+  AttachState& s = State();
+  // Safe to call unconditionally, including when bruss_lowfive_attach()
+  // was never called at all (a plain --transport fuse run) -- NOT an
+  // error, unlike serve_after_write/receive_before_read's own
+  // "never attached" refusal, because this function's own caller
+  // (u_main.c/v_main.f90) calls it once at the very end of main()
+  // regardless of --transport, as a hygiene check, not a per-delivery
+  // operation gated on an attach having already happened.
+  if (!s.attached || !s.distributed) return 0;
+#if FUSE_EXAMPLES_LOWFIVE_ATTACH_HAVE_DIST
+  auto action = fuse_examples::lowfive_attach::serve_state_step(
+      &s.serve_state, fuse_examples::lowfive_attach::ServeEvent::kFinalize);
+  if (!action.ok()) {
+    CopyErrorMessage("[" + action.error().code + "] " + action.error().message, errbuf,
+                     errbuf_len);
+    return 1;
+  }
+  return 0;
+#else
+  (void)errbuf;
+  (void)errbuf_len;
+  return 0;
 #endif
 }
 
@@ -495,6 +705,19 @@ int bruss_lowfive_serve_after_write(char* errbuf, long long errbuf_len) {
 int bruss_lowfive_receive_before_read(char* errbuf, long long errbuf_len) {
   CopyErrorMessageNoLowFive(errbuf, errbuf_len);
   return 1;
+}
+
+int bruss_lowfive_after_read_close(char* errbuf, long long errbuf_len) {
+  CopyErrorMessageNoLowFive(errbuf, errbuf_len);
+  return 1;
+}
+
+int bruss_lowfive_finalize(char*, long long) {
+  // Unlike attach/serve/receive, always a harmless no-op here: this
+  // build has no LowFive at all, so there is never anything deferred to
+  // flush, and the caller (u_main.c/v_main.f90) calls this one
+  // unconditionally at the end of main() regardless of --transport.
+  return 0;
 }
 
 }  // extern "C"

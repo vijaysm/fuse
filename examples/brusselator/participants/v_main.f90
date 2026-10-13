@@ -174,6 +174,18 @@ program v_main
       integer(c_long_long) :: fapl_id_out
       integer(c_int) :: rc
     end function bruss_lowfive_attach
+
+    ! Round 2 ("role-ordered serve"), new in this track: called
+    ! unconditionally at the very end of this program (lowfive_attach.h's
+    ! own header comment has the full account of what this catches --
+    ! harmless no-op when LowFive was never attached in this process).
+    function bruss_lowfive_finalize(errbuf, errbuf_len) &
+        result(rc) bind(C, name="bruss_lowfive_finalize")
+      import :: c_ptr, c_long_long, c_int
+      type(c_ptr), value :: errbuf
+      integer(c_long_long), value :: errbuf_len
+      integer(c_int) :: rc
+    end function bruss_lowfive_finalize
   end interface
 
   graph_path = ""
@@ -476,6 +488,18 @@ program v_main
 
   status = fuse_destroy(ctx, nothing, nothing)
   call check(status, "destroy")
+
+  ! Round 2 ("role-ordered serve"), new in this track: called
+  ! unconditionally (harmless no-op when !use_lowfive or the attach was
+  ! never reached) after this process's own last v_lowfive_write_export/
+  ! v_lowfive_read_import call and before tearing down MPI --
+  ! lowfive_attach.h's own header comment has the full account of what
+  ! this catches (u_main.c's own mirror-image call has the same comment).
+  io_rc = bruss_lowfive_finalize(c_loc(errbuf), int(len(errbuf), c_long_long))
+  if (io_rc /= 0) then
+    write(0, '(A,A)') "FAIL(v_main): bruss_lowfive_finalize: ", cstr_message(errbuf)
+    call MPI_Abort(MPI_COMM_WORLD, 1, ierr)
+  end if
 
   call MPI_Comm_free(v_comm, ierr)
   call MPI_Finalize(ierr)

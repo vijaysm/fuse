@@ -2,6 +2,7 @@
 #include "brusselator_grid.h"
 #include "lowfive_attach.h"
 
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <utility>
@@ -404,6 +405,44 @@ int bruss_lowfive_write(const char* file, const char* dataset,
   return 0;
 }
 
+// "LowFive attach" track, ROUND 2 REVIEW: every path below that reaches
+// a successful H5Fopen calls H5Fclose(fid) before returning, success or
+// a later dataset-level failure alike -- and EVERY one of those H5Fclose
+// calls is what, in distributed mode, sends the RPC that releases a
+// PEER's own pending serve (lowfive_attach_decision.hpp's own "ROUND 2
+// REVIEW" comment has the LowFive-source citations). So `AfterReadClose`
+// below is called after EVERY one of them, not only the success path --
+// a dataset-level failure (H5Dopen2, the extent check, H5Dread) must not
+// leave this process's own serve-state bookkeeping silently behind,
+// even though the function is about to return an error either way.
+//
+// `main_rc`/`main_errbuf_already_set`: when the READ itself already
+// failed, that diagnostic is kept (it is more specific than anything the
+// hook could report) and the hook's own result is only logged to stderr
+// as a secondary note if it ALSO fails -- two independent failures are
+// not merged into one `errbuf`, which only holds one message. When the
+// read itself succeeded, the hook's own result becomes this function's.
+namespace {
+int AfterReadClose(int main_rc, char* errbuf, long long errbuf_len) {
+  char hook_errbuf[2048];
+  const int hook_rc = bruss_lowfive_after_read_close(hook_errbuf, sizeof(hook_errbuf));
+  if (main_rc != 0) {
+    if (hook_rc != 0) {
+      std::fprintf(stderr,
+                   "NOTE(bruss_lowfive_read): bruss_lowfive_after_read_close() also failed "
+                   "after an earlier read error: %s\n",
+                   hook_errbuf);
+    }
+    return main_rc;  // errbuf already carries the read's own, more specific message
+  }
+  if (hook_rc != 0) {
+    CopyErrorMessage(std::string(hook_errbuf), errbuf, errbuf_len);
+    return 1;
+  }
+  return 0;
+}
+}  // namespace
+
 int bruss_lowfive_read(const char* file, const char* dataset,
                        double* data, long long n,
                        long long fapl_id,
@@ -419,13 +458,21 @@ int bruss_lowfive_read(const char* file, const char* dataset,
   // "called by the CONSUMER side BEFORE its own, unmodified H5Fopen" --
   // fuse::LowFiveTransport::receive_as_consumer()'s own placement
   // (fuse/transport/transport.hpp), mirrored here; a no-op when the
-  // live attach is single-process.
+  // live attach is single-process. ROUND 2 REVIEW: no longer performs
+  // the receive itself in distributed mode either -- H5Fopen just below
+  // does, automatically; see lowfive_attach.h's own updated doc on this
+  // function's own counterpart.
   if (bruss_lowfive_receive_before_read(errbuf, errbuf_len) != 0) {
     return 1;
   }
   const hid_t fapl = static_cast<hid_t>(fapl_id);
   const hid_t fid = H5Fopen(file, H5F_ACC_RDONLY, fapl);
   if (fid < 0) {
+    // No H5Fclose to call (nothing was opened), so no AfterReadClose
+    // call either -- nothing was sent to a peer that could be owed a
+    // matching bookkeeping update (lowfive_attach_decision.hpp's own
+    // "ROUND 2 REVIEW" comment: the receive IS H5Fopen; if it failed,
+    // nothing was received).
     CopyErrorMessage(Hdf5CallFailed("H5Fopen", file, dataset), errbuf, errbuf_len);
     return 1;
   }
@@ -433,7 +480,7 @@ int bruss_lowfive_read(const char* file, const char* dataset,
   if (did < 0) {
     H5Fclose(fid);
     CopyErrorMessage(Hdf5CallFailed("H5Dopen2", file, dataset), errbuf, errbuf_len);
-    return 1;
+    return AfterReadClose(1, errbuf, errbuf_len);
   }
   // `n` is the caller's own buffer length, checked against the dataset's
   // actual extent rather than trusted -- a mismatch here means the
@@ -450,7 +497,7 @@ int bruss_lowfive_read(const char* file, const char* dataset,
     CopyErrorMessage(
         Hdf5CallFailed("H5Dget_space/extent-mismatch", file, dataset), errbuf,
         errbuf_len);
-    return 1;
+    return AfterReadClose(1, errbuf, errbuf_len);
   }
   H5Sclose(space);
   const herr_t rrc =
@@ -459,9 +506,9 @@ int bruss_lowfive_read(const char* file, const char* dataset,
   H5Fclose(fid);
   if (rrc < 0) {
     CopyErrorMessage(Hdf5CallFailed("H5Dread", file, dataset), errbuf, errbuf_len);
-    return 1;
+    return AfterReadClose(1, errbuf, errbuf_len);
   }
-  return 0;
+  return AfterReadClose(0, errbuf, errbuf_len);
 }
 
 #else  // !FUSE_HAVE_LOWFIVE

@@ -588,6 +588,25 @@ int main(int argc, char** argv) {
   rc = t->destroy(ctx, NULL, NULL);
   if (rc != FUSE_OK) fail(NULL, "destroy", rc);
 
+  /* Round 2 ("role-ordered serve"), new in this track: called
+   * unconditionally (harmless no-op when !use_lowfive or the attach was
+   * never reached) at the very end, after this process's own last
+   * u_lowfive_write_export()/u_lowfive_read_import() call and before
+   * tearing down MPI -- lowfive_attach.h's own header comment has the
+   * full account of what this catches (a first-reader role's own
+   * deferred serve left unflushed, which would otherwise be a silent
+   * data drop instead of a refusal). */
+  {
+    char finalize_errbuf[2048];
+    const int finalize_rc =
+        bruss_lowfive_finalize(finalize_errbuf, (long long)sizeof(finalize_errbuf));
+    if (finalize_rc != 0) {
+      fprintf(stderr, "FAIL(u_main): bruss_lowfive_finalize: rc=%d %s\n", finalize_rc,
+              finalize_errbuf);
+      MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+  }
+
   /* Unconditional: u_comm is never MPI_COMM_NULL now that every rank's
    * own color is 0 or 2 (never MPI_UNDEFINED) -- see this split's own
    * comment above. */
