@@ -94,7 +94,13 @@ set(FUSE_R3D_TAG "58dfbfb2fd2a89e36e3c7ceb5ca6aef3f9c4c4e6" CACHE STRING "r3d co
 set(FUSE_YAMLCPP_TAG     "0.8.0")
 set(FUSE_GTEST_TAG       "v1.15.2")   # git tag; the find_package version below is the same number without the v
 set(FUSE_GTEST_VERSION   "1.15.2")
-set(FUSE_KOKKOS_TAG     "4.4.01")
+# Floor is ArborX 2.1's own find_package(Kokkos 4.5 REQUIRED CONFIG)
+# (UPSTREAMS.lock [arborx].kokkos_required); the previous 4.4.01 pin was below
+# it, so a fetch build (no installed Kokkos, as on CI) made ArborX's configure
+# fail with "Could not find a package configuration file provided by Kokkos
+# (requested version 4.5)". 4.5.01 is the lowest 4.5 patch release ArborX 2.1
+# builds against.
+set(FUSE_KOKKOS_TAG     "4.5.01")
 set(FUSE_EIGEN_TAG      "3.4.0")
 # ArborX: the scalable BVH tree and point-cloud interpolants fuse::search
 # wraps (docs/dev/search.md) -- required at every tier, like Kokkos and fmt,
@@ -475,6 +481,21 @@ macro(fuse_resolve_dependencies)
   # comfortably below every fmt this project has ever targeted (FETCH
   # pins 11.0.2; homebrew on this host carries 12.2.0) -- the goal is
   # excluding the one known-bad install, not pinning a ceiling.
+
+  # fuse-abi is a SHARED library (src/CMakeLists.txt) that links the static
+  # fetched dependencies (fmt, Kokkos, ...) into itself. Those archives are
+  # built without -fPIC by default, so linking libfuse-abi.so against them fails
+  # with "relocation ... can not be used when making a shared object; recompile
+  # with -fPIC" (seen on a fetch build: first on libkokkoscore.a, then on
+  # libfmtd.a; an installed /opt/kokkos / system fmt is built with PIC and never
+  # hit it). Request position-independent code globally BEFORE the first fetch
+  # below -- it is harmless to the executables that also link these static libs,
+  # and must precede fuse_require(fmt) since fmt is the first thing fetched. An
+  # explicit -DCMAKE_POSITION_INDEPENDENT_CODE still wins.
+  if(NOT DEFINED CMAKE_POSITION_INDEPENDENT_CODE)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+  endif()
+
   fuse_require(fmt VERSION 9 HINT "fmt is the only output formatter (docs/dev/conventions.md).")
 
   # Apple's clang ships no OpenMP runtime, so CMake's FindOpenMP fails with no
@@ -518,6 +539,46 @@ macro(fuse_resolve_dependencies)
   endif()
 
   fuse_require(Kokkos HINT "Kokkos is required at every tier; /opt/kokkos on this machine. If it was built with OpenMP and this fails on OpenMP_CXX, install libomp (brew install libomp) or pass -DOpenMP_ROOT.")
+
+  # ArborX's own CMakeLists does find_package(Kokkos 4.5 REQUIRED CONFIG). When
+  # Kokkos was FETCHED (no installed copy -- CI has none) its targets exist in
+  # this build as the Kokkos::kokkos ALIAS, but find_package(... CONFIG)
+  # searches the filesystem for a KokkosConfig.cmake rather than reusing those
+  # in-memory targets, so ArborX's configure died with "Could not find a
+  # package configuration file provided by Kokkos (requested version 4.5)".
+  #
+  # The Kokkos build DOES write a KokkosConfig.cmake into
+  # ${CMAKE_BINARY_DIR}/cmake_packages/Kokkos, but it include()s a
+  # KokkosTargets.cmake that only exists after the generate step, so pointing
+  # find_package at it fails at CONFIGURE time. The CMake-native fix for "a
+  # FetchContent-built package should satisfy a later find_package" is a stub in
+  # CMAKE_FIND_PACKAGE_REDIRECTS_DIR (what FIND_PACKAGE_ARGS writes
+  # automatically for the dependencies that use it); Kokkos is fetched without
+  # FIND_PACKAGE_ARGS -- it needs CACHE options set before the fetch -- so the
+  # redirect is written here by hand. It only reports found + version; the real
+  # Kokkos:: targets the redirect's consumers link already live in this tree.
+  # Guarded on the fetch having happened (the in-tree config dir Kokkos writes
+  # only when built from source); an INSTALLED Kokkos resolves ArborX's
+  # find_package the ordinary way and this is skipped.
+  if(EXISTS "${CMAKE_BINARY_DIR}/cmake_packages/Kokkos/KokkosConfig.cmake"
+     AND TARGET Kokkos::kokkos)
+    if(NOT Kokkos_VERSION)
+      set(Kokkos_VERSION "${FUSE_KOKKOS_TAG}")
+    endif()
+    file(WRITE "${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}/kokkos-config.cmake"
+      "set(Kokkos_FOUND TRUE)\n")
+    file(WRITE "${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}/kokkos-config-version.cmake"
+      "set(PACKAGE_VERSION \"${Kokkos_VERSION}\")\n"
+      "if(PACKAGE_VERSION VERSION_LESS PACKAGE_FIND_VERSION)\n"
+      "  set(PACKAGE_VERSION_COMPATIBLE FALSE)\n"
+      "else()\n"
+      "  set(PACKAGE_VERSION_COMPATIBLE TRUE)\n"
+      "  if(PACKAGE_VERSION VERSION_EQUAL PACKAGE_FIND_VERSION)\n"
+      "    set(PACKAGE_VERSION_EXACT TRUE)\n"
+      "  endif()\n"
+      "endif()\n")
+  endif()
+
   # Sanitized before anything links it. The offender on this machine is
   # Kokkos::LIBDL, whose only usage requirement is the SDK include path Kokkos was
   # configured against; the rest are listed so a different install's stale entry is
