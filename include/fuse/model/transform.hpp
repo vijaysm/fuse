@@ -84,6 +84,21 @@ struct OperatorStep
     OperatorKind kind = OperatorKind::UnitScale;
     /** False only for an automatically inserted exact unit scale. */
     bool explicitly_requested = false;
+    /** For `UnitScale`: `v_t = scale * v_s`, `offset` unused (left at its
+     * default).
+     *
+     * For `AffineUnit` (BM-6, review 2026-10-11): `v_t = scale * v_s +
+     * offset`, where `scale = source.scale / target.scale` and `offset =
+     * (source.offset - target.offset) / target.scale` -- the division by
+     * `target.scale` applies to BOTH fields, not only to `scale`. Deriving
+     * it: a source value `v_s` represents the physical quantity `q =
+     * source.scale * v_s + source.offset` (SI base units); the target
+     * representation of that same quantity is `v_t = (q - target.offset) /
+     * target.scale`. Substituting gives exactly the formula above. The one
+     * producer of this step (`check_units()`, src/model/compatibility.cpp)
+     * applies it; there is no consumer yet (`ir_can_emit(AffineUnit)` is
+     * false), so this comment is the step's only specification until one
+     * lands. */
     Rational scale{1, 1};
     Rational offset{0, 1};
     std::vector<std::uint32_t> component_map;

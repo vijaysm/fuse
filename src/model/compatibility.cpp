@@ -171,12 +171,30 @@ void check_units(const ConnectionRequest& request, Evaluation& evaluation)
     {
         // An offset change moves the zero of the scale - Celsius to Kelvin -
         // which is a change of meaning, never inserted on the caller's behalf.
-        const std::optional<Rational> delta =
+        const std::optional<Rational> raw_delta =
             Rational::try_sub(source.offset, target.offset);
-        if (!delta)
+        if (!raw_delta)
         {
             evaluation.refuse(ConnectionStage::Unit, ConnectionReason::UnitConversionOverflow,
                               "the exact unit offset difference is not representable");
+            return;
+        }
+        // BM-6: the affine conversion is `v_t = factor * v + (o_s - o_t) /
+        // target.scale` -- the step's own OWN consumer (not yet landed;
+        // `ir_can_emit(AffineUnit)` is false) will apply `step.scale` and
+        // `step.offset` exactly that way (transform.hpp's `OperatorStep`).
+        // The division by `target.scale` was missing here -- ported
+        // verbatim from the parent, where it is only ever correct when
+        // `target.scale == 1`, the one case `Compatibility.UnitRules`
+        // happens to pin. `target.scale` is never zero (R-19: a unit's
+        // scale is never non-positive), so `try_div` here fails only on
+        // overflow, like `factor` above.
+        const std::optional<Rational> delta = Rational::try_div(*raw_delta, target.scale);
+        if (!delta)
+        {
+            evaluation.refuse(ConnectionStage::Unit, ConnectionReason::UnitConversionOverflow,
+                              "the exact unit offset, divided by the target scale, is not "
+                              "representable");
             return;
         }
         if (!evaluation.requested(OperatorKind::AffineUnit))
