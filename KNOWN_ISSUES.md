@@ -4412,3 +4412,96 @@ updating that test.
 above); a Python-side MPI story (`mpi4py`, communicator passing into `RunnerConfig`); native/MOAB backend
 bindings. None of the three has a design in `docs/dev/python-surface.md` beyond the "what this does not
 expose" list — a v2 scope decision, not a defect in v1.
+
+### D38. The Runner's generic size reconciliation held an `ExternalDelivery` instruction to the same equal-size rule as an ordinary data-moving kind
+
+**What it was.** `src/runtime/runner.cpp`'s per-instruction buffer-size reconciliation (`resolve_instructions()`) reads
+`out_total` doubles from every input arc for any instruction kind it does not name as an exception — `Remap` and
+`Transport` are already exempted, each for its own documented reason (`Remap`'s sizes are reconciled against the
+matrix it is actually given, in `resolve_remap()`; `Transport`'s two ends are the same region in two components'
+own per-placement decompositions, KNOWN_ISSUES.md D5, reconciled instead in `check_transport_extents()` once a
+real `CommGraph` exists). `OpKind::ExternalDelivery` was not in that exemption list, so the generic check ran for
+it too. `ExternalDelivery` (Unit 3, S6 phase 3, "LowFive" track) is the boundary node a LowFive-bound channel
+compiles to instead of `Transport` — `src/ir/rules_channel.cpp`'s `lower_channel()` gives it the SAME single
+input `Transport` would have had (the exporting component's own producer arc, kept as a pure ordering edge,
+never read by `execute()`'s own `OpKind::ExternalDelivery` case), but types its OWN output arc with the
+IMPORTING component's own `rank_set` — "the value...lands on the CONSUMER's own placement, not the producer's"
+(that function's own comment). The input and output of one `ExternalDelivery` instruction are therefore two
+DIFFERENT components' own decompositions, not two placements of the same one (`Transport`'s own case) — an even
+stronger reason to exempt it, since on a rank hosting exactly one end, D24's own contract ("a placement is
+decomposed over its own RankSet... a component that does not live on this rank gets an empty view") makes the
+two sizes disagree BY CONSTRUCTION, every time, on every rank hosting exactly one end.
+
+**How it surfaced.** Measured on the host (2026-10-12, `build-lowfive`, MPICH 5.0.0a1/`ch4:ofi`), the first run
+where `verification.brusselator.participants.lowfive.mpmd.3` and `...lowfive.accept.3` got past D36's own
+launch-layout fix and reached `fuse_initialize()`: `u_stdout.0.log` printed `FAIL(u_main): initialize: status=-4
+ExternalDelivery instruction 1 reads 2816 values from arc %0 into 0 at arc %2` (U's rank: 2816 = U's own 16x16=256
+cell `u_out`, 11 window samples wide, the whole size U's own one-rank `RankSet` decomposes to; 0 because V, the
+channel's importer, is not hosted on U's rank); `v_stdout.1.log` printed the mirror, `reads 0 values from arc %0
+into 2816 at arc %2`. `coupler_stdout.2.log` printed `another rank of the base communicator failed to resolve its
+buffers or instructions, so this rank must not enter the collective CommGraph construction; see that rank's own
+error for the cause` — the coupler rank never ran its own local check at all; it refused on the agreed, collective
+failure the other two ranks' own refusals fed it, not on anything computed locally (the standing rule that a
+collective path never returns on a rank's own locally-computed condition).
+
+**Fix.** `resolve_instructions()`'s per-instruction size check now also skips `OpKind::ExternalDelivery`, in its
+own outer `if`, wrapped AROUND the existing `Remap`/`Transport` check rather than folded into its condition —
+deliberately, so the existing line `build-evidence/mutations/transport-runtime.toml`'s own
+`transport-held-to-equal-extents` mutation anchors verbatim stays byte-identical and that row needed no edit at
+all. Unlike `Transport`, no replacement check was added: `execute()`'s own `OpKind::ExternalDelivery` case never
+reads the input (op.hpp's own header comment on the enumerator has the full account of why the edge is carried
+anyway, as a pure ordering constraint), so the "heap overread" hazard the whole reconciliation exists to catch
+cannot arise for this kind regardless of what the two arcs' sizes are. The output arc's own size — what the
+application's write through `fuse_view_field` actually gets (`src/abi/participant.cpp`'s `impl_view_field`, via
+`Runner::field_window_view()`) — is sized by the same `sizes(region, rank_set)` callback (`src/schedule/
+buffers.cpp`'s `plan_buffers()`) every other coupler-owned arc in the system already relies on; there is no new
+invariant this kind needs that a narrower check could still catch, and the task that found this was explicit that
+a check that cannot be made to fire must not be added speculatively.
+
+**Audited for the same class of mistake** (an instruction's input arc total compared against its output arc
+total, or an equal-size assumption, for a kind whose two ends can be two different components' own
+decompositions): `src/runtime/runner.cpp:792`'s `resolve_remap()` coincidence check (`in.total() != out.total()`)
+is `Remap`'s OWN stronger, narrower replacement check, fired only when `regions_coincide()` has already
+established the two regions are the same mesh in the same order on THIS rank — not a cross-component comparison.
+`check_transport_extents()` (`runner.cpp`) is filtered to `OpKind::Transport` only and already gated behind
+`CommGraph`/`base_communicator`; unaffected. Every `.total()` comparison in `src/runtime/iteration.cpp` (lines
+942, 1021, 1504, 1551, 4204) is either gated on a window member's own `cfg.hosted` (never compares a hosted
+member's size against an unhosted one's) or a same-arc/same-member self-consistency check (a buffer resized
+against its own config-derived expected size, or a chain walk that correctly STOPS, rather than fails, at a size
+discontinuity). `src/schedule/*.cpp` and `src/ir/*.cpp` contain no size-equality arithmetic at all — decomposition
+sizing is a runtime-only concern in this codebase. `src/abi/participant.cpp` has no field-size check beyond the
+one `resolve_buffers()` (`runner.cpp`) already performs, which is unaffected (window-scoped fields bypass it
+entirely, per `iteration.cpp`'s own account at line 938). No second instance of this mistake was found.
+
+**Pinned by** `test/verification/brusselator_external_delivery_size_test.cpp`'s two cases. The first drives the
+REAL LowFive-bound Brusselator accept-layout graph (`U {0,1}`, the remap coupler `{1,1}`, `V {2,1}` — the shape
+`brusselator_graph_tool.cpp`'s own accept branch with `--ranks-u 1 --ranks-coupler 1 --ranks-v 1 --transport
+lowfive` builds) through `fuse::Runner::initialize()` with `RunnerConfig::force_this_process` (no MPI, KNOWN_
+ISSUES.md C1), once on U's rank and once on V's; it asserts `initialize()` gets PAST the `ExternalDelivery` check
+on both (the error code is no longer `E-RT-SIZE` and the message no longer names `ExternalDelivery`) but still
+fails on a SEPARATE, pre-existing tier-0 ceiling found while writing this test — `iteration.cpp`'s own
+`R.participants` (the window region's cross-rank residual-reduction set) is populated only `if (config.
+base_communicator.has_value())`, so with no real communicator it stays empty on every rank, and the SAME
+function's "an empty coupling value... the region would report convergence after one sweep" refusal
+(`E-RT-REGION`) fires for whichever convergence measure names the component not hosted here. This is the SAME
+class of tier-0-only limitation `brusselator_accept_layout_test.cpp`'s own header comment already documents for
+the ordinary channel's `Transport`/`CommGraph` requirement, manifesting through a different check; on a real
+multi-process run `R.participants` holds all three ranks and this refusal never fires. The second case is the
+"narrowest reachable function" fallback this task's own instructions asked for when the real graph cannot reach a
+clean `initialize()` success at tier 0: a minimal, non-windowed `ExternalDelivery` channel between two components
+on two disjoint ranks with no `IterationRegion` at all, where `initialize()` DOES succeed cleanly on both ranks —
+isolating this fix's own effect with nothing else in the way. One mutation
+(`build-evidence/mutations/external-delivery-size.toml`'s `external-delivery-size-exemption-removed`): with the
+new outer guard disabled, BOTH tests fail, the first reproducing the host's own two `u_stdout.0.log`/
+`v_stdout.1.log` messages character for character.
+
+**Does not close D14.** D14 is about the two-HDF5-image hazard, the `libfmt` `dlopen` blocker, and Demo B's own
+distributed-transport path being compiled but never run; this defect is independent of all three, and the
+LowFive row this fixes was never blocked by D14 on the owner's own `build-lowfive` tree in the first place.
+
+**What the host must verify.** `ctest -R participants.lowfive` in `build-lowfive` (3 tasks each,
+`verification.brusselator.participants.lowfive.mpmd.3` and `...lowfive.accept.3`): both should now get past
+`fuse_initialize()`'s own `ExternalDelivery` check on every rank. Whether either reaches its first period, and
+whether the VOL plugin's own accept-mode intercommunicator (D14) lets `...lowfive.accept.3` complete the
+handshake at all, are separate, unmeasured questions this entry makes no claim about — see this round's own
+report for what the sources show and do not show about them.
