@@ -62,12 +62,17 @@ set_property(GLOBAL PROPERTY FUSE_GATED_TEST_SOURCES "")
 # against its serial oracle, the native mesh's kernels, the typed numerical
 # kernels -- were verified there only. `fuse_add_omp_legs` registers a test a
 # second and third time, at ONE thread and at every core, so the two extremes
-# are measured on every build rather than assumed from the default. What this
-# catches is order-dependent floating-point accumulation: median.hpp's
-# histogram sums weights with Kokkos::atomic_add, whose summation order is the
-# threads', and a weighted median that lands within an ulp of a bucket edge
-# can move an element across the cut. Uniform weights would never show it;
-# the skewed-weight cases can. Labelled `omp`; empty when Kokkos has no OpenMP.
+# are measured on every build rather than assumed from the default.
+# review-2026-10-11 PS-12: this paragraph used to say the hazard these legs
+# guard against is order-dependent FLOATING-POINT accumulation in
+# median.hpp's histogram -- wrong, since `Weight` (types.hpp) is `int64_t`
+# and `Kokkos::atomic_add` on an integer is exact and order-invariant by
+# associativity; there is no FP accumulation in the histogram at all. What
+# these legs actually guard against is any FUTURE order-sensitive
+# accumulation this layer might grow, and they empirically PIN the bit-
+# identity claim (docs/dev/partitioning.md "Determinism") at both thread-
+# count extremes rather than assuming it from the default. Labelled `omp`;
+# empty when Kokkos has no OpenMP.
 #
 # What it does NOT cover, stated so nobody reads the label as more than it is:
 # the coupler's own runtime (src/runtime/, src/schedule/) executes no Kokkos
