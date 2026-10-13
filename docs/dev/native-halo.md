@@ -112,6 +112,27 @@ where none is owed.
   (apply, rebuild, run `fuse_backend_native_halo_test` whole and unfiltered, record the exact
   pass/fail split, restore and `cmp` byte-identical).
 
+## Device packing (Phase 2, "weight-builders" track)
+
+`include/fuse/backend/native/mesh_pack_device.hpp` adds `fuse::native::device::pack_to<kHaloRecord,
+Space>`, the Space-templated packing seam `docs/dev/device-resident-arcs.md`'s Phase 2 names. It
+builds the IDENTICAL wire records `pack_for_migration`/`pack_halo_cells` do (`kHaloRecord` selects
+which of the two), but reads `MeshArrays<Space>`'s own CSR connectivity directly rather than walking
+`NativeMeshView` -- a host-only, validated view by design (`Result`/`Failure`/`fmt` are not
+device-callable) -- so that on `Space == Kokkos::DefaultExecutionSpace::memory_space` the owned-block
+numbering, every record's byte size, and the byte-level write all run as Kokkos kernels, with no host
+round trip for the per-cell data. Verified byte-for-byte against the existing host packers on the same
+generated meshes (quad and polyhedral), in both Host mode and Device mode (`test/backend/
+native_mesh_pack_device_test.cpp`).
+
+**Not yet done:** the receiving side's dedup-by-global-id merge (`merge_halo_cells`'s cell dedup,
+`unpack_migrated_mesh`'s vertex dedup) is not templated on `Space`. Device CSR data MOVEMENT (the part
+that scales with mesh size) is a natural fit for the same byte-record approach `pack_to` already
+proves; the DECISION of which incoming record's global id is new (an O(received-record-count)
+membership test against a small set) is the open piece -- see KNOWN_ISSUES.md's weight-builders entry
+for the concrete blocker (no device-friendly hash-set primitive used here yet) and the report
+(`report-weight-builders.md`) for what a sort-and-compact implementation would need.
+
 ## Open items
 
 - The conservative column-mass-by-global-id check (a source cell's measure, summed across every rank
