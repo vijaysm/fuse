@@ -5139,3 +5139,202 @@ second measurement:
 
 **Still does not close D14.** Unchanged by this round -- an instrumentation-only round touches neither the
 two-HDF5-image hazard, Demo B's own distributed path, nor D14's own open accept-mode question.
+
+**Round 6 (2026-10-13) -- the trace answered it; a DEFINITE defect, cited and fixed.** The host set
+`FUSE_LOWFIVE_ATTACH_TRACE=1 FUSE_LOWFIVE_LOG=trace` and ran `ctest -R 'participants\.lowfive\.mpmd\.3'`; the row
+hung to the 60 s timeout, and the trace (`u_stdout.0.log`/`v_stdout.1.log`) showed, verbatim:
+
+```
+U (first-server): attach: world_rank=0 component=U role=first-server distributed=1
+  registrations=[(brusselator_u.h5, /grid/u_out, 0), (brusselator_v.h5, /grid/v_out, 0)]
+  memory_patterns=[(brusselator_u.h5, /grid/u_out), (brusselator_v.h5, /grid/v_out)]
+  serve_on_close=0 intercomms.size=1 files.size=0
+  write: file=brusselator_u.h5 dataset=/grid/u_out nvals=2816 enter | H5Fcreate_ok=1 |
+    dataset_exists_before_close=0 | after_close files_in_memory=0 |
+    serve_after_write action=kServeNow enter | kServeNow exit elapsed=0.000052s | write exit rc=0
+  LowFive's own log: [trace] enter serve_all, files.size = 0 | Index ctor, number of intercomms: 1,
+    files.size = 0 | serve_all done
+  read: file=brusselator_v.h5 ... enter | receive_before_read action=kReceiveOnly |
+    H5Fopen about to call  (then hangs in get_file_hierarchy's MPI_Probe)
+V (first-reader): same attach line (role=first-reader), write: H5Fcreate_ok=1,
+  dataset_exists_before_close=0, after_close files_in_memory=0, action=kDeferServe, then
+  read file=brusselator_u.h5 ... H5Fopen about to call (same hang).
+```
+
+H1 (write skipped), H3 (wrong action), and H4 (no intercomm) are RULED OUT by this trace: the write ran, U took
+`kServeNow`, exactly one intercomm is registered. H2's own SYMPTOM is confirmed (`serve_all()` saw `files.size =
+0` and returned in 52 microseconds without serving) -- but NOT round 4's own guessed mechanism, which round 5
+already corrected from source (`is_memory` does not gate whether a dataset is counted in `indexed_datasets`).
+
+**Root cause, read directly from LowFive's source (every cite re-read for this round):**
+
+- `include/lowfive/vol-metadata.hpp:49`: `bool keep = false; // whether to keep files in the metadata after they
+  are closed`; `set_keep(bool)` at `:106`. PUBLIC, default `false`.
+- `src/vol-metadata/file.cpp` (`MetadataVOL::file_close()`): `if (File* f = dynamic_cast<File*>(...)) { ...; if
+  (!keep) { files.erase(f->name); delete f; /* erases all the children too */ } }` -- runs regardless of whether
+  this VOL is a plain `MetadataVOL` or a `DistMetadataVOL` (the distributed subclass's own `file_close()` falls
+  through to this EXACT function at its own tail: `return MetadataVOL::file_close(file, dxpl_id, req);`).
+- `src/vol-dist-metadata.cpp` (`DistMetadataVOL::file_close()`, the LOCAL-file branch): the ONLY place this
+  function ever calls `serve_all()` on its own is `else if (serve_on_close && match_any(f->name, "", memory,
+  true)) serve_all();` -- gated on `serve_on_close`, which round 2's own fix sets `false` specifically so NOTHING
+  auto-serves inside `H5Fclose()`. That `if`/`else if` chain runs BEFORE the tail call into `MetadataVOL::
+  file_close()` above.
+- Putting these together: with `serve_on_close == false` (round 2's own setting) and `keep` left at its own
+  default `false` (never set by any round before this one), `H5Fclose()` neither serves internally NOR keeps the
+  file -- it is erased and deleted, unconditionally, the moment `H5Fclose()` returns, BEFORE this process's own
+  explicit `bruss_lowfive_serve_after_write()` hook (called by `shim.cpp` AFTER `H5Fclose()` returns) ever runs a
+  line. By the time that hook's own `serve_all()` call happens, `files` is ALREADY EMPTY -- exactly the measured
+  `files.size = 0`, `"enter serve_all, files.size = 0"`, and the 52-microsecond return (`serve_all()`'s own
+  `Index` constructor counts `indexed_datasets` by walking `files`, which has nothing left to walk; `index.
+  indexed_datasets || !perform_indexing` is then false at `serve_all()`'s own default `perform_indexing=true`, so
+  `index.serve()` -- the part that would actually block polling for the peer -- is never called at all). LowFive
+  therefore only works with `serve_on_close=true`, OR with `serve_on_close=false` AND `keep=true` -- this attach
+  shipped the first half of the second option without the second half.
+- `MetadataVOL::drop(std::string filename)` (`src/vol-metadata.cpp`): `auto it = files.find(filename); delete
+  it->second; files.erase(it);` -- NO check against `files.end()`; calling this for an ABSENT name dereferences
+  `files.end()`, undefined behaviour.
+- `MetadataVOL::clear_files()` (`src/vol-metadata.cpp`): deletes EVERY entry in `files`, not just one -- never
+  usable to release a single file.
+- `MetadataVOL::file_create()` (`src/vol-metadata/file.cpp`): `File* f = new File(name_, ...); files.emplace
+  (name_, f);` -- `std::map::emplace()` is a NO-OP on a DUPLICATE key: if `name_` is still in `files` from a
+  PREVIOUS create that was never dropped, the OLD `File*` stays exactly where it is, and the FRESH `f` this call
+  just allocated is never stored in `files` at all (only on this NEW open handle's own `mdata_obj`). The
+  practical effect, read from this call site directly: SILENT REUSE OF STALE DATA, not an error and not a crash
+  -- a LATER `serve_all()` keyed off this filename walks `files`, finds the OLD `File`'s own (now stale)
+  children, and serves THOSE, never the fresh write this handle just performed through its own orphaned object.
+
+**The fix.** `lowfive_attach_decision.hpp`'s new `decide_vol_settings(bool distributed) -> VolSettings{serve_
+on_close, keep}` is the ONE place that decides both settings together, checked against `VolSettingsSatisfyInvariant
+()`'s own invariant (`serve_on_close == false implies keep == true`). `bruss_lowfive_attach()`'s distributed
+branch applies both (`vol.serve_on_close = settings.serve_on_close; vol.set_keep(settings.keep);`) in place of
+the round-2-era hardcoded `vol.serve_on_close = false;` alone. A new pure function, `FindOwnExportedFiles(table,
+this_name)`, derives this rank's own exported file name(s) from the SAME binding table/`this_name` the attach
+already holds (never a hardcoded literal), via `fuse::build_lowfive_bindings()`'s own `"<component>.<field>"`
+qualification scheme. A new, GUARDED wrapper, `GuardedDropOwnExportedFile()` (`files.find(name) != files.end()`
+before calling `vol.drop(name)`, since `drop()` itself has no such check), is called right after EACH of the two
+places this process ever actually serves a file -- `bruss_lowfive_serve_after_write()`'s own `kServeNow` case,
+and `bruss_lowfive_after_read_close()`'s own `kFlushDeferred` case -- never merely after a write, and never for
+the peer's own file. The single-process branch is UNCHANGED, per the lead's own instruction: its existing `vol.
+set_keep(true)` call already matches `decide_vol_settings(false).keep`, for the identical underlying reason (round
+4's own citation, unchanged); `serve_on_close` does not apply to `LowFive::MetadataVOL` at all, and nothing in
+that branch ever serves or drops anything, since it never serves anyone in the first place.
+
+**File lifetime invariant.** A file exists in `files` from its writer's own `H5Fclose` to the end of its serve,
+and is dropped before that component's own NEXT `H5Fcreate` of the same name. Checked against the real event
+order: cold start (write, read, matching this invariant trivially -- one write, immediately served and dropped,
+before this rank's own next write at period 1); the steady state (write-then-read every period, I1's own
+progress invariant unchanged by this round); the LAST period and finalize (the first-server's own file is always
+served-and-dropped SYNCHRONOUSLY inside the SAME `serve_after_write()` call that wrote it, so nothing of its own
+is ever left in `files` by the time of finalize; the first-reader's own file stays in `files`, undropped, exactly
+as long as its own deferred serve stays unflushed -- the EXISTING `bruss_lowfive_finalize()` refusal
+(`E-LOWFIVE-ATTACH-SERVE-UNFLUSHED`) already catches that case by name, UNCHANGED by this round, because "deferred
+serve never flushed" and "file never served-and-dropped" are the SAME fact for a first-reader). Collective
+safety: `GuardedDropOwnExportedFile()`'s own drop is local to a rank (no MPI call at all); `serve_all()` remains
+the only collective operation in this path, and every rank still takes the same branch from the SAME graph data
+`decide_serve_roles()` already reads identically on every rank of either component -- unchanged by this round.
+
+**The trace line the lead asked to be explained before finishing: `dataset_exists_before_close=0`.** Confirmed
+an UNRELIABLE proxy, not evidence of a missing dataset. `LowFive::MetadataVOL::link_specific()`'s own `H5VL_LINK_
+EXISTS` case (`src/vol-metadata/link.cpp`) calls `Object::locate()` -> `search()` for `H5VL_OBJECT_BY_NAME`,
+which walks the path SEGMENT BY SEGMENT, matching each slash-separated piece against a SEPARATE child object.
+`dataset_create()`, called by this shim with NO prior `H5Gcreate` for an intermediate group, attaches the new
+`Dataset` as ONE FLAT child whose own `name` field is literally `"grid/u_out"` (round 4/5's own account of
+`search()`'s own fallback-on-no-match behaviour, re-applied here) -- `search()` looks for a child named exactly
+`"grid"` first, finds none (no such child exists; the real child is named `"grid/u_out"`), and reports
+not-found. `is_memory`'s own check (`dataset_create()`'s own `match_any(filepath, memory)`, `filepath` built by
+`Object::fullname()`, a WHOLE-STRING comparison, never a segment walk) is UNAFFECTED -- confirmed by round 4's
+own fix actually working (the write succeeded, `H5Fcreate_ok=1`). REPLACED: `shim.cpp`'s own trace no longer
+calls `H5Lexists()` at all; a new accessor, `bruss_lowfive_attach_has_real_file()`, wraps the PUBLIC `LowFive::
+MetadataVOL::has_real_file()` instead -- FILE-level, not dataset-level (nothing public exposes a per-dataset
+check at all; `Object`/`Dataset` are forward-declared/opaque in the installed headers), but RELIABLE, unlike the
+check it replaces. The trace now also prints `keep=` (alongside the already-printed `serve_on_close=`) at attach
+time, and `files.size_after_drop=` after each of the two serve call sites.
+
+**The corrected account of what round 4's slash fix did and did not break.** Round 5 already corrected the claim
+that an unslashed `set_memory()` pattern starves `indexed_datasets` -- unchanged by this round. The slash fix
+itself remains NEEDED, for the reason `is_memory` actually matters, cited above: it governs whether `H5Dwrite`/
+`H5Dread` on a given dataset use the in-memory path at all. An unslashed pattern would have meant every
+Brusselator dataset's own read/write silently missed interception -- a DIFFERENT defect from the indexing one
+round 4 originally (and wrongly) blamed for the symptom it was chasing, now stated precisely instead of left
+implicit.
+
+**Model check extended, and RENAMED, not left with two names for the same fact.** Round 4's own `ProcessPolicy::
+nothing_indexed` (guessed mechanism: an unslashed pattern) is RENAMED `ProcessPolicy::file_deleted_at_close`
+(confirmed mechanism: `!keep`), per the lead's own instruction. A new `ProcessPolicy::drop_after_serve` field
+(default `true`, the shipped protocol) models the THIRD named configuration -- `keep=true` but the drop itself
+never runs. A new PURE function, `WouldReuseStaleFileOnRecreate(policy, n_iterations)`, flags that configuration
+directly: `!file_deleted_at_close && !drop_after_serve && n_iterations > 1` -- a STATIC property of the
+configuration (true for ANY interleaving), not a blocking/liveness question the explicit-state search's own
+vocabulary can represent at all (the file stays servable, just WRONG, on recreate -- nothing gets anyone stuck).
+Three named configurations, each with its own assertion, driven from `decide_vol_settings()` where applicable so
+a mutation of the real setting changes the model's own verdict: the SHIPPED configuration (`keep=true`, drop
+after serve) completes for N=1, 2, 60 and both rank orders; the ROUND-5 configuration (`file_deleted_at_close=
+true`, i.e. `keep=false`) is reported stuck; `keep=true` without the drop is reported, by name, via `WouldReuse
+StaleFileOnRecreate()`, as the stale-reuse failure this entry's own "Root cause" section cites -- NOT as a
+stuck/diverging search result, because it is not one.
+
+**One mutation row planned, then REMOVED, not shipped as a vacuous pass.** A third mutation row (removing the
+guarded drop call at `bruss_lowfive_serve_after_write()`'s own `kServeNow` case) was written, applied, and found
+to kill NOTHING: every one of this binary's own 63 tests still passed, because nothing in this sandbox's own
+test suite calls the REAL `bruss_lowfive_serve_after_write()` with a REAL `LowFive::DistMetadataVOL` (that
+requires live MPI and live LowFive, neither available here) -- the model check's own `kShipped` policy drives
+`serve_state_step()`/`decide_serve_roles()`, never `lowfive_attach.cpp`'s own call sites around them. REMOVED
+rather than kept and described as "caught," per the lead's own standing instruction elsewhere in this track: "a
+piece only measurable on the host is listed in host_pending, not tested vacuously." Whether the guarded drop call
+itself is actually reached, in the compiled binary, after a real serve, is UNVERIFIED by any tier-0 test and
+listed below as a `host_pending` item -- observable only via this round's own new `files.size_after_drop=` trace
+line on a real host run.
+
+**Pinned by (Round 6, additive to the round-5 section's own inventory above, now 63 tests total in that
+binary).** Two new `DecideVolSettings` tests (distributed wants `serve_on_close=false`/`keep=true`; single-
+process still wants `keep=true`); four new `VolSettingsSatisfyInvariant` tests (both of `decide_vol_settings()`'s
+own outputs satisfy it; the round-5 pair `{false,false}` violates it -- the lead's own named test; any pair with
+`keep=true` satisfies it; `{true,false}` satisfies it too, since LowFive's own internal auto-serve covers that
+pair); four new `FindOwnExportedFiles` tests (U owns `brusselator_u.h5`; V owns `brusselator_v.h5`; an unknown
+component owns nothing; an empty table owns nothing); four new `WouldReuseStaleFileOnRecreate` tests (true on the
+second iteration when kept-without-drop; false for one iteration; false for the shipped configuration;
+false when the file was never kept in the first place -- the two failure modes do not compound). Five `ModelCheck`
+tests replacing the two round-4/5 `nothing_indexed`-named ones (now `file_deleted_at_close`-named, same
+assertions, driven from `decide_vol_settings()` where the shipped configuration is asserted). Two new hand-proved
+mutation rows (`decide-vol-settings-keep-removed`: 57 PASS / 6 FAIL, killing every test that is actually driven
+from `decide_vol_settings()`'s own output; `would-reuse-stale-file-on-recreate-ignores-drop-after-serve`: 62
+PASS / 1 FAIL), each killed decisively and the file restored byte-identical (`md5` checked) before the next step.
+All EIGHT pre-existing mutation rows were RE-RUN (not merely anchor-checked) against this round's own larger
+binary and still kill exactly the same test(s) each always did (61/2, 62/1, 62/1, 52/11, 61/2, 62/1, 61/2, 61/2
+respectively -- counts larger than earlier rounds' own only because more passing tests now share the same
+binary, the same note every prior round's own entry already made). `python3 tools/mutate.py --check-anchors`
+reports 342 valid, 0 stale, of 342 (343 before the removed row). Full tier-0 and all 5 repo-health gates clean,
+and the full tier-1 (MPI+Fortran+LowFive+MOAB) build is clean too -- this round's own report has the exact
+numbers.
+
+**What the host must verify (Round 6) -- this time, a cited root cause and a fix, not only instrumentation; but
+still never run on a host.** In `build-lowfive`: rebuild (`cmake --build .`, every target), then
+
+```
+FUSE_LOWFIVE_ATTACH_TRACE=1 FUSE_LOWFIVE_LOG=trace ctest -R 'participants\.lowfive\.mpmd\.3' --output-on-failure
+```
+
+On success, each rank's own trace should print, IN ORDER: the attach line with `keep=1` (new this round,
+alongside the already-printed `serve_on_close=0`); the write trace, ending `files.size_after_drop=0` (served AND
+dropped, same iteration); for U specifically, `serve_after_write action=kServeNow enter` followed by its own
+`exit elapsed=` line with a LARGE elapsed value (seconds, not microseconds -- it actually BLOCKED, waiting for
+V's own open-and-close, unlike round 5's own 52-microsecond return); then the read trace, `H5Fopen_ok=1` (no
+longer hanging); this pattern repeating every period; and -- unlike every prior round -- enough periods actually
+completing to reach `brusselator_check`'s own pass/fail line, something THIS track has never yet seen. Plausible
+next failures, and which of this round's own claims each would contradict: `serve_all()` finds `files.size=1` but
+the peer's own `get_file_hierarchy` RPC call THROWS an exception instead of hanging or succeeding -- contradicts
+nothing in this entry's own root-cause account (that account only concerns whether `serve_all()` ever BLOCKS
+correctly, not what happens once a real RPC round-trip is attempted, which this entry does not claim to have
+settled); the dataset READ RPC itself hangs after `file_open()` succeeds -- same caveat, a stage this track has
+never exercised; period 2's own `H5Fcreate` collides anyway (a `MetadataError` naming the file, or silently wrong
+data on the NEXT read) -- would mean the guarded drop is not actually being reached at the right point, contradicting
+this entry's own "File lifetime invariant" section directly, and the FIRST thing to check with `FUSE_LOWFIVE_LOG=
+trace`'s own `files.size` lines; `bruss_lowfive_finalize()` refuses with a kept file never served
+(`E-LOWFIVE-ATTACH-SERVE-UNFLUSHED`) -- would mean I1 (the write/read alternation this protocol depends on) does
+not hold for this row's own graph after all, the SAME caveat every prior round's own account already carried,
+unchanged by this round's own fix.
+
+**Still does not close D14.** Unchanged by this round -- the two-HDF5-image hazard is closed (host action only),
+Demo B's own distributed path is compiled and never run, and D14's own open accept-mode intercommunicator
+question (item 3 of its "what remains" list) is untouched by a fix that only concerns a file's own in-memory
+lifetime, never accept mode's own unexposed intercommunicator.

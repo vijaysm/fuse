@@ -591,6 +591,101 @@ FUSE_LOWFIVE_ATTACH_TRACE=1 FUSE_LOWFIVE_LOG=trace \
 KNOWN_ISSUES.md D39's own "Round 5" account has the full table of "trace
 shows X => hypothesis Hn" this round's own report builds for the lead.
 
+**Round 6 -- the trace answered it.** The host set both env variables and
+ran the row to its 60 s timeout; the trace showed H1/H3/H4 RULED OUT (the
+write ran, U took `kServeNow`, one intercomm is registered) and H2's own
+SYMPTOM confirmed, but not round 4's own guessed mechanism (already
+corrected by round 5): LowFive's own log printed `"enter serve_all,
+files.size = 0"`, and `serve_all()` returned in 52 microseconds.
+
+**Root cause, read directly from LowFive's source.** `LowFive::
+MetadataVOL::keep` (`include/lowfive/vol-metadata.hpp`) is a PUBLIC bool,
+default `false`; `MetadataVOL::file_close()` erases and deletes a file's
+own metadata whenever `!keep`. `DistMetadataVOL::file_close()`'s own
+LOCAL-file branch calls `serve_all()` on its own ONLY when `serve_on_close`
+is true -- this attach's own round-2 fix set it `false` specifically so
+NOTHING auto-serves inside `H5Fclose()` -- and then falls through to the
+SAME `MetadataVOL::file_close()` above regardless. With `serve_on_close
+=false` and `keep` left at its own default `false` (never set by any
+round before this one), `H5Fclose()` neither serves internally NOR keeps
+the file: it is erased and deleted before this process's own explicit
+`bruss_lowfive_serve_after_write()` hook -- the ONLY server this protocol
+ever gives a file -- ever runs a line. LowFive therefore only works with
+`serve_on_close=true`, or with `serve_on_close=false` AND `keep=true`; this
+attach shipped the first half of the second option without the second
+half. KNOWN_ISSUES.md D39's own "Round 6" account has the full citations
+(including why `MetadataVOL::drop()` and `clear_files()` needed a guard
+and a "never call this for one file" warning respectively, and what
+`MetadataVOL::file_create()`'s own `files.emplace()` does on a duplicate
+key if a served file is never dropped).
+
+**The fix: `decide_vol_settings()`, a file lifetime, and a guarded drop.**
+`lowfive_attach_decision.hpp`'s own `decide_vol_settings(distributed)`
+is now the ONE place that decides `serve_on_close`/`keep` together (both
+`true`/`false` pairs this attach could otherwise set independently are
+checked against the invariant `serve_on_close==false => keep==true` via
+`VolSettingsSatisfyInvariant()`). `bruss_lowfive_attach()`'s distributed
+branch applies both; its own exported file name(s) (`FindOwnExportedFiles
+()`, derived from the SAME binding table/`this_name` the attach already
+holds) are dropped, one at a time, right after each is actually SERVED --
+at the first-server's own `kServeNow`, and at the first-reader's own
+post-close `kFlushDeferred` -- never merely written, and never the peer's
+own file. The file lifetime invariant: a file exists in `files` from its
+writer's own close to the end of its serve, and is dropped before that
+component's own NEXT `H5Fcreate` of the same name -- without the drop,
+`file_create()`'s own `files.emplace()` is a no-op on that duplicate key,
+and a later `serve_all()` would silently serve the PREVIOUS period's own
+stale data, never the fresh write. The single-process branch is
+UNCHANGED (its own existing `vol.set_keep(true)` already matches `decide_
+vol_settings(false).keep`; it never serves anyone, so nothing is ever
+dropped there either, and `serve_on_close` does not apply to `LowFive::
+MetadataVOL` at all).
+
+**The corrected account of what round 4's slash fix did and did not
+break.** Round 5 already corrected the claim that an unslashed `set_
+memory()` pattern starves `indexed_datasets` -- `MetadataVOL::file_
+create()`/`dataset_create()` add to `files`/the object tree
+UNCONDITIONALLY, regardless of pattern match (round 5's own account,
+unchanged). The slash fix itself is STILL needed, for the reason `is_
+memory` actually matters: `MetadataVOL::dataset_create()`'s own `is_
+memory` flag (computed from the SAME pattern match, stored on the new
+`Dataset` object) governs whether `H5Dwrite`/`H5Dread` on that dataset
+use the in-memory path at all, or fall through toward a real, un-
+intercepted file -- an unslashed pattern would have meant every
+Brusselator dataset's own read/write silently missed interception, a
+DIFFERENT defect from the indexing one round 4 originally (and wrongly)
+blamed for the symptom it was chasing.
+
+**`dataset_exists_before_close` was wrong, not the write.** Round 5's own
+`H5Lexists()`-based check reported `0` even though the write that
+preceded it succeeded -- confirmed this round to be an UNRELIABLE proxy,
+not evidence the dataset was missing: `H5Lexists()` walks a path segment
+by segment (`LowFive::MetadataVOL::link_specific()`'s own `H5VL_LINK_
+EXISTS` case, `Object::locate()` -> `search()`), but `dataset_create()`,
+called here with no prior `H5Gcreate` for an intermediate group, attaches
+the dataset as ONE FLAT child literally named `"grid/u_out"` -- `search()`
+looks for a child named exactly `"grid"` first, finds none, and reports
+not-found, even though the dataset is genuinely there (`is_memory`'s own
+check, which compares the WHOLE string via `Object::fullname()` rather
+than walking it segment by segment, is unaffected -- confirmed by round
+4's own fix actually working). REMOVED, replaced with `bruss_lowfive_
+attach_has_real_file()` (`LowFive::MetadataVOL::has_real_file()`, PUBLIC,
+FILE-level not dataset-level -- the best available proxy, since nothing
+public exposes a per-dataset check at all).
+
+**Host command, unchanged in form, now with a settled root cause behind
+it:**
+
+```
+FUSE_LOWFIVE_ATTACH_TRACE=1 FUSE_LOWFIVE_LOG=trace \
+    ctest -R 'participants\.lowfive\.mpmd\.3' --output-on-failure
+```
+
+KNOWN_ISSUES.md D39's own "Round 6" account has the full host_pending
+paragraph: what each rank's trace must print on success, in order, and
+for each plausible next failure what the trace/stack would look like and
+which of this round's own claims it would contradict.
+
 **IR/runtime half, implemented and measured (no LowFive/HDF5 needed) —
 2026-10-04.** `lower_channel()` (`src/ir/rules_channel.cpp`) emits a new
 `OpKind::ExternalDelivery` node (`include/fuse/ir/op.hpp`) in place of
