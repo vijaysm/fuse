@@ -20,6 +20,8 @@
 #include "fuse/model/descriptor.hpp"
 #include "fuse/model/coupling_graph.hpp"
 
+#include "graph_fixture.hpp"
+
 namespace {
 
 const fuse_participant_abi_v1* Table() {
@@ -122,6 +124,79 @@ TEST(AbiStructSize, OldCallerStructSizeNeverReadsMyComponent) {
   old_opts->reserved     = 0;
   old_opts->end_time     = fuse_exact_time{.numerator = 0, .denominator = 1};
   EXPECT_EQ(t->setup(ctx, old_opts, nullptr), FUSE_OK);
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+// AbiStructSize.OldCallerFuseStepRequestIsAccepted (Review 2026-10-11 AB-2):
+// FirstFrozenStructSize<fuse_step_request> was missing, so check_struct_size
+// refused struct_size=16 (the layout shipped before t_begin/t_end/step/
+// iteration/requires_checkpoint/requires_restore/reserved were appended in
+// 612b153, per c-abi.md's growth table "16 -> 72") with FUSE_ERR_VERSION,
+// even though begin_step()/end_step() never read any of the grown members
+// (entries.def documents them provider-direction-only). Heap-allocates
+// EXACTLY the pre-growth byte count, mirroring
+// OldCallerStructSizeNeverReadsMyComponent above, so a read past it is a
+// genuine heap-buffer-overflow.
+TEST(AbiStructSize, OldCallerFuseStepRequestIsAccepted) {
+  constexpr std::size_t kOldSize =
+      offsetof(fuse_step_request, component) + sizeof(const char*);
+  static_assert(kOldSize < sizeof(fuse_step_request),
+               "the provider-direction fields must have grown "
+               "fuse_step_request (rule 3)");
+
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+
+  fuse_context_out co{.struct_size = sizeof(co)};
+  ASSERT_EQ(t->create(nullptr, nullptr, &co), FUSE_OK);
+  fuse_ctx* ctx = co.ctx;
+  const auto bytes = fuse::abi_test::build_two_component_lag1_bytes();
+  fuse_graph_source src{.struct_size = sizeof(src)};
+  src.bytes = bytes.data();
+  src.byte_count = bytes.size();
+  ASSERT_EQ(t->load_graph(ctx, &src, nullptr), FUSE_OK);
+
+  double up_storage[4] = {1, 2, 3, 4};
+  double down_storage[4] = {0, 0, 0, 0};
+  fuse_field_name fname{.struct_size = sizeof(fname)};
+  fname.component = "upstream";
+  fname.field = "out";
+  fuse_field_ref fref{.struct_size = sizeof(fref)};
+  ASSERT_EQ(t->field_handle(ctx, &fname, &fref), FUSE_OK);
+  fuse_field_view fview{.struct_size = sizeof(fview)};
+  fview.handle = fref.handle;
+  fview.element_type = FUSE_ELEMENT_F64;
+  fview.memspace = FUSE_MEMSPACE_HOST;
+  fview.ownership = FUSE_OWNERSHIP_OWNED;
+  fview.components = 1;
+  fview.count = 4;
+  fview.owned_count = 4;
+  fview.stride = 1;
+  fview.data = up_storage;
+  ASSERT_EQ(t->register_field(ctx, &fview, nullptr), FUSE_OK);
+
+  fname.component = "downstream";
+  fname.field = "in";
+  ASSERT_EQ(t->field_handle(ctx, &fname, &fref), FUSE_OK);
+  fview.handle = fref.handle;
+  fview.data = down_storage;
+  ASSERT_EQ(t->register_field(ctx, &fview, nullptr), FUSE_OK);
+
+  ASSERT_EQ(t->initialize(ctx, nullptr, nullptr), FUSE_OK);
+
+  auto buf = std::make_unique<std::byte[]>(kOldSize);
+  auto* old_req = reinterpret_cast<fuse_step_request*>(buf.get());
+  old_req->struct_size = static_cast<std::uint32_t>(kOldSize);
+  old_req->component   = "upstream";
+
+  fuse_step_report rep{.struct_size = sizeof(rep)};
+  EXPECT_EQ(t->begin_step(ctx, old_req, &rep), FUSE_OK);
+  EXPECT_EQ(rep.step, 0);
+
+  old_req->component = "upstream";  // end_step's own struct_size check
+  fuse_step_report end_rep{.struct_size = sizeof(end_rep)};
+  EXPECT_EQ(t->end_step(ctx, old_req, &end_rep), FUSE_OK);
 
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
