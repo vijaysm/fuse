@@ -3,6 +3,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <iterator>
 #include <optional>
@@ -199,6 +200,19 @@ std::optional<Failure> check_unknown_keys(const YAML::Node& n,
     }
   }
   return std::nullopt;
+}
+
+// BM-2: the single guard every required-key site below calls. Returns a
+// Failure naming the key and the context when the key is absent; the
+// caller still does its own `.as<T>()` afterwards (the type itself is
+// handled by `from_yaml`'s outer try/catch, which turns a wrong-typed
+// scalar on this now-confirmed-present key into the same E-YAML-PARSE
+// code rather than a raw yaml-cpp exception).
+std::optional<Failure> require_key(const YAML::Node& n, const char* key,
+                                   const std::string& context) {
+  if (n[key]) return std::nullopt;
+  return Failure{"E-YAML-PARSE",
+               context + " is missing required key '" + key + "'"};
 }
 
 using ComponentByName = std::unordered_map<std::string, ComponentId>;
@@ -778,14 +792,23 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
   return std::string{e.c_str()};
 }
 
-Result<CouplingGraph> from_yaml(std::string_view text) {
-  YAML::Node root;
-  try {
-    root = YAML::Load(std::string{text});
-  } catch (const YAML::Exception& ex) {
-    return Failure{"E-YAML-PARSE", ex.what()};
-  }
-
+/// BM-2 (review 2026-10-11): the parse body below used to read every
+/// required key with a bare `node["key"].as<T>()` -- no presence guard, no
+/// surrounding `try`. yaml-cpp throws `YAML::BadConversion`/`InvalidNode`
+/// for a missing, misspelled or wrong-typed scalar, and that exception
+/// used to escape a function whose declared contract is `Result<
+/// CouplingGraph>`, past every caller that checks `.ok()` instead of
+/// wrapping the call in a `try`. Each required key below is now guarded
+/// explicitly, by name and by the entry it belongs to, so the common
+/// mistake (a typo'd key, a map where a scalar was expected) reports
+/// `E-YAML-PARSE` naming the exact key; `from_yaml_body` is additionally
+/// wrapped in a `try` that translates ANY exception still reaching it --
+/// a wrong-typed scalar on an OPTIONAL key, or a `fuse::Error` escaping a
+/// helper such as `RankSet`'s own range check (BM-14) -- into the same
+/// `E-YAML-PARSE` failure rather than letting it propagate as a non-FUSE,
+/// undeclared exception.
+namespace {
+Result<CouplingGraph> from_yaml_body(const YAML::Node& root) {
   if (auto e = check_unknown_keys(
           root,
           {"version", "meshes", "regions", "components", "couplers",
@@ -810,7 +833,16 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
     if (auto e = check_unknown_keys(n, {"name", "source"}, "mesh entry")) {
       return *e;
     }
+    if (auto e = require_key(n, "name", "mesh entry")) return *e;
     const auto name = n["name"].as<std::string>();
+    // BM-16: name-keyed maps collapse a duplicate silently (last wins),
+    // which is how a region naming this mesh by name could resolve to a
+    // DIFFERENT mesh than the one the author thought they had declared.
+    // Refused here, at the point the duplicate first becomes ambiguous,
+    // rather than left to silently rewrite the graph on a round trip.
+    if (mesh_by_name.count(name)) {
+      return Failure{"E-YAML-DUP", "duplicate mesh name '" + name + "'"};
+    }
     mesh_by_name[name] = g.add_mesh(
         MeshDecl{.name = name,
                  .source = n["source"] ? n["source"].as<std::string>() : ""});
@@ -821,12 +853,21 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
             n, {"name", "mesh", "entity_set", "dimension"}, "region entry")) {
       return *e;
     }
+    if (auto e = require_key(n, "mesh", "region entry")) return *e;
     const auto mesh_name = n["mesh"].as<std::string>();
     const auto it = mesh_by_name.find(mesh_name);
     if (it == mesh_by_name.end()) {
       return Failure{"E-YAML-REF", "unknown mesh '" + mesh_name + "'"};
     }
+    if (auto e = require_key(n, "name", "region entry")) return *e;
     const auto name = n["name"].as<std::string>();
+    // BM-16: same reasoning as the mesh table above -- a channel or field
+    // resolving this region's name must not be able to silently land on
+    // whichever of two identically-named regions happened to be declared
+    // last.
+    if (region_by_name.count(name)) {
+      return Failure{"E-YAML-DUP", "duplicate region name '" + name + "'"};
+    }
     region_by_name[name] = g.add_region(Region{
         .name = name,
         .mesh = it->second,
@@ -852,6 +893,7 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
     if (auto e = check_unknown_keys(n, {"name", "index", "ranks", "launch"}, "coupler entry")) {
       return *e;
     }
+    if (auto e = require_key(n, "name", "coupler entry")) return *e;
     CouplerDecl c;
     c.name = n["name"].as<std::string>();
     if (n["ranks"]) {
@@ -860,10 +902,13 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
         for (const auto& r : n["ranks"]) ranks.push_back(r.as<int>());
         c.ranks = RankSet{std::move(ranks)};
       } else {
+        const std::string ranks_ctx = "coupler '" + c.name + "' ranks";
         if (auto e = check_unknown_keys(n["ranks"], {"first", "count"},
-                                        "coupler '" + c.name + "' ranks")) {
+                                        ranks_ctx)) {
           return *e;
         }
+        if (auto e = require_key(n["ranks"], "first", ranks_ctx)) return *e;
+        if (auto e = require_key(n["ranks"], "count", ranks_ctx)) return *e;
         c.ranks = RankSet{n["ranks"]["first"].as<int>(),
                           n["ranks"]["count"].as<int>()};
       }
@@ -907,6 +952,7 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
             n, {"name", "ranks", "interval", "fields", "launch"}, "component entry")) {
       return *e;
     }
+    if (auto e = require_key(n, "name", "component entry")) return *e;
     ComponentDecl c;
     c.name = n["name"].as<std::string>();
     if (n["ranks"]) {
@@ -917,10 +963,13 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
         // ranks in launcher order without that changing the graph.
         c.ranks = RankSet{std::move(ranks)};
       } else {
+        const std::string ranks_ctx = "component '" + c.name + "' ranks";
         if (auto e = check_unknown_keys(n["ranks"], {"first", "count"},
-                                        "component '" + c.name + "' ranks")) {
+                                        ranks_ctx)) {
           return *e;
         }
+        if (auto e = require_key(n["ranks"], "first", ranks_ctx)) return *e;
+        if (auto e = require_key(n["ranks"], "count", ranks_ctx)) return *e;
         c.ranks = RankSet{n["ranks"]["first"].as<int>(),
                           n["ranks"]["count"].as<int>()};
       }
@@ -948,8 +997,14 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
               "field entry in component '" + c.name + "'")) {
         return *e;
       }
+      if (auto e = require_key(fn, "name", "field entry in component '" + c.name + "'")) {
+        return *e;
+      }
       FieldSpec f;
       f.name = fn["name"].as<std::string>();
+      if (auto e = require_key(fn, "region", "field '" + f.name + "' in component '" + c.name + "'")) {
+        return *e;
+      }
       const auto rname = fn["region"].as<std::string>();
       const auto rit = region_by_name.find(rname);
       if (rit == region_by_name.end()) {
@@ -1033,7 +1088,10 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
             "channel entry")) {
       return *e;
     }
+    if (auto e = require_key(n, "name", "channel entry")) return *e;
     const auto name = n["name"].as<std::string>();
+    if (auto e = require_key(n, "source", "channel '" + name + "'")) return *e;
+    if (auto e = require_key(n, "target", "channel '" + name + "'")) return *e;
     const auto src_name = n["source"].as<std::string>();
     const auto tgt_name = n["target"].as<std::string>();
     const auto sit = field_by_qualified.find(src_name);
@@ -1043,6 +1101,13 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
     }
     if (tit == field_by_qualified.end()) {
       return Failure{"E-YAML-REF", "unknown target field '" + tgt_name + "'"};
+    }
+    // BM-16: same reasoning as the mesh/region tables above -- an
+    // iteration region naming this channel by name (below) must not be
+    // able to silently bind to whichever of two identically-named
+    // channels happened to be declared last.
+    if (channel_by_name.count(name)) {
+      return Failure{"E-YAML-DUP", "duplicate channel name '" + name + "'"};
     }
     const ChannelId cid = g.add_channel(name, sit->second, tit->second);
     channel_by_name[name] = cid;
@@ -1104,6 +1169,10 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
       if (auto e = check_unknown_keys(n["spacetime"],
                                       {"basis", "degree", "window"},
                                       "channel '" + name + "' spacetime")) {
+        return *e;
+      }
+      if (auto e = require_key(n["spacetime"], "basis",
+                               "channel '" + name + "' spacetime")) {
         return *e;
       }
       TemporalBasis basis = TemporalBasis::None;
@@ -1170,6 +1239,7 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
             "iteration region entry")) {
       return *e;
     }
+    if (auto e = require_key(n, "name", "iteration region entry")) return *e;
     IterationRegionDecl d;
     d.name = n["name"].as<std::string>();
     for (const auto& c : n["channels"]) {
@@ -1180,7 +1250,19 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
       }
       d.channels.push_back(it->second);
     }
-    if (n["max_iterations"]) d.max_iterations = n["max_iterations"].as<int>();
+    if (n["max_iterations"]) {
+      d.max_iterations = n["max_iterations"].as<int>();
+      // BM-17: an authoring-time gate for a defect that otherwise surfaces
+      // only mid-run, inside the sweep loop (`Runner`'s own non-positive-
+      // count check, several collectives deep) instead of here, where the
+      // whole document's problems can be reported together.
+      if (d.max_iterations < 1) {
+        return Failure{"E-YAML-PARSE",
+                     "iteration region '" + d.name +
+                         "': max_iterations must be at least 1, got " +
+                         std::to_string(d.max_iterations)};
+      }
+    }
     for (const auto& mn : n["convergence"]) {
       if (auto e = check_unknown_keys(mn, {"kind", "tolerance", "field"},
                                       "convergence measure")) {
@@ -1200,6 +1282,17 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
                          "a field"};
       }
       m.tolerance = mn["tolerance"].as<double>();
+      // BM-17: `ConvergenceMeasure::satisfied()` (fuse/model/iteration.hpp)
+      // refuses a non-finite or non-positive tolerance with FUSE_THROW,
+      // mid-sweep, several collectives into a run -- the same condition is
+      // checkable, and reportable alongside every other document problem,
+      // at the authoring gate instead.
+      if (!(m.tolerance > 0.0) || !std::isfinite(m.tolerance)) {
+        return Failure{"E-YAML-PARSE",
+                     "iteration region '" + d.name + "': convergence measure "
+                         "for field '" + mn["field"].as<std::string>() +
+                         "' has a tolerance that is not finite and positive"};
+      }
       m.field = mn["field"].as<std::string>();
       d.convergence.add(std::move(m));
     }
@@ -1405,6 +1498,27 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
   }
 
   return g;
+}
+}  // namespace
+
+Result<CouplingGraph> from_yaml(std::string_view text) {
+  YAML::Node root;
+  try {
+    root = YAML::Load(std::string{text});
+  } catch (const YAML::Exception& ex) {
+    return Failure{"E-YAML-PARSE", ex.what()};
+  }
+  // BM-2: the body above this point can only fail via YAML::Load itself
+  // (caught just above); everything from here on -- required-key access,
+  // RankSet construction (BM-14), and every other `.as<T>()` call on an
+  // OPTIONAL key that still turns out to be the wrong YAML type -- is
+  // wrapped in one catch-all so no exception, FUSE-shaped or not, can
+  // escape a function whose contract is `Result<CouplingGraph>`.
+  try {
+    return from_yaml_body(root);
+  } catch (const std::exception& ex) {
+    return Failure{"E-YAML-PARSE", ex.what()};
+  }
 }
 
 Result<CouplingGraph> load_yaml_file(const std::string& path) {
