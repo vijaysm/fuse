@@ -959,6 +959,15 @@ fuse_add_gtest(backend native_migration THROWS)
 foreach(t native_mesh native_distributed_mesh native_generators native_migration)
   fuse_add_omp_legs(backend.${t} fuse_backend_${t}_test THROWS)
 endforeach()
+# docs/dev/native-mesh.md, "Execution space": NativeMeshView's device-resident
+# measure/centroid kernels. A `.device` twin re-runs the SAME binary under
+# FUSE_EXECUTION_SPACE=device -- the mesh construction path itself does not
+# branch on this variable (the device arrays are always built, device.md),
+# but the twin still proves the whole binary, run under the device
+# interpreter's environment, finishes clean rather than only in the default
+# (host-interpreter) environment every other row already runs under.
+fuse_add_device_twin(backend.native_distributed_mesh fuse_backend_native_distributed_mesh_test
+                     THROWS)
 fuse_tests_gated_by(FUSE_ENABLE_MPI backend/native_migration_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(backend native_migration_mpi LIBS fuse::backend fuse::partition MPI::MPI_CXX
@@ -1005,6 +1014,20 @@ foreach(t box_index refusals)
   fuse_add_gtest(search ${t})
 endforeach()
 fuse_add_gtest(search mesh_adapter LIBS fuse::backend)
+# docs/dev/search.md, "Execution space": BoxIndex/query_points_distributed on
+# Kokkos::DefaultExecutionSpace. box_index_test.cpp's own
+# DeviceBuildMatchesHostBuildForPointAndNearestQueries directly compares the
+# two spaces within one process; these `.device` twins additionally re-run
+# EVERY existing property test (brute-force point queries, k-nearest, shared
+# face/vertex, determinism) a second time with FUSE_EXECUTION_SPACE=device,
+# which flips BoxIndex::build's own `ExecutionSpace::Default` resolution
+# (types.hpp) -- the same mechanism RunnerConfig::resolved_execution_space()
+# uses, so this is the same "whole binary under the device interpreter"
+# property fuse_add_device_twin's own header comment names.
+foreach(t box_index refusals)
+  fuse_add_device_twin(search.${t} fuse_search_${t}_test)
+endforeach()
+fuse_add_device_twin(search.mesh_adapter fuse_search_mesh_adapter_test)
 fuse_tests_gated_by(FUSE_ENABLE_MPI search/distributed_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(search distributed_mpi LIBS fuse::search MPI::MPI_CXX)
