@@ -2547,6 +2547,27 @@ Result<void> Runner::Impl::setup(ComponentSet& components,
   }
   r = build_ticks(components);
   if (!r.ok()) return r;
+
+  // A5: the device staging lanes (`Impl::device_staging`'s own comment has
+  // the sizing argument), sized once here like `reduction_scratch` below and
+  // for the same reason; grown, not shrunk, on a repeated initialize().
+  // BEFORE resolve_regions(): a window-scoped region's lagged import chain
+  // is executed once during region resolution (iteration.cpp, "chain"), and
+  // with zero-length lanes that Interpolate reported E-RT-DEVICE
+  // (verification.brusselator_runner.device, the first run of the twin).
+  if (config.execution_space == RunnerConfig::RunnerExecutionSpace::Device) {
+    std::size_t stride = 0;
+    for (const Slot& s : slots) stride = std::max(stride, s.total());
+    device_staging_stride = stride;
+    if (block_host_scratch.size() < stride) block_host_scratch.resize(stride);
+    const std::size_t needed = kDeviceStagingSlots * stride;
+    if (device_staging.extent(0) < needed) {
+      device_staging = Kokkos::View<double*, DeviceMemSpace>(
+          Kokkos::view_alloc("fuse::dev_staging", Kokkos::WithoutInitializing),
+          needed);
+    }
+  }
+
   // Last: resolve_regions() needs the ticks and the resolved buffers, and it
   // is the single place spec §5.3's preconditions are checked
   // (E-ITER-NOCONVERGE, E-ITER-MAXITER, E-ITER-NOROLLBACK).
@@ -2581,22 +2602,6 @@ Result<void> Runner::Impl::setup(ComponentSet& components,
         Kokkos::view_alloc("fuse::reduction_scratch",
                           Kokkos::WithoutInitializing),
         needed_chunks);
-  }
-
-  // A5: the device staging lanes (`Impl::device_staging`'s own comment has
-  // the sizing argument), sized once here like `reduction_scratch` above and
-  // for the same reason. Grown, not shrunk, on a repeated initialize().
-  if (config.execution_space == RunnerConfig::RunnerExecutionSpace::Device) {
-    std::size_t stride = 0;
-    for (const Slot& s : slots) stride = std::max(stride, s.total());
-    device_staging_stride = stride;
-    if (block_host_scratch.size() < stride) block_host_scratch.resize(stride);
-    const std::size_t needed = kDeviceStagingSlots * stride;
-    if (device_staging.extent(0) < needed) {
-      device_staging = Kokkos::View<double*, DeviceMemSpace>(
-          Kokkos::view_alloc("fuse::dev_staging", Kokkos::WithoutInitializing),
-          needed);
-    }
   }
 
   initialized = true;
