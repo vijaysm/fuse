@@ -2157,7 +2157,7 @@ Result<void> Runner::Impl::checkpoint_regions(ComponentSet& components) {
     for (std::size_t v = 0; v < R.verify_arcs.size(); ++v) {
       const detail::Slot& s = slots[R.verify_arcs[v]];
       if (s.data != nullptr) {
-        num::copy(s.data, R.verify_save[v].data(), R.verify_save[v].size());
+        slot_to_host(s, R.verify_save[v].data(), R.verify_save[v].size());
       }
     }
   }
@@ -2389,7 +2389,7 @@ Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
   // feed arcs rather than re-derived, so a Newton-selected region starts
   // from exactly the point a Picard-accelerated one would.
   for (const detail::RegionBlock& b : R.blocks) {
-    num::copy(slots[b.feed_arc].data, x.data() + b.offset, b.length);
+    slot_to_host(slots[b.feed_arc], x.data() + b.offset, b.length);
   }
 
   // step_period()'s own top comment (runner.cpp): "By the time control
@@ -2418,6 +2418,7 @@ Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
   // behalf.
   for (const std::size_t slot : R.component_slots) {
     const Result<void> r = components.at(slot).restore_state();
+    note_component_ran();
     if (!r.ok()) return r;
   }
 
@@ -2672,18 +2673,18 @@ Result<void> Runner::Impl::evaluate_window_region_residual(
   std::vector<std::vector<double>> carried_snapshot(R.carried_arcs.size());
   for (std::size_t i = 0; i < R.carried_arcs.size(); ++i) {
     const detail::Slot& s = slots[R.carried_arcs[i]];
-    if (s.data != nullptr) {
-      carried_snapshot[i].assign(s.data, s.data + s.total());
-    }
+    if (s.data != nullptr) slot_to_vector(s, carried_snapshot[i], s.total());
   }
   std::vector<std::vector<double>> feed_snapshot(R.blocks.size());
   std::vector<std::vector<double>> value_snapshot(R.blocks.size());
   for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
     const detail::RegionBlock& b = R.blocks[bi];
-    const double* feed = slots[b.feed_arc].data;
-    if (feed != nullptr) feed_snapshot[bi].assign(feed, feed + b.length);
-    const double* value = slots[b.value_arc].data;
-    if (value != nullptr) value_snapshot[bi].assign(value, value + b.length);
+    if (slots[b.feed_arc].data != nullptr) {
+      slot_to_vector(slots[b.feed_arc], feed_snapshot[bi], b.length);
+    }
+    if (slots[b.value_arc].data != nullptr) {
+      slot_to_vector(slots[b.value_arc], value_snapshot[bi], b.length);
+    }
   }
   struct SavedWindowMemberState {
     Rational clock;
@@ -2753,7 +2754,7 @@ Result<void> Runner::Impl::evaluate_window_region_residual(
       if (b.newton_offset == detail::RegionBlock::kNotInNewtonVector) {
         continue;
       }
-      const double* g = slots[b.value_arc].data;
+      const double* g = slot_host_read(slots[b.value_arc], b.length, block_host_scratch);
       for (std::size_t j = 0; j < b.length; ++j) {
         f_out[b.newton_offset + j] = x[b.newton_offset + j] - g[j];
         if (!g_out.empty()) g_out[b.newton_offset + j] = g[j];
@@ -2775,21 +2776,22 @@ Result<void> Runner::Impl::evaluate_window_region_residual(
   } else {
     for (const std::size_t slot : R.component_slots) {
       const Result<void> rs = components.at(slot).restore_state();
+      note_component_ran();
       if (!rs.ok() && restore_err.ok()) restore_err = rs;
     }
     for (std::size_t i = 0; i < R.carried_arcs.size(); ++i) {
       detail::Slot& s = slots[R.carried_arcs[i]];
       if (s.data != nullptr && !carried_snapshot[i].empty()) {
-        num::copy(carried_snapshot[i].data(), s.data, carried_snapshot[i].size());
+        host_to_slot(carried_snapshot[i].data(), s, carried_snapshot[i].size());
       }
     }
     for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
       const detail::RegionBlock& b = R.blocks[bi];
       if (!feed_snapshot[bi].empty()) {
-        num::copy(feed_snapshot[bi].data(), slots[b.feed_arc].data, b.length);
+        host_to_slot(feed_snapshot[bi].data(), slots[b.feed_arc], b.length);
       }
       if (!value_snapshot[bi].empty()) {
-        num::copy(value_snapshot[bi].data(), slots[b.value_arc].data, b.length);
+        host_to_slot(value_snapshot[bi].data(), slots[b.value_arc], b.length);
       }
     }
     for (const NodeId node : R.window_member_nodes) {
@@ -3192,7 +3194,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
     for (std::size_t v = 0; v < R.verify_arcs.size(); ++v) {
       const detail::Slot& s = slots[R.verify_arcs[v]];
       if (s.data != nullptr) {
-        num::copy(s.data, R.verify_save[v].data(), R.verify_save[v].size());
+        slot_to_host(s, R.verify_save[v].data(), R.verify_save[v].size());
       }
     }
   }
@@ -3214,7 +3216,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
   // what we last wrote means the residual measures the real map, including
   // anything the delivery did on the way.
   for (const detail::RegionBlock& b : R.blocks) {
-    num::copy(slots[b.feed_arc].data, R.x_old.data() + b.offset, b.length);
+    slot_to_host(slots[b.feed_arc], R.x_old.data() + b.offset, b.length);
   }
 
   for (int k = 0; k < R.max_iterations; ++k) {
@@ -3365,7 +3367,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
     // converged-looking zero) entry instead, below.
     for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
       const detail::RegionBlock& b = R.blocks[bi];
-      const double* g = slots[b.value_arc].data;
+      const double* g = slot_host_read(slots[b.value_arc], b.length, block_host_scratch);
       double* x_new_block = R.x_new.data() + b.offset;
       const double* x_old_block = R.x_old.data() + b.offset;
 
@@ -3528,6 +3530,32 @@ detail::Task<Result<void>> Runner::Impl::run_region(
         }
         window_converged = wc.converged;
       }
+
+      // KNOWN_ISSUES.md D42: `gathered_window_block_samples()` just above
+      // reaches only `R.participants` -- correctly, it has nothing to
+      // gather from anyone else -- but THIS region's own channels move
+      // over the run's single shared transport communicator, which a
+      // rank hosting some OTHER, uncoupled component outside R.
+      // participants (this function's own bystander) still shares, and
+      // such a rank keeps calling `move()` for these channels every
+      // sweep (mpi_transport.cpp's own "rank in neither rank set still
+      // enters MPI_Alltoallv with zero counts" convention) with no way to
+      // learn `window_converged` from the gather above, since it was
+      // never in `gathered` to begin with. Left uncorrected, a
+      // participant breaks this loop the sweep it converges while a
+      // bystander -- never having heard -- keeps calling `move()` on
+      // later sweeps nobody else joins, deadlocking the shared
+      // communicator (measured, `parallel.window_runner_mpi.3`, the
+      // uncoupled-third-rank case). Broadcasting here, unconditionally,
+      // every sweep, to EVERY rank sharing the communicator -- not just
+      // `R.participants` -- is what makes a bystander's own copy of this
+      // loop stop in lockstep with the participants it has no other
+      // relationship to.
+      bool agreed_converged = window_converged;
+      const Result<void> bc =
+          broadcast_window_convergence(R, window_converged, agreed_converged);
+      if (!bc.ok()) co_return bc.error();
+      window_converged = agreed_converged;
     } else if (R.participants.size() > 1) {
       const std::size_t nb = R.blocks.size();
       std::vector<double> payload(1 + 4 * nb);
@@ -3674,6 +3702,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
     // before it would be undone.
     for (const std::size_t slot : R.component_slots) {
       const Result<void> rs = components.at(slot).restore_state();
+      note_component_ran();
       if (!rs.ok()) co_return rs;
       // KNOWN_ISSUES.md D12: the re-advance below (R.tick_indices) is
       // this slot's first advance() after THIS restore_state(), so it is
@@ -3708,8 +3737,8 @@ detail::Task<Result<void>> Runner::Impl::run_region(
       const std::vector<double>& saved = R.verify_save[v];
       if (s.data == nullptr || saved.empty()) continue;
       ++stats.checkpoint_verifications;
-      if (std::memcmp(s.data, saved.data(), saved.size() * sizeof(double)) ==
-          0) {
+      const double* now = slot_host_read(s, saved.size(), block_host_scratch);
+      if (std::memcmp(now, saved.data(), saved.size() * sizeof(double)) == 0) {
         continue;
       }
       const std::size_t which = R.verify_component[v];
@@ -3752,7 +3781,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
     for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
       const detail::RegionBlock& b = R.blocks[bi];
       const double* fed = R.x_out.data() + b.offset;
-      num::copy(fed, slots[b.value_arc].data, b.length);
+      host_to_slot(fed, slots[b.value_arc], b.length);
       for (const std::uint32_t arc : {b.value_arc, b.residual_arc}) {
         std::vector<double>& shadow = previous[arc];
         if (shadow.size() == b.length) num::copy(fed, shadow.data(), b.length);
@@ -4040,6 +4069,7 @@ Result<void> Runner::Impl::resolve_pending_window_straddles(
     const Rational target_clock = st.clock;
 
     const Result<void> r0 = comp.restore_state();
+    note_component_ran();
     if (!r0.ok()) return r0;
 
     // This member's own import over the window that just finished,
@@ -4139,6 +4169,7 @@ Result<void> Runner::Impl::resolve_pending_window_straddles(
         ctx.step = 0;
         ctx.iteration = 0;
         const Result<void> ar = comp.advance(ctx);
+        note_component_ran();
         if (!ar.ok()) return ar;
       }
       clock = end;
@@ -4786,6 +4817,7 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
       co_await detail::ExternalSuspend{&active_handle};
     }
     const Result<void> ar = comp.advance(ctx);
+    note_component_ran();
     if (!ar.ok()) co_return ar;
     if (out != nullptr) {
       for (std::size_t e = 0; e < cfg.length; ++e) {

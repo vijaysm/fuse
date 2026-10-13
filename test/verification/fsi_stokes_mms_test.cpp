@@ -20,6 +20,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -346,4 +347,44 @@ TEST(FsiStokesMms, TemporalOrderIsTwo) {
   EXPECT_GT(order, 1.8) << "observed temporal order " << order
                         << ", finest error " << errs.back();
   EXPECT_LT(order, 2.3) << "suspiciously high temporal order " << order;
+}
+
+// Phase 1's dt-keyed LU cache (`fsi::CnStepLuCache`, stokes_solver.hpp) is
+// sound only if dt is the ONLY per-call argument that changes A. `p0` is not
+// rhs-only: the pressure-gradient coefficient is 0.5/dx when p0 is supplied
+// (trapezoidal) and 1/dx when it is not (fully implicit), so A itself differs.
+// A cache seeded by an implicit-only call must not be reused for a
+// trapezoidal call at the same dt; the cached result has to equal the
+// always-fresh one bit for bit (flag off, the backend IS Eigen::SparseLU).
+TEST(FsiStokesLuCache, DoesNotReuseAnImplicitFactorisationForATrapezoidalStep) {
+  const fsi::ChannelParams cp{.nx = 10, .ny = 6, .L = 1.0, .H = 0.2, .mu = 0.01, .rho = 1.0};
+  fsi::ChannelBCs bcs;
+  bcs.left.u = [](double y, double) { return 4.0 * y * (0.2 - y) / (0.2 * 0.2); };
+  bcs.right.outflow = true;
+  const fsi::SourceTerms src;
+  const std::vector<double> u0((cp.nx + 1) * cp.ny, 0.0), v0(cp.nx * (cp.ny + 1), 0.0);
+  const fsi::PressurePin pin{cp.nx - 1, 0, 0.0};
+  const double dt = 0.01;
+
+  fsi::CnStepLuCache cache;
+  // Seed the cache with the fully implicit matrix (p0 == nullptr).
+  const fsi::FlowState implicit =
+      fsi::cn_step(cp, bcs, src, dt, 0.0, dt, u0, v0, pin, nullptr, nullptr, &cache);
+  ASSERT_TRUE(cache.valid);
+  // A non-trivial p0 (the implicit step's own pressure), same dt.
+  const std::vector<double> p0 = implicit.p;
+  ASSERT_GT(std::abs(*std::max_element(p0.begin(), p0.end())), 0.0);
+
+  const fsi::FlowState fresh =
+      fsi::cn_step(cp, bcs, src, dt, 0.0, dt, u0, v0, pin, nullptr, &p0, nullptr);
+  const fsi::FlowState cached =
+      fsi::cn_step(cp, bcs, src, dt, 0.0, dt, u0, v0, pin, nullptr, &p0, &cache);
+
+  ASSERT_EQ(cached.u.size(), fresh.u.size());
+  double worst = 0.0;
+  for (std::size_t i = 0; i < fresh.u.size(); ++i) worst = std::max(worst, std::abs(cached.u[i] - fresh.u[i]));
+  for (std::size_t i = 0; i < fresh.v.size(); ++i) worst = std::max(worst, std::abs(cached.v[i] - fresh.v[i]));
+  for (std::size_t i = 0; i < fresh.p.size(); ++i) worst = std::max(worst, std::abs(cached.p[i] - fresh.p[i]));
+  EXPECT_EQ(worst, 0.0) << "cached trapezoidal step differs from the fresh one by " << worst
+                        << ": the cache reused a factorisation of the wrong matrix";
 }

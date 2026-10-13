@@ -198,8 +198,77 @@ Registered at 2, 3 and 4 ranks (`layout.migrate.{2,3,4}.c1-<lo>-<hi>.c2-<lo>-<hi
 placement shapes the existing `layout.*` rows already cover. Compiled and linked in this sandbox
 (Tier 1); running them is a host action, same as every other MPI test here.
 
+## Execution space
+
+`MeshArrays<MemorySpace>`'s template argument has always defaulted to
+`Kokkos::DefaultExecutionSpace::memory_space` -- device memory on a CUDA/HIP/SYCL build -- but
+`NativeMeshView::create`/`create_from_host` mirrored every array to the host unconditionally and
+validated/decomposed/measured entirely there, so nothing about the mesh was actually device-resident
+once a `NativeMeshView` existed. This section is what changed.
+
+**Validation stays host-only, unconditionally -- this did not move.** Connectivity range checks,
+the polygon/polyhedron fan triangulation (`canonical_fan_triangulation`), and the star-shapedness
+checks (`canonical_cell_tetrahedra`) all return `Result`/use `fmt::format`, neither of which is
+device-callable in this codebase's own convention (same standing priority -- robustness over
+efficiency -- the file header above already states). `create_from_host` runs this exactly as
+before, over the SAME host-mirrored `MeshArrays<Kokkos::HostSpace>` `create<MemorySpace>` has always
+produced via `to_memory_space<Kokkos::HostSpace>`: that mirror is already "created on demand" (once
+per mesh construction, not on every query) and "cached" (held for the view's lifetime in the
+existing `vertex_xyz_`/`cell_vertices_`/`cell_simplices_`/`measure_`/`centroid_` host members,
+exactly as `measure(dim,i)`/`centroid(dim,i)` have always served them) -- there was no unconditional,
+per-query re-mirroring to make lazy, because none existed.
+
+**What is new: a genuinely device-resident, independently computed primary pair.**
+`NativeMeshView::device_measure()`/`device_centroid()` are `Kokkos::View<double*, DeviceMemSpace>`/
+`Kokkos::View<double* [3], DeviceMemSpace>` (`DeviceMemSpace = Kokkos::DefaultExecutionSpace::memory_space`),
+populated by two Kokkos kernels dispatched on `Kokkos::DefaultExecutionSpace` at the end of
+`create_from_host`, after the host validation loop above has already run:
+
+* **Centroid** is a per-cell vertex average (the SAME convention `centroid(dim,i)` has always used,
+  not a simplex-weighted one -- see this file's existing comment on that choice), computed directly
+  from `vertex_coords` and the cell-to-vertex CSR with no simplex decomposition involved at all, in
+  the same ascending-corner order the host loop uses.
+* **Measure** sums each cell's own simplices -- the SAME simplex corners
+  `canonical_fan_triangulation`/`canonical_cell_tetrahedra` just validated, flattened into a device
+  CSR -- in the same order the host loop pushed them, through device-callable counterparts of
+  `geometry.hpp`'s `triangle_area`/`tetrahedron_volume` formulas (`native_mesh.cpp`'s anonymous
+  namespace; independent of that header's host-only operator overloads, so geometry.hpp itself is
+  untouched).
+
+Both kernels reproduce the host loop's own accumulation order exactly, so on a host-only build
+(`Kokkos::DefaultExecutionSpace` IS the host space there) the device arrays are bit-identical to
+`measure_`/`centroid_`; on higgs's CUDA build they agree to 1e-14 relative (nvcc's FMA contraction;
+KNOWN_ISSUES.md D45, the accepted contraction gap). `measure(dim,i)`/`centroid(dim,i)` and every existing `MeshView` consumer keep
+reading the pre-existing host arrays unchanged -- nothing above the backend sees `DeviceMemSpace` or
+has to change.
+
+**What this does NOT make device-resident.** `simplex_count`/`simplex_points` (the variable-length
+per-cell simplex corner list `element_boxes`/the supermesh builder read) still come from the host
+`cell_simplices_` member only; there is no device CSR exposed for them, only the flattened one
+`create_from_host` builds and discards after feeding the measure kernel. `NativeMeshBuilder` (host
+`std::vector`-based construction), the VTK file reader/writer, `fuse::native::migrate`'s pack/unpack,
+and `build_native_remap_halo`/`build_supermesh_weights` (the MLS and conservative-intersection
+weight builders) all still go through the host-only `MeshView`/`MeshArrays<Kokkos::HostSpace>`
+surface and are unaffected by this section -- see "What is deferred" below and
+docs/dev/device-resident-arcs.md's own Phase 2 ordering (search, then this file, then halo and
+migration pack/unpack, then the weight builders, named there as this track's siblings' scope, not
+this one's).
+
+## Device-capable packing (Phase 2, "weight-builders" track)
+
+`include/fuse/backend/native/mesh_pack_device.hpp` templates migration's and the remap halo's byte-wire
+PACK on the Kokkos memory space (docs/dev/native-halo.md's own "Device packing" section has the full
+account): `MeshArrays<Space>`'s plain CSR connectivity is read directly, with no `NativeMeshView`
+round trip, so packing runs as Kokkos kernels on `Space`. The receiving side's dedup-by-global-id merge
+is not yet templated -- see "What is deferred" below and KNOWN_ISSUES.md.
+
 ## What is deferred
 
+- **Device-resident migration/halo MERGE.** `pack_to<Space>` (above) moves packing to the device; the
+  symmetric unpack/merge (`unpack_migrated_mesh`'s vertex dedup, `merge_halo_cells`'s cell dedup, both
+  by global id) still runs on the host. The bulk per-field data copy generalizes the same way packing
+  did; the open piece is the membership decision itself, which wants a device-friendly sorted-unique or
+  hash-set primitive this track did not build.
 - **Coverage migration (M3).** This migrates OWNED cells whole; it does not build or maintain GHOST
   layers across a repartition. A caller needing ghosts after migration re-derives them separately.
 - **Per-placement remap weights.** `repartition`'s convenience wrapper uses a uniform per-cell weight;

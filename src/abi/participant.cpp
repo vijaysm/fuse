@@ -20,19 +20,30 @@
 
 #include <cstddef>
 #include <cstring>
-#include <cstdlib>   // std::atexit, for the Kokkos finalize hook
+#include <cstdlib>   // std::atexit, for the Kokkos finalize hook; std::getenv/atoi below
 #include <mutex>
 #include <new>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 
 #include <Kokkos_Core.hpp>
+#include <fmt/format.h>
 
 #if FUSE_HAVE_MPI
 #include <mpi.h>
 #endif
+#if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || defined(KOKKOS_ENABLE_SYCL)
+// Kokkos' own pre-initialization device enumeration (used internally by its
+// `map_device_id_by("mpi_rank")` option); the non-test overload
+// (`get_visible_devices()`, no argument) is the one its own header comment
+// says to use. Not raw CUDA: this is Kokkos' API, just under `Impl`.
+#include <impl/Kokkos_DeviceManagement.hpp>
+#endif
 
+#include "fuse/abi/device_binding.hpp"
 #include "fuse/backend/mesh_view.hpp"
 #include "fuse/base/error.hpp"
 #include "fuse/base/rational.hpp"
@@ -316,11 +327,108 @@ fuse_status impl_capabilities(fuse_ctx*, const fuse_null*,
 /// itself already finalized and does nothing. This is not finalizing from
 /// fuse_destroy(), which the paragraph above rules out for good reason: by
 /// the time an atexit hook runs, no caller can create another context.
+namespace {
+
+/// An explicit `--kokkos-device-id=N` argument or the `KOKKOS_DEVICE_ID`
+/// environment variable, checked in that order -- the same precedence
+/// Kokkos' own command-line parser gives the two spellings. `argc==0` (this
+/// file's own call site, which has no argv at all: `ensure_kokkos_initialized()`
+/// runs from `fuse_create()`, not from a `main()`) simply skips the argv
+/// scan and falls through to the environment variable.
+std::optional<int> explicit_device_id_override(int argc, char** argv) {
+  if (const char* env = std::getenv("KOKKOS_DEVICE_ID");
+      env != nullptr && env[0] != '\0') {
+    return std::atoi(env);
+  }
+  constexpr std::string_view kPrefix = "--kokkos-device-id=";
+  for (int i = 0; i < argc; ++i) {
+    if (argv == nullptr || argv[i] == nullptr) continue;
+    const std::string_view a{argv[i]};
+    if (a.substr(0, kPrefix.size()) == kPrefix) {
+      return std::atoi(std::string(a.substr(kPrefix.size())).c_str());
+    }
+  }
+  return std::nullopt;
+}
+
+/// This process's rank within its node: `MPI_COMM_TYPE_SHARED` splits
+/// `MPI_COMM_WORLD` into one communicator per node, so a rank's position in
+/// its own split is exactly "how many other ranks on this node come before
+/// me" -- which device index 0, 1, 2, ... it should try to claim if devices
+/// are assigned round-robin. 0 without MPI, and 0 before `MPI_Init` (this
+/// function is called from `ensure_kokkos_initialized()`, which MUST run
+/// before `MPI_Init` in a library-embedding caller is not guaranteed by
+/// anything this library controls -- `MPI_Initialized()` is the one
+/// well-defined way to ask "is it safe to call `MPI_Comm_split_type` yet").
+int local_rank_in_node() {
+#if FUSE_HAVE_MPI
+  int mpi_started = 0;
+  if (MPI_Initialized(&mpi_started) != MPI_SUCCESS || mpi_started == 0) {
+    return 0;
+  }
+  MPI_Comm local = MPI_COMM_NULL;
+  if (MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0,
+                          MPI_INFO_NULL, &local) != MPI_SUCCESS) {
+    return 0;
+  }
+  int rank = 0;
+  MPI_Comm_rank(local, &rank);
+  MPI_Comm_free(&local);
+  return rank;
+#else
+  return 0;
+#endif
+}
+
+/// How many devices this build's Kokkos backend reports visible, queried
+/// BEFORE `Kokkos::initialize()` -- the same enumeration Kokkos' own
+/// `map_device_id_by("mpi_rank")` option uses internally for this exact
+/// purpose. 0 on a Serial/OpenMP-only Kokkos (no device backend at all).
+int visible_device_count() {
+#if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || defined(KOKKOS_ENABLE_SYCL)
+  return static_cast<int>(Kokkos::Impl::get_visible_devices().size());
+#else
+  return 0;
+#endif
+}
+
+/// Gathers the real inputs `fuse::abi::resolve_device_id()` needs and
+/// returns the device id THIS process should bind to, or `nullopt` when
+/// there is no device backend at all and no explicit override either --
+/// the caller then passes nothing to Kokkos and gets ordinary host-only
+/// behaviour, unchanged from before this function existed.
+std::optional<int> resolve_device_id_for_this_process(int argc, char** argv) {
+  const std::optional<int> override_id = explicit_device_id_override(argc, argv);
+  const int count = visible_device_count();
+  if (count <= 0 && !override_id.has_value()) return std::nullopt;
+  const int local_rank = local_rank_in_node();
+  const int id = fuse::abi::resolve_device_id(local_rank, count, override_id);
+  if (std::getenv("FUSE_DEVICE_DEBUG") != nullptr) {
+    fmt::print(stderr,
+               "[device-bind] local_rank={} device_count={} override={} -> "
+               "device_id={}\n",
+               local_rank, count,
+               override_id.has_value() ? std::to_string(*override_id) : "none",
+               id);
+  }
+  return id;
+}
+
+}  // namespace
+
 void ensure_kokkos_initialized() {
   static std::once_flag once;
   std::call_once(once, [] {
     if (!Kokkos::is_initialized() && !Kokkos::is_finalized()) {
-      Kokkos::initialize();
+      Kokkos::InitializationSettings settings;
+      // No argv at this call site (fuse_create() is a library entry point,
+      // not a main()): only the KOKKOS_DEVICE_ID environment variable can
+      // override here, not a command-line flag.
+      if (const std::optional<int> dev =
+              resolve_device_id_for_this_process(0, nullptr)) {
+        settings.set_device_id(*dev);
+      }
+      Kokkos::initialize(settings);
       std::atexit([] {
         if (Kokkos::is_initialized() && !Kokkos::is_finalized()) {
           Kokkos::finalize();

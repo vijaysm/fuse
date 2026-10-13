@@ -131,7 +131,7 @@ fuse::Result<std::unique_ptr<fuse::Component>> Registry::extract(const std::stri
     if (it->first == name) {
       std::unique_ptr<fuse::Component> c = std::move(it->second);
       mounted_.erase(it);
-      return c;
+      return std::move(c);
     }
   }
   return fuse::Failure{"E-ABI-REGISTRY-NOTFOUND",

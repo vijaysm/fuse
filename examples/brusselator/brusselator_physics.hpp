@@ -371,7 +371,7 @@ inline fuse::Result<NativeGrid> NativeGrid::make(fuse::native::NativeMeshBackend
     seen[static_cast<std::size_t>(canonical)] = 1;
     g.native_of_canonical_[static_cast<std::size_t>(canonical)] = static_cast<int>(native_idx);
   }
-  return g;
+  return std::move(g);
 }
 
 /// The periodic 5-point Laplacian on a canonical-order nx*ny grid --

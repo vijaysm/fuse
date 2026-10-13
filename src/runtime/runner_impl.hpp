@@ -48,6 +48,11 @@ struct Slot {
   int         components = 1;
   bool        owned_by_component = false;
   bool        persistent = false;
+  /// `data` points into `Impl::device_storage` (DeviceMemSpace), not host
+  /// memory: only Space-generic instructions may dereference it, through the
+  /// execute_on() span helpers. Set at the end of setup() for Device mode
+  /// (docs/dev/device-resident-arcs.md); always false under Host.
+  bool        device = false;
 
   [[nodiscard]] std::size_t total() const noexcept {
     return elements * static_cast<std::size_t>(components);
@@ -200,15 +205,40 @@ struct SpacetimeInfo {
 /// single-component `remap_apply`'s test fixture does, because the sort may
 /// have reordered it relative to the original array.
 ///
-/// All three views live in `Kokkos::HostSpace` explicitly, not the default
-/// execution space's memory space: `Runner::Impl::HostExecSpace` (below) is
-/// always host (Serial/OpenMP/Threads), whose `memory_space` IS
-/// `Kokkos::HostSpace`, so the two agree without a template parameter here.
-struct RemapCsr {
-  Kokkos::View<std::size_t*, Kokkos::HostSpace> row_begin;
-  Kokkos::View<std::size_t*, Kokkos::HostSpace> col;
-  Kokkos::View<double*,      Kokkos::HostSpace> val;
+/// `RemapCsr` (the alias below) lives in `Kokkos::HostSpace` explicitly, not
+/// the default execution space's memory space: `Runner::Impl::HostExecSpace`
+/// is always host (Serial/OpenMP/Threads), whose `memory_space` IS
+/// `Kokkos::HostSpace`. A5 adds the one other instantiation,
+/// `RemapCsrOf<Runner::Impl::DeviceMemSpace>` (`Impl::remap_csr_device`), a
+/// byte-for-byte `deep_copy` of the host one made by `mirror_remap_csr()` at
+/// the same point of `resolve_remap()` -- the sort and the prefix scan still
+/// run exactly once, on host.
+template <class MemSpace>
+struct RemapCsrOf {
+  Kokkos::View<std::size_t*, MemSpace> row_begin;
+  Kokkos::View<std::size_t*, MemSpace> col;
+  Kokkos::View<double*,      MemSpace> val;
 };
+using RemapCsr = RemapCsrOf<Kokkos::HostSpace>;
+
+template <class MemSpace>
+[[nodiscard]] RemapCsrOf<MemSpace> mirror_remap_csr(const RemapCsr& host) {
+  RemapCsrOf<MemSpace> d;
+  d.row_begin = Kokkos::View<std::size_t*, MemSpace>(
+      Kokkos::view_alloc("fuse::remap_csr_row_begin_dev",
+                        Kokkos::WithoutInitializing),
+      host.row_begin.extent(0));
+  d.col = Kokkos::View<std::size_t*, MemSpace>(
+      Kokkos::view_alloc("fuse::remap_csr_col_dev", Kokkos::WithoutInitializing),
+      host.col.extent(0));
+  d.val = Kokkos::View<double*, MemSpace>(
+      Kokkos::view_alloc("fuse::remap_csr_val_dev", Kokkos::WithoutInitializing),
+      host.val.extent(0));
+  Kokkos::deep_copy(d.row_begin, host.row_begin);
+  Kokkos::deep_copy(d.col, host.col);
+  Kokkos::deep_copy(d.val, host.val);
+  return d;
+}
 
 /// One `Transport` instruction's execution plan, resolved once at setup.
 ///
@@ -285,6 +315,87 @@ struct TransportPlan {
            static_cast<std::size_t>(std::max(spec.components, 1));
   }
 };
+
+/// Device-resident twin of one `TransportPlan`'s matching data, built once
+/// in Device mode alongside the host plan (docs/dev/device-resident-arcs.md
+/// Phase 3: the GPU-aware transport step). Every index array below is
+/// pre-expanded to DOUBLE granularity -- `index[k*components+c] =
+/// entity_index[k]*components+c` -- so the hot loop's pack/unpack reduces
+/// to `fuse::num::gather`/`scatter`, the same kernels the elementwise
+/// operators and the remap matvec already use on the device, rather than a
+/// bespoke indexed kernel per Transport matching pattern. Mirrors the
+/// `RemapCsrOf`/`mirror_remap_csr` pair above: the expansion runs once, on
+/// host, at setup; the hot loop never allocates or recomputes it.
+template <class MemSpace>
+struct TransportDeviceOf {
+  Kokkos::View<double*, MemSpace>      send, recv;
+  Kokkos::View<std::size_t*, MemSpace> gather, scatter;
+  Kokkos::View<std::size_t*, MemSpace> local_src, local_dst;
+  Kokkos::View<std::size_t*, MemSpace> peer_written;
+  /// Scratch for the same-rank permutation (`local_src` -> `local_dst`):
+  /// `fuse::num::gather` writes it FROM `local_src`, then
+  /// `fuse::num::scatter` writes `out` FROM it at `local_dst` -- two
+  /// kernels, because neither primitive varies both its source and its
+  /// destination index in one call. Sized once to `local_src`'s own
+  /// extent (already double-granular).
+  Kokkos::View<double*, MemSpace>      local_scratch;
+  /// Scratch for the peer path's masked copy (`out[d] <- recv[d]`, `d`
+  /// ranging over `peer_written`): gather the selected positions out of
+  /// `recv` into this, then scatter them back into `out` at the SAME
+  /// positions -- the masked copy expressed as the two shared primitives
+  /// instead of a third bespoke kernel. Sized once to `peer_written`'s own
+  /// extent.
+  Kokkos::View<double*, MemSpace>      peer_scratch;
+};
+
+/// Builds `TransportDeviceOf<MemSpace>` from one host `TransportPlan`,
+/// expanding every entity index to double granularity by `spec.components`
+/// and `deep_copy`-ing each array once (host vector -> unmanaged host view
+/// -> device view, the same two-step `mirror_remap_csr` above uses).
+template <class MemSpace>
+[[nodiscard]] TransportDeviceOf<MemSpace> mirror_transport_plan(
+    const TransportPlan& p) {
+  const std::size_t nc =
+      static_cast<std::size_t>(std::max(p.spec.components, 1));
+  const auto expand = [nc](const std::vector<std::size_t>& entity) {
+    std::vector<std::size_t> out(entity.size() * nc);
+    for (std::size_t k = 0; k < entity.size(); ++k) {
+      for (std::size_t c = 0; c < nc; ++c) out[k * nc + c] = entity[k] * nc + c;
+    }
+    return out;
+  };
+  const auto to_device_idx = [](const std::vector<std::size_t>& host_idx) {
+    Kokkos::View<std::size_t*, MemSpace> d(
+        Kokkos::view_alloc("fuse::transport_idx_dev", Kokkos::WithoutInitializing),
+        host_idx.size());
+    Kokkos::View<const std::size_t*, Kokkos::HostSpace,
+                Kokkos::MemoryTraits<Kokkos::Unmanaged>>
+        h(host_idx.data(), host_idx.size());
+    Kokkos::deep_copy(d, h);
+    return d;
+  };
+  TransportDeviceOf<MemSpace> d;
+  d.gather       = to_device_idx(expand(p.gather));
+  d.scatter      = to_device_idx(expand(p.scatter));
+  d.local_src    = to_device_idx(expand(p.local_src));
+  d.local_dst    = to_device_idx(expand(p.local_dst));
+  d.peer_written = to_device_idx(expand(p.peer_written));
+  d.send = Kokkos::View<double*, MemSpace>(
+      Kokkos::view_alloc("fuse::transport_send_dev", Kokkos::WithoutInitializing),
+      p.total());
+  d.recv = Kokkos::View<double*, MemSpace>(
+      Kokkos::view_alloc("fuse::transport_recv_dev", Kokkos::WithoutInitializing),
+      p.total());
+  d.local_scratch = Kokkos::View<double*, MemSpace>(
+      Kokkos::view_alloc("fuse::transport_local_scratch_dev",
+                         Kokkos::WithoutInitializing),
+      p.local_src.size() * nc);
+  d.peer_scratch = Kokkos::View<double*, MemSpace>(
+      Kokkos::view_alloc("fuse::transport_peer_scratch_dev",
+                         Kokkos::WithoutInitializing),
+      p.peer_written.size() * nc);
+  return d;
+}
 
 /// Everything an instruction needs that can be worked out at setup, so the
 /// hot loop performs no lookup, no arithmetic on ids, and no allocation.
@@ -725,17 +836,87 @@ struct Runner::Impl {
   /// DEFAULT HOST execution space -- OpenMP if the build enabled it, Serial
   /// otherwise (`Kokkos::DefaultHostExecutionSpace`'s own definition) --
   /// instead of the hand-rolled serial loops `execute()` used to call
-  /// directly. Not templated on `Impl` itself: a device build (A5) is out
-  /// of scope for this closing, and every `SpanOf`/`ConstSpanOf` this file
-  /// wraps assumes host-accessible memory -- component-owned arrays,
+  /// directly. Every `SpanOf`/`ConstSpanOf` this file wraps over a raw
+  /// pointer assumes host-accessible memory -- component-owned arrays,
   /// coupler storage, `RemapWeights` triplets -- which is exactly what this
   /// alias's `memory_space` (`Kokkos::HostSpace`) is, for every space it can
   /// resolve to.
   using HostExecSpace = Kokkos::DefaultHostExecutionSpace;
 
+  /// A5: the device counterpart, selected only when `config.execution_space
+  /// == RunnerConfig::RunnerExecutionSpace::Device` (see `execute_on<Space>`
+  /// in runner.cpp and docs/dev/runner-device-dispatch.md). Falls back to
+  /// `HostExecSpace` when fuse was built with no device backend at all --
+  /// `setup()` refuses `Device` in that case rather than silently running it
+  /// on host, so this fallback is never actually exercised with `Device`
+  /// selected, only used to keep the alias well-formed on every build.
+#if defined(KOKKOS_ENABLE_CUDA)
+  using DeviceExecSpace = Kokkos::Cuda;
+#elif defined(KOKKOS_ENABLE_HIP)
+  using DeviceExecSpace = Kokkos::HIP;
+#elif defined(KOKKOS_ENABLE_SYCL)
+  using DeviceExecSpace = Kokkos::SYCL;
+#else
+  using DeviceExecSpace = HostExecSpace;
+#endif
+  using DeviceMemSpace = typename DeviceExecSpace::memory_space;
+
+  /// Space-aware moves between a Slot and host memory, for the host-side
+  /// bookkeeping of iteration.cpp / fixed_point_residual.cpp (gather and
+  /// scatter of the accelerator vector, checkpoint and verify snapshots, the
+  /// Newton seam's save/restore). For a host slot each is byte for byte the
+  /// num::copy / assign it replaced; for a device slot it is one deep_copy.
+  /// docs/dev/device-resident-arcs.md, step 3.
+  static void slot_to_host(const detail::Slot& s, double* dst, std::size_t n) {
+    if (!s.device) { num::copy(s.data, dst, n); return; }
+    Kokkos::deep_copy(num::SpanOf<HostExecSpace>(dst, n),
+                      num::ConstSpanOf<DeviceExecSpace>(s.data, n));
+  }
+  static void host_to_slot(const double* src, const detail::Slot& s, std::size_t n) {
+    if (!s.device) { num::copy(src, s.data, n); return; }
+    Kokkos::deep_copy(num::SpanOf<DeviceExecSpace>(s.data, n),
+                      num::ConstSpanOf<HostExecSpace>(src, n));
+  }
+  static void slot_to_vector(const detail::Slot& s, std::vector<double>& v, std::size_t n) {
+    if (!s.device) { v.assign(s.data, s.data + n); return; }
+    v.resize(n);
+    slot_to_host(s, v.data(), n);
+  }
+  /// A host pointer to `n` values of the slot: the slot itself when it is
+  /// host memory, otherwise `scratch` after one copy (sized here; callers
+  /// in the sweep loop pass a vector sized once at setup).
+  static const double* slot_host_read(const detail::Slot& s, std::size_t n,
+                                      std::vector<double>& scratch) {
+    if (!s.device) return s.data;
+    if (scratch.size() < n) scratch.resize(n);
+    slot_to_host(s, scratch.data(), n);
+    return scratch.data();
+  }
+
   bool initialized = false;
 
   std::vector<std::vector<double>> storage;       // coupler-owned, one per arc
+  /// Device-resident twin of `storage` for Device mode: an arc lives in
+  /// exactly one of the two (the other entry is empty). Filled by
+  /// place_arcs_on_device() at the end of setup(); see Slot::device.
+  std::vector<Kokkos::View<double*, DeviceMemSpace>> device_storage;
+  /// Device mirror of a component-owned HOST field that a Space-generic
+  /// instruction reads (Device mode only; empty otherwise). Refreshed from
+  /// the host field the first time a kernel reads it after component code
+  /// ran (`component_epoch` below), read in place of a staging lane by
+  /// span_c(); never written by a kernel (span_m() still stages such a
+  /// slot, so a write reaches the host field).
+  std::vector<Kokkos::View<double*, DeviceMemSpace>> device_mirror;
+  /// A host field changes only inside component code (advance(),
+  /// restore_state()) or when the application fills an ExternalDelivery
+  /// buffer. `component_epoch` counts those events; `device_mirror_epoch[a]`
+  /// is the epoch mirror `a` was last copied at, so a mirror read between
+  /// two such events is copied once, and a field nobody reads is never
+  /// copied. Every call site that hands control to a component bumps it
+  /// through note_component_ran().
+  std::uint64_t              component_epoch = 1;
+  std::vector<std::uint64_t> device_mirror_epoch;
+  void note_component_ran() noexcept { ++component_epoch; }
   std::vector<detail::Slot>        slots;         // parallel to arcs
   std::vector<std::vector<double>> previous;      // previous iterate, for Relax
   std::vector<std::size_t>         sample_count;  // per arc, for Accumulate
@@ -769,6 +950,10 @@ struct Runner::Impl {
   /// `detail::RemapCsr`'s own comment. `Resolved::remap` indexes both
   /// vectors together.
   std::vector<detail::RemapCsr>       remap_csr;
+  /// A5: `remap_csr`'s device-resident twin, same index, filled ONLY when
+  /// `config.execution_space == Device` (empty otherwise, never indexed by
+  /// the host instantiation of `execute_on`). See `detail::mirror_remap_csr`.
+  std::vector<detail::RemapCsrOf<DeviceMemSpace>> remap_csr_device;
   /// One entry per `OpKind::Remap` instruction targeting a distributed nodal
   /// region via `"consistent"`/`"consistent-transpose"` (detail::
   /// NodalDistRemap); `Resolved::nodal_dist` indexes it. Built once in
@@ -834,6 +1019,28 @@ struct Runner::Impl {
   /// parallel to `transport_plans`. attach_comm_graphs() needs the instruction
   /// to read its input and output arcs; `Resolved` does not carry them.
   std::vector<std::size_t>           transport_instruction;
+  /// Device-resident twin of `transport_plans`, same index, built once in
+  /// `build_transport_device_buffers()` right after `place_arcs_on_device()`
+  /// (docs/dev/device-resident-arcs.md Phase 3). Empty under Host, and
+  /// empty under Device for a plan whose arcs did not both land on the
+  /// device (`execute_on<Space>`'s `OpKind::Transport` case falls back to
+  /// the per-arc host-staging path below for that plan and never indexes
+  /// this).
+  std::vector<detail::TransportDeviceOf<DeviceMemSpace>> transport_device;
+  /// Per-plan host scratch for the arc that landed on the device when its
+  /// PARTNER did not -- a Remap needing conservation checking pins the
+  /// Constrain's `before_arc` (frequently a Transport's own output) to
+  /// host while the other arc, untouched by any other host-only
+  /// instruction, lands on the device like everything around it
+  /// (measured: `RunnerDevice.DeviceAndHostAgreeToRoundingOnRelaxAndWeighted
+  /// Remap`, `RunnerDevice.OrdinaryIterationRegionConvergesOnTheDeviceLikeThe
+  /// Host`, both no-graph plans whose output feeds exactly such a pin).
+  /// Sized in `build_transport_device_buffers()` to that side's own
+  /// `Slot::total()` whenever it is device-resident and `transport_device`
+  /// got no entry for the plan; empty (0-sized, a no-op to stage) on the
+  /// side that is already host, and on every plan Device mode mirrored in
+  /// full.
+  std::vector<std::vector<double>> transport_in_scratch, transport_out_scratch;
   RunStats                         stats;
   std::int64_t                     period_index = 0;
 
@@ -1104,6 +1311,33 @@ struct Runner::Impl {
   /// per sweep, per iteration.cpp's own header comment (point 4: nothing in
   /// the sweep loop may allocate).
   Kokkos::View<double*, Kokkos::HostSpace> reduction_scratch;
+  /// Host landing buffer for slot_host_read() in the sweep loop, sized once
+  /// in setup() to the longest region block (Device mode only; empty under
+  /// Host, where slot_host_read() never copies).
+  std::vector<double> block_host_scratch;
+
+  /// A5: the device path's ONLY buffer, allocated once in `setup()` when
+  /// `config.execution_space == Device` (zero-extent otherwise). Every arc
+  /// buffer, `previous[]` iterate and space-time history row stays where it
+  /// is today -- host memory a component, a Transport, a checkpoint `memcmp`
+  /// and `advance_window()` all read directly -- and `execute_on<Space>`
+  /// stages each distinct host pointer an instruction touches into one of
+  /// `kDeviceStagingSlots` fixed lanes of `device_staging_stride` doubles
+  /// (`deep_copy` in before the kernel, back out after for the ones a kernel
+  /// wrote). `kDeviceStagingSlots` is the most distinct pointers one
+  /// `Instruction` can name: `Instruction::in` holds three plus `out`
+  /// (Merge), and Relax/Residual/Sample reach `previous[]`/`history` in
+  /// place of a second or third input. The stride is the largest
+  /// `Slot::total()` of the plan, which also bounds every `previous[]`
+  /// (sized `out_total`, resolve_instructions()) and every history row
+  /// (`SpacetimeInfo::width == out.total()`, resolve_spacetime()). Nothing
+  /// in the sweep loop allocates on this path either -- a deep_copy is a
+  /// memcpy, not a new buffer -- though Kokkos's own deep_copy fence labels
+  /// may heap-allocate a std::string, which no allocation-counted test
+  /// exercises in Device mode.
+  static constexpr std::size_t          kDeviceStagingSlots = 4;
+  Kokkos::View<double*, DeviceMemSpace> device_staging;
+  std::size_t                           device_staging_stride = 0;
 
   Impl(const CouplingGraph& g, const OperatorDAG& d, ExecutionPlan p,
        const MeshBackend& b)
@@ -1111,6 +1345,24 @@ struct Runner::Impl {
 
   Result<void> setup(ComponentSet& components, FieldRegistry& registry);
   Result<void> resolve_buffers(FieldRegistry& registry);
+  /// Device mode only: moves every eligible coupler-owned arc from
+  /// `storage` into `device_storage` and flags its Slot. Eligibility is
+  /// decided from the resolved plan -- every instruction reading or writing
+  /// the arc is one of execute_on()'s Space-generic cases (a Remap with a
+  /// distributed-nodal operator, or a Sample/Interpolate with a spacetime
+  /// projection, does not count),
+  /// and the arc is named by no region block, carried/verify list, window
+  /// member or Constrain -- so the host-only cases and iteration.cpp never
+  /// meet a device pointer. Called after resolve_regions(); allocates once.
+  void place_arcs_on_device();
+  /// Device mode only, called right after `place_arcs_on_device()`: for
+  /// every plan of `transport_plans` whose Transport instruction's input
+  /// AND output arc both ended up device-resident, builds the matching
+  /// `transport_device` entry (`detail::mirror_transport_plan()`). A plan
+  /// with a mixed or all-host pair of arcs gets an empty entry and the
+  /// `OpKind::Transport` case falls back to the host-staged path for it,
+  /// exactly as under Host. Allocates once, never in the hot loop.
+  void build_transport_device_buffers();
   Result<void> resolve_instructions();
   /// Spec §6 mode 1. Splits one communicator per component out of
   /// `config.base_communicator` and builds one `CommGraph` per entry of
@@ -1438,6 +1690,15 @@ struct Runner::Impl {
   /// cannot be named from outside it.
   [[nodiscard]] LinearizationToken* window_block_provider_token(
       ComponentSet& components, std::uint32_t feed_arc);
+
+  /// A5: `execute()`'s whole body, parameterised on the Kokkos execution
+  /// space its Space-generic cases launch on (`HostExecSpace` or
+  /// `DeviceExecSpace`; `execute()` is the one-line dispatcher that picks
+  /// from `config.execution_space`). Defined in runner.cpp, where its only
+  /// caller lives. See docs/dev/runner-device-dispatch.md for which cases
+  /// are Space-generic and which stay host-only whatever `Space` is.
+  template <class Space>
+  Result<void> execute_on(const Instruction& ins, const detail::Resolved& r);
 
   /// KNOWN_ISSUES.md D12. A coroutine (see src/runtime/resume.hpp):
   /// suspends via `co_await detail::ExternalSuspend{}`, reporting
@@ -1817,6 +2078,30 @@ struct Runner::Impl {
   /// owns for this call -- `run_region_newton()`/`run_region_newton_
   /// window()`'s own early return reads this BEFORE any of that.
   Result<bool> region_is_local_participant(const detail::RegionRuntime& r) const;
+
+  /// KNOWN_ISSUES.md D42: `gather_window_block_samples()` deliberately
+  /// reaches only `r.participants` -- but the channels THIS region moves
+  /// are exchanged over the run's single shared transport communicator
+  /// (`config.base_communicator`, duplicated whole by `MpiTransport::
+  /// set_communicator()`), which can span MORE ranks than `r.
+  /// participants` names: a rank hosting some OTHER, uncoupled component
+  /// placed outside this region entirely still calls `move()` for this
+  /// region's channels every sweep (the "rank in neither rank set still
+  /// enters MPI_Alltoallv with zero counts" convention, mpi_transport.cpp's
+  /// own header comment) and so must stop sweeping in the SAME iteration
+  /// every participant does, or its next `move()` has no matching call
+  /// from anyone and the communicator deadlocks. `r.participants` alone
+  /// cannot tell such a rank when that is, since that rank is never IN
+  /// it. This broadcasts the already-decided `converged` flag from
+  /// `r.participants.front()` to literally every rank of `config.
+  /// base_communicator` -- participants redundantly re-receive their own
+  /// answer, everyone else learns it for the first time -- so every rank
+  /// that shares the communicator leaves the sweep on the same iteration.
+  /// A no-op, `converged` returned unchanged, when `r.participants.size()
+  /// <= 1` (tier 0, or every checkpointed component on one rank: no other
+  /// rank exists to diverge from in the first place).
+  Result<void> broadcast_window_convergence(const detail::RegionRuntime& r,
+                                            bool converged, bool& converged_out);
 };
 
 }  // namespace fuse

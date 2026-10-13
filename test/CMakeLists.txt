@@ -20,6 +20,30 @@ endif()
 set(FUSE_TEST_GOLDEN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/golden")
 set(FUSE_TEST_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data")
 
+# A handful of tests below (runtime/field .compile_ok/.compile_fail) drive a
+# NESTED `cmake --build ${CMAKE_BINARY_DIR} --target ...` at test-run time
+# rather than linking a normal gtest binary, specifically so the thing under
+# test is "does this translation unit compile," not "does it run." That
+# nested build re-invokes mpicxx, which is a shell wrapper that picks its
+# real host compiler from $OMPI_CXX at the moment IT runs -- not from
+# whatever was exported when this project was configured. If OMPI_CXX
+# (/opt/kokkos/bin/nvcc_wrapper on a Kokkos::CUDA build, set by every
+# CMakePresets.json tier) is missing from the shell that happens to invoke
+# ctest, mpicxx silently falls back to plain g++, which rejects the
+# nvcc-only flags (`-Wext-lambda-captures-this`, `-arch=sm_61`) this
+# project's own CMake unconditionally adds whenever Kokkos::CUDA exists --
+# breaking runtime.compile_ok.capabilities_override and
+# field.compile_ok.owning_chain outright, and silently turning their
+# WILL_FAIL siblings into false passes (a bad build fails for the wrong
+# reason instead of the one under test). Pinning OMPI_CXX to what THIS
+# configure actually used, the same way MOAB's LD_LIBRARY_PATH fixup above
+# does, makes the nested build's toolchain match this one regardless of the
+# invoking shell.
+set(_fuse_nested_build_env_mods "")
+if(DEFINED ENV{OMPI_CXX})
+  list(APPEND _fuse_nested_build_env_mods "OMPI_CXX=set:$ENV{OMPI_CXX}")
+endif()
+
 # `layer` names both the source directory and, by default, the library the test
 # links. NO_LAYER_LIB separates them: test/verification/ is not a library layer,
 # it exercises whatever the case needs (declared via LIBS).
@@ -96,6 +120,38 @@ add_test(NAME build.mpi_dynamic_cache_decisions
          COMMAND ${CMAKE_COMMAND} -DFUSE_CHECK_TMP=${CMAKE_CURRENT_BINARY_DIR}/mpi-dynamic-check
                  -P ${CMAKE_SOURCE_DIR}/tools/check-mpi-dynamic-cache.cmake)
 set_tests_properties(build.mpi_dynamic_cache_decisions PROPERTIES LABELS "build")
+# Device twins (docs/dev/device-resident-arcs.md step 4). A build whose
+# Kokkos has a CUDA/HIP/SYCL backend registers every row passed to
+# fuse_add_device_twin() a second time, as `<row>.device`, with
+# FUSE_EXECUTION_SPACE=device in its environment: RunnerConfig's `Default`
+# execution space reads that variable (include/fuse/runtime/runner.hpp), so
+# the same binary runs its graphs under the device interpreter -- device-
+# resident arcs, mirrored or device-registered fields, kernels on the device
+# -- and must reproduce the host row's verdict. Labelled `device`; absent,
+# not skipped, when the build has no device backend.
+set(FUSE_KOKKOS_HAS_DEVICE OFF)
+if(Kokkos_ENABLE_CUDA OR Kokkos_ENABLE_HIP OR Kokkos_ENABLE_SYCL
+   OR "${Kokkos_DEVICES}" MATCHES "CUDA|HIP|SYCL")
+  set(FUSE_KOKKOS_HAS_DEVICE ON)
+endif()
+set(FUSE_KOKKOS_HAS_DEVICE ${FUSE_KOKKOS_HAS_DEVICE} PARENT_SCOPE)
+function(fuse_add_device_twin test_name target)
+  if(NOT FUSE_KOKKOS_HAS_DEVICE)
+    return()
+  endif()
+  cmake_parse_arguments(ARG "THROWS" "TIMEOUT" "ARGS;LABELS" ${ARGN})
+  set(labels "device" ${ARG_LABELS})
+  if(ARG_THROWS)
+    list(APPEND labels throws)
+  endif()
+  add_test(NAME ${test_name}.device COMMAND ${target} ${ARG_ARGS})
+  set_tests_properties(${test_name}.device PROPERTIES
+    LABELS "${labels}"
+    ENVIRONMENT "FUSE_EXECUTION_SPACE=device")
+  if(ARG_TIMEOUT)
+    set_tests_properties(${test_name}.device PROPERTIES TIMEOUT ${ARG_TIMEOUT})
+  endif()
+endfunction()
 function(fuse_add_omp_legs test_name target)
   if(NOT FUSE_KOKKOS_HAS_OPENMP)
     return()
@@ -184,7 +240,7 @@ endfunction()
 # MOAB rows where the build registers twelve), which is exactly the kind of
 # gap that makes a selector read as coverage it does not have.
 function(fuse_add_mpi_test layer name)
-  cmake_parse_arguments(ARG "" "" "LIBS;RANKS;LABELS" ${ARGN})
+  cmake_parse_arguments(ARG "DEVICE_TWIN" "" "LIBS;RANKS;LABELS" ${ARGN})
   if(NOT ARG_RANKS)
     # 1 included deliberately (S5.5, build-evidence/parallel-matrix.toml row
     # A-RANKS). A single task is not a trivial case of the others: every match
@@ -208,8 +264,84 @@ function(fuse_add_mpi_test layer name)
   foreach(n IN LISTS ARG_RANKS)
     add_test(NAME ${layer}.${name}.${n}
              COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${n} $<TARGET_FILE:${target}>)
-    set_tests_properties(${layer}.${name}.${n} PROPERTIES TIMEOUT 120 LABELS "${_fuse_mpi_labels}")
+    # Every rank is a separate process, and Kokkos::OpenMP defaults each one's
+    # thread count to the WHOLE machine's core count with no awareness of the
+    # other ranks sharing it -- at n=5 on an 8-core box that is 40 threads for
+    # 8 cores, measured to turn a sub-second job into a 120s TIMEOUT (this
+    # function's own TIMEOUT 120 below) purely from scheduler thrashing, not
+    # from anything the test exercises. `fuse_add_omp_legs` above already caps
+    # itself to the host's core count for the same reason; capping each rank's
+    # share to max(1, cores / n) is that same discipline applied per rank.
+    math(EXPR _fuse_mpi_threads "${_fuse_host_cores} / ${n}")
+    if(_fuse_mpi_threads LESS 1)
+      set(_fuse_mpi_threads 1)
+    endif()
+    # OMPI_MCA_coll_tuned_alltoallv_algorithm=2 (pairwise) works around a real
+    # hang in this Open MPI (4.1.5)'s own default "basic_linear" alltoallv
+    # algorithm, but ONLY on a communicator other than MPI_COMM_WORLD itself
+    # (MPI_Comm_dup'd, MPI_Comm_split'd, or MPI_Comm_create_group'd -- every
+    # transport/partition/search communicator this project ever builds one
+    # on). Measured 2026-10-10: a bare MPI_Comm_dup followed by one
+    # MPI_Alltoallv on the duplicate hangs with rank 0 returning and every
+    # other rank stuck inside the collective -- reproduced with zero fuse or
+    # Kokkos code involved, independent of MPI_THREAD_MULTIPLE (still hangs
+    # under MPI_THREAD_FUNNELED and plain MPI_Init), independent of the BTL
+    # (vader, tcp) and PML (ob1) in use, and absent entirely on MPI_COMM_WORLD
+    # itself with the identical send/recv pattern. Forcing the "pairwise"
+    # algorithm (`ompi_info --param coll tuned --level 9`'s own
+    # coll_tuned_alltoallv_algorithm enum) made 30/30 of
+    # parallel.mpi_transport's and 28/28 of parallel.comm_graph's subtests
+    # pass where they previously hung; "basic_linear" (the default this
+    # build's decision function was choosing for every non-WORLD communicator
+    # at this rank count) could not be made to pass at all, however many
+    # times it was tried. Harmless on any other MPI: an OMPI_MCA_* variable an
+    # MPICH/other mpiexec does not recognise is simply unused environment, not
+    # an error. If a future Open MPI release fixes this, the fix becomes a
+    # no-op (pairwise is a correctness-preserving algorithm choice everywhere
+    # dynamic rules reach, just not always the fastest one at huge rank
+    # counts fuse does not target).
+    #
+    # OMPI_MCA_rmaps_base_oversubscribe=1 is unrelated: this host has 4
+    # PHYSICAL cores behind its 8 logical ones (Core(s) per socket: 4,
+    # `lscpu`), and Open MPI sizes its default "slot" count from physical
+    # cores, not `nproc`'s 8 -- so `n=5` and up refused outright with "not
+    # enough slots" even though the host plainly has 8 logical CPUs to run
+    # them on. The equivalent of passing `--oversubscribe` on the `mpiexec`
+    # command line; these are correctness tests at a handful of ranks, not a
+    # throughput benchmark, so running more ranks than physical cores is
+    # exactly the point at n=5.
+    set_tests_properties(${layer}.${name}.${n} PROPERTIES TIMEOUT 120 LABELS "${_fuse_mpi_labels}"
+      ENVIRONMENT "OMP_NUM_THREADS=${_fuse_mpi_threads};OMP_PROC_BIND=false;OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
   endforeach()
+  # DEVICE_TWIN (docs/dev/device-resident-arcs.md Phase 3): re-registers
+  # this row under FUSE_EXECUTION_SPACE=device at 1, 2 and 3 ranks --
+  # several ranks sharing however many devices this build's Kokkos reports
+  # (one, on higgs; fuse::abi::resolve_device_id() is what maps a local
+  # rank onto one when there are fewer devices than ranks). Absent, not
+  # skipped, on a build with no device backend (fuse_add_device_twin's own
+  # FUSE_KOKKOS_HAS_DEVICE guard, reused here) and at a rank count this
+  # row was never registered at in the first place -- a test that needs
+  # RANKS 2 3 (epoch_reconcile, window_runner_mpi) gets device twins only
+  # at the ranks it actually runs at, never at 1.
+  if(ARG_DEVICE_TWIN AND FUSE_KOKKOS_HAS_DEVICE)
+    # The intersection of {1, 2, 3} and this row's own RANKS: a row
+    # registered only at RANKS 2 3 (window_runner_mpi) gets device twins
+    # only at 2 and 3, never a rank count it does not run the host leg at.
+    foreach(n IN ITEMS 1 2 3)
+      if(NOT n IN_LIST ARG_RANKS)
+        continue()
+      endif()
+      math(EXPR _fuse_mpi_threads "${_fuse_host_cores} / ${n}")
+      if(_fuse_mpi_threads LESS 1)
+        set(_fuse_mpi_threads 1)
+      endif()
+      add_test(NAME ${layer}.${name}.${n}.device
+               COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${n} $<TARGET_FILE:${target}>)
+      set_tests_properties(${layer}.${name}.${n}.device PROPERTIES TIMEOUT 120
+        LABELS "${_fuse_mpi_labels};device"
+        ENVIRONMENT "FUSE_EXECUTION_SPACE=device;OMP_NUM_THREADS=${_fuse_mpi_threads};OMP_PROC_BIND=false;OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
+    endforeach()
+  endif()
 endfunction()
 
 # ---------------------------------------------------------------- base
@@ -378,6 +510,15 @@ fuse_add_gtest(backend cell_simplices)
 # same PRIVATE/BUILD_LOCAL_INTERFACE posture src/CMakeLists.txt's
 # fuse-coupler-search target uses for the same dependency.
 fuse_add_gtest(backend mls_weights LIBS $<BUILD_LOCAL_INTERFACE:ArborX::ArborX>)
+# Device-resident-arcs Phase 2, "weight-builders" track: the Space-templated
+# batched moment-matrix solve (mls_weights_device.hpp) -- an in-house
+# Gaussian elimination with partial pivoting, NOT KokkosBatched::SerialGesv:
+# both of its pivoting modes failed to compile against this host's
+# installed Kokkos/KokkosKernels pairing (measured; see
+# mls_weights_device.hpp's own header comment and KNOWN_ISSUES.md's
+# weight-builders entry for the exact compiler errors), so this test needs
+# no KokkosKernels dependency at all.
+fuse_add_gtest(backend mls_weights_device LIBS $<BUILD_LOCAL_INTERFACE:ArborX::ArborX>)
 # Nodal-remap track, step 1: general consistent interpolation on any
 # supported cell (general_interp.hpp), reached through
 # build_consistent_interp_weights (consistent_interp.hpp) exactly like
@@ -417,8 +558,34 @@ fuse_tests_gated_by(FUSE_ENABLE_MOAB_MPI parallel/remap_halo_mpi_test.cpp
   parallel/moab_placed_view_mpi_test.cpp)
 
 if(FUSE_ENABLE_MOAB)
+  # MOAB_LIBRARY_DIRS (cmake/FuseDependencies.cmake) is this project's own
+  # best record of where every one of MOAB's dependencies' shared libraries
+  # live, filled in from each MOAB_USE_<PKG>/<PKG>_DIR pair when MOAB's own
+  # config does not already list it. It is NOT enough to rely on a MOAB
+  # binary's rpath alone: this toolchain's gcc passes --as-needed on every
+  # link by default (`gcc -dumpspecs`), which drops a dependency library
+  # from a binary's own NEEDED list the moment nothing in THIS project's
+  # sources calls its symbols directly (true of every moab_mesh_test.cpp
+  # case, which never touches TempestRemap/NetCDF/PnetCDF/Zoltan directly) --
+  # so resolving it at runtime falls on libMOAB.so's OWN rpath instead,
+  # which is not this project's to guarantee complete. Measured 2026-10-10:
+  # a MOAB rebuilt against a different dependency tree landed with a rpath
+  # naming only its MPI-stack paths, breaking backend.moab_mesh and the
+  # abi.install_consumer_* tests with "libTempestRemap.so.0: cannot open
+  # shared object file" though nothing in this repository had changed.
+  # Prepending every one of MOAB_LIBRARY_DIRS to LD_LIBRARY_PATH at test run
+  # time (not baked into any one binary's own rpath, which --as-needed can
+  # still defeat) makes this independent of what libMOAB.so's own rpath
+  # does or does not list.
+  set(_fuse_moab_env_mods "")
+  foreach(_fuse_moab_libdir IN LISTS MOAB_LIBRARY_DIRS)
+    list(APPEND _fuse_moab_env_mods "LD_LIBRARY_PATH=path_list_prepend:${_fuse_moab_libdir}")
+  endforeach()
+
   fuse_add_gtest(backend moab_mesh THROWS LABELS moab)
+  set_tests_properties(backend.moab_mesh PROPERTIES ENVIRONMENT_MODIFICATION "${_fuse_moab_env_mods}")
   fuse_add_gtest(backend remap_halo THROWS LABELS moab)
+  set_tests_properties(backend.remap_halo PROPERTIES ENVIRONMENT_MODIFICATION "${_fuse_moab_env_mods}")
   # REVIEW.md R-41 (BT-F15): a real, non-planar, non-matching MOAB mesh, not
   # a generated box. MOAB installs a 3456-quad cubed sphere under
   # share/examples/fortran relative to its own include prefix; discovered
@@ -497,6 +664,10 @@ if(FUSE_ENABLE_MOAB)
         FUSE_SPHERE_ATM="${FUSE_SPHERE_ATM_FILE}"
         FUSE_SPHERE_OCN="${FUSE_SPHERE_OCN_FILE}")
     endif()
+    foreach(_fuse_moab_mpi_rank 1 2 3 4 5)
+      set_tests_properties(parallel.remap_halo_mpi.${_fuse_moab_mpi_rank} PROPERTIES
+        ENVIRONMENT_MODIFICATION "${_fuse_moab_env_mods}")
+    endforeach()
 
     # KNOWN_ISSUES D5, the MOAB half: MoabMeshBackend::set_placements /
     # placed_view under a REAL communicator of more than one rank. See
@@ -511,6 +682,10 @@ if(FUSE_ENABLE_MOAB)
       target_compile_definitions(fuse_parallel_moab_placed_view_mpi_test PRIVATE
         FUSE_SPHERE_ATM="${FUSE_SPHERE_ATM_FILE}")
     endif()
+    foreach(_fuse_moab_mpi_rank 1 2 3 4 5)
+      set_tests_properties(parallel.moab_placed_view_mpi.${_fuse_moab_mpi_rank} PROPERTIES
+        ENVIRONMENT_MODIFICATION "${_fuse_moab_env_mods}")
+    endforeach()
   endif()
 endif()
 
@@ -568,6 +743,13 @@ fuse_add_gtest(runtime window_fixed_point_residual LIBS fuse::runtime fuse::back
 # rather than every leg agreeing by coincidence at a size too small to tell.
 fuse_add_gtest(runtime runner_determinism)
 fuse_add_omp_legs(runtime.runner_determinism fuse_runtime_runner_determinism_test)
+# KNOWN_ISSUES.md A5: the SAME Runner::Impl::execute() stream run once on
+# the host space and once on RunnerConfig::RunnerExecutionSpace::Device,
+# compared value for value, with RunStats::device_dispatches proving the
+# device path was actually taken. On a build with no device backend the
+# Device cases assert the E-RT-DEVICE refusal instead of skipping silently.
+# See docs/dev/runner-device-dispatch.md.
+fuse_add_gtest(runtime runner_device)
 
 # KNOWN_ISSUES.md B3: `bool supports_rollback() const override` no longer
 # names a virtual to override, once `Component::capabilities()` is the one
@@ -588,12 +770,20 @@ add_test(NAME runtime.compile_fail.stale_rollback_override
 # one lock.
 set_tests_properties(runtime.compile_fail.stale_rollback_override PROPERTIES
   WILL_FAIL TRUE LABELS "compile_fail" RESOURCE_LOCK fuse_build_tree)
+if(_fuse_nested_build_env_mods)
+  set_tests_properties(runtime.compile_fail.stale_rollback_override PROPERTIES
+    ENVIRONMENT_MODIFICATION "${_fuse_nested_build_env_mods}")
+endif()
 
 add_test(NAME runtime.compile_ok.capabilities_override
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
           --target fuse_runtime_compile_ok_capabilities_override)
 set_tests_properties(runtime.compile_ok.capabilities_override PROPERTIES
   LABELS "compile_fail" RESOURCE_LOCK fuse_build_tree)
+if(_fuse_nested_build_env_mods)
+  set_tests_properties(runtime.compile_ok.capabilities_override PROPERTIES
+    ENVIRONMENT_MODIFICATION "${_fuse_nested_build_env_mods}")
+endif()
 
 # ---------------------------------------------------------------- parallel
 # Tier 1 only, and absent rather than skipped in Tier 0 for the reason above.
@@ -607,9 +797,16 @@ fuse_tests_gated_by(FUSE_ENABLE_MPI
   parallel/schur_slab_mpi_test.cpp parallel/krylov_mpi_test.cpp
   parallel/derivative_gate_mpi_test.cpp parallel/participant_reducer_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
-  foreach(t runner_transport comm_graph mpi_transport)
+  foreach(t comm_graph mpi_transport)
     fuse_add_mpi_test(parallel ${t} LIBS fuse::runtime)
   endforeach()
+  # Runner-driving (graph-executing): the channel Transport's own MPI
+  # exchange, through a real Runner, at every rank count -- the row the
+  # device-resident/GPU-aware transport path (docs/dev/device-resident-arcs.md
+  # Phase 3) is most directly exercised by. `comm_graph`/`mpi_transport`
+  # above call CommGraph/Transport directly and never reach the Runner, so
+  # they get no device twin.
+  fuse_add_mpi_test(parallel runner_transport LIBS fuse::runtime DEVICE_TWIN)
   # "Containers" track, tier 1: make_mpi_reducer/make_mpi_exchanger and the
   # DistVector/DistSparseMatrix operations built on them, over a real
   # MPI_COMM_WORLD. RANKS 2 only, per the task: built here, run on the host.
@@ -665,7 +862,7 @@ if(FUSE_ENABLE_MPI)
   # partially overlapping RankSets. See that file's own header for the
   # closed-form / one-rank-reference argument its "bit-identical across
   # rank counts" checks rest on.
-  fuse_add_mpi_test(parallel nodal_remap_runner LIBS fuse::runtime fuse::backend)
+  fuse_add_mpi_test(parallel nodal_remap_runner LIBS fuse::runtime fuse::backend DEVICE_TWIN)
   # epoch_reconcile is registered from 2 ranks up, not 1. Its own
   # EpochReconcile.TheJobNeedsAtLeastTwoRanks asserts `world_size() >= 2`
   # deliberately -- "Not a skip: with one rank there is nothing to reconcile,
@@ -679,7 +876,7 @@ if(FUSE_ENABLE_MPI)
   # declares exactly two coupled members (A, B); at 2 ranks they are
   # disjoint, at 3 a genuinely uncoupled third component (C) is added so
   # its presence is proven not to perturb the window's agreed answer.
-  fuse_add_mpi_test(parallel window_runner_mpi LIBS fuse::runtime RANKS 2 3)
+  fuse_add_mpi_test(parallel window_runner_mpi LIBS fuse::runtime RANKS 2 3 DEVICE_TWIN)
   # KNOWN_ISSUES.md D31: the window-Newton seam's own first actual MPI
   # test, mirroring window_runner_mpi's own two/three-rank placements
   # (test/parallel/window_newton_mpi_test.cpp's own header comment).
@@ -748,9 +945,12 @@ if(FUSE_ENABLE_MPI)
     foreach(_mode mpmd accept)
       # Registered only where this MPI can carry the mode -- examples/
       # CMakeLists.txt's own gate on the participant rows has the reasoning.
-      # FUSE_ENABLE_CONNECT_ACCEPT is measured at configure time and stays ON
-      # when it could not be measured.
+      # FUSE_ENABLE_CONNECT_ACCEPT/FUSE_ENABLE_CONNECT_MPMD are each measured
+      # at configure time and stay ON when they could not be measured.
       if(_mode STREQUAL "accept" AND NOT FUSE_ENABLE_CONNECT_ACCEPT)
+        continue()
+      endif()
+      if(_mode STREQUAL "mpmd" AND NOT FUSE_ENABLE_CONNECT_MPMD)
         continue()
       endif()
       set(_name parallel.connect.${_mode}.${_na}+${_nb})
@@ -762,8 +962,15 @@ if(FUSE_ENABLE_MPI)
                 $<TARGET_FILE:fuse_parallel_connect_a>
                 $<TARGET_FILE:fuse_parallel_connect_b>
                 ${_golden} ${_scratch} 60)
+      # Same OMPI alltoallv-algorithm workaround as fuse_add_mpi_test's own
+      # ENVIRONMENT line above: connect_mpmd() (connect.cpp) duplicates
+      # MPI_COMM_WORLD, and the Runner traffic that follows over it can hit
+      # this host's Open MPI (4.1.5) basic_linear-alltoallv hang exactly like
+      # MpiTransport's own duplicate does. run_pair.sh's mpiexec children
+      # inherit it from this test process's environment.
       set_tests_properties(${_name} PROPERTIES
-        LABELS "parallel;mpi;connect" TIMEOUT 120)
+        LABELS "parallel;mpi;connect" TIMEOUT 120
+        ENVIRONMENT "OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
     endforeach()
   endforeach()
 endif()
@@ -820,6 +1027,15 @@ fuse_add_gtest(backend native_migration THROWS)
 foreach(t native_mesh native_distributed_mesh native_generators native_migration)
   fuse_add_omp_legs(backend.${t} fuse_backend_${t}_test THROWS)
 endforeach()
+# docs/dev/native-mesh.md, "Execution space": NativeMeshView's device-resident
+# measure/centroid kernels. A `.device` twin re-runs the SAME binary under
+# FUSE_EXECUTION_SPACE=device -- the mesh construction path itself does not
+# branch on this variable (the device arrays are always built, device.md),
+# but the twin still proves the whole binary, run under the device
+# interpreter's environment, finishes clean rather than only in the default
+# (host-interpreter) environment every other row already runs under.
+fuse_add_device_twin(backend.native_distributed_mesh fuse_backend_native_distributed_mesh_test
+                     THROWS)
 fuse_tests_gated_by(FUSE_ENABLE_MPI backend/native_migration_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(backend native_migration_mpi LIBS fuse::backend fuse::partition MPI::MPI_CXX
@@ -833,12 +1049,18 @@ endif()
 # half under a REAL communicator is test/parallel/native_halo_mpi_test.cpp.
 fuse_add_gtest(backend native_halo THROWS)
 fuse_add_omp_legs(backend.native_halo fuse_backend_native_halo_test THROWS)
+# Device-resident-arcs Phase 2, "weight-builders" track: the Space-templated
+# migration/halo wire PACK (mesh_pack_device.hpp), checked byte-for-byte
+# against pack_for_migration/pack_halo_cells above, in both Host mode and
+# (when this Kokkos has one) a Cuda/HIP/SYCL backend. Header-only; no new
+# LIBS beyond fuse::backend's own Kokkos dependency.
+fuse_add_gtest(backend native_mesh_pack_device THROWS)
 # The parallel half, under a REAL communicator of more than one rank: needs
 # only FUSE_ENABLE_MPI (no MOAB) since the native backend's own covering-set
 # construction is planar/volumetric, not spherical.
 fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/native_halo_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
-  fuse_add_mpi_test(parallel native_halo_mpi LIBS fuse::backend MPI::MPI_CXX RANKS 2 3)
+  fuse_add_mpi_test(parallel native_halo_mpi LIBS fuse::backend MPI::MPI_CXX RANKS 2 3 DEVICE_TWIN)
 endif()
 fuse_add_gtest(backend supermesh THROWS)
 fuse_add_gtest(backend transfer_map_io THROWS)
@@ -847,6 +1069,12 @@ fuse_add_gtest(backend transfer_map_io THROWS)
 # CrystalRouter above: one test target's include path, not a widened public
 # surface.
 target_include_directories(fuse_backend_supermesh_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+# Device-resident-arcs Phase 2, "weight-builders" track: the candidate-pair
+# broad phase (supermesh_candidates_device.hpp) standing alongside
+# build_supermesh_weights, not wired into it -- see KNOWN_ISSUES.md's
+# weight-builders entry for the r3d/r2d device-feasibility finding this
+# header's own comment also carries.
+fuse_add_gtest(backend supermesh_candidates_device)
 
 # Soma-import port (docs/dev/soma-import.md, RemapApply.* rows): fuse::apply_weights()'s
 # own E-REMAP-ARG/E-REMAP-COO contract, exercised directly -- see the file's own header
@@ -871,6 +1099,20 @@ foreach(t box_index refusals)
   fuse_add_gtest(search ${t})
 endforeach()
 fuse_add_gtest(search mesh_adapter LIBS fuse::backend)
+# docs/dev/search.md, "Execution space": BoxIndex/query_points_distributed on
+# Kokkos::DefaultExecutionSpace. box_index_test.cpp's own
+# DeviceBuildMatchesHostBuildForPointAndNearestQueries directly compares the
+# two spaces within one process; these `.device` twins additionally re-run
+# EVERY existing property test (brute-force point queries, k-nearest, shared
+# face/vertex, determinism) a second time with FUSE_EXECUTION_SPACE=device,
+# which flips BoxIndex::build's own `ExecutionSpace::Default` resolution
+# (types.hpp) -- the same mechanism RunnerConfig::resolved_execution_space()
+# uses, so this is the same "whole binary under the device interpreter"
+# property fuse_add_device_twin's own header comment names.
+foreach(t box_index refusals)
+  fuse_add_device_twin(search.${t} fuse_search_${t}_test)
+endforeach()
+fuse_add_device_twin(search.mesh_adapter fuse_search_mesh_adapter_test)
 fuse_tests_gated_by(FUSE_ENABLE_MPI search/distributed_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(search distributed_mpi LIBS fuse::search MPI::MPI_CXX)
@@ -905,12 +1147,20 @@ add_test(NAME field.compile_fail.dangling_span
 # sequencing among exactly these three and nothing else.
 set_tests_properties(field.compile_fail.dangling_span PROPERTIES
   WILL_FAIL TRUE LABELS "compile_fail" RESOURCE_LOCK fuse_build_tree)
+if(_fuse_nested_build_env_mods)
+  set_tests_properties(field.compile_fail.dangling_span PROPERTIES
+    ENVIRONMENT_MODIFICATION "${_fuse_nested_build_env_mods}")
+endif()
 
 add_test(NAME field.compile_ok.owning_chain
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
           --target fuse_field_compile_ok_owning_chain)
 set_tests_properties(field.compile_ok.owning_chain PROPERTIES
   LABELS "compile_fail" RESOURCE_LOCK fuse_build_tree)
+if(_fuse_nested_build_env_mods)
+  set_tests_properties(field.compile_ok.owning_chain PROPERTIES
+    ENVIRONMENT_MODIFICATION "${_fuse_nested_build_env_mods}")
+endif()
 
 # ---------------------------------------------------------------- verification
 # AgreementBounds track: a tier-0 unit test of examples/dn_heat/
@@ -932,6 +1182,7 @@ target_include_directories(fuse_verification_brusselator_agreement_bound_test PR
 foreach(t mms_transfer iteration)
   fuse_add_gtest(verification ${t} NO_LAYER_LIB
                  LIBS fuse::runtime fuse::backend fuse::transport)
+  fuse_add_device_twin(verification.${t} fuse_verification_${t}_test)
 endforeach()
 # THROWS: AnUnimplementedNodalOrderRefusesThroughTheRealSchedulingPath exercises
 # an E-EXTENT-DISC refusal (src/backend/serial_backend.cpp), which aborts rather
@@ -939,6 +1190,7 @@ endforeach()
 # 36124149902, 2026-09-25).
 fuse_add_gtest(verification interface_transfer THROWS NO_LAYER_LIB
                LIBS fuse::runtime fuse::backend fuse::transport)
+fuse_add_device_twin(verification.interface_transfer fuse_verification_interface_transfer_test THROWS)
 
 # The one-rank case of parallel/nodal_remap_runner_test.cpp, WITHOUT MPI. It
 # shares that file's backend (support/partitioned_test_backend.hpp, which no
@@ -949,6 +1201,7 @@ fuse_add_gtest(verification nodal_remap_runner_serial NO_LAYER_LIB
                LIBS fuse::runtime fuse::backend)
 target_include_directories(fuse_verification_nodal_remap_runner_serial_test PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/support)
+fuse_add_device_twin(verification.nodal_remap_runner_serial fuse_verification_nodal_remap_runner_serial_test)
 
 # FSI channel (FSI track): fsi_stokes_mms and fsi_beam exercise the two
 # standalone solvers (examples/fsi_channel/{stokes,beam}_solver.hpp) with no
@@ -959,9 +1212,14 @@ target_include_directories(fuse_verification_nodal_remap_runner_serial_test PRIV
 # registration just below.
 foreach(t fsi_stokes_mms fsi_beam fsi_coupled fsi_transient fsi_energy_diag)
   fuse_add_gtest(verification ${t} NO_LAYER_LIB
-                 LIBS fuse::runtime fuse::backend Eigen3::Eigen)
+                 LIBS fuse::runtime fuse::backend Eigen3::Eigen fuse::examples_common)
   target_include_directories(fuse_verification_${t}_test PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/fsi_channel)
+endforeach()
+# The three rows that drive a Runner graph (the two standalone-solver rows
+# run no coupler and would only repeat themselves).
+foreach(t fsi_coupled fsi_transient fsi_energy_diag)
+  fuse_add_device_twin(verification.${t} fuse_verification_${t}_test TIMEOUT 3600)
 endforeach()
 
 # Gray-Scott (Time windows track): the species solver's own MMS order, the
@@ -972,10 +1230,25 @@ endforeach()
 # Eigen::SparseLU and FUSE_LINALG_BACKEND=eigen is the default backend.
 foreach(t gray_scott_mms gray_scott_multirate gray_scott_reference)
   fuse_add_gtest(verification ${t} NO_LAYER_LIB
-                 LIBS fuse::runtime fuse::backend Eigen3::Eigen)
+                 LIBS fuse::runtime fuse::backend Eigen3::Eigen fuse::examples_common)
   target_include_directories(fuse_verification_${t}_test PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/gray_scott)
 endforeach()
+foreach(t gray_scott_multirate gray_scott_reference)
+  fuse_add_device_twin(verification.${t} fuse_verification_${t}_test TIMEOUT 3600)
+endforeach()
+
+# The sparse direct solver both of the above hold (examples/common/
+# sparse_solve_backend.hpp): the Eigen::SparseLU contract it forwards, checked
+# on the two matrix shapes the examples build, plus bitwise agreement with a
+# bare Eigen::SparseLU when FUSE_ENABLE_CUSPARSE is off -- the proof that the
+# flag-off build of the examples is unchanged by holding the wrapper.
+fuse_add_gtest(verification sparse_solve_backend NO_LAYER_LIB
+               LIBS fuse::base Eigen3::Eigen fuse::examples_common)
+# stokes_solver.hpp: the reproducibility case assembles the real Stokes
+# saddle point through cn_step()'s debug_matrix_out hook.
+target_include_directories(fuse_verification_sparse_solve_backend_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/examples/fsi_channel)
 
 # Brusselator (Time windows track, "a code FUSE has never met"): weights
 # (an independent, integer-arithmetic oracle reimplementing the Toy's own
@@ -993,6 +1266,12 @@ foreach(t brusselator_weights brusselator_physics brusselator_runner brusselator
   target_include_directories(fuse_verification_${t}_test PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/brusselator)
 endforeach()
+# Measured on higgs (Debug, device interpreter, machine loaded by three
+# concurrent builds): the first two cases alone took 57 min, so the twin's
+# timeout is three hours; the window-scoped region still stages every arc per
+# instruction (docs/dev/device-resident-arcs.md, step 3), which is what makes
+# this row the slow one.
+fuse_add_device_twin(verification.brusselator_runner fuse_verification_brusselator_runner_test TIMEOUT 10800)
 
 # S6 phase 3 ("LowFive" track), Unit 3: brusselator_graph_tool.cpp's own
 # --transport lowfive wiring, reproduced directly against validate() --
@@ -1228,6 +1507,21 @@ endif()
 # This is the actual thing conventions.md's "CMake package `fuse-coupler`"
 # claim needs to be true, not a proxy for it: before this, nothing in the
 # tree ran `cmake --install` at all.
+# The installed fuse-couplerConfig.cmake find_dependency()s Kokkos, fmt and
+# Eigen3. The consumer configure below sees CMAKE_PREFIX_PATH, but a package
+# this configure found through a prefix derived from the invoking shell's
+# PATH (fmt from a conda prefix, measured 2026-10-12) is not on it, so the
+# consumer resolved it only when ctest ran from a shell with the same PATH.
+# Forward where THIS configure found each one -- the same shape as the
+# OMPI_CXX pin above (D47) -- so the three install consumers test the
+# installed package, not the invoking shell.
+set(_fuse_consumer_dep_args "")
+foreach(_fuse_dep IN ITEMS Kokkos fmt Eigen3 yaml-cpp)
+  if(DEFINED ${_fuse_dep}_DIR AND NOT "${${_fuse_dep}_DIR}" MATCHES "NOTFOUND$")
+    list(APPEND _fuse_consumer_dep_args "-D${_fuse_dep}_DIR=${${_fuse_dep}_DIR}")
+  endif()
+endforeach()
+
 add_test(NAME install.consumer_find_package
   # -D arguments MUST precede -P: cmake only honours -D definitions that
   # appear before the script argument on its command line.
@@ -1239,6 +1533,7 @@ add_test(NAME install.consumer_find_package
           -DCMAKE_COMMAND=${CMAKE_COMMAND}
           -DCMAKE_GENERATOR=${CMAKE_GENERATOR}
           "-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
+          "-DFUSE_CONSUMER_DEP_ARGS=${_fuse_consumer_dep_args}"
           -P ${CMAKE_CURRENT_SOURCE_DIR}/install_consumer/run-smoke-test.cmake
 )
 set_tests_properties(install.consumer_find_package PROPERTIES
@@ -1354,12 +1649,17 @@ if(TARGET fuse-abi-fortran)
               -DCMAKE_COMMAND=${CMAKE_COMMAND}
               -DCMAKE_GENERATOR=${CMAKE_GENERATOR}
               "-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
+              "-DFUSE_CONSUMER_DEP_ARGS=${_fuse_consumer_dep_args}"
               -P ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/install_consumer/run-smoke-test.cmake
     )
     set_tests_properties(abi.install_consumer_fortran PROPERTIES
       LABELS "abi;fortran;install"
       RESOURCE_LOCK fuse_build_tree
       TIMEOUT 300)
+    if(_fuse_moab_env_mods)
+      set_tests_properties(abi.install_consumer_fortran PROPERTIES
+        ENVIRONMENT_MODIFICATION "${_fuse_moab_env_mods}")
+    endif()
   else()
     add_test(NAME abi.install_consumer_fortran
       COMMAND ${CMAKE_COMMAND} -P
@@ -1393,6 +1693,7 @@ add_library(fuse_abi_test_support STATIC ${CMAKE_SOURCE_DIR}/src/abi/test_suppor
 target_include_directories(fuse_abi_test_support PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
 target_link_libraries(fuse_abi_test_support PUBLIC fuse::runtime)
 
+fuse_add_gtest(abi device_binding NO_LAYER_LIB)
 fuse_add_gtest(abi entries_golden)
 target_compile_definitions(fuse_abi_entries_golden_test PRIVATE
   FUSE_PYTHON3_EXECUTABLE="${FUSE_ABI_PYTHON3}"
@@ -1438,6 +1739,7 @@ add_test(NAME abi.install_consumer_c
           -DCMAKE_COMMAND=${CMAKE_COMMAND}
           -DCMAKE_GENERATOR=${CMAKE_GENERATOR}
           "-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
+          "-DFUSE_CONSUMER_DEP_ARGS=${_fuse_consumer_dep_args}"
           -DFUSE_ABI_REFERENCE_EXE=$<TARGET_FILE:fuse_abi_reference>
           -P ${CMAKE_CURRENT_SOURCE_DIR}/abi/install_consumer/run-smoke-test.cmake
 )
@@ -1446,6 +1748,10 @@ set_tests_properties(abi.install_consumer_c PROPERTIES
   RESOURCE_LOCK fuse_build_tree  # same reason install.consumer_find_package uses it, above
   TIMEOUT 300
 )
+if(_fuse_moab_env_mods)
+  set_tests_properties(abi.install_consumer_c PROPERTIES
+    ENVIRONMENT_MODIFICATION "${_fuse_moab_env_mods}")
+endif()
 
 # ABI-COLLECTIVE-AGREEMENT: tier 1 only, absent (not skipped) in tier 0 for
 # the reason every other MPI-gated test in this file is.

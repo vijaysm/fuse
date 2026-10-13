@@ -59,7 +59,13 @@ struct MeshArrays {
   int dim = 0;  ///< topological dimension of every cell (1, 2 or 3)
 
   // ---- vertices --------------------------------------------------------
-  Kokkos::View<double* [3], MemorySpace> vertex_coords;
+  /// LayoutRight in EVERY memory space: a rank-2 View's default layout is
+  /// the space's own (LayoutRight on the host, LayoutLeft on CUDA), and
+  /// `Kokkos::deep_copy` cannot change memory space and layout in one call,
+  /// so `to_memory_space<Device>()` on a host mesh threw (KNOWN_ISSUES.md
+  /// D54). Pinning the layout keeps the host arrays as they always were
+  /// and makes the device copy a plain contiguous memcpy.
+  Kokkos::View<double* [3], Kokkos::LayoutRight, MemorySpace> vertex_coords;
   Kokkos::View<std::int64_t*, MemorySpace> vertex_gid;
   Kokkos::View<int*, MemorySpace> vertex_owner;
   Kokkos::View<bool*, MemorySpace> vertex_is_owned;
@@ -109,7 +115,7 @@ template <class Target, class Source>
 [[nodiscard]] MeshArrays<Target> to_memory_space(const MeshArrays<Source>& src) {
   MeshArrays<Target> dst;
   dst.dim = src.dim;
-  dst.vertex_coords = detail::copy_view<Kokkos::View<double* [3], Target>>(src.vertex_coords);
+  dst.vertex_coords = detail::copy_view<Kokkos::View<double* [3], Kokkos::LayoutRight, Target>>(src.vertex_coords);
   dst.vertex_gid = detail::copy_view<Kokkos::View<std::int64_t*, Target>>(src.vertex_gid);
   dst.vertex_owner = detail::copy_view<Kokkos::View<int*, Target>>(src.vertex_owner);
   dst.vertex_is_owned = detail::copy_view<Kokkos::View<bool*, Target>>(src.vertex_is_owned);
@@ -254,7 +260,54 @@ class NativeMeshView final : public MeshView {
   /// caller should go through `create`/`create_from_host`.
   NativeMeshView() = default;
 
+  // ---- device-resident geometry (docs/dev/native-mesh.md, "Execution
+  // space") -----------------------------------------------------------
+  //
+  // `measure(dim,i)`/`centroid(dim,i)` above keep serving the host arrays
+  // this file has always computed -- `Result`/`Failure`/`fmt` validation
+  // (canonical_fan_triangulation, canonical_cell_tetrahedra) is host-only by
+  // this codebase's own standing convention, and that validation pass
+  // already produces the host measure/centroid as an unavoidable byproduct,
+  // so there is no separate "mirror rebuild" step to make lazy: the host
+  // array IS the validation's own output, computed once, at construction.
+  //
+  // What is NEW is `device_measure_`/`device_centroid_` below: the SAME two
+  // per-cell maps, INDEPENDENTLY recomputed by a Kokkos kernel dispatched on
+  // Kokkos::DefaultExecutionSpace directly from this view's validated
+  // simplex corners and vertex connectivity (`create_from_host`'s last
+  // step), landing in `Kokkos::DefaultExecutionSpace::memory_space` -- real
+  // device memory on a CUDA/HIP/SYCL build. A caller (or a verification
+  // test) that wants the values where a device-resident kernel can read
+  // them without a host round trip uses these; everything above the backend
+  // is unaffected; it never sees this type.
+ public:
+  using DeviceMemSpace = Kokkos::DefaultExecutionSpace::memory_space;
+
+  /// Per-cell measure, computed on the device (see above). Agrees with
+  /// `measure(dim_, i)` to 1e-14 relative on a build with a real device
+  /// backend (nvcc's FMA contraction, the same tolerance
+  /// docs/dev/device-resident-arcs.md's reproducibility contract already
+  /// accepts for RelaxFunctor/RemapMultiFunctor), bit-identically on a
+  /// host-only build (Kokkos::DefaultExecutionSpace == the host space, and
+  /// the kernel sums each cell's simplices in the same order the host loop
+  /// does). Empty when `cell_count() == 0`.
+  [[nodiscard]] const Kokkos::View<double*, DeviceMemSpace>& device_measure() const noexcept {
+    return device_measure_;
+  }
+
+  /// Per-cell centroid (vertex average, matching `centroid(dim_, i)`'s own
+  /// convention), computed on the device directly from `vertex_coords` and
+  /// the cell-to-vertex CSR -- no simplex decomposition needed for this one,
+  /// since a vertex average does not go through it even on the host (see
+  /// `centroid(dim,i)`'s file comment above). Column 0/1/2 are x/y/z.
+  [[nodiscard]] const Kokkos::View<double* [3], DeviceMemSpace>& device_centroid() const noexcept {
+    return device_centroid_;
+  }
+
  private:
+  Kokkos::View<double*, DeviceMemSpace> device_measure_;
+  Kokkos::View<double* [3], DeviceMemSpace> device_centroid_;
+
   void check(int dim, std::size_t i, const char* what) const;
 
   int dim_ = 0;

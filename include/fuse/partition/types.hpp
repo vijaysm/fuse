@@ -19,13 +19,17 @@ using Weight = std::int64_t;
 /// A communicator handle that names no MPI type, so this header (and every
 /// other public header in this layer) stays free of `mpi.h` -- the same
 /// boundary convention `fuse::transport`'s `MpiTransport` uses
-/// (`MPI_Comm_c2f`/`MPI_Comm_f2c`; see transport.hpp). `kNullComm` (0) means
+/// (`MPI_Comm_c2f`/`MPI_Comm_f2c`; see transport.hpp). `kNullComm` (-1) means
 /// "no communicator": exactly one process, no MPI symbol touched at
 /// all -- what makes `rcb_partition` callable in a base (no-MPI) build.
-/// A non-zero handle requires `FUSE_HAVE_MPI`; supplying one without it is
-/// `E-PART-NO-MPI`.
+/// Negative, not 0: OpenMPI's `MPI_Comm_c2f` hands out small sequential
+/// NON-NEGATIVE Fortran handles with no reserved always-invalid value (even
+/// `MPI_COMM_WORLD` itself can legitimately come back as `0`), so `0` would
+/// silently collide with a real communicator and get treated as "no MPI".
+/// A caller that passes any valid handle requires `FUSE_HAVE_MPI`; supplying
+/// one without it is `E-PART-NO-MPI`.
 using CommHandle = int;
-inline constexpr CommHandle kNullComm = 0;
+inline constexpr CommHandle kNullComm = -1;
 
 /// Histogram-median tunables, matching rcb_moab's Common.hpp defaults.
 /// K=128 buckets, 4 refine iterations reaches sub-microscale bucket
