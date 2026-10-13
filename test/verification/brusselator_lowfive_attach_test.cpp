@@ -431,12 +431,28 @@ TEST(ModelCheck, Round8MeasuredOrderCompletesFor2Exchanges) {
 }
 
 // 60: this row's own kMaxIterations (brusselator_graph_tool.cpp) --
-// reused here as an exchange count. Round 9 (task 3) closes the
-// question round 8 left unsettled: the host measured ~61 exchanges
-// per coupling window (122 U writes / 2 windows), i.e. once per Jacobi
-// sweep (not once per window) -- lowfive_attach_decision.hpp's own
-// "ROUND 9" comment has the full account (measured, not re-derived
-// here).
+// reused here as an exchange count, a pre-round-9 stress value, not a
+// claim about any measured sweep count on any head. Round 9 (task 3)
+// closed the question round 8 left unsettled using a figure measured
+// on commit 7aec9c8 (BEFORE the owner's device-branch merge): ~61
+// exchanges per coupling window (122 U writes / 2 windows), i.e. once
+// per Jacobi sweep. Round 10 (task D) found the SAME row measures a
+// DIFFERENT figure on HEAD 0dc8c70 (after BOTH the device-branch
+// merge and the Collectives track's own fix for the unrequested-
+// period hang): 12 sweeps per period, 25 writes/25 reads per rank
+// for a `--periods 2` run, now SYMMETRIC between U and V (a mid-fix
+// measurement on b98777d, while the row still hung on an unrequested
+// third period, saw an asymmetric 26 U writes/25 reads -- superseded
+// by this completed-row figure, not an independent data point). The
+// CAUSE of the change from 61 to 12 is still NOT fully established,
+// though the Collectives track's own D57 entry refutes the earlier
+// "61 = kMaxIterations + 1" hypothesis outright and traces 61 to a
+// commit predating that fix (lowfive_attach_decision.hpp's own
+// "ROUND 10" comment has the full account, including D57's own
+// arithmetic-only observation that 122 is also consistent with 12
+// sweeps/period over TEN periods, not two); both figures are
+// measured, neither re-derived here, and neither is this row's own
+// number specifically.
 TEST(ModelCheck, Round8MeasuredOrderCompletesFor60Exchanges) {
   using namespace fuse_examples::lowfive_attach_model;
   const auto r = RunSimulationRound8(Round8Order::kMeasured, 60,
@@ -1053,17 +1069,31 @@ TEST(CheckGraphOrderValidated, MultiRankComponentIsRefused) {
 // (i)-(iv), each with its own assertion, plus the soundness link
 // (static_check_accepts(order) implies model_completes(order)).
 
-TEST(ModelCheck, Round8MeasuredOrderCompletesFor1And2And60And122Exchanges) {
-  // Scenario (i). 122 is the host's own MEASURED exchange count for a
-  // `--periods 2` run (round 9, task 3): 122 U writes total, i.e. ~61
-  // exchanges per coupling window across 2 windows -- not a derived
-  // figure (the Collectives track owns the Runner's own sweep-count
-  // machinery this would need to derive from first principles;
-  // lowfive_attach_decision.hpp's own "ROUND 9" comment records it as
-  // measured). 60 remains ALSO covered below as the pre-round-9 stress
-  // value (this row's own kMaxIterations, reused as an exchange count,
-  // not a claim it equals a Jacobi sweep count).
-  for (int n : {1, 2, 60, 122}) {
+TEST(ModelCheck, Round8MeasuredOrderCompletesFor1And2And60And122And25Exchanges) {
+  // Scenario (i). 122 was round 9's own MEASURED exchange count for a
+  // `--periods 2` run on commit 7aec9c8 (BEFORE the owner's device-
+  // branch merge): 122 U writes total, i.e. ~61 exchanges per coupling
+  // window across 2 windows. Round 10 (task D) found the SAME row
+  // measures 25 writes (U and V both, symmetric) per rank on HEAD
+  // 0dc8c70, once the row COMPLETES (after both the device-branch
+  // merge and the Collectives track's own hang fix) -- a mid-fix
+  // measurement on b98777d, taken while the row still hung on an
+  // unrequested third period, saw an asymmetric 26 U writes/25 reads;
+  // that figure is superseded here by the completed-row 25, not kept
+  // as a separate scenario. The cause of the change from 122 to 25 is
+  // still NOT fully established (lowfive_attach_decision.hpp's own
+  // "ROUND 10" comment has the full account, including the
+  // Collectives track's own D57 findings). 122 is NOT this round's
+  // own real count and is labelled as 7aec9c8's own figure, not
+  // restated as current; 25 (HEAD's own completed-row figure) is
+  // added to the SAME loop, confirming the existing, N-generic
+  // machinery already covers it without any new scenario type --
+  // neither figure is a derived one (the Collectives track owns the
+  // Runner's own sweep-count machinery that would be needed to derive
+  // either). 60 remains ALSO covered as the pre-round-9 stress value
+  // (this row's own kMaxIterations, reused as an exchange count, not
+  // a claim it equals a Jacobi sweep count on either head).
+  for (int n : {1, 2, 25, 60, 122}) {
     const auto r = RunSimulationRound8(Round8Order::kMeasured, n,
                                        ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
                                        ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader});

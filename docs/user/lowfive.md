@@ -936,28 +936,50 @@ writes/122 reads, every `H5Dread rc=0`). The row still times out, but on a DIFFE
 coupler's own base-communicator `MPI_Allreduce`, never joined by U/V after the last delivery) -- not a defect in
 anything this track owns.
 
-**The coupler exit crash.** `brusselator_coupler_main` aborts at process exit, AFTER `MPI_Finalize`, with
-`libc++abi: terminating due to uncaught exception of type std::__1::system_error: mutex lock failed: Invalid
-argument`. Root cause: `examples/CMakeLists.txt`'s own ctest `ENVIRONMENT` property sets `HDF5_VOL_CONNECTOR`/
-`HDF5_PLUGIN_PATH` process-wide for the WHOLE MPMD launch (all three `':'`-separated app segments share one
-environment); the coupler never calls `bruss_lowfive_attach()`, but HDF5's own env-route default-VOL resolution
-registers the "lowfive" connector class there anyway, and HDF5's own exit-time teardown (`H5_term_library`) later
-calls into the connector's own `_term()` callback, which logs through a spdlog registry already torn down by
-static-destruction order. Fix: the coupler calls `unsetenv()` on the three env-route variables before `MPI_Init`
-(preventing the connector from ever registering there at all); U and V call an explicit, synchronous `H5close()`
-in `bruss_lowfive_finalize()`, before their own `MPI_Finalize()`, while the process is still in ordinary
-execution (so spdlog's own registry cannot have been torn down yet, regardless of atexit() ordering) --
-KNOWN_ISSUES.md D39's own "Round 9" account has the full crash trace and the ranked alternatives this was chosen
-over.
+**The coupler exit crash -- round 9's own root cause claim is RETRACTED by round 10's own measurement.**
+`brusselator_coupler_main` aborts at process exit, AFTER `MPI_Finalize`, with `libc++abi: terminating due to
+uncaught exception of type std::__1::system_error: mutex lock failed: Invalid argument`. Round 9 attributed this
+to `examples/CMakeLists.txt`'s own ctest `ENVIRONMENT` property setting `HDF5_VOL_CONNECTOR`/`HDF5_PLUGIN_PATH`
+process-wide for the whole MPMD launch, and fixed it by having the coupler `unsetenv()` those three variables
+before `MPI_Init`. Round 10's own host measurement shows the coupler's own trace line DID print (confirming the
+`unsetenv()` ran) and the SAME abort still happened, byte-identical, on two different MOAB installs -- DISPROVING
+environment inheritance as a complete explanation. Round 10's own reading excludes, with citations, every
+FUSE-side path that could construct a LowFive VOL object on the coupler's own rank (`RunnerConfig::transport` is
+always `"mpi"` for this graph, never `"lowfive"`, so `LowFiveTransport`/`VolSingleton`/`DistVolSingleton` are
+never reached; `lowfive_attach.cpp` is not compiled into the coupler at all; the graph's own fieldless "lowfive"
+marker component is skipped by the identical `ComponentKind::Coupler` exemption the real coupler component gets)
+and confirms (but does not by itself explain) that `liblowfive`/`liblowfive-dist`/MOAB/TempestRemap are linked
+into EVERY FUSE executable unconditionally, by build-time design, independent of role. The remaining, unexcluded
+candidate -- a pre-`main()` static initialiser in a linked library, running before `unsetenv()` has a chance to
+execute -- needs a host experiment to settle (an `lldb` session on the coupler's own MPMD segment, breakpoints on
+`main`/`H5open`/`H5VLregister_connector`/`H5VLregister_connector_by_value`); KNOWN_ISSUES.md D39's own "Round 10"
+account has the full exclusion list, citations, and the experiment design in full. The `unsetenv()` fix is KEPT
+(still sound hygiene for a process with no deliberate use for the connector) but is no longer claimed to be THE
+fix for this crash. U's and V's own fix (an explicit, synchronous `H5close()` in `bruss_lowfive_finalize()`,
+before their own `MPI_Finalize()`) is UNAFFECTED by this retraction -- it addresses a different, confirmed
+mechanism (their own deliberate attach via `lowfive_attach.cpp`), not the coupler's own mystery registration.
 
 **Naming correction (no logic change).** The `period=N` trace field and two pure-function names (`ExpectedOrder
 ForPeriod`, `OrderTracker::period_index`) were a misnomer: the unit they track is one write-then-read exchange,
-not a coupling window -- the host measured 61 exchanges per window (122 U writes for a `--periods 2` run), not
-one. Renamed to `exchange=`/`ExpectedOrderForExchange`/`exchange_index` throughout this track's own code, tests,
-and docs; "period" is reserved for the Brusselator's own `--periods` CLI flag and the outer coupling-window loop.
-This also closes round 8's own open question: `ExternalDelivery` fires once per Jacobi sweep, not once per
-window (~61 deliveries per window, MEASURED, not derived -- the exact relationship to this row's own
-`max_iterations = 60` is the Collectives track's own question).
+not a coupling window -- the host measured 61 exchanges per window (122 U writes for a `--periods 2` run) ON
+COMMIT 7aec9c8, BEFORE the owner's Kokkos+CUDA device-branch merge, not one. Renamed to `exchange=`/
+`ExpectedOrderForExchange`/`exchange_index` throughout this track's own code, tests, and docs; "period" is
+reserved for the Brusselator's own `--periods` CLI flag and the outer coupling-window loop -- this renaming
+itself is unaffected by anything below. This also closed round 8's own open question using THAT figure:
+`ExternalDelivery` fires once per Jacobi sweep, not once per window (~61 deliveries per window on 7aec9c8,
+MEASURED, not derived). **Round 10 correction:** the SAME row, re-measured on HEAD 0dc8c70 (after both the
+device-branch merge and the Collectives track's own fix for the row's own unrequested-period hang, which
+completes the row for the first time), shows a DIFFERENT figure: 12 sweeps per period, 25 writes/25 reads per
+rank for `--periods 2`, SYMMETRIC between U and V (a mid-fix measurement on b98777d, taken while the row still
+hung on an unrequested third period, saw an asymmetric 26 U writes/25 reads -- superseded by this completed-row
+figure, not an independent data point). The CAUSE of the change from 61 to 12 is still NOT fully established,
+though the Collectives track's own D57 entry narrows it: running the real species physics gives
+`ref_iterations = 12` on both components, refuting the earlier "61 is exactly `kMaxIterations + 1`" hypothesis
+outright, and traces 61 to a commit predating that fix, confirming it as a genuine 7aec9c8 measurement. D57
+also records, as an arithmetic observation only, not a finding, that 122 is also consistent with 12
+sweeps/period over TEN periods rather than two -- not established, only consistent; this file does not claim a
+cause for the 61-to-12 change. The exact relationship between either sweep count and the Collectives track's
+own `max_iterations`/convergence machinery remains that track's own question in both cases.
 
 **Host command, unchanged in form, now testing the exit-hygiene fix (never previously reached, since no process
 in this row had ever gotten far enough to call its own exit() cleanly before):**
@@ -970,6 +992,33 @@ FUSE_LOWFIVE_ATTACH_TRACE=1 FUSE_LOWFIVE_LOG=info \
 KNOWN_ISSUES.md D39's own "Round 9" account has the full host_pending paragraph: what each of the three
 processes must print and do at exit, and for each plausible next failure what it would look like and which of
 this round's own claims it would contradict.
+
+**Round 10 -- round 9's own exit-crash fix is confirmed on the host to have RUN but not to have stopped the**
+**crash; a read-first investigation excludes every FUSE-side registration path with citations; a host**
+**experiment is designed, not run; this crash is now the ONLY thing between the row and a pass.** Same host,
+same row, measured mid-round on HEAD b98777d (after the owner's Kokkos+CUDA device-branch merge;
+`/opt/moab-tempest` was removed, MOAB now lives at `/opt/moab/cmake-all` with a shared `libhdf5.310` rather than
+an embedded copy -- measured identical on both). The coupler's own trace line printed (confirming the
+`unsetenv()` call ran), and the SAME abort still happened, byte-identical trace, on both MOAB installs. Three
+FUSE-side mechanisms were excluded by reading, not by a host run: `RunnerConfig::transport` is assigned exactly
+once in the tree and is always `"mpi"` for this graph, so `LowFiveTransport` is never constructed on any rank;
+the graph's own fieldless "lowfive" marker component is skipped by the identical `ComponentKind::Coupler` check
+the real coupler component is; `lowfive_attach.cpp` is not compiled into the coupler's own binary at all.
+`liblowfive`/MOAB/TempestRemap ARE linked into every FUSE executable by build-time design (explaining
+`otool -L`, not causation). No eager/static-constructor trigger was found in LowFive's own granted source. The
+remaining, unexcluded candidate -- a pre-`main()` static initialiser inside MOAB's or TempestRemap's own
+compiled binary, unreadable from this track -- needs a host `lldb` experiment to settle (breakpoints on
+`main`/`H5open`/`H5VLregister_connector`/`H5VLregister_connector_by_value`, each outcome separating a distinct
+candidate); KNOWN_ISSUES.md D39's own "Round 10" account has the full exclusion list, citations, and the
+four-outcome experiment design in full. **LATER UPDATE, same round, HEAD now 0dc8c70:** the Collectives track's
+own fix for the row's own unrequested-period hang landed, and the row NO LONGER HANGS -- it completes in
+1.87 s, with U/V's own data path reproducing the transport-only twin exactly (byte-identical logs,
+`brusselator_check --check: OK`) for the first time. This exit crash is now the ONLY remaining failure in the
+row. U's and V's own exit codes were NOT observed in this measurement (mpiexec killed them after the coupler's
+own BAD TERMINATION was reported); task B's own experiment is extended to capture them once the coupler's own
+fix lands. No FUSE-code change was made this round: reading
+did not establish a definite defect in FUSE's own code, only in a dependency this track cannot patch. Round
+9's `unsetenv()` and U/V's `H5close()` calls are both KEPT, unchanged.
 
 **IR/runtime half, implemented and measured (no LowFive/HDF5 needed) —
 2026-10-04.** `lower_channel()` (`src/ir/rules_channel.cpp`) emits a new

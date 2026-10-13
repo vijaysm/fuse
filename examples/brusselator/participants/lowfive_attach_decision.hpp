@@ -454,15 +454,60 @@ struct ServeState {
 // for all 364 (U) and 365 (V) events the host measured with the OLD name in
 // place).
 //
-// ROUND 9 ALSO CLOSES round 8's own open question above (now answered
-// by the host's own measurement, task 3): `ExternalDelivery` fires once
-// per Jacobi SWEEP, not once per coupling WINDOW -- ~61 deliveries per
-// window (122 U writes / 2 windows), not 1. This is a MEASURED figure,
-// not a derived one (the Collectives track owns the Runner's own
-// sweep-count/convergence machinery this would need to derive from
-// first principles); the exact relationship between 61 and `max_
-// iterations = 60` on this row's own graph is the Collectives track's
-// own question to answer, not restated here.
+// ROUND 9 CLOSED round 8's own open question above (ExternalDelivery
+// fires once per Jacobi SWEEP, not once per coupling WINDOW, not 1)
+// with a MEASURED figure -- ROUND 10 CORRECTS WHICH HEAD MEASURED
+// WHAT, since the figure itself changed across a merge this track did
+// not make, and a LATER round-10 update (after the Collectives track's
+// own D57 fix landed, HEAD b98777d -> 0dc8c70) supersedes the
+// mid-round b98777d figure below with the row's own completed count.
+// On commit 7aec9c8 (BEFORE the owner's Kokkos+CUDA device-branch
+// merge), round 9's own host measurement was ~61 deliveries per
+// coupling window (122 U writes / 2 windows for a `--periods 2` run).
+// On HEAD 0dc8c70 (AFTER both the device-branch merge and the
+// Collectives track's own D57 fix for the unrequested-period hang),
+// the row now COMPLETES (1.87 s, no hang): the collective trace shows
+// 12 sweeps per period on all three ranks (48 lines each, one md5
+// across all three), and U made 25 writes / 25 reads, V 25 writes /
+// 25 reads (1 cold start + 24 sweeps each way, 2 requested periods) --
+// SYMMETRIC, unlike the mid-round b98777d measurement (26 U writes/25
+// reads, 25 V writes/26 reads) taken while the row was still hung on
+// an unrequested third period; that mid-round 26/25 figure is
+// SUPERSEDED by this 25/25 completed-row figure, not an independent
+// third data point. Both the 7aec9c8 figure (61/window, 122 writes)
+// and the 0dc8c70 figure (12 sweeps/period, 25 writes/reads per rank)
+// are MEASURED, on their own respective commit; NEITHER is derived
+// from first principles. THE CAUSE OF THE CHANGE FROM 61 TO 12 IS
+// STILL NOT FULLY ESTABLISHED, though the Collectives track's own
+// D57 entry (KNOWN_ISSUES.md) narrows it considerably and this file
+// adopts its own findings rather than re-deriving them: running the
+// REAL species physics (not a mirror) through the SAME configuration
+// gives `ref_iterations = 12` on both components, REFUTING the
+// earlier tentative "61 is exactly `kMaxIterations + 1` (60+1)"
+// hypothesis outright (a converged, tolerance-driven window of 12
+// sweeps cannot itself produce 61 deliveries); the 61 figure traces
+// to commit `60b6207`, an ancestor of D57's own Round 1 fix and a
+// parent of the device-branch merge, confirming it was genuinely
+// measured on 7aec9c8, not a transcription error. D57 also records,
+// AS AN ARITHMETIC OBSERVATION ONLY, NOT A FINDING (this file adopts
+// the same caveat, not a stronger claim): 122 = 1 + 10 x 12 + 1, so
+// 122 deliveries are ALSO consistent with 12 sweeps per period over
+// TEN periods, not two -- meaning the original "61 per window"
+// framing may have been an artefact of assuming a 2-period run when
+// the measurement was actually a 10-period one, rather than evidence
+// that convergence itself takes a different number of sweeps across
+// the merge. This is NOT established, only consistent; this round
+// does not re-run 7aec9c8 to decide between it and D57's other
+// candidates (redundant `resume_period()` calls under the old eager
+// continuation; a D42-related change in how a window's convergence
+// verdict reaches ranks outside `R.participants`), which remains the
+// Collectives track's own open question, not restated as closed
+// here. Both figures are recorded here, explicitly labelled by which
+// commit produced them, rather than silently updating the number in
+// place -- a reader comparing this file against an OLDER D39 account
+// (or against docs/user/lowfive.md's own "Round 9" section) should
+// see the SAME two labelled figures, not a single number that quietly
+// changed meaning.
 //
 // Cold start is a SEPARATE, PRE-LOOP priming call on BOTH mains
 // (u_main.c lines ~505-516, v_main.f90's own mirror), not exchange 0 of
@@ -1377,8 +1422,46 @@ struct DatasetGroupSplit {
 // _term() (base.cpp:210) <- H5VL__free_cls <- ... <- H5_term_library
 // <- __cxa_finalize_ranges <- exit <- dyld start.
 //
-// (a) WHY THE COUPLER HAS A LOWFIVE VOL CLASS REGISTERED AT ALL, cited
-// from source: `examples/CMakeLists.txt`'s own `verification.
+// UPDATE (HEAD 0dc8c70, after the Collectives track's own D57 fix for
+// the unrequested-period hang landed): the row NO LONGER HANGS. It
+// now ends in 1.87 s with `run_participants.sh: participant run
+// exited 15`; `FUSE_COLLECTIVE_TRACE` agrees exactly across all three
+// ranks (48 lines, one md5); U and V's own completed-row counts and
+// `u.log`/`v.log` are byte-identical to the passing transport-only
+// twin's, and `brusselator_check` run by hand on them reports `--check:
+// OK`. The LowFive data path has reproduced the transport run exactly
+// for the first time. This coupler exit crash is now the ONLY thing
+// standing between this row and a pass. U's and V's own exit codes
+// were NOT observed in this measurement (mpiexec killed them once the
+// coupler's own BAD TERMINATION was reported) -- whether round 9's own
+// H5close()/finalize path in U and V exits cleanly, once the coupler
+// stops aborting, is still unmeasured; task B's own experiment design
+// below is written to capture it.
+//
+// (a) WHY THE COUPLER HAS A LOWFIVE VOL CLASS REGISTERED AT ALL -- this
+// round's OWN theory (the inherited ctest ENVIRONMENT) IS FALSIFIED.
+// ROUND 10 RETRACTION, read this before the paragraph below: the
+// lead's own round 10 brief reports the coupler's own trace line
+// ("unregistered env-route VOL vars... before MPI_Init
+// (role=kNonAttachingCoordinator)") DID print -- the unsetenv() calls
+// below DID run, before MPI_Init, exactly as designed -- and the
+// SAME abort still happened, byte-identical message, on BOTH MOAB
+// installs measured. This DISPROVES the paragraph immediately below
+// as a COMPLETE causal account: removing the three env-route
+// variables from the coupler's own environment does not stop
+// whatever registers the connector, so environment inheritance from
+// the ctest row is NOT (or not solely) the mechanism. The paragraph
+// is kept, struck through in spirit but not edited out of the
+// historical record, because the FACTS it cites (the ENVIRONMENT
+// property, the single shared mpiexec environment, lowfive_attach.cpp
+// not being one of the coupler's own sources) are all still true --
+// only the CONCLUSION drawn from them (that this is what registers
+// the class) no longer holds. lowfive_attach_decision.hpp's own
+// "ROUND 10" comment below (after the three ranked fixes) has what
+// this round's own reading could newly exclude and what remains open.
+//
+// [ORIGINAL ROUND 9 TEXT, NOW KNOWN INCOMPLETE -- see the retraction
+// immediately above]: `examples/CMakeLists.txt`'s own `verification.
 // brusselator.participants.lowfive.{mpmd,accept}.3` row sets
 // `ENVIRONMENT "HDF5_VOL_CONNECTOR=lowfive;HDF5_PLUGIN_PATH=...;
 // FUSE_LOWFIVE_BINDINGS=..."` on the ONE ctest COMMAND
@@ -1405,16 +1488,24 @@ struct DatasetGroupSplit {
 // file VOL ID"` failure from a split id table, not a correctly-
 // registered connector's own exit-time teardown -- the crash trace
 // here shows a SINGLE, correctly-resolving `H5VL__free_cls` call
-// chain, consistent with one image, not two.
+// chain, consistent with one image, not two. [END ORIGINAL ROUND 9
+// TEXT.]
 //
 // (b) RANKED FIXES, each with the reason it is or is not adopted.
 // NOT registering the connector in a process that never attaches --
-// ADOPTED for the coupler: `unsetenv()` on the three env-route
-// variables, before MPI_Init, before any native HDF5 call, is sound
-// because the coupler never calls `bruss_lowfive_attach()` and so has
-// no legitimate use for the connector at all; it is minimal because it
-// removes the hazard AT ITS SOURCE (no connector ever registered, so
-// `VOLBase::_term()` is never reached) rather than racing its teardown
+// ADOPTED for the coupler, KEPT in round 10 as sound hygiene, but
+// ROUND 10 MEASURED IT DOES NOT STOP THE CRASH: `unsetenv()` on the
+// three env-route variables, before MPI_Init, before any native HDF5
+// call, is still sound (the coupler never calls `bruss_lowfive_
+// attach()` and has no legitimate use for the connector regardless of
+// what else registers it) and is kept rather than reverted -- but it
+// is NO LONGER claimed to be THE fix for this crash, since the host's
+// own round 10 measurement shows the identical abort with this exact
+// code in place and its own trace line confirmed printed. It is
+// minimal because it removes ONE possible hazard AT ITS SOURCE (had
+// the env route been the cause, no connector would ever register, so
+// `VOLBase::_term()` would never be reached) rather than racing its
+// teardown
 // against spdlog's own static destruction. A deterministic teardown in
 // `bruss_lowfive_finalize()` -- ADOPTED for U and V, which DO
 // deliberately attach: an explicit, SYNCHRONOUS `H5close()` call,
@@ -1454,6 +1545,198 @@ struct DatasetGroupSplit {
 // connector at all) holds regardless of which it is, so this round did
 // not chase the exact call site further; recorded as a limitation, not
 // a settled claim.
+//
+// ---------------------------------------------------------------------
+// ROUND 10, task A -- re-opened after the retraction above. Enumerated,
+// with file:line cites, every FUSE-side path that could reach a
+// LowFive connector registration or construct a VOLBase-derived
+// object, and whether the coupler (role kNonAttachingCoordinator) can
+// reach it.
+//
+// EXCLUDED, with citations (the coupler CANNOT reach these):
+// (1) `src/transport/lowfive_transport.cpp`'s own `VolSingleton`/
+// `DistVolSingleton` (lines 119-231) -- the ONLY callers of
+// `vol_singleton()`/`dist_vol_singleton()` anywhere in the tree are
+// `LowFiveTransport`'s OWN member functions (`set_location`,
+// `serve_as_producer`, `receive_as_consumer`, `build_plan`, the
+// `Impl` destructor -- grepped exhaustively across src/, include/,
+// examples/, test/; every hit is inside lowfive_transport.cpp
+// itself). A `LowFiveTransport` object is constructed ONLY via
+// `TransportRegistry::instance().create(config.transport)`
+// (`src/runtime/runner.cpp:2478,4516` -- READ, not edited, per this
+// round's own "do not touch runner*.cpp" instruction) when `config.
+// transport == "lowfive"`. `RunnerConfig::transport` is assigned in
+// exactly ONE place in the whole tree, `src/abi/participant.cpp:1048`
+// (also read-only this round): `config.transport = "mpi";`, inside the
+// `if (c.communicator_set)` branch -- the Brusselator's own MPMD
+// `fuse_setup()` call ALWAYS sets `setup.communicator`
+// (`coupler_main.c`'s own `setup.communicator = (int64_t)MPI_Comm_
+// c2f(MPI_COMM_WORLD);`, identically in u_main.c/v_main.f90), so
+// `config.transport` is `"mpi"` for EVERY rank of THIS graph, on
+// EVERY role, ALWAYS -- `TransportRegistry::instance().create("mpi")`
+// returns an `MpiTransport`, never a `LowFiveTransport`. STRUCTURALLY
+// IMPOSSIBLE for this graph to construct a `LowFiveTransport` at all,
+// on any rank, confirmed by reading every assignment site to `config.
+// transport` in the tree (one site, one value, unconditional for an
+// MPI-communicator run).
+// (2) `examples/brusselator/participants/lowfive_attach.cpp`'s own
+// direct `LowFive::MetadataVOL::create_MetadataVOL()`/
+// `LowFive::DistMetadataVOL::create_DistMetadataVOL()` calls (this
+// track's own mechanism, rounds 1-9) -- `lowfive_attach.cpp` is not
+// one of `brusselator_coupler_main`'s own sources
+// (`examples/CMakeLists.txt:374-376`: `target_link_libraries
+// (brusselator_coupler_main PRIVATE fuse::abi MPI::MPI_C)`, no
+// `target_sources` adding `lowfive_attach.cpp` the way U's/V's own
+// targets get at lines 387/412) -- this translation unit is not even
+// COMPILED into the coupler executable, let alone called.
+// (3) The graph's own fieldless "lowfive" marker component
+// (`brusselator_graph_tool.cpp:296-299`: `kind = ComponentKind::
+// Coupler`, `ranks = RankSet{0, total_ranks}` -- spans every rank,
+// including the coupler's own) -- `fuse_initialize()`'s own wiring
+// loop (`src/abi/participant.cpp:941`: `if (decl.kind == fuse::
+// ComponentKind::Coupler) continue;`) skips BOTH the real "coupler"
+// component AND this fieldless marker identically, since both share
+// `kind == ComponentKind::Coupler` -- this loop constructs nothing
+// for either. (The `brusselator_graph_tool.cpp` comment above this
+// marker's own `add_component()` call, read carefully, describes a
+// PAST bug this exact `.kind` assignment already fixed -- a component
+// with the ComponentDecl DEFAULT kind, `Physics`, used to slip past
+// this same skip; it no longer does, now that `.kind` is set
+// explicitly. The marker is declarative only: nothing in the ABI or
+// Runtime consumes it to construct a transport or VOL object.)
+//
+// CONFIRMED, newly read this round, but NOT sufficient on its own to
+// explain registration (linkage is not the same as invocation):
+// `liblowfive`/`liblowfive-dist`/MOAB/TempestRemap are linked into
+// EVERY FUSE executable, including the coupler, UNCONDITIONALLY, by
+// build-time design, independent of role or graph content --
+// `src/CMakeLists.txt:304`: `fuse_link_lowfive_with_fmt_fix(fuse-
+// coupler-transport)`, called whenever `FUSE_ENABLE_LOWFIVE` is ON,
+// with its own comment stating `lowfive_transport.cpp` is "already in
+// the add_library() sources list... every configuration"; `src/
+// CMakeLists.txt:503`: `target_link_libraries(fuse-coupler-backend
+// PUBLIC fuse::moab)`, called whenever `FUSE_ENABLE_MOAB` is ON. Since
+// `brusselator_coupler_main` links `fuse::abi`, which pulls in the
+// WHOLE `fuse-coupler-*` static library stack, it transitively links
+// `liblowfive`/`liblowfive-dist`/MOAB/TempestRemap REGARDLESS of
+// whether its own graph or role ever uses the LowFive transport --
+// this is WHY `otool -L` on the coupler shows these libraries
+// (answers the "why do they appear at all" half of the lead's own
+// question), but dyld LINKING a dylib is not the same as that
+// dylib's own static initialisers doing anything HDF5-related; no
+// eager/global-constructor call into `H5VLregister_connector`/
+// `H5open` was found by reading LowFive's own granted source (below).
+//
+// READ IN LOWFIVE'S OWN SOURCE (/Users/mahadevan/Code/hdf5/LowFive,
+// rev 7f3a58b -- may not be the EXACT revision installed at the
+// host's own LowFive prefix; stated as a caveat, not assumed
+// identical): `LowFive::VOLBase::register_plugin()` (`src/vol-base/
+// base.cpp:155-163`) is the ONLY call site in the whole LowFive tree
+// for the UNVALUED `H5VLregister_connector` (not `_by_name`, not
+// `_by_value`) -- it is an ORDINARY MEMBER FUNCTION, called only from
+// `LowFive::H5VOLProperty`'s own constructor (`include/lowfive/
+// H5VOLProperty.hpp:14`: `vol_id = vol_plugin.register_plugin();`),
+// itself only constructed by explicit application code (`VolSingleton`
+// /`DistVolSingleton` in FUSE -- excluded above -- or `lowfive_attach.
+// cpp` -- also excluded above). `LowFive::VOLBase::_str_to_info()`
+// (`src/vol-base/info.cpp`, around line 160) calls `H5VLregister_
+// connector_by_value`, NOT the unvalued form -- this is HDF5's OWN
+// env-route string parser, invoked by HDF5 itself when `HDF5_VOL_
+// CONNECTOR` names a connector not yet registered; task B's own
+// experiment below distinguishes whether THIS call site fires despite
+// the measured `unsetenv()`. `LowFive::VOLBase::connector_id` (`base.
+// cpp:5`) and `LowFive::VOLBase::connector` (`base.cpp:7-...`) are
+// GLOBAL, NAMESPACE-SCOPE static definitions -- but both are plain
+// DATA (a `hid_t` initialised to `-1`; an aggregate of FUNCTION
+// POINTERS), not calls; neither executes any code at load time.
+// `H5PLget_plugin_type()`/`H5PLget_plugin_info()` (`base.cpp:118-`,
+// confirmed present: `src/CMakeLists.txt`'s own LowFive counterpart,
+// `CMakeLists.txt:102` + `src/CMakeLists.txt:7,42`, shows LowFive
+// itself ships BOTH an `lowfive` AND a SEPARATE `lowfive-dist`
+// library target) are ORDINARY FUNCTIONS HDF5's OWN plugin loader
+// would call AFTER finding and `dlopen`-ing a plugin file via a PATH
+// search -- `liblowfive.dylib` is DIRECTLY LINKED into the coupler
+// (confirmed by the lead's own `otool -L`), not discovered via
+// `HDF5_PLUGIN_PATH` (unset before `MPI_Init`), so this specific
+// route is unlikely, but not excluded with certainty (whether HDF5's
+// OWN default, compiled-in plugin search directories happen to also
+// contain this file is outside what source reading alone can settle).
+// No `__attribute__((constructor))` function and no non-trivial
+// GLOBAL (namespace-scope, not function-local) C++ object was found
+// anywhere in LowFive's granted source tree (grepped exhaustively).
+//
+// NOT EXCLUDED, no source access: MOAB's own and TempestRemap's own
+// source are not granted to this track -- whether EITHER has a
+// static initialiser that calls `H5open()` (directly, or indirectly
+// through a netCDF/HDF5 convenience call during its OWN library
+// init) cannot be read here. Given every FUSE-side and every
+// LowFive-side path this round could read is excluded, a pre-`main()`
+// static initialiser in MOAB, TempestRemap, or netCDF -- running
+// before `coupler_main()`'s own `unsetenv()` calls have a chance to
+// execute at all -- is the LEADING candidate, but is NOT a settled
+// claim: declared as a limitation of this round's own read access,
+// not asserted as fact.
+//
+// ROUND 10, task B -- the host experiment (the lead runs this, not
+// this round). An `lldb` batch session on the COUPLER's own MPMD
+// segment only (U and V run normally alongside it, through the SAME
+// `mpiexec` invocation `test/parallel/brusselator_participants/
+// run_participants.sh`'s own `mpmd` branch already builds -- read,
+// quoted in this round's own `host_pending`), breaking on FOUR
+// symbols: `main` (an ordering anchor), `H5open` (library init),
+// `H5VLregister_connector` (the UNVALUED form -- programmatic
+// registration, e.g. `register_plugin()`), and `H5VLregister_
+// connector_by_value` (the env-route form, `_str_to_info`'s own
+// call). Each breakpoint auto-prints a backtrace and continues, so
+// the session runs to the real crash (or to a clean exit, once fixed)
+// without manual stepping. OUTCOMES and what each would exclude:
+// (i) `H5open`/either register_connector variant fires BEFORE `main`
+// -- PROVES a pre-`main` static initialiser in a linked library
+// (MOAB/TempestRemap/netCDF/LowFive's own dylib load) is the cause;
+// the backtrace's own top frame (even if from an anonymous `.init`
+// thunk `lldb` cannot fully symbolise) narrows WHICH library by
+// which `lldb image list`/`image lookup -a <pc>` reports at that
+// address. (ii) `H5VLregister_connector` (unvalued) fires AFTER
+// `main`, with a backtrace rooted in `coupler_main`'s own call chain
+// -- DISPROVES this round's own exclusion of (1)/(2)/(3) above and
+// would name the EXACT FUSE function this round's own reading missed.
+// (iii) `H5VLregister_connector_by_value` fires AFTER `main`, despite
+// the confirmed `unsetenv()` -- would mean the env-route parser still
+// ran from SOME value (a stale environment snapshot taken before the
+// `unsetenv()`, or `HDF5_VOL_CONNECTOR` propagated through a DIFFERENT
+// channel than the three names this round and round 9 both checked,
+// e.g. an MPI-launcher-level `-genv` not visible to a plain `getenv()`
+// audit) -- names the env route as the cause after all, just not
+// through the mechanism round 9 assumed. (iv) NEITHER register-
+// connector breakpoint ever fires, yet the crash still happens --
+// would mean the SAME symbol name resolves differently in the
+// installed build (a static/internal-linkage variant, or symbol
+// versioning) and the experiment should re-target the breakpoint at
+// `H5_term_library`/`H5VL_term_package` instead, read backward from
+// there.
+//
+// UPDATE (HEAD 0dc8c70): now that the row's own hang is fixed, the
+// coupler's exit abort is the ONLY remaining failure, and it causes
+// mpiexec to report BAD TERMINATION and kill U/V before their own
+// exit codes are observed -- so U's and V's own round-9 H5close()/
+// finalize path (whether it ALSO exits cleanly once the coupler stops
+// aborting) is the next unmeasured stage, not yet confirmed either
+// way. The experiment above should be extended to capture it: run U
+// and V under the SAME `mpiexec` MPMD command with each rank's own
+// `--outfile-pattern`-redirected stdout/stderr kept (rather than
+// discarded on a killed run), and add one trace line immediately
+// AFTER each rank's own `MPI_Finalize()` call in `u_main.c`/
+// `v_main.f90`/`bruss_lowfive_finalize()` reporting that rank's own
+// process is about to exit 0 cleanly -- printed only if execution
+// reaches that point, so its ABSENCE on a killed run is itself
+// informative (distinguishes "U/V exited cleanly, killed after" from
+// "U/V never reached their own clean-exit line"). This does not
+// require fixing the coupler first; it can run against the SAME
+// pre-fix binary and will simply show NO such line from U/V this
+// round, consistent with "not yet measured" above -- the real
+// information arrives once the coupler's own fix (whatever task B's
+// four breakpoints point to) lands and the SAME trace line is checked
+// again.
 enum class LowFiveProcessRole { kAttachingParticipant, kNonAttachingCoordinator };
 
 /// PURE data (task 1b): the three env-route variables a non-attaching
