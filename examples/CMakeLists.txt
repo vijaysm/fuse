@@ -388,10 +388,11 @@ if(FUSE_ENABLE_MPI)
   # HDF5 C API -- fuse::lowfive (cmake/FuseDependencies.cmake, which this
   # directory's own fuse_resolve_dependencies() call already ran before
   # add_subdirectory(examples) reached here, CMakeLists.txt) carries
-  # HDF5 plus the LowFive libraries themselves. The connector attachment
-  # this track chose (the HDF5_VOL_CONNECTOR/HDF5_PLUGIN_PATH env-var
-  # mechanism, docs/user/lowfive.md) needs no LowFive SYMBOL in THIS
-  # executable at all -- only ordinary HDF5 calls -- but linking the one
+  # HDF5 plus the LowFive libraries themselves. This unit first attached the
+  # connector through the HDF5_VOL_CONNECTOR/HDF5_PLUGIN_PATH env-var
+  # mechanism (docs/user/lowfive.md), which needed no LowFive SYMBOL in THIS
+  # executable at all -- only ordinary HDF5 calls (the participants now attach
+  # programmatically, see the note after the Unit 3b rows) -- but linking the one
   # `fuse::lowfive` target already resolved is simpler than teasing the
   # raw HDF5-only half back out, and costs nothing an ordinary HDF5
   # dependency does not already cost.
@@ -531,16 +532,19 @@ endif()
 # rank per component to prove the wiring, and a second world size would
 # only repeat it.
 #
-# HDF5_VOL_CONNECTOR/HDF5_PLUGIN_PATH: the two env vars docs/user/
-# lowfive.md's own "Unit 3" design names as the attachment mechanism --
-# set here, in the test's own ENVIRONMENT, per the lead's own instruction,
-# rather than inside run_participants.sh, so a host operator reading
-# `ctest --show-only` sees exactly what this row depends on.
-# FUSE_LOWFIVE_BINDINGS names the SAME graph.yaml run_participants.sh's
-# own graph_tool step writes -- a fixed, predictable path relative to
-# each row's own scratch directory, computed here rather than returned
-# by the script (CMake, not the shell, is where every OTHER row's own
-# path convention already lives).
+# Environment: these rows set NO HDF5_VOL_CONNECTOR, HDF5_PLUGIN_PATH or
+# FUSE_LOWFIVE_BINDINGS. They were written for docs/user/lowfive.md's env-var
+# route, but u_main and v_main attach LowFive programmatically
+# (lowfive_attach.cpp), so nothing here reads them, and setting them is
+# harmful: libMOAB's static initialiser (_GLOBAL__sub_I_WriteHDF5.cpp) calls
+# H5open before main, HDF5 then reads HDF5_VOL_CONNECTOR and registers the
+# LowFive connector in the coupler, and at exit that connector's teardown
+# reaches an already-destroyed spdlog registry and aborts (KNOWN_ISSUES.md
+# D39). Measured 2026-10-13 on the owner's machine: the mpmd row fails with the
+# three variables set and passes with them unset, and also passes with only
+# FUSE_LOWFIVE_BINDINGS set. The env-route plugin (fuse-lowfive-vol) stays in
+# the tree; the TARGET guard below is kept so the rows are registered under
+# the same conditions as before.
 if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND FUSE_ENABLE_LOWFIVE
    AND TARGET brusselator_u_main AND TARGET brusselator_v_main
    AND TARGET fuse-lowfive-vol)
@@ -568,27 +572,22 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND FUSE_ENABLE_LOWFIVE
     set_tests_properties(${_name} PROPERTIES
       LABELS "parallel;mpi;lowfive;verification;brusselator"
       TIMEOUT 120
-      ENVIRONMENT "HDF5_VOL_CONNECTOR=lowfive;HDF5_PLUGIN_PATH=$<TARGET_FILE_DIR:fuse-lowfive-vol>;FUSE_LOWFIVE_BINDINGS=${_scratch}/graph.yaml;OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
+      ENVIRONMENT "OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
   endforeach()
 endif()
 # ---- S6 phase 3 Unit 3b host rows: end ---------------------------------
 
-# ---- "LowFive attach" track note (additive comment only; the three
-# ENVIRONMENT variables just above are left UNCHANGED on purpose) -------
-# Both brusselator_u_main and brusselator_v_main now attach LowFive
-# programmatically (examples/brusselator/participants/lowfive_attach.cpp)
-# for EVERY --transport lowfive row, mpmd and accept alike: every
-# bruss_lowfive_write()/bruss_lowfive_read() call now passes an explicit
-# fapl_id and refuses outright if it is negative, so neither row's own
-# H5Fcreate/H5Fopen ever reaches HDF5_VOL_CONNECTOR's own default-VOL
-# resolution. HDF5_VOL_CONNECTOR/HDF5_PLUGIN_PATH/FUSE_LOWFIVE_BINDINGS
-# above are therefore vestigial for these two rows specifically -- kept
-# verbatim (not removed) because this file is a SHARED file under this
-# track's own additive-only constraint, and because the env-route
-# plugin (fuse-lowfive-vol, src/transport/lowfive_plugin_vol.cpp) they
-# were written for stays in the tree unchanged for a later track; a
-# future cleanup pass that confirms no other row still needs them on
-# THESE two rows specifically may remove the three variables here.
+# ---- LowFive attach note (revised 2026-10-13) ---------------------------
+# Both brusselator_u_main and brusselator_v_main attach LowFive
+# programmatically (examples/brusselator/participants/lowfive_attach.cpp) for
+# every --transport lowfive row, mpmd and accept alike: every
+# bruss_lowfive_write()/bruss_lowfive_read() call passes an explicit fapl_id
+# and refuses if it is negative, so neither row's H5Fcreate/H5Fopen reaches
+# HDF5_VOL_CONNECTOR's default-VOL resolution. The three env-route variables
+# were therefore removed from these two rows' ENVIRONMENT (see the comment
+# above the block for the measurement). The accept row still fails by design:
+# it is refused by name with E-LOWFIVE-ATTACH-ACCEPT until KNOWN_ISSUES.md D14
+# is resolved.
 # ---- "LowFive attach" track note: end ----------------------------------
 
 # ---------------------------------------------------------------------------
