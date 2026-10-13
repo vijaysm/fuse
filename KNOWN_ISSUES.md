@@ -5190,6 +5190,36 @@ pre-`main()` static initialiser -- but this round's own reading cannot promote t
 own exit codes become the next unmeasured stage -- the exit-code-capture addition above is written to catch
 this on the SAME run, not a separate one.
 
+**Resolution of the coupler's exit abort (2026-10-13, measured on the owner's machine, MOAB `/opt/moab/cmake-all`,**
+**MPICH 5.0.0a1; supersedes the "leading, unproven candidate" wording above).** Three measurements, none from reading.
+(1) A throwaway interposer (dyld `__interpose` of `H5open` and `H5VLregister_connector*`, loaded into the coupler's
+segment only, kept in `/tmp`, not committed) printed one event: the first `H5open` call came from
+`_GLOBAL__sub_I_WriteHDF5.cpp` in `libMOAB.5.6.0.dylib`, run by dyld's initialisers before `main`, with
+`HDF5_VOL_CONNECTOR=lowfive` and `HDF5_PLUGIN_PATH` set in the environment. No public `H5VLregister_connector*` call
+was seen: the registration inside `H5open` itself (HDF5 reading `HDF5_VOL_CONNECTOR` at initialisation) was not
+observed directly, so it is inferred from (2). The same hand run recorded the segments' exit codes: U 0, V 0,
+coupler 134 (so U's and V's own teardown, round 9's `H5close()` before `MPI_Finalize`, exits cleanly).
+(2) `run_participants.sh` run directly in six environments: `lowfive.mpmd.3` with the ctest environment fails
+(`participant run exited 15`, the `mutex lock failed` abort present); with only `FUSE_LOWFIVE_BINDINGS` set it
+passes, `brusselator_check` prints `--check: OK`, no abort; with none of the three variables set it passes the same
+way. A hand-launched MPMD run without the connector variables exited 0 on all three ranks, wrote `u.log` and `v.log`
+byte-identical to the passing transport-only twin's, and its `FUSE_COLLECTIVE_TRACE` had 48 lines with one md5 on
+all three ranks. (3) After the fix below, `ctest -R participants.lowfive` on `build-lowfive` reported
+`participants.lowfive.mpmd.3` Passed (1.70 s).
+
+**Cause and fix.** `u_main` and `v_main` attach LowFive programmatically, so the two rows' `ENVIRONMENT`
+(`HDF5_VOL_CONNECTOR`, `HDF5_PLUGIN_PATH`, `FUSE_LOWFIVE_BINDINGS`, written for the env-var route) was not read by
+anything in these rows, and it made HDF5 register the LowFive connector in the coupler as soon as libMOAB's static
+initialiser opened HDF5. At process exit that connector's teardown (`VOLBase::_term`) reaches the already-destroyed
+spdlog registry and aborts. The three variables are removed from both rows' `ENVIRONMENT` in
+`examples/CMakeLists.txt`. Round 9's `unsetenv()` in `coupler_main.c` cannot help when libMOAB is linked, because
+it runs in `main`, after the initialiser; it is kept and is untested against a coupler built without MOAB.
+
+**Not established.** The abort mechanism is a latent teardown defect in LowFive (a connector class freed after
+spdlog's registry is gone): any process that registers the connector through the environment and exits normally can
+hit it; it was not patched here. `participants.lowfive.accept.3` still fails in every environment, with the named
+refusal `E-LOWFIVE-ATTACH-ACCEPT` (D14); what that registered row should assert is an open decision.
+
 ### ~~D40. This host's Open MPI (4.1.5) hangs in `MPI_Alltoallv` on any communicator but `MPI_COMM_WORLD`~~ — WORKED AROUND 2026-10-10
 
 **Measured 2026-10-10**, tracking down a hang in `parallel.mpi_transport.{4,5}`, `parallel.comm_graph.{4,5}`
