@@ -374,6 +374,36 @@ if(FUSE_ENABLE_MPI)
   add_executable(brusselator_coupler_main
     brusselator/participants/coupler_main.c)
   target_link_libraries(brusselator_coupler_main PRIVATE fuse::abi MPI::MPI_C)
+  # ---- D14 Stage B (KNOWN_ISSUES.md), additive: begin --------------------
+  # brusselator_coupler_main now ALSO joins the single collective split
+  # bruss_lowfive_join_local_split() performs (lowfive_attach.cpp, compiles
+  # to a trivial, always-local_comm_f=0 stub when FUSE_HAVE_LOWFIVE is 0,
+  # exactly like u_main.c's/v_main.f90's own additive hunks below) -- never
+  # bruss_lowfive_attach() itself (round 9's own ruling, unchanged: this
+  # target still never constructs a real LowFive VOL object). Needs
+  # fuse::model (fuse::build_lowfive_bindings(), fuse::load_yaml_file())
+  # AND, corrected here after a tier-1 (-DFUSE_ENABLE_LOWFIVE=ON) build
+  # caught the gap this comment's own earlier claim missed:
+  # lowfive_attach.cpp's own top-of-file #include block (outside any
+  # FUSE_HAVE_LOWFIVE guard, so EVERY target compiling this source needs
+  # it) names <lowfive/H5VOLProperty.hpp> directly -- a HEADER search
+  # path only `fuse::lowfive` provides, which KNOWN_ISSUES.md D39 Round
+  # 10's own finding (liblowfive/liblowfive-dist already linked
+  # transitively via fuse::abi -> fuse-coupler-transport) does NOT: a
+  # transitive LINK dependency carries no transitive include directory
+  # in this build graph. Mirrors brusselator_u_main's own identical
+  # fuse_link_lowfive_with_fmt_fix() call below, same reason (shim.cpp's
+  # own header comment on that function has the full fmt-version
+  # account).
+  target_sources(brusselator_coupler_main PRIVATE brusselator/participants/lowfive_attach.cpp)
+  target_link_libraries(brusselator_coupler_main PRIVATE fuse::model)
+  if(TARGET fuse::lowfive)
+    fuse_link_lowfive_with_fmt_fix(brusselator_coupler_main)
+  endif()
+  if(LOWFIVE_HAVE_DIST)
+    target_compile_definitions(brusselator_coupler_main PRIVATE FUSE_LOWFIVE_DIST_LIB_FOUND=1)
+  endif()
+  # ---- D14 Stage B: end ---------------------------------------------------
 
   add_executable(brusselator_u_main
     brusselator/participants/u_main.c
@@ -523,9 +553,11 @@ endif()
 
 # ---- S6 phase 3 (Conformance, "LowFive" track), Unit 3b host rows:
 # begin -----------------------------------------------------------------
-# Same host_verification_needed status as the plain rows just above, PLUS
-# the host's LowFive still needs the fmt-12 rebuild (KNOWN_ISSUES.md D14)
-# before `fuse-lowfive-vol` can even load -- marked there explicitly.
+# Same host_verification_needed status as the plain rows just above.
+# The host's LowFive fmt-12 rebuild (KNOWN_ISSUES.md D14 "what remains"
+# item 1) is DONE -- `fuse-lowfive-vol` loads and `.lowfive.mpmd.3` passes
+# (D39 Round 10). `.lowfive.accept.3` still needs a host run of D14 Stage
+# B's own ABI-gap fix (D14's "what remains" item 3) before it can pass.
 # World size 3 only (1+1+1): item 3's own ask names .lowfive.{mpmd,accept}.3,
 # not .5; the degenerate reference graph (brusselator_graph_tool.cpp's own
 # kDtU == kWindow) this track measured against never needed more than one
@@ -585,9 +617,15 @@ endif()
 # and refuses if it is negative, so neither row's H5Fcreate/H5Fopen reaches
 # HDF5_VOL_CONNECTOR's default-VOL resolution. The three env-route variables
 # were therefore removed from these two rows' ENVIRONMENT (see the comment
-# above the block for the measurement). The accept row still fails by design:
-# it is refused by name with E-LOWFIVE-ATTACH-ACCEPT until KNOWN_ISSUES.md D14
-# is resolved.
+# above the block for the measurement). The mpmd row passes (D39 Round 10,
+# 1.70 s). The accept row's own blanket E-LOWFIVE-ATTACH-ACCEPT refusal is
+# replaced, D14 Stage B (2026-10-13): decide_attach_mode() now accepts a
+# Connect-mode channel when the base communicator is exposed (the new
+# base_communicator() ABI entry) and at most two Connect-mode components
+# are declared (D18), refusing only those two narrower conditions by name.
+# Build-verified only -- this sandbox cannot start MPI -- so the accept row
+# still fails to RUN here; whether it passes on a host is KNOWN_ISSUES.md
+# D14's own open item until that host run happens.
 # ---- "LowFive attach" track note: end ----------------------------------
 
 # ---------------------------------------------------------------------------

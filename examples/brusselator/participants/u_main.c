@@ -38,6 +38,18 @@
  * requires of every rank of the local group passed to them) but never
  * create a bruss_u_handle, never register a field, and never call
  * u_loop_step() -- there is no "U" work for them to drive, and the
+ * D14 Stage B companion fix: a placeholder rank ALSO calls
+ * bruss_lowfive_join_local_split() (the collective split of the base
+ * communicator every rank must join, see that function's own header
+ * comment) but is_physics_rank below gates it OUT of ever calling
+ * bruss_lowfive_attach() itself, mirroring coupler_main.c's own,
+ * pre-existing, explicit "this process never calls
+ * bruss_lowfive_attach()" convention -- before this fix, an unconditional
+ * attach call here would have reached decide_attach_mode() with ZERO
+ * qualifying channels and refused by name (E-LOWFIVE-ATTACH-ORDER-
+ * UNVALIDATED's own size-mismatch branch, not the more legible
+ * E-LOWFIVE-ATTACH-NOCHANNELS one -- the static order check runs first),
+ * aborting the whole row on this rank alone.
  * coupler itself has no clock, no step, and no user code of its own
  * (docs/dev/coupler-placement.md's own enumerated call sites). In mpmd
  * mode --ranks-u defaults to this executable's own full world size (no
@@ -75,14 +87,17 @@
 
 /* S6 phase 3 (Conformance, "LowFive attach" track): the file-access
  * property list bruss_lowfive_attach() hands back, set once in main()
- * right after MPI_Init()/the physics-communicator split, below, and
- * read by u_lowfive_write_export()/u_lowfive_read_import() on every
- * call thereafter -- a file-scope static, not a parameter threaded
- * through those two functions, for the same reason the U_LOWFIVE_*
- * macros just above are file-scope: both name a single, process-wide
- * attach, not a per-call argument a caller chooses. -1 means "not
- * attached yet" and is refused by bruss_lowfive_write()/
- * bruss_lowfive_read() themselves (shim.h's own updated contract). */
+ * -- D14 Stage B moved that call to AFTER fuse_setup() succeeds
+ * (decision 5: base_communicator() has nothing to report before
+ * setup()'s own collective has run), no longer right after MPI_Init()/
+ * the physics-communicator split -- and read by
+ * u_lowfive_write_export()/u_lowfive_read_import() on every call
+ * thereafter -- a file-scope static, not a parameter threaded through
+ * those two functions, for the same reason the U_LOWFIVE_* macros just
+ * above are file-scope: both name a single, process-wide attach, not a
+ * per-call argument a caller chooses. -1 means "not attached yet" and
+ * is refused by bruss_lowfive_write()/bruss_lowfive_read() themselves
+ * (shim.h's own updated contract). */
 static long long g_lowfive_fapl_id = -1;
 
 /* Unit 3b, item 2(a): `fuse_step_report::delivery_pending` (entries.def,
@@ -237,6 +252,16 @@ int main(int argc, char** argv) {
   int world_rank = 0, world_size = 1;
   MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
   MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+  /* D14 Stage B: captured BEFORE the "mpmd: every local rank is U"
+   * overwrite below, the ONLY existing signal this program's own CLI
+   * already carries for "which launch mode is this" -- --ranks-u is
+   * left at its -1 default in mpmd mode (every local rank is U, so
+   * there is nothing to say) and given a positive value in accept mode
+   * (physics ranks only, with ranks_coupler more riding along). Used
+   * below to decide which bridge communicator base_communicator()
+   * ought to agree with (decision 5: mpmd keeps passing MPI_COMM_WORLD
+   * literally; accept queries the new accessor). */
+  const int is_mpmd_launch = (ranks_u < 0);
   if (ranks_u < 0) ranks_u = world_size; /* mpmd: every local rank is U */
   const int is_physics_rank = (world_rank < ranks_u);
 
@@ -290,34 +315,6 @@ int main(int argc, char** argv) {
     MPI_Comm_size(u_comm, &u_size);
   }
 
-  /* S6 phase 3 (Conformance, "LowFive attach" track): programmatic VOL
-   * attach, once per process, after MPI_Init() and before the first
-   * bruss_lowfive_write()/bruss_lowfive_read() call below -- the design
-   * this track's own instructions ask for, in place of the env-var
-   * route (HDF5_VOL_CONNECTOR/HDF5_PLUGIN_PATH) that null-dereferenced
-   * on this exact call (KNOWN_ISSUES.md D38/D39). Uses the SAME
-   * graph_path this program's own --graph argument already names --
-   * no separate FUSE_LOWFIVE_BINDINGS environment variable. */
-  if (use_lowfive) {
-    char attach_errbuf[2048];
-    /* u_comm, not MPI_COMM_WORLD: lowfive_attach.h's own header comment
-     * ("FOUND WHILE IMPLEMENTING") has the full account of why an
-     * attach-owned MPI_Comm_split(MPI_COMM_WORLD, ...) would hang --
-     * the coupler process never calls bruss_lowfive_attach() at all, so
-     * it would never join that collective. u_comm is this process's
-     * own already-formed physics-only communicator, with the coupler's
-     * own matching split already satisfied above. */
-    const int attach_rc =
-        bruss_lowfive_attach(graph_path, (long long)MPI_Comm_c2f(u_comm),
-                             &g_lowfive_fapl_id, attach_errbuf,
-                             (long long)sizeof(attach_errbuf));
-    if (attach_rc != 0) {
-      fprintf(stderr, "FAIL(u_main): bruss_lowfive_attach: rc=%d %s\n", attach_rc,
-              attach_errbuf);
-      MPI_Abort(MPI_COMM_WORLD, 1);
-    }
-  }
-
   const fuse_participant_abi_v1* t = fuse_coupler_abi(FUSE_ABI_VERSION);
   if (!t) {
     fprintf(stderr, "FAIL(u_main): fuse_coupler_abi() returned NULL\n");
@@ -350,6 +347,99 @@ int main(int argc, char** argv) {
   setup.my_component = "U";
   rc = t->setup(ctx, &setup, NULL);
   if (rc != FUSE_OK) fail(ctx, "setup", rc);
+
+  /* D14 Stage B (KNOWN_ISSUES.md), decision 5: the attach call moves
+   * HERE, after fuse_setup() succeeds, uniformly for mpmd and accept
+   * (not mode-conditional) -- base_communicator() (entries.def) has
+   * nothing to report before setup() has run its own collective. Cold-
+   * start priming (u_loop.c's own first write-then-read, below, after
+   * bruss_u_create()) is UNAFFECTED: it already runs after this point in
+   * program order (it needs uh/u_in/u_out, not created yet either), so
+   * moving the attach call earlier in that same post-setup region changes
+   * nothing about when priming itself happens, only when the VOL
+   * registration it depends on does -- strictly before, same as before.
+   *
+   * bridge_comm_f, decision 5's own ruling: mpmd keeps MPI_COMM_WORLD
+   * literally (connect_mpmd() merely dups it, so the two are congruent,
+   * same rank for same process, by construction -- but they are NOT the
+   * SAME communicator object, and this track found no way to show they
+   * are interchangeable for MPI_Intercomm_create's own peer_comm
+   * argument without a host measurement this sandbox cannot make; the
+   * mpmd row already PASSES on the host with MPI_COMM_WORLD, so nothing
+   * here risks that regression for zero measured benefit). Accept mode
+   * queries the new accessor -- the ONLY way to recover the merged
+   * communicator connect() formed (D14's own gap, Stage A section 3). */
+  long long bridge_comm_f = 0;
+  if (is_mpmd_launch) {
+    bridge_comm_f = (long long)MPI_Comm_c2f(MPI_COMM_WORLD);
+  } else {
+    fuse_base_communicator_info bci;
+    memset(&bci, 0, sizeof(bci));
+    bci.struct_size = sizeof(bci);
+    rc = t->base_communicator(ctx, NULL, &bci);
+    if (rc != FUSE_OK) fail(ctx, "base_communicator", rc);
+    if (!bci.formed) {
+      fprintf(stderr,
+              "FAIL(u_main): base_communicator(): formed=0 after a successful "
+              "setup() with a nonzero communicator -- connect() itself should "
+              "have refused setup() already if it could not form one\n");
+      MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+    bridge_comm_f = bci.communicator;
+  }
+
+  /* D14 Stage B, decision 3 (the companion fix): called by EVERY rank,
+   * physics and placeholder alike -- the collective MPI_Comm_split()
+   * inside needs the WHOLE bridge's participation, coupler/placeholder
+   * included (lowfive_attach.h's own doc comment on this function has
+   * the full account); safe and cheap even for an ordinary, non-LowFive
+   * run (no MPI call at all when the graph carries no hdf5_path field).
+   * NEVER gated on use_lowfive/is_physics_rank -- gating a collective on
+   * either would be exactly the "collective skipped on a locally
+   * computed condition" hazard this track was asked to audit for. */
+  long long local_comm_f = 0;
+  {
+    char split_errbuf[2048];
+    const int split_rc = bruss_lowfive_join_local_split(
+        graph_path, bridge_comm_f, &local_comm_f, split_errbuf,
+        (long long)sizeof(split_errbuf));
+    if (split_rc != 0) {
+      fprintf(stderr, "FAIL(u_main): bruss_lowfive_join_local_split: rc=%d %s\n", split_rc,
+              split_errbuf);
+      MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+  }
+
+  /* D14 Stage B, decision 3 (the companion fix): a rank with nothing to
+   * attach (local_comm_f == 0 -- the bundled coupler/placeholder, or any
+   * run with no qualifying channel) must NEVER call
+   * bruss_lowfive_attach() at all, mirroring coupler_main.c's own,
+   * pre-existing, explicit convention ("this process never calls
+   * bruss_lowfive_attach()"). Gating THIS call on is_physics_rank/
+   * local_comm_f is safe precisely because it is NOT collective --
+   * unlike the split above, bruss_lowfive_attach() forms its own
+   * intercommunicator over exactly the two groups local_comm_f/the
+   * peer's own already identify, never over the coupler's own
+   * (non-)participation. */
+  if (use_lowfive && is_physics_rank) {
+    if (local_comm_f == 0) {
+      fprintf(stderr,
+              "FAIL(u_main): --transport lowfive but this physics rank has no "
+              "qualifying HDF5-bound channel (bruss_lowfive_join_local_split "
+              "returned local_comm_f=0)\n");
+      MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+    char attach_errbuf[2048];
+    const int attach_rc =
+        bruss_lowfive_attach(graph_path, bridge_comm_f, local_comm_f,
+                             &g_lowfive_fapl_id, attach_errbuf,
+                             (long long)sizeof(attach_errbuf));
+    if (attach_rc != 0) {
+      fprintf(stderr, "FAIL(u_main): bruss_lowfive_attach: rc=%d %s\n", attach_rc,
+              attach_errbuf);
+      MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+  }
 
   bruss_u_handle* uh = NULL;
   double* u_in = NULL;
@@ -614,7 +704,11 @@ int main(int argc, char** argv) {
    * tearing down MPI -- lowfive_attach.h's own header comment has the
    * full account of what this catches (a first-reader role's own
    * deferred serve left unflushed, which would otherwise be a silent
-   * data drop instead of a refusal). */
+   * data drop instead of a refusal). D14 Stage B: this is ALSO now
+   * where the local split and intercomm this process created are freed
+   * (bruss_lowfive_finalize()'s own doc comment has the full account of
+   * the order) -- still unconditional and still harmless for the
+   * placeholder rank, which created neither. */
   {
     char finalize_errbuf[2048];
     const int finalize_rc =

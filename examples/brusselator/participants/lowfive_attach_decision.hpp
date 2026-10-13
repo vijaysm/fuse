@@ -6,22 +6,34 @@
 // what wraps this). Decides, from the loaded coupling graph alone, which
 // of two outcomes this rank's own attach call must reach, or refuses:
 //
-//   - every HDF5-bound channel this rank takes part in is Mpmd-launched on
-//     both ends -> attach a DistMetadataVOL over an intercommunicator this
-//     process still has to form (fuse::plan_lowfive_rendezvous(), already
-//     tier-0 tested, supplies the MPI_Comm_split/MPI_Intercomm_create
-//     arguments);
+//   - every HDF5-bound channel this rank takes part in is Mpmd- or
+//     Connect(accept)-launched on both ends -> attach a DistMetadataVOL
+//     over an intercommunicator this process still has to form
+//     (fuse::plan_lowfive_rendezvous(), already tier-0 tested, supplies
+//     the MPI_Comm_split/MPI_Intercomm_create arguments; a Connect-mode
+//     channel additionally needs the merged base communicator D14 Stage
+//     B exposes through the base_communicator() ABI entry -- see
+//     AttachBridgeContext below);
 //   - no HDF5-bound channel names this rank at all -> refused
 //     (E-LOWFIVE-ATTACH-NOCHANNELS): a caller that reaches this file at
 //     all already decided (from --transport lowfive) that SOME field
 //     needs interception, so a rank with no part in any of them is a
 //     graph/launch mismatch, not a legitimate no-op -- the charter's own
 //     "no silent fallback";
-//   - any HDF5-bound channel this rank takes part in has an ACCEPT-mode
-//     (LaunchMode::Connect) component on either end -> refused clearly
-//     (E-LOWFIVE-ATTACH-ACCEPT; docs/user/lowfive.md, KNOWN_ISSUES.md
-//     D14's own accept-mode intercommunicator question, still open) --
-//     never a half-configured VOL;
+//   - an HDF5-bound channel this rank takes part in has an ACCEPT-mode
+//     (LaunchMode::Connect) component on either end, but the caller's
+//     own base communicator was never formed -> refused
+//     (E-LOWFIVE-ATTACH-ACCEPT-NO-BRIDGE): D14's own accept-mode
+//     intercommunicator question (docs/user/lowfive.md, KNOWN_ISSUES.md)
+//     is closed by the new ABI entry, in-sandbox, as of 2026-10-13 --
+//     this refusal now fires only when base_communicator() itself
+//     reports `formed = 0`, never unconditionally;
+//   - more than two Connect-mode components are declared in the whole
+//     graph -> refused (E-LOWFIVE-ATTACH-ACCEPT-UNSUPPORTED-TOPOLOGY):
+//     fuse::transport::connect_pairwise() itself supports exactly two
+//     (KNOWN_ISSUES.md D18, not pursued), checked here too in defence of
+//     this function's own pure-function contract (no reliance on
+//     connect() having already refused upstream);
 //   - two or more HDF5-bound channels this rank takes part in do not all
 //     partition the world into the SAME two groups -> refused
 //     (E-LOWFIVE-ATTACH-INCONSISTENT): src/transport/lowfive_plugin_
@@ -49,6 +61,7 @@
 
 #include "fuse/base/result.hpp"
 #include "fuse/model/component.hpp"
+#include "fuse/model/coupling_graph.hpp"
 #include "fuse/model/launch.hpp"
 #include "fuse/transport/lowfive.hpp"
 
@@ -75,6 +88,106 @@ struct ChannelRoles {
   std::string reader_name;
 };
 
+/// D14 Stage B: the per-rank channel-collection loop, factored out of
+/// lowfive_attach.cpp's own body (mirroring src/transport/
+/// lowfive_plugin_graph.cpp's own ConfigureDistributed() loop) so a
+/// SECOND caller -- bruss_lowfive_join_local_split(), which every rank of
+/// the bridge communicator calls, including a bundled coupler/placeholder
+/// rank that never attaches -- can reach the IDENTICAL, rank-filtered
+/// answer without duplicating the loop. PURE: no MPI, no LowFive, no
+/// HDF5, only fuse::model/fuse::CouplingGraph. `this_rank` is the base
+/// communicator's own rank number (see decide_attach_mode()'s own doc
+/// comment below for which communicator that is, by launch mode).
+[[nodiscard]] inline std::vector<ChannelRoles> CollectChannelsForRank(
+    const fuse::CouplingGraph& graph, int this_rank) {
+  std::vector<ChannelRoles> channels;
+  for (std::uint32_t i = 0; i < graph.channel_count(); ++i) {
+    const fuse::Channel& ch = graph.channel_at(fuse::ChannelId{i});
+    const fuse::FieldSpec& src = graph.field(ch.source);
+    if (!src.hdf5_path.has_value()) continue;
+    const fuse::ComponentId writer_id = graph.owner_of(ch.source);
+    const fuse::ComponentId reader_id = graph.owner_of(ch.target);
+    if (!writer_id.valid() || !reader_id.valid()) continue;
+    const fuse::ComponentDecl& writer_c = graph.component(writer_id);
+    const fuse::ComponentDecl& reader_c = graph.component(reader_id);
+    if (!writer_c.ranks.contains(this_rank) && !reader_c.ranks.contains(this_rank)) {
+      continue;  // this channel's two sides do not include this rank
+    }
+    ChannelRoles roles;
+    roles.field_name = writer_c.name + "." + src.name;
+    roles.writer_ranks = writer_c.ranks;
+    roles.reader_ranks = reader_c.ranks;
+    roles.writer_launch = writer_c.launch.mode;
+    roles.reader_launch = reader_c.launch.mode;
+    roles.writer_name = writer_c.name;
+    roles.reader_name = reader_c.name;
+    channels.push_back(std::move(roles));
+  }
+  return channels;
+}
+
+/// D14 Stage B, owner's own ruling (decision 2): LowFive's `local`
+/// communicator is no longer the caller's own pre-existing u_comm/v_comm
+/// (rejected: "on the strength of the rank-order argument you made from
+/// source" -- D14 Stage A section 3(A)'s own flagged, UNCONFIRMED
+/// assumption that u_comm's relative ordering coincides with the bridge's
+/// own). Instead, a FRESH split of the bridge communicator itself, keyed
+/// by which component's RankSet (from the graph, the SAME sets
+/// plan_lowfive_rendezvous() below consumes) this rank belongs to -- so
+/// the numbering is, BY CONSTRUCTION of the split, the one
+/// plan_lowfive_rendezvous() already expects (`split_key =
+/// own.index_of(this_rank)`), never a coincidence argued from a SEPARATE
+/// communicator's own, differently-derived numbering.
+///
+/// PURE: returns a DECISION, never calls MPI_Comm_split itself (the one
+/// caller that does, bruss_lowfive_join_local_split() in lowfive_attach.
+/// cpp, is the ONLY place `MPI_UNDEFINED`'s real value is known -- this
+/// header stays MPI-free). `participates = false` is the answer for
+/// EVERY rank this channel's own writer/reader RankSets do not name --
+/// the bundled coupler/placeholder (accept mode) or the real coupler
+/// (Mpmd mode) alike: BOTH still call bruss_lowfive_join_local_split()
+/// (the standing rule this track was asked to audit for: a collective
+/// must never be skipped on a locally computed condition -- MPI_Comm_
+/// split is collective over the WHOLE bridge, coupler included, even
+/// though the coupler's own output group is empty), but neither ever
+/// reaches bruss_lowfive_attach() itself (the companion fix, decision 3).
+struct LocalSplitChoice {
+  bool participates = false;
+  /// Meaningful only when `participates` -- the caller's own job to
+  /// translate into MPI_UNDEFINED for the other case (this header is
+  /// MPI-free, so MPI_UNDEFINED's actual value is never named here).
+  int color = 0;
+  int key = 0;
+};
+
+[[nodiscard]] inline LocalSplitChoice DecideLocalSplitChoice(
+    const std::vector<ChannelRoles>& channels, int this_rank) {
+  if (channels.empty()) return LocalSplitChoice{};
+  // The CANONICAL channel (the first one) is enough: decide_attach_mode()
+  // 's own INCONSISTENT check (below) is what guarantees every OTHER
+  // qualifying channel partitions the world into the SAME two groups, so
+  // the canonical channel's own writer/reader RankSets already name the
+  // group this_rank belongs to, for ANY qualifying channel.
+  const ChannelRoles& canon = channels.front();
+  const bool is_writer = canon.writer_ranks.contains(this_rank);
+  const bool is_reader = canon.reader_ranks.contains(this_rank);
+  // Defence in depth, not merely trusting the documented precondition
+  // ("channels must already be filtered to the ones naming this_rank"
+  // -- CollectChannelsForRank()'s own job): a this_rank in NEITHER side
+  // of the canonical channel is exactly the shape a bug upstream of
+  // this call (a stale channels list, a caller skipping
+  // CollectChannelsForRank()) would produce, and "does not participate"
+  // is the correct, safe answer for it -- never a crash, never a
+  // fabricated color.
+  if (!is_writer && !is_reader) return LocalSplitChoice{};
+  const fuse::RankSet& own = is_writer ? canon.writer_ranks : canon.reader_ranks;
+  LocalSplitChoice out;
+  out.participates = true;
+  out.color = is_writer ? 0 : 1;
+  out.key = own.index_of(this_rank);
+  return out;
+}
+
 enum class AttachMode { kSingleProcess, kDistributed };
 
 struct Decision {
@@ -83,16 +196,53 @@ struct Decision {
   fuse::LowFiveRendezvousPlan rendezvous;
 };
 
+/// D14 Stage B (KNOWN_ISSUES.md), replacing the PRIOR, unconditional
+/// Connect-mode refusal below: accept mode's own merged base communicator
+/// IS now exposed back to a caller (`fuse_base_communicator()`,
+/// entries.def), so a Connect-mode channel is handled by the SAME
+/// plan_lowfive_rendezvous()/INCONSISTENT logic Mpmd already used --
+/// PROVIDED a bridge was actually formed for THIS context and the graph's
+/// own topology is one this attach still supports. Two refusals replace
+/// the one blanket refusal, each named and each verified only by a test
+/// that makes it fire (this track's own standing rule):
+///   * `connect_mode_component_count` (every component in the WHOLE
+///     graph declaring `LaunchMode::Connect`, not just this rank's own
+///     qualifying channels -- `fuse::transport::connect_pairwise()`'s own
+///     `order.size() != 2` refusal, KNOWN_ISSUES.md D18, is a GRAPH-WIDE
+///     property a single rank's own channel list cannot always see: a
+///     third Connect-mode component elsewhere in the graph, on a channel
+///     this rank takes no part in, would still make `connect()` itself
+///     refuse for WHATEVER rank tries to pair with it, but never reach
+///     this function to say so). More than two is refused here too, by
+///     name, as defence in depth for a caller that reaches this function
+///     without having gone through `connect()` first.
+///   * `bridge_formed` (`fuse_base_communicator_info::formed`, read by
+///     the caller BEFORE calling this function): a Connect-mode channel
+///     with no formed bridge has no intercommunicator this attach could
+///     possibly build -- the ORIGINAL gap, now narrowed to exactly the
+///     cases where `connect()` itself never succeeded (more than two
+///     components, or `fuse_setup()` never given a communicator at all).
+struct AttachBridgeContext {
+  bool bridge_formed = false;
+  int connect_mode_component_count = 0;
+};
+
 /// `channels` must already be filtered to the ones naming `this_rank` on
 /// either side (lowfive_attach.cpp's own job, mirroring the existing
 /// env-route plugin's `ConfigureDistributed()` loop in
 /// src/transport/lowfive_plugin_graph.cpp) -- an empty list is refused
 /// here, not treated as "nothing to do." `this_rank` is the base
-/// communicator's own rank number (MPI_COMM_WORLD's, in MPMD launch,
-/// exactly as lowfive_plugin_graph.cpp's own comment states and this
-/// track's MEASURED EVIDENCE confirms).
+/// communicator's own rank number -- MPI_COMM_WORLD's in Mpmd launch
+/// (lowfive_plugin_graph.cpp's own comment, this track's MEASURED
+/// EVIDENCE) and the EXPOSED BRIDGE's in Connect (accept/connect) launch,
+/// per fuse_base_communicator()'s own contract -- never MPI_COMM_WORLD
+/// there, whose numbering an accept-mode reader (V) does not share with
+/// the merged bridge (D14 Stage A section 3(A), item 3: MPI_Intercomm_
+/// merge's own high/low rule offsets the "high" side's local numbers by
+/// the "low" side's own world size).
 [[nodiscard]] inline fuse::Result<Decision> decide_attach_mode(
-    const std::vector<ChannelRoles>& channels, int this_rank) {
+    const std::vector<ChannelRoles>& channels, int this_rank,
+    const AttachBridgeContext& bridge = AttachBridgeContext{}) {
   if (channels.empty()) {
     return fuse::Failure{
         "E-LOWFIVE-ATTACH-NOCHANNELS",
@@ -102,18 +252,45 @@ struct Decision {
             "silently skipping interception"};
   }
 
+  bool any_connect = false;
   for (const ChannelRoles& ch : channels) {
     if (ch.writer_launch == fuse::LaunchMode::Connect ||
         ch.reader_launch == fuse::LaunchMode::Connect) {
-      return fuse::Failure{
-          "E-LOWFIVE-ATTACH-ACCEPT",
-          "channel '" + ch.field_name +
-              "' has an accept-mode (LaunchMode::Connect) component on one "
-              "end; accept mode's own merged base communicator is never "
-              "exposed back to a caller (KNOWN_ISSUES.md D14), so this "
-              "attach has no intercommunicator to form for it and refuses "
-              "rather than falling back to a half-configured VOL"};
+      any_connect = true;
+      break;
     }
+  }
+  if (any_connect) {
+    if (bridge.connect_mode_component_count > 2) {
+      return fuse::Failure{
+          "E-LOWFIVE-ATTACH-ACCEPT-UNSUPPORTED-TOPOLOGY",
+          "the loaded graph declares " +
+              std::to_string(bridge.connect_mode_component_count) +
+              " Connect-mode (accept/connect) components; "
+              "fuse::transport::connect_pairwise() itself supports exactly "
+              "two (KNOWN_ISSUES.md D18, not pursued), and this attach does "
+              "not attempt to support more -- connect() itself will already "
+              "have refused E-CONNECT-SPEC for whichever rank tried to pair "
+              "beyond the first two, but this attach refuses by name too, "
+              "for a caller that reaches it without having gone through "
+              "connect() first"};
+    }
+    if (!bridge.bridge_formed) {
+      return fuse::Failure{
+          "E-LOWFIVE-ATTACH-ACCEPT-NO-BRIDGE",
+          "an HDF5-bound channel has an accept-mode (LaunchMode::Connect) "
+          "component on one end, but no base communicator was formed for "
+          "this context (fuse_base_communicator() reports formed=0) -- "
+          "either fuse_setup() was never given a nonzero communicator, or "
+          "connect() itself refused before this attach could run; D14 "
+          "(KNOWN_ISSUES.md) is resolved only when a bridge DOES exist, not "
+          "merely because this attach stopped refusing Connect mode "
+          "unconditionally"};
+    }
+    // A formed bridge and a supported topology: fall through to the SAME
+    // canonical-channel/plan_lowfive_rendezvous()/INCONSISTENT logic Mpmd
+    // already used -- D14 Stage A's own recommendation (design A): once
+    // the bridge exists, Connect-mode needs no different treatment here.
   }
 
   // Canonical channel: the first one, exactly as the existing env-route
@@ -689,6 +866,23 @@ struct ChannelOrderSignature {
 /// OTHER graph -- a third channel, a swapped channel order, a
 /// multi-rank component -- is refused by `CheckGraphOrderValidated()`
 /// below, by name, rather than silently assumed to behave the same way.
+///
+/// D14 Stage B, scope C decision (2026-10-13): does the accept-mode
+/// 3-rank layout need its OWN entry here? NO, proven rather than
+/// argued -- test/verification/brusselator_lowfive_attach_test.cpp's
+/// own ComputeGraphOrderSignature.AcceptLayoutPhysicsRanksMatchTheValid
+/// atedMpmdSignature builds the real accept-3 component layout
+/// (brusselator_graph_tool.cpp's own accept branch: U's RankSet is its
+/// physics ranks alone post-D36, V's starts right after U's local
+/// world) and computes, from each physics rank's own
+/// CollectChannelsForRank() result, EXACTLY this function's own return
+/// value -- both launch modes share the SAME add_window_coupling() call
+/// that declares u_out/v_out in the SAME order, so the signature is a
+/// property of the GRAPH, not of launch.mode. The bundled
+/// coupler/placeholder rank's own signature is empty and does NOT
+/// match (PlaceholderRankSignatureDoesNotMatchAndWouldBeRefused, same
+/// file) -- irrelevant in practice because the companion fix keeps that
+/// rank from ever calling decide_attach_mode() at all.
 [[nodiscard]] inline std::vector<ChannelOrderSignature> ValidatedGraphOrderSignatures() {
   return {ChannelOrderSignature{"U", "V", 1, 1}, ChannelOrderSignature{"V", "U", 1, 1}};
 }

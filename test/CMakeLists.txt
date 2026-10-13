@@ -1314,9 +1314,13 @@ target_include_directories(fuse_verification_brusselator_graph_tool_lowfive_test
 # ---- S6 phase 3 (Conformance, "LowFive attach" track): begin ----------
 # The pure, MPI-free and HDF5-free decision function examples/brusselator/
 # participants/lowfive_attach_decision.hpp's own header comment describes
-# in full: which of {single-process, distributed, refused (accept mode /
-# no channel / inconsistent partition)} a rank's own programmatic VOL
-# attach must reach, from the loaded graph's RankSets/LaunchModes alone.
+# in full: which of {single-process, distributed, refused (no channel /
+# no bridge formed / more than two Connect-mode components / inconsistent
+# partition)} a rank's own programmatic VOL attach must reach, from the
+# loaded graph's RankSets/LaunchModes alone -- D14 Stage B (KNOWN_ISSUES.
+# md): accept mode (LaunchMode::Connect) is no longer an outright refusal
+# by itself, now that a caller can recover a formed bridge communicator
+# (fuse_base_communicator(), entries.def).
 # Header-only, so this test needs only fuse::model's own include path
 # (fuse/model/component.hpp, fuse/model/launch.hpp) plus fuse/transport/
 # lowfive.hpp's header-only plan_lowfive_rendezvous() -- NO_LAYER_LIB,

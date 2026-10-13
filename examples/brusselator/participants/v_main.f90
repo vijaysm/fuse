@@ -139,6 +139,13 @@ program v_main
   ! kOwnFile/kPeerFile/solver_cstr already use just above.
   integer(c_long_long) :: fapl_id
   character(len=513), target :: graph_path_cstr
+  ! D14 Stage B (KNOWN_ISSUES.md): the bridge base_communicator() (ffuse,
+  ! generated) reports for this context, and the local communicator
+  ! bruss_lowfive_join_local_split()'s own fresh split of it produces --
+  ! see this program's own post-setup block below for the full account.
+  type(fuse_base_communicator_info) :: bci
+  integer(c_long_long) :: bridge_comm_f, local_comm_f
+  logical :: is_mpmd_launch
 
   ! ---- the two bruss_lowfive_* HDF5 calls and the one build-config
   ! query, through shim.cpp's own extern "C" export (shim.h's own header
@@ -167,17 +174,35 @@ program v_main
       integer(c_int) :: rc
     end function bruss_lowfive_read
 
+    ! D14 Stage B (KNOWN_ISSUES.md): the collective EVERY rank of the
+    ! bridge must join -- lowfive_attach.h's own header comment on this
+    ! function has the full account. `local_comm_f_out` is `intent(out)`
+    ! on the C side, spelled the same by-reference way fapl_id_out
+    ! already is below.
+    function bruss_lowfive_join_local_split(graph_path, bridge_comm_f, local_comm_f_out, &
+        errbuf, errbuf_len) result(rc) bind(C, name="bruss_lowfive_join_local_split")
+      import :: c_ptr, c_long_long, c_int
+      type(c_ptr), value :: graph_path, errbuf
+      integer(c_long_long), value :: bridge_comm_f, errbuf_len
+      integer(c_long_long) :: local_comm_f_out
+      integer(c_int) :: rc
+    end function bruss_lowfive_join_local_split
+
     ! S6 phase 3 (Conformance, "LowFive attach" track): programmatic VOL
     ! attach, once per process -- lowfive_attach.h's own header comment
     ! has the full account. `fapl_id_out` is `intent(out)` on the C side
     ! (a `long long*`), which Fortran's own bind(C) spells as a by-
     ! reference INTEGER argument (no `value`), identical to how ffuse's
-    ! own generated interfaces already pass an ABI out-parameter.
-    function bruss_lowfive_attach(graph_path, physics_comm_f, fapl_id_out, errbuf, errbuf_len) &
-        result(rc) bind(C, name="bruss_lowfive_attach")
+    ! own generated interfaces already pass an ABI out-parameter. D14
+    ! Stage B: `bridge_comm_f`/`local_comm_f` replace the single
+    ! `physics_comm_f` this interface used to take -- never called by a
+    ! rank with nothing to attach now (the companion fix); see this
+    ! program's own call site below for why.
+    function bruss_lowfive_attach(graph_path, bridge_comm_f, local_comm_f, fapl_id_out, &
+        errbuf, errbuf_len) result(rc) bind(C, name="bruss_lowfive_attach")
       import :: c_ptr, c_long_long, c_int
       type(c_ptr), value :: graph_path, errbuf
-      integer(c_long_long), value :: physics_comm_f, errbuf_len
+      integer(c_long_long), value :: bridge_comm_f, local_comm_f, errbuf_len
       integer(c_long_long) :: fapl_id_out
       integer(c_int) :: rc
     end function bruss_lowfive_attach
@@ -310,26 +335,9 @@ program v_main
   call MPI_Comm_rank(v_comm, v_rank, ierr)
   call MPI_Comm_size(v_comm, v_size, ierr)
 
-  ! S6 phase 3 (Conformance, "LowFive attach" track): programmatic VOL
-  ! attach, once per process, after MPI_Init() and before the first
-  ! bruss_lowfive_write()/bruss_lowfive_read() call below -- mirrors
-  ! u_main.c's own placement exactly. Uses the SAME graph_path this
-  ! program's own --graph argument already names.
+  ! D14 Stage B: fapl_id's own "not attached yet" default -- the real
+  ! attach call moves to AFTER fuse_setup() succeeds, below (decision 5).
   fapl_id = -1_c_long_long
-  if (use_lowfive) then
-    ! v_comm, not MPI_COMM_WORLD -- lowfive_attach.h's own header comment
-    ! ("FOUND WHILE IMPLEMENTING") has the full account: an attach-owned
-    ! split of MPI_COMM_WORLD would hang, since coupler_main.c never
-    ! calls bruss_lowfive_attach() at all. v_comm is this process's own
-    ! already-formed physics-only communicator, established above.
-    graph_path_cstr = trim(graph_path) // c_null_char
-    io_rc = bruss_lowfive_attach(c_loc(graph_path_cstr), int(v_comm, c_long_long), &
-        fapl_id, c_loc(errbuf), int(len(errbuf), c_long_long))
-    if (io_rc /= 0) then
-      write(0, '(A,A)') "FAIL(v_main): bruss_lowfive_attach: ", cstr_message(errbuf)
-      call MPI_Abort(MPI_COMM_WORLD, 1, ierr)
-    end if
-  end if
 
   ! Cross-check against --ranks-u/--ranks-v (above): the two mechanisms
   ! must agree (both describe the SAME physical fact, V's own component
@@ -365,6 +373,80 @@ program v_main
   setup%my_component = c_loc(my_component_name)
   status = fuse_setup(ctx, setup, nothing)
   call check(status, "setup")
+
+  ! D14 Stage B (KNOWN_ISSUES.md), decision 5: the attach call moves
+  ! HERE, after fuse_setup() succeeds, uniformly for mpmd and accept (not
+  ! mode-conditional) -- base_communicator() (ffuse, generated) has
+  ! nothing to report before setup()'s own collective has run. Cold-start
+  ! priming (this program's own first write-then-read, after
+  ! bruss_v_create() below) is UNAFFECTED: it already runs after this
+  ! point in program order, so moving the attach call earlier in this
+  ! same post-setup region changes nothing about when priming happens,
+  ! only when the VOL registration it depends on does -- strictly
+  ! before, same as before.
+  !
+  ! is_mpmd_launch, decision 5's own ruling: mpmd keeps MPI_COMM_WORLD
+  ! literally for the bridge (connect_mpmd() merely dups it -- congruent,
+  ! same rank for same process, by construction, but not the SAME
+  ! communicator object, and this track found no way to show the two are
+  ! interchangeable for MPI_Intercomm_create's own peer_comm argument
+  ! without a host measurement this sandbox cannot make; the mpmd row
+  ! already PASSES on the host with MPI_COMM_WORLD, so nothing here risks
+  ! that regression for zero measured benefit). ranks_u_offset is 0 in
+  ! accept mode (this program's own header comment on it, above) and > 0
+  ! in mpmd mode (the real U rank count, always >= 1) -- the ONE existing
+  ! CLI signal this program already carries for which launch mode this
+  ! is, unchanged by argument parsing between there and here.
+  is_mpmd_launch = (ranks_u_offset > 0)
+  if (is_mpmd_launch) then
+    bridge_comm_f = int(MPI_COMM_WORLD, c_long_long)
+  else
+    ! struct_size is set by the generated fuse_base_communicator()
+    ! module procedure itself, not by this caller (abi-design.md's own
+    ! "struct_size is set by the module, not the user" -- the SAME
+    ! convention fuse_setup()/fuse_create() above already rely on
+    ! silently; grep this file for "struct_size" to confirm it is never
+    ! set by hand anywhere else here either).
+    status = fuse_base_communicator(ctx, nothing, bci)
+    call check(status, "base_communicator")
+    if (bci%formed == 0) then
+      write(0, '(A)') "FAIL(v_main): base_communicator(): formed=0 after a " // &
+          "successful setup() with a nonzero communicator -- connect() " // &
+          "itself should have refused setup() already if it could not form one"
+      call MPI_Abort(MPI_COMM_WORLD, 1, ierr)
+    end if
+    bridge_comm_f = bci%communicator
+  end if
+
+  ! D14 Stage B, decision 3 (the companion fix's own mirror image): V's
+  ! own executable has no bundled placeholder rank at all (Q1's ruling,
+  ! this file's own header comment) -- every rank of it is real
+  ! V-physics -- but it still calls bruss_lowfive_join_local_split()
+  ! unconditionally, the same collective every rank of the bridge must
+  ! join (lowfive_attach.h's own header comment on that function has the
+  ! full account); safe and cheap even for an ordinary, non-LowFive run.
+  graph_path_cstr = trim(graph_path) // c_null_char
+  io_rc = bruss_lowfive_join_local_split(c_loc(graph_path_cstr), bridge_comm_f, &
+      local_comm_f, c_loc(errbuf), int(len(errbuf), c_long_long))
+  if (io_rc /= 0) then
+    write(0, '(A,A)') "FAIL(v_main): bruss_lowfive_join_local_split: ", cstr_message(errbuf)
+    call MPI_Abort(MPI_COMM_WORLD, 1, ierr)
+  end if
+
+  if (use_lowfive) then
+    if (local_comm_f == 0) then
+      write(0, '(A)') "FAIL(v_main): --transport lowfive but this rank has no " // &
+          "qualifying HDF5-bound channel (bruss_lowfive_join_local_split " // &
+          "returned local_comm_f=0)"
+      call MPI_Abort(MPI_COMM_WORLD, 1, ierr)
+    end if
+    io_rc = bruss_lowfive_attach(c_loc(graph_path_cstr), bridge_comm_f, local_comm_f, &
+        fapl_id, c_loc(errbuf), int(len(errbuf), c_long_long))
+    if (io_rc /= 0) then
+      write(0, '(A,A)') "FAIL(v_main): bruss_lowfive_attach: ", cstr_message(errbuf)
+      call MPI_Abort(MPI_COMM_WORLD, 1, ierr)
+    end if
+  end if
 
   call bruss_grid_dims(nx_u, ny_u, nx_v, ny_v)
   kDiffusion = bruss_diffusion()

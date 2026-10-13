@@ -42,6 +42,7 @@
 #include <string.h>
 
 #include "fuse/abi/participant.h"
+#include "lowfive_attach.h"
 
 static void fail(fuse_ctx* ctx, const char* what, fuse_status rc) {
   char buf[2048];
@@ -78,9 +79,13 @@ int main(int argc, char** argv) {
   }
 
   /* ROUND 9, task 1(a): this process never calls bruss_lowfive_attach()
-   * (lowfive_attach.cpp is not one of this target's own sources -- see
-   * examples/CMakeLists.txt), so it has no deliberate use for a LowFive
-   * VOL connector at all. The THREE env-route variables named here are
+   * (D14 Stage B: lowfive_attach.cpp IS now one of this target's own
+   * sources -- examples/CMakeLists.txt -- but ONLY for
+   * bruss_lowfive_join_local_split(), the collective split every rank
+   * of the bridge must join; this rank never calls bruss_lowfive_
+   * attach() itself, the ONE function that constructs a real LowFive
+   * VOL object), so it has no deliberate use for a LowFive VOL
+   * connector at all. The THREE env-route variables named here are
    * nonetheless still live in this process's own environment --
    * examples/CMakeLists.txt's own ctest ENVIRONMENT property sets them
    * on the WHOLE MPMD launch (run_participants.sh's own single
@@ -184,6 +189,36 @@ int main(int argc, char** argv) {
   rc = t->setup(ctx, &setup, NULL);
   if (rc != FUSE_OK) fail(ctx, "setup", rc);
 
+  /* D14 Stage B (KNOWN_ISSUES.md), decision 2/3: this rank joins the
+   * SAME collective split U's and V's own physics ranks join
+   * (bruss_lowfive_join_local_split()'s own header comment in
+   * lowfive_attach.h has the full account) -- MPI_Comm_split() is
+   * collective over the WHOLE bridge communicator, and this rank is
+   * part of it (it shares MPI_COMM_WORLD with U and V in this track's
+   * own mpmd-only placement -- this file's own header comment), even
+   * though a Coupler-kind component owns no field and is never the
+   * writer or reader of any LowFive-bound channel, so its own color is
+   * always MPI_UNDEFINED and local_comm_f always comes back 0. This
+   * process still never calls bruss_lowfive_attach() itself (round 9's
+   * own ruling, unchanged) -- only the collective every rank of the
+   * bridge must join, never the VOL registration itself. Safe and cheap
+   * even for an ordinary, non-LowFive row: no MPI call at all when the
+   * graph carries no hdf5_path field (bruss_lowfive_join_local_split()'s
+   * own doc comment has the full account). */
+  {
+    long long local_comm_f = 0;
+    char split_errbuf[2048];
+    const int split_rc = bruss_lowfive_join_local_split(
+        graph_path, (long long)MPI_Comm_c2f(MPI_COMM_WORLD), &local_comm_f,
+        split_errbuf, (long long)sizeof(split_errbuf));
+    if (split_rc != 0) {
+      fprintf(stderr, "FAIL(coupler_main): bruss_lowfive_join_local_split: rc=%d %s\n",
+              split_rc, split_errbuf);
+      MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+    (void)local_comm_f; /* always 0 on this rank; nothing more to do with it */
+  }
+
   rc = t->initialize(ctx, NULL, NULL);
   if (rc != FUSE_OK) fail(ctx, "initialize", rc);
 
@@ -202,6 +237,23 @@ int main(int argc, char** argv) {
 
   rc = t->destroy(ctx, NULL, NULL);
   if (rc != FUSE_OK) fail(NULL, "destroy", rc);
+
+  /* D14 Stage B: harmless no-op on this rank (bruss_lowfive_attach() is
+   * never called here, so there is nothing for this to flush or free --
+   * lowfive_attach.h's own doc comment states the "regardless of
+   * whether bruss_lowfive_attach() was ever called" contract plainly)
+   * -- called anyway, for the same uniform hygiene u_main.c/v_main.f90
+   * already apply, before tearing down MPI. */
+  {
+    char finalize_errbuf[2048];
+    const int finalize_rc =
+        bruss_lowfive_finalize(finalize_errbuf, (long long)sizeof(finalize_errbuf));
+    if (finalize_rc != 0) {
+      fprintf(stderr, "FAIL(coupler_main): bruss_lowfive_finalize: rc=%d %s\n", finalize_rc,
+              finalize_errbuf);
+      MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+  }
 
   MPI_Comm_free(&coupler_comm);
   MPI_Finalize();

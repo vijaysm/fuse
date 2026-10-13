@@ -32,7 +32,70 @@
 extern "C" {
 #endif
 
-/* Call EXACTLY ONCE per process, after MPI_Init() and before the first
+/* D14 Stage B (KNOWN_ISSUES.md): called by EVERY rank of the bridge
+ * communicator (bruss_lowfive_attach()'s own callers below -- the real
+ * physics ranks -- AND a bundled coupler/placeholder rank that will
+ * never call bruss_lowfive_attach() at all), right after fuse_setup()
+ * succeeds, BEFORE any bruss_lowfive_write()/bruss_lowfive_read() call.
+ * `bridge_comm_f` is the Fortran handle base_communicator() (entries.def)
+ * returned for this context -- MPI_COMM_WORLD itself for an Mpmd launch
+ * (D14 Stage B decision 5: MPMD callers keep passing MPI_COMM_WORLD
+ * literally, not this accessor's own value -- see u_main.c's own header
+ * comment for why), or the merged base communicator connect() formed for
+ * a Connect (accept/connect) launch.
+ *
+ * Loads `graph_path` itself (the SAME file every caller already parsed
+ * for its own fuse_load_graph(), reloaded here exactly as
+ * bruss_lowfive_attach() below already does) and, if-and-only-if that
+ * graph has at least one field with hdf5_path set, performs EXACTLY ONE
+ * MPI_Comm_split() of `bridge_comm_f` -- collective over the WHOLE of
+ * it, every rank, coupler/placeholder included (the standing rule this
+ * track was asked to audit for: a collective must never be skipped on a
+ * locally computed condition; MPI_Comm_split() is collective over its
+ * own input communicator regardless of which output group a given rank
+ * lands in). A rank this attach's own qualifying channels do not name
+ * (the coupler, real or bundled) is given color MPI_UNDEFINED internally
+ * and gets back MPI_COMM_NULL, reported here as `*local_comm_f_out = 0`
+ * -- not an error, the expected answer for a rank with nothing to attach.
+ * If the graph has NO hdf5_path field at all (an ordinary, non-LowFive
+ * run), nothing is collective here at all: every rank reaches that same
+ * answer from the SAME loaded file, with no MPI call of any kind
+ * ("collective agreement the easy way", connect.hpp's own module
+ * comment) -- so this function is SAFE and CHEAP to call unconditionally
+ * on every participant main, lowfive or not, mpmd or accept.
+ *
+ * Owner's own ruling (D14 Stage B decision 2): this split's own color is
+ * keyed by which component's RankSet (from the graph -- the SAME
+ * writer/reader RankSets plan_lowfive_rendezvous() consumes) this rank
+ * belongs to, NEVER by reusing a pre-existing communicator like
+ * u_main.c's own `u_comm` -- that reuse was this track's OWN Stage A
+ * proposal, rejected: it rested on an argument, from source alone, that
+ * u_comm's own relative rank order happens to coincide with the bridge's
+ * (true for U, who merges "low" and keeps its own numbers, per
+ * MPI_Intercomm_merge's own high/low rule -- NOT independently confirmed
+ * against real MPI semantics). A fresh split of the bridge itself needs
+ * no such argument: the numbering IS, by construction, the one
+ * plan_lowfive_rendezvous() already expects.
+ *
+ * On success (return 0) `*local_comm_f_out` is set (0 for a
+ * non-participating rank, a real Fortran handle otherwise); on failure
+ * (return nonzero), `*local_comm_f_out` is left at 0 and a message is
+ * copied into `errbuf`. Without -DFUSE_ENABLE_LOWFIVE=ON, always
+ * succeeds with `*local_comm_f_out = 0` -- there is no HDF5-bound field
+ * for ANY graph to carry in that configuration, so every caller reaches
+ * the identical "nothing to join" answer the same way an ordinary,
+ * non-LowFive graph does, with no MPI call. The ONE communicator this
+ * function creates (when it creates one at all) is this function's own
+ * to describe, not to free -- see bruss_lowfive_finalize() below for
+ * where and in what order it, and the intercommunicator
+ * bruss_lowfive_attach() forms from it, are released. */
+int bruss_lowfive_join_local_split(const char* graph_path, long long bridge_comm_f,
+                                   long long* local_comm_f_out,
+                                   char* errbuf, long long errbuf_len);
+
+/* Call EXACTLY ONCE per process, after fuse_setup() succeeds and
+ * bruss_lowfive_join_local_split() (above) has returned a NONZERO
+ * `*local_comm_f_out` for THIS rank, and before the first
  * bruss_lowfive_write()/bruss_lowfive_read() call. `graph_path` is the
  * SAME --graph argument this program's own main() already parsed -- the
  * graph that carries the field-to-hdf5-path bindings
@@ -42,29 +105,34 @@ extern "C" {
  * shim already has the graph path on its own command line and reads no
  * FUSE_LOWFIVE_BINDINGS environment variable.
  *
- * `physics_comm_f` is this process's own ALREADY-FORMED physics-only
- * communicator (an MPI_Comm_c2f handle) -- u_main.c's own `u_comm`,
- * v_main.f90's own `v_comm` (the SAME communicator bruss_u_create()/
- * bruss_v_create()'s own `comm_f` argument already takes, for the same
- * reason). FOUND WHILE IMPLEMENTING, NOT BEFORE: an earlier version of
- * this function formed a FRESH MPI_Comm_split(MPI_COMM_WORLD, ...) of
- * its own for the distributed rendezvous, exactly mirroring src/
- * transport/lowfive_plugin_vol.cpp's own ConfigureOnce() -- but
- * MPI_Comm_split on MPI_COMM_WORLD is collective over EVERY rank of
- * MPI_COMM_WORLD, including the coupler's, and `bruss_lowfive_attach()`
- * is never called from coupler_main.c at all: U and V would have
- * entered that split while the coupler never did, which hangs (the
- * standing rule this track was asked to audit for: "a collective path
- * must never return on a locally computed condition" -- the mirror
- * image of that rule, a collective ENTERED without every rank's own
- * participation, is the SAME hazard from the other side). Passing in
- * `u_comm`/`v_comm` instead needs NO new collective over MPI_COMM_WORLD
- * at all: `MPI_Intercomm_create`'s own `local_comm` argument is
- * collective only over the union of the two SIDES' own groups (U's
- * physics ranks, V's physics ranks), which the coupler was never part
- * of in the first place, and `u_comm`/`v_comm` are already formed, with
- * the coupler's own matching MPI_Comm_split call already satisfied
- * (u_main.c's own header comment on that split has the full account).
+ * NEVER CALLED by a rank with nothing to attach (the companion fix, D14
+ * Stage B decision 3): a bundled coupler/placeholder rank (accept mode)
+ * or the real coupler (mpmd mode) calls bruss_lowfive_join_local_split()
+ * above -- the collective every rank of the bridge must join -- and
+ * stops there; it must never call this function at all, mirroring
+ * coupler_main.c's own, pre-existing, explicit convention ("this process
+ * never calls bruss_lowfive_attach()").
+ *
+ * `bridge_comm_f` is the SAME handle passed to
+ * bruss_lowfive_join_local_split() just before this call -- this
+ * function reads this rank's own position in it (`this_rank`) for the
+ * static order check, decide_attach_mode(), and plan_lowfive_rendezvous()
+ * alike, and uses it as MPI_Intercomm_create()'s own `peer_comm`
+ * argument. D14 Stage A's own open item 3: in an accept (Connect) launch
+ * this canNOT be MPI_COMM_WORLD (unlike Mpmd, where it already is one and
+ * the same) -- V's own position in the merged bridge is OFFSET from its
+ * own local MPI_COMM_WORLD rank by U's local world size
+ * (MPI_Intercomm_merge's own high/low rule), so using MPI_COMM_WORLD
+ * here for an accept-mode V would silently derive the WRONG remote
+ * leader.
+ *
+ * `local_comm_f` is the NONZERO handle bruss_lowfive_join_local_split()
+ * already produced for this rank -- this function does not split
+ * anything itself; it only verifies `local_comm_f`'s own size/position
+ * still match the rendezvous plan it independently derives from the
+ * SAME graph (defence in depth, not re-trust), then forms the ONE
+ * intercommunicator LowFive needs via MPI_Intercomm_create(local_comm_f,
+ * ..., bridge_comm_f, ...).
  *
  * On success (return 0), `*fapl_id_out` receives the file-access
  * property list every subsequent bruss_lowfive_write()/
@@ -74,21 +142,22 @@ extern "C" {
  * On failure (return nonzero), `*fapl_id_out` is left at -1 and a
  * message is copied into `errbuf` (same truncate-and-NUL-terminate
  * convention as bruss_lowfive_write/read): a malformed graph, no
- * HDF5-bound field in it, an accept-mode component on an HDF5-bound
- * channel this rank takes part in (refused by design -- see
- * KNOWN_ISSUES.md D39; D14's own accept-mode intercommunicator question
- * stays open), two HDF5-bound channels this rank takes part in that do
- * not partition the world the same way, or (distributed mode only) an
- * HDF5/MPI call that itself failed. A second call in the same process is
- * also refused: the VOL registration is process-wide and exactly once
- * (src/transport/lowfive_transport.cpp's own VolSingleton has the full
- * account of why re-registering is not safe).
+ * HDF5-bound field in it, more than two Connect-mode (accept/connect)
+ * components graph-wide (KNOWN_ISSUES.md D18, not pursued), a Connect-
+ * mode channel with no bridge formed for this context (the ORIGINAL D14
+ * gap, now narrowed to exactly this), two HDF5-bound channels this rank
+ * takes part in that do not partition the world the same way, or
+ * (distributed mode only) an HDF5/MPI call that itself failed. A second
+ * call in the same process is also refused: the VOL registration is
+ * process-wide and exactly once (src/transport/lowfive_transport.cpp's
+ * own VolSingleton has the full account of why re-registering is not
+ * safe).
  *
  * Without -DFUSE_ENABLE_LOWFIVE=ON, returns nonzero immediately with
  * "not built with LowFive" in errbuf, mirroring bruss_lowfive_write/
  * read's own contract; never touches HDF5 at all in that configuration. */
-int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
-                         long long* fapl_id_out,
+int bruss_lowfive_attach(const char* graph_path, long long bridge_comm_f,
+                         long long local_comm_f, long long* fapl_id_out,
                          char* errbuf, long long errbuf_len);
 
 /* INTERNAL to the shim -- called only from shim.cpp's own
@@ -173,7 +242,26 @@ int bruss_lowfive_after_read_close(char* errbuf, long long errbuf_len);
  * clean finalize (serve already flushed, or this side is the
  * first-server and never defers) returns 0. Without
  * -DFUSE_ENABLE_LOWFIVE=ON, or when LowFive was never attached in this
- * process, always returns 0: there is nothing to have deferred. */
+ * process, always returns 0: there is nothing to have deferred.
+ *
+ * D14 Stage B, owner's own ruling (decision 2): ALSO where the two
+ * communicators this track's own code creates are freed, in the order
+ * that cannot hang -- AFTER this rank's own H5close() (round 9's own
+ * fix, kept: H5close() must run while the process is still in ORDINARY
+ * execution, before any exit()-time static-destruction unwind begins,
+ * the same reasoning that makes freeing a communicator here, rather
+ * than letting MPI_Finalize's own implicit cleanup do it, the safe
+ * order), BEFORE the caller's own MPI_Finalize: first the
+ * intercommunicator bruss_lowfive_attach() formed (MPI_Comm_free,
+ * non-collective over the BRIDGE -- an intercommunicator's own free is
+ * collective only over its own two local groups, already disjoint from
+ * the coupler), then the local communicator
+ * bruss_lowfive_join_local_split() split off (also MPI_Comm_free). A
+ * rank whose own bruss_lowfive_join_local_split() call returned
+ * `*local_comm_f_out == 0` (the coupler, real or bundled) created
+ * nothing and frees nothing here -- this function is still harmless to
+ * call unconditionally for such a rank (the existing "always returns 0"
+ * contract above already covers it). */
 int bruss_lowfive_finalize(char* errbuf, long long errbuf_len);
 
 /* ROUND 5 (diagnostic trace track): 1 iff FUSE_LOWFIVE_ATTACH_TRACE is

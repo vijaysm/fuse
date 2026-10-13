@@ -853,6 +853,116 @@ inline SimulationResult RunSimulationRound8(Round8Order order, int n_exchanges,
   return result;
 }
 
+// ---------------------------------------------------------------------
+// D14 Stage B (KNOWN_ISSUES.md), scope C: "the accept layout is a
+// scenario: U physics, a placeholder rank that does no LowFive calls
+// but takes part in every base-communicator collective, V". Read
+// against RunSimulationRound8() just above: its own third actor
+// ("the coupler", `script_c`, pure kSyncBarrier, no write/read/serve of
+// its own) is ALREADY, at the level this model operates on, the
+// IDENTICAL role an accept-mode bundled coupler/placeholder rank plays
+// -- the model has no notion of which executable hosts an actor, only
+// of each actor's own event sequence, and "pure sync, never a channel
+// event" is the SAME sequence whether that actor is coupler_main.c's
+// own separate MPMD process or u_main.c's own extra, bundled rank. So
+// RunSimulationRound8() already IS the accept-layout scenario, under a
+// reading that is now made EXPLICIT (not silently assumed) by the test
+// below that exercises it under that name, rather than inventing a
+// fourth, duplicate actor type with nothing to distinguish it.
+//
+// What this model CANNOT distinguish, stated rather than elided: the
+// REAL bridge communicator's own rank-numbering difference between mpmd
+// and accept (D14 Stage A section 3(A) item 3, fixed in lowfive_attach_
+// decision.hpp's own decide_attach_mode()/this_rank handling, tier-0
+// tested directly in test/verification/brusselator_lowfive_attach_
+// test.cpp's own WrongThisRankFromLocalWorldInsteadOfBridgeMisclassifiesV)
+// -- that is a RankSet-arithmetic property, checked separately, not an
+// event-ordering one this file's own search explores.
+//
+// The known-bad placement scope C also asks for: a THIRD actor that
+// EXISTS in the real row (the placeholder/coupler rank is really
+// there) but never calls bruss_lowfive_join_local_split() at all -- the
+// exact bug the companion fix (decision 3) closes. Modelled here as
+// `third_actor_joins = false`: U's and V's own scripts are UNCHANGED
+// (still try to pass every kSyncBarrier, because the real collective
+// IS entered on their side), but the third actor's own script is
+// forced EMPTY regardless of `n_exchanges` -- it never shows up to any
+// barrier at all, the mirror image of "a collective entered without
+// every rank's own participation": U and V get stuck waiting for a
+// rank that never joins.
+inline SimulationResult RunSimulationAcceptLayout(Round8Order order, int n_exchanges,
+                                                  ProcessPolicy policy_a, ProcessPolicy policy_b,
+                                                  bool third_actor_joins) {
+  const std::vector<MicroStep> script_a =
+      BuildScriptFromEvents(BuildEventSequence(order, policy_a.role, n_exchanges));
+  const std::vector<MicroStep> script_b =
+      BuildScriptFromEvents(BuildEventSequence(order, policy_b.role, n_exchanges));
+  const std::vector<MicroStep> script_c =
+      third_actor_joins ? BuildCouplerScript(n_exchanges) : std::vector<MicroStep>{};
+  const ProcessPolicy policy_c{PolicyKind::kShipped, ServeRole::kFirstServer};  // never consulted
+
+  GlobalState init{};
+  std::set<GlobalState> visited;
+  std::vector<GlobalState> stack;
+  visited.insert(init);
+  stack.push_back(init);
+
+  std::optional<std::string> stuck_example;
+
+  while (!stack.empty()) {
+    GlobalState s = stack.back();
+    stack.pop_back();
+
+    const bool a_done = s.a.pc >= static_cast<int>(script_a.size());
+    const bool b_done = s.b.pc >= static_cast<int>(script_b.size());
+    const bool c_done = s.c.pc >= static_cast<int>(script_c.size());
+    if (a_done && b_done && c_done) continue;  // terminal, nothing more to explore from here
+
+    bool moved = false;
+
+    if (auto out = detail::TryStep(script_a, s.a, s.b.own_serving, s.b.serving_k, policy_a,
+                                   s.b.sync_entering, s.b.sync_passed, s.c.sync_entering,
+                                   s.c.sync_passed)) {
+      moved = true;
+      GlobalState ns = s;
+      ns.a = out->new_pos;
+      if (out->peer_serving_update.has_value()) ns.b.own_serving = *out->peer_serving_update;
+      if (out->peer_serving_k_update.has_value()) ns.b.serving_k = *out->peer_serving_k_update;
+      if (visited.insert(ns).second) stack.push_back(ns);
+    }
+    if (auto out = detail::TryStep(script_b, s.b, s.a.own_serving, s.a.serving_k, policy_b,
+                                   s.a.sync_entering, s.a.sync_passed, s.c.sync_entering,
+                                   s.c.sync_passed)) {
+      moved = true;
+      GlobalState ns = s;
+      ns.b = out->new_pos;
+      if (out->peer_serving_update.has_value()) ns.a.own_serving = *out->peer_serving_update;
+      if (out->peer_serving_k_update.has_value()) ns.a.serving_k = *out->peer_serving_k_update;
+      if (visited.insert(ns).second) stack.push_back(ns);
+    }
+    if (auto out = detail::TryStep(script_c, s.c, false, -1, policy_c, s.a.sync_entering,
+                                   s.a.sync_passed, s.b.sync_entering, s.b.sync_passed)) {
+      moved = true;
+      GlobalState ns = s;
+      ns.c = out->new_pos;
+      if (visited.insert(ns).second) stack.push_back(ns);
+    }
+
+    if (!moved && !stuck_example.has_value()) {
+      stuck_example = "A: pc=" + std::to_string(s.a.pc) + " sync=" + std::to_string(s.a.sync_passed) +
+                      "  B: pc=" + std::to_string(s.b.pc) + " sync=" + std::to_string(s.b.sync_passed) +
+                      "  Third: pc=" + std::to_string(s.c.pc) + " sync=" + std::to_string(s.c.sync_passed) +
+                      " joins=" + std::to_string(third_actor_joins ? 1 : 0);
+    }
+  }
+
+  SimulationResult result;
+  result.num_visited_states = static_cast<int>(visited.size());
+  result.stuck_example = stuck_example;
+  result.completed = !stuck_example.has_value();
+  return result;
+}
+
 /// PURE (task 4's own "soundness link"): would the STATIC check
 /// (lowfive_attach_decision.hpp's own `CheckGraphOrderValidated()`)
 /// accept a graph exhibiting `order`? Only `kMeasured` has a real graph

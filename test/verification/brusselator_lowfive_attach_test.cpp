@@ -14,6 +14,7 @@
 #include "lowfive_attach_model_check.hpp"
 
 #include "fuse/model/component.hpp"
+#include "fuse/model/coupling_graph.hpp"
 #include "fuse/model/launch.hpp"
 
 using fuse::LaunchMode;
@@ -129,20 +130,343 @@ TEST(DecideAttachMode, NoChannelsIsRefused) {
   EXPECT_EQ(d.error().code, "E-LOWFIVE-ATTACH-NOCHANNELS");
 }
 
-TEST(DecideAttachMode, AcceptModeOnWriterIsRefused) {
+// D14 Stage B (KNOWN_ISSUES.md): REPLACES AcceptModeOnWriterIsRefused/
+// AcceptModeOnReaderIsRefused (the SAME two shapes, not deleted outright
+// -- this track's own repeated convention when a falsified or superseded
+// model is replaced, not silently dropped) -- a Connect-mode channel
+// with a FORMED bridge and a supported topology (<=2 Connect-mode
+// components graph-wide) now reaches the IDENTICAL kDistributed
+// decision Mpmd already did, never refused by launch mode alone. This
+// is D14's own "what remains" item 3, closed in decide_attach_mode()'s
+// own pure logic (the host run that would close it in practice is a
+// separate, host-only question -- host_pending in this track's own
+// report).
+TEST(DecideAttachMode, AcceptModeOnWriterWithFormedBridgeIsDistributed) {
   const std::vector<ChannelRoles> channels{
       MakeChannel("U.u_out", RankSet{0, 1}, RankSet{1, 1}, LaunchMode::Connect, LaunchMode::Mpmd)};
-  const auto d = decide_attach_mode(channels, /*this_rank=*/0);
-  ASSERT_FALSE(d.ok());
-  EXPECT_EQ(d.error().code, "E-LOWFIVE-ATTACH-ACCEPT");
+  fuse_examples::lowfive_attach::AttachBridgeContext bridge;
+  bridge.bridge_formed = true;
+  bridge.connect_mode_component_count = 1;
+  const auto d = decide_attach_mode(channels, /*this_rank=*/0, bridge);
+  ASSERT_TRUE(d.ok()) << d.error().code << ": " << d.error().message;
+  EXPECT_EQ(d.value().mode, AttachMode::kDistributed);
+  EXPECT_TRUE(d.value().rendezvous.is_writer);
+  EXPECT_EQ(d.value().rendezvous.split_color, 0);
 }
 
-TEST(DecideAttachMode, AcceptModeOnReaderIsRefused) {
+TEST(DecideAttachMode, AcceptModeOnReaderWithFormedBridgeIsDistributed) {
   const std::vector<ChannelRoles> channels{
       MakeChannel("U.u_out", RankSet{0, 1}, RankSet{1, 1}, LaunchMode::Mpmd, LaunchMode::Connect)};
-  const auto d = decide_attach_mode(channels, /*this_rank=*/1);
+  fuse_examples::lowfive_attach::AttachBridgeContext bridge;
+  bridge.bridge_formed = true;
+  bridge.connect_mode_component_count = 1;
+  const auto d = decide_attach_mode(channels, /*this_rank=*/1, bridge);
+  ASSERT_TRUE(d.ok()) << d.error().code << ": " << d.error().message;
+  EXPECT_EQ(d.value().mode, AttachMode::kDistributed);
+  EXPECT_FALSE(d.value().rendezvous.is_writer);
+  EXPECT_EQ(d.value().rendezvous.split_color, 1);
+}
+
+// The ORIGINAL refusal survives, named differently, for the one case
+// design (A) never claimed to close: no bridge at all (fuse_setup()
+// never given a communicator, or connect() itself refused before this
+// attach could run). The DEFAULT AttachBridgeContext{} (bridge_formed
+// false) is exactly the one every EXISTING decide_attach_mode() call
+// above (with no third argument) already uses, so this is also a
+// regression test that the default itself still refuses.
+TEST(DecideAttachMode, ConnectModeWithNoBridgeFormedIsRefused) {
+  const std::vector<ChannelRoles> channels{
+      MakeChannel("U.u_out", RankSet{0, 1}, RankSet{1, 1}, LaunchMode::Connect, LaunchMode::Mpmd)};
+  const auto d = decide_attach_mode(channels, /*this_rank=*/0);  // default bridge: not formed
   ASSERT_FALSE(d.ok());
-  EXPECT_EQ(d.error().code, "E-LOWFIVE-ATTACH-ACCEPT");
+  EXPECT_EQ(d.error().code, "E-LOWFIVE-ATTACH-ACCEPT-NO-BRIDGE");
+}
+
+// D18 (KNOWN_ISSUES.md, not pursued): connect_pairwise() itself supports
+// exactly two Connect-mode components; this is the SAME limit, checked
+// here too, as defence in depth for a caller that reaches this function
+// without having gone through connect() first.
+TEST(DecideAttachMode, MoreThanTwoConnectModeComponentsIsRefused) {
+  const std::vector<ChannelRoles> channels{
+      MakeChannel("U.u_out", RankSet{0, 1}, RankSet{1, 1}, LaunchMode::Connect, LaunchMode::Mpmd)};
+  fuse_examples::lowfive_attach::AttachBridgeContext bridge;
+  bridge.bridge_formed = true;
+  bridge.connect_mode_component_count = 3;
+  const auto d = decide_attach_mode(channels, /*this_rank=*/0, bridge);
+  ASSERT_FALSE(d.ok());
+  EXPECT_EQ(d.error().code, "E-LOWFIVE-ATTACH-ACCEPT-UNSUPPORTED-TOPOLOGY");
+}
+
+// The >2-components check fires BEFORE the no-bridge check -- a caller
+// should learn about the unsupported topology, not a secondary symptom
+// of it (a graph like this would also never form a bridge, since
+// connect_pairwise() itself refuses first).
+TEST(DecideAttachMode, MoreThanTwoComponentsRefusalPrecedesNoBridgeRefusal) {
+  const std::vector<ChannelRoles> channels{
+      MakeChannel("U.u_out", RankSet{0, 1}, RankSet{1, 1}, LaunchMode::Connect, LaunchMode::Mpmd)};
+  fuse_examples::lowfive_attach::AttachBridgeContext bridge;
+  bridge.bridge_formed = false;
+  bridge.connect_mode_component_count = 3;
+  const auto d = decide_attach_mode(channels, /*this_rank=*/0, bridge);
+  ASSERT_FALSE(d.ok());
+  EXPECT_EQ(d.error().code, "E-LOWFIVE-ATTACH-ACCEPT-UNSUPPORTED-TOPOLOGY");
+}
+
+// Mpmd-only channels are UNAFFECTED by AttachBridgeContext entirely --
+// `any_connect` stays false, so neither new check is even consulted;
+// this is the existing WriterRankGetsDistributedWithSplitColorZero
+// shape, with an EXPLICIT (still-default, still-unformed) bridge
+// context, proving the two new checks are gated correctly.
+TEST(DecideAttachMode, MpmdOnlyChannelIgnoresBridgeContextEntirely) {
+  const std::vector<ChannelRoles> channels{
+      MakeChannel("U.u_out", RankSet{0, 1}, RankSet{1, 1})};
+  const auto d = decide_attach_mode(channels, /*this_rank=*/0,
+                                    fuse_examples::lowfive_attach::AttachBridgeContext{});
+  ASSERT_TRUE(d.ok()) << d.error().code << ": " << d.error().message;
+  EXPECT_EQ(d.value().mode, AttachMode::kDistributed);
+}
+
+// D14 Stage A section 3(A) item 3, now a REGRESSION test: `this_rank`
+// must come from the BRIDGE, never from a rank's own local
+// MPI_COMM_WORLD, in an accept (Connect) launch -- MPI_Intercomm_merge's
+// own high/low rule offsets V's own position by U's local world size, so
+// V's own local-world rank number and its bridge-relative one are
+// DIFFERENT integers. This test builds the EXACT accept-3 layout (U
+// physics rank 0, a bundled coupler/placeholder rank 1 naming no channel
+// at all, V at bridge rank 2) and shows the OLD derivation (V's own
+// local MPI_COMM_WORLD rank, 0, since V's own one-rank executable always
+// numbers itself from 0) does not refuse and does not crash -- it
+// silently misclassifies V as the WRITER instead of the reader, because
+// U's own writer_ranks={0} happens to contain 0 too. A refusal would
+// have been a kinder failure than this.
+TEST(DecideAttachMode, WrongThisRankFromLocalWorldInsteadOfBridgeMisclassifiesV) {
+  const std::vector<ChannelRoles> channels{
+      MakeChannel("U.u_out", /*writer=*/RankSet{0, 1}, /*reader=*/RankSet{2, 1},
+                  LaunchMode::Connect, LaunchMode::Connect)};
+  fuse_examples::lowfive_attach::AttachBridgeContext bridge;
+  bridge.bridge_formed = true;
+  bridge.connect_mode_component_count = 2;
+
+  // CORRECT: this_rank = 2, V's own position in the BRIDGE.
+  const auto d_correct = decide_attach_mode(channels, /*this_rank=*/2, bridge);
+  ASSERT_TRUE(d_correct.ok()) << d_correct.error().code << ": " << d_correct.error().message;
+  EXPECT_FALSE(d_correct.value().rendezvous.is_writer) << "V is the reader, correctly";
+
+  // WRONG: this_rank = 0, V's own LOCAL MPI_COMM_WORLD rank -- the
+  // derivation this track's own Stage A code used before this fix.
+  const auto d_wrong = decide_attach_mode(channels, /*this_rank=*/0, bridge);
+  ASSERT_TRUE(d_wrong.ok()) << d_wrong.error().code << ": " << d_wrong.error().message;
+  EXPECT_TRUE(d_wrong.value().rendezvous.is_writer)
+      << "the OLD derivation's own silent failure mode: V misclassified as the writer";
+}
+
+// D14 Stage B: DecideLocalSplitChoice() -- the pure color/key decision
+// bruss_lowfive_join_local_split() turns into a real MPI_Comm_split().
+TEST(DecideLocalSplitChoice, EmptyChannelsDoesNotParticipate) {
+  const std::vector<ChannelRoles> channels;
+  const auto choice = fuse_examples::lowfive_attach::DecideLocalSplitChoice(channels, 1);
+  EXPECT_FALSE(choice.participates);
+}
+
+TEST(DecideLocalSplitChoice, WriterRankGetsColorZeroKeyedByRankSetPosition) {
+  const std::vector<ChannelRoles> channels{
+      MakeChannel("U.u_out", RankSet{0, 2}, RankSet{5, 1})};  // writer = {0,1}
+  const auto choice = fuse_examples::lowfive_attach::DecideLocalSplitChoice(channels, 1);
+  ASSERT_TRUE(choice.participates);
+  EXPECT_EQ(choice.color, 0);
+  EXPECT_EQ(choice.key, 1);  // index_of(1) within {0,1}
+}
+
+TEST(DecideLocalSplitChoice, ReaderRankGetsColorOne) {
+  const std::vector<ChannelRoles> channels{
+      MakeChannel("U.u_out", RankSet{0, 1}, RankSet{5, 2})};  // reader = {5,6}
+  const auto choice = fuse_examples::lowfive_attach::DecideLocalSplitChoice(channels, 6);
+  ASSERT_TRUE(choice.participates);
+  EXPECT_EQ(choice.color, 1);
+  EXPECT_EQ(choice.key, 1);  // index_of(6) within {5,6}
+}
+
+TEST(DecideLocalSplitChoice, NonMemberRankDoesNotParticipate) {
+  // The bundled coupler/placeholder rank (2): neither writer nor reader.
+  const std::vector<ChannelRoles> channels{
+      MakeChannel("U.u_out", RankSet{0, 1}, RankSet{3, 1})};
+  const auto choice = fuse_examples::lowfive_attach::DecideLocalSplitChoice(channels, 2);
+  EXPECT_FALSE(choice.participates);
+}
+
+namespace {
+
+// D14 Stage B: the smallest graph that exercises CollectChannelsForRank()
+// on a REAL fuse::CouplingGraph -- U (RankSet{0,1}, writer of u_out,
+// hdf5_path set), a fieldless Coupler-kind placeholder (RankSet{1,1},
+// named "coupler" in a channel neither writer nor reader -- the accept-
+// mode bundled rank's own shape), V (RankSet{2,1}, reader of u_out) --
+// mirrors the real accept-3 layout's own bridge-relative numbering
+// (U physics 0, placeholder 1, V 2).
+fuse::CouplingGraph MakeAcceptLikeGraph() {
+  using fuse::AccumOp;
+  using fuse::ComponentDecl;
+  using fuse::ComponentKind;
+  using fuse::Conservation;
+  using fuse::CouplingGraph;
+  using fuse::FieldSpec;
+  using fuse::MeshDecl;
+  using fuse::Rational;
+  using fuse::Region;
+  using fuse::RemapFlags;
+  namespace u = fuse::units;
+
+  CouplingGraph g;
+  const auto m = g.add_mesh(MeshDecl{.name = "grid", .source = "generated:box:4x4x4"});
+  const auto r = g.add_region(Region{.name = "all", .mesh = m, .entity_set = "all",
+                                     .dimension = 3});
+
+  const auto u_comp = g.add_component(
+      ComponentDecl{.name = "U", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  ComponentDecl coupler_decl{.name = "coupler", .ranks = fuse::RankSet{1, 1},
+                             .interval = Rational{1}};
+  coupler_decl.kind = ComponentKind::Coupler;
+  g.add_component(coupler_decl);
+  const auto v_comp = g.add_component(
+      ComponentDecl{.name = "V", .ranks = fuse::RankSet{2, 1}, .interval = Rational{1}});
+
+  FieldSpec u_out_spec{.name = "u_out", .region = r, .units = u::kDimensionless,
+                       .conservation = Conservation::None, .intent = fuse::Intent::Provides};
+  u_out_spec.hdf5_path = "brusselator_u.h5/grid/u_out";
+  const auto u_out = g.add_field(u_comp, u_out_spec);
+  FieldSpec v_in_spec{.name = "u_in", .region = r, .units = u::kDimensionless,
+                      .conservation = Conservation::None, .intent = fuse::Intent::Requires};
+  const auto v_in = g.add_field(v_comp, v_in_spec);
+
+  const auto ch = g.add_channel("u2v", u_out, v_in);
+  g.channel(ch).accumulate(AccumOp::Mean).remap(RemapFlags::Conservative);
+  return g;
+}
+
+}  // namespace
+
+TEST(CollectChannelsForRank, WriterRankSeesTheOneQualifyingChannel) {
+  const auto g = MakeAcceptLikeGraph();
+  const auto channels = fuse_examples::lowfive_attach::CollectChannelsForRank(g, /*this_rank=*/0);
+  ASSERT_EQ(channels.size(), 1u);
+  EXPECT_EQ(channels.front().writer_name, "U");
+  EXPECT_EQ(channels.front().reader_name, "V");
+}
+
+TEST(CollectChannelsForRank, ReaderRankSeesTheOneQualifyingChannel) {
+  const auto g = MakeAcceptLikeGraph();
+  const auto channels = fuse_examples::lowfive_attach::CollectChannelsForRank(g, /*this_rank=*/2);
+  ASSERT_EQ(channels.size(), 1u);
+}
+
+// The companion fix's own foundation: the bundled coupler/placeholder
+// rank (1) is neither writer nor reader of the one channel this graph
+// declares -- CollectChannelsForRank() must return it EMPTY, not the
+// channel by accident (a Coupler-kind component is never a field owner
+// at all, validate()'s own E-COUPLER-FIELDS rule, so this is a property
+// of the RankSet membership test alone, not of ComponentKind).
+TEST(CollectChannelsForRank, BundledPlaceholderRankSeesNoChannelAtAll) {
+  const auto g = MakeAcceptLikeGraph();
+  const auto channels = fuse_examples::lowfive_attach::CollectChannelsForRank(g, /*this_rank=*/1);
+  EXPECT_TRUE(channels.empty());
+}
+
+// D14 Stage B, scope C: the real Brusselator exchange is BIDIRECTIONAL
+// (u_out: U writes, V reads; v_out: V writes, U reads) -- MakeAcceptLikeGraph()
+// above has only one channel, enough for the three CollectChannelsForRank
+// tests it serves, but not enough to compute the FULL two-channel order
+// signature CheckGraphOrderValidated() actually checks. Same component
+// layout and bridge-relative numbering (U physics 0, placeholder 1, V 2)
+// as MakeAcceptLikeGraph(), with the second channel added.
+fuse::CouplingGraph MakeAcceptLikeGraphBidirectional() {
+  using fuse::AccumOp;
+  using fuse::ComponentDecl;
+  using fuse::ComponentKind;
+  using fuse::Conservation;
+  using fuse::CouplingGraph;
+  using fuse::FieldSpec;
+  using fuse::MeshDecl;
+  using fuse::Rational;
+  using fuse::Region;
+  using fuse::RemapFlags;
+  namespace u = fuse::units;
+
+  CouplingGraph g;
+  const auto m = g.add_mesh(MeshDecl{.name = "grid", .source = "generated:box:4x4x4"});
+  const auto r = g.add_region(Region{.name = "all", .mesh = m, .entity_set = "all",
+                                     .dimension = 3});
+
+  const auto u_comp = g.add_component(
+      ComponentDecl{.name = "U", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  ComponentDecl coupler_decl{.name = "coupler", .ranks = fuse::RankSet{1, 1},
+                             .interval = Rational{1}};
+  coupler_decl.kind = ComponentKind::Coupler;
+  g.add_component(coupler_decl);
+  const auto v_comp = g.add_component(
+      ComponentDecl{.name = "V", .ranks = fuse::RankSet{2, 1}, .interval = Rational{1}});
+
+  FieldSpec u_out_spec{.name = "u_out", .region = r, .units = u::kDimensionless,
+                       .conservation = Conservation::None, .intent = fuse::Intent::Provides};
+  u_out_spec.hdf5_path = "brusselator_u.h5/grid/u_out";
+  const auto u_out = g.add_field(u_comp, u_out_spec);
+  FieldSpec v_in_spec{.name = "u_in", .region = r, .units = u::kDimensionless,
+                      .conservation = Conservation::None, .intent = fuse::Intent::Requires};
+  const auto v_in = g.add_field(v_comp, v_in_spec);
+  const auto ch1 = g.add_channel("u2v", u_out, v_in);
+  g.channel(ch1).accumulate(AccumOp::Mean).remap(RemapFlags::Conservative);
+
+  FieldSpec v_out_spec{.name = "v_out", .region = r, .units = u::kDimensionless,
+                       .conservation = Conservation::None, .intent = fuse::Intent::Provides};
+  v_out_spec.hdf5_path = "brusselator_v.h5/grid/v_out";
+  const auto v_out = g.add_field(v_comp, v_out_spec);
+  FieldSpec u_in_spec{.name = "v_in", .region = r, .units = u::kDimensionless,
+                      .conservation = Conservation::None, .intent = fuse::Intent::Requires};
+  const auto u_in = g.add_field(u_comp, u_in_spec);
+  const auto ch2 = g.add_channel("v2u", v_out, u_in);
+  g.channel(ch2).accumulate(AccumOp::Mean).remap(RemapFlags::Conservative);
+
+  return g;
+}
+
+// D14 Stage B, scope C (task decision: extend ValidatedGraphOrderSignatures()
+// ONLY if the accept layout's own derived signature is identical to the
+// validated MPMD one -- otherwise leave it refused and say so). PROVEN
+// identical here, from an ACTUAL fuse::CouplingGraph matching the real
+// accept-3 layout's own component names, RankSets and channel order
+// (brusselator_graph_tool.cpp's own accept branch: u_ranks={0,1},
+// v_ranks={u_ranks_u+ranks_coupler,1}, both launch modes share the SAME
+// add_window_coupling() call that declares u_out/v_out in the SAME order)
+// -- so NO code change to ValidatedGraphOrderSignatures() is needed; the
+// existing {U,V,1,1},{V,U,1,1} entry already covers both launch modes,
+// because the check is signature-based, never launch-mode-based.
+TEST(ComputeGraphOrderSignature, AcceptLayoutPhysicsRanksMatchTheValidatedMpmdSignature) {
+  const auto g = MakeAcceptLikeGraphBidirectional();
+  for (const int physics_rank : {0, 2}) {  // U's physics rank, then V's
+    const auto channels =
+        fuse_examples::lowfive_attach::CollectChannelsForRank(g, physics_rank);
+    const auto signature =
+        fuse_examples::lowfive_attach::ComputeGraphOrderSignature(channels);
+    EXPECT_EQ(signature, fuse_examples::lowfive_attach::ValidatedGraphOrderSignatures())
+        << "physics_rank=" << physics_rank;
+    EXPECT_TRUE(
+        fuse_examples::lowfive_attach::CheckGraphOrderValidated(signature).ok())
+        << "physics_rank=" << physics_rank;
+  }
+}
+
+// The bundled placeholder rank's own signature (empty, no qualifying
+// channel) does NOT match the validated one -- exactly why the companion
+// fix must keep this rank from ever reaching CheckGraphOrderValidated()
+// at all (u_main.c's own is_physics_rank gate), not because the check
+// itself needs to special-case it.
+TEST(ComputeGraphOrderSignature, PlaceholderRankSignatureDoesNotMatchAndWouldBeRefused) {
+  const auto g = MakeAcceptLikeGraphBidirectional();
+  const auto channels = fuse_examples::lowfive_attach::CollectChannelsForRank(g, 1);
+  const auto signature = fuse_examples::lowfive_attach::ComputeGraphOrderSignature(channels);
+  EXPECT_TRUE(signature.empty());
+  const auto checked = fuse_examples::lowfive_attach::CheckGraphOrderValidated(signature);
+  EXPECT_FALSE(checked.ok());
+  EXPECT_EQ(checked.error().code, "E-LOWFIVE-ATTACH-ORDER-UNVALIDATED");
 }
 
 // A third channel naming a group outside the canonical pair -- the gap
@@ -1226,4 +1550,53 @@ TEST(DecideExitHygienePlan, AttachingParticipantCallsExplicitH5closeAndDoesNotUn
   const auto plan = decide_exit_hygiene_plan(LowFiveProcessRole::kAttachingParticipant);
   EXPECT_FALSE(plan.unregister_env_route_vol);
   EXPECT_TRUE(plan.explicit_h5close_before_mpi_finalize);
+}
+
+
+// D14 Stage B (KNOWN_ISSUES.md), scope C: the accept-layout scenario --
+// lowfive_attach_model_check.hpp's own "RunSimulationAcceptLayout"
+// comment has the full account of why this reuses RunSimulationRound8's
+// existing third-actor machinery under an explicit name, rather than a
+// new, duplicate actor type.
+TEST(ModelCheck, AcceptLayoutPlaceholderJoiningCompletesLikeTheCouplerScenario) {
+  for (int n : {1, 2, 25}) {
+    const auto r = fuse_examples::lowfive_attach_model::RunSimulationAcceptLayout(
+        Round8Order::kMeasured, n, ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
+        ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader},
+        /*third_actor_joins=*/true);
+    EXPECT_TRUE(r.completed) << "n=" << n << " " << (r.stuck_example ? *r.stuck_example : "");
+  }
+}
+
+// The known-bad placement scope C also asks for: a real third actor
+// (the bundled coupler/placeholder rank) that EXISTS but never joins
+// the collective at all -- the exact bug the companion fix (decision 3)
+// closes. This is the model-level mirror of
+// test/verification/brusselator_lowfive_attach_test.cpp's own
+// BundledPlaceholderRankSeesNoChannelAtAll (CollectChannelsForRank)
+// test: here it is the SYNC collective, not channel membership, that
+// is missing a participant.
+TEST(ModelCheck, AcceptLayoutPlaceholderNeverJoiningGetsStuck) {
+  const auto r = fuse_examples::lowfive_attach_model::RunSimulationAcceptLayout(
+      Round8Order::kMeasured, /*n_exchanges=*/2,
+      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
+      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader},
+      /*third_actor_joins=*/false);
+  EXPECT_FALSE(r.completed);
+  ASSERT_TRUE(r.stuck_example.has_value());
+}
+
+// n_exchanges=1 never reaches a kSyncBarrier at all (BuildEventSequence()
+// 's own cold-start-only shape for n<=1) -- the third actor's own
+// non-participation therefore has nothing to get stuck ON, a boundary
+// this track's own standing rule ("do not write a test that cannot
+// fail") asks to be stated explicitly rather than silently merged into
+// the n=2 case above.
+TEST(ModelCheck, AcceptLayoutPlaceholderNeverJoiningStillCompletesAtOneExchange) {
+  const auto r = fuse_examples::lowfive_attach_model::RunSimulationAcceptLayout(
+      Round8Order::kMeasured, /*n_exchanges=*/1,
+      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
+      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader},
+      /*third_actor_joins=*/false);
+  EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
 }

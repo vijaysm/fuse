@@ -52,14 +52,28 @@
 // routing (`set_memory()`, applied per binding below) is what tells it
 // which claimed file a given H5Fcreate/H5Fopen belongs to, not which
 // direction data happens to move in on a given call. The communicator
-// `plan.split_color`/`split_key` describe is NOT formed by a fresh
-// MPI_Comm_split() call in this file -- it is the caller's own, already
-// -formed physics-only communicator (`physics_comm_f`, u_main.c's own
-// u_comm / v_main.f90's own v_comm), verified against the plan's own
-// expected size/position rather than re-split from MPI_COMM_WORLD. See
-// bruss_lowfive_attach()'s own body below for why: that fresh split was
-// this file's own first version, found wrong while implementing (lowfive_
-// attach.h's own header comment has the full account).
+// `plan.split_color`/`split_key` describe IS formed by a fresh
+// MPI_Comm_split() in this file, by `bruss_lowfive_join_local_split()` --
+// but of the BRIDGE (the base communicator fuse_setup() formed for this
+// process's own Connect- or Mpmd-launched component, now readable through
+// the base_communicator() ABI entry, D14 Stage B, 2026-10-13), never of
+// MPI_COMM_WORLD directly, and never the caller's own already-formed
+// physics-only communicator (u_main.c's own u_comm / v_main.f90's own
+// v_comm) either -- an EARLIER version of this file tried both of those
+// in turn and both were found wrong: splitting MPI_COMM_WORLD directly
+// hangs when the bundled coupler/placeholder rank does not take part
+// (KNOWN_ISSUES.md D39's own "found while implementing" paragraph), and
+// reusing u_comm/v_comm assumes, rather than derives, that their local
+// rank numbering already matches plan.split_key's own expectation -- true
+// for U (MPI_Intercomm_merge's own high/low rule keeps U's ranks
+// unchanged) but NOT for V, whose merged position is offset by U's local
+// world size (the owner's own ruling against reusing them; see
+// WrongThisRankFromLocalWorldInsteadOfBridgeMisclassifiesV in
+// test/verification/brusselator_lowfive_attach_test.cpp for the tier-0
+// proof). The fresh split costs one extra collective per process, paid
+// once at attach time, not per exchange. See bruss_lowfive_attach()'s own
+// body below for how the resulting `local_comm_f` is then verified
+// against the plan's own expected size/position exactly as before.
 //
 // DEADLOCK-AVOIDANCE DECISION -- ROUND 2, SECOND ATTEMPT, supersedes
 // both round 1's own ruling AND this round's own FIRST attempt (both
@@ -119,21 +133,18 @@
 
 #include "fuse/base/config.hpp"
 
-#if FUSE_HAVE_LOWFIVE
-
+// D14 Stage B (KNOWN_ISSUES.md): these four need only fuse::model/
+// fuse::transport and <mpi.h> -- NEVER a LowFive/HDF5 header -- so they
+// are available regardless of FUSE_HAVE_LOWFIVE, unlike everything
+// below. bruss_lowfive_join_local_split() (defined below, outside the
+// FUSE_HAVE_LOWFIVE guard) is the one caller that needs them in a build
+// without LowFive at all -- brusselator_coupler_main links this file
+// without ever otherwise touching LowFive, so its own translation unit
+// must still compile clean there.
 #include "lowfive_attach_decision.hpp"
 
 #include "fuse/model/yaml_io.hpp"
 #include "fuse/transport/lowfive_graph.hpp"
-
-#include <lowfive/H5VOLProperty.hpp>
-#include <lowfive/log.hpp>
-#include <lowfive/vol-metadata.hpp>
-#if defined(FUSE_LOWFIVE_DIST_LIB_FOUND) && FUSE_HAVE_MPI
-#include <lowfive/vol-dist-metadata.hpp>
-#endif
-
-#include <hdf5.h>
 
 #if FUSE_HAVE_MPI
 #include <mpi.h>
@@ -147,6 +158,17 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#if FUSE_HAVE_LOWFIVE
+
+#include <lowfive/H5VOLProperty.hpp>
+#include <lowfive/log.hpp>
+#include <lowfive/vol-metadata.hpp>
+#if defined(FUSE_LOWFIVE_DIST_LIB_FOUND) && FUSE_HAVE_MPI
+#include <lowfive/vol-dist-metadata.hpp>
+#endif
+
+#include <hdf5.h>
 
 // Local name, mirroring src/transport/lowfive_transport.cpp's own
 // FUSE_LOWFIVE_HAVE_DIST macro exactly (same three preconditions), under
@@ -213,6 +235,19 @@ struct AttachState {
   // compared for "did anything happen in between" even across
   // exchanges.
   long long event_index = 0;
+  // D14 Stage B, owner's own ruling (decision 2): "free every
+  // communicator you create, on every rank, in the order that cannot
+  // hang" -- `local_comm` is the fresh split bruss_lowfive_join_local_
+  // split() formed from the bridge (stashed there, before this rank ever
+  // calls bruss_lowfive_attach() at all); `intercomm` is the one
+  // MPI_Intercomm_create() forms inside bruss_lowfive_attach(). Both
+  // MPI_COMM_NULL until actually created; bruss_lowfive_finalize() frees
+  // whichever is non-null, AFTER H5close() and BEFORE the caller's own
+  // MPI_Finalize (that function's own doc comment has the full account
+  // of why that order, not MPI_Finalize's own implicit cleanup, is the
+  // one that cannot hang).
+  MPI_Comm local_comm = MPI_COMM_NULL;
+  MPI_Comm intercomm = MPI_COMM_NULL;
 #endif
 };
 
@@ -375,8 +410,135 @@ void EnableLowFiveLoggerOnce() {
 
 extern "C" {
 
-int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
-                         long long* fapl_id_out,
+// D14 Stage B (KNOWN_ISSUES.md): the collective EVERY rank of the bridge
+// must join, coupler/placeholder included -- lowfive_attach.h's own doc
+// comment on this function has the full account of why, and of why it
+// is safe and cheap to call unconditionally (an ordinary, non-LowFive
+// graph reaches "nothing to join" identically on every rank, with no MPI
+// call at all). Needs fuse::model (graph load, build_lowfive_bindings())
+// and <mpi.h> only -- never a LowFive/HDF5 header, so this function
+// compiles and is safe to link into a binary (brusselator_coupler_main)
+// that never otherwise touches LowFive at all.
+int bruss_lowfive_join_local_split(const char* graph_path, long long bridge_comm_f,
+                                   long long* local_comm_f_out,
+                                   char* errbuf, long long errbuf_len) {
+  if (local_comm_f_out) *local_comm_f_out = 0;
+  if (!graph_path || !*graph_path) {
+    CopyErrorMessage("bruss_lowfive_join_local_split(): graph_path is empty", errbuf, errbuf_len);
+    return 1;
+  }
+#if !FUSE_HAVE_MPI
+  (void)bridge_comm_f;
+  CopyErrorMessage(
+      "bruss_lowfive_join_local_split(): this build has no MPI "
+      "(-DFUSE_ENABLE_MPI=OFF); the Brusselator participants always need it",
+      errbuf, errbuf_len);
+  return 1;
+#else
+  int mpi_initialized = 0;
+  MPI_Initialized(&mpi_initialized);
+  if (!mpi_initialized) {
+    CopyErrorMessage(
+        "bruss_lowfive_join_local_split(): MPI is not initialised; call MPI_Init() first",
+        errbuf, errbuf_len);
+    return 1;
+  }
+  auto g = fuse::load_yaml_file(graph_path);
+  if (!g.ok()) {
+    CopyErrorMessage("load_yaml_file('" + std::string(graph_path) + "'): [" + g.error().code +
+                     "] " + g.error().message,
+                     errbuf, errbuf_len);
+    return 1;
+  }
+  const fuse::CouplingGraph& graph = g.value();
+
+  auto table = fuse::build_lowfive_bindings(graph);
+  if (!table.ok()) {
+    CopyErrorMessage("build_lowfive_bindings: [" + table.error().code + "] " +
+                     table.error().message,
+                     errbuf, errbuf_len);
+    return 1;
+  }
+  if (table.value().empty()) {
+    // Collective agreement the easy way (connect.hpp's own module
+    // comment): every rank loads the SAME graph file and reaches this
+    // IDENTICAL verdict with no MPI call at all -- an ordinary,
+    // non-LowFive run, or a build without -DFUSE_ENABLE_LOWFIVE=ON
+    // (whose graph could never carry an hdf5_path field any caller of
+    // this function would pass either). Nothing to join; not an error.
+    return 0;
+  }
+
+  if (bridge_comm_f == 0) {
+    CopyErrorMessage(
+        "bruss_lowfive_join_local_split(): bridge_comm_f is 0 (MPI_COMM_NULL); "
+        "pass base_communicator()'s own value for this context (entries.def), "
+        "not an unset handle",
+        errbuf, errbuf_len);
+    return 1;
+  }
+  const MPI_Comm bridge = MPI_Comm_f2c(static_cast<MPI_Fint>(bridge_comm_f));
+  if (bridge == MPI_COMM_NULL) {
+    CopyErrorMessage(
+        "bruss_lowfive_join_local_split(): bridge_comm_f converts to MPI_COMM_NULL",
+        errbuf, errbuf_len);
+    return 1;
+  }
+  int this_rank = 0;
+  MPI_Comm_rank(bridge, &this_rank);
+
+  const auto channels = fuse_examples::lowfive_attach::CollectChannelsForRank(graph, this_rank);
+  const auto choice = fuse_examples::lowfive_attach::DecideLocalSplitChoice(channels, this_rank);
+
+  // COLLECTIVE over the WHOLE of `bridge`, every rank, regardless of
+  // `choice.participates` -- MPI_Comm_split() is collective over its own
+  // INPUT communicator; MPI_UNDEFINED is the standard's own documented
+  // mechanism for "I take part in this collective but belong to no
+  // output group" (a non-participating rank gets back MPI_COMM_NULL,
+  // which is NOT an error here -- see this function's own header
+  // comment in lowfive_attach.h).
+  MPI_Comm local = MPI_COMM_NULL;
+  const int color = choice.participates ? choice.color : MPI_UNDEFINED;
+  const int key = choice.participates ? choice.key : this_rank;
+  MPI_Comm_split(bridge, color, key, &local);
+
+  if (choice.participates && local == MPI_COMM_NULL) {
+    CopyErrorMessage(
+        "bruss_lowfive_join_local_split(): MPI_Comm_split() returned "
+        "MPI_COMM_NULL for a rank DecideLocalSplitChoice() said should "
+        "participate -- a color/key mismatch with the plan this function "
+        "itself derived",
+        errbuf, errbuf_len);
+    return 1;
+  }
+  if (local_comm_f_out) {
+    *local_comm_f_out = (local == MPI_COMM_NULL) ? 0 : static_cast<long long>(MPI_Comm_c2f(local));
+  }
+  if (TraceEnabledCached()) {
+    std::fprintf(stderr,
+                 "TRACE(bruss_lowfive_join_local_split): bridge_rank=%d participates=%d "
+                 "color=%d key=%d\n",
+                 this_rank, choice.participates ? 1 : 0, color, key);
+  }
+  // D14 Stage B, owner's own ruling (decision 2): "free every
+  // communicator you create" -- `local` is stashed in AttachState here,
+  // for bruss_lowfive_attach() to hand to MPI_Intercomm_create() and for
+  // bruss_lowfive_finalize() to free, in that order, AFTER this rank's
+  // own H5close() and BEFORE the caller's own MPI_Finalize (that
+  // function's own doc comment has the full account). A
+  // non-participating rank's own `local` is MPI_COMM_NULL -- nothing to
+  // stash, nothing to free.
+#if FUSE_EXAMPLES_LOWFIVE_ATTACH_HAVE_DIST
+  if (local != MPI_COMM_NULL) {
+    State().local_comm = local;
+  }
+#endif
+  return 0;
+#endif  // FUSE_HAVE_MPI
+}
+
+int bruss_lowfive_attach(const char* graph_path, long long bridge_comm_f,
+                         long long local_comm_f, long long* fapl_id_out,
                          char* errbuf, long long errbuf_len) {
   if (fapl_id_out) *fapl_id_out = -1;
   AttachState& s = State();
@@ -409,8 +571,31 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
                      errbuf, errbuf_len);
     return 1;
   }
-  int world_rank = 0;
-  MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
+  if (bridge_comm_f == 0) {
+    CopyErrorMessage(
+        "bruss_lowfive_attach(): bridge_comm_f is 0 (MPI_COMM_NULL); pass "
+        "base_communicator()'s own value for this context, not an unset handle",
+        errbuf, errbuf_len);
+    return 1;
+  }
+  const MPI_Comm bridge = MPI_Comm_f2c(static_cast<MPI_Fint>(bridge_comm_f));
+  if (bridge == MPI_COMM_NULL) {
+    CopyErrorMessage("bruss_lowfive_attach(): bridge_comm_f converts to MPI_COMM_NULL", errbuf,
+                     errbuf_len);
+    return 1;
+  }
+  // D14 Stage A section 3(A) item 3, FIXED here: this rank's own
+  // position in the BRIDGE, never MPI_COMM_WORLD -- the two coincide for
+  // Mpmd (connect_mpmd() merely dups MPI_COMM_WORLD) and for U in an
+  // accept launch (MPI_Intercomm_merge's own high=0 side keeps its local
+  // numbers), but NOT for V in an accept launch, whose own position is
+  // OFFSET by U's local world size. Every RankSet-membership check below
+  // (CollectChannelsForRank, decide_attach_mode, plan_lowfive_rendezvous)
+  // is declared in the GRAPH's own bridge-relative numbering, so this is
+  // the one rank number that makes all three agree, regardless of launch
+  // mode.
+  int this_rank = 0;
+  MPI_Comm_rank(bridge, &this_rank);
   // ROUND 5 (diagnostic trace track), item 5: before any LowFive VOL is
   // constructed, so its own ctor-time trace lines (if FUSE_LOWFIVE_LOG
   // is set) are captured too.
@@ -440,33 +625,13 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
     return 1;
   }
 
-  // Mirror src/transport/lowfive_plugin_graph.cpp's own
-  // ConfigureDistributed() loop, generalized to collect EVERY qualifying
-  // channel (not just the first) so decide_attach_mode() can check they
-  // all agree -- see lowfive_attach_decision.hpp's own header comment.
-  std::vector<fuse_examples::lowfive_attach::ChannelRoles> channels;
-  for (std::uint32_t i = 0; i < graph.channel_count(); ++i) {
-    const fuse::Channel& ch = graph.channel_at(fuse::ChannelId{i});
-    const fuse::FieldSpec& src = graph.field(ch.source);
-    if (!src.hdf5_path.has_value()) continue;
-    const fuse::ComponentId writer_id = graph.owner_of(ch.source);
-    const fuse::ComponentId reader_id = graph.owner_of(ch.target);
-    if (!writer_id.valid() || !reader_id.valid()) continue;
-    const fuse::ComponentDecl& writer_c = graph.component(writer_id);
-    const fuse::ComponentDecl& reader_c = graph.component(reader_id);
-    if (!writer_c.ranks.contains(world_rank) && !reader_c.ranks.contains(world_rank)) {
-      continue;  // this channel's two sides do not include this rank
-    }
-    fuse_examples::lowfive_attach::ChannelRoles roles;
-    roles.field_name = writer_c.name + "." + src.name;
-    roles.writer_ranks = writer_c.ranks;
-    roles.reader_ranks = reader_c.ranks;
-    roles.writer_launch = writer_c.launch.mode;
-    roles.reader_launch = reader_c.launch.mode;
-    roles.writer_name = writer_c.name;
-    roles.reader_name = reader_c.name;
-    channels.push_back(std::move(roles));
-  }
+  // D14 Stage B: the per-rank channel-collection loop is now
+  // CollectChannelsForRank() (lowfive_attach_decision.hpp), shared with
+  // bruss_lowfive_join_local_split() above so the two calls -- which
+  // MUST agree on this rank's own role, since join_local_split()'s own
+  // split already baked a color into `local_comm_f` -- can never
+  // silently diverge.
+  const auto channels = fuse_examples::lowfive_attach::CollectChannelsForRank(graph, this_rank);
 
   // ROUND 8, task 3a: the STATIC order check, at attach time, before
   // decide_attach_mode() or anything else that could block -- refuses
@@ -493,7 +658,30 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
     }
   }
 
-  auto decision = fuse_examples::lowfive_attach::decide_attach_mode(channels, world_rank);
+  // D14 Stage B, scope B: `connect_mode_component_count` is this rank's
+  // own, independent read of the SAME graph every rank already loaded --
+  // a count, not a RankSet membership test, so it needs no per-rank
+  // filtering of its own (every rank sees the identical graph-wide
+  // total). `fuse_base_communicator_info::formed` is NOT re-derived here
+  // -- the caller (u_main.c/v_main.f90) already checked it before ever
+  // calling this function (never calling bruss_lowfive_attach() at all
+  // when formed==0, the same gating that keeps the coupler/placeholder
+  // out of this function entirely) -- so `bridge_formed=true` always,
+  // from THIS call site; decide_attach_mode()'s own `false` branch is
+  // reachable only from a direct, pure-function test, by design (this
+  // track's own standing rule: a refusal is verified only if a test
+  // makes it fire).
+  int connect_mode_component_count = 0;
+  for (std::uint32_t i = 0; i < graph.component_count(); ++i) {
+    if (graph.component(fuse::ComponentId{i}).launch.mode == fuse::LaunchMode::Connect) {
+      ++connect_mode_component_count;
+    }
+  }
+  fuse_examples::lowfive_attach::AttachBridgeContext bridge_ctx;
+  bridge_ctx.bridge_formed = true;
+  bridge_ctx.connect_mode_component_count = connect_mode_component_count;
+
+  auto decision = fuse_examples::lowfive_attach::decide_attach_mode(channels, this_rank, bridge_ctx);
   if (!decision.ok()) {
     CopyErrorMessage("[" + decision.error().code + "] " + decision.error().message, errbuf,
                      errbuf_len);
@@ -514,27 +702,33 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
   if (decision.value().mode == fuse_examples::lowfive_attach::AttachMode::kDistributed) {
 #if FUSE_EXAMPLES_LOWFIVE_ATTACH_HAVE_DIST
     const fuse::LowFiveRendezvousPlan& plan = decision.value().rendezvous;
-    // `local` is THIS process's own, ALREADY-FORMED physics-only
-    // communicator (u_main.c's own u_comm / v_main.f90's own v_comm) --
-    // NOT a fresh MPI_Comm_split(MPI_COMM_WORLD, ...) of this function's
-    // own. See lowfive_attach.h's own header comment ("FOUND WHILE
-    // IMPLEMENTING") for why: a split of MPI_COMM_WORLD here would be a
-    // NEW collective the coupler process never joins (coupler_main.c
-    // never calls this function), hanging U and V. MPI_Intercomm_create
-    // needs no such split: it is collective only over the union of the
-    // two SIDES' own groups, which u_comm/v_comm already are.
-    if (physics_comm_f == 0) {
+    // D14 Stage B, owner's own ruling (decision 2): `local` is the
+    // FRESH split bruss_lowfive_join_local_split() already formed from
+    // the bridge (NEVER u_comm/v_comm reused -- see lowfive_attach.h's
+    // own header comment on bruss_lowfive_join_local_split() for why
+    // that reuse was this track's own, rejected Stage A proposal), keyed
+    // by RankSet membership exactly as plan_lowfive_rendezvous() itself
+    // expects. The intercommunicator is formed over the BRIDGE, never
+    // MPI_COMM_WORLD (D14 Stage A's own open item, closed here): in an
+    // Mpmd launch the two are one and the same (connect_mpmd() merely
+    // dups MPI_COMM_WORLD), but in an accept (Connect) launch they are
+    // NOT -- MPI_COMM_WORLD spans only one of the two separately
+    // launched executables, while the bridge spans both, which is
+    // exactly what MPI_Intercomm_create()'s own `peer_comm` argument
+    // must do to resolve `plan.remote_leader`'s own rank number
+    // correctly.
+    if (local_comm_f == 0) {
       CopyErrorMessage(
-          "bruss_lowfive_attach(): physics_comm_f is 0 (MPI_COMM_NULL); "
-          "pass this process's own already-formed physics-only "
-          "communicator (u_comm/v_comm), not an unset handle",
+          "bruss_lowfive_attach(): local_comm_f is 0 (MPI_COMM_NULL); call "
+          "bruss_lowfive_join_local_split() first and pass its own nonzero "
+          "result, never an unset handle",
           errbuf, errbuf_len);
       return 1;
     }
-    const MPI_Comm local = MPI_Comm_f2c(static_cast<MPI_Fint>(physics_comm_f));
+    const MPI_Comm local = MPI_Comm_f2c(static_cast<MPI_Fint>(local_comm_f));
     if (local == MPI_COMM_NULL) {
       CopyErrorMessage(
-          "bruss_lowfive_attach(): physics_comm_f converts to MPI_COMM_NULL",
+          "bruss_lowfive_attach(): local_comm_f converts to MPI_COMM_NULL",
           errbuf, errbuf_len);
       return 1;
     }
@@ -543,23 +737,28 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
     // position `plan_lowfive_rendezvous()` computed from the graph's own
     // RankSet) -- "rather than trust it", the same discipline `fuse::
     // LowFiveTransport::build_plan_from_peers()`'s own header comment
-    // states for an equivalent numbering assumption.
+    // states for an equivalent numbering assumption. Defence in depth
+    // now, not the only check: bruss_lowfive_join_local_split()'s own
+    // MPI_Comm_split() already used this exact color/key pair, so a
+    // mismatch here would mean the TWO calls' own CollectChannelsForRank
+    // results disagreed (a caller passing a stale local_comm_f from a
+    // DIFFERENT graph, for instance), not merely an unverified handle.
     int local_size = 0, local_rank = 0;
     MPI_Comm_size(local, &local_size);
     MPI_Comm_rank(local, &local_rank);
     const fuse::RankSet& own_side =
         plan.is_writer ? channels.front().writer_ranks : channels.front().reader_ranks;
     if (static_cast<std::size_t>(local_size) != own_side.size() ||
-        own_side.index_of(world_rank) != local_rank) {
+        own_side.index_of(this_rank) != local_rank) {
       CopyErrorMessage(
-          "bruss_lowfive_attach(): physics_comm_f's own size/rank does not "
-          "match this rank's own side of the graph's RankSet; passed the "
-          "wrong communicator",
+          "bruss_lowfive_attach(): local_comm_f's own size/rank does not "
+          "match this rank's own side of the graph's RankSet -- passed a "
+          "stale or mismatched handle",
           errbuf, errbuf_len);
       return 1;
     }
     MPI_Comm intercomm = MPI_COMM_NULL;
-    MPI_Intercomm_create(local, plan.local_leader, MPI_COMM_WORLD, plan.remote_leader, plan.tag,
+    MPI_Intercomm_create(local, plan.local_leader, bridge, plan.remote_leader, plan.tag,
                          &intercomm);
     int is_inter = 0;
     MPI_Comm_test_inter(intercomm, &is_inter);
@@ -571,6 +770,11 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
           errbuf, errbuf_len);
       return 1;
     }
+    // D14 Stage B, owner's own ruling (decision 2): "free every
+    // communicator you create" -- stashed here for bruss_lowfive_
+    // finalize() to free, AFTER H5close() and BEFORE MPI_Finalize (that
+    // function's own doc comment has the full account of the order).
+    s.intercomm = intercomm;
     LowFive::DistMetadataVOL& vol = LowFive::DistMetadataVOL::create_DistMetadataVOL(local, intercomm);
     // ROUND 2 ("role-ordered serve"), the measured fix: `serve_on_close`
     // is a PUBLIC bool member, default true (lowfive/vol-dist-
@@ -672,7 +876,7 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
     }
     s.own_exported_files = own_files.value();
     // ROUND 5 (diagnostic trace track), item 1 of the brief: one line
-    // with everything the lead asked for -- world rank, component,
+    // with everything the lead asked for -- bridge rank, component,
     // role, distributed flag, the registered (file, dataset_pattern,
     // intercomm_index) list, the (file, dataset) memory patterns, and
     // the serve_on_close value actually set. `intercomms.size()`/
@@ -682,13 +886,20 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
     // from the installed headers) -- included for that reason. ROUND 6,
     // item 6 of the brief: `keep=` added alongside the already-printed
     // `serve_on_close=`, so the next host run's own attach-time line
-    // shows the full pair this round's own fix applies together.
+    // shows the full pair this round's own fix applies together. D14
+    // Stage B: `bridge_rank=` replaces `world_rank=` (the field now
+    // names this rank's own position in the BRIDGE, not necessarily
+    // MPI_COMM_WORLD -- see this function's own `this_rank` comment
+    // above); a NEW `intercomm_formed=1` confirms MPI_Intercomm_create()
+    // itself completed before anything else in this branch could run
+    // (task F's own request: the first MPI-level fact a host run should
+    // separate from everything downstream of it).
     if (TraceEnabledCached()) {
       std::fprintf(stderr,
-                   "TRACE(bruss_lowfive_attach): world_rank=%d component=%s role=%s "
-                   "distributed=1 registrations=%s memory_patterns=%s serve_on_close=%d keep=%d "
-                   "intercomms.size=%zu files.size=%zu\n",
-                   world_rank, this_name.c_str(),
+                   "TRACE(bruss_lowfive_attach): bridge_rank=%d component=%s role=%s "
+                   "distributed=1 intercomm_formed=1 registrations=%s memory_patterns=%s "
+                   "serve_on_close=%d keep=%d intercomms.size=%zu files.size=%zu\n",
+                   this_rank, this_name.c_str(),
                    s.serve_state.role == fuse_examples::lowfive_attach::ServeRole::kFirstServer
                        ? "first-server"
                        : "first-reader",
@@ -750,9 +961,9 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
     // would mean anything for.
     if (TraceEnabledCached()) {
       std::fprintf(stderr,
-                   "TRACE(bruss_lowfive_attach): world_rank=%d distributed=0 "
+                   "TRACE(bruss_lowfive_attach): bridge_rank=%d distributed=0 "
                    "memory_patterns=%s files.size=%zu\n",
-                   world_rank,
+                   this_rank,
                    fuse_examples::lowfive_attach::FormatMemoryPatternsForTrace(applied_memory_patterns)
                        .c_str(),
                    vol.files.size());
@@ -1066,7 +1277,21 @@ int bruss_lowfive_finalize(char* errbuf, long long errbuf_len) {
   // (u_main.c/v_main.f90) calls it once at the very end of main()
   // regardless of --transport, as a hygiene check, not a per-delivery
   // operation gated on an attach having already happened.
-  if (!s.attached || !s.distributed) return 0;
+  if (!s.attached || !s.distributed) {
+#if FUSE_EXAMPLES_LOWFIVE_ATTACH_HAVE_DIST
+    // D14 Stage B, owner's own ruling (decision 2): free whatever THIS
+    // rank itself created even on this early-return path -- a rank that
+    // joined the split (bruss_lowfive_join_local_split()) but never
+    // reached a successful bruss_lowfive_attach() (the only way
+    // `s.attached` is false with `local_comm` non-null: u_main.c/
+    // v_main.f90 abort the process immediately on any attach failure,
+    // so this is a belt-and-suspenders case in practice, not a reachable
+    // steady state) must not leak the communicator it already formed.
+    if (s.local_comm != MPI_COMM_NULL) MPI_Comm_free(&s.local_comm);
+    if (s.intercomm != MPI_COMM_NULL) MPI_Comm_free(&s.intercomm);
+#endif
+    return 0;
+  }
 #if FUSE_EXAMPLES_LOWFIVE_ATTACH_HAVE_DIST
   auto action = fuse_examples::lowfive_attach::serve_state_step(
       &s.serve_state, fuse_examples::lowfive_attach::ServeEvent::kFinalize);
@@ -1099,6 +1324,19 @@ int bruss_lowfive_finalize(char* errbuf, long long errbuf_len) {
     }
     H5close();
   }
+  // D14 Stage B, owner's own ruling (decision 2): "free every
+  // communicator you create, on every rank, in the order that cannot
+  // hang" -- AFTER H5close() (the VOL class is torn down; neither
+  // communicator needs to stay alive for that call) and BEFORE the
+  // caller's own MPI_Finalize (read, not assumed: both u_main.c's and
+  // v_main.f90's own call sites call this function strictly before
+  // MPI_Finalize(), the same ordering round 9's own H5close() fix
+  // already relies on). Intercomm first, local second -- the reverse of
+  // creation order, the usual stack discipline, though MPI itself places
+  // no ordering requirement between freeing two otherwise-unrelated
+  // communicators.
+  if (s.intercomm != MPI_COMM_NULL) MPI_Comm_free(&s.intercomm);
+  if (s.local_comm != MPI_COMM_NULL) MPI_Comm_free(&s.local_comm);
   return 0;
 #else
   (void)errbuf;
@@ -1160,7 +1398,23 @@ void CopyErrorMessageNoLowFive(char* errbuf, long long errbuf_len) {
 
 extern "C" {
 
-int bruss_lowfive_attach(const char*, long long, long long* fapl_id_out, char* errbuf,
+// D14 Stage B: UNLIKE every other stub in this branch, this one
+// SUCCEEDS -- lowfive_attach.h's own doc comment on
+// bruss_lowfive_join_local_split() states the contract plainly: without
+// -DFUSE_ENABLE_LOWFIVE=ON, no graph this build could ever load carries
+// an hdf5_path field, so every caller (physics rank or coupler/
+// placeholder alike) reaches the IDENTICAL "nothing to join" answer the
+// real implementation already gives an ordinary, non-LowFive graph, with
+// no MPI call either way -- never an error, and never a reason for
+// brusselator_coupler_main to behave differently in this configuration
+// than it already does.
+int bruss_lowfive_join_local_split(const char*, long long, long long* local_comm_f_out,
+                                   char*, long long) {
+  if (local_comm_f_out) *local_comm_f_out = 0;
+  return 0;
+}
+
+int bruss_lowfive_attach(const char*, long long, long long, long long* fapl_id_out, char* errbuf,
                          long long errbuf_len) {
   if (fapl_id_out) *fapl_id_out = -1;
   CopyErrorMessageNoLowFive(errbuf, errbuf_len);
