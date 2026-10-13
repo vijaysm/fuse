@@ -239,3 +239,33 @@ new = """    case ServeEvent::kExportWrittenAndClosed: {
       }"""
 target = "fuse_verification_brusselator_lowfive_attach_test"
 test = "verification.brusselator_lowfive_attach"
+
+# Round 9 (task 1: the coupler exit crash -- a SIGABRT at process exit,
+# after MPI_Finalize, from HDF5's own atexit teardown calling into
+# LowFive's VOLBase::_term(), which logs through a spdlog registry
+# already destroyed by static-destruction order; lowfive_attach_
+# decision.hpp's own "ROUND 9, task 1" comment has the full trace, root
+# cause, and ranked-fix reasoning). One mutation row for the new pure
+# decision function the coupler's own fix (unsetenv the env-route VOL
+# variables) and U's/V's own fix (an explicit H5close() in bruss_
+# lowfive_finalize()) are BOTH driven from.
+
+[[mutation]]
+id = "decide-exit-hygiene-plan-roles-swapped"
+area = "examples"
+describes = "decide_exit_hygiene_plan() swaps which role gets which fix -- a non-attaching coordinator (the coupler) would get the explicit H5close() instead of having the env-route VOL variables unregistered, missing the actual hazard (an HDF5 call it never deliberately makes), while an attaching participant (U or V) would unregister the env-route variables instead of calling H5close() in bruss_lowfive_finalize(), leaving the SAME exit-time crash this round's own fix exists to prevent"
+file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
+old = """  if (role == LowFiveProcessRole::kNonAttachingCoordinator) {
+    return ExitHygienePlan{/*unregister_env_route_vol=*/true,
+                           /*explicit_h5close_before_mpi_finalize=*/false};
+  }
+  return ExitHygienePlan{/*unregister_env_route_vol=*/false,
+                         /*explicit_h5close_before_mpi_finalize=*/true};"""
+new = """  if (role == LowFiveProcessRole::kNonAttachingCoordinator) {
+    return ExitHygienePlan{/*unregister_env_route_vol=*/false,
+                           /*explicit_h5close_before_mpi_finalize=*/true};
+  }
+  return ExitHygienePlan{/*unregister_env_route_vol=*/true,
+                         /*explicit_h5close_before_mpi_finalize=*/false};"""
+target = "fuse_verification_brusselator_lowfive_attach_test"
+test = "verification.brusselator_lowfive_attach"

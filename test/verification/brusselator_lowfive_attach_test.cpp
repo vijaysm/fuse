@@ -41,13 +41,17 @@ using fuse_examples::lowfive_attach::SplitDatasetGroupPath;
 using fuse_examples::lowfive_attach::ServeNowOrDefer;
 using fuse_examples::lowfive_attach::decide_serve_action;
 using fuse_examples::lowfive_attach::ExpectedEventKind;
-using fuse_examples::lowfive_attach::ExpectedOrderForPeriod;
+using fuse_examples::lowfive_attach::ExpectedOrderForExchange;
 using fuse_examples::lowfive_attach::OrderTracker;
 using fuse_examples::lowfive_attach::CheckAndAdvanceOrder;
 using fuse_examples::lowfive_attach::ChannelOrderSignature;
 using fuse_examples::lowfive_attach::ComputeGraphOrderSignature;
 using fuse_examples::lowfive_attach::ValidatedGraphOrderSignatures;
 using fuse_examples::lowfive_attach::CheckGraphOrderValidated;
+using fuse_examples::lowfive_attach::LowFiveProcessRole;
+using fuse_examples::lowfive_attach::EnvRouteVolVariableNames;
+using fuse_examples::lowfive_attach::ExitHygienePlan;
+using fuse_examples::lowfive_attach::decide_exit_hygiene_plan;
 using fuse_examples::lowfive_attach_model::WouldReuseStaleFileOnRecreate;
 using fuse_examples::lowfive_attach_model::EventKind;
 using fuse_examples::lowfive_attach_model::Round8Order;
@@ -266,10 +270,10 @@ TEST(ServeStateStep, FirstReaderDefersOnlyTheColdStartThenServesImmediatelyEvery
   ASSERT_TRUE(cold_closed.ok()) << cold_closed.error().code;
   EXPECT_EQ(cold_closed.value(), ServeAction::kFlushDeferred);  // the cold start's own flush
 
-  for (int period = 0; period < 3; ++period) {
+  for (int exchange = 0; exchange < 3; ++exchange) {
     const auto w = serve_state_step(&st, ServeEvent::kExportWrittenAndClosed);
     ASSERT_TRUE(w.ok()) << w.error().code;
-    EXPECT_EQ(w.value(), ServeAction::kServeNow) << "period " << period;  // no longer deferred
+    EXPECT_EQ(w.value(), ServeAction::kServeNow) << "exchange " << exchange;  // no longer deferred
 
     const auto about = serve_state_step(&st, ServeEvent::kImportAboutToOpen);
     ASSERT_TRUE(about.ok()) << about.error().code;
@@ -277,7 +281,7 @@ TEST(ServeStateStep, FirstReaderDefersOnlyTheColdStartThenServesImmediatelyEvery
 
     const auto closed = serve_state_step(&st, ServeEvent::kImportClosed);
     ASSERT_TRUE(closed.ok()) << closed.error().code;
-    EXPECT_EQ(closed.value(), ServeAction::kNoopAfterImport) << "period " << period;  // nothing to flush
+    EXPECT_EQ(closed.value(), ServeAction::kNoopAfterImport) << "exchange " << exchange;  // nothing to flush
   }
   const auto fin = serve_state_step(&st, ServeEvent::kFinalize);
   ASSERT_TRUE(fin.ok()) << fin.error().code;
@@ -402,9 +406,9 @@ TEST(ModelCheck, ShippedProtocolCompletesFor1Iteration) {
 
 // REPLACES ShippedProtocolCompletesFor2Iterations/For60Iterations/
 // RegardlessOfWhichPositionIsFirstServer (RunSimulation()'s own
-// N-period BuildScript() put BOTH roles through write-then-read every
-// period -- a shape round 8's own task 1 found no real graph can ever
-// produce for N>=2 periods: the two components' own steady-state
+// N-exchange BuildScript() put BOTH roles through write-then-read every
+// exchange -- a shape round 8's own task 1 found no real graph can ever
+// produce for N>=2 exchanges: the two components' own steady-state
 // orders are COMPLEMENTARY (lowfive_attach_decision.hpp's own "ROUND
 // 8" comment), never identical. That shape was round 2/3's own
 // FALSIFIED assumption applied to the MODEL too, not only to
@@ -418,7 +422,7 @@ TEST(ModelCheck, ShippedProtocolCompletesFor1Iteration) {
 // with the MEASURED order (lowfive_attach_model::Round8Order::
 // kMeasured) -- the one shape task 1 confirms the real graph produces --
 // for the SAME N values and the SAME position-independence check.
-TEST(ModelCheck, Round8MeasuredOrderCompletesFor2Periods) {
+TEST(ModelCheck, Round8MeasuredOrderCompletesFor2Exchanges) {
   using namespace fuse_examples::lowfive_attach_model;
   const auto r = RunSimulationRound8(Round8Order::kMeasured, 2,
                                      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
@@ -427,10 +431,13 @@ TEST(ModelCheck, Round8MeasuredOrderCompletesFor2Periods) {
 }
 
 // 60: this row's own kMaxIterations (brusselator_graph_tool.cpp) --
-// reused here as a period count, not a claim that each one is a Jacobi
-// sweep (lowfive_attach_decision.hpp's own "ROUND 8" comment declares
-// that question unsettled).
-TEST(ModelCheck, Round8MeasuredOrderCompletesFor60Periods) {
+// reused here as an exchange count. Round 9 (task 3) closes the
+// question round 8 left unsettled: the host measured ~61 exchanges
+// per coupling window (122 U writes / 2 windows), i.e. once per Jacobi
+// sweep (not once per window) -- lowfive_attach_decision.hpp's own
+// "ROUND 9" comment has the full account (measured, not re-derived
+// here).
+TEST(ModelCheck, Round8MeasuredOrderCompletesFor60Exchanges) {
   using namespace fuse_examples::lowfive_attach_model;
   const auto r = RunSimulationRound8(Round8Order::kMeasured, 60,
                                      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
@@ -660,7 +667,7 @@ TEST(ModelCheck, ShippedConfigurationCompletesFor1Iteration) {
 // BuildScript() shape is unrealistic for N>=2); still driven from
 // decide_vol_settings() (round 6's own standing instruction), now via
 // RunSimulationRound8() and the measured order.
-TEST(ModelCheck, Round8MeasuredOrderWithDecideVolSettingsCompletesFor2And60Periods) {
+TEST(ModelCheck, Round8MeasuredOrderWithDecideVolSettingsCompletesFor2And60Exchanges) {
   using namespace fuse_examples::lowfive_attach_model;
   const auto settings = fuse_examples::lowfive_attach::decide_vol_settings(/*distributed=*/true);
   ProcessPolicy server{PolicyKind::kShipped, ServeRole::kFirstServer, !settings.keep};
@@ -875,31 +882,36 @@ TEST(DecideServeAction, FirstReaderDefersOnlyBeforeAnyCompletedRead) {
 }
 
 // ---------------------------------------------------------------------
-// ROUND 8 (task 3b): ExpectedOrderForPeriod() / CheckAndAdvanceOrder() --
-// the LOCAL per-event assertion.
+// ROUND 8 (task 3b): ExpectedOrderForExchange() / CheckAndAdvanceOrder()
+// -- the LOCAL per-event assertion. Round 9 (task 2) renamed
+// ExpectedOrderForPeriod()/OrderTracker::period_index to
+// ExpectedOrderForExchange()/exchange_index -- the unit tracked is one
+// write-then-read (or read-then-write) pair, not a coupling window
+// (lowfive_attach_decision.hpp's own "ROUND 9" comment has the full
+// account); none of the test ASSERTIONS below changed, only the names.
 
-TEST(ExpectedOrderForPeriod, ColdStartIsWriteReadOnBothRoles) {
-  EXPECT_EQ(ExpectedOrderForPeriod(ServeRole::kFirstServer, 0)[0], ExpectedEventKind::kWrite);
-  EXPECT_EQ(ExpectedOrderForPeriod(ServeRole::kFirstServer, 0)[1], ExpectedEventKind::kRead);
-  EXPECT_EQ(ExpectedOrderForPeriod(ServeRole::kFirstReader, 0)[0], ExpectedEventKind::kWrite);
-  EXPECT_EQ(ExpectedOrderForPeriod(ServeRole::kFirstReader, 0)[1], ExpectedEventKind::kRead);
+TEST(ExpectedOrderForExchange, ColdStartIsWriteReadOnBothRoles) {
+  EXPECT_EQ(ExpectedOrderForExchange(ServeRole::kFirstServer, 0)[0], ExpectedEventKind::kWrite);
+  EXPECT_EQ(ExpectedOrderForExchange(ServeRole::kFirstServer, 0)[1], ExpectedEventKind::kRead);
+  EXPECT_EQ(ExpectedOrderForExchange(ServeRole::kFirstReader, 0)[0], ExpectedEventKind::kWrite);
+  EXPECT_EQ(ExpectedOrderForExchange(ServeRole::kFirstReader, 0)[1], ExpectedEventKind::kRead);
 }
 
-TEST(ExpectedOrderForPeriod, SteadyStateIsWriteReadForFirstServer) {
-  EXPECT_EQ(ExpectedOrderForPeriod(ServeRole::kFirstServer, 1)[0], ExpectedEventKind::kWrite);
-  EXPECT_EQ(ExpectedOrderForPeriod(ServeRole::kFirstServer, 1)[1], ExpectedEventKind::kRead);
-  EXPECT_EQ(ExpectedOrderForPeriod(ServeRole::kFirstServer, 60)[0], ExpectedEventKind::kWrite);
+TEST(ExpectedOrderForExchange, SteadyStateIsWriteReadForFirstServer) {
+  EXPECT_EQ(ExpectedOrderForExchange(ServeRole::kFirstServer, 1)[0], ExpectedEventKind::kWrite);
+  EXPECT_EQ(ExpectedOrderForExchange(ServeRole::kFirstServer, 1)[1], ExpectedEventKind::kRead);
+  EXPECT_EQ(ExpectedOrderForExchange(ServeRole::kFirstServer, 60)[0], ExpectedEventKind::kWrite);
 }
 
-TEST(ExpectedOrderForPeriod, SteadyStateIsReadWriteForFirstReader) {
-  EXPECT_EQ(ExpectedOrderForPeriod(ServeRole::kFirstReader, 1)[0], ExpectedEventKind::kRead);
-  EXPECT_EQ(ExpectedOrderForPeriod(ServeRole::kFirstReader, 1)[1], ExpectedEventKind::kWrite);
-  EXPECT_EQ(ExpectedOrderForPeriod(ServeRole::kFirstReader, 60)[0], ExpectedEventKind::kRead);
+TEST(ExpectedOrderForExchange, SteadyStateIsReadWriteForFirstReader) {
+  EXPECT_EQ(ExpectedOrderForExchange(ServeRole::kFirstReader, 1)[0], ExpectedEventKind::kRead);
+  EXPECT_EQ(ExpectedOrderForExchange(ServeRole::kFirstReader, 1)[1], ExpectedEventKind::kWrite);
+  EXPECT_EQ(ExpectedOrderForExchange(ServeRole::kFirstReader, 60)[0], ExpectedEventKind::kRead);
 }
 
-TEST(CheckAndAdvanceOrder, FirstServerMeasuredSequenceAcceptedAcrossPeriods) {
+TEST(CheckAndAdvanceOrder, FirstServerMeasuredSequenceAcceptedAcrossExchanges) {
   OrderTracker t;
-  for (int period = 0; period < 3; ++period) {
+  for (int exchange = 0; exchange < 3; ++exchange) {
     auto w = CheckAndAdvanceOrder(ServeRole::kFirstServer, t, ServeEvent::kExportWrittenAndClosed);
     ASSERT_TRUE(w.ok()) << w.error().code;
     t = w.value();
@@ -909,23 +921,23 @@ TEST(CheckAndAdvanceOrder, FirstServerMeasuredSequenceAcceptedAcrossPeriods) {
     auto closed = CheckAndAdvanceOrder(ServeRole::kFirstServer, t, ServeEvent::kImportClosed);
     ASSERT_TRUE(closed.ok()) << closed.error().code;
     t = closed.value();
-    EXPECT_EQ(t.period_index, period + 1);
+    EXPECT_EQ(t.exchange_index, exchange + 1);
     EXPECT_EQ(t.slot, 0);
   }
 }
 
-TEST(CheckAndAdvanceOrder, FirstReaderColdStartThenSteadyAcceptedAcrossPeriods) {
-  OrderTracker t;  // period 0: write, read (cold start -- same as first-server)
+TEST(CheckAndAdvanceOrder, FirstReaderColdStartThenSteadyAcceptedAcrossExchanges) {
+  OrderTracker t;  // exchange 0: write, read (cold start -- same as first-server)
   auto w0 = CheckAndAdvanceOrder(ServeRole::kFirstReader, t, ServeEvent::kExportWrittenAndClosed);
   ASSERT_TRUE(w0.ok()) << w0.error().code;
   t = w0.value();
   auto r0 = CheckAndAdvanceOrder(ServeRole::kFirstReader, t, ServeEvent::kImportClosed);
   ASSERT_TRUE(r0.ok()) << r0.error().code;
   t = r0.value();
-  EXPECT_EQ(t.period_index, 1);
+  EXPECT_EQ(t.exchange_index, 1);
 
-  // period 1+: read, write (steady state).
-  for (int period = 1; period < 4; ++period) {
+  // exchange 1+: read, write (steady state).
+  for (int exchange = 1; exchange < 4; ++exchange) {
     auto r = CheckAndAdvanceOrder(ServeRole::kFirstReader, t, ServeEvent::kImportAboutToOpen);
     ASSERT_TRUE(r.ok()) << r.error().code;
     t = r.value();
@@ -935,12 +947,12 @@ TEST(CheckAndAdvanceOrder, FirstReaderColdStartThenSteadyAcceptedAcrossPeriods) 
     auto w = CheckAndAdvanceOrder(ServeRole::kFirstReader, t, ServeEvent::kExportWrittenAndClosed);
     ASSERT_TRUE(w.ok()) << w.error().code;
     t = w.value();
-    EXPECT_EQ(t.period_index, period + 1);
+    EXPECT_EQ(t.exchange_index, exchange + 1);
   }
 }
 
 TEST(CheckAndAdvanceOrder, FirstReaderWritingTwiceInSteadyStateIsRefused) {
-  // period 0 (write,read) done; period 1 steady state expects read
+  // exchange 0 (write,read) done; exchange 1 steady state expects read
   // first -- writing again here is the exact regression this check
   // exists to catch (the measured host hang's own cause, one layer up
   // from decide_serve_action() itself).
@@ -958,7 +970,7 @@ TEST(CheckAndAdvanceOrder, FirstReaderWritingTwiceInSteadyStateIsRefused) {
 }
 
 TEST(CheckAndAdvanceOrder, FirstServerReadingBeforeWritingInSteadyStateIsRefused) {
-  OrderTracker t{/*period_index=*/1, /*slot=*/0};  // steady state, expects write first
+  OrderTracker t{/*exchange_index=*/1, /*slot=*/0};  // steady state, expects write first
   const auto bad = CheckAndAdvanceOrder(ServeRole::kFirstServer, t, ServeEvent::kImportAboutToOpen);
   ASSERT_FALSE(bad.ok());
   EXPECT_EQ(bad.error().code, "E-LOWFIVE-ATTACH-ORDER-DEVIATION");
@@ -968,7 +980,7 @@ TEST(CheckAndAdvanceOrder, FinalizeNeverChangesTheTracker) {
   OrderTracker t{2, 1};
   const auto r = CheckAndAdvanceOrder(ServeRole::kFirstServer, t, ServeEvent::kFinalize);
   ASSERT_TRUE(r.ok());
-  EXPECT_EQ(r.value().period_index, 2);
+  EXPECT_EQ(r.value().exchange_index, 2);
   EXPECT_EQ(r.value().slot, 1);
 }
 
@@ -1041,9 +1053,17 @@ TEST(CheckGraphOrderValidated, MultiRankComponentIsRefused) {
 // (i)-(iv), each with its own assertion, plus the soundness link
 // (static_check_accepts(order) implies model_completes(order)).
 
-TEST(ModelCheck, Round8MeasuredOrderCompletesFor1And2And60Periods) {
-  // Scenario (i).
-  for (int n : {1, 2, 60}) {
+TEST(ModelCheck, Round8MeasuredOrderCompletesFor1And2And60And122Exchanges) {
+  // Scenario (i). 122 is the host's own MEASURED exchange count for a
+  // `--periods 2` run (round 9, task 3): 122 U writes total, i.e. ~61
+  // exchanges per coupling window across 2 windows -- not a derived
+  // figure (the Collectives track owns the Runner's own sweep-count
+  // machinery this would need to derive from first principles;
+  // lowfive_attach_decision.hpp's own "ROUND 9" comment records it as
+  // measured). 60 remains ALSO covered below as the pre-round-9 stress
+  // value (this row's own kMaxIterations, reused as an exchange count,
+  // not a claim it equals a Jacobi sweep count).
+  for (int n : {1, 2, 60, 122}) {
     const auto r = RunSimulationRound8(Round8Order::kMeasured, n,
                                        ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
                                        ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader});
@@ -1056,9 +1076,10 @@ TEST(ModelCheck, Round8MeasuredOrderUnderRegressedPolicyReproducesTheMeasuredHan
   // measured 120 s timeout: the SAME order the real graph produces,
   // but round 2/3's own falsified "always defer" policy instead of
   // decide_serve_action(). Must get stuck, and the stuck position
-  // must be U in read(v#1) (first-server's own kOpenClose at period 1)
-  // with the first-reader parked at its own period-1 sync -- exactly
-  // what the lead's own brief names as the measured cycle.
+  // must be U in read(v#1) (first-server's own kOpenClose at
+  // exchange 1) with the first-reader parked at its own exchange-1
+  // sync -- exactly what the lead's own brief names as the measured
+  // cycle.
   const auto r = RunSimulationRound8(
       Round8Order::kMeasured, 2,
       ProcessPolicy{PolicyKind::kRegressedAlwaysDeferFirstReader, ServeRole::kFirstServer},
@@ -1073,7 +1094,7 @@ TEST(ModelCheck, Round8BothSidesWriteReadSteadyGetsStuck) {
   // order mechanism can produce, task 1's own finding) -- the shipped
   // policy, applied to this hypothetical shape, reports the
   // mutual-serve stuck state: both block on their OWN write's serve
-  // at the SAME period, neither has reached the read that would
+  // at the SAME exchange, neither has reached the read that would
   // release the other.
   const auto r = RunSimulationRound8(Round8Order::kBothWriteReadSteady, 3,
                                      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
@@ -1121,12 +1142,12 @@ TEST(ModelCheck, Round8MeasuredOrderIsTheOnlyAcceptedCatalogueEntry) {
 // sequences are DATA now (task 4's own "a list of events"), pinned
 // directly.
 
-TEST(BuildEventSequence, FirstServerIsWriteReadEveryPeriodIncludingColdStart) {
+TEST(BuildEventSequence, FirstServerIsWriteReadEveryExchangeIncludingColdStart) {
   const auto seq = BuildEventSequence(Round8Order::kMeasured, ServeRole::kFirstServer, 3);
   const std::vector<EventKind> expected{
-      EventKind::kWrite, EventKind::kRead,                                // period 0 (cold start)
-      EventKind::kWrite, EventKind::kRead, EventKind::kSync,              // period 1
-      EventKind::kWrite, EventKind::kRead, EventKind::kSync};             // period 2
+      EventKind::kWrite, EventKind::kRead,                                // exchange 0 (cold start)
+      EventKind::kWrite, EventKind::kRead, EventKind::kSync,              // exchange 1
+      EventKind::kWrite, EventKind::kRead, EventKind::kSync};             // exchange 2
   EXPECT_EQ(seq.size(), expected.size());
   for (std::size_t i = 0; i < expected.size() && i < seq.size(); ++i) {
     EXPECT_EQ(seq[i], expected[i]) << "index " << i;
@@ -1136,15 +1157,43 @@ TEST(BuildEventSequence, FirstServerIsWriteReadEveryPeriodIncludingColdStart) {
 TEST(BuildEventSequence, FirstReaderIsWriteReadAtColdStartThenReadWriteSteady) {
   const auto seq = BuildEventSequence(Round8Order::kMeasured, ServeRole::kFirstReader, 3);
   const std::vector<EventKind> expected{
-      EventKind::kWrite, EventKind::kRead,                                // period 0 (cold start)
-      EventKind::kRead, EventKind::kWrite, EventKind::kSync,              // period 1 (steady)
-      EventKind::kRead, EventKind::kWrite, EventKind::kSync};             // period 2
+      EventKind::kWrite, EventKind::kRead,                                // exchange 0 (cold start)
+      EventKind::kRead, EventKind::kWrite, EventKind::kSync,              // exchange 1 (steady)
+      EventKind::kRead, EventKind::kWrite, EventKind::kSync};             // exchange 2
   EXPECT_EQ(seq.size(), expected.size());
   for (std::size_t i = 0; i < expected.size() && i < seq.size(); ++i) {
     EXPECT_EQ(seq[i], expected[i]) << "index " << i;
   }
 }
 
-TEST(BuildEventSequence, ZeroPeriodsIsEmpty) {
+TEST(BuildEventSequence, ZeroExchangesIsEmpty) {
   EXPECT_TRUE(BuildEventSequence(Round8Order::kMeasured, ServeRole::kFirstServer, 0).empty());
+}
+
+// ---------------------------------------------------------------------
+// ROUND 9 (task 1): the coupler exit crash -- which teardown steps run
+// for which role, as a PURE function (decide_exit_hygiene_plan()), and
+// the literal env-route variable list (EnvRouteVolVariableNames())
+// coupler_main.c's own unsetenv() calls mirror by hand (this header's
+// own "ROUND 9, task 1" comment has the full crash trace, root cause,
+// and ranked-fix reasoning).
+
+TEST(EnvRouteVolVariableNames, ListsExactlyTheThreeEnvRouteVariables) {
+  const auto names = EnvRouteVolVariableNames();
+  ASSERT_EQ(names.size(), 3u);
+  EXPECT_EQ(names[0], "HDF5_VOL_CONNECTOR");
+  EXPECT_EQ(names[1], "HDF5_PLUGIN_PATH");
+  EXPECT_EQ(names[2], "FUSE_LOWFIVE_BINDINGS");
+}
+
+TEST(DecideExitHygienePlan, NonAttachingCoordinatorUnregistersAndSkipsExplicitH5close) {
+  const auto plan = decide_exit_hygiene_plan(LowFiveProcessRole::kNonAttachingCoordinator);
+  EXPECT_TRUE(plan.unregister_env_route_vol);
+  EXPECT_FALSE(plan.explicit_h5close_before_mpi_finalize);
+}
+
+TEST(DecideExitHygienePlan, AttachingParticipantCallsExplicitH5closeAndDoesNotUnregister) {
+  const auto plan = decide_exit_hygiene_plan(LowFiveProcessRole::kAttachingParticipant);
+  EXPECT_FALSE(plan.unregister_env_route_vol);
+  EXPECT_TRUE(plan.explicit_h5close_before_mpi_finalize);
 }
