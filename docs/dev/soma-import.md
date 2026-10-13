@@ -172,20 +172,20 @@ the evidence); every other status gets its own row with file-specific evidence.
 
 | File | Evidence |
 |---|---|
-| `docs/BUILDING.md` | Design/plan document describing the retired soma:: library; moved verbatim into docs/history/soma/ with a provenance header (step 3), not ported as code. |
-| `docs/HANDOFF.md` | Design/plan document describing the retired soma:: library; moved verbatim into docs/history/soma/ with a provenance header (step 3), not ported as code. |
+| `docs/BUILDING.md` | Design/plan document describing the retired soma:: library; moved into docs/history/soma/ with a provenance header and markup-only edits listed in docs/history/soma/index.md (step 3), not ported as code. |
+| `docs/HANDOFF.md` | Design/plan document describing the retired soma:: library; moved into docs/history/soma/ with a provenance header and markup-only edits listed in docs/history/soma/index.md (step 3), not ported as code. |
 | `docs/plans/2026-09-02-soma-implementation.md` | Design/plan document describing the retired soma:: library; moved verbatim into docs/history/soma/ with a provenance header (step 3), not ported as code. |
 | `docs/plans/soma-phase-0.md` | Design/plan document describing the retired soma:: library; moved verbatim into docs/history/soma/ with a provenance header (step 3), not ported as code. |
 | `docs/plans/soma-phase-1.md` | Design/plan document describing the retired soma:: library; moved verbatim into docs/history/soma/ with a provenance header (step 3), not ported as code. |
 | `docs/plans/soma-phase-2.md` | Design/plan document describing the retired soma:: library; moved verbatim into docs/history/soma/ with a provenance header (step 3), not ported as code. |
 | `docs/plans/soma-phase-3.md` | Design/plan document describing the retired soma:: library; moved verbatim into docs/history/soma/ with a provenance header (step 3), not ported as code. |
 | `docs/plans/soma-phase-4.md` | Design/plan document describing the retired soma:: library; moved verbatim into docs/history/soma/ with a provenance header (step 3), not ported as code. |
-| `docs/plans/soma-phase-5.md` | Design/plan document describing the retired soma:: library; moved verbatim into docs/history/soma/ with a provenance header (step 3), not ported as code. |
+| `docs/plans/soma-phase-5.md` | Design/plan document describing the retired soma:: library; moved into docs/history/soma/ with a provenance header and markup-only edits listed in docs/history/soma/index.md (step 3), not ported as code. |
 | `docs/plans/soma-phase-6.md` | Design/plan document describing the retired soma:: library; moved verbatim into docs/history/soma/ with a provenance header (step 3), not ported as code. |
 | `docs/plans/soma-phase-7.md` | Design/plan document describing the retired soma:: library; moved verbatim into docs/history/soma/ with a provenance header (step 3), not ported as code. |
 | `docs/plans/soma-phase-8.md` | Design/plan document describing the retired soma:: library; moved verbatim into docs/history/soma/ with a provenance header (step 3), not ported as code. |
 | `docs/specs/2026-09-02-soma-design.md` | Design/plan document describing the retired soma:: library; moved verbatim into docs/history/soma/ with a provenance header (step 3), not ported as code. |
-| `docs/specs/2026-09-11-comm-graph-design.md` | Design/plan document describing the retired soma:: library; moved verbatim into docs/history/soma/ with a provenance header (step 3), not ported as code. |
+| `docs/specs/2026-09-11-comm-graph-design.md` | Design/plan document describing the retired soma:: library; moved into docs/history/soma/ with a provenance header and markup-only edits listed in docs/history/soma/index.md (step 3), not ported as code. |
 
 ### `infrastructure-superseded` (7 files)
 

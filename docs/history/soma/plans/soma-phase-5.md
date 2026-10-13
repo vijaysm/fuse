@@ -838,7 +838,7 @@ Implementation contract, each point pinned by a test:
 ```cmake
 if(SOMA_ENABLE_MOAB)
   target_sources(soma_core PRIVATE mesh/moab_backend.cpp remap/intx_weights.cpp)
-  ...
+  # ...
 endif()
 ```
 
