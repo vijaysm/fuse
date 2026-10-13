@@ -113,6 +113,21 @@ struct FirstFrozenStructSize<fuse_field_view> {
       offsetof(fuse_field_view, data) + sizeof(void*);
 };
 
+template <>
+struct FirstFrozenStructSize<fuse_step_request> {
+  // Review 2026-10-11 AB-2: this specialization was missing, so an old
+  // caller's struct_size=16 (the layout shipped before t_begin/t_end/step/
+  // iteration/requires_checkpoint/requires_restore/reserved were appended
+  // in 612b153 for the provider direction, per c-abi.md's growth table
+  // "16 -> 72") was refused FUSE_ERR_VERSION by check_struct_size's old
+  // `>= sizeof(current)` bound, even though begin_step()/end_step() never
+  // read any of the grown members (entries.def's comments on each mark
+  // them provider-direction-only). `component` is the last pre-growth
+  // member.
+  static constexpr std::size_t value =
+      offsetof(fuse_step_request, component) + sizeof(const char*);
+};
+
 /// abi-design.md rule 2. A `struct_size` smaller than `T`'s first frozen
 /// layout, or larger than FUSE_ABI_MAX_STRUCT_SIZE, is FUSE_ERR_VERSION.
 /// Before Defect 3 this bound was always `sizeof(T)` (current); now that
