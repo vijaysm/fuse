@@ -269,3 +269,78 @@ TEST(NativeMigrationMpi, VertexOwnerIsTheMinimumRankAmongHoldersAfterMigration) 
   }
   EXPECT_GT(shared_vertices_checked, 0u);
 }
+
+// ---------------------------------------------------------------------------
+// NM-6: `unpack_migrated_mesh`'s own rebuild is per-rank data (whatever
+// THIS rank alone received); before this fix it returned unreconciled,
+// ahead of `resolve_vertex_ownership`'s own Allgather/Allgatherv. Ranks 0
+// and 1 each migrate one perfectly valid, dimension-3 Tet to rank 2 --
+// valid by EACH SENDER's own `dim_` (every sender's own `b.build()`
+// succeeds). Rank 2's own (pre-migration) mesh, though, declares `dim 2`:
+// the dimension `unpack_migrated_mesh` rebuilds against is the RECEIVING
+// rank's own `mesh.dimension()` (native_migration.cpp), not the sender's
+// -- a mismatch invisible to any SENDER's own validation, and reachable
+// only once the received Tets land in a builder declared for a different
+// dimension. Pre-fix: rank 2 returns its own E-MESH-DIM immediately while
+// ranks 0, 1, and any rank beyond 2 (this row runs at RANKS 2 3 4 5) block
+// forever in resolve_vertex_ownership's collective, so the WHOLE ctest row
+// times out rather than failing cleanly. Post-fix: every rank returns
+// within the timeout, rank 2 with its own E-MESH-DIM and every other rank
+// with E-MESH-MIGRATE-PEER-REFUSED.
+// ---------------------------------------------------------------------------
+TEST(NativeMigrationMpi, ADimensionMismatchVisibleOnlyOnTheDestinationRefusesEverywhere) {
+  int rank = 0, size = 1;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  FUSE_REQUIRE_AT_LEAST_RANKS(3);
+
+  std::vector<int> dest;
+  std::unique_ptr<NativeMeshView> view;
+  if (rank == 0) {
+    NativeMeshBuilder b(3);
+    const int v0 = b.add_vertex(0, 0.0, 0.0, 0.0, 0, true);
+    const int v1 = b.add_vertex(1, 1.0, 0.0, 0.0, 0, true);
+    const int v2 = b.add_vertex(2, 0.0, 1.0, 0.0, 0, true);
+    const int v3 = b.add_vertex(3, 0.0, 0.0, 1.0, 0, true);
+    b.add_cell(CellType::Tet, {v0, v1, v2, v3}, 100, 0, true);
+    auto arrays = b.build();
+    ASSERT_TRUE(arrays.ok()) << "rank " << rank << ": " << arrays.error().message;
+    auto view_r = NativeMeshView::create_from_host(arrays.value(), rank);
+    ASSERT_TRUE(view_r.ok()) << "rank " << rank << ": " << view_r.error().message;
+    view = std::move(view_r.value());
+    dest = {2};
+  } else if (rank == 1) {
+    NativeMeshBuilder b(3);
+    const int v0 = b.add_vertex(10, 5.0, 0.0, 0.0, 1, true);
+    const int v1 = b.add_vertex(11, 6.0, 0.0, 0.0, 1, true);
+    const int v2 = b.add_vertex(12, 5.0, 1.0, 0.0, 1, true);
+    const int v3 = b.add_vertex(13, 5.0, 0.0, 1.0, 1, true);
+    b.add_cell(CellType::Tet, {v0, v1, v2, v3}, 101, 1, true);
+    auto arrays = b.build();
+    ASSERT_TRUE(arrays.ok()) << "rank " << rank << ": " << arrays.error().message;
+    auto view_r = NativeMeshView::create_from_host(arrays.value(), rank);
+    ASSERT_TRUE(view_r.ok()) << "rank " << rank << ": " << view_r.error().message;
+    view = std::move(view_r.value());
+    dest = {2};
+  } else {
+    // Rank 2 (the common destination) and any rank beyond it: no owned
+    // cells of their own -- an empty `dest`, they only RECEIVE -- but
+    // their OWN pre-migration mesh is declared dimension 2, not 3, which
+    // is the whole point: `unpack_migrated_mesh` rebuilds against THIS
+    // rank's own dimension, not either sender's.
+    NativeMeshBuilder b(2);
+    auto arrays = b.build();
+    ASSERT_TRUE(arrays.ok()) << "rank " << rank << ": " << arrays.error().message;
+    auto view_r = NativeMeshView::create_from_host(arrays.value(), rank);
+    ASSERT_TRUE(view_r.ok()) << "rank " << rank << ": " << view_r.error().message;
+    view = std::move(view_r.value());
+  }
+
+  const auto result = migrate(*view, dest, world_handle());
+  ASSERT_FALSE(result.ok()) << "rank " << rank << " unexpectedly succeeded";
+  if (rank == 2) {
+    EXPECT_EQ(result.error().code, "E-MESH-DIM") << "rank " << rank;
+  } else {
+    EXPECT_EQ(result.error().code, "E-MESH-MIGRATE-PEER-REFUSED") << "rank " << rank;
+  }
+}
