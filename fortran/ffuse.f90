@@ -183,6 +183,13 @@ module ffuse
     integer(c_int64_t) :: periods = 0_c_int64_t
   end type fuse_run_request
 
+  type, bind(C), public :: fuse_base_communicator_info
+    integer(c_int32_t) :: struct_size = 0_c_int32_t
+    integer(c_int64_t) :: communicator = 0_c_int64_t
+    integer(c_int32_t) :: formed = 0_c_int32_t
+    integer(c_int32_t) :: reserved = 0_c_int32_t
+  end type fuse_base_communicator_info
+
   type, bind(C), public :: fuse_field_spec
     integer(c_int32_t) :: struct_size = 0_c_int32_t
     type(c_ptr) :: name = c_null_ptr
@@ -333,6 +340,14 @@ module ffuse
       type(fuse_field_view), intent(inout) :: out
       integer(c_int32_t) :: status
     end function ffuse_view_field
+
+    function ffuse_base_communicator(ctx, in, out) result(status) bind(C, name="ffuse_base_communicator")
+      import :: c_int32_t, c_ptr, fuse_base_communicator_info, fuse_null
+      type(c_ptr), value :: ctx
+      type(fuse_null), intent(in) :: in
+      type(fuse_base_communicator_info), intent(inout) :: out
+      integer(c_int32_t) :: status
+    end function ffuse_base_communicator
   end interface
 
   public :: fuse_version, &
@@ -350,7 +365,8 @@ module ffuse
             fuse_begin_step, &
             fuse_end_step, &
             fuse_run, &
-            fuse_view_field
+            fuse_view_field, &
+            fuse_base_communicator
 
   interface fuse_last_error
     module procedure fuse_last_error_struct, fuse_last_error_message
@@ -629,5 +645,16 @@ contains
     out%struct_size = int(c_sizeof(out), c_int32_t)
     status = ffuse_view_field(ctx%ptr, in, out)
   end function fuse_view_field
+
+  function fuse_base_communicator(ctx, in, out) result(status)
+    type(fuse_ctx), intent(in) :: ctx
+    type(fuse_null), intent(inout) :: in
+    type(fuse_base_communicator_info), intent(inout) :: out
+    integer(c_int32_t) :: status
+
+    in%struct_size = int(c_sizeof(in), c_int32_t)
+    out%struct_size = int(c_sizeof(out), c_int32_t)
+    status = ffuse_base_communicator(ctx%ptr, in, out)
+  end function fuse_base_communicator
 
 end module ffuse
