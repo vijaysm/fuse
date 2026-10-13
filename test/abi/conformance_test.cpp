@@ -630,7 +630,7 @@ INSTANTIATE_TEST_SUITE_P(
       return info.param.test_name;
     });
 
-// The three provider-adapter refusal codes above that register_fields()
+// The five provider-adapter refusal codes above that register_fields()
 // and advance() CANNOT reach through fuse_initialize()/fuse_run() --
 // save_state()/restore_state() are only called mid-run from a checkpoint
 // this fixture never takes, no-graph and no-table are mis-set-up states
