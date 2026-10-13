@@ -38,7 +38,7 @@ template <class T>
 // t_end only -- see advance() below), not "is struct_size at least
 // this host's current sizeof(fuse_step_report)". A plugin built
 // against the pre-growth 64-byte layout (c-abi.md's growth table,
-// commit 612b153's predecessor) never had next_component/step_opened/
+// commit da33572's predecessor) never had next_component/step_opened/
 // period/delivery_pending/delivery_field to write, and this host never
 // reads any of them from a plugin's own report -- only t_begin/t_end,
 // both inside that original 64 bytes.

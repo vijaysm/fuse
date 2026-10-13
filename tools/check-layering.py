@@ -166,14 +166,6 @@ INCLUDE_FUSE = re.compile(r"^\s*#\s*include\s*[<\"]fuse/([a-z_]+)/")
 INCLUDE_ANY = re.compile(r"^\s*#\s*include\s*[<\"]([^>\"]+)[>\"]")
 
 
-def layer_of(path: Path) -> str | None:
-    parts = path.parts
-    if "fuse" not in parts:
-        return None
-    i = parts.index("fuse")
-    return parts[i + 1] if i + 1 < len(parts) else None
-
-
 def main() -> int:
     root = Path(__file__).resolve().parent.parent
     include_dir = root / "include" / "fuse"

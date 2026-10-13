@@ -163,7 +163,7 @@ static fuse_status p_advance(fuse_provider_ctx* self, const fuse_step_request* i
   out->reserved = 0;
   out->t_begin = in->t_begin;
 #ifdef FUSE_TEST_BAD_WINDOW
-  /* Echo a window shifted by one tick from the one actually requested:
+  /* Echo a window whose end is one time unit past the one actually requested:
    * rule 6 requires EXACT agreement, so this is refused E-ABI-PROVIDER-WINDOW
    * rather than accepted as "close enough". */
   out->t_end.numerator = in->t_end.numerator + in->t_end.denominator;
