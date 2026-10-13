@@ -402,20 +402,24 @@ int bruss_lowfive_write(const char* file, const char* dataset,
   }
   const herr_t wrc =
       H5Dwrite(did, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
-  // ROUND 5, item 2's own "best available proxy" instruction: nothing
-  // public exposes whether THIS dataset was attached as in-memory
-  // (lowfive_attach.h's own bruss_lowfive_attach_file_count() doc has
-  // the full account of why) -- H5Lexists(), called here while `fid`
-  // is still open, BEFORE H5Dclose/H5Fclose, is an ordinary VOL
-  // dispatch LowFive answers from its own in-memory metadata tree
-  // regardless of is_memory/is_passthru, so a 0 or negative result
-  // here (as distinct from the file-count check after close, below)
-  // would mean dataset_create() itself was never reached for this
-  // dataset at all -- a DIFFERENT failure from anything H2/H4 name.
+  // ROUND 6: REPLACES round 5's own H5Lexists()-based
+  // `dataset_exists_before_close` check -- confirmed UNRELIABLE this
+  // round (lowfive_attach.h's own doc comment on bruss_lowfive_attach_
+  // has_real_file() has the full citation: H5Lexists() walks the
+  // dataset's own path segment by segment, but this shim's own
+  // H5Dcreate2 call, with no prior H5Gcreate, attaches the dataset as
+  // ONE FLAT child whose name literally contains the slash --
+  // H5Lexists() reports false negatives for exactly this shape, which
+  // is why round 5's own host trace printed `dataset_exists_before_
+  // close=0` even though the write just succeeded). `has_real_file()`
+  // is FILE-level, not dataset-level (nothing public exposes a
+  // dataset-level check at all -- Object/Dataset are opaque in the
+  // installed headers), but it is RELIABLE, unlike the check it
+  // replaces: a diagnostic that reports false negatives is worse than
+  // none, the lead's own instruction.
   if (traced) {
-    const htri_t exists = H5Lexists(fid, dataset, H5P_DEFAULT);
-    std::fprintf(stderr, "TRACE(bruss_lowfive_write): dataset_exists_before_close=%d\n",
-                 exists > 0 ? 1 : 0);
+    std::fprintf(stderr, "TRACE(bruss_lowfive_write): file_has_real_entry_before_close=%d\n",
+                 bruss_lowfive_attach_has_real_file(file));
   }
   H5Dclose(did);
   H5Sclose(space);

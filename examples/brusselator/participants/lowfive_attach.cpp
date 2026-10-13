@@ -191,6 +191,14 @@ struct AttachState {
   // since LowFive::MetadataVOL has no serve_on_close/serve_all() of
   // this kind at all).
   fuse_examples::lowfive_attach::ServeState serve_state;
+  // ROUND 6: this component's own exported file name(s) -- lowfive_
+  // attach_decision.hpp's own FindOwnExportedFiles(), computed once at
+  // attach time from the SAME binding table/this_name the attach
+  // already derives, never recomputed per write/read call. Dropped,
+  // one at a time, right after each is actually served (this file's
+  // own two call sites below) -- never the peer's own file, which this
+  // rank never owns the lifetime of.
+  std::vector<std::string> own_exported_files;
 #endif
 };
 
@@ -290,6 +298,22 @@ bool TraceEnabledCached() {
   static const bool enabled =
       fuse_examples::lowfive_attach::ParseTraceEnabledEnv(std::getenv("FUSE_LOWFIVE_ATTACH_TRACE"));
   return enabled;
+}
+
+// ROUND 6: `LowFive::MetadataVOL::drop(std::string)` (src/vol-
+// metadata.cpp, cited in lowfive_attach_decision.hpp's own "ROOT CAUSE"
+// comment) dereferences `files.find(name)` WITHOUT checking `end()` --
+// undefined behaviour on an absent name. This wrapper guards that;
+// `files` is a PUBLIC member (confirmed round 5, reused here). Absent
+// is treated as a harmless no-op, not a refusal: this round's own
+// protocol only ever calls this right after a file this SAME rank just
+// served, so the name should always be present -- but a double-drop
+// (a future bug, or a mutation of the call-site guard this round's own
+// mutation rows below test for) finding the file already gone is
+// exactly what we wanted anyway, not a new problem to report.
+template <typename Vol>
+void GuardedDropOwnExportedFile(Vol& vol, const std::string& file) {
+  if (vol.files.find(file) != vol.files.end()) vol.drop(file);
 }
 
 // ROUND 5 (diagnostic trace track), item 5 of the brief: `FUSE_LOWFIVE_
@@ -521,7 +545,21 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
     // own "Round 2" comment has the full stack). Setting it false here
     // makes serving an explicit decision this file's own serve_state_
     // step() calls make, never H5Fclose's.
-    vol.serve_on_close = false;
+    //
+    // ROUND 6: `serve_on_close=false` ALONE is not enough -- lowfive_
+    // attach_decision.hpp's own "ROOT CAUSE" comment has the full
+    // account, measured on the host: without `keep=true` too, `H5Fclose
+    // ()`'s own tail call into `MetadataVOL::file_close()` erases and
+    // deletes the file BEFORE this process's own explicit serve_after_
+    // write() hook ever runs, so that hook's own serve_all() finds
+    // files.size()==0 and returns without serving (the round-5 hang).
+    // `decide_vol_settings()` is the ONE place that decides BOTH
+    // settings together, so the invariant it keeps
+    // (VolSettingsSatisfyInvariant()) is checked once, not re-derived
+    // at each of this function's own two branches.
+    const auto vol_settings = fuse_examples::lowfive_attach::decide_vol_settings(/*distributed=*/true);
+    vol.serve_on_close = vol_settings.serve_on_close;
+    vol.set_keep(vol_settings.keep);
     bool ok = false;
     std::vector<std::pair<std::string, std::string>> applied_memory_patterns;
     ApplyBindings(vol, table.value(), &ok, &build_error, &applied_memory_patterns);
@@ -581,6 +619,19 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
     s.dist_vol = &vol;
     s.vol = &vol;
     distributed_now = true;
+    // ROUND 6: the file(s) this rank's own two serve call sites below
+    // must drop, one at a time, right after each is actually served --
+    // computed once, here, from the SAME table/this_name already in
+    // scope (lowfive_attach_decision.hpp's own FindOwnExportedFiles()
+    // doc comment has the full account of why this, never a hardcoded
+    // literal).
+    auto own_files = fuse_examples::lowfive_attach::FindOwnExportedFiles(table.value(), this_name);
+    if (!own_files.ok()) {
+      CopyErrorMessage("[" + own_files.error().code + "] " + own_files.error().message, errbuf,
+                       errbuf_len);
+      return 1;
+    }
+    s.own_exported_files = own_files.value();
     // ROUND 5 (diagnostic trace track), item 1 of the brief: one line
     // with everything the lead asked for -- world rank, component,
     // role, distributed flag, the registered (file, dataset_pattern,
@@ -589,11 +640,14 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
     // `files.size()` are not in the brief's own enumerated list but are
     // directly diagnostic for H4 (wrong/empty intercomm selection) and
     // cost nothing extra to read (both are public members, confirmed
-    // from the installed headers) -- included for that reason.
+    // from the installed headers) -- included for that reason. ROUND 6,
+    // item 6 of the brief: `keep=` added alongside the already-printed
+    // `serve_on_close=`, so the next host run's own attach-time line
+    // shows the full pair this round's own fix applies together.
     if (TraceEnabledCached()) {
       std::fprintf(stderr,
                    "TRACE(bruss_lowfive_attach): world_rank=%d component=%s role=%s "
-                   "distributed=1 registrations=%s memory_patterns=%s serve_on_close=%d "
+                   "distributed=1 registrations=%s memory_patterns=%s serve_on_close=%d keep=%d "
                    "intercomms.size=%zu files.size=%zu\n",
                    world_rank, this_name.c_str(),
                    s.serve_state.role == fuse_examples::lowfive_attach::ServeRole::kFirstServer
@@ -603,7 +657,8 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
                        .c_str(),
                    fuse_examples::lowfive_attach::FormatMemoryPatternsForTrace(applied_memory_patterns)
                        .c_str(),
-                   vol.serve_on_close ? 1 : 0, vol.intercomms.size(), vol.files.size());
+                   vol.serve_on_close ? 1 : 0, vol.keep ? 1 : 0, vol.intercomms.size(),
+                   vol.files.size());
     }
 #else
     CopyErrorMessage(
@@ -627,6 +682,20 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
     // Without `set_keep(true)`, LowFive discards a file's metadata at
     // H5Fclose and the read leg's H5Fopen finds nothing -- the identical
     // reasoning VolSingleton::VolSingleton's own comment gives.
+    //
+    // ROUND 6: unchanged by this round, per the lead's own instruction
+    // -- this branch already needed, and already had, exactly what
+    // decide_vol_settings(false).keep now names explicitly for the
+    // distributed branch (both branches' own `keep` requirement traces
+    // to the SAME MetadataVOL::file_close() behaviour this header's own
+    // "ROOT CAUSE" comment cites). `serve_on_close` does not apply here
+    // at all: `LowFive::MetadataVOL` (this branch's own VOL type, unlike
+    // the distributed branch's DistMetadataVOL) has no such member, and
+    // nothing in this branch ever calls serve_all()/drop() either --
+    // this VOL never serves anyone, so files simply accumulate in
+    // `files` for this process's own lifetime (the single-process path
+    // round 4's own citation already measured end to end; this round
+    // does not revisit that measurement).
     vol.set_keep(true);
     if (!BuildVerifiedFapl(vol, &fapl, &build_error)) {
       CopyErrorMessage(build_error, errbuf, errbuf_len);
@@ -700,11 +769,19 @@ int bruss_lowfive_serve_after_write(char* errbuf, long long errbuf_len) {
         std::fprintf(stderr, "TRACE(bruss_lowfive_serve_after_write): action=kServeNow enter\n");
       const auto t0 = std::chrono::steady_clock::now();
       s.dist_vol->serve_all();
+      // ROUND 6: this component's own exported file(s) are only now
+      // safe to drop -- SERVED, not merely written -- so the next
+      // period's own H5Fcreate(TRUNC) of the same name does not meet a
+      // stale copy (lowfive_attach_decision.hpp's own "ROOT CAUSE"
+      // comment has the full citation on file_create()'s own emplace()-
+      // on-duplicate-key behaviour).
+      for (const auto& f : s.own_exported_files) GuardedDropOwnExportedFile(*s.dist_vol, f);
       if (TraceEnabledCached()) {
         const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         std::fprintf(stderr,
-                     "TRACE(bruss_lowfive_serve_after_write): action=kServeNow exit elapsed=%.6fs\n",
-                     elapsed);
+                     "TRACE(bruss_lowfive_serve_after_write): action=kServeNow exit elapsed=%.6fs "
+                     "files.size_after_drop=%zu\n",
+                     elapsed, s.dist_vol->files.size());
       }
       return 0;
     }
@@ -832,11 +909,16 @@ int bruss_lowfive_after_read_close(char* errbuf, long long errbuf_len) {
         std::fprintf(stderr, "TRACE(bruss_lowfive_after_read_close): action=kFlushDeferred enter\n");
       const auto t0 = std::chrono::steady_clock::now();
       s.dist_vol->serve_all();
+      // ROUND 6: same reasoning as serve_after_write()'s own kServeNow
+      // case above -- this is the FIRST-READER's own deferred serve,
+      // now actually served, so its own exported file is safe to drop.
+      for (const auto& f : s.own_exported_files) GuardedDropOwnExportedFile(*s.dist_vol, f);
       if (TraceEnabledCached()) {
         const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         std::fprintf(stderr,
-                     "TRACE(bruss_lowfive_after_read_close): action=kFlushDeferred exit elapsed=%.6fs\n",
-                     elapsed);
+                     "TRACE(bruss_lowfive_after_read_close): action=kFlushDeferred exit elapsed=%.6fs "
+                     "files.size_after_drop=%zu\n",
+                     elapsed, s.dist_vol->files.size());
       }
       return 0;
     }
@@ -896,6 +978,15 @@ long long bruss_lowfive_attach_file_count(void) {
   AttachState& s = State();
   if (!s.attached || !s.vol) return -1;
   return static_cast<long long>(s.vol->files.size());
+}
+
+// ROUND 6: see lowfive_attach.h's own doc comment on this function for
+// why it exists (replacing the round-5 trace's unreliable H5Lexists()
+// check) and why it is FILE-level, not dataset-level.
+int bruss_lowfive_attach_has_real_file(const char* file) {
+  AttachState& s = State();
+  if (!s.attached || !s.vol || !file) return -1;
+  return s.vol->has_real_file(file) ? 1 : 0;
 }
 
 void bruss_lowfive_trace_skip(const char* which, long long window_samples, long long count,
@@ -990,6 +1081,9 @@ long long bruss_lowfive_attach_file_count(void) {
   // itself gives (fapl_id_out = -1).
   return -1;
 }
+
+// ROUND 6: same reasoning as bruss_lowfive_attach_file_count() above.
+int bruss_lowfive_attach_has_real_file(const char*) { return -1; }
 
 void bruss_lowfive_trace_skip(const char* which, long long window_samples, long long count,
                               long long components) {

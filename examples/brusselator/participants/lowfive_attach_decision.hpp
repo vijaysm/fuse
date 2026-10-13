@@ -747,4 +747,161 @@ struct IntercommRegistration {
   return out;
 }
 
+
+// ROUND 6: the trace answered H1-H4. The write ran (H5Fcreate_ok=1), U
+// (first-server) took kServeNow, exactly one intercomm is registered --
+// H1/H3/H4 are RULED OUT. What the trace showed instead: `serve_all()`
+// entered and exited in 52 microseconds, LowFive's own log printing
+// "enter serve_all, files.size = 0" -- H2's own SYMPTOM, but not round
+// 4's own guessed mechanism (round 5 already corrected that guess from
+// source: `is_memory` does not gate whether a dataset is COUNTED).
+//
+// ROOT CAUSE, read directly from LowFive's source (every cite re-read
+// for this round, not reused from memory):
+// - `include/lowfive/vol-metadata.hpp:49`: `bool keep = false; // whether
+//   to keep files in the metadata after they are closed`; `set_keep
+//   (bool)` at `:106`. PUBLIC, default false.
+// - `src/vol-metadata/file.cpp` (`MetadataVOL::file_close()`): `if
+//   (File* f = dynamic_cast<File*>(...)) { ...; if (!keep) { files.erase
+//   (f->name); delete f; /* erases all the children too */ } }` -- runs
+//   regardless of whether this VOL is a plain `MetadataVOL` or a
+//   `DistMetadataVOL` (the distributed subclass's own `file_close()`
+//   falls through to this EXACT function at its own tail,
+//   `src/vol-dist-metadata.cpp`: `return MetadataVOL::file_close(file,
+//   dxpl_id, req);`).
+// - `src/vol-dist-metadata.cpp` (`DistMetadataVOL::file_close()`, the
+//   LOCAL-file branch): the ONLY place this function ever calls
+//   `serve_all()` on its own is `else if (serve_on_close && match_any
+//   (f->name, "", memory, true)) serve_all();` -- gated on `serve_on_
+//   close`, which round 2's own fix (lowfive_attach.cpp) sets `false`
+//   specifically so NOTHING auto-serves inside `H5Fclose()`. That
+//   `if`/`else if` chain runs BEFORE the tail call into `MetadataVOL::
+//   file_close()` above.
+// - Putting these two together: with `serve_on_close == false` (round
+//   2's own setting) and `keep` left at its own default `false` (never
+//   set by any round before this one), `H5Fclose()` neither serves
+//   internally NOR keeps the file -- it is ERASED AND DELETED,
+//   unconditionally, the moment `H5Fclose()` returns, before this
+//   process's own explicit `bruss_lowfive_serve_after_write()` hook
+//   (called by `shim.cpp` AFTER `H5Fclose()` returns) ever runs a
+//   line. By the time that hook's own `serve_all()` call happens,
+//   `files` is ALREADY EMPTY -- exactly the measured `files.size = 0`,
+//   `enter serve_all, files.size = 0`, and the 52-microsecond return
+//   (LowFive own confirms, from its own source, why: `serve_all()`'s
+//   own `Index` constructor counts `indexed_datasets` by walking
+//   `files`, which has nothing left to walk; `index.indexed_datasets ||
+//   !perform_indexing` is then false at `serve_all()`'s own default
+//   `perform_indexing=true`, so `index.serve()` -- the part that would
+//   actually block polling for the peer -- is never called at all).
+//   LowFive therefore only works with `serve_on_close=true`, OR with
+//   `serve_on_close=false` AND `keep=true` -- this attach shipped the
+//   first half of the second option without the second half.
+// - `MetadataVOL::drop(std::string filename)` (`src/vol-metadata.cpp`):
+//   `auto it = files.find(filename); delete it->second; files.erase
+//   (it);` -- NO check against `files.end()`; calling this for an
+//   ABSENT name dereferences `files.end()`, undefined behaviour. Guarded
+//   by `BuildIntercommRegistrations()`'s own sibling below
+//   (`GuardedDropOwnExportedFile()`, `lowfive_attach.cpp`) before ever
+//   calling this.
+// - `MetadataVOL::clear_files()` (`src/vol-metadata.cpp`): deletes EVERY
+//   entry in `files`, not just one -- never call this to release a
+//   single file; it would also delete the PEER's own file this rank
+//   may have just received.
+// - `MetadataVOL::file_create()` (`src/vol-metadata/file.cpp`): `File*
+//   f = new File(name_, ...); files.emplace(name_, f);` -- `std::map::
+//   emplace()` is a NO-OP on a DUPLICATE key: if `name_` is still in
+//   `files` from a PREVIOUS create that was never dropped, the OLD
+//   `File*` stays exactly where it is, and the FRESH `f` this call just
+//   allocated is never stored in `files` at all (only on this NEW open
+//   handle's own `mdata_obj`, which nothing else ever looks up by
+//   filename). The practical effect, read from this call site directly
+//   (not assumed): SILENT REUSE OF STALE DATA, not an error and not a
+//   crash -- a LATER `serve_all()` keyed off this filename walks
+//   `files`, finds the OLD `File`'s own (now stale) children, and
+//   serves THOSE, never the fresh write this handle just performed
+//   through its own orphaned object. This is exactly why the file must
+//   be dropped after it is served, before this component's own NEXT
+//   `H5Fcreate` of the same name.
+
+/// The only two LowFive-level settings `bruss_lowfive_attach()` applies
+/// to a constructed VOL -- `serve_on_close` (meaningful for `LowFive::
+/// DistMetadataVOL` only; `LowFive::MetadataVOL` has no such member at
+/// all) and `keep` (meaningful for either). Decided together, by ONE
+/// function, rather than set separately at each of `bruss_lowfive_
+/// attach()`'s own two branches, so the invariant below is checked
+/// once, not re-derived at each call site.
+struct VolSettings {
+  bool serve_on_close;
+  bool keep;
+};
+
+/// PURE: the settings this attach applies, for either branch
+/// (`distributed` tells the CALLER which fields are actually consumed --
+/// the single-process branch's own `LowFive::MetadataVOL` has no `serve_
+/// on_close` member, so it simply never reads that field of the
+/// returned struct, exactly as it already never changed its own
+/// existing `vol.set_keep(true)` call this round). BOTH branches need
+/// `keep=true`: round 4's own comment on the single-process branch
+/// already established why there (without it, the read leg's own
+/// `H5Fopen` finds nothing, the SAME `MetadataVOL::file_close()` this
+/// header's own "ROOT CAUSE" comment above cites for the distributed
+/// case); this round's own finding is that the distributed branch needs
+/// it for exactly the same underlying reason, not a different one. The
+/// distributed branch additionally needs `serve_on_close=false` (round
+/// 2's own account: `true` served ANY two writes racing into `serve_
+/// all()` together, inside `H5Fclose()`, before either side had read
+/// the other).
+[[nodiscard]] inline VolSettings decide_vol_settings(bool distributed) {
+  (void)distributed;  // both branches currently want the identical pair
+  return VolSettings{/*serve_on_close=*/false, /*keep=*/true};
+}
+
+/// PURE: the invariant `decide_vol_settings()` must never violate --
+/// "`serve_on_close == false` implies `keep == true`" (this header's own
+/// "ROOT CAUSE" comment above has the full account of why: with `serve_
+/// on_close` false, NOTHING inside `DistMetadataVOL::file_close()` ever
+/// serves a local file on its own, so the application's own explicit
+/// serve call is the ONLY server that file will ever get -- if `keep` is
+/// also false, the file is erased and deleted before that explicit
+/// serve call ever runs). Takes an ARBITRARY pair, not only `decide_vol_
+/// settings()`'s own return value, so a future mutation of either field
+/// is caught directly by a test feeding it the bad pair, not only
+/// indirectly through whatever `decide_vol_settings()` happens to
+/// return.
+[[nodiscard]] inline bool VolSettingsSatisfyInvariant(VolSettings s) {
+  return s.serve_on_close || s.keep;
+}
+
+/// PURE: which file(s) `this_name` (the SAME canonical component name
+/// `bruss_lowfive_attach()` already derives from `plan.is_writer`) is
+/// the WRITER of, among `table`'s own bindings -- derived from `fuse::
+/// build_lowfive_bindings()`'s own `"<component>.<field>"` qualification
+/// scheme (`include/fuse/transport/lowfive_graph.hpp`), never a
+/// hardcoded literal. Returns one file per matching binding, in table
+/// order (this track's own Brusselator graph has exactly one per
+/// component, but a future graph where one component writes more than
+/// one HDF5-bound field is not refused by `decide_attach_mode()` by
+/// name, so this function does not assume it away either); empty if
+/// `this_name` writes nothing qualifying (a read-only component, same
+/// reasoning). These are the files this rank's own attach must drop,
+/// one at a time, after each is served -- never the PEER's own file,
+/// which this rank only ever reads and never owns the lifetime of.
+[[nodiscard]] inline fuse::Result<std::vector<std::string>> FindOwnExportedFiles(
+    const fuse::LowFiveFieldBindingTable& table, const std::string& this_name) {
+  std::vector<std::string> out;
+  const std::string prefix = this_name + ".";
+  for (const fuse::LowFiveFieldBinding& b : table.bindings()) {
+    if (b.field_name.size() <= prefix.size() ||
+        b.field_name.compare(0, prefix.size(), prefix) != 0) {
+      continue;
+    }
+    auto split = fuse::split_hdf5_path(b.hdf5_path);
+    if (!split.ok()) {
+      return fuse::Failure{split.error().code, split.error().message};
+    }
+    out.push_back(split.value().first);
+  }
+  return out;
+}
+
 }  // namespace fuse_examples::lowfive_attach
