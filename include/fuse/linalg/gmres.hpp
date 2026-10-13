@@ -37,7 +37,12 @@
 /// NO SILENT CAP. Exhausting `GmresOptions::max_iterations` (the total
 /// Arnoldi-step budget across every restart cycle) without a verified
 /// convergence returns `E-LINALG-NO-CONVERGENCE`, carrying the iteration
-/// count and the last known relative residual.
+/// count and the last known relative residual. `GmresOptions::restart <
+/// 1` refuses `E-LINALG-OPTIONS` at entry rather than livelocking: with
+/// `restart == 0` the Arnoldi loop below never executes a single step,
+/// so `total_iter` never advances and the outer restart loop spins
+/// through `a.apply` (a collective under MPI) with no exit -- the one
+/// configuration `max_iterations` cannot cap (Review 2026-10-11 NL-2).
 
 #include <cmath>
 #include <cstddef>
@@ -74,6 +79,12 @@ template <class Op, class Precond>
   requires LinearOperator<Op> && Preconditioner<Precond>
 [[nodiscard]] Result<SolverReport> gmres(const Op& a, const Precond& m, DistVector& x,
                                           const DistVector& b, const GmresOptions& opt = {}) {
+  if (opt.restart < 1) {
+    return Failure{"E-LINALG-OPTIONS",
+                  fmt::format("gmres: GmresOptions::restart must be >= 1, got {} (restart == 0 "
+                             "never executes an Arnoldi step, so the restart loop never exits)",
+                             opt.restart)};
+  }
   const double b_norm = b.norm2();
   if (b_norm == 0.0) {
     x.set_zero();
