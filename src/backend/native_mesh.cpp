@@ -281,6 +281,35 @@ std::vector<OrientedFace> oriented_faces_of_cell(const MeshArrays<Kokkos::HostSp
 
 namespace {
 Point to_point(const Vec3& v) { return Point{v.x, v.y, v.z}; }
+
+// ---- device-callable geometry primitives --------------------------------
+// Kokkos::FUNCTION counterparts of geometry.hpp's host-only
+// norm/triangle_area/tetrahedron_volume (same formulas: |b-a|, half the
+// cross-product magnitude, a sixth of the scalar triple product's
+// magnitude), over raw coordinate triples rather than `Vec3` so this stays
+// independent of that header's host-only operator overloads. Used only by
+// the device measure kernel at the end of `create_from_host`; the host
+// validation pass above still calls geometry.hpp's own functions, unchanged.
+KOKKOS_FUNCTION double device_segment_length(const double a[3], const double b[3]) {
+  const double dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
+  return Kokkos::sqrt(dx * dx + dy * dy + dz * dz);
+}
+KOKKOS_FUNCTION double device_triangle_area(const double a[3], const double b[3],
+                                           const double c[3]) {
+  const double ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+  const double vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+  const double cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx;
+  return 0.5 * Kokkos::sqrt(cx * cx + cy * cy + cz * cz);
+}
+KOKKOS_FUNCTION double device_tetrahedron_volume(const double a[3], const double b[3],
+                                                const double c[3], const double d[3]) {
+  const double ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+  const double vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+  const double wx = d[0] - a[0], wy = d[1] - a[1], wz = d[2] - a[2];
+  const double tx = vy * wz - vz * wy, ty = vz * wx - vx * wz, tz = vx * wy - vy * wx;
+  const double triple = ux * tx + uy * ty + uz * tz;
+  return Kokkos::abs(triple) / 6.0;
+}
 }  // namespace
 
 Result<std::unique_ptr<NativeMeshView>> NativeMeshView::create_from_host(
@@ -488,6 +517,139 @@ Result<std::unique_ptr<NativeMeshView>> NativeMeshView::create_from_host(
           {to_point(t.a), to_point(t.b), to_point(t.c), to_point(t.d)});
     }
     view->measure_[c] = sum;
+  }
+
+  // ---- device-resident geometry (docs/dev/native-mesh.md) ---------------
+  // See native_mesh.hpp's "device-resident geometry" comment: these two
+  // Kokkos kernels INDEPENDENTLY recompute the per-cell measure/centroid
+  // this loop just validated, landing in
+  // Kokkos::DefaultExecutionSpace::memory_space -- real device memory on a
+  // CUDA/HIP/SYCL build. The host arrays above (`measure_`/`centroid_`) are
+  // unaffected; nothing here removes or reorders the validation.
+  {
+    using DeviceMemSpace = NativeMeshView::DeviceMemSpace;
+    using DeviceExecutionSpace = Kokkos::DefaultExecutionSpace;
+
+    // Centroid: vertex_coords + the cell-to-vertex CSR directly, the same
+    // inputs (and the same ascending-corner accumulation order) the host
+    // loop above used -- no simplex decomposition is involved for this one.
+    // Kokkos::View<double*[3], ...>'s DEFAULT array layout is the space's
+    // own default (LayoutRight on Kokkos::HostSpace, LayoutLeft on
+    // Kokkos::CudaSpace); deep_copy between the two default layouts has no
+    // common execution space to run the transpose in, so the destination's
+    // layout is pinned to the SOURCE's (LayoutRight) explicitly here --
+    // found running this kernel for the first time against a real CUDA
+    // build (Kokkos::deep_copy: "no available copy mechanism").
+    Kokkos::View<double* [3], Kokkos::LayoutRight, DeviceMemSpace> device_vertex_coords(
+        Kokkos::view_alloc(Kokkos::WithoutInitializing, "native_mesh.device_vertex_coords"), nv);
+    Kokkos::deep_copy(device_vertex_coords, arrays.vertex_coords);
+    Kokkos::View<int*, DeviceMemSpace> device_cell_vertex_offsets(
+        Kokkos::view_alloc(Kokkos::WithoutInitializing, "native_mesh.device_cell_vertex_offsets"),
+        arrays.cell_vertex_offsets.extent(0));
+    Kokkos::deep_copy(device_cell_vertex_offsets, arrays.cell_vertex_offsets);
+    Kokkos::View<int*, DeviceMemSpace> device_cell_vertex_indices(
+        Kokkos::view_alloc(Kokkos::WithoutInitializing, "native_mesh.device_cell_vertex_indices"),
+        arrays.cell_vertex_indices.extent(0));
+    Kokkos::deep_copy(device_cell_vertex_indices, arrays.cell_vertex_indices);
+
+    Kokkos::View<double* [3], DeviceMemSpace> device_centroid(
+        Kokkos::view_alloc(Kokkos::WithoutInitializing, "native_mesh.device_centroid"), nc);
+    Kokkos::parallel_for(
+        "native_mesh.device_centroid",
+        Kokkos::RangePolicy<DeviceExecutionSpace>(0, static_cast<std::int64_t>(nc)),
+        KOKKOS_LAMBDA(std::int64_t c) {
+          const int voff = device_cell_vertex_offsets(c);
+          const int vcount = device_cell_vertex_offsets(c + 1) - voff;
+          double cx = 0.0, cy = 0.0, cz = 0.0;
+          for (int k = 0; k < vcount; ++k) {
+            const int lv = device_cell_vertex_indices(voff + k);
+            cx += device_vertex_coords(lv, 0);
+            cy += device_vertex_coords(lv, 1);
+            cz += device_vertex_coords(lv, 2);
+          }
+          const double inv_n = 1.0 / static_cast<double>(vcount);
+          device_centroid(c, 0) = cx * inv_n;
+          device_centroid(c, 1) = cy * inv_n;
+          device_centroid(c, 2) = cz * inv_n;
+        });
+    view->device_centroid_ = device_centroid;
+
+    // Measure: flatten the validated per-cell simplex corners
+    // (`view->cell_simplices_`, just populated above) into a device CSR and
+    // sum each cell's own simplices in the SAME order the host loop above
+    // used -- bit-identical on a host-only build (Kokkos::DefaultExecutionSpace
+    // == the host space there), 1e-14 relative on a real device (nvcc's FMA
+    // contraction; docs/dev/device-resident-arcs.md's reproducibility
+    // contract already accepts this for RelaxFunctor/RemapMultiFunctor).
+    std::vector<int> simplex_offsets(nc + 1, 0);
+    for (std::size_t c = 0; c < nc; ++c) {
+      simplex_offsets[c + 1] =
+          simplex_offsets[c] + static_cast<int>(view->cell_simplices_[c].size());
+    }
+    const auto total_simplices = static_cast<std::size_t>(simplex_offsets[nc]);
+    Kokkos::View<double* [4][3], Kokkos::HostSpace> simplex_corners_host(
+        Kokkos::view_alloc(Kokkos::WithoutInitializing, "native_mesh.simplex_corners_host"),
+        total_simplices);
+    for (std::size_t c = 0; c < nc; ++c) {
+      for (std::size_t s = 0; s < view->cell_simplices_[c].size(); ++s) {
+        const auto& corners = view->cell_simplices_[c][s];
+        const auto row = static_cast<std::size_t>(simplex_offsets[c]) + s;
+        for (int k = 0; k < 4; ++k) {
+          simplex_corners_host(row, k, 0) = corners[static_cast<std::size_t>(k)].x;
+          simplex_corners_host(row, k, 1) = corners[static_cast<std::size_t>(k)].y;
+          simplex_corners_host(row, k, 2) = corners[static_cast<std::size_t>(k)].z;
+        }
+      }
+    }
+    Kokkos::View<int*, Kokkos::HostSpace> simplex_offsets_host(
+        Kokkos::view_alloc(Kokkos::WithoutInitializing, "native_mesh.simplex_offsets_host"),
+        nc + 1);
+    for (std::size_t c = 0; c <= nc; ++c) simplex_offsets_host(c) = simplex_offsets[c];
+
+    // Same LayoutRight pin as device_vertex_coords above, for the same
+    // reason: `simplex_corners_host` is Kokkos::HostSpace's default layout.
+    Kokkos::View<double* [4][3], Kokkos::LayoutRight, DeviceMemSpace> simplex_corners(
+        Kokkos::view_alloc(Kokkos::WithoutInitializing, "native_mesh.simplex_corners"),
+        total_simplices);
+    Kokkos::deep_copy(simplex_corners, simplex_corners_host);
+    Kokkos::View<int*, DeviceMemSpace> device_simplex_offsets(
+        Kokkos::view_alloc(Kokkos::WithoutInitializing, "native_mesh.device_simplex_offsets"),
+        nc + 1);
+    Kokkos::deep_copy(device_simplex_offsets, simplex_offsets_host);
+
+    Kokkos::View<double*, DeviceMemSpace> device_measure(
+        Kokkos::view_alloc(Kokkos::WithoutInitializing, "native_mesh.device_measure"), nc);
+    const int dim_for_kernel = view->dim_;
+    Kokkos::parallel_for(
+        "native_mesh.device_measure",
+        Kokkos::RangePolicy<DeviceExecutionSpace>(0, static_cast<std::int64_t>(nc)),
+        KOKKOS_LAMBDA(std::int64_t c) {
+          const int soff = device_simplex_offsets(c);
+          const int scount = device_simplex_offsets(c + 1) - soff;
+          double sum = 0.0;
+          for (int s = 0; s < scount; ++s) {
+            const int row = soff + s;
+            const double a[3] = {simplex_corners(row, 0, 0), simplex_corners(row, 0, 1),
+                                 simplex_corners(row, 0, 2)};
+            const double b[3] = {simplex_corners(row, 1, 0), simplex_corners(row, 1, 1),
+                                 simplex_corners(row, 1, 2)};
+            if (dim_for_kernel == 1) {
+              sum += device_segment_length(a, b);
+            } else if (dim_for_kernel == 2) {
+              const double cc[3] = {simplex_corners(row, 2, 0), simplex_corners(row, 2, 1),
+                                    simplex_corners(row, 2, 2)};
+              sum += device_triangle_area(a, b, cc);
+            } else if (dim_for_kernel == 3) {
+              const double cc[3] = {simplex_corners(row, 2, 0), simplex_corners(row, 2, 1),
+                                    simplex_corners(row, 2, 2)};
+              const double dd[3] = {simplex_corners(row, 3, 0), simplex_corners(row, 3, 1),
+                                    simplex_corners(row, 3, 2)};
+              sum += device_tetrahedron_volume(a, b, cc, dd);
+            }
+          }
+          device_measure(c) = sum;
+        });
+    view->device_measure_ = device_measure;
   }
 
   return std::move(view);

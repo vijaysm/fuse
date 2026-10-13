@@ -3566,6 +3566,8 @@ reductions), re-anchor the two rows in `build-evidence/mutations.toml`, and tigh
 `docs/dev/device-resident-arcs.md` follows the same contract: bitwise where the host side is a
 reduction the determinism contract covers, working precision elsewhere, stated by its test.
 
+
+The same accepted gap covers the native mesh's device geometry kernels (2026-10-13, mesh-search track): `NativeMeshView::device_measure()`/`device_centroid()` recompute the per-cell measures and centroids on `Kokkos::DefaultExecutionSpace`, and nvcc contracts the cross- and dot-product arithmetic of the triangle-area and tetrahedron-volume formulas, so `test/backend/native_distributed_mesh_test.cpp`'s `DeviceGeometryMatchesHost*` cases assert 1e-14 relative agreement, not bitwise. Closing it, if ever wanted, is the same `unfused_multiply_add` idiom.
 ### ~~D39. `fuse-abi-shared`'s install RPATH named only yaml-cpp, so an installed consumer could not load Kokkos or the MOAB chain~~ — FIXED 2026-10-10; libMOAB.so's own rpath gap WORKED AROUND at test time
 
 **Measured 2026-10-10** on this host after an external MOAB rebuild: `backend.moab_mesh` and both
