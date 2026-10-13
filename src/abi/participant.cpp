@@ -627,6 +627,14 @@ fuse_status impl_setup(fuse_ctx* ctx, const fuse_setup_options* in, fuse_null*) 
     }
     const fuse_status sz = check_struct_size(in);
     if (sz != FUSE_OK) return sz;
+    // Review 2026-10-11 AB-11: entries.def documents `reserved` as "must
+    // be 0", but nothing read it to check -- a caller that left it
+    // uninitialised (or copy-pasted a struct with something else in that
+    // slot) was silently accepted. Cheap to check, so checked.
+    if (in->reserved != 0) {
+      return fail(&c, FUSE_ERR_INVALID, "E-ABI-SETUP-RESERVED",
+                 "fuse_setup_options: reserved must be 0");
+    }
     // entries.def's own comment on my_component: an old caller's smaller
     // struct_size never allocated this member, so it is read ONLY when
     // struct_size_covers it -- exactly the write-side guard's own mirror,
