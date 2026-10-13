@@ -3603,6 +3603,137 @@ through `ENVIRONMENT_MODIFICATION`. The build itself still needs the variable ex
 `_machine` preset sets it for configure only); that is a property of Open MPI's compiler wrapper,
 not of this project.
 
+### D41 [weight-builders]. Native halo/migration's device-side merge (dedup-by-global-id) is not implemented
+
+**Scope note, 2026-10-13.** `fuse::native::device::pack_to<Space>` (include/fuse/backend/native/
+mesh_pack_device.hpp) templates the migration and halo wire PACK on the Kokkos memory space, verified
+byte-for-byte against `pack_for_migration`/`pack_halo_cells` in both Host and Device mode
+(`test/backend/native_mesh_pack_device_test.cpp`). The symmetric receiving-side merge
+(`unpack_migrated_mesh`'s vertex dedup, `merge_halo_cells`'s cell dedup, both by global id, both
+currently `std::unordered_map`/`std::unordered_set` over `std::vector`) is NOT templated. The bulk
+per-field data copy generalizes the same way packing did (a Kokkos kernel reading the received byte
+buffers' fixed-layout records); the open piece is the membership decision itself -- "is this global id
+already held" -- which has no device-friendly hash-set equivalent used anywhere in this codebase yet.
+A sort-and-compact approach (flatten every incoming (gid, payload) pair, `Kokkos::sort` by gid, then a
+`parallel_scan` over adjacent-equal runs to assign each unique gid one slot) is the natural device
+algorithm and was not attempted here for lack of time, not because it is infeasible. Blocks: a Device
+mode caller of `build_native_remap_halo`/`migrate` still needs the host round trip for the merge step.
+
+### D42 [weight-builders]. MLS device solve coarsens `E-MLS-RANK`'s diagnostic and is not wired into `build_mls_weights`; `KokkosBatched::SerialGesv` does not build here
+
+**Scope note, 2026-10-13.** `fuse::device::solve_mls_on_space<Space>` (include/fuse/backend/
+mls_weights_device.hpp) runs the per-target moment-matrix assembly and solve as a Kokkos BATCHED
+kernel, verified against a NumPy-computed reference (1e-14 relative on a well-conditioned 2D/degree-1
+case; ~1.5-2e-11 relative on a deliberately near-singular 3D/degree-2 stress case with `k == P`
+exactly -- a conditioning effect, not a bug; `mls_weights.hpp`'s own guidance is to choose `k`
+comfortably above the basis size `P`, which keeps this well clear of 1e-12).
+
+**`KokkosBatched::SerialGesv` was tried first and does not build on this host, in EITHER pivoting
+mode** (named by the task that approved this track, from /opt/kokkos-kernels; not assumed infeasible
+-- both modes were actually built against this header's own `A`/`B`/`X` views before being abandoned).
+Exact measured errors, both against `Kokkos::subview`-derived arguments to `SerialGesv::invoke`:
+
+- `Gesv::StaticPivoting`: `KokkosBatched_Gesv_Impl.hpp`'s own implementation slices its `tmp` scratch
+  by column range (`Kokkos::subview(tmp, Kokkos::ALL, Kokkos::make_pair(0, n))`) and by single column
+  (`Kokkos::subview(tmp, Kokkos::ALL, n)`), both necessarily `LayoutStride` regardless of `tmp`'s own
+  layout (not a layout choice this track could route around, unlike the top-level `A`'s `LayoutLeft` ->
+  `LayoutRight` fix, which WAS a layout choice and did work). The compiler error, from
+  `KokkosBatched_Trsm_Serial_Impl.hpp` and `KokkosBatched_LU_Serial_Impl.hpp`, both in Host and Cuda
+  instantiations: `class "Kokkos::View<double *, Kokkos::LayoutStride, ...>" has no member "stride_0"`
+  (and `"stride_1"`) -- this installed Kokkos's `View<..., LayoutStride>` simply does not define those
+  accessors, which `SerialTrsm`/`SerialLU` call on exactly those slices.
+- `Gesv::NoPivoting`: tried next on the premise that its implementation builds no such internal
+  scratch (`KokkosBatched_Gesv_Impl.hpp`'s `NoPivoting::invoke` calls `SerialLU`/`SerialTrsm` directly
+  on the caller's own `A`/`X`, confirmed by reading it). In the Cuda instantiation specifically, the
+  1-D subview of the RHS vector (`Kokkos::subview(X, t, Kokkos::ALL)`, `X` a `View<double**,
+  LayoutRight, CudaSpace>`) came back typed `Kokkos::View<double *, Kokkos::OpenMP::array_layout,
+  Kokkos::Device<Kokkos::CudaSpace::execution_space, Kokkos::CudaSpace::memory_space>, ...>` --
+  `Kokkos::OpenMP::array_layout` attached to a `CudaSpace` device type is a layout/execution-space
+  mismatch inside Kokkos's OWN subview type deduction on this installation, not anything this header's
+  view-layout choices produced. Same missing-`stride_0`/`stride_1` error as above, on that malformed
+  type.
+
+Both are Kokkos 5.2.0 / this installed kokkos-kernels version-pairing defects, independent of anything
+in this header; `find_package(KokkosKernels)` itself is ALSO broken on this host (a separate finding --
+`KokkosKernelsConfig.cmake:40`'s `set_target_properties()` call has an argument-count CMake's own
+parser rejects, a hard configure error even under `QUIET`). Given two independent, unfixable-from-here
+defects in the same dependency, this track replaced `KokkosBatched::SerialGesv` with an in-house
+Gaussian elimination with partial pivoting (`solve_square_system_partial_pivot`, same file), indexing
+`A`/`X` directly with no `Kokkos::subview` at all for the solve step -- re-verified against the NumPy
+reference afterward, unchanged to the precision above. `KokkosKernels` is consequently NOT a build
+dependency of this track's final state (the `find_package` workaround was removed along with the
+dependency it worked around).
+
+Two things remain open regardless of which solver is used: (1) the device solve reports only a
+pass/fail status per target, not the rank and condition-number estimate `E-MLS-RANK`'s host message
+carries, so a Device-mode rejection would have to re-run the specific failed target(s) through the
+host path to recover that diagnostic, or accept a coarser message; (2) `solve_mls_on_space` takes
+already-resolved point sets, options and a k-nearest result as plain arguments -- it is not wired into
+`build_mls_weights`'s own `RemapPlan`/`CouplingGraph`/`MeshBackend` dispatch, so Device mode is not yet
+reachable through the normal `fuse::build_weights` entry point.
+
+### D43 [weight-builders]. Supermesh (r3d/r2d) clip stays host-only; device feasibility measured and blocked on three build-system items, not algorithm
+
+**Scope note, 2026-10-13.** Assessed, not assumed, per this track's own instructions. The r3d/r2d call
+path `build_supermesh_weights` actually uses (`r3d_init_tet`/`r3d_clip`/`r3d_reduce` for a 3D pair,
+`r2d_init_poly`/`r2d_clip`/`r2d_reduce` for a 2D pair) has no recursion, no heap allocation, and only
+fixed-size stack buffers bounded by `R3D_MAX_VERTS`/`R2D_MAX_VERTS` (compile-time constants) -- read in
+full from `_deps/r3d-src/src/{r3d,r2d}.c`, not inferred from the header. Algorithmically it is
+device-portable. It is blocked today by three concrete, non-algorithmic obstacles: (1) the vendored
+translation units carry no `KOKKOS_FUNCTION`/`__host__ __device__` annotation on any function, and
+annotating the call path means patching the vendored copy (surviving an `UPSTREAMS.lock` bump) or
+hand-porting the subset FUSE calls into a FUSE-owned header; (2) `r3d_clip`'s (and r2d's analogous)
+debug path calls `fprintf(stderr, ...)` guarded only by `#if !defined(NDEBUG)`, which fires in this
+track's Debug build and is not device-callable; (3) `r3d.c`/`r2d.c` are compiled as C, and `nvcc`
+identifies a device translation unit by language, so even an annotated copy needs the TU compiled as
+C++ to have `KOKKOS_FUNCTION` take effect. None of the three is a correctness obstacle; all three are
+packaging work on a vendored, pinned dependency this track's time budget did not extend to. What IS
+done: the candidate-pair broad phase (the O(target-simplex x source-simplex) box test,
+`build_supermesh_weights`'s own "the honest starting point" brute force) runs as a device kernel
+(`fuse::device::candidate_pairs`, include/fuse/backend/supermesh_candidates_device.hpp), verified
+against a from-scratch serial reference in 2D and 3D, standing ALONGSIDE `build_supermesh_weights`
+rather than wired into it (floating-point accumulation order in the existing `std::map`-based
+column/row sums is not guaranteed invariant under a different candidate-generation order, and "no
+change to results in Host mode" is this track's hard requirement, so the existing code path is
+untouched).
+
+### D44 [weight-builders]. `fuse::native::to_memory_space<Target>` throws converting Host -> a real device space for a multi-dimensional field
+
+**Found 2026-10-13, this track's own device build -- a pre-existing defect, not introduced here.**
+`include/fuse/backend/native_mesh.hpp`'s `to_memory_space<Target>` (the one hook
+docs/dev/native-mesh.md names as what "makes the mesh GPU-resident") had never been exercised
+Host -> a real Cuda/HIP/SYCL space before this track: docs/dev/native-mesh.md's own Phase 2 note
+says plainly that "`NativeMeshView` converts to host at construction and the NativeMesh tests were
+pinned to host for the CUDA build." This track's new device-mode test rows
+(`test/backend/native_mesh_pack_device_test.cpp`) are the first to call it that way, and it throws:
+
+```
+Error: Kokkos::deep_copy with no available copy mechanism: from source view
+("native_mesh.vertex_coords") to destination view ("native_mesh.vertex_coords").
+There is no common execution space that can access both source's space
+(Host) and destination's space (Cuda), so source and destination
+must be contiguous and have the same layout.
+```
+
+Root cause: `detail::copy_view` (same file) declares its destination view with no explicit
+`array_layout` (`Kokkos::View<double* [3], Target>`), and `Kokkos::View`'s default layout differs by
+execution space for a rank >= 2 view -- `LayoutRight` on Host/OpenMP, `LayoutLeft` on Cuda. A field
+like `vertex_coords` (`double* [3]`, rank 2) therefore has MISMATCHED layouts between the Host source
+and a Cuda destination, and `Kokkos::deep_copy` cannot bridge a memory-space change and a layout
+change in the same call when the two spaces cannot access each other's memory directly. Every
+rank-2-or-higher field in `MeshArrays` (`vertex_coords`; `cell_vertex_offsets`/`cell_vertex_indices`
+etc. are rank 1 and unaffected) hits this on a Host -> device call; rank-1 fields do not, which is
+why only `vertex_coords` appears in the measured message above (it is the first field the function
+copies).
+
+Not fixed here: a fix belongs in `to_memory_space`/`copy_view` itself (shared infrastructure every
+native-mesh consumer uses, not something scoped to this track), and the right shape of the fix --
+pin an explicit matching layout for every multi-dimensional field, or copy through a same-layout
+mirror per field -- deserves the next device-mesh track's attention rather than a one-line patch
+slipped into this one. This track's own device-mode pack test rows catch the exception and
+`GTEST_SKIP()` with this citation rather than reporting a `pack_to` failure that isn't one; the
+Host-mode rows (which do not cross this path) are unaffected and green.
+
 ### D27. The native backend's remap halo has no `accumulate_remap_halo` counterpart
 
 **Closed for the forward direction, 2026-10-10 ("Halo" track):** `fuse::native::NativeMeshBackend`

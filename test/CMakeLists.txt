@@ -475,6 +475,15 @@ fuse_add_gtest(backend cell_simplices)
 # same PRIVATE/BUILD_LOCAL_INTERFACE posture src/CMakeLists.txt's
 # fuse-coupler-search target uses for the same dependency.
 fuse_add_gtest(backend mls_weights LIBS $<BUILD_LOCAL_INTERFACE:ArborX::ArborX>)
+# Device-resident-arcs Phase 2, "weight-builders" track: the Space-templated
+# batched moment-matrix solve (mls_weights_device.hpp) -- an in-house
+# Gaussian elimination with partial pivoting, NOT KokkosBatched::SerialGesv:
+# both of its pivoting modes failed to compile against this host's
+# installed Kokkos/KokkosKernels pairing (measured; see
+# mls_weights_device.hpp's own header comment and KNOWN_ISSUES.md's
+# weight-builders entry for the exact compiler errors), so this test needs
+# no KokkosKernels dependency at all.
+fuse_add_gtest(backend mls_weights_device LIBS $<BUILD_LOCAL_INTERFACE:ArborX::ArborX>)
 # Nodal-remap track, step 1: general consistent interpolation on any
 # supported cell (general_interp.hpp), reached through
 # build_consistent_interp_weights (consistent_interp.hpp) exactly like
@@ -981,6 +990,12 @@ endif()
 # half under a REAL communicator is test/parallel/native_halo_mpi_test.cpp.
 fuse_add_gtest(backend native_halo THROWS)
 fuse_add_omp_legs(backend.native_halo fuse_backend_native_halo_test THROWS)
+# Device-resident-arcs Phase 2, "weight-builders" track: the Space-templated
+# migration/halo wire PACK (mesh_pack_device.hpp), checked byte-for-byte
+# against pack_for_migration/pack_halo_cells above, in both Host mode and
+# (when this Kokkos has one) a Cuda/HIP/SYCL backend. Header-only; no new
+# LIBS beyond fuse::backend's own Kokkos dependency.
+fuse_add_gtest(backend native_mesh_pack_device THROWS)
 # The parallel half, under a REAL communicator of more than one rank: needs
 # only FUSE_ENABLE_MPI (no MOAB) since the native backend's own covering-set
 # construction is planar/volumetric, not spherical.
@@ -995,6 +1010,12 @@ fuse_add_gtest(backend transfer_map_io THROWS)
 # CrystalRouter above: one test target's include path, not a widened public
 # surface.
 target_include_directories(fuse_backend_supermesh_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+# Device-resident-arcs Phase 2, "weight-builders" track: the candidate-pair
+# broad phase (supermesh_candidates_device.hpp) standing alongside
+# build_supermesh_weights, not wired into it -- see KNOWN_ISSUES.md's
+# weight-builders entry for the r3d/r2d device-feasibility finding this
+# header's own comment also carries.
+fuse_add_gtest(backend supermesh_candidates_device)
 
 # ---------------------------------------------------------------- field
 # THROWS: the extent refusals are the point of half these cases.

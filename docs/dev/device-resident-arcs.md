@@ -95,6 +95,38 @@ Kokkos-native clipping kernel is to be measured in that step and reported,
 not assumed. MOAB-backed meshes stay host-resident; their weights are built
 on the host and mirrored, as today.
 
+## Phase 2 progress ("weight-builders" track, 2026-10-13)
+
+- **Found along the way:** `to_memory_space<Target>` (native_mesh.hpp) throws converting Host -> a
+  real device space for any rank >= 2 `MeshArrays` field (`vertex_coords`), a layout mismatch between
+  Host's and Cuda's default `Kokkos::View` layout -- never exercised that direction before this track
+  (KNOWN_ISSUES.md's D44). Not fixed here (shared infrastructure, out of this track's scope); this
+  track's own device test rows skip on it with a citation rather than reporting a false `pack_to`
+  failure.
+- **Halo/migration pack:** done as a Space-templated Kokkos kernel
+  (`fuse::native::device::pack_to`, docs/dev/native-halo.md's own "Device packing" section) -- not yet
+  the symmetric merge/unpack (dedup-by-global-id stays host; see that doc and KNOWN_ISSUES.md).
+- **MLS weight assembly:** done as a Kokkos BATCHED kernel
+  (`fuse::device::solve_mls_on_space`, include/fuse/backend/mls_weights_device.hpp) using
+  `KokkosBatched::SerialGesv` from /opt/kokkos-kernels for the per-target `P x P` normal-equations
+  solve, verified against a NumPy reference and against the real `fuse::search::BoxIndex` k-nearest
+  result. Not yet wired into `build_mls_weights`'s own `RemapPlan`-level dispatch, and the
+  `E-MLS-RANK` per-target diagnostic (rank, condition estimate) is coarsened on device to a failure
+  count -- `SerialGesv` itself reports only pass/fail.
+- **Supermesh intersection:** feasibility measured, not assumed (device-resident-arcs.md's own
+  instruction for this step). r3d/r2d's call path used by `build_supermesh_weights` (`r3d_init_tet`/
+  `r3d_clip`/`r3d_reduce`, `r2d_init_poly`/`r2d_clip`/`r2d_reduce`) has no recursion, no heap
+  allocation, and only fixed-size stack buffers on the actual code path read -- algorithmically
+  device-portable -- but is blocked today by three concrete, non-algorithmic obstacles: the vendored
+  TUs are plain C with no `KOKKOS_FUNCTION` annotation, `r3d_clip`'s debug path calls
+  `fprintf(stderr, ...)` under a `#if !defined(NDEBUG)` guard that fires in this track's Debug build,
+  and the TUs are compiled as C, not C++ (nvcc identifies device code by language). The candidate-pair
+  broad phase (the O(target-simplex x source-simplex) box test, "the honest starting point" in
+  supermesh.cpp's own words) is accelerated as a device kernel
+  (`fuse::device::candidate_pairs`, include/fuse/backend/supermesh_candidates_device.hpp), standing
+  alongside `build_supermesh_weights` rather than inside it, so Host mode is untouched; the clip itself
+  stays host-side pending the patch above.
+
 ## Multi-rank (Phase 3)
 
 **Done (transport track, 2026-10-13):** a run-time GPU-aware MPI probe

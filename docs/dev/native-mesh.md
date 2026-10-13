@@ -254,8 +254,21 @@ docs/dev/device-resident-arcs.md's own Phase 2 ordering (search, then this file,
 migration pack/unpack, then the weight builders, named there as this track's siblings' scope, not
 this one's).
 
+## Device-capable packing (Phase 2, "weight-builders" track)
+
+`include/fuse/backend/native/mesh_pack_device.hpp` templates migration's and the remap halo's byte-wire
+PACK on the Kokkos memory space (docs/dev/native-halo.md's own "Device packing" section has the full
+account): `MeshArrays<Space>`'s plain CSR connectivity is read directly, with no `NativeMeshView`
+round trip, so packing runs as Kokkos kernels on `Space`. The receiving side's dedup-by-global-id merge
+is not yet templated -- see "What is deferred" below and KNOWN_ISSUES.md.
+
 ## What is deferred
 
+- **Device-resident migration/halo MERGE.** `pack_to<Space>` (above) moves packing to the device; the
+  symmetric unpack/merge (`unpack_migrated_mesh`'s vertex dedup, `merge_halo_cells`'s cell dedup, both
+  by global id) still runs on the host. The bulk per-field data copy generalizes the same way packing
+  did; the open piece is the membership decision itself, which wants a device-friendly sorted-unique or
+  hash-set primitive this track did not build.
 - **Coverage migration (M3).** This migrates OWNED cells whole; it does not build or maintain GHOST
   layers across a repartition. A caller needing ghosts after migration re-derives them separately.
 - **Per-placement remap weights.** `repartition`'s convenience wrapper uses a uniform per-cell weight;
