@@ -63,6 +63,7 @@
 #include <Eigen/Dense>
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -1597,14 +1598,28 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   // indifferent to the sign.
   ASSERT_NEAR(std::abs(lambda), eig.rho, 1e-9);
 
+  // The eigenvalue -1 is repeated (one acceleration passenger per beam
+  // degree of freedom), so the eigen-decomposition is free to return any
+  // basis of that eigenspace, real or complex: the host run happens to get
+  // a real vector, the same row under FUSE_EXECUTION_SPACE=device (where
+  // the Relax/Remap kernels round differently at the 1e-14 level and the
+  // finite-difference columns move with them) got one with |imag| up to
+  // 0.23. For a real eigenvalue of a real matrix the real part of any
+  // eigenvector is itself an eigenvector, so x is that real part; what the
+  // protocol needs is only that it is not negligible, and `eig_quality`
+  // below checks that it IS an eigenvector of the actual coupled run.
   Eigen::VectorXd x(static_cast<Eigen::Index>(d.D));
-  double max_im = 0.0;
+  double max_im = 0.0, vnorm2 = 0.0;
   for (Eigen::Index i = 0; i < x.size(); ++i) {
-    x[i] = eig.solver.eigenvectors().col(eig.dominant)[i].real();
-    max_im = std::max(max_im, std::abs(eig.solver.eigenvectors().col(eig.dominant)[i].imag()));
+    const std::complex<double> v = eig.solver.eigenvectors().col(eig.dominant)[i];
+    x[i] = v.real();
+    max_im = std::max(max_im, std::abs(v.imag()));
+    vnorm2 += std::norm(v);
   }
-  std::printf("eigenvector max |imag part| = %.3e (should be ~0)\n", max_im);
-  ASSERT_LT(max_im, 1e-6);
+  std::printf("eigenvector max |imag part| = %.3e (a real basis vector of the "
+              "repeated eigenvalue is taken as its real part)\n", max_im);
+  ASSERT_GT(x.norm(), 0.1 * std::sqrt(vnorm2))
+      << "the eigenvector's real part is negligible; pick another basis vector";
 
   // Round 4's own homogeneous run: Umax=0 so b=0 exactly (only inflow
   // forces this system; the beam has none of its own), letting a SINGLE
