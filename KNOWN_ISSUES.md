@@ -4472,3 +4472,37 @@ default `.omp`/non-`.device` MPI legs) are unaffected and still assert zero allo
 -n 1 ... ` does not reproduce the two-rank disjoint placement, so the real repro needs an
 attached debugger or `gdb --args` under `mpiexec`), to get an actual call stack for the
 allocation.
+### D43 (transport track). `parallel.window_runner_mpi`'s new `.device` twin fails with `E-RT-DEVICE` on an `Interpolate` instruction — OPEN, pre-existing window+device interaction, not caused by this track's Transport change
+
+**What.** `fuse_add_mpi_test(parallel window_runner_mpi ... DEVICE_TWIN)` (this track) registers
+the first-ever Device-mode run of this file's window-scoped iteration region test. Both
+`.device` rows fail immediately: `E-RT-DEVICE: instruction 'Interpolate' needed more device
+staging than setup() provisioned (4 lanes of 0 values)` -- `Impl::device_staging_stride` is 0
+when this plan's window-scoped region reaches its spacetime `Interpolate`, so `stage()`'s fault
+path (`staging_fault = true`) trips on the very first lane request. `parallel.window_runner_mpi.2`
+/`.3` (Host) are unaffected and still pass; `parallel.nodal_remap_runner` and
+`parallel.native_halo_mpi`'s own new `.device` twins both pass clean, so this is specific to
+the window-scoped + spacetime-Interpolate combination, not to Transport or to `DEVICE_TWIN`
+rows generally.
+
+**Why this is not this track's Transport change.** `device_staging_stride` is computed in
+`Runner::Impl::initialize()` as `max(s.total() for s in slots)`, entirely independent of which
+arcs `place_arcs_on_device()` pins or promotes -- Transport's own arcs moving from
+unconditionally-pinned to space-aware (D41) does not change any `Slot::total()`. The window
+member bookkeeping (`advance_window()`, `src/runtime/iteration.cpp`) and its own Interpolate
+dispatch are both outside `execute_on<Space>()`'s ordinary switch (WindowAdvance instructions
+are special-cased, per that case's own refusal comment), so this looks like a latent gap in
+the window-scoped-region-under-Device path that nothing in this tree's suite exercised before
+`DEVICE_TWIN` added the first `.device` row for this specific test file.
+
+**Why not fixed now.** docs/dev/device-resident-arcs.md's own rollout Step 3 lists "the
+accelerator interface vector and the window-member bookkeeping" as a SEPARATE item from this
+track's Phase 3 scope (GPU-aware transport, rank-to-device binding, device-mode MPI test
+rows); diagnosing a zero-sized `device_staging_stride` for a window-scoped plan's spacetime
+history needs a change to `Runner::Impl::initialize()`'s stride computation or to how a
+window's own ticks reach `execute_on<Space>()`, neither of which this track's charter covers.
+
+**What would close it.** Trace with `FUSE_DEVICE_DEBUG=1` why `device_staging_stride` comes out
+0 for this plan (every ordinary, non-window slot in it is non-empty, per the Host leg's own
+successful run) -- likely the window-scoped region's own blocks/history are sized from a path
+`initialize()`'s stride loop does not walk, which is exactly the gap Step 3 names.

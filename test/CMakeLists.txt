@@ -223,7 +223,7 @@ endfunction()
 # MOAB rows where the build registers twelve), which is exactly the kind of
 # gap that makes a selector read as coverage it does not have.
 function(fuse_add_mpi_test layer name)
-  cmake_parse_arguments(ARG "" "" "LIBS;RANKS;LABELS" ${ARGN})
+  cmake_parse_arguments(ARG "DEVICE_TWIN" "" "LIBS;RANKS;LABELS" ${ARGN})
   if(NOT ARG_RANKS)
     # 1 included deliberately (S5.5, build-evidence/parallel-matrix.toml row
     # A-RANKS). A single task is not a trivial case of the others: every match
@@ -296,6 +296,35 @@ function(fuse_add_mpi_test layer name)
     set_tests_properties(${layer}.${name}.${n} PROPERTIES TIMEOUT 120 LABELS "${_fuse_mpi_labels}"
       ENVIRONMENT "OMP_NUM_THREADS=${_fuse_mpi_threads};OMP_PROC_BIND=false;OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
   endforeach()
+  # DEVICE_TWIN (docs/dev/device-resident-arcs.md Phase 3): re-registers
+  # this row under FUSE_EXECUTION_SPACE=device at 1, 2 and 3 ranks --
+  # several ranks sharing however many devices this build's Kokkos reports
+  # (one, on higgs; fuse::abi::resolve_device_id() is what maps a local
+  # rank onto one when there are fewer devices than ranks). Absent, not
+  # skipped, on a build with no device backend (fuse_add_device_twin's own
+  # FUSE_KOKKOS_HAS_DEVICE guard, reused here) and at a rank count this
+  # row was never registered at in the first place -- a test that needs
+  # RANKS 2 3 (epoch_reconcile, window_runner_mpi) gets device twins only
+  # at the ranks it actually runs at, never at 1.
+  if(ARG_DEVICE_TWIN AND FUSE_KOKKOS_HAS_DEVICE)
+    # The intersection of {1, 2, 3} and this row's own RANKS: a row
+    # registered only at RANKS 2 3 (window_runner_mpi) gets device twins
+    # only at 2 and 3, never a rank count it does not run the host leg at.
+    foreach(n IN ITEMS 1 2 3)
+      if(NOT n IN_LIST ARG_RANKS)
+        continue()
+      endif()
+      math(EXPR _fuse_mpi_threads "${_fuse_host_cores} / ${n}")
+      if(_fuse_mpi_threads LESS 1)
+        set(_fuse_mpi_threads 1)
+      endif()
+      add_test(NAME ${layer}.${name}.${n}.device
+               COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${n} $<TARGET_FILE:${target}>)
+      set_tests_properties(${layer}.${name}.${n}.device PROPERTIES TIMEOUT 120
+        LABELS "${_fuse_mpi_labels};device"
+        ENVIRONMENT "FUSE_EXECUTION_SPACE=device;OMP_NUM_THREADS=${_fuse_mpi_threads};OMP_PROC_BIND=false;OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
+    endforeach()
+  endif()
 endfunction()
 
 # ---------------------------------------------------------------- base
@@ -712,9 +741,16 @@ fuse_tests_gated_by(FUSE_ENABLE_MPI
   parallel/schur_slab_mpi_test.cpp parallel/krylov_mpi_test.cpp
   parallel/derivative_gate_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
-  foreach(t runner_transport comm_graph mpi_transport)
+  foreach(t comm_graph mpi_transport)
     fuse_add_mpi_test(parallel ${t} LIBS fuse::runtime)
   endforeach()
+  # Runner-driving (graph-executing): the channel Transport's own MPI
+  # exchange, through a real Runner, at every rank count -- the row the
+  # device-resident/GPU-aware transport path (docs/dev/device-resident-arcs.md
+  # Phase 3) is most directly exercised by. `comm_graph`/`mpi_transport`
+  # above call CommGraph/Transport directly and never reach the Runner, so
+  # they get no device twin.
+  fuse_add_mpi_test(parallel runner_transport LIBS fuse::runtime DEVICE_TWIN)
   # "Containers" track, tier 1: make_mpi_reducer/make_mpi_exchanger and the
   # DistVector/DistSparseMatrix operations built on them, over a real
   # MPI_COMM_WORLD. RANKS 2 only, per the task: built here, run on the host.
@@ -762,7 +798,7 @@ if(FUSE_ENABLE_MPI)
   # partially overlapping RankSets. See that file's own header for the
   # closed-form / one-rank-reference argument its "bit-identical across
   # rank counts" checks rest on.
-  fuse_add_mpi_test(parallel nodal_remap_runner LIBS fuse::runtime fuse::backend)
+  fuse_add_mpi_test(parallel nodal_remap_runner LIBS fuse::runtime fuse::backend DEVICE_TWIN)
   # epoch_reconcile is registered from 2 ranks up, not 1. Its own
   # EpochReconcile.TheJobNeedsAtLeastTwoRanks asserts `world_size() >= 2`
   # deliberately -- "Not a skip: with one rank there is nothing to reconcile,
@@ -776,7 +812,7 @@ if(FUSE_ENABLE_MPI)
   # declares exactly two coupled members (A, B); at 2 ranks they are
   # disjoint, at 3 a genuinely uncoupled third component (C) is added so
   # its presence is proven not to perturb the window's agreed answer.
-  fuse_add_mpi_test(parallel window_runner_mpi LIBS fuse::runtime RANKS 2 3)
+  fuse_add_mpi_test(parallel window_runner_mpi LIBS fuse::runtime RANKS 2 3 DEVICE_TWIN)
   # Grid track: test/verification/brusselator_grid_decomposition_test.cpp's
   # requirements 2-4 repeated on 2 real ranks. RANKS 2 only, per the task
   # ("the tier-1 test repeats 2-4 on 2 real ranks"); the test-local MPI
@@ -941,7 +977,7 @@ fuse_add_omp_legs(backend.native_halo fuse_backend_native_halo_test THROWS)
 # construction is planar/volumetric, not spherical.
 fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/native_halo_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
-  fuse_add_mpi_test(parallel native_halo_mpi LIBS fuse::backend MPI::MPI_CXX RANKS 2 3)
+  fuse_add_mpi_test(parallel native_halo_mpi LIBS fuse::backend MPI::MPI_CXX RANKS 2 3 DEVICE_TWIN)
 endif()
 fuse_add_gtest(backend supermesh THROWS)
 fuse_add_gtest(backend transfer_map_io THROWS)
