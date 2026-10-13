@@ -9,6 +9,7 @@
 #include <locale>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "fuse/ir/dump.hpp"  // detail::attrs_string, detail::pad
@@ -718,6 +719,51 @@ bool rank_participates(const Instruction& ins, int rank, const CouplingGraph& g)
   return in_set(ins.attrs.src_rank_set) || in_set(ins.attrs.dst_rank_set);
 }
 
+/// Review 2026-10-11 IS-7: a component or channel named by more than one
+/// window-scoped region is resolved first-wins everywhere that reads it --
+/// `ClockSet`'s ctor takes the first region's window length and `break`s
+/// (clock.hpp:190-191, whose own comment calls the configuration
+/// unsupported without refusing it), and `owning_window_region()`/
+/// `owning_window_region_for_component()` (src/schedule/expand.cpp) both
+/// `return` on the first match. None of those sites refuses the overlap;
+/// this does, once, for every window-scoped region in `g`, before any of
+/// them runs.
+[[nodiscard]] Result<void> check_window_region_overlap(const CouplingGraph& g) {
+  std::unordered_map<std::uint32_t, std::uint32_t> component_region;
+  std::unordered_map<std::uint32_t, std::uint32_t> channel_region;
+  for (std::uint32_t i = 0; i < g.iteration_region_count(); ++i) {
+    const IterationRegionDecl& decl = g.iteration_region(IterationRegionIdx{i});
+    if (!decl.window_scope.has_value()) continue;
+
+    for (const ComponentId m : window_region_members(g, decl)) {
+      const auto [it, inserted] = component_region.emplace(m.value(), i);
+      if (!inserted && it->second != i) {
+        const IterationRegionDecl& first =
+            g.iteration_region(IterationRegionIdx{it->second});
+        return Failure{
+            "E-SCHED-WINDOW-OVERLAP",
+            "component '" + g.component(m).name +
+                "' belongs to both window-scoped region '" + first.name +
+                "' and '" + decl.name + "'; a component's clock and lag "
+                "window can resolve to only one of them"};
+      }
+    }
+    for (const ChannelId c : decl.channels) {
+      const auto [it, inserted] = channel_region.emplace(c.value(), i);
+      if (!inserted && it->second != i) {
+        const IterationRegionDecl& first =
+            g.iteration_region(IterationRegionIdx{it->second});
+        return Failure{
+            "E-SCHED-WINDOW-OVERLAP",
+            "channel '" + g.channel_at(c).name +
+                "' belongs to both window-scoped region '" + first.name +
+                "' and '" + decl.name + "'"};
+      }
+    }
+  }
+  return Result<void>::success();
+}
+
 }  // namespace
 
 std::vector<std::string> epoch_sequence(const ExecutionPlan& plan,
@@ -735,6 +781,17 @@ ScheduleResult schedule(const CouplingGraph& g, const OperatorDAG& dag,
                         const ClockSet& clocks, const RegionSizes& sizes,
                         ExpandMode mode) {
   ScheduleResult result;
+
+  // Review 2026-10-11 IS-7: checked once, across every window-scoped region
+  // at once, before any per-region gate below runs -- those each validate
+  // one region in isolation and cannot see a component or channel a SECOND
+  // region also claims.
+  const Result<void> no_overlap = check_window_region_overlap(g);
+  if (!no_overlap.ok()) {
+    result.diags.add(Severity::Error, no_overlap.error().code,
+                     no_overlap.error().message);
+    return result;
+  }
 
   // Time windows track: the legality gate for a window-scoped iteration
   // region (fuse::CouplingWindowScope, fuse/schedule/window.hpp) must be

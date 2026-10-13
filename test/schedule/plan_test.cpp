@@ -397,6 +397,103 @@ TEST(ExecutionPlan, WindowMemberGatesAnOrdinaryCycleOutsideTheRegion) {
   EXPECT_TRUE(saw_cycle_code) << r.diags.to_string();
 }
 
+// Review 2026-10-11 IS-7: a component claimed by two DIFFERENT window-scoped
+// regions used to be silently resolved first-wins -- ClockSet's ctor
+// (include/fuse/schedule/clock.hpp) takes the first region's window length
+// and `break`s, and owning_window_region_for_component() (src/schedule/
+// expand.cpp) `return`s on the first match -- a wrong-but-deterministic
+// schedule with no diagnostic. `b` is a member of both `ab` (with `a`) and
+// `bc` (with `c`) below; schedule() must refuse it with the new
+// E-SCHED-WINDOW-OVERLAP rather than silently pick one.
+TEST(ExecutionPlan, ComponentInTwoWindowRegionsIsRefused) {
+  CouplingGraph g;
+  const auto ma = g.add_mesh(fuse::MeshDecl{.name = "ma"});
+  const auto mb = g.add_mesh(fuse::MeshDecl{.name = "mb"});
+  const auto mc = g.add_mesh(fuse::MeshDecl{.name = "mc"});
+  const auto ra = g.add_region(fuse::Region{.name = "ra", .mesh = ma});
+  const auto rb = g.add_region(fuse::Region{.name = "rb", .mesh = mb});
+  const auto rc = g.add_region(fuse::Region{.name = "rc", .mesh = mc});
+
+  const auto a = g.add_component(ComponentDecl{
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1, 4}});
+  const auto b = g.add_component(ComponentDecl{
+      .name = "b", .ranks = fuse::RankSet{1, 1}, .interval = Rational{1, 4}});
+  const auto c = g.add_component(ComponentDecl{
+      .name = "c", .ranks = fuse::RankSet{2, 1}, .interval = Rational{1, 4}});
+
+  // Region "ab": a <-> b.
+  const auto a_out = g.add_field(a, fuse::FieldSpec{
+      .name = "a_out", .region = ra, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Provides});
+  const auto b_in = g.add_field(b, fuse::FieldSpec{
+      .name = "b_in", .region = rb, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Requires});
+  const auto b_out = g.add_field(b, fuse::FieldSpec{
+      .name = "b_out", .region = rb, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Provides});
+  const auto a_in = g.add_field(a, fuse::FieldSpec{
+      .name = "a_in", .region = ra, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Requires});
+  const auto ab_fwd = g.add_channel("a2b", a_out, b_in);
+  const auto ab_back = g.add_channel("b2a", b_out, a_in);
+  g.channel(ab_back).lag(1).allow_time_level_mismatch(
+      "resolved by the a-b coupling window's own sweep");
+
+  fuse::CouplingWindowScope ab_scope;
+  ab_scope.window_component = "a";
+  ab_scope.order = 2;
+  ab_scope.policies = {{"a", fuse::DtPolicy::Adjustable},
+                       {"b", fuse::DtPolicy::Adjustable}};
+  ab_scope.iteration = fuse::WaveformIteration::GaussSeidel;
+  g.add_iteration_region(fuse::IterationRegionDecl{
+      .name = "ab", .channels = {ab_fwd, ab_back}, .max_iterations = 20,
+      .window_scope = ab_scope});
+
+  // Region "bc": b <-> c. `b` is also a member of "ab" above.
+  const auto b_out2 = g.add_field(b, fuse::FieldSpec{
+      .name = "b_out2", .region = rb, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Provides});
+  const auto c_in = g.add_field(c, fuse::FieldSpec{
+      .name = "c_in", .region = rc, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Requires});
+  const auto c_out = g.add_field(c, fuse::FieldSpec{
+      .name = "c_out", .region = rc, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Provides});
+  const auto b_in2 = g.add_field(b, fuse::FieldSpec{
+      .name = "b_in2", .region = rb, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Requires});
+  const auto bc_fwd = g.add_channel("b2c", b_out2, c_in);
+  const auto bc_back = g.add_channel("c2b", c_out, b_in2);
+  g.channel(bc_back).lag(1).allow_time_level_mismatch(
+      "resolved by the b-c coupling window's own sweep");
+
+  fuse::CouplingWindowScope bc_scope;
+  bc_scope.window_component = "c";
+  bc_scope.order = 2;
+  bc_scope.policies = {{"b", fuse::DtPolicy::Adjustable},
+                       {"c", fuse::DtPolicy::Adjustable}};
+  bc_scope.iteration = fuse::WaveformIteration::GaussSeidel;
+  g.add_iteration_region(fuse::IterationRegionDecl{
+      .name = "bc", .channels = {bc_fwd, bc_back}, .max_iterations = 20,
+      .window_scope = bc_scope});
+
+  const auto r = build(g);
+  EXPECT_FALSE(r.ok());  // wrongly accepted (first-wins) before the fix
+  bool saw_overlap_code = false;
+  for (const auto& d : r.diags.items()) {
+    if (d.code == "E-SCHED-WINDOW-OVERLAP") saw_overlap_code = true;
+  }
+  EXPECT_TRUE(saw_overlap_code) << r.diags.to_string();
+}
+
 TEST(ExecutionPlan, DumpMentionsEveryOpKindPresent) {
   const auto r = build(pair(Rational{1}, Rational{1}));
   ASSERT_TRUE(r.ok());
