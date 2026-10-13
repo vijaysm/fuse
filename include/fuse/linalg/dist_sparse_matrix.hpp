@@ -98,7 +98,13 @@ class DistSparseMatrix {
   /// there is a caller mistake and throws, the same split
   /// `DistVector::check_same_distribution` draws elsewhere in this
   /// library); a communication failure inside `update_ghosts()` is the
-  /// one outcome this returns a `Failure` for.
+  /// one outcome this returns a `Failure` for. `x` and `y` must not
+  /// alias, not even partially: row `i`'s write to `y` happens before
+  /// every later row that reads the SAME owned entry of `x` as an
+  /// off-diagonal column, so `apply(v, v)` reads some entries of `v`
+  /// after they have already been overwritten -- a caller mistake,
+  /// asserted at entry (`kernels.hpp`'s num-layer kernels document the
+  /// identical no-aliasing rule for their own in-place calls).
   [[nodiscard]] Result<void> apply(DistVector& x, DistVector& y) const;
 
   /// `d.data()[i] <- A(row_lo + i, row_lo + i)` (0.0 where the diagonal
