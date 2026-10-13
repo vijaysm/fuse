@@ -4987,3 +4987,155 @@ never with live HDF5/LowFive serving a real file.
 gave -- the two-HDF5-image hazard is closed (host action only), Demo B's own distributed path is compiled and
 never run, and D14's own open accept-mode intercommunicator question (item 3 of its "what remains" list) is
 untouched by a fix that only concerns the MPMD row's own already-formed intercommunicator.
+
+**Round 5 (2026-10-13), instrumentation, not a fix -- round 4's own set_intercomm/NormalizeDatasetPattern fix
+held, and the host's own NEXT run reached a NEW hang.** The host rebuilt (`cmake --build .`, every target, exit 0)
+and ran `ctest -R 'participants\.lowfive\.mpmd\.3'`. The row got PAST its own first remote `H5Fopen` (no more
+`MetadataError: file_open(): no intercomm found`) and hung the full 120 s again, with a `sample` at +40 s showing
+BOTH `brusselator_u_main` and `brusselator_v_main` inside `file_open()`'s own `get_file_hierarchy` RPC call
+(`rpc::client::call` -> `rpc::recv` -> `MPI_Probe`, polling) -- `brusselator_coupler_main` waiting in
+`MPI_Allreduce` for both, `u.log`/`v.log` both empty. Under this entry's own role-ordered protocol, U (the lower-
+`min_rank()` component) is first-server: its own `bruss_lowfive_write` -> `bruss_lowfive_serve_after_write` ->
+`kServeNow` -> `serve_all()` call must have RETURNED WITHOUT BLOCKING, or never run at all -- U is a CONSUMER in
+the sample, not inside `serve_all()`. Four hypotheses, named by the lead, each predicting a different trace:
+
+- **H1**: the cold-start write's own view guard (`out_view.window_samples > 0 && out_view.data`, `u_main.c`) was
+  false, so `bruss_lowfive_write()` was never reached at all -- no file, nothing for the peer to open.
+- **H2**: `serve_all()` returned at once because `indexed_datasets == 0` (`vol-dist-metadata.cpp`'s own `if
+  (index.indexed_datasets || !perform_indexing) index.serve();`).
+- **H3**: the serve hook returned an action other than `kServeNow` (or never ran at all).
+- **H4**: `serve_all()` served the wrong intercomm index, or `intercomms`/`serve_indices` ended up empty.
+
+**Source analysis (cites, not speculation presented as fact) -- what each hypothesis would need to be true, and
+whether this sandbox's own reading of the source supports it:**
+
+**H1: argues AGAINST, not FOR, from the FUSE side -- but not disproven, because nothing in this sandbox can
+observe the real call.** `Runner::field_window_view()` (`src/runtime/runner.cpp:4160-4186`) computes
+`window_samples` as `arc_components / field_components` -- a STRUCTURAL ratio from the DAG arc's own type, set
+once the window-scoped arc exists, with NO dependence on whether any step has actually run -- and returns
+`slot.data` (the buffer `impl_->slots[arc.value()]` already points at), not a flag that tracks whether the buffer
+has been "primed" with a real value yet. `test/verification/brusselator_lowfive_harness_test.cpp`'s own
+`deliver()` helper (lines ~218-249) calls the IDENTICAL `view_field()` at the IDENTICAL point in a process's own
+lifecycle -- right after `fuse_initialize()`, before any `fuse_begin_step()` -- for the SAME kind of field (`u_out`
+cold-start export), with `ASSERT_GT(src.window_samples, 0)` (line 245), and that test PASSES in this track's own
+tier-0 suite. This is not a proof that `u_main.c`'s own `out_view.window_samples > 0 && out_view.data` guard
+passes on the host -- `u_main.c` is a different process, a different graph load path, and this sandbox cannot run
+it with real MPI -- but it is evidence that the MECHANISM H1 would need (the window buffer not yet being primed at
+cold start) does not match how `field_window_view()`/`resolve_regions()`'s own "ordinary prime" pass are
+documented and tested to behave. Item 3's own trace (`bruss_lowfive_trace_skip()`) is what actually settles this
+on the next host run.
+
+**H2: the SPECIFIC mechanism ("is_memory mismatch starves indexed_datasets") does NOT hold, read directly from
+LowFive's source -- a narrower, correct finding than "H2 is the cause" or "H2 is ruled out."** `MetadataVOL::
+file_create()`'s own comment states plainly: "we build the in-memory hierarchy regardless of whether we match
+memory" (`src/vol-metadata/file.cpp`) -- `files.emplace(name_, f)` runs UNCONDITIONALLY, before the `match_any()`
+check that decides `is_passthru`. `MetadataVOL::dataset_create()` (`src/vol-metadata/dataset.cpp:30-33`, this
+entry's own round-4 citation) computes `is_memory` and THEN calls `obj_path.obj->add_child(new Dataset(...,
+is_passthru, is_memory))` UNCONDITIONALLY too -- `is_memory`/`is_passthru` are stored as constructor arguments ON
+the new `Dataset` object, not a gate on whether that object is added to the tree at all. `Index::find_datasets()`
+(`src/vol-dist/index.cpp:191-201`) is a plain recursive walk (`dynamic_cast<Dataset*>(o)` on every descendant of
+every `File` in `idx_srv.files`) that never consults `is_memory`/`is_passthru` either. So a dataset this process
+actually created (via `H5Fcreate`+`H5Dcreate2`, regardless of whether its own `set_memory()` pattern matched) IS
+counted in `indexed_datasets`, contradicting this entry's own round-4 account of DEFECT B's effect on `serve_all()`
+-- that account was WRONG about THIS specific mechanism (round 4's own `NormalizeDatasetPattern()` fix is still
+correct and still needed, for a DIFFERENT reason: `is_memory` controls whether `H5Dwrite`/`H5Dread` actually use
+the in-memory `Dataset` object at all, not whether `indexed_datasets` counts it). What DOES still gate
+`index.serve()`: `serve_all()`'s own declared default is `perform_indexing = true`
+(`include/lowfive/vol-dist-metadata.hpp:83`), so `index.indexed_datasets || !perform_indexing` reduces to plain
+`index.indexed_datasets` at this call's own default arguments -- if `indexed_datasets` is 0 for ANY OTHER reason
+(the write never happening at all, H1; `files` somehow not containing this file at call time; an object-tree
+quirk this reading did not find), `index.serve()` is skipped and `serve_all()` returns immediately, exactly the
+H2 SYMPTOM, just not via the mechanism this entry's own round-4 account named. Item 2's own trace (file count
+before/after close, `H5Lexists()` before close) is what actually measures `indexed_datasets`' own precondition on
+the next host run (the dataset's own existence), since nothing public exposes `indexed_datasets` itself from this
+translation unit's own installed headers.
+
+**H3: not confirmed or refuted by reading the dispatch code again -- `decide_serve_roles()`/`serve_state_step()`'s
+own logic is straightforward and this entry's own round-2/round-2-REVIEW tests already cover the state machine in
+isolation, but nothing in THIS sandbox can observe whether `bruss_lowfive_serve_after_write()` was actually
+CALLED, or what `action.value()` actually was, on a real run.** Item 4's own before/after trace line names the
+action taken (`kServeNow`/`kDeferServe`/`kFlushDeferred`/`kNoopAfterImport`) explicitly, which is the only way to
+tell a correct `kDeferServe` (first-reader, expected) from an incorrectly-skipped `kServeNow` (first-server, a
+real bug) without guessing.
+
+**H4: `DistMetadataVOL::intercomms`/`serve_indices` are PUBLIC members (confirmed from the installed
+`/opt/lowfive/include/lowfive/vol-dist-metadata.hpp`, both declared before any access-specifier label, so the
+struct's own default-public rule applies) -- directly traceable, and `create_DistMetadataVOL()`
+(`src/vol-dist-metadata.cpp:398-416`) is a SINGLETON keyed on a class-static `info->vol`: a SECOND call in the
+same process, with DIFFERENT `local`/`intercomms_` arguments, only WARNS and returns the FIRST instance, silently
+discarding the new arguments. `bruss_lowfive_attach()` already refuses a second call in this process
+(`AttachState`'s own doc comment) by this entry's own design, so this specific hazard does not look reachable for
+a plain `lowfive.mpmd.3` run today -- recorded as a general hazard this track's own single-call-per-process
+discipline protects against, not a diagnosis of the measured hang. Item 1's own attach-time trace reports
+`intercomms.size()` (not in the lead's own enumerated list, but free to read and directly diagnostic) so a future
+run can rule this in or out without guessing either.
+
+**No definite defect established in attach/shim/u_main/v_main code this round -- by the lead's own instruction,
+this is why no fix is applied.** The one definite finding (H2's specific mechanism does not hold) is a correction
+to this entry's own round-4 account, not a new bug to fix -- `indexed_datasets` behaves correctly regardless of
+`is_memory`, so there is nothing broken in that specific path to change. Every other hypothesis remains open,
+settled only by a trace this round adds, not by this round's own reading.
+
+**The diagnostic trace added this round.** Two env variables, both read ONCE per process (a cached bool/`getenv()`
+call each): `FUSE_LOWFIVE_ATTACH_TRACE=1` (exactly the character `1`; `lowfive_attach_decision.hpp`'s own
+`ParseTraceEnabledEnv()`) turns on this track's own `TRACE(...)`-prefixed stderr lines (attach-time: world rank,
+component, role, `distributed`, the `set_intercomm()`/`set_memory()` argument lists, `serve_on_close`,
+`intercomms.size()`/`files.size()`; write/read: file/dataset/`nvals`, `H5Fcreate`/`H5Fopen` success,
+`H5Lexists()` before close, file count after close; the write/read view guards' own skip case, via a new
+`bruss_lowfive_trace_skip()` reachable from Fortran through a `bind(C)` subroutine; each `serve_all()` call site,
+with the action taken and monotonic elapsed seconds). `FUSE_LOWFIVE_LOG=<level>` turns on LowFive's own
+`spdlog`-based logger (`LowFive::create_logger()`, guarded with a `try`/`catch(const std::exception&)` against the
+one documented way it can throw -- a second registration of a logger named `"lowfive"` in the same process,
+unreachable today for the reason H4's own account gives, handled anyway per the lead's own instruction). Neither
+variable changes any return code or call order -- confirmed by this round's own full verification (below) passing
+identically to round 4's own count, plus a direct read of every call site added: each is a single cached-bool
+branch guarding an `fprintf()`/`create_logger()` call and nothing else. docs/user/lowfive.md's new "Diagnosing a
+hang" section has the exact host command and the full account of where the trace lines land (`run_participants.
+sh`'s own per-rank stderr redirection) and why `FUSE_LOWFIVE_ATTACH_TRACE`/`FUSE_LOWFIVE_LOG` reach all three
+programs under MPICH (no `-env`/`-genv`/`-envnone` flags anywhere in that script's three `mpiexec` invocations,
+so hydra's own documented default -- propagate the launching shell's environment -- applies; CTest's own
+`ENVIRONMENT` test property only adds variables, never clears the rest).
+
+**Pinned by (Round 5, additive to the round-4 section's own inventory above, now 46 tests total in that
+binary).** Five new `ParseTraceEnabledEnv` tests (exactly `"1"` is enabled; unset/empty/`"0"`/word-forms
+`"true"`/`"TRUE"`/`"yes"`/`"10"` are all disabled -- the brief's own literal spec, deliberately not a permissive
+grammar); three `FormatRegistrationsForTrace` tests and three `FormatMemoryPatternsForTrace` tests (empty list,
+one entry's own exact format, two entries comma-separated) -- the pure formatters the attach-time trace line's own
+text goes through. Two new hand-proved mutation rows in `build-evidence/mutations/lowfive-attach.toml`
+(`parse-trace-enabled-env-accepts-anything-nonempty`, reproducing a permissive-grammar regression exactly -- 44
+PASS / 2 FAIL; `format-registrations-for-trace-drops-the-intercomm-index`, reproducing a silent loss of H4's own
+diagnostic field -- 44 PASS / 2 FAIL), each killed decisively and the file restored byte-identical (`md5` checked)
+before the next step. All five pre-existing mutation rows (two from round 2/round-2-REVIEW, two from round 4, one
+from the original `DecideAttachMode` set) were RE-RUN (not merely anchor-checked) against this round's own larger
+binary and still kill exactly the same test(s) each always did (45/1, 45/1, 38/8, 44/2, 45/1 respectively -- the
+38/8 count for the round-2-REVIEW row differs from round 4's own 27/8 only because this round added more PASSING
+tests to the same binary, the same "larger binary, same mutation effect" note round 4's own entry already made for
+that row). `python3 tools/mutate.py --check-anchors` reports 340 valid, 0 stale, of 340. Full tier-0 and all 5
+repo-health gates clean, and the full tier-1 (MPI+Fortran+LowFive+MOAB) build is clean too, INCLUDING the Fortran
+changes to `v_main.f90` (the new `bind(C)` interface, two `target` string declarations, two call sites) -- this
+round's own report has the exact numbers.
+
+**What the host must verify (Round 5) -- a trace run, not a fix verification; this round changed NOTHING about
+whether the row passes.** In `build-lowfive`: rebuild (`cmake --build .`, every target), then
+
+```
+FUSE_LOWFIVE_ATTACH_TRACE=1 FUSE_LOWFIVE_LOG=trace ctest -R 'participants\.lowfive\.mpmd\.3' --output-on-failure
+```
+
+Read `u_stdout.<rank>.log`/`v_stdout.<rank>.log` (`run_participants.sh`'s own per-rank redirection). A table of
+what the trace would show for each hypothesis, built from this entry's own source analysis above, not from a
+second measurement:
+
+| Trace shows | Hypothesis |
+|---|---|
+| A `TRACE(u_lowfive_write_export): SKIPPED` line at the cold-start call, before any `TRACE(bruss_lowfive_write)` line ever appears for U | H1 (confirms it -- contradicts this entry's own FUSE-side reading above) |
+| `TRACE(bruss_lowfive_write)` reaches `exit rc=0`, but `after_close files_in_memory=0` (or `dataset_exists_before_close=0`) | H2-adjacent: the write happened but the VOL's own file/dataset bookkeeping did not retain it -- a defect this round's own source reading did not find and did not expect |
+| `TRACE(bruss_lowfive_serve_after_write): action=kServeNow enter` with NO matching `exit elapsed=` line before the 120 s timeout | the healthy signature this entry's own role-ordered design expects -- the hang is downstream (the PEER's own open-and-close never happens), not in U's own serve call at all; re-examine why V never reaches its own `H5Fopen`/`H5Fclose` of `brusselator_u.h5` |
+| `TRACE(bruss_lowfive_serve_after_write): action=kServeNow exit elapsed=0.00000Xs` (near-zero) | H2's own SYMPTOM, mechanism not yet identified by this entry (see H2's own account above -- `indexed_datasets` was 0 for a reason this round's own reading did not find) |
+| `TRACE(bruss_lowfive_serve_after_write): action=kDeferServe` printed for U (the first-server) instead of `kServeNow` | H3 confirmed -- `decide_serve_roles()` assigned the wrong role, or `this_name`/`roles.value().first_server_name` disagree in a way this entry's own tier-0 tests did not cover |
+| No `TRACE(bruss_lowfive_attach)` line at all for U, or `distributed=0` where `distributed=1` was expected | the attach itself took a different branch than this row's own graph should produce -- re-check `decide_attach_mode()`'s own qualifying-channel logic against the ACTUAL graph.yaml this run generated |
+| `intercomms.size=0` (or a registration list with an index that does not match `remote_size()`'s own intercomm) in the attach-time trace | H4 confirmed |
+| LowFive's own `FUSE_LOWFIVE_LOG=trace` output shows `"enter serve_all, files.size = 0"` for U | the file was never created in THIS process's own VOL at all -- points back to H1, independent of this round's own `bruss_lowfive_write`-side trace agreeing |
+
+**Still does not close D14.** Unchanged by this round -- an instrumentation-only round touches neither the
+two-HDF5-image hazard, Demo B's own distributed path, nor D14's own open accept-mode question.

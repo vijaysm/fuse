@@ -496,6 +496,101 @@ this fix has never been run on a host either: the row's own distributed
 RPC path, per-iteration steady state, and data correctness remain
 UNMEASURED by any round of this track so far.
 
+## Diagnosing a hang
+
+**Round 5** -- round 4's own fix held (no more `file_open(): no intercomm
+found`), and the host's own NEXT run of `lowfive.mpmd.3` got PAST the first
+remote open and into a NEW 120 s hang, measured with both `brusselator_u_main`
+and `brusselator_v_main` inside `file_open()`'s own `get_file_hierarchy` RPC
+call (`rpc::recv` -> `MPI_Probe`), neither inside `serve_all()` at all --
+U (first-server, the lower-`min_rank()` component) should have been serving,
+not also consuming. KNOWN_ISSUES.md D39's own "Round 5" account has the full
+four-hypothesis analysis (H1: the cold-start write's own view guard was
+false; H2: `serve_all()` returned at once because `indexed_datasets==0`;
+H3: the serve hook returned an action other than `kServeNow`, or never ran;
+H4: `serve_all()` served the wrong intercomm index, or `intercomms`/
+`serve_indices` ended up empty) with LowFive-source citations for each --
+this section covers only the DIAGNOSTIC TRACE this round adds, not that
+analysis.
+
+**Two independent, OFF-by-default env variables**, both read once per
+process (a cached bool/one `getenv()` call each -- "keep the trace code
+out of the hot path when disabled," the lead's own instruction):
+
+- **`FUSE_LOWFIVE_ATTACH_TRACE=1`** (exactly the character `1`; anything
+  else, including unset, is disabled -- `lowfive_attach_decision.hpp`'s own
+  `ParseTraceEnabledEnv()`) turns on this track's OWN trace lines, all
+  prefixed `TRACE(...)`, written to stderr:
+  - One line at attach time (`bruss_lowfive_attach()`): world rank,
+    component, role (`first-server`/`first-reader`), the `distributed`
+    flag, the registered `(file, dataset_pattern, intercomm_index)` list
+    (`vol.set_intercomm()`'s own arguments), the `(file, dataset)` memory
+    patterns (`vol.set_memory()`'s own arguments), the `serve_on_close`
+    value actually set, and (bonus, not in the brief's own enumerated
+    list but free to read and directly diagnostic for H4) `intercomms.
+    size()`/`files.size()`.
+  - One line before and after `bruss_lowfive_write()`/`bruss_lowfive_
+    read()` (`shim.cpp`): file, dataset, `nvals`, whether `H5Fcreate`/
+    `H5Fopen` succeeded, and (write side only) an `H5Lexists()` check on
+    the dataset path BEFORE `H5Fclose` plus the VOL's own in-memory file
+    count AFTER it (`bruss_lowfive_attach_file_count()`, the best
+    available proxy for "was the dataset attached at all" -- nothing
+    public exposes a per-dataset `is_memory` flag from this translation
+    unit's own installed LowFive headers).
+  - One line when `u_lowfive_write_export`'s/`u_lowfive_read_import`'s
+    (`u_main.c`) or `v_lowfive_write_export`'s/`v_lowfive_read_import`'s
+    (`v_main.f90`, via a new `bind(C)` subroutine, `bruss_lowfive_
+    trace_skip()` -- Fortran has no printf-equivalent of its own that
+    reaches stderr with this exact shape) own `window_samples > 0 &&
+    data` guard is FALSE, i.e. the write/read was SKIPPED -- settles H1
+    directly.
+  - One line before and after each of the two places this process ever
+    calls `serve_all()` (`bruss_lowfive_serve_after_write()`'s own
+    `kServeNow` case, `bruss_lowfive_after_read_close()`'s own
+    `kFlushDeferred` case), with monotonic elapsed seconds -- a
+    near-zero elapsed line is H2's own signature; a line that never
+    gets its own matching "exit" line is the hang itself, caught live.
+- **`FUSE_LOWFIVE_LOG=<level>`** (`trace`/`debug`/`info`, LowFive's own
+  `spdlog`-based logger, `LowFive::create_logger()`) turns on LowFive's
+  OWN internal trace lines -- `"enter serve_all, files.size = N"` and
+  `Index`'s own logging settle H2/H4 directly, from inside the library
+  rather than this track's own call sites around it. Called once, at the
+  very top of `bruss_lowfive_attach()`, guarded against the one way
+  `create_logger()` can throw (a second call in the same process --
+  unreachable today, since `bruss_lowfive_attach()` already refuses a
+  second call of its own, but guarded anyway per the lead's own
+  instruction to handle it, not assume it away).
+
+**Where the trace lines land.** `test/parallel/brusselator_participants/
+run_participants.sh`'s own `mpmd` branch redirects each segment's stdout
+AND stderr, per rank, to `$SCRATCH/u_stdout.<rank>.log`/`v_stdout.<rank>.
+log`/`coupler_stdout.<rank>.log` (`sh -c '... exec "$@" >
+"${f}.${PMI_RANK:-0}.log" 2>&1'`) -- exactly where the lead's own brief
+said to look. Both env variables reach every one of the three programs:
+`run_participants.sh`'s own three `mpiexec` invocations (one for `mpmd`,
+two for `accept`) pass none of MPICH's own `-env`/`-genv`/`-envnone`
+flags, so MPICH's hydra process manager uses its documented DEFAULT
+behavior of propagating the LAUNCHING shell's own environment to every
+spawned rank; CTest's own `ENVIRONMENT` test property (`examples/
+CMakeLists.txt`, the three vestigial `HDF5_VOL_CONNECTOR`/
+`HDF5_PLUGIN_PATH`/`FUSE_LOWFIVE_BINDINGS` lines this page's own earlier
+section already names) only ADDS those three variables to the test
+process's environment -- it does not clear or replace the rest of it
+(CTest's own documented behavior) -- so exporting both variables in the
+shell that invokes `ctest` is sufficient; nothing in `examples/
+CMakeLists.txt`'s own `ENVIRONMENT` property needs to change.
+
+**Host command, exactly as the lead's own brief asked for a form that
+survives ctest/mpiexec:**
+
+```
+FUSE_LOWFIVE_ATTACH_TRACE=1 FUSE_LOWFIVE_LOG=trace \
+    ctest -R 'participants\.lowfive\.mpmd\.3' --output-on-failure
+```
+
+KNOWN_ISSUES.md D39's own "Round 5" account has the full table of "trace
+shows X => hypothesis Hn" this round's own report builds for the lead.
+
 **IR/runtime half, implemented and measured (no LowFive/HDF5 needed) —
 2026-10-04.** `lower_channel()` (`src/ir/rules_channel.cpp`) emits a new
 `OpKind::ExternalDelivery` node (`include/fuse/ir/op.hpp`) in place of
