@@ -1814,6 +1814,48 @@ add_library(fuse_test_provider_linear_bad_advance SHARED abi/plugins/linear_prov
 target_include_directories(fuse_test_provider_linear_bad_advance PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_compile_definitions(fuse_test_provider_linear_bad_advance PRIVATE FUSE_TEST_BAD_ADVANCE)
 
+# review-2026-10-11 abi: TD-6 (provider-adapter refusal codes no test fired)
+# and AB-6 (capabilities()/describe() silent-degradation paths) each need a
+# real dlopen()'d plugin that misbehaves in one more way, compiled from the
+# SAME source as the targets above.
+add_library(fuse_test_provider_linear_bad_create SHARED abi/plugins/linear_provider.c)
+target_include_directories(fuse_test_provider_linear_bad_create PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(fuse_test_provider_linear_bad_create PRIVATE FUSE_TEST_BAD_CREATE)
+
+add_library(fuse_test_provider_linear_bad_bind SHARED abi/plugins/linear_provider.c)
+target_include_directories(fuse_test_provider_linear_bad_bind PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(fuse_test_provider_linear_bad_bind PRIVATE FUSE_TEST_BAD_BIND)
+
+add_library(fuse_test_provider_linear_bad_window SHARED abi/plugins/linear_provider.c)
+target_include_directories(fuse_test_provider_linear_bad_window PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(fuse_test_provider_linear_bad_window PRIVATE FUSE_TEST_BAD_WINDOW)
+
+add_library(fuse_test_provider_linear_bad_element SHARED abi/plugins/linear_provider.c)
+target_include_directories(fuse_test_provider_linear_bad_element PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(fuse_test_provider_linear_bad_element PRIVATE FUSE_TEST_BAD_ELEMENT)
+
+add_library(fuse_test_provider_linear_bad_capabilities SHARED abi/plugins/linear_provider.c)
+target_include_directories(fuse_test_provider_linear_bad_capabilities PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(fuse_test_provider_linear_bad_capabilities PRIVATE FUSE_TEST_BAD_CAPABILITIES)
+
+add_library(fuse_test_provider_linear_bad_describe_extra SHARED abi/plugins/linear_provider.c)
+target_include_directories(fuse_test_provider_linear_bad_describe_extra PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(fuse_test_provider_linear_bad_describe_extra PRIVATE FUSE_TEST_BAD_DESCRIBE_EXTRA)
+
+add_library(fuse_test_provider_linear_bad_save SHARED abi/plugins/linear_provider.c)
+target_include_directories(fuse_test_provider_linear_bad_save PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(fuse_test_provider_linear_bad_save PRIVATE FUSE_TEST_BAD_SAVE)
+
+add_library(fuse_test_provider_linear_bad_restore SHARED abi/plugins/linear_provider.c)
+target_include_directories(fuse_test_provider_linear_bad_restore PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(fuse_test_provider_linear_bad_restore PRIVATE FUSE_TEST_BAD_RESTORE)
+
+# review-2026-10-11 abi: AB-3's old-plugin struct_size variant -- writes
+# the pre-growth fuse_step_report size instead of sizeof(current).
+add_library(fuse_test_provider_linear_old_step_report SHARED abi/plugins/linear_provider.c)
+target_include_directories(fuse_test_provider_linear_old_step_report PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(fuse_test_provider_linear_old_step_report PRIVATE FUSE_TEST_OLD_STEP_REPORT)
+
 # fuse-abi-fortran (ffuse + ffuse_provider + the shim) is a STATIC archive
 # whose only undefined symbol is fuse_coupler_abi -- resolved here because
 # THIS target is the first thing that actually needs it resolved (fortran/
@@ -1840,12 +1882,28 @@ fuse_add_gtest(abi conformance NO_LAYER_LIB LIBS fuse::abi-static fuse_abi_test_
 target_include_directories(fuse_abi_conformance_test PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
 add_dependencies(fuse_abi_conformance_test
   fuse_test_provider_linear fuse_test_provider_linear_bad_version
-  fuse_test_provider_linear_bad_describe fuse_test_provider_linear_bad_advance)
+  fuse_test_provider_linear_bad_describe fuse_test_provider_linear_bad_advance
+  fuse_test_provider_linear_bad_create fuse_test_provider_linear_bad_bind
+  fuse_test_provider_linear_bad_window fuse_test_provider_linear_bad_element
+  fuse_test_provider_linear_bad_capabilities fuse_test_provider_linear_bad_describe_extra
+  fuse_test_provider_linear_bad_save fuse_test_provider_linear_bad_restore
+  fuse_test_provider_linear_old_step_report)
 target_compile_definitions(fuse_abi_conformance_test PRIVATE
   FUSE_TEST_C_PROVIDER_PLUGIN="$<TARGET_FILE:fuse_test_provider_linear>"
   FUSE_TEST_C_PROVIDER_PLUGIN_BAD_VERSION="$<TARGET_FILE:fuse_test_provider_linear_bad_version>"
   FUSE_TEST_C_PROVIDER_PLUGIN_BAD_DESCRIBE="$<TARGET_FILE:fuse_test_provider_linear_bad_describe>"
   FUSE_TEST_C_PROVIDER_PLUGIN_BAD_ADVANCE="$<TARGET_FILE:fuse_test_provider_linear_bad_advance>"
+  # review-2026-10-11 abi: TD-6/AB-6's own plugin variants.
+  FUSE_TEST_C_PROVIDER_PLUGIN_BAD_CREATE="$<TARGET_FILE:fuse_test_provider_linear_bad_create>"
+  FUSE_TEST_C_PROVIDER_PLUGIN_BAD_BIND="$<TARGET_FILE:fuse_test_provider_linear_bad_bind>"
+  FUSE_TEST_C_PROVIDER_PLUGIN_BAD_WINDOW="$<TARGET_FILE:fuse_test_provider_linear_bad_window>"
+  FUSE_TEST_C_PROVIDER_PLUGIN_BAD_ELEMENT="$<TARGET_FILE:fuse_test_provider_linear_bad_element>"
+  FUSE_TEST_C_PROVIDER_PLUGIN_BAD_CAPABILITIES="$<TARGET_FILE:fuse_test_provider_linear_bad_capabilities>"
+  FUSE_TEST_C_PROVIDER_PLUGIN_BAD_DESCRIBE_EXTRA="$<TARGET_FILE:fuse_test_provider_linear_bad_describe_extra>"
+  FUSE_TEST_C_PROVIDER_PLUGIN_BAD_SAVE="$<TARGET_FILE:fuse_test_provider_linear_bad_save>"
+  FUSE_TEST_C_PROVIDER_PLUGIN_BAD_RESTORE="$<TARGET_FILE:fuse_test_provider_linear_bad_restore>"
+  # review-2026-10-11 abi: AB-3's old-plugin struct_size variant.
+  FUSE_TEST_C_PROVIDER_PLUGIN_OLD_STEP_REPORT="$<TARGET_FILE:fuse_test_provider_linear_old_step_report>"
 )
 if(FUSE_TEST_FORTRAN_PROVIDER_AVAILABLE)
   add_dependencies(fuse_abi_conformance_test fuse_test_provider_linear_fortran)
