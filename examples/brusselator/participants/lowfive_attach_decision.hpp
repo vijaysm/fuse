@@ -491,4 +491,178 @@ struct ServeState {
   return fuse::Failure{"E-LOWFIVE-ATTACH-SERVE-BADEVENT", "unrecognised ServeEvent"};
 }
 
+// ---------------------------------------------------------------------
+// ROUND 4: two defects the host measured, both confirmed by reading
+// LowFive's own source (/Users/mahadevan/Code/hdf5/LowFive, rev
+// 7f3a58b) before writing a line of fix, not inferred from the error
+// message alone.
+//
+// DEFECT A (the one the host hit, 2026-10-13: both brusselator_u_main
+// and brusselator_v_main die at their own FIRST remote H5Fopen,
+// `LowFive::MetadataError: file_open(): no intercomm found for
+// brusselator_{v,u}.h5`). `DistMetadataVOL::file_open()`
+// (src/vol-dist-metadata.cpp:263) calls `find_matches(name, "",
+// intercomm_locations, true)`, which is empty on this attach's own
+// side because nothing ever calls `DistMetadataVOL::set_intercomm()`
+// (include/lowfive/vol-dist-metadata.hpp:59-63, which pushes a
+// `LocationPattern{filename, full_path}` onto `intercomm_locations` and
+// the given index onto `intercomm_indices` -- the ONLY two places either
+// vector is ever touched, confirmed by grep). `grep -rn set_intercomm`
+// across this FUSE checkout's own src/, include/, and examples/ finds
+// ZERO calls to LowFive's own method (as opposed to `fuse::transport::
+// LowFiveTransport::set_intercomm()`, a same-named but unrelated wrapper
+// around forming the MPI intercommunicator itself, not registering it
+// with the VOL) in `lowfive_attach.cpp`, in the env-route plugin
+// (`src/transport/lowfive_plugin_vol.cpp`), or in `src/transport/
+// lowfive_transport.cpp`'s own `DistVolSingleton` -- all three would
+// fail identically at the first remote open, exactly as the host
+// measured for this track's own code.
+//
+// DEFECT B (checked, not assumed, before any fix): `fuse::
+// split_hdf5_path()` (include/fuse/transport/lowfive.hpp:61) returns the
+// dataset component WITHOUT a leading slash (`hdf5_path.substr(first +
+// sep.size())`, where `sep = ".h5/"` -- the slash is consumed as part of
+// the separator, never re-added). `LowFive::Object::fullname()` (src/
+// metadata/object.hpp:169-184), by contrast, ALWAYS produces a full
+// dataset path WITH a leading slash: it prefixes every path segment with
+// `/` unless already present (`(!o->name.empty() && o->name[0] != '/') ?
+// "/" : ""`, applied walking up to the File root AND to the child path
+// argument). `MetadataVOL::dataset_create()` (src/vol-metadata/
+// dataset.cpp:30-33) computes `is_memory = match_any(filepath, memory)`
+// -- the DEFAULT 2-argument overload, `partial = false` -- where
+// `filepath = obj->fullname(name_str)`, i.e. the slashed form. `match()`
+// (include/lowfive/vol-metadata.hpp:135-150) is a wildcard matcher
+// walking both strings position by position; at the very first
+// character, an unslashed pattern ('g' at position 0 of "grid/u_out")
+// against a slashed candidate ('/' at position 0 of "/grid/u_out") is
+// neither an exact character match nor a `*`/`?` wildcard, so the match
+// falls through to `return partial;` = `false`. CONFIRMED: `lowfive_
+// attach.cpp`'s own `ApplyBindings()` passes exactly the unslashed form
+// (`split.value().second`, straight from `split_hdf5_path()`) to `vol.
+// set_memory()`, so `is_memory` is `false` for every Brusselator dataset
+// this attach registers, meaning `dataset_create()` never attaches an
+// in-memory `Dataset` object to the file's own tree, `Index`'s own
+// constructor's `find_datasets()` traversal (src/vol-dist/index.cpp:
+// 17-28) never finds it, `indexed_datasets` stays 0, and `serve_all()`
+// (src/vol-dist-metadata.cpp:61, `if (index.indexed_datasets ||
+// !perform_indexing) index.serve();`) returns WITHOUT EVER CALLING
+// `index.serve()` -- a first-server's own "blocking" `serve_all()` call
+// would therefore not block at all, and would not actually serve
+// anything either. This is a SECOND, independent defect that DEFECT A
+// masked in the host's own run (both processes died at file_open()
+// before either ever reached a point where this would matter) but would
+// otherwise prevent any data from ever crossing once A is fixed.
+//
+// Cross-checked, as asked, NOT edited (out of this round's own scope):
+// the env-route plugin (`src/transport/lowfive_plugin_graph.cpp:127`)
+// builds its own dataset pattern as `port.substr(slash)` -- INCLUDING
+// the slash at `slash = port.find('/')`'s own position, unlike `fuse::
+// split_hdf5_path()`'s `substr(first + sep.size())` -- so the env-route
+// plugin does NOT have DEFECT B (it never calls `split_hdf5_path()` at
+// all for this purpose; it manually splits the SAME `"<file>.h5/
+// <dataset>"` string with its own, slash-preserving logic). Both
+// `src/transport/lowfive_transport.cpp`'s single-process `VolSingleton`
+// (line 140) and distributed `DistVolSingleton` (line 215) call `vol.
+// set_memory("*", "*")` -- a blanket wildcard matching any file and any
+// dataset regardless of slashes (`match("*", <anything>, false)` always
+// returns true by consuming the `*` against the whole candidate,
+// vol-metadata.hpp:135-150) -- so neither has DEFECT B either. All
+// three, however, DO share DEFECT A (confirmed by the same grep above);
+// the one-line fixes for the lead, not applied here (src/ and include/
+// are out of this round's own scope):
+//   lowfive_plugin_vol.cpp, right after its own `ApplyBindings(vol,
+//     cfg.bindings);` call (ConfigureOnce(), distributed branch): add
+//     `for (const auto& b : cfg.bindings) vol.set_intercomm(b.
+//     filename_pattern, b.path_pattern, 0);`
+//   lowfive_transport.cpp, right after `vol.set_memory("*", "*");` in
+//     `DistVolSingleton`'s own constructor: add `vol.set_intercomm("*",
+//     "*", 0);`
+// Both assume exactly one intercomm, matching the SAME single-intercomm
+// `create_DistMetadataVOL(local, intercomm)` overload both already use
+// (confirmed by reading each call site) -- the identical assumption this
+// track's own fix below makes, for the identical, citeable reason.
+
+/// PURE: normalizes a dataset pattern to the leading-slash form `Object::
+/// fullname()` always produces (DEFECT B comment above). Already-slashed
+/// input is returned UNCHANGED (idempotent); an empty pattern is refused
+/// (`E-LOWFIVE-ATTACH-DATASET-EMPTY-PATTERN`) -- nothing to register.
+/// Deliberately NOT a change to `fuse::split_hdf5_path()` itself (out of
+/// scope this round: that function has its own tests and the
+/// single-process path reaches LowFive through a `"*"` wildcard, never
+/// through this specific unslashed string, so changing its own contract
+/// would be an unrelated, unreviewed behaviour change for a caller this
+/// round never touches).
+[[nodiscard]] inline fuse::Result<std::string> NormalizeDatasetPattern(const std::string& pattern) {
+  if (pattern.empty()) {
+    return fuse::Failure{"E-LOWFIVE-ATTACH-DATASET-EMPTY-PATTERN",
+                         "a dataset pattern is empty; nothing to register with LowFive's own "
+                         "set_memory()/set_intercomm()"};
+  }
+  if (pattern.front() == '/') return pattern;
+  return "/" + pattern;
+}
+
+/// One (file, normalized dataset pattern, intercomm index) entry this
+/// rank's own attach must register via `LowFive::DistMetadataVOL::
+/// set_intercomm()` (DEFECT A comment above) so a CONSUMER's own remote
+/// `file_open()` can find which intercomm serves a given filename.
+struct IntercommRegistration {
+  std::string file;
+  std::string dataset_pattern;
+  int         intercomm_index;
+};
+
+/// PURE, MPI/HDF5-free: builds the full registration list for one
+/// binding table against a SINGLE, EXPLICIT intercomm index -- never
+/// hardcoded inside this function, so a future multi-intercomm design
+/// needs a different SIGNATURE here (e.g. a per-binding-group index),
+/// not a different value silently threaded through this one. See
+/// lowfive_attach.cpp's own call site for why it always passes `0`
+/// under THIS attach's own architecture (exactly one intercomm is ever
+/// formed: `decide_attach_mode()` already refuses, by name, any graph
+/// where this rank's own qualifying channels do not all partition the
+/// world into the SAME two groups -- `E-LOWFIVE-ATTACH-INCONSISTENT` --
+/// so there is structurally no way for this attach to need a second
+/// intercomm today; a design that ever did would need to extend THIS
+/// function, not silently bump the value its caller passes).
+///
+/// Mirrors `ApplyBindings()`'s own loop and its own defensive split_
+/// hdf5_path() re-check (`build_lowfive_bindings()` already validated
+/// every binding; a failure here would mean that contract broke, not a
+/// new input) -- refuses with the propagated `E-LOWFIVE-PORT` in that
+/// case, or `NormalizeDatasetPattern()`'s own refusal if some future
+/// binding's dataset component is ever empty.
+///
+/// Builds one entry per BINDING in the whole table, not filtered by
+/// whether THIS rank writes or reads that binding's own file -- grep
+/// confirms `intercomm_locations`/`intercomm_indices` (the two vectors
+/// `set_intercomm()` populates) are consulted ONLY inside `DistMetadataVOL
+/// ::file_open()` (src/vol-dist-metadata.cpp:263,269), the REMOTE-OPEN
+/// path; a rank's own `H5Fcreate` of a file it writes reaches `file_
+/// create()`, an entirely different VOL callback that never touches
+/// either vector. So registering a file's own intercomm location on the
+/// rank that only ever CREATES it (never opens it as a consumer) is
+/// harmless by construction: `file_open()`'s own `find_matches()` first
+/// checks `match(x.filename, filename)` per entry (src/vol-dist-
+/// metadata.cpp's own helper in vol-metadata.hpp:177-187), so an entry
+/// for a filename THIS rank's own `file_open()` call is never made
+/// against simply never matches, costing one extra linear-scan
+/// comparison and nothing else.
+[[nodiscard]] inline fuse::Result<std::vector<IntercommRegistration>> BuildIntercommRegistrations(
+    const fuse::LowFiveFieldBindingTable& table, int intercomm_index) {
+  std::vector<IntercommRegistration> out;
+  for (const fuse::LowFiveFieldBinding& b : table.bindings()) {
+    auto split = fuse::split_hdf5_path(b.hdf5_path);
+    if (!split.ok()) {
+      return fuse::Failure{split.error().code, split.error().message};
+    }
+    auto normalized = NormalizeDatasetPattern(split.value().second);
+    if (!normalized.ok()) {
+      return fuse::Failure{normalized.error().code, normalized.error().message};
+    }
+    out.push_back(IntercommRegistration{split.value().first, normalized.value(), intercomm_index});
+  }
+  return out;
+}
+
 }  // namespace fuse_examples::lowfive_attach

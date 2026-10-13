@@ -234,7 +234,26 @@ void ApplyBindings(LowFive::MetadataVOL& vol, const fuse::LowFiveFieldBindingTab
                   "] " + split.error().message;
       return;
     }
-    vol.set_memory(split.value().first, split.value().second);
+    // ROUND 4, DEFECT B fix: `split.value().second` (straight from
+    // split_hdf5_path(), e.g. "grid/u_out") has no leading slash, but
+    // LowFive::Object::fullname() -- what MetadataVOL::dataset_create()'s
+    // own is_memory check actually compares against -- always produces
+    // one ("/grid/u_out"). Without normalizing, is_memory is false for
+    // every Brusselator dataset this attach registers, and the dataset
+    // is never attached as in-memory at all: see lowfive_attach_
+    // decision.hpp's own "DEFECT B" comment for the full citations.
+    // Applied here, in the ONE place both the distributed and the
+    // single-process branches of bruss_lowfive_attach() already share,
+    // rather than at either call site -- both need the same fix.
+    auto normalized =
+        fuse_examples::lowfive_attach::NormalizeDatasetPattern(split.value().second);
+    if (!normalized.ok()) {
+      *ok = false;
+      *error_out = "NormalizeDatasetPattern('" + split.value().second + "'): [" +
+                  normalized.error().code + "] " + normalized.error().message;
+      return;
+    }
+    vol.set_memory(split.value().first, normalized.value());
   }
 }
 
@@ -428,6 +447,29 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
     if (!ok) {
       CopyErrorMessage(build_error, errbuf, errbuf_len);
       return 1;
+    }
+    // ROUND 4, DEFECT A fix: nothing before this line ever called
+    // LowFive's own DistMetadataVOL::set_intercomm(), so a CONSUMER's
+    // first remote H5Fopen on this process threw file_open(): no
+    // intercomm found -- the exact exception the host measured on both
+    // sides. lowfive_attach_decision.hpp's own "DEFECT A"/"DEFECT B"
+    // comment has the full citations for both this fix and the
+    // normalization already applied inside ApplyBindings() above.
+    // Intercomm index 0 is explicit here, not hidden inside
+    // BuildIntercommRegistrations() itself -- see that function's own
+    // doc for why this attach's own architecture can never need a
+    // second index (decide_attach_mode() already refuses, by name, any
+    // graph requiring one), and why a design that ever did would need a
+    // different function signature, not a different value passed here.
+    auto registrations =
+        fuse_examples::lowfive_attach::BuildIntercommRegistrations(table.value(), /*intercomm_index=*/0);
+    if (!registrations.ok()) {
+      CopyErrorMessage("[" + registrations.error().code + "] " + registrations.error().message,
+                       errbuf, errbuf_len);
+      return 1;
+    }
+    for (const auto& reg : registrations.value()) {
+      vol.set_intercomm(reg.file, reg.dataset_pattern, reg.intercomm_index);
     }
     if (!BuildVerifiedFapl(vol, &fapl, &build_error)) {
       CopyErrorMessage(build_error, errbuf, errbuf_len);
