@@ -77,6 +77,42 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  /* ROUND 9, task 1(a): this process never calls bruss_lowfive_attach()
+   * (lowfive_attach.cpp is not one of this target's own sources -- see
+   * examples/CMakeLists.txt), so it has no deliberate use for a LowFive
+   * VOL connector at all. The THREE env-route variables named here are
+   * nonetheless still live in this process's own environment --
+   * examples/CMakeLists.txt's own ctest ENVIRONMENT property sets them
+   * on the WHOLE MPMD launch (run_participants.sh's own single
+   * mpiexec invocation, one shared environment across all three
+   * ':'-separated app segments), not per-segment -- and HDF5's own
+   * env-route default-VOL resolution would otherwise register the
+   * "lowfive" connector class here too, with nothing that ever wanted
+   * it, the measured cause of this process's own exit-time SIGABRT
+   * (lowfive_attach_decision.hpp's own "ROUND 9, task 1" comment has
+   * the full crash trace, root cause, and the ranked alternatives this
+   * fix was chosen over). Removing these before MPI_Init, before any
+   * native HDF5 call this process might make, prevents the connector
+   * from EVER registering here -- the authoritative list of which
+   * three variables is fuse_examples::lowfive_attach::
+   * EnvRouteVolVariableNames() (lowfive_attach_decision.hpp); kept in
+   * sync by hand, since this file is plain C with no dependency on
+   * that C++ header (duplicating three literal names is smaller and
+   * less coupling than adding a whole new C++ translation unit and
+   * CMake target just to share them). */
+  {
+    unsetenv("HDF5_VOL_CONNECTOR");
+    unsetenv("HDF5_PLUGIN_PATH");
+    unsetenv("FUSE_LOWFIVE_BINDINGS");
+    const char* trace = getenv("FUSE_LOWFIVE_ATTACH_TRACE");
+    if (trace && trace[0] == '1' && trace[1] == '\0') {
+      fprintf(stderr,
+              "TRACE(coupler_main): unregistered env-route VOL vars "
+              "(HDF5_VOL_CONNECTOR, HDF5_PLUGIN_PATH, FUSE_LOWFIVE_BINDINGS) "
+              "before MPI_Init (role=kNonAttachingCoordinator)\n");
+    }
+  }
+
   MPI_Init(&argc, &argv);
 
   const fuse_participant_abi_v1* t = fuse_coupler_abi(FUSE_ABI_VERSION);

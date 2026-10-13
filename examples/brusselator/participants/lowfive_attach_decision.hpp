@@ -389,12 +389,12 @@ struct ServeState {
 // the COLD START, where it happens to coincide with "this process has
 // not read anything yet." The host's own measured steady-state event
 // sequences (KNOWN_ISSUES.md D39's own "Round 8" account has them
-// verbatim) show the two components running DIFFERENT per-period
+// verbatim) show the two components running DIFFERENT per-exchange
 // orders once past the cold start: U (first-server) = write, read,
-// sync, every period, unchanged; V (first-reader) = write, read ONLY
-// at the cold start (period 0) -- then READ, WRITE, sync from period 1
-// onward, the READ now coming FIRST. Deferring V's OWN later writes
-// under the OLD rule (which only ever looks at `role`, never at
+// sync, every exchange, unchanged; V (first-reader) = write, read ONLY
+// at the cold start (exchange 0) -- then READ, WRITE, sync from
+// exchange 1 onward, the READ now coming FIRST. Deferring V's OWN later
+// writes under the OLD rule (which only ever looks at `role`, never at
 // anything that happens in between) stacks two never-flushed defers
 // against V's own read-then-write steady state and the mutual-serve
 // cycle the lead's own brief above describes exactly; the host's own
@@ -426,7 +426,7 @@ struct ServeState {
 // own suspension first in ITS OWN stream (U: write u_out, i.e. this
 // channel's export, comes first) and whose IMPORTER ALSO sees that SAME
 // channel's suspension first in ITS OWN stream (V: read u_out, i.e.
-// this channel's import, comes first) -- U's own per-period order is
+// this channel's import, comes first) -- U's own per-exchange order is
 // therefore [write(u_out), read(v_out)] and V's is [read(u_out),
 // write(v_out)], matching the measured sequences exactly. COMPONENT
 // ORDER and RANK SETS do not independently enter this: `decl.channels`
@@ -438,27 +438,34 @@ struct ServeState {
 // channels' own suspensions. ITERATION KIND (Jacobi) and ACCELERATION
 // KIND do not change this mechanism either -- the ordering-edge
 // placement in `lower_channel()` is applied identically regardless of
-// `WaveformIteration` kind, per the same cited comment. NOT FULLY
-// SETTLED by this round's own reading: whether `ExternalDelivery`
-// fires once per WINDOW or once per Jacobi SWEEP within a window
-// (`max_iterations = 60` on this row's own graph) -- `deliver_
-// external()`'s own citation above places it in the SAME slot
-// `Transport` would occupy WITHIN one sweep, which in principle could
-// mean once per sweep; the host's own measured counts (exactly two
-// write-serve-read cycles across two periods before the hang, not
-// dozens) are the empirical evidence available and are consistent with
-// once-per-period, but this round did not trace `run_region()`'s own
-// sweep-count/convergence machinery far enough to prove analytically
-// that this row's own graph (channel v2u has its own `.lag(1)
-// .allow_time_level_mismatch(...)`, consistent with an explicit,
-// non-iterated exchange) never re-delivers mid-window. Declared here as
-// a limitation of this round's own source investigation, not a settled
-// claim; the model below uses PERIOD as its own unit, matching the
-// host's own measured granularity, and does not claim it is identical
-// to "per Jacobi sweep."
+// `WaveformIteration` kind, per the same cited comment.
+//
+// ROUND 9 -- "period" renamed to "exchange" throughout this file (task
+// 2): the unit this header and the functions below track is ONE
+// write-then-read (or read-then-write) PAIR -- an EXCHANGE -- not a
+// coupling WINDOW. The host's own measured counts (round 9's own brief:
+// 122 U writes for a `--periods 2` run, i.e. TWO windows) make the
+// distinction concrete: 61 exchanges per window, not one. "period" is
+// reserved, in this file and in docs/user/lowfive.md, for the
+// Brusselator's own `--periods` CLI flag and u_main.c's/v_main.f90's
+// own outer loop -- a coupling WINDOW -- and is never used for the
+// write/read-pair unit tracked here. This is a NAME correction only;
+// none of the ORDER-CHECK or POLICY logic changes (the semantics held
+// for all 364 (U) and 365 (V) events the host measured with the OLD name in
+// place).
+//
+// ROUND 9 ALSO CLOSES round 8's own open question above (now answered
+// by the host's own measurement, task 3): `ExternalDelivery` fires once
+// per Jacobi SWEEP, not once per coupling WINDOW -- ~61 deliveries per
+// window (122 U writes / 2 windows), not 1. This is a MEASURED figure,
+// not a derived one (the Collectives track owns the Runner's own
+// sweep-count/convergence machinery this would need to derive from
+// first principles); the exact relationship between 61 and `max_
+// iterations = 60` on this row's own graph is the Collectives track's
+// own question to answer, not restated here.
 //
 // Cold start is a SEPARATE, PRE-LOOP priming call on BOTH mains
-// (u_main.c lines ~505-516, v_main.f90's own mirror), not period 0 of
+// (u_main.c lines ~505-516, v_main.f90's own mirror), not exchange 0 of
 // either component's own `fuse_begin_step()`/`fuse_end_step()` loop --
 // it calls `u_lowfive_write_export()`/`u_lowfive_read_import()`
 // directly, with no step request/report and no coupler sync of any
@@ -469,12 +476,13 @@ struct ServeState {
 // though V's own STEADY-STATE order (inside the loop, IR-schedule-
 // derived) is read-then-write: two independent mechanisms that happen
 // to produce the identical write-then-read SHAPE at the cold start for
-// unrelated reasons (U's: the IR schedule, same as every later period;
-// V's: the priming call's own hardcoded order, true ONLY at the cold
-// start). This round's own model (below, and ExpectedOrderForPeriod()'s
-// own period_index == 0 special case) treats the cold start as "period
-// 0" for bookkeeping, matching the lead's own framing, while
-// documenting here that it is mechanically a different code path.
+// unrelated reasons (U's: the IR schedule, same as every later
+// exchange; V's: the priming call's own hardcoded order, true ONLY at
+// the cold start). This round's own model (below, and
+// ExpectedOrderForExchange()'s own exchange_index == 0 special case)
+// treats the cold start as "exchange 0" for bookkeeping, matching the
+// lead's own framing, while documenting here that it is mechanically a
+// different code path.
 enum class ServeNowOrDefer { kServeNow, kDefer };
 
 /// PURE POLICY (task 2): a write is deferred ONLY if this process is
@@ -489,63 +497,65 @@ enum class ServeNowOrDefer { kServeNow, kDefer };
   return ServeNowOrDefer::kServeNow;
 }
 
-/// One top-level event kind in a process's own per-period order (task 3b,
-/// task 4) -- distinct from `ServeEvent`, which is LowFive-hook-shaped
-/// (an import is TWO ServeEvents, kImportAboutToOpen then kImportClosed);
-/// this is the coarser, order-table-shaped kind each hook's own event
-/// maps onto for the purpose of checking against the measured order.
+/// One top-level event kind in a process's own per-exchange order
+/// (task 3b, task 4) -- distinct from `ServeEvent`, which is
+/// LowFive-hook-shaped (an import is TWO ServeEvents,
+/// kImportAboutToOpen then kImportClosed); this is the coarser,
+/// order-table-shaped kind each hook's own event maps onto for the
+/// purpose of checking against the measured order.
 enum class ExpectedEventKind { kWrite, kRead };
 
-/// PURE (task 1's own derived table): this role's own two per-period
+/// PURE (task 1's own derived table): this role's own two per-exchange
 /// slots, for the ONE measured, validated configuration -- cold start
-/// (`period_index == 0`, EITHER role) and first-server (every period)
-/// are [write, read]; first-reader's own STEADY state (`period_index
-/// >= 1`) is [read, write]. See this header's own "ROUND 8" comment
-/// above for the full derivation and citations.
-[[nodiscard]] inline std::array<ExpectedEventKind, 2> ExpectedOrderForPeriod(ServeRole role,
-                                                                             int period_index) {
-  if (period_index == 0 || role == ServeRole::kFirstServer) {
+/// (`exchange_index == 0`, EITHER role) and first-server (every
+/// exchange) are [write, read]; first-reader's own STEADY state
+/// (`exchange_index >= 1`) is [read, write]. See this header's own
+/// "ROUND 8"/"ROUND 9" comments above for the full derivation,
+/// citations, and the "period"->"exchange" rename (round 9, task 2).
+[[nodiscard]] inline std::array<ExpectedEventKind, 2> ExpectedOrderForExchange(
+    ServeRole role, int exchange_index) {
+  if (exchange_index == 0 || role == ServeRole::kFirstServer) {
     return {ExpectedEventKind::kWrite, ExpectedEventKind::kRead};
   }
   return {ExpectedEventKind::kRead, ExpectedEventKind::kWrite};
 }
 
-/// Per-process position within `ExpectedOrderForPeriod()`'s own table --
-/// `slot` is 0 or 1 within the CURRENT `period_index`; a period
-/// completes (period_index increments, slot resets to 0) once slot 1's
-/// own event has been observed, whichever top-level kind (write or
-/// read) that happens to be for this role/period.
+/// Per-process position within `ExpectedOrderForExchange()`'s own
+/// table -- `slot` is 0 or 1 within the CURRENT `exchange_index`; an
+/// exchange completes (exchange_index increments, slot resets to 0)
+/// once slot 1's own event has been observed, whichever top-level kind
+/// (write or read) that happens to be for this role/exchange.
 struct OrderTracker {
-  int period_index = 0;
+  int exchange_index = 0;
   int slot = 0;
 };
 
-/// PURE (task 3b): checks `event` against `ExpectedOrderForPeriod(role,
-/// tracker.period_index)[tracker.slot]` and, if it matches, returns the
-/// ADVANCED tracker (never mutates its argument -- this header's own
-/// "PURITY" convention elsewhere); refuses
+/// PURE (task 3b): checks `event` against `ExpectedOrderForExchange(role,
+/// tracker.exchange_index)[tracker.slot]` and, if it matches, returns
+/// the ADVANCED tracker (never mutates its argument -- this header's
+/// own "PURITY" convention elsewhere); refuses
 /// (`E-LOWFIVE-ATTACH-ORDER-DEVIATION`), naming the expected event, the
-/// observed one, and the period index, on a mismatch. `kImportAboutToOpen`
-/// and `kImportClosed` both check against the SAME `kRead` slot (a read
-/// is one logical event spanning two ServeEvents) but only
-/// `kImportClosed` (and `kExportWrittenAndClosed`) ADVANCE the tracker --
-/// `kImportAboutToOpen` only checks, since advancing early would let a
-/// SECOND write slip in without its own read ever completing.
-/// `kFinalize` is not a per-period slot at all and always leaves the
-/// tracker unchanged. Called BEFORE `serve_state_step()` at every real
-/// call site (lowfive_attach.cpp), so a deviation is caught before the
-/// blocking call `serve_state_step()`'s own answer might otherwise
-/// enter -- never after.
+/// observed one, and the exchange index, on a mismatch.
+/// `kImportAboutToOpen` and `kImportClosed` both check against the SAME
+/// `kRead` slot (a read is one logical event spanning two ServeEvents)
+/// but only `kImportClosed` (and `kExportWrittenAndClosed`) ADVANCE the
+/// tracker -- `kImportAboutToOpen` only checks, since advancing early
+/// would let a SECOND write slip in without its own read ever
+/// completing. `kFinalize` is not a per-exchange slot at all and
+/// always leaves the tracker unchanged. Called BEFORE `serve_state_
+/// step()` at every real call site (lowfive_attach.cpp), so a
+/// deviation is caught before the blocking call `serve_state_step()`'s
+/// own answer might otherwise enter -- never after.
 [[nodiscard]] inline fuse::Result<OrderTracker> CheckAndAdvanceOrder(ServeRole role,
                                                                      OrderTracker tracker,
                                                                      ServeEvent event) {
   const std::array<ExpectedEventKind, 2> expected =
-      ExpectedOrderForPeriod(role, tracker.period_index);
+      ExpectedOrderForExchange(role, tracker.exchange_index);
   auto refuse = [&](ExpectedEventKind want, ExpectedEventKind got) -> fuse::Failure {
     auto name = [](ExpectedEventKind k) { return k == ExpectedEventKind::kWrite ? "write" : "read"; };
     return fuse::Failure{
         "E-LOWFIVE-ATTACH-ORDER-DEVIATION",
-        "period " + std::to_string(tracker.period_index) + ", slot " +
+        "exchange " + std::to_string(tracker.exchange_index) + ", slot " +
             std::to_string(tracker.slot) + ": expected " + std::string(name(want)) +
             ", observed " + std::string(name(got)) +
             " -- the serve policy has only been validated against the measured order "
@@ -559,7 +569,7 @@ struct OrderTracker {
       }
       OrderTracker next = tracker;
       if (next.slot == 1) {
-        next.period_index += 1;
+        next.exchange_index += 1;
         next.slot = 0;
       } else {
         next.slot = 1;
@@ -578,7 +588,7 @@ struct OrderTracker {
       }
       OrderTracker next = tracker;
       if (next.slot == 1) {
-        next.period_index += 1;
+        next.exchange_index += 1;
         next.slot = 0;
       } else {
         next.slot = 1;
@@ -1352,6 +1362,132 @@ struct DatasetGroupSplit {
     return DatasetGroupSplit{"", leaf};
   }
   return DatasetGroupSplit{before, leaf};
+}
+
+// ---------------------------------------------------------------------
+// ROUND 9, task 1 -- the coupler exit crash. Measured (the lead's own
+// brief): brusselator_coupler_main aborts at process exit, AFTER
+// MPI_Finalize, with `libc++abi: terminating due to uncaught exception
+// of type std::__1::system_error: mutex lock failed: Invalid argument`.
+// Symbolised trace (innermost first): __pthread_kill <- abort <-
+// __abort_message <- std::terminate <- __cxa_throw <- std::__throw_
+// system_error <- std::mutex::lock <- std::lock_guard<std::mutex> (in
+// liblowfive.dylib) <- spdlog::details::registry::get <- spdlog::get
+// <- LowFive::get_logger() (log-private.hpp:53) <- LowFive::VOLBase::
+// _term() (base.cpp:210) <- H5VL__free_cls <- ... <- H5_term_library
+// <- __cxa_finalize_ranges <- exit <- dyld start.
+//
+// (a) WHY THE COUPLER HAS A LOWFIVE VOL CLASS REGISTERED AT ALL, cited
+// from source: `examples/CMakeLists.txt`'s own `verification.
+// brusselator.participants.lowfive.{mpmd,accept}.3` row sets
+// `ENVIRONMENT "HDF5_VOL_CONNECTOR=lowfive;HDF5_PLUGIN_PATH=...;
+// FUSE_LOWFIVE_BINDINGS=..."` on the ONE ctest COMMAND
+// (`run_participants.sh`), which launches ALL THREE MPMD app segments
+// (U, V, coupler) from a SINGLE `mpiexec` invocation sharing ONE
+// environment (`test/parallel/brusselator_participants/run_
+// participants.sh`'s own ':'-separated segments) -- the same file's
+// own "LowFive attach track note" comment confirms only that U's and
+// V's own `H5Fcreate`/`H5Fopen` calls now bypass this env-route
+// resolution (they pass an explicit `fapl_id`); it says nothing about
+// the coupler, which never calls `bruss_lowfive_attach()` at all
+// (`lowfive_attach.cpp` is not one of `brusselator_coupler_main`'s own
+// sources). The env var is therefore STILL live in the coupler's own
+// process, and HDF5's OWN env-route default-VOL resolution (triggered
+// at the coupler's own, otherwise-ordinary, first native HDF5 call --
+// this track's own linked library stack pulls in HDF5 transitively
+// whether or not the coupler calls an H5 function directly) registers
+// the "lowfive" connector class there too, with nothing in this
+// process that ever deliberately wanted it. The two-HDF5-image hazard
+// (KNOWN_ISSUES.md D14, `tools/probe-hdf5-images.{c,sh}`) is a
+// DIFFERENT, already-measured-PASS condition on this host (exactly one
+// `libhdf5` image for this MOAB+LowFive pairing) and is NOT this
+// crash's cause: D14's own symptom is a SILENT `H5Pset_vol(): "not a
+// file VOL ID"` failure from a split id table, not a correctly-
+// registered connector's own exit-time teardown -- the crash trace
+// here shows a SINGLE, correctly-resolving `H5VL__free_cls` call
+// chain, consistent with one image, not two.
+//
+// (b) RANKED FIXES, each with the reason it is or is not adopted.
+// NOT registering the connector in a process that never attaches --
+// ADOPTED for the coupler: `unsetenv()` on the three env-route
+// variables, before MPI_Init, before any native HDF5 call, is sound
+// because the coupler never calls `bruss_lowfive_attach()` and so has
+// no legitimate use for the connector at all; it is minimal because it
+// removes the hazard AT ITS SOURCE (no connector ever registered, so
+// `VOLBase::_term()` is never reached) rather than racing its teardown
+// against spdlog's own static destruction. A deterministic teardown in
+// `bruss_lowfive_finalize()` -- ADOPTED for U and V, which DO
+// deliberately attach: an explicit, SYNCHRONOUS `H5close()` call,
+// after `serve_state_step(kFinalize)`'s own unflushed-serve check
+// succeeds and BEFORE the caller's own `MPI_Finalize()` (both u_main.c
+// and v_main.f90 already call `bruss_lowfive_finalize()` strictly
+// before `MPI_Finalize()` -- confirmed by reading both call sites, not
+// changed by this round), is sound because it runs the SAME `VOLBase::
+// _term()` -> `get_logger()` call chain while the process is still in
+// ORDINARY execution -- no exit()-time static-destruction unwind has
+// begun at all, so spdlog's own registry cannot have been torn down
+// yet, regardless of atexit() registration order. This is STRICTER
+// than relying solely on the pre-existing `std::atexit(+[]{
+// H5close(); });` already registered in `bruss_lowfive_attach()` (the
+// SAME mechanism `VolSingleton`'s own constructor uses, per docs/user/
+// lowfive.md's "HDF5_VOL_CONNECTOR abort" section) -- that registration
+// is KEPT, not removed, as a backstop for an abrupt-exit path that
+// skips `bruss_lowfive_finalize()` (e.g. a later `MPI_Abort()`), since
+// `H5close()` is documented idempotent and a second call after the
+// first already tore everything down is a safe no-op. An explicit
+// `spdlog::shutdown()` ordering was considered and NOT adopted:
+// `shutdown()` would tear down the registry itself, which does not fix
+// the hazard (it only moves WHICH line crashes if `_term()` is still
+// reachable afterward) and orders a DIFFERENT library's own static
+// object from FUSE's side, no more reliable than the atexit race it
+// replaces. Making LowFive's logger a `shared_ptr` the VOL object
+// itself holds -- NOT adopted, and NOT implemented: this is a change
+// to LowFive's OWN source (`log-private.hpp`/`vol-base.hpp`), out of
+// scope ("do NOT patch LowFive, only report").
+//
+// What this round's own reading could NOT establish from source alone
+// (no host run to confirm): whether the coupler's own first native
+// HDF5 call happens through MOAB's own mesh I/O, through FUSE's
+// backend layer eagerly touching HDF5 for an unrelated reason, or
+// through HDF5's own env-route resolution being triggered by library
+// LOAD rather than any specific call -- the fix (not registering the
+// connector at all) holds regardless of which it is, so this round did
+// not chase the exact call site further; recorded as a limitation, not
+// a settled claim.
+enum class LowFiveProcessRole { kAttachingParticipant, kNonAttachingCoordinator };
+
+/// PURE data (task 1b): the three env-route variables a non-attaching
+/// coordinator process (the coupler) must `unsetenv()` before its own
+/// first native HDF5 call, so that HDF5's own env-route default-VOL
+/// resolution never registers the "lowfive" connector class in a
+/// process that has no deliberate use for it at all. The SAME three
+/// names `examples/CMakeLists.txt`'s own ctest `ENVIRONMENT` property
+/// sets process-wide for the whole MPMD launch (this header's own
+/// "ROUND 9, task 1" comment above has the full citation).
+[[nodiscard]] inline std::vector<std::string> EnvRouteVolVariableNames() {
+  return {"HDF5_VOL_CONNECTOR", "HDF5_PLUGIN_PATH", "FUSE_LOWFIVE_BINDINGS"};
+}
+
+struct ExitHygienePlan {
+  bool unregister_env_route_vol = false;
+  bool explicit_h5close_before_mpi_finalize = false;
+};
+
+/// PURE (task 1b): which of this round's own two fixes applies to which
+/// role -- a non-attaching coordinator (the coupler) never calls
+/// `bruss_lowfive_attach()`, so its own fix is to prevent the env-route
+/// connector from ever registering at all; an attaching participant
+/// (U or V) deliberately attaches and needs a deterministic, explicit
+/// `H5close()` before its own `MPI_Finalize()` instead (this header's
+/// own "ROUND 9, task 1(b)" comment above has the full reasoning for
+/// why each role gets the fix it gets, not the other one).
+[[nodiscard]] inline ExitHygienePlan decide_exit_hygiene_plan(LowFiveProcessRole role) {
+  if (role == LowFiveProcessRole::kNonAttachingCoordinator) {
+    return ExitHygienePlan{/*unregister_env_route_vol=*/true,
+                           /*explicit_h5close_before_mpi_finalize=*/false};
+  }
+  return ExitHygienePlan{/*unregister_env_route_vol=*/false,
+                         /*explicit_h5close_before_mpi_finalize=*/true};
 }
 
 }  // namespace fuse_examples::lowfive_attach

@@ -200,7 +200,7 @@ struct ProcessPolicy {
   // this is NOT modelled as a blocking/stuck state at all (it is not
   // one): the search's own vocabulary covers whether processes get
   // stuck, and a never-dropped-but-still-served file does not get
-  // anyone stuck, it gets the NEXT period's own write silently wrong.
+  // anyone stuck, it gets the NEXT exchange's own write silently wrong.
   bool drop_after_serve = true;
 };
 
@@ -221,7 +221,7 @@ struct DecideResult {
   // deferred_pending) would otherwise silently default this to false
   // on EVERY call, never actually recording that a read has completed
   // -- exactly the bug this field's own addition fixes (caught before
-  // any test used it: scenario (i) would never complete past period 1
+  // any test used it: scenario (i) would never complete past exchange 1
   // without it, first-reader deferring at every write forever, never
   // just the cold start).
   bool new_completed_any_read;
@@ -494,7 +494,7 @@ inline std::optional<StepOutcome> TryStep(const std::vector<MicroStep>& script, 
     // then see the released peer as "not arrived" (false) instead of
     // "already gone through," permanently stranding whichever two
     // check second and third. Caught before any test used it (every
-    // n_periods >= 2 scenario got stuck exactly at the first sync).
+    // n_exchanges >= 2 scenario got stuck exactly at the first sync).
     const auto reached = [&](bool other_entering, int other_passed) {
       return other_passed > pos.sync_passed || (other_passed == pos.sync_passed && other_entering);
     };
@@ -662,10 +662,15 @@ enum class EventKind { kWrite, kRead, kSync };
 /// already have to the real protocol.
 enum class Round8Order { kMeasured, kBothWriteReadSteady, kBothReadWriteSteady };
 
-/// PURE: this role's own STEADY-state (period >= 1) [first, second]
+/// PURE: this role's own STEADY-state (exchange >= 1) [first, second]
 /// shape for `order`. `kMeasured`'s own shape matches
-/// `lowfive_attach::ExpectedOrderForPeriod(role, 1)` exactly (not
+/// `lowfive_attach::ExpectedOrderForExchange(role, 1)` exactly (not
 /// re-derived independently of it: both read the SAME measured table).
+/// Round 9 (task 2) renamed "period" to "exchange" throughout this
+/// section: the unit here is ONE write-then-read (or read-then-write)
+/// pair, not a coupling window (the host measured ~61 of these per
+/// window -- lowfive_attach_decision.hpp's own "ROUND 9" comment has
+/// the full account).
 [[nodiscard]] inline std::array<EventKind, 2> SteadyShapeForOrder(Round8Order order,
                                                                    ServeRole role) {
   switch (order) {
@@ -681,21 +686,22 @@ enum class Round8Order { kMeasured, kBothWriteReadSteady, kBothReadWriteSteady }
   return {EventKind::kWrite, EventKind::kRead};
 }
 
-/// PURE: this role's own full per-process event list for `n_periods`
-/// periods. Period 0 is the cold start -- write-then-read on EITHER
-/// role, unconditionally, with NO sync (u_main.c's/v_main.f90's own
-/// pre-loop priming call, a separate mechanism from the IR-scheduled
-/// steady state -- lowfive_attach_decision.hpp's own "ROUND 8" comment
-/// has the full account of why). Periods 1..n_periods-1 are steady
-/// state, from `SteadyShapeForOrder()`, each followed by one `kSync`.
-/// `n_periods <= 0` returns an empty sequence (nothing to simulate).
+/// PURE: this role's own full per-process event list for `n_exchanges`
+/// exchanges. Exchange 0 is the cold start -- write-then-read on
+/// EITHER role, unconditionally, with NO sync (u_main.c's/v_main.f90's
+/// own pre-loop priming call, a separate mechanism from the
+/// IR-scheduled steady state -- lowfive_attach_decision.hpp's own
+/// "ROUND 8" comment has the full account of why). Exchanges
+/// 1..n_exchanges-1 are steady state, from `SteadyShapeForOrder()`,
+/// each followed by one `kSync`. `n_exchanges <= 0` returns an empty
+/// sequence (nothing to simulate).
 [[nodiscard]] inline std::vector<EventKind> BuildEventSequence(Round8Order order, ServeRole role,
-                                                                int n_periods) {
+                                                                int n_exchanges) {
   std::vector<EventKind> out;
-  if (n_periods <= 0) return out;
+  if (n_exchanges <= 0) return out;
   out.push_back(EventKind::kWrite);
   out.push_back(EventKind::kRead);
-  for (int p = 1; p < n_periods; ++p) {
+  for (int p = 1; p < n_exchanges; ++p) {
     const std::array<EventKind, 2> shape = SteadyShapeForOrder(order, role);
     out.push_back(shape[0]);
     out.push_back(shape[1]);
@@ -705,32 +711,32 @@ enum class Round8Order { kMeasured, kBothWriteReadSteady, kBothReadWriteSteady }
 }
 
 /// PURE: expands one process's own `BuildEventSequence()` output into
-/// `MicroStep`s, labelling every step in a period with that period's
-/// own 0-based index -- period 0 (cold start) is exactly 2 events
-/// (write, read), no sync; every later period is exactly 3 (the steady
-/// shape's own two events, then sync) -- so this function can walk the
-/// list two-or-three-at-a-time rather than inferring period boundaries
-/// from counting, which this round's own design notes found ambiguous
-/// at the cold-start/period-1 boundary when periods were counted
-/// purely by "two write/read events seen" without knowing in advance
-/// whether a sync follows.
+/// `MicroStep`s, labelling every step in an exchange with that
+/// exchange's own 0-based index -- exchange 0 (cold start) is exactly
+/// 2 events (write, read), no sync; every later exchange is exactly 3
+/// (the steady shape's own two events, then sync) -- so this function
+/// can walk the list two-or-three-at-a-time rather than inferring
+/// exchange boundaries from counting, which this round's own design
+/// notes found ambiguous at the cold-start/exchange-1 boundary when
+/// exchanges were counted purely by "two write/read events seen"
+/// without knowing in advance whether a sync follows.
 [[nodiscard]] inline std::vector<MicroStep> BuildScriptFromEvents(
     const std::vector<EventKind>& events) {
   std::vector<MicroStep> steps;
-  int period = 0;
+  int exchange = 0;
   std::size_t i = 0;
   const auto push_one = [&](EventKind e) {
     switch (e) {
       case EventKind::kWrite:
-        steps.push_back({StepKind::kWriteClosed, period});
+        steps.push_back({StepKind::kWriteClosed, exchange});
         break;
       case EventKind::kRead:
-        steps.push_back({StepKind::kAboutToOpen, period});
-        steps.push_back({StepKind::kOpenClose, period});
-        steps.push_back({StepKind::kImportClosed, period});
+        steps.push_back({StepKind::kAboutToOpen, exchange});
+        steps.push_back({StepKind::kOpenClose, exchange});
+        steps.push_back({StepKind::kImportClosed, exchange});
         break;
       case EventKind::kSync:
-        steps.push_back({StepKind::kSyncBarrier, period});
+        steps.push_back({StepKind::kSyncBarrier, exchange});
         break;
     }
   };
@@ -743,36 +749,36 @@ enum class Round8Order { kMeasured, kBothWriteReadSteady, kBothReadWriteSteady }
       push_one(events[i]);
       i += 1;
     }
-    period += 1;
+    exchange += 1;
   }
   return steps;
 }
 
 /// PURE: the coupler's own script -- one `kSyncBarrier` per STEADY
-/// period (1..n_periods-1), labelled identically to the physics
-/// processes' own steady syncs (the cold start, period 0, never syncs
-/// on any process, including the coupler).
-[[nodiscard]] inline std::vector<MicroStep> BuildCouplerScript(int n_periods) {
+/// exchange (1..n_exchanges-1), labelled identically to the physics
+/// processes' own steady syncs (the cold start, exchange 0, never
+/// syncs on any process, including the coupler).
+[[nodiscard]] inline std::vector<MicroStep> BuildCouplerScript(int n_exchanges) {
   std::vector<MicroStep> steps;
-  for (int period = 1; period < n_periods; ++period) {
-    steps.push_back({StepKind::kSyncBarrier, period});
+  for (int exchange = 1; exchange < n_exchanges; ++exchange) {
+    steps.push_back({StepKind::kSyncBarrier, exchange});
   }
   return steps;
 }
 
 /// Explores every interleaving of THREE actors -- U (`policy_a`), V
 /// (`policy_b`), and the coupler (sync only, no policy) -- running
-/// `order`'s own `n_periods`-period scripts, to exhaustion (same DFS +
-/// visited-set discipline as `RunSimulation()` above, now over a
+/// `order`'s own `n_exchanges`-exchange scripts, to exhaustion (same
+/// DFS + visited-set discipline as `RunSimulation()` above, now over a
 /// 3-field `GlobalState`). `policy_a.role`/`policy_b.role` select each
 /// one's own event sequence via `BuildEventSequence()`.
-inline SimulationResult RunSimulationRound8(Round8Order order, int n_periods,
+inline SimulationResult RunSimulationRound8(Round8Order order, int n_exchanges,
                                             ProcessPolicy policy_a, ProcessPolicy policy_b) {
   const std::vector<MicroStep> script_a =
-      BuildScriptFromEvents(BuildEventSequence(order, policy_a.role, n_periods));
+      BuildScriptFromEvents(BuildEventSequence(order, policy_a.role, n_exchanges));
   const std::vector<MicroStep> script_b =
-      BuildScriptFromEvents(BuildEventSequence(order, policy_b.role, n_periods));
-  const std::vector<MicroStep> script_c = BuildCouplerScript(n_periods);
+      BuildScriptFromEvents(BuildEventSequence(order, policy_b.role, n_exchanges));
+  const std::vector<MicroStep> script_c = BuildCouplerScript(n_exchanges);
   const ProcessPolicy policy_c{PolicyKind::kShipped, ServeRole::kFirstServer};  // never consulted
 
   GlobalState init{};
@@ -864,11 +870,11 @@ inline SimulationResult RunSimulationRound8(Round8Order order, int n_periods,
 
 /// PURE (task 4's own "soundness link"): does the SHIPPED policy (both
 /// roles, `decide_serve_action()`-driven) complete `order`'s own
-/// `n_periods`-period script without either process getting stuck?
-[[nodiscard]] inline bool model_completes(Round8Order order, int n_periods) {
+/// `n_exchanges`-exchange script without either process getting stuck?
+[[nodiscard]] inline bool model_completes(Round8Order order, int n_exchanges) {
   ProcessPolicy server{PolicyKind::kShipped, ServeRole::kFirstServer};
   ProcessPolicy reader{PolicyKind::kShipped, ServeRole::kFirstReader};
-  return RunSimulationRound8(order, n_periods, server, reader).completed;
+  return RunSimulationRound8(order, n_exchanges, server, reader).completed;
 }
 
 /// PURE, no search needed (unlike RunSimulation()'s own interleaving

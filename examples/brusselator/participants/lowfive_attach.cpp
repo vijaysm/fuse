@@ -206,10 +206,12 @@ struct AttachState {
   fuse_examples::lowfive_attach::OrderTracker order_tracker;
   // ROUND 8, task 6: a monotonically increasing per-process event
   // index (every real hook call below increments it once, in trace
-  // order) -- distinct from order_tracker's own period_index/slot
-  // (which resets every period); this one never resets, so two trace
-  // lines can be compared for "did anything happen in between" even
-  // across periods.
+  // order) -- distinct from order_tracker's own exchange_index/slot
+  // (which resets every exchange -- round 9 renamed this from
+  // "period," this header's own "ROUND 9" comment has the full
+  // account); this one never resets, so two trace lines can be
+  // compared for "did anything happen in between" even across
+  // exchanges.
   long long event_index = 0;
 #endif
 };
@@ -806,8 +808,8 @@ int bruss_lowfive_serve_after_write(char* errbuf, long long errbuf_len) {
   const long long this_event_index = s.event_index++;
   if (TraceEnabledCached()) {
     std::fprintf(stderr,
-                 "TRACE(bruss_lowfive_serve_after_write): event_index=%lld period=%d policy=%s\n",
-                 this_event_index, s.order_tracker.period_index,
+                 "TRACE(bruss_lowfive_serve_after_write): event_index=%lld exchange=%d policy=%s\n",
+                 this_event_index, s.order_tracker.exchange_index,
                  cold_start_first_reader ? "cold-start-first-reader" : "steady-state");
   }
   // Unchanged by the round-2 review: the WRITE side's own event/action
@@ -837,10 +839,12 @@ int bruss_lowfive_serve_after_write(char* errbuf, long long errbuf_len) {
       s.dist_vol->serve_all();
       // ROUND 6: this component's own exported file(s) are only now
       // safe to drop -- SERVED, not merely written -- so the next
-      // period's own H5Fcreate(TRUNC) of the same name does not meet a
-      // stale copy (lowfive_attach_decision.hpp's own "ROOT CAUSE"
-      // comment has the full citation on file_create()'s own emplace()-
-      // on-duplicate-key behaviour).
+      // exchange's own H5Fcreate(TRUNC) of the same name does not meet
+      // a stale copy (round 9 renamed "period" to "exchange" here,
+      // task 2 -- this file is recreated on every write, i.e. every
+      // exchange, not once per coupling window; lowfive_attach_
+      // decision.hpp's own "ROOT CAUSE" comment has the full citation
+      // on file_create()'s own emplace()-on-duplicate-key behaviour).
       for (const auto& f : s.own_exported_files) GuardedDropOwnExportedFile(*s.dist_vol, f);
       if (TraceEnabledCached()) {
         const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -920,9 +924,9 @@ int bruss_lowfive_receive_before_read(char* errbuf, long long errbuf_len) {
   const long long this_event_index = s.event_index++;
   if (TraceEnabledCached()) {
     std::fprintf(stderr,
-                 "TRACE(bruss_lowfive_receive_before_read): event_index=%lld period=%d "
+                 "TRACE(bruss_lowfive_receive_before_read): event_index=%lld exchange=%d "
                  "policy=receive-only\n",
-                 this_event_index, s.order_tracker.period_index);
+                 this_event_index, s.order_tracker.exchange_index);
   }
   auto action = fuse_examples::lowfive_attach::serve_state_step(
       &s.serve_state, fuse_examples::lowfive_attach::ServeEvent::kImportAboutToOpen);
@@ -999,9 +1003,9 @@ int bruss_lowfive_after_read_close(char* errbuf, long long errbuf_len) {
   const long long this_event_index = s.event_index++;
   if (TraceEnabledCached()) {
     std::fprintf(stderr,
-                 "TRACE(bruss_lowfive_after_read_close): event_index=%lld period=%d "
+                 "TRACE(bruss_lowfive_after_read_close): event_index=%lld exchange=%d "
                  "policy=%s\n",
-                 this_event_index, s.order_tracker.period_index,
+                 this_event_index, s.order_tracker.exchange_index,
                  s.serve_state.deferred_pending ? "flush-deferred" : "noop-after-import");
   }
   auto action = fuse_examples::lowfive_attach::serve_state_step(
@@ -1070,6 +1074,30 @@ int bruss_lowfive_finalize(char* errbuf, long long errbuf_len) {
     CopyErrorMessage("[" + action.error().code + "] " + action.error().message, errbuf,
                      errbuf_len);
     return 1;
+  }
+  // ROUND 9, task 1(b): a DETERMINISTIC, explicit H5close() -- NOT an
+  // atexit()-registered one -- called here, strictly BEFORE this
+  // function's own caller's MPI_Finalize() (confirmed by reading both
+  // u_main.c's and v_main.f90's own call sites: bruss_lowfive_
+  // finalize() always precedes MPI_Finalize() there), while the
+  // process is still in ORDINARY execution. decide_exit_hygiene_plan()
+  // says an attaching participant (U or V, the only role this
+  // function's own caller ever runs in) always wants this -- see this
+  // file's own "ROUND 9, task 1" header comment for why this is sound
+  // (spdlog's own static registry cannot have been torn down yet,
+  // since no exit()-time unwind has begun) and why the PRE-EXISTING
+  // std::atexit(+[]{H5close();}) in bruss_lowfive_attach() is KEPT,
+  // not replaced, as a backstop for an abrupt-exit path that skips
+  // this function entirely.
+  const auto hygiene = fuse_examples::lowfive_attach::decide_exit_hygiene_plan(
+      fuse_examples::lowfive_attach::LowFiveProcessRole::kAttachingParticipant);
+  if (hygiene.explicit_h5close_before_mpi_finalize) {
+    if (TraceEnabledCached()) {
+      std::fprintf(stderr,
+                   "TRACE(bruss_lowfive_finalize): calling H5close() before MPI_Finalize "
+                   "(deterministic VOL teardown, role=kAttachingParticipant)\n");
+    }
+    H5close();
   }
   return 0;
 #else
