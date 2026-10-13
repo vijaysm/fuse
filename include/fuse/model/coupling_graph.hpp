@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <limits>
 
 #include <optional>
 #include <string>
@@ -505,9 +506,21 @@ namespace detail {
 [[nodiscard]] inline std::size_t window_sample_capacity(
     Rational window_length, Rational interval, DtPolicy policy) {
   if (!(interval > Rational{0})) return 1;
-  const Rational ratio = window_length / interval;
-  std::int64_t substeps = ratio.num() / ratio.den();
-  if (ratio.num() % ratio.den() != 0) ++substeps;
+  // Review 2026-10-11 IS-6: `window_length / interval` (Rational::operator/)
+  // FUSE_REFUSEs with E-BASE-RATIONAL-OVERFLOW on an unrepresentable ratio
+  // (~2^63-magnitude window/interval values) -- an exception this function's
+  // own contract ("never fails, refusal is someone else's job", matching
+  // effective_channel_lag()'s shape) does not allow, and which used to
+  // escape schedule() uncaught instead of surfacing as an E-SCHED-*
+  // diagnostic. `try_div` cannot throw; on overflow, report the capacity as
+  // unrepresentably large rather than the ratio itself -- the caller's own
+  // `needed > waveform_capacity` gate (E-SCHED-WINDOW-CAPACITY,
+  // src/schedule/window.cpp) already refuses anything this large, so no
+  // caller ever observes the sentinel as a usable count.
+  const std::optional<Rational> ratio = Rational::try_div(window_length, interval);
+  if (!ratio.has_value()) return std::numeric_limits<std::size_t>::max();
+  std::int64_t substeps = ratio->num() / ratio->den();
+  if (ratio->num() % ratio->den() != 0) ++substeps;
   if (substeps < 0) substeps = 0;
   std::size_t needed = static_cast<std::size_t>(substeps) + 1;
   if (policy == DtPolicy::Fixed) needed += 1;
