@@ -17,6 +17,27 @@
 //     then immediately (non-blockingly, from this process's own view)
 //     releases it.
 //
+// ROUND 7 CONFIRMATION (not a change -- the blocking semantics above
+// are re-read against source this round and CONFIRMED, with the
+// mechanism now cited rather than assumed; this comment is appended,
+// the two bullets above are untouched). `DistMetadataVOL::file_close()`
+// (LowFive/src/vol-dist-metadata.cpp)'s own RemoteFile branch does
+// THREE things, not one: `f->obj.call<void>("file_close")` (an RPC to
+// the producer), then a COLLECTIVE `MPI_Barrier(local)` across EVERY
+// rank of the consumer's own local communicator, then -- ONLY on the
+// consumer's own root rank -- `f->obj.self_->finish(0)`. The producer's
+// own `Index::serve()` (LowFive/src/vol-dist/index.cpp) processes RPCs
+// in a loop until `s.process(source)` has returned true (a `finish`
+// was received) for EVERY one of its own registered intercomm servers
+// (`all_done_count == servers.size()`), at which point it posts its own
+// `ibarrier` and returns once that completes. For this row's own single
+// intercomm, this reduces to exactly the two bullets above; the three-
+// part breakdown matters only once more than one intercomm/consumer is
+// in play, which this row is not. Nothing here changes which process
+// blocks on what -- it only names the RPC/barrier/finish sequence
+// underneath "close" that this track's own earlier rounds cited as a
+// single step.
+//
 // WHAT THIS DOES AND DOES NOT ESTABLISH. This checks the PROTOCOL
 // (lowfive_attach_decision.hpp's own state machine) against the
 // blocking semantics AS READ from LowFive's source above -- it is NOT a

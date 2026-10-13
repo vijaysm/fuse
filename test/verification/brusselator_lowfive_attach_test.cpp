@@ -36,6 +36,8 @@ using fuse_examples::lowfive_attach::ServeRole;
 using fuse_examples::lowfive_attach::ServeState;
 using fuse_examples::lowfive_attach::VolSettings;
 using fuse_examples::lowfive_attach::VolSettingsSatisfyInvariant;
+using fuse_examples::lowfive_attach::DatasetGroupSplit;
+using fuse_examples::lowfive_attach::SplitDatasetGroupPath;
 using fuse_examples::lowfive_attach_model::WouldReuseStaleFileOnRecreate;
 
 namespace {
@@ -749,4 +751,42 @@ TEST(FormatMemoryPatternsForTrace, TwoEntriesCommaSeparated) {
                                                              {"brusselator_v.h5", "/grid/v_out"}};
   EXPECT_EQ(FormatMemoryPatternsForTrace(patterns),
            "[(brusselator_u.h5, /grid/u_out), (brusselator_v.h5, /grid/v_out)]");
+}
+
+// ROUND 7: SplitDatasetGroupPath() tests. "/grid/u_out" is the exact
+// path both u_main.c's U_LOWFIVE_OWN_DATASET and v_main.f90's
+// kOwnDataset/kPeerDataset use.
+TEST(SplitDatasetGroupPath, NestedPathSplitsGroupAndLeaf) {
+  DatasetGroupSplit s = SplitDatasetGroupPath("/grid/u_out");
+  EXPECT_EQ(s.group_path, "/grid");
+  EXPECT_EQ(s.leaf_name, "u_out");
+}
+
+TEST(SplitDatasetGroupPath, OtherComponentNestedPath) {
+  DatasetGroupSplit s = SplitDatasetGroupPath("/grid/v_out");
+  EXPECT_EQ(s.group_path, "/grid");
+  EXPECT_EQ(s.leaf_name, "v_out");
+}
+
+TEST(SplitDatasetGroupPath, SingleLeadingSlashNeedsNoGroup) {
+  DatasetGroupSplit s = SplitDatasetGroupPath("/u_out");
+  EXPECT_EQ(s.group_path, "");
+  EXPECT_EQ(s.leaf_name, "u_out");
+}
+
+TEST(SplitDatasetGroupPath, NoSlashAtAllNeedsNoGroup) {
+  DatasetGroupSplit s = SplitDatasetGroupPath("u_out");
+  EXPECT_EQ(s.group_path, "");
+  EXPECT_EQ(s.leaf_name, "u_out");
+}
+
+TEST(SplitDatasetGroupPath, MultiSegmentPathKeepsWholeGroupPrefix) {
+  // group_create() (LowFive source) creates intermediate groups one
+  // segment at a time on its own, so a single H5Gcreate2() call with
+  // this WHOLE multi-segment group_path is sufficient -- this test
+  // only pins SplitDatasetGroupPath()'s own output, not LowFive's
+  // behavior (which is not under tier-0 test here).
+  DatasetGroupSplit s = SplitDatasetGroupPath("/a/b/c");
+  EXPECT_EQ(s.group_path, "/a/b");
+  EXPECT_EQ(s.leaf_name, "c");
 }
