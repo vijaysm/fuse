@@ -390,8 +390,9 @@ Result<std::size_t> build_native_remap_halo(NativeMeshBackend& backend, MeshId s
 
 #if !FUSE_HAVE_MPI
   return Failure{"E-MESH-NO-MPI",
-               "the native backend reports a communicator of " + std::to_string(ranks) +
-                   " ranks, but this build has no MPI"};
+               fmt::format("the native backend reports a communicator of {} ranks, but this "
+                          "build has no MPI",
+                          ranks)};
 #else
   // The same guard MoabMeshBackend::set_communicator() makes: a build WITH
   // MPI whose process never called MPI_Init (every tier-0 test binary in a
@@ -404,10 +405,10 @@ Result<std::size_t> build_native_remap_halo(NativeMeshBackend& backend, MeshId s
     int initialized = 0;
     if (MPI_Initialized(&initialized) != MPI_SUCCESS || initialized == 0) {
       return Failure{"E-MESH-MPIINIT",
-                   "the native backend reports a communicator of " +
-                       std::to_string(ranks) +
-                       " ranks, but MPI is not initialised in this process; the "
-                       "covering-set halo is a collective and cannot be built"};
+                   fmt::format("the native backend reports a communicator of {} ranks, but "
+                              "MPI is not initialised in this process; the covering-set "
+                              "halo is a collective and cannot be built",
+                              ranks)};
     }
   }
   // With MPI initialised (checked above), `ranks` is `backend.communicator_size()`, which is pure local
