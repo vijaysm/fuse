@@ -423,6 +423,24 @@ void affine_conversion_divides_offset_by_target_scale()
             "the offset was not divided by target.scale (got the un-divided -10 instead of -5)");
 }
 
+// BM-13 (review 2026-10-11): `check_constraints()` used to honor only
+// `OperatorKind::Clip` -- an explicit `ConservationEnforcement` request
+// was silently ignored, no step and no diagnostic, the exact I4 shape
+// this project's own conventions forbid. `ir_can_emit(ConservationEnforcement)`
+// is false (src/ir/lowering.cpp), so the request now reaches the SAME
+// unlowerable refusal `Clip` already does once the chain is lowered;
+// this test (model layer only, no IR dependency) pins the half this
+// layer owns: the step is emitted and marked as an explicit request, not
+// dropped.
+void conservation_enforcement_request_is_emitted_not_dropped()
+{
+    auto request = agreeing();
+    request.explicitly_requested = operator_request_bit(OperatorKind::ConservationEnforcement);
+    const auto result = check_connection(request);
+    require(result.chain.size() == 1 && result.chain.steps[0].kind == OperatorKind::ConservationEnforcement,
+            "an explicit ConservationEnforcement request was silently dropped");
+    require(result.chain.steps[0].explicitly_requested, "the request was not recorded as explicit");
+}
 }
 
 TEST(Compatibility, ExactConnection) { exact_connection(); }
@@ -436,3 +454,4 @@ TEST(Compatibility, CapabilityAndVersionClosure) { capability_and_version_closur
 TEST(Compatibility, ReportsEveryStageAtOnce) { reports_every_stage_at_once(); }
 TEST(Compatibility, FullChainIsOrdered) { full_chain_is_ordered(); }
 TEST(Compatibility, AffineConversionRespectsTargetScale) { affine_conversion_divides_offset_by_target_scale(); }
+TEST(Compatibility, ConservationEnforcementRequestIsEmittedNotDropped) { conservation_enforcement_request_is_emitted_not_dropped(); }
