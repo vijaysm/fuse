@@ -167,3 +167,20 @@ old = """  return !policy.file_deleted_at_close && !policy.drop_after_serve && n
 new = """  return !policy.file_deleted_at_close && n_iterations > 1;"""
 target = "fuse_verification_brusselator_lowfive_attach_test"
 test = "verification.brusselator_lowfive_attach"
+
+# Round 7 (the serve now sees the file; the row now fails fast inside
+# V's own H5Dget_space on a remote dataset instead of hanging): one
+# mutation for the pure SplitDatasetGroupPath() helper the shim's new
+# H5Gcreate2() fix is driven from.
+
+[[mutation]]
+id = "split-dataset-group-path-leaf-keeps-leading-slash"
+area = "examples"
+describes = "SplitDatasetGroupPath() includes the dataset's own leading slash on the leaf name instead of stripping it at the split point -- would make the shim's own H5Gcreate2() call target the wrong string ('/grid' with an extra separator folded into the leaf) and, more importantly, would make the group_path/leaf_name split inconsistent with Object::search()'s own segment boundaries, silently reintroducing a variant of this round's own root cause"
+file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
+old = """  const std::string before = dataset_path.substr(0, last_slash);
+  const std::string leaf = dataset_path.substr(last_slash + 1);"""
+new = """  const std::string before = dataset_path.substr(0, last_slash);
+  const std::string leaf = dataset_path.substr(last_slash);"""
+target = "fuse_verification_brusselator_lowfive_attach_test"
+test = "verification.brusselator_lowfive_attach"
