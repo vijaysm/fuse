@@ -183,18 +183,26 @@ std::string& thread_error_message() {
   static thread_local std::string msg;
   return msg;
 }
+/// The fuse_status the most recent failing call on this thread returned;
+/// the thread-local twin of fuse_ctx::last_error_status (context.hpp).
+fuse_status& thread_error_status() {
+  static thread_local fuse_status status = FUSE_OK;
+  return status;
+}
 
-void store_error(fuse_ctx* ctx, const std::string& code,
+void store_error(fuse_ctx* ctx, fuse_status status, const std::string& code,
                  const std::string& msg) noexcept {
   try {
     thread_error_code()    = code;
     thread_error_message() = msg;
+    thread_error_status()  = status;
   } catch (...) {  // NOLINT(bugprone-empty-catch): nothing better is possible
   }
   if (ctx != nullptr) {
     try {
       ctx->last_error_code    = code;
       ctx->last_error_message = msg;
+      ctx->last_error_status  = status;
     } catch (...) {  // NOLINT(bugprone-empty-catch)
     }
   }
@@ -202,7 +210,7 @@ void store_error(fuse_ctx* ctx, const std::string& code,
 
 fuse_status fail(fuse_ctx* ctx, fuse_status code, const std::string& fcode,
                  const std::string& msg) noexcept {
-  store_error(ctx, fcode, msg);
+  store_error(ctx, code, fcode, msg);
   return code;
 }
 
@@ -485,6 +493,7 @@ fuse_status impl_destroy(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
     if (auto r = fuse::transport::disconnect(owned); !r.ok()) {
       thread_error_code()    = r.error().code;
       thread_error_message() = r.error().message;
+      thread_error_status()  = FUSE_ERR_RUNTIME;
       return FUSE_ERR_RUNTIME;
     }
 #else
@@ -501,19 +510,24 @@ fuse_status impl_last_error(fuse_ctx* ctx, const fuse_null*, fuse_error* out) {
 
   const std::string* code = nullptr;
   const std::string* msg = nullptr;
+  const fuse_status* status = nullptr;
   if (ctx == nullptr) {
-    code = &thread_error_code();
-    msg  = &thread_error_message();
+    code   = &thread_error_code();
+    msg    = &thread_error_message();
+    status = &thread_error_status();
   } else if (!is_live(ctx)) {
     return FUSE_ERR_INVALID;
   } else {
-    code = &ctx->last_error_code;
-    msg  = &ctx->last_error_message;
+    code   = &ctx->last_error_code;
+    msg    = &ctx->last_error_message;
+    status = &ctx->last_error_status;
   }
 
   out->struct_size = sizeof(fuse_error);
-  out->status      = FUSE_OK;  // the ABI never reconstructs the ORIGINAL
-                               // failing status; only the message/code.
+  out->status      = *status;  // the fuse_status store_error() recorded
+                               // alongside code/message for the call that
+                               // set them (FUSE_OK if nothing has failed
+                               // yet on this context/thread).
   out->length      = msg->size();
   out->code        = code->empty() ? nullptr : code->c_str();
   if (out->buffer == nullptr) {

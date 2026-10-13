@@ -141,7 +141,7 @@ FUSE_ABI_FIELD(int32_t,        c_int32_t,  truncated,    "out: 1 if the message 
 FUSE_ABI_FIELD(uint64_t,       c_int64_t,  length,       "out: full message length in bytes, excluding the NUL")
 FUSE_ABI_FIELD(char*,          c_ptr,      buffer,       "in: caller's buffer, or NULL to query length only")
 FUSE_ABI_FIELD(uint64_t,       c_int64_t,  capacity,     "in: bytes available in buffer")
-FUSE_ABI_FIELD(const char*,    c_ptr,      code,         "out: the E-... code, static storage, valid until the next failing call")
+FUSE_ABI_FIELD(const char*,    c_ptr,      code,         "out: the E-... code; valid until the next failing call on this context (or thread, when ctx is NULL) -- NOT static storage (it points into the context's own last_error_code, or the thread-local twin when ctx is NULL), and not valid after fuse_destroy() on this context (Review 2026-10-11 AB-8: the doc text previously claimed static storage, which this never was)")
 FUSE_ABI_STRUCT_END(fuse_error)
 
 FUSE_ABI_STRUCT(fuse_graph_source, "where a coupling graph comes from; exactly one of yaml_path and bytes is set")

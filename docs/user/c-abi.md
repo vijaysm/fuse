@@ -89,8 +89,10 @@ limitation in `KNOWN_ISSUES.md` D25; a coupler-delivered initial exchange would 
 
 **Reading an error.** Every entry point above returns a `fuse_status` — `FUSE_OK` (`0`) or a
 negative `FUSE_ERR_*` — but not the message. `fuse->last_error(ctx, NULL, &err)` fills a caller-owned
-`fuse_error` with the failed call's own `E-...` code (`err.code`, static storage, valid until the
-next failing call), its full message length (`err.length`), and as much of the message text as fits
+`fuse_error` with the failed call's own `fuse_status` again (`err.status` — `FUSE_OK` if nothing has
+failed yet on this context), its `E-...` code (`err.code` — valid until the next failing call on
+this context, or the thread when `ctx` is `NULL`; not static storage, and not valid after
+`fuse_destroy()`), its full message length (`err.length`), and as much of the message text as fits
 in `err.buffer`/`err.capacity`, always NUL-terminated (`err.truncated` is `1` if it did not fit, and
 `err.length` is then the length a second call would need; pass `buffer = NULL` to query the length
 alone, without copying anything):
