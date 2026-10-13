@@ -11,12 +11,16 @@ The natural spelling of the opt-in is a member on `IterationRegionDecl`
 this port and is not touched here. `CouplingWindowScope`
 (`fuse/schedule/window.hpp`) carries the opt-in as a sibling parameter
 instead — passed alongside the graph, not inside it — and
-`validate_coupling_window()` is the legality gate. Wiring `schedule()`
-itself to accept and act on a `CouplingWindowScope` is designed but not
-built; today's contiguous-run rule (`mark_regions`,
-`src/schedule/scheduler.cpp`) is unchanged, and a two-clock region without
-the opt-in keeps refusing exactly as `test/schedule/multirate_region_test.cpp`
-pins.
+`validate_coupling_window()` is the legality gate. `schedule()` itself calls
+it, and acts on the scope it names, for every window-scoped region in the
+graph (`src/schedule/scheduler.cpp`'s `schedule()`, which runs the gate
+before `expand()`). `mark_regions()`'s contiguous-run rule (same file) is
+NOT unchanged: it carries its own window multi-pass bound -- a window-scoped
+region's own clock may tick several times per period, so the rule stops a
+run the moment every member has appeared once rather than greedily
+consuming every later pass into it. A two-clock region without the opt-in
+still refuses exactly as `test/schedule/multirate_region_test.cpp` pins;
+that part never changed.
 
 `WindowCoupler` (`fuse/runtime/window_coupler.hpp`) is the runtime driver a
 model author can use directly today, against real `Component`/`Waveform`/
@@ -62,11 +66,15 @@ piecewise-linear.
 
 `E-SCHED-WINDOW-*` (schedule-time, `validate_coupling_window`): `EMPTY`,
 `AMBIGUOUS`, `COMPONENT`, `INTERVAL`, `POLICY`, `ORDER`, `SHORTEN`,
-`CAPACITY`. `E-RT-WINDOW-*` (`WindowCoupler::create`/`run_window`): `EMPTY`,
-`NULL`, `INTERVAL`, `ORDER`, `CHANNEL`, `ROLLBACK`, `NOCONVERGE`. Every one
-has a test that makes it fire (`test/schedule/window_scope_test.cpp`,
-`test/runtime/window_coupler_test.cpp`'s `WindowCouplerRefusals` suite) —
-per [](testing.md), an unexercised refusal is not verified.
+`CAPACITY`, `GAUSSSEIDEL-NOLAG`. `E-SCHED-WINDOW-OVERLAP` (schedule-time,
+`schedule()` itself, before any per-region gate runs): a component or
+channel named by more than one window-scoped region. `E-RT-WINDOW-*`
+(`WindowCoupler::create`/`run_window`): `EMPTY`, `NULL`, `INTERVAL`,
+`ORDER`, `CHANNEL`, `ROLLBACK`, `NOCONVERGE`. Every one has a test that
+makes it fire (`test/schedule/window_scope_test.cpp`,
+`test/schedule/plan_test.cpp`, `test/runtime/window_coupler_test.cpp`'s
+`WindowCouplerRefusals` suite) — per [](testing.md), an unexercised refusal
+is not verified.
 
 ## Two bugs found in the straddle replay, and one gap found but not fixed
 
@@ -141,11 +149,15 @@ data this window"; see `KNOWN_ISSUES.md` D7.
 
 ## What is NOT built here
 
-- `schedule()`/`Runner` resolving `WindowMember` fields from a
-  `CouplingGraph`/`FieldRegistry` the way a single-clock `RegionBlock` does.
+- `Runner` resolving `WindowMember` fields from a `CouplingGraph`/
+  `FieldRegistry` the way a single-clock `RegionBlock` does, against a
+  standalone `WindowCoupler` rather than through `schedule()`'s own compiled
+  plan (`schedule()` itself DOES compile a window-scoped `IterationRegionDecl`
+  — see above).
 - Extending `IterationRegionDecl` itself with the opt-in (belongs to the
   track that owns `fuse/model/coupling_graph.hpp`).
-- `src/CMakeLists.txt` registering `schedule/window.cpp` and
-  `runtime/window_coupler.cpp` into the `fuse::schedule`/`fuse::runtime`
-  library targets — outside this track's file ownership; see the
-  hand-off note this change's commit carries.
+
+`src/CMakeLists.txt` already registers `schedule/window.cpp` and
+`runtime/window_coupler.cpp` into the `fuse::schedule`/`fuse::runtime`
+library targets (review 2026-10-11 IS-12 -- this page used to list that
+registration as not-yet-done).
