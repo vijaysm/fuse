@@ -31,46 +31,46 @@ ConnectionVerdict severity_of(ConnectionReason reason) noexcept
 class Evaluation
 {
   public:
-    explicit Evaluation(const ConnectionRequest& request) : _request(request) {}
+    explicit Evaluation(const ConnectionRequest& request) : request_(request) {}
 
     void refuse(ConnectionStage stage, ConnectionReason reason, std::string detail,
                 std::uint64_t missing_capabilities = 0)
     {
-        _result.diagnostics.push_back({stage, reason, missing_capabilities, std::move(detail)});
+        result_.diagnostics.push_back({stage, reason, missing_capabilities, std::move(detail)});
         const auto severity = severity_of(reason);
-        if (severity > _result.verdict) _result.verdict = severity;
-        if (!_result.first_incompatible_stage) _result.first_incompatible_stage = stage;
+        if (severity > result_.verdict) result_.verdict = severity;
+        if (!result_.first_incompatible_stage) result_.first_incompatible_stage = stage;
     }
 
     [[nodiscard]] bool requested(OperatorKind kind) const noexcept
     {
-        return (_request.explicitly_requested & operator_request_bit(kind)) != 0;
+        return (request_.explicitly_requested & operator_request_bit(kind)) != 0;
     }
 
-    void emit(OperatorStep step) { _result.chain.steps.push_back(std::move(step)); }
+    void emit(OperatorStep step) { result_.chain.steps.push_back(std::move(step)); }
 
     [[nodiscard]] ConnectionCompatibility finish()
     {
-        if (_result.verdict == ConnectionVerdict::Ambiguous || _result.verdict == ConnectionVerdict::Unsupported)
+        if (result_.verdict == ConnectionVerdict::Ambiguous || result_.verdict == ConnectionVerdict::Unsupported)
         {
             // A refused connection has no chain. A partial chain would invite a
             // runtime fallback, which is exactly what must not exist: a
             // fallback that substitutes an operator changes the meaning of the
             // coupled quantity while reporting success.
-            _result.chain.steps.clear();
-            return std::move(_result);
+            result_.chain.steps.clear();
+            return std::move(result_);
         }
-        if (_result.chain.empty()) _result.verdict = ConnectionVerdict::Exact;
-        else if (chain_is_lossless(_result.chain)) _result.verdict = ConnectionVerdict::LosslessExplicit;
-        else _result.verdict = ConnectionVerdict::LossyExplicit;
-        return std::move(_result);
+        if (result_.chain.empty()) result_.verdict = ConnectionVerdict::Exact;
+        else if (chain_is_lossless(result_.chain)) result_.verdict = ConnectionVerdict::LosslessExplicit;
+        else result_.verdict = ConnectionVerdict::LossyExplicit;
+        return std::move(result_);
     }
 
-    [[nodiscard]] ConnectionCompatibility& result() noexcept { return _result; }
+    [[nodiscard]] ConnectionCompatibility& result() noexcept { return result_; }
 
   private:
-    const ConnectionRequest& _request;
-    ConnectionCompatibility _result;
+    const ConnectionRequest& request_;
+    ConnectionCompatibility result_;
 };
 
 // The spine's rational helpers returned an error code; fuse::Rational compares
