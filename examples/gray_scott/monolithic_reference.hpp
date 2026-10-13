@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "gray_scott_physics.hpp"
+#include "sparse_solve_backend.hpp"
 
 namespace gray_scott {
 
@@ -150,11 +151,14 @@ class MonolithicGrayScott {
       rhs.head(N) = -Ru;
       rhs.tail(N) = -Rv;
 
-      Eigen::SparseLU<Eigen::SparseMatrix<double>> solver;
-      solver.compute(jac);
-      if (solver.info() != Eigen::Success) return false;
-      const Eigen::VectorXd delta = solver.solve(rhs);
-      if (solver.info() != Eigen::Success) return false;
+      if (!jac_pattern_analyzed_) {
+        jac_solver_.analyzePattern(jac);
+        jac_pattern_analyzed_ = true;
+      }
+      jac_solver_.factorize(jac);
+      if (jac_solver_.info() != Eigen::Success) return false;
+      const Eigen::VectorXd delta = jac_solver_.solve(rhs);
+      if (jac_solver_.info() != Eigen::Success) return false;
 
       u_new += delta.head(N);
       v_new += delta.tail(N);
@@ -177,6 +181,19 @@ class MonolithicGrayScott {
   double newton_tol_;
   int    newton_max_iter_;
   MonolithicSourceFn su_, sv_;
+
+  // Newton-loop Jacobian solver, reused across EVERY Newton iteration and
+  // EVERY step() call on this instance. The Jacobian's sparsity PATTERN
+  // (which (row,col) entries exist) is invariant -- it comes entirely from
+  // lap_'s own fixed structural pattern (built once, in the constructor)
+  // plus always-present per-cell cross-coupling entries -- so
+  // analyzePattern() is computed ONCE, lazily, on the first Jacobian ever
+  // assembled; every subsequent iteration only needs factorize()+solve(),
+  // which re-read the CURRENT numeric values and carry no staleness risk.
+  // SparseLuBackend IS Eigen::SparseLU unless FUSE_ENABLE_CUSPARSE is on
+  // (examples/common/sparse_solve_backend.hpp): same calls, same results.
+  fuse_examples::SparseLuBackend jac_solver_;
+  bool jac_pattern_analyzed_ = false;
 };
 
 }  // namespace gray_scott

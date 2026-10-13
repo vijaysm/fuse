@@ -45,13 +45,19 @@ LAYERS = [
     # below `backend`, on purpose: the ArborX track's task explicitly places
     # it there so that `backend` CAN depend on it (the reverse of
     # `partition`'s own mesh_adapter.hpp, which reaches UP into `backend`
-    # instead). Its public headers name no third-party type at all --
-    # `box_index.hpp` is pimpl'd and `distributed.hpp` never names mpi.h --
-    # so it needs no entry in ALLOWED_PUBLIC_THIRD_PARTY beyond the empty
-    # default every layer gets. `mesh_adapter.hpp`'s adapter is a template
-    # constrained by a structural (duck-typed) concept over `fuse::MeshView`'s
-    # shape rather than an `#include "fuse/backend/...")` of the real type --
-    # the only way to consume that shape from BELOW `backend` at all.
+    # instead). `box_index.hpp` is still pimpl'd against ArborX itself (no
+    # `#include <ArborX.hpp>` anywhere under include/) and `distributed.hpp`
+    # never names mpi.h, but `box_index.hpp` DOES now name `Kokkos_Core.hpp`
+    # (docs/dev/search.md's "Execution space" section, mesh-search track):
+    # `BoxIndex::build`/`query_points`/`query_nearest` gained
+    # `Kokkos::View<..., Kokkos::DefaultExecutionSpace::memory_space>`
+    # overloads so a device-resident caller never round-trips through the
+    # host, the same reason `field`/`num`/`runtime`/`partition` below allow
+    # it -- a Kokkos-templated public API, not an implementation detail.
+    # `mesh_adapter.hpp`'s adapter stays a template constrained by a
+    # structural (duck-typed) concept over `fuse::MeshView`'s shape rather
+    # than an `#include "fuse/backend/...")` of the real type -- the only way
+    # to consume that shape from BELOW `backend` at all.
     "search",
     "backend",
     # `partition` (fuse::partition, the Kokkos-view RCB port) sits directly
@@ -100,12 +106,13 @@ ALLOWED_PUBLIC_THIRD_PARTY = {
     # substance of usability rule U3, not an implementation detail, so the view
     # type is in the public interface by design.
     "field": {"Kokkos_Core.hpp"},
-    # No Kokkos, no ArborX, no mpi.h: box_index.hpp is pimpl'd and
-    # distributed.hpp is mpi.h-free by construction (both header comments
-    # explain why), so this layer's public surface names nothing third-party
-    # at all -- unlike `field`/`num`/`runtime` just above and below, which are
-    # Kokkos-templated in their public interface by design.
-    "search": set(),
+    # box_index.hpp is pimpl'd against ArborX (no <ArborX.hpp> under
+    # include/) and distributed.hpp is mpi.h-free by construction (both
+    # header comments explain why), but box_index.hpp's device-resident
+    # Kokkos::View overloads (docs/dev/search.md, "Execution space") put
+    # Kokkos_Core.hpp in this layer's public surface by design, the same
+    # justification `field`/`num`/`runtime`/`partition` already carry.
+    "search": {"Kokkos_Core.hpp"},
     "runtime": {"Kokkos_Core.hpp"},
     "backend": {"Kokkos_Core.hpp", "Kokkos_Macros.hpp"},   # per-backend headers live under backend/<name>/
     # rcb_partition/weighted_median/apply_coord_transform are all templated

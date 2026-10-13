@@ -39,6 +39,18 @@ struct DistributedQueryResult {
 /// EXACTLY as given, so a caller wanting the shared-face tolerance pads them
 /// first (`geometry.hpp::padded`, or `element_boxes` which already does).
 ///
+/// `space` follows `BoxIndex::build`'s own convention
+/// (`resolve_execution_space()`, types.hpp): `Host` (the default) builds and
+/// queries `ArborX::DistributedTree` on `Kokkos::DefaultHostExecutionSpace`,
+/// byte-identical to this function's behaviour before the parameter existed;
+/// `Device` (explicit, or `FUSE_EXECUTION_SPACE=device`) builds and queries
+/// on `Kokkos::DefaultExecutionSpace` and its `memory_space`, copying
+/// `local_boxes`/`points` to the device and the result back exactly the way
+/// `BoxIndex::build(std::vector<Box>, ExecutionSpace)` does for the local
+/// tree. Ignored at `comm == kNullComm` only in the sense that there is no
+/// MPI traffic to place on a space either way; the local `BoxIndex` it
+/// delegates to still honours it.
+///
 /// COLLECTIVE over `comm` when `comm != kNullComm`: every rank must call
 /// this, even one with zero local boxes or zero local query points
 /// (`fuse::partition`'s "Global collective discipline",
@@ -57,7 +69,10 @@ struct DistributedQueryResult {
 ///     one).
 ///   * `E-SEARCH-NO-MPI` -- `comm != kNullComm` on a build with no MPI
 ///     (`FUSE_HAVE_MPI == 0`); mirrors `fuse::partition`'s `E-PART-NO-MPI`.
+///   * `E-SEARCH-SPACE` -- `space == ExecutionSpace::Default` and
+///     `FUSE_EXECUTION_SPACE` names neither `host` nor `device`.
 [[nodiscard]] Result<DistributedQueryResult> query_points_distributed(
-    CommHandle comm, std::vector<Box> local_boxes, const std::vector<Point>& points);
+    CommHandle comm, std::vector<Box> local_boxes, const std::vector<Point>& points,
+    ExecutionSpace space = ExecutionSpace::Default);
 
 }  // namespace fuse::search

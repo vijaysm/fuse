@@ -2,12 +2,12 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <numeric>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "fuse/base/rational.hpp"
 #include "fuse/schedule/slab.hpp"
 #include "fuse/schedule/window.hpp"
 
@@ -69,7 +69,7 @@ bool has_sample(const Channel& ch) {
                                            const Rational& interval) {
   const Int128 n = static_cast<Int128>(k) * interval.num();
   const Int128 d = interval.den();  // always >= 1
-  const Int128 g = std::gcd(abs128(n), d);
+  const Int128 g = detail::gcd128(abs128(n), d);
   const Int128 rn = n / g;
   if (!detail::fits_i64(rn)) {
     return Failure{"E-SCHED-PERIOD",

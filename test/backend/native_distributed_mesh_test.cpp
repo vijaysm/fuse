@@ -7,10 +7,13 @@
 
 #include "fuse/backend/native/geometry.hpp"
 
+#include <Kokkos_Core.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <set>
+#include <type_traits>
 
 #include <gtest/gtest.h>
 
@@ -400,4 +403,140 @@ TEST(NativeDistributedMesh, OwnedCountExcludesGhosts) {
   EXPECT_TRUE(v.is_owned(1, 0));
   EXPECT_FALSE(v.is_owned(1, 1));
   EXPECT_EQ(v.owned_count(0), 2u);
+}
+
+// ---- device-resident geometry (docs/dev/native-mesh.md, "Execution space")
+
+namespace {
+
+/// Common body for the two tests below: every `device_measure()`/
+/// `device_centroid()` entry agrees with the corresponding
+/// `measure(dim,i)`/`centroid(dim,i)` call to 1e-14 relative -- the nvcc
+/// FMA-contraction tolerance docs/dev/device-resident-arcs.md's
+/// reproducibility contract already accepts, and bit-identical on a
+/// host-only build where Kokkos::DefaultExecutionSpace IS the host space.
+void ExpectDeviceGeometryMatchesHost(const NativeMeshView& v) {
+  using DeviceMemSpace = NativeMeshView::DeviceMemSpace;
+
+  // Compile-time: the primary arrays' element type AND memory space are
+  // exactly Kokkos::DefaultExecutionSpace::memory_space, not merely
+  // "some Kokkos view".
+  static_assert(std::is_same_v<typename std::decay_t<decltype(v.device_measure())>::memory_space,
+                              Kokkos::DefaultExecutionSpace::memory_space>);
+  static_assert(std::is_same_v<typename std::decay_t<decltype(v.device_centroid())>::memory_space,
+                              Kokkos::DefaultExecutionSpace::memory_space>);
+
+  // Runtime: whether the host can dereference that memory space directly is
+  // exactly "is this build's default execution space a real device" --
+  // SpaceAccessibility, not the type alias, is what actually proves it.
+  constexpr bool kHostCanTouchDeviceMemoryDirectly =
+      Kokkos::SpaceAccessibility<Kokkos::HostSpace, DeviceMemSpace>::accessible;
+#if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || defined(KOKKOS_ENABLE_SYCL)
+  EXPECT_FALSE(kHostCanTouchDeviceMemoryDirectly)
+      << "a real device backend is compiled in, so the primary geometry arrays "
+         "must live in memory the host cannot dereference directly";
+#else
+  EXPECT_TRUE(kHostCanTouchDeviceMemoryDirectly);
+#endif
+
+  ASSERT_EQ(v.device_measure().extent(0), v.cell_count());
+  ASSERT_EQ(v.device_centroid().extent(0), v.cell_count());
+  auto measure_mirror = Kokkos::create_mirror_view(v.device_measure());
+  Kokkos::deep_copy(measure_mirror, v.device_measure());
+  auto centroid_mirror = Kokkos::create_mirror_view(v.device_centroid());
+  Kokkos::deep_copy(centroid_mirror, v.device_centroid());
+
+  for (std::size_t c = 0; c < v.cell_count(); ++c) {
+    SCOPED_TRACE(::testing::Message() << "cell " << c);
+    const double host_measure = v.measure(v.dimension(), c);
+    const double tol = std::max(1e-14, std::abs(host_measure) * 1e-14);
+    EXPECT_NEAR(measure_mirror(c), host_measure, tol);
+
+    const fuse::Point host_centroid = v.centroid(v.dimension(), c);
+    EXPECT_NEAR(centroid_mirror(c, 0), host_centroid.x, 1e-13);
+    EXPECT_NEAR(centroid_mirror(c, 1), host_centroid.y, 1e-13);
+    EXPECT_NEAR(centroid_mirror(c, 2), host_centroid.z, 1e-13);
+  }
+}
+
+}  // namespace
+
+TEST(NativeDistributedMesh, DeviceGeometryMatchesHostForThreeDimensionalShapes) {
+  // One mesh, five different 3D shapes (mixed shapes, one dimension, exactly
+  // what "general cell" means here) -- a Hex, a Tet, a Prism, a Pyramid and
+  // a Polyhedron twin of the Hex, so the device measure kernel's per-cell
+  // simplex count varies cell to cell (6, 1, 3, 2 and 6 simplices).
+  NativeMeshBuilder b(3);
+
+  int hex[8];
+  const double hx[8] = {0, 1, 1, 0, 0, 1, 1, 0};
+  const double hy[8] = {0, 0, 1, 1, 0, 0, 1, 1};
+  const double hz[8] = {0, 0, 0, 0, 1, 1, 1, 1};
+  for (int i = 0; i < 8; ++i) hex[i] = b.add_vertex(i, hx[i], hy[i], hz[i], 0, true);
+  b.add_cell(CellType::Hex, {hex[0], hex[1], hex[2], hex[3], hex[4], hex[5], hex[6], hex[7]}, 0, 0,
+            true);
+
+  const int t0 = b.add_vertex(8, 2.0, 0.0, 0.0, 0, true);
+  const int t1 = b.add_vertex(9, 3.0, 0.0, 0.0, 0, true);
+  const int t2 = b.add_vertex(10, 2.0, 1.0, 0.0, 0, true);
+  const int t3 = b.add_vertex(11, 2.0, 0.0, 1.0, 0, true);
+  b.add_cell(CellType::Tet, {t0, t1, t2, t3}, 1, 0, true);
+
+  const int p0 = b.add_vertex(12, 4.0, 0.0, 0.0, 0, true);
+  const int p1 = b.add_vertex(13, 5.0, 0.0, 0.0, 0, true);
+  const int p2 = b.add_vertex(14, 4.0, 1.0, 0.0, 0, true);
+  const int p3 = b.add_vertex(15, 4.0, 0.0, 1.0, 0, true);
+  const int p4 = b.add_vertex(16, 5.0, 0.0, 1.0, 0, true);
+  const int p5 = b.add_vertex(17, 4.0, 1.0, 1.0, 0, true);
+  b.add_cell(CellType::Prism, {p0, p1, p2, p3, p4, p5}, 2, 0, true);
+
+  const int q0 = b.add_vertex(18, 6.0, 0.0, 0.0, 0, true);
+  const int q1 = b.add_vertex(19, 7.0, 0.0, 0.0, 0, true);
+  const int q2 = b.add_vertex(20, 7.0, 1.0, 0.0, 0, true);
+  const int q3 = b.add_vertex(21, 6.0, 1.0, 0.0, 0, true);
+  const int q4 = b.add_vertex(22, 6.5, 0.5, 1.0, 0, true);
+  b.add_cell(CellType::Pyramid, {q0, q1, q2, q3, q4}, 3, 0, true);
+
+  int poly[8];
+  const double px[8] = {8, 9, 9, 8, 8, 9, 9, 8};
+  const double py[8] = {0, 0, 1, 1, 0, 0, 1, 1};
+  const double pz[8] = {0, 0, 0, 0, 1, 1, 1, 1};
+  for (int i = 0; i < 8; ++i) poly[i] = b.add_vertex(23 + i, px[i], py[i], pz[i], 0, true);
+  std::vector<std::vector<int>> faces = {
+      {poly[0], poly[3], poly[2], poly[1]}, {poly[4], poly[5], poly[6], poly[7]},
+      {poly[0], poly[1], poly[5], poly[4]}, {poly[1], poly[2], poly[6], poly[5]},
+      {poly[2], poly[3], poly[7], poly[6]}, {poly[3], poly[0], poly[4], poly[7]}};
+  b.add_polyhedron_cell(faces, 4, 0, true);
+
+  auto arrays_r = b.build();
+  ASSERT_TRUE(arrays_r.ok());
+  auto view_r = NativeMeshView::create_from_host(arrays_r.value(), 0);
+  ASSERT_TRUE(view_r.ok()) << view_r.error().message;
+  ExpectDeviceGeometryMatchesHost(*view_r.value());
+}
+
+TEST(NativeDistributedMesh, DeviceGeometryMatchesHostForTwoDimensionalShapes) {
+  // A Quad (2 simplices) and a concave Polygon (4 simplices) in the SAME
+  // mesh, so the device measure kernel's per-cell simplex count varies here
+  // too, at dimension 2.
+  NativeMeshBuilder b(2);
+  const int v0 = b.add_vertex(0, 0.0, 0.0, 0.0, 0, true);
+  const int v1 = b.add_vertex(1, 1.0, 0.0, 0.0, 0, true);
+  const int v2 = b.add_vertex(2, 1.0, 1.0, 0.0, 0, true);
+  const int v3 = b.add_vertex(3, 0.0, 1.0, 0.0, 0, true);
+  b.add_cell(CellType::Quad, {v0, v1, v2, v3}, 0, 0, true);
+
+  const int w0 = b.add_vertex(4, 2.0, 0.0, 0.0, 0, true);
+  const int w1 = b.add_vertex(5, 4.0, 0.0, 0.0, 0, true);
+  const int w2 = b.add_vertex(6, 4.0, 1.0, 0.0, 0, true);
+  const int w3 = b.add_vertex(7, 3.0, 1.0, 0.0, 0, true);
+  const int w4 = b.add_vertex(8, 3.0, 2.0, 0.0, 0, true);
+  const int w5 = b.add_vertex(9, 2.0, 2.0, 0.0, 0, true);
+  b.add_cell(CellType::Polygon, {w0, w1, w2, w3, w4, w5}, 1, 0, true);
+
+  auto arrays_r = b.build();
+  ASSERT_TRUE(arrays_r.ok());
+  auto view_r = NativeMeshView::create_from_host(arrays_r.value(), 0);
+  ASSERT_TRUE(view_r.ok()) << view_r.error().message;
+  ExpectDeviceGeometryMatchesHost(*view_r.value());
 }

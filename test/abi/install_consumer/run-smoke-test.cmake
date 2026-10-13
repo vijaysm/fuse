@@ -38,6 +38,9 @@ execute_process(
           -G "${CMAKE_GENERATOR}"
           "-Dfuse-coupler_DIR=${FUSE_INSTALL_PREFIX}/lib/cmake/fuse-coupler"
           "-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
+          # <pkg>_DIR for every package this build's configure found, so the
+          # consumer resolves the same ones (test/CMakeLists.txt, optional).
+          ${FUSE_CONSUMER_DEP_ARGS}
   RESULT_VARIABLE _fuse_rc)
 if(NOT _fuse_rc EQUAL 0)
   message(FATAL_ERROR "configuring the ABI install consumer failed (${_fuse_rc}) -- "

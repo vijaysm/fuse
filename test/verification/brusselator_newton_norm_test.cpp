@@ -45,6 +45,7 @@
 #include <memory>
 #include <numeric>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <fuse/backend/native_backend.hpp>
@@ -139,7 +140,7 @@ struct Rig {
       Eigen::Map<brusselator::Vector>(rig->comp_v->provided_ptr(), n_u);
   rig->comp_u = std::make_unique<brusselator::UComponent>(
       "U", rig->u_grid, cfg, v0_on_u, dt_u, dt_v, window);
-  return rig;
+  return std::move(rig);  // Result<unique_ptr>: no NRVO, nvcc's host pass needs the move spelled out
 }
 
 struct WindowNewtonRunResult {

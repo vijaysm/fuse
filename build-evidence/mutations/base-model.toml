@@ -39,7 +39,7 @@ describes = "lcm_denominator() reverts to the direct int64_t std::lcm call, rein
 file = "include/fuse/base/rational.hpp"
 old = """    const detail::Int128 ad = a.den_;
     const detail::Int128 bd = b.den_;
-    const detail::Int128 dg = std::gcd(ad, bd);
+    const detail::Int128 dg = detail::gcd128(ad, bd);
     const detail::Int128 l = (ad / dg) * bd;  // divide first: no needless growth
     detail::check_fits_i64(l, "Rational::lcm_denominator: denominator lcm overflow");
     return Rational{1, static_cast<std::int64_t>(l)};"""

@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "fuse/base/ids.hpp"
@@ -105,6 +106,31 @@ struct RunnerConfig {
   /// silent no-op, not an error, so `CopyTransport` and every existing
   /// `RunnerConfig{}` user is unaffected.
   std::function<Result<void>(Transport&)> transport_setup;
+
+  /// A5. Which Kokkos execution space `Runner::Impl::execute()` dispatches
+  /// its elementwise `OpKind`s (Interpolate/Remap/Sample/Accumulate/
+  /// Extrapolate/Merge/Scale/Relax/Residual) on. `Host` (the default) is
+  /// byte-for-byte what every caller got before this field existed --
+  /// `Device` is new, opt-in, and only meaningful when fuse was built
+  /// against a Kokkos with a real device backend (CUDA/HIP/SYCL) compiled
+  /// in; asking for it otherwise is a configuration error (see
+  /// `Runner::Impl::setup()`), not a silent fall back to `Host`. Everything
+  /// else `execute()` does (Transport/Epoch/Sink/Accelerate/Constrain/
+  /// window refusals) is unconditionally host-only and ignores this field
+  /// entirely -- see docs/dev/runner-device-dispatch.md.
+  ///
+  /// `Default` (the default) is resolved by `Runner::initialize()` from the
+  /// process environment: `FUSE_EXECUTION_SPACE=device` selects `Device`,
+  /// `host`, empty or unset selects `Host`, anything else is `E-RT-SPACE`.
+  /// That is what lets a whole test binary or example run under the device
+  /// interpreter unchanged (the `.device` ctest twins,
+  /// docs/dev/device-resident-arcs.md step 4) while a caller that names
+  /// `Host` or `Device` explicitly is never overridden.
+  enum class RunnerExecutionSpace { Default, Host, Device };
+  RunnerExecutionSpace execution_space = RunnerExecutionSpace::Default;
+  /// `Default` resolved against the environment as described above; what
+  /// `initialize()` stores. `execution_space` itself is left as given.
+  [[nodiscard]] Result<RunnerExecutionSpace> resolved_execution_space() const;
 };
 
 struct RunStats {
@@ -153,6 +179,49 @@ struct RunStats {
   /// Rank-agreement points this rank took part in. Zero in a serial run,
   /// and zero is correct there: with one rank there is nobody to agree with.
   std::size_t epochs_reconciled = 0;
+  /// A5: instructions whose elementwise kernels ran on the device space
+  /// (`RunnerConfig::execution_space == Device`). Exactly 0 under the `Host`
+  /// default. A counter for the same reason `remap_weight_builds` is one:
+  /// the host and device paths are meant to agree numerically, so no
+  /// delivered value can tell "the device computed it" from "the host did",
+  /// and a test that wants to assert the device path was actually exercised
+  /// asserts on this.
+  std::int64_t device_dispatches = 0;
+  /// Coupler-owned arcs whose storage lives in the device memory space
+  /// (docs/dev/device-resident-arcs.md): allocated once in setup() when
+  /// `execution_space == Device` for every arc that only Space-generic
+  /// instructions touch and no region, window or spacetime bookkeeping
+  /// reads on the host. Exactly 0 under `Host`. Counts arcs, not bytes, so
+  /// a test can assert the device path held data without staging.
+  std::int64_t device_resident_arcs = 0;
+  /// Copies across the host/device boundary in Device mode: a host-
+  /// registered Provides field's device mirror refreshed before a kernel
+  /// reads it (once per component step it is read after), and a Sink/Epoch/
+  /// Accelerate copy whose two arcs live in different spaces. A same-space
+  /// copy does not count. 0 under Host. In Device mode with every field
+  /// device-registered, the only crossings left are the two around each
+  /// Transport, host code until the GPU-aware transport step.
+  std::int64_t device_boundary_copies = 0;
+  /// Per-instruction staging copies in Device mode (`Impl::device_staging`):
+  /// one for each host-side operand a kernel had to be handed through a
+  /// staging lane (host arc pinned by a host-only instruction, `previous[]`,
+  /// history, a host-registered field a kernel WRITES) and one for each
+  /// lane written back. The number docs/dev/device-resident-arcs.md drives
+  /// to zero: a plan whose instructions are all Space-generic or space-aware
+  /// and whose fields are device-registered stages nothing. 0 under Host.
+  std::int64_t device_staged_copies = 0;
+  /// `OpKind::Transport` exchanges whose packed buffer was handed to MPI
+  /// (or, for a same-process move, `Kokkos::deep_copy`'d) WITHOUT crossing
+  /// to host memory: both arcs were device-resident and, for an MPI
+  /// exchange, `Transport::is_gpu_aware()` was true
+  /// (docs/dev/device-resident-arcs.md Phase 3). 0 under Host, and 0 under
+  /// Device whenever `FUSE_TRANSPORT_HOST_STAGING=1` forces the fallback
+  /// below instead. Disjoint from `device_staged_copies`: the host-staged
+  /// fallback (not GPU-aware, or forced) still packs/unpacks ON the device
+  /// and counts here as a `device_boundary_copies` pair, never as a
+  /// `device_staging`-lane staged copy -- a Transport plan's own send/recv
+  /// buffers are not `device_staging`'s four lanes.
+  std::int64_t device_transport_moves = 0;
 };
 
 /// Per-region outcome of the most recent period (spec §5.3).
@@ -305,6 +374,14 @@ class Runner {
 
   Result<void> initialize(ComponentSet& components, FieldRegistry& registry,
                           const RunnerConfig& config = {});
+
+  /// A5: the Kokkos execution space `RunnerConfig::RunnerExecutionSpace::
+  /// Device` resolves to on THIS build -- `"Cuda"` against a CUDA-enabled
+  /// Kokkos, `"HIP"`/`"SYCL"` likewise. Equal to the host space's own name
+  /// when no device backend was compiled in, which is exactly the build
+  /// `initialize()` refuses `Device` on (`E-RT-DEVICE`), so a caller can
+  /// ask before configuring rather than after failing.
+  [[nodiscard]] static std::string_view device_execution_space_name() noexcept;
 
   Result<void> run_period(ComponentSet& components);
   Result<void> run(ComponentSet& components, std::int64_t periods);

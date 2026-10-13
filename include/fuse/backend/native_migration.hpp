@@ -25,13 +25,22 @@
 /// the recombined result -- exactly how the partition track tests RCB
 /// against an emulated-rank oracle.
 ///
-/// GPU-AWARE MPI. `native_migration.cpp` probes at configure time (see
-/// `cmake/FuseMpiGpuAware.cmake`) whether the MPI library reports
-/// CUDA/HIP awareness, and records the result in
-/// `fuse::native::mpi_is_gpu_aware()` -- but `exchange_migration_buffers`
-/// always stages through host buffers regardless, per the standing
-/// priority (robustness before efficiency): a device-resident exchange
-/// path is not implemented yet. See docs/dev/native-mesh.md.
+/// GPU-AWARE MPI. `fuse::native::mpi_is_gpu_aware()` is a run-time probe
+/// (`MPIX_Query_cuda_support()` where OpenMPI's extension declares it,
+/// falling back to `cmake/FuseMpiGpuAware.cmake`'s configure-time constant
+/// where it does not). `exchange_migration_buffers` here does NOT consult
+/// it: this file's own migration exchange always stages through host
+/// buffers regardless, per the standing priority (robustness before
+/// efficiency) -- a device-resident native-mesh migration path is still
+/// future work. See docs/dev/native-mesh.md.
+///
+/// NOT shared with `fuse::transport::MpiTransport::is_gpu_aware()`
+/// (src/transport/mpi_transport.cpp, docs/dev/device-resident-arcs.md
+/// Phase 3), which duplicates the identical probe rather than calling this
+/// one: `transport`'s library does not link `backend`'s (the CMake link
+/// graph is stricter than the header-include direction
+/// tools/check-layering.py enforces), the same reason `fuse::partition`'s
+/// own `CommHandle` duplicates this file's, rather than including it.
 
 #include <cstddef>
 #include <cstdint>
@@ -46,15 +55,22 @@ namespace fuse::native {
 /// of `mpi.h` (the same boundary convention `fuse::partition::CommHandle`
 /// uses -- duplicated rather than shared, because `backend` sits BELOW
 /// `partition` in the layering order and may not depend on it).
-/// `kNullComm` means the base build configuration: exactly one process, no MPI symbol
-/// touched.
+/// `kNullComm` (-1) means the base build configuration: exactly one process, no
+/// MPI symbol touched. Negative, not 0: OpenMPI's `MPI_Comm_c2f` hands out
+/// small sequential NON-NEGATIVE Fortran handles with no reserved
+/// always-invalid value (even `MPI_COMM_WORLD` itself can legitimately come
+/// back as `0`), so `0` would silently collide with a real communicator and
+/// get treated as "no MPI".
 using CommHandle = int;
-inline constexpr CommHandle kNullComm = 0;
+inline constexpr CommHandle kNullComm = -1;
 
-/// True if the MPI library this was built against reports CUDA- or
-/// HIP-aware buffers (a configure-time probe; always false in a build
-/// with no MPI). Informational only: `exchange_migration_buffers` does
-/// not act on it yet (see the file header).
+/// True if MPI calls in THIS process may be handed CUDA device pointers
+/// directly (a run-time probe; always false in a build with no MPI, and
+/// forced false by `FUSE_TRANSPORT_HOST_STAGING=1` regardless of what the
+/// probe would otherwise report). `exchange_migration_buffers` itself does
+/// not act on it (see the file header); `fuse::transport::MpiTransport`
+/// has its own, duplicated copy, not a caller of this one (see the file
+/// header).
 [[nodiscard]] bool mpi_is_gpu_aware();
 
 /// Packs each of `mesh`'s OWNED cells whose destination is `dest[i]`

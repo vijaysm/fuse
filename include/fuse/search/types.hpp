@@ -1,5 +1,13 @@
 #pragma once
 
+#include <cctype>
+#include <cstdlib>
+#include <string>
+
+#include <fmt/format.h>
+
+#include "fuse/base/result.hpp"
+
 /// fuse::search -- a spatial-index facade over ArborX (its scalable BVH and
 /// point-cloud interpolants; see cmake/FuseDependencies.cmake's
 /// fuse_resolve_arborx()), the way fuse::linalg is a facade over its dense
@@ -53,9 +61,50 @@ struct Tolerance {
 /// Defined independently here rather than reused from `fuse::partition`:
 /// partition sits ABOVE both backend and search in the layer ordering, so
 /// depending on it would be the same forbidden upward reach `mesh_adapter.hpp`
-/// avoids for `fuse::backend`. `kNullComm` (0) means "no communicator":
-/// exactly one participant, no MPI symbol touched at all.
+/// avoids for `fuse::backend`. `kNullComm` (-1) means "no communicator":
+/// exactly one participant, no MPI symbol touched at all. Negative, not 0:
+/// OpenMPI's `MPI_Comm_c2f` hands out small sequential NON-NEGATIVE Fortran
+/// handles with no reserved always-invalid value (even `MPI_COMM_WORLD`
+/// itself can legitimately come back as `0`), so `0` would silently collide
+/// with a real communicator and get treated as "no MPI".
 using CommHandle = int;
-inline constexpr CommHandle kNullComm = 0;
+inline constexpr CommHandle kNullComm = -1;
+
+/// Which Kokkos execution space `BoxIndex::build`/`query_points_distributed`
+/// run on. Mirrors `fuse::RunnerConfig::RunnerExecutionSpace`
+/// (include/fuse/runtime/runner.hpp) in both shape and the environment
+/// variable it reads, without depending on `fuse::runtime`: this layer sits
+/// below `backend`, which sits below `runtime` (docs/dev/layering.md), so an
+/// `#include "fuse/runtime/runner.hpp"` here would be an upward dependency
+/// this layer's placement forbids. `Host` is `Kokkos::DefaultHostExecutionSpace`
+/// / `Kokkos::HostSpace`, byte-identical to this facade's behaviour before
+/// this field existed; `Device` is `Kokkos::DefaultExecutionSpace` and its
+/// `memory_space` (the same pair `fuse::native::MeshArrays`'s default
+/// template argument already names), which on a build with no CUDA/HIP/SYCL
+/// backend compiled in is `Kokkos::DefaultExecutionSpace == Kokkos::DefaultHostExecutionSpace`
+/// -- i.e. `Device` degrades to exactly `Host`, never a refusal.
+enum class ExecutionSpace { Default, Host, Device };
+
+/// `Default` resolved from the `FUSE_EXECUTION_SPACE` process environment
+/// variable, read and parsed identically to
+/// `RunnerConfig::resolved_execution_space()`: `device` selects `Device`,
+/// `host`, unset or empty selects `Host`, anything else is `E-SEARCH-SPACE`.
+/// `Host` or `Device` passed in is returned unchanged -- an explicit
+/// argument on the search API is never overridden by the environment,
+/// exactly as the Runner's own convention promises.
+[[nodiscard]] inline Result<ExecutionSpace> resolve_execution_space(
+    ExecutionSpace requested = ExecutionSpace::Default) {
+  if (requested != ExecutionSpace::Default) return requested;
+  const char* env = std::getenv("FUSE_EXECUTION_SPACE");
+  std::string v = env == nullptr ? std::string{} : std::string{env};
+  for (char& ch : v) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  if (v.empty() || v == "host") return ExecutionSpace::Host;
+  if (v == "device") return ExecutionSpace::Device;
+  return Failure{"E-SEARCH-SPACE",
+                fmt::format("FUSE_EXECUTION_SPACE='{}' is not a search execution space; "
+                           "use 'host' or 'device' (or unset it), or pass an explicit "
+                           "fuse::search::ExecutionSpace",
+                           env)};
+}
 
 }  // namespace fuse::search

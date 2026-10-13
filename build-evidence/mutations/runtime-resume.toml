@@ -20,14 +20,19 @@ file = "src/runtime/runner.cpp"
 old = """    pending_external_request = std::move(req);
     co_await detail::ExternalSuspend{&active_handle};
   }
-  co_return comp.advance(ctx);
+  const Result<void> adv = comp.advance(ctx);
+  note_component_ran();
+  co_return adv;
 }"""
 new = """    pending_external_request = std::move(req);
     const Result<void> advance_result = comp.advance(ctx);
+    note_component_ran();
     co_await detail::ExternalSuspend{&active_handle};
     co_return advance_result;
   }
-  co_return comp.advance(ctx);
+  const Result<void> adv = comp.advance(ctx);
+  note_component_ran();
+  co_return adv;
 }"""
 target = "fuse_abi_participant_test"
 test = "abi.participant"

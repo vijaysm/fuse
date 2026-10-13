@@ -45,8 +45,17 @@ function(fuse_partition_add_mpi_test name)
   foreach(n 1 2 3 4 5)
     add_test(NAME partition.${name}.${n}
              COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${n} $<TARGET_FILE:${target}>)
+    # Same per-rank OMP_NUM_THREADS cap and OMPI_MCA alltoallv-algorithm
+    # workaround as test/CMakeLists.txt's own fuse_add_mpi_test -- see that
+    # function's identical ENVIRONMENT line for why both are needed on this
+    # host's Open MPI (4.1.5).
+    math(EXPR _fuse_partition_mpi_threads "${_fuse_host_cores} / ${n}")
+    if(_fuse_partition_mpi_threads LESS 1)
+      set(_fuse_partition_mpi_threads 1)
+    endif()
     set_tests_properties(partition.${name}.${n} PROPERTIES TIMEOUT 120
-                         LABELS "partition;mpi;parallel")
+                         LABELS "partition;mpi;parallel"
+                         ENVIRONMENT "OMP_NUM_THREADS=${_fuse_partition_mpi_threads};OMP_PROC_BIND=false;OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
   endforeach()
 endfunction()
 

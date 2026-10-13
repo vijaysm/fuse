@@ -12,6 +12,20 @@
 cmake_minimum_required(VERSION 3.24)
 project(fuse LANGUAGES C CXX VERSION 0.1.0)
 
+# fuse-abi-shared (src/CMakeLists.txt) links fuse::runtime and, through it,
+# every other fuse-coupler-* static archive in this tree -- the only one of
+# those archives built -fPIC on its own is fuse-abi-objects, an OBJECT
+# library whose own POSITION_INDEPENDENT_CODE was set because its objects
+# were always known to end up in a .so. Without this, ld only discovers the
+# gap at the final link: a non-PIC archive compiled this way can still
+# define an ordinary global, but a `thread_local` one (first hit: Kokkos'
+# SharedAllocationRecord::t_tracking_enabled, pulled in through
+# runner.cpp.o) gets the initial-exec TLS model, and `R_X86_64_TPOFF32
+# against hidden symbol ... cannot be used when making a shared object`
+# fails the link. Global, not per-target, because the whole static closure
+# feeds that one shared library.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 option(FUSE_BUILD_UPSTREAM_KARMA "Build the imported spine tree under upstream/karma"   OFF)
