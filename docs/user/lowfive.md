@@ -686,6 +686,157 @@ paragraph: what each rank's trace must print on success, in order, and
 for each plausible next failure what the trace/stack would look like and
 which of this round's own claims it would contradict.
 
+**Round 7 -- the serve now sees the file; the row fails fast instead of
+hanging.** With round 6's fix landed, the host's own row now runs to
+completion in under a second and FAILS with an abort, not a 60 s
+timeout: V's own `H5Dget_space()` on a dataset it opened on the PEER's
+file (via `H5Fopen`/`H5Dopen2`, i.e. a REMOTE dataset) throws `LowFive::
+MetadataError: Unexpected no class in dataspace = -1`, from HDF5's own
+diagnostic chain `H5Scopy(): not a dataspace` / `H5Iinc_ref(): invalid
+ID` immediately before it.
+
+**Root cause, read from source, not guessed.** This shim's own `bruss_
+lowfive_write()` calls `H5Dcreate2(fid, "/grid/u_out", ...)` with NO
+prior `H5Gcreate2(fid, "/grid", ...)`. Round 6 already found this
+flattens the dataset into ONE child of the file/root literally named
+`"grid/u_out"` (`LowFive::Object::search()`, src/metadata/object.hpp,
+ALWAYS splits on the first `/` before attempting any match, confirmed
+again this round by re-reading the same function) -- round 6 found this
+breaks `H5Lexists()` ONLY cosmetically, since the write-side `is_memory`
+check compares the whole string via `fullname()` and is unaffected. This
+round finds the SAME flat name ALSO breaks `MetadataVOL::dataset_open()`
+(src/vol-metadata/dataset.cpp) -- and this one is NOT cosmetic: since
+`search("grid/u_out")` never finds a child named exactly `"grid"`, the
+lookup falls through to `result->mdata_obj = parent->add_child(new
+DummyDataset(name));` -- a placeholder class (src/metadata/dummy.hpp)
+that is NOT a subclass of `Dataset` and whose own `space` member is
+default-constructed (`id == 0`). `DistMetadataVOL::dataset_open()`'s own
+promotion to an RPC-backed `RemoteDataset` (`dynamic_cast<Dataset*>
+(mdata_obj) && RemoteObject::query(mdata_obj)`) never fires on a
+`DummyDataset` (the dynamic_cast is correctly null between these two
+unrelated classes) -- so the placeholder's own, never-populated `space`
+is what `MetadataVOL::dataset_get()`'s GET_SPACE branch later reads:
+`H5Scopy(0)` fails, returning LowFive's own documented sentinel `-1`;
+the immediately following trace statement constructs `Dataspace(-1)` as
+a LOGGER ARGUMENT (evaluated regardless of the active log level --
+C++'s own eager-argument-evaluation rule, not a LowFive choice), whose
+own ctor throws on `id != 0` with no valid HDF5 class -- the exact
+measured message, down to the literal `-1`.
+
+**Ranked against the alternatives, each read from source, not
+assumed.** (a) `RemoteDataset`'s own ctor (src/metadata/remote.hpp) DOES
+fetch `space` via a real RPC call named `"metadata"` -- this machinery
+is real, and LowFive's own upstream `examples/prod-con-multidata/` demo
+proves it works (producer: `H5Gcreate(file, "/group1", ...)` then
+`H5Dcreate2(group, "grid", ...)`, a BARE name relative to the GROUP
+handle; consumer: calls `H5Dget_space()` on the resulting remote dataset
+successfully) -- just never reached in this row, since `make_remote_
+dataset()` is never called at all. (b) a hid lifetime bug in
+`deserialize()`/`make_remote_dataset()`: traced `LowFive::Hid`'s own
+ref-counted `H5Iinc_ref`/`H5Idec_ref` discipline (src/metadata/hid.hpp)
+through both functions and found it correctly balanced for the code
+that WOULD run if that path were reached -- excluded as this crash's
+cause, though unverified on a live host run, since that path has never
+executed in this track. (c) a two-HDF5-image/version mismatch: excluded
+-- the symptom (a correctly-formatted HDF5 diagnostic plus a C++
+exception whose exact message and numeric value this round's own
+account predicts from LowFive's own code) is what a logic bug on a
+bogus id looks like, not an ABI/image mismatch, which this track's own
+configure-time probe already guards against elsewhere and which this
+round's own tier-1 configure re-confirmed PASS.
+
+**The fix, in this shim, not in LowFive.** `bruss_lowfive_write()` now
+calls `H5Gcreate2()` for the dataset's own parent group path before
+`H5Dcreate2()`, derived by a new pure function, `SplitDatasetGroupPath()`
+(`lowfive_attach_decision.hpp`). `LowFive::MetadataVOL::group_create()`
+(src/vol-metadata/group.cpp) already walks its own unconsumed `search()`
+remainder segment by segment, creating one `Group` per segment --
+unlike `dataset_create()`, which never does -- so one `H5Gcreate2()`
+call is sufficient even for a multi-segment parent path. `Object::
+fullname()` (used by the write-side `is_memory` check round 4 fixed)
+walks `parent` pointers and re-concatenates with `/`, so nesting the
+dataset under a real `Group` named `"grid"` reproduces the IDENTICAL
+`"/grid/u_out"` string that check already matches against -- no
+regression to round 4's own fix.
+
+**The width check (shim.cpp, the `H5Dget_space`/`H5Sget_simple_extent_
+dims` pair guarding against a silently short/overrunning `H5Dread`) is
+UNCHANGED in its own logic, and is NOT replaced.** `H5Dget_space` on a
+remote dataset is a SUPPORTED, WORKING LowFive mechanism once the
+dataset is properly nested under a real group (confirmed against
+LowFive's own upstream example above) -- there is no upstream
+limitation to work around here, so none of the fallback candidates the
+lead asked evaluated are adopted: a "local view" does not apply (a
+reader opening a peer's file has no local copy to query); a second VOL
+path for `H5Sget_simple_extent_dims` does not help (the failure is
+inside `H5Dget_space` itself, before dims extraction is even reached);
+`H5Dget_storage_size()` is not merely redundant but UNSUPPORTED on a
+memory-backed dataset at all in this LowFive revision (`MetadataVOL::
+dataset_optional()`'s own warning: "not implemented in metadata yet");
+an in-band size attribute or dataset would duplicate information a
+WORKING `H5Dget_space` call already supplies more directly. Whether the
+graph's own validation could make a runtime check unnecessary: `fuse::
+validate()` (`include/fuse/model/validate.hpp`) only enforces a field's
+own per-point COMPONENT count (scalar vs. vector width) between export
+and import, never the TOTAL runtime array length -- that length is
+`out_view.count * out_view.components` in `u_main.c`, with `count`
+coming from each process's OWN domain decomposition, built
+independently by each participant and never compared by the graph
+itself. For THIS row (one rank per component, mirrored grids) the
+counts happen to agree, but nothing in `validate()` GUARANTEES that for
+a general decomposition -- the runtime check stays worth having, exactly
+as it already was.
+
+**Next calls in the read path, confirmed or excluded by source, not
+exercised by any host run yet.** `H5Dread(did, H5T_NATIVE_DOUBLE, H5S_
+ALL, H5S_ALL, H5P_DEFAULT, data)` -- CONFIRMED hazard: `DistMetadataVOL::
+dataset_read()`'s own RemoteDataset branch (src/vol-dist-metadata.cpp)
+carries an explicit, unresolved upstream comment, `// TODO: support
+H5S_ALL, need to get file_space_id, mem_space_id with H5Dget_space`, and
+passes whatever it is given straight into `Dataspace(file_space_id)`/
+`Dataspace(mem_space_id)`; `H5S_ALL` is literally `0` in this HDF5 build
+(`H5Spublic.h`), which hits `Dataspace`'s own early-return (`if (id ==
+0) return;`) leaving `min`/`max` default-constructed/empty --
+`RemoteDataset::query()`'s own bounding box would then be built from
+those empty vectors, not the dataset's real extent. FIXED in this shim,
+not in LowFive: `H5Dread` now reuses the SAME `space` handle the width
+check already validated, for BOTH the file and memory dataspace
+arguments, instead of `H5S_ALL` -- a standard HDF5 idiom for a full,
+contiguous, correctly-sized read, and one that never exercises LowFive's
+own cited TODO. `H5Dclose`/`H5Fclose` of the `RemoteFile`, and the
+producer's own serve-loop return: CONFIRMED and REFINED (not changed)
+from source -- `DistMetadataVOL::file_close()`'s own RemoteFile branch
+does three things (an RPC `"file_close"` call, a COLLECTIVE `MPI_Barrier
+(local)` across every rank of the consumer's own local communicator,
+then -- only on the consumer's own root rank -- `finish(0)`);
+`Index::serve()` (src/vol-dist/index.cpp) loops processing RPCs until
+`finish` has been received on EVERY one of its own registered intercomm
+servers, then returns. The model check's own "peer's open AND close
+release the serve" wording already covers this; `lowfive_attach_model_
+check.hpp`'s own "ROUND 7 CONFIRMATION" comment has the full citations,
+appended without changing the two bullets it confirms. The WRITE side
+of period 2 (create after the round-6 drop): the mechanics checked out
+from source (the guarded drop runs synchronously, in the same call
+stack, right after the serve that needs it, before any later create can
+race it) but WHETHER the cross-component SCHEDULING (which periods's
+write/read/drop interleave with which, enforced by `fuse::WindowCoupler`,
+out of this track's own scope) actually reaches period 2 in the right
+order has NEVER been exercised by any host run across all seven rounds
+-- listed in `host_pending`, not claimed.
+
+**Host command, unchanged in form, now past TWO fixed defects and
+testing a third hazard it had never reached before:**
+
+```
+FUSE_LOWFIVE_ATTACH_TRACE=1 FUSE_LOWFIVE_LOG=info \
+    ctest -R 'participants\.lowfive\.mpmd\.3' --output-on-failure
+```
+
+(`info`, not `trace`, per the lead's own instruction this round -- the
+trace log is large; raise it back to `trace` only if `info` does not
+separate the next failure's own hypotheses). KNOWN_ISSUES.md D39's own
+"Round 7" account has the full host_pending paragraph.
+
 **IR/runtime half, implemented and measured (no LowFive/HDF5 needed) —
 2026-10-04.** `lower_channel()` (`src/ir/rules_channel.cpp`) emits a new
 `OpKind::ExternalDelivery` node (`include/fuse/ir/op.hpp`) in place of
