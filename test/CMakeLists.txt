@@ -1466,6 +1466,7 @@ add_library(fuse_abi_test_support STATIC ${CMAKE_SOURCE_DIR}/src/abi/test_suppor
 target_include_directories(fuse_abi_test_support PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
 target_link_libraries(fuse_abi_test_support PUBLIC fuse::runtime)
 
+fuse_add_gtest(abi device_binding NO_LAYER_LIB)
 fuse_add_gtest(abi entries_golden)
 target_compile_definitions(fuse_abi_entries_golden_test PRIVATE
   FUSE_PYTHON3_EXECUTABLE="${FUSE_ABI_PYTHON3}"
