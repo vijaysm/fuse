@@ -428,28 +428,63 @@ Result<std::size_t> build_native_remap_halo(NativeMeshBackend& backend, MeshId s
   const MPI_Comm resolved = resolve(backend.communicator());
   int real_size = 1;
   MPI_Comm_size(resolved, &real_size);
-  if (real_size != ranks) {
+  // NM-5: the sibling check just above this one validates communicator
+  // SIZE but not RANK -- `backend.rank()` is what every self-exclusion
+  // and wire-owner decision below uses, while box owners and the
+  // Allgather/Alltoall below address participants by the COMMUNICATOR's
+  // own rank numbering. The two coincide for a world-sized backend
+  // (every tier-0/tier-1 test here), but a backend adopting a
+  // SUB-communicator (a future caller, not in this tree today) could
+  // disagree, silently misrouting every exchange below to the wrong
+  // peer instead of refusing.
+  int real_rank = 0;
+  MPI_Comm_rank(resolved, &real_rank);
+  const int my_rank = backend.rank();
+  if (real_size != ranks || real_rank != my_rank) {
     return Failure{"E-MESH-NO-MPI",
-                 "the native backend reports a communicator of " + std::to_string(ranks) +
-                     " ranks, but its actual MPI communicator has " +
-                     std::to_string(real_size) + "; this backend was not given a real "
-                     "multi-rank communicator to decompose over"};
-  }
-  auto src_r = backend.native_view(source, placement);
-  if (!src_r.ok()) return src_r.error();
-  auto tgt_r = backend.native_view(target, placement);
-  if (!tgt_r.ok()) return tgt_r.error();
-  const NativeMeshView& src = *src_r.value();
-  const NativeMeshView& tgt = *tgt_r.value();
-  if (src.dimension() != dim || tgt.dimension() != dim) {
-    return Failure{"E-REMAP-DIM",
-                 "build_native_remap_halo: dimension " + std::to_string(dim) +
-                     " was asked for, but the source view reports " +
-                     std::to_string(src.dimension()) + " and the target view " +
-                     std::to_string(tgt.dimension())};
+                 fmt::format("the native backend reports rank {} of {}, but its actual MPI "
+                            "communicator reports rank {} of {}; this backend was not given "
+                            "the real multi-rank communicator it is supposed to decompose "
+                            "over",
+                            my_rank, ranks, real_rank, real_size)};
   }
 
-  const int my_rank = backend.rank();
+  // LOCAL validity, computed before any collective: resolving both views
+  // (native_view can refuse per placement with E-MESH-ID/E-MESH-PLACEMENT)
+  // and comparing their dimension (E-REMAP-DIM, data-dependent) are both
+  // rank-local -- reduced here with every other rank, mirroring migrate()'s
+  // own pattern (native_migration.cpp), BEFORE `allgather_boxes` below, so
+  // no rank can return its own refusal while a peer proceeds into that
+  // collective.
+  auto src_r = backend.native_view(source, placement);
+  auto tgt_r = backend.native_view(target, placement);
+  Result<void> local_check = Result<void>::success();
+  if (!src_r.ok()) {
+    local_check = src_r.error();
+  } else if (!tgt_r.ok()) {
+    local_check = tgt_r.error();
+  } else if (src_r.value()->dimension() != dim || tgt_r.value()->dimension() != dim) {
+    local_check = Failure{"E-REMAP-DIM",
+                 fmt::format("build_native_remap_halo: dimension {} was asked for, but the "
+                            "source view reports {} and the target view {}",
+                            dim, src_r.value()->dimension(), tgt_r.value()->dimension())};
+  }
+  {
+    const int locally_ok = local_check.ok() ? 1 : 0;
+    int globally_ok = locally_ok;
+    MPI_Allreduce(&locally_ok, &globally_ok, 1, MPI_INT, MPI_MIN, resolved);
+    if (globally_ok == 0) {
+      if (!local_check.ok()) return local_check.error();
+      return Failure{"E-MESH-HALO-PEER-REFUSED",
+                   fmt::format("rank {} is proceeding, but at least one other rank in this "
+                              "communicator refused its own source/target resolution or "
+                              "dimension check; every rank refuses together so none hangs "
+                              "waiting on the covering-set exchange below", my_rank)};
+    }
+  }
+  const NativeMeshView& src = *src_r.value();
+  const NativeMeshView& tgt = *tgt_r.value();
+
   const CommHandle comm = backend.communicator();
 
   // This rank's own target boxes (one per OWNED target cell -- selective,
@@ -494,17 +529,47 @@ Result<std::size_t> build_native_remap_halo(NativeMeshBackend& backend, MeshId s
   std::vector<int> owner_rank;
   std::vector<std::int64_t> owner_owned_index;
   auto merged = merge_halo_cells(src, received, my_rank, &owner_rank, &owner_owned_index);
-  if (!merged.ok()) return merged.error();
 
-  auto new_view = NativeMeshView::create_from_host(merged.value(), my_rank);
-  if (!new_view.ok()) return new_view.error();
+  // POST-EXCHANGE verdict: `merge_halo_cells` and `create_from_host` can
+  // each fail on data this rank alone received (a malformed incoming
+  // record, a connectivity refusal from the rebuilt view) -- reconciled
+  // here, BEFORE returning, the same way the pre-exchange verdict above
+  // was: the caller of `build_native_remap_halo` (`build_weights`,
+  // ultimately) performs its own collectives against the triple this
+  // call just committed, and a rank that returned success here while a
+  // peer returned failure would desync that caller's next collective.
+  std::unique_ptr<NativeMeshView> new_source_view;
+  Result<void> post_check = Result<void>::success();
+  if (!merged.ok()) {
+    post_check = merged.error();
+  } else {
+    auto new_view = NativeMeshView::create_from_host(merged.value(), my_rank);
+    if (!new_view.ok()) {
+      post_check = new_view.error();
+    } else {
+      new_source_view = std::move(new_view.value());
+    }
+  }
+  {
+    const int locally_ok = post_check.ok() ? 1 : 0;
+    int globally_ok = locally_ok;
+    MPI_Allreduce(&locally_ok, &globally_ok, 1, MPI_INT, MPI_MIN, resolved);
+    if (globally_ok == 0) {
+      if (!post_check.ok()) return post_check.error();
+      return Failure{"E-MESH-HALO-PEER-REFUSED",
+                   fmt::format("rank {} merged its received halo cells successfully, but at "
+                              "least one peer failed merging or rebuilding its own mesh "
+                              "view; every rank refuses together so none hangs on this "
+                              "triple's next collective", my_rank)};
+    }
+  }
 
   const std::size_t adopted = owner_rank.size();
   fuse::linalg::GhostPattern pattern;
   pattern.owner_rank = std::move(owner_rank);
   pattern.remote_local_index = std::move(owner_owned_index);
 
-  auto committed = backend.commit_remap_halo(source, placement, std::move(new_view.value()),
+  auto committed = backend.commit_remap_halo(source, placement, std::move(new_source_view),
                                             target, dim, std::move(pattern));
   if (!committed.ok()) return committed.error();
   return adopted;
