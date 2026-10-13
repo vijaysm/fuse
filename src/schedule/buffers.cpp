@@ -7,7 +7,6 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
-#include <string_view>
 #include <vector>
 
 namespace fuse {
@@ -75,14 +74,16 @@ Result<BufferPlan> try_plan_buffers(const OperatorDAG& dag, const TimedDag& time
   // exactly this Sink with the SAME "/window" label suffix the window
   // EXPORT side's own WindowAdvance output already uses for the
   // identical reason (that one is excluded above by node KIND, since
-  // WindowAdvance is neither Source nor Sink; this one needs a label
-  // check because it genuinely is a Sink).
-  const auto is_window_arc = [](const std::string& label) {
-    constexpr std::string_view kSuffix = "/window";
-    return label.size() >= kSuffix.size() &&
-           label.compare(label.size() - kSuffix.size(), kSuffix.size(),
-                        kSuffix) == 0;
-  };
+  // WindowAdvance is neither Source nor Sink; this one needs a check
+  // because it genuinely is a Sink).
+  //
+  // Review 2026-10-11 IS-4: the check used to be a `"/window"` label-suffix
+  // match, which an ordinary field legally named `q/window` would also
+  // satisfy -- validate() only checks field-name uniqueness, not the
+  // absence of '/' -- silently stealing that field's own delivery into
+  // coupler-owned scratch instead of its component's registered storage.
+  // `OpAttrs::window_import_sink` is set structurally by `emit_field_sink()`
+  // (src/ir/lowering.cpp) and cannot collide with a user-chosen name.
   std::vector<char> component_owned(n_arcs, 0);
   for (std::size_t i = 0; i < n_nodes; ++i) {
     const Node& n = dag.node(NodeId{static_cast<std::uint32_t>(i)});
@@ -94,7 +95,7 @@ Result<BufferPlan> try_plan_buffers(const OperatorDAG& dag, const TimedDag& time
                               std::to_string(n.output.value()) +
                               " but the DAG has " + std::to_string(n_arcs)};
     }
-    if (n.kind == OpKind::Sink && is_window_arc(n.label)) continue;
+    if (n.kind == OpKind::Sink && n.attrs.window_import_sink) continue;
     component_owned[n.output.value()] = 1;
   }
 

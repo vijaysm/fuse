@@ -67,11 +67,17 @@ void emit_field_sink(LoweringContext& ctx, const CouplingGraph& g, FieldId f,
   // component's own registered storage -- which resolve_buffers()
   // (src/runtime/runner.cpp) would otherwise do unconditionally for any
   // Sink whose label parses as "component.field" for a real field.
+  // Review 2026-10-11 IS-4: the label still carries the "/window" suffix
+  // below (unchanged, so no existing dump moves), but it is readability only
+  // now -- plan_buffers() reads the structural `window_import_sink` flag,
+  // not the string, so a field legally named "q/window" cannot be mistaken
+  // for one.
   const std::string label =
       qualified(g, f) + (is_window_import ? "/window" : "");
   const ArcId sink_arc =
       ctx.dag.add_arc(source_type(g, f, components), label);
-  ctx.dag.add_node(OpKind::Sink, {it->second}, sink_arc, OpAttrs{}, origin,
+  ctx.dag.add_node(OpKind::Sink, {it->second}, sink_arc,
+                   OpAttrs{.window_import_sink = is_window_import}, origin,
                    label);
   ctx.sink_arc[f.value()] = sink_arc;
 }
