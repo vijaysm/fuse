@@ -3,6 +3,7 @@
 
 #include "fuse/backend/native_migration.hpp"
 
+#include <cstdlib>
 #include <cstring>
 #include <type_traits>
 #include <unordered_map>
@@ -12,6 +13,12 @@
 
 #if FUSE_HAVE_MPI
 #include <mpi.h>
+// Declares MPIX_Query_cuda_support()/MPIX_CUDA_AWARE_SUPPORT when this
+// OpenMPI was built with CUDA-aware support -- the same header
+// cmake/FuseMpiGpuAware.cmake's configure-time probe compiles against.
+// Absent on an MPI with no such extension; #if defined(...) below, never
+// an unconditional call.
+#include <mpi-ext.h>
 #endif
 
 namespace fuse::native {
@@ -121,7 +128,33 @@ void pack_one_cell(const NativeMeshView& mesh, std::size_t c, std::vector<std::b
 
 }  // namespace
 
-bool mpi_is_gpu_aware() { return FUSE_MPI_GPU_AWARE != 0; }
+// A5 Phase 3 (docs/dev/device-resident-arcs.md): a run-time probe, not the
+// bare configure-time constant. `MPIX_Query_cuda_support()` (OpenMPI's
+// extension, declared by <mpi-ext.h> exactly when `FUSE_MPI_GPU_AWARE`'s own
+// configure-time check -- cmake/FuseMpiGpuAware.cmake -- found the macro)
+// reports whether CUDA-aware buffers are actually enabled for THIS process,
+// which can differ from "the library was built with the capability": OpenMPI
+// disables it at run time when `OMPI_MCA_opal_cuda_support` is unset or 0,
+// something the configure-time macro alone cannot see. Where the extension
+// is not declared at all (MPICH without it, or no MPI), `FUSE_MPI_GPU_AWARE`
+// is the only signal there is, exactly as before this change.
+//
+// `FUSE_TRANSPORT_HOST_STAGING=1` forces this to false regardless of what
+// either probe reports: the one lever that lets the host-staged fallback
+// path (src/transport/mpi_transport.cpp, src/runtime/runner.cpp's
+// `OpKind::Transport` case) be exercised by a test even on a machine whose
+// MPI genuinely is GPU-aware, rather than only on one that is not.
+bool mpi_is_gpu_aware() {
+  if (const char* force = std::getenv("FUSE_TRANSPORT_HOST_STAGING");
+      force != nullptr && force[0] != '\0' && force[0] != '0') {
+    return false;
+  }
+#if FUSE_HAVE_MPI && defined(MPIX_CUDA_AWARE_SUPPORT)
+  return MPIX_Query_cuda_support() != 0;
+#else
+  return FUSE_MPI_GPU_AWARE != 0;
+#endif
+}
 
 Result<std::vector<std::vector<std::byte>>> pack_for_migration(const NativeMeshView& mesh,
                                                                 const std::vector<int>& dest,
