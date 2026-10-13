@@ -40,6 +40,22 @@ partner waiting for a report that is never sent; covering more makes ranks wait
 for partners who are not coming. Both are hangs, and both are detectable here
 rather than at run time.
 
+## A gap the scan does not close
+
+The scan in `schedule()` (`src/schedule/scheduler.cpp`) that proves every data move has a following
+rank-agreement point walks the plan's instructions for `OpKind::Transport` only. A channel whose `Remap`
+runs at a placement other than its source or target (`lower_channel()`'s step 5 in
+`src/ir/rules_channel.cpp`, `ranks_differ && remap_moves`) also moves data across ranks, inside the
+`Remap` instruction itself, with no separate `Transport` for the scan to find. Such a `Remap` carries no
+`E-SCHED-EPOCH-MISSING`/`E-SCHED-EPOCH-PARTIAL` guarantee: a rank-local failure inside it (an uncovered
+point, an exact-conversion overflow) is discovered by its partners only when they block on the next
+collective — the hang this operator exists to prevent for the `Transport` case. Widening the scan
+mechanically was not done: a `Transport` is followed by a dedicated `Epoch` unconditionally
+(`lower_channel()` step 4), while a placement-moving `Remap` has no uniform post-`Remap` agreement
+point to pair against, so the same pairing loop would either miss the real gap or refuse legal graphs.
+Closing it needs an agreement point emitted alongside a placement-moving `Remap`, the way `Transport`'s
+is — a channel-lowering change. Review 2026-10-11 IS-3, recorded rather than fixed.
+
 ## What it deliberately does not do
 
 It is **not** a global barrier, and the compiler does not require every rank to
