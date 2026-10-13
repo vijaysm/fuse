@@ -33,6 +33,17 @@ bool has_code(const Diagnostics& d, std::string_view code) {
 }
 
 // A graph that validates clean; individual tests perturb one thing.
+//
+// BM-1 (review 2026-10-11): `src`/`dst` are `Conservation::Intensive`, not
+// `Extensive` as an earlier version of this fixture had them -- this
+// fixture's "flux" channel declares no remap at all (same region on both
+// ends), and connect.hpp's `check_channel()` now correctly refuses an
+// `Extensive`-target channel whose declared transfer is a plain Copy
+// (ConnectTest/ValidateTest's own BM-1 tests exercise that refusal
+// directly). None of the tests built on this fixture are ABOUT
+// conservation, so `Intensive` keeps them exercising what they actually
+// name instead of all newly failing on an unrelated, correctly-added
+// E-CONN-CONSERVATION.
 struct Fixture {
   CouplingGraph g;
   fuse::ComponentId fluid, solid;
@@ -51,11 +62,11 @@ struct Fixture {
                                           .interval = Rational{1}});
     src = g.add_field(fluid, FieldSpec{.name = "q", .region = r,
                                        .units = u::kHeatFluxDensity,
-                                       .conservation = Conservation::Extensive,
+                                       .conservation = Conservation::Intensive,
                                        .intent = Intent::Provides});
     dst = g.add_field(solid, FieldSpec{.name = "q_in", .region = r,
                                        .units = u::kHeatFluxDensity,
-                                       .conservation = Conservation::Extensive,
+                                       .conservation = Conservation::Intensive,
                                        .intent = Intent::Requires});
     ch = g.add_channel("flux", src, dst);
   }
@@ -144,7 +155,7 @@ TEST(Validate, RejectsUnitMismatch) {
   const auto r = f.g.field(f.dst).region;
   const auto bad = f.g.add_field(
       f.solid, FieldSpec{.name = "T_in", .region = r, .units = u::kKelvin,
-                         .conservation = Conservation::Extensive,
+                         .conservation = Conservation::Intensive,
                          .intent = Intent::Requires});
   f.g.add_channel("bad", f.src, bad);   // W/m^2 -> K
   const Diagnostics d = validate(f.g);
@@ -157,7 +168,7 @@ TEST(Validate, RejectsComponentCountMismatch) {
   const auto vec = f.g.add_field(
       f.solid, FieldSpec{.name = "v_in", .region = r, .components = 3,
                          .units = u::kHeatFluxDensity,
-                         .conservation = Conservation::Extensive,
+                         .conservation = Conservation::Intensive,
                          .intent = Intent::Requires});
   f.g.add_channel("bad_shape", f.src, vec);
   const Diagnostics d = validate(f.g);
@@ -192,7 +203,7 @@ TEST(Validate, RejectsIntentViolation) {
   const auto wrong = f.g.add_field(
       f.fluid, FieldSpec{.name = "wrong", .region = r,
                          .units = u::kHeatFluxDensity,
-                         .conservation = Conservation::Extensive,
+                         .conservation = Conservation::Intensive,
                          .intent = Intent::Requires});
   f.g.add_channel("bad_intent", wrong, f.dst);
   const Diagnostics d = validate(f.g);
@@ -205,7 +216,7 @@ TEST(Validate, RejectsSelfCoupling) {
   const auto other = f.g.add_field(
       f.fluid, FieldSpec{.name = "q2", .region = r,
                          .units = u::kHeatFluxDensity,
-                         .conservation = Conservation::Extensive,
+                         .conservation = Conservation::Intensive,
                          .intent = Intent::Requires});
   f.g.add_channel("self", f.src, other);
   const Diagnostics d = validate(f.g);
@@ -263,11 +274,11 @@ TEST(Validate, LagSpanOverflowIsReportedNotThrown) {
                                                     .interval = Rational{1}});
   const auto src = g.add_field(fluid, FieldSpec{.name = "q", .region = r,
                                                 .units = u::kHeatFluxDensity,
-                                                .conservation = Conservation::Extensive,
+                                                .conservation = Conservation::Intensive,
                                                 .intent = Intent::Provides});
   const auto dst = g.add_field(solid, FieldSpec{.name = "q_in", .region = r,
                                                 .units = u::kHeatFluxDensity,
-                                                .conservation = Conservation::Extensive,
+                                                .conservation = Conservation::Intensive,
                                                 .intent = Intent::Requires});
   const auto ch = g.add_channel("flux", src, dst);
   g.channel(ch).lag(2);  // |lag| * interval = 2 * INT64_MAX overflows
@@ -300,7 +311,7 @@ TEST(Validate, RejectsTwoWritersToOneTarget) {
   const auto src2 = f.g.add_field(
       f.fluid, FieldSpec{.name = "q_alt", .region = r,
                          .units = u::kHeatFluxDensity,
-                         .conservation = Conservation::Extensive,
+                         .conservation = Conservation::Intensive,
                          .intent = Intent::Provides});
   f.g.add_channel("second_writer", src2, f.dst);
   const Diagnostics d = validate(f.g);
@@ -326,7 +337,7 @@ TEST(Validate, AcceptsTwoWritersOnceAMergeIsDeclared) {
   const auto src2 = f.g.add_field(
       f.fluid, FieldSpec{.name = "q_alt", .region = r,
                          .units = u::kHeatFluxDensity,
-                         .conservation = Conservation::Extensive,
+                         .conservation = Conservation::Intensive,
                          .intent = Intent::Provides});
   f.g.add_channel("second_writer", src2, f.dst);
   f.g.merge(f.dst, fuse::MergeOp::Sum);
@@ -887,4 +898,116 @@ TEST(Validate, RejectsLagExceedingTheWindowItself) {
       fuse::WaveformIteration::GaussSeidel, /*back_lag=*/20);
   const Diagnostics d = validate(g);
   EXPECT_TRUE(has_code(d, "E-LAG")) << d.to_string();
+}
+
+// ---------------------------------------------------------------------------
+// BM-1 (review 2026-10-11): the Conservation stage now reaches validate().
+// `connect.hpp`'s `check_channel()` used to hardcode `TransferKind::Copy`,
+// so EVERY channel into a `Conservation::Extensive` field refused there --
+// but this loop skipped every stage but Unit, so the refusal reached no
+// consumer and the graph validated clean regardless. These three pin the
+// fixed behavior directly: a plain copy into an Extensive field is refused
+// with a message naming the field and guarantee; a channel that actually
+// declares a conservative transfer is accepted; and a channel that ALSO has
+// a scale-only unit mismatch reports both problems rather than losing the
+// unit conversion behind the conservation refusal (compatibility_test.cpp's
+// `Compatibility.ConservationRules` pins the same rule one layer down, at
+// `check_connection()` directly).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// `fluid`/`solid`, each owning one Conservation::Extensive field over the
+/// same region (`r1`) or two different ones (`r1`/`r2`), connected by one
+/// channel the caller can still perturb (declare conservative, change
+/// units, ...) before calling validate().
+struct ExtensiveFixture {
+  CouplingGraph g;
+  fuse::FieldId src, dst;
+  fuse::ChannelId ch;
+
+  explicit ExtensiveFixture(bool same_region) {
+    const auto m1 = g.add_mesh(MeshDecl{.name = "m1", .source = "generated:box"});
+    const auto r1 = g.add_region(Region{.name = "r1", .mesh = m1,
+                                        .entity_set = "w", .dimension = 2});
+    const auto r2 = same_region ? r1
+                                : g.add_region(Region{.name = "r2", .mesh = m1,
+                                                      .entity_set = "w2", .dimension = 2});
+    const auto fluid = g.add_component(ComponentDecl{.name = "fluid",
+                                                      .ranks = fuse::RankSet{0, 1},
+                                                      .interval = Rational{1}});
+    const auto solid = g.add_component(ComponentDecl{.name = "solid",
+                                                      .ranks = fuse::RankSet{1, 1},
+                                                      .interval = Rational{1}});
+    src = g.add_field(fluid, FieldSpec{.name = "q", .region = r1,
+                                       .units = u::kHeatFluxDensity,
+                                       .conservation = Conservation::Extensive,
+                                       .intent = Intent::Provides});
+    dst = g.add_field(solid, FieldSpec{.name = "q_in", .region = r2,
+                                       .units = u::kHeatFluxDensity,
+                                       .conservation = Conservation::Extensive,
+                                       .intent = Intent::Requires});
+    ch = g.add_channel("flux", src, dst);
+  }
+};
+
+}  // namespace
+
+TEST(Validate, ExtensiveTargetOverAPlainCopyIsRefused) {
+  ExtensiveFixture f(/*same_region=*/true);  // no remap declared: a plain copy
+  const Diagnostics d = validate(f.g);
+  EXPECT_TRUE(has_code(d, "E-CONN-CONSERVATION")) << d.to_string();
+  bool names_field_and_guarantee = false;
+  for (const auto& item : d.items()) {
+    if (item.code != "E-CONN-CONSERVATION") continue;
+    names_field_and_guarantee = item.message.find("q_in") != std::string::npos &&
+                                item.message.find("global") != std::string::npos;
+  }
+  EXPECT_TRUE(names_field_and_guarantee)
+      << "message must name the refused field and the required guarantee: "
+      << d.to_string();
+}
+
+TEST(Validate, ExtensiveTargetOverAConservativeRemapIsAccepted) {
+  ExtensiveFixture f(/*same_region=*/false);
+  f.g.channel(f.ch).conservative();
+  const Diagnostics d = validate(f.g);
+  EXPECT_FALSE(has_code(d, "E-CONN-CONSERVATION")) << d.to_string();
+  EXPECT_FALSE(d.has_errors()) << d.to_string();
+  // `validate()`'s two assertions above pass even pre-fix, for the WRONG
+  // reason: before BM-1, this loop mapped only Unit-stage diagnostics, so a
+  // Conservation-stage refusal (which the hardcoded-Copy bug fired on EVERY
+  // Extensive target, including this conservative one) reached no consumer
+  // here regardless of whether the channel actually compiled. Asking
+  // `check_channel()` directly is what actually discriminates: pre-fix it
+  // reports `Unsupported` for this exact graph (the hardcoded Copy ignores
+  // `.conservative()`); post-fix, `declared_transfer()` resolves the
+  // channel's `RemapFlags::Conservative` and the connection compiles.
+  const auto connection = check_channel(f.g, f.ch);
+  EXPECT_TRUE(connection.compiles())
+      << "a channel that actually declares a conservative transfer must "
+         "compile through check_channel() -- not merely pass unrelated to "
+         "it, which is what the two checks above alone would permit";
+}
+
+TEST(Validate,
+    ExtensiveTargetWithScaleOnlyMismatchReportsBothConservationAndUnitScale) {
+  ExtensiveFixture f(/*same_region=*/true);  // plain copy: Conservation refuses
+  // Same dimensions as the fixture's own kHeatFluxDensity, differing only by
+  // an exact, zero-offset scale -- the kPa-vs-Pa shape BM-1's own finding
+  // names, reproduced here in the fixture's own unit dimension rather than
+  // pulling in a second one.
+  fuse::Units base_units = u::kHeatFluxDensity;
+  fuse::Units scaled_units = base_units;
+  scaled_units.scale = Rational{1000};
+  const_cast<FieldSpec&>(f.g.field(f.src)).units = scaled_units;
+  const_cast<FieldSpec&>(f.g.field(f.dst)).units = base_units;
+  const Diagnostics d = validate(f.g);
+  EXPECT_TRUE(has_code(d, "E-CONN-CONSERVATION")) << d.to_string();
+  EXPECT_TRUE(has_code(d, "I-UNIT-SCALE-INSERTED"))
+      << "the scale-only conversion must still be reported, not discarded "
+         "behind the conservation refusal: "
+      << d.to_string();
+  EXPECT_FALSE(has_code(d, "E-UNITS")) << d.to_string();
+  EXPECT_FALSE(has_code(d, "E-UNITS-SCALE")) << d.to_string();
 }

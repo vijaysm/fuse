@@ -825,3 +825,59 @@ TEST(ChannelLowering, MergedFieldAuthorizedOnTheActualNewestWriterIsAccepted) {
   EXPECT_TRUE(r.ok()) << r.diags.to_string();
 }
 
+// ---------------------------------------------------------------------------
+// BM-1 (review 2026-10-11): an Extensive-target channel refuses at the
+// Conservation stage (connect.hpp's `check_channel()`) whenever its declared
+// transfer is not conservative -- a plain copy, here. `Evaluation::finish()`
+// (src/model/compatibility.cpp) used to clear the WHOLE operator chain on
+// that refusal, including a Transform-phase `UnitScale` step the Unit stage
+// had ALREADY authorized (Unit runs before Conservation): a scale-only unit
+// mismatch (kPa -> Pa) on such a channel lost its scale and surfaced here as
+// a bare, unexplained `E-IR-TYPE` -- the type never converts, so `Sink`'s
+// `assignable_from` (op.hpp) sees kilopascals where it required pascals.
+// `finish()` now keeps a Transform-phase step across a later-stage refusal,
+// so this channel's Scale operator still gets emitted and the type is
+// correct by the time `type_check()` runs; the authoring-time refusal itself
+// is `validate()`'s job (test/model/validate_test.cpp's own BM-1 tests pin
+// that it still fires, as `E-CONN-CONSERVATION`, alongside the inserted-scale
+// warning).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+CouplingGraph extensive_scale_only_mismatch_graph() {
+  CouplingGraph g;
+  const auto m = g.add_mesh(MeshDecl{.name = "m"});
+  const auto r = g.add_region(Region{.name = "r", .mesh = m});
+  const auto a = g.add_component(ComponentDecl{
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  const auto b = g.add_component(ComponentDecl{
+      .name = "b", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  fuse::Units pascal = u::kPascal;
+  fuse::Units kilopascal = pascal;
+  kilopascal.scale = Rational{1000};
+  const auto src = g.add_field(a, FieldSpec{
+      .name = "p_out", .region = r, .units = kilopascal,
+      .conservation = Conservation::Extensive, .intent = Intent::Provides});
+  const auto dst = g.add_field(b, FieldSpec{
+      .name = "p_in", .region = r, .units = pascal,
+      .conservation = Conservation::Extensive, .intent = Intent::Requires});
+  // Plain copy: no .conservative(), so the Conservation stage refuses.
+  g.add_channel("p_link", src, dst);
+  return g;
+}
+
+}  // namespace
+
+TEST(ChannelLowering,
+    ExtensiveTargetWithAScaleOnlyMismatchGetsItsScaleNotABareTypeError) {
+  const CouplingGraph g = extensive_scale_only_mismatch_graph();
+  const auto r = lower(g);
+  bool saw_type_error = false;
+  for (const auto& d : r.diags.items()) {
+    if (d.code == "E-IR-TYPE") saw_type_error = true;
+  }
+  EXPECT_FALSE(saw_type_error) << r.diags.to_string();
+  EXPECT_TRUE(r.ok()) << r.diags.to_string();
+}
+

@@ -367,8 +367,25 @@ void reports_every_stage_at_once()
     late_refusal.available_capabilities = 0;
     const auto discarded = check_connection(late_refusal);
     require(discarded.verdict == ConnectionVerdict::Unsupported, "a missing capability was tolerated");
-    require(discarded.chain.empty(),
-            "a stage that refused after an operator was emitted left a partial chain");
+    // BM-1 (review 2026-10-11): this used to assert the OPPOSITE --
+    // `discarded.chain.empty()` -- because `Evaluation::finish()`
+    // (src/model/compatibility.cpp) cleared the WHOLE chain on any refusal,
+    // discarding the Unit stage's own already-authorized `UnitScale` right
+    // along with it. That is the exact silent loss BM-1 found: an
+    // Extensive-target channel's auto-inferred scale vanishing behind an
+    // unrelated, LATER-stage Conservation refusal (connect.hpp's hardcoded
+    // `TransferKind::Copy`), surfacing as a bare, unexplained `E-IR-TYPE` in
+    // `lower()` instead of the real problem. A Transform-phase step only
+    // rescales, reorders or selects components -- it never moves or alters
+    // the value the way a Spatial/Temporal/Constraint-phase step does, so
+    // `finish()` now keeps it across a later refusal; the other phases stay
+    // cleared (the `broken` case above, whose refusal precedes any step at
+    // all, is unaffected).
+    require(discarded.chain.size() == 1,
+            "a stage that refused after a Transform-phase operator was "
+            "emitted must still keep that operator, not discard it");
+    require(discarded.chain.steps[0].kind == OperatorKind::UnitScale,
+            "the retained step must be the Unit stage's own UnitScale");
 }
 
 void full_chain_is_ordered()

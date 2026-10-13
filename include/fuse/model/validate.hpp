@@ -380,27 +380,89 @@ inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
     //     did not write;
     //   * an OFFSET change, or a scale under a policy that forbids insertion
     //     -> E-UNITS-SCALE, refused. Moving the zero of a scale changes meaning.
+    //
+    // BM-1 (review 2026-10-11): this loop used to skip every stage but Unit
+    // (`if (item.stage != ConnectionStage::Unit) continue;`), so a Location-
+    // or Conservation-stage refusal reached no consumer at all here -- the
+    // graph validated clean and the channel failed much later, inside
+    // `lower()`, with no authoring-time explanation. Both are mapped below
+    // now. Shape-stage diagnostics are NOT added here: `to_semantics()`
+    // derives `FieldSemantics::shape`/`components` from the same
+    // `FieldSpec::components` the pre-existing `E-SHAPE` check below already
+    // compares, so a Shape-stage refusal from `check_channel()` fires on
+    // exactly the same condition `E-SHAPE` already reports -- adding a
+    // second code for it would be a duplicate, not a previously-silent gap.
+    // Temporal and Capability never fire through this path at all: neither
+    // axis is populated from a `FieldSpec` (connect.hpp's own top-of-file
+    // comment: continuity, temporal interpretation, ownership, access and
+    // update all stay `Unspecified`), so `check_temporal`/`check_capabilities`
+    // see no interval, no capability bits and no requirement in a
+    // graph-built `ConnectionRequest` and never refuse.
     const auto connection = check_channel(g, cid, policy);
     for (const auto& item : connection.diagnostics) {
-      if (item.stage != ConnectionStage::Unit) continue;
-      switch (item.reason) {
-        case ConnectionReason::DimensionMismatch:
-          d.add(Severity::Error, "E-UNITS",
-                "unit mismatch: source '" + sf.name + "' is " + sf.units.to_string() +
-                    ", target '" + tf.name + "' is " + tf.units.to_string(), ctx);
+      switch (item.stage) {
+        case ConnectionStage::Unit:
+          switch (item.reason) {
+            case ConnectionReason::DimensionMismatch:
+              d.add(Severity::Error, "E-UNITS",
+                    "unit mismatch: source '" + sf.name + "' is " + sf.units.to_string() +
+                        ", target '" + tf.name + "' is " + tf.units.to_string(), ctx);
+              break;
+            case ConnectionReason::UnitsUndeclared:
+              // Unknown dimensions, which is NOT dimensionless. Refused rather than
+              // assumed, because assuming would connect two unrelated quantities.
+              d.add(Severity::Error, "E-UNITS-UNDECLARED",
+                    "a unit could not be interpreted, so the two cannot be shown to agree: " +
+                        item.detail, ctx);
+              break;
+            default:
+              d.add(Severity::Error, "E-UNITS-SCALE",
+                    std::string("unit conversion refused (") +
+                        std::string(connection_reason_name(item.reason)) + "): " + item.detail, ctx);
+              break;
+          }
           break;
-        case ConnectionReason::UnitsUndeclared:
-          // Unknown dimensions, which is NOT dimensionless. Refused rather than
-          // assumed, because assuming would connect two unrelated quantities.
-          d.add(Severity::Error, "E-UNITS-UNDECLARED",
-                "a unit could not be interpreted, so the two cannot be shown to agree: " +
-                    item.detail, ctx);
+        case ConnectionStage::Location:
+          // LocationChangeRequiresTransfer / ContinuityChangeRequiresTransfer:
+          // the two fields are represented differently (location, continuity
+          // or basis degree) and the channel declares no remap at all and no
+          // region change -- `declared_transfer(g, ch)` (connect.hpp) stayed
+          // at `Copy`. A plain copy cannot change where or how a value is
+          // represented.
+          d.add(Severity::Error, "E-CONN-LOCATION",
+                "channel from '" + sf.name + "' to '" + tf.name + "' changes " +
+                    std::string(connection_reason_name(item.reason)) +
+                    " but declares a plain copy (no remap, same region); declare "
+                    "a remap for this channel (ChannelBuilder::remap) or route it "
+                    "through a region change",
+                ctx);
           break;
+        case ConnectionStage::Conservation: {
+          // ConservationNotProvidedByTransfer: the target field is
+          // `Conservation::Extensive` (`required_conservation()`,
+          // connect.hpp) but the channel's declared transfer
+          // (`declared_transfer()`, same file) does not carry a strong
+          // enough `ConservationGuarantee` -- a plain Copy, an uncoerced
+          // Interpolation, or a Remap with no `RemapFlags::Conservative`.
+          // Named here rather than left for `lower()`'s own, unrelated
+          // `E-IR-UNLOWERABLE`/`E-IR-TYPE` refusals, so the authoring gate
+          // says why in terms of the rule the user actually broke.
+          const TransferSemantics transfer = declared_transfer(g, ch);
+          d.add(Severity::Error, "E-CONN-CONSERVATION",
+                "channel into '" + tf.name + "' requires " +
+                    std::string(conservation_guarantee_name(required_conservation(tf))) +
+                    " (its target field is Conservation::Extensive), but the "
+                    "declared transfer (" + std::string(transfer_kind_name(transfer.kind)) +
+                    ") provides " + std::string(conservation_guarantee_name(transfer.conservation)) +
+                    "; declare the channel conservative "
+                    "(ChannelBuilder::conservative()) if its transfer really "
+                    "does conserve the field globally, or mark the target "
+                    "field Conservation::Intensive if it does not need to",
+                ctx);
+          break;
+        }
         default:
-          d.add(Severity::Error, "E-UNITS-SCALE",
-                std::string("unit conversion refused (") +
-                    std::string(connection_reason_name(item.reason)) + "): " + item.detail, ctx);
-          break;
+          break;  // Identity/Temporal/Capability: never populated from a FieldSpec (see above)
       }
     }
     for (const auto& step : connection.chain.steps) {
