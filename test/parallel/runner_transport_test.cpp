@@ -1463,7 +1463,7 @@ TEST(RunnerTransport, TheTransportPathAllocatesNothingWhileRunning) {
   // (E-TRANSPORT-RANKS). A skip, not a workaround: this test's subject is a
   // two-sided job, which one rank cannot host.
   FUSE_REQUIRE_AT_LEAST_RANKS(2);
-  // the issue tracker (transport track): under this row's `.device` twin,
+  // the issue tracker under this row's `.device` twin,
   // `fluid`/`solid`'s disjoint placement puts Transport's input arc at
   // n=0 (skipped by place_arcs_on_device(), stays host) and its output arc
   // on the device on the rank that holds `solid` -- a MIXED pair, staged
