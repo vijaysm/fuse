@@ -464,6 +464,38 @@ not, if I1/I2 hold as argued), are what the next host run answers -- see
 KNOWN_ISSUES.md D39's own "what the host must verify" paragraph for the
 exact command and what each outcome looks like.
 
+**Round 4 correction** -- the SECOND fix above DID close the measured hang
+(the host ran it: `lowfive.mpmd.3` no longer times out), but both
+`brusselator_u_main` and `brusselator_v_main` now die in 1.2 s at their own
+FIRST remote `H5Fopen`, with an uncaught `LowFive::MetadataError`,
+`file_open(): no intercomm found for brusselator_{v,u}.h5`
+(`DistMetadataVOL::file_open()`, `src/vol-dist-metadata.cpp:277` on this
+host's own LowFive checkout). Two defects, found by reading LowFive's own
+source rather than guessed from the exception text: nothing in
+`lowfive_attach.cpp` (or, checked and reported but not touched, the
+env-route plugin or `lowfive_transport.cpp`'s own `DistVolSingleton`) ever
+called `LowFive::DistMetadataVOL::set_intercomm()` at all, so `file_open()`'s
+own lookup had nothing to find; and `fuse::split_hdf5_path()`'s own
+unslashed dataset-path output, passed straight to `vol.set_memory()`,
+never matched `LowFive::Object::fullname()`'s own always-slashed form that
+`dataset_create()` compares against, so `indexed_datasets` stayed `0` and
+`serve_all()` would have returned without serving anything even once a
+remote open succeeded. `bruss_lowfive_attach()`'s distributed branch now
+calls a new pure function, `BuildIntercommRegistrations()`
+(`lowfive_attach_decision.hpp`), once per binding, and `vol.set_intercomm()`
+once per registration; `ApplyBindings()` normalizes the dataset pattern
+through a second new pure function, `NormalizeDatasetPattern()`, before
+ever calling `vol.set_memory()`, for both the single-process and
+distributed branches alike. Neither fix touches `split_hdf5_path()` itself
+(out of scope; the single-process path never reaches LowFive through this
+unslashed string in the first place -- it uses `VolSingleton`'s own
+blanket `"*"`/`"*"` wildcards). KNOWN_ISSUES.md D39's own "Round 4 update"
+account has the full citations, the cross-check of the two other call
+sites, and -- stated explicitly there, repeated here because it matters --
+this fix has never been run on a host either: the row's own distributed
+RPC path, per-iteration steady state, and data correctness remain
+UNMEASURED by any round of this track so far.
+
 **IR/runtime half, implemented and measured (no LowFive/HDF5 needed) —
 2026-10-04.** `lower_channel()` (`src/ir/rules_channel.cpp`) emits a new
 `OpKind::ExternalDelivery` node (`include/fuse/ir/op.hpp`) in place of

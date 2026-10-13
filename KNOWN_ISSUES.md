@@ -4850,3 +4850,140 @@ re-check, starting with whether `file_open()`'s own RPC dance is really as uncon
 
 **Still does not close D14.** Unchanged by this round's own review, for the same reasons the round-2-update
 section already gave.
+
+**Round 4 update (2026-10-13), superseding nothing above -- the round-2-REVIEW fix landed and the row no longer
+hangs, but both ranks now die at their own first REMOTE `H5Fopen`.** The host rebuilt (`cmake --build .`, every
+target, exit 0) and ran `ctest -R 'participants\.lowfive\.mpmd\.3'` after round 2 REVIEW's own fix landed on main
+(`ac7fe33`, `8c11804`, `9482fac`). The row now FAILS in 1.2 s instead of hanging: both `brusselator_u_main` and
+`brusselator_v_main` die with an uncaught `LowFive::MetadataError`, `file_open(): no intercomm found for
+brusselator_v.h5` (on U) / `...brusselator_u.h5` (on V), thrown from `DistMetadataVOL::file_open()`
+(`src/vol-dist-metadata.cpp:277` on this host's own LowFive checkout, rev `7f3a58b`) on each process's own FIRST
+attempt to open the PEER's remote file. Two independent defects were found by reading LowFive's own source, not
+assumed from the exception text alone:
+
+- **DEFECT A (the one the host hit).** Nothing in `lowfive_attach.cpp`, in the env-route plugin
+  (`src/transport/lowfive_plugin_vol.cpp`), or in `lowfive_transport.cpp`'s own `DistVolSingleton` ever calls
+  `LowFive::DistMetadataVOL::set_intercomm()` (`include/lowfive/vol-dist-metadata.hpp:59-63`) -- confirmed by a
+  `grep -rn set_intercomm` across this repository's own `src/`/`include/`/`examples/` returning zero hits in any of
+  the three. `intercomm_locations`/`intercomm_indices`, the two vectors that call populates, are the ONLY thing
+  `file_open()` consults (`src/vol-dist-metadata.cpp:263,269`) to decide which intercomm a remote filename belongs
+  to; with both vectors empty, `find_matches()` returns nothing and `file_open()` throws exactly the exception
+  above (`:277`). `examples/prod-con-multidata/consumer1-multidata.cpp:61`'s own
+  `vol_plugin.set_intercomm("outfile.h5", "/group1/grid", 0)` is LowFive's own worked example of the call this
+  attach was missing.
+- **DEFECT B (found while fixing A, confirmed by direct source tracing, not by a second host run -- a second
+  failure A was masking).** `fuse::split_hdf5_path()` strips the dataset path's own leading slash
+  (`"brusselator_u.h5/grid/u_out"` -> `("brusselator_u.h5", "grid/u_out")`, no leading `/`); `ApplyBindings()`
+  passed that unslashed string directly to `vol.set_memory()`. `LowFive::Object::fullname()`
+  (`src/metadata/object.hpp:169-184`), which `MetadataVOL::dataset_create()`'s own `is_memory = match_any(filepath,
+  memory)` check (`src/vol-metadata/dataset.cpp:30-33`, default `partial=false`) compares against, ALWAYS produces
+  a LEADING-slash path. Tracing `match()` (`include/lowfive/vol-metadata.hpp:135-150`) character by character: the
+  first comparison is `'g'` (the unslashed pattern) against `'/'` (the real path), a mismatch, and with
+  `partial=false` that returns `false` immediately -- `is_memory` is `false` for every Brusselator dataset,
+  `dataset_create()` never attaches an in-memory `Dataset` object, `Index::find_datasets()`'s own tree-walk finds
+  nothing, `indexed_datasets` stays `0`, and `serve_all()`'s own `if (index.indexed_datasets || !perform_indexing)
+  index.serve();` guard (`src/vol-dist-metadata.cpp` -- this entry's own round-2-update section already named the
+  surrounding `serve_all()` call) SKIPS `index.serve()` entirely: `serve_all()` returns without blocking and
+  without serving anything. DEFECT B alone would not have produced the exception the host saw (it changes what
+  gets served, not whether an intercomm is registered) -- it was found by reading the attach-side code DEFECT A's
+  own fix touches, not by a second host measurement, and is recorded here because an A-only fix would have left it
+  in place, silently dropping every dataset.
+
+**Fix.** `ApplyBindings()` (`lowfive_attach.cpp`, the ONE call site shared by both the single-process and the
+distributed branch) now normalizes each binding's own dataset component through a new pure function,
+`NormalizeDatasetPattern()` (`lowfive_attach_decision.hpp`), before calling `vol.set_memory()` -- prepending the
+leading slash `fullname()` always has, refusing (`E-LOWFIVE-ATTACH-DATASET-EMPTY-PATTERN`) an empty pattern rather
+than silently passing one through. This fixes DEFECT B for both branches from one place, without touching
+`split_hdf5_path()` itself (out of this track's scope; that function has its own tests and the single-process
+path never reaches LowFive through this unslashed string -- it uses `VolSingleton`'s own blanket `"*"`/`"*"`
+wildcards, read and confirmed unaffected). A second new pure function, `BuildIntercommRegistrations()`, builds one
+`IntercommRegistration{file, dataset_pattern, intercomm_index}` per binding in the table, reusing the SAME
+normalized dataset pattern; the distributed branch of `bruss_lowfive_attach()` calls it once (intercomm index `0`
+-- see below) and then calls `vol.set_intercomm(reg.file, reg.dataset_pattern, reg.intercomm_index)` once per
+entry, fixing DEFECT A. Registrations are built for EVERY binding in the table on EVERY rank, not filtered by
+whether this rank writes or reads that binding's own file: `set_intercomm()`'s own two vectors are consulted ONLY
+inside `file_open()`'s remote-open path (grep-confirmed, zero other callers); a rank's own `H5Fcreate` of a file it
+writes reaches `file_create()`, a different VOL callback that never touches either vector, so an entry for a
+filename this rank's own `file_open()` is never called against costs one unmatched linear-scan comparison and
+nothing else (`lowfive_attach_decision.hpp`'s own doc comment on `BuildIntercommRegistrations()` has the full
+argument, including the `file_open()`-side `find_matches()` citation).
+
+**The single-intercomm index is a parameter, not a silently-bumped constant.** `BuildIntercommRegistrations()`
+takes `intercomm_index` as an explicit argument; `lowfive_attach.cpp`'s own call site passes `0` with a comment
+citing why: `decide_attach_mode()` already refuses, by name (`E-LOWFIVE-ATTACH-INCONSISTENT`), any graph whose
+qualifying channels do not all partition the world into the SAME two groups, so this attach's own architecture
+structurally cannot need more than one intercomm today. A future multi-intercomm design would need to change this
+function's own SIGNATURE (e.g. a per-binding-group index), not have a caller silently thread a different value
+through an unchanged one.
+
+**Cross-check, reported but NOT fixed (out of this round's own scope -- `src/`/`include/` untouched).** The
+env-route plugin (`src/transport/lowfive_plugin_graph.cpp`) builds its own `path_pattern` via `port.substr(slash)`
+WITH the leading slash included -- it does not share DEFECT B. `lowfive_transport.cpp`'s own `VolSingleton` and
+`DistVolSingleton` both call `vol.set_memory("*", "*")`, a blanket wildcard that matches regardless of slashes --
+neither shares DEFECT B either. All three (`lowfive_attach.cpp`, `lowfive_plugin_vol.cpp`,
+`lowfive_transport.cpp`'s `DistVolSingleton`) DO share DEFECT A, confirmed by the same `grep -rn set_intercomm`
+above returning zero hits in any of them; one-line fixes for each are documented in `lowfive_attach_decision.hpp`'s
+own "ROUND 4" comment for whichever track owns those files next, not applied here.
+
+**Model check extended for DEFECT B's own effect on blocking semantics, not for DEFECT A.** DEFECT B changes
+whether `serve_all()` actually serves, which the explicit-state model already encodes blocking/release around --
+`ProcessPolicy` gained a `nothing_indexed` field and `DecideResult` an `actually_serves` field
+(`lowfive_attach_model_check.hpp`); when `nothing_indexed` is set, `kServeNow`/`kFlushDeferred` set
+`actually_serves = false` and the simulation's own blocking step treats that as advancing with NO peer release --
+a genuinely stuck state, not a silent pass, verified by a new test asserting the search never completes. DEFECT A
+(an uncaught exception terminating the process before any serve/receive event) is a qualitatively different
+failure mode than a blocking/deadlock scenario this search's own vocabulary represents, and was NOT added to the
+model; it is instead verified through `BuildIntercommRegistrations()`'s own direct unit tests (a testable proxy
+for whether the real attach registers correctly) plus the source citations above.
+
+**Pinned by (Round 4, additive to the round-2-REVIEW section's own inventory above, now 35 tests total in that
+binary).** Three new `NormalizeDatasetPattern` tests (unslashed gets a leading slash; already-slashed is
+unchanged; empty is refused) and three new `BuildIntercommRegistrations` tests (one entry per binding, with the
+given index and a leading slash; the index is whatever the caller passes; an empty table is an empty result, not
+a refusal). Two new `ModelCheck` tests for the `nothing_indexed` case (the shipped protocol gets stuck when
+nothing is indexed; the shipped protocol still completes when indexing defaults on). Two new hand-proved mutation
+rows in `build-evidence/mutations/lowfive-attach.toml` (`normalize-dataset-pattern-slash-removed`,
+reproducing DEFECT B exactly in the pure function -- 33 PASS / 2 FAIL, killed by both the direct test and the
+`BuildIntercommRegistrations` test that depends on the normalized form;
+`build-intercomm-registrations-empty`, reproducing DEFECT A exactly -- 34 PASS / 1 FAIL), each killed decisively
+and the file restored byte-identical (`md5` checked) before the next step. The three pre-existing mutation rows
+(`decide-serve-roles-first-server-comparison-swapped`, `serve-state-step-finalize-unflushed-check-disabled`,
+`serve-state-step-flush-moved-back-to-pre-open`) were all three re-run (not merely anchor-checked) against this
+round's own larger binary and still kill exactly the same test(s) each always did (34/1, 34/1, 27/8
+respectively -- the 27/8 count larger than round 2 REVIEW's own 20/7 because this round added more passing tests
+to the same binary, not because the mutation's own effect changed). `python3 tools/mutate.py --check-anchors`
+reports 338 valid, 0 stale, of 338. Full tier-0 and all 5 repo-health gates clean (this round's own report has the
+exact numbers).
+
+**What the host must verify (Round 4), superseding nothing above -- this round's own fix has never been run on a
+host.** In `build-lowfive`: rebuild (`cmake --build .`, every target), then `ctest -R
+'participants\.lowfive\.mpmd\.3'` (3 tasks). This round's own report has the full `host_pending` paragraph with
+exact expected log/stack text for each outcome; in outline: a clean pass means every rank's own log shows the SAME
+period-by-period convergence Unit 3a's own single-process harness already measured bit-exact, AND neither
+`bruss_lowfive_finalize()` call printed an unflushed-serve refusal; the SAME `MetadataError: file_open(): no
+intercomm found` text reappearing would mean this round's own `set_intercomm()` fix did not actually reach the
+constructed `DistMetadataVOL` (a stale binary, or a registration built against the wrong table); a hang with the
+`file_close -> serve_all -> Index::serve` stack the round-2-update section already named would mean DEFECT B's fix
+did not actually make `indexed_datasets` nonzero, reviving the EXACT race role-ordered serve was built to avoid; a
+NEW LowFive exception from somewhere in the `get_file_hierarchy`/dataset-read RPC path (not `file_open`'s own
+intercomm lookup) would mean this row has reached ground this track has never exercised at all -- see the next
+paragraph.
+
+**Explicit, because nothing above should be read as claiming it: the row's own distributed RPC path, per-iteration
+steady state, and data correctness have NEVER RUN, on any host, under this track.** Every round of this track
+(1 through 4) has fixed what stopped the row from REACHING its own first successful remote open/read -- the null
+dereference (D38/round 1), the serve/receive deadlock (round 2 update/REVIEW), and now the missing intercomm
+registration plus the unindexed dataset (round 4). None of these rounds has ever observed a SUCCESSFUL remote
+`H5Fopen`, a successful `get_file_hierarchy` RPC, a successful dataset read, a second iteration, or a comparison of
+the exchanged U/V field values against the in-process `Runner`'s own bit-exact reference (Unit 3a). This round's
+own fix is argued from LowFive's source, the same way round 2 REVIEW's own corrected protocol was -- and round 2
+REVIEW's own FIRST argument (the rejected pre-open-flush design) was ALSO argued from LowFive's source and was
+wrong, caught only once the host actually ran it. The same could be true here: this entry does not claim the row
+passes, only that the two specific defects the host's own exception pointed to are fixed and re-verified at the
+level this sandbox can reach (direct source citation, a pure-function proxy, and tier-0 tests) -- never with MPI,
+never with live HDF5/LowFive serving a real file.
+
+**Still does not close D14.** Unchanged by this round, for the same reasons the round-2-update section already
+gave -- the two-HDF5-image hazard is closed (host action only), Demo B's own distributed path is compiled and
+never run, and D14's own open accept-mode intercommunicator question (item 3 of its "what remains" list) is
+untouched by a fix that only concerns the MPMD row's own already-formed intercommunicator.
