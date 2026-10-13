@@ -121,7 +121,42 @@ struct VertexLookup {
   }
 };
 
-VertexLookup build_grid_vertices(NativeMeshBuilder& b, const Grid& g) {
+/// `native_backend.hpp` documents `E-MESH-SIZE` for a spec whose rank-local
+/// vertex count would not fit this generator's own int-indexed builder
+/// (NM-12 records the narrowing separately); before this check, nothing
+/// ever produced it -- a huge spec's `sx*sy*sz` product either overflowed
+/// silently or stayed representable but vastly exceeded available memory,
+/// so `VertexLookup::local.assign` failed as an uncaught
+/// `std::bad_alloc`/`std::length_error` instead of this library's own
+/// `Result` contract. `kMaxGeneratedEntitiesPerRank` is `INT32_MAX`: local
+/// vertex and cell indices are `int` throughout the builder, so a rank's
+/// own slice is refused once it would not fit one, well before the
+/// allocation below is attempted.
+constexpr std::size_t kMaxGeneratedEntitiesPerRank =
+    static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max());
+
+[[nodiscard]] Result<std::size_t> checked_entity_count(std::size_t a, std::size_t b,
+                                                        std::size_t c, std::string_view what) {
+  std::size_t product = a;
+  for (std::size_t factor : {b, c}) {
+    if (factor != 0 && product > kMaxGeneratedEntitiesPerRank / factor) {
+      return Failure{"E-MESH-SIZE",
+                     fmt::format("{} would need more than {} entities on one rank, which this "
+                                "generator's int-indexed builder cannot hold",
+                                what, kMaxGeneratedEntitiesPerRank)};
+    }
+    product *= factor;
+  }
+  if (product > kMaxGeneratedEntitiesPerRank) {
+    return Failure{"E-MESH-SIZE",
+                   fmt::format("{} requests {} entities on one rank, more than this "
+                              "generator's {} limit",
+                              what, product, kMaxGeneratedEntitiesPerRank)};
+  }
+  return product;
+}
+
+Result<VertexLookup> build_grid_vertices(NativeMeshBuilder& b, const Grid& g) {
   VertexLookup lut;
   const std::size_t split_count = g.split_hi - g.split_lo + 1;  // local vertex range, split axis
   lut.sx = g.n[0] + 1;
@@ -141,7 +176,9 @@ VertexLookup build_grid_vertices(NativeMeshBuilder& b, const Grid& g) {
   if (g.dim == 3) {
     lut.sy = g.n[1] + 1;  // full range: z is the split axis, not y
     lut.sz = split_count;
-    lut.local.assign(lut.sx * lut.sy * lut.sz, -1);
+    const auto n = checked_entity_count(lut.sx, lut.sy, lut.sz, "this rank's vertex grid");
+    if (!n.ok()) return n.error();
+    lut.local.assign(n.value(), -1);
     for (std::size_t izl = 0; izl < split_count; ++izl) {
       const std::size_t iz = g.split_lo + izl;
       for (std::size_t iy = 0; iy < lut.sy; ++iy) {
@@ -151,7 +188,9 @@ VertexLookup build_grid_vertices(NativeMeshBuilder& b, const Grid& g) {
   } else {
     lut.sy = split_count;  // local range: y IS the split axis in 2D
     lut.sz = 1;
-    lut.local.assign(lut.sx * lut.sy * lut.sz, -1);
+    const auto n = checked_entity_count(lut.sx, lut.sy, lut.sz, "this rank's vertex grid");
+    if (!n.ok()) return n.error();
+    lut.local.assign(n.value(), -1);
     for (std::size_t iyl = 0; iyl < split_count; ++iyl) {
       const std::size_t iy = g.split_lo + iyl;
       for (std::size_t ix = 0; ix < lut.sx; ++ix) place(ix, iy, 0, ix, iyl, 0, iy);
@@ -204,7 +243,9 @@ Result<MeshArrays<Kokkos::HostSpace>> generate_native_mesh(const std::string& sp
     Grid g{2, n, 0, 0, rank, num_ranks};
     std::tie(g.split_lo, g.split_hi) = rank_slice(n[1], rank, num_ranks);
     NativeMeshBuilder b(2);
-    const auto lut = build_grid_vertices(b, g);
+    const auto lut_r = build_grid_vertices(b, g);
+    if (!lut_r.ok()) return lut_r.error();
+    const auto& lut = lut_r.value();
     for (std::size_t iy = g.split_lo; iy < g.split_hi; ++iy) {
       const std::size_t iyl = iy - g.split_lo;
       for (std::size_t ix = 0; ix < n[0]; ++ix) {
@@ -233,7 +274,9 @@ Result<MeshArrays<Kokkos::HostSpace>> generate_native_mesh(const std::string& sp
     Grid g{3, n, 0, 0, rank, num_ranks};
     std::tie(g.split_lo, g.split_hi) = rank_slice(n[2], rank, num_ranks);
     NativeMeshBuilder b(3);
-    const auto lut = build_grid_vertices(b, g);
+    const auto lut_r = build_grid_vertices(b, g);
+    if (!lut_r.ok()) return lut_r.error();
+    const auto& lut = lut_r.value();
     const std::size_t total_verts = (n[0] + 1) * (n[1] + 1) * (n[2] + 1);
 
     for (std::size_t iz = g.split_lo; iz < g.split_hi; ++iz) {

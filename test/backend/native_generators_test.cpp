@@ -379,6 +379,26 @@ TEST(NativeMeshIo, VtkRoundTripReproducesAPolyhedralMeshExactly) {
   std::remove(path.c_str());
 }
 
+// ---------------------------------------------------------------------------
+// NM-7: `native_backend.hpp` documents `E-MESH-SIZE` for a spec whose
+// count does not fit; before this fix nothing produced it, and a spec
+// this large instead crashed inside `VertexLookup::local.assign` as an
+// uncaught `std::bad_alloc`/`std::length_error`. Both specs are far past
+// the int-indexed builder's limit but cheap to refuse -- no allocation is
+// attempted before the check fires.
+// ---------------------------------------------------------------------------
+TEST(NativeGenerators, RefusesAHexboxSpecTooLargeForOneRankInsteadOfCrashing) {
+  auto arrays = generate_native_mesh("hexbox:200000x200000x200000", 0, 1);
+  ASSERT_FALSE(arrays.ok());
+  EXPECT_EQ(arrays.error().code, "E-MESH-SIZE");
+}
+
+TEST(NativeGenerators, RefusesAQuadSpecTooLargeForOneRankInsteadOfCrashing) {
+  auto arrays = generate_native_mesh("quad:4000000000x4000000000", 0, 1);
+  ASSERT_FALSE(arrays.ok());
+  EXPECT_EQ(arrays.error().code, "E-MESH-SIZE");
+}
+
 TEST(NativeMeshIo, RefusesAFileThatDoesNotExist) {
   auto r = read_native_mesh_file("/nonexistent/path/does/not/exist.vtk");
   ASSERT_FALSE(r.ok());
