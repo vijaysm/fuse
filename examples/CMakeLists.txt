@@ -373,6 +373,29 @@ if(FUSE_ENABLE_MPI)
     fuse_link_lowfive_with_fmt_fix(brusselator_u_main)
   endif()
 
+  # ---- S6 phase 3 (Conformance, "LowFive attach" track): begin --------
+  # lowfive_attach.cpp (examples/brusselator/participants) constructs the
+  # VOL connector PROGRAMMATICALLY instead of through the HDF5_VOL_
+  # CONNECTOR/HDF5_PLUGIN_PATH env-var route -- see that file's own
+  # header comment and KNOWN_ISSUES.md D39 for why. Always added to this
+  # executable's own sources (like shim.cpp, it compiles to a trivial
+  # "not built with LowFive" stub when FUSE_HAVE_LOWFIVE is 0), needing
+  # fuse::model (fuse/model/yaml_io.hpp, CouplingGraph) in addition to
+  # shim.cpp's own fuse::lowfive -- a dependency this executable did not
+  # need before this track, since shim.cpp's own bruss_lowfive_write/
+  # read never parsed the graph themselves.
+  target_sources(brusselator_u_main PRIVATE brusselator/participants/lowfive_attach.cpp)
+  target_link_libraries(brusselator_u_main PRIVATE fuse::model)
+  # FUSE_LOWFIVE_DIST_LIB_FOUND: this executable's own copy of the SAME
+  # compile definition src/CMakeLists.txt's fuse-lowfive-vol-graph/-impl
+  # OBJECT libraries already receive -- PRIVATE compile definitions do
+  # not propagate from a linked library to a consumer, so lowfive_
+  # attach.cpp needs its own.
+  if(LOWFIVE_HAVE_DIST)
+    target_compile_definitions(brusselator_u_main PRIVATE FUSE_LOWFIVE_DIST_LIB_FOUND=1)
+  endif()
+  # ---- "LowFive attach" track: end (brusselator_u_main half) ----------
+
   if(TARGET fuse-abi-fortran)
     add_executable(brusselator_v_main
       brusselator/participants/v_main.f90
@@ -384,6 +407,14 @@ if(FUSE_ENABLE_MPI)
     if(TARGET fuse::lowfive)
       fuse_link_lowfive_with_fmt_fix(brusselator_v_main)
     endif()
+    # ---- "LowFive attach" track: begin (brusselator_v_main half) ------
+    # Mirrors brusselator_u_main's own additive hunk just above exactly.
+    target_sources(brusselator_v_main PRIVATE brusselator/participants/lowfive_attach.cpp)
+    target_link_libraries(brusselator_v_main PRIVATE fuse::model)
+    if(LOWFIVE_HAVE_DIST)
+      target_compile_definitions(brusselator_v_main PRIVATE FUSE_LOWFIVE_DIST_LIB_FOUND=1)
+    endif()
+    # ---- "LowFive attach" track: end -----------------------------------
   else()
     message(STATUS "fuse: FUSE_ENABLE_MPI is ON but no Fortran compiler was found; "
                    "brusselator_v_main (Conformance Unit 2) will not be built")
@@ -494,6 +525,24 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND FUSE_ENABLE_LOWFIVE
   endforeach()
 endif()
 # ---- S6 phase 3 Unit 3b host rows: end ---------------------------------
+
+# ---- "LowFive attach" track note (additive comment only; the three
+# ENVIRONMENT variables just above are left UNCHANGED on purpose) -------
+# Both brusselator_u_main and brusselator_v_main now attach LowFive
+# programmatically (examples/brusselator/participants/lowfive_attach.cpp)
+# for EVERY --transport lowfive row, mpmd and accept alike: every
+# bruss_lowfive_write()/bruss_lowfive_read() call now passes an explicit
+# fapl_id and refuses outright if it is negative, so neither row's own
+# H5Fcreate/H5Fopen ever reaches HDF5_VOL_CONNECTOR's own default-VOL
+# resolution. HDF5_VOL_CONNECTOR/HDF5_PLUGIN_PATH/FUSE_LOWFIVE_BINDINGS
+# above are therefore vestigial for these two rows specifically -- kept
+# verbatim (not removed) because this file is a SHARED file under this
+# track's own additive-only constraint, and because the env-route
+# plugin (fuse-lowfive-vol, src/transport/lowfive_plugin_vol.cpp) they
+# were written for stays in the tree unchanged for a later track; a
+# future cleanup pass that confirms no other row still needs them on
+# THESE two rows specifically may remove the three variables here.
+# ---- "LowFive attach" track note: end ----------------------------------
 
 # ---------------------------------------------------------------------------
 # FSI channel (FSI track): a 2D unsteady-Stokes channel with an Euler-

@@ -121,6 +121,18 @@ program v_main
   character(len=17), target :: kOwnFile, kPeerFile
   character(len=12), target :: kOwnDataset, kPeerDataset
 
+  ! S6 phase 3 (Conformance, "LowFive attach" track): the file-access
+  ! property list bruss_lowfive_attach() hands back, set once below
+  ! (right after MPI_Init()/the physics-communicator split) and read by
+  ! v_lowfive_write_export()/v_lowfive_read_import() on every call
+  ! thereafter -- shim.h's own updated contract (-1 means "not attached
+  ! yet", refused by bruss_lowfive_write()/bruss_lowfive_read()
+  ! themselves). graph_path_cstr is graph_path NUL-terminated for the
+  ! bind(C) call, the same c_loc()-of-a-target-buffer convention
+  ! kOwnFile/kPeerFile/solver_cstr already use just above.
+  integer(c_long_long) :: fapl_id
+  character(len=513), target :: graph_path_cstr
+
   ! ---- the two bruss_lowfive_* HDF5 calls and the one build-config
   ! query, through shim.cpp's own extern "C" export (shim.h's own header
   ! comment has the full account of why this exists at all: no HDF5
@@ -132,21 +144,36 @@ program v_main
       integer(c_int) :: avail
     end function bruss_lowfive_available
 
-    function bruss_lowfive_write(file, dataset, data, n, errbuf, errbuf_len) &
+    function bruss_lowfive_write(file, dataset, data, n, fapl_id, errbuf, errbuf_len) &
         result(rc) bind(C, name="bruss_lowfive_write")
       import :: c_ptr, c_long_long, c_int
       type(c_ptr), value :: file, dataset, data, errbuf
-      integer(c_long_long), value :: n, errbuf_len
+      integer(c_long_long), value :: n, fapl_id, errbuf_len
       integer(c_int) :: rc
     end function bruss_lowfive_write
 
-    function bruss_lowfive_read(file, dataset, data, n, errbuf, errbuf_len) &
+    function bruss_lowfive_read(file, dataset, data, n, fapl_id, errbuf, errbuf_len) &
         result(rc) bind(C, name="bruss_lowfive_read")
       import :: c_ptr, c_long_long, c_int
       type(c_ptr), value :: file, dataset, data, errbuf
-      integer(c_long_long), value :: n, errbuf_len
+      integer(c_long_long), value :: n, fapl_id, errbuf_len
       integer(c_int) :: rc
     end function bruss_lowfive_read
+
+    ! S6 phase 3 (Conformance, "LowFive attach" track): programmatic VOL
+    ! attach, once per process -- lowfive_attach.h's own header comment
+    ! has the full account. `fapl_id_out` is `intent(out)` on the C side
+    ! (a `long long*`), which Fortran's own bind(C) spells as a by-
+    ! reference INTEGER argument (no `value`), identical to how ffuse's
+    ! own generated interfaces already pass an ABI out-parameter.
+    function bruss_lowfive_attach(graph_path, physics_comm_f, fapl_id_out, errbuf, errbuf_len) &
+        result(rc) bind(C, name="bruss_lowfive_attach")
+      import :: c_ptr, c_long_long, c_int
+      type(c_ptr), value :: graph_path, errbuf
+      integer(c_long_long), value :: physics_comm_f, errbuf_len
+      integer(c_long_long) :: fapl_id_out
+      integer(c_int) :: rc
+    end function bruss_lowfive_attach
   end interface
 
   graph_path = ""
@@ -249,6 +276,27 @@ program v_main
   call MPI_Comm_split(MPI_COMM_WORLD, 1, world_rank, v_comm, ierr)
   call MPI_Comm_rank(v_comm, v_rank, ierr)
   call MPI_Comm_size(v_comm, v_size, ierr)
+
+  ! S6 phase 3 (Conformance, "LowFive attach" track): programmatic VOL
+  ! attach, once per process, after MPI_Init() and before the first
+  ! bruss_lowfive_write()/bruss_lowfive_read() call below -- mirrors
+  ! u_main.c's own placement exactly. Uses the SAME graph_path this
+  ! program's own --graph argument already names.
+  fapl_id = -1_c_long_long
+  if (use_lowfive) then
+    ! v_comm, not MPI_COMM_WORLD -- lowfive_attach.h's own header comment
+    ! ("FOUND WHILE IMPLEMENTING") has the full account: an attach-owned
+    ! split of MPI_COMM_WORLD would hang, since coupler_main.c never
+    ! calls bruss_lowfive_attach() at all. v_comm is this process's own
+    ! already-formed physics-only communicator, established above.
+    graph_path_cstr = trim(graph_path) // c_null_char
+    io_rc = bruss_lowfive_attach(c_loc(graph_path_cstr), int(v_comm, c_long_long), &
+        fapl_id, c_loc(errbuf), int(len(errbuf), c_long_long))
+    if (io_rc /= 0) then
+      write(0, '(A,A)') "FAIL(v_main): bruss_lowfive_attach: ", cstr_message(errbuf)
+      call MPI_Abort(MPI_COMM_WORLD, 1, ierr)
+    end if
+  end if
 
   ! Cross-check against --ranks-u/--ranks-v (above): the two mechanisms
   ! must agree (both describe the SAME physical fact, V's own component
@@ -485,7 +533,7 @@ contains
     if (view%window_samples > 0 .and. c_associated(view%data)) then
       io_rc = bruss_lowfive_write(c_loc(kOwnFile), c_loc(kOwnDataset), &
           view%data, int(view%count, c_long_long) * int(view%components, c_long_long), &
-          c_loc(errbuf), int(len(errbuf), c_long_long))
+          fapl_id, c_loc(errbuf), int(len(errbuf), c_long_long))
       if (io_rc /= 0) then
         write(0, '(A,A)') "FAIL(v_main): bruss_lowfive_write(v_out): ", cstr_message(errbuf)
         call MPI_Abort(MPI_COMM_WORLD, 1, ierr)
@@ -502,7 +550,7 @@ contains
     if (view%window_samples > 0 .and. c_associated(view%data)) then
       io_rc = bruss_lowfive_read(c_loc(kPeerFile), c_loc(kPeerDataset), &
           view%data, int(view%count, c_long_long) * int(view%components, c_long_long), &
-          c_loc(errbuf), int(len(errbuf), c_long_long))
+          fapl_id, c_loc(errbuf), int(len(errbuf), c_long_long))
       if (io_rc /= 0) then
         write(0, '(A,A)') "FAIL(v_main): bruss_lowfive_read(v_in): ", cstr_message(errbuf)
         call MPI_Abort(MPI_COMM_WORLD, 1, ierr)

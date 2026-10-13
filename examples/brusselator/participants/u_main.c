@@ -60,6 +60,7 @@
 #include "fuse/abi/participant.h"
 #include "fuse/base/config.hpp"
 #include "brusselator_grid.h"
+#include "lowfive_attach.h"
 #include "u_loop.h"
 
 /* S6 phase 3 (Conformance, "LowFive" track), Unit 3b. The graph tool's own
@@ -71,6 +72,18 @@
 #define U_LOWFIVE_OWN_DATASET "/grid/u_out"
 #define U_LOWFIVE_PEER_FILE "brusselator_v.h5"
 #define U_LOWFIVE_PEER_DATASET "/grid/v_out"
+
+/* S6 phase 3 (Conformance, "LowFive attach" track): the file-access
+ * property list bruss_lowfive_attach() hands back, set once in main()
+ * right after MPI_Init()/the physics-communicator split, below, and
+ * read by u_lowfive_write_export()/u_lowfive_read_import() on every
+ * call thereafter -- a file-scope static, not a parameter threaded
+ * through those two functions, for the same reason the U_LOWFIVE_*
+ * macros just above are file-scope: both name a single, process-wide
+ * attach, not a per-call argument a caller chooses. -1 means "not
+ * attached yet" and is refused by bruss_lowfive_write()/
+ * bruss_lowfive_read() themselves (shim.h's own updated contract). */
+static long long g_lowfive_fapl_id = -1;
 
 /* Unit 3b, item 2(a): `fuse_step_report::delivery_pending` (entries.def,
  * docs/user/c-abi.md's own new section) replaces this file's own prior
@@ -108,8 +121,8 @@ static void u_lowfive_write_export(const fuse_participant_abi_v1* t, fuse_ctx* c
     char errbuf[2048];
     const int io_rc =
         bruss_lowfive_write(U_LOWFIVE_OWN_FILE, U_LOWFIVE_OWN_DATASET,
-                            (const double*)out_view.data, nvals, errbuf,
-                            (long long)sizeof(errbuf));
+                            (const double*)out_view.data, nvals, g_lowfive_fapl_id,
+                            errbuf, (long long)sizeof(errbuf));
     if (io_rc != 0) u_lowfive_fail_io("bruss_lowfive_write(u_out)", io_rc, errbuf);
   }
 }
@@ -129,8 +142,8 @@ static void u_lowfive_read_import(const fuse_participant_abi_v1* t, fuse_ctx* ct
     char errbuf[2048];
     const int io_rc =
         bruss_lowfive_read(U_LOWFIVE_PEER_FILE, U_LOWFIVE_PEER_DATASET,
-                           (double*)in_view.data, nvals, errbuf,
-                           (long long)sizeof(errbuf));
+                           (double*)in_view.data, nvals, g_lowfive_fapl_id,
+                           errbuf, (long long)sizeof(errbuf));
     if (io_rc != 0) u_lowfive_fail_io("bruss_lowfive_read(u_in)", io_rc, errbuf);
   }
 }
@@ -256,6 +269,34 @@ int main(int argc, char** argv) {
   if (is_physics_rank) {
     MPI_Comm_rank(u_comm, &u_rank);
     MPI_Comm_size(u_comm, &u_size);
+  }
+
+  /* S6 phase 3 (Conformance, "LowFive attach" track): programmatic VOL
+   * attach, once per process, after MPI_Init() and before the first
+   * bruss_lowfive_write()/bruss_lowfive_read() call below -- the design
+   * this track's own instructions ask for, in place of the env-var
+   * route (HDF5_VOL_CONNECTOR/HDF5_PLUGIN_PATH) that null-dereferenced
+   * on this exact call (KNOWN_ISSUES.md D38/D39). Uses the SAME
+   * graph_path this program's own --graph argument already names --
+   * no separate FUSE_LOWFIVE_BINDINGS environment variable. */
+  if (use_lowfive) {
+    char attach_errbuf[2048];
+    /* u_comm, not MPI_COMM_WORLD: lowfive_attach.h's own header comment
+     * ("FOUND WHILE IMPLEMENTING") has the full account of why an
+     * attach-owned MPI_Comm_split(MPI_COMM_WORLD, ...) would hang --
+     * the coupler process never calls bruss_lowfive_attach() at all, so
+     * it would never join that collective. u_comm is this process's
+     * own already-formed physics-only communicator, with the coupler's
+     * own matching split already satisfied above. */
+    const int attach_rc =
+        bruss_lowfive_attach(graph_path, (long long)MPI_Comm_c2f(u_comm),
+                             &g_lowfive_fapl_id, attach_errbuf,
+                             (long long)sizeof(attach_errbuf));
+    if (attach_rc != 0) {
+      fprintf(stderr, "FAIL(u_main): bruss_lowfive_attach: rc=%d %s\n", attach_rc,
+              attach_errbuf);
+      MPI_Abort(MPI_COMM_WORLD, 1);
+    }
   }
 
   const fuse_participant_abi_v1* t = fuse_coupler_abi(FUSE_ABI_VERSION);

@@ -205,22 +205,34 @@ double bruss_v_state_mean(const bruss_v_handle* h);
 double bruss_v_exchange_in(const bruss_v_handle* h);
 const char* bruss_v_last_error(const bruss_v_handle* h);
 
-/* S6 phase 3 (Conformance, "LowFive" track), Unit 3b: the ordinary,
- * no-FUSE-call-at-all HDF5 write/read a window member's own loop performs
- * directly against its export/import, with the VOL connector that makes
- * this interception rather than a real file attached process-wide by
- * HDF5's own HDF5_VOL_CONNECTOR/HDF5_PLUGIN_PATH mechanism (docs/user/
- * lowfive.md's "Unit 3" design) -- this shim exists ONLY so u_main.c
- * (pure C, already links this translation unit) and v_main.f90 (pure
- * Fortran, no HDF5 Fortran module in this install -- checked, /opt/hdf5
- * ships no Fortran bindings) can issue the SAME two HDF5 calls (H5Fcreate/
- * H5Dcreate2/H5Dwrite/H5Fclose and H5Fopen/H5Dopen2/H5Dread/H5Fclose) once
- * rather than twice, exactly as this file's own header comment already
- * does for bruss_u_step/bruss_v_step. `fapl_id` is deliberately NOT a
- * parameter here, unlike LowFiveTransport::access_plist_handle() (the
- * DIFFERENT, programmatic-attachment path examples/demo_b uses): a literal
- * H5P_DEFAULT is the whole point of the env-var attachment mechanism this
- * track's instruction specifies, so both calls always pass it.
+/* S6 phase 3 (Conformance, "LowFive" track), Unit 3b -- UPDATED by the
+ * "LowFive attach" track: the ordinary, no-FUSE-call-at-all HDF5 write/
+ * read a window member's own loop performs directly against its export/
+ * import. `fapl_id` is now REQUIRED and is passed literally as the
+ * `fapl_id` argument of this call's own H5Fcreate/H5Fopen, in place of
+ * H5P_DEFAULT -- the file-access property list lowfive_attach.h's own
+ * bruss_lowfive_attach() builds and hands back, exactly the way
+ * `fuse::LowFiveTransport::access_plist_handle()` already does for
+ * examples/demo_b's own programmatic-attachment path (lowfive_attach.h's
+ * own header comment has the full account of why the participants moved
+ * onto this mechanism: the env-var route's own null dereference,
+ * KNOWN_ISSUES.md D38/D39). A caller that has not called
+ * bruss_lowfive_attach() successfully first -- `fapl_id < 0` -- is
+ * refused here rather than silently substituting H5P_DEFAULT, which
+ * would reach a real file with no interception and no diagnostic
+ * (this codebase's own "no silent fallback" rule). This shim exists
+ * ONLY so u_main.c (pure C, already links this translation unit) and
+ * v_main.f90 (pure Fortran, no HDF5 Fortran module in this install --
+ * checked, /opt/hdf5 ships no Fortran bindings) can issue the SAME two
+ * HDF5 calls (H5Fcreate/H5Dcreate2/H5Dwrite/H5Fclose and H5Fopen/
+ * H5Dopen2/H5Dread/H5Fclose) once rather than twice, exactly as this
+ * file's own header comment already does for bruss_u_step/bruss_v_step.
+ * Internally (lowfive_attach.h) also brackets the H5Fclose with
+ * bruss_lowfive_serve_after_write() and the H5Fopen with
+ * bruss_lowfive_receive_before_read() whenever the live attach is
+ * distributed -- transparent to this function's own caller, so u_main.c/
+ * v_main.f90's own call sites need no choreography of their own beyond
+ * passing `fapl_id` through.
  *
  * Returns 0 on success; nonzero on failure, with a message copied into
  * errbuf (truncated to errbuf_len - 1 bytes, always NUL-terminated) --
@@ -232,9 +244,11 @@ const char* bruss_v_last_error(const bruss_v_handle* h);
  * include path in that configuration). */
 int bruss_lowfive_write(const char* file, const char* dataset,
                         const double* data, long long n,
+                        long long fapl_id,
                         char* errbuf, long long errbuf_len);
 int bruss_lowfive_read(const char* file, const char* dataset,
                        double* data, long long n,
+                       long long fapl_id,
                        char* errbuf, long long errbuf_len);
 
 /* 1 iff this build was configured with -DFUSE_ENABLE_LOWFIVE=ON, 0
