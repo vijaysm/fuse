@@ -679,6 +679,27 @@ fuse_status impl_setup(fuse_ctx* ctx, const fuse_setup_options* in, fuse_null*) 
         // either, for the identical reason).
       }
 #endif
+    } else if (my_component != nullptr) {
+      // Review 2026-10-11 AB-4: this whole my_component handling (above)
+      // lived inside `if (in->communicator != 0)`, so a caller that named
+      // an Mpmd/Connect component but left communicator == 0 fell through
+      // silently -- the run proceeded single-process on a graph that
+      // declares a multi-executable launch, with no refusal at all.
+      // my_component's own comment (entries.def) requires a non-zero
+      // communicator for exactly these two LaunchModes, to form the real
+      // base communicator from; InProcess/Plugin need no communicator at
+      // all, so only Mpmd/Connect are refused here.
+      const auto cid = c.graph.find_component(my_component);
+      if (cid.has_value()) {
+        const fuse::LaunchMode mode = c.graph.component(*cid).launch.mode;
+        if (mode == fuse::LaunchMode::Mpmd || mode == fuse::LaunchMode::Connect) {
+          return fail(&c, FUSE_ERR_INVALID, "E-ABI-SETUP-COMPONENT",
+                     std::string("fuse_setup_options: my_component names '") +
+                         my_component + "', whose LaunchSpec is Mpmd or Connect and "
+                         "therefore requires a non-zero communicator to form the real "
+                         "base communicator from (communicator == 0 was supplied)");
+        }
+      }
     }
     if (in->has_end_time) {
       const fuse::Result<fuse::Rational> t = from_abi_time(in->end_time);
