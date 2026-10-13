@@ -1329,6 +1329,67 @@ bool prime_next_request(fuse_ctx& c, const char* fn, bool* rolled_over,
         c.next_request.reset();
         return true;
       }
+    } else if (c.communicator_set) {
+      // KNOWN_ISSUES.md D57. No end_time was declared at all (fuse_setup
+      // ()'s own fuse_setup_options::has_end_time left at its zero
+      // default) -- the ONLY bound the branch above can test against is
+      // absent, so there is nothing here to check a new period's own
+      // start against. Unlike the exceeded-end_time case, this is not
+      // "the run is over": a well-formed caller bounds an undeclared-
+      // end_time run itself, by its own loop over a known period count
+      // (examples/brusselator/participants/u_main.c's own `for (p = 0;
+      // p < periods; ++p)`, mirrored by v_main.f90 and by coupler_main.c
+      // 's own fuse_run(periods) call) -- but THIS function has no way
+      // to learn that count, and fuse_run()'s own loop never asks this
+      // one to look ahead at all (Runner::run() calls run_period()
+      // exactly `periods` times and stops; it never peeks into period
+      // `periods` the way the eager continuation below would). Starting
+      // period c.periods_completed's own coroutine here regardless would
+      // run REAL instructions of a period the caller's own bound never
+      // authorized.
+      //
+      // Gated on `c.communicator_set` -- NOT on `!c.has_end_time` alone
+      // -- because the hazard this guards against is specifically a
+      // base-communicator collective (OpKind::Constrain's reduction,
+      // gated on `config.base_communicator.has_value()`, KNOWN_ISSUES.md
+      // D10) that an in-process-only PARTNER rank bounded by
+      // Runner::run(periods) will never also enter, since its own loop
+      // already stopped -- a hazard that exists only when a base
+      // communicator is configured at all. `c.communicator_set` is set
+      // once, identically, from `fuse_setup_options::communicator` at
+      // setup() time (not derived from any rank-local runtime state), so
+      // this is the same value on every rank that shares the
+      // communicator -- consistent with the standing rule that a
+      // collective path never returns on a locally computed condition.
+      // Without this narrowing, the single-process conformance case
+      // (`AbiParticipant.MismatchedRolloverNamesTheRealPeriodStartComp
+      // onent`, test/abi/participant_test.cpp) -- which never configures
+      // a communicator and relies on EXACTLY the eager continuation this
+      // branch would otherwise skip, to resolve a still-converging
+      // window's real next-period owner ahead of the caller asking for
+      // it, per "the lead's own ruling" that test's own header cites --
+      // regressed the first time this fix was written unconditionally
+      // (measured: the full tier-0 ctest suite caught it, `abi.
+      // participant` FAILED where it had passed on HEAD). With no
+      // communicator at all, there is no partner rank to disagree with,
+      // so the eager continuation below is harmless and that test's own
+      // behaviour is preserved exactly, unchanged by this entry.
+      //
+      // Reported exactly like the exceeded-end_time case: c.next_request
+      // stays empty, fuse_begin_step()'s own caller (below) sees
+      // next_component == -1 / step_opened == 0 for THIS component, for
+      // THIS now-completed period -- a true, non-speculative answer, not
+      // a lie, since the rolled-over count above already reflects this
+      // period finishing -- and the decision whether a period beyond it
+      // should run is left entirely to whether the caller's own loop
+      // makes another fuse_begin_step() call at all. A caller that does
+      // (because its own loop has more periods to go) gets the fresh
+      // period's real first request from THAT later call's own ordinary
+      // (non-rollover) resume_period(), exactly as if this rollover had
+      // never been entered -- unchanged behaviour for every period but
+      // the last one requested.
+      c.next_request.reset();
+      return true;
     }
     outcome = c.runner->resume_period(c.components);
     if (!outcome.ok()) {

@@ -202,8 +202,8 @@ describes = "the lead's own ruling (2026-10-04), item 2: prime_next_request()'s 
 file = "src/abi/participant.cpp"
 old = """  if (!outcome.value().has_value()) {
     // This period is over (see this function's own comment above for
-    // why that is expected here, not a violation of the \"ticks at least
-    // once\" invariant): complete its bookkeeping exactly as fuse_run()
+    // why that is expected here, not a violation of the "ticks at least
+    // once" invariant): complete its bookkeeping exactly as fuse_run()
     // would at a period's end, then start the next one and prime ITS
     // OWN first request, in this same call -- UNLESS the next period's
     // own start would be at or past the run's own declared end_time
@@ -218,6 +218,67 @@ old = """  if (!outcome.value().has_value()) {
         c.next_request.reset();
         return true;
       }
+    } else if (c.communicator_set) {
+      // KNOWN_ISSUES.md D57. No end_time was declared at all (fuse_setup
+      // ()'s own fuse_setup_options::has_end_time left at its zero
+      // default) -- the ONLY bound the branch above can test against is
+      // absent, so there is nothing here to check a new period's own
+      // start against. Unlike the exceeded-end_time case, this is not
+      // "the run is over": a well-formed caller bounds an undeclared-
+      // end_time run itself, by its own loop over a known period count
+      // (examples/brusselator/participants/u_main.c's own `for (p = 0;
+      // p < periods; ++p)`, mirrored by v_main.f90 and by coupler_main.c
+      // 's own fuse_run(periods) call) -- but THIS function has no way
+      // to learn that count, and fuse_run()'s own loop never asks this
+      // one to look ahead at all (Runner::run() calls run_period()
+      // exactly `periods` times and stops; it never peeks into period
+      // `periods` the way the eager continuation below would). Starting
+      // period c.periods_completed's own coroutine here regardless would
+      // run REAL instructions of a period the caller's own bound never
+      // authorized.
+      //
+      // Gated on `c.communicator_set` -- NOT on `!c.has_end_time` alone
+      // -- because the hazard this guards against is specifically a
+      // base-communicator collective (OpKind::Constrain's reduction,
+      // gated on `config.base_communicator.has_value()`, KNOWN_ISSUES.md
+      // D10) that an in-process-only PARTNER rank bounded by
+      // Runner::run(periods) will never also enter, since its own loop
+      // already stopped -- a hazard that exists only when a base
+      // communicator is configured at all. `c.communicator_set` is set
+      // once, identically, from `fuse_setup_options::communicator` at
+      // setup() time (not derived from any rank-local runtime state), so
+      // this is the same value on every rank that shares the
+      // communicator -- consistent with the standing rule that a
+      // collective path never returns on a locally computed condition.
+      // Without this narrowing, the single-process conformance case
+      // (`AbiParticipant.MismatchedRolloverNamesTheRealPeriodStartComp
+      // onent`, test/abi/participant_test.cpp) -- which never configures
+      // a communicator and relies on EXACTLY the eager continuation this
+      // branch would otherwise skip, to resolve a still-converging
+      // window's real next-period owner ahead of the caller asking for
+      // it, per "the lead's own ruling" that test's own header cites --
+      // regressed the first time this fix was written unconditionally
+      // (measured: the full tier-0 ctest suite caught it, `abi.
+      // participant` FAILED where it had passed on HEAD). With no
+      // communicator at all, there is no partner rank to disagree with,
+      // so the eager continuation below is harmless and that test's own
+      // behaviour is preserved exactly, unchanged by this entry.
+      //
+      // Reported exactly like the exceeded-end_time case: c.next_request
+      // stays empty, fuse_begin_step()'s own caller (below) sees
+      // next_component == -1 / step_opened == 0 for THIS component, for
+      // THIS now-completed period -- a true, non-speculative answer, not
+      // a lie, since the rolled-over count above already reflects this
+      // period finishing -- and the decision whether a period beyond it
+      // should run is left entirely to whether the caller's own loop
+      // makes another fuse_begin_step() call at all. A caller that does
+      // (because its own loop has more periods to go) gets the fresh
+      // period's real first request from THAT later call's own ordinary
+      // (non-rollover) resume_period(), exactly as if this rollover had
+      // never been entered -- unchanged behaviour for every period but
+      // the last one requested.
+      c.next_request.reset();
+      return true;
     }
     outcome = c.runner->resume_period(c.components);
     if (!outcome.ok()) {
@@ -229,12 +290,12 @@ old = """  if (!outcome.value().has_value()) {
       // Two periods in a row with no externally driven component to
       // stop at: THIS is the genuine invariant violation, unreachable
       // for a well-formed graph with at least one such component.
-      *out_code = \"E-ABI-STEP-ORDER\";
+      *out_code = "E-ABI-STEP-ORDER";
       *out_message =
           std::string(fn) +
-          \": the current period has no externally driven component left \"
-          \"to step; this should be unreachable for a graph with at least \"
-          \"one such component\";
+          ": the current period has no externally driven component left "
+          "to step; this should be unreachable for a graph with at least "
+          "one such component";
       return false;
     }
   }"""
@@ -280,3 +341,77 @@ old = """      Kokkos::initialize(settings);
 new = "      Kokkos::initialize(settings);"
 target = "fuse_abi_consumer"
 test = "abi.install_consumer_c"
+
+[[mutation]]
+id = "abi-period-rollover-eager-continuation"
+area = "abi/participant (prime_next_request)"
+describes = "KNOWN_ISSUES.md D57. Removing prime_next_request()'s own `else if (c.communicator_set)` branch restores the unconditional fallthrough: when no end_time is declared and the current period has just drained, the function immediately calls Runner::Impl::resume_period() a SECOND time in the SAME fuse_begin_step() call even when a base communicator IS configured -- starting an extra period the caller's own bounded loop (examples/brusselator/participants/u_main.c's own `for (p = 0; p < periods; ++p)`) never asked for and the coupler's own Runner::run(periods) loop will never also enter. (The `c.communicator_set` gate itself -- distinguishing this from the single-process conformance case, AbiParticipant.MismatchedRolloverNamesTheRealPeriodStartComponent, which has no communicator and relies on the SAME eager continuation -- was added after the full tier-0 ctest suite caught that test regressing against a first-draft, unconditional version of this fix.)"
+file = "src/abi/participant.cpp"
+old = """    } else if (c.communicator_set) {
+      // KNOWN_ISSUES.md D57. No end_time was declared at all (fuse_setup
+      // ()'s own fuse_setup_options::has_end_time left at its zero
+      // default) -- the ONLY bound the branch above can test against is
+      // absent, so there is nothing here to check a new period's own
+      // start against. Unlike the exceeded-end_time case, this is not
+      // "the run is over": a well-formed caller bounds an undeclared-
+      // end_time run itself, by its own loop over a known period count
+      // (examples/brusselator/participants/u_main.c's own `for (p = 0;
+      // p < periods; ++p)`, mirrored by v_main.f90 and by coupler_main.c
+      // 's own fuse_run(periods) call) -- but THIS function has no way
+      // to learn that count, and fuse_run()'s own loop never asks this
+      // one to look ahead at all (Runner::run() calls run_period()
+      // exactly `periods` times and stops; it never peeks into period
+      // `periods` the way the eager continuation below would). Starting
+      // period c.periods_completed's own coroutine here regardless would
+      // run REAL instructions of a period the caller's own bound never
+      // authorized.
+      //
+      // Gated on `c.communicator_set` -- NOT on `!c.has_end_time` alone
+      // -- because the hazard this guards against is specifically a
+      // base-communicator collective (OpKind::Constrain's reduction,
+      // gated on `config.base_communicator.has_value()`, KNOWN_ISSUES.md
+      // D10) that an in-process-only PARTNER rank bounded by
+      // Runner::run(periods) will never also enter, since its own loop
+      // already stopped -- a hazard that exists only when a base
+      // communicator is configured at all. `c.communicator_set` is set
+      // once, identically, from `fuse_setup_options::communicator` at
+      // setup() time (not derived from any rank-local runtime state), so
+      // this is the same value on every rank that shares the
+      // communicator -- consistent with the standing rule that a
+      // collective path never returns on a locally computed condition.
+      // Without this narrowing, the single-process conformance case
+      // (`AbiParticipant.MismatchedRolloverNamesTheRealPeriodStartComp
+      // onent`, test/abi/participant_test.cpp) -- which never configures
+      // a communicator and relies on EXACTLY the eager continuation this
+      // branch would otherwise skip, to resolve a still-converging
+      // window's real next-period owner ahead of the caller asking for
+      // it, per "the lead's own ruling" that test's own header cites --
+      // regressed the first time this fix was written unconditionally
+      // (measured: the full tier-0 ctest suite caught it, `abi.
+      // participant` FAILED where it had passed on HEAD). With no
+      // communicator at all, there is no partner rank to disagree with,
+      // so the eager continuation below is harmless and that test's own
+      // behaviour is preserved exactly, unchanged by this entry.
+      //
+      // Reported exactly like the exceeded-end_time case: c.next_request
+      // stays empty, fuse_begin_step()'s own caller (below) sees
+      // next_component == -1 / step_opened == 0 for THIS component, for
+      // THIS now-completed period -- a true, non-speculative answer, not
+      // a lie, since the rolled-over count above already reflects this
+      // period finishing -- and the decision whether a period beyond it
+      // should run is left entirely to whether the caller's own loop
+      // makes another fuse_begin_step() call at all. A caller that does
+      // (because its own loop has more periods to go) gets the fresh
+      // period's real first request from THAT later call's own ordinary
+      // (non-rollover) resume_period(), exactly as if this rollover had
+      // never been entered -- unchanged behaviour for every period but
+      // the last one requested.
+      c.next_request.reset();
+      return true;
+    }
+    outcome = c.runner->resume_period(c.components);"""
+new = """    }
+    outcome = c.runner->resume_period(c.components);"""
+target = "fuse_verification_brusselator_period_rollover_test"
+test = "verification.brusselator_period_rollover"
+result = "CONFIRMED 2026-10-13 (Collectives track, tier 0, /tmp/collectives/b0): applying the mutation by hand and rebuilding the target made BrusselatorPeriodRollover.StopsAtTheRequestedPeriodCountWithNoEndTime FAIL (begin_rep.next_component=0 at the stopping call instead of -1; whole unfiltered binary: [PASSED] 0 tests, [FAILED] 1 test). File restored from the in-memory pre-mutation text and confirmed byte-identical via cmp (both MD5 8749b463b4c75db9a4909c4218fe17ab). Clean rebuild of the same target then passed again ([PASSED] 1 test, begin_rep.next_component=-1 at the stopping call). The companion regression this `communicator_set` gate exists to prevent was independently confirmed by rebuilding and running fuse_abi_participant_test's own WHOLE unfiltered binary (17 tests): AbiParticipant.MismatchedRolloverNamesTheRealPeriodStartComponent, which never configures a communicator, PASSED unchanged ([PASSED] 17 tests)."

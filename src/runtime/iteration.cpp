@@ -19,7 +19,12 @@
 #include "fuse/linalg/dist_vector.hpp"
 #include "fuse/num/kernels.hpp"
 #include "fuse/num/newton_krylov.hpp"
+#include "fuse/runtime/collective_trace.hpp"
 #include "fuse/runtime/fixed_point_residual.hpp"
+
+#if FUSE_HAVE_MPI
+#include <mpi.h>
+#endif
 
 /// Spec §5.3: executing an iteration region.
 ///
@@ -3242,6 +3247,41 @@ detail::Task<Result<void>> Runner::Impl::run_region(
       // times, so a rank that drops out of the exchange desynchronises the
       // remaining iterations rather than just one step.
       if (step_failure.has_value() && !is_collective(stream[i].kind)) continue;
+      // KNOWN_ISSUES.md D57 ("Collectives" track). Off by default (one
+      // getenv per instruction, cached the same way FUSE_CONSERVATION_
+      // DEBUG already is at its own call site, runner.cpp): a per-rank
+      // trace of every COLLECTIVE instruction this sweep reaches, so a
+      // host run can diff three ranks' own ordinal sequences directly
+      // against each other instead of inferring agreement from a hang.
+      // Placed HERE, not inside execute() (runner.cpp), because this is
+      // the one place with both the region's own name (R.name) and the
+      // current sweep index (k) -- execute() has neither.
+      if (is_collective(stream[i].kind)) {
+        static const bool trace_enabled = std::getenv("FUSE_COLLECTIVE_TRACE") != nullptr;
+        if (trace_enabled) {
+          int rank = -1;
+#if FUSE_HAVE_MPI
+          // Written as a named bool, not `if (config.base_communicator.
+          // has_value())` directly: that exact substring is build-
+          // evidence/mutations/transport-runtime.toml's own
+          // `cross-rank-region-check-fires-unconditionally` anchor
+          // (src/runtime/iteration.cpp:1351, a DIFFERENT, pre-existing
+          // check), and tools/mutate.py --check-anchors flags any
+          // anchor text that no longer identifies its target uniquely --
+          // which a second, textually identical line would, even one
+          // this far away and unrelated to that row's own mutation.
+          const bool have_base_communicator = config.base_communicator.has_value();
+          if (have_base_communicator) {
+            MPI_Comm_rank(MPI_Comm_f2c(static_cast<MPI_Fint>(*config.base_communicator)), &rank);
+          }
+#endif
+          fmt::print(stderr, "{}\n",
+                     format_collective_trace_line(
+                         rank, R.name, static_cast<int>(period_index), k,
+                         static_cast<std::uint32_t>(i), to_cstring(stream[i].kind),
+                         "base", ++collective_trace_ordinal));
+        }
+      }
       // Time windows track: execute() has no ComponentSet& and cannot call
       // advance()/save_state()/restore_state() itself (see its own
       // OpKind::WindowAdvance case, src/runtime/runner.cpp) -- a

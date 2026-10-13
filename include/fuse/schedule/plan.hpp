@@ -210,6 +210,32 @@ struct ScheduleResult {
                                                       const CouplingGraph& g,
                                                       int rank);
 
+/// KNOWN_ISSUES.md D57 ("Collectives" track). `epoch_sequence()`'s own
+/// sibling for the OTHER real base-communicator collective the
+/// interpreter issues from the per-period path: `OpKind::Constrain`'s
+/// conservation reduction (`src/runtime/runner.cpp`, `ConstrainInfo::
+/// reduce`, a real `MPI_Allreduce`, unlike `Epoch`'s own point-to-point
+/// agreement). `Constrain` is emitted with an empty `OpAttrs{}` (`src/
+/// ir/rules_derived.cpp`), so `rank_participates()` -- the same helper
+/// `epoch_sequence()` uses -- reports every rank a trivial participant,
+/// matching `ci.reduce`'s own actual gate (`config.base_communicator.
+/// has_value()`, unconditioned on any rank-set membership).
+///
+/// Two ranks' own `constrain_sequence()` being identical proves there is
+/// no STATIC divergence in which `Constrain` instructions a rank's
+/// compiled plan contains -- every rank compiles the same plan from the
+/// same graph, so this can only fail to hold if `rank_participates()`
+/// itself disagreed, which it structurally cannot for an instruction
+/// whose own `attrs.src_rank_set`/`dst_rank_set` are both unset. It does
+/// NOT prove the ranks agree on how many PERIODS to walk that plan --
+/// D57's own hang is exactly that second, orthogonal disagreement (a
+/// property of the ABI driver loop, `src/abi/participant.cpp`'s
+/// `prime_next_request()`, not of `plan` or `g`) -- see docs/dev/
+/// rank-agreement.md's own "Agreement on a schedule is not agreement on
+/// how many times to run it".
+[[nodiscard]] std::vector<std::string> constrain_sequence(
+    const ExecutionPlan& plan, const CouplingGraph& g, int rank);
+
 [[nodiscard]] ScheduleResult schedule(const CouplingGraph& g,
                                       const OperatorDAG& dag,
                                       const ClockSet& clocks,

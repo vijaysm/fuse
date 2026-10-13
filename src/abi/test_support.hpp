@@ -18,10 +18,12 @@
 /// directly (not through the installed library), which is why this is a
 /// free function and not a table entry.
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
 #include "fuse/runtime/component.hpp"
+#include "fuse/runtime/runner.hpp"
 
 struct fuse_ctx;
 
@@ -53,5 +55,61 @@ bool inject_component(fuse_ctx* ctx, const std::string& component_name,
 /// `fuse_initialize()`. Returns false (and leaves `ctx` unchanged) when
 /// `ctx` is null or the context is not in the `Loaded` state.
 bool force_this_process(fuse_ctx* ctx, int rank);
+
+/// KNOWN_ISSUES.md D57 ("Collectives" track): the Runner's own
+/// instruction/conservation-check counters (fuse::RunStats, include/fuse/
+/// runtime/runner.hpp), read directly off the context's own Runner -- no
+/// entry in the frozen public ABI exposes them (deliberately: a debugging
+/// aid, not a coupling-physics result the ABI's own surface is scoped to),
+/// so a test that needs to tell "exactly N periods' worth of Runner work
+/// happened" from "N periods were REPORTED (fuse_step_report::period) but
+/// N+1 periods' worth of instructions already executed to produce that
+/// report" (D57's own defect: fuse_begin_step()'s own `step_opened == 0`
+/// at a period boundary describes the request the CALLER should act on
+/// next, never how much of a FOLLOWING period's own stream prime_next_
+/// request()'s rollover already ran to find it) has to reach past every
+/// ABI report, all of which describe the next pending request, not the
+/// Runner's own cumulative work.
+///
+/// Returns a default-constructed (all-zero) fuse::RunStats when `ctx` is
+/// null or not yet Initialized -- never a null-dereference crash, the same
+/// defensive posture `inject_component()`/`force_this_process()` already
+/// take on a misused context.
+fuse::RunStats run_stats(const fuse_ctx* ctx);
+
+/// KNOWN_ISSUES.md D57 ("Collectives" track). Sets `fuse_ctx::
+/// communicator_set`/`communicator` directly -- the state `fuse_setup()`
+/// (src/abi/participant.cpp) would otherwise set from a NON-ZERO
+/// `fuse_setup_options::communicator`, which that same function refuses
+/// outright on a build with no MPI (`E-ABI-SETUP-NOMPI`) -- so a tier-0
+/// test can exercise `prime_next_request()`'s own `c.communicator_set`
+/// gate (the condition that distinguishes D57's own real row, where a
+/// base communicator IS configured without an end_time, from
+/// `AbiParticipant.MismatchedRolloverNamesTheRealPeriodStartComponent`'s
+/// own single-process, no-communicator scenario, where the PRE-EXISTING
+/// eager-continuation behaviour that test pins must keep working
+/// unchanged) with no MPI runtime at all. Safe to do so: every MPI call
+/// site `config.base_communicator.has_value()` can reach is itself
+/// compiled out under `#if FUSE_HAVE_MPI` (absent at tier 0), so setting
+/// this never risks calling into an uninitialized MPI library -- a
+/// Constrain instruction reached with `ci.reduce` set instead takes
+/// `resolve_constrain()`'s/`execute()`'s own `#else` arm and returns a
+/// clean `E-RT-CONSERVATION-REDUCE` Result::Failure (runner.cpp), never a
+/// crash or a hang, which is exactly the decisive, safe signal this
+/// track's own mutation proof (reverting the fix) relies on.
+///
+/// Callable any time after a successful `fuse_setup()`, in EITHER the
+/// `Loaded` or the `Initialized` state -- unlike `force_this_process()`,
+/// which `fuse_initialize()` itself consumes and so must precede. Calling
+/// it AFTER `fuse_initialize()` (once the Runner already exists with
+/// whatever transport that call picked) is the usual choice: it reaches
+/// `prime_next_request()`'s own `c.communicator_set` read -- a plain
+/// context field with no other run-time consumer -- without also
+/// flipping `fuse_initialize()`'s own "mpi" vs "copy" transport choice,
+/// which fails outright on a build with no "mpi" backend registered
+/// (tier 0, `FUSE_HAVE_MPI` off) regardless of whether the graph's own
+/// channels ever need a real Transport exchange. Returns false (and
+/// leaves `ctx` unchanged) when `ctx` is null or in neither state.
+bool force_communicator_set(fuse_ctx* ctx, std::int64_t value);
 
 }  // namespace fuse::abi_test

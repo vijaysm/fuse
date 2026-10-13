@@ -541,6 +541,12 @@ add_library(fuse-coupler-runtime
   runtime/checkpoint_support.cpp
   runtime/window_coupler.cpp
   runtime/fixed_point_residual.cpp
+  # KNOWN_ISSUES.md D57 ("Collectives" track): FUSE_COLLECTIVE_TRACE's own
+  # pure formatter, called from run_region() (iteration.cpp) -- kept in
+  # its own translation unit so test/runtime/collective_trace_test.cpp
+  # can pin the formatter's own output without linking the whole
+  # coroutine-based Runner.
+  runtime/collective_trace.cpp
 )
 add_library(fuse::runtime ALIAS fuse-coupler-runtime)
 target_compile_features(fuse-coupler-runtime PUBLIC cxx_std_20)

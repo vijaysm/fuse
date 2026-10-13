@@ -396,6 +396,14 @@ endforeach()
 # buffers asserts the overflow refusals are raised, so it aborts in the no-exceptions leg.
 fuse_add_gtest(schedule buffers THROWS)
 fuse_add_gtest(schedule clock THROWS)
+# KNOWN_ISSUES.md D57 ("Collectives" track): fuse::constrain_sequence()
+# tied to the REAL three-rank Brusselator participants layout, which
+# needs examples/brusselator's own graph builder on its include path --
+# test/parallel/schur_slab_mpi_test.cpp's own precedent for a schedule-
+# layer test reusing it.
+fuse_add_gtest(schedule constrain_sequence LIBS fuse::schedule fuse::ir fuse::backend fuse::model)
+target_include_directories(fuse_schedule_constrain_sequence_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/examples/brusselator)
 
 # ---------------------------------------------------------------- num
 foreach(t kernels waveform_order residual_norm)
@@ -692,7 +700,8 @@ endif()
 # ---------------------------------------------------------------- runtime
 foreach(t runner checkpoint epoch_schedule window_convergence window_coupler
          window_runner window_runner_multirate window_runner_straddle
-         window_runner_mismatched_length window_hosting window_newton_hosting)
+         window_runner_mismatched_length window_hosting window_newton_hosting
+         collective_trace)
   fuse_add_gtest(runtime ${t})
 endforeach()
 fuse_add_gtest(runtime component_iface THROWS)
@@ -1272,6 +1281,26 @@ endforeach()
 # instruction (docs/dev/device-resident-arcs.md, step 3), which is what makes
 # this row the slow one.
 fuse_add_device_twin(verification.brusselator_runner fuse_verification_brusselator_runner_test TIMEOUT 10800)
+
+# KNOWN_ISSUES.md D57 ("Collectives" track): the period-rollover-past-
+# end_time-free-bound regression, driven through the real participant
+# ABI (fuse_begin_step/fuse_end_step) on a single-process, no-coupler
+# window+ExternalDelivery graph -- see the test file's own header for
+# why this shape, not the real three-rank participants graph, is what
+# tier 0 can reach. Needs fuse::abi on top of the plain brusselator deps
+# above (hence its own fuse_add_gtest call, not folded into the foreach
+# loop above, which never links fuse::abi).
+fuse_add_gtest(verification brusselator_period_rollover NO_LAYER_LIB
+               LIBS fuse::runtime fuse::backend fuse::model fuse::abi Eigen3::Eigen Kokkos::kokkos)
+target_include_directories(fuse_verification_brusselator_period_rollover_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/examples/brusselator
+  ${CMAKE_SOURCE_DIR}/src/abi)
+# fuse::abi_test::run_stats() (src/abi/test_support.{hpp,cpp}) reaches
+# past the frozen public ABI to read fuse::RunStats off the context's
+# own Runner -- the SAME test-only seam test/abi/*.cpp already link
+# directly rather than through the installed library.
+target_sources(fuse_verification_brusselator_period_rollover_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/abi/test_support.cpp)
 
 # S6 phase 3 ("LowFive" track), Unit 3: brusselator_graph_tool.cpp's own
 # --transport lowfive wiring, reproduced directly against validate() --

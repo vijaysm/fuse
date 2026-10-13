@@ -731,6 +731,20 @@ std::vector<std::string> epoch_sequence(const ExecutionPlan& plan,
   return seq;
 }
 
+// KNOWN_ISSUES.md D57 ("Collectives" track): see this function's own
+// declaration (plan.hpp) for the full account of what agreement this
+// proves and, as importantly, what it does not.
+std::vector<std::string> constrain_sequence(const ExecutionPlan& plan,
+                                            const CouplingGraph& g, int rank) {
+  std::vector<std::string> seq;
+  for (const Instruction& ins : plan.instructions()) {
+    if (ins.kind != OpKind::Constrain) continue;
+    if (!rank_participates(ins, rank, g)) continue;
+    seq.push_back(ins.time.to_string() + ":%" + std::to_string(ins.out.value()));
+  }
+  return seq;
+}
+
 ScheduleResult schedule(const CouplingGraph& g, const OperatorDAG& dag,
                         const ClockSet& clocks, const RegionSizes& sizes,
                         ExpandMode mode) {

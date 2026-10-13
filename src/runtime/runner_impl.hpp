@@ -1043,6 +1043,17 @@ struct Runner::Impl {
   std::vector<std::vector<double>> transport_in_scratch, transport_out_scratch;
   RunStats                         stats;
   std::int64_t                     period_index = 0;
+  /// KNOWN_ISSUES.md D57 ("Collectives" track). FUSE_COLLECTIVE_TRACE's
+  /// own per-rank, monotonically increasing count of collective
+  /// instructions (fuse::is_collective(), include/fuse/ir/op.hpp) this
+  /// rank has entered in the whole run so far -- incremented once per
+  /// traced instruction in run_region() (iteration.cpp), the one place
+  /// that has both the region's own name and the current sweep index to
+  /// hand to fuse::format_collective_trace_line() (include/fuse/runtime/
+  /// collective_trace.hpp). Never read by anything but the trace itself:
+  /// comparing two ranks' own ordinal-N line is how a host run tells
+  /// whether they agree on what their Nth collective is.
+  std::int64_t                     collective_trace_ordinal = 0;
 
   std::vector<detail::RegionRuntime> regions;
   std::vector<IterationStats>        region_stats;   // parallel to regions
