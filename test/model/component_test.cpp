@@ -1,6 +1,8 @@
+#include <limits>
 #include <vector>
 
 #include <gtest/gtest.h>
+#include <fuse/base/error.hpp>
 #include <fuse/model/component.hpp>
 
 using fuse::ComponentDecl;
@@ -98,4 +100,39 @@ TEST(RankSet, AnEmptyPlacementIsLegal) {
   EXPECT_EQ(none.min_rank(), -1);
   EXPECT_FALSE(none.contains(0));
   EXPECT_TRUE(none.is_contiguous()) << "vacuously, and callers rely on it";
+}
+
+// ---- BM-14 (review 2026-10-11): UB/OOM on an edge-input count ---------
+//
+// `RankSet(int, int)` used to `reserve(count)` and loop `count` times with
+// no bound at all: a YAML document with `ranks: {first: 0, count:
+// 2000000000}` would reserve ~16 GB before anything looked at it, and
+// `first + count` overflowing `int` was signed-overflow UB in the loop.
+// Both are refused now, before either happens.
+
+TEST(RankSet, RefusesAnAbsurdlyLargeCount) {
+  EXPECT_THROW((void)RankSet(0, 1 << 30), fuse::Refusal);
+}
+
+TEST(RankSet, RefusesFirstPlusCountOverflow) {
+  EXPECT_THROW((void)RankSet(std::numeric_limits<int>::max() - 10, 20),
+              fuse::Refusal);
+}
+
+TEST(RankSet, RefusalCarriesTheDocumentedCode) {
+  try {
+    (void)RankSet(0, 1 << 30);
+    FAIL() << "expected RankSet to refuse an absurd count";
+  } catch (const fuse::Refusal& e) {
+    EXPECT_EQ(e.code(), "E-RANKSET-RANGE");
+  }
+}
+
+TEST(RankSet, AnOrdinaryLargeCountStillWorks) {
+  // The refusal bound is far above any real placement; a merely large one
+  // (every rank of a big job) must still construct normally.
+  const RankSet big{0, 1 << 16};
+  EXPECT_EQ(big.size(), std::size_t{1} << 16);
+  EXPECT_EQ(big.min_rank(), 0);
+  EXPECT_EQ(big.max_rank(), (1 << 16) - 1);
 }
