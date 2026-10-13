@@ -173,8 +173,17 @@ conservation, total measure conservation, global id uniqueness, a round trip thr
 partitions, and the collective refusal firing when only ONE rank's assignment is bad. This sandbox
 cannot initialise MPI (`mpiexec` cannot bind a port, and a singleton `MPI_Init` aborts here), so these
 are "compiled here, awaiting host run" -- `docs/dev/testing.md`'s "compiled, untested" state, not
-verified, until run on the user's host. The same is true of `examples/layout_driver`'s
-`layout.migrate.{2,3,4}.*` rows (below).
+verified, until run on the user's host (KNOWN_ISSUES.md records no host run of this file specifically).
+`examples/layout_driver`'s own `layout.migrate.{2,3,4}.*` rows are a DIFFERENT claim: KNOWN_ISSUES.md's
+D5 entry records all 18 `layout.*` tests, including the 3 `layout.migrate.*` ones, passing on the host
+2026-09-23 -- this doc previously (and wrongly) lumped them in with the still-host-unverified migration
+test above; they are VERIFIED, not merely compiled.
+
+Tier 1, native halo (`test/parallel/native_halo_mpi_test.cpp`; docs/dev/native-halo.md has the full
+breakdown): `parallel.native_halo_mpi.{2,3}` both passed on the host 2026-10-10 -- VERIFIED. This
+sibling file was in the same "compiled, awaiting host run" state the migration row above is still in
+until that run cleared it; an earlier revision of this table did not distinguish the two and left
+native halo looking unverified after it no longer was.
 
 ## The layout driver's `--mesh`/`--migrate`
 
