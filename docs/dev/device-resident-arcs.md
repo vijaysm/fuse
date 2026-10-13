@@ -208,10 +208,76 @@ the next step starts. Host mode byte-identity is the standing invariant.
    eigenvalue -1 (the device run's rounding gave a complex basis vector; the
    test now takes its real part, which is an eigenvector of a real matrix
    at a real eigenvalue, and still validates it against the coupled run).
-5. Phase 2 mesh/search/builders; Phase 3 transport/binding/MPI twins (in
-   progress on their own worktrees; see the reports linked from the final
-   review report).
-6. Measurement against the quiet Host baseline recorded in the same session.
+5. DONE in part (2026-10-13, three tracks, integrated at 8e3c8b5).
+   Search: `fuse::search::BoxIndex` and `query_points_distributed` build
+   and query ArborX on `Kokkos::DefaultExecutionSpace` under
+   `FUSE_EXECUTION_SPACE=device` (device-resident `Kokkos::View` entry
+   points for the local index; the distributed query still takes host
+   vectors). Native mesh: `NativeMeshView::device_measure()`/
+   `device_centroid()` are computed by kernels on the default execution
+   space; validation and the simplex decomposition stay host (`Result`/
+   `fmt` are not device-callable), `MeshArrays::vertex_coords` is
+   `LayoutRight` in every space (D47). Weight builders: the migration/halo
+   wire pack, a batched MLS solve and the supermesh candidate-pair broad
+   phase exist as space-templated kernels with their own rows, but none is
+   wired into its production entry point yet (D44-D46 name what blocks
+   each: the receive-side merge, the MLS rank diagnostic, the r3d clip's
+   packaging). Transport: `MpiTransport::is_gpu_aware()` is a run-time
+   probe; the `Transport` case packs/unpacks on the device and hands MPI a
+   device pointer when the MPI is GPU-aware, stages through host buffers
+   otherwise (`FUSE_TRANSPORT_HOST_STAGING=1` forces that path); a mixed
+   device/host arc pair is handled (D41); ranks bind to a device by local
+   rank (`fuse::abi::resolve_device_id()`); `fuse_add_mpi_test(...
+   DEVICE_TWIN)` registers 1/2/3-rank `.device` rows. Open: D42
+   (allocation count of the mixed-pair transport row under the device leg).
+6. Measured on higgs (Debug, GTX 1050 Ti, OpenMPI 4.1.5 reporting
+   GPU-aware), integrated gate 2026-10-13: host suite 295/296 (`-LE
+   device`; the one failure is `example.brusselator.omp_identical` at its
+   1500 s timeout, a load-sensitive row), device leg 28/28, cuSPARSE
+   flag-on regex 15/15, anchors 308/308. The twins are correctness rows,
+   not a speed claim: every problem here is a few hundred to a few thousand
+   cells, so kernel launch latency and the remaining host stops dominate.
+   Timings from that gate (same binaries, one process, not a quiet-machine
+   measurement -- the host suite ran at load average 8):
+
+| row | host (s) | `.device` (s) | ratio |
+|---|---|---|---|
+| `backend.native_distributed_mesh` | 0.35 | 0.39 | 1.11 |
+| `example.brusselator.runner` | 56.62 | 70.06 | 1.24 |
+| `example.dn_heat` | 251.28 | 388.44 | 1.55 |
+| `example.gray_scott` | 69.04 | 64.79 | 0.94 |
+| `example.mms_pair` | 1.86 | 0.21 | 0.11 |
+| `parallel.native_halo_mpi.2` | 0.51 | 0.60 | 1.18 |
+| `parallel.native_halo_mpi.3` | 0.64 | 0.71 | 1.11 |
+| `parallel.nodal_remap_runner.1` | 0.36 | 0.36 | 1.00 |
+| `parallel.nodal_remap_runner.2` | 0.44 | 0.51 | 1.16 |
+| `parallel.nodal_remap_runner.3` | 0.62 | 0.67 | 1.08 |
+| `parallel.runner_transport.1` | 0.35 | 0.35 | 1.00 |
+| `parallel.runner_transport.2` | 0.53 | 0.65 | 1.23 |
+| `parallel.runner_transport.3` | 0.66 | 0.93 | 1.41 |
+| `parallel.window_runner_mpi.2` | 0.61 | 0.91 | 1.49 |
+| `parallel.window_runner_mpi.3` | 0.79 | 2.58 | 3.27 |
+| `search.box_index` | 0.38 | 0.72 | 1.89 |
+| `search.mesh_adapter` | 0.35 | 0.41 | 1.17 |
+| `search.refusals` | 0.34 | 0.45 | 1.32 |
+| `verification.brusselator_runner` | 62.32 | 1330.89 | 21.36 |
+| `verification.fsi_coupled` | 5.81 | 33.35 | 5.74 |
+| `verification.fsi_energy_diag` | 37.97 | 41.94 | 1.10 |
+| `verification.fsi_transient` | 67.41 | 496.51 | 7.37 |
+| `verification.gray_scott_multirate` | 16.63 | 21.68 | 1.30 |
+| `verification.gray_scott_reference` | 428.20 | 651.30 | 1.52 |
+| `verification.interface_transfer` | 0.39 | 0.40 | 1.03 |
+| `verification.iteration` | 0.51 | 11.32 | 22.20 |
+| `verification.mms_transfer` | 0.41 | 0.79 | 1.93 |
+| `verification.nodal_remap_runner_serial` | 0.36 | 0.37 | 1.03 |
+
+   The two large ratios are the rows whose region is window-scoped
+   (`verification.brusselator_runner`) or whose sweep loop is dominated by
+   tiny per-sweep copies (`verification.iteration`): there every arc is
+   still staged per instruction, which is step 3's remaining item (window
+   bookkeeping, `previous[]`, history). A scaled problem is the right next
+   measurement; the Runner's own kernels are not the bottleneck at these
+   sizes.
 
 ## What the placement trace shows today
 
