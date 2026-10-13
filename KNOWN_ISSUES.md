@@ -4402,8 +4402,9 @@ RunnerConfig` constructs. No MPI rank set beyond a single rank was run or is cla
 
 **A genuine naming bug, found and reported, not fixed (out of this track's src/include scope).**
 `include/fuse/ir/dump.hpp:126`, inside `dump_graphviz()`, still emits the literal header `"digraph soma_ir {"`
-— a leftover from the soma → fuse rename that `dump_text()` (line 73, same header)
-already carries correctly as `"# fuse-ir v1"`. `python/tests/test_graph.py` records this as an
+— a leftover from the soma → fuse rename that `dump_text()` already carries correctly as
+`"# fuse-ir v1"` (the header line is `include/fuse/ir/dump.hpp:73`, inside `dump_text()`, which begins at
+line 70). `python/tests/test_graph.py` records this as an
 `xfail(strict=True)` test citing both line numbers, so the suite documents the finding without silently
 working around it and will fail loudly (an unexpected XPASS) the day someone fixes `dump_graphviz()` without
 updating that test.
