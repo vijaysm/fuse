@@ -165,16 +165,21 @@ TEST(SchurSlabSolverMpi, OneRowRowBandRefuses) {
   auto reducer = fuse::linalg::make_mpi_reducer(comm_f);
   auto result = SchurSlabSolver::factor(nx, ny, j_lo, j_hi, 0.5, owners, reducer);
 
-  if (rank == nranks - 1) {
-    ASSERT_FALSE(result.ok());
-    EXPECT_EQ(result.error().code, "E-LINALG-SCHUR-SLAB");
-  }
-  // Every other rank's own factor() legitimately succeeds; this case is
-  // about ONE rank's own local refusal, not a collective one (the
-  // standing rule that a collective must never return on a locally
-  // computed condition does not apply here -- factor() performs no
-  // collective of its own until AFTER this check, docs/dev/
-  // schur-slab-solver.md's own "refusal is local" note).
+  // Review 2026-10-11 NL-3: under the fixed factor() (commit c11ac18,
+  // src/linalg/schur_slab.cpp:221-247) every rank scans ALL bands from
+  // `row_ownership` and refuses identically, with zero collectives --
+  // NOT "this rank's own band happens to be fine, so only the undersized
+  // rank refuses while its peers' own factor() legitimately succeeds and
+  // carries on" (the comment this replaces, which described the PRE-FIX
+  // behaviour that deadlocked on a real host: one rank refusing locally
+  // while its peers entered the allgather below it never reaches). Every
+  // rank here must see the SAME refusal, exactly as the tier-0 sibling
+  // (`SchurSlabSolverRefusal.
+  // OneRowBandRefusesOnEveryRankWithoutStrandingAnyoneInACollective`,
+  // test/linalg/schur_slab_test.cpp:424-443) already asserts.
+  ASSERT_FALSE(result.ok()) << "rank " << rank << ": every rank must refuse together, "
+                                                   "regardless of its own band's size";
+  EXPECT_EQ(result.error().code, "E-LINALG-SCHUR-SLAB");
 }
 
 TEST(LinalgComm, MpiReducerAllgatherConcatenatesInRankOrder) {

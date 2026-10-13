@@ -123,8 +123,9 @@ which this grid and partition were always meant to allow, and silently
 handling the 1-row case would hide a misconfigured decomposition instead of
 surfacing it.
 
-**HOST-FOUND BUG (2026-10-10, commit 3b43bd0), and the general principle it
-forced.** The first version of this check was answerable from this rank's
+**HOST-FOUND BUG (2026-10-09, commit c11ac18 "Agree the Schur solver's
+refusals across every rank before any collective"), and the general
+principle it forced.** The first version of this check was answerable from this rank's
 own `j_lo`/`j_hi` alone and returned immediately on that -- which reads, at
 first glance, like exactly the "never return on a locally computed
 condition" discipline `DistSparseMatrix::from_triplets`'s own header
