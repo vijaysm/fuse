@@ -24,6 +24,17 @@ across whatever `Reducer` the vector was built with -- the solvers themselves ne
 collective of their own, so they are parallel by construction. `SolverReport {iterations,
 residual_norm, converged}` is returned alongside the solution.
 
+**The claim above is about the CONVERGED path only (Review 2026-10-11 NL-6).** `pcg`/`gmres`
+return on the first `!apply(...).ok()` with no cross-rank reconciliation of that decision --
+`LinearOperator`'s/`Preconditioner`'s own header comments now state the precondition this
+relies on: every `apply` the solver is handed must fail IDENTICALLY on every rank of a call, or
+the failing rank skips every later `dot`/`norm2` collective its peers still enter --
+[](rank-agreement.md)'s own hang class. Every operator/preconditioner this library builds
+itself (`DistSparseMatrix`, `IdentityPreconditioner`, `JacobiPreconditioner`) only fails on an
+MPI error, in practice process-fatal, so this is latent, not exercised, today; a caller-supplied
+`MatrixFreeOperator` wrapping a residual function that CAN refuse data-dependently on one rank
+alone is the one path this library does not itself close.
+
 ## PCG: the Hestenes-Stiefel recurrence, verified before being reported
 
 `pcg`'s recurrence is exactly Eigen's `ConjugateGradient`

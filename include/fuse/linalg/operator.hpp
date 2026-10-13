@@ -46,6 +46,26 @@ struct SolverReport {
 /// `DistSparseMatrix::apply` returns a `Failure` for) through `Result<void>`
 /// rather than a thrown exception -- the same execution-boundary contract
 /// `fuse::Result`'s own header comment describes.
+///
+/// UNIFORM-FAILURE PRECONDITION (Review 2026-10-11 NL-6). `pcg`/`gmres`
+/// return on the FIRST `!apply(...).ok()` with no cross-rank
+/// reconciliation of that decision -- unlike `DistSparseMatrix::apply`'s
+/// own refusals (I2-audited: every one is either a rank-identical
+/// function of locally held data, agreed via `ranks_not_ok` before any
+/// collective it guards, or has no later collective in the call), an
+/// implementation of this concept whose `apply` can refuse on SOME ranks
+/// of a call and succeed on OTHERS makes the solver's failing rank skip
+/// every later `dot`/`norm2` collective its peers still enter --
+/// rank-agreement.md's own hang class. `MatrixFreeOperator` below wraps
+/// an arbitrary caller callable (a residual function's action), which
+/// CAN refuse on one rank alone; every operator this library builds
+/// itself only fails on an MPI error (process-fatal in practice), so
+/// this is latent, not exercised, today. A caller supplying a
+/// `MatrixFreeOperator` whose wrapped callable can fail data-dependently
+/// must make that failure decision identically on every rank before
+/// returning it (the same discipline `schur_slab.cpp`'s own `factor()`
+/// uses for its own pre-collective refusals) -- this concept does not,
+/// and structurally cannot, enforce that itself.
 template <class T>
 concept LinearOperator = requires(const T& op, DistVector& x, DistVector& y) {
   { op.apply(x, y) } -> std::same_as<Result<void>>;
