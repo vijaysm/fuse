@@ -109,3 +109,35 @@ new = """    (void)intercomm_index;
   return out;"""
 target = "fuse_verification_brusselator_lowfive_attach_test"
 test = "verification.brusselator_lowfive_attach"
+
+# Round 5 (diagnostic trace track): two more mutations for the pure
+# functions the trace instrumentation's own env-parsing and formatting
+# go through -- the real getenv()/fprintf() call sites in lowfive_
+# attach.cpp/shim.cpp are not tier-0 testable at all (this round's own
+# report says so plainly), so these pure halves are what the gate
+# covers.
+
+[[mutation]]
+id = "parse-trace-enabled-env-accepts-anything-nonempty"
+area = "examples"
+describes = "ParseTraceEnabledEnv() accepts any non-empty string as enabled, not just the literal \"1\" the brief's own spec names -- would make FUSE_LOWFIVE_ATTACH_TRACE=0 (or any other accidental non-empty value) silently turn tracing ON, the opposite of the documented contract"
+file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
+old = """[[nodiscard]] inline bool ParseTraceEnabledEnv(const char* raw) {
+  return raw != nullptr && raw[0] == '1' && raw[1] == '\\0';
+}"""
+new = """[[nodiscard]] inline bool ParseTraceEnabledEnv(const char* raw) {
+  return raw != nullptr && raw[0] != '\\0';
+}"""
+target = "fuse_verification_brusselator_lowfive_attach_test"
+test = "verification.brusselator_lowfive_attach"
+
+[[mutation]]
+id = "format-registrations-for-trace-drops-the-intercomm-index"
+area = "examples"
+describes = "FormatRegistrationsForTrace() stops printing the intercomm_index field -- would make the attach-time trace line silently unable to show H4 (a registration pointed at the wrong intercomm index), one of the four hypotheses this round's own instrumentation exists to distinguish"
+file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
+old = """    out += "(" + regs[i].file + ", " + regs[i].dataset_pattern + ", " +
+           std::to_string(regs[i].intercomm_index) + ")";"""
+new = """    out += "(" + regs[i].file + ", " + regs[i].dataset_pattern + ")";"""
+target = "fuse_verification_brusselator_lowfive_attach_test"
+test = "verification.brusselator_lowfive_attach"

@@ -120,6 +120,13 @@ program v_main
   ! assigned once, just below, and never changed again.
   character(len=17), target :: kOwnFile, kPeerFile
   character(len=12), target :: kOwnDataset, kPeerDataset
+  ! ROUND 5 (diagnostic trace track): the two `which` labels bruss_
+  ! lowfive_trace_skip() prints, one per call site below -- same
+  ! c_loc()-needs-a-target reasoning as kOwnFile/kOwnDataset above, not
+  ! because the TEXT varies, only because c_loc() needs an addressable
+  ! variable, not a literal.
+  character(len=25), target :: kTraceWhichWriteExport
+  character(len=24), target :: kTraceWhichReadImport
 
   ! S6 phase 3 (Conformance, "LowFive attach" track): the file-access
   ! property list bruss_lowfive_attach() hands back, set once below
@@ -186,6 +193,18 @@ program v_main
       integer(c_long_long), value :: errbuf_len
       integer(c_int) :: rc
     end function bruss_lowfive_finalize
+
+    ! ROUND 5 (diagnostic trace track), item 3 of the brief: a no-op
+    ! unless FUSE_LOWFIVE_ATTACH_TRACE=1 -- lowfive_attach.h's own doc
+    ! comment has the full account. A SUBROUTINE (void return), unlike
+    ! every other interface above, because this is purely a diagnostic
+    ! side effect with nothing to report back.
+    subroutine bruss_lowfive_trace_skip(which, window_samples, count, components) &
+        bind(C, name="bruss_lowfive_trace_skip")
+      import :: c_ptr, c_long_long
+      type(c_ptr), value :: which
+      integer(c_long_long), value :: window_samples, count, components
+    end subroutine bruss_lowfive_trace_skip
   end interface
 
   graph_path = ""
@@ -256,6 +275,8 @@ program v_main
   kOwnDataset = "/grid/v_out" // c_null_char
   kPeerFile = "brusselator_u.h5" // c_null_char
   kPeerDataset = "/grid/u_out" // c_null_char
+  kTraceWhichWriteExport = "v_lowfive_write_export" // c_null_char
+  kTraceWhichReadImport = "v_lowfive_read_import" // c_null_char
 
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD, world_rank, ierr)
@@ -562,6 +583,13 @@ contains
         write(0, '(A,A)') "FAIL(v_main): bruss_lowfive_write(v_out): ", cstr_message(errbuf)
         call MPI_Abort(MPI_COMM_WORLD, 1, ierr)
       end if
+    else
+      ! ROUND 5 (diagnostic trace track), item 3: u_main.c's own
+      ! u_lowfive_write_export() mirrors this with the identical guard
+      ! and the identical call, settling H1 for V's own write side too.
+      call bruss_lowfive_trace_skip(c_loc(kTraceWhichWriteExport), &
+          int(view%window_samples, c_long_long), int(view%count, c_long_long), &
+          int(view%components, c_long_long))
     end if
   end subroutine v_lowfive_write_export
 
@@ -579,6 +607,13 @@ contains
         write(0, '(A,A)') "FAIL(v_main): bruss_lowfive_read(v_in): ", cstr_message(errbuf)
         call MPI_Abort(MPI_COMM_WORLD, 1, ierr)
       end if
+    else
+      ! ROUND 5 (diagnostic trace track), item 3: the READ side's own
+      ! counterpart, same reasoning as v_lowfive_write_export()'s own
+      ! else branch above.
+      call bruss_lowfive_trace_skip(c_loc(kTraceWhichReadImport), &
+          int(view%window_samples, c_long_long), int(view%count, c_long_long), &
+          int(view%components, c_long_long))
     end if
   end subroutine v_lowfive_read_import
 

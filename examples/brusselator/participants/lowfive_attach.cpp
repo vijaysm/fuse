@@ -127,6 +127,7 @@
 #include "fuse/transport/lowfive_graph.hpp"
 
 #include <lowfive/H5VOLProperty.hpp>
+#include <lowfive/log.hpp>
 #include <lowfive/vol-metadata.hpp>
 #if defined(FUSE_LOWFIVE_DIST_LIB_FOUND) && FUSE_HAVE_MPI
 #include <lowfive/vol-dist-metadata.hpp>
@@ -138,10 +139,13 @@
 #include <mpi.h>
 #endif
 
+#include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Local name, mirroring src/transport/lowfive_transport.cpp's own
@@ -171,6 +175,14 @@ struct AttachState {
   bool attached = false;
   hid_t fapl = H5I_INVALID_HID;
   bool distributed = false;
+  // ROUND 5 (diagnostic trace track): a base-class pointer valid in
+  // EITHER branch of bruss_lowfive_attach() (LowFive::DistMetadataVOL
+  // derives from LowFive::MetadataVOL, and MetadataVOL::files is what
+  // bruss_lowfive_attach_file_count() reads -- lowfive_attach.h's own
+  // doc comment on that function has the full citation) -- never
+  // owned/deleted, same reasoning as VolSingleton's own note on
+  // dist_vol below.
+  LowFive::MetadataVOL* vol = nullptr;
 #if FUSE_EXAMPLES_LOWFIVE_ATTACH_HAVE_DIST
   LowFive::DistMetadataVOL* dist_vol = nullptr;  // never owned/deleted; see VolSingleton's own note
   // Round 2 ("role-ordered serve"): the pure state machine this
@@ -220,7 +232,8 @@ bool BuildVerifiedFapl(Vol& vol, hid_t* fapl_out, std::string* error_out) {
 }
 
 void ApplyBindings(LowFive::MetadataVOL& vol, const fuse::LowFiveFieldBindingTable& table,
-                   bool* ok, std::string* error_out) {
+                   bool* ok, std::string* error_out,
+                   std::vector<std::pair<std::string, std::string>>* applied_out = nullptr) {
   *ok = true;
   for (const fuse::LowFiveFieldBinding& b : table.bindings()) {
     auto split = fuse::split_hdf5_path(b.hdf5_path);
@@ -254,6 +267,69 @@ void ApplyBindings(LowFive::MetadataVOL& vol, const fuse::LowFiveFieldBindingTab
       return;
     }
     vol.set_memory(split.value().first, normalized.value());
+    // ROUND 5 (diagnostic trace track): the attach-time trace (item 1
+    // of the brief) wants the EXACT (file, dataset) pairs passed to
+    // set_memory() above -- collecting them here, in the one place
+    // that already computes the normalized value, is the single
+    // source of truth; re-deriving the same list a second time at the
+    // trace call site would risk drifting out of sync with what this
+    // function actually applied.
+    if (applied_out) applied_out->emplace_back(split.value().first, normalized.value());
+  }
+}
+
+// ROUND 5 (diagnostic trace track): item 1's own cached-bool
+// requirement ("Keep the trace code out of the hot path when
+// disabled") -- getenv() runs exactly once per process, the FIRST
+// time ANY of this file's/shim.cpp's own trace call sites asks.
+// fuse_examples::lowfive_attach::ParseTraceEnabledEnv() is the pure
+// half (lowfive_attach_decision.hpp); this wraps it with the one
+// process-wide getenv() call neither that function nor a unit test
+// can perform.
+bool TraceEnabledCached() {
+  static const bool enabled =
+      fuse_examples::lowfive_attach::ParseTraceEnabledEnv(std::getenv("FUSE_LOWFIVE_ATTACH_TRACE"));
+  return enabled;
+}
+
+// ROUND 5 (diagnostic trace track), item 5 of the brief: `FUSE_LOWFIVE_
+// LOG=<level>` turns on LowFive's own spdlog-based tracing
+// (`LowFive::create_logger(level)`, include/lowfive/log.hpp) -- "With
+// 'trace' LowFive prints 'enter serve_all, files.size = N' and Index
+// logs, which settle H2/H4 directly" (vol-dist-metadata.cpp:42,
+// src/vol-dist/index.cpp:13 on this host's own LowFive checkout, both
+// read above). Read src/log.cpp first: `create_logger()` calls
+// `spd::stderr_color_mt("lowfive")`, which THROWS `spdlog::spdlog_ex`
+// (derived from std::exception) if a logger named "lowfive" is already
+// registered in spdlog's own global registry -- `get_logger()`
+// (log-private.hpp, NOT an installed/public header, so this file
+// cannot call it) only ever builds a local, unregistered null-sink
+// fallback when "lowfive" is not found, so it does NOT register
+// anything itself; the only way "lowfive" could already be registered
+// when this runs is a SECOND call to create_logger() in the same
+// process. bruss_lowfive_attach() already refuses a second call in
+// this process (AttachState's own doc comment), so in THIS codebase's
+// current usage that second call cannot happen -- caught here anyway,
+// by catching any std::exception rather than naming spdlog::spdlog_ex
+// explicitly (which would need <spdlog/spdlog.h> on this translation
+// unit's own include path; this file has no other reason to add that
+// dependency, so it does not), because the lead's own brief asked this
+// to be handled, not assumed unreachable. On the caught-duplicate path
+// this function does NOT call set_level() on the already-registered
+// logger (no handle to it without spdlog::get(), which needs the same
+// header): that logger keeps whichever level ITS OWN create_logger()
+// call set, which may not match THIS process's own FUSE_LOWFIVE_LOG
+// request -- a known, documented limitation of the minimal-change
+// approach, not a silent bug.
+void EnableLowFiveLoggerOnce() {
+  const char* level = std::getenv("FUSE_LOWFIVE_LOG");
+  if (!level || level[0] == '\0') return;
+  try {
+    LowFive::create_logger(std::string(level));
+  } catch (const std::exception&) {
+    // Already registered by an earlier call in this process (see this
+    // function's own doc comment above) -- nothing more this file can
+    // do without <spdlog/spdlog.h>.
   }
 }
 
@@ -297,6 +373,10 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
   }
   int world_rank = 0;
   MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
+  // ROUND 5 (diagnostic trace track), item 5: before any LowFive VOL is
+  // constructed, so its own ctor-time trace lines (if FUSE_LOWFIVE_LOG
+  // is set) are captured too.
+  EnableLowFiveLoggerOnce();
 
   auto g = fuse::load_yaml_file(graph_path);
   if (!g.ok()) {
@@ -443,7 +523,8 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
     // step() calls make, never H5Fclose's.
     vol.serve_on_close = false;
     bool ok = false;
-    ApplyBindings(vol, table.value(), &ok, &build_error);
+    std::vector<std::pair<std::string, std::string>> applied_memory_patterns;
+    ApplyBindings(vol, table.value(), &ok, &build_error, &applied_memory_patterns);
     if (!ok) {
       CopyErrorMessage(build_error, errbuf, errbuf_len);
       return 1;
@@ -498,7 +579,32 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
                              : fuse_examples::lowfive_attach::ServeRole::kFirstReader;
     s.serve_state.deferred_pending = false;
     s.dist_vol = &vol;
+    s.vol = &vol;
     distributed_now = true;
+    // ROUND 5 (diagnostic trace track), item 1 of the brief: one line
+    // with everything the lead asked for -- world rank, component,
+    // role, distributed flag, the registered (file, dataset_pattern,
+    // intercomm_index) list, the (file, dataset) memory patterns, and
+    // the serve_on_close value actually set. `intercomms.size()`/
+    // `files.size()` are not in the brief's own enumerated list but are
+    // directly diagnostic for H4 (wrong/empty intercomm selection) and
+    // cost nothing extra to read (both are public members, confirmed
+    // from the installed headers) -- included for that reason.
+    if (TraceEnabledCached()) {
+      std::fprintf(stderr,
+                   "TRACE(bruss_lowfive_attach): world_rank=%d component=%s role=%s "
+                   "distributed=1 registrations=%s memory_patterns=%s serve_on_close=%d "
+                   "intercomms.size=%zu files.size=%zu\n",
+                   world_rank, this_name.c_str(),
+                   s.serve_state.role == fuse_examples::lowfive_attach::ServeRole::kFirstServer
+                       ? "first-server"
+                       : "first-reader",
+                   fuse_examples::lowfive_attach::FormatRegistrationsForTrace(registrations.value())
+                       .c_str(),
+                   fuse_examples::lowfive_attach::FormatMemoryPatternsForTrace(applied_memory_patterns)
+                       .c_str(),
+                   vol.serve_on_close ? 1 : 0, vol.intercomms.size(), vol.files.size());
+    }
 #else
     CopyErrorMessage(
         "bruss_lowfive_attach(): this process needs LowFive::DistMetadataVOL "
@@ -512,7 +618,8 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
   } else {
     LowFive::MetadataVOL& vol = LowFive::MetadataVOL::create_MetadataVOL();
     bool ok = false;
-    ApplyBindings(vol, table.value(), &ok, &build_error);
+    std::vector<std::pair<std::string, std::string>> applied_memory_patterns;
+    ApplyBindings(vol, table.value(), &ok, &build_error, &applied_memory_patterns);
     if (!ok) {
       CopyErrorMessage(build_error, errbuf, errbuf_len);
       return 1;
@@ -526,6 +633,22 @@ int bruss_lowfive_attach(const char* graph_path, long long physics_comm_f,
       return 1;
     }
     distributed_now = false;
+    s.vol = &vol;
+    // ROUND 5 (diagnostic trace track): the single-process branch has
+    // no role/serve choreography at all (LowFive::MetadataVOL has no
+    // serve_on_close/serve_all()), so this line is deliberately
+    // shorter than the distributed branch's own -- there is nothing
+    // else to report here that the distributed trace's own fields
+    // would mean anything for.
+    if (TraceEnabledCached()) {
+      std::fprintf(stderr,
+                   "TRACE(bruss_lowfive_attach): world_rank=%d distributed=0 "
+                   "memory_patterns=%s files.size=%zu\n",
+                   world_rank,
+                   fuse_examples::lowfive_attach::FormatMemoryPatternsForTrace(applied_memory_patterns)
+                       .c_str(),
+                   vol.files.size());
+    }
   }
 
   s.fapl = fapl;
@@ -563,11 +686,33 @@ int bruss_lowfive_serve_after_write(char* errbuf, long long errbuf_len) {
                      errbuf_len);
     return 1;
   }
+  // ROUND 5 (diagnostic trace track), item 4 of the brief: one line
+  // before and after each serve_all() call, with the action taken and
+  // monotonic elapsed seconds -- "a serve_all that returns in
+  // microseconds is the H2 signature; one that blocks until the peer
+  // opens is the healthy signature." The kDeferServe branch also
+  // traces (no serve_all() call at all), so H3 ("the hook returned
+  // another action") shows up as a trace line with NO matching "exit
+  // elapsed=" line, as distinct from H2's own near-zero elapsed line.
   switch (action.value()) {
-    case fuse_examples::lowfive_attach::ServeAction::kServeNow:
+    case fuse_examples::lowfive_attach::ServeAction::kServeNow: {
+      if (TraceEnabledCached())
+        std::fprintf(stderr, "TRACE(bruss_lowfive_serve_after_write): action=kServeNow enter\n");
+      const auto t0 = std::chrono::steady_clock::now();
       s.dist_vol->serve_all();
+      if (TraceEnabledCached()) {
+        const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        std::fprintf(stderr,
+                     "TRACE(bruss_lowfive_serve_after_write): action=kServeNow exit elapsed=%.6fs\n",
+                     elapsed);
+      }
       return 0;
+    }
     case fuse_examples::lowfive_attach::ServeAction::kDeferServe:
+      if (TraceEnabledCached())
+        std::fprintf(stderr,
+                     "TRACE(bruss_lowfive_serve_after_write): action=kDeferServe (no serve_all "
+                     "call; flushed at this side's own next kImportClosed)\n");
       return 0;  // nothing to do now; flushed at this side's own next kImportClosed
     default:
       CopyErrorMessage(
@@ -620,8 +765,18 @@ int bruss_lowfive_receive_before_read(char* errbuf, long long errbuf_len) {
                      errbuf_len);
     return 1;
   }
+  // ROUND 5 (diagnostic trace track), item 4: this hook never calls
+  // serve_all() at all (ROUND 2 REVIEW's own account above), so its
+  // own trace line is a single "enter/is about to open" marker with no
+  // matching elapsed-time line -- a real H5Fopen-blocks-here signature
+  // in the surrounding write/read trace (shim.cpp) is what settles
+  // whether the peer is actually serving at this point, not this hook.
   switch (action.value()) {
     case fuse_examples::lowfive_attach::ServeAction::kReceiveOnly:
+      if (TraceEnabledCached())
+        std::fprintf(stderr,
+                     "TRACE(bruss_lowfive_receive_before_read): action=kReceiveOnly (nothing "
+                     "LowFive-level to do; H5Fopen performs the real receive)\n");
       return 0;  // nothing LowFive-level to do; H5Fopen performs the real receive
     default:
       CopyErrorMessage(
@@ -667,11 +822,29 @@ int bruss_lowfive_after_read_close(char* errbuf, long long errbuf_len) {
                      errbuf_len);
     return 1;
   }
+  // ROUND 5 (diagnostic trace track), item 4: same before/after/
+  // elapsed-time shape as serve_after_write()'s own kServeNow case
+  // above -- this is the FIRST-READER's own (deferred) serve_all()
+  // call, the other of the two places this process ever blocks in it.
   switch (action.value()) {
-    case fuse_examples::lowfive_attach::ServeAction::kFlushDeferred:
+    case fuse_examples::lowfive_attach::ServeAction::kFlushDeferred: {
+      if (TraceEnabledCached())
+        std::fprintf(stderr, "TRACE(bruss_lowfive_after_read_close): action=kFlushDeferred enter\n");
+      const auto t0 = std::chrono::steady_clock::now();
       s.dist_vol->serve_all();
+      if (TraceEnabledCached()) {
+        const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        std::fprintf(stderr,
+                     "TRACE(bruss_lowfive_after_read_close): action=kFlushDeferred exit elapsed=%.6fs\n",
+                     elapsed);
+      }
       return 0;
+    }
     case fuse_examples::lowfive_attach::ServeAction::kNoopAfterImport:
+      if (TraceEnabledCached())
+        std::fprintf(stderr,
+                     "TRACE(bruss_lowfive_after_read_close): action=kNoopAfterImport (no serve_all "
+                     "call)\n");
       return 0;
     default:
       CopyErrorMessage(
@@ -712,10 +885,34 @@ int bruss_lowfive_finalize(char* errbuf, long long errbuf_len) {
 #endif
 }
 
+// ROUND 5 (diagnostic trace track): lowfive_attach.h's own doc comment
+// on each of these three has the full account of what it reports and
+// why it is shaped this way; TraceEnabledCached()/ParseTraceEnabledEnv()
+// are the single getenv()/pure-parse pair every trace call site (this
+// file and shim.cpp) goes through.
+int bruss_lowfive_trace_enabled(void) { return TraceEnabledCached() ? 1 : 0; }
+
+long long bruss_lowfive_attach_file_count(void) {
+  AttachState& s = State();
+  if (!s.attached || !s.vol) return -1;
+  return static_cast<long long>(s.vol->files.size());
+}
+
+void bruss_lowfive_trace_skip(const char* which, long long window_samples, long long count,
+                              long long components) {
+  if (!TraceEnabledCached()) return;
+  std::fprintf(stderr,
+               "TRACE(%s): SKIPPED (window_samples=%lld count=%lld components=%lld -- the "
+               "window_samples > 0 && data guard was false)\n",
+               which ? which : "?", window_samples, count, components);
+}
+
 }  // extern "C"
 
 #else  // !FUSE_HAVE_LOWFIVE
 
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -760,6 +957,47 @@ int bruss_lowfive_finalize(char*, long long) {
   // flush, and the caller (u_main.c/v_main.f90) calls this one
   // unconditionally at the end of main() regardless of --transport.
   return 0;
+}
+
+// ROUND 5 (diagnostic trace track): the three functions below do not
+// depend on HDF5/LowFive at all (plain getenv()/fprintf()), so they
+// work the same in this build configuration -- u_main.c's/v_main.f90's
+// own skip-guard trace (item 3 of the brief) fires regardless of
+// -DFUSE_ENABLE_LOWFIVE, same as bruss_lowfive_available() above.
+// This duplicates (rather than shares) the env-parsing logic the
+// FUSE_HAVE_LOWFIVE branch's own TraceEnabledCached() uses, because
+// that branch's own pure half (ParseTraceEnabledEnv(),
+// lowfive_attach_decision.hpp) is only included under `#if
+// FUSE_HAVE_LOWFIVE` above (it pulls in fuse/base/result.hpp and
+// friends this translation unit has no other reason to need here) --
+// restructuring that include guard just to share one string
+// comparison was judged not worth the risk for this round.
+namespace {
+bool TraceEnabledCachedNoLowFive() {
+  static const bool enabled = [] {
+    const char* raw = std::getenv("FUSE_LOWFIVE_ATTACH_TRACE");
+    return raw != nullptr && raw[0] == '1' && raw[1] == '\0';
+  }();
+  return enabled;
+}
+}  // namespace
+
+int bruss_lowfive_trace_enabled(void) { return TraceEnabledCachedNoLowFive() ? 1 : 0; }
+
+long long bruss_lowfive_attach_file_count(void) {
+  // No LowFive VOL exists in this build at all -- never "attached", so
+  // always the same "not available" answer bruss_lowfive_attach()
+  // itself gives (fapl_id_out = -1).
+  return -1;
+}
+
+void bruss_lowfive_trace_skip(const char* which, long long window_samples, long long count,
+                              long long components) {
+  if (!TraceEnabledCachedNoLowFive()) return;
+  std::fprintf(stderr,
+               "TRACE(%s): SKIPPED (window_samples=%lld count=%lld components=%lld -- the "
+               "window_samples > 0 && data guard was false)\n",
+               which ? which : "?", window_samples, count, components);
 }
 
 }  // extern "C"
