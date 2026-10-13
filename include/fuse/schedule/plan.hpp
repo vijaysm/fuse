@@ -198,6 +198,18 @@ struct ScheduleResult {
 ///                    instruction stream as contiguous whole-body passes, so
 ///                    it cannot be expressed as flat enter/exit boundaries
 ///   E-SCHED-PLAN     the expansion or the buffer plan does not describe `dag`
+///   E-SCHED-WINDOW-OVERLAP  review 2026-10-11 IS-7/IS-12: a component or
+///                    channel named by more than one window-scoped region,
+///                    checked once across every region before any of the
+///                    per-region gates below run
+///   E-SCHED-WINDOW-*  every window-scoped `IterationRegionDecl`'s own
+///                    legality gate, forwarded from `validate_coupling_
+///                    window()` (fuse/schedule/window.hpp): `EMPTY`,
+///                    `AMBIGUOUS`, `COMPONENT`, `INTERVAL`, `POLICY`,
+///                    `ORDER`, `SHORTEN`, `CAPACITY`, `GAUSSSEIDEL-NOLAG`
+///                    (docs/dev/coupling-windows.md has the full list and
+///                    what each one catches; this page used to omit all of
+///                    them)
 ///
 /// `mode` is forwarded to `expand()` and is a test seam: it exists so that a
 /// lockstep graph can be built both with and without spec §8.2's fast path and
