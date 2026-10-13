@@ -210,6 +210,18 @@ struct RunStats {
   /// to zero: a plan whose instructions are all Space-generic or space-aware
   /// and whose fields are device-registered stages nothing. 0 under Host.
   std::int64_t device_staged_copies = 0;
+  /// `OpKind::Transport` exchanges whose packed buffer was handed to MPI
+  /// (or, for a same-process move, `Kokkos::deep_copy`'d) WITHOUT crossing
+  /// to host memory: both arcs were device-resident and, for an MPI
+  /// exchange, `Transport::is_gpu_aware()` was true
+  /// (docs/dev/device-resident-arcs.md Phase 3). 0 under Host, and 0 under
+  /// Device whenever `FUSE_TRANSPORT_HOST_STAGING=1` forces the fallback
+  /// below instead. Disjoint from `device_staged_copies`: the host-staged
+  /// fallback (not GPU-aware, or forced) still packs/unpacks ON the device
+  /// and counts here as a `device_boundary_copies` pair, never as a
+  /// `device_staging`-lane staged copy -- a Transport plan's own send/recv
+  /// buffers are not `device_staging`'s four lanes.
+  std::int64_t device_transport_moves = 0;
 };
 
 /// Per-region outcome of the most recent period (spec §5.3).

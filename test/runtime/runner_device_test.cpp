@@ -4,10 +4,21 @@
 // calling a kernel directly -- test/num/space_kernels_test.cpp already does
 // that for every enabled space). docs/dev/runner-device-dispatch.md has the
 // scope: only the Space-generic cases (Sample/Accumulate/Scale/Remap/Relax/
-// Residual/Merge/Extrapolate/Interpolate-identity) move; Transport/Epoch/
-// Sink/Constrain/Diagnose and Remap's distributed-nodal branch
+// Residual/Merge/Extrapolate/Interpolate-identity) move; Epoch/Sink/
+// Constrain/Diagnose and Remap's distributed-nodal branch
 // (apply_nodal_dist_remap(), an MPI exchange) stay host-only
-// unconditionally. Neither scenario here builds a distributed-nodal Remap
+// unconditionally. `Transport` moved out of that group in the transport
+// track (docs/dev/device-resident-arcs.md Phase 3): its own case packs and
+// unpacks on the device when both its arcs are device-resident, handing
+// MPI a device pointer when `Transport::is_gpu_aware()` and staging
+// through host memory when not -- see
+// RunnerDevice.DeviceRegisteredFieldsCrossOnlyAtHostOnlyInstructionsAndAgreeWithHost
+// below, whose own comment has the updated crossing count. The scenarios
+// here use the no-graph (single-process, no CommGraph) Transport path,
+// never the MPI one; `test/parallel/runner_transport_test.cpp`'s `.device`
+// twins (`fuse_add_mpi_test(... DEVICE_TWIN)`) exercise the MPI path's
+// device/host and GPU-aware/not branches instead. Neither scenario here
+// builds a distributed-nodal Remap
 // (it needs a multi-rank placement), so that fallback is documented, not
 // exercised.
 //
@@ -449,17 +460,24 @@ TEST(RunnerDevice, DeviceAndHostAgreeToRoundingOnRelaxAndWeightedRemap) {
   EXPECT_NE(host.consumer.front(), 0.0);
 }
 
-// docs/dev/device-resident-arcs.md step 2: fields registered in device
-// memory are aliased by the Runner directly, so a chain whose endpoints are
-// both device fields is mirrored nowhere. The host stops left in this plan
-// are its host-only instructions -- the channel's Transport (a local move
-// on one rank, host code until the GPU-aware transport step) and the
-// Diagnose after the Remap (a host reduction) -- each of which pins the arc
-// it reads and the arc it writes, so a space-aware copy next to one
-// (Epoch, Sink) may cross once on each side and nothing else crosses at
-// all. Measured on this plan (FUSE_DEVICE_DEBUG=1): Sample -> Accumulate
-// -> Transport -> Epoch -> Remap -> Diagnose -> Sink; the Epoch copies
-// host -> device and the Sink host -> device field: two per period.
+// docs/dev/device-resident-arcs.md step 2 and, as of the transport track,
+// Phase 3: fields registered in device memory are aliased by the Runner
+// directly, so a chain whose endpoints are both device fields is mirrored
+// nowhere. The one host stop left in this plan is its single remaining
+// unconditionally host-only instruction -- the Diagnose after the Remap (a
+// host reduction) -- which pins the arc it reads and the arc it writes, so
+// a space-aware copy next to it (the Sink) crosses once. The channel's
+// Transport is no longer a host stop: it is a same-process, no-graph move
+// (this scenario builds no CommGraph), both its arcs are coupler-owned and
+// therefore device-resident like everything around them, so its case takes
+// the `Kokkos::deep_copy` branch and counts in `device_transport_moves`,
+// not `device_boundary_copies` -- and the Epoch next to it, now reading a
+// device arc on both sides, is a same-space copy that crosses nothing
+// either (RunStats::device_boundary_copies' own comment: "a same-space
+// copy does not count"). Measured on this plan (FUSE_DEVICE_DEBUG=1):
+// Sample -> Accumulate -> Transport -> Epoch -> Remap -> Diagnose -> Sink;
+// only the Sink crosses, host -> device: one per period, down from two
+// before this track (the former Epoch crossing is gone).
 TEST(RunnerDevice, DeviceRegisteredFieldsCrossOnlyAtHostOnlyInstructionsAndAgreeWithHost) {
   if constexpr (!kHasDeviceBackend) GTEST_SKIP() << "no device backend";
   Scenario s = mean_over_four_substeps();
@@ -475,24 +493,36 @@ TEST(RunnerDevice, DeviceRegisteredFieldsCrossOnlyAtHostOnlyInstructionsAndAgree
   }
   EXPECT_GT(dev.stats.device_dispatches, 0);
   EXPECT_GT(dev.stats.device_resident_arcs, 0);
-  // RED on the step-1 tree: Sink copied device arc -> device field through
-  // host memcpy (a crash or garbage), and device fields were refused.
-  const int host_only = dev.transports + dev.diagnoses;
+  // GREEN since the transport track: Transport's own no-graph arcs are now
+  // device-resident and its move is a Kokkos::deep_copy, counted here, not
+  // staged through host memory and not refused (RED before this track:
+  // place_arcs_on_device() pinned Transport's arcs to host unconditionally,
+  // which this scenario's device-registered chain would have crossed at
+  // twice over, not once).
+  ASSERT_GT(dev.transports, 0);
+  EXPECT_EQ(dev.stats.device_transport_moves, dev.transports * 3);
+  // Diagnose is the only instruction left that pins both the arc it reads
+  // and the arc it writes; the Sink beside it (Diagnose's output feeding a
+  // device-registered consumer field) is this plan's one remaining
+  // crossing.
+  const int host_only = dev.diagnoses;
   ASSERT_GT(host_only, 0);
   EXPECT_GT(dev.stats.device_boundary_copies, 0);
-  EXPECT_LE(dev.stats.device_boundary_copies, 2 * host_only * 3)
+  EXPECT_LE(dev.stats.device_boundary_copies, host_only * 3)
       << "a device-registered chain crossed the boundary somewhere other "
          "than next to a host-only instruction";
   // The same count every period: nothing crosses at setup or only once.
   const Outcome one = run(s, Space::Device, 1);
   ASSERT_TRUE(one.init.ok()) << one.init.error().message;
   EXPECT_EQ(dev.stats.device_boundary_copies, 3 * one.stats.device_boundary_copies);
-  // The two kernels whose output a host-only instruction reads (the
-  // Accumulate before the Transport, the Remap before the Diagnose) write
-  // through a staging lane: one copy in, one back, per instruction. No
-  // field and no other arc is staged.
-  ASSERT_GT(dev.accumulates + dev.remaps, 0);
-  EXPECT_EQ(dev.stats.device_staged_copies, 2 * (dev.accumulates + dev.remaps) * 3)
+  // The one kernel whose output a host-only instruction reads (the Remap
+  // before the Diagnose) writes through a staging lane: one copy in, one
+  // back, per instruction. Accumulate's output no longer stages -- Transport
+  // reads it directly now that Transport's own arcs are device-resident, so
+  // Accumulate's output was never pinned by place_arcs_on_device() in the
+  // first place. No field and no other arc is staged.
+  ASSERT_GT(dev.remaps, 0);
+  EXPECT_EQ(dev.stats.device_staged_copies, 2 * dev.remaps * 3)
       << "something other than a host-only instruction's input was staged";
   EXPECT_EQ(host.stats.device_staged_copies, 0);
 }
