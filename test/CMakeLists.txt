@@ -1370,7 +1370,8 @@ fuse_tests_gated_by(FUSE_ENABLE_FORTRAN
   verification/brusselator_participants_test.cpp
   verification/brusselator_check_test.cpp
   verification/brusselator_lowfive_harness_test.cpp
-  verification/brusselator_asymmetric_dt_isolation_test.cpp)
+  verification/brusselator_asymmetric_dt_isolation_test.cpp
+  verification/brusselator_u_loop_step_fix_test.cpp)
 if(TARGET fuse-abi-fortran)
   fuse_add_gtest(verification brusselator_participants NO_LAYER_LIB
                  LIBS fuse::runtime fuse::backend fuse::abi fuse::abi-fortran Eigen3::Eigen Kokkos::kokkos)
@@ -1524,6 +1525,41 @@ if(TARGET fuse-abi-fortran)
   endif()
   set_target_properties(fuse_verification_brusselator_asymmetric_dt_isolation_test PROPERTIES
     Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/brusselator_asymmetric_dt_isolation_fortran_modules)
+
+  # KNOWN_ISSUES.md D57 ("Collectives" track), Round 2: drives the REAL
+  # u_loop_step()/bruss_v_loop_step() (not brusselator_period_rollover_
+  # test.cpp's own mirror) at a 1x1 grid, so a mutation reverting u_loop.c's/
+  # v_loop.f90's own next_component-propagation fix is caught by rebuilding
+  # and running THIS target -- same deps as brusselator_participants above.
+  fuse_add_gtest(verification brusselator_u_loop_step_fix NO_LAYER_LIB
+                 LIBS fuse::runtime fuse::backend fuse::abi fuse::abi-fortran Eigen3::Eigen Kokkos::kokkos)
+  target_include_directories(fuse_verification_brusselator_u_loop_step_fix_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/brusselator
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants
+    ${CMAKE_SOURCE_DIR}/src/abi)
+  # fuse::abi_test::force_communicator_set() (src/abi/test_support.{hpp,cpp})
+  # is the SAME test-only seam brusselator_period_rollover_test.cpp's own
+  # target links directly -- see that target's own comment above.
+  target_sources(fuse_verification_brusselator_u_loop_step_fix_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/abi/test_support.cpp
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/shim.cpp
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/u_loop.c
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/v_loop.f90)
+  if(TARGET fuse::lowfive)
+    fuse_link_lowfive_with_fmt_fix(fuse_verification_brusselator_u_loop_step_fix_test)
+  endif()
+  # Same build-only addition as the four targets above: shim.cpp references
+  # bruss_lowfive_serve_after_write()/bruss_lowfive_receive_before_read()
+  # under FUSE_HAVE_LOWFIVE, so this target links lowfive_attach.cpp too.
+  # It never calls bruss_lowfive_attach() itself.
+  target_sources(fuse_verification_brusselator_u_loop_step_fix_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/lowfive_attach.cpp)
+  target_link_libraries(fuse_verification_brusselator_u_loop_step_fix_test PRIVATE fuse::model)
+  if(LOWFIVE_HAVE_DIST)
+    target_compile_definitions(fuse_verification_brusselator_u_loop_step_fix_test PRIVATE FUSE_LOWFIVE_DIST_LIB_FOUND=1)
+  endif()
+  set_target_properties(fuse_verification_brusselator_u_loop_step_fix_test PROPERTIES
+    Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/brusselator_u_loop_step_fix_fortran_modules)
 endif()
 
 # ---------------------------------------------------------------- install

@@ -346,3 +346,85 @@ new = "  [[nodiscard]] fuse::Result<Vector> apply_diffusion_preconditioner(doubl
 target = "fuse_verification_brusselator_runner_test"
 test = "verification.brusselator_runner"
 result = "Hand-proved 2026-10-11: with ONLY UCore's own function mutated to the identity (the old/new pair above, VDiffusionCore's own function untouched), BrusselatorRunner.NewtonConvergesInAPinnedIterationCountWithTheBlockJacobiPreconditioner FAILS -- with_bj.iterations_per_window.front() reads 3 instead of the pinned 4, identical to the without_bj (no-preconditioner) path's own count. (Separately tried: mutating ONLY VDiffusionCore's own function, UCore's left alone, does NOT move the count -- the test still PASSES; U's own preconditioner solve alone is sufficient to be load-bearing for the pinned count, V's own alone is not, at this Rig's problem scale -- mutating BOTH at once, tried earlier in this same session, does fail it, consistent with U's own contribution dominating.) File restored and cmp-verified byte-identical; rebuilt and reran to confirm the test passes again."
+
+[[mutation]]
+id = "brusselator-u-loop-step-drops-next-component-at-period-close"
+area = "examples/brusselator"
+describes = "removes u_loop_step()'s own propagation of out_begin_rep->next_component into out_rep->next_component when fuse_begin_step() reports step_opened == 0 -- restores the pre-Round-2 HEAD behaviour where *out_rep is zeroed wholesale, so u_main.c's own loop-exit check (`if (rep.next_component == -1) break;`) can never observe a genuine, correctly-reported (KNOWN_ISSUES.md D57's own participant.cpp fix) period-boundary close: next_component reads 0 (a valid ComponentId, not a close signal) instead of -1, the loop calls fuse_begin_step() again, and that fresh call's own ordinary (unbounded when !has_end_time) resume_period() starts a period the caller never requested."
+file = "examples/brusselator/participants/u_loop.c"
+old = """  if (!out_begin_rep->step_opened) {
+    memset(out_rep, 0, sizeof(*out_rep));
+    out_rep->struct_size = sizeof(*out_rep);
+    /* KNOWN_ISSUES.md D57, Round 2. u_main.c's own loop (its header
+     * comment's own account) has exactly one way to notice a period has
+     * closed: `if (rep.next_component == -1) break;` -- *out_rep*, never
+     * *out_begin_rep*, which this function's own doc comment above
+     * already says is what names who IS due instead. Leaving next_
+     * component at its zeroed default (0) here was wrong: 0 is also a
+     * valid ComponentId, so u_main.c's own check can never distinguish
+     * "nothing is due, the run just ended" from "component 0 is due" --
+     * and in particular can never see the one case that matters most,
+     * fuse_begin_step()'s own correctly-reported next_component == -1 at
+     * a genuine, no-end-time-declared period boundary (KNOWN_ISSUES.md
+     * D57's own fix, src/abi/participant.cpp's prime_next_request()):
+     * with that signal silently zeroed to 0 here, u_main.c's loop never
+     * breaks, calls fuse_begin_step() again, and that FRESH call's own
+     * ordinary (never-bounded-when-!has_end_time) first resume_period()
+     * call starts a period the caller's own loop never asked for --
+     * measured on the host as U/V hanging in that unrequested period's
+     * own base-communicator Constrain reduction while the coupler's own
+     * bounded Runner::run(periods) had already exited. Copying this one
+     * field across is enough: every OTHER case this branch also covers
+     * (a delivery-pending stop, an ordinary rollover naming a real
+     * component) already has out_begin_rep->next_component set to that
+     * real, non -1 component id, so u_main.c's own check correctly keeps
+     * looping for those, exactly as it already did. */
+    out_rep->next_component = out_begin_rep->next_component;
+    return FUSE_OK;
+  }"""
+new = """  if (!out_begin_rep->step_opened) {
+    memset(out_rep, 0, sizeof(*out_rep));
+    out_rep->struct_size = sizeof(*out_rep);
+    return FUSE_OK;
+  }"""
+target = "fuse_verification_brusselator_u_loop_step_fix_test"
+test = "verification.brusselator_u_loop_step_fix"
+result = "CONFIRMED 2026-10-13 (Collectives track, Round 2, tier 0, /tmp/collectives/b0): applying the mutation by hand and rebuilding the target made BrusselatorULoopStepFix.RealShimFunctionsNeverSeeThePeriodBoundaryThroughTheZeroedReport FAIL (a real step of period 2 ran against kRequestedPeriods=2: steps_taken=44, global_periods_done=0, observed_unauthorized_period=1, unauthorized_period_value=2; whole unfiltered binary: [PASSED] 1 test, [FAILED] 1 test -- the companion crossed-shim test, which drives this same graph's component 0 through bruss_v_loop_step() instead and never calls the mutated u_loop_step() for it, PASSED unchanged, confirming isolation). File restored from the pre-mutation text and confirmed byte-identical via cmp (both MD5 a034a5bddf203694ea8ff3b522bd2d4d). Clean rebuild of the same target then passed again ([PASSED] 2 tests, global_periods_done=2, observed_unauthorized_period=0 on both cases)."
+
+[[mutation]]
+id = "brusselator-v-loop-step-drops-next-component-at-period-close"
+area = "examples/brusselator"
+describes = "removes v_loop_step()'s own propagation of out_begin_rep%next_component into out_rep%next_component when fuse_begin_step() reports step_opened == 0 -- the Fortran mirror of u_loop.c's identical defect/fix (brusselator-u-loop-step-drops-next-component-at-period-close, this file): v_main.f90's own loop-exit check (`if (rep%next_component == -1) exit`) can never observe a genuine period-boundary close through the zeroed report, so its own next fuse_begin_step() call starts a period the caller never requested."
+file = "examples/brusselator/participants/v_loop.f90"
+old = """    if (out_begin_rep%step_opened == 0) then
+      out_rep = fuse_step_report()
+      out_rep%struct_size = int(c_sizeof(out_rep), c_int32_t)
+      ! KNOWN_ISSUES.md D57, Round 2. v_main.f90's own loop has exactly
+      ! one way to notice a period has closed: `if (rep%next_component
+      ! == -1) exit` -- out_rep, never out_begin_rep, which this
+      ! function's own doc comment above already says is what names who
+      ! IS due instead. Leaving next_component at its default-
+      ! constructed zero here was wrong, for the identical reason
+      ! u_loop_step()'s own sibling fix (u_loop.c) states in full: 0 is
+      ! also a valid ComponentId, so v_main.f90's own check can never
+      ! tell "nothing is due, the run just ended" from "component 0 is
+      ! due" -- in particular never seeing fuse_begin_step()'s own
+      ! correctly-reported next_component == -1 at a genuine period
+      ! boundary with no end_time declared (src/abi/participant.cpp's
+      ! prime_next_request(), KNOWN_ISSUES.md D57's own fix), so the
+      ! loop never exits, calls fuse_begin_step() again, and that FRESH
+      ! call's own ordinary (unbounded when !has_end_time) first
+      ! resume_period() call starts a period the caller never requested.
+      out_rep%next_component = out_begin_rep%next_component
+      status = FUSE_OK
+      return
+    end if"""
+new = """    if (out_begin_rep%step_opened == 0) then
+      out_rep = fuse_step_report()
+      out_rep%struct_size = int(c_sizeof(out_rep), c_int32_t)
+      status = FUSE_OK
+      return
+    end if"""
+target = "fuse_verification_brusselator_u_loop_step_fix_test"
+test = "verification.brusselator_u_loop_step_fix"
+result = "CONFIRMED 2026-10-13 (Collectives track, Round 2, tier 0, /tmp/collectives/b0): u_loop_step()'s own mutation row (brusselator-u-loop-step-drops-next-component-at-period-close, above) proved the identical C-side defect/fix, but this graph's own compiled schedule (traced: is_u/begin_rep.next_component/begin_rep.period at every step_opened == 0 call, confirmed unchanged under both WaveformIteration::Jacobi/::GaussSeidel and with kDtU/kDtV swapped) ALWAYS routes the genuine, next_component == -1 period-close observation through graph component 0 (named \"U\" in this test's own graph) -- an artifact of this tier-0 test's single fuse_ctx sharing ONE c.next_request cache for both components (the real multi-rank row has no such tie: each rank runs its own independent prime_next_request()), so a straight mutation of this file through the natural U/V role assignment is never observed. BrusselatorULoopStepFix.RealVLoopFortranFunctionNeverSeesThePeriodBoundaryThroughTheZeroedReport (this target's own second TEST) isolates it instead, by driving graph component 0 through the REAL bruss_v_loop_step() (this file) in place of u_loop_step() -- legal because neither shim wrapper reads the component name the ABI itself resolves it from `req->component`, never the shim. Applying this mutation by hand and rebuilding made that test FAIL (steps_taken=44, global_periods_done=0, observed_unauthorized_period=1, unauthorized_period_value=2; whole unfiltered binary: [PASSED] 1 test, [FAILED] 1 test -- the companion natural-role test, which never calls the mutated bruss_v_loop_step() for component 0, PASSED unchanged). File restored from the pre-mutation text and confirmed byte-identical via cmp (both MD5 5266fee6a7d5e06dbe75d93ff0a18f3a). Clean rebuild of the same target then passed again ([PASSED] 2 tests)."

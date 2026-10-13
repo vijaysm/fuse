@@ -176,6 +176,13 @@ fuse_status drive_one_step(const fuse_participant_abi_v1* t, fuse_ctx* ctx,
   if (!out_begin_rep->step_opened) {
     std::memset(out_rep, 0, sizeof(*out_rep));
     out_rep->struct_size = sizeof(*out_rep);
+    // KNOWN_ISSUES.md D57, Round 2's own fix to u_loop.c's/v_loop.f90's
+    // real counterpart, mirrored here VERBATIM (this function's own
+    // header comment) now that the fix exists: propagate the one field
+    // either real caller loop's "has a period closed" check reads.
+    // Round 1's own version of this helper did not do this -- the exact
+    // gap Round 2's own host measurement traced back to the real files.
+    out_rep->next_component = out_begin_rep->next_component;
     return FUSE_OK;
   }
   std::memset(out_rep, 0, sizeof(*out_rep));
@@ -407,28 +414,52 @@ std::int64_t reference_conservation_checks(int periods) {
 
 }  // namespace
 
-// KNOWN_ISSUES.md D57. The literal claim: driving this graph's two
-// externally-driven members through fuse_begin_step()/fuse_end_step(),
-// with NO end_time declared, for however many ABI calls it takes to see
-// the SAME period-boundary signal fuse_begin_step() ever reports twice
-// in a row, completes EXACTLY two Runner-internal periods -- never
-// three. Before this entry's own fix, `prime_next_request()`'s own
-// rollover (src/abi/participant.cpp) answers the call that discovers
-// period 1 (0-indexed) is already drained by silently starting AND
-// RUNNING period 2's own first chunk in the SAME call, so the SECOND
-// period-boundary signal this loop ever observes already reports
-// c.periods_completed == 3 (one further period already under way, with
-// no bound anywhere stopping it from continuing past that if this test
-// kept calling), not 2. Mirrors examples/brusselator/participants/
-// u_main.c's/v_main.f90's own period-counting loop exactly: NEITHER
-// looks at a wall-clock/has_end_time bound anywhere in its own source
-// (grep'd for this round's own report) -- BOTH rely entirely on seeing
-// `step_opened == 0` with a FRESH, not-already-cached request (this
-// test's own `saw_boundary`, mirroring `rep.next_component == -1`'s own
-// role in u_main.c's loop, generalised past the single-component case
-// that check alone covers -- see this test's own driving loop comment)
-// exactly once per real period.
-TEST(BrusselatorPeriodRollover, StopsAtTheRequestedPeriodCountWithNoEndTime) {
+// KNOWN_ISSUES.md D57, Round 2. Round 1's own test checked
+// `begin_rep.next_component` directly -- a field `impl_begin_step()`
+// (src/abi/participant.cpp) DOES report correctly (-1, genuinely nothing
+// cached) once this entry's own `else if (c.communicator_set)` branch
+// stops the rollover. That is not what the real row's own callers ever
+// read, though: `examples/brusselator/participants/u_loop.c`'s
+// `u_loop_step()` (mirrored in Fortran by `v_loop.f90`'s
+// `v_loop_step()`) zeroes `*out_rep` WHOLESALE -- including
+// `out_rep->next_component` -- whenever `!out_begin_rep->step_opened`,
+// and NEVER copies `out_begin_rep->next_component` across before
+// returning. `u_main.c`'s own loop (`for (p = 0; p < periods; ++p) {
+// for (;;) { ...; if (rep.next_component == -1) break; } }`,
+// `v_main.f90`'s own `do p = 0, periods - 1 ... if (rep%next_component
+// == -1) exit`) checks exactly that zeroed field -- `rep`/`out_rep`,
+// never `begin_rep`/`out_begin_rep` -- to decide when a period has
+// closed. `rep.next_component` is therefore 0 (zeroed), not -1, on
+// EVERY `step_opened == 0` report, including the genuine, correctly-
+// reported-by-this-entry's-own-fix period-boundary one, so the inner
+// `for(;;)` loop never breaks there: it calls `begin_step()` again,
+// `prime_next_request()` finds `c.next_request` still empty (left that
+// way by this entry's own fix) and makes its FIRST, ORDINARY
+// `resume_period()` call -- the one call site `prime_next_request()`
+// has NO bound on at all when `!c.has_end_time` (the bound check at the
+// TOP of that function only fires `if (c.has_end_time && ...)`) --
+// which happily starts period index `kRequestedPeriods` (2), the one
+// `Runner::run(components, kRequestedPeriods)` (the coupler's own
+// driver) never requests. This is NOT the eager SECOND call inside ONE
+// `prime_next_request()` invocation this entry's own fix already closes
+// (confirmed: that gate still fires correctly, `begin_rep.next_component
+// == -1` below IS observed) -- it is a FRESH, separate `fuse_begin_step()`
+// call the caller's own loop makes because `u_loop_step()`/`v_loop_step()`
+// threw away the one signal that would have stopped it.
+//
+// This test mirrors `u_loop_step()`'s own zeroing exactly (`drive_one_
+// step()`, this file, unchanged from Round 1) but, unlike Round 1,
+// drives TWO independent per-component loop cursors shaped exactly like
+// `u_main.c`'s/`v_main.f90`'s own outer `for (p = 0; p < periods; ++p)`
+// loop, and the ONLY signal either cursor ever consults to decide a
+// period has closed is `end_rep.next_component == -1` (`rep`'s own
+// role) -- `begin_rep.next_component` is read ONLY for this test's own
+// dispatch (standing in for "which of two separate OS processes gets
+// the next turn", a question a real multi-rank run answers by
+// construction and a single-process reproduction must simulate), never
+// to decide when a period is done, exactly as neither real driver ever
+// does.
+TEST(BrusselatorPeriodRollover, CallerLoopNeverSeesThePeriodBoundaryThroughTheZeroedReport) {
   fuse::CouplingGraph g;
   SetupResult setup = build_and_initialize(g);
   ASSERT_NE(setup.ctx, nullptr) << "graph build/setup/initialize failed";
@@ -436,29 +467,49 @@ TEST(BrusselatorPeriodRollover, StopsAtTheRequestedPeriodCountWithNoEndTime) {
   ASSERT_NE(t, nullptr);
 
   constexpr int kRequestedPeriods = 2;
-  // Generous but finite: the defect this test pins does not actually
-  // diverge for THIS single-process, no-coupler graph (there is no
-  // coupler rank to hang against) -- it just keeps completing further,
-  // unrequested periods. A real multi-rank run hangs instead (this
-  // round's own host trace, KNOWN_ISSUES.md D57); this cap is what
-  // keeps THIS reproduction finite and gives a clear failure message
-  // instead of a timeout if the defect is somehow worse than measured.
-  constexpr int kSafetyCapSteps = 20000;
+  // Small and bounded: if the defect fires, a REAL step of period index
+  // kRequestedPeriods (one the coupler's own Runner::run(periods) never
+  // requests) is reached within a handful of extra calls, per this
+  // entry's own Round 1 measurement that the eager continuation's own
+  // first new-period suspend point is an ordinary external substep, not
+  // many sweeps deep. A fixed build is expected to need close to
+  // 2 * (one driver's own calls per period) and then stop; this cap
+  // only guards against a genuinely unbounded loop producing no
+  // assertion failure at all within a reasonable test runtime.
+  constexpr int kSafetyCapSteps = 500;
 
+  // `c.periods_completed` (src/abi/context.hpp) is ONE counter per
+  // `fuse_ctx` -- on the real three-rank row that is one counter PER
+  // RANK (separate processes, separate memory), expected to stay in
+  // lockstep only because the coupling forces it, never because it is
+  // shared state. This test drives both "U" and "V" through a SINGLE
+  // `fuse_ctx` (tier 0 has one process standing in for two ranks), so
+  // there is genuinely only one such counter here -- `global_periods_
+  // done`, below, tracks it directly rather than inventing a separate
+  // per-component count neither real driver loop has any equivalent
+  // of (u_main.c's/v_main.f90's own `p` is the number of times THAT
+  // process's own loop has personally seen period-closed, which on
+  // the real row is always reading the SAME rank-local counter as
+  // every other check that process makes).
+  int global_periods_done = 0;
   std::int32_t next_hint = -1;
-  int periods_seen_by_boundary = 0;
-  std::int32_t last_reported_period = -1;
+  bool observed_unauthorized_period = false;
+  std::int32_t unauthorized_period_value = -999;
+  bool observed_unauthorized_via_rollover_report = false;
   int steps_taken = 0;
-  for (; steps_taken < kSafetyCapSteps; ++steps_taken) {
+  for (; steps_taken < kSafetyCapSteps && global_periods_done < kRequestedPeriods;
+       ++steps_taken) {
     if (next_hint == -1) {
       fuse_ongoing ongoing{.struct_size = sizeof(ongoing)};
-      ASSERT_EQ(t->is_coupling_ongoing(setup.ctx, nullptr, &ongoing), FUSE_OK);
+      ASSERT_EQ(t->is_coupling_ongoing(setup.ctx, nullptr, &ongoing), FUSE_OK)
+          << "step " << steps_taken;
       next_hint = ongoing.next_component;
     }
     const bool is_u = (next_hint == setup.u_idx);
     ASSERT_TRUE(is_u || next_hint == setup.v_idx)
         << "step " << steps_taken << ": next_component resolved to neither "
         << "U (" << setup.u_idx << ") nor V (" << setup.v_idx << "), got " << next_hint;
+
     fuse_step_report end_rep{.struct_size = sizeof(end_rep)};
     fuse_step_report begin_rep{.struct_size = sizeof(begin_rep)};
     const fuse_status rc = drive_one_step(
@@ -472,102 +523,84 @@ TEST(BrusselatorPeriodRollover, StopsAtTheRequestedPeriodCountWithNoEndTime) {
       ADD_FAILURE() << "step " << steps_taken << " (" << (is_u ? "U" : "V")
                     << "): rc=" << rc << " " << (err.code ? err.code : "?")
                     << ": " << buf;
+      break;
     }
-    ASSERT_EQ(rc, FUSE_OK) << "step " << steps_taken;
+
+    // The decisive, airtight signal: a REAL step (checkpoint/physics/
+    // end_step() all ran, step_opened == 1) of period index
+    // kRequestedPeriods or beyond. Reading `begin_rep` here is not
+    // "cheating" the way it would be for a stop/continue DECISION --
+    // this is the test's own OBSERVATION of what the Runner actually
+    // did, not a signal either real driver loop acts on.
+    if (begin_rep.step_opened && begin_rep.period >= kRequestedPeriods) {
+      observed_unauthorized_period = true;
+      unauthorized_period_value = begin_rep.period;
+      break;
+    }
 
     if (!begin_rep.step_opened) {
-      // Mirrors u_main.c's/v_main.f90's own "no step -- a delivery
-      // notification, or the period just closed" branch: the ONLY
-      // signal either loop ever consults here, this test's own
-      // `begin_rep.period` (entries.def: "set on EVERY fuse_step_report
-      // regardless of step_opened"), reported true for a genuine
-      // period-boundary report, never for a plain delivery-pending one
-      // (whose own `period` stays whatever c.periods_completed already
-      // was, unchanged).
-      if (!begin_rep.delivery_pending && begin_rep.period != last_reported_period) {
-        ++periods_seen_by_boundary;
-        last_reported_period = begin_rep.period;
-        if (periods_seen_by_boundary == kRequestedPeriods) {
-          // u_main.c's/v_main.f90's own outer loop would exit HERE --
-          // this is the call whose own report says "period
-          // kRequestedPeriods is done." fuse_step_report::period itself
-          // is NOT the discriminating signal (see this test's own
-          // header: a rolled-over call always reports step_opened == 0
-          // and the CORRECT c.periods_completed regardless of whether
-          // it also silently ran ahead) -- what is checked below,
-          // outside this loop, is how much of the Runner's own work
-          // (fuse::abi_test::run_stats(), src/abi/test_support.hpp) had
-          // ALREADY happened by the time this exact call returned.
-          ASSERT_EQ(begin_rep.period, kRequestedPeriods)
-              << "fuse_begin_step() reported period " << begin_rep.period
-              << " at the " << kRequestedPeriods << "-th period-boundary "
-                 "signal (sanity check on this test's own loop)";
-          fprintf(stderr, "DIAG stopping-call begin_rep.next_component=%d (== -1 means "
-                  "genuinely nothing more without a NEW request; any other value means "
-                  "period %d's own first chunk is ALREADY cached/run)\n",
-                  begin_rep.next_component, kRequestedPeriods);
-          // KNOWN_ISSUES.md D57's own real discriminator: impl_begin_step()
-          // (src/abi/participant.cpp) reports next_component == -1 ONLY
-          // through its "!c.next_request.has_value()" branch -- genuinely
-          // nothing cached, nothing of any further period has run. Every
-          // OTHER step_opened==0 case (delivery pending, or the "treat_as_
-          // mismatch" rollover branch its own header comment documents)
-          // names a REAL component, because `c.next_request` already holds
-          // a REAL, already-resolved ExternalAdvanceRequest -- for a
-          // rollover specifically, one `resume_period()` call already
-          // walked INTO the new period's own stream to find it. A caller
-          // that sees anything but -1 here has no way to tell "this is
-          // period kRequestedPeriods continuing" from "period
-          // kRequestedPeriods+1 already began" -- which is exactly D57's
-          // own defect.
-          EXPECT_EQ(begin_rep.next_component, -1)
-              << "fuse_begin_step() named component " << begin_rep.next_component
-              << " as due next, immediately after reporting period "
-              << kRequestedPeriods << " complete -- with NO end_time "
-                 "declared, that can only be period " << kRequestedPeriods
-              << "+1's own already-cached first request (KNOWN_ISSUES.md "
-                 "D57), not a legitimate continuation of period "
-              << kRequestedPeriods << " (which this report just said was "
-                 "already over)";
-          break;
-        }
+      // u_main.c's/v_main.f90's own "no step -- a delivery notification,
+      // or the period just closed" branch. This graph's own channels
+      // are LowFive-bound but this test never actually calls a
+      // u_lowfive_write_export()/read_import() equivalent (StubBlock's
+      // own fields never change, so a real write/read is not needed to
+      // keep the window's own convergence correct) -- `delivery_pending`
+      // is handled by doing nothing, exactly as a no-op write/read would.
+      //
+      // THE BUG, reproduced exactly: u_main.c's/v_main.f90's own ONLY
+      // period-closed check reads `rep`/`out_rep` (`end_rep` here) --
+      // `drive_one_step()` (this file, mirroring u_loop_step()/
+      // v_loop_step() verbatim) zeroes it whenever `!step_opened`, so
+      // `end_rep.next_component` is 0 here, NEVER -1, even on the exact
+      // call where `begin_rep.next_component` (unzeroed, read only as
+      // an observation above and via the diagnostic below, never to
+      // decide anything) correctly says -1.
+      if (end_rep.next_component == -1) {
+        ++global_periods_done;
+      } else if (begin_rep.next_component == -1) {
+        // Diagnostic only, not part of the decision: this is the exact
+        // call where the REAL signal (begin_rep) says "period closed,
+        // nothing cached" but the zeroed one (end_rep, what the real
+        // callers actually read) does not -- the moment this entry's
+        // Round 1 fix's own correct report gets silently dropped.
+        observed_unauthorized_via_rollover_report = true;
       }
-      // Trust the Runner's own answer, never guess: -1 here means
-      // "re-resolve via fuse_is_coupling_ongoing() at the top of the
-      // next iteration" (the SAME fallback this loop's own top already
-      // has), not "try the other component" -- the compiled stream can
-      // legitimately ask for the SAME component again (an ordinary tick
-      // immediately followed by another), and guessing wrong is exactly
-      // what produced this test's own first-draft E-ABI-STEP-ORDER
-      // failure ("component 'V' asked out of turn... expects 'U' next").
-      next_hint = begin_rep.next_component;
+      next_hint = begin_rep.next_component;  // dispatch artifact only.
       continue;
+    }
+
+    // step_opened == 1: a real end_step() ran; end_rep is not zeroed.
+    if (end_rep.next_component == -1) {
+      ++global_periods_done;
     }
     next_hint = end_rep.next_component;
   }
-  ASSERT_LT(steps_taken, kSafetyCapSteps)
-      << "never observed " << kRequestedPeriods << " period-boundary signals "
-         "within " << kSafetyCapSteps << " ABI calls -- see this test's own "
-         "header for what that would mean";
 
-  // Read BEFORE destroy() (which tears the Runner down). Reported, not
-  // asserted: measured (both with and without this entry's own fix)
-  // at 6 for this minimal, 1-cell StubBlock graph either way -- the
-  // defect's own first visible effect (the EXPECT_EQ above, which DOES
-  // discriminate) is reached by resume_period()'s eager SECOND call
-  // finding period kRequestedPeriods+1's own FIRST suspend point,
-  // which for this graph's own instruction order is an ordinary
-  // WindowAdvance needing a fresh external substep -- BEFORE either
-  // channel's own ExternalDelivery/Remap/Constrain chain for that
-  // period ever runs. Continuing to drive past the stopping point
-  // above (what a caller that does not check next_component == -1
-  // would do next) is what would let conservation_checks itself
-  // diverge, and on the real three-rank MPI graph is exactly the
-  // continued, legitimate-looking delivery traffic KNOWN_ISSUES.md
-  // D57's own measured host trace shows (U/V's own 122/121 deliveries)
-  // before the run reaches that period's own Constrain reduction and
-  // hangs. Kept here as a secondary, honestly-labelled data point, not
-  // part of this test's own pass/fail claim.
+  fprintf(stderr,
+          "DIAG steps_taken=%d global_periods_done=%d "
+          "observed_unauthorized_via_rollover_report=%d "
+          "observed_unauthorized_period=%d unauthorized_period_value=%d\n",
+          steps_taken, global_periods_done,
+          observed_unauthorized_via_rollover_report ? 1 : 0,
+          observed_unauthorized_period ? 1 : 0, unauthorized_period_value);
+
+  // KNOWN_ISSUES.md D57's own Round 2 claim: on HEAD, this FAILS -- a
+  // real step of an unrequested period runs, because neither caller
+  // loop can observe the correctly-reported -1 through the zeroed
+  // report its own wrapper hands it.
+  EXPECT_FALSE(observed_unauthorized_period)
+      << "a real step of period " << unauthorized_period_value
+      << " ran (kRequestedPeriods=" << kRequestedPeriods
+      << "); global_periods_done=" << global_periods_done
+      << " -- u_loop_step()'s/v_loop_step()'s own zeroed end-step report "
+         "never let either caller loop observe period "
+      << kRequestedPeriods << "'s own correctly-reported close "
+         "(KNOWN_ISSUES.md D57)";
+  EXPECT_LT(steps_taken, kSafetyCapSteps)
+      << "never reached " << kRequestedPeriods << " periods done (global_"
+         "periods_done=" << global_periods_done << ") within " << kSafetyCapSteps
+      << " ABI calls";
+
   const fuse::RunStats abi_stats = fuse::abi_test::run_stats(setup.ctx);
   EXPECT_EQ(t->destroy(setup.ctx, nullptr, nullptr), FUSE_OK);
   const std::int64_t reference = reference_conservation_checks(kRequestedPeriods);
