@@ -5,6 +5,8 @@
 #include <fuse/model/validate.hpp>
 
 #include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <string_view>
 
 using fuse::AccumOp;
@@ -222,6 +224,55 @@ TEST(Validate, RejectsLagExceedingWindow) {
   Fixture f;
   f.g.channel(f.ch).lag(5);   // source interval 1, window 1 => 5 > 1
   const Diagnostics d = validate(f.g);
+  EXPECT_TRUE(has_code(d, "E-LAG")) << d.to_string();
+}
+
+// BM-8 (review 2026-10-11): `std::abs(ch.lag)` is UB for `ch.lag ==
+// INT_MIN` (no positive int counterpart), and `ch.lag` is a raw int32_t
+// off the wire with no range check (descriptor.hpp) -- a corrupted
+// descriptor could set exactly this value. `ChannelBuilder::lag()` has
+// no validation of its own either, so INT_MIN is reachable through the
+// ordinary graph-building API too. validate()'s own contract is "every
+// problem is reported together", never a throw; this must survive
+// without UB and without throwing.
+TEST(Validate, LagOfIntMinDoesNotTriggerUndefinedBehavior) {
+  Fixture f;
+  f.g.channel(f.ch).lag(std::numeric_limits<int>::min());
+  Diagnostics d;
+  EXPECT_NO_THROW(d = validate(f.g));
+  EXPECT_TRUE(has_code(d, "E-LAG")) << d.to_string();
+}
+
+// BM-8: the lag-span multiply used to be the throwing `*` operator,
+// which can FUSE_REFUSE out of validate() on overflow -- a throw from a
+// Diagnostics-returning function whose whole point is "report every
+// problem together", and an abort in a FUSE_ENABLE_EXCEPTIONS=OFF
+// build. `try_mul` turns the identical condition into a reported
+// diagnostic instead.
+TEST(Validate, LagSpanOverflowIsReportedNotThrown) {
+  constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+  CouplingGraph g;
+  const auto m = g.add_mesh(MeshDecl{.name = "m", .source = "generated:box"});
+  const auto r = g.add_region(Region{.name = "wall", .mesh = m,
+                                     .entity_set = "w", .dimension = 2});
+  const auto fluid = g.add_component(ComponentDecl{.name = "fluid",
+                                                    .ranks = fuse::RankSet{0, 1},
+                                                    .interval = Rational{kMax}});
+  const auto solid = g.add_component(ComponentDecl{.name = "solid",
+                                                    .ranks = fuse::RankSet{1, 1},
+                                                    .interval = Rational{1}});
+  const auto src = g.add_field(fluid, FieldSpec{.name = "q", .region = r,
+                                                .units = u::kHeatFluxDensity,
+                                                .conservation = Conservation::Extensive,
+                                                .intent = Intent::Provides});
+  const auto dst = g.add_field(solid, FieldSpec{.name = "q_in", .region = r,
+                                                .units = u::kHeatFluxDensity,
+                                                .conservation = Conservation::Extensive,
+                                                .intent = Intent::Requires});
+  const auto ch = g.add_channel("flux", src, dst);
+  g.channel(ch).lag(2);  // |lag| * interval = 2 * INT64_MAX overflows
+  Diagnostics d;
+  EXPECT_NO_THROW(d = validate(g));
   EXPECT_TRUE(has_code(d, "E-LAG")) << d.to_string();
 }
 
