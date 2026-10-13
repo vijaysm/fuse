@@ -146,8 +146,11 @@ processor sets that may be disjoint, identical or partially overlapping);
 MPMD and true separate-launch accept/connect); `fuse::LowFiveTransport` (intercepted-HDF5
 transport). Covered by [](placement.md), [](multiple-executables.md) and [](lowfive.md). **Mixed**:
 `CommGraph` and MPMD `connect()` are host-verified (KNOWN_ISSUES.md D21, D25); accept/connect is
-implemented but blocked on this host's own MPI (D23); `LowFiveTransport`'s single-process path is
-verified, its distributed (cross-process) path compiles but is unmeasured (D14).
+host-verified too, as of 2026-10-13 (D23's own MPI blocker is cleared, and the plain
+`verification.brusselator.participants.accept.3` row passes, KNOWN_ISSUES.md D36); `LowFiveTransport`'s
+single-process path is verified, and its distributed (cross-process) path is now ALSO host-verified
+for MPMD launch (`lowfive.mpmd.3` passes, D39) — accept-mode launch over the same distributed path
+compiles, with its one known ABI gap closed in-sandbox but not yet host-run (D14, still OPEN).
 
 ## `fuse::field` — field storage and the lazy view pipeline
 

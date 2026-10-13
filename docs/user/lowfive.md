@@ -332,11 +332,46 @@ comment names as missing (every HDF5-bound channel a rank takes part in
 must agree on the SAME two-group partition; see KNOWN_ISSUES.md D39's own
 account and `examples/brusselator/participants/lowfive_attach_decision.hpp`
 for the full reasoning, tier-0 tested in `test/verification/
-brusselator_lowfive_attach_test.cpp`). Accept mode refuses cleanly at
+brusselator_lowfive_attach_test.cpp`). Accept mode refused cleanly at
 attach time (`E-LOWFIVE-ATTACH-ACCEPT`) rather than forming a
-half-configured VOL — D14's own accept-mode intercommunicator question is
-still open, and `verification.brusselator.participants.lowfive.accept.3`
-stays red on purpose until it is decided.
+half-configured VOL through this round — D14's own accept-mode
+intercommunicator question was still open, and
+`verification.brusselator.participants.lowfive.accept.3` stayed red on
+purpose until it was decided.
+
+**Superseded, D14 Stage B (2026-10-13): the intercommunicator question is
+decided, in-sandbox only.** The paragraph above describes
+`bruss_lowfive_attach()` taking the caller's own already-formed
+PHYSICS-ONLY communicator (`physics_comm_f`, U's `u_comm` / V's
+`v_comm`) directly as the peer for `MPI_Intercomm_create()`. That
+signature is gone: `bruss_lowfive_attach()` now takes a `bridge_comm_f`
+(the merged base communicator `fuse_setup()` forms for a `Connect`-mode
+component, now readable by any caller through the new, append-only ABI
+entry `base_communicator()` / `fuse_base_communicator_info`,
+`docs/user/c-abi.md`) and a `local_comm_f` the caller must obtain
+separately, from the new `bruss_lowfive_join_local_split()` — a fresh,
+collective `MPI_Comm_split` of that bridge, keyed by which of the
+graph's own writer/reader `RankSet`s this rank belongs to (NOT a reuse
+of `u_comm`/`v_comm`: the owner's own ruling was that reusing them
+assumes, rather than derives, that their local ranks already match the
+plan's expected numbering). Every rank that shares the bridge —
+including the bundled coupler/placeholder rank that hosts no LowFive
+channel at all — must call `bruss_lowfive_join_local_split()`
+(a collective, never skippable), but only a rank that actually hosts a
+qualifying channel goes on to call `bruss_lowfive_attach()` itself. With
+the bridge exposed, `decide_attach_mode()` no longer refuses a
+Connect-mode channel outright: it now refuses only a bridge that was
+never formed (`E-LOWFIVE-ATTACH-ACCEPT-NO-BRIDGE`) or more than two
+Connect-mode components (`E-LOWFIVE-ATTACH-ACCEPT-UNSUPPORTED-TOPOLOGY`,
+D18), and otherwise proceeds exactly like an MPMD channel. Build-verified
+only (tier-0 ctest, the pure-function model checks in
+`lowfive_attach_model_check.hpp`, and a tier-1
+`-DFUSE_ENABLE_LOWFIVE=ON` compile) — this sandbox cannot start MPI, so
+`verification.brusselator.participants.lowfive.accept.3` has never
+actually RUN this path. D14 stays OPEN until a host does; see
+KNOWN_ISSUES.md D14's own "what remains" item 3 for the current status
+and this track's own `host_pending` record for the exact command and
+expected trace.
 
 The Brusselator's own `u_main.c`/`v_main.f90` (not a separate
 LowFive-specific main, as an earlier plan for this section assumed before
@@ -433,9 +468,14 @@ mpiexec -n 1 brusselator_u_main --graph graph.yaml --log u.log --periods 2 --tra
     : -n 1 brusselator_v_main --graph graph.yaml --log v.log --periods 2 --transport lowfive \
     : -n 1 brusselator_coupler_main --graph graph.yaml
 
-# lowfive.accept.3 -- bruss_lowfive_attach() refuses cleanly on both U and V
-# (E-LOWFIVE-ATTACH-ACCEPT) the moment it reads the graph's own
-# LaunchMode::Connect; stays red on purpose, KNOWN_ISSUES.md D39
+# lowfive.accept.3 -- D14 Stage B (2026-10-13, build-verified only, NOT
+# host-run): base_communicator() now exposes the merged bridge, and
+# bruss_lowfive_join_local_split()/bruss_lowfive_attach() attempt the
+# real distributed attach instead of refusing outright. Expected, per
+# this track's own host_pending record: both U's physics rank and V
+# exchange through LowFive like the mpmd row above; U's bundled
+# coupler/placeholder rank joins the collective split but never calls
+# attach(). KNOWN_ISSUES.md D14 stays OPEN until this is measured.
 mpiexec -n 2 brusselator_u_main --graph graph.yaml --log u.log --ranks-u 1 --periods 2 --transport lowfive &
 mpiexec -n 1 brusselator_v_main --graph graph.yaml --log v.log --periods 2 --transport lowfive &
 wait

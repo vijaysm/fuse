@@ -2966,29 +2966,42 @@ assertion fires).
 once; nothing below is repeated in D18 or D19, and the plain (non-LowFive)
 participant rows those two entries track are NOT re-listed here):**
 
-1. **Host action: rebuild `/opt/lowfive` (and `/opt/lowfive-dist`) against
-   fmt 9 or newer.** Both ship a bundled fmt 8.1.1 and both carry an
-   unresolvable `@rpath/libfmt.8.dylib` dependency (measured via `otool
-   -L`) — no `libfmt.8.dylib` exists anywhere on this host, so every
-   LowFive-linked binary fails at `dlopen`, including the single-process
-   path. Blocks items 2-4 below entirely; nothing past this point can be
-   attempted, only read from headers, until it is done.
-2. **Host step: the connector-name check.** `HDF5_VOL_CONNECTOR=lowfive`
-   is this track's own best reading of LowFive's `VOLBase::name` member —
-   not something confirmed from headers alone, and not checkable until
-   item 1 lets `fuse-lowfive-vol` actually load. First host attempt should
-   confirm the name matches before trusting anything downstream of it.
-3. **Open question for the lead: the accept-mode intercommunicator gap.**
-   ACCEPT mode's own merged base communicator is never exposed back to a
-   caller through any ABI query, so `fuse-lowfive-vol`'s own rendezvous
-   logic (item 3 of the Unit 3b account above) has no way to reach it on
-   that path — scoped to MPMD launch only until this is answered.
-   Blocks `verification.brusselator.participants.lowfive.accept.3`
-   specifically; `.mpmd.3` does not need it.
-4. **ctest rows, host-only, blocked on item 1:**
-   `verification.brusselator.participants.lowfive.mpmd.3`,
-   `verification.brusselator.participants.lowfive.accept.3` (the second
-   additionally blocked on item 3).
+1. ~~**Host action: rebuild `/opt/lowfive` (and `/opt/lowfive-dist`) against
+   fmt 9 or newer.**~~ — done; D39's own account (Round 10) measures
+   `fuse-lowfive-vol` loading and running on this host
+   (`participants.lowfive.mpmd.3` Passed, 1.70 s), which could not happen
+   if the `dlopen` failure this item named were still present.
+2. ~~**Host step: the connector-name check.**~~ — done; the SAME Round 10
+   measurement is only possible if `HDF5_VOL_CONNECTOR=lowfive` is the
+   name LowFive's `VOLBase` actually registers under, since the row
+   exchanges real data through it (`brusselator_check` `--check: OK`,
+   byte-identical logs to the transport-only twin).
+3. **The accept-mode intercommunicator gap — closed in-sandbox by a new
+   ABI entry, NOT YET host-verified (D14 Stage B, 2026-10-13).** Item 3's
+   own question above is answered: ACCEPT mode's merged base communicator
+   is now exposed through a new, append-only ABI entry,
+   `base_communicator()` / `fuse_base_communicator_info`
+   (`include/fuse/abi/entries.def`, `docs/user/c-abi.md`, "Recovering the
+   base communicator"). `fuse-lowfive-vol`'s own rendezvous logic
+   (`lowfive_attach_decision.hpp`'s `decide_attach_mode`) now derives
+   LowFive's local communicator from a fresh `MPI_Comm_split` of that
+   exposed bridge, keyed by the graph's own `RankSet`s, rather than
+   refusing Connect-mode channels outright; the companion fix (the
+   bundled coupler/placeholder rank must still join that split but never
+   call `bruss_lowfive_attach()`) is implemented alongside it. Every
+   change is build-verified only (tier-0 ctest, the pure-function model
+   checks, and a tier-1 `-DFUSE_ENABLE_LOWFIVE=ON` compile) — this
+   sandbox cannot start MPI (C1), so **D14 stays OPEN** until the host
+   actually runs `participants.lowfive.accept.3` and it passes; see this
+   track's own `host_pending` record for the exact command and the
+   expected trace.
+4. **ctest rows, host-only:**
+   `verification.brusselator.participants.lowfive.mpmd.3` — no longer
+   blocked, Passed (1.70 s, D39 Round 10).
+   `verification.brusselator.participants.lowfive.accept.3` — was
+   blocked on item 3 above; item 3's own fix is now in place but
+   UNVERIFIED on a host, so this row remains the host's to run before
+   D14 can close.
 5. **Host run: Demo B** (`examples/demo_b`'s producer/consumer
    executables) — compiles against LowFive's documented
    `DistMetadataVOL` API only; never run. Needs item 1 and a real MPI
@@ -3572,6 +3585,14 @@ working. D23 stays open until the host's own `accept.*` rows are the ones to dec
 3 tasks, on the owner's own `build-lowfive` tree) should now pass `fuse_setup()`'s own layout check; whether it
 runs to completion and matches the non-LowFive reference is this entry's own second host-verification item,
 independent of D14 and of D23 alike.
+
+**Confirmed (2026-10-13, `ctest`, `build-all`, measured on the owner's machine in the lead's host session, not in this sandbox): the plain (non-LowFive)
+`verification.brusselator.participants.accept.3` PASSES on the host at HEAD**, in two separate runs the same day
+(1.12 s, 1.05 s) — the first row above is answered: `connect()`'s own accept/merge/disconnect path (this entry's
+fix) is measured working, independent of LowFive entirely. `.accept.5` remains unrun per D18's own ruling,
+unaffected by this confirmation. D14's own account (its "what remains" item 3) cites this same measurement as the
+reason its own accept-mode ABI gap, not this entry's layout bug, is now the only thing standing between
+`verification.brusselator.participants.lowfive.accept.3` and a pass.
 
 ### D37. `pfuse` v1 (the pybind11 bindings) does not expose Newton, MPI, or either non-serial mesh backend to Python, and inherited one pre-existing naming bug in `dump_graphviz()` — OPEN, scope decision for v2
 
@@ -5217,8 +5238,12 @@ it runs in `main`, after the initialiser; it is kept and is untested against a c
 
 **Not established.** The abort mechanism is a latent teardown defect in LowFive (a connector class freed after
 spdlog's registry is gone): any process that registers the connector through the environment and exits normally can
-hit it; it was not patched here. `participants.lowfive.accept.3` still fails in every environment, with the named
-refusal `E-LOWFIVE-ATTACH-ACCEPT` (D14); what that registered row should assert is an open decision.
+hit it; it was not patched here. `participants.lowfive.accept.3` failed in every environment through this round,
+behind the single, blanket named refusal `E-LOWFIVE-ATTACH-ACCEPT` (D14). **Superseded by D14 Stage B
+(2026-10-13):** that blanket refusal is replaced by `decide_attach_mode`'s own narrower checks (a formed bridge
+communicator required; at most two Connect-mode components, D18) now that the accept-mode intercommunicator gap
+itself is closed by a new ABI entry — see D14's own "what remains" item 3 for the current, still-host-unverified
+status of what this registered row should assert.
 
 ### ~~D40. This host's Open MPI (4.1.5) hangs in `MPI_Alltoallv` on any communicator but `MPI_COMM_WORLD`~~ — WORKED AROUND 2026-10-10
 

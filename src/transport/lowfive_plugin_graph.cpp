@@ -48,6 +48,20 @@ namespace {
 // merging two intercommunicators is never exposed back to a caller (no
 // ABI query returns it) -- an open question for the lead, not silently
 // guessed past.
+//
+// ADDITIVE NOTE, D14 Stage B (2026-10-13): that ABI gap is closed --
+// `fuse_coupler_abi()`'s new `base_communicator()` entry
+// (`fuse_base_communicator_info`, `include/fuse/abi/entries.def`) now
+// returns the merged communicator setup() formed, for every launch
+// mode, not MPMD alone. This function's own behaviour is UNCHANGED by
+// that: it reads `MPI_COMM_WORLD` directly because it runs inside
+// `fuse-lowfive-vol`'s OWN plugin-side env-route path (the
+// `HDF5_VOL_CONNECTOR` route), a different consumer from the
+// Brusselator example's programmatic attach path
+// (`examples/brusselator/participants/lowfive_attach.cpp`, which DOES
+// use the new accessor). Extending the env-route path itself to accept
+// mode -- reading `base_communicator()` here instead of assuming
+// `MPI_COMM_WORLD` -- is a separate change, out of this stage's scope.
 bool ConfigureDistributed(const fuse::CouplingGraph& g, Config* out) {
   int mpi_initialized = 0;
   MPI_Initialized(&mpi_initialized);

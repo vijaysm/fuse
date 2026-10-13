@@ -44,11 +44,14 @@ removing contraction measurably changes an ill-conditioned iteration's own conve
 `remap_halo_pattern`/`make_mpi_exchanger`, but no `accumulate_remap_halo` — the reverse exchange a
 future native conservation-audit tool would want; nothing in the tree needs it yet); D15 (the
 provider direction is conformance-tested on one process; device fields, mixed checkpoint/restore, and
-a plugin on a rank subset are not); D14 (LowFive's distributed transport and Demo B are compiled, not
-run — needs LowFive rebuilt against `fmt >= 9`, the host's `/opt/lowfive` links `libfmt.8`).
+a plugin on a rank subset are not); D14 (LowFive's fmt rebuild is done and the distributed transport
+now RUNS for MPMD launch — `lowfive.mpmd.3` passes, D39 — but Demo B is still compiled, not run, and
+accept-mode launch over the same transport has its one known ABI gap closed in-sandbox, 2026-10-13,
+not yet host-verified).
 
-**S6 / interfaces** — D23 (accept/connect cannot complete on this MPICH `ch3:nemesis` build when both
-programs share a node; needs MPICH ch4 or Open MPI, not a library fix); D17 (`--accel aitken`
+**S6 / interfaces** — D23 (worked around 2026-10-12: the host's MPICH was reinstalled to a `ch4:ofi`
+build, which does not hang on accept/connect sharing a node — `ch3:nemesis` itself was never fixed);
+D17 (`--accel aitken`
 converges through `--driver runner` but not `--driver window` on the identical config — open, not
 pursued, Conformance Unit 2 needs no accelerator); D18 (`connect()`'s `Connect`-mode path supports
 exactly two components; a third refuses — open, not pursued, Unit 2 routes around it); D7
