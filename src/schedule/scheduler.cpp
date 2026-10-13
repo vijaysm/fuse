@@ -355,16 +355,17 @@ void group_regions_within_instants(const OperatorDAG& dag,
     // the region's converged output) is exactly what interleaved with the
     // body and made contiguity depend on declaration order. Deferring it past
     // the loop is not a silent choice -- it is the only correct placement.
+    // Review 2026-10-11 IS-10: that second case needs no vector of its own --
+    // `from_outside` below is built from every input a member reads whose
+    // PRODUCER lies outside the region, so an arc a member itself produces is
+    // never marked `from_outside` regardless of who else reads it, and
+    // readiness (every instruction's inputs already written, checked above)
+    // already keeps the region's own producers ordered correctly relative to
+    // their consumers. A `member_produces` set computed and never read beyond
+    // a `(void)` cast used to sit here, inviting a future reader to assume it
+    // was load-bearing in this decision; it was not.
     bool entangled = false;
     {
-      std::vector<char> member_produces(dag.arc_count(), 0);
-      for (std::size_t k = lo; k < hi; ++k) {
-        if (owner[instructions[k].origin_node.value()] == kNoRegion) continue;
-        const Instruction& ins = instructions[k];
-        if (ins.out.valid() && ins.out.value() < dag.arc_count()) {
-          member_produces[ins.out.value()] = 1;
-        }
-      }
       std::vector<char> from_outside(dag.arc_count(), 0);
       for (std::size_t k = lo; k < hi; ++k) {
         if (owner[instructions[k].origin_node.value()] == kNoRegion) continue;
@@ -386,7 +387,6 @@ void group_regions_within_instants(const OperatorDAG& dag,
           }
         }
       }
-      (void)member_produces;
     }
 
     if (std::getenv("FUSE_SCHEDULE_DEBUG") != nullptr) {
