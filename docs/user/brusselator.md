@@ -465,8 +465,22 @@ two-sided remap decomposition (in-process, thread-barrier stand-ins for a real `
 `GhostExchanger`), and `brusselator_graph_tool`'s own reference-reproduction rows.
 **Verified** (host, `KNOWN_ISSUES.md` D25/D28/D29): `verification.brusselator.participants.mpmd.{3,5}`
 — the full three-executable, MPI-separated-process A4 case, at up to five total ranks.
-**Deliberate refusal**, tested: `E-BRUSS-MESH-INDEX`, `E-BRUSS-U-REACTION`,
-`E-BRUSS-DIFFUSION-DIRECT-DECOMPOSED`. **Absent / blocked, not a defect in this library**:
+**Deliberate refusal**, tested: `E-BRUSS-U-REACTION` (`BrusselatorRefusalCoverage.
+UReactionFixedPointRefusesPastFiftySolves`, test/verification/
+brusselator_refusal_coverage_test.cpp), `E-BRUSS-DIFFUSION-DIRECT-DECOMPOSED`
+(`BrusselatorSpeciesCoreDecomposition.DirectSolverRefusesWhenDecomposed`).
+**Deliberate refusal, implemented but deliberately untested**: `E-BRUSS-MESH-INDEX`
+(`NativeGrid::make`) only fires when a loaded mesh's cell centroids disagree with the row
+band/formula `NativeGrid::make` itself used to generate the "generated:quad:NxM" source it
+loads — i.e. only on a corrupted or hand-crafted mesh view, never on the honest generator this
+example always drives. `NativeMeshBackend`'s public surface has no way to substitute a
+different view into a name's default slot to exercise this from a test: `load()` always
+(re)generates one consistent with its own `nx`/`ny`; loading the same name twice makes
+`mesh_id()` refuse `E-MESH-NAME-AMBIGUOUS` before any centroid is read; `set_placed_view`/
+`commit_remap_halo` write the per-`ComponentId` placed slot, not the default slot
+`NativeGrid::make` reads, and the latter is documented "nothing but the native halo machinery
+may call this" (see test/verification/brusselator_refusal_coverage_test.cpp's trailing
+comment for the full reasoning). **Absent / blocked, not a defect in this library**:
 `verification.brusselator.participants.accept.{3,5}` (D23, needs MPICH ch4 or Open MPI);
 `verification.brusselator.graph_tool.reproduces_reference_lowfive` is verified, but the
 `lowfive.{mpmd,accept}.3` participant rows are blocked the same way D14's LowFive rebuild is for

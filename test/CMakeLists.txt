@@ -1289,6 +1289,16 @@ fuse_add_gtest(verification brusselator_diffusion_solver_cache NO_LAYER_LIB
                LIBS fuse::runtime fuse::backend fuse::model fuse::linalg Eigen3::Eigen Kokkos::kokkos)
 target_include_directories(fuse_verification_brusselator_diffusion_solver_cache_test PRIVATE
   ${CMAKE_SOURCE_DIR}/examples/brusselator)
+# TD-1: docs/user/brusselator.md claimed E-BRUSS-MESH-INDEX and
+# E-BRUSS-U-REACTION were both tested; BrusselatorRefusalCoverage fires
+# the reachable one (U's reaction fixed point past its 50-solve cap) and
+# the file's own trailing comment records why E-BRUSS-MESH-INDEX is not
+# (the doc is corrected to match). Same deps as brusselator_diffusion_
+# solver_cache just above.
+fuse_add_gtest(verification brusselator_refusal_coverage NO_LAYER_LIB
+               LIBS fuse::runtime fuse::backend fuse::model fuse::linalg Eigen3::Eigen Kokkos::kokkos)
+target_include_directories(fuse_verification_brusselator_refusal_coverage_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/examples/brusselator)
 
 # S6 phase 3 ("LowFive" track), Unit 3: brusselator_graph_tool.cpp's own
 # --transport lowfive wiring, reproduced directly against validate() --
