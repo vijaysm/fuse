@@ -23,6 +23,8 @@ using fuse_examples::lowfive_attach::ChannelRoles;
 using fuse_examples::lowfive_attach::decide_attach_mode;
 using fuse_examples::lowfive_attach::decide_serve_roles;
 using fuse_examples::lowfive_attach::BuildIntercommRegistrations;
+using fuse_examples::lowfive_attach::decide_vol_settings;
+using fuse_examples::lowfive_attach::FindOwnExportedFiles;
 using fuse_examples::lowfive_attach::FormatMemoryPatternsForTrace;
 using fuse_examples::lowfive_attach::FormatRegistrationsForTrace;
 using fuse_examples::lowfive_attach::IntercommRegistration;
@@ -32,6 +34,9 @@ using fuse_examples::lowfive_attach::ServeAction;
 using fuse_examples::lowfive_attach::ServeEvent;
 using fuse_examples::lowfive_attach::ServeRole;
 using fuse_examples::lowfive_attach::ServeState;
+using fuse_examples::lowfive_attach::VolSettings;
+using fuse_examples::lowfive_attach::VolSettingsSatisfyInvariant;
+using fuse_examples::lowfive_attach_model::WouldReuseStaleFileOnRecreate;
 
 namespace {
 
@@ -493,14 +498,133 @@ TEST(BuildIntercommRegistrations, EmptyTableIsEmptyResultNotARefusal) {
 }
 
 // ---------------------------------------------------------------------
-// Round 4: the model check's own DEFECT B case (ProcessPolicy::
-// nothing_indexed) -- "a protocol that relies on a serve that never
-// serves is a stuck/diverging state, not a silent pass."
+// Round 6: VolSettings/decide_vol_settings()/VolSettingsSatisfyInvariant()
+// -- the pure decision this round's own fix routes BOTH LowFive-level
+// settings through, instead of setting them separately.
 
-TEST(ModelCheck, ShippedProtocolWithNothingIndexedGetsStuck) {
+TEST(DecideVolSettings, DistributedWantsServeOnCloseFalseAndKeepTrue) {
+  const auto s = decide_vol_settings(/*distributed=*/true);
+  EXPECT_FALSE(s.serve_on_close);
+  EXPECT_TRUE(s.keep);
+}
+
+TEST(DecideVolSettings, SingleProcessStillWantsKeepTrue) {
+  // serve_on_close is meaningless for the single-process branch's own
+  // LowFive::MetadataVOL (no such member) -- only `keep` is ever
+  // actually consumed there, and it must still be true (round 4's own
+  // reasoning, unchanged).
+  const auto s = decide_vol_settings(/*distributed=*/false);
+  EXPECT_TRUE(s.keep);
+}
+
+TEST(VolSettingsSatisfyInvariant, DecideVolSettingsOwnOutputSatisfiesIt) {
+  EXPECT_TRUE(VolSettingsSatisfyInvariant(decide_vol_settings(true)));
+  EXPECT_TRUE(VolSettingsSatisfyInvariant(decide_vol_settings(false)));
+}
+
+TEST(VolSettingsSatisfyInvariant, ServeOnCloseFalseAndKeepFalseViolatesIt) {
+  // Round 5's own actual (wrong) configuration, fed directly: the
+  // lead's own instruction, "the invariant test killing a settings
+  // pair with serve_on_close=false and keep=false."
+  EXPECT_FALSE(VolSettingsSatisfyInvariant(VolSettings{/*serve_on_close=*/false, /*keep=*/false}));
+}
+
+TEST(VolSettingsSatisfyInvariant, AnyPairWithKeepTrueSatisfiesIt) {
+  EXPECT_TRUE(VolSettingsSatisfyInvariant(VolSettings{false, true}));
+  EXPECT_TRUE(VolSettingsSatisfyInvariant(VolSettings{true, true}));
+}
+
+TEST(VolSettingsSatisfyInvariant, ServeOnCloseTrueAndKeepFalseSatisfiesIt) {
+  // Never a configuration this attach actually ships, but the
+  // invariant itself ("serve_on_close==false implies keep==true") does
+  // not forbid it -- LowFive's own internal auto-serve covers this
+  // pair, per lowfive_attach_decision.hpp's own "ROOT CAUSE" comment.
+  EXPECT_TRUE(VolSettingsSatisfyInvariant(VolSettings{true, false}));
+}
+
+// ---------------------------------------------------------------------
+// Round 6: FindOwnExportedFiles() -- the binding-table-derived file
+// name(s) this rank's own attach must drop after each is served.
+
+TEST(FindOwnExportedFiles, USOwnFileIsBrusselatorU) {
+  const auto table = MakeBrusselatorBindingTable();
+  const auto r = FindOwnExportedFiles(table, "U");
+  ASSERT_TRUE(r.ok()) << r.error().code;
+  ASSERT_EQ(r.value().size(), 1u);
+  EXPECT_EQ(r.value()[0], "brusselator_u.h5");
+}
+
+TEST(FindOwnExportedFiles, VSOwnFileIsBrusselatorV) {
+  const auto table = MakeBrusselatorBindingTable();
+  const auto r = FindOwnExportedFiles(table, "V");
+  ASSERT_TRUE(r.ok()) << r.error().code;
+  ASSERT_EQ(r.value().size(), 1u);
+  EXPECT_EQ(r.value()[0], "brusselator_v.h5");
+}
+
+TEST(FindOwnExportedFiles, UnknownComponentOwnsNothing) {
+  const auto table = MakeBrusselatorBindingTable();
+  const auto r = FindOwnExportedFiles(table, "W");
+  ASSERT_TRUE(r.ok()) << r.error().code;
+  EXPECT_TRUE(r.value().empty());
+}
+
+TEST(FindOwnExportedFiles, EmptyTableOwnsNothing) {
+  const fuse::LowFiveFieldBindingTable table;
+  const auto r = FindOwnExportedFiles(table, "U");
+  ASSERT_TRUE(r.ok()) << r.error().code;
+  EXPECT_TRUE(r.value().empty());
+}
+
+// ---------------------------------------------------------------------
+// Round 6: the model check's own file-lifetime cases, renamed from
+// round 4's own ProcessPolicy::nothing_indexed (wrong guessed
+// mechanism, corrected by round 5's own source re-reading) to
+// ProcessPolicy::file_deleted_at_close (round 6's own confirmed one),
+// and driven from decide_vol_settings() directly, not a hand-set bool
+// disconnected from it -- "the model must be driven from decide_vol_
+// settings so that a mutation of the setting changes the verdict."
+
+TEST(ModelCheck, ShippedConfigurationCompletesFor1Iteration) {
   using namespace fuse_examples::lowfive_attach_model;
-  ProcessPolicy server{PolicyKind::kShipped, ServeRole::kFirstServer, /*nothing_indexed=*/true};
-  ProcessPolicy reader{PolicyKind::kShipped, ServeRole::kFirstReader, /*nothing_indexed=*/true};
+  const auto settings = fuse_examples::lowfive_attach::decide_vol_settings(/*distributed=*/true);
+  ProcessPolicy server{PolicyKind::kShipped, ServeRole::kFirstServer, !settings.keep};
+  ProcessPolicy reader{PolicyKind::kShipped, ServeRole::kFirstReader, !settings.keep};
+  const auto r = RunSimulation(1, server, reader);
+  EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
+}
+
+TEST(ModelCheck, ShippedConfigurationCompletesFor2And60Iterations) {
+  using namespace fuse_examples::lowfive_attach_model;
+  const auto settings = fuse_examples::lowfive_attach::decide_vol_settings(/*distributed=*/true);
+  ProcessPolicy server{PolicyKind::kShipped, ServeRole::kFirstServer, !settings.keep};
+  ProcessPolicy reader{PolicyKind::kShipped, ServeRole::kFirstReader, !settings.keep};
+  for (int n : {2, 60}) {
+    const auto r = RunSimulation(n, server, reader);
+    EXPECT_TRUE(r.completed) << "n=" << n << " " << (r.stuck_example ? *r.stuck_example : "");
+  }
+}
+
+TEST(ModelCheck, ShippedConfigurationCompletesRegardlessOfWhichPositionIsFirstServer) {
+  using namespace fuse_examples::lowfive_attach_model;
+  const auto settings = fuse_examples::lowfive_attach::decide_vol_settings(/*distributed=*/true);
+  ProcessPolicy a{PolicyKind::kShipped, ServeRole::kFirstReader, !settings.keep};
+  ProcessPolicy b{PolicyKind::kShipped, ServeRole::kFirstServer, !settings.keep};
+  const auto r = RunSimulation(2, a, b);
+  EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
+}
+
+// Mutation target (a): if decide_vol_settings() is mutated to return
+// keep=false, THIS test's own policy flips to file_deleted_at_close=
+// true and the shipped configuration gets stuck -- failing the
+// EXPECT_TRUE(r.completed) tests above, not a separate hand-set case.
+// Pinned directly here too, for a config that is NOT what decide_vol_
+// settings() actually returns, so H2's own confirmed round-5 mechanism
+// stays pinned even if decide_vol_settings() itself is never wrong.
+TEST(ModelCheck, FileDeletedAtCloseConfigurationGetsStuck) {
+  using namespace fuse_examples::lowfive_attach_model;
+  ProcessPolicy server{PolicyKind::kShipped, ServeRole::kFirstServer, /*file_deleted_at_close=*/true};
+  ProcessPolicy reader{PolicyKind::kShipped, ServeRole::kFirstReader, /*file_deleted_at_close=*/true};
   const auto r = RunSimulation(1, server, reader);
   EXPECT_FALSE(r.completed);
   ASSERT_TRUE(r.stuck_example.has_value());
@@ -508,15 +632,58 @@ TEST(ModelCheck, ShippedProtocolWithNothingIndexedGetsStuck) {
 
 // Sanity check on the flag itself: leaving it at its own default (false)
 // must reproduce the ordinary, already-passing shipped-protocol result
-// -- i.e. this new field cannot have silently changed the nominal case.
-TEST(ModelCheck, ShippedProtocolDefaultsToIndexedAndStillCompletes) {
+// -- i.e. this field cannot have silently changed the nominal case.
+TEST(ModelCheck, ShippedProtocolDefaultsToKeptAndStillCompletes) {
   using namespace fuse_examples::lowfive_attach_model;
   ProcessPolicy server{PolicyKind::kShipped, ServeRole::kFirstServer};
   ProcessPolicy reader{PolicyKind::kShipped, ServeRole::kFirstReader};
-  EXPECT_FALSE(server.nothing_indexed);
-  EXPECT_FALSE(reader.nothing_indexed);
+  EXPECT_FALSE(server.file_deleted_at_close);
+  EXPECT_FALSE(reader.file_deleted_at_close);
+  EXPECT_TRUE(server.drop_after_serve);
+  EXPECT_TRUE(reader.drop_after_serve);
   const auto r = RunSimulation(2, server, reader);
   EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
+}
+
+// ---------------------------------------------------------------------
+// Round 6: WouldReuseStaleFileOnRecreate() -- the THIRD named
+// configuration ("keep=true without the drop"), reported as a stale-
+// data-reuse failure, NOT as a stuck/diverging search result: the
+// lead's own instruction names it as a DIFFERENT failure mode, and
+// this header's own doc comment on the function explains why no
+// interleaving search is needed or able to detect it (it is not a
+// blocking/liveness issue at all).
+
+TEST(WouldReuseStaleFileOnRecreate, KeepTrueWithoutDropOnSecondIterationIsTrue) {
+  using namespace fuse_examples::lowfive_attach_model;
+  ProcessPolicy server{PolicyKind::kShipped, ServeRole::kFirstServer, /*file_deleted_at_close=*/false,
+                       /*drop_after_serve=*/false};
+  EXPECT_TRUE(WouldReuseStaleFileOnRecreate(server, 2));
+  EXPECT_TRUE(WouldReuseStaleFileOnRecreate(server, 60));
+}
+
+TEST(WouldReuseStaleFileOnRecreate, OneIterationNeverRecreatesAnything) {
+  using namespace fuse_examples::lowfive_attach_model;
+  ProcessPolicy server{PolicyKind::kShipped, ServeRole::kFirstServer, /*file_deleted_at_close=*/false,
+                       /*drop_after_serve=*/false};
+  EXPECT_FALSE(WouldReuseStaleFileOnRecreate(server, 1));
+}
+
+TEST(WouldReuseStaleFileOnRecreate, ShippedConfigurationNeverReusesAStaleFile) {
+  using namespace fuse_examples::lowfive_attach_model;
+  const auto settings = fuse_examples::lowfive_attach::decide_vol_settings(/*distributed=*/true);
+  ProcessPolicy server{PolicyKind::kShipped, ServeRole::kFirstServer, !settings.keep};
+  EXPECT_FALSE(WouldReuseStaleFileOnRecreate(server, 60));
+}
+
+TEST(WouldReuseStaleFileOnRecreate, FileDeletedAtCloseHasNothingToReuseEither) {
+  // If the file was never kept at all (round 5's own actual
+  // misconfiguration), there is nothing left to reuse stale -- the two
+  // failure modes are mutually exclusive, not compounding.
+  using namespace fuse_examples::lowfive_attach_model;
+  ProcessPolicy server{PolicyKind::kShipped, ServeRole::kFirstServer, /*file_deleted_at_close=*/true,
+                       /*drop_after_serve=*/false};
+  EXPECT_FALSE(WouldReuseStaleFileOnRecreate(server, 60));
 }
 
 

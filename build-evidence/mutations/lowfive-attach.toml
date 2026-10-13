@@ -141,3 +141,29 @@ old = """    out += "(" + regs[i].file + ", " + regs[i].dataset_pattern + ", " +
 new = """    out += "(" + regs[i].file + ", " + regs[i].dataset_pattern + ")";"""
 target = "fuse_verification_brusselator_lowfive_attach_test"
 test = "verification.brusselator_lowfive_attach"
+
+# Round 6 (the diagnosed, cited defect -- not instrumentation this time):
+# three mutations for decide_vol_settings()'s own keep field and the
+# guarded drop call sites in lowfive_attach.cpp.
+
+[[mutation]]
+id = "decide-vol-settings-keep-removed"
+area = "examples"
+describes = "decide_vol_settings() returns keep=false instead of true -- reproduces round 5's own measured misconfiguration exactly: MetadataVOL::file_close() erases and deletes the file before this attach's own explicit serve_all() call ever runs, and serve_all() finds files.size()==0 and returns without serving"
+file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
+old = """  (void)distributed;  // both branches currently want the identical pair
+  return VolSettings{/*serve_on_close=*/false, /*keep=*/true};"""
+new = """  (void)distributed;  // both branches currently want the identical pair
+  return VolSettings{/*serve_on_close=*/false, /*keep=*/false};"""
+target = "fuse_verification_brusselator_lowfive_attach_test"
+test = "verification.brusselator_lowfive_attach"
+
+[[mutation]]
+id = "would-reuse-stale-file-on-recreate-ignores-drop-after-serve"
+area = "examples"
+describes = "WouldReuseStaleFileOnRecreate() stops checking drop_after_serve -- would make the model-check's own third named configuration (keep=true without the drop) indistinguishable from the shipped protocol (keep=true, drop after serve), silently dropping the one check this round's own report adds for that failure mode"
+file = "examples/brusselator/participants/lowfive_attach_model_check.hpp"
+old = """  return !policy.file_deleted_at_close && !policy.drop_after_serve && n_iterations > 1;"""
+new = """  return !policy.file_deleted_at_close && n_iterations > 1;"""
+target = "fuse_verification_brusselator_lowfive_attach_test"
+test = "verification.brusselator_lowfive_attach"

@@ -135,20 +135,39 @@ enum class PolicyKind {
 struct ProcessPolicy {
   PolicyKind kind;
   ServeRole role;  // meaningful for kShipped and kRejectedPreOpenFlush only
-  // ROUND 4, DEFECT B's own named case (not a rejected design -- a
-  // measured LowFive mechanic this attach's own fix must not silently
-  // rely on serve_state_step() alone to prevent): when true, a
-  // kEnterBlocking action never actually serves anything, modelling
-  // `DistMetadataVOL::serve_all()` returning WITHOUT calling `index.
-  // serve()` because `index.indexed_datasets == 0` (lowfive_attach_
-  // decision.hpp's own "DEFECT B" comment has the full citations: an
-  // unslashed `set_memory()` pattern means `dataset_create()`'s own
-  // `is_memory` check is false for every dataset, so none is ever
-  // attached to the file's own in-memory tree, and `Index`'s own
-  // `find_datasets()` traversal finds nothing to index). Default false
-  // (the shipped protocol's own tests, which assert completion, must
-  // not accidentally rely on this).
-  bool nothing_indexed = false;
+  // ROUND 6, RENAMED from round 4's own `nothing_indexed` (the lead's
+  // own instruction: "do not leave two names for it" -- round 5 already
+  // established the round-4 NAME's own guessed MECHANISM, an unslashed
+  // set_memory() pattern, does not hold; round 6 found the REAL one and
+  // this field is renamed to say so, not left with the wrong name
+  // alongside a corrected comment). When true, a kEnterBlocking action
+  // never actually serves anything, modelling `DistMetadataVOL::
+  // serve_all()` returning WITHOUT calling `index.serve()` because
+  // `files.size() == 0` by the time it runs -- `MetadataVOL::file_
+  // close()`'s own `if (!keep) { files.erase(f->name); delete f; }`
+  // (lowfive_attach_decision.hpp's own "ROOT CAUSE" comment has the
+  // full citation) erased and deleted the file, synchronously inside
+  // H5Fclose(), before this process's own explicit serve call -- the
+  // ONLY server this protocol ever gives a file -- ever runs a line.
+  // Driven, in the tests that use this field, from `fuse_examples::
+  // lowfive_attach::decide_vol_settings()`'s own `keep` field (`!keep`
+  // => this flag true), not hand-set independently of it -- "the model
+  // must be driven from decide_vol_settings so that a mutation of the
+  // setting changes the verdict," the lead's own instruction. Default
+  // false (the shipped protocol's own tests, which assert completion,
+  // must not accidentally rely on this).
+  bool file_deleted_at_close = false;
+  // ROUND 6: whether this process's own exported file is dropped
+  // (lowfive_attach.cpp's own GuardedDropOwnExportedFile(), called
+  // right after each ACTUAL serve) once it has been served. Default
+  // true (the shipped protocol). False models the round-6 brief's own
+  // third named configuration -- keep=true, but the drop step itself
+  // never runs -- see WouldReuseStaleFileOnRecreate() below for why
+  // this is NOT modelled as a blocking/stuck state at all (it is not
+  // one): the search's own vocabulary covers whether processes get
+  // stuck, and a never-dropped-but-still-served file does not get
+  // anyone stuck, it gets the NEXT period's own write silently wrong.
+  bool drop_after_serve = true;
 };
 
 struct DecideResult {
@@ -158,8 +177,8 @@ struct DecideResult {
   // Meaningful only when action == kEnterBlocking: whether this call
   // actually enters a blocking serve the peer's own open-and-close can
   // release (true), or completes as a no-op that never serves anything
-  // at all (false, DEFECT B's own case) -- see ProcessPolicy::
-  // nothing_indexed above. Always true for every other action.
+  // at all (false, ProcessPolicy::file_deleted_at_close's own case).
+  // Always true for every other action.
   bool actually_serves = true;
 };
 
@@ -227,7 +246,7 @@ inline DecideResult Decide(const ProcessPolicy& policy, StepKind kind, int k, bo
     switch (result.value()) {
       case ServeAction::kServeNow:
         return {MicroAction::kEnterBlocking, state.deferred_pending, pending_k,
-               !policy.nothing_indexed};
+               !policy.file_deleted_at_close};
       case ServeAction::kDeferServe:
         return {MicroAction::kPassThrough, state.deferred_pending, k, true};
       case ServeAction::kReceiveOnly:
@@ -235,7 +254,7 @@ inline DecideResult Decide(const ProcessPolicy& policy, StepKind kind, int k, bo
         return {MicroAction::kPassThrough, state.deferred_pending, pending_k, true};
       case ServeAction::kFlushDeferred:
         return {MicroAction::kEnterBlocking, state.deferred_pending, pending_k,
-               !policy.nothing_indexed};
+               !policy.file_deleted_at_close};
       case ServeAction::kNoopFinalizeClean:
         return {MicroAction::kPassThrough, state.deferred_pending, pending_k,
                true};  // not reached mid-script
@@ -341,7 +360,8 @@ inline std::optional<StepOutcome> TryStep(const std::vector<MicroStep>& script, 
   const DecideResult d = Decide(policy, step.kind, step.k, pos.pending, pos.pending_k);
 
   if (d.action == MicroAction::kEnterBlocking && !d.actually_serves) {
-    // ROUND 4, DEFECT B's own named case (ProcessPolicy::nothing_indexed):
+    // ROUND 6 (renamed from round 4's own ProcessPolicy::nothing_indexed,
+    // now ProcessPolicy::file_deleted_at_close):
     // `serve_all()` returns WITHOUT ever calling `index.serve()` when
     // nothing is indexed -- a complete no-op from BOTH sides' own point
     // of view. This process does NOT block (advances immediately,
@@ -442,6 +462,38 @@ inline SimulationResult RunSimulation(int n_iterations, ProcessPolicy policy_a,
   result.stuck_example = stuck_example;
   result.completed = !stuck_example.has_value();
   return result;
+}
+
+
+/// PURE, no search needed (unlike RunSimulation()'s own interleaving
+/// exploration, this is a STATIC property of a configuration, not of
+/// any particular interleaving): does `policy` reuse a STALE file on
+/// this process's own SECOND (or later) write of it? lowfive_attach_
+/// decision.hpp's own "ROOT CAUSE" comment has the full citation on
+/// `MetadataVOL::file_create()`: `files.emplace(name_, f)` is a
+/// `std::map::emplace()` call, a NO-OP on a duplicate key -- if the
+/// file is KEPT resident from a PREVIOUS write that was never dropped,
+/// the OLD File* (and its own stale children) stays exactly where it
+/// is, and the fresh write goes into an orphaned object `serve_all()`
+/// never finds. `!policy.file_deleted_at_close` is this policy's own
+/// `keep` -- the two are the SAME fact read from opposite ends (this
+/// header's own ProcessPolicy::file_deleted_at_close doc comment: it is
+/// driven from `!decide_vol_settings().keep`), so this function reads
+/// it that way rather than adding a third, redundant field that could
+/// silently disagree with the first. This happens on EVERY write after
+/// the first, regardless of which rank serves when or in what order --
+/// hence no interleaving search: `!file_deleted_at_close &&
+/// !drop_after_serve && n_iterations > 1` is both necessary and
+/// sufficient, true for any policy whose OWN write actually keeps a
+/// file (both roles write once per iteration in this track's own fixed
+/// script, so this applies to either). Returns false for a single
+/// iteration (nothing to recreate yet), whenever a drop actually
+/// happens, or whenever the file was never kept in the first place
+/// (file_deleted_at_close's own case -- nothing to reuse if nothing
+/// survived to be reused).
+[[nodiscard]] inline bool WouldReuseStaleFileOnRecreate(const ProcessPolicy& policy,
+                                                        int n_iterations) {
+  return !policy.file_deleted_at_close && !policy.drop_after_serve && n_iterations > 1;
 }
 
 }  // namespace fuse_examples::lowfive_attach_model
