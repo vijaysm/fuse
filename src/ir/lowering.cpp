@@ -297,7 +297,28 @@ LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy) {
       }
       const OpAttrs merge_attrs{.reason = std::string(merge_op_name(spec->op)),
                                 .merge = spec->op};
-      const ValueType newest_type = ctx.dag.arc(newest).type;
+      // Review 2026-10-11 IS-1 (placement follow-on): the newest writer's
+      // own arc supplies the merge's time level, but NOT its placement --
+      // `lower_channel()`'s step 5b (src/ir/rules_channel.cpp) only moves
+      // `type.rank_set` off the writer's own component when the two
+      // components' RankSets actually differ, so a same-rank-set channel
+      // (the ordinary case: writer and target happen to run on the same
+      // ranks) leaves it stamped with the WRITER's component id for the
+      // whole chain. Taking `newest_type.rank_set` as-is therefore schedules
+      // the Merge against whichever writer happened to be newest's own
+      // clock (`boundary_owner()`, src/schedule/expand.cpp) instead of
+      // `f`'s owner -- silently correct when that writer's interval equals
+      // the owner's, and silently wrong (one Merge instance instead of one
+      // per owner tick) when it does not. The merge is always delivered to
+      // `f`'s owner, never to a writer, so that is the placement it carries
+      // regardless of which writer is newest (measured on
+      // `multirate_merge()`'s own fixture, test/schedule/plan_test.cpp: a
+      // period-2 lagging writer merged with a period-1 identity one
+      // produced a single Merge instance at the slower writer's own tick
+      // instead of one per target tick, sorting the Sink's own per-tick
+      // reads ahead of the write they depend on).
+      ValueType newest_type = ctx.dag.arc(newest).type;
+      newest_type.rank_set = static_cast<int>(g.owner_of(f).value());
 
       // Merge with more than three sources is lowered as a left-fold of
       // pairwise merges (documented at include/fuse/schedule/plan.hpp's

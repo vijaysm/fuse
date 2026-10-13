@@ -136,6 +136,54 @@ CouplingGraph merge_across_ranks() {
   return g;
 }
 
+/// Two writers at DIFFERENT intervals -- W1 ticks every 2 time units, W2
+/// every 1 -- merged (Sum) into M, which ticks every 1. Colocated (same rank
+/// as the target) on purpose, so the only thing this fixture exercises is
+/// the interaction between multirate decomposition and the Merge phase, not
+/// a Transport/Epoch pair (`MergeAcrossRanksSchedulesInDependenceOrder`
+/// already covers that). W1's channel carries a real chain node (`.relax`)
+/// so its tail is not the bare Source/Sink arc.
+///
+/// Review 2026-10-11 IS-1: W1's slab decomposition against M's interval
+/// (`decompose(2, 1, period)`) makes its FIRST merge instant target-limited
+/// -- the source step has not finished when M's first tick ends, so the
+/// causality contract in expand.hpp stamps W1's tail `AfterTicks` there --
+/// while the boundary pass stamped every Merge `BeforeTicks` unconditionally.
+/// Same instant, wrong relative order: `check_dependence_order()` refused
+/// this legal graph with `E-SCHED-ORDER`, reading it as "Merge ran before
+/// the input it combines."
+CouplingGraph multirate_merge() {
+  CouplingGraph g;
+  const auto m = g.add_mesh(fuse::MeshDecl{.name = "m"});
+  const auto r = g.add_region(fuse::Region{.name = "r", .mesh = m});
+  const auto dst = g.add_component(ComponentDecl{
+      .name = "dst", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  const auto in = g.add_field(
+      dst, fuse::FieldSpec{.name = "f_in", .region = r,
+                           .units = u::kHeatFluxDensity,
+                           .conservation = fuse::Conservation::Extensive,
+                           .intent = fuse::Intent::Requires});
+  const auto w1 = g.add_component(ComponentDecl{
+      .name = "w1", .ranks = fuse::RankSet{0, 1}, .interval = Rational{2}});
+  const auto out1 = g.add_field(
+      w1, fuse::FieldSpec{.name = "f_out", .region = r,
+                          .units = u::kHeatFluxDensity,
+                          .conservation = fuse::Conservation::Extensive,
+                          .intent = fuse::Intent::Provides});
+  const auto ch1 = g.add_channel("ch1", out1, in);
+  g.channel(ch1).relax(0.7);
+  const auto w2 = g.add_component(ComponentDecl{
+      .name = "w2", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  const auto out2 = g.add_field(
+      w2, fuse::FieldSpec{.name = "f_out", .region = r,
+                          .units = u::kHeatFluxDensity,
+                          .conservation = fuse::Conservation::Extensive,
+                          .intent = fuse::Intent::Provides});
+  g.add_channel("ch2", out2, in);
+  g.merge(in, fuse::MergeOp::Sum);
+  return g;
+}
+
 /// Independent of the scheduler's own reasoning: walk the emitted stream and
 /// check that every operand was written by an earlier instruction. A lagged
 /// arc (negative time offset) is exempt -- spec §4.3, its value comes from the
@@ -523,6 +571,24 @@ TEST(ExecutionPlan, MergeAcrossRanksSchedulesInDependenceOrder) {
   ASSERT_TRUE(saw_transport)
       << "fixture must actually exercise a Transport/Epoch pair, or it is "
          "the colocated case FiveWriterMerge* already covers";
+
+  const fuse::ClockSet cs{g};
+  const auto r = schedule(g, lowered.dag, cs, constant_sizes(64));
+  ASSERT_TRUE(r.ok()) << r.diags.to_string();  // used to fail E-SCHED-ORDER
+  EXPECT_EQ(dependence_violations(lowered.dag, r.plan), 0u);
+}
+
+// Review 2026-10-11 IS-1: a Merge combining writers at different intervals
+// must schedule, and the stream must be a real dependence order, not an
+// accident of E-SCHED-ORDER happening not to fire. Before the fix this
+// refused with E-SCHED-ORDER (Merge's boundary-pass phase was unconditionally
+// BeforeTicks, sorting it ahead of W1's target-limited, AfterTicks tail at
+// their shared first instant); after the fix Merge's phase tracks the latest
+// of its writers' phases at that instant and the plan is a valid order.
+TEST(ExecutionPlan, MultirateMergeSchedulesInDependenceOrder) {
+  const CouplingGraph g = multirate_merge();
+  const auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
 
   const fuse::ClockSet cs{g};
   const auto r = schedule(g, lowered.dag, cs, constant_sizes(64));
