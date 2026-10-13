@@ -53,11 +53,36 @@ class Evaluation
     {
         if (result_.verdict == ConnectionVerdict::Ambiguous || result_.verdict == ConnectionVerdict::Unsupported)
         {
-            // A refused connection has no chain. A partial chain would invite a
-            // runtime fallback, which is exactly what must not exist: a
-            // fallback that substitutes an operator changes the meaning of the
-            // coupled quantity while reporting success.
-            result_.chain.steps.clear();
+            // A refused connection keeps no Spatial-, Temporal- or
+            // Constraint-phase step: each of those moves or alters the actual
+            // value, and emitting one without the connection it belongs to
+            // would be exactly the runtime fallback that must not exist (a
+            // fallback that substitutes an operator changes the meaning of
+            // the coupled quantity while reporting success).
+            //
+            // BM-1 (review 2026-10-11): this used to clear the WHOLE chain,
+            // including a Transform-phase step (an inferred `UnitScale`, most
+            // often) that an EARLIER stage had already authorized before a
+            // LATER stage refused -- Shape, Location, Temporal, Conservation
+            // and Capability all run after Unit. Discarding it was a second,
+            // independent silent loss on top of the refusal itself: a
+            // channel whose target is `Conservation::Extensive` refuses at
+            // the Conservation stage on every declared transfer that is not
+            // conservative, so a scale-only unit mismatch (kPa -> Pa) on such
+            // a channel lost its UnitScale here and surfaced, much later
+            // and with no explanation, as a bare `E-IR-TYPE` in `lower()`
+            // (src/ir/rules_channel.cpp reads this same chain). A
+            // Transform-phase step only rescales, reorders or selects
+            // components -- it carries none of the above risk, so keeping it
+            // is not a partial chain in the sense the comment above warns
+            // against; it is the one part of the chain that was already
+            // correct before the later stage had anything to say.
+            auto& steps = result_.chain.steps;
+            steps.erase(std::remove_if(steps.begin(), steps.end(),
+                                       [](const OperatorStep& step) {
+                                           return operator_phase(step.kind) != OperatorPhase::Transform;
+                                       }),
+                       steps.end());
             return std::move(result_);
         }
         if (result_.chain.empty()) result_.verdict = ConnectionVerdict::Exact;
