@@ -396,6 +396,33 @@ void full_chain_is_ordered()
     require(result.chain.steps[0].kind == OperatorKind::UnitScale, "the chain does not begin with the unit scale");
     require(result.chain.steps.back().kind == OperatorKind::Clip, "the chain does not end with the constraint");
 }
+
+// BM-6 (review 2026-10-11): the emitted AffineUnit offset used to be
+// `source.offset - target.offset`, correct only when `target.scale == 1`
+// -- the one case `unit_rules()` above happens to pin (`agreeing()`'s
+// `temperature()` fixture leaves both sides at the default scale of 1).
+// This test sets `target.scale = 2` so a regression back to the
+// un-divided formula is caught: the correct conversion is
+// `v_t = (source.scale/target.scale)*v_s + (source.offset-target.offset)/
+// target.scale`, i.e. scale 1/2 and offset -5 for the inputs below, not
+// the buggy scale 1/2 and offset -10 the un-divided formula produced.
+void affine_conversion_divides_offset_by_target_scale()
+{
+    auto request = agreeing();
+    request.source.units.scale = Rational{1};
+    request.source.units.offset = Rational{0};
+    request.target.units.scale = Rational{2};
+    request.target.units.offset = Rational{10};
+    request.explicitly_requested = operator_request_bit(OperatorKind::AffineUnit);
+    const auto result = check_connection(request);
+    require(result.verdict == ConnectionVerdict::LosslessExplicit, "a requested affine conversion was refused");
+    require(result.chain.size() == 1 && result.chain.steps[0].kind == OperatorKind::AffineUnit,
+            "no affine operator was emitted");
+    require(result.chain.steps[0].scale == Rational{1, 2}, "the conversion factor was wrong");
+    require(result.chain.steps[0].offset == Rational{-5},
+            "the offset was not divided by target.scale (got the un-divided -10 instead of -5)");
+}
+
 }
 
 TEST(Compatibility, ExactConnection) { exact_connection(); }
@@ -408,3 +435,4 @@ TEST(Compatibility, ConservationRules) { conservation_rules(); }
 TEST(Compatibility, CapabilityAndVersionClosure) { capability_and_version_closure(); }
 TEST(Compatibility, ReportsEveryStageAtOnce) { reports_every_stage_at_once(); }
 TEST(Compatibility, FullChainIsOrdered) { full_chain_is_ordered(); }
+TEST(Compatibility, AffineConversionRespectsTargetScale) { affine_conversion_divides_offset_by_target_scale(); }
