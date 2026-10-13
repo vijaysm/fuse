@@ -126,3 +126,9 @@ FUSE_FORTRAN_EXPORT fuse_status ffuse_view_field(fuse_ctx* ctx, const fuse_field
   if (!table || !table->view_field) return FUSE_ERR_UNSUPPORTED;
   return table->view_field(ctx, in, out);
 }
+
+FUSE_FORTRAN_EXPORT fuse_status ffuse_base_communicator(fuse_ctx* ctx, const fuse_null* in, fuse_base_communicator_info* out) {
+  const fuse_participant_abi_v1* table = fuse_fortran_shim_table();
+  if (!table || !table->base_communicator) return FUSE_ERR_UNSUPPORTED;
+  return table->base_communicator(ctx, in, out);
+}

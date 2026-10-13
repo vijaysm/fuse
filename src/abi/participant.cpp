@@ -613,8 +613,7 @@ fuse_status impl_setup(fuse_ctx* ctx, const fuse_setup_options* in, fuse_null*) 
                  "fuse_setup_options: a non-zero communicator was supplied, but this "
                  "build has no MPI");
 #endif
-      c.communicator     = in->communicator;
-      c.communicator_set = true;
+      c.communicator = in->communicator;
 #if FUSE_HAVE_MPI
       // my_component's own comment (entries.def): form the real base
       // communicator via fuse::transport::connect() when the loaded
@@ -644,12 +643,24 @@ fuse_status impl_setup(fuse_ctx* ctx, const fuse_setup_options* in, fuse_null*) 
           // are connected, and neither can finalize on its own.
           c.connected = connected.value();
         }
-        // InProcess/Plugin: nothing to do -- in->communicator already is
-        // the base communicator, exactly as when my_component is NULL
-        // (fuse::transport::connect() itself refuses to be called for
-        // either, for the identical reason).
+        // InProcess/Plugin/LowFive: nothing to do -- in->communicator
+        // already is the base communicator, exactly as when my_component
+        // is NULL (fuse::transport::connect() itself refuses to be
+        // called for any of the three, for the identical reason).
       }
 #endif
+      // D14 (KNOWN_ISSUES.md), found while implementing base_communicator():
+      // set ONLY here, after every early return above has had its chance to
+      // fire -- a FAILED connect() (Mpmd/Connect launch) must leave
+      // communicator_set FALSE, never stranded true with the caller's own
+      // raw, UNMERGED communicator. Before this fix, a failed connect()
+      // left communicator_set true (set eagerly, above the connect() call)
+      // with c.communicator still the caller's own unmerged in->communicator
+      // -- harmless everywhere that already gated on c.state (setup() itself
+      // returned a failure, so no caller proceeds), but exactly wrong for
+      // base_communicator()'s own `formed` flag, whose contract is "a
+      // TRUSTWORTHY base communicator exists", not "setup() was called".
+      c.communicator_set = true;
     }
     if (in->has_end_time) {
       const fuse::Result<fuse::Rational> t = from_abi_time(in->end_time);
@@ -1950,6 +1961,30 @@ fuse_status impl_run(fuse_ctx* ctx, const fuse_run_request* in, fuse_null*) {
                  r.error().message);
     }
     c.periods_completed += in->periods;
+    return FUSE_OK;
+  });
+}
+
+// D14 (KNOWN_ISSUES.md), appended 2026-10-13: a local, non-collective read of
+// c.communicator/c.communicator_set -- entries.def's own doc comment on this
+// entry has the full account of why it exists (the merged base communicator
+// Connect-mode's own accept/connect + MPI_Intercomm_merge forms, previously
+// held only inside this opaque fuse_ctx and never returned to any caller).
+// Legal at ANY context state, including before fuse_setup() is ever called
+// (formed=0, communicator=0, matching context.hpp's own field defaults) --
+// unlike fuse_is_coupling_ongoing() above, this reads nothing that depends
+// on fuse_initialize() or fuse_setup() having run; `with_ctx()` is the only
+// gate (a live, non-destroyed handle).
+fuse_status impl_base_communicator(fuse_ctx* ctx, const fuse_null*,
+                                   fuse_base_communicator_info* out) {
+  return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
+    if (out == nullptr) return FUSE_ERR_INVALID;
+    const fuse_status sz = check_struct_size(out);
+    if (sz != FUSE_OK) return sz;
+    out->struct_size  = sizeof(fuse_base_communicator_info);
+    out->communicator = c.communicator_set ? c.communicator : 0;
+    out->formed       = c.communicator_set ? 1 : 0;
+    out->reserved     = 0;
     return FUSE_OK;
   });
 }

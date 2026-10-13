@@ -303,6 +303,42 @@ checkpointed by any region, which is every component in a graph with no iteratio
 as `StepContext::iteration` (`include/fuse/runtime/component.hpp`) documents for an in-process
 component.
 
+## Recovering the base communicator FUSE formed (`base_communicator`)
+
+`fuse_setup_options::communicator` (above) is write-only from the caller's own point of view: for an
+`mpmd`- or `connect`-launched component, `fuse_setup()` internally replaces whatever communicator you
+passed with the real base communicator it formed (a duplicate of the shared MPMD world, or the
+merged intracommunicator `MPI_Intercomm_merge` produced from an accept/connect handshake), and never
+handed that value back — `setup`'s own `OUT` type has always been `fuse_null` (no output struct at
+all). For an `mpmd` launch this did not matter much: the base communicator is numbered identically to
+the `MPI_COMM_WORLD` you already had. For a `connect` (accept/connect) launch it mattered a great
+deal: the merged communicator spans BOTH separately-launched executables, with a rank numbering
+neither side's own local `MPI_COMM_WORLD` carries — and nothing could recover it (KNOWN_ISSUES.md
+D14's own "what remains" item 3).
+
+`base_communicator(ctx, NULL, &info)` closes that gap, appended after `view_field` (the current last
+entry in the table):
+
+```c
+fuse_base_communicator_info info = {.struct_size = sizeof(info)};
+fuse->base_communicator(ctx, NULL, &info);
+if (info.formed) {
+  MPI_Comm base = MPI_Comm_f2c((MPI_Fint)info.communicator);
+  /* base is this process's own base communicator -- the SAME one
+     RunnerConfig::base_communicator and MpiTransport::set_communicator use
+     internally, for every launch mode (in_process, plugin, mpmd, connect,
+     lowfive), not connect alone. */
+}
+```
+
+Legal at any context state, including before `fuse_setup()` has ever been called
+(`info.formed == 0`, `info.communicator == 0`, matching `fuse_setup_options::communicator`'s own
+documented default of "none"). A local, non-collective read: every rank of the base communicator
+already agrees on its own existence from `fuse_setup()`'s own collective (forming it in the first
+place IS the collective; reading back what each rank already has is not). Not meaningful across
+ranks as a single shared integer — like any MPI communicator, each rank's own `MPI_Comm_c2f` handle
+value is process-local, and this entry returns the caller's own.
+
 ## Version compatibility
 
 The table begins with its own size and version:

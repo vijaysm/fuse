@@ -228,6 +228,18 @@ typedef struct fuse_run_request {
   int64_t  periods;  /* how many coupling periods; -1 = until the end time */
 } fuse_run_request;
 
+/* the base communicator this context's setup() formed, if any -- D14 */
+/* (KNOWN_ISSUES.md), appended 2026-10-13: the ONE thing Connect-mode */
+/* (accept/connect) launch never handed back to a caller through any ABI query; */
+/* growth-only, read-only, a local (non-collective) read of state setup()'s own */
+/* collective already agreed identically on every rank */
+typedef struct fuse_base_communicator_info {
+  uint32_t struct_size;
+  int64_t  communicator;  /* Fortran handle (MPI_Comm_c2f) of this context's own base communicator -- the SAME value setup() stored internally and RunnerConfig::base_communicator/MpiTransport::set_communicator already use, for EVERY launch mode (InProcess, Plugin, Mpmd, Connect, LowFive), not Connect alone; 0 if setup() was never given a nonzero communicator */
+  int32_t  formed;  /* 1 if setup() was given a nonzero communicator (communicator_set), 0 otherwise -- a caller must check this before trusting `communicator`, the same struct_size-negotiation discipline every other OUT struct already uses for an old-caller default */
+  int32_t  reserved;  /* 0; fills the padding so that an appended member changes sizeof (abi-design.md rule 3) -- measured: struct_size(4)+pad(4)+communicator(8)+formed(4) leaves 4 bytes of trailing padding before this field consumes it */
+} fuse_base_communicator_info;
+
 /* one field a provider provides, requires, or both -- one row of what */
 /* describe() reports */
 typedef struct fuse_field_spec {

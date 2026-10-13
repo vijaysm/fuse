@@ -49,6 +49,12 @@ struct FakeV2Table {
   // table grows to the same entry count this fixture always enumerated
   // by hand.
   decltype(fuse_participant_abi_v1::view_field) view_field;
+  // D14 (KNOWN_ISSUES.md), appended 2026-10-13 to entries.def LAST --
+  // base_communicator() is now PART of the real v1 table's own prefix,
+  // not the fixture's simulated "v2" addition below; folded into
+  // FakeV2Table for the identical reason view_field's own comment just
+  // gave for itself, one entry later.
+  decltype(fuse_participant_abi_v1::base_communicator) base_communicator;
   // The appended v2 member. Never read by a v1 caller (struct_size says it
   // isn't there) and never read by this test's "v2 caller" EITHER, when the
   // table it was handed turns out to be a real v1 one -- see

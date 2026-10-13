@@ -13,8 +13,9 @@
 ! ergonomically", which is exactly why ffuse exists as flat ffuse_* symbols
 ! instead), so this mirror type exists ONLY in this test, to pin the one
 ! other number struct_sizes.golden records: struct_size + abi_version
-! (4 + 4 bytes) plus one C_FUNPTR per of the 16 entries (Unit 3, S6 phase
-! 3 Conformance, 2026-10-04: view_field appended last).
+! (4 + 4 bytes) plus one C_FUNPTR per of the 17 entries (Unit 3, S6 phase
+! 3 Conformance, 2026-10-04: view_field appended last; D14, 2026-10-13:
+! base_communicator appended last after that).
 program sizes_test
   use, intrinsic :: iso_c_binding
   use ffuse
@@ -47,6 +48,7 @@ program sizes_test
     type(c_funptr) :: end_step = c_null_funptr
     type(c_funptr) :: run = c_null_funptr
     type(c_funptr) :: view_field = c_null_funptr
+    type(c_funptr) :: base_communicator = c_null_funptr
   end type fuse_participant_abi_v1_mirror
 
   type(c_ptr) :: a_pointer
@@ -65,6 +67,7 @@ program sizes_test
   type(fuse_step_report) :: v_step_report
   type(fuse_ongoing) :: v_ongoing
   type(fuse_run_request) :: v_run_request
+  type(fuse_base_communicator_info) :: v_base_communicator_info
   type(fuse_participant_abi_v1_mirror) :: v_table
   type(fuse_field_spec) :: v_field_spec
   type(fuse_field_table) :: v_field_table
@@ -89,6 +92,7 @@ program sizes_test
   write(*, '(A," ",I0)') "fuse_step_report", c_sizeof(v_step_report)
   write(*, '(A," ",I0)') "fuse_ongoing", c_sizeof(v_ongoing)
   write(*, '(A," ",I0)') "fuse_run_request", c_sizeof(v_run_request)
+  write(*, '(A," ",I0)') "fuse_base_communicator_info", c_sizeof(v_base_communicator_info)
   write(*, '(A," ",I0)') "fuse_participant_abi_v1", c_sizeof(v_table)
   write(*, '(A," ",I0)') "fuse_field_spec", c_sizeof(v_field_spec)
   write(*, '(A," ",I0)') "fuse_field_table", c_sizeof(v_field_table)

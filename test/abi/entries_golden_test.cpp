@@ -73,6 +73,7 @@ TEST(AbiGolden, StructSizesMatchTheTable) {
       {"fuse_step_report", sizeof(fuse_step_report)},
       {"fuse_ongoing", sizeof(fuse_ongoing)},
       {"fuse_run_request", sizeof(fuse_run_request)},
+      {"fuse_base_communicator_info", sizeof(fuse_base_communicator_info)},
       {"fuse_participant_abi_v1", sizeof(fuse_participant_abi_v1)},
       {"fuse_field_spec", sizeof(fuse_field_spec)},
       {"fuse_field_table", sizeof(fuse_field_table)},
@@ -134,7 +135,8 @@ TEST(AbiGolden, NoStructHasTrailingPaddingALaterMemberCouldHide) {
   FUSE_NO_TRAILING_PADDING(fuse_step_report, delivery_field);
   FUSE_NO_TRAILING_PADDING(fuse_ongoing, next_component);
   FUSE_NO_TRAILING_PADDING(fuse_run_request, periods);
-  FUSE_NO_TRAILING_PADDING(fuse_participant_abi_v1, view_field);
+  FUSE_NO_TRAILING_PADDING(fuse_base_communicator_info, reserved);
+  FUSE_NO_TRAILING_PADDING(fuse_participant_abi_v1, base_communicator);
   FUSE_NO_TRAILING_PADDING(fuse_field_spec, element_type);
   FUSE_NO_TRAILING_PADDING(fuse_field_table, written);
   FUSE_NO_TRAILING_PADDING(fuse_provider_instance, self);

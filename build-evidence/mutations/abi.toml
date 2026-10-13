@@ -415,3 +415,20 @@ new = """    }
 target = "fuse_verification_brusselator_period_rollover_test"
 test = "verification.brusselator_period_rollover"
 result = "CONFIRMED 2026-10-13 (Collectives track, tier 0, /tmp/collectives/b0): applying the mutation by hand and rebuilding the target made BrusselatorPeriodRollover.StopsAtTheRequestedPeriodCountWithNoEndTime FAIL (begin_rep.next_component=0 at the stopping call instead of -1; whole unfiltered binary: [PASSED] 0 tests, [FAILED] 1 test). File restored from the in-memory pre-mutation text and confirmed byte-identical via cmp (both MD5 8749b463b4c75db9a4909c4218fe17ab). Clean rebuild of the same target then passed again ([PASSED] 1 test, begin_rep.next_component=-1 at the stopping call). The companion regression this `communicator_set` gate exists to prevent was independently confirmed by rebuilding and running fuse_abi_participant_test's own WHOLE unfiltered binary (17 tests): AbiParticipant.MismatchedRolloverNamesTheRealPeriodStartComponent, which never configures a communicator, PASSED unchanged ([PASSED] 17 tests)."
+
+[[mutation]]
+id = "abi-base-communicator-always-reports-formed"
+area = "abi"
+describes = "impl_base_communicator() reports formed = 1 unconditionally instead of c.communicator_set ? 1 : 0 (D14 Stage B, 2026-10-13), so a caller cannot tell an unformed base communicator (before setup(), or after a setup() that never supplied one) from a real one -- the one contract struct_size negotiation does not cover"
+file = "src/abi/participant.cpp"
+old = """    out->struct_size  = sizeof(fuse_base_communicator_info);
+    out->communicator = c.communicator_set ? c.communicator : 0;
+    out->formed       = c.communicator_set ? 1 : 0;
+    out->reserved     = 0;"""
+new = """    out->struct_size  = sizeof(fuse_base_communicator_info);
+    out->communicator = c.communicator_set ? c.communicator : 0;
+    out->formed       = 1;
+    out->reserved     = 0;"""
+target = "fuse_abi_struct_size_test"
+test = "abi.struct_size"
+result = "CONFIRMED 2026-10-13 (sandbox, tier-0 b0): applying the mutation and rebuilding fuse_abi_struct_size_test failed exactly 4 of 8 AbiStructSize tests -- BaseCommunicatorDefaultsToZeroFormedBeforeSetup, BaseCommunicatorStaysUnformedAfterACommunicatorlessSetup, BaseCommunicatorInfoExactFrozenSizeIsAccepted, and BaseCommunicatorInfoLongerStructFromANewerCallerIsAccepted (each on EXPECT_EQ(info.formed, 0), got 1); BaseCommunicatorInfoShortStructIsRefused was unaffected (struct_size negotiation fires before formed is ever read). File restored and confirmed byte-identical to the pre-mutation copy via md5 (803ae5e1dc25cad8413dbafac53e6c63 both before and after); fuse_abi_struct_size_test rebuilt clean and all 8 tests passed again."
