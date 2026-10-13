@@ -776,6 +776,25 @@ if(FUSE_ENABLE_LOWFIVE AND FUSE_ENABLE_MPI AND LOWFIVE_HAVE_DIST)
   add_executable(demo_b_consumer demo_b/consumer_main.cpp $<TARGET_OBJECTS:demo_b_consumer_hdf5>)
   target_link_libraries(demo_b_consumer PRIVATE fuse::transport MPI::MPI_CXX)
   target_include_directories(demo_b_consumer PRIVATE demo_b)
+
+  # review-2026-10-11 numerics
+  # TD-10: docs/user/examples.md claims "every one of them is run by
+  # ctest wherever its build configuration allows it", but demo_b had no
+  # ctest row at all, under any configuration (grep for add_test.*demo_b
+  # across the tree was empty) -- gated on the SAME three conditions the
+  # build above uses, so it registers exactly where the executables do
+  # and nowhere else. run_demo.sh's own two mpiexec children are each
+  # -n 1 (the rendezvous intercommunicator forms between two SEPARATE
+  # one-rank jobs, this file's own header comment), so one rank is
+  # enough for the row itself.
+  set(_demo_b_scratch ${CMAKE_CURRENT_BINARY_DIR}/demo-b-scratch)
+  add_test(NAME example.demo_b
+          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/demo_b/run_demo.sh
+                  ${CMAKE_BINARY_DIR}
+                  ${_demo_b_scratch}/port
+                  ${_demo_b_scratch}/producer_out.h5
+                  /grid/values)
+  set_tests_properties(example.demo_b PROPERTIES LABELS "example")
 else()
   message(STATUS "fuse: Demo B (examples/demo_b) needs "
                  "-DFUSE_ENABLE_LOWFIVE=ON -DFUSE_ENABLE_MPI=ON and a "
