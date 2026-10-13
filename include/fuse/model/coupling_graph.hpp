@@ -55,8 +55,16 @@ struct IterationRegionDecl {
   /// filtering here (preCICE ships `imvj-restart-mode` for precisely this
   /// reason), so its retained inverse Jacobian is never refreshed.
   ///
-  /// `AccelConfig::filter` (QR1/QR2/QR3) is a documented no-op until Task
-  /// 7.4; setting it changes nothing today.
+  /// `AccelConfig::filter` (QR1/QR2/QR3) is implemented and active:
+  /// `filter_qn_columns()` (src/num/accel_quasi_newton.cpp) is called from
+  /// the accelerator, `fuse/model/iteration.hpp` documents each filter's
+  /// measured effect on sweep count, and the freeze fixture pins
+  /// `FilterKind::QR1` in the canonical bytes. BM-11 (review 2026-10-11):
+  /// this comment used to say the filter was "a documented no-op until
+  /// Task 7.4", which was true when this declaration was written but
+  /// stayed uncorrected after Task 7.4 landed -- a reader tuning
+  /// convergence off this comment alone would skip the one knob that can
+  /// change sweep count by a large factor.
   AccelConfig            acceleration{.kind = AccelKind::None};
 
   /// Time windows track: the OPT-IN that will turn this region from today's
