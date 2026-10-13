@@ -378,6 +378,21 @@ cases compiled to a skip stub in every configuration, host included (`REVIEW.md`
 first written here; R-09 is the unrelated `step_period()` collective-agreement BLOCKER). `test/backend/moab_mesh_test.cpp` now includes `config.hpp` and tests `#if FUSE_HAVE_MOAB` — the
 cases compile again, but C1's "needs one host run" still stands: nothing here can `MPI_Init`.
 
+### C2. Second implementation review, 2026-10-11 — 159 findings, fixed 2026-10-12/13, disposition in `docs/dev/reviews/2026-10-11/disposition.md`
+
+Eleven independent read-only reviews against `4a8a9d8` (5 BLOCKER, 24 MAJOR, 95 MINOR/DEVIATION, 35
+IMPROVEMENT; `docs/dev/reviews/2026-10-11/index.md` is the ranked index). The owner's scope for the fix
+round was BLOCKER + MAJOR + the MINORs with real impact plus the wave-0 gates and the record corrections;
+the IMPROVEMENT tier stays open. Outcome, per the disposition table: 132 fixed (each library fix with a
+test that failed before it where one was constructible; the LowFive plugin and connect-accept fixes are
+verified by reading only, since neither path runs on the host), 3 deferred (IS-3 doc route, BM-5 → D58,
+AB-10 → D57), 2 not defects (BC-2 already closed at `e6a92e4`; RT-3's divergence is intentional and now
+documented), the rest open by scope. Thirteen of the twenty-nine BLOCKER/MAJOR findings were the same
+rank-agreement hang class (index §2.1); `docs/dev/rank-agreement.md` now carries the checklist question
+and the two accepted recipes, and the static gate the index proposes (`tools/check-rank-agreement.py`) is
+not built — recorded as the one structural follow-up. Entries D26 (closed), D14, D23, D42 and the new
+D57/D58 below carry the per-item records.
+
 ### ~~C1. The MOAB backend is built but unrun in the sandbox~~ — CLOSED: every MOAB row passes on the host, 2026-10-08
 
 **Host run, 2026-10-08 (the user's machine, `build-all`, `ctest -L moab`):
@@ -2994,6 +3009,17 @@ participant rows those two entries track are NOT re-listed here):**
    `DistMetadataVOL` API only; never run. Needs item 1 and a real MPI
    intercommunicator between two genuinely separate processes.
 
+**Addendum 2026-10-13 (review 2026-10-11 TR-2, TR-4) — fixed by derivation, unmeasured.**
+`fuse-lowfive-vol`'s `ConfigureOnce()` now issues `MPI_Comm_split`/`MPI_Intercomm_create` on every
+world rank (colour `MPI_UNDEFINED` for a rank the LowFive channel does not name) instead of only on the
+participants, and aborts the job on a failed `LoadConfig()` or a distributed configuration built without
+`DistMetadataVOL` instead of attaching a zero-binding connector. `FUSE_ENABLE_LOWFIVE` is OFF on every
+host available to the round, so neither the fix nor its two scenarios (a non-participant world rank; a
+build without `DistMetadataVOL`) has run. The second hazard the review names is not closed by this: the
+rendezvous still runs only on a rank whose own first HDF5 call loads the plugin, so a rank that never
+touches HDF5 never reaches it — moving the rendezvous into an explicit step every participant calls
+(`connect()`'s MPMD choreography is the natural site) is the larger fix, left open here.
+
 ### D15. The provider direction (S6 phase 4, "Adapter host" track) is implemented and conformance-tested on one process; device fields, mixed checkpoint/restore, and a plugin on a rank subset are not
 
 **What is done, measured 2026-10-02.** `include/fuse/abi/provider.h` (generated from a second
@@ -3264,7 +3290,7 @@ rank 2, and 24 for one spanning ranks 1 and 2.
 **Not the whole of multi-executable yet.** This clears the exchange plan's inputs; what
 the MPMD rows do beyond it is unmeasured until they run again.
 
-### D26. `FUSE_LINALG_BACKEND=builtin` has not configured since the examples linked Eigen directly
+### ~~D26. `FUSE_LINALG_BACKEND=builtin` has not configured since the examples linked Eigen directly~~ — CLOSED 2026-10-13 (review 2026-10-11 BC-1)
 
 **Measured 2026-10-10 on a clean export of `9d9ab7a`** (before the Krylov and Schur
 solvers landed): `cmake -DFUSE_LINALG_BACKEND=builtin` fails at configure with
@@ -3284,9 +3310,15 @@ Eigen (measured: `--target fuse-coupler-linalg` builds clean under `builtin`). P
 GMRES are header-only and need nothing. Their tests compare against Eigen and link it
 like the examples do.
 
-**Open:** either `builtin` becomes a real configuration again (the Eigen-linked tests and
-examples gated by `if(FUSE_LINALG_BACKEND STREQUAL "eigen")`, with a configure-time
-message listing what is skipped) or the option is retired. Not decided here.
+**Closed 2026-10-13 by review 2026-10-11 BC-1.** The 23 test targets and 5 example targets that linked
+`Eigen3::Eigen` directly are gated behind `FUSE_LINALG_BACKEND_IS_EIGEN` in `test/CMakeLists.txt` and
+`examples/CMakeLists.txt`, with one configure-time status message listing what a `builtin` configure
+skips and a `fuse_tests_gated_by` entry so the registration audit stays honest. Measured on higgs: a
+`builtin` Debug tree configures, builds and passes 264/264 rows (excluding the unrelated
+`brusselator_runner`); the default `eigen` tree is unchanged (`ctest -L 'linalg|install'` 16/16).
+`SchurSlabSolver::factor()` still refuses `E-LINALG-SCHUR-BACKEND` under `builtin` (there is no built-in
+direct factorisation), and that refusal is now fired by `test/linalg/schur_slab_unavailable_test.cpp`
+(NL-5), registered only in that configuration. The CI matrix's `builtin` legs can therefore go green.
 
 ### D30. Two bit-for-bit tests fail by one ulp in a Release build — a decision on floating-point contraction — DECIDED AND CLOSED 2026-10-12
 
@@ -5139,6 +5171,14 @@ have the identical gap while investigating this — a local failure on a partici
 participants, via the same `gather_window_block_samples()` — but is not exercised by any current test
 and is left for a future pass rather than bundled into this fix.
 
+**Note 2026-10-13 (review 2026-10-11 RT-1, RT-2).** The ordinary (non-window) multi-rank region got the
+same bystander treatment as this entry's window fix (RT-1: a rank outside `R.participants` now reads the
+agreed convergence outcome instead of deciding from an unreduced payload), and five rank-local failure
+paths that used to `co_return` ahead of later collectives now record and carry forward (RT-2). The
+peer-failure-to-bystander gap noted in the previous paragraph was confirmed live on the ordinary-region
+path too: the RT-2(c) restore-failure test hangs at 3–5 ranks and is therefore registered at exactly two
+ranks. That propagation gap is still open, for both region kinds.
+
 ### D43. `example.fsi_channel`'s IQN-ILS coupling is marginally stable near the beam's first natural period — a 1e-12 change in the fluid solve diverges it; OPEN, rows DISABLED under `FUSE_ENABLE_CUSPARSE`
 
 **Measured 2026-10-11**, found while verifying the examples' cusolverRf sparse-solve backend
@@ -5596,6 +5636,12 @@ host's MPICH is now 5.0.0a1 with device `ch4:ofi` (`mpichversion`), and `tools/p
 accept/connect works between two same-node jobs. This entry stays open until `parallel.connect.accept.*` and
 `verification.brusselator.participants.accept.3` have run on that MPI; the configure step could not show it,
 because the verdict it had cached was stale (D35).
+
+**Addendum 2026-10-13 (review 2026-10-11 TR-5) — fixed, compiled, unmeasured.** `connect_pairwise()`'s
+acceptor-side rank 0 now broadcasts its own `MPI_Open_port`/`publish_port_file` outcome to every acceptor
+rank before the port-name `Bcast`, so a rank-0-only failure no longer leaves its peers waiting in that
+collective. The path is behind `FUSE_ENABLE_CONNECT_ACCEPT`, OFF on the host this round built on, so the
+fix compiled but could not be exercised; it runs when this entry's accept rows run.
 
 ### ~~D22. A shared Kokkos aborts the process at exit~~ — CLOSED 2026-10-09
 
@@ -6430,3 +6476,24 @@ tolerance convention the factor is not to be widened: the derivation (one eig_qu
 error in the extracted inputs, scaled by |u_raw|) is missing a term on this toolchain -- the two
 `cn_step` solves' own forward-error difference is the candidate. The `.device` twin of the row passes
 (its energy budget runs on the selected oscillatory mode exactly as the host leg does).
+
+### D57. The participant ABI's refusals are decided rank-locally and never reconciled across a component's ranks — OPEN, documented (review 2026-10-11 AB-10)
+
+`begin_step`/`end_step`/`setup`/`initialize`/`run` return codes such as `E-ABI-STEP-ORDER` or
+`E-ABI-STEP-ALREADY-OPEN` from local state only; an out-of-turn or omitted call on one rank of a
+multi-rank component strands its peers inside `resume_period()`'s Transports and Epochs. The C++
+terminals meet the A4 contract through the Epoch reconciliation; the ABI boundary does not, and said
+nothing about it. `docs/user/c-abi.md` now states the guarantee ("Every rank of a component must make
+the same calls, in the same order") and the residual exposure. Routing local ABI refusals through the
+same reconciliation the Runner uses, plus a host-run two-rank refusal-not-hang row, is the fix; the
+existing MPI participant fixture deliberately avoids the asymmetric call sequence, so the row needs a
+timeout harness first.
+
+### D58. The graph descriptor is host-endian while `bytes.hpp`'s canonical rules are little-endian — OPEN, recorded (review 2026-10-11 BM-5)
+
+`detail::Writer::pod`/`Reader::pod` in `include/fuse/model/descriptor.hpp` memcpy the native
+representation; every other canonical encoding in `fuse/base/bytes.hpp` is little-endian by
+construction. Invisible on every machine this library builds on, but a big-endian host or adapter would
+emit descriptors the golden files and any little-endian peer refuse. Recorded in `bytes.hpp` and
+`docs/dev/abi-design.md`; routing `pod()` through `bytes::put_integer` changes every golden file's bytes
+and waits for a deliberate `kGraphVersion` bump.
