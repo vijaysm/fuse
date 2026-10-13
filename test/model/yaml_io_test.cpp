@@ -624,3 +624,256 @@ TEST(YamlIo, UnknownKeyInNewtonConfigBlockIsRefused) {
   ASSERT_FALSE(restored.ok());
   EXPECT_EQ(restored.error().code, "E-YAML-UNKNOWN-KEY");
 }
+
+// ---------------------------------------------------------------------
+// BM-2 (review 2026-10-11): from_yaml() used to read every required key
+// with a bare `node["key"].as<T>()` -- no presence guard, no surrounding
+// `try` -- so a document that LOADS (valid YAML syntax) but omits or
+// misspells a required key, or supplies a wrong-typed scalar for one,
+// made yaml-cpp throw a raw `YAML::Exception` out of a function whose
+// contract is `Result<CouplingGraph>`. Each case below is a minimal,
+// otherwise-valid document with exactly one defect.
+// ---------------------------------------------------------------------
+namespace {
+
+// A minimal document that loads cleanly through every required key this
+// file's from_yaml() reads: one mesh, one region, one component with one
+// field, no channels, no iteration regions.
+const char* const kMinimalYaml = R"(version: 1
+meshes:
+  - name: m
+regions:
+  - name: r
+    mesh: m
+components:
+  - name: c
+    fields:
+      - name: f
+        region: r
+channels: []
+iteration_regions: []
+)";
+
+// Deletes the first line containing `needle` (used to drop a required
+// key's own `key: value` line from kMinimalYaml or a derived document).
+std::string drop_line(std::string text, const char* needle) {
+  const std::size_t pos = text.find(needle);
+  if (pos == std::string::npos) return text;
+  const std::size_t line_start = text.rfind('\n', pos) + 1;
+  const std::size_t line_end = text.find('\n', pos) + 1;
+  return text.substr(0, line_start) + text.substr(line_end);
+}
+
+}  // namespace
+
+TEST(YamlIo, MinimalDocumentLoadsCleanly) {
+  const auto g = from_yaml(kMinimalYaml);
+  ASSERT_TRUE(g.ok()) << g.error().message;
+  EXPECT_EQ(g.value().mesh_count(), 1u);
+  EXPECT_EQ(g.value().region_count(), 1u);
+  EXPECT_EQ(g.value().field_count(), 1u);
+}
+
+TEST(YamlIo, MissingMeshNameIsRefused) {
+  // `drop_line` would remove the whole `- name: m` entry here (it is the
+  // mesh's only key), collapsing the list to empty rather than leaving a
+  // present-but-keyless mesh entry; replacing with an empty map keeps the
+  // entry (and the required-key check reachable) while removing the key.
+  std::string text = kMinimalYaml;
+  const std::size_t pos = text.find("- name: m");
+  text.replace(pos, std::string("- name: m").size(), "- {}");
+  const auto restored = from_yaml(text);
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
+}
+
+TEST(YamlIo, MissingRegionMeshIsRefused) {
+  const auto restored = from_yaml(drop_line(kMinimalYaml, "mesh: m"));
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
+}
+
+TEST(YamlIo, MissingRegionNameIsRefused) {
+  const auto restored = from_yaml(drop_line(kMinimalYaml, "name: r"));
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
+}
+
+TEST(YamlIo, MissingComponentNameIsRefused) {
+  const auto restored = from_yaml(drop_line(kMinimalYaml, "name: c"));
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
+}
+
+TEST(YamlIo, MissingFieldNameIsRefused) {
+  const auto restored = from_yaml(drop_line(kMinimalYaml, "name: f"));
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
+}
+
+TEST(YamlIo, MissingFieldRegionIsRefused) {
+  const auto restored = from_yaml(drop_line(kMinimalYaml, "region: r"));
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
+}
+
+TEST(YamlIo, MissingCouplerNameIsRefused) {
+  std::string text = kMinimalYaml;
+  const std::size_t at = text.find("channels: []");
+  text.insert(at, "couplers:\n  - ranks: {first: 0, count: 1}\n");
+  const auto restored = from_yaml(text);
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
+}
+
+TEST(YamlIo, MissingRanksFirstIsRefused) {
+  std::string text = kMinimalYaml;
+  const std::size_t at = text.find("fields:");
+  text.insert(at, "ranks: {count: 1}\n    ");
+  const auto restored = from_yaml(text);
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
+}
+
+TEST(YamlIo, MissingRanksCountIsRefused) {
+  std::string text = kMinimalYaml;
+  const std::size_t at = text.find("fields:");
+  text.insert(at, "ranks: {first: 0}\n    ");
+  const auto restored = from_yaml(text);
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
+}
+
+TEST(YamlIo, MissingChannelNameIsRefused) {
+  std::string text = kMinimalYaml;
+  text = drop_line(text, "channels: []");
+  text += "channels:\n  - source: c.f\n    target: c.f\n";
+  const auto restored = from_yaml(text);
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
+}
+
+TEST(YamlIo, MissingChannelSourceIsRefused) {
+  std::string text = kMinimalYaml;
+  text = drop_line(text, "channels: []");
+  text += "channels:\n  - name: ch\n    target: c.f\n";
+  const auto restored = from_yaml(text);
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
+}
+
+TEST(YamlIo, MissingChannelTargetIsRefused) {
+  std::string text = kMinimalYaml;
+  text = drop_line(text, "channels: []");
+  text += "channels:\n  - name: ch\n    source: c.f\n";
+  const auto restored = from_yaml(text);
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
+}
+
+TEST(YamlIo, MissingIterationRegionNameIsRefused) {
+  std::string text = kMinimalYaml;
+  text = drop_line(text, "iteration_regions: []");
+  text += "iteration_regions:\n  - channels: []\n";
+  const auto restored = from_yaml(text);
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
+}
+
+TEST(YamlIo, MissingSpacetimeBasisIsRefused) {
+  std::string text = kMinimalYaml;
+  text = drop_line(text, "channels: []");
+  text += "channels:\n  - name: ch\n    source: c.f\n    target: c.f\n"
+          "    spacetime: {degree: 1}\n";
+  const auto restored = from_yaml(text);
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
+}
+
+// Wrong-typed-scalar classes (BM-2's second half): a map where a scalar
+// was expected, and a string where a number was expected. Both used to
+// throw a raw YAML::BadConversion out of from_yaml(); the outer
+// try/catch in from_yaml() (around from_yaml_body()) now translates
+// whichever one yaml-cpp throws into E-YAML-PARSE.
+TEST(YamlIo, WrongTypedScalarMapWhereStringExpectedIsRefused) {
+  std::string text = kMinimalYaml;
+  // "name" for the mesh entry becomes a map instead of a string scalar.
+  const std::size_t pos = text.find("name: m");
+  text.replace(pos, std::string("name: m").size(), "name: {a: 1}");
+  const auto restored = from_yaml(text);
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
+}
+
+TEST(YamlIo, WrongTypedScalarStringWhereNumberExpectedIsRefused) {
+  std::string text = kMinimalYaml;
+  const std::size_t at = text.find("fields:");
+  text.insert(at, "ranks: {first: abc, count: 1}\n    ");
+  const auto restored = from_yaml(text);
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
+}
+
+// BM-15: an out-of-range structural-map exponent (narrow_exponent's own
+// bound, fuse/base/units.hpp) must be refused, not silently wrapped into
+// a different physical quantity.
+TEST(YamlIo, DuplicateMeshNameIsRefused) {
+  std::string text = kMinimalYaml;
+  const std::size_t at = text.find("regions:");
+  text.insert(at, "  - name: m\n");
+  const auto restored = from_yaml(text);
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-DUP");
+}
+
+TEST(YamlIo, DuplicateRegionNameIsRefused) {
+  std::string text = kMinimalYaml;
+  const std::size_t at = text.find("components:");
+  text.insert(at, "  - name: r\n    mesh: m\n");
+  const auto restored = from_yaml(text);
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-DUP");
+}
+
+TEST(YamlIo, DuplicateChannelNameIsRefused) {
+  std::string text = kMinimalYaml;
+  text = drop_line(text, "channels: []");
+  text += "channels:\n"
+          "  - name: ch\n    source: c.f\n    target: c.f\n"
+          "  - name: ch\n    source: c.f\n    target: c.f\n";
+  const auto restored = from_yaml(text);
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-DUP");
+}
+
+// BM-17: a non-positive max_iterations, and a non-finite/non-positive
+// convergence tolerance, must be refused at the authoring gate rather
+// than surfacing only mid-sweep (ConvergenceMeasure::satisfied()'s own
+// FUSE_THROW, fuse/model/iteration.hpp).
+TEST(YamlIo, NonPositiveMaxIterationsIsRefused) {
+  std::string text = kMinimalYaml;
+  text = drop_line(text, "iteration_regions: []");
+  text += "iteration_regions:\n  - channels: []\n    name: outer\n    max_iterations: 0\n";
+  const auto restored = from_yaml(text);
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
+}
+
+// BM-12 (review 2026-10-11): parse_units()'s scalar branch used to look
+// symbols up in a private 10-entry table instead of the real unit-
+// expression parser semantics.hpp documents as "how a YAML ... caller
+// states units at all" -- a YAML author writing any of the parser's
+// other symbols was refused with E-YAML-UNITS. Tests both spellings of
+// the same quantity ("Hz" and the structural map it is NOT dimensionally
+// equal to, to show the scalar form now parses at all) plus a compound
+// expression ("m/s") the old table never had an entry for.
+TEST(YamlIo, NonPositiveConvergenceToleranceIsRefused) {
+  std::string text = kMinimalYaml;
+  text = drop_line(text, "iteration_regions: []");
+  text += "iteration_regions:\n"
+          "  - channels: []\n    name: outer\n"
+          "    convergence:\n      - {kind: Relative, tolerance: -1.0, field: f}\n";
+  const auto restored = from_yaml(text);
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
+}
