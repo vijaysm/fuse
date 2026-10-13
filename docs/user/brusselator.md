@@ -466,8 +466,10 @@ two-sided remap decomposition (in-process, thread-barrier stand-ins for a real `
 **Verified**: `verification.brusselator.participants.mpmd.{3,5}`
 — the full three-executable, MPI-separated-process A4 case, at up to five total ranks.
 **Deliberate refusal**, tested: `E-BRUSS-MESH-INDEX`, `E-BRUSS-U-REACTION`,
-`E-BRUSS-DIFFUSION-DIRECT-DECOMPOSED`. **Absent / blocked, not a defect in this library**:
-`verification.brusselator.participants.accept.{3,5}`;
-`verification.brusselator.graph_tool.reproduces_reference_lowfive` is verified, but the
-`lowfive.{mpmd,accept}.3` participant rows are blocked the same way LowFive rebuild is for
-every other LowFive-dependent row in this tree.
+`E-BRUSS-DIFFUSION-DIRECT-DECOMPOSED`. **Host-verified, as of 2026-10-13**:
+`verification.brusselator.participants.accept.3` passes.
+**Absent / blocked, not a defect in this library**: `accept.5` (own ruling keeps it built but
+unrun without the owner's say-so, independent of). `verification.brusselator.graph_tool.
+reproduces_reference_lowfive` is verified; of the `lowfive.{mpmd,accept}.3` participant rows, `mpmd.3`
+is now ALSO host-verified; `lowfive.accept.3` has its one known ABI gap
+closed in-sandbox but not yet run on a host.
