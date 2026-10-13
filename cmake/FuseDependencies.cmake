@@ -1116,7 +1116,13 @@ macro(fuse_resolve_dependencies)
     # collide with and the probe would prove nothing.
     if(FUSE_ENABLE_MOAB)
       get_filename_component(_fuse_lowfive_root "${LOWFIVE_INCLUDE_DIR}" DIRECTORY)
-      get_filename_component(_fuse_moab_root "${MOAB_LIBRARY_DIRS}" DIRECTORY)
+      # MOAB_LIBRARY_DIRS is a list: MOAB's own library directory first, then
+      # the NetCDF/PnetCDF/HDF5/TempestRemap/Zoltan directories appended
+      # above (83665ef). The probe wants MOAB's own prefix, so take element 0;
+      # passing the whole list gave the probe a root made of ";"-joined paths
+      # and its compile failed (measured on this host, 2026-10-13).
+      list(GET MOAB_LIBRARY_DIRS 0 _fuse_moab_lib0)
+      get_filename_component(_fuse_moab_root "${_fuse_moab_lib0}" DIRECTORY)
       list(GET HDF5_INCLUDE_DIRS 0 _fuse_hdf5_include0)
       get_filename_component(_fuse_hdf5_root "${_fuse_hdf5_include0}" DIRECTORY)
       set(_fuse_probe_script "${PROJECT_SOURCE_DIR}/tools/probe-hdf5-images.sh")
