@@ -184,3 +184,58 @@ new = """  const std::string before = dataset_path.substr(0, last_slash);
   const std::string leaf = dataset_path.substr(last_slash);"""
 target = "fuse_verification_brusselator_lowfive_attach_test"
 test = "verification.brusselator_lowfive_attach"
+
+# Round 8 (the real steady-state order: U write,read every period;
+# V write,read ONLY at cold start, then read,write -- lowfive_attach_
+# decision.hpp's own "ROUND 8" comment has the full derivation and
+# citations). Three mutations: the corrected policy function, the
+# static per-graph order check, and the local per-event order
+# assertion -- one deviation kind each, matching this round's own
+# task 5.
+
+[[mutation]]
+id = "decide-serve-action-defers-every-first-reader-write"
+area = "examples"
+describes = "decide_serve_action() goes back to round 2/3's own falsified policy -- a first-reader defers EVERY write, not just its cold-start one -- reproducing the measured host hang exactly: V's period-1 write is deferred past U's own blocking read of it, and V's next read needs U's next write, which needs that same read to return first"
+file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
+old = """[[nodiscard]] inline ServeNowOrDefer decide_serve_action(ServeRole role, bool completed_any_read) {
+  if (role == ServeRole::kFirstReader && !completed_any_read) return ServeNowOrDefer::kDefer;
+  return ServeNowOrDefer::kServeNow;
+}"""
+new = """[[nodiscard]] inline ServeNowOrDefer decide_serve_action(ServeRole role, bool completed_any_read) {
+  (void)completed_any_read;
+  if (role == ServeRole::kFirstReader) return ServeNowOrDefer::kDefer;
+  return ServeNowOrDefer::kServeNow;
+}"""
+target = "fuse_verification_brusselator_lowfive_attach_test"
+test = "verification.brusselator_lowfive_attach"
+
+[[mutation]]
+id = "check-graph-order-validated-accepts-any-graph"
+area = "examples"
+describes = "CheckGraphOrderValidated() accepts any graph's order signature, not just the one measured configuration -- would let the LowFive participants attach to a swapped channel order, a third channel, or a multi-rank component with no warning at all, exactly the silent-assumption failure mode task 3a's own E-LOWFIVE-ATTACH-ORDER-UNVALIDATED exists to name instead"
+file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
+old = """  const std::vector<ChannelOrderSignature> validated = ValidatedGraphOrderSignatures();
+  if (signature.size() != validated.size()) {"""
+new = """  const std::vector<ChannelOrderSignature> validated = ValidatedGraphOrderSignatures();
+  (void)validated;
+  return fuse::Result<void>::success();
+  if (signature.size() != validated.size()) {"""
+target = "fuse_verification_brusselator_lowfive_attach_test"
+test = "verification.brusselator_lowfive_attach"
+
+[[mutation]]
+id = "check-and-advance-order-write-check-disabled"
+area = "examples"
+describes = "CheckAndAdvanceOrder()'s own kExportWrittenAndClosed case no longer refuses a write observed where the measured order table expects a read -- would let a first-reader regress to writing on every period (the exact round 2/3 defect the OTHER two round 8 mutations in this file also reproduce) run all the way to its own blocking call with no E-LOWFIVE-ATTACH-ORDER-DEVIATION at all, silently losing the one piece of this round's own defense that is supposed to catch it per-event rather than only at attach time"
+file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
+old = """    case ServeEvent::kExportWrittenAndClosed: {
+      if (expected[tracker.slot] != ExpectedEventKind::kWrite) {
+        return refuse(expected[tracker.slot], ExpectedEventKind::kWrite);
+      }"""
+new = """    case ServeEvent::kExportWrittenAndClosed: {
+      if (false && expected[tracker.slot] != ExpectedEventKind::kWrite) {
+        return refuse(expected[tracker.slot], ExpectedEventKind::kWrite);
+      }"""
+target = "fuse_verification_brusselator_lowfive_attach_test"
+test = "verification.brusselator_lowfive_attach"
