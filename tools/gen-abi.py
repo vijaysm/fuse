@@ -485,8 +485,27 @@ def _fortran_convenience(name: str, inp: str, out: str) -> list[str]:
             "    out%buffer = c_loc(buf)",
             "    out%capacity = int(len(message), c_int64_t)",
             "    status = fuse_last_error_struct(ctx, in, out)",
-            "    n = min(out%length, out%capacity)",
+            # Review 2026-10-11 AB-5: on the truncated path the C side
+            # (impl_last_error, src/abi/participant.cpp) writes only
+            # capacity-1 message bytes, then a NUL at buf(capacity) --
+            # copying min(length, capacity) (the old expression) included
+            # that NUL as the string's own last character. On the
+            # untruncated path capacity > length, so min(length, capacity)
+            # is unaffected and still copies exactly the real message.
+            "    if (out%truncated /= 0) then",
+            "      n = min(out%length, max(out%capacity - 1_c_int64_t, 0_c_int64_t))",
+            "    else",
+            "      n = min(out%length, out%capacity)",
+            "    end if",
             "    message = ' '",
+            # AB-5's second half (generator note, not fixed here): `buf` is
+            # declared `kind=c_char` (the ISO_C_BINDING companion, matched
+            # to the C `char` this module's `c_loc()` calls bind against)
+            # while `message`, the caller's own dummy argument, is plain
+            # `character(len=*)` -- default kind. This assignment is only
+            # portable because every compiler this project builds against
+            # happens to make `c_char` and the default kind the same
+            # physical representation; the standard does not guarantee it.
             "    do i = 1, n",
             "      message(i:i) = buf(int(i):int(i))",
             "    end do",
