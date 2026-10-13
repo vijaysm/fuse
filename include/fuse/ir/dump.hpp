@@ -123,7 +123,14 @@ inline std::string pad(std::string s, std::size_t width) {
 [[nodiscard]] inline std::string dump_graphviz(const OperatorDAG& d) {
   std::ostringstream os;
   os.imbue(std::locale::classic());
-  os << "digraph soma_ir {\n  rankdir=LR;\n  node [shape=box];\n";
+  // Review 2026-10-11 IS-11: this used to say "soma_ir", legacy upstream
+  // residue in a public output artifact -- the same class R-46 fixed for the
+  // LowFive probe dataset name (src/transport/lowfive_transport.cpp),
+  // conventions.md's own ban on soma-prefixed names. (A DIFFERENT sentinel
+  // suffix, ".soma-writable-probe" at lowfive_transport.cpp:568, is this
+  // same class's own still-open instance, tracked separately as TR-13 --
+  // not touched here, not R-46's own fix.)
+  os << "digraph fuse_ir {\n  rankdir=LR;\n  node [shape=box];\n";
   for (const NodeId nid : d.topological_order()) {
     const Node& n = d.node(nid);
     os << "  n" << nid.value() << " [label=\"" << to_cstring(n.kind);
