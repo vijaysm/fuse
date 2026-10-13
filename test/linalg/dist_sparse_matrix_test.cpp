@@ -22,6 +22,7 @@
 
 #include <gtest/gtest.h>
 
+#include "fuse/base/error.hpp"
 #include "fuse/linalg/comm.hpp"
 #include "fuse/linalg/dist_vector.hpp"
 
@@ -264,6 +265,24 @@ TEST(DistSparseMatrixApply, DiagonalNeedsNoCommunicationAndMatchesTheAssembledTr
   EXPECT_DOUBLE_EQ(d.data()[0], 5.0);
   EXPECT_DOUBLE_EQ(d.data()[1], 6.0);
   EXPECT_DOUBLE_EQ(d.data()[2], 0.0);  // structurally absent diagonal entry
+}
+
+// Review 2026-10-11 NL-11: row i's write to y overwrites x's owned block
+// before every later row that reads the SAME entry as an off-diagonal
+// input column (dist_sparse_matrix.hpp's own apply() doc now states the
+// rule) -- apply(v, v) is exactly the case the header forbids.
+TEST(DistSparseMatrixApply, RefusesXAndYAliasing) {
+  const RowOwnership owners{{0, 3}};
+  const std::vector<Triplet> t{
+      {0, 0, 5.0}, {0, 1, -1.0}, {1, 1, 6.0}, {1, 2, -2.0}, {2, 2, 7.0}, {2, 0, -3.0},
+  };
+  auto m = DistSparseMatrix::from_triplets(0, 3, 3, t, make_serial_reducer(), owners);
+  ASSERT_TRUE(m.ok()) << m.error().message;
+  DistVector v(3, make_serial_exchanger(), make_serial_reducer());
+  v.data()[0] = 1.0;
+  v.data()[1] = 2.0;
+  v.data()[2] = 3.0;
+  EXPECT_THROW((void)m.value().apply(v, v), fuse::InvariantViolation);
 }
 
 TEST(DistSparseMatrixBasics, LocalAndGlobalRowCounts) {
