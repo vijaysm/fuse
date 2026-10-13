@@ -1002,6 +1002,23 @@ fuse_add_gtest(verification brusselator_graph_tool_lowfive NO_LAYER_LIB
                LIBS fuse::model fuse::backend)
 target_include_directories(fuse_verification_brusselator_graph_tool_lowfive_test PRIVATE
   ${CMAKE_SOURCE_DIR}/examples/brusselator)
+
+# ---- S6 phase 3 (Conformance, "LowFive attach" track): begin ----------
+# The pure, MPI-free and HDF5-free decision function examples/brusselator/
+# participants/lowfive_attach_decision.hpp's own header comment describes
+# in full: which of {single-process, distributed, refused (accept mode /
+# no channel / inconsistent partition)} a rank's own programmatic VOL
+# attach must reach, from the loaded graph's RankSets/LaunchModes alone.
+# Header-only, so this test needs only fuse::model's own include path
+# (fuse/model/component.hpp, fuse/model/launch.hpp) plus fuse/transport/
+# lowfive.hpp's header-only plan_lowfive_rendezvous() -- NO_LAYER_LIB,
+# same reasoning as brusselator_graph_tool_lowfive just above.
+fuse_add_gtest(verification brusselator_lowfive_attach NO_LAYER_LIB
+               LIBS fuse::model)
+target_include_directories(fuse_verification_brusselator_lowfive_attach_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/examples/brusselator/participants)
+# ---- "LowFive attach" track: end ---------------------------------------
+
 # The weights oracle is pure host arithmetic (no Kokkos kernel of its own);
 # the physics suite's ReactionKokkosMatchesTheClosedForm IS one, so its omp
 # legs are the ones that are load-bearing here.
@@ -1067,6 +1084,20 @@ if(TARGET fuse-abi-fortran)
   if(TARGET fuse::lowfive)
     fuse_link_lowfive_with_fmt_fix(fuse_verification_brusselator_participants_test)
   endif()
+  # "LowFive attach" track: shim.cpp now calls bruss_lowfive_serve_
+  # after_write()/bruss_lowfive_receive_before_read() (lowfive_attach.h),
+  # so every target compiling shim.cpp needs lowfive_attach.cpp's own
+  # object code too, or the link fails on those two undefined symbols --
+  # fuse_verification_brusselator_participants_test compiles shim.cpp (just above) but never called
+  # bruss_lowfive_attach() itself (it drives the ABI through view_field+
+  # memcpy instead of real HDF5, docs/user/lowfive.md's own account), so
+  # this is a build-only addition, not a new behavior under test here.
+  target_sources(fuse_verification_brusselator_participants_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/lowfive_attach.cpp)
+  target_link_libraries(fuse_verification_brusselator_participants_test PRIVATE fuse::model)
+  if(LOWFIVE_HAVE_DIST)
+    target_compile_definitions(fuse_verification_brusselator_participants_test PRIVATE FUSE_LOWFIVE_DIST_LIB_FOUND=1)
+  endif()
   # Two targets below (this one and brusselator_check) both compile
   # v_loop.f90 into a `v_loop_mod` .mod file; CMake's default Fortran
   # module output directory is not automatically per-target the way the
@@ -1092,6 +1123,20 @@ if(TARGET fuse-abi-fortran)
     ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/brusselator_check_core.cpp)
   if(TARGET fuse::lowfive)
     fuse_link_lowfive_with_fmt_fix(fuse_verification_brusselator_check_test)
+  endif()
+  # "LowFive attach" track: shim.cpp now calls bruss_lowfive_serve_
+  # after_write()/bruss_lowfive_receive_before_read() (lowfive_attach.h),
+  # so every target compiling shim.cpp needs lowfive_attach.cpp's own
+  # object code too, or the link fails on those two undefined symbols --
+  # fuse_verification_brusselator_check_test compiles shim.cpp (just above) but never called
+  # bruss_lowfive_attach() itself (it drives the ABI through view_field+
+  # memcpy instead of real HDF5, docs/user/lowfive.md's own account), so
+  # this is a build-only addition, not a new behavior under test here.
+  target_sources(fuse_verification_brusselator_check_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/lowfive_attach.cpp)
+  target_link_libraries(fuse_verification_brusselator_check_test PRIVATE fuse::model)
+  if(LOWFIVE_HAVE_DIST)
+    target_compile_definitions(fuse_verification_brusselator_check_test PRIVATE FUSE_LOWFIVE_DIST_LIB_FOUND=1)
   endif()
   set_target_properties(fuse_verification_brusselator_check_test PROPERTIES
     Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/brusselator_check_fortran_modules)
@@ -1119,6 +1164,20 @@ if(TARGET fuse-abi-fortran)
     ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/brusselator_check_core.cpp)
   if(TARGET fuse::lowfive)
     fuse_link_lowfive_with_fmt_fix(fuse_verification_brusselator_lowfive_harness_test)
+  endif()
+  # "LowFive attach" track: shim.cpp now calls bruss_lowfive_serve_
+  # after_write()/bruss_lowfive_receive_before_read() (lowfive_attach.h),
+  # so every target compiling shim.cpp needs lowfive_attach.cpp's own
+  # object code too, or the link fails on those two undefined symbols --
+  # fuse_verification_brusselator_lowfive_harness_test compiles shim.cpp (just above) but never called
+  # bruss_lowfive_attach() itself (it drives the ABI through view_field+
+  # memcpy instead of real HDF5, docs/user/lowfive.md's own account), so
+  # this is a build-only addition, not a new behavior under test here.
+  target_sources(fuse_verification_brusselator_lowfive_harness_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/lowfive_attach.cpp)
+  target_link_libraries(fuse_verification_brusselator_lowfive_harness_test PRIVATE fuse::model)
+  if(LOWFIVE_HAVE_DIST)
+    target_compile_definitions(fuse_verification_brusselator_lowfive_harness_test PRIVATE FUSE_LOWFIVE_DIST_LIB_FOUND=1)
   endif()
   set_target_properties(fuse_verification_brusselator_lowfive_harness_test PROPERTIES
     Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/brusselator_lowfive_harness_fortran_modules)

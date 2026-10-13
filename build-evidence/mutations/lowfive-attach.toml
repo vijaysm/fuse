@@ -1,0 +1,18 @@
+# Mutations for S6 phase 3 ("LowFive" track), "LowFive attach" track. Own
+# file per the review-fix protocol: do not edit build-evidence/
+# mutations.toml directly while other fixers hold it dirty (same
+# convention as field-pipeline.toml, transport-lowfive.toml).
+
+[[mutation]]
+id = "decide-attach-mode-skips-the-accept-refusal"
+area = "examples"
+describes = "decide_attach_mode() silently accepts an accept-mode (LaunchMode::Connect) component on an HDF5-bound channel instead of refusing with E-LOWFIVE-ATTACH-ACCEPT -- the attach would go on to compute a distributed rendezvous plan for a launch mode that has no exposed base-communicator intercomm to form it from"
+file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
+old = """  for (const ChannelRoles& ch : channels) {
+    if (ch.writer_launch == fuse::LaunchMode::Connect ||
+        ch.reader_launch == fuse::LaunchMode::Connect) {"""
+new = """  for (const ChannelRoles& ch : channels) {
+    if (false && (ch.writer_launch == fuse::LaunchMode::Connect ||
+        ch.reader_launch == fuse::LaunchMode::Connect)) {"""
+target = "fuse_verification_brusselator_lowfive_attach_test"
+test = "verification.brusselator_lowfive_attach"
