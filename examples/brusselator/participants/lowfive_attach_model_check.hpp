@@ -85,6 +85,7 @@
 
 #include "lowfive_attach_decision.hpp"
 
+#include <array>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -105,7 +106,8 @@ using fuse_examples::lowfive_attach::serve_state_step;
 /// policy at all -- see this header's own top comment); the other three
 /// correspond exactly to `ServeEvent`'s own three per-read/write members
 /// (`kFinalize` is handled separately, once, after the whole script).
-enum class StepKind { kWriteClosed, kAboutToOpen, kOpenClose, kImportClosed };
+enum class StepKind { kWriteClosed, kAboutToOpen, kOpenClose, kImportClosed,
+                      kSyncBarrier };  // ROUND 8: the collective sync U, V and the coupler share
 
 /// What a process does at one step, translated from the real
 /// `ServeAction` (or, for `kOpenClose`, unconditional). `kEnterBlocking`/
@@ -117,7 +119,8 @@ enum class StepKind { kWriteClosed, kAboutToOpen, kOpenClose, kImportClosed };
 /// lets the search represent "still blocked inside serve_all()" as an
 /// ordinary, re-triable program-counter position instead of a special
 /// case in the search itself.
-enum class MicroAction { kEnterBlocking, kExitBlocking, kOpenCloseStep, kPassThrough };
+enum class MicroAction { kEnterBlocking, kExitBlocking, kOpenCloseStep, kPassThrough,
+                        kSyncBarrierStep };  // ROUND 8
 
 struct MicroStep {
   StepKind kind;
@@ -147,10 +150,20 @@ inline std::vector<MicroStep> BuildScript(int n_iterations) {
 /// not as evidence about the shipped protocol, which `kShipped` alone
 /// speaks for.
 enum class PolicyKind {
-  kShipped,              // ServeRole decides; flush at kImportClosed (the fix)
+  kShipped,              // decide_serve_action() decides (round 8's own fix); flush at kImportClosed
   kOriginalNatural,      // round 1: serve at EVERY write, both roles, never defer
   kBothDefer,            // strawman: both roles defer at write, flush at kImportClosed
-  kRejectedPreOpenFlush  // the FIRST round-2 attempt this review rejected: flush at kAboutToOpen
+  kRejectedPreOpenFlush, // the FIRST round-2 attempt this review rejected: flush at kAboutToOpen
+  // ROUND 8, task 4 scenario (ii) -- round 2/3's own FALSIFIED model,
+  // hand-rolled exactly like the three strawmen above (never through
+  // serve_state_step(), which this round's own fix changed to call
+  // decide_serve_action() instead and so can no longer express this):
+  // a first-reader defers EVERY write, unconditionally, flushing only
+  // at its own next kImportClosed; a first-server never defers. This
+  // is the regression test for the measured host hang, not a design
+  // this track ships -- see this file's own ModelCheck.
+  // MeasuredOrderUnderRegressedPolicyReproducesTheMeasuredHang test.
+  kRegressedAlwaysDeferFirstReader
 };
 
 struct ProcessPolicy {
@@ -201,22 +214,42 @@ struct DecideResult {
   // at all (false, ProcessPolicy::file_deleted_at_close's own case).
   // Always true for every other action.
   bool actually_serves = true;
+  // ROUND 8: threaded the SAME way `pending`/`pending_k` already are
+  // (this header's own "PURITY" paragraph) -- decide_serve_action()'s
+  // own "history" input. A fresh, throwaway ServeState built fresh
+  // every Decide() call (as this function already does for
+  // deferred_pending) would otherwise silently default this to false
+  // on EVERY call, never actually recording that a read has completed
+  // -- exactly the bug this field's own addition fixes (caught before
+  // any test used it: scenario (i) would never complete past period 1
+  // without it, first-reader deferring at every write forever, never
+  // just the cold start).
+  bool new_completed_any_read;
 };
 
 /// PURE: the action this process takes at `kind`/`k`, given its own
-/// policy and its own CURRENT `pending`/`pending_k` (passed in, not
-/// retained) -- see this header's own top "PURITY" paragraph for why.
+/// policy and its own CURRENT `pending`/`pending_k`/`completed_any_read`
+/// (passed in, not retained) -- see this header's own top "PURITY"
+/// paragraph for why. `completed_any_read` is round 8's own addition,
+/// threaded the SAME way `pending`/`pending_k` already were.
 inline DecideResult Decide(const ProcessPolicy& policy, StepKind kind, int k, bool pending,
-                           int pending_k) {
+                           int pending_k, bool completed_any_read) {
   if (policy.kind == PolicyKind::kShipped || policy.kind == PolicyKind::kRejectedPreOpenFlush) {
-    // Reconstruct a throwaway ServeState from the explicit (role, pending)
-    // this call was given -- serve_state_step() is itself a pure function
-    // of (ServeState, ServeEvent); giving it a FRESH, explicitly-seeded
-    // state each call (rather than one mutable object threaded live
-    // through the search) is what keeps THIS function pure.
+    // Reconstruct a throwaway ServeState from the explicit (role, pending,
+    // completed_any_read) this call was given -- serve_state_step() is
+    // itself a pure function of (ServeState, ServeEvent); giving it a
+    // FRESH, explicitly-seeded state each call (rather than one mutable
+    // object threaded live through the search) is what keeps THIS
+    // function pure. completed_any_read MUST be seeded here too (round
+    // 8's own fix, caught before any test used it): leaving it at
+    // ServeState's own default (false) on every call would silently
+    // make decide_serve_action() see "no read has ever completed" every
+    // single time, defeating the very policy this header exists to
+    // simulate.
     ServeState state;
     state.role = policy.role;
     state.deferred_pending = pending;
+    state.completed_any_read = completed_any_read;
 
     const bool flush_here = (policy.kind == PolicyKind::kShipped) ? (kind == StepKind::kImportClosed)
                                                                    : (kind == StepKind::kAboutToOpen);
@@ -245,17 +278,28 @@ inline DecideResult Decide(const ProcessPolicy& policy, StepKind kind, int k, bo
         }
         break;
       case StepKind::kOpenClose:
-        return {MicroAction::kOpenCloseStep, pending, pending_k};
+        return {MicroAction::kOpenCloseStep, pending, pending_k, true, completed_any_read};
+      case StepKind::kSyncBarrier:
+        // Intercepted earlier, in TryStep(), for every REAL simulation
+        // (never reaches here in practice) -- a defensive case only,
+        // so this switch stays exhaustive over StepKind.
+        return {MicroAction::kSyncBarrierStep, pending, pending_k, true, completed_any_read};
     }
 
     if (!call_it) {
       // kRejectedPreOpenFlush's own non-serve_state_step steps: flush
       // happens at kAboutToOpen instead (handled below via flush_here),
-      // and kImportClosed does nothing.
+      // and kImportClosed does nothing. Still marks completed_any_read
+      // at the import's own close, exactly as serve_state_step() does
+      // for the kShipped path -- this rejected design completes an
+      // import just as much as the shipped one does, even though it
+      // flushes at a different point.
+      const bool next_completed_any_read =
+          completed_any_read || kind == StepKind::kImportClosed;
       if (flush_here && pending && policy.role == ServeRole::kFirstReader) {
-        return {MicroAction::kEnterBlocking, false, pending_k};
+        return {MicroAction::kEnterBlocking, false, pending_k, true, next_completed_any_read};
       }
-      return {MicroAction::kPassThrough, pending, pending_k};
+      return {MicroAction::kPassThrough, pending, pending_k, true, next_completed_any_read};
     }
 
     auto result = serve_state_step(&state, event);
@@ -267,39 +311,61 @@ inline DecideResult Decide(const ProcessPolicy& policy, StepKind kind, int k, bo
     switch (result.value()) {
       case ServeAction::kServeNow:
         return {MicroAction::kEnterBlocking, state.deferred_pending, pending_k,
-               !policy.file_deleted_at_close};
+               !policy.file_deleted_at_close, state.completed_any_read};
       case ServeAction::kDeferServe:
-        return {MicroAction::kPassThrough, state.deferred_pending, k, true};
+        return {MicroAction::kPassThrough, state.deferred_pending, k, true,
+               state.completed_any_read};
       case ServeAction::kReceiveOnly:
       case ServeAction::kNoopAfterImport:
-        return {MicroAction::kPassThrough, state.deferred_pending, pending_k, true};
+        return {MicroAction::kPassThrough, state.deferred_pending, pending_k, true,
+               state.completed_any_read};
       case ServeAction::kFlushDeferred:
         return {MicroAction::kEnterBlocking, state.deferred_pending, pending_k,
-               !policy.file_deleted_at_close};
+               !policy.file_deleted_at_close, state.completed_any_read};
       case ServeAction::kNoopFinalizeClean:
-        return {MicroAction::kPassThrough, state.deferred_pending, pending_k,
-               true};  // not reached mid-script
+        return {MicroAction::kPassThrough, state.deferred_pending, pending_k, true,
+               state.completed_any_read};  // not reached mid-script
     }
-    return {MicroAction::kPassThrough, pending, pending_k, true};
+    return {MicroAction::kPassThrough, pending, pending_k, true, state.completed_any_read};
   }
 
-  // kOriginalNatural / kBothDefer: symmetric, hand-rolled, no
-  // serve_state_step() involvement at all (these designs predate it /
-  // were never wired through it).
-  if (kind == StepKind::kOpenClose) return {MicroAction::kOpenCloseStep, pending, pending_k};
+  // kOriginalNatural / kBothDefer / kRegressedAlwaysDeferFirstReader:
+  // hand-rolled, no serve_state_step() involvement at all (these
+  // designs predate it, were never wired through it, or -- the
+  // regressed one -- can no longer BE expressed by calling it, since
+  // round 8's own fix changed what it calls for the write decision).
+  // None of these three ever CONSULT completed_any_read (they are
+  // role-only or unconditional), but it is still threaded through
+  // unchanged, marked true at kImportClosed, so a caller that mixes a
+  // strawman policy into round 8's own event-sequence machinery still
+  // gets a consistent value out, never a silently stale one.
+  const bool next_completed_any_read = completed_any_read || kind == StepKind::kImportClosed;
+  if (kind == StepKind::kOpenClose) {
+    return {MicroAction::kOpenCloseStep, pending, pending_k, true, next_completed_any_read};
+  }
   if (kind == StepKind::kWriteClosed) {
     if (policy.kind == PolicyKind::kOriginalNatural) {
-      return {MicroAction::kEnterBlocking, pending, pending_k};
+      return {MicroAction::kEnterBlocking, pending, pending_k, true, next_completed_any_read};
     }
-    return {MicroAction::kPassThrough, true, k};  // kBothDefer: always defer
+    if (policy.kind == PolicyKind::kRegressedAlwaysDeferFirstReader) {
+      if (policy.role == ServeRole::kFirstServer) {
+        return {MicroAction::kEnterBlocking, pending, pending_k, true, next_completed_any_read};
+      }
+      // first-reader: ALWAYS defers -- the falsified rule.
+      return {MicroAction::kPassThrough, true, k, true, next_completed_any_read};
+    }
+    return {MicroAction::kPassThrough, true, k, true, next_completed_any_read};  // kBothDefer: always defer
   }
   if (kind == StepKind::kImportClosed) {
-    if (policy.kind == PolicyKind::kBothDefer && pending) {
-      return {MicroAction::kEnterBlocking, false, pending_k};
+    if ((policy.kind == PolicyKind::kBothDefer ||
+         policy.kind == PolicyKind::kRegressedAlwaysDeferFirstReader) &&
+        pending) {
+      return {MicroAction::kEnterBlocking, false, pending_k, true, next_completed_any_read};
     }
-    return {MicroAction::kPassThrough, pending, pending_k};
+    return {MicroAction::kPassThrough, pending, pending_k, true, next_completed_any_read};
   }
-  return {MicroAction::kPassThrough, pending, pending_k};  // kAboutToOpen: no-op for both strawmen
+  // kAboutToOpen / kSyncBarrier: no-op for every strawman.
+  return {MicroAction::kPassThrough, pending, pending_k, true, next_completed_any_read};
 }
 
 /// One process's own mutable position in the search. `std::set`'s own
@@ -313,17 +379,49 @@ struct ProcPos {
   int serving_k = -1;
   bool pending = false;
   int pending_k = -1;
+  // ROUND 8: decide_serve_action()'s own "history" input, threaded the
+  // SAME way pending/pending_k already are (this header's own
+  // "PURITY" paragraph) -- see DecideResult::new_completed_any_read's
+  // own comment for the bug this fixes. False initially (no read
+  // completed yet); every pre-round-8 script never reads this field at
+  // all (Decide()'s OLD call sites never passed it), so it is harmless
+  // there too.
+  bool completed_any_read = false;
+  // ROUND 8: how many sync barriers (StepKind::kSyncBarrier) this
+  // process has gotten PAST so far -- monotonic, 0 initially. Unused
+  // (always 0) by every pre-round-8 script/test, which never contains
+  // a kSyncBarrier step at all; harmless to carry on every ProcPos.
+  int sync_passed = 0;
+  // ROUND 8: has this process ARRIVED at (but not yet passed) barrier
+  // index `sync_passed`? Mirrors `entering`'s own two-phase pattern for
+  // serve blocking -- needed because `sync_passed >= sync_passed` is
+  // vacuously true for two processes that have BOTH merely never
+  // started (both at 0), which would let the FIRST barrier release
+  // itself with nobody actually there; checking `other.sync_entering &&
+  // other.sync_passed == mine` instead requires an OBSERVED arrival,
+  // not just a count that has not yet fallen behind.
+  bool sync_entering = false;
 
-  auto Tied() const { return std::tie(pc, entering, own_serving, serving_k, pending, pending_k); }
+  auto Tied() const {
+    return std::tie(pc, entering, own_serving, serving_k, pending, pending_k, completed_any_read,
+                    sync_passed, sync_entering);
+  }
   bool operator<(const ProcPos& o) const { return Tied() < o.Tied(); }
   bool operator==(const ProcPos& o) const { return Tied() == o.Tied(); }
 };
 
 struct GlobalState {
   ProcPos a, b;
+  // ROUND 8: the coupler, a THIRD actor that only ever runs
+  // StepKind::kSyncBarrier steps (task 4's own "a third process that
+  // only participates in the sync") -- default-constructed (all-zero)
+  // and never touched by any pre-round-8 RunSimulation() call, so the
+  // existing two-process search is unaffected.
+  ProcPos c;
   bool operator<(const GlobalState& o) const {
     if (!(a == o.a)) return a < o.a;
-    return b < o.b;
+    if (!(b == o.b)) return b < o.b;
+    return c < o.c;
   }
 };
 
@@ -347,7 +445,15 @@ struct StepOutcome {
 /// `std::nullopt` if blocked right now.
 inline std::optional<StepOutcome> TryStep(const std::vector<MicroStep>& script, const ProcPos& pos,
                                           bool peer_own_serving, int peer_serving_k,
-                                          const ProcessPolicy& policy) {
+                                          const ProcessPolicy& policy,
+                                          // ROUND 8: the OTHER two processes' own sync-arrival state,
+                                          // for the kSyncBarrier branch below -- defaulted so every
+                                          // pre-round-8 call site (two-process scripts, never a
+                                          // kSyncBarrier step) compiles and behaves unchanged.
+                                          bool other1_sync_entering = false,
+                                          int other1_sync_passed = 0,
+                                          bool other2_sync_entering = false,
+                                          int other2_sync_passed = 0) {
   if (pos.pc >= static_cast<int>(script.size())) return std::nullopt;  // already done
   const MicroStep& step = script[static_cast<std::size_t>(pos.pc)];
 
@@ -356,6 +462,49 @@ inline std::optional<StepOutcome> TryStep(const std::vector<MicroStep>& script, 
       ProcPos next = pos;
       next.pc += 1;
       return StepOutcome{next, false, std::nullopt};
+    }
+    return std::nullopt;
+  }
+
+  if (step.kind == StepKind::kSyncBarrier) {
+    // ROUND 8: a symmetric N-of-N rendezvous (task 4's own "collective
+    // sync event shared by U, V and the coupler"), two phases like the
+    // serve/open-close pair above but symmetric (every one of the
+    // THREE actors both "enters" and is released by the SAME kind of
+    // step, unlike serve's asymmetric enter-vs-open-close split).
+    // Phase 1 (`!pos.sync_entering`): record arrival at this barrier,
+    // visible to the other two via their own read of THIS ProcPos --
+    // does not advance `pc` yet.
+    if (!pos.sync_entering) {
+      ProcPos next = pos;
+      next.sync_entering = true;
+      return StepOutcome{next, std::nullopt, std::nullopt};
+    }
+    // Phase 2: released once BOTH others have "reached" this SAME
+    // barrier index -- either they are currently ARRIVED there
+    // (`sync_entering` at the identical `sync_passed`), OR they have
+    // ALREADY PASSED it (`sync_passed` strictly greater -- monotonic,
+    // so having passed index i implies having reached it earlier).
+    // The second half is NOT optional: an earlier version of this
+    // check required `other.sync_passed == pos.sync_passed` ONLY,
+    // which works for the FIRST process to check, but then the ONE
+    // process that releases FIRST clears its own `sync_entering` and
+    // bumps `sync_passed` past the other two's own still-current
+    // index -- their own NEXT check (`other_passed == mine`) would
+    // then see the released peer as "not arrived" (false) instead of
+    // "already gone through," permanently stranding whichever two
+    // check second and third. Caught before any test used it (every
+    // n_periods >= 2 scenario got stuck exactly at the first sync).
+    const auto reached = [&](bool other_entering, int other_passed) {
+      return other_passed > pos.sync_passed || (other_passed == pos.sync_passed && other_entering);
+    };
+    if (reached(other1_sync_entering, other1_sync_passed) &&
+        reached(other2_sync_entering, other2_sync_passed)) {
+      ProcPos next = pos;
+      next.sync_entering = false;
+      next.sync_passed += 1;
+      next.pc += 1;
+      return StepOutcome{next, std::nullopt, std::nullopt};
     }
     return std::nullopt;
   }
@@ -375,10 +524,11 @@ inline std::optional<StepOutcome> TryStep(const std::vector<MicroStep>& script, 
   }
 
   // Not yet entering: ask the PURE decision function exactly once,
-  // using THIS process's own explicit pending/pending_k -- never the
-  // peer's state, which is irrelevant to the decision (this header's
-  // own "PURITY" paragraph).
-  const DecideResult d = Decide(policy, step.kind, step.k, pos.pending, pos.pending_k);
+  // using THIS process's own explicit pending/pending_k/
+  // completed_any_read -- never the peer's state, which is irrelevant
+  // to the decision (this header's own "PURITY" paragraph).
+  const DecideResult d =
+      Decide(policy, step.kind, step.k, pos.pending, pos.pending_k, pos.completed_any_read);
 
   if (d.action == MicroAction::kEnterBlocking && !d.actually_serves) {
     // ROUND 6 (renamed from round 4's own ProcessPolicy::nothing_indexed,
@@ -395,6 +545,7 @@ inline std::optional<StepOutcome> TryStep(const std::vector<MicroStep>& script, 
     next.pc += 1;
     next.pending = d.new_pending;
     next.pending_k = d.new_pending_k;
+    next.completed_any_read = d.new_completed_any_read;
     return StepOutcome{next, std::nullopt, std::nullopt};
   }
   if (d.action == MicroAction::kEnterBlocking) {
@@ -413,12 +564,14 @@ inline std::optional<StepOutcome> TryStep(const std::vector<MicroStep>& script, 
     next.serving_k = step.k;
     next.pending = d.new_pending;
     next.pending_k = d.new_pending_k;
+    next.completed_any_read = d.new_completed_any_read;
     return StepOutcome{next, std::nullopt, std::nullopt};
   }
   // kPassThrough (kOpenCloseStep unreachable here; handled above).
   ProcPos next = pos;
   next.pc += 1;
   next.pending = d.new_pending;
+  next.completed_any_read = d.new_completed_any_read;
   next.pending_k = d.new_pending_k;
   return StepOutcome{next, std::nullopt, std::nullopt};
 }
@@ -485,6 +638,238 @@ inline SimulationResult RunSimulation(int n_iterations, ProcessPolicy policy_a,
   return result;
 }
 
+
+// ---------------------------------------------------------------------
+// ROUND 8, task 4: the per-component event sequences are now DATA (a
+// list of `EventKind`), not RunSimulation()'s own hard-coded
+// write-then-read pair -- the host's own measured steady-state orders
+// (lowfive_attach_decision.hpp's own "ROUND 8" comment has the derived
+// table and citations) differ between the two roles, which a single
+// shared `BuildScript()` can never express. A third actor, the
+// coupler, participates in a `kSyncBarrier` event neither physics
+// process's own old script had any notion of.
+
+/// One top-level event this round's own catalogue of orders is built
+/// from -- `kSync` is the collective the coupler also participates in.
+enum class EventKind { kWrite, kRead, kSync };
+
+/// The order catalogue (task 4): `kMeasured` is the ONE order any real
+/// graph can produce under the current channel-order mechanism
+/// (lowfive_attach_decision.hpp's own "ROUND 8" comment); the other two
+/// are strawmen with NO corresponding real graph, kept only to show the
+/// model discriminates them (task 4, scenarios iii/iv) -- the identical
+/// relationship the existing kOriginalNatural/kBothDefer strawmen above
+/// already have to the real protocol.
+enum class Round8Order { kMeasured, kBothWriteReadSteady, kBothReadWriteSteady };
+
+/// PURE: this role's own STEADY-state (period >= 1) [first, second]
+/// shape for `order`. `kMeasured`'s own shape matches
+/// `lowfive_attach::ExpectedOrderForPeriod(role, 1)` exactly (not
+/// re-derived independently of it: both read the SAME measured table).
+[[nodiscard]] inline std::array<EventKind, 2> SteadyShapeForOrder(Round8Order order,
+                                                                   ServeRole role) {
+  switch (order) {
+    case Round8Order::kMeasured:
+      return role == ServeRole::kFirstServer
+                 ? std::array<EventKind, 2>{EventKind::kWrite, EventKind::kRead}
+                 : std::array<EventKind, 2>{EventKind::kRead, EventKind::kWrite};
+    case Round8Order::kBothWriteReadSteady:
+      return {EventKind::kWrite, EventKind::kRead};
+    case Round8Order::kBothReadWriteSteady:
+      return {EventKind::kRead, EventKind::kWrite};
+  }
+  return {EventKind::kWrite, EventKind::kRead};
+}
+
+/// PURE: this role's own full per-process event list for `n_periods`
+/// periods. Period 0 is the cold start -- write-then-read on EITHER
+/// role, unconditionally, with NO sync (u_main.c's/v_main.f90's own
+/// pre-loop priming call, a separate mechanism from the IR-scheduled
+/// steady state -- lowfive_attach_decision.hpp's own "ROUND 8" comment
+/// has the full account of why). Periods 1..n_periods-1 are steady
+/// state, from `SteadyShapeForOrder()`, each followed by one `kSync`.
+/// `n_periods <= 0` returns an empty sequence (nothing to simulate).
+[[nodiscard]] inline std::vector<EventKind> BuildEventSequence(Round8Order order, ServeRole role,
+                                                                int n_periods) {
+  std::vector<EventKind> out;
+  if (n_periods <= 0) return out;
+  out.push_back(EventKind::kWrite);
+  out.push_back(EventKind::kRead);
+  for (int p = 1; p < n_periods; ++p) {
+    const std::array<EventKind, 2> shape = SteadyShapeForOrder(order, role);
+    out.push_back(shape[0]);
+    out.push_back(shape[1]);
+    out.push_back(EventKind::kSync);
+  }
+  return out;
+}
+
+/// PURE: expands one process's own `BuildEventSequence()` output into
+/// `MicroStep`s, labelling every step in a period with that period's
+/// own 0-based index -- period 0 (cold start) is exactly 2 events
+/// (write, read), no sync; every later period is exactly 3 (the steady
+/// shape's own two events, then sync) -- so this function can walk the
+/// list two-or-three-at-a-time rather than inferring period boundaries
+/// from counting, which this round's own design notes found ambiguous
+/// at the cold-start/period-1 boundary when periods were counted
+/// purely by "two write/read events seen" without knowing in advance
+/// whether a sync follows.
+[[nodiscard]] inline std::vector<MicroStep> BuildScriptFromEvents(
+    const std::vector<EventKind>& events) {
+  std::vector<MicroStep> steps;
+  int period = 0;
+  std::size_t i = 0;
+  const auto push_one = [&](EventKind e) {
+    switch (e) {
+      case EventKind::kWrite:
+        steps.push_back({StepKind::kWriteClosed, period});
+        break;
+      case EventKind::kRead:
+        steps.push_back({StepKind::kAboutToOpen, period});
+        steps.push_back({StepKind::kOpenClose, period});
+        steps.push_back({StepKind::kImportClosed, period});
+        break;
+      case EventKind::kSync:
+        steps.push_back({StepKind::kSyncBarrier, period});
+        break;
+    }
+  };
+  while (i < events.size()) {
+    const bool has_sync = (i + 2 < events.size()) && events[i + 2] == EventKind::kSync;
+    push_one(events[i]);
+    push_one(events[i + 1]);
+    i += 2;
+    if (has_sync) {
+      push_one(events[i]);
+      i += 1;
+    }
+    period += 1;
+  }
+  return steps;
+}
+
+/// PURE: the coupler's own script -- one `kSyncBarrier` per STEADY
+/// period (1..n_periods-1), labelled identically to the physics
+/// processes' own steady syncs (the cold start, period 0, never syncs
+/// on any process, including the coupler).
+[[nodiscard]] inline std::vector<MicroStep> BuildCouplerScript(int n_periods) {
+  std::vector<MicroStep> steps;
+  for (int period = 1; period < n_periods; ++period) {
+    steps.push_back({StepKind::kSyncBarrier, period});
+  }
+  return steps;
+}
+
+/// Explores every interleaving of THREE actors -- U (`policy_a`), V
+/// (`policy_b`), and the coupler (sync only, no policy) -- running
+/// `order`'s own `n_periods`-period scripts, to exhaustion (same DFS +
+/// visited-set discipline as `RunSimulation()` above, now over a
+/// 3-field `GlobalState`). `policy_a.role`/`policy_b.role` select each
+/// one's own event sequence via `BuildEventSequence()`.
+inline SimulationResult RunSimulationRound8(Round8Order order, int n_periods,
+                                            ProcessPolicy policy_a, ProcessPolicy policy_b) {
+  const std::vector<MicroStep> script_a =
+      BuildScriptFromEvents(BuildEventSequence(order, policy_a.role, n_periods));
+  const std::vector<MicroStep> script_b =
+      BuildScriptFromEvents(BuildEventSequence(order, policy_b.role, n_periods));
+  const std::vector<MicroStep> script_c = BuildCouplerScript(n_periods);
+  const ProcessPolicy policy_c{PolicyKind::kShipped, ServeRole::kFirstServer};  // never consulted
+
+  GlobalState init{};
+  std::set<GlobalState> visited;
+  std::vector<GlobalState> stack;
+  visited.insert(init);
+  stack.push_back(init);
+
+  std::optional<std::string> stuck_example;
+
+  while (!stack.empty()) {
+    GlobalState s = stack.back();
+    stack.pop_back();
+
+    const bool a_done = s.a.pc >= static_cast<int>(script_a.size());
+    const bool b_done = s.b.pc >= static_cast<int>(script_b.size());
+    const bool c_done = s.c.pc >= static_cast<int>(script_c.size());
+    if (a_done && b_done && c_done) continue;  // terminal, nothing more to explore from here
+
+    bool moved = false;
+
+    if (auto out = detail::TryStep(script_a, s.a, s.b.own_serving, s.b.serving_k, policy_a,
+                                   s.b.sync_entering, s.b.sync_passed, s.c.sync_entering,
+                                   s.c.sync_passed)) {
+      moved = true;
+      GlobalState ns = s;
+      ns.a = out->new_pos;
+      if (out->peer_serving_update.has_value()) ns.b.own_serving = *out->peer_serving_update;
+      if (out->peer_serving_k_update.has_value()) ns.b.serving_k = *out->peer_serving_k_update;
+      if (visited.insert(ns).second) stack.push_back(ns);
+    }
+    if (auto out = detail::TryStep(script_b, s.b, s.a.own_serving, s.a.serving_k, policy_b,
+                                   s.a.sync_entering, s.a.sync_passed, s.c.sync_entering,
+                                   s.c.sync_passed)) {
+      moved = true;
+      GlobalState ns = s;
+      ns.b = out->new_pos;
+      if (out->peer_serving_update.has_value()) ns.a.own_serving = *out->peer_serving_update;
+      if (out->peer_serving_k_update.has_value()) ns.a.serving_k = *out->peer_serving_k_update;
+      if (visited.insert(ns).second) stack.push_back(ns);
+    }
+    // The coupler never serves/writes/reads (its own script is pure
+    // kSyncBarrier) -- `peer_own_serving`/`peer_serving_k` are passed
+    // as harmless constants (false/-1) since its own script never
+    // reaches the kOpenClose branch that would consult them.
+    if (auto out = detail::TryStep(script_c, s.c, false, -1, policy_c, s.a.sync_entering,
+                                   s.a.sync_passed, s.b.sync_entering, s.b.sync_passed)) {
+      moved = true;
+      GlobalState ns = s;
+      ns.c = out->new_pos;
+      if (visited.insert(ns).second) stack.push_back(ns);
+    }
+
+    if (!moved && !stuck_example.has_value()) {
+      stuck_example = "A: pc=" + std::to_string(s.a.pc) + " entering=" + std::to_string(s.a.entering) +
+                      " serving=" + std::to_string(s.a.own_serving) + "(" + std::to_string(s.a.serving_k) +
+                      ") pending=" + std::to_string(s.a.pending) + "(" + std::to_string(s.a.pending_k) +
+                      ") sync=" + std::to_string(s.a.sync_passed) +
+                      "  B: pc=" + std::to_string(s.b.pc) + " entering=" + std::to_string(s.b.entering) +
+                      " serving=" + std::to_string(s.b.own_serving) + "(" + std::to_string(s.b.serving_k) +
+                      ") pending=" + std::to_string(s.b.pending) + "(" + std::to_string(s.b.pending_k) +
+                      ") sync=" + std::to_string(s.b.sync_passed) +
+                      "  Coupler: pc=" + std::to_string(s.c.pc) +
+                      " sync=" + std::to_string(s.c.sync_passed);
+    }
+  }
+
+  SimulationResult result;
+  result.num_visited_states = static_cast<int>(visited.size());
+  result.stuck_example = stuck_example;
+  result.completed = !stuck_example.has_value();
+  return result;
+}
+
+/// PURE (task 4's own "soundness link"): would the STATIC check
+/// (lowfive_attach_decision.hpp's own `CheckGraphOrderValidated()`)
+/// accept a graph exhibiting `order`? Only `kMeasured` has a real graph
+/// behind it at all (the channel-order mechanism can only ever produce
+/// "one side exports-then-imports, the other imports-then-exports" --
+/// lowfive_attach_decision.hpp's own "ROUND 8" comment) -- the other
+/// two catalogue entries are strawmen with no corresponding graph, so
+/// there is no signature for the static check to ever be asked about;
+/// defined false for them so the soundness assertion below
+/// (accepts-implies-completes) is checked against ALL three catalogue
+/// entries uniformly, not only the one real graph.
+[[nodiscard]] inline bool static_check_accepts(Round8Order order) {
+  return order == Round8Order::kMeasured;
+}
+
+/// PURE (task 4's own "soundness link"): does the SHIPPED policy (both
+/// roles, `decide_serve_action()`-driven) complete `order`'s own
+/// `n_periods`-period script without either process getting stuck?
+[[nodiscard]] inline bool model_completes(Round8Order order, int n_periods) {
+  ProcessPolicy server{PolicyKind::kShipped, ServeRole::kFirstServer};
+  ProcessPolicy reader{PolicyKind::kShipped, ServeRole::kFirstReader};
+  return RunSimulationRound8(order, n_periods, server, reader).completed;
+}
 
 /// PURE, no search needed (unlike RunSimulation()'s own interleaving
 /// exploration, this is a STATIC property of a configuration, not of
