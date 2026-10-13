@@ -1627,17 +1627,52 @@ Result<void> Runner::Impl::resolve_instructions() {
     // which kind of plan it gets -- a whole-arc copy needs equal sizes, a
     // CommGraph plan needs its indices in range -- and that is not known until
     // attach_comm_graphs(), so check_transport_extents() reconciles it there.
-    if (ins.kind != OpKind::Remap && ins.kind != OpKind::Transport) {
-      for (std::uint8_t k = 0; k < ins.n_in; ++k) {
-        const std::size_t in_total = slots[ins.in[k].value()].total();
-        if (in_total == r.out_total) continue;
-        return Failure{"E-RT-SIZE",
-                     std::string{to_cstring(ins.kind)} + " instruction " +
-                         std::to_string(i) + " reads " +
-                         std::to_string(in_total) + " values from arc %" +
-                         std::to_string(ins.in[k].value()) + " into " +
-                         std::to_string(r.out_total) + " at arc %" +
-                         std::to_string(ins.out.value())};
+    //
+    // `ExternalDelivery` is exempt for a STRONGER reason than either, in its
+    // OWN outer guard rather than folded into the condition just below (an
+    // existing mutation row -- build-evidence/mutations/transport-runtime.
+    // toml's own `transport-held-to-equal-extents` -- anchors that exact
+    // line verbatim; wrapping it here, instead of editing it, is what keeps
+    // that anchor valid unchanged). Its input and output are not just two
+    // placements of the SAME region (D5) but two DIFFERENT components' own
+    // decompositions by design (src/ir/rules_channel.cpp's own `lower_
+    // channel()`: the input carries the EXPORTING component's own producer
+    // arc, the output is typed with the IMPORTING component's own
+    // `rank_set` -- "the value...lands on the CONSUMER's own placement, not
+    // the producer's"). On a rank hosting exactly one end, D24's own
+    // contract ("a placement is decomposed over its own RankSet... a
+    // component that does not live on this rank gets an empty view") makes
+    // the two sizes disagree by construction: 2816 values from the
+    // exporter's own producer into 0 at the (unhosted) importer's own arc,
+    // or the mirror -- KNOWN_ISSUES.md D38, measured on the host's first
+    // LowFive-bound MPMD/accept run past D36's own launch-layout fix.
+    // Unlike `Transport`, there is no replacement check to add here:
+    // `execute()`'s own `OpKind::ExternalDelivery` case (this file) never
+    // reads the input at all -- it is purely the ordering edge op.hpp's own
+    // header comment on `ExternalDelivery` documents -- so no kernel ever
+    // reads `out_total` doubles from it, and the "heap overread" hazard
+    // this whole reconciliation exists to catch (this function's own
+    // comment, two paragraphs up) cannot arise for this kind. The output
+    // arc's own size (what the application's write through `fuse_
+    // view_field` actually gets, src/abi/participant.cpp's `impl_view_
+    // field` via `Runner::field_window_view()`) is sized by the SAME
+    // `sizes(region, rank_set)` callback (src/schedule/buffers.cpp's
+    // `plan_buffers()`) already relied on, untested by this entry, for
+    // every other coupler-owned arc in the system -- there is no new
+    // invariant this kind needs that a narrower check could still catch.
+    if (ins.kind != OpKind::ExternalDelivery) {
+      if (ins.kind != OpKind::Remap && ins.kind != OpKind::Transport) {
+        for (std::uint8_t k = 0; k < ins.n_in; ++k) {
+          const std::size_t in_total = slots[ins.in[k].value()].total();
+          if (in_total == r.out_total) continue;
+          return Failure{"E-RT-SIZE",
+                       std::string{to_cstring(ins.kind)} + " instruction " +
+                           std::to_string(i) + " reads " +
+                           std::to_string(in_total) + " values from arc %" +
+                           std::to_string(ins.in[k].value()) + " into " +
+                           std::to_string(r.out_total) + " at arc %" +
+                           std::to_string(ins.out.value())};
+        }
       }
     }
 
