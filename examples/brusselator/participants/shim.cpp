@@ -1,6 +1,7 @@
 #include "shim.h"
 #include "brusselator_grid.h"
 #include "lowfive_attach.h"
+#include "lowfive_attach_decision.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -383,6 +384,40 @@ int bruss_lowfive_write(const char* file, const char* dataset,
     if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_write): exit rc=1 (H5Fcreate failed)\n");
     return 1;
   }
+  // ROUND 7: a dataset path with a parent group (every Brusselator
+  // dataset: "/grid/u_out", "/grid/v_out") needs that group to exist as
+  // a REAL `LowFive::Group` object before H5Dcreate2 -- otherwise
+  // `LowFive::Object::search()`'s segment-by-segment walk never finds a
+  // child named exactly "grid", and `dataset_create()` (which, unlike
+  // `group_create()`, never creates intermediate groups on its own)
+  // flattens the dataset into one child of the FILE/root literally
+  // named "grid/u_out". That flattening is harmless for THIS write
+  // (the in-memory check below and the is_memory pattern match both
+  // compare the whole string, round 4/6's own citations), but it is
+  // NOT harmless for the READER's own H5Dopen2 later: lowfive_attach_
+  // decision.hpp's own "ROUND 7" comment has the full citations for
+  // why an unresolvable dataset_open() lookup falls back to a
+  // DummyDataset placeholder whose never-populated `space` is what
+  // crashes the reader's own H5Dget_space(). SplitDatasetGroupPath() is
+  // pure and tested; group_path is empty (no call) for a dataset with
+  // no parent group segment at all.
+  const auto dataset_path_split =
+      fuse_examples::lowfive_attach::SplitDatasetGroupPath(dataset);
+  if (!dataset_path_split.group_path.empty()) {
+    const hid_t gid = H5Gcreate2(fid, dataset_path_split.group_path.c_str(),
+                                 H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    if (traced) {
+      std::fprintf(stderr, "TRACE(bruss_lowfive_write): H5Gcreate2(%s)_ok=%d\n",
+                   dataset_path_split.group_path.c_str(), gid >= 0 ? 1 : 0);
+    }
+    if (gid < 0) {
+      H5Fclose(fid);
+      CopyErrorMessage(Hdf5CallFailed("H5Gcreate2", file, dataset), errbuf, errbuf_len);
+      if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_write): exit rc=1 (H5Gcreate2 failed)\n");
+      return 1;
+    }
+    H5Gclose(gid);
+  }
   const hsize_t dims[1] = {static_cast<hsize_t>(n)};
   const hid_t space = H5Screate_simple(1, dims, nullptr);
   if (space < 0) {
@@ -560,9 +595,53 @@ int bruss_lowfive_read(const char* file, const char* dataset,
     if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_read): exit rc=1 (extent mismatch)\n");
     return AfterReadClose(1, errbuf, errbuf_len);
   }
-  H5Sclose(space);
+  if (traced) {
+    std::fprintf(stderr, "TRACE(bruss_lowfive_read): extent dims[0]=%llu rank=1\n",
+                 static_cast<unsigned long long>(dims[0]));
+  }
+  // ROUND 7: reuses `space` (already validated above against `n`) as
+  // BOTH the file and memory dataspace for H5Dread, instead of H5S_ALL.
+  // `LowFive::DistMetadataVOL::dataset_read()`'s own RemoteDataset
+  // branch (LowFive/src/vol-dist-metadata.cpp) has an explicit,
+  // unresolved upstream TODO: "support H5S_ALL, need to get
+  // file_space_id, mem_space_id with H5Dget_space" -- it passes
+  // whatever file_space_id/mem_space_id this call is given straight
+  // into `Dataspace(file_space_id)`/`Dataspace(mem_space_id)`, and
+  // `H5S_ALL` is literally `0` in this HDF5 build (H5Spublic.h), which
+  // hits `Dataspace`'s own early-return (`if (id == 0) return;`,
+  // LowFive/src/metadata/dataspace.hpp) leaving `min`/`max` default-
+  // constructed/empty -- `RemoteDataset::query()`'s own bounding box
+  // (`b.min = Point(file_space.min); b.max = Point(file_space.max);`)
+  // would then be built from those empty vectors, not the dataset's
+  // real extent. This is LowFive's own cited limitation, not patched
+  // here; this shim instead avoids ever exercising it, since `space`
+  // already describes the dataset's own full extent (verified against
+  // `n` immediately above) and is exactly as valid a file/memory
+  // dataspace argument as H5S_ALL would be for a full, contiguous,
+  // correctly-sized read -- a standard HDF5 idiom, not a new one.
+  if (traced) {
+    std::fprintf(stderr, "TRACE(bruss_lowfive_read): H5Dread reusing space_id=%lld "
+                 "(not H5S_ALL; LowFive's own RemoteDataset path does not yet "
+                 "support it)\n",
+                 static_cast<long long>(space));
+  }
   const herr_t rrc =
-      H5Dread(did, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
+      H5Dread(did, H5T_NATIVE_DOUBLE, space, space, H5P_DEFAULT, data);
+  // ROUND 7, task 4: "after H5Dread print rc and the first and last
+  // value read (so a data mismatch is visible)" -- printed regardless
+  // of rrc (a failed read's own buffer contents are still worth seeing
+  // when diagnosing a next failure on the host; they are ordinary
+  // caller-owned memory, not uninitialized in the UB sense, just
+  // possibly stale).
+  if (traced && n > 0) {
+    std::fprintf(stderr,
+                 "TRACE(bruss_lowfive_read): H5Dread rc=%d first=%.17g last=%.17g\n",
+                 static_cast<int>(rrc), data[0], data[n - 1]);
+  } else if (traced) {
+    std::fprintf(stderr, "TRACE(bruss_lowfive_read): H5Dread rc=%d (n=0, no values)\n",
+                 static_cast<int>(rrc));
+  }
+  H5Sclose(space);
   H5Dclose(did);
   H5Fclose(fid);
   if (traced) {

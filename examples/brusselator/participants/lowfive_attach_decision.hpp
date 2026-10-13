@@ -904,4 +904,129 @@ struct VolSettings {
   return out;
 }
 
+/// ROUND 7 -- the serve now sees the file (round 6 landed); the row now
+/// FAILS in under a second with an abort instead of hanging, inside
+/// V's own `H5Dget_space()` on a REMOTE dataset: `H5S.c ... H5Scopy():
+/// not a dataspace` -> `LowFive::MetadataError: Unexpected no class in
+/// dataspace = -1`, thrown from `Dataspace(space_id)`'s own ctor
+/// (LowFive/src/metadata/dataspace.hpp) evaluated as a logger argument
+/// inside `MetadataVOL::dataset_get()`'s GET_SPACE branch (LowFive/src/
+/// vol-metadata/dataset.cpp): `auto& dataspace = static_cast<Dataset*>
+/// (dset_->mdata_obj)->space; hid_t space_id = dataspace.copy();` --
+/// `dataspace.copy()` (`H5Scopy(id)`) fails because `id == 0`.
+///
+/// Root cause, read from source, not guessed: this shim's own
+/// `bruss_lowfive_write()` calls `H5Dcreate2(fid, "/grid/u_out", ...)`
+/// with NO prior `H5Gcreate2(fid, "/grid", ...)` -- round 6 already
+/// found this flattens the dataset into ONE child of the FILE/root
+/// literally named `"grid/u_out"` (confirmed again this round:
+/// `LowFive::Object::search()`, src/metadata/object.hpp, ALWAYS splits
+/// on the first `/` before attempting any match -- `auto pos =
+/// path.find("/"); ...; for (child : children) if (child->name ==
+/// first_name) ...; return ObjectPath{this, path};` -- it never tries a
+/// whole-string match first). Round 6 found this breaks `H5Lexists()`
+/// (a COSMETIC trace artifact, since the write-side `is_memory` check
+/// compares the whole string via `fullname()` and is unaffected). This
+/// round finds the SAME flat name ALSO breaks `MetadataVOL::dataset_
+/// open()` (src/vol-metadata/dataset.cpp) -- NOT cosmetic there: `auto
+/// obj_path = parent->search(name); if (obj_path.path.empty())
+/// result->mdata_obj = obj_path.obj; if (!result->mdata_obj) {
+/// result->mdata_obj = parent->add_child(new DummyDataset(name)); }` --
+/// since `search("grid/u_out")` never finds a child named exactly
+/// `"grid"`, `obj_path.path` comes back as the WHOLE unconsumed string
+/// (non-empty), so `result->mdata_obj` is left null and a `DummyDataset`
+/// placeholder (src/metadata/dummy.hpp: `struct DummyDataset : public
+/// DummyObject { Datatype type; Dataspace space; ... }` -- NOT a
+/// subclass of `Dataset`, default-constructed `space` with `id == 0`)
+/// is substituted. `DistMetadataVOL::dataset_open()`'s own promotion to
+/// a RPC-backed `RemoteDataset` (`dynamic_cast<Dataset*>(mdata_obj) &&
+/// RemoteObject::query(mdata_obj)`) never fires, because `dynamic_cast
+/// <Dataset*>` on a `DummyDataset*` is correctly null (unrelated
+/// classes, both children of `Object` but not of each other) -- so the
+/// placeholder's own, never-populated `space` (id == 0) is what later
+/// `H5Dget_space()` reads. `H5Scopy(0)` fails ("not a dataspace"),
+/// returning LowFive's own documented failure sentinel `H5I_INVALID_HID
+/// == -1`; the immediately following `log->trace("copied space id =
+/// {}, space = {}", space_id, Dataspace(space_id))` constructs
+/// `Dataspace(-1)` as a LOGGER ARGUMENT (evaluated regardless of the
+/// active log level, C++'s own eager-argument-evaluation rule, not a
+/// LowFive choice) -- its ctor's `if (cls_ == H5S_NO_CLASS) throw
+/// MetadataError(fmt::format("Unexpected no class in dataspace = {}",
+/// id));` fires with `id == -1`, the EXACT measured message.
+///
+/// Confirmed NOT the cause (read, not assumed): (a) `RemoteDataset`'s
+/// own ctor (LowFive/src/metadata/remote.hpp) DOES fetch `space` via a
+/// real RPC (`std::tie(dim, type, space, decomposer) = obj.call<...>
+/// ("metadata")`) -- this machinery is real and, per LowFive's own
+/// upstream `examples/prod-con-multidata/` demo (producer: `H5Gcreate
+/// (file, "/group1", ...)` then `H5Dcreate2(group, "grid", ...)` with a
+/// BARE name relative to the GROUP handle; consumer: calls `H5Dget_
+/// space()` on the resulting remote dataset successfully), is a
+/// SUPPORTED, WORKING LowFive feature -- just never reached in this
+/// row, because `make_remote_dataset()` is never called at all. (b) a
+/// hid lifetime bug in `deserialize()`/`make_remote_dataset()`: traced
+/// `LowFive::Hid`'s own ref-counted `H5Iinc_ref`/`H5Idec_ref` discipline
+/// (src/metadata/hid.hpp) through both functions and found it correctly
+/// balanced for the code that WOULD run if `make_remote_dataset()` were
+/// reached -- excluded as this crash's cause, though unverified on a
+/// live host run since that path has literally never executed yet in
+/// this track. (c) a two-HDF5-image/version mismatch: excluded -- the
+/// symptom (a clean, correctly-formatted HDF5 diagnostic plus a C++
+/// exception whose message is produced by LowFive's own code, with the
+/// EXACT numeric value this round's own account predicts) is what a
+/// logic bug operating on a bogus id looks like, not what an ABI/image
+/// mismatch looks like (which this track's own configure-time probe,
+/// unchanged by this round, already guards against elsewhere).
+///
+/// The fix belongs in this shim, not in LowFive: create the dataset's
+/// own parent group(s) before `H5Dcreate2()`, so `search()`'s segment
+/// walk succeeds at every level on both the writer's own in-process
+/// lookup and -- via the identical, separately-deserialized tree built
+/// from the SAME `serialize()`d byte stream -- the reader's `dataset_
+/// open()` lookup too. `LowFive::MetadataVOL::group_create()` (src/
+/// vol-metadata/group.cpp) already walks its OWN unconsumed `search()`
+/// remainder segment by segment, creating one `Group` per segment --
+/// unlike `dataset_create()`, which never does -- so ONE `H5Gcreate2()`
+/// call for the dataset's full parent-group path is sufficient even if
+/// that path has more than one segment. `Object::fullname()` (used by
+/// the write-side `is_memory`/pattern-matching check round 4 fixed)
+/// walks `parent` pointers and re-concatenates with `/`, so nesting the
+/// dataset under a real `Group` named "grid" reproduces the IDENTICAL
+/// `"/grid/u_out"` string that check already matches against --
+/// confirmed no regression to round 4's own fix.
+struct DatasetGroupSplit {
+  std::string group_path;  // "" if no H5Gcreate2() call is needed (the
+                            // dataset belongs directly under whatever
+                            // location H5Dcreate2/H5Dopen2 was given)
+  std::string leaf_name;   // the dataset's own bare name once
+                            // group_path's own Group chain exists; not
+                            // used by the shim's own H5Dcreate2 call
+                            // (which still passes the FULL path -- see
+                            // above for why that is sufficient once the
+                            // group exists), returned so a test can
+                            // assert on both halves independently
+};
+
+/// PURE: splits a dataset path (as passed to `H5Dcreate2`/`H5Dopen2`)
+/// into the parent group path to `H5Gcreate2()` before creating the
+/// dataset, and the dataset's own leaf name. A path with no `/` at all,
+/// or whose only `/` is a single leading one (`"/u_out"`), needs no
+/// group (`group_path == ""`) -- the dataset belongs directly under
+/// whatever location was passed to `H5Dcreate2`/`H5Dopen2`.
+[[nodiscard]] inline DatasetGroupSplit SplitDatasetGroupPath(
+    const std::string& dataset_path) {
+  const auto last_slash = dataset_path.find_last_of('/');
+  if (last_slash == std::string::npos) {
+    return DatasetGroupSplit{"", dataset_path};
+  }
+  const std::string before = dataset_path.substr(0, last_slash);
+  const std::string leaf = dataset_path.substr(last_slash + 1);
+  if (before.empty()) {
+    // "/u_out": a single leading slash, nothing between it and the
+    // leaf -- root-level dataset, no intermediate group.
+    return DatasetGroupSplit{"", leaf};
+  }
+  return DatasetGroupSplit{before, leaf};
+}
+
 }  // namespace fuse_examples::lowfive_attach
