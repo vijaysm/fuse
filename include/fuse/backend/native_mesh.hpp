@@ -59,7 +59,13 @@ struct MeshArrays {
   int dim = 0;  ///< topological dimension of every cell (1, 2 or 3)
 
   // ---- vertices --------------------------------------------------------
-  Kokkos::View<double* [3], MemorySpace> vertex_coords;
+  /// LayoutRight in EVERY memory space: a rank-2 View's default layout is
+  /// the space's own (LayoutRight on the host, LayoutLeft on CUDA), and
+  /// `Kokkos::deep_copy` cannot change memory space and layout in one call,
+  /// so `to_memory_space<Device>()` on a host mesh threw (KNOWN_ISSUES.md
+  /// D47). Pinning the layout keeps the host arrays as they always were
+  /// and makes the device copy a plain contiguous memcpy.
+  Kokkos::View<double* [3], Kokkos::LayoutRight, MemorySpace> vertex_coords;
   Kokkos::View<std::int64_t*, MemorySpace> vertex_gid;
   Kokkos::View<int*, MemorySpace> vertex_owner;
   Kokkos::View<bool*, MemorySpace> vertex_is_owned;
@@ -109,7 +115,7 @@ template <class Target, class Source>
 [[nodiscard]] MeshArrays<Target> to_memory_space(const MeshArrays<Source>& src) {
   MeshArrays<Target> dst;
   dst.dim = src.dim;
-  dst.vertex_coords = detail::copy_view<Kokkos::View<double* [3], Target>>(src.vertex_coords);
+  dst.vertex_coords = detail::copy_view<Kokkos::View<double* [3], Kokkos::LayoutRight, Target>>(src.vertex_coords);
   dst.vertex_gid = detail::copy_view<Kokkos::View<std::int64_t*, Target>>(src.vertex_gid);
   dst.vertex_owner = detail::copy_view<Kokkos::View<int*, Target>>(src.vertex_owner);
   dst.vertex_is_owned = detail::copy_view<Kokkos::View<bool*, Target>>(src.vertex_is_owned);

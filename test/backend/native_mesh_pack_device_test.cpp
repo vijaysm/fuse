@@ -96,15 +96,9 @@ void check_migration_pack_matches_host(const char* generator_spec) {
   const auto expected = pack_for_migration(*view.value(), dest_host, /*num_ranks=*/3);
   ASSERT_TRUE(expected.ok()) << expected.error().message;
 
-  MeshArrays<Space> device_mesh;
-  try {
-    device_mesh = to_memory_space<Space>(arrays.value());
-  } catch (const std::exception& e) {
-    GTEST_SKIP() << "fuse::native::to_memory_space<Space> threw converting Host -> this "
-                    "device space (a pre-existing defect this track found, not pack_to's "
-                    "-- see KNOWN_ISSUES.md): "
-                 << e.what();
-  }
+  // KNOWN_ISSUES.md D47 (fixed): a host -> device copy of the rank-2
+  // vertex_coords used to throw on the layout change; the layout is pinned now.
+  const MeshArrays<Space> device_mesh = to_memory_space<Space>(arrays.value());
   const auto dest = dest_view<Space>(dest_host);
   auto got = device::pack_to<false, Space>(device_mesh, dest, 3);
   ASSERT_EQ(got.size(), expected.value().size());
@@ -136,15 +130,9 @@ void check_halo_pack_matches_host(const char* generator_spec) {
   const auto expected =
       pack_halo_cells(*view.value(), send_by_local_index, owned_idx_host, /*my_rank=*/5, 3);
 
-  MeshArrays<Space> device_mesh;
-  try {
-    device_mesh = to_memory_space<Space>(arrays.value());
-  } catch (const std::exception& e) {
-    GTEST_SKIP() << "fuse::native::to_memory_space<Space> threw converting Host -> this "
-                    "device space (a pre-existing defect this track found, not pack_to's "
-                    "-- see KNOWN_ISSUES.md): "
-                 << e.what();
-  }
+  // KNOWN_ISSUES.md D47 (fixed): a host -> device copy of the rank-2
+  // vertex_coords used to throw on the layout change; the layout is pinned now.
+  const MeshArrays<Space> device_mesh = to_memory_space<Space>(arrays.value());
   const auto dest = dest_view<Space>(dest_of_owned);
   std::vector<std::int32_t> owner_rank_host(nowned, 5);
   std::vector<std::int64_t> owned_idx_flat(nowned);

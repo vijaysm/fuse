@@ -100,7 +100,7 @@ on the host and mirrored, as today.
 - **Found along the way:** `to_memory_space<Target>` (native_mesh.hpp) throws converting Host -> a
   real device space for any rank >= 2 `MeshArrays` field (`vertex_coords`), a layout mismatch between
   Host's and Cuda's default `Kokkos::View` layout -- never exercised that direction before this track
-  (KNOWN_ISSUES.md's D44). Not fixed here (shared infrastructure, out of this track's scope); this
+  (KNOWN_ISSUES.md's D47). Not fixed here (shared infrastructure, out of this track's scope); this
   track's own device test rows skip on it with a citation rather than reporting a false `pack_to`
   failure.
 - **Halo/migration pack:** done as a Space-templated Kokkos kernel

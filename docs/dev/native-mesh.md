@@ -238,7 +238,7 @@ populated by two Kokkos kernels dispatched on `Kokkos::DefaultExecutionSpace` at
 Both kernels reproduce the host loop's own accumulation order exactly, so on a host-only build
 (`Kokkos::DefaultExecutionSpace` IS the host space there) the device arrays are bit-identical to
 `measure_`/`centroid_`; on higgs's CUDA build they agree to 1e-14 relative (nvcc's FMA contraction;
-KNOWN_ISSUES.md D41). `measure(dim,i)`/`centroid(dim,i)` and every existing `MeshView` consumer keep
+KNOWN_ISSUES.md D38, the accepted contraction gap). `measure(dim,i)`/`centroid(dim,i)` and every existing `MeshView` consumer keep
 reading the pre-existing host arrays unchanged -- nothing above the backend sees `DeviceMemSpace` or
 has to change.
 
