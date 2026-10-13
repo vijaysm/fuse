@@ -291,6 +291,19 @@ struct OpAttrs {
   /// then, so no existing reference dump moves.
   ArcId         window_import{};
 
+  /// Review 2026-10-11 IS-4: true for the Sink `emit_field_sink()`
+  /// (src/ir/lowering.cpp) builds for a window-scoped import -- the one
+  /// whose output is K samples wide, delivered unchanged from its provider,
+  /// and must NOT be aliased onto the component's own native (single-value)
+  /// storage the way an ordinary Sink's output is (`plan_buffers()`,
+  /// src/schedule/buffers.cpp, is the reader). Previously this was decided
+  /// by a `"/window"` label suffix, which an ordinary field legally named
+  /// `q/window` would also match, silently stealing its own delivery into
+  /// coupler-owned scratch. Not printed by `attrs_string()` below: a boolean
+  /// set structurally by lowering changes no existing dump (the label still
+  /// carries the same text it always did, for readability only).
+  bool          window_import_sink = false;
+
   friend bool operator==(const OpAttrs&, const OpAttrs&) = default;
 };
 

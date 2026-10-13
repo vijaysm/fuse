@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <limits>
 #include <stdexcept>  // std::size_t limits only; the thrown type is fuse::InvalidArgument (buffers.hpp)
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -174,6 +175,52 @@ TEST(Buffers, ComponentOwnedIsExactlyTheSourceAndSinkOutputs) {
   // The intermediates the coupler does own are spec §4.2's list: the waveform
   // sample, the accumulator, transport staging, the remap target, diagnose.
   EXPECT_EQ(plan.total_coupler_elements, 100u * (dag.arc_count() - 2));
+}
+
+// Review 2026-10-11 IS-4: plan_buffers() used to decide a Sink was a
+// window-scoped import's own scratch buffer by matching a "/window" LABEL
+// suffix -- and a field is legally allowed to contain '/' in its own name
+// (validate() checks only name uniqueness). A plain Requires field named
+// "q/window", written by an ordinary channel with no iteration region
+// anywhere in the graph, produces exactly that label by coincidence and
+// used to be silently diverted into coupler-owned scratch instead of being
+// aliased onto its own component's registered storage -- the delivered
+// value would never reach the component. The structural
+// `OpAttrs::window_import_sink` flag this fix reads cannot collide with a
+// user-chosen name.
+TEST(Buffers, OrdinaryFieldNamedWithASlashWindowSuffixIsNotMistakenForAWindowImport) {
+  CouplingGraph g;
+  const auto mf = g.add_mesh(fuse::MeshDecl{.name = "mf"});
+  const auto ms = g.add_mesh(fuse::MeshDecl{.name = "ms"});
+  const auto rf = g.add_region(fuse::Region{.name = "rf", .mesh = mf});
+  const auto rs = g.add_region(fuse::Region{.name = "rs", .mesh = ms});
+  const auto a = g.add_component(ComponentDecl{
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  const auto b = g.add_component(ComponentDecl{
+      .name = "b", .ranks = fuse::RankSet{1, 1}, .interval = Rational{1}});
+  const auto s = g.add_field(a, fuse::FieldSpec{
+      .name = "q", .region = rf, .units = u::kKelvin,
+      .intent = fuse::Intent::Provides});
+  const auto t = g.add_field(b, fuse::FieldSpec{
+      .name = "q/window", .region = rs, .units = u::kKelvin,
+      .intent = fuse::Intent::Requires});
+  g.add_channel("c", s, t);
+
+  const fuse::OperatorDAG dag = lower_ok(g);
+  const auto plan = plan_buffers(dag, expand_ok(g, dag), constant_sizes(100));
+
+  bool found = false;
+  for (std::size_t i = 0; i < dag.node_count(); ++i) {
+    const fuse::Node& n = dag.node(fuse::NodeId{static_cast<std::uint32_t>(i)});
+    if (n.kind != fuse::OpKind::Sink) continue;
+    if (n.label.find("q/window") == std::string::npos) continue;
+    found = true;
+    ASSERT_TRUE(n.output.valid());
+    EXPECT_TRUE(plan.buffers[n.output.value()].is_component_owned)
+        << "a field literally named \"q/window\" must alias its component's "
+           "own storage, not be mistaken for a window-scoped import";
+  }
+  ASSERT_TRUE(found) << "fixture must produce a Sink labelled \"...q/window\"";
 }
 
 TEST(Buffers, WaveformArcsArePersistent) {
