@@ -837,6 +837,97 @@ trace log is large; raise it back to `trace` only if `info` does not
 separate the next failure's own hypotheses). KNOWN_ISSUES.md D39's own
 "Round 7" account has the full host_pending paragraph.
 
+**Round 8 -- the measured steady-state order is not "write,read every
+period" on both sides; the fix is a policy correction plus a two-part
+order check, not a dynamic exchange.** With round 7's fix landed, the
+host's own row now round-trips a FULL period through LowFive for the
+first time on both ranks (every `H5Dread rc=0`, correct extents,
+`files_in_memory` back to 0 after each read-close) but still times out
+at 120 s, one write into period 1: U (first-server) blocks in its own
+`read(v#1)`, and V (first-reader) parks LAST, at the coupler's own
+`MPI_Allreduce` sync, having just deferred its own `v#1` serve.
+KNOWN_ISSUES.md D39's own "Round 8" account has the host's own full
+trace, both ranks, verbatim.
+
+**Root cause.** Round 2/3's own model assumed both sides run
+write-then-read every period, with a first-reader's deferred serve
+flushed after its own NEXT read's close. The measured orders differ by
+role: U writes then reads every period, unchanged from its own cold
+start; V writes then reads ONLY at cold start, then reads-then-writes
+from period 1 onward. Under the old "first-reader always defers"
+policy this is circular -- each side's own next step needs the other's
+release first.
+
+**What determines the steady-state order:** channel DECLARATION order
+(`CouplingGraph::add_channel()` assigns each `ChannelId` strictly in
+call order), combined with `Runner::Impl::deliver_external()`'s own
+per-channel "exporter suspends before importer" rule and
+`lower_channel()`'s own `ExternalDelivery` ordering-edge placement
+(the same slot `Transport` would occupy) -- NOT component declaration
+order, rank sets, the Jacobi iteration kind, or the acceleration kind
+(the first three happen to coincide with channel order in this graph
+but are not what drives it; the last two do not change the mechanism).
+Not fully settled: whether `ExternalDelivery` fires once per coupling
+window or once per Jacobi sweep -- the host's own measured counts (two
+write-serve-read cycles across two periods) are consistent with
+once-per-period, but this round did not trace the sweep-count machinery
+far enough to prove it analytically. Full derivation, with every
+citation, is in `lowfive_attach_decision.hpp`'s own "ROUND 8" header
+comment and in KNOWN_ISSUES.md D39's own "Round 8" account.
+
+**The fix:** `decide_serve_action(role, completed_any_read)` defers
+ONLY a first-reader's cold-start write; every later write, either role,
+serves immediately. `ServeState` gained `completed_any_read`.
+
+**The order check, two parts, deliberately NOT a dynamic runtime
+exchange.** (a) STATIC, at attach time: `CheckGraphOrderValidated()`
+refuses (`E-LOWFIVE-ATTACH-ORDER-UNVALIDATED`, naming the first
+differing property) unless the loaded graph's own channel-order
+signature exactly matches the ONE measured, validated configuration --
+this limits the fix to validated configurations only, stated plainly
+here and in KNOWN_ISSUES.md, not silently assumed to generalize. (b)
+LOCAL, per event: `CheckAndAdvanceOrder()` runs before every real
+LowFive hook's own blocking call and refuses
+(`E-LOWFIVE-ATTACH-ORDER-DEVIATION`, naming expected vs. observed event,
+period, and slot) before that call, never after. (c) Nothing sound was
+found for detecting the peer's own order at runtime instead: each side
+only learns the peer's order from the OUTCOME of a serve/read exchange,
+which is the exact mechanism already at risk of deadlock -- an exchange
+performed after the first problematic write cannot prevent a mutual
+serve already begun (the measured hang IS such a state), and the
+exchange call itself could deadlock if one side is already blocked
+inside `H5Fopen`. No sound pre-serve exchange is proposed; this is an
+open question, not a NOT-NOW decision made for convenience.
+
+**The model check:** event sequences (write/read/sync) are now DATA,
+not inline control flow, with a third (coupler) actor added for the
+collective sync. Four scenarios are checked against `RunSimulationRound8()`'s
+own 3-actor search: the measured order under the new policy completes
+for 1, 2, and 60 periods; the measured order under the OLD (round 2/3)
+policy reproduces the measured hang (a regression test); both
+"write-then-read every period" and both "read-then-write every period"
+(the two strawman shapes round 2/3 implicitly assumed) each get stuck.
+A soundness link (`static_check_accepts(order) == model_completes(order)`)
+is asserted for every catalogued order -- true only for the measured
+order, because the channel-order mechanism can only ever produce that
+one shape; the two strawmen have no corresponding real graph at all.
+KNOWN_ISSUES.md D39's own "Round 8" account has the full test inventory
+and the three new mutation rows.
+
+**Host command, unchanged in form, now past the first full period but
+never past the first write into period 1:**
+
+```
+FUSE_LOWFIVE_ATTACH_TRACE=1 FUSE_LOWFIVE_LOG=info \
+    ctest -R 'participants\.lowfive\.mpmd\.3' --output-on-failure
+```
+
+KNOWN_ISSUES.md D39's own "Round 8" account has the full host_pending
+paragraph: the expected per-event trace line shape (event index, period
+index, policy/reason string, order-check verdict) on both ranks, and
+for each plausible next failure what the trace would look like and
+which of this round's own claims it would contradict.
+
 **IR/runtime half, implemented and measured (no LowFive/HDF5 needed) —
 2026-10-04.** `lower_channel()` (`src/ir/rules_channel.cpp`) emits a new
 `OpKind::ExternalDelivery` node (`include/fuse/ir/op.hpp`) in place of

@@ -5507,3 +5507,165 @@ thing to check with `FUSE_LOWFIVE_LOG=trace`'s own `files.size`/`files.size_afte
 Demo B's own distributed path is compiled and never run, and D14's own open accept-mode intercommunicator
 question (item 3 of its "what remains" list) is untouched by a fix that concerns dataset/group nesting and
 H5S_ALL usage, never accept mode's own unexposed intercommunicator.
+
+**Round 8 (2026-10-13) -- the measured order is not "write,read every period" on both sides; the fix is a**
+**policy correction plus a two-part order check, not a dynamic exchange.** With round 7's fix landed (commit
+80944cc), the host ran the row with `FUSE_LOWFIVE_ATTACH_TRACE=1 FUSE_LOWFIVE_LOG=info`: build exit 0, and for
+the first time a FULL PERIOD round-trips through LowFive on both ranks -- every `H5Dread rc=0`, correct extents
+(2816 for U's own field, 2048 for V's), `files_in_memory` back to 0 after each read-close. The row still times
+out at 120s, one write into period 1. U's own trace: `write(u#0)` -> `kServeNow` -> exit (1.3ms) -> `read(v#0)`
+-> `H5Fopen_ok` -> `kNoopAfterImport` -> `write(u#1)` -> `kServeNow` -> exit (0.7ms) -> `read(v#1)` -> `H5Fopen`
+about to call, STUCK. V's own trace: `write(v#0)` -> `kDeferServe` -> `read(u#0)` -> `H5Fopen_ok` ->
+`kFlushDeferred` -> flush exit (0.8ms) -> `read(u#1)` -> `H5Fopen_ok` -> `kNoopAfterImport` -> `write(v#1)` ->
+`kDeferServe`, LAST -- V then parks at the coupler's own `MPI_Allreduce` sync (`coupler_main.c:163`).
+
+**Root cause: round 2/3's own model assumed BOTH sides run "write then read" every period, with the
+first-reader's deferred serve flushed after its OWN next read's close. The host's own measured steady-state
+orders differ by role.** U (first-server) writes then reads every period, unchanged from its own cold start. V
+(first-reader) writes then reads ONLY at its own cold start (period 0); from period 1 onward it reads, THEN
+writes. Under round 2/3's own "first-reader always defers" policy this is circular: U blocks in `read(v#1)`
+waiting for V's own `v#1` serve; V's own `v#1` is deferred until V's own NEXT read-close; V's own next read
+(`u#2`) needs U's own `u#2`, which U writes only after its own `read(v#1)` returns -- which needs V's own
+release first.
+
+**What determines the steady-state order (task 1): channel DECLARATION order, not component order, rank sets,
+iteration kind, or acceleration kind.** `brusselator::add_window_coupling()`
+(`examples/brusselator/brusselator_graph.hpp`) calls `g.add_channel("u2v", u_out, v_in)` BEFORE
+`g.add_channel("v2u", v_out, u_in)`. `fuse::CouplingGraph::add_channel()` assigns each `ChannelId` strictly in
+call order (`channels_.push_back(...); return ChannelId{channels_.size() - 1}`), so `u2v` is `ChannelId{0}` and
+`v2u` is `ChannelId{1}`. `Runner::Impl::deliver_external()` (`src/runtime/iteration.cpp`) suspends the EXPORTER
+of a channel's own delivery BEFORE the IMPORTER, per channel -- its own comment reads "Suspended FIRST, matching
+the real time order." `lower_channel()` (`src/ir/rules_channel.cpp`) places each channel's own `ExternalDelivery`
+DAG node with `source_producer` as an ordering-edge input, so the scheduler places it, per `OpKind::
+ExternalDelivery`'s own doc comment (`include/fuse/ir/op.hpp`), "after the exporting member's own last substep...
+before the importer's own advance" -- the same slot `Transport` would occupy. Combined, channel `u2v`
+(declared first) makes U the exporter-suspends-first side for that channel and V the importer; channel `v2u`
+(declared second) makes V the exporter and U the importer. Component declaration order and rank sets
+(`fuse::RankSet`) do not independently determine order in this graph (they happen to coincide with channel order
+here, but the mechanism is the channel list, not the component list); the Jacobi iteration kind and the
+acceleration kind do not change the mechanism either -- the ordering-edge placement applies identically
+regardless of which iteration/acceleration is configured. **Not fully settled, declared as a limitation rather
+than a checked claim:** whether `ExternalDelivery` fires once per coupling window or once per Jacobi sweep
+(`max_iterations = 60` in this graph) -- `deliver_external()`'s own citation places the node in the slot
+`Transport` would occupy WITHIN one sweep, which in principle could mean once per sweep. The host's own measured
+counts (exactly two write-serve-read cycles across two periods, not dozens) are consistent with once-per-period,
+but this round did not trace `run_region()`'s own sweep-count/convergence machinery far enough to prove it
+analytically. Cold start (`u_main.c` lines ~505-516, `v_main.f90`'s own mirror) is a SEPARATE pre-loop priming
+call -- hardcoded write-then-read on BOTH mains, no step/sync machinery at all -- mechanically different from the
+IR-scheduled steady state, though it produces the identical write-then-read SHAPE for an unrelated reason.
+
+**The fix (task 2): `decide_serve_action(role, completed_any_read)` defers ONLY the cold-start write; every**
+**later write serves immediately, on both roles.** A first-reader's write is deferred if and only if it has not
+yet completed any read; a first-server's write is never deferred; a first-reader's write past its own cold start
+is served immediately, exactly like a first-server's. `ServeState` gained `completed_any_read` (set
+unconditionally, both roles, at `kImportClosed`); `serve_state_step()`'s own `kExportWrittenAndClosed` case now
+calls `decide_serve_action()` instead of a hardcoded role check. The round 2/3 test that encoded the falsified
+"first-reader always defers" model (`FirstReaderDefersThenReceivesAndFlushesRepeatedly`) is REPLACED (not
+deleted to force a pass) by `FirstReaderDefersOnlyTheColdStartThenServesImmediatelyEveryLaterWrite`, which asserts
+the corrected shape directly.
+
+**The order check (task 3), two parts, deliberately NOT a dynamic runtime exchange.** (a) STATIC, at attach time:
+`ComputeGraphOrderSignature()` reduces the loaded graph's own LowFive-bound channels to
+`{writer_name, reader_name, writer_rank_count, reader_rank_count}` per channel, in `ChannelId` order;
+`CheckGraphOrderValidated()` refuses with `E-LOWFIVE-ATTACH-ORDER-UNVALIDATED`, naming the first differing
+property, unless the signature exactly matches `ValidatedGraphOrderSignatures()` -- the ONE measured
+configuration (`{"U","V",1,1}` then `{"V","U",1,1}`). This limits the policy to validated configurations ONLY:
+a third channel, a swapped channel order, or a multi-rank component is refused by name, not silently assumed to
+behave the same way. (b) LOCAL, per event: `ExpectedOrderForPeriod(role, period_index)` gives each role's own
+two-slot order for the validated configuration; `CheckAndAdvanceOrder()` is called BEFORE
+`serve_state_step()`'s own answer at every real call site in `lowfive_attach.cpp`, and refuses with
+`E-LOWFIVE-ATTACH-ORDER-DEVIATION`, naming the expected and observed event kind plus the period and slot, before
+the next blocking LowFive call -- never after. (c) Whether anything cheaper/sound could detect the peer's own
+order at RUNTIME instead of relying on a pre-validated static signature: nothing sound was found. Each side only
+learns its OWN role and OWN read/write history locally; the peer's own order is only observable from the
+OUTCOME of a serve/read exchange, which is the exact mechanism already at risk of deadlock. A dynamic exchange
+performed after the first problematic write could not prevent a mutual serve already begun (the measured hang
+IS such a state: both sides have already issued the calls that deadlock), and the exchange call itself could
+deadlock if one side is already blocked inside `H5Fopen` waiting on the other's own serve -- the message
+describing the peer's order would itself need a channel that is not already stuck. No sound pre-serve exchange
+is proposed here; if one is found later it belongs in `docs/user/lowfive.md`'s own open-questions list, not
+implemented speculatively against an unmeasured case.
+
+**The model check (task 4): event sequences as DATA, a third (coupler) actor added for the collective sync, four**
+**scenarios plus a soundness link.** `EventKind{kWrite, kRead, kSync}` and `Round8Order{kMeasured,
+kBothWriteReadSteady, kBothReadWriteSteady}` make each catalogued order's own per-period shape explicit data
+(`SteadyShapeForOrder()`, `BuildEventSequence()`), rather than inline control flow; `BuildScriptFromEvents()`/
+`BuildCouplerScript()` turn an event list into the same `MicroStep` scripts `TryStep()` already consumes.
+`TryStep()` gained a `kSyncBarrier` step kind modelling the coupler's own three-process `MPI_Allreduce`: a
+two-phase arrival/release (`sync_entering`, `sync_passed`) rather than a naive "not behind" check, which is
+vacuously satisfiable at the very first barrier (everyone starts at `sync_passed = 0`); and the release
+condition is MONOTONIC (`other_passed > my_passed || (other_passed == my_passed && other_entering)`), because a
+naive "both exactly equal" check permanently strands the second and third releaser once the first has already
+incremented past. `RunSimulationRound8()` runs a 3-actor (U, V, coupler) DFS with a visited-state set.
+(i) measured order, new policy: completes for N = 1, 2, 60 periods (state count grows to 4725 at N = 60, not
+combinatorially -- `Round8MeasuredOrderCompletesFor1And2And60Periods`). (ii) measured order, round 2/3's own
+protocol (`PolicyKind::kRegressedAlwaysDeferFirstReader`, a hand-rolled copy of the falsified policy, kept
+separate from `decide_serve_action()` itself so the regression test does not merely re-test the same function it
+is supposed to be a regression guard for): reproduces the measured STUCK state exactly
+(`Round8MeasuredOrderUnderRegressedPolicyReproducesTheMeasuredHang`). (iii) both sides write-then-read every
+period (the strawman round 2/3 implicitly assumed): mutual-serve stuck (`Round8BothSidesWriteReadSteadyGetsStuck`).
+(iv) both sides read-then-write every period: also stuck (`Round8BothSidesReadWriteSteadyGetsStuck`).
+Soundness link: `static_check_accepts(order) == model_completes(order)` holds for every `Round8Order` catalogue
+entry (`Round8StaticCheckAcceptsImpliesModelCompletesForEveryCatalogueEntry`) -- `static_check_accepts()` is true
+ONLY for `kMeasured`, because task 1's own derivation shows the channel-order mechanism can only ever produce
+the "one exports-then-imports, other imports-then-exports" shape; the two strawman orders have no corresponding
+real graph at all, so "not accepted" is correct for them, not merely convenient. The pre-existing N = 1
+file-lifetime scenarios (`RunSimulation`/`BuildScript`, the three illustrative deadlocks and two completions)
+are kept working, unchanged, alongside the new machinery -- they remain meaningful because an N = 1 scenario is
+order-independent.
+
+**Pinned by (Round 8, additive to round 7's own inventory, 92 tests total in the binary now).** One
+`ServeStateStep` test replaced (the falsified-model one, named above); six `ModelCheck` tests replaced (their
+own N >= 2 "both write-read every period" script is the now-proven-unrealistic `kBothWriteReadSteady` strawman,
+which only completed before because it was tested against the now-falsified "always defer" policy -- each
+replacement carries a comment saying which test and why, per this round's own instruction not to delete a test
+just to make it pass). 24 new tests: `DecideServeAction` (2), `ExpectedOrderForPeriod` (3), `CheckAndAdvanceOrder`
+(5), `ComputeGraphOrderSignature` (1), `CheckGraphOrderValidated` (4, one refusal per differing property:
+swapped channel order, different component names, a third channel, a multi-rank component), `ModelCheck` (6, the
+four scenarios above plus the soundness link and a "measured is the only accepted catalogue entry" check),
+`BuildEventSequence` (3). Three new mutation rows (`decide-serve-action-defers-every-first-reader-write`,
+`check-graph-order-validated-accepts-any-graph`, `check-and-advance-order-write-check-disabled`), killed
+decisively and the file restored byte-identical (`md5` checked) before the next step.
+`python3 tools/mutate.py --check-anchors` reports 346 valid, 0 stale, of 346. Full tier-0 build and ctest
+(205/205, unchanged -- no new tier-0 ctest TARGETS added this round) and all 5 repo-health gates clean. The full
+tier-1 (MPI+Fortran+LowFive+MOAB) build is ALSO clean, including the production wiring of `CheckAndAdvanceOrder()`
+into all three real LowFive hooks (`bruss_lowfive_serve_after_write`, `bruss_lowfive_receive_before_read`,
+`bruss_lowfive_after_read_close`) and `CheckGraphOrderValidated()` into `bruss_lowfive_attach()` itself, both in
+`examples/brusselator/participants/lowfive_attach.cpp` -- confirmed directly in this round's own build log
+against the real `LowFive::DistMetadataVOL` headers, linked into both `brusselator_u_main` and
+`brusselator_v_main`.
+
+**What the host must verify (Round 8) -- the policy fix and order check have never been run on a host; only the**
+**model check and the pure functions are tier-0 tested.** In `build-lowfive`: rebuild (`cmake --build .`, every
+target), then
+
+```
+FUSE_LOWFIVE_ATTACH_TRACE=1 FUSE_LOWFIVE_LOG=info ctest -R 'participants\.lowfive\.mpmd\.3' --output-on-failure
+```
+
+On success, both ranks' own trace should show, for TWO periods: the attach line, now followed immediately by
+`TRACE(bruss_lowfive_attach): order-check-verdict=accepted` (the static check, run once, both ranks); then, per
+write/read/import-close event, a line naming the monotonic per-process `event_index`, the `period_index`, and
+the policy/reason string (`cold-start-first-reader` or `steady-state` at write; `receive-only` at
+import-about-to-open; `flush-deferred` or `noop-after-import` at import-close) -- U's own period-1 `write(u#1)`
+should now show `steady-state` (served immediately, not deferred) where round 7's own trace showed the process
+getting stuck instead; V's own period-1 `write(v#1)` should ALSO show `steady-state`, served immediately rather
+than deferred past V's own next read. If this round's own derivation and fix are both correct, the row should
+reach `brusselator_check`'s own pass/fail comparison between the LowFive-routed values and the in-process
+`Runner`'s own reference values -- a stage this track has never yet reached. Plausible next failures, and which
+of this round's own claims each would contradict: an `E-LOWFIVE-ATTACH-ORDER-DEVIATION` fires on the host despite
+92/92 tier-0 tests passing -- would mean task 1's own derived order table is incomplete for some real-host
+timing this round's model did not capture (the model's own DFS explores every interleaving the three-actor
+script ALLOWS, not every interleaving a real MPI/LowFive runtime could produce); the row still hangs with no
+order-check refusal at all -- would mean the hang has a THIRD cause downstream of both fixed defects, not an
+order-of-events problem (the one class this round's own policy and checks can catch); `brusselator_check` itself
+reports a value mismatch once the row completes -- a genuine data round-trip defect, separate from anything the
+attach/order layer owns, the first thing `brusselator_check` is built to catch; the Jacobi-sweep-frequency
+question (task 1's own declared limitation) turns out to matter -- would mean `ExternalDelivery` fires more than
+once per period for `max_iterations > 1`, and the order table (built assuming once per period) would need
+revisiting even though this round's own tier-0 evidence cannot distinguish the two cases.
+
+**Still does not close D14.** Unchanged by this round -- the two-HDF5-image hazard is closed (host action only),
+Demo B's own distributed path is compiled and never run, and D14's own open accept-mode intercommunicator
+question (item 3 of its "what remains" list) is untouched by a fix that concerns serve/read ORDER, never accept
+mode's own unexposed intercommunicator.
