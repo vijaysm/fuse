@@ -1,5 +1,6 @@
 #include "shim.h"
 #include "brusselator_grid.h"
+#include "lowfive_attach.h"
 
 #include <cstring>
 #include <string>
@@ -345,13 +346,26 @@ int bruss_lowfive_available(void) { return FUSE_HAVE_LOWFIVE; }
 
 int bruss_lowfive_write(const char* file, const char* dataset,
                         const double* data, long long n,
+                        long long fapl_id,
                         char* errbuf, long long errbuf_len) {
-  // Literal H5P_DEFAULT on every call, per shim.h's own comment: the VOL
-  // that makes this interception rather than a real file on disk is
-  // attached process-wide (HDF5_VOL_CONNECTOR/HDF5_PLUGIN_PATH), not by
-  // any property-list argument this function passes -- the whole point
-  // of this track's chosen attachment mechanism (docs/user/lowfive.md).
-  const hid_t fid = H5Fcreate(file, H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+  // `fapl_id`, not H5P_DEFAULT, per shim.h's own updated comment ("LowFive
+  // attach" track): the VOL that makes this interception rather than a
+  // real file on disk is attached PROGRAMMATICALLY, by bruss_lowfive_
+  // attach() (lowfive_attach.h), and this call's own fapl_id argument is
+  // the file-access property list that carries it. A negative fapl_id
+  // means attach either was never called or failed -- refused here,
+  // rather than silently falling back to H5P_DEFAULT, which would reach
+  // a real file with no interception and no diagnostic.
+  if (fapl_id < 0) {
+    CopyErrorMessage(
+        "bruss_lowfive_write('" + std::string(file) +
+            "'): fapl_id < 0; call bruss_lowfive_attach() successfully "
+            "first",
+        errbuf, errbuf_len);
+    return 1;
+  }
+  const hid_t fapl = static_cast<hid_t>(fapl_id);
+  const hid_t fid = H5Fcreate(file, H5F_ACC_TRUNC, H5P_DEFAULT, fapl);
   if (fid < 0) {
     CopyErrorMessage(Hdf5CallFailed("H5Fcreate", file, dataset), errbuf, errbuf_len);
     return 1;
@@ -380,13 +394,37 @@ int bruss_lowfive_write(const char* file, const char* dataset,
     CopyErrorMessage(Hdf5CallFailed("H5Dwrite", file, dataset), errbuf, errbuf_len);
     return 1;
   }
+  // "called by the producer side after it has written ... and called
+  // its own, unmodified H5Fclose" -- fuse::LowFiveTransport::
+  // serve_as_producer()'s own placement (fuse/transport/transport.hpp),
+  // mirrored here; a no-op when the live attach is single-process.
+  if (bruss_lowfive_serve_after_write(errbuf, errbuf_len) != 0) {
+    return 1;
+  }
   return 0;
 }
 
 int bruss_lowfive_read(const char* file, const char* dataset,
                        double* data, long long n,
+                       long long fapl_id,
                        char* errbuf, long long errbuf_len) {
-  const hid_t fid = H5Fopen(file, H5F_ACC_RDONLY, H5P_DEFAULT);
+  if (fapl_id < 0) {
+    CopyErrorMessage(
+        "bruss_lowfive_read('" + std::string(file) +
+            "'): fapl_id < 0; call bruss_lowfive_attach() successfully "
+            "first",
+        errbuf, errbuf_len);
+    return 1;
+  }
+  // "called by the CONSUMER side BEFORE its own, unmodified H5Fopen" --
+  // fuse::LowFiveTransport::receive_as_consumer()'s own placement
+  // (fuse/transport/transport.hpp), mirrored here; a no-op when the
+  // live attach is single-process.
+  if (bruss_lowfive_receive_before_read(errbuf, errbuf_len) != 0) {
+    return 1;
+  }
+  const hid_t fapl = static_cast<hid_t>(fapl_id);
+  const hid_t fid = H5Fopen(file, H5F_ACC_RDONLY, fapl);
   if (fid < 0) {
     CopyErrorMessage(Hdf5CallFailed("H5Fopen", file, dataset), errbuf, errbuf_len);
     return 1;
@@ -429,6 +467,7 @@ int bruss_lowfive_read(const char* file, const char* dataset,
 #else  // !FUSE_HAVE_LOWFIVE
 
 int bruss_lowfive_write(const char*, const char*, const double*, long long,
+                        long long,
                         char* errbuf, long long errbuf_len) {
   CopyErrorMessage("not built with LowFive (FUSE_ENABLE_LOWFIVE was OFF)", errbuf,
                    errbuf_len);
@@ -436,6 +475,7 @@ int bruss_lowfive_write(const char*, const char*, const double*, long long,
 }
 
 int bruss_lowfive_read(const char*, const char*, double*, long long,
+                       long long,
                        char* errbuf, long long errbuf_len) {
   CopyErrorMessage("not built with LowFive (FUSE_ENABLE_LOWFIVE was OFF)", errbuf,
                    errbuf_len);
