@@ -3024,8 +3024,11 @@ participant rows those two entries track are NOT re-listed here):**
    held only the two logs; `run_demo.sh` with dataset paths `/values` and `/a/b/c/values` also passed.
    The consumer reads with `H5S_ALL`, which D39 round 7 recorded as an unresolved upstream TODO in
    `DistMetadataVOL::dataset_read`; this whole-dataset 1-D read returned correct values, which does not
-   establish that `H5S_ALL` is safe for other selections. Not measured: fix (c)'s necessity under LowFive
-   (no run without it), more than one rank per side, more than one file or dataset per transport, and a
+   establish that `H5S_ALL` is safe for other selections. **Mutation rows** (`build-evidence/mutations/demo-b.toml`, `FUSE_MUTATE_MPI=1 tools/mutate.py --area demo_b
+   --build-dir build-lowfive` on the owner's machine, HEAD `58e2727`): 3 killed, 0 declared equivalent, 0 not
+   assessed, 0 without a baseline, 0 not killed, of 3; the checkout was clean before and after. The killed
+   `demo-b-producer-skips-the-parent-group` row is the measurement that fix (c) is necessary under LowFive:
+   without the parent group, `example.demo_b` fails. Not measured: more than one rank per side, more than one file or dataset per transport, and a
    second exchange in one process.
 
 **D14 is closed.** Every item above is done and host-measured. Limits that remain belong to other
@@ -7120,3 +7123,22 @@ asserts a named refusal, not less. `docs/dev/newton-krylov.md` §10.2's "Scope" 
 only and named the old code, has a dated superseding note. **Measured after the fix:** `petsc.snes` Passed on
 `build-all`. Not established: why the quick tier of 2026-10-12 after `000b01c` did not show this (the tree and tier at
 that run were not recorded).
+
+### ~~D60. The installed package could not be consumed from a LowFive-enabled build: `fuse-lowfive` was never recreated~~ — FIXED 2026-10-14, host-verified
+
+**Measured** with `ctest -LE slow` on `build-lowfive` (owner's machine, HEAD `58e2727`): 316 of 318 passed;
+`abi.install_consumer_c` and `abi.install_consumer_fortran` failed with `ld: library 'fuse-lowfive' not found`.
+Cause, read from the install tree: the exported `fuse::transport` carries `$<LINK_ONLY:fuse-lowfive>` in its
+`INTERFACE_LINK_LIBRARIES` (`fuse-coupler-targets.cmake`), because `fuse-coupler-transport` links the
+`fuse-lowfive` IMPORTED target `cmake/FuseDependencies.cmake` builds, and that target is not part of any export
+set. `fuse-couplerConfig.cmake.in` recreated `fuse-moab` for the same reason but had no equivalent for LowFive, so a
+consumer saw a bare library name. Not a regression of the Demo B work: `build-lowfive`'s own
+`LastTestsFailed.log` already listed `abi.install_consumer_c` before it. **Fix:** `cmake/FuseDependencies.cmake`
+records `FUSE_LOWFIVE_LIBRARIES_RESOLVED` (LowFive, its distributed library when present, and HDF5 with every
+CMake target resolved to its file) and `FUSE_LOWFIVE_INCLUDE_DIRS`, and prints the list at configure time; the
+package config recreates `fuse-lowfive` from them when `FUSE_ENABLE_LOWFIVE` was on, with the same MPI link,
+`FMT_HEADER_ONLY` and fmt include ordering as the build's own target. Resolved on this host (from
+`cmake --trace-expand`): `liblowfive.dylib`, `liblowfive-dist.dylib`, `libhdf5.dylib` and the SDK's
+`libz.tbd`, `libdl.tbd`, `libm.tbd`. **Measured after the fix:** both install-consumer rows Passed in
+`build-lowfive` and `build-all`, and `example.demo_b` still passes. No configure-time refusal was added: nothing
+could make one fire, and the two install-consumer rows are the test that does.
