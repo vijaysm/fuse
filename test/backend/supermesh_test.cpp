@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -1371,4 +1372,104 @@ TEST(RemapPartial, SourceWiderThanTargetTruncatesWhenConservationIsNotAsked) {
   EXPECT_NEAR(tgt_integral, 0.5 * src_integral, 1e-12 * src_integral)
       << "exactly half the source's constant-field integral should arrive; "
          "the other half had no target cell to receive it";
+}
+
+// ===========================================================================
+// Device-resident-arcs Phase 2 (KNOWN_ISSUES D53, narrowed): the broad
+// phase (fuse::device::candidate_pairs) under Device, standing in front of
+// the UNCHANGED host clip. Host mode (no guard below) is untouched by this
+// track and is covered by every test above; these rows set
+// FUSE_EXECUTION_SPACE directly (build_supermesh_weights's own
+// fuse::search::resolve_execution_space() reads it, mirroring
+// RunnerConfig's convention -- see mls_weights.cpp's identical choice for
+// the companion MLS track) so they are a genuine comparison regardless of
+// whether this binary's own ctest row also sets it externally.
+// ===========================================================================
+
+namespace {
+
+class SupermeshExecutionSpaceEnvGuard {
+ public:
+  explicit SupermeshExecutionSpaceEnvGuard(const char* value) {
+    const char* prev = std::getenv("FUSE_EXECUTION_SPACE");
+    had_prev_ = prev != nullptr;
+    if (had_prev_) prev_value_ = prev;
+    if (value == nullptr) {
+      unsetenv("FUSE_EXECUTION_SPACE");
+    } else {
+      setenv("FUSE_EXECUTION_SPACE", value, /*overwrite=*/1);
+    }
+  }
+  ~SupermeshExecutionSpaceEnvGuard() {
+    if (had_prev_) {
+      setenv("FUSE_EXECUTION_SPACE", prev_value_.c_str(), /*overwrite=*/1);
+    } else {
+      unsetenv("FUSE_EXECUTION_SPACE");
+    }
+  }
+  SupermeshExecutionSpaceEnvGuard(const SupermeshExecutionSpaceEnvGuard&) = delete;
+  SupermeshExecutionSpaceEnvGuard& operator=(const SupermeshExecutionSpaceEnvGuard&) = delete;
+
+ private:
+  bool had_prev_ = false;
+  std::string prev_value_;
+};
+
+}  // namespace
+
+TEST(SupermeshDevice, ThreeDimensionalDeviceBroadPhaseMatchesHostExactly) {
+  // Same 3x3x3 -> 4x4x4 pair as ThreeDimensionalNonMatchingIsExactlyConservative
+  // (above): no interior face plane shared, every weight from a genuine
+  // clip. dim == 3 is exactly device_candidate_pairs's own box test, so the
+  // candidate set -- and therefore every accumulated triplet, in the same
+  // accumulation order -- is identical to the host brute force's, not
+  // merely close.
+  auto p = pair_of("generated:box:3x3x3", "generated:box:4x4x4");
+  ASSERT_TRUE(p != nullptr);
+
+  fuse::RemapWeights host_w;
+  {
+    SupermeshExecutionSpaceEnvGuard guard("host");
+    const auto r = fuse::build_supermesh_weights(*p->src, *p->tgt, 3);
+    ASSERT_TRUE(r.ok()) << r.error().code << ": " << r.error().message;
+    host_w = r.value();
+  }
+  fuse::RemapWeights device_w;
+  {
+    SupermeshExecutionSpaceEnvGuard guard("device");
+    const auto r = fuse::build_supermesh_weights(*p->src, *p->tgt, 3);
+    ASSERT_TRUE(r.ok()) << r.error().code << ": " << r.error().message;
+    device_w = r.value();
+  }
+
+  ASSERT_EQ(host_w.row.size(), device_w.row.size());
+  EXPECT_EQ(host_w.row, device_w.row);
+  EXPECT_EQ(host_w.col, device_w.col);
+  ASSERT_EQ(host_w.val.size(), device_w.val.size());
+  for (std::size_t k = 0; k < host_w.val.size(); ++k) {
+    EXPECT_DOUBLE_EQ(host_w.val[k], device_w.val[k]) << "triplet " << k;
+  }
+  EXPECT_DOUBLE_EQ(host_w.max_row_defect, device_w.max_row_defect);
+  EXPECT_DOUBLE_EQ(host_w.max_col_defect, device_w.max_col_defect);
+  EXPECT_DOUBLE_EQ(host_w.min_src_coverage, device_w.min_src_coverage);
+  EXPECT_DOUBLE_EQ(host_w.min_tgt_coverage, device_w.min_tgt_coverage);
+  EXPECT_EQ(host_w.monotone, device_w.monotone);
+}
+
+TEST(SupermeshDevice, OneDimensionalStaysOnHostBroadPhaseUnderDeviceToo) {
+  // dim == 1 never takes the device broad phase (device_candidate_pairs's
+  // own comment: its box test has no axis1d parameter) -- this is the
+  // regression check that Device mode's result for a 1D pair is still
+  // produced by the SAME brute-force loop Host mode uses, not a silently
+  // wrong device-filtered one.
+  auto p = pair_of("generated:line:8", "generated:line:5");
+  ASSERT_TRUE(p != nullptr);
+  SupermeshExecutionSpaceEnvGuard guard("device");
+  const auto r = fuse::build_supermesh_weights(*p->src, *p->tgt, 1);
+  ASSERT_TRUE(r.ok()) << r.error().code << ": " << r.error().message;
+  const fuse::RemapWeights& w = r.value();
+  EXPECT_EQ(w.n_rows, 5u);
+  EXPECT_EQ(w.n_cols, 8u);
+  EXPECT_LT(w.max_row_defect, 1e-14);
+  EXPECT_LT(w.max_col_defect, 1e-14);
 }

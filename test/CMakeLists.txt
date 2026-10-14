@@ -1210,6 +1210,14 @@ if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel native_halo_mpi LIBS fuse::backend MPI::MPI_CXX RANKS 2 3 DEVICE_TWIN)
 endif()
 fuse_add_gtest(backend supermesh THROWS)
+# Device-resident-arcs Phase 2, "weight-builders" track (KNOWN_ISSUES D53,
+# narrowed): build_supermesh_weights' broad phase dispatches to
+# fuse::device::candidate_pairs for dim >= 2 when FUSE_EXECUTION_SPACE=device
+# (read via fuse::search::resolve_execution_space()); the clip stays host-only.
+# The SupermeshDevice.* rows (supermesh_test.cpp) set/restore the variable
+# themselves, so this twin additionally re-exercises every PRE-EXISTING row
+# in the file under the device interpreter.
+fuse_add_device_twin(backend.supermesh fuse_backend_supermesh_test THROWS)
 fuse_add_gtest(backend transfer_map_io THROWS)
 # supermesh_test reaches src/backend/supermesh_detail.hpp directly, a private
 # header (REVIEW.md R-12/BK-M2), the same way parallel/comm_graph_test reaches

@@ -6696,6 +6696,26 @@ column/row sums is not guaranteed invariant under a different candidate-generati
 change to results in Host mode" is this track's hard requirement, so the existing code path is
 untouched).
 
+**Narrowed, 2026-10-14 (round 2).** The broad phase IS now wired into `build_supermesh_weights`
+itself: on a resolved Device space AND `dim >= 2` (`candidate_pairs`' box test has no analogue of the
+1D path's caller-chosen single-axis test -- `axis1d` -- so dim == 1 stays on the brute-force loop
+unconditionally, in every execution space, to avoid silently filtering on the wrong axis), the device
+CSR of candidate pairs replaces the brute-force box test, and each candidate pair is still clipped by
+the UNCHANGED host `intersect()`. For `dim >= 2` this is not merely "close": `candidate_pairs`' box
+test is IDENTICAL to the brute force's own per-axis test, so the candidate set -- and the accumulation
+order into the `std::map` triplet accumulator -- is the SAME as the brute force's, not just
+numerically close; `SupermeshDevice.ThreeDimensionalDeviceBroadPhaseMatchesHostExactly`
+(test/backend/supermesh_test.cpp) checks every triplet bit-identical between Host and Device mode on
+that basis, not to a tolerance. Host mode is untouched and bitwise unchanged (`space != Device` takes
+the original brute-force loop, unconditionally). The CLIP remains host-only: the three build-system
+blockers this entry measured in round 1 (no `KOKKOS_FUNCTION` annotation on the vendored TUs, a
+debug-only `fprintf` not device-callable, C rather than C++ translation units) are unchanged findings
+-- nothing in round 2 touched r3d/r2d itself, so they are not re-measured, only re-affirmed by not
+having been worked around. RED/GREEN also includes
+`SupermeshDevice.OneDimensionalStaysOnHostBroadPhaseUnderDeviceToo` (the dim == 1 regression check),
+plus a `backend.supermesh.device` ctest twin re-running the whole file under
+`FUSE_EXECUTION_SPACE=device`.
+
 ### ~~D54. `fuse::native::to_memory_space<Target>` throws converting Host -> a real device space for a multi-dimensional field~~ — FIXED 2026-10-13 (integration)
 
 **Found 2026-10-13, this track's own device build -- a pre-existing defect, not introduced here.**

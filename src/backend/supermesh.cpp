@@ -8,7 +8,11 @@
 #include <string>
 #include <vector>
 
+#include <Kokkos_Core.hpp>
+
+#include "fuse/backend/supermesh_candidates_device.hpp"
 #include "fuse/base/error.hpp"
+#include "fuse/search/types.hpp"
 
 #include "supermesh_detail.hpp"
 
@@ -186,6 +190,86 @@ using fuse::supermesh_detail::inward_plane;
   return moments[0] > 0.0 ? moments[0] : 0.0;
 }
 
+/// The host-side CSR of a device-accelerated broad phase: for each target
+/// simplex `t` (by position in `ts`), every source simplex index `s` (by
+/// position in `ss`) whose box overlaps, found by
+/// `fuse::device::candidate_pairs` (supermesh_candidates_device.hpp) rather
+/// than this file's own nested `boxes_overlap` loop.
+///
+/// ONLY CALLED for `dim >= 2`: `fuse::device::boxes_overlap_on_space` tests
+/// axes `0 .. dim - 1` unconditionally, exactly `boxes_overlap`'s own
+/// `dim >= 2` branch above -- the SAME per-axis test, so the candidate set
+/// this returns is IDENTICAL to what the brute-force loop below would keep.
+/// `boxes_overlap`'s `dim == 1` branch tests a SINGLE CALLER-CHOSEN axis
+/// (`axis1d`, picked per pair of meshes further down in
+/// `build_supermesh_weights`, not always axis 0) -- a test the device
+/// kernel has no `axis1d` parameter for, so using it for `dim == 1` would
+/// silently filter on the wrong axis whenever `axis1d != 0`. The 1D case
+/// stays on the existing brute-force loop unconditionally, in every
+/// execution space, for exactly this reason.
+struct HostCandidateCsr {
+  std::vector<int> offsets;    ///< size ts.size() + 1
+  std::vector<int> src_index;  ///< size offsets.back(); CSR columns into `ss`
+};
+
+[[nodiscard]] HostCandidateCsr device_candidate_pairs(const std::vector<Simplex>& ts,
+                                                      const std::vector<Simplex>& ss, int dim) {
+  using Space = Kokkos::DefaultExecutionSpace::memory_space;
+  const std::size_t nt = ts.size();
+  const std::size_t ns = ss.size();
+
+  // KNOWN_ISSUES D54's own defect class, hit here by this header's own new
+  // views (see mls_weights.cpp's build_mls_weights_device, which hits the
+  // identical bug for the companion MLS track and documents it in full):
+  // a `double* [3]` rank-2 view's PER-SPACE default layout differs between
+  // Host and Cuda, so a plain HostSpace mirror is layout-incompatible with
+  // a same-shape device view and `Kokkos::deep_copy` cannot bridge both a
+  // memory-space and a layout change at once. `Kokkos::create_mirror_view`
+  // derives the mirror's layout FROM the device view instead of assuming
+  // Host's own default, which is the fix.
+  Kokkos::View<double* [3], Space> t_lo_d(
+      Kokkos::view_alloc("fuse::supermesh_t_lo_d", Kokkos::WithoutInitializing), nt);
+  Kokkos::View<double* [3], Space> t_hi_d(
+      Kokkos::view_alloc("fuse::supermesh_t_hi_d", Kokkos::WithoutInitializing), nt);
+  Kokkos::View<double* [3], Space> s_lo_d(
+      Kokkos::view_alloc("fuse::supermesh_s_lo_d", Kokkos::WithoutInitializing), ns);
+  Kokkos::View<double* [3], Space> s_hi_d(
+      Kokkos::view_alloc("fuse::supermesh_s_hi_d", Kokkos::WithoutInitializing), ns);
+  auto t_lo_h = Kokkos::create_mirror_view(t_lo_d);
+  auto t_hi_h = Kokkos::create_mirror_view(t_hi_d);
+  auto s_lo_h = Kokkos::create_mirror_view(s_lo_d);
+  auto s_hi_h = Kokkos::create_mirror_view(s_hi_d);
+  for (std::size_t i = 0; i < nt; ++i) {
+    for (int k = 0; k < 3; ++k) {
+      t_lo_h(i, k) = ts[i].lo[k];
+      t_hi_h(i, k) = ts[i].hi[k];
+    }
+  }
+  for (std::size_t i = 0; i < ns; ++i) {
+    for (int k = 0; k < 3; ++k) {
+      s_lo_h(i, k) = ss[i].lo[k];
+      s_hi_h(i, k) = ss[i].hi[k];
+    }
+  }
+  Kokkos::deep_copy(t_lo_d, t_lo_h);
+  Kokkos::deep_copy(t_hi_d, t_hi_h);
+  Kokkos::deep_copy(s_lo_d, s_lo_h);
+  Kokkos::deep_copy(s_hi_d, s_hi_h);
+
+  const fuse::device::CandidatePairs<Space> pairs =
+      fuse::device::candidate_pairs<Space>(t_lo_d, t_hi_d, s_lo_d, s_hi_d, dim);
+
+  auto offsets_h = Kokkos::create_mirror_view(pairs.offsets);
+  Kokkos::deep_copy(offsets_h, pairs.offsets);
+  auto src_index_h = Kokkos::create_mirror_view(pairs.src_index);
+  Kokkos::deep_copy(src_index_h, pairs.src_index);
+
+  HostCandidateCsr out;
+  out.offsets.assign(offsets_h.data(), offsets_h.data() + offsets_h.extent(0));
+  out.src_index.assign(src_index_h.data(), src_index_h.data() + src_index_h.extent(0));
+  return out;
+}
+
 }  // namespace
 
 Result<RemapWeights> build_supermesh_weights(const MeshView& src,
@@ -341,19 +425,50 @@ Result<RemapWeights> build_supermesh_weights(const MeshView& src,
   // audit (`kCoverageTol` there), so the two paths reject on the same
   // threshold, and unit-testable directly (test/backend/supermesh_test.cpp).
 
-  // Brute force over bounding-box-compatible pairs. This is O(n_t * n_s) box
-  // tests, which is the honest starting point: it is exact, it has no tuning
-  // parameter, and it is the reference a spatial index must reproduce. The
-  // index is a performance task, and replacing this before it is measured
-  // would be replacing something correct with something unmeasured.
-  for (const Simplex& t : ts) {
-    for (const Simplex& s : ss) {
-      if (!boxes_overlap(t, s, dim, axis1d)) continue;
-      const double m = intersect(t, s, dim, axis1d);
-      if (m <= 0.0) continue;
-      acc[{t.parent, s.parent}] += m;
-      src_covered[s.parent] += m;
-      tgt_covered[t.parent] += m;
+  // Device-resident-arcs Phase 2, "weight-builders" track (KNOWN_ISSUES
+  // D53): the broad phase moves to `fuse::device::candidate_pairs` when the
+  // resolved execution space is Device AND `dim >= 2` (device_candidate_pairs's
+  // own comment states why `dim == 1` is excluded); the clip itself
+  // (`intersect`, above) stays host-only regardless -- r3d/r2d are not
+  // device-callable without vendored-dependency changes this track's time
+  // budget did not extend to (this header's own "WHY THE CLIP ITSELF STAYS
+  // ON THE HOST" comment, supermesh_candidates_device.hpp). Host mode
+  // (space != Device) takes the UNCHANGED brute-force loop, unconditionally:
+  // this branch exists only to choose which candidate SOURCE comes first,
+  // never to alter the box test or the clip either path applies afterward,
+  // so Host mode's result is bitwise unaffected by this track.
+  const auto space_r = search::resolve_execution_space();
+  if (!space_r.ok()) return space_r.error();
+  const bool device_broad_phase = space_r.value() == search::ExecutionSpace::Device && dim >= 2;
+
+  if (device_broad_phase) {
+    const HostCandidateCsr csr = device_candidate_pairs(ts, ss, dim);
+    for (std::size_t t = 0; t < ts.size(); ++t) {
+      for (int idx = csr.offsets[t]; idx < csr.offsets[t + 1]; ++idx) {
+        const std::size_t s = static_cast<std::size_t>(csr.src_index[idx]);
+        const double m = intersect(ts[t], ss[s], dim, axis1d);
+        if (m <= 0.0) continue;
+        acc[{ts[t].parent, ss[s].parent}] += m;
+        src_covered[ss[s].parent] += m;
+        tgt_covered[ts[t].parent] += m;
+      }
+    }
+  } else {
+    // Brute force over bounding-box-compatible pairs. This is O(n_t * n_s)
+    // box tests, which is the honest starting point: it is exact, it has no
+    // tuning parameter, and it is the reference a spatial index must
+    // reproduce. The index is a performance task, and replacing this before
+    // it is measured would be replacing something correct with something
+    // unmeasured.
+    for (const Simplex& t : ts) {
+      for (const Simplex& s : ss) {
+        if (!boxes_overlap(t, s, dim, axis1d)) continue;
+        const double m = intersect(t, s, dim, axis1d);
+        if (m <= 0.0) continue;
+        acc[{t.parent, s.parent}] += m;
+        src_covered[s.parent] += m;
+        tgt_covered[t.parent] += m;
+      }
     }
   }
 
