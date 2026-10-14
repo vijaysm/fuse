@@ -603,12 +603,32 @@ if(FUSE_ENABLE_MOAB)
   # file itself already refers to; nothing previously defined it). The four
   # MoabMeshFile.* cases compile only when the file is found; its absence is
   # a configure-time message, not a test that reads as passing.
+  # find_file never searches again once its variable is set, so a path into
+  # an install that was later removed or replaced stayed in the cache and the
+  # four MoabMeshFile.* tests compiled against a file that no longer existed
+  # (measured 2026-10-13: /opt/moab-tempest removed, build-all still named
+  # it). Re-validate the cached path and search again when it is gone.
+  if(FUSE_MOAB_TEST_MESH_FILE AND NOT EXISTS "${FUSE_MOAB_TEST_MESH_FILE}")
+    message(STATUS
+      "fuse: cached FUSE_MOAB_TEST_MESH_FILE=${FUSE_MOAB_TEST_MESH_FILE} "
+      "no longer exists; searching again")
+    unset(FUSE_MOAB_TEST_MESH_FILE CACHE)
+  endif()
   if(MOAB_INCLUDE_DIRS)
     list(GET MOAB_INCLUDE_DIRS 0 _fuse_moab_inc)
     get_filename_component(_fuse_moab_prefix "${_fuse_moab_inc}" DIRECTORY)
     find_file(FUSE_MOAB_TEST_MESH_FILE
               NAMES spherecube.h5m
               PATHS "${_fuse_moab_prefix}/share/examples/fortran"
+              NO_DEFAULT_PATH)
+  endif()
+  # An install may not ship the example (the /opt/moab/cmake-all build does
+  # not). -DFUSE_MOAB_SOURCE_DIR=/path/to/moab (a MOAB source root, like
+  # FUSE_MOAB_MESHFILES below) is searched second, at examples/fortran.
+  if(NOT FUSE_MOAB_TEST_MESH_FILE AND FUSE_MOAB_SOURCE_DIR)
+    find_file(FUSE_MOAB_TEST_MESH_FILE
+              NAMES spherecube.h5m
+              PATHS "${FUSE_MOAB_SOURCE_DIR}/examples/fortran"
               NO_DEFAULT_PATH)
   endif()
   if(FUSE_MOAB_TEST_MESH_FILE)
@@ -618,8 +638,9 @@ if(FUSE_ENABLE_MOAB)
   else()
     message(STATUS
       "fuse: spherecube.h5m not found under a share/examples/fortran next to "
-      "the MOAB include prefix; the real-mesh MoabMeshFile.* tests are not "
-      "compiled")
+      "the MOAB include prefix, nor under FUSE_MOAB_SOURCE_DIR/examples/"
+      "fortran; the real-mesh MoabMeshFile.* tests are not compiled "
+      "(pass -DFUSE_MOAB_SOURCE_DIR=<MOAB source root> to run them)")
   endif()
 
   # A NON-MATCHING pair of spherical meshes, for the parallel half of the remap
