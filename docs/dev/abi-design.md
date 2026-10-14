@@ -114,6 +114,21 @@ rules, each of which a test enforces:
    relative to its other collectives — the same contract `MoabMeshBackend::set_communicator`
    states.
 
+## The graph descriptor's byte order
+
+The coupling-graph descriptor (`fuse::serialize`/`fuse::deserialize`, `include/fuse/model/
+descriptor.hpp`) is also described as "the ABI narrow waist", but it is a separate encoding
+from the C-ABI struct rules above and does not follow them. `detail::Writer::pod`/`detail::
+Reader::pod` write a value's native in-memory representation via `memcpy` -- host-endian, not
+the little-endian rule `include/fuse/base/bytes.hpp` states for every OTHER canonical encoding
+in the library (the field-entry key, the semantic model, the operator chain). BM-5 (review
+2026-10-11): this was undocumented and untested; every machine this library has built on so
+far is little-endian, so the gap has never been visible. Recorded rather than fixed immediately
+(see `bytes.hpp`'s own note for why): the descriptor is host-endian and same-host-family only
+until a version bump routes it through `bytes::put_integer` deliberately, at a point where the
+golden-file churn that bump causes is expected. A big-endian host building and exchanging
+descriptors with a little-endian peer would silently disagree about every multi-byte field.
+
 ## Fortran: `ffuse`
 
 Fortran gets flat `bind(C)` procedures rather than the table (the exception stated under "The

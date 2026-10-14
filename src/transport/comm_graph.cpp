@@ -614,12 +614,20 @@ Result<CommGraph> CommGraph::build(int base_comm_handle,
   MPI_Group bgroup = MPI_GROUP_NULL;
   MPI_Group ugroup = MPI_GROUP_NULL;
   {
+    // Review 2026-10-11 TR-9. MPI_Comm_group/MPI_Group_incl are both purely
+    // local -- no communication -- but MPI_Comm_create_group right after
+    // them is collective over `ugroup`, and every rank that reaches it did
+    // so because its OWN local pair above succeeded. A local failure here
+    // on one rank only used to return a Result while its ugroup peers, who
+    // saw no failure, go on to enter that collective and wait for a rank
+    // that now never will -- exactly the "MPI failure strictly between two
+    // collectives" window this file's own header discipline (point 4)
+    // already names and answers by aborting rather than returning.
     if (MPI_Comm_group(base, &bgroup) != MPI_SUCCESS ||
         MPI_Group_incl(bgroup, static_cast<int>(union_ranks.size()),
                        union_ranks.data(), &ugroup) != MPI_SUCCESS) {
       if (bgroup != MPI_GROUP_NULL) MPI_Group_free(&bgroup);
-      return Failure{"E-COMMGRAPH-COMM",
-                   "could not form the union of the two components' groups"};
+      abort_job(base, "could not form the union of the two components' groups");
     }
     // Collective over `ugroup` only, which is exactly the set of ranks that
     // reach this line.
@@ -1176,20 +1184,12 @@ Result<void> accumulate_shared_rows(const MeshView& view, int dim,
                                     std::vector<double>& local_values,
                                     int base_comm_handle) {
   const std::size_t nv = view.entity_count(dim);
-  if (components < 1) {
-    return Failure{"E-ACCUM-COMPONENTS",
-                   fmt::format("accumulate_shared_rows: components must be "
-                              "at least 1, got {}",
-                              components)};
-  }
-  if (local_values.size() != nv * components) {
-    return Failure{
-        "E-ACCUM-SIZE",
-        fmt::format("accumulate_shared_rows: {} entities x {} components "
-                   "needs a buffer of {} values, got {}",
-                   nv, components, nv * components, local_values.size())};
-  }
 
+  // `base_comm_handle` is a structural precondition -- every rank is
+  // required to pass the same, valid communicator -- so a null handle or a
+  // failed MPI_Comm_size is checked and returned before any collective,
+  // exactly like CommGraph::build's own E-COMMGRAPH-OPTS (comm_graph.cpp's
+  // own header comment, point 1).
   const MPI_Comm comm = MPI_Comm_f2c(static_cast<MPI_Fint>(base_comm_handle));
   if (comm == MPI_COMM_NULL) {
     return Failure{"E-ACCUM-COMM",
@@ -1199,6 +1199,50 @@ Result<void> accumulate_shared_rows(const MeshView& view, int dim,
   int num_ranks = 0;
   if (MPI_Comm_size(comm, &num_ranks) != MPI_SUCCESS) {
     return Failure{"E-ACCUM-COMM", "accumulate_shared_rows: MPI_Comm_size failed"};
+  }
+
+  // Review 2026-10-11 TR-7. `components` and `local_values` are per-rank
+  // CALLER data, unlike `base_comm_handle` above -- a caller bug can size
+  // either wrong on one rank only, and a local return here used to leave
+  // every other rank to enter the MPI_Allgather below alone. The verdict is
+  // agreed (MPI_Allreduce MAX) before anyone acts on it, the same
+  // Collective-1 discipline build_plan() uses (mpi_transport.cpp).
+  enum class SizeErr : int { None = 0, Components = 1, Size = 2 };
+  SizeErr local_err = SizeErr::None;
+  if (components < 1) {
+    local_err = SizeErr::Components;
+  } else if (local_values.size() != nv * components) {
+    local_err = SizeErr::Size;
+  }
+  {
+    auto      in  = static_cast<int>(local_err);
+    int       out = in;
+    const int rc  = MPI_Allreduce(&in, &out, 1, MPI_INT, MPI_MAX, comm);
+    if (rc != MPI_SUCCESS) {
+      return Failure{"E-ACCUM-COMM",
+                     "accumulate_shared_rows: MPI_Allreduce while agreeing the "
+                     "components/size check failed"};
+    }
+    const auto agreed = static_cast<SizeErr>(out);
+    if (agreed != SizeErr::None) {
+      if (local_err == SizeErr::Components) {
+        return Failure{"E-ACCUM-COMPONENTS",
+                       fmt::format("accumulate_shared_rows: components must be "
+                                  "at least 1, got {}",
+                                  components)};
+      }
+      if (local_err == SizeErr::Size) {
+        return Failure{
+            "E-ACCUM-SIZE",
+            fmt::format("accumulate_shared_rows: {} entities x {} components "
+                       "needs a buffer of {} values, got {}",
+                       nv, components, nv * components, local_values.size())};
+      }
+      return Failure{agreed == SizeErr::Components ? "E-ACCUM-COMPONENTS" : "E-ACCUM-SIZE",
+                     "accumulate_shared_rows: another rank's components/buffer-size "
+                     "check failed; every rank refuses together rather than one side "
+                     "entering the Allgather alone"};
+    }
   }
 
   // Every LOCAL row contributes its own global id and value EXACTLY ONCE,
@@ -1283,20 +1327,9 @@ Result<void> copy_owner_shared_rows(const MeshView& view, int dim,
                                     std::vector<double>& local_values,
                                     int base_comm_handle) {
   const std::size_t nv = view.entity_count(dim);
-  if (components < 1) {
-    return Failure{"E-ACCUM-COMPONENTS",
-                   fmt::format("copy_owner_shared_rows: components must be "
-                              "at least 1, got {}",
-                              components)};
-  }
-  if (local_values.size() != nv * components) {
-    return Failure{
-        "E-ACCUM-SIZE",
-        fmt::format("copy_owner_shared_rows: {} entities x {} components "
-                   "needs a buffer of {} values, got {}",
-                   nv, components, nv * components, local_values.size())};
-  }
 
+  // `base_comm_handle` is a structural precondition, checked and returned
+  // before any collective, same as accumulate_shared_rows above.
   const MPI_Comm comm = MPI_Comm_f2c(static_cast<MPI_Fint>(base_comm_handle));
   if (comm == MPI_COMM_NULL) {
     return Failure{"E-ACCUM-COMM",
@@ -1306,6 +1339,48 @@ Result<void> copy_owner_shared_rows(const MeshView& view, int dim,
   int num_ranks = 0;
   if (MPI_Comm_size(comm, &num_ranks) != MPI_SUCCESS) {
     return Failure{"E-ACCUM-COMM", "copy_owner_shared_rows: MPI_Comm_size failed"};
+  }
+
+  // Review 2026-10-11 TR-7 (copy_owner_shared_rows is this finding's second
+  // site). Same fix as accumulate_shared_rows: `components`/`local_values`
+  // are per-rank caller data, so their verdict is agreed before anyone acts
+  // on it rather than returned locally ahead of the MPI_Allgather below.
+  enum class SizeErr : int { None = 0, Components = 1, Size = 2 };
+  SizeErr local_err = SizeErr::None;
+  if (components < 1) {
+    local_err = SizeErr::Components;
+  } else if (local_values.size() != nv * components) {
+    local_err = SizeErr::Size;
+  }
+  {
+    auto      in  = static_cast<int>(local_err);
+    int       out = in;
+    const int rc  = MPI_Allreduce(&in, &out, 1, MPI_INT, MPI_MAX, comm);
+    if (rc != MPI_SUCCESS) {
+      return Failure{"E-ACCUM-COMM",
+                     "copy_owner_shared_rows: MPI_Allreduce while agreeing the "
+                     "components/size check failed"};
+    }
+    const auto agreed = static_cast<SizeErr>(out);
+    if (agreed != SizeErr::None) {
+      if (local_err == SizeErr::Components) {
+        return Failure{"E-ACCUM-COMPONENTS",
+                       fmt::format("copy_owner_shared_rows: components must be "
+                                  "at least 1, got {}",
+                                  components)};
+      }
+      if (local_err == SizeErr::Size) {
+        return Failure{
+            "E-ACCUM-SIZE",
+            fmt::format("copy_owner_shared_rows: {} entities x {} components "
+                       "needs a buffer of {} values, got {}",
+                       nv, components, nv * components, local_values.size())};
+      }
+      return Failure{agreed == SizeErr::Components ? "E-ACCUM-COMPONENTS" : "E-ACCUM-SIZE",
+                     "copy_owner_shared_rows: another rank's components/buffer-size "
+                     "check failed; every rank refuses together rather than one side "
+                     "entering the Allgather alone"};
+    }
   }
 
   std::vector<std::int64_t> local_gids(nv);
@@ -1375,14 +1450,27 @@ Result<void> copy_owner_shared_rows(const MeshView& view, int dim,
     }
   }
 
+  // Review 2026-10-11 TR-8. This used to walk THIS rank's own `local_gids`
+  // -- a per-rank subset of the mesh -- so a missing owner fired only on
+  // the ranks that happen to hold the orphaned vertex among their own
+  // entities, while every other rank returned success for the very same
+  // global defect: a mixed outcome across ranks for one shared mesh
+  // contract violation. `gathered_gids` is the identical union on every
+  // rank (it came from the Allgatherv above), so checking that instead
+  // makes the check -- and its outcome -- the same everywhere, exactly
+  // like the "more than one owner" check just above it.
+  for (std::size_t i = 0; i < static_cast<std::size_t>(total); ++i) {
+    if (owner_of.find(gathered_gids[i]) != owner_of.end()) continue;
+    return Failure{"E-ACCUM-OWNER",
+                   fmt::format("copy_owner_shared_rows: no rank claims "
+                              "ownership of global id {}",
+                              gathered_gids[i])};
+  }
+
   for (std::size_t i = 0; i < nv; ++i) {
+    // Every id was just confirmed, identically on every rank, to have
+    // exactly one owner -- this lookup cannot fail.
     const auto it = owner_of.find(local_gids[i]);
-    if (it == owner_of.end()) {
-      return Failure{"E-ACCUM-OWNER",
-                     fmt::format("copy_owner_shared_rows: no rank claims "
-                                "ownership of global id {}",
-                                local_gids[i])};
-    }
     for (std::size_t c = 0; c < components; ++c) local_values[i * components + c] = it->second[c];
   }
   return Result<void>::success();

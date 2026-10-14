@@ -35,7 +35,13 @@ namespace fuse::linalg {
 /// the two mean different things to a reader even though nothing in the
 /// language distinguishes them: `pcg`/`gmres` constrain their two template
 /// parameters by the concept that matches each argument's ROLE, not by a
-/// shape the compiler could not tell apart anyway.
+/// shape the compiler could not tell apart anyway. Carries the SAME
+/// uniform-failure precondition `LinearOperator`'s own header comment
+/// states (Review 2026-10-11 NL-6): a `p.apply` that can refuse on some
+/// ranks of a call and succeed on others strands the solver's other
+/// ranks inside a later collective. `IdentityPreconditioner` and
+/// `JacobiPreconditioner` below never fail data-dependently, so this is
+/// latent for every preconditioner this library builds itself.
 template <class T>
 concept Preconditioner = requires(const T& p, DistVector& x, DistVector& y) {
   { p.apply(x, y) } -> std::same_as<Result<void>>;

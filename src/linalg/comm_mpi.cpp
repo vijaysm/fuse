@@ -46,6 +46,8 @@
 
 #include "fuse/base/error.hpp"
 
+#include <limits>
+
 #if FUSE_HAVE_MPI
 #include <algorithm>
 #include <mpi.h>
@@ -74,6 +76,13 @@ class MpiReducer : public Reducer {
 
   void sum(double* inout, std::size_t n) const override {
     if (n == 0) return;
+    // Review 2026-10-11 NL-14: a count above INT_MAX silently truncates
+    // through static_cast<int> into a wrong-size MPI_Allreduce (UB-
+    // adjacent at the MPI level, not a refusal) rather than failing
+    // loudly here.
+    FUSE_ASSERT(n <= static_cast<std::size_t>(std::numeric_limits<int>::max()),
+               "MpiReducer::sum: {} entries exceeds MPI's int count limit ({})", n,
+               std::numeric_limits<int>::max());
     MPI_Allreduce(MPI_IN_PLACE, inout, static_cast<int>(n), MPI_DOUBLE, MPI_SUM, comm_);
   }
 
@@ -87,6 +96,10 @@ class MpiReducer : public Reducer {
   [[nodiscard]] int size() const override { return size_; }
 
   void allgather(const double* send, std::size_t n_each, double* recv) const override {
+    // Review 2026-10-11 NL-14: same INT_MAX boundary as sum() above.
+    FUSE_ASSERT(n_each <= static_cast<std::size_t>(std::numeric_limits<int>::max()),
+               "MpiReducer::allgather: {} entries exceeds MPI's int count limit ({})", n_each,
+               std::numeric_limits<int>::max());
     MPI_Allgather(send, static_cast<int>(n_each), MPI_DOUBLE, recv, static_cast<int>(n_each),
                  MPI_DOUBLE, comm_);
   }
@@ -128,6 +141,14 @@ class MpiExchanger : public GhostExchanger {
                ghost_n, ghost_n_);
 
     const int send_total = ans_displs_.back();
+    // Review 2026-10-11 NL-14: a total this call accumulated past
+    // INT_MAX wraps to a negative `int` -- caught here (a negative
+    // size_t cast below would otherwise allocate a bogus-huge buffer)
+    // rather than left as the same silent, UB-adjacent truncation
+    // sum()/allgather() above now refuse instead of absorbing.
+    FUSE_ASSERT(send_total >= 0,
+               "MpiExchanger::update: accumulated send total overflowed int (wrapped to {})",
+               send_total);
     std::vector<double> send_buf(static_cast<std::size_t>(send_total), 0.0);
     for (int k = 0; k < send_total; ++k) {
       const std::int64_t idx = ans_index_[static_cast<std::size_t>(k)];
@@ -135,6 +156,9 @@ class MpiExchanger : public GhostExchanger {
     }
 
     const int recv_total = req_displs_.back();
+    FUSE_ASSERT(recv_total >= 0,
+               "MpiExchanger::update: accumulated recv total overflowed int (wrapped to {})",
+               recv_total);
     std::vector<double> recv_buf(static_cast<std::size_t>(recv_total), 0.0);
     const int rc = MPI_Alltoallv(send_buf.data(), ans_counts_.data(), ans_displs_.data(),
                                  MPI_DOUBLE, recv_buf.data(), req_counts_.data(),

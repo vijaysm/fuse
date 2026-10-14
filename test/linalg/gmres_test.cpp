@@ -277,4 +277,26 @@ TEST(GmresRefusals, NoConvergenceWithinATinyIterationCapNamesTheIterationCountAn
       << "message should carry the iteration count: " << result.error().message;
 }
 
+// Review 2026-10-11 NL-2: restart == 0 means the Arnoldi loop (the `for
+// (k = 0; k < mrestart; ...)` below gmres.hpp's restart boundary) never
+// executes a single step, so `total_iter` never advances past 0 and the
+// outer `while (true)` restart loop never reaches its own
+// `max_iterations` check -- a livelock (a collective `a.apply` under
+// MPI) that no `E-LINALG-NO-CONVERGENCE` would ever report. Refused at
+// entry instead, before any `apply`.
+TEST(GmresRefusals, RestartBelowOneRefusesAtEntry) {
+  constexpr std::int64_t n = 10;
+  const std::vector<Triplet> t = random_nonsymmetric(static_cast<int>(n), 47u);
+  DistSparseMatrix a = to_dist(t, n);
+  const std::vector<double> b_values = random_vector(static_cast<int>(n), 53u);
+  DistVector b = make_vector(n, b_values);
+  DistVector x(static_cast<std::size_t>(n), make_serial_exchanger(), make_serial_reducer());
+
+  GmresOptions opt;
+  opt.restart = 0;
+  Result<SolverReport> result = gmres(a, IdentityPreconditioner{}, x, b, opt);
+  ASSERT_FALSE(result.ok());
+  EXPECT_EQ(result.error().code, "E-LINALG-OPTIONS");
+}
+
 }  // namespace

@@ -9,13 +9,52 @@
 
 #include "fuse/partition/mesh_adapter.hpp"
 
+#include <cstddef>
+
 #include <gtest/gtest.h>
 
+#include "fuse/backend/mesh_view.hpp"
 #include "fuse/backend/serial_backend.hpp"
 #include "fuse_test_main.hpp"
 
 namespace fuse::partition {
 namespace {
+
+// PS-4: a minimal MeshView stub whose dimension() answers <= 0 -- the one
+// documented, Tier-0-reachable refusal (mesh_adapter.hpp's own doc
+// comment, mesh_adapter.cpp:35-39) no test in this file previously fired.
+// Every other pure virtual is unreachable once dimension() <= 0 refuses
+// before a single entity is read, so they return harmless placeholders.
+class DimensionStubMesh : public fuse::MeshView {
+ public:
+  explicit DimensionStubMesh(int dim) : dim_(dim) {}
+  [[nodiscard]] int dimension() const override { return dim_; }
+  [[nodiscard]] std::size_t entity_count(int) const override { return 0; }
+  [[nodiscard]] std::size_t owned_count(int) const override { return 0; }
+  [[nodiscard]] bool is_owned(int, std::size_t) const override { return false; }
+  [[nodiscard]] fuse::Point centroid(int, std::size_t) const override { return fuse::Point{}; }
+  [[nodiscard]] double measure(int, std::size_t) const override { return 0.0; }
+  [[nodiscard]] std::size_t global_id(int, std::size_t) const override { return 0; }
+  [[nodiscard]] std::size_t simplex_count(int, std::size_t) const override { return 0; }
+  void simplex_points(int, std::size_t, std::size_t, fuse::Point*) const override {}
+
+ private:
+  int dim_;
+};
+
+TEST(MeshAdapter, RefusesNoEntitiesWhenDimensionIsZero) {
+  DimensionStubMesh mesh(0);
+  auto r = centroids_of(mesh);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-PART-NO-ENTITIES");
+}
+
+TEST(MeshAdapter, RefusesNoEntitiesWhenDimensionIsNegative) {
+  DimensionStubMesh mesh(-1);
+  auto r = centroids_of(mesh);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-PART-NO-ENTITIES");
+}
 
 TEST(MeshAdapter, GeneratedLineYieldsOneCentroidPerCellAtDimension1) {
   fuse::SerialMeshBackend backend;

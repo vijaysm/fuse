@@ -52,10 +52,28 @@ struct EpochSchedule {
 /// maps positions to ranks. Out-of-range input yields an empty schedule rather
 /// than an assertion, since a rank that does not take part simply does nothing.
 ///
+/// RT-8 (review 2026-10-11): also empty for `participants` at or past
+/// `kMaxStrideParticipants` (2^30) -- the stride walk below doubles `stride`
+/// (and computes `2 * stride`) as a plain `int`; past this bound the next
+/// doubling would be signed-integer-overflow UB, latent at any MPI job size
+/// this library could plausibly be run at (this file's own "31 bounds any
+/// participant count an int can express" comment already notes the
+/// practical ceiling), but UB is UB whether or not a real run ever reaches
+/// it. Clamping the DOMAIN here, rather than widening the stride walk's own
+/// arithmetic to `unsigned`, keeps every line of that walk -- and the
+/// mutations that anchor to them -- unchanged; a participant count this
+/// large has no other meaning here anyway ("out of range" already returns
+/// empty for `index`, by the same convention).
+///
 /// No allocation, so it is safe to call inside a running plan.
+inline constexpr int kMaxStrideParticipants = 1 << 30;
+
 [[nodiscard]] inline EpochSchedule epoch_schedule(int participants, int index) {
   EpochSchedule s;
-  if (participants <= 1 || index < 0 || index >= participants) return s;
+  if (participants <= 1 || index < 0 || index >= participants ||
+      participants >= kMaxStrideParticipants) {
+    return s;
+  }
 
   for (int stride = 1; stride < participants; stride *= 2) {
     if ((index % (2 * stride)) == 0) {
@@ -77,6 +95,23 @@ struct EpochSchedule {
     s.result_recv_from = 0;
   }
   return s;
+}
+
+/// RT-9 (review 2026-10-11): the pure comparison behind `E-RT-EPOCH-TAG`
+/// (`resolve_epoch_participants()`, `src/runtime/runner.cpp`), factored
+/// out so it is unit-testable without MPI at all -- rank-agreement.md's
+/// own point about this refusal ("a refusal before the run is a better
+/// failure than 'Invalid tag' raised inside a reduction") had no test
+/// that made the comparison fire, so a regression that deleted or
+/// inverted it would have passed the whole suite silently. `reported_
+/// tag_ub` is whatever `MPI_Comm_get_attr(..., MPI_TAG_UB, ...)`
+/// returned for the communicator in use; `max_used_tag` is `fuse::tags::
+/// kMaxUsed` -- passed in rather than referenced here so this header
+/// (already dependency-free apart from `<array>`/`<cstddef>`) gains no
+/// include on `fuse/transport/tags.hpp`.
+[[nodiscard]] inline bool tag_ub_too_low(int reported_tag_ub,
+                                         int max_used_tag) {
+  return reported_tag_ub < max_used_tag;
 }
 
 }  // namespace fuse

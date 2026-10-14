@@ -1328,6 +1328,39 @@ TEST(MpiTransportPeers, DisagreeingHalvesAreRefusedBeforeTheRun) {
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
+// Review 2026-10-11 TR-1. rank 0's send plan names rank 2 of a 2-rank
+// communicator, so Phase A's range check (a purely rank-0-local condition)
+// fails on rank 0 only; rank 1's own plan is empty and never involves rank 0,
+// so rank 1's Phase A passes. Before the fix, rank 0 took the `err !=
+// Err::None` branch straight to the final agreement while rank 1 entered the
+// Phase B MPI_Alltoall alone -- a hang, which this test turns into a
+// ctest --timeout failure rather than a wrong pass. After the fix, every
+// rank issues the same Alltoall (rank 0 with a zero-filled sendcounts) and
+// every rank returns E-TRANSPORT-RANKS.
+TEST(MpiTransportPeers, AsymmetricPhaseAFailureIsRefusedByEveryRank) {
+  FUSE_REQUIRE_RANKS(2);
+  const int rank = world_rank();
+  std::vector<fuse::CommGraphPeer> send_plan;
+  std::vector<fuse::CommGraphPeer> recv_plan;
+  if (rank == 0) {
+    fuse::CommGraphPeer peer;
+    peer.base_rank = 2;  // outside a 2-rank communicator's [0, 2)
+    peer.local_indices = {0};
+    peer.global_ids = {0};
+    send_plan.push_back(peer);
+  }
+
+  MpiTransport t;
+  ASSERT_TRUE(t.set_communicator(MPI_Comm_c2f(MPI_COMM_WORLD)).ok());
+  const auto plan = t.build_plan_from_peers(send_plan, recv_plan, {}, 4, 1);
+  ASSERT_FALSE(plan.ok())
+      << "rank " << rank
+      << ": a plan naming a peer outside the communicator was accepted";
+  EXPECT_EQ(plan.error().code, "E-TRANSPORT-RANKS")
+      << "every rank must report the same code: " << plan.error().message;
+  ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
+}
+
 // Regression guard for a real bug in this host's Open MPI (4.1.5), not in
 // fuse: its default "basic_linear" MPI_Alltoallv algorithm hangs -- rank 0
 // returns, every other rank sits inside the collective forever -- whenever

@@ -72,6 +72,31 @@ int NativeMeshBuilder::find_or_add_face(const std::vector<int>& local_vertices_o
           if (ok) reverse_match = true;
         }
       }
+      if (!forward_match && !reverse_match) {
+        // The same vertex SET (sorted_key matched above), but an order
+        // that is neither a cyclic match nor a cyclic reversal of the
+        // already-stored face -- duplicate corners, or the same set
+        // presented at a different length, are the two ways this
+        // happens. Per I4 this is refused rather than silently reused
+        // under an arbitrary orientation: record the refusal (build() is
+        // the only Result-returning path back to the caller) and leave
+        // the stored face untouched.
+        if (!face_mismatch_error_) {
+          std::string gids;
+          for (std::size_t k = 0; k < sorted_key.size(); ++k) {
+            if (k != 0) gids += ",";
+            gids += fmt::format("{}", sorted_key[k]);
+          }
+          face_mismatch_error_ = {
+              "E-MESH-POLYGON-FACE-MISMATCH",
+              fmt::format("a polyhedron face shares vertex set [{}] with an already-recorded "
+                         "face, but its corner order is neither a cyclic match nor a cyclic "
+                         "reversal of the stored one",
+                         gids)};
+        }
+        *flip = false;
+        return idx;
+      }
       *flip = !forward_match && reverse_match;
       return idx;
     }
@@ -115,6 +140,10 @@ int NativeMeshBuilder::add_polyhedron_cell(const std::vector<std::vector<int>>& 
 }
 
 Result<MeshArrays<Kokkos::HostSpace>> NativeMeshBuilder::build() const {
+  if (face_mismatch_error_) {
+    return Failure{face_mismatch_error_->first, face_mismatch_error_->second};
+  }
+
   MeshArrays<Kokkos::HostSpace> out;
   out.dim = dim_;
 
@@ -314,6 +343,25 @@ KOKKOS_FUNCTION double device_tetrahedron_volume(const double a[3], const double
 
 Result<std::unique_ptr<NativeMeshView>> NativeMeshView::create_from_host(
     const MeshArrays<Kokkos::HostSpace>& arrays, int my_rank) {
+  // NM-8: the class's own doc claims create_from_host "validates
+  // connectivity" -- it checked vertex-index range (E-MESH-CONNECTIVITY,
+  // below) but never the topological dimension itself nor a fixed-shape
+  // cell's own corner count, both of which NativeMeshBuilder::build()
+  // already checks for data that arrives through the builder. A direct
+  // caller of create_from_host (every in-tree producer routes through
+  // NativeMeshBuilder::build(), which already checks these -- latent via
+  // the public direct call this header's "every producer" claim does not
+  // actually enforce) with `dim` outside {0,1,2,3} fell through to the
+  // dimension dispatch below with no matching branch (silently 0
+  // measure, no simplices); a Triangle with 2 corners or a Hex with 4
+  // was an out-of-bounds `std::vector::operator[]` read below (UB).
+  if (arrays.dim < 0 || arrays.dim > 3) {
+    return Failure{"E-MESH-DIM",
+                   fmt::format("create_from_host: dimension {} is outside the supported range "
+                              "[0, 3]",
+                              arrays.dim)};
+  }
+
   auto view = std::make_unique<NativeMeshView>();
   view->dim_ = arrays.dim;
   view->my_rank_ = my_rank;
@@ -351,6 +399,18 @@ Result<std::unique_ptr<NativeMeshView>> NativeMeshView::create_from_host(
 
     const int voff = arrays.cell_vertex_offsets(c);
     const int vcount = arrays.cell_vertex_offsets(c + 1) - voff;
+    // NM-8: the same corner-count check NativeMeshBuilder::build() already
+    // makes for data arriving through the builder (this function's own
+    // class-doc "validates connectivity" claim, restated here for a
+    // caller that reaches create_from_host directly). A Triangle given 2
+    // corners or a Hex given 4 would otherwise read `view->cell_vertices_
+    // [c][...]` out of bounds below (UB) instead of a named refusal.
+    const int expect_corners = fixed_corner_count(type);
+    if (expect_corners != 0 && vcount != expect_corners) {
+      return Failure{"E-MESH-CONNECTIVITY",
+                     fmt::format("cell {} is a shape needing {} corners but was given {}", c,
+                                expect_corners, vcount)};
+    }
     for (int k = 0; k < vcount; ++k) {
       const int lv = arrays.cell_vertex_indices(voff + k);
       if (lv < 0 || static_cast<std::size_t>(lv) >= nv) {

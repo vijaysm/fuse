@@ -734,3 +734,150 @@ TEST(CouplerLowering, RemapOnUnusedWhenChannelWouldNeverRemapReproducesNoCoupler
                            static_cast<int>(dst_c.value())));
 }
 
+// ---------------------------------------------------------------------------
+// Review 2026-10-11 IS-9: a merged field's Sink judged its time-mismatch
+// authorization by the FIRST-DECLARED writer, not the one whose contribution
+// the merge actually adopted (type_check()'s `n.origin`, set by
+// emit_field_sink()'s own "first channel found" scan). Two lagged writers
+// into one merged field, with the SECOND-declared one more recent (lag 1)
+// than the first (lag 2): the merge's own rule (lower()'s own comment,
+// "the combined value's time level is the LATEST of its contributions")
+// picks the second writer's level, but the old scan still authorized
+// against the first. Below, the first writer IS authorized and the second
+// (the real "newest") is NOT -- before the fix this was wrongly admitted;
+// after the fix, type_check must see the unauthorized mismatch on the
+// writer that actually matters and refuse with E-IR-TYPE.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+CouplingGraph two_lagged_writers_merge(bool authorize_first,
+                                       bool authorize_second) {
+  CouplingGraph g;
+  const auto m = g.add_mesh(MeshDecl{.name = "m"});
+  const auto r = g.add_region(Region{.name = "r", .mesh = m});
+  const auto dst = g.add_component(ComponentDecl{
+      .name = "dst", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  const auto in = g.add_field(dst, FieldSpec{
+      .name = "f_in", .region = r, .units = u::kKelvin,
+      .conservation = Conservation::Extensive, .intent = Intent::Requires});
+
+  const auto w1 = g.add_component(ComponentDecl{
+      .name = "w1", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  const auto out1 = g.add_field(w1, FieldSpec{
+      .name = "f_out", .region = r, .units = u::kKelvin,
+      .conservation = Conservation::Extensive, .intent = Intent::Provides});
+  // Declared FIRST, lagged 2 (the OLDER of the two contributions).
+  const auto ch1 = g.add_channel("ch1", out1, in);
+  g.channel(ch1).lag(2);
+  if (authorize_first) {
+    g.channel(ch1).allow_time_level_mismatch("writer 1, lag 2");
+  }
+
+  const auto w2 = g.add_component(ComponentDecl{
+      .name = "w2", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  const auto out2 = g.add_field(w2, FieldSpec{
+      .name = "f_out", .region = r, .units = u::kKelvin,
+      .conservation = Conservation::Extensive, .intent = Intent::Provides});
+  // Declared SECOND, lagged 1 -- more recent than ch1, so the merge adopts
+  // ITS time level as the combined value's (lower()'s own "LATEST of its
+  // contributions" rule).
+  const auto ch2 = g.add_channel("ch2", out2, in);
+  g.channel(ch2).lag(1);
+  if (authorize_second) {
+    g.channel(ch2).allow_time_level_mismatch("writer 2, lag 1");
+  }
+
+  g.merge(in, fuse::MergeOp::Sum);
+  return g;
+}
+
+}  // namespace
+
+TEST(ChannelLowering,
+    MergedFieldAuthorizationFollowsTheActualNewestWriterNotTheFirstDeclared) {
+  // The newest (second-declared) writer is unauthorized; the first-declared,
+  // older writer is. Before the fix, type_check checked the first-declared
+  // channel's flag and wrongly admitted this graph; after the fix it checks
+  // the second (actually-newest) channel's flag and refuses it.
+  const CouplingGraph g =
+      two_lagged_writers_merge(/*authorize_first=*/true,
+                               /*authorize_second=*/false);
+  const auto r = lower(g);
+  ASSERT_FALSE(r.ok())
+      << "writer 2's unauthorized mismatch must not be hidden behind "
+         "writer 1's authorization";
+  bool saw_type_error = false;
+  for (const auto& d : r.diags.items()) {
+    if (d.code == "E-IR-TYPE") saw_type_error = true;
+  }
+  EXPECT_TRUE(saw_type_error) << r.diags.to_string();
+}
+
+TEST(ChannelLowering, MergedFieldAuthorizedOnTheActualNewestWriterIsAccepted) {
+  // The newest (second-declared) writer IS authorized; the first-declared,
+  // older one is not (and does not need to be -- its contribution is not
+  // the one the merge adopted). Must be accepted.
+  const CouplingGraph g =
+      two_lagged_writers_merge(/*authorize_first=*/false,
+                               /*authorize_second=*/true);
+  const auto r = lower(g);
+  EXPECT_TRUE(r.ok()) << r.diags.to_string();
+}
+
+// ---------------------------------------------------------------------------
+// BM-1 (review 2026-10-11): an Extensive-target channel refuses at the
+// Conservation stage (connect.hpp's `check_channel()`) whenever its declared
+// transfer is not conservative -- a plain copy, here. `Evaluation::finish()`
+// (src/model/compatibility.cpp) used to clear the WHOLE operator chain on
+// that refusal, including a Transform-phase `UnitScale` step the Unit stage
+// had ALREADY authorized (Unit runs before Conservation): a scale-only unit
+// mismatch (kPa -> Pa) on such a channel lost its scale and surfaced here as
+// a bare, unexplained `E-IR-TYPE` -- the type never converts, so `Sink`'s
+// `assignable_from` (op.hpp) sees kilopascals where it required pascals.
+// `finish()` now keeps a Transform-phase step across a later-stage refusal,
+// so this channel's Scale operator still gets emitted and the type is
+// correct by the time `type_check()` runs; the authoring-time refusal itself
+// is `validate()`'s job (test/model/validate_test.cpp's own BM-1 tests pin
+// that it still fires, as `E-CONN-CONSERVATION`, alongside the inserted-scale
+// warning).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+CouplingGraph extensive_scale_only_mismatch_graph() {
+  CouplingGraph g;
+  const auto m = g.add_mesh(MeshDecl{.name = "m"});
+  const auto r = g.add_region(Region{.name = "r", .mesh = m});
+  const auto a = g.add_component(ComponentDecl{
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  const auto b = g.add_component(ComponentDecl{
+      .name = "b", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  fuse::Units pascal = u::kPascal;
+  fuse::Units kilopascal = pascal;
+  kilopascal.scale = Rational{1000};
+  const auto src = g.add_field(a, FieldSpec{
+      .name = "p_out", .region = r, .units = kilopascal,
+      .conservation = Conservation::Extensive, .intent = Intent::Provides});
+  const auto dst = g.add_field(b, FieldSpec{
+      .name = "p_in", .region = r, .units = pascal,
+      .conservation = Conservation::Extensive, .intent = Intent::Requires});
+  // Plain copy: no .conservative(), so the Conservation stage refuses.
+  g.add_channel("p_link", src, dst);
+  return g;
+}
+
+}  // namespace
+
+TEST(ChannelLowering,
+    ExtensiveTargetWithAScaleOnlyMismatchGetsItsScaleNotABareTypeError) {
+  const CouplingGraph g = extensive_scale_only_mismatch_graph();
+  const auto r = lower(g);
+  bool saw_type_error = false;
+  for (const auto& d : r.diags.items()) {
+    if (d.code == "E-IR-TYPE") saw_type_error = true;
+  }
+  EXPECT_FALSE(saw_type_error) << r.diags.to_string();
+  EXPECT_TRUE(r.ok()) << r.diags.to_string();
+}
+

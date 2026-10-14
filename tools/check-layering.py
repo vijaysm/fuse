@@ -166,14 +166,6 @@ INCLUDE_FUSE = re.compile(r"^\s*#\s*include\s*[<\"]fuse/([a-z_]+)/")
 INCLUDE_ANY = re.compile(r"^\s*#\s*include\s*[<\"]([^>\"]+)[>\"]")
 
 
-def layer_of(path: Path) -> str | None:
-    parts = path.parts
-    if "fuse" not in parts:
-        return None
-    i = parts.index("fuse")
-    return parts[i + 1] if i + 1 < len(parts) else None
-
-
 def main() -> int:
     root = Path(__file__).resolve().parent.parent
     include_dir = root / "include" / "fuse"
@@ -185,10 +177,31 @@ def main() -> int:
     problems: list[str] = []
 
     for header in sorted(include_dir.rglob("*.h*")):
-        layer = layer_of(header.relative_to(root))
-        if layer is None or layer not in rank:
-            continue
         rel = header.relative_to(root)
+        rel_in_fuse = header.relative_to(include_dir)
+        if len(rel_in_fuse.parts) < 2:
+            # A header directly under include/fuse/, in no layer directory at
+            # all -- not what this loop checks (there is no "fuse/<layer>/"
+            # to rank), and not the BC-9 gap: that gap is a directory this
+            # list does not know, not the absence of one.
+            continue
+        layer = rel_in_fuse.parts[0]
+        if layer not in rank:
+            # This is the gap BC-9 named: LAYERS' own header comment says
+            # "every directory under include/fuse MUST appear here", but
+            # until now an unlisted one was silently skipped below instead
+            # of failing loudly -- exactly how `field`, `linalg` and `abi`
+            # went unchecked for a release each (see the LAYERS comment).
+            # A `continue` here would repeat that: the gate must fail
+            # instead, on the fact that a directory exists that it cannot
+            # rank, before it gets a chance to miss a real violation in it.
+            problems.append(
+                f"{rel}: 'include/fuse/{layer}/' is not a directory LAYERS "
+                f"knows about -- add it to tools/check-layering.py's LAYERS "
+                f"(with its position argued, as every other entry's comment "
+                f"does) before this header can be checked for anything (I7)"
+            )
+            continue
         for lineno, line in enumerate(header.read_text().splitlines(), 1):
             m = INCLUDE_FUSE.match(line)
             if m:
@@ -212,6 +225,34 @@ def main() -> int:
                     problems.append(
                         f"{rel}:{lineno}: '{m.group(1)}' is not permitted in a public "
                         f"'{layer}' header"
+                    )
+
+    # The include-direction check above only ever walked include/fuse's
+    # PUBLIC headers; a src/*.cpp translation unit including a higher
+    # layer's public header was invisible to both this gate and the link
+    # graph (a .cpp does not appear in anyone else's dependency chain, so
+    # nothing downstream would ever notice the inversion either). Same rank
+    # table, same direction rule; the third-party-header and Kokkos-in-
+    # public-header rules stay public-header-only, since a .cpp is never
+    # part of a layer's public surface.
+    src_dir = root / "src"
+    if src_dir.is_dir():
+        for tu in sorted(src_dir.rglob("*.cpp")):
+            rel = tu.relative_to(root)
+            rel_in_src = tu.relative_to(src_dir)
+            if len(rel_in_src.parts) < 2:
+                continue
+            layer = rel_in_src.parts[0]
+            if layer not in rank:
+                continue
+            for lineno, line in enumerate(tu.read_text(errors="replace").splitlines(), 1):
+                m = INCLUDE_FUSE.match(line)
+                if not m:
+                    continue
+                dep = m.group(1)
+                if dep in rank and rank[dep] > rank[layer]:
+                    problems.append(
+                        f"{rel}:{lineno}: layer '{layer}' includes from '{dep}', which is above it"
                     )
 
     problems += check_legacy(root)

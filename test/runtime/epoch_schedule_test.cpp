@@ -123,6 +123,37 @@ TEST(EpochSchedule, ANonParticipantDoesNothing) {
   }
 }
 
+// RT-8 (review 2026-10-11): a participant count at or past
+// kMaxStrideParticipants (2^30) is clamped to the SAME empty schedule an
+// out-of-range `index` already returns, rather than entering the stride
+// walk at all -- the walk's own `stride *= 2`/`2 * stride` arithmetic is
+// `int`, and doubling past this bound is undefined behaviour regardless
+// of whether any real MPI job ever reaches it. No real job does (this
+// file's own 31-bound comment); this test pins the clamp itself, not a
+// reachable scenario.
+TEST(EpochSchedule, HugeParticipantCountIsClampedNotWalked) {
+  const auto at_bound = epoch_schedule(fuse::kMaxStrideParticipants, 0);
+  EXPECT_EQ(at_bound.reduce_recv_count, 0);
+  EXPECT_EQ(at_bound.reduce_send_to, -1);
+  EXPECT_EQ(at_bound.result_recv_from, -1);
+  EXPECT_EQ(at_bound.result_send_count, 0);
+
+  const auto past_bound =
+      epoch_schedule(fuse::kMaxStrideParticipants + 1000, 0);
+  EXPECT_EQ(past_bound.reduce_recv_count, 0);
+  EXPECT_EQ(past_bound.reduce_send_to, -1);
+  EXPECT_EQ(past_bound.result_recv_from, -1);
+  EXPECT_EQ(past_bound.result_send_count, 0);
+
+  // One below the bound still walks normally -- the clamp is exact, not
+  // a blanket refusal near the boundary.
+  const auto just_under =
+      epoch_schedule(fuse::kMaxStrideParticipants - 1, 0);
+  EXPECT_GT(just_under.result_send_count, 0)
+      << "participant 0, one below the clamp, must still compute an "
+         "ordinary schedule";
+}
+
 TEST(EpochSchedule, IsAllocationFree) {
   // The runtime's standing property is that a running plan touches no
   // allocator, and this is built once per agreement point per step. A first
@@ -134,4 +165,27 @@ TEST(EpochSchedule, IsAllocationFree) {
   static_assert(sizeof(fuse::EpochSchedule) <= 160,
                 "EpochSchedule grew; it is built per agreement point per step");
   SUCCEED();
+}
+
+// RT-9 (review 2026-10-11): the threshold comparison behind E-RT-EPOCH-TAG
+// (resolve_epoch_participants(), src/runtime/runner.cpp), factored into
+// tag_ub_too_low() so it is unit-testable without MPI -- rank-agreement.md
+// documents the refusal as a deliberate "fail before the run, not inside a
+// reduction", but no test made the comparison actually FIRE (a regression
+// deleting or inverting it would have passed the whole suite silently).
+TEST(EpochSchedule, TagUbTooLowFires) {
+  using fuse::tag_ub_too_low;
+  // tags::kMaxUsed is 0x5C16 (kWindowConvergence, tags.hpp) at HEAD; this
+  // test is independent of that exact value by construction -- it only
+  // ever compares a `reported_tag_ub` against a `max_used_tag` it supplies
+  // itself, never against the real constant.
+  EXPECT_TRUE(tag_ub_too_low(/*reported_tag_ub=*/100, /*max_used_tag=*/200))
+      << "an MPI whose own MPI_TAG_UB (100) is below the highest tag this "
+         "library uses (200) must be reported as too low";
+  EXPECT_FALSE(tag_ub_too_low(/*reported_tag_ub=*/200, /*max_used_tag=*/200))
+      << "exactly enough headroom (reported == max_used) is enough -- every "
+         "tag up to and including max_used is then a valid MPI tag";
+  EXPECT_FALSE(tag_ub_too_low(/*reported_tag_ub=*/32767, /*max_used_tag=*/0x5C16))
+      << "the standard MPI_TAG_UB floor (32767) comfortably covers this "
+         "library's own highest tag, which is the ordinary case";
 }

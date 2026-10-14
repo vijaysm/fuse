@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <unordered_set>
 
 #include "fuse/base/rational.hpp"
 #include "fuse/field/field_ref.hpp"
@@ -13,13 +14,38 @@ namespace fuse::abi_detail {
 
 namespace {
 
-// abi-design.md rule 2, the same test src/abi/participant.cpp's own
-// check_struct_size runs: every argument struct in entries.def has shipped
-// exactly one frozen layout so far, so "smaller than the oldest known
-// layout" and "smaller than sizeof(T)" agree today.
+// abi-design.md rule 2. Correct for fuse_provider_instance and
+// fuse_capability_set, which (c-abi.md's own growth table) have each
+// shipped exactly one frozen layout so far -- "smaller than the oldest
+// known layout" and "smaller than sizeof(T)" agree for those two. NOT
+// correct for fuse_step_report (see step_report_struct_size_ok below,
+// Review 2026-10-11 AB-3): that struct HAS grown, and this template's
+// ">= sizeof(T) [current]" bound refuses a plugin built against an
+// older header's smaller-but-still-valid struct_size, the exact
+// backward-compatibility deviation AB-2 found in the opposite
+// direction (participant.cpp's own FirstFrozenStructSize<T>).
 template <class T>
 [[nodiscard]] bool struct_size_ok(const T* s) noexcept {
   return s != nullptr && s->struct_size >= sizeof(T) &&
+         s->struct_size <= static_cast<std::uint32_t>(FUSE_ABI_MAX_STRUCT_SIZE);
+}
+
+// Review 2026-10-11 AB-3: the read-side mirror of
+// FirstFrozenStructSize<fuse_step_report> (src/abi/participant.cpp) --
+// this is a DIFFERENT translation unit from a plugin's own `advance()`,
+// writing INTO this host's `rep`, so the question is "does the
+// plugin's struct_size cover the members THIS HOST reads" (t_begin,
+// t_end only -- see advance() below), not "is struct_size at least
+// this host's current sizeof(fuse_step_report)". A plugin built
+// against the pre-growth 64-byte layout (c-abi.md's growth table,
+// commit da33572's predecessor) never had next_component/step_opened/
+// period/delivery_pending/delivery_field to write, and this host never
+// reads any of them from a plugin's own report -- only t_begin/t_end,
+// both inside that original 64 bytes.
+[[nodiscard]] bool step_report_struct_size_ok(const fuse_step_report* s) noexcept {
+  constexpr std::size_t kFirstFrozenSize =
+      offsetof(fuse_step_report, t_end) + sizeof(fuse_exact_time);
+  return s != nullptr && s->struct_size >= kFirstFrozenSize &&
          s->struct_size <= static_cast<std::uint32_t>(FUSE_ABI_MAX_STRUCT_SIZE);
 }
 
@@ -108,19 +134,35 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
       fuse_null cin{sizeof(fuse_null)};
       fuse_capability_set caps{sizeof(fuse_capability_set)};
       const fuse_status cs = table_->capabilities(self_, &cin, &caps);
-      if (cs == FUSE_OK && struct_size_ok(&caps)) {
-        // Determinism is left UNDECLARED (the determinism field's raw 0,
-        // capabilities.hpp's own default) rather than claimed: the provider
-        // ABI has no entry through which a plugin states a determinism
-        // level, so silence must decode to std::nullopt, not a guess.
-        capabilities_ = (((caps.flags & FUSE_CAP_CHECKPOINT) != 0) ? fuse::kCapabilityRollback
-                                                                    : std::uint64_t{0}) |
-                        // A provider's own instance is opaque past the fields it
-                        // binds; FUSE's byte-for-byte rollback check can never see
-                        // state the plugin keeps that was never described and
-                        // bound (component.hpp's own caveat on carries_hidden_state()).
-                        fuse::kCapabilityHiddenState;
+      // Review 2026-10-11 AB-6(a): an ENTRY THAT EXISTS but returns a
+      // non-OK status (or a struct_size this host does not recognise) was
+      // silently ignored, degrading to "no checkpoint" with no refusal --
+      // indistinguishable from the provider correctly reporting it has
+      // nothing to checkpoint. A plugin that offers the entry and then
+      // cannot honour it is a defect this ABI boundary must surface, not
+      // paper over.
+      if (cs != FUSE_OK) {
+        return fuse::Failure{"E-ABI-PROVIDER-CAPABILITIES",
+                             "provider '" + name_ + "': capabilities() returned " +
+                                 std::to_string(cs)};
       }
+      if (!struct_size_ok(&caps)) {
+        return fuse::Failure{"E-ABI-VERSION",
+                             "provider '" + name_ +
+                                 "': capabilities() wrote a struct_size this host does not "
+                                 "recognise"};
+      }
+      // Determinism is left UNDECLARED (the determinism field's raw 0,
+      // capabilities.hpp's own default) rather than claimed: the provider
+      // ABI has no entry through which a plugin states a determinism
+      // level, so silence must decode to std::nullopt, not a guess.
+      capabilities_ = (((caps.flags & FUSE_CAP_CHECKPOINT) != 0) ? fuse::kCapabilityRollback
+                                                                  : std::uint64_t{0}) |
+                      // A provider's own instance is opaque past the fields it
+                      // binds; FUSE's byte-for-byte rollback check can never see
+                      // state the plugin keeps that was never described and
+                      // bound (component.hpp's own caveat on carries_hidden_state()).
+                      fuse::kCapabilityHiddenState;
     }
 
     // ---- describe() ---------------------------------------------------
@@ -161,6 +203,28 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
     const auto& fields = graph.component(*cid).fields;
     storage_.clear();
     storage_.resize(fields.size());
+
+    // Review 2026-10-11 AB-6(b): the cross-check below only walked the
+    // graph's OWN fields, asking "does describe() report this one" -- a
+    // plugin reporting a SUPERSET (an extra row the graph never declared
+    // for this component) passed silently. providers.md's own text
+    // ("a describe() that disagrees with the graph's own field
+    // declaration ... never silently skipped or substituted") does not
+    // carve out an exception for extra rows, so this direction is refused
+    // with the same E-ABI-DESCRIBE code the missing-field direction uses.
+    {
+      std::unordered_set<std::string> declared_names;
+      declared_names.reserve(fields.size());
+      for (const fuse::FieldId fid : fields) declared_names.insert(graph.field(fid).name);
+      for (const auto& row : rows) {
+        if (row.name != nullptr && !declared_names.contains(row.name)) {
+          return fuse::Failure{
+              "E-ABI-DESCRIBE",
+              "provider '" + name_ + "': describe() reports field '" + row.name +
+                  "', which the graph does not declare for this component"};
+        }
+      }
+    }
 
     // SerialMeshBackend::region_size() indexes its OWN loaded-mesh vector
     // directly by MeshId (src/backend/serial_backend.cpp), which requires
@@ -263,7 +327,7 @@ fuse::Result<void> ProviderAdapter::advance(const fuse::StepContext& ctx) {
       return fuse::Failure{"E-ABI-PROVIDER-ADVANCE",
                            "provider '" + name_ + "': advance() returned " + std::to_string(rc)};
     }
-    if (!struct_size_ok(&rep)) {
+    if (!step_report_struct_size_ok(&rep)) {
       return fuse::Failure{"E-ABI-VERSION",
                            "provider '" + name_ + "': advance() wrote a struct_size this host does not recognise"};
     }

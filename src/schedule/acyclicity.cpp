@@ -757,6 +757,17 @@ CycleReport prove_acyclic(const CouplingGraph& g, const OperatorDAG& dag,
     int side = -1;
     if (n.kind == OpKind::Source) {
       side = 1;
+    } else if (n.kind == OpKind::WindowAdvance) {
+      // Review 2026-10-11 IS-2: a window member's own export is this node,
+      // never a `Source` (finish_window_regions(), src/ir/window_lowering.cpp
+      // -- empty inputs, a real SSA root, exactly like Source). Treating it
+      // the same way Source is treated here is not an analogy, it is the
+      // same case: before this, no component edge was ever formed for a
+      // window member's step, so an unlagged loop through it via channels
+      // declared outside the window-scoped region (the member's clock is
+      // the window's own cadence, but this file's black-box rule does not
+      // care which clock a step counts on) was certified acyclic.
+      side = 1;
     } else if (n.kind == OpKind::Sink && n.origin.valid() &&
                n.origin.value() < g.channel_count()) {
       side = 0;

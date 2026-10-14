@@ -200,12 +200,20 @@ substituted.
 | Code | Meaning |
 |---|---|
 | `E-ABI-LOAD` | `dlopen()`/`dlsym()` failed; the message carries `dlerror()`'s own text |
-| `E-ABI-VERSION` | the plugin's table does not speak `FUSE_ABI_VERSION` (absent, too small, or a different `abi_version`) |
-| `E-ABI-DESCRIBE` | `describe()` disagrees with the graph's own field declaration for a named field |
+| `E-ABI-VERSION` | the plugin's table does not speak `FUSE_ABI_VERSION` (absent, too small, or a different `abi_version`), or `create()`/`advance()` wrote a `struct_size` this host does not recognise |
+| `E-ABI-DESCRIBE` | `describe()` disagrees with the graph's own field declaration for a named field — including a field `describe()` reports that the graph does not declare for this component at all (a superset, refused the same as a mismatch or an omission) |
 | `E-ABI-PROVIDER-CREATE` / `-BIND` / `-ADVANCE` / `-SAVE` / `-RESTORE` | the named entry returned a non-`FUSE_OK` status |
+| `E-ABI-PROVIDER-CAPABILITIES` | the optional `capabilities()` entry exists but returned a non-`FUSE_OK` status (absence, not failure, is what "no checkpoint" means) |
 | `E-ABI-PROVIDER-WINDOW` | `advance()` echoed a different window than the one it was asked to run (rule 6) |
 | `E-ABI-PROVIDER-ELEMENT` | a field is not `FUSE_ELEMENT_F64`, the only element type this host supports through this ABI |
+| `E-ABI-PROVIDER-TABLE` | the provider's table is absent, or missing one of `create`/`destroy`/`describe`/`bind`/`advance` |
+| `E-ABI-PROVIDER-DESCRIBE` | the `describe()` call itself (the size query or the fill) returned a non-`FUSE_OK` status — distinct from `E-ABI-DESCRIBE`, which is the cross-check against the graph's own declaration |
+| `E-ABI-PROVIDER-GRAPH` | the provider's own component name is not a component of the loaded graph |
+| `E-ABI-PROVIDER-EXCEPTION` | `register_fields()` or `advance()` caught a `std::exception` the plugin or FUSE's own backend/graph calls threw |
+| `E-ABI-REGISTRY-NULL` | `mount_component()`/`mount_table()` was given a null component or table |
 | `E-ABI-REGISTRY-DUPLICATE` | a second provider was mounted under a name already in use |
+| `E-ABI-REGISTRY-INSTALL` | `ComponentSet::add()` threw while installing a mounted provider |
+| `E-ABI-REGISTRY-NOTFOUND` | `extract()` was asked for a name no provider is mounted under |
 | `E-LAUNCH-PLUGIN-PATH` | a `plugin`-launched component declares an empty `plugin_path` |
 
 ## Open questions

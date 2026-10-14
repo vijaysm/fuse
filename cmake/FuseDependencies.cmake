@@ -82,7 +82,6 @@ endfunction()
 
 # ---------------------------------------------------------------- Tier 0 (always)
 set(FUSE_FMT_TAG        "11.0.2")
-set(FUSE_FMTLOG_TAG     "v2.2.1")
 # r3d: exact clipping of simplices and analytic moments (Powell & Abel 2015,
 # LA-UR-15-26964). It is the supermesh kernel for the ALWAYS-AVAILABLE
 # conservative path, so like yaml-cpp it is fetched by default rather than
@@ -195,9 +194,6 @@ endif()
 # Consulted only when FUSE_ALLOW_FETCH is ON and find_package came up empty.
 FetchContent_Declare(fmt
   GIT_REPOSITORY https://github.com/fmtlib/fmt.git GIT_TAG ${FUSE_FMT_TAG} GIT_SHALLOW ON)
-FetchContent_Declare(fmtlog
-  GIT_REPOSITORY https://github.com/MengRao/fmtlog.git GIT_TAG ${FUSE_FMTLOG_TAG}
-  GIT_SUBMODULES "" GIT_SHALLOW ON)   # its submodules are a vendored fmt and two benchmark loggers
 FetchContent_Declare(googletest
   GIT_REPOSITORY https://github.com/google/googletest.git GIT_TAG ${FUSE_GTEST_TAG} GIT_SHALLOW ON)
 FetchContent_Declare(Kokkos
@@ -1232,14 +1228,9 @@ macro(fuse_resolve_dependencies)
        "lowfive=${FUSE_ENABLE_LOWFIVE}\nexceptions=${FUSE_ENABLE_EXCEPTIONS}\n")
 endmacro()
 
-macro(fuse_resolve_logging)
-  fuse_require(fmtlog FETCH_AS fmtlog
-               HINT "fmtlog is the logger (docs/dev/conventions.md); header-only over our fmt.")
-  if(NOT TARGET fuse::fmtlog)
-    add_library(fuse-fmtlog INTERFACE)
-    add_library(fuse::fmtlog ALIAS fuse-fmtlog)
-    target_include_directories(fuse-fmtlog INTERFACE ${fmtlog_SOURCE_DIR} ${FMTLOG_INCLUDE_DIR})
-    target_compile_definitions(fuse-fmtlog INTERFACE FMTLOG_HEADER_ONLY)
-    target_link_libraries(fuse-fmtlog INTERFACE fmt::fmt)
-  endif()
-endmacro()
+# fuse_resolve_logging() (an fmtlog interface target, never called by anyone)
+# removed 2026-10-12: no file under include/ or src/ ever included fmtlog, and
+# nothing called the macro -- a fetched, linked, never-used dependency, the
+# same option-to-nothing shape I4 forbids in library code. See
+# docs/dev/conventions.md's "Output and logging" section for what replaced
+# the contract this macro never actually implemented.

@@ -136,6 +136,54 @@ CouplingGraph merge_across_ranks() {
   return g;
 }
 
+/// Two writers at DIFFERENT intervals -- W1 ticks every 2 time units, W2
+/// every 1 -- merged (Sum) into M, which ticks every 1. Colocated (same rank
+/// as the target) on purpose, so the only thing this fixture exercises is
+/// the interaction between multirate decomposition and the Merge phase, not
+/// a Transport/Epoch pair (`MergeAcrossRanksSchedulesInDependenceOrder`
+/// already covers that). W1's channel carries a real chain node (`.relax`)
+/// so its tail is not the bare Source/Sink arc.
+///
+/// Review 2026-10-11 IS-1: W1's slab decomposition against M's interval
+/// (`decompose(2, 1, period)`) makes its FIRST merge instant target-limited
+/// -- the source step has not finished when M's first tick ends, so the
+/// causality contract in expand.hpp stamps W1's tail `AfterTicks` there --
+/// while the boundary pass stamped every Merge `BeforeTicks` unconditionally.
+/// Same instant, wrong relative order: `check_dependence_order()` refused
+/// this legal graph with `E-SCHED-ORDER`, reading it as "Merge ran before
+/// the input it combines."
+CouplingGraph multirate_merge() {
+  CouplingGraph g;
+  const auto m = g.add_mesh(fuse::MeshDecl{.name = "m"});
+  const auto r = g.add_region(fuse::Region{.name = "r", .mesh = m});
+  const auto dst = g.add_component(ComponentDecl{
+      .name = "dst", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  const auto in = g.add_field(
+      dst, fuse::FieldSpec{.name = "f_in", .region = r,
+                           .units = u::kHeatFluxDensity,
+                           .conservation = fuse::Conservation::Extensive,
+                           .intent = fuse::Intent::Requires});
+  const auto w1 = g.add_component(ComponentDecl{
+      .name = "w1", .ranks = fuse::RankSet{0, 1}, .interval = Rational{2}});
+  const auto out1 = g.add_field(
+      w1, fuse::FieldSpec{.name = "f_out", .region = r,
+                          .units = u::kHeatFluxDensity,
+                          .conservation = fuse::Conservation::Extensive,
+                          .intent = fuse::Intent::Provides});
+  const auto ch1 = g.add_channel("ch1", out1, in);
+  g.channel(ch1).relax(0.7);
+  const auto w2 = g.add_component(ComponentDecl{
+      .name = "w2", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
+  const auto out2 = g.add_field(
+      w2, fuse::FieldSpec{.name = "f_out", .region = r,
+                          .units = u::kHeatFluxDensity,
+                          .conservation = fuse::Conservation::Extensive,
+                          .intent = fuse::Intent::Provides});
+  g.add_channel("ch2", out2, in);
+  g.merge(in, fuse::MergeOp::Sum);
+  return g;
+}
+
 /// Independent of the scheduler's own reasoning: walk the emitted stream and
 /// check that every operand was written by an earlier instruction. A lagged
 /// arc (negative time offset) is exempt -- spec §4.3, its value comes from the
@@ -235,6 +283,215 @@ TEST(ExecutionPlan, RejectsCyclicSchedules) {
   EXPECT_TRUE(r.plan.instructions().empty());
   EXPECT_TRUE(r.plan.buffers().buffers.empty());
   EXPECT_EQ(r.plan.region_count(), 0u);
+}
+
+// Review 2026-10-11 IS-2: a window member's own export is produced by
+// OpKind::WindowAdvance -- an SSA root with empty inputs, exactly like
+// Source, finish_window_regions() in src/ir/window_lowering.cpp -- not by
+// Source itself. The acyclicity prover's black-box component-edge rule
+// (src/schedule/acyclicity.cpp) built that edge only from Source/Sink
+// endpoints, so no component edge was ever formed for a window member's
+// step. An unlagged loop through the member via ORDINARY channels declared
+// OUTSIDE the window-scoped region -- which neither the window gate's own
+// `has_unbroken_cycle()` (src/schedule/window.cpp, scans only
+// `region.channels`) nor the prover's endpoint scan could see -- was
+// wrongly certified acyclic. `a` is the window member; `a2c`/`c2a` are
+// ordinary, unlagged, and not in the region's channel list.
+TEST(ExecutionPlan, WindowMemberGatesAnOrdinaryCycleOutsideTheRegion) {
+  CouplingGraph g;
+  const auto ma = g.add_mesh(fuse::MeshDecl{.name = "ma"});
+  const auto mb = g.add_mesh(fuse::MeshDecl{.name = "mb"});
+  const auto mc = g.add_mesh(fuse::MeshDecl{.name = "mc"});
+  const auto ra = g.add_region(fuse::Region{.name = "ra", .mesh = ma});
+  const auto rb = g.add_region(fuse::Region{.name = "rb", .mesh = mb});
+  const auto rc = g.add_region(fuse::Region{.name = "rc", .mesh = mc});
+
+  const auto a = g.add_component(ComponentDecl{
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1, 4}});
+  const auto b = g.add_component(ComponentDecl{
+      .name = "b", .ranks = fuse::RankSet{1, 1}, .interval = Rational{1, 4}});
+  const auto c = g.add_component(ComponentDecl{
+      .name = "c", .ranks = fuse::RankSet{2, 1}, .interval = Rational{1, 4}});
+
+  // The window-scoped pair, `a` <-> `b` -- mirrors
+  // window_region_golden_test.cpp's two_member_window_graph(): one unlagged
+  // direction (checked by check_window_causality()'s strict rule) and one
+  // lagged (its relaxed rule), which is what makes the region itself
+  // schedulable.
+  const auto a_out = g.add_field(a, fuse::FieldSpec{
+      .name = "a_out", .region = ra, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Provides});
+  const auto b_in = g.add_field(b, fuse::FieldSpec{
+      .name = "b_in", .region = rb, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Requires});
+  const auto b_out = g.add_field(b, fuse::FieldSpec{
+      .name = "b_out", .region = rb, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Provides});
+  const auto a_in = g.add_field(a, fuse::FieldSpec{
+      .name = "a_in", .region = ra, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Requires});
+  const auto fwd = g.add_channel("a2b", a_out, b_in);
+  const auto back = g.add_channel("b2a", b_out, a_in);
+  g.channel(back).lag(1).allow_time_level_mismatch(
+      "resolved by the a-b coupling window's own sweep, not a real-time lag");
+
+  fuse::CouplingWindowScope scope;
+  scope.window_component = "a";
+  scope.order = 2;
+  scope.policies = {{"a", fuse::DtPolicy::Adjustable},
+                    {"b", fuse::DtPolicy::Adjustable}};
+  scope.iteration = fuse::WaveformIteration::GaussSeidel;
+  g.add_iteration_region(fuse::IterationRegionDecl{
+      .name = "window", .channels = {fwd, back}, .max_iterations = 20,
+      .window_scope = scope});
+
+  // The ordinary, unlagged cycle runs a -> b -> c -> a, closing back on `a`
+  // through `a_out` -- the window member's own export, never a second
+  // Provides field declared directly on `a`. `a` must have NO ordinary
+  // `Source` node of its own: finish_window_regions() (src/ir/
+  // window_lowering.cpp) replaces a window member's export with a
+  // `WindowAdvance` node, which is the entire point under test. Giving `a`
+  // an unrelated ordinary Provides field here would let prove_acyclic's
+  // pre-existing Source/Sink rule close the loop on its own, exercising
+  // nothing about the gap this fix closes (measured: with a second Provides
+  // field on `a`, this test passed even with the fix reverted). Nor can the
+  // cycle's outgoing leg read `a_out` through a SECOND, non-window channel
+  // directly: the window member's export is sized for the window's own
+  // waveform, so an ordinary reader outside the region fails type-checking
+  // before acyclicity is ever reached (measured: E-IR-TYPE on `c.c_in`).
+  // Routing the outgoing leg through `b` -- already the window's OTHER,
+  // ordinary consumer of `a_out` via `fwd` -- sidesteps both problems: `b`'s
+  // own, unrelated Provides field closes the loop into `c`, and `c`'s own
+  // Provides field closes it back onto `a_in2`, which is unlagged and
+  // genuinely depends on `a_out` only through the missing WindowAdvance
+  // component edge this fix adds.
+  const auto b_out2 = g.add_field(b, fuse::FieldSpec{
+      .name = "b_out2", .region = rb, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Provides});
+  const auto c_in = g.add_field(c, fuse::FieldSpec{
+      .name = "c_in", .region = rc, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Requires});
+  const auto c_out = g.add_field(c, fuse::FieldSpec{
+      .name = "c_out", .region = rc, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Provides});
+  const auto a_in2 = g.add_field(a, fuse::FieldSpec{
+      .name = "a_in2", .region = ra, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Requires});
+  g.add_channel("b2c", b_out2, c_in);
+  g.add_channel("c2a", c_out, a_in2);
+
+  const auto r = build(g);
+  EXPECT_FALSE(r.ok());  // wrongly accepted before the fix
+  bool saw_cycle_code = false;
+  for (const auto& d : r.diags.items()) {
+    if (d.code == "E-SCHED-CYCLE") saw_cycle_code = true;
+  }
+  EXPECT_TRUE(saw_cycle_code) << r.diags.to_string();
+}
+
+// Review 2026-10-11 IS-7: a component claimed by two DIFFERENT window-scoped
+// regions used to be silently resolved first-wins -- ClockSet's ctor
+// (include/fuse/schedule/clock.hpp) takes the first region's window length
+// and `break`s, and owning_window_region_for_component() (src/schedule/
+// expand.cpp) `return`s on the first match -- a wrong-but-deterministic
+// schedule with no diagnostic. `b` is a member of both `ab` (with `a`) and
+// `bc` (with `c`) below; schedule() must refuse it with the new
+// E-SCHED-WINDOW-OVERLAP rather than silently pick one.
+TEST(ExecutionPlan, ComponentInTwoWindowRegionsIsRefused) {
+  CouplingGraph g;
+  const auto ma = g.add_mesh(fuse::MeshDecl{.name = "ma"});
+  const auto mb = g.add_mesh(fuse::MeshDecl{.name = "mb"});
+  const auto mc = g.add_mesh(fuse::MeshDecl{.name = "mc"});
+  const auto ra = g.add_region(fuse::Region{.name = "ra", .mesh = ma});
+  const auto rb = g.add_region(fuse::Region{.name = "rb", .mesh = mb});
+  const auto rc = g.add_region(fuse::Region{.name = "rc", .mesh = mc});
+
+  const auto a = g.add_component(ComponentDecl{
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1, 4}});
+  const auto b = g.add_component(ComponentDecl{
+      .name = "b", .ranks = fuse::RankSet{1, 1}, .interval = Rational{1, 4}});
+  const auto c = g.add_component(ComponentDecl{
+      .name = "c", .ranks = fuse::RankSet{2, 1}, .interval = Rational{1, 4}});
+
+  // Region "ab": a <-> b.
+  const auto a_out = g.add_field(a, fuse::FieldSpec{
+      .name = "a_out", .region = ra, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Provides});
+  const auto b_in = g.add_field(b, fuse::FieldSpec{
+      .name = "b_in", .region = rb, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Requires});
+  const auto b_out = g.add_field(b, fuse::FieldSpec{
+      .name = "b_out", .region = rb, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Provides});
+  const auto a_in = g.add_field(a, fuse::FieldSpec{
+      .name = "a_in", .region = ra, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Requires});
+  const auto ab_fwd = g.add_channel("a2b", a_out, b_in);
+  const auto ab_back = g.add_channel("b2a", b_out, a_in);
+  g.channel(ab_back).lag(1).allow_time_level_mismatch(
+      "resolved by the a-b coupling window's own sweep");
+
+  fuse::CouplingWindowScope ab_scope;
+  ab_scope.window_component = "a";
+  ab_scope.order = 2;
+  ab_scope.policies = {{"a", fuse::DtPolicy::Adjustable},
+                       {"b", fuse::DtPolicy::Adjustable}};
+  ab_scope.iteration = fuse::WaveformIteration::GaussSeidel;
+  g.add_iteration_region(fuse::IterationRegionDecl{
+      .name = "ab", .channels = {ab_fwd, ab_back}, .max_iterations = 20,
+      .window_scope = ab_scope});
+
+  // Region "bc": b <-> c. `b` is also a member of "ab" above.
+  const auto b_out2 = g.add_field(b, fuse::FieldSpec{
+      .name = "b_out2", .region = rb, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Provides});
+  const auto c_in = g.add_field(c, fuse::FieldSpec{
+      .name = "c_in", .region = rc, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Requires});
+  const auto c_out = g.add_field(c, fuse::FieldSpec{
+      .name = "c_out", .region = rc, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Provides});
+  const auto b_in2 = g.add_field(b, fuse::FieldSpec{
+      .name = "b_in2", .region = rb, .units = u::kKelvin,
+      .conservation = fuse::Conservation::Extensive,
+      .intent = fuse::Intent::Requires});
+  const auto bc_fwd = g.add_channel("b2c", b_out2, c_in);
+  const auto bc_back = g.add_channel("c2b", c_out, b_in2);
+  g.channel(bc_back).lag(1).allow_time_level_mismatch(
+      "resolved by the b-c coupling window's own sweep");
+
+  fuse::CouplingWindowScope bc_scope;
+  bc_scope.window_component = "c";
+  bc_scope.order = 2;
+  bc_scope.policies = {{"b", fuse::DtPolicy::Adjustable},
+                       {"c", fuse::DtPolicy::Adjustable}};
+  bc_scope.iteration = fuse::WaveformIteration::GaussSeidel;
+  g.add_iteration_region(fuse::IterationRegionDecl{
+      .name = "bc", .channels = {bc_fwd, bc_back}, .max_iterations = 20,
+      .window_scope = bc_scope});
+
+  const auto r = build(g);
+  EXPECT_FALSE(r.ok());  // wrongly accepted (first-wins) before the fix
+  bool saw_overlap_code = false;
+  for (const auto& d : r.diags.items()) {
+    if (d.code == "E-SCHED-WINDOW-OVERLAP") saw_overlap_code = true;
+  }
+  EXPECT_TRUE(saw_overlap_code) << r.diags.to_string();
 }
 
 TEST(ExecutionPlan, DumpMentionsEveryOpKindPresent) {
@@ -523,6 +780,24 @@ TEST(ExecutionPlan, MergeAcrossRanksSchedulesInDependenceOrder) {
   ASSERT_TRUE(saw_transport)
       << "fixture must actually exercise a Transport/Epoch pair, or it is "
          "the colocated case FiveWriterMerge* already covers";
+
+  const fuse::ClockSet cs{g};
+  const auto r = schedule(g, lowered.dag, cs, constant_sizes(64));
+  ASSERT_TRUE(r.ok()) << r.diags.to_string();  // used to fail E-SCHED-ORDER
+  EXPECT_EQ(dependence_violations(lowered.dag, r.plan), 0u);
+}
+
+// Review 2026-10-11 IS-1: a Merge combining writers at different intervals
+// must schedule, and the stream must be a real dependence order, not an
+// accident of E-SCHED-ORDER happening not to fire. Before the fix this
+// refused with E-SCHED-ORDER (Merge's boundary-pass phase was unconditionally
+// BeforeTicks, sorting it ahead of W1's target-limited, AfterTicks tail at
+// their shared first instant); after the fix Merge's phase tracks the latest
+// of its writers' phases at that instant and the plan is a valid order.
+TEST(ExecutionPlan, MultirateMergeSchedulesInDependenceOrder) {
+  const CouplingGraph g = multirate_merge();
+  const auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
 
   const fuse::ClockSet cs{g};
   const auto r = schedule(g, lowered.dag, cs, constant_sizes(64));

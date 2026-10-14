@@ -414,7 +414,7 @@ class Waveform {
 
   /// Written out rather than calling num::copy: kernels.hpp declares
   /// `extern template copy<double>`, so using it would give this otherwise
-  /// header-only tier-C header a link dependency on soma_core.
+  /// header-only tier-C header a link dependency on fuse-coupler-num.
   void copy_row(std::size_t i, double* out) const noexcept {
     const double* const src = row_ptr(i);
     for (std::size_t e = 0; e < elements_; ++e) out[e] = src[e];

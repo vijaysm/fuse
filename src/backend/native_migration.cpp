@@ -370,7 +370,25 @@ Result<std::unique_ptr<NativeMeshView>> migrate(const NativeMeshView& mesh,
 
   auto received = exchange_migration_buffers(local.value(), comm);
   auto arrays_r = unpack_migrated_mesh(received, mesh.dimension(), my_rank);
-  if (!arrays_r.ok()) return arrays_r.error();
+
+  // NM-6: `unpack_migrated_mesh` rebuilds THIS rank's own mesh from
+  // whatever it alone received, so it can fail on data no peer shares
+  // (e.g. a malformed incoming record) -- reconciled here, BEFORE
+  // `resolve_vertex_ownership`'s own Allgather/Allgatherv (comm.hpp's own
+  // two-phase pattern), the same way the pre-exchange verdict above
+  // already is.
+  const int unpack_locally_ok = arrays_r.ok() ? 1 : 0;
+  const int unpack_globally_ok = allreduce_min_int(unpack_locally_ok, comm);
+  if (unpack_globally_ok == 0) {
+    if (!arrays_r.ok()) return arrays_r.error();
+    return Failure{"E-MESH-MIGRATE-PEER-REFUSED",
+                   fmt::format("rank {} unpacked its migrated cells successfully, but at "
+                              "least one other rank in this communicator failed rebuilding "
+                              "its own mesh from what it received; every rank refuses "
+                              "together so none hangs waiting on vertex-ownership resolution",
+                              my_rank)};
+  }
+
   auto arrays = arrays_r.value();
   resolve_vertex_ownership(arrays, comm);
   return NativeMeshView::create_from_host(arrays, my_rank);

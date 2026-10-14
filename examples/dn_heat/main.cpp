@@ -831,6 +831,16 @@ int main(int argc, char** argv) {
   // max_iter=1 and read like an explicit scheme.
   const Outcome picard = run_case(picard_cfg, kMaxIterations, kPeriods,
                                   dn::Wiring::Connected, true, dump);
+  // Review 2026-10-11 TD-3: docs/user/dn-heat.md claims --dump prints
+  // "instead of running anything"; prior to this fix every run fell
+  // through into the remaining ten configurations below (aitken
+  // through newton-nl) and their convergence gates regardless, costing
+  // the whole run's time for an exit status that was the gates' own, not
+  // an unconditional 0. `example.dn_heat.dump`'s own ctest row only
+  // checks the dump text via PASS_REGULAR_EXPRESSION (examples/
+  // CMakeLists.txt), never these later outcomes, so nothing below this
+  // point is load-bearing under --dump.
+  if (dump) return 0;
   const Outcome aitken = run_case(aitken_cfg, kMaxIterations, kPeriods,
                                   dn::Wiring::Connected, true);
   const Outcome iqn =

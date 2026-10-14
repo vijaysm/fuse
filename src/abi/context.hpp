@@ -223,4 +223,9 @@ struct fuse_ctx {
   // --- last_error() state ---
   std::string last_error_code;
   std::string last_error_message;
+  /// The fuse_status the most recent failing call on this context returned
+  /// (FUSE_OK until the first failure). fuse_error::status (types.h) is
+  /// documented as "the fuse_status of the failed call"; this is what
+  /// impl_last_error() (participant.cpp) now reads to honour that.
+  fuse_status last_error_status = FUSE_OK;
 };

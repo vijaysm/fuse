@@ -6,6 +6,8 @@
 #include "fuse/search/distributed.hpp"
 
 #include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <type_traits>
 
 #include <fmt/format.h>
@@ -149,8 +151,6 @@ Result<DistributedQueryResult> query_points_distributed(CommHandle comm,
                                                         std::vector<Box> local_boxes,
                                                         const std::vector<Point>& points,
                                                         ExecutionSpace space) {
-  auto dim = classify_local(local_boxes);
-  if (!dim.ok()) return dim.error();
   const Result<ExecutionSpace> resolved = resolve_execution_space(space);
   if (!resolved.ok()) return resolved.error();
   const bool use_device = resolved.value() == ExecutionSpace::Device && kHasDeviceBackend;
@@ -159,10 +159,15 @@ Result<DistributedQueryResult> query_points_distributed(CommHandle comm,
   empty_result.offsets.assign(points.size() + 1, 0);
 
   if (comm == kNullComm) {
-    // One participant: answered locally, no MPI symbol touched, every hit
-    // tagged rank 0 -- what a single-rank caller of the distributed API
-    // should see (fuse::partition's own kNullComm convention). The local
-    // BoxIndex honours the same resolved execution space.
+    // One participant: no collective is possible or needed, so the
+    // rank-local classification is both necessary and sufficient -- see
+    // classify_local's own comment. Answered locally, no MPI symbol
+    // touched, every hit tagged rank 0 -- what a single-rank caller of the
+    // distributed API should see (fuse::partition's own kNullComm
+    // convention). The local BoxIndex honours the same resolved execution
+    // space.
+    auto dim = classify_local(local_boxes);
+    if (!dim.ok()) return dim.error();
     auto local = BoxIndex::build(std::move(local_boxes), resolved.value());
     if (!local.ok()) return local.error();
     auto local_result = local.value().query_points(points);
@@ -177,6 +182,48 @@ Result<DistributedQueryResult> query_points_distributed(CommHandle comm,
   MPI_Comm mpi_comm = MPI_Comm_f2c(comm);
   int my_rank = 0;
   MPI_Comm_rank(mpi_comm, &my_rank);
+
+  // PS-1: reconcile the rank-local dimension check across the WHOLE
+  // communicator BEFORE any rank reaches a collective -- an
+  // `MPI_Allreduce(MIN)` of a locally-computed validity flag, mirroring
+  // `fuse::native::migrate`'s agree-before-exchange recipe (see
+  // distributed.hpp's header comment and docs/dev/rank-agreement.md). A
+  // rank whose own local_boxes fail classify_local must never refuse alone
+  // while its peers proceed into DistributedTree construction, which
+  // `run_distributed_query` (above) performs unconditionally.
+  auto local_dim = classify_local(local_boxes);
+  const int locally_ok = local_dim.ok() ? 1 : 0;
+  int globally_ok = 0;
+  MPI_Allreduce(&locally_ok, &globally_ok, 1, MPI_INT, MPI_MIN, mpi_comm);
+  if (globally_ok == 0) {
+    if (!local_dim.ok()) return local_dim.error();
+    return Failure{"E-SEARCH-MIXED-DIM",
+                   fmt::format("rank {} is proceeding, but at least one other rank in this "
+                               "communicator refused its own local_boxes' dimension check; "
+                               "every rank refuses together so none hangs waiting on the "
+                               "DistributedTree build",
+                               my_rank)};
+  }
+
+  // PS-5: every rank's own boxes now agree with themselves; agree them
+  // with each other next. A rank with zero local_boxes classifies as 0 (no
+  // opinion, matching BoxIndex's own empty-index convention) and must not
+  // be read as "this rank votes for 0D" -- it is excluded from the
+  // MIN by substituting the largest representable value for it.
+  const std::int64_t dim_value = static_cast<std::int64_t>(local_dim.value());
+  std::int64_t global_max_dim = 0;
+  MPI_Allreduce(&dim_value, &global_max_dim, 1, MPI_INT64_T, MPI_MAX, mpi_comm);
+  const std::int64_t dim_or_no_vote =
+      (dim_value == 0) ? std::numeric_limits<std::int64_t>::max() : dim_value;
+  std::int64_t global_min_voted_dim = 0;
+  MPI_Allreduce(&dim_or_no_vote, &global_min_voted_dim, 1, MPI_INT64_T, MPI_MIN, mpi_comm);
+  if (global_max_dim > 0 && global_min_voted_dim != global_max_dim) {
+    return Failure{"E-SEARCH-MIXED-DIM",
+                   fmt::format("ranks disagree about local_boxes' dimension (ranges from {} to "
+                               "{} across ranks that submitted any boxes); a distributed "
+                               "spatial index cannot mix dimensionalities across ranks",
+                               global_min_voted_dim, global_max_dim)};
+  }
 
   if (use_device) {
     return run_distributed_query<DeviceExecutionSpace>(mpi_comm, my_rank, local_boxes, points);

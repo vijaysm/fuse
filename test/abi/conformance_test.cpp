@@ -35,6 +35,7 @@
 #include "fuse/abi/provider.h"
 #include "fuse/base/rational.hpp"
 #include "fuse/field/field_ref.hpp"
+#include "fuse/field/registry.hpp"
 #include "fuse/model/coupling_graph.hpp"
 #include "fuse/runtime/component.hpp"
 
@@ -54,6 +55,34 @@
 #endif
 #ifndef FUSE_TEST_C_PROVIDER_PLUGIN_BAD_ADVANCE
 #error "FUSE_TEST_C_PROVIDER_PLUGIN_BAD_ADVANCE must be defined"
+#endif
+// review-2026-10-11 abi: TD-6/AB-6's own plugin variants.
+#ifndef FUSE_TEST_C_PROVIDER_PLUGIN_BAD_CREATE
+#error "FUSE_TEST_C_PROVIDER_PLUGIN_BAD_CREATE must be defined"
+#endif
+#ifndef FUSE_TEST_C_PROVIDER_PLUGIN_BAD_BIND
+#error "FUSE_TEST_C_PROVIDER_PLUGIN_BAD_BIND must be defined"
+#endif
+#ifndef FUSE_TEST_C_PROVIDER_PLUGIN_BAD_WINDOW
+#error "FUSE_TEST_C_PROVIDER_PLUGIN_BAD_WINDOW must be defined"
+#endif
+#ifndef FUSE_TEST_C_PROVIDER_PLUGIN_BAD_ELEMENT
+#error "FUSE_TEST_C_PROVIDER_PLUGIN_BAD_ELEMENT must be defined"
+#endif
+#ifndef FUSE_TEST_C_PROVIDER_PLUGIN_BAD_CAPABILITIES
+#error "FUSE_TEST_C_PROVIDER_PLUGIN_BAD_CAPABILITIES must be defined"
+#endif
+#ifndef FUSE_TEST_C_PROVIDER_PLUGIN_BAD_DESCRIBE_EXTRA
+#error "FUSE_TEST_C_PROVIDER_PLUGIN_BAD_DESCRIBE_EXTRA must be defined"
+#endif
+#ifndef FUSE_TEST_C_PROVIDER_PLUGIN_BAD_SAVE
+#error "FUSE_TEST_C_PROVIDER_PLUGIN_BAD_SAVE must be defined"
+#endif
+#ifndef FUSE_TEST_C_PROVIDER_PLUGIN_BAD_RESTORE
+#error "FUSE_TEST_C_PROVIDER_PLUGIN_BAD_RESTORE must be defined"
+#endif
+#ifndef FUSE_TEST_C_PROVIDER_PLUGIN_OLD_STEP_REPORT
+#error "FUSE_TEST_C_PROVIDER_PLUGIN_OLD_STEP_REPORT must be defined"
 #endif
 #ifndef FUSE_TEST_FORTRAN_PROVIDER_PLUGIN
 #error "FUSE_TEST_FORTRAN_PROVIDER_PLUGIN (the built linear_provider_f shared object path) must be defined"
@@ -478,6 +507,225 @@ TEST(ConformanceTest, PluginAdvanceErrorSurfacesAsComponentFailure) {
   ASSERT_EQ(t->last_error(ctx, nullptr, &err), FUSE_OK);
   EXPECT_STREQ(err.code, "E-ABI-PROVIDER-ADVANCE");
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+// Review 2026-10-11 AB-3: a plugin whose advance() writes the pre-growth
+// fuse_step_report struct_size (64 bytes, the layout that shipped before
+// next_component/step_opened/period/delivery_pending/delivery_field were
+// appended -- c-abi.md's own growth table) must still be ACCEPTED: this
+// host only ever reads t_begin/t_end off a plugin's own report, both
+// inside that original 64 bytes. Before this fix, provider_adapter.cpp's
+// struct_size_ok<fuse_step_report> demanded >= sizeof(current) = 104 and
+// refused this exact, backward-compatible plugin with E-ABI-VERSION.
+TEST(ConformanceTest, OldPluginStepReportStructSizeIsAccepted) {
+  const auto bytes = fuse::abi_test::build_two_component_lag1_bytes(fuse::Rational{1},
+                                                                    /*cells=*/1);
+  const fuse_participant_abi_v1* t = Table();
+  ASSERT_NE(t, nullptr);
+  fuse_context_out co{sizeof(co)};
+  ASSERT_EQ(t->create(nullptr, nullptr, &co), FUSE_OK);
+  fuse_ctx* ctx = co.ctx;
+  fuse_graph_source src{sizeof(src)};
+  src.bytes = bytes.data();
+  src.byte_count = bytes.size();
+  ASSERT_EQ(t->load_graph(ctx, &src, nullptr), FUSE_OK);
+
+  ASSERT_TRUE(fuse::abi_test::inject_component(ctx, "downstream",
+                                               std::make_unique<DownstreamSink>()));
+  fuse::abi_detail::Registry registry;
+  ASSERT_TRUE(
+      registry.mount_dynamic("upstream", FUSE_TEST_C_PROVIDER_PLUGIN_OLD_STEP_REPORT).ok());
+  fuse::Result<std::unique_ptr<fuse::Component>> extracted = registry.extract("upstream");
+  ASSERT_TRUE(extracted.ok());
+  ASSERT_TRUE(fuse::abi_test::inject_component(ctx, "upstream", std::move(extracted).value()));
+
+  ASSERT_EQ(t->initialize(ctx, nullptr, nullptr), FUSE_OK);
+  fuse_run_request rr{sizeof(rr)};
+  rr.periods = 1;
+  fuse_status rc = t->run(ctx, &rr, nullptr);
+  if (rc != FUSE_OK) {
+    fuse_error err{sizeof(err)};
+    char buf[512] = {0};
+    err.buffer = buf;
+    err.capacity = sizeof(buf);
+    t->last_error(ctx, nullptr, &err);
+    ADD_FAILURE() << "fuse_run unexpectedly refused the old-struct-size plugin ("
+                  << (err.code ? err.code : "?") << "): " << buf;
+  }
+  EXPECT_EQ(rc, FUSE_OK);
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+// Review 2026-10-11 TD-6: a one-rank "mount a misbehaving plugin as
+// upstream, then drive it through fuse_initialize()/fuse_run()" harness,
+// parametrised over which single plugin entry misbehaves, firing each of
+// the provider-adapter refusal codes TD-6 found untested by anything in
+// the tree. Mirrors PluginAdvanceErrorSurfacesAsComponentFailure and
+// PluginDescribeDisagreeingWithTheGraphIsRefused above; only the plugin
+// path and the expected code/call differ per row.
+struct ProviderAdapterRefusalCase {
+  std::string test_name;
+  const char* plugin_path;
+  const char* expected_code;
+  bool        fails_at_initialize;  // false => fails at run() instead
+};
+
+class ProviderAdapterRefusalTest
+    : public testing::TestWithParam<ProviderAdapterRefusalCase> {};
+
+TEST_P(ProviderAdapterRefusalTest, FiresTheExpectedCode) {
+  const auto& p = GetParam();
+  const auto bytes = fuse::abi_test::build_two_component_lag1_bytes(fuse::Rational{1},
+                                                                    /*cells=*/1);
+  const fuse_participant_abi_v1* t = Table();
+  ASSERT_NE(t, nullptr);
+  fuse_context_out co{sizeof(co)};
+  ASSERT_EQ(t->create(nullptr, nullptr, &co), FUSE_OK);
+  fuse_ctx* ctx = co.ctx;
+  fuse_graph_source src{sizeof(src)};
+  src.bytes = bytes.data();
+  src.byte_count = bytes.size();
+  ASSERT_EQ(t->load_graph(ctx, &src, nullptr), FUSE_OK);
+
+  ASSERT_TRUE(fuse::abi_test::inject_component(ctx, "downstream",
+                                               std::make_unique<DownstreamSink>()));
+  fuse::abi_detail::Registry registry;
+  ASSERT_TRUE(registry.mount_dynamic("upstream", p.plugin_path).ok());
+  fuse::Result<std::unique_ptr<fuse::Component>> extracted = registry.extract("upstream");
+  ASSERT_TRUE(extracted.ok());
+  ASSERT_TRUE(fuse::abi_test::inject_component(ctx, "upstream", std::move(extracted).value()));
+
+  fuse_error err{sizeof(err)};
+  if (p.fails_at_initialize) {
+    EXPECT_EQ(t->initialize(ctx, nullptr, nullptr), FUSE_ERR_RUNTIME);
+  } else {
+    ASSERT_EQ(t->initialize(ctx, nullptr, nullptr), FUSE_OK);
+    fuse_run_request rr{sizeof(rr)};
+    rr.periods = 1;
+    EXPECT_EQ(t->run(ctx, &rr, nullptr), FUSE_ERR_RUNTIME);
+  }
+  ASSERT_EQ(t->last_error(ctx, nullptr, &err), FUSE_OK);
+  EXPECT_STREQ(err.code, p.expected_code);
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    TD6AndAB6, ProviderAdapterRefusalTest,
+    testing::Values(
+        ProviderAdapterRefusalCase{"CreateFails", FUSE_TEST_C_PROVIDER_PLUGIN_BAD_CREATE,
+                                   "E-ABI-PROVIDER-CREATE", true},
+        ProviderAdapterRefusalCase{"BindFails", FUSE_TEST_C_PROVIDER_PLUGIN_BAD_BIND,
+                                   "E-ABI-PROVIDER-BIND", true},
+        ProviderAdapterRefusalCase{"NonF64Element", FUSE_TEST_C_PROVIDER_PLUGIN_BAD_ELEMENT,
+                                   "E-ABI-PROVIDER-ELEMENT", true},
+        ProviderAdapterRefusalCase{"CapabilitiesFails",
+                                   FUSE_TEST_C_PROVIDER_PLUGIN_BAD_CAPABILITIES,
+                                   "E-ABI-PROVIDER-CAPABILITIES", true},
+        ProviderAdapterRefusalCase{"DescribeSuperset",
+                                   FUSE_TEST_C_PROVIDER_PLUGIN_BAD_DESCRIBE_EXTRA,
+                                   "E-ABI-DESCRIBE", true},
+        ProviderAdapterRefusalCase{"WindowEchoWrong", FUSE_TEST_C_PROVIDER_PLUGIN_BAD_WINDOW,
+                                   "E-ABI-PROVIDER-WINDOW", false}),
+    [](const testing::TestParamInfo<ProviderAdapterRefusalCase>& info) {
+      return info.param.test_name;
+    });
+
+// The five provider-adapter refusal codes above that register_fields()
+// and advance() CANNOT reach through fuse_initialize()/fuse_run() --
+// save_state()/restore_state() are only called mid-run from a checkpoint
+// this fixture never takes, no-graph and no-table are mis-set-up states
+// the participant ABI itself never produces -- are driven directly
+// through the same fuse::Component interface fuse::Runner uses, exactly
+// the test-only seam test/abi/test_support.hpp already opens for fuse_ctx.
+TEST(ConformanceTest, PluginSaveStateErrorIsRefused) {
+  fuse::abi_detail::Registry registry;
+  ASSERT_TRUE(registry.mount_dynamic("upstream", FUSE_TEST_C_PROVIDER_PLUGIN_BAD_SAVE).ok());
+  fuse::Result<std::unique_ptr<fuse::Component>> extracted = registry.extract("upstream");
+  ASSERT_TRUE(extracted.ok());
+  std::unique_ptr<fuse::Component> comp = std::move(extracted).value();
+
+  fuse::FieldRegistry freg;
+  const fuse::CouplingGraph graph =
+      fuse::abi_test::build_two_component_lag1_graph(fuse::Rational{1}, /*cells=*/1);
+  ASSERT_TRUE(comp->register_fields(freg, graph).ok());
+
+  const fuse::Result<void> saved = comp->save_state();
+  ASSERT_FALSE(saved.ok());
+  EXPECT_EQ(saved.error().code, "E-ABI-PROVIDER-SAVE");
+}
+
+TEST(ConformanceTest, PluginRestoreStateErrorIsRefused) {
+  fuse::abi_detail::Registry registry;
+  ASSERT_TRUE(registry.mount_dynamic("upstream", FUSE_TEST_C_PROVIDER_PLUGIN_BAD_RESTORE).ok());
+  fuse::Result<std::unique_ptr<fuse::Component>> extracted = registry.extract("upstream");
+  ASSERT_TRUE(extracted.ok());
+  std::unique_ptr<fuse::Component> comp = std::move(extracted).value();
+
+  fuse::FieldRegistry freg;
+  const fuse::CouplingGraph graph =
+      fuse::abi_test::build_two_component_lag1_graph(fuse::Rational{1}, /*cells=*/1);
+  ASSERT_TRUE(comp->register_fields(freg, graph).ok());
+
+  const fuse::Result<void> restored = comp->restore_state();
+  ASSERT_FALSE(restored.ok());
+  EXPECT_EQ(restored.error().code, "E-ABI-PROVIDER-RESTORE");
+}
+
+TEST(ConformanceTest, ProviderAdapterRefusesWhenComponentNotInGraph) {
+  fuse::abi_detail::Registry registry;
+  ASSERT_TRUE(registry.mount_dynamic("upstream", FUSE_TEST_C_PROVIDER_PLUGIN).ok());
+  fuse::Result<std::unique_ptr<fuse::Component>> extracted = registry.extract("upstream");
+  ASSERT_TRUE(extracted.ok());
+  std::unique_ptr<fuse::Component> comp = std::move(extracted).value();
+
+  fuse::FieldRegistry freg;
+  const fuse::CouplingGraph empty_graph;  // declares no "upstream" component at all
+  const fuse::Result<void> rf = comp->register_fields(freg, empty_graph);
+  ASSERT_FALSE(rf.ok());
+  EXPECT_EQ(rf.error().code, "E-ABI-PROVIDER-GRAPH");
+}
+
+TEST(ConformanceTest, ProviderAdapterRefusesATableMissingARequiredEntry) {
+  // No dlopen() needed: ProviderAdapter's own register_fields() refuses
+  // before ever reading through table_ when it is null (the state a
+  // plugin whose dlopen/version-negotiation failed earlier leaves it in).
+  fuse::abi_detail::ProviderAdapter adapter("upstream", nullptr);
+  fuse::FieldRegistry freg;
+  const fuse::CouplingGraph graph =
+      fuse::abi_test::build_two_component_lag1_graph(fuse::Rational{1}, /*cells=*/1);
+  const fuse::Result<void> rf = adapter.register_fields(freg, graph);
+  ASSERT_FALSE(rf.ok());
+  EXPECT_EQ(rf.error().code, "E-ABI-PROVIDER-TABLE");
+}
+
+TEST(ConformanceTest, ProviderAdapterRegisterFieldsExceptionBecomesAFailure) {
+  // register_fields()'s own try/catch (E-ABI-PROVIDER-EXCEPTION) guards
+  // against anything FUSE's own backend/graph calls can throw, not just
+  // the plugin; a field whose region the graph never declared (a
+  // malformed descriptor this test builds directly, bypassing
+  // fuse::validate(), the same way a corrupted wire descriptor would
+  // reach this code if validation were ever skipped) makes
+  // graph.region(spec.region) throw std::out_of_range.
+  fuse::abi_detail::Registry registry;
+  ASSERT_TRUE(registry.mount_dynamic("upstream", FUSE_TEST_C_PROVIDER_PLUGIN).ok());
+  fuse::Result<std::unique_ptr<fuse::Component>> extracted = registry.extract("upstream");
+  ASSERT_TRUE(extracted.ok());
+  std::unique_ptr<fuse::Component> comp = std::move(extracted).value();
+
+  fuse::CouplingGraph graph;
+  const auto up = graph.add_component(fuse::ComponentDecl{
+      .name = "upstream", .ranks = fuse::RankSet{0, 1}, .interval = fuse::Rational{1}});
+  graph.add_field(up, fuse::FieldSpec{.name = "out",
+                                      .region = fuse::RegionId{0},  // no region 0 exists
+                                      .components = 1,
+                                      .units = fuse::units::kKelvin,
+                                      .conservation = fuse::Conservation::None,
+                                      .intent = fuse::Intent::Provides});
+
+  fuse::FieldRegistry freg;
+  const fuse::Result<void> rf = comp->register_fields(freg, graph);
+  ASSERT_FALSE(rf.ok());
+  EXPECT_EQ(rf.error().code, "E-ABI-PROVIDER-EXCEPTION");
 }
 
 // ---- struct_size short/long on the provider table itself (no dlopen; a

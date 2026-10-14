@@ -459,7 +459,11 @@ contains
     out%buffer = c_loc(buf)
     out%capacity = int(len(message), c_int64_t)
     status = fuse_last_error_struct(ctx, in, out)
-    n = min(out%length, out%capacity)
+    if (out%truncated /= 0) then
+      n = min(out%length, max(out%capacity - 1_c_int64_t, 0_c_int64_t))
+    else
+      n = min(out%length, out%capacity)
+    end if
     message = ' '
     do i = 1, n
       message(i:i) = buf(int(i):int(i))

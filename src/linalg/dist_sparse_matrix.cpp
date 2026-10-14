@@ -1,6 +1,7 @@
 #include "fuse/linalg/dist_sparse_matrix.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <tuple>
 
@@ -159,6 +160,21 @@ Result<void> DistSparseMatrix::apply(DistVector& x, DistVector& y) const {
              "DistSparseMatrix::apply: x carries {} ghosts, this matrix's ghost_pattern() "
              "carries {}; x was not built from this matrix's own ghost_pattern()",
              x.ghost_size(), ghost_pattern_.owner_rank.size());
+  // Review 2026-10-11 NL-11: row i's write to y overwrites x's owned
+  // block before every later row has read it as an off-diagonal input
+  // column, so apply(v, v) (or any partial overlap) silently computes
+  // the wrong answer -- caught here, not left to the header's own
+  // no-aliasing sentence alone. Range comparison via std::less, the same
+  // total-order argument src/num/accel_relaxation.cpp's own overlap
+  // check already relies on.
+  {
+    const std::less<const double*> before;
+    const auto overlaps = [&before](const double* a, const double* b, std::size_t n) {
+      return before(a, b + n) && before(b, a + n);
+    };
+    FUSE_ASSERT(!overlaps(x.data(), y.data(), x.owned_size()),
+               "DistSparseMatrix::apply: x and y must not alias, not even partially");
+  }
 
   if (auto r = x.update_ghosts(); !r.ok()) return r.error();
 

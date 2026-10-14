@@ -581,6 +581,10 @@ TEST(NativeHaloBuildWeights, ThreeRanksMisalignedCompleteWeightsAndLinearFieldRe
     // OWNED target cell's centroid.
     const auto pattern_r = backend.remap_halo_pattern(fx.u_mid, fx.v_mid, 2);
     ASSERT_TRUE(pattern_r.ok()) << pattern_r.error().message;
+    const auto offset_r = backend.remap_halo_ghost_offset(fx.u_mid, fx.v_mid, 2);
+    ASSERT_TRUE(offset_r.ok()) << offset_r.error().message;
+    ASSERT_EQ(offset_r.value(), 0u)
+        << "this fixture builds only one halo on u_mid, so its ghosts start right at owned_n";
     std::vector<double> src_field(u.entity_count(2));
     for (std::size_t c = 0; c < u.entity_count(2); ++c) {
       if (u.is_owned(2, c)) {
@@ -706,6 +710,23 @@ TEST(NativeHaloBuildNativeRemapHalo, NoCommunicatorIsASuccessfulNoOpEvenAtManyRa
   EXPECT_EQ(r.value(), 0u);
 }
 
+// ---------------------------------------------------------------------------
+// E-MESH-HALO: `remap_halo_pattern`'s own documented refusal for a triple
+// no halo was ever built for -- unfired by any test in the tree before
+// this one (index.md's own test-coverage-gap list: "no test fires
+// E-MESH-HALO"), and per I4 an unfired refusal does not count as
+// implemented.
+// ---------------------------------------------------------------------------
+TEST(NativeHaloBuildNativeRemapHalo, RemapHaloPatternRefusesBeforeAHaloIsBuilt) {
+  NativeMeshBackend backend(0, 1);
+  ASSERT_TRUE(backend.load(MeshDecl{.name = "U", .source = kUSource}).ok());
+  ASSERT_TRUE(backend.load(MeshDecl{.name = "V", .source = kVSource}).ok());
+  EXPECT_FALSE(backend.has_remap_halo(MeshId{0}, MeshId{1}, 2));
+  const auto r = backend.remap_halo_pattern(MeshId{0}, MeshId{1}, 2);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-MESH-HALO");
+}
+
 TEST(NativeHaloBuildNativeRemapHalo, IdentitySourceEqualsTargetIsASuccessfulNoOp) {
   // Same mesh id on both sides (dispatched through `fuse::build_remap_halo`
   // itself, exercising the dynamic_cast dispatch in intx_weights.cpp): the
@@ -725,6 +746,153 @@ TEST(NativeHaloBuildNativeRemapHalo, IdentitySourceEqualsTargetIsASuccessfulNoOp
   const auto r = fuse::build_remap_halo(plan, graph, backend);
   ASSERT_TRUE(r.ok()) << r.error().code << ": " << r.error().message;
   EXPECT_EQ(r.value(), 0u);
+}
+
+// ---------------------------------------------------------------------------
+// NM-3: `merge_halo_cells` appends each halo's newly adopted cells STRICTLY
+// AFTER whatever `source` already held (native_halo.cpp's own comment), so
+// U's mesh after a SECOND halo for a different target (here W, a THIRD
+// grid) is laid out `[owned, ghosts_V, ghosts_W]` -- the W pattern's own
+// ghosts do NOT start at `owned_n`, they start `ghost_offset` further in,
+// where `ghost_offset` is exactly how many ghosts the FIRST (V) halo
+// already appended. Before NM-3, `remap_halo_pattern` carried no such
+// offset at all, so any consumer following the documented
+// `make_mpi_exchanger` contract literally (ghosts at `owned_n + g`) would
+// read U's V-ghost slots with W-ghost values for every g below the V
+// halo's own count -- silently wrong field values in a conservative remap.
+// This test fills a NON-CONSTANT (linear) field so a misindexed ghost
+// changes the applied result, not just its size.
+// ---------------------------------------------------------------------------
+TEST(NativeHaloSecondTarget, GhostOffsetIndexesTheSecondHaloBlockCorrectly) {
+  constexpr int kRanks = 2;
+  constexpr const char* kWSource = "generated:quad:20x20";
+
+  // Pass 1: U -> V, the fixture's own existing pair.
+  auto ranks1 = build_ranks(kRanks);
+  auto run1 = run_halo_pipeline(ranks1, kRanks);
+
+  // Pass 2: the ALREADY-WIDENED U from pass 1 -> W, a DIFFERENT target
+  // grid. `run_halo_pipeline` only reads its inputs (never moves them),
+  // so `ranks2[r].u` is still valid afterward for the production
+  // `commit_remap_halo` call below.
+  std::vector<RankPieces> ranks2(static_cast<std::size_t>(kRanks));
+  for (int r = 0; r < kRanks; ++r) {
+    ranks2[static_cast<std::size_t>(r)].u = std::move(run1.new_u[static_cast<std::size_t>(r)]);
+    auto wa = generate_native_mesh("quad:20x20", r, kRanks);
+    ASSERT_TRUE(wa.ok()) << wa.error().message;
+    auto wv = NativeMeshView::create_from_host(wa.value(), r);
+    ASSERT_TRUE(wv.ok()) << wv.error().message;
+    ranks2[static_cast<std::size_t>(r)].v = std::move(wv.value());
+  }
+  auto run2 = run_halo_pipeline(ranks2, kRanks);
+
+  CouplingGraph graph;
+  const MeshId u_mid = graph.add_mesh(MeshDecl{.name = "U", .source = kUSource});
+  const MeshId v_mid = graph.add_mesh(MeshDecl{.name = "V", .source = kVSource});
+  const MeshId w_mid = graph.add_mesh(MeshDecl{.name = "W", .source = kWSource});
+  const RegionId u_region =
+      graph.add_region(Region{.name = "u_all", .mesh = u_mid, .entity_set = "", .dimension = 2});
+  const RegionId w_region =
+      graph.add_region(Region{.name = "w_all", .mesh = w_mid, .entity_set = "", .dimension = 2});
+  RemapPlan plan;
+  plan.src = u_region;
+  plan.tgt = w_region;
+
+  double max_field_error = 0.0;
+  for (int r = 0; r < kRanks; ++r) {
+    NativeMeshBackend backend(r, kRanks);
+    backend.set_communicator(/*placeholder, never dereferenced*/ 1);
+    ASSERT_TRUE(backend.load(MeshDecl{.name = "U", .source = kUSource}).ok());
+    ASSERT_TRUE(backend.load(MeshDecl{.name = "V", .source = kVSource}).ok());
+    ASSERT_TRUE(backend.load(MeshDecl{.name = "W", .source = kWSource}).ok());
+
+    const std::size_t adopted1 = run1.adopted[static_cast<std::size_t>(r)];
+    auto committed1 = backend.commit_remap_halo(
+        u_mid, ComponentId{}, std::move(ranks2[static_cast<std::size_t>(r)].u), v_mid, 2,
+        run1.pattern[static_cast<std::size_t>(r)]);
+    ASSERT_TRUE(committed1.ok()) << committed1.error().message;
+
+    auto committed2 = backend.commit_remap_halo(
+        u_mid, ComponentId{}, std::move(run2.new_u[static_cast<std::size_t>(r)]), w_mid, 2,
+        run2.pattern[static_cast<std::size_t>(r)]);
+    ASSERT_TRUE(committed2.ok()) << committed2.error().message;
+
+    const auto pattern2_r = backend.remap_halo_pattern(u_mid, w_mid, 2);
+    ASSERT_TRUE(pattern2_r.ok()) << pattern2_r.error().message;
+    const auto offset2_r = backend.remap_halo_ghost_offset(u_mid, w_mid, 2);
+    ASSERT_TRUE(offset2_r.ok()) << offset2_r.error().message;
+    EXPECT_EQ(offset2_r.value(), adopted1)
+        << "rank " << r << ": the W halo's ghosts must start right after the V halo's own";
+
+    const auto u_view_r = backend.native_view(u_mid, ComponentId{});
+    ASSERT_TRUE(u_view_r.ok());
+    const NativeMeshView& u = *u_view_r.value();
+    const std::size_t owned_n = u.owned_count(2);
+    const auto& owner_rank2 = pattern2_r.value().owner_rank;
+    const auto& remote_idx2 = pattern2_r.value().remote_local_index;
+    const std::size_t ghost_offset = offset2_r.value();
+
+    // Every OWNED cell's own analytic value, plus (via the W pattern, at
+    // the CORRECT offset) every W-ghost's owner's own value -- the same
+    // owned-field-by-rank technique the misaligned 3-rank build_weights
+    // test above uses, restricted to this fixture's own 2 ranks.
+    std::vector<std::vector<double>> owned_field_of_rank(static_cast<std::size_t>(kRanks));
+    for (int s = 0; s < kRanks; ++s) {
+      NativeMeshBackend owner_backend(s, kRanks);
+      auto ua = generate_native_mesh("quad:16x16", s, kRanks);
+      ASSERT_TRUE(ua.ok());
+      auto uv = NativeMeshView::create_from_host(ua.value(), s);
+      ASSERT_TRUE(uv.ok());
+      const auto idx_s = owned_block_index(*uv.value());
+      owned_field_of_rank[static_cast<std::size_t>(s)].resize(uv.value()->owned_count(2));
+      for (std::size_t c = 0; c < uv.value()->entity_count(2); ++c) {
+        if (uv.value()->is_owned(2, c)) {
+          const auto p = uv.value()->centroid(2, c);
+          owned_field_of_rank[static_cast<std::size_t>(s)][idx_s[c]] = linear_field(p.x, p.y);
+        }
+      }
+    }
+
+    std::vector<double> src_field(u.entity_count(2), 0.0);
+    for (std::size_t c = 0; c < u.entity_count(2); ++c) {
+      if (u.is_owned(2, c)) {
+        const auto p = u.centroid(2, c);
+        src_field[c] = linear_field(p.x, p.y);
+      }
+    }
+    // The CORRECT, offset-aware fill for the W block: slot `owned_n +
+    // ghost_offset + g`, NOT `owned_n + g` (which would read the V
+    // block's slots instead -- exactly NM-3's bug).
+    for (std::size_t g = 0; g < owner_rank2.size(); ++g) {
+      src_field[owned_n + ghost_offset + g] =
+          owned_field_of_rank[static_cast<std::size_t>(owner_rank2[g])]
+                            [static_cast<std::size_t>(remote_idx2[g])];
+    }
+
+    const auto w = fuse::build_weights(plan, graph, backend);
+    ASSERT_TRUE(w.ok()) << "rank " << r << ": " << w.error().message;
+    std::vector<double> dst_field(w.value().n_rows);
+    const auto applied = fuse::apply_weights(w.value(), src_field.data(), dst_field.data(), 1);
+    ASSERT_TRUE(applied.ok()) << applied.error().message;
+
+    const auto w_view_r = backend.native_view(w_mid, ComponentId{});
+    ASSERT_TRUE(w_view_r.ok());
+    const NativeMeshView& wv_view = *w_view_r.value();
+    for (std::size_t j = 0; j < wv_view.entity_count(2); ++j) {
+      if (!wv_view.is_owned(2, j)) continue;
+      const auto p = wv_view.centroid(2, j);
+      max_field_error = std::max(max_field_error, std::fabs(dst_field[j] - linear_field(p.x, p.y)));
+    }
+  }
+  // The same analytic (Lipschitz) ceiling the misaligned 3-rank
+  // build_weights test above uses: a first-order conservative remap
+  // reproduces a linear field only to its own variation across the
+  // coarsest (U, width 1/16) source cell -- an O(1) value here (not this
+  // small bound) would mean a ghost landed in the wrong slot.
+  constexpr double kUCellWidth = 1.0 / 16.0;
+  constexpr double kLinearFieldWorstCaseBound = (2.0 + 5.0) * kUCellWidth;
+  EXPECT_LE(max_field_error, kLinearFieldWorstCaseBound)
+      << "measured linear-field reproduction error through a SECOND halo's ghost block";
 }
 
 }  // namespace

@@ -52,11 +52,18 @@ debugger hook: [](debugging.md).
 `fmt` is the only formatter. No `iostream`, and no `printf` in library code. Any path that must not
 allocate formats into a caller-provided buffer with `fmt::format_to`.
 
-`fmtlog` is the logger, started by `fuse::initialize` and drained by `fuse::finalize`. Three
-constraints are part of the contract:
+There is no process-wide logger. `fmtlog` was fetched (`cmake/FuseDependencies.cmake`) and a
+`fuse_resolve_logging()` macro built an interface target for it, but nothing in `include/` or
+`src/` ever included it or called the macro — removed 2026-10-12 rather than left as dead fetch
+weight. `fuse::initialize`/`fuse::finalize` set the process-wide error policy and the rank reported
+in diagnostics (`include/fuse/base/error.hpp`); they do not start or drain a logger.
+Diagnostic text today goes through `FUSE_THROW`/`FUSE_REFUSE` (errors) or directly through `fmt` at
+the call site (host-only CLI examples' status lines). Should a process-wide logger be added later,
+it must still meet the three constraints this section used to state for `fmtlog`, because they are
+properties of *any* logger this project would accept, not of that one library:
 
-- It is **not callable from device code.** Device-side diagnostics use `Kokkos::printf`.
-- Per-thread buffers are pre-touched at initialisation, so logging never allocates after setup
+- **Not callable from device code.** Device-side diagnostics use `Kokkos::printf`.
+- **No allocation after setup** — per-thread buffers pre-touched at initialisation
   ([](invariants.md) `I5`).
 - Every line carries the MPI rank, and **a log line is never evidence of a collective outcome** —
   that is `Epoch`'s job ([](invariants.md) `I2`).

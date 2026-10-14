@@ -1510,6 +1510,74 @@ TEST(CommGraph, ASideWithACommunicatorButNoMeshIsRefused) {
 }
 
 // ---------------------------------------------------------------------------
+// accumulate_shared_rows / copy_owner_shared_rows -- agreed pre-collective
+// verdicts (review 2026-10-11 TR-7, TR-8).
+// ---------------------------------------------------------------------------
+
+// TR-7. Rank 1's buffer is deliberately the wrong size; rank 0's is correct.
+// Before the fix, rank 1 returned E-ACCUM-SIZE locally while rank 0 entered
+// the first MPI_Allgather alone and blocked in it -- a ctest timeout, not a
+// failure. After the fix both ranks agree the same code before either
+// enters that Allgather.
+TEST(AccumulateSharedRows, AMismatchedBufferOnOneRankIsRefusedByEveryRank) {
+  FUSE_REQUIRE_RANKS(2);
+  const int rank = world_rank();
+  TestMesh mesh(0, {gid_of(static_cast<std::size_t>(rank))}, {Point{0, 0, 0}});
+
+  std::vector<double> local_values(rank == 1 ? 2 : 1, 1.0);  // rank 1: wrong size
+  const auto r = fuse::accumulate_shared_rows(mesh, 0, 1, local_values,
+                                              MPI_Comm_c2f(MPI_COMM_WORLD));
+  ASSERT_FALSE(r.ok()) << "rank " << rank << ": a size mismatch on one rank was accepted";
+  EXPECT_EQ(r.error().code, "E-ACCUM-SIZE")
+      << "every rank must report the same code: " << r.error().message;
+  ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
+}
+
+// TR-7's twin site.
+TEST(CopyOwnerSharedRows, AMismatchedBufferOnOneRankIsRefusedByEveryRank) {
+  FUSE_REQUIRE_RANKS(2);
+  const int rank = world_rank();
+  TestMesh mesh(0, {gid_of(static_cast<std::size_t>(rank))}, {Point{0, 0, 0}});
+
+  std::vector<double> local_values(rank == 0 ? 3 : 1, 1.0);  // rank 0: wrong size
+  const auto r = fuse::copy_owner_shared_rows(mesh, 0, 1, local_values,
+                                              MPI_Comm_c2f(MPI_COMM_WORLD));
+  ASSERT_FALSE(r.ok()) << "rank " << rank << ": a size mismatch on one rank was accepted";
+  EXPECT_EQ(r.error().code, "E-ACCUM-SIZE")
+      << "every rank must report the same code: " << r.error().message;
+  ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
+}
+
+// TR-8. gid_of(99) is a ghost on rank 0 (not owned there) and absent from
+// rank 1 entirely -- nobody owns it, a mesh contract violation. Before the
+// fix the "no owner" scan walked only each rank's OWN local_gids: rank 0
+// (which holds the orphaned id) saw the defect and refused, while rank 1
+// (which never held it) saw nothing and returned success -- a mixed
+// outcome across ranks for one shared defect. After the fix both ranks scan
+// the identical gathered id list and agree.
+TEST(CopyOwnerSharedRows, AGlobalIdNobodyOwnsIsRefusedByEveryRank) {
+  FUSE_REQUIRE_RANKS(2);
+  const int rank = world_rank();
+  std::unique_ptr<TestMesh> mesh;
+  if (rank == 0) {
+    mesh = std::make_unique<TestMesh>(
+        0, std::vector<std::size_t>{gid_of(0), gid_of(99)},
+        std::vector<Point>{Point{0, 0, 0}, Point{1, 0, 0}});
+    mesh->set_ghost(1);  // gid_of(99): held, but NOT owned, by rank 0
+  } else {
+    mesh = std::make_unique<TestMesh>(0, std::vector<std::size_t>{gid_of(1)},
+                                      std::vector<Point>{Point{2, 0, 0}});
+  }
+  std::vector<double> local_values(mesh->entity_count(0), 1.0);
+  const auto r = fuse::copy_owner_shared_rows(*mesh, 0, 1, local_values,
+                                              MPI_Comm_c2f(MPI_COMM_WORLD));
+  ASSERT_FALSE(r.ok()) << "rank " << rank << ": an unowned global id was accepted";
+  EXPECT_EQ(r.error().code, "E-ACCUM-OWNER")
+      << "every rank must report the same code: " << r.error().message;
+  ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 namespace {

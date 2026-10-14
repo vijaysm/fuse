@@ -7,6 +7,9 @@
 #include "fuse/model/coupling_graph.hpp"
 #include "fuse/backend/native_mesh_io.hpp"
 
+#include "fuse/base/error.hpp"
+
+#include <cstdint>
 #include <cstdio>
 #include <set>
 #include <vector>
@@ -376,8 +379,104 @@ TEST(NativeMeshIo, VtkRoundTripReproducesAPolyhedralMeshExactly) {
   std::remove(path.c_str());
 }
 
+// ---------------------------------------------------------------------------
+// NM-7: `native_backend.hpp` documents `E-MESH-SIZE` for a spec whose
+// count does not fit; before this fix nothing produced it, and a spec
+// this large instead crashed inside `VertexLookup::local.assign` as an
+// uncaught `std::bad_alloc`/`std::length_error`. Both specs are far past
+// the int-indexed builder's limit but cheap to refuse -- no allocation is
+// attempted before the check fires.
+// ---------------------------------------------------------------------------
+TEST(NativeGenerators, RefusesAHexboxSpecTooLargeForOneRankInsteadOfCrashing) {
+  auto arrays = generate_native_mesh("hexbox:200000x200000x200000", 0, 1);
+  ASSERT_FALSE(arrays.ok());
+  EXPECT_EQ(arrays.error().code, "E-MESH-SIZE");
+}
+
+TEST(NativeGenerators, RefusesAQuadSpecTooLargeForOneRankInsteadOfCrashing) {
+  auto arrays = generate_native_mesh("quad:4000000000x4000000000", 0, 1);
+  ASSERT_FALSE(arrays.ok());
+  EXPECT_EQ(arrays.error().code, "E-MESH-SIZE");
+}
+
 TEST(NativeMeshIo, RefusesAFileThatDoesNotExist) {
   auto r = read_native_mesh_file("/nonexistent/path/does/not/exist.vtk");
   ASSERT_FALSE(r.ok());
   EXPECT_EQ(r.error().code, "E-MESH-IO");
+}
+
+// ---------------------------------------------------------------------------
+// NM-1: the writer's stream precision must be `max_digits10` for `double`
+// (17), or ids and coordinates past 6 significant digits are silently
+// rounded on write. A gid at or beyond 1e6 is dense in the generators, so a
+// rounded gid collides with a DIFFERENT real vertex/cell instead of merely
+// losing precision -- `hexbox:3x2x2`'s round-trip test above escapes this
+// because its gids stay under 1e6 and its thirds (0.333333+0.333334+
+// 0.333333) happen to sum to exactly 1.0, so the per-cell measure SUM check
+// cannot see the rounding either. This mesh is hand-built, not generated,
+// so every gid and coordinate is under direct control: gids are deliberately
+// past 1e6, and the two quads have unequal, irrational-looking widths so
+// neither a measure nor a coordinate-sum comparison can cancel a rounding
+// error into agreement -- only a per-cell, per-coordinate, per-gid exact
+// comparison (below) is sharp enough to see it.
+// ---------------------------------------------------------------------------
+TEST(NativeMeshIo, VtkRoundTripReproducesGidsAndCoordinatesAtFullPrecision) {
+  NativeMeshBuilder b(2);
+  const int v0 = b.add_vertex(1234567, 0.0, 0.0, 0.0, 0, true);
+  const int v1 = b.add_vertex(2345678, 0.6283185307179586, 0.0, 0.0, 0, true);
+  const int v2 = b.add_vertex(3456789, 1.4142135623730951, 0.0, 0.0, 0, true);
+  const int v3 = b.add_vertex(4567891, 0.0, 0.9045340337332909, 0.0, 0, true);
+  const int v4 = b.add_vertex(5678912, 0.6283185307179586, 0.9045340337332909, 0.0, 0, true);
+  const int v5 = b.add_vertex(6789123, 1.4142135623730951, 0.9045340337332909, 0.0, 0, true);
+  b.add_cell(CellType::Quad, {v0, v1, v4, v3}, 1000003, 0, true);
+  b.add_cell(CellType::Quad, {v1, v2, v5, v4}, 2000003, 0, true);
+  auto arrays = b.build();
+  ASSERT_TRUE(arrays.ok()) << arrays.error().message;
+  auto view = NativeMeshView::create_from_host(arrays.value(), 0);
+  ASSERT_TRUE(view.ok()) << view.error().message;
+
+  const std::string path = scratch_vtk_path("precision");
+  auto w = write_native_mesh_file(path, *view.value(), 0);
+  ASSERT_TRUE(w.ok()) << w.error().message;
+
+  auto read_back = read_native_mesh_file(path);
+  ASSERT_TRUE(read_back.ok()) << read_back.error().message;
+  auto view2 = NativeMeshView::create_from_host(read_back.value(), 0);
+  ASSERT_TRUE(view2.ok()) << view2.error().message;
+  std::remove(path.c_str());
+
+  ASSERT_EQ(view2.value()->vertex_count(), view.value()->vertex_count());
+  ASSERT_EQ(view2.value()->cell_count(), view.value()->cell_count());
+  for (std::size_t v = 0; v < view.value()->vertex_count(); ++v) {
+    EXPECT_EQ(view2.value()->vertex_gid_of(v), view.value()->vertex_gid_of(v)) << "vertex " << v;
+    for (int k = 0; k < 3; ++k) {
+      EXPECT_EQ(view2.value()->vertex_x(v, k), view.value()->vertex_x(v, k))
+          << "vertex " << v << " coord " << k;
+    }
+  }
+  for (std::size_t c = 0; c < view.value()->cell_count(); ++c) {
+    EXPECT_EQ(view2.value()->global_id(2, c), view.value()->global_id(2, c)) << "cell " << c;
+    EXPECT_NEAR(view2.value()->measure(2, c), view.value()->measure(2, c), 1e-12) << "cell " << c;
+  }
+}
+
+// NM-1: the writer must refuse (as an invariant, not a data-dependent
+// refusal: a gid this large is this backend's own id assignment going
+// wrong, never a caller input) rather than silently truncate a gid past
+// the format's documented bound (native_mesh_io.hpp: "every integer up to
+// 2^53").
+TEST(NativeMeshIo, WriterAssertsOnAVertexGidAtOrBeyond2Pow53) {
+  NativeMeshBuilder b(1);
+  const std::int64_t too_big = std::int64_t{1} << 53;
+  const int v0 = b.add_vertex(too_big, 0.0, 0.0, 0.0, 0, true);
+  const int v1 = b.add_vertex(0, 1.0, 0.0, 0.0, 0, true);
+  b.add_cell(CellType::Segment, {v0, v1}, 0, 0, true);
+  auto arrays = b.build();
+  ASSERT_TRUE(arrays.ok()) << arrays.error().message;
+  auto view = NativeMeshView::create_from_host(arrays.value(), 0);
+  ASSERT_TRUE(view.ok()) << view.error().message;
+
+  const std::string path = scratch_vtk_path("oversize-gid");
+  EXPECT_THROW((void)write_native_mesh_file(path, *view.value(), 0), fuse::InvariantViolation);
+  std::remove(path.c_str());
 }

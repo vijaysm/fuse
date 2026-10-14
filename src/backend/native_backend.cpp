@@ -10,6 +10,19 @@
 
 namespace fuse::native {
 
+namespace {
+// Internal storage only: the generic `fuse::linalg::GhostPattern`
+// `remap_halo_pattern` hands back (UNCHANGED, so `examples/brusselator/
+// species_core.hpp`'s `GhostExchangerFactory` -- outside this lane's
+// owned paths -- keeps compiling against it), plus the ghost-offset
+// `remap_halo_ghost_offset` hands back separately (NM-3's own header
+// comment explains why the two are split rather than one new struct).
+struct StoredHaloPattern {
+  fuse::linalg::GhostPattern pattern;
+  std::size_t ghost_offset = 0;
+};
+}  // namespace
+
 struct NativeMeshBackend::Impl {
   std::vector<std::unique_ptr<NativeMeshView>> meshes;
   std::vector<std::string> names;
@@ -18,10 +31,12 @@ struct NativeMeshBackend::Impl {
   // so that key never appears here.
   std::map<std::pair<std::uint32_t, std::uint32_t>, std::unique_ptr<NativeMeshView>> placed;
   // The remap halo's bookkeeping half (native_backend.hpp's own comment):
-  // keyed by (source mesh index, target mesh index, dimension). Presence,
-  // not the pattern's size, is "has_remap_halo" -- an empty GhostPattern is
-  // a legitimately built, zero-cell halo.
-  std::map<std::tuple<std::uint32_t, std::uint32_t, int>, fuse::linalg::GhostPattern>
+  // keyed by (source mesh index, target mesh index, dimension, placement
+  // value -- NM-4: a plain ComponentId::kInvalid for the unplaced default
+  // decomposition, the same sentinel `Id<Tag>` already reserves for it).
+  // Presence, not the pattern's size, is "has_remap_halo" -- an empty
+  // GhostPattern is a legitimately built, zero-cell halo.
+  std::map<std::tuple<std::uint32_t, std::uint32_t, int, std::uint32_t>, StoredHaloPattern>
       halo_pattern;
 };
 
@@ -263,21 +278,36 @@ int NativeMeshBackend::communicator_size() const noexcept {
   return communicator_ == kNullComm ? 1 : num_ranks_;
 }
 
-bool NativeMeshBackend::has_remap_halo(MeshId source, MeshId target, int dim) const noexcept {
-  return impl_->halo_pattern.count({source.value(), target.value(), dim}) > 0;
+bool NativeMeshBackend::has_remap_halo(MeshId source, MeshId target, int dim,
+                                       ComponentId placement) const noexcept {
+  return impl_->halo_pattern.count({source.value(), target.value(), dim, placement.value()}) > 0;
 }
 
-Result<fuse::linalg::GhostPattern> NativeMeshBackend::remap_halo_pattern(MeshId source,
-                                                                         MeshId target,
-                                                                         int dim) const {
-  const auto it = impl_->halo_pattern.find({source.value(), target.value(), dim});
+Result<fuse::linalg::GhostPattern> NativeMeshBackend::remap_halo_pattern(
+    MeshId source, MeshId target, int dim, ComponentId placement) const {
+  const auto it =
+      impl_->halo_pattern.find({source.value(), target.value(), dim, placement.value()});
   if (it == impl_->halo_pattern.end()) {
     return Failure{"E-MESH-HALO",
                    fmt::format("no remap halo has been built for source mesh {}, target mesh "
-                              "{}, dimension {}; call build_remap_halo first",
-                              source.value(), target.value(), dim)};
+                              "{}, dimension {}, placement {}; call build_remap_halo first",
+                              source.value(), target.value(), dim, placement.value())};
   }
-  return it->second;
+  return it->second.pattern;
+}
+
+Result<std::size_t> NativeMeshBackend::remap_halo_ghost_offset(MeshId source, MeshId target,
+                                                                int dim,
+                                                                ComponentId placement) const {
+  const auto it =
+      impl_->halo_pattern.find({source.value(), target.value(), dim, placement.value()});
+  if (it == impl_->halo_pattern.end()) {
+    return Failure{"E-MESH-HALO",
+                   fmt::format("no remap halo has been built for source mesh {}, target mesh "
+                              "{}, dimension {}, placement {}; call build_remap_halo first",
+                              source.value(), target.value(), dim, placement.value())};
+  }
+  return it->second.ghost_offset;
 }
 
 Result<const NativeMeshView*> NativeMeshBackend::native_view(MeshId id,
@@ -307,7 +337,25 @@ Result<void> NativeMeshBackend::commit_remap_halo(MeshId source, ComponentId pla
   if (!source.valid() || source.value() >= impl_->meshes.size()) {
     return Failure{"E-MESH-ID", fmt::format("no mesh with id {}", source.value())};
   }
+  // NM-3: this triple's own ghost block starts right after however many
+  // ghost cells `source`'s CURRENT (about-to-be-replaced) view already
+  // holds -- the count an EARLIER call for a different target already
+  // appended. Computed from the OLD view, before it is overwritten below;
+  // 0 for the first halo ever built on this source (and for the
+  // zero-cells no-op, `new_source_view == nullptr`), matching
+  // `merge_halo_cells`'s own append order exactly.
+  std::size_t ghost_offset = 0;
   if (new_source_view != nullptr) {
+    const NativeMeshView* old_view = nullptr;
+    if (placement.valid()) {
+      const auto found = impl_->placed.find({source.value(), placement.value()});
+      if (found != impl_->placed.end()) old_view = found->second.get();
+    } else {
+      old_view = impl_->meshes[source.value()].get();
+    }
+    if (old_view != nullptr) {
+      ghost_offset = old_view->entity_count(dim) - old_view->owned_count(dim);
+    }
     if (placement.valid()) {
       const auto it = impl_->placed.find({source.value(), placement.value()});
       if (it == impl_->placed.end()) {
@@ -320,7 +368,8 @@ Result<void> NativeMeshBackend::commit_remap_halo(MeshId source, ComponentId pla
       impl_->meshes[source.value()] = std::move(new_source_view);
     }
   }
-  impl_->halo_pattern[{source.value(), target.value(), dim}] = std::move(pattern);
+  impl_->halo_pattern[{source.value(), target.value(), dim, placement.value()}] =
+      StoredHaloPattern{std::move(pattern), ghost_offset};
   return Result<void>::success();
 }
 

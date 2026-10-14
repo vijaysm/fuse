@@ -543,7 +543,22 @@ Result<void> MpiTransport::build_plan(const TransportSpec& spec) {
   // the same `fail()`/`agree()` mechanism as every other outcome in this
   // function, so it is still reconciled at Collective 4 rather than left for
   // one rank to discover alone inside the actual data move.
-  std::vector<int> all_components(usize, 0);
+  //
+  // Review 2026-10-11 TR-10. This allocation sits strictly between
+  // Collective 2 above and the Allgather just below, with nothing to catch
+  // a bad_alloc here the way Phase A's own try/catch covers its own
+  // allocations -- exactly the single window this file's own header
+  // comment (point under "THE ONE WINDOW...") already names and answers by
+  // aborting rather than letting an uncaught exception skip the
+  // collectives every other rank is about to enter.
+  std::vector<int> all_components;
+  try {
+    all_components.assign(usize, 0);
+  } catch (const std::exception& e) {
+    abort_job(p->comm, e.what());
+  } catch (...) {
+    abort_job(p->comm, "an unknown exception");
+  }
   {
     const int my_components = spec.components;
     const int rc = MPI_Allgather(&my_components, 1, MPI_INT,
@@ -596,15 +611,24 @@ Result<void> MpiTransport::build_plan(const TransportSpec& spec) {
 
     if (err == Err::None) {
       if (!agreement.agreed()) {
-        fail(Err::PeerMatch,
-             "rank " + std::to_string(agreement.disagreeing_rank) +
-                 " called build_plan() with components = " +
-                 std::to_string(agreement.disagreeing_value) + ", but rank " +
-                 std::to_string(agreement.first_rank) +
-                 " (also in the src or dst rank set) called it with " +
-                 std::to_string(agreement.first_value) +
-                 "; every rank taking part in this redistribution must agree "
-                 "on the field's component count");
+        // TR-10 (continued): the string concatenation below is itself an
+        // allocation strictly between this Allgather and Collective 3; the
+        // same reasoning as all_components above applies.
+        try {
+          fail(Err::PeerMatch,
+               "rank " + std::to_string(agreement.disagreeing_rank) +
+                   " called build_plan() with components = " +
+                   std::to_string(agreement.disagreeing_value) + ", but rank " +
+                   std::to_string(agreement.first_rank) +
+                   " (also in the src or dst rank set) called it with " +
+                   std::to_string(agreement.first_value) +
+                   "; every rank taking part in this redistribution must agree "
+                   "on the field's component count");
+        } catch (const std::exception& e) {
+          abort_job(p->comm, e.what());
+        } catch (...) {
+          abort_job(p->comm, "an unknown exception");
+        }
       }
     }
   }
@@ -884,6 +908,28 @@ Result<void> MpiTransport::build_plan_from_peers(
            "components must be positive, got " + std::to_string(components));
     }
 
+    // Review 2026-10-11 TR-14. The matched path (build_plan(), ~line 427)
+    // checks elements*components against kIntMax before anything derived
+    // from it is cast to an MPI int; this peer-wise path had no equivalent,
+    // and the per-peer casts a few lines below it (sendcounts/recvcounts)
+    // can wrap negative first. Same guard, same reasoning: size_t
+    // arithmetic wraps in silence, so the product is checked before it is
+    // formed, not after.
+    if (components > 0) {
+      const auto nc_check = static_cast<std::size_t>(components);
+      if (elements > kIntMax) {
+        fail(Err::Size, "this rank holds " + std::to_string(elements) +
+                            " elements, more than the INT_MAX an MPI count "
+                            "can express");
+      } else if (nc_check != 0 && elements > kIntMax / nc_check) {
+        fail(Err::Size,
+             "elements * components = " + std::to_string(elements) + " * " +
+                 std::to_string(nc_check) +
+                 " exceeds INT_MAX, which no MPI count or displacement can "
+                 "express; split the field into several transports");
+      }
+    }
+
     // Peers ascending and in range. Ascending is not cosmetic: the count
     // arrays are indexed by rank and both sides walk their index vectors in
     // that order, so an out-of-order peer list pairs a sender's block with the
@@ -917,6 +963,24 @@ Result<void> MpiTransport::build_plan_from_peers(
                      std::to_string(peer.base_rank) + " names local element " +
                      std::to_string(idx) + ", but this rank holds " +
                      std::to_string(elements));
+            return;
+          }
+        }
+        // TR-14 (continued): this peer's own block, per_peer*nc, is what the
+        // sendcounts/recvcounts population loop below casts to int; a peer
+        // with enough local_indices to overflow that cast would otherwise
+        // wrap into a negative Alltoallv count rather than refuse.
+        if (components > 0) {
+          const auto nc_check = static_cast<std::size_t>(components);
+          const std::size_t n = peer.local_indices.size();
+          if (nc_check != 0 && n > kIntMax / nc_check) {
+            fail(Err::Size,
+                 std::string{which} + " plan for rank " +
+                     std::to_string(peer.base_rank) + " names " +
+                     std::to_string(n) + " local indices * " +
+                     std::to_string(nc_check) +
+                     " components, which exceeds INT_MAX and cannot be cast "
+                     "to an MPI count");
             return;
           }
         }
@@ -1004,29 +1068,55 @@ Result<void> MpiTransport::build_plan_from_peers(
   // the difference between an error at setup and a field delivered to the
   // wrong rank for the whole run.
   //
-  // Skipped on a rank that has already failed, whose count arrays are not
-  // meaningful -- but the agreement below still runs, so nobody is left in a
-  // collective alone.
-  if (err == Err::None) {
-    std::vector<int> expected(usize, 0);
+  // Issued on every rank, including one whose local Phase A already failed:
+  // `p->sendcounts` was zero-filled by the unconditional `assign(usize, 0)`
+  // above, so a failed rank truthfully reports "nothing to send" instead of
+  // leaving its peers waiting inside this Alltoall while it goes straight to
+  // the agreement below.
+  {
+    // Review 2026-10-11 TR-10. `expected`'s allocation sits strictly before
+    // the Alltoall every rank now reaches unconditionally (TR-1 above); an
+    // uncaught bad_alloc here would keep THIS rank from ever reaching that
+    // collective while every peer already has, and the fail()-string
+    // concatenation below sits strictly between that Alltoall and the final
+    // agreement a few lines down -- both are the same "between two
+    // collectives" window this file's own header comment already names and
+    // answers by aborting rather than letting an uncaught exception skip a
+    // collective a peer is already in.
+    std::vector<int> expected;
+    try {
+      expected.assign(usize, 0);
+    } catch (const std::exception& e) {
+      abort_job(p->comm, e.what());
+    } catch (...) {
+      abort_job(p->comm, "an unknown exception");
+    }
     mpi_rc = MPI_Alltoall(p->sendcounts.data(), 1, MPI_INT, expected.data(), 1,
                           MPI_INT, p->comm);
-    if (mpi_rc != MPI_SUCCESS) {
-      fail(Err::Mpi, "MPI_Alltoall failed while checking the peer plan: " +
-                         mpi_error_text(mpi_rc));
-    } else {
-      for (std::size_t r = 0; r < usize; ++r) {
-        if (expected[r] != p->recvcounts[r]) {
-          fail(Err::PeerMatch,
-               "rank " + std::to_string(r) + " intends to send " +
-                   std::to_string(expected[r]) +
-                   " doubles to this rank, which expects " +
-                   std::to_string(p->recvcounts[r]) +
-                   ". The two halves of the plan disagree: either "
-                   "set_communicator() was given a different communicator "
-                   "than the rank graph was built over, or the two sides came "
-                   "from different graphs");
-          break;
+    if (err == Err::None) {
+      if (mpi_rc != MPI_SUCCESS) {
+        fail(Err::Mpi, "MPI_Alltoall failed while checking the peer plan: " +
+                           mpi_error_text(mpi_rc));
+      } else {
+        try {
+          for (std::size_t r = 0; r < usize; ++r) {
+            if (expected[r] != p->recvcounts[r]) {
+              fail(Err::PeerMatch,
+                   "rank " + std::to_string(r) + " intends to send " +
+                       std::to_string(expected[r]) +
+                       " doubles to this rank, which expects " +
+                       std::to_string(p->recvcounts[r]) +
+                       ". The two halves of the plan disagree: either "
+                       "set_communicator() was given a different communicator "
+                       "than the rank graph was built over, or the two sides "
+                       "came from different graphs");
+              break;
+            }
+          }
+        } catch (const std::exception& e) {
+          abort_job(p->comm, e.what());
+        } catch (...) {
+          abort_job(p->comm, "an unknown exception");
         }
       }
     }

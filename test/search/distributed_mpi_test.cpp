@@ -128,5 +128,58 @@ TEST(SearchDistributedMpi, HitsWithinOneQuerySortedByRankThenIndex) {
   }
 }
 
+// PS-1: rank 0 alone submits a mixed-dimension local_boxes array; every
+// other rank's own local_boxes are perfectly well-formed. Before the fix
+// rank 0 refused locally and returned while its peers entered
+// ArborX::DistributedTree's collective construction -- a hang that
+// ctest's TIMEOUT (not a passing/failing assertion) was the only thing
+// that could ever report. This test asserts the refusal itself, which is
+// only observable once every rank returns it.
+TEST(SearchDistributedMpi, RefusesWhenOnlyOneRankSubmitsMixedDimensionBoxes) {
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
+  int rank = 0;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+  std::vector<Box> local_boxes;
+  if (rank == 0) {
+    local_boxes = {
+        Box{Point{0.0, 0.0, 0.0}, Point{1.0, 1.0, 0.0}},  // 2D
+        Box{Point{0.0, 0.0, 0.0}, Point{1.0, 1.0, 1.0}},  // 3D
+    };
+  } else {
+    local_boxes = testing::random_boxes(/*dim=*/3, 5);
+  }
+  const std::vector<Point> points = {Point{0.5, 0.5, 0.5}};
+
+  const auto r = query_points_distributed(MPI_Comm_c2f(MPI_COMM_WORLD), local_boxes, points);
+  ASSERT_FALSE(r.ok()) << "every rank must refuse together, including ranks whose own "
+                          "local_boxes were fine, rank "
+                       << rank;
+  EXPECT_EQ(r.error().code, "E-SEARCH-MIXED-DIM");
+}
+
+// PS-5: no single rank's own local_boxes are internally mixed-dimension,
+// but rank 0's are uniformly 2D while every other rank's are uniformly
+// 3D -- a cross-rank disagreement classify_local alone cannot see.
+// Before the fix this was accepted silently and produced hits the caller
+// has no consistent way to interpret.
+TEST(SearchDistributedMpi, RefusesWhenRanksDisagreeAboutDimension) {
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
+  int rank = 0;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+  std::vector<Box> local_boxes;
+  if (rank == 0) {
+    local_boxes = {Box{Point{0.0, 0.0, 0.0}, Point{1.0, 1.0, 0.0}}};  // 2D
+  } else {
+    local_boxes = {Box{Point{0.0, 0.0, 0.0}, Point{1.0, 1.0, 1.0}}};  // 3D
+  }
+  const std::vector<Point> points = {Point{0.5, 0.5, 0.0}};
+
+  const auto r = query_points_distributed(MPI_Comm_c2f(MPI_COMM_WORLD), local_boxes, points);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-SEARCH-MIXED-DIM");
+}
+
 }  // namespace
 }  // namespace fuse::search

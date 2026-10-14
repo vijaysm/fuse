@@ -128,8 +128,19 @@ struct Box3 {
 ///
 /// Errors, never throws: `E-REMAP-DIM` if `source` and `target`'s views
 /// disagree on dimension, `E-MESH-ID`/`E-MESH-PLACEMENT` from resolving
-/// either view, and whatever `merge_halo_cells` propagates from a
-/// malformed incoming record (`E-MESH-CONNECTIVITY`, `E-MESH-DIM`).
+/// either view -- both RANK-LOCAL and reduced with `MPI_Allreduce(MIN)`
+/// before either of this function's two collective phases (the box
+/// allgather and the cell exchange), so a refusal on one rank is never
+/// returned while a peer proceeds into one of them. Separately, whatever
+/// `merge_halo_cells`/`NativeMeshView::create_from_host` propagates from a
+/// malformed incoming record (`E-MESH-CONNECTIVITY`, `E-MESH-DIM`) can
+/// only be known AFTER the cell exchange has already run (it is derived
+/// from that exchange's own output) -- this verdict gets its own
+/// `MPI_Allreduce(MIN)`, after both collectives, before this function
+/// returns, so the CALLER's next collective against the triple this call
+/// commits never sees a rank-divergent outcome either. Either class of
+/// refusal on one rank gets a plain `E-MESH-HALO-PEER-REFUSED` on every
+/// other rank, naming no specific cause because it has none of its own.
 [[nodiscard]] Result<std::size_t> build_native_remap_halo(NativeMeshBackend& backend,
                                                           MeshId source, MeshId target, int dim,
                                                           ComponentId placement);
