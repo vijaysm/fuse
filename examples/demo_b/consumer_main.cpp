@@ -1,7 +1,7 @@
 // Demo B consumer driver (S6 phase 3, "LowFive" track). See
 // producer_main.cpp's own comment -- the same reasoning applies here.
 //
-// UNEXECUTED: see producer_main.cpp and docs/user/lowfive.md.
+// Run by the ctest row example.demo_b; see producer_main.cpp.
 //
 // Usage: demo_b_consumer <port_file> <hdf5_file> <dataset_name>
 //

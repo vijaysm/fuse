@@ -16,8 +16,8 @@
 // report raises for the lead; see docs/user/lowfive.md and KNOWN_ISSUES.md
 // section D.
 //
-// UNEXECUTED, like everything else MPI in this track: see
-// docs/user/lowfive.md's distributed-mode section.
+// Measured by the ctest row example.demo_b (2026-10-14); see
+// docs/user/demo-b.md.
 
 #include <mpi.h>
 

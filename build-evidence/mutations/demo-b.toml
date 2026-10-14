@@ -1,0 +1,37 @@
+# Mutations for the Demo B fixes (KNOWN_ISSUES.md D14 item 5, 2026-10-14).
+# Rows 2 and 3 need a launcher (requires = "mpi") and a LowFive build; run
+# with FUSE_MUTATE_MPI=1 tools/mutate.py --area demo_b --build-dir build-lowfive.
+
+[[mutation]]
+id = "set-location-probe-uses-a-fixed-name"
+area = "demo_b"
+describes = "set_location()'s writable-directory probe goes back to the fixed O_EXCL name, so a peer process's live probe at that name refuses the claim"
+file = "src/transport/lowfive_transport.cpp"
+old = """  std::string sentinel = file + ".writable-probe.XXXXXX";
+  const int fd = ::mkstemp(sentinel.data());"""
+new = """  std::string sentinel = file + ".soma-writable-probe";
+  const int fd = ::open(sentinel.c_str(), O_CREAT | O_EXCL | O_WRONLY, 0600);"""
+target = "fuse_transport_lowfive_test"
+test = "transport.lowfive"
+
+[[mutation]]
+id = "distributed-build-plan-registers-no-intercomm"
+area = "demo_b"
+describes = "distributed build_plan() never calls DistMetadataVOL::set_intercomm(), so the consumer's H5Fopen finds no intercommunicator for the file"
+file = "src/transport/lowfive_transport.cpp"
+old = """                  p->file + ":" + full_path) == dg.registered_paths.end()) {"""
+new = """                  p->file + ":" + full_path) == dg.registered_paths.end() && false) {"""
+target = "demo_b_consumer"
+test = "example.demo_b"
+requires = "mpi"
+
+[[mutation]]
+id = "demo-b-producer-skips-the-parent-group"
+area = "demo_b"
+describes = "demo_b_produce() calls H5Dcreate2 for /grid/values without creating /grid first"
+file = "examples/demo_b/producer_hdf5.cpp"
+old = """  if (last != std::string::npos && last > 0) {"""
+new = """  if (false && last != std::string::npos && last > 0) {"""
+target = "demo_b_producer"
+test = "example.demo_b"
+requires = "mpi"

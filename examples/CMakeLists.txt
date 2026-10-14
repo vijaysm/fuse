@@ -794,10 +794,7 @@ endif()
 # probe (cmake/FuseDependencies.cmake's LowFive block) only runs, and only
 # matters, when FUSE_ENABLE_MOAB is ALSO on in the same configure.
 #
-# UNEXECUTED in this checkout -- MPI cannot start in the sandbox this was
-# written in. Compiles against this host's real LowFive/MPI headers
-# (2026-10-02); run via examples/demo_b/run_demo.sh on a host where MPI
-# works, per docs/user/lowfive.md's host_verification_needed commands.
+# Run as the ctest row example.demo_b below (examples/demo_b/run_demo.sh).
 if(FUSE_ENABLE_LOWFIVE AND FUSE_ENABLE_MPI AND LOWFIVE_HAVE_DIST)
   add_library(demo_b_producer_hdf5 OBJECT demo_b/producer_hdf5.cpp)
   target_link_libraries(demo_b_producer_hdf5 PRIVATE fuse::lowfive)
@@ -812,6 +809,22 @@ if(FUSE_ENABLE_LOWFIVE AND FUSE_ENABLE_MPI AND LOWFIVE_HAVE_DIST)
   add_executable(demo_b_consumer demo_b/consumer_main.cpp $<TARGET_OBJECTS:demo_b_consumer_hdf5>)
   target_link_libraries(demo_b_consumer PRIVATE fuse::transport MPI::MPI_CXX)
   target_include_directories(demo_b_consumer PRIVATE demo_b)
+
+  # Two separate one-task launches joined by MPI_Comm_accept/connect, so the
+  # row needs the dynamic-process capability the configure probe measures
+  # (cmake/FuseMpiDynamic.cmake). Exit code 0 means both processes exited 0:
+  # the consumer's values match the producer's bit for bit AND no HDF5 file
+  # reached disk (consumer_main.cpp).
+  if(FUSE_ENABLE_CONNECT_ACCEPT)
+    set(_demo_b_scratch ${CMAKE_CURRENT_BINARY_DIR}/demo-b-scratch)
+    add_test(NAME example.demo_b
+      COMMAND ${CMAKE_COMMAND} -E env MPIEXEC=${MPIEXEC_EXECUTABLE}
+              bash ${CMAKE_CURRENT_SOURCE_DIR}/demo_b/run_demo.sh ${CMAKE_BINARY_DIR}
+              ${_demo_b_scratch}/port ${_demo_b_scratch}/demo_b_producer_out.h5 /grid/values)
+    set_tests_properties(example.demo_b PROPERTIES
+      LABELS "parallel;mpi;lowfive;example"
+      TIMEOUT 120)
+  endif()
 else()
   message(STATUS "fuse: Demo B (examples/demo_b) needs "
                  "-DFUSE_ENABLE_LOWFIVE=ON -DFUSE_ENABLE_MPI=ON and a "
