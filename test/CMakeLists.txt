@@ -560,6 +560,16 @@ fuse_add_gtest(backend cell_simplices)
 # same PRIVATE/BUILD_LOCAL_INTERFACE posture src/CMakeLists.txt's
 # fuse-coupler-search target uses for the same dependency.
 fuse_add_gtest(backend mls_weights LIBS $<BUILD_LOCAL_INTERFACE:ArborX::ArborX>)
+# Device-resident-arcs Phase 2, "weight-builders" track (KNOWN_ISSUES D52,
+# closing): build_mls_weights' own dispatch to fuse::device::solve_mls_on_space,
+# re-running the SAME binary under FUSE_EXECUTION_SPACE=device
+# (fuse_add_device_twin's own convention). The MlsWeightsDevice/MlsRefusalsDevice
+# rows (mls_weights_test.cpp) set and restore the variable themselves, so they
+# are a genuine Host/Device comparison either way this row's own outer
+# environment is set; this twin additionally re-exercises every PRE-EXISTING
+# row in the file under the device interpreter, which build_mls_weights now
+# reads via fuse::search::resolve_execution_space().
+fuse_add_device_twin(backend.mls_weights fuse_backend_mls_weights_test)
 # Device-resident-arcs Phase 2, "weight-builders" track: the Space-templated
 # batched moment-matrix solve (mls_weights_device.hpp) -- an in-house
 # Gaussian elimination with partial pivoting, NOT KokkosBatched::SerialGesv:

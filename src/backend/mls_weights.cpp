@@ -11,6 +11,9 @@
 
 #include <fmt/format.h>
 
+#include <Kokkos_Core.hpp>
+
+#include "fuse/backend/mls_weights_device.hpp"
 #include "fuse/backend/native_backend.hpp"
 #include "fuse/linalg/least_squares.hpp"
 #include "fuse/search/box_index.hpp"
@@ -170,6 +173,260 @@ struct MlsSide {
   for (const auto& p : a) fold(p);
   for (const auto& p : b) fold(p);
   return search::classify_dim(search::Box{lo, hi});
+}
+
+// ---------------------------------------------------------------------------
+// One target's local moment-matrix assembly and solve, factored out of the
+// serial per-target loop below so the SAME code -- not a second hand-written
+// copy that could silently drift from it -- backs two call sites: the Host
+// loop's own per-target iteration, and the Device path's recovery of
+// `E-MLS-RANK`'s full diagnostic (target index, rank, condition estimate)
+// for whichever target `fuse::device::solve_mls_on_space`'s coarser
+// pass/fail status flagged (mls_weights_device.hpp's own "WHAT THIS DOES
+// NOT DO" section). Pulling this out changes no arithmetic and no
+// evaluation order from the Host path's pre-existing loop body, so Host
+// mode's result is unaffected (bitwise).
+// ---------------------------------------------------------------------------
+
+struct MlsTargetFit {
+  std::vector<std::vector<double>> basis_rows;  ///< k entries, each p_size long.
+  std::vector<double>              phi;         ///< k entries.
+  std::vector<double>              coeff;       ///< p_size entries.
+};
+
+[[nodiscard]] Result<MlsTargetFit> mls_fit_one_target(
+    int dim, int degree, MlsRadial radial, std::size_t p_size, std::size_t t,
+    const std::vector<search::Point>& src_pts, const search::Point& tp,
+    const std::vector<std::size_t>& nbr_src_indices) {
+  const std::size_t k = nbr_src_indices.size();
+  std::vector<double> dists(k);
+  double max_dist = 0.0;
+  for (std::size_t local = 0; local < k; ++local) {
+    const search::Point& sp = src_pts[nbr_src_indices[local]];
+    const double dx = sp.x - tp.x;
+    const double dy = sp.y - tp.y;
+    const double dz = sp.z - tp.z;
+    const double d = std::sqrt(dx * dx + dy * dy + dz * dz);
+    dists[local] = d;
+    max_dist = std::max(max_dist, d);
+  }
+  // Same 1.1x-past-the-farthest-neighbour, epsilon-floored radius the Host
+  // loop uses (see build_mls_weights's own comment for why).
+  const double radius = 1.1 * std::max(max_dist, std::numeric_limits<double>::epsilon());
+
+  const auto at = [p_size](std::size_t i, std::size_t j) { return j * p_size + i; };
+  std::vector<double> moment(p_size * p_size, 0.0);
+  std::vector<double> phi(k);
+  std::vector<std::vector<double>> basis_rows(k);
+  for (std::size_t local = 0; local < k; ++local) {
+    const search::Point& sp = src_pts[nbr_src_indices[local]];
+    phi[local] = mls_crbf(radial, dists[local] / radius);
+    basis_rows[local] = polynomial_basis(dim, degree, sp.x - tp.x, sp.y - tp.y, sp.z - tp.z);
+    const std::vector<double>& b = basis_rows[local];
+    for (std::size_t a = 0; a < p_size; ++a) {
+      for (std::size_t c = 0; c < p_size; ++c) {
+        moment[at(a, c)] += phi[local] * b[a] * b[c];
+      }
+    }
+  }
+
+  std::vector<double> rhs(p_size, 0.0);
+  rhs[0] = 1.0;
+  std::vector<double> coeff(p_size);
+  std::vector<double> a_copy = moment;  // least_squares_builtin mutates in place.
+  const std::size_t rank =
+      fuse::linalg::least_squares_builtin(a_copy, p_size, p_size, rhs, coeff);
+
+  if (rank < p_size) {
+    const double diag0 = std::fabs(a_copy[at(0, 0)]);
+    const double diag_last = rank >= 1 ? std::fabs(a_copy[at(rank - 1, rank - 1)]) : 0.0;
+    const std::string cond_str = (rank >= 1 && diag_last > 0.0)
+                                     ? fmt::format("{:.3e}", diag0 / diag_last)
+                                     : std::string("singular (no accepted pivot)");
+    return Failure{
+        "E-MLS-RANK",
+        fmt::format("target {}'s local degree-{} fit in {}D is rank-deficient: rank {} "
+                    "of {} basis functions (its {} neighbours are too coincident, "
+                    "collinear or coplanar for this degree). Condition estimate "
+                    "(largest/smallest accepted pivot magnitude): {}",
+                    t, degree, dim, rank, p_size, k, cond_str)};
+  }
+
+  MlsTargetFit fit;
+  fit.basis_rows = std::move(basis_rows);
+  fit.phi = std::move(phi);
+  fit.coeff = std::move(coeff);
+  return fit;
+}
+
+// ---------------------------------------------------------------------------
+// Device path (KNOWN_ISSUES D52): the k-nearest search already ran on
+// `fuse::search::resolve_execution_space()`'s resolved space by the time
+// this is called (`BoxIndex::build`'s own `space` argument, threaded
+// through from `build_mls_weights` below) -- this function performs the
+// per-target moment-matrix assembly and solve on the SAME space, via
+// `fuse::device::solve_mls_on_space`, then deep-copies the result back to
+// host `RemapWeights` triplets. `knn` is the shared k-nearest result both
+// the Host and Device paths resolve from (identical either way: search.md's
+// own determinism guarantee -- "sorted ascending by index" -- holds
+// regardless of which space actually ran the query), so a target's column
+// order is identical between the two paths.
+//
+// `solve_mls_on_space`'s own elimination (an absolute pivot floor) is NOT
+// the Host path's column-pivoted, rank-revealing QR (mls_weights_device.hpp's
+// own header comment), so a target it flags as failing is CONFIRMED, not
+// merely trusted: this function re-derives that target's full diagnostic by
+// calling `mls_fit_one_target` -- the Host path's own code -- with the
+// SAME neighbour set the device solve used. Two outcomes follow: the Host
+// code agrees (a genuine rank deficiency) and `E-MLS-RANK` is returned
+// naming that exact target and its Host-computed condition estimate, same
+// as if the Host path itself had reached it; or the Host code disagrees
+// (the device solve's coarser floor was over-eager) and that one target's
+// weights are patched in from the Host-computed fit instead of the device's
+// (meaningless, early-returned) elimination state, so an isolated
+// disagreement never ships a wrong number silently. Scanned in ascending
+// target order, matching the Host loop's own "stop at the first failing
+// target" sequencing: if more than one target disagrees, the first one
+// (by index) is what both paths would have named.
+// ---------------------------------------------------------------------------
+
+[[nodiscard]] Result<RemapWeights> build_mls_weights_device(
+    int dim, const MlsOptions& opt, std::size_t p_size, const std::vector<search::Point>& src_pts,
+    const std::vector<search::Point>& tgt_pts, const search::QueryResult& knn) {
+  using Space = Kokkos::DefaultExecutionSpace::memory_space;
+  const std::size_t n_cols = src_pts.size();
+  const std::size_t n_rows = tgt_pts.size();
+  const std::size_t k = static_cast<std::size_t>(opt.k);
+
+  // Flat (n_rows * k) neighbour-index table, shared by the device solve and
+  // by this function's own host-side diagnostic recovery -- built once from
+  // `knn`, exactly the per-target slice the Host loop reads from the same
+  // CSR.
+  std::vector<std::int32_t> nbr_flat(n_rows * k);
+  for (std::size_t t = 0; t < n_rows; ++t) {
+    const std::size_t begin = knn.offsets[t];
+    const std::size_t end = knn.offsets[t + 1];
+    if (end - begin != k) {
+      return Failure{"E-MLS-NEIGHBORS",
+                     fmt::format("target {} got {} neighbour(s), fewer than the declared "
+                                 "k={}",
+                                 t, end - begin, opt.k)};
+    }
+    for (std::size_t j = begin; j < end; ++j) {
+      nbr_flat[t * k + (j - begin)] = static_cast<std::int32_t>(knn.indices[j]);
+    }
+  }
+
+  // KNOWN_ISSUES D54's own defect class (a `double* [3]` rank-2 view's
+  // PER-SPACE default layout -- LayoutRight on Host, LayoutLeft on Cuda --
+  // makes a plain `Kokkos::View<double* [3], Kokkos::HostSpace>` mirror
+  // layout-INCOMPATIBLE with a same-shape `Kokkos::View<double* [3], Space>`
+  // device view; `Kokkos::deep_copy` cannot bridge a memory-space change
+  // and a layout change in the same call), hit here by this header's own
+  // new views rather than `native_mesh.hpp`'s fixed ones: `Space` is left
+  // implicit on these views (matching `solve_mls_on_space`'s own
+  // unqualified `Kokkos::View<double* [3], Space>` parameter type exactly,
+  // so the call below is not a second type to keep in sync), so the fix is
+  // `Kokkos::create_mirror_view`, which derives the mirror's layout FROM
+  // the device view it mirrors instead of assuming Host's own default.
+  Kokkos::View<double* [3], Space> src_d(
+      Kokkos::view_alloc("fuse::mls_device_src_d", Kokkos::WithoutInitializing), n_cols);
+  auto src_h = Kokkos::create_mirror_view(src_d);
+  for (std::size_t i = 0; i < n_cols; ++i) {
+    src_h(i, 0) = src_pts[i].x;
+    src_h(i, 1) = src_pts[i].y;
+    src_h(i, 2) = src_pts[i].z;
+  }
+  Kokkos::deep_copy(src_d, src_h);
+
+  Kokkos::View<double* [3], Space> tgt_d(
+      Kokkos::view_alloc("fuse::mls_device_tgt_d", Kokkos::WithoutInitializing), n_rows);
+  auto tgt_h = Kokkos::create_mirror_view(tgt_d);
+  for (std::size_t i = 0; i < n_rows; ++i) {
+    tgt_h(i, 0) = tgt_pts[i].x;
+    tgt_h(i, 1) = tgt_pts[i].y;
+    tgt_h(i, 2) = tgt_pts[i].z;
+  }
+  Kokkos::deep_copy(tgt_d, tgt_h);
+
+  Kokkos::View<int*, Kokkos::HostSpace> nbr_h(
+      Kokkos::view_alloc("fuse::mls_device_nbr_h", Kokkos::WithoutInitializing), n_rows * k);
+  for (std::size_t i = 0; i < nbr_flat.size(); ++i) nbr_h(i) = nbr_flat[i];
+  Kokkos::View<int*, Space> nbr_d(
+      Kokkos::view_alloc("fuse::mls_device_nbr_d", Kokkos::WithoutInitializing), n_rows * k);
+  Kokkos::deep_copy(nbr_d, nbr_h);
+
+  const fuse::device::MlsDeviceResult<Space> device_result =
+      fuse::device::solve_mls_on_space<Space>(dim, opt.degree, opt.k, opt.radial, src_d, tgt_d,
+                                              nbr_d);
+
+  auto row_h = Kokkos::create_mirror_view(device_result.row);
+  auto col_h = Kokkos::create_mirror_view(device_result.col);
+  auto val_h = Kokkos::create_mirror_view(device_result.val);
+  auto status_h = Kokkos::create_mirror_view(device_result.status);
+  Kokkos::deep_copy(row_h, device_result.row);
+  Kokkos::deep_copy(col_h, device_result.col);
+  Kokkos::deep_copy(val_h, device_result.val);
+  Kokkos::deep_copy(status_h, device_result.status);
+
+  RemapWeights out;
+  out.n_rows = n_rows;
+  out.n_cols = n_cols;
+  out.order = opt.degree + 1;
+  out.max_col_defect = std::numeric_limits<double>::infinity();
+  out.max_col_defect_native = std::numeric_limits<double>::infinity();
+  out.row.reserve(n_rows * k);
+  out.col.reserve(n_rows * k);
+  out.val.reserve(n_rows * k);
+
+  double max_row_defect = 0.0;
+  double min_weight = std::numeric_limits<double>::infinity();
+
+  for (std::size_t t = 0; t < n_rows; ++t) {
+    if (status_h(static_cast<int>(t)) != 0) {
+      // Confirm (or refute) the device's coarser verdict with the Host
+      // path's own rank-revealing solve, on the SAME neighbour set.
+      std::vector<std::size_t> nbr_idx(k);
+      for (std::size_t local = 0; local < k; ++local) {
+        nbr_idx[local] = static_cast<std::size_t>(nbr_flat[t * k + local]);
+      }
+      auto fit_r = mls_fit_one_target(dim, opt.degree, opt.radial, p_size, t, src_pts,
+                                      tgt_pts[t], nbr_idx);
+      if (!fit_r.ok()) return fit_r.error();  // confirmed: same E-MLS-RANK the Host path would raise.
+      // Not confirmed: patch this one row from the Host-computed fit rather
+      // than the device's early-returned (meaningless) elimination state.
+      const MlsTargetFit& fit = fit_r.value();
+      double row_sum = 0.0;
+      for (std::size_t local = 0; local < k; ++local) {
+        double dotc = 0.0;
+        for (std::size_t a = 0; a < p_size; ++a) dotc += fit.coeff[a] * fit.basis_rows[local][a];
+        const double w = fit.phi[local] * dotc;
+        out.row.push_back(static_cast<std::int32_t>(t));
+        out.col.push_back(static_cast<std::int32_t>(nbr_idx[local]));
+        out.val.push_back(w);
+        row_sum += w;
+        min_weight = std::min(min_weight, w);
+      }
+      max_row_defect = std::max(max_row_defect, std::fabs(row_sum - 1.0));
+      continue;
+    }
+
+    double row_sum = 0.0;
+    for (std::size_t local = 0; local < k; ++local) {
+      const std::size_t idx = t * k + local;
+      out.row.push_back(static_cast<std::int32_t>(row_h(idx)));
+      out.col.push_back(static_cast<std::int32_t>(col_h(idx)));
+      out.val.push_back(val_h(idx));
+      row_sum += val_h(idx);
+      min_weight = std::min(min_weight, val_h(idx));
+    }
+    max_row_defect = std::max(max_row_defect, std::fabs(row_sum - 1.0));
+  }
+
+  out.max_row_defect = max_row_defect;
+  out.min_weight = out.val.empty() ? 0.0 : min_weight;
+  out.monotone = (out.min_weight >= -1e-12) && (max_row_defect <= 1e-12);
+  return out;
 }
 
 }  // namespace
@@ -434,6 +691,32 @@ Result<RemapWeights> build_mls_weights(const RemapPlan& plan, const CouplingGrap
                                opt.k, n_cols)};
   }
 
+  // Device-resident-arcs Phase 2 (KNOWN_ISSUES D52): which Kokkos execution
+  // space the k-nearest search and the per-target solve run on. No explicit
+  // argument on `RemapPlan` or `MlsOptions` for this -- `RemapPlan::key()`'s
+  // own contract is that every field of the struct appears in the cache key
+  // (remap_plan.hpp), and this builder's dispatch is reachable directly in
+  // a unit test with no Runner and no RemapPlan field to set, exactly the
+  // shape `fuse::search::resolve_execution_space()` (types.hpp) already
+  // exists for: the SAME `FUSE_EXECUTION_SPACE` environment variable
+  // `RunnerConfig::resolved_execution_space()` reads, or an explicit
+  // `fuse::search::ExecutionSpace` argument, with no dependency on
+  // `fuse::runtime` (this builder already depends on `fuse::search` for the
+  // k-nearest search itself, so reusing its resolver adds no new edge).
+  // This is the SAME convention `test/CMakeLists.txt`'s `fuse_add_device_twin`
+  // exercises for every other device-mode row: re-running a binary with
+  // `FUSE_EXECUTION_SPACE=device` in its environment, trusting the function
+  // under test to read it. A Runner that sets `RunnerConfig::execution_space`
+  // explicitly in code (bypassing the environment variable) is NOT seen by
+  // this resolution -- a gap disclosed in this track's report, not closed
+  // here: closing it needs either exporting the Runner's own resolved space
+  // into the environment before a plan is built, or threading an explicit
+  // space through `RemapPlan` (touching its cache key), both wider than
+  // this track's scope.
+  const auto space_r = search::resolve_execution_space();
+  if (!space_r.ok()) return space_r.error();
+  const search::ExecutionSpace space = space_r.value();
+
   // One degenerate (zero-size) box per source point: BoxIndex is a box
   // index, and a point IS the degenerate box `{p, p}`. No `padded()` step --
   // that tolerance exists so a point sitting on a shared cell FACE is found
@@ -441,22 +724,40 @@ Result<RemapWeights> build_mls_weights(const RemapPlan& plan, const CouplingGrap
   std::vector<search::Box> boxes;
   boxes.reserve(n_cols);
   for (const search::Point& p : src_pts) boxes.push_back(search::Box{p, p});
-  auto index_r = search::BoxIndex::build(std::move(boxes));
+  auto index_r = search::BoxIndex::build(std::move(boxes), space);
   if (!index_r.ok()) return index_r.error();
   const search::BoxIndex& index = index_r.value();
 
+  // The k-nearest search itself: `query_nearest`'s std::vector overload
+  // builds and queries on `index`'s own resolved space (search.md, "Inputs
+  // and outputs") -- a device-resolved index runs the broad-phase box
+  // traversal and the k-nearest distance comparisons as Kokkos device
+  // kernels, copying only the thin host<->device boundary at this call,
+  // the same boundary every vector-based caller of this facade crosses.
   auto knn_r = index.query_nearest(tgt_pts, opt.k);
   if (!knn_r.ok()) return knn_r.error();
   const search::QueryResult& knn = knn_r.value();
 
   const std::size_t p_size = basis_size;
-  std::vector<double> moment(p_size * p_size);
-  std::vector<double> rhs(p_size);
-  std::vector<double> coeff(p_size);
-  std::vector<double> dists(static_cast<std::size_t>(opt.k));
 
-  const auto at = [p_size](std::size_t i, std::size_t j) { return j * p_size + i; };
+  if (space == search::ExecutionSpace::Device) {
+    auto dev_r = build_mls_weights_device(dim, opt, p_size, src_pts, tgt_pts, knn);
+    if (!dev_r.ok()) return dev_r.error();
+    out = dev_r.value();
+    if (has(plan.flags, RemapFlags::Monotone) && !out.monotone) {
+      return Failure{
+          "E-MLS-MONOTONE",
+          fmt::format("RemapFlags::Monotone was asked for method 'mls' degree={}, but the "
+                      "assembled matrix is not bound preserving: min weight {:.3e}, max row "
+                      "defect {:.3e}. Bound preservation is generic for degree 0 (a "
+                      "normalised weighted average) and is not guaranteed for degree >= 1 -- "
+                      "drop RemapFlags::Monotone, or declare degree=0",
+                      opt.degree, out.min_weight, out.max_row_defect)};
+    }
+    return out;
+  }
 
+  // ---- Host path, bitwise unchanged from before this track -----------------
   out.row.reserve(n_rows * static_cast<std::size_t>(opt.k));
   out.col.reserve(n_rows * static_cast<std::size_t>(opt.k));
   out.val.reserve(n_rows * static_cast<std::size_t>(opt.k));
@@ -479,70 +780,21 @@ Result<RemapWeights> build_mls_weights(const RemapPlan& plan, const CouplingGrap
                                  t, end - begin, opt.k)};
     }
 
-    const search::Point& tp = tgt_pts[t];
-    double max_dist = 0.0;
-    for (std::size_t j = begin; j < end; ++j) {
-      const search::Point& sp = src_pts[knn.indices[j]];
-      const double dx = sp.x - tp.x;
-      const double dy = sp.y - tp.y;
-      const double dz = sp.z - tp.z;
-      const double d = std::sqrt(dx * dx + dy * dy + dz * dz);
-      dists[j - begin] = d;
-      max_dist = std::max(max_dist, d);
-    }
-    // 1.1x past the farthest declared neighbour, floored so a target whose
-    // k neighbours all coincide with it does not divide by zero -- the same
-    // choice ArborX's own MLS kernel makes and for the same stated reason
-    // ("the one at the limit would be 0 due to how CRBFs work").
-    const double radius =
-        1.1 * std::max(max_dist, std::numeric_limits<double>::epsilon());
+    std::vector<std::size_t> nbr_idx(static_cast<std::size_t>(opt.k));
+    for (std::size_t j = begin; j < end; ++j) nbr_idx[j - begin] = knn.indices[j];
 
-    std::fill(moment.begin(), moment.end(), 0.0);
-    std::vector<double> phi(static_cast<std::size_t>(opt.k));
-    std::vector<std::vector<double>> basis_rows(static_cast<std::size_t>(opt.k));
-    for (std::size_t j = begin; j < end; ++j) {
-      const std::size_t local = j - begin;
-      const search::Point& sp = src_pts[knn.indices[j]];
-      phi[local] = mls_crbf(opt.radial, dists[local] / radius);
-      basis_rows[local] = polynomial_basis(dim, opt.degree, sp.x - tp.x, sp.y - tp.y, sp.z - tp.z);
-      const std::vector<double>& b = basis_rows[local];
-      for (std::size_t a = 0; a < p_size; ++a) {
-        for (std::size_t c = 0; c < p_size; ++c) {
-          moment[at(a, c)] += phi[local] * b[a] * b[c];
-        }
-      }
-    }
-
-    std::fill(rhs.begin(), rhs.end(), 0.0);
-    rhs[0] = 1.0;
-    std::vector<double> a_copy = moment;  // least_squares_builtin mutates in place.
-    const std::size_t rank =
-        fuse::linalg::least_squares_builtin(a_copy, p_size, p_size, rhs, coeff);
-
-    if (rank < p_size) {
-      const double diag0 = std::fabs(a_copy[at(0, 0)]);
-      const double diag_last = rank >= 1 ? std::fabs(a_copy[at(rank - 1, rank - 1)]) : 0.0;
-      const std::string cond_str = (rank >= 1 && diag_last > 0.0)
-                                       ? fmt::format("{:.3e}", diag0 / diag_last)
-                                       : std::string("singular (no accepted pivot)");
-      return Failure{
-          "E-MLS-RANK",
-          fmt::format("target {}'s local degree-{} fit in {}D is rank-deficient: rank {} "
-                      "of {} basis functions (its {} neighbours are too coincident, "
-                      "collinear or coplanar for this degree). Condition estimate "
-                      "(largest/smallest accepted pivot magnitude): {}",
-                      t, opt.degree, dim, rank, p_size, opt.k, cond_str)};
-    }
+    auto fit_r = mls_fit_one_target(dim, opt.degree, opt.radial, p_size, t, src_pts, tgt_pts[t],
+                                    nbr_idx);
+    if (!fit_r.ok()) return fit_r.error();
+    const MlsTargetFit& fit = fit_r.value();
 
     double row_sum = 0.0;
-    for (std::size_t j = begin; j < end; ++j) {
-      const std::size_t local = j - begin;
-      const std::vector<double>& b = basis_rows[local];
+    for (std::size_t local = 0; local < nbr_idx.size(); ++local) {
       double dotc = 0.0;
-      for (std::size_t a = 0; a < p_size; ++a) dotc += coeff[a] * b[a];
-      const double w = phi[local] * dotc;
+      for (std::size_t a = 0; a < p_size; ++a) dotc += fit.coeff[a] * fit.basis_rows[local][a];
+      const double w = fit.phi[local] * dotc;
       out.row.push_back(static_cast<std::int32_t>(t));
-      out.col.push_back(static_cast<std::int32_t>(knn.indices[j]));
+      out.col.push_back(static_cast<std::int32_t>(nbr_idx[local]));
       out.val.push_back(w);
       row_sum += w;
       min_weight = std::min(min_weight, w);

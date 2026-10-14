@@ -6597,7 +6597,7 @@ A sort-and-compact approach (flatten every incoming (gid, payload) pair, `Kokkos
 algorithm and was not attempted here for lack of time, not because it is infeasible. Blocks: a Device
 mode caller of `build_native_remap_halo`/`migrate` still needs the host round trip for the merge step.
 
-### D52. MLS device solve coarsens `E-MLS-RANK`'s diagnostic and is not wired into `build_mls_weights`; `KokkosBatched::SerialGesv` does not build here
+### ~~D52. MLS device solve coarsens `E-MLS-RANK`'s diagnostic and is not wired into `build_mls_weights`; `KokkosBatched::SerialGesv` does not build here~~ — CLOSED 2026-10-14 (round 2)
 
 **Scope note, 2026-10-13.** `fuse::device::solve_mls_on_space<Space>` (include/fuse/backend/
 mls_weights_device.hpp) runs the per-target moment-matrix assembly and solve as a Kokkos BATCHED
@@ -6649,6 +6649,27 @@ host path to recover that diagnostic, or accept a coarser message; (2) `solve_ml
 already-resolved point sets, options and a k-nearest result as plain arguments -- it is not wired into
 `build_mls_weights`'s own `RemapPlan`/`CouplingGraph`/`MeshBackend` dispatch, so Device mode is not yet
 reachable through the normal `fuse::build_weights` entry point.
+
+**Closed, 2026-10-14 (round 2).** Both open items are resolved. `build_mls_weights`
+(src/backend/mls_weights.cpp) resolves its execution space via
+`fuse::search::resolve_execution_space()` (the `FUSE_EXECUTION_SPACE` convention
+`RunnerConfig::resolved_execution_space()` and `fuse::search` already use -- no new `RemapPlan` field,
+stated and justified in the function's own comment) and, on Device, threads the k-nearest search
+through `BoxIndex::build`'s Device path and the per-target solve through `solve_mls_on_space`,
+reachable now through the normal `fuse::build_weights` entry point. `MlsDeviceResult` gained a
+`status` field (one flag per target, not just the aggregate `n_fail`); `build_mls_weights`'s Device
+path re-runs the Host path's own rank-revealing solve (factored into `mls_fit_one_target`, shared
+code, not a duplicate) on exactly the target(s) `status` flags, confirming the device solve's coarser
+verdict and reproducing `E-MLS-RANK`'s exact message -- same target, same condition estimate -- or,
+on the rare disagreement the two eliminations' different pivot criteria make possible, patching that
+one row's weights from the confirmed Host fit instead of trusting the device's (meaningless,
+early-returned) elimination state. Host mode is untouched and bitwise unchanged (every pre-existing
+`backend.mls_weights` row still passes with no `FUSE_EXECUTION_SPACE` set). RED/GREEN:
+`MlsWeightsDevice.DeviceMatchesHostStructureAndValuesWithinTolerance` (1e-12 relative, identical CSR
+structure, on a degree-2/k=12 fixture) and
+`MlsRefusalsDevice.AllCoincidentNeighboursIsRankDeficientUnderDeviceToo` (exactly-singular, so both
+eliminations agree) in test/backend/mls_weights_test.cpp, plus a `backend.mls_weights.device` ctest
+twin re-running the whole file under `FUSE_EXECUTION_SPACE=device`.
 
 ### D53. Supermesh (r3d/r2d) clip stays host-only; device feasibility measured and blocked on three build-system items, not algorithm
 

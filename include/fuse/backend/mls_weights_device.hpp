@@ -68,19 +68,23 @@
 /// neighbourhood. Verified against the NumPy reference to the precision
 /// already reported below, unaffected by this rewrite.
 ///
-/// WHAT THIS DOES NOT DO (yet): the neighbour search stays on the host
-/// (`fuse::search::BoxIndex::query_nearest`, called by the caller of this
-/// header, not inside it -- copy the results to `Space` and hand them
-/// here, per the task's own "copy results to the device yourself behind
-/// one function" allowance), and the RANK-DEFICIENCY diagnostic
-/// (`E-MLS-RANK`'s named rejection with a per-target condition estimate)
-/// is replaced by a coarser device-side status flag:
-/// `solve_square_system_partial_pivot` reports failure (no pivot above a
-/// floor in some column) without a rank or condition number, so a caller
-/// here gets a COUNT of failed targets, not which one or why. A production integration
-/// that must keep `E-MLS-RANK`'s exact diagnostic would re-run the
-/// specific failed targets through the host path, since the fast path
-/// exists precisely because failures are expected to be rare.
+/// WHAT THIS DOES NOT DO: the neighbour search itself stays outside this
+/// header (`fuse::search::BoxIndex::query_nearest`, called by the caller --
+/// `build_mls_weights`, mls_weights.cpp -- which copies the results to
+/// `Space` and hands them here, per the task's own "copy results to the
+/// device yourself behind one function" allowance; the search runs on
+/// `BoxIndex`'s own resolved space, Host or Device, independently of this
+/// header). This header's own elimination
+/// (`solve_square_system_partial_pivot`) reports only a per-target PASS/FAIL
+/// flag -- no rank, no condition number -- not the RANK-DEFICIENCY
+/// diagnostic `E-MLS-RANK`'s named rejection carries on the Host path.
+/// `MlsDeviceResult::status` exposes that flag per target (not just the
+/// aggregate `n_fail` count) exactly so a caller CAN recover the full
+/// diagnostic: `build_mls_weights`'s own Device path re-runs the Host
+/// path's rank-revealing solve on just the target(s) `status` names,
+/// which is cheap because failures are expected to be rare (this header's
+/// own fast path exists on that premise) and reproduces `E-MLS-RANK`'s
+/// exact message, target index and condition estimate.
 
 #include <cmath>
 #include <cstddef>
@@ -236,16 +240,26 @@ struct VecAtBatch {
 /// count means for its own error contract.
 ///
 /// Returns device CSR views (`row`/`col`/`val`, each size `n_rows * k`) --
-/// the primary result in Device mode -- plus `n_fail`. A caller that wants
-/// a host `RemapWeights` deep-copies these three and the scalar
-/// diagnostics (`max_row_defect`, `min_weight`, `monotone`) are cheap to
-/// recompute from the host mirror directly, exactly as `build_mls_weights`
-/// does today, and are NOT duplicated as a second device reduction here.
+/// the primary result in Device mode -- plus `n_fail` and `status` (one
+/// entry per target, 0 on success, the same nonzero code
+/// `solve_square_system_partial_pivot` returns on a column with no pivot
+/// above `kPivotFloor`). A caller that wants a host `RemapWeights`
+/// deep-copies `row`/`col`/`val`; the scalar diagnostics (`max_row_defect`,
+/// `min_weight`, `monotone`) are cheap to recompute from the host mirror
+/// directly, exactly as `build_mls_weights` does today, and are NOT
+/// duplicated as a second device reduction here. `status` exists so a
+/// caller can recover WHICH target(s) failed and re-derive `E-MLS-RANK`'s
+/// full diagnostic (target index, rank, condition estimate) by re-running
+/// the Host path's own rank-revealing solve on just that target -- this
+/// header's own partial-pivot elimination reports only a pass/fail flag per
+/// target, not a rank or condition number (see this header's own "WHAT THIS
+/// DOES NOT DO" section above).
 template <class Space>
 struct MlsDeviceResult {
   Kokkos::View<std::int32_t*, Space> row;
   Kokkos::View<std::int32_t*, Space> col;
   Kokkos::View<double*, Space> val;
+  Kokkos::View<int*, Space> status;
   int n_fail = 0;
 };
 
@@ -319,6 +333,7 @@ template <class Space>
   out.row = Kokkos::View<std::int32_t*, Space>("fuse::device::mls_row", n_rows * k);
   out.col = Kokkos::View<std::int32_t*, Space>("fuse::device::mls_col", n_rows * k);
   out.val = Kokkos::View<double*, Space>("fuse::device::mls_val", n_rows * k);
+  out.status = status;
   Kokkos::parallel_for(
       "fuse::device::mls_extract", Kokkos::RangePolicy<ExecSpace>(0, n_rows),
       KOKKOS_LAMBDA(const int t) {

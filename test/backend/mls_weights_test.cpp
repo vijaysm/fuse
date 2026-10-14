@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <random>
 #include <string>
@@ -861,4 +862,120 @@ TEST(MlsWeights, MatchesArborXsOwnInterpolateOnTheSameCloud3D) {
   for (std::size_t i = 0; i < tgt_pts.size(); ++i) {
     EXPECT_NEAR(fuse_vals[i], arborx_vals(i), 1e-8) << "target " << i;
   }
+}
+
+// ===========================================================================
+// Device-resident-arcs Phase 2 (KNOWN_ISSUES D52): build_mls_weights's own
+// dispatch to fuse::device::solve_mls_on_space, read from the SAME
+// FUSE_EXECUTION_SPACE convention RunnerConfig::resolved_execution_space()
+// and fuse::search::resolve_execution_space() both use
+// (mls_weights.cpp's own comment on its resolution point). These tests set
+// and restore the variable directly, independent of whether this binary's
+// OWN ctest row (`backend.mls_weights.device`, test/CMakeLists.txt) also
+// sets it externally, so they run as a genuine Host/Device comparison
+// either way.
+// ===========================================================================
+
+namespace {
+
+/// RAII guard: sets FUSE_EXECUTION_SPACE for its lifetime, restores
+/// whatever (if anything) was there before on destruction -- so a test
+/// that forces "device" never leaks that choice into a test that runs
+/// after it in the same binary.
+class ExecutionSpaceEnvGuard {
+ public:
+  explicit ExecutionSpaceEnvGuard(const char* value) {
+    const char* prev = std::getenv("FUSE_EXECUTION_SPACE");
+    had_prev_ = prev != nullptr;
+    if (had_prev_) prev_value_ = prev;
+    if (value == nullptr) {
+      unsetenv("FUSE_EXECUTION_SPACE");
+    } else {
+      setenv("FUSE_EXECUTION_SPACE", value, /*overwrite=*/1);
+    }
+  }
+  ~ExecutionSpaceEnvGuard() {
+    if (had_prev_) {
+      setenv("FUSE_EXECUTION_SPACE", prev_value_.c_str(), /*overwrite=*/1);
+    } else {
+      unsetenv("FUSE_EXECUTION_SPACE");
+    }
+  }
+  ExecutionSpaceEnvGuard(const ExecutionSpaceEnvGuard&) = delete;
+  ExecutionSpaceEnvGuard& operator=(const ExecutionSpaceEnvGuard&) = delete;
+
+ private:
+  bool had_prev_ = false;
+  std::string prev_value_;
+};
+
+}  // namespace
+
+TEST(MlsWeightsDevice, DeviceMatchesHostStructureAndValuesWithinTolerance) {
+  auto src_pts = grid_2d(11, 11);
+  std::vector<Point> tgt_pts = {Point{0.23, 0.61, 0.0}, Point{0.5, 0.5, 0.0},
+                                Point{0.81, 0.12, 0.0}, Point{0.05, 0.95, 0.0}};
+  const RemapWeights host_w = [&] {
+    ExecutionSpaceEnvGuard guard("host");
+    Fixture fx(0, src_pts, tgt_pts);
+    const auto plan = fx.plan("mls:degree=2,k=12,radial=wendland2");
+    const auto w_r = fuse::build_mls_weights(plan, fx.graph, fx.backend);
+    EXPECT_TRUE(w_r.ok()) << (w_r.ok() ? "" : w_r.error().message);
+    return w_r.ok() ? w_r.value() : RemapWeights{};
+  }();
+
+  const RemapWeights device_w = [&] {
+    ExecutionSpaceEnvGuard guard("device");
+    Fixture fx(0, src_pts, tgt_pts);
+    const auto plan = fx.plan("mls:degree=2,k=12,radial=wendland2");
+    const auto w_r = fuse::build_mls_weights(plan, fx.graph, fx.backend);
+    EXPECT_TRUE(w_r.ok()) << (w_r.ok() ? "" : w_r.error().message);
+    return w_r.ok() ? w_r.value() : RemapWeights{};
+  }();
+
+  // Same CSR structure: identical row/col triplets, in the same order --
+  // both paths read the k-nearest result from the same deterministic,
+  // ascending-sorted search.md convention.
+  ASSERT_EQ(host_w.n_rows, device_w.n_rows);
+  ASSERT_EQ(host_w.n_cols, device_w.n_cols);
+  ASSERT_EQ(host_w.row.size(), device_w.row.size());
+  ASSERT_EQ(host_w.row, device_w.row);
+  ASSERT_EQ(host_w.col, device_w.col);
+  for (std::size_t i = 0; i < host_w.val.size(); ++i) {
+    const double rel = std::fabs(host_w.val[i]) > 1e-12
+                            ? std::fabs(device_w.val[i] - host_w.val[i]) / std::fabs(host_w.val[i])
+                            : std::fabs(device_w.val[i] - host_w.val[i]);
+    EXPECT_LE(rel, 1e-12) << "triplet " << i << ": host " << host_w.val[i] << " vs device "
+                          << device_w.val[i];
+  }
+  EXPECT_NEAR(host_w.max_row_defect, device_w.max_row_defect, 1e-12);
+  EXPECT_NEAR(host_w.min_weight, device_w.min_weight, 1e-12);
+  EXPECT_EQ(host_w.monotone, device_w.monotone);
+}
+
+TEST(MlsRefusalsDevice, AllCoincidentNeighboursIsRankDeficientUnderDeviceToo) {
+  // Exactly KNOWN_ISSUES's own AllCoincidentNeighboursIsRankDeficient
+  // fixture (Host-mode test above): 8 EXACT duplicates of one point, so
+  // the moment matrix is singular to an exact-zero pivot -- the one case
+  // this track's two different eliminations (Host's column-pivoted QR,
+  // Device's partial-pivot Gaussian elimination) are both certain to
+  // agree on, since neither needs a relative tolerance to see a literal
+  // zero. build_mls_weights's Device path confirms the device solve's
+  // coarser verdict against this exact Host computation before raising
+  // E-MLS-RANK (mls_weights.cpp's own build_mls_weights_device comment),
+  // so the message -- same target, same "Condition estimate" text -- is
+  // the Host path's own, not a separately worded Device rejection.
+  ExecutionSpaceEnvGuard guard("device");
+  const Point p{0.4, 0.4, 0.0};
+  std::vector<Point> src_pts(8, p);
+  src_pts.push_back(Point{5.0, 5.0, 0.0});
+  src_pts.push_back(Point{6.0, 5.0, 0.0});
+  std::vector<Point> tgt_pts = {Point{0.4, 0.4, 0.0}};
+  Fixture fx(0, src_pts, tgt_pts);
+  auto plan = fx.plan("mls:degree=2,k=8,radial=wendland2");
+  const auto r = fuse::build_mls_weights(plan, fx.graph, fx.backend);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-MLS-RANK");
+  EXPECT_NE(r.error().message.find("target 0's"), std::string::npos) << r.error().message;
+  EXPECT_NE(r.error().message.find("Condition estimate"), std::string::npos) << r.error().message;
 }
