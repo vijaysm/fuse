@@ -138,9 +138,16 @@ TEST(NativeHaloMpi, BuildRemapHaloThenBuildWeightsThenExchangeReproducesALinearF
   // make_mpi_exchanger needs a GhostPattern and the OWNED count, exactly
   // as fuse::linalg::DistVector's own constructor contract states
   // (comm.hpp) -- native_backend.hpp's own remap_halo_pattern() returns
-  // precisely that pattern.
+  // precisely that pattern, unchanged (NM-3: the ghost offset a SECOND
+  // halo on the same source would need rides a separate accessor,
+  // remap_halo_ghost_offset, precisely so this type stays source-
+  // compatible with examples/brusselator's own consumer; 0 here since
+  // this fixture builds only ONE halo on `u_mid`).
   const auto pattern_r = f.backend.remap_halo_pattern(f.u_mid, f.v_mid, 2);
   ASSERT_TRUE(pattern_r.ok()) << pattern_r.error().message;
+  const auto offset_r = f.backend.remap_halo_ghost_offset(f.u_mid, f.v_mid, 2);
+  ASSERT_TRUE(offset_r.ok()) << offset_r.error().message;
+  ASSERT_EQ(offset_r.value(), 0u);
   const std::size_t owned_n = u.owned_count(2);
   auto exchanger = fuse::linalg::make_mpi_exchanger(world_handle(), pattern_r.value(), owned_n);
   ASSERT_NE(exchanger, nullptr);
@@ -225,4 +232,36 @@ TEST(NativeHaloMpi, BuildRemapHaloIsIdempotentUnderARealCommunicator) {
   EXPECT_EQ(second.value(), 0u) << "rank " << rank
                                 << ": every cell the pair needs was already adopted by the "
                                    "first call";
+}
+
+// ---------------------------------------------------------------------------
+// NM-2/NM-5: `build_native_remap_halo`'s pre-exchange rejections (resolving
+// either view, the dimension check) are rank-LOCAL -- before this fix,
+// returned directly with no reconciliation, so a rank that fails locally
+// while its peers do not would return while those peers block forever on
+// `allgather_boxes`'s collective. Only RANK 0 is given the wrong
+// dimension here (every other rank asks for the dimension U/V actually
+// are), a data-dependent mismatch no earlier check sees coming -- exactly
+// the shape `migrate()`'s own `E-MESH-MIGRATE-PEER-REFUSED` test exercises
+// for the sibling migration path. Pre-fix: rank 0 returns immediately
+// while ranks 1.. hang in the box allgather, so this ROW (registered with
+// a `--timeout`, docs/dev/testing.md) reports Timeout rather than a test
+// failure. Post-fix: every rank returns within the timeout, rank 0 with
+// its own E-REMAP-DIM and every other rank with E-MESH-HALO-PEER-REFUSED.
+// ---------------------------------------------------------------------------
+TEST(NativeHaloMpi, ADisagreeingDimensionRefusesOnEveryRankInsteadOfHanging) {
+  int rank = 0, size = 1;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  ASSERT_GE(size, 2) << "this row is only meaningful with more than one rank";
+  Fixture f(rank, size);
+
+  const int dim = (rank == 0) ? 1 : 2;
+  const auto r = build_native_remap_halo(f.backend, f.u_mid, f.v_mid, dim, ComponentId{});
+  ASSERT_FALSE(r.ok()) << "rank " << rank << " unexpectedly succeeded";
+  if (rank == 0) {
+    EXPECT_EQ(r.error().code, "E-REMAP-DIM") << "rank " << rank;
+  } else {
+    EXPECT_EQ(r.error().code, "E-MESH-HALO-PEER-REFUSED") << "rank " << rank;
+  }
 }

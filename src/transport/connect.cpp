@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -24,19 +25,21 @@ namespace {
   return std::string(buf, static_cast<std::size_t>(len));
 }
 
-/// Every `Connect`-mode component, in the graph's own component order. That
-/// order, not acceptor/connector role, is what `connect()` fixes
-/// `MPI_Intercomm_merge`'s high/low argument by, so the merged numbering is
-/// the same thing on both sides regardless of which side happens to
-/// publish the port.
-[[nodiscard]] std::vector<ComponentId> connect_mode_components(const CouplingGraph& g) {
-  std::vector<ComponentId> out;
-  for (std::uint32_t i = 0; i < g.component_count(); ++i) {
-    if (g.component(ComponentId{i}).launch.mode == LaunchMode::Connect) {
-      out.push_back(ComponentId{i});
-    }
-  }
-  return out;
+// Review 2026-10-11 TR-9. The same discipline mpi_transport.cpp's and
+// comm_graph.cpp's own header comments state: a failure that cannot be
+// agreed across ranks (because it happens inside, or strictly between,
+// collectives every rank already entered together) aborts loudly with a
+// message rather than returning a Result one rank's peers never see --
+// returning instead leaves them in whatever COLLECTIVE this communicator's
+// caller performs next, waiting for a rank that already left.
+[[noreturn]] void abort_job(MPI_Comm comm, const char* what) {
+  std::fprintf(stderr,  // NOLINT(fuse-raw-io)
+               "FUSE: connect() cannot continue (%s). Aborting rather than "
+               "deadlocking the job.\n",
+               what);
+  std::fflush(stderr);
+  MPI_Abort(comm, 1);
+  std::abort();
 }
 
 /// Writes `port_name` to `path` so a concurrent reader (another process's
@@ -100,7 +103,14 @@ namespace {
   MPI_Comm dup = MPI_COMM_NULL;
   rc = MPI_Comm_dup(world, &dup);
   if (rc != MPI_SUCCESS) {
-    return Failure{"E-CONNECT-MPI", "MPI_Comm_dup failed: " + mpi_error_text(rc)};
+    // TR-9: every rank already agreed check_mpmd_layout()'s verdict above
+    // from identical gathered data, so a per-rank-divergent MPI_Comm_dup
+    // outcome here cannot be reconciled by a further reduction -- the
+    // ranks that succeeded go on to perform MORE collectives over `dup`
+    // (CommGraph::build, MpiTransport::build_plan, ...) that a rank
+    // returning an error here will never reach. Abort rather than hand
+    // back a Result its peers have no way to learn about.
+    abort_job(world, ("MPI_Comm_dup failed: " + mpi_error_text(rc)).c_str());
   }
   ConnectedWorld out;
   out.base_comm_f = static_cast<int>(MPI_Comm_c2f(dup));
@@ -112,13 +122,11 @@ namespace {
                                                       ComponentId my_id,
                                                       MPI_Comm world,
                                                       const ConnectOptions& opts) {
-  const std::vector<ComponentId> order = connect_mode_components(g);
-  if (order.size() != 2) {
-    return Failure{"E-CONNECT-SPEC",
-                   "pairwise connect() supports exactly two connect-mode "
-                   "components; the graph declares " +
-                       std::to_string(order.size())};
-  }
+  // TR-17: the two-component rule itself now lives in connect.hpp, pure
+  // and MPI-free, so a tier-0 test can fire its refusal directly.
+  const auto order_result = ::fuse::transport::connect_mode_components(g);
+  if (!order_result.ok()) return order_result.error();
+  const std::vector<ComponentId>& order = order_result.value();
   const bool i_am_first = (order[0] == my_id);
   const ComponentId partner_id = i_am_first ? order[1] : order[0];
   const ComponentDecl& mine = g.component(my_id);
@@ -147,12 +155,34 @@ namespace {
   MPI_Comm intercomm = MPI_COMM_NULL;
   if (mine.launch.is_acceptor) {
     char port_name[MPI_MAX_PORT_NAME] = {};
+    // Review 2026-10-11 TR-5. rank 0 alone opens the port and publishes its
+    // name; a failure in either call used to return from rank 0 right here,
+    // while every other acceptor rank went on into the MPI_Bcast below and
+    // blocked in it forever. rank 0's outcome is now itself broadcast first,
+    // so every acceptor rank learns it and returns the same E-CONNECT-MPI
+    // together before any rank reaches the port-name Bcast.
+    int         open_rc = MPI_SUCCESS;
+    std::string open_detail;
     if (rank == 0) {
       rc = MPI_Open_port(MPI_INFO_NULL, port_name);
       if (rc != MPI_SUCCESS) {
-        return Failure{"E-CONNECT-MPI", "MPI_Open_port failed: " + mpi_error_text(rc)};
+        open_rc = rc;
+        open_detail = "MPI_Open_port failed: " + mpi_error_text(rc);
+      } else if (auto r = publish_port_file(connect_file, port_name); !r.ok()) {
+        open_rc = MPI_ERR_OTHER;  // not a real MPI code; the sentinel only needs != MPI_SUCCESS
+        open_detail = r.error().message;
       }
-      if (auto r = publish_port_file(connect_file, port_name); !r.ok()) return r.error();
+    }
+    rc = MPI_Bcast(&open_rc, 1, MPI_INT, 0, world);
+    if (rc != MPI_SUCCESS) {
+      return Failure{"E-CONNECT-MPI",
+                     "MPI_Bcast of the port-open outcome failed: " + mpi_error_text(rc)};
+    }
+    if (open_rc != MPI_SUCCESS) {
+      return Failure{"E-CONNECT-MPI",
+                     rank == 0 ? open_detail
+                               : "rank 0 failed to open or publish the acceptor port; its own "
+                                 "diagnostic carries the detail"};
     }
     // Every rank of `world` must call MPI_Comm_accept with the SAME port
     // name (it is collective over this side's local group), so rank 0's

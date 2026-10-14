@@ -190,6 +190,23 @@ struct RemapWeights {
   /// is why orders 3 and 4 exist here at all.
   double max_col_defect_native = 0.0;
 
+  /// Whether `max_col_defect` above is a conservation residual in
+  /// `MeshView::measure` AT ALL. True for every conservative FV builder
+  /// (the supermesh path, the MOAB intx path, TempestRemap): their
+  /// `max_col_defect` is exactly the quantity `WeightsOperator::claims()`'s
+  /// `conservative` flag promises. FALSE for the consistent-interpolation
+  /// (H) builders (`consistent_interp.hpp`, `general_interp.hpp`): a nodal
+  /// degree of freedom has no measure to weight a column sum by, so their
+  /// `max_col_defect` is the plain, UNWEIGHTED column-sum residual --
+  /// informative as a diagnostic (and left populated for that reason), but
+  /// not the property `conservative` names. REVIEW.md TF-16: before this
+  /// field existed, `claims()` read `max_col_defect` directly regardless
+  /// of which builder produced it, so a coincident node-to-node H pair
+  /// (column sum exactly 1 by accident of geometry, not by the property H
+  /// actually has) would certify `conservative` -- exactly the claim both
+  /// H headers say H never makes.
+  bool col_defect_is_measure_weighted = true;
+
   [[nodiscard]] std::size_t nnz() const noexcept { return val.size(); }
 };
 
@@ -469,12 +486,19 @@ struct RemapPlan {
 /// `RemapFlags::Conservative` happens to be set. So `build_weights` rejects a
 /// partitioned pair for which no halo was built (`E-REMAP-PARALLEL`), and with
 /// one it conserves to 1.2e-15 at two ranks and 7.4e-16 at four, from the
-/// task report that measured this. REVIEW.md R-11: neither number is pinned
-/// by a test in this tree -- `test/unit/remap_parallel_test.cpp` and
-/// `test/unit/remap_halo_parallel_test.cpp`, cited here previously, do not
-/// exist under `test/backend/`. Both the rejection and the halo/conservation
-/// path are implemented, untested (docs/dev/testing.md state); see B1/B2
-/// in REVIEW.md for the MPI tests that would verify them.
+/// task report that measured this. REVIEW.md TF-7: this used to say neither
+/// number is pinned by any test and both the rejection and the halo path
+/// were implemented-but-untested -- half-stale since
+/// `test/parallel/remap_halo_mpi_test.cpp` ported (host-verified per that
+/// file's own header): `ERemapParallelRefusesAboveOneRankAndNotAtOne` fires
+/// the rejection by name at every registered rank count, and
+/// `BuildRemapHaloDeliversExactHaloValuesAndRoundTripsExactly` checks the
+/// halo's own forward/reverse round trip by exact global id and bookkeeping
+/// identity (not a tolerance). Only the two end-to-end conservation FIGURES
+/// quoted above (1.2e-15, 7.4e-16, 66.7%, 91.2%) remain diagnostic-only --
+/// that file prints, but does not gate on, the corresponding numbers on its
+/// own real spherical pair, since no fixture here has had its true overlap
+/// fraction independently measured to gate against.
 ///
 /// The rejection is keyed on the communicator having MORE THAN ONE RANK, not on
 /// a communicator being present: a one-rank communicator is an ordinary MPI

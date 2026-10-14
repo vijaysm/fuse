@@ -79,15 +79,18 @@
 ///
 /// DEFAULT (`capabilities() == 0`, i.e. no override at all): no rollback
 /// (correct -- see `Component::capabilities()`'s own doc comment for why),
-/// `DeterminismLevel::Bitwise` (the determinism field's zero bit pattern),
-/// no hidden state. Bitwise is an ASSUMPTION for a component that says
-/// nothing, not a proof: it is the correct default for the overwhelming
-/// common case FUSE already ships (hand-written numerical components with
-/// no RNG and no external nondeterministic dependency), and it is also the
-/// ONLY default that keeps every existing `capabilities()` override --
-/// which sets `kCapabilityRollback` alone and leaves the determinism field
-/// at zero -- describing the same component it described before this file
-/// existed. A component that is genuinely nondeterministic (wraps an RNG,
+/// determinism UNDECLARED -- NOT `DeterminismLevel::Bitwise` -- and no
+/// hidden state. BM-9 (review 2026-10-11): this paragraph used to read
+/// "`DeterminismLevel::Bitwise` (the determinism field's zero bit
+/// pattern)", which contradicts this file's own encode/decode pair just
+/// above (raw 0 decodes to `std::nullopt`, i.e. undeclared, by design --
+/// see `decode_capability_determinism()`'s own comment for why silence
+/// must not read as the strongest claim in `DeterminismLevel`), the test
+/// that pins it (`Capabilities.ZeroDecodesToUndeclaredNotBitwise`), and
+/// `src/runtime/checkpoint_support.cpp`'s own undeclared-with-warning
+/// handling. A reader of this paragraph alone would assume silence means
+/// `Bitwise` -- the exact assumption KNOWN_ISSUES.md B3 was closed to
+/// forbid. A component that is genuinely nondeterministic (wraps an RNG,
 /// calls into a library with unspecified reduction order, etc.) MUST set
 /// `kCapabilityDeterminismMask` to `encode_capability_determinism(
 /// DeterminismLevel::Nondeterministic)` explicitly, or the check in

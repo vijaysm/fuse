@@ -71,7 +71,15 @@ struct Simplex {
   return out;
 }
 
-[[nodiscard]] bool boxes_overlap(const Simplex& a, const Simplex& b, int dim) {
+/// `axis1d` is the coordinate axis `build_supermesh_weights` selected for a
+/// 1D pair (REVIEW.md TF-4) -- `dim == 1` tests ONLY that axis, since the
+/// other two are the pair's (near-)constant flat coordinates, not a second
+/// dimension to be boxed in. Ignored for `dim >= 2`.
+[[nodiscard]] bool boxes_overlap(const Simplex& a, const Simplex& b, int dim,
+                                 int axis1d) {
+  if (dim == 1) {
+    return !(a.hi[axis1d] < b.lo[axis1d] || b.hi[axis1d] < a.lo[axis1d]);
+  }
   for (int k = 0; k < dim; ++k) {
     if (a.hi[k] < b.lo[k] || b.hi[k] < a.lo[k]) return false;
   }
@@ -99,15 +107,20 @@ struct Simplex {
 // add through the public MeshView grammar alone.
 using fuse::supermesh_detail::inward_plane;
 
-/// The exact measure of the intersection of two simplices.
-[[nodiscard]] double intersect(const Simplex& t, const Simplex& s, int dim) {
+/// The exact measure of the intersection of two simplices. `axis1d` is the
+/// coordinate axis to read for `dim == 1` (REVIEW.md TF-4: hard-coding `.x`
+/// silently measured the wrong thing -- an EMPTY overlap on every pair for
+/// a y- or z-aligned line, since both "intervals" degenerate to the same
+/// constant x); ignored for `dim >= 2`.
+[[nodiscard]] double intersect(const Simplex& t, const Simplex& s, int dim,
+                               int axis1d) {
   if (dim == 1) {
     // An overlap of intervals is a subtraction. Using a clipper here would add
     // rounding rather than remove it.
-    const double tlo = std::min(t.p[0].x, t.p[1].x);
-    const double thi = std::max(t.p[0].x, t.p[1].x);
-    const double slo = std::min(s.p[0].x, s.p[1].x);
-    const double shi = std::max(s.p[0].x, s.p[1].x);
+    const double tlo = std::min(coord(t.p[0], axis1d), coord(t.p[1], axis1d));
+    const double thi = std::max(coord(t.p[0], axis1d), coord(t.p[1], axis1d));
+    const double slo = std::min(coord(s.p[0], axis1d), coord(s.p[1], axis1d));
+    const double shi = std::max(coord(s.p[0], axis1d), coord(s.p[1], axis1d));
     return std::max(0.0, std::min(thi, shi) - std::max(tlo, slo));
   }
 
@@ -226,6 +239,68 @@ Result<RemapWeights> build_supermesh_weights(const MeshView& src,
     }
   }
 
+  // The 1D kernel (`intersect`'s `dim == 1` branch) is a single coordinate
+  // subtraction, with no analogue of the check just above (REVIEW.md
+  // TF-4). Reading `.x` unconditionally had two silent failure modes: a
+  // line laid out along y or z has every pair of "intervals" degenerate to
+  // the SAME constant x, so every overlap computes to exactly 0 -- an
+  // EMPTY matrix returned as SUCCESS, indistinguishable from a target
+  // field correctly left at zero; and a genuinely diagonal line would have
+  // its x-SHADOW measured instead of its own length, a plausible but wrong
+  // number for exactly the reason the dim == 2 check above refuses
+  // projection rather than risk it.
+  //
+  // Both are closed the SAME way: find the single coordinate axis along
+  // which these segments actually vary (not necessarily x -- a beam laid
+  // out along y or z is handled, matching
+  // `build_consistent_interp_weights_1d`'s own axis choice,
+  // consistent_interp.hpp), and refuse outright, the SAME way the dim == 2
+  // check does, when the segments are not aligned with any SINGLE
+  // coordinate axis -- i.e. when projecting onto the chosen axis would
+  // measure a shadow, not a length.
+  int axis1d = 0;
+  if (dim == 1) {
+    double lo[3], hi[3];
+    bool first = true;
+    const auto fold = [&](const std::vector<Simplex>& v) {
+      for (const Simplex& s : v) {
+        for (int vtx = 0; vtx <= 1; ++vtx) {
+          for (int k = 0; k < 3; ++k) {
+            const double c = coord(s.p[vtx], k);
+            if (first) { lo[k] = hi[k] = c; }
+            lo[k] = std::min(lo[k], c);
+            hi[k] = std::max(hi[k], c);
+          }
+          first = false;
+        }
+      }
+    };
+    fold(ss);
+    fold(ts);
+    double spread[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
+    for (int k = 1; k < 3; ++k) {
+      if (spread[k] > spread[axis1d]) axis1d = k;
+    }
+    const double diameter = spread[axis1d];
+    const double tol = std::max(diameter, 1.0) * supermesh_detail::kSupermeshCoverageTol;
+    int nonzero_axes = 0;
+    for (int k = 0; k < 3; ++k) {
+      if (spread[k] > tol) ++nonzero_axes;
+    }
+    if (nonzero_axes > 1) {
+      return Failure{
+          "E-REMAP-NONPLANAR",
+          "the 1D supermesh kernel clips along a single coordinate axis, and "
+          "these segments vary along more than one (spread x=" +
+              std::to_string(spread[0]) + " y=" + std::to_string(spread[1]) +
+              " z=" + std::to_string(spread[2]) +
+              "). Projecting onto one axis would measure the segments' "
+              "SHADOW, not their own length -- a plausible wrong answer; a "
+              "non-axis-aligned 1D interface needs an arc-length "
+              "parameterisation, not a coordinate subtraction"};
+    }
+  }
+
   RemapWeights w;
   w.n_rows = tgt.entity_count(dim);
   w.n_cols = src.entity_count(dim);
@@ -273,8 +348,8 @@ Result<RemapWeights> build_supermesh_weights(const MeshView& src,
   // would be replacing something correct with something unmeasured.
   for (const Simplex& t : ts) {
     for (const Simplex& s : ss) {
-      if (!boxes_overlap(t, s, dim)) continue;
-      const double m = intersect(t, s, dim);
+      if (!boxes_overlap(t, s, dim, axis1d)) continue;
+      const double m = intersect(t, s, dim, axis1d);
       if (m <= 0.0) continue;
       acc[{t.parent, s.parent}] += m;
       src_covered[s.parent] += m;
@@ -286,7 +361,7 @@ Result<RemapWeights> build_supermesh_weights(const MeshView& src,
   w.row.reserve(acc.size());
   w.col.reserve(acc.size());
   w.val.reserve(acc.size());
-  double min_w = acc.empty() ? 0.0 : 1.0;
+  double min_w = 1.0;
   std::vector<double> row_sum(w.n_rows, 0.0);
   std::size_t dropped = 0;
   for (const auto& [key, measure] : acc) {
@@ -309,7 +384,15 @@ Result<RemapWeights> build_supermesh_weights(const MeshView& src,
     row_sum[j] += val;
     min_w = std::min(min_w, val);
   }
-  w.min_weight = min_w;
+  // REVIEW.md TF-15: `acc.empty()` (no candidate pair overlapped at all) is
+  // not the only way `w.val` ends up empty -- every accumulated entry
+  // falling below `kNegligible` and being dropped does too, and the loop
+  // above only updates `min_w` for a KEPT entry, so an all-dropped `acc`
+  // would otherwise leave `min_w` at its initial 1.0. `RemapWeights`
+  // documents zero for an empty matrix (`min_weight`'s own contract); key
+  // on `w.val`, the matrix actually returned, not on `acc`, the
+  // pre-filter accumulator.
+  w.min_weight = w.val.empty() ? 0.0 : min_w;
 
   for (std::size_t i = 0; i < w.n_cols; ++i) {
     w.src_measure_total += src.measure(dim, i);

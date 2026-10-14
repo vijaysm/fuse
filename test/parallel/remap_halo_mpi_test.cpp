@@ -25,6 +25,7 @@
 // FUSE_ENABLE_MPI are both on (test/CMakeLists.txt); its outcome comes from
 // a host run, like every other MOAB-enabled-build-configuration MPI test in this tree.
 
+#include <cstdint>
 #include <cstdio>
 #include <vector>
 
@@ -133,6 +134,65 @@ TEST(RemapHaloMpi, EMeshHaloGeometryRefusesTheBoxPairAboveOneRankAndNotAtOne) {
                             "pair must be refused by name, not guessed at";
     EXPECT_EQ(r.error().code, "E-MESH-HALO-GEOMETRY");
   }
+}
+
+// ---------------------------------------------------------------------------
+// Review 2026-10-11 TF-3: `MoabMeshBackend::adopt_remap_halo`'s own
+// per-rank rejections (the GLOBAL_ID tag lookup, the per-covering-cell
+// GLOBAL_ID check, `add_entities`, `regather_with_halo`) used to return
+// straight from this rank while a peer with an unaffected covering set
+// proceeded into `plan_halo_exchange`'s own collectives -- and, worse, a
+// rank with an EMPTY local covering set (`count == 0`, an entirely
+// ordinary outcome, not an error) used to skip the rejection checks
+// AND the reconciliation entirely, going straight to `plan_halo_exchange`,
+// while a peer with `count > 0` took the unreconciled rejection path.
+// Calls `adopt_remap_halo` DIRECTLY (it is a public method; the "only
+// build_remap_halo may call it" rule in its own header is a layering
+// convention, not an access restriction) with a handle MOAB can never
+// resolve (0, always invalid -- no entity has handle 0) on exactly one
+// rank's covering set, and an EMPTY covering set (`count == 0`) on every
+// other rank -- the exact "one rank bad, the rest legitimately idle" shape
+// TF-3 names. Pre-fix signature: the bad rank returns `Failure` directly
+// (skipping plan_halo_exchange's own collectives) while the `count == 0`
+// ranks call `plan_halo_exchange`, enter ITS internal Allgather, and hang
+// waiting for a peer that already returned. Post-fix: every rank returns
+// the SAME `Failure` within the test's own TIMEOUT, none of them ever
+// reaching `plan_halo_exchange`.
+// ---------------------------------------------------------------------------
+TEST(RemapHaloMpi, AdoptRemapHaloOneRankBadCoveringCellAgreesAcrossRanks) {
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
+  int rank = 0, size = 1;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  const int fault_rank = size - 1;
+
+  fuse::MoabMeshBackend backend;
+  ASSERT_TRUE(backend.set_communicator(world_handle()).ok());
+  const char* src = "generated:box:4x4x4";
+  ASSERT_TRUE(backend.load({.name = "s", .source = src}).ok());
+  const auto smid = backend.mesh_id("s");
+  ASSERT_TRUE(smid.ok());
+
+  fuse::Result<std::size_t> r =
+      fuse::Failure{"E-TEST-UNREACHED", "adopt_remap_halo was never called"};
+  if (rank == fault_rank) {
+    // Entity handle 0 names no entity in any moab::Interface -- MOAB's own
+    // reserved "invalid handle" value -- so `tag_get_data` on it cannot
+    // succeed. Stands in for a genuinely malformed covering-set cell (e.g.
+    // one whose GLOBAL_ID tag was never set) without needing one.
+    const std::uint64_t bad_handle = 0;
+    r = backend.adopt_remap_halo(smid.value(), smid.value(), /*dim=*/3, &bad_handle, 1);
+  } else {
+    // An ordinary rank whose own covering set happens to be empty -- the
+    // case the pre-fix `count == 0` early return used to treat as "nothing
+    // to reconcile, go straight to plan_halo_exchange".
+    r = backend.adopt_remap_halo(smid.value(), smid.value(), /*dim=*/3, nullptr, 0);
+  }
+  ASSERT_FALSE(r.ok()) << "rank " << rank
+                       << ": every rank of the communicator must refuse "
+                          "together, not just the one rank with the bad "
+                          "covering cell";
+  EXPECT_EQ(r.error().code, "E-MESH-HALO");
 }
 
 // ---------------------------------------------------------------------------

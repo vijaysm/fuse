@@ -437,6 +437,14 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
   // Which writers exist is settled here; how they combine is settled after
   // every channel has lowered, because the combine needs all of them at once.
   ctx.field_writers[ch.target.value()].push_back(cur);
+  // Review 2026-10-11 IS-9: recorded here, not reconstructed later from
+  // `cur`'s producer node, because an identity channel (same region, same
+  // placement, unlagged -- this loop emitted no node at all for it) leaves
+  // `cur` as the bare Source arc, whose producer's own `Node::origin` is
+  // deliberately `ChannelId{}` (lower()'s step 1: a Source belongs to its
+  // component, not to any one reader). This is the one place that still
+  // knows `cid` is the channel that put `cur` into `field_writers`.
+  ctx.writer_arc_channel[cur.value()] = cid;
   ctx.field_arc[ch.target.value()] = cur;  // single-writer fast path, fixed up below
   return true;
 }

@@ -1308,6 +1308,20 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
       // graph-level property of policy+interval+window_length, not
       // something that depends on any particular window instance ever
       // running.
+      // RT-3 (review 2026-10-11): WindowCoupler::create()'s OTHER D7
+      // refusal -- a Fixed member whose own interval exceeds the window
+      // (E-RT-WINDOW-LONGSTEP) -- was considered for mirroring here, but
+      // is deliberately NOT mirrored: this compiled path's own replay
+      // (detail::advance_straddle_split(), exercised below) already
+      // handles exactly that configuration, and
+      // test/runtime/window_runner_test.cpp's
+      // WindowRunner.FixedPolicyStraddleNowSucceeds is a pre-existing,
+      // passing test of it (A Adjustable, B Fixed with interval 1 on a
+      // 1/2 window, i.e. interval > window_length). Mirroring the
+      // driver's refusal here would reject a configuration this path
+      // both supports and already tests; the divergence from
+      // WindowCoupler::create() is intentional, not an oversight --
+      // recorded in docs/user/coupling-windows.md.
       bool have_straddler = false;
       for (const NodeId node : R.window_member_nodes) {
         const WindowMemberConfig& cfg = window_member_config.at(node.value());
@@ -2137,6 +2151,20 @@ Result<void> Runner::Impl::check_region_isolation(const detail::RegionRuntime& R
 // ---------------------------------------------------------------------------
 
 Result<void> Runner::Impl::checkpoint_regions(ComponentSet& components) {
+  // RT-2(e) (review 2026-10-11): `local_result` records the FIRST local
+  // failure (if any) and stops the walk right there -- but does not
+  // return out of this function. A bare `return s;` on the first
+  // region/slot whose save_state() failed used to leave here directly,
+  // before this period's instruction stream has run a single collective
+  // on ANY rank -- step_period()'s caller (`co_return c;`, right after
+  // this call) would then exit this rank from the whole period while a
+  // peer whose own save_state() succeeded went on to enter that stream,
+  // including its Transport/Epoch collectives, with no partner on this
+  // rank ever reaching them. Agreeing the status below, over every rank
+  // of the communicator, BEFORE returning, is what makes every rank
+  // decide the SAME way: either every rank enters the period's
+  // instruction stream, or none does.
+  Result<void> local_result = Result<void>::success();
   for (detail::RegionRuntime& R : regions) {
     // Time windows track: a window-scoped region's own checkpoint happens
     // once per PASS (once per window instance), inside run_region()
@@ -2150,12 +2178,16 @@ Result<void> Runner::Impl::checkpoint_regions(ComponentSet& components) {
     if (R.window_scoped) continue;
     for (const std::size_t slot : R.component_slots) {
       const Result<void> s = components.at(slot).save_state();
-      if (!s.ok()) return s;
+      if (!s.ok()) {
+        local_result = s;
+        break;
+      }
       // KNOWN_ISSUES.md D12: consumed by advance() the next time it is
       // about to suspend for this slot -- see runner_impl.hpp's own
       // comment on slot_just_checkpointed/slot_just_restored.
       if (slot < slot_just_checkpointed.size()) slot_just_checkpointed[slot] = 1;
     }
+    if (!local_result.ok()) break;
     // The bytes the verification below compares against. Taken here, right
     // after save_state(), so they are exactly what the component claims to
     // have captured.
@@ -2166,7 +2198,19 @@ Result<void> Runner::Impl::checkpoint_regions(ComponentSet& components) {
       }
     }
   }
-  return Result<void>::success();
+
+  bool agreed_ok = local_result.ok();
+  const Result<void> agreement =
+      agree_checkpoint_status(local_result.ok(), agreed_ok);
+  if (!agreement.ok()) return agreement;
+  if (agreed_ok) return Result<void>::success();
+  if (!local_result.ok()) return local_result;
+  return Failure{
+      "E-RT-CHECKPOINT-PEER",
+      "a peer rank's period-top checkpoint (save_state() over its own "
+      "iteration regions' component slots) failed; stopping here, before "
+      "this period's instruction stream, rather than entering collectives "
+      "that failing rank cannot join. The failing rank reports the cause."};
 }
 
 // ---------------------------------------------------------------------------
@@ -3186,20 +3230,41 @@ detail::Task<Result<void>> Runner::Impl::run_region(
     // that checkpoint would otherwise overwrite the very state the
     // replay needs to restore_state() back to (resolve_pending_window_
     // straddles()'s own comment, runner_impl.hpp).
+    // RT-2(a)/(b) (review 2026-10-11): neither a replay failure nor a
+    // save_state() failure here is rank-uniform -- each is a rank-local
+    // component verdict, exactly like (c)/(d)'s own restore_state()/
+    // rollback-check below -- and a bare co_return at this point in the
+    // function would exit before the sweep loop just below reaches its
+    // own first body Transport and residual/window-convergence agreement,
+    // leaving a partner that did not fail waiting in those collectives
+    // for a rank that already returned. Recording step_failure and
+    // skipping the rest of THIS pass's own (non-collective) checkpoint
+    // setup -- while still falling through into the sweep loop, whose
+    // body already gates every instruction on `step_failure.has_value()`
+    // via `is_collective()` -- carries the failure to every partner at
+    // the first collective this pass reaches, the same way (c)/(d) do.
     const Result<void> replay_r = resolve_pending_window_straddles(
         components, R);
-    if (!replay_r.ok()) co_return replay_r.error();
-
-    for (const std::size_t slot : R.component_slots) {
-      const Result<void> s = components.at(slot).save_state();
-      if (!s.ok()) co_return s;
-      // KNOWN_ISSUES.md D12: see the matching line in checkpoint_regions().
-      if (slot < slot_just_checkpointed.size()) slot_just_checkpointed[slot] = 1;
+    if (!replay_r.ok() && !step_failure.has_value()) {
+      step_failure = replay_r.error();
     }
-    for (std::size_t v = 0; v < R.verify_arcs.size(); ++v) {
-      const detail::Slot& s = slots[R.verify_arcs[v]];
-      if (s.data != nullptr) {
-        slot_to_host(s, R.verify_save[v].data(), R.verify_save[v].size());
+    if (!step_failure.has_value()) {
+      for (const std::size_t slot : R.component_slots) {
+        const Result<void> s = components.at(slot).save_state();
+        if (!s.ok()) {
+          step_failure = s.error();
+          break;
+        }
+        // KNOWN_ISSUES.md D12: see the matching line in checkpoint_regions().
+        if (slot < slot_just_checkpointed.size()) slot_just_checkpointed[slot] = 1;
+      }
+    }
+    if (!step_failure.has_value()) {
+      for (std::size_t v = 0; v < R.verify_arcs.size(); ++v) {
+        const detail::Slot& s = slots[R.verify_arcs[v]];
+        if (s.data != nullptr) {
+          slot_to_host(s, R.verify_save[v].data(), R.verify_save[v].size());
+        }
       }
     }
   }
@@ -3212,7 +3277,20 @@ detail::Task<Result<void>> Runner::Impl::run_region(
   // region. `R.window_scoped` is implied true here (the only way to
   // reach this point with `R.newton` set -- the early return above
   // already took every ordinary Newton region out).
+  //
+  // RT-2(a)/(b)'s own carry-forward above is for the Picard sweep loop
+  // just below, which gates every instruction on `step_failure` via
+  // `is_collective()`; `run_region_newton_window()` has no such gate and
+  // never reads this function's `step_failure` at all, so a straddle-
+  // replay or save_state() failure recorded above must still leave here
+  // directly -- exactly the ORIGINAL behaviour -- rather than being
+  // handed to a solve path that would not know to carry it forward.
   if (R.newton) {
+    if (step_failure.has_value()) {
+      const Failure f = *step_failure;
+      step_failure.reset();
+      co_return f;
+    }
     co_return run_region_newton_window(components, R, enter, exit);
   }
 
@@ -3501,6 +3579,19 @@ detail::Task<Result<void>> Runner::Impl::run_region(
     // already is -- length-gating it the same way would silently fold
     // uninitialized memory into the sum below.
     bool window_converged = false;
+    // RT-4 (review 2026-10-11): recorded instead of an immediate co_return
+    // from inside the `else if (!gathered.empty())` branch below, so this
+    // pass's broadcast -- which every rank sharing the communicator,
+    // participant or bystander, must still reach -- runs before any rank
+    // leaves. See that branch's own comment.
+    bool window_unmeasured_found = false;
+    std::string window_unmeasured_detail;
+    // RT-1 (review 2026-10-11): set by reduce_region_residuals() below for
+    // the ordinary (non-window-scoped) multi-rank path; read again past the
+    // step_failure check to gate the convergence decision the same way.
+    // Left at its default (true) for the window-scoped and single-rank
+    // paths, neither of which consults it.
+    bool is_region_participant = true;
     if (R.window_scoped) {
       const std::size_t nb = R.blocks.size();
       std::vector<WindowBlockSample> mine(nb);
@@ -3557,18 +3648,24 @@ detail::Task<Result<void>> Runner::Impl::run_region(
             gathered, R.convergence, R.measure_block, R.block_first,
             k == 0, R.residual_norms, R.reference_norms);
         if (wc.unmeasured_block >= 0) {
-          co_return Failure{
-              "E-RT-WINDOW-UNMEASURED",
+          // RT-4 (review 2026-10-11): recorded, not an immediate
+          // co_return -- see the broadcast below, which this rank (a
+          // participant) must still reach so a bystander outside
+          // `gathered` learns to stop too, rather than being left
+          // calling move() for a sweep no participant ever joins again.
+          window_unmeasured_found = true;
+          window_unmeasured_detail =
               "iteration region '" + R.name + "': no participant of the "
               "window convergence agreement owns any part of block " +
                   std::to_string(wc.unmeasured_block) +
-                  "'s coupling value this sweep"};
+                  "'s coupling value this sweep";
+        } else {
+          for (std::size_t bi = 0; bi < nb; ++bi) {
+            R.block_residual[bi] = wc.block_residual[bi];
+            R.block_value[bi] = wc.block_value[bi];
+          }
+          window_converged = wc.converged;
         }
-        for (std::size_t bi = 0; bi < nb; ++bi) {
-          R.block_residual[bi] = wc.block_residual[bi];
-          R.block_value[bi] = wc.block_value[bi];
-        }
-        window_converged = wc.converged;
       }
 
       // KNOWN_ISSUES.md D42: `gathered_window_block_samples()` just above
@@ -3591,11 +3688,36 @@ detail::Task<Result<void>> Runner::Impl::run_region(
       // `R.participants` -- is what makes a bystander's own copy of this
       // loop stop in lockstep with the participants it has no other
       // relationship to.
+      //
+      // RT-4: the unmeasured verdict is broadcast FIRST and separately --
+      // a bystander that only ever learned `converged == false` here
+      // would read "not yet", keep sweeping past every participant's own
+      // co_return just below, and deadlock the next sweep's move() with
+      // no partner left to answer it. Folding both flags into one
+      // broadcast call would need widening broadcast_window_convergence()'s
+      // own, already-tested, single-bool contract; two calls to the
+      // SAME function (same root, `r.participants.front()`, both times)
+      // reaches the identical outcome without touching it.
+      bool agreed_unmeasured = window_unmeasured_found;
+      const Result<void> bc_u = broadcast_window_convergence(
+          R, window_unmeasured_found, agreed_unmeasured);
+      if (!bc_u.ok()) co_return bc_u.error();
+
       bool agreed_converged = window_converged;
       const Result<void> bc =
           broadcast_window_convergence(R, window_converged, agreed_converged);
       if (!bc.ok()) co_return bc.error();
       window_converged = agreed_converged;
+
+      if (agreed_unmeasured) {
+        co_return Failure{
+            "E-RT-WINDOW-UNMEASURED",
+            window_unmeasured_found
+                ? window_unmeasured_detail
+                : ("iteration region '" + R.name + "': a participant of "
+                   "the window convergence agreement reported an "
+                   "unmeasured block this sweep")};
+      }
     } else if (R.participants.size() > 1) {
       const std::size_t nb = R.blocks.size();
       std::vector<double> payload(1 + 4 * nb);
@@ -3617,37 +3739,55 @@ detail::Task<Result<void>> Runner::Impl::run_region(
         payload[1 + 4 * bi + 2] = owned_here ? R.block_value[bi] : 0.0;
         payload[1 + 4 * bi + 3] = owned;
       }
-      const Result<void> red = reduce_region_residuals(R, payload);
+      const Result<void> red =
+          reduce_region_residuals(R, payload, is_region_participant);
       if (!red.ok()) co_return red.error();
-      if (payload[0] < 0.5) {
-        // A participant's local failure carries through the reduction
-        // exactly as reconcile_epoch() carries an Epoch's: this rank's own
-        // sweep may have succeeded locally, but stopping here -- rather
-        // than waiting for the failed rank at the next sweep's reduction --
-        // is the point of reaching the collective at all.
-        if (!step_failure.has_value()) {
-          step_failure = Failure{
-              "E-RT-REGION-PEER",
-              "a rank taking part in iteration region '" + R.name +
-                  "'s residual agreement failed; stopping here rather than "
-                  "waiting for it at the next sweep. The failing rank "
-                  "reports the cause."};
-        }
-      } else {
-        for (std::size_t bi = 0; bi < nb; ++bi) {
-          if (payload[1 + 4 * bi + 1] == 0.0) {
-            // Not one participant owned any part of this block this sweep
-            // -- a setup defect (the measure names a coupling value nobody
-            // in the region's rank set ever provides), not a converged
-            // zero, and not something the sweep loop can recover from.
-            co_return Failure{
-                "E-RT-REGION-UNMEASURED",
-                "iteration region '" + R.name + "': no participant of the "
-                "residual agreement owns any part of block " +
-                    std::to_string(bi) + "'s coupling value this sweep"};
+      // RT-1 (review 2026-10-11): a rank outside R.participants shares
+      // config.base_communicator with every rank that IS -- this region's
+      // own transport channels move over that whole communicator every
+      // sweep (mpi_transport.cpp's "rank in neither rank set still enters
+      // MPI_Alltoallv with zero counts" convention) -- but
+      // reduce_region_residuals() leaves such a rank's `payload` exactly
+      // as filled above, never reduced: every `owned` entry is 0.0 because
+      // this rank hosts no block of this region at all. Reading the
+      // UNMEASURED check or the agreed values below against that payload,
+      // as the window-scoped sibling's own `gathered.empty()` guard
+      // exists to prevent, would trip E-RT-REGION-UNMEASURED on every such
+      // run regardless of whether the real participants ever had one
+      // unmeasured block. Skip both here; the convergence decision this
+      // rank still owes its partners is read off the broadcast past the
+      // step_failure check below, mirroring broadcast_window_convergence().
+      if (is_region_participant) {
+        if (payload[0] < 0.5) {
+          // A participant's local failure carries through the reduction
+          // exactly as reconcile_epoch() carries an Epoch's: this rank's own
+          // sweep may have succeeded locally, but stopping here -- rather
+          // than waiting for the failed rank at the next sweep's reduction --
+          // is the point of reaching the collective at all.
+          if (!step_failure.has_value()) {
+            step_failure = Failure{
+                "E-RT-REGION-PEER",
+                "a rank taking part in iteration region '" + R.name +
+                    "'s residual agreement failed; stopping here rather than "
+                    "waiting for it at the next sweep. The failing rank "
+                    "reports the cause."};
           }
-          R.block_residual[bi] = payload[1 + 4 * bi + 0];
-          R.block_value[bi] = payload[1 + 4 * bi + 2];
+        } else {
+          for (std::size_t bi = 0; bi < nb; ++bi) {
+            if (payload[1 + 4 * bi + 1] == 0.0) {
+              // Not one participant owned any part of this block this sweep
+              // -- a setup defect (the measure names a coupling value nobody
+              // in the region's rank set ever provides), not a converged
+              // zero, and not something the sweep loop can recover from.
+              co_return Failure{
+                  "E-RT-REGION-UNMEASURED",
+                  "iteration region '" + R.name + "': no participant of the "
+                  "residual agreement owns any part of block " +
+                      std::to_string(bi) + "'s coupling value this sweep"};
+            }
+            R.block_residual[bi] = payload[1 + 4 * bi + 0];
+            R.block_value[bi] = payload[1 + 4 * bi + 2];
+          }
         }
       }
     }
@@ -3709,7 +3849,30 @@ detail::Task<Result<void>> Runner::Impl::run_region(
       // Throws only on a size mismatch, which resolve_regions() made
       // impossible; run_period()'s catch turns it into E-RT-RUN rather
       // than letting it out of a Result-returning call.
-      if (R.convergence.all_satisfied(R.residual_norms, R.reference_norms)) {
+      const bool locally_satisfied =
+          R.convergence.all_satisfied(R.residual_norms, R.reference_norms);
+      bool region_converged = locally_satisfied;
+      if (R.participants.size() > 1) {
+        // RT-1 (review 2026-10-11), mirroring D35's broadcast_window_
+        // convergence(): `locally_satisfied` is only the AGREED decision
+        // on a rank reduce_region_residuals() actually reduced for
+        // (is_region_participant); a bystander's own R.residual_norms/
+        // R.reference_norms above were never updated by this sweep's
+        // reduction and are not meaningful. Broadcasting the participants'
+        // decision from R.participants.front() to every rank of
+        // config.base_communicator -- bystander included -- is what keeps
+        // a bystander's own copy of this loop breaking on the SAME sweep
+        // the real participants do, rather than drifting to a different
+        // (or no) sweep and deadlocking the next collective, which is this
+        // finding's hang.
+        const bool candidate = is_region_participant && locally_satisfied;
+        bool agreed_converged = candidate;
+        const Result<void> bc =
+            broadcast_region_convergence(R, candidate, agreed_converged);
+        if (!bc.ok()) co_return bc.error();
+        region_converged = agreed_converged;
+      }
+      if (region_converged) {
         st.converged = true;
         break;
       }
@@ -3743,7 +3906,24 @@ detail::Task<Result<void>> Runner::Impl::run_region(
     for (const std::size_t slot : R.component_slots) {
       const Result<void> rs = components.at(slot).restore_state();
       note_component_ran();
-      if (!rs.ok()) co_return rs;
+      if (!rs.ok()) {
+        // RT-2(c) (review 2026-10-11): record and carry forward exactly as
+        // the accelerator-divergence path above does (R-09's own comment),
+        // rather than returning straight out of run_region(). The deliver
+        // loop just below already gates its own sink instructions on
+        // `step_failure.has_value()` (via `is_collective()`), and the
+        // re-advance loop after that already stops calling advance() once
+        // `step_failure` is set -- both reach this sweep's end without
+        // this rank dropping out of anything collective. The next sweep's
+        // residual/window-convergence agreement (reduce_region_residuals()/
+        // gather_window_block_samples()) then carries this rank's own
+        // failure to every partner exactly as reconcile_epoch() carries an
+        // Epoch's, instead of leaving a partner whose own restore_state()
+        // succeeded waiting in that collective for a rank that already
+        // returned out of the function.
+        if (!step_failure.has_value()) step_failure = rs.error();
+        continue;
+      }
       // KNOWN_ISSUES.md D12: the re-advance below (R.tick_indices) is
       // this slot's first advance() after THIS restore_state(), so it is
       // the one that must report requires_restore -- and, since a
@@ -3782,23 +3962,37 @@ detail::Task<Result<void>> Runner::Impl::run_region(
         continue;
       }
       const std::size_t which = R.verify_component[v];
-      co_return Failure{
-          "E-ITER-ROLLBACK",
-          "component '" +
-              components.at(R.component_slots[which]).name() +
-              "' is in the derived checkpoint set of iteration region '" +
-              R.name +
-              "', its supports_rollback() returned true, and its "
-              "restore_state() returned success -- but the storage it "
-              "registered for arc %" + std::to_string(R.verify_arcs[v]) +
-              " does not hold the values it held when save_state() was called. "
-              "save_state() must capture everything advance() writes, "
-              "including the registered field arrays, and restore_state() must "
-              "copy it back element-wise into that same storage. Sweep " +
-              std::to_string(st.iterations) +
-              " would otherwise start from state the previous sweep left "
-              "behind, and the region would converge to the fixed point of a "
-              "different operator"};
+      // RT-2(d) (review 2026-10-11): E-ITER-ROLLBACK is BY DESIGN a
+      // rank-local verdict -- it compares each rank's own slice of
+      // registered storage, so one rank's component failing this check
+      // while a peer's passes is precisely the scenario it exists to
+      // catch, not an edge case. Record it and keep checking the rest of
+      // the derived checkpoint set (each arc's own comparison is
+      // independent) instead of returning straight out of run_region();
+      // the deliver/re-advance code below already carries a recorded
+      // `step_failure` through its own collectives exactly as (c)'s own
+      // comment just above describes, reaching the next sweep's residual
+      // agreement rather than leaving a peer waiting in it.
+      if (!step_failure.has_value()) {
+        step_failure = Failure{
+            "E-ITER-ROLLBACK",
+            "component '" +
+                components.at(R.component_slots[which]).name() +
+                "' is in the derived checkpoint set of iteration region '" +
+                R.name +
+                "', its supports_rollback() returned true, and its "
+                "restore_state() returned success -- but the storage it "
+                "registered for arc %" + std::to_string(R.verify_arcs[v]) +
+                " does not hold the values it held when save_state() was "
+                "called. save_state() must capture everything advance() "
+                "writes, including the registered field arrays, and "
+                "restore_state() must copy it back element-wise into that "
+                "same storage. Sweep " + std::to_string(st.iterations) +
+                " would otherwise start from state the previous sweep left "
+                "behind, and the region would converge to the fixed point "
+                "of a different operator"};
+      }
+      continue;
     }
 
     // Deliver the accelerated iterate, and bring every previous-iterate shadow
@@ -4319,11 +4513,15 @@ Result<void> Runner::Impl::resolve_pending_window_straddles(
 // straddles()` (this file, called from `run_region()`, BEFORE this
 // function ever runs for that next instance) then REPLAYS it with that
 // window's own now-final data, following the SAME choreography
-// `WindowCoupler::resolve_pending_straddles()` uses -- NOT YET VERIFIED
-// bit-exact against it (test/runtime/window_runner_straddle_test.cpp's
-// own *FixedBCrossing tests still disagree at this writing; see that
-// file's own comment on the open gap). An IMPORT PROVIDER's straddle is
-// handled by
+// `WindowCoupler::resolve_pending_straddles()` uses -- RT-6 (review
+// 2026-10-11): the *FixedBCrossing tests this comment used to call "not
+// yet verified" now exist, run, and are currently passing, with
+// GaussSeidel matching the driver bitwise; they run at kFixedSweeps=1,
+// not the N~25-30 regime a separate bisection measured a ~4.5e-14
+// relative Jacobi floor at -- see test/runtime/window_runner_straddle_
+// test.cpp's own comment next to `kFixedSweeps` for the current state
+// and the open question of which regime this check is meant to pin. An
+// IMPORT PROVIDER's straddle is handled by
 // `window_sample_times()`/`window_sample_shift()` (fuse/model/coupling_
 // graph.hpp) reconstructing the provider's own grid and buffer-index
 // correspondence from the graph alone -- verified against the compiled
@@ -4431,11 +4629,14 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
     // resolve_pending_window_straddles() temporarily and comparing the
     // printed T0/T1/clock sequence against the hand-derived (13,7)
     // schedule (instrumentation since removed). This
-    // fixes THAT bug specifically; it does not, by itself, make the
-    // wider `*FixedBCrossing` comparisons in test/runtime/window_
-    // runner_straddle_test.cpp bit-exact against the driver -- they
-    // still disagree at this writing; see that file's own comment on
-    // the open gap. Cached in `window_pass_start_clock`
+    // fixes THAT bug specifically; RT-6 (review 2026-10-11): the wider
+    // `*FixedBCrossing` comparisons in test/runtime/window_runner_
+    // straddle_test.cpp now exist, run, and currently pass, at
+    // kFixedSweeps=1 -- that file's own comment next to `kFixedSweeps`
+    // has the current account, including the open question of whether
+    // N=1 is the regime this check is meant to pin, versus the N~25-30
+    // regime a separate bisection measured a floor at. Cached in
+    // `window_pass_start_clock`
     // (its own comment, runner_impl.hpp) so EVERY sweep of this pass
     // plans from the SAME clock, not from wherever the PREVIOUS
     // sweep's own advance left `st.clock`.

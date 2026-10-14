@@ -28,7 +28,10 @@ no enforcement is a preference.
 
 `I6` **Invariants throw or return a status; `assert` is never an invariant.**
 : Release and sanitizer legs are mandatory, because three defects in the parent code bases escaped
-  Debug-only suites. *Enforced by* `tools/check-invariants.py` and by the CI legs themselves.
+  Debug-only suites. The no-`assert` rule itself is *enforced by* `tools/check-invariants.py`. Of
+  the two mandatory legs, only Release exists today (`tier0`'s Debug/Release matrix,
+  `.github/workflows/ci.yml`); the ASan+UBSan leg this rule also demands has no CI leg yet —
+  `testing.md`'s CI-legs list carries it under Planned, for S1's exit.
 
 `I7` **Third-party types stay out of public headers.**
 : No Eigen, KokkosKernels, MOAB, PETSc, MPI or HDF5 type in a public header outside its own backend
@@ -41,8 +44,13 @@ no enforcement is a preference.
 
 `I9` **A port is accepted only with killed mutants.**
 : At least one named mutation per public kernel, killed by a test, logged under `build-evidence/`.
-  Green tests that cannot detect the defect they were written for are decoration. *Enforced by* the
-  mutation-evidence CI gate.
+  Green tests that cannot detect the defect they were written for are decoration. *Enforced by*
+  `tools/mutate.py` run against a configured build before a port is accepted, with the resulting log
+  committed under `build-evidence/`. The one piece of this that is a CI gate today is staleness, not
+  the kill itself: `tools/mutate.py --check-anchors` (static, no build) runs in the `gates` job and
+  fails when a logged mutation's anchor text no longer occurs exactly once in its file — the gap that
+  let three KILLED rows outlive the rename they were written against. Running the mutations and
+  confirming each is KILLED still has no CI leg (see `testing.md`'s CI-legs list).
 
 `I10` **A fact about an upstream repository is a dated observation.**
 : Cite `path:line` at the SHA in `UPSTREAMS.lock`; re-verify before depending on it. *Enforced by*
@@ -96,7 +104,11 @@ descriptor's bytes are reproducible). Three rules follow, each with a test:
 - **Multiplying or dividing an affine unit is refused** (`E-BASE-UNITS-AFFINE`). Degrees Celsius
   squared is not a quantity, and dropping the offset would be a silent error no dimensional check
   can see.
-- **A scale-only mismatch on a channel is its own verdict** (`E-UNITS-SCALE`), not an `E-UNITS`
-  incompatibility and not silence. It is a conversion the compiler will insert once transform
-  inference lands (S2.4); until then it is refused, because applying the wrong factor every step is
-  worse than a configure-time error.
+- **A scale-only mismatch on a channel is its own verdict**, not an `E-UNITS` incompatibility and
+  not silence. Transform inference (S2.4) has landed: under `ConnectPolicy::allow_automatic_unit_scale`
+  (the default), an exact, zero-offset scale is inferred as a `UnitScale` operator and *reported*,
+  not silent — `validate()` emits `I-UNIT-SCALE-INSERTED` naming the factor, because the user should
+  see an operator they did not write. `E-UNITS-SCALE` is the verdict only when insertion is not
+  permitted (the policy forbids it) or not possible (an offset change, which moves the zero of the
+  scale and is never inserted on the caller's behalf) — applying the wrong factor, or silently
+  moving a zero, every step is worse than a reported insertion or a refusal.

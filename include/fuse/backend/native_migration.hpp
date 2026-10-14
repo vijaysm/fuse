@@ -135,7 +135,11 @@ void resolve_vertex_ownership(MeshArrays<Kokkos::HostSpace>& arrays, CommHandle 
 /// its OWN validity locally, then reduces that outcome with every other
 /// rank via one `MPI_Allreduce(MIN)` BEFORE calling the exchange -- if
 /// any rank is invalid, EVERY rank returns the same rejection, none of
-/// them touching the alltoall at all.
+/// them touching the alltoall at all. `unpack_migrated_mesh`'s own
+/// POST-exchange rebuild is reconciled the identical way, before
+/// `resolve_vertex_ownership`'s own Allgather/Allgatherv: a rank whose
+/// received buffers it alone cannot rebuild must not return while its
+/// peers proceed into that collective either.
 [[nodiscard]] Result<std::unique_ptr<NativeMeshView>> migrate(const NativeMeshView& mesh,
                                                               const std::vector<int>& dest,
                                                               CommHandle comm);

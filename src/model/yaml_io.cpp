@@ -3,6 +3,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <iterator>
 #include <optional>
@@ -12,6 +13,7 @@
 #include <vector>
 
 #include "fuse/model/descriptor.hpp"
+#include "fuse/model/semantics.hpp"
 #include "fuse/model/validate.hpp"
 
 namespace fuse {
@@ -30,13 +32,6 @@ const UnitEntry kUnitTable[] = {
     {"J", units::kJoule},         {"W", units::kWatt},
     {"Pa", units::kPascal},       {"W/m^2", units::kHeatFluxDensity},
 };
-
-bool lookup_units(const std::string& sym, Units& out) {
-  for (const auto& e : kUnitTable) {
-    if (sym == e.symbol) { out = e.value; return true; }
-  }
-  return false;
-}
 
 bool parse_rational(const std::string& s, Rational& out) {
   const auto slash = s.find('/');
@@ -84,13 +79,46 @@ YAML::Node units_node(const Units& u) {
   return n;
 }
 
-/// Reads either form: a table symbol, or the structural map `units_node` emits.
+/// Reads either form: a unit expression, or the structural map `units_node`
+/// emits.
+///
+/// BM-12 (review 2026-10-11): the scalar branch used to look symbols up in
+/// `kUnitTable` above -- a 10-entry table private to this file -- while
+/// semantics.hpp documents `parse_unit_expression()` as "how a YAML or
+/// C-ABI caller states units at all". The two vocabularies disagreed:
+/// `"m/s"`, `"kg/m^3"`, `"Hz"` and eight more of the parser's 21 symbols
+/// parsed everywhere else in the library and were refused here with
+/// `E-YAML-UNITS`. Routing through the real parser closes the gap for
+/// every symbol it supports (a strict superset of `kUnitTable`'s ten,
+/// checked by hand against `unit_symbols`, src/model/semantics.cpp);
+/// `units_node()`'s own emission table above is unchanged, so the round
+/// trip for every symbol it ever writes stays byte-identical.
+///
+/// BM-15 (review 2026-10-11): an exponent read here used to narrow with a
+/// bare `static_cast<std::int8_t>`, which wraps silently (`length: 300`
+/// read back as 44) instead of refusing -- the in-process path refuses the
+/// identical case (`detail::narrow_exponent`, fuse/base/units.hpp,
+/// `E-BASE-UNITS-EXPONENT`), so a hand-written YAML document should not be
+/// able to declare a different physical quantity than the one it wrote.
+/// `exponent_in_range` is threaded through rather than thrown: this
+/// function's whole contract is "fail by returning false", and the two
+/// scale/offset checks below already follow that shape.
 bool parse_units(const YAML::Node& n, Units& out) {
-  if (n.IsScalar()) return lookup_units(n.as<std::string>(), out);
+  if (n.IsScalar()) {
+    if (const auto parsed = parse_unit_expression(n.as<std::string>())) {
+      out = *parsed;
+      return true;
+    }
+    return false;
+  }
   if (!n.IsMap()) return false;
   Units u{};
-  const auto get = [&n](const char* key, std::int8_t& into) {
-    if (n[key]) into = static_cast<std::int8_t>(n[key].as<int>());
+  bool exponent_in_range = true;
+  const auto get = [&n, &exponent_in_range](const char* key, std::int8_t& into) {
+    if (!n[key]) return;
+    const int value = n[key].as<int>();
+    if (value < -128 || value > 127) { exponent_in_range = false; return; }
+    into = static_cast<std::int8_t>(value);
   };
   get("length", u.length);
   get("mass", u.mass);
@@ -99,6 +127,7 @@ bool parse_units(const YAML::Node& n, Units& out) {
   get("temperature", u.temperature);
   get("amount", u.amount);
   get("luminosity", u.luminosity);
+  if (!exponent_in_range) return false;
   if (n["scale"] && !parse_rational(n["scale"].as<std::string>(), u.scale)) return false;
   if (n["offset"] && !parse_rational(n["offset"].as<std::string>(), u.offset)) return false;
   out = u;
@@ -201,6 +230,19 @@ std::optional<Failure> check_unknown_keys(const YAML::Node& n,
   return std::nullopt;
 }
 
+// BM-2: the single guard every required-key site below calls. Returns a
+// Failure naming the key and the context when the key is absent; the
+// caller still does its own `.as<T>()` afterwards (the type itself is
+// handled by `from_yaml`'s outer try/catch, which turns a wrong-typed
+// scalar on this now-confirmed-present key into the same E-YAML-PARSE
+// code rather than a raw yaml-cpp exception).
+std::optional<Failure> require_key(const YAML::Node& n, const char* key,
+                                   const std::string& context) {
+  if (n[key]) return std::nullopt;
+  return Failure{"E-YAML-PARSE",
+               context + " is missing required key '" + key + "'"};
+}
+
 using ComponentByName = std::unordered_map<std::string, ComponentId>;
 
 // --- window (de)serialization ------------------------------------------
@@ -237,19 +279,30 @@ std::optional<Failure> emit_window(YAML::Emitter& e, const CouplingGraph& g,
         << YAML::Key << "component" << YAML::Value
         << g.component(w.component).name
         << YAML::EndMap;
-      break;
+      return std::nullopt;
     case Window::Kind::Explicit:
       e << YAML::Flow << YAML::BeginMap
         << YAML::Key << "kind" << YAML::Value << "explicit"
         << YAML::Key << "length" << YAML::Value << w.length.to_string()
         << YAML::EndMap;
-      break;
+      return std::nullopt;
     case Window::Kind::CouplingPeriod:
-    default:
       e << "coupling_period";
-      break;
+      return std::nullopt;
   }
-  return std::nullopt;
+  // BM-3: there used to be a `default:` here that folded an out-of-range
+  // `Window::Kind` into the `CouplingPeriod` case above -- the exact
+  // silent-reinterpretation shape R-04 was fixed for, except this was the
+  // one enum R-04's own sweep missed. `deserialize()` now range-checks
+  // the byte a `Window::Kind` is built from (fuse/model/descriptor.hpp),
+  // so every graph reaching this emitter has one of the three
+  // enumerators above; reaching here means a `Window` was constructed
+  // directly with a `static_cast` outside both the deserializer and the
+  // builder factories, a programmer error FUSE_ASSERT is the project's
+  // own spelling for.
+  FUSE_ASSERT(false, "emit_window: Window::Kind {} is out of range",
+             static_cast<int>(w.kind));
+  return Failure{"E-YAML-PARSE", "unreachable"};
 }
 
 Result<Window> parse_window(const YAML::Node& wn,
@@ -778,14 +831,23 @@ Result<std::string> to_yaml(const CouplingGraph& g) {
   return std::string{e.c_str()};
 }
 
-Result<CouplingGraph> from_yaml(std::string_view text) {
-  YAML::Node root;
-  try {
-    root = YAML::Load(std::string{text});
-  } catch (const YAML::Exception& ex) {
-    return Failure{"E-YAML-PARSE", ex.what()};
-  }
-
+/// BM-2 (review 2026-10-11): the parse body below used to read every
+/// required key with a bare `node["key"].as<T>()` -- no presence guard, no
+/// surrounding `try`. yaml-cpp throws `YAML::BadConversion`/`InvalidNode`
+/// for a missing, misspelled or wrong-typed scalar, and that exception
+/// used to escape a function whose declared contract is `Result<
+/// CouplingGraph>`, past every caller that checks `.ok()` instead of
+/// wrapping the call in a `try`. Each required key below is now guarded
+/// explicitly, by name and by the entry it belongs to, so the common
+/// mistake (a typo'd key, a map where a scalar was expected) reports
+/// `E-YAML-PARSE` naming the exact key; `from_yaml_body` is additionally
+/// wrapped in a `try` that translates ANY exception still reaching it --
+/// a wrong-typed scalar on an OPTIONAL key, or a `fuse::Error` escaping a
+/// helper such as `RankSet`'s own range check (BM-14) -- into the same
+/// `E-YAML-PARSE` failure rather than letting it propagate as a non-FUSE,
+/// undeclared exception.
+namespace {
+Result<CouplingGraph> from_yaml_body(const YAML::Node& root) {
   if (auto e = check_unknown_keys(
           root,
           {"version", "meshes", "regions", "components", "couplers",
@@ -810,7 +872,16 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
     if (auto e = check_unknown_keys(n, {"name", "source"}, "mesh entry")) {
       return *e;
     }
+    if (auto e = require_key(n, "name", "mesh entry")) return *e;
     const auto name = n["name"].as<std::string>();
+    // BM-16: name-keyed maps collapse a duplicate silently (last wins),
+    // which is how a region naming this mesh by name could resolve to a
+    // DIFFERENT mesh than the one the author thought they had declared.
+    // Refused here, at the point the duplicate first becomes ambiguous,
+    // rather than left to silently rewrite the graph on a round trip.
+    if (mesh_by_name.count(name)) {
+      return Failure{"E-YAML-DUP", "duplicate mesh name '" + name + "'"};
+    }
     mesh_by_name[name] = g.add_mesh(
         MeshDecl{.name = name,
                  .source = n["source"] ? n["source"].as<std::string>() : ""});
@@ -821,12 +892,21 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
             n, {"name", "mesh", "entity_set", "dimension"}, "region entry")) {
       return *e;
     }
+    if (auto e = require_key(n, "mesh", "region entry")) return *e;
     const auto mesh_name = n["mesh"].as<std::string>();
     const auto it = mesh_by_name.find(mesh_name);
     if (it == mesh_by_name.end()) {
       return Failure{"E-YAML-REF", "unknown mesh '" + mesh_name + "'"};
     }
+    if (auto e = require_key(n, "name", "region entry")) return *e;
     const auto name = n["name"].as<std::string>();
+    // BM-16: same reasoning as the mesh table above -- a channel or field
+    // resolving this region's name must not be able to silently land on
+    // whichever of two identically-named regions happened to be declared
+    // last.
+    if (region_by_name.count(name)) {
+      return Failure{"E-YAML-DUP", "duplicate region name '" + name + "'"};
+    }
     region_by_name[name] = g.add_region(Region{
         .name = name,
         .mesh = it->second,
@@ -852,6 +932,7 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
     if (auto e = check_unknown_keys(n, {"name", "index", "ranks", "launch"}, "coupler entry")) {
       return *e;
     }
+    if (auto e = require_key(n, "name", "coupler entry")) return *e;
     CouplerDecl c;
     c.name = n["name"].as<std::string>();
     if (n["ranks"]) {
@@ -860,10 +941,13 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
         for (const auto& r : n["ranks"]) ranks.push_back(r.as<int>());
         c.ranks = RankSet{std::move(ranks)};
       } else {
+        const std::string ranks_ctx = "coupler '" + c.name + "' ranks";
         if (auto e = check_unknown_keys(n["ranks"], {"first", "count"},
-                                        "coupler '" + c.name + "' ranks")) {
+                                        ranks_ctx)) {
           return *e;
         }
+        if (auto e = require_key(n["ranks"], "first", ranks_ctx)) return *e;
+        if (auto e = require_key(n["ranks"], "count", ranks_ctx)) return *e;
         c.ranks = RankSet{n["ranks"]["first"].as<int>(),
                           n["ranks"]["count"].as<int>()};
       }
@@ -907,6 +991,7 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
             n, {"name", "ranks", "interval", "fields", "launch"}, "component entry")) {
       return *e;
     }
+    if (auto e = require_key(n, "name", "component entry")) return *e;
     ComponentDecl c;
     c.name = n["name"].as<std::string>();
     if (n["ranks"]) {
@@ -917,10 +1002,13 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
         // ranks in launcher order without that changing the graph.
         c.ranks = RankSet{std::move(ranks)};
       } else {
+        const std::string ranks_ctx = "component '" + c.name + "' ranks";
         if (auto e = check_unknown_keys(n["ranks"], {"first", "count"},
-                                        "component '" + c.name + "' ranks")) {
+                                        ranks_ctx)) {
           return *e;
         }
+        if (auto e = require_key(n["ranks"], "first", ranks_ctx)) return *e;
+        if (auto e = require_key(n["ranks"], "count", ranks_ctx)) return *e;
         c.ranks = RankSet{n["ranks"]["first"].as<int>(),
                           n["ranks"]["count"].as<int>()};
       }
@@ -948,8 +1036,14 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
               "field entry in component '" + c.name + "'")) {
         return *e;
       }
+      if (auto e = require_key(fn, "name", "field entry in component '" + c.name + "'")) {
+        return *e;
+      }
       FieldSpec f;
       f.name = fn["name"].as<std::string>();
+      if (auto e = require_key(fn, "region", "field '" + f.name + "' in component '" + c.name + "'")) {
+        return *e;
+      }
       const auto rname = fn["region"].as<std::string>();
       const auto rit = region_by_name.find(rname);
       if (rit == region_by_name.end()) {
@@ -965,8 +1059,17 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
       if (fn["components"]) f.components = fn["components"].as<int>();
       if (fn["units"]) {
         if (!parse_units(fn["units"], f.units)) {
-          return Failure{"E-YAML-UNITS",
-                       "unknown unit symbol '" + fn["units"].as<std::string>() + "'"};
+          // BM-15: `parse_units()` fails for two different node shapes --
+          // an unrecognised SCALAR symbol, and a structural MAP with an
+          // out-of-range exponent (this function's own new check) -- and
+          // only the first is safely describable with `.as<std::string>()`;
+          // calling that on the second (a map) throws, which used to turn
+          // this E-YAML-UNITS failure into an unrelated E-YAML-PARSE one
+          // via from_yaml()'s outer catch.
+          const std::string detail = fn["units"].IsScalar()
+              ? "unknown unit symbol '" + fn["units"].as<std::string>() + "'"
+              : "unparseable unit specification for field '" + f.name + "'";
+          return Failure{"E-YAML-UNITS", detail};
         }
         // N-base-model-2: R-19 gated a non-positive Units::scale at the
         // binary descriptor boundary (descriptor.hpp) and at
@@ -1033,7 +1136,10 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
             "channel entry")) {
       return *e;
     }
+    if (auto e = require_key(n, "name", "channel entry")) return *e;
     const auto name = n["name"].as<std::string>();
+    if (auto e = require_key(n, "source", "channel '" + name + "'")) return *e;
+    if (auto e = require_key(n, "target", "channel '" + name + "'")) return *e;
     const auto src_name = n["source"].as<std::string>();
     const auto tgt_name = n["target"].as<std::string>();
     const auto sit = field_by_qualified.find(src_name);
@@ -1043,6 +1149,13 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
     }
     if (tit == field_by_qualified.end()) {
       return Failure{"E-YAML-REF", "unknown target field '" + tgt_name + "'"};
+    }
+    // BM-16: same reasoning as the mesh/region tables above -- an
+    // iteration region naming this channel by name (below) must not be
+    // able to silently bind to whichever of two identically-named
+    // channels happened to be declared last.
+    if (channel_by_name.count(name)) {
+      return Failure{"E-YAML-DUP", "duplicate channel name '" + name + "'"};
     }
     const ChannelId cid = g.add_channel(name, sit->second, tit->second);
     channel_by_name[name] = cid;
@@ -1104,6 +1217,10 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
       if (auto e = check_unknown_keys(n["spacetime"],
                                       {"basis", "degree", "window"},
                                       "channel '" + name + "' spacetime")) {
+        return *e;
+      }
+      if (auto e = require_key(n["spacetime"], "basis",
+                               "channel '" + name + "' spacetime")) {
         return *e;
       }
       TemporalBasis basis = TemporalBasis::None;
@@ -1170,6 +1287,7 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
             "iteration region entry")) {
       return *e;
     }
+    if (auto e = require_key(n, "name", "iteration region entry")) return *e;
     IterationRegionDecl d;
     d.name = n["name"].as<std::string>();
     for (const auto& c : n["channels"]) {
@@ -1180,7 +1298,19 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
       }
       d.channels.push_back(it->second);
     }
-    if (n["max_iterations"]) d.max_iterations = n["max_iterations"].as<int>();
+    if (n["max_iterations"]) {
+      d.max_iterations = n["max_iterations"].as<int>();
+      // BM-17: an authoring-time gate for a defect that otherwise surfaces
+      // only mid-run, inside the sweep loop (`Runner`'s own non-positive-
+      // count check, several collectives deep) instead of here, where the
+      // whole document's problems can be reported together.
+      if (d.max_iterations < 1) {
+        return Failure{"E-YAML-PARSE",
+                     "iteration region '" + d.name +
+                         "': max_iterations must be at least 1, got " +
+                         std::to_string(d.max_iterations)};
+      }
+    }
     for (const auto& mn : n["convergence"]) {
       if (auto e = check_unknown_keys(mn, {"kind", "tolerance", "field"},
                                       "convergence measure")) {
@@ -1200,6 +1330,17 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
                          "a field"};
       }
       m.tolerance = mn["tolerance"].as<double>();
+      // BM-17: `ConvergenceMeasure::satisfied()` (fuse/model/iteration.hpp)
+      // refuses a non-finite or non-positive tolerance with FUSE_THROW,
+      // mid-sweep, several collectives into a run -- the same condition is
+      // checkable, and reportable alongside every other document problem,
+      // at the authoring gate instead.
+      if (!(m.tolerance > 0.0) || !std::isfinite(m.tolerance)) {
+        return Failure{"E-YAML-PARSE",
+                     "iteration region '" + d.name + "': convergence measure "
+                         "for field '" + mn["field"].as<std::string>() +
+                         "' has a tolerance that is not finite and positive"};
+      }
       m.field = mn["field"].as<std::string>();
       d.convergence.add(std::move(m));
     }
@@ -1405,6 +1546,27 @@ Result<CouplingGraph> from_yaml(std::string_view text) {
   }
 
   return g;
+}
+}  // namespace
+
+Result<CouplingGraph> from_yaml(std::string_view text) {
+  YAML::Node root;
+  try {
+    root = YAML::Load(std::string{text});
+  } catch (const YAML::Exception& ex) {
+    return Failure{"E-YAML-PARSE", ex.what()};
+  }
+  // BM-2: the body above this point can only fail via YAML::Load itself
+  // (caught just above); everything from here on -- required-key access,
+  // RankSet construction (BM-14), and every other `.as<T>()` call on an
+  // OPTIONAL key that still turns out to be the wrong YAML type -- is
+  // wrapped in one catch-all so no exception, FUSE-shaped or not, can
+  // escape a function whose contract is `Result<CouplingGraph>`.
+  try {
+    return from_yaml_body(root);
+  } catch (const std::exception& ex) {
+    return Failure{"E-YAML-PARSE", ex.what()};
+  }
 }
 
 Result<CouplingGraph> load_yaml_file(const std::string& path) {

@@ -63,4 +63,68 @@ TEST(Connect, IntentBecomesRoleAndExtensiveFieldsRequireConservation) {
             ConservationGuarantee::None);
 }
 
+// BM-1 (review 2026-10-11): `declared_transfer()` is what `check_channel()`
+// used to replace with a hardcoded `TransferKind::Copy`. These tests pin
+// its own contract directly, against a channel's real `RemapSpec` and
+// region, independent of `check_connection()`'s stages (those are
+// `Compatibility.ConservationRules`'s job, test/model/compatibility_test.cpp).
+namespace {
+
+// Two one-field components on their own region by default; a test can move
+// `dst`'s region to `r_a` to build a same-region pair, or leave it on `r_b`
+// for a region-changing one.
+struct TransferFixture {
+  CouplingGraph g;
+  ChannelId ch;
+
+  explicit TransferFixture(bool same_region) {
+    const auto m_a = g.add_mesh(MeshDecl{.name = "m_a", .source = "generated:line:4"});
+    const auto m_b = g.add_mesh(MeshDecl{.name = "m_b", .source = "generated:line:4"});
+    const auto r_a = g.add_region(Region{.name = "r_a", .mesh = m_a, .dimension = 1});
+    const auto r_b = same_region ? r_a
+                                 : g.add_region(Region{.name = "r_b", .mesh = m_b, .dimension = 1});
+    const auto a = g.add_component(ComponentDecl{.name = "a", .ranks = RankSet{0, 1}, .interval = Rational{1}});
+    const auto b = g.add_component(ComponentDecl{.name = "b", .ranks = RankSet{0, 1}, .interval = Rational{1}});
+    const auto src = g.add_field(a, FieldSpec{.name = "out", .region = r_a, .intent = Intent::Provides});
+    const auto dst = g.add_field(b, FieldSpec{.name = "in", .region = r_b, .intent = Intent::Requires});
+    ch = g.add_channel("c", src, dst);
+  }
+};
+
+}  // namespace
+
+TEST(Connect, DeclaredTransferIsCopyOnlyForNoRemapAndMatchingRegion) {
+  TransferFixture f(/*same_region=*/true);
+  const auto transfer = declared_transfer(f.g, f.g.channel_at(f.ch));
+  EXPECT_EQ(transfer.kind, TransferKind::Copy);
+  EXPECT_EQ(transfer.conservation, ConservationGuarantee::None);
+}
+
+TEST(Connect, DeclaredTransferIsInterpolationWhenTheRegionChangesWithNoRemapFlags) {
+  // lower()'s own `region_changes` condition (src/ir/rules_channel.cpp)
+  // emits a real Remap for exactly this shape even with no remap flags at
+  // all, so a `Copy` verdict here would be a declaration that disagrees
+  // with what actually runs.
+  TransferFixture f(/*same_region=*/false);
+  const auto transfer = declared_transfer(f.g, f.g.channel_at(f.ch));
+  EXPECT_EQ(transfer.kind, TransferKind::Interpolation);
+  EXPECT_EQ(transfer.conservation, ConservationGuarantee::None);
+}
+
+TEST(Connect, DeclaredTransferIsInterpolationForANonConservativeRemapFlag) {
+  TransferFixture f(/*same_region=*/true);
+  f.g.channel(f.ch).remap(RemapFlags::Monotone);
+  const auto transfer = declared_transfer(f.g, f.g.channel_at(f.ch));
+  EXPECT_EQ(transfer.kind, TransferKind::Interpolation);
+  EXPECT_EQ(transfer.conservation, ConservationGuarantee::None);
+}
+
+TEST(Connect, DeclaredTransferIsConservativeRemapOnlyWhenTheChannelDeclaresIt) {
+  TransferFixture f(/*same_region=*/false);
+  f.g.channel(f.ch).conservative();
+  const auto transfer = declared_transfer(f.g, f.g.channel_at(f.ch));
+  EXPECT_EQ(transfer.kind, TransferKind::ConservativeRemap);
+  EXPECT_EQ(transfer.conservation, ConservationGuarantee::GlobalConservative);
+}
+
 }  // namespace

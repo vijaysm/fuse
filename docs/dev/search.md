@@ -176,6 +176,22 @@ space's memory the same way the local facade does, and copying the ranked `(rank
 to host memory to assemble the `std::vector`-based `DistributedQueryResult` (no device-resident
 overload for the distributed path -- out of this track's scope).
 
+## Rank agreement in the distributed query
+
+`query_points_distributed`'s dimension check (`E-SEARCH-MIXED-DIM`) is rank-local in its
+computation but never in its RETURN: a rank whose own `local_boxes` fail `BoxIndex::build`'s
+per-box dimension check, or whose `local_boxes` agree with themselves but disagree in dimension
+with another rank's, does not refuse alone. Both cases are reconciled with an `MPI_Allreduce`
+across the whole communicator (`MIN` of a locally-computed validity flag, then `MAX`/`MIN` of the
+agreed dimension) BEFORE `ArborX::DistributedTree` is constructed -- the same agree-before-collective
+recipe `fuse::native::migrate` and `fuse::partition::centroids_of` use for their own per-rank
+rejections. A rank with zero local boxes casts no vote in the cross-rank comparison. Found
+2026-10-11: the check used to run before the comm == kNullComm branch and return immediately on a
+rank-local failure, which left every OTHER rank in `comm` entering the distributed tree's
+collective construction -- a hang, not a refusal -- and the cross-rank disagreement case was not
+checked at all. `test/search/distributed_mpi_test.cpp`'s `RefusesWhenOnlyOneRankSubmitsMixed...`
+and `...DisagreeAboutDimension...` are the firing tests this fix added.
+
 ## Determinism
 
 Every `QueryResult`/`DistributedQueryResult` group is sorted ascending by index (`(rank, index)` for

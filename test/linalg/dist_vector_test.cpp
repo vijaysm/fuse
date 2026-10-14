@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <random>
 #include <vector>
@@ -304,10 +305,29 @@ TEST(DistVectorTwoPartitionFake, DotAndNorm2EqualTheGatheredSerialReduction) {
 
   // Ground truth, gathered: the global quantities a single-rank computation
   // over the WHOLE vector would produce.
-  double expect_dot = 0.0;
-  for (std::size_t i = 0; i < n; ++i) expect_dot += a[i] * b[i];
+  double expect_dot = 0.0, sum_abs_dot_terms = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    expect_dot += a[i] * b[i];
+    sum_abs_dot_terms += std::fabs(a[i] * b[i]);
+  }
   double expect_max_a = 0.0;
   for (std::size_t i = 0; i < n; ++i) expect_max_a = std::max(expect_max_a, std::fabs(a[i]));
+
+  // Review 2026-10-11 NL-10: `a0.dot(b0)`/`a1.dot(b1)` below each sum a
+  // 2-way split (this partition's own local partial plus the OTHER
+  // partition's, handed in through `TwoPartitionReducer`) via one
+  // `Reducer::sum`; `expect_dot` above sums all `n` terms in a single
+  // ascending-index loop. Floating-point addition is not associative, so
+  // the two groupings can disagree in the last bit even on a correct
+  // implementation -- a bit-tight `EXPECT_DOUBLE_EQ` would pass today by
+  // luck of magnitude (the same fragility class KNOWN_ISSUES.md's D30
+  // already records for contraction, not reassociation), not by
+  // construction. Bounded by a measured, term-count-scaled tolerance
+  // instead, as dist_sparse_matrix_test.cpp's own
+  // `check_two_partition_apply` already does for the analogous apply()
+  // split.
+  const double dot_tol =
+      static_cast<double>(n) * std::numeric_limits<double>::epsilon() * sum_abs_dot_terms;
 
   // Each partition's own local partial, computed the SAME way (independent
   // of DistVector), so it can be handed to the OTHER partition's fake
@@ -332,14 +352,18 @@ TEST(DistVectorTwoPartitionFake, DotAndNorm2EqualTheGatheredSerialReduction) {
   std::copy(a.begin(), a.begin() + static_cast<std::ptrdiff_t>(n0), a0.data());
   std::copy(b.begin(), b.begin() + static_cast<std::ptrdiff_t>(n0), b0.data());
 
-  EXPECT_DOUBLE_EQ(a0.dot(b0), expect_dot);
+  EXPECT_NEAR(a0.dot(b0), expect_dot, dot_tol);
 
   DistVector a0_self(n0, make_serial_exchanger(), std::make_shared<TwoPartitionReducer>(
                                                       0, local_selfdot1, local_max1));
   std::copy(a.begin(), a.begin() + static_cast<std::ptrdiff_t>(n0), a0_self.data());
   double expect_norm2 = 0.0;
   for (std::size_t i = 0; i < n; ++i) expect_norm2 += a[i] * a[i];
-  EXPECT_DOUBLE_EQ(a0_self.norm2(), std::sqrt(expect_norm2));
+  // Every term of expect_norm2 is non-negative, so its own sum is its own
+  // magnitude bound -- no separate sum_abs needed (NL-10, as above).
+  const double norm2_tol =
+      static_cast<double>(n) * std::numeric_limits<double>::epsilon() * expect_norm2;
+  EXPECT_NEAR(a0_self.norm2(), std::sqrt(expect_norm2), norm2_tol);
 
   DistVector a0_max(n0, make_serial_exchanger(), std::make_shared<TwoPartitionReducer>(
                                                      0, local_dot1, local_max1));
@@ -355,7 +379,7 @@ TEST(DistVectorTwoPartitionFake, DotAndNorm2EqualTheGatheredSerialReduction) {
                                                  1, local_dot0, local_max0));
   std::copy(a.begin() + static_cast<std::ptrdiff_t>(n0), a.end(), a1.data());
   std::copy(b.begin() + static_cast<std::ptrdiff_t>(n0), b.end(), b1.data());
-  EXPECT_DOUBLE_EQ(a1.dot(b1), expect_dot);
+  EXPECT_NEAR(a1.dot(b1), expect_dot, dot_tol);
 }
 
 // ---------------------------------------------------------------------

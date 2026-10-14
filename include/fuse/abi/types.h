@@ -112,7 +112,7 @@ typedef struct fuse_error {
   uint64_t    length;  /* out: full message length in bytes, excluding the NUL */
   char*       buffer;  /* in: caller's buffer, or NULL to query length only */
   uint64_t    capacity;  /* in: bytes available in buffer */
-  const char* code;  /* out: the E-... code, static storage, valid until the next failing call */
+  const char* code;  /* out: the E-... code; valid until the next failing call on this context (or thread, when ctx is NULL) -- NOT static storage (it points into the context's own last_error_code, or the thread-local twin when ctx is NULL), and not valid after fuse_destroy() on this context (Review 2026-10-11 AB-8: the doc text previously claimed static storage, which this never was) */
 } fuse_error;
 
 /* where a coupling graph comes from; exactly one of yaml_path and bytes is set */
@@ -136,8 +136,8 @@ typedef struct fuse_setup_options {
   uint32_t        struct_size;
   int64_t         communicator;  /* Fortran handle of the communicator this process couples on (MPI_Comm_c2f), or 0 for none -- UNLESS my_component names a component whose loaded LaunchSpec is Mpmd or Connect, in which case this is instead the WORLD communicator this process starts in (this executable's own MPI_COMM_WORLD, already MPI_Init'd), and fuse_setup() forms the real base communicator from it via fuse::transport::connect() before storing it; see my_component's own comment */
   int32_t         has_end_time;  /* 1 if end_time is set */
-  int32_t         reserved;  /* must be 0 */
-  fuse_exact_time end_time;  /* when is_coupling_ongoing turns false; the graph's own end otherwise */
+  int32_t         reserved;  /* must be 0; not validated by this host (Review 2026-10-11 AB-11) */
+  fuse_exact_time end_time;  /* when is_coupling_ongoing turns false, when has_end_time is set; the graph carries no end time of its own to fall back on (Review 2026-10-11 AB-11: the prior text -- the graph's own end otherwise -- described a model-layer feature that does not exist -- impl_is_coupling_ongoing reports ongoing=1 forever when has_end_time is unset). A run with no end_time is unbounded until the caller's own loop, or fuse_run()'s own periods count, stops it. */
   const char*     my_component;  /* NUL-terminated name of the graph component THIS process plays, or NULL (the default, and every behaviour this had before this field existed) to use `communicator` exactly as given, with no connect() call at all. Required to form a real base communicator when the loaded graph declares component `my_component`'s own LaunchSpec as Mpmd (launcher-style multiple-program-multiple-data, MPI_COMM_WORLD already shared -- this call reads MPI_APPNUM and checks it) or Connect (separately launched executables -- this call does the MPI_Open_port/MPI_Comm_accept or MPI_Comm_connect handshake LaunchSpec::port_file/service_name/is_acceptor name, then MPI_Intercomm_merge); for InProcess or Plugin, behaves exactly as when NULL (communicator used as given) since fuse::transport::connect() itself refuses to be called for either, saying there is nothing to connect and the given communicator already is the base one. A C or Fortran caller therefore never calls fuse::transport::connect() (or any other C++) directly -- setting this one field is the whole difference between an in-process run and a multi-executable one, which is the point: a participant written in a foreign language never has to touch C++ to take part in one. Appended 2026-10-03 for examples/brusselator/participants/{u_main.c,v_main.f90} (Conformance Unit 2); ignored (NULL-equivalent) by an old caller whose struct_size predates this field, per abi-design.md rule 2 */
 } fuse_setup_options;
 

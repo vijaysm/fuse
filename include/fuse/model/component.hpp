@@ -1,12 +1,15 @@
 #pragma once
 #include <utility>
 #include <cstddef>
+#include <cstdint>
 #include <iterator>
 #include <algorithm>
+#include <limits>
 
 #include <string>
 #include <vector>
 
+#include "fuse/base/error.hpp"
 #include "fuse/base/ids.hpp"
 #include "fuse/base/rational.hpp"
 #include "fuse/model/launch.hpp"
@@ -63,7 +66,31 @@ class RankSet {
   /// (`E-TRANSPORT-RANKS`) two layers down -- the ruling of 2026-09-22 is that
   /// the refusal is right and this contract was the incomplete half.
   RankSet(int first, int count) {
-    ranks_.reserve(static_cast<std::size_t>(count > 0 ? count : 0));
+    if (count <= 0) return;  // empty, as documented above.
+    // BM-14 (review 2026-10-11): `first` and `count` arrive unchecked from
+    // any caller, including a hand-written YAML document (src/model/
+    // yaml_io.cpp) that has not yet reached any other validation gate. A
+    // huge `count` would `reserve()` gigabytes before anything looks at
+    // it, and `first + count` overflowing `int` is undefined behavior in
+    // the loop below -- refused here, before either happens, the same
+    // "refuse rather than let the arithmetic go wrong" rule
+    // `detail::narrow_exponent()` (fuse/base/units.hpp) and `Rational`'s
+    // own overflow checks already follow. 16 million ranks is already
+    // far more than any placement a real coupled run has ever declared.
+    constexpr int kMaxRankSetCount = 1 << 24;
+    if (count > kMaxRankSetCount) {
+      FUSE_REFUSE("E-RANKSET-RANGE",
+                 "RankSet(first={}, count={}): count exceeds the sane bound {}",
+                 first, count, kMaxRankSetCount);
+    }
+    const std::int64_t last =
+        static_cast<std::int64_t>(first) + static_cast<std::int64_t>(count) - 1;
+    if (last > std::numeric_limits<int>::max()) {
+      FUSE_REFUSE("E-RANKSET-RANGE",
+                 "RankSet(first={}, count={}): first + count overflows int",
+                 first, count);
+    }
+    ranks_.reserve(static_cast<std::size_t>(count));
     for (int i = 0; i < count; ++i) ranks_.push_back(first + i);
   }
 

@@ -8,6 +8,8 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -58,6 +60,23 @@ TEST(Multiscale, OverlapCheckRefusesEvenForValidCoverage) {
   const auto under = check_overlap({.coverage = {Rational{1, 3}, Rational{1, 3}}});
   ASSERT_FALSE(under.ok());
   EXPECT_EQ(under.error().code, "E-MULTISCALE-NOT-IMPLEMENTED");
+}
+
+// BM-19 (review 2026-10-11): `total()` used to accumulate with the
+// throwing `+` operator, which already refused an unrepresentable sum
+// (via Rational::operator+=) but did so from three stack frames down,
+// with a message naming an addition rather than this accumulation. The
+// refusal itself is unchanged -- same E-BASE-RATIONAL-OVERFLOW code --
+// now raised explicitly, by name, at this call site via `try_add`.
+TEST(Multiscale, OverlapTotalRefusesAnUnrepresentableSum) {
+  constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+  const OverlapSpec huge{.coverage = {Rational{kMax}, Rational{kMax}}};
+  try {
+    (void)huge.total();
+    FAIL() << "expected OverlapSpec::total() to refuse an unrepresentable sum";
+  } catch (const fuse::Refusal& e) {
+    EXPECT_EQ(e.code(), "E-BASE-RATIONAL-OVERFLOW");
+  }
 }
 
 TEST(Multiscale, SurrogateSubstitutionRefusesWithACompleteContract) {

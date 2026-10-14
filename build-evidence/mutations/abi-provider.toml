@@ -62,10 +62,10 @@ old = """    const fuse_status rc = table_->advance(self_, &req, &rep);
       return fuse::Failure{\"E-ABI-PROVIDER-ADVANCE\",
                            \"provider '\" + name_ + \"': advance() returned \" + std::to_string(rc)};
     }
-    if (!struct_size_ok(&rep)) {"""
+    if (!step_report_struct_size_ok(&rep)) {"""
 new = """    const fuse_status rc = table_->advance(self_, &req, &rep);
     (void)rc;
-    if (!struct_size_ok(&rep)) {"""
+    if (!step_report_struct_size_ok(&rep)) {"""
 target = "fuse_abi_conformance_test"
 test = "abi.conformance"
 result = "CONFIRMED 2026-10-02: ConformanceTest.PluginAdvanceErrorSurfacesAsComponentFailure failed on EXPECT_STREQ(err.code, \"E-ABI-PROVIDER-ADVANCE\") -- the bad-advance plugin's FUSE_ERR_RUNTIME return was no longer read, so run() did not fail on the dropped status code itself. The failure still surfaced (run() still returned FUSE_ERR_RUNTIME, just with err.code == \"E-ABI-PROVIDER-WINDOW\" instead): with the error check gone, the adapter fell through to the window-equality check (rule 6) against `rep`, which the bad-advance plugin never touches (it returns immediately), so rep's zero-initialized t_begin/t_end disagreed with the request's and were caught there instead -- a DIFFERENT refusal than the one this row names, which is itself the finding: removing the error check does not make a misbehaving provider's failure invisible, it only changes which of the adapter's own checks catches it, and this mutation would go undetected only if BOTH checks were removed together. The other 11 ConformanceTest cases, none of which mounts a provider whose advance() fails, still passed. Restored; cmp against the pre-mutation file reported no difference."

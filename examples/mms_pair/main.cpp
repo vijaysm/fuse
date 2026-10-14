@@ -133,6 +133,12 @@ int main(int argc, char** argv) {
   if (dump) {
     std::cout << "=== IR ===\n" << dump_text(lowered.dag)
               << "\n=== PLAN ===\n" << sched.plan.to_string() << "\n";
+    // Review 2026-10-11 TD-3: docs/user/mms-pair.md claims --dump prints
+    // "without running anything, then exits 0"; prior to this fix every
+    // run still fell through into the full gated physics run below,
+    // costing the entire run and returning the gates' own exit status
+    // rather than an unconditional 0.
+    return 0;
   }
 
   fuse::ComponentSet components;

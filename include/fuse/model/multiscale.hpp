@@ -78,9 +78,27 @@ struct ClosureSpec {
 /// be CHECKED rather than compared against a tolerance.
 struct OverlapSpec {
   std::vector<Rational> coverage;
+  /// BM-19 (review 2026-10-11): the accumulation used the throwing `+`
+  /// operator, which can `FUSE_REFUSE("E-BASE-RATIONAL-OVERFLOW", ...)` on
+  /// an unrepresentable running sum -- the same refusal happens now, via
+  /// `try_add`, but explicitly and by name at this call site instead of
+  /// three stack frames down inside `Rational::operator+=`, so a reader
+  /// (or a debugger backtrace) sees which accumulation overflowed rather
+  /// than just that an addition somewhere did. `check_overlap()`
+  /// (src/model/multiscale.cpp), today's only real consumer, refuses
+  /// unconditionally regardless of the value (multiscale is declared and
+  /// rejecting, not yet implemented), so this only ever affects the text
+  /// of that refusal's message.
   [[nodiscard]] Rational total() const {
     Rational sum{0};
-    for (const auto& c : coverage) sum = sum + c;
+    for (const auto& c : coverage) {
+      const auto next = Rational::try_add(sum, c);
+      if (!next) {
+        FUSE_REFUSE("E-BASE-RATIONAL-OVERFLOW",
+                   "OverlapSpec::total: coverage sum overflow");
+      }
+      sum = *next;
+    }
     return sum;
   }
 };

@@ -97,6 +97,34 @@ struct LoweringContext {
   /// combine node is emitted once all channels have lowered.
   std::unordered_map<std::uint32_t, std::vector<ArcId>> field_writers;
 
+  /// Review 2026-10-11 IS-9: the channel that produced each arc recorded in
+  /// `field_writers`, keyed by `ArcId::value()`. An identity channel (same
+  /// region, same placement, unlagged -- `five_writer_merge()`'s own shape,
+  /// test/schedule/plan_test.cpp) emits NO node of its own: the writer arc
+  /// IS the Source arc, whose producer's `Node::origin` is deliberately
+  /// `ChannelId{}` (a Source belongs to its component, not to any one
+  /// channel that reads it -- lower()'s step 1). Looking the channel up via
+  /// `dag.arc(writer).producer`'s own origin therefore returns an INVALID
+  /// channel for exactly the writers that have no chain node, which is what
+  /// this map exists to avoid: it is populated at the one place
+  /// (`lower_channel()`, src/ir/rules_channel.cpp) that already knows which
+  /// channel each writer arc belongs to, before that identity is lost.
+  std::unordered_map<std::uint32_t, ChannelId> writer_arc_channel;
+
+  /// Review 2026-10-11 IS-9: for a merged field, the channel whose
+  /// contribution the merge actually adopted as the combined value's time
+  /// level -- the LATEST of its writers' (lower()'s own merge-construction
+  /// comment on why: a lagged writer's output is typed one level back, and
+  /// the acyclicity prover's lag-cutting rule needs the true newest level,
+  /// not the first-declared writer's). `emit_field_sink()` reads this to
+  /// authorize the Sink's time-level mismatch against the writer that is
+  /// ACTUALLY responsible for it, instead of against whichever channel
+  /// happens to target the field first by declaration order -- which, for a
+  /// multi-writer field, can authorize the wrong contribution (or refuse
+  /// one that was properly authorized). Absent for a single-writer field,
+  /// where the one writer is unambiguous and this does not apply.
+  std::unordered_map<std::uint32_t, ChannelId> merge_newest_origin;
+
   /// The same policy the validator used. It must be the same object, or the
   /// compiler can emit a unit conversion the checker forbade (or omit one it
   /// authorized) and nothing would notice: validation and lowering would each
@@ -364,7 +392,9 @@ struct CheckpointSet {
 ///     zero times.
 ///
 /// Split out of `verify_iteration_region()` below because the C ABI needs
-/// exactly this subset: `soma_initialize()` (src/capi/soma_c.cpp) has no
+/// exactly this subset: `fuse_initialize()` (`impl_initialize`,
+/// src/abi/participant.cpp -- review 2026-10-11 IS-11, this used to cite a
+/// `soma_c.cpp`/`soma_initialize()` that does not exist) has no
 /// `ComponentSet`, so it cannot ask about rollback support, and no `Runner`, so
 /// it never reaches `verify_iteration_region()` at all -- yet both states above
 /// are exactly as wrong there as they are on the Runner path. Shared rather
@@ -400,8 +430,9 @@ struct MeasureTarget {
 ///
 /// Shared by `Runner::Impl::resolve_regions()` (src/runtime/iteration.cpp),
 /// whose targets come from the DAG's residual blocks, and by
-/// `soma_initialize()` (src/capi/soma_c.cpp), whose targets come from the
-/// graph's declared channel list.
+/// `fuse_initialize()` (`impl_initialize`, src/abi/participant.cpp --
+/// review 2026-10-11 IS-11, correcting the same stale `soma_c.cpp` citation
+/// as above), whose targets come from the graph's declared channel list.
 ///
 /// WHY THOSE TWO LISTS AGREE, stated precisely because the obvious reason is
 /// not the operative one. `build_iteration_regions()` (src/ir/regions.cpp)

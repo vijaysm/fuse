@@ -46,6 +46,18 @@ TEST(CopyTransport, RejectsNullPointers) {
   EXPECT_FALSE(t.move(v.data(), nullptr, 4).ok());
 }
 
+// Review 2026-10-11 TR-16. MpiTransport::move() (transport.hpp's own doc)
+// accepts null exactly when n is zero -- a rank owning no elements of a mesh
+// entity set is ordinary in parallel, and an empty std::vector<double>'s
+// data() is permitted to be null. CopyTransport used to refuse null
+// unconditionally, so the same zero-element, same-process channel was
+// refused by this backend and accepted by the MPI one.
+TEST(CopyTransport, AcceptsNullPointersWhenNIsZero) {
+  CopyTransport t;
+  ASSERT_TRUE(t.prepare(TransportSpec{.elements = 0}).ok());
+  EXPECT_TRUE(t.move(nullptr, nullptr, 0).ok());
+}
+
 TEST(CopyTransport, RejectsMoveBeyondPreparedSize) {
   const std::vector<double> src(4, 1.0);
   std::vector<double> dst(4, 0.0);

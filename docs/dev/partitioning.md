@@ -39,7 +39,17 @@ the port intact:
 * **Ties** (elements inside the bucket-bound band) are sorted by global id and distributed by an
   ascending-weight walk until the left target weight is met -- the same rule, the same order of
   operations, including `std::llround` for the target weight -- so two runs with the same global
-  input produce the same tie assignment regardless of how that input is split across ranks.
+  input produce the same tie assignment regardless of how that input is split across ranks, FOR
+  UNIQUE GLOBAL IDS -- `rcb_partition` does not require them, and sorting by gid alone leaves ties
+  AMONG elements sharing one gid without a specified order. Both places that sort tied elements
+  (the local pre-sort before the tie Allgatherv, and the global sort of the gathered tie list) use
+  `std::stable_sort`, not `std::sort`, so a shared gid's relative order is the REPRODUCIBLE one
+  (original local position, then ascending position in the gathered array) rather than whatever an
+  unstable sort's internal algorithm happens to produce -- a well-defined result for a fixed split,
+  not a split-invariant one: two different communicator sizes can still assign a shared gid's
+  duplicates to different sides, because "gathered position" depends on which rank owns which
+  duplicate. `test/partition/rcb_oracle.hpp` mirrors both `stable_sort` calls exactly, so bit-parity
+  against the oracle holds with duplicate gids present, not only in their absence.
 * **Bucket-index arithmetic is identical on every execution space by construction, not by compiler
   flag.** The one place a bucket index is computed (`detail::accumulate_histogram` in
   `median.hpp`) writes `(c - cur_lo) * inv_dx` as two separate operations -- a subtraction, then a
@@ -60,6 +70,31 @@ the port intact:
 This port is deliberately **not** restructured into level-synchronous batching or any other
 efficiency change: robustness and accuracy come first, and a restructuring is deferred until
 parity with the oracle below is verified end to end, including on the user's host with real MPI.
+
+## Rank agreement at entry
+
+`rcb_partition`'s entry-point rejections (`E-PART-SIZE-MISMATCH`, `E-PART-NUM-PARTS`,
+`E-PART-WEIGHT`) are each a RANK-LOCAL computation -- a per-rank view's own length, a per-rank
+`RcbOptions::num_parts`, a per-rank weights array's sign -- but never a rank-local RETURN when
+`comm != kNullComm`. Found 2026-10-11: they used to throw directly, before
+`detail::recursive_bisect`'s first Allreduce, so a caller's precondition bug on exactly one rank
+hung every other rank waiting in that collective. The fix mirrors `centroids_of`'s and
+`fuse::native::migrate`'s own recipe: this rank's combined verdict is Allreduce(MIN)-agreed with
+every other rank before any rejection is thrown, and a rank whose OWN verdict was fine but a peer's
+was not throws the generic `E-PART-OPTS` rather than proceeding.
+
+`E-PART-OPTS` additionally covers a second, independent precondition: `num_parts`,
+`median_buckets` and `median_refine_iters` are per-rank INPUTS that decide the shape of the
+recursion itself (how many levels, how many histogram Allreduces per level) and were never
+reduced before this fix -- two ranks could pass different-but-individually-valid options and
+execute a different number or kind of collectives at the first level, an MPI-standard-erroneous
+mismatch or a deadlock. `rcb_partition` now Allreduce-agrees all three (`MAX` and `MIN`, so
+disagreement is detectable) alongside the verdict flag, in the SAME pair of collectives.
+
+`test/partition/rcb_mpi_test.cpp`'s `RefusesWhenOnlyOneRankHasAMismatchedWeightsArray` and
+`RefusesWhenRanksDisagreeAboutNumParts` are the firing tests; both need a real communicator (a
+single rank has no peer to strand), so they are compiled, not run, in this sandbox -- see "What is
+verified where" below.
 
 ## The serial oracle
 
@@ -85,7 +120,11 @@ manifolds and never assumed -- as the only other option
 (`include/fuse/partition/coord_transform.hpp`). Degenerate inputs are handled by the *same* code
 path as the general case, not a special branch: all centroids identical, an empty local input, an
 empty rank in a real communicator, zero total weight, and a single part (`num_parts == 1`) all
-recurse and terminate normally rather than being special-cased.
+recurse and terminate normally rather than being special-cased. A NEGATIVE weight is not treated as
+one of these degenerate-but-legal cases: `weighted_median`'s zero-or-negative-total early return
+would otherwise place the split at an arbitrary coordinate and silently distribute every tied
+element by the sign of that coordinate, so `rcb_partition` refuses `E-PART-WEIGHT` at entry instead
+(see "Rank agreement at entry").
 
 Deferred, and absent rather than silently ignored:
 
@@ -125,9 +164,22 @@ standing in for them.
   once, and a scan-based design would misread that as mixed-dimension input on every ordinary
   volumetric mesh.
 * **Every refusal named in the task** -- `E-PART-NUM-PARTS` (negative `num_parts`),
-  `E-PART-SIZE-MISMATCH` (centroids/weights/gids length disagreement), and (in a Tier 0 build only)
-  `E-PART-NO-MPI` (a non-null communicator handle with no MPI compiled in) -- fires under a test in
-  `test/partition/refusals_test.cpp`, which is labelled `throws`.
+  `E-PART-SIZE-MISMATCH` (centroids/weights/gids length disagreement), `E-PART-WEIGHT` (a negative
+  element weight), and (in a Tier 0 build only) `E-PART-NO-MPI` (a non-null communicator handle
+  with no MPI compiled in) -- fires under a test in `test/partition/refusals_test.cpp`, which is
+  labelled `throws`. `E-PART-NO-ENTITIES` (`mesh_adapter.hpp`'s agreed-dimension-<=0 refusal) fires
+  in `test/partition/mesh_adapter_test.cpp` against a stub `MeshView` -- it needs no communicator,
+  since `dimension() <= 0` agrees with itself at `comm == kNullComm`.
+* **`E-PART-OPTS`** (see "Rank agreement at entry" above) is, like `E-PART-MIXED-DIM`, a cross-rank
+  property that cannot be produced with a single rank: it fires in
+  `test/partition/rcb_mpi_test.cpp`'s `RefusesWhenOnlyOneRankHasAMismatchedWeightsArray` (one rank's
+  own precondition fails) and `RefusesWhenRanksDisagreeAboutNumParts` (every rank's own precondition
+  holds, but the ranks disagree about `RcbOptions`).
+* **`repartition`'s `E-PART-REPARTITION-NUM-PARTS`** (see repartition.hpp) fires at Tier 0 in
+  `test/partition/repartition_test.cpp` for the `num_parts > comm_size` direction (`comm_size == 1`
+  at `kNullComm`) and under a real communicator in
+  `test/partition/repartition_mpi_test.cpp`'s `RefusesNumPartsLessThanCommSize` for the direction
+  that used to be accepted silently.
 * **`E-PART-MIXED-DIM`** is, by construction, a cross-rank property: `centroids_of` Allreduce-agrees
   `MeshView::dimension()` (both `MAX` and `MIN`, so disagreement is detectable and not just which
   value "wins") *before* reading a single entity, and `comm == kNullComm` (one participant) agrees

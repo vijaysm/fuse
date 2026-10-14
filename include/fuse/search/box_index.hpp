@@ -10,9 +10,10 @@
 #include "fuse/search/types.hpp"
 
 /// A spatial index over axis-aligned boxes, backed by
-/// `ArborX::BoundingVolumeHierarchy` (src/search/box_index.cpp is the only
-/// translation unit that names an ArborX type -- this header, like
-/// `fuse::linalg`'s facade, never does).
+/// `ArborX::BoundingVolumeHierarchy` (src/search/box_index.cpp is one of
+/// the two translation units in fuse::search that name an ArborX type, the
+/// other being distributed.cpp -- this header, like `fuse::linalg`'s
+/// facade, never does).
 namespace fuse::search {
 
 /// CSR-style batched query result: query `q`'s hits are
@@ -135,8 +136,10 @@ class BoxIndex {
       Kokkos::View<const Point*, Kokkos::DefaultExecutionSpace::memory_space> points) const;
 
   /// For every point in `points`, the `k` nearest boxes by distance to the
-  /// box (0 if the point is inside it), `k` capped to `size()` when the
-  /// index holds fewer boxes than that. Hits are NOT sorted by distance (see
+  /// box (0 if the point is inside it), `k` EXPLICITLY capped to `size()`
+  /// by this facade (not merely inherited from whatever clamping ArborX's
+  /// own `nearest` predicate happens to apply) when the index holds fewer
+  /// boxes than that. Hits are NOT sorted by distance (see
   /// `QueryResult`'s comment) -- a caller that needs the nearest-first order
   /// must compute distances itself (`geometry.hpp` has none, deliberately:
   /// nothing here commits to a specific box-to-point distance metric beyond

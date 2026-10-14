@@ -83,6 +83,55 @@ struct ConnectPolicy {
                                                         : ConservationGuarantee::None;
 }
 
+/// Review 2026-10-11, BM-1: the transfer a channel actually declares, read
+/// from its own `RemapSpec` rather than assumed. `RemapFlags::Conservative`
+/// (`ChannelBuilder::conservative()`) is the one statement this layer can
+/// trust as globally conservative -- it is the authored claim the project's
+/// own conservation tests (`Compatibility.ConservationRules`) exist to hold a
+/// channel to, not a property this header may infer from the mesh. Any other
+/// declared remap, or a channel whose target field lives in a different
+/// region than its source -- `lower()`'s own `region_changes` condition
+/// (src/ir/rules_channel.cpp) emits a real spatial transfer for exactly that
+/// case even with no remap flags at all -- moves values between locations
+/// without conserving by construction. Only when neither holds is the
+/// channel an exact copy, which is where `TransferSemantics`'s own defaults
+/// (`Copy`, `None`) already point.
+[[nodiscard]] inline TransferSemantics declared_transfer(const CouplingGraph& g, const Channel& ch) {
+  TransferSemantics transfer;
+  if (has(ch.remap.flags, RemapFlags::Conservative)) {
+    transfer.kind = TransferKind::ConservativeRemap;
+    transfer.conservation = ConservationGuarantee::GlobalConservative;
+    return transfer;
+  }
+  const bool region_changes = g.field(ch.source).region != g.field(ch.target).region;
+  if (ch.remap.flags != RemapFlags::None || region_changes) {
+    transfer.kind = TransferKind::Interpolation;
+    return transfer;  // conservation stays at TransferSemantics's own None default
+  }
+  return transfer;  // Copy, None -- the struct's own defaults
+}
+
+/// `ConservationGuarantee` has no stringifier of its own (`semantics.hpp`
+/// declares the enum but not a `to_cstring`); `validate()` needs one to name
+/// what a channel required against what its declared transfer provided.
+[[nodiscard]] inline std::string_view conservation_guarantee_name(ConservationGuarantee g) noexcept {
+  switch (g) {
+    case ConservationGuarantee::None: return "no conservation guarantee";
+    case ConservationGuarantee::LocalConservative: return "a local conservation guarantee";
+    case ConservationGuarantee::GlobalConservative: return "a global conservation guarantee";
+  }
+  return "an unrecognized conservation guarantee";
+}
+
+[[nodiscard]] inline std::string_view transfer_kind_name(TransferKind k) noexcept {
+  switch (k) {
+    case TransferKind::Copy: return "Copy";
+    case TransferKind::Interpolation: return "Interpolation";
+    case TransferKind::ConservativeRemap: return "ConservativeRemap";
+  }
+  return "an unrecognized transfer kind";
+}
+
 /// Evaluate one channel through the spine's seven stages.
 [[nodiscard]] inline ConnectionCompatibility check_channel(const CouplingGraph& g, ChannelId c,
                                                            const ConnectPolicy& policy = {}) {
@@ -92,11 +141,17 @@ struct ConnectPolicy {
   request.target = to_semantics(g.field(ch.target));
   request.required_conservation = required_conservation(g.field(ch.target));
   request.allow_automatic_unit_scale = policy.allow_automatic_unit_scale;
-  // The declared spatial transfer: a channel between different regions needs one,
-  // and the graph does not yet name which. `Copy` is what the coupler assumed
-  // implicitly; naming it here makes the assumption visible to the stage that
-  // checks conservation, which is where it matters.
-  request.transfer.kind = TransferKind::Copy;
+  // BM-1 (review 2026-10-11): this used to hardcode `TransferKind::Copy`
+  // unconditionally, which made the Conservation stage below refuse EVERY
+  // channel into a `Conservation::Extensive` field (no declared transfer can
+  // ever satisfy `required_conservation`'s `GlobalConservative`) and made the
+  // Location stage refuse every region-changing channel with no remap flags
+  // (`declared_transfer` there is this same `request.transfer.kind != Copy`
+  // test) -- see test/verification/interface_transfer_test.cpp's own account
+  // of the second effect. Deriving it from the channel's own declaration
+  // lets a channel that really does name a conservative transfer pass, and
+  // lets a plain copy or an undeclared-conservation remap still be refused.
+  request.transfer = declared_transfer(g, ch);
   return check_connection(request);
 }
 

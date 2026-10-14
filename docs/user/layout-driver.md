@@ -70,8 +70,12 @@ This sandbox cannot start MPI at all, so every `layout.*` row below is a `ctest`
 
 ## What it prints
 
-`--timing out.csv` writes one row of step timings; otherwise the driver is silent on success and
-prints an `E-LAYOUT-*`-prefixed message and returns non-zero on any rejection or a failed `--check`.
+`--timing out.csv` writes one row of step timings. Rank 0 always prints one `shape(comp1,
+comp2): ...` line regardless of `--timing` (`examples/layout_driver/main.cpp`'s own
+`shape_of()` call) and, under `--check`, one further `check: N/N destination entities
+delivered (job entities = ...)` line — the driver is silent only apart from those two lines on
+success, and prints an `E-LAYOUT-*`-prefixed message and returns non-zero on any rejection or a
+failed `--check`.
 
 ## Measured against (host-recorded, KNOWN_ISSUES.md)
 

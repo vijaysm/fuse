@@ -219,12 +219,16 @@ constexpr double kCoverageTol = 1e-9;
   auto built = build_supermesh_weights(*s.value().view, *d.value().view,
                                        s.value().dim);
   if (!built.ok()) return built.error();
-  // Soma-import finding (docs/dev/soma-import.md, RemapPartial.* rows): this
-  // path computed min_src_coverage all along (build_supermesh_weights's own
-  // audit) but never read it against RemapFlags::Conservative -- only the
-  // FUSE_HAVE_MOAB half of this file enforced the refusal, so a tier-0
-  // (no-MOAB) build silently dropped uncovered source mass on a channel
-  // explicitly marked Conservative. Same check, same tolerance, same error
+  // Soma-import finding (docs/dev/soma-import.md, RemapPartial.* rows), same
+  // defect as REVIEW.md TF-5: this path computed min_src_coverage all along
+  // (build_supermesh_weights's own audit) but never read it against
+  // RemapFlags::Conservative -- only the FUSE_HAVE_MOAB half of this file
+  // enforced the refusal, so a tier-0 (no-MOAB) build silently dropped
+  // uncovered source mass on a channel explicitly marked Conservative, and a
+  // MOAB-capable build whose backend happens not to be MoabMeshBackend
+  // (N-BACKEND-4's own dispatch just above routes here) silently accepted
+  // the flag and then ignored it: the exact I4 shape (a documented
+  // guarantee quietly not enforced). Same check, same tolerance, same error
   // code as the MOAB path below, so a plan rejected there is rejected here
   // for the identical reason.
   if (has(plan.flags, RemapFlags::Conservative) &&
@@ -238,7 +242,9 @@ constexpr double kCoverageTol = 1e-9;
             std::to_string(built.value().n_cols) +
             "). The mass in the uncovered part would be dropped, not "
             "transferred, so the map would not be conservative. Make the "
-            "two regions cover the same domain."};
+            "two regions cover the same domain, or clear the Conservative "
+            "flag to accept a truncating map -- the shortfall is then "
+            "reported in RemapWeights::min_src_coverage."};
   }
   return built;
 }
@@ -815,6 +821,16 @@ struct BoxTry {
   bool failed = false;
 };
 
+/// `BoxTry::failed` is `try_boxes`' own Result-shaped outcome (its OTHER
+/// field, `ok`, is a classification verdict -- "this mesh is not boxes" --
+/// not a failure); reconstituting it as a `Result<BoxTry>` is what lets
+/// `reconcile<T>` reach it below, the same mechanism `build_remap_halo`
+/// already applies to `fit_surface`'s own Result.
+[[nodiscard]] Result<BoxTry> to_result(BoxTry bt) {
+  if (bt.failed) return bt.error;
+  return bt;
+}
+
 [[nodiscard]] BoxTry try_boxes(const Side& s) {
   BoxTry out;
   BoxMesh& m = out.mesh;
@@ -1250,10 +1266,18 @@ void discard_supermesh(moab::Interface& mb, moab::EntityHandle set) {
   }
 
   // --- orientation -----------------------------------------------------------
+  //
+  // REVIEW.md TF-2: `orient()` reorients THIS rank's own local cells only
+  // (the exact R-01 hazard `build_remap_halo`'s own orient calls already
+  // reconcile), and `intersect_surfaces` is reached from `build_weights`'
+  // first-order path, ahead of `assemble()`'s collectives below in that
+  // caller -- so a per-cell connectivity read/write failure here must be
+  // agreed across the communicator before any rank proceeds, not returned
+  // straight from this rank alone.
   {
-    const auto o1 = orient(src, fs);
+    const auto o1 = reconcile(src.pcomm, orient(src, fs));
     if (!o1.ok()) return o1.error();
-    const auto o2 = orient(tgt, ft);
+    const auto o2 = reconcile(tgt.pcomm, orient(tgt, ft));
     if (!o2.ok()) return o2.error();
   }
 
@@ -1443,7 +1467,18 @@ struct Audit {
   auto* pc = static_cast<moab::ParallelComm*>(src.pcomm);
   const MPI_Comm comm = pc->comm();
   int nproc = 1;
-  MPI_Comm_size(comm, &nproc);
+  // REVIEW.md TF-8 (N-BACKEND-3 class): an unchecked MPI_Comm_size leaves
+  // `nproc` at its initialiser value of 1 on failure, which this function
+  // would then read as "no peers to reconcile with" and return success
+  // having skipped every Allreduce below -- exactly the silent fallback
+  // reconcile<T> and reconcile_halo already refuse rather than risk (both
+  // reject outright when they cannot size their own communicator).
+  if (MPI_Comm_size(comm, &nproc) != MPI_SUCCESS) {
+    return Failure{"E-REMAP-PARALLEL",
+                 "reduce_audit: could not size the communicator to reduce "
+                 "the per-rank audit; refusing rather than treating it as "
+                 "having no peers to reconcile with"};
+  }
   if (nproc <= 1) return Result<void>::success();
 
   double mins[3] = {audit.min_src_coverage, audit.min_tgt_coverage,
@@ -1934,10 +1969,16 @@ constexpr double kHighOrderCoverageTol = 1e-6;
 // (4 partition sets, deliberately misaligned): the ORDINARY serial
 // intersection over the halo-extended source gives target coverage 1.0 to
 // 1e-16 at 1, 2 and 4 ranks, from the task report that measured this.
-// REVIEW.md R-11: no conservation test in this tree pins that number --
-// `test/unit/remap_parallel_test.cpp`, cited here previously, does not
-// exist under `test/backend/`. Implemented, untested (docs/dev/testing.md
-// state); see REVIEW.md B1/B2 for the MPI test that would verify it.
+// REVIEW.md TF-7: this used to say no test in the tree pins any of this --
+// half-stale since `test/parallel/remap_halo_mpi_test.cpp` ported
+// (host-verified per that file's own header): the halo's own forward/
+// reverse round trip is checked there by EXACT global id and bookkeeping
+// identity (not a tolerance), and E-REMAP-PARALLEL's rejection boundary
+// fires by name at every registered rank count. Only the specific 1.0-to-
+// 1e-16 coverage FIGURE quoted above remains diagnostic-only: that file
+// prints, but does not gate on, the corresponding number on its own real
+// spherical pair, since this exact cubed-sphere/partner pair's true
+// overlap has not been independently measured to gate against.
 // ===========================================================================
 
 Result<std::size_t> build_remap_halo(const RemapPlan& plan,
@@ -2308,10 +2349,13 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
   // ordinary MPI job whose mesh happens to be undivided; every cell is local
   // and the serial construction is exactly right. Rejecting it would take
   // remap away from every single-rank MPI run, and no serial test can see
-  // the difference. REVIEW.md R-11: `test/unit/remap_parallel_test.cpp`,
-  // cited here previously as running a one-rank leg to check exactly that,
-  // does not exist under `test/backend/`. Implemented, untested
-  // (docs/dev/testing.md state).
+  // the difference. REVIEW.md TF-7: this used to say no test runs the one-
+  // rank leg to check that -- stale since
+  // `test/parallel/remap_halo_mpi_test.cpp`'s
+  // `ERemapParallelRefusesAboveOneRankAndNotAtOne` ported (host-verified
+  // per that file's own header): `== 1` must succeed and `> 1` must refuse
+  // `E-REMAP-PARALLEL`, checked at every registered rank count 1..5, both
+  // sides of the boundary this paragraph names.
   // ==========================================================================
   if (a.backend != nullptr && a.backend->communicator_size() > 1 &&
       a.file_set != b.file_set &&
@@ -2475,11 +2519,30 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
 
   // =========================================================================
   // The first-order supermesh builder, unchanged from Task 5.2.
+  //
+  // REVIEW.md TF-2: `try_boxes`, `intersect_boxes`, `fit_surface` and the
+  // kind/radius/plane-z match below each run a computation (reading this
+  // rank's own local cell corners, tagging GIDs) that can FAIL outright on
+  // one rank -- a MOAB connectivity read error, an out-of-range tag --
+  // while a peer's identical call succeeds, ahead of `assemble()`'s own
+  // collectives (`accumulate_remap_halo`, `reduce_audit`'s
+  // `MPI_Allreduce`). `reconcile<T>` is exactly `resolve()`'s and
+  // `build_remap_halo`'s own fit_surface/orient fix (R-01): it agrees
+  // whether every rank's call SUCCEEDED, so a one-rank error returns the
+  // SAME Failure everywhere instead of that rank returning alone while its
+  // peers walk into those collectives and hang. It does NOT, and cannot,
+  // agree whether ranks that all succeeded classified their OWN local
+  // partition into the SAME box/surface verdict (`BoxTry::ok`,
+  // `SurfaceFit::kind`) -- that is a different, value-level hazard
+  // `reconcile_dim` exists for elsewhere (Side::dim) and TF-2 does not
+  // claim to close it here.
   // =========================================================================
-  const BoxTry ba = try_boxes(a);
-  if (ba.failed) return ba.error;
-  const BoxTry bb = try_boxes(b);
-  if (bb.failed) return bb.error;
+  auto ba_r = reconcile(a.pcomm, to_result(try_boxes(a)));
+  if (!ba_r.ok()) return ba_r.error();
+  const BoxTry ba = ba_r.value();
+  auto bb_r = reconcile(b.pcomm, to_result(try_boxes(b)));
+  if (!bb_r.ok()) return bb_r.error();
+  const BoxTry bb = bb_r.value();
 
   // `RemapFlags::Monotone` on this builder is a CHECK, not a different
   // construction: the map it makes is a convex combination whenever the two
@@ -2493,15 +2556,15 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
   };
 
   if (ba.ok && bb.ok) {
-    auto sm = intersect_boxes(a, b, ba.mesh, bb.mesh);
+    auto sm = reconcile(a.pcomm, intersect_boxes(a, b, ba.mesh, bb.mesh));
     if (!sm.ok()) return sm.error();
     return finish(assemble(a, b, std::move(sm.value()), conservative));
   }
 
   if (a.dim == 2) {
-    auto fa = fit_surface(a);
+    auto fa = reconcile(a.pcomm, fit_surface(a));
     if (!fa.ok()) return fa.error();
-    auto fb = fit_surface(b);
+    auto fb = reconcile(b.pcomm, fit_surface(b));
     if (!fb.ok()) return fb.error();
     if (fa.value().ok && fb.value().ok && fa.value().kind == fb.value().kind) {
       if (fa.value().kind == Surface::Sphere) {
@@ -2523,7 +2586,7 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
                          std::to_string(fa.value().z) + " and " +
                          std::to_string(fb.value().z) + ")"};
       }
-      auto sm = intersect_surfaces(a, b, fa.value(), fb.value());
+      auto sm = reconcile(a.pcomm, intersect_surfaces(a, b, fa.value(), fb.value()));
       if (!sm.ok()) return sm.error();
       return finish(assemble(a, b, std::move(sm.value()), conservative));
     }

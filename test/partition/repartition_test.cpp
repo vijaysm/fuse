@@ -27,3 +27,21 @@ TEST(Repartition, AtKNullCommIsTheIdentityUpToLocalOrdering) {
   }
   EXPECT_NEAR(total, original_total, 1e-10);
 }
+
+// PS-6: at kNullComm, comm_size is always 1, so only the num_parts >
+// comm_size direction of the mismatch is reachable here -- the num_parts <
+// comm_size direction (the one that used to be silently accepted) needs a
+// real communicator with more than one rank; see
+// repartition_mpi_test.cpp's RefusesNumPartsLessThanCommSize.
+TEST(Repartition, RefusesNumPartsGreaterThanCommSizeAtKNullComm) {
+  auto arrays = fuse::native::generate_native_mesh("hexbox:2x2x2", 0, 1);
+  ASSERT_TRUE(arrays.ok());
+  auto view = fuse::native::NativeMeshView::create_from_host(arrays.value(), 0);
+  ASSERT_TRUE(view.ok());
+
+  fuse::partition::RepartitionOptions opts;
+  opts.rcb.num_parts = 2;  // kNullComm means comm size 1; 2 != 1
+  auto result = fuse::partition::repartition(*view.value(), opts);
+  ASSERT_FALSE(result.ok());
+  EXPECT_EQ(result.error().code, "E-PART-REPARTITION-NUM-PARTS");
+}

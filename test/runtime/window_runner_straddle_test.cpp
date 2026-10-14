@@ -717,6 +717,19 @@ TEST(WindowRunnerStraddle, WindowSampleShiftMatchesProviderBufferTimesOverTheWho
 // separate overwrite bug (cause 2) exists. Left as EXPECT_EQ (bit-exact)
 // rather than loosened to a tolerance pending the user's ruling on
 // cause (1) -- see this file's own report to the lead.
+//
+// RT-6 (review 2026-10-11), plain record of the current state: this
+// comparison runs EXACTLY ONE sweep per window (kFixedSweeps = 1 below),
+// currently passing (EXPECT_EQ, bit-exact) at that count. The paragraph
+// above is the bisection's own account of how the runner/driver gap
+// varies with the sweep count, from N=1 up to the N~25-30 regime its own
+// ~4.5e-14 relative floor was measured at -- left exactly as that
+// session wrote it rather than re-paraphrased here, since which of the
+// two regimes N=1 actually sits at on that curve is precisely the
+// question this round is recording, not resolving (see this round's
+// disposition record_text). `kFixedSweeps` is left at 1 here -- raising
+// it is the user's call (the open "pending the user's ruling on cause
+// (1)" above), not this pass's.
 constexpr int kFixedSweeps = 1;
 
 void ExpectFixedIterationMatch(WaveformIteration mode,
@@ -854,5 +867,21 @@ TEST(WindowRunnerStraddle, BothMembersFixedAndStraddlingTogetherIsRejected) {
          "setup, before any window instance runs";
   EXPECT_EQ(init.error().code, "E-RT-WINDOW-STRADDLE") << init.error().message;
 }
+
+// RT-3 (review 2026-10-11), decision record: WindowCoupler::create()'s
+// OTHER D7 refusal -- a Fixed member whose own interval exceeds the
+// window (E-RT-WINDOW-LONGSTEP) -- is NOT mirrored into resolve_regions()
+// above. It was investigated; mirroring it would reject a configuration
+// this compiled path already supports and already tests:
+// test/runtime/window_runner_test.cpp's
+// WindowRunner.FixedPolicyStraddleNowSucceeds runs A Adjustable, B Fixed
+// with interval 1 on a 1/2-length window (interval > window_length) to
+// completion and asserts convergence. This path's own replay
+// (detail::advance_straddle_split()) handles a single step that spans
+// past the window end the same way it handles one that merely does not
+// divide the window evenly; WindowCoupler::create()'s stricter driver-
+// level refusal does not have that replay available to it. The
+// divergence from the driver is intentional and is recorded in
+// docs/user/coupling-windows.md, not fixed by mirroring the refusal here.
 
 

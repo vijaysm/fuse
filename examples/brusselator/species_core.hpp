@@ -196,7 +196,8 @@ class DirectDiffusionSolver final : public DiffusionSolver {
   [[nodiscard]] fuse::Result<void> factor(double dt, double diffusion,
                                           double extra_diagonal) override {
     if (factored_step_ < 0.0 ||
-        std::abs(dt - factored_step_) > 32 * std::numeric_limits<double>::epsilon() * dt) {
+        std::abs(dt - factored_step_) > 32 * std::numeric_limits<double>::epsilon() * dt ||
+        diffusion != factored_diffusion_) {
       Eigen::SparseMatrix<double> matrix = (-dt * diffusion) * laplacian_;
       const int n = static_cast<int>(laplacian_.rows());
       for (int i = 0; i < n; ++i) matrix.coeffRef(i, i) += 1.0 + extra_diagonal;
@@ -206,6 +207,7 @@ class DirectDiffusionSolver final : public DiffusionSolver {
                              "DirectDiffusionSolver: factorization failed"};
       }
       factored_step_ = dt;
+      factored_diffusion_ = diffusion;
     }
     return fuse::Result<void>::success();
   }
@@ -223,6 +225,12 @@ class DirectDiffusionSolver final : public DiffusionSolver {
   Sparse laplacian_;
   Eigen::SimplicialLDLT<Sparse> factor_;
   double factored_step_ = -1.0;
+  // Review 2026-10-11 NL-1: `diffusion` is a per-call argument of
+  // `factor()`, not a value derivable from `dt`; omitting it from the
+  // cache key let a call with the same dt but a different diffusion reuse
+  // a stale factorization (BrusselatorDiffusionSolverCache.
+  // DirectSolverRefactorsOnChangedDiffusion pins the regression).
+  double factored_diffusion_ = std::numeric_limits<double>::quiet_NaN();
 };
 
 /// `fuse::linalg::SchurSlabSolver` over this rank's own row band -- an
@@ -259,7 +267,13 @@ class SchurDiffusionSolver final : public DiffusionSolver {
                                           double extra_diagonal) override {
     if (!factored_ ||
         std::abs(dt - factored_dt_) > 32 * std::numeric_limits<double>::epsilon() * std::max(dt, 1.0) ||
-        extra_diagonal != factored_extra_diagonal_) {
+        extra_diagonal != factored_extra_diagonal_ ||
+        // Review 2026-10-11 NL-1: `diffusion` is a per-call argument that
+        // changes A exactly like `dt` and `extra_diagonal` do (the matrix
+        // is `(1+extra)*I - dt*diffusion*L_h`) -- omitting it let a call
+        // at the same dt/extra but a different diffusion reuse a stale
+        // factorization.
+        diffusion != factored_diffusion_) {
       const double scale = 1.0 + extra_diagonal;
       const double coefficient = dt * diffusion / scale;
       auto solved = fuse::linalg::SchurSlabSolver::factor(nx_, ny_, j_lo_, j_hi_, coefficient,
@@ -273,6 +287,7 @@ class SchurDiffusionSolver final : public DiffusionSolver {
       scale_ = scale;
       factored_dt_ = dt;
       factored_extra_diagonal_ = extra_diagonal;
+      factored_diffusion_ = diffusion;
       factored_ = true;
     }
     return fuse::Result<void>::success();
@@ -312,6 +327,7 @@ class SchurDiffusionSolver final : public DiffusionSolver {
   bool factored_ = false;
   double factored_dt_ = -1.0;
   double factored_extra_diagonal_ = 0.0;
+  double factored_diffusion_ = std::numeric_limits<double>::quiet_NaN();
 };
 
 /// `fuse::linalg::pcg`/`gmres` over a `fuse::linalg::DistSparseMatrix`
@@ -349,7 +365,12 @@ class KrylovDiffusionSolver final : public DiffusionSolver {
                                           double extra_diagonal) override {
     if (!factored_ ||
         std::abs(dt - factored_dt_) > 32 * std::numeric_limits<double>::epsilon() * std::max(dt, 1.0) ||
-        extra_diagonal != factored_extra_diagonal_) {
+        extra_diagonal != factored_extra_diagonal_ ||
+        // Review 2026-10-11 NL-1: `diffusion` is a per-call argument that
+        // changes every off-diagonal and diagonal triplet below exactly
+        // like `dt` does -- omitting it let a call at the same dt/extra
+        // but a different diffusion reuse a stale assembled matrix.
+        diffusion != factored_diffusion_) {
       const double scale = 1.0 + extra_diagonal;
       const double xx = static_cast<double>(nx_) * nx_;
       const double yy = static_cast<double>(ny_) * ny_;
@@ -385,6 +406,7 @@ class KrylovDiffusionSolver final : public DiffusionSolver {
       precond_ = std::make_unique<fuse::linalg::JacobiPreconditioner>(std::move(jac.value()));
       factored_dt_ = dt;
       factored_extra_diagonal_ = extra_diagonal;
+      factored_diffusion_ = diffusion;
       factored_ = true;
     }
     return fuse::Result<void>::success();
@@ -435,6 +457,7 @@ class KrylovDiffusionSolver final : public DiffusionSolver {
   bool factored_ = false;
   double factored_dt_ = -1.0;
   double factored_extra_diagonal_ = 0.0;
+  double factored_diffusion_ = std::numeric_limits<double>::quiet_NaN();
 };
 
 /// Picks and builds the `DiffusionSolver` implementation `kind` names,

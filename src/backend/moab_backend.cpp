@@ -2592,8 +2592,20 @@ Result<void> MoabMeshBackend::Impl::plan_halo_exchange(std::size_t mesh,
 
   const MPI_Comm comm = pcomm->comm();
   int nproc = 1, me = 0;
-  MPI_Comm_size(comm, &nproc);
-  MPI_Comm_rank(comm, &me);
+  // REVIEW.md TF-8 (N-BACKEND-3 class): unchecked, `nproc`/`me` silently
+  // keep their initialisers (1, 0) on failure -- sized and addressed as a
+  // one-rank communicator while the Allgather/Alltoall(v) below are issued
+  // against the REAL communicator, a size mismatch the collectives
+  // themselves would have to detect. `reconcile_halo` just below already
+  // refuses outright when it cannot size or rank ITS communicator (this
+  // same class, fixed there); this call gets the identical treatment.
+  if (MPI_Comm_size(comm, &nproc) != MPI_SUCCESS ||
+      MPI_Comm_rank(comm, &me) != MPI_SUCCESS) {
+    return Failure{"E-MESH-HALO",
+                 "plan_halo_exchange: could not size or rank the "
+                 "communicator; refusing rather than treating it as a "
+                 "one-rank communicator"};
+  }
   const auto np = static_cast<std::size_t>(nproc);
 
   const MoabMeshView& view = *meshes[mesh];
@@ -2843,9 +2855,10 @@ Result<std::size_t> MoabMeshBackend::adopt_remap_halo(MeshId source,
   const auto seen = impl_->halo_pairs.find(key);
   if (seen != impl_->halo_pairs.end()) return seen->second;
 
-  if (!impl_->parallel() || count == 0) {
-    // Nothing to adopt, but the PAIR is still recorded as built: zero halo
-    // cells is a real answer and must not read as "never asked for".
+  if (!impl_->parallel()) {
+    // No communicator to reconcile against either: a one-rank (or
+    // no-MPI-build) caller has nothing to adopt and no peer to disagree
+    // with.
     impl_->halo_pairs.emplace(key, std::size_t{0});
     const Result<void> p = impl_->plan_halo_exchange(s, dim);
     if (!p.ok()) return p.error();
@@ -2854,50 +2867,111 @@ Result<std::size_t> MoabMeshBackend::adopt_remap_halo(MeshId source,
 
   MoabMeshView& view = *impl_->meshes[s];
   const DimData& dd = view.dim_data(dim);
-  if (!dd.gid_error.empty()) {
-    return Failure{"E-MESH-HALO-GID",
-                 "this mesh cannot carry a remap halo at dimension " +
-                     std::to_string(dim) + ": " + dd.gid_error};
+
+  // REVIEW.md TF-3: every rejection below (`gid_error`, the GLOBAL_ID tag
+  // lookup, the per-covering-cell GLOBAL_ID check, `add_entities`,
+  // `regather_with_halo`) depends on THIS rank's own covering-set contents
+  // -- rank-local by construction, since `cells`/`count` is this rank's own
+  // argument, and LEGITIMATELY varies in size (down to zero: an empty
+  // local covering set is an ordinary outcome, not an error) from rank to
+  // rank -- and each one precedes `plan_halo_exchange`'s own collectives
+  // (the Allgather/Alltoall(v) inside it, already guarded by
+  // N-BACKEND-2/R-02's own `reconcile_halo` calls one frame down).
+  // `impl_->parallel()` just above is a BACKEND-WIDE property (true
+  // identically on every rank of this communicator, not a per-call one),
+  // so every rank that reaches this point runs the SAME five
+  // `reconcile_step` calls below, in the SAME order, regardless of its own
+  // `count` -- `count == 0` must NOT skip any of them (an earlier version
+  // of this fix did exactly that, which would have let a rank with an
+  // empty local covering set skip a collective a peer with a non-empty one
+  // still enters -- the same hang TF-3 reports, reintroduced one level
+  // down). Routed through that SAME `reconcile_halo` one frame earlier
+  // here, so a rank whose local covering set has a defect refuses in step
+  // with every peer instead of returning alone while an unaffected peer
+  // proceeds into `plan_halo_exchange`'s collectives.
+#ifdef FUSE_MOAB_PARALLEL
+  const MPI_Comm halo_comm = impl_->pcomm->comm();
+#endif
+  const auto reconcile_step = [&](bool failed, std::string msg) -> Result<void> {
+#ifdef FUSE_MOAB_PARALLEL
+    return reconcile_halo(halo_comm, failed, msg);
+#else
+    // impl_->parallel() is always false without FUSE_MOAB_PARALLEL, so the
+    // early `!impl_->parallel()` return above always fires first and this
+    // branch never runs; kept only so the function compiles in every
+    // configuration.
+    return failed ? Result<void>(Failure{"E-MESH-HALO", std::move(msg)})
+                  : Result<void>::success();
+#endif
+  };
+
+  {
+    const Result<void> agreed = reconcile_step(
+        !dd.gid_error.empty(),
+        "this mesh cannot carry a remap halo at dimension " +
+            std::to_string(dim) + ": " + dd.gid_error);
+    if (!agreed.ok()) return agreed.error();
   }
   std::set<std::size_t> present(dd.global_ids.begin(), dd.global_ids.end());
 
   moab::Tag gid = nullptr;
-  if (impl_->mb.tag_get_handle(GLOBAL_ID_TAG_NAME, 1, moab::MB_TYPE_INTEGER,
-                               gid) != moab::MB_SUCCESS) {
-    return Failure{"E-MESH-HALO",
-                 "the mesh has no GLOBAL_ID tag, so a halo cell cannot be "
-                 "matched to the cell it copies"};
+  const bool no_gid_tag = impl_->mb.tag_get_handle(GLOBAL_ID_TAG_NAME, 1,
+                                                    moab::MB_TYPE_INTEGER,
+                                                    gid) != moab::MB_SUCCESS;
+  {
+    const Result<void> agreed = reconcile_step(
+        no_gid_tag, "the mesh has no GLOBAL_ID tag, so a halo cell cannot be "
+                    "matched to the cell it copies");
+    if (!agreed.ok()) return agreed.error();
   }
 
   Impl::HaloState& state = impl_->halos[{s, dim}];
   std::vector<moab::EntityHandle> keep;
   keep.reserve(count);
-  for (std::size_t k = 0; k < count; ++k) {
+  bool bad_cell_gid = false;
+  // `no_gid_tag` is already agreed false on every rank by this point (the
+  // reconcile_step above would have returned otherwise), so `gid` is a
+  // valid tag handle here -- but only when `count > 0` does this rank have
+  // any cells of its own to read it for.
+  for (std::size_t k = 0; !no_gid_tag && k < count && !bad_cell_gid; ++k) {
     const auto h = static_cast<moab::EntityHandle>(cells[k]);
     int g = 0;
     if (impl_->mb.tag_get_data(gid, &h, 1, &g) != moab::MB_SUCCESS || g <= 0) {
-      return Failure{"E-MESH-HALO",
-                   "a covering cell carries no positive GLOBAL_ID, so it "
-                   "cannot be matched to the source cell it copies"};
+      bad_cell_gid = true;
+      break;
     }
     const auto gg = static_cast<std::size_t>(g);
     if (present.count(gg) != 0) continue;  // this rank already holds it
     present.insert(gg);                    // and never twice
     keep.push_back(h);
   }
+  {
+    const Result<void> agreed = reconcile_step(
+        bad_cell_gid, "a covering cell carries no positive GLOBAL_ID, so it "
+                      "cannot be matched to the source cell it copies");
+    if (!agreed.ok()) return agreed.error();
+  }
+
+  bool add_failed = false;
   if (!keep.empty()) {
-    if (impl_->mb.add_entities(view.file_set(), keep.data(),
-                               static_cast<int>(keep.size())) !=
-        moab::MB_SUCCESS) {
-      return Failure{"E-MESH-HALO",
-                   "MOAB refused to add " + std::to_string(keep.size()) +
-                       " halo cells to the mesh's file set"};
-    }
-    state.cells.insert(keep.begin(), keep.end());
+    add_failed = impl_->mb.add_entities(view.file_set(), keep.data(),
+                                        static_cast<int>(keep.size())) !=
+                 moab::MB_SUCCESS;
+    if (!add_failed) state.cells.insert(keep.begin(), keep.end());
+  }
+  {
+    const Result<void> agreed = reconcile_step(
+        add_failed, "MOAB refused to add " + std::to_string(keep.size()) +
+                        " halo cells to the mesh's file set");
+    if (!agreed.ok()) return agreed.error();
   }
 
   const Result<void> rg = impl_->regather_with_halo(s, dim);
-  if (!rg.ok()) return rg.error();
+  {
+    const Result<void> agreed =
+        reconcile_step(!rg.ok(), rg.ok() ? std::string() : rg.error().message);
+    if (!agreed.ok()) return agreed.error();
+  }
   const Result<void> p = impl_->plan_halo_exchange(s, dim);
   if (!p.ok()) return p.error();
 

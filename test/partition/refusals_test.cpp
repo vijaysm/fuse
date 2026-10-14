@@ -65,6 +65,25 @@ TEST(PartitionRefusals, NegativeNumPartsIsRefused) {
   EXPECT_THROW((void)(rcb_partition<Space>(opts, c, w, g)), fuse::Refusal);
 }
 
+// PS-10: a negative weight is not a load-balance metric; without this
+// refusal, weighted_median's zero-or-negative-total early return places
+// the split at an arbitrary coordinate and silently sorts every tied
+// element to the right.
+TEST(PartitionRefusals, NegativeWeightIsRefused) {
+  auto c = centroids_of_size<Space>(10);
+  Kokkos::View<Weight*, typename Space::memory_space> w_dev("weights", 10);
+  Kokkos::deep_copy(w_dev, Weight{1});
+  auto w_host = Kokkos::create_mirror_view(w_dev);
+  Kokkos::deep_copy(w_host, w_dev);
+  w_host(3) = Weight{-1};
+  Kokkos::deep_copy(w_dev, w_host);
+  Kokkos::View<const Weight*, typename Space::memory_space> w = w_dev;
+  auto g = gids_of_size<Space>(10);
+  RcbOptions opts;
+  opts.num_parts = 2;
+  EXPECT_THROW((void)(rcb_partition<Space>(opts, c, w, g)), fuse::Refusal);
+}
+
 #if !FUSE_HAVE_MPI
 // This build has no MPI at all (the base build configuration) -- a non-null communicator handle
 // can only be a caller error, and must be rejected before anything tries to

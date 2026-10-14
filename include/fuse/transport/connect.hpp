@@ -433,6 +433,37 @@ struct ConnectedWorld {
   }
 }
 
+/// Pure, MPI-free. Every `Connect`-mode component, in the graph's own
+/// component order -- the same order `connect()`'s own comment fixes
+/// `MPI_Intercomm_merge`'s high/low argument by, so the merged numbering is
+/// the same thing on both sides regardless of which side happens to
+/// publish the port. Refuses `E-CONNECT-SPEC` when the count is not
+/// exactly two: D18's own limit (KNOWN_ISSUES.md), and the reason
+/// `connect_pairwise()` (connect.cpp) cannot do anything with a third one.
+///
+/// Review 2026-10-11 TR-17. This rule used to live inline inside
+/// `connect_pairwise()`, behind `#if FUSE_HAVE_MPI` and `MPI_Initialized()`
+/// -- a real, reachable refusal (any graph with a third `Connect`-mode
+/// component hits it) with no test anywhere in the tree, because its only
+/// caller needed a live MPI world to reach at all. Pulled out beside
+/// `validate_launch_layout()` so a tier-0 test can fire it directly.
+[[nodiscard]] inline Result<std::vector<ComponentId>> connect_mode_components(
+    const CouplingGraph& g) {
+  std::vector<ComponentId> out;
+  for (std::uint32_t i = 0; i < g.component_count(); ++i) {
+    if (g.component(ComponentId{i}).launch.mode == LaunchMode::Connect) {
+      out.push_back(ComponentId{i});
+    }
+  }
+  if (out.size() != 2) {
+    return Failure{
+        "E-CONNECT-SPEC",
+        "pairwise connect() supports exactly two connect-mode components; "
+        "the graph declares " + std::to_string(out.size())};
+  }
+  return out;
+}
+
 #if FUSE_HAVE_MPI
 /// Forms the base communicator for the component named by
 /// `opts.my_component`, from this process's local world

@@ -669,21 +669,27 @@ add_library(fuse::abi ALIAS fuse-abi-shared)
 # every one of ITS found-not-fetched dependencies that MOAB's own config
 # doesn't already carry an rpath entry for (MOAB_LIBRARY_DIRS, the same
 # per-package fixup FuseDependencies.cmake builds for target_link_directories
-# above). fmt and yaml-cpp happen to share one directory on this machine, and
-# OpenBLAS is a system package already on the default search path, which is
-# why this was long mistaken for a single-library, yaml-cpp-only gap: an
-# installed consumer that actually exercises a MOAB-enabled build (every
-# abi.install_consumer_* test does, in the "all" tier) hit exactly this, as
-# "libkokkoscore.so.5.2: cannot open shared object file", once yaml-cpp's
-# own directory stopped being the one thing missing. An installed consumer
-# has no other way to find any of these, since none is part of the
-# fuse-coupler install package (this file's own comment on
-# fuse-coupler-model's identical link line explains why, for yaml-cpp).
-# Pointing INSTALL_RPATH at wherever THIS configure resolved each of them is
-# the same answer a consumer's own CMAKE_PREFIX_PATH would need to give
-# find_package(fuse-coupler) in the first place.
+# above). fmt is in the same position as yaml-cpp and Kokkos whenever
+# `fuse_require(fmt ...)` resolved a shared build of it rather than the
+# fetched static archive -- found on this install's own CMAKE_PREFIX_PATH,
+# not on the system's default search path. This was fixed once for
+# yaml-cpp alone (commit 942c841) on the strength of the two happening to
+# share one directory on the machine that commit was made on; OpenBLAS is
+# a system package already on the default search path, which is why that
+# looked sufficient: an installed consumer that actually exercises a
+# MOAB-enabled build (every abi.install_consumer_* test does, in the "all"
+# tier) hit exactly this, as "libkokkoscore.so.5.2: cannot open shared
+# object file", once yaml-cpp's own directory stopped being the one thing
+# missing. An installed consumer has no other way to find any of these,
+# since none is part of the fuse-coupler install package (this file's own
+# comment on fuse-coupler-model's identical link line explains why, for
+# yaml-cpp). Pointing INSTALL_RPATH at wherever THIS configure resolved
+# each of them is the same answer a consumer's own CMAKE_PREFIX_PATH would
+# need to give find_package(fuse-coupler) in the first place -- fmt now
+# gets that answer unconditionally rather than by sharing yaml-cpp's.
 set(_fuse_abi_install_rpath "$<TARGET_FILE_DIR:yaml-cpp::yaml-cpp>"
-                            "$<TARGET_FILE_DIR:Kokkos::kokkoscore>")
+                            "$<TARGET_FILE_DIR:Kokkos::kokkoscore>"
+                            "$<TARGET_FILE_DIR:fmt::fmt>")
 if(FUSE_ENABLE_MOAB)
   list(APPEND _fuse_abi_install_rpath ${MOAB_LIBRARY_DIRS})
 endif()

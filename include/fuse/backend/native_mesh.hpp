@@ -37,7 +37,9 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <Kokkos_Core.hpp>
@@ -168,6 +170,12 @@ class NativeMeshBuilder {
   ///   E-MESH-CONNECTIVITY      a cell/face vertex index is out of range
   ///   E-MESH-POLYGON-*         from a polygon/polyhedron-face decomposition
   ///   E-MESH-CELL-NOT-STAR-SHAPED   from a polyhedron cell decomposition
+  ///   E-MESH-POLYGON-FACE-MISMATCH  a polyhedron face named the same
+  ///                            vertex SET a previous cell already
+  ///                            recorded, in an order that is neither a
+  ///                            cyclic match nor a cyclic reversal of the
+  ///                            stored one (NM-10: ambiguous, never
+  ///                            silently reused)
   [[nodiscard]] Result<MeshArrays<Kokkos::HostSpace>> build() const;
 
  private:
@@ -193,6 +201,12 @@ class NativeMeshBuilder {
   std::vector<std::vector<int>> faces_;
   // gid-sorted-tuple -> index into faces_, used only during building.
   std::vector<std::pair<std::vector<std::int64_t>, int>> face_index_;
+  // Set the first time `find_or_add_face` sees a vertex SET it already
+  // recorded but in neither the stored cyclic order nor its reversal;
+  // `build()` returns this (code, message) rather than ever reaching the
+  // geometry pass with a face reused under an order that does not
+  // actually match (NM-10).
+  std::optional<std::pair<std::string, std::string>> face_mismatch_error_;
 
   int find_or_add_face(const std::vector<int>& local_vertices_outward, bool* flip);
 };
@@ -222,6 +236,12 @@ class NativeMeshView final : public MeshView {
   }
 
   /// The host-only worker every `create<MemorySpace>` delegates to.
+  /// Validates, never throws: `E-MESH-DIM` if `arrays.dim` is outside
+  /// `[0, 3]`, `E-MESH-CONNECTIVITY` if a fixed-shape cell's corner count
+  /// disagrees with its type or a corner names a vertex index out of
+  /// range (NM-8: every in-tree producer already goes through
+  /// `NativeMeshBuilder::build()`, which checks the same two things, so
+  /// these guard only a caller that reaches this factory directly).
   [[nodiscard]] static Result<std::unique_ptr<NativeMeshView>> create_from_host(
       const MeshArrays<Kokkos::HostSpace>& arrays, int my_rank);
 

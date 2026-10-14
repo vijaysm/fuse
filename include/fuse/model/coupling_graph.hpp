@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <limits>
 
 #include <optional>
 #include <string>
@@ -54,8 +55,16 @@ struct IterationRegionDecl {
   /// filtering here (preCICE ships `imvj-restart-mode` for precisely this
   /// reason), so its retained inverse Jacobian is never refreshed.
   ///
-  /// `AccelConfig::filter` (QR1/QR2/QR3) is a documented no-op until Task
-  /// 7.4; setting it changes nothing today.
+  /// `AccelConfig::filter` (QR1/QR2/QR3) is implemented and active:
+  /// `filter_qn_columns()` (src/num/accel_quasi_newton.cpp) is called from
+  /// the accelerator, `fuse/model/iteration.hpp` documents each filter's
+  /// measured effect on sweep count, and the freeze fixture pins
+  /// `FilterKind::QR1` in the canonical bytes. BM-11 (review 2026-10-11):
+  /// this comment used to say the filter was "a documented no-op until
+  /// Task 7.4", which was true when this declaration was written but
+  /// stayed uncorrected after Task 7.4 landed -- a reader tuning
+  /// convergence off this comment alone would skip the one knob that can
+  /// change sweep count by a large factor.
   AccelConfig            acceleration{.kind = AccelKind::None};
 
   /// Time windows track: the OPT-IN that will turn this region from today's
@@ -502,12 +511,33 @@ namespace detail {
 /// actually refuses that case; this function never fails, matching
 /// `effective_channel_lag()`'s own "never fails, refusal is someone
 /// else's job" shape.
+///
+/// BM-19 (review 2026-10-11): the division used to be the throwing `/`
+/// operator, which can `FUSE_REFUSE` on an unrepresentable ratio --
+/// escaping as a thrown `Refusal` the signature never promised, and
+/// `abort_no_exceptions()` in a `FUSE_ENABLE_EXCEPTIONS=OFF` build, where
+/// this "never fails" function would abort instead. `try_div` makes the
+/// promise true: an unrepresentable ratio is treated the same as the
+/// already-documented non-positive-`interval` case above, a harmless
+/// minimum the caller's own gate is responsible for refusing instead.
 [[nodiscard]] inline std::size_t window_sample_capacity(
     Rational window_length, Rational interval, DtPolicy policy) {
   if (!(interval > Rational{0})) return 1;
-  const Rational ratio = window_length / interval;
-  std::int64_t substeps = ratio.num() / ratio.den();
-  if (ratio.num() % ratio.den() != 0) ++substeps;
+  // Review 2026-10-11 IS-6: `window_length / interval` (Rational::operator/)
+  // FUSE_REFUSEs with E-BASE-RATIONAL-OVERFLOW on an unrepresentable ratio
+  // (~2^63-magnitude window/interval values) -- an exception this function's
+  // own contract ("never fails, refusal is someone else's job", matching
+  // effective_channel_lag()'s shape) does not allow, and which used to
+  // escape schedule() uncaught instead of surfacing as an E-SCHED-*
+  // diagnostic. `try_div` cannot throw; on overflow, report the capacity as
+  // unrepresentably large rather than the ratio itself -- the caller's own
+  // `needed > waveform_capacity` gate (E-SCHED-WINDOW-CAPACITY,
+  // src/schedule/window.cpp) already refuses anything this large, so no
+  // caller ever observes the sentinel as a usable count.
+  const std::optional<Rational> ratio = Rational::try_div(window_length, interval);
+  if (!ratio.has_value()) return std::numeric_limits<std::size_t>::max();
+  std::int64_t substeps = ratio->num() / ratio->den();
+  if (ratio->num() % ratio->den() != 0) ++substeps;
   if (substeps < 0) substeps = 0;
   std::size_t needed = static_cast<std::size_t>(substeps) + 1;
   if (policy == DtPolicy::Fixed) needed += 1;
@@ -567,14 +597,51 @@ namespace detail {
 /// update comment) -- but it must be read from there, never
 /// reconstructed from this member's own compiled buffer, whichever
 /// window instance is being read.
+/// BM-19 (review 2026-10-11): every Rational operation below used to use
+/// the throwing spellings (`+`, `-`, `*`, `/`), any of which can
+/// `FUSE_REFUSE` on an unrepresentable intermediate -- an uncaught
+/// `Refusal` escaping a function with no `Result` in its signature to
+/// report that through, or an abort in a `FUSE_ENABLE_EXCEPTIONS=OFF`
+/// build. `try_*` is used throughout instead; the four lambdas below set
+/// `ok` on the first unrepresentable step and every later computation and
+/// loop is gated on it, so the function always returns a well-formed (if,
+/// on that one unrepresentable path, truncated after `T0`) list ending in
+/// `T1` rather than throwing. No legitimate window -- every caller passes
+/// a `window_length`/`interval` that already fits comfortably once
+/// reduced -- can reach this path; it exists for the same reason
+/// `window_sample_capacity()` just above now also uses `try_div`: a
+/// corrupted or adversarially constructed graph must not be able to
+/// crash this function.
 [[nodiscard]] inline std::vector<Rational> window_sample_times(
     Rational interval, DtPolicy policy, Rational member_start,
     Rational window_length, std::int64_t window_index) {
-  const Rational T0 = member_start + Rational(window_index) * window_length;
-  const Rational T1 = T0 + window_length;
+  bool ok = true;
+  const auto add = [&](Rational a, Rational b) {
+    const auto r = Rational::try_add(a, b);
+    if (!r) { ok = false; return a; }
+    return *r;
+  };
+  const auto sub = [&](Rational a, Rational b) {
+    const auto r = Rational::try_sub(a, b);
+    if (!r) { ok = false; return a; }
+    return *r;
+  };
+  const auto mul = [&](Rational a, Rational b) {
+    const auto r = Rational::try_mul(a, b);
+    if (!r) { ok = false; return a; }
+    return *r;
+  };
+  const auto div = [&](Rational a, Rational b) {
+    const auto r = Rational::try_div(a, b);
+    if (!r) { ok = false; return a; }
+    return *r;
+  };
+
+  const Rational T0 = add(member_start, mul(Rational(window_index), window_length));
+  const Rational T1 = ok ? add(T0, window_length) : T0;
   std::vector<Rational> times;
   times.push_back(T0);
-  if (interval > Rational{0}) {
+  if (ok && interval > Rational{0}) {
     if (policy == DtPolicy::Fixed) {
       // The member's own GLOBAL grid, anchored at `member_start`,
       // independent of `window_index`: the first grid point strictly
@@ -582,25 +649,27 @@ namespace detail {
       // `double`) rather than by stepping from `member_start` one
       // `interval` at a time -- the same number either way, but O(1)
       // instead of O(window_index).
-      const Rational offset = (T0 - member_start) / interval;
-      std::int64_t k = offset.num() / offset.den();  // floor: offset >= 0
-                                                     // always (window_index
-                                                     // >= 0), so truncating
-                                                     // integer division IS
-                                                     // floor division here.
-      Rational t = member_start + Rational(k) * interval;
-      while (!(t > T0)) t = t + interval;
-      while (t < T1) {
-        times.push_back(t);
-        t = t + interval;
+      const Rational offset = div(sub(T0, member_start), interval);
+      if (ok) {
+        std::int64_t k = offset.num() / offset.den();  // floor: offset >= 0
+                                                       // always (window_index
+                                                       // >= 0), so truncating
+                                                       // integer division IS
+                                                       // floor division here.
+        Rational t = add(member_start, mul(Rational(k), interval));
+        while (ok && !(t > T0)) t = add(t, interval);
+        while (ok && t < T1) {
+          times.push_back(t);
+          t = add(t, interval);
+        }
       }
     } else {
       // Adjustable: the grid restarts at T0 every window
       // (`fuse::detail::plan_substeps()`'s own contract).
-      Rational t = T0 + interval;
-      while (t < T1) {
+      Rational t = add(T0, interval);
+      while (ok && t < T1) {
         times.push_back(t);
-        t = t + interval;
+        t = add(t, interval);
       }
     }
   }

@@ -78,7 +78,14 @@ def load_manifest() -> list[dict]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--build-dir", required=True, type=Path)
+    # Not `required=True`: the --check-anchors branch below never reads
+    # args.build_dir at all (it is a text-anchor check over
+    # build-evidence/*.toml and the source tree, no build, no git
+    # requirement), but argparse's own requiredness demanded one anyway --
+    # which is exactly what kept this sub-second static check out of CI
+    # (BC-3): a `gates` job leg has no configured build directory to hand
+    # it. `type=Path` only applies when a value is actually given.
+    ap.add_argument("--build-dir", default=None, type=Path)
     ap.add_argument("--area", default=None)
     ap.add_argument("--write-log", action="store_true")
     ap.add_argument("--jobs", type=int, default=8)
@@ -87,6 +94,9 @@ def main() -> int:
                          "no git requirement. Run this in CI: an anchor that drifted is a "
                          "mutation that is silently no longer assessed (REVIEW.md BT-F5).")
     args = ap.parse_args()
+
+    if args.build_dir is None and not args.check_anchors:
+        ap.error("--build-dir is required unless --check-anchors is given")
 
     spec_rows = load_manifest()
     if args.check_anchors:

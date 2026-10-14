@@ -113,6 +113,21 @@ struct FirstFrozenStructSize<fuse_field_view> {
       offsetof(fuse_field_view, data) + sizeof(void*);
 };
 
+template <>
+struct FirstFrozenStructSize<fuse_step_request> {
+  // Review 2026-10-11 AB-2: this specialization was missing, so an old
+  // caller's struct_size=16 (the layout shipped before t_begin/t_end/step/
+  // iteration/requires_checkpoint/requires_restore/reserved were appended
+  // in 612b153 for the provider direction, per c-abi.md's growth table
+  // "16 -> 72") was refused FUSE_ERR_VERSION by check_struct_size's old
+  // `>= sizeof(current)` bound, even though begin_step()/end_step() never
+  // read any of the grown members (entries.def's comments on each mark
+  // them provider-direction-only). `component` is the last pre-growth
+  // member.
+  static constexpr std::size_t value =
+      offsetof(fuse_step_request, component) + sizeof(const char*);
+};
+
 /// abi-design.md rule 2. A `struct_size` smaller than `T`'s first frozen
 /// layout, or larger than FUSE_ABI_MAX_STRUCT_SIZE, is FUSE_ERR_VERSION.
 /// Before Defect 3 this bound was always `sizeof(T)` (current); now that
@@ -183,18 +198,26 @@ std::string& thread_error_message() {
   static thread_local std::string msg;
   return msg;
 }
+/// The fuse_status the most recent failing call on this thread returned;
+/// the thread-local twin of fuse_ctx::last_error_status (context.hpp).
+fuse_status& thread_error_status() {
+  static thread_local fuse_status status = FUSE_OK;
+  return status;
+}
 
-void store_error(fuse_ctx* ctx, const std::string& code,
+void store_error(fuse_ctx* ctx, fuse_status status, const std::string& code,
                  const std::string& msg) noexcept {
   try {
     thread_error_code()    = code;
     thread_error_message() = msg;
+    thread_error_status()  = status;
   } catch (...) {  // NOLINT(bugprone-empty-catch): nothing better is possible
   }
   if (ctx != nullptr) {
     try {
       ctx->last_error_code    = code;
       ctx->last_error_message = msg;
+      ctx->last_error_status  = status;
     } catch (...) {  // NOLINT(bugprone-empty-catch)
     }
   }
@@ -202,7 +225,7 @@ void store_error(fuse_ctx* ctx, const std::string& code,
 
 fuse_status fail(fuse_ctx* ctx, fuse_status code, const std::string& fcode,
                  const std::string& msg) noexcept {
-  store_error(ctx, fcode, msg);
+  store_error(ctx, code, fcode, msg);
   return code;
 }
 
@@ -485,6 +508,7 @@ fuse_status impl_destroy(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
     if (auto r = fuse::transport::disconnect(owned); !r.ok()) {
       thread_error_code()    = r.error().code;
       thread_error_message() = r.error().message;
+      thread_error_status()  = FUSE_ERR_RUNTIME;
       return FUSE_ERR_RUNTIME;
     }
 #else
@@ -501,19 +525,24 @@ fuse_status impl_last_error(fuse_ctx* ctx, const fuse_null*, fuse_error* out) {
 
   const std::string* code = nullptr;
   const std::string* msg = nullptr;
+  const fuse_status* status = nullptr;
   if (ctx == nullptr) {
-    code = &thread_error_code();
-    msg  = &thread_error_message();
+    code   = &thread_error_code();
+    msg    = &thread_error_message();
+    status = &thread_error_status();
   } else if (!is_live(ctx)) {
     return FUSE_ERR_INVALID;
   } else {
-    code = &ctx->last_error_code;
-    msg  = &ctx->last_error_message;
+    code   = &ctx->last_error_code;
+    msg    = &ctx->last_error_message;
+    status = &ctx->last_error_status;
   }
 
   out->struct_size = sizeof(fuse_error);
-  out->status      = FUSE_OK;  // the ABI never reconstructs the ORIGINAL
-                               // failing status; only the message/code.
+  out->status      = *status;  // the fuse_status store_error() recorded
+                               // alongside code/message for the call that
+                               // set them (FUSE_OK if nothing has failed
+                               // yet on this context/thread).
   out->length      = msg->size();
   out->code        = code->empty() ? nullptr : code->c_str();
   if (out->buffer == nullptr) {
@@ -598,6 +627,14 @@ fuse_status impl_setup(fuse_ctx* ctx, const fuse_setup_options* in, fuse_null*) 
     }
     const fuse_status sz = check_struct_size(in);
     if (sz != FUSE_OK) return sz;
+    // Review 2026-10-11 AB-11: entries.def documents `reserved` as "must
+    // be 0", but nothing read it to check -- a caller that left it
+    // uninitialised (or copy-pasted a struct with something else in that
+    // slot) was silently accepted. Cheap to check, so checked.
+    if (in->reserved != 0) {
+      return fail(&c, FUSE_ERR_INVALID, "E-ABI-SETUP-RESERVED",
+                 "fuse_setup_options: reserved must be 0");
+    }
     // entries.def's own comment on my_component: an old caller's smaller
     // struct_size never allocated this member, so it is read ONLY when
     // struct_size_covers it -- exactly the write-side guard's own mirror,
@@ -661,6 +698,27 @@ fuse_status impl_setup(fuse_ctx* ctx, const fuse_setup_options* in, fuse_null*) 
       // base_communicator()'s own `formed` flag, whose contract is "a
       // TRUSTWORTHY base communicator exists", not "setup() was called".
       c.communicator_set = true;
+    } else if (my_component != nullptr) {
+      // Review 2026-10-11 AB-4: this whole my_component handling (above)
+      // lived inside `if (in->communicator != 0)`, so a caller that named
+      // an Mpmd/Connect component but left communicator == 0 fell through
+      // silently -- the run proceeded single-process on a graph that
+      // declares a multi-executable launch, with no refusal at all.
+      // my_component's own comment (entries.def) requires a non-zero
+      // communicator for exactly these two LaunchModes, to form the real
+      // base communicator from; InProcess/Plugin need no communicator at
+      // all, so only Mpmd/Connect are refused here.
+      const auto cid = c.graph.find_component(my_component);
+      if (cid.has_value()) {
+        const fuse::LaunchMode mode = c.graph.component(*cid).launch.mode;
+        if (mode == fuse::LaunchMode::Mpmd || mode == fuse::LaunchMode::Connect) {
+          return fail(&c, FUSE_ERR_INVALID, "E-ABI-SETUP-COMPONENT",
+                     std::string("fuse_setup_options: my_component names '") +
+                         my_component + "', whose LaunchSpec is Mpmd or Connect and "
+                         "therefore requires a non-zero communicator to form the real "
+                         "base communicator from (communicator == 0 was supplied)");
+        }
+      }
     }
     if (in->has_end_time) {
       const fuse::Result<fuse::Rational> t = from_abi_time(in->end_time);
@@ -1456,13 +1514,18 @@ fuse_status impl_begin_step(fuse_ctx* ctx, const fuse_step_request* in,
                      c.graph.component(*c.open_component).name +
                      "' still has one open; call its fuse_end_step() first");
     }
-    bool rolled_over = false;
+    // Review 2026-10-11 AB-12: `rolled_over` was declared `false` and
+    // then OR'd with `this_call_rolled_over` immediately below with
+    // nothing in between able to set it -- a no-op vestige of an
+    // earlier loop (this is the only prime_next_request() call in this
+    // function). `this_call_rolled_over` carries the real value from
+    // here on; no behaviour change.
     bool this_call_rolled_over = false;
     if (!prime_next_request(c, "fuse_begin_step", &this_call_rolled_over,
                             &err_code, &err_message)) {
       return fail(&c, FUSE_ERR_RUNTIME, err_code, err_message);
     }
-    rolled_over = rolled_over || this_call_rolled_over;
+    const bool rolled_over = this_call_rolled_over;
     // S6 phase 3 (Conformance, Unit 3b), item 2 of this round,
     // SUPERSEDING the lead's own earlier (2026-10-04) ruling that this
     // call "consumes EVERY pending delivery proxy it encounters while

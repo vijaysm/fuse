@@ -31,6 +31,30 @@
  *
  * Dependency-free on purpose: this header pulls in no FUSE type, so the
  * dependency-free encoders can use it without acquiring one.
+ *
+ * **Not used by the graph descriptor.** BM-5 (review 2026-10-11): the
+ * coupling-graph descriptor (`fuse::serialize`/`fuse::deserialize`,
+ * fuse/model/descriptor.hpp -- "the ABI narrow waist") does not route
+ * through this header at all. Its `detail::Writer::pod`/`detail::Reader::
+ * pod` `memcpy` a value's native in-memory representation directly,
+ * which is little-endian on every machine this library currently builds
+ * for but is NOT the little-endian encoding this header defines --
+ * two canonical-byte encoders in the same layer, with different
+ * endianness rules, invisible on every common-endian host. The golden
+ * files under test/golden/ (`waist-v*.bin`) are therefore pinned to
+ * little-endian bytes only because every machine that has ever produced
+ * them was; a big-endian host or adapter would write a descriptor these
+ * golden tests, and every other little-endian peer, would refuse to
+ * read. Recorded here rather than changed: routing the descriptor's
+ * `pod()` through `put_integer()` would change every existing golden
+ * file's bytes on a little-endian host too (this header's `put_integer`
+ * writes the SAME bytes a little-endian `memcpy` would, but a signed
+ * 1-byte field such as an enum ordinal is written through `put_signed`
+ * today only where the descriptor already uses `bytes::`-prefixed calls,
+ * which the descriptor's own `pod()` is not one of), so it waits for a
+ * version bump that can absorb the golden-file churn deliberately,
+ * tracked alongside the rest of the descriptor's version history in
+ * fuse/model/descriptor.hpp and in docs/dev/abi-design.md.
  */
 namespace fuse::bytes
 {

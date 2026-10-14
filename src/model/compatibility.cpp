@@ -31,46 +31,71 @@ ConnectionVerdict severity_of(ConnectionReason reason) noexcept
 class Evaluation
 {
   public:
-    explicit Evaluation(const ConnectionRequest& request) : _request(request) {}
+    explicit Evaluation(const ConnectionRequest& request) : request_(request) {}
 
     void refuse(ConnectionStage stage, ConnectionReason reason, std::string detail,
                 std::uint64_t missing_capabilities = 0)
     {
-        _result.diagnostics.push_back({stage, reason, missing_capabilities, std::move(detail)});
+        result_.diagnostics.push_back({stage, reason, missing_capabilities, std::move(detail)});
         const auto severity = severity_of(reason);
-        if (severity > _result.verdict) _result.verdict = severity;
-        if (!_result.first_incompatible_stage) _result.first_incompatible_stage = stage;
+        if (severity > result_.verdict) result_.verdict = severity;
+        if (!result_.first_incompatible_stage) result_.first_incompatible_stage = stage;
     }
 
     [[nodiscard]] bool requested(OperatorKind kind) const noexcept
     {
-        return (_request.explicitly_requested & operator_request_bit(kind)) != 0;
+        return (request_.explicitly_requested & operator_request_bit(kind)) != 0;
     }
 
-    void emit(OperatorStep step) { _result.chain.steps.push_back(std::move(step)); }
+    void emit(OperatorStep step) { result_.chain.steps.push_back(std::move(step)); }
 
     [[nodiscard]] ConnectionCompatibility finish()
     {
-        if (_result.verdict == ConnectionVerdict::Ambiguous || _result.verdict == ConnectionVerdict::Unsupported)
+        if (result_.verdict == ConnectionVerdict::Ambiguous || result_.verdict == ConnectionVerdict::Unsupported)
         {
-            // A refused connection has no chain. A partial chain would invite a
-            // runtime fallback, which is exactly what must not exist: a
-            // fallback that substitutes an operator changes the meaning of the
-            // coupled quantity while reporting success.
-            _result.chain.steps.clear();
-            return std::move(_result);
+            // A refused connection keeps no Spatial-, Temporal- or
+            // Constraint-phase step: each of those moves or alters the actual
+            // value, and emitting one without the connection it belongs to
+            // would be exactly the runtime fallback that must not exist (a
+            // fallback that substitutes an operator changes the meaning of
+            // the coupled quantity while reporting success).
+            //
+            // BM-1 (review 2026-10-11): this used to clear the WHOLE chain,
+            // including a Transform-phase step (an inferred `UnitScale`, most
+            // often) that an EARLIER stage had already authorized before a
+            // LATER stage refused -- Shape, Location, Temporal, Conservation
+            // and Capability all run after Unit. Discarding it was a second,
+            // independent silent loss on top of the refusal itself: a
+            // channel whose target is `Conservation::Extensive` refuses at
+            // the Conservation stage on every declared transfer that is not
+            // conservative, so a scale-only unit mismatch (kPa -> Pa) on such
+            // a channel lost its UnitScale here and surfaced, much later
+            // and with no explanation, as a bare `E-IR-TYPE` in `lower()`
+            // (src/ir/rules_channel.cpp reads this same chain). A
+            // Transform-phase step only rescales, reorders or selects
+            // components -- it carries none of the above risk, so keeping it
+            // is not a partial chain in the sense the comment above warns
+            // against; it is the one part of the chain that was already
+            // correct before the later stage had anything to say.
+            auto& steps = result_.chain.steps;
+            steps.erase(std::remove_if(steps.begin(), steps.end(),
+                                       [](const OperatorStep& step) {
+                                           return operator_phase(step.kind) != OperatorPhase::Transform;
+                                       }),
+                       steps.end());
+            return std::move(result_);
         }
-        if (_result.chain.empty()) _result.verdict = ConnectionVerdict::Exact;
-        else if (chain_is_lossless(_result.chain)) _result.verdict = ConnectionVerdict::LosslessExplicit;
-        else _result.verdict = ConnectionVerdict::LossyExplicit;
-        return std::move(_result);
+        if (result_.chain.empty()) result_.verdict = ConnectionVerdict::Exact;
+        else if (chain_is_lossless(result_.chain)) result_.verdict = ConnectionVerdict::LosslessExplicit;
+        else result_.verdict = ConnectionVerdict::LossyExplicit;
+        return std::move(result_);
     }
 
-    [[nodiscard]] ConnectionCompatibility& result() noexcept { return _result; }
+    [[nodiscard]] ConnectionCompatibility& result() noexcept { return result_; }
 
   private:
-    const ConnectionRequest& _request;
-    ConnectionCompatibility _result;
+    const ConnectionRequest& request_;
+    ConnectionCompatibility result_;
 };
 
 // The spine's rational helpers returned an error code; fuse::Rational compares
@@ -171,12 +196,30 @@ void check_units(const ConnectionRequest& request, Evaluation& evaluation)
     {
         // An offset change moves the zero of the scale - Celsius to Kelvin -
         // which is a change of meaning, never inserted on the caller's behalf.
-        const std::optional<Rational> delta =
+        const std::optional<Rational> raw_delta =
             Rational::try_sub(source.offset, target.offset);
-        if (!delta)
+        if (!raw_delta)
         {
             evaluation.refuse(ConnectionStage::Unit, ConnectionReason::UnitConversionOverflow,
                               "the exact unit offset difference is not representable");
+            return;
+        }
+        // BM-6: the affine conversion is `v_t = factor * v + (o_s - o_t) /
+        // target.scale` -- the step's own OWN consumer (not yet landed;
+        // `ir_can_emit(AffineUnit)` is false) will apply `step.scale` and
+        // `step.offset` exactly that way (transform.hpp's `OperatorStep`).
+        // The division by `target.scale` was missing here -- ported
+        // verbatim from the parent, where it is only ever correct when
+        // `target.scale == 1`, the one case `Compatibility.UnitRules`
+        // happens to pin. `target.scale` is never zero (R-19: a unit's
+        // scale is never non-positive), so `try_div` here fails only on
+        // overflow, like `factor` above.
+        const std::optional<Rational> delta = Rational::try_div(*raw_delta, target.scale);
+        if (!delta)
+        {
+            evaluation.refuse(ConnectionStage::Unit, ConnectionReason::UnitConversionOverflow,
+                              "the exact unit offset, divided by the target scale, is not "
+                              "representable");
             return;
         }
         if (!evaluation.requested(OperatorKind::AffineUnit))
@@ -359,11 +402,31 @@ void check_capabilities(const ConnectionRequest& request, Evaluation& evaluation
 
 void check_constraints(Evaluation& evaluation)
 {
-    if (!evaluation.requested(OperatorKind::Clip)) return;
-    OperatorStep step;
-    step.kind = OperatorKind::Clip;
-    step.explicitly_requested = true;
-    evaluation.emit(std::move(step));
+    // BM-13: `Clip` used to be the only requested constraint this
+    // function honored; an explicit `operator_request_bit(OperatorKind::
+    // ConservationEnforcement)` -- bit 41, a VALID request -- was
+    // silently ignored, no step emitted and no diagnostic raised, the I4
+    // shape (a caller's explicit request that silently does nothing).
+    // Both operators are unimplemented in the IR today (`ir_can_emit()`,
+    // src/ir/lowering.cpp, returns `false` for each), so emitting the
+    // step -- exactly as `Clip` already does -- reaches the SAME
+    // `E-IR-UNLOWERABLE` refusal `rules_channel.cpp` already raises for
+    // `Clip`, rather than inventing a second way to say "not yet
+    // implemented".
+    if (evaluation.requested(OperatorKind::Clip))
+    {
+        OperatorStep step;
+        step.kind = OperatorKind::Clip;
+        step.explicitly_requested = true;
+        evaluation.emit(std::move(step));
+    }
+    if (evaluation.requested(OperatorKind::ConservationEnforcement))
+    {
+        OperatorStep step;
+        step.kind = OperatorKind::ConservationEnforcement;
+        step.explicitly_requested = true;
+        evaluation.emit(std::move(step));
+    }
 }
 }
 

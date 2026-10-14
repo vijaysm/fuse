@@ -503,8 +503,16 @@ void bind_all(TwoComponentJob& h) {
 /// back together.
 class LinearRelaxComponent final : public fuse::Component {
  public:
-  LinearRelaxComponent(std::string name, double a, double k, std::size_t n)
-      : name_(std::move(name)), a_(a), k_(k), out_(n, 0.0), in_(n, 0.0) {}
+  /// RT-2(c) (review 2026-10-11): `fail_restore_after` -- -1 (the default,
+  /// every existing caller) never rejects; N makes the (N+1)-th
+  /// restore_state() call (0-based, matching StubComponent's own
+  /// fail_after convention) return a Failure instead of restoring,
+  /// forcing a mid-sweep restore_state() failure on exactly this
+  /// component's own rank without perturbing a peer on a different rank.
+  LinearRelaxComponent(std::string name, double a, double k, std::size_t n,
+                       int fail_restore_after = -1)
+      : name_(std::move(name)), a_(a), k_(k), out_(n, 0.0), in_(n, 0.0),
+        fail_restore_after_(fail_restore_after) {}
 
   [[nodiscard]] std::string name() const override { return name_; }
 
@@ -534,6 +542,12 @@ class LinearRelaxComponent final : public fuse::Component {
     return fuse::Result<void>::success();
   }
   fuse::Result<void> restore_state() override {
+    const int n = restore_calls_++;
+    if (fail_restore_after_ >= 0 && n >= fail_restore_after_) {
+      return fuse::Failure{"E-TEST-RESTORE-REFUSED",
+                           "'" + name_ + "' refuses restore_state() past "
+                               "call " + std::to_string(fail_restore_after_)};
+    }
     for (std::size_t i = 0; i < out_.size(); ++i) out_[i] = saved_out_[i];
     for (std::size_t i = 0; i < in_.size(); ++i) in_[i] = saved_in_[i];
     return fuse::Result<void>::success();
@@ -546,6 +560,8 @@ class LinearRelaxComponent final : public fuse::Component {
   std::string          name_;
   double               a_, k_;
   std::vector<double>  out_, in_, saved_out_, saved_in_;
+  int                  fail_restore_after_ = -1;
+  int                  restore_calls_ = 0;
 };
 
 /// `A`/`B` both span the WHOLE communicator (unlike TwoComponentJob's
@@ -1135,6 +1151,264 @@ TEST(RunnerTransport, RegionConvergesInTheSerialIterationCount) {
       << "every rank must exit on the same sweep the serial run does, "
          "whatever this rank's own unequal local slice of the 4 entities "
          "looks like";
+  ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
+}
+
+// ---------------------------------------------------------------------------
+// RT-1 (review 2026-10-11): a rank outside an ORDINARY (non-window-scoped)
+// multi-rank iteration region's own R.participants shares config.
+// base_communicator with the region's real participants -- the same shape
+// KNOWN_ISSUES.md D35 fixed for the window-scoped sibling
+// (broadcast_window_convergence()). Before the mirroring fix
+// (broadcast_region_convergence(), src/runtime/runner.cpp),
+// reduce_region_residuals() left such a rank's payload at all-zero `owned`
+// counts -- never reduced for it -- and the UNMEASURED check right after
+// read that as "no participant owns this block": a guaranteed, spurious
+// E-RT-REGION-UNMEASURED at sweep 0 on the bystander alone, with the two
+// real participants (A, B) converging normally over kSerialIterations
+// sweeps without ever seeing it.
+// ---------------------------------------------------------------------------
+
+/// A plain interval-1, no-field component -- this fixture's own uncoupled
+/// bystander, hosting nothing this iteration region's channels touch.
+class UncoupledBystanderComponent final : public fuse::Component {
+ public:
+  [[nodiscard]] std::string name() const override { return "C"; }
+  fuse::Result<void> register_fields(fuse::FieldRegistry&,
+                                     const fuse::CouplingGraph&) override {
+    return fuse::Result<void>::success();
+  }
+  fuse::Result<void> advance(const fuse::StepContext&) override {
+    return fuse::Result<void>::success();
+  }
+};
+
+/// LinearFixedPointJob's own two-way iterated coupling (same A/B
+/// coefficients, same entity count, same tolerance -- identical fixed point
+/// and contraction rate, so the serial sweep count is the same known 30
+/// RegionConvergesInTheSerialIterationCount, just above, pins), but with A
+/// and B on DISJOINT ranks {0}/{1} rather than both spanning the whole
+/// communicator, and -- when `with_bystander` -- a third, genuinely
+/// uncoupled component C on rank 2: no fields, no channels, not a member of
+/// the implicit coupling group's RankSet.
+class DisjointFixedPointJob {
+ public:
+  static constexpr std::size_t kEntities = 4;
+
+  /// RT-2(c): `fail_a_restore_after` (-1 default, every existing caller) is
+  /// passed to "A"'s own LinearRelaxComponent ONLY on a rank `a_ranks_`
+  /// actually names (`-1`, never-fails, on every other rank) -- every
+  /// rank constructs its OWN LinearRelaxComponent("A", ...) object
+  /// regardless of `a_ranks_` (build_ticks()'s own documented need for a
+  /// Component per graph component on every rank, this file's own
+  /// TwoComponentJob-era comment), so forwarding the SAME threshold
+  /// unconditionally would make B's rank fail its own, otherwise-inert,
+  /// local copy of "A" independently of rank 0 -- not the one-rank-bad
+  /// topology this is for.
+  explicit DisjointFixedPointJob(int max_iterations, bool with_bystander,
+                                 int fail_a_restore_after = -1)
+      : a_ranks_{0, 1}, b_ranks_{1, 1},
+        backend(a_ranks_, b_ranks_, kEntities, 1) {
+    const auto mesh =
+        graph.add_mesh(fuse::MeshDecl{.name = "shared", .source = "test"});
+    region_ = graph.add_region(
+        fuse::Region{.name = "r", .mesh = mesh, .dimension = 1});
+
+    const auto ca = graph.add_component(fuse::ComponentDecl{
+        .name = "A", .ranks = a_ranks_, .interval = Rational{1}});
+    const auto cb = graph.add_component(fuse::ComponentDecl{
+        .name = "B", .ranks = b_ranks_, .interval = Rational{1}});
+    const auto a_out = graph.add_field(
+        ca, fuse::FieldSpec{.name = "a_out", .region = region_,
+                           .units = fuse::units::kKelvin,
+                           .intent = fuse::Intent::Provides});
+    const auto a_in = graph.add_field(
+        ca, fuse::FieldSpec{.name = "a_in", .region = region_,
+                           .units = fuse::units::kKelvin,
+                           .intent = fuse::Intent::Requires});
+    const auto b_in = graph.add_field(
+        cb, fuse::FieldSpec{.name = "b_in", .region = region_,
+                           .units = fuse::units::kKelvin,
+                           .intent = fuse::Intent::Requires});
+    const auto b_out = graph.add_field(
+        cb, fuse::FieldSpec{.name = "b_out", .region = region_,
+                           .units = fuse::units::kKelvin,
+                           .intent = fuse::Intent::Provides});
+
+    const auto fwd = graph.add_channel("a2b", a_out, b_in);
+    const auto back = graph.add_channel("b2a", b_out, a_in);
+    graph.channel(back).lag(1).allow_time_level_mismatch("iterated");
+
+    fuse::ConvergenceCriterion conv;
+    conv.add(fuse::Converged::Relative(1e-10, "a2b"));
+    conv.add(fuse::Converged::Relative(1e-10, "b2a"));
+    graph.add_iteration_region(fuse::IterationRegionDecl{
+        .name = "outer", .channels = {fwd, back},
+        .max_iterations = max_iterations, .convergence = conv});
+
+    if (with_bystander) {
+      graph.add_component(fuse::ComponentDecl{
+          .name = "C", .ranks = fuse::RankSet{2, 1}, .interval = Rational{1}});
+    }
+
+    EXPECT_TRUE(backend.load(graph.mesh(mesh)).ok());
+    const auto lowered = lower(graph);
+    EXPECT_TRUE(lowered.ok()) << lowered.diags.to_string();
+    dag = lowered.dag;
+
+    const fuse::ClockSet clocks{graph};
+    const auto sched =
+        schedule(graph, dag, clocks, fuse::make_region_sizes(graph, backend));
+    EXPECT_TRUE(sched.ok()) << sched.diags.to_string();
+    plan = sched.plan;
+
+    auto size_of = [&](std::uint32_t cid) -> std::size_t {
+      const auto n = backend.placed_region_size(graph.region(region_),
+                                                fuse::ComponentId{cid});
+      EXPECT_TRUE(n.ok());
+      return n.ok() ? n.value() : 0;
+    };
+    // RT-2(c): only the rank a_ranks_ actually names gets the real
+    // threshold; every other rank's own (otherwise-inert) copy of "A" is
+    // left at -1, never failing on its own.
+    const int fail_this_rank =
+        a_ranks_.contains(current_rank()) ? fail_a_restore_after : -1;
+    components.add(std::make_unique<LinearRelaxComponent>(
+        "A", 1.0, 0.5, size_of(0), fail_this_rank));
+    components.add(std::make_unique<LinearRelaxComponent>(
+        "B", 2.0, 0.4, size_of(1)));
+    if (with_bystander) {
+      components.add(std::make_unique<UncoupledBystanderComponent>());
+    }
+  }
+
+  fuse::RankSet          a_ranks_, b_ranks_;
+  PartitionedTestBackend backend;
+
+  fuse::CouplingGraph  graph;
+  fuse::OperatorDAG    dag;
+  fuse::ExecutionPlan  plan;
+  fuse::ComponentSet   components;
+  fuse::FieldRegistry  registry;
+
+ private:
+  fuse::RegionId region_;
+};
+
+void bind_all(DisjointFixedPointJob& h) {
+  for (auto& c : h.components) {
+    EXPECT_TRUE(c.register_fields(h.registry, h.graph).ok());
+  }
+}
+
+TEST(RunnerTransport,
+     OrdinaryRegionBystanderDoesNotDeadlockOrMisreportUnmeasured) {
+  FUSE_REQUIRE_AT_LEAST_RANKS(3);
+  constexpr int kSerialIterations = 30;
+  auto h =
+      DisjointFixedPointJob(kSerialIterations + 10, /*with_bystander=*/true);
+  ASSERT_GT(h.plan.region_count(), 0u);
+  Runner runner{h.graph, h.dag, h.plan, h.backend};
+  bind_all(h);
+
+  fuse::RunnerConfig cfg;
+  cfg.transport         = "mpi";
+  cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
+  cfg.transport_setup   = mpi_comm_setup();
+  const auto init = runner.initialize(h.components, h.registry, cfg);
+  ASSERT_TRUE(init.ok()) << init.error().code << ": " << init.error().message;
+
+  const auto run = runner.run_period(h.components);
+  ASSERT_TRUE(run.ok())
+      << "rank " << current_rank() << ": " << run.error().code << ": "
+      << run.error().message
+      << " -- a rank outside R.participants (rank 2, hosting only the "
+         "uncoupled component C) must not report E-RT-REGION-UNMEASURED "
+         "from a residual agreement it never joined";
+  ASSERT_FALSE(runner.iteration_stats().empty());
+  const fuse::IterationStats& st = runner.iteration_stats()[0];
+  EXPECT_TRUE(st.converged);
+  EXPECT_EQ(st.iterations, kSerialIterations)
+      << "rank " << current_rank() << ": every rank sharing the "
+         "communicator -- participant or bystander -- must agree the SAME "
+         "sweep count A and B converge in on their own disjoint ranks";
+  ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
+}
+
+// ---------------------------------------------------------------------------
+// RT-2(c) (review 2026-10-11): a mid-sweep restore_state() failure on one
+// rank of an ordinary multi-rank iteration region used to `co_return`
+// straight out of run_region() (iteration.cpp), before that sweep's
+// partner ever learns of it -- the partner's own restore_state() succeeds
+// and it proceeds into the NEXT sweep's body Transport, where the failing
+// rank never arrives. Fixed by recording step_failure and falling through
+// to the existing carry-forward machinery (the deliver/re-advance code
+// right below already gates on step_failure via is_collective()), so the
+// failure reaches every partner at the next sweep's residual agreement --
+// the same reconcile_epoch()-style "-PEER" convention this file's own
+// StillRunsASecondChannelAfterARegionFailsUnderMpi/healthy-rank-leaves-
+// at-the-epoch mutation already document for the Epoch case.
+// ---------------------------------------------------------------------------
+
+TEST(RunnerTransport, RestoreStateFailureIsCarriedToEveryRankNotReturnedFrom) {
+  // Exactly 2, not "at least 2": a third rank here would be a bystander
+  // hosting neither A nor B, and peer-FAILURE propagation to such a
+  // bystander is the one gap D35's own closing note left for a window
+  // region's bystander and a real run confirmed is identical for this
+  // ordinary-region path (KNOWN_ISSUES.md D35; this round's own
+  // disposition record_text) -- out of scope for RT-2(c), which is about
+  // the two real participants, A's rank and B's rank, not a rank with no
+  // stake in this region at all.
+  FUSE_REQUIRE_RANKS(2);
+  // Well short of the known 30-sweep convergence count (RegionConverges-
+  // InTheSerialIterationCount, above): the failure must land while the
+  // region is still iterating, never having reached convergence.
+  constexpr int kFailAfter = 3;
+  auto h = DisjointFixedPointJob(/*max_iterations=*/40,
+                                 /*with_bystander=*/false,
+                                 /*fail_a_restore_after=*/kFailAfter);
+  ASSERT_GT(h.plan.region_count(), 0u);
+  Runner runner{h.graph, h.dag, h.plan, h.backend};
+  bind_all(h);
+
+  fuse::RunnerConfig cfg;
+  cfg.transport         = "mpi";
+  cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
+  cfg.transport_setup   = mpi_comm_setup();
+  const auto init = runner.initialize(h.components, h.registry, cfg);
+  ASSERT_TRUE(init.ok()) << init.error().code << ": " << init.error().message;
+
+  const auto run = runner.run_period(h.components);
+  ASSERT_FALSE(run.ok())
+      << "rank " << current_rank() << ": A's own restore_state() was made "
+         "to fail past call " << kFailAfter << "; every rank sharing the "
+         "communicator must see a Failure, not a silent success (which "
+         "would mean this rank never heard about the other's hang-prone "
+         "early return) and not a TIMEOUT (which would mean it did hang)";
+  // A's own rank reports its own local diagnostic; B's rank learns of it
+  // only through a cross-rank collective, reporting whichever "-PEER"
+  // code that collective's own mechanism uses. Which one depends on
+  // which the two-way channel's body reaches FIRST on the next sweep:
+  // this fixture's own channels carry a Transport+Epoch pair, and
+  // reconcile_epoch() co_returns immediately on an Epoch failure (the
+  // i-loop's own established rule, iteration.cpp) -- before the region's
+  // own residual agreement (reduce_region_residuals(), RT-2(c)'s own
+  // target) is ever reached. Measured: E-RT-EPOCH-PEER. Both codes are
+  // accepted, matching this file's own existing convention for the
+  // identical ambiguity (see AChannelOutsideTheRegionStillCompletesAfter
+  // TheRegionFails's own "whichever its stream reaches first" comment,
+  // above) -- what RT-2(c) actually guarantees is that B's rank reports SOME
+  // "-PEER" code rather than hanging or reporting success.
+  if (h.a_ranks_.contains(current_rank())) {
+    EXPECT_EQ(run.error().code, "E-TEST-RESTORE-REFUSED")
+        << run.error().message;
+  } else if (h.b_ranks_.contains(current_rank())) {
+    EXPECT_TRUE(run.error().code == "E-RT-EPOCH-PEER" ||
+               run.error().code == "E-RT-REGION-PEER")
+        << "rank " << current_rank() << " does not host the failing "
+           "component, so it must report a partner's failure, not "
+        << run.error().code << ": " << run.error().message;
+  }
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 

@@ -158,11 +158,17 @@ struct ScheduleResult {
 
 /// expand -> prove_acyclic -> plan_buffers -> emit.
 ///
-/// Never throws: every downstream step that can throw (`plan_buffers` throws
-/// std::invalid_argument / std::out_of_range / std::overflow_error by
-/// contract, and `OperatorDAG`'s accessors are `.at()`-checked) is caught and
-/// reported as a diagnostic instead. An init-time setup error belongs in
-/// `diags`, which is the channel the caller already has to read.
+/// Never throws: this calls `try_plan_buffers()` (buffers.hpp), the
+/// `Result`-returning spelling that reports every setup mistake as a
+/// diagnostic rather than throwing, and `OperatorDAG`'s accessors are
+/// `.at()`-checked. Review 2026-10-11 IS-5: this paragraph used to repeat
+/// the throwing `plan_buffers()`'s now-refuted three-way std::exception
+/// contract (REVIEW.md R-28 fixed the twin text in buffers.hpp but missed
+/// this one) -- the type that function actually throws is
+/// `fuse::InvalidArgument`, none of `std::invalid_argument` /
+/// `std::out_of_range` / `std::overflow_error`, and schedule() does not call
+/// it anyway. An init-time setup error belongs in `diags`, which is the
+/// channel the caller already has to read.
 ///
 /// **Nothing is returned in `plan` unless every gate passed.** `ok() == false`
 /// always comes with a default-constructed, empty `ExecutionPlan`; there is no
@@ -192,6 +198,18 @@ struct ScheduleResult {
 ///                    instruction stream as contiguous whole-body passes, so
 ///                    it cannot be expressed as flat enter/exit boundaries
 ///   E-SCHED-PLAN     the expansion or the buffer plan does not describe `dag`
+///   E-SCHED-WINDOW-OVERLAP  review 2026-10-11 IS-7/IS-12: a component or
+///                    channel named by more than one window-scoped region,
+///                    checked once across every region before any of the
+///                    per-region gates below run
+///   E-SCHED-WINDOW-*  every window-scoped `IterationRegionDecl`'s own
+///                    legality gate, forwarded from `validate_coupling_
+///                    window()` (fuse/schedule/window.hpp): `EMPTY`,
+///                    `AMBIGUOUS`, `COMPONENT`, `INTERVAL`, `POLICY`,
+///                    `ORDER`, `SHORTEN`, `CAPACITY`, `GAUSSSEIDEL-NOLAG`
+///                    (docs/dev/coupling-windows.md has the full list and
+///                    what each one catches; this page used to omit all of
+///                    them)
 ///
 /// `mode` is forwarded to `expand()` and is a test seam: it exists so that a
 /// lockstep graph can be built both with and without spec §8.2's fast path and

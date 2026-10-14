@@ -367,8 +367,25 @@ void reports_every_stage_at_once()
     late_refusal.available_capabilities = 0;
     const auto discarded = check_connection(late_refusal);
     require(discarded.verdict == ConnectionVerdict::Unsupported, "a missing capability was tolerated");
-    require(discarded.chain.empty(),
-            "a stage that refused after an operator was emitted left a partial chain");
+    // BM-1 (review 2026-10-11): this used to assert the OPPOSITE --
+    // `discarded.chain.empty()` -- because `Evaluation::finish()`
+    // (src/model/compatibility.cpp) cleared the WHOLE chain on any refusal,
+    // discarding the Unit stage's own already-authorized `UnitScale` right
+    // along with it. That is the exact silent loss BM-1 found: an
+    // Extensive-target channel's auto-inferred scale vanishing behind an
+    // unrelated, LATER-stage Conservation refusal (connect.hpp's hardcoded
+    // `TransferKind::Copy`), surfacing as a bare, unexplained `E-IR-TYPE` in
+    // `lower()` instead of the real problem. A Transform-phase step only
+    // rescales, reorders or selects components -- it never moves or alters
+    // the value the way a Spatial/Temporal/Constraint-phase step does, so
+    // `finish()` now keeps it across a later refusal; the other phases stay
+    // cleared (the `broken` case above, whose refusal precedes any step at
+    // all, is unaffected).
+    require(discarded.chain.size() == 1,
+            "a stage that refused after a Transform-phase operator was "
+            "emitted must still keep that operator, not discard it");
+    require(discarded.chain.steps[0].kind == OperatorKind::UnitScale,
+            "the retained step must be the Unit stage's own UnitScale");
 }
 
 void full_chain_is_ordered()
@@ -396,6 +413,51 @@ void full_chain_is_ordered()
     require(result.chain.steps[0].kind == OperatorKind::UnitScale, "the chain does not begin with the unit scale");
     require(result.chain.steps.back().kind == OperatorKind::Clip, "the chain does not end with the constraint");
 }
+
+// BM-6 (review 2026-10-11): the emitted AffineUnit offset used to be
+// `source.offset - target.offset`, correct only when `target.scale == 1`
+// -- the one case `unit_rules()` above happens to pin (`agreeing()`'s
+// `temperature()` fixture leaves both sides at the default scale of 1).
+// This test sets `target.scale = 2` so a regression back to the
+// un-divided formula is caught: the correct conversion is
+// `v_t = (source.scale/target.scale)*v_s + (source.offset-target.offset)/
+// target.scale`, i.e. scale 1/2 and offset -5 for the inputs below, not
+// the buggy scale 1/2 and offset -10 the un-divided formula produced.
+void affine_conversion_divides_offset_by_target_scale()
+{
+    auto request = agreeing();
+    request.source.units.scale = Rational{1};
+    request.source.units.offset = Rational{0};
+    request.target.units.scale = Rational{2};
+    request.target.units.offset = Rational{10};
+    request.explicitly_requested = operator_request_bit(OperatorKind::AffineUnit);
+    const auto result = check_connection(request);
+    require(result.verdict == ConnectionVerdict::LosslessExplicit, "a requested affine conversion was refused");
+    require(result.chain.size() == 1 && result.chain.steps[0].kind == OperatorKind::AffineUnit,
+            "no affine operator was emitted");
+    require(result.chain.steps[0].scale == Rational{1, 2}, "the conversion factor was wrong");
+    require(result.chain.steps[0].offset == Rational{-5},
+            "the offset was not divided by target.scale (got the un-divided -10 instead of -5)");
+}
+
+// BM-13 (review 2026-10-11): `check_constraints()` used to honor only
+// `OperatorKind::Clip` -- an explicit `ConservationEnforcement` request
+// was silently ignored, no step and no diagnostic, the exact I4 shape
+// this project's own conventions forbid. `ir_can_emit(ConservationEnforcement)`
+// is false (src/ir/lowering.cpp), so the request now reaches the SAME
+// unlowerable refusal `Clip` already does once the chain is lowered;
+// this test (model layer only, no IR dependency) pins the half this
+// layer owns: the step is emitted and marked as an explicit request, not
+// dropped.
+void conservation_enforcement_request_is_emitted_not_dropped()
+{
+    auto request = agreeing();
+    request.explicitly_requested = operator_request_bit(OperatorKind::ConservationEnforcement);
+    const auto result = check_connection(request);
+    require(result.chain.size() == 1 && result.chain.steps[0].kind == OperatorKind::ConservationEnforcement,
+            "an explicit ConservationEnforcement request was silently dropped");
+    require(result.chain.steps[0].explicitly_requested, "the request was not recorded as explicit");
+}
 }
 
 TEST(Compatibility, ExactConnection) { exact_connection(); }
@@ -408,3 +470,5 @@ TEST(Compatibility, ConservationRules) { conservation_rules(); }
 TEST(Compatibility, CapabilityAndVersionClosure) { capability_and_version_closure(); }
 TEST(Compatibility, ReportsEveryStageAtOnce) { reports_every_stage_at_once(); }
 TEST(Compatibility, FullChainIsOrdered) { full_chain_is_ordered(); }
+TEST(Compatibility, AffineConversionRespectsTargetScale) { affine_conversion_divides_offset_by_target_scale(); }
+TEST(Compatibility, ConservationEnforcementRequestIsEmittedNotDropped) { conservation_enforcement_request_is_emitted_not_dropped(); }

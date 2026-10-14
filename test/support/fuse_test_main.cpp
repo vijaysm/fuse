@@ -152,8 +152,13 @@ int main(int argc, char** argv) {
   // second, GoogleTest last so --gtest_* flags survive both initializers.
 #if FUSE_HAVE_MPI
   int provided = 0;
-  // THREAD_MULTIPLE because fmtlog's polling thread and a host-parallel region may
-  // both be live while a transport progresses.
+  // THREAD_MULTIPLE requested defensively: nothing in this tree is known to
+  // call MPI from more than one thread today (there is no process-wide
+  // logger with its own polling thread -- that was fmtlog, fetched but
+  // never wired in, removed 2026-10-12), but asking for the weakest level
+  // this harness happens to need now would silently narrow what every test
+  // registered under it may assume. MULTIPLE is the one request that can
+  // only be loosened, never tightened, without re-auditing every test.
   MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided);
   MPI_Comm_rank(MPI_COMM_WORLD, &fuse::testing::g_rank);
   MPI_Comm_size(MPI_COMM_WORLD, &fuse::testing::g_size);

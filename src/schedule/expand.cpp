@@ -221,6 +221,86 @@ bool has_sample(const Channel& ch) {
   return ComponentId{static_cast<std::uint32_t>(rank_set)};
 }
 
+/// The `TickPhase` a Merge's input is attributed at the merge instant
+/// `(dst_step + 1) * dst_dt` -- the same causality contract the per-channel
+/// loop below applies to that writer's own tail node, re-derived here because
+/// a Merge has no single origin channel to look the answer up on (review
+/// 2026-10-11 IS-1: the boundary pass previously stamped every Merge
+/// `BeforeTicks` unconditionally, so a source-limited writer whose tail is
+/// still `AfterTicks` at this instant sorted AFTER a Merge that read it,
+/// failing `check_dependence_order()` with `E-SCHED-ORDER` on a legal graph).
+///
+/// `input` is one of the Merge node's `inputs` arcs. Three shapes reach here:
+///   - a window-closing chain (accumulation or space-time): always
+///     `BeforeTicks`, per the causality contract in expand.hpp;
+///   - an ordinary (Instant) channel chain: re-run its slab decomposition at
+///     `dst_dt` and read the phase of the slab that ends at this instant,
+///     exactly as the per-channel loop computed it for the writer's own tail;
+///   - another `Merge` (the left-fold chain lowering.cpp builds for more than
+///     three writers): recurse, since every node in that fold shares the
+///     combined field's destination component and therefore the same
+///     `dst_dt` and the same `dst_step` numbering.
+[[nodiscard]] Result<TickPhase> merge_writer_phase_at(
+    const CouplingGraph& g, const OperatorDAG& dag, const ClockSet& clocks,
+    const Rational& period, ArcId input, const Rational& dst_dt,
+    std::int64_t dst_step) {
+  const NodeId producer = dag.arc(input).producer;
+  const Node& pn = dag.node(producer);
+
+  if (pn.kind == OpKind::Merge) {
+    TickPhase worst = TickPhase::BeforeTicks;
+    for (const ArcId in2 : pn.inputs) {
+      const Result<TickPhase> p =
+          merge_writer_phase_at(g, dag, clocks, period, in2, dst_dt, dst_step);
+      if (!p.ok()) return p.error();
+      worst = std::max(worst, p.value());
+    }
+    return worst;
+  }
+
+  if (!claimed_by_channel(g, pn)) {
+    // No channel owns this writer (e.g. a Source feeding the merge
+    // directly, or a constant) -- its value is current at every instant, so
+    // it is never the reason a delivery has to wait.
+    return TickPhase::BeforeTicks;
+  }
+
+  const ChannelId origin{pn.origin.value()};
+  const Channel& ch = g.channel_at(origin);
+  if (has_sample(ch)) {
+    return TickPhase::BeforeTicks;
+  }
+
+  const Result<std::pair<ComponentId, ComponentId>> ends =
+      channel_endpoints(g, ch);
+  if (!ends.ok()) return ends.error();
+  Rational src_dt = clocks.clock(ends.value().first).interval();
+  const IterationRegionDecl* owning_window = owning_window_region(g, origin);
+  if (owning_window != nullptr) {
+    const Result<Rational> wl =
+        window_length(g, *owning_window->window_scope);
+    if (!wl.ok()) return wl.error();
+    src_dt = wl.value();
+  }
+
+  const Result<SlabDecomposition> d = decompose(src_dt, dst_dt, period);
+  if (!d.ok()) return d.error();
+  const Result<Rational> boundary = scaled_tick(dst_step + 1, dst_dt);
+  if (!boundary.ok()) return boundary.error();
+  for (const Slab& s : d.value().slabs) {
+    if (s.dst_step != dst_step || s.end != boundary.value()) continue;
+    const Result<Rational> complete = scaled_tick(s.src_step + 1, src_dt);
+    if (!complete.ok()) return complete.error();
+    return s.end < complete.value() ? TickPhase::AfterTicks
+                                    : TickPhase::BeforeTicks;
+  }
+  // No slab of this writer ends exactly at this merge instant: its interval
+  // does not divide the merge's, which tick_count() above already refused
+  // for the merge's own owner clock -- unreachable for a graph that reached
+  // this point.
+  return TickPhase::BeforeTicks;
+}
+
 /// The order every expansion finishes in: by time, then by `TickPhase`, ties
 /// by NodeId. One definition, used by both paths, so the fast path cannot be
 /// sorted differently from the general one.
@@ -341,7 +421,9 @@ Result<TimedDag> expand(const CouplingGraph& g, const OperatorDAG& dag,
   // Refused here, where the reason is still visible.
   //
   // Not refused in `lower()`: the DAG for such a channel is well formed (it is
-  // the *schedule* that does not exist), and `soma_initialize` lowers without
+  // the *schedule* that does not exist), and `fuse_initialize()`
+  // (`impl_initialize`, src/abi/participant.cpp -- review 2026-10-11 IS-11,
+  // correcting a stale `soma_initialize` citation) lowers without
   // scheduling, so rejecting it there would make a graph unloadable for a
   // reason that only shows up one layer down.
   for (std::uint32_t c = 0; c < g.channel_count(); ++c) {
@@ -595,11 +677,28 @@ Result<TimedDag> expand(const CouplingGraph& g, const OperatorDAG& dag,
     // `k*dt`, which is the one case this loop was written for.
     // REVIEW.md N-ir-schedule-2: placing Merge at the tick's start sorted it
     // before the Epoch/Transport outputs it reads.
+    //
+    // Review 2026-10-11 IS-1: the tick's END is one instant, but which SIDE
+    // of it the Merge sits on is not fixed at `BeforeTicks` the way Source's
+    // is. A multirate writer whose own tail is target-limited at this same
+    // instant is `AfterTicks` (its source step has not finished), and the
+    // Merge reads that writer, so it cannot be ready any earlier than the
+    // writer it depends on: its phase is the LATEST (max) of its writers'
+    // phases at this instant, derived by `merge_writer_phase_at()`.
     const bool tick_closing = (n.kind == OpKind::Merge);
     for (std::int64_t k = 0; k < nk.value(); ++k) {
       const Result<Rational> t = scaled_tick(tick_closing ? k + 1 : k, dt);
       if (!t.ok()) return t.error();
-      if (!emit(nid, t.value(), k, k)) return explode_error();
+      TickPhase phase = TickPhase::BeforeTicks;
+      if (n.kind == OpKind::Merge) {
+        for (const ArcId in : n.inputs) {
+          const Result<TickPhase> p =
+              merge_writer_phase_at(g, dag, clocks, out.period, in, dt, k);
+          if (!p.ok()) return p.error();
+          phase = std::max(phase, p.value());
+        }
+      }
+      if (!emit(nid, t.value(), k, k, phase)) return explode_error();
     }
   }
 
