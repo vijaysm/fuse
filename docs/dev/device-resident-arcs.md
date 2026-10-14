@@ -127,6 +127,64 @@ on the host and mirrored, as today.
   alongside `build_supermesh_weights` rather than inside it, so Host mode is untouched; the clip itself
   stays host-side pending the patch above.
 
+## Phase 2 progress ("weight-builders" track, round 2, 2026-10-14)
+
+Closes the wiring gap the round above left open for two of its three kernels, and narrows the third:
+
+- **MLS weight assembly, wired in.** `build_mls_weights` (src/backend/mls_weights.cpp) now resolves
+  its execution space via `fuse::search::resolve_execution_space()` (the same `FUSE_EXECUTION_SPACE`
+  convention `RunnerConfig::resolved_execution_space()` and `fuse::search` itself already use) and, on
+  Device, runs the k-nearest search through `BoxIndex::build`'s own Device path and the per-target
+  solve through `fuse::device::solve_mls_on_space` -- reachable now through the normal
+  `fuse::build_weights` entry point, not just as a standalone kernel. The round-1 note that
+  `KokkosBatched::SerialGesv` backs the solve is corrected: this host's installed Kokkos/
+  KokkosKernels pairing could not build either of `SerialGesv`'s pivoting modes (exact compiler
+  errors in mls_weights_device.hpp's own header comment and KNOWN_ISSUES D52); the solve is an
+  in-house partial-pivot Gaussian elimination instead, with no KokkosKernels dependency. The
+  `E-MLS-RANK` diagnostic is no longer merely coarsened: `MlsDeviceResult::status` (one flag per
+  target, a new field) lets `build_mls_weights`'s Device path re-run the Host path's own
+  rank-revealing solve on exactly the target(s) flagged, confirming the verdict and reproducing the
+  Host message (same target, same condition estimate) rather than reporting only a failure count.
+  Host mode is bitwise unchanged (verified: every pre-existing `backend.mls_weights` row still passes
+  under the default, no-`FUSE_EXECUTION_SPACE` environment). RED/GREEN:
+  `MlsWeightsDevice.DeviceMatchesHostStructureAndValuesWithinTolerance` (1e-12 relative, identical
+  CSR structure) and `MlsRefusalsDevice.AllCoincidentNeighboursIsRankDeficientUnderDeviceToo`
+  (test/backend/mls_weights_test.cpp), plus a `backend.mls_weights.device` ctest twin re-running the
+  whole file under `FUSE_EXECUTION_SPACE=device`.
+- **Supermesh broad phase, wired in; clip still blocked as measured.** `build_supermesh_weights`
+  (src/backend/supermesh.cpp) now dispatches its O(target-simplex x source-simplex) broad phase to
+  `fuse::device::candidate_pairs` when the resolved space is Device AND the pair is 2D or 3D (1D stays
+  on the existing brute force unconditionally: `candidate_pairs`' box test has no analogue of the 1D
+  path's caller-chosen single-axis test, so using it there would silently filter on the wrong axis
+  whenever that axis is not axis 0). The clip itself (`intersect`, r3d/r2d) is unchanged and stays
+  host-only -- round 1's three build-system blockers (no `KOKKOS_FUNCTION` annotation on the vendored
+  TUs, a debug-only `fprintf` not device-callable, C rather than C++ translation units) are unchanged
+  findings, not re-measured, since nothing in this round touched r3d/r2d itself. Host mode is bitwise
+  unchanged. RED/GREEN: `SupermeshDevice.ThreeDimensionalDeviceBroadPhaseMatchesHostExactly` (every
+  triplet bit-identical, not merely within tolerance: dim >= 2's box test is IDENTICAL to the brute
+  force's own, so the candidate set -- and the accumulation order into the triplet map -- match
+  exactly) and `SupermeshDevice.OneDimensionalStaysOnHostBroadPhaseUnderDeviceToo`
+  (test/backend/supermesh_test.cpp), plus a `backend.supermesh.device` ctest twin.
+- **Halo/migration merge: the dedup DECISION is now device-resident; the full unpack is not.**
+  `fuse::native::device::dedup_by_gid` (include/fuse/backend/native/mesh_merge_device.hpp, new file)
+  implements the sort-and-compact algorithm round 1's entry named as the natural approach "not
+  attempted here for lack of time" -- see docs/dev/native-halo.md's own "Device merge decision"
+  section for the algorithm, its complexity, and the two gaps still open (Host-convention slot
+  numbering; parsing a variable-length wire record's boundaries, which stays a host-side walk). A
+  reusable primitive, not yet called by `merge_halo_cells`/`unpack_migrated_mesh` themselves.
+  RED/GREEN: `test/backend/native_mesh_merge_device_test.cpp`, both Host- and Device-space
+  instantiations, against a from-scratch `std::unordered_map`/`std::unordered_set` reference.
+
+A hit found and fixed along the way, in this round's OWN new code rather than pre-existing
+infrastructure: every `Kokkos::View<double* [3], Space>` this round constructs (MLS's device point
+arrays, supermesh's device box-corner arrays) hit D54's exact defect class on a plain
+`Kokkos::View<double* [3], Kokkos::HostSpace>` mirror -- a rank-2 view's PER-SPACE default layout
+differs between Host and Cuda, so that mirror is layout-incompatible with the same-shape device view
+and `Kokkos::deep_copy` cannot bridge both a memory-space and a layout change at once. `D54` itself
+(native_mesh.hpp's own fields) was already fixed; this round's NEW views needed the same fix
+(`Kokkos::create_mirror_view(device_view)`, which derives the mirror's layout from the view it
+mirrors) applied to their own declarations, not inherited from D54's.
+
 ## Multi-rank (Phase 3)
 
 **Done (transport track, 2026-10-13):** a run-time GPU-aware MPI probe

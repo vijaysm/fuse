@@ -128,7 +128,13 @@ ALLOWED_PUBLIC_THIRD_PARTY = {
     # justification `field`/`num`/`runtime`/`partition` already carry.
     "search": {"Kokkos_Core.hpp"},
     "runtime": {"Kokkos_Core.hpp"},
-    "backend": {"Kokkos_Core.hpp", "Kokkos_Macros.hpp"},   # per-backend headers live under backend/<name>/
+    # mesh_merge_device.hpp's dedup_by_gid<Space> (KNOWN_ISSUES D51) needs
+    # Kokkos::Experimental::sort_by_key, declared in Kokkos_Sort.hpp rather
+    # than Kokkos_Core.hpp -- the same "templated on an execution space in
+    # the public interface" justification this dict's own header comment
+    # gives for Kokkos_Core.hpp itself; Kokkos_Sort.hpp is pure Kokkos
+    # public API, not a third dependency.
+    "backend": {"Kokkos_Core.hpp", "Kokkos_Macros.hpp", "Kokkos_Sort.hpp"},   # per-backend headers live under backend/<name>/
     # rcb_partition/weighted_median/apply_coord_transform are all templated
     # on an execution space, in the public interface, the same reason `num`
     # and `field` need the core header.

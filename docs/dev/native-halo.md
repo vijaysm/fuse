@@ -125,13 +125,42 @@ round trip for the per-cell data. Verified byte-for-byte against the existing ho
 generated meshes (quad and polyhedral), in both Host mode and Device mode (`test/backend/
 native_mesh_pack_device_test.cpp`).
 
-**Not yet done:** the receiving side's dedup-by-global-id merge (`merge_halo_cells`'s cell dedup,
-`unpack_migrated_mesh`'s vertex dedup) is not templated on `Space`. Device CSR data MOVEMENT (the part
-that scales with mesh size) is a natural fit for the same byte-record approach `pack_to` already
-proves; the DECISION of which incoming record's global id is new (an O(received-record-count)
-membership test against a small set) is the open piece -- see KNOWN_ISSUES.md's weight-builders entry
-for the concrete blocker (no device-friendly hash-set primitive used here yet) and the report
-(`report-weight-builders.md`) for what a sort-and-compact implementation would need.
+## Device merge decision (KNOWN_ISSUES D51, narrowed)
+
+`include/fuse/backend/native/mesh_merge_device.hpp` adds `fuse::native::device::dedup_by_gid<Space>`:
+the receiving side's MERGE DECISION itself -- "is this incoming global id already held, and if it is
+genuinely new, which ONE of possibly several cross-sender copies is canonical" -- as Kokkos kernels on
+`Space`, replacing the `std::unordered_map`/`std::unordered_set` membership test `merge_halo_cells`'s
+cell dedup and `unpack_migrated_mesh`'s vertex dedup both make today. A sort-and-compact pass:
+`Kokkos::Experimental::sort_by_key` the concatenation of the already-held gids and the incoming
+candidates (carrying a signed tag that encodes both side and original position), then one
+`Kokkos::parallel_scan` over the sorted order assigns every DISTINCT value one ascending slot, and an
+`atomic_min` pass picks the lowest-original-index incoming copy as canonical for a slot no existing
+entry claims -- the same "first occurrence in buffer order wins" rule the Host path already follows,
+so Device mode never disagrees with what Host would keep for the same input order.
+`O((E + N) log(E + N))` for the sort (the dominant term), `O(E + N)` for the rest. Verified against a
+from-scratch `std::unordered_map`/`std::unordered_set` reference on gid sets built to exercise every
+case the real wire traffic can produce (no overlap, incoming duplicates of an existing entry,
+cross-sender duplicates among incoming, empty incoming, empty existing), in both Host mode and (when
+this Kokkos has one) a Cuda/HIP/SYCL backend (`test/backend/native_mesh_merge_device_test.cpp`).
+
+**Not yet done:** wiring this primitive into `merge_halo_cells`/`unpack_migrated_mesh` themselves.
+Two gaps remain, both stated rather than assumed:
+
+1. **Slot numbering.** `dedup_by_gid`'s output numbers the merged gid set ascending BY VALUE, not by
+   the Host builders' own append-order convention (every existing vertex/cell keeps its original local
+   index; new ones are appended in first-encounter order) -- a caller that needs byte-for-byte parity
+   with the Host numbering adds one more renumbering pass (sketched in `mesh_merge_device.hpp`'s own
+   header comment), not a second dedup algorithm.
+2. **Record-boundary discovery.** The wire format's records are variable length with no byte-length
+   prefix (`mesh_pack_device.hpp`'s own format), so locating each record's start offset in a received
+   buffer -- the step before a flat gid array for `dedup_by_gid` even exists -- is only discoverable by
+   walking the buffer; parallelizing that (or adding a length prefix so it CAN be parallelized) is a
+   separate change neither this entry nor `dedup_by_gid` attempts.
+
+So a Device-mode caller of `build_native_remap_halo`/`migrate` still needs a host round trip for the
+full merge, but the DECISION at its core -- which this entry's own scope note (2026-10-13) named as
+"the open piece," for lack of a device-friendly hash-set primitive -- is now implemented and tested.
 
 ## Open items
 

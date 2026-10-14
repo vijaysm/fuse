@@ -6597,6 +6597,29 @@ A sort-and-compact approach (flatten every incoming (gid, payload) pair, `Kokkos
 algorithm and was not attempted here for lack of time, not because it is infeasible. Blocks: a Device
 mode caller of `build_native_remap_halo`/`migrate` still needs the host round trip for the merge step.
 
+**Narrowed, 2026-10-14 (round 2).** The membership DECISION itself -- "is this incoming gid already
+held, and which one of several cross-sender copies is canonical" -- is now implemented:
+`fuse::native::device::dedup_by_gid<Space>` (include/fuse/backend/native/mesh_merge_device.hpp, new
+file), a sort-and-compact pass via `Kokkos::Experimental::sort_by_key` (not the plain `Kokkos::sort`
+this entry's own round-1 text named -- `sort_by_key` carries a payload tag through the sort instead of
+losing each entry's original side/position, which a value-only sort would) plus one `parallel_scan`
+for slot assignment and an `atomic_min` pass for canonical selection, matching the Host path's "first
+occurrence in buffer order wins" rule exactly. `O((E + N) log(E + N))`. Verified against a
+from-scratch `std::unordered_map`/`std::unordered_set` reference covering no-overlap, incoming-vs-
+existing duplicates, cross-sender incoming-vs-incoming duplicates, and both empty-input cases, in both
+Host mode and (when this Kokkos has one) a Cuda/HIP/SYCL backend
+(`test/backend/native_mesh_merge_device_test.cpp`). Two gaps still block wiring this into
+`merge_halo_cells`/`unpack_migrated_mesh` themselves, both stated in `mesh_merge_device.hpp`'s own
+header comment and docs/dev/native-halo.md's "Device merge decision" section: (1) the primitive's own
+slot numbering is ascending BY GID VALUE, not the Host builders' append-order convention (existing
+keeps its index; new entries append in first-encounter order) -- a mechanical renumbering pass, not a
+second algorithm; (2) the wire format's variable-length, unprefixed records make per-record boundary
+discovery within a received buffer a serial walk regardless of execution space, which this round did
+not attempt to parallelize (it would need either a length-prefixed wire-format change or an
+accept-serial-scan compromise). A Device mode caller of `build_native_remap_halo`/`migrate` still
+needs the host round trip for the full merge; the open piece this entry named in round 1 -- no
+device-friendly hash-set equivalent existed -- does not block it anymore.
+
 ### ~~D52. MLS device solve coarsens `E-MLS-RANK`'s diagnostic and is not wired into `build_mls_weights`; `KokkosBatched::SerialGesv` does not build here~~ — CLOSED 2026-10-14 (round 2)
 
 **Scope note, 2026-10-13.** `fuse::device::solve_mls_on_space<Space>` (include/fuse/backend/

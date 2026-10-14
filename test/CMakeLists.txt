@@ -1202,6 +1202,12 @@ fuse_add_omp_legs(backend.native_halo fuse_backend_native_halo_test THROWS)
 # (when this Kokkos has one) a Cuda/HIP/SYCL backend. Header-only; no new
 # LIBS beyond fuse::backend's own Kokkos dependency.
 fuse_add_gtest(backend native_mesh_pack_device THROWS)
+# Device-resident-arcs Phase 2, "weight-builders" track (KNOWN_ISSUES D51,
+# narrowed): the receive-side dedup-by-global-id MERGE DECISION
+# (mesh_merge_device.hpp's dedup_by_gid), tested directly against a
+# from-scratch std::unordered_map/set reference, both in Host mode and (when
+# this Kokkos has one) a Cuda/HIP/SYCL backend. Header-only; no new LIBS.
+fuse_add_gtest(backend native_mesh_merge_device)
 # The parallel half, under a REAL communicator of more than one rank: needs
 # only FUSE_ENABLE_MPI (no MOAB) since the native backend's own covering-set
 # construction is planar/volumetric, not spherical.
