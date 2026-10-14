@@ -363,15 +363,12 @@ the bridge exposed, `decide_attach_mode()` no longer refuses a
 Connect-mode channel outright: it now refuses only a bridge that was
 never formed (`E-LOWFIVE-ATTACH-ACCEPT-NO-BRIDGE`) or more than two
 Connect-mode components (`E-LOWFIVE-ATTACH-ACCEPT-UNSUPPORTED-TOPOLOGY`,
-D18), and otherwise proceeds exactly like an MPMD channel. Build-verified
-only (tier-0 ctest, the pure-function model checks in
-`lowfive_attach_model_check.hpp`, and a tier-1
-`-DFUSE_ENABLE_LOWFIVE=ON` compile) — this sandbox cannot start MPI, so
-`verification.brusselator.participants.lowfive.accept.3` has never
-actually RUN this path. D14 stays OPEN until a host does; see
-KNOWN_ISSUES.md D14's own "what remains" item 3 for the current status
-and this track's own `host_pending` record for the exact command and
-expected trace.
+D18), and otherwise proceeds exactly like an MPMD channel. Host-measured on the
+owner's machine, 2026-10-13: `verification.brusselator.participants.lowfive.accept.3`
+Passed on its first host run (1.26 s), with `brusselator_check --check: OK` and
+`u.log`/`v.log` byte-identical to the non-LowFive accept row's; the numbers are in
+KNOWN_ISSUES.md D14's "what remains" item 3. Only one configuration (one rank
+each for U and V, plus the bundled coupler rank) has been run.
 
 The Brusselator's own `u_main.c`/`v_main.f90` (not a separate
 LowFive-specific main, as an earlier plan for this section assumed before
@@ -468,14 +465,12 @@ mpiexec -n 1 brusselator_u_main --graph graph.yaml --log u.log --periods 2 --tra
     : -n 1 brusselator_v_main --graph graph.yaml --log v.log --periods 2 --transport lowfive \
     : -n 1 brusselator_coupler_main --graph graph.yaml
 
-# lowfive.accept.3 -- D14 Stage B (2026-10-13, build-verified only, NOT
-# host-run): base_communicator() now exposes the merged bridge, and
-# bruss_lowfive_join_local_split()/bruss_lowfive_attach() attempt the
-# real distributed attach instead of refusing outright. Expected, per
-# this track's own host_pending record: both U's physics rank and V
-# exchange through LowFive like the mpmd row above; U's bundled
-# coupler/placeholder rank joins the collective split but never calls
-# attach(). KNOWN_ISSUES.md D14 stays OPEN until this is measured.
+# lowfive.accept.3 -- D14 Stage B (2026-10-13, host-run: Passed, 1.26 s):
+# base_communicator() exposes the merged bridge, and
+# bruss_lowfive_join_local_split()/bruss_lowfive_attach() form the
+# distributed attach on it. Both U's physics rank and V exchange through
+# LowFive like the mpmd row above; U's bundled coupler/placeholder rank
+# joins the collective split but never calls attach().
 mpiexec -n 2 brusselator_u_main --graph graph.yaml --log u.log --ranks-u 1 --periods 2 --transport lowfive &
 mpiexec -n 1 brusselator_v_main --graph graph.yaml --log v.log --periods 2 --transport lowfive &
 wait

@@ -623,9 +623,8 @@ endif()
 # Connect-mode channel when the base communicator is exposed (the new
 # base_communicator() ABI entry) and at most two Connect-mode components
 # are declared (D18), refusing only those two narrower conditions by name.
-# Build-verified only -- this sandbox cannot start MPI -- so the accept row
-# still fails to RUN here; whether it passes on a host is KNOWN_ISSUES.md
-# D14's own open item until that host run happens.
+# Host-run 2026-10-13: both LowFive rows Passed (accept 1.26 s, mpmd 2.37 s),
+# KNOWN_ISSUES.md D14 item 3.
 # ---- "LowFive attach" track note: end ----------------------------------
 
 # ---------------------------------------------------------------------------

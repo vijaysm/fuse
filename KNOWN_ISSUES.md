@@ -2787,9 +2787,10 @@ Conformance Unit 2/2b row this mirrors.**
    this entry**: this cannot be measured even once in this sandbox (the
    libfmt.8 dlopen blocker above still applies — LowFive cannot load at
    all here, so neither can a plugin built against it), it is scoped to
-   MPMD launch only (ACCEPT mode's own merged base communicator is never
-   exposed back to a caller through any ABI query, an open question for
-   the lead rather than a silent guess), and the connector name this
+   MPMD launch only (ACCEPT mode's own merged base communicator was never
+   exposed back to a caller through any ABI query when this was written; it is
+   since, by `base_communicator()` (D14 Stage B), which the participants use and
+   this plugin does not), and the connector name this
    plugin's own ctest rows pass to `HDF5_VOL_CONNECTOR` ("lowfive") is
    this track's best reading of LowFive's own `VOLBase::name` member, not
    something this session found a way to confirm from headers alone.
@@ -2976,32 +2977,27 @@ participant rows those two entries track are NOT re-listed here):**
    name LowFive's `VOLBase` actually registers under, since the row
    exchanges real data through it (`brusselator_check` `--check: OK`,
    byte-identical logs to the transport-only twin).
-3. **The accept-mode intercommunicator gap — closed in-sandbox by a new
-   ABI entry, NOT YET host-verified (D14 Stage B, 2026-10-13).** Item 3's
-   own question above is answered: ACCEPT mode's merged base communicator
-   is now exposed through a new, append-only ABI entry,
-   `base_communicator()` / `fuse_base_communicator_info`
-   (`include/fuse/abi/entries.def`, `docs/user/c-abi.md`, "Recovering the
-   base communicator"). `fuse-lowfive-vol`'s own rendezvous logic
-   (`lowfive_attach_decision.hpp`'s `decide_attach_mode`) now derives
-   LowFive's local communicator from a fresh `MPI_Comm_split` of that
-   exposed bridge, keyed by the graph's own `RankSet`s, rather than
-   refusing Connect-mode channels outright; the companion fix (the
-   bundled coupler/placeholder rank must still join that split but never
-   call `bruss_lowfive_attach()`) is implemented alongside it. Every
-   change is build-verified only (tier-0 ctest, the pure-function model
-   checks, and a tier-1 `-DFUSE_ENABLE_LOWFIVE=ON` compile) — this
-   sandbox cannot start MPI (C1), so **D14 stays OPEN** until the host
-   actually runs `participants.lowfive.accept.3` and it passes; see this
-   track's own `host_pending` record for the exact command and the
-   expected trace.
-4. **ctest rows, host-only:**
-   `verification.brusselator.participants.lowfive.mpmd.3` — no longer
-   blocked, Passed (1.70 s, D39 Round 10).
-   `verification.brusselator.participants.lowfive.accept.3` — was
-   blocked on item 3 above; item 3's own fix is now in place but
-   UNVERIFIED on a host, so this row remains the host's to run before
-   D14 can close.
+3. ~~**The accept-mode intercommunicator gap.**~~ — **closed and host-verified (D14 Stage B, 2026-10-13).**
+   ACCEPT mode's merged base communicator is exposed through a new, append-only ABI entry,
+   `base_communicator()` / `fuse_base_communicator_info` (`include/fuse/abi/entries.def`, `docs/user/c-abi.md`,
+   "Recovering the base communicator"). `decide_attach_mode` no longer refuses Connect-mode channels outright; LowFive's
+   local communicator is a fresh `MPI_Comm_split` of that bridge keyed by the graph's own `RankSet`s, and the bundled
+   coupler/placeholder rank joins the split but never calls `bruss_lowfive_attach()`. **Measured on the owner's machine,
+   2026-10-13 (HEAD `9ffd2b6`, `build-lowfive`, MPICH 5.0.0a1, MOAB `/opt/moab/cmake-all`), first host run:**
+   `participants.lowfive.accept.3` Passed (1.26 s) and `participants.lowfive.mpmd.3` Passed (2.37 s, unchanged). In the
+   accept row the split trace shows the placeholder (`bridge_rank=1`) not participating, U (`bridge_rank=0`, `color=0`)
+   and V (`bridge_rank=2`, `color=1`) participating; both attach lines read `order-check-verdict=accepted
+   intercomm_formed=1` (U `first-server`, V `first-reader`); U and V each made 25 writes and 25 reads; no `E-LOWFIVE`
+   line in either log. `brusselator_check` on the row's logs prints `2 window(s) final_mean_u=1.58658618817
+   final_mean_v=1.9982226403`, balance errors `1.632e-13` / `2.379e-13` / `7.984e-14`, `--check: OK`, and `u.log` and
+   `v.log` are byte-identical to the non-LowFive accept row's. V's bridge rank 2 is the value the tier-0 test
+   `WrongThisRankFromLocalWorldInsteadOfBridgeMisclassifiesV` predicted, which confirms `this_rank` is read from the
+   bridge. The `abi.*` rows (13) and the transport twins `participants.{mpmd,accept}.3` passed on the same rebuilt
+   `build-all`. Not measured: more than one run of the accept row, `.accept.5`, a multi-rank accept layout (the order
+   check is validated for one configuration only, D39), and `base_communicator()` after a failed `connect()` (needs MPI
+   to reach, as for the LowFive-launch branch).
+4. ~~**ctest rows, host-only:**~~ `verification.brusselator.participants.lowfive.mpmd.3` Passed (D39 Round 10, and again
+   2026-10-13 after this stage); `verification.brusselator.participants.lowfive.accept.3` Passed (item 3).
 5. **Host run: Demo B** (`examples/demo_b`'s producer/consumer
    executables) — compiles against LowFive's documented
    `DistMetadataVOL` API only; never run. Needs item 1 and a real MPI
@@ -5242,8 +5238,8 @@ hit it; it was not patched here. `participants.lowfive.accept.3` failed in every
 behind the single, blanket named refusal `E-LOWFIVE-ATTACH-ACCEPT` (D14). **Superseded by D14 Stage B
 (2026-10-13):** that blanket refusal is replaced by `decide_attach_mode`'s own narrower checks (a formed bridge
 communicator required; at most two Connect-mode components, D18) now that the accept-mode intercommunicator gap
-itself is closed by a new ABI entry — see D14's own "what remains" item 3 for the current, still-host-unverified
-status of what this registered row should assert.
+itself is closed by a new ABI entry; the row Passed on its first host run after that stage (1.26 s) — see D14's
+own "what remains" item 3 for the measurement.
 
 ### ~~D40. This host's Open MPI (4.1.5) hangs in `MPI_Alltoallv` on any communicator but `MPI_COMM_WORLD`~~ — WORKED AROUND 2026-10-10
 
@@ -7059,3 +7055,39 @@ any currently-PASSING row depends on the probe's inability to see an embedded im
 same hazard D14 was written for could still be silently present behind a MOAB install that embeds HDF5) is
 also open -- this entry does not claim D14 is unsound, only that this ONE probe cannot fully verify its own
 precondition on every possible MOAB build.
+
+### ~~D59. Two failures the host's quick tier showed on 2026-10-13: a stale cached mesh path after the MOAB switch, and a stale refusal code in `petsc.snes`~~ — FIXED 2026-10-13, host-verified
+
+**Measured** with `ctest -LE slow` on `build-all` (HEAD `9ffd2b6`): 321 of 323 passed; `petsc.snes` and
+`backend.moab_mesh` failed. Neither involved the D14 stage.
+
+**`backend.moab_mesh`: 4 of 46 failed** (`MoabMeshFile.ReadsTheCubedSphereAndReportsLocalCounts`,
+`CubedSphereGlobalIdsComeFromTheFile`, `CubedSphereAreaMatchesAnIndependentQuadrature`,
+`IndividualCubedSphereQuadsMatchABruteForceIntegral`), each with MOAB's `/opt/moab-tempest/share/examples/fortran/spherecube.h5m:
+No such file or directory`. Cause, read from `build-all/CMakeCache.txt` and `test/CMakeLists.txt`:
+`FUSE_MOAB_TEST_MESH_FILE` is the cached result of `find_file`, which never searches again once its variable is set, so
+the path into the removed `/opt/moab-tempest` survived a reconfigure with `-DMOAB_DIR=/opt/moab/cmake-all/...` and the
+four tests were compiled against a file that no longer existed. The comment above that block says the absence of the
+file is meant to be "a configure-time message, not a test that reads as passing"; the stale cache defeated that. The
+new install ships no `share/examples/fortran/spherecube.h5m` (checked: no `spherecube*` anywhere under
+`/opt/moab/cmake-all`); the file is 258,228 bytes and byte-identical (same md5) in three MOAB source trees under
+`/Users/mahadevan/Code/sigma/moab-release`. **Fix** (`test/CMakeLists.txt`): the cached path is re-validated and
+searched again when it is gone, and an optional `-DFUSE_MOAB_SOURCE_DIR=<MOAB source root>` is searched second at
+`examples/fortran` (the owner chose this over vendoring the file or dropping the tests). Without that option and with
+an install lacking the file, the four tests are not compiled and configure says so. **Measured after the fix**
+(reconfigure with `-DFUSE_MOAB_SOURCE_DIR=/Users/mahadevan/Code/sigma/moab-release`): both trees printed `cached
+FUSE_MOAB_TEST_MESH_FILE=... no longer exists; searching again` then `real-mesh MOAB tests will use .../examples/fortran/
+spherecube.h5m`; `backend.moab_mesh` Passed in `build-all` and `build-lowfive`. Not measured: a configure with neither the
+install's file nor `FUSE_MOAB_SOURCE_DIR` (the not-compiled message path), and any other cached `find_*` result that
+could outlive an install (`FUSE_MOAB_MESHFILES` is a plain `-D` path, not a cached search).
+
+**`petsc.snes`: `PetscSnes.MultiRankVectorIsRefused` failed** at `test/petsc/snes_test.cpp:191`: expected
+`E-PETSC-SOLVE-MULTIRANK`, got `E-PETSC-SOLVE-GHOSTED`. Commit `000b01c` (2026-10-12, window Newton on the region's own
+ranks) made the PETSc driver multi-rank over `comm_f` and narrowed its refusal to a nonzero ghost region, now named
+`E-PETSC-SOLVE-GHOSTED` (`src/petsc/solve.cpp`, `include/fuse/petsc/solve.hpp`), but left this assertion on the old code;
+the sandbox that built it cannot run PETSc rows (D32), so only a host run could show it. **Fix:** the test is renamed
+`GhostedVectorIsRefused` and asserts `E-PETSC-SOLVE-GHOSTED` for the same input (a vector with one ghost entry); it still
+asserts a named refusal, not less. `docs/dev/newton-krylov.md` §10.2's "Scope" sentence, which still said single-rank
+only and named the old code, has a dated superseding note. **Measured after the fix:** `petsc.snes` Passed on
+`build-all`. Not established: why the quick tier of 2026-10-12 after `000b01c` did not show this (the tree and tier at
+that run were not recorded).
