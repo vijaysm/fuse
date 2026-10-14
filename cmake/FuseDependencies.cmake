@@ -1114,6 +1114,49 @@ macro(fuse_resolve_dependencies)
     # into the same binary, so it only applies when MOAB is also enabled;
     # with FUSE_ENABLE_MOAB=OFF there is nothing for LowFive's HDF5 to
     # collide with and the probe would prove nothing.
+    # Baked into fuse-couplerConfig.cmake.in, as FUSE_MOAB_* are: the installed
+    # fuse::transport links $<LINK_ONLY:fuse-lowfive>, a target the export set
+    # does not contain, so a find_package(fuse-coupler) consumer must recreate
+    # it. Before 2026-10-14 nothing did, and abi.install_consumer_{c,fortran}
+    # failed in every LowFive-enabled tree with "library 'fuse-lowfive' not
+    # found". Entries that are CMake targets (an HDF5 config package's own) are
+    # resolved to their files here, since a consumer cannot see this build's
+    # targets.
+    set(_fuse_lowfive_link "${LOWFIVE_LIBRARY}")
+    if(LOWFIVE_HAVE_DIST)
+      list(APPEND _fuse_lowfive_link "${LOWFIVE_DIST_LIBRARY}")
+    endif()
+    if(TARGET HDF5::HDF5)
+      list(APPEND _fuse_lowfive_link HDF5::HDF5)
+    else()
+      list(APPEND _fuse_lowfive_link ${HDF5_C_LIBRARIES} ${HDF5_LIBRARIES})
+    endif()
+    set(FUSE_LOWFIVE_LIBRARIES_RESOLVED "")
+    foreach(_l IN LISTS _fuse_lowfive_link)
+      if(TARGET "${_l}")
+        get_target_property(_loc "${_l}" LOCATION)
+        if(_loc)
+          list(APPEND FUSE_LOWFIVE_LIBRARIES_RESOLVED "${_loc}")
+        endif()
+        get_target_property(_iface "${_l}" INTERFACE_LINK_LIBRARIES)
+        foreach(_i IN LISTS _iface)
+          if(TARGET "${_i}")
+            get_target_property(_iloc "${_i}" LOCATION)
+            if(_iloc)
+              list(APPEND FUSE_LOWFIVE_LIBRARIES_RESOLVED "${_iloc}")
+            endif()
+          elseif(_i AND NOT _i MATCHES "^\\$<")
+            list(APPEND FUSE_LOWFIVE_LIBRARIES_RESOLVED "${_i}")
+          endif()
+        endforeach()
+      elseif(_l)
+        list(APPEND FUSE_LOWFIVE_LIBRARIES_RESOLVED "${_l}")
+      endif()
+    endforeach()
+    list(REMOVE_DUPLICATES FUSE_LOWFIVE_LIBRARIES_RESOLVED)
+    set(FUSE_LOWFIVE_INCLUDE_DIRS "${LOWFIVE_INCLUDE_DIR};${LOWFIVE_FMT_INCLUDE_DIR};${HDF5_INCLUDE_DIRS}")
+    message(STATUS "fuse: installed package recreates fuse-lowfive from: ${FUSE_LOWFIVE_LIBRARIES_RESOLVED}")
+    unset(_fuse_lowfive_link)
     if(FUSE_ENABLE_MOAB)
       get_filename_component(_fuse_lowfive_root "${LOWFIVE_INCLUDE_DIR}" DIRECTORY)
       # MOAB_LIBRARY_DIRS is a list: MOAB's own library directory first, then
