@@ -169,9 +169,13 @@ TEST(PetscSnes, DivergenceWhenTheFunctionEvaluationBudgetIsTooSmall) {
   EXPECT_TRUE(is_diverged(r.value().status)) << to_cstring(r.value().status);
 }
 
-TEST(PetscSnes, MultiRankVectorIsRefused) {
-  // A DistVector with a nonzero ghost region -- E-PETSC-SOLVE-MULTIRANK
-  // must fire rather than silently drop the ghost region. Built directly
+TEST(PetscSnes, GhostedVectorIsRefused) {
+  // A DistVector with a nonzero ghost region -- E-PETSC-SOLVE-GHOSTED
+  // must fire rather than silently drop the ghost region. (This was
+  // E-PETSC-SOLVE-MULTIRANK while the driver was single-rank only;
+  // 000b01c made it multi-rank over comm_f and narrowed the refusal to
+  // the ghost region itself, KNOWN_ISSUES.md D31/D32, but left this
+  // assertion on the old code: found by the host's quick tier, 2026-10-13.) Built directly
   // against a hand-rolled exchanger reporting a nonzero ghost_size(),
   // the same shape test/num/newton_krylov_test.cpp's own rank-agreement
   // fixtures use for a non-serial exchanger.
@@ -188,5 +192,5 @@ TEST(PetscSnes, MultiRankVectorIsRefused) {
   opt.comm_f = comm_self_f();
   Result<NewtonResult> r = fuse::petsc::solve(atan_residual({0.0, 0.0}), x, nullptr, nullptr, opt);
   ASSERT_FALSE(r.ok());
-  EXPECT_STREQ(r.error().code.c_str(), "E-PETSC-SOLVE-MULTIRANK");
+  EXPECT_STREQ(r.error().code.c_str(), "E-PETSC-SOLVE-GHOSTED");
 }

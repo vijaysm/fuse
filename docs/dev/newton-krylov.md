@@ -1426,6 +1426,12 @@ inner solve, every configuration this driver builds.
 region), refusing `E-PETSC-SOLVE-MULTIRANK` otherwise -- the identical
 restriction §4's "Scope" paragraph states for the native seam itself.
 
+*Superseded 2026-10-12 (`000b01c`, KNOWN_ISSUES.md D31/D32): the driver is
+multi-rank over `SnesOptions::comm_f`, and only a vector carrying a nonzero
+ghost region (`x.owned_size() != x.size()`) is refused, now as
+`E-PETSC-SOLVE-GHOSTED`; `E-PETSC-SOLVE-MULTIRANK` no longer exists. The
+paragraph above describes the driver as first measured (§10.3).*
+
 ### 10.3 Measured on the host (2026-10-11)
 
 The sandbox this track built in cannot complete a bare `MPI_Init()` (MPICH's
