@@ -16,8 +16,13 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
+
+#include <dirent.h>
+#include <unistd.h>
 
 using fuse::LowFiveFieldBinding;
 using fuse::LowFiveFieldBindingTable;
@@ -243,6 +248,40 @@ TEST(LowFiveTransport, SetLocationRequiresBothNames) {
   EXPECT_FALSE(t.set_location("file.h5", "").ok());
 }
 
+// Demo B launches its producer and consumer on one path in one directory.
+// set_location() proves the directory writable by creating and removing a
+// probe file; with a fixed probe name the second process's O_EXCL open failed
+// while the first one's probe existed (measured on the owner's machine,
+// 2026-10-13, E-TRANSPORT-LF-LOCATION). A file at that old fixed name stands
+// in for the peer's live probe: the claim must still succeed, and no probe
+// may be left behind.
+TEST(LowFiveTransport, SetLocationIsNotBlockedByAPeersProbe) {
+  char dir_template[] = "/tmp/fuse-lf-probe-XXXXXX";
+  ASSERT_NE(::mkdtemp(dir_template), nullptr);
+  const std::string dir = dir_template;
+  const std::string file = dir + "/shared.h5";
+  const std::string peer_probe = file + ".soma-writable-probe";
+  {
+    std::FILE* f = std::fopen(peer_probe.c_str(), "w");
+    ASSERT_NE(f, nullptr);
+    std::fclose(f);
+  }
+  LowFiveTransport t;
+  const auto r = t.set_location(file, "/grid/values");
+  EXPECT_TRUE(r.ok()) << (r.ok() ? "" : r.error().code + ": " + r.error().message);
+  std::vector<std::string> left;
+  if (DIR* d = ::opendir(dir.c_str())) {
+    while (const dirent* e = ::readdir(d)) {
+      const std::string n = e->d_name;
+      if (n != "." && n != ".." && n != "shared.h5.soma-writable-probe") left.push_back(n);
+    }
+    ::closedir(d);
+  }
+  EXPECT_TRUE(left.empty()) << "left in " << dir << ": " << (left.empty() ? "" : left.front());
+  std::remove(peer_probe.c_str());
+  ::rmdir(dir.c_str());
+}
+
 TEST(LowFiveTransport, BuildPlanBeforeSetLocationIsRefused) {
   LowFiveTransport t;
   const auto r = t.build_plan(TransportSpec{.elements = 1});
@@ -299,16 +338,10 @@ TEST(LowFiveTransport, SetIntercommNeedsMpi) {
 }
 #endif  // FUSE_HAVE_MPI
 
-TEST(LowFiveTransport, DistInterceptionIsNeverExercisedHere) {
-  // Documents a gap rather than papering over it: a GENUINE distributed
-  // round trip needs two MPI processes joined by a real intercommunicator
-  // (MPI_Comm_connect/accept or an MPMD launch), which this test binary
-  // never has (fuse_test_main runs single-process, and per this track's own
-  // report MPI cannot be started at all in the sandbox this was written
-  // in). examples/demo_b and test/verification/demo_b_test.cpp (if/when the
-  // lead adds the latter) are where that claim would actually be checked,
-  // on the host. See KNOWN_ISSUES.md section D and docs/user/lowfive.md.
-  SUCCEED();
-}
+// The distributed round trip (two processes joined by a real
+// intercommunicator) is not exercised in this single-process binary; it is
+// the ctest row example.demo_b (examples/CMakeLists.txt), which runs
+// examples/demo_b/run_demo.sh. A placeholder SUCCEED() test that stood here
+// was removed: it could not fail.
 
 #endif  // FUSE_HAVE_LOWFIVE

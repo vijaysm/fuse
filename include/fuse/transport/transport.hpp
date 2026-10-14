@@ -373,14 +373,11 @@ class LowFiveTransport final : public Transport {
   /// or an MPMD launch's split communicator; forming it is NOT this
   /// transport's job.
   ///
-  /// UNEXECUTED IN THIS CHECKOUT: MPI cannot start in the sandbox this was
-  /// written in (docs/user/lowfive.md). The implementation follows
-  /// `LowFive::DistMetadataVOL`'s public header contract
-  /// (lowfive/vol-dist-metadata.hpp) as closely as that contract states it,
-  /// but it has never been run. `host_verification_needed` in this track's
-  /// report names the exact commands; treat a KNOWN_ISSUES.md entry
-  /// referencing this comment as the authoritative caveat, not this one in
-  /// isolation.
+  /// Measured end to end for ONE producer process and ONE consumer process
+  /// (ctest row example.demo_b, owner's machine 2026-10-14: values bit for
+  /// bit, no HDF5 file on disk). Not measured: more than one rank per side,
+  /// more than one file or dataset per transport, or a second exchange in
+  /// the same process. KNOWN_ISSUES.md D14 is the authoritative record.
   ///
   /// Errors: `E-TRANSPORT-NOLOWFIVE`, `E-TRANSPORT-NOMPI` (built without
   /// `FUSE_ENABLE_MPI`), `E-TRANSPORT-MPIINIT`, `E-TRANSPORT-COMM`,

@@ -56,8 +56,8 @@
 #endif
 
 // Distributed mode (Demo B, two executables -- see set_intercomm()'s
-// declaration in fuse/transport/transport.hpp for what this is and the
-// UNEXECUTED caveat that applies to all of it). Needs MPI for the
+// declaration in fuse/transport/transport.hpp for what this is and what has
+// been measured, ctest row example.demo_b). Needs MPI for the
 // intercommunicator itself, which is why this is a second, narrower guard
 // than plain FUSE_HAVE_LOWFIVE: a LowFive build with FUSE_ENABLE_MPI=OFF has
 // the single-process path above but not this one.
@@ -190,11 +190,11 @@ VolSingleton& vol_singleton() {
 /// once `set_location()`/`build_plan()` have already created a
 /// (non-distributed) VolSingleton.
 ///
-/// UNEXECUTED: constructed from LowFive::DistMetadataVOL's public header
-/// contract (lowfive/vol-dist-metadata.hpp) only; MPI cannot start in the
-/// sandbox this was written in, so nothing below has run. See
-/// docs/user/lowfive.md and this track's report for exactly what that means
-/// for confidence in this path versus the single-process one above, which
+/// Constructed from LowFive::DistMetadataVOL's public header contract
+/// (lowfive/vol-dist-metadata.hpp); measured end to end for one producer and
+/// one consumer process by the ctest row example.demo_b (2026-10-14). See
+/// docs/user/lowfive.md for what that one configuration covers, versus the
+/// single-process path above, which
 /// IS measured end to end.
 struct DistVolSingleton {
   LowFive::DistMetadataVOL& vol;
@@ -202,6 +202,7 @@ struct DistVolSingleton {
   hid_t                     vol_id = H5I_INVALID_HID;
   bool                      registered = false;
   std::vector<std::string>  claimed;
+  std::vector<std::string>  registered_paths;  // "file:/dataset" given to set_intercomm
 
   DistVolSingleton(MPI_Comm local, MPI_Comm intercomm)
       : vol(LowFive::DistMetadataVOL::create_DistMetadataVOL(local, intercomm)) {
@@ -306,7 +307,7 @@ struct LowFiveTransport::Impl {
   // Task 8.4 continuation (Demo B): set once by set_intercomm(), before
   // set_location(). Decides which VOL singleton build_plan() attaches to --
   // see the note on DistVolSingleton for why there is only ever one kind
-  // per process. UNEXECUTED path; see transport.hpp's set_intercomm() doc.
+  // per process. See transport.hpp's set_intercomm() doc.
   bool distributed = false;
 #if FUSE_LOWFIVE_HAVE_DIST
   MPI_Comm    local_comm = MPI_COMM_NULL;
@@ -386,7 +387,7 @@ std::string LowFiveTransport::file_path() const {
 
 // ---------------------------------------------------------------------------
 // set_intercomm / serve_as_producer / receive_as_consumer -- distributed
-// mode, Demo B (Task 8.4 continuation). UNEXECUTED: see the doc comment on
+// mode, Demo B (Task 8.4 continuation). See the doc comment on
 // set_intercomm() in fuse/transport/transport.hpp.
 // ---------------------------------------------------------------------------
 
@@ -482,8 +483,8 @@ Result<void> LowFiveTransport::serve_as_producer() {
                  "across"};
   }
   // Public API shape only (vol-dist-metadata.hpp): push whatever this
-  // process has written across the intercommunicator. UNEXECUTED -- see
-  // this method's declaration.
+  // process has written across the intercommunicator. See this
+  // method's declaration.
   dist_vol_singleton(p->local_comm, p->intercomm).vol.serve_all();
   return Result<void>::success();
 #endif
@@ -503,7 +504,7 @@ Result<void> LowFiveTransport::receive_as_consumer() {
                  "receive_as_consumer() without a prior successful "
                  "set_intercomm()"};
   }
-  // UNEXECUTED -- see this method's declaration in transport.hpp.
+  // See this method's declaration in transport.hpp.
   dist_vol_singleton(p->local_comm, p->intercomm).vol.broadcast_files();
   return Result<void>::success();
 #endif
@@ -565,8 +566,15 @@ Result<void> LowFiveTransport::set_location(std::string file,
   // distributed mode too: the producer side still promises nothing reaches
   // this path, and "could not have written here anyway" would be worthless
   // evidence of that promise in either mode.
-  const std::string sentinel = file + ".soma-writable-probe";
-  const int fd = ::open(sentinel.c_str(), O_CREAT | O_EXCL | O_WRONLY, 0600);
+  //
+  // The sentinel name is unique per call (mkstemp). A fixed name made two
+  // processes claiming the same path at once refuse each other: the second
+  // O_EXCL open failed while the first process's sentinel existed, which is
+  // exactly Demo B's launch (producer and consumer in one directory),
+  // measured on the owner's machine 2026-10-13; a sentinel left by a crashed
+  // run refused every later run the same way.
+  std::string sentinel = file + ".writable-probe.XXXXXX";
+  const int fd = ::mkstemp(sentinel.data());
   if (fd < 0) {
     return Failure{"E-TRANSPORT-LF-LOCATION",
                  "cannot create a file next to '" + file +
@@ -650,7 +658,7 @@ Result<void> LowFiveTransport::build_plan(const TransportSpec& spec) {
     // path makes before touching HDF5 data, just without the write+read
     // either side of them). The bit-for-bit, zero-bytes-on-disk claim is
     // Demo B's own test's job (examples/demo_b), run on the host.
-    // UNEXECUTED -- see set_intercomm()'s doc in transport.hpp.
+    // See set_intercomm()'s doc in transport.hpp.
     // ---------------------------------------------------------------------
     auto& dg = dist_vol_singleton(p->local_comm, p->intercomm);
     if (!dg.registered) {
@@ -661,6 +669,19 @@ Result<void> LowFiveTransport::build_plan(const TransportSpec& spec) {
     const hid_t fapl = H5Pcreate(H5P_FILE_ACCESS);
     if (fapl < 0) {
       return Failure{"E-TRANSPORT-HDF5", "H5Pcreate(H5P_FILE_ACCESS) failed"};
+    }
+    // A consumer's H5Fopen of a memory file looks up the intercommunicator
+    // serving it (DistMetadataVOL::file_open: "no intercomm found" when the
+    // lookup is empty, measured for Demo B 2026-10-13); the producer side
+    // needs no lookup but the registration is harmless there. Index 0 is the
+    // only intercommunicator this singleton holds. LowFive matches the full
+    // dataset path, so it is registered with exactly one leading '/'.
+    const std::string full_path =
+        p->dataset.front() == '/' ? p->dataset : "/" + p->dataset;
+    if (std::find(dg.registered_paths.begin(), dg.registered_paths.end(),
+                  p->file + ":" + full_path) == dg.registered_paths.end()) {
+      dg.vol.set_intercomm(p->file, full_path, 0);
+      dg.registered_paths.push_back(p->file + ":" + full_path);
     }
     dg.prop->apply(fapl);
     hid_t      on_list = H5I_INVALID_HID;
