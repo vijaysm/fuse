@@ -9,9 +9,9 @@ ever reaches disk. `fuse::LowFiveTransport` (`fuse/transport/transport.hpp`,
 
 This page has two parts: the single-process interception path, which is implemented
 and measured end to end, and the cross-process (two-executable, "Demo B") path, which
-compiles against LowFive's documented API but has never been run — MPI cannot start in
-the sandbox this was written in. The difference in confidence between the two is the
-most important thing on this page; it is restated at the start of each section.
+is measured for one producer and one consumer process (ctest row `example.demo_b`,
+2026-10-14; [Demo B](demo-b.md)). Older passages below that call the cross-process path
+unexecuted are dated records of the state before that run.
 
 ## The two-HDF5-image hazard — closed, with a measured acceptance test
 

@@ -45,9 +45,8 @@ removing contraction measurably changes an ill-conditioned iteration's own conve
 future native conservation-audit tool would want; nothing in the tree needs it yet); D15 (the
 provider direction is conformance-tested on one process; device fields, mixed checkpoint/restore, and
 a plugin on a rank subset are not); D14 (LowFive's fmt rebuild is done and the distributed transport
-now RUNS for MPMD launch — `lowfive.mpmd.3` passes, D39 — but Demo B is still compiled, not run, and
-accept-mode launch over the same transport has its one known ABI gap closed in-sandbox, 2026-10-13,
-not yet host-verified).
+now RUNS for MPMD launch — `lowfive.mpmd.3` passes, D39 — Demo B passes as the ctest row `example.demo_b` (2026-10-14), and the
+accept-mode participants row passes since D14 Stage B (2026-10-13); D14 is closed).
 
 **S6 / interfaces** — D23 (worked around 2026-10-12: the host's MPICH was reinstalled to a `ch4:ofi`
 build, which does not hang on accept/connect sharing a node — `ch3:nemesis` itself was never fixed);

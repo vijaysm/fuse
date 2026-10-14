@@ -2493,7 +2493,7 @@ component, so this is a scope reduction recorded here rather than a verified beh
 build above is compiled, not run; `test/parallel/runner_transport_test.cpp`'s own allocation
 check, and the full parallel suite, remain to be measured on a host that can start MPI.
 
-### D14. LowFive: the two-HDF5-image hazard is closed by a measured configure-time probe; the distributed transport and Demo B are compiled, not run
+### ~~D14. LowFive: the two-HDF5-image hazard is closed by a measured configure-time probe; the distributed transport and Demo B are compiled, not run~~ — CLOSED 2026-10-14, host-verified (the participants' MPMD and accept rows and Demo B pass)
 
 **The two-HDF5-image hazard (S6 phase 3, "LowFive" track) — CLOSED with a measured,
 configure-time acceptance test; the underlying fix is a host action.** A binary
@@ -2523,7 +2523,7 @@ from the sandbox this track ran in, so rebuilding a LowFive to close a measured 
 recorded on the same page) is a host action, not something this entry can close
 further.
 
-**Demo B (two unmodified HDF5 executables, cross-process) — NOT executed; compiles
+**Superseded 2026-10-14: Demo B runs and passes as the ctest row `example.demo_b`; see item 5 of "What remains" below.** **Demo B (two unmodified HDF5 executables, cross-process) — NOT executed (as of 2026-10-02); compiles
 against LowFive's documented API only.** The single-process interception path
 (`LowFiveTransport::set_location`/`build_plan`/`move`, unconditionally compiled, part
 of this codebase before this phase) is measured end to end and is not in question.
@@ -2998,10 +2998,39 @@ participant rows those two entries track are NOT re-listed here):**
    to reach, as for the LowFive-launch branch).
 4. ~~**ctest rows, host-only:**~~ `verification.brusselator.participants.lowfive.mpmd.3` Passed (D39 Round 10, and again
    2026-10-13 after this stage); `verification.brusselator.participants.lowfive.accept.3` Passed (item 3).
-5. **Host run: Demo B** (`examples/demo_b`'s producer/consumer
-   executables) — compiles against LowFive's documented
-   `DistMetadataVOL` API only; never run. Needs item 1 and a real MPI
-   intercommunicator between two genuinely separate processes.
+5. ~~**Host run: Demo B**~~ — **done, 2026-10-14.** Registered as the ctest row `example.demo_b`
+   (`examples/CMakeLists.txt`, when the configure probe enables `FUSE_ENABLE_CONNECT_ACCEPT`), which runs
+   `examples/demo_b/run_demo.sh`: one producer and one consumer process from two separate `mpiexec -n 1`
+   launches, joined by `MPI_Comm_accept`/`MPI_Comm_connect`. **First host run (HEAD `2ebc0d4`, before any fix),
+   both processes exited 1:** the producer's `set_location` refused with `E-TRANSPORT-LF-LOCATION` ("cannot
+   create a file next to ..."), and the consumer's `H5Fopen` raised LowFive's `file_open(): no intercomm found
+   for ...`. Causes, both in FUSE's transport: (a) `set_location` proved the directory writable with an
+   `O_EXCL` sentinel at the fixed name `<file>.soma-writable-probe`, so the second process to claim the same
+   path failed while the first one's sentinel existed (a sentinel left by a crash refused every later run the
+   same way); (b) the distributed VOL never called `DistMetadataVOL::set_intercomm(file, path, index)`, which a
+   consumer's `file_open` needs to find the serving intercommunicator (LowFive's own consumer examples call it).
+   **Fixes:** (a) the sentinel is now `mkstemp`-unique, pinned by the LowFive-tree test
+   `LowFiveTransport.SetLocationIsNotBlockedByAPeersProbe`, where a file at the old fixed name stands in for
+   the peer's live sentinel and no probe may be left behind; (b) distributed `build_plan` registers the file
+   with the dataset path normalised to one leading `/`, index 0, once per file and path; and (c) the producer
+   payload `demo_b_produce` creates the dataset's parent groups (`H5Gcreate2` with intermediate-group
+   creation) before `H5Dcreate2`, which plain HDF5 requires and which LowFive otherwise flattens
+   (D39 round 7). Also: `run_demo.sh` writes its logs next to the port file instead of fixed `/tmp` names,
+   removes a stale HDF5 file before the run, and takes the configured launcher; a placeholder
+   `DistInterceptionIsNeverExercisedHere` test that could not fail was removed. **Measured after the fixes**
+   (owner's machine, MPICH 5.0.0a1, `build-lowfive`): `example.demo_b` Passed on its first run (0.60 s) and
+   in five repeats (0.16–0.42 s); the producer printed `wrote 8 values, served across the intercommunicator`
+   and the consumer `read 8 values, bit-for-bit match, zero bytes of HDF5 on disk`; the scratch directory
+   held only the two logs; `run_demo.sh` with dataset paths `/values` and `/a/b/c/values` also passed.
+   The consumer reads with `H5S_ALL`, which D39 round 7 recorded as an unresolved upstream TODO in
+   `DistMetadataVOL::dataset_read`; this whole-dataset 1-D read returned correct values, which does not
+   establish that `H5S_ALL` is safe for other selections. Not measured: fix (c)'s necessity under LowFive
+   (no run without it), more than one rank per side, more than one file or dataset per transport, and a
+   second exchange in one process.
+
+**D14 is closed.** Every item above is done and host-measured. Limits that remain belong to other
+entries: `.accept.5` (D18), the order check validated for one participants configuration (D39), and no
+test of `base_communicator()` after a failed `connect()` (item 3).
 
 ### D15. The provider direction (S6 phase 4, "Adapter host" track) is implemented and conformance-tested on one process; device fields, mixed checkpoint/restore, and a plugin on a rank subset are not
 

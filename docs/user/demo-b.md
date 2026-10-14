@@ -86,11 +86,15 @@ example has been recorded there as of this writing.
 
 ## State
 
-**Implemented, untested.** The single-process LowFive interception path this example's distributed
-path builds on (`LowFiveTransport::set_location`/`build_plan`/`move`) is itself measured end to end
-([LowFive](lowfive.md), "Single-process interception"). `set_intercomm`/`serve_as_producer`/
-`receive_as_consumer` and the two Demo B executables exist, compile against the real host libraries,
-and have never been run — there is a build, but no measurement, behind every claim this page makes
-about the demo's own behaviour, and that gap is stated rather than papered over with the
-single-process measurement it is not. Not **designed only**: the code exists and compiles, which is
-a stronger state than a document describing an interface that has not been written.
+**Measured, one configuration.** The ctest row `example.demo_b` runs `run_demo.sh`: one producer
+process and one consumer process, launched separately and joined by `MPI_Comm_accept`/`MPI_Comm_connect`.
+On the owner's machine (2026-10-14, MPICH 5.0.0a1, `build-lowfive`) it passed on its first run and in
+five repeats (0.16–0.60 s). The producer printed `wrote 8 values, served across the intercommunicator`,
+and the consumer printed `read 8 values, bit-for-bit match, zero bytes of HDF5 on disk`, which is the
+consumer's own exit-code assertion. `run_demo.sh` with dataset paths `/values` and `/a/b/c/values`
+also passed. The first run, before three fixes, failed, and both failures are recorded in
+KNOWN_ISSUES.md D14: `set_location`'s writable-directory probe used a fixed name, so two processes
+claiming one path refused each other; and the distributed VOL registered no intercommunicator for the
+file, so the consumer's `H5Fopen` raised `no intercomm found`. The producer payload now also creates
+the dataset's parent group, which `H5Dcreate2` requires in plain HDF5. Not measured: more than one
+rank per side, more than one file or dataset, or a second exchange in the same process.
