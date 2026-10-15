@@ -1,4 +1,4 @@
-#  The parallel coverage matrix — S5.5.
+#  The parallel coverage matrix -- S5.5.
 #
 #  The plan's S5.5 asks that every cell of the parallel matrix "has a named
 #  test or a named refusal", and records that this was "partly satisfied in
@@ -19,7 +19,7 @@
 #                                    library, not a waiver.
 #
 #  Rows 1-14 are the CommGraph regression matrix of
-#  upstream/soma/docs/specs/2026-09-11-comm-graph-design.md §7, transcribed
+#  upstream/soma/docs/specs/2026-09-11-comm-graph-design.md Section 7, transcribed
 #  because that document is in the imported parent tree, which is temporary
 #  (the namespace ruling). When `upstream/` goes, the matrix must not go with
 #  it -- the tests referred to "test 14 of the matrix" while the matrix itself
