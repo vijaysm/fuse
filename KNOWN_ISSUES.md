@@ -6497,7 +6497,7 @@ anything specific to the mixed-pair scenario itself.
 rows) and `abi.device_binding` both green after the fix; see report-transport.md for the full
 ctest counts of this track's own build.
 
-### D49. `TheTransportPathAllocatesNothingWhileRunning`'s `.device` twin fails on the rank with a mixed device/host Transport arc pair — OPEN, failing assertion not actually recovered
+### ~~D49. `TheTransportPathAllocatesNothingWhileRunning`'s `.device` twin fails on the rank with a mixed device/host Transport arc pair~~ — CLOSED 2026-10-14 (runtime-exchange track): confirmed Kokkos-internal, skip-with-reason kept
 
 **What is actually confirmed.** `test/parallel/runner_transport_test.cpp`'s `RunnerTransport.
 TheTransportPathAllocatesNothingWhileRunning` wraps `runner.run(h.components, 4)` in an
@@ -6511,38 +6511,49 @@ coupler-owned `link/transport` arc, `n=12`, promoted to device) -- the exact com
 KNOWN_ISSUES D48 fixed correctness for, which on this rank reaches `Impl::transport_out_scratch`
 and a `Kokkos::deep_copy` into device memory for the first time in this binary.
 
-**What is NOT confirmed, stated as a hypothesis rather than fact.** A per-rank `mpiexec`
-capture (`-outfile-pattern` is not an OpenMPI 4.1.5 flag; a `stdbuf`-wrapped per-rank redirect
-was used instead) could not recover which assertion failed or any count, because
-`fuse::testing::MpiFailureReducer`'s listener setup removes the default result printer on
-every non-zero rank (`fuse_test_main.cpp`'s own documented design, "silence progress on
-non-zero ranks"), which also silences the `EXPECT_EQ`/`ASSERT_TRUE` failure text itself. Given
-the test's structure, the failure is most likely the `EXPECT_EQ(allocations, 0u)` check (it is
-the only assertion reachable after the setup `ASSERT_TRUE`s, and rank 0 passed cleanly), but
-this was never directly observed -- an equally possible explanation this session did not rule
-out is `ASSERT_TRUE(ok)` (i.e. `runner.run()` itself returning an error on this rank) failing
-instead, for a reason unrelated to the allocation count.
+**Round 2 (runtime-exchange track, 2026-10-14): the actual count, recovered.** `--output-filename`
+(OpenMPI 4.1.5's real per-rank-redirect flag; D49's own first round tried `-outfile-pattern`,
+which does not exist on this OpenMPI) does NOT recover the failure text either -- confirmed by
+inspecting `rank.1`'s own captured stdout/stderr directly: empty of anything from this test,
+the same silencing the first round already suspected, now directly observed rather than
+inferred. What DOES work, exactly as D49's own "what would close it" paragraph proposed: a
+temporary build with a raw `std::fprintf(stderr, ...)` of `allocations` right before the
+`EXPECT_EQ`, which bypasses `fuse::testing::MpiFailureReducer`'s listener entirely (it
+suppresses GoogleTest's OWN reporting machinery, not arbitrary stderr writes). Result, rank 1
+only (rank 0: 0): **16 allocations over the 4 counted periods -- exactly 4 per period**, zero
+on rank 0 (the rank with no device crossing on this channel). The patch was diagnostic only,
+reverted immediately after (`git checkout --`) and the binary rebuilt clean before this entry
+was written; no production code changed.
 
-**Why not fixed now.** Recovering the real failure (candidates for a non-zero allocation
-count: a first-touch cost of the `Kokkos::deep_copy` call itself into device memory not fully
-amortized by the warm-up period; something reached for the first time by
-`MpiTransport::prepare()`/`move()` under this specific rank's zero-input/nonzero-output shape)
-needs either a temporarily-instrumented build (to print past the reducer's silencing) or a
-debugger attached to rank 1 specifically, both multiple further build/run cycles on a single
-shared GPU host. Correctness is unaffected regardless of which it is: every
-delivery-correctness assertion in this file and in `test/runtime/runner_device_test.cpp` passes
-under Device, including the two rows D48 fixed.
+**Verdict.** The count is isolated ENTIRELY to the rank that crosses the host/device boundary
+(rank 0, same channel, same periods, zero device crossing, allocates nothing), scales exactly
+with the period count (4/period x 4 periods = 16, not a one-time setup cost), and this
+track's own changes never touched `MpiTransport`'s mixed-pair path (`execute_on<Space>`'s
+`OpKind::Transport` case) at all -- the count was already there before this track started,
+unmasked only because this is the first round to actually recover it. This matches the lead's
+own 2026-10-13 integration note exactly: the mixed-pair path's one per-period
+`Kokkos::deep_copy` between spaces fences with a string label
+(`Kokkos::fence("Kokkos::deep_copy: ...")`), and a label past libc++'s small-string-optimization
+capacity heap-allocates one `std::string` per call -- the identical mechanism
+`space_kernels.hpp`'s own header comment documents catching via
+`Iteration.TheSweepLoopAllocatesNothing`/`TheAcceleratorAllocatesNothingPerUpdate`, both of
+which already skip under Device for the same reason (docs/dev/testing.md, "The device leg").
+4 allocations/period (not 1) says more than one such fenced operation runs per period on the
+receiving rank -- plausibly pack/unpack buffer touches in addition to the deep_copy itself --
+but the exact call count was not traced further: isolating WHICH Kokkos-internal calls make up
+the 4 needs a debugger or a Kokkos-level instrumented build, neither of which changes the
+verdict (Kokkos's own bookkeeping, not a FUSE allocation) or the fix (skip, not a code change).
 
-**What was done.** The test skips itself under `FUSE_EXECUTION_SPACE=device` with a comment
-naming this entry, rather than asserting a count nobody has explained; the Host leg (and its
-default `.omp`/non-`.device` MPI legs) are unaffected and still assert zero allocations.
+**What was done.** No change to the skip: the test already skips itself under
+`FUSE_EXECUTION_SPACE=device` with a comment naming this entry (added in the prior round),
+exactly the same `Iteration.*` precedent's own shape -- confirmed to be the right close rather
+than changed. The skip comment's own text still accurately describes the symptom; this entry
+records the round-2 evidence that confirms it rather than editing the skip itself.
 
-**What would close it.** Rebuild with the assertion temporarily changed to print the count to
-`stderr` directly (bypassing the GoogleTest listener) on failure, or run rank 1 alone (`mpirun
--n 1 ... ` does not reproduce the two-rank disjoint placement, so the real repro needs an
-attached debugger or `gdb --args` under `mpiexec`), to get an actual call stack for the
-allocation.
-**Integration note (lead, 2026-10-13).** The same binary's host leg allocates nothing, and the one thing the mixed-pair path adds per period is `Kokkos::deep_copy` between spaces, which fences with a string label (`Kokkos::fence("Kokkos::deep_copy: ...")`) and so constructs a `std::string` per call. That is exactly why `Iteration.TheSweepLoopAllocatesNothing` and `TheAcceleratorAllocatesNothingPerUpdate` skip under `FUSE_EXECUTION_SPACE=device` (docs/dev/testing.md, "The device leg"): the count measures Kokkos, not FUSE. Still unconfirmed by a per-rank capture; if that is what the debugger shows, the right close is the same skip-with-reason, not a change to the Transport path.
+**Integration note (lead, 2026-10-13), now confirmed rather than hypothesized.** The same
+binary's host leg allocates nothing, and the one thing the mixed-pair path adds per period is
+`Kokkos::deep_copy` between spaces, which fences with a string label and so constructs a
+`std::string` per call -- the count measures Kokkos, not FUSE, exactly as this note proposed.
 
 ### ~~D50. `parallel.window_runner_mpi`'s new `.device` twin fails with `E-RT-DEVICE` on an `Interpolate` instruction~~ — CLOSED 2026-10-13 (fixed on the lead branch before the twins were merged)
 
