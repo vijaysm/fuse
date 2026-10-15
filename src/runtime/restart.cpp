@@ -12,7 +12,7 @@ Result<void> write_restart_point(Runner& runner, ComponentSet& components,
                                  std::int64_t period_index) {
   Result<void> r = writer.put_scalar_rational(kTimeName, time);
   if (!r.ok()) return r;
-  r = writer.put_scalar(kPeriodName, static_cast<double>(period_index));
+  r = writer.put_scalar(kPeriodName, period_index);
   if (!r.ok()) return r;
   r = runner.write_restart_fields(writer, components);
   if (!r.ok()) return r;
@@ -45,10 +45,10 @@ Result<void> restore_restart_point(Runner& runner, ComponentSet& components,
                                    std::int64_t& out_period_index) {
   const Result<Rational> time = reader.get_scalar_rational(kTimeName);
   if (!time.ok()) return time.error();
-  const Result<double> period = reader.get_scalar(kPeriodName);
+  const Result<fuse::ReadConversionReport> period =
+      reader.get_scalar(kPeriodName, out_period_index);
   if (!period.ok()) return period.error();
   out_time = time.value();
-  out_period_index = static_cast<std::int64_t>(period.value());
   const Result<void> r = runner.restore_restart_fields(
       reader, components, allow_accelerator_reset_on_mismatch,
       any_accelerator_reset);

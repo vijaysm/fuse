@@ -241,12 +241,12 @@ Result<void> get_field_per_block(RestartReader& reader,
   for (const RestartRowBlock& block : blocks) {
     const std::size_t count = block.ids.size();
     const std::string qualified = name_prefix + "/" + block.field_name;
-    const Result<void> r = reader.get_field(
+    const Result<fuse::ReadConversionReport> r = reader.get_field(
         qualified, block.ids,
         flat.subspan(off * static_cast<std::size_t>(components),
                      count * static_cast<std::size_t>(components)),
         components);
-    if (!r.ok()) return r;
+    if (!r.ok()) return r.error();
     off += count;
   }
   return Result<void>::success();
@@ -508,7 +508,9 @@ class AitkenAccel final : public Accelerator {
     r_prev_.resize(n_);
     const std::string omega_name = std::string(name_prefix) + "/aitken/omega";
     const std::string r_prefix = std::string(name_prefix) + "/aitken/r_prev";
-    const Result<double> om = reader.get_scalar(omega_name);
+    double omega_read = 0.0;
+    const Result<fuse::ReadConversionReport> om =
+        reader.get_scalar(omega_name, omega_read);
     if (!om.ok()) {
       // E-RESTART-MISSING-SCALAR specifically: export_restart_state()
       // wrote nothing at all for this name_prefix because have_prev_ was
@@ -533,7 +535,7 @@ class AitkenAccel final : public Accelerator {
       reset();
       return Result<void>::success();
     }
-    omega_ = om.value();
+    omega_ = omega_read;
     have_prev_ = true;
     return Result<void>::success();
   }
