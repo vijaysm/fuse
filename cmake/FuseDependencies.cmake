@@ -197,7 +197,7 @@ endif()
 # FUSE_ENABLE_MOAB requirement at that point rather than this
 # unconditional one.
 
-# fmt — the ONLY output formatter in the library (docs/dev/conventions.md). No iostreams in
+# fmt -- the ONLY output formatter in the library (docs/dev/conventions.md). No iostreams in
 # library code, no printf in host code; fmt::format_to with a caller-provided buffer
 # on any path that must not allocate.
 # ------------------------------------------------- declarations for the fetch path

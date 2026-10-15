@@ -14,6 +14,10 @@ jobs:
         with: { python-version: "3.12" }
       - run: python3 tools/check-layering.py
       - run: python3 tools/check-invariants.py
+      # Owner's 2026-10-15 ASCII-only ruling: every tracked source file
+      # decodes as pure ASCII except *.md (reviewed by eye) and upstream/
+      # (vendored, not edited). Static, sub-second, no build.
+      - run: python3 tools/check-ascii.py
       # Byte-identity of upstream/ against the manifest (invariant I8). The
       # stronger --parents form needs the parent repositories and runs locally.
       - run: python3 tools/verify-import.py

@@ -1,4 +1,4 @@
-# FUSE — top-level superbuild.
+# FUSE -- top-level superbuild.
 #
 # At S0 this builds the two imported parent trees and nothing else: there is no
 # fuse/ source yet, and a target that compiles nothing is worse than no target.

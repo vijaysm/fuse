@@ -1,4 +1,4 @@
-# FUSE — clang-tidy for a scientific computing library.
+# FUSE -- clang-tidy for a scientific computing library.
 #
 # Two principles decide what is enabled:
 #   1. A check that finds real numerical or distributed bugs is on, even if noisy.
@@ -36,15 +36,15 @@ Checks: >
   -misc-no-recursion
 
 # Why the notable exclusions:
-#   bugprone-easily-swappable-parameters — remap(src, dst, tol, ...) is inherent to the domain.
-#   readability-magic-numbers / cppcoreguidelines-avoid-magic-numbers — quadrature weights,
+#   bugprone-easily-swappable-parameters -- remap(src, dst, tol, ...) is inherent to the domain.
+#   readability-magic-numbers / cppcoreguidelines-avoid-magic-numbers -- quadrature weights,
 #     tolerances and order constants are the content of numerical code.
-#   readability-function-cognitive-complexity — a lowering rule or a kernel is long by nature;
+#   readability-function-cognitive-complexity -- a lowering rule or a kernel is long by nature;
 #     the charter's real limit is one concern per function, which no metric measures.
-#   modernize-use-trailing-return-type — churns every signature in 45 kLOC of imported code.
-#   modernize-avoid-c-arrays — the C ABI records are plain C structs by contract.
-#   misc-include-cleaner — Kokkos and MPI headers defeat it; revisit when it improves.
-#   misc-non-private-member-variables-in-classes — descriptor and ABI records are PODs.
+#   modernize-use-trailing-return-type -- churns every signature in 45 kLOC of imported code.
+#   modernize-avoid-c-arrays -- the C ABI records are plain C structs by contract.
+#   misc-include-cleaner -- Kokkos and MPI headers defeat it; revisit when it improves.
+#   misc-non-private-member-variables-in-classes -- descriptor and ABI records are PODs.
 #   cppcoreguidelines-pro-bounds-* and pro-type-reinterpret-cast are absent deliberately:
 #     field buffers are raw pointers with strides and the canonical encoder is byte-level.
 #
