@@ -23,7 +23,7 @@ TEST(Units, HeatFluxDensityIsWattPerSquareMetre) {
   static_assert(u::kHeatFluxDensity == u::kWatt / (u::kMetre * u::kMetre));
 }
 
-// The check that makes §4.2 worth having.
+// The check that makes Section 4.2 worth having.
 TEST(Units, TemperatureIsNotHeatFlux) {
   static_assert(!(u::kKelvin == u::kHeatFluxDensity));
 }
@@ -46,7 +46,7 @@ TEST(Units, ToStringRoundTripsFamiliarNames) {
   EXPECT_EQ(u::kDimensionless.to_string(), "1");
   EXPECT_EQ(u::kMetre.to_string(), "m");
   EXPECT_EQ(u::kKelvin.to_string(), "K");
-  // W = kg·m^2·s^-3
+  // W = kg*m^2*s^-3
   const std::string w = u::kWatt.to_string();
   EXPECT_NE(w.find("kg"), std::string::npos);
   EXPECT_NE(w.find("m^2"), std::string::npos);

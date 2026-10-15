@@ -156,7 +156,7 @@ RunResult run_once(const TransferCase& s) {
   // Both fields are pure functions of x, not of time, so a one-coupling-cycle lag on
   // the return field transfer changes nothing about what is measured -- it exists
   // only to turn this two-way pair into a legal explicit scheme (spec
-  // §8.2's E-SCHED-CYCLE hard gate rejects an unlagged algebraic loop; this
+  // Section 8.2's E-SCHED-CYCLE hard gate rejects an unlagged algebraic loop; this
   // test is about transfer accuracy, not about the FSI model's own strong
   // coupling, which is a later phase's concern).
   const auto fch = g.add_channel("wall_force", force_out, force_in);

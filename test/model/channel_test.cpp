@@ -27,7 +27,7 @@ TEST(RemapFlags, CombineAndTest) {
   EXPECT_FALSE(has(f, RemapFlags::HighOrder));
 }
 
-// This is the exact syntax from spec §5.2. ChannelBuilder is obtained only
+// This is the exact syntax from spec Section 5.2. ChannelBuilder is obtained only
 // through CouplingGraph::channel() (it holds a graph reference + id, not a
 // bare Channel&, so it survives channels_ reallocating).
 TEST(ChannelBuilder, BuildsTheSpecExample) {
@@ -47,7 +47,7 @@ TEST(ChannelBuilder, BuildsTheSpecExample) {
   EXPECT_DOUBLE_EQ(c.relax.omega, 0.7);
 }
 
-// Spec §7.3 example.
+// Spec Section 7.3 example.
 TEST(ChannelBuilder, BuildsSpacetimeChannel) {
   CouplingGraph g;
   const auto id = g.add_channel("sst->T_surf", FieldId{2}, FieldId{3});
@@ -69,7 +69,7 @@ TEST(ChannelBuilder, LagIsRecorded) {
   EXPECT_EQ(g.channel_at(id).lag, 1);
 }
 
-// Spec §4.3: the escape hatch must record a reason, never be silent.
+// Spec Section 4.3: the escape hatch must record a reason, never be silent.
 TEST(ChannelBuilder, TimeLevelMismatchRequiresAReason) {
   CouplingGraph g;
   const auto id = g.add_channel("c", FieldId{}, FieldId{});

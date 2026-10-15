@@ -327,7 +327,7 @@ TEST(Acyclicity, UnwrittenBidirectionalFieldIsNotASpuriousCycle) {
 }
 
 // ---------------------------------------------------------------------------
-// Iteration regions (spec §5.3), now that Task 7.2 derives
+// Iteration regions (spec Section 5.3), now that Task 7.2 derives
 // IterationRegion::carried. The gate learned about `carried`, not about the
 // annotation: what breaks a cycle is a previous-iterate value in the IR, and
 // declaring a region does not by itself create one.
@@ -833,7 +833,7 @@ TEST(Acyclicity, SecondWriterOnANodeFreeChannelCannotHideARealLoop) {
 }
 
 // The authoring gate must reject the same graph outright: silently dropping
-// every writer but the last is not an implementation of spec §5.1's Merge.
+// every writer but the last is not an implementation of spec Section 5.1's Merge.
 TEST(Acyclicity, MultiWriterIsAnAuthoringError) {
   const fuse::Diagnostics d = validate(multi_writer_hiding_a_loop(true));
   EXPECT_TRUE(d.has_errors()) << d.to_string();

@@ -1,4 +1,4 @@
-// test/search/fixtures.hpp — random box/point generators and a brute-force
+// test/search/fixtures.hpp -- random box/point generators and a brute-force
 // reference, so every property test compares fuse::search's answer against
 // an INDEPENDENT computation of the same fuse::search::contains/padded
 // rules (geometry.hpp), not a re-invented notion of containment.

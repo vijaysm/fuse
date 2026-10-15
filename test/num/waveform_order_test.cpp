@@ -332,7 +332,7 @@ TEST(WaveformOrder, LinearIntegralIsThirdOrder) {
 }
 
 // The integral of the interpolating quadratic is Simpson's rule: O(h^5).
-// This is the primitive the space-time conservation check (spec §7.4) rides
+// This is the primitive the space-time conservation check (spec Section 7.4) rides
 // on, so its order is the one that must not silently drop.
 TEST(WaveformOrder, DgTwoIntegralIsFifthOrder) {
   expect_integral_order("DG(2), 3 samples", TemporalBasis::DG, 2, 3, 5.0, kTol);

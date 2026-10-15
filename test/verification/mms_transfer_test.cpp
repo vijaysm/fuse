@@ -1,4 +1,4 @@
-// Spec §10 level 4 for Phase 4: the first coupled run measured against an
+// Spec Section 10 level 4 for Phase 4: the first coupled run measured against an
 // analytic answer.
 //
 // WHAT IS AND IS NOT BEING VERIFIED HERE

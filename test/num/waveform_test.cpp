@@ -293,7 +293,7 @@ TEST(Waveform, ResetClearsSamplesButKeepsCapacity) {
 // Interpolation
 // ---------------------------------------------------------------------------
 
-// Spec §4.4: explicit coupling is the degenerate waveform, not a separate path.
+// Spec Section 4.4: explicit coupling is the degenerate waveform, not a separate path.
 TEST(Waveform, SingleSampleConstantIsTheExplicitCase) {
   Waveform w{1, 1, TemporalBasis::Constant, 0};
   w.reset(Rational{0}, Rational{1});
@@ -389,7 +389,7 @@ TEST(Waveform, EvaluateRefusesToExtrapolate) {
                          [](double t) { return t; });
   double     out = 0.0;
   const auto r = w.evaluate(Rational{3, 4}, &out);
-  ASSERT_FALSE(r.ok()) << "extrapolation is Extrapolate's job (spec §5.1)";
+  ASSERT_FALSE(r.ok()) << "extrapolation is Extrapolate's job (spec Section 5.1)";
   EXPECT_EQ(r.error().code, "E-WF-OUTSIDE");
 }
 

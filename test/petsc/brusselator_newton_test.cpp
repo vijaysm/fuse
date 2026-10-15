@@ -388,7 +388,7 @@ TEST(BrusselatorNewtonPetsc, MeasuredErrorAgainstATightReference) {
 // PETSC is on; not expected to pass IN THIS SANDBOX. Does NOT assert the
 // two substrates take the same outer-iteration count (SNES's own GMRES/
 // line-search implementation is not required to follow the identical
-// path, docs/dev/newton-krylov.md §10.3's own measured step-1
+// path, docs/dev/newton-krylov.md Section 10.3's own measured step-1
 // difference) -- only that PETSc converges, and that its final state
 // agrees with the native one to the CALIBRATED bound
 // (`brusselator_bound::agreement_bound()`, examples/brusselator/

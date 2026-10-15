@@ -296,7 +296,7 @@ TEST(MpiTransport, RegisteredInTheTransportRegistry) {
 // Redistribution
 // ---------------------------------------------------------------------------
 
-// The disjoint-rank-set case spec §4.1 calls the normal one: the first half of
+// The disjoint-rank-set case spec Section 4.1 calls the normal one: the first half of
 // the ranks produce, the second half consume.
 TEST(MpiTransport, RedistributesAcrossDisjointRankSets) {
   Pattern p;

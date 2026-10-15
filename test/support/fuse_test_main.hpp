@@ -8,8 +8,8 @@
 ///     while ranks 0-2 proceed into the next collective. The suite then HANGS, and a
 ///     hang is not a test result. This harness reduces the failure status across the
 ///     communicator at the end of every test, so a failure anywhere fails everywhere
-///     — the same discipline the library itself applies with `Epoch`
-///     (docs/CHARTER.md §2).
+///     -- the same discipline the library itself applies with `Epoch`
+///     (docs/CHARTER.md Section 2).
 ///   * Every rank printing its own progress makes the log unreadable and interleaved.
 ///     Only rank 0 keeps the default printer; other ranks stay silent unless they are
 ///     the rank that failed, and then they print only their own failures.
@@ -58,7 +58,7 @@ int self_communicator_handle();
 /// Declare a test's rank requirement. A test that needs exactly N ranks must say so;
 /// running it at the wrong size is a configuration error, reported once by rank 0,
 /// not a silent pass. Registration is per ctest entry, so the matrix in
-/// docs/PLAN.md §S5.5 is checkable by grep.
+/// docs/PLAN.md Section S5.5 is checkable by grep.
 bool requires_ranks(int exact);
 bool requires_at_least_ranks(int minimum);
 

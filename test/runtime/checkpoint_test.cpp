@@ -229,7 +229,7 @@ TEST(Checkpoint, ExplanationNamesTheBufferAndTheComponents) {
 }
 
 // ---------------------------------------------------------------------------
-// Verification. Spec §5.3's distinguishing claim is not that FUSE computes the
+// Verification. Spec Section 5.3's distinguishing claim is not that FUSE computes the
 // set but that it then checks the component honoured it.
 // ---------------------------------------------------------------------------
 

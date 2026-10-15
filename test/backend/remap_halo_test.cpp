@@ -1,4 +1,4 @@
-// The remap halo's SERIAL contract — the part of KNOWN_ISSUES D4's
+// The remap halo's SERIAL contract -- the part of KNOWN_ISSUES D4's
 // `A-PARTITIONED` gap that can be tested without a launcher.
 //
 // `build_remap_halo`, `exchange_remap_halo` and `accumulate_remap_halo` had 34

@@ -25,7 +25,7 @@ namespace C = fuse::Converged;
 namespace u = fuse::units;
 
 // ---------------------------------------------------------------------------
-// Allocation counting. Spec §2 layer 3 requires the interpreted loop to
+// Allocation counting. Spec Section 2 layer 3 requires the interpreted loop to
 // allocate nothing, and Task 4.6 proved that for a plan with no implicit coupling group by
 // replacing the global operator new. A sweep loop that allocates per iteration
 // would slip past that test entirely, so the same instrument is used here.
@@ -175,7 +175,7 @@ class LinearBlock final : public fuse::Component {
 };
 
 /// Claims rollback support and does not restore the field storage it
-/// registered. Spec §5.3 says the runtime verifies that the component saved
+/// registered. Spec Section 5.3 says the runtime verifies that the component saved
 /// what the derived set said it must; this is the component that proves the
 /// verification is a check and not a comment.
 class LyingBlock final : public fuse::Component {
@@ -463,7 +463,7 @@ TEST(Iteration, CheckpointsAreRestoredBetweenSweeps) {
   EXPECT_DOUBLE_EQ(f->a->history(), 1.0);
 }
 
-// Spec §5.3: the runtime verifies the component can do what the derived set
+// Spec Section 5.3: the runtime verifies the component can do what the derived set
 // requires of it.
 TEST(Iteration, RejectsAComponentThatCannotRollBack) {
   auto f = build(AccelConfig{.kind = AccelKind::None}, 10, BKind::NoRollback);
@@ -472,7 +472,7 @@ TEST(Iteration, RejectsAComponentThatCannotRollBack) {
   EXPECT_EQ(r.error().code, "E-ITER-NOROLLBACK");
 }
 
-// Spec §5.3's distinguishing claim over preCICE: FUSE does not merely ask the
+// Spec Section 5.3's distinguishing claim over preCICE: FUSE does not merely ask the
 // component to promise, it checks that the state came back.
 TEST(Iteration, RejectsAComponentWhoseRestoreDoesNothing) {
   auto f = build(AccelConfig{.kind = AccelKind::None}, 10, BKind::Lying);
@@ -1142,7 +1142,7 @@ TEST(Iteration, TheAcceleratorAllocatesNothingPerUpdate) {
 }
 
 // ---------------------------------------------------------------------------
-// The criterion has to survive the serialised coupling specification (spec §3.2).
+// The criterion has to survive the serialised coupling specification (spec Section 3.2).
 // ---------------------------------------------------------------------------
 
 TEST(Iteration, ConvergenceAndAccelerationCrossTheDescriptor) {

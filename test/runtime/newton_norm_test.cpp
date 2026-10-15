@@ -146,7 +146,7 @@ NewtonDnHeatFixture make_newton_setup(int max_iterations, fuse::NewtonConfig cfg
 
 /// A tight, but ACHIEVABLE, constant forcing term, isolating Newton's own
 /// algebra from Eisenstat-Walker's own deliberate under-solving
-/// (newton-krylov.md §8.2/§8.3's own reasoning for doing the identical
+/// (newton-krylov.md Section 8.2/Section 8.3's own reasoning for doing the identical
 /// thing). MEASURED while building this test, on THIS unpreconditioned
 /// dn_heat problem: `forcing_eta_constant` at `1e-10` and even `1e-6` --
 /// both well above `default_mffd_error_rel() = sqrt(eps_mach) ~= 1.49e-8`
@@ -161,7 +161,7 @@ NewtonDnHeatFixture make_newton_setup(int max_iterations, fuse::NewtonConfig cfg
 /// recomputed residual the solver correctly insists on before reporting
 /// success never actually reaches the requested `1e-6` within the
 /// restart budget, a tighter, problem-specific floor than the naive MFFD
-/// estimate, matching newton-krylov.md §9.9.2's own point that MFFD/GMRES
+/// estimate, matching newton-krylov.md Section 9.9.2's own point that MFFD/GMRES
 /// forcing floors are measured per-problem, not derived from one global
 /// constant. `1e-3` DOES converge (one Newton step, `||F|| ~0.22` from
 /// `||F_0|| ~766`, status `ConvergedRelative`) -- tight enough to isolate
@@ -676,7 +676,7 @@ TEST(NewtonNorm, ExactDenseSolveAgreesToRoundoffTimesConditionNumber) {
 // linear Jacobian that a handful of Eisenstat-Walker-forced steps closes
 // most of the remaining error regardless of scale, and pushing the scale
 // to 1e6 to force a difference instead hit GMRES's own matrix-free
-// precision floor (newton-krylov.md §8.3's own measured limit) on BOTH
+// precision floor (newton-krylov.md Section 8.3's own measured limit) on BOTH
 // norms, a different effect than the one under test. The STOPPING TEST
 // itself, not the iteration count it produces on any one problem, is what
 // NewtonNorm actually changes -- so this test measures THAT directly: the
@@ -1023,7 +1023,7 @@ TEST(NewtonNorm, BlockJacobiPreconditionerWithExactTokensConvergesUnderMeasureWe
 // merely a per-entry-varying coefficient, so Newton's own local
 // linearisation is only approximately right away from the root and takes
 // several steps to close the gap, the SAME reason dn_heat's own k(T)
-// variant needs more than one step, docs/dev/newton-krylov.md §8.3).
+// variant needs more than one step, docs/dev/newton-krylov.md Section 8.3).
 // "A" is coupled to "B" the SAME ping-pong way DiagonalFixture's own
 // "lo"/"hi" are: A_out = p * B_in + q (A's own units, `scale` times
 // bigger than B's), B_out = k * (A_in)^2 + m (B's own, natural units,

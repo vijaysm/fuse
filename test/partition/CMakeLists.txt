@@ -1,4 +1,4 @@
-# test/partition/CMakeLists.txt — fuse::partition's own test registration.
+# test/partition/CMakeLists.txt -- fuse::partition's own test registration.
 #
 # NOT fuse_add_gtest/fuse_add_mpi_test (test/CMakeLists.txt's own functions):
 # those resolve "${layer}/${name}_test.cpp" relative to the CALLER's

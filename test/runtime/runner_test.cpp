@@ -643,7 +643,7 @@ TEST(Runner, ASecondPeriodDeliversTheSecondStepsValues) {
 }
 
 // ---------------------------------------------------------------------------
-// Spec §4.2: who owns which buffer.
+// Spec Section 4.2: who owns which buffer.
 // ---------------------------------------------------------------------------
 
 TEST(Runner, ComponentOwnedArcsAliasComponentStorageAndAreNotAllocated) {
@@ -731,7 +731,7 @@ TEST(Runner, RefusesAFieldRegisteredWithANonContiguousLayout) {
 }
 
 // ---------------------------------------------------------------------------
-// Spec §2 layer 3: no allocation in the hot loop.
+// Spec Section 2 layer 3: no allocation in the hot loop.
 // ---------------------------------------------------------------------------
 
 TEST(Runner, AllocatesNothingWhileRunning) {
@@ -758,7 +758,7 @@ TEST(Runner, AllocatesNothingWhileRunning) {
   ASSERT_TRUE(ok);
   EXPECT_EQ(allocations, 0u)
       << "run() allocated " << allocations
-      << " times; spec §2 layer 3 requires the interpreted loop to allocate "
+      << " times; spec Section 2 layer 3 requires the interpreted loop to allocate "
          "nothing";
 }
 
@@ -1434,7 +1434,7 @@ TEST(Runner, AcceptsAnAcceleratedMultiRankRegionWhenNoCommunicatorIsConfigured) 
 }
 
 // ---------------------------------------------------------------------------
-// Spec §5.4, Task 5.5: which Remaps the runtime will and will not execute.
+// Spec Section 5.4, Task 5.5: which Remaps the runtime will and will not execute.
 //
 // A `Remap` is now either real weights from `build_weights` or an identity
 // that was PROVED correct, and nothing else. The three tests below pin the

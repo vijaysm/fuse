@@ -1,4 +1,4 @@
-// test/search/refusals_test.cpp — deliberate refusals firing
+// test/search/refusals_test.cpp -- deliberate refusals firing
 // (docs/dev/testing.md: "counts as verified only when a test makes it
 // fire"). fuse::search returns Result<T>/Failure at its boundary (like
 // fuse::backend's MeshBackend), not FUSE_REFUSE/exceptions, so every case

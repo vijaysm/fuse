@@ -230,7 +230,7 @@ TEST(Validate, RejectsZeroInterval) {
   EXPECT_TRUE(has_code(d, "E-INTERVAL")) << d.to_string();
 }
 
-// Spec §4.3: OASIS documents lag > coupling period as a deadlock hazard.
+// Spec Section 4.3: OASIS documents lag > coupling period as a deadlock hazard.
 TEST(Validate, RejectsLagExceedingWindow) {
   Fixture f;
   f.g.channel(f.ch).lag(5);   // source interval 1, window 1 => 5 > 1
@@ -303,7 +303,7 @@ TEST(Validate, WarnsOnUnconsumedProvidesField) {
 // and the dependence it declared vanishes from the schedule. A graph with a
 // real algebraic loop through a shadowed writer then cleared this gate and
 // was certified acyclic by prove_acyclic (232 such graphs in a 19,181-graph
-// fuzz sweep). Spec §5.1's `Merge` is the feature that would make several
+// fuzz sweep). Spec Section 5.1's `Merge` is the feature that would make several
 // writers legal; dropping all but one is not an implementation of it.
 TEST(Validate, RejectsTwoWritersToOneTarget) {
   Fixture f;

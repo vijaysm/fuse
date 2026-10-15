@@ -1,4 +1,4 @@
-// test/search/mesh_adapter_test.cpp — element_boxes against
+// test/search/mesh_adapter_test.cpp -- element_boxes against
 // fuse::SerialMeshBackend's generated line (1D) and box (3D) meshes, proving
 // the duck-typed MeshLike template really does instantiate against the
 // concrete fuse::MeshView with no cast and no include of mesh_view.hpp from

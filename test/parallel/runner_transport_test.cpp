@@ -700,7 +700,7 @@ TEST(RunnerTransport, SplittingByRankSetReproducesComponentMembership) {
   MPI_Comm_size(MPI_COMM_WORLD, &world);
   MPI_Comm_rank(MPI_COMM_WORLD, &me);
 
-  // Two disjoint components spanning the job, as spec §6 mode 1 describes.
+  // Two disjoint components spanning the job, as spec Section 6 mode 1 describes.
   const fuse::RankSet src{0, world / 2};
   const fuse::RankSet dst{world / 2, world - world / 2};
   EXPECT_FALSE(src.overlaps(dst));
@@ -1760,7 +1760,7 @@ TEST(RunnerTransport, TheTransportPathAllocatesNothingWhileRunning) {
                     "is not yet isolated to a cause";
   }
   // The same guarantee Runner.AllocatesNothingWhileRunning pins for the serial
-  // path (spec §2 layer 3). This is what proves that holding the TransportSpec
+  // path (spec Section 2 layer 3). This is what proves that holding the TransportSpec
   // behind an index, rather than by value in Resolved, actually removed the
   // per-step allocation transport.hpp:70-77 warns about.
   auto h = make_two_component_job("");

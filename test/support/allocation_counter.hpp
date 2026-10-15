@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 // Allocation counting.
 //
-// Spec §2 layer 3 requires the interpreted loop to allocate nothing. Replacing
+// Spec Section 2 layer 3 requires the interpreted loop to allocate nothing. Replacing
 // the global operator new is the only way to *measure* that rather than assert
 // it by inspection: it catches an allocation anywhere below run_period(),
 // including ones the Runner does not make directly (a std::string returned by

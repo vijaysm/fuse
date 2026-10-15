@@ -82,7 +82,7 @@ TEST(GoldenIr, PairIterated)             { check_golden("pair_iterated"); }
 // (test/verification/brusselator_lowfive_harness_test.cpp).
 TEST(GoldenIr, PairLowFiveBound)         { check_golden("pair_lowfive_bound"); }
 
-// Spec §2.1: the architecture's central claim is that operator order is
+// Spec Section 2.1: the architecture's central claim is that operator order is
 // explicit and therefore checkable. If these two dumps were ever equal, the
 // IR would not be recording what it promises to record.
 TEST(GoldenIr, OperatorOrderIsObservable) {

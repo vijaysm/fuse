@@ -61,7 +61,7 @@ bool has_code(const fuse::Diagnostics& d, const char* code) {
 }
 
 /// Five components, each providing one field into the same target, with a
-/// declared Sum merge -- an entirely ordinary use of spec §5.1's Merge that
+/// declared Sum merge -- an entirely ordinary use of spec Section 5.1's Merge that
 /// used to compile past lower() as one 5-input Merge node and then fail
 /// schedule() with E-SCHED-ARITY, blaming a "lower Merge as a left-fold"
 /// step that lower() never performed (REVIEW.md R-27). All writers are
@@ -186,7 +186,7 @@ CouplingGraph multirate_merge() {
 
 /// Independent of the scheduler's own reasoning: walk the emitted stream and
 /// check that every operand was written by an earlier instruction. A lagged
-/// arc (negative time offset) is exempt -- spec §4.3, its value comes from the
+/// arc (negative time offset) is exempt -- spec Section 4.3, its value comes from the
 /// previous period on purpose.
 std::size_t dependence_violations(const fuse::OperatorDAG& dag,
                                   const fuse::ExecutionPlan& plan) {
@@ -806,7 +806,7 @@ TEST(ExecutionPlan, MultirateMergeSchedulesInDependenceOrder) {
 }
 
 // ---------------------------------------------------------------------------
-// Iteration regions become explicit loop boundaries (spec §2 layer 3)
+// Iteration regions become explicit loop boundaries (spec Section 2 layer 3)
 // ---------------------------------------------------------------------------
 
 // The declaration-order limitation, pinned so it cannot regress silently and

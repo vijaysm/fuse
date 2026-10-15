@@ -1,4 +1,4 @@
-// test/parallel/remap_halo_mpi_test.cpp — the PARALLEL half of KNOWN_ISSUES
+// test/parallel/remap_halo_mpi_test.cpp -- the PARALLEL half of KNOWN_ISSUES
 // D4's `A-PARTITIONED` gap (build-evidence/parallel-matrix.toml), under a
 // REAL mpiexec. test/backend/remap_halo_test.cpp covers the one-rank
 // contract; this file is everything that needs a communicator of more than

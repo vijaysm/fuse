@@ -31,7 +31,7 @@ TEST(Clock, AdvancesExactly) {
   EXPECT_EQ(c.step(), 3);
 }
 
-// The property spec §4.3 exists to guarantee.
+// The property spec Section 4.3 exists to guarantee.
 TEST(Clock, NoDriftOverAMillionSteps) {
   Clock c{Rational{1, 7}};
   for (int i = 0; i < 1'000'000; ++i) c.advance();

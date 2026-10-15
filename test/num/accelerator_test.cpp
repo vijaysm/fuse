@@ -23,7 +23,7 @@ using fuse::make_accelerator;
 
 // ---------------------------------------------------------------------------
 // Allocation counting, as in test/verification/iteration_test.cpp and
-// test/unit/runner_test.cpp. Spec §2 layer 3 requires the sweep loop to
+// test/unit/runner_test.cpp. Spec Section 2 layer 3 requires the sweep loop to
 // allocate nothing, and an accelerated implicit coupling group runs the accelerator inside that
 // loop, so "the accelerator allocates nothing per update" is part of the same
 // requirement. Replacing the global operator new is the only way to MEASURE
@@ -1806,7 +1806,7 @@ TEST(Accelerator, ImvjRetainedJacobianIsBounded) {
 }
 
 // ---------------------------------------------------------------------------
-// The hot loop. Spec §2 layer 3 requires the interpreted sweep loop to
+// The hot loop. Spec Section 2 layer 3 requires the interpreted sweep loop to
 // allocate nothing, and an accelerated implicit coupling group calls update() from inside that
 // loop, so the accelerators are part of the same requirement -- measured, not
 // asserted in a comment.

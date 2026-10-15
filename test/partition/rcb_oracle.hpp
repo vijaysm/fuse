@@ -1,4 +1,4 @@
-// test/partition/rcb_oracle.hpp — serial reference for fuse::partition's RCB.
+// test/partition/rcb_oracle.hpp -- serial reference for fuse::partition's RCB.
 //
 // TEST CODE, NOT LIBRARY CODE (docs/dev/testing.md, the-five-states: this is
 // what "Verified" is checked against, not the thing being verified). Kept

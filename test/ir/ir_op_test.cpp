@@ -70,7 +70,7 @@ TEST(ValueType, NotAssignableAcrossComponentCounts) {
   EXPECT_FALSE(assignable_from(a, b, false));
 }
 
-// Spec §4.3: strict by default.
+// Spec Section 4.3: strict by default.
 TEST(ValueType, TimeLevelMismatchBlocksAssignmentByDefault) {
   ValueType a{.region = RegionId{0}};
   ValueType b{.region = RegionId{0}};

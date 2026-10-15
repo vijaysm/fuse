@@ -55,7 +55,7 @@ TEST(Rational, Ordering) {
   EXPECT_GT(Rational(3, 4), Rational(2, 3));
 }
 
-// The property that matters for §8.2: no drift over long runs.
+// The property that matters for Section 8.2: no drift over long runs.
 TEST(Rational, NoDriftOverManySteps) {
   const Rational dt{1, 3};
   Rational t{0};
@@ -115,7 +115,7 @@ TEST(Rational, ComparisonNeeds128BitIntermediate) {
 // UBSan reports "signed integer overflow: 3099999999 * 3100000000 cannot be
 // represented" at the old operator+='s numerator line, and without a
 // sanitizer the naive build silently computes num=den=-8836744073709551616,
-// which is not 1 — i.e. this test genuinely FAILS (EXPECT_EQ mismatch)
+// which is not 1 -- i.e. this test genuinely FAILS (EXPECT_EQ mismatch)
 // against the pre-fix header. With the __int128 intermediate the sum
 // reduces exactly to 1.
 TEST(Rational, AdditionWithOverflowingIntermediateNormalisesExactly) {
@@ -132,7 +132,7 @@ TEST(Rational, AdditionWithOverflowingIntermediateNormalisesExactly) {
 // reports "signed integer overflow: 3100000027 * 3100010033 cannot be
 // represented" at the old operator*='s first multiply, and without a
 // sanitizer the naive build computes num=den=-8836650701708739105 (not 1)
-// — i.e. this test genuinely FAILS against the pre-fix header. With the
+// -- i.e. this test genuinely FAILS against the pre-fix header. With the
 // __int128 intermediate every step reduces exactly, ending at 1.
 TEST(Rational, ChainedMultiplyAcrossUnrelatedDenominatorsStaysExact) {
   constexpr std::int64_t p1 = 3'100'000'027LL;
@@ -203,7 +203,7 @@ TEST(Rational, GcdRationalHandlesLargeButRepresentableGcd) {
 // Rational's constructor normalised into num=-1, den=9223372036709301665 --
 // a NEGATIVE rational returned as the gcd of two positive ones, with no
 // diagnostic. ClockSet::finest_interval() calls gcd_rational in a fold, so
-// that negative interval would have propagated straight into §8.3's
+// that negative interval would have propagated straight into Section 8.3's
 // decomposition into common-refinement intervals. Unrepresentable must be an error, not a wrapped answer.
 TEST(Rational, GcdRationalThrowsOnUnrepresentableDenominatorLcm) {
   EXPECT_THROW(

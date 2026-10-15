@@ -77,7 +77,7 @@ TEST(ChannelLowering, MinimalChannelIsSourceRemapSink) {
   EXPECT_FALSE(contains(k, OpKind::Relax));
 }
 
-// This is the exact chain from spec §5.2.
+// This is the exact chain from spec Section 5.2.
 TEST(ChannelLowering, SpecExampleEmitsSampleAccumulateRemapRelax) {
   Pair p = make_pair();
   p.g.channel(p.ch)
@@ -92,7 +92,7 @@ TEST(ChannelLowering, SpecExampleEmitsSampleAccumulateRemapRelax) {
   ASSERT_TRUE(contains(k, OpKind::Accumulate));
   ASSERT_TRUE(contains(k, OpKind::Remap));
   ASSERT_TRUE(contains(k, OpKind::Relax));
-  // Order is the point of the whole design (spec §2.1).
+  // Order is the point of the whole design (spec Section 2.1).
   EXPECT_LT(index_of(k, OpKind::Sample), index_of(k, OpKind::Accumulate));
   EXPECT_LT(index_of(k, OpKind::Accumulate), index_of(k, OpKind::Remap));
   EXPECT_LT(index_of(k, OpKind::Remap), index_of(k, OpKind::Relax));
@@ -200,7 +200,7 @@ TEST(ChannelLowering, ExtrapolatePrecedesRemap) {
   EXPECT_LT(index_of(k, OpKind::Extrapolate), index_of(k, OpKind::Remap));
 }
 
-// Spec §4.3: lag(k) is a TimeLevel offset of -k, not a node.
+// Spec Section 4.3: lag(k) is a TimeLevel offset of -k, not a node.
 TEST(ChannelLowering, LagShiftsTimeLevelWithoutEmittingANode) {
   Pair p = make_pair();
   p.g.channel(p.ch).lag(1).allow_time_level_mismatch("lag by design");

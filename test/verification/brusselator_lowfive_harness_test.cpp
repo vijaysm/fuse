@@ -579,7 +579,7 @@ void RunExternalDeliveryMatchesInProcessRunner(WaveformIteration wi) {
   // boundary exactly) produced state_new0=0x1.a812fd6999c04p+0
   // (1.6565397627653065) in BOTH the reference's own UCore and the
   // harness's own -- EXACTLY this test's own reported `ref_u_state[0][0]`.
-  // call=120 (t_end≈0.0205, window 1's own FIRST substep) produced
+  // call=120 (t_end~=0.0205, window 1's own FIRST substep) produced
   // state_new0=0x1.a8681633ac936p+0 (1.6578382373960046) in BOTH
   // instances too -- EXACTLY this test's own reported (wrong) harness
   // `u_state[0]` BEFORE this fix. Both UCore instances ran call=120

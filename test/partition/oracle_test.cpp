@@ -1,4 +1,4 @@
-// test/partition/oracle_test.cpp — self-consistency of the serial RCB
+// test/partition/oracle_test.cpp -- self-consistency of the serial RCB
 // oracle (test/partition/rcb_oracle.hpp) at emulated P = 1..5. No Kokkos,
 // no MPI: this is the property rcb_moab calls RcbBfBAcrossRanks, checked
 // on the oracle alone, runnable in this sandbox.

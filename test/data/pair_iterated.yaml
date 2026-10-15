@@ -29,7 +29,7 @@ iteration_regions:
   - name: outer
     channels: [flux]
     max_iterations: 30
-    # Spec §5.3. Without this the region has an empty ConvergenceCriterion,
+    # Spec Section 5.3. Without this the region has an empty ConvergenceCriterion,
     # which reports satisfied, so it would stop after one sweep and call itself
     # converged; the runner refuses that with E-ITER-NOCONVERGE.
     convergence:
