@@ -304,10 +304,8 @@ the next step starts. Host mode byte-identity is the standing invariant.
    `fmt` are not device-callable), `MeshArrays::vertex_coords` is
    `LayoutRight` in every space (D54). Weight builders: the migration/halo
    wire pack, a batched MLS solve and the supermesh candidate-pair broad
-   phase exist as space-templated kernels with their own rows, but none is
-   wired into its production entry point yet (D52/D53 name what blocks
-   each: the MLS rank diagnostic, the r3d clip's packaging; D51, the
-   receive-side merge, closed 2026-10-15 round 3). Transport: `MpiTransport::is_gpu_aware()` is a run-time
+   phase existed as space-templated kernels with their own rows but were
+   not yet wired into their production entry points (wired in step 7). Transport: `MpiTransport::is_gpu_aware()` is a run-time
    probe; the `Transport` case packs/unpacks on the device and hands MPI a
    device pointer when the MPI is GPU-aware, stages through host buffers
    otherwise (`FUSE_TRANSPORT_HOST_STAGING=1` forces that path); a mixed
@@ -315,8 +313,9 @@ the next step starts. Host mode byte-identity is the standing invariant.
    rank (`fuse::abi::resolve_device_id()`); `fuse_add_mpi_test(...
    DEVICE_TWIN)` registers 1/2/3-rank `.device` rows. Open: D49
    (allocation count of the mixed-pair transport row under the device leg).
-6. Measured on higgs (Debug, GTX 1050 Ti, OpenMPI 4.1.5 reporting
-   GPU-aware), integrated gate 2026-10-13: host suite 295/296 (`-LE
+6. Measured on higgs (Debug, GTX 1050 Ti, OpenMPI 4.1.5 -- built without
+   CUDA support, so every GPU-aware MPI path ran its host-staged fallback;
+   see D63), integrated gate 2026-10-13: host suite 295/296 (`-LE
    device`; the one failure is `example.brusselator.omp_identical` at its
    1500 s timeout, a load-sensitive row), device leg 28/28, cuSPARSE
    flag-on regex 15/15, anchors 308/308. The twins are correctness rows,
@@ -363,6 +362,47 @@ the next step starts. Host mode byte-identity is the standing invariant.
    bookkeeping, `previous[]`, history). A scaled problem is the right next
    measurement; the Runner's own kernels are not the bottleneck at these
    sizes.
+
+7. DONE (round 2, 2026-10-15, five tracks integrated at a97489aa on main
+   35229b28). Weight builders: `build_mls_weights` runs its k-nearest
+   search and per-target solve on the resolved execution space (D52
+   closed); `build_supermesh_weights` runs the candidate-pair broad phase
+   on the device for dim >= 2, the r3d/r2d clip stays host (D53). Native
+   mesh: `NativeMeshView` is device-primary (`MeshArrays` in
+   `DeviceMemSpace`; validation once on a transient host mirror; every
+   host accessor builds and caches its mirror on first use, counted by
+   `host_mirrors_materialized()`); the simplex decomposition is retained
+   as a device CSR and `fuse::search::element_boxes_device_resident`
+   feeds `BoxIndex::build_device_resident` from it with no host round
+   trip. Halo and migration: pack (`pack_to`/`pack_fanout`), exchange
+   (`exchange_migration_buffers<Space>`) and the receive-side merge
+   (`dedup_by_gid`, renumbering, face-CSR gather) run on the device end
+   to end with a self-describing wire format; a full halo or migration
+   round materialises no host mirror (D51 closed). Runtime: Constrain's
+   conservation sum and Diagnose's non-finite check are reductions on
+   the arc's own space; the distributed-nodal Remap resolves its
+   exchange once at setup (`build_distributed_remap_plan`) and runs its
+   per-period gather and H^T scatter as Kokkos kernels around one
+   `MPI_Alltoallv`, the scatter summing each target's contributions in
+   contributor-global-id order so the result is bit-identical across
+   rank counts; D49 closed with a per-rank capture. Exchange layer:
+   `fuse::linalg` stays Kokkos-free -- `PackedExchanger` exposes the MPI
+   exchanger's pack/unpack maps and a raw `MPI_Alltoallv`, and
+   `fuse::backend::DeviceGhostExchanger` drives it with Kokkos kernels;
+   one probe, `fuse::linalg::mpi_is_gpu_aware()`, decides device pointers
+   versus host staging for Transport, the ghost exchange, the nodal
+   remap and migration (`FUSE_TRANSPORT_HOST_STAGING=1` forces staging).
+   Gate on higgs at a97489aa: build clean; anchors 355/355; invariants
+   and layering 0 violations; `ctest -j1 -LE device` 333/335 (D55, D56
+   only); `ctest -j1 -L device` 35/35. Caveat: higgs's Open MPI is not
+   CUDA-aware, so the device-pointer branch of every exchange is compiled
+   and reachable but ran only its host-staged fallback here (D63). Still
+   host: `previous[]`, space-time history and window-region bookkeeping
+   (staged per instruction); MOAB-backed meshes and the mesh file reader;
+   the r3d/r2d clip; consistent/general interpolation and Tempest weights;
+   `DistVector` and the component-internal linear algebra; accelerators
+   and Newton; `MeshView::measure()` has no device-callable form for the
+   nodal remap's H^T input scaling.
 
 ## What the placement trace shows today
 
