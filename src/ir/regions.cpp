@@ -79,7 +79,7 @@ void build_iteration_regions(LoweringContext& ctx) {
       region.residuals.push_back(res);
     }
 
-    // Spec §5.3 / Task 7.2: the checkpoint set is derived, never asked for.
+    // Spec Section 5.3 / Task 7.2: the checkpoint set is derived, never asked for.
     // Run it last, after the Residual nodes exist, so the analysis sees the
     // whole body. Note the residual nodes are deliberately *not* in
     // region.body -- body is fixed above, before they are emitted -- and nor

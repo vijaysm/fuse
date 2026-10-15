@@ -57,7 +57,7 @@ Result<BufferPlan> try_plan_buffers(const OperatorDAG& dag, const TimedDag& time
   }
 
   // Arcs that alias component storage: Source outputs and Sink outputs
-  // (spec §4.2). Everything else is a coupler intermediate.
+  // (spec Section 4.2). Everything else is a coupler intermediate.
   //
   // Time windows track (C3): a window-scoped IMPORT's own Sink is the one
   // exception. Its output is K samples wide (window_import_width(),
@@ -128,7 +128,7 @@ Result<BufferPlan> try_plan_buffers(const OperatorDAG& dag, const TimedDag& time
     b.is_component_owned = component_owned[i] != 0;
 
     // Waveform accumulators, and anything reached through lag(k) -- which is
-    // exactly a negative TimeLevel offset (spec §4.3) -- carry a value across
+    // exactly a negative TimeLevel offset (spec Section 4.3) -- carry a value across
     // the period boundary and must not be recycled inside one. Rational's
     // operator<=> compares in 128 bits and is noexcept, so this cannot throw.
     b.is_persistent = (a.type.kind == ValueKind::Waveform) ||

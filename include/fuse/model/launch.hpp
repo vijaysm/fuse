@@ -15,12 +15,12 @@ namespace fuse {
 ///
 /// `Mpmd`: launcher-style multiple-program-multiple-data
 /// (`mpiexec -np 2 ./a : -np 3 ./b`, upstream/soma's comm-graph design
-/// calls this spec §6 mode 2). `MPI_COMM_WORLD` already contains every rank
+/// calls this spec Section 6 mode 2). `MPI_COMM_WORLD` already contains every rank
 /// of every program; `connect()` reads `MPI_APPNUM` to tell this program's
 /// ranks from the others' and checks the result against `appnum` and the
 /// declared `RankSet`s.
 ///
-/// `Connect`: true separate-executable MPMD (spec §6 mode 3 -- independent
+/// `Connect`: true separate-executable MPMD (spec Section 6 mode 3 -- independent
 /// MPI universes, no common parent communicator). This component's
 /// executable was launched with its own `mpiexec`, with `MPI_COMM_WORLD`
 /// containing only its own ranks. `connect()` forms an intercommunicator to

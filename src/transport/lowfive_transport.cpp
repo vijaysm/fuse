@@ -1,4 +1,4 @@
-// Task 8.4: the LowFive HDF5-VOL transport (spec §5 mechanism 4, Demo B).
+// Task 8.4: the LowFive HDF5-VOL transport (spec Section 5 mechanism 4, Demo B).
 //
 // THIS FILE IS COMPILED IN EVERY CONFIGURATION. Only its body is conditional.
 // `LowFiveTransport` is declared unconditionally in the public header, so

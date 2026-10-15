@@ -43,7 +43,7 @@
 /// `detail/ArborX_InterpDetailsMovingLeastSquaresCoefficients.hpp`), which
 /// really does return the `num_targets x num_neighbors` Kokkos view directly,
 /// callable independently of the class. That function was read in full
-/// (`docs/user/point-cloud-remap.md` §"ArborX read" reproduces the header
+/// (`docs/user/point-cloud-remap.md` Section "ArborX read" reproduces the header
 /// comment's own account of it), and NOT used here, for two reasons that both
 /// matter more than the convenience of not reimplementing MLS:
 ///
@@ -82,7 +82,7 @@
 /// a stable surface. `fuse::search::BoxIndex::query_nearest` supplies the k
 /// nearest source points (the ArborX-backed BVH, used exactly as the nodal
 /// track's k-nearest work already established it), a compactly supported
-/// radial weight (Wendland, §"radial weight" below) is evaluated in this file,
+/// radial weight (Wendland, Section "radial weight" below) is evaluated in this file,
 /// and the local polynomial fit is one call to
 /// `fuse::linalg::least_squares_builtin` per target -- not on the k x P
 /// weighted Vandermonde system directly (that facade takes one right-hand
@@ -122,7 +122,7 @@
 /// leaves one out has not stated what map they want and a plausible guess
 /// would give them one anyway, silently. Supported `radial` names:
 /// `wendland0`, `wendland2`, `wendland4`, `wendland6` (Wendland's compactly
-/// supported functions of matching smoothness, §CRBF below; the same family
+/// supported functions of matching smoothness, Section CRBF below; the same family
 /// ArborX's own `CRBF::Wendland<N>` offers, so a cross-check test can name the
 /// identical function on both sides).
 ///
@@ -173,7 +173,7 @@
 ///                            `DiscontinuousGLL` order 0 (cell centroid,
 ///                            the mesh entity set's own dimension).
 ///   * `E-MLS-NEIGHBORS`   -- `k` below the declared degree's basis size
-///                            (§ above), or a source side with fewer than `k`
+///                            (Section above), or a source side with fewer than `k`
 ///                            points, discovered before any per-target work.
 ///   * `E-MLS-RANK`        -- a target's local `P x P` moment-matrix solve is
 ///                            numerically rank-deficient (coincident or

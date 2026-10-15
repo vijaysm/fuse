@@ -40,7 +40,7 @@ struct BufferDecl {
   RegionId    region;
   /// The arc aliases storage a component registered, so the coupler must not
   /// allocate it and must not count it in `total_coupler_elements`
-  /// (spec §4.2: components own their data). True for exactly the `Source`
+  /// (spec Section 4.2: components own their data). True for exactly the `Source`
   /// and `Sink` node outputs, which are the DAG's field boundary.
   bool        is_component_owned = false;
   /// The buffer carries a value from one period into the next, so it must not
@@ -56,12 +56,12 @@ struct BufferPlan {
   std::size_t             total_coupler_elements = 0;
 };
 
-/// Spec §2 layer 3: everything the hot loop needs, allocated once.
+/// Spec Section 2 layer 3: everything the hot loop needs, allocated once.
 ///
 /// One `BufferDecl` per arc of `dag`, in arc order, so `plan.buffers[i]`
 /// describes `ArcId{i}`.
 ///
-/// `is_component_owned` (spec §4.2). The coupler never owns component data. A
+/// `is_component_owned` (spec Section 4.2). The coupler never owns component data. A
 /// `Source` output is the provider's registered array as it leaves the
 /// component; a `Sink` output is the consumer's registered array the coupled
 /// value is delivered into. Everything between them -- accumulators, waveform
@@ -74,7 +74,7 @@ struct BufferPlan {
 /// another cannot be reused inside a period. Two sources:
 ///   - `ValueKind::Waveform`, the accumulator a `Sample` fills;
 ///   - a negative `TimeLevel::offset`, i.e. an arc reached through `lag(k)`
-///     (spec §4.3: `lag(k)` *is* an offset of -k). The lagged buffer is
+///     (spec Section 4.3: `lag(k)` *is* an offset of -k). The lagged buffer is
 ///     written at the end of period p and read in period p+1; recycling it
 ///     makes the consumer read this period's value instead of last period's,
 ///     which turns an explicit lagged scheme into an implicit one with no
@@ -84,7 +84,7 @@ struct BufferPlan {
 ///
 /// Persistence *across iterations* of an iteration region is deliberately not
 /// covered here: that is `OperatorDAG::IterationRegion::carried`, the derived
-/// checkpoint set (spec §5.3, Phase 7 Task 7.2).
+/// checkpoint set (spec Section 5.3, Phase 7 Task 7.2).
 ///
 /// `timed` is checked for consistency with `dag` and otherwise unused: the
 /// per-period instance count only changes buffer sizes once waveform depth is

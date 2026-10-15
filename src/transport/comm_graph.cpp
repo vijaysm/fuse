@@ -102,7 +102,7 @@ enum class Err : int {
 // Wire records. Field order is chosen so that every struct is padding-free on
 // any ABI where the fixed-width types have their natural sizes and alignments,
 // which the static_asserts pin. Both ends of an exchange are the same binary
-// in one MPI job (spec §6 mode 1), so the bytes are memcpy'd as they are.
+// in one MPI job (spec Section 6 mode 1), so the bytes are memcpy'd as they are.
 // ---------------------------------------------------------------------------
 
 /// Round 1, GlobalId mode. `kind` 0 = "I own this", 1 = "I want this".
@@ -199,7 +199,7 @@ void for_each_rec(const std::vector<Envelope>& in, F&& f) {
 /// splitmix64. A hash, not a mask: `gid % P` alone buckets a contiguous id
 /// block onto a handful of ranks, which is the load imbalance this shard
 /// function exists to avoid. (NearestNeighbor mode does NOT use a hash --
-/// see the Morton partition below and §4.4 of the spec for why.)
+/// see the Morton partition below and Section 4.4 of the spec for why.)
 [[nodiscard]] u64 mix64(u64 x) noexcept {
   x += 0x9E3779B97F4A7C15ULL;
   x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
@@ -459,7 +459,7 @@ Result<CommGraph> CommGraph::build(int base_comm_handle,
                                    const CommGraphOptions& opts) {
   // -- Preconditions, before any collective -------------------------------
   // Nothing on any other rank is waiting yet, so returning here cannot
-  // desynchronise a job. These are the checks spec §6 requires to be
+  // desynchronise a job. These are the checks spec Section 6 requires to be
   // preconditions rather than runtime discoveries.
   const bool nn = opts.mode == MatchMode::NearestNeighbor;
   if (nn && !(opts.nn_tolerance > 0.0)) {

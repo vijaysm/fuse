@@ -10,7 +10,7 @@
 #include "fuse/linalg/least_squares.hpp"
 #include "fuse/num/accelerator.hpp"
 
-/// Spec §5.1 `Accelerate` and §5.3: the least-squares members of the
+/// Spec Section 5.1 `Accelerate` and Section 5.3: the least-squares members of the
 /// accelerator family -- Secant, IQN-ILS and IQN-IMVJ. They differ only in how
 /// many columns they keep and whether anything survives a window boundary, so
 /// there is one class.
@@ -366,7 +366,7 @@ void filter_qn_columns(FilterKind filter, double limit, std::size_t n,
 /// update() performs no heap allocation (a window boundary that folds a new
 /// block in is nearly but not quite the same claim -- see
 /// fold_window_into_jacobian()). An accelerated
-/// implicit coupling group sits inside the sweep loop, which spec §2 layer 3 requires
+/// implicit coupling group sits inside the sweep loop, which spec Section 2 layer 3 requires
 /// to be allocation free, and the scratch of a least-squares solve over
 /// k columns of length n is far too big to leave to the allocator once per
 /// sweep. Nothing about the arithmetic changed with the buffers: every scratch

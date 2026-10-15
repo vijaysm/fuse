@@ -119,7 +119,7 @@ class LinearOperator {
   [[nodiscard]] virtual std::uint64_t signature() const = 0;
 };
 
-/// ||A^T y · x - y · A x|| relative to the magnitudes involved, for one pair of
+/// ||A^T y * x - y * A x|| relative to the magnitudes involved, for one pair of
 /// vectors. Exactly zero for an operator whose transpose is its adjoint, up to
 /// the rounding of two different summation orders -- so the fixture compares it
 /// against a tolerance scaled by the number of contributions, not against zero.

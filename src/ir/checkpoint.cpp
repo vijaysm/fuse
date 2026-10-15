@@ -8,7 +8,7 @@
 #include "fuse/ir/op.hpp"
 #include "fuse/model/iteration.hpp"
 
-// Spec §5.3's derived checkpoint set (Task 7.2).
+// Spec Section 5.3's derived checkpoint set (Task 7.2).
 //
 // THE RULE, stated so it can be checked. Re-executing an iteration region's
 // body must produce the same answer it would have produced had the previous
@@ -323,7 +323,7 @@ Result<std::vector<std::size_t>> match_convergence_measures(
   // --- rule 2: EVERY residual is measured, not just one of them -------------
   //
   // MEASURED, not argued: on a two-channel pair, with the single measure the
-  // obvious reading of spec §5.3's example suggests, IQN-ILS drove the measured
+  // obvious reading of spec Section 5.3's example suggests, IQN-ILS drove the measured
   // channel's residual to EXACTLY zero on sweep 3 while the unmeasured one
   // still stood at 0.8, and the region reported convergence at a_out = 2.25
   // against a true fixed point of 2.5 -- a 10% error, converged, with a

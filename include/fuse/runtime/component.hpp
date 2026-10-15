@@ -28,12 +28,12 @@ namespace fuse {
 /// `Component::advance()` call must cover, plus where the call sits in the
 /// schedule.
 ///
-/// Times are `Rational`, never `double` (spec §4.3): 1/3 and 1/7 subcycling
+/// Times are `Rational`, never `double` (spec Section 4.3): 1/3 and 1/7 subcycling
 /// must decompose into slabs with no drift over 10^6 steps, which
 /// floating-point accumulation destroys silently.
 ///
 /// `step` counts coupling steps from the start of the run. `iteration` is the
-/// 0-based index of the current sweep inside an iteration region (spec §5.3)
+/// 0-based index of the current sweep inside an iteration region (spec Section 5.3)
 /// and is 0 everywhere outside one; a component that is re-advanced over the
 /// *same* interval with `iteration > 0` is being iterated and must have had
 /// `restore_state()` called first.
@@ -53,7 +53,7 @@ struct StepContext {
   /// `advance()` is the implementer's own override and nothing in the base
   /// runs first. A context with `t_end < t_begin` fed to a component that
   /// integrates over `dt()` produces a negative time step, which is not a
-  /// crash — it is a plausible-looking wrong answer.
+  /// crash -- it is a plausible-looking wrong answer.
   [[nodiscard]] constexpr bool valid() const noexcept {
     return t_begin <= t_end && step >= 0 && iteration >= 0;
   }
@@ -245,18 +245,18 @@ class ImplicitComponent {
   return diags;
 }
 
-/// A participating physics code, integrated in-process (spec §6 mode 1).
+/// A participating physics code, integrated in-process (spec Section 6 mode 1).
 ///
 /// Deliberately minimal: name yourself, bind your storage, advance in time.
-/// Everything else FUSE needs — remap, accumulation, scheduling — it derives
+/// Everything else FUSE needs -- remap, accumulation, scheduling -- it derives
 /// from the `CouplingGraph`, not from the component.
 ///
-/// OWNERSHIP MODEL (spec §4.2). The component owns its field arrays. FUSE
+/// OWNERSHIP MODEL (spec Section 4.2). The component owns its field arrays. FUSE
 /// never allocates, copies, or frees them; it wraps them in non-owning
 /// `FieldRef`s. FUSE owns only its own intermediates (accumulators, waveform
 /// buffers, remap targets, previous iterates). A `Component` held in a
 /// `ComponentSet` is owned by that set and destroyed with it, through this
-/// base pointer — hence the virtual destructor.
+/// base pointer -- hence the virtual destructor.
 ///
 /// THREADING. All methods are called from the component's own rank, from a
 /// single thread, and never concurrently with each other. A component may use
@@ -276,7 +276,7 @@ class Component {
   Component& operator=(Component&&) = delete;
 
   /// This component's name, which must equal the `ComponentDecl::name` of the
-  /// graph node it implements — that string is the only link between the
+  /// graph node it implements -- that string is the only link between the
   /// authored graph and the running object.
   ///
   /// Contract for the implementer: must be non-empty, must be the same value
@@ -290,7 +290,7 @@ class Component {
   [[nodiscard]] virtual std::string name() const = 0;
 
   /// Bind this component's own storage into `registry`, once, at setup
-  /// (spec §4.2).
+  /// (spec Section 4.2).
   ///
   /// The implementer must, for each `FieldId` in
   /// `graph.component(id).fields`, call `registry.bind(id, FieldRef{...})`
@@ -303,7 +303,7 @@ class Component {
   /// valid and *fixed* for the whole run: FUSE resolves once here and
   /// dereferences in the hot loop. Registering `vec.data()` and later growing,
   /// reassigning, or reallocating `vec` dangles every view. This includes
-  /// `restore_state()` — restore a checkpoint element-wise, do not
+  /// `restore_state()` -- restore a checkpoint element-wise, do not
   /// reassign the container.
   ///
   /// `registry` outlives this call and keeps copies of the views. `graph` is
@@ -321,13 +321,13 @@ class Component {
   /// On entry the implementer may assume: `register_fields()` succeeded; every
   /// field this component declared `Intent::Requires` holds values valid at
   /// `ctx.t_begin`, already remapped and time-interpolated by FUSE; and
-  /// `ctx.valid()` (the driver checks it — see `StepContext::valid()`).
+  /// `ctx.valid()` (the driver checks it -- see `StepContext::valid()`).
   ///
   /// On return the implementer must guarantee: every field it declared
   /// `Intent::Provides` holds values valid at `ctx.t_end`, written *in place*
   /// through the storage registered in `register_fields()`; and no registered
   /// pointer has moved. Writing to a `Requires` field is undefined from FUSE's
-  /// point of view — FUSE may overwrite it at any later exchange.
+  /// point of view -- FUSE may overwrite it at any later exchange.
   ///
   /// `ctx` is borrowed for the duration of the call; copy it if you need it
   /// afterwards.
@@ -335,7 +335,7 @@ class Component {
   /// Inside an iteration region `advance()` is called repeatedly with the same
   /// `t_begin`/`t_end` and increasing `ctx.iteration`, each call preceded by a
   /// `restore_state()`. It must therefore be a pure function of (restored
-  /// state, inputs) — accumulating a side effect per call, such as appending
+  /// state, inputs) -- accumulating a side effect per call, such as appending
   /// to an output file or incrementing an internal step counter, produces
   /// results that depend on the iteration count.
   ///
@@ -343,11 +343,11 @@ class Component {
   virtual Result<void> advance(const StepContext& ctx) = 0;
 
   /// Checkpoint the state `advance()` mutates, so the same interval can be
-  /// re-advanced (spec §5.3).
+  /// re-advanced (spec Section 5.3).
   ///
-  /// Spec §5.3: FUSE derives the checkpoint set from dataflow over the SSA
+  /// Spec Section 5.3: FUSE derives the checkpoint set from dataflow over the SSA
   /// form, tells the component which of its state crosses the region
-  /// boundary, and *verifies at runtime that it was saved* — unlike preCICE,
+  /// boundary, and *verifies at runtime that it was saved* -- unlike preCICE,
   /// which pushes `requiresWritingCheckpoint()` onto the user. Phase 7
   /// Task 7.2 raises an error for a component that appears in an iteration
   /// region with `supports_rollback() == false`; the hooks are declared now so
@@ -359,7 +359,7 @@ class Component {
   /// `Runner::Impl::run_region`, src/runtime/iteration.cpp), one per
   /// component the derived checkpoint set names. It cannot see, and
   /// therefore cannot verify, any state private to the component that was
-  /// never registered — the paragraph below asks the implementer to save
+  /// never registered -- the paragraph below asks the implementer to save
   /// that too, but nothing in FUSE checks that they did. "FUSE verifies the
   /// rollback" means "FUSE verifies the registered part of the rollback."
   ///
@@ -657,7 +657,7 @@ class ComponentIterator {
 ///
 /// Owns its components: they are destroyed with the set, through
 /// `Component`'s virtual destructor. Move-only, and moving the set moves only
-/// the owning pointers — the components themselves never move, which is what
+/// the owning pointers -- the components themselves never move, which is what
 /// keeps every `FieldRef` bound during `register_fields()` valid.
 ///
 /// Insertion order is the iteration order and is the order `at()` indexes.
@@ -741,7 +741,7 @@ class ComponentSet {
  private:
   // Node-based ownership on purpose: push_back reallocates this vector, but
   // it moves unique_ptrs, never the Components, so a Component* handed out by
-  // find() or at() — and every FieldRef bound into it — survives a later
+  // find() or at() -- and every FieldRef bound into it -- survives a later
   // add(). Never hold the *iterators* across an add().
   std::vector<std::unique_ptr<Component>> components_;
 };

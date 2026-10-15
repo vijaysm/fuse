@@ -98,7 +98,7 @@ using detail::Int128;
 }
 
 /// Test seam (declared in slab.hpp): counts calls to decompose() so that the
-/// lockstep fast path of spec §8.2 can be *proved* not to touch the slab
+/// lockstep fast path of spec Section 8.2 can be *proved* not to touch the slab
 /// machinery rather than assumed not to. Atomic because two threads may build
 /// two plans concurrently; relaxed ordering, since the counter is only ever
 /// read after the build it measures has finished.
@@ -168,7 +168,7 @@ Result<SlabDecomposition> decompose(Rational src_interval,
   }
   // The partitions coincide exactly when the intervals are equal; both are
   // anchored at 0, so equal intervals means every slab is a whole step of
-  // both sides (spec §8.2's lockstep fast path).
+  // both sides (spec Section 8.2's lockstep fast path).
   out.degenerate = (src_interval == dst_interval);
   return out;
 }

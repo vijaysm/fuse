@@ -11,7 +11,7 @@
 #include "fuse/model/coupling_graph.hpp"
 #include "fuse/model/iteration.hpp"
 
-/// Time windows track (spec-in-progress §5.4): an OPT-IN alternative to
+/// Time windows track (spec-in-progress Section 5.4): an OPT-IN alternative to
 /// today's single-clock iteration region, for a region whose channels span
 /// two (or more) clocks that do not coincide for a long time -- the 7:13
 /// case the multirate probe (`test/schedule/multirate_region_test.cpp`)

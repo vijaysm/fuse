@@ -65,7 +65,7 @@ inline std::string pad(std::string s, std::size_t width) {
 
 }  // namespace detail
 
-/// Spec §10 level 2: this text is checked into test/golden/ and compared
+/// Spec Section 10 level 2: this text is checked into test/golden/ and compared
 /// byte-for-byte, so a lowering change cannot silently alter the numerics.
 [[nodiscard]] inline std::string dump_text(const OperatorDAG& d) {
   std::ostringstream os;

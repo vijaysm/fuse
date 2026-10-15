@@ -1,4 +1,4 @@
-// Task 5.4: n->m redistribution between two disjoint rank sets (spec §4.1).
+// Task 5.4: n->m redistribution between two disjoint rank sets (spec Section 4.1).
 //
 // THE SHAPE OF THIS FILE IS DICTATED BY TWO CONSTRAINTS THAT PULL APART.
 //
@@ -418,7 +418,7 @@ Result<void> MpiTransport::build_plan(const TransportSpec& spec) {
                  "one global_ids list per rank, so a rank in both sets has no "
                  "way to state a source distribution and a different "
                  "destination distribution; use disjoint rank sets (spec "
-                 "§4.1) and CopyTransport for the purely local part");
+                 "Section 4.1) and CopyTransport for the purely local part");
       }
     }
 

@@ -13,7 +13,7 @@ struct MeshDecl {
   std::string source;  // file path, or "generated:<spec>"
 };
 
-/// Spec §4.1: the connectable unit. Coupling happens on interfaces, not whole
+/// Spec Section 4.1: the connectable unit. Coupling happens on interfaces, not whole
 /// meshes, so channels connect Regions.
 struct Region {
   std::string name;

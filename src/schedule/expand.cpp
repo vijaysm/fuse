@@ -36,7 +36,7 @@ bool runs_on_source_clock(OpKind k) { return k == OpKind::Sample; }
 /// rather than lying on the slab decomposition?
 ///
 /// Two constructions do. Accumulation is the original one. A SPACE-TIME
-/// channel (spec §7.3) is the second and was added by Task 6.3: the temporal
+/// channel (spec Section 7.3) is the second and was added by Task 6.3: the temporal
 /// operator `T` of `M = T (x) W` has one coefficient per (target step, source
 /// step) pair over the whole window, and its column index runs over EVERY
 /// source step -- including, for any reconstruction degree above zero, source
@@ -316,7 +316,7 @@ bool has_sample(const Channel& ch) {
   return a.node < b.node;
 }
 
-/// Spec §8.2's lockstep shortcut: expand a whole period without decomposing.
+/// Spec Section 8.2's lockstep shortcut: expand a whole period without decomposing.
 ///
 /// Precondition (the caller's `out.lockstep`): every component shares one
 /// interval and no channel is space-time. The common period is then that one
@@ -462,7 +462,7 @@ Result<TimedDag> expand(const CouplingGraph& g, const OperatorDAG& dag,
     return true;
   };
 
-  // Spec §8.2: lockstep is the degenerate case and must not pay for the slab
+  // Spec Section 8.2: lockstep is the degenerate case and must not pay for the slab
   // machinery. One instance per node, `decompose()` never called. The result
   // is sorted by the same comparator as the general path, below, and is
   // required to be identical to it -- see emit_lockstep().

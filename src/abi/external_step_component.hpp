@@ -77,7 +77,7 @@ class ExternalStepComponent final : public fuse::Component {
   /// found, element by element through `FieldRef::at()` so an arbitrary
   /// (non-contiguous) layout is handled the same way the rest of the
   /// runtime handles one. At most one snapshot is ever live -- spec
-  /// §5.3's own rule, mirrored in component.hpp's doc comment on this
+  /// Section 5.3's own rule, mirrored in component.hpp's doc comment on this
   /// override -- so `saved_` is simply overwritten, never appended to.
   fuse::Result<void> save_state() override {
     saved_.resize(provides_.size());

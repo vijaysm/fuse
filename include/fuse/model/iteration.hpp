@@ -151,7 +151,7 @@ struct ConvergenceMeasure {
   }
 };
 
-/// Conjunction of measures: `Relative(...) & Absolute(...)` from spec §5.3.
+/// Conjunction of measures: `Relative(...) & Absolute(...)` from spec Section 5.3.
 ///
 /// Measure i is tested against `residual_norms[i]` and `reference_norms[i]`,
 /// so the caller's ordering is load-bearing; both vectors must have exactly
@@ -595,7 +595,7 @@ struct WindowMemberPolicy {
   DtPolicy    policy = DtPolicy::Adjustable;
 };
 
-/// Time windows track (spec-in-progress §5.4): the opt-in payload that turns
+/// Time windows track (spec-in-progress Section 5.4): the opt-in payload that turns
 /// a multi-clock `IterationRegionDecl` into a coupling window instead of the
 /// contiguous single-clock loop `schedule()` otherwise requires
 /// (`E-SCHED-REGION`; see `fuse::validate_coupling_window`,
@@ -747,7 +747,7 @@ struct AccelConfig {
   bool scale_fields = true;
 };
 
-/// Spec §5.3. Stateful across the iterations of a window; `reset()` marks a
+/// Spec Section 5.3. Stateful across the iterations of a window; `reset()` marks a
 /// window boundary.
 
 namespace Converged {

@@ -15,11 +15,11 @@
 
 namespace fuse {
 
-/// Spec §4.4: a field sampled at several points across a time window of a waveform iteration plus
+/// Spec Section 4.4: a field sampled at several points across a time window of a waveform iteration plus
 /// an interpolation policy. It is the base abstraction for coupled data in
 /// time -- **explicit coupling is the degenerate case** (one sample, `Constant`
 /// basis; see `is_degenerate()`), not a separate code path -- and it is the
-/// carrier the space-time projection of §7.3 reads from.
+/// carrier the space-time projection of Section 7.3 reads from.
 ///
 /// The point of the class is that one component samples the waveform on *its*
 /// interval and the other evaluates or integrates it at times *it* chooses.
@@ -28,7 +28,7 @@ namespace fuse {
 /// ---------------------------------------------------------------------------
 /// TIME IS EXACT
 /// ---------------------------------------------------------------------------
-/// Sample times and window bounds are `Rational` (spec §4.3). Nothing here
+/// Sample times and window bounds are `Rational` (spec Section 4.3). Nothing here
 /// accumulates time in floating point. Conversions to `double` happen only
 /// after an exact difference has been formed -- `(t - window_begin)` -- so the
 /// basis kernels see *window-local* times and never lose significant digits to
@@ -49,7 +49,7 @@ namespace fuse {
 ///                                      THE WINDOW. That hold *is* the
 ///                                      `Constant` basis (it is what makes
 ///                                      `Accumulate`+`Remap` == `temporal =
-///                                      Constant`, spec §7.3), and it is what
+///                                      Constant`, spec Section 7.3), and it is what
 ///                                      makes the one-sample explicit case
 ///                                      have a well-defined window mean.
 ///   Linear     [t_first, t_last]
@@ -61,7 +61,7 @@ namespace fuse {
 /// ever extrapolates past `t_last` for `Linear`/`DG`/`Spline`, and nothing ever
 /// extrapolates *backwards* before `t_first` for any basis. Silent
 /// extrapolation is how a coupled scheme loses its order of accuracy with no
-/// error message; per spec §5.1 prediction beyond known data is `Extrapolate`,
+/// error message; per spec Section 5.1 prediction beyond known data is `Extrapolate`,
 /// a different operator with different legality.
 ///
 /// A consequence worth stating: `mean()` integrates over the whole window, so
@@ -146,7 +146,7 @@ class Waveform {
   /// 0..kMaxDgDegree for `DG`, and exactly 3 for `Spline` (only the natural
   /// cubic is implemented -- accepting `Spline(5)` and quietly building a
   /// cubic would be a silent order loss). `TemporalBasis::None` means "no
-  /// temporal representation" (spec §7.3) and is not a waveform.
+  /// temporal representation" (spec Section 7.3) and is not a waveform.
   ///
   /// The window starts empty at `[0, 0]`; call `reset()` before `push()`.
   Waveform(std::size_t elements, std::size_t capacity, TemporalBasis basis,
@@ -246,7 +246,7 @@ class Waveform {
 
   /// Interpolate INSIDE the support (see the class comment). `out` must point
   /// at `elements()` doubles. Beyond the support this returns `E-WF-OUTSIDE`;
-  /// prediction past known data is `Extrapolate`'s job (spec §5.1).
+  /// prediction past known data is `Extrapolate`'s job (spec Section 5.1).
   [[nodiscard]] Result<void> evaluate(Rational t, double* out) const {
     if (times_.empty()) {
       return Failure{"E-WF-EMPTY", "Waveform::evaluate: no samples"};
@@ -283,7 +283,7 @@ class Waveform {
   }
 
   /// int_a^b f dt, per element -- the primitive the space-time conservation
-  /// check of spec §7.4 needs. `[a, b]` must lie inside the support; anything
+  /// check of spec Section 7.4 needs. `[a, b]` must lie inside the support; anything
   /// else is `E-WF-RANGE`, for the same reason `evaluate` rejects an attempt
   /// to extrapolate. Exact for `Constant`, `Linear` (piecewise-linear
   /// representation) and `DG` (analytic integral of the fitted polynomial),
@@ -394,7 +394,7 @@ class Waveform {
     return basis_ == TemporalBasis::Constant ? end_ : times_.back();
   }
 
-  /// Spec §4.4's explicit-coupling case: one sample, constant interpolation.
+  /// Spec Section 4.4's explicit-coupling case: one sample, constant interpolation.
   [[nodiscard]] bool is_degenerate() const noexcept {
     return times_.size() == 1 && basis_ == TemporalBasis::Constant;
   }

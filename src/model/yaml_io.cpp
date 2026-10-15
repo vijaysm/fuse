@@ -162,7 +162,7 @@ const char* const kAccumNames[]   = {"Instant", "Sum", "Mean", "Min", "Max",
                                      "Integral"};
 const char* const kBasisNames[]   = {"None", "Constant", "Linear", "DG",
                                      "Spline"};
-// Spec §5.3. These three must stay in the declaration order of MeasureKind
+// Spec Section 5.3. These three must stay in the declaration order of MeasureKind
 // (num/convergence.hpp), AccelKind and FilterKind (num/accelerator.hpp):
 // lookup_enum() maps a name to its index and casts. A reordered enum with an
 // unreordered table here reads "Relative" back as "Absolute", which is a
@@ -250,8 +250,8 @@ using ComponentByName = std::unordered_map<std::string, ComponentId>;
 // Windows reference components by name, matching the convention fields and
 // channels already use ("fluid.heat_flux"), not by index.
 //
-// `coupling_period` — the default, and the only kind Brief 1.7's schema
-// example shows — is emitted as the bare scalar "coupling_period" so the
+// `coupling_period` -- the default, and the only kind Brief 1.7's schema
+// example shows -- is emitted as the bare scalar "coupling_period" so the
 // checked-in fixture and the brief's exact schema text keep working
 // unchanged. `from_component` and `explicit` carry a payload (a component
 // name, or a rational length) that a bare scalar cannot hold, so those two

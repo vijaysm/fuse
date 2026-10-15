@@ -12,7 +12,7 @@
 
 namespace fuse {
 
-/// Spec §5.1's twelve primitives, plus Source/Sink boundary nodes so that
+/// Spec Section 5.1's twelve primitives, plus Source/Sink boundary nodes so that
 /// every arc has a producer and every value a consumer.
 enum class OpKind {
   Sample, Accumulate, Interpolate, Extrapolate, Remap, Merge, Relax,
@@ -196,7 +196,7 @@ enum class ValueKind { Instant, Waveform };
   return k == ValueKind::Waveform ? "Waveform" : "Instant";
 }
 
-/// The type of an SSA value. Spec §2: every arc carries its time level, so a
+/// The type of an SSA value. Spec Section 2: every arc carries its time level, so a
 /// staggering error is a type error found at lowering.
 struct ValueType {
   ValueKind    kind = ValueKind::Instant;
@@ -236,7 +236,7 @@ struct ValueType {
 
 /// Can `consumer` accept a value of type `producer`?
 /// allow_time_mismatch comes from Channel::time_level_mismatch_reason and
-/// relaxes ONLY the time check (spec §4.3).
+/// relaxes ONLY the time check (spec Section 4.3).
 [[nodiscard]] inline bool assignable_from(const ValueType& producer,
                                           const ValueType& consumer,
                                           bool allow_time_mismatch) noexcept {

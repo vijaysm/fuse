@@ -186,7 +186,7 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
     type = acc;
   }
 
-  // 2b. Space-time projection (spec §7.3): the `T` of `M = T (x) W`.
+  // 2b. Space-time projection (spec Section 7.3): the `T` of `M = T (x) W`.
   //
   // Two nodes, not one. `Sample` runs on the SOURCE clock and is what makes
   // the whole window of source step values visible at once -- `T`'s column
@@ -222,7 +222,7 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
                base + "/extrapolate");
   }
 
-  // 4. Lag: a TimeLevel shift, not a node (spec §4.3).
+  // 4. Lag: a TimeLevel shift, not a node (spec Section 4.3).
   //
   // `effective_channel_lag()` (fuse/model/coupling_graph.hpp), not `ch.lag`
   // directly: inside a `WaveformIteration::Jacobi` window this channel's
@@ -415,7 +415,7 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
   // ctx.field_arc[target], so bind the post-Remap arc there before calling
   // it, then re-read the result. This must run before Relax: Relax is
   // user-authored and belongs after the derived verification chain
-  // (spec §5.2's Remap -> Constrain -> Diagnose -> Relax), and the DAG is
+  // (spec Section 5.2's Remap -> Constrain -> Diagnose -> Relax), and the DAG is
   // append-only so there is no way to splice Constrain/Diagnose in front of
   // an already-emitted Relax node.
   ctx.field_arc[ch.target.value()] = cur;

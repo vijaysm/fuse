@@ -107,7 +107,7 @@ inline constexpr std::int64_t kMaxTimedNodes = 1'000'000;
 ///
 /// Test seam. `Auto` is the production setting and the only one any caller
 /// outside the test suite should pass. `ForceGeneral` exists because the
-/// lockstep fast path (spec §8.2) is an *optimisation*, not a second set of
+/// lockstep fast path (spec Section 8.2) is an *optimisation*, not a second set of
 /// semantics: the only way to hold it to that is to run the same graph through
 /// both algorithms and compare the results, which needs a way to suppress the
 /// shortcut from outside. `TimedDag::lockstep` describes the *graph*, not the
@@ -119,13 +119,13 @@ enum class ExpandMode : std::uint8_t {
 };
 
 /// Unroll the lowered DAG over one common period of the clock set
-/// (spec §8, §8.3).
+/// (spec Section 8, Section 8.3).
 ///
 /// Every node of `dag` is instantiated at least once:
 ///   - a node whose `origin` names a channel is instantiated once per slab of
 ///     that channel's (source, target) decomposition, except that when the
 ///     channel carries a `Sample` -- because it accumulates, or because it is
-///     a space-time channel (spec §7.3) -- that `Sample` runs once per source
+///     a space-time channel (spec Section 7.3) -- that `Sample` runs once per source
 ///     tick and everything downstream of it once per target tick;
 ///   - every other node (`Source`, and any `Sink` no channel wrote) is
 ///     instantiated once per tick of the component its value lives on.
@@ -146,7 +146,7 @@ enum class ExpandMode : std::uint8_t {
 ///                    the top of `expand()`
 ///
 /// When every component shares one interval and no channel is space-time
-/// (`ClockSet::is_lockstep()`, spec §8.2), the common period is that one
+/// (`ClockSet::is_lockstep()`, spec Section 8.2), the common period is that one
 /// interval, every clock ticks exactly once in it, and every slab
 /// decomposition is the single slab [0, period). `expand()` then takes a
 /// shortcut that emits one instance per node directly and never calls

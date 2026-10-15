@@ -5,7 +5,7 @@
 
 #include "fuse/base/ids.hpp"
 
-/// Spec §3.1 tier C and §5.1: the primitive numeric kernels the plan
+/// Spec Section 3.1 tier C and Section 5.1: the primitive numeric kernels the plan
 /// interpreter dispatches to.
 ///
 /// Floating-point accumulation order (standing convention for this header):
@@ -181,7 +181,7 @@ template <class T>
   return false;
 }
 
-// Spec §3.1: instantiate the common cases once, keep the templates available.
+// Spec Section 3.1: instantiate the common cases once, keep the templates available.
 extern template void   copy<double>(const double*, double*, std::size_t);
 extern template void   copy<float>(const float*, float*, std::size_t);
 extern template double norm_l2<double>(const double*, std::size_t);

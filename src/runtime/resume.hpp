@@ -21,7 +21,7 @@
 /// (test/runtime/runner_test.cpp's `Runner.AllocatesNothingWhileRunning`,
 /// test/parallel/runner_transport_test.cpp's transport allocation test,
 /// ...) intercept to pin the in-process hot loop's allocation count at
-/// zero after one uncounted warm-up period (spec §2 layer 3: "the
+/// zero after one uncounted warm-up period (spec Section 2 layer 3: "the
 /// interpreted loop allocates nothing"). advance() is called once per
 /// Tick, every period -- without reuse, converting it to a coroutine would
 /// cost one real heap allocation and one free PER TICK, PER PERIOD,
