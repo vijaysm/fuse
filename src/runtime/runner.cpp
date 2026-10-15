@@ -382,14 +382,19 @@ void Runner::Impl::place_arcs_on_device() {
   };
 
   // Instructions: only execute_on()'s Space-generic cases may see a device
-  // pointer, and only through span_c()/span_m(). Remap's distributed-nodal
-  // operator and the spacetime projections run host code on their arcs.
+  // pointer, and only through span_c()/span_m(). The spacetime projections
+  // (Sample/Interpolate's history branch) run host code on their arcs.
   // Source/ExternalDelivery (alias or mirror), Sink/Accelerate/Epoch (a
-  // space-aware copy) and Transport (docs/dev/device-resident-arcs.md
+  // space-aware copy), Transport (docs/dev/device-resident-arcs.md
   // Phase 3: a device-resident gather/scatter when the backend is
-  // GPU-aware, a host-staged pack/unpack otherwise -- either way its own
-  // code decides the space, not this function) handle either space and pin
-  // nothing.
+  // GPU-aware, a host-staged pack/unpack otherwise) and Remap's
+  // distributed-nodal operator (runtime-exchange track:
+  // apply_nodal_dist_remap() stages its own arcs explicitly, the same
+  // shape as Transport's mixed-pair fallback -- its own MPI exchange
+  // always stages through host buffers, so the space decision is entirely
+  // the deep_copy at its own entry/exit, not a staging lane here) handle
+  // either space and pin nothing. Constrain/Diagnose still pin theirs (a
+  // separate commit's scope).
   // FUSE_DEVICE_DEBUG: one line per instruction (its class) and per arc (where
   // it ended up), the same convention as FUSE_NODAL_DEBUG above.
   const bool trace = std::getenv("FUSE_DEVICE_DEBUG") != nullptr;
@@ -403,7 +408,16 @@ void Runner::Impl::place_arcs_on_device() {
       case OpKind::Scale: case OpKind::Relax: case OpKind::Residual:
         generic = true;
         break;
-      case OpKind::Remap:       generic = r.nodal_dist < 0; break;
+      case OpKind::Remap:
+        // An ordinary weighted Remap is still Space-generic
+        // (num::remap_apply<Space>, read_by_kernel marking included).
+        // runtime-exchange track: the distributed-nodal operator
+        // (r.nodal_dist >= 0) no longer pins its arcs either --
+        // apply_nodal_dist_remap() stages them explicitly (deep_copy at
+        // entry/exit), the same space-AWARE shape Transport already uses,
+        // rather than this function forcing them to host.
+        if (r.nodal_dist >= 0) { space_aware = true; } else { generic = true; }
+        break;
       case OpKind::Sample:      generic = r.spacetime < 0; break;   // history branch is host
       case OpKind::Interpolate: generic = r.spacetime < 0; break;   // apply_spacetime is host
       case OpKind::Source: case OpKind::ExternalDelivery: case OpKind::Sink:
@@ -1344,17 +1358,43 @@ Result<void> Runner::Impl::apply_nodal_dist_remap(const Instruction& ins, const 
   const detail::Slot& out_slot = slots[ins.out.value()];
   const std::size_t components = plan.components;
 
+  // runtime-exchange track: place_arcs_on_device() no longer pins a
+  // distributed-nodal Remap's arcs to host, so either may now be
+  // device-resident; this function is the one that stages them, exactly
+  // as its case's own comment in place_arcs_on_device() says. The MPI
+  // exchange itself (apply_distributed_H/HT, below) stays entirely on
+  // host buffers regardless of GPU-aware MPI: unlike Transport's
+  // CommGraph, whose per-step payload is a plain value array against an
+  // index map resolved once at setup, this operator's own wire format
+  // (allgatherv_records) interleaves a global id with every value and is
+  // rebuilt from an unordered_map lookup every period -- there is no
+  // contiguous device buffer to hand MPI a pointer to without first
+  // splitting that index resolution out into its own one-time setup step,
+  // which is a larger rework than this track's own budget covers (stated
+  // as a deviation in report-runtime-exchange.md). `slot_to_vector`/
+  // `host_to_slot` (both already used by iteration.cpp's own sweep-loop
+  // bookkeeping) are the exact deep_copy-or-plain-copy branch this needs,
+  // reused rather than re-derived; for a host slot they are the IDENTICAL
+  // operations this function always performed, so the Host leg is
+  // byte-for-byte unchanged.
+  std::vector<double> local_src;
+  if (!plan.transpose) slot_to_vector(in_slot, local_src, in_slot.elements * components);
+
   // Opt-in trace (FUSE_NODAL_DEBUG). Host run 2026-09-25: on a disjoint
   // two-component placement the H direction delivered exact values while
   // H^T D delivered zero to every target vertex, and the two paths read as
   // symmetric. What decides it is what each rank actually holds here: how
   // many rows it built, how many values its input slot has and whether they
   // are zero, and how many entities its two views hold. Printed per rank so
-  // the next run answers that instead of another reading.
+  // the next run answers that instead of another reading. Reads
+  // `local_src` (host, built above) rather than `in_slot.data` directly
+  // when the H branch already needed it, rather than a second copy;
+  // the H^T branch below still has its own host copy to read because it is
+  // gathered-and-scaled, not a plain copy.
   const bool trace = std::getenv("FUSE_NODAL_DEBUG") != nullptr;
-  if (trace) {
+  if (trace && !plan.transpose) {
     double in_abs = 0.0;
-    for (std::size_t k = 0; k < in_slot.elements * components; ++k) in_abs += std::abs(in_slot.data[k]);
+    for (std::size_t k = 0; k < local_src.size(); ++k) in_abs += std::abs(local_src[k]);
     int me = -1;
 #if FUSE_HAVE_MPI
     if (config.base_communicator.has_value()) {
@@ -1371,25 +1411,40 @@ Result<void> Runner::Impl::apply_nodal_dist_remap(const Instruction& ins, const 
   }
 
   if (!plan.transpose) {
-    // "consistent": H. in_slot is the nodal side's own LOCAL buffer
+    // "consistent": H. local_src is the nodal side's own LOCAL buffer
     // (entity-major, owned + ghost) -- exactly apply_distributed_H's
     // `local_src_values` contract.
-    const std::vector<double> local_src(in_slot.data, in_slot.data + in_slot.elements * components);
     std::vector<double> owned_out;
     const auto ah = apply_distributed_H(plan.rows, *plan.nodal_view, local_src, components,
                                         owned_out, plan.comm_handle);
     if (!ah.ok()) return ah.error();
-    std::fill(out_slot.data, out_slot.data + out_slot.elements * components, 0.0);
-    for (std::size_t k = 0; k < plan.rows.rows.size(); ++k) {
-      const std::size_t li = plan.rows.rows[k].local_index;
-      for (std::size_t c = 0; c < components; ++c) {
-        out_slot.data[li * components + c] = owned_out[k * components + c];
+    if (!out_slot.device) {
+      std::fill(out_slot.data, out_slot.data + out_slot.elements * components, 0.0);
+      for (std::size_t k = 0; k < plan.rows.rows.size(); ++k) {
+        const std::size_t li = plan.rows.rows[k].local_index;
+        for (std::size_t c = 0; c < components; ++c) {
+          out_slot.data[li * components + c] = owned_out[k * components + c];
+        }
       }
-    }
-    if (trace) {
-      double s = 0.0;
-      for (std::size_t k = 0; k < out_slot.elements * components; ++k) s += std::abs(out_slot.data[k]);
-      fmt::print(stderr, "[nodal-dist] arc %{} H sum|out|={:.6g}\n", ins.out.value(), s);
+      if (trace) {
+        double s = 0.0;
+        for (std::size_t k = 0; k < out_slot.elements * components; ++k) s += std::abs(out_slot.data[k]);
+        fmt::print(stderr, "[nodal-dist] arc %{} H sum|out|={:.6g}\n", ins.out.value(), s);
+      }
+    } else {
+      std::vector<double> out_host(out_slot.elements * components, 0.0);
+      for (std::size_t k = 0; k < plan.rows.rows.size(); ++k) {
+        const std::size_t li = plan.rows.rows[k].local_index;
+        for (std::size_t c = 0; c < components; ++c) {
+          out_host[li * components + c] = owned_out[k * components + c];
+        }
+      }
+      host_to_slot(out_host.data(), out_slot, out_host.size());
+      if (trace) {
+        double s = 0.0;
+        for (const double v : out_host) s += std::abs(v);
+        fmt::print(stderr, "[nodal-dist] arc %{} H sum|out|={:.6g}\n", ins.out.value(), s);
+      }
     }
     return Result<void>::success();
   }
@@ -1400,13 +1455,43 @@ Result<void> Runner::Impl::apply_nodal_dist_remap(const Instruction& ins, const 
   // entity's own measure UNLESS the eval side is itself already a load
   // (plan.src_is_load) -- the same density-to-load rule
   // build_consistent_weights_for_plan's transpose branch bakes into its
-  // weights at build time, applied here to the VALUES at apply time instead.
+  // weights at build time, applied here to the VALUES at apply time
+  // instead. The gather itself still runs as a plain host loop (it is a
+  // handful of owned rows, not a field-sized buffer, and it feeds straight
+  // into apply_distributed_HT's own host-side gid bookkeeping below) --
+  // only the SOURCE it reads from changes: `in_slot`'s own pointer when it
+  // is host-resident, or a one-shot deep_copy into `in_host` when it is
+  // device-resident, via the same slot_to_vector() used above for the H
+  // branch.
+  std::vector<double> in_host;
+  const double* in_read = in_slot.data;
+  if (in_slot.device) {
+    slot_to_vector(in_slot, in_host, in_slot.elements * components);
+    in_read = in_host.data();
+  }
+  if (trace) {
+    double in_abs = 0.0;
+    for (std::size_t k = 0; k < in_slot.elements * components; ++k) in_abs += std::abs(in_read[k]);
+    int me = -1;
+#if FUSE_HAVE_MPI
+    if (config.base_communicator.has_value()) {
+      MPI_Comm_rank(MPI_Comm_f2c(static_cast<MPI_Fint>(*config.base_communicator)), &me);
+    }
+#endif
+    fmt::print(stderr,
+               "[nodal-dist rank {}] arc %{} {} rows={} in.elements={} sum|in|={:.6g} "
+               "nodal.nv={} eval.n={} out.elements={} src_is_load={}\n",
+               me, ins.out.value(), plan.transpose ? "H^T" : "H", plan.rows.rows.size(),
+               in_slot.elements, in_abs, plan.nodal_view->entity_count(0),
+               plan.eval_view->entity_count(plan.eval_dim), out_slot.elements,
+               plan.src_is_load);
+  }
   std::vector<double> owned_loads(plan.rows.rows.size() * components, 0.0);
   for (std::size_t k = 0; k < plan.rows.rows.size(); ++k) {
     const std::size_t li = plan.rows.rows[k].local_index;
     const double scale = plan.src_is_load ? 1.0 : plan.eval_view->measure(plan.eval_dim, li);
     for (std::size_t c = 0; c < components; ++c) {
-      owned_loads[k * components + c] = in_slot.data[li * components + c] * scale;
+      owned_loads[k * components + c] = in_read[li * components + c] * scale;
     }
   }
   std::vector<double> out_local;
@@ -1419,7 +1504,12 @@ Result<void> Runner::Impl::apply_nodal_dist_remap(const Instruction& ins, const 
                        std::to_string(out_local.size()) + " values, expected " +
                        std::to_string(out_slot.elements * components)};
   }
-  std::copy(out_local.begin(), out_local.end(), out_slot.data);
+  // host_to_slot's host branch is num::copy(src, s.data, n) -- the same
+  // bytes std::copy(out_local.begin(), out_local.end(), out_slot.data)
+  // always wrote -- so the Host leg is unchanged; a device out_slot gets
+  // the deep_copy this operator's own case comment in
+  // place_arcs_on_device() promises.
+  host_to_slot(out_local.data(), out_slot, out_local.size());
   if (trace) {
     double s_in = 0.0, s_out = 0.0;
     for (const double v : owned_loads) s_in += std::abs(v);
