@@ -25,6 +25,21 @@
 
 namespace fuse::linalg {
 
+/// True if MPI calls in THIS process may be handed CUDA/HIP device
+/// pointers directly (a run-time probe, `MPIX_Query_cuda_support()` where
+/// this MPI's own extension declares it, falling back to
+/// `cmake/FuseMpiGpuAware.cmake`'s configure-time constant where it does
+/// not; always false in a build with no MPI, and forced false by
+/// `FUSE_TRANSPORT_HOST_STAGING=1` regardless of what either reports).
+/// THE one probe `fuse::native::mpi_is_gpu_aware()`
+/// (src/backend/native_migration.cpp) and `fuse::transport::
+/// MpiTransport::is_gpu_aware()` (src/transport/mpi_transport.cpp) both
+/// call now, in `fuse::linalg` because that layer sits below both
+/// (tools/check-layering.py) and both already may depend on it --
+/// Migration track, 2026-10-15; src/linalg/mpi_gpu_aware.cpp's own header
+/// comment has the full history of why this used to be two copies.
+[[nodiscard]] bool mpi_is_gpu_aware();
+
 /// A global reduction over whatever communicator this instance was built
 /// for. One rank in a build with no MPI, `comm size()` ranks under MPI --
 /// the same "kNullComm needs no MPI symbol at all" convention

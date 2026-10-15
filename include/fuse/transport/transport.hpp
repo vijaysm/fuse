@@ -64,11 +64,11 @@ class Transport {
   /// Runner's own `OpKind::Transport` case does a `Kokkos::deep_copy`
   /// there directly and never asks) or that always stages through host
   /// buffers today (`LowFiveTransport`). `MpiTransport` is the one
-  /// override that can answer true, and does so at run time (a
-  /// `MPIX_Query_cuda_support()` probe, not a configure-time constant),
-  /// not by calling `fuse::native::mpi_is_gpu_aware()` -- the identical
-  /// probe, duplicated rather than shared: `transport`'s library does not
-  /// link `backend`'s.
+  /// override that can answer true, and does so at run time via
+  /// `fuse::linalg::mpi_is_gpu_aware()` (comm.hpp) -- the SAME probe
+  /// `fuse::native::mpi_is_gpu_aware()` calls, no longer duplicated
+  /// between the two libraries (Migration track, 2026-10-15:
+  /// src/linalg/mpi_gpu_aware.cpp's own header comment has the history).
   [[nodiscard]] virtual bool is_gpu_aware() const noexcept { return false; }
 };
 
@@ -205,7 +205,7 @@ class MpiTransport final : public Transport {
   [[nodiscard]] std::string name() const override { return "mpi"; }
   [[nodiscard]] bool is_local() const override { return false; }
 
-  /// `fuse::native::mpi_is_gpu_aware()`, cached once (the probe is a
+  /// `fuse::linalg::mpi_is_gpu_aware()`, cached once (the probe is a
   /// syscall-free library query, but `prepare()`'s hot-loop contract bars
   /// even that from `move()`, so this reads the cached value, never the
   /// probe itself).

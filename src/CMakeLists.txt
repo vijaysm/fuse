@@ -168,6 +168,11 @@ set_target_properties(fuse-coupler-schedule PROPERTIES
 add_library(fuse-coupler-linalg
   linalg/least_squares.cpp
   linalg/comm_serial.cpp
+  # Migration track, 2026-10-15: the shared GPU-aware MPI probe
+  # (fuse::linalg::mpi_is_gpu_aware(), comm.hpp) -- always built, like
+  # comm_serial.cpp above, not only under FUSE_ENABLE_MPI, since a
+  # no-MPI build still needs a definition that returns false.
+  linalg/mpi_gpu_aware.cpp
   linalg/dist_vector.cpp
   linalg/dist_sparse_matrix.cpp
 )
