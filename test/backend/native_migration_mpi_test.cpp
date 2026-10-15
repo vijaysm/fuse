@@ -406,3 +406,45 @@ TEST(NativeMigrationMpi, GpuAwareExchangeOverloadMatchesHostVectorOverloadByteFo
   }
   unsetenv("FUSE_TRANSPORT_HOST_STAGING");
 }
+
+// Migration track, 2026-10-15 (KNOWN_ISSUES D51, device-resident merge):
+// a REAL multi-rank `migrate` must leave BOTH the source view's and the
+// rebuilt result view's lazy host mirror unmaterialized, under EITHER
+// `FUSE_TRANSPORT_HOST_STAGING` setting (comm.hpp's own GPU-aware-vs-
+// host-staged branch inside `exchange_migration_buffers<Space>`) --
+// checked with EAGER accessors only (global_id/is_owned/entity_count/
+// host_mirrors_materialized never call ensure_host_mirror()).
+TEST(NativeMigrationMpi, MigrateMaterializesNoHostMirrorOnEitherViewUnderEitherStagingSetting) {
+  int rank = 0, size = 1;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
+
+  for (const char* staging : {"0", "1"}) {
+    setenv("FUSE_TRANSPORT_HOST_STAGING", staging, /*overwrite=*/1);
+
+    auto arrays = generate_native_mesh("hexbox:4x3x2", rank, size);
+    ASSERT_TRUE(arrays.ok()) << arrays.error().message;
+    auto view = NativeMeshView::create_from_host(arrays.value(), rank);
+    ASSERT_TRUE(view.ok()) << view.error().message;
+    ASSERT_EQ(view.value()->host_mirrors_materialized(), 0);
+
+    // Every owned cell stays on its own rank: a real migration round trip
+    // (real `MPI_Alltoallv` + `MPI_Allgatherv`) with a trivial assignment,
+    // so this test's own setup never has to compute a non-trivial
+    // destination list.
+    std::vector<int> dest(view.value()->owned_count(3), rank);
+    auto migrated = migrate(*view.value(), dest, world_handle());
+    ASSERT_TRUE(migrated.ok()) << "rank " << rank << " staging=" << staging << ": "
+                              << migrated.error().message;
+
+    EXPECT_EQ(view.value()->host_mirrors_materialized(), 0)
+        << "rank " << rank << " staging=" << staging
+        << ": migrate touched the SOURCE view's lazy host mirror";
+    EXPECT_EQ(migrated.value()->host_mirrors_materialized(), 0)
+        << "rank " << rank << " staging=" << staging
+        << ": migrate's device-resident unpack/merge touched the RESULT view's lazy host "
+          "mirror before any caller asked it to";
+  }
+  unsetenv("FUSE_TRANSPORT_HOST_STAGING");
+}

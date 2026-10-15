@@ -226,6 +226,39 @@ TEST(NativeMigration, MigrateAtKNullCommIsTheIdentityUpToLocalOrdering) {
   }
 }
 
+// Migration track, 2026-10-15 (KNOWN_ISSUES D51, device-resident merge):
+// `migrate` now rebuilds the RESULT view through `device::pack_to` ->
+// `exchange_migration_buffers<Space>` -> `device::unpack_migrated_mesh_
+// device<Space>` -> `resolve_vertex_ownership_device<Space>` ->
+// `NativeMeshView::create<Space>` end to end -- checked here with EAGER
+// accessors only (global_id/is_owned/entity_count/host_mirrors_
+// materialized never call ensure_host_mirror(); see NativeMeshView's own
+// header comment), so this test does not itself materialize what it is
+// trying to prove stayed unmaterialized.
+TEST(NativeMigration, FullMigrateRoundTripMaterializesNoHostMirrorOnEitherView) {
+  auto arrays = generate_native_mesh("hexbox:2x2x3", 0, 1);
+  ASSERT_TRUE(arrays.ok());
+  auto view = NativeMeshView::create_from_host(arrays.value(), 0);
+  ASSERT_TRUE(view.ok());
+  ASSERT_EQ(view.value()->host_mirrors_materialized(), 0);
+
+  std::vector<int> dest(view.value()->cell_count(), 0);  // everyone stays on rank 0
+  auto migrated = migrate(*view.value(), dest, kNullComm);
+  ASSERT_TRUE(migrated.ok()) << migrated.error().message;
+
+  EXPECT_EQ(view.value()->host_mirrors_materialized(), 0)
+      << "migrate touched the SOURCE view's lazy host mirror";
+  EXPECT_EQ(migrated.value()->host_mirrors_materialized(), 0)
+      << "migrate's device-resident unpack/merge touched the RESULT view's lazy host mirror "
+        "before any caller asked it to";
+
+  EXPECT_EQ(migrated.value()->cell_count(), view.value()->cell_count());
+  EXPECT_EQ(migrated.value()->vertex_count(), view.value()->vertex_count());
+  for (std::size_t c = 0; c < migrated.value()->cell_count(); ++c) {
+    EXPECT_TRUE(migrated.value()->is_owned(3, c));
+  }
+}
+
 TEST(NativeMigration, MigrateRefusesAnIncompleteAssignmentAtKNullComm) {
   auto arrays = generate_native_mesh("hexbox:2x2x2", 0, 1);
   ASSERT_TRUE(arrays.ok());
@@ -235,4 +268,54 @@ TEST(NativeMigration, MigrateRefusesAnIncompleteAssignmentAtKNullComm) {
   auto migrated = migrate(*view.value(), dest, kNullComm);
   ASSERT_FALSE(migrated.ok());
   EXPECT_EQ(migrated.error().code, "E-MESH-MIGRATE-INCOMPLETE");
+}
+
+// Migration track, 2026-10-15 (KNOWN_ISSUES D51, device-resident merge,
+// POLYHEDRON LIMITATION): no OTHER test in this suite's migration/halo/
+// repartition coverage exercises `CellType::Polyhedron` at all (every
+// generator here is hexbox/line/quad -- fixed-shape Hex/Segment/Quad),
+// so this is the first evidence the device-resident unpack's Polyhedron
+// path (mesh_merge_device.hpp's own doc comment) produces a geometrically
+// correct cell at all, under the declared limitation it also documents:
+// a migrated Polyhedron's faces are rebuilt as NEW, PRIVATE entries (an
+// identity `cell_face_indices`, never deduplicated against another cell's
+// face) rather than `NativeMeshBuilder::add_polyhedron_cell`'s own cross-
+// cell face-sharing dedup -- invisible here because a single migrated
+// TET has no neighbour to share a face with either way; this checks
+// conservation (cell/vertex count, measure, ownership), not face count.
+TEST(NativeMigration, PolyhedronCellSurvivesADeviceResidentMigrationRoundTrip) {
+  NativeMeshBuilder b(3);
+  const int v0 = b.add_vertex(0, 0.0, 0.0, 0.0, 0, true);
+  const int v1 = b.add_vertex(1, 1.0, 0.0, 0.0, 0, true);
+  const int v2 = b.add_vertex(2, 0.0, 1.0, 0.0, 0, true);
+  const int v3 = b.add_vertex(3, 0.0, 0.0, 1.0, 0, true);
+  // The same outward-CCW face table cell_topology.hpp's `fixed_face_
+  // corners(CellType::Tet, ...)` uses, spelled out explicitly as a
+  // Polyhedron's own face-to-vertex CSR instead of relying on Tet's
+  // fixed-shape path -- exercising the SAME wire records/device unpack a
+  // true general polyhedron (a cut cell, an agglomerated volume) would.
+  const std::vector<std::vector<int>> faces = {
+      {v1, v2, v3}, {v0, v3, v2}, {v0, v1, v3}, {v0, v2, v1}};
+  b.add_polyhedron_cell(faces, /*gid=*/100, /*owner=*/0, /*is_owned=*/true);
+  auto arrays = b.build();
+  ASSERT_TRUE(arrays.ok()) << arrays.error().message;
+  auto view = NativeMeshView::create_from_host(arrays.value(), 0);
+  ASSERT_TRUE(view.ok()) << view.error().message;
+  ASSERT_EQ(view.value()->cell_count(), 1u);
+  const double original_measure = view.value()->measure(3, 0);
+  EXPECT_NEAR(original_measure, 1.0 / 6.0, 1e-12) << "unit right tet, volume 1/6";
+
+  std::vector<int> dest(view.value()->cell_count(), 0);
+  auto migrated = migrate(*view.value(), dest, kNullComm);
+  ASSERT_TRUE(migrated.ok()) << migrated.error().message;
+
+  EXPECT_EQ(migrated.value()->cell_count(), 1u);
+  EXPECT_EQ(migrated.value()->vertex_count(), 4u);
+  ASSERT_TRUE(migrated.value()->is_owned(3, 0));
+  EXPECT_EQ(static_cast<std::int64_t>(migrated.value()->global_id(3, 0)), 100);
+  EXPECT_NEAR(migrated.value()->measure(3, 0), original_measure, 1e-12)
+      << "a device-resident Polyhedron migration must reproduce the same cell volume";
+  for (std::size_t v = 0; v < migrated.value()->vertex_count(); ++v) {
+    EXPECT_TRUE(migrated.value()->is_owned(0, v));
+  }
 }

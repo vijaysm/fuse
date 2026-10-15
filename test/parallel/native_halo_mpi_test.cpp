@@ -216,6 +216,40 @@ TEST(NativeHaloMpi, BuildRemapHaloThenBuildWeightsThenExchangeReproducesALinearF
 }
 
 // ---------------------------------------------------------------------------
+// Migration track, 2026-10-15 (KNOWN_ISSUES D51, device-resident merge):
+// `build_native_remap_halo` now rebuilds its source view through
+// `device::pack_fanout` -> `exchange_migration_buffers<Space>` ->
+// `device::merge_halo_cells_device<Space>` -> `NativeMeshView::create
+// <Space>` end to end -- no `NativeMeshView` host-serving accessor
+// (`cell_vertices`/`vertex_x`/`cell_faces`/`measure`/`centroid`/
+// `simplex_points`) is called anywhere in that path, so the REBUILT
+// source view's lazy host mirror must still read 0 immediately after,
+// checked here with EAGER accessors only (host_mirrors_materialized()
+// itself never materializes anything) before this test's OWN assertions
+// would otherwise do so.
+// ---------------------------------------------------------------------------
+TEST(NativeHaloMpi, BuildRemapHaloMaterializesNoHostMirrorOnTheRebuiltSourceView) {
+  int rank = 0, size = 1;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  Fixture f(rank, size);
+
+  const auto u_before_r = f.backend.native_view(f.u_mid, ComponentId{});
+  ASSERT_TRUE(u_before_r.ok());
+  ASSERT_EQ(u_before_r.value()->host_mirrors_materialized(), 0);
+
+  const auto adopted = fuse::build_remap_halo(f.plan, f.graph, f.backend);
+  ASSERT_TRUE(adopted.ok()) << adopted.error().code << ": " << adopted.error().message;
+
+  const auto u_after_r = f.backend.native_view(f.u_mid, ComponentId{});
+  ASSERT_TRUE(u_after_r.ok());
+  EXPECT_EQ(u_after_r.value()->host_mirrors_materialized(), 0)
+      << "rank " << rank
+      << ": build_native_remap_halo's device-resident pack/exchange/merge touched the "
+        "rebuilt source view's lazy host mirror before any caller asked it to";
+}
+
+// ---------------------------------------------------------------------------
 // Idempotence under a real communicator: a second build_remap_halo() call
 // for the SAME (source, target, dimension) must adopt nothing further.
 // ---------------------------------------------------------------------------
