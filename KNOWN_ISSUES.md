@@ -7821,3 +7821,42 @@ over a window-scoped region. Four Runner-level round-trip tests for this exact c
 (`SeparateLayoutJacobiAitken`, `GrowingLayoutJacobiAitken`, `SeparateLayoutJacobiIqnIls`,
 `GrowingLayoutJacobiIqnIls`) were written, found failing because of this gap, and removed rather
 than shipped failing or weakened.
+
+
+### D73. A cross-rank general (non-nodal) weighted Remap on NativeMeshBackend builds a silently empty conservative matrix with no remap-halo call -- OPEN, found 2026-10-15 (scaled-bench track)
+
+Found while building `test/bench/scaled_device_benchmark.cpp`'s scaled provider/consumer row: a
+conservative weighted channel (two native structured-quad meshes of different resolution, no
+`.remap_method()` override, so `Runner::Impl::resolve_remap()` takes the general weighted branch, not
+the nodal-distributed one) between two components on DISJOINT MPI rank sets builds
+`RunStats::remap_weight_builds == 1` on every rank with `RunStats::remap_weight_nonzeros == 0` at every
+rank count above 1 -- not a crash, not a wrong answer, a genuinely empty matrix. Each rank's local
+intersection search sees only its own region's local view (`regions_coincide`/`build_weights`'s own
+local, per-rank construction); a rank hosting only the provider's cells has no consumer cells to
+overlap with, and vice versa, so the conservative weight build finds nothing, on every rank, every
+time. `fuse::native::build_remap_halo()`/`build_native_remap_halo()` (`remap_plan.hpp`,
+`native_halo.hpp`) exist to exchange exactly this geometry across ranks before the weight build runs,
+and `remap_plan.hpp`'s own "ORDER MATTERS" comment says the halo must be built before `schedule()`
+sizes any buffer -- but nothing in `Runner::initialize()`'s own path calls it, and nothing in
+`resolve_remap()`'s general branch refuses or warns when no halo exists on a `NativeMeshBackend` (the
+nearby `MoabMeshBackend`-specific check a few lines above it, `E-RT-REMAP-HALO`, does refuse when a
+MOAB mesh carries an un-exchanged halo -- there is no analogous check for the native backend at all).
+
+Not reproduced for the small `example.scaled_device_benchmark`/`--verify` correctness row: that row
+runs at MPI world size 1 with provider and consumer placed on the SAME one-rank world, so the local
+search already sees both sides' full geometry and the weight build is genuinely non-trivial there
+(confirmed: `remap_weight_builds=1`, 49 real consumer cells, host and device agree to 1e-14 relative).
+The scaled, multi-rank `bench.scaled_device_benchmark.{1,2,3}[.device]` rows still measure genuine
+Sample/Remap/Transport/Diagnose/Sink instruction dispatch and MpiTransport exchange overhead at scale
+(the benchmark's own stated purpose) at ranks 2 and 3 too, but the Remap's own matvec there is over an
+empty matrix, not a real transfer -- stated plainly in that file's own header comment and in this
+entry, not asserted as a defect of the benchmark itself.
+
+Not fixed here: driving `build_remap_halo()` correctly needs the caller to build it from a `RemapPlan`
+BEFORE `schedule()` (so halo-adopted ghost cells are already counted when buffers are sized), on the
+SAME `NativeMeshBackend` mesh ids the Runner's own channel resolves against -- a restructuring of
+`build()`'s own sequence in `scaled_device_benchmark.cpp`, not a one-line call, and a check of whether
+`Runner::initialize()` should drive this automatically for every caller rather than leaving it to each
+one to remember. Left for the lead to scope; `test/parallel/remap_halo_mpi_test.cpp` and
+`runner.cpp`'s own comment at the `MoabMeshBackend` halo-refusal check (search for `E-RT-REMAP-HALO`)
+are the next place to start.
