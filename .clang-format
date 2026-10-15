@@ -1,6 +1,6 @@
-# FUSE — C++20 scientific computing library.
+# FUSE -- C++20 scientific computing library.
 # Rationale for every deviation from LLVM is in a trailing comment; do not change
-# a value without updating the comment (docs/CHARTER.md §Identity).
+# a value without updating the comment (docs/CHARTER.md Section Identity).
 ---
 Language: Cpp
 BasedOnStyle: LLVM

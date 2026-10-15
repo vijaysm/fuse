@@ -111,7 +111,7 @@ The exact pins the build fetches when a dependency is not already installed:
 ```{literalinclude} ../../cmake/FuseDependencies.cmake
 :language: cmake
 :start-after: "# ---------------------------------------------------------------- Tier 0 (always)"
-:end-before: "# fmt — the ONLY output formatter"
+:end-before: "# fmt -- the ONLY output formatter"
 ```
 
 Every configured build writes `fuse-resolved-dependencies.txt` into its binary directory recording

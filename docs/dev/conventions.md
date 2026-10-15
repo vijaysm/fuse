@@ -40,6 +40,18 @@ Several checks are disabled on purpose because they fight numerical code — mag
 content of a quadrature table, and `easily-swappable-parameters` is inherent to `remap(src, dst, tol,
 ...)`. Each exclusion states its reason in the file.
 
+## Character encoding
+
+Owner's ruling (2026-10-15): every tracked source file is pure ASCII -- code, comments, CMake, YAML, TOML, shell, and prose in files other than Markdown. `tools/check-ascii.py` enforces it: it walks `git ls-files`, skips `*.md` (Markdown prose is reviewed by eye and may carry a section sign, an em dash, or an author's own name) and skips `upstream/` (vendored parent trees staged for removal, not edited), decodes every remaining tracked file as UTF-8, and refuses with `file:line:col` and the Unicode character name for the first code point above U+007F it finds in each file. A tracked file that is not valid UTF-8 at all is refused too, unless its path matches one of the binary-fixture globs named in the script (the golden `.bin` snapshots under `test/golden/` and `python/tests/golden/`) -- an undecodable file that is not on that list is far more likely to be a newly added fixture nobody told the gate about than a deliberate binary artifact, so the default is to refuse, not to guess.
+
+Run it the same way as the other static gates:
+
+```
+python3 tools/check-ascii.py
+```
+
+`tools/ascii-fix.py` is the mechanical fix for a violation: it replaces each non-ASCII character with the meaning-preserving ASCII spelling recorded in its own docstring (a section sign becomes the word "Section ", an em dash becomes "--", and so on), except for the SI-unit separator in `include/fuse/base/units.hpp`, whose few call sites are listed there explicitly rather than matched by a general rule, because the same character (U+00B7 MIDDLE DOT) means two different things in this tree depending on where it appears. Re-run it whenever a new non-ASCII character lands in a tracked file; it is a no-op on an already-clean file.
+
 ## Errors
 
 `FUSE_ASSERT` for invariants (checked in every build), `FUSE_THROW(Type, …)` for recoverable errors,
