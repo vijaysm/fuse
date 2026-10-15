@@ -7,6 +7,7 @@
 #include <type_traits>
 #include <vector>
 
+#include <Kokkos_Core.hpp>
 #include <fmt/format.h>
 
 #include "fuse/base/result.hpp"
@@ -122,5 +123,38 @@ template <MeshLike M>
   }
   return boxes;
 }
+
+/// Device-resident counterpart of `element_boxes`, over a simplex CSR
+/// already resident in `Kokkos::DefaultExecutionSpace::memory_space` --
+/// entity `e`'s simplices are rows `simplex_offsets(e) .. simplex_offsets(e
+/// + 1)` of `simplex_corners`, corner `k` (`k < corners_per_simplex`) of row
+/// `s` at `simplex_corners(s, k, 0..2)`. NOT a template over a `MeshLike`
+/// mesh type the way `element_boxes` is: this layer cannot name
+/// `fuse::backend::NativeMeshView` (this file's own header comment), and
+/// there is no device-resident "duck typed" concept to constrain against --
+/// a caller (`fuse::backend`, which CAN name both) passes the CSR views
+/// directly (`NativeMeshView::device_simplex_offsets()`/
+/// `device_simplex_corners()`, docs/dev/native-mesh.md), so a native mesh's
+/// element boxes are built, and fed to `BoxIndex::build_device_resident`,
+/// with no host round trip at all.
+///
+/// `owned`, when its extent is nonzero, is a per-entity device flag the
+/// same length as `simplex_offsets.extent(0) - 1`; an entity with
+/// `owned(e) == false` contributes no box -- the SAME filter
+/// `element_boxes` applies via `is_owned`. An empty `owned` (the default)
+/// boxes every entity, unfiltered.
+///
+/// Errors, never throws: `E-SEARCH-NO-GEOMETRY` if some (owned) entity's
+/// simplex range is empty, the same refusal `element_boxes` makes for the
+/// host path.
+[[nodiscard]] Result<Kokkos::View<Box*, Kokkos::DefaultExecutionSpace::memory_space>>
+element_boxes_device_resident(
+    Kokkos::View<const int*, Kokkos::DefaultExecutionSpace::memory_space> simplex_offsets,
+    Kokkos::View<const double* [4][3], Kokkos::LayoutRight,
+                Kokkos::DefaultExecutionSpace::memory_space>
+        simplex_corners,
+    int corners_per_simplex,
+    Kokkos::View<const bool*, Kokkos::DefaultExecutionSpace::memory_space> owned = {},
+    const Tolerance& tol = {});
 
 }  // namespace fuse::search

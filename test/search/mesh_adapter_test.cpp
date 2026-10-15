@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <vector>
 
+#include "fuse/backend/native_mesh.hpp"
 #include "fuse/backend/serial_backend.hpp"
 #include "fuse/search/box_index.hpp"
 #include "fuse_test_main.hpp"
@@ -83,6 +84,83 @@ TEST(MeshAdapter, GeneratedBoxUsesTheVolumeDimensionNotTheBoundarySkin) {
   ASSERT_TRUE(qr.ok());
   ASSERT_EQ(qr.value().offsets.size(), 2u);
   EXPECT_GT(qr.value().offsets[1] - qr.value().offsets[0], 0u);
+}
+
+// ---------------------------------------------------------------------------
+// element_boxes_device_resident (docs/dev/native-mesh.md, "Execution
+// space"): a native mesh's device-resident simplex CSR
+// (fuse::native::NativeMeshView::device_simplex_offsets()/
+// device_simplex_corners()) builds the SAME boxes element_boxes would, with
+// no host round trip -- this file links fuse::backend (test/CMakeLists.txt),
+// so it is the one place in fuse::search's own test suite that can name a
+// concrete mesh backend to prove it.
+// ---------------------------------------------------------------------------
+
+TEST(MeshAdapter, DeviceElementBoxesMatchHostElementBoxesForANativeMesh) {
+  using fuse::native::CellType;
+  using fuse::native::NativeMeshBuilder;
+  using fuse::native::NativeMeshView;
+
+  NativeMeshBuilder b(2);
+  const int v0 = b.add_vertex(0, 0.0, 0.0, 0.0, 0, true);
+  const int v1 = b.add_vertex(1, 1.0, 0.0, 0.0, 0, true);
+  const int v2 = b.add_vertex(2, 1.0, 1.0, 0.0, 0, true);
+  const int v3 = b.add_vertex(3, 0.0, 1.0, 0.0, 0, true);
+  b.add_cell(CellType::Quad, {v0, v1, v2, v3}, 0, 0, true);
+  const int v4 = b.add_vertex(4, 2.0, 0.0, 0.0, 0, true);
+  const int v5 = b.add_vertex(5, 3.0, 0.0, 0.0, 0, true);
+  const int v6 = b.add_vertex(6, 3.0, 1.0, 0.0, 0, true);
+  const int v7 = b.add_vertex(7, 2.5, 1.0, 0.0, 0, true);
+  const int v8 = b.add_vertex(8, 2.5, 2.0, 0.0, 0, true);
+  const int v9 = b.add_vertex(9, 2.0, 2.0, 0.0, 0, true);
+  b.add_cell(CellType::Polygon, {v4, v5, v6, v7, v8, v9}, 1, 0, true);
+  auto arrays_r = b.build();
+  ASSERT_TRUE(arrays_r.ok());
+
+  // Two independently constructed views over the SAME arrays: one serves
+  // the host reference, the other is checked to never touch its own host
+  // mirror while the device path runs.
+  auto host_view_r = NativeMeshView::create_from_host(arrays_r.value(), 0);
+  ASSERT_TRUE(host_view_r.ok()) << host_view_r.error().message;
+  auto device_view_r = NativeMeshView::create_from_host(arrays_r.value(), 0);
+  ASSERT_TRUE(device_view_r.ok()) << device_view_r.error().message;
+  const auto& dv = *device_view_r.value();
+
+  std::vector<std::size_t> owned_ids;
+  const auto host_boxes_r = element_boxes(*host_view_r.value(), owned_ids);
+  ASSERT_TRUE(host_boxes_r.ok()) << host_boxes_r.error().message;
+
+  ASSERT_EQ(dv.host_mirrors_materialized(), 0)
+      << "the device view must not have been touched by the host reference computation above";
+  const auto device_boxes_r = element_boxes_device_resident(
+      dv.device_simplex_offsets(), dv.device_simplex_corners(), dv.dimension() + 1);
+  ASSERT_TRUE(device_boxes_r.ok()) << device_boxes_r.error().message;
+  EXPECT_EQ(dv.host_mirrors_materialized(), 0)
+      << "building element boxes from the device CSR must not materialize a host mirror";
+
+  auto mirror = Kokkos::create_mirror_view(device_boxes_r.value());
+  Kokkos::deep_copy(mirror, device_boxes_r.value());
+  ASSERT_EQ(mirror.extent(0), host_boxes_r.value().size());
+  for (std::size_t k = 0; k < mirror.extent(0); ++k) {
+    SCOPED_TRACE(::testing::Message() << "box " << k);
+    EXPECT_NEAR(mirror(k).lo.x, host_boxes_r.value()[k].lo.x, 1e-13);
+    EXPECT_NEAR(mirror(k).lo.y, host_boxes_r.value()[k].lo.y, 1e-13);
+    EXPECT_NEAR(mirror(k).lo.z, host_boxes_r.value()[k].lo.z, 1e-13);
+    EXPECT_NEAR(mirror(k).hi.x, host_boxes_r.value()[k].hi.x, 1e-13);
+    EXPECT_NEAR(mirror(k).hi.y, host_boxes_r.value()[k].hi.y, 1e-13);
+    EXPECT_NEAR(mirror(k).hi.z, host_boxes_r.value()[k].hi.z, 1e-13);
+  }
+
+  // Feeds BoxIndex::build_device_resident directly -- index construction
+  // for this native mesh never touches the host.
+  Kokkos::View<const Box*, Kokkos::DefaultExecutionSpace::memory_space> const_boxes =
+      device_boxes_r.value();
+  auto idx = BoxIndex::build_device_resident(const_boxes);
+  ASSERT_TRUE(idx.ok()) << idx.error().message;
+  EXPECT_EQ(idx.value().dimension(), 2);
+  EXPECT_EQ(idx.value().size(), 2u);
+  EXPECT_EQ(dv.host_mirrors_materialized(), 0)
+      << "BoxIndex::build_device_resident must not have touched the device view's host mirror";
 }
 
 }  // namespace
