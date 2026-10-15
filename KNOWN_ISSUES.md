@@ -6631,6 +6631,52 @@ accept-serial-scan compromise). A Device mode caller of `build_native_remap_halo
 needs the host round trip for the full merge; the open piece this entry named in round 1 -- no
 device-friendly hash-set equivalent existed -- does not block it anymore.
 
+**Narrowed further, 2026-10-15 (Migration track).** Both migration and
+halo wire PACK are now wired to the device-resident primitives this
+entry's own round-2 text introduced, not merely proven standalone:
+`pack_for_migration` (native_migration.cpp) and `pack_halo_cells`
+(native_halo.cpp) call `fuse::native::device::pack_to`/a new sibling,
+`pack_fanout` (mesh_pack_device.hpp's many-to-many generalization,
+needed because a halo copy -- unlike a migrated cell -- may be sent to
+SEVERAL destinations), directly against `NativeMeshView::device_arrays()`.
+No `NativeMeshView` host-serving accessor is reached by either packer,
+checked by a `host_mirrors_materialized() == 0` assertion around each
+call (`NativeMigration.PackForMigrationMaterializesNoHostMirror`,
+`NativeHaloPackMerge.PackHaloCellsMaterializesNoHostMirror`). The MPI
+exchange also gained a GPU-aware REPLACEMENT: `exchange_migration_
+buffers<Space>` (native_migration.hpp/.cpp), a new Space-templated
+overload taking/returning `Kokkos::View<std::byte*, Space>` buffers,
+hands `MPI_Alltoallv` a device buffer's own raw pointer when `Space` is
+a device memory space and `fuse::linalg::mpi_is_gpu_aware()` says this
+MPI build may take one (`FUSE_TRANSPORT_HOST_STAGING` still forces the
+fallback); this probe is itself now the ONE copy both `fuse::native` and
+`fuse::transport::MpiTransport` call (`include/fuse/linalg/comm.hpp`,
+`src/linalg/mpi_gpu_aware.cpp`), rather than each keeping its own, now
+that `linalg` sits below both in the layering order and `backend`
+already links it. Verified byte-for-byte against the existing
+`std::vector` overload at 1-5 ranks and both `FUSE_TRANSPORT_HOST_
+STAGING` settings (`NativeMigrationMpi.GpuAwareExchangeOverloadMatches
+HostVectorOverloadByteForByte`; `backend.native_migration_mpi` gained a
+`DEVICE_TWIN` registration at 2/3 ranks to cover it there too).
+
+NOT DONE: exactly the same two gaps this entry's round-2 text already
+named -- (1) `dedup_by_gid`'s slot numbering is by GID VALUE, not the
+Host builders' append-order convention, needing the mechanical
+renumbering pass this entry's round-2 text sketches; (2) the wire
+format's unprefixed variable-length records make per-record boundary
+discovery a serial walk regardless of execution space. Neither
+`merge_halo_cells` nor `unpack_migrated_mesh` was touched this round,
+and `migrate`/`build_native_remap_halo` still call the ORIGINAL
+`std::vector<std::byte>` `exchange_migration_buffers` overload: wiring
+the new device-resident pack and the new GPU-aware exchange all the way
+through needs the merge side to stop requiring a host-resident buffer
+FIRST, or a device-resident pack's own output would just get copied to
+host again right before the unpack/merge step anyway, which defeats the
+point of either change. This is this round's own deferred item -- the
+same "proven standalone, not yet wired" shape this entry's own round-2
+text left `pack_to`/`dedup_by_gid` in, before this round wired the
+first of them (`pack_to`/`pack_fanout`) all the way in.
+
 ### ~~D52. MLS device solve coarsens `E-MLS-RANK`'s diagnostic and is not wired into `build_mls_weights`; `KokkosBatched::SerialGesv` does not build here~~ — CLOSED 2026-10-14 (round 2)
 
 **Scope note, 2026-10-13.** `fuse::device::solve_mls_on_space<Space>` (include/fuse/backend/

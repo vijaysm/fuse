@@ -206,9 +206,21 @@ the identical logic DUPLICATED rather than shared -- `transport`'s
 library does not link `backend`'s, discovered as a link error partway
 through this track (the header-include direction
 tools/check-layering.py enforces is not the CMake target link graph).
-The halo/migration exchanges (`fuse::native::exchange_migration_buffers`)
-do not consult their copy yet -- that stays host-only, per the standing
-priority, and is a different track's scope. Rank-to-device binding (`fuse::abi::resolve_device_id()`,
+
+**Superseded (Migration track, 2026-10-15):** the duplication above is
+gone -- `fuse::linalg::mpi_is_gpu_aware()` (`include/fuse/linalg/comm.hpp`,
+`src/linalg/mpi_gpu_aware.cpp`) is the one copy now, in a layer BOTH
+`backend` and `transport` sit above (`linalg` < ... < `backend` <
+`partition` < `transport`), and both of the functions named above are
+thin wrappers over it. The halo/migration exchange itself also gained a
+GPU-aware REPLACEMENT this round: `fuse::native::exchange_migration_
+buffers<Space>` (`Kokkos::View<std::byte*, Space>` buffers, device
+pointers handed to `MPI_Alltoallv` directly when the probe says so),
+proven byte-for-byte against the existing host-staged overload at 1-5
+ranks -- but not yet called by `migrate`/`build_native_remap_halo`
+(KNOWN_ISSUES.md D51's own remaining gap: `unpack_migrated_mesh`/
+`merge_halo_cells` still need a host-resident buffer). See
+docs/dev/native-halo.md's "GPU-aware exchange" section for the detail. Rank-to-device binding (`fuse::abi::resolve_device_id()`,
 header-only and unit-tested with a mocked device count) is wired into
 `ensure_kokkos_initialized()` and the test main: local rank within the node
 modulo the visible device count, honouring an explicit
@@ -410,16 +422,18 @@ track's call to overturn:
   today. Adding one is a layering decision for the owner, not something
   this track changes unilaterally.
 - `fuse::native::exchange_migration_buffers()` (`native_migration.hpp`)
-  states its own policy in its header comment: "this file's own migration
-  exchange always stages through host buffers regardless, per the standing
-  priority (robustness before efficiency) -- a device-resident native-mesh
-  migration path is still future work." `pack_for_migration`'s own byte-
-  buffer packing already depends on `NativeMeshView`'s host-only accessors
-  (`cell_vertices`, `global_id`; device-resident-arcs.md's own Phase 2
-  section: "validation ... stay host, Result/fmt are not device-callable"),
-  so making the exchange itself device-aware is gated on NativeMeshView
-  becoming device-primary first -- the device-mesh/weight-builders track's
-  own scope (D51-D53), not this one's.
+  USED TO state its own policy as "this file's own migration exchange
+  always stages through host buffers regardless, per the standing
+  priority (robustness before efficiency)" -- superseded (Migration track,
+  2026-10-15): `NativeMeshView` is now device-primary (as this section's
+  own gating condition anticipated), `pack_for_migration`/`pack_halo_cells`
+  read `mesh.device_arrays()` directly with no host-only accessor touched,
+  and a GPU-aware `exchange_migration_buffers<Space>` overload exists and
+  is proven standalone. The ORIGINAL `std::vector` overload this bullet
+  described is still what `migrate`/`build_native_remap_halo` call,
+  because `unpack_migrated_mesh`/`merge_halo_cells` have not yet been
+  updated to accept a device-resident buffer (KNOWN_ISSUES.md D51) -- see
+  docs/dev/native-halo.md for the current, narrower gap.
 
 **Lead must know.** The GhostExchanger and migration-exchange blockers
 above are findings, not fixes -- report-runtime-exchange.md states them as

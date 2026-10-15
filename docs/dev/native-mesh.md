@@ -112,7 +112,9 @@ part is ONLY the exchange, matching `fuse::partition::detail::collectives.cpp`'s
   an entry names a destination outside `[0, num_ranks)`.
 - `exchange_migration_buffers(send, comm)` -- the ONLY function that names an MPI type: an
   `MPI_Alltoall` for sizes then `MPI_Alltoallv` for the payload, always staged through HOST buffers (see
-  "GPU-aware MPI" below). `comm == kNullComm` is the identity, touching no MPI symbol.
+  "GPU-aware MPI" below). `comm == kNullComm` is the identity, touching no MPI symbol. A Space-templated
+  GPU-aware REPLACEMENT, `exchange_migration_buffers<Space>`, exists alongside it (Migration track,
+  2026-10-15) but is not yet called by `migrate` -- see "GPU-aware MPI" below.
 - `unpack_migrated_mesh(received, dim, my_rank)` -- rebuilds a mesh from every received buffer, deduping
   vertices and faces by global id (`NativeMeshBuilder`'s own rule). Every unpacked cell is OWNED by this
   rank (a cell migrates whole, never as a ghost); vertex ownership is left tentative.
@@ -146,14 +148,25 @@ convenience the task asked for: `centroids_of` (already existing, `mesh_adapter.
 (uniform per-cell weight) + `migrate`, sharing one communicator across all three. A caller wanting
 load-imbalance-aware weights calls `rcb_partition`/`migrate` directly instead.
 
-**GPU-aware MPI.** `cmake/FuseMpiGpuAware.cmake`'s `fuse_probe_mpi_gpu_aware` is a configure-time check
-for the `MPIX_CUDA_AWARE_SUPPORT`/`MPIX_ROCM_AWARE_SUPPORT` extension macros (`<mpi-ext.h>`), recorded as
-`FUSE_MPI_GPU_AWARE` in the generated `config.hpp` and read by `fuse::native::mpi_is_gpu_aware()`. The
-result is INFORMATIONAL ONLY: `exchange_migration_buffers` always stages through host memory regardless
-of what it reports, per the standing priority (robustness before efficiency) -- a device-resident
-exchange path is future work, named in "what is deferred" below. (This sandbox links MPICH, which does
-not implement either extension macro, so the probe reports 0 here; it is exercised as a real 0/1
-decision only on an MPI build that does.)
+**GPU-aware MPI (Migration track, 2026-10-15 update).** `cmake/FuseMpiGpuAware.cmake`'s
+`fuse_probe_mpi_gpu_aware` is a configure-time check for the `MPIX_CUDA_AWARE_SUPPORT`/
+`MPIX_ROCM_AWARE_SUPPORT` extension macros (`<mpi-ext.h>`), recorded as `FUSE_MPI_GPU_AWARE` in the
+generated `config.hpp`. The run-time probe that prefers `MPIX_Query_cuda_support()` over that
+configure-time fallback now lives ONCE, as `fuse::linalg::mpi_is_gpu_aware()` (`include/fuse/linalg/
+comm.hpp`, `src/linalg/mpi_gpu_aware.cpp`) -- `fuse::native::mpi_is_gpu_aware()` and
+`fuse::transport::MpiTransport::is_gpu_aware()` both call it now rather than each keeping its own copy
+(`linalg` sits below both `backend` and `transport` in the layering order, and `backend` already links
+it). The `std::vector<std::byte>`-based `exchange_migration_buffers` is UNCHANGED and still what
+`migrate`/`build_native_remap_halo` call: it always stages through host memory regardless of the probe.
+A GPU-aware REPLACEMENT, `exchange_migration_buffers<Space>` (Kokkos::View<std::byte*, Space> buffers,
+`MPI_Alltoallv` on the raw device pointer when `Space` is a device memory space and the probe says so,
+host-staged otherwise), is added and verified byte-for-byte against the `std::vector` overload at 1-5
+ranks and both `FUSE_TRANSPORT_HOST_STAGING` settings (`test/backend/native_migration_mpi_test.cpp`),
+but is not yet called by `migrate`: wiring it through needs `unpack_migrated_mesh`/`merge_halo_cells`
+to also stop requiring a host-resident buffer first (KNOWN_ISSUES.md D51's own remaining gap). (This
+sandbox links MPICH, which does not implement either extension macro, so the configure-time fallback
+reports 0 here; higgs links OpenMPI 4.1.5, which does, so the run-time probe is exercised as a real 0/1
+decision there -- see the ctest rows above.)
 
 ## What is verified where
 
@@ -324,9 +337,13 @@ is not yet templated -- see "What is deferred" below and KNOWN_ISSUES.md.
 - **Per-placement remap weights.** `repartition`'s convenience wrapper uses a uniform per-cell weight;
   load-imbalance-aware weighting is available by calling `rcb_partition`/`migrate` directly, not through
   the wrapper.
-- **Device-resident intersection / exchange.** `exchange_migration_buffers` always stages through host
-  memory, regardless of what `mpi_is_gpu_aware()` reports (see "GPU-aware MPI" above); no kernel in this
-  track runs the pack/unpack byte-layout logic on a device execution space.
+- **Device-resident intersection / exchange, pack and exchange primitives ready, not yet wired end-to-end.** The pack side
+  (`pack_for_migration`/`pack_halo_cells`) is now device-resident (see "Repartition migration (M2)" and
+  docs/dev/native-halo.md's own "Device packing" section), and a GPU-aware `exchange_migration_buffers
+  <Space>` exists and is proven standalone (see "GPU-aware MPI" above) -- but `migrate`/
+  `build_native_remap_halo` still call the ORIGINAL host-staged overload, because `unpack_migrated_
+  mesh`/`merge_halo_cells` still need a host-resident `std::vector<std::byte>` buffer (KNOWN_ISSUES.md
+  D51). Wiring the three together end-to-end is the natural next increment, not attempted this round.
 - **Field-transfer integration for a migrated mesh.** The layout driver's `--migrate` mode verifies MESH
   conservation properties, not a full FIELD hand-off through the coupling graph's transport layer for an
   arbitrary post-migration entity ordering. Matching migrated entities back to `MpiTransport`'s exchange

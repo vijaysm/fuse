@@ -125,6 +125,45 @@ round trip for the per-cell data. Verified byte-for-byte against the existing ho
 generated meshes (quad and polyhedral), in both Host mode and Device mode (`test/backend/
 native_mesh_pack_device_test.cpp`).
 
+**Wired in (Migration track, 2026-10-15).** `pack_for_migration` (native_migration.cpp) and
+`pack_halo_cells` (native_halo.cpp) now call `pack_to`/a new sibling, `pack_fanout`, directly against
+`mesh.device_arrays()` -- no `NativeMeshView` host-serving accessor (`cell_vertices`/`vertex_x`/
+`cell_faces`) is reached by either packer anymore, checked directly by a `host_mirrors_materialized()
+== 0` assertion around each call (`test/backend/native_migration_test.cpp`'s
+`PackForMigrationMaterializesNoHostMirror`, `test/backend/native_halo_test.cpp`'s
+`PackHaloCellsMaterializesNoHostMirror`). `pack_fanout` exists because `pack_to`'s model -- ONE
+destination per owned cell -- cannot express a halo copy's many-to-many fan-out (the same source cell
+sent to SEVERAL destination ranks whose covering set it overlaps): `pack_fanout` iterates the
+flattened (cell, destination rank) send list instead of the cell set, reusing `pack_to`'s own
+`record_size`/`write_record` helpers unchanged (checked directly: `test/backend/native_halo_test.cpp`'s
+`PackHaloCellsFansOutOneCellToSeveralDestinations` sends one cell to two destinations and checks both
+copies are byte-identical). The one remaining host round trip is the packed WIRE BYTES themselves
+(copied back to a `std::vector<std::byte>` for `exchange_migration_buffers`'s existing signature), not
+the mesh -- see the "GPU-aware exchange" section below for the primitive that removes it, and
+KNOWN_ISSUES.md D51 for why it is not yet wired all the way through.
+
+## GPU-aware exchange (Migration track, 2026-10-15)
+
+`fuse::linalg::mpi_is_gpu_aware()` (`include/fuse/linalg/comm.hpp`, `src/linalg/mpi_gpu_aware.cpp`) is
+now the ONE run-time GPU-aware-MPI probe: `fuse::native::mpi_is_gpu_aware()` and
+`fuse::transport::MpiTransport::is_gpu_aware()` both call it, rather than each keeping its own
+identical copy (both `backend` and `transport` sit above `linalg` in the layering order). A new
+Space-templated overload, `exchange_migration_buffers<Space>` (native_migration.hpp/.cpp), takes and
+returns `Kokkos::View<std::byte*, Space>` buffers -- the same per-destination buffers `pack_to`/
+`pack_fanout` produce -- handing `MPI_Alltoallv` a device buffer's own raw pointer directly when
+`Space` is a device memory space and the probe says this MPI build may take one (and
+`FUSE_TRANSPORT_HOST_STAGING` is not forcing the fallback), staging through host `std::vector<std::byte>`
+buffers otherwise (the identical two-phase shape the existing `std::vector` overload already uses).
+Verified byte-for-byte against that existing overload at 1-5 ranks and both
+`FUSE_TRANSPORT_HOST_STAGING` settings
+(`NativeMigrationMpi.GpuAwareExchangeOverloadMatchesHostVectorOverloadByteForByte`,
+`test/backend/native_migration_mpi_test.cpp`; `backend.native_migration_mpi` gained a `DEVICE_TWIN`
+registration at 2/3 ranks to cover it under the Runner's device interpreter too).
+
+NOT YET WIRED: `migrate`/`build_native_remap_halo` still call the ORIGINAL `std::vector` overload,
+because `unpack_migrated_mesh`/`merge_halo_cells` still require a host-resident buffer -- see
+KNOWN_ISSUES.md D51's own narrowing for exactly what is left.
+
 ## Device merge decision (KNOWN_ISSUES D51, narrowed)
 
 `include/fuse/backend/native/mesh_merge_device.hpp` adds `fuse::native::device::dedup_by_gid<Space>`:
