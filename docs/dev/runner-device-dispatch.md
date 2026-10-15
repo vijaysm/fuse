@@ -83,9 +83,15 @@ that:
    `num::copy(ptr, ptr, n)` — no `Space`, no `SpanOf` — a deliberate choice by
    whoever wrote this: `Source`/`ExternalDelivery` (no-ops), `Sink`/
    `Accelerate`/`Epoch`/`Constrain` (plain copy, some with MPI/reduction
-   logic alongside), `Transport` (MPI `move()`, which at the time this
-   paragraph was written only ever operated on host memory regardless of
-   `execution_space` — `mpi_is_gpu_aware()` was explicitly informational-only.
+   logic alongside — **update, runtime-exchange track (docs/dev/
+   device-resident-arcs.md): `Constrain` moved out of this group — along
+   with `Diagnose`, not named in this paragraph's own list but dispatched
+   through the identical plain-copy shape — both now read/write through
+   `span_c()`/`span_m()` and reduce on the arc's own space, joining
+   `Transport` in the space-AWARE group instead**), `Transport` (MPI
+   `move()`, which at the time this paragraph was written only ever
+   operated on host memory regardless of `execution_space` —
+   `mpi_is_gpu_aware()` was explicitly informational-only.
    **Update, transport track (docs/dev/device-resident-arcs.md Phase 3):**
    no longer true. `mpi_is_gpu_aware()` is now a run-time probe, and
    `Transport`'s own `OpKind` case in `execute_on<Space>()` packs/unpacks on
@@ -95,8 +101,11 @@ that:
    third group, space-AWARE, alongside none of the others here), `Remap`'s
    distributed-nodal branch (`r.nodal_dist >= 0`,
    `apply_nodal_dist_remap()` — an MPI exchange over host buffers, so it
-   stays host-only even though the other two `Remap` branches move),
-   `WindowAdvance`/`Map`/`Reduce`/`Closure` (refusals). Only about
+   stays host-only even though the other two `Remap` branches move —
+   **update, runtime-exchange track: also moved to the space-AWARE group;
+   its own case stages its arcs explicitly around the still-host-buffered
+   MPI exchange, the same shape Transport's own mixed-pair fallback
+   uses**), `WindowAdvance`/`Map`/`Reduce`/`Closure` (refusals). Only about
    9 of ~15 `OpKind`s are templated on `HostExecSpace` today and need `Space`
    genericity: `Interpolate`'s identity-copy branch, `Remap`'s identity and
    weighted branches, `Sample`'s non-spacetime branch, `Accumulate`,

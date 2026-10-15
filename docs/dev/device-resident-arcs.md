@@ -28,8 +28,8 @@ multi-rank device runs in place before a multi-GPU machine is available.
 | `RegionRuntime::x_old/x_new/x_out`, accelerator state | host vectors, `Accelerator` host-only | stay host; the gather `slots[b.feed_arc] → x_old` and scatter back become `deep_copy`s per sweep over the Newton/Picard interface vector (small by construction: interface dofs, not fields) |
 | transport `send_buf/recv_buf` | host vectors, `MPI_Alltoallv` | **done (transport track, 2026-10-13):** `Impl::transport_device` (device views, built once when both of a Transport instruction's arcs land on the device) when `Transport::is_gpu_aware()` is true at run time; otherwise the pack/unpack kernels still run on the device and only the already-existing host `send`/`recv` buffers stage the `MPI_Alltoallv` itself. A mixed device/host arc pair (found to occur for real -- KNOWN_ISSUES D48 -- not a hypothetical) stages the device side through `Impl::transport_in_scratch`/`transport_out_scratch` and runs the ordinary host loop. |
 | `RemapCsr` / `remap_csr_device` | host triplets + device twin built at resolve | device CSR is the primary in Device mode; builders may produce it directly (Phase 2) |
-| `weight_sets` (Constrain measures) | host vectors | host; `Constrain` integrates on the arc space and reduces, result to host |
-| `NodalDistRemap` buffers | host, MPI exchange | host; `apply_nodal_dist_remap()` stages its arcs explicitly (it is an MPI exchange like Transport) |
+| `weight_sets` (Constrain measures) | host vectors | **done (runtime-exchange track, 2026-10-14):** host (`weight_sets` never changes after setup); `weight_sets_device` is a device-resident mirror, built once in `build_constrain_device_buffers()`, and `Constrain` integrates on the arc's own space via `fuse::num::deterministic_dot` into `constrain_reduction_scratch`, result to host |
+| `NodalDistRemap` buffers | host, MPI exchange | **done (runtime-exchange track, 2026-10-14):** host; `apply_nodal_dist_remap()` stages its arcs explicitly (it is an MPI exchange like Transport) -- the arcs may now be device-resident (`place_arcs_on_device()` no longer pins them), but `apply_distributed_H`/`apply_distributed_HT`'s own `MPI_Allgatherv` calls stay on host buffers regardless of GPU-aware MPI (see the new "Runtime-exchange track" section below for why) |
 | checkpoint payloads, `verify_save`, Newton seam snapshots (`fixed_point_residual.cpp`) | host copies of slots | `deep_copy` from the arc space into the existing host containers |
 
 ## The boundary rule
@@ -52,11 +52,19 @@ Host memory is touched in Device mode only at:
    hypothetical -- a Remap's conservation check pins one of them) -- the
    device-resident side stages through a host scratch buffer and the
    ordinary scalar host loop runs against two host pointers, one crossing
-   for whichever side was device. Still unconditionally host for
-   `apply_nodal_dist_remap()` (a different track's scope);
-3. `Epoch` (status reconciliation is MPI on scalars; the value copy itself runs
-   on the arc space), `Diagnose` (`has_nonfinite` becomes a reduction on the
-   arc space; only the verdict is host), `Constrain` (reduction result);
+   for whichever side was device. `apply_nodal_dist_remap()`
+   (runtime-exchange track, 2026-10-14) is the same shape: a device-
+   resident `in`/`out` arc is staged through one `slot_to_vector()`/
+   `host_to_slot()` deep_copy at the function's own entry/exit, around an
+   MPI exchange (`apply_distributed_H`/`apply_distributed_HT`) that stays
+   on host buffers either way -- see the dedicated section below for why
+   that exchange itself is not GPU-aware;
+3. `Epoch` (status reconciliation is MPI on scalars; the value copy itself
+   runs on the arc space), `Diagnose` (runtime-exchange track, done:
+   `has_nonfinite` is a reduction on the arc space via `any_nonfinite<Space>`;
+   only the verdict is host), `Constrain` (runtime-exchange track, done: the
+   conservation sum is a reduction on the arc space via `deterministic_dot`
+   against `weight_sets_device`; only the scalar verdict is host);
 4. the accelerator interface vector and the window-member bookkeeping
    (`advance_window`'s clocks and the straddle state, which are scalars);
 5. checkpoint/resume and the Newton seam's save/restore.
@@ -250,11 +258,13 @@ the next step starts. Host mode byte-identity is the standing invariant.
    through `slot_to_host()`/`host_to_slot()`/`slot_host_read()`
    (`runner_impl.hpp`), so `place_arcs_on_device()` pins only the arcs a
    WINDOW-scoped region names (its bookkeeping still dereferences them on
-   the host), a Constrain's `before` arc, and the arcs of host-only
-   instructions (Transport, Diagnose, Constrain, nodal Remap, the
-   space-time branches). Still host, by this rule: `previous[]` and the
-   space-time history (staged per instruction), `reduction_scratch`,
-   Diagnose/Constrain reductions.
+   the host) and the space-time branches. Still host, by this rule:
+   `previous[]` and the space-time history (staged per instruction).
+   DONE (runtime-exchange track, 2026-10-14): `reduction_scratch` itself
+   stays `HostSpace` (iteration.cpp's own block reductions are
+   unconditionally host, a different track's scope), but Diagnose/
+   Constrain's reductions and the distributed-nodal Remap no longer pin
+   their arcs at all -- see the "Runtime-exchange track" section below.
 4. DONE (4610b22, 581c5d1, 7b369f4). `FUSE_EXECUTION_SPACE` resolves
    `RunnerConfig::RunnerExecutionSpace::Default`; `fuse_add_device_twin()`
    registers the 14 `.device` rows (docs/dev/testing.md, "The device
@@ -341,11 +351,74 @@ the next step starts. Host mode byte-identity is the standing invariant.
 
 `FUSE_DEVICE_DEBUG=1 ./fuse_runtime_runner_device_test` on the mean-over-four-
 substeps chain prints `Sample -> Accumulate -> Transport -> Epoch -> Remap ->
-Diagnose -> Sink`: the Transport pins `%accumulate`/`%transport`, the Diagnose
-pins `%remap`/`%diagnose`, the Sample output and the Epoch output are device
-arcs, the producer's field is mirrored. The two host-only instructions are
-what Phase 3 (Transport) and the deferred Diagnose reduction remove; until
-then a fully device-registered chain crosses the boundary twice per period
-(Epoch host -> device, Sink host -> device field) and stages the two kernel
-outputs those instructions read (`DeviceRegisteredFieldsCrossOnlyAtHostOnly
-InstructionsAndAgreeWithHost` pins both counts).
+Diagnose -> Sink`: every arc in the chain is now device-resident, the Sample
+output and the Epoch output included, and (runtime-exchange track,
+2026-10-14) `Diagnose`'s own arcs as well -- nothing in this plan pins
+anything anymore. A fully device-registered chain therefore crosses the
+boundary ZERO times per period and stages nothing through a `device_staging`
+lane (`DeviceRegisteredFieldsCrossTheBoundaryZeroTimesAndAgreeWithHost` pins
+both counts at 0). This is down from one crossing (the Sink, host ->
+device) after the transport track and two before it.
+
+## Runtime-exchange track (2026-10-14)
+
+**Done.** `OpKind::Constrain`'s conservation sum and `OpKind::Diagnose`'s
+non-finite check no longer pin their arcs to host: both read/write through
+`span_c()`/`span_m()` like every other Space-generic case, and the
+reduction itself runs on the arc's own space --
+`fuse::num::deterministic_dot<Space>` against a device mirror of
+`weight_sets` (`weight_sets_device`, built once in
+`build_constrain_device_buffers()`) for Constrain, `fuse::num::
+any_nonfinite<Space>` for Diagnose -- with only the scalar verdict (and,
+for Constrain, the cross-rank `MPI_Allreduce`) staying on host. Constrain's
+`before_arc` is not one of its own instruction's `in`/`out` arcs (it is the
+Remap's own input, on the source region), so it is read through a small
+local `span_any_c()` helper keyed on the `Slot` directly rather than
+`span_c()`'s own ins.in/ins.out identity lookup; the same device-pointer-
+or-stage-it decision either way.
+`apply_nodal_dist_remap()` no longer has its arcs pinned either: its own
+case now stages a device-resident `in`/`out` slot through one
+`slot_to_vector()`/`host_to_slot()` deep_copy at its own entry/exit (the
+same helpers `iteration.cpp`'s sweep loop already uses), around an MPI
+exchange that still runs entirely on host buffers.
+
+**Why the nodal-dist and ghost-field exchanges themselves stay host
+buffers, not GPU-aware MPI.** Two separate, pre-existing architectural
+decisions block a literal "hand MPI a device pointer" implementation for
+the other two pieces this track's instructions named, and neither is this
+track's call to overturn:
+
+- `apply_distributed_H`/`apply_distributed_HT` (`nodal_remap_distributed.cpp`)
+  exchange wire records that INTERLEAVE a global id with every value
+  (`allgatherv_records`, stride doubles per record), rebuilt from an
+  `unordered_map` lookup every period -- unlike `Transport`'s `CommGraph`,
+  whose index resolution is a ONE-TIME setup cost and whose per-step
+  payload is a plain value array. There is no contiguous device buffer to
+  hand `MPI_Allgatherv` a pointer to without first splitting index
+  resolution out of the per-period path, the same two-phase shape
+  `fuse::linalg::make_mpi_exchanger` already uses for ghost fields -- a
+  larger rework than stage-and-exchange, out of this track's scope.
+- `fuse::linalg::GhostExchanger` (`comm.hpp`) is deliberately isolated from
+  Kokkos (`comm.hpp`'s own header comment: "linalg includes only base"),
+  the same boundary `tools/check-layering.py` enforces for every other
+  `fuse::linalg` header. Its `update()` already takes raw `const double*`/
+  `double*` (space-agnostic at the type level), but `MpiExchanger::update`'s
+  pack/unpack loops (`comm_mpi.cpp`) dereference them on the host; making
+  that a device kernel needs a Kokkos include this header does not carry
+  today. Adding one is a layering decision for the owner, not something
+  this track changes unilaterally.
+- `fuse::native::exchange_migration_buffers()` (`native_migration.hpp`)
+  states its own policy in its header comment: "this file's own migration
+  exchange always stages through host buffers regardless, per the standing
+  priority (robustness before efficiency) -- a device-resident native-mesh
+  migration path is still future work." `pack_for_migration`'s own byte-
+  buffer packing already depends on `NativeMeshView`'s host-only accessors
+  (`cell_vertices`, `global_id`; device-resident-arcs.md's own Phase 2
+  section: "validation ... stay host, Result/fmt are not device-callable"),
+  so making the exchange itself device-aware is gated on NativeMeshView
+  becoming device-primary first -- the device-mesh/weight-builders track's
+  own scope (D51-D53), not this one's.
+
+**Lead must know.** The GhostExchanger and migration-exchange blockers
+above are findings, not fixes -- report-runtime-exchange.md states them as
+deviations. Overturning either standing decision is the owner's call.
