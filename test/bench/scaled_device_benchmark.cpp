@@ -39,6 +39,27 @@
 // RANKS; see test/parallel/runner_transport_test.cpp's own comment on
 // exactly this).
 //
+// FOUND GAP (KNOWN_ISSUES.md D68, not fixed here, out of this track's
+// scope): Runner::Impl::resolve_remap()'s general (non-nodal) weighted
+// branch builds its conservative matrix from each rank's OWN LOCAL view
+// of both regions, with no automatic remap-halo exchange -- the exchange
+// fuse::native::build_remap_halo()/build_native_remap_halo() exist to
+// provide, per remap_plan.hpp's own "ORDER MATTERS" comment, but which a
+// caller must invoke explicitly, before schedule(), and which this
+// program does not. With provider and consumer on DISJOINT ranks, that
+// means every rank's local intersection search finds a genuine zero
+// (the matching cells of the other side live on a rank it has no view
+// of at all) -- RunStats::remap_weight_nonzeros measured 0 at every
+// rank count above 1, never a crash or a wrong answer, just a silently
+// empty conservative matrix. The small --verify row does not hit this
+// (there, provider and consumer sit on the SAME one-rank world, so the
+// local search already sees both sides); the scaled, multi-rank rows
+// below still measure genuine instruction dispatch and Transport/Diagnose
+// overhead at scale (this program's own stated purpose), but the Remap's
+// own matvec at ranks 2 and 3 is over an empty matrix, not a real
+// transfer. Fixing this needs the caller-driven halo sequence this file's
+// own comment quotes from runner.cpp; left to the lead to scope.
+//
 // EXECUTION SPACE. RunnerConfig::execution_space follows the environment
 // (FUSE_EXECUTION_SPACE) by default, the same convention
 // fuse_add_device_twin()/DEVICE_TWIN ctest rows rely on to run one binary
@@ -561,7 +582,7 @@ int run_verify() {
 
   auto run_one = [&](Space space, bool device_fields, fuse::RunStats* out_stats,
                      std::vector<double>* out_values) -> fuse::Result<void> {
-    fuse::Result<void> err;
+    fuse::Result<void> err = fuse::Result<void>::success();
     auto h = build(kVerifyN, device_fields, &err);
     if (!err.ok()) return err;
     for (auto& comp : h->components) {
@@ -678,7 +699,7 @@ int main(int argc, char** argv) {
               << "load (1 min, before)     : " << one_minute_load() << "\n";
   }
 
-  fuse::Result<void> build_err;
+  fuse::Result<void> build_err = fuse::Result<void>::success();
   const double t_build0 = MPI_Wtime();
   auto h = build(args.n, device_fields, &build_err);
   const double t_build1 = MPI_Wtime();
