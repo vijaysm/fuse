@@ -7529,3 +7529,107 @@ further than this round's own scope (the scatter-add determinism, not the weight
 `nodal_remap_distributed_test.cpp`/`nodal_remap_distributed_nullcomm_test.cpp` (lower-level, non-Runner
 tests of the same primitive) would be the next place to isolate it with a 2-rank-vs-1-rank weight dump,
 if this round's track's own time allowed.
+
+### D68. `BoxIndex::build_device_resident` tied its tree-routing flag to `kHasDeviceBackend`, reading `size()`/`empty()`/every query from the untouched host tree on a build with no device backend -- FOUND AND FIXED 2026-10-15 (MeshAdapter track)
+
+**What was found.** `search.mesh_adapter`'s `MeshAdapter.DeviceElementBoxesMatchHostElementBoxesForANativeMesh`
+(added in 98be06b, 2026-10-14, "search: element_boxes_device_resident over a device-resident
+simplex CSR") failed on `idx.value().size()`, 0 instead of 2, with every assertion before it
+passing -- the device-resident boxes themselves (`element_boxes_device_resident`) matched the
+host reference exactly, and `idx.value().dimension()` already reported the correct 2.
+`BoxIndex::size()`/`empty()`/`query_points()`/`query_nearest()` (src/search/box_index.cpp)
+all read `impl_->device_tree` only when the member `device_` is true, `impl_->host_tree`
+otherwise; `dimension()` is set unconditionally from the same `classify_all()` call both
+paths share, which is why it alone was unaffected.
+
+`BoxIndex::build_device_resident` (added bf88d887, 2026-10-13, "Build and query BoxIndex on
+the default execution space") always builds its tree into `impl_->device_tree` -- unlike
+`BoxIndex::build()`, it has no host-tree branch at all -- but set the routing flag with
+`out.device_ = kHasDeviceBackend;` rather than `true`. `kHasDeviceBackend` is
+`!std::is_same_v<Kokkos::DefaultExecutionSpace, Kokkos::DefaultHostExecutionSpace>`, a
+compile-time constant that is `false` on any build with no CUDA/HIP/SYCL backend (this
+sandbox's Kokkos 5.1.0, Serial/OpenMP only, confirmed by the standalone measurement below).
+On such a build `device_` was left `false` while the tree sat in `device_tree`: every
+`size()`/`empty()`/query call then addressed the default-constructed, never-built
+`host_tree` instead, reporting an empty index regardless of input.
+
+**Confirmed, not merely inferred, with a standalone program** linked against
+`fuse-coupler-search` directly (bypassing gtest): 7 boxes built via
+`build_device_resident` on this build reported `kHasDeviceBackend=0`, `dimension()=2`
+(correct), `size()=0` (wrong, expected 7), `empty()=1` (wrong), and a point known to lie
+inside box 0 returned 0 query hits. The classification-only candidates the task asked to
+exclude were ruled out this way: `build_device_resident` does record a count (`n =
+boxes.extent(0)`, used to size `compacted_index`/`arbor_boxes`/the parallel loops), and the
+host mirror it builds (`Kokkos::create_mirror_view(boxes)`) exists solely to let
+`classify_all`'s host-only `Result`-returning check read box extents -- the test's own
+`host_mirrors_materialized() == 0` assertion is checking the SEPARATE `NativeMeshView`'s own
+mirror (never touched, correctly), not this unrelated local mirror inside
+`BoxIndex::build_device_resident`. `size()` reads a real member (`device_`-gated), just the
+wrong one for this entry point's own invariant ("I always build into `device_tree`").
+
+**A second, pre-existing test was silently passing for the same reason.**
+`BoxIndex.ViewBasedBuildAndQueryMatchVectorBasedOnTheSameIndex` (box_index_test.cpp) builds
+a `BoxIndex` with `build_device_resident`, queries it both via
+`query_points_device_resident` and `query_points`, and compares the two CSR results. Both
+calls route through the same `empty()` check first; with `device_` wrongly `false`,
+`empty()` was wrongly `true`, so both calls short-circuited to the same all-empty
+`QueryResult`/`QueryResultView` and the comparison passed by agreeing on nothing. Measured
+directly: before the fix, the standalone program's query against box 0 returned 0 hits;
+after the fix, 1. This track leaves that existing test's assertions exactly as they were (fixing the
+root cause in `build_device_resident` is what makes them meaningful, not a change to the
+test itself) -- recorded here because this track's own measurement is what surfaced it, not
+because strengthening that test was in this track's scope.
+
+**What was fixed.** One line, `src/search/box_index.cpp`'s `BoxIndex::build_device_resident`:
+`out.device_ = kHasDeviceBackend;` to `out.device_ = true;` -- this entry point's own
+invariant ("always builds into `device_tree`") now matches the flag that routes reads to it.
+`kHasDeviceBackend` still gates `executes_on_device()` (`device_ && kHasDeviceBackend`)
+exactly as before, so that accessor's documented contract ("`Device` requested on a
+host-only build degrades to `Host`") is unaffected -- confirmed by
+`BoxIndex.ViewBasedBuildAndQueryMatchVectorBasedOnTheSameIndex`'s own
+`EXPECT_EQ(idx.value().executes_on_device(), kHasDeviceBackend)` still passing.
+
+**Why a real device build would not have shown this.** `fuse_add_device_twin`
+(test/CMakeLists.txt) is registered only `if(FUSE_KOKKOS_HAS_DEVICE)` -- absent here, not
+skipped, confirmed by `ctest -N` listing `search.box_index`/`search.mesh_adapter` with no
+`.device` suffix. Even where it IS registered, `FUSE_EXECUTION_SPACE=device` (the twin's own
+mechanism) only changes `BoxIndex::build()`'s `resolve_execution_space()` outcome;
+`build_device_resident` takes no `ExecutionSpace` argument and never reads that variable, so
+the twin would exercise the identical code path as the base row within one binary. The
+determining fact is `kHasDeviceBackend`, which is fixed at compile time by whether Kokkos
+was built with a CUDA/HIP/SYCL backend at all -- on a build that has one, `kHasDeviceBackend`
+is `true` unconditionally, so `out.device_ = kHasDeviceBackend` already equalled `true` and
+this defect could not have manifested, in the base row or the twin. The defect is specific
+to a Kokkos build with no device backend compiled in at all (Serial/OpenMP, like this
+sandbox and, per the task description, the lead's own measurement) -- exactly the tier-0
+configuration this ladder always builds, so no CI leg this repository runs today would have
+missed it for a build-configuration reason; it was missed because no existing test checked
+`size()`/`empty()`/a real query hit after `build_device_resident` independently of the one
+row that happened to exercise all three together for the first time (98be06b).
+
+**What was added.** `BoxIndex.BuildDeviceResidentSizeMatchesBoxCountForZeroOneAndSevenBoxes`
+(box_index_test.cpp): `size()`/`empty()` pinned directly against `build_device_resident`'s
+own box count for 0, 1 and 7 boxes, independent of `mesh_adapter_test.cpp`'s native-mesh
+scenario. Mutation row `search-build-device-resident-flag-tied-to-backend`
+(build-evidence/mutations/search.toml) reverts the fix (`out.device_ = kHasDeviceBackend;`)
+and is killed by this new test (n=1 and n=7; n=0 is unaffected because `empty()` is true
+either way for a zero-box index) -- confirmed by rebuilding `fuse_search_box_index_test`
+against the reverted line and observing exactly those two sub-checks fail, the rest of the
+16-test binary still green.
+
+**Verification.** `search.mesh_adapter` and `search.box_index` (full binaries, every
+existing test plus the new one) pass after the fix on this sandbox's tier-0 configuration
+(Debug, Kokkos 5.1.0 Serial/OpenMP, ArborX 2.1.99, see report-meshadapter.md for the
+resolved-dependencies record). `tools/mutate.py --check-anchors` reports the new anchor
+valid (0 stale) alongside the area's four pre-existing rows.
+
+**Cross-references.** D49/D51 (native::device halo/migration merge) and D66/D67
+(runtime-exchange device-direct path) are the other open device-resident entries; all four,
+including this one, share the same root difficulty this track's own measurement adds one
+more data point to: a facade whose device-resident entry points are exercised almost
+exclusively on hosts with no real device backend, where "device" and "host" collapse to the
+same type and the distinction between "which space did I ask for" and "which space is the
+data actually in" is easy to let drift apart, because nothing observable breaks until a
+caller reads the GENUINELY device-resident member (`size()`/`empty()`/a query) rather than a
+CPU-computed one (`dimension()`).
+
