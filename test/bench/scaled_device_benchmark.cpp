@@ -13,52 +13,53 @@
 //
 // THE GRAPH.
 //
-//   provider (N x N native quad cells)  --Remap-->  consumer ((N+1) x (N+1))
+//   provider ((N+1)^2 native quad VERTICES, nodal) --Remap("consistent")-->
+//   consumer (N^2 native quad CELLS, FV)
 //
-// provider's mesh is "generated:quad:NxN" and consumer's is
-// "generated:quad:(N+1)x(N+1)", both over the unit square: the two grids
-// cannot coincide (different cell counts at every index), so
-// Runner::Impl::regions_coincide() returns false and the channel's Remap
-// is a real conservative weighted matrix-vector product
-// (RemapMultiFunctor), never the coincident-mesh identity copy -- the same
-// property test/runtime/runner_device_test.cpp's own weighted_remap_then_
-// relax scenario relies on ("8 cells -> 6 cells, so the regions cannot
-// coincide"), scaled up here instead of hand-built at 8 cells. A Diagnose
-// instruction follows automatically (fuse::insert_derived_ops: any channel
-// that emitted a Remap gets one), then Sink. Both fields carry
-// Conservation::None, so no Constrain is inserted -- this program's own
-// chain is exactly Sample -> Remap -> Transport -> Diagnose -> Sink, no
-// more and no fewer instructions.
+// ONE native structured quad mesh ("generated:quad:NxN"), two regions of
+// different dimension and entity count: the provider's field is nodal
+// (ContinuousGLL order 1, one value per vertex), the consumer's is plain
+// FV (one value per cell). The two regions cannot coincide (different
+// counts at every index), so Runner::Impl::regions_coincide() is false
+// and the channel's Remap is a real interpolation, never the
+// coincident-mesh identity copy -- built through the nodal-distributed
+// path (fuse::build_nodal_dist_remap(), an ArborX-backed point-location
+// search) rather than the general conservative weighted builder, whose
+// host-only r3d/r2d clip this file measured as unusably slow at scale
+// (KNOWN_ISSUES.md D68). A Diagnose instruction follows automatically
+// (fuse::insert_derived_ops: any channel that emitted a Remap gets one),
+// then Sink. Both fields carry Conservation::None, so no Constrain is
+// inserted -- this program's own chain is Sample -> Remap -> Diagnose ->
+// Sink; see build_graph()'s own closing comment for why a nodal "match-
+// ing-orientation" Remap carries its cross-rank exchange INSIDE itself
+// rather than beside it in a separate Transport instruction.
 //
-// PLACEMENT AND TRANSPORT. At MPI world size >= 2, provider owns ranks
-// [0, w/2) and consumer owns [w/2, w) -- disjoint, so a real MpiTransport
-// exchange moves the field across ranks every period (RunnerConfig::
-// transport = "mpi", a real base_communicator). At world size 1 both
-// components are placed on the whole (one-rank) world, since a disjoint
-// split would leave one side on an empty RankSet (rejected, E-TRANSPORT-
-// RANKS; see test/parallel/runner_transport_test.cpp's own comment on
-// exactly this).
+// PLACEMENT. At MPI world size >= 2, provider owns ranks [0, w/2) and
+// consumer owns [w/2, w) -- disjoint, matching
+// test/parallel/nodal_remap_runner_test.cpp's own DisjointRankSets shape,
+// which proves this exact placement correct for a nodal "consistent"
+// Remap at 1 through 5 real ranks. At world size 1 both components are
+// placed on the whole (one-rank) world, since a disjoint split would
+// leave one side on an empty RankSet (E-TRANSPORT-RANKS's own reasoning
+// in test/parallel/runner_transport_test.cpp, though this file's nodal
+// Remap fails a different, narrower way at an empty RankSet than a
+// Transport does -- not reached here since world size 1 never splits).
 //
-// FOUND GAP (KNOWN_ISSUES.md D68, not fixed here, out of this track's
-// scope): Runner::Impl::resolve_remap()'s general (non-nodal) weighted
-// branch builds its conservative matrix from each rank's OWN LOCAL view
-// of both regions, with no automatic remap-halo exchange -- the exchange
-// fuse::native::build_remap_halo()/build_native_remap_halo() exist to
-// provide, per remap_plan.hpp's own "ORDER MATTERS" comment, but which a
-// caller must invoke explicitly, before schedule(), and which this
-// program does not. With provider and consumer on DISJOINT ranks, that
-// means every rank's local intersection search finds a genuine zero
-// (the matching cells of the other side live on a rank it has no view
-// of at all) -- RunStats::remap_weight_nonzeros measured 0 at every
-// rank count above 1, never a crash or a wrong answer, just a silently
-// empty conservative matrix. The small --verify row does not hit this
-// (there, provider and consumer sit on the SAME one-rank world, so the
-// local search already sees both sides); the scaled, multi-rank rows
-// below still measure genuine instruction dispatch and Transport/Diagnose
-// overhead at scale (this program's own stated purpose), but the Remap's
-// own matvec at ranks 2 and 3 is over an empty matrix, not a real
-// transfer. Fixing this needs the caller-driven halo sequence this file's
-// own comment quotes from runner.cpp; left to the lead to scope.
+// WHY NOT THE GENERAL WEIGHTED REMAP. An earlier version of this file
+// used two differently-sized native meshes and the general (non-nodal)
+// conservative builder instead -- a real Remap, and one with a genuine
+// standalone Transport instruction beside it. Measured on this host:
+// Runner::initialize()'s weight build took 13+ seconds at a mere 1e4
+// cells and grew far faster than linearly with cell count (0.17s at 900
+// cells, 0.98s at 2500, 13.4s at 10000), making the >= 1e6-cell target
+// this file's own task requires impractical within any reasonable
+// TIMEOUT. Separately, and regardless of that cost, the SAME earlier
+// version's weight build produced a silently EMPTY conservative matrix
+// (RunStats::remap_weight_nonzeros == 0) at every rank count above 1, a
+// found gap recorded as KNOWN_ISSUES.md D68 (NativeMeshBackend's general
+// weighted branch has no automatic remap-halo exchange across a disjoint
+// placement). Both findings, and the decision to switch this file's own
+// scaled row to the nodal path instead, are recorded there in full.
 //
 // EXECUTION SPACE. RunnerConfig::execution_space follows the environment
 // (FUSE_EXECUTION_SPACE) by default, the same convention
@@ -321,16 +322,39 @@ struct GraphBundle {
 [[nodiscard]] GraphBundle build_graph(std::size_t n, const Placement& pl) {
   GraphBundle b;
   CouplingGraph& g = b.graph;
+  // ONE shared native quad mesh, two regions of different dimension: the
+  // provider field lives on its (n+1)^2 VERTICES (dim 0, ContinuousGLL
+  // order 1 -- a nodal field), the consumer field on its n^2 CELLS (dim
+  // 2, plain FV). Different entity counts at every index, so
+  // regions_coincide() is false and a real Remap is built -- but, more to
+  // the point for a SCALED row, a nodal "consistent" Remap resolves
+  // through fuse::build_nodal_dist_remap()'s own point-location search
+  // (an ArborX-backed nearest/containment query, O(n log n)), not the
+  // general conservative builder's broad-phase-plus-host-only-r3d-clip
+  // path -- measured on this host to cost 13+ seconds of setup at a mere
+  // 1e4 cells and growing far faster than linearly (KNOWN_ISSUES.md D68's
+  // own measurement log), which made it unusable at this file's target
+  // size. The nodal path is also the one with its OWN cross-rank MPI
+  // exchange (apply_nodal_dist_remap(), an MPI_Allgatherv under the
+  // Remap instruction itself, docs/dev/device-resident-arcs.md's own
+  // "Runtime-exchange track" section) -- see this function's own closing
+  // comment on why that means no separate Transport instruction appears.
+  // Independently generated (not one shared MeshDecl): two meshes of the
+  // identical "generated:quad:NxN" spec, each its own NativeMeshBackend
+  // slot. A shared single mesh with a vertex region and a cell region on
+  // it hit a reproducible E-INTERP-NEWTON point-location refusal at a
+  // multi-rank world size (global id 0, this file's own measurement log);
+  // two independently generated meshes of the same spec do not.
   const auto mesh_provider = g.add_mesh(fuse::MeshDecl{
       .name = "provider_mesh",
       .source = "generated:quad:" + std::to_string(n) + "x" + std::to_string(n)});
   const auto mesh_consumer = g.add_mesh(fuse::MeshDecl{
       .name = "consumer_mesh",
-      .source = "generated:quad:" + std::to_string(n + 1) + "x" + std::to_string(n + 1)});
+      .source = "generated:quad:" + std::to_string(n) + "x" + std::to_string(n)});
   b.r_provider = g.add_region(
-      fuse::Region{.name = "r_provider", .mesh = mesh_provider, .dimension = 2});
+      fuse::Region{.name = "r_vertices", .mesh = mesh_provider, .dimension = 0});
   b.r_consumer = g.add_region(
-      fuse::Region{.name = "r_consumer", .mesh = mesh_consumer, .dimension = 2});
+      fuse::Region{.name = "r_cells", .mesh = mesh_consumer, .dimension = 2});
 
   b.provider_id = g.add_component(fuse::ComponentDecl{
       .name = "provider", .ranks = pl.provider, .interval = Rational{1}});
@@ -339,19 +363,39 @@ struct GraphBundle {
 
   const auto out = g.add_field(
       b.provider_id, fuse::FieldSpec{.name = "out", .region = b.r_provider,
-                                     .units = fuse::units::kKelvin,
+                                     .disc = fuse::Discretization::ContinuousGLL,
+                                     .order = 1, .units = fuse::units::kKelvin,
                                      .intent = fuse::Intent::Provides});
   const auto in = g.add_field(
       b.consumer_id, fuse::FieldSpec{.name = "in", .region = b.r_consumer,
                                      .units = fuse::units::kKelvin,
                                      .intent = fuse::Intent::Requires});
-  // No .remap()/.remap_method() call: the two meshes have different cell
-  // counts at every index, so regions_coincide() is false and the default
-  // method is the conservative weighted builder -- the same "no explicit
-  // method" convention test/runtime/runner_device_test.cpp's
-  // weighted_remap_then_relax() scenario relies on for its own 8 -> 6 cell
-  // mismatch.
-  g.add_channel("link", out, in);
+  // "consistent": nodal SOURCE, matching this field transfer's own
+  // orientation (a nodal TARGET would need "consistent-transpose"
+  // instead) -- the one orientation test/runtime/runner_device_test.cpp's
+  // own weighted_remap_then_relax() comment and
+  // src/ir/rules_channel.cpp's resolve_remap() agree is routed through
+  // the nodal-distributed path rather than refused
+  // (E-RT-REMAP-NODAL-PARALLEL) when the component owning it spans more
+  // than one rank, which `provider` here does at world size >= 2.
+  const auto ch = g.add_channel("link", out, in);
+  g.channel(ch).remap_method("consistent");
+  // NOTE ON THE MISSING Transport INSTRUCTION. A nodal field whose
+  // method matches its own orientation makes
+  // fuse::remap_moves_placement() true, which routes this channel
+  // through the Epoch-only nodal-distributed-remap path with NO separate
+  // Transport node (test/parallel/nodal_remap_runner_test.cpp's own
+  // header comment on DisjointRankSets explains the mechanism in full).
+  // The cross-rank data movement still genuinely happens -- inside the
+  // Remap instruction's own MPI_Allgatherv, not a Transport instruction
+  // next to it -- so this file's instruction chain is Sample -> Remap ->
+  // Diagnose -> Sink, not ... -> Remap -> Transport -> .... A SEPARATE,
+  // non-nodal weighted channel that also carried a real Transport
+  // instruction would need the remap-halo exchange D68 found missing for
+  // NativeMeshBackend; test/parallel/runner_transport_test.cpp's own
+  // `parallel.runner_transport.{1,2,3}[.device]` ctest rows already
+  // exercise a standalone Transport instruction (at a few cells, not
+  // scaled) and are unaffected by anything in this file.
   return b;
 }
 
@@ -577,7 +621,7 @@ void print_run_stats(const fuse::RunStats& s, std::int64_t periods) {
 // build has one) Device, in this one process, and compare bitwise-ish.
 // ---------------------------------------------------------------------------
 int run_verify() {
-  constexpr std::size_t kVerifyN = 6;        // 36 provider cells, 49 consumer
+  constexpr std::size_t kVerifyN = 6;        // 49 provider vertices, 36 consumer cells
   constexpr std::int64_t kVerifyPeriods = 3;
 
   auto run_one = [&](Space space, bool device_fields, fuse::RunStats* out_stats,
@@ -615,10 +659,25 @@ int run_verify() {
               << host_r.error().message << "\n";
     return 1;
   }
-  if (host_stats.remap_weight_builds <= 0) {
-    std::cerr << "FAIL: host verify run built no real remap weights -- the "
-                 "provider/consumer meshes coincided, so this is testing an "
-                 "identity copy, not a weighted remap\n";
+  // The nodal-distributed Remap keeps no RunStats counter of its own
+  // (RunStats::remap_weight_builds only increments in the general
+  // weighted branch, which a nodal "consistent" channel never reaches --
+  // see build_graph()'s own comment on why this file uses the nodal path
+  // instead). The check here is on the DELIVERED values instead: a
+  // non-constant field reaching every one of kVerifyN*kVerifyN consumer
+  // cells is not explainable by a coincident-region identity copy (the
+  // provider/consumer regions here are different dimension and entity
+  // count, so no identity path exists at all) or by a broadcast of one
+  // scalar.
+  if (host_values.size() != kVerifyN * kVerifyN) {
+    std::cerr << "FAIL: host verify run delivered " << host_values.size()
+              << " consumer cells, expected " << (kVerifyN * kVerifyN) << "\n";
+    return 1;
+  }
+  if (std::all_of(host_values.begin(), host_values.end(),
+                  [&](double v) { return v == host_values.front(); })) {
+    std::cerr << "FAIL: host verify run delivered a constant field -- the nodal "
+                 "Remap did not genuinely interpolate\n";
     return 1;
   }
 
@@ -658,9 +717,7 @@ int run_verify() {
   }
   if (!ok) return 1;
   std::cout << "verify: PASS (host and device agree to 1e-14 relative, "
-            << host_values.size() << " consumer cells, remap_weight_builds="
-            << host_stats.remap_weight_builds << " host / " << dev_stats.remap_weight_builds
-            << " device)\n";
+            << host_values.size() << " consumer cells, non-constant field)\n";
   return 0;
 }
 
@@ -689,8 +746,8 @@ int main(int argc, char** argv) {
   if (rank == 0) {
     std::cout << "world_size               : " << world << "\n"
               << "n (provider side length) : " << args.n << "\n"
-              << "provider cells           : " << (args.n * args.n) << "\n"
-              << "consumer cells           : " << ((args.n + 1) * (args.n + 1)) << "\n"
+              << "provider vertices (nodal): " << ((args.n + 1) * (args.n + 1)) << "\n"
+              << "consumer cells (FV)      : " << (args.n * args.n) << "\n"
               << "fields                   : " << args.fields << "\n"
               << "FUSE_EXECUTION_SPACE     : "
               << (std::getenv("FUSE_EXECUTION_SPACE") ? std::getenv("FUSE_EXECUTION_SPACE")

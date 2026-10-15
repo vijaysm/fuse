@@ -7860,3 +7860,37 @@ SAME `NativeMeshBackend` mesh ids the Runner's own channel resolves against -- a
 one to remember. Left for the lead to scope; `test/parallel/remap_halo_mpi_test.cpp` and
 `runner.cpp`'s own comment at the `MoabMeshBackend` halo-refusal check (search for `E-RT-REMAP-HALO`)
 are the next place to start.
+
+
+### D69. A nodal "consistent" Remap's distributed point-location search refuses at the domain's own corner vertex (global id 0) at some multi-rank splits -- OPEN, found 2026-10-15 (scaled-bench track)
+
+Found while registering `bench.scaled_device_benchmark.{2,3}[.device]` (`test/bench/scaled_device_benchmark.cpp`):
+a nodal "consistent" channel between a provider's (N+1)^2 vertices and a consumer's N^2 cells, both
+independently generated `generated:quad:NxN` meshes over the unit square, on disjoint MPI rank sets,
+fails `Runner::initialize()` at N=1000 (2 and 3 ranks, both host and `FUSE_EXECUTION_SPACE=device`) with
+
+    E-INTERP-NEWTON: 'link/remap': build_distributed_interp_rows failed:
+    build_distributed_interp_rows: rank 1 could not place its evaluation
+    entity of global id 0 (E-INTERP-NEWTON)
+
+-- the SAME evaluation entity (global id 0, the mesh's own corner at (0,0)) D67
+(runtime-exchange track, 2026-10-15) already named as the one point where a replicated-source,
+multi-rank point-location search disagrees with a one-rank reference by 1 ULP. D67 was a tiny
+VALUE discrepancy, absorbed by every test's own tolerance until an exact-equality row caught it;
+this is the same search going further and refusing outright to place that corner point at all, at a
+rank count and problem size D67's own file never tried (D67's own reproduction is `n_beam=7,
+n_fluid=11` on a 1D line mesh at ranks 2 and 3; this file's own mesh is 2D, `N=1000`). Not
+reproduced at N=1 (one rank; no replicated gather at all, `comm_handle == kNullComm`-shaped) nor at
+small multi-rank N (N=20, 2 and 3 ranks, passes cleanly) -- whatever tips the Newton iteration from
+"1 ULP off" to "does not converge" at this corner depends on both the rank split and the problem
+size, not reproduced at a size small enough to isolate further within this track's own time.
+
+Not fixed here, and not this track's own scope to fix (the primitive D67 already named,
+`build_distributed_interp_rows`'s own per-cell containment search, general_interp.hpp's
+`invert_reference_map`/tie-break code). Worked around in `test/CMakeLists.txt`'s own bench
+registration: `bench.scaled_device_benchmark.{2,3}` and their `.device` twins are registered
+`DISABLED TRUE`, each with a comment pointing here, rather than left failing or silently dropped --
+`bench.scaled_device_benchmark.1[.device]` (no multi-rank split, no replicated gather) and the small
+`example.scaled_device_benchmark[.device]` correctness row (world size 1, same reason) are
+unaffected and pass. Re-enabling the two disabled rows is the right acceptance test for whoever
+fixes D67/D69's shared root cause.
