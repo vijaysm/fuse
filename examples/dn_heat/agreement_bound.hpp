@@ -19,7 +19,7 @@
 // bound many orders of magnitude looser than the quantity it was meant to
 // certify. The separate `3.9e-8 * ||native solution||` term was ALSO the
 // wrong kind of quantity for this purpose: it is docs/dev/newton-krylov.md
-// §10.3's measured first-Newton-step residual difference between the
+// Section 10.3's measured first-Newton-step residual difference between the
 // native and PETSc GMRES implementations on SYNTHETIC quadratic/atan unit
 // problems -- a measurement about how the two Krylov solvers' own internal
 // arithmetic differs ONE STEP IN, not a bound on the difference between
@@ -221,7 +221,7 @@ inline constexpr double kJacobianInverseInfNorm = 2.0 / (1.0 + kMinStationRatio)
 // ---------------------------------------------------------------------
 
 /// The measured relative inter-solver (native-vs-PETSc GMRES/Arnoldi)
-/// difference, docs/dev/newton-krylov.md §10.3 -- round 2's own
+/// difference, docs/dev/newton-krylov.md Section 10.3 -- round 2's own
 /// additional term, kept here only for the legacy formula below.
 inline constexpr double kMeasuredInterSolverRelativeDifference = 3.9e-8;
 

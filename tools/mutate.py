@@ -284,12 +284,12 @@ def main() -> int:
         area = args.area or "all"
         # An area may be a path ("examples/brusselator"); the log is one file.
         log = ROOT / "build-evidence" / f"{area.replace('/', '-')}-mutations.md"
-        lines = [f"# Mutation evidence — `{area}`", "",
+        lines = [f"# Mutation evidence -- `{area}`", "",
                  f"Run {date.today().isoformat()} against build `{args.build_dir.name}`. "
                  "Regenerate with `tools/mutate.py --write-log`; do not edit.", "",
                  "| Mutation | File | Outcome | Killed by |", "|---|---|---|---|"]
         for m, v, n in results:
-            lines.append(f"| `{m['id']}` — {m['describes']} | `{m['file']}` | **{v}** ({n}) | `{m['test']}` |")
+            lines.append(f"| `{m['id']}` -- {m['describes']} | `{m['file']}` | **{v}** ({n}) | `{m['test']}` |")
         lines += ["", f"**{killed} killed / {len(results)} total.**"]
         log.write_text("\n".join(lines) + "\n")
         print(f"wrote {log.relative_to(ROOT)}")

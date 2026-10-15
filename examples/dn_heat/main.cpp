@@ -1,4 +1,4 @@
-// Demo A of spec §11 at the Phase 7 milestone: IMPLICIT coupling.
+// Demo A of spec Section 11 at the Phase 7 milestone: IMPLICIT coupling.
 //
 // A classical Dirichlet-Neumann pair of heat conduction domains, iterated to
 // its fixed point inside a `g.iterate({...})` implicit coupling group with a derived checkpoint
@@ -38,7 +38,7 @@
 //   newton-petsc / newton-nl-petsc (S7.2b, PetscSelect track): the SAME two
 //              graphs as newton/newton-nl, solved by the PETSc SNESNEWTONLS
 //              substrate (fuse::petsc::solve(), docs/dev/newton-krylov.md
-//              §10) instead of the native one -- selected by
+//              Section 10) instead of the native one -- selected by
 //              NewtonConfig::substrate, never a code fork. Run ONLY when
 //              invoked with --newton-petsc, and only compiled in at all
 //              under FUSE_HAVE_PETSC: calling fuse::petsc::install() (this
@@ -53,7 +53,7 @@
 //              row's output stays byte-identical whether or not this
 //              binary was built with FUSE_ENABLE_PETSC.
 //   newton-nl  dn::DirichletSlab::beta = 0.1 (a real nonlinearity in the wall's
-//              own conductivity, docs/dev/newton-krylov.md §8.3), still solved
+//              own conductivity, docs/dev/newton-krylov.md Section 8.3), still solved
 //              by Newton: informational, like iqn+qr2, reporting the FITTED
 //              convergence order from the final period's own residual history
 //              rather than entering the correctness ladder (it is not the same
@@ -71,7 +71,7 @@
 // not opinions (32 stations, 20 coupling cycles, tolerance 1e-8, debug build):
 //
 //   * deleting either convergence measure -- i.e. writing the single-measure
-//     form spec §5.3's example suggests -- is rejected at initialize() with
+//     form spec Section 5.3's example suggests -- is rejected at initialize() with
 //     E-ITER-MEASURE naming the unmeasured field transfer. Both directions were
 //     tried. Nothing silently converges to the wrong fixed point here, but
 //     only because the runtime rejects to start.
@@ -211,7 +211,7 @@ fuse::CouplingGraph build_graph(fuse::AccelConfig accel, int max_iterations) {
 
   // THE CRITERION COVERS BOTH FIELD TRANSFERS, and this is not a style choice.
   // `Converged::Relative(tol, "u_wall")` alone -- the obvious reading of spec
-  // §5.3's single-measure example -- would leave the flux residual untested. A
+  // Section 5.3's single-measure example -- would leave the flux residual untested. A
   // quasi-Newton step is a least-squares fit over the CONCATENATED residual
   // and is perfectly capable of zeroing the measured block at the expense of
   // the unmeasured one: measured on the sibling two-field-transfer test, IQN-ILS
@@ -875,7 +875,7 @@ int main(int argc, char** argv) {
       run_case(newton_cfg, kMaxIterations, kPeriods, dn::Wiring::Connected,
                true);
   // Informational, like iqn+qr2: a REAL nonlinearity in the wall's own
-  // conductivity (beta = 0.1, docs/dev/newton-krylov.md §8.3), rtol loosened
+  // conductivity (beta = 0.1, docs/dev/newton-krylov.md Section 8.3), rtol loosened
   // to 1e-4 for the SAME reason the dedicated unit test loosens it -- reaching
   // 1e-8 from here needs a near-machine-precision last linear solve this
   // unpreconditioned, matrix-free iteration cannot complete within a sane
@@ -953,7 +953,7 @@ int main(int argc, char** argv) {
       "  NOTE: 'newton' row's own sweeps column (%lld) counts one per "
       "coupling period, not one per Newton step -- a Newton-selected region "
       "bypasses the Picard sweep loop entirely (docs/dev/newton-krylov.md "
-      "§8.1) and so does not accumulate `total_iterations` the way the rows "
+      "Section 8.1) and so does not accumulate `total_iterations` the way the rows "
       "above do. The final period alone took %zu Newton step(s) (its own "
       "residual history below).\n",
       static_cast<long long>(newton.sweeps), newton.last_residuals.size());
@@ -1058,13 +1058,13 @@ int main(int argc, char** argv) {
   // 1b. The Newton-selected region, gated separately from gate 1 above: its
   //     own "sweeps" (runner.stats().total_iterations) counts one per
   //     coupling period, not one per Newton step (docs/dev/newton-krylov.md
-  //     §8.1), so the `sweeps > periods` check above would read it as "not
+  //     Section 8.1), so the `sweeps > periods` check above would read it as "not
   //     an iteration" -- true of the COUNTER, false of what actually ran.
   //     `checkpoint_verifications` is also not asserted here: it counts the
   //     OUTER checkpoint/rollback byte-verification a REJECTED Picard sweep
   //     triggers, and a Newton-selected region has no rejected-sweep
   //     rollback to verify (its own commit is the only non-restored write,
-  //     docs/dev/newton-krylov.md §8.1) -- 0 here is the honest answer, not
+  //     docs/dev/newton-krylov.md Section 8.1) -- 0 here is the honest answer, not
   //     a missing check.
   check(newton.not_converged == 0,
         "newton: " + std::to_string(newton.not_converged) +
@@ -1078,8 +1078,8 @@ int main(int argc, char** argv) {
             " W/m^2 >= " + std::to_string(kImplicitGate));
   check(newton.addresses_fixed,
         "newton: a registered field address moved during the run");
-  // docs/dev/newton-krylov.md §8.3b: this track's own fix for a genuine,
-  // numerically-harmless bookkeeping defect found while measuring §8.3 --
+  // docs/dev/newton-krylov.md Section 8.3b: this track's own fix for a genuine,
+  // numerically-harmless bookkeeping defect found while measuring Section 8.3 --
   // run_region_newton() originally left the generic per-period tick every
   // region (Newton or Picard) is already advanced by before its own body
   // runs un-rolled-back, so this read 2x the period count. Regression-

@@ -23,7 +23,7 @@ iteration region 'dirichlet_neumann': 0 coupler buffer(s) and 2 component(s) mus
   expl-long    200      200    200   2.312e+00  4.542e+00   4.963e+00  5.819e+00
   iqn-long     200     2016      0   8.541e-07  1.708e-06   8.541e-07  1.708e-06
   newton        20       20      0   8.660e-11  1.290e-10   1.260e-10  2.303e-10
-  NOTE: 'newton' row's own sweeps column (20) counts one per coupling period, not one per Newton step -- a Newton-selected region bypasses the Picard sweep loop entirely (docs/dev/newton-krylov.md §8.1) and so does not accumulate `total_iterations` the way the rows above do. The final period alone took 4 Newton step(s) (its own residual history below).
+  NOTE: 'newton' row's own sweeps column (20) counts one per coupling period, not one per Newton step -- a Newton-selected region bypasses the Picard sweep loop entirely (docs/dev/newton-krylov.md Section 8.1) and so does not accumulate `total_iterations` the way the rows above do. The final period alone took 4 Newton step(s) (its own residual history below).
 
 residual history of the final period (2-norm of the concatenated residual)
   picard     734 sweeps: 5.68e+01 5.64e+01 4.88e+01 4.86e+01 4.36e+01 4.34e+01 ... 1.10e-05

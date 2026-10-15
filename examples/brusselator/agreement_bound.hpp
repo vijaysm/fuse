@@ -2,7 +2,7 @@
 
 // AgreementBounds track: the native-vs-PETSc agreement bound for the
 // Brusselator's own window-Newton coupling (docs/dev/newton-krylov.md
-// §9), replacing a chosen constant (first a 20x margin on a mistaken
+// Section 9), replacing a chosen constant (first a 20x margin on a mistaken
 // proxy, then a measured-but-still-chosen inflation of a LOWER bound on
 // ||J^-1|| -- rejected: a multiple of a lower bound proves nothing about
 // an upper bound, no matter how it is flagged) with an A-POSTERIORI
@@ -13,7 +13,7 @@
 // dn_heat/agreement_bound.hpp) is exact because its own residual is
 // affine with a known, closed-form per-station Jacobian. The
 // Brusselator's window-Newton residual is nonlinear (the reaction term)
-// and spans multiple window substeps (docs/dev/newton-krylov.md §9.1);
+// and spans multiple window substeps (docs/dev/newton-krylov.md Section 9.1);
 // no closed-form Jacobian-inverse bound was derived for it, and the
 // Runner's public API exposes only ||F|| at each Newton iterate
 // (IterationStats::residual_history), never the iterate itself or a
@@ -66,7 +66,7 @@
 // ROUND 3 (the owner's own correction to round 2): the SEPARATE
 // `kMeasuredInterSolverRelativeDifference * ||native solution||` term
 // below is REMOVED from the asserted bound. It is docs/dev/newton-
-// krylov.md §10.3's measured FIRST-NEWTON-STEP residual difference
+// krylov.md Section 10.3's measured FIRST-NEWTON-STEP residual difference
 // between the native and PETSc GMRES implementations on SYNTHETIC
 // quadratic/atan unit problems -- a measurement about how the two
 // Krylov solvers' own internal arithmetic differs ONE STEP IN, not a
@@ -94,7 +94,7 @@
 // `c` a fill-in-dependent constant this track did not derive from
 // `DiffusionSolver`'s own factorisation, and the window compounds up to
 // 11 such solves (U's own `window_sample_capacity`, docs/dev/newton-
-// krylov.md §9.1) with remap interpolation between them. Deriving `||A||`
+// krylov.md Section 9.1) with remap interpolation between them. Deriving `||A||`
 // and the fill-in constant from the code rather than guessing would be
 // needed for a defensible number, and this track did not do that work --
 // so NO round-off floor is added here. If the host's own observed
@@ -134,7 +134,7 @@ namespace brusselator_bound {
 // own "ROUND 3" section is why.
 // ---------------------------------------------------------------------
 
-/// docs/dev/newton-krylov.md §10.3's own measured relative difference
+/// docs/dev/newton-krylov.md Section 10.3's own measured relative difference
 /// between the native and PETSc GMRES/Arnoldi implementations, on a
 /// synthetic quadratic/atan problem -- round 2's own additional term,
 /// kept here only for the legacy formula below.

@@ -11,7 +11,7 @@
 
 #include <fuse/runtime/component.hpp>
 
-/// The two participants of Demo A (spec §11) at the Phase 7 milestone: a
+/// The two participants of Demo A (spec Section 11) at the Phase 7 milestone: a
 /// Dirichlet-Neumann pair of heat conduction domains, coupled implicitly.
 ///
 /// THE PROBLEM, and why its error is the COUPLER'S and nobody else's.
