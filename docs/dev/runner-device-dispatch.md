@@ -210,6 +210,17 @@ when the code contradicted the plan's assumption:
   host memory stays authoritative. Cost: one extra deep_copy pair per
   `Relax`/`Residual` on the device path — performance only, which this
   document already concedes for the whole device path.
+
+  NOT superseded (window-regions track, 2026-10-15, docs/dev/
+  device-resident-arcs.md step 8): a device-resident companion for
+  `previous[]` and an unpinned window-import arc were ATTEMPTED this
+  round, on the theory that `advance_window()`'s own `slot_host_read()`
+  would remove the "would have desynchronised the window path" risk this
+  bullet names. The attempt was reverted -- see step 8's own account of
+  the correctness regression it produced and the bisection that narrowed
+  it without finding the cause. `previous[]` stays staged through the
+  per-instruction device lane for `Relax`/`Residual`, unchanged from this
+  bullet's own original account.
 - **No `reduction_scratch` device companion.** It is used only by
   `iteration.cpp`'s deterministic norms over host arc buffers, which stay
   host-resident under this port. If `iteration.cpp` ever dispatches on
