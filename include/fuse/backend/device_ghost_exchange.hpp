@@ -26,7 +26,13 @@
 /// example code outside this library). This class is new infrastructure
 /// for the next device-resident consumer, built and tested on its own
 /// terms (test/parallel/device_ghost_exchange_test.cpp) rather than
-/// retrofitted onto a caller that does not yet need it.
+/// retrofitted onto a caller that does not yet need it. (This round's
+/// OWN Task 2, `nodal_remap_distributed.cpp`'s plan-based exchange, DOES
+/// use this class's `update<Space>()`/`exchange_adjoint_raw<Space>()` as
+/// its underlying engine -- a different, purpose-built consumer of a
+/// SPECIFIC nodal-remap pattern, not the generic mesh-halo-field use
+/// case `DistVector`/`NativeMeshBackend` would reach this class for,
+/// which still has none.)
 
 #include "fuse/base/config.hpp"
 #include "fuse/base/error.hpp"
@@ -203,16 +209,18 @@ class DeviceGhostExchanger {
   /// `ghost_size()` entries, in the SAME ghost order `update()`'s own
   /// `ghosts` argument uses) into `accum` (`Space`-resident, `accum_n`
   /// entries), ACCUMULATING -- `accum[k] += ...`, not `=` -- at
-  /// whichever local index each contribution's owner resolved to.
-  /// `accum` is NOT zeroed by this call; the caller zeroes it first
-  /// (`nodal_remap_distributed.cpp`'s own H^T scatter needs this because
-  /// several contributions, from different rows and possibly different
-  /// ranks, legitimately land on the same destination entry -- the exact
-  /// reduction `apply_distributed_HT`'s own `sum_by_gid` performs, done
-  /// here with `Kokkos::atomic_add` instead of a pre-sorted local sum;
-  /// see docs/dev/device-resident-arcs.md's own note on the
-  /// determinism trade this makes against `apply_distributed_HT`'s
-  /// bit-identical-across-rank-counts guarantee).
+  /// whichever local index each contribution's owner resolved to, via
+  /// `Kokkos::atomic_add` in whatever order MPI happens to deliver the
+  /// contributions. `accum` is NOT zeroed by this call; the caller
+  /// zeroes it first. This is the right tool for a caller with no
+  /// summation order of its own to preserve (this class's own ring-
+  /// pattern test, where each ghost maps to a UNIQUE remote owned entry
+  /// and there is no fan-in to order at all) -- NOT for
+  /// `nodal_remap_distributed.cpp`'s own H^T scatter-add, which needs
+  /// reproducibility across rank counts and uses `exchange_adjoint_raw()`
+  /// below plus its own precomputed, decomposition-independent sort
+  /// instead (see `DistributedRemapPlan::target_row_offset`/
+  /// `sorted_answer_slot`'s own header comment).
   ///
   /// Requires the `PackedExchanger` facet (an `MpiExchanger`); unlike
   /// `update()`, there is no generic fallback through the base
@@ -304,6 +312,88 @@ class DeviceGhostExchanger {
     (void)accum_n;
     return Failure{"E-RT-NODAL-DIST-NOMPI",
                    "DeviceGhostExchanger::update_adjoint: ghost_size() > 0 but the base "
+                   "exchanger has no PackedExchanger facet -- unreachable for a real "
+                   "MpiExchanger, so this indicates an exchanger type this class does not "
+                   "yet support"};
+  }
+
+  /// The gather+exchange HALF of `update_adjoint()` above, WITHOUT its
+  /// own atomic-add unpack: `raw_answers` (`Space`-resident,
+  /// `raw_answers_n` entries, `raw_answers_n` must equal the base
+  /// exchanger's own `pack_index().size()`) receives the post-exchange
+  /// buffer in `pack_index()`'s own ANSWER order, left for the CALLER to
+  /// reduce itself. `nodal_remap_distributed.cpp`'s H^T scatter-add uses
+  /// this instead of `update_adjoint()`'s own generic (MPI-arrival-
+  /// order, hence not reproducible across rank counts) `Kokkos::
+  /// atomic_add`: see `DistributedRemapPlan::target_row_offset`/
+  /// `sorted_answer_slot`'s own header comment for the FIXED,
+  /// decomposition-independent order it reduces `raw_answers` in
+  /// instead. `update_adjoint()` itself is UNCHANGED and still correct
+  /// for a caller with no fan-in order of its own to preserve.
+  template <class Space>
+  [[nodiscard]] Result<void> exchange_adjoint_raw(const double* contrib, std::size_t contrib_n,
+                                                  double* raw_answers,
+                                                  std::size_t raw_answers_n) const {
+    last_device_direct_ = false;
+#if FUSE_HAVE_MPI
+    if (packed_) {
+      const auto& pack_idx = packed_->pack_index();
+      const auto& unpack_idx = packed_->unpack_index();
+      const std::size_t send_total = pack_idx.size();
+      const std::size_t recv_total = unpack_idx.size();
+      (void)raw_answers_n;  // == send_total, by this function's own contract
+
+      Kokkos::View<const double*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>> contrib_view(
+          contrib, contrib_n);
+      Kokkos::View<double*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>> ans_view(
+          raw_answers, send_total);
+      Kokkos::View<double*, Space> req_buf(
+          Kokkos::view_alloc(Kokkos::WithoutInitializing, "ghost_exchange_adjoint_raw_req"),
+          recv_total);
+
+      constexpr bool kSpaceIsHost =
+          Kokkos::SpaceAccessibility<Space, Kokkos::HostSpace>::accessible;
+      if constexpr (kSpaceIsHost) {
+        const std::int64_t* unpack_p = unpack_idx.data();
+        Kokkos::parallel_for(
+            "ghost_exchange_adjoint_raw_gather_host", Kokkos::RangePolicy<Space>(0, recv_total),
+            KOKKOS_LAMBDA(std::size_t k) {
+              req_buf(k) = contrib_view(static_cast<std::size_t>(unpack_p[k]));
+            });
+        Kokkos::fence("ghost_exchange_adjoint_raw_gather_host_fence");
+      } else {
+        ensure_device_maps(pack_idx, unpack_idx);
+        auto d_unpack = d_unpack_index_;
+        Kokkos::parallel_for(
+            "ghost_exchange_adjoint_raw_gather_device", Kokkos::RangePolicy<Space>(0, recv_total),
+            KOKKOS_LAMBDA(std::size_t k) {
+              req_buf(k) = contrib_view(static_cast<std::size_t>(d_unpack(k)));
+            });
+        Kokkos::fence("ghost_exchange_adjoint_raw_gather_device_fence");
+      }
+
+      const bool gpu_aware = linalg::mpi_is_gpu_aware();
+      if (!kSpaceIsHost && gpu_aware) {
+        const auto ex = packed_->exchange_packed_adjoint(req_buf.data(), ans_view.data());
+        if (!ex.ok()) return ex.error();
+        last_device_direct_ = true;
+      } else {
+        auto req_host = Kokkos::create_mirror_view(req_buf);
+        Kokkos::deep_copy(req_host, req_buf);
+        std::vector<double> ans_host(send_total, 0.0);
+        const auto ex = packed_->exchange_packed_adjoint(req_host.data(), ans_host.data());
+        if (!ex.ok()) return ex.error();
+        Kokkos::View<const double*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
+            ans_host_view(ans_host.data(), send_total);
+        Kokkos::deep_copy(ans_view, ans_host_view);
+      }
+      return Result<void>::success();
+    }
+#endif
+    (void)contrib_n;
+    (void)raw_answers_n;
+    return Failure{"E-RT-NODAL-DIST-NOMPI",
+                   "DeviceGhostExchanger::exchange_adjoint_raw: ghost_size() > 0 but the base "
                    "exchanger has no PackedExchanger facet -- unreachable for a real "
                    "MpiExchanger, so this indicates an exchanger type this class does not "
                    "yet support"};

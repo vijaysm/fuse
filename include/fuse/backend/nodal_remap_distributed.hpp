@@ -272,11 +272,48 @@ struct DistributedRemapPlan {
   /// side (`DistributedInterpRow`'s own header comment), so there is no
   /// ghost of the OUTPUT to refresh there.
   std::shared_ptr<const linalg::GhostExchanger> ghost_fill_exchanger;
+
+  /// Lead's determinism follow-up (2026-10-15): the H^T scatter-add's own
+  /// FIXED summation order, resolved ONCE here instead of leaving it to
+  /// `Kokkos::atomic_add`'s MPI-arrival order -- recovers
+  /// `apply_distributed_HT`'s own "bit-identical across rank counts"
+  /// guarantee (this struct's original round 2 submission traded that
+  /// guarantee away; see KNOWN_ISSUES/report-exchange-2.md for the
+  /// history) for this plan-based path too, at a one-time setup cost
+  /// instead of paying for it every period.
+  ///
+  /// Built from `exchanger`'s own `PackedExchanger::pack_index()`
+  /// indexing (the ADJOINT exchange's own "answer order",
+  /// `exchange_packed_adjoint()`'s own `recv` layout) by an EXTRA
+  /// one-time adjoint exchange of each contribution's CONTRIBUTOR
+  /// EVALUATION ENTITY'S GLOBAL id -- the identical sort key
+  /// `apply_distributed_HT`'s own file-header comment names as the one
+  /// that does not depend on the decomposition, unlike the contributing
+  /// RANK, which does -- one extra `MPI_Alltoallv` of a `double`-encoded
+  /// gid array, paid once at setup, not per period.
+  ///
+  /// `target_row_offset[t]..target_row_offset[t+1]` (CSR, size
+  /// `owned_n + 1`) names every answer slot destined for this rank's
+  /// OWNED, component-expanded local position `t`; `sorted_answer_slot`
+  /// (size `exchanger`'s own `pack_index().size()`) is a PERMUTATION of
+  /// `[0, pack_index().size())`, grouped by `t` and, within each group,
+  /// sorted ASCENDING by that slot's contributor global id. The per-
+  /// period kernel sums each `t`'s bucket in this FIXED order -- one
+  /// thread per `t`, a plain sequential loop over its own bucket, no
+  /// atomics -- giving a result that depends only on the SET of terms
+  /// (which is itself decomposition-independent), never on how many
+  /// ranks produced them or in what order MPI delivered them.
+  std::vector<std::size_t> target_row_offset;
+  std::vector<std::size_t> sorted_answer_slot;
 };
 
 /// Builds the plan above from `rows` (already built by
-/// `build_distributed_interp_rows`) and `src_nodal` (the SAME nodal
-/// `MeshView` that function and `apply_distributed_H`/`HT` take).
+/// `build_distributed_interp_rows`), `src_nodal` (the SAME nodal
+/// `MeshView` that function and `apply_distributed_H`/`HT` take), and
+/// `eval_points`/`eval_dim` (the SAME evaluation view and dimension --
+/// needed here, not just at apply time, so this function can resolve
+/// `target_row_offset`/`sorted_answer_slot` above from each row's own
+/// evaluation entity's GLOBAL id).
 /// COLLECTIVE over `comm_handle`, called ONCE per matching instruction at
 /// setup -- the same discipline `build_distributed_interp_rows` itself
 /// already documents. `comm_handle` must be a REAL communicator
@@ -293,11 +330,14 @@ struct DistributedRemapPlan {
 /// coordinates that one carries and this one does not need. Rejects
 /// `E-RT-NODAL-DIST-OWNER` (a row names a global id no rank reported
 /// owning -- the same code `build_distributed_interp_rows` uses for the
-/// identical hazard) and whatever `fuse::linalg::make_mpi_exchanger`
-/// itself asserts true by construction (it cannot fail post-validation;
-/// see that function's own contract).
+/// identical hazard), `E-RT-NODAL-DIST-GID-RANGE` (a contributor global
+/// id exceeds a double's 53-bit mantissa, the same `gid_fits_double`
+/// bound every other wire-format gid in this file is checked against),
+/// and whatever `fuse::linalg::make_mpi_exchanger` itself asserts true
+/// by construction (it cannot fail post-validation; see that function's
+/// own contract).
 [[nodiscard]] Result<DistributedRemapPlan> build_distributed_remap_plan(
-    const DistributedInterpRows& rows, const MeshView& src_nodal, std::size_t components,
-    search::CommHandle comm_handle);
+    const DistributedInterpRows& rows, const MeshView& src_nodal, const MeshView& eval_points,
+    int eval_dim, std::size_t components, search::CommHandle comm_handle);
 
 }  // namespace fuse

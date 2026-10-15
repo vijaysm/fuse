@@ -170,6 +170,13 @@ struct NodalDistRemap {
   /// rank's local ghost copy of the same source vertex. Null exactly
   /// when `remap_plan.ghost_fill_exchanger` is.
   std::shared_ptr<backend::DeviceGhostExchanger> device_ghost_fill_exchanger;
+  /// Device-resident mirrors of `remap_plan.target_row_offset`/
+  /// `sorted_answer_slot` (DistributedRemapPlan's own header comment --
+  /// the H^T scatter-add's precomputed, decomposition-independent
+  /// summation order), built once alongside the two above. Empty when
+  /// `device_exchanger` is null.
+  Kokkos::View<std::size_t*, Kokkos::DefaultExecutionSpace::memory_space> target_row_offset_device;
+  Kokkos::View<std::size_t*, Kokkos::DefaultExecutionSpace::memory_space> sorted_answer_slot_device;
 };
 
 /// One space-time channel's operator and its window of source history

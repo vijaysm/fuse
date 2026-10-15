@@ -7373,3 +7373,34 @@ device-direct branch itself has no host run that reaches it: nothing on higgs ca
 correctly with real device pointers in MPI's hands, as opposed to merely compiling. A host with a
 genuinely CUDA-aware OpenMPI (or MPICH built against UCX/CUDA) is what this needs; until then this
 branch is UNVERIFIED, not failing.
+
+### D64. `build_distributed_interp_rows`'s per-cell containment search disagrees by 1 ULP at the domain's own boundary vertex between an exactly-one-rank replica and a real multi-rank one — OPEN, found 2026-10-15 (runtime-exchange track, follow-up round)
+
+Found while adding `NodalRemapRunnerMpi.ConsistentTransposeIsBitIdenticalAcrossRankCounts` (the lead's
+determinism follow-up's own RED/GREEN row, `test/parallel/nodal_remap_runner_test.cpp`): the H^T
+scatter-add's plan-based reduction (this round's own fix, `DistributedRemapPlan::target_row_offset`/
+`sorted_answer_slot`) IS bit-identical across every real (`comm_handle != fuse::search::kNullComm`)
+decomposition tried — confirmed by a real host run at ranks 2 and 3, agreeing on all 8 beam vertices to
+the last bit. One vertex (global id 0, the mesh's own left edge at `x = 0.0`) disagrees between an
+EXACTLY-ONE-RANK run and EITHER multi-rank run by 1 ULP (`0.06611570247933884481` at one rank vs.
+`0.066115702479338858688` at both two and three ranks) — small enough that it was already silently
+absorbed by this file's own pre-existing `1e-12`-relative tolerance on every OTHER test here, never
+asserted against directly until this round's exact-equality row.
+
+NOT the scatter-add arrival-order nondeterminism this round's own fix targets (that part is confirmed
+fixed: two DIFFERENT real decompositions, ranks 2 and 3, already agree exactly on every vertex including
+this one). `GeometricLineMesh::measure()`/`centroid()` (test/support/partitioned_test_backend.hpp) are
+confirmed decomposition-invariant by inspection: both read only the GLOBAL `n_cells_`/global vertex
+index, never `num_ranks_in_set`/`my_rank_in_set`, so the mesh geometry itself is not the source. The
+likely cause is upstream, in `build_distributed_interp_rows`'s own per-cell containment search
+(general_interp.hpp's `invert_reference_map`/tie-break primitives) against the REPLICATED source mesh
+`gather_global_source` assembles: an exactly-one-rank run's replica is a trivial local copy (no
+`MPI_Allgatherv` at all, `allgatherv_records`'s own `comm_handle == kNullComm`-style identity path is
+NOT what runs here since this plan is built only for a real communicator, but the PATTERN/hash-map
+build order a one-element `MPI_Allgatherv` produces could still differ from a genuinely multi-rank
+concatenation's own order), which could change which of two near-tied candidate cells wins at a
+boundary point, or the floating-point path taken, by a reproducible but tiny amount. Not diagnosed
+further than this round's own scope (the scatter-add determinism, not the weight build) warranted;
+`nodal_remap_distributed_test.cpp`/`nodal_remap_distributed_nullcomm_test.cpp` (lower-level, non-Runner
+tests of the same primitive) would be the next place to isolate it with a 2-rank-vs-1-rank weight dump,
+if this round's track's own time allowed.

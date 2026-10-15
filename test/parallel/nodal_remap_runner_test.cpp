@@ -169,7 +169,8 @@ struct ReferenceResult {
 /// the fluid traction density is a uniform 1.0, matching `compute_reference`
 /// above exactly. Every rank of `MPI_COMM_WORLD` must call this.
 void run_and_check(std::size_t n_beam, std::size_t n_fluid, fuse::RankSet beam_ranks,
-                   fuse::RankSet fluid_ranks, double vel_a, double vel_b) {
+                   fuse::RankSet fluid_ranks, double vel_a, double vel_b,
+                   bool exact_beam_load = false) {
   CouplingGraph g;
   const auto m_beam = g.add_mesh(fuse::MeshDecl{.name = "beam_mesh", .source = "n/a"});
   const auto m_fluid = g.add_mesh(fuse::MeshDecl{.name = "fluid_mesh", .source = "n/a"});
@@ -336,8 +337,43 @@ void run_and_check(std::size_t n_beam, std::size_t n_fluid, fuse::RankSet beam_r
   const std::vector<double>& beam_load = bp->bufs["beam_load"];
   for (std::size_t i = 0; i < beam_load.size(); ++i) {
     const std::size_t gid = beam_view->global_id(0, i);
-    EXPECT_NEAR(beam_load[i], ref.beam_load.at(gid), 1e-12 * std::abs(ref.beam_load.at(gid)) + 1e-13)
-        << "rank " << world_rank() << " beam local vertex " << i << " (global id " << gid << ")";
+    // Lead's determinism follow-up (2026-10-15): `exact_beam_load` tightens
+    // this check to bitwise equality for
+    // ConsistentTransposeIsBitIdenticalAcrossRankCounts below -- the plan-
+    // based H^T scatter-add now sums every contribution in ascending
+    // CONTRIBUTOR GLOBAL id order (DistributedRemapPlan::target_row_offset/
+    // sorted_answer_slot's own header comment), the SAME order
+    // compute_reference()'s own serial apply_weights() call sums its COO
+    // storage in (a one-rank build's fluid-cell LOCAL index IS its GLOBAL
+    // id, and that storage is itself grouped by ascending fluid cell), so
+    // the two are expected to agree to the LAST BIT, not just in tolerance.
+    if (exact_beam_load && gid != 0) {
+      EXPECT_EQ(beam_load[i], ref.beam_load.at(gid))
+          << "rank " << world_rank() << " beam local vertex " << i << " (global id " << gid << ")";
+    } else if (exact_beam_load) {
+      // gid 0 (x=0, the domain's own left edge) is excluded from the
+      // EXACT check above: a real host run (ranks 1/2/3, both host and
+      // .device) found its weight differs from the one-rank reference by
+      // 1 ULP, identically at rank counts 2 AND 3 -- i.e., a GENUINE,
+      // reproducible discrepancy between an exactly-one-rank replica
+      // assembly (gather_global_source's own trivial local-copy branch)
+      // and a real multi-rank MPI_Allgatherv concatenation, in
+      // `build_distributed_interp_rows`'s own per-cell containment
+      // search at this one boundary vertex -- NOT the H^T scatter-add's
+      // arrival-order nondeterminism this test targets (that part
+      // already proved rank-count-independent: every OTHER vertex here
+      // matches bitwise, and this one itself matches between ranks 2
+      // and 3). Pre-existing, out of this round's scope (recorded as
+      // KNOWN_ISSUES D64); still checked, at a tolerance (5e-16, an
+      // order of magnitude above the observed 1-ULP gap) tight enough
+      // that a regression to arrival-order Kokkos::atomic_add would
+      // still be caught here too.
+      EXPECT_NEAR(beam_load[i], ref.beam_load.at(gid), 5e-16)
+          << "rank " << world_rank() << " beam local vertex " << i << " (global id " << gid << ")";
+    } else {
+      EXPECT_NEAR(beam_load[i], ref.beam_load.at(gid), 1e-12 * std::abs(ref.beam_load.at(gid)) + 1e-13)
+          << "rank " << world_rank() << " beam local vertex " << i << " (global id " << gid << ")";
+    }
   }
 
   // (3) Global force conserved and interface power balanced to 1e-13
@@ -406,6 +442,23 @@ TEST(NodalRemapRunnerMpi, IdenticalRankSets) {
   // see KNOWN_ISSUES.md D8 for the exact host command this still needs.
   const fuse::RankSet all{0, world_size()};
   run_and_check(7, 11, all, all, 0.3, 2.0);
+}
+
+TEST(NodalRemapRunnerMpi, ConsistentTransposeIsBitIdenticalAcrossRankCounts) {
+  // Lead's determinism follow-up (2026-10-15): nodal_remap_distributed.cpp's
+  // plan-based H^T scatter-add now sorts every contribution by its
+  // CONTRIBUTOR EVAL ENTITY'S GLOBAL id before summing -- the SAME key
+  // compute_reference()'s own serial apply_weights() call effectively sums
+  // its COO storage in (a single-rank build's fluid-cell LOCAL index IS its
+  // GLOBAL id, and build_consistent_interp_weights' own storage is grouped
+  // by ascending fluid cell). This is the one test in this file that
+  // asserts EXACT (not EXPECT_NEAR) equality against that reference, at
+  // every rank count this file is registered for (parallel-matrix.toml:
+  // 1 through 5) -- a loose tolerance would not have caught a regression
+  // back to arrival-order Kokkos::atomic_add, since that was already
+  // passing the file's own 1e-12 relative check before this round's fix.
+  const fuse::RankSet all{0, world_size()};
+  run_and_check(7, 11, all, all, 0.3, 2.0, /*exact_beam_load=*/true);
 }
 
 TEST(NodalRemapRunnerMpi, PartiallyOverlappingRankSets) {

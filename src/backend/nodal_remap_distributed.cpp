@@ -786,6 +786,8 @@ Result<void> apply_distributed_HT(const DistributedInterpRows& rows, const MeshV
 
 Result<DistributedRemapPlan> build_distributed_remap_plan(const DistributedInterpRows& rows,
                                                           const MeshView& src_nodal,
+                                                          const MeshView& eval_points,
+                                                          int eval_dim,
                                                           std::size_t components,
                                                           search::CommHandle comm_handle) {
   if (components < 1) {
@@ -808,6 +810,8 @@ Result<DistributedRemapPlan> build_distributed_remap_plan(const DistributedInter
 #if !FUSE_HAVE_MPI
   (void)rows;
   (void)src_nodal;
+  (void)eval_points;
+  (void)eval_dim;
   (void)components;
   return Failure{"E-RT-NODAL-DIST-NOMPI",
                  "build_distributed_remap_plan: comm_handle names a real communicator, but "
@@ -933,6 +937,82 @@ Result<DistributedRemapPlan> build_distributed_remap_plan(const DistributedInter
       linalg::make_mpi_exchanger(static_cast<int>(comm_handle), pattern, plan.owned_n);
   plan.ghost_fill_exchanger =
       linalg::make_mpi_exchanger(static_cast<int>(comm_handle), fill_pattern, plan.owned_n);
+
+  // Step 5 (lead's deterministic-sum follow-up, 2026-10-15): resolve the
+  // H^T scatter-add's own FIXED summation order once here, instead of
+  // leaving it to `Kokkos::atomic_add`'s MPI-arrival order -- recovers
+  // `apply_distributed_HT`'s own "bit-identical across rank counts"
+  // guarantee for this plan-based path too. See DistributedRemapPlan's
+  // own header comment for the full rationale; this is the identical
+  // (target_gid, contributor_gid) sort `apply_distributed_HT` already
+  // performs per call, done here ONCE against the exchanger's own
+  // ADJOINT "answer order" instead of a fresh Allgatherv'd term list
+  // every period.
+  const auto packed = std::dynamic_pointer_cast<const linalg::PackedExchanger>(plan.exchanger);
+  if (!packed) {
+    return Failure{"E-RT-NODAL-DIST-MPI",
+                   "build_distributed_remap_plan: make_mpi_exchanger returned an exchanger "
+                   "with no PackedExchanger facet -- unreachable for a real communicator"};
+  }
+  const auto& unpack_idx = packed->unpack_index();  // REQUEST order, length total_slots*components
+  const auto& pack_idx = packed->pack_index();       // ANSWER order, length this rank's own incoming count
+
+  // This rank's own per-slot contributor id (the OWNING evaluation
+  // entity's global id, the SAME value repeated across a row's `k`
+  // weights and `components` components), in the SAME slot order
+  // `weights_flat`/`pattern` already use -- gathered into REQUEST order
+  // by `unpack_index()` exactly the way `DeviceGhostExchanger::
+  // update_adjoint()` gathers a real contribution value (comm.hpp's own
+  // NAMING paragraph: `unpack_index()` is this rank's REQUEST side).
+  bool gid_range_failed = false;
+  std::size_t gid_range_fail_gid = 0;
+  std::vector<double> contributor_gid(total_slots * components, 0.0);
+  for (std::size_t r = 0; r < rows.rows.size(); ++r) {
+    const std::size_t gid = eval_points.global_id(eval_dim, rows.rows[r].local_index);
+    if (!gid_fits_double(gid) && !gid_range_failed) {
+      gid_range_failed = true;
+      gid_range_fail_gid = gid;
+    }
+    for (std::size_t k = 0; k < rows.rows[r].weights.size(); ++k) {
+      for (std::size_t c = 0; c < components; ++c) {
+        contributor_gid[(plan.row_offset[r] + k) * components + c] = static_cast<double>(gid);
+      }
+    }
+  }
+  {
+    const auto agreed = agree_on_local_failure(comm_handle, gid_range_failed,
+                                               static_cast<int>(FailCode::kGidTooLarge),
+                                               gid_range_fail_gid, "build_distributed_remap_plan");
+    if (!agreed.ok()) return agreed.error();
+  }
+
+  std::vector<double> req_buf(unpack_idx.size(), 0.0);
+  for (std::size_t k = 0; k < unpack_idx.size(); ++k) {
+    req_buf[k] = contributor_gid[static_cast<std::size_t>(unpack_idx[k])];
+  }
+  std::vector<double> ans_buf(pack_idx.size(), 0.0);
+  const auto tag_ex = packed->exchange_packed_adjoint(req_buf.data(), ans_buf.data());
+  if (!tag_ex.ok()) return tag_ex.error();
+
+  // Group every answer slot by its OWNED target position (`pack_idx`'s
+  // own value -- the identical target `DeviceGhostExchanger::
+  // update_adjoint()`'s own atomic-add would scatter into), sorted
+  // ascending by the gid this slot's contribution carries -- the fixed,
+  // decomposition-independent order described above.
+  std::vector<std::vector<std::pair<double, std::size_t>>> buckets(plan.owned_n);
+  for (std::size_t k = 0; k < pack_idx.size(); ++k) {
+    const auto t = static_cast<std::size_t>(pack_idx[k]);
+    buckets[t].emplace_back(ans_buf[k], k);
+  }
+  plan.target_row_offset.assign(plan.owned_n + 1, 0);
+  plan.sorted_answer_slot.assign(pack_idx.size(), 0);
+  std::size_t pos = 0;
+  for (std::size_t t = 0; t < plan.owned_n; ++t) {
+    std::sort(buckets[t].begin(), buckets[t].end());
+    for (const auto& [gid, k] : buckets[t]) plan.sorted_answer_slot[pos++] = k;
+    plan.target_row_offset[t + 1] = pos;
+  }
+
   return plan;
 #endif
 }
