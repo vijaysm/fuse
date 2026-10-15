@@ -134,6 +134,29 @@ class GhostExchanger {
 [[nodiscard]] std::shared_ptr<const GhostExchanger> make_serial_exchanger();
 
 #if FUSE_HAVE_MPI
+/// A run-time probe for whether this build's MPI will move a device
+/// pointer correctly (CUDA-aware buffers), shared by every caller that
+/// used to duplicate it (`fuse::transport::MpiTransport::is_gpu_aware()`,
+/// src/transport/mpi_transport.cpp) rather than re-derived per layer --
+/// the runtime-exchange track's own layering decision: `linalg` sits
+/// below both `transport` and `backend` (tools/check-layering.py), so
+/// this is the lowest layer either can include it from.
+/// `fuse::native::mpi_is_gpu_aware()` (src/backend/native_migration.cpp)
+/// is NOT routed through this -- that probe belongs to the migration
+/// track's own buffers (native_migration.hpp's header comment), outside
+/// this track's scope.
+///
+/// `FUSE_TRANSPORT_HOST_STAGING=1` forces this to `false` regardless of
+/// the underlying probe -- the one lever that lets the host-staged
+/// fallback be exercised by a test even on a machine whose MPI genuinely
+/// is GPU-aware (named `FUSE_TRANSPORT_HOST_STAGING` for the transport
+/// track that first added it; kept rather than renamed, since every
+/// caller of this probe -- transport's own channel exchange, the ghost
+/// and nodal-remap exchanges this track adds -- answers the identical
+/// question, "may a device pointer reach MPI directly", and a second env
+/// var asking it again would only invite the two disagreeing).
+[[nodiscard]] bool mpi_is_gpu_aware();
+
 /// `comm_f` is an `MPI_Comm_c2f` handle, exactly like
 /// `fuse::search::CommHandle` -- this header stays free of `mpi.h` even
 /// though the factory exists only in an MPI build; `src/linalg/comm_mpi.cpp`
@@ -221,6 +244,80 @@ struct ParticipantSetReducerResult {
 /// why a plain `MPI_Alltoallv` is enough for `update()` itself.
 [[nodiscard]] std::shared_ptr<const GhostExchanger> make_mpi_exchanger(
     int comm_f, const GhostPattern& pattern, std::size_t owned_n);
+
+/// The counts, displacements and pack/unpack maps `make_mpi_exchanger()`'s
+/// own `update()` already derives once and reuses every call
+/// (src/linalg/comm_mpi.cpp's header comment), exposed so a caller that
+/// can pack and unpack on its OWN memory space -- a Kokkos kernel on a
+/// device-resident ghost exchange (`fuse::backend`) or on a device-
+/// resident nodal-remap exchange plan (`fuse::backend::
+/// nodal_remap_distributed`) -- can drive the SAME `MPI_Alltoallv` over
+/// buffers it already owns, instead of `update()`'s own host-side
+/// pack/unpack loop. `GhostExchanger::update()`'s own signature and
+/// contract (this file's header comment above) are UNCHANGED; this is an
+/// ADDITIONAL facet the concrete MPI exchanger also implements, reached
+/// with `std::dynamic_pointer_cast<const PackedExchanger>` on whatever
+/// `make_mpi_exchanger()` returned (`nullptr` for the serial exchanger,
+/// which carries no pattern to expose -- the same fact `ghost_size() ==
+/// 0` already reports).
+///
+/// NAMING, so the two exchange methods below read against the same
+/// mental picture `update()`'s own header comment draws: this
+/// participant's REQUEST side is what it asks its peers for (the ghosts
+/// it wants); its ANSWER side is what its peers ask IT for (which of its
+/// own owned entries they want). `pack_index()`/`send_counts()`/
+/// `send_displs()` describe the ANSWER side (`update()`'s own
+/// `ans_index`/`ans_counts`/`ans_displs`, the data THIS rank sends);
+/// `unpack_index()`/`recv_counts()`/`recv_displs()` describe the REQUEST
+/// side (`update()`'s own `fill_index`/`req_counts`/`req_displs`, the
+/// data THIS rank receives).
+class PackedExchanger {
+ public:
+  virtual ~PackedExchanger() = default;
+
+  /// This participant's own OWNED entries to pack and send, grouped by
+  /// peer in send order: peer `p`'s slice is `pack_index()[send_displs()[p]
+  /// .. send_displs()[p] + send_counts()[p])`, each entry a LOCAL index
+  /// into the `owned` array `GhostExchanger::update()` itself would have
+  /// taken.
+  [[nodiscard]] virtual const std::vector<std::int64_t>& pack_index() const = 0;
+  /// Where each received value lands, grouped by peer in receive order:
+  /// peer `p`'s slice is `unpack_index()[recv_displs()[p] ..
+  /// recv_displs()[p] + recv_counts()[p])`, each entry a GHOST-ORDER index
+  /// into the `ghosts` array `GhostExchanger::update()` itself would have
+  /// filled.
+  [[nodiscard]] virtual const std::vector<std::int64_t>& unpack_index() const = 0;
+  [[nodiscard]] virtual const std::vector<int>& send_counts() const = 0;
+  [[nodiscard]] virtual const std::vector<int>& send_displs() const = 0;
+  [[nodiscard]] virtual const std::vector<int>& recv_counts() const = 0;
+  [[nodiscard]] virtual const std::vector<int>& recv_displs() const = 0;
+
+  /// One `MPI_Alltoallv` over buffers the caller has ALREADY packed and
+  /// will unpack itself: `send` holds `send_displs().back() +
+  /// send_counts().back()` entries in ANSWER order (see `pack_index()`);
+  /// `recv` receives the same total in REQUEST order (see
+  /// `unpack_index()`) -- the identical data motion `update()`'s own
+  /// single `MPI_Alltoallv` performs, minus that function's own host-side
+  /// pack/unpack loops. `send`/`recv` may be device pointers under a
+  /// GPU-aware MPI (`mpi_is_gpu_aware()`); this call does no staging of
+  /// its own either way -- same collective discipline as
+  /// `GhostExchanger::update()`.
+  [[nodiscard]] virtual Result<void> exchange_packed(const double* send, double* recv) const = 0;
+
+  /// The ADJOINT exchange `nodal_remap_distributed.cpp`'s H^T scatter-add
+  /// needs: roles swapped relative to `exchange_packed()` above. `send`
+  /// holds `recv_displs().back() + recv_counts().back()` entries in
+  /// REQUEST order (what `exchange_packed()` would have received);
+  /// `recv` receives `send_displs().back() + send_counts().back()`
+  /// entries in ANSWER order (what `exchange_packed()` would have sent).
+  /// Only the Alltoallv's own send/receive roles are swapped -- neither
+  /// side is summed by this call; a caller receiving into the SAME
+  /// destination index more than once (several requesters wanting the
+  /// same owned entry) must accumulate itself, exactly as it would for
+  /// any other scatter-add.
+  [[nodiscard]] virtual Result<void> exchange_packed_adjoint(const double* send,
+                                                              double* recv) const = 0;
+};
 #endif  // FUSE_HAVE_MPI
 
 }  // namespace fuse::linalg

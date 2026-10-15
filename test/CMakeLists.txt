@@ -968,6 +968,12 @@ if(FUSE_ENABLE_MPI)
   # directly -- this row stays for the primitive-level coverage the Runner
   # test does not itself re-derive (e.g. its own out-of-domain refusal).
   fuse_add_mpi_test(parallel nodal_remap_distributed LIBS fuse::backend)
+  # runtime-exchange track, follow-up round: DeviceGhostExchanger
+  # (include/fuse/backend/device_ghost_exchange.hpp), a ring pattern over
+  # Kokkos-space-resident buffers. DEVICE_TWIN re-runs it under
+  # FUSE_EXECUTION_SPACE=device, which the test reads directly (it drives
+  # the exchanger without a Runner).
+  fuse_add_mpi_test(parallel device_ghost_exchange LIBS fuse::backend DEVICE_TWIN)
   # "Nodal remap" track, round 3 (KNOWN_ISSUES.md D8): the Runner-level
   # sibling of the row above -- a real beam/fluid consistent +
   # consistent-transpose channel pair, driven through lower -> schedule ->
