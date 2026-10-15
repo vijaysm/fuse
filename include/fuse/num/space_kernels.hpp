@@ -592,4 +592,50 @@ template <class Space>
   return finalize_deterministic_scratch<Space>(scratch, n_chunks);
 }
 
+// ---------------------------------------------------------------------------
+// runtime-exchange track: OpKind::Diagnose's non-finite check, parameterised
+// on Space. Unlike deterministic_dot/deterministic_sum above, this reduction
+// needs no fixed-chunk scheme: logical OR is associative and commutative
+// regardless of how a thread count partitions the range, so a plain
+// Kokkos::parallel_reduce already gives the same verdict independent of
+// thread count -- the determinism argument dot/weighted_norm_squared above
+// do NOT get, and deterministic_dot/deterministic_sum need, does not apply
+// to a predicate that is true or false, never a rounded sum. A named
+// functor, not KOKKOS_LAMBDA, for the reason AccumulateFunctor's own
+// comment above gives: this reduction is reached from execute_on()'s
+// OpKind::Diagnose case, every coupling cycle.
+template <class Space>
+struct AnyNonfiniteFunctor {
+  ConstSpanOf<Space> v;
+  // Every index must WRITE acc (not just the nonfinite ones): Kokkos::Max<int>
+  // seeds each thread-local accumulator at reduction_identity<int>::max()
+  // (INT_MIN), and a thread whose whole chunk is finite never touches acc if
+  // the write is conditional on "found a bad one" -- the combined max then
+  // stays INT_MIN, not 0, for the (common, correct) all-finite case, which
+  // any_nonfinite() below would read as "non-finite" (INT_MIN != 0). Writing
+  // max(acc, bad) unconditionally for every i makes the combined result
+  // exactly 0 when nothing in range is non-finite, 1 when anything is.
+  KOKKOS_INLINE_FUNCTION void operator()(const std::size_t i, int& acc) const {
+        const int bad = Kokkos::isfinite(v(i)) ? 0 : 1;
+        if (bad > acc) acc = bad;
+  }
+};
+
+/// `true` if any element of `v` is NaN or infinite.
+template <class Space>
+[[nodiscard]] bool any_nonfinite(ConstSpanOf<Space> v) {
+  // An empty range (a disjoint-placement arc with 0 local entities on this
+  // rank -- test/parallel/nodal_remap_runner_test.cpp's DisjointRankSets
+  // and PartiallyOverlappingRankSets scenarios both have one side) never
+  // calls the functor at all, so Kokkos::Max<int>'s own reduction identity
+  // (INT_MIN) would be what comes back, not the 0 "nothing is non-finite"
+  // means -- checked explicitly rather than relying on a reduction over no
+  // elements to agree with this function's own vacuous-truth convention.
+  if (v.extent(0) == 0) return false;
+  int result = 0;
+  Kokkos::parallel_reduce("fuse::any_nonfinite", Kokkos::RangePolicy<Space>(0, v.extent(0)),
+                         AnyNonfiniteFunctor<Space>{v}, Kokkos::Max<int>(result));
+  return result != 0;
+}
+
 }  // namespace fuse::num

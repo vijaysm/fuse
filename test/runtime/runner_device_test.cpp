@@ -4,21 +4,26 @@
 // calling a kernel directly -- test/num/space_kernels_test.cpp already does
 // that for every enabled space). docs/dev/runner-device-dispatch.md has the
 // scope: only the Space-generic cases (Sample/Accumulate/Scale/Remap/Relax/
-// Residual/Merge/Extrapolate/Interpolate-identity) move; Epoch/Sink/
-// Constrain/Diagnose and Remap's distributed-nodal branch
-// (apply_nodal_dist_remap(), an MPI exchange) stay host-only
-// unconditionally. `Transport` moved out of that group in the transport
-// track (docs/dev/device-resident-arcs.md Phase 3): its own case packs and
-// unpacks on the device when both its arcs are device-resident, handing
-// MPI a device pointer when `Transport::is_gpu_aware()` and staging
-// through host memory when not -- see
-// RunnerDevice.DeviceRegisteredFieldsCrossOnlyAtHostOnlyInstructionsAndAgreeWithHost
-// below, whose own comment has the updated crossing count. The scenarios
-// here use the no-graph (single-process, no CommGraph) Transport path,
-// never the MPI one; `test/parallel/runner_transport_test.cpp`'s `.device`
-// twins (`fuse_add_mpi_test(... DEVICE_TWIN)`) exercise the MPI path's
-// device/host and GPU-aware/not branches instead. Neither scenario here
-// builds a distributed-nodal Remap
+// Residual/Merge/Extrapolate/Interpolate-identity) move; Epoch/Sink stay
+// host-only for the value-copy's own scalar bookkeeping around it, never
+// for the copy itself. `Transport` moved out of the host-only group in the
+// transport track (docs/dev/device-resident-arcs.md Phase 3): its own case
+// packs and unpacks on the device when both its arcs are device-resident,
+// handing MPI a device pointer when `Transport::is_gpu_aware()` and staging
+// through host memory when not. Constrain/Diagnose and Remap's
+// distributed-nodal branch (apply_nodal_dist_remap(), an MPI exchange)
+// moved out of it in the runtime-exchange track: Constrain's conservation
+// sum and Diagnose's non-finite check are now reductions on the arc's own
+// space (only the scalar verdict is host), and apply_nodal_dist_remap()
+// stages its own arcs explicitly around an MPI exchange that still runs
+// entirely on host buffers -- see
+// RunnerDevice.DeviceRegisteredFieldsCrossTheBoundaryZeroTimesAndAgreeWithHost
+// below, whose own comment has the updated (zero) crossing count. The
+// scenarios here use the no-graph (single-process, no CommGraph) Transport
+// path, never the MPI one; `test/parallel/runner_transport_test.cpp`'s
+// `.device` twins (`fuse_add_mpi_test(... DEVICE_TWIN)`) exercise the MPI
+// path's device/host and GPU-aware/not branches instead. Neither scenario
+// here builds a distributed-nodal Remap
 // (it needs a multi-rank placement), so that fallback is documented, not
 // exercised.
 //
@@ -474,11 +479,15 @@ TEST(RunnerDevice, DeviceAndHostAgreeToRoundingOnRelaxAndWeightedRemap) {
 // not `device_boundary_copies` -- and the Epoch next to it, now reading a
 // device arc on both sides, is a same-space copy that crosses nothing
 // either (RunStats::device_boundary_copies' own comment: "a same-space
-// copy does not count"). Measured on this plan (FUSE_DEVICE_DEBUG=1):
-// Sample -> Accumulate -> Transport -> Epoch -> Remap -> Diagnose -> Sink;
-// only the Sink crosses, host -> device: one per period, down from two
-// before this track (the former Epoch crossing is gone).
-TEST(RunnerDevice, DeviceRegisteredFieldsCrossOnlyAtHostOnlyInstructionsAndAgreeWithHost) {
+// copy does not count"). runtime-exchange track: Diagnose, the one
+// instruction left in this plan that used to pin both the arc it reads and
+// the arc it writes, no longer does either -- its non-finite check is now
+// a reduction on the arc's own space. Measured on this plan
+// (FUSE_DEVICE_DEBUG=1): Sample -> Accumulate -> Transport -> Epoch ->
+// Remap -> Diagnose -> Sink; every instruction in it is now Space-generic
+// or space-aware, so it crosses the host/device boundary ZERO times per
+// period (down from one, the Sink, before this track).
+TEST(RunnerDevice, DeviceRegisteredFieldsCrossTheBoundaryZeroTimesAndAgreeWithHost) {
   if constexpr (!kHasDeviceBackend) GTEST_SKIP() << "no device backend";
   Scenario s = mean_over_four_substeps();
   const Outcome host = run(s, Space::Host, 3);
@@ -495,35 +504,31 @@ TEST(RunnerDevice, DeviceRegisteredFieldsCrossOnlyAtHostOnlyInstructionsAndAgree
   EXPECT_GT(dev.stats.device_resident_arcs, 0);
   // GREEN since the transport track: Transport's own no-graph arcs are now
   // device-resident and its move is a Kokkos::deep_copy, counted here, not
-  // staged through host memory and not refused (RED before this track:
-  // place_arcs_on_device() pinned Transport's arcs to host unconditionally,
-  // which this scenario's device-registered chain would have crossed at
-  // twice over, not once).
+  // staged through host memory and not refused.
   ASSERT_GT(dev.transports, 0);
   EXPECT_EQ(dev.stats.device_transport_moves, dev.transports * 3);
-  // Diagnose is the only instruction left that pins both the arc it reads
-  // and the arc it writes; the Sink beside it (Diagnose's output feeding a
-  // device-registered consumer field) is this plan's one remaining
-  // crossing.
-  const int host_only = dev.diagnoses;
-  ASSERT_GT(host_only, 0);
-  EXPECT_GT(dev.stats.device_boundary_copies, 0);
-  EXPECT_LE(dev.stats.device_boundary_copies, host_only * 3)
-      << "a device-registered chain crossed the boundary somewhere other "
-         "than next to a host-only instruction";
-  // The same count every period: nothing crosses at setup or only once.
+  // runtime-exchange track (RED before this track: place_arcs_on_device()
+  // pinned Diagnose's arcs to host unconditionally, so this device-
+  // registered chain crossed the boundary once per period, at the Sink
+  // right after it -- GREEN now that Diagnose's own case reads and writes
+  // through span_c()/span_m() like every other Space-generic case, so the
+  // Sink beside it is a same-space copy that does not count either).
+  ASSERT_GT(dev.diagnoses, 0);
+  EXPECT_EQ(dev.stats.device_boundary_copies, 0)
+      << "a device-registered chain crossed the boundary even though every "
+         "instruction in it is now Space-generic or space-aware";
+  // The same (zero) count every period: nothing crosses at setup either.
   const Outcome one = run(s, Space::Device, 1);
   ASSERT_TRUE(one.init.ok()) << one.init.error().message;
-  EXPECT_EQ(dev.stats.device_boundary_copies, 3 * one.stats.device_boundary_copies);
-  // The one kernel whose output a host-only instruction reads (the Remap
-  // before the Diagnose) writes through a staging lane: one copy in, one
-  // back, per instruction. Accumulate's output no longer stages -- Transport
-  // reads it directly now that Transport's own arcs are device-resident, so
-  // Accumulate's output was never pinned by place_arcs_on_device() in the
-  // first place. No field and no other arc is staged.
+  EXPECT_EQ(one.stats.device_boundary_copies, 0);
+  // Nothing stages through a device_staging lane either: the Remap's
+  // output used to be staged for the Diagnose right after it (a host-only
+  // instruction's input); now that Diagnose reads it directly on the
+  // device, that lane is never touched.
   ASSERT_GT(dev.remaps, 0);
-  EXPECT_EQ(dev.stats.device_staged_copies, 2 * dev.remaps * 3)
-      << "something other than a host-only instruction's input was staged";
+  EXPECT_EQ(dev.stats.device_staged_copies, 0)
+      << "something was staged through a device_staging lane even though "
+         "no instruction in this chain is host-only anymore";
   EXPECT_EQ(host.stats.device_staged_copies, 0);
 }
 
@@ -544,9 +549,24 @@ TEST(RunnerDevice, HostRegisteredFieldsAreMirroredOncePerProducerStep) {
   ASSERT_TRUE(host_fields.init.ok()) << host_fields.init.error().message;
   ASSERT_TRUE(device_fields.init.ok()) << device_fields.init.error().message;
   const std::int64_t producer_steps = 2 * 4, consumer_steps = 2;
+  // runtime-exchange track: Diagnose's own arc (the Sink's input, %6 in
+  // FUSE_DEVICE_DEBUG's own trace of this plan) is no longer host-pinned,
+  // so it is device-resident in BOTH variants here -- which flips which
+  // variant the Sink's own crossing falls in. `consumer_steps` (one Sink
+  // execution per period) used to count a crossing in `device_fields`
+  // only (Diagnose's host-pinned output -> the device-registered consumer
+  // field) and none in `host_fields` (host -> host); now it is the
+  // reverse (device Diagnose output -> the device-registered consumer
+  // field in `device_fields` is same-space, device Diagnose output -> the
+  // HOST-registered consumer field in `host_fields` crosses once per
+  // period instead). The mirror term (`producer_steps`, unaffected by
+  // this track) still only counts in `host_fields`; the Sink term now
+  // only counts in `host_fields` too, so the difference ADDS the two
+  // instead of subtracting them.
   EXPECT_EQ(host_fields.stats.device_boundary_copies - device_fields.stats.device_boundary_copies,
-            producer_steps - consumer_steps)
-      << "the producer's field was mirrored other than once per producer step";
+            producer_steps + consumer_steps)
+      << "the producer's field was mirrored other than once per producer step, or the "
+         "consumer-field Sink crossed somewhere other than once per period";
   // A per-instruction staging design would also stage the 8 Sample reads;
   // the mirror replaces them, so the staged copies are the same two
   // host-only inputs as in the device-registered run.

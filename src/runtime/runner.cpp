@@ -387,14 +387,16 @@ void Runner::Impl::place_arcs_on_device() {
   // Source/ExternalDelivery (alias or mirror), Sink/Accelerate/Epoch (a
   // space-aware copy), Transport (docs/dev/device-resident-arcs.md
   // Phase 3: a device-resident gather/scatter when the backend is
-  // GPU-aware, a host-staged pack/unpack otherwise) and Remap's
+  // GPU-aware, a host-staged pack/unpack otherwise), Remap's
   // distributed-nodal operator (runtime-exchange track:
   // apply_nodal_dist_remap() stages its own arcs explicitly, the same
   // shape as Transport's mixed-pair fallback -- its own MPI exchange
   // always stages through host buffers, so the space decision is entirely
-  // the deep_copy at its own entry/exit, not a staging lane here) handle
-  // either space and pin nothing. Constrain/Diagnose still pin theirs (a
-  // separate commit's scope).
+  // the deep_copy at its own entry/exit, not a staging lane here) and
+  // Constrain/Diagnose (runtime-exchange track: the conservation sum and
+  // the non-finite check are now reductions on the arc's own space,
+  // `fuse::num::deterministic_dot`/`any_nonfinite`; only the scalar
+  // verdict is host) handle either space and pin nothing.
   // FUSE_DEVICE_DEBUG: one line per instruction (its class) and per arc (where
   // it ended up), the same convention as FUSE_NODAL_DEBUG above.
   const bool trace = std::getenv("FUSE_DEVICE_DEBUG") != nullptr;
@@ -422,6 +424,7 @@ void Runner::Impl::place_arcs_on_device() {
       case OpKind::Interpolate: generic = r.spacetime < 0; break;   // apply_spacetime is host
       case OpKind::Source: case OpKind::ExternalDelivery: case OpKind::Sink:
       case OpKind::Accelerate: case OpKind::Epoch: case OpKind::Transport:
+      case OpKind::Constrain: case OpKind::Diagnose:
         space_aware = true;
         break;
       default: break;
@@ -451,8 +454,12 @@ void Runner::Impl::place_arcs_on_device() {
   // slot_to_host()/host_to_slot()/slot_host_read() helpers (step 3), so
   // they may live on the device. A WINDOW-scoped region's bookkeeping
   // (advance_window(), priming, lagged imports, the t0 correction) still
-  // dereferences its arcs on the host, so every arc it names stays there;
-  // constrain reads its `before` arc on the host.
+  // dereferences its arcs on the host, so every arc it names stays there.
+  // runtime-exchange track: a Constrain's `before_arc` is no longer pinned
+  // here -- execute_on()'s OpKind::Constrain case reads it through its own
+  // space-aware helper (span_any_c()) exactly as it reads its own in/out
+  // arcs, so the arc is free to land wherever place_arcs_on_device()'s own
+  // default (device-resident unless something else pins it) puts it.
   for (const detail::RegionRuntime& R : regions) {
     if (!R.window_scoped) continue;
     for (const detail::RegionBlock& b : R.blocks) {
@@ -468,7 +475,6 @@ void Runner::Impl::place_arcs_on_device() {
   }
   for (const auto& [field, arc] : window_export_field_arc) pin_arc(arc);
   for (const auto& [field, arc] : window_import_field_arc) pin_arc(arc);
-  for (const detail::ConstrainInfo& ci : constrains) pin(ci.before_arc);
 
   for (std::size_t i = 0; i < n_arcs; ++i) {
     Slot& s = slots[i];
@@ -554,6 +560,32 @@ void Runner::Impl::build_transport_device_buffers() {
                  pi, in_slot.device ? "device" : "host",
                  out_slot.device ? "device" : "host");
     }
+  }
+}
+
+// runtime-exchange track: device mode only, called right after
+// build_transport_device_buffers(). weight_sets never changes after setup
+// (resolve_remap()'s own comment), so its device mirror is built exactly
+// once here rather than per Constrain or per period.
+void Runner::Impl::build_constrain_device_buffers() {
+  weight_sets_device.clear();
+  weight_sets_device.resize(weight_sets.size());
+  std::size_t max_len = 0;
+  for (std::size_t i = 0; i < weight_sets.size(); ++i) {
+    const std::vector<double>& w = weight_sets[i];
+    if (w.empty()) continue;
+    weight_sets_device[i] = Kokkos::View<double*, DeviceMemSpace>(
+        Kokkos::view_alloc("fuse::weight_set_dev", Kokkos::WithoutInitializing), w.size());
+    Kokkos::deep_copy(
+        num::SpanOf<DeviceExecSpace>(weight_sets_device[i].data(), w.size()),
+        num::ConstSpanOf<HostExecSpace>(w.data(), w.size()));
+    max_len = std::max(max_len, w.size());
+  }
+  const std::size_t needed_chunks = num::deterministic_chunks(max_len);
+  if (constrain_reduction_scratch.extent(0) < needed_chunks) {
+    constrain_reduction_scratch = Kokkos::View<double*, DeviceMemSpace>(
+        Kokkos::view_alloc("fuse::constrain_reduction_scratch", Kokkos::WithoutInitializing),
+        needed_chunks);
   }
 }
 
@@ -2761,6 +2793,9 @@ Result<void> Runner::Impl::setup(ComponentSet& components,
     // Phase 3: now that every Transport instruction's arcs have their
     // final placement, mirror the ones that landed fully on the device.
     build_transport_device_buffers();
+    // runtime-exchange track: weight_sets is complete by this point
+    // (every Constrain was built during resolve, above); mirror it once.
+    build_constrain_device_buffers();
   }
 
   // KNOWN_ISSUES.md D11 (closing): scratch for the fixed-chunk deterministic
@@ -4161,8 +4196,11 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
     case OpKind::Constrain: {
       if (ins.n_in == 0 || !ins.out.valid()) break;
       double* out = out_ptr();
-      // Phase 4 reports; it does not correct.
-      num::copy(in_ptr(0), out, n);
+      // Phase 4 reports; it does not correct. Space-generic: runs wherever
+      // in_ptr(0)/out are resident, exactly like every other case that
+      // calls num::xxx<Space>(span_c(...), span_m(...)) above.
+      auto out_span = span_m(out, n);
+      num::copy<Space>(span_c(in_ptr(0), n), out_span);
 
       if (r.constrain < 0) break;
       const ConstrainInfo& ci = constrains[static_cast<std::size_t>(r.constrain)];
@@ -4175,8 +4213,57 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
       // that entity's physical measure, ghosts already zero-weighted. This is
       // the quantity a conservative remap must preserve; comparing the
       // operator's own input with its own copy of it never can.
-      double before = num::weighted_sum(src.data, wb.data(), wb.size());
-      double after = num::weighted_sum(out, wa.data(), wa.size());
+      //
+      // runtime-exchange track: this is now a reduction on the arc's own
+      // space (device-resident-arcs.md's "Constrain (reduction result)"),
+      // not an unconditional host call. `src` (ci.before_arc) is not one of
+      // this instruction's own in/out arcs -- it is the Remap's own input,
+      // on the source region -- so span_c()/span_m()'s ins.in/ins.out
+      // identity lookup cannot place it; `span_any_c` below is the same
+      // staging decision (device pointer used directly, a host pointer
+      // staged through a device_staging lane) keyed on the Slot directly.
+      // On kHostAccessible (every Host-mode call, and a no-device-backend
+      // build's sole instantiation) both sums are exactly the plain host
+      // num::weighted_sum calls this case has always made, byte for byte.
+      // Only a real device dispatch (kHostAccessible false) takes the
+      // deterministic_dot<Space> branch, reading `wb`/`wa` through their
+      // device mirror (`weight_sets_device`, built once in
+      // build_constrain_device_buffers()) and reducing into
+      // `constrain_reduction_scratch`.
+      double before, after;
+      if constexpr (kHostAccessible) {
+        before = num::weighted_sum(src.data, wb.data(), wb.size());
+        after = num::weighted_sum(out, wa.data(), wa.size());
+      } else {
+        const auto span_any_c = [&](const Slot& s, std::size_t len) {
+          if (s.device) {
+            used_device_arc = true;
+            return num::ConstSpanOf<Space>(s.data, len);
+          }
+          double* const lane = stage(s.data, len, nullptr);
+          return num::ConstSpanOf<Space>(lane, staging_fault ? 0 : len);
+        };
+        const num::SpanOf<Space> scratch(constrain_reduction_scratch.data(),
+                                         constrain_reduction_scratch.extent(0));
+        const num::ConstSpanOf<Space> wb_span(weight_sets_device[ci.weights_before].data(),
+                                              wb.size());
+        const num::ConstSpanOf<Space> wa_span(weight_sets_device[ci.weights_after].data(),
+                                              wa.size());
+        before = num::deterministic_dot<Space>(span_any_c(src, wb.size()), wb_span, scratch);
+        after = num::deterministic_dot<Space>(
+            num::ConstSpanOf<Space>(out_span.data(), wa.size()), wa_span, scratch);
+      }
+      // The per-rank shares BEFORE the Allreduce below may overwrite
+      // before/after with the cross-rank totals -- captured here so
+      // FUSE_CONSERVATION_DEBUG's own print (further down) never
+      // re-derives them with a second call. runtime-exchange track: the
+      // debug print used to recompute them with a direct
+      // num::weighted_sum(src.data, ...) call, which is both redundant
+      // (the values are exactly what was just computed above) and, once
+      // `src.data`/`out` can be device addresses, unsafe to dereference
+      // from host code -- reusing the saved locals fixes both.
+      const double own_before = before;
+      const double own_after = after;
       if (ci.reduce) {
 #if FUSE_HAVE_MPI
         // KNOWN_ISSUES.md D10: the owned shares summed over every rank, plus
@@ -4211,9 +4298,6 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
       // many weights are non-zero on each side, so a wrong ownership or a
       // wrong weight is visible without a debugger.
       if (std::getenv("FUSE_CONSERVATION_DEBUG") != nullptr) {
-        const double own_before =
-            num::weighted_sum(src.data, wb.data(), wb.size());
-        const double own_after = num::weighted_sum(out, wa.data(), wa.size());
         std::size_t nzb = 0, nza = 0;
         for (const double w : wb) nzb += w != 0.0 ? 1 : 0;
         for (const double w : wa) nza += w != 0.0 ? 1 : 0;
@@ -4252,8 +4336,20 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
     case OpKind::Diagnose: {
       if (ins.n_in == 0 || !ins.out.valid()) break;
       double* out = out_ptr();
-      num::copy(in_ptr(0), out, n);
-      if (num::has_nonfinite(out, n)) {
+      // Space-generic, same shape as Constrain's own copy above.
+      auto out_span = span_m(out, n);
+      num::copy<Space>(span_c(in_ptr(0), n), out_span);
+      // runtime-exchange track: has_nonfinite becomes a reduction on the
+      // arc's own space (device-resident-arcs.md: "Diagnose (has_nonfinite
+      // becomes a reduction on the arc space; only the verdict is host)");
+      // on kHostAccessible this is exactly the original host call.
+      bool nonfinite;
+      if constexpr (kHostAccessible) {
+        nonfinite = num::has_nonfinite(out, n);
+      } else {
+        nonfinite = num::any_nonfinite<Space>(num::ConstSpanOf<Space>(out_span.data(), n));
+      }
+      if (nonfinite) {
         return Failure{"E-RT-NONFINITE",
                      "non-finite value detected in arc %" +
                          std::to_string(ins.out.value()) + " after " +
