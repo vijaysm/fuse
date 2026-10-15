@@ -122,13 +122,23 @@ TEST(NativeMigration, EmulatedRoundTripThroughTwoDifferentPartitionsReproducesTh
 
   // Round 2: from round1's 3-way split, migrate everything onto a SINGLE
   // rank (a different partition than the original: a 3->1 gather).
-  std::vector<std::vector<std::byte>> per_dest_round2(1);
+  //
+  // Each sender's packed buffer is its own entry in `per_dest_round2`, not
+  // raw-byte-concatenated into one: the wire-format-v2 header (Migration
+  // track, 2026-10-15; mesh_pack_device.hpp's own "WIRE FORMAT v2"
+  // comment) makes every `pack_for_migration` buffer self-describing
+  // (record count + offsets from ITS OWN start), so concatenating two
+  // senders' buffers byte-for-byte -- valid under the old header-less
+  // format, which this test originally relied on -- hides every record
+  // past the first sender's own declared extent from the parser, the same
+  // way every OTHER multi-sender case in this suite already keeps one
+  // buffer per sender.
+  std::vector<std::vector<std::byte>> per_dest_round2;
   for (auto& piece : round1) {
     std::vector<int> dest2(piece->owned_count(3), 0);
     auto packed2 = pack_for_migration(*piece, dest2, 1);
     ASSERT_TRUE(packed2.ok());
-    auto& bytes = packed2.value()[0];
-    per_dest_round2[0].insert(per_dest_round2[0].end(), bytes.begin(), bytes.end());
+    per_dest_round2.push_back(std::move(packed2.value()[0]));
   }
   auto final_arrays = unpack_migrated_mesh(per_dest_round2, 3, 0);
   ASSERT_TRUE(final_arrays.ok()) << final_arrays.error().message;

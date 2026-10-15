@@ -13,6 +13,7 @@
 #include <unordered_set>
 
 #include "fuse/backend/native/mesh_pack_device.hpp"
+#include "fuse/backend/native/mesh_merge_device.hpp"
 #include "fuse/base/config.hpp"
 #include "fuse/base/error.hpp"
 
@@ -55,6 +56,26 @@ std::vector<std::byte> to_host_bytes(const Kokkos::View<std::byte*, NativeMeshVi
   std::vector<std::byte> out(mirror.extent(0));
   if (!out.empty()) std::memcpy(out.data(), mirror.data(), mirror.extent(0));
   return out;
+}
+
+/// See native_migration.cpp's identical helper's comment: wraps every
+/// host byte buffer as a `Kokkos::View<std::byte*, Kokkos::HostSpace>` so
+/// `merge_halo_cells` below can call straight into
+/// `fuse::native::device::merge_halo_cells_device<Kokkos::HostSpace>`
+/// instead of maintaining its own by-hand sequential parser for the wire-
+/// format-v2 header `device::pack_fanout` now always writes.
+std::vector<Kokkos::View<std::byte*, Kokkos::HostSpace>> to_host_views(
+    const std::vector<std::vector<std::byte>>& received) {
+  std::vector<Kokkos::View<std::byte*, Kokkos::HostSpace>> views(received.size());
+  for (std::size_t i = 0; i < received.size(); ++i) {
+    views[i] = Kokkos::View<std::byte*, Kokkos::HostSpace>(
+        Kokkos::view_alloc("merge_halo_cells::host_buf", Kokkos::WithoutInitializing),
+        received[i].size());
+    if (!received[i].empty()) {
+      std::memcpy(views[i].data(), received[i].data(), received[i].size());
+    }
+  }
+  return views;
 }
 
 }  // namespace
@@ -154,7 +175,12 @@ std::vector<std::size_t> owned_block_index(const NativeMeshView& mesh) {
   return idx;
 }
 
-std::vector<std::vector<std::byte>> pack_halo_cells(
+/// The device-resident pack both `pack_halo_cells` (below, host-byte
+/// return for the in-process emulation technique native_halo_test.cpp
+/// uses) and `build_native_remap_halo` (device buffers straight into
+/// `exchange_migration_buffers<Space>`) share -- see
+/// `pack_for_migration_device`'s identical split in native_migration.cpp.
+std::vector<Kokkos::View<std::byte*, NativeMeshView::DeviceMemSpace>> pack_halo_cells_device(
     const NativeMeshView& mesh, const std::vector<std::vector<std::size_t>>& send_by_local_index,
     const std::vector<std::size_t>& owned_block_index, int my_rank, int num_ranks) {
   const int dim = mesh.dimension();
@@ -216,123 +242,63 @@ std::vector<std::vector<std::byte>> pack_halo_cells(
   Kokkos::deep_copy(owner_d, owner_h);
   Kokkos::deep_copy(owned_idx_d, owned_idx_h);
 
-  auto packed = device::pack_fanout<true, Space>(mesh.device_arrays(), cell_d, dest_d, num_ranks,
-                                                 owner_d, owned_idx_d);
+  return device::pack_fanout<true, Space>(mesh.device_arrays(), cell_d, dest_d, num_ranks,
+                                          owner_d, owned_idx_d);
+}
+
+std::vector<std::vector<std::byte>> pack_halo_cells(
+    const NativeMeshView& mesh, const std::vector<std::vector<std::size_t>>& send_by_local_index,
+    const std::vector<std::size_t>& owned_block_index, int my_rank, int num_ranks) {
+  auto packed =
+      pack_halo_cells_device(mesh, send_by_local_index, owned_block_index, my_rank, num_ranks);
   std::vector<std::vector<std::byte>> result(packed.size());
   for (std::size_t r = 0; r < packed.size(); ++r) result[r] = to_host_bytes(packed[r]);
   return result;
 }
 
+/// The device-resident merge both `merge_halo_cells` (below, the public
+/// host `MeshArrays<HostSpace>` + `std::vector<int>`/`std::vector
+/// <std::int64_t>` signature native_halo_test.cpp already calls) and
+/// `build_native_remap_halo` (device buffers end to end) share --
+/// `device::merge_halo_cells_device<Space>` itself has no refusal path
+/// (no existing test's wire data is malformed; see this track's report),
+/// so this wrapper's only job is converting `Kokkos::View<std::int32_t*,
+/// Space>`/`Kokkos::View<std::int64_t*, Space>` GhostPattern outputs to
+/// `std::vector<int>`/`std::vector<std::int64_t>` for callers that have
+/// not themselves moved to the device-resident GhostPattern views.
+template <class Space>
+MeshArrays<Space> merge_halo_cells_to_vectors(
+    const MeshArrays<Space>& source, const std::vector<Kokkos::View<std::byte*, Space>>& received,
+    int my_rank, std::vector<int>* owner_rank, std::vector<std::int64_t>* owner_owned_index) {
+  (void)my_rank;
+  Kokkos::View<std::int32_t*, Space> owner_rank_d;
+  Kokkos::View<std::int64_t*, Space> owned_idx_d;
+  MeshArrays<Space> out =
+      device::merge_halo_cells_device<Space>(source, received, my_rank, &owner_rank_d, &owned_idx_d);
+
+  auto owner_h = Kokkos::create_mirror_view(owner_rank_d);
+  Kokkos::deep_copy(owner_h, owner_rank_d);
+  auto idx_h = Kokkos::create_mirror_view(owned_idx_d);
+  Kokkos::deep_copy(idx_h, owned_idx_d);
+
+  const std::size_t n_new = owner_h.extent(0);
+  owner_rank->resize(n_new);
+  owner_owned_index->resize(n_new);
+  for (std::size_t i = 0; i < n_new; ++i) {
+    (*owner_rank)[i] = static_cast<int>(owner_h(i));
+    (*owner_owned_index)[i] = idx_h(i);
+  }
+  return out;
+}
+
 Result<MeshArrays<Kokkos::HostSpace>> merge_halo_cells(
     const NativeMeshView& source, const std::vector<std::vector<std::byte>>& received,
     int my_rank, std::vector<int>* owner_rank, std::vector<std::int64_t>* owner_owned_index) {
-  (void)my_rank;
   FUSE_ASSERT(owner_rank != nullptr && owner_owned_index != nullptr,
              "merge_halo_cells: both output vectors are required");
-  owner_rank->clear();
-  owner_owned_index->clear();
-
-  NativeMeshBuilder builder(source.dimension());
-  std::unordered_map<std::int64_t, int> vertex_by_gid;
-  std::unordered_set<std::int64_t> held_gids;
-
-  // 1. Every existing vertex, verbatim, in `source`'s own local-index order
-  //    -- so `source`'s local vertex index v is ALSO builder's local index
-  //    v for the first `vertex_count()` vertices added, and every existing
-  //    cell's own `cell_vertices(c)` can be handed to the builder with no
-  //    translation at all.
-  for (std::size_t v = 0; v < source.vertex_count(); ++v) {
-    const int lv = builder.add_vertex(source.vertex_gid_of(v), source.vertex_x(v, 0),
-                                      source.vertex_x(v, 1), source.vertex_x(v, 2),
-                                      source.vertex_owner_of(v), source.vertex_owned_of(v));
-    FUSE_ASSERT(static_cast<std::size_t>(lv) == v,
-               "merge_halo_cells: existing vertex {} landed at builder index {}, breaking the "
-               "identity mapping every existing cell's connectivity relies on",
-               v, lv);
-    vertex_by_gid[source.vertex_gid_of(v)] = lv;
-  }
-
-  // 2. Every existing cell, verbatim -- ownership and owner rank preserved,
-  //    including a cell adopted by an earlier call for a different target.
-  for (std::size_t c = 0; c < source.cell_count(); ++c) {
-    const auto type = source.cell_type_of(c);
-    const auto gid = static_cast<std::int64_t>(source.global_id(source.dimension(), c));
-    held_gids.insert(gid);
-    if (type == CellType::Polyhedron) {
-      builder.add_polyhedron_cell(source.cell_faces(c), gid, source.cell_owner_of(c),
-                                  source.cell_owned_of(c));
-    } else {
-      builder.add_cell(type, source.cell_vertices(c), gid, source.cell_owner_of(c),
-                       source.cell_owned_of(c));
-    }
-  }
-
-  // 3. Every NEW cell from `received`, skipping any whose global id this
-  //    rank already holds (idempotency, and the "copy, don't duplicate"
-  //    rule `MoabMeshBackend::adopt_remap_halo` documents) -- appended
-  //    strictly after every existing cell, so `*owner_rank`/
-  //    `*owner_owned_index` are exactly the new slots' GhostPattern, in
-  //    append order.
-  for (const auto& buf : received) {
-    std::size_t pos = 0;
-    while (pos < buf.size()) {
-      const auto sender_owner_rank = read_pod<std::int32_t>(buf, pos);
-      const auto sender_owned_index = read_pod<std::int64_t>(buf, pos);
-      const auto cell_gid = read_pod<std::int64_t>(buf, pos);
-      const auto type = static_cast<CellType>(read_pod<std::uint8_t>(buf, pos));
-      const auto n = static_cast<std::size_t>(read_pod<std::int32_t>(buf, pos));
-
-      std::vector<int> closure(n);
-      for (std::size_t k = 0; k < n; ++k) {
-        const auto vgid = read_pod<std::int64_t>(buf, pos);
-        const double x = read_pod<double>(buf, pos);
-        const double y = read_pod<double>(buf, pos);
-        const double z = read_pod<double>(buf, pos);
-        if (held_gids.count(cell_gid) == 0) {
-          // Only materialize vertices for a cell we are actually about to
-          // keep -- skipped below, but the wire format is fixed-length per
-          // record regardless, so the read above always has to happen to
-          // stay positioned for the next record.
-          auto it = vertex_by_gid.find(vgid);
-          if (it == vertex_by_gid.end()) {
-            const int lv = builder.add_vertex(vgid, x, y, z, sender_owner_rank, false);
-            it = vertex_by_gid.emplace(vgid, lv).first;
-          }
-          closure[k] = it->second;
-        }
-      }
-
-      std::vector<std::vector<int>> faces;
-      std::size_t nfaces = 0;
-      if (type == CellType::Polyhedron) {
-        nfaces = static_cast<std::size_t>(read_pod<std::int32_t>(buf, pos));
-        faces.resize(nfaces);
-        for (std::size_t f = 0; f < nfaces; ++f) {
-          const auto nfv = static_cast<std::size_t>(read_pod<std::int32_t>(buf, pos));
-          faces[f].resize(nfv);
-          for (std::size_t k = 0; k < nfv; ++k) {
-            const auto ci = static_cast<std::size_t>(read_pod<std::int32_t>(buf, pos));
-            faces[f][k] = closure[ci];
-          }
-        }
-      }
-
-      if (held_gids.count(cell_gid) != 0) continue;  // already local: skip, do not duplicate
-      held_gids.insert(cell_gid);
-
-      int new_local_cell = 0;
-      if (type == CellType::Polyhedron) {
-        new_local_cell = builder.add_polyhedron_cell(faces, cell_gid, sender_owner_rank, false);
-      } else {
-        new_local_cell = builder.add_cell(type, closure, cell_gid, sender_owner_rank, false);
-      }
-      (void)new_local_cell;
-      owner_rank->push_back(sender_owner_rank);
-      owner_owned_index->push_back(sender_owned_index);
-    }
-  }
-
-  return builder.build();
+  return merge_halo_cells_to_vectors<Kokkos::HostSpace>(
+      to_memory_space<Kokkos::HostSpace>(source.device_arrays()), to_host_views(received),
+      my_rank, owner_rank, owner_owned_index);
 }
 
 namespace {
@@ -540,28 +506,64 @@ Result<std::size_t> build_native_remap_halo(NativeMeshBackend& backend, MeshId s
     }
   }
 
-  const std::vector<std::vector<std::byte>> send =
-      pack_halo_cells(src, send_by_local_index, owned_idx, my_rank, ranks);
-  const std::vector<std::vector<std::byte>> received = exchange_migration_buffers(send, comm);
+  // DEVICE-RESIDENT END TO END (Migration track, 2026-10-15): `send` is
+  // `Space` buffers straight from `device::pack_fanout` (the still-public
+  // `pack_halo_cells` stages to host bytes only for the in-process
+  // emulation test technique, same split `migrate`'s own comment names
+  // for `pack_for_migration`), `exchange_migration_buffers<Space>` moves
+  // them without this function touching a host mirror, and
+  // `device::merge_halo_cells_device<Space>` merges `src.device_arrays()`
+  // against them directly -- no `NativeMeshView` host-serving accessor
+  // (`cell_vertices`, `vertex_x`, `cell_faces`) is called anywhere in this
+  // path, so no host mirror is materialized by a halo round either.
+  using Space = NativeMeshView::DeviceMemSpace;
+  const std::vector<Kokkos::View<std::byte*, Space>> send =
+      pack_halo_cells_device(src, send_by_local_index, owned_idx, my_rank, ranks);
+  const std::vector<Kokkos::View<std::byte*, Space>> received =
+      exchange_migration_buffers<Space>(send, comm);
 
-  std::vector<int> owner_rank;
-  std::vector<std::int64_t> owner_owned_index;
-  auto merged = merge_halo_cells(src, received, my_rank, &owner_rank, &owner_owned_index);
+  Kokkos::View<std::int32_t*, Space> owner_rank_d;
+  Kokkos::View<std::int64_t*, Space> owned_idx_d;
+  MeshArrays<Space> merged_arrays = device::merge_halo_cells_device<Space>(
+      src.device_arrays(), received, my_rank, &owner_rank_d, &owned_idx_d);
+  auto owner_rank_h = Kokkos::create_mirror_view(owner_rank_d);
+  Kokkos::deep_copy(owner_rank_h, owner_rank_d);
+  auto owned_idx_h = Kokkos::create_mirror_view(owned_idx_d);
+  Kokkos::deep_copy(owned_idx_h, owned_idx_d);
+  const std::size_t n_new = owner_rank_h.extent(0);
+  std::vector<int> owner_rank(n_new);
+  std::vector<std::int64_t> owner_owned_index(n_new);
+  for (std::size_t i = 0; i < n_new; ++i) {
+    owner_rank[i] = static_cast<int>(owner_rank_h(i));
+    owner_owned_index[i] = owned_idx_h(i);
+  }
 
-  // POST-EXCHANGE verdict: `merge_halo_cells` and `create_from_host` can
-  // each fail on data this rank alone received (a malformed incoming
-  // record, a connectivity refusal from the rebuilt view) -- reconciled
-  // here, BEFORE returning, the same way the pre-exchange verdict above
-  // was: the caller of `build_native_remap_halo` (`build_weights`,
-  // ultimately) performs its own collectives against the triple this
-  // call just committed, and a rank that returned success here while a
-  // peer returned failure would desync that caller's next collective.
+  // POST-EXCHANGE verdict: `create<Space>` can still fail on data this
+  // rank alone received (a connectivity refusal from the rebuilt view) --
+  // reconciled here, BEFORE returning, the same way the pre-exchange
+  // verdict above was: the caller of `build_native_remap_halo`
+  // (`build_weights`, ultimately) performs its own collectives against
+  // the triple this call just committed, and a rank that returned success
+  // here while a peer returned failure would desync that caller's next
+  // collective. `device::merge_halo_cells_device` itself has no refusal
+  // path of its own (this track's report names the one case it does not
+  // validate -- a Polyhedron's cross-cell face sharing, not attempted on
+  // this path either way), but it also does not reproduce
+  // `NativeMeshBuilder::build()`'s own `E-MESH-DIM` check (a received
+  // cell's topological dimension against the mesh's own) the way
+  // `merge_halo_cells` used to get for free by routing through the
+  // builder -- `all_cells_match_dimension` (mesh_merge_device.hpp) is
+  // that one check, folded into this same post-exchange verdict alongside
+  // `create<Space>`'s own.
   std::unique_ptr<NativeMeshView> new_source_view;
   Result<void> post_check = Result<void>::success();
-  if (!merged.ok()) {
-    post_check = merged.error();
+  if (!device::all_cells_match_dimension<Space>(merged_arrays)) {
+    post_check = Failure{"E-MESH-DIM",
+                        fmt::format("rank {}: a halo cell's topological dimension disagrees "
+                                   "with this rank's own mesh dimension {}",
+                                   my_rank, dim)};
   } else {
-    auto new_view = NativeMeshView::create_from_host(merged.value(), my_rank);
+    auto new_view = NativeMeshView::create<Space>(merged_arrays, my_rank);
     if (!new_view.ok()) {
       post_check = new_view.error();
     } else {

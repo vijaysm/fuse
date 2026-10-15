@@ -11,6 +11,7 @@
 #include "fuse/base/config.hpp"
 #include "fuse/base/error.hpp"
 #include "fuse/backend/native/mesh_pack_device.hpp"
+#include "fuse/backend/native/mesh_merge_device.hpp"
 #include "fuse/linalg/comm.hpp"  // fuse::linalg::mpi_is_gpu_aware, the shared probe
 
 #if FUSE_HAVE_MPI
@@ -73,18 +74,6 @@ int allreduce_min_int(int local, CommHandle comm) {
 #endif
 }
 
-// ---- byte-buffer read helper (unpack only; pack now goes through
-// `fuse::native::device::pack_to`, mesh_pack_device.hpp) -------------------
-
-template <class T>
-T read_pod(const std::vector<std::byte>& buf, std::size_t& pos) {
-  static_assert(std::is_trivially_copyable_v<T>);
-  T v{};
-  std::memcpy(&v, buf.data() + pos, sizeof(T));
-  pos += sizeof(T);
-  return v;
-}
-
 /// Copies a device-resident packed buffer to a host `std::vector<std::byte>`
 /// -- the ONE host round trip `pack_for_migration` still pays, for the wire
 /// bytes themselves (never the mesh's own geometry), until
@@ -114,9 +103,15 @@ std::vector<std::byte> to_host_bytes(const Kokkos::View<std::byte*, NativeMeshVi
 // src/linalg/mpi_gpu_aware.cpp's header comment for why it no longer does.
 bool mpi_is_gpu_aware() { return fuse::linalg::mpi_is_gpu_aware(); }
 
-Result<std::vector<std::vector<std::byte>>> pack_for_migration(const NativeMeshView& mesh,
-                                                                const std::vector<int>& dest,
-                                                                int num_ranks) {
+/// The device-resident pack both `pack_for_migration` (below, host-byte
+/// return for the existing in-process-emulation test technique) and
+/// `migrate` (device buffers straight into `exchange_migration_buffers
+/// <Space>`, no host round trip for the wire bytes either) share -- the
+/// validation and the `device::pack_to` call are identical either way;
+/// only what happens to the result differs.
+Result<std::vector<Kokkos::View<std::byte*, NativeMeshView::DeviceMemSpace>>>
+pack_for_migration_device(const NativeMeshView& mesh, const std::vector<int>& dest,
+                          int num_ranks) {
   const std::size_t nowned = mesh.owned_count(mesh.dimension());
   if (dest.size() != nowned) {
     return Failure{"E-MESH-MIGRATE-INCOMPLETE",
@@ -147,10 +142,16 @@ Result<std::vector<std::vector<std::byte>>> pack_for_migration(const NativeMeshV
       Kokkos::view_alloc("pack_for_migration::dest_d", Kokkos::WithoutInitializing), nowned);
   Kokkos::deep_copy(dest_d, dest_h);
 
-  auto packed = device::pack_to<false, Space>(mesh.device_arrays(), dest_d, num_ranks);
+  return device::pack_to<false, Space>(mesh.device_arrays(), dest_d, num_ranks);
+}
 
-  std::vector<std::vector<std::byte>> result(packed.size());
-  for (std::size_t r = 0; r < packed.size(); ++r) result[r] = to_host_bytes(packed[r]);
+Result<std::vector<std::vector<std::byte>>> pack_for_migration(const NativeMeshView& mesh,
+                                                                const std::vector<int>& dest,
+                                                                int num_ranks) {
+  auto packed = pack_for_migration_device(mesh, dest, num_ranks);
+  if (!packed.ok()) return packed.error();
+  std::vector<std::vector<std::byte>> result(packed.value().size());
+  for (std::size_t r = 0; r < packed.value().size(); ++r) result[r] = to_host_bytes(packed.value()[r]);
   return result;
 }
 
@@ -337,71 +338,52 @@ exchange_migration_buffers<NativeMeshView::DeviceMemSpace>(
     const std::vector<Kokkos::View<std::byte*, NativeMeshView::DeviceMemSpace>>&, CommHandle);
 #endif
 
+namespace {
+/// Wraps every host byte buffer `exchange_migration_buffers`/the
+/// in-process emulation tests hand this file as a `Kokkos::View<std::byte*,
+/// Kokkos::HostSpace>` (one small copy per buffer -- the SAME wire bytes
+/// this function used to walk by hand) so `unpack_migrated_mesh`/
+/// `merge_halo_cells` below can call straight into
+/// `fuse::native::device::unpack_migrated_mesh_device`/
+/// `merge_halo_cells_device` instead of maintaining a second, by-hand
+/// sequential parser for the SAME wire-format-v2 header
+/// (mesh_pack_device.hpp's own "WIRE FORMAT v2" comment) `device::pack_to`/
+/// `pack_fanout` now always write. Host mode is this templates'
+/// `Space = Kokkos::HostSpace` instantiation -- literally the same code
+/// the device build runs, not a parallel reimplementation, which is what
+/// guarantees Host's append-order numbering and Device's agree bit for
+/// bit, not merely up to a permutation.
+std::vector<Kokkos::View<std::byte*, Kokkos::HostSpace>> to_host_views(
+    const std::vector<std::vector<std::byte>>& received) {
+  std::vector<Kokkos::View<std::byte*, Kokkos::HostSpace>> views(received.size());
+  for (std::size_t i = 0; i < received.size(); ++i) {
+    views[i] = Kokkos::View<std::byte*, Kokkos::HostSpace>(
+        Kokkos::view_alloc("unpack::host_buf", Kokkos::WithoutInitializing), received[i].size());
+    if (!received[i].empty()) {
+      std::memcpy(views[i].data(), received[i].data(), received[i].size());
+    }
+  }
+  return views;
+}
+}  // namespace
+
 Result<MeshArrays<Kokkos::HostSpace>> unpack_migrated_mesh(
     const std::vector<std::vector<std::byte>>& received, int dim, int my_rank) {
-  NativeMeshBuilder builder(dim);
-  std::unordered_map<std::int64_t, int> vertex_by_gid;  // gid -> local vertex index
-
-  for (const auto& buf : received) {
-    std::size_t pos = 0;
-    while (pos < buf.size()) {
-      const auto cell_gid = read_pod<std::int64_t>(buf, pos);
-      const auto type = static_cast<CellType>(read_pod<std::uint8_t>(buf, pos));
-      const auto n = static_cast<std::size_t>(read_pod<std::int32_t>(buf, pos));
-
-      std::vector<int> closure(n);
-      for (std::size_t k = 0; k < n; ++k) {
-        const auto gid = read_pod<std::int64_t>(buf, pos);
-        const double x = read_pod<double>(buf, pos);
-        const double y = read_pod<double>(buf, pos);
-        const double z = read_pod<double>(buf, pos);
-        auto it = vertex_by_gid.find(gid);
-        if (it == vertex_by_gid.end()) {
-          const int lv = builder.add_vertex(gid, x, y, z, my_rank, true);
-          it = vertex_by_gid.emplace(gid, lv).first;
-        }
-        closure[k] = it->second;
-      }
-
-      if (type == CellType::Polyhedron) {
-        const auto nfaces = static_cast<std::size_t>(read_pod<std::int32_t>(buf, pos));
-        std::vector<std::vector<int>> faces(nfaces);
-        for (std::size_t f = 0; f < nfaces; ++f) {
-          const auto nfv = static_cast<std::size_t>(read_pod<std::int32_t>(buf, pos));
-          faces[f].resize(nfv);
-          for (std::size_t k = 0; k < nfv; ++k) {
-            const auto ci = static_cast<std::size_t>(read_pod<std::int32_t>(buf, pos));
-            faces[f][k] = closure[ci];
-          }
-        }
-        builder.add_polyhedron_cell(faces, cell_gid, my_rank, true);
-      } else {
-        builder.add_cell(type, closure, cell_gid, my_rank, true);
-      }
-    }
-  }
-
-  return builder.build();
+  return device::unpack_migrated_mesh_device<Kokkos::HostSpace>(to_host_views(received), dim,
+                                                                my_rank);
 }
 
-void resolve_vertex_ownership(MeshArrays<Kokkos::HostSpace>& arrays, CommHandle comm) {
-  const std::size_t nv = arrays.vertex_count();
-  if (comm == kNullComm) {
-    for (std::size_t v = 0; v < nv; ++v) {
-      arrays.vertex_owner(v) = 0;
-      arrays.vertex_is_owned(v) = true;
-    }
-    return;
-  }
+namespace {
 #if FUSE_HAVE_MPI
+/// The Allgather/Allgatherv + "global minimum rank holding each gid" core
+/// both `resolve_vertex_ownership` overloads below need -- pulled out so
+/// the device overload's own host staging (gids only, never geometry) has
+/// something to call instead of duplicating this collective by hand.
+void allgather_min_rank_of_gid(const std::vector<std::int64_t>& local_gids, CommHandle comm,
+                               std::vector<int>* owner_out) {
   MPI_Comm c = resolve(comm);
   const int num_ranks = comm_size(comm);
-  const int my_rank = comm_rank(comm);
-
-  std::vector<std::int64_t> local_gids(nv);
-  for (std::size_t v = 0; v < nv; ++v) local_gids[v] = arrays.vertex_gid(v);
-
-  const int local_count = static_cast<int>(nv);
+  const int local_count = static_cast<int>(local_gids.size());
   std::vector<int> counts(static_cast<std::size_t>(num_ranks));
   MPI_Allgather(&local_count, 1, MPI_INT, counts.data(), 1, MPI_INT, c);
   std::vector<int> displs(static_cast<std::size_t>(num_ranks));
@@ -428,18 +410,95 @@ void resolve_vertex_ownership(MeshArrays<Kokkos::HostSpace>& arrays, CommHandle 
     }
   }
 
+  owner_out->resize(local_gids.size());
+  for (std::size_t v = 0; v < local_gids.size(); ++v) {
+    (*owner_out)[v] = min_rank_of.at(local_gids[v]);
+  }
+}
+#endif
+}  // namespace
+
+void resolve_vertex_ownership(MeshArrays<Kokkos::HostSpace>& arrays, CommHandle comm) {
+  const std::size_t nv = arrays.vertex_count();
+  if (comm == kNullComm) {
+    for (std::size_t v = 0; v < nv; ++v) {
+      arrays.vertex_owner(v) = 0;
+      arrays.vertex_is_owned(v) = true;
+    }
+    return;
+  }
+#if FUSE_HAVE_MPI
+  const int my_rank = comm_rank(comm);
+  std::vector<std::int64_t> local_gids(nv);
+  for (std::size_t v = 0; v < nv; ++v) local_gids[v] = arrays.vertex_gid(v);
+
+  std::vector<int> owners;
+  allgather_min_rank_of_gid(local_gids, comm, &owners);
+
   for (std::size_t v = 0; v < nv; ++v) {
-    const int owner = min_rank_of.at(arrays.vertex_gid(v));
-    arrays.vertex_owner(v) = owner;
-    arrays.vertex_is_owned(v) = (owner == my_rank);
+    arrays.vertex_owner(v) = owners[v];
+    arrays.vertex_is_owned(v) = (owners[v] == my_rank);
   }
 #else
   refuse_no_mpi();
 #endif
 }
 
+template <class Space>
+void resolve_vertex_ownership_device(MeshArrays<Space>& arrays, CommHandle comm) {
+  const std::size_t nv = arrays.vertex_count();
+  if (comm == kNullComm) {
+    Kokkos::deep_copy(arrays.vertex_owner, 0);
+    Kokkos::deep_copy(arrays.vertex_is_owned, true);
+    return;
+  }
+#if FUSE_HAVE_MPI
+  const int my_rank = comm_rank(comm);
+
+  // The ONE bounded host-staging exception this track's device-resident
+  // pipeline keeps (report-migration.md names it explicitly): only
+  // `vertex_gid`, an O(nv) int64 bookkeeping array, round-trips through
+  // the host for this `MPI_Allgather`/`MPI_Allgatherv` -- never cell or
+  // vertex GEOMETRY, and never the `host_mirrors_materialized()` lazy
+  // cache a halo/migration round's own assertion tracks (this function
+  // reads/writes `MeshArrays<Space>` fields directly, not through
+  // `NativeMeshView`'s lazy host-mirror accessors, so it never sets that
+  // flag). `MPI_Allgatherv` has no portable device-buffer form the way
+  // `MPI_Alltoallv` (`exchange_migration_buffers`) does when the MPI
+  // implementation is GPU-aware, so this collective's own host round trip
+  // is not a missed optimisation -- it is the one MPI does not offer a way
+  // around.
+  auto gid_h = Kokkos::create_mirror_view(arrays.vertex_gid);
+  Kokkos::deep_copy(gid_h, arrays.vertex_gid);
+  std::vector<std::int64_t> local_gids(nv);
+  for (std::size_t v = 0; v < nv; ++v) local_gids[v] = gid_h(v);
+
+  std::vector<int> owners;
+  allgather_min_rank_of_gid(local_gids, comm, &owners);
+
+  auto owner_h = Kokkos::create_mirror_view(arrays.vertex_owner);
+  auto is_owned_h = Kokkos::create_mirror_view(arrays.vertex_is_owned);
+  for (std::size_t v = 0; v < nv; ++v) {
+    owner_h(v) = owners[v];
+    is_owned_h(v) = (owners[v] == my_rank);
+  }
+  Kokkos::deep_copy(arrays.vertex_owner, owner_h);
+  Kokkos::deep_copy(arrays.vertex_is_owned, is_owned_h);
+#else
+  refuse_no_mpi();
+#endif
+}
+
+template void resolve_vertex_ownership_device<Kokkos::HostSpace>(
+    MeshArrays<Kokkos::HostSpace>&, CommHandle);
+#if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || defined(KOKKOS_ENABLE_SYCL)
+template void resolve_vertex_ownership_device<NativeMeshView::DeviceMemSpace>(
+    MeshArrays<NativeMeshView::DeviceMemSpace>&, CommHandle);
+#endif
+
 Result<std::unique_ptr<NativeMeshView>> migrate(const NativeMeshView& mesh,
                                                 const std::vector<int>& dest, CommHandle comm) {
+  using Space = NativeMeshView::DeviceMemSpace;
   const int num_ranks = comm_size(comm);
   const int my_rank = comm_rank(comm);
 
@@ -447,7 +506,21 @@ Result<std::unique_ptr<NativeMeshView>> migrate(const NativeMeshView& mesh,
   // Result), then reduced with every other rank -- see the header
   // comment: a rank must never return this rejection on its own and skip
   // the exchange while its neighbours proceed into it.
-  auto local = pack_for_migration(mesh, dest, num_ranks);
+  //
+  // DEVICE-RESIDENT END TO END (Migration track, 2026-10-15): `local`
+  // holds `Space` buffers straight from `device::pack_to` (never staged to
+  // a host `std::vector<std::byte>` the way the still-public
+  // `pack_for_migration` does for the in-process-emulation test
+  // technique), `exchange_migration_buffers<Space>` moves them
+  // GPU-aware-or-host-staged per `fuse::linalg::mpi_is_gpu_aware()`
+  // without this function itself touching a host mirror, and
+  // `unpack_migrated_mesh_device<Space>` rebuilds the received mesh
+  // without one either -- `NativeMeshView::create<Space>` below is the
+  // ONLY place left that is allowed to run its own one-time host
+  // validation deep-copy (by pre-existing design, native_mesh.cpp), which
+  // is not the `host_mirrors_materialized()` lazy-mirror cache this
+  // track's own tests assert stays unmaterialized.
+  auto local = pack_for_migration_device(mesh, dest, num_ranks);
   const int locally_ok = local.ok() ? 1 : 0;
   const int globally_ok = allreduce_min_int(locally_ok, comm);
   if (globally_ok == 0) {
@@ -459,30 +532,42 @@ Result<std::unique_ptr<NativeMeshView>> migrate(const NativeMeshView& mesh,
                               my_rank)};
   }
 
-  auto received = exchange_migration_buffers(local.value(), comm);
-  auto arrays_r = unpack_migrated_mesh(received, mesh.dimension(), my_rank);
-
-  // NM-6: `unpack_migrated_mesh` rebuilds THIS rank's own mesh from
-  // whatever it alone received, so it can fail on data no peer shares
-  // (e.g. a malformed incoming record) -- reconciled here, BEFORE
-  // `resolve_vertex_ownership`'s own Allgather/Allgatherv (comm.hpp's own
-  // two-phase pattern), the same way the pre-exchange verdict above
-  // already is.
-  const int unpack_locally_ok = arrays_r.ok() ? 1 : 0;
-  const int unpack_globally_ok = allreduce_min_int(unpack_locally_ok, comm);
-  if (unpack_globally_ok == 0) {
-    if (!arrays_r.ok()) return arrays_r.error();
+  auto received = exchange_migration_buffers<Space>(local.value(), comm);
+  // `unpack_migrated_mesh_device` itself has no refusal path (the wire
+  // format is self-describing by construction, and a Polyhedron's cross-
+  // cell face sharing -- the one thing it does not validate, see this
+  // track's report -- cannot raise one either way), but
+  // `NativeMeshBuilder::build()` -- what `unpack_migrated_mesh` used to
+  // route through -- also checked every cell's topological dimension
+  // against `dim` (`E-MESH-DIM`), which this device path does not get for
+  // free since it never goes through the builder. NM-6's own "rebuilds
+  // THIS rank's own mesh from whatever it alone received" reasoning still
+  // applies: reconciled here, BEFORE `resolve_vertex_ownership_device`'s
+  // own Allgather/Allgatherv, the same two-phase pattern the pre-exchange
+  // verdict above already uses.
+  MeshArrays<Space> arrays = device::unpack_migrated_mesh_device<Space>(received, mesh.dimension(),
+                                                                       my_rank);
+  Result<void> dim_check =
+      device::all_cells_match_dimension<Space>(arrays)
+          ? Result<void>::success()
+          : Result<void>(Failure{"E-MESH-DIM",
+                                 fmt::format("rank {}: a migrated cell's topological dimension "
+                                            "disagrees with this rank's own mesh dimension {}",
+                                            my_rank, mesh.dimension())});
+  const int dim_locally_ok = dim_check.ok() ? 1 : 0;
+  const int dim_globally_ok = allreduce_min_int(dim_locally_ok, comm);
+  if (dim_globally_ok == 0) {
+    if (!dim_check.ok()) return dim_check.error();
     return Failure{"E-MESH-MIGRATE-PEER-REFUSED",
                    fmt::format("rank {} unpacked its migrated cells successfully, but at "
-                              "least one other rank in this communicator failed rebuilding "
-                              "its own mesh from what it received; every rank refuses "
-                              "together so none hangs waiting on vertex-ownership resolution",
+                              "least one other rank in this communicator found a dimension "
+                              "mismatch in what it received; every rank refuses together so "
+                              "none hangs waiting on vertex-ownership resolution",
                               my_rank)};
   }
 
-  auto arrays = arrays_r.value();
-  resolve_vertex_ownership(arrays, comm);
-  return NativeMeshView::create_from_host(arrays, my_rank);
+  resolve_vertex_ownership_device<Space>(arrays, comm);
+  return NativeMeshView::create<Space>(arrays, my_rank);
 }
 
 }  // namespace fuse::native

@@ -47,6 +47,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <Kokkos_Core.hpp>
@@ -161,6 +162,91 @@ KOKKOS_INLINE_FUNCTION void write_record(const MeshArrays<Space>& mesh, int c, s
   }
 }
 
+/// WIRE FORMAT v2 (Migration track, 2026-10-15; KNOWN_ISSUES D51's own
+/// narrowing: "the wire format's variable-length, unprefixed records
+/// make per-record boundary discovery... a serial walk... it would need
+/// either a length-prefixed wire-format change"). Every buffer `pack_to`/
+/// `pack_fanout` produce now opens with a FIXED-SIZE header a receiver
+/// can read with one `parallel_for` indexed by record, never a
+/// sequential walk of the variable-length payload that follows it:
+///
+///   [int64 record_count]
+///   [record_count + 1 int64 byte offsets, ABSOLUTE from the start of
+///    this buffer -- record r's bytes span [offsets[r], offsets[r+1]),
+///    and offsets[record_count] is the buffer's own total size]
+///   [payload: every record, back to back, unchanged from before this
+///    header existed]
+///
+/// `alloc_buffer_with_header` below builds this from the SAME `contrib`/
+/// `payload_offset` arrays `pack_to`/`pack_fanout` already compute for
+/// the payload write step -- one more `parallel_scan` (contributing index
+/// -> compacted 0..record_count-1 position) and two small `parallel_for`
+/// writes, then returns the allocated buffer (header slots already
+/// written) and that compacted `record_index`, which the caller's own
+/// write step uses instead of `payload_offset` directly (offset by this
+/// buffer's own `header_bytes = buf.extent(0) - total_payload`).
+template <class Space>
+[[nodiscard]] std::pair<Kokkos::View<std::byte*, Space>, Kokkos::View<int*, Space>>
+alloc_buffer_with_header(const Kokkos::View<std::size_t*, Space>& contrib,
+                         const Kokkos::View<std::size_t*, Space>& payload_offset,
+                         std::size_t total_payload, int n) {
+  using ExecSpace = typename Space::execution_space;
+
+  Kokkos::View<int*, Space> record_index(
+      Kokkos::view_alloc("fuse::native::device::header_record_index", Kokkos::WithoutInitializing),
+      n);
+  int n_records = 0;
+  Kokkos::parallel_scan(
+      "fuse::native::device::header_record_scan", Kokkos::RangePolicy<ExecSpace>(0, n),
+      KOKKOS_LAMBDA(const int i, int& running, const bool final_pass) {
+        const bool has_record = contrib(i) != 0;
+        if (final_pass) record_index(i) = running;
+        if (has_record) running += 1;
+      },
+      n_records);
+
+  // Zero records: an entirely empty buffer, not a 16-byte header around no
+  // payload -- preserves the pre-header wire contract a destination that
+  // receives nothing already relied on (`pack_halo_cells`'s own "nothing is
+  // ever sent to one's own rank" -> an empty buffer, native_halo_test.cpp)
+  // and avoids shipping header bytes over MPI for an empty send.
+  // `read_record_count_host`/`parse_buffers` (mesh_merge_device.hpp) treat
+  // a zero-extent buffer as zero records without reading it.
+  if (n_records == 0) {
+    return {Kokkos::View<std::byte*, Space>(), record_index};
+  }
+
+  const std::size_t header_bytes =
+      sizeof(std::int64_t) * static_cast<std::size_t>(2 + n_records);
+  Kokkos::View<std::byte*, Space> buf(
+      Kokkos::view_alloc("fuse::native::device::pack_buf", Kokkos::WithoutInitializing),
+      header_bytes + total_payload);
+
+  Kokkos::parallel_for(
+      "fuse::native::device::header_write_count", Kokkos::RangePolicy<ExecSpace>(0, 1),
+      KOKKOS_LAMBDA(const int) {
+        std::size_t pos = 0;
+        append_pod_at<std::int64_t>(buf.data(), pos, static_cast<std::int64_t>(n_records));
+      });
+  Kokkos::parallel_for(
+      "fuse::native::device::header_write_offsets", Kokkos::RangePolicy<ExecSpace>(0, n),
+      KOKKOS_LAMBDA(const int i) {
+        if (contrib(i) == 0) return;
+        std::size_t pos = sizeof(std::int64_t) * static_cast<std::size_t>(1 + record_index(i));
+        append_pod_at<std::int64_t>(buf.data(), pos,
+                                    static_cast<std::int64_t>(header_bytes + payload_offset(i)));
+      });
+  Kokkos::parallel_for(
+      "fuse::native::device::header_write_end", Kokkos::RangePolicy<ExecSpace>(0, 1),
+      KOKKOS_LAMBDA(const int) {
+        std::size_t pos = sizeof(std::int64_t) * static_cast<std::size_t>(1 + n_records);
+        append_pod_at<std::int64_t>(buf.data(), pos,
+                                    static_cast<std::int64_t>(header_bytes + total_payload));
+      });
+
+  return {buf, record_index};
+}
+
 /// Packs every cell `c` with `cell_is_owned(c)` and
 /// `dest_of_owned(owned_block_index(c)) == r` into a freshly allocated
 /// `Kokkos::View<std::byte*, Space>` per destination rank `r`, entirely as
@@ -236,8 +322,9 @@ template <bool kHaloRecord, class Space>
         "fuse::native::device::total_reduce", Kokkos::RangePolicy<ExecSpace>(0, n),
         KOKKOS_LAMBDA(const int c, std::size_t& acc) { acc += contrib(c); }, total);
 
-    Kokkos::View<std::byte*, Space> buf(
-        Kokkos::view_alloc("fuse::native::device::pack_buf", Kokkos::WithoutInitializing), total);
+    auto buf_and_index = alloc_buffer_with_header<Space>(contrib, offset, total, n);
+    Kokkos::View<std::byte*, Space> buf = buf_and_index.first;
+    const std::size_t header_bytes = buf.extent(0) - total;
     // The `if constexpr` dispatch is hoisted OUT of the lambda body, into two
     // separate kernel launches, rather than written as a branch inside one
     // `KOKKOS_LAMBDA` (which is what a first attempt did): nvcc's extended
@@ -252,7 +339,7 @@ template <bool kHaloRecord, class Space>
           "fuse::native::device::write_records_halo", Kokkos::RangePolicy<ExecSpace>(0, n),
           KOKKOS_LAMBDA(const int c) {
             if (contrib(c) == 0) return;
-            write_record<kHaloRecord>(mesh_local, c, buf.data(), offset(c),
+            write_record<kHaloRecord>(mesh_local, c, buf.data(), header_bytes + offset(c),
                                       owner_rank_of(owned_idx(c)), owned_block_idx_of(owned_idx(c)));
           });
     } else {
@@ -260,7 +347,7 @@ template <bool kHaloRecord, class Space>
           "fuse::native::device::write_records_migration", Kokkos::RangePolicy<ExecSpace>(0, n),
           KOKKOS_LAMBDA(const int c) {
             if (contrib(c) == 0) return;
-            write_record<kHaloRecord>(mesh_local, c, buf.data(), offset(c), 0, 0);
+            write_record<kHaloRecord>(mesh_local, c, buf.data(), header_bytes + offset(c), 0, 0);
           });
     }
     result[static_cast<std::size_t>(r)] = buf;
@@ -332,9 +419,9 @@ template <bool kHaloRecord, class Space>
         "fuse::native::device::fanout_total_reduce", Kokkos::RangePolicy<ExecSpace>(0, n_sends),
         KOKKOS_LAMBDA(const int s, std::size_t& acc) { acc += contrib(s); }, total);
 
-    Kokkos::View<std::byte*, Space> buf(
-        Kokkos::view_alloc("fuse::native::device::fanout_buf", Kokkos::WithoutInitializing),
-        total);
+    auto buf_and_index = alloc_buffer_with_header<Space>(contrib, offset, total, n_sends);
+    Kokkos::View<std::byte*, Space> buf = buf_and_index.first;
+    const std::size_t header_bytes = buf.extent(0) - total;
     // Same nvcc first-capture-under-if-constexpr workaround `pack_to` above
     // documents: two launches, not one branching lambda.
     if constexpr (kHaloRecord) {
@@ -343,7 +430,7 @@ template <bool kHaloRecord, class Space>
           KOKKOS_LAMBDA(const int s) {
             if (contrib(s) == 0) return;
             const int c = cell_of_send(s);
-            write_record<kHaloRecord>(mesh_local, c, buf.data(), offset(s),
+            write_record<kHaloRecord>(mesh_local, c, buf.data(), header_bytes + offset(s),
                                       owner_rank_of_cell(c), owned_block_idx_of_cell(c));
           });
     } else {
@@ -351,7 +438,8 @@ template <bool kHaloRecord, class Space>
           "fuse::native::device::fanout_write_migration", Kokkos::RangePolicy<ExecSpace>(0, n_sends),
           KOKKOS_LAMBDA(const int s) {
             if (contrib(s) == 0) return;
-            write_record<kHaloRecord>(mesh_local, cell_of_send(s), buf.data(), offset(s), 0, 0);
+            write_record<kHaloRecord>(mesh_local, cell_of_send(s), buf.data(),
+                                      header_bytes + offset(s), 0, 0);
           });
     }
     result[static_cast<std::size_t>(r)] = buf;
