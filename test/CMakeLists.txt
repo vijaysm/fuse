@@ -890,7 +890,7 @@ fuse_tests_gated_by(FUSE_ENABLE_MPI
   parallel/linalg_mpi_test.cpp parallel/brusselator_grid_mpi_test.cpp
   parallel/schur_slab_mpi_test.cpp parallel/krylov_mpi_test.cpp
   parallel/derivative_gate_mpi_test.cpp parallel/participant_reducer_mpi_test.cpp
-  parallel/restart_collective_mpi_test.cpp)
+  parallel/restart_collective_mpi_test.cpp parallel/device_ghost_exchange_test.cpp)
 # restart_collective_mpi_test.cpp links fuse::restart_io, built only under
 # FUSE_ENABLE_HDF5, so an MPI-on/HDF5-off configuration must see it as gated.
 fuse_tests_gated_by(FUSE_ENABLE_HDF5 parallel/restart_collective_mpi_test.cpp)
