@@ -365,6 +365,11 @@ Result<std::unique_ptr<NativeMeshView>> NativeMeshView::create_from_host(
   auto view = std::make_unique<NativeMeshView>();
   view->dim_ = arrays.dim;
   view->my_rank_ = my_rank;
+  // PRIMARY storage (docs/dev/native-mesh.md, "Execution space"): a deep
+  // copy to DeviceMemSpace, unconditionally -- a plain contiguous copy on a
+  // host-only build (DeviceMemSpace == HostSpace there). Every on-demand
+  // host mirror below is rebuilt FROM this, not from `arrays`.
+  view->device_arrays_ = to_memory_space<NativeMeshView::DeviceMemSpace>(arrays);
 
   const std::size_t nv = arrays.vertex_count();
   view->vertex_xyz_.resize(nv);
@@ -710,9 +715,139 @@ Result<std::unique_ptr<NativeMeshView>> NativeMeshView::create_from_host(
           device_measure(c) = sum;
         });
     view->device_measure_ = device_measure;
+
+    // Retained, not discarded: this is the SAME simplex CSR the kernel just
+    // reduced -- `device_simplex_offsets()`/`device_simplex_corners()`'s own
+    // doc (native_mesh.hpp) names the callers (fuse::search's device element
+    // boxes, BoxIndex::build_device_resident) that read it without a host
+    // round trip.
+    view->device_simplex_offsets_ = device_simplex_offsets;
+    view->device_simplex_corners_ = simplex_corners;
   }
 
+  // DEVICE-PRIMARY: the host arrays populated above were SCRATCH, needed to
+  // run the host-only validation (canonical_fan_triangulation,
+  // canonical_cell_tetrahedra) and to seed the device kernels just above --
+  // not a permanent host mirror. Release them now that `device_arrays_` and
+  // the device-resident derived geometry hold everything a host accessor
+  // needs to rebuild from; `ensure_host_mirror()` repopulates them lazily,
+  // the first time one is actually called (docs/dev/native-mesh.md,
+  // "Execution space").
+  std::vector<std::array<double, 3>>().swap(view->vertex_xyz_);
+  std::vector<std::vector<int>>().swap(view->cell_vertices_);
+  std::vector<std::vector<std::vector<int>>>().swap(view->cell_faces_);
+  std::vector<std::vector<std::array<Point, 4>>>().swap(view->cell_simplices_);
+  std::vector<Point>().swap(view->centroid_);
+  std::vector<double>().swap(view->measure_);
+  view->host_mirror_materialized_ = false;
+
   return std::move(view);
+}
+
+void NativeMeshView::ensure_host_mirror() const {
+  if (host_mirror_materialized_) return;
+
+  // A plain mirror of the PRIMARY storage to host -- not a re-validation:
+  // `device_arrays_` was already proved valid by `create_from_host`'s own
+  // host-only pass, so this step cannot fail and reports nothing through
+  // Result/Failure.
+  const auto host_arrays = to_memory_space<Kokkos::HostSpace>(device_arrays_);
+
+  const std::size_t nv = host_arrays.vertex_count();
+  vertex_xyz_.resize(nv);
+  for (std::size_t v = 0; v < nv; ++v) {
+    vertex_xyz_[v] = {host_arrays.vertex_coords(v, 0), host_arrays.vertex_coords(v, 1),
+                      host_arrays.vertex_coords(v, 2)};
+  }
+
+  const std::size_t nc = cell_type_.size();
+  cell_vertices_.assign(nc, {});
+  cell_faces_.assign(nc, {});
+  for (std::size_t c = 0; c < nc; ++c) {
+    const int voff = host_arrays.cell_vertex_offsets(c);
+    const int vcount = host_arrays.cell_vertex_offsets(c + 1) - voff;
+    cell_vertices_[c].resize(static_cast<std::size_t>(vcount));
+    for (int k = 0; k < vcount; ++k) {
+      cell_vertices_[c][static_cast<std::size_t>(k)] = host_arrays.cell_vertex_indices(voff + k);
+    }
+    // cell_faces_ is read by a caller (native_halo.cpp, native_mesh_io.cpp,
+    // native_migration.cpp) ONLY for a Polyhedron cell -- every call site
+    // gates on `cell_type_of(c) == CellType::Polyhedron` first, since a
+    // fixed shape's faces are already recoverable from cell_vertices(c) via
+    // cell_topology.hpp's own tables. create_from_host's validation pass
+    // also builds this for every "3D, non-Tet" shape, but only because it
+    // is a byproduct of that pass's own oriented-face-to-tetrahedra
+    // geometry step (canonical_cell_tetrahedra) -- a computation this
+    // mirror does not repeat (measure/centroid come from the device
+    // instead, see above), so there is nothing here that needs the
+    // fixed-shape case at all; reconstructing it for a Hex/Prism/Pyramid
+    // would be dead weight no accessor ever reads.
+    if (cell_type_[c] == CellType::Polyhedron) {
+      std::vector<std::vector<int>> faces;
+      {
+        const int foff = host_arrays.cell_face_offsets(c);
+        const int fcount = host_arrays.cell_face_offsets(c + 1) - foff;
+        for (int f = 0; f < fcount; ++f) {
+          const int face_idx = host_arrays.cell_face_indices(foff + f);
+          const bool flip = host_arrays.cell_face_flip(foff + f);
+          const int fvoff = host_arrays.face_vertex_offsets(face_idx);
+          const int fvcount = host_arrays.face_vertex_offsets(face_idx + 1) - fvoff;
+          std::vector<int> face(static_cast<std::size_t>(fvcount));
+          for (int k = 0; k < fvcount; ++k) {
+            const int kk = flip ? (fvcount - 1 - k) : k;
+            face[static_cast<std::size_t>(k)] = host_arrays.face_vertex_indices(fvoff + kk);
+          }
+          faces.push_back(std::move(face));
+        }
+      }
+      cell_faces_[c] = std::move(faces);
+    }
+  }
+
+  // centroid_/measure_: a mirror of the device-computed values, not a
+  // second computation -- device_centroid_/device_measure_ are the
+  // independently recomputed device twins of exactly these per-cell maps
+  // (docs/dev/native-mesh.md, "Execution space"), so reading them back here
+  // is the SAME bit-identical (host-only build)/1e-14-relative (real
+  // device) relationship that class's existing test already pins.
+  centroid_.assign(nc, Point{});
+  measure_.assign(nc, 0.0);
+  if (nc > 0) {
+    auto centroid_mirror = Kokkos::create_mirror_view(device_centroid_);
+    Kokkos::deep_copy(centroid_mirror, device_centroid_);
+    auto measure_mirror = Kokkos::create_mirror_view(device_measure_);
+    Kokkos::deep_copy(measure_mirror, device_measure_);
+    for (std::size_t c = 0; c < nc; ++c) {
+      centroid_[c] = Point{centroid_mirror(c, 0), centroid_mirror(c, 1), centroid_mirror(c, 2)};
+      measure_[c] = measure_mirror(c);
+    }
+  }
+
+  // cell_simplices_: unflatten the device simplex CSR the same way.
+  cell_simplices_.assign(nc, {});
+  if (device_simplex_offsets_.extent(0) > 0) {
+    auto offsets_mirror = Kokkos::create_mirror_view(device_simplex_offsets_);
+    Kokkos::deep_copy(offsets_mirror, device_simplex_offsets_);
+    auto corners_mirror = Kokkos::create_mirror_view(device_simplex_corners_);
+    Kokkos::deep_copy(corners_mirror, device_simplex_corners_);
+    const int corners_per_simplex = dim_ + 1;
+    for (std::size_t c = 0; c < nc; ++c) {
+      const int soff = offsets_mirror(c);
+      const int scount = offsets_mirror(c + 1) - soff;
+      cell_simplices_[c].resize(static_cast<std::size_t>(scount));
+      for (int s = 0; s < scount; ++s) {
+        const int row = soff + s;
+        std::array<Point, 4> corners{};
+        for (int k = 0; k < corners_per_simplex; ++k) {
+          corners[static_cast<std::size_t>(k)] = Point{
+              corners_mirror(row, k, 0), corners_mirror(row, k, 1), corners_mirror(row, k, 2)};
+        }
+        cell_simplices_[c][static_cast<std::size_t>(s)] = corners;
+      }
+    }
+  }
+
+  host_mirror_materialized_ = true;
 }
 
 void NativeMeshView::check(int dim, std::size_t i, const char* what) const {
@@ -751,6 +886,7 @@ bool NativeMeshView::is_owned(int dim, std::size_t i) const {
 
 Point NativeMeshView::centroid(int dim, std::size_t i) const {
   check(dim, i, "centroid");
+  ensure_host_mirror();
   if (dim == 0) {
     return Point{vertex_xyz_[i][0], vertex_xyz_[i][1], vertex_xyz_[i][2]};
   }
@@ -764,6 +900,7 @@ double NativeMeshView::measure(int dim, std::size_t i) const {
               "NativeMeshView::measure: this backend defines no measure for vertices "
               "(dim 0); a zero weight would silently drop them from a conservation sum");
   }
+  ensure_host_mirror();
   return measure_[i];
 }
 
@@ -775,12 +912,14 @@ std::size_t NativeMeshView::global_id(int dim, std::size_t i) const {
 std::size_t NativeMeshView::simplex_count(int dim, std::size_t i) const {
   check(dim, i, "simplex_count");
   if (dim == 0) return 0;
+  ensure_host_mirror();
   return cell_simplices_[i].size();
 }
 
 void NativeMeshView::simplex_points(int dim, std::size_t i, std::size_t s, Point* out) const {
   check(dim, i, "simplex_points");
   FUSE_ASSERT(out != nullptr, "simplex_points given a null output");
+  ensure_host_mirror();
   FUSE_ASSERT(s < cell_simplices_[i].size(), "simplex {} of cell {} does not exist (it has {})",
              s, i, cell_simplices_[i].size());
   const int corners = dim_ + 1;
@@ -799,6 +938,7 @@ void NativeMeshView::simplex_points(int dim, std::size_t i, std::size_t s, Point
 // ---------------------------------------------------------------------------
 Result<MeshView::CellVertices> NativeMeshView::cell_vertices(int dim, std::size_t i) const {
   check(dim, i, "cell_vertices");
+  ensure_host_mirror();
   if (dim != dim_) {
     return Failure{"E-MESH-NO-CELL-VERTICES",
                    "NativeMeshView::cell_vertices: connectivity is stored only for "
