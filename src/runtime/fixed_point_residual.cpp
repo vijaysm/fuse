@@ -324,18 +324,23 @@ Result<void> Runner::Impl::evaluate_region_residual_direct(
   std::vector<std::vector<double>> carried_snapshot(R.carried_arcs.size());
   for (std::size_t i = 0; i < R.carried_arcs.size(); ++i) {
     const detail::Slot& s = slots[R.carried_arcs[i]];
+    // docs/dev/device-resident-arcs.md step 8: `s.data, s.data + s.total()`
+    // is a raw pointer range over the arc's own storage -- legal only when
+    // that storage is host memory. slot_to_vector() already carries the
+    // same "assign the whole slot, or resize and slot_to_host() when it is
+    // device-resident" fallback this iterator-pair constructor needs.
     if (s.data != nullptr) {
-      carried_snapshot[i].assign(s.data, s.data + s.total());
+      slot_to_vector(s, carried_snapshot[i], s.total());
     }
   }
   std::vector<std::vector<double>> feed_snapshot(R.blocks.size());
   std::vector<std::vector<double>> value_snapshot(R.blocks.size());
   for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
     const detail::RegionBlock& b = R.blocks[bi];
-    const double* feed = slots[b.feed_arc].data;
-    if (feed != nullptr) feed_snapshot[bi].assign(feed, feed + b.length);
-    const double* value = slots[b.value_arc].data;
-    if (value != nullptr) value_snapshot[bi].assign(value, value + b.length);
+    const detail::Slot& feed_slot = slots[b.feed_arc];
+    if (feed_slot.data != nullptr) slot_to_vector(feed_slot, feed_snapshot[bi], b.length);
+    const detail::Slot& value_slot = slots[b.value_arc];
+    if (value_slot.data != nullptr) slot_to_vector(value_slot, value_snapshot[bi], b.length);
   }
   std::vector<std::vector<double>> provides_snapshot(R.newton_direct_members.size());
   for (std::size_t mi = 0; mi < R.newton_direct_members.size(); ++mi) {
@@ -345,16 +350,23 @@ Result<void> Runner::Impl::evaluate_region_residual_direct(
     provides_snapshot[mi].resize(total);
     std::size_t off = 0;
     for (std::size_t k = 0; k < m.provides_blocks.size(); ++k) {
-      const double* src = slots[m.provides_source_arcs[k]].data;
+      const detail::Slot& src_slot = slots[m.provides_source_arcs[k]];
       const std::size_t len = R.blocks[m.provides_blocks[k]].length;
-      if (src != nullptr) num::copy(src, provides_snapshot[mi].data() + off, len);
+      // docs/dev/device-resident-arcs.md step 8: this Newton-Direct
+      // member's own Provides arc is reached by place_arcs_on_device()'s
+      // ordinary rule (step 3), same as every other region block, so it
+      // may be device-resident -- slot_to_host() instead of a raw
+      // num::copy() off `Slot::data`.
+      if (src_slot.data != nullptr) {
+        slot_to_host(src_slot, provides_snapshot[mi].data() + off, len);
+      }
       off += len;
     }
   }
 
   // --- deliver x into every block's own feed arc (component Requires) ----
   for (const detail::RegionBlock& b : R.blocks) {
-    num::copy(x.data() + b.offset, slots[b.feed_arc].data, b.length);
+    host_to_slot(x.data() + b.offset, slots[b.feed_arc], b.length);
   }
 
   // --- G(x): evaluate_residual() on every Direct member, in place of
@@ -379,7 +391,7 @@ Result<void> Runner::Impl::evaluate_region_residual_direct(
       std::size_t off = 0;
       for (const std::size_t bi : m.requires_blocks) {
         const detail::RegionBlock& b = R.blocks[bi];
-        num::copy(slots[b.feed_arc].data, interface_in.data() + off, b.length);
+        slot_to_host(slots[b.feed_arc], interface_in.data() + off, b.length);
         off += b.length;
       }
     }
@@ -414,9 +426,9 @@ Result<void> Runner::Impl::evaluate_region_residual_direct(
 
     std::size_t off = 0;
     for (std::size_t k = 0; k < m.provides_blocks.size(); ++k) {
-      double* dst = slots[m.provides_source_arcs[k]].data;
+      const detail::Slot& dst_slot = slots[m.provides_source_arcs[k]];
       const std::size_t len = R.blocks[m.provides_blocks[k]].length;
-      if (dst != nullptr) num::copy(residual_out.data() + off, dst, len);
+      if (dst_slot.data != nullptr) host_to_slot(residual_out.data() + off, dst_slot, len);
       off += len;
     }
   }
@@ -434,7 +446,11 @@ Result<void> Runner::Impl::evaluate_region_residual_direct(
   // --- F(x) = x - G(x), read before any restore undoes it ----------------
   if (eval_err.ok() && body_err.ok()) {
     for (const detail::RegionBlock& b : R.blocks) {
-      const double* g = slots[b.value_arc].data;
+      // docs/dev/device-resident-arcs.md step 8: `b.value_arc` is an
+      // ordinary region block arc (step 3's own rule), so it may be
+      // device-resident -- slot_host_read() instead of dereferencing
+      // `Slot::data` element by element.
+      const double* g = slot_host_read(slots[b.value_arc], b.length, block_host_scratch);
       for (std::size_t j = 0; j < b.length; ++j) {
         f_out[b.offset + j] = x[b.offset + j] - g[j];
       }
@@ -452,28 +468,28 @@ Result<void> Runner::Impl::evaluate_region_residual_direct(
   const bool skip_restore = commit && eval_err.ok() && body_err.ok();
   if (!skip_restore) {
     for (std::size_t i = 0; i < R.carried_arcs.size(); ++i) {
-      detail::Slot& s = slots[R.carried_arcs[i]];
+      const detail::Slot& s = slots[R.carried_arcs[i]];
       if (s.data != nullptr && !carried_snapshot[i].empty()) {
-        num::copy(carried_snapshot[i].data(), s.data, carried_snapshot[i].size());
+        host_to_slot(carried_snapshot[i].data(), s, carried_snapshot[i].size());
       }
     }
     for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
       const detail::RegionBlock& b = R.blocks[bi];
       if (!feed_snapshot[bi].empty()) {
-        num::copy(feed_snapshot[bi].data(), slots[b.feed_arc].data, b.length);
+        host_to_slot(feed_snapshot[bi].data(), slots[b.feed_arc], b.length);
       }
       if (!value_snapshot[bi].empty()) {
-        num::copy(value_snapshot[bi].data(), slots[b.value_arc].data, b.length);
+        host_to_slot(value_snapshot[bi].data(), slots[b.value_arc], b.length);
       }
     }
     for (std::size_t mi = 0; mi < R.newton_direct_members.size(); ++mi) {
       const detail::RegionRuntime::NewtonDirectMember& m = R.newton_direct_members[mi];
       std::size_t off = 0;
       for (std::size_t k = 0; k < m.provides_blocks.size(); ++k) {
-        double* dst = slots[m.provides_source_arcs[k]].data;
+        const detail::Slot& dst_slot = slots[m.provides_source_arcs[k]];
         const std::size_t len = R.blocks[m.provides_blocks[k]].length;
-        if (dst != nullptr) {
-          num::copy(provides_snapshot[mi].data() + off, dst, len);
+        if (dst_slot.data != nullptr) {
+          host_to_slot(provides_snapshot[mi].data() + off, dst_slot, len);
         }
         off += len;
       }

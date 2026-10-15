@@ -282,6 +282,20 @@ the next step starts. Host mode byte-identity is the standing invariant.
    unconditionally host, a different track's scope), but Diagnose/
    Constrain's reductions and the distributed-nodal Remap no longer pin
    their arcs at all -- see the "Runtime-exchange track" section below.
+   DONE (window-regions track, 2026-10-15): `fixed_point_residual.cpp`'s
+   `evaluate_region_residual_direct()` (the Newton-Direct residual path)
+   carried twelve raw `num::copy()`/`std::vector::assign()` calls and one
+   raw per-element read off `Slot::data` directly for an ORDINARY region's
+   own block/carried/verify arcs, missed when this step's own 6510f5e fixed
+   its sibling `evaluate_region_residual()` -- closed through
+   `slot_to_host()`/`host_to_slot()`/`slot_to_vector()`/`slot_host_read()`,
+   the same helpers 6510f5e already used elsewhere in this file.
+   ATTEMPTED, BLOCKED (window-regions track, 2026-10-15): unpinning a
+   WINDOW-scoped region's own arcs and giving `previous[]` a device-
+   resident companion is NOT done -- see the "Window-regions track" section
+   below for what was tried, what it broke, and the bisection that narrowed
+   the fault without finding it. Still host, by this rule: `previous[]`,
+   the space-time history, and every arc a window-scoped region names.
 4. DONE (4610b22, 581c5d1, 7b369f4). `FUSE_EXECUTION_SPACE` resolves
    `RunnerConfig::RunnerExecutionSpace::Default`; `fuse_add_device_twin()`
    registers the 14 `.device` rows (docs/dev/testing.md, "The device
