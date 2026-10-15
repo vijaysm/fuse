@@ -100,7 +100,7 @@ jobs:
           -DCMAKE_DISABLE_FIND_PACKAGE_fmt=ON
           -DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON -DCMAKE_DISABLE_FIND_PACKAGE_Eigen3=ON
       - run: cmake --build build -j
-      - run: ctest --test-dir build --output-on-failure
+      - run: ctest --test-dir build --output-on-failure -LE bench
       - run: cat build/fuse-resolved-dependencies.txt
 
   tier0-no-exceptions:
@@ -121,4 +121,4 @@ jobs:
       - run: cmake --build build -j
       # Tests that assert a throw cannot run here by design; the leg proves the
       # library and the non-throwing tests build and pass with the option off.
-      - run: ctest --test-dir build --output-on-failure -LE throws
+      - run: ctest --test-dir build --output-on-failure -LE 'throws|bench'

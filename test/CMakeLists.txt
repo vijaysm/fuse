@@ -2254,6 +2254,79 @@ else()
     FUSE_TEST_FORTRAN_PROVIDER_PLUGIN="")
 endif()
 
+# ---------------------------------------------------------------- bench
+# Scaled device benchmark (docs/dev/device-resident-arcs.md rollout step 6
+# follow-up, scaled-bench track): a native quad-mesh Remap/Transport chain
+# at problem sizes orders of magnitude larger than the correctness suite,
+# so per-instruction kernel-launch and host-stop overhead can be told
+# apart from genuine arithmetic cost -- see bench/scaled_device_benchmark.cpp's
+# own header comment for the graph and the placement/execution-space
+# conventions. Not a *_test.cpp (the audit section below globs only
+# *_test.cpp) and not a gtest binary -- one MPI-aware executable driven by
+# different CLI arguments at each rank count and problem size, the same
+# convention examples/CMakeLists.txt's own fuse_add_layout_test uses for
+# layout_driver.
+if(FUSE_ENABLE_MPI)
+  add_executable(fuse_bench_scaled_device_benchmark bench/scaled_device_benchmark.cpp)
+  target_link_libraries(fuse_bench_scaled_device_benchmark PRIVATE
+    fuse::runtime fuse::backend fuse::transport MPI::MPI_CXX)
+
+  # Small-size correctness row (RED/GREEN evidence): --verify builds and
+  # runs the SAME small graph under Host and Device IN THIS ONE PROCESS
+  # and asserts 1e-14 relative agreement itself -- see the file's own
+  # header comment. Labelled "example": cheap (a handful of cells) and
+  # belongs in the default tiers, same as mms_pair/dn_heat's own
+  # correctness rows. The .device twin reruns the identical --verify
+  # command under FUSE_EXECUTION_SPACE=device; --verify's own comparison
+  # does not read that variable (it hardwires Host then Device inside one
+  # process regardless), so the twin is a second, convention-following
+  # confirmation rather than a different code path.
+  add_test(NAME example.scaled_device_benchmark
+           COMMAND fuse_bench_scaled_device_benchmark --verify)
+  set_tests_properties(example.scaled_device_benchmark PROPERTIES
+    LABELS "example" TIMEOUT 120)
+  if(COMMAND fuse_add_device_twin)
+    fuse_add_device_twin(example.scaled_device_benchmark fuse_bench_scaled_device_benchmark
+      ARGS --verify LABELS example)
+  endif()
+
+  # The scaled rows: --n/--periods sized for a real measurement, at 1, 2
+  # and 3 ranks (the disjoint provider/consumer placement degenerates to
+  # "both on the whole one-rank world" at one rank -- see
+  # scaled_device_benchmark.cpp's own placement_for() comment), each with a
+  # FUSE_EXECUTION_SPACE=device twin at --fields device. Labelled "bench"
+  # ONLY (never "example", "gtest" or "parallel"), so neither tier0's plain
+  # `ctest --test-dir build` leg (.github/workflows/ci.yml, now `-LE bench`
+  # on both its tier0 invocations for exactly this reason) nor a bare
+  # `ctest -j1` sweeps up the scaled size by accident. Run deliberately
+  # with `ctest -L bench`.
+  function(fuse_add_bench_row name ranks)
+    cmake_parse_arguments(ARG "" "" "ARGS" ${ARGN})
+    add_test(NAME ${name}
+             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks}
+                     $<TARGET_FILE:fuse_bench_scaled_device_benchmark> ${ARG_ARGS})
+    set_tests_properties(${name} PROPERTIES TIMEOUT 1800 LABELS "bench;mpi;parallel")
+  endfunction()
+
+  set(FUSE_BENCH_N 1000 CACHE STRING
+      "Scaled device benchmark provider grid side length (provider has N*N cells)")
+  foreach(_bench_ranks 1 2 3)
+    fuse_add_bench_row(bench.scaled_device_benchmark.${_bench_ranks} ${_bench_ranks}
+      ARGS --n ${FUSE_BENCH_N} --periods 5 --fields host)
+    if(FUSE_KOKKOS_HAS_DEVICE)
+      add_test(NAME bench.scaled_device_benchmark.${_bench_ranks}.device
+               COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${_bench_ranks}
+                       $<TARGET_FILE:fuse_bench_scaled_device_benchmark>
+                       --n ${FUSE_BENCH_N} --periods 5 --fields device)
+      set_tests_properties(bench.scaled_device_benchmark.${_bench_ranks}.device PROPERTIES
+        TIMEOUT 1800 LABELS "bench;mpi;parallel;device"
+        ENVIRONMENT "FUSE_EXECUTION_SPACE=device")
+    endif()
+  endforeach()
+else()
+  message(STATUS "fuse: fuse_bench_scaled_device_benchmark not built -- needs FUSE_ENABLE_MPI=ON")
+endif()
+
 # ---------------------------------------------------------------- audit
 # Every *_test.cpp on disk must be registered above or declared gated by a tier
 # option that is OFF in this configuration. Anything else is a test that runs
