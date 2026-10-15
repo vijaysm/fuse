@@ -1207,3 +1207,259 @@ system `--check-anchors` itself verifies).
   coverage the ORIGINAL (pre-restart) provider entries this round extended already have in this
   test file.
 
+
+## 11. Stage B Slice 1b -- typed fields, implementation record (2026-10-15)
+
+The owner reviewed Slice 1's design (Section 9-10) and required restart
+fields to be templated on element type before Slice 2 proceeds. This
+section records what was built, what the real HDF5 and compiler behaviour
+turned out to be (several measured facts this slice's own design review
+did not anticipate), and the mutation/tier-0 evidence.
+
+### Design implemented (owner's ten numbered items)
+
+1. **`fuse::ElementType`** (`include/fuse/model/element_type.hpp:54-81`) is a
+   closed enum: `Int8`..`Int64`, `UInt8`..`UInt64`, `Binary16`, `BFloat16`,
+   `Binary32`, `Binary64`, `LongDouble`, `Bool`. `ElementTypeOf<T>`
+   (`element_type.hpp:167-240`) resolves a C++ type to its enumerator at
+   compile time; any `T` outside the supported set fails a `static_assert`
+   in the unspecialised primary template.
+2. **`fuse::bfloat16`** (`include/fuse/model/bfloat16.hpp`) is a FUSE
+   storage type: 1 sign, 8 exponent (bias 127, same as `Binary32`), 7
+   explicit significand bits. `from_float()` rounds to nearest, ties to
+   even, quiet-NaN-preserving (`bfloat16.hpp:63-76`). `test/model/
+   bfloat16_test.cpp`'s `ExhaustiveBitToFloatToBitIdentityOverEveryNonNan
+   Pattern` round-trips all 65536 bit patterns (254 correctly identified as
+   NaN). Stored in HDF5 as a user-defined float type built the same way as
+   every other non-native float `ElementType` -- see item 5 below.
+3. **`Bool`** is stored as one `UInt8` byte; `validate_bool_bytes()`
+   (`src/restart_io/hdf5_restart_io.cpp:482-495`) refuses
+   (`E-RESTART-BAD-BOOL-BYTE`) any byte that is not `0` or `1`.
+4. **Templated interface.** `put_field<T>()`/`get_field<T>()` and
+   `put_scalar<T>()`/`get_scalar<T>()` (`include/fuse/model/restart.hpp:
+   194-200, 224-229, 305-311, 326-334`) are non-virtual templates over ONE
+   virtual byte-based pair each (`put_field_bytes`/`get_field_bytes`,
+   `put_scalar_bytes`/`get_scalar_bytes`). This round MIGRATED every caller
+   to the templated interface rather than keeping a double-only legacy
+   overload (the "say which" the owner asked for -- migrate, not
+   dual-maintain): `src/num/accel_relaxation.cpp`, `src/runtime/
+   restart.cpp` (`period_index` now `std::int64_t` through the typed path,
+   never cast through `double`), `examples/dn_heat/dn_component.hpp`, and
+   `test/runtime/restart_test.cpp`'s existing call sites. `get_scalar<T>()`
+   takes an out-parameter `T&` rather than round 1's `Result<double>`
+   return (`restart.hpp:314-325`'s comment records why: a value and a
+   report cannot both occupy one `Result<>` slot without inventing a pair
+   type this project has no other use for). `DirichletSlab` gained a
+   `std::int32_t sweep_count_` and a `bool parity_flag_`
+   (`examples/dn_heat/dn_component.hpp`), round-tripped through the Runner
+   end to end -- `test/runtime/restart_test.cpp`'s `RunResult::
+   dirichlet_sweep_count`/`dirichlet_parity_flag`, verified by a real
+   mutation (disabling `sweep_count_` restore fails `SameRankRoundTrip*`,
+   reverted and confirmed clean).
+5. **Per-field metadata.** `write_type_metadata()`/`read_and_verify_type_
+   metadata()` (`hdf5_restart_io.cpp:327-472`) write/check `element_type`,
+   `byte_size`, `significand_bits`, `exponent_bits`, `exponent_bias`,
+   `byte_order`, `is_signed` as HDF5 attributes alongside each dataset.
+   `read_and_verify_type_metadata()` was REWRITTEN mid-round (see "Design
+   bugs found" below): it returns a fresh `ElementTypeInfo` built from the
+   FILE's own attributes, checked only for internal self-consistency
+   against the dataset's own actual HDF5 datatype
+   (`H5Tget_fields`/`H5Tget_ebias`/`H5Tget_norm`/`H5Tget_class`/
+   `H5Tget_sign`) -- never against this build's global `element_type_info()`
+   table. Any attribute/dataset-type disagreement refuses
+   (`E-RESTART-TYPE-METADATA-MISMATCH`); an unrecognised `element_type`
+   name refuses by name (`E-RESTART-UNKNOWN-ELEMENT-TYPE`).
+6. **`ReadConversion::Exact`/`Widening`/`AllowNarrowing`**
+   (`element_type.hpp:113`) -- `convert_one_element()`
+   (`hdf5_restart_io.cpp:613-712`) is the one dispatch point: identical-type
+   fast path, `Exact` refusal (`E-RESTART-TYPE-MISMATCH`), `Widening`'s
+   exactness check via `fuse::detail::is_exact_widening()`
+   (`element_type.cpp:183`, two overloads -- the `ElementTypeInfo`-based
+   primary used here, and a convenience `ElementType`-based wrapper for
+   same-platform callers), float narrowing via `fuse::detail::
+   narrow_float()` (`float_bits.cpp:250`), integer narrowing via
+   `encode_int_checked()` (`hdf5_restart_io.cpp:540-595`, refuses
+   `E-RESTART-INTEGER-OVERFLOW` on overflow even under `AllowNarrowing`,
+   and `E-RESTART-SIGNED-TO-UNSIGNED` unconditionally). All float
+   conversion is done in FUSE code built and tested from scratch
+   (`include/fuse/model/float_bits.hpp`/`.cpp`: `decode_float_bits()`,
+   `encode_float_bits()`, `round_significand()`, `narrow_float()`) --
+   **never HDF5's own soft-conversion machinery**; see "HDF5's own
+   conversion limitation" below for why. The owner's exact mandated
+   scenario -- a hand-built x86-64-style 80-bit `long double` dataset,
+   mantissa `0x8000000000000001`, biased exponent `16383` (unbiased `0`,
+   value `1 + 2^-63`), explicit leading bit (`H5T_NORM_MSBSET`, per
+   `H5Tpublic.h`) -- is `test/runtime/typed_restart_hdf5_test.cpp`'s
+   `TypedRestartHdf5.HandBuiltX86LongDoubleExactAndWideningRefuseAllow
+   NarrowingReportsDelta`: `Exact` and `Widening` both refuse
+   (`E-RESTART-TYPE-MISMATCH`), `AllowNarrowing` succeeds with
+   `max_absolute_change` bit-for-bit equal to an independently computed
+   `std::ldexp(1.0, -63)`.
+7. **Accelerator/waveform histories stay `Binary64`.**
+   `src/num/accel_relaxation.cpp`'s per-block helpers and Aitken's omega
+   read/write exclusively `double` -- unchanged from Stage B Slice 1 Round
+   2; this round only migrated their call sites to the typed
+   `put_scalar<double>`/`get_scalar<double>` spelling, never the stored
+   type.
+8. **Collective global-id check** (`fuse/restart_io/collective_check_mpi.
+   hpp`/`.cpp`, int64 ids) is unchanged from Round 2; typed fields do not
+   touch it.
+9. **ABI.** No Form-A entry exists yet (Round 2 Item 4's own scope
+   reduction stands), so no ABI change was made. A future Form-A struct
+   that exposes a field's element type would add one `std::uint8_t`-sized
+   tag immediately after the existing `byte_size`/`components` pair in
+   whatever field-descriptor struct Form A eventually defines, matching
+   `ElementType`'s own `std::uint8_t` underlying type -- append-only,
+   never inserted before an existing member, the same rule Round 2's Item
+   4 note already states for Form A generally.
+10. **Python.** Read-only note, not implemented: `fuse::bfloat16` has no
+    standard numpy dtype; a future binding would need either `ml_dtypes`
+    (adds a third-party dependency solely for its `bfloat16`/`float8_*`
+    numpy extension types) or a FUSE-side `uint16` view with a documented
+    reinterpretation contract. `Binary16` maps to numpy's own `float16`
+    when the platform provides it; `LongDouble` maps to numpy's
+    `longdouble` ONLY when the two platforms' extended-precision formats
+    agree (this project's own measured Apple-Silicon-vs-x86-64 difference,
+    item 2 below, means that mapping is platform-conditional, not
+    universal). No implementation; `python/` is untouched this round.
+
+### Measured findings this round surfaced that the design review did not anticipate
+
+- **HDF5's own soft type-conversion refuses `H5T_NORM_MSBSET`.** A
+  standalone test program (`/tmp/h5test3.c`, HDF5 1.14.1-2 at `/opt/hdf5`)
+  built an 80-bit x86-extended-style `long double` HDF5 type (explicit
+  leading significand bit) and asked `H5Dread()` to convert it to a plain
+  `double`. HDF5's own error stack: `H5Tconv.c` line 4602 in
+  `H5T__conv_f_f()`: "normalization method not implemented yet". This
+  means FUSE cannot trust `H5Dread`'s type-conversion machinery for ANY
+  conversion touching an explicit-leading-bit format (x86 extended
+  precision is the only one this project's measured platforms produce,
+  but the limitation is in HDF5's own soft converter, not specific to one
+  bit pattern) -- motivating item 6's from-scratch bit-level pipeline.
+- **`H5Tset_fields()`/`H5Tset_precision()`/`H5Tset_size()` ordering is
+  direction-dependent**, found and fixed twice while building
+  `make_derived_float_type()` (`hdf5_restart_io.cpp:236-295`): for a
+  PRECISION DECREASE (e.g. `Binary32` -> `BFloat16`/`Binary16`,
+  shrinking from 32 to 16 bits), `H5Tset_fields()` must run BEFORE
+  `H5Tset_precision()`/`H5Tset_size()` shrink the type, or HDF5 reports
+  "exponent bit field size/location is invalid" (the old field positions
+  no longer fit the new, smaller size). For a PRECISION INCREASE (e.g.
+  `Binary64` -> an 80-bit extended type), size/precision must grow FIRST,
+  then `H5Tset_fields()` positions the fields in the new, larger size, or
+  HDF5 reports "adjust sign, mantissa, and exponent fields first" (the old
+  field positions do not fit the type being asked to shrink TO before it
+  has grown). Both exact messages were captured from the real HDF5 error
+  stack, not inferred.
+- **The original `make_hdf5_type_for()` dispatched `LongDouble` to
+  `H5T_NATIVE_LDOUBLE` unconditionally -- wrong when the `ElementTypeInfo`
+  comes from a FOREIGN file's own attributes.** On this platform
+  `H5T_NATIVE_LDOUBLE` is a 53-bit type; using it as the memory type while
+  reading a file whose actual on-disk type is a hand-built MSBSET 80-bit
+  type triggered the identical "normalization method not implemented"
+  failure as the untrusted-soft-conversion path above, because HDF5 still
+  has to soft-convert between the file type and whatever memory type is
+  requested. **Fix:** `make_hdf5_type_for()` now dispatches EVERY float
+  `ElementType` (`Binary16`/`BFloat16`/`Binary32`/`Binary64`/`LongDouble`)
+  through ONE fully general `make_derived_float_type(const
+  ElementTypeInfo&)` (`hdf5_restart_io.cpp:236-295`) that builds the HDF5
+  type purely from the `ElementTypeInfo`'s OWN fields -- no native-type
+  shortcut for any float type, including the common case where a platform's
+  own `long double`/`double` happen to match a native type exactly.
+  Within that rewrite, the precision formula was also corrected: `stored_
+  mantissa_bits + exponent_bits + 1`, NOT `significand_bits + exponent_
+  bits + 1` -- `significand_bits` already INCLUDES any implicit leading
+  bit (`element_type.hpp`'s own `ElementTypeInfo::significand_bits` doc
+  comment), so adding `+1` again overcounted by one bit for every
+  IMPLIED-norm type. This was masked for every PRECISION-DECREASE case
+  by HDF5's own auto-shrink-on-size-decrease behaviour (documented under
+  `H5Tset_size()`), but produced a wrong, non-matching type for the
+  INCREASE case (the x86-long-double scenario), which is how it was
+  caught -- a real test failure (`E-RESTART-HDF5: H5Dread scalars/x86ld`),
+  not a code-review catch.
+- **A design flaw in the original `read_and_verify_type_metadata()`
+  would have made it structurally IMPOSSIBLE to read a genuinely
+  foreign-platform file under `AllowNarrowing`,** contradicting item 6's
+  own requirement. The original version compared a file's `element_type`
+  attributes against `fuse::element_type_info(enum)` -- THIS build's own
+  canonical/global metadata table -- so any file whose actual recorded
+  metadata did not match this platform's own table entry (exactly the
+  x86-long-double scenario) would refuse before `AllowNarrowing` ever got
+  a chance to run. Caught by test DESIGN (recognising the contradiction
+  with item 6 while writing the hand-built-file test), fixed before
+  running the broken version: the function now builds a FRESH
+  `ElementTypeInfo` from the file's own attributes, verified only for
+  internal self-consistency against the dataset's own actual HDF5 type.
+  `is_exact_widening()` was refactored to take `const ElementTypeInfo&` on
+  both sides for this reason (`element_type.hpp:264`, with a convenience
+  `ElementType`-based overload at `element_type.hpp:272` for same-platform
+  callers), and `convert_one_element()` takes the stored side as `const
+  ElementTypeInfo&` directly rather than re-deriving it from an
+  `ElementType` enumerator.
+
+### Mutation rows (this round, build-evidence/mutations/restart.toml)
+
+Each row below was hand-applied to `/tmp/restart/src4`, rebuilt, run for
+real, reverted, and `cmp`-verified byte-identical against the clean file
+before moving to the next row -- this project's established convention,
+not the source-anchor system `mutate.py --check-anchors` verifies.
+
+| # | Mutation | File:line | Killed by |
+|---|---|---|---|
+| 1 | `is_exact_widening()` always returns `true` | `element_type.cpp:183` (body replaced with unconditional `return true`) | `TypedRestart.WideningRefusesANonExactConversion` (`restart_test.cpp`), `TypedRestartHdf5.HandBuiltX86LongDoubleExactAndWideningRefuseAllowNarrowingReportsDelta` (its `Widening`-refuses assertion wrongly succeeds, then throws `bad_variant_access` reading a `Failure` as a value), `ElementType.IsExactWideningMatchesEveryOwnerNamedCase` |
+| 2 | `bfloat16::from_float()`'s round-up branch disabled (`if (false && ...)`), reducing it to plain truncation | `bfloat16.hpp` (round-to-nearest-even branch) | `BFloat16.RoundToNearestEvenAtExactTies`, `BFloat16.RoundingOverflowAtTheTopOfTheRangeBecomesInfinity` -- NOT caught by the exhaustive round-trip test, by construction: that test's inputs are bf16 bit patterns widened losslessly to `float` first, so every value it round-trips already has all-zero bits in the range truncation vs. rounding would differ on, which is exactly why the two dedicated tie/overflow tests exist separately |
+| 3 | `narrow_float()`'s `result.absolute_change` forced to `0.0` regardless of the computed delta | `float_bits.cpp:301` | `FloatBits.OwnerScenario_X86ExtendedLongDoubleNarrowsToMacDoubleWithReportedDelta`, `TypedRestart.FloatNarrowingReportsAMeasuredChange` (`restart_test.cpp`), `TypedRestartHdf5.HandBuiltX86LongDoubleExactAndWideningRefuseAllowNarrowingReportsDelta` (reports `0` against an independently computed `1.0842021724855044e-19`) |
+
+### Fortran build-configuration correction (carried forward from Round 2)
+
+This round's own instructions repeated Round 1's original ("no Fortran
+compiler in sandbox") premise and asked for `-DFUSE_ENABLE_FORTRAN=OFF`.
+That premise is the SAME one Round 2 Item 7 already measured and corrected:
+`gfortran` (GNU 16.2.0) is installed at `/opt/homebrew/bin/gfortran`, not
+on `PATH` by default -- verified again this round (`gfortran --version`
+reports `GNU Fortran (Homebrew GCC 16.2.0) 16.2.0`). Flagged to the owner
+mid-round rather than silently deciding either way; the owner chose to
+enable Fortran, matching Round 2's own established configuration
+(`-DFUSE_ENABLE_FORTRAN=ON -DCMAKE_Fortran_COMPILER=/opt/homebrew/bin/
+gfortran`). Built WITHOUT this flag first to confirm the two
+`abi.conformance` Fortran-plugin tests (`LagOneGraphAllFourKindsMatch
+Native`, `SubcycledMeanGraphAllFourKindsMatchNative`) fail identically
+(`FortranPlugin: E-ABI-LOAD`) on the UNMODIFIED pristine tree under the
+same flag -- confirming the failure is a build-configuration effect, not a
+Slice 1b regression -- before reconfiguring with Fortran on and deleting
+that temporary verification tree.
+
+### Full tier-0 run, this round
+
+With `-DFUSE_ENABLE_HDF5=ON -DFUSE_ENABLE_FORTRAN=ON -DCMAKE_Fortran_
+COMPILER=/opt/homebrew/bin/gfortran -DFUSE_ENABLE_MPI=OFF` (otherwise
+identical to Round 2's configuration, Debug, `FUSE_FP_REPRODUCIBLE` ON by
+default): **100% tests passed, 0 tests failed out of 223** (up from Round
+2's 219 -- this round added 4 new ctest entries: `fuse_model_bfloat16_test`,
+`fuse_model_element_type_test`, `fuse_model_float_bits_test`, and
+`fuse_runtime_typed_restart_hdf5_test`, the last gated by
+`FUSE_ENABLE_HDF5`). A separate build with `-DFUSE_ENABLE_HDF5=OFF`
+(otherwise identical) confirmed nothing else breaks without HDF5.
+
+### Scope reductions declared this round (in addition to Round 2's, unresolved)
+
+- **Integer narrowing under `AllowNarrowing` reports no measured change**
+  (unlike float narrowing's `max_absolute_change`) -- an integer value
+  that does not fit refuses outright (`E-RESTART-INTEGER-OVERFLOW`); one
+  that DOES fit is exact by construction (narrowing a wider integer type
+  to a narrower one that still holds the value loses nothing), so there is
+  no partial-information case analogous to float rounding to report a
+  magnitude for.
+- **`int` -> `float` narrowing is not implemented/not authorized** --
+  item 6's design restricts `int -> float` conversion to the `Widening`
+  case where the float's significand width exactly covers the integer's
+  range (`is_exact_widening()`'s int-to-float branch); a NARROWING int-to-
+  float conversion (one that could lose integer precision) was never
+  part of the owner's ten-item list and was not added speculatively.
+- **`bool` -> `float` widening is not implemented** -- not named in any of
+  the owner's ten items; `Bool` only interconverts with itself under every
+  `ReadConversion` mode in this round's implementation.
+- **No Python binding code was written** (item 10, read-only by
+  instruction).
+- **Form A's element-type tag is a documentation note only** (item 9), not
+  an actual ABI/`entries.def` change -- no Form-A struct exists yet for it
+  to attach to.

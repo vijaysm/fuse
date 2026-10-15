@@ -115,6 +115,16 @@ References are listed at the end; a bracketed number points into that list.
 | `fuse::linalg::SchurSlabSolver` | Schur-complement direct solver | An exact distributed direct solver for a banded system, by eliminating each participant's interior unknowns locally and solving the much smaller Schur complement system over the interface unknowns alone [19]. |
 | "row band" (`fuse::native::rank_slice`) | subdomain | One participant's contiguous range of rows of a row-partitioned grid — the domain-decomposition literature's term is *subdomain* [19]; this project keeps "row band" in code and prose to avoid colliding with "slab", the unrelated time-domain term above. |
 
+## Element types (restart typed fields)
+
+| Identifier in the code | Term | Definition |
+|---|---|---|
+| `fuse::ElementType` | element type | A closed enumeration naming the scalar storage format a restart field is written/read as: `Int8`..`Int64`, `UInt8`..`UInt64`, `Binary16`, `BFloat16`, `Binary32`, `Binary64`, `LongDouble`, `Bool`. Stored in the restart file as per-field metadata (`element_type`, `byte_size`, `significand_bits`, `exponent_bits`, `exponent_bias`, `byte_order`, `is_signed`), never inferred from the reading process's own type. |
+| `Binary16`, `Binary32`, `Binary64` | binary16 / binary32 / binary64 | The IEEE 754-2019 names [20] for the formats C++ calls `_Float16`/`float`/`double`: 1 sign bit, an implicit leading significand bit, and 5/8/11 exponent bits respectively (`Binary16`: 10 explicit significand bits; `Binary32`: 23; `Binary64`: 52). |
+| `fuse::bfloat16` | bfloat16 | A FUSE-defined storage type (there is no standard C++ type for it on every platform): 1 sign bit, 8 exponent bits (the same width and bias as `Binary32`), 7 explicit significand bits. `to_float()` is always an exact widening; `from_float()` rounds to nearest, ties to even, and preserves quiet-NaN payloads. |
+| `fuse::ElementType::LongDouble` | long double / x86 extended precision | The platform's native `long double`. On Apple Silicon (this project's primary development target) it is bit-identical to `Binary64` (53-bit significand); on x86-64 it is typically the 80-bit extended format with an EXPLICIT (not implicit) leading significand bit -- HDF5 calls this `H5T_NORM_MSBSET` as opposed to `Binary16`/`32`/`64`'s `H5T_NORM_IMPLIED`. A restart field written as `LongDouble` on one platform and read on another goes through the same `ReadConversion` machinery as any other type pair; it is never assumed to match. |
+| `fuse::ReadConversion::Exact`, `Widening`, `AllowNarrowing` | read-conversion mode | The caller's declared tolerance for a stored field's element type differing from the type it is read back as. `Exact` (the default) refuses by name on any mismatch. `Widening` additionally permits a conversion that is proven lossless from the two types' own metadata (significand/exponent coverage for floats, bit-width/signedness rules for integers) -- a float narrowing or a signed-to-unsigned conversion is never "widening" and always refuses. `AllowNarrowing` additionally permits a conversion that may lose information, and reports the largest change actually measured over the values read (`fuse::ReadConversionReport::max_absolute_change`); integer overflow refuses (`E-RESTART-INTEGER-OVERFLOW`) even under `AllowNarrowing` -- this mode bounds silent error, it does not disable the overflow check. |
+
 ## Verification and testing
 
 | Identifier in the code | Term | Definition |
@@ -147,3 +157,4 @@ References are listed at the end; a bracketed number points into that list.
 17. M. R. Hestenes and E. Stiefel. Methods of conjugate gradients for solving linear systems. *J. Res. Natl. Bur. Stand.* 49(6):409–436, 1952.
 18. Y. Saad and M. H. Schultz. GMRES: a generalized minimal residual algorithm for solving nonsymmetric linear systems. *SIAM J. Sci. Stat. Comput.* 7(3):856–869, 1986.
 19. B. Smith, P. Bjørstad and W. Gropp. *Domain Decomposition: Parallel Multilevel Methods for Elliptic Partial Differential Equations*. Cambridge University Press, 1996.
+20. IEEE Std 754-2019 (Revision of IEEE Std 754-2008). *IEEE Standard for Floating-Point Arithmetic*. IEEE, 2019.
