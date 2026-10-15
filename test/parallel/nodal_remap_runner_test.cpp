@@ -364,7 +364,7 @@ void run_and_check(std::size_t n_beam, std::size_t n_fluid, fuse::RankSet beam_r
       // already proved rank-count-independent: every OTHER vertex here
       // matches bitwise, and this one itself matches between ranks 2
       // and 3). Pre-existing, out of this round's scope (recorded as
-      // KNOWN_ISSUES D64); still checked, at a tolerance (5e-16, an
+      // KNOWN_ISSUES D67); still checked, at a tolerance (5e-16, an
       // order of magnitude above the observed 1-ULP gap) tight enough
       // that a regression to arrival-order Kokkos::atomic_add would
       // still be caught here too.

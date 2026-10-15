@@ -315,7 +315,7 @@ the next step starts. Host mode byte-identity is the standing invariant.
    (allocation count of the mixed-pair transport row under the device leg).
 6. Measured on higgs (Debug, GTX 1050 Ti, OpenMPI 4.1.5 -- built without
    CUDA support, so every GPU-aware MPI path ran its host-staged fallback;
-   see D63), integrated gate 2026-10-13: host suite 295/296 (`-LE
+   see D66), integrated gate 2026-10-13: host suite 295/296 (`-LE
    device`; the one failure is `example.brusselator.omp_identical` at its
    1500 s timeout, a load-sensitive row), device leg 28/28, cuSPARSE
    flag-on regex 15/15, anchors 308/308. The twins are correctness rows,
@@ -396,7 +396,7 @@ the next step starts. Host mode byte-identity is the standing invariant.
    and layering 0 violations; `ctest -j1 -LE device` 333/335 (D55, D56
    only); `ctest -j1 -L device` 35/35. Caveat: higgs's Open MPI is not
    CUDA-aware, so the device-pointer branch of every exchange is compiled
-   and reachable but ran only its host-staged fallback here (D63). Still
+   and reachable but ran only its host-staged fallback here (D66). Still
    host: `previous[]`, space-time history and window-region bookkeeping
    (staged per instruction); MOAB-backed meshes and the mesh file reader;
    the r3d/r2d clip; consistent/general interpolation and Tempest weights;

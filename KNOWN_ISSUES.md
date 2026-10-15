@@ -7499,7 +7499,7 @@ correctly with real device pointers in MPI's hands, as opposed to merely compili
 genuinely CUDA-aware OpenMPI (or MPICH built against UCX/CUDA) is what this needs; until then this
 branch is UNVERIFIED, not failing.
 
-### D64. `build_distributed_interp_rows`'s per-cell containment search disagrees by 1 ULP at the domain's own boundary vertex between an exactly-one-rank replica and a real multi-rank one — OPEN, found 2026-10-15 (runtime-exchange track, follow-up round)
+### D67. `build_distributed_interp_rows`'s per-cell containment search disagrees by 1 ULP at the domain's own boundary vertex between an exactly-one-rank replica and a real multi-rank one — OPEN, found 2026-10-15 (runtime-exchange track, follow-up round)
 
 Found while adding `NodalRemapRunnerMpi.ConsistentTransposeIsBitIdenticalAcrossRankCounts` (the lead's
 determinism follow-up's own RED/GREEN row, `test/parallel/nodal_remap_runner_test.cpp`): the H^T
