@@ -261,19 +261,30 @@ class NativeMeshView final : public MeshView {
   [[nodiscard]] std::size_t vertex_count() const noexcept { return vertex_gid_.size(); }
   [[nodiscard]] CellType cell_type_of(std::size_t c) const { return cell_type_[c]; }
   [[nodiscard]] const std::vector<int>& cell_vertices(std::size_t c) const {
+    ensure_host_mirror();
     return cell_vertices_[c];
   }
   [[nodiscard]] const std::vector<std::vector<int>>& cell_faces(std::size_t c) const {
+    ensure_host_mirror();
     return cell_faces_[c];
   }
-  [[nodiscard]] double vertex_x(std::size_t v, int k) const { return vertex_xyz_[v][k]; }
+  [[nodiscard]] double vertex_x(std::size_t v, int k) const {
+    ensure_host_mirror();
+    return vertex_xyz_[v][k];
+  }
   [[nodiscard]] std::int64_t vertex_gid_of(std::size_t v) const { return vertex_gid_[v]; }
   [[nodiscard]] int vertex_owner_of(std::size_t v) const { return vertex_owner_[v]; }
   [[nodiscard]] bool vertex_owned_of(std::size_t v) const { return vertex_owned_[v]; }
   [[nodiscard]] int cell_owner_of(std::size_t c) const { return cell_owner_[c]; }
   [[nodiscard]] bool cell_owned_of(std::size_t c) const { return cell_owned_[c]; }
-  [[nodiscard]] Point cell_centroid_point(std::size_t c) const { return centroid_[c]; }
-  [[nodiscard]] double cell_measure_value(std::size_t c) const { return measure_[c]; }
+  [[nodiscard]] Point cell_centroid_point(std::size_t c) const {
+    ensure_host_mirror();
+    return centroid_[c];
+  }
+  [[nodiscard]] double cell_measure_value(std::size_t c) const {
+    ensure_host_mirror();
+    return measure_[c];
+  }
 
   /// Default-constructs an empty, unfinalized view. Public only so
   /// `std::make_unique` can reach it from `create_from_host`; every other
@@ -283,25 +294,40 @@ class NativeMeshView final : public MeshView {
   // ---- device-resident geometry (docs/dev/native-mesh.md, "Execution
   // space") -----------------------------------------------------------
   //
-  // `measure(dim,i)`/`centroid(dim,i)` above keep serving the host arrays
-  // this file has always computed -- `Result`/`Failure`/`fmt` validation
-  // (canonical_fan_triangulation, canonical_cell_tetrahedra) is host-only by
-  // this codebase's own standing convention, and that validation pass
-  // already produces the host measure/centroid as an unavoidable byproduct,
-  // so there is no separate "mirror rebuild" step to make lazy: the host
-  // array IS the validation's own output, computed once, at construction.
+  // DEVICE-PRIMARY. `device_arrays_` below -- a deep copy of the
+  // constructor's input into `DeviceMemSpace` -- is this view's PRIMARY
+  // storage: real device memory on a CUDA/HIP/SYCL build, the same space
+  // `device_measure_`/`device_centroid_`/the device simplex CSR already
+  // live in. Validation (connectivity ranges, `canonical_fan_triangulation`,
+  // `canonical_cell_tetrahedra`) still runs exactly once, host-only, at
+  // construction -- `Result`/`Failure`/`fmt` are not device-callable in this
+  // codebase's own convention -- but its host-side scratch arrays are not
+  // retained: `create_from_host` discards them once the device arrays below
+  // are populated, so a `NativeMeshView` that nothing has queried through
+  // the host-serving accessors holds no host mirror at all, only
+  // `device_arrays_` and the device-resident derived geometry.
   //
-  // What is NEW is `device_measure_`/`device_centroid_` below: the SAME two
-  // per-cell maps, INDEPENDENTLY recomputed by a Kokkos kernel dispatched on
-  // Kokkos::DefaultExecutionSpace directly from this view's validated
-  // simplex corners and vertex connectivity (`create_from_host`'s last
-  // step), landing in `Kokkos::DefaultExecutionSpace::memory_space` -- real
-  // device memory on a CUDA/HIP/SYCL build. A caller (or a verification
-  // test) that wants the values where a device-resident kernel can read
-  // them without a host round trip uses these; everything above the backend
-  // is unaffected; it never sees this type.
+  // ON-DEMAND HOST MIRRORS. `vertex_xyz_`/`cell_vertices_`/`cell_faces_`/
+  // `cell_simplices_`/`centroid_`/`measure_` -- every host array
+  // `measure(dim,i)`/`centroid(dim,i)`/`simplex_points`/`cell_vertices`/
+  // `vertex_x` serve -- are built from `device_arrays_` (plus the device
+  // measure/centroid/simplex CSR, already-validated so this step cannot
+  // fail) the FIRST time any of those accessors is called, by
+  // `ensure_host_mirror()`, and cached for the view's lifetime after that.
+  // `host_mirrors_materialized()` is this count (0 before the first call,
+  // 1 after), exposed for exactly this: a test that constructs a view and
+  // checks no host array exists until something asks for one.
  public:
   using DeviceMemSpace = Kokkos::DefaultExecutionSpace::memory_space;
+
+  /// This view's primary storage: the input `MeshArrays`, deep-copied to
+  /// `DeviceMemSpace` at construction. Every on-demand host mirror below is
+  /// rebuilt FROM this (and from the device-resident derived geometry), not
+  /// from the constructor's original host argument, so a caller holding
+  /// only this view can still reconstruct every host-serving accessor.
+  [[nodiscard]] const MeshArrays<DeviceMemSpace>& device_arrays() const noexcept {
+    return device_arrays_;
+  }
 
   /// Per-cell measure, computed on the device (see above). Agrees with
   /// `measure(dim_, i)` to 1e-14 relative on a build with a real device
@@ -324,35 +350,85 @@ class NativeMeshView final : public MeshView {
     return device_centroid_;
   }
 
+  /// The validated per-cell simplex decomposition, flattened into a device
+  /// CSR: cell `c`'s simplices are rows
+  /// `device_simplex_offsets()(c) .. device_simplex_offsets()(c + 1)` of
+  /// `device_simplex_corners()`, corner `k` (`k < dimension() + 1`) of
+  /// simplex row `s` at `device_simplex_corners()(s, k, 0..2)` (x, y, z).
+  /// This is the SAME CSR `device_measure()`'s kernel reduces -- previously
+  /// built and discarded inside `create_from_host` (docs/dev/native-mesh.md
+  /// used to say so explicitly); retained here so a caller building a
+  /// spatial index (`fuse::search::element_boxes_device_resident`,
+  /// `BoxIndex::build_device_resident`) never has to touch the host to get
+  /// a native mesh's element boxes. Size `cell_count() + 1`; empty when
+  /// `cell_count() == 0`.
+  [[nodiscard]] const Kokkos::View<int*, DeviceMemSpace>& device_simplex_offsets() const noexcept {
+    return device_simplex_offsets_;
+  }
+
+  /// See `device_simplex_offsets()`. Every row holds 4 corner slots
+  /// regardless of `dimension()` -- a 1D/2D simplex's unused trailing
+  /// corners are zero-filled, matching `cell_simplices_`'s own
+  /// `std::array<Point, 4>` convention; a reader uses only the first
+  /// `dimension() + 1` of them.
+  [[nodiscard]] const Kokkos::View<double* [4][3], Kokkos::LayoutRight, DeviceMemSpace>&
+  device_simplex_corners() const noexcept {
+    return device_simplex_corners_;
+  }
+
+  /// 0 before any host-serving accessor (`measure`, `centroid`,
+  /// `simplex_points`, `cell_vertices`, `vertex_x`, ...) has been called on
+  /// this view, 1 after the first one materializes and caches the host
+  /// mirror (see the class comment above). Exposed for tests only.
+  [[nodiscard]] int host_mirrors_materialized() const noexcept {
+    return host_mirror_materialized_ ? 1 : 0;
+  }
+
  private:
+  /// Builds `vertex_xyz_`/`cell_vertices_`/`cell_faces_`/`cell_simplices_`/
+  /// `centroid_`/`measure_` from `device_arrays_` and the device-resident
+  /// derived geometry, exactly once (a no-op after the first call). Never
+  /// fails: the data it mirrors was already validated at construction.
+  void ensure_host_mirror() const;
+
   Kokkos::View<double*, DeviceMemSpace> device_measure_;
   Kokkos::View<double* [3], DeviceMemSpace> device_centroid_;
+  Kokkos::View<int*, DeviceMemSpace> device_simplex_offsets_;
+  Kokkos::View<double* [4][3], Kokkos::LayoutRight, DeviceMemSpace> device_simplex_corners_;
+  MeshArrays<DeviceMemSpace> device_arrays_;  ///< PRIMARY storage
 
   void check(int dim, std::size_t i, const char* what) const;
 
   int dim_ = 0;
   int my_rank_ = 0;
 
-  std::vector<std::array<double, 3>> vertex_xyz_;
+  // ---- cheap per-entity bookkeeping, eager -------------------------------
+  // Plain scalars/flags copied once from the constructor's host argument --
+  // no geometry, no fallible decomposition -- so these are not part of the
+  // on-demand mirror above; they exist unconditionally from construction,
+  // same as before this file's device-primary change.
   std::vector<std::int64_t> vertex_gid_;
   std::vector<int> vertex_owner_;
   std::vector<bool> vertex_owned_;
 
   std::vector<CellType> cell_type_;
-  std::vector<std::vector<int>> cell_vertices_;
-  std::vector<std::vector<std::vector<int>>> cell_faces_;  ///< [cell][face][local vtx]
   std::vector<std::int64_t> cell_gid_;
   std::vector<int> cell_owner_;
   std::vector<bool> cell_owned_;
 
-  // Derived at construction: per-cell simplex decomposition (as vertex
-  // triples/quadruples of PHYSICAL POINTS, since a simplex's corners are
-  // not necessarily mesh vertices' local indices after decomposition would
-  // need -- they always ARE mesh vertex positions here, but simplex_points
-  // returns Points, so storing points directly avoids a second lookup).
-  std::vector<std::vector<std::array<Point, 4>>> cell_simplices_;  ///< [cell][simplex]
-  std::vector<Point> centroid_;
-  std::vector<double> measure_;
+  // ---- on-demand host mirror, lazy ---------------------------------------
+  // `mutable`: materialized from inside `const` accessors, the first time
+  // one of them is actually called (see `ensure_host_mirror()`).
+  mutable bool host_mirror_materialized_ = false;
+  mutable std::vector<std::array<double, 3>> vertex_xyz_;
+  mutable std::vector<std::vector<int>> cell_vertices_;
+  mutable std::vector<std::vector<std::vector<int>>> cell_faces_;  ///< [cell][face][local vtx]
+  // [cell][simplex]; a simplex's corners are PHYSICAL POINTS (always 4
+  // slots, trailing ones zero for a 1D/2D cell) -- see
+  // `device_simplex_corners()`'s comment for why 4 always.
+  mutable std::vector<std::vector<std::array<Point, 4>>> cell_simplices_;
+  mutable std::vector<Point> centroid_;
+  mutable std::vector<double> measure_;
 };
 
 }  // namespace fuse::native

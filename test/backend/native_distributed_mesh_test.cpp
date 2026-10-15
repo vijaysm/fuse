@@ -614,3 +614,120 @@ TEST(NativeDistributedMesh, FaceWithSameVertexSetInANonCyclicOrderIsRefused) {
   ASSERT_FALSE(arrays_r.ok());
   EXPECT_EQ(arrays_r.error().code, "E-MESH-POLYGON-FACE-MISMATCH");
 }
+
+// ---------------------------------------------------------------------------
+// Device-primary storage (docs/dev/native-mesh.md, "Execution space"):
+// `device_arrays()` -- not any `std::vector` member -- is this view's
+// primary storage, and the host arrays `measure`/`centroid`/`simplex_points`/
+// `cell_vertices`/`vertex_x` serve are built, and cached, only the first
+// time one of those accessors is actually called.
+// ---------------------------------------------------------------------------
+
+TEST(NativeDistributedMesh, DeviceArraysAreThePrimaryStorageAtCompileTime) {
+  // Compile-time only: every field of `device_arrays()` lives in
+  // NativeMeshView::DeviceMemSpace, not merely "some Kokkos view" -- the
+  // same compile-time bar ExpectDeviceGeometryMatchesHost already holds
+  // device_measure()/device_centroid() to, above.
+  using DeviceMemSpace = NativeMeshView::DeviceMemSpace;
+  NativeMeshBuilder b(2);
+  const int v0 = b.add_vertex(0, 0.0, 0.0, 0.0, 0, true);
+  const int v1 = b.add_vertex(1, 1.0, 0.0, 0.0, 0, true);
+  const int v2 = b.add_vertex(2, 1.0, 1.0, 0.0, 0, true);
+  const int v3 = b.add_vertex(3, 0.0, 1.0, 0.0, 0, true);
+  b.add_cell(CellType::Quad, {v0, v1, v2, v3}, 0, 0, true);
+  auto arrays_r = b.build();
+  ASSERT_TRUE(arrays_r.ok());
+  auto view_r = NativeMeshView::create_from_host(arrays_r.value(), 0);
+  ASSERT_TRUE(view_r.ok()) << view_r.error().message;
+  const auto& v = *view_r.value();
+
+  static_assert(
+      std::is_same_v<typename std::decay_t<decltype(v.device_arrays().vertex_coords)>::memory_space,
+                    DeviceMemSpace>);
+  static_assert(std::is_same_v<
+                typename std::decay_t<decltype(v.device_arrays().cell_vertex_indices)>::memory_space,
+                DeviceMemSpace>);
+  SUCCEED();
+}
+
+TEST(NativeDistributedMesh, NoHostMirrorExistsUntilAHostAccessorIsCalled) {
+  NativeMeshBuilder b(2);
+  const int v0 = b.add_vertex(0, 0.0, 0.0, 0.0, 0, true);
+  const int v1 = b.add_vertex(1, 1.0, 0.0, 0.0, 0, true);
+  const int v2 = b.add_vertex(2, 1.0, 1.0, 0.0, 0, true);
+  const int v3 = b.add_vertex(3, 0.0, 1.0, 0.0, 0, true);
+  b.add_cell(CellType::Quad, {v0, v1, v2, v3}, 0, 0, true);
+  auto arrays_r = b.build();
+  ASSERT_TRUE(arrays_r.ok());
+  auto view_r = NativeMeshView::create_from_host(arrays_r.value(), 0);
+  ASSERT_TRUE(view_r.ok()) << view_r.error().message;
+  const auto& v = *view_r.value();
+
+  // Right after construction: validation already ran (it had to, to return
+  // an `ok()` Result at all), but nothing has asked for a host-serving
+  // array yet.
+  EXPECT_EQ(v.host_mirrors_materialized(), 0);
+
+  // The first host accessor call materializes the mirror...
+  EXPECT_NEAR(v.measure(2, 0), 1.0, 1e-14);
+  EXPECT_EQ(v.host_mirrors_materialized(), 1);
+
+  // ...and every accessor after that (host or otherwise) is served from the
+  // SAME cached mirror, not a fresh one.
+  EXPECT_NEAR(v.centroid(2, 0).x, 0.5, 1e-14);
+  EXPECT_EQ(v.vertex_x(0, 0), 0.0);
+  EXPECT_EQ(v.host_mirrors_materialized(), 1);
+}
+
+TEST(NativeDistributedMesh, DeviceSimplexCsrMatchesTheValidatedHostDecomposition) {
+  // A Hex (6 simplices after the divergence-theorem fan) and a Tet (its own
+  // single simplex): device_simplex_offsets()/device_simplex_corners() must
+  // describe exactly the same per-cell corner lists simplex_points() does,
+  // once the host mirror is materialized.
+  NativeMeshBuilder b(3);
+  int hex[8];
+  const double hx[8] = {0, 1, 1, 0, 0, 1, 1, 0};
+  const double hy[8] = {0, 0, 1, 1, 0, 0, 1, 1};
+  const double hz[8] = {0, 0, 0, 0, 1, 1, 1, 1};
+  for (int i = 0; i < 8; ++i) hex[i] = b.add_vertex(i, hx[i], hy[i], hz[i], 0, true);
+  b.add_cell(CellType::Hex, {hex[0], hex[1], hex[2], hex[3], hex[4], hex[5], hex[6], hex[7]}, 0, 0,
+            true);
+  const int t0 = b.add_vertex(8, 2.0, 0.0, 0.0, 0, true);
+  const int t1 = b.add_vertex(9, 3.0, 0.0, 0.0, 0, true);
+  const int t2 = b.add_vertex(10, 2.0, 1.0, 0.0, 0, true);
+  const int t3 = b.add_vertex(11, 2.0, 0.0, 1.0, 0, true);
+  b.add_cell(CellType::Tet, {t0, t1, t2, t3}, 1, 0, true);
+
+  auto arrays_r = b.build();
+  ASSERT_TRUE(arrays_r.ok());
+  auto view_r = NativeMeshView::create_from_host(arrays_r.value(), 0);
+  ASSERT_TRUE(view_r.ok()) << view_r.error().message;
+  const auto& v = *view_r.value();
+
+  ASSERT_EQ(v.device_simplex_offsets().extent(0), v.cell_count() + 1);
+  auto offsets_mirror = Kokkos::create_mirror_view(v.device_simplex_offsets());
+  Kokkos::deep_copy(offsets_mirror, v.device_simplex_offsets());
+  auto corners_mirror = Kokkos::create_mirror_view(v.device_simplex_corners());
+  Kokkos::deep_copy(corners_mirror, v.device_simplex_corners());
+
+  const int corners_per_simplex = v.dimension() + 1;
+  for (std::size_t c = 0; c < v.cell_count(); ++c) {
+    SCOPED_TRACE(::testing::Message() << "cell " << c);
+    const int soff = offsets_mirror(c);
+    const int scount = offsets_mirror(c + 1) - soff;
+    ASSERT_EQ(static_cast<std::size_t>(scount), v.simplex_count(v.dimension(), c));
+    std::vector<fuse::Point> host_corners(static_cast<std::size_t>(corners_per_simplex));
+    for (int s = 0; s < scount; ++s) {
+      v.simplex_points(v.dimension(), c, static_cast<std::size_t>(s), host_corners.data());
+      const int row = soff + s;
+      for (int k = 0; k < corners_per_simplex; ++k) {
+        EXPECT_NEAR(corners_mirror(row, k, 0), host_corners[static_cast<std::size_t>(k)].x,
+                   1e-13);
+        EXPECT_NEAR(corners_mirror(row, k, 1), host_corners[static_cast<std::size_t>(k)].y,
+                   1e-13);
+        EXPECT_NEAR(corners_mirror(row, k, 2), host_corners[static_cast<std::size_t>(k)].z,
+                   1e-13);
+      }
+    }
+  }
+}
