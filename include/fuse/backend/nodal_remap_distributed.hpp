@@ -98,11 +98,13 @@
 #include "fuse/base/config.hpp"
 
 #include <cstddef>
+#include <memory>
 #include <vector>
 
 #include "fuse/backend/general_interp.hpp"
 #include "fuse/backend/mesh_view.hpp"
 #include "fuse/base/result.hpp"
+#include "fuse/linalg/comm.hpp"  // DistributedRemapPlan::exchanger
 #include "fuse/search/types.hpp"
 
 namespace fuse {
@@ -209,5 +211,93 @@ struct DistributedInterpRows {
                                                 std::size_t components,
                                                 std::vector<double>& out_src_nodal_local,
                                                 search::CommHandle comm_handle);
+
+/// runtime-exchange track, follow-up round (lead's layering decision):
+/// the ONE-TIME resolved exchange `apply_distributed_H`/`apply_distributed_HT`
+/// above do NOT use -- those two functions are UNCHANGED (every caller
+/// that already depends on their per-call Allgatherv-and-replicate
+/// behaviour, including the `comm_handle == fuse::search::kNullComm`
+/// single-rank path, keeps it) -- this is the alternative a REAL
+/// communicator's caller may build ONCE, at the same point
+/// `build_distributed_interp_rows` itself is called, and reuse every
+/// period: `apply_distributed_H`'s index resolution (which rank owns
+/// each row's `src_global_ids`, and at what LOCAL position) does not
+/// change between periods, only the field VALUES gathered through it
+/// do, so resolving it once turns the per-period cost from "replicate
+/// the whole source mesh's connectivity and rebuild a hash map" into
+/// "one `MPI_Alltoallv` of a plain value array" -- the same trade
+/// `fuse::transport::CommGraph` already makes for Transport's own
+/// channel exchange.
+///
+/// `exchanger` is `fuse::linalg::make_mpi_exchanger()`'s own pattern,
+/// COMPONENT-EXPANDED: ghost slot `(row_offset[r] + k) * components + c`
+/// is row `r`'s `k`-th weight's contribution for component `c`, so a
+/// SINGLE `GhostExchanger::update()` (or
+/// `fuse::backend::DeviceGhostExchanger::update<Space>()`) call moves
+/// every component at once, matching `apply_distributed_H`'s own
+/// entity-major, component-minor layout convention exactly. `row_offset`
+/// is UNEXPANDED (one entry per row, `rows.rows.size() + 1`);
+/// `weights_flat` is UNEXPANDED too (one entry per `(row, k)` pair, the
+/// same order `row_offset` indexes) -- the caller multiplies by
+/// `components` itself wherever a slot or an owned index is actually
+/// used, since the weight itself does not vary by component.
+///
+/// `owned_n` is `src_nodal.entity_count(0) * components`: THIS
+/// participant's own local (owned + ghost) nodal buffer size, component-
+/// expanded -- the same quantity `apply_distributed_H`'s own
+/// `local_src_values.size()` contract already names, so the plan's
+/// `exchanger` can be driven directly off a caller's existing per-arc
+/// buffer with no repacking into an owned-only compaction.
+struct DistributedRemapPlan {
+  std::vector<std::size_t> row_offset;  ///< size rows.rows.size() + 1
+  std::vector<double> weights_flat;     ///< size row_offset.back(), UNEXPANDED
+  std::size_t components = 1;
+  std::size_t owned_n = 0;  ///< src_nodal.entity_count(0) * components
+  std::shared_ptr<const linalg::GhostExchanger> exchanger;
+  /// H^T's own requirement `apply_distributed_HT` already documents --
+  /// "every LOCAL row -- owned or ghost -- gets the SAME GLOBAL TOTAL for
+  /// its global id" -- that `exchanger` above does not provide by
+  /// itself: `exchanger`'s own pattern moves values FROM each row's
+  /// source vertices TO the rows that reference them (or, run adjoint,
+  /// scatter-adds contributions INTO each source vertex's OWNER), never
+  /// back out to every OTHER rank that holds the same vertex as a
+  /// GHOST. This second exchanger is that missing broadcast: one ghost
+  /// slot per LOCAL ghost entity of `src_nodal` (component-expanded,
+  /// same convention as `exchanger`'s own pattern), mapping to that
+  /// entity's owner -- built from the SAME global ownership map
+  /// `exchanger`'s own pattern resolution already computed, so this is
+  /// an second, nearly-free `GhostPattern` derivation, not a second
+  /// Allgather. `apply_distributed_H`'s own gather needs no equivalent:
+  /// `rows.rows` only ever names entities THIS rank owns on the EVAL
+  /// side (`DistributedInterpRow`'s own header comment), so there is no
+  /// ghost of the OUTPUT to refresh there.
+  std::shared_ptr<const linalg::GhostExchanger> ghost_fill_exchanger;
+};
+
+/// Builds the plan above from `rows` (already built by
+/// `build_distributed_interp_rows`) and `src_nodal` (the SAME nodal
+/// `MeshView` that function and `apply_distributed_H`/`HT` take).
+/// COLLECTIVE over `comm_handle`, called ONCE per matching instruction at
+/// setup -- the same discipline `build_distributed_interp_rows` itself
+/// already documents. `comm_handle` must be a REAL communicator
+/// (`fuse::search::kNullComm` is refused with `E-RT-NODAL-DIST-NOMPI`:
+/// a single-rank, no-MPI caller has no index resolution worth
+/// amortising -- `apply_distributed_H`/`HT`'s existing null-comm branch,
+/// a plain local copy, already touches no MPI symbol and is cheaper than
+/// building an `MpiExchanger` for one participant would be).
+///
+/// Resolves each row's `src_global_ids` to (owner rank, owner's own
+/// LOCAL position) via one additional one-time `MPI_Allgatherv` of every
+/// rank's own (global id, local index) pairs for its OWNED nodal
+/// vertices -- `gather_global_source`'s own vertex gather, minus the
+/// coordinates that one carries and this one does not need. Rejects
+/// `E-RT-NODAL-DIST-OWNER` (a row names a global id no rank reported
+/// owning -- the same code `build_distributed_interp_rows` uses for the
+/// identical hazard) and whatever `fuse::linalg::make_mpi_exchanger`
+/// itself asserts true by construction (it cannot fail post-validation;
+/// see that function's own contract).
+[[nodiscard]] Result<DistributedRemapPlan> build_distributed_remap_plan(
+    const DistributedInterpRows& rows, const MeshView& src_nodal, std::size_t components,
+    search::CommHandle comm_handle);
 
 }  // namespace fuse
