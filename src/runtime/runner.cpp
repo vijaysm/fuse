@@ -1379,9 +1379,242 @@ Result<std::int32_t> Runner::Impl::build_nodal_dist_remap(
       slots[ins.out.value()].components < 1 ? 1 : slots[ins.out.value()].components);
   plan.comm_handle = comm_handle;
 
+  // runtime-exchange track, follow-up round: a REAL communicator gets the
+  // one-time resolved exchange plan built here, once, alongside `rows`
+  // itself -- `apply_nodal_dist_remap()` below then drives it every
+  // period instead of apply_distributed_H/HT's own per-call Allgatherv.
+  // `comm_handle == fuse::search::kNullComm` (a single-rank run) skips
+  // this entirely: `plan.remap_plan.exchanger` stays null, and
+  // `apply_nodal_dist_remap()` falls back to apply_distributed_H/HT
+  // directly, UNCHANGED from before this round.
+  if (comm_handle != search::kNullComm) {
+    const auto remap_plan_r = build_distributed_remap_plan(
+        plan.rows, *plan.nodal_view, plan.components, comm_handle);
+    if (!remap_plan_r.ok()) {
+      return Failure{remap_plan_r.error().code,
+                     label + ": build_distributed_remap_plan failed: " +
+                         remap_plan_r.error().message};
+    }
+    plan.remap_plan = remap_plan_r.value();
+    plan.device_exchanger =
+        std::make_shared<backend::DeviceGhostExchanger>(plan.remap_plan.exchanger);
+    plan.device_ghost_fill_exchanger =
+        std::make_shared<backend::DeviceGhostExchanger>(plan.remap_plan.ghost_fill_exchanger);
+    using DeviceMemSpaceT = Kokkos::DefaultExecutionSpace::memory_space;
+    const std::size_t n_row_offset = plan.remap_plan.row_offset.size();
+    const std::size_t n_weights = plan.remap_plan.weights_flat.size();
+    plan.row_offset_device = Kokkos::View<std::size_t*, DeviceMemSpaceT>(
+        Kokkos::view_alloc(Kokkos::WithoutInitializing, "nodal_dist_row_offset_device"),
+        n_row_offset);
+    plan.weights_flat_device = Kokkos::View<double*, DeviceMemSpaceT>(
+        Kokkos::view_alloc(Kokkos::WithoutInitializing, "nodal_dist_weights_flat_device"),
+        n_weights);
+    auto h_row_offset = Kokkos::create_mirror_view(plan.row_offset_device);
+    auto h_weights = Kokkos::create_mirror_view(plan.weights_flat_device);
+    for (std::size_t i = 0; i < n_row_offset; ++i) h_row_offset(i) = plan.remap_plan.row_offset[i];
+    for (std::size_t i = 0; i < n_weights; ++i) h_weights(i) = plan.remap_plan.weights_flat[i];
+    Kokkos::deep_copy(plan.row_offset_device, h_row_offset);
+    Kokkos::deep_copy(plan.weights_flat_device, h_weights);
+  }
+
   const auto idx = static_cast<std::int32_t>(nodal_dist_remaps.size());
   nodal_dist_remaps.push_back(std::move(plan));
   return idx;
+}
+
+namespace {
+
+using DeviceMemSpaceT = Kokkos::DefaultExecutionSpace::memory_space;
+
+/// `plan.row_offset_device`/`weights_flat_device` are ALWAYS cached in
+/// `DeviceMemSpaceT`, but a Host-space kernel cannot dereference a
+/// device-space View (measured: `Kokkos::View ERROR: attempt to access
+/// inaccessible memory space` -- the mirror-image of the ghost-exchange
+/// deadlock this same round already fixed once, same root cause: a
+/// per-rank/per-call Space choice must not silently assume the OTHER
+/// side's own fixed storage). These two helpers hand back an UNMANAGED
+/// view in whichever `Space` the caller is actually templated on: the
+/// SAME device-resident storage when `Space` is the device space, or a
+/// zero-copy wrap of `plan.remap_plan`'s own host `std::vector` when
+/// `Space` is host.
+template <class Space>
+Kokkos::View<const std::size_t*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>> row_offset_on(
+    const detail::NodalDistRemap& plan) {
+  if constexpr (Kokkos::SpaceAccessibility<Space, Kokkos::HostSpace>::accessible) {
+    return Kokkos::View<const std::size_t*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>>(
+        plan.remap_plan.row_offset.data(), plan.remap_plan.row_offset.size());
+  } else {
+    return Kokkos::View<const std::size_t*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>>(
+        plan.row_offset_device.data(), plan.row_offset_device.size());
+  }
+}
+
+template <class Space>
+Kokkos::View<const double*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>> weights_flat_on(
+    const detail::NodalDistRemap& plan) {
+  if constexpr (Kokkos::SpaceAccessibility<Space, Kokkos::HostSpace>::accessible) {
+    return Kokkos::View<const double*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>>(
+        plan.remap_plan.weights_flat.data(), plan.remap_plan.weights_flat.size());
+  } else {
+    return Kokkos::View<const double*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>>(
+        plan.weights_flat_device.data(), plan.weights_flat_device.size());
+  }
+}
+
+/// Free function, not a member: nvcc refuses an extended `__host__
+/// __device__` lambda (`KOKKOS_LAMBDA`) defined inside a function that is
+/// a member of a class nested privately in another (`Runner::Impl`'s own
+/// situation) -- the same reason every other device kernel this track
+/// and the device-resident-arcs design before it added
+/// (`fuse::num::any_nonfinite<Space>`, `deterministic_dot<Space>`,
+/// space_kernels.hpp) lives at namespace scope, called FROM a
+/// `Runner::Impl` member rather than embedded in one.
+template <class Space>
+void nodal_dist_gather_reduce_kernel(
+    Kokkos::View<const std::size_t*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>> row_offset,
+    Kokkos::View<const double*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>> weights,
+    Kokkos::View<double*, Space> needs, Kokkos::View<double*, Space> out_buf, std::size_t n_rows,
+    std::size_t comps) {
+  Kokkos::parallel_for(
+      "nodal_dist_gather_reduce", Kokkos::RangePolicy<Space>(0, n_rows),
+      KOKKOS_LAMBDA(std::size_t row) {
+        const std::size_t begin = row_offset(row);
+        const std::size_t end = row_offset(row + 1);
+        for (std::size_t c = 0; c < comps; ++c) {
+          double acc = 0.0;
+          for (std::size_t s = begin; s < end; ++s) {
+            acc += weights(s) * needs(s * comps + c);
+          }
+          out_buf(row * comps + c) = acc;
+        }
+      });
+  Kokkos::fence("nodal_dist_gather_reduce_fence");
+}
+
+template <class Space>
+void nodal_dist_scatter_expand_kernel(
+    Kokkos::View<const std::size_t*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>> row_offset,
+    Kokkos::View<const double*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>> weights,
+    Kokkos::View<double*, Space> owned_loads_dev, Kokkos::View<double*, Space> contrib,
+    std::size_t n_rows, std::size_t comps) {
+  Kokkos::parallel_for(
+      "nodal_dist_scatter_expand", Kokkos::RangePolicy<Space>(0, n_rows),
+      KOKKOS_LAMBDA(std::size_t row) {
+        const std::size_t begin = row_offset(row);
+        const std::size_t end = row_offset(row + 1);
+        for (std::size_t s = begin; s < end; ++s) {
+          const double w = weights(s);
+          for (std::size_t c = 0; c < comps; ++c) {
+            contrib(s * comps + c) = w * owned_loads_dev(row * comps + c);
+          }
+        }
+      });
+  Kokkos::fence("nodal_dist_scatter_expand_fence");
+}
+
+}  // namespace
+
+template <class Space>
+Result<void> Runner::Impl::nodal_dist_gather_on(detail::NodalDistRemap& plan,
+                                                const detail::Slot& in_slot,
+                                                const detail::Slot& out_slot,
+                                                std::size_t components) {
+  const std::size_t ghost_n = plan.remap_plan.exchanger->ghost_size();
+  const std::size_t n_rows =
+      plan.remap_plan.row_offset.empty() ? 0 : plan.remap_plan.row_offset.size() - 1;
+  const std::size_t owned_n = plan.remap_plan.owned_n;
+
+  Kokkos::View<double*, Space> needs(
+      Kokkos::view_alloc(Kokkos::WithoutInitializing, "nodal_dist_gather_needs"), ghost_n);
+  const auto ex = plan.device_exchanger->template update<Space>(in_slot.data, owned_n,
+                                                                 needs.data(), ghost_n);
+  if (!ex.ok()) return ex.error();
+
+  Kokkos::View<double*, Space> out_buf(
+      Kokkos::view_alloc(Kokkos::WithoutInitializing, "nodal_dist_gather_out"),
+      n_rows * components);
+  nodal_dist_gather_reduce_kernel<Space>(row_offset_on<Space>(plan), weights_flat_on<Space>(plan),
+                                         needs, out_buf, n_rows, components);
+
+  // Scatter by each row's OWN local_index (plan.rows.rows[k]) into
+  // out_slot -- the exact shape the OLD (null-comm) code's own scatter
+  // loop uses, applied here to `out_buf` staged to host first (the
+  // scatter target index is small and host-side either way).
+  std::vector<double> out_rows_host(n_rows * components);
+  if constexpr (Kokkos::SpaceAccessibility<Space, Kokkos::HostSpace>::accessible) {
+    for (std::size_t i = 0; i < out_rows_host.size(); ++i) out_rows_host[i] = out_buf(i);
+  } else {
+    auto mirror = Kokkos::create_mirror_view(out_buf);
+    Kokkos::deep_copy(mirror, out_buf);
+    for (std::size_t i = 0; i < out_rows_host.size(); ++i) out_rows_host[i] = mirror(i);
+  }
+  if (!out_slot.device) {
+    std::fill(out_slot.data, out_slot.data + out_slot.elements * components, 0.0);
+    for (std::size_t k = 0; k < plan.rows.rows.size(); ++k) {
+      const std::size_t li = plan.rows.rows[k].local_index;
+      for (std::size_t c = 0; c < components; ++c) {
+        out_slot.data[li * components + c] = out_rows_host[k * components + c];
+      }
+    }
+  } else {
+    std::vector<double> out_host(out_slot.elements * components, 0.0);
+    for (std::size_t k = 0; k < plan.rows.rows.size(); ++k) {
+      const std::size_t li = plan.rows.rows[k].local_index;
+      for (std::size_t c = 0; c < components; ++c) {
+        out_host[li * components + c] = out_rows_host[k * components + c];
+      }
+    }
+    host_to_slot(out_host.data(), out_slot, out_host.size());
+  }
+  return Result<void>::success();
+}
+
+template <class Space>
+Result<void> Runner::Impl::nodal_dist_scatter_on(detail::NodalDistRemap& plan,
+                                                  const detail::Slot& out_slot,
+                                                  std::size_t components,
+                                                  const std::vector<double>& owned_loads) {
+  const std::size_t ghost_n = plan.remap_plan.exchanger->ghost_size();
+  const std::size_t n_rows =
+      plan.remap_plan.row_offset.empty() ? 0 : plan.remap_plan.row_offset.size() - 1;
+
+  Kokkos::View<double*, Space> owned_loads_dev(
+      Kokkos::view_alloc(Kokkos::WithoutInitializing, "nodal_dist_owned_loads"),
+      owned_loads.size());
+  auto mirror_in = Kokkos::create_mirror_view(owned_loads_dev);
+  for (std::size_t i = 0; i < owned_loads.size(); ++i) mirror_in(i) = owned_loads[i];
+  Kokkos::deep_copy(owned_loads_dev, mirror_in);
+
+  Kokkos::View<double*, Space> contrib(
+      Kokkos::view_alloc(Kokkos::WithoutInitializing, "nodal_dist_scatter_contrib"), ghost_n);
+  nodal_dist_scatter_expand_kernel<Space>(row_offset_on<Space>(plan), weights_flat_on<Space>(plan),
+                                          owned_loads_dev, contrib, n_rows, components);
+
+  const std::size_t accum_n = plan.remap_plan.owned_n;
+  Kokkos::View<double*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>> out_view(out_slot.data,
+                                                                                 accum_n);
+  Kokkos::deep_copy(out_view, 0.0);
+  const auto ex = plan.device_exchanger->template update_adjoint<Space>(
+      contrib.data(), ghost_n, out_slot.data, accum_n);
+  if (!ex.ok()) return ex.error();
+
+  // The required second pass (DistributedRemapPlan::ghost_fill_exchanger's
+  // own header comment): `out_slot.data` now holds the correct total at
+  // every OWNED position (just written above) and 0 at every GHOST
+  // position (the deep_copy before update_adjoint()); broadcast each
+  // owner's total out to every local ghost copy of the same source
+  // vertex, matching apply_distributed_HT's own "owned or ghost, same
+  // global total" contract. Same buffer for both arguments is safe --
+  // the owned and ghost index sets this pattern touches are disjoint by
+  // construction, and `update()`'s own pack phase only ever reads owned
+  // positions before its unpack phase writes ghost ones (the identical
+  // safety argument `fuse::linalg::DistVector::sync_ghosts()` already
+  // relies on, passing offset views of its OWN single buffer the same
+  // way).
+  const auto fill = plan.device_ghost_fill_exchanger->template update<Space>(
+      out_slot.data, accum_n, out_slot.data, accum_n);
+  if (!fill.ok()) return fill.error();
+  return Result<void>::success();
 }
 
 Result<void> Runner::Impl::apply_nodal_dist_remap(const Instruction& ins, const Resolved& r) {
@@ -1390,25 +1623,77 @@ Result<void> Runner::Impl::apply_nodal_dist_remap(const Instruction& ins, const 
   const detail::Slot& out_slot = slots[ins.out.value()];
   const std::size_t components = plan.components;
 
-  // runtime-exchange track: place_arcs_on_device() no longer pins a
-  // distributed-nodal Remap's arcs to host, so either may now be
-  // device-resident; this function is the one that stages them, exactly
-  // as its case's own comment in place_arcs_on_device() says. The MPI
-  // exchange itself (apply_distributed_H/HT, below) stays entirely on
-  // host buffers regardless of GPU-aware MPI: unlike Transport's
-  // CommGraph, whose per-step payload is a plain value array against an
-  // index map resolved once at setup, this operator's own wire format
-  // (allgatherv_records) interleaves a global id with every value and is
-  // rebuilt from an unordered_map lookup every period -- there is no
-  // contiguous device buffer to hand MPI a pointer to without first
-  // splitting that index resolution out into its own one-time setup step,
-  // which is a larger rework than this track's own budget covers (stated
-  // as a deviation in report-runtime-exchange.md). `slot_to_vector`/
-  // `host_to_slot` (both already used by iteration.cpp's own sweep-loop
-  // bookkeeping) are the exact deep_copy-or-plain-copy branch this needs,
-  // reused rather than re-derived; for a host slot they are the IDENTICAL
-  // operations this function always performed, so the Host leg is
-  // byte-for-byte unchanged.
+  // runtime-exchange track, follow-up round: a REAL communicator's plan
+  // (`build_nodal_dist_remap()` built `plan.device_exchanger` whenever
+  // `plan.comm_handle != fuse::search::kNullComm`) drives the one-time
+  // resolved exchange below (`nodal_dist_gather_on`/`nodal_dist_
+  // scatter_on`, defined just above) instead of apply_distributed_H/
+  // HT's own per-call Allgatherv-and-replicate. A single-rank run
+  // (`comm_handle == kNullComm`, `plan.device_exchanger` null) falls
+  // through to the OLD path further down, UNCHANGED from before this
+  // round.
+  if (plan.device_exchanger) {
+    if (!plan.transpose) {
+      // "consistent": H. in_slot (the nodal source)'s own residency
+      // decides Space -- its FULL local buffer (owned + ghost, entity-
+      // major, component-interleaved) IS remap_plan's own "owned" array,
+      // so this operator never stages the INPUT just to reach the
+      // exchange.
+      if (in_slot.device) {
+        return nodal_dist_gather_on<Kokkos::DefaultExecutionSpace>(plan, in_slot, out_slot,
+                                                                    components);
+      }
+      return nodal_dist_gather_on<Kokkos::DefaultHostExecutionSpace>(plan, in_slot, out_slot,
+                                                                      components);
+    }
+
+    // "consistent-transpose": H^T D. `owned_loads` (per ROW, scaled by
+    // the eval side's own cell measure unless it is itself already a
+    // load) needs `plan.eval_view->measure()` -- a host-only MeshView
+    // accessor, no device-callable form -- so this input-side gather
+    // and scale stays on HOST regardless of in_slot's own residency,
+    // EXACTLY the OLD code's own `in_host`/`slot_to_vector` staging
+    // below (deviation noted in report-exchange-2.md: this is a pre-
+    // existing MeshView limitation, not something this round's scope
+    // changes). Only the EXCHANGE and the scatter-add into out_slot run
+    // on Space, chosen by out_slot's own residency.
+    std::vector<double> in_host;
+    const double* in_read = in_slot.data;
+    if (in_slot.device) {
+      slot_to_vector(in_slot, in_host, in_slot.elements * components);
+      in_read = in_host.data();
+    }
+    std::vector<double> owned_loads(plan.rows.rows.size() * components, 0.0);
+    for (std::size_t k = 0; k < plan.rows.rows.size(); ++k) {
+      const std::size_t li = plan.rows.rows[k].local_index;
+      const double scale = plan.src_is_load ? 1.0 : plan.eval_view->measure(plan.eval_dim, li);
+      for (std::size_t c = 0; c < components; ++c) {
+        owned_loads[k * components + c] = in_read[li * components + c] * scale;
+      }
+    }
+
+    if (out_slot.device) {
+      return nodal_dist_scatter_on<Kokkos::DefaultExecutionSpace>(plan, out_slot, components,
+                                                                   owned_loads);
+    }
+    return nodal_dist_scatter_on<Kokkos::DefaultHostExecutionSpace>(plan, out_slot, components,
+                                                                     owned_loads);
+  }
+
+  // ---- comm_handle == fuse::search::kNullComm: the OLD path, UNCHANGED ----
+  // Reached only when `plan.device_exchanger` is null, i.e.
+  // `plan.comm_handle == fuse::search::kNullComm` (a single-rank run):
+  // the one-time resolved exchange plan above does not apply there (its
+  // own `build_distributed_remap_plan` refuses a null communicator --
+  // "no index resolution worth amortising for one participant"), so this
+  // path calls apply_distributed_H/HT exactly as the runtime-exchange
+  // track's FIRST round left it: the MPI exchange stays entirely on host
+  // buffers (moot at a single rank, which touches no MPI symbol at all
+  // either way); `slot_to_vector`/`host_to_slot` (both already used by
+  // iteration.cpp's own sweep-loop bookkeeping) are the exact deep_copy-
+  // or-plain-copy branch this needs, reused rather than re-derived; for
+  // a host slot they are the IDENTICAL operations this function always
+  // performed, so the Host leg is byte-for-byte unchanged.
   std::vector<double> local_src;
   if (!plan.transpose) slot_to_vector(in_slot, local_src, in_slot.elements * components);
 

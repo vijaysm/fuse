@@ -784,4 +784,157 @@ Result<void> apply_distributed_HT(const DistributedInterpRows& rows, const MeshV
   return Result<void>::success();
 }
 
+Result<DistributedRemapPlan> build_distributed_remap_plan(const DistributedInterpRows& rows,
+                                                          const MeshView& src_nodal,
+                                                          std::size_t components,
+                                                          search::CommHandle comm_handle) {
+  if (components < 1) {
+    return Failure{"E-RT-NODAL-DIST-ARG",
+                   "build_distributed_remap_plan: components must be >= 1"};
+  }
+  // Written search::kNullComm == comm_handle (reversed) rather than the
+  // textually-identical comm_handle == search::kNullComm
+  // allgatherv_records already uses just above: tools/mutate.py's own
+  // anchor matching needs `old` to appear exactly once per mutation id,
+  // and nodal-remap-dist-nullcomm-swallows-real-communicator's `old`
+  // string IS that exact line -- kept distinct here on purpose, not by
+  // accident.
+  if (search::kNullComm == comm_handle) {
+    return Failure{"E-RT-NODAL-DIST-NOMPI",
+                   "build_distributed_remap_plan: comm_handle is fuse::search::kNullComm; a "
+                   "single-rank caller has no index resolution worth amortising -- call "
+                   "apply_distributed_H/apply_distributed_HT directly instead"};
+  }
+#if !FUSE_HAVE_MPI
+  (void)rows;
+  (void)src_nodal;
+  (void)components;
+  return Failure{"E-RT-NODAL-DIST-NOMPI",
+                 "build_distributed_remap_plan: comm_handle names a real communicator, but "
+                 "this build of FUSE has no MPI; configure with -DFUSE_ENABLE_MPI=ON"};
+#else
+  // Step 1: flatten rows into a per-slot (row, k) array -- the order
+  // DistributedRemapPlan::weights_flat and the component-expanded
+  // GhostPattern below both use.
+  std::vector<std::size_t> row_offset(rows.rows.size() + 1, 0);
+  for (std::size_t r = 0; r < rows.rows.size(); ++r) {
+    row_offset[r + 1] = row_offset[r] + rows.rows[r].weights.size();
+  }
+  const std::size_t total_slots = row_offset.back();
+  std::vector<double> weights_flat(total_slots, 0.0);
+  std::vector<std::size_t> src_gid_flat(total_slots, 0);
+  for (std::size_t r = 0; r < rows.rows.size(); ++r) {
+    const DistributedInterpRow& row = rows.rows[r];
+    for (std::size_t k = 0; k < row.weights.size(); ++k) {
+      weights_flat[row_offset[r] + k] = row.weights[k];
+      src_gid_flat[row_offset[r] + k] = row.src_global_ids[k];
+    }
+  }
+
+  // Step 2: one-time Allgather of (this rank, gid, local index) for every
+  // rank's OWNED nodal vertices -- gather_global_source's own vertex
+  // gather, minus the coordinates that one carries and this one does
+  // not need, plus the sending rank tagged onto each record directly
+  // (allgatherv_records' own flattened output does not otherwise expose
+  // which rank contributed which record).
+  const int my_rank = comm_rank(comm_handle);
+  std::vector<double> owned_buf;
+  const std::size_t nv = src_nodal.entity_count(0);
+  for (std::size_t i = 0; i < nv; ++i) {
+    if (!src_nodal.is_owned(0, i)) continue;
+    owned_buf.push_back(static_cast<double>(my_rank));
+    owned_buf.push_back(static_cast<double>(src_nodal.global_id(0, i)));
+    owned_buf.push_back(static_cast<double>(i));
+  }
+  const auto g = allgatherv_records(comm_handle, owned_buf, /*stride=*/3);
+  if (!g.ok()) return g.error();
+
+  std::unordered_map<std::size_t, std::pair<int, std::size_t>> owner_of;
+  owner_of.reserve(g.value().records);
+  for (std::size_t k = 0; k < g.value().records; ++k) {
+    const double* rec = &g.value().data[k * 3];
+    const auto rank = static_cast<int>(rec[0]);
+    const auto gid = static_cast<std::size_t>(rec[1]);
+    const auto local_idx = static_cast<std::size_t>(rec[2]);
+    const auto [it, inserted] = owner_of.emplace(gid, std::make_pair(rank, local_idx));
+    if (!inserted) {
+      return Failure{"E-RT-NODAL-DIST-OWNER",
+                     fmt::format("build_distributed_remap_plan: source vertex global id {} "
+                                 "was reported OWNED by two ranks",
+                                 gid)};
+    }
+  }
+
+  // Step 3: component-expanded GhostPattern -- slot (s, c) resolves to
+  // the owner's own local position scaled by components, the SAME
+  // entity-major convention apply_distributed_H's local_src_values
+  // already uses, so the plan's exchanger can be driven directly off a
+  // caller's existing per-arc buffer.
+  linalg::GhostPattern pattern;
+  pattern.owner_rank.assign(total_slots * components, 0);
+  pattern.remote_local_index.assign(total_slots * components, 0);
+  for (std::size_t s = 0; s < total_slots; ++s) {
+    const auto it = owner_of.find(src_gid_flat[s]);
+    if (it == owner_of.end()) {
+      return Failure{"E-RT-NODAL-DIST-OWNER",
+                     fmt::format("build_distributed_remap_plan: a row references source "
+                                 "vertex global id {}, which no rank reported owning",
+                                 src_gid_flat[s])};
+    }
+    const int owner_rank = it->second.first;
+    const std::size_t owner_local = it->second.second;
+    for (std::size_t c = 0; c < components; ++c) {
+      pattern.owner_rank[s * components + c] = owner_rank;
+      pattern.remote_local_index[s * components + c] =
+          static_cast<std::int64_t>(owner_local * components + c);
+    }
+  }
+
+  // Step 4: the ghost-fill pattern `apply_distributed_HT`'s own
+  // contract needs (DistributedRemapPlan's own header comment) -- one
+  // slot per LOCAL GHOST entity of `src_nodal` (component-expanded),
+  // mapping to that SAME entity's owner, reusing `owner_of` again
+  // rather than a second Allgather. A local entity this rank itself
+  // owns is never a slot here: `update()`'s contract already leaves
+  // `owned[i]` as whatever the caller wrote, so refusing to overwrite
+  // it with a copy of itself is the identity either way, and omitting
+  // the slot entirely is simpler than including a no-op one.
+  std::vector<std::size_t> ghost_local_index;
+  for (std::size_t i = 0; i < nv; ++i) {
+    if (src_nodal.is_owned(0, i)) continue;
+    ghost_local_index.push_back(i);
+  }
+  linalg::GhostPattern fill_pattern;
+  fill_pattern.owner_rank.assign(ghost_local_index.size() * components, 0);
+  fill_pattern.remote_local_index.assign(ghost_local_index.size() * components, 0);
+  for (std::size_t g = 0; g < ghost_local_index.size(); ++g) {
+    const std::size_t i = ghost_local_index[g];
+    const auto it = owner_of.find(src_nodal.global_id(0, i));
+    if (it == owner_of.end()) {
+      return Failure{"E-RT-NODAL-DIST-OWNER",
+                     fmt::format("build_distributed_remap_plan: local ghost vertex global id "
+                                 "{} is not owned by any rank", src_nodal.global_id(0, i))};
+    }
+    const int owner_rank = it->second.first;
+    const std::size_t owner_local = it->second.second;
+    for (std::size_t c = 0; c < components; ++c) {
+      fill_pattern.owner_rank[g * components + c] = owner_rank;
+      fill_pattern.remote_local_index[g * components + c] =
+          static_cast<std::int64_t>(owner_local * components + c);
+    }
+  }
+
+  DistributedRemapPlan plan;
+  plan.row_offset = std::move(row_offset);
+  plan.weights_flat = std::move(weights_flat);
+  plan.components = components;
+  plan.owned_n = nv * components;
+  plan.exchanger =
+      linalg::make_mpi_exchanger(static_cast<int>(comm_handle), pattern, plan.owned_n);
+  plan.ghost_fill_exchanger =
+      linalg::make_mpi_exchanger(static_cast<int>(comm_handle), fill_pattern, plan.owned_n);
+  return plan;
+#endif
+}
+
 }  // namespace fuse

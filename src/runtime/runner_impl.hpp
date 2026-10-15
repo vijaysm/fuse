@@ -23,6 +23,7 @@
 #include "fuse/num/accelerator.hpp"
 #include "fuse/num/space_kernels.hpp"
 #include "fuse/model/iteration.hpp"
+#include "fuse/backend/device_ghost_exchange.hpp"
 #include "fuse/backend/nodal_remap_distributed.hpp"
 #include "fuse/backend/remap_plan.hpp"
 #include "fuse/backend/spacetime.hpp"
@@ -140,6 +141,35 @@ struct NodalDistRemap {
   /// communicator, not a component-scoped split, per this struct's own
   /// build function's comment on why.
   int comm_handle = 0;
+
+  /// runtime-exchange track, follow-up round: the one-time resolved
+  /// exchange plan (`fuse::build_distributed_remap_plan`,
+  /// nodal_remap_distributed.hpp), built in `build_nodal_dist_remap()`
+  /// whenever `comm_handle` names a REAL communicator -- `exchanger` is
+  /// null when `comm_handle == fuse::search::kNullComm` (a single-rank
+  /// run), and `apply_nodal_dist_remap()` falls back to
+  /// `apply_distributed_H`/`apply_distributed_HT` directly in that case,
+  /// UNCHANGED, exactly as before this round.
+  DistributedRemapPlan remap_plan;
+  /// Drives `remap_plan.exchanger` over Space-resident buffers
+  /// (`fuse::backend::DeviceGhostExchanger`'s own header comment); held
+  /// by `shared_ptr` rather than by value so this struct stays movable
+  /// without needing `DeviceGhostExchanger` itself to be. Null exactly
+  /// when `remap_plan.exchanger` is.
+  std::shared_ptr<backend::DeviceGhostExchanger> device_exchanger;
+  /// Device-resident mirrors of `remap_plan.row_offset`/`weights_flat`,
+  /// built once alongside `device_exchanger` -- the per-period weighted-
+  /// reduce (H) and weight-expand (H^T) kernels in `apply_nodal_dist_
+  /// remap()` read these instead of re-deriving them from `remap_plan`'s
+  /// host vectors every period. Empty when `device_exchanger` is null.
+  Kokkos::View<std::size_t*, Kokkos::DefaultExecutionSpace::memory_space> row_offset_device;
+  Kokkos::View<double*, Kokkos::DefaultExecutionSpace::memory_space> weights_flat_device;
+  /// Drives `remap_plan.ghost_fill_exchanger` (DistributedRemapPlan's own
+  /// header comment) -- the H^T scatter-add's required second pass,
+  /// broadcasting each owner's now-accumulated total out to every OTHER
+  /// rank's local ghost copy of the same source vertex. Null exactly
+  /// when `remap_plan.ghost_fill_exchanger` is.
+  std::shared_ptr<backend::DeviceGhostExchanger> device_ghost_fill_exchanger;
 };
 
 /// One space-time channel's operator and its window of source history
@@ -1513,6 +1543,26 @@ struct Runner::Impl {
   /// function above -- every period, not just once.
   Result<void> apply_nodal_dist_remap(const Instruction& ins,
                                       const detail::Resolved& r);
+  /// runtime-exchange track, follow-up round: the "consistent" (H)
+  /// gather half of `apply_nodal_dist_remap()`'s plan-based path, a
+  /// member function template (the SAME reason `execute_on<Space>` is
+  /// one, not a local lambda: nvcc rejects an extended `__host__
+  /// __device__` lambda -- `KOKKOS_LAMBDA` -- defined inside a generic
+  /// lambda, which is what this was first written as). `in_slot`'s own
+  /// residency decides `Space` at the call site in
+  /// `apply_nodal_dist_remap()`.
+  template <class Space>
+  Result<void> nodal_dist_gather_on(detail::NodalDistRemap& plan, const detail::Slot& in_slot,
+                                    const detail::Slot& out_slot, std::size_t components);
+  /// The "consistent-transpose" (H^T D) scatter-add half, called with
+  /// `owned_loads` already built on HOST (measure()-scaling needs a
+  /// host-only `MeshView` call regardless of `Space`, this function's
+  /// own definition explains why) -- `out_slot`'s own residency decides
+  /// `Space` at the call site.
+  template <class Space>
+  Result<void> nodal_dist_scatter_on(detail::NodalDistRemap& plan, const detail::Slot& out_slot,
+                                     std::size_t components,
+                                     const std::vector<double>& owned_loads);
   /// Spec §7.3 (Task 6.3). Builds one `SpacetimeInfo` per space-time
   /// `Interpolate` node and refuses every configuration the interpreter cannot
   /// execute correctly, rather than falling back to a lower-order basis.
