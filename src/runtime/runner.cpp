@@ -1389,7 +1389,7 @@ Result<std::int32_t> Runner::Impl::build_nodal_dist_remap(
   // directly, UNCHANGED from before this round.
   if (comm_handle != search::kNullComm) {
     const auto remap_plan_r = build_distributed_remap_plan(
-        plan.rows, *plan.nodal_view, plan.components, comm_handle);
+        plan.rows, *plan.nodal_view, *eval_view_r.value(), eval_dim, plan.components, comm_handle);
     if (!remap_plan_r.ok()) {
       return Failure{remap_plan_r.error().code,
                      label + ": build_distributed_remap_plan failed: " +
@@ -1415,6 +1415,29 @@ Result<std::int32_t> Runner::Impl::build_nodal_dist_remap(
     for (std::size_t i = 0; i < n_weights; ++i) h_weights(i) = plan.remap_plan.weights_flat[i];
     Kokkos::deep_copy(plan.row_offset_device, h_row_offset);
     Kokkos::deep_copy(plan.weights_flat_device, h_weights);
+
+    // Lead's determinism follow-up (2026-10-15): device mirrors of the
+    // H^T scatter-add's own precomputed summation order, the same
+    // caching convention as row_offset_device/weights_flat_device just
+    // above.
+    const std::size_t n_target_row_offset = plan.remap_plan.target_row_offset.size();
+    const std::size_t n_sorted_answer_slot = plan.remap_plan.sorted_answer_slot.size();
+    plan.target_row_offset_device = Kokkos::View<std::size_t*, DeviceMemSpaceT>(
+        Kokkos::view_alloc(Kokkos::WithoutInitializing, "nodal_dist_target_row_offset_device"),
+        n_target_row_offset);
+    plan.sorted_answer_slot_device = Kokkos::View<std::size_t*, DeviceMemSpaceT>(
+        Kokkos::view_alloc(Kokkos::WithoutInitializing, "nodal_dist_sorted_answer_slot_device"),
+        n_sorted_answer_slot);
+    auto h_target_row_offset = Kokkos::create_mirror_view(plan.target_row_offset_device);
+    auto h_sorted_answer_slot = Kokkos::create_mirror_view(plan.sorted_answer_slot_device);
+    for (std::size_t i = 0; i < n_target_row_offset; ++i) {
+      h_target_row_offset(i) = plan.remap_plan.target_row_offset[i];
+    }
+    for (std::size_t i = 0; i < n_sorted_answer_slot; ++i) {
+      h_sorted_answer_slot(i) = plan.remap_plan.sorted_answer_slot[i];
+    }
+    Kokkos::deep_copy(plan.target_row_offset_device, h_target_row_offset);
+    Kokkos::deep_copy(plan.sorted_answer_slot_device, h_sorted_answer_slot);
   }
 
   const auto idx = static_cast<std::int32_t>(nodal_dist_remaps.size());
@@ -1458,6 +1481,34 @@ Kokkos::View<const double*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>> weig
   } else {
     return Kokkos::View<const double*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>>(
         plan.weights_flat_device.data(), plan.weights_flat_device.size());
+  }
+}
+
+/// The SAME Space-dispatch convention as row_offset_on/weights_flat_on
+/// just above, for the H^T scatter-add's own precomputed summation
+/// order (DistributedRemapPlan::target_row_offset/sorted_answer_slot's
+/// own header comment, lead's determinism follow-up 2026-10-15).
+template <class Space>
+Kokkos::View<const std::size_t*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
+target_row_offset_on(const detail::NodalDistRemap& plan) {
+  if constexpr (Kokkos::SpaceAccessibility<Space, Kokkos::HostSpace>::accessible) {
+    return Kokkos::View<const std::size_t*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>>(
+        plan.remap_plan.target_row_offset.data(), plan.remap_plan.target_row_offset.size());
+  } else {
+    return Kokkos::View<const std::size_t*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>>(
+        plan.target_row_offset_device.data(), plan.target_row_offset_device.size());
+  }
+}
+
+template <class Space>
+Kokkos::View<const std::size_t*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
+sorted_answer_slot_on(const detail::NodalDistRemap& plan) {
+  if constexpr (Kokkos::SpaceAccessibility<Space, Kokkos::HostSpace>::accessible) {
+    return Kokkos::View<const std::size_t*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>>(
+        plan.remap_plan.sorted_answer_slot.data(), plan.remap_plan.sorted_answer_slot.size());
+  } else {
+    return Kokkos::View<const std::size_t*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>>(
+        plan.sorted_answer_slot_device.data(), plan.sorted_answer_slot_device.size());
   }
 }
 
@@ -1510,6 +1561,40 @@ void nodal_dist_scatter_expand_kernel(
         }
       });
   Kokkos::fence("nodal_dist_scatter_expand_fence");
+}
+
+/// Lead's determinism follow-up (2026-10-15): the H^T scatter-add's own
+/// FIXED, decomposition-independent reduction -- one thread per LOCAL
+/// target position `t`, summing its own precomputed bucket of answer-
+/// slot values (`DistributedRemapPlan::target_row_offset`/
+/// `sorted_answer_slot`'s own header comment) in a plain sequential
+/// loop, no atomics. `accum(t)` is OVERWRITTEN (`=`, not `+=`): a `t`
+/// with an empty bucket (no row referenced it, or it is a local GHOST
+/// position the primary exchanger never targets) gets exactly `0.0`,
+/// matching `apply_distributed_HT`'s own "no row referenced this
+/// vertex: stays 0" contract -- no separate zero-first pass needed, the
+/// way `update_adjoint()`'s own atomic-add required one.
+template <class Space>
+void nodal_dist_scatter_reduce_deterministic_kernel(
+    Kokkos::View<const std::size_t*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
+        target_row_offset,
+    Kokkos::View<const std::size_t*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
+        sorted_answer_slot,
+    Kokkos::View<const double*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>> raw_answers,
+    Kokkos::View<double*, Space> accum) {
+  const std::size_t n_targets = accum.extent(0);
+  Kokkos::parallel_for(
+      "nodal_dist_scatter_reduce_deterministic", Kokkos::RangePolicy<Space>(0, n_targets),
+      KOKKOS_LAMBDA(std::size_t t) {
+        double sum = 0.0;
+        const std::size_t begin = target_row_offset(t);
+        const std::size_t end = target_row_offset(t + 1);
+        for (std::size_t j = begin; j < end; ++j) {
+          sum += raw_answers(sorted_answer_slot(j));
+        }
+        accum(t) = sum;
+      });
+  Kokkos::fence("nodal_dist_scatter_reduce_deterministic_fence");
 }
 
 }  // namespace
@@ -1593,19 +1678,34 @@ Result<void> Runner::Impl::nodal_dist_scatter_on(detail::NodalDistRemap& plan,
   const std::size_t accum_n = plan.remap_plan.owned_n;
   Kokkos::View<double*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>> out_view(out_slot.data,
                                                                                  accum_n);
-  Kokkos::deep_copy(out_view, 0.0);
-  const auto ex = plan.device_exchanger->template update_adjoint<Space>(
-      contrib.data(), ghost_n, out_slot.data, accum_n);
+
+  // Lead's determinism follow-up (2026-10-15): the raw post-exchange
+  // answer buffer (pack_index()'s own ANSWER order), reduced below by
+  // nodal_dist_scatter_reduce_deterministic_kernel in a FIXED,
+  // decomposition-independent order instead of update_adjoint()'s own
+  // Kokkos::atomic_add -- see DistributedRemapPlan::target_row_offset/
+  // sorted_answer_slot's own header comment.
+  const std::size_t raw_answers_n = plan.remap_plan.sorted_answer_slot.size();
+  Kokkos::View<double*, Space> raw_answers(
+      Kokkos::view_alloc(Kokkos::WithoutInitializing, "nodal_dist_raw_answers"), raw_answers_n);
+  const auto ex = plan.device_exchanger->template exchange_adjoint_raw<Space>(
+      contrib.data(), ghost_n, raw_answers.data(), raw_answers_n);
   if (!ex.ok()) return ex.error();
+  nodal_dist_scatter_reduce_deterministic_kernel<Space>(
+      target_row_offset_on<Space>(plan), sorted_answer_slot_on<Space>(plan),
+      Kokkos::View<const double*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>>(
+          raw_answers.data(), raw_answers_n),
+      out_view);
 
   // The required second pass (DistributedRemapPlan::ghost_fill_exchanger's
   // own header comment): `out_slot.data` now holds the correct total at
-  // every OWNED position (just written above) and 0 at every GHOST
-  // position (the deep_copy before update_adjoint()); broadcast each
-  // owner's total out to every local ghost copy of the same source
-  // vertex, matching apply_distributed_HT's own "owned or ghost, same
-  // global total" contract. Same buffer for both arguments is safe --
-  // the owned and ghost index sets this pattern touches are disjoint by
+  // every OWNED position (the deterministic reduce above covers every
+  // local position, owned or ghost, writing 0.0 where no row referenced
+  // it -- see that kernel's own header comment); broadcast each owner's
+  // total out to every local ghost copy of the same source vertex,
+  // matching apply_distributed_HT's own "owned or ghost, same global
+  // total" contract. Same buffer for both arguments is safe -- the
+  // owned and ghost index sets this pattern touches are disjoint by
   // construction, and `update()`'s own pack phase only ever reads owned
   // positions before its unpack phase writes ghost ones (the identical
   // safety argument `fuse::linalg::DistVector::sync_ghosts()` already

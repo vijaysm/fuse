@@ -543,19 +543,37 @@ taken on this hardware) under both the natural and forced
 reachable in the code, but no host run here can confirm it moves data
 correctly with a real device pointer in MPI's own hands.
 
-**A reproducibility trade, declared.** The original nodal-remap
-exchange's own design (nodal_remap_distributed.hpp's header comment)
-proves its H^T total "bit-identical across rank counts" by summing every
-contribution in one global, rank-count-independent order (sorted by
-contributor global id) after an `MPI_Allgatherv` of the WHOLE term list.
-The plan-based path's scatter-add uses `Kokkos::atomic_add` into each
-owner's own position instead -- correct, but summing in whatever order
-messages/threads happen to arrive, which is NOT reproducible across rank
-counts (or, in principle, across runs). `parallel.nodal_remap_runner`'s
-own checks (1e-12 relative tolerance, not exact equality) do not
-distinguish the two; tightening that test to catch the difference, or
-recovering the stronger guarantee with a precomputed, rank-count-fixed
-sort order over the exchange's own receive buffer, is this round's one
-explicitly open follow-up, not attempted here (`apply_distributed_H`/
+**The reproducibility trade above, recovered (2026-10-15 follow-up).**
+The original nodal-remap exchange's own design (nodal_remap_distributed.hpp's
+header comment) proves its H^T total "bit-identical across rank counts" by
+summing every contribution in one global, rank-count-independent order
+(sorted by contributor global id) after an `MPI_Allgatherv` of the WHOLE
+term list. This round's FIRST submission's plan-based scatter-add used
+`Kokkos::atomic_add` into each owner's own position instead -- correct,
+but summing in whatever order messages/threads happened to arrive, NOT
+reproducible across rank counts. The lead asked for the stronger
+guarantee back rather than accepting that trade: `build_distributed_remap_plan`
+now resolves, ONCE at setup, a CSR (`DistributedRemapPlan::target_row_offset`/
+`sorted_answer_slot`) grouping every incoming contribution by its target
+local position and sorting each group ascending by the contributor
+evaluation entity's GLOBAL id -- the identical key `apply_distributed_HT`'s
+own per-call sort already uses, resolved by one EXTRA one-time adjoint
+exchange of a `double`-encoded gid array (reusing the exact same
+`PackedExchanger::exchange_packed_adjoint()` plumbing the VALUE exchange
+itself uses) rather than a fresh Allgatherv of the whole term list every
+period. The per-period H^T kernel (`nodal_dist_scatter_reduce_
+deterministic_kernel`, replacing `DeviceGhostExchanger::update_adjoint()`'s
+own atomic-add for this one caller) sums each target's bucket
+sequentially in that fixed order, one thread per target, no atomics.
+`parallel.nodal_remap_runner.ConsistentTransposeIsBitIdenticalAcrossRankCounts`
+(new) asserts EXACT equality against the one-rank serial reference at
+every rank count this file runs at, tightened from that file's usual
+1e-12 relative check specifically to catch a regression back to arrival-
+order summation; GREEN on both the host and `.device` rows (host and
+device multiply/sum steps here have no `a*b+c` fusion opportunity in
+source, unlike the Relax/Remap kernels `docs/dev/runner-device-dispatch.md`
+already notes are NOT bit-identical to host for that reason, so this
+claim does not inherit that caveat). `apply_distributed_H`/
 `apply_distributed_HT` themselves, used at `comm_handle ==
-fuse::search::kNullComm`, keep the stronger guarantee unchanged).
+fuse::search::kNullComm`, were never affected (they keep their own
+original guarantee throughout).
