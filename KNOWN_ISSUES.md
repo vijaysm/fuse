@@ -7257,3 +7257,17 @@ carries information between calls"), including `spare_`, whose documented post-c
 ("Empty until the cap first binds") is exactly what a fresh object already has. A dn_heat round
 trip with `.accelerate(AccelKind::IQN_ILS)` -- mirroring the existing Aitken one -- is the
 verification this needs once written.
+
+### ~~D65. A transient `MPI_Finalize` hang under libfabric's default provider on the owner's machine~~ — NOT REPRODUCED 2026-10-15, cause not established
+
+**Measured** 2026-10-15 on the owner's machine (MPICH 5.0.0a1, ch4:ofi): a five-line
+`MPI_Init_thread`/`MPI_Finalize` program hung in `MPIDI_OFI_mpi_finalize_hook` → `flush_send_queue` (macOS
+`sample`), as a singleton and under `mpiexec -n 1`, in 3 of 3 runs; with `FI_PROVIDER=tcp` it exited. The `build-all`
+quick tier had 11 timeouts (334 rows): the three restart rows and eight rows that had passed the day before
+(`partition.repartition_mpi.1`–`5`, `abi.refusal_sweep`, `verification.brusselator_diffusion_solver_cache`,
+`verification.brusselator_refusal_coverage`); with `FI_PROVIDER=tcp` the restart rows passed. Ruled out:
+`FI_SOCKETS_IFACE=en0` and `=lo0` did not remove the hang (the hostname `Mac` resolves to `192.168.2.124` and
+`192.168.2.80`; `en0` is `.80`). **About six hours later, with no change to the binaries or the MPI install,** the same
+program exited 3 of 3 under the default provider, the restart rows passed, and the quick tier passed 334 of 334
+(78.37 s). Nothing in FUSE sets the provider. If a host run again times out with every rank inside `MPI_Finalize`,
+run the five-line program first: a hang there is this environment state, not FUSE.
