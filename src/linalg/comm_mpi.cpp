@@ -40,28 +40,17 @@
 // collective is kept.
 
 // Explicit, not transitive: the feature macro is read below (docs/dev/invariants.md).
-#include "fuse/base/config.hpp"  // FUSE_MPI_GPU_AWARE
+#include "fuse/base/config.hpp"
 
 #include "fuse/linalg/comm.hpp"
 
 #include "fuse/base/error.hpp"
 
-#include <cstdlib>
 #include <limits>
 
 #if FUSE_HAVE_MPI
 #include <algorithm>
 #include <mpi.h>
-// Declares MPIX_Query_cuda_support()/MPIX_CUDA_AWARE_SUPPORT when this
-// OpenMPI was built with CUDA-aware support -- moved here from
-// src/transport/mpi_transport.cpp's own (now superseded) copy of this
-// probe, mirrored verbatim since this is where the probe now lives
-// (comm.hpp's own header comment on `mpi_is_gpu_aware()`).
-#if defined(__has_include)
-#if __has_include(<mpi-ext.h>)
-#include <mpi-ext.h>
-#endif
-#endif
 #endif
 
 namespace fuse::linalg {
@@ -313,22 +302,6 @@ class ParticipantSetReducer : public Reducer {
 
 std::shared_ptr<const Reducer> make_mpi_reducer(int comm_f) {
   return std::make_shared<const MpiReducer>(resolve(comm_f));
-}
-
-// Moved here from src/transport/mpi_transport.cpp's own (now superseded)
-// transport_mpi_is_gpu_aware() -- identical probe body, now the one copy
-// both `transport` and `backend` call (comm.hpp's own header comment on
-// `mpi_is_gpu_aware()` explains the layering choice).
-bool mpi_is_gpu_aware() {
-  if (const char* force = std::getenv("FUSE_TRANSPORT_HOST_STAGING");
-      force != nullptr && force[0] != '\0' && force[0] != '0') {
-    return false;
-  }
-#if defined(MPIX_CUDA_AWARE_SUPPORT)
-  return MPIX_Query_cuda_support() != 0;
-#else
-  return FUSE_MPI_GPU_AWARE != 0;
-#endif
 }
 
 Result<ParticipantSetReducerResult> make_participant_set_reducer(

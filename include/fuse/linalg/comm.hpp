@@ -149,29 +149,6 @@ class GhostExchanger {
 [[nodiscard]] std::shared_ptr<const GhostExchanger> make_serial_exchanger();
 
 #if FUSE_HAVE_MPI
-/// A run-time probe for whether this build's MPI will move a device
-/// pointer correctly (CUDA-aware buffers), shared by every caller that
-/// used to duplicate it (`fuse::transport::MpiTransport::is_gpu_aware()`,
-/// src/transport/mpi_transport.cpp) rather than re-derived per layer --
-/// the runtime-exchange track's own layering decision: `linalg` sits
-/// below both `transport` and `backend` (tools/check-layering.py), so
-/// this is the lowest layer either can include it from.
-/// `fuse::native::mpi_is_gpu_aware()` (src/backend/native_migration.cpp)
-/// is NOT routed through this -- that probe belongs to the migration
-/// track's own buffers (native_migration.hpp's header comment), outside
-/// this track's scope.
-///
-/// `FUSE_TRANSPORT_HOST_STAGING=1` forces this to `false` regardless of
-/// the underlying probe -- the one lever that lets the host-staged
-/// fallback be exercised by a test even on a machine whose MPI genuinely
-/// is GPU-aware (named `FUSE_TRANSPORT_HOST_STAGING` for the transport
-/// track that first added it; kept rather than renamed, since every
-/// caller of this probe -- transport's own channel exchange, the ghost
-/// and nodal-remap exchanges this track adds -- answers the identical
-/// question, "may a device pointer reach MPI directly", and a second env
-/// var asking it again would only invite the two disagreeing).
-[[nodiscard]] bool mpi_is_gpu_aware();
-
 /// `comm_f` is an `MPI_Comm_c2f` handle, exactly like
 /// `fuse::search::CommHandle` -- this header stays free of `mpi.h` even
 /// though the factory exists only in an MPI build; `src/linalg/comm_mpi.cpp`
